@@ -4,7 +4,13 @@
 # scripts/golden-capture-container.sh. SOURCED, not executed.
 #
 #   ctr_engine PREFIX          set CTR_ENGINE (OPENPETE_CONTAINER_ENGINE, else
-#                              podman, else docker); exit 64 when none is found
+#                              podman, else docker); exit 64 when none is found;
+#                              set CTR_ENGINE_ARGS, the global options every
+#                              `"$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run`
+#                              passes: under rootless podman with no session
+#                              bus at $XDG_RUNTIME_DIR/bus, --conmon
+#                              scripts/lib/conmon-no-session-bus, so the
+#                              container's cleanup autolaunches no dbus-daemon
 #   ctr_engine_mode            one line naming the engine, its version, its
 #                              rootless or rootful mode and storage driver
 #   ctr_uidmap                 set CTR_UIDMAP: the host uid inside the
@@ -42,7 +48,9 @@
 CTR_MOUNTS=()
 CTR_ENV=()
 CTR_UIDMAP=()
+CTR_ENGINE_ARGS=()
 CTR_ENGINE="${CTR_ENGINE:-}"
+CTR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CTR_PREFIX="${CTR_PREFIX:-container}"
 
 ctr_die() { echo "[$CTR_PREFIX] $*" >&2; exit "${CTR_DIE_CODE:-1}"; }
@@ -59,6 +67,11 @@ ctr_engine() {
     [[ -n "$CTR_ENGINE" ]] || { echo "[$CTR_PREFIX] no podman or docker found" >&2; exit 64; }
     command -v "$CTR_ENGINE" >/dev/null \
         || { echo "[$CTR_PREFIX] OPENPETE_CONTAINER_ENGINE=$CTR_ENGINE is not on PATH" >&2; exit 64; }
+    CTR_ENGINE_ARGS=()
+    if [[ "${CTR_ENGINE##*/}" == podman && "$(id -u)" != 0 \
+          && ! -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]]; then
+        CTR_ENGINE_ARGS=(--conmon "$CTR_LIB_DIR/conmon-no-session-bus")
+    fi
 }
 
 ctr_storage_driver() {
@@ -222,7 +235,7 @@ ctr_replay_dockerfile() {
     for kv in "${envs[@]}"; do changes+=(--change "ENV $kv"); done
     local cname="openpete-replay-$$-$RANDOM"
     echo "[$CTR_PREFIX] replay: $base -> $image ($n RUN steps)"
-    if ! "$CTR_ENGINE" run --name "$cname" -v "$work:/replay:ro" -v "$(cd "$context" && pwd):/replay-context:ro" \
+    if ! "$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run --name "$cname" -v "$work:/replay:ro" -v "$(cd "$context" && pwd):/replay-context:ro" \
             "$base" /bin/sh /replay/replay.sh; then
         "$CTR_ENGINE" rm -f "$cname" >/dev/null 2>&1 || true
         rm -rf "$work"

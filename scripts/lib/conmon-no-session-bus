@@ -1,0 +1,26 @@
+#!/bin/sh
+# scripts/lib/conmon-no-session-bus - conmon with the D-Bus session bus
+# disabled, passed to rootless podman as `--conmon` by scripts/lib/container.sh
+# (ctr_engine) when no session bus listens at $XDG_RUNTIME_DIR/bus.
+#
+# conmon runs the container's exit command, `podman container cleanup`, with
+# the environment podman built for conmon: no DBUS_SESSION_BUS_ADDRESS. That
+# podman asks systemd (org.freedesktop.systemd1) over the session bus for a
+# scope; finding no address and no $XDG_RUNTIME_DIR/bus, it autolaunches a
+# bus through `dbus-launch`, and the dbus-daemon outlives the run, holding
+# any pipe it inherited. The unknown transport `disabled:` makes
+# that connect fail; podman logs it at debug level and cleans up as before.
+#
+# podman passes conmon a fixed environment, so the real binary is found in
+# podman's default conmon_path list, then on the PATH it passes.
+DBUS_SESSION_BUS_ADDRESS=disabled:
+export DBUS_SESSION_BUS_ADDRESS
+for c in /usr/libexec/podman/conmon /usr/local/libexec/podman/conmon \
+         /usr/local/lib/podman/conmon /usr/bin/conmon /usr/sbin/conmon \
+         /usr/local/bin/conmon /usr/local/sbin/conmon \
+         /run/current-system/sw/bin/conmon; do
+    [ -x "$c" ] && exec "$c" "$@"
+done
+c="$(command -v conmon)" && exec "$c" "$@"
+echo "conmon-no-session-bus: no conmon found" >&2
+exit 127

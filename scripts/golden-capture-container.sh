@@ -221,7 +221,7 @@ run_opts=(--network=none)
 # running after the container exits, and an inherited descriptor would hold
 # the lock with them.
 run_in() {
-    "$ENGINE" run --rm "${run_opts[@]}" "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" \
+    "$ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${run_opts[@]}" "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" \
         -w "$CTREE" "$IMAGE" "$@" 9>&- 8>&-
 }
 

@@ -142,7 +142,7 @@ in_image() {
     local image="$1" net="$2"; shift 2
     local netopt=()
     [[ "$net" == none ]] && netopt=(--network=none)
-    "$CTR_ENGINE" run --rm "${netopt[@]}" "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" \
+    "$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${netopt[@]}" "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" \
         "${CTR_UIDMAP[@]}" -w "$TREE" "$image" bash -euo pipefail -c "$@"
 }
 
@@ -240,7 +240,7 @@ form_decomp() {
         sed 's#^\([0-9A-Fa-f]* \)build\.wad/#\1build/wad/#' sha256sum.txt >/tmp/sha256sum.txt
         sha256sum -c /tmp/sha256sum.txt"
     t0=$SECONDS
-    "$CTR_ENGINE" run --rm --network=none "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" "${CTR_UIDMAP[@]}" \
+    "$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm --network=none "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" "${CTR_UIDMAP[@]}" \
         -w "$TREE/$dir" "$image" bash -euo pipefail -c "$build_cmd" \
         || fail "decomp $game build or hash check failed"
     local f
@@ -362,7 +362,7 @@ form_shell() {
     [[ -t 0 ]] && tty=(-it)
     local cmd='scripts/setup.sh || echo "[container] scripts/setup.sh exited $?"; exec bash'
     (( $# )) && cmd='scripts/setup.sh >/dev/null || true; exec "$@"'
-    "$CTR_ENGINE" run --rm "${tty[@]}" "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" "${CTR_UIDMAP[@]}" \
+    "$CTR_ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${tty[@]}" "${CTR_MOUNTS[@]}" "${CTR_ENV[@]}" "${CTR_UIDMAP[@]}" \
         -w "$TREE" "$DEV_IMAGE" bash -c "$cmd" _ "$@"
 }
 

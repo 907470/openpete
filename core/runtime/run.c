@@ -7678,6 +7678,22 @@ static int run_split_threaded(const openpete_options_t* opts)
  * @return The current VBL count. */
 static int disc_trace_vbl(void) { return SDL_GetAtomicInt(&openpete_vbl_device); }
 
+/** @brief Keep a headless run's SDL init from autolaunching a D-Bus session bus.
+ *
+ * Every SDL_Init/SDL_InitSubSystem calls SDL_DBus_Init, which opens the
+ * session bus through libdbus. With DBUS_SESSION_BUS_ADDRESS unset and no
+ * socket at $XDG_RUNTIME_DIR/bus (ssh, cron, a WSL shell without a user
+ * manager), libdbus autolaunches one through `dbus-launch --autolaunch`, and
+ * that dbus-daemon outlives the process. A headless run uses no session-bus
+ * service (screensaver inhibit, IME, portals), so it sets the address to
+ * the unknown transport `disabled:`: the connect fails and SDL runs without
+ * D-Bus. A set address and a windowed run are left unchanged.
+ * @param headless The run is headless. */
+static void headless_disable_session_bus_autolaunch(bool headless) {
+    if (headless && !SDL_getenv_unsafe("DBUS_SESSION_BUS_ADDRESS"))
+        SDL_setenv_unsafe("DBUS_SESSION_BUS_ADDRESS", "disabled:", 0);
+}
+
 int openpete_run(const openpete_options_t* opts) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
     openpete_disc_trace_set_vbl_source(disc_trace_vbl);
@@ -7694,6 +7710,7 @@ int openpete_run(const openpete_options_t* opts) {
     OPL_INFO_F("boot", "starting %s (frame_limit=%d max_seconds=%d headless=%d)",
                opts->display_name, opts->frame_limit, opts->max_runtime_seconds,
                (int)opts->headless);
+    headless_disable_session_bus_autolaunch(opts->headless);
 
     /* Extraction worker pool size (--extract-threads), before any consumer
      * can resolve it. Threads themselves spawn lazily on first parallel run. */

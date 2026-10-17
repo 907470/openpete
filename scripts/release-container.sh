@@ -109,7 +109,7 @@ mkdir -p "$PRIV/psxrecomp" "$PRIV/linux-release-launcher" \
 mounts=(-v "$PWD:/src"
         -v "$PWD/$PRIV/psxrecomp:/src/third_party/psxrecomp/build"
         -v "$PWD/$PRIV/linux-release-launcher:/src/build/linux-release-launcher")
-"$ENGINE" run --rm "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
+"$ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build third_party/psxrecomp/build -j

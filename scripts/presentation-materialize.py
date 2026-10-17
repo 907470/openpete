@@ -77,6 +77,7 @@ import importlib.util
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -128,6 +129,22 @@ def container_engine():
         if shutil.which(c):
             return c
     return None
+
+
+def engine_args(engine):
+    """Global options for `engine run`, as ctr_engine in scripts/lib/container.sh
+    sets CTR_ENGINE_ARGS: under rootless podman with no session bus at
+    $XDG_RUNTIME_DIR/bus, --conmon scripts/lib/conmon-no-session-bus, so the
+    container's cleanup autolaunches no dbus-daemon."""
+    if os.path.basename(engine) != "podman" or os.getuid() == 0:
+        return []
+    run = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+    try:
+        if stat.S_ISSOCK(os.stat(os.path.join(run, "bus")).st_mode):
+            return []
+    except OSError:
+        pass
+    return ["--conmon", os.path.join(HERE, "lib", "conmon-no-session-bus")]
 
 
 class Timer:
@@ -434,7 +451,7 @@ def container_prefix(decomp):
                           tag], capture_output=True, text=True).stdout.strip()
     user = (["--userns=keep-id"] if engine == "podman"
             else ["--user", "%d:%d" % (os.getuid(), os.getgid())])
-    return ([engine, "run", "--rm", "-v", "%s:%s" % (decomp, wd)] + user
+    return ([engine] + engine_args(engine) + ["run", "--rm", "-v", "%s:%s" % (decomp, wd)] + user
             + ["-w", wd, tag], "image:%s@%s" % (tag, iid[:12]))
 
 
