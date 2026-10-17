@@ -79,6 +79,14 @@ summer_forest | pos=(121674, 76726, 37488) yaw=1556 pitch=-40
 # outside the 4:3 screen: the game's portal pass rejects it on the X
 # outcode bits, so its preview is missing at 16:9.
 autumn_plains | pos=(90130, 56523, 28297) yaw=688 pitch=160
+# Homeworld portal seen head-on from inside its opening at 16:9: the picture is
+# authored for the 4:3 frame and the side bands beyond it show the backdrop
+# where the destination's own sky (Colossus, read from its WAD entry) has faces.
+summer_forest | pos=(92227, 83198, 37023) yaw=2167 pitch=0
+# A homeworld portal beyond the pass's picture distance (depth 0x5000): the
+# game draws the backdrop faded to its far colour; under --lod extended the
+# picture draws at every distance.
+summer_forest | pos=(117352, 87841, 38523) yaw=2167 pitch=40
 # zephyr poly-anim sector 114: far away the guest re-packs only the LP bank,
 # so --lod extended draws the stale HP pose and the uncovered-LP ride adds
 # the current LP pose, two copies of the object (863 px over HP); original

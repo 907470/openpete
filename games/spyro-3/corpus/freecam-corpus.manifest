@@ -55,6 +55,15 @@ sunrise_spring | pos=(24392, 51564, 21691) yaw=-690 pitch=70
 # The homeworld portal turned into the 16:9 side band, outside the 4:3
 # screen: the game's portal pass rejects it on the X outcode bits.
 sunrise_spring | pos=(25844, 47069, 20665) yaw=256 pitch=123
+# Homeworld portal seen head-on from inside its opening at 16:9: the picture is
+# authored for the 4:3 frame and the side bands beyond it show the backdrop
+# where the destination's own sky (Sunny Villa, read from its WAD entry) has
+# faces.
+sunrise_spring | pos=(26335, 48384, 20634) yaw=1422 pitch=0
+# A homeworld portal beyond the pass's picture distance (depth 0x5000): the
+# game draws the backdrop faded to its far colour; under --lod extended the
+# picture draws at every distance.
+sunrise_spring | pos=(39686, 29303, 22134) yaw=1422 pitch=40
 # moby vs terrain depth: the submarine draws at the wrong depth against the
 # ground
 super_bonus_round:1 | pos=(63716, 66117, 15554) yaw=507 pitch=155
