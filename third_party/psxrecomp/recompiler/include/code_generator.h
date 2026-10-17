@@ -248,6 +248,16 @@ private:
     void note_named_call(uint32_t target);
     /// @brief Record a call through a register or a syscall in the current region.
     void note_indirect_call();
+    /** @brief Record a `jr $t2` kernel table call that on the console only reads kernel RAM, as the loads and instructions of the kernel path.
+     *
+     * The kernel functions so recorded store nothing, call nothing and do
+     * not loop (OpenBIOS card.c getCardStatus); any other kernel call, or a
+     * `jr $t2` whose t2 and t1 the block does not set to constants, is
+     * recorded by note_indirect_call().
+     * @param block_start the first instruction of the block ending in the `jr`
+     * @param jr_addr     the `jr $t2` instruction; its delay slot follows it
+     * @return true when the call was recorded as a kernel read */
+    bool note_kernel_read_call(uint32_t block_start, uint32_t jr_addr);
     /** @brief Record the conditional branch that exits the current region, before its delay slot is noted.
      *
      * Sets EmittedRegion::v0_test for a `beq`/`bne` (or the likely forms)

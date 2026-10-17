@@ -178,6 +178,55 @@ void CodeGenerator::note_indirect_call() {
     facts_.back().regions.back().v0_out = V0Out::Unknown;
 }
 
+namespace {
+
+uint32_t gpr_written(uint32_t i);  // defined with the bound walk below
+
+/// A kernel function that on the console reads kernel RAM and returns: no store, no call, no loop.
+struct KernelRead {
+    uint32_t table;   ///< the vector: 0xA0, 0xB0 or 0xC0
+    uint32_t fn;      ///< the function number in t1
+    uint32_t insns;   ///< the console's instructions from the vector to the return, branch and jump words excluded
+};
+
+/* B(5Ch) _card_status: the B0 vector (lui, addiu, delay nop; SCPH-1001 ROM
+ * 0x10010), the B0 table dispatch (lui, addiu, sll, add, lw, nop, delay
+ * nop; ROM 0x100E8) and the body (lui, addu, lbu of the port's status byte
+ * at 0x7568, delay nop; ROM 0x15B5C). */
+constexpr KernelRead kKernelReads[] = {
+    {0xB0u, 0x5Cu, 14u},
+};
+
+}  // namespace
+
+bool CodeGenerator::note_kernel_read_call(uint32_t block_start, uint32_t jr_addr) {
+    if (facts_.empty() || facts_.back().regions.empty()) return false;
+    constexpr uint32_t kT1 = 9, kT2 = 10;
+    bool known[2] = {false, false};
+    uint32_t value[2] = {0, 0};
+    for (uint32_t a = block_start; a <= jr_addr + 4u; a += 4u) {
+        if (a == jr_addr) continue;
+        auto w = exe_.read_word(a);
+        if (!w) return false;
+        const uint32_t dst = gpr_written(*w);
+        if (dst != kT1 && dst != kT2) continue;
+        const uint32_t op = (*w >> 26) & 0x3F;
+        const bool from_zero = (op == 0x09 || op == 0x0D) && get_rs(*w) == 0;  // addiu/ori from $zero
+        known[dst - kT1] = from_zero;
+        value[dst - kT1] = *w & 0xFFFFu;
+    }
+    if (!known[0] || !known[1]) return false;
+    for (const KernelRead& k : kKernelReads) {
+        if (k.table != value[1] || k.fn != value[0]) continue;
+        EmittedRegion& r = facts_.back().regions.back();
+        r.loads = true;
+        r.insns += k.insns;
+        r.v0_out = V0Out::Unknown;
+        return true;
+    }
+    return false;
+}
+
 void CodeGenerator::note_branch(uint32_t instr) {
     if (facts_.empty() || facts_.back().regions.empty()) return;
     EmittedRegion& r = facts_.back().regions.back();
@@ -2291,7 +2340,8 @@ std::string CodeGenerator::translate_basic_block(
                         // BIOS call or unrecognised indirect jump
                         ss << config_.indent << fmt::format("call_by_address(cpu, {});  /* jr {} */\n",
                                                             reg_name(jr_rs), reg_name(jr_rs));
-                        note_indirect_call();
+                        if (jr_rs != 10 || !note_kernel_read_call(block.start_addr, block.exit_instr.address))
+                            note_indirect_call();
                         ss << config_.indent << "return;\n";
                     }
                     }  // end of !jr_is_saved_ra branch

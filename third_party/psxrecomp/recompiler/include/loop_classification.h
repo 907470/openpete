@@ -54,13 +54,16 @@ struct EmittedGoto {
 struct EmittedRegion {
     uint32_t label = 0;
     uint32_t insns = 0;          ///< instructions translated (branch and jump words excluded)
-    bool loads = false;          ///< reads guest memory (lb..lwr, lwc2)
+    bool loads = false;          ///< reads guest memory (lb..lwr, lwc2), or calls a kernel
+                                 ///< function that only reads kernel RAM (its path's
+                                 ///< instructions are counted in insns)
     bool stores = false;         ///< writes guest memory (sb..swr, swc2)
     bool opaque_call = false;    ///< calls code no leaf summary can describe: a PSYQ
-                                 ///< or manual symbol, call_by_address on a register,
-                                 ///< or psx_syscall
+                                 ///< or manual symbol, call_by_address on a register
+                                 ///< (a kernel read call excepted), or psx_syscall
     bool indirect = false;       ///< call_by_address on a register (a jump table's
-                                 ///< out-of-range default excepted) or psx_syscall
+                                 ///< out-of-range default and a kernel read call
+                                 ///< excepted) or psx_syscall
     std::vector<uint32_t> named;     ///< PSYQ or manual symbols called, one entry per call
     std::vector<uint32_t> callees;   ///< generated functions of this unit called, one entry per call
     std::vector<uint32_t> foreign;   ///< constant `call_by_address` targets, one entry per call;
