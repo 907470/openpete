@@ -1,0 +1,32 @@
+# mat-fx-pair - material resolution fixture: a manifest row and a C
+# registration on one selector (player), plus flame ident 0 and sky rows
+# that overlap mat-fx-broad's.
+#
+# The manifest rows register before the entry point, so on the player key
+# the row and the C material are a same-mod tie. Never enable it to play.
+
+[mod]
+id      = "mat-fx-pair"
+name    = "Material Fixture: Pair"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "player"
+params  = [1.0, 0.0, 0.0, 0.5]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "flame"
+ident   = 0
+params  = [1.0, 0.0, 0.0, 0.5]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "sky"
+params  = [1.0, 0.0, 0.0, 0.5]

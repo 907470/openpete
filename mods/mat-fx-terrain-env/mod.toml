@@ -1,0 +1,23 @@
+# mat-fx-terrain-env - material resolution fixture: an env-keyed terrain
+# declarative on the texture mat-fx-terrain refines (Tiledef id 1).
+#
+# Listed after mat-fx-terrain, so on the env-animated faces of texture 1
+# it is the higher-priority material against mat-fx-terrain's earlier
+# texture-keyed refine. Never enable it to play.
+
+[mod]
+id      = "mat-fx-terrain-env"
+name    = "Material Fixture: Terrain Env"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag     = "shaders/tint.frag"
+channel  = "terrain"
+texture  = 1
+env_anim = true
+params   = [1.0, 1.0, 0.0, 0.5]

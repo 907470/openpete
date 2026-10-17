@@ -1,0 +1,17 @@
+# mat-fx-classrefine - material resolution fixture: a class-keyed moby
+# refine retuned every present (the Spyro Portals pattern).
+#
+# The class is one the current level loaded (api->moby_classes, the
+# middle entry; a fixed class on a game that serves no class census). The
+# callback claims instances whose guest address has bit 4 clear and
+# declines the rest. Never enable it to play.
+
+[mod]
+id      = "mat-fx-classrefine"
+name    = "Material Fixture: Class Refine"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false

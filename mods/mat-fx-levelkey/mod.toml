@@ -1,0 +1,18 @@
+# mat-fx-levelkey - material resolution fixture: a moby declarative keyed
+# to another level, registered before a refine on the same class.
+#
+# The declarative's level key is the current level + 1, retuned whenever
+# the level changes; the refine claims every instance of the class. The
+# class is one the current level loaded (api->moby_classes, middle entry
+# + 4; a fixed class on a game that serves no class census). Never enable
+# it to play.
+
+[mod]
+id      = "mat-fx-levelkey"
+name    = "Material Fixture: Level Key"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false

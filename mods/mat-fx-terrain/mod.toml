@@ -1,0 +1,17 @@
+# mat-fx-terrain - material resolution fixture: terrain refines.
+#
+# A refine keyed to Tiledef id 1 that claims every face, and an
+# untextured-band refine keyed to the current level (retuned whenever the
+# level changes) that declines on an even level id and claims on an odd
+# one. mat-fx-terrain-env, listed later, adds an env-keyed declarative on
+# texture 1. Never enable it to play.
+
+[mod]
+id      = "mat-fx-terrain"
+name    = "Material Fixture: Terrain"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false

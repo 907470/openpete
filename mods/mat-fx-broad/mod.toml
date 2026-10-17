@@ -1,0 +1,37 @@
+# mat-fx-broad - material resolution fixture: broad declaratives.
+#
+# A channel-wide moby row (no class key), and one row each on flame ident
+# 0, sky and player. Listed before mat-fx-pair, which carries rows on the
+# same flame, sky and player keys, so the pair measures cross-mod
+# declarative order on non-moby channels. Never enable it to play.
+
+[mod]
+id      = "mat-fx-broad"
+name    = "Material Fixture: Broad"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "moby"
+params  = [0.0, 0.0, 1.0, 0.5]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "flame"
+ident   = 0
+params  = [0.0, 0.0, 1.0, 0.5]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "sky"
+params  = [0.0, 0.0, 1.0, 0.5]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "player"
+params  = [0.0, 0.0, 1.0, 0.5]

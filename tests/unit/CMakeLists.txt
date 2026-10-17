@@ -436,6 +436,24 @@ set_target_properties(mod_vec_test PROPERTIES C_STANDARD 99)
 add_test(NAME mod_vec_test COMMAND mod_vec_test)
 set_tests_properties(mod_vec_test PROPERTIES LABELS "mods")
 
+# mod_material_resolve_test - the material resolver
+# (core/mods/mod_material_resolve.c) against stub loader hooks: per case,
+# materials for stub mods (enabled-list position, api pin), the extraction,
+# bake and draw-time outcome, and the resolve census counters.
+add_executable(mod_material_resolve_test
+    mod_material_resolve_test.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_material_resolve.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(mod_material_resolve_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/core/mods)
+target_compile_definitions(mod_material_resolve_test PRIVATE OPENPETE_ENGINE_BUILD)
+set_target_properties(mod_material_resolve_test PROPERTIES C_STANDARD 11)
+add_test(NAME mod_material_resolve_test COMMAND mod_material_resolve_test)
+set_tests_properties(mod_material_resolve_test PROPERTIES LABELS "mods")
+
 # mod_games_test - the games a mod names besides the one it runs on
 # (core/mods/mod_games.c): list merging and limits, the route of a disc call
 # for every role and install state against a fake library lookup, the first
@@ -564,6 +582,7 @@ add_test(NAME sfx_smpl_walk_test COMMAND sfx_smpl_walk_test)
 set(RHI_STRESS_SOURCES
     rhi_compile_stress.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_shader.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_material_resolve.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_cdata.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
     ${CMAKE_SOURCE_DIR}/core/host/sha256.c

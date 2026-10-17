@@ -1,0 +1,20 @@
+# mat-fx-exclude13 - material resolution fixture: narrow-before-wide exclusions in one
+# mod (the sky-selector pattern), pinned at api 13.
+#
+# Three class-keyed identity materials register first, then a
+# channel-wide moby tint. Within one mod the first registration wins a
+# tie today, so the three classes keep their stock look under the tint.
+# mat-fx-exclude (api 12) and mat-fx-exclude13 (api 13) are the same
+# source at the two pins. The classes are three the current level loaded
+# (api->moby_classes, from the middle entry), retuned every present.
+# Never enable it to play.
+
+[mod]
+id      = "mat-fx-exclude13"
+name    = "Material Fixture: Exclude (api 13)"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false

@@ -1,0 +1,17 @@
+# mat-fx-wildrefine-a - material resolution fixture: a channel-wide moby
+# refine that claims only its own instances (the Japanese Extras pattern).
+#
+# The selector has no class key; the callback claims mobys of even class
+# id and declines the rest. mat-fx-wildrefine-a and -b claim disjoint
+# classes, so with both enabled the later-listed one decides every moby
+# and the earlier one's claims are never asked. Never enable it to play.
+
+[mod]
+id      = "mat-fx-wildrefine-a"
+name    = "Material Fixture: Wild Refine A"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
