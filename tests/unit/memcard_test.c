@@ -10,6 +10,10 @@
  *           the card write; the game-facing calls must return the libmcrd
  *           error McErrCardInvalid (2), the file on disk must be unchanged
  *           and the in-memory card must still read the old contents.
+ *           With the injection removed, a later frame write is still
+ *           refused: the slot stays failing for the session.
+ *   folder  a --card1 path in a folder that does not exist is refused by
+ *           the startup check, and one in an existing folder passes.
  *   bad     a truncated card, an unknown 131200-byte file and a 131200-
  *           byte image with the PSP/PS3 .vmp magic: the first two are
  *           renamed to <name>.bad-1 with their bytes intact and a fresh
@@ -174,13 +178,16 @@ static int case_fail(void) {
     memset(frame, 0x33, sizeof frame);
     int fw = openpete_memcard_write_frame(0, 70, frame);
     unsetenv("OPENPETE_WRITE_FAIL");
-    printf("fail: write=%d sync rslt=%d create=%d format=%d write_frame=%d\n", w, rslt, c, f, fw);
+    int later = openpete_memcard_write_frame(0, 71, frame);
+    printf("fail: write=%d sync rslt=%d create=%d format=%d write_frame=%d later=%d\n",
+           w, rslt, c, f, fw, later);
 
     int rc = 0;
     if (w != 2 || rslt != 2) rc |= fail("fail: MemCardWriteFile did not report McErrCardInvalid");
     if (c != 2) rc |= fail("fail: MemCardCreateFile did not report McErrCardInvalid");
     if (f != 2) rc |= fail("fail: MemCardFormat did not report McErrCardInvalid");
     if (fw != -1) rc |= fail("fail: the BIOS frame write did not report failure");
+    if (later != -1) rc |= fail("fail: a write after a failed one was not refused");
 
     long n1 = 0;
     unsigned char* after = slurp(path, &n1);
@@ -280,6 +287,28 @@ static int case_frames(void) {
     return rc;
 }
 
+/** @brief A --card1 path in a missing folder fails the startup check; one in an existing folder passes.
+ * @return 0 when both verdicts hold. */
+static int case_folder(void) {
+    char dir[600], missing[700], present[700];
+    fresh_dir(dir, sizeof dir);
+    snprintf(missing, sizeof missing, "%s/no-such-folder/card1.mcr", dir);
+    snprintf(present, sizeof present, "%s/card1.mcr", dir);
+    openpete_memcard_set_paths(missing, NULL);
+    openpete_memcard_set_presence(1, 0);
+    int r_missing = openpete_memcard_startup_check();
+    openpete_memcard_set_paths(present, NULL);
+    openpete_memcard_set_presence(1, 0);
+    int r_present = openpete_memcard_startup_check();
+    printf("folder: missing=%d present=%d\n", r_missing, r_present);
+    int rc = 0;
+    if (r_missing != -1) rc |= fail("folder: a card in a missing folder was not refused");
+    if (r_present != 0) rc |= fail("folder: a card in an existing folder was refused");
+    struct stat st;
+    if (stat(missing, &st) == 0) rc |= fail("folder: the refused card was created");
+    return rc;
+}
+
 /** @brief Run one case in a child process, since the card module's slot state is process-wide.
  * @return The case's result. */
 static int run_case(int (*fn)(void)) {
@@ -307,6 +336,7 @@ int main(int argc, char** argv) {
     rc |= run_case(bad_vmp);
     rc |= run_case(bad_dexdrive);
     rc |= run_case(case_frames);
+    rc |= run_case(case_folder);
     printf(rc ? "memcard_test: FAILED\n" : "memcard_test: ok\n");
     return rc;
 }

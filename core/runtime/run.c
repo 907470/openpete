@@ -3391,7 +3391,7 @@ static int run_host_init(const openpete_options_t* opts) {
     sfx_pack_set_dir_override(opts->sfxpack_dir);
     sfx_pack_init();        /* assets/sfx/ drop-in replacement */
     /* Boot: written before the host loop starts, so no other thread reads it. */
-    s_mute = opts->mute ? 1 : 0;
+    s_mute = opts->mute;
     apply_mute_gains();
     live_knob_publish_shown();
 
@@ -3403,7 +3403,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_memcard_set_presence(1, opts->card_b_present);
     openpete_memcard_set_unformatted(opts->card_unformatted);
     openpete_memcard_set_adopt(opts->adopt_saves);
-    openpete_memcard_startup_check();
+    if (openpete_memcard_startup_check() != 0) return OPENPETE_EXIT_SETUP_ERROR;
     openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
                           opts->handoff_argv);
     /* Savestate slots every game shared are copied into this game's own

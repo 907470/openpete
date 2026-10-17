@@ -62,14 +62,21 @@ void openpete_memcard_set_unformatted(int on);
  * @param on Nonzero enables adoption. */
 void openpete_memcard_set_adopt(int on);
 
-/** @brief Run the modset tag check at startup for each present slot whose image file exists.
+/** @brief Refuse a present slot whose card folder does not exist, then run the modset tag check for each existing image.
  *
- * The game may not touch the card until its save UI, and the check
- * concerns the launch configuration. The check runs once per slot per
- * process, so the later open by the game does not repeat it. A missing
- * image is skipped: it holds no progress, and the first write tags it.
- * Call after mods init and the configuration setters. */
-void openpete_memcard_startup_check(void);
+ * Each present slot's image path is resolved (creating the --card-dir,
+ * OPENPETE_CARD_DIR or default card folder). A folder that does not exist
+ * afterwards is refused with an error naming the path and the folder: a
+ * card in it could never be written, and a game that probes the card at
+ * boot retries the write without end. A --card1/--card2 folder is never
+ * created, so a mistyped path is reported instead of creating folders.
+ * The modset check concerns the launch configuration, as the game may not
+ * touch the card until its save UI; it runs once per slot per process,
+ * so the later open by the game does not repeat it. A missing image is
+ * skipped: it holds no progress, and the first write tags it. Call after
+ * mods init and the configuration setters.
+ * @return 0, or -1 when a present slot's card folder does not exist. */
+int openpete_memcard_startup_check(void);
 
 /* --- libmcrd surface (called by the psyq_MemCard* thunks) ----------------- */
 

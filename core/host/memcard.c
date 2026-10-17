@@ -76,9 +76,11 @@ extern int openpete_speculative; /* openpete_fiber.h - runahead lookahead */
 static uint8_t s_card[2][MC_CARD_SIZE];
 static uint8_t s_disk[2][MC_CARD_SIZE];        /* the image as last persisted */
 /* Writes to the slot are refused: its file is a headered image loaded
- * read-only (s_readonly), or no card path resolved (s_mem_only). */
+ * read-only (s_readonly), no card path resolved (s_mem_only), or a write
+ * to its file failed earlier in the session (s_write_failed). */
 static int     s_readonly[2];
 static int     s_mem_only[2];
+static int     s_write_failed[2];
 static int     s_refuse_warned[2];
 static int     s_present[2]      = { 1, 1 };   /* both cards inserted by default */
 static int     s_loaded[2]       = { 0, 0 };
@@ -317,7 +319,7 @@ static void mc_modset_on_write(int slot) {
  * @return 1 when the slot's image is read-only or memory-only, else 0. */
 static int mc_write_refused(int slot)
 {
-    if (!s_readonly[slot] && !s_mem_only[slot]) return 0;
+    if (!s_readonly[slot] && !s_mem_only[slot] && !s_write_failed[slot]) return 0;
     if (!s_refuse_warned[slot]) {
         s_refuse_warned[slot] = 1;
         OPL_ERROR_F("memcard", "card %d: save refused - %s", slot,
@@ -326,6 +328,20 @@ static int mc_write_refused(int slot)
                                      : "the image is a headered format loaded read-only");
     }
     return 1;
+}
+
+/** @brief Mark the slot as failing writes after a write to its file failed, logging it once.
+ *
+ * Every later write is refused without touching the file and reports a
+ * card error to the game, as a card that fails its writes does, so a game
+ * that retries the write does not repeat the file I/O and its log lines.
+ * @param slot Card slot, 0 or 1. */
+static void mc_mark_write_failed(int slot)
+{
+    s_write_failed[slot] = 1;
+    s_refuse_warned[slot] = 1;
+    OPL_ERROR_F("memcard", "card %d: writing %s failed; the card reports a write "
+                "error to the game for the rest of the session", slot, s_path[slot]);
 }
 
 /** @brief Report whether a slot write is suppressed because the tick is speculative (runahead).
@@ -357,8 +373,12 @@ static int mc_speculative_suppressed(int slot)
 static int mc_flush(int slot)
 {
     if (!s_loaded[slot] || mc_speculative_suppressed(slot)) return 0;
-    if (mc_write_refused(slot) ||
-        op_atomic_write_file(s_path[slot], s_card[slot], MC_CARD_SIZE) != 0) {
+    int failed = mc_write_refused(slot);
+    if (!failed && op_atomic_write_file(s_path[slot], s_card[slot], MC_CARD_SIZE) != 0) {
+        mc_mark_write_failed(slot);
+        failed = 1;
+    }
+    if (failed) {
         memcpy(s_card[slot], s_disk[slot], MC_CARD_SIZE);
         return -1;
     }
@@ -635,20 +655,61 @@ void openpete_memcard_set_adopt(int on)
     s_adopt = on ? 1 : 0;
 }
 
-void openpete_memcard_startup_check(void)
+/** @brief Report whether the folder holding the slot's resolved image path exists, naming it in folder.
+ *
+ * The folder is the path up to its last separator; a path with none lies
+ * in the working directory, which exists.
+ * @param slot Card slot, 0 or 1.
+ * @param folder Receives the folder, or "." for a bare file name.
+ * @param cap Size of folder in bytes.
+ * @return 1 when the folder exists and is a directory, else 0. */
+static int mc_folder_exists(int slot, char* folder, size_t cap)
+{
+    const char* p = s_path[slot];
+    const char* sep = strrchr(p, '/');
+#ifdef _WIN32
+    const char* bs = strrchr(p, '\\');
+    if (bs && (!sep || bs > sep)) sep = bs;
+#endif
+    if (!sep) { snprintf(folder, cap, "."); return 1; }
+    size_t n = (size_t)(sep - p);
+    if (n == 0) n = 1;                       /* "/card.mcr": the root */
+#ifdef _WIN32
+    if (n == 2 && p[1] == ':') n = 3;        /* "C:\card.mcr": the drive root */
+#endif
+    snprintf(folder, cap, "%.*s", (int)n, p);
+    struct stat st;
+    return stat(folder, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
+}
+
+int openpete_memcard_startup_check(void)
 {
     /* Spyro only touches the card from its save UI, but the modset
      * warning is about the LAUNCH configuration - surface it at startup.
      * Existing images only: a fresh dir has no progress to protect (the
      * game's first real write birth-tags via mc_flush). */
+    int rc = 0;
     for (int slot = 0; slot < 2; slot++) {
         if (!s_present[slot]) continue;
         if (mc_resolve_path(slot) != 0) continue;
+        char folder[1280];
+        if (!mc_folder_exists(slot, folder, sizeof folder)) {
+            if (s_path_override[slot][0])
+                OPL_ERROR_F("memcard", "--card%d %s: the folder %s does not exist; create it "
+                            "or name a card file in an existing folder",
+                            slot + 1, s_path_override[slot], folder);
+            else
+                OPL_ERROR_F("memcard", "card %d: the card folder %s does not exist and "
+                            "could not be created", slot, folder);
+            rc = -1;
+            continue;
+        }
         FILE* f = fopen(s_path[slot], "rb");
         if (!f) continue;
         fclose(f);
         mc_modset_check_open(slot);
     }
+    return rc;
 }
 
 void openpete_memcard_set_unformatted(int on)
