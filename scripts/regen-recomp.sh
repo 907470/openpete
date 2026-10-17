@@ -564,7 +564,7 @@ if [[ "$ra_spill_found" != "${RA_SPILL_RETURNS:-0}" ]]; then
 fi
 echo "[regen] ra-spill returns: $ra_spill_found (matches recomp.conf)"
 
-# Every in-image word-table `jr` must dispatch through an index switch; an
+# Every in-image word-table `jr` must dispatch through a switch; an
 # unswitched one stub-misses on any entry that is not a dispatch entry.
 # recomp.conf's JUMPTABLE_UNSWITCHED names the accepted exceptions.
 python3 tools/check_jumptable_dispatch.py --game "$GAME"

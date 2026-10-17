@@ -301,6 +301,18 @@ private:
     JumpTableSite detect_jump_table(const BasicBlock& jr_block,
                                     const ControlFlowGraph& cfg) const;
 
+    /** @brief Emit one `case` arm of a jump-table switch.
+     *
+     * A target inside the function is a `goto` to its block label; a target
+     * with an external, manual or recompiled-function name is a direct call
+     * followed by `return`; any other target goes through call_by_address().
+     * @param ss    stream receiving the arm
+     * @param cfg   control-flow graph of the function holding the `jr`
+     * @param label case label, written verbatim after `case`
+     * @param t     table entry the arm transfers to */
+    void emit_table_case(std::stringstream& ss, const ControlFlowGraph& cfg,
+                         const std::string& label, uint32_t t);
+
     /** @brief Find the SLTIU bound of a jump table through the control flow.
      *
      * The guard is the conditional `beq`/`bne` against $zero on the edge

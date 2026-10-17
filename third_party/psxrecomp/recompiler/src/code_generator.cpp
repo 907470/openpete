@@ -1839,6 +1839,28 @@ CodeGenerator::JumpTableSite CodeGenerator::detect_jump_table(
     return site;
 }
 
+void CodeGenerator::emit_table_case(std::stringstream& ss, const ControlFlowGraph& cfg,
+                                    const std::string& label, uint32_t t) {
+    if (cfg.blocks.count(t) || extra_labels_.count(t)) {
+        ss << config_.indent << fmt::format("    case {}: goto block_{:08X};\n", label, t);
+        note_goto(t, GotoArm::Case);
+    } else if (auto* ext = external_name_for(t)) {
+        ss << config_.indent << fmt::format("    case {}: {}(cpu); return;\n", label, *ext);
+        note_named_call(t);
+    } else if (auto* man = manual_name_for(t)) {
+        ss << config_.indent << fmt::format("    case {}: {}(cpu); return;\n", label, *man);
+        note_named_call(t);
+    } else if (known_functions_.count(t)) {
+        ss << config_.indent << fmt::format("    case {}: {}{:08X}(cpu); return;\n",
+                                            label, config_.func_prefix, t);
+        note_call(t);
+    } else {
+        ss << config_.indent << fmt::format(
+            "    case {}: call_by_address(cpu, 0x{:08X}u); return;\n", label, t);
+        note_foreign_call(t);
+    }
+}
+
 std::string CodeGenerator::translate_basic_block(
     const BasicBlock& block,
     const ControlFlowGraph& cfg) {
@@ -2233,29 +2255,7 @@ std::string CodeGenerator::translate_basic_block(
                                 table_base, table_count, reg_name(index_reg));
                             ss << config_.indent << fmt::format("switch ({}) {{\n", reg_name(index_reg));
                             for (uint32_t i = 0; i < table_count; i++) {
-                                uint32_t t = entries[i];
-                                if (cfg.blocks.count(t) || extra_labels_.count(t)) {
-                                    ss << config_.indent << fmt::format(
-                                        "    case {}u: goto block_{:08X};\n", i, t);
-                                    note_goto(t, GotoArm::Case);
-                                } else if (auto* ext = external_name_for(t)) {
-                                    ss << config_.indent << fmt::format(
-                                        "    case {}u: {}(cpu); return;\n", i, *ext);
-                                    note_named_call(t);
-                                } else if (auto* man = manual_name_for(t)) {
-                                    ss << config_.indent << fmt::format(
-                                        "    case {}u: {}(cpu); return;\n", i, *man);
-                                    note_named_call(t);
-                                } else if (known_functions_.count(t)) {
-                                    ss << config_.indent << fmt::format(
-                                        "    case {}u: {}{:08X}(cpu); return;\n",
-                                        i, config_.func_prefix, t);
-                                    note_call(t);
-                                } else {
-                                    ss << config_.indent << fmt::format(
-                                        "    case {}u: call_by_address(cpu, 0x{:08X}u); return;\n", i, t);
-                                    note_foreign_call(t);
-                                }
+                                emit_table_case(ss, cfg, fmt::format("{}u", i), entries[i]);
                             }
                             ss << config_.indent << fmt::format(
                                 "    default: call_by_address(cpu, {}); return;  /* out-of-range index */\n",
@@ -2265,16 +2265,18 @@ std::string CodeGenerator::translate_basic_block(
                             emitted_switch = true;
                         }
                     }
-                    // Fallback: old switch-on-loaded-address. Used when the
-                    // back-scan couldn't identify the index register, or when
-                    // the new emission aborted on a table-read failure.
+                    // Fallback: switch on the loaded address. Used when the
+                    // back-scan found no `sll` of a bounded index (a loop that
+                    // steps a byte-offset register by 4 instead), or when the
+                    // indexed emission aborted on a table-read failure. Each
+                    // distinct entry is a case; any other loaded value reaches
+                    // call_by_address through the default arm.
                     if (!emitted_switch && table_base != 0 && table_count > 0) {
                         std::set<uint32_t>    seen;
                         std::vector<uint32_t> targets;
                         for (uint32_t i = 0; i < table_count; i++) {
                             auto eopt = exe_.read_word(table_base + i * 4);
-                            if (eopt && seen.insert(*eopt).second &&
-                                (cfg.blocks.count(*eopt) || extra_labels_.count(*eopt))) {
+                            if (eopt && seen.insert(*eopt).second) {
                                 targets.push_back(*eopt);
                             }
                         }
@@ -2282,8 +2284,7 @@ std::string CodeGenerator::translate_basic_block(
                             ss << config_.indent << fmt::format("/* jump table 0x{:08X}, {} entries */\n", table_base, table_count);
                             ss << config_.indent << fmt::format("switch ({}) {{\n", reg_name(jr_rs));
                             for (uint32_t t : targets) {
-                                ss << config_.indent << fmt::format("    case 0x{:08X}u: goto block_{:08X};\n", t, t);
-                                note_goto(t, GotoArm::Case);
+                                emit_table_case(ss, cfg, fmt::format("0x{:08X}u", t), t);
                             }
                             ss << config_.indent << "    default: call_by_address(cpu, " << reg_name(jr_rs) << "); return;\n";
                             note_opaque_call();

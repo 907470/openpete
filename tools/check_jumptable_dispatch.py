@@ -12,7 +12,10 @@ A compiler-emitted jump table dispatches as
     jr    v0
 
 psxrecomp turns it into `switch (idx)` with one case per entry, each a
-`goto` or a direct call of the entry's function. When it does not, the
+`goto` or a direct call of the entry's function; a table addressed by a
+byte-offset register with no `sll` (a loop stepping the offset by 4)
+becomes a `switch` on the loaded address with the same arms. When it
+emits neither, the
 emitted C is `call_by_address(cpu, cpu->v0); return;` and every entry
 must also be a dispatch entry: an entry that is not one stub-misses, the
 C function returns without running the guest epilogue, and the guest
