@@ -106,3 +106,6 @@ winter_tundra | pos=(62261, 102618, 45966) yaw=-7 pitch=143
 # The 16:9 row is the contrast leg.
 summer_forest | pos=(106616, 79875, 36925) yaw=-1522 pitch=154
 summer_forest@aspect32x9 | pos=(106616, 79875, 36925) yaw=-1522 pitch=154 | | --aspect 32:9
+# The cone-widened band admits a far portal whose outline overlaps the near
+# arch; the near inner rim must hold inside the far outline.
+summer_forest@aspect32x9 | pos=(106616, 79875, 36925) yaw=-1650 pitch=154 | | --aspect 32:9
