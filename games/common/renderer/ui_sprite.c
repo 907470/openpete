@@ -1747,23 +1747,23 @@ static void rank_scene_2d(CPUState* cpu) {
                        rank_by_link_on() ? "link" : "walk"); }
 }
 
-/** @brief Feeds the first n claimed primitives into the native scene and ranks the scene's 2D.
+/** @brief Feeds every claimed primitive into the native scene and ranks the scene's 2D.
  *
- * Each released primitive is re-summed (a changed sum counts in s_mutated),
- * recorded for ui_sprite_ot_verify and fed through feed_one_claim, tagged
- * with its address. Every 2D triangle in the scene, the batch's and the
- * glyphs fed at emission, is then ranked by rank_scene_2d. The unreleased
- * tail moves to the front of the claim array. With no CPU, no n or the native scene off, the n claims
- * are dropped unfed, as they are while a render-path selection leaves RP_UI
- * out. Every caller releases the whole batch.
- * @param n The count to release, clamped to the claimed count. */
-static void release_batch(unsigned n) {
+ * The batch is taken off the pending count before the first feed: a feed
+ * opens the scene it lands in (scene_begin_for_feed), and when that closes a
+ * scene of the batch's build VBL the frame-close callback runs inside this
+ * call and must find nothing pending, or it releases the same claims a second
+ * time. Each released primitive is re-summed (a changed sum counts in
+ * s_mutated), recorded for ui_sprite_ot_verify and fed through
+ * feed_one_claim, tagged with its address. Every 2D triangle in the scene, the
+ * batch's and the glyphs fed at emission, is then ranked by rank_scene_2d.
+ * With no CPU or the native scene off, the claims are dropped unfed, as they
+ * are while a render-path selection leaves RP_UI out. */
+static void release_batch(void) {
     CPUState* cpu = s_cpu;
-    if (n > s_claim_n) n = s_claim_n;
-    if (!cpu || !n || !openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) {
-        s_claim_n -= n;
-        return;
-    }
+    const unsigned n = s_claim_n;
+    s_claim_n = 0;
+    if (!cpu || !n || !openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
     /* Which primitives are released is decided in claim order. What order
      * they are composed in is decided after the feed, by the table walk
      * below, over every 2D tri of the scene at once. */
@@ -1784,20 +1784,17 @@ static void release_batch(unsigned n) {
     }
     openpete_native_scene_set_prim(0u);
     rank_scene_2d(cpu);
-    /* Carry the unreleased tail to the front for its own release. */
-    s_claim_n -= n;
-    for (unsigned i = 0; i < s_claim_n; i++) s_claim[i] = s_claim[i + n];
     s_verify_pending += n;
     if (s_tr)
-        fprintf(stderr, "[uifeed f=%u built=%u live=%u] rel=%u kept=%u mutated=%u lost=%u late=%u cap=%u fed=%u\n",
-                openpete_frame, s_claim_frame, openpete_native_scene_frame(), n, s_claim_n,
+        fprintf(stderr, "[uifeed f=%u built=%u live=%u] rel=%u mutated=%u lost=%u late=%u cap=%u fed=%u\n",
+                openpete_frame, s_claim_frame, openpete_native_scene_frame(), n,
                 s_mutated, s_claim_lost, s_claim_late, s_claim_at_capture, s_fed_prims);
     if (s_tr)
         fprintf(stderr, "[uispec f=%u] refused=%u\n", openpete_frame, s_claim_spec_refused);
 }
 
 /* Releases every claimed primitive still pending. */
-void ui_sprite_ot_draw_begin(void) { release_batch(s_claim_n); }
+void ui_sprite_ot_draw_begin(void) { release_batch(); }
 
 /** @brief Releases the pending batch when the scene of the VBL that built it closes.
  *
@@ -1831,7 +1828,7 @@ static void on_overlay_precapture(void) {
      * back to the frame close reads its words a frame later, which for 2D that
      * animates (the cutscene letterbox sliding in) is the next tick's position,
      * which puts the bar 2 PSX rows out on every tick of the slide. */
-    if (s_claim_n) { s_claim_at_capture++; release_batch(s_claim_n); }
+    if (s_claim_n) { s_claim_at_capture++; release_batch(); }
     s_cap_frame = pending ? built : 0xFFFFFFFFu;
     s_presented_scene = openpete_native_scene_frame();
 }
@@ -1883,11 +1880,12 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
      * the release can read. */
     if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_claim++;
-    /* A batch never spans frames: the tail the capture kept back belongs to the
-     * frame that built it, and by the first claim of a later frame it is final,
-     * so release it before starting the new batch. Without this the tail holds
-     * the batch open and the next frame's primitives inherit its build frame. */
-    if (s_claim_n && openpete_frame != s_claim_frame) release_batch(s_claim_n);
+    /* A batch never spans frames: a batch still pending (claimed after its
+     * frame's capture) belongs to the frame that built it, and by the first
+     * claim of a later frame it is final, so release it before starting the
+     * new batch. Without this the next frame's primitives inherit its build
+     * frame. */
+    if (s_claim_n && openpete_frame != s_claim_frame) release_batch();
     if (!s_claim_n) {
         s_claim_frame = openpete_frame;
         /* Open this frame's scene now, where a 3D feeder of the same ordering
