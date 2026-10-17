@@ -84,7 +84,7 @@ the engine's own compile flags.
 Linux:
 
 ``` sh
-cc -shared -fPIC -O2 -fno-strict-aliasing -Wall -Wundef \
+cc -shared -fPIC -D_GNU_SOURCE -O2 -fno-strict-aliasing -Wall -Wundef \
    -I <sdk>/games/<game> -I <sdk> \
    -o .build/<game>/<id>.so src/*.c <sdk>/openpete_mod_abi.c
 ```
@@ -118,7 +118,7 @@ A `"*"` object for every game (a source with no per-game header, see
 defines `OPENPETE_MOD_ANY_GAME`:
 
 ``` sh
-cc -shared -fPIC -O2 -fno-strict-aliasing -Wall -Wundef \
+cc -shared -fPIC -D_GNU_SOURCE -O2 -fno-strict-aliasing -Wall -Wundef \
    -DOPENPETE_MOD_ANY_GAME -I <sdk> \
    -o .build/any/<id>.so src/*.c <sdk>/openpete_mod_abi.c
 ```

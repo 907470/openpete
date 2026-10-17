@@ -15,7 +15,7 @@
 // game-neutral openpete_mod_api.h, psx_runtime.h, ...), staged there by
 // the build, into mods/<id>/.build/<game-id>/<id>.so, rebuilt when the
 // CONTENT-HASH build key (api version + compiler identity + game id +
-// SDK files + sources) differs from the stamped one - mtime churn never
+// compile flags + SDK files + sources) differs from the stamped one - mtime churn never
 // forces a rebuild. An object records the game it was built for
 // (openpete_mod_game); the loader refuses one that does not fit the
 // running game (mod_check_game). Mods may also ship as <id>.zip
@@ -3992,7 +3992,7 @@ static const char* src_path(const mod_fvec* v, int i) {
 }
 
 /* CONTENT-HASH build key: api version + compiler identity + game id +
- * SDK file bytes (each from the directory it resolves in) + sorted source
+ * compile flags + SDK file bytes (each from the directory it resolves in) + sorted source
  * bytes. mtime churn (git checkout, cp, zip
  * re-extract) never changes it; an SDK regen, api bump, toolchain swap,
  * or real source edit always does. Returns 0 with key_out filled, -1 if
@@ -4009,6 +4009,24 @@ static char                s_sdk_prefix_dir[MOD_PATH_MAX];
 static char                s_sdk_prefix_game[32];
 static int                 s_sdk_prefix_ok = 0;
 static uint64_t            s_sdk_prefix_stamp;
+
+/* The compile line's flags between the compiler and the include paths.
+ * sdk_prefix hashes them into every build key, so a flag change rebuilds
+ * every stamped mod. Windows: one dllexport in a mod source would turn off
+ * the MinGW linker's export of every global, and with it
+ * openpete_mod_entry, openpete_mod_abi and openpete_mod_game;
+ * --export-all-symbols keeps them all. Elsewhere _GNU_SOURCE makes glibc's
+ * headers declare its extensions (RTLD_DEFAULT, dladdr). */
+static const char* const mod_cc_flags[] = {
+    "-shared",
+#ifndef _WIN32
+    "-fPIC", "-D_GNU_SOURCE",
+#else
+    "-Wl,--export-all-symbols",
+#endif
+    "-O2", "-g", "-fno-strict-aliasing", "-Wall", "-Wundef",
+};
+#define MOD_CC_FLAG_COUNT (sizeof mod_cc_flags / sizeof mod_cc_flags[0])
 
 static const char* const sdk_inputs[] = {
     "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
@@ -4077,7 +4095,7 @@ static void sdk_prefix_recheck(const char* sdk_dir) {
 /** @brief Return the SHA-256 state that every mod's build key starts from.
  *
  * Hashes the API version, the compiler identity, the running game's id,
- * then for each file of sdk_inputs in order the directory it resolves in
+ * the compile line's fixed flags (mod_cc_flags), then for each file of sdk_inputs in order the directory it resolves in
  * (sdk_input_path: per-game or root) and its bytes; an absent file
  * contributes its resolution byte only. The state is cached per (SDK
  * directory, game id) until sdk_prefix_recheck drops it, and callers
@@ -4098,6 +4116,9 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
         openpete_sha256_update(&hc, ident, strlen(ident));
     }
     openpete_sha256_update(&hc, game, strlen(game) + 1);
+    for (size_t i = 0; i < MOD_CC_FLAG_COUNT; i++)
+        openpete_sha256_update(&hc, mod_cc_flags[i],
+                               strlen(mod_cc_flags[i]) + 1);
     for (size_t i = 0; i < SDK_INPUT_COUNT; i++) {
         char p[MOD_PATH_MAX];
         const uint8_t per_game =
@@ -4242,8 +4263,11 @@ static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
  * running game's generated headers and openpete_game.h shadow any root
  * copy and a misspelled game macro warns; on Windows with
  * `-Wl,--export-all-symbols`, so every global the loader resolves stays
- * exported when a source marks one `dllexport`. Log lines carry the label
- * `<id> [<game-id>]`. `stamp`
+ * exported when a source marks one `dllexport`; elsewhere with
+ * `-D_GNU_SOURCE`, so glibc's headers declare its extensions
+ * (`RTLD_DEFAULT`, `dladdr`) to the mod's sources. The fixed flags come
+ * from mod_cc_flags, which the build key hashes. Log lines carry the
+ * label `<id> [<game-id>]`. `stamp`
  * = 1 records the build key on success so an unchanged mod never
  * recompiles (0 = hot-reload .hotN objects on Windows, where the base DLL
  * is file-locked and must go stale until the next boot). A failed compile
@@ -4303,18 +4327,17 @@ static int mod_compile(const char* mod_dir, const char* id,
     snprintf(inc, sizeof inc, "-I%s", sdk_dir);
     snprintf(rsp_arg, sizeof rsp_arg, "@%s", rsp_path);
     snprintf(log_path, sizeof log_path, "%s/compile.log", build_dir);
-    /* Windows: one dllexport in a mod source would turn off the MinGW
-     * linker's export of every global, and with it openpete_mod_entry,
-     * openpete_mod_abi and openpete_mod_game; the flag keeps them all. */
-    const char* argv[] = { cc, "-shared",
-#ifndef _WIN32
-                           "-fPIC",
-#else
-                           "-Wl,--export-all-symbols",
-#endif
-                           "-O2", "-g", "-fno-strict-aliasing", "-Wall",
-                           "-Wundef", inc_game, inc, "-o", out_path, rsp_arg,
-                           NULL };
+    const char* argv[MOD_CC_FLAG_COUNT + 8];
+    size_t argc = 0;
+    argv[argc++] = cc;
+    for (size_t i = 0; i < MOD_CC_FLAG_COUNT; i++)
+        argv[argc++] = mod_cc_flags[i];
+    argv[argc++] = inc_game;
+    argv[argc++] = inc;
+    argv[argc++] = "-o";
+    argv[argc++] = out_path;
+    argv[argc++] = rsp_arg;
+    argv[argc] = NULL;
 
     OPL_INFO_F("mods", "%s [%s]: compiling %d source file%s", id, game,
                n_srcs, n_srcs == 1 ? "" : "s");

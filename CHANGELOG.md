@@ -20,6 +20,9 @@ openpete.com; the changelog page of the shipped docs makes it relative.
 
 ## Unreleased
 
+- Mod SDK: the Linux mod compile line defines `_GNU_SOURCE`, so a mod source can use glibc extensions such as
+  `RTLD_DEFAULT` and `dladdr` from `<dlfcn.h>`; a mod that failed to compile on them now builds.
+  The mod build key now covers the compile flags, so every source mod recompiles once on first boot after the update.
 - Mod SDK: material priority follows the enabled list, later mods first, on every channel including terrain, where a
   refine no longer outranks a later declarative. Between two materials of one mod, a mod pinned at `api = 13` or later
   gives the later registration priority; a mod pinned below 13 keeps the first registration, as before. Postfx
