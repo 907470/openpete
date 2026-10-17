@@ -44,12 +44,10 @@
 /* g_Spyro fields only this draw reads. +0x2C non-zero is the mirrored-copy
  * pass: it suppresses the head matrix compose (spyrodraw.s:268,282,316-318)
  * and the routine runs a second time with it clear for the avatar itself.
- * +0x20 byte 3 non-zero selects the pre-blend colour table the routine builds
- * at draw scratch + 0x1800 instead of the model's own block
- * (spyrodraw.s:740-751). */
+ * +0x20 is the tint word: byte 3 non-zero makes the routine cue the model's
+ * colour block toward the far colour in bytes 0-2 (spyrodraw.s:740-775). */
 #define SPYRO_MIRROR_GATE  0x2Cu
 #define SPYRO_COLOUR_FILT  0x20u
-#define COLOUR_SCRATCH_OFF 0x1800u
 
 /** @brief Runs the game's avatar draw routine through the recompiled dispatch.
  *
@@ -354,15 +352,18 @@ static void s23_seam_joint(CPUState* cpu, const player_xform_t* parent,
                 + (double)parent->M[i][2]*VZ) / 4096.0;
 }
 
-/** @brief The face stream and colour block, shared by both parts.
+/** @brief The face stream, the model colour block and the tint word, shared by both parts.
  *
  * One face stream and one colour block serve the whole skeleton: the body
- * Animation's +0x08 and +0x0C (spyrodraw.s:737-741,883,888-891). The colour
- * filter (g_Spyro+0x20 byte 3 nonzero) swaps the block for the pre-blend table
- * the routine builds at draw scratch + 0x1800 (spyrodraw.s:743-749).
+ * Animation's +0x08 and +0x0C (spyrodraw.s:737-741,883,888-891). The tint is
+ * g_Spyro+0x20, which the sim writes once per tick before the draw: with byte
+ * 3 nonzero the draw DPCS-cues every entry of the block toward the far colour
+ * in bytes 0-2 at IR0 = byte 3 << 4 into a table in its draw scratch and
+ * indexes that table instead (spyrodraw.s:743-775); the walk applies the same
+ * cue to the model block, so it never reads the table the draw built.
  * @param cpu Reads the Animation and g_Spyro.
  * @param part Unused.
- * @param out Receives the face stream and colour block addresses.
+ * @param out Receives the face stream and colour block addresses and the tint.
  * @return 1, or 0 when the body has no Animation. */
 static int s23_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     (void)part;
@@ -370,11 +371,7 @@ static int s23_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     if (!anim) return 0;
     out->faces   = cpu->read_word(anim + 0x08u);
     out->colours = cpu->read_word(anim + 0x0Cu);
-    if ((cpu->read_word(PL.base + SPYRO_COLOUR_FILT) >> 24) != 0) {
-        uint32_t end = cpu->read_word(game_layout.polybuf.end);
-        if (end >= 0x80000000u)
-            out->colours = end - PL.part_base_polybuf_off + COLOUR_SCRATCH_OFF;
-    }
+    out->tint    = cpu->read_word(PL.base + SPYRO_COLOUR_FILT);
     return 1;
 }
 

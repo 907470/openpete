@@ -47,6 +47,9 @@ typedef struct player_xform {
 typedef struct player_faces {
     uint32_t faces;    /* the face block: a leading byte count, records after it */
     uint32_t colours;  /* the packed-RGB colour block the face indices reach into */
+    uint32_t tint;     /* a depth-cue tint over every colour of the block: bytes 0-2
+                        * the far colour's 0..255 channels, byte 3 the blend weight
+                        * in 1/256 steps; byte 3 zero leaves the colours alone */
 } player_faces_t;
 
 /* One part's transform record: the words the walk reads out of the block the

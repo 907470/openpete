@@ -539,8 +539,9 @@ const game_layout_t spyro2_game_layout = {
         .part_matrix_sign  = 0x80000000u,       /* spyrodraw.s:377 bgez skips the reload */
         .blend_mask        = 0x0FFFu,           /* the blend byte << 4, 1.12 (spyrodraw.s:402) */
 
-        .colour_scratch_off = 0x1800u,          /* spyrodraw.s:750 */
-        .colour_scratch_len = 0x200u,           /* 7-bit colour indices, four bytes each */
+        /* No colour_scratch: the walk cues the model colour block by the tint
+         * word itself (player_faces_t.tint) rather than reading the table the
+         * draw builds in its scratch. */
         .sxy_base = 0x1F800000u,                /* the draw writes every projected vertex's
                                                  * int16 screen position here as it goes
                                                  * (spyrodraw.s:363,390-393,445-450); the walk

@@ -302,6 +302,44 @@ static uint32_t plane_shade(uint32_t rgb) {
     return out;
 }
 
+/** @brief Cues one packed 0x00BBGGRR colour toward a tint's far colour, the draw's DPCS pass over the model colour table.
+ *
+ * The draw loads the far colour's channels shifted left by 4 into RFC/GFC/BFC
+ * and the weight byte shifted left by 4 into IR0, then runs one sf = 1 DPCS per
+ * table entry. Both of that chain's shifts are arithmetic and its divisors
+ * powers of two, so the two floors compose into one:
+ *   out = floor(c + (f - c) * w / 256)
+ * with c the channel, f the far channel and w the weight byte, clamped to a
+ * byte. The float form is exact: (f - c) * w is at most 65025 in magnitude and
+ * the divide by 256 only moves the exponent.
+ * @param rgb The model colour.
+ * @param tint The tint word; byte 3 the weight, bytes 0-2 the far colour.
+ * @return The cued colour. */
+static uint32_t player_tint_cue(uint32_t rgb, uint32_t tint) {
+    const float w = (float)(tint >> 24);
+    uint32_t out = 0;
+    for (int i = 0; i < 3; i++) {
+        const float ch = (float)((rgb  >> (8*i)) & 0xFFu);
+        const float fc = (float)((tint >> (8*i)) & 0xFFu);
+        float v = floorf(ch + (fc - ch) * w / 256.0f);
+        if (v < 0.0f) v = 0.0f; else if (v > 255.0f) v = 255.0f;
+        out |= (uint32_t)v << (8*i);
+    }
+    return out;
+}
+
+/** @brief One face vertex's colour: the colour block's entry at a byte offset, cued by the block's tint.
+ *
+ * A tint whose weight byte is zero leaves the entry as read.
+ * @param cpu Reads the colour block.
+ * @param F The part's streams and tint.
+ * @param off The entry's byte offset in the block.
+ * @return The packed 0x00BBGGRR colour. */
+static uint32_t player_face_colour(CPUState* cpu, const player_faces_t* F, uint32_t off) {
+    uint32_t c = cpu->read_word(F->colours + off) & 0xFFFFFFu;
+    return (F->tint >> 24) ? player_tint_cue(c, F->tint) : c;
+}
+
 /** @brief Whether OPENPETE_PLAYER_VERIFY_NOPLANE, the water-plane split's negative control, is set.
  *
  * Latched on the first call. When set, player_project_all never asks the
@@ -701,7 +739,7 @@ int player_build_walk(CPUState* cpu) {
      * streams for every part; decode each distinct pair once. */
     uint32_t seen_faces[PLAYER_PARTS_MAX]; int nseen = 0;
     for (int p = 0; p < nparts; p++) {
-        player_faces_t F;
+        player_faces_t F = {0};
         if (!player_game.part_faces(cpu, p, &F)) continue;
         if (F.faces < 0x80000000u || F.colours < 0x80000000u) continue;
         int dup = 0;
@@ -716,10 +754,10 @@ int player_build_walk(CPUState* cpu) {
         s_eng_faces += nf;
         for (int fi = 0; fi < nf; fi++) {
             const moby_wface_t* f = &s_face[fi];
-            uint32_t c0 = cpu->read_word(F.colours + f->c0) & 0xFFFFFFu;
-            uint32_t c1 = cpu->read_word(F.colours + f->c1) & 0xFFFFFFu;
-            uint32_t c2 = cpu->read_word(F.colours + f->c2) & 0xFFFFFFu;
-            uint32_t c3 = cpu->read_word(F.colours + f->c3) & 0xFFFFFFu;
+            uint32_t c0 = player_face_colour(cpu, &F, f->c0);
+            uint32_t c1 = player_face_colour(cpu, &F, f->c1);
+            uint32_t c2 = player_face_colour(cpu, &F, f->c2);
+            uint32_t c3 = player_face_colour(cpu, &F, f->c3);
             int blend = f->blendbit ? moby_abr_blend(f->abr) : 0;
             double n1 = player_nclip(f->i0, f->i1, f->i2);
             double n2 = (f->i3 < s_sproj_n) ? player_nclip(f->i3, f->i1, f->i2) : -1.0;
