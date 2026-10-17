@@ -394,6 +394,12 @@ kind = "function"
 note = "func_800168DC (asm/order_table.s:111-127) - links a0 into the 2D ordering table at g_HudOT; every 2D emitter calls it and the 3D draws inline their own insert, so it is the 2D feeder's chokepoint hook site"
 
 [[symbol]]
+name = "F_UI_OT_STITCH"
+addr = 0x80016784
+kind = "function"
+note = "func_80016784(n) (asm/order_table.s:11-89, handwritten) - the ordering-table stitch: from world slot n down to slot 0 it links each non-empty slot's tail to the next non-empty slot's head and clears the slot, then appends the g_HudOT FIFO {tail, head}, clears it, ends the chain at D_8006BBE0 and returns the first head as the DrawOTag argument; called by every base-binary draw routine in [0x8001A050, 0x8001F158), Flight5 in the five flight-level overlays, func_credits_8007BFD0 and TitlescreenDraw"
+
+[[symbol]]
 name = "F_UI_FADE"
 addr = 0x800190D4
 kind = "function"

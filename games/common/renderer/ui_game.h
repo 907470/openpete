@@ -128,7 +128,7 @@ typedef struct ui_game {
      * before the open table is drawn: its caller links more into that table
      * after the wait, and the table's 2D linked so far waits for the scene
      * the table is finished in. lo 0 ends the list. */
-    struct { uint32_t lo, hi, overlay; } stitch_routine[4];
+    struct { uint32_t lo, hi, overlay; } stitch_routine[8];
 } ui_game_t;
 
 /* The running game's table: game_runtime_install (game_host_desc.h) copies

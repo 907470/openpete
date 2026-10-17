@@ -10,6 +10,16 @@
 
 #include <stddef.h>
 
+/* The id words the overlays carry at the head of the overlay region, the
+ * values the dispatcher matches them by (generated/spyro_overlay_table.c). */
+#define OVL_LEVEL_15    16u
+#define OVL_LEVEL_25    22u
+#define OVL_LEVEL_35    28u
+#define OVL_LEVEL_45    34u
+#define OVL_LEVEL_55    40u
+#define OVL_CREDITS     47u
+#define OVL_TITLESCREEN 48u
+
 /** @brief Returns the byte offset of the flame's first-cell cap colour set for this tick.
  *
  * The cap colours at D_FLAME_UV hold two four-word sets; the flame draw
@@ -440,4 +450,25 @@ const ui_game_t spyro1_ui_game = {
     /* Text is drawn as text-moby models (renderer/text_moby.c), not as an SPRT
      * chain, so there is no self-linking emitter to hook. */
     .sprt_chain_emitter = { 0u, 0u, 0u },
+
+    /* g_HudOT is one {tail, head} FIFO: func_800168DC appends at its tail
+     * (order_table.s:111-127), and func_80016784 appends the whole FIFO
+     * after the world slots and clears it (order_table.s:39-88), returning
+     * the head prim DrawOTag walks. The stitch runs after the draw
+     * routine's VSync, so the 2D draw order is the link order. */
+    .rank_by_link = 1,
+    .ot_stitch    = F_UI_OT_STITCH,
+    /* Every caller of func_80016784, each waiting its VSync around the
+     * stitch: the base-binary draw routines func_8001A050 through
+     * GamestateDraw (contiguous), Flight5 in the five flight-level
+     * overlays (one vaddr in each), func_credits_8007BFD0 and
+     * TitlescreenDraw. */
+    .stitch_routine = { { 0x8001A050u, 0x8001F158u, 0u },
+                        { 0x8007B68Cu, 0x8007CFB4u, OVL_LEVEL_15 },
+                        { 0x8007B68Cu, 0x8007CFB4u, OVL_LEVEL_25 },
+                        { 0x8007B68Cu, 0x8007CFB4u, OVL_LEVEL_35 },
+                        { 0x8007B68Cu, 0x8007CFB4u, OVL_LEVEL_45 },
+                        { 0x8007B68Cu, 0x8007CFB4u, OVL_LEVEL_55 },
+                        { 0x8007BFD0u, 0x8007C338u, OVL_CREDITS },
+                        { 0x8007CEE4u, 0x8007DDE8u, OVL_TITLESCREEN } },
 };
