@@ -15887,7 +15887,17 @@ void openpete_native_set_fps_overlay(int on) {
     openpete_native_set_perf_stats(on ? s_perf_stats_last : OPENPETE_PERF_OFF);
 }
 int  openpete_native_fps_overlay_enabled(void) { return s_perf_stats != OPENPETE_PERF_OFF; }
-int  openpete_native_fps_value(void) { return s_fps_value; }
+int  openpete_native_fps_value(void)
+{
+    /* A headless run makes no presents to count; it composes one scene per
+     * tick, the rate the match-sim pacer it runs under presents at. Report
+     * the NTSC tick rate rounded to the nearest integer as the live window
+     * is, a value independent of host speed. */
+    if (s_nr.headless)
+        return (int)((2 * OP_VBL_HZ_NUM + OP_VBL_HZ_DEN * OP_TICK_VBLS)
+                     / (2 * OP_VBL_HZ_DEN * OP_TICK_VBLS));
+    return s_fps_value;
+}
 
 /* Live presentation setters (in-game settings menu). Display-only: they touch
  * only renderer state (s_nr and this file's statics), consumed by the next

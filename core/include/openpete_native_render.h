@@ -396,8 +396,12 @@ int  openpete_native_fps_overlay_enabled(void);
  * The value counts presents on whichever thread makes them (inline, or the
  * present thread under eager production) and is recomputed at the first
  * present at least 0.5 s of wall time after the previous window started,
- * rounded to the nearest integer. The overlay's FPS line prints it.
- * @return Presents per second; 0 before the first window completes. */
+ * rounded to the nearest integer. The overlay's FPS line prints it. A
+ * headless run makes no presents and composes one scene per tick, so it
+ * returns the NTSC tick rate 1125000/37609 Hz rounded (30), a value
+ * independent of host speed.
+ * @return Presents per second; 0 before the first window completes; the
+ *         rounded tick rate under --headless. */
 int  openpete_native_fps_value(void);
 
 /* Live presentation setters (the in-game settings menu drives these). All
