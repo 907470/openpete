@@ -22,6 +22,7 @@
 #include "openpete_host_input.h"     /* the published mouse snapshot */
 #include "openpete_host_mouse.h"     /* totals, ownership, probe */
 #include "openpete_devui.h"          /* ADVANCED opens the overlay */
+#include "openpete_docs_open.h"      /* DOCUMENTATION opens the browser */
 
 #include <math.h>
 #include <stddef.h>
@@ -31,7 +32,7 @@
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_WOBBLE, ROW_PIXEL, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM,
-       ROW_ADVANCED, ROW_QUIT,
+       ROW_DOCS, ROW_ADVANCED, ROW_QUIT,
        ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
@@ -43,12 +44,13 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "FOV", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
-    "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "ADVANCED", "EXIT GAME",
+    "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "DOCUMENTATION",
+    "ADVANCED", "EXIT GAME",
 };
 
 
 /* Per row: the id, which is also the OSD coalescing key, the knob registry
- * row the row moves (NULL for the EXIT action row and the mod rows), a hint
+ * row the row moves (NULL for the action rows and the mod rows), a hint
  * naming what the row changes, written in the glyph set notify_row
  * documents, and whether a change is saved to openpete.toml. FREECAM is a
  * session toggle: saving it would start the next launch with Spyro frozen
@@ -74,6 +76,7 @@ ROW_SURFACE[ROW_FOG + 1] = {
     [ROW_DITHER]  = { "menu.dither",     "dither",           "PSX 15 BIT COLOUR AND DITHER",            1 },
     [ROW_LOD]     = { "menu.lod",        "lod",              "ORIGINAL OR FULL DETAIL AT ANY DISTANCE", 1 },
     [ROW_FREECAM] = { "menu.freecam",    "freecam",          "FLY THE CAMERA FREELY",                   0 },
+    [ROW_DOCS]    = { "menu.docs",       NULL,               "OPEN THE DOCUMENTATION IN A BROWSER",     0 },
     [ROW_ADVANCED] = { "menu.advanced",  NULL,               "MORE SETTINGS AND CONTROLS",              0 },
     [ROW_QUIT]    = { "menu.quit",       NULL,               "QUIT THE GAME",                           0 },
     [ROW_COUNT]   = { NULL,              NULL,               NULL,                                      0 },
@@ -303,6 +306,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return on_off(s_fog_idx);
     case ROW_FREECAM:  return on_off(s_freecam_idx);
+    case ROW_DOCS:     return "";   /* centered: the label IS the row */
     case ROW_ADVANCED: return "";   /* centered: the label IS the row */
     case ROW_QUIT:     return "";   /* centered: the label IS the row */
     case ROW_MODSEL: {
@@ -350,9 +354,10 @@ static void log_state(const char* what) {
  *
  * FREECAM toggles the free camera only when the row disagrees with the live
  * state. LOD also re-reads the fog state the LOD setter resolved. EXIT
- * requests a cooperative shutdown once armed twice. ADVANCED closes the menu
- * and opens the dev overlay on its Controls section, or toasts NOT
- * AVAILABLE without an overlay. DISPLAY and the mod rows apply nothing
+ * requests a cooperative shutdown once armed twice. DOCUMENTATION opens the
+ * documentation in the system browser and toasts whether one opened.
+ * ADVANCED closes the menu and opens the dev overlay on its Controls
+ * section, or toasts NOT AVAILABLE without an overlay. DISPLAY and the mod rows apply nothing
  * here. A row whose ROW_SURFACE persist flag is set marks its
  * knob for the settings writer, which saves it after the debounce interval,
  * on menu close or at shutdown; DISPLAY is marked too, since the writer
@@ -397,6 +402,13 @@ static void apply_row(int row) {
         }
         if (s_open) openpete_menu_toggle();
         openpete_devui_open_section("Controls");
+        break;
+    case ROW_DOCS:
+        /* The menu stays open: the browser takes the focus, and the player
+         * returns to the menu as they left it. */
+        openpete_osd_notify("host", ROW_SURFACE[ROW_DOCS].id, 0, "%s",
+                            openpete_docs_open() == 0 ? "OPENED IN YOUR BROWSER"
+                                                      : "NO BROWSER COULD BE OPENED");
         break;
     case ROW_QUIT:
         /* Cooperative: the host-fiber loop drains and tears down on its next
@@ -524,9 +536,10 @@ static int64_t wheel_notches(int64_t total) {
  * The mouse poll gives these rows a left click only; a right click or a
  * wheel notch on them is ignored.
  * @param row The row index.
- * @return Non-zero for DISPLAY, ADVANCED and EXIT. */
+ * @return Non-zero for DISPLAY, DOCUMENTATION, ADVANCED and EXIT. */
 static int row_action_only(int row) {
-    return row == ROW_DISPLAY || row == ROW_ADVANCED || row == ROW_QUIT;
+    return row == ROW_DISPLAY || row == ROW_DOCS || row == ROW_ADVANCED ||
+           row == ROW_QUIT;
 }
 
 /* The close glyph's drawn ink, in overlay units, as the text builder emitted
@@ -733,6 +746,16 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
         const float drawn = s_row_cap_drawn > 0.0f ? s_row_cap_drawn : row_cap;
         out->row_y[ROW_QUIT] = out->panel_y1 - top_pad - drawn * 0.5f;
     }
+    /* Hint line: centred in the gap between the row above EXIT and EXIT's
+     * ink, two row pitches tall, so it never sits inside a row's hit band. */
+    out->hint_cap_h = 0.020f;
+    out->hint_y = out->row_y[N - 1];
+    if (ROW_QUIT < N && ROW_QUIT > 0) {
+        const float drawn = s_row_cap_drawn > 0.0f ? s_row_cap_drawn : row_cap;
+        const float above = out->row_y[ROW_QUIT - 1] + drawn * 0.5f;
+        const float below = out->row_y[ROW_QUIT] - drawn * 0.5f;
+        out->hint_y = 0.5f * (above + below);
+    }
     /* Split point (labels right-align to label_x, values left-align at value_x).
      * Kept left of centre - reduces the left padding and gives the widest row's
      * value ("EXTENDED") room before the right border. */
@@ -754,7 +777,14 @@ const char* openpete_menu_row_label(int row) {
     return (row >= 0 && row < ROW_COUNT) ? ROW_LABEL[row] : "";
 }
 
-int openpete_menu_row_centered(int row) { return row == ROW_ADVANCED || row == ROW_QUIT; }
+const char* openpete_menu_row_hint(int row) {
+    if (row < 0 || row >= ROW_COUNT || !ROW_SURFACE[row].hint) return "";
+    return ROW_SURFACE[row].hint;
+}
+
+int openpete_menu_row_centered(int row) {
+    return row == ROW_DOCS || row == ROW_ADVANCED || row == ROW_QUIT;
+}
 
 const char* openpete_menu_row_value(int row, char* buf, int buflen) {
     if (row < 0 || row >= ROW_COUNT) return "";
@@ -828,7 +858,9 @@ void openpete_menu_adjust(int dx) {
         apply_row(ROW_ADVANCED);
         return;
     /* Action rows have no value to cycle - left/right are inert on them.
-     * openpete_menu_activate() is the only way in. */
+     * openpete_menu_activate() is the only way in, so a stray Right on the
+     * way down the list neither opens a browser nor arms EXIT. */
+    case ROW_DOCS:
     case ROW_QUIT: return;
     default: break;
     }

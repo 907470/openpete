@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fence: every release id of a shipped game has a User docs entry.
 
+Also: the error ids agree with the troubleshooting page, and every mod.toml
+key the loader reads has a Modding docs entry.
+
 Reads, per built game, the OPENPETE_SURFACE_DUMP output and the `--help`
 output of its linux-release binary, the User docs map
 (docs/src/user/pages.toml), the shipped games (games/shipped.toml), the
@@ -42,6 +45,16 @@ Legs (each failure is one REFUSED line):
   default   every release flag taking a value and every release non-action
             row declares `def` or `default_note`
   hint      every menu hint is inside the menu glyph set
+  errid     the OP-E ids of core/include/openpete_error_ids.h and the rows
+            of the By error id table of docs/src/user/help/
+            troubleshooting.md agree both ways, each row anchored at the
+            id in lower case, and OPENPETE_TROUBLESHOOTING_URL names that
+            page
+  modkey    every mod.toml key core/mods/mod_loader.c reads (the literal
+            key of a toml_*_in call or of a helper taking
+            (toml_table_t*, const char* key)) is named on a
+            docs/src/modding/ page, in backticks or as a TOML key or table
+            line
   A shipped game with zero release rows or zero key actions is VACUOUS.
 `--help` and `-h` are exempt from the flag legs.
 
@@ -96,6 +109,10 @@ PRESETS = (ROOT / "cmake" / "presets" / "linux-release-launcher.cmake",
            ROOT / "cmake" / "presets" / "windows-mingw-launcher.cmake")
 OPTIONS_C = ROOT / "core" / "config" / "options.c"
 SCHEMA_C = ROOT / "core" / "config" / "config_schema.c"
+ERROR_IDS_H = ROOT / "core" / "include" / "openpete_error_ids.h"
+TROUBLESHOOTING_MD = USER_DIR / "help" / "troubleshooting.md"
+MOD_LOADER_C = ROOT / "core" / "mods" / "mod_loader.c"
+MODDING_DIR = ROOT / "docs" / "src" / "modding"
 ALL_GAMES = ("spyro-1", "spyro-2", "spyro-3")
 EXEMPT_FLAGS = {"--help", "-h"}
 
@@ -115,6 +132,17 @@ BODY_DEF_RE = re.compile(r"^  (" + FLAG_TOKEN + r")(?![a-z0-9-])")
 PRE_DEF_RE = re.compile(r"(?<=  )(" + FLAG_TOKEN + r")(?![a-z0-9-])")
 PARSER_RE = re.compile(r'strcmp\(a, "(--[^"]+)"\)')
 SCHEMA_ROW_RE = re.compile(r'^\s*\{\s*"([a-z0-9_]+)",\s*(?:"|NULL)')
+# One OPENPETE_ERROR_IDS row: X(NAME, "OP-E-...", "anchor").
+ERROR_ROW_RE = re.compile(r'X\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)')
+ERROR_URL_RE = re.compile(r'#define\s+OPENPETE_TROUBLESHOOTING_URL\s*\\?\s*'
+                          r'"https://openpete\.com/docs/([^"#]+)\.html"')
+# One row of the troubleshooting page's By error id table.
+ERROR_DOC_RE = re.compile(r'^\|\s*<a id="([^"]+)"></a>`([^`]+)`\s*\|', re.M)
+# A mod.toml key the loader reads: the literal key of a toml_*_in call, or
+# of a call to a helper that takes (toml_table_t*, const char* key).
+TOML_READ_RE = re.compile(r'toml_\w+_in\(\s*[\w>.-]+\s*,\s*"([^"]+)"')
+KEY_HELPER_RE = re.compile(r'^\w[\w\s\*]*?\b(\w+)\(\s*toml_table_t\s*\*\s*\w+\s*,'
+                           r'\s*const char\s*\*\s*key\b', re.M)
 MARKER_IDS = re.compile(r"^(flag:|knob:|key:(?:host|pad)\.|menu:|directive:)")
 
 
@@ -616,6 +644,103 @@ def leg_hints(games):
     return out
 
 
+def leg_error_ids(header_text, page_text, page_rel):
+    """The OPENPETE_ERROR_IDS table and the troubleshooting page's By error
+    id table agree: the same ids, each page row anchored at its code row's
+    anchor, every anchor the id in lower case, and the URL constant naming
+    the page. Returns (findings, row count)."""
+    out = []
+    code = ERROR_ROW_RE.findall(header_text)
+    if not code:
+        return [Finding("errid", "no OPENPETE_ERROR_IDS row parsed from "
+                        "core/include/openpete_error_ids.h")], 0
+    m = ERROR_URL_RE.search(header_text)
+    want = page_rel[:-len(".md")]
+    if not m or m.group(1) != want:
+        out.append(Finding("errid", (
+            f"OPENPETE_TROUBLESHOOTING_URL names "
+            f"{m.group(1) + '.html' if m else 'no openpete.com page'}, not "
+            f"the page that holds the By error id table ({want}.html)")))
+    section = page_text.split("\n## By error id", 1)
+    if len(section) < 2:
+        return out + [Finding("errid", f"{page_rel} has no '## By error id' "
+                              f"section")], len(code)
+    body = section[1].split("\n## ", 1)[0]
+    docs = {}
+    for anchor, ident in ERROR_DOC_RE.findall(body):
+        if ident in docs:
+            out.append(Finding("errid", f"{page_rel}: {ident} has two rows"))
+        docs[ident] = anchor
+    seen = set()
+    for name, ident, anchor in code:
+        if ident in seen:
+            out.append(Finding("errid", f"openpete_error_ids.h: {ident} is "
+                               f"on two rows"))
+        seen.add(ident)
+        if anchor != ident.lower():
+            out.append(Finding("errid", (
+                f"openpete_error_ids.h: {name} anchor '{anchor}' is not its "
+                f"id in lower case ('{ident.lower()}')")))
+        if ident not in docs:
+            out.append(Finding("errid", (
+                f"{ident} (openpete_error_ids.h {name}) has no row in "
+                f"{page_rel} '## By error id'; add "
+                f"| <a id=\"{anchor}\"></a>`{ident}` | ... |")))
+        elif docs[ident] != anchor:
+            out.append(Finding("errid", (
+                f"{page_rel}: {ident} is anchored '{docs[ident]}', the code "
+                f"links '#{anchor}'")))
+    for ident in sorted(set(docs) - seen):
+        out.append(Finding("errid", (
+            f"{page_rel}: {ident} has a row but no OPENPETE_ERROR_IDS row; "
+            f"a retired error keeps its row in both tables")))
+    return out, len(code)
+
+
+def mod_toml_keys(loader_text):
+    """The mod.toml keys mod_loader.c reads, in source order."""
+    keys = TOML_READ_RE.findall(loader_text)
+    for helper in set(KEY_HELPER_RE.findall(loader_text)):
+        keys += re.findall(r'\b' + re.escape(helper) +
+                           r'\(\s*\w+\s*,\s*"([^"]+)"', loader_text)
+    return list(dict.fromkeys(keys))
+
+
+def key_documented(key, pages):
+    """Whether a Modding page names the key: in backticks, or as a TOML key
+    or table header at the start of a line."""
+    pats = (re.compile(r"`" + re.escape(key) + r"`"),
+            re.compile(r"^\s*" + re.escape(key) + r"\s*=", re.M),
+            re.compile(r"^\s*\[\[?" + re.escape(key) + r"\]\]?", re.M))
+    return any(p.search(t) for t in pages.values() for p in pats)
+
+
+def leg_mod_keys(loader_text, pages):
+    """Every mod.toml key the loader reads is named on a Modding page.
+    Returns (findings, key count)."""
+    keys = mod_toml_keys(loader_text)
+    if not keys:
+        return [Finding("modkey", "no mod.toml key parsed from "
+                        "core/mods/mod_loader.c")], 0
+    out = [Finding("modkey", (
+        f"mod.toml key '{k}' (core/mods/mod_loader.c) is named on no page "
+        f"of docs/src/modding/; document it in manifest.md or the page of "
+        f"its table"))
+        for k in keys if not key_documented(k, pages)]
+    return out, len(keys)
+
+
+def source_legs():
+    """The legs over source tables with no dump input: error ids and
+    mod.toml keys. Returns (findings, error id rows, mod.toml keys)."""
+    page_rel = TROUBLESHOOTING_MD.relative_to(ROOT / "docs" / "src").as_posix()
+    f1, n_err = leg_error_ids(ERROR_IDS_H.read_text(),
+                              TROUBLESHOOTING_MD.read_text(), page_rel)
+    pages = {p.name: p.read_text() for p in sorted(MODDING_DIR.glob("*.md"))}
+    f2, n_keys = leg_mod_keys(MOD_LOADER_C.read_text(), pages)
+    return f1 + f2, n_err, n_keys
+
+
 def check(inputs, warn=False):
     """Run every leg over {game: (dump, help)}; returns the exit code."""
     shipped = Shipped()
@@ -651,6 +776,8 @@ def check(inputs, warn=False):
     findings += f
     findings += leg_defaults(games, shipped)
     findings += leg_hints(games)
+    f, n_err, n_keys = source_legs()
+    findings += f
 
     vacuous = []
     for name in shipped.games:
@@ -672,8 +799,8 @@ def check(inputs, warn=False):
     print(f"surface_coverage: {len(games)} games read, {n_lits} parser "
           f"literals, {n_schema} schema keys; map leg "
           f"{'current' if map_ok else map_msg if map_ok is None else 'STALE'}"
-          f"; anchors {'checked' if anchors else 'not run'}; "
-          f"{len(findings)} findings")
+          f"; anchors {'checked' if anchors else 'not run'}; {n_err} error "
+          f"ids, {n_keys} mod.toml keys; {len(findings)} findings")
     if warn:
         return 0
     if findings or vacuous:

@@ -18,6 +18,9 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
+- Settings menu: a line above **EXIT GAME** names what the selected row changes, and the **DOCUMENTATION** row
+  opens the documentation in the browser: the copy in `docs/` beside the program, or openpete.com from the
+  AppImage. `--help` ends with the documentation's address.
 - Mod SDK: a mod can read the discs of other Spyro games in the library. The manifest keys `requires_games` (the
   mod does not load while a listed game has no disc in the library, and the log, the Mods section and the launcher's
   version selector name the game) and `optional_games` (the mod loads; the disc calls for a missing game fail) name

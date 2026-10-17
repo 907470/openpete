@@ -19,12 +19,14 @@ can be changed in [Key bindings](../customizing/key-bindings.md).
 | --- | --- | --- | --- |
 | Previous / next row | ++up++ <!-- id: key:host.menu_up home --> / ++down++ <!-- id: key:host.menu_down --> | D-pad, left stick | Point at the row |
 | Change the value | ++left++ <!-- id: key:host.menu_left --> / {{ key("key:host.menu_right") }} <!-- id: key:host.menu_right --> | D-pad, left stick; Cross also steps forward | Left click steps forward, right click back, wheel either way |
-| Activate **ADVANCED** or **EXIT GAME** | {{ key("key:host.menu_select") }} <!-- id: key:host.menu_select home --> | Cross | Left click |
+| Activate **DOCUMENTATION**, **ADVANCED** or **EXIT GAME** | {{ key("key:host.menu_select") }} <!-- id: key:host.menu_select home --> | Cross | Left click |
 | Close | the menu key, ++esc++ | Start or Circle, on release <!-- id: key:host.menu_close home --> | The close mark in the corner |
 
 Values wrap around at either end. Each change raises an on-screen
 notification naming the row and its new value; see
 [Display](../graphics/display.md#on-screen-notifications).
+
+The line above **EXIT GAME** names what the selected row changes.
 
 ## Rows
 
@@ -43,6 +45,7 @@ notification naming the row and its new value; see
 | **DITHER** | **OFF**, **15-BIT** | {{ config_key("knob:dither") }} <!-- id: knob:dither --> | [PlayStation look](../graphics/retro-look.md#dither) |
 | **LOD** | **ORIGINAL**, **EXTENDED** | {{ config_key("knob:lod") }} <!-- id: knob:lod --> | [Quality](../graphics/quality.md#level-of-detail) |
 | **FREECAM** | **OFF**, **ON** | `freecam` <!-- id: knob:freecam --> | [Practice tools](practice-tools.md#free-camera) |
+| **DOCUMENTATION** | | | [below](#documentation) |
 | **ADVANCED** | | | [below](#advanced) |
 | **EXIT GAME** | | | [below](#exit-game) |
 
@@ -73,6 +76,18 @@ settings beat the rest of the file, but a flag typed on the command line or
 an exported environment variable beats them for that launch; a menu change
 to such a setting is still saved and applies on a launch without the flag or
 variable. See [The config file](../customizing/config-file.md).
+
+## DOCUMENTATION
+
+Activating **DOCUMENTATION** <!-- id: menu:menu.docs --> opens this
+documentation in your web browser and shows **OPENED IN YOUR BROWSER**, or
+**NO BROWSER COULD BE OPENED** when the system has no browser to hand it to.
+The menu stays open. The Windows zip and the Linux tar.xz open the copy in
+the `docs` folder beside the program, which works offline; the AppImage
+and a build without that folder open
+[openpete.com/docs/user](https://openpete.com/docs/user/index.html). The
+AppImage opens the website because its files disappear when the game
+closes, and a browser installed as a snap cannot read them.
 
 ## ADVANCED
 

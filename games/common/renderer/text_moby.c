@@ -1140,6 +1140,34 @@ static void menu_close_anchor(emit_ctx_t* cx, int v0,
     openpete_menu_note_close_rect(x0 + dx, y0, x1 + dx, y1);
 }
 
+/** @brief Returns the largest cap height, at most cap, at which a string fits a width.
+ *
+ * measure_string is linear in the cap height, so one proportional shrink is
+ * exact.
+ * @param str The text.
+ * @param cap The cap height ceiling, in overlay units.
+ * @param avail The width available, in overlay units.
+ * @return cap when the string fits or measures zero, else the shrunk cap. */
+static float fit_cap(const char* str, float cap, float avail) {
+    const float w = measure_string(str, cap);
+    return (w > avail && w > 0.0f) ? cap * (avail / w) : cap;
+}
+
+/** @brief Emits a string centred on a point.
+ *
+ * @param cx The emission context.
+ * @param str The text; an empty string emits nothing.
+ * @param xc Centre x, in overlay units.
+ * @param yc Centre y, in overlay units.
+ * @param cap The cap height, in overlay units.
+ * @param rgb The tint.
+ * @param wob The wobble phase, or below 0 for none. */
+static void emit_centred(emit_ctx_t* cx, const char* str, float xc, float yc,
+                         float cap, unsigned rgb, int wob) {
+    const float w = measure_string(str, cap);
+    emit_string(cx, str, xc - 0.5f * w, yc - cap * 0.5f, cap, rgb, wob);
+}
+
 /* draw_menu_overlay (native_render.c) draws the published text over the panel. */
 void text_moby_native_menu(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
@@ -1172,26 +1200,17 @@ void text_moby_native_menu(CPUState* cpu) {
     /* Pause-menu alignment: title centred; labels RIGHT-aligned to L.label_x;
      * values LEFT-aligned at L.value_x (the two columns meet at a central split). */
     const float pcx = 0.5f * (L.panel_x0 + L.panel_x1);   /* panel centre x */
-    {
-        const char* title = openpete_menu_title();
-        const float tw = measure_string(title, L.title_cap_h);
-        emit_string(&cx, title, pcx - 0.5f * tw,
-                    L.title_y - L.title_cap_h * 0.5f, L.title_cap_h,
-                    MENU_TITLE_TINT, -1);
-    }
+    emit_centred(&cx, openpete_menu_title(), pcx, L.title_y, L.title_cap_h,
+                 MENU_TITLE_TINT, -1);
     /* Uniform row font: shrink EVERY row (labels + values; the SETTINGS title
      * keeps its own cap) to the size the widest value needs to fit its column
      * - "FULLSCREEN" - so no single row reads smaller than its neighbours.
      * Measured from the FIXED reference string, not the live values, so the
      * size never breathes as a value toggles (WINDOWED <-> FULLSCREEN).
-     * measure_string is linear in cap_h, so one proportional shrink is exact.
      * Rows keep their spacing (L.row_y); only the glyph size changes. */
     const float vavail = (L.panel_x1 - 0.015f) - L.value_x;
-    float row_cap = L.row_cap_h;
-    {
-        const float w = measure_string("FULLSCREEN", L.row_cap_h);
-        if (w > vavail && w > 0.0f) row_cap = L.row_cap_h * (vavail / w);
-    }
+    const float cavail = (L.panel_x1 - 0.015f) - (L.panel_x0 + 0.015f);
+    const float row_cap = fit_cap("FULLSCREEN", L.row_cap_h, vavail);
     /* The bottom-anchored row's y is computed from this height; publish it
      * before the rows are placed so the anchor uses what was drawn. */
     openpete_menu_note_row_cap(row_cap);
@@ -1200,18 +1219,12 @@ void text_moby_native_menu(CPUState* cpu) {
         const int wob = (r == cursor) ? phase : -1;   /* only the selected row wobbles */
         char vb[16];
         const char* label = openpete_menu_row_label(r);
-        const char* value = openpete_menu_row_value(r, vb, sizeof vb);
         /* Action rows (EXIT GAME) have no value: centre the label on the panel
          * so it reads as a button rather than a setting whose value went
          * missing. Shrunk if the armed text outgrows the panel width. */
         if (openpete_menu_row_centered(r)) {
-            float ccap = row_cap;
-            const float cavail = (L.panel_x1 - 0.015f) - (L.panel_x0 + 0.015f);
-            const float cw0 = measure_string(label, ccap);
-            if (cw0 > cavail && cw0 > 0.0f) ccap *= cavail / cw0;
-            const float cw = measure_string(label, ccap);
-            emit_string(&cx, label, pcx - 0.5f * cw,
-                        L.row_y[r] - ccap * 0.5f, ccap, MENU_TXT_TINT, wob);
+            emit_centred(&cx, label, pcx, L.row_y[r],
+                         fit_cap(label, row_cap, cavail), MENU_TXT_TINT, wob);
             continue;
         }
         const float lw = measure_string(label, row_cap);
@@ -1219,12 +1232,16 @@ void text_moby_native_menu(CPUState* cpu) {
                     L.row_y[r] - row_cap * 0.5f, row_cap, MENU_TXT_TINT, wob);
         /* Safety net for any future value wider than the reference: shrink
          * that one value further so it still ends before the panel border. */
-        float vcap = row_cap;
-        const float vw = measure_string(value, vcap);
-        if (vw > vavail && vw > 0.0f) vcap *= vavail / vw;
+        const char* value = openpete_menu_row_value(r, vb, sizeof vb);
+        const float vcap = fit_cap(value, row_cap, vavail);
         emit_string(&cx, value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
                     MENU_TXT_TINT, wob);
     }
+    /* Hint line: what the cursor row changes, centred, shrunk to the panel
+     * width, without the wobble so it reads as a caption of the row. */
+    const char* hint = openpete_menu_row_hint(cursor);
+    emit_centred(&cx, hint, pcx, L.hint_y, fit_cap(hint, L.hint_cap_h, cavail),
+                 MENU_TXT_TINT, -1);
     /* Close glyph: not a row, so the keyboard cursor never reaches it; the
      * pointer resting on it wobbles it like the row under the cursor. */
     menu_close_anchor(&cx, cx.n, &L,

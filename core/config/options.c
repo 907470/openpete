@@ -15,6 +15,7 @@
                            * game_validate_cheats_arg (--cheats names) */
 
 #include "openpete_paths.h" /* where --bk2-record output is allowed to live */
+#include "openpete_docs_open.h" /* OPENPETE_DOCS_URL - the --help footer */
 
 #include <SDL3/SDL.h>     /* SDL_CreateDirectory - --bk2-record output dir */
 
@@ -813,7 +814,8 @@ static void help_put_block(int block, const char* renderer) {
  * ("Video recording") prints only under OPENPETE_HAS_LIBAV; the debug block
  * is compiled out under OPENPETE_HIDE_DEBUG_FLAGS, set by the *-launcher
  * distribution presets, and a one-line note replaces it. The omission is
- * display-only: every flag parses in every build.
+ * display-only: every flag parses in every build. A footer names the
+ * published documentation and the packaged copy.
  * @param display_name Game title printed in the heading.
  * @param argv0 Program path printed in the usage line.
  * @param default_renderer Renderer the game starts with when --renderer is absent. */
@@ -850,6 +852,10 @@ static void print_help(const char* display_name, const char* argv0,
     fputs("\nDebug / diagnostic flags:\n", stderr);
     help_put_block(HELP_DEBUG, renderer);
 #endif
+    fputs("\nDocumentation: " OPENPETE_DOCS_URL "\n"
+          "  The Windows zip and the Linux tar.xz carry a copy as docs/index.html\n"
+          "  beside the program; the settings menu's DOCUMENTATION row opens it.\n",
+          stderr);
 }
 
 void openpete_options_init(openpete_options_t* opts) {

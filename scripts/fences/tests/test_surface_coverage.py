@@ -7,7 +7,9 @@ flag with no docs entry, a value-taking release row with no default, a
 displayed menu row, a key action, a config directive), plus a menu hint
 outside the glyph set, a --help definition the dump lacks, and a dump with
 no key action (VACUOUS). Each control must exit 1 with its refusal line,
-which the unmutated run must not print. AudienceTest pins the derived
+which the unmutated run must not print. SourceLegTest runs the error id
+and mod.toml key legs on the tree and on planted mismatches of the source
+text; it needs no binary. AudienceTest pins the derived
 audience of the flags --help prints in its debug block while their
 registry rows sit in the release block.
 
@@ -47,8 +49,18 @@ def setUpModule():
     STATE["tmp"] = tmp
     games = sc.capture(BUILD, tmp / "base")
     if GAME not in games:
-        raise unittest.SkipTest(f"no {GAME} binary under {BUILD}")
+        STATE["skip"] = f"no {GAME} binary under {BUILD}"
+        return
     STATE["base_rc"], STATE["base_out"] = run_check(tmp / "base")
+
+
+class NeedsBinary(unittest.TestCase):
+    """Skipped when no game binary was captured."""
+
+    @classmethod
+    def setUpClass(cls):
+        if "skip" in STATE:
+            raise unittest.SkipTest(STATE["skip"])
 
 
 def tearDownModule():
@@ -56,7 +68,7 @@ def tearDownModule():
         shutil.rmtree(STATE["tmp"], ignore_errors=True)
 
 
-class ControlTest(unittest.TestCase):
+class ControlTest(NeedsBinary):
     """Each mutation must be refused with its own line."""
 
     def mutate(self, name, dump_fn=None, help_fn=None):
@@ -152,7 +164,7 @@ class ControlTest(unittest.TestCase):
         self.assert_refused(rc, out, "VACUOUS: spyro-1:")
 
 
-class AudienceTest(unittest.TestCase):
+class AudienceTest(NeedsBinary):
     """The derived audience of the rows outside the debug block that only
     the dev overlay shows besides their flag, of every registry flag's
     --help block, and of the pass-through env row."""
@@ -195,6 +207,76 @@ class AudienceTest(unittest.TestCase):
     def test_km_dev_key_not_release(self):
         self.assertIsNone(self.reason("key:host.camlock"))
         self.assertIn("release flag", self.reason("knob:mute"))
+
+
+class SourceLegTest(unittest.TestCase):
+    """The error id and mod.toml key legs over the tree, then one planted
+    mismatch per refusal on a copy of the source text."""
+
+    PAGE = "user/help/troubleshooting.md"
+
+    def setUp(self):
+        self.h = sc.ERROR_IDS_H.read_text()
+        self.p = sc.TROUBLESHOOTING_MD.read_text()
+        self.loader = sc.MOD_LOADER_C.read_text()
+        self.pages = {f.name: f.read_text()
+                      for f in sorted(sc.MODDING_DIR.glob("*.md"))}
+
+    def errid(self, h=None, p=None):
+        f, n = sc.leg_error_ids(h or self.h, p or self.p, self.PAGE)
+        return [x.text for x in f], n
+
+    def refused(self, texts, needle):
+        self.assertTrue(any(needle in t for t in texts), texts)
+        line = next(t for t in texts if needle in t)
+        print(f"\n  control: {line}", file=sys.stderr)
+
+    def test_tree_agrees(self):
+        f, n = self.errid()
+        self.assertEqual(f, [])
+        self.assertGreater(n, 0)
+        f, n = sc.leg_mod_keys(self.loader, self.pages)
+        self.assertEqual([x.text for x in f], [])
+        self.assertGreater(n, 0)
+
+    def test_code_id_without_page_row(self):
+        h = self.h.replace('X(CRASH,', 'X(ZZ_SELFTEST, "OP-E-ZZ-SELFTEST", '
+                           '"op-e-zz-selftest") \\\n    X(CRASH,', 1)
+        self.refused(self.errid(h=h)[0], "OP-E-ZZ-SELFTEST (openpete_error_ids"
+                     ".h ZZ_SELFTEST) has no row")
+
+    def test_page_row_without_code_id(self):
+        h = "\n".join(x for x in self.h.splitlines()
+                      if '"OP-E-HANG"' not in x)
+        self.refused(self.errid(h=h)[0], "OP-E-HANG has a row but no "
+                     "OPENPETE_ERROR_IDS row")
+
+    def test_page_anchor_differs(self):
+        p = self.p.replace('<a id="op-e-hang"></a>', '<a id="op-e-hung"></a>', 1)
+        self.refused(self.errid(p=p)[0], "OP-E-HANG is anchored 'op-e-hung'")
+
+    def test_code_anchor_not_lower_id(self):
+        h = self.h.replace('"OP-E-HANG",          "op-e-hang"',
+                           '"OP-E-HANG",          "op-e-stall"', 1)
+        self.refused(self.errid(h=h)[0], "HANG anchor 'op-e-stall'")
+
+    def test_url_names_another_page(self):
+        h = self.h.replace("user/help/troubleshooting.html",
+                           "user/help/faq.html", 1)
+        self.refused(self.errid(h=h)[0], "OPENPETE_TROUBLESHOOTING_URL names "
+                     "user/help/faq.html")
+
+    def test_undocumented_mod_key(self):
+        loader = self.loader + ('\nstatic void zz(toml_table_t* t) '
+                                '{ toml_bool_in(t, "zz_selftest_key"); }\n')
+        f, _ = sc.leg_mod_keys(loader, self.pages)
+        self.refused([x.text for x in f], "mod.toml key 'zz_selftest_key'")
+
+    def test_undocumented_helper_key(self):
+        loader = self.loader.replace('level_count_key(lt, "eggs"',
+                                     'level_count_key(lt, "zz_eggs"', 1)
+        f, _ = sc.leg_mod_keys(loader, self.pages)
+        self.refused([x.text for x in f], "mod.toml key 'zz_eggs'")
 
 
 if __name__ == "__main__":

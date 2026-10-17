@@ -191,6 +191,7 @@
 "knob:window" = "graphics/display.md#window"
 "knob:wireframe" = "playing/dev-overlay.md#sections"
 "menu:menu.advanced" = "playing/settings-menu.md#advanced"
+"menu:menu.docs" = "playing/settings-menu.md#documentation"
 "menu:menu.quit" = "playing/settings-menu.md#exit-game"
 
 [game.spyro-1]

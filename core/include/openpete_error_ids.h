@@ -6,8 +6,9 @@
  * line and the message box of that error, followed by the URL of its row
  * on the User troubleshooting page, so a player goes from the message to
  * the fix. Ids are never renumbered or reused: a removed error keeps its
- * row on the page. A new error adds a row here and one to the page's
- * "By error id" table, whose anchor is the id in lower case. */
+ * row here and on the page. A new error adds a row here and one to the
+ * page's "By error id" table, whose anchor is the id in lower case;
+ * scripts/fences/surface_coverage.py refuses the two tables disagreeing. */
 #ifndef OPENPETE_ERROR_IDS_H
 #define OPENPETE_ERROR_IDS_H
 

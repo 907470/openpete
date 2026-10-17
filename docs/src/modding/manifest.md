@@ -92,7 +92,10 @@ the player before playing that card under a different set; progress is
 never blocked, and `--adopt-saves` re-tags. A mod with no `src/` and no
 `[[level]]` is derived non-mutative. A mod with `src/` is assumed mutative
 unless it sets `sim_mutative = false`. Asset overlays, shaders, `draw_text`,
-`ui_status`, and `notify` never write guest RAM.
+`ui_status`, and `notify` never write guest RAM. The obsolete key
+`sim_neutral` has the opposite sense; it is still read when `sim_mutative`
+is absent, and the load logs a warning naming the `sim_mutative` line to
+write instead.
 
 **`state`, `runahead`.** Both default to undeclared. An enabled code mod
 with `runahead` undeclared disables runahead; with `state` undeclared it

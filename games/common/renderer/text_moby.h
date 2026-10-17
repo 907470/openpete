@@ -101,7 +101,8 @@ void text_moby_native_perf_overlay(struct CPUState* cpu);
  * rate), emits the centred title, the rows (labels right-aligned to the
  * layout's label column, values left-aligned at the value column, action
  * rows centred; every row shrunk to the cap at which "FULLSCREEN" fits the
- * value column), the close glyph and the frame, all lit by the rotating
+ * value column), the cursor row's hint line centred in the gap above EXIT
+ * (shrunk to the panel width), the close glyph and the frame, all lit by the rotating
  * specular, and publishes with openpete_native_set_menu_glyphs. The row
  * under the cursor and the hovered close glyph take the per-glyph yaw
  * wobble. Room for the frame is reserved, so overflowing text loses its

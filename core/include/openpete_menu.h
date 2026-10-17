@@ -76,6 +76,9 @@ typedef struct {
      * back through openpete_menu_note_close_rect and is what the mouse
      * consumer tests, so the hit region is the pixels that were drawn. */
     float close_x, close_y, close_cap_h;   /* top-left corner, side */
+    /* The hint line: one centred line naming what the cursor row changes,
+     * between the last settings row and the bottom-anchored EXIT row. */
+    float hint_y, hint_cap_h;              /* centre y, cap height ceiling */
 } openpete_menu_layout_t;
 
 /** @brief Fill the menu layout in overlay space.
@@ -83,7 +86,8 @@ typedef struct {
  * The panel is a full-height sidebar. Row y positions start below the title
  * and advance at a fixed pitch. The EXIT row is instead anchored to the panel
  * bottom, using the cap height the text builder last published through
- * openpete_menu_note_row_cap, or row_cap_h before that. The close square sits
+ * openpete_menu_note_row_cap, or row_cap_h before that. The hint line is
+ * centred in the gap between the row above EXIT and EXIT. The close square sits
  * at the panel's top right. The row count is the menu's row count capped at
  * the capacity of row_y.
  * @param out The layout to fill; a null pointer is ignored. */
@@ -147,6 +151,13 @@ const char* openpete_menu_title(void);
  * @return A static string; the empty string for a row outside the menu. */
 const char* openpete_menu_row_label(int row);
 
+/** @brief Name what a row changes, for the hint line under the rows.
+ *
+ * The text is the row's surface hint, written in the menu glyph set.
+ * @param row The row index.
+ * @return A static string; the empty string for a row outside the menu. */
+const char* openpete_menu_row_hint(int row);
+
 /** @brief Spell a row's current value.
  *
  * Reads live renderer state for DISPLAY, FOV and the mod rows and the row's
@@ -165,12 +176,12 @@ unsigned    openpete_menu_wobble_phase(void);
 
 /** @brief Report whether a row is the centred action row with no value column.
  *
- * ADVANCED and EXIT GAME are centred. The glyph builder centres their
+ * DOCUMENTATION, ADVANCED and EXIT GAME are centred. The glyph builder centres their
  * labels instead of splitting them across the label and value columns; EXIT
  * GAME's label carries its state, reading REALLY EXIT? once armed.
  * openpete_menu_activate acts only on these rows.
  * @param row The row index.
- * @return 1 for the ADVANCED and EXIT rows, else 0. */
+ * @return 1 for the DOCUMENTATION, ADVANCED and EXIT rows, else 0. */
 int         openpete_menu_row_centered(int row);
 
 /** @brief Move the row cursor one row, wrapping at either end.
