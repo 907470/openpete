@@ -130,7 +130,7 @@ static uint32_t s_stat_unaligned_reads;
 /* Writes that landed in a staged span instead of guest memory, for the run. A
  * producer whose span is staged publishes into the copy, so the write never
  * reaches gameplay memory; counting them separately keeps s_stat_writes
- * meaning "writes that still reached guest RAM", and a run-wide total is what
+ * meaning "stores no span covered, which were dropped", and a run-wide total is what
  * says the redirect executed at all. */
 static uint32_t s_stat_writes_staged;
 
@@ -155,7 +155,7 @@ static int s_warned_full;
 /* OPENPETE_SUBTICK_WRITE_TRACE=1 */
 static int s_trace = -1;
 
-/* Distinct guest addresses written while a view was open, for the whole run.
+/* Distinct guest addresses of stores dropped while a view was open, for the whole run.
  * Per-present tracing is capped and shows only what one present did; a census
  * needs the union, so producers that fire rarely or only in certain scenes
  * still appear. Linear set -- it is tiny by construction, and if it ever is
@@ -165,7 +165,7 @@ static struct { uint32_t addr; uint32_t hits; } s_wset[SV_WSET_MAX];
 static uint32_t s_wset_n;
 static uint32_t s_wset_overflow;
 
-/** @brief Count a guest store that reached guest memory in the run-wide address set.
+/** @brief Count a dropped guest store in the run-wide address set.
  *
  * Bumps the hit count of @p addr when it is in the set, adds it while fewer
  * than SV_WSET_MAX addresses are held, else counts an overflow.
@@ -182,6 +182,27 @@ static void sv_wset_note(uint32_t addr)
         s_wset_overflow++;
     }
 }
+
+/* Store widths the drop census distinguishes. */
+enum { SV_K_WORD, SV_K_HALF, SV_K_BYTE, SV_K_SWL, SV_K_SWR, SV_KINDS };
+static const char* const k_sv_kind[SV_KINDS] = { "word", "half", "byte", "swl", "swr" };
+
+/* Host call sites that issued a dropped store, for the run. While the view is
+ * open the game fiber is parked, so cpu->ra holds the parked guest return
+ * address and names no store; the host return address of the CPU callback is
+ * the store's site. Linear set: it is empty on a clean run. */
+#define SV_SITE_MAX 64u
+static struct { const void* host; uint32_t first_addr; uint32_t hits; uint8_t kind; } s_drop_site[SV_SITE_MAX];
+static uint32_t s_drop_site_n;
+static uint32_t s_drop_site_overflow;
+/* Lifetime count of CPU stores dropped while a view was open. */
+static uint32_t s_stat_writes_dropped;
+
+#if defined(__GNUC__) || defined(__clang__)
+#define SV_HOST_RA() __builtin_return_address(0)
+#else
+#define SV_HOST_RA() NULL
+#endif
 
 void openpete_subtick_view_report_writes(void)
 {
@@ -200,9 +221,20 @@ void openpete_subtick_view_report_writes(void)
                    "%u unaligned load(s) hit a staged span and read CANONICAL "
                    "bytes -- lwl/lwr are not served from staging",
                    s_stat_unaligned_reads);
+    if (s_stat_writes_dropped) {
+        OPL_WARN_F("subtick-view",
+                   "%u CPU store(s) no staged span covered were DROPPED during "
+                   "sub-tick presents, from %u host site(s)%s:",
+                   s_stat_writes_dropped, s_drop_site_n,
+                   s_drop_site_overflow ? " (site table full, more elided)" : "");
+        for (uint32_t i = 0; i < s_drop_site_n; i++)
+            OPL_WARN_F("subtick-view", "  %s host %p first [%08x] x%u",
+                       k_sv_kind[s_drop_site[i].kind], s_drop_site[i].host,
+                       s_drop_site[i].first_addr, s_drop_site[i].hits);
+    }
     if (!s_wset_n) return;
     OPL_WARN_F("subtick-view",
-               "%u distinct guest address(es) written during sub-tick presents%s:",
+               "%u distinct guest address(es) stored to (dropped) during sub-tick presents%s:",
                s_wset_n, s_wset_overflow ? " (set full, more elided)" : "");
     for (uint32_t i = 0; i < s_wset_n; i++)
         OPL_WARN_F("subtick-view", "  [%08x] x%u", s_wset[i].addr, s_wset[i].hits);
@@ -299,42 +331,88 @@ static uint8_t sv_read_byte(uint32_t addr)
     return s_orig_read_byte(addr);
 }
 
-/** @brief Guest halfword store during a present: absorbed by a covering staged span, else counted and performed.
+/** @brief Drop a CPU store no staged span absorbed, counting it per host call site.
  *
- * Every store width (word, half, byte, swl, swr) is counted, so a producer
- * writing guest memory in any width appears in the write census; the count
- * measures producers that still write guest memory during a present. A store
- * outside the staged spans is performed rather than refused, since refusing
- * it would change the present without protecting gameplay state.
+ * The store is never performed: guest memory holds gameplay state and the
+ * game fiber is parked, so a store during a present can only be the display
+ * path mutating that state. The per-present count, the run-wide address set
+ * and the site table each record it; a site's first drop is logged once with
+ * its guest address and value, and OPENPETE_SUBTICK_WRITE_TRACE logs the
+ * first 16 drops of each present.
+ * @param kind One of the SV_K_ widths.
+ * @param host Host return address of the CPU callback that received the store.
+ * @param addr Guest address the store named.
+ * @param value Value stored (the register value for swl and swr). */
+static void sv_drop(unsigned kind, const void* host, uint32_t addr, uint32_t value)
+{
+    s_stat_writes++;
+    s_stat_writes_dropped++;
+    sv_wset_note(addr);
+    if (s_trace && s_stat_writes <= 16)
+        OPL_WARN_F("subtick-view", "%s store dropped during present: [%08x] <- %08x",
+                   k_sv_kind[kind], addr, value);
+    for (uint32_t i = 0; i < s_drop_site_n; i++)
+        if (s_drop_site[i].host == host && s_drop_site[i].kind == kind) {
+            s_drop_site[i].hits++;
+            return;
+        }
+    if (s_drop_site_n >= SV_SITE_MAX) { s_drop_site_overflow++; return; }
+    s_drop_site[s_drop_site_n].host       = host;
+    s_drop_site[s_drop_site_n].kind       = (uint8_t)kind;
+    s_drop_site[s_drop_site_n].first_addr = addr;
+    s_drop_site[s_drop_site_n].hits       = 1;
+    s_drop_site_n++;
+    OPL_WARN_F("subtick-view",
+               "%s store DROPPED during a sub-tick present: [%08x] <- %08x from host %p "
+               "(openpete_subtick_view_begin at %p); later drops from this site are counted only",
+               k_sv_kind[kind], addr, value, host, (void*)&openpete_subtick_view_begin);
+}
+
+/** @brief CPU halfword-store callback: absorbed by a covering staged span, else dropped and counted.
+ *
  * @param addr Guest address.
  * @param v    Halfword to store. */
 static void sv_write_half(uint32_t addr, uint16_t v)
 { if (sv_staged_store(addr, 2, &v)) return;
-  s_stat_writes++; sv_wset_note(addr); s_orig_write_half(addr, v); }
+  sv_drop(SV_K_HALF, SV_HOST_RA(), addr, v); }
 
-/** @brief CPU byte-store callback: absorbed by a covering staged span, else counted and performed.
+/** @brief CPU byte-store callback: absorbed by a covering staged span, else dropped and counted.
  *
  * @param addr Guest address.
  * @param v Byte to store. */
 static void sv_write_byte(uint32_t addr, uint8_t v)
 { if (sv_staged_store(addr, 1, &v)) return;
-  s_stat_writes++; sv_wset_note(addr); s_orig_write_byte(addr, v); }
+  sv_drop(SV_K_BYTE, SV_HOST_RA(), addr, v); }
 
-/** @brief CPU swl callback: counts the store and performs it through the displaced callback.
+/** @brief CPU swl callback: stores the bytes swl writes into a covering staged span, else drops and counts the store.
  *
- * Never absorbed by a staged span.
+ * SWL at @p addr writes the (addr & 3) + 1 bytes from the aligned word's
+ * start through @p addr with the low bytes of rt >> ((3 - (addr & 3)) * 8),
+ * the bytes do_swl in core/psx/cpu.c replaces; the staged store covers
+ * exactly those bytes, so a span holding them absorbs the store without a
+ * read of the word around it.
  * @param addr Guest address.
  * @param v Register value. */
 static void sv_swl(uint32_t addr, uint32_t v)
-{ s_stat_writes++; sv_wset_note(addr); s_orig_swl(addr, v); }
+{
+    const uint32_t k = addr & 3u;
+    const uint32_t bytes = v >> ((3u - k) * 8u);
+    if (sv_staged_store(addr & ~3u, k + 1u, &bytes)) return;
+    sv_drop(SV_K_SWL, SV_HOST_RA(), addr, v);
+}
 
-/** @brief CPU swr callback: counts the store and performs it through the displaced callback.
+/** @brief CPU swr callback: stores the bytes swr writes into a covering staged span, else drops and counts the store.
  *
- * Never absorbed by a staged span.
+ * SWR at @p addr writes the 4 - (addr & 3) bytes from @p addr through the
+ * aligned word's end with the low bytes of the register, the bytes do_swr
+ * in core/psx/cpu.c replaces.
  * @param addr Guest address.
  * @param v Register value. */
 static void sv_swr(uint32_t addr, uint32_t v)
-{ s_stat_writes++; sv_wset_note(addr); s_orig_swr(addr, v); }
+{
+    if (sv_staged_store(addr, 4u - (addr & 3u), &v)) return;
+    sv_drop(SV_K_SWR, SV_HOST_RA(), addr, v);
+}
 
 /** @brief CPU lwl callback: counts a load that lands in a staged span and reads through the displaced callback.
  *
@@ -356,27 +434,17 @@ static uint32_t sv_lwr(uint32_t addr, uint32_t rt)
 { if (s_active && sv_find(addr) >= 0) s_stat_unaligned_reads++;
   return s_orig_lwr(addr, rt); }
 
-/** @brief CPU word-store callback: absorbed by a covering staged span, else counted, traced and performed.
+/** @brief CPU word-store callback: absorbed by a covering staged span, else dropped and counted.
  *
- * With OPENPETE_SUBTICK_WRITE_TRACE set, the first 16 stores that reach
- * guest memory in a present are logged.
+ * A staged span is the value this present publishes, so a store into one
+ * belongs in the copy; a store nothing staged would mutate gameplay state
+ * and is dropped.
  * @param addr Guest address.
  * @param value Word to store. */
 static void sv_write_word(uint32_t addr, uint32_t value)
 {
-    /* A staged span is the value this present publishes, so a write into one
-     * belongs in the copy. Guest memory is reached only by a write nothing
-     * staged, which is what the census and the RAM guard exist to report. */
     if (sv_staged_store(addr, 4, &value)) return;
-    s_stat_writes++;
-    sv_wset_note(addr);
-    /* OPENPETE_SUBTICK_WRITE_TRACE names the addresses, which is what turns
-     * "something wrote during a present" into a producer you can go and fix.
-     * Capped per present so a runaway writer cannot flood the log. */
-    if (s_trace && s_stat_writes <= 16)
-        OPL_WARN_F("subtick-view", "guest write during present: [%08x] <- %08x",
-                   addr, value);
-    s_orig_write_word(addr, value);
+    sv_drop(SV_K_WORD, SV_HOST_RA(), addr, value);
 }
 
 void openpete_subtick_view_begin(CPUState* cpu)

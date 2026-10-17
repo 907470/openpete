@@ -31,7 +31,9 @@
  * places feeders read guest memory.
  *
  * Staging copies bytes out of guest memory, never back. A CPU store during
- * the view that no staged span covers is counted and still performed.
+ * the view (word, half, byte, swl, swr) lands in the staged span covering
+ * its bytes; one that no span covers is dropped and counted per host call
+ * site, so guest memory is never written through the CPU callbacks.
  *
  * NOT a replacement for openpete_psx_to_host_ptr(). Recompiled guest code
  * must keep resolving against real memory - only the display-side feeders
@@ -149,16 +151,14 @@ void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len);
  *
  * All three reset at openpete_subtick_view_begin(). Spans and served reads
  * are zero when the view did not engage, so a check that sees zero served
- * reads has not exercised the view. The write count covers every store
- * (word, half, byte, swl, swr) that reached guest memory while the view was
- * open; a word, half or byte store into a staged span lands in the copy and
- * is not counted. A
- * counted write is the display path mutating gameplay-readable memory, and
- * the target is zero. The write is performed after it is counted, because
- * refusing it would corrupt the present rather than protect the state.
+ * reads has not exercised the view. The write count covers every CPU store
+ * (word, half, byte, swl, swr) no staged span covered while the view was
+ * open; such a store is dropped, not performed, and a store into a staged
+ * span lands in the copy and is not counted. A counted store is the display
+ * path trying to mutate gameplay-readable memory, and the target is zero.
  * @param out_spans Receives the spans staged; may be NULL.
  * @param out_served Receives the reads served from staging; may be NULL.
- * @param out_writes Receives the guest-memory writes; may be NULL. */
+ * @param out_writes Receives the dropped CPU stores; may be NULL. */
 void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
                                  uint32_t* out_writes);
 
@@ -183,12 +183,13 @@ uint32_t openpete_subtick_view_staged_writes(void);
  * @return Lifetime dropped-byte count. */
 uint32_t openpete_subtick_view_poke_drops(void);
 
-/** @brief Log the run's staging refusals, poke drops, unaligned staged reads and written guest addresses.
+/** @brief Log the run's staging refusals, poke drops, unaligned staged reads and dropped CPU stores.
  *
  * Called by openpete_native_render_shutdown. Each nonzero counter logs a
- * warning, then every distinct guest address written by a CPU store while
- * a view was open is listed with its hit count (256 addresses at most,
- * overflow noted). The address list covers CPU-path writes only; a producer
+ * warning; dropped CPU stores are listed per host call site with width,
+ * first guest address and count (64 sites at most), then every distinct
+ * guest address a dropped store named is listed with its hit count (256
+ * addresses at most, overflow noted). These cover CPU-path stores only; a producer
  * that writes through a host pointer is found by the RAM guard
  * (OPENPETE_SUBTICK_RAM_GUARD). */
 void openpete_subtick_view_report_writes(void);
