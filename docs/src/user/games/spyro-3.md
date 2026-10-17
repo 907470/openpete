@@ -30,17 +30,18 @@ its file name. Drag the image onto the window, or pass it on the command line, a
 for Spyro 1 ([First run](../getting-started/first-run.md)):
 
 ```
-openpete --no-card "Spyro - Year of the Dragon (v1.0).cue"
+openpete "Spyro - Year of the Dragon (v1.0).cue"
 ```
-
-`--no-card` is required for now; see [Memory cards](#memory-cards).
 
 ## Memory cards
 
-!!! warning "Current limitation: no memory card"
-    Spyro 3 cannot use a memory card yet. With a card inserted, which is
-    the default, the game hangs at the title screen and the program exits
-    with status 2 after its hang check. Start it with
+Spyro 3 creates, saves and loads its save on a memory card as on Spyro 1
+([Saves](../playing/saves.md#memory-cards)).
+
+!!! warning "New: memory card support"
+    Card support on Spyro 3 is new. Creating, saving and loading are
+    checked against the PlayStation reference; a full run with a card
+    inserted is not checked yet. If the game misbehaves with a card, start it with
     `--no-card`<!-- id: flag:--no-card -->, or set it once in
     `openpete.toml`:
 
@@ -87,7 +88,7 @@ replaces `--skip-to-level`'s level.
 | `dino_mines` (44), `super_bonus_round` (50) | 1, 2, 3 |
 
 ```
-openpete --game spyro-3 --no-card --skip-to-area seashell_shore:2
+openpete --game spyro-3 --skip-to-area seashell_shore:2
 ```
 
 ## Cutscenes

@@ -161,7 +161,7 @@ clock each one counts.
 | --- | --- |
 | `frame_step` (key action) | ticks: advances one tick |
 | `--record-frames N`<!-- id: flag:--record-frames --> | encoded video images of a recording |
-| `--frame-limit N`<!-- id: flag:--frame-limit --> | VBLs: exits after N |
+| `--frame-limit N`<!-- id: flag:--frame-limit --> | VBLs, per game as below (on Spyro 1 only the VBLs at which the game hands control back): exits once the count reaches N |
 | `--bk2-frame-offset N`<!-- id: flag:--bk2-frame-offset --> | VBLs: the VBL at which a recording's first input entry plays |
 | `--screenshot-on-frame N`<!-- id: flag:--screenshot-on-frame --> | VBLs |
 | `--screenshot-intermediate-on-frame N`<!-- id: flag:--screenshot-intermediate-on-frame --> | VBLs; captures an image between two ticks |

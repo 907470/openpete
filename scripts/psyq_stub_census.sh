@@ -2,11 +2,13 @@
 #
 # psyq_stub_census.sh - which untranslated PSYQ symbols a game actually calls.
 #
-# `generated/psyq_stubs.c` emits an abort stub for every PSYQ symbol the
-# recompiled code references; a thunk in the shared PSYQ-to-PsyCross layer
-# overrides the ones that are implemented, and what survives as a weak
-# definition in the linked executable is the untranslated surface. That list
-# is static and includes symbols the game may never reach. This script
+# `generated/psyq_stubs.c` lists an abort stub for every PSYQ symbol the
+# recompiled code references; the build drops the names a thunk in the shared
+# PSYQ-to-PsyCross layer defines (tools/filter_psyq_stubs.py) and records the
+# rest, with their guest addresses, in the game's stub table
+# (build/linux-release/games/<game>/gen/psyq_stub_table.c). That table is the
+# untranslated surface. It is static and includes symbols the game may never
+# reach. This script
 # separates the two: it boots the game once per level (--skip-to-level), runs
 # a few seconds of live gameplay under OPENPETE_PSYQ_STUB_CONTINUE=1 - which
 # logs each distinct stub once and returns instead of aborting - and reports
@@ -61,11 +63,17 @@ OUTDIR="${OUTDIR:-build/psyq-census/$GAME}"
 rm -rf "$OUTDIR"
 mkdir -p "$OUTDIR"
 
-# The untranslated surface as linked: weak psyq_* definitions no thunk
-# overrode. `nm` prints 'W' for a surviving weak stub and 'T' for one a
-# strong thunk replaced.
-nm --defined-only "$BIN" | awk '$2=="W" && $3 ~ /^psyq_/ {print $3}' | sort -u \
+# The untranslated surface as built: the game's stub table, one
+# `{ "psyq_NAME", 0xADDRu },` row per stub no thunk defines. The linked
+# binary cannot give it: every stub is a strong definition in the
+# compile-once union of all games' stubs, so `nm` types stubs and thunks
+# alike as 'T'.
+TABLE="build/linux-release/games/$GAME/gen/psyq_stub_table.c"
+[[ -f "$TABLE" ]] || { echo "[psyq-census] SKIP: no stub table at $TABLE"; exit 64; }
+sed -n 's/^ *{ "\(psyq_[A-Za-z0-9_]*\)", 0x[0-9A-Fa-f]*u },$/\1/p' "$TABLE" | sort -u \
   > "$OUTDIR/untranslated.txt"
+[[ -s "$OUTDIR/untranslated.txt" ]] \
+  || { echo "[psyq-census] FAIL: no stub rows parsed from $TABLE" >&2; exit 1; }
 
 # Levels straight from the game's own resolver ("  name (number)"), so the
 # script needs no per-game table.

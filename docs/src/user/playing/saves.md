@@ -22,8 +22,10 @@ Every write the game makes goes to the file at once. The files are standard
 | {{ flag("flag:--card-unformatted") }} <!-- id: flag:--card-unformatted --> | Provision a blank unformatted card, so the game's own format screen runs |
 
 !!! warning "Spyro 2 and Spyro 3"
-    Spyro 2 and Spyro 3 cannot use a memory card yet: with a card inserted
-    they hang at boot. Run them with `--no-card`; see
+    Card support on Spyro 2 and Spyro 3 is new: saving and loading are
+    checked against the PlayStation reference, a full run with a card
+    inserted is not checked yet. If a game misbehaves with a card, run it with
+    `--no-card`; see
     [Spyro 2](../games/spyro-2.md#memory-cards) and
     [Spyro 3](../games/spyro-3.md#memory-cards).
 

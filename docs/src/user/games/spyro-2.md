@@ -28,16 +28,18 @@ name. Drag the image onto the window, or pass it on the command line,
 as for Spyro 1 ([First run](../getting-started/first-run.md)):
 
 ```
-openpete --no-card "Spyro 2 - Ripto's Rage.cue"
+openpete "Spyro 2 - Ripto's Rage.cue"
 ```
-
-`--no-card` is required for now; see [Memory cards](#memory-cards).
 
 ## Memory cards
 
-!!! warning "Current limitation: no memory card"
-    Spyro 2 cannot use a memory card yet. With a card inserted, which is
-    the default, the game hangs at boot. Start it with
+Spyro 2 creates, saves and loads its save on a memory card as on Spyro 1
+([Saves](../playing/saves.md#memory-cards)).
+
+!!! warning "New: memory card support"
+    Card support on Spyro 2 is new. Creating, saving and loading are
+    checked against the PlayStation reference; a full run with a card
+    inserted is not checked yet. If the game misbehaves with a card, start it with
     `--no-card`<!-- id: flag:--no-card -->, or set it once in
     `openpete.toml`:
 
