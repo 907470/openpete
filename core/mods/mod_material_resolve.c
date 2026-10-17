@@ -45,12 +45,14 @@ static int s_mat_has_instance;   /* cached: any live selector has a callback */
 int mod_mat_count(void) { return s_mat_count; }
 /* Forward: the reset clears state defined further down. */
 static void reset_level_and_view(void);
+static void overlap_reset(void);
 void mod_mat_reset(void) {
     memset(s_mats, 0, sizeof s_mats);
     s_mat_count = 0;
     s_mat_sel_dirty = 0;
     s_mat_has_instance = 0;
     reset_level_and_view();
+    overlap_reset();
 }
 mod_material_t* mod_mat_at(int i) { return &s_mats[i]; }
 
@@ -432,6 +434,7 @@ int mod_mat_append(const char* id, const openpete_mod_material_selector_t* sel,
     mod_fixed_set(&s_mat_census, (size_t)s_mat_count);
     if (terrain_sel_relevant(m)) s_mat_ter_epoch++;
     mod_mat_rearm_split();
+    mod_mat_overlap_bump();
     OPL_INFO_F("mods", "%s: material selector armed (channel %d ident %d class %d "
                "flags %#x%s)", id, sel->channel, sel->ident, sel->moby_class, sel->flags,
                per_instance ? ", per-instance" : "");
@@ -441,6 +444,7 @@ int mod_mat_append(const char* id, const openpete_mod_material_selector_t* sel,
 int mod_mat_enable(int material, int on) {
     if (material < 0 || material >= s_mat_count || !s_mats[material].live)
         return -1;
+    if (s_mats[material].user_enabled != (on ? 1 : 0)) mod_mat_overlap_bump();
     s_mats[material].user_enabled = on ? 1 : 0;
     if (terrain_sel_relevant(&s_mats[material])) s_mat_ter_epoch++;
     mod_mat_rearm_split();
@@ -455,6 +459,18 @@ int mod_mat_set_params(int material, const void* block, uint32_t len) {
     s_mats[material].params_len = len;
     if (len) memcpy(s_mats[material].params, block, len);
     return 0;
+}
+
+/** @brief Install a selector on a material; a change of its bytes restarts the refine observation and bumps the overlap inputs.
+ *
+ * A retune to the bytes already installed changes nothing.
+ * @param m The material.
+ * @param sel The new selector. */
+static void sel_store(mod_material_t* m, const openpete_mod_material_selector_t* sel) {
+    if (memcmp(&m->sel, sel, sizeof *sel) == 0) return;
+    m->sel = *sel;
+    m->obs_calls = m->obs_declines = 0;
+    mod_mat_overlap_bump();
 }
 
 int mod_mat_set_selector(const char* id, int material,
@@ -481,7 +497,7 @@ int mod_mat_set_selector(const char* id, int material,
         return 0;
     }
     const int was_ter = terrain_sel_relevant(m);
-    m->sel = *sel;
+    sel_store(m, sel);
     m->sel_dirty = 0;
     if (was_ter || terrain_sel_relevant(m)) s_mat_ter_epoch++;
     mod_mat_rearm_split();
@@ -497,7 +513,7 @@ void mod_mat_apply_pending(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].sel_dirty) continue;
         const int was_ter = terrain_sel_relevant(&s_mats[i]);
-        s_mats[i].sel = s_mats[i].sel_pending;
+        sel_store(&s_mats[i], &s_mats[i].sel_pending);
         s_mats[i].sel_dirty = 0;
         if (was_ter || terrain_sel_relevant(&s_mats[i])) s_mat_ter_epoch++;
         n++;
@@ -603,13 +619,23 @@ int  openpete_mods_material_slot_count(void) { return s_mat_slot_n; }
 /* ------------------------------------------------------------------ */
 /* Priority. */
 
+/** @brief Rank two materials from their table indices, owners' load indices and the first one's api pin.
+ *
+ * @param a Index of the first material.
+ * @param load_a Its owner's load index.
+ * @param pin_a Its owner's api pin.
+ * @param b Index of the second material.
+ * @param load_b Its owner's load index.
+ * @return 1 when the first ranks above the second. */
+static int rank_above(int a, int load_a, int pin_a, int b, int load_b) {
+    if (load_a != load_b) return load_a > load_b;
+    /* One mod: registration order, its direction selected by the pin. */
+    return pin_a >= MOD_MAT_API_LATER_TIE ? a > b : a < b;
+}
+
 int mod_mat_outranks(int a, int b) {
     if (b < 0) return 1;
-    const mod_material_t* ma = &s_mats[a];
-    const mod_material_t* mb = &s_mats[b];
-    if (ma->load_index != mb->load_index) return ma->load_index > mb->load_index;
-    /* One mod: registration order, its direction selected by the pin. */
-    return ma->api_pin >= MOD_MAT_API_LATER_TIE ? a > b : a < b;
+    return rank_above(a, s_mats[a].load_index, s_mats[a].api_pin, b, s_mats[b].load_index);
 }
 
 /* ------------------------------------------------------------------ */
@@ -871,6 +897,19 @@ static moby_memo_t* moby_memo_find(unsigned stamp, uint32_t vaddr, int cls) {
     return NULL;
 }
 
+/* Advanced on the first call and the first decline of a moby refine, the
+ * two events that move its accept-all observation. Sim thread only. */
+static unsigned s_ovl_obs;
+
+/** @brief Count one moby refine call and its decline for the overlap diagnostic's accept-all observation.
+ *
+ * @param m The refine material.
+ * @param declined Nonzero when the callback returned -1. */
+static void refine_observe(mod_material_t* m, int declined) {
+    if (m->obs_calls++ == 0) s_ovl_obs++;
+    if (declined && m->obs_declines++ == 0) s_ovl_obs++;
+}
+
 /** @brief Run the extraction walk for one moby: the first material down the priority order that takes it.
  *
  * A declarative material lands; a refine material is asked, inside a
@@ -901,6 +940,7 @@ static int moby_walk(int cls, uint32_t vaddr, unsigned char* buf, int* len) {
         const int rc = m->per_instance(&key, buf, OPENPETE_MATERIAL_UNIFORMS_MAX);
         openpete_mods_guard_leave();
         cen_bump(w, MOD_MAT_CENSUS_REFINE_CALLS);
+        refine_observe(m, rc < 0);
         if (rc >= 0) {
             cen_bump(w, MOD_MAT_CENSUS_EXTRACT_WINS);
             *len = rc > (int)OPENPETE_MATERIAL_UNIFORMS_MAX ? (int)OPENPETE_MATERIAL_UNIFORMS_MAX : rc;
@@ -1253,6 +1293,23 @@ static int material_selector_matches(const mod_material_t* m,
     return 1;
 }
 
+/** @brief Test whether a declarative material may shade a decoded tag key at a contract's draw site.
+ *
+ * A material with a per-instance callback never matches: it resolves
+ * through slots only. A moby tag tests the extraction walk's predicate
+ * (material_matches_moby); another tag tests liveness, the user and owner
+ * enable, the contract and material_selector_matches.
+ * @param m The material.
+ * @param k The decoded tag key.
+ * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
+ * @return 1 when the material matches. */
+static int material_decl_matches_key(const mod_material_t* m, const material_key_t* k, int contract) {
+    if (m->per_instance) return 0;
+    if (k->path == 0) return material_matches_moby(m, k->cls, k->level, contract);
+    return m->live && m->user_enabled && m->contract == contract &&
+           openpete_mods_is_enabled(m->owner) && material_selector_matches(m, k);
+}
+
 /** @brief Return the declarative material that wins a decoded tag key, or -1.
  *
  * Considers live, user-enabled materials of enabled mods with the shading
@@ -1265,14 +1322,7 @@ static int material_selector_matches(const mod_material_t* m,
 static int material_winner(const material_key_t* k, int contract) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
-        mod_material_t* m = &s_mats[i];
-        if (m->per_instance) continue;   /* per-instance winners resolve via slots only */
-        /* A moby tag resolves through the extraction walk's predicate. */
-        const int match = k->path == 0 ? material_matches_moby(m, k->cls, k->level, contract)
-                                       : m->live && m->user_enabled && m->contract == contract &&
-                                         openpete_mods_is_enabled(m->owner) &&
-                                         material_selector_matches(m, k);
-        if (match && mod_mat_outranks(i, best)) best = i;
+        if (material_decl_matches_key(&s_mats[i], k, contract) && mod_mat_outranks(i, best)) best = i;
     }
     return best;
 }
@@ -1353,4 +1403,284 @@ int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
     if (best >= 0 && mod_owner_held(s_mats[best].owner)) best = -1;
     census_resolve(&k, best);
     return best;
+}
+
+/* ------------------------------------------------------------------ */
+/* Overlap diagnostic. */
+
+/* A material's key set per channel. A moby class or a channel identity is
+ * either every value, one value, or none: every selector key is -1 or one
+ * value, so the resolver's predicates, asked at the material's own key and
+ * at a value no selector names, decide which. Terrain keys are enumerated:
+ * (texid -1..127) x env x tier, the bake's key space. */
+enum { OVL_NONE = 0, OVL_ONE, OVL_ALL };
+#define OVL_SENTINEL (-0x7FFFFFFF)   /* a class or identity no selector names */
+#define OVL_TER_KEYS (129 * 4)
+#define OVL_TER_WORDS ((OVL_TER_KEYS + 63) / 64)
+
+typedef struct { int kind, val; } ovl_set_t;
+typedef struct {
+    ovl_set_t ch[OP_CHAN_PORTAL + 1];   /* by OP_CHAN_*; the terrain entry is unused */
+    uint64_t  ter[OVL_TER_WORDS];
+    int load, pin, refine;
+    int asked, declined;                /* moby refine observation */
+} ovl_foot_t;
+
+static _Atomic unsigned s_ovl_gen = 1;
+/* The inputs the last snapshot was taken under. */
+static unsigned s_ovl_seen_gen, s_ovl_seen_toggle, s_ovl_seen_obs;
+static int s_ovl_seen_level, s_ovl_snapped;
+static ovl_foot_t s_ovl_foot[MOD_MATERIAL_MAX];
+static int s_ovl_n;
+/* Computed and published verdicts per (hi, lo), and the listed pairs. */
+static unsigned char s_ovl_next[MOD_MATERIAL_MAX][MOD_MATERIAL_MAX];
+static unsigned char s_ovl_prev[MOD_MATERIAL_MAX][MOD_MATERIAL_MAX];
+static mod_mat_overlap_t s_ovl_stage[MOD_MAT_OVERLAP_MAX], s_ovl_pub[MOD_MAT_OVERLAP_MAX];
+static int s_ovl_stage_total, s_ovl_pub_total, s_ovl_prev_n;
+
+void mod_mat_overlap_bump(void) { atomic_fetch_add_explicit(&s_ovl_gen, 1u, memory_order_relaxed); }
+
+/** @brief Clear the published verdicts and the refine observation counter for mod_mat_reset, and mark a snapshot due. */
+static void overlap_reset(void) {
+    memset(s_ovl_prev, 0, sizeof s_ovl_prev);
+    s_ovl_prev_n = s_ovl_pub_total = s_ovl_stage_total = s_ovl_n = 0;
+    s_ovl_snapped = 0;
+    s_ovl_obs = 0;
+    mod_mat_overlap_bump();
+}
+
+int mod_mat_overlap_due(void) {
+    return !s_ovl_snapped || s_ovl_seen_gen != atomic_load_explicit(&s_ovl_gen, memory_order_relaxed) ||
+           s_ovl_seen_toggle != openpete_mods_toggle_epoch() || s_ovl_seen_level != s_cur_level ||
+           s_ovl_seen_obs != s_ovl_obs;
+}
+
+/** @brief Return the draw-site contract of a channel: DECAL for shadows, SCENE for every other channel. */
+static int ovl_chan_contract(int ch) {
+    return ch == OP_CHAN_SHADOW ? OPENPETE_MATERIAL_CONTRACT_DECAL : OPENPETE_MATERIAL_CONTRACT_SCENE;
+}
+
+/** @brief Return the moby classes a material can take: through a declarative landing or a refine call of the extraction walk.
+ *
+ * @param m The material.
+ * @param level The pushed level. */
+static ovl_set_t ovl_moby_set(const mod_material_t* m, int level) {
+    const int c = OPENPETE_MATERIAL_CONTRACT_SCENE;
+    ovl_set_t s = {OVL_NONE, 0};
+    const int named = m->sel.moby_class != -1 ? m->sel.moby_class : m->sel.ident;
+    if (material_matches_moby(m, OVL_SENTINEL, level, c)) s.kind = OVL_ALL;
+    else if (named != -1 && material_matches_moby(m, named, level, c)) { s.kind = OVL_ONE; s.val = named; }
+    return s;
+}
+
+/** @brief Return the identities of a declarative channel (player through portal) a material can shade.
+ *
+ * @param m The material.
+ * @param ch OP_CHAN_* other than moby and terrain.
+ * @param level The pushed level. */
+static ovl_set_t ovl_chan_set(const mod_material_t* m, int ch, int level) {
+    material_key_t k = {ch - 1, -1, -1, ch, OVL_SENTINEL, level, 0, 0, 0};
+    ovl_set_t s = {OVL_NONE, 0};
+    if (material_decl_matches_key(m, &k, ovl_chan_contract(ch))) { s.kind = OVL_ALL; return s; }
+    k.ident = m->sel.ident;
+    if (m->sel.ident != -1 && material_decl_matches_key(m, &k, ovl_chan_contract(ch))) {
+        s.kind = OVL_ONE; s.val = m->sel.ident;
+    }
+    return s;
+}
+
+/** @brief Set one bit per terrain key the bake would bucket to a material when it wins.
+ *
+ * @param m The material.
+ * @param level The pushed level.
+ * @param bits Receives OVL_TER_WORDS words, bit (texid + 1) * 4 + env * 2 + lp. */
+static void ovl_terrain_bits(const mod_material_t* m, int level, uint64_t* bits) {
+    memset(bits, 0, OVL_TER_WORDS * sizeof *bits);
+    if (!terrain_sel_usable(m, level)) return;
+    for (int k = 0; k < OVL_TER_KEYS; k++) {
+        const int texid = k / 4 - 1, env = (k >> 1) & 1, lp = k & 1;
+        const int hit = m->per_instance ? terrain_refine_key_matches(m, texid < 0, texid)
+                                        : terrain_decl_matches(m, texid, env, lp);
+        if (hit) bits[k >> 6] |= 1ull << (k & 63);
+    }
+}
+
+void mod_mat_overlap_snapshot(void) {
+    const int level = s_cur_level;
+    s_ovl_seen_gen = atomic_load_explicit(&s_ovl_gen, memory_order_relaxed);
+    s_ovl_seen_toggle = openpete_mods_toggle_epoch();
+    s_ovl_seen_level = level;
+    s_ovl_seen_obs = s_ovl_obs;
+    s_ovl_snapped = 1;
+    s_ovl_n = s_mat_count;
+    for (int i = 0; i < s_mat_count; i++) {
+        const mod_material_t* m = &s_mats[i];
+        ovl_foot_t* f = &s_ovl_foot[i];
+        memset(f, 0, sizeof *f);
+        f->load = m->load_index;
+        f->pin = m->api_pin;
+        f->refine = m->per_instance != NULL;
+        f->asked = m->obs_calls > 0;
+        f->declined = m->obs_declines > 0;
+        f->ch[OP_CHAN_MOBY] = ovl_moby_set(m, level);
+        for (int ch = OP_CHAN_PLAYER; ch <= OP_CHAN_PORTAL; ch++) f->ch[ch] = ovl_chan_set(m, ch, level);
+        ovl_terrain_bits(m, level, f->ter);
+    }
+}
+
+/** @brief Test whether two key sets share a value. */
+static int ovl_meets(ovl_set_t a, ovl_set_t b) {
+    return a.kind && b.kind && (a.kind == OVL_ALL || b.kind == OVL_ALL || a.val == b.val);
+}
+/** @brief Test whether key set @p l lies inside key set @p h. */
+static int ovl_within(ovl_set_t l, ovl_set_t h) {
+    return !l.kind || h.kind == OVL_ALL || (l.kind == OVL_ONE && h.kind == OVL_ONE && l.val == h.val);
+}
+
+/** @brief Compare the terrain keys of a pair: whether they share one, and whether the lower's lie inside the higher's.
+ *
+ * @param h The higher material's footprint.
+ * @param l The lower material's footprint.
+ * @param within Receives 1 when every key of @p l is a key of @p h.
+ * @return 1 when a key is shared. */
+static int ovl_ter_meets(const ovl_foot_t* h, const ovl_foot_t* l, int* within) {
+    int meet = 0;
+    *within = 1;
+    for (int w = 0; w < OVL_TER_WORDS; w++) {
+        if (l->ter[w] & h->ter[w]) meet = 1;
+        if (l->ter[w] & ~h->ter[w]) *within = 0;
+    }
+    return meet;
+}
+
+/** @brief Return the shadow verdict of a higher-ranked material over a lower-ranked one from their footprints.
+ *
+ * Full when the higher takes every key of the lower: on terrain any higher
+ * material that matches a key takes it (a refine's decline draws stock); on
+ * the moby walk a declarative takes the keys it matches, and a refine takes
+ * them only when it has been asked and never declined (accept-all); on the
+ * declarative channels only declaratives match. Partial when a key is
+ * shared but not every key is taken; none when no key is shared.
+ * @param hi Higher-ranked material index.
+ * @param lo Lower-ranked material index.
+ * @param chans Receives the OP_CHAN_* bits of the channels with a shared key.
+ * @param accept_all Receives 1 when a full verdict rests on an accept-all moby refine.
+ * @return MOD_MAT_SHADOW_*. */
+static int ovl_pair(int hi, int lo, unsigned* chans, int* accept_all) {
+    const ovl_foot_t* h = &s_ovl_foot[hi];
+    const ovl_foot_t* l = &s_ovl_foot[lo];
+    int within = 1;
+    *chans = ovl_ter_meets(h, l, &within) ? 1u << OP_CHAN_TERRAIN : 0u;
+    int full = within;
+    for (int ch = OP_CHAN_MOBY; ch <= OP_CHAN_PORTAL; ch++) {
+        if (ch == OP_CHAN_TERRAIN || !l->ch[ch].kind) continue;
+        if (ovl_meets(l->ch[ch], h->ch[ch])) *chans |= 1u << ch;
+        const int takes = !h->refine || (h->asked && !h->declined);
+        if (!takes || !ovl_within(l->ch[ch], h->ch[ch])) full = 0;
+    }
+    *accept_all = full && h->refine && (*chans & (1u << OP_CHAN_MOBY)) != 0;
+    if (!*chans) return MOD_MAT_SHADOW_NONE;
+    return full ? MOD_MAT_SHADOW_FULL : MOD_MAT_SHADOW_PARTIAL;
+}
+
+void mod_mat_overlap_compute(void) {
+    s_ovl_stage_total = 0;
+    memset(s_ovl_next, 0, sizeof s_ovl_next);
+    for (int a = 0; a < s_ovl_n; a++)
+        for (int b = a + 1; b < s_ovl_n; b++) {
+            const int a_hi = rank_above(a, s_ovl_foot[a].load, s_ovl_foot[a].pin, b, s_ovl_foot[b].load);
+            const int hi = a_hi ? a : b, lo = a_hi ? b : a;
+            unsigned chans;
+            int aa;
+            const int v = ovl_pair(hi, lo, &chans, &aa);
+            if (v == MOD_MAT_SHADOW_NONE) continue;
+            s_ovl_next[hi][lo] = (unsigned char)v;
+            if (s_ovl_stage_total < MOD_MAT_OVERLAP_MAX) {
+                mod_mat_overlap_t* p = &s_ovl_stage[s_ovl_stage_total];
+                p->hi = hi; p->lo = lo; p->verdict = v; p->chans = chans; p->accept_all = aa;
+            }
+            s_ovl_stage_total++;
+        }
+}
+
+const char* mod_mat_shadow_name(int verdict) {
+    return verdict == MOD_MAT_SHADOW_FULL ? "full" : verdict == MOD_MAT_SHADOW_PARTIAL ? "partial" : "none";
+}
+
+/* Channel names by OP_CHAN_*. */
+static const char* const k_ovl_chan[] = {"", "moby", "terrain", "player", "flame", "particle",
+                                         "sky", "shadow", "tracer", "portal"};
+
+/** @brief Write a material's kind and the selector keys it sets into a buffer.
+ *
+ * @param i Material index.
+ * @param buf Receives the text.
+ * @param cap Bytes in @p buf. */
+static void ovl_describe(int i, char* buf, size_t cap) {
+    const mod_material_t* m = &s_mats[i];
+    const int ch = m->sel.channel;
+    int n = snprintf(buf, cap, "%s #%d %s %s", m->owner ? m->owner : "?", i,
+                     m->per_instance ? "refine" : "decl",
+                     ch == -1 ? "any" : ch >= OP_CHAN_MOBY && ch <= OP_CHAN_PORTAL ? k_ovl_chan[ch] : "?");
+    if (m->sel.moby_class != -1 && n < (int)cap) n += snprintf(buf + n, cap - (size_t)n, " class %d", m->sel.moby_class);
+    if (m->sel.ident != -1 && n < (int)cap) n += snprintf(buf + n, cap - (size_t)n, " ident %d", m->sel.ident);
+    if (m->sel.texture != -1 && n < (int)cap) n += snprintf(buf + n, cap - (size_t)n, " tex %d", m->sel.texture);
+    if (m->sel.level != -1 && n < (int)cap) n += snprintf(buf + n, cap - (size_t)n, " level %d", m->sel.level);
+    if (m->sel.flags && n < (int)cap) snprintf(buf + n, cap - (size_t)n, " flags %#x", m->sel.flags);
+}
+
+/** @brief Write the channel names of an OP_CHAN_* bit set, comma separated.
+ *
+ * @param chans The bits.
+ * @param buf Receives the text.
+ * @param cap Bytes in @p buf. */
+static void ovl_chan_list(unsigned chans, char* buf, size_t cap) {
+    size_t n = 0;
+    buf[0] = 0;
+    for (int ch = OP_CHAN_MOBY; ch <= OP_CHAN_PORTAL && n < cap; ch++)
+        if (chans & (1u << ch)) n += (size_t)snprintf(buf + n, cap - n, "%s%s", n ? "," : "", k_ovl_chan[ch]);
+}
+
+/** @brief Log one pair whose verdict changed, naming both materials, the shared channels and the refine observation.
+ *
+ * @param hi Higher-ranked material index.
+ * @param lo Lower-ranked material index.
+ * @param verdict The new MOD_MAT_SHADOW_*. */
+static void ovl_log(int hi, int lo, int verdict) {
+    char a[160], b[160], c[96];
+    unsigned chans = 0;
+    int aa = 0;
+    if (verdict != MOD_MAT_SHADOW_NONE) (void)ovl_pair(hi, lo, &chans, &aa);
+    ovl_describe(hi, a, sizeof a);
+    ovl_describe(lo, b, sizeof b);
+    ovl_chan_list(chans, c, sizeof c);
+    const ovl_foot_t* h = &s_ovl_foot[hi];
+    const char* why = !h->refine || !(chans & (1u << OP_CHAN_MOBY)) ? "" : aa ? " (accept-all refine)"
+                    : h->declined ? " (refine declines)" : !h->asked ? " (refine not yet asked)" : "";
+    OPL_INFO_F("mods", "material overlap: %s over %s: %s%s%s%s", a, b, mod_mat_shadow_name(verdict),
+               *c ? " on " : "", c, verdict == MOD_MAT_SHADOW_NONE ? "" : why);
+}
+
+void mod_mat_overlap_publish(void) {
+    const int n = s_ovl_n > s_ovl_prev_n ? s_ovl_n : s_ovl_prev_n;
+    for (int hi = 0; hi < n; hi++)
+        for (int lo = 0; lo < n; lo++)
+            if (s_ovl_next[hi][lo] != s_ovl_prev[hi][lo]) ovl_log(hi, lo, s_ovl_next[hi][lo]);
+    memcpy(s_ovl_prev, s_ovl_next, sizeof s_ovl_prev);
+    s_ovl_prev_n = s_ovl_n;
+    s_ovl_pub_total = s_ovl_stage_total;
+    const int listed = s_ovl_stage_total < MOD_MAT_OVERLAP_MAX ? s_ovl_stage_total : MOD_MAT_OVERLAP_MAX;
+    memcpy(s_ovl_pub, s_ovl_stage, (size_t)listed * sizeof *s_ovl_pub);
+}
+
+int mod_mat_overlap_verdict(int hi, int lo) {
+    if (hi < 0 || lo < 0 || hi >= MOD_MATERIAL_MAX || lo >= MOD_MATERIAL_MAX) return MOD_MAT_SHADOW_NONE;
+    return s_ovl_prev[hi][lo];
+}
+
+int mod_mat_overlap_total(void) { return s_ovl_pub_total; }
+
+const mod_mat_overlap_t* mod_mat_overlap_at(int i) {
+    const int listed = s_ovl_pub_total < MOD_MAT_OVERLAP_MAX ? s_ovl_pub_total : MOD_MAT_OVERLAP_MAX;
+    return i >= 0 && i < listed ? &s_ovl_pub[i] : NULL;
 }

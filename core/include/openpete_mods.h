@@ -1878,6 +1878,38 @@ typedef struct {
  * @return 0 on success, -1 otherwise. */
 int  openpete_mods_material_terrain_bucket_gpu(
         int bucket, int pipe_idx, openpete_mod_material_terrain_t* out);
+/** @brief Recompute the material overlap pairs when a register, enable, retune, owner removal, mod toggle, level change or refine observation moved them.
+ *
+ * Tick boundary, sim thread. Takes the registry write lock to snapshot the
+ * selectors and again to publish; computes between the two without it.
+ * Logs each pair whose shadow verdict changed. */
+void openpete_mods_material_overlap_tick(void);
+/** @brief One overlapping material pair for the dev overlay. */
+typedef struct {
+    int         hi, lo;          /* material indices; hi ranks above lo */
+    const char* hi_owner;
+    const char* lo_owner;
+    int         hi_refine, lo_refine;
+    const char* verdict;         /* "full" or "partial" */
+    unsigned    chans;           /* bit OP_CHAN_* per channel with a shared key */
+    int         accept_all;      /* full because hi is a moby refine that never declined */
+} openpete_mods_material_overlap_info_t;
+/** @brief Return the number of listed overlap pairs.
+ *
+ * Read under the registry read lock (the compose).
+ * @return The count. */
+int  openpete_mods_material_overlap_count(void);
+/** @brief Return the number of overlap pairs found, listed or not.
+ *
+ * @return The count. */
+int  openpete_mods_material_overlap_total(void);
+/** @brief Describe one listed overlap pair.
+ *
+ * Read under the registry read lock (the compose).
+ * @param i Index below openpete_mods_material_overlap_count().
+ * @param out Receives the pair.
+ * @return 0, or -1 out of range. */
+int  openpete_mods_material_overlap_at(int i, openpete_mods_material_overlap_info_t* out);
 /** @brief Return the size of the material table, live and swept slots alike, for openpete_mods_material_enum_at.
  *
  * Takes no lock; the precompile calls it under the registry read lock.

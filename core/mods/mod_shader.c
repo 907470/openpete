@@ -1126,6 +1126,35 @@ void openpete_mods_material_apply_pending(void) {
     REG_WR(); mod_mat_apply_pending(); REG_WR_END();
 }
 
+void openpete_mods_material_overlap_tick(void) {
+    if (!mod_mat_overlap_due()) return;   /* nothing moved: never take the lock */
+    { REG_WR(); mod_mat_overlap_snapshot(); REG_WR_END(); }
+    mod_mat_overlap_compute();
+    { REG_WR(); mod_mat_overlap_publish(); REG_WR_END(); }
+}
+
+int openpete_mods_material_overlap_count(void) {
+    const int total = mod_mat_overlap_total();
+    return total < MOD_MAT_OVERLAP_MAX ? total : MOD_MAT_OVERLAP_MAX;
+}
+
+int openpete_mods_material_overlap_total(void) { return mod_mat_overlap_total(); }
+
+int openpete_mods_material_overlap_at(int i, openpete_mods_material_overlap_info_t* out) {
+    const mod_mat_overlap_t* p = mod_mat_overlap_at(i);
+    if (!p || !out) return -1;
+    out->hi = p->hi;
+    out->lo = p->lo;
+    out->hi_owner = mod_mat_at(p->hi)->owner;
+    out->lo_owner = mod_mat_at(p->lo)->owner;
+    out->hi_refine = mod_mat_at(p->hi)->per_instance != NULL;
+    out->lo_refine = mod_mat_at(p->lo)->per_instance != NULL;
+    out->verdict = mod_mat_shadow_name(p->verdict);
+    out->chans = p->chans;
+    out->accept_all = p->accept_all;
+    return 0;
+}
+
 /** @brief Fill a draw's GPU material description from a material index and a uniform slot.
  *
  * Copies the vertex and fragment SPIR-V (NULL with 0 words for a stock
@@ -1235,6 +1264,7 @@ static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
         m->live = 0;
         m->generation = slot_generation_next();
         mod_mat_ter_epoch_bump();
+        mod_mat_overlap_bump();
     }
     mod_mat_rearm_split();
 }

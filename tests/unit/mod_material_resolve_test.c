@@ -856,6 +856,190 @@ static void case_slot_table_full(void) {
     OUTCOME("the 128th distinct block draws stock; the re-extract asks again and gets slot 1");
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Overlap diagnostic. */
+
+/** @brief Recompute the overlap pairs when their inputs moved, as the tick boundary does, without the registry lock. */
+static void ovl_refresh(void) {
+    if (!mod_mat_overlap_due()) return;
+    mod_mat_overlap_snapshot();
+    mod_mat_overlap_compute();
+    mod_mat_overlap_publish();
+}
+/** @brief Return the published shadow verdict of material @p hi over @p lo after a refresh. */
+static int ovl(int hi, int lo) {
+    ovl_refresh();
+    return mod_mat_overlap_verdict(hi, lo);
+}
+#define FULL MOD_MAT_SHADOW_FULL
+#define PART MOD_MAT_SHADOW_PARTIAL
+#define NONE MOD_MAT_SHADOW_NONE
+
+/** @brief The declarative fixtures: mat-fx-pair over mat-fx-broad on flame 0, sky and player; mat-fx-pair's C player row over its manifest row. */
+static void case_ovl_fixture_decl(void) {
+    begin("Overlap: mat-fx-pair over mat-fx-broad");
+    stub_mod_t* a = mod("mat-fx-broad", 0, 13);
+    stub_mod_t* b = mod("mat-fx-pair", 1, 13);
+    openpete_mod_material_selector_t f0 = sel_ch(OP_CHAN_FLAME);
+    f0.ident = 0;
+    const int am = reg(a, sel_ch(OP_CHAN_MOBY), SCENE, NULL);
+    const int af = reg(a, f0, SCENE, NULL);
+    const int as = reg(a, sel_ch(OP_CHAN_SKY), SCENE, NULL);
+    const int ap = reg(a, sel_ch(OP_CHAN_PLAYER), SCENE, NULL);
+    const int bp = reg(b, sel_ch(OP_CHAN_PLAYER), SCENE, NULL);
+    const int bf = reg(b, f0, SCENE, NULL);
+    const int bs = reg(b, sel_ch(OP_CHAN_SKY), SCENE, NULL);
+    const int bc = reg(b, sel_ch(OP_CHAN_PLAYER), SCENE, NULL);
+    CHECK(ovl(bf, af) == FULL && ovl(bs, as) == FULL && ovl(bp, ap) == FULL && ovl(bc, ap) == FULL,
+          "cross-mod full: flame %d sky %d player %d", ovl(bf, af), ovl(bs, as), ovl(bp, ap));
+    CHECK(ovl(bc, bp) == FULL && ovl(bp, bc) == NONE, "same-mod C over manifest row at pin 13");
+    CHECK(ovl(bf, am) == NONE && ovl(bs, af) == NONE, "disjoint channels");
+    CHECK(mod_mat_overlap_total() == 5, "pairs %d", mod_mat_overlap_total());
+    OUTCOME("pair over broad: flame 0, sky, player full; pair C player over its manifest row full; 5 pairs");
+}
+
+/** @brief The wild-refine fixtures: a later channel-wide refine over an earlier one is partial; a declining refine stays partial. */
+static void case_ovl_fixture_wild(void) {
+    begin("Overlap: mat-fx-wildrefine-b over mat-fx-wildrefine-a and mat-fx-classrefine");
+    stub_mod_t* c = mod("mat-fx-classrefine", 0, 13);
+    stub_mod_t* a = mod("mat-fx-wildrefine-a", 1, 13);
+    stub_mod_t* b = mod("mat-fx-wildrefine-b", 2, 13);
+    const int mc = reg(c, sel_moby(7), SCENE, rf_accept);
+    const int ma = reg(a, sel_moby(-1), SCENE, rf_class7);
+    const int mb = reg(b, sel_moby(-1), SCENE, rf_class7);
+    CHECK(ovl(mb, ma) == PART && ovl(mb, mc) == PART && ovl(ma, mc) == PART, "before any call");
+    openpete_mods_material_frame_reset(1);
+    (void)openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);   /* b and a decline class 5 */
+    CHECK(mod_mat_overlap_due(), "first decline moves the inputs");
+    CHECK(ovl(mb, ma) == PART && ovl(mb, mc) == PART, "after declines");
+    OUTCOME("wild-b over wild-a, wild-b over classrefine, wild-a over classrefine: partial before and after calls");
+}
+
+/** @brief mat-fx-levelkey: a level-keyed declarative and a later same-mod refine on its class; the pair exists only in the keyed level. */
+static void case_ovl_fixture_levelkey(void) {
+    begin("Overlap: mat-fx-levelkey");
+    stub_mod_t* a = mod("mat-fx-levelkey", 0, 13);
+    openpete_mod_material_selector_t d = sel_moby(5);
+    d.level = 4;
+    const int md = reg(a, d, SCENE, NULL);
+    const int mr = reg(a, sel_moby(5), SCENE, rf_accept);
+    openpete_mods_set_level(3);
+    CHECK(ovl(mr, md) == NONE, "level 3: the declarative matches nothing");
+    openpete_mods_set_level(4);
+    CHECK(ovl(mr, md) == PART, "level 4, refine not yet asked");
+    openpete_mods_material_frame_reset(1);
+    (void)openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(ovl(mr, md) == FULL, "level 4, refine asked and accepted");
+    OUTCOME("level 3 none; level 4 partial before the refine is asked, full (accept-all) after");
+}
+
+/** @brief The terrain fixtures: a later env declarative over a texture refine is partial; a refine over a declarative on its key is full. */
+static void case_ovl_fixture_terrain(void) {
+    begin("Overlap: mat-fx-terrain-env over mat-fx-terrain");
+    stub_mod_t* a = mod("mat-fx-terrain", 0, 13);
+    stub_mod_t* b = mod("mat-fx-terrain-env", 1, 13);
+    openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN), u = sel_ch(OP_CHAN_TERRAIN);
+    r.texture = 1;
+    u.flags = OP_SEL_UNTEXTURED;
+    const int mr = reg(a, r, SCENE, rf_accept);
+    const int mu = reg(a, u, SCENE, rf_decline);
+    openpete_mod_material_selector_t e = r;
+    e.flags = OP_SEL_ENV_ANIM;
+    const int me = reg(b, e, SCENE, NULL);
+    CHECK(ovl(me, mr) == PART, "env declarative over the texture refine");
+    CHECK(ovl(me, mu) == NONE && ovl(mu, mr) == NONE && ovl(mr, mu) == NONE, "band refine shares no key");
+    stub_mod_t* c = mod("fx-tr-late", 2, 13);
+    const int ml = reg(c, r, SCENE, rf_decline);
+    CHECK(ovl(ml, me) == FULL && ovl(ml, mr) == FULL, "a terrain refine over its key: full (decline draws stock)");
+    OUTCOME("env decl over texture refine partial; band refine none; a later declining texture-1 refine full over both");
+}
+
+/** @brief Census pattern: sky-selector's narrow exclusions before its wide fog, at pin 12 and pin 13. */
+static void case_ovl_exclude(int api) {
+    char name[96];
+    snprintf(name, sizeof name, "Overlap: exclusions before the wide material (pin %d)", api);
+    begin(name);
+    stub_mod_t* a = mod("fx-exclude", 0, api);
+    int mx[5];
+    for (int i = 0; i < 5; i++) mx[i] = reg(a, sel_moby(83 + i), SCENE, NULL);
+    const int mw = reg(a, sel_moby(-1), SCENE, NULL);
+    int ok = 1;
+    for (int i = 0; i < 5; i++)
+        ok &= api >= 13 ? (ovl(mw, mx[i]) == FULL && ovl(mx[i], mw) == NONE)
+                        : (ovl(mx[i], mw) == PART && ovl(mw, mx[i]) == NONE);
+    CHECK(ok, "pin %d verdicts", api);
+    CHECK(mod_mat_overlap_total() == 5, "pairs %d", mod_mat_overlap_total());
+    OUTCOME("%s", api >= 13 ? "wide over each exclusion: full (the exclusions never draw)"
+                            : "each exclusion over the wide material: partial (one class each)");
+}
+
+/** @brief Census pattern: Japanese Extras (a later channel-wide refine accepting its own eggs) over a Portals class-keyed refine. */
+static void case_ovl_je_portals(void) {
+    begin("Overlap: Japanese Extras over Portals");
+    stub_mod_t* p = mod("spyro-portals", 0, 12);
+    stub_mod_t* j = mod("spyro-japanese-extras", 1, 11);
+    const int mp = reg(p, sel_moby(5), SCENE, rf_accept);
+    const int mj = reg(j, sel_moby(-1), SCENE, rf_class7);
+    CHECK(ovl(mj, mp) == PART, "before a call");
+    openpete_mods_material_frame_reset(1);
+    const int s7 = openpete_mods_material_moby_slot(NULL, 7, 0x80010000u);
+    CHECK(s7 == 1 && ovl(mj, mp) == FULL, "accepted every call so far: full");
+    const int s5 = openpete_mods_material_moby_slot(NULL, 5, 0x80010100u);
+    CHECK(s5 != 1 && ovl(mj, mp) == PART, "after its first decline: partial");
+    OUTCOME("JE over Portals: partial; full only while JE has accepted every call it was asked; partial from its first decline");
+}
+
+/** @brief Census pattern: an accept-all refine (moby-instance-tint) over earlier moby materials is reported full, a declarative on another channel too partial. */
+static void case_ovl_accept_all(void) {
+    begin("Overlap: accept-all refine");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* t = mod("moby-instance-tint", 1, 5);
+    const int ma = reg(a, sel_moby(5), SCENE, NULL);
+    const int mw = reg(a, openpete_mod_material_sel_any(), SCENE, NULL);
+    const int mt = reg(t, sel_moby(-1), SCENE, rf_accept);
+    CHECK(ovl(mt, ma) == PART, "not yet asked");
+    openpete_mods_material_frame_reset(1);
+    (void)openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(ovl(mt, ma) == FULL, "accept-all: full");
+    const mod_mat_overlap_t* p = NULL;
+    for (int i = 0; i < mod_mat_overlap_total(); i++)
+        if (mod_mat_overlap_at(i)->hi == mt && mod_mat_overlap_at(i)->lo == ma) p = mod_mat_overlap_at(i);
+    CHECK(p && p->accept_all && p->chans == (1u << OP_CHAN_MOBY), "listed with the accept-all note");
+    CHECK(ovl(mt, mw) == PART, "channel -1 declinative keeps its other channels");
+    CHECK(!mod_mat_overlap_due(), "a further accepted call moves nothing");
+    (void)openpete_mods_material_moby_slot(NULL, 6, 0x80010200u);
+    CHECK(!mod_mat_overlap_due(), "second call");
+    OUTCOME("tint over the class-5 declarative: partial until asked, then full (accept-all); over a channel -1 declarative partial");
+}
+
+/** @brief The inputs: an unchanged retune or enable moves nothing; a changed retune, an enable change, a level change and an owner toggle do. */
+static void case_ovl_inputs(void) {
+    begin("Overlap: recompute inputs");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    const int ma = reg(a, sel_moby(5), SCENE, NULL);
+    const int mb = reg(b, sel_moby(5), SCENE, NULL);
+    CHECK(ovl(mb, ma) == FULL, "full");
+    openpete_mod_material_selector_t s5 = sel_moby(5), s6 = sel_moby(6);
+    CHECK(mod_mat_set_selector("fx-b", mb, &s5) == 0 && !mod_mat_overlap_due(), "same retune");
+    CHECK(mod_mat_enable(mb, 1) == 0 && !mod_mat_overlap_due(), "same enable");
+    CHECK(mod_mat_set_selector("fx-b", mb, &s6) == 0 && mod_mat_overlap_due(), "retune");
+    CHECK(ovl(mb, ma) == NONE, "retuned away");
+    CHECK(mod_mat_set_selector("fx-b", mb, &s5) == 0 && ovl(mb, ma) == FULL, "retuned back");
+    CHECK(mod_mat_enable(mb, 0) == 0 && ovl(mb, ma) == NONE, "disabled");
+    CHECK(mod_mat_enable(mb, 1) == 0 && ovl(mb, ma) == FULL, "enabled");
+    openpete_mods_set_level(2);
+    CHECK(mod_mat_overlap_due(), "level change");
+    ovl_refresh();
+    openpete_mods_in_present = 1;
+    CHECK(mod_mat_set_selector("fx-b", mb, &s6) == 0 && !mod_mat_overlap_due(), "parked retune waits");
+    openpete_mods_in_present = 0;
+    mod_mat_apply_pending();
+    CHECK(ovl(mb, ma) == NONE, "applied");
+    OUTCOME("same retune or enable: no recompute; retune, enable change, level change, applied parked retune: recompute");
+}
+
 int main(void) {
     case_f1();
     case_f1a_level();
@@ -885,6 +1069,15 @@ int main(void) {
     case_moby_predicate();
     case_tick_memo();
     case_slot_table_full();
+    case_ovl_fixture_decl();
+    case_ovl_fixture_wild();
+    case_ovl_fixture_levelkey();
+    case_ovl_fixture_terrain();
+    case_ovl_exclude(12);
+    case_ovl_exclude(13);
+    case_ovl_je_portals();
+    case_ovl_accept_all();
+    case_ovl_inputs();
     CHECK(s_split == 1, "tag split armed while materials are live");
     printf("%s: %d checks\n", s_fail ? "FAIL" : "PASS", s_checks);
     return s_fail;

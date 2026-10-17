@@ -92,6 +92,10 @@ typedef struct {
      * present or half the frame shades under the old key. */
     openpete_mod_material_selector_t sel_pending;
     int           sel_dirty;
+    /* Moby extraction refine calls and declines since registration or the
+     * last selector change; the overlap diagnostic reports a refine called
+     * at least once that never declined as accept-all. */
+    unsigned      obs_calls, obs_declines;
     int  live;
     unsigned generation;   /* slot_generation_next at register and at each retirement */
 } mod_material_t;
@@ -332,5 +336,79 @@ enum {
     MOD_MAT_CENSUS_STALE_MEMO,       /* bucket pass found no outcome of the present it composes */
     MOD_MAT_CENSUS_N
 };
+
+/* Overlap diagnostic: per pair of materials whose selectors share a key,
+ * how much of the lower material's key set the higher one takes. */
+
+/** @brief Shadow verdict of one ordered material pair. */
+enum {
+    MOD_MAT_SHADOW_NONE = 0,     /* no key both materials match */
+    MOD_MAT_SHADOW_PARTIAL,      /* the higher takes some keys, or may decline on them */
+    MOD_MAT_SHADOW_FULL          /* the higher takes every key the lower matches */
+};
+
+/** @brief One overlapping pair: the higher-ranked material, the lower one, the verdict. */
+typedef struct {
+    int      hi, lo;      /* material indices; hi outranks lo (mod_mat_outranks) */
+    int      verdict;     /* MOD_MAT_SHADOW_* */
+    unsigned chans;       /* bit OP_CHAN_* set per channel the two share a key on */
+    int      accept_all;  /* the verdict rests on hi being an accept-all moby refine */
+} mod_mat_overlap_t;
+
+/* Pairs the published list holds; pairs past it are counted, not listed. */
+#define MOD_MAT_OVERLAP_MAX 1024
+
+/** @brief Record a change the overlap verdicts depend on: a register, enable change, selector change or owner removal. */
+void mod_mat_overlap_bump(void);
+
+/** @brief Return whether the inputs of the overlap verdicts moved since the last snapshot.
+ *
+ * The inputs: the change counter mod_mat_overlap_bump advances, the mod
+ * toggle epoch, the pushed level, and the first call and first decline of
+ * each moby refine. Takes no lock.
+ * @return Nonzero when a snapshot is due. */
+int mod_mat_overlap_due(void);
+
+/** @brief Record each material's key set and rank inputs for mod_mat_overlap_compute; the caller holds the registry write lock.
+ *
+ * The key set of a material is read through the resolver's own predicates
+ * at the pushed level: the moby class and the channel identity of each
+ * declarative channel, and every (texid, env, tier) terrain key. */
+void mod_mat_overlap_snapshot(void);
+
+/** @brief Compute the overlap pairs from the last snapshot, without a lock.
+ *
+ * Sim thread only, between mod_mat_overlap_snapshot and
+ * mod_mat_overlap_publish. */
+void mod_mat_overlap_compute(void);
+
+/** @brief Install the computed pairs as the published list and log each pair whose verdict changed; the caller holds the registry write lock.
+ *
+ * A pair that left the list logs verdict none. */
+void mod_mat_overlap_publish(void);
+
+/** @brief Return the shadow verdict of one ordered pair from the published list.
+ *
+ * @param hi Material index of the higher-ranked material.
+ * @param lo Material index of the lower-ranked one.
+ * @return MOD_MAT_SHADOW_*; NONE when the pair is not listed. */
+int mod_mat_overlap_verdict(int hi, int lo);
+
+/** @brief Return the number of overlapping pairs found, listed or not.
+ *
+ * @return The count; at most MOD_MAT_OVERLAP_MAX of them are listed. */
+int mod_mat_overlap_total(void);
+
+/** @brief Return one listed pair of the published list.
+ *
+ * @param i Index below min(mod_mat_overlap_total(), MOD_MAT_OVERLAP_MAX).
+ * @return The pair, or NULL out of range. */
+const mod_mat_overlap_t* mod_mat_overlap_at(int i);
+
+/** @brief Return the name of a shadow verdict.
+ *
+ * @param verdict MOD_MAT_SHADOW_*.
+ * @return "none", "partial" or "full". */
+const char* mod_mat_shadow_name(int verdict);
 
 #endif

@@ -1738,6 +1738,49 @@ static void draw_refused_mod_rows(const ImGuiTextFilter &filter)
     }
 }
 
+/** @brief Write the channel names of an OP_CHAN_* bit set, comma separated.
+ *
+ * @param chans The bits.
+ * @param buf Receives the text.
+ * @param cap Bytes in @p buf. */
+static void overlap_chan_names(unsigned chans, char *buf, size_t cap)
+{
+    static const char *const k_chan[] = {"", "moby", "terrain", "player", "flame",
+                                         "particle", "sky", "shadow", "tracer", "portal"};
+    size_t at = 0;
+    buf[0] = 0;
+    for (int ch = 1; ch <= 9 && at < cap; ch++)
+        if (chans & (1u << ch))
+            at += (size_t)snprintf(buf + at, cap - at, "%s%s", at ? "," : "", k_chan[ch]);
+}
+
+/** @brief Draw a collapsed tree node listing each pair of enabled materials whose selectors share a key, with its shadow verdict.
+ *
+ * One line per pair: the higher-ranked material, the lower one, full or
+ * partial, the shared channels, and the accept-all note when the full
+ * verdict rests on a moby refine that never declined. Draws nothing while
+ * no pair overlaps. Runs inside the compose, under the registry read lock
+ * the published pair list is read under. */
+static void draw_material_overlaps()
+{
+    const int n = openpete_mods_material_overlap_count();
+    const int total = openpete_mods_material_overlap_total();
+    if (total == 0) return;
+    if (!ImGui::TreeNode("##overlaps", "Material overlaps (%d)", total)) return;
+    for (int i = 0; i < n; i++) {
+        openpete_mods_material_overlap_info_t p;
+        if (openpete_mods_material_overlap_at(i, &p) != 0) continue;
+        char chans[96];
+        overlap_chan_names(p.chans, chans, sizeof chans);
+        ImGui::Text("%s #%d %s over %s #%d %s: %s on %s%s", p.hi_owner ? p.hi_owner : "?", p.hi,
+                    p.hi_refine ? "refine" : "decl", p.lo_owner ? p.lo_owner : "?", p.lo,
+                    p.lo_refine ? "refine" : "decl", p.verdict, chans,
+                    p.accept_all ? " (accept-all refine)" : "");
+    }
+    if (total > n) ImGui::TextDisabled("%d more not listed", total - n);
+    ImGui::TreePop();
+}
+
 /** @brief Draw the Mods header with an Open folder button and one row per loaded mod that passes the filter.
  *
  * Draws nothing when an active filter matches no mod. With no mod loaded and
@@ -1781,6 +1824,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         ImGui::PopID();
     }
     draw_refused_mod_rows(filter);
+    draw_material_overlaps();
     draw_mods_memory_summary(n);
 }
 

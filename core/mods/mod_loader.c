@@ -2342,6 +2342,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
      * have split the frame between two keys, and the class census reads
      * guest RAM. The tick boundary is where they become legal. */
     openpete_mods_material_apply_pending();
+    openpete_mods_material_overlap_tick();
     if (mod_count()) openpete_mods_moby_class_census(cpu);
 
     /* Apply-committed config changes: reload the mod so its entry
