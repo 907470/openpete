@@ -30,6 +30,15 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail=0
 
+# The base-redirect window applies to every binary (recomp.conf SONY_IMAGE_WINDOW,
+# recorded in the manifest so the first-boot build passes it too).
+window=()
+win_line=$(grep -m1 '^sony_image_window = ' "$MAN/manifest.toml" || true)
+if [[ -n "$win_line" ]]; then
+    win=${win_line#sony_image_window = \"}; win=${win%\"}
+    window=(--sony-image-window="$win")
+fi
+
 check() {  # check <label> <regen_file> <singlepass_file>
     if cmp -s "$2" "$3"; then
         echo "  PASS  $1"
@@ -51,6 +60,7 @@ fi
     --external-prefix=psyq_ \
     --extra-funcs="$MAN/main_exe.funcs.txt" \
     "${channel[@]}" \
+    "${window[@]}" \
     --skip-on-error >/dev/null
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' "$TMP/main_exe/PSX.EXE_dispatch.c"
 check "main_exe (full)"     "$OUT/PSX.EXE_full.c"     "$TMP/main_exe/PSX.EXE_full.c"
@@ -70,6 +80,7 @@ while IFS=$'\t' read -r name wad load; do
         --func-prefix="func_${name}_" \
         --extra-funcs="$MAN/$name.funcs.txt" \
         --leaf-summary="$TMP/main_exe/PSX.EXE_leaves.tsv" \
+        "${window[@]}" \
         --skip-on-error >/dev/null
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
         "$TMP/$name/$name.bin_dispatch.c"

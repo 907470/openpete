@@ -69,8 +69,10 @@ fi
 # path, which returns v0=v1=0 and yields inside the guest function.
 RA_SPILL_LOG="$(mktemp)"
 trap 'rm -f "$RA_SPILL_LOG"' EXIT
+# SONY_IMAGE_WINDOW from recomp.conf applies to every binary of the game.
 run_psxrecomp() {
-    "$PSXRECOMP" "$@" | tee -a "$RA_SPILL_LOG"
+    "$PSXRECOMP" "$@" ${SONY_IMAGE_WINDOW:+--sony-image-window="$SONY_IMAGE_WINDOW"} \
+        | tee -a "$RA_SPILL_LOG"
     return "${PIPESTATUS[0]}"
 }
 

@@ -65,7 +65,7 @@ typedef struct openpete_game_runtime {
     const game_disc_layout_t*       disc_layout;     /* NULL: no WAD overlay */
     uint32_t pad_read_pc;          /* game_get_pad_read_pc */
     uint32_t load_delay_default;   /* game_get_load_delay_default */
-    uint32_t sony_image_base;      /* psx_runtime_g_sony_image_base */
+    uint32_t sony_image_base;      /* psx_runtime_g_sony_image_base; 0 = no window */
     uint32_t feed_key;             /* openpete_feed_key_t; 0 = openpete_frame */
     uint32_t loop_anchor_pc;       /* the main loop's first call, entered once per game tick; 0 = none */
     uint32_t consume_pc;           /* the pad-ring consumer, entered once per game tick; keys bk2 rows (openpete_consume); 0 = none */

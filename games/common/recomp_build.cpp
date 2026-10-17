@@ -8,8 +8,9 @@
 //
 // Every per-game fact comes from the staged manifest (each overlay's name,
 // id, load address and reference hash; whether the main EXE takes channel
-// sites) or from the running game's build record (game_build.h): the module
-// name, and the overlay window of the game's recomp.conf OVERLAY_RANGE.
+// sites; the base-redirect window every binary takes) or from the running
+// game's build record (game_build.h): the module name, and the overlay
+// window of the game's recomp.conf OVERLAY_RANGE.
 //
 // Inputs staged next to the exe by the shared-linkage build
 // (CMake): recomp/manifest/<game id>/ (converged funcs lists +
@@ -234,8 +235,35 @@ bool rename_token(const fs::path& p, const std::string& from, const std::string&
     return op_atomic_write_file(p.string().c_str(), out_s.data(), out_s.size()) == 0;
 }
 
+/* The facts a converged manifest.toml states ahead of its [[overlay]] tables. */
+struct ManifestHeader {
+    std::string main_exe_sha;  /* the main EXE's reference sha256 */
+    bool channel_sites = false;  /* the main EXE takes --channel-sites */
+    std::string window_opt;  /* ` --sony-image-window=<lo>:<hi>`, passed to every binary; empty: none */
+};
+
+/** @brief Record one line of the manifest's header (the lines before its first [[overlay]]).
+ *
+ * @param line the manifest line
+ * @param h receives the fact the line states; a line stating none leaves it unchanged */
+void parse_header_line(const std::string& line, ManifestHeader& h) {
+    if (line.rfind("sha256 = \"", 0) == 0)
+        h.main_exe_sha = line.substr(10, line.size() - 11);
+    else if (line == "channel_sites = true")
+        h.channel_sites = true;
+    else if (line.rfind("sony_image_window = \"", 0) == 0)
+        h.window_opt = " --sony-image-window=" + line.substr(21, line.size() - 22);
+}
+
+/** @brief Read a converged manifest.toml: its header facts and its overlays.
+ *
+ * @param toml the manifest path
+ * @param out receives one Overlay per [[overlay]] table, in file order
+ * @param header receives the facts the header lines state
+ * @return false when the file is unreadable, has no overlay, or an overlay
+ *         lacks a load_addr */
 bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out,
-                    std::string* main_exe_sha, bool* channel_sites) {
+                    ManifestHeader& header) {
     std::ifstream f(toml);
     if (!f) return false;
     std::string line;
@@ -248,9 +276,7 @@ bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out,
     while (std::getline(f, line)) {
         if (line == "[[overlay]]") { flush(); in_overlay = true; continue; }
         if (!in_overlay) {
-            if (main_exe_sha && line.rfind("sha256 = \"", 0) == 0)
-                *main_exe_sha = line.substr(10, line.size() - 11);
-            if (line == "channel_sites = true") *channel_sites = true;
+            parse_header_line(line, header);
             continue;
         }
         if (line.rfind("name = \"", 0) == 0)
@@ -523,9 +549,8 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
     }
 
     std::vector<Overlay> ovls;
-    std::string main_exe_sha;
-    bool channel_sites = false;
-    if (!parse_manifest(man / "manifest.toml", ovls, &main_exe_sha, &channel_sites)) {
+    ManifestHeader hdr;
+    if (!parse_manifest(man / "manifest.toml", ovls, hdr)) {
         std::fprintf(stderr, "openpete: cannot parse %s %s\n",
                      (man / "manifest.toml").string().c_str(), openpete_error_ref(OP_E_PACKAGE));
         return -1;
@@ -563,8 +588,8 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
      * discovery pass runs for a modified binary). */
     {
         int modified = 0;
-        if (!main_exe_sha.empty() &&
-            sha256_file_hex(inputs / "PSX.EXE") != main_exe_sha) {
+        if (!hdr.main_exe_sha.empty() &&
+            sha256_file_hex(inputs / "PSX.EXE") != hdr.main_exe_sha) {
             std::fprintf(stderr, "[first-boot] NOTE: PSX.EXE differs from "
                                  "the retail binary\n");
             modified++;
@@ -606,9 +631,9 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
           << " --external-symbols=" << q << (man / "psyq.toml").string() << q
           << " --external-prefix=psyq_"
           << " --extra-funcs=" << q << (man / "main_exe.funcs.txt").string() << q;
-        if (channel_sites)
+        if (hdr.channel_sites)
             c << " --channel-sites=" << q << (man / "channel_sites.txt").string() << q;
-        c << " --skip-on-error" << QUIET_REDIR;
+        c << hdr.window_opt << " --skip-on-error" << QUIET_REDIR;
         if (!run(c.str())) return -1;
         if (!rename_token(gen / "PSX.EXE_dispatch.c",
                           "psx_dispatch_compiled", "psx_dispatch_main_exe"))
@@ -630,7 +655,7 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
            * an overlay loop polling through one is a delivery site, as in
            * scripts/regen-recomp.sh. */
           << " --leaf-summary=" << q << (gen / "PSX.EXE_leaves.tsv").string() << q
-          << " --skip-on-error" << QUIET_REDIR;
+          << hdr.window_opt << " --skip-on-error" << QUIET_REDIR;
         if (!run(c.str())) return -1;
         if (!rename_token(gen / (o.name + ".bin_dispatch.c"),
                           "psx_dispatch_compiled", "psx_dispatch_" + o.name))

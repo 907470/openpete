@@ -1191,29 +1191,23 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * `psx_runtime_clip_x_threshold`. */
                     uint32_t rt = get_rt(instr);
                     uint16_t imm = get_imm16_u(instr);
-                    /* g_SonyImage base redirect. Detect a `lui $X, 0x8007`
+                    /* Base redirect for a per-game address window (off
+                     * unless --sony-image-window is given). A `lui $X, hi`
                      * paired with the canonical `addiu $X, $X, lo` at
-                     * addr+4 whose composed value falls in the splash /
-                     * scratch pool span [0x8006FCF4, 0x80072894). For
-                     * those pairs, emit code that places `(new_base +
-                     * offset) - sext(lo)` into $X so the canonical addiu
-                     * (translated normally) reconstitutes
-                     * `psx_runtime_g_sony_image_base + offset`.
+                     * addr+4 whose composed value falls in [win_lo,
+                     * win_hi) is emitted so the lui places
+                     * `(psx_runtime_g_sony_image_base + offset) - sext(lo)`
+                     * into $X; the addiu, translated normally, then
+                     * reconstitutes `psx_runtime_g_sony_image_base +
+                     * offset`. Identity while the knob holds win_lo.
                      *
-                     * Identity when `psx_runtime_g_sony_image_base ==
-                     * 0x8006FCF4u` (default), so leaving the knob alone
-                     * means byte-identical recompiled behaviour. The
-                     * substitution composes by always lifting by a fixed
-                     * delta (`base - 0x8006FCF4`) on the lui half — the
-                     * unchanged addiu adds back its imm, recovering the
-                     * pool-relative offset.
-                     *
-                     * Pool span ends at 0x80072E94 = 0x8006FCF4 + 0x31A0
-                     * (sizeof g_SonyImage); no other globals live in the
-                     * 0x8007XXXX low band before this point (next
-                     * labelled BSS sym is g_MobyShadows at 0x80075EF8),
-                     * so value-keying by composed address is unambiguous. */
-                    if (imm == 0x8007u) {
+                     * Spyro 1 passes its g_SonyImage pool, [0x8006FCF4,
+                     * 0x80072E94) (0x31A0 = sizeof g_SonyImage), so the
+                     * scratch pool can be relocated by one variable. No
+                     * other labelled global lies in that span (the next
+                     * is g_MobyShadows at 0x80075EF8), so keying on the
+                     * composed address is unambiguous there. */
+                    if (sony_image_lo_ < sony_image_hi_) {
                         auto next_opt = exe_.read_word(addr + 4);
                         if (next_opt.has_value()) {
                             uint32_t next = *next_opt;
@@ -1225,11 +1219,11 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                                 next_rs == rt && next_rt == rt && rt != 0)
                             {
                                 uint32_t composed =
-                                    (uint32_t)((int64_t)0x80070000 + next_imm);
-                                if (composed >= 0x8006FCF4u &&
-                                    composed <  0x80072E94u)
+                                    ((uint32_t)imm << 16) + (uint32_t)next_imm;
+                                if (composed >= sony_image_lo_ &&
+                                    composed <  sony_image_hi_)
                                 {
-                                    uint32_t pool_off = composed - 0x8006FCF4u;
+                                    uint32_t pool_off = composed - sony_image_lo_;
                                     /* The unchanged addiu at addr+4
                                      * adds sext(next_imm); compute the
                                      * lui half such that lui_value +
@@ -1238,8 +1232,9 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                                      * pool_off. */
                                     code = fmt::format(
                                         "{} = (uint32_t)(psx_runtime_g_sony_image_base + 0x{:X}u) - (uint32_t){};"
-                                        "  /* g_SonyImage redirect: lui half of (D_8006FCF4 + 0x{:X}) */",
-                                        reg_name(rt), pool_off, next_imm, pool_off);
+                                        "  /* g_SonyImage redirect: lui half of (D_{:08X} + 0x{:X}) */",
+                                        reg_name(rt), pool_off, next_imm,
+                                        sony_image_lo_, pool_off);
                                     break;
                                 }
                             }

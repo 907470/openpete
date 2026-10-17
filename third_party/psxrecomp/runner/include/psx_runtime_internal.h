@@ -148,9 +148,9 @@ void diag_track_gp1(uint32_t cmd);
  * @brief Base of the g_SonyImage / D_8006FCF4 scratch pool.
  *
  * Default 0x8006FCF4, the canonical address. A consumer that relocates
- * the pool sets the new base; the recompiler's lui+addiu substitution for
- * every pair landing in [0x8006FCF4, 0x80072894) resolves to base +
- * offset.
+ * the pool sets the new base; under --sony-image-window=<lo>:<hi> the
+ * recompiler's lui+addiu substitution for every pair landing in [lo, hi)
+ * resolves to base + offset.
  */
 OPENPETE_ABI_DATA extern uint32_t psx_runtime_g_sony_image_base;
 

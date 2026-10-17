@@ -350,20 +350,12 @@ static const openpete_launcher_known_disc k_known_discs[] = {
 
 /* Unset: the pad-read site is not localised for this game yet, so the
  * pacing census reports the pad-read phase as unmeasured rather than as
- * zero reads; no WAD disc layout; no cheats, so --cheats is refused.
+ * zero reads; no WAD disc layout; no cheats, so --cheats is refused; no
+ * sony_image_base, since recomp.conf names no g_SonyImage window and the
+ * recompiled code never reads the base.
  *
  * load_delay_default: the measured floor for the checksum walk (the
  * level-load delay note in the file header).
- *
- * sony_image_base: the recompiler carries a compiled-in substitution for a
- * `lui 0x8007` + `addiu` pair composing into [0x8006FCF4, 0x80072E94),
- * rewriting it to `psx_runtime_g_sony_image_base + offset`. That window is
- * Spyro 1's g_SonyImage scratch pool, but the substitution is not
- * data-driven, so it fires on any game whose code composes an address in
- * that span. Holding the base at the canonical value makes the emitted
- * expression reduce to the original address, so the rewrite is identity
- * here. Making the window per-game belongs to the recompiler, not to this
- * file.
  *
  * feed_key: every frame trigger a run is given (--frame-limit, the
  * screenshot and state pins) counts VBLs (openpete_vbl): the game waits with
@@ -384,7 +376,6 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .icon                 = &spyro3_game_icon,
     .layout               = &spyro3_game_layout,
     .load_delay_default   = 66u,
-    .sony_image_base      = 0x8006FCF4u,
     .loop_anchor_pc       = 0x80055400u,
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),

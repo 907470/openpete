@@ -111,8 +111,9 @@ OPENPETE_ABI_DATA extern uint32_t openpete_gte_caller_pc;
  * Core defines it once; openpete_game_runtime_register sets it to the
  * registered descriptor's sony_image_base, the pool's address in that
  * game's executable, before any recompiled code runs. The recompiler
- * replaces every `lui`/`addiu` address pair that lands inside the pool with
- * this base plus the pair's offset into it.
+ * replaces every `lui`/`addiu` address pair that lands inside the window
+ * the game's recomp.conf SONY_IMAGE_WINDOW names with this base plus the
+ * pair's offset into it; a game with no window never reads it.
  */
 OPENPETE_ABI_DATA extern uint32_t psx_runtime_g_sony_image_base;
 

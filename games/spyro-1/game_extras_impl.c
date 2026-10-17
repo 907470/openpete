@@ -760,9 +760,10 @@ static const openpete_launcher_known_disc k_known_discs[] = {
  * demo load's LoadLevel spin or CDLoadSync; goldens and bk2s carry 0.
  *
  * sony_image_base: the g_SonyImage / D_8006FCF4 scratch pool. The
- * recompiler rewrites a `lui 0x8007` + `addiu` pair composing an address in
- * [0x8006FCF4, 0x80072E94) to `psx_runtime_g_sony_image_base + offset`; at
- * the canonical value the expression equals the original address. The
+ * recompiler rewrites a `lui` + `addiu` pair composing an address in the
+ * recomp.conf SONY_IMAGE_WINDOW, [0x8006FCF4, 0x80072E94), to
+ * `psx_runtime_g_sony_image_base + offset`; at the canonical value the
+ * expression equals the original address. The
  * terrain renderer reads it (games/common/renderer/terrain.c).
  *
  * No sub-area targets: every --skip-to-area value is refused. The level

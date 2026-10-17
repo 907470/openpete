@@ -96,6 +96,27 @@ static bool parse_toml_manifest(const std::string& path, ExternalManifest& out, 
     return true;
 }
 
+/** @brief Parses `<lo>:<hi>` (each strtoul base 0) into a KSEG0 window with lo < hi.
+ *
+ * @param s the option value
+ * @param lo receives the first address
+ * @param hi receives one past the last address
+ * @return false on a malformed value or an empty or non-KSEG0 window */
+static bool parse_address_window(const std::string& s, uint32_t& lo, uint32_t& hi) {
+    const size_t colon = s.find(':');
+    if (colon == std::string::npos) return false;
+    const std::string a = s.substr(0, colon), b = s.substr(colon + 1);
+    char* end_a = nullptr;
+    char* end_b = nullptr;
+    const unsigned long va = std::strtoul(a.c_str(), &end_a, 0);
+    const unsigned long vb = std::strtoul(b.c_str(), &end_b, 0);
+    if (a.empty() || b.empty() || *end_a || *end_b) return false;
+    if (va < 0x80000000ul || vb > 0xA0000000ul || va >= vb) return false;
+    lo = (uint32_t)va;
+    hi = (uint32_t)vb;
+    return true;
+}
+
 // Parse the flat channel-sites table generated from render_channels.toml by
 // tools/gen_channel_sites.py. One site per non-comment line:
 //   <kind> <addr-hex> <imm-hex> <symbol>
@@ -255,6 +276,8 @@ int main(int argc, char** argv) {
         fmt::print("  --forced-entry=<hex-addr>     Add a forced function entry point (repeatable)\n");
         fmt::print("  --emit-external-jals=<file>   Write KSEG0 JAL targets that fall outside this binary's range\n");
         fmt::print("  --channel-sites=<file>        Render-channel substitution table (from render_channels.toml)\n");
+        fmt::print("  --sony-image-window=<lo>:<hi> Redirect lui+addiu pairs composing into [lo, hi) through\n");
+        fmt::print("                                psx_runtime_g_sony_image_base (default: none)\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
         fmt::print("  --leaf-summary=<file>         Another unit's <stem>_leaves.tsv: its pure leaves count\n");
         fmt::print("                                as leaves of this unit's loop classification (repeatable)\n");
@@ -282,6 +305,7 @@ int main(int argc, char** argv) {
     std::vector<uint32_t> forced_entries;
     std::string emit_external_jals_path;
     std::string channel_sites_path;
+    std::string sony_image_window;
     bool emit_pc_tracking = false;
     std::vector<std::string> leaf_summary_paths;
 
@@ -312,6 +336,7 @@ int main(int argc, char** argv) {
         else if (a == "--emit-external-jals" && i + 1 < argc)         emit_external_jals_path = argv[++i];
         else if (!(v = take_value(a, "--channel-sites")).empty())     channel_sites_path = v;
         else if (a == "--channel-sites" && i + 1 < argc)              channel_sites_path = argv[++i];
+        else if (!(v = take_value(a, "--sony-image-window")).empty()) sony_image_window = v;
         else if (a == "--skip-on-error")                              skip_on_error = true;
         else if (a == "--emit-pc-tracking")                           emit_pc_tracking = true;
         else if (!(v = take_value(a, "--leaf-summary")).empty())     leaf_summary_paths.push_back(v);
@@ -707,6 +732,17 @@ int main(int argc, char** argv) {
     PSXRecomp::CodeGenerator codegen(*exe, codegen_config);
     codegen.set_annotations(&annotations);
     codegen.set_skip_on_error(skip_on_error);
+
+    if (!sony_image_window.empty()) {
+        uint32_t lo = 0, hi = 0;
+        if (!parse_address_window(sony_image_window, lo, hi)) {
+            fmt::print(stderr, "error: --sony-image-window={}: expected "
+                       "<lo>:<hi> with KSEG0 lo < hi\n", sony_image_window);
+            return 1;
+        }
+        fmt::print("g_SonyImage window: [0x{:08X}, 0x{:08X})\n", lo, hi);
+        codegen.set_sony_image_window(lo, hi);
+    }
 
     // Load the render-channel substitution table (generated from
     // games/spyro-1/manifest/render_channels.toml). Optional — without it the data-driven

@@ -159,6 +159,19 @@ public:
         channel_sites_ = std::move(sites);
     }
 
+    /** @brief Enables the base redirect for lui+addiu pairs composing into [lo, hi).
+     *
+     * Each such pair is emitted so that it composes
+     * `psx_runtime_g_sony_image_base + (addr - lo)`, which is the original
+     * address while the runtime knob holds `lo`. Unset (the default), no
+     * pair is redirected.
+     * @param lo first address of the window, the canonical base
+     * @param hi one past the last address of the window */
+    void set_sony_image_window(uint32_t lo, uint32_t hi) {
+        sony_image_lo_ = lo;
+        sony_image_hi_ = hi;
+    }
+
     // Inspectors used by main_psx.cpp when emitting the dispatch table.
     // An address is "external" only if it has an entry in the symbol map.
     // Addresses inside the PSYQ range but without an exported name are
@@ -195,6 +208,8 @@ private:
     uint32_t external_range_end_   = 0;
     std::map<uint32_t, std::string> manual_impls_;
     std::map<uint32_t, ChannelSite> channel_sites_;  // from render_channels.toml
+    uint32_t sony_image_lo_ = 0;  // see set_sony_image_window(); lo == hi: off
+    uint32_t sony_image_hi_ = 0;
     bool skip_on_error_ = false;
     std::vector<FunctionFacts> facts_;   // see emitted_facts()
 
