@@ -4535,6 +4535,9 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
      * no window at all. */
     if (opts->headless) return;
 
+    /* SDL_WINDOW_VULKAN loads the Vulkan loader, which scans implicit layers. */
+    rhi_loader_env_prepare(openpete_config_env);
+
     int w, h;
     nr_resolve_window_size(opts, win_w, win_h, &w, &h);
 
@@ -6150,6 +6153,10 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
                                   int open, const char *title)
 {
     if (s_launch.dev) return 0;
+    /* Before SDL_WINDOW_VULKAN loads the Vulkan loader. Called before the
+     * game is identified, the [env] value of the game-neutral tiers is still
+     * in the pending table, which openpete_config_env reads. */
+    rhi_loader_env_prepare(openpete_config_env);
     int w, h;
     nr_resolve_window_size(opts, win_w, win_h, &w, &h);
     /* The window belongs to the calling thread, the one that pumps its

@@ -171,6 +171,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    rhi_loader_env_prepare(NULL);   /* before SDL_WINDOW_VULKAN loads the loader */
     SDL_Window *win = SDL_CreateWindow("openpete rhi smoketest", 1280, 720,
                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!win) {

@@ -126,6 +126,18 @@ void rhi_set_knob_source(const char *(*fn)(const char *name))
     s_knob_source = fn;
 }
 
+void rhi_loader_env_prepare(const char *(*user_value)(const char *name))
+{
+#ifdef _WIN32
+    static const char kVar[] = "DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1";
+    if (getenv(kVar)) return;   /* the process environment wins, 0 included */
+    const char *v = user_value ? user_value(kVar) : NULL;
+    _putenv_s(kVar, (v && *v) ? v : "1");
+#else
+    (void)user_value;
+#endif
+}
+
 /** @brief Read a device-creation knob through the installed source, else the environment.
  *
  * @param name The env var.
@@ -1116,13 +1128,8 @@ static bool want_validation_layer(void)
 /** @brief Create the Vulkan 1.2 instance with the surface extensions SDL requires, plus validation when requested.
  *
  * Windowed runs enable the extensions SDL_Vulkan_GetInstanceExtensions
- * reports; headless runs enable none. On Windows the process environment
- * gains DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1 unless the variable is
- * already set, before the loader scans implicit layers: on laptops pairing
- * an AMD iGPU with an NVIDIA dGPU, an outdated VK_LAYER_AMD_switchable_graphics
- * makes vkEnumeratePhysicalDevices report no device, and the layer's only
- * function, choosing between the GPUs, is done by pick_physical_and_device.
- * When want_validation_layer() returns
+ * reports; headless runs enable none. rhi_loader_env_prepare runs first,
+ * before the loader scans implicit layers. When want_validation_layer() returns
  * true, the instance also enables VK_LAYER_KHRONOS_validation and
  * VK_EXT_debug_utils, and a messenger routing warnings and errors to
  * debug_cb is created on dev->debug.
@@ -1134,13 +1141,10 @@ static bool want_validation_layer(void)
  *         vkCreateInstance fails. */
 static bool create_instance(rhi_device *dev, const char *app_name)
 {
-#ifdef _WIN32
     /* The loader reads a layer's disable variable when it scans implicit
      * layers, which want_validation_layer's layer query and vkCreateInstance
-     * both do; a variable the user set, including to 0, is kept. */
-    if (!getenv("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1"))
-        _putenv_s("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1");
-#endif
+     * both do. A windowed caller already ran it before creating the window. */
+    rhi_loader_env_prepare(NULL);
 
     /* Windowed: SDL supplies the platform surface extensions. Headless: none -
      * a surfaceless instance needs no surface extension at all. */

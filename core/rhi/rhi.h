@@ -83,6 +83,22 @@ void rhi_set_present_mode_name(rhi_device *dev, const char *mode);
  * @param fn Returns a knob's value or NULL when unset; NULL restores getenv. */
 void rhi_set_knob_source(const char *(*fn)(const char *name));
 
+/** @brief On Windows, write the Vulkan loader's environment before anything loads the loader; elsewhere do nothing.
+ *
+ * Sets DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1: on laptops pairing an AMD
+ * iGPU with an NVIDIA dGPU, an outdated VK_LAYER_AMD_switchable_graphics
+ * implicit layer makes vkEnumeratePhysicalDevices report no device, and the
+ * layer's only function, choosing between the GPUs, is done by the device
+ * pick. The loader reads the variable at every implicit-layer scan, the first
+ * of which SDL performs while creating an SDL_WINDOW_VULKAN window
+ * (SDL_Vulkan_LoadLibrary queries the instance extensions), so every such
+ * window creation and the instance creation call this first. A variable the
+ * process environment already carries is kept, so the call is idempotent;
+ * otherwise the value @p user_value returns is written, else "1".
+ * @param user_value Returns the value the user configured for a variable, or
+ *                   NULL when none; NULL reads only the process environment. */
+void rhi_loader_env_prepare(const char *(*user_value)(const char *name));
+
 /** @brief Return the device's vsync preference as rhi_create or rhi_set_vsync last received it.
  *
  * The preference is returned unresolved: -1 means the environment decides
