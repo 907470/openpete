@@ -82,8 +82,9 @@ layout(push_constant) uniform TerrainPC {
     vec4 fc;             /* gl_FragCoord -> PSX screen: x = fc.x * fx + fc.y, y = fc.z * fy + fc.w */
 } ter_pc;
 
-/* Nonzero on a face the vertex stage accepted as a portal's inner rim under
- * a plane that discards its rim per fragment (rim_classified). */
+/* 1 + the plane index on a face the vertex stage accepted as a portal's
+ * inner rim under a plane that discards its rim per fragment
+ * (rim_classified); 0 on every other face. */
 layout(location = 14) flat in uint vRim;
 
 #define OP_COVER_SRC g
@@ -91,15 +92,16 @@ layout(location = 14) flat in uint vRim;
 
 /* The portal plane-cover rule (portal_cover.glsl) for this fragment: in a
  * blended pass with the cover on, discard at or behind plane - M inside an
- * opening; on an inner-rim face, discard inside an opening at any depth
- * (OP_PORTAL_RIM_MARGIN), where the preview paints. */
+ * opening; on an inner-rim face, discard inside the accepting plane's
+ * opening at any depth (OP_PORTAL_RIM_MARGIN), where its preview paints. */
 bool ter_portal_discards()
 {
     if (!((ter_pc.cover != 0 && g.cov_cnt.y != 0) || vRim != 0u)) return false;
     const vec2 p = vec2(ter_pc.fc.x * gl_FragCoord.x + ter_pc.fc.y,
                         ter_pc.fc.z * gl_FragCoord.y + ter_pc.fc.w);
     const float m = vRim != 0u ? OP_PORTAL_RIM_MARGIN : float(g.cov_margin.x);
-    return op_portal_covered(p, op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED), m);
+    return op_portal_covered(p, op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED), m,
+                             int(vRim) - 1);
 }
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
  * 128-world ordering-table slot indices and resolves an equal slot to the

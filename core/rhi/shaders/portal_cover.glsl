@@ -26,17 +26,21 @@
 
 /* The margin of the inner-rim discard: a face the terrain feed accepts as a
  * portal's inner rim lies within the rim classifier's band about the
- * opening plane, so its fragments are discarded inside an outline at any
- * depth. */
+ * opening plane, so its fragments are discarded inside that plane's outline
+ * at any depth. */
 #define OP_PORTAL_RIM_MARGIN 1.0e30
 
 /* Whether a fragment at PSX screen point p with view-Z vz (full-world units)
- * lies inside an opening's outline at or behind its plane minus m. The
+ * lies inside an opening's outline at or behind its plane minus m. only < 0
+ * tests every plane; only >= 0 tests plane `only` alone (an inner-rim face
+ * is discarded only inside the outline of the plane that accepted it). The
  * outline containment is the crossing rule; a plane whose field is not
  * positive at p (the plane behind the camera there) covers nothing. */
-bool op_portal_covered(vec2 p, float vz, float m)
+bool op_portal_covered(vec2 p, float vz, float m, int only)
 {
-    for (int pi = 0; pi < OP_COVER_SRC.cov_cnt.x; pi++) {
+    const int lo = only < 0 ? 0 : only;
+    const int hi = only < 0 ? OP_COVER_SRC.cov_cnt.x : min(only + 1, OP_COVER_SRC.cov_cnt.x);
+    for (int pi = lo; pi < hi; pi++) {
         int pn = int(OP_COVER_SRC.cov_abc[pi].w);
         if (pn < 3) continue;
         vec4 bb = OP_COVER_SRC.cov_bbox[pi];

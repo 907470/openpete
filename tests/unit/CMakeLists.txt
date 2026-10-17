@@ -28,6 +28,14 @@ target_include_directories(fnv1a64_test PRIVATE
 set_target_properties(fnv1a64_test PROPERTIES C_STANDARD 99)
 add_test(NAME fnv1a64_test COMMAND fnv1a64_test)
 
+# portal_cover_slot_test - header-only. The feed-plane to published
+# cover-plane slot map an inner-rim face names its accepting plane by.
+add_executable(portal_cover_slot_test portal_cover_slot_test.c)
+target_include_directories(portal_cover_slot_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(portal_cover_slot_test PROPERTIES C_STANDARD 99)
+add_test(NAME portal_cover_slot_test COMMAND portal_cover_slot_test)
+
 # openpete_time_test - verifies the high-resolution monotonic clock +
 # hybrid sleep+spin waiter.
 # Compiles openpete_time.c directly to stay SDL-free. The Win32 path

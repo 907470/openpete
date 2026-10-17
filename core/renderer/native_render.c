@@ -385,10 +385,11 @@ typedef struct {
     int host_added; /* 1 = geometry the host added beyond the game's own render
                      * (sticky set_host_added value). The scene's content and
                      * world-frame verdicts skip these tris. */
-    int portal_rim; /* 1 = opaque terrain the feed accepted as a portal's inner
-                     * rim (sticky set_portal_rim value): it draws through the
+    int portal_rim; /* 1 + the accepting plane's cover slot on opaque terrain
+                     * the feed accepted as a portal's inner rim, 0 otherwise
+                     * (sticky set_portal_rim value): it draws through the
                      * inner-rim twins (nr_rim_twins), which discard it inside
-                     * the portal openings. */
+                     * that plane's opening outline alone. */
     float kfl[3][2]; /* drain coordinate p per vertex and ...                 */
     uint32_t kc[8];  /* ... the face's drain sub-cell key table (sticky
                       * set_key_cells value; all zero = none): each fragment
@@ -683,7 +684,9 @@ static int s_cur_host_added;
 void openpete_native_scene_set_host_added(int on) { s_cur_host_added = on ? 1 : 0; }
 /* Sticky portal inner-rim mark (see openpete_native_scene_set_portal_rim). */
 static int s_cur_portal_rim;
-void openpete_native_scene_set_portal_rim(int on) { s_cur_portal_rim = on ? 1 : 0; }
+void openpete_native_scene_set_portal_rim(int plane) {
+    s_cur_portal_rim = (plane > 0 && plane <= NR_COVER_PLANES) ? plane : 0;
+}
 static float    s_cur_kfl[3][2];
 static uint32_t s_cur_kc[8];
 static float    s_cur_kn[12];
@@ -10018,24 +10021,34 @@ static int nr_is_key_pipe(const rhi_pipeline* p)
 }
 
 static rhi_ubo* s_cover_ubo;
+/* The cover plane the inner-rim rule binds next (bind_cover_block): 1 + the
+ * plane's slot, as scene_tri_t.portal_rim carries it; 0 tests every plane.
+ * Set by the rim draws around each run of one plane's faces. */
+static int s_rim_plane;
+/* UBO blocks of bind_cover_block: the cover rule, the inner-rim rule over
+ * every plane, and the inner-rim rule over each plane alone. */
+#define NR_COVER_BLOCKS (2 + NR_COVER_PLANES)
 /** @brief Bind the composed scene's portal cover planes at one set of a portal pipeline.
  *
- * The two-block UBO is created on first use. Both blocks are the scene's
- * planes (ps_cover) with this pass's gl_FragCoord -> PSX screen affine;
- * block 1 also sets cnt.z, which selects the inner-rim rule in a stage that
- * picks the rule at run time (a material's portal profile). They are
+ * The UBO is created on first use. Every block holds the scene's planes
+ * (ps_cover) with this pass's gl_FragCoord -> PSX screen affine. Block 0
+ * serves the blended cover rule. Blocks 1 and up set cnt.z, which selects
+ * the inner-rim rule in a stage that picks the rule at run time (a
+ * material's portal profile), and cnt.w = block - 1: block 1 (cnt.w 0) tests
+ * every plane, block 2 + p (cnt.w 1 + p) plane p alone. The blocks are
  * written on the first bind of each RHI frame and again whenever they
  * differ from the last ones written, so a panel pass and a full-extent pass
  * of one present each read their own affine. Returns without binding when
  * the UBO cannot be created.
  * @param set The descriptor set: 5 on the engine's twins, 7 on a material's
  *        portal profile.
- * @param rim Nonzero to bind the inner-rim block. */
+ * @param rim Nonzero to bind the inner-rim block of plane s_rim_plane. */
 static void bind_cover_block(uint32_t set, int rim)
 {
     static uint64_t s_serial = UINT64_MAX;
     static nr_cover_block s_last;
-    if (!s_cover_ubo) s_cover_ubo = rhi_create_ubo(s_nr.dev, (uint32_t)sizeof(nr_cover_block), 2);
+    if (!s_cover_ubo)
+        s_cover_ubo = rhi_create_ubo(s_nr.dev, (uint32_t)sizeof(nr_cover_block), NR_COVER_BLOCKS);
     if (!s_cover_ubo) return;
     nr_cover_block b = *ps_cover();
     scene_fc_affine fa;
@@ -10044,13 +10057,17 @@ static void bind_cover_block(uint32_t set, int rim)
     const uint64_t fs = rhi_frame_serial(s_nr.dev);
     if (fs != s_serial || memcmp(&b, &s_last, sizeof b) != 0) {
         rhi_ubo_write(s_cover_ubo, 0, &b, (uint32_t)sizeof b);
-        nr_cover_block r = b;
-        r.cnt[2] = 1;
-        rhi_ubo_write(s_cover_ubo, 1, &r, (uint32_t)sizeof r);
+        for (uint32_t k = 1; k < NR_COVER_BLOCKS; k++) {
+            nr_cover_block r = b;
+            r.cnt[2] = 1;
+            r.cnt[3] = (int32_t)(k - 1);
+            rhi_ubo_write(s_cover_ubo, k, &r, (uint32_t)sizeof r);
+        }
         s_last = b;
         s_serial = fs;
     }
-    rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, set, rim ? 1u : 0u);
+    const int plane = s_rim_plane > 0 && s_rim_plane <= NR_COVER_PLANES ? s_rim_plane : 0;
+    rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, set, rim ? 1u + (uint32_t)plane : 0u);
 }
 
 /** @brief The stock pipeline of a front-shell twin.
@@ -14255,11 +14272,95 @@ static int ut_opaque_group_skips(int gb, int gc, const scene_tri_t* st) {
     return st->portal_rim || (gc >= 0 && st->category != gc);
 }
 
+/* A run of consecutive inner-rim triangles of one accepting plane in an
+ * untextured rim bucket (UTC_WORLD_RIM, UTC_FILL_RIM): first vertex, vertex
+ * count and the plane as scene_tri_t.portal_rim carries it. utc_scatter
+ * records them in packing order; the rim draws bind each run's plane. */
+typedef struct { int first, count, plane; } rim_run_t;
+static rim_run_t* s_rim_runs[2];
+static int s_rim_run_n[2], s_rim_run_cap[2];
+/* Rim draw calls of the present being composed, for the
+ * OPENPETE_PORTAL_RIM_DBG census (rim_draw_census). */
+static uint32_t s_rim_draws;
+static int s_rim_tex_runs;   /* plane runs of the textured rim bucket, same census */
+
+/** @brief Append one packed triangle to its untextured rim bucket's plane runs.
+ *
+ * Extends the bucket's last run when the triangle continues it (same plane,
+ * the next vertex), else opens a run; a failed allocation folds the
+ * triangle into the last run with plane 0, which tests every plane.
+ * @param k The rim bucket: 0 UTC_WORLD_RIM, 1 UTC_FILL_RIM.
+ * @param vert The triangle's first vertex in scene_vb.
+ * @param plane Its scene_tri_t.portal_rim. */
+static void rim_run_add(int k, int vert, int plane)
+{
+    rim_run_t* last = s_rim_run_n[k] ? &s_rim_runs[k][s_rim_run_n[k] - 1] : NULL;
+    if (last && last->first + last->count == vert && last->plane == plane) {
+        last->count += 3;
+        return;
+    }
+    if (s_rim_run_n[k] == s_rim_run_cap[k]) {
+        const int cap = s_rim_run_cap[k] ? s_rim_run_cap[k] * 2 : 64;
+        rim_run_t* grown = (rim_run_t*)realloc(s_rim_runs[k], (size_t)cap * sizeof *grown);
+        if (!grown) {
+            if (last && last->first + last->count == vert) { last->count += 3; last->plane = 0; }
+            return;
+        }
+        s_rim_runs[k] = grown;
+        s_rim_run_cap[k] = cap;
+    }
+    s_rim_runs[k][s_rim_run_n[k]++] = (rim_run_t){ vert, 3, plane };
+}
+
+/** @brief Draw an untextured rim bucket's plane runs through one inner-rim twin.
+ *
+ * Each run binds the twin with its plane's cover block (bind_scene_pipe ->
+ * bind_cover_block), so its faces are discarded inside that plane's outline
+ * alone; the runs keep their packing order.
+ * @param k The rim bucket: 0 UTC_WORLD_RIM, 1 UTC_FILL_RIM.
+ * @param p The inner-rim twin. */
+static void draw_rim_runs(int k, rhi_pipeline* p)
+{
+    for (int i = 0; i < s_rim_run_n[k]; i++) {
+        const rim_run_t* r = &s_rim_runs[k][i];
+        s_rim_plane = r->plane;
+        bind_scene_pipe(p);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)r->count, (uint32_t)r->first);
+        s_rim_draws++;
+    }
+    s_rim_plane = 0;
+}
+
+static unsigned ps_frame(void);
+/** @brief Print the composed scene's inner-rim draw calls under OPENPETE_PORTAL_RIM_DBG.
+ *
+ * OPENPETE_PORTAL_RIM_DBG=<VBL>: on the first compose whose scene stamp is
+ * at or after VBL, one line with the rim triangles per bucket, the plane runs
+ * of the untextured buckets and the draw calls the rim draws issued.
+ * @param ut_v Vertex count of the untextured WORLD rim bucket.
+ * @param fill_v Vertex count of the untextured WORLD_FILL rim bucket.
+ * @param tx_v Vertex count of the textured rim bucket. */
+static void rim_draw_census(int ut_v, int fill_v, int tx_v)
+{
+    static int armed = -2; static unsigned at = 0;
+    if (armed == -2) { const char* e = getenv("OPENPETE_PORTAL_RIM_DBG");
+                       armed = (e && *e) ? 1 : -1; at = (e && *e) ? (unsigned)atoi(e) : 0; }
+    const unsigned f = ps_frame();
+    if (armed != 1 || f < at || f == 0xFFFFFFFFu) return;
+    armed = -1;
+    fprintf(stderr, "[rim-draws] f=%u tris world=%d fill=%d tex=%d runs world=%d fill=%d "
+            "tex=%d draw calls=%u\n", f, ut_v / 3, fill_v / 3, tx_v / 3,
+            s_rim_run_n[0], s_rim_run_n[1], s_rim_tex_runs, s_rim_draws);
+}
+
 /** @brief Draw the opaque WORLD faces carrying the portal inner-rim mark through the WORLD pipelines' inner-rim twins.
  *
  * The twins' fragment stage (the _rim variants, portal_cover_scene.glsl)
- * discards a fragment inside a published opening outline, where the portal
- * preview paints, and keeps it elsewhere; with hole-fill armed they are the
+ * discards a fragment inside the opening outline of the plane that accepted
+ * its face, where that portal's preview paints, and keeps it elsewhere; the
+ * faces draw in runs of one accepting plane, in bucket order, each run under
+ * its plane's cover block. With hole-fill armed the twins are the
  * stencil-MARK twins, so a kept fragment marks its coverage like the rest of
  * the WORLD group. A pipeline without a twin draws through its stock
  * pipeline. A mod material applies through its portal profile, which keeps
@@ -14267,47 +14368,54 @@ static int ut_opaque_group_skips(int gb, int gc, const scene_tri_t* st) {
  * stock.
  * @param scene Scene triangles.
  * @param tx_start First vertex of the textured block that s_txscene indexes.
- * @param ut_first First vertex of the untextured rim faces.
- * @param ut_count Their vertex count.
+ * @param ut_count Vertex count of the untextured rim faces (their plane runs
+ *        are s_rim_runs[0]).
  * @param tx_first First vertex of the textured rim faces (textured bucket 13).
  * @param tx_count Their vertex count.
  * @param holefill_on Nonzero when the WORLD group draws through the MARK pipes.
  * @param gi The layered group being drawn; only the WORLD group (0) draws them. */
-static void draw_portal_rim(const scene_tri_t* scene, int tx_start, int ut_first, int ut_count,
+static void draw_portal_rim(const scene_tri_t* scene, int tx_start, int ut_count,
                             int tx_first, int tx_count, int holefill_on, int gi) {
     if (gi != 0) return;
     rhi_pipeline* ut = nr_cover_twin_of(holefill_on ? s_nr.gouraud_mark_pipe : s_nr.gouraud_pipe);
-    if (ut && ut_count > 0) {
-        bind_scene_pipe(ut);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_count, (uint32_t)ut_first);
-    }
+    if (ut && ut_count > 0) draw_rim_runs(0, ut);
     rhi_pipeline* tx = nr_cover_twin_of(holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe);
     if (!tx || tx_count <= 0 || !s_nr.vram_tex) return;
     rhi_pipeline* hd = nr_cover_twin_of(holefill_on ? s_nr.hd_cutout_mark_pipe : s_nr.hd_cutout_pipe);
-    bind_scene_pipe(tx);
-    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-    draw_tex_runs(tx_first, tx_count, tx_start, scene, &tx, 1, hd, holefill_on ? 2 : 1, 0);
+    const int base = (tx_first - tx_start) / 3, ntri = tx_count / 3;
+    for (int i = 0; i < ntri;) {
+        const int plane = scene[s_txscene[base + i]].portal_rim;
+        int run = 1;
+        while (i + run < ntri && scene[s_txscene[base + i + run]].portal_rim == plane) run++;
+        s_rim_plane = plane;
+        s_rim_tex_runs++;
+        const uint32_t d0 = rhi_draw_calls(s_nr.dev);
+        bind_scene_pipe(tx);
+        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        draw_tex_runs(tx_first + i * 3, run * 3, tx_start, scene, &tx, 1, hd,
+                      holefill_on ? 2 : 1, 0);
+        s_rim_draws += rhi_draw_calls(s_nr.dev) - d0;
+        i += run;
+    }
+    s_rim_plane = 0;
 }
 
 /** @brief Draw the WORLD_FILL faces carrying the portal inner-rim mark through the hole-fill pipeline's inner-rim twin.
  *
  * Same stencil TEST_ZERO role as the stock fill; the twin discards a
- * fragment inside a published opening outline. Without a twin the stock
- * fill pipeline draws them.
- * @param first First vertex of the faces.
- * @param count Their vertex count.
+ * fragment inside the opening outline of the plane that accepted its face,
+ * drawing the faces in runs of one plane (s_rim_runs[1]). Without a twin the
+ * stock fill pipeline draws them.
+ * @param count Vertex count of the faces.
  * @param holefill_on Nonzero when hole-fill is armed; zero draws nothing, as
  *        for the stock fill.
  * @param gi The layered group being drawn; the fill draws after the ACTOR
  *        group (2). */
-static void draw_portal_rim_fill(int first, int count, int holefill_on, int gi) {
+static void draw_portal_rim_fill(int count, int holefill_on, int gi) {
     rhi_pipeline* p = nr_cover_twin_of(s_nr.gouraud_fill_pipe);
     if (gi != 2 || !holefill_on || !p || count <= 0) return;
-    bind_scene_pipe(p);
-    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-    rhi_draw(s_nr.dev, (uint32_t)count, (uint32_t)first);
+    draw_rim_runs(1, p);
 }
 
 /* Untextured single-category buckets of draw_native_scene, in vertex-buffer
@@ -14380,14 +14488,21 @@ static int utc_reserve(int lo, int hi, const int cnt[UTC_N], int n, int cap,
     return n;
 }
 
-/** @brief Pack the triangles of buckets lo..hi-1 into their reserved ranges in one pass, in submission order. */
+/** @brief Pack the triangles of buckets lo..hi-1 into their reserved ranges in one pass, in submission order.
+ *
+ * The inner-rim buckets in the range also record their plane runs
+ * (rim_run_add), reset first. */
 static void utc_scatter(int lo, int hi, const scene_tri_t *scene, int scene_n, rhi_vertex *buf,
                         int cur[UTC_N], const int end[UTC_N])
 {
+    for (int c = UTC_WORLD_RIM; c <= UTC_FILL_RIM; c++)
+        if (c >= lo && c < hi) s_rim_run_n[c - UTC_WORLD_RIM] = 0;
     for (int t = 0; t < scene_n; t++) {
         const int c = utc_class(&scene[t]);
         if (c < lo || c >= hi || cur[c] >= end[c]) continue;
         pack_scene_tri(&buf[cur[c]], &scene[t]);
+        if (c == UTC_WORLD_RIM || c == UTC_FILL_RIM)
+            rim_run_add(c - UTC_WORLD_RIM, cur[c], scene[t].portal_rim);
         cur[c] += 3;
     }
 }
@@ -15241,6 +15356,7 @@ static bool draw_native_scene(bool full_extent)
      * slot, over other mobys like the rescued dragon), but writes no depth, so the
      * player Spyro drawn next still covers it (Spyro flies in front of the intro
      * text). Matches the PSX moby OT: near-slot UI over other mobys, player on top. */
+    s_rim_draws = 0; s_rim_tex_runs = 0;
     for (int gi = 0; gi < 7; gi++) {
         /* Freeze backdrop active (pause / inventory / flight-results): the world is
          * frozen INTO the backdrop (drawn above), and the canonical game render emits
@@ -15503,7 +15619,7 @@ static bool draw_native_scene(bool full_extent)
          * sectors) draws in the same slot as the CPU-fed WORLD group - opaque
          * depth-write, stencil-MARK when hole-fill is armed (identical raster
          * roles; the vertex stage owns the per-face verdicts). */
-        draw_portal_rim(scene, tx_start, ut_first[16], ut_count[16],
+        draw_portal_rim(scene, tx_start, ut_count[16],
                         txg_first[13], txg_count[13], holefill_on, gi);
         if (gi == 0 && openpete_tercache_frame_open()) {
             openpete_tercache_clip aff; tercache_clip_params(&aff);
@@ -15529,7 +15645,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
         }
-        draw_portal_rim_fill(ut_first[17], ut_count[17], holefill_on, gi);
+        draw_portal_rim_fill(ut_count[17], holefill_on, gi);
         /* Terrain-cache LP hole-fill twin: stencil TEST_ZERO at true LP depth,
          * same slot as the scene-fed fill (before the portal stencil clear). */
         if (gi == 2 && holefill_on && openpete_tercache_frame_open()) {
@@ -15675,6 +15791,7 @@ static bool draw_native_scene(bool full_extent)
         if (gi == 0 && backdrop_defer)
             draw_backdrop_fills(bg, ut_first, ut_count, 1);
     }
+    rim_draw_census(ut_count[16], ut_count[17], txg_count[13]);
 
     /* Default: the flat 2D HUD/text draws OVER the whole scene incl. the player
      * (Spyro behind the HUD/text). Only the GS_LevelTransition flyby puts it under

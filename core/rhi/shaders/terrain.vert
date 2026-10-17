@@ -279,7 +279,8 @@ layout(location = 10)     out vec3  vKd;    /* fold position D x vKq            
 layout(location = 11) flat out vec4 vKn0;   /* fold corners TL.xyz TR.x             */
 layout(location = 12) flat out vec4 vKn1;   /*   TR.yz BL.xy                        */
 layout(location = 13) flat out vec4 vKn2;   /*   BL.z BR.xyz                        */
-layout(location = 14) flat out uint vRim;  /* inner rim discarded per fragment (terrain.frag) */
+layout(location = 14) flat out uint vRim;  /* 1 + accepting plane of an inner rim discarded per
+                                            * fragment (terrain.frag); 0 = not rim */
 layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
                                              * | ladder-face 1<<16 | fogbias 1<<17  */
 
@@ -857,10 +858,11 @@ double rim_uv_edge_dist_g(int base, int pn, double u, double v) {
 }
 /* The inner-rim verdict of a tri (classify flags == 0 under some plane):
  * 0 = not rim; 1 = rim under a plane the CPU feed drops it for, so the
- * retained draw drops it too; 2 = rim under a plane that discards its rim per
- * fragment (rim_O[pi].w), so the face is kept and terrain.frag discards the
- * covered part. Inputs are the emitted tri's FLOAT screen coords (the feed
- * ttri's sx/sy) and walk view-Z (m3). */
+ * retained draw drops it too; 2 + pi = rim under plane pi, which discards its
+ * rim per fragment (rim_O[pi].w), so the face is kept and terrain.frag
+ * discards the part inside plane pi's outline (vRim = 1 + pi; the rim and
+ * cover plane lists share the feed's plane order). Inputs are the emitted
+ * tri's FLOAT screen coords (the feed ttri's sx/sy) and walk view-Z (m3). */
 int rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
     precise double ofx = g.rim_oxyH.x, ofy = g.rim_oxyH.y, H = g.rim_oxyH.z;
     if (H < 1.0lf) return 0;
@@ -932,7 +934,7 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
         double fl = sqrt(fx * fx + fy * fy + fz * fz);
         if (fl < 1e-9lf) continue;                   /* RIMFAIL_ANGLE */
         if (abs((fx * nx + fy * ny + fz * nz) / fl) < cosw) continue;
-        return g.rim_O[pi].w != 0.0lf ? 2 : 1;       /* all terms pass */
+        return g.rim_O[pi].w != 0.0lf ? 2 + pi : 1;  /* all terms pass */
     }
     return 0;
 }
@@ -1547,7 +1549,7 @@ void main()
             rimv = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
         }
         if (rimv == 1) { kill_vert(); return; }
-        vRim = rimv == 2 ? 1u : 0u;
+        vRim = rimv >= 2 ? uint(rimv - 1) : 0u;
     }
 #endif
 
@@ -1789,7 +1791,7 @@ void main()
                  sc = scr_of(outv[e2]);
             int rimv = rim_classified(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z);
             if (rimv == 1) { kill_vert(); return; }
-            vRim = rimv == 2 ? 1u : 0u;
+            vRim = rimv >= 2 ? uint(rimv - 1) : 0u;
         }
         cvx V = outv[self == 0 ? e0 : (self == 1 ? e1 : e2)];
         mo  = V.m;

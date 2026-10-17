@@ -47,6 +47,7 @@
 #include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
 #include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
+#include "openpete_portal_cover_slot.h" /* feed plane -> published cover slot */
 #include "openpete_psx.h"
 #include "openpete_knobs.h"          /* knob_env_epoch_stale */
 #include "openpete_subtick_view.h"  /* openpete_subtick_host_span (sector colour host reads) */
@@ -11709,6 +11710,9 @@ static int s_otbias_on = 1;        /* OPENPETE_TERRAIN_OT_BIAS this VBL (shared:
                                     * lands at the wrong final depth) */
 static openpete_portal_skyplane s_pplane[6];
 static int s_pplane_n = 0;
+/* Published cover-plane slot of each s_pplane entry this feed
+ * (openpete_portal_cover_slots), -1 when the plane is not published. */
+static int s_pplane_slot[6];
 
 /* Conform one built tri against the active portal skies. Returns 1 and fills
  * ovz[3] (world/16 scale, the ttri unit) when the face is sky-covered. */
@@ -12268,12 +12272,15 @@ enum { RIM_KEEP = 0, RIM_DROP, RIM_FRAGMENT };
 /** @brief Returns the feed's inner-rim verdict for a triangle.
  * @param cpu The guest CPU state.
  * @param t The triangle.
+ * @param plane Receives the accepting plane's s_pplane index when the
+ *        verdict is not RIM_KEEP.
  * @return RIM_KEEP when no plane accepts it as inner rim; RIM_DROP when the
  *         accepting plane drops its rim whole; RIM_FRAGMENT when that plane
  *         discards its rim per fragment (rim_fragment). */
-static int portal_rim_face(CPUState* cpu, const ttri* t) {
+static int portal_rim_face(CPUState* cpu, const ttri* t, int* plane) {
     int pi = 0;
     if (portal_rim_classify(cpu, t, &pi) != 0) return RIM_KEEP;
+    *plane = pi;
     return s_pplane[pi].rim_fragment ? RIM_FRAGMENT : RIM_DROP;
 }
 
@@ -12344,6 +12351,62 @@ static void tn_feed_key_cells(const ttri* t) {
         openpete_native_scene_set_key_fold(t->kn);
 }
 
+/** @brief The screen bounding box of n points.
+ * @param x Point x coordinates.
+ * @param y Point y coordinates.
+ * @param n Point count, at least 1.
+ * @param box Receives x0, y0, x1, y1. */
+static void screen_box(const float* x, const float* y, int n, float box[4]) {
+    box[0] = box[2] = x[0]; box[1] = box[3] = y[0];
+    for (int k = 1; k < n; k++) {
+        box[0] = fminf(box[0], x[k]); box[2] = fmaxf(box[2], x[k]);
+        box[1] = fminf(box[1], y[k]); box[3] = fmaxf(box[3], y[k]);
+    }
+}
+/* OPENPETE_PORTAL_RIM_DBG census of the feed it fires on: the rim faces kept
+ * for the per-fragment discard, and those whose screen box meets the outline
+ * box of a published plane other than the one that accepted them (the faces
+ * a discard testing every plane would cut inside a foreign opening). */
+static int s_rim_cross_live, s_rim_cross_n, s_rim_cross_rim;
+/** @brief Count one per-fragment rim face for the cross-plane census.
+ *
+ * The face's screen bounding box is tested against the outline bounding box
+ * of every published plane but @p pi; a face meeting any of them counts
+ * once and is logged with its sector, face and the planes it meets.
+ * @param t The rim triangle.
+ * @param pi Its accepting plane's s_pplane index. */
+static void rim_cross_count(const ttri* t, int pi) {
+    s_rim_cross_rim++;
+    float fb[4], qb[4];
+    screen_box(t->sx, t->sy, 3, fb);
+    unsigned meets = 0;
+    for (int qi = 0; qi < s_pplane_n; qi++) {
+        const openpete_portal_skyplane* q = &s_pplane[qi];
+        if (qi == pi || s_pplane_slot[qi] < 0) continue;
+        screen_box(q->px, q->py, q->pn < 16 ? q->pn : 16, qb);
+        if (fb[2] >= qb[0] && fb[0] <= qb[2] && fb[3] >= qb[1] && fb[1] <= qb[3]) meets |= 1u << qi;
+    }
+    if (!meets) return;
+    s_rim_cross_n++;
+    fprintf(stderr, "[rim-cross] sec=%d face=%d plane=%d slot=%d meets=0x%x\n",
+            t->sec, t->face, pi, s_pplane_slot[pi], meets);
+}
+/** @brief Arm the cross-plane census for this feed and print the plane-to-slot map. */
+static void rim_cross_arm(void) {
+    s_rim_cross_live = 1; s_rim_cross_n = 0; s_rim_cross_rim = 0;
+    fprintf(stderr, "[rim] f=%u planes=%d slot map:", openpete_frame, s_pplane_n);
+    for (int pi = 0; pi < s_pplane_n; pi++)
+        fprintf(stderr, " %d:pn=%d->%d", pi, s_pplane[pi].pn, s_pplane_slot[pi]);
+    fprintf(stderr, "\n");
+}
+/** @brief Print the armed cross-plane census's totals and disarm it. */
+static void rim_cross_close(void) {
+    if (!s_rim_cross_live) return;
+    s_rim_cross_live = 0;
+    fprintf(stderr, "[rim-cross] f=%u rim faces=%d meeting a foreign outline=%d\n",
+            openpete_frame, s_rim_cross_rim, s_rim_cross_n);
+}
+
 /** @brief Returns the portal inner-rim verdict the feed applies to a triangle.
  *
  * The rim lies in the opening plane, coincident with the destination-sky
@@ -12356,14 +12419,16 @@ static void tn_feed_key_cells(const ttri* t) {
  * face in a sector the broadphase rejected.
  * @param cpu The guest CPU state.
  * @param t The triangle.
+ * @param plane Receives the accepting plane's s_pplane index when the
+ *        verdict is not RIM_KEEP.
  * @return RIM_KEEP, RIM_DROP or RIM_FRAGMENT. */
-static int tn_rim_verdict(CPUState* cpu, const ttri* t) {
+static int tn_rim_verdict(CPUState* cpu, const ttri* t, int* plane) {
     static int s_cull = -1;
     if (s_cull < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_CULL");
                       s_cull = (e && *e) ? (*e != '0') : 1; }
     if (!s_cull) return RIM_KEEP;
     if (s_rimbroad == 1 && !rim_sec_cand(t->sec)) return RIM_KEEP;
-    const int rim = portal_rim_face(cpu, t);
+    const int rim = portal_rim_face(cpu, t, plane);
     if (s_rimbroad == 2 && rim != RIM_KEEP && !rim_sec_cand(t->sec)) {
         static int logged = 0;
         if (logged < 32) { logged++;
@@ -12372,6 +12437,27 @@ static int tn_rim_verdict(CPUState* cpu, const ttri* t) {
                     openpete_frame, t->sec, t->face); }
     }
     return rim;
+}
+
+/** @brief Apply the inner-rim rule to a triangle about to be fed.
+ *
+ * Sets the scene's sticky rim mark to 1 + the accepting plane's published
+ * slot when the plane discards its rim per fragment, so the rim stages
+ * discard the face inside that plane's outline alone; a plane with no
+ * published outline cuts nothing, and the face draws whole (mark 0). Counts
+ * the face for the armed cross-plane census.
+ * @param cpu The guest CPU state.
+ * @param t The triangle.
+ * @return 1 when the accepting plane drops its rim (the caller skips the
+ *         triangle), else 0. */
+static int tn_rim_feed(CPUState* cpu, const ttri* t) {
+    int rpi = -1;
+    const int rim = tn_rim_verdict(cpu, t, &rpi);
+    if (rim == RIM_DROP) return 1;
+    const int slot = rim == RIM_FRAGMENT ? s_pplane_slot[rpi] : -1;
+    openpete_native_scene_set_portal_rim(slot + 1);
+    if (s_rim_cross_live && slot >= 0) rim_cross_count(t, rpi);
+    return 0;
 }
 
 /** @brief Feeds this build's terrain triangles to the native scene.
@@ -12414,11 +12500,13 @@ static void terrain_feed_native(CPUState* cpu) {
      * the game-side plane provider. */
     {
         openpete_native_cover_plane cvp[6];
-        int cn = 0;
-        for (int pi = 0; pi < s_pplane_n && cn < 6; pi++) {
+        int pn[6];
+        for (int pi = 0; pi < s_pplane_n; pi++) pn[pi] = s_pplane[pi].pn;
+        const int cn = openpete_portal_cover_slots(pn, s_pplane_n, 6, s_pplane_slot);
+        for (int pi = 0; pi < s_pplane_n; pi++) {
             const openpete_portal_skyplane* pp = &s_pplane[pi];
-            if (pp->pn < 3) continue;
-            openpete_native_cover_plane* o = &cvp[cn++];
+            if (s_pplane_slot[pi] < 0) continue;
+            openpete_native_cover_plane* o = &cvp[s_pplane_slot[pi]];
             o->a = pp->a; o->b = pp->b; o->c = pp->c; o->pn = pp->pn;
             for (int k = 0; k < pp->pn; k++) { o->px[k] = pp->px[k]; o->py[k] = pp->py[k]; }
         }
@@ -12550,6 +12638,7 @@ static void terrain_feed_native(CPUState* cpu) {
                          s_rim = (e && *e) ? 1 : -1; s_rim_f = (e && *e) ? (unsigned)atoi(e) : 0; }
       if (s_rim == 1 && openpete_frame >= s_rim_f && s_pplane_n > 0) {
         s_rim = -1;                                  /* one shot */
+        rim_cross_arm();
         const double ofx = s_view.ofx, ofy = s_view.ofy, H = s_view.H_eff;
         for (int pi = 0; pi < s_pplane_n; pi++) {
           const openpete_portal_skyplane* pp = &s_pplane[pi];
@@ -12929,10 +13018,7 @@ static void terrain_feed_native(CPUState* cpu) {
             : OPENPETE_TAG_TERRAIN_UNTEX(t->tier, t->env,
                                          t->sec < 0 ? 0 : t->sec, untex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);
-        {   const int rim = tn_rim_verdict(cpu, t);
-            if (rim == RIM_DROP) continue;
-            openpete_native_scene_set_portal_rim(rim == RIM_FRAGMENT);
-        }
+        if (tn_rim_feed(cpu, t)) continue;
         /* OPENPETE_PORTAL_RIM_SHOW=1: paint classified faces one colour per
          * failure COMBINATION, so the picture says which TERM is responsible
          * rather than merely that something was rejected. A yes/no highlight
@@ -12988,6 +13074,7 @@ static void terrain_feed_native(CPUState* cpu) {
     }
     openpete_native_scene_set_presnap(0);   /* never leak past this feeder */
     openpete_native_scene_set_portal_rim(0);
+    rim_cross_close();
     /* The former TERRAIN_KEY aperture fan (the sky bucket's og key rastered
      * into the key image, discarding og-covered opaque terrain per pixel) is
      * RETIRED with the plane-cover rule: opaque terrain behind the opening
