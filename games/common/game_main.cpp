@@ -11,6 +11,7 @@
 
 #include "openpete.h"
 #include "openpete_config.h"
+#include "openpete_fatal.h"
 #include "openpete_identify.h"
 #include "openpete_log.h"
 #include "openpete_boot_timing.h"
@@ -45,6 +46,17 @@ static int identify(const openpete_options_t* opts, const char* library_game,
     in.recorded_game = (library_game && *library_game) ? library_game : nullptr;
     in.linked_game = game_get_id();
     return openpete_identify(&in, id);
+}
+
+/** @brief Tell the player the game cannot start, then hand back the exit code.
+ *
+ * @param rc The exit code the entry returns.
+ * @param err The error's id.
+ * @param why What failed, as a sentence for the player.
+ * @return rc. */
+static int fatal_start(int rc, openpete_error_t err, const char* why) {
+    openpete_fatal_message(err, "OpenPete could not start", why);
+    return rc;
 }
 
 /** @brief The launcher's view of this game: its id, name, known discs (the runtime descriptor's) and library module path.
@@ -125,9 +137,10 @@ static int extract_mode(int argc, char** argv, const openpete_options_t* neutral
  * @param neutral The game-neutral options; receives the library's disc.
  * @param opts Receives the full resolution.
  * @param exit_now Set to 1 when the run ends in the launcher.
- * @return OPENPETE_EXIT_OK, OPENPETE_EXIT_SETUP_ERROR on a refused
- *         identification, the parser's status, or 1 when the recompiled
- *         module cannot be attached. */
+ * @return OPENPETE_EXIT_OK, or after telling the player:
+ *         OPENPETE_EXIT_SETUP_ERROR on a refused identification or a missing
+ *         disc, the parser's status, or 1 when the recompiled module cannot
+ *         be attached. */
 static int start_session(int argc, char** argv, openpete_options_t* neutral,
                          openpete_options_t* opts, int* exit_now) {
     openpete_launcher_begin(launcher_game_desc(), neutral, !neutral->headless);
@@ -138,14 +151,22 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     openpete_ident_t id;
     rc = identify(neutral, openpete_launcher_selected_game(), &id);
     if (rc == OPENPETE_EXIT_OK) rc = openpete_identify_require_linked(&id, game_get_id());
-    if (rc != OPENPETE_EXIT_OK) return rc;
+    if (rc != OPENPETE_EXIT_OK)
+        return fatal_start(rc, OP_E_WRONG_DISC, "The disc does not match the game chosen to run.");
 
     /* The one full resolution: the identified game's and disc's scopes
-     * join the tiers, and the environment and argv are written once. */
+     * join the tiers, and the environment and argv are written once. A
+     * launch with no arguments can fail only on the config file or the
+     * environment, so only it shows the message box. */
+    openpete_fatal_set_interactive(!neutral->headless && argc <= 1);
     rc = openpete_options_parse_identified(opts, argc, argv, &id, game_get_display_name());
-    if (rc != OPENPETE_EXIT_OK) return rc;
+    if (rc != OPENPETE_EXIT_OK)
+        return fatal_start(rc, OP_E_CONFIG, "A setting in openpete.toml (or an OPENPETE_ "
+                                            "environment variable) was not accepted.");
+    openpete_fatal_set_interactive(!opts->headless);
     rc = openpete_options_require_exe_source(opts);
-    if (rc != OPENPETE_EXIT_OK) return rc;
+    if (rc != OPENPETE_EXIT_OK)
+        return fatal_start(rc, OP_E_NO_DISC, "No game disc image was found.");
 
     /* The mod layer, once, at identification: before the compile below
      * and the load inside openpete_run(). */
@@ -165,7 +186,8 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     openpete_boot_mark(OP_BOOT_MODULE_ATTACH_START);
     if (openpete_game_recomp_attach(module_override, opts->disc_path,
                                     opts->recomp_module_path == NULL) != 0)
-        return 1;
+        return fatal_start(1, OP_E_MODULE,
+                           "The game code built from the disc could not be loaded or built.");
     openpete_boot_mark(OP_BOOT_MODULE_ATTACHED);
 
     /* Mod compile-on-boot: every stale enabled source mod compiles on a

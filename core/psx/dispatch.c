@@ -463,7 +463,7 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
     char msg[2600];
     snprintf(msg, sizeof msg, "The game stopped responding and was closed. "
              "Diagnostic files were written to %s and %s.", path, rampath);
-    openpete_fatal_message("OpenPete stopped responding", msg);
+    openpete_fatal_message(OP_E_HANG, "OpenPete stopped responding", msg);
     fflush(stdout); fflush(stderr);
     /* stderr is a pipe drained by the log pump thread; exiting first would take the
      * watchdog's own diagnosis down with the process before it is copied. */

@@ -46,10 +46,11 @@ static const openpete_launcher_game* launcher_game_desc(void) {
 /** @brief Tell the player the game cannot start, then hand back the exit code.
  *
  * @param rc The exit code main returns.
+ * @param err The error's id.
  * @param why What failed, as a sentence for the player.
  * @return rc. */
-static int fatal_start(int rc, const char* why) {
-    openpete_fatal_message("OpenPete could not start", why);
+static int fatal_start(int rc, openpete_error_t err, const char* why) {
+    openpete_fatal_message(err, "OpenPete could not start", why);
     return rc;
 }
 
@@ -75,8 +76,8 @@ static int parse_options(openpete_options_t* opts, int argc, char** argv,
                 : openpete_options_parse_neutral(opts, argc, argv);
     openpete_fatal_set_interactive(!opts->headless && argc <= 1);
     if (rc != OPENPETE_EXIT_OK)
-        return fatal_start(rc, "A setting in openpete.toml (or an OPENPETE_ "
-                               "environment variable) was not accepted.");
+        return fatal_start(rc, OP_E_CONFIG, "A setting in openpete.toml (or an OPENPETE_ "
+                                            "environment variable) was not accepted.");
     openpete_fatal_set_interactive(!opts->headless);
     return OPENPETE_EXIT_OK;
 }
@@ -191,7 +192,7 @@ static int launcher_identify(openpete_options_t* neutral, char* module_path,
     rc = identify(neutral, openpete_launcher_selected_game(), id);
     if (rc == OPENPETE_EXIT_OK) rc = openpete_identify_require_linked(id, game_get_id());
     if (rc != OPENPETE_EXIT_OK)
-        return fatal_start(rc, "The disc is not Spyro the Dragon.");
+        return fatal_start(rc, OP_E_WRONG_DISC, "The disc does not match the game chosen to run.");
     return OPENPETE_EXIT_OK;
 }
 
@@ -222,7 +223,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     if (rc != OPENPETE_EXIT_OK) return rc;
     rc = openpete_options_require_exe_source(opts);
     if (rc != OPENPETE_EXIT_OK)
-        return fatal_start(rc, "No game disc image was found.");
+        return fatal_start(rc, OP_E_NO_DISC, "No game disc image was found.");
 
     /* The mod layer, once, at identification: before the compile-on-boot
      * pass below and the load inside openpete_run(). */
@@ -242,7 +243,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     const int allow_build = (opts->recomp_module_path == NULL);
     openpete_boot_mark(OP_BOOT_MODULE_ATTACH_START);
     if (openpete_game_recomp_attach(module_override, opts->disc_path, allow_build) != 0)
-        return fatal_start(1, "The game code built from the disc could not be loaded or built.");
+        return fatal_start(1, OP_E_MODULE, "The game code built from the disc could not be loaded or built.");
     openpete_boot_mark(OP_BOOT_MODULE_ATTACHED);
 
     /* Mod compile-on-boot: compile any stale enabled source mods on a

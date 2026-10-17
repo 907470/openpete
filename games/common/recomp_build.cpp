@@ -25,6 +25,7 @@
 // implib (recomp/tools/libopenpete-exe-exports.a).
 #include "openpete_launcher.h"
 #include "openpete_atomic_file.h"
+#include "openpete_error_ids.h"
 #include "game_build.h"
 #include "recomp_attach.h"
 #include "openpete_log.h"
@@ -159,7 +160,8 @@ bool run(const std::string& cmd) {
 #else
     int rc = std::system(cmd.c_str());
 #endif
-    if (rc != 0) OPL_ERROR_F("recomp-build", "command failed (%d): %s", rc, cmd.c_str());
+    if (rc != 0) OPL_ERROR_F("recomp-build", "command failed (%d): %s %s", rc, cmd.c_str(),
+                             openpete_error_ref(OP_E_MODULE));
     return rc == 0;
 }
 
@@ -501,7 +503,7 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
         std::fprintf(stderr,
             "openpete: no compiler for the first-boot module build - "
             "expected the bundled toolchain at recomp/tools/ next to the "
-            "exe (or $OPENPETE_CC)\n");
+            "exe (or $OPENPETE_CC) %s\n", openpete_error_ref(OP_E_NO_COMPILER));
         return -1;
     }
 
@@ -509,14 +511,14 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
         !fs::exists(src / "psx_runtime_internal.h")) {
         std::fprintf(stderr,
             "openpete: recomp inputs not staged next to the exe (%s) - "
-            "expected recomp/manifest/%s + recomp/src\n", R.string().c_str(),
-            openpete_game_build()->id);
+            "expected recomp/manifest/%s + recomp/src %s\n", R.string().c_str(),
+            openpete_game_build()->id, openpete_error_ref(OP_E_PACKAGE));
         return -1;
     }
     const std::string psxrecomp = find_psxrecomp(base);
     if (psxrecomp.empty()) {
         std::fprintf(stderr, "openpete: PSXRecomp not found (recomp/tools/ "
-                             "or $OPENPETE_PSXRECOMP)\n");
+                             "or $OPENPETE_PSXRECOMP) %s\n", openpete_error_ref(OP_E_PACKAGE));
         return -1;
     }
 
@@ -524,8 +526,8 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
     std::string main_exe_sha;
     bool channel_sites = false;
     if (!parse_manifest(man / "manifest.toml", ovls, &main_exe_sha, &channel_sites)) {
-        std::fprintf(stderr, "openpete: cannot parse %s\n",
-                     (man / "manifest.toml").string().c_str());
+        std::fprintf(stderr, "openpete: cannot parse %s %s\n",
+                     (man / "manifest.toml").string().c_str(), openpete_error_ref(OP_E_PACKAGE));
         return -1;
     }
 
@@ -540,10 +542,10 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
     fs::create_directories(obj, ec);
     if (ec || !fs::exists(obj)) {
         std::fprintf(stderr,
-            "openpete: cannot create the module build directory (%s): %s\n"
+            "openpete: cannot create the module build directory (%s): %s %s\n"
             "  (deep install paths can exceed Windows' path limit - move "
             "the install to a shorter path)\n",
-            work.string().c_str(), ec.message().c_str());
+            work.string().c_str(), ec.message().c_str(), openpete_error_ref(OP_E_MODULE_DIR));
         return -1;
     }
 

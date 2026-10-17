@@ -7,6 +7,7 @@
 #include "openpete_boot_timing.h"
 #include "openpete_config.h"
 #include "openpete_disc_trace.h"
+#include "openpete_error_ids.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"
 #include "openpete_time.h"
@@ -79,9 +80,10 @@ int openpete_identify(const openpete_ident_in_t* in, openpete_ident_t* out) {
     }
     const char* from_disc = disc_game(in, out);
     if (from_disc && in->selector && strcmp(from_disc, in->selector) != 0) {
-        fprintf(stderr, "openpete: --game %s, but the disc %s is %s (%s)\n",
+        fprintf(stderr, "openpete: --game %s, but the disc %s is %s (%s) %s\n",
                 in->selector, out->disc_path, from_disc,
-                out->serial[0] ? out->serial : "recorded in the library");
+                out->serial[0] ? out->serial : "recorded in the library",
+                openpete_error_ref(OP_E_WRONG_DISC));
         return OPENPETE_EXIT_SETUP_ERROR;
     }
     if (from_disc) {
@@ -100,8 +102,9 @@ int openpete_identify(const openpete_ident_in_t* in, openpete_ident_t* out) {
 int openpete_identify_require_linked(const openpete_ident_t* id, const char* linked_game) {
     if (!id->game || !linked_game || !strcmp(id->game, linked_game))
         return OPENPETE_EXIT_OK;
-    fprintf(stderr, "openpete: the %s names %s, but this executable runs %s\n",
-            openpete_ident_source_name(id->source), id->game, linked_game);
+    fprintf(stderr, "openpete: the %s names %s, but this executable runs %s %s\n",
+            openpete_ident_source_name(id->source), id->game, linked_game,
+            openpete_error_ref(OP_E_WRONG_DISC));
     return OPENPETE_EXIT_SETUP_ERROR;
 }
 

@@ -1459,8 +1459,9 @@ static int open_game_disc(const openpete_options_t* opts) {
                                       tried, sizeof tried) != 0) {
         OPL_ERROR_F("boot",
                     "--disc %s names no readable disc image (tried: %s). "
-                    "Pass the .cue, or the .bin itself.",
-                    opts->disc_path, tried[0] ? tried : "(nothing)");
+                    "Pass the .cue, or the .bin itself. %s",
+                    opts->disc_path, tried[0] ? tried : "(nothing)",
+                    openpete_error_ref(OP_E_DISC_READ));
         return OPENPETE_EXIT_SETUP_ERROR;
     }
     disc_image_t* img = disc_image_open(bin, DISC_READ_CACHED, OPENPETE_DISC_TAG_NONE);
@@ -1483,8 +1484,8 @@ static int attach_disc_image(const openpete_options_t* opts) {
     if (rc != OPENPETE_EXIT_OK) return rc;
     openpete_disc_cache_trace_install();
     if (!openpete_disc_psycross_bind(disc_image_game())) {
-        OPL_ERROR_F("boot", "--disc %s: the image cannot be bound to PsyCross (larger than 2 GiB)",
-                    opts->disc_path);
+        OPL_ERROR_F("boot", "--disc %s: the image cannot be bound to PsyCross (larger than 2 GiB) %s",
+                    opts->disc_path, openpete_error_ref(OP_E_DISC_READ));
         return OPENPETE_EXIT_SETUP_ERROR;
     }
     OPL_INFO_F("boot", "PsyCross CD image: %s (%s)", disc_image_bin_path(disc_image_game()),
@@ -1566,7 +1567,8 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     uint8_t* bytes = NULL;
     size_t   len   = 0;
     if (try_load_exe(opts, &bytes, &len) != 0) {
-        OPL_ERROR_F("boot", "could not load PSX EXE (need --exe-path or --disc)");
+        OPL_ERROR_F("boot", "could not load PSX EXE (need --exe-path or --disc) %s",
+                    openpete_error_ref(OP_E_DISC_READ));
         return OPENPETE_EXIT_SETUP_ERROR;
     }
     int rc = openpete_psx_boot(&cpu, bytes, len);
@@ -1593,8 +1595,8 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
                     "PsyCross init failed (SDL: %s). No display is reachable; "
                     "even --headless needs one, because PsyCross rasterizes "
                     "for the oracle. Over ssh, export XDG_RUNTIME_DIR and "
-                    "WAYLAND_DISPLAY (or DISPLAY) from the login session.",
-                    SDL_GetError());
+                    "WAYLAND_DISPLAY (or DISPLAY) from the login session. %s",
+                    SDL_GetError(), openpete_error_ref(OP_E_DISPLAY));
         return OPENPETE_EXIT_PANIC;
     }
 
@@ -2970,7 +2972,10 @@ static int run_host_init(const openpete_options_t* opts) {
     uint8_t* bytes = NULL;
     size_t   len   = 0;
     if (try_load_exe(opts, &bytes, &len) != 0) {
-        OPL_ERROR_F("boot", "could not load PSX EXE (need --exe-path or --disc)");
+        OPL_ERROR_F("boot", "could not load PSX EXE (need --exe-path or --disc) %s",
+                    openpete_error_ref(OP_E_DISC_READ));
+        openpete_fatal_message(OP_E_DISC_READ, "OpenPete could not start",
+                               "The game's program could not be read from the disc image.");
         return OPENPETE_EXIT_SETUP_ERROR;
     }
     int rc = openpete_psx_boot(&g_game.cpu, bytes, len);
@@ -3121,8 +3126,10 @@ static int run_host_init(const openpete_options_t* opts) {
                     "PsyCross init failed (SDL: %s). No display is reachable; "
                     "even --headless needs one, because PsyCross rasterizes "
                     "for the oracle. Over ssh, export XDG_RUNTIME_DIR and "
-                    "WAYLAND_DISPLAY (or DISPLAY) from the login session.",
-                    SDL_GetError());
+                    "WAYLAND_DISPLAY (or DISPLAY) from the login session. %s",
+                    SDL_GetError(), openpete_error_ref(OP_E_DISPLAY));
+        openpete_fatal_message(OP_E_DISPLAY, "OpenPete could not start graphics",
+                               "No display could be opened.");
         return OPENPETE_EXIT_PANIC;
     }
 
@@ -3269,7 +3276,7 @@ static int run_host_init(const openpete_options_t* opts) {
     if (g_psyx_null_gpu && !openpete_native_render_enabled()) {
         OPL_ERROR_F("boot", "%s", "native renderer unavailable and PsyCross is "
                     "in null-GPU mode: no display path, stopping");
-        openpete_fatal_message("OpenPete could not start graphics",
+        openpete_fatal_message(OP_E_VULKAN, "OpenPete could not start graphics",
             "No usable Vulkan graphics device was found.\n\n"
             "Install the latest driver for your graphics card.\n"
             "To run without Vulkan, add renderer = \"psycross\" to openpete.toml.");
@@ -7546,7 +7553,10 @@ static int run_split_threaded(const openpete_options_t* opts)
      * SDL_Init(SDL_INIT_VIDEO) inside PsyX_Initialise (run_host_init, also on
      * this thread) then only takes another reference. */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
-        OPL_ERROR_F("boot", "SDL_Init(video) failed: %s", SDL_GetError());
+        OPL_ERROR_F("boot", "SDL_Init(video) failed: %s %s", SDL_GetError(),
+                    openpete_error_ref(OP_E_DISPLAY));
+        openpete_fatal_message(OP_E_DISPLAY, "OpenPete could not start graphics",
+                               "No display could be opened.");
         return OPENPETE_EXIT_SETUP_ERROR;
     }
 

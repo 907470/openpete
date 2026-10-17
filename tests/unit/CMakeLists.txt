@@ -169,6 +169,7 @@ if(NOT WIN32)
         ${CMAKE_SOURCE_DIR}/core/host/memcard.c
         ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
         ${CMAKE_SOURCE_DIR}/core/config/paths.c
+        ${CMAKE_SOURCE_DIR}/core/diag/error_ids.c
         ${CMAKE_SOURCE_DIR}/core/diag/log.c)
     target_include_directories(memcard_test PRIVATE
         ${CMAKE_SOURCE_DIR}/core/include
@@ -222,6 +223,7 @@ add_test(NAME config_resolve_test COMMAND config_resolve_test)
 add_executable(identify_test
     identify_test.c
     ${CMAKE_SOURCE_DIR}/core/config/identify.c
+    ${CMAKE_SOURCE_DIR}/core/diag/error_ids.c
     ${CMAKE_SOURCE_DIR}/core/diag/log.c)
 target_include_directories(identify_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include

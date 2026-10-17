@@ -950,7 +950,8 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
     int rc = library_resolve(opts, module_path, module_cap);
     if (rc == LAUNCHER_LIB_QUIT) { *exit_now = 1; return OPENPETE_EXIT_OK; }
     if (rc != 0) {
-        openpete_fatal_message("OpenPete could not start", "The game library could not be read.");
+        openpete_fatal_message(OP_E_LIBRARY, "OpenPete could not start",
+                               "The game library could not be read.");
         return 1;
     }
     if (opts->disc_path || opts->exe_path) return OPENPETE_EXIT_OK;
@@ -968,7 +969,7 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
     }
     opts->ingest_path = dropped;
     if (library_resolve(opts, module_path, module_cap) != 0) {
-        openpete_fatal_message("OpenPete could not start",
+        openpete_fatal_message(OP_E_INGEST, "OpenPete could not start",
                                "The disc image could not be added to the game library.");
         return 1;
     }
@@ -1064,8 +1065,9 @@ void openpete_launcher_vk_failure(const char* why, int continues) {
     const char* next = continues
         ? "The game starts on the OpenGL fallback display instead."
         : "Install the latest driver for your graphics card. OpenPete will now close.";
-    OPL_ERROR_F("launcher", "no Vulkan device: %s; %s", why ? why : "",
-                continues ? "continuing on PsyCross's GL window" : "exiting");
+    OPL_ERROR_F("launcher", "no Vulkan device: %s; %s %s", why ? why : "",
+                continues ? "continuing on PsyCross's GL window" : "exiting",
+                openpete_error_ref(OP_E_VULKAN));
     if (!s.ui) return;
     if (const char* skip = getenv("OPENPETE_MSGBOX_SKIP"); skip && *skip && *skip != '0') {
         OPL_INFO_F("launcher", "%s", "message box suppressed (OPENPETE_MSGBOX_SKIP)");
@@ -1081,8 +1083,9 @@ void openpete_launcher_vk_failure(const char* why, int continues) {
         return;
     }
     char text[1024];
-    snprintf(text, sizeof text, "OpenPete could not start Vulkan graphics.\n\n%s\n\n%s",
-             why ? why : "", next);
+    snprintf(text, sizeof text,
+             "OpenPete could not start Vulkan graphics.\n\n%s\n\n%s\n\nError %s, explained at:\n%s",
+             why ? why : "", next, openpete_error_id(OP_E_VULKAN), openpete_error_url(OP_E_VULKAN));
     const bool shown = SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
                                                 "OpenPete could not start graphics", text, nullptr);
     OPL_INFO_F("launcher", "message box %s", shown ? "shown and dismissed" : "could not be shown");

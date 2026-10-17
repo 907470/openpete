@@ -18,6 +18,7 @@
 #define _GNU_SOURCE
 #include "openpete_psx.h"
 #include "openpete_crash.h"
+#include "openpete_error_ids.h"
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_mods.h"   /* crash attribution: name the offending mod */
@@ -225,7 +226,7 @@ static const char* sig_name(int sig) {
 /** @brief Write the crash report to the original stderr and the log file, then re-raise the signal under its default disposition.
  *
  * Runs on the thread's alternate stack. The report holds the signal, the
- * fault address and si_code (named as a game-fiber stack overflow when the
+ * crash's error reference (OP-E-CRASH), the fault address and si_code (named as a game-fiber stack overflow when the
  * address is in the fiber's guard page), the host RIP/RSP/RBP and the
  * mapped words at RSP, the guest registers with their symbols, the mod
  * whose override chain was executing, and last the host backtrace
@@ -239,6 +240,7 @@ static void on_signal(int sig, siginfo_t* info, void* ucontext) {
     int overflow = info && openpete_fiber_guard_contains((uintptr_t)info->si_addr);
     s_rep_len = 0;
     rep_str("\n=== openpete crash: "); rep_str(sig_name(sig)); rep_str(" ===\n");
+    rep_str("  "); rep_str(openpete_error_ref(OP_E_CRASH)); rep_str("\n");
     if (info) {
         rep_str("  fault addr="); rep_hex((uint64_t)(uintptr_t)info->si_addr, 1);
         rep_str(" code="); rep_dec(info->si_code); rep_str("\n");
@@ -382,12 +384,16 @@ static DWORD WINAPI dump_thread(LPVOID arg) {
     return 0;
 }
 
-/** @brief Append the exception banner, the fault address and the host registers of the exception record. */
+/** @brief Append the exception banner, the fault address and the host registers of the exception record.
+ *
+ * The banner is followed by the crash's error reference (OP-E-CRASH).
+ * @param ep The exception's pointers. */
 static void rep_seh_context(const EXCEPTION_POINTERS* ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     rep_str("\n=== openpete crash: "); rep_str(seh_name(code)); rep_str(" (");
     rep_hex(code, 8); rep_str(") thread="); rep_dec((int64_t)GetCurrentThreadId());
     rep_str(GetCurrentThreadId() == g_main_tid ? " (main) ===\n" : " ===\n");
+    rep_str("  "); rep_str(openpete_error_ref(OP_E_CRASH)); rep_str("\n");
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
         ULONG_PTR kind = ep->ExceptionRecord->ExceptionInformation[0];
         rep_str("  fault addr="); rep_hex((uint64_t)ep->ExceptionRecord->ExceptionInformation[1], 1);

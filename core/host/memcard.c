@@ -19,6 +19,7 @@
 
 #include "openpete_memcard.h"
 #include "openpete_atomic_file.h"
+#include "openpete_error_ids.h"
 #include "openpete_log.h"
 #include "openpete_paths.h"
 #include "openpete_mods.h" /* openpete_mods_modset_tag - save safety */
@@ -322,10 +323,11 @@ static int mc_write_refused(int slot)
     if (!s_readonly[slot] && !s_mem_only[slot] && !s_write_failed[slot]) return 0;
     if (!s_refuse_warned[slot]) {
         s_refuse_warned[slot] = 1;
-        OPL_ERROR_F("memcard", "card %d: save refused - %s", slot,
+        OPL_ERROR_F("memcard", "card %d: save refused - %s %s", slot,
                     s_mem_only[slot] ? "no card file is usable (no card directory "
                                        "resolves, or the file could not be read)"
-                                     : "the image is a headered format loaded read-only");
+                                     : "the image is a headered format loaded read-only",
+                    openpete_error_ref(s_mem_only[slot] ? OP_E_CARD_OPEN : OP_E_CARD_READONLY));
     }
     return 1;
 }
@@ -341,7 +343,8 @@ static void mc_mark_write_failed(int slot)
     s_write_failed[slot] = 1;
     s_refuse_warned[slot] = 1;
     OPL_ERROR_F("memcard", "card %d: writing %s failed; the card reports a write "
-                "error to the game for the rest of the session", slot, s_path[slot]);
+                "error to the game for the rest of the session %s", slot, s_path[slot],
+                openpete_error_ref(OP_E_CARD_WRITE));
 }
 
 /** @brief Report whether a slot write is suppressed because the tick is speculative (runahead).
@@ -449,8 +452,8 @@ static int mc_load_container(int slot, FILE* f, long size)
             return 0;
         s_readonly[slot] = 1;
         OPL_WARN_F("memcard", "card %d: %s is a %s image; loaded read-only - "
-                   "saves are refused until it is converted to a raw 128 KiB .mcr",
-                   slot, s_path[slot], c->name);
+                   "saves are refused until it is converted to a raw 128 KiB .mcr %s",
+                   slot, s_path[slot], c->name, openpete_error_ref(OP_E_CARD_READONLY));
         return 1;
     }
     return 0;
@@ -469,12 +472,13 @@ static int mc_set_aside(int slot)
         if (probe) { fclose(probe); continue; }
         if (rename(s_path[slot], aside) != 0) break;
         OPL_ERROR_F("memcard", "card %d: %s is not a 128 KiB card image; moved to %s "
-                    "and a new card provisioned", slot, s_path[slot], aside);
+                    "and a new card provisioned %s", slot, s_path[slot], aside,
+                    openpete_error_ref(OP_E_CARD_BAD));
         return 0;
     }
     OPL_ERROR_F("memcard", "card %d: %s is not a 128 KiB card image and cannot be "
-                "moved aside (%s); the slot runs in memory and saves are refused",
-                slot, s_path[slot], strerror(errno));
+                "moved aside (%s); the slot runs in memory and saves are refused %s",
+                slot, s_path[slot], strerror(errno), openpete_error_ref(OP_E_CARD_BAD));
     return -1;
 }
 
@@ -496,7 +500,8 @@ static int mc_load_file(int slot)
     if (!f) {
         if (errno == ENOENT) return MC_FILE_ABSENT;
         OPL_ERROR_F("memcard", "card %d: %s cannot be opened (%s); the slot runs in "
-                    "memory and saves are refused", slot, s_path[slot], strerror(errno));
+                    "memory and saves are refused %s", slot, s_path[slot], strerror(errno),
+                    openpete_error_ref(OP_E_CARD_OPEN));
         return MC_FILE_UNUSABLE;
     }
     long size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1;
@@ -514,7 +519,8 @@ static int mc_load_file(int slot)
     if (loaded) return MC_FILE_LOADED;
     if (read_failed) {
         OPL_ERROR_F("memcard", "card %d: %s could not be read; the slot runs in memory "
-                    "and saves are refused", slot, s_path[slot]);
+                    "and saves are refused %s", slot, s_path[slot],
+                    openpete_error_ref(OP_E_CARD_OPEN));
         return MC_FILE_UNUSABLE;
     }
     return mc_set_aside(slot) == 0 ? MC_FILE_ABSENT : MC_FILE_UNUSABLE;
@@ -536,7 +542,8 @@ static void mc_ensure_loaded(int slot)
     int st = MC_FILE_UNUSABLE;
     if (mc_resolve_path(slot) != 0)
         OPL_ERROR_F("memcard", "card %d: no card directory resolves; the slot runs "
-                    "in memory and saves are refused", slot);
+                    "in memory and saves are refused %s", slot,
+                    openpete_error_ref(OP_E_CARD_OPEN));
     else
         st = mc_load_file(slot);
     if (st == MC_FILE_LOADED) {
@@ -696,11 +703,13 @@ int openpete_memcard_startup_check(void)
         if (!mc_folder_exists(slot, folder, sizeof folder)) {
             if (s_path_override[slot][0])
                 OPL_ERROR_F("memcard", "--card%d %s: the folder %s does not exist; create it "
-                            "or name a card file in an existing folder",
-                            slot + 1, s_path_override[slot], folder);
+                            "or name a card file in an existing folder %s",
+                            slot + 1, s_path_override[slot], folder,
+                            openpete_error_ref(OP_E_CARD_OPEN));
             else
                 OPL_ERROR_F("memcard", "card %d: the card folder %s does not exist and "
-                            "could not be created", slot, folder);
+                            "could not be created %s", slot, folder,
+                            openpete_error_ref(OP_E_CARD_OPEN));
             rc = -1;
             continue;
         }

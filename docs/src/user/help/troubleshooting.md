@@ -16,7 +16,8 @@ The download is not signed, so SmartScreen warns. Click **More info**, then
 
 The [first run](glossary.md#first-run-compile) builds the game code inside the install folder, and a deep
 folder can exceed the Windows path-length limit. The message reads
-"cannot create the module build directory". Move the install to a short
+"cannot create the module build directory"
+([OP-E-MODULE-DIR](#op-e-module-dir)). Move the install to a short
 path, such as `C:\Games\OpenPete`.
 
 ### The AppImage exits with a FUSE error
@@ -32,7 +33,7 @@ without it:
 
 A `.tar.xz` without a bundled compiler uses the system `cc`. Install one
 (`sudo apt install gcc` or your distribution's equivalent), or name one in
-the variable `OPENPETE_CC`.
+the variable `OPENPETE_CC` ([OP-E-NO-COMPILER](#op-e-no-compiler)).
 
 ### The game stopped starting after an edit to `openpete.toml`
 
@@ -132,8 +133,30 @@ See [Reporting a bug](reporting-a-bug.md): attach `openpete.log` and the
 
 ## By error id
 
-This table lists the error ids (`OP-E-...`) that error messages print, each
-with its cause and fix. No message prints an id yet.
+Each error message ends with its id (`OP-E-...`) and the address of its
+row in this table, for example
+`[OP-E-CONFIG: https://openpete.com/docs/user/help/troubleshooting.html#op-e-config]`.
+On Windows the message box shows the same id and address. The message
+column gives the start of the text, or a box's text.
 
 | Id | Message | Cause | Fix |
 | --- | --- | --- | --- |
+| <a id="op-e-config"></a>`OP-E-CONFIG` | A setting in openpete.toml (or an OPENPETE_ environment variable) was not accepted. | An unknown key, a value of the wrong type or a value outside a key's list, in `openpete.toml` or in an environment variable whose name starts with `OPENPETE_`. The line before it names the file, section and key. | Correct the line ([edit to `openpete.toml`](#the-game-stopped-starting-after-an-edit-to-openpetetoml)). |
+| <a id="op-e-library"></a>`OP-E-LIBRARY` | The game library could not be read. | The `library` folder could not be read or written, or a disc image could not be copied into it. The line before it names the step: `library dir not writable`, `--ingest copy failed`, or `no .bin found`. | Free disk space, check that the folder is writable ([File locations](file-locations.md)), and keep the `.bin` next to its `.cue`. |
+| <a id="op-e-ingest"></a>`OP-E-INGEST` | The disc image could not be added to the game library. | The image dropped on the first-run screen could not be copied into the [library](glossary.md#library); the causes are those of OP-E-LIBRARY. | As for [OP-E-LIBRARY](#op-e-library), then drop the image again. |
+| <a id="op-e-wrong-disc"></a>`OP-E-WRONG-DISC` | The disc does not match the game chosen to run. | The disc image is another game than the one this program runs, or the game named on the command line differs from the disc's. | Open the right disc image, or start without naming a game. |
+| <a id="op-e-no-disc"></a>`OP-E-NO-DISC` | No game disc image was found. | The [library](glossary.md#library) holds no disc and none was named. | Start OpenPete without arguments and drop the disc image on its window ([Installing](../getting-started/install.md)). |
+| <a id="op-e-disc-read"></a>`OP-E-DISC-READ` | The game's program could not be read from the disc image. | The disc image is missing, truncated, larger than 2 GiB, or not a raw `.bin` (a 2048-byte-sector `.iso` is refused). The log line names every file it tried. | Make a new image of the disc as `.bin` and `.cue`, and open the `.cue`. |
+| <a id="op-e-module"></a>`OP-E-MODULE` | The game code built from the disc could not be loaded or built. | The [first-run compile](glossary.md#first-run-compile) failed, or the compiled game code in the library could not be loaded. A `command failed` line names the failing step. | Check the lines before it for OP-E-NO-COMPILER, OP-E-MODULE-DIR or OP-E-PACKAGE. Otherwise free disk space and start again; if it fails again, [report a bug](reporting-a-bug.md). |
+| <a id="op-e-no-compiler"></a>`OP-E-NO-COMPILER` | no compiler for the first-boot module build | The package has no bundled compiler and the system has no `cc`. | Install one (`sudo apt install gcc` or your distribution's equivalent), or name one in the variable `OPENPETE_CC`. |
+| <a id="op-e-module-dir"></a>`OP-E-MODULE-DIR` | cannot create the module build directory | The library folder is not writable, or on Windows the install path is too deep for the path-length limit. | Move the install to a short path, such as `C:\\Games\\OpenPete`, and check that the folder is writable. |
+| <a id="op-e-package"></a>`OP-E-PACKAGE` | recomp inputs not staged next to the exe, PSXRecomp not found, or cannot parse the manifest | Files of the `recomp` folder next to the program are missing or damaged. | Extract the release again into an empty folder. |
+| <a id="op-e-display"></a>`OP-E-DISPLAY` | No display could be opened. | No window system is reachable: no desktop session, or a remote shell without its display variables. | Start OpenPete from the desktop session. |
+| <a id="op-e-vulkan"></a>`OP-E-VULKAN` | OpenPete could not start Vulkan graphics. | No graphics device with the required Vulkan support was found, or its driver failed to create one. | Install the latest driver for your graphics card. To run without Vulkan, set `renderer = "psycross"` in `openpete.toml` ([Renderer](../graphics/display.md#renderer)). |
+| <a id="op-e-gpu-lost"></a>`OP-E-GPU-LOST` | the graphics device stopped responding; closing | The graphics driver reset the device: a driver fault, an overheating or overclocked card, or a mod shader that ran too long. The line before it names the last GPU pass begun. | Install the latest driver and remove overclocks. If the line names a mod's pass, disable that mod ([Mods](../customizing/mods.md)). |
+| <a id="op-e-hang"></a>`OP-E-HANG` | The game stopped responding and was closed. | The game's code made no progress for several seconds. | [Report a bug](reporting-a-bug.md) with `openpete.log` and the `hang-trace.bin` the message names. |
+| <a id="op-e-crash"></a>`OP-E-CRASH` | === openpete crash: ... === | The program crashed. The log holds the crash report. | [Report a bug](reporting-a-bug.md) with `openpete.log`; on Windows also attach `openpete-crash.dmp` from the same folder. |
+| <a id="op-e-card-open"></a>`OP-E-CARD-OPEN` | card N: ... cannot be opened, could not be read, or no card directory resolves; saves are refused | The memory card file or its folder cannot be read: missing permissions, or another program holds the file. | Close other programs using the file and check the `cards` folder's permissions ([File locations](file-locations.md)). The game runs, but nothing it saves is kept. |
+| <a id="op-e-card-bad"></a>`OP-E-CARD-BAD` | card N: ... is not a 128 KiB card image | The card file has the wrong size or an unknown header. It was renamed to `<name>.bad-N` and a new card made in its place. | To use the old saves, convert the renamed file to a raw 128 KiB `.mcr` and put it back under the card's name ([Saves](../playing/saves.md)). |
+| <a id="op-e-card-readonly"></a>`OP-E-CARD-READONLY` | card N: ... is a ... image; loaded read-only | The card file is a DexDrive `.gme`, VGS `.mem` or PSP/PS3 `.vmp` image. It loads, and saves to it are refused. | Convert it to a raw 128 KiB `.mcr` with a memory card tool. |
+| <a id="op-e-card-write"></a>`OP-E-CARD-WRITE` | card N: the save could not be written | Writing the card file failed: the disk is full, the folder is read-only, or another program holds the file. | Free disk space or close the other program, then save again. The card keeps its contents from before the failed save. |

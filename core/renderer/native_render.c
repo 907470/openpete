@@ -34,6 +34,7 @@
 #include "openpete_paths.h"         /* pipeline cache directory */
 #include "openpete_launcher.h"      /* the progress screen the compile stage draws */
 #include "openpete_config.h"        /* device-creation knobs from the game-neutral tiers */
+#include "openpete_error_ids.h"     /* the device-lost line's error id */
 #include "openpete_atomic_file.h"   /* pipeline cache write-back */
 
 #include "openpete_log.h"
@@ -6520,6 +6521,17 @@ static void nr_adopt_window_state(SDL_Window *win, rhi_device *dev,
                want_max ? "maximized" : "resized to the game's size");
 }
 
+/** @brief Tell the player the graphics device was lost, then request the clean shutdown.
+ *
+ * The RHI calls it once, on the first unrecoverable device loss; its own
+ * lines before it name the call that reported the loss. */
+static void nr_on_device_lost(void)
+{
+    OPL_ERROR_F("native", "the graphics device stopped responding; closing %s",
+                openpete_error_ref(OP_E_GPU_LOST));
+    openpete_request_shutdown();
+}
+
 /** @brief Take the launcher's window and device for the game, creating them first when no launcher did.
  *
  * The device is the one the launcher created and drew on (one device per
@@ -6669,7 +6681,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
     /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
      * rather than spin failed frames forever. */
-    rhi_set_device_lost_handler(openpete_request_shutdown);
+    rhi_set_device_lost_handler(nr_on_device_lost);
     /* The live env rows' writes wait for the compile workers' runs, inside
      * which the driver reads the environment, and for any file commit's
      * environment read on another thread. */

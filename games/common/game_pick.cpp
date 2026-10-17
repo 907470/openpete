@@ -79,7 +79,7 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
         /* A launch with no arguments (a double-click) fails only on the
          * config file or the environment; only it shows the box. */
         openpete_fatal_set_interactive(!neutral.headless && argc <= 1);
-        openpete_fatal_message("OpenPete could not start",
+        openpete_fatal_message(OP_E_CONFIG, "OpenPete could not start",
                                "A setting in openpete.toml (or an OPENPETE_ "
                                "environment variable) was not accepted.");
         *exit_code = rc;
