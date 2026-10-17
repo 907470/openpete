@@ -39,8 +39,9 @@
 # x86_64) for Windows, a trimmed llvm.org clang for Linux
 # (scripts/setup_linux_clang.sh produces one in .tools/clang). Without
 # it the Windows zip and the Linux tarball fall back to the user's own
-# compiler (documented in README-dist); the AppImage always bundles one,
-# since needing nothing installed is the point of it.
+# compiler (docs/src/user/getting-started/requirements.md documents this);
+# the AppImage always bundles one, since needing nothing installed is the
+# point of it.
 set -euo pipefail
 
 # Staging runs the built exe (--compile-mods) to fill each mod's .build, and
@@ -250,8 +251,9 @@ sys.exit(0 if any(g in games for g in sys.argv[2:]) else 3)
         # default, and the only option for a read-only AppImage) the
         # runtime looks in the data directory instead, and a placeholder
         # shipped here would be a directory nobody's mods are read from -
-        # worse, it would be mistaken for the real one. README-dist names
-        # the per-user path for those platforms.
+        # worse, it would be mistaken for the real one.
+        # docs/src/user/help/file-locations.md names the per-user path for
+        # those platforms.
         if [[ "$PLATFORM" == windows ]]; then
             mkdir -p "$STAGE/mods"
             printf '%s\n' \
@@ -500,7 +502,7 @@ package_linux() {  # package_linux <exe-dir>
         cp -a "$TOOLCHAIN"/. "$STAGE/recomp/tools/clang/"
     else
         echo "[package] NOTE: no --toolchain - the archive uses the" \
-             "system cc (README-dist documents this)." >&2
+             "system cc (the User docs requirements page documents this)." >&2
     fi
     [[ -n "$SIGN_CMD" ]] && echo "[package] NOTE: --sign is Windows-only" \
         "(Authenticode); ignored for linux" >&2

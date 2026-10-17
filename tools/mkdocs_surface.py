@@ -15,8 +15,9 @@ Generated pages, added in on_files as File.generated (no file is written):
   user/reference/key-actions.md    every key action of the host and pad
                                    domains
   user/reference/changelog.md      CHANGELOG.md without its Unreleased
-                                   section, site-absolute /docs/ links made
-                                   relative
+                                   section, its links into the site
+                                   (/docs/... or https://openpete.com/docs/...)
+                                   made relative
 
 An entry is listed when the baseline places it in the shipped build: a
 flag whose help-only row is in the release or preamble block, or whose
@@ -280,13 +281,15 @@ def key_actions_page(surface, dmap):
     return "\n".join(out) + "\n"
 
 
-ABS_LINK = re.compile(r"\]\(/docs/([^)#\s]*?)(?:\.html)?(#[^)\s]*)?\)")
+ABS_LINK = re.compile(r"\]\((?:https://openpete\.com)?/docs/"
+                      r"([^)#\s]*?)(?:\.html)?(#[^)\s]*)?\)")
 
 
 def changelog_page():
     """CHANGELOG.md without `## Unreleased` and without its HTML comments
-    (the format note for the website's generator), its /docs/ links
-    relative."""
+    (the format note for the website's generator), its links into the site
+    (`/docs/...` or `https://openpete.com/docs/...`) relative, so the
+    shipped copy links the shipped pages."""
     out, skip = [], False
     source = re.sub(r"<!--.*?-->\n*", "", CHANGELOG.read_text(), flags=re.S)
     for line in source.split("\n"):

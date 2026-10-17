@@ -13,7 +13,9 @@ Newest version first. The date and the "(Status)" label are each optional;
 the status is shown as a pill ("Unreleased", "Current"). Items take inline
 code (`x`), links ([text](url)), emphasis (*x*), and raw inline HTML where
 Markdown has none (<kbd>M</kbd>, &times;). A link whose whole text is one
-code span renders as <code><a>...</a></code>.
+code span renders as <code><a>...</a></code>. A documentation page is linked
+by its full https://openpete.com/docs/ URL, which resolves on GitHub and on
+openpete.com; the changelog page of the shipped docs makes it relative.
 -->
 
 ## Unreleased
@@ -90,9 +92,9 @@ code span renders as <code><a>...</a></code>.
 - Reduced VRAM usage
 - Fixed the dev menu (default: <kbd>M</kbd>) opening and closing the first time
 - Implemented mouse support for the in-game menu, freecam and bindings (<code>mouse:left</code>, <code>mouse:wheel_up</code>, <code>mouse:x</code>)
-- Mod SDK: Added [mouse APIs](/docs/modding/reference/api.html#mouse)
-- Mod SDK: Added [controller APIs](/docs/modding/reference/api.html#pads)
-- Mod SDK: Added [api->disc_path](/docs/modding/reference/api.html#api-disc_path)
+- Mod SDK: Added [mouse APIs](https://openpete.com/docs/modding/reference/api.html#mouse)
+- Mod SDK: Added [controller APIs](https://openpete.com/docs/modding/reference/api.html#pads)
+- Mod SDK: Added [api->disc_path](https://openpete.com/docs/modding/reference/api.html#api-disc_path)
 - Mod SDK: Dynamically allocate asset arrays to remove fixed capacities
 - Mod SDK: Added PSYQ types in the generated struct header with a <code>PSX\_</code> prefix
 - Spyro 1: Fixed some near-camera terrain rendering the low-poly geometry in the end credits
