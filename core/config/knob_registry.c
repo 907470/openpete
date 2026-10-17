@@ -2168,6 +2168,9 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LATCHED("PORTAL3_INTERP", "Debug", "1",
         "Spyro 2 and Spyro 3 portal-preview sub-tick interpolation (default 1); "
         "0 replays every preview at the state its tick captured."),
+    ENVROW_LATCHED("PORTAL3_SKY", "Debug", "1",
+        "Spyro 2 and Spyro 3 portal previews: the destination level's sky, read from its "
+        "WAD entry, beneath each picture (default 1); 0 leaves the authored backdrop."),
     ENVROW_LATCHED("PARTICLES", "Debug", "1",
         "Particle feed enable (default 1); the guest draw runs either way."),
     ENVROW_LATCHED("TRACERS", "Debug", "1",
@@ -2219,7 +2222,7 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LIVE("PORTAL_SKY_OTPUSH", "Debug", "1",
         "Far-portal sky rides the .s +64-slot OT bump as an 8192-world depth push (0 = un-pushed plane)."),
     ENVROW_LATCHED("NOLOD_PORTAL_DOME", "Debug", "1",
-        "Kill switch for extended-LOD always-render dome (default 1)."),
+        "Kill switch for extended-LOD always-render dome, every game (default 1)."),
     ENVROW_LATCHED("PORTAL_GUARD", "Debug", "0",
         "Experiment: re-feed .s near-band tris as portal guard."),
     ENVROW_LATCHED("PORTAL_APERTURE", "Debug", "1",

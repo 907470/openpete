@@ -63,7 +63,17 @@
  *          jal; the wrapper keeps its own $ra at sp+0x10
  *   env_wrap_ret the return address of that wrapper's call inside the draw
  *          dispatcher (the world draw under flag 0x4, the portal pass later
- *          under flag 0x8, the flag word in $s3) */
+ *          under flag 0x8, the flag word in $s3)
+ *   level_slots the byte table the loader indexes by a level number to get
+ *          the level's slot, the record's +0x42 byte naming the level a
+ *          portal leads to
+ *   level_wad_base the WAD.WAD entry holding slot 0's level data; slot n's
+ *          is level_wad_base + 2 * n, its sub-file 1 the block chain the
+ *          loader walks
+ *   level_wad_hops the size-prefixed blocks the loader steps over from the
+ *          start of that sub-file before the block whose size word sits at
+ *          +0x0C; the sky block follows it and the portal block follows the
+ *          sky block */
 typedef struct portal_game_s23_consts {
     uint32_t block;
     uint32_t pass;
@@ -76,6 +86,9 @@ typedef struct portal_game_s23_consts {
     uint32_t far_counter;
     uint32_t env_draw_ret;
     uint32_t env_wrap_ret;
+    uint32_t level_slots;
+    int      level_wad_base;
+    int      level_wad_hops;
 } portal_game_s23_consts_t;
 
 /* The running game's table: game_runtime_install (game_host_desc.h) copies

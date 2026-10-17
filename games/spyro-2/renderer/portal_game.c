@@ -17,4 +17,11 @@ const portal_game_s23_consts_t spyro2_portal_game_s23 = {
     .far_counter = 0x8006700Cu,   /* drawutil/func_8004C66C.s:359-360 */
     .env_draw_ret = 0x8004C524u,  /* drawutil/func_8004C4FC.s:15-17: after the world draw's jal */
     .env_wrap_ret = 0x800155E8u,  /* draw/func_800155A0.s:24-26: after the wrapper's jal */
+    .level_slots    = 0x80064940u, /* lbu %lo(D_80064940)(level number) (titlescreen_and_loading/
+                                    * leveldata/func_titlescreen_and_loading_80070498.s:75-79) */
+    .level_wad_base = 15,          /* Summer Forest's data entry; each level holds two entries */
+    .level_wad_hops = 6,           /* titlescreen_and_loading/overlay_pointers/
+                                    * func_titlescreen_and_loading_8006FA98.s: six blocks, then the
+                                    * +0x0C size word (:207-212), the sky (D_800681C4) and the
+                                    * portal block (D_80066F00, :213-226) */
 };

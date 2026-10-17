@@ -17,4 +17,10 @@ const portal_game_s23_consts_t spyro3_portal_game_s23 = {
     .far_counter = 0x8006C644u,   /* drawutil/func_8001EDEC.s:505-506 */
     .env_draw_ret = 0x8001EC4Cu,  /* drawutil/func_8001EC24.s:13-15: after the world draw's jal */
     .env_wrap_ret = 0x8001E4A8u,  /* draw/func_8001E460.s:22-24: after the wrapper's jal */
+    .level_slots    = 0x80066FCCu, /* lbu %lo(D_80066FCC)(level number) (loading/loading1/
+                                    * func_loading_8007494C.s:88-90) */
+    .level_wad_base = 97,          /* Sunrise Spring's data entry; each level holds two entries */
+    .level_wad_hops = 4,           /* loading/loading6/func_loading_800795BC.s: four blocks, then the
+                                    * +0x0C size word, the sky (D_8006E340, :152-153) and the
+                                    * portal block (D_8006C530, :161-162) */
 };

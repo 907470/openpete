@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 2a2a001f49f518e4493a92e28d9bb2b44ea503a5
+# head: 50221e23f3f9d2ab169812c8d476a05450b8e995
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -105,7 +105,6 @@ games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0
 games/common/psyq/psyq_thunks.cpp	psyq_VSync	29	0	
 games/common/psyq/psyq_thunks.cpp	psyq_thunk_state_load	27	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
-games/common/renderer/cyclorama.c	cyc_extract_m	139	0	
 games/common/renderer/cyclorama.c	cyclorama_reextract	56	0	
 games/common/renderer/flame.c	flame_build_strip	59	0	
 games/common/renderer/flame.c	flame_dump	26	0	

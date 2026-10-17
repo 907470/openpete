@@ -62,6 +62,8 @@
 #include "renderer/portal_spyro23.h"
 #include "renderer/portal_plane.h"     /* openpete_portal_plane_margin */
 #include "renderer/terrain.h"          /* terrain_native_flush_deferred */
+#include "renderer/portal_sky_s23.h"   /* portal_sky_s23_extension */
+#include "no_lod.h"                    /* openpete_no_lod */
 #include "game_layout.h"
 
 #include <math.h>
@@ -810,21 +812,86 @@ static void p3_decode_vertices(CPUState* cpu, uint32_t tab, uint32_t vc, int arg
     }
 }
 
-/** @brief Decodes a preview mesh's colour table, faded by the portal's IR0 toward its far colour, then by `sky_ir0` toward `env_far`.
+/** @brief Whether OPENPETE_PORTAL3_PROBE paints each preview layer one flat sentinel colour.
+ *
+ * Latched on the first call; set, non-empty and not starting with '0'
+ * enables it. Under it the backdrop draws 0xFF00FF, the picture 0x00FF00 and
+ * the destination-sky extension 0xFFFF00 (0x00BBGGRR), so a capture counts
+ * each layer's pixels inside the aperture.
+ * @return 1 when enabled, else 0. */
+static int p3_probe(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_PROBE"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/* The fade terms every colour of one preview passes. */
+typedef struct {
+    int      ir0;        /* the portal's fade toward far_rgb */
+    uint32_t far_rgb;
+    int      sky_ir0;    /* the sky fog factor toward env_far, 0 for none */
+    uint32_t env_far;
+    uint32_t probe;      /* the sentinel replacing every colour, 0xFF000000 for none */
+} p3_fade;
+
+#define P3_NO_PROBE 0xFF000000u
+
+/** @brief One colour of a preview after its two fades: the portal's IR0 toward its far colour, then the sky fog toward the environment far colour.
+ * @param c The authored colour, 0x00BBGGRR.
+ * @param f The preview's fade terms.
+ * @return The faded colour, or the probe sentinel. */
+static uint32_t p3_fade_colour(uint32_t c, const p3_fade* f) {
+    if (f->probe != P3_NO_PROBE) return f->probe;
+    if (f->ir0) c = ngte_depth_cue(c, f->far_rgb, f->ir0);
+    if (f->sky_ir0) c = ngte_depth_cue(c, f->env_far, f->sky_ir0);
+    return c;
+}
+
+/** @brief Decodes a preview mesh's colour table through p3_fade_colour.
  * @param cpu Reads the table.
  * @param tab The colour table's address.
  * @param cc The colour count, at most P3_MAX_COLS.
- * @param p The preview; supplies IR0 and the far colour.
- * @param sky_ir0 The sky fog factor, 0 for none.
- * @param env_far The environment far colour.
+ * @param f The preview's fade terms.
  * @param col Receives the colours. */
-static void p3_decode_colours(CPUState* cpu, uint32_t tab, uint32_t cc, const p3_preview* p,
-                              int sky_ir0, uint32_t env_far, uint32_t* col) {
-    for (uint32_t j = 0; j < cc; j++) {
-        uint32_t c = cpu->read_word(tab + j * 4) & 0xFFFFFF;
-        if (p->ir0) c = ngte_depth_cue(c, p->far_rgb, p->ir0);
-        if (sky_ir0) c = ngte_depth_cue(c, env_far, sky_ir0);
-        col[j] = c;
+static void p3_decode_colours(CPUState* cpu, uint32_t tab, uint32_t cc, const p3_fade* f, uint32_t* col) {
+    for (uint32_t j = 0; j < cc; j++) col[j] = p3_fade_colour(cpu->read_word(tab + j * 4) & 0xFFFFFF, f);
+}
+
+/** @brief Whether OPENPETE_PORTAL3_SKY draws the destination sky read from the disc beneath each picture.
+ *
+ * Latched on the first call; on unless the variable starts with '0'.
+ * @return 1 when on, else 0. */
+static int p3_sky_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_SKY"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief Emits the destination sky beneath a portal's picture: every triangle portal_sky_s23_extension returns, faded as the picture is.
+ *
+ * Drawn with the picture record, before its faces and after the backdrop's,
+ * at the same depth, so the picture keeps every pixel it covers and the sky
+ * replaces the backdrop wherever the sky has a face and the picture stops. A triangle whose three
+ * corners share an outcode bit against the bounds is dropped, as the leaf
+ * drops a picture face; the rest are clipped to the outline by p3_emit_split.
+ * @param cpu Reads the portal record.
+ * @param p The picture preview; its record names the portal.
+ * @param E The preview's emission context.
+ * @param B The preview's bounds.
+ * @param f The preview's fade terms, the probe sentinel for the extension. */
+static void p3_emit_sky(CPUState* cpu, const p3_preview* p, const p3_emit_ctx* E, p3_bounds B, const p3_fade* f) {
+    const portal_sky_tri* t = NULL;
+    const int n = p->rec ? portal_sky_s23_extension(cpu, p->rec, &t) : 0;
+    for (int i = 0; i < n; i++) {
+        p3_v tri[3];
+        int all = 0xF;
+        for (int k = 0; k < 3; k++) {
+            tri[k].x = t[i].x[k]; tri[k].y = t[i].y[k];
+            tri[k].rgb = p3_fade_colour(t[i].rgb[k], f);
+            all &= (tri[k].y <= B.ymin) | ((tri[k].y >= B.ymax) << 1) | ((tri[k].x <= B.xmin) << 2) |
+                   ((tri[k].x >= B.xmax) << 3);
+        }
+        if (!all) p3_emit_split(tri, 3, p, E, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
     }
 }
 
@@ -840,6 +907,9 @@ static void p3_decode_colours(CPUState* cpu, uint32_t tab, uint32_t cc, const p3
  * @param cpu The guest CPU state.
  * @param p The preview; its edges are the ones the faces clip to.
  * @param op The re-derived opening, or NULL.
+ * Before a picture's faces the destination sky is emitted beneath them
+ * (p3_emit_sky), unless OPENPETE_PORTAL3_SKY is 0; a portal drawn as its
+ * backdrop alone gets no sky.
  * @param vw The view; supplies the screen recentring offset.
  * @param sky_ir0 The sky fog factor, 0 for none.
  * @param env_far The environment far colour.
@@ -859,7 +929,9 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
                             -(double)openpete_portal_plane_margin(), 1 + p->slot };
     const p3_bounds B = p3_bounds_of(p, op);
     p3_decode_vertices(cpu, M + vo, vc, p->arg, B, vx, vy, oc);
-    p3_decode_colours(cpu, M + co, cc, p, sky_ir0, env_far, col);
+    const int probe = p3_probe();
+    p3_fade F = { p->ir0, p->far_rgb, sky_ir0, env_far, probe ? (p->arg ? 0xFF00FFu : 0x00FF00u) : P3_NO_PROBE };
+    p3_decode_colours(cpu, M + co, cc, &F, col);
     /* The portal's stencil footprint, once per portal (the background record
      * comes first). */
     if (p->slot < P3_MAX_PORTALS && !mask_done[p->slot]) {
@@ -868,6 +940,11 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
     }
     const uint32_t tag = OPENPETE_TAG_PORTAL(p->arg ? OPENPETE_TAG_PORTAL_FLAT : OPENPETE_TAG_PORTAL_DOME, p->slot);
     openpete_native_scene_set_tag(tag);
+    if (p->arg == 0 && p3_sky_on()) {
+        p3_fade S = F;
+        S.probe = probe ? 0xFFFF00u : P3_NO_PROBE;
+        p3_emit_sky(cpu, p, &E, B, &S);
+    }
     const p3_mesh mesh = { vx, vy, oc, col, vc, cc };
     for (uint32_t f = 0; f < fc; f++) {
         uint32_t w0 = cpu->read_word(M + fo + f * 8), w1 = cpu->read_word(M + fo + f * 8 + 4);
@@ -907,13 +984,45 @@ static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) {
     }
 }
 
+/** @brief Whether extended LOD draws every portal's picture: openpete_no_lod, unless OPENPETE_NOLOD_PORTAL_DOME starts with '0'.
+ *
+ * The variable is latched on the first call; openpete_no_lod is read live.
+ * @return 1 when the picture is forced, else 0. */
+static int p3_lod_picture(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_NOLOD_PORTAL_DOME"); v = !(e && *e == '0'); }
+    return openpete_no_lod && v;
+}
+
+/** @brief The previews extended LOD draws: every preview unfaded by distance, and the picture of every portal the pass drew only as its backdrop.
+ *
+ * The pass draws a portal at depth 0x5000 and beyond as its backdrop alone,
+ * faded fully toward its far colour, and fades both records toward it from
+ * depth 0x4000. Here every preview's IR0 is 0, and a backdrop record that no
+ * picture record of the same slot follows is followed by one: the same
+ * block, with the leaf argument 0 and the mesh header at +0x3C.
+ * @param T The tick as captured (or lerped).
+ * @param O Receives the previews to feed. */
+static void p3_lod_tick(const p3_tick* T, p3_tick* O) {
+    O->n = 0; O->frame = T->frame; O->valid = T->valid;
+    for (int i = 0; i < T->n && O->n < P3_MAX_PORTALS * 2; i++) {
+        O->p[O->n] = T->p[i];
+        O->p[O->n++].ir0 = 0;
+        const int pic_follows = i + 1 < T->n && T->p[i + 1].arg == 0 && T->p[i + 1].slot == T->p[i].slot;
+        if (T->p[i].arg != 1 || pic_follows || O->n >= P3_MAX_PORTALS * 2) continue;
+        O->p[O->n] = O->p[O->n - 1];
+        O->p[O->n].arg = 0;
+        O->p[O->n++].mesh += 0x3Cu;
+    }
+}
+
 /** @brief Emits every preview of a tick into the native scene.
  *
  * Returns without emitting when the native scene or RP_PORTAL is off, and
  * before opening the frame's scene when the tick holds no preview. Resets the
  * census counters, opens the scene for the current openpete_frame, resolves
  * each preview's opening under the view (p3_resolve) and extracts it, and records the frame in s_sky_fed_frame when any triangle was
- * emitted.
+ * emitted. Under extended LOD the previews are p3_lod_tick's.
  * @param cpu The guest CPU state.
  * @param T The captured (or lerped) previews. */
 static void p3_feed(CPUState* cpu, const p3_tick* T) {
@@ -923,6 +1032,8 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
     /* A pass that captured no preview emits nothing, so it must not open the
      * frame's scene: opening snapshots and clears whatever the frame holds. */
     if (T->n == 0) return;
+    static p3_tick s_lod;
+    if (p3_lod_picture()) { p3_lod_tick(T, &s_lod); T = &s_lod; }
     /* In a game state that draws neither sky nor terrain this pass is the
      * frame's first native feeder, so it opens the frame's scene itself.
      * Without that, the previews append to the previous frame's already

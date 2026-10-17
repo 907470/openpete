@@ -203,19 +203,63 @@ static void cyc_capture_visibility(CPUState* cpu) {
     for (uint32_t i = 0; i < n; i++) s_cyc_vis[i] = cpu->read_byte(game_layout.cyc.visibility + i);
     s_cyc_vis_n = n;
 }
+/** @brief Passes one camera-space sky face to cyc_clip_emit under the view in `ctx`.
+ * @param a The first corner.
+ * @param b The second corner.
+ * @param c The third corner.
+ * @param gouraud Nonzero for a gouraud face.
+ * @param ctx The ngte_view the face projects under. */
+static void cyc_emit_cb(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, void* ctx) {
+    cyc_clip_emit(a, b, c, gouraud, (const ngte_view*)ctx);
+}
+
+/** @brief Builds the sector-pointer iteration set of one sky draw (func_8004EBA8 phase 0).
+ *
+ * A layout with per-sector visibility bytes takes the sectors whose captured
+ * byte is nonzero; otherwise a negative a0 takes every sector and a
+ * non-negative one the occlusion group occGroups[a0] (indices ending at
+ * 0xFF). In widescreen (`ws`) every sector is taken: the visibility bytes and
+ * the group are a 4:3 selection that omits the dome sectors visible only at
+ * the widened sides, and the near-plane clip and the scissor confine the
+ * full 360 degree dome to the visible frustum. The count is clamped to 1024.
+ * @param cpu The guest CPU state, read only.
+ * @param a0 The draw's a0: the occlusion group index, negative for all sectors.
+ * @param ws Nonzero when the view is wider than 4:3.
+ * @param sectors Receives the sector addresses.
+ * @return The number of sectors written. */
+static uint32_t cyc_sector_list(CPUState* cpu, uint32_t a0, int ws, uint32_t sectors[1024]) {
+    uint32_t sectorCount = cpu->read_word(game_layout.cyc.sector_count);
+    const uint32_t sectorsBase = cpu->read_word(game_layout.cyc.sectors);
+    const uint32_t occGroups   = cpu->read_word(game_layout.cyc.occ_groups);
+    uint32_t n = 0;
+    if (sectorCount > 1024) sectorCount = 1024;
+    if (game_layout.cyc.visibility || (int32_t)a0 < 0 || ws) {
+        /* The visibility bytes: nonzero = drawn, written by the game's
+         * visibility pass before the draw, keyed on the camera position
+         * against the sky occlusion data. */
+        for (uint32_t i = 0; i < sectorCount; i++)
+            if (!game_layout.cyc.visibility || ws || (i < s_cyc_vis_n && s_cyc_vis[i]))
+                sectors[n++] = cpu->read_word(sectorsBase + i * 4);
+        return n;
+    }
+    const uint32_t list = occGroups ? cpu->read_word(occGroups + a0 * 4) : 0u;
+    for (uint32_t k = 0; list && k < 1024; k++) {
+        const uint8_t idx = cpu->read_byte(list + k);
+        if (idx == 0xFF) break;
+        sectors[n++] = cpu->read_word(sectorsBase + (uint32_t)idx * 4);
+    }
+    return n;
+}
+
 /** @brief Rebuild s_native from g_Cyclorama with the given cull and draw matrices.
  *
  * Reads the sector table and the camera GTE offsets and H, then mirrors
- * func_8004EBA8: builds the sector list (the visibility bytes, all sectors
- * for a negative a0, or the occlusion group a0), culls each sector against
- * its radius with the cull matrix, unpacks each vertex and rotates it with
- * the draw matrix into camera space, applies the depth cue to the colour
- * table, and emits a flat or gouraud triangle per face (strips on Spyro 3),
- * near-plane clipped through cyc_clip_emit. Widescreen views walk every
- * sector and skip the radius cull. Counts read from RAM are clamped to the
- * local buffers (1024 sectors, 4096 vertices and colours); out-of-range face
- * indices drop the face. When the layout depth-cues in the draw and no fade
- * is passed, a nonzero fog factor word supplies the fade. Reads only.
+ * func_8004EBA8: builds the sector list (cyc_sector_list), culls each
+ * sector against its radius with the cull matrix, and decodes it with the
+ * draw matrix through cyclorama_decode_sector, each face near-plane clipped
+ * through cyc_clip_emit. Widescreen views skip the radius cull. When the
+ * layout depth-cues in the draw and no fade is passed, a nonzero fog factor
+ * word supplies the fade. Reads only.
  * @param cpu The guest CPU state, read only.
  * @param a0 The draw's a0: the occlusion group index, negative for all sectors.
  * @param Mcull Q12 matrix for the sector radius cull.
@@ -229,44 +273,9 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
     /* One projection view for this pass: offsets, H and the Hor+ bounds. The
      * cull/draw matrices come from the hook's a1/a2, not the view. */
     ngte_view vw; ngte_view_build(cpu, &vw);
-
-    uint32_t sectorCount = cpu->read_word(game_layout.cyc.sector_count);
-    uint32_t sectorsBase = cpu->read_word(game_layout.cyc.sectors);
-    uint32_t occGroups   = cpu->read_word(game_layout.cyc.occ_groups);
-
-    /* Build the sector-pointer iteration set (mirrors func_8004EBA8 phase 0).
-     * In widescreen the .s's per-view occlusion GROUP (occGroups[a0]) is a 4:3
-     * selection that omits the dome sectors visible only at the widened sides,
-     * so iterate ALL sectors instead (the full 360° dome is in RAM; the
-     * per-sector radius cull below + the near-plane clip + the scissor confine
-     * it to the visible frustum). Display-only. */
-    int ws = vw.extended;   /* Hor+ or a wider FOV */
-    uint32_t sectors[1024]; uint32_t nSectors = 0;
-    if (sectorCount > 1024) sectorCount = 1024;
-    if (game_layout.cyc.visibility) {
-        /* The game's visibility pass wrote one byte per sector before the
-         * draw (nonzero = drawn), keyed on the camera position against the
-         * sky occlusion data: the same 4:3 selection as the group list, so
-         * widescreen walks every sector here too. */
-        for (uint32_t i = 0; i < sectorCount; i++)
-            if (ws || (i < s_cyc_vis_n && s_cyc_vis[i]))
-                sectors[nSectors++] = cpu->read_word(sectorsBase + i * 4);
-    } else if ((int32_t)a0 < 0 || ws) {
-        for (uint32_t i = 0; i < sectorCount; i++)
-            sectors[nSectors++] = cpu->read_word(sectorsBase + i * 4);
-    } else if (occGroups) {
-        uint32_t list = cpu->read_word(occGroups + a0 * 4);
-        if (list) {
-            for (uint32_t k = 0; k < 1024; k++) {
-                uint8_t idx = cpu->read_byte(list + k);
-                if (idx == 0xFF) break;
-                sectors[nSectors++] = cpu->read_word(sectorsBase + (uint32_t)idx * 4);
-            }
-        }
-    }
-
-    static double   pm1[4096], pm2[4096], pz[4096];   /* camera-space MAC per vertex */
-    static uint32_t col[4096];
+    const int ws = vw.extended;   /* Hor+ or a wider FOV */
+    uint32_t sectors[1024];
+    const uint32_t nSectors = cyc_sector_list(cpu, a0, ws, sectors);
 
     /* A sky draw that depth-cues its own colours: the factor word, when
      * nonzero, is IR0 against the fog far colour for every colour entry. */
@@ -274,10 +283,14 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
         int ir0 = (int)cpu->read_word(game_layout.fog.factor);
         if (ir0) { fade_ir0 = ir0; fade_rgb = ngte_fog_far_colour(cpu); }
     }
-    const int s3 = game_layout.cyc.face_layout == CYC_FACES_SPYRO3;
+    const cyclorama_fade fade[2] = { { fade_rgb, fade_ir0 }, { 0u, 0 } };
+    const cyclorama_src src = { cpu, NULL, 0u, 0u };
+    double Md[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) Md[i][j] = (double)Mdraw[i][j];
 
     for (uint32_t si = 0; si < nSectors; si++) {
-        uint32_t S = sectors[si];
+        const uint32_t S = sectors[si];
         if (!S) continue;
 
         /* phase-1 cull: project the representative point with the cull
@@ -294,103 +307,149 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
             double cull_mac3 = project(Mcull, cull_vx, cull_vy, cull_vz, 0, 0, &vw, &dsx, &dsy, NULL);
             if (cull_mac3 <= (double)radius) continue;
         }
+        cyclorama_decode_sector(&src, S, Md, 4096.0, fade, cyc_emit_cb, &vw);
+    }
+}
 
-        uint32_t h8 = cpu->read_word(S + 0x08), hC = cpu->read_word(S + 0x0C);
-        uint32_t hF = cpu->read_word(S + 0x10);
-        int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16);
-        int centerZ = (int16_t)(hC >> 16);
-        /* Spyro 1: +0x0C low half = vertex count, +0x10 = face count (bits
-         * 0-12) and colour-table byte length (>> 14). Spyro 3: +0x0C byte 0 =
-         * vertex count, byte 1 = colour count; +0x10 high half = face-word
-         * list byte length, low half = index-halfword list byte length. */
-        uint32_t vertexCount = s3 ? (hC & 0xFF) : (hC & 0xFFFF);
-        uint32_t colorCount  = s3 ? ((hC >> 8) & 0xFF) : (hF >> 14) / 4;
-        uint32_t faceCount   = s3 ? 0 : (hF & 0x1FFF);
+/* ---- the sector decode, shared with the portal previews ---------------- */
 
-        if (vertexCount > 4096) vertexCount = 4096;
-        uint32_t vertBase  = S + game_layout.cyc.vertex_base;
-        uint32_t colorBase = vertBase + vertexCount * 4;       /* s4 */
-        uint32_t faceBase  = colorBase + (s3 ? colorCount * 4 : (hF >> 14));
+/** @brief Reads one little-endian word of a sector source, 0 outside a host source's span.
+ * @param s The source.
+ * @param a The address.
+ * @return The word. */
+static uint32_t cyc_rd32(const cyclorama_src* s, uint32_t a) {
+    if (!s->buf) return s->cpu->read_word(a);
+    const uint32_t o = a - s->base;
+    if (a < s->base || o > s->len || s->len - o < 4u) return 0u;
+    const uint8_t* b = s->buf + o;
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
 
-        /* phase-2a: unpack + compute the camera-space MAC for every vertex (the
-         * near-plane clip interpolates in camera space, then projects). */
-        for (uint32_t i = 0; i < vertexCount; i++) {
-            uint32_t w = cpu->read_word(vertBase + i * 4);
-            int vx = centerX - (int)((w >> 10) & 0x7FF);
-            int vy = centerY - (int)(w & 0x3FF);
-            int vz = centerZ + (int)(w >> 21);
-            pm1[i] = (Mdraw[0][0]*(double)vx + Mdraw[0][1]*(double)vy + Mdraw[0][2]*(double)vz) / 4096.0;
-            pm2[i] = (Mdraw[1][0]*(double)vx + Mdraw[1][1]*(double)vy + Mdraw[1][2]*(double)vz) / 4096.0;
-            pz[i]  = (Mdraw[2][0]*(double)vx + Mdraw[2][1]*(double)vy + Mdraw[2][2]*(double)vz) / 4096.0;
+/** @brief Reads one little-endian halfword of a sector source, 0 outside a host source's span.
+ * @param s The source.
+ * @param a The address.
+ * @return The halfword. */
+static uint32_t cyc_rd16(const cyclorama_src* s, uint32_t a) {
+    if (!s->buf) return s->cpu->read_half(a);
+    const uint32_t o = a - s->base;
+    if (a < s->base || o > s->len || s->len - o < 2u) return 0u;
+    return (uint32_t)s->buf[o] | ((uint32_t)s->buf[o + 1] << 8);
+}
+
+/* One decoded sector: its camera-space vertices and faded colours. */
+typedef struct {
+    double   m1[4096], m2[4096], m3[4096];
+    uint32_t col[4096];
+    uint32_t nv, nc;
+} cyc_sector;
+
+/** @brief Emits one face of a decoded sector by its vertex and colour indices.
+ *
+ * A face with a vertex index at or past the vertex count is dropped; a colour
+ * index at or past the colour count reads black. The face is flat when its
+ * three colour indices are equal, else gouraud.
+ * @param D The decoded sector.
+ * @param v The three vertex indices.
+ * @param k The three colour indices.
+ * @param fn Receives the face.
+ * @param ctx The receiver's context. */
+static void cyc_sector_face(const cyc_sector* D, const uint32_t v[3], const uint32_t k[3],
+                            cyclorama_tri_fn fn, void* ctx) {
+    if (v[0] >= D->nv || v[1] >= D->nv || v[2] >= D->nv) return;
+    const int gouraud = !(k[0] == k[1] && k[0] == k[2]);
+    ngte_cvert C[3];
+    for (int i = 0; i < 3; i++) {
+        const uint32_t ki = gouraud ? k[i] : k[0];
+        memset(&C[i], 0, sizeof C[i]);
+        C[i].m1 = D->m1[v[i]]; C[i].m2 = D->m2[v[i]]; C[i].m3 = D->m3[v[i]];
+        C[i].rgb = ki < D->nc ? D->col[ki] : 0;
+    }
+    fn(C[0], C[1], C[2], gouraud, ctx);
+}
+
+/** @brief Walks a Spyro 2/3 sector's strips: one face word per strip and a halfword index list.
+ *
+ * Face word bits 31-24 are the third vertex, 23-17 / 16-10 / 9-3 the three
+ * colour indices and 2-0 the number of continuation triangles; the strip's
+ * first halfword holds the first two vertices ((H >> 8) & 0xFF, H & 0xFF)
+ * and each continuation halfword adds one vertex (H & 0xFF) with one colour
+ * ((H >> 8) & 0x7F); bit 15 of a continuation shifts the window by one,
+ * clear keeps the middle vertex and replaces the first.
+ * @param s The source.
+ * @param faceBase The face-word list's address.
+ * @param hF The sector's +0x10 word: face-word list length << 16 | halfword list length.
+ * @param D The decoded sector.
+ * @param fn Receives each face.
+ * @param ctx The receiver's context. */
+static void cyc_sector_strips(const cyclorama_src* s, uint32_t faceBase, uint32_t hF,
+                              const cyc_sector* D, cyclorama_tri_fn fn, void* ctx) {
+    uint32_t hw = faceBase + (hF >> 16);
+    const uint32_t hwEnd = hw + (hF & 0xFFFF);
+    uint32_t fw = faceBase;
+    for (int guard = 0; hw + 2 <= hwEnd && guard < 8192; guard++) {
+        const uint32_t W = cyc_rd32(s, fw), H = cyc_rd16(s, hw);
+        fw += 4; hw += 2;
+        uint32_t v[3] = { (H >> 8) & 0xFF, H & 0xFF, (W >> 24) & 0xFF };
+        uint32_t k[3] = { (W >> 17) & 0x7F, (W >> 10) & 0x7F, (W >> 3) & 0x7F };
+        uint32_t more = W & 7;
+        for (;;) {
+            cyc_sector_face(D, v, k, fn, ctx);
+            if (!more || hw + 2 > hwEnd) break;
+            more--;
+            const uint32_t H2 = cyc_rd16(s, hw);
+            hw += 2;
+            if (H2 & 0x8000) { v[0] = v[1]; v[1] = v[2]; k[0] = k[1]; k[1] = k[2]; }
+            else             { v[0] = v[2]; k[0] = k[2]; }
+            v[2] = H2 & 0xFF; k[2] = (H2 >> 8) & 0x7F;
         }
-        if (colorCount > 4096) colorCount = 4096;
-        for (uint32_t j = 0; j < colorCount; j++) {
-            uint32_t c = cpu->read_word(colorBase + j * 4) & 0xFFFFFF;
-            col[j] = fade_ir0 ? ngte_depth_cue(c, fade_rgb, fade_ir0) : c;
-        }
+    }
+}
 
-        if (s3) {
-            /* phase-2b, strips: one face word per strip (bits 31-24 the
-             * third vertex, 23-17 / 16-10 / 9-3 the three colour indices,
-             * 2-0 the number of continuation triangles) and a parallel
-             * halfword list whose first entry holds the first two vertices
-             * ((H >> 8) & 0xFF, H & 0xFF) and whose continuation entries each
-             * add one vertex (H & 0xFF) with one colour ((H >> 8) & 0x7F);
-             * bit 15 of a continuation shifts the window by one, clear keeps
-             * the middle vertex and replaces the first. */
-            uint32_t hw = faceBase + (hF >> 16), hwEnd = hw + (hF & 0xFFFF);
-            uint32_t fw = faceBase;
-            int guard = 0;
-            while (hw + 2 <= hwEnd && guard++ < 8192) {
-                uint32_t W = cpu->read_word(fw); fw += 4;
-                uint32_t H = cpu->read_half(hw); hw += 2;
-                uint32_t v0 = (H >> 8) & 0xFF, v1 = H & 0xFF, v2 = (W >> 24) & 0xFF;
-                uint32_t k0 = (W >> 17) & 0x7F, k1 = (W >> 10) & 0x7F, k2 = (W >> 3) & 0x7F;
-                uint32_t more = W & 7;
-                for (;;) {
-                    if (v0 < vertexCount && v1 < vertexCount && v2 < vertexCount) {
-                        int gouraud = !(k0 == k1 && k0 == k2);
-                        uint32_t cc0 = (k0 < colorCount) ? col[k0] : 0;
-                        uint32_t cc1 = gouraud ? ((k1 < colorCount) ? col[k1] : 0) : cc0;
-                        uint32_t cc2 = gouraud ? ((k2 < colorCount) ? col[k2] : 0) : cc0;
-                        ngte_cvert A = { pm1[v0], pm2[v0], pz[v0], cc0 };
-                        ngte_cvert B = { pm1[v1], pm2[v1], pz[v1], cc1 };
-                        ngte_cvert C = { pm1[v2], pm2[v2], pz[v2], cc2 };
-                        cyc_clip_emit(A, B, C, gouraud, &vw);
-                    }
-                    if (!more || hw + 2 > hwEnd) break;
-                    more--;
-                    uint32_t H2 = cpu->read_half(hw); hw += 2;
-                    if (H2 & 0x8000) { v0 = v1; v1 = v2; k0 = k1; k1 = k2; }
-                    else             { v0 = v2; k0 = k2; }
-                    v2 = H2 & 0xFF; k2 = (H2 >> 8) & 0x7F;
-                }
-            }
-            continue;
-        }
-
-        /* phase-2b: faces. word0 = vertex indices, word1 = colour indices.
-         * Flat (F3) when the 3 colour indices match, else gouraud (G3). */
-        for (uint32_t f = 0; f < faceCount; f++) {
-            uint32_t w0 = cpu->read_word(faceBase + f * 8);
-            uint32_t w1 = cpu->read_word(faceBase + f * 8 + 4);
-            uint32_t i0 = (w0 >> 22) & 0x3FF, i1 = (w0 >> 12) & 0xFF, i2 = (w0 >> 2) & 0xFF;
-            uint32_t k0 = (w1 >> 22) & 0x3FF, k1 = (w1 >> 12) & 0xFF, k2 = (w1 >> 2) & 0xFF;
-            if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
-            int gouraud = !(k0 == k1 && k0 == k2);
-            uint32_t cc0 = (k0 < colorCount) ? col[k0] : 0;
-            uint32_t cc1 = gouraud ? ((k1 < colorCount) ? col[k1] : 0) : cc0;
-            uint32_t cc2 = gouraud ? ((k2 < colorCount) ? col[k2] : 0) : cc0;
-
-            /* Near-plane CLIP (not reject) so the dome's side/wrap geometry that
-             * straddles the camera renders its in-front part at wide aspect - the
-             * old whole-tri reject dropped it (tuned for 4:3 ±37°). cyc_push_tri
-             * applies the widescreen-aware horizontal trivial reject + scissor. */
-            ngte_cvert A = { pm1[i0], pm2[i0], pz[i0], cc0 };
-            ngte_cvert B = { pm1[i1], pm2[i1], pz[i1], cc1 };
-            ngte_cvert C = { pm1[i2], pm2[i2], pz[i2], cc2 };
-            cyc_clip_emit(A, B, C, gouraud, &vw);
-        }
+void cyclorama_decode_sector(const cyclorama_src* src, uint32_t S, const double M[3][3], double scale,
+                             const cyclorama_fade fade[2], cyclorama_tri_fn fn, void* ctx) {
+    static cyc_sector D;
+    const uint32_t h8 = cyc_rd32(src, S + 0x08), hC = cyc_rd32(src, S + 0x0C);
+    const uint32_t hF = cyc_rd32(src, S + 0x10);
+    const int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16);
+    const int centerZ = (int16_t)(hC >> 16);
+    /* Spyro 1: +0x0C low half = vertex count, +0x10 = face count (bits
+     * 0-12) and colour-table byte length (>> 14). Spyro 2/3: +0x0C byte 0 =
+     * vertex count, byte 1 = colour count; +0x10 high half = face-word
+     * list byte length, low half = index-halfword list byte length. */
+    const int s3 = game_layout.cyc.face_layout == CYC_FACES_SPYRO3;
+    uint32_t vertexCount = s3 ? (hC & 0xFF) : (hC & 0xFFFF);
+    uint32_t colorCount  = s3 ? ((hC >> 8) & 0xFF) : (hF >> 14) / 4;
+    if (vertexCount > 4096) vertexCount = 4096;
+    if (colorCount > 4096) colorCount = 4096;
+    const uint32_t vertBase  = S + game_layout.cyc.vertex_base;
+    const uint32_t colorBase = vertBase + vertexCount * 4;
+    const uint32_t faceBase  = colorBase + (s3 ? colorCount * 4 : (hF >> 14));
+    /* The camera-space MAC of every vertex: the near-plane clip interpolates
+     * in camera space, then projects. */
+    for (uint32_t i = 0; i < vertexCount; i++) {
+        const uint32_t w = cyc_rd32(src, vertBase + i * 4);
+        const int vx = centerX - (int)((w >> 10) & 0x7FF);
+        const int vy = centerY - (int)(w & 0x3FF);
+        const int vz = centerZ + (int)(w >> 21);
+        D.m1[i] = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / scale;
+        D.m2[i] = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / scale;
+        D.m3[i] = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / scale;
+    }
+    for (uint32_t j = 0; j < colorCount; j++) {
+        uint32_t c = cyc_rd32(src, colorBase + j * 4) & 0xFFFFFF;
+        for (int f = 0; f < 2; f++)
+            if (fade[f].ir0) c = ngte_depth_cue(c, fade[f].rgb, fade[f].ir0);
+        D.col[j] = c;
+    }
+    D.nv = vertexCount; D.nc = colorCount;
+    if (s3) { cyc_sector_strips(src, faceBase, hF, &D, fn, ctx); return; }
+    /* Faces: word0 = vertex indices, word1 = colour indices. */
+    const uint32_t faceCount = hF & 0x1FFF;
+    for (uint32_t f = 0; f < faceCount; f++) {
+        const uint32_t w0 = cyc_rd32(src, faceBase + f * 8), w1 = cyc_rd32(src, faceBase + f * 8 + 4);
+        const uint32_t v[3] = { (w0 >> 22) & 0x3FF, (w0 >> 12) & 0xFF, (w0 >> 2) & 0xFF };
+        const uint32_t k[3] = { (w1 >> 22) & 0x3FF, (w1 >> 12) & 0xFF, (w1 >> 2) & 0xFF };
+        cyc_sector_face(&D, v, k, fn, ctx);
     }
 }
 
