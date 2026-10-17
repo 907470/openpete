@@ -4395,21 +4395,28 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
  *   and options screens, whose level picture and title text are 2D quads).
  *   That screen is the frame the game means to freeze under the menu, so it
  *   qualifies.
- * - World content with terrain: an ordinary gameplay frame. Terrain reaches
- *   the present by one of two routes and either qualifies: the retained
- *   cache's selected state (frame_content() > 0, or < 0 when the retained path
- *   is not in use at all), or WORLD triangles in the scene when the terrain is
- *   batched on the CPU. Testing only the retained state rejects every present
- *   whenever the retained path is initialised but unusable - a vertex-snap
- *   raster grid, a delayed or split scene, a device without fp64 - because the
+ * - Terrain drawn: an ordinary gameplay frame. Terrain reaches the present by
+ *   one of two routes and either qualifies alone: the retained cache's
+ *   selected state paints a live sector (frame_content() > 0), or the scene
+ *   carries the game's WORLD triangles, batched on the CPU. A present whose
+ *   terrain is all cache-drawn carries no WORLD triangle and, when the moby
+ *   path is off or no moby is in view, no ACTOR triangle either, so the
+ *   retained state is read as world on its own. Testing only the retained
+ *   state rejects every present whenever the retained path is initialised but
+ *   unusable - a delayed or split scene, a device without fp64 - because the
  *   feeder then stages an empty state per scene, which reads the same as a
- *   genuine per-scene skip.
- * - 3D without world: the degenerate pause-entry transition, where the terrain
- *   feed cuts out one present before the freeze prim is emitted and the frame
- *   holds the player's body or a moby over the HUD. Snapshotting it freezes a
- *   backdrop with no ground, so it is rejected and the last full gameplay
- *   frame stands.
+ *   genuine per-scene skip; the CPU route covers those.
+ * - Retained path not in use (frame_content() < 0): scene_has_world decides,
+ *   as every world triangle is on the CPU.
+ * - 3D without terrain while the retained path is in use: the degenerate
+ *   pause-entry transition, where the terrain feed cuts out one present
+ *   before the freeze prim is emitted (staging an empty retained state) and
+ *   the frame holds the player's body or a moby over the HUD. Snapshotting
+ *   it freezes a backdrop with no ground, so it is rejected and the last full
+ *   gameplay frame stands.
  *
+ * The scene-content clause matches scene_content_test: a present whose only
+ * content is the selected retained terrain composes, so it is a source.
  * frame_content() reads the state selected for this present, so the caller
  * selects by stamp first.
  * @param scene   The present's scene triangle buffer.
@@ -4417,10 +4424,13 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
  * @param sfreeze The present's freeze word; bit 31 set marks a freeze scene.
  * @return true when the scene is a freeze-backdrop source. */
 static bool scene_is_freeze_source(const scene_tri_t* scene, int n, uint32_t sfreeze) {
-    if (!scene_has_game_tris(scene, n) || (sfreeze & (1u << 31))) return false;
+    if (sfreeze & (1u << 31)) return false;
+    const int tc = openpete_tercache_frame_content();
+    if (tc > 0) return true;                       /* the retained state paints terrain */
+    if (!scene_has_game_tris(scene, n)) return false;
     if (scene_is_2d_only(scene, n)) return true;
-    return scene_has_world(scene, n)
-        && (openpete_tercache_frame_content() != 0 || scene_has_terrain(scene, n));
+    if (tc < 0) return scene_has_world(scene, n);  /* every world triangle is on the CPU */
+    return scene_has_terrain(scene, n);
 }
 
 /** @brief Resolve the size of the game window.
@@ -17674,9 +17684,9 @@ static void compose_variant(void)
          * tail of the buffer or it overwrites the globals. */
         const size_t gblen = strlen(gb);
         openpete_tercache_frame_slots(gb + gblen, (int)(sizeof gb - gblen));
-        fprintf(stderr, "[freeze f=%u stamp=%08x] world=%d n=%d W=%d A=%d freeze=%08x tc_src=%d drawn=%d | %s\n",
+        fprintf(stderr, "[freeze f=%u stamp=%08x] world=%d n=%d W=%d A=%d freeze=%08x tc_src=%d tc_content=%d drawn=%d | %s\n",
                 s_scene_key, scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
-                openpete_tercache_frame_source(), td, gb);
+                openpete_tercache_frame_source(), openpete_tercache_frame_content(), td, gb);
     }
     /* The freeze backdrop is snapshotted from the clean, correctly-projected
      * windowed offscreen (rhi_snapshot_offscreen_to_rt after the offscreen pass
@@ -19686,9 +19696,12 @@ static bool freeze_src_verdict(void) {
     openpete_tercache_frame_select(scene_present_stamp());
     const bool src = scene_is_freeze_source(sbuf, scene_n, sfreeze);
     if (freeze_leg_probe())
-        fprintf(stderr, "[freezeleg f=%u] copies_stamp=%u scene_n=%d twod=%d freeze=%d skip=%d\n",
+        fprintf(stderr, "[freezeleg f=%u] copies_stamp=%u scene_n=%d twod=%d freeze=%d skip=%d"
+                " has_world=%d has_terrain=%d tc_content=%d\n",
                 s_scene_frame, scene_present_stamp(), scene_n, scene_2d_count(sbuf, scene_n),
-                (sfreeze & (1u << 31)) ? 1 : 0, src ? 0 : 1);
+                (sfreeze & (1u << 31)) ? 1 : 0, src ? 0 : 1,
+                (int)scene_has_world(sbuf, scene_n), (int)scene_has_terrain(sbuf, scene_n),
+                openpete_tercache_frame_content());
     return src;
 }
 
