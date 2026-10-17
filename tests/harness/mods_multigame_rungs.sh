@@ -83,7 +83,10 @@
 #                   channel-gallery (every row lit) and late-pipes each
 #                   repaint pixels at a corpus pin against a no-mod baseline
 #                   that a control leg repeats exactly; each logs its rows
-#                   or passes armed and none is refused. imgui-panel's tick
+#                   or passes armed and none is refused. The gallery's moby
+#                   refine row keyed on state 1 repaints a strict nonzero
+#                   subset of its any-state leg and on state 250 nothing.
+#                   imgui-panel's tick
 #                   arm counts calls above 0 and live mobys between 1 and
 #                   4095 with the oracle at PASS on the smoke run.
 #   scan watch      (Spyro 3) the mod guard restores and names a mod's store
@@ -952,6 +955,37 @@ PY_P7
             bad "$tag: 0 px repainted"
         fi
     done
+
+    # The gallery's moby refine row alone (row 19, every class) keyed on the
+    # game's moby state byte (gallery.refine_state; Spyro 2 offset 0x48, Spyro
+    # 3 the typed Moby view). At the pin the refine candidates hold states 0,
+    # 1 and others on both games, so state P7_STATE selects a strict subset:
+    # it repaints more than 0 px and fewer than the claim-all leg (-1, which
+    # skips the byte read), and state 250, held by no moby, repaints nothing.
+    # A wrong offset reads another byte and fails one of the two bounds.
+    say "gallery refine row keyed on the moby state byte on $PG_GAME"
+    P7_STATE=1
+    for leg in all:-1 state:$P7_STATE none:250; do
+        tag="ref${leg%%:*}"
+        p7_stage "$tag" channel-gallery
+        printf 'gallery.rows = "19"\ngallery.class = -1\ngallery.refine_state = %s\n' \
+            "${leg#*:}" > "$WORK/p7-$tag/channel-gallery/config.toml"
+        out="$(p7_shoot "$tag")"; rc=$?
+        if [ "$rc" -ne 0 ] || [ ! -s "$WORK/p7-$tag-$P7_PIN-vk.png" ] ||
+           ! printf '%s\n' "$out" | grep -q "21 selector rows armed, 1 lit"; then
+            bad "$tag: no capture (rc=$rc) or the refine row did not light"
+            printf '%s\n' "$out" | grep -iE "error|refused|lit" | head -4
+            continue
+        fi
+        printf -v "p7_$tag" '%s' "$(p7_diffpx "$p7_base" "$WORK/p7-$tag-$P7_PIN-vk.png")"
+    done
+    if [ "${p7_refstate:-0}" -gt 0 ] && [ "${p7_refstate:-0}" -lt "${p7_refall:-0}" ] &&
+       [ "${p7_refnone:-1}" -eq 0 ]; then
+        ok "refine state $P7_STATE: ${p7_refstate} px, a strict subset of any state ${p7_refall} px; state 250: 0 px"
+    else
+        bad "refine state $P7_STATE: ${p7_refstate:-?} px (want 0 < n < any state ${p7_refall:-?} px), state 250: ${p7_refnone:-?} px (want 0)"
+    fi
+    unset p7_refall p7_refstate p7_refnone
 
     say "imgui-panel: the tick arm samples the moby array on $PG_GAME"
     fixture "$WORK/imgui-$PG_GAME" imgui-panel
