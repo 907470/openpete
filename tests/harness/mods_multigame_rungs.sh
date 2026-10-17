@@ -25,8 +25,10 @@
 #   levels          (a game with no level ops) a [[level]] row is refused
 #                   with one line naming the game; the mod still loads.
 #   channel refusal under OPENPETE_MOD_CHANNEL_MASK withholding moby, a
-#                   [[material]] row and both C registration entries on moby
-#                   are refused with one line each; terrain registers.
+#                   [[material]] row, both C registration entries on moby
+#                   and material_set_selector retuning the terrain material
+#                   to moby are refused with one line each; terrain
+#                   registers and a retune to terrain returns 0.
 #   unsupported     read_level_data and moby_classes, called twice each,
 #                   return OPENPETE_MOD_ERR_UNSUPPORTED on a game whose
 #                   descriptor leaves their member NULL, with one log line
@@ -317,8 +319,10 @@ fi
 # registers one material on moby through material_register, one through
 # material_register_refine, and one on terrain. The declarative row is
 # skipped with its line; both C moby registrations return -1 with one
-# refusal line each; the terrain registration returns a handle.
-say "materials: a withheld channel is refused by [[material]] and material_register on $PG_GAME"
+# refusal line each; the terrain registration returns a handle. Retuning
+# that handle's selector to moby through material_set_selector returns -1
+# with one refusal line; retuning it to terrain returns 0.
+say "materials: a withheld channel is refused by [[material]], material_register and material_set_selector on $PG_GAME"
 d="$WORK/chanref/chan-refuse"
 mod_toml "$d" chan-refuse 'game = ["spyro-1", "spyro-2", "spyro-3"]'
 mkdir -p "$d/shaders" "$d/.build/any"
@@ -342,8 +346,12 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     int b = api->material_register_refine(self, &sel, sh, refine);
     sel.channel = OP_CHAN_TERRAIN;
     int c = api->material_register(self, &sel, sh);
-    api->log(self, OP_MOD_LOG_INFO, "chan-refuse shader %d moby %d moby-refine %d terrain %d",
-             sh, a, b, c);
+    sel.channel = OP_CHAN_MOBY;
+    int d = api->material_set_selector(self, c, &sel);
+    sel.channel = OP_CHAN_TERRAIN;
+    int e = api->material_set_selector(self, c, &sel);
+    api->log(self, OP_MOD_LOG_INFO, "chan-refuse shader %d moby %d moby-refine %d terrain %d "
+             "retune-moby %d retune-terrain %d", sh, a, b, c, d, e);
     return 0;
 }
 CEOF
@@ -353,17 +361,19 @@ if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
         -o "$d/.build/any/chan-refuse.so" > "$WORK/chan-refuse-cc.log" 2>&1; then
     out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_CHANNEL_MASK=0x3FC)
             run_game "$WORK/chanref" $((60 + KEY0)) )"
-    res="$(printf '%s\n' "$out" | sed -n 's/.*chan-refuse shader \(-\?[0-9]*\) moby \(-\?[0-9]*\) moby-refine \(-\?[0-9]*\) terrain \(-\?[0-9]*\).*/\1 \2 \3 \4/p')"
+    res="$(printf '%s\n' "$out" | sed -n 's/.*chan-refuse shader \(-\?[0-9]*\) moby \(-\?[0-9]*\) moby-refine \(-\?[0-9]*\) terrain \(-\?[0-9]*\) retune-moby \(-\?[0-9]*\) retune-terrain \(-\?[0-9]*\).*/\1 \2 \3 \4 \5 \6/p')"
     n_c="$(printf '%s\n' "$out" | grep -c "material_register: channel 1 unsupported on $PG_GAME - refused")"
     n_cr="$(printf '%s\n' "$out" | grep -c "material_register_refine: channel 1 unsupported on $PG_GAME - refused")"
     n_row="$(printf '%s\n' "$out" | grep -c "\[\[material\]\] row 0: channel 1 unsupported on $PG_GAME - skipped")"
-    read -r r_sh r_a r_b r_c <<<"${res:-x x x x}"
+    n_sel="$(printf '%s\n' "$out" | grep -c "material_set_selector: channel 1 unsupported on $PG_GAME - refused")"
+    read -r r_sh r_a r_b r_c r_d r_e <<<"${res:-x x x x x x}"
     if [ "$r_sh" -ge 0 ] 2>/dev/null && [ "$r_a" = -1 ] && [ "$r_b" = -1 ] &&
-       [ "$r_c" -ge 0 ] 2>/dev/null && [ "$n_c" -eq 1 ] && [ "$n_cr" -eq 1 ] &&
-       [ "$n_row" -eq 1 ]; then
-        ok "moby refused: register $r_a, refine $r_b, row skipped; terrain handle $r_c; refusal lines $n_c + $n_cr + $n_row"
+       [ "$r_c" -ge 0 ] 2>/dev/null && [ "$r_d" = -1 ] && [ "$r_e" = 0 ] &&
+       [ "$n_c" -eq 1 ] && [ "$n_cr" -eq 1 ] && [ "$n_row" -eq 1 ] &&
+       [ "$n_sel" -eq 1 ]; then
+        ok "moby refused: register $r_a, refine $r_b, retune $r_d, row skipped; terrain handle $r_c, retune $r_e; refusal lines $n_c + $n_cr + $n_sel + $n_row"
     else
-        bad "returns [${res:-none}] (want shader>=0 -1 -1 terrain>=0), refusal lines $n_c/1 $n_cr/1 row $n_row/1"
+        bad "returns [${res:-none}] (want shader>=0 -1 -1 terrain>=0 -1 0), refusal lines $n_c/1 $n_cr/1 retune $n_sel/1 row $n_row/1"
         printf '%s\n' "$out" | grep -E 'chan-refuse|material' | head -8
     fi
 else

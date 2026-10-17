@@ -950,7 +950,8 @@ typedef struct openpete_mod_api {
      * hook or UI section takes effect at the next tick; from entry or a
      * tick hook it applies at once. The material keeps shading under its
      * old key until the new one applies. The selector is validated as
-     * material_register() validates it.
+     * material_register() validates it; a channel the running game does
+     * not serve is refused with -1 and the old selector stays in force.
      * @since api 6
      */
     int (*material_set_selector)(openpete_mod_t* self, int material,

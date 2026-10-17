@@ -2923,9 +2923,11 @@ static int material_channel_served(int channel) {
     return channel < 32 && ((mask >> channel) & 1u);
 }
 
-/** @brief Refuse a C-registered material whose channel the running game does not serve.
+/** @brief Refuse a C material selector whose channel the running game does not serve.
  *
- * Logs one line naming the mod, the entry, the channel and the game.
+ * Serves material_register, material_register_refine and
+ * material_set_selector. Logs one line naming the mod, the entry, the
+ * channel and the game.
  * @param self The calling mod.
  * @param call The api entry name, for the log line.
  * @param sel The selector; non-NULL.
@@ -2995,6 +2997,23 @@ static int api_material_register_refine(openpete_mod_t* self,
     return openpete_mods_material_register(self, sel, -1, shader, refine);
 }
 
+/** @brief Retune a mod's material selector, refusing a channel the running game does not serve.
+ *
+ * Applies the channel test of the registration entries, so a retune can
+ * no more move a material onto an unserved channel than a registration
+ * can place one there; a refusal leaves the old selector in force.
+ * @param self The calling mod.
+ * @param material The material handle.
+ * @param sel The new selector; NULL returns -1.
+ * @return 0, or -1 for a NULL selector, an unserved channel, or a refusal
+ *         by openpete_mods_material_set_selector. */
+static int api_material_set_selector(openpete_mod_t* self, int material,
+                                     const openpete_mod_material_selector_t* sel) {
+    if (!sel || !material_sel_channel_served(self, "material_set_selector", sel))
+        return -1;
+    return openpete_mods_material_set_selector(self, material, sel);
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     /* pillar 1: the override chain */
@@ -3057,7 +3076,7 @@ static const openpete_mod_api_t s_api = {
     .material_register_refine = api_material_register_refine,
     .material_enable     = openpete_mods_material_enable,
     .material_set_params = openpete_mods_material_set_params,
-    .material_set_selector = openpete_mods_material_set_selector,
+    .material_set_selector = api_material_set_selector,
     .moby_classes        = api_moby_classes,
 };
 
