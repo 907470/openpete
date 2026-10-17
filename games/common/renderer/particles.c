@@ -17,9 +17,10 @@
 // primitive's view-Z by projecting its own record's position, pairing
 // primitives to records through the stamp byte the routine maintains
 // (partsdraw.s:223 clears it when a record's processing starts, :358, :415,
-// :528, :693 and :745 set it once the primitive has been appended), which
-// makes the pairing the routine's own invariant rather than a match on
-// geometry. Class `fixed_layer_class` and up link at a fixed front bucket
+// :528, :693 and :745 set it once the record passes its screen and depth
+// window) and the per-class key test some classes apply after the stamp
+// (game_layout.particles.stamp_skip), which makes the pairing the routine's
+// own invariant rather than a match on geometry. Class `fixed_layer_class` and up link at a fixed front bucket
 // (partsdraw.s:202) and stamp nothing, so those primitives take the near
 // depth that bucket means and are paired by class alone. Line numbers cite the
 // Spyro 3 asm/partsdraw.s; the Spyro 2 routine is the same code two lines
@@ -237,13 +238,47 @@ static void part_project(const ngte_view* v, const double p[3], ngte_proj* o) {
                      v->ofx, v->ofy, v, 0, o);
 }
 
+/* Records the last pairing walk found stamped with no primitive appended. */
+static int s_stamp_skipped;
+
+/** @brief Whether a stamped record failed its class's test between the stamp and the append, so the routine appended nothing for it.
+ *
+ * Reproduces the routine's test from game_layout.particles.stamp_skip: the
+ * record point goes through RTPS as the routine loads it (VXY0 = camera Y and
+ * Z minus the record's, VZ0 = record X minus camera X, each a halfword, the
+ * camera position shifted right by 2, zero translation), and the ordering key
+ * (SZ3 >> 5) - size is compared against the class's key_min.
+ * @param cpu Reads the record's position words and size byte.
+ * @param v The tick's view; supplies the camera matrix and RAM position.
+ * @param rec The stamped record's guest address.
+ * @param cls The record's class, below fixed_layer_class.
+ * @return 1 when the routine stamped the record and appended nothing. */
+static int part_stamp_skipped(CPUState* cpu, const ngte_view* v, uint32_t rec, int cls) {
+    const struct game_part_stamp_skip* t = &game_layout.particles.stamp_skip[cls];
+    if (!t->on) return 0;
+    const int32_t cx = (int32_t)v->cam_ram[0] >> 2;
+    const int32_t cy = (int32_t)v->cam_ram[1] >> 2;
+    const int32_t cz = (int32_t)v->cam_ram[2] >> 2;
+    const uint32_t w0 = cpu->read_word(rec + game_layout.particles.pos_off);
+    const uint32_t w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
+    const int32_t x = (int32_t)(w0 & 0xFFFFu), y = (int32_t)(w0 >> 16);
+    const int32_t z = (int32_t)(w1 & 0xFFFFu);
+    static const int tr0[3] = { 0, 0, 0 };
+    ngte_rtps_out o;
+    ngte_rtps_int(v->cam_M, tr0, (int16_t)(cy - y), (int16_t)(cz - z), (int16_t)(x - cx),
+                  v->ofx, v->ofy, (int)v->H_canon, &o);
+    const int size = t->size_off ? (int)cpu->read_byte(rec + t->size_off) : 0;
+    return (o.sz3 >> 5) - size < t->key_min;
+}
+
 /** @brief Pairs each captured primitive with the record that appended it and stores the record's view-Z as a scene depth.
  *
  * The routine appends in pool order and at most one primitive per record, so
  * walking the pool and the captured list together aligns them. A record
- * emitted a primitive when its stamp byte is set, or when its class links at
- * the fixed front bucket, where the routine stamps nothing and always appends;
- * the latter take the front depth and keep no record. A paired record keeps its
+ * emitted a primitive when its stamp byte is set and it passes its class's
+ * test between the stamp and the append (part_stamp_skipped), or when its
+ * class links at the fixed front bucket, where the routine stamps nothing and
+ * always appends; the latter take the front depth and keep no record. A paired record keeps its
  * position words, its projected point (and a two-point class's second point)
  * and its view-Z. The walk ends at the pool's end sentinel or the last
  * captured primitive, and does nothing when the pool pointer is outside RAM.
@@ -259,6 +294,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
     const float front = openpete_native_scene_viewz(openpete_worldvz_full(1.0f));
 
     int i = 0;
+    s_stamp_skipped = 0;
     for (uint32_t rec = base; i < s_item_n; rec += stride) {
         const int sel = (int)(int16_t)(uint16_t)cpu->read_half(rec + game_layout.particles.sel_off);
         if (sel < 0) {
@@ -272,6 +308,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
             continue;
         }
         if (cpu->read_byte(rec + game_layout.particles.drawn_off) == 0) continue;
+        if (part_stamp_skipped(cpu, v, rec, cls)) { s_stamp_skipped++; continue; }
 
         part_item* it = &s_item[i];
         it->cls = cls;
@@ -750,16 +787,53 @@ static void part_feed_native(void) {
     openpete_native_scene_set_tag(0);
 }
 
+/** @brief The mean of a captured primitive's screen vertices.
+ *
+ * A polygon averages its decoded vertices; a line averages its two endpoints
+ * from the raw words, where a gouraud line carries a colour word before each.
+ * @param p The captured primitive.
+ * @param gx Receives the mean X.
+ * @param gy Receives the mean Y. */
+static void part_item_centroid(const ngte_prim* p, double* gx, double* gy) {
+    double sx = 0, sy = 0;
+    if (p->nv) {
+        for (int k = 0; k < p->nv; k++) { sx += p->x[k]; sy += p->y[k]; }
+        *gx = sx / p->nv; *gy = sy / p->nv;
+        return;
+    }
+    const int words = (p->code & 0x10u) ? 3 : 2;
+    for (int k = 0; k < 2; k++) {
+        const uint32_t xy = p->raw[2 + (uint32_t)k * (uint32_t)(words - 1)];
+        sx += (double)(int16_t)(xy & 0xFFFFu);
+        sy += (double)(int16_t)(xy >> 16);
+    }
+    *gx = sx / 2.0; *gy = sy / 2.0;
+}
+
+/** @brief The screen point a correctly paired primitive's centroid sits at: the record's projected point, or the midpoint of the two-point class's two.
+ *
+ * The routine offsets a billboard's corners around the record point, and
+ * draws a two-point record as the line between its two projected points
+ * (partsdraw.s:683-684), whose centroid is their midpoint.
+ * @param it The paired item.
+ * @param ax Receives the X.
+ * @param ay Receives the Y. */
+static void part_item_anchor(const part_item* it, double* ax, double* ay) {
+    const int two = it->cls == PART_TWO_POINT_CLASS;
+    *ax = two ? (it->psx + it->psx2) / 2.0 : it->psx;
+    *ay = two ? (it->psy + it->psy2) / 2.0 : it->psy;
+}
+
 /** @brief Prints the particle census line when openpete_frame lies in the OPENPETE_PARTICLE_CENSUS range.
  *
- * The range is LO-HI or a single VBL count. Per call it prints the primitives
- * the routine appended by GPU code, the native triangles this feeder emitted
- * from them, and per class the calibration the depth pairing rests on: the
- * mean and worst Manhattan distance between each paired record's own projected
- * point and the centroid of the primitive the pairing gave it, followed by the
- * unpaired count. The routine projects the record and then offsets the
- * primitive's corners around that point, so a correct pairing (and a correct
- * camera matrix) keeps this small and a wrong one scatters it across the
+ * The range is LO-HI or a single openpete_frame value. Per call it prints the
+ * primitives the routine appended by GPU code, the native triangles this
+ * feeder emitted from them, and per class the calibration the depth pairing
+ * rests on: the mean and worst Manhattan distance between the point each
+ * paired record anchors (part_item_anchor) and the centroid of the primitive
+ * the pairing gave it, followed by the unpaired count and the stamped records
+ * the routine appended nothing for. A correct pairing (and a correct camera
+ * matrix) keeps the distance small and a wrong one scatters it across the
  * screen. A capture whose fed count is zero measured nothing.
  * @param start Guest address of the polybuf interval's start.
  * @param end Guest address one past its end.
@@ -779,29 +853,17 @@ static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
         for (int i = 0; i < s_item_n; i++) {
             const part_item* it = &s_item[i];
             if (it->cls != cl || (uint32_t)cl >= game_layout.particles.fixed_layer_class) continue;
-            const ngte_prim* p = &it->p;
-            double gx = 0, gy = 0; int nv = 0;
-            if (p->nv) {
-                for (int k = 0; k < p->nv; k++) { gx += p->x[k]; gy += p->y[k]; }
-                nv = p->nv;
-            } else {
-                const int words = (p->code & 0x10u) ? 3 : 2;   /* gouraud line carries a colour per endpoint */
-                for (int k = 0; k < 2; k++) {
-                    const uint32_t xy = p->raw[2 + (uint32_t)k * (uint32_t)(words - 1)];
-                    gx += (double)(int16_t)(xy & 0xFFFFu);
-                    gy += (double)(int16_t)(xy >> 16);
-                }
-                nv = 2;
-            }
-            gx /= nv; gy /= nv;
-            const double d = fabs(gx - it->psx) + fabs(gy - it->psy);
+            double gx, gy, ax, ay;
+            part_item_centroid(&it->p, &gx, &gy);
+            part_item_anchor(it, &ax, &ay);
+            const double d = fabs(gx - ax) + fabs(gy - ay);
             sum += d; if (d > worst) worst = d; n++;
         }
         if (n) fprintf(stderr, " c%d:n=%d mean=%.2f worst=%.1f", cl, n, sum / n, worst);
     }
     int unpaired = 0;
     for (int i = 0; i < s_item_n; i++) if (s_item[i].cls < 0) unpaired++;
-    fprintf(stderr, " unpaired=%d\n", unpaired);
+    fprintf(stderr, " unpaired=%d stamp_skipped=%d\n", unpaired, s_stamp_skipped);
 }
 
 /** @brief The distance from the record's own projected point to the primitive's furthest vertex, in pixels.

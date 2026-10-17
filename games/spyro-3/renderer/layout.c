@@ -332,11 +332,25 @@ const game_layout_t spyro3_game_layout = {
                                            * (X low, Y high) and 0x8 (Z low) and subtract
                                            * the camera position shifted right by 2 */
         .drawn_off  = 0x03u,              /* partsdraw.s:223 sb zero at record start,
-                                           * :358/:415/:528/:693/:745 sb 1 at the append */
+                                           * :358/:415/:528/:693/:745 sb 1 once the record
+                                           * passes its screen and depth window */
         .fixed_layer_class = 5u,          /* partsdraw.s:76-87 dispatches classes 0-4 and
                                            * falls through for 5 and up; the fallthrough
                                            * links at D_OT_BASE - 8 (:202) instead of a
                                            * depth bucket */
+        .stamp_skip = {
+            /* class 0: :745 stamps, :744 has shifted SZ3 right by 5, :751-752
+             * subtracts 2 and skips a key <= 0; the size byte is subtracted
+             * after (:753) and the key clamped to 0 (:754-756) */
+            [0] = { .on = 1, .size_off = 0u, .key_min = 3 },
+            /* class 3: :415 stamps, :414 has shifted SZ3 right by 5, :408/:417-421
+             * subtracts the byte at +0x11 (lhu +0x10, srl 8) and skips a
+             * negative key */
+            [3] = { .on = 1, .size_off = 0x11u, .key_min = 0 },
+            /* class 2 clamps its key to 0 (:579-582) and appends; classes 1
+             * (:690 tests, :693 stamps) and 4 (:355 tests, :358 stamps)
+             * append after the stamp unconditionally */
+        },
     },
     .moby = {
         /* Offsets read from asm/mobydraw.s, whose three routines Spyro 2

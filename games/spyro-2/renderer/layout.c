@@ -345,12 +345,13 @@ const game_layout_t spyro2_game_layout = {
     /* The particle renderer, func_80048128. It aligns onto the other game's
      * func_8003AA38 except at two sites, four instructions in all, and both
      * sites are ordering-key clamps inside the routine, which this engine runs
-     * unchanged. At partsdraw.s:582 a key that has gone negative skips the
-     * record entirely, where the other game clamps it to bucket 0 and still
-     * draws; at partsdraw.s:751-752 the class-5 key is formed with no clamp at
-     * all. A record the routine skips leaves its drawn stamp clear, so the pool
-     * walk below follows the routine's own verdict either way and no descriptor
-     * field expresses the pair. */
+     * unchanged. At partsdraw.s:582 a class-2 key that has gone negative skips
+     * the record, where the other game clamps it to bucket 0 and still draws;
+     * at partsdraw.s:751-753 the class-0 key subtracts the size byte before
+     * the skip test, where the other game tests the bare depth and clamps the
+     * key after. Three classes set the drawn stamp before their last skip
+     * test, so a record can carry the stamp and append nothing; stamp_skip
+     * holds each such test. */
     .particles = {
         .hook       = F_PARTICLES_DRAW,
         .array_ptr  = D_PARTS_ARRAY,      /* partsdraw.s:57-59 loads the pool base through
@@ -364,11 +365,27 @@ const game_layout_t spyro2_game_layout = {
                                            * Y high) and 0x8 (Z low) and subtract the camera
                                            * position shifted right by 2 */
         .drawn_off  = 0x03u,              /* partsdraw.s:225 sb zero at record start,
-                                           * :360/:417/:530/:693/:745 sb 1 at the append */
+                                           * :360/:417/:530/:693/:745 sb 1 once the record
+                                           * passes its screen and depth window */
         .fixed_layer_class = 5u,          /* partsdraw.s:81-89 dispatches classes 0-4 and falls
                                            * through for 5 and up; the fallthrough links at the
                                            * fixed front entry, polybuf scratch - 8
                                            * (partsdraw.s:204-206), instead of a depth bucket */
+        .stamp_skip = {
+            /* class 0: :745 stamps, :744 has shifted SZ3 right by 5, :751-753
+             * subtracts the size byte (+0xA, :710/:723-724) and 2 and skips a
+             * key <= 0 */
+            [0] = { .on = 1, .size_off = 0x0Au, .key_min = 3 },
+            /* class 2: :530 stamps, :522 has shifted SZ3 right by 5, :578-582
+             * subtracts the byte at +0x11 (lhu +0x10, srl 8) and skips a
+             * negative key */
+            [2] = { .on = 1, .size_off = 0x11u, .key_min = 0 },
+            /* class 3: :417 stamps, :416 has shifted SZ3 right by 5, :410/:419-423
+             * subtracts the byte at +0x11 and skips a negative key */
+            [3] = { .on = 1, .size_off = 0x11u, .key_min = 0 },
+            /* classes 1 (:690 tests, :693 stamps) and 4 (:357 tests, :360
+             * stamps) append after the stamp unconditionally */
+        },
     },
     /* The moby (3D actor) draw. Three handwritten routines: the cull
      * func_80043858 carves the tick's draw scratch out of the primitive buffer

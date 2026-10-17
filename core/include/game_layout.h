@@ -74,6 +74,11 @@ enum { ENV_ANIM_KIND_VERT = 0, ENV_ANIM_KIND_COLOUR = 1 };
 
 #define ENV_ANIM_SUBLISTS 3
 
+/* Particle classes that link at a depth bucket: the routine dispatches
+ * classes 0-4 to their own bodies and links class 5 and up at a fixed front
+ * entry, which stamps nothing. */
+#define GAME_PART_DEPTH_CLASSES 5
+
 /* One ENV_ANIM_ARENA sub-list. `entry_off` = 0 marks an unused row. */
 typedef struct env_anim_sublist {
     uint16_t hdr_off;    /* byte offset into the block that locates the list */
@@ -580,12 +585,18 @@ typedef struct game_layout {
      * record's camera-relative position in quarter world units, X in the low
      * half and Y in the high half of the first word and Z in the low half of
      * the second. `drawn_off` is the byte the routine clears when it starts a
-     * record and sets when it has appended that record's primitive, so after
-     * the draw the set bytes name, in pool order, exactly the records that
-     * emitted. `fixed_layer_class` is the class index at and above which the
+     * record and sets once the record passes its screen and depth window; a
+     * record whose class appends right there emitted exactly when the byte is
+     * set. `fixed_layer_class` is the class index at and above which the
      * routine links its primitive at a fixed front ordering-table entry
      * instead of at the record's own depth, and whose records pack their
-     * position differently; those primitives draw over the world. */
+     * position differently; those primitives draw over the world.
+     *
+     * `stamp_skip[c]` is class c's test between the stamp and the append:
+     * with `on` set, the routine forms the ordering key (SZ3 >> 5) - size,
+     * where SZ3 is the record point's projected depth and size the byte at
+     * `size_off` (0: no size term), and appends nothing when the key is below
+     * `key_min`. A stamped record that fails it emitted no primitive. */
     struct {
         uint32_t hook;
         uint32_t array_ptr;
@@ -594,6 +605,11 @@ typedef struct game_layout {
         uint32_t pos_off;
         uint32_t drawn_off;
         uint32_t fixed_layer_class;
+        struct game_part_stamp_skip {
+            uint8_t on;
+            uint8_t size_off;
+            int8_t  key_min;
+        } stamp_skip[GAME_PART_DEPTH_CLASSES];
     } particles;
 
     /* The moby (3D actor) draw. The games share the walk: a cull pass builds

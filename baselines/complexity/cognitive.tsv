@@ -138,7 +138,6 @@ games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0
 games/common/renderer/moby_game_spyro23.c	s23_simple_decode	125	0	
 games/common/renderer/moby_game_spyro23.c	s23_special_face	45	0	
 games/common/renderer/native_gte.c	ngte_walk_prims	80	0	
-games/common/renderer/particles.c	part_census	36	0	
 games/common/renderer/player.c	pair_lists	27	0	
 games/common/renderer/player.c	plane_emit	32	0	
 games/common/renderer/player.c	player_build_walk	80	0	
