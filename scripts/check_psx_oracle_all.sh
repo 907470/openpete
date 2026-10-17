@@ -48,7 +48,7 @@ run_row() {
     local recipe_args
     for g in "${GAMES[@]}"; do
         recipe_args=()
-        if [[ -n "${CARD_RECIPE[$row]:-}" ]]; then
+        if [[ -n "$row" && -n "${CARD_RECIPE[$row]:-}" ]]; then
             [[ -f "games/$g/${CARD_RECIPE[$row]}" ]] || continue
             recipe_args=(--recipe "games/$g/${CARD_RECIPE[$row]}")
         fi
