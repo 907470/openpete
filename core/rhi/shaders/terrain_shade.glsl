@@ -69,7 +69,9 @@ layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* The fragment-visible part of terrain.vert's TerrainPC: the fields up to
  * `snap` are the vertex stage's; `cover` turns on the blended cover discard
- * and `fc` maps gl_FragCoord to PSX screen space for both portal discards. */
+ * and `fc` maps gl_FragCoord to PSX screen space for both portal discards.
+ * The vertex stage's block continues past `fc` with the material pass's
+ * class mask. */
 layout(push_constant) uniform TerrainPC {
     vec4 cbase;
     vec4 cdims;

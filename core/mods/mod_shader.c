@@ -1041,9 +1041,11 @@ int openpete_mods_material_terrain_bucket_gpu(
     if (m->frag < 0) return -1;
     if (m->per_instance) {
         /* The outcome the sim thread computed for the composed scene; no
-         * callback runs on the compose. Declining is not an error: those
-         * faces are already claimed out of the stock pass, so the caller
-         * draws the bucket's pass with the STOCK pipeline. */
+         * callback runs on the compose. A pass lists a refine only when a
+         * class resolved to it, so a missing outcome is a pass from
+         * another present's tables: those faces are already claimed out
+         * of the stock pass, so the caller draws them with the STOCK
+         * pipeline. */
         int slot = mod_mat_terrain_bucket_slot(bucket - 1);
         if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK || slot <= 0) return -1;
         out->uniform_slot = slot;

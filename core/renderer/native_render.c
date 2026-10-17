@@ -13571,9 +13571,9 @@ static const char *const k_tag_path_name[16] = {
  * ordering fields (mordinal, rank, koff, seq, prim) and the three vertices
  * (screen x, y, z, colour). The owner decode reads tag bits 31:28 as the path;
  * a terrain tag (path 2) prints sector, LP tier, env-anim bit, texture
- * record and refine slot, any other path its name from k_tag_path_name with
- * id and slot; a moby slot prints a declarative landing as decl:<material>
- * and the stock outcome with a stock: prefix.
+ * record and material slot, any other path its name from k_tag_path_name
+ * with id and slot; a moby or terrain slot prints a declarative landing as
+ * decl:<material> and the stock outcome with a stock: prefix.
  * @param f VBL the scene was extracted at.
  * @param idx Triangle index in the composed list.
  * @param T The triangle. */
@@ -13581,10 +13581,13 @@ static void scene_box_log_tri(unsigned f, int idx, const scene_tri_t *T) {
     const uint32_t tag = T->tag, path = tag >> 28;
     char who[96];
     const unsigned mslot = (tag >> 16) & 0xFFFu, tslot = (tag >> 16) & 0x1FFu;
-    if (path == 2u)   /* terrain: sector, LP tier, env-anim, texture record, refine slot */
+    if (path == 2u)   /* terrain: sector, LP tier, env-anim, texture record, material slot */
         snprintf(who, sizeof who, "terrain sec=%u lp=%u env=%u texrec=%u slot=%s%u",
                  tag & 0x1FFu, (tag >> 26) & 1u, (tag >> 27) & 1u, (tag >> 9) & 0x7Fu,
-                 tslot == OPENPETE_MATERIAL_TERRAIN_STOCK ? "stock:" : "", tslot);
+                 tslot == OPENPETE_MATERIAL_TERRAIN_STOCK ? "stock:"
+                 : (tslot & OPENPETE_MATERIAL_TERRAIN_DECL) ? "decl:" : "",
+                 tslot != OPENPETE_MATERIAL_TERRAIN_STOCK && (tslot & OPENPETE_MATERIAL_TERRAIN_DECL)
+                     ? tslot & (OPENPETE_MATERIAL_TERRAIN_DECL - 1u) : tslot);
     else if (path == 1u && mslot != OPENPETE_MATERIAL_SLOT_STOCK && (mslot & OPENPETE_MATERIAL_SLOT_DECL))
         snprintf(who, sizeof who, "moby id=%u slot=decl:%u", tag & 0xFFFFu,
                  mslot & (OPENPETE_MATERIAL_SLOT_DECL - 1u));

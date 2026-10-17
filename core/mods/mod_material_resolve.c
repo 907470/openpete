@@ -46,6 +46,7 @@ int mod_mat_count(void) { return s_mat_count; }
 /* Forward: the reset clears state defined further down. */
 static void reset_level_and_view(void);
 static void overlap_reset(void);
+static void ter_class_reset(void);
 void mod_mat_reset(void) {
     memset(s_mats, 0, sizeof s_mats);
     s_mat_count = 0;
@@ -53,6 +54,7 @@ void mod_mat_reset(void) {
     s_mat_has_instance = 0;
     reset_level_and_view();
     overlap_reset();
+    ter_class_reset();
 }
 mod_material_t* mod_mat_at(int i) { return &s_mats[i]; }
 
@@ -80,13 +82,16 @@ int mod_mat_view_static_slot(int m) { return s_mat_view ? s_mat_view->static_slo
 /* Slot ids are minted from ONE global counter but stamped into per-path
  * tag fields of differing width, so the table can never outgrow the
  * NARROWEST field that carries an id. Terrain's is the narrowest at 9
- * bits, and its decode masks (tag >> 16) & 0x1FF: an id of 512 would
- * come back as 0, which reads as "defer to declarative resolve" - the
- * wrong material, silently, with no crash and no log. 0x1FF itself is
- * the declined->stock sentinel, so the last usable id is 510. Raising
- * MOD_MATERIAL_SLOTS means widening that field first. */
-typedef char nr_assert_mat_slots_fit_narrowest_tag_field[
-    (MOD_MATERIAL_SLOTS <= OPENPETE_MATERIAL_TERRAIN_STOCK) ? 1 : -1];
+ * bits: its slot ids stay below the declarative bit
+ * OPENPETE_MATERIAL_TERRAIN_DECL, every landing OPENPETE_MATERIAL_TERRAIN_DECL
+ * | index stays below the stock outcome 0x1FF, and the decode masks
+ * (tag >> 16) & 0x1FF, so a wider id would come back as another outcome
+ * with no log. Raising MOD_MATERIAL_SLOTS or MOD_MATERIAL_MAX means
+ * widening that field first. */
+_Static_assert(MOD_MATERIAL_SLOTS <= OPENPETE_MATERIAL_TERRAIN_DECL, "slot ids stay below the terrain declarative bit");
+_Static_assert(MOD_MATERIAL_MAX - 1 < 0xFF, "material index fits the terrain declarative landing");
+_Static_assert((OPENPETE_MATERIAL_TERRAIN_DECL | (MOD_MATERIAL_MAX - 1)) < OPENPETE_MATERIAL_TERRAIN_STOCK,
+               "no terrain declarative landing aliases the stock outcome");
 /* The moby field's declarative landing is OPENPETE_MATERIAL_SLOT_DECL |
  * material index: every index and every slot id stays below the bit, and
  * the largest landing below OPENPETE_MATERIAL_SLOT_STOCK. */
@@ -100,11 +105,12 @@ _Static_assert((OPENPETE_MATERIAL_SLOT_DECL | (MOD_MATERIAL_MAX - 1)) < OPENPETE
 
 static _Atomic int s_census = -1;   /* -1 = not read yet */
 static _Atomic unsigned s_cen[MOD_MATERIAL_MAX][MOD_MAT_CENSUS_N];
-/* Terrain key histograms: (texid -1..127) x env x lp, the bake's
- * openpete_mods_material_terrain_bucket queries and the walked draw-time
- * resolves. Each key keeps its count and the last bucket it resolved to
- * (material index + 1, 0 stock). */
-#define CEN_TER_KEYS (129 * 4)
+/* Terrain key histograms over the face keys (ter_key_index: texid
+ * -1..127 x texturedness x env x lp): the retained bake's class queries
+ * (openpete_mods_material_terrain_class), keeping the last class id, and
+ * the walked path's (openpete_mods_material_terrain_walk_slot), keeping the
+ * last resolved member + 1 (0 stock). */
+#define CEN_TER_KEYS (129 * 8)
 static _Atomic unsigned s_cen_bake_n[CEN_TER_KEYS];
 static _Atomic int      s_cen_bake_b[CEN_TER_KEYS];
 static _Atomic unsigned s_cen_walk_n[CEN_TER_KEYS];
@@ -115,6 +121,7 @@ static _Atomic unsigned s_cen_class[CEN_CLASSES];
 static _Atomic unsigned s_cen_presents;
 static _Atomic unsigned s_cen_view_resolves;   /* draw-time resolves under an installed view */
 static _Atomic unsigned s_cen_memo_replays;    /* walk and terrain outcomes replayed from the tick's memo */
+static _Atomic int      s_cen_pass_max;        /* most terrain material passes one colour slot drew */
 static int s_cen_atexit;
 
 int mod_mat_census_on(void) {
@@ -137,6 +144,7 @@ void mod_mat_census_reset(void) {
     atomic_store_explicit(&s_cen_presents, 0u, memory_order_relaxed);
     atomic_store_explicit(&s_cen_view_resolves, 0u, memory_order_relaxed);
     atomic_store_explicit(&s_cen_memo_replays, 0u, memory_order_relaxed);
+    atomic_store_explicit(&s_cen_pass_max, 0, memory_order_relaxed);
 }
 unsigned mod_mat_census_view_resolves(void) {
     return atomic_load_explicit(&s_cen_view_resolves, memory_order_relaxed);
@@ -156,19 +164,16 @@ static void cen_bump(int m, int which) {
     if (!mod_mat_census_on() || m < 0 || m >= MOD_MATERIAL_MAX) return;
     atomic_fetch_add_explicit(&s_cen[m][which], 1u, memory_order_relaxed);
 }
-/** @brief Record one terrain key query and the bucket it resolved to.
+/** @brief Record one terrain key query and its outcome.
  *
  * @param n Count array of CEN_TER_KEYS.
- * @param b Last-bucket array of CEN_TER_KEYS.
- * @param texid Tiledef id, or -1.
- * @param env Env-rewrite flag.
- * @param lp LP-tier flag.
- * @param bucket Material index + 1, or 0 for stock. */
-static void cen_ter(_Atomic unsigned* n, _Atomic int* b, int texid, int env, int lp, int bucket) {
-    if (!mod_mat_census_on() || texid < -1 || texid > 127) return;
-    const int k = (texid + 1) * 4 + (env ? 2 : 0) + (lp ? 1 : 0);
+ * @param b Last-outcome array of CEN_TER_KEYS.
+ * @param k Face key index (ter_key_index).
+ * @param v The outcome: a class id on the bake, a member + 1 on the walk. */
+static void cen_ter(_Atomic unsigned* n, _Atomic int* b, int k, int v) {
+    if (!mod_mat_census_on() || k < 0 || k >= CEN_TER_KEYS) return;
     atomic_fetch_add_explicit(&n[k], 1u, memory_order_relaxed);
-    atomic_store_explicit(&b[k], bucket, memory_order_relaxed);
+    atomic_store_explicit(&b[k], v, memory_order_relaxed);
 }
 void mod_mat_census_bucket_pass(int m) { cen_bump(m, MOD_MAT_CENSUS_BUCKET_PASSES); }
 unsigned mod_mat_census_get(int m, int which) {
@@ -176,10 +181,13 @@ unsigned mod_mat_census_get(int m, int which) {
     return atomic_load_explicit(&s_cen[m][which], memory_order_relaxed);
 }
 
+static int census_class_member(int c);
+static void census_print_classes_ter(void);
 /** @brief Print the terrain key comparison: bake keys, walked keys, keys both saw, and disagreements.
  *
- * A disagreement is a key both paths queried whose last buckets differ;
- * the first eight are listed. */
+ * A bake key's member is its class's last resolution (census_class_member).
+ * A disagreement is a key both paths queried whose members differ; the
+ * first eight are listed. */
 static void census_print_terrain(void) {
     unsigned bake_keys = 0, walk_keys = 0, both = 0, differ = 0, bake_q = 0, walk_q = 0;
     unsigned untex_bake = 0;
@@ -187,20 +195,22 @@ static void census_print_terrain(void) {
         const unsigned bn = atomic_load_explicit(&s_cen_bake_n[k], memory_order_relaxed);
         const unsigned wn = atomic_load_explicit(&s_cen_walk_n[k], memory_order_relaxed);
         bake_q += bn; walk_q += wn;
-        if (bn) { bake_keys++; if (k < 4) untex_bake += bn; }
+        if (bn) { bake_keys++; if (k < 8) untex_bake += bn; }
         if (wn) walk_keys++;
         if (!bn || !wn) continue;
         both++;
-        const int bb = atomic_load_explicit(&s_cen_bake_b[k], memory_order_relaxed);
+        const int bc = atomic_load_explicit(&s_cen_bake_b[k], memory_order_relaxed);
+        const int bb = census_class_member(bc) + 1;
         const int wb = atomic_load_explicit(&s_cen_walk_b[k], memory_order_relaxed);
         if (bb == wb) continue;
         if (differ++ < 8)
-            fprintf(stderr, "[material-census] terrain key texid=%d env=%d lp=%d: bake bucket %d, walked %d\n",
-                    k / 4 - 1, (k >> 1) & 1, k & 1, bb, wb);
+            fprintf(stderr, "[material-census] terrain key texid=%d untex=%d env=%d lp=%d: bake class %d member %d, "
+                    "walked member %d\n", k / 8 - 1, (k >> 2) & 1, (k >> 1) & 1, k & 1, bc, bb - 1, wb - 1);
     }
     fprintf(stderr, "[material-census] terrain bake: %u queries over %u keys (%u with texid -1); "
-                    "walked: %u resolves over %u keys; both %u, last bucket differs on %u\n",
+                    "walked: %u resolves over %u keys; both %u, resolved member differs on %u\n",
             bake_q, bake_keys, untex_bake, walk_q, walk_keys, both, differ);
+    census_print_classes_ter();
 }
 
 /** @brief Print the five moby classes extraction saw most, with their counts. */
@@ -227,18 +237,18 @@ void mod_mat_census_print(void) {
             atomic_load_explicit(&s_cen_presents, memory_order_relaxed), s_mat_count);
     fprintf(stderr, "[material-census] idx owner chan class ident tex level flags kind contract load"
                     " | draws bucket_passes extract_wins refine_calls declines fallthroughs"
-                    " decline_shadows outranked stale_memo\n");
+                    " outranked stale_memo\n");
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
         unsigned c[MOD_MAT_CENSUS_N];
         for (int j = 0; j < MOD_MAT_CENSUS_N; j++) c[j] = mod_mat_census_get(i, j);
         engaged += (unsigned long long)c[MOD_MAT_CENSUS_DRAWS] + c[MOD_MAT_CENSUS_BUCKET_PASSES] +
                    c[MOD_MAT_CENSUS_REFINE_CALLS];
-        fprintf(stderr, "[material-census] %3d %s %d %d %d %d %d %#x %s %d %d | %u %u %u %u %u %u %u %u %u\n",
+        fprintf(stderr, "[material-census] %3d %s %d %d %d %d %d %#x %s %d %d | %u %u %u %u %u %u %u %u\n",
                 i, m->owner ? m->owner : "?", m->sel.channel, m->sel.moby_class, m->sel.ident,
                 m->sel.texture, m->sel.level, m->sel.flags, m->per_instance ? "refine" : "decl",
                 m->contract, m->load_index,
-                c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]);
+                c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
     }
     fprintf(stderr, "[material-census] view-installed resolves=%u tick-memo replays=%u\n",
             atomic_load_explicit(&s_cen_view_resolves, memory_order_relaxed),
@@ -309,7 +319,7 @@ int mod_postfx_rank(mod_postfx_rank_t* v, int n, int cap) {
  * toggle of one - re-baked the whole cache for changes that cannot alter a
  * single terrain bucket, which cost 2.7x the frame rate while a mod was
  * toggling rows (terrain.build 33% -> 73% of sim_tick). Move it only for
- * changes terrain_winner() could actually see. */
+ * changes a terrain resolution class (ter_candidates) could actually see. */
 static unsigned s_mat_ter_epoch;
 /* Moves on every material table change (mod_mat_rearm_split) and level
  * change; the tick memo is void once it moves. */
@@ -639,16 +649,16 @@ int mod_mat_outranks(int a, int b) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Terrain: bake-side winner and bucket list. */
+/* Terrain: resolution classes, the bake's class ids and the pass list. */
 
-/** @brief Test whether a material can bucket terrain faces in a level.
+/** @brief Test whether a material can be a terrain face's candidate in a level.
  *
  * True when the material is live, user-enabled and owned by an enabled
  * mod, has the scene shading contract (retained terrain is a scene-contract
  * site), is on channel -1 or OP_CHAN_TERRAIN, and has no level key or one
  * equal to @p level; a negative @p level matches every level key. The
  * level test mirrors the draw-time resolve's, so a level-scoped selector
- * buckets faces only in its level. */
+ * takes part in a face's class only in its level. */
 static int terrain_sel_usable(const mod_material_t* m, int level) {
     if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner))
         return 0;
@@ -662,29 +672,32 @@ static int terrain_sel_usable(const mod_material_t* m, int level) {
  *
  * A terrain refine is keyed on one Tiledef id (texture key set,
  * OP_SEL_UNTEXTURED clear) or on the untextured band (OP_SEL_UNTEXTURED
- * set, no texture key); env and tier are not part of its key. Shared by the
- * bake, the walked refine winners and the draw-time re-derivation, so both
- * terrain paths rank one candidate set.
+ * set, no texture key); env and tier are not part of its key. A textured
+ * face with no Tiledef id (@p texid -1) is no refine's key. The class table
+ * (ter_candidates) serves both terrain paths, so both rank one candidate
+ * set.
  * @param m The material.
  * @param untex Nonzero for an untextured face.
- * @param texid The face's Tiledef id when textured. */
+ * @param texid The face's Tiledef id when textured, or -1. */
 static int terrain_refine_key_matches(const mod_material_t* m, int untex, int texid) {
     return untex ? ((m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == -1)
-                 : (!(m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture != -1 &&
-                    m->sel.texture == texid);
+                 : (!(m->sel.flags & OP_SEL_UNTEXTURED) && texid >= 0 && m->sel.texture == texid);
 }
 
 /** @brief Test whether a declarative terrain material's selector accepts a face key.
  *
- * The draw-time resolve's predicate over the face's tag bits: the texture
- * key and the OP_SEL_ENV_ANIM, tier and textured/untextured flags.
+ * The draw-time resolve's predicate over the face's keys: the texture key
+ * and the OP_SEL_ENV_ANIM, tier and textured/untextured flags. Texturedness
+ * is the face's own, not inferred from the texid: a textured face whose
+ * Tiledef id keys no selector (an imported sector's borrowed face) passes
+ * texid -1 with @p untex 0, matches OP_SEL_TEXTURED and no texture key.
  * @param m The material.
- * @param texid Tiledef id, or -1 for an untextured face.
+ * @param texid Tiledef id, or -1 when the face has none.
+ * @param untex Nonzero for an untextured face.
  * @param env Nonzero for a face in the env-rewrite set.
  * @param lp Nonzero for an LP-tier face. */
-static int terrain_decl_matches(const mod_material_t* m, int texid, int env, int lp) {
-    const int untex = texid < 0;
-    if (m->sel.texture != -1 && (untex || m->sel.texture != texid)) return 0;
+static int terrain_decl_matches(const mod_material_t* m, int texid, int untex, int env, int lp) {
+    if (m->sel.texture != -1 && (untex || texid < 0 || m->sel.texture != texid)) return 0;
     if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) return 0;
     if ((m->sel.flags & OP_SEL_HP_TIER) && lp) return 0;
     if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) return 0;
@@ -693,54 +706,193 @@ static int terrain_decl_matches(const mod_material_t* m, int texid, int env, int
     return 1;
 }
 
-/** @brief Return the index of the winning terrain material for a face key, or -1.
+/* Terrain resolution classes. A face key (texid, texturedness, env, tier)
+ * has a candidate list: the refine materials whose key is the face's and
+ * that outrank the face's declarative winner, highest first, then that
+ * declarative winner when there is one. Refines below the declarative
+ * winner are never reached, since the declarative takes every face it
+ * matches. Equal lists are one class. The retained bake stamps the class
+ * id into the face; each present resolves every class to one member, the
+ * first accepting refine, else the declarative, else stock, and the
+ * walked path stamps that member. The class id has the 8 bits of the
+ * baked face field (OPENPETE_MATERIAL_TER_BUCKET_MAX), 0 = no candidate. */
+#define TER_CLASS_N (OPENPETE_MATERIAL_TER_BUCKET_MAX + 1)
+/* Members kept per class. A key with more refines above its declarative
+ * winner keeps the highest-ranked ones; the rest are never asked. */
+#define TER_CLASS_MEMBERS 32
+/* Face keys: texid -1..127 x texturedness x env x tier. */
+#define TER_KEYS (129 * 8)
+
+typedef struct {
+    int      n;                          /* members, highest ranked first */
+    short    m[TER_CLASS_MEMBERS];       /* material indices */
+    unsigned epoch;                      /* terrain epoch of the last intern, either path */
+    unsigned bake_epoch;                 /* terrain epoch of the last retained-bake intern */
+    unsigned res_present;                /* s_mat_present of `res` */
+    int      res;                        /* resolved member, or -1 for stock */
+} ter_class_t;
+static ter_class_t s_cls[TER_CLASS_N];   /* [0] unused: no candidate */
+static int s_cls_n = 1;
+static int s_cls_recycled;               /* a full table reused a class id, logged once */
+/* Face key -> class id, valid while the stamp equals the terrain epoch. */
+static unsigned s_cls_key_stamp[TER_KEYS];
+static unsigned char s_cls_key[TER_KEYS];
+
+/** @brief Clear the class table and the key memo for mod_mat_reset. */
+static void ter_class_reset(void) {
+    memset(s_cls, 0, sizeof s_cls);
+    memset(s_cls_key_stamp, 0, sizeof s_cls_key_stamp);
+    s_cls_n = 1;
+    s_cls_recycled = 0;
+}
+
+/** @brief Return the index of a face key in the class memo and the census histograms.
  *
- * Over the materials terrain_sel_usable() accepts for the current level,
- * a refine material whose key is the face's (terrain_refine_key_matches)
- * and a declarative one whose selector accepts the face
- * (terrain_decl_matches) compete in one ranking (mod_mat_outranks), as the
- * walked draw-time resolve ranks a tag's refine slot against its
- * declarative winner.
- * @param texid Tiledef id, or -1 for an untextured face.
- * @param env Nonzero for a face in the env-rewrite set.
- * @param lp Nonzero for an LP-tier face. */
-static int terrain_winner(int texid, int env, int lp) {
-    if (s_mat_count == 0) return -1;
-    const int untex = texid < 0;
+ * @param texid Tiledef id -1..127.
+ * @param untex Nonzero for an untextured face.
+ * @param env Env-rewrite flag.
+ * @param lp LP-tier flag. */
+static int ter_key_index(int texid, int untex, int env, int lp) {
+    return (((texid + 1) * 2 + (untex ? 1 : 0)) * 2 + (env ? 1 : 0)) * 2 + (lp ? 1 : 0);
+}
+
+/** @brief Compute a face key's candidate list at the pushed level.
+ *
+ * Over the materials terrain_sel_usable() accepts: the declarative winner
+ * among those terrain_decl_matches() accepts (mod_mat_outranks), and the
+ * refines whose one key is the face's (terrain_refine_key_matches) that
+ * outrank it, highest first, at most TER_CLASS_MEMBERS - 1 of them; the
+ * declarative winner ends the list.
+ * @param texid Tiledef id, or -1.
+ * @param untex Nonzero for an untextured face.
+ * @param env Env-rewrite flag.
+ * @param lp LP-tier flag.
+ * @param out Receives TER_CLASS_MEMBERS material indices at most.
+ * @return The member count, 0 when no material matches. */
+static int ter_candidates(int texid, int untex, int env, int lp, short* out) {
     const int level = openpete_mods_current_level();
-    int best = -1;
+    int d = -1, n = 0;
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
-        if (!terrain_sel_usable(m, level)) continue;
-        const int match = m->per_instance ? terrain_refine_key_matches(m, untex, texid)
-                                          : terrain_decl_matches(m, texid, env, lp);
-        if (match && mod_mat_outranks(i, best)) best = i;
+        if (!m->per_instance && terrain_sel_usable(m, level) &&
+            terrain_decl_matches(m, texid, untex, env, lp) && mod_mat_outranks(i, d))
+            d = i;
     }
-    return best;
+    short r[MOD_MATERIAL_MAX];
+    int rn = 0;
+    for (int i = 0; i < s_mat_count; i++) {
+        const mod_material_t* m = &s_mats[i];
+        if (!m->per_instance || !terrain_sel_usable(m, level) ||
+            !terrain_refine_key_matches(m, untex, texid) || !mod_mat_outranks(i, d))
+            continue;
+        int j = rn++;
+        while (j > 0 && mod_mat_outranks(i, r[j - 1])) { r[j] = r[j - 1]; j--; }
+        r[j] = (short)i;
+    }
+    for (n = 0; n < rn && n < TER_CLASS_MEMBERS - 1; n++) out[n] = r[n];
+    if (d >= 0) out[n++] = (short)d;
+    return n;
 }
 
-int openpete_mods_material_terrain_bucket(int texid, int env, int lp) {
-    int w = terrain_winner(texid, env, lp);
-    int b = (w < 0) ? 0 : ((w + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX) ? w + 1 : 0);
-    if (b && s_mats[w].per_instance) s_mats[w].bake_won = 1;
-    cen_ter(s_cen_bake_n, s_cen_bake_b, texid, env, lp, b);
-    return b;
-}
-
-/** @brief List the live terrain bucket ids for the pushed level, ascending.
+/** @brief Return the class id of a candidate list, interning it.
  *
- * Ascending by construction: the scan runs in index order and the id is
- * the index + 1.
- * @param out Receives the ids.
+ * An equal list reuses its class. With the table full, a class no path
+ * interned in the current terrain epoch takes the new list: its faces were
+ * baked under an earlier selector set, draw in the stock pass while the
+ * class is not baked in the current epoch (ter_class_pass_live), and draw
+ * the new list's member from the first bake that stamps the class again
+ * until their sector rebakes.
+ * @param list The members.
+ * @param n Member count, at least 1.
+ * @param ep The current terrain epoch.
+ * @return The class id 1..TER_CLASS_N-1, or 0 when every class is current. */
+static int ter_class_intern(const short* list, int n, unsigned ep) {
+    for (int c = 1; c < s_cls_n; c++)
+        if (s_cls[c].n == n && memcmp(s_cls[c].m, list, (size_t)n * sizeof *list) == 0) return c;
+    int c = 0;
+    if (s_cls_n < TER_CLASS_N) {
+        c = s_cls_n++;
+    } else {
+        for (int r = 1; r < TER_CLASS_N && !c; r++)
+            if (s_cls[r].epoch != ep) c = r;
+        if (!c) return 0;
+        if (!s_cls_recycled++)
+            OPL_INFO_F("mods", "terrain material classes: table full (%d), reusing the classes of an "
+                       "earlier selector set", TER_CLASS_N - 1);
+    }
+    memset(&s_cls[c], 0, sizeof s_cls[c]);
+    s_cls[c].n = n;
+    memcpy(s_cls[c].m, list, (size_t)n * sizeof *list);
+    return c;
+}
+
+/** @brief Return the resolution class of a face key for the current terrain epoch, or 0 for none.
+ *
+ * Memoised per key until the terrain epoch moves.
+ * @param texid Tiledef id, or -1.
+ * @param untex Nonzero for an untextured face.
+ * @param env Env-rewrite flag.
+ * @param lp LP-tier flag. */
+static int ter_class_of(int texid, int untex, int env, int lp) {
+    if (s_mat_count == 0) return 0;
+    if (texid < -1 || texid > 127) texid = -1;
+    const int k = ter_key_index(texid, untex, env, lp);
+    const unsigned ep = openpete_mods_material_terrain_epoch();
+    if (s_cls_key_stamp[k] == ep) return s_cls_key[k];
+    short list[TER_CLASS_MEMBERS];
+    const int n = ter_candidates(texid, untex, env, lp, list);
+    const int c = n ? ter_class_intern(list, n, ep) : 0;
+    if (c) s_cls[c].epoch = ep;
+    s_cls_key_stamp[k] = ep;
+    s_cls_key[k] = (unsigned char)c;
+    return c;
+}
+
+int openpete_mods_material_terrain_class(int texid, int untex, int env, int lp) {
+    const int c = ter_class_of(texid, untex, env, lp);
+    if (c) s_cls[c].bake_epoch = openpete_mods_material_terrain_epoch();
+    if (mod_mat_census_on() && texid >= -1 && texid <= 127)
+        cen_ter(s_cen_bake_n, s_cen_bake_b, ter_key_index(texid, untex, env, lp), c);
+    return c;
+}
+
+/** @brief Return the pass a class draws in for the present the live memo describes: its resolved member + 1, or 0 for stock.
+ *
+ * Stock for a class the retained bake has not stamped in the current
+ * terrain epoch, one not resolved this present, and one resolved to stock.
+ * @param c Class id.
+ * @param ep The current terrain epoch. */
+static int ter_class_pass_live(int c, unsigned ep) {
+    const ter_class_t* k = &s_cls[c];
+    if (c <= 0 || c >= s_cls_n || k->bake_epoch != ep || k->res_present != s_mat_present || k->res < 0)
+        return 0;
+    return k->res + 1;
+}
+
+/** @brief Fill the pass of every class id from the live memo.
+ *
+ * @param out Receives TER_CLASS_N entries; class 0 and unused ids read 0. */
+static void ter_class_pass_table_live(unsigned char* out) {
+    const unsigned ep = openpete_mods_material_terrain_epoch();
+    memset(out, 0, TER_CLASS_N);
+    for (int c = 1; c < s_cls_n; c++) out[c] = (unsigned char)ter_class_pass_live(c, ep);
+}
+
+/** @brief List the material passes of a class-to-pass table, ascending.
+ *
+ * A pass is a material index + 1 that at least one class resolves to; the
+ * stock pass 0 is not listed.
+ * @param cp The class-to-pass table, TER_CLASS_N entries.
+ * @param out Receives the pass ids.
  * @param cap Capacity of @p out.
  * @return Ids written. */
-static int terrain_bucket_list_live(int* out, int cap) {
-    int n = 0, level = openpete_mods_current_level();
-    for (int i = 0; i < s_mat_count && n < cap; i++) {
-        if (!terrain_sel_usable(&s_mats[i], level)) continue;
-        if (i + 1 > OPENPETE_MATERIAL_TER_BUCKET_MAX) break;
-        out[n++] = i + 1;
-    }
+static int ter_pass_list(const unsigned char* cp, int* out, int cap) {
+    unsigned char seen[TER_CLASS_N];
+    memset(seen, 0, sizeof seen);
+    for (int c = 1; c < TER_CLASS_N; c++) seen[cp[c]] = 1;
+    int n = 0;
+    for (int p = 1; p < TER_CLASS_N && n < cap; p++)
+        if (seen[p]) out[n++] = p;
     return n;
 }
 
@@ -752,7 +904,55 @@ int openpete_mods_material_terrain_bucket_list(int* out, int cap) {
         for (int i = 0; i < n; i++) out[i] = s_mat_view->ter_bucket[i];
         return n;
     }
-    return terrain_bucket_list_live(out, cap);
+    unsigned char cp[TER_CLASS_N];
+    ter_class_pass_table_live(cp);
+    const int n = ter_pass_list(cp, out, cap);
+    if (mod_mat_census_on() && n > atomic_load_explicit(&s_cen_pass_max, memory_order_relaxed))
+        atomic_store_explicit(&s_cen_pass_max, n, memory_order_relaxed);
+    return n;
+}
+
+int openpete_mods_material_terrain_pass_mask(int pass, uint32_t mask[8]) {
+    unsigned char live[TER_CLASS_N];
+    const unsigned char* cp = s_mat_view ? s_mat_view->ter_class_pass : live;
+    if (!s_mat_view) ter_class_pass_table_live(live);
+    int n = 0;
+    memset(mask, 0, 8 * sizeof *mask);
+    for (int c = 0; c < TER_CLASS_N; c++)
+        if (cp[c] == pass) { mask[c >> 5] |= 1u << (c & 31); n++; }
+    return n;
+}
+
+/** @brief Census: return a class's last resolved member, or -1 for stock, no resolution or no class.
+ *
+ * @param c Class id. */
+static int census_class_member(int c) {
+    return c > 0 && c < s_cls_n && s_cls[c].res_present ? s_cls[c].res : -1;
+}
+
+/** @brief Census: print the class count, the passes per colour slot, and each class's members and last resolution. */
+static void census_print_classes_ter(void) {
+    const unsigned ep = openpete_mods_material_terrain_epoch();
+    int baked = 0;
+    for (int c = 1; c < s_cls_n; c++) baked += s_cls[c].bake_epoch == ep;
+    fprintf(stderr, "[material-census] terrain classes=%d (baked in the current epoch %d); "
+                    "material passes per colour slot max=%d\n",
+            s_cls_n - 1, baked, atomic_load_explicit(&s_cen_pass_max, memory_order_relaxed));
+    for (int c = 1; c < s_cls_n && c <= 16; c++) {
+        char buf[160];
+        int n = 0;
+        buf[0] = 0;
+        for (int j = 0; j < s_cls[c].n && n < (int)sizeof buf - 8; j++)
+            n += snprintf(buf + n, sizeof buf - (size_t)n, "%s%d%s", j ? " > " : "", s_cls[c].m[j],
+                          s_mats[s_cls[c].m[j]].per_instance ? "r" : "d");
+        fprintf(stderr, "[material-census] terrain class %d: %s; last resolved %d\n", c, buf, census_class_member(c));
+    }
+}
+
+int mod_mat_terrain_class_count(void) { return s_cls_n - 1; }
+int mod_mat_terrain_class_resolved(int c) {
+    if (c <= 0 || c >= s_cls_n || s_cls[c].res_present != s_mat_present) return -1;
+    return s_cls[c].res;
 }
 
 /* ------------------------------------------------------------------ */
@@ -760,7 +960,7 @@ int openpete_mods_material_terrain_bucket_list(int* out, int cap) {
 
 /* Per-scene snapshot of the interned per-instance slots (see the ring in
  * native_render.c): slots 1 up to the live count, the static slot of every
- * material index, and the terrain bucket list. Each slot's bytes sit in a
+ * material index, the terrain class-to-pass table and its pass list. Each slot's bytes sit in a
  * fixed OPENPETE_MATERIAL_UNIFORMS_MAX array, so the compose indexes them
  * the same way as the live table. */
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out) {
@@ -779,8 +979,11 @@ void openpete_mods_material_view_capture(openpete_mods_material_view_t* out) {
                                  ? s_mats[i].refine_slot : 0;
     }
     out->level = s_cur_level;
-    /* The live list, whatever view the compose thread has installed. */
-    out->ter_bucket_n = terrain_bucket_list_live(out->ter_bucket, OPENPETE_MODS_MATERIAL_VIEW_MATS);
+    /* The live tables, whatever view the compose thread has installed. */
+    ter_class_pass_table_live(out->ter_class_pass);
+    out->ter_bucket_n = ter_pass_list(out->ter_class_pass, out->ter_bucket, OPENPETE_MODS_MATERIAL_VIEW_MATS);
+    if (mod_mat_census_on() && out->ter_bucket_n > atomic_load_explicit(&s_cen_pass_max, memory_order_relaxed))
+        atomic_store_explicit(&s_cen_pass_max, out->ter_bucket_n, memory_order_relaxed);
 }
 void openpete_mods_material_view_set(const openpete_mods_material_view_t* v) { s_mat_view = v; }
 const openpete_mods_material_view_t* openpete_mods_material_view_get(void) { return s_mat_view; }
@@ -897,11 +1100,11 @@ static moby_memo_t* moby_memo_find(unsigned stamp, uint32_t vaddr, int cls) {
     return NULL;
 }
 
-/* Advanced on the first call and the first decline of a moby refine, the
- * two events that move its accept-all observation. Sim thread only. */
+/* Advanced on the first call and the first decline of a refine, the two
+ * events that move its accept-all observation. Sim thread only. */
 static unsigned s_ovl_obs;
 
-/** @brief Count one moby refine call and its decline for the overlap diagnostic's accept-all observation.
+/** @brief Count one moby or terrain refine call and its decline for the overlap diagnostic's accept-all observation.
  *
  * @param m The refine material.
  * @param declined Nonzero when the callback returned -1. */
@@ -999,69 +1202,43 @@ int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
 }
 
 /* ------------------------------------------------------------------ */
-/* Walked terrain refines. */
+/* Terrain refine outcomes and class resolution. */
 
-/** @brief Return the winning per-instance terrain material for one refine key, or -1.
+/** @brief Census: count a terrain refine call as outranked when a higher declarative matches its key on some face.
  *
- * The walked path's refine winner. Considers the per-instance materials
- * terrain_sel_usable() accepts for @p level (the bake's predicate: live,
- * enabled, SCENE contract, terrain channel, level key) whose one key is
- * the face's (terrain_refine_key_matches); the highest ranked
- * (mod_mat_outranks) wins. A texture-less refine without OP_SEL_UNTEXTURED
- * has no key and never wins.
- * @param untex Nonzero for the untextured band (the beyond-LOD gouraud terrain).
- * @param texid The Tiledef id of a textured face.
- * @param level The level the key resolves in. */
-static int material_terrain_refine_winner(int untex, int texid, int level) {
-    int best = -1;
-    for (int i = 0; i < s_mat_count; i++) {
-        const mod_material_t* m = &s_mats[i];
-        if (!m->per_instance || !terrain_sel_usable(m, level)) continue;
-        if (terrain_refine_key_matches(m, untex, texid) && mod_mat_outranks(i, best)) best = i;
-    }
-    return best;
-}
-
-/** @brief Census: classify a terrain refine call against the other usable terrain materials on its key.
- *
- * Counts the call as outranked when a usable declarative material ranked
- * above it (mod_mat_outranks) matches the refine's key on some face (texture key -1
- * or equal, texturedness compatible; env and tier are face keys the
- * refine key does not carry), and a decline as shadowing when any other
- * usable material matches that key.
- * @param w The refine material.
- * @param declined Nonzero when the callback returned -1. */
-static void census_terrain_refine(int w, int declined) {
+ * A usable declarative material ranked above the refine (mod_mat_outranks)
+ * whose texture key is -1 or the refine's and whose texturedness flags
+ * admit the refine's band matches the refine's key on some face; env and
+ * tier are face keys the refine key does not carry.
+ * @param w The refine material. */
+static void census_terrain_refine(int w) {
     const mod_material_t* r = &s_mats[w];
     const int untex = (r->sel.flags & OP_SEL_UNTEXTURED) != 0;
     const int level = openpete_mods_current_level();
-    int outranked = 0, other = 0;
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
-        if (i == w || !terrain_sel_usable(m, level)) continue;
+        if (i == w || m->per_instance || !terrain_sel_usable(m, level)) continue;
         if (m->sel.texture != -1 && (untex || m->sel.texture != r->sel.texture)) continue;
         if ((m->sel.flags & OP_SEL_TEXTURED) && untex) continue;
         if ((m->sel.flags & OP_SEL_UNTEXTURED) && !untex) continue;
-        other = 1;
-        if (!m->per_instance && mod_mat_outranks(i, w)) outranked = 1;
+        if (mod_mat_outranks(i, w)) { cen_bump(w, MOD_MAT_CENSUS_OUTRANKED); return; }
     }
-    if (outranked) cen_bump(w, MOD_MAT_CENSUS_OUTRANKED);
-    if (declined && other) cen_bump(w, MOD_MAT_CENSUS_DECLINE_SHADOWS);
 }
 
 /* The refine outcome of one per-instance terrain material, computed once
  * per tick on the sim thread. A terrain refine selector carries one key,
  * a Tiledef id or the untextured band, so the material's outcome is the
- * outcome of every face it reaches and one memo per material serves the
- * walked and the retained terrain alike. The slot memo is keyed on the
- * present counter openpete_mods_material_frame_reset() advances; the view
- * captures it for the compose (mod_mat_terrain_bucket_slot). The block
- * itself is kept for the tick (memo_stamp), and a later present of the tick
- * re-interns it without a call. The callback runs inside a guarded stretch
- * owned by the material's mod and receives a terrain key with the
- * selector's texture (-1 for the untextured band); its block, capped at
- * OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned slot of the same
- * material with identical bytes, else takes a new slot. */
+ * outcome of every face it reaches and one memo per material serves every
+ * class it is a member of, walked and retained alike. The slot memo is
+ * keyed on the present counter openpete_mods_material_frame_reset()
+ * advances; the view captures it for the compose
+ * (mod_mat_terrain_bucket_slot). The block itself is kept for the tick
+ * (memo_stamp), and a later present of the tick re-interns it without a
+ * call. The callback runs inside a guarded stretch owned by the material's
+ * mod and receives a terrain key with the selector's texture (-1 for the
+ * untextured band); its block, capped at OPENPETE_MATERIAL_UNIFORMS_MAX,
+ * reuses an interned slot of the same material with identical bytes, else
+ * takes a new slot. */
 int mod_mat_terrain_refine_slot(int w) {
     if (w < 0 || w >= s_mat_count) return 0;
     mod_material_t* m = &s_mats[w];
@@ -1091,7 +1268,8 @@ int mod_mat_terrain_refine_slot(int w) {
     openpete_mods_guard_leave();
     cen_bump(w, MOD_MAT_CENSUS_REFINE_CALLS);
     if (rc < 0) cen_bump(w, MOD_MAT_CENSUS_DECLINES);
-    if (mod_mat_census_on()) census_terrain_refine(w, rc < 0);
+    refine_observe(m, rc < 0);
+    if (mod_mat_census_on()) census_terrain_refine(w);
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
     m->refine_stamp = stamp;
     m->refine_kept_len = rc < 0 ? -1 : rc;
@@ -1102,36 +1280,60 @@ int mod_mat_terrain_refine_slot(int w) {
     return (m->refine_slot = s);
 }
 
-/* Per-instance material slot for one textured terrain Tiledef id. */
-int openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid) {
-    if (!s_mat_has_instance) return 0;
-    (void)cpu;
-    return mod_mat_terrain_refine_slot(material_terrain_refine_winner(0, texid, s_cur_level));
+/** @brief Resolve a terrain class to its member for this present.
+ *
+ * Walks the class's members, highest ranked first, skipping one no longer
+ * usable (terrain_sel_usable): a declarative member lands; a refine member
+ * is asked through mod_mat_terrain_refine_slot and lands on acceptance,
+ * while its decline passes the class to the next member, counted as a
+ * fall-through when one follows. An accepted block that finds the slot
+ * table full resolves to stock for this present. Memoised per present.
+ * Sim thread only.
+ * @param c Class id 1..s_cls_n-1.
+ * @return The material index, or -1 for stock. */
+static int ter_class_resolve(int c) {
+    ter_class_t* k = &s_cls[c];
+    if (k->res_present == s_mat_present) return k->res;
+    k->res_present = s_mat_present;
+    k->res = -1;
+    const int level = s_cur_level;
+    int declined = -1;
+    for (int j = 0; j < k->n; j++) {
+        const int i = k->m[j];
+        const mod_material_t* m = &s_mats[i];
+        if (!terrain_sel_usable(m, level)) continue;
+        if (declined >= 0) cen_bump(declined, MOD_MAT_CENSUS_FALLTHROUGHS);
+        if (!m->per_instance) { k->res = i; break; }
+        const int s = mod_mat_terrain_refine_slot(i);
+        if (s > 0 && s != OPENPETE_MATERIAL_TERRAIN_STOCK) { k->res = i; break; }
+        if (m->refine_kept_len >= 0) break;     /* accepted, slot table full: stock */
+        declined = i;
+    }
+    return k->res;
 }
 
-/* Per-instance material slot for the untextured terrain band. */
-int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
-    if (!s_mat_has_instance) return 0;
-    (void)cpu;
-    return mod_mat_terrain_refine_slot(material_terrain_refine_winner(1, -1, s_cur_level));
+int openpete_mods_material_terrain_walk_slot(CPUState* cpu, int texid, int untex, int env, int lp) {
+    (void)cpu;   /* refines read guest RAM through the mod api's accessors */
+    if (s_mat_count == 0) return 0;
+    const int c = ter_class_of(texid, untex, env, lp);
+    const int r = c ? ter_class_resolve(c) : -1;
+    if (mod_mat_census_on() && texid >= -1 && texid <= 127)
+        cen_ter(s_cen_walk_n, s_cen_walk_b, ter_key_index(texid < 0 ? -1 : texid, untex, env, lp), r + 1);
+    if (r < 0) return OPENPETE_MATERIAL_TERRAIN_STOCK;
+    if (!s_mats[r].per_instance) return OPENPETE_MATERIAL_TERRAIN_DECL | r;
+    return s_mats[r].refine_slot;
 }
 
 void openpete_mods_material_terrain_refine_present(void) {
-    if (!s_mat_has_instance) return;
-    const int level = s_cur_level;
-    /* The refines a retained face draws through: the walk asks the ones it
-     * reaches itself, and a refine whose faces are all retained has no
-     * walked face to ask it. A refine asked here wins its own key among
-     * the refines (as the walk would pick it) and won a face key at the
-     * bake (no higher declarative took every face of its key), so an
-     * outranked refine is never asked. */
-    for (int i = 0; i < s_mat_count && i + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX; i++) {
-        const mod_material_t* m = &s_mats[i];
-        if (!m->per_instance || !m->bake_won || !terrain_sel_usable(m, level)) continue;
-        const int untex = (m->sel.flags & OP_SEL_UNTEXTURED) != 0;
-        if (material_terrain_refine_winner(untex, m->sel.texture, level) != i) continue;
-        (void)mod_mat_terrain_refine_slot(i);
-    }
+    if (s_mat_count == 0) return;
+    /* The classes the retained faces carry: the walk resolves the classes
+     * it reaches itself, and a class whose faces are all retained has no
+     * walked face to resolve it. A refine is asked only as a member of a
+     * class above its key's declarative winner, so an outranked refine is
+     * never asked. */
+    const unsigned ep = openpete_mods_material_terrain_epoch();
+    for (int c = 1; c < s_cls_n; c++)
+        if (s_cls[c].bake_epoch == ep) (void)ter_class_resolve(c);
 }
 
 int mod_mat_terrain_bucket_slot(int w) {
@@ -1140,10 +1342,10 @@ int mod_mat_terrain_bucket_slot(int w) {
     int slot = 0;
     if (s_mat_view) slot = s_mat_view->ter_refine[w];
     else if (m->refine_present == s_mat_present) slot = m->refine_slot;
-    if (slot <= 0) {
-        /* A bucket no baked face carries draws nothing; only one that
-         * does misses an outcome. */
-        if (m->bake_won) cen_bump(w, MOD_MAT_CENSUS_STALE_MEMO);
+    if (slot <= 0 || slot == OPENPETE_MATERIAL_TERRAIN_STOCK) {
+        /* The pass list holds a refine only when a class resolved to it, so
+         * a missing outcome is a pass from another present's tables. */
+        cen_bump(w, MOD_MAT_CENSUS_STALE_MEMO);
         return OPENPETE_MATERIAL_TERRAIN_STOCK;
     }
     return slot;
@@ -1174,8 +1376,9 @@ static int material_slot_usable(int slot) { return material_usable(view_slot_mat
 
 /* Draw-time resolve (native_render draw_tex_runs): the run's provenance tag ->
  * the winning override, or -1. Tag layout: [31:28] path+1; moby class
- * [15:0] + per-instance slot [27:16]; terrain env bit 27 / LP
- * bit 26 + sector [8:0]. Rank: mod_mat_outranks. */
+ * [15:0] + walk outcome [27:16]; terrain env bit 27 / LP bit 26 /
+ * untextured bit 25 + class outcome [24:16] + sector [8:0]. Rank:
+ * mod_mat_outranks. */
 /* The selector keys a tag carries, decoded once. `path` is 0 moby,
  * 1 terrain; the other members are -1 when the tag's path does not carry
  * that key. */
@@ -1222,11 +1425,12 @@ static void material_key_from_tag(uint32_t tag, material_key_t* k) {
  * A moby tag carries the extraction walk's outcome in bits [27:16]
  * (OPENPETE_MATERIAL_SLOT_STOCK = exhausted, OPENPETE_MATERIAL_SLOT_DECL |
  * index = a declarative landing, else an interned slot); a terrain tag
- * carries a per-present slot in bits [24:16]
- * (OPENPETE_MATERIAL_TERRAIN_STOCK = declined). Slot 0 defers to the
- * declarative resolve. A slot at or past the view's slot count is stale,
- * and a slot or landing whose material is no longer usable
- * (material_usable) does not resolve.
+ * carries its face class's resolved member in bits [24:16]
+ * (OPENPETE_MATERIAL_TERRAIN_STOCK = stock,
+ * OPENPETE_MATERIAL_TERRAIN_DECL | index = a declarative landing, else an
+ * interned slot). Slot 0 defers to the declarative resolve. A slot at or
+ * past the view's slot count is stale, and a slot or landing whose
+ * material is no longer usable (material_usable) does not resolve.
  * @param tag Provenance tag.
  * @param path 0 moby, 1 terrain; other paths carry no slot.
  * @param slot Receives the slot on a hit, or the material index of a
@@ -1235,21 +1439,22 @@ static void material_key_from_tag(uint32_t tag, material_key_t* k) {
  *         fall through to the declarative resolve, -1 when the outcome is
  *         stock or no longer resolves. */
 static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
-    int s;
+    int s, decl, stock;
     if (path == 0) {
         s = (int)((tag >> 16) & 0xFFFu);
-        if (s == OPENPETE_MATERIAL_SLOT_STOCK) return -1;    /* exhausted */
-        if (s & OPENPETE_MATERIAL_SLOT_DECL) {
-            s &= OPENPETE_MATERIAL_SLOT_DECL - 1;
-            if (!material_usable(s)) return -1;
-            *slot = s;
-            return 2;
-        }
+        decl = OPENPETE_MATERIAL_SLOT_DECL; stock = OPENPETE_MATERIAL_SLOT_STOCK;
     } else if (path == 1) {
         s = (int)((tag >> 16) & 0x1FFu);
-        if (s == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1; /* declined */
+        decl = OPENPETE_MATERIAL_TERRAIN_DECL; stock = OPENPETE_MATERIAL_TERRAIN_STOCK;
     } else {
         return 0;
+    }
+    if (s == stock) return -1;
+    if (s & decl) {
+        s &= decl - 1;
+        if (!material_usable(s)) return -1;
+        *slot = s;
+        return 2;
     }
     if (s == 0) return 0;                        /* declarative resolve */
     if (s >= view_slot_n()) return -1;           /* stale (post-reset) */
@@ -1327,43 +1532,11 @@ static int material_winner(const material_key_t* k, int contract) {
     return best;
 }
 
-/** @brief Resolve a walked terrain tag whose refine slot is set, ranking the refine against the declarative winner.
+/** @brief Census: record a draw-time outcome per material.
  *
- * The tag carries the outcome of the walked refine winner for its texid
- * or untextured band; the declarative winner depends on the tag's env,
- * tier and texturedness as well. A claimed slot (@p claimed 1) keeps its
- * material unless the declarative winner outranks it. A declined refine
- * (@p claimed 0, the tag holds OPENPETE_MATERIAL_TERRAIN_STOCK) is
- * re-derived from the tag's keys: the draw is stock when that refine still
- * outranks the declarative winner, else the declarative winner draws.
- * @param k The decoded terrain key.
- * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
- * @param claimed 1 for a claimed slot, 0 for a decline.
- * @param slot In: the claimed slot; out: the uniform slot, 0 for a
- *        declarative material's static block.
- * @return The material index, or -1 for stock. */
-static int terrain_tag_resolve(const material_key_t* k, int contract, int claimed, int* slot) {
-    const int d = material_winner(k, contract);
-    const int r = claimed ? view_slot_mat(*slot)
-                          : material_terrain_refine_winner(k->untex, k->tex, k->level);
-    if (r >= 0 && mod_mat_outranks(r, d)) {
-        if (!claimed) return -1;                       /* the refine's decline stands */
-        return s_mats[r].contract == contract ? r : -1;
-    }
-    *slot = 0;
-    return d;
-}
-
-/** @brief Census: record a draw-time outcome per material and, for terrain tags, per face key.
- *
- * @param k The decoded key.
  * @param best The resolved material, or -1 for stock. */
-static void census_resolve(const material_key_t* k, int best) {
-    if (!mod_mat_census_on()) return;
-    cen_bump(best, MOD_MAT_CENSUS_DRAWS);
-    if (k->path == 1)
-        cen_ter(s_cen_walk_n, s_cen_walk_b, k->untex ? -1 : k->tex, k->env, k->lp,
-                best < 0 ? 0 : best + 1);
+static void census_resolve(int best) {
+    if (mod_mat_census_on()) cen_bump(best, MOD_MAT_CENSUS_DRAWS);
 }
 
 int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
@@ -1375,16 +1548,6 @@ int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
         atomic_fetch_add_explicit(&s_cen_view_resolves, 1u, memory_order_relaxed);
     material_key_from_tag(tag, &k);
     const int from_tag = material_slot_from_tag(tag, k.path, slot);
-    if (k.path == 1 && (from_tag == 1 ||
-                        (from_tag == -1 && ((tag >> 16) & 0x1FFu) == OPENPETE_MATERIAL_TERRAIN_STOCK))) {
-        /* Walked terrain: the refine slot or decline ranks against the
-         * declarative winner of the tag's keys. A stale or unusable slot
-         * stays stock below. */
-        best = terrain_tag_resolve(&k, contract, from_tag == 1, slot);
-        if (best >= 0 && mod_owner_held(s_mats[best].owner)) best = -1;
-        census_resolve(&k, best);
-        return best;
-    }
     switch (from_tag) {
     case 1:
     case 2:
@@ -1393,15 +1556,15 @@ int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
         best = from_tag == 1 ? view_slot_mat(*slot) : *slot;
         if (from_tag == 2) *slot = 0;
         if (s_mats[best].contract != contract || mod_owner_held(s_mats[best].owner)) best = -1;
-        census_resolve(&k, best);
+        census_resolve(best);
         return best;
-    case -1: census_resolve(&k, -1); return -1;
+    case -1: census_resolve(-1); return -1;
     default: break;   /* declarative resolve */
     }
     *slot = 0;
     best = material_winner(&k, contract);
     if (best >= 0 && mod_owner_held(s_mats[best].owner)) best = -1;
-    census_resolve(&k, best);
+    census_resolve(best);
     return best;
 }
 
@@ -1412,10 +1575,10 @@ int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
  * either every value, one value, or none: every selector key is -1 or one
  * value, so the resolver's predicates, asked at the material's own key and
  * at a value no selector names, decide which. Terrain keys are enumerated:
- * (texid -1..127) x env x tier, the bake's key space. */
+ * the face keys of the class table (ter_key_index). */
 enum { OVL_NONE = 0, OVL_ONE, OVL_ALL };
 #define OVL_SENTINEL (-0x7FFFFFFF)   /* a class or identity no selector names */
-#define OVL_TER_KEYS (129 * 4)
+#define OVL_TER_KEYS TER_KEYS
 #define OVL_TER_WORDS ((OVL_TER_KEYS + 63) / 64)
 
 typedef struct { int kind, val; } ovl_set_t;
@@ -1489,18 +1652,20 @@ static ovl_set_t ovl_chan_set(const mod_material_t* m, int ch, int level) {
     return s;
 }
 
-/** @brief Set one bit per terrain key the bake would bucket to a material when it wins.
+/** @brief Set one bit per terrain face key a material is a candidate for.
  *
+ * Keys a face cannot carry (a Tiledef id on an untextured face) stay clear.
  * @param m The material.
  * @param level The pushed level.
- * @param bits Receives OVL_TER_WORDS words, bit (texid + 1) * 4 + env * 2 + lp. */
+ * @param bits Receives OVL_TER_WORDS words, bit ter_key_index(texid, untex, env, lp). */
 static void ovl_terrain_bits(const mod_material_t* m, int level, uint64_t* bits) {
     memset(bits, 0, OVL_TER_WORDS * sizeof *bits);
     if (!terrain_sel_usable(m, level)) return;
     for (int k = 0; k < OVL_TER_KEYS; k++) {
-        const int texid = k / 4 - 1, env = (k >> 1) & 1, lp = k & 1;
-        const int hit = m->per_instance ? terrain_refine_key_matches(m, texid < 0, texid)
-                                        : terrain_decl_matches(m, texid, env, lp);
+        const int texid = k / 8 - 1, untex = (k >> 2) & 1, env = (k >> 1) & 1, lp = k & 1;
+        if (untex && texid >= 0) continue;
+        const int hit = m->per_instance ? terrain_refine_key_matches(m, untex, texid)
+                                        : terrain_decl_matches(m, texid, untex, env, lp);
         if (hit) bits[k >> 6] |= 1ull << (k & 63);
     }
 }
@@ -1555,9 +1720,9 @@ static int ovl_ter_meets(const ovl_foot_t* h, const ovl_foot_t* l, int* within) 
 
 /** @brief Return the shadow verdict of a higher-ranked material over a lower-ranked one from their footprints.
  *
- * Full when the higher takes every key of the lower: on terrain any higher
- * material that matches a key takes it (a refine's decline draws stock); on
- * the moby walk a declarative takes the keys it matches, and a refine takes
+ * Full when the higher takes every key of the lower: on the moby walk and
+ * on terrain, where a refine's decline passes the key to the next
+ * candidate, a declarative takes the keys it matches, and a refine takes
  * them only when it has been asked and never declined (accept-all); on the
  * declarative channels only declaratives match. Partial when a key is
  * shared but not every key is taken; none when no key is shared.
@@ -1570,15 +1735,18 @@ static int ovl_pair(int hi, int lo, unsigned* chans, int* accept_all) {
     const ovl_foot_t* h = &s_ovl_foot[hi];
     const ovl_foot_t* l = &s_ovl_foot[lo];
     int within = 1;
+    const int takes = !h->refine || (h->asked && !h->declined);
     *chans = ovl_ter_meets(h, l, &within) ? 1u << OP_CHAN_TERRAIN : 0u;
     int full = within;
+    if (!takes)
+        for (int w = 0; w < OVL_TER_WORDS; w++)
+            if (l->ter[w]) full = 0;
     for (int ch = OP_CHAN_MOBY; ch <= OP_CHAN_PORTAL; ch++) {
         if (ch == OP_CHAN_TERRAIN || !l->ch[ch].kind) continue;
         if (ovl_meets(l->ch[ch], h->ch[ch])) *chans |= 1u << ch;
-        const int takes = !h->refine || (h->asked && !h->declined);
         if (!takes || !ovl_within(l->ch[ch], h->ch[ch])) full = 0;
     }
-    *accept_all = full && h->refine && (*chans & (1u << OP_CHAN_MOBY)) != 0;
+    *accept_all = full && h->refine && (*chans & (1u << OP_CHAN_MOBY | 1u << OP_CHAN_TERRAIN)) != 0;
     if (!*chans) return MOD_MAT_SHADOW_NONE;
     return full ? MOD_MAT_SHADOW_FULL : MOD_MAT_SHADOW_PARTIAL;
 }
@@ -1655,7 +1823,8 @@ static void ovl_log(int hi, int lo, int verdict) {
     ovl_describe(lo, b, sizeof b);
     ovl_chan_list(chans, c, sizeof c);
     const ovl_foot_t* h = &s_ovl_foot[hi];
-    const char* why = !h->refine || !(chans & (1u << OP_CHAN_MOBY)) ? "" : aa ? " (accept-all refine)"
+    const char* why = !h->refine || !(chans & (1u << OP_CHAN_MOBY | 1u << OP_CHAN_TERRAIN)) ? ""
+                    : aa ? " (accept-all refine)"
                     : h->declined ? " (refine declines)" : !h->asked ? " (refine not yet asked)" : "";
     OPL_INFO_F("mods", "material overlap: %s over %s: %s%s%s%s", a, b, mod_mat_shadow_name(verdict),
                *c ? " on " : "", c, verdict == MOD_MAT_SHADOW_NONE ? "" : why);

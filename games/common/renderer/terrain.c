@@ -8292,13 +8292,15 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
                  | ((uint32_t)key_cells << 21)   /* keys per drain sub-cell */
                  | ((uint32_t)F->lpkey << 22)    /* keys with the LP base term */
                  | (((uint32_t)F->otbias & 0x1Fu) << 24);
-    /* Material bucket, keyed exactly as the walk's provenance tag is:
-     * Tiledef id + env-rewrite membership. Both LOD halves of a face
-     * share it (the selector keys on the Tiledef, not on the page), so
-     * it rides mat_far0 alone and the near half needs no copy. */
-    /* A borrowed face's Tiledef id names the source table: it keys no selector. */
-    const int hp_bucket = openpete_mods_material_terrain_bucket(
-        (F->tb == -1 || S->ff) ? -1 : (F->tb & 0x7F), F->tgen != 0, 0);
+    /* Material bucket: the face's resolution class, keyed as the walk
+     * keys it: Tiledef id, the face's own texturedness, env-rewrite
+     * membership, HP tier. Both LOD halves of a face share it (the
+     * selector keys on the Tiledef, not on the page), so it rides
+     * mat_far0 alone and the near half needs no copy. A borrowed face's
+     * Tiledef id names the source table: it keys no selector, and the
+     * face stays textured. */
+    const int hp_bucket = openpete_mods_material_terrain_class(
+        (F->tb == -1 || S->ff) ? -1 : (F->tb & 0x7F), F->tb == -1, F->tgen != 0, 0);
     T.matf0 = tgpu_pack_mat0(&F->mat) | ((uint32_t)hp_bucket << 24);
     T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
     T.matn0 = tgpu_pack_mat0(&F->matN); T.matn1 = (uint32_t)(F->matN.clut_raw & 0xFFFF);
@@ -8466,8 +8468,9 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
 
     /* ---- LP tier: untextured; drawn in WORLD and re-drawn in FILL ---- */
     /* Every LP face keys the same (untextured, LP tier), so its material
-     * bucket is a per-sector constant. 0 = no material claims these faces. */
-    const int lp_bucket = openpete_mods_material_terrain_bucket(-1, 0, 1);
+     * bucket (resolution class) is a per-sector constant. 0 = no material
+     * is a candidate for these faces. */
+    const int lp_bucket = openpete_mods_material_terrain_class(-1, 1, 0, 1);
     const tgpu_lpset own_lp = { SC->lpV, (anim && !vsnap) ? SC->lpVprev : NULL, SC->nLpV,
                                 SC->lpColBase, CA, sec_index };
     for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++)
@@ -12439,6 +12442,32 @@ static int tn_rim_verdict(CPUState* cpu, const ttri* t, int* plane) {
     return rim;
 }
 
+/* Walked material memo rows: Tiledef ids 0..127, then textured with no
+ * Tiledef id, then untextured. */
+#define TN_MAT_KEYS 130
+
+/** @brief Return a walked terrain triangle's provenance tag with its face class's resolved material.
+ *
+ * The material key is the face's Tiledef id (row 128 for a textured face
+ * with none, row 129 for an untextured face), env-rewrite membership and
+ * tier; the first face of a key in the feed resolves it through
+ * openpete_mods_material_terrain_walk_slot and the memo serves the rest.
+ * @param cpu The guest CPU state.
+ * @param t The triangle.
+ * @param tex Nonzero when the triangle is drawn textured.
+ * @param memo Per-feed memo, TN_MAT_KEYS rows of (env, tier), -1 unresolved.
+ * @return The terrain provenance tag. */
+static uint32_t tn_material_tag(CPUState* cpu, const ttri* t, int tex, int16_t memo[][4]) {
+    const int tid = (tex && t->texid >= 0 && t->texid < 128) ? t->texid : -1;
+    const int sec = t->sec < 0 ? 0 : t->sec;
+    int16_t* slot = &memo[tex ? (tid >= 0 ? tid : 128) : 129][(t->env ? 2 : 0) | (t->tier ? 1 : 0)];
+    if (*slot < 0)
+        *slot = (int16_t)openpete_mods_material_terrain_walk_slot(cpu, tid, !tex, t->env, t->tier);
+    if (!tex) return OPENPETE_TAG_TERRAIN_UNTEX(t->tier, t->env, sec, *slot);
+    if (tid < 0) return OPENPETE_TAG_TERRAIN_NOTEX_ID(t->tier, t->env, sec, *slot);
+    return OPENPETE_TAG_TERRAIN_TEX(t->tier, t->env, sec, tid, *slot);
+}
+
 /** @brief Apply the inner-rim rule to a triangle about to be fed.
  *
  * Sets the scene's sticky rim mark to 1 + the accepting plane's published
@@ -12696,19 +12725,16 @@ static void terrain_feed_native(CPUState* cpu) {
         const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
         s_fill_dilate = (e && *e) ? (float)atof(e) : 0.0f;  /* quantize/grow OFF by default (they cause silhouette ghosting/spikes + sub-tick crawl; envs re-enable for experiments) */
     }
-    /* Level push (idempotent after the build's), then every keyed terrain
-     * refine's outcome for this present, on this thread, after the frame
-     * reset: the walk below reads the memo, the retained passes read the
-     * outcome the material view captures, and no callback runs on the
-     * compose. */
+    /* Level push (idempotent after the build's), then the member of every
+     * terrain class the retained bake stamped, for this present, on this
+     * thread, after the frame reset: the retained passes read the
+     * class-to-pass table the material view captures, and no callback runs
+     * on the compose. */
     render_material_level_push(cpu);
     openpete_mods_material_terrain_refine_present();
-    /* Untextured-band material: one resolve per feed - the whole
-     * beyond-LOD gouraud band shares a single per-instance outcome. */
-    const int untex_slot = openpete_mods_material_terrain_untex_slot(cpu);
-    /* Texture-keyed materials: one resolve per (feed, Tiledef id),
-     * memoized - -1 = unresolved. */
-    int16_t tex_slot[128];
+    /* Walked faces: one class resolve per feed and face key
+     * (tn_material_tag), memoized; -1 = unresolved. */
+    int16_t tex_slot[TN_MAT_KEYS][4];
     memset(tex_slot, 0xFF, sizeof tex_slot);
     /* Terrain self-snaps (push_tri floors under the integer snap; subdivide
      * midpoints carry exact on-edge positions) - the renderer chokepoint
@@ -12981,42 +13007,7 @@ static void terrain_feed_native(CPUState* cpu) {
             else
                 tri.koff = (float)-(mean + 0.5);    /* contest-only, never emitted */
         }
-        int tid = (tex && t->texid >= 0 && t->texid < 128) ? t->texid : -1;
-        if (tid >= 0 && tex_slot[tid] < 0) {
-            tex_slot[tid] = (int16_t)openpete_mods_material_terrain_tex_slot(cpu, tid);
-            static int s_tsr = -2;
-            if (s_tsr == -2) { const char* e2 = getenv("OPENPETE_TEXSEL_DBG");
-                               s_tsr = e2 ? atoi(e2) : -1; }
-            if (s_tsr == tid && openpete_frame > 2000u) { static int pr2;
-                if (pr2++ < 12) fprintf(stderr, "[texsel-resolve f=%u] tid=%d -> slot=%d\n",
-                                        openpete_frame, tid, tex_slot[tid]); }
-        }
-        {   /* OPENPETE_TEXSEL_DBG=<tid>: once per present, count that id's
-             * textured tris + missing-texid textured tris + its slot. */
-            static int s_tsdbg = -2;
-            if (s_tsdbg == -2) { const char* e2 = getenv("OPENPETE_TEXSEL_DBG");
-                                 s_tsdbg = e2 ? atoi(e2) : -1; }
-            if (s_tsdbg >= 0) {
-                static unsigned lf = 0xFFFFFFFFu; static int nt, nm;
-                if (openpete_frame != lf) {
-                    if (lf != 0xFFFFFFFFu)
-                        fprintf(stderr, "[texsel f=%u] tid=%d tris=%d slot=%d "
-                                "textured-missing-texid=%d\n", lf, s_tsdbg, nt,
-                                tex_slot[s_tsdbg], nm);
-                    lf = openpete_frame; nt = 0; nm = 0;
-                }
-                if (tid == s_tsdbg) nt++;
-                if (tex && tid < 0) nm++;
-            }
-        }
-        openpete_native_scene_set_tag(tex
-            ? (tid >= 0
-                   ? OPENPETE_TAG_TERRAIN_TEX(t->tier, t->env,
-                                              t->sec < 0 ? 0 : t->sec,
-                                              tid, tex_slot[tid])
-                   : OPENPETE_TAG_TERRAIN(t->tier, t->env, t->sec < 0 ? 0 : t->sec))
-            : OPENPETE_TAG_TERRAIN_UNTEX(t->tier, t->env,
-                                         t->sec < 0 ? 0 : t->sec, untex_slot));
+        openpete_native_scene_set_tag(tn_material_tag(cpu, t, tex, tex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);
         if (tn_rim_feed(cpu, t)) continue;
         /* OPENPETE_PORTAL_RIM_SHOW=1: paint classified faces one colour per

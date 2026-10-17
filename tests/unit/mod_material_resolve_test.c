@@ -12,10 +12,13 @@
  * effect; refine outcomes asked once per tick and replayed on the tick's
  * re-extracts; a same-mod tie kept by the first registration below api
  * pin 13 and by the later one from it; terrain refines and declaratives in
- * one enabled-list ranking on the bake and the walked path, one terrain
- * predicate (level and contract) on both paths, terrain refine outcomes
- * computed on the sim thread and read by the compose from the view, and the
- * level read from the installed view at draw time. Every stub mod carries
+ * one enabled-list ranking, a terrain face's resolution class (the refines
+ * above its declarative winner, then that winner) shared by the retained
+ * and the walked path, a terrain refine's decline passing the face to the
+ * next member of its class, one terrain predicate (level and contract) on
+ * both paths, terrain class resolutions computed on the sim thread and
+ * read by the compose from the view, and the level read from the installed
+ * view at draw time. Every stub mod carries
  * its api pin, so a rule keyed on the pin changes only the cases whose mods
  * sit on the changed side of it.
  *
@@ -144,10 +147,43 @@ static int resolve(uint32_t tag, int contract) {
     int slot = 0;
     return mod_mat_resolve_index(tag, contract, &slot);
 }
+
+/** @brief Retained bake: the resolution class of a face key; @p tex -1 is an untextured face. */
+static int bake(int tex, int env, int lp) {
+    return openpete_mods_material_terrain_class(tex, tex < 0, env, lp);
+}
+/** @brief Walked path: the tag field of a face key; @p tex -1 is an untextured face. */
+static int walk(int tex, int env, int lp) {
+    return openpete_mods_material_terrain_walk_slot(NULL, tex, tex < 0, env, lp);
+}
+/** @brief Retained path: the material whose pass draws class @p c, from the published pass list and class masks, or -1 for the stock pass.
+ *
+ * Reads the installed view when one is set, else the live tables. Returns
+ * -2 when no pass, or more than one, holds the class. */
+static int retained(int c) {
+    int passes[OPENPETE_MATERIAL_TER_BUCKET_MAX + 1];
+    const int n = openpete_mods_material_terrain_bucket_list(passes + 1, OPENPETE_MATERIAL_TER_BUCKET_MAX);
+    passes[0] = 0;
+    int hit = -2, hits = 0;
+    for (int i = 0; i <= n; i++) {
+        uint32_t mask[8];
+        (void)openpete_mods_material_terrain_pass_mask(passes[i], mask);
+        if ((mask[c >> 5] >> (c & 31)) & 1u) { hit = passes[i] - 1; hits++; }
+    }
+    return hits == 1 ? hit : -2;
+}
+/** @brief Return the number of retained material passes listed for the present. */
+static int retained_passes(void) {
+    int passes[OPENPETE_MATERIAL_TER_BUCKET_MAX];
+    return openpete_mods_material_terrain_bucket_list(passes, OPENPETE_MATERIAL_TER_BUCKET_MAX);
+}
 #define SCENE OPENPETE_MATERIAL_CONTRACT_SCENE
 #define DECAL OPENPETE_MATERIAL_CONTRACT_DECAL
 /** @brief The moby tag field of a declarative landing on material @p m. */
 #define DECL(m) (OPENPETE_MATERIAL_SLOT_DECL | (m))
+/** @brief The terrain tag field of a declarative landing on material @p m. */
+#define TDECL(m) (OPENPETE_MATERIAL_TERRAIN_DECL | (m))
+#define TSTOCK OPENPETE_MATERIAL_TERRAIN_STOCK
 
 /* Refine callbacks. Each counts its calls; a claim writes a 16-byte block
  * derived from the key, so distinct instances intern distinct slots. */
@@ -193,7 +229,6 @@ static void case_f1(void) {
     CHECK(s_calls == 1, "calls %d", s_calls);
     CHECK(resolve(moby_tag(5, s), SCENE) == ma, "declined instance resolves");
     CHECK(mod_mat_census_get(mb, MOD_MAT_CENSUS_DECLINES) == 1, "census declines");
-    CHECK(mod_mat_census_get(mb, MOD_MAT_CENSUS_DECLINE_SHADOWS) == 0, "census decline shadows");
     CHECK(mod_mat_census_get(mb, MOD_MAT_CENSUS_FALLTHROUGHS) == 1, "census fallthroughs");
     CHECK(mod_mat_census_get(ma, MOD_MAT_CENSUS_EXTRACT_WINS) == 1, "census landing");
     CHECK(s_guard_max == 1 && s_guard_depth == 0 && s_guard_owner && strcmp(s_guard_owner, "fx-b") == 0,
@@ -283,14 +318,17 @@ static void case_f3(void) {
     const int md = reg(b, r, SCENE, NULL);
     mod_mat_census_force(1);
     openpete_mods_material_frame_reset(1);
-    CHECK(openpete_mods_material_terrain_bucket(3, 0, 0) == md + 1, "bake bucket");
-    const int s = openpete_mods_material_terrain_tex_slot(NULL, 3);
-    CHECK(s == 1, "walked slot %d", s);
+    s_calls = 0;
+    const int c = bake(3, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(c > 0 && retained(c) == md, "retained class %d -> %d", c, retained(c));
+    const int s = walk(3, 0, 0);
+    CHECK(s == TDECL(md), "walked field %#x", s);
     CHECK(resolve(ter_tag(3, 0, 0, s), SCENE) == md, "walked resolve");
     CHECK(resolve(ter_tag(3, 0, 0, 0), SCENE) == md, "slotless tag");
-    CHECK(mod_mat_census_get(mr, MOD_MAT_CENSUS_OUTRANKED) == 1, "census outranked");
+    CHECK(s_calls == 0 && mod_mat_census_get(mr, MOD_MAT_CENSUS_REFINE_CALLS) == 0, "refine never asked");
     mod_mat_census_force(0);
-    OUTCOME("texture 3: bake bucket = the later declarative, walked = the later declarative; refine counted outranked");
+    OUTCOME("texture 3: retained and walked = the later declarative; the refine below it is never asked");
 
     begin("Terrain refine over an earlier declarative");
     b = mod("fx-td", 0, 13);
@@ -298,16 +336,18 @@ static void case_f3(void) {
     const int md2 = reg(b, r, SCENE, NULL);
     const int mr2 = reg(a, r, SCENE, rf_accept);
     openpete_mods_material_frame_reset(1);
-    CHECK(openpete_mods_material_terrain_bucket(3, 0, 0) == mr2 + 1, "bake bucket");
-    const int s2 = openpete_mods_material_terrain_tex_slot(NULL, 3);
-    CHECK(resolve(ter_tag(3, 0, 0, s2), SCENE) == mr2, "walked resolve");
+    const int c2 = bake(3, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(c2) == mr2, "retained %d", retained(c2));
+    const int s2 = walk(3, 0, 0);
+    CHECK(s2 == 1 && resolve(ter_tag(3, 0, 0, s2), SCENE) == mr2, "walked resolve");
     (void)md2;
-    OUTCOME("texture 3: bake bucket = the later refine, walked = the later refine");
+    OUTCOME("texture 3: retained and walked = the later refine");
 }
 
-/** @brief A walked terrain refine's decline ranks against the tag's declarative winner, per env key. */
+/** @brief A terrain refine's decline passes the face to the next member of its class, per env key, on both paths. */
 static void case_terrain_decline(void) {
-    begin("Walked terrain decline under and over a declarative");
+    begin("Terrain decline under and over a declarative");
     stub_mod_t* a = mod("fx-tr", 0, 13);
     stub_mod_t* b = mod("fx-tenv", 1, 13);
     stub_mod_t* c = mod("fx-tr2", 2, 13);
@@ -317,19 +357,120 @@ static void case_terrain_decline(void) {
     e.flags = OP_SEL_ENV_ANIM;
     reg(a, r, SCENE, rf_decline);
     const int me = reg(b, e, SCENE, NULL);
+    mod_mat_census_force(1);
     openpete_mods_material_frame_reset(1);
-    const int s = openpete_mods_material_terrain_tex_slot(NULL, 3);
-    CHECK(s == OPENPETE_MATERIAL_TERRAIN_STOCK, "walked decline %#x", s);
-    CHECK(resolve(ter_tag(3, 1, 0, s), SCENE) == me, "env face: the later declarative");
-    CHECK(resolve(ter_tag(3, 0, 0, s), SCENE) == -1, "plain face: the decline");
-    CHECK(openpete_mods_material_terrain_bucket(3, 1, 0) == me + 1, "bake env face");
-    reg(c, r, SCENE, rf_decline);
+    CHECK(walk(3, 1, 0) == TDECL(me) && resolve(ter_tag(3, 1, 0, walk(3, 1, 0)), SCENE) == me,
+          "env face: the later declarative");
+    CHECK(walk(3, 0, 0) == TSTOCK && resolve(ter_tag(3, 0, 0, TSTOCK), SCENE) == -1,
+          "plain face: the decline, nothing below");
+    const int ce = bake(3, 1, 0), cp = bake(3, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(ce) == me && retained(cp) == -1, "retained env %d plain %d", retained(ce), retained(cp));
+    const int mc = reg(c, r, SCENE, rf_decline);
     openpete_mods_material_frame_reset(1);
-    const int s2 = openpete_mods_material_terrain_tex_slot(NULL, 3);
-    CHECK(resolve(ter_tag(3, 1, 0, s2), SCENE) == -1, "env face under a later declining refine");
-    OUTCOME("decline: env face draws the later env declarative, plain face stock; a later declining refine draws stock on both");
+    s_calls = 0;
+    const int s2 = walk(3, 1, 0);
+    CHECK(s2 == TDECL(me) && resolve(ter_tag(3, 1, 0, s2), SCENE) == me,
+          "env face under a later declining refine: falls through, field %#x", s2);
+    CHECK(walk(3, 0, 0) == TSTOCK, "plain face: both refines decline");
+    const int ce2 = bake(3, 1, 0), cp2 = bake(3, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(ce2) == me && retained(cp2) == -1, "retained env %d plain %d", retained(ce2), retained(cp2));
+    CHECK(s_calls == 2, "each refine asked once in the present, calls %d", s_calls);
+    CHECK(mod_mat_census_get(mc, MOD_MAT_CENSUS_FALLTHROUGHS) >= 1, "fall-through counted");
+    mod_mat_census_force(0);
+    OUTCOME("decline: env face draws the env declarative below the declining refines, plain face stock; "
+            "retained and walked agree");
 }
 
+/* The level rf_band reads. */
+static int s_band_level;
+/** @brief Refine: claim the untextured band on an odd level, decline it on an even one. */
+static int rf_band(const openpete_mod_material_key_t* k, void* out, uint32_t cap) {
+    (void)k;
+    s_calls++;
+    if ((s_band_level & 1) == 0 || cap < 16) return -1;
+    memset(out, 9, 16);
+    return 16;
+}
+/** @brief mat-fx-terrain's pattern: an untextured-band refine above its own mod's untextured declarative, declining on even levels. */
+static void case_terrain_fallthrough(void) {
+    begin("Terrain decline falls through to a lower declarative (mat-fx-terrain)");
+    static openpete_mods_material_view_t v;
+    stub_mod_t* a = mod("mat-fx-terrain", 0, 13);
+    openpete_mod_material_selector_t d = sel_ch(OP_CHAN_TERRAIN), u = sel_ch(OP_CHAN_TERRAIN);
+    d.flags = OP_SEL_UNTEXTURED;          /* manifest row, registered first */
+    u.flags = OP_SEL_UNTEXTURED;
+    const int md = reg(a, d, SCENE, NULL);
+    const int mu = reg(a, u, SCENE, rf_band);
+    mod_mat_census_force(1);
+    s_band_level = 10;
+    openpete_mods_set_level(10);
+    openpete_mods_material_frame_reset(1);
+    s_calls = 0;
+    const int c = bake(-1, 0, 1);
+    CHECK(c > 0 && mod_mat_terrain_class_count() == 1, "one class, %d", mod_mat_terrain_class_count());
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(c) == md && retained_passes() == 1, "even level, retained: %d passes %d", retained(c), retained_passes());
+    CHECK(walk(-1, 0, 1) == TDECL(md) && resolve(ter_tag(-1, 0, 1, TDECL(md)), SCENE) == md, "even level, walked");
+    CHECK(s_calls == 1, "one call for both paths, %d", s_calls);
+    CHECK(mod_mat_census_get(mu, MOD_MAT_CENSUS_FALLTHROUGHS) == 1, "fall-through %u",
+          mod_mat_census_get(mu, MOD_MAT_CENSUS_FALLTHROUGHS));
+    uint32_t m0[8], m1[8];
+    CHECK(openpete_mods_material_terrain_pass_mask(0, m0) >= 1 && (m0[0] & 1u) && !((m0[c >> 5] >> (c & 31)) & 1u),
+          "stock pass: class 0, not the class");
+    CHECK(openpete_mods_material_terrain_pass_mask(md + 1, m1) == 1, "the declarative's pass: one class");
+    s_band_level = 11;
+    openpete_mods_set_level(11);
+    openpete_mods_material_frame_reset(1);
+    const int c11 = bake(-1, 0, 1);
+    openpete_mods_material_terrain_refine_present();
+    const int s11 = walk(-1, 0, 1);
+    CHECK(c11 == c && retained(c) == mu && s11 > 0 && s11 < TDECL(0) && resolve(ter_tag(-1, 0, 1, s11), SCENE) == mu,
+          "odd level: the refine on both paths");
+    openpete_mods_material_view_capture(&v);
+    openpete_mods_material_frame_reset(1);
+    openpete_mods_material_view_set(&v);
+    CHECK(retained(c) == mu && retained_passes() == 1 && mod_mat_terrain_bucket_slot(mu) == s11,
+          "captured view keeps the present's table");
+    openpete_mods_material_view_set(NULL);
+    CHECK(retained(c) == -1, "live table, next present before the resolution: stock pass");
+    mod_mat_census_force(0);
+    OUTCOME("even level: the band refine declines and both paths draw the declarative below it (1 call, 1 fall-through); "
+            "odd level: the refine; 1 class, 1 material pass");
+}
+
+/** @brief The pass count is bounded by the terrain materials with baked faces; classes resolving to stock join the stock pass. */
+static void case_terrain_pass_bound(void) {
+    begin("Terrain classes and passes per colour slot");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    openpete_mod_material_selector_t t = sel_ch(OP_CHAN_TERRAIN), r1 = sel_ch(OP_CHAN_TERRAIN), r2;
+    t.flags = OP_SEL_TEXTURED;
+    r1.texture = 1;
+    r2 = r1;
+    r2.texture = 2;
+    const int mt = reg(a, t, SCENE, NULL);
+    const int ma = reg(b, r1, SCENE, rf_accept);
+    const int mdc = reg(b, r2, SCENE, rf_decline);
+    openpete_mod_material_selector_t e = sel_ch(OP_CHAN_TERRAIN);
+    e.flags = OP_SEL_ENV_ANIM;
+    const int me = reg(a, e, SCENE, NULL);   /* a's later row: over mt on env faces, under b's refines */
+    openpete_mods_material_frame_reset(1);
+    int cls[16], n = 0;
+    for (int tex = 0; tex < 4; tex++)
+        for (int env = 0; env < 2; env++) cls[n++] = bake(tex, env, 0);
+    cls[n++] = bake(-1, 0, 1);
+    openpete_mods_material_terrain_refine_present();
+    const int nc = mod_mat_terrain_class_count();
+    CHECK(nc == 6, "classes %d", nc);
+    CHECK(retained(cls[2]) == ma && retained(cls[4]) == mt && retained(cls[5]) == me && retained(cls[0]) == mt,
+          "tex 1 refine, tex 2 falls through to the textured declarative, env to the env declarative");
+    CHECK(retained(cls[8]) == -1, "untextured LP: stock");
+    CHECK(retained_passes() == 3, "passes %d (ma, mt, me)", retained_passes());
+    (void)mdc;
+    OUTCOME("%d classes; 3 material passes per colour slot for 4 live terrain materials (the declining refine owns none)", nc);
+}
 /** @brief A same-mod tie keeps the first registration, manifest row against C and C against C. */
 static void case_f4(void) {
     begin("Same-mod tie, manifest row then C registration (pin 13)");
@@ -410,14 +551,16 @@ static void case_f3a(void) {
     openpete_mods_set_level(3);
     openpete_mods_material_frame_reset(1);
     s_calls = 0;
-    CHECK(openpete_mods_material_terrain_bucket(4, 0, 0) == 0, "bake");
-    const int s = openpete_mods_material_terrain_tex_slot(NULL, 4);
-    CHECK(s == 0 && s_calls == 0, "walked slot %d calls %d", s, s_calls);
+    CHECK(bake(4, 0, 0) == 0, "bake");
+    const int s = walk(4, 0, 0);
+    CHECK(s == TSTOCK && s_calls == 0, "walked slot %#x calls %d", s, s_calls);
     CHECK(resolve(ter_tag(4, 0, 0, s), SCENE) == -1, "walked resolve");
     openpete_mods_set_level(9);
     openpete_mods_material_frame_reset(1);
-    CHECK(openpete_mods_material_terrain_bucket(4, 0, 0) == mr + 1, "bake level 9");
-    const int s9 = openpete_mods_material_terrain_tex_slot(NULL, 4);
+    const int c9 = bake(4, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(c9 > 0 && retained(c9) == mr, "retained level 9");
+    const int s9 = walk(4, 0, 0);
     CHECK(resolve(ter_tag(4, 0, 0, s9), SCENE) == mr, "walked level 9");
     OUTCOME("level 3: bake stock, walked stock (no call); level 9: both refine");
 
@@ -427,8 +570,8 @@ static void case_f3a(void) {
     reg(a, r, DECAL, rf_accept);
     openpete_mods_material_frame_reset(1);
     s_calls = 0;
-    CHECK(openpete_mods_material_terrain_tex_slot(NULL, 4) == 0 && s_calls == 0, "walked");
-    CHECK(openpete_mods_material_terrain_bucket(4, 0, 0) == 0, "bake");
+    CHECK(walk(4, 0, 0) == 0 && s_calls == 0, "walked");
+    CHECK(bake(4, 0, 0) == 0, "bake");
     OUTCOME("a DECAL terrain refine is asked on neither path");
 }
 
@@ -497,21 +640,20 @@ static void case_f3b_terrain_refine(void) {
     const int mu = reg(a, u, SCENE, rf_decline);
     reg(a, sel_ch(-1), SCENE, rf_accept);   /* unkeyed: never asked on terrain */
     mod_mat_census_force(1);
-    CHECK(openpete_mods_material_terrain_bucket(6, 0, 0) == mr + 1, "bake textured");
-    CHECK(openpete_mods_material_terrain_bucket(-1, 0, 0) == mu + 1, "bake untextured");
+    const int c6 = bake(6, 0, 0), cu = bake(-1, 0, 0);
     openpete_mods_material_frame_reset(1);
     s_calls = 0;
     openpete_mods_material_terrain_refine_present();
     CHECK(s_calls == 2, "sim-thread calls %d", s_calls);
     const int sr = mod_mat_terrain_bucket_slot(mr);
     CHECK(sr == 1, "memo slot %d", sr);
-    CHECK(mod_mat_terrain_bucket_slot(mu) == OPENPETE_MATERIAL_TERRAIN_STOCK, "declined");
-    CHECK(openpete_mods_material_terrain_tex_slot(NULL, 6) == sr && s_calls == 2, "walk reuses the memo");
+    CHECK(retained(c6) == mr && retained(cu) == -1, "retained: the refine, the declined band stock");
+    CHECK(walk(6, 0, 0) == sr && s_calls == 2, "walk reuses the memo");
     openpete_mods_material_view_capture(&v);
     openpete_mods_material_frame_reset(1);   /* the sim thread opens the next tick's scene */
     s_calls = 0;
     openpete_mods_material_view_set(&v);
-    CHECK(mod_mat_terrain_bucket_slot(mr) == sr, "view slot");
+    CHECK(mod_mat_terrain_bucket_slot(mr) == sr && retained(c6) == mr, "view slot and pass");
     CHECK(resolve(ter_tag(6, 0, 0, sr), SCENE) == mr, "walked tag through the view");
     openpete_mods_material_view_set(NULL);
     CHECK(mod_mat_terrain_bucket_slot(mr) == OPENPETE_MATERIAL_TERRAIN_STOCK, "stale memo");
@@ -535,15 +677,15 @@ static void case_refine_present_outranked(void) {
     const int md = reg(b, r3, SCENE, NULL);
     reg(a, r5, SCENE, rf_accept);              /* outranked by c's refine on texture 5 */
     const int mc = reg(c, r5, SCENE, rf_accept);
-    CHECK(openpete_mods_material_terrain_bucket(3, 0, 0) == md + 1, "texture 3 bake");
-    CHECK(openpete_mods_material_terrain_bucket(3, 1, 1) == md + 1, "texture 3 env lp bake");
-    CHECK(openpete_mods_material_terrain_bucket(5, 0, 0) == mc + 1, "texture 5 bake");
     openpete_mods_material_frame_reset(1);
+    const int c3 = bake(3, 0, 0), c3e = bake(3, 1, 1), c5 = bake(5, 0, 0);
     s_calls = 0;
     openpete_mods_material_terrain_refine_present();
+    CHECK(retained(c3) == md && retained(c3e) == md && retained(c5) == mc, "texture 3 the declarative, texture 5 the later refine");
     CHECK(s_calls == 1, "calls %d", s_calls);
     CHECK(mod_mat_terrain_bucket_slot(mc) == 1, "the winning refine has an outcome");
-    OUTCOME("1 call: the texture-5 winner; the refine under the later declarative and the lower texture-5 refine get 0");
+    OUTCOME("1 call: the texture-5 winner; the refine under the later declarative and the lower texture-5 refine "
+            "(reached only on its decline) get 0");
 }
 
 /** @brief Host-loop mode (no view installed): a frame reset strands an earlier present's slot, and a reused slot names another instance's block. */
@@ -580,12 +722,15 @@ static void case_level_change_bake(void) {
     const int md = reg(a, d, SCENE, NULL);
     openpete_mods_set_level(3);
     const unsigned e1 = openpete_mods_material_terrain_epoch();
-    CHECK(openpete_mods_material_terrain_bucket(5, 0, 0) == 0, "level 3");
+    CHECK(bake(5, 0, 0) == 0, "level 3");
     /* The guest has entered level 9; the bake runs before the push. */
-    CHECK(openpete_mods_material_terrain_bucket(5, 0, 0) == 0, "before push");
+    CHECK(bake(5, 0, 0) == 0, "before push");
     openpete_mods_set_level(9);
     CHECK(openpete_mods_material_terrain_epoch() > e1, "epoch moved");
-    CHECK(openpete_mods_material_terrain_bucket(5, 0, 0) == md + 1, "after push");
+    openpete_mods_material_frame_reset(1);
+    const int c = bake(5, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(c > 0 && retained(c) == md, "after push");
     OUTCOME("bake before the push: stock; push moves the epoch; bake after: the material");
 }
 
@@ -686,7 +831,7 @@ static void case_cross_mod_decl(void) {
     OUTCOME("flame 0, sky, player: the later mod; flame 1 (only the earlier mod): the earlier mod");
 }
 
-/** @brief Imported-sector terrain faces: the bake's texid -1 reads as untextured, the walked tag as textured with no texid. */
+/** @brief Imported-sector terrain faces: textured with no Tiledef id on both paths, so both take the textured declarative. */
 static void case_imported_sector(void) {
     begin("Imported-sector terrain faces (texid -1)");
     stub_mod_t* a = mod("fx-untex", 0, 13);
@@ -697,9 +842,14 @@ static void case_imported_sector(void) {
     const int mu = reg(a, u, SCENE, rf_accept);
     const int mt = reg(b, t, SCENE, NULL);
     openpete_mods_material_frame_reset(1);
-    CHECK(openpete_mods_material_terrain_bucket(-1, 0, 0) == mu + 1, "bake");
-    CHECK(resolve(ter_tag(0, 0, 0, 0), SCENE) == mt, "walked");
-    OUTCOME("bake: the untextured-band refine; walked (textured, Tiledef bits 0): the textured declarative");
+    const int c = openpete_mods_material_terrain_class(-1, 0, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(c) == mt, "retained %d", retained(c));
+    const int s = openpete_mods_material_terrain_walk_slot(NULL, -1, 0, 0, 0);
+    CHECK(s == TDECL(mt) && resolve(ter_tag(0, 0, 0, s), SCENE) == mt, "walked field %#x", s);
+    CHECK(resolve(ter_tag(0, 0, 0, 0), SCENE) == mt, "slotless walked tag");
+    (void)mu;
+    OUTCOME("retained and walked: the textured declarative; the untextured-band refine keys only untextured faces");
 }
 
 /** @brief The walk runs down the priority order: each decline passes the moby on, a refine below the landing is never asked, an exhausted walk draws stock. */
@@ -805,7 +955,7 @@ static void case_tick_memo(void) {
     openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN);
     r.texture = 6;
     const int mt = reg(b, r, SCENE, rf_accept);
-    CHECK(openpete_mods_material_terrain_bucket(6, 0, 0) == mt + 1, "bake");
+    CHECK(bake(6, 0, 0) > 0, "bake");
     mod_mat_census_force(1);
     openpete_mods_material_frame_reset(1);
     s_calls = 0;
@@ -951,8 +1101,22 @@ static void case_ovl_fixture_terrain(void) {
     CHECK(ovl(me, mu) == NONE && ovl(mu, mr) == NONE && ovl(mr, mu) == NONE, "band refine shares no key");
     stub_mod_t* c = mod("fx-tr-late", 2, 13);
     const int ml = reg(c, r, SCENE, rf_decline);
-    CHECK(ovl(ml, me) == FULL && ovl(ml, mr) == FULL, "a terrain refine over its key: full (decline draws stock)");
-    OUTCOME("env decl over texture refine partial; band refine none; a later declining texture-1 refine full over both");
+    CHECK(ovl(ml, me) == PART && ovl(ml, mr) == PART, "a terrain refine over its key, not yet asked: partial");
+    openpete_mods_material_frame_reset(1);
+    (void)walk(1, 0, 0);                       /* ml declines texture 1 */
+    CHECK(ovl(ml, me) == PART && ovl(ml, mr) == PART, "after its decline: partial");
+    OUTCOME("env decl over texture refine partial; band refine none; a later declining texture-1 refine partial over both");
+
+    begin("Overlap: an accept-all terrain refine over a declarative on its key");
+    stub_mod_t* d = mod("fx-tdecl", 0, 13);
+    stub_mod_t* t = mod("fx-tacc", 1, 13);
+    const int md = reg(d, r, SCENE, NULL);
+    const int mt = reg(t, r, SCENE, rf_accept);
+    CHECK(ovl(mt, md) == PART, "not yet asked");
+    openpete_mods_material_frame_reset(1);
+    (void)walk(1, 0, 0);
+    CHECK(ovl(mt, md) == FULL, "asked and accepted: full (accept-all)");
+    OUTCOME("a terrain refine over a declarative on its key: partial until asked, full while it has accepted every call");
 }
 
 /** @brief Census pattern: sky-selector's narrow exclusions before its wide fog, at pin 12 and pin 13. */
@@ -1047,6 +1211,8 @@ int main(void) {
     case_f2();
     case_f3();
     case_terrain_decline();
+    case_terrain_fallthrough();
+    case_terrain_pass_bound();
     case_f4();
     case_hp_tier_moby();
     case_textured_moby();

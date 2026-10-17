@@ -534,12 +534,14 @@ typedef struct {
     float   x_base, x_span, y_base, y_span;
     float   disp_w, clip_h, band, freeze_wf;
     int32_t pass_sel, full_extent;
-    int32_t mat_pass;      /* -1 = every face, 0 = stock, >0 = that bucket */
+    int32_t mat_pass;      /* -1 = every face, 0 = stock, >0 = that material's pass */
     int32_t snap;          /* 1 = integer vertex precision (screen-point floor) */
     int32_t cover;         /* 1 = portal cover discard (terrain.frag) */
     int32_t pad_[3];
     float   fc[4];         /* gl_FragCoord -> PSX screen affine, read by the portal discards */
+    uint32_t cls_mask[8];  /* mat_pass >= 0: bit c keeps the faces of resolution class c */
 } tc_pc;
+_Static_assert(sizeof(tc_pc) == 112, "tc_pc mirrors terrain.vert TerrainPC");
 
 /* --vertex-precision integer, latched once per RHI frame (below) so every
  * arena draw of one present agrees. The renderer's snap state is live: a
@@ -1896,18 +1898,30 @@ static int tc_dup_draw(void)
     return n;
 }
 
-/* Which bucket the arena draws are currently filtering for: -1 = every face
- * (no terrain material installed, and every depth/key pass), 0 = the stock
- * pass, >0 = one material's pass. Set around each group of arena draws. */
+/* Which pass the arena draws are currently filtering for: -1 = every face
+ * (no terrain material pass, and every depth/key pass), 0 = the stock
+ * pass, >0 = one material's pass (its index + 1). Set around each group of
+ * arena draws, with the resolution classes the pass keeps in
+ * s_tc_mat_mask. */
 static int s_tc_mat_pass = -1;
-/* Bucket passes that fell through to the stock pipeline, counted per draw
- * pass. A live bucket binds its own pipeline; a bucket whose material is
- * dead, disabled or has no terrain profile redraws the whole arena stock,
- * which is what iterating the live-bucket list avoids. */
+static uint32_t s_tc_mat_mask[8];
+
+/** @brief Select the material pass the following arena draws filter for, with its resolution-class mask.
+ *
+ * @param pass -1 for every face, 0 for the stock pass, else a material
+ *        pass id; a pass >= 0 loads its class mask from the material
+ *        view (openpete_mods_material_terrain_pass_mask). */
+static void tc_mat_pass_set(int pass)
+{
+    s_tc_mat_pass = pass;
+    if (pass >= 0) (void)openpete_mods_material_terrain_pass_mask(pass, s_tc_mat_mask);
+}
+/* Material passes that fell through to the stock pipeline, counted per
+ * draw pass: a pass whose material is dead, disabled, held, has no terrain
+ * profile or no pipeline draws its faces stock. */
 static unsigned s_tc_mat_stock;
-/* Bucket passes run in this draw pass. With the live-bucket list this is
- * the number of live terrain materials; iterating 1..bucket_max instead
- * would make it the highest material index, however few are live. */
+/* Material passes run in this draw pass: the distinct members the baked
+ * resolution classes resolved to this present. */
 static unsigned s_tc_mat_passes;
 
 /** @brief Return whether a pair is on the level-edge replacement's retire list.
@@ -2020,8 +2034,8 @@ static uint32_t tc_arena_high(int arena)
  *
  * Zeroes the block, copies the clip mapping's extents, band and freeze
  * factor, the portal cover flag and fragment affine, and stamps the material
- * pass (s_tc_mat_pass) and the vertex precision snap latched for this
- * present (s_tc_snap).
+ * pass (s_tc_mat_pass) with its class mask (s_tc_mat_mask) and the vertex
+ * precision snap latched for this present (s_tc_snap).
  * @param pc Out: the block to fill.
  * @param pass_sel Pass selector.
  * @param c Clip mapping; must not be NULL. */
@@ -2034,6 +2048,7 @@ static void tc_pc_fill(tc_pc *pc, int pass_sel, const openpete_tercache_clip *c)
     pc->band = c->band; pc->freeze_wf = c->freeze_wf;
     pc->pass_sel = pass_sel; pc->full_extent = c->full_extent;
     pc->mat_pass = s_tc_mat_pass;
+    memcpy(pc->cls_mask, s_tc_mat_mask, sizeof pc->cls_mask);
     pc->snap = s_tc_snap;
     pc->cover = c->cover;
     memcpy(pc->fc, c->fc, sizeof pc->fc);
@@ -2074,13 +2089,14 @@ static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
 /* ---- material passes ----------------------------------------------------
  * A material is a draw-state change, so faces it claims cannot be drawn in
  * the same pass as the faces it does not. The arena stays whole: it is drawn
- * once per participating bucket, and the vertex stage keeps only that
- * bucket's faces (pc.mat_pass). The stock pass runs first with mat_pass 0,
- * dropping every claimed face.
+ * once per pass, and the vertex stage keeps only the faces whose resolution
+ * class maps to that pass (pc.cls_mask). The stock pass runs first with
+ * mat_pass 0, keeping the faces of class 0 and of every class that resolved
+ * to stock.
  *
  * The world, fill, alpha, add and subtract colour slots take part, the blend
- * arenas included: each runs its stock pass filtered to mat_pass 0, then one
- * pass per live bucket. The depth prepass and key slots draw every face. */
+ * arenas included: each runs its stock pass, then one pass per resolved
+ * member. The depth prepass and key slots draw every face. */
 
 void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
                                       const uint32_t *frag, size_t frag_words,
@@ -2127,18 +2143,18 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
     return rc == 0 ? *pslot : NULL;
 }
 
-/** @brief Bind one bucket's terrain material pipeline for a vertex variant and colour slot, or the stock pipeline.
+/** @brief Bind one pass's terrain material pipeline for a vertex variant and colour slot, or the stock pipeline.
  *
  * The material pipeline is built lazily, once per material, variant and
  * slot, and bound with the material UBO pair at set 3. @p stock is the
- * pipeline this bucket's faces would have been drawn with had they not been
+ * pipeline this pass's faces would have been drawn with had they not been
  * claimed; it is bound instead whenever the material cannot serve them (a
- * refine callback that declined this present, a pipeline that failed to
- * build, a shader with no terrain profile, no material UBO yet), and each
+ * held or disabled owner, a pipeline that failed to build, a shader with
+ * no terrain profile, no material UBO yet), and each
  * such fallback counts in s_tc_mat_stock. The pass always runs: the stock
  * pass has already dropped these faces, so skipping it would leave a hole in
  * the world rather than an unreshaded patch.
- * @param bucket Terrain material bucket id.
+ * @param bucket Terrain material pass id (material index + 1).
  * @param variant Vertex variant: 0 plain, 1 anim, 2 near, 3 anim cells,
  *        4 near cells.
  * @param slot Colour slot: 0 world, 1 world with stencil mark, 2 fill,
@@ -2170,13 +2186,13 @@ draw_stock:
     return 1;
 }
 
-/** @brief Draw the opaque world arenas of all five vertex variants for one material bucket.
+/** @brief Draw the opaque world arenas of all five vertex variants for one material pass.
  *
  * Each variant carries the stock pipeline it would have used, so a material
  * that cannot serve its faces this present degrades to stock shading rather
  * than to a hole. The plain, anim and near variants draw their opaque and LP
  * arenas; the cell variants draw their opaque arena.
- * @param bucket Terrain material bucket id.
+ * @param bucket Terrain material pass id.
  * @param slot Colour slot (0 world, 1 world with stencil mark).
  * @param use_mark Nonzero to fall back to the stencil-mark pipelines.
  * @param clip Clip mapping for the draw target. */
@@ -2205,9 +2221,9 @@ static void tc_draw_material_world(int bucket, int slot, int use_mark,
         tc_draw_arena(OPTC_ARENA_CN_OPAQUE, 0, clip);
 }
 
-/** @brief Draw one blend class's arenas of all five vertex variants for one material bucket.
+/** @brief Draw one blend class's arenas of all five vertex variants for one material pass.
  *
- * @param bucket Terrain material bucket id.
+ * @param bucket Terrain material pass id.
  * @param slot Colour slot (3 alpha, 4 add, 5 subtract).
  * @param cls Blend arena class: OPTC_ARENA_ALPHA, OPTC_ARENA_ADD or
  *        OPTC_ARENA_SUB.
@@ -2235,18 +2251,16 @@ static void tc_draw_material_blend(int bucket, int slot, int cls,
 
 /** @brief Run the material passes of one colour slot, after its stock passes.
  *
- * One pass per live terrain bucket, each setting s_tc_mat_pass to the
- * bucket so the vertex stage keeps only that bucket's faces. Bucket ids are
- * a material index + 1 and so are sparse: a material registered at index
- * 200 leaves 199 ids with no live material behind it. Iterating the live
- * list rather than 1..highest keeps the pass count proportional to the live
- * terrain materials at any table size, because an id with no live material
- * still binds a pipeline and redraws the whole arena, every face of which
- * the bucket filter then discards. The prepass and key slots run no
- * material pass.
+ * One pass per listed pass id, each setting s_tc_mat_pass to the id and
+ * s_tc_mat_mask to the resolution classes that resolved to it, so the
+ * vertex stage keeps only those faces. The list holds only the members
+ * the baked classes resolved to this present, so the pass count is at
+ * most the live terrain materials with baked faces: a class that resolved
+ * to stock draws in the stock pass, and a material no class resolved to
+ * draws no pass. The prepass and key slots run no material pass.
  * @param which OPTC_DRAW_* slot.
- * @param buckets Live bucket ids.
- * @param bn Number of live bucket ids.
+ * @param buckets Pass ids.
+ * @param bn Number of pass ids.
  * @param use_mark Nonzero when the world slot uses the stencil-mark pipelines.
  * @param clip Clip mapping for the draw target. */
 static void tc_draw_material_passes(int which, const int *buckets, int bn,
@@ -2255,7 +2269,7 @@ static void tc_draw_material_passes(int which, const int *buckets, int bn,
 {
     for (int k = 0; k < bn; k++) {
         const int b = buckets[k];
-        s_tc_mat_pass = b;
+        tc_mat_pass_set(b);
         s_tc_mat_passes++;
         switch (which) {
         case OPTC_DRAW_WORLD:
@@ -2343,19 +2357,17 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
      * the terrain blocks cannot sit beside it. */
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);
-    /* Every colour slot runs its stock pass filtered (mat_pass 0) and then
-     * one pass per live bucket. Bucket ids are a material index + 1 and so
-     * are sparse: the list is iterated rather than the 1..max range,
-     * because an id with no live material still binds the stock pipeline
-     * and redraws the whole arena. The depth and key passes shade nothing,
-     * so they draw every face regardless of bucket. */
+    /* Every colour slot runs its stock pass filtered (mat_pass 0, the
+     * classes resolved to stock) and then one pass per listed member. The
+     * depth and key passes shade nothing, so they draw every face
+     * regardless of class. */
     int buckets[OPENPETE_MATERIAL_TER_BUCKET_MAX];
     const int bn = (which == OPTC_DRAW_PREPASS || which == OPTC_DRAW_PREPASS_DEPTH ||
                     which == OPTC_DRAW_KEY)
                        ? 0
                        : openpete_mods_material_terrain_bucket_list(
                              buckets, OPENPETE_MATERIAL_TER_BUCKET_MAX);
-    s_tc_mat_pass = bn > 0 ? 0 : -1;
+    tc_mat_pass_set(bn > 0 ? 0 : -1);
     s_tc_mat_stock = 0;
     s_tc_mat_passes = 0;
     const int cworld = use_mark ? TC_CP_MARK : TC_CP_WORLD;

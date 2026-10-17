@@ -32,6 +32,10 @@ openpete.com; the changelog page of the shipped docs makes it relative.
   `material_register_refine` and `material_set_selector` refuse, with one log line and -1, a refine that cannot take
   effect (a channel other than moby, terrain or any; a decal shader; a terrain selector with neither a texture key nor
   `OP_SEL_UNTEXTURED`). A moby selector with `OP_SEL_HP_TIER` no longer matches. A refine is asked once per tick.
+- Mod SDK: a terrain refine's `-1` means "not mine" as on the moby channel: the face passes to the next refine keyed
+  to it, then to the highest-priority declarative material matching it, where it used to draw stock. A textured face
+  of an imported sector (no texture id of its own) now matches `OP_SEL_TEXTURED` materials in the retained terrain
+  cache as it does in the walked terrain, where the cache treated it as untextured.
 - Settings menu: a line above **EXIT GAME** names what the selected row changes, and the **DOCUMENTATION** row
   opens the documentation in the browser: the copy in `docs/` beside the program, or openpete.com from the
   AppImage. `--help` ends with the documentation's address.

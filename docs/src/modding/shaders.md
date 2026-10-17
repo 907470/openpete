@@ -251,7 +251,10 @@ the class rows take `gallery.class` from `config.toml`.
 A selector prunes cheaply; a refine callback decides per instance. It
 runs during extraction in tick context and returns the instance's uniform
 block, or `-1` for "not mine": a moby passes to the next matching
-material (see the ordering above), a terrain key keeps stock shading:
+material (see the ordering above), and so does a terrain face (the next
+refine keyed to its texture or band, then the highest-priority
+declarative material matching the face); with none left it keeps stock
+shading:
 
 ```c
 static int refine(const openpete_mod_material_key_t* key, void* out, uint32_t cap) {

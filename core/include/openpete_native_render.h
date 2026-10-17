@@ -1711,10 +1711,11 @@ void openpete_native_scene_mark_terrain_feed(void);
  *   bits 31:28  path (0 = untagged, 1 = moby, 2 = terrain)
  *   moby:       bits 15:0  m_Class
  *   terrain:    bit 27 env-anim member (func_8002A6FC rewrite set),
- *               bit 26 LP tier, bits 8:0 sector id; textured faces add
- *               the Tiledef/texture-record id in [15:9] (word2 & 0x7F -
- *               the texture-selector key) and a per-present material
- *               slot in [24:16] (texture-keyed per-instance resolve)
+ *               bit 26 LP tier, bit 25 untextured, bits 8:0 sector id;
+ *               textured faces add the Tiledef/texture-record id in
+ *               [15:9] (word2 & 0x7F - the texture-selector key); the
+ *               face class's resolved material for the present in
+ *               [24:16] (OPENPETE_MATERIAL_TERRAIN_* in openpete_mods.h)
  *
  * INERT BY DEFAULT: the tag joins the material sort/coalesce key ONLY
  * when a split consumer is armed (a registered material selector or
@@ -1732,18 +1733,24 @@ void openpete_native_scene_mark_terrain_feed(void);
     (0x20000000u | ((env) ? 0x08000000u : 0u) | ((lp) ? 0x04000000u : 0u) | \
      ((uint32_t)(sec) & 0x1FFu))
 /* Textured terrain face: [15:9] = the face's Tiledef/texture-record id
- * (word2 & 0x7F - the id texture selectors key on), [24:16] = the
- * per-present material slot from the texture-keyed per-instance resolve
- * (0 = declarative resolve, 0x1FF = the callback declined -> stock). */
+ * (word2 & 0x7F - the id texture selectors key on), [24:16] = the face
+ * class's resolved material for the present (0 = draw-time declarative
+ * resolve, 0x100 | index = a declarative material, 0x1FF = stock, else an
+ * interned refine slot). */
 #define OPENPETE_TAG_TERRAIN_TEX(lp, env, sec, tex, slot) \
     (OPENPETE_TAG_TERRAIN(lp, env, sec) | \
      (((uint32_t)(slot) & 0x1FFu) << 16) | (((uint32_t)(tex) & 0x7Fu) << 9))
 /* Untextured terrain band: bit 25 marks the flat/gouraud tris, and
- * [24:16] carries the per-extraction material slot (0 = declarative resolve,
- * 0x1FF = the callback declined -> stock). */
+ * [24:16] carries the face class's resolved material, encoded as on a
+ * textured face. */
 #define OPENPETE_TAG_TERRAIN_UNTEX(lp, env, sec, slot) \
     (OPENPETE_TAG_TERRAIN(lp, env, sec) | 0x02000000u | \
      (((uint32_t)(slot) & 0x1FFu) << 16))
+/* Textured terrain face with no Tiledef id (an imported sector's borrowed
+ * face): [15:9] stays 0, and [24:16] carries the face class's resolved
+ * material, encoded as on a textured face. */
+#define OPENPETE_TAG_TERRAIN_NOTEX_ID(lp, env, sec, slot) \
+    (OPENPETE_TAG_TERRAIN(lp, env, sec) | (((uint32_t)(slot) & 0x1FFu) << 16))
 
 /* ── The remaining feeder paths ───────────────────────────────────────
  * Every path below copies the MOBY layout exactly - [31:28] path,

@@ -420,8 +420,9 @@ typedef struct openpete_mod_material_key {
  *         not mine. On the moby channel the instance passes to the next
  *         material in priority order that matches it (a declarative one
  *         takes it, a refine one is asked), and keeps stock shading when
- *         none takes it. On terrain the key keeps stock shading unless a
- *         higher-priority declarative material matches the face.
+ *         none takes it. On terrain the faces of the key pass the same
+ *         way to the next refine keyed to them, then to the
+ *         highest-priority declarative material that matches each face.
  */
 typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);

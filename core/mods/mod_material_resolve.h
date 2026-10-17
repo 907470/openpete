@@ -20,10 +20,11 @@
 
 #include <stdint.h>
 
-/* A real bound, not a table size: the bucket id stamped into the baked
- * face material is the index + 1, and it has 8 bits
- * (OPENPETE_MATERIAL_TER_BUCKET_MAX). A material registered above index
- * 254 would succeed and then never shade a terrain face. */
+/* A real bound, not a table size: a retained-terrain pass id is the
+ * material index + 1 in 8 bits (OPENPETE_MATERIAL_TER_BUCKET_MAX), and a
+ * walked terrain tag lands on OPENPETE_MATERIAL_TERRAIN_DECL | index in 9.
+ * A material registered above index 254 would succeed and then never
+ * shade a terrain face. */
 #define MOD_MATERIAL_MAX OPENPETE_MATERIAL_TER_BUCKET_MAX
 
 /* Per-present interned per-instance slots. Index 0 reserved
@@ -70,10 +71,10 @@ typedef struct {
     uint32_t      params_len;
     int           static_slot;
     /* Per-instance TERRAIN materials: the refine outcome for this present,
-     * memoized so the callback runs ONCE however many faces need it and
-     * whichever residency they are in. A terrain refine selector has exactly
-     * one key (its Tiledef id, or the untextured band), so one slot covers
-     * the whole material. */
+     * memoized so the callback runs ONCE however many faces and resolution
+     * classes need it and whichever residency they are in. A terrain refine
+     * selector has exactly one key (its Tiledef id, or the untextured band),
+     * so one slot covers the whole material. */
     int           refine_slot;
     unsigned      refine_present;
     /* The same outcome kept for the tick (memo stamp), so a later present
@@ -82,19 +83,15 @@ typedef struct {
     unsigned      refine_stamp;
     int           refine_kept_len;
     unsigned char refine_kept[OPENPETE_MATERIAL_UNIFORMS_MAX];
-    /* Set once the retained bake has stamped this refine's bucket into a
-     * face; kept for the session, since a retained face keeps its bucket
-     * until a rebake that need not restamp it. The sim-thread refine pass
-     * asks only refines a retained face can draw through. */
-    int           bake_won;
     /* A selector retuned from inside a present (material_set_selector) parks
      * here until the tick boundary. Selection has to be constant for a whole
      * present or half the frame shades under the old key. */
     openpete_mod_material_selector_t sel_pending;
     int           sel_dirty;
-    /* Moby extraction refine calls and declines since registration or the
-     * last selector change; the overlap diagnostic reports a refine called
-     * at least once that never declined as accept-all. */
+    /* Refine calls and declines (moby extraction and terrain) since
+     * registration or the last selector change; the overlap diagnostic
+     * reports a refine called at least once that never declined as
+     * accept-all. */
     unsigned      obs_calls, obs_declines;
     int  live;
     unsigned generation;   /* slot_generation_next at register and at each retirement */
@@ -231,25 +228,41 @@ int mod_mat_view_static_slot(int m);
 /** @brief Return the refine outcome of one per-instance terrain material for this present.
  *
  * The callback runs at most once per present per material (memo keyed on
- * the counter openpete_mods_material_frame_reset advances); a block
+ * the counter openpete_mods_material_frame_reset advances) and once per
+ * tick (a later present of the tick re-interns the kept block); a block
  * identical to an interned slot of the same material reuses that slot.
- * Sim thread only: extraction and openpete_mods_material_terrain_refine_present.
+ * Sim thread only: the resolution of a terrain class that has the
+ * material as a member.
  * @param w Material index, or -1 for none.
  * @return 0 for no material or a declarative one, an interned slot, or
  *         OPENPETE_MATERIAL_TERRAIN_STOCK when the callback declined or
  *         the slot table is full. */
 int mod_mat_terrain_refine_slot(int w);
 
-/** @brief Return the refine outcome a retained-terrain bucket pass binds, without calling a callback.
+/** @brief Return the refine outcome a retained-terrain material pass binds, without calling a callback.
  *
  * Reads the installed view's outcome for the material, else, with no view
  * installed, the material's memo when it was computed this present. A memo
- * from another present, or a view with no outcome for the material, reads as
- * stock; it counts in the census (MOD_MAT_CENSUS_STALE_MEMO) when a baked
- * face carries the material's bucket.
+ * from another present, a view with no outcome for the material, and a
+ * declined outcome read as stock and count in the census
+ * (MOD_MAT_CENSUS_STALE_MEMO): the pass list holds a refine only when a
+ * class resolved to it.
  * @param w Material index of a per-instance material.
  * @return An interned slot, or OPENPETE_MATERIAL_TERRAIN_STOCK. */
 int mod_mat_terrain_bucket_slot(int w);
+
+/** @brief Return the number of terrain resolution classes interned this session.
+ *
+ * @return The count; class ids run 1 to the count. */
+int mod_mat_terrain_class_count(void);
+
+/** @brief Return the member a terrain resolution class resolved to this present.
+ *
+ * Reads the live memo, without resolving.
+ * @param c Class id.
+ * @return The material index, or -1 for stock, a class not resolved this
+ *         present, or no such class. */
+int mod_mat_terrain_class_resolved(int c);
 
 /** @brief Pick the material that shades a draw's provenance tag, without the GPU description.
  *
@@ -297,7 +310,7 @@ int mod_postfx_rank(mod_postfx_rank_t* v, int n, int cap);
  * the first call that finds it on registers the exit-time print.
  * @return Nonzero when on. */
 int mod_mat_census_on(void);
-/** @brief Count one retained-terrain pass bound to a material's bucket.
+/** @brief Count one retained-terrain material pass bound to a material.
  *
  * @param m Material index. */
 void mod_mat_census_bucket_pass(int m);
@@ -326,12 +339,11 @@ unsigned mod_mat_census_view_resolves(void);
 
 enum {
     MOD_MAT_CENSUS_DRAWS = 0,        /* draw-time resolves won (walked runs) */
-    MOD_MAT_CENSUS_BUCKET_PASSES,    /* retained-terrain passes bound */
+    MOD_MAT_CENSUS_BUCKET_PASSES,    /* retained-terrain material passes bound */
     MOD_MAT_CENSUS_EXTRACT_WINS,     /* moby extraction walk landed on it (refine or decl) */
     MOD_MAT_CENSUS_REFINE_CALLS,     /* refine callback invocations */
     MOD_MAT_CENSUS_DECLINES,         /* refine returned -1 */
-    MOD_MAT_CENSUS_FALLTHROUGHS,     /* moby decline the walk carried to a lower material */
-    MOD_MAT_CENSUS_DECLINE_SHADOWS,  /* terrain decline drawn stock while another material matched */
+    MOD_MAT_CENSUS_FALLTHROUGHS,     /* decline carried to a lower material (moby walk, terrain class) */
     MOD_MAT_CENSUS_OUTRANKED,        /* refine called while a higher declarative matched its key */
     MOD_MAT_CENSUS_STALE_MEMO,       /* bucket pass found no outcome of the present it composes */
     MOD_MAT_CENSUS_N
@@ -373,7 +385,8 @@ int mod_mat_overlap_due(void);
  *
  * The key set of a material is read through the resolver's own predicates
  * at the pushed level: the moby class and the channel identity of each
- * declarative channel, and every (texid, env, tier) terrain key. */
+ * declarative channel, and every (texid, texturedness, env, tier) terrain
+ * face key. */
 void mod_mat_overlap_snapshot(void);
 
 /** @brief Compute the overlap pairs from the last snapshot, without a lock.

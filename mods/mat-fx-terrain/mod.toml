@@ -3,7 +3,10 @@
 # A refine keyed to Tiledef id 1 that claims every face, and an
 # untextured-band refine keyed to the current level (retuned whenever the
 # level changes) that declines on an even level id and claims on an odd
-# one. mat-fx-terrain-env, listed later, adds an env-keyed declarative on
+# one. The manifest row below is an untextured-face declarative; it
+# registers before the entry point's refines, so at api 13 it ranks below
+# them and takes the band faces the band refine declines.
+# mat-fx-terrain-env, listed later, adds an env-keyed declarative on
 # texture 1. Never enable it to play.
 
 [mod]
@@ -15,3 +18,9 @@ api     = 13
 state    = "none"
 runahead = "pure"
 sim_mutative = false
+
+[[material]]
+frag     = "shaders/tint.frag"
+channel  = "terrain"
+textured = false
+params   = [0.0, 0.0, 1.0, 0.5]
