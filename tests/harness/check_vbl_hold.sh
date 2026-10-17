@@ -2,12 +2,16 @@
 # check_vbl_hold.sh - the engagement cases of VBL delivery's hold path and
 # of the per-VBL split of an off-schedule VSync(n).
 #
-# Row hold/on-schedule (spyro-2, cardless oracle smoke): two runs under
-# OPENPETE_VBL_HOLD=charge:1000:4, one holding the window and one dry (the
-# same four deliveries counted and taken). Pass: the hold leg holds 4,
-# flushes once, leaves D = 3 after the flush; and the drive head at the
-# window's end (device VBL, position, base LBA, start time, rate) is the
-# same in both legs.
+# Row hold/on-schedule (spyro-2, cardless oracle, full 20k): two runs under
+# OPENPETE_VBL_HOLD=charge:6000:4 with OPENPETE_VBL_LEAF_CHECK=1, one holding
+# the window and one dry (the same four deliveries counted and taken). Pass:
+# the hold leg holds 4, flushes once, leaves D = 3 after the flush; each
+# leg's in-binary hold window check passes (device VBL count advanced by 4,
+# drive-head time at that count, openpete_vbl +1 held or +4 dry); the drive
+# head at the window's end (device VBL, position, base LBA, start time,
+# rate) is the same in both legs; and the device-half leaf check ran its
+# rows (nonzero runs, the countdown row included in the hold leg) with no
+# device row writing guest RAM or the scratchpad.
 # Row hold/off-schedule (spyro-2 and spyro-3 corpus bk2s, free-running):
 # OPENPETE_VBL_HOLD=pause:0:2 over a blocking CdSync waiting out a stream
 # read's closing CdlPause. Pass: 2 held, one flush, openpete_vbl advanced by
@@ -50,8 +54,8 @@ field() { sed -n "$2" "$1" | tail -1; }
 if want hold-on; then
     for leg in hold dry; do
         rm -f "$ROOT/hold-on-$leg.log"
-        spec="charge:1000:4"; [[ $leg == dry ]] && spec="charge:1000:4:dry"
-        OPENPETE_VBL_HOLD="$spec" OPENPETE_FRAME_LIMIT=8000 \
+        spec="charge:6000:4"; [[ $leg == dry ]] && spec="charge:6000:4:dry"
+        OPENPETE_VBL_HOLD="$spec" OPENPETE_VBL_LEAF_CHECK=1 \
             OPENPETE_ORACLE_LOG="$ROOT/hold-on-$leg.log" \
             tests/harness/check_psx_oracle.sh --game spyro-2 >/dev/null 2>&1
         [[ -s "$ROOT/hold-on-$leg.log" ]] || { echo "[vbl-hold] hold-on: no $leg log" >&2; exit 64; }
@@ -63,9 +67,19 @@ if want hold-on; then
     dval=$(field "$h" 's/.*hold window closed: .*D=\(-\{0,1\}[0-9]*\)$/\1/p')
     head_h=$(field "$h" 's/.*hold window head: \(.*\)/\1/p')
     head_d=$(field "$d" 's/.*hold window head: \(.*\)/\1/p')
-    nums="held=${held:-0} dry=${dry:-0} flushes=${flushes:-?} D=${dval:-?} head(hold)=[${head_h:-none}] head(dry)=[${head_d:-none}]"
+    chk_h=$(field "$h" 's/.*hold window check: \([A-Z]*\) .*/\1/p')
+    chk_d=$(field "$d" 's/.*hold window check: \([A-Z]*\) .*/\1/p')
+    leaf_runs=0 leaf_bad=0
+    for f in "$h" "$d"; do
+        r=$(field "$f" 's/.*leaf check: \([0-9]*\) device-row runs, [0-9]* wrote.*/\1/p')
+        b=$(field "$f" 's/.*leaf check: [0-9]* device-row runs, \([0-9]*\) wrote.*/\1/p')
+        leaf_runs=$((leaf_runs + ${r:-0})); leaf_bad=$((leaf_bad + ${b:-0}))
+    done
+    leaf_cd=$(field "$h" 's/.*leaf check row countdown: \([0-9]*\) runs.*/\1/p')
+    nums="held=${held:-0} dry=${dry:-0} flushes=${flushes:-?} D=${dval:-?} check(hold)=${chk_h:-none} check(dry)=${chk_d:-none} leaf runs=$leaf_runs countdown=${leaf_cd:-0} writes=$leaf_bad head(hold)=[${head_h:-none}] head(dry)=[${head_d:-none}]"
     if [[ "${held:-0}" == 4 && "${dry:-0}" == 4 && "${flushes:-}" == 1 && "${dval:-}" == 3 &&
-          -n "$head_h" && "$head_h" == "$head_d" ]]; then
+          "$chk_h" == PASS && "$chk_d" == PASS && $leaf_runs -gt 0 && "${leaf_cd:-0}" -gt 0 &&
+          $leaf_bad -eq 0 && -n "$head_h" && "$head_h" == "$head_d" ]]; then
         verdict hold-on PASS "$nums"
     elif [[ "${held:-0}" == 0 ]]; then
         verdict hold-on VACUOUS "$nums"

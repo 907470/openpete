@@ -1031,6 +1031,103 @@ void openpete_loop_site_census_log(void) {
     OPL_INFO_F("delivery", "pure check: %u site(s) compared, %u flagged", s_pure_sites, flagged);
 }
 
+/* Device-half leaf check (OPENPETE_VBL_LEAF_CHECK=1). A VBLANK's device
+ * rows (the drive head's stream pump, the SPU envelope, the audio drain,
+ * the CD-ROM controller step, the deferred read's countdown) run whether
+ * or not the CPU takes the VBLANK, so none may write guest RAM or the
+ * scratchpad: libcd's status mirror, landed sectors and every callback
+ * the guest sees belong to the CPU half, which a critical section holds.
+ * Each row runs between a snapshot of both and a compare against it; a
+ * byte that differs after the row names the row as writing CPU-half
+ * state. */
+#define LEAF_ROWS 8u
+#define LEAF_RAM_BASE     0x80000000u  /* KSEG0 address of guest RAM byte 0 */
+#define LEAF_SCRATCH_BASE 0x1F800000u  /* address of scratchpad byte 0 */
+static int      s_leaf_check = -1;
+static int      s_leaf_open = 0;
+static uint8_t* s_leaf_ram = NULL;
+static uint8_t  s_leaf_scratch[OPENPETE_PSX_SCRATCH_SIZE];
+static const char* s_leaf_row_name[LEAF_ROWS];
+static uint64_t s_leaf_row_runs[LEAF_ROWS], s_leaf_row_bad[LEAF_ROWS];
+static uint32_t s_leaf_rows = 0u;
+
+/** @brief Report whether the device-half leaf check is on, reading OPENPETE_VBL_LEAF_CHECK once.
+ * @return 1 when on. */
+static int leaf_check_on(void) {
+    if (s_leaf_check < 0) {
+        const char* env = getenv("OPENPETE_VBL_LEAF_CHECK");
+        s_leaf_check = (env && *env && *env != '0');
+        if (s_leaf_check) {
+            s_leaf_ram = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
+            if (!s_leaf_ram) s_leaf_check = 0;
+        }
+    }
+    return s_leaf_check;
+}
+
+/** @brief Find or add the census row of a device row by name.
+ * @param row The device row's name (a string literal).
+ * @return The row index, or LEAF_ROWS when the table is full. */
+static uint32_t leaf_row(const char* row) {
+    for (uint32_t i = 0; i < s_leaf_rows; i++)
+        if (s_leaf_row_name[i] == row || !strcmp(s_leaf_row_name[i], row)) return i;
+    if (s_leaf_rows == LEAF_ROWS) return LEAF_ROWS;
+    s_leaf_row_name[s_leaf_rows] = row;
+    return s_leaf_rows++;
+}
+
+/** @brief Find the first byte at which two buffers differ.
+ * @param a First buffer.
+ * @param b Second buffer.
+ * @param n Length of both.
+ * @return The offset of the first differing byte, or n when they are equal. */
+static uint32_t leaf_first_diff(const uint8_t* a, const uint8_t* b, uint32_t n) {
+    if (!memcmp(a, b, n)) return n;
+    uint32_t i = 0;
+    while (a[i] == b[i]) i++;
+    return i;
+}
+
+void openpete_vbl_leaf_begin(void) {
+    if (!leaf_check_on() || s_leaf_open) return;
+    s_leaf_open = 1;
+    memcpy(s_leaf_ram, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);
+    memcpy(s_leaf_scratch, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
+}
+
+void openpete_vbl_leaf_end(const char* row) {
+    if (!s_leaf_open) return;
+    s_leaf_open = 0;
+    const uint8_t* ram = openpete_psx_get_ram();
+    const uint8_t* sp = openpete_psx_get_scratch();
+    const uint32_t r = leaf_first_diff(s_leaf_ram, ram, OPENPETE_PSX_RAM_SIZE);
+    const uint32_t s = r < OPENPETE_PSX_RAM_SIZE ? OPENPETE_PSX_SCRATCH_SIZE
+                                                 : leaf_first_diff(s_leaf_scratch, sp, OPENPETE_PSX_SCRATCH_SIZE);
+    const uint32_t i = leaf_row(row);
+    if (i < LEAF_ROWS) s_leaf_row_runs[i]++;
+    if (r == OPENPETE_PSX_RAM_SIZE && s == OPENPETE_PSX_SCRATCH_SIZE) return;
+    if (i < LEAF_ROWS && s_leaf_row_bad[i]++ >= 8u) return;
+    const uint32_t addr = r < OPENPETE_PSX_RAM_SIZE ? LEAF_RAM_BASE + r : LEAF_SCRATCH_BASE + s;
+    const uint8_t was = r < OPENPETE_PSX_RAM_SIZE ? s_leaf_ram[r] : s_leaf_scratch[s];
+    const uint8_t now = r < OPENPETE_PSX_RAM_SIZE ? ram[r] : sp[s];
+    OPL_ERROR_F("delivery", "leaf check: device row %s wrote guest byte 0x%08X (0x%02X -> 0x%02X) "
+                "at openpete_vbl=%d device=%d",
+                row, addr, was, now, SDL_GetAtomicInt(&openpete_vbl), SDL_GetAtomicInt(&openpete_vbl_device));
+}
+
+void openpete_vbl_leaf_report(void) {
+    if (s_leaf_check <= 0) return;
+    uint64_t runs = 0, bad = 0;
+    for (uint32_t i = 0; i < s_leaf_rows; i++) {
+        runs += s_leaf_row_runs[i];
+        bad += s_leaf_row_bad[i];
+        OPL_INFO_F("delivery", "leaf check row %s: %llu runs, %llu wrote guest RAM", s_leaf_row_name[i],
+                   (unsigned long long)s_leaf_row_runs[i], (unsigned long long)s_leaf_row_bad[i]);
+    }
+    OPL_INFO_F("delivery", "leaf check: %llu device-row runs, %llu wrote guest RAM", (unsigned long long)runs,
+               (unsigned long long)bad);
+}
+
 void openpete_loop_vbl(void) {
     s_loop_acc = 0u;
     s_loop_quanta = 0u;

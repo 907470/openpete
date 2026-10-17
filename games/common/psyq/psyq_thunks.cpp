@@ -883,6 +883,7 @@ extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
  * charges the SPU instead (spu_vbl_samples). */
 static void vbl_device_head(void) {
     SDL_AddAtomicInt(&openpete_vbl_device, 1);
+    openpete_vbl_leaf_begin();
     /* Run the SPU for the VBL's output samples: the voices' envelopes and
      * heads the guest reads back (key status, ENVX) and the mix, on the
      * same clock, with or without an audio device, after the XA decoder
@@ -890,13 +891,16 @@ static void vbl_device_head(void) {
     cd_stream_pump(1);
     PsyX_SPUAL_TickEnvelope(spu_vbl_samples(1));
     audio_dump_drain();
+    openpete_vbl_leaf_end("head");
 }
 
 /** @brief Step the CD-ROM controller model by one VBLANK: the interrupts it raises for a game that drives the controller's registers itself. */
 static void vbl_device_mmio(void) {
     static int s_cd_raw_set = 0;
     if (!s_cd_raw_set) { s_cd_raw_set = 1; openpete_cdrom_mmio_set_raw_pc_min(psyq_game_cd_raw_pc_min()); }
+    openpete_vbl_leaf_begin();
     openpete_cdrom_mmio_vbl(1u);
+    openpete_vbl_leaf_end("mmio");
 }
 
 /* One vsync's pad verdicts, taken at its VBLANK before the card step. */
@@ -1094,6 +1098,9 @@ static uint64_t s_hw_held = 0, s_hw_flushes = 0;
 static uint64_t s_hw_head_after = 0;    /* drive-head time after the window's flush */
 static uint32_t s_hw_dev_vbl = 0;       /* device VBL count there */
 static uint32_t s_hw_vbl_before = 0, s_hw_vbl_after = 0;   /* openpete_vbl across the window */
+static uint32_t s_hw_dev_before = 0;    /* openpete_vbl_device before the window's first VBLANK */
+static uint64_t s_hw_flushes_before = 0;   /* s_dlv_flushes there */
+static int      s_hw_d_before = 0;      /* D there */
 
 /** @brief Parse OPENPETE_VBL_HOLD once. */
 static void hold_window_parse(void) {
@@ -1128,7 +1135,12 @@ static int hold_window_takes(vbl_src src) {
     if (s_hw_src < 0 || !s_hw_count) return 0;
     if (s_hw_src != VBL_SRC_N && s_hw_src != (int)src) return 0;
     if (s_hw_skip) { s_hw_skip--; return 0; }
-    if (!s_hw_held) s_hw_vbl_before = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    if (!s_hw_held) {
+        s_hw_vbl_before = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+        s_hw_dev_before = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
+        s_hw_flushes_before = s_dlv_flushes;
+        s_hw_d_before = openpete_sched_dropped();
+    }
     s_hw_count--;
     s_hw_held++;
     return !s_hw_dry;
@@ -1139,7 +1151,9 @@ static int hold_window_takes(vbl_src src) {
 static void hold_vbl(vbl_src src) {
     vbl_device_head();
     vbl_device_mmio();
+    openpete_vbl_leaf_begin();
     cd_defer_countdown(1u);
+    openpete_vbl_leaf_end("countdown");
     if (!s_latched) { s_latched = 1; s_latch_key = openpete_sched_pos() + 1u; }
     if (openpete_sched_active()) { openpete_sched_advance_pos(1); openpete_sched_drop_vbl(); }
     s_dlv_held[src]++;
@@ -1176,6 +1190,39 @@ extern "C" void psyq_crit_flush(CPUState* cpu) {
     openpete_guest_regs_restore(cpu, &saved);
 }
 
+/** @brief Assert the clocks and the drive head at the hold window's end against a window of the same VBLANKs taken.
+ *
+ * Every VBLANK of the window ran the device half once, so the device VBL
+ * count advanced by the window's length and the drive head, which reads
+ * device time, sits at that count. A held window advanced `openpete_vbl`
+ * by one (the flush), flushed once and, under the schedule, left D higher
+ * by the window's length less one; a dry window took each VBLANK, so
+ * `openpete_vbl` advanced by its length with no flush and D unchanged. A
+ * held window whose end found the flag set has not flushed and is not
+ * checked. Logs one verdict line. */
+static void hold_window_check(void) {
+    const uint32_t n = (uint32_t)s_hw_held;
+    if (!s_hw_dry && openpete_crit_masked()) {
+        OPL_INFO_F("delivery", "hold window check: SKIP, the flag is set at the window's end (no flush yet)");
+        return;
+    }
+    const uint32_t dev_want = s_hw_dev_before + n;
+    const uint64_t head_want = (uint64_t)dev_want * CD_HEAD_TU;
+    const uint32_t vbl_want = s_hw_dry ? n : 1u;
+    const uint64_t flush_want = s_hw_dry ? 0u : 1u;
+    const int d_want = (s_hw_dry || !openpete_sched_active()) ? 0 : (int)n - 1;
+    const uint32_t vbl_got = s_hw_vbl_after - s_hw_vbl_before;
+    const uint64_t flush_got = s_dlv_flushes - s_hw_flushes_before;
+    const int d_got = openpete_sched_dropped() - s_hw_d_before;
+    const int ok = s_hw_dev_vbl == dev_want && s_hw_head_after == head_want && vbl_got == vbl_want &&
+                   flush_got == flush_want && d_got == d_want;
+    OPL_INFO_F("delivery", "hold window check: %s device vbl %u -> %u (want %u), head t=%llu (want %llu), "
+               "vbl +%u (want +%u), flushes +%llu (want +%llu), D +%d (want +%d)",
+               ok ? "PASS" : "FAIL", s_hw_dev_before, s_hw_dev_vbl, dev_want,
+               (unsigned long long)s_hw_head_after, (unsigned long long)head_want, vbl_got, vbl_want,
+               (unsigned long long)flush_got, (unsigned long long)flush_want, d_got, d_want);
+}
+
 /** @brief End the diagnostic hold window when its last VBLANK was consumed: flush as ExitCriticalSection would (not for a dry window), and record the drive head and the VBL counters there.
  *
  * The head line carries every input of the head's position (time, base
@@ -1197,6 +1244,7 @@ static void hold_window_close(CPUState* cpu) {
     OPL_INFO_F("delivery", "hold window head: device vbl %u pos=%lld base=%u start=%llu rate=%u",
                s_hw_dev_vbl, (long long)cd_head_at(s_hw_head_after, 1u), s_head_lba,
                (unsigned long long)s_head_t, s_head_rate);
+    hold_window_check();
 }
 
 /** @brief Deliver one VBLANK from `src`: taken (one VBL body, the position advanced under a schedule) or, for a gated source while interrupts are masked, held.
@@ -1324,6 +1372,7 @@ extern "C" void psyq_vbl_delivery_report(void) {
                (unsigned long long)s_loop_counted_only, (unsigned long long)s_loop_pre_anchor);
     OPL_INFO_F("delivery", "blocking CdSync off the schedule: %llu, with a stream CdlPause owed: %llu",
                (unsigned long long)s_cd_sync0_calls, (unsigned long long)s_cd_sync0_pause_owed);
+    openpete_vbl_leaf_report();
     openpete_loop_site_census_log();
     uint32_t hits[4], bad[4];
     openpete_sched_conv_report(hits, bad);

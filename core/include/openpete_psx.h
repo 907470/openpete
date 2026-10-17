@@ -449,6 +449,24 @@ uint64_t openpete_loop_insns_since_anchor(void);
 /** @brief Restart the polling-loop accumulator: a VBLANK elapsed, taken or held. */
 void openpete_loop_vbl(void);
 
+/** @brief Snapshot guest RAM and the scratchpad before one device row of a VBLANK, when OPENPETE_VBL_LEAF_CHECK=1.
+ *
+ * Does nothing with the variable unset or while a snapshot is open. */
+void openpete_vbl_leaf_begin(void);
+
+/** @brief Compare guest RAM and the scratchpad with the open snapshot and count the row.
+ *
+ * A differing byte means the device row wrote CPU-half state: it is
+ * counted against the row and its first address logged as an error (the
+ * first eight per row). Does nothing without an open snapshot.
+ * @param row The device row's name, a string literal the census keeps. */
+void openpete_vbl_leaf_end(const char* row);
+
+/** @brief Log the leaf check's census: runs and writing runs per device row, and the totals.
+ *
+ * Does nothing with the check off. */
+void openpete_vbl_leaf_report(void);
+
 /** @brief Read the polling-loop accumulator's run counters.
  * @param polls Receives the back-edge polls counted.
  * @param trips Receives the quanta reached.
