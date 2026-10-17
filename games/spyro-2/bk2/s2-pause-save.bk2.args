@@ -1,0 +1,8 @@
+# Synthetic movie (scripts/make_bk2.py, VBL-keyed, load delay 0): from
+# --skip-to-level glimmer, Start at VBL 1800, Down twice and Cross pick the
+# pause menu's Save Game at VBL 1940, then Cross every 90 VBLs from 2000 to
+# 2900: the game saves to File 1 (Save Complete at VBL 2260) and twice more
+# through "Save to same file?" (Save Complete at 3040). Played on the card
+# s2-create-save leaves. The slot 1 card is given by the caller (--card1).
+--skip-to-level glimmer
+--no-card2

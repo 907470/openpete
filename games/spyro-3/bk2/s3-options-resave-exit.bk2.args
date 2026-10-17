@@ -1,0 +1,9 @@
+# Synthetic movie (scripts/make_bk2.py, VBL-keyed): s3-options-save-exit's
+# route for a card already holding BASCUS-94467SPY3_1 (the card
+# s3-options-save-exit or s3-create-save leaves): Options > Save Game reads
+# the save and overwrites it (Cross every 90 VBLs from 1960 to 2500, pause
+# menu back at VBL 2555), then Exit Level at VBL 2680; the loading overlay
+# opens its card events at VBL 2715 and autosaves. The slot 1 card is given
+# by the caller (--card1).
+--skip-to-level sunny_villa
+--no-card2

@@ -1,0 +1,10 @@
+# Synthetic movie (scripts/make_bk2.py, VBL-keyed): from --skip-to-level
+# sunny_villa, Start at VBL 1700, Down twice and Cross open Options, Cross
+# on Save Game, then Cross every 90 VBLs from 1960 to 2860: on a blank
+# formatted card the options overlay creates the save block and writes the
+# save (pause menu back at VBL 2945). Down four times and Cross pick Exit
+# Level at VBL 3040; the loading overlay opens its card events at VBL 3075
+# and autosaves (Saved successfully by VBL 3315); Sunrise Spring by 3690.
+# The slot 1 card is given by the caller (--card1).
+--skip-to-level sunny_villa
+--no-card2
