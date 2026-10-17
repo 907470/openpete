@@ -38,11 +38,11 @@
 #include "openpete_psxtrace.h"
 #include "openpete_cdrom_mmio.h"
 
-#define CD_FIFO 16
-#define CD_QUEUE 8
-#define CD_RESP 16
+#define CD_FIFO  OPENPETE_CDROM_MMIO_FIFO
+#define CD_QUEUE OPENPETE_CDROM_MMIO_QUEUE
+#define CD_RESP  OPENPETE_CDROM_MMIO_FIFO
 
-typedef struct { uint32_t due; uint8_t irq, n, resp[CD_RESP]; } cd_pending_t;
+typedef openpete_cdrom_mmio_pending_t cd_pending_t;
 
 static uint8_t  s_index = 0;
 static uint8_t  s_param[CD_FIFO]; static uint32_t s_param_n = 0;
@@ -339,6 +339,34 @@ int openpete_cdrom_mmio_write8(uint32_t phys, uint8_t v) {
     default:
         return 0;
     }
+}
+
+void openpete_cdrom_mmio_state_save(openpete_cdrom_mmio_state_t* out) {
+    memset(out, 0, sizeof *out);
+    out->vbl = s_vbl;
+    out->param_n = s_param_n; out->resp_n = s_resp_n; out->resp_head = s_resp_head; out->queue_n = s_queue_n;
+    out->index = s_index; out->irq_enable = s_irq_enable; out->irq_flag = s_irq_flag; out->last_cmd = s_last_cmd;
+    memcpy(out->param, s_param, sizeof out->param);
+    memcpy(out->resp, s_resp, sizeof out->resp);
+    for (uint32_t i = 0; i < s_queue_n; i++) {
+        out->queue[i].due = s_queue[i].due;
+        out->queue[i].irq = s_queue[i].irq;
+        out->queue[i].n = s_queue[i].n;
+        memcpy(out->queue[i].resp, s_queue[i].resp, sizeof out->queue[i].resp);
+    }
+}
+
+void openpete_cdrom_mmio_state_load(const openpete_cdrom_mmio_state_t* in) {
+    s_vbl = in->vbl;
+    s_param_n = in->param_n > CD_FIFO ? CD_FIFO : in->param_n;
+    s_resp_n = in->resp_n > CD_FIFO ? CD_FIFO : in->resp_n;
+    s_resp_head = in->resp_head > s_resp_n ? s_resp_n : in->resp_head;
+    s_queue_n = in->queue_n > CD_QUEUE ? CD_QUEUE : in->queue_n;
+    s_index = in->index; s_irq_enable = in->irq_enable; s_irq_flag = in->irq_flag; s_last_cmd = in->last_cmd;
+    memcpy(s_param, in->param, sizeof s_param);
+    memcpy(s_resp, in->resp, sizeof s_resp);
+    memset(s_queue, 0, sizeof s_queue);
+    memcpy(s_queue, in->queue, s_queue_n * sizeof s_queue[0]);
 }
 
 /* The reference's response to the library's next command of this byte in

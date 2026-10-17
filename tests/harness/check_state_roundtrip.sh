@@ -14,7 +14,8 @@
 #                                 (the runahead rollback shape); replayed
 #                                 frames must self-match pass 1 AND match
 #                                 the clean run
-# and, on a row with a save key, a fourth:
+# and, on a row with a save key, a fourth (and, with a load key, a fifth and
+# sixth):
 #   same-key                    - --state-save-on-frame K and
 #                                 --state-load-on-frame K on one run: the
 #                                 save is queued before the load, so the run
@@ -23,6 +24,17 @@
 #                                 marked `>0` must report a nonzero deferred
 #                                 snapshot count and load count: K falls on a
 #                                 yield that is not a VSync wait's final one.
+#   load-key                    - --state-save-on-frame K and
+#                                 --state-load-on-frame L (L > K) on one
+#                                 run: the run returns to the state it saved
+#                                 L - K VBLs earlier, so host state the state
+#                                 omits is left on the later timeline
+#   fresh-load                  - a second process loads that state file at
+#                                 L, with no host state of the saving run;
+#                                 on both, every row matches the clean row
+#                                 of its (frame, vbl), at least one row
+#                                 after the load is shared with clean, and
+#                                 the log shows the save and the load
 #
 # Usage: tests/harness/check_state_roundtrip.sh [--game SLUG] [movie.bk2 ...]
 #   (default: the manifest's rows; a movie argument is the row `movie|-|-|-`)
@@ -84,20 +96,21 @@ done
 
 # One entry per row: source, card, boot flags, save key, deferral; an empty
 # field reads as `-`.
-R_SRC=(); R_CARD=(); R_FLAGS=(); R_KEY=(); R_DEF=()
+R_SRC=(); R_CARD=(); R_FLAGS=(); R_KEY=(); R_DEF=(); R_LKEY=()
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; echo "${v:--}"; }
 if [ ${#MOVIES[@]} -gt 0 ]; then
     for m in "${MOVIES[@]}"; do
-        R_SRC+=("$m"); R_CARD+=(-); R_FLAGS+=(-); R_KEY+=(-); R_DEF+=(-)
+        R_SRC+=("$m"); R_CARD+=(-); R_FLAGS+=(-); R_KEY+=(-); R_DEF+=(-); R_LKEY+=(-)
     done
 else
     pg_manifest "$MANIFEST" pipe
-    while IFS='|' read -r f_src f_card f_flags f_key f_def; do
+    while IFS='|' read -r f_src f_card f_flags f_key f_def f_lkey; do
         [[ -z "${f_src//[[:space:]]/}" ]] && continue
         f_src="$(trim "$f_src")"
         [[ "$f_src" != - ]] && f_src="$PG_BK2_DIR/$f_src"
         R_SRC+=("$f_src"); R_CARD+=("$(trim "${f_card:-}")"); R_FLAGS+=("$(trim "${f_flags:-}")")
         R_KEY+=("$(trim "${f_key:-}")"); R_DEF+=("$(trim "${f_def:-}")")
+        R_LKEY+=("$(trim "${f_lkey:-}")")
     done < <(sed 's/#.*//' "$MANIFEST")
 fi
 [ ${#R_SRC[@]} -gt 0 ] || { echo "FAIL: no rows in $MANIFEST"; exit 1; }
@@ -231,6 +244,47 @@ EOF
     else
         echo "  same-key($key): DIVERGED FAIL"; fail=1
     fi
+
+    # Load-key legs: the state saved at K is loaded at L, once by the run
+    # that saved it and once by a fresh process. Host state a state file
+    # omits differs from the saved timeline's in both, so a post-load row
+    # diverges from clean.
+    lkey="${R_LKEY[$i]}"
+    [ "$lkey" = - ] && continue
+    lk_state="$OUT/$name-lk.state"
+    rm -f "${OUT:?}/$name-lk.state"
+    row_run "$i" "$OUT/$name-lk.csv" \
+        --state-save-on-frame "$key" --state-save-output "$lk_state" \
+        --state-load-on-frame "$lkey" --state-load-input "$lk_state" \
+        || { echo "  load-key run FAILED"; fail=1; continue; }
+    row_run "$i" "$OUT/$name-fl.csv" \
+        --state-load-on-frame "$lkey" --state-load-input "$lk_state" \
+        || { echo "  fresh-load run FAILED"; fail=1; continue; }
+    for leg in lk fl; do
+        if [ $leg = lk ]; then label="load-key($key->$lkey)"; else label="fresh-load($key->$lkey)"; fi
+        if ! grep -q "loaded $lk_state" "$OUT/$name-$leg.csv.log" ||
+           { [ $leg = lk ] && ! grep -q "saved $lk_state" "$OUT/$name-$leg.csv.log"; }; then
+            echo "  $label: VACUOUS FAIL (save/load not logged)"; fail=1; continue
+        fi
+        python3 - "$OUT/$name-clean.csv" "$OUT/$name-$leg.csv" "$label" <<'EOF2' || fail=1
+import csv, sys
+key = lambda r: (r[0], r[1])
+clean = {key(r): r[2] for r in csv.reader(open(sys.argv[1])) if r and r[0] != 'frame'}
+rows = [r for r in csv.reader(open(sys.argv[2])) if r and r[0] != 'frame']
+# The load is the last row whose vbl does not follow its predecessor's.
+cut = 0
+for i in range(1, len(rows)):
+    if int(rows[i][1]) - int(rows[i - 1][1]) not in (0, 1, 2, 3):
+        cut = i
+post = [r for r in rows[cut:] if key(r) in clean] if cut else []
+div = [r for r in rows if key(r) in clean and clean[key(r)] != r[2]]
+first = f", first at frame {div[0][0]} vbl {div[0][1]}" if div else ""
+ok = cut > 0 and post and not div
+print(f"  {sys.argv[3]}: {len(post)} post-load row(s) shared with clean, "
+      f"{len(div)} diverged{first} -> " + ("PASS" if ok else "FAIL"))
+sys.exit(0 if ok else 1)
+EOF2
+    done
 done
 
 # Runahead determinism gate: with --runahead 2 the presented timeline

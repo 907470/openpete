@@ -6,3 +6,8 @@
 # directory load's read of sector 9 is in flight between the vblank step
 # that started it and its completion.
 - | card-v6-blank.mcd | - | 600 |
+# The title overlay's own drive code (func_title_8007B87C polls the
+# controller's interrupt flag at 0x1F801803) has controller interrupts
+# queued at VBL 620; a state saved there and loaded 380 VBLs later, or by a
+# fresh process, raises them at the VBLs they were due.
+- | none | - | 620 | - | 1000

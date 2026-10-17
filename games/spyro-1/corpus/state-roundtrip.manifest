@@ -1,6 +1,6 @@
 # Savestate round-trip corpus for Spyro 1, read by
 # tests/harness/check_state_roundtrip.sh.
-# Fields: source | card | boot flags | save key | deferral
+# Fields: source | card | boot flags | save key | deferral | load key
 #   source     a bk2 under games/spyro-1/bk2/, or `-` for a boot with no movie
 #   card       `-` the game's own boot flags (oracle.conf RUN_ARGS); `none`
 #              no card (--no-card); a fixture file under tests/golden/spyro-1/
@@ -10,6 +10,9 @@
 #              --state-save-on-frame and --state-load-on-frame
 #   deferral   optional; `>0` asserts the same-key leg deferred its requests
 #              to a later final yield
+#   load key   optional; a feed key L above the save key K: the state saved
+#              at K is loaded at L by the run that saved it and by a fresh
+#              process, and every row of both must match clean
 artisans-lp-waterfall.bk2      | - | - | - |
 town-square-portal-entry.bk2   | - | - | - |
 exit-level.bk2                 | - | - | - |

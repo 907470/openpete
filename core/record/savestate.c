@@ -90,6 +90,7 @@
 #include "openpete_discontinuity.h"
 #include "openpete_fiber.h"  /* openpete_vbl - saved/restored via hdr.vbl */
 #include "openpete_atomic_file.h"
+#include "openpete_cdrom_mmio.h" /* the controller model joins the CD section */
 #include "openpete_log.h"
 #include "openpete_memcard.h" /* openpete_psx_bios_reseed_ram */
 #include "openpete_psxtrace.h" /* openpete_sched_active */
@@ -164,8 +165,10 @@ extern int g_cdXaStartVBL;
  *     the low-park ledger is gone with the low allocator.
  * 8 = SPUALVoiceState carries the voice head (consumed_dec_fp).
  * 9 = header v4 carries the device VBL count; the PSYQ latch pack v9 the
- *     critical-section flag, the latched VBLANK and the dropped count. */
-#define OPENPETE_STATE_ABI 9u
+ *     critical-section flag, the latched VBLANK and the dropped count.
+ * 10 = the CD section carries the CD-ROM controller model (registers,
+ *     response FIFO, interrupt queue, VBL count). */
+#define OPENPETE_STATE_ABI 10u
 
 /* Just the register file - the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
@@ -234,7 +237,44 @@ typedef struct {
     int32_t read_done;
     int32_t xa_start_lba;   /* virtual music-head anchor (LIBCD.C) - the */
     int32_t xa_start_vbl;   /* GetlocP reply is a pure function of these */
+    /* The controller registers a game's own drive code polls (core/psx/
+     * cdrom_mmio.c): an interrupt queued before the save is raised after
+     * the load at the VBL count it was due. */
+    openpete_cdrom_mmio_state_t mmio;
 } state_cd_t;
+
+/** @brief Capture the CD section: PsyCross's head position and music-head anchor, and the controller model.
+ *
+ * The file save and the in-memory snapshot both take the section here.
+ * @param cd Receives the section; every byte is written. */
+static void state_cd_capture(state_cd_t* cd) {
+    memset(cd, 0, sizeof *cd);
+    cd->cur_sector   = g_cdCurrentSector;
+    cd->sector_size  = g_cdSectorSize;
+    cd->cur_track    = g_cdCurrentTrack;
+    cd->num_frames   = g_cdNumFrames;
+    cd->cd_com       = g_CD_com;
+    cd->read_done    = g_cdReadDoneFlag;
+    cd->xa_start_lba = g_cdXaStartLBA;
+    cd->xa_start_vbl = g_cdXaStartVBL;
+    openpete_cdrom_mmio_state_save(&cd->mmio);
+}
+
+/** @brief Restore the CD section state_cd_capture took.
+ *
+ * The file load and the in-memory restore both apply the section here.
+ * @param cd The section. */
+static void state_cd_apply(const state_cd_t* cd) {
+    g_cdCurrentSector = cd->cur_sector;
+    g_cdSectorSize    = cd->sector_size;
+    g_cdCurrentTrack  = cd->cur_track;
+    g_cdNumFrames     = cd->num_frames;
+    g_CD_com          = cd->cd_com;
+    g_cdReadDoneFlag  = cd->read_done;
+    g_cdXaStartLBA    = cd->xa_start_lba;
+    g_cdXaStartVBL    = cd->xa_start_vbl;
+    openpete_cdrom_mmio_state_load(&cd->mmio);
+}
 
 /* Chunked fwrite/fread. Some Windows stdio configurations short-write
  * multi-megabyte blobs in a single fwrite call (observed on the 8 MiB
@@ -622,14 +662,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     if (hdr.arena_bytes)      openpete_mods_arena_state_save(arena_snap);
 
     state_cd_t cd;
-    cd.cur_sector   = g_cdCurrentSector;
-    cd.sector_size  = g_cdSectorSize;
-    cd.cur_track    = g_cdCurrentTrack;
-    cd.num_frames   = g_cdNumFrames;
-    cd.cd_com       = g_CD_com;
-    cd.read_done    = g_cdReadDoneFlag;
-    cd.xa_start_lba = g_cdXaStartLBA;
-    cd.xa_start_vbl = g_cdXaStartVBL;
+    state_cd_capture(&cd);
 
     /* The file layout, in order; a zero-length section writes nothing. */
     const struct { const char* what; const void* buf; size_t n; } sections[] = {
@@ -995,14 +1028,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     (void)PsyX_VRAM_Restore(vram_buf, hdr.vram_bytes);
     (void)PsyX_SPUAL_RestoreMem(spumem_buf, hdr.spu_mem_bytes);
     (void)PsyX_SPUAL_RestoreState(spu_buf, hdr.spu_state_bytes);
-    g_cdCurrentSector = cd.cur_sector;
-    g_cdSectorSize    = cd.sector_size;
-    g_cdCurrentTrack  = cd.cur_track;
-    g_cdNumFrames     = cd.num_frames;
-    g_CD_com          = cd.cd_com;
-    g_cdReadDoneFlag  = cd.read_done;
-    g_cdXaStartLBA    = cd.xa_start_lba;
-    g_cdXaStartVBL    = cd.xa_start_vbl;
+    state_cd_apply(&cd);
     free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf); free(tag_buf);
 
     /* Re-anchor the guest-visible VBL counter to the saved value (see the
@@ -1141,14 +1167,7 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     memcpy(m->ram,         openpete_psx_get_ram(),     OPENPETE_PSX_RAM_SIZE);
     memcpy(m->scratch_buf, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
     if (PsyX_SPUAL_SnapshotState(m->spu, m->spu_bytes) != 0) return -1;
-    m->cd.cur_sector   = g_cdCurrentSector;
-    m->cd.sector_size  = g_cdSectorSize;
-    m->cd.cur_track    = g_cdCurrentTrack;
-    m->cd.num_frames   = g_cdNumFrames;
-    m->cd.cd_com       = g_CD_com;
-    m->cd.read_done    = g_cdReadDoneFlag;
-    m->cd.xa_start_lba = g_cdXaStartLBA;
-    m->cd.xa_start_vbl = g_cdXaStartVBL;
+    state_cd_capture(&m->cd);
     PsyX_CD_QueueSnapshot(m->cdq);
     if (m->gx_bytes) game_state_extra_save(m->gx);
     if (PsyX_VRAM_Snapshot(m->vram, m->vram_bytes) != 0) return -1;
@@ -1176,14 +1195,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     memcpy(openpete_psx_get_scratch(), m->scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
     if (PsyX_SPUAL_RestoreStateEx(m->spu, m->spu_bytes, quiet ? 1 : 0) != 0)
         return -1;
-    g_cdCurrentSector = m->cd.cur_sector;
-    g_cdSectorSize    = m->cd.sector_size;
-    g_cdCurrentTrack  = m->cd.cur_track;
-    g_cdNumFrames     = m->cd.num_frames;
-    g_CD_com          = m->cd.cd_com;
-    g_cdReadDoneFlag  = m->cd.read_done;
-    g_cdXaStartLBA    = m->cd.xa_start_lba;
-    g_cdXaStartVBL    = m->cd.xa_start_vbl;
+    state_cd_apply(&m->cd);
     PsyX_CD_QueueRestore(m->cdq);
     /* Runs on the QUIET path too (runahead's per-tick rollback): a
      * speculative tick that crossed into a load moved the WAD cursor or

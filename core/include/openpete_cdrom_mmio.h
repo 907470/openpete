@@ -93,6 +93,38 @@ int      openpete_cdrom_mmio_libcd_last_irq(uint32_t idx, uint32_t* rec, uint32_
  * @return PsyCross's g_cdNumFrames, floored at 0. */
 uint32_t openpete_cdrom_mmio_disc_sectors(void);
 
+/* The controller's register state and interrupt queue, fixed layout, as a
+ * savestate carries it: a game that drives the controller itself polls the
+ * flag register across VBLs, so an interrupt queued before a save is raised
+ * after the load at the VBL count it was due. The replay cursors are not
+ * carried: a load is refused while the reference's schedule runs. */
+#define OPENPETE_CDROM_MMIO_FIFO  16
+#define OPENPETE_CDROM_MMIO_QUEUE 8
+typedef struct {
+    uint32_t due;                               /* VBL count it may be raised from */
+    uint8_t  irq, n;                            /* INT number, response length */
+    uint8_t  resp[OPENPETE_CDROM_MMIO_FIFO];
+    uint8_t  pad[2];
+} openpete_cdrom_mmio_pending_t;
+typedef struct {
+    uint32_t vbl;                               /* the model's VBL count */
+    uint32_t param_n, resp_n, resp_head, queue_n;
+    uint8_t  index, irq_enable, irq_flag, last_cmd;
+    uint8_t  param[OPENPETE_CDROM_MMIO_FIFO];
+    uint8_t  resp[OPENPETE_CDROM_MMIO_FIFO];
+    openpete_cdrom_mmio_pending_t queue[OPENPETE_CDROM_MMIO_QUEUE];
+} openpete_cdrom_mmio_state_t;
+
+/** @brief Copy the controller's register state, response FIFO and interrupt queue into @p out.
+ *
+ * @param out Receives the state; every byte is written, padding zeroed. */
+void openpete_cdrom_mmio_state_save(openpete_cdrom_mmio_state_t* out);
+/** @brief Replace the controller's register state, response FIFO and interrupt queue with @p in.
+ *
+ * Counts beyond the FIFO or queue capacity are clamped to it.
+ * @param in The state a save wrote. */
+void openpete_cdrom_mmio_state_load(const openpete_cdrom_mmio_state_t* in);
+
 /** @brief Log the controller's exit counters.
  *
  * Prints nothing when the game issued no command and no library query was
