@@ -71,3 +71,9 @@ super_bonus_round:1 | pos=(63716, 66117, 15554) yaw=507 pitch=155
 # paints the back face over the terrain; true depth hides it, and the
 # additive front face adds onto the terrain behind.
 midnight_mountain | pos=(108418, 95872, 10261) yaw=-1196 pitch=205
+# A homeworld portal near the side edge of a 32:9 frame: the pass's depth gate
+# admits a record only inside a 45-degree cone about the view axis at vertex
+# 2, so a portal in the outer 32:9 band is rejected before the X outcode test.
+# The 16:9 row is the contrast leg.
+sunrise_spring | pos=(31890, 41448, 21584) yaw=-1993 pitch=45
+sunrise_spring@aspect32x9 | pos=(31890, 41448, 21584) yaw=-1993 pitch=45 | | --aspect 32:9
