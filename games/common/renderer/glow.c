@@ -398,6 +398,7 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         glow_pair_depths(cpu, &view);
+        render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_GLOW)) glow_feed_native();
     }
     glow_census(startp, endp, fed_before);
@@ -544,6 +545,7 @@ void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
         } else if (bracketed) {
             glow_rebase_all(cpu, alpha);
         }
+        render_material_level_push(cpu);
         glow_feed_native();
     }
     cut_held_sets_leave(&s_sets, pick);

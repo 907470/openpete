@@ -51,6 +51,75 @@ python3 -c "import PIL" 2>/dev/null || { echo "[modchan] SKIP: PIL unavailable";
 mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
+# ── an earlier scene binds its own material outcomes ──────────────────
+# OPENPETE_NATIVE_SCENE_DELAY=1 makes the compose draw the history entry one
+# scene back, headless included. mods/mat-fx-pulse claims every moby with a
+# block whose colour flips with the tick's parity, so the history scene and
+# the live one intern different bytes at the same slot index. Composed
+# through the material view captured with the history entry, the delayed
+# capture at F equals the undelayed capture of the history scene's own VBL
+# F'; composed through the live table it binds the newest tick's colour and
+# the mobys differ.
+#
+# F' is calibrated, not assumed: the stock pair (no mod) picks whichever of
+# F-1 and F-2 the delayed compose reproduces most closely, and that pair's
+# delta is the bar the mod pair may not exceed. Engagement: the mod repaints
+# the F' capture, and the census counts view-installed resolves (refuses 0).
+# delay_leg <tag> <scene> <frame> <delay> <mods-dir>
+delay_leg() {
+    local tag="$1" scene="$2" frame="$3" delay="$4" md="$5"
+    local -a movie=(--bk2 "$PG_BK2_DIR/$scene.bk2") extra=()
+    if [ -f "$PG_BK2_DIR/$scene.bk2.args" ]; then
+        read -ra extra < <(grep -v '^#' "$PG_BK2_DIR/$scene.bk2.args" | tr '\n' ' ')
+        movie+=("${extra[@]}")
+    fi
+    local -a PG_CAPTURE_ENV=(OPENPETE_NATIVE_SCENE_DELAY="$delay" OPENPETE_MATERIAL_STATS=1)
+    local PG_CAPTURE_TIMEOUT=900
+    pg_capture "$WORK/$tag.log" "$WORK/$tag-$frame-vk.png" -- \
+        --renderer vk --mute 1 --aspect 4:3 --lod original --no-card \
+        "${movie[@]}" --screenshot-native-only --mods-dir "$md" \
+        --screenshot-on-frame "$frame" \
+        --screenshot-output "$WORK/$tag-{n}.png" --frame-limit $((frame + 2))
+}
+# delay_rung <scene> <frame>
+delay_rung() {
+    local scene="$1" f="$2" fp best="" bestn="" n
+    local stock="$WORK/mods-delay-stock" pulse="$WORK/mods-delay-pulse"
+    say "a delayed compose binds the history scene's own material block ($scene $f)"
+    rm -rf "${stock:?}" "${pulse:?}"
+    mkdir -p "$stock" "$pulse"
+    : > "$stock/enabled.txt"
+    cp -r mods/mat-fx-pulse "$pulse/"
+    rm -rf "${pulse:?}/mat-fx-pulse/.build"
+    echo mat-fx-pulse > "$pulse/enabled.txt"
+    delay_leg dl_stock_d1 "$scene" "$f" 1 "$stock" ||
+        { bad "no delayed stock capture (see $WORK/dl_stock_d1.log)"; return; }
+    for fp in $((f - 1)) $((f - 2)); do
+        delay_leg "dl_stock_d0_$fp" "$scene" "$fp" 0 "$stock" ||
+            { bad "no stock capture at $fp (see $WORK/dl_stock_d0_$fp.log)"; return; }
+        n=$(diffpx "$WORK/dl_stock_d1-$f-vk.png" "$WORK/dl_stock_d0_$fp-$fp-vk.png")
+        if [ -z "$bestn" ] || [ "${n:-999999}" -lt "$bestn" ]; then best=$fp; bestn=${n:-999999}; fi
+    done
+    ok "the delayed compose at $f reproduces VBL $best within $bestn px (stock)"
+    delay_leg dl_pulse_d1 "$scene" "$f" 1 "$pulse" &&
+    delay_leg dl_pulse_d0 "$scene" "$best" 0 "$pulse" ||
+        { bad "no pulse capture (see $WORK/dl_pulse_d1.log, $WORK/dl_pulse_d0.log)"; return; }
+    local reach m views
+    reach=$(diffpx "$WORK/dl_stock_d0_$best-$best-vk.png" "$WORK/dl_pulse_d0-$best-vk.png")
+    m=$(diffpx "$WORK/dl_pulse_d1-$f-vk.png" "$WORK/dl_pulse_d0-$best-vk.png")
+    views=$(sed -n 's/.*\[material-census\] view-installed resolves=\([0-9]*\).*/\1/p' \
+            "$WORK/dl_pulse_d1.log" | tail -1)
+    if [ "${reach:-0}" -eq 0 ]; then
+        bad "mat-fx-pulse repainted 0 px at $best: the rung proves nothing"
+    elif [ "${views:-0}" -eq 0 ]; then
+        bad "the census counted ${views:-no} view-installed resolves on the delayed compose"
+    elif [ "${m:-999999}" -le "$bestn" ]; then
+        ok "the delayed compose draws the history scene's block: ${m} px <= stock ${bestn} px (reach ${reach} px, ${views} view-installed resolves)"
+    else
+        bad "the delayed compose differs from VBL $best by ${m} px, stock ${bestn} px: the history scene bound another scene's material block"
+    fi
+}
+
 # ── Spyro 2 and 3: per-channel engagement ─────────────────────────────
 # The gallery mod and the frame pins of the rungs after this block are
 # Spyro 1's. On Spyro 2 and 3 each render channel is proven live by one
@@ -147,6 +216,10 @@ PY
             bad "$ch: 0 px repainted at $scene $frame"
         fi
     done <<< "$S23_RUNGS"
+    diffpx() { s23_diffpx "$@"; }
+    delay_scene=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\1/p' <<< "$S23_RUNGS")
+    delay_frame=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\2/p' <<< "$S23_RUNGS")
+    delay_rung "$delay_scene" "$delay_frame"
     echo
     if [ "$fail" -eq 0 ]; then echo "[modchan] ALL GREEN"; else echo "[modchan] FAILURES - see above"; fi
     exit $fail
@@ -556,6 +629,8 @@ if CACHE=1 run_rows stockret flame 1800 "" "" &&
 else
     bad "no capture for the residency baseline (see $WORK/stockret.log, $WORK/stockwalk.log)"
 fi
+
+delay_rung flame 1800
 
 echo
 if [ "$fail" -eq 0 ]; then

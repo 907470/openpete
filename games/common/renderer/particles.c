@@ -957,6 +957,7 @@ void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready_held(RP_PARTICLES, s_item_held)) return;
     if (bracketed) part_rebase_all(cpu, alpha);
     part_extent_census(alpha);
+    render_material_level_push(cpu);
     part_feed_native();
 }
 
@@ -992,6 +993,7 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
         if (s_reb_dbg >= 2) part_view_dbg("tick", &view);
         part_pair_depths(cpu, &view);
         part_extent_census(-1.0);
+        render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_PARTICLES)) part_feed_native();
         part_census(startp, endp, fed_before);
     }

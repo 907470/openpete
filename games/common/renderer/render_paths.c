@@ -17,6 +17,8 @@
 #include <string.h>
 #include "openpete_fiber.h"   /* openpete_frame: interval and mark VBLs, the ivdump probe */
 #include "renderer/env_knob.h"
+#include "game_layout.h"             /* level_id: the level push */
+#include "openpete_mods.h"           /* openpete_mods_set_level */
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
@@ -422,3 +424,7 @@ const feature_module_t render_paths_module = {
     .apply_options  = render_paths_apply_options,
     .dispatch_table = render_paths_dispatch,
 };
+
+void render_material_level_push(struct CPUState* cpu) {
+    if (cpu) openpete_mods_set_level((int)cpu->read_word(game_layout.level_id));
+}

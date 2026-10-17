@@ -1,0 +1,20 @@
+# mat-fx-pulse - material resolution fixture: a channel-wide moby refine
+# whose block changes every tick.
+#
+# The callback claims every moby with a tint whose colour follows the
+# parity of the sampled tick, so consecutive ticks' scenes intern
+# different bytes into the same slot index. A compose of an earlier scene
+# (OPENPETE_NATIVE_SCENE_DELAY, a kept or held scene) binds that scene's
+# own block only when it composes through the material view captured with
+# it; through the live table it binds the newest tick's colour. Never
+# enable it to play.
+
+[mod]
+id      = "mat-fx-pulse"
+name    = "Material Fixture: Per-Tick Pulse"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false

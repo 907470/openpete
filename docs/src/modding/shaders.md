@@ -73,9 +73,12 @@ Injection points:
   at `op_scene_depth`.
 - `OP_POSTFX_PRESENT`: reserved; registration is refused.
 
-Passes run on every present. Order across mods
-follows enabled-list priority; `order` breaks ties within one mod, lower
-first.
+Passes run on every present, lowest priority first. A mod later in the
+enabled list ranks higher, so its pass runs later and sees every earlier
+pass's output; `order` breaks ties within one mod, lower first. The
+renderer runs at most 15 passes per injection point, its own included;
+over that, the lowest-priority passes are dropped and one warning is
+logged.
 
 Inputs: `op_prev_pass` (set 0), `op_scene_depth` (set 1; the opaque
 terrain pre-pass depth, meaningful at the `SCENE` point, no mobys),
@@ -156,8 +159,19 @@ Build the selector with `openpete_mod_material_sel_any()` and assign
 fields; never zero-initialise it. The struct carries its own size and
 flag mask, and the engine refuses a selector it cannot honour exactly.
 
-Manifest rows arm before the entry point runs, so C registrations land
-later and win where two materials claim the same pixels.
+Where two materials claim one draw, the mod later in the enabled list
+wins, on every channel and on terrain alike, refine or declarative.
+Inside one mod the registration order decides, selected by the mod's
+`api` pin: from `api = 13` the later registration wins, and below 13 the
+first one does. Manifest rows arm before the entry point runs, so from
+`api = 13` a C registration wins over a manifest row on the same
+selector, and below 13 the row wins.
+
+A mod first enabled during a session (from the Mods panel) ranks above
+every mod in the enabled list, and such mods rank among themselves by id;
+its function overrides take the chain tail in the order the mods were
+enabled. A restart applies `enabled.txt` order. A dependency ranks below
+the mods that depend on it.
 
 `material_register` is refused inside a present, and a UI section runs
 inside one. A material that follows a value the player is changing

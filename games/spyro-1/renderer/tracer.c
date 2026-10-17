@@ -134,6 +134,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
     int wshift    = is_gnasty ? 2 : 0;
     openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
 
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
 
     for (int s = 0; s < s_nsets; s++) {

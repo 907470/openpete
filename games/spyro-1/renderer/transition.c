@@ -201,6 +201,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
 
     if (feed && endp > startp) {
         crossfade_extract(cpu);
+        render_material_level_push(cpu);
         crossfade_feed_native();
         if (dump_on()) {
             static int s_rawdumped = 0;
@@ -275,6 +276,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
         uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
         if (tick > 31) tick = 31;
         int fade = (int)((tick * 127u + 15u) / 31u);      /* 0..31 -> 0..127 (rounded) */
+        render_material_level_push(cpu);
         openpete_native_scene_begin_frame(openpete_frame);
         openpete_native_scene_set_freeze_backdrop(0x4C, 0x80, 0x40, fade);
     }
@@ -289,6 +291,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
 void transition_reextract(CPUState* cpu) {
     if (!hook_reextract_ready(RP_TRANSITION)) return;  /* scene on, selected, canon-drawn */
     crossfade_extract(cpu);
+    render_material_level_push(cpu);
     crossfade_feed_native();
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
         static int cen = -1;

@@ -781,6 +781,7 @@ static int on_zap_draw(CPUState* cpu, uint32_t addr) {
         zap_pair_depths(cpu, &view);
         zap_hold();
         if (feed && render_path_enabled(RP_TRACER)) {
+            render_material_level_push(cpu);
             zap_feed_set(s_tick, s_tick_n);
             zap_trace("canon", 1.0);
         }
@@ -913,6 +914,7 @@ void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
          * paired: the captured corners feed verbatim. */
         if (pick >= 0) memset(&s_reb, 0, sizeof s_reb);
         else if (bracketed) zap_rebase_all(cpu, alpha);
+        render_material_level_push(cpu);
         zap_feed_set(s_tick, s_tick_n);
         zap_trace("inter", bracketed ? alpha : 1.0);
     }

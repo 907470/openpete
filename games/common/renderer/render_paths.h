@@ -152,6 +152,17 @@ bool render_path_canon_drawn(render_path_t p);
  *         lies in an unselected path's interval or in none. */
 bool render_path_addr_visible(uint32_t addr);
 
+struct CPUState;
+/** @brief Push the level the guest is in to the mods layer, for level-keyed material selectors.
+ *
+ * Reads game_layout.level_id and passes it to openpete_mods_set_level,
+ * which is idempotent for an unchanged level. Every scene feeder calls it
+ * before it extracts or opens the scene: the guest writes the level inside
+ * its tick, before that tick's feeders, so the first feeder of a tick
+ * pushes the level its moby resolves, terrain bake and material view read.
+ * @param cpu Guest CPU state. */
+void render_material_level_push(struct CPUState* cpu);
+
 #ifdef __cplusplus
 }
 #endif

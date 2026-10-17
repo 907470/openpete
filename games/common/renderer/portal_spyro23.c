@@ -1040,6 +1040,7 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
      * presented scene and the next feeder's frame-keyed clear discards them.
      * The call is keyed on the frame: a scene an earlier feeder opened is
      * left as it is and the previews append to it. */
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     ngte_view vw; ngte_view_build(cpu, &vw);
     int sky_ir0 = game_layout.fog.factor ? (int)cpu->read_word(game_layout.fog.factor) : 0;

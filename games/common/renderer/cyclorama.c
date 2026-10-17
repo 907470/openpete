@@ -686,6 +686,7 @@ static void push_scene(CPUState* cpu) {
         fprintf(stderr, "[cyc-native] feeding panel 0: %d cyclorama tris from gamestate (frame %u)\n",
                 s_native_n, openpete_frame);
     }
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     /* The PSX cyclorama clears the frame to g_Cyclorama.m_BackgroundColor
      * (+0x10) before drawing the dome; mirror that so uncovered areas (below

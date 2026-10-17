@@ -1171,6 +1171,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
         ngte_view_build(cpu, &view);
         glint_pair_depths(cpu, &view);
         if (feed && render_path_enabled(RP_SPARKLE)) {
+            render_material_level_push(cpu);
             glint_feed_native();
             glint_trace("canon", 1.0);
         }
@@ -1190,6 +1191,7 @@ void glint_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
         } else if (bracketed) {
             glint_rebase_all(cpu, alpha);
         }
+        render_material_level_push(cpu);
         glint_feed_native();
         glint_trace("inter", bracketed ? alpha : 1.0);
     }

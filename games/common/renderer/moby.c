@@ -7442,9 +7442,14 @@ static void push_scene_moby_tris(void) {
     openpete_native_scene_set_host_added(0);
 }
 
-/** @brief Open the scene of the current VBL counter and append the walk's moby triangles to it (push_scene_moby_tris). */
-static void push_scene_moby(void) {
+/** @brief Open the scene of the current VBL counter and append the walk's moby triangles to it (push_scene_moby_tris).
+ *
+ * Pushes the guest's level first, since push_scene_moby_tris resolves each
+ * moby's material against level-keyed selectors.
+ * @param cpu Guest CPU state. */
+static void push_scene_moby(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     push_scene_moby_tris();
 }
@@ -7795,6 +7800,7 @@ static int moby_ovl_defer(CPUState* cpu) {
     if (ovl_ab_on()) ovl_ab_compare(cpu, mob);
     if (!moby_ovl_single_record(mob)) return 0;
     if (s_ovl_feed.pending) s_ovl_orphan++;
+    render_material_level_push(cpu);
     if (render_path_enabled(RP_MOBY)) openpete_native_scene_begin_frame(openpete_frame);
     memcpy(s_ovl_feed.rec, s_rec_snap, game_layout.moby.rec_stride);
     s_ovl_feed.base = s_rec_snap_base;
@@ -8039,7 +8045,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         { OP_PROF_ACCUM_SCOPE("moby.feed");
           /* the overlay pass feeds at the canonical present (moby_ovl_defer) */
           if (is_spec || !s_pass_overlay || !moby_ovl_defer(cpu))
-              push_scene_moby(); }            /* recolor_walk_from_prims dropped: colour already native
+              push_scene_moby(cpu); }            /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
         /* Sub-tick spine: snapshot the cull records + per-vertex fog colour
          * scratch (both live now) so intermediates can re-derive these mobys.
@@ -10255,7 +10261,7 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
          * the native mirror), so the interval above is empty and the gems/props
          * this feeder just built would live on canonical presents only. */
         if (shd_n > 0) render_path_mark_drawn(RP_MOBY);
-        push_scene_moby();                      /* reads zero .s prim output */
+        push_scene_moby(cpu);                      /* reads zero .s prim output */
         /* Sub-tick spine: snapshot the shaded Moby* list (live now) so
          * intermediates can re-derive the gems/props. */
         if (spyro_native_canon_capture_open()) {
@@ -10364,7 +10370,7 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
          * an empty interval; the path must still read canon-drawn or the
          * sub-tick spine drops these triangles on every intermediate present. */
         if (ntri > 0 && end <= start) render_path_mark_drawn(RP_MOBY);
-        push_scene_moby();
+        push_scene_moby(cpu);
     }
     if (verify) {
         static int s_reports = 0;
@@ -12071,7 +12077,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             s_gout.n++;
         }
     }
-    push_scene_moby();
+    push_scene_moby(cpu);
     moby_rot_census(mat, rot_bins);
     moby_centre_census(mat);
     s_walk_in_rex = 0;
@@ -12198,7 +12204,7 @@ static void moby_reextract_body(CPUState* cpu) {
         s_gout.n = 0;
         moby_game.simple_replay(cpu);
         sim_walk = s_gout.n;
-        push_scene_moby();
+        push_scene_moby(cpu);
     }
     if (reg_fresh) moby_ovl_reextract(cpu);
     spyro_native_prod_camera_leave();
@@ -12210,7 +12216,7 @@ static void moby_reextract_body(CPUState* cpu) {
         moby_view_shd_build(cpu);
         build_shaded_walk_tris(cpu);
         spyro_native_prod_camera_leave();
-        push_scene_moby();
+        push_scene_moby(cpu);
     }
     openpete_native_scene_set_hud_under_player(
         moby_game.hud_under_player ? moby_game.hud_under_player(cpu) : 0);

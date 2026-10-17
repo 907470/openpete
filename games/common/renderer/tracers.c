@@ -718,6 +718,7 @@ static int on_ribbon(CPUState* cpu, uint32_t addr) {
         ngte_view_build(cpu, &view);
         rib_pair_depths(cpu, &view);
         const int first = tr_hold();
+        render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_TRACER))
             tr_feed_native(&s_tick[first], s_tick_n - first);
     }
@@ -747,6 +748,7 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
         ngte_view_build(cpu, &view);
         msh_pair_depths(cpu, &view, s_msh_desc);
         const int first = tr_hold();
+        render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_TRACER))
             tr_feed_native(&s_tick[first], s_tick_n - first);
     }
@@ -931,6 +933,7 @@ void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
         /* On a held cut the staged camera is tick N-1's, the camera the shown
          * set was drawn under: alpha 1 emits its captured corners. */
         tr_rebase_all(cpu, (bracketed && pick < 0) ? alpha : 1.0);
+        render_material_level_push(cpu);
         tr_feed_native(s_tick, s_tick_n);
         s_reb_active = 0;
     }

@@ -932,6 +932,7 @@ void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) {
 static void shadow_moby_feed_native(CPUState* cpu) {
     shadow_moby_build(cpu);
     if (s_mosh_n <= 0) return;
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_MOBY, 0));
     for (int i = 0; i < s_mosh_n; i++) {

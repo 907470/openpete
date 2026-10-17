@@ -1086,6 +1086,7 @@ static void particle_compare(CPUState* cpu) {
 static void particle_feed_native(CPUState* cpu) {
     particle_build(cpu);
     if (s_fq_n <= 0 && s_pline_n <= 0) return;
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);   /* append after world + actors */
     int split[2][3] = { {0,1,2}, {1,3,2} };              /* FT4 -> 2 tris */
     /* sel-1 gouraud streak lines -> thin (1px-perp) gouraud quads */
@@ -1357,6 +1358,7 @@ static void glow_build(CPUState* cpu) {
 static void glow_feed_native(CPUState* cpu) {
     glow_build(cpu);
     if (s_gtri_n <= 0) return;
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(
         OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0));
@@ -1681,6 +1683,7 @@ static void sparkle_build(CPUState* cpu) {
 static void sparkle_feed_native(CPUState* cpu) {
     sparkle_build(cpu);
     if (s_sline_n <= 0 && s_sstar_n <= 0) return;
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(
         OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_FLARE, 0, 0));
@@ -1923,6 +1926,7 @@ static void dragonstar_build(CPUState* cpu) {
 static void dragonstar_feed_native(CPUState* cpu) {
     dragonstar_build(cpu);
     if (s_dstri_n <= 0) return;
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     /* g_HudOT overlay: the PSX links this into the HUD OT, drawn OVER the whole 3D
      * scene. blend=2 puts it in the native additive group (drawn last, over the

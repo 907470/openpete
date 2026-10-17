@@ -4,12 +4,16 @@
  * Each case registers materials for stub mods (id, enabled-list position,
  * manifest api pin), drives the extraction, bake and draw-time entry
  * points, and asserts the outcome the resolver produces. The cases record
- * the current rules: one material per draw, a refine decline drawn stock,
- * a same-mod tie kept by the first registration, a terrain refine ranked
- * above every declarative, the extraction scan without the level,
- * contract and identity tests, and the level read live at draw time.
- * Every stub mod carries its api pin, so a rule keyed on the pin changes
- * only the cases whose mods sit on the changed side of it.
+ * the current rules: one material per draw, a moby refine decline drawn
+ * stock, a same-mod tie kept by the first registration below api pin 13
+ * and by the later one from it, terrain refines and declaratives in one
+ * enabled-list ranking on the bake and the walked path, one terrain
+ * predicate (level and contract) on both paths, terrain refine outcomes
+ * computed on the sim thread and read by the compose from the view, the
+ * extraction scan without the level, contract and identity tests, and the
+ * level read from the installed view at draw time. Every stub mod carries
+ * its api pin, so a rule keyed on the pin changes only the cases whose mods
+ * sit on the changed side of it.
  *
  * Exit 0 when every check holds, 1 otherwise. */
 #include "mod_material_resolve.h"
@@ -97,7 +101,7 @@ static stub_mod_t* mod(const char* id, int load, int api) {
 static int reg(const stub_mod_t* m, openpete_mod_material_selector_t sel, int contract,
                openpete_mod_material_fn fn) {
     if (!mod_mat_sel_valid(m->id, &sel)) return -1;
-    return mod_mat_append(m->id, &sel, -1, 0, contract, fn, m->load_index, 1u);
+    return mod_mat_append(m->id, &sel, -1, 0, contract, fn, m->load_index, m->api, 1u);
 }
 /** @brief A selector on one channel, every other key open. */
 static openpete_mod_material_selector_t sel_ch(int ch) {
@@ -253,9 +257,9 @@ static void case_f2(void) {
     OUTCOME("class 5: STOCK (A shadowed); class 7: wild refine; A reached only by a tag that skipped extraction");
 }
 
-/** @brief A terrain refine outranks a later declarative on its texture, at bake and walked. */
+/** @brief A later declarative outranks an earlier terrain refine on its texture, at bake and walked; an earlier declarative does not. */
 static void case_f3(void) {
-    begin("Terrain refine outranks a later declarative");
+    begin("Terrain refine under a later declarative");
     stub_mod_t* a = mod("fx-tr", 0, 13);
     stub_mod_t* b = mod("fx-td", 1, 13);
     openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN);
@@ -264,20 +268,64 @@ static void case_f3(void) {
     const int md = reg(b, r, SCENE, NULL);
     mod_mat_census_force(1);
     openpete_mods_material_frame_reset();
-    CHECK(openpete_mods_material_terrain_bucket(3, 0, 0) == mr + 1, "bake bucket");
+    CHECK(openpete_mods_material_terrain_bucket(3, 0, 0) == md + 1, "bake bucket");
     const int s = openpete_mods_material_terrain_tex_slot(NULL, 3);
     CHECK(s == 1, "walked slot %d", s);
-    CHECK(resolve(ter_tag(3, 0, 0, s), SCENE) == mr, "walked resolve");
+    CHECK(resolve(ter_tag(3, 0, 0, s), SCENE) == md, "walked resolve");
     CHECK(resolve(ter_tag(3, 0, 0, 0), SCENE) == md, "slotless tag");
     CHECK(mod_mat_census_get(mr, MOD_MAT_CENSUS_OUTRANKED) == 1, "census outranked");
     mod_mat_census_force(0);
-    OUTCOME("texture 3: bake bucket = refine, walked = refine; census counts the refine as outranked");
+    OUTCOME("texture 3: bake bucket = the later declarative, walked = the later declarative; refine counted outranked");
+
+    begin("Terrain refine over an earlier declarative");
+    b = mod("fx-td", 0, 13);
+    a = mod("fx-tr", 1, 13);
+    const int md2 = reg(b, r, SCENE, NULL);
+    const int mr2 = reg(a, r, SCENE, rf_accept);
+    openpete_mods_material_frame_reset();
+    CHECK(openpete_mods_material_terrain_bucket(3, 0, 0) == mr2 + 1, "bake bucket");
+    const int s2 = openpete_mods_material_terrain_tex_slot(NULL, 3);
+    CHECK(resolve(ter_tag(3, 0, 0, s2), SCENE) == mr2, "walked resolve");
+    (void)md2;
+    OUTCOME("texture 3: bake bucket = the later refine, walked = the later refine");
+}
+
+/** @brief A walked terrain refine's decline ranks against the tag's declarative winner, per env key. */
+static void case_terrain_decline(void) {
+    begin("Walked terrain decline under and over a declarative");
+    stub_mod_t* a = mod("fx-tr", 0, 13);
+    stub_mod_t* b = mod("fx-tenv", 1, 13);
+    stub_mod_t* c = mod("fx-tr2", 2, 13);
+    openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN), e = sel_ch(OP_CHAN_TERRAIN);
+    r.texture = 3;
+    e.texture = 3;
+    e.flags = OP_SEL_ENV_ANIM;
+    reg(a, r, SCENE, rf_decline);
+    const int me = reg(b, e, SCENE, NULL);
+    openpete_mods_material_frame_reset();
+    const int s = openpete_mods_material_terrain_tex_slot(NULL, 3);
+    CHECK(s == OPENPETE_MATERIAL_TERRAIN_STOCK, "walked decline %#x", s);
+    CHECK(resolve(ter_tag(3, 1, 0, s), SCENE) == me, "env face: the later declarative");
+    CHECK(resolve(ter_tag(3, 0, 0, s), SCENE) == -1, "plain face: the decline");
+    CHECK(openpete_mods_material_terrain_bucket(3, 1, 0) == me + 1, "bake env face");
+    reg(c, r, SCENE, rf_decline);
+    openpete_mods_material_frame_reset();
+    const int s2 = openpete_mods_material_terrain_tex_slot(NULL, 3);
+    CHECK(resolve(ter_tag(3, 1, 0, s2), SCENE) == -1, "env face under a later declining refine");
+    OUTCOME("decline: env face draws the later env declarative, plain face stock; a later declining refine draws stock on both");
 }
 
 /** @brief A same-mod tie keeps the first registration, manifest row against C and C against C. */
 static void case_f4(void) {
     begin("Same-mod tie, manifest row then C registration (pin 13)");
     stub_mod_t* a = mod("fx-pair", 0, 13);
+    reg(a, sel_ch(OP_CHAN_PLAYER), SCENE, NULL);
+    const int mc = reg(a, sel_ch(OP_CHAN_PLAYER), SCENE, NULL);
+    CHECK(resolve(chan_tag(OP_CHAN_PLAYER, 0), SCENE) == mc, "player");
+    OUTCOME("player: the C registration (later registration) wins");
+
+    begin("Same-mod tie, manifest row then C registration (pin 12)");
+    a = mod("fx-pair12", 0, 12);
     const int mm = reg(a, sel_ch(OP_CHAN_PLAYER), SCENE, NULL);
     reg(a, sel_ch(OP_CHAN_PLAYER), SCENE, NULL);
     CHECK(resolve(chan_tag(OP_CHAN_PLAYER, 0), SCENE) == mm, "player");
@@ -291,6 +339,13 @@ static void case_f4(void) {
     reg(a, f, SCENE, NULL);
     CHECK(resolve(chan_tag(OP_CHAN_FLAME, 0), SCENE) == m1, "flame");
     OUTCOME("flame ident 0: the first registration wins");
+
+    begin("Same-mod tie, C against C on flame ident 0 (pin 13)");
+    a = mod("fx-gifts13", 0, 13);
+    reg(a, f, SCENE, NULL);
+    const int m2 = reg(a, f, SCENE, NULL);
+    CHECK(resolve(chan_tag(OP_CHAN_FLAME, 0), SCENE) == m2, "flame");
+    OUTCOME("flame ident 0: the later registration wins");
 }
 
 /** @brief OP_SEL_HP_TIER on a moby selector: extraction rejects it, the draw-time scan accepts it. */
@@ -327,7 +382,7 @@ static void case_textured_moby(void) {
     OUTCOME("class 508: extraction picks it (declarative, slot 0); draw-time resolve: it");
 }
 
-/** @brief A level-keyed terrain refine draws on the walked path in every level and buckets only in its own. */
+/** @brief A level-keyed terrain refine draws on both paths only in its own level. */
 static void case_f3a(void) {
     begin("Level-keyed terrain refine");
     stub_mod_t* a = mod("fx-tlev", 0, 13);
@@ -337,13 +392,27 @@ static void case_f3a(void) {
     const int mr = reg(a, r, SCENE, rf_accept);
     openpete_mods_set_level(3);
     openpete_mods_material_frame_reset();
+    s_calls = 0;
     CHECK(openpete_mods_material_terrain_bucket(4, 0, 0) == 0, "bake");
     const int s = openpete_mods_material_terrain_tex_slot(NULL, 4);
-    CHECK(s == 1, "walked slot %d", s);
-    CHECK(resolve(ter_tag(4, 0, 0, s), SCENE) == mr, "walked resolve");
+    CHECK(s == 0 && s_calls == 0, "walked slot %d calls %d", s, s_calls);
+    CHECK(resolve(ter_tag(4, 0, 0, s), SCENE) == -1, "walked resolve");
     openpete_mods_set_level(9);
+    openpete_mods_material_frame_reset();
     CHECK(openpete_mods_material_terrain_bucket(4, 0, 0) == mr + 1, "bake level 9");
-    OUTCOME("level 3: bake stock, walked refine; level 9: both refine");
+    const int s9 = openpete_mods_material_terrain_tex_slot(NULL, 4);
+    CHECK(resolve(ter_tag(4, 0, 0, s9), SCENE) == mr, "walked level 9");
+    OUTCOME("level 3: bake stock, walked stock (no call); level 9: both refine");
+
+    begin("DECAL-contract terrain refine on the walked path");
+    a = mod("fx-tdecal", 0, 13);
+    r.level = -1;
+    reg(a, r, DECAL, rf_accept);
+    openpete_mods_material_frame_reset();
+    s_calls = 0;
+    CHECK(openpete_mods_material_terrain_tex_slot(NULL, 4) == 0 && s_calls == 0, "walked");
+    CHECK(openpete_mods_material_terrain_bucket(4, 0, 0) == 0, "bake");
+    OUTCOME("a DECAL terrain refine is asked on neither path");
 }
 
 /** @brief Refines that cannot take effect register today and stay inert. */
@@ -380,9 +449,71 @@ static void case_f3b_view_level(void) {
     openpete_mods_material_view_set(&v);
     CHECK(resolve(moby_tag(5, 0), SCENE) == md, "before");
     openpete_mods_set_level(4);
-    CHECK(resolve(moby_tag(5, 0), SCENE) == -1, "after");
+    CHECK(resolve(moby_tag(5, 0), SCENE) == md, "after");
     openpete_mods_material_view_set(NULL);
-    OUTCOME("view captured in level 3: resolves the material; after a push of level 4: stock");
+    CHECK(resolve(moby_tag(5, 0), SCENE) == -1, "live table after");
+    OUTCOME("view captured in level 3: resolves the material before and after a push of level 4; the live table: stock");
+}
+
+/** @brief F3b: terrain refine outcomes are computed on the sim thread; the compose reads the view or this present's memo and calls nothing. */
+static void case_f3b_terrain_refine(void) {
+    begin("F3b terrain refine outcomes on the sim thread");
+    static openpete_mods_material_view_t v;
+    stub_mod_t* a = mod("fx-tr", 0, 13);
+    openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN), u = sel_ch(OP_CHAN_TERRAIN);
+    r.texture = 6;
+    u.flags = OP_SEL_UNTEXTURED;
+    const int mr = reg(a, r, SCENE, rf_accept);
+    const int mu = reg(a, u, SCENE, rf_decline);
+    reg(a, sel_ch(-1), SCENE, rf_accept);   /* unkeyed: never asked on terrain */
+    mod_mat_census_force(1);
+    CHECK(openpete_mods_material_terrain_bucket(6, 0, 0) == mr + 1, "bake textured");
+    CHECK(openpete_mods_material_terrain_bucket(-1, 0, 0) == mu + 1, "bake untextured");
+    openpete_mods_material_frame_reset();
+    s_calls = 0;
+    openpete_mods_material_terrain_refine_present();
+    CHECK(s_calls == 2, "sim-thread calls %d", s_calls);
+    const int sr = mod_mat_terrain_bucket_slot(mr);
+    CHECK(sr == 1, "memo slot %d", sr);
+    CHECK(mod_mat_terrain_bucket_slot(mu) == OPENPETE_MATERIAL_TERRAIN_STOCK, "declined");
+    CHECK(openpete_mods_material_terrain_tex_slot(NULL, 6) == sr && s_calls == 2, "walk reuses the memo");
+    openpete_mods_material_view_capture(&v);
+    openpete_mods_material_frame_reset();   /* the sim thread opens the next scene */
+    s_calls = 0;
+    openpete_mods_material_view_set(&v);
+    CHECK(mod_mat_terrain_bucket_slot(mr) == sr, "view slot");
+    CHECK(resolve(ter_tag(6, 0, 0, sr), SCENE) == mr, "walked tag through the view");
+    openpete_mods_material_view_set(NULL);
+    CHECK(mod_mat_terrain_bucket_slot(mr) == OPENPETE_MATERIAL_TERRAIN_STOCK, "stale memo");
+    CHECK(mod_mat_census_get(mr, MOD_MAT_CENSUS_STALE_MEMO) == 1, "stale memo counted");
+    CHECK(s_calls == 0, "compose calls %d", s_calls);
+    CHECK(mod_mat_census_view_resolves() >= 1, "view resolves counted");
+    mod_mat_census_force(0);
+    OUTCOME("2 refine calls on the sim thread; the compose binds the view's outcome, a stale memo draws stock; 0 compose calls");
+}
+
+/** @brief The sim-thread refine pass asks no outranked terrain refine: one a later declarative takes on every face, or a lower refine on the same key. */
+static void case_refine_present_outranked(void) {
+    begin("Sim-thread refine pass skips outranked refines");
+    stub_mod_t* a = mod("fx-tr", 0, 13);
+    stub_mod_t* b = mod("fx-td", 1, 13);
+    stub_mod_t* c = mod("fx-tr2", 2, 13);
+    openpete_mod_material_selector_t r3 = sel_ch(OP_CHAN_TERRAIN), r5 = sel_ch(OP_CHAN_TERRAIN);
+    r3.texture = 3;
+    r5.texture = 5;
+    reg(a, r3, SCENE, rf_accept);              /* outranked by b on every face of texture 3 */
+    const int md = reg(b, r3, SCENE, NULL);
+    reg(a, r5, SCENE, rf_accept);              /* outranked by c's refine on texture 5 */
+    const int mc = reg(c, r5, SCENE, rf_accept);
+    CHECK(openpete_mods_material_terrain_bucket(3, 0, 0) == md + 1, "texture 3 bake");
+    CHECK(openpete_mods_material_terrain_bucket(3, 1, 1) == md + 1, "texture 3 env lp bake");
+    CHECK(openpete_mods_material_terrain_bucket(5, 0, 0) == mc + 1, "texture 5 bake");
+    openpete_mods_material_frame_reset();
+    s_calls = 0;
+    openpete_mods_material_terrain_refine_present();
+    CHECK(s_calls == 1, "calls %d", s_calls);
+    CHECK(mod_mat_terrain_bucket_slot(mc) == 1, "the winning refine has an outcome");
+    OUTCOME("1 call: the texture-5 winner; the refine under the later declarative and the lower texture-5 refine get 0");
 }
 
 /** @brief Host-loop mode (no view installed): a frame reset strands an earlier present's slot, and a reused slot names another instance's block. */
@@ -428,7 +559,7 @@ static void case_level_change_bake(void) {
     OUTCOME("bake before the push: stock; push moves the epoch; bake after: the material");
 }
 
-/** @brief Postfx collect with more passes than the cap keeps the lowest-priority ones. */
+/** @brief Postfx collect with more passes than the cap keeps the highest-priority ones, lowest first. */
 static void case_postfx_cap(void) {
     begin("Postfx collect, 20 passes, cap 15");
     mod_postfx_rank_t v[20];
@@ -436,15 +567,15 @@ static void case_postfx_cap(void) {
     const int n = mod_postfx_rank(v, 20, 15);
     CHECK(n == 15, "kept %d", n);
     int ok = 1;
-    for (int i = 0; i < n; i++) ok &= v[i].load_index == i;
-    CHECK(ok, "kept the 15 lowest load indices in ascending order");
+    for (int i = 0; i < n; i++) ok &= v[i].load_index == i + 5;
+    CHECK(ok, "kept the 15 highest load indices in ascending order");
     mod_postfx_rank_t w[3] = {{2, 1, 0}, {0, 1, 5}, {1, 1, 0}};
     CHECK(mod_postfx_rank(w, 3, 15) == 3 && w[0].index == 1 && w[1].index == 2 && w[2].index == 0,
           "ties by order then index");
-    OUTCOME("kept load 0..14, dropped 15..19 (the highest priority); same load: order, then index");
+    OUTCOME("kept load 5..19 in run order, dropped 0..4 (the lowest priority); same load: order, then index");
 }
 
-/** @brief Narrow-before-wide exclusions in one mod (sky-selector): the first same-mod registration wins, at api 12 and api 13. */
+/** @brief Narrow-before-wide exclusions in one mod (sky-selector): the first same-mod registration wins at api 12, the later one at api 13. */
 static void case_exclude(int api) {
     char name[96];
     snprintf(name, sizeof name, "narrow-before-wide exclusions in one mod (pin %d)", api);
@@ -457,9 +588,10 @@ static void case_exclude(int api) {
     openpete_mods_material_frame_reset();
     const int s = openpete_mods_material_moby_slot(NULL, 83, 0x80010000u);
     CHECK(s == 0, "slot %d", s);
-    CHECK(resolve(moby_tag(83, s), SCENE) == mx, "excluded class");
+    CHECK(resolve(moby_tag(83, s), SCENE) == (api >= 13 ? mw : mx), "excluded class");
     CHECK(resolve(moby_tag(99, 0), SCENE) == mw, "other class");
-    OUTCOME("class 83: the exclusion (first registration); class 99: the wide material");
+    OUTCOME("class 83: %s; class 99: the wide material",
+            api >= 13 ? "the wide material (later registration)" : "the exclusion (first registration)");
 }
 
 /** @brief An accept-all channel-wide refine (moby-instance-tint) claims every class over earlier materials. */
@@ -546,12 +678,15 @@ int main(void) {
     case_f1a_decal();
     case_f2();
     case_f3();
+    case_terrain_decline();
     case_f4();
     case_hp_tier_moby();
     case_textured_moby();
     case_f3a();
     case_d3a();
     case_f3b_view_level();
+    case_f3b_terrain_refine();
+    case_refine_present_outranked();
     case_host_loop();
     case_level_change_bake();
     case_postfx_cap();

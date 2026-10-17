@@ -263,6 +263,7 @@ static void shadow_player_feed_native(CPUState* cpu, int slot) {
     if (!shadow_player_feed_enabled()) return;
     shadow_player_build(cpu);
     if (s_tri_n <= 0) return;
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER,
                                                       (uint32_t)(slot < 0 ? 0 : slot)));

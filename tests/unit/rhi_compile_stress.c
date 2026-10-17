@@ -203,6 +203,11 @@ int openpete_mods_is_enabled(const char *id) { (void)id; return 1; }
  * @param self Unused.
  * @return 0. */
 int openpete_mods_load_index_of(openpete_mod_t *self) { (void)self; return 0; }
+/** @brief Return a mod's api pin.
+ *
+ * @param self Unused.
+ * @return 13. */
+int openpete_mods_api_pin_of(openpete_mod_t *self) { (void)self; return 13; }
 /** @brief Return the toggle epoch.
  *
  * @return 0. */

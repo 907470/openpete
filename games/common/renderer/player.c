@@ -868,6 +868,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
             if (s_mirror_pass && sd < 0) sp_pull = OPENPETE_OT_SLOT_WORLD * (double)sd;
         }
     }
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_PLAYER((uint32_t)s_player_slot));
     for (int i = 0; i < s_swtri_n; i++) {

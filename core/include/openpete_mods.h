@@ -1539,12 +1539,15 @@ typedef struct {
     int             index;       /* the pass's registry index (openpete_mods_postfx_enum_at) */
     int             point;       /* its insertion point (OP_POSTFX_*) */
 } openpete_postfx_pass_t;
-/** @brief Fill @p out with the enabled postfx passes at one insertion point, highest priority first.
+/** @brief Fill @p out with the enabled postfx passes at one insertion point in run order, lowest priority first.
  *
  * A pass counts when it is live, enabled, at @p point, and its owning mod is
- * enabled. The whole set is insertion-sorted by the mod's load index, then
- * per-mod order, then registration index, before @p cap is applied, so a
- * truncated set keeps the highest-priority passes and logs one warning.
+ * enabled. The whole set is insertion-sorted ascending by the mod's load
+ * index (enabled-list position, later higher), then per-mod order, then
+ * registration index, so the highest-priority pass runs last and sees
+ * every earlier pass's output. Over @p cap the lowest-priority passes are
+ * dropped: a truncated set keeps the highest-priority passes, still in run
+ * order, and logs one warning.
  * @param point Postfx insertion point (OP_POSTFX_*).
  * @param out Receives the passes.
  * @param cap Capacity of @p out.
@@ -1668,14 +1671,20 @@ typedef struct {
 /** @brief Resolve a draw's provenance tag to the material override that applies.
  *
  * Takes no lock; the compose calls it under the registry read lock. Only
- * materials whose shading contract equals @p contract take part. A slot
- * the tag carries (moby bits 27:16, terrain bits 24:16) selects its
- * material directly; slot 0 falls through to the declarative winner among
- * live, user-enabled materials of enabled mods, the highest load index
- * winning. An OPENPETE_MATERIAL_SLOT_STOCK or
- * OPENPETE_MATERIAL_TERRAIN_STOCK slot, a slot past the view, a slot
- * whose material is swept or owner disabled, and a slot whose material
- * has another contract resolve to none.
+ * materials whose shading contract equals @p contract take part. A moby
+ * slot (bits 27:16) selects its material directly. A terrain slot (bits
+ * 24:16) keeps its refine material unless the declarative winner of the
+ * tag's keys ranks above it; an OPENPETE_MATERIAL_TERRAIN_STOCK decline
+ * draws stock only while the walked refine winner of the tag's texid or
+ * untextured band still ranks above that declarative winner, else the
+ * declarative winner draws. Slot 0 falls through to the declarative
+ * winner among live, user-enabled materials of enabled mods. Rank is the
+ * owner's enabled-list position, later higher, and inside one mod the
+ * registration order selected by its api pin (later from 13, earlier
+ * below). The level a level key tests is the installed view's. An
+ * OPENPETE_MATERIAL_SLOT_STOCK slot, a slot past the view, a slot whose
+ * material is swept or owner disabled, and a slot whose material has
+ * another contract resolve to none.
  *
  * @param tag Provenance tag; 0 resolves to none.
  * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
@@ -1736,10 +1745,12 @@ int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
  *
  * The untextured band is the beyond-LOD gouraud terrain; the whole band
  * shares one outcome, and the terrain feed resolves it once per feed. The
- * winner is the highest-load_index live, user-enabled per-instance
- * material of an enabled mod on channel -1 or OP_CHAN_TERRAIN with
+ * winner is the highest-ranked per-instance material the retained bake
+ * would also accept (live, user-enabled, enabled owner, scene contract,
+ * channel -1 or OP_CHAN_TERRAIN, level key in scope) with
  * OP_SEL_UNTEXTURED and no texture key. Its refine callback runs at most
- * once per present and receives a terrain key with texture -1.
+ * once per present and receives a terrain key with texture -1; the
+ * draw-time resolve ranks the outcome against the declarative winner.
  * @param cpu Unused.
  * @return The slot for OPENPETE_TAG_TERRAIN_UNTEX: 0 when no per-instance
  *         material wins (the draw-time declarative resolve applies), an
@@ -1748,8 +1759,9 @@ int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
 int  openpete_mods_material_terrain_untex_slot(CPUState* cpu);
 /** @brief Resolve the per-instance material of one textured terrain face's Tiledef id to a uniform slot.
  *
- * The winner is the highest-load_index live, user-enabled per-instance
- * material of an enabled mod on channel -1 or OP_CHAN_TERRAIN without
+ * The winner is the highest-ranked per-instance material the retained
+ * bake would also accept (live, user-enabled, enabled owner, scene
+ * contract, channel -1 or OP_CHAN_TERRAIN, level key in scope) without
  * OP_SEL_UNTEXTURED whose texture key equals @p texid. Its refine callback
  * runs at most once per present and receives the Tiledef id in the key.
  * The terrain feed memoizes the result per feed and Tiledef id.
@@ -1793,9 +1805,11 @@ unsigned openpete_mods_material_terrain_epoch(void);
  * Applies the draw-time resolve's predicates and priority, so a face
  * shades identically walked or retained: a per-instance selector whose
  * texture key matches (or, for the untextured band, one with
- * OP_SEL_UNTEXTURED) outranks every declarative one, and within each kind
- * the later-loaded mod wins. Only live, user-enabled selectors of enabled
- * mods on the terrain channel in scope for the current level count. The
+ * OP_SEL_UNTEXTURED) and a declarative one whose selector accepts the face
+ * rank in one order, the owner's enabled-list position, later higher, and
+ * inside one mod the registration order selected by its api pin. Only
+ * live, user-enabled, scene-contract selectors of enabled mods on the
+ * terrain channel in scope for the current level count. The
  * bucket is the winning material index + 1; a winner whose bucket would
  * exceed OPENPETE_MATERIAL_TER_BUCKET_MAX returns 0.
  * @param texid Tiledef id, or -1 for an untextured face.
@@ -1834,9 +1848,12 @@ typedef struct {
  *
  * The bucket's material must be live, user-enabled, owned by an enabled
  * mod, and carry a fragment shader with a terrain profile. A per-instance
- * material binds the uniform slot its refine callback produced this
- * present; a declined outcome returns -1. A declarative material binds its
- * static slot, read through the installed material view when one is set.
+ * material binds the uniform slot its refine callback produced for the
+ * composed scene: the installed material view's outcome, or with no view
+ * the outcome openpete_mods_material_terrain_refine_present computed this
+ * present. No callback runs here; a declined outcome, or none for that
+ * scene, returns -1. A declarative material binds its static slot, read
+ * through the installed material view when one is set.
  * On -1 the caller draws the bucket's faces with the stock pipeline, since
  * the stock pass has already dropped them.
  * @param bucket Bucket id, a material index + 1.
@@ -1902,13 +1919,26 @@ void openpete_mods_material_frame_reset(void);
 /** @brief Set the level being rendered, for level-scoped material selector keys.
  *
  * Sector and texture ids are per-level, and the mods layer cannot read the
- * game's level symbol, so the terrain feed pushes the id while it renders.
+ * game's level symbol, so the game-side render feeders push the id before
+ * they extract (terrain build, moby walk, re-extract, each scene feeder).
  * Until a push the level is -1, which makes level keys inert. A change of
  * level bumps the terrain material epoch, since the retained terrain
- * latches level-dependent verdicts against it. One int written between
- * scenes and read at draw; no lock is taken.
+ * latches level-dependent verdicts against it. The material view captures
+ * the level, and a draw-time resolve reads the installed view's level. One
+ * int written on the sim thread; no lock is taken.
  * @param level_id The game's level id. */
 void openpete_mods_set_level(int level_id);
+/** @brief Compute this present's refine outcome of every terrain refine a retained face draws through.
+ *
+ * Sim thread, after the bake, the frame reset and the level push, before
+ * the walked terrain reads the memo: the walk memoises only the texids it
+ * reaches, and a refine whose faces are all retained has no walked face to
+ * ask it. A refine is asked when it wins its own key among the refines and
+ * the bake has stamped its bucket into a face, so a refine a
+ * higher-ranked material outranks on every face is never asked.
+ * The material view captures the outcomes, so the compose binds them
+ * without calling a callback (openpete_mods_material_terrain_bucket_gpu). */
+void openpete_mods_material_terrain_refine_present(void);
 /** @brief Return one plus the number of slots interned this present in the live table.
  *
  * Slot 0 is reserved, so the valid slots are 1 up to the count minus one.
@@ -1946,12 +1976,18 @@ typedef struct {
      * the last entry, so this carries what ter_bucket_max used to. */
     int ter_bucket_n;
     int ter_bucket[OPENPETE_MODS_MATERIAL_VIEW_MATS];
+    /* Per material: the terrain refine outcome computed for this scene
+     * (an interned slot or OPENPETE_MATERIAL_TERRAIN_STOCK), 0 for none. */
+    int ter_refine[OPENPETE_MODS_MATERIAL_VIEW_MATS];
+    int level;                                    /* level pushed at capture */
 } openpete_mods_material_view_t;
-/** @brief Copy the interned slots, per-material static slots and terrain bucket list into a view.
+/** @brief Copy the interned slots, per-material static slots, terrain refine outcomes, bucket list and level into a view.
  *
- * Takes no lock; the sim thread calls it at scene publish. Copies slots 1
- * up to the live count, the static slot of every material index, and the
- * terrain bucket ids read from the live materials.
+ * Takes no lock; the sim thread calls it at scene publish, at each history
+ * push and when the game-render scene is kept. Copies slots 1 up to the
+ * live count, the static slot and this present's terrain refine outcome of
+ * every material index, the terrain bucket ids read from the live
+ * materials, and the pushed level.
  *
  * @param out Receives the snapshot. */
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
@@ -1961,6 +1997,10 @@ void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
  * NULL after; NULL makes the resolve read the live tables.
  * @param v The view, or NULL. */
 void openpete_mods_material_view_set(const openpete_mods_material_view_t* v);
+/** @brief Return the installed material view, or NULL when the resolve reads the live tables.
+ *
+ * @return The view. */
+const openpete_mods_material_view_t* openpete_mods_material_view_get(void);
 /** @brief Return a mod's 0-based position in the loaded mod table, which is its load order.
  *
  * The table holds boot-enabled and deferred-entry mods alike, in
@@ -1968,6 +2008,13 @@ void openpete_mods_material_view_set(const openpete_mods_material_view_t* v);
  * @param self The mod handle; NULL returns -1.
  * @return The load index, or -1 for NULL. */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
+/** @brief Return a mod's manifest api pin, the `[mod] api` key.
+ *
+ * Rules keyed on the pin (the same-mod material tie, the overlay-window
+ * override scope) read it through this accessor.
+ * @param self The mod handle; NULL returns 0.
+ * @return The pin, or 0 when the key is absent or @p self is NULL. */
+int  openpete_mods_api_pin_of(openpete_mod_t* self);
 /** @brief Return the tick, alpha and canonical flag of the last present flush that reached the present hooks.
  *
  * The postfx engine UBO and the native renderer read it, so shaders see the

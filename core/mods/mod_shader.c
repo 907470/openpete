@@ -917,10 +917,11 @@ static void postfx_truncation_notice(int point, int have, int cap) {
 
 int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
                                  int cap) {
-    /* The whole enabled set is collected and sorted before the cap is
-     * applied, so the passes the renderer runs are the highest-priority
-     * ones rather than whichever registered first. Static, cleared per
-     * call: this runs per present and the storage is worth keeping. */
+    /* The whole enabled set is collected and sorted into run order, lowest
+     * priority first, before the cap is applied; mod_postfx_rank drops the
+     * lowest-priority passes, so the passes the renderer runs are the
+     * highest-priority ones. Static, cleared per call: this runs per
+     * present and the storage is worth keeping. */
     static mod_fvec s_idx;   /* mod_postfx_rank_t, one per enabled pass */
     int n, have;
     if (!s_idx.elem_size)
@@ -1039,10 +1040,11 @@ int openpete_mods_material_terrain_bucket_gpu(
         return -1;
     if (m->frag < 0) return -1;
     if (m->per_instance) {
-        /* The refine callback decides this present. Declining is not an
-         * error: those faces are already claimed out of the stock pass, so
-         * the caller draws the bucket's pass with the STOCK pipeline. */
-        int slot = mod_mat_terrain_refine_slot(bucket - 1);
+        /* The outcome the sim thread computed for the composed scene; no
+         * callback runs on the compose. Declining is not an error: those
+         * faces are already claimed out of the stock pass, so the caller
+         * draws the bucket's pass with the STOCK pipeline. */
+        int slot = mod_mat_terrain_bucket_slot(bucket - 1);
         if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK || slot <= 0) return -1;
         out->uniform_slot = slot;
     } else {
@@ -1101,6 +1103,7 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
                           frag_shader >= 0 ? shader_at(frag_shader)->contract
                                            : OPENPETE_MATERIAL_CONTRACT_SCENE,
                           per_instance, openpete_mods_load_index_of(self),
+                          openpete_mods_api_pin_of(self),
                           fits ? slot_generation_next() : 0u);
 }
 int openpete_mods_material_register(openpete_mod_t* self,

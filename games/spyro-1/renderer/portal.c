@@ -2567,6 +2567,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
     static int s_reports = 0;
     if (s_want_dump_this_frame() && s_reports < 512) { dump_leaf(cpu, which, a0, a1, a2, start, end); s_reports++; }
     if (feed) {
+        render_material_level_push(cpu);
         openpete_native_scene_begin_frame(openpete_frame);  /* append; cyclorama/world already began it */
         int is_dome = (kind != PORTAL_FLAT);
         /* Stamp the preview kind for the emits this leaf is about to make. */
@@ -2781,6 +2782,7 @@ static void feed_revealed_portals(CPUState* cpu) {
     const float xlo = s_view.xlo, xhi = s_view.xhi;
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
     int revealed = 0;
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);   /* append; world/cyclorama began it */
     for (uint32_t i = 0; i < n; i++) {
         uint32_t p = cpu->read_word(G_PORTALS + i * 4);
@@ -3062,6 +3064,7 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
         if (cen && openpete_frame / 100u != last) { last = openpete_frame / 100u;
             fprintf(stderr, "[census f=%u PORTAL-REPLAY] fires=%u\n", openpete_frame, s_fires); }
     }
+    render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);   /* append; cyclorama began it */
 
     /* Sub-tick dome matrix = lerp(prev, curr, alpha), componentwise (like the

@@ -2801,6 +2801,10 @@ int openpete_mods_load_index_of(openpete_mod_t* self) {
     return self->load_index;
 }
 
+int openpete_mods_api_pin_of(openpete_mod_t* self) {
+    return self ? (int)self->api_pin : 0;
+}
+
 const char* openpete_mods_sdk_dir(void) {
     return s_sdk_dir;
 }
@@ -4405,7 +4409,10 @@ static void mod_register_materials(struct openpete_mod* mod);
  * registered. Sets entered on success.
  * @return 0, or -1 on failure. */
 static int mod_run_entry(struct openpete_mod* mod) {
-    mod_register_materials(mod);   /* manifest first; entry's C wins over it */
+    /* Manifest rows register before the entry's C materials, so on one
+     * selector the C registration wins from api pin 13 and the manifest row
+     * below it (mod_mat_outranks). */
+    mod_register_materials(mod);
     mod_entry_fn entry =
         (mod_entry_fn)mod_dlsym(mod->dl, "openpete_mod_entry");
     if (!entry) {

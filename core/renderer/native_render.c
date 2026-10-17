@@ -876,6 +876,9 @@ static int                s_scene_hist_replay[SCENE_HIST]; /* built by a re-extr
 static int                s_scene_hist_hud_under[SCENE_HIST]; /* flat-HUD-under-player flag, per snapshot */
 static int                s_scene_hist_actor_front[SCENE_HIST]; /* actors-in-front (dragon rescue) flag, per snapshot */
 static nr_cover_block     s_scene_hist_cover[SCENE_HIST]; /* the snapshot's portal openings */
+/* The material view of each snapshot, captured at its push, while the
+ * interned slot table still holds the closing scene's outcomes. */
+static openpete_mods_material_view_t s_scene_hist_matview[SCENE_HIST];
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
 static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
 /* 1 after an eager publish took the accumulator's storage: s_scene holds the
@@ -1391,6 +1394,7 @@ static void scene_hist_push(void) {
         s_scene_hist_hud_under[slot] = sl->hud_under;
         s_scene_hist_actor_front[slot] = sl->actor_front;
         s_scene_hist_cover[slot] = sl->cover;
+        openpete_mods_material_view_capture(&s_scene_hist_matview[slot]);
         s_scene_hist_head = slot;
         if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         return;
@@ -1405,6 +1409,7 @@ static void scene_hist_push(void) {
     s_scene_hist_hud_under[slot] = s_scene_hud_under;
     s_scene_hist_actor_front[slot] = s_scene_actor_front;
     s_scene_hist_cover[slot] = s_cover_live;
+    openpete_mods_material_view_capture(&s_scene_hist_matview[slot]);
     s_scene_hist_head = slot;
     if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
 }
@@ -1588,6 +1593,7 @@ static struct {
     uint32_t bg, fade, freeze;
     int      hud_under, actor_front;
     nr_cover_block cover;       /* its portal openings */
+    openpete_mods_material_view_t matview;   /* its interned material slots */
 } s_scene_game;
 
 /** @brief Keep the game render's accumulated scene before a re-extract wipes it, by exchanging storage.
@@ -1607,6 +1613,8 @@ static void scene_game_retain(void) {
     s_scene_game.hud_under = s_scene_hud_under;
     s_scene_game.actor_front = s_scene_actor_front;
     s_scene_game.cover = s_cover_live;
+    /* Before the re-extract's frame reset rewrites the slot table. */
+    openpete_mods_material_view_capture(&s_scene_game.matview);
 }
 
 /* ---- frame-close notification ------------------------------------------- */
@@ -4265,6 +4273,22 @@ static scene_view_t scene_present_view(void) {
     return (scene_view_t){ s_scene, s_scene_n, s_scene_bg, s_scene_fade, s_scene_freeze,
                            s_scene_hud_under, s_scene_actor_front, scene_live_stamp(),
                            s_scene_replay };
+}
+
+/** @brief Return the material view captured with the scene scene_present_view selects.
+ *
+ * The same arms in the same order as scene_present_view: the compose
+ * source slot's view, the kept game-render scene's, the history entry's at
+ * the delay depth, the moved ring slot's; NULL for the live accumulator,
+ * whose outcomes are the live table's.
+ * @return The view, or NULL. */
+static const openpete_mods_material_view_t *scene_present_matview(void) {
+    if (s_ps_slot) return &s_ps_slot->matview;
+    if (s_fbsnap_game_sel) return &s_scene_game.matview;
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) return &s_scene_hist_matview[slot];
+    const scene_slot_t *ms = scene_moved_slot();
+    return ms ? &ms->matview : NULL;
 }
 
 /** @brief Return whether the scene scene_present_buf returns was built by a re-extract rather than by the game's render.
@@ -14551,11 +14575,32 @@ static void draw_over_fade_2d(const scene_tri_t* scene, int scene_n, const int* 
     draw_overlay_quads(ut_first[UT_BUCKET_OVER_OVERLAY], ut_count[UT_BUCKET_OVER_OVERLAY]);
 }
 
+static bool draw_native_scene(bool full_extent);
+/** @brief Draw the selected scene with the material view captured with it installed.
+ *
+ * Every material resolve, retained-terrain bucket bind and material UBO
+ * fill of the scene draw reads the view of the scene scene_present_view
+ * selects (scene_present_matview), so a kept, history or moved-slot scene
+ * binds its own interned outcomes rather than the live table's. The view
+ * installed before the call is restored after it.
+ * @param full_extent 1 to map the full PSX extent (offscreen panel), 0 for the display mapping.
+ * @return true when anything was drawn. */
+static bool draw_scene_with_matview(bool full_extent)
+{
+    const openpete_mods_material_view_t *prev = openpete_mods_material_view_get();
+    openpete_mods_material_view_set(scene_present_matview());
+    const bool drew = draw_native_scene(full_extent);
+    openpete_mods_material_view_set(prev);
+    return drew;
+}
+
 /** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
  *
  * Packs the scene triangles into the vertex buffer and draws the world
  * groups, the HUD, overlay, panel, 3D-HUD, portal, sky, fill and
  * actor-front layers and the textured buckets in their fixed order.
+ * Callers reach it through draw_scene_with_matview, which installs the
+ * scene's material view around it.
  * @param full_extent 1 to map the full PSX extent (offscreen panel), 0 for the display mapping.
  * @return true when anything was drawn. */
 static bool draw_native_scene(bool full_extent)
@@ -17634,7 +17679,7 @@ static bool vramfb_prepare(float wf)
  * @return true when the scene drew. */
 static bool draw_scene_or_vram(bool vram)
 {
-    const bool drew = draw_native_scene(true);
+    const bool drew = draw_scene_with_matview(true);
     if (!drew && vram && s_vramfb_vb) draw_vram_fallback(s_vramfb_vb);
     return drew;
 }
@@ -17745,7 +17790,7 @@ static void compose_variant(void)
         rhi_gpu_zone_begin(s_nr.dev, "sc.rtbegin");
         rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
         rhi_gpu_zone_end(s_nr.dev);
-        bool drew = draw_native_scene(false);   /* scene at ss_factor× (scissor auto-scaled) */
+        bool drew = draw_scene_with_matview(false);   /* scene at ss_factor× (scissor auto-scaled) */
         s_pc_cur = drew ? PC_SCENE : PC_VRAM;
         rhi_end_render_target(s_nr.dev, s_nr.ss_rtt);
         rhi_gpu_zone_end(s_nr.dev);
@@ -17800,7 +17845,7 @@ static void compose_variant(void)
     s_pc_cur = PC_CLEAR;                 /* no layout yet: the clear is the picture */
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
         rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
-        bool scene_drew = draw_native_scene(false);
+        bool scene_drew = draw_scene_with_matview(false);
         rhi_gpu_zone_end(s_nr.dev);
         s_pc_cur = scene_drew ? PC_SCENE : PC_VRAM;
         if (!scene_drew) draw_vram_fallback(s_nr.panels_vb);
@@ -18109,8 +18154,8 @@ void openpete_native_material_bind(struct rhi_device *dev, int uniform_slot,
 /** @brief Refill the material UBO: the engine block and each interned slot's uniform bytes.
  *
  * Block 0 takes the engine block and block 1 + s the uniform bytes of
- * interned material slot s, read from the present slot's material view or,
- * with no slot active, from the mod registry. The UBO is created on first
+ * interned material slot s, read from the installed material view or, with
+ * none installed, from the mod registry's live table. The UBO is created on first
  * use. Returns at once unless a material selector or dev split is armed
  * (tag_split_on). Slots past the block count are ignored. With
  * OPENPETE_MATERIAL_STATS set it prints each new peak of interned slots. */
@@ -18122,7 +18167,8 @@ static void fill_material_ubo(void)
                                    MAT_UBO_BLOCKS);
     if (!s_mat_ubo) return;
     write_engine_block(s_mat_ubo, 0, 0, 0);
-    int nslots = s_ps_slot ? s_ps_slot->matview.slot_n : openpete_mods_material_slot_count();   /* 1 + interned */
+    const openpete_mods_material_view_t *mv = openpete_mods_material_view_get();
+    int nslots = mv ? mv->slot_n : openpete_mods_material_slot_count();   /* 1 + interned */
     /* Per-instance material census (OPENPETE_MATERIAL_STATS=1): the peak
      * interned-slot count is the structural proof that per-instance
      * callbacks produce distinct outcomes AND the batcher splits by
@@ -18140,8 +18186,8 @@ static void fill_material_ubo(void)
     }
     for (int s = 1; s < nslots && s < MAT_UBO_BLOCKS - 1; s++) {
         uint32_t len = 0;
-        const void* p = s_ps_slot ? (len = s_ps_slot->matview.slots[s].len, (const void*)s_ps_slot->matview.slots[s].bytes)
-                                  : openpete_mods_material_slot_uniforms(s, &len);
+        const void* p = mv ? (len = mv->slots[s].len, (const void*)mv->slots[s].bytes)
+                           : openpete_mods_material_slot_uniforms(s, &len);
         if (p && len) rhi_ubo_write(s_mat_ubo, 1 + s, p, len);
     }
 }
@@ -19797,7 +19843,7 @@ static void freeze_render_into(rhi_texture **tex, int *tw, int *th, bool *valid,
         { int kw, kh; rhi_texture_extent(*tex, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
         rhi_begin_render_target(s_nr.dev, *tex, br, bgc, bb, 1.0f);
-        draw_native_scene(true);
+        draw_scene_with_matview(true);
         rhi_end_render_target(s_nr.dev, *tex);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);

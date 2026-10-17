@@ -12607,9 +12607,13 @@ static void terrain_feed_native(CPUState* cpu) {
         const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
         s_fill_dilate = (e && *e) ? (float)atof(e) : 0.0f;  /* quantize/grow OFF by default (they cause silhouette ghosting/spikes + sub-tick crawl; envs re-enable for experiments) */
     }
-    /* Level-scoped selector keys resolve at draw time, which has no cpu -
-     * push the id from here, the feed that runs whenever a world renders. */
-    openpete_mods_set_level((int)cpu->read_word(game_layout.level_id));
+    /* Level push (idempotent after the build's), then every keyed terrain
+     * refine's outcome for this present, on this thread, after the frame
+     * reset: the walk below reads the memo, the retained passes read the
+     * outcome the material view captures, and no callback runs on the
+     * compose. */
+    render_material_level_push(cpu);
+    openpete_mods_material_terrain_refine_present();
     /* Untextured-band material: one resolve per feed - the whole
      * beyond-LOD gouraud band shares a single per-instance outcome. */
     const int untex_slot = openpete_mods_material_terrain_untex_slot(cpu);
@@ -13374,6 +13378,7 @@ static void terrain_defer_census(void) {
  * @param cpu      guest CPU state
  * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
 static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
+    render_material_level_push(cpu);             /* the bake's level keys */
     { OP_PROF_ACCUM_SCOPE("terrain.build");
       terrain_build(cpu, occGroup); }            /* native walk + tris */
     openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
@@ -13524,6 +13529,7 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
 
 /* Sub-tick re-extract; documented at the declaration in terrain.h. */
 void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
+    render_material_level_push(cpu);   /* level keys of this re-extract's bake and resolves */
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_TERRAIN)) return;
     /* Reproduce terrain ONLY if the canonical frame drew it. During a level

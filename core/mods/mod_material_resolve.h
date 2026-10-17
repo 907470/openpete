@@ -30,12 +30,20 @@
  * (= "defer to draw-time class resolve"); 1.. are interned outcomes. */
 #define MOD_MATERIAL_SLOTS 128
 
+/* The first manifest api pin whose same-mod material ties go to the later
+ * registration; a lower pin keeps the first registration. */
+#define MOD_MAT_API_LATER_TIE 13
+
 typedef struct {
     const char* owner;
     openpete_mod_material_selector_t sel;
     int  vert, frag;       /* shader handles; -1 = stock stage */
     openpete_mod_material_fn per_instance;   /* NULL = declarative */
     int  load_index;
+    /* The owner's manifest api pin. It selects the same-mod tie direction:
+     * below MOD_MAT_API_LATER_TIE the first registration wins, from it the
+     * later one does (mod_mat_outranks). */
+    int  api_pin;
     /* OPENPETE_MATERIAL_CONTRACT_* of the fragment stage; SCENE for a
      * material with the stock fragment stage. */
     int  contract;
@@ -68,6 +76,11 @@ typedef struct {
      * the whole material. */
     int           refine_slot;
     unsigned      refine_present;
+    /* Set once the retained bake has stamped this refine's bucket into a
+     * face; kept for the session, since a retained face keeps its bucket
+     * until a rebake that need not restamp it. The sim-thread refine pass
+     * asks only refines a retained face can draw through. */
+    int           bake_won;
     /* A selector retuned from inside a present (material_set_selector) parks
      * here until the tick boundary. Selection has to be constant for a whole
      * present or half the frame shades under the old key. */
@@ -120,12 +133,24 @@ int mod_mat_sel_valid(const char* id, const openpete_mod_material_selector_t* se
  * @param contract OPENPETE_MATERIAL_CONTRACT_* of the fragment stage.
  * @param per_instance Refine callback, or NULL for a declarative material.
  * @param load_index The owner's enabled-list position.
+ * @param api_pin The owner's manifest api pin.
  * @param generation A fresh slot generation.
  * @return The material handle, or -1. */
 int mod_mat_append(const char* owner, const openpete_mod_material_selector_t* sel,
                    int vert, int frag, int contract,
                    openpete_mod_material_fn per_instance, int load_index,
-                   unsigned generation);
+                   int api_pin, unsigned generation);
+
+/** @brief Test whether material @p a ranks above material @p b.
+ *
+ * The owner with the higher load_index (later in the enabled list) ranks
+ * higher. Two materials of one mod rank by registration: the later one
+ * ranks higher when the owner's api pin is at least MOD_MAT_API_LATER_TIE,
+ * the earlier one otherwise. Every winner scan ranks through it.
+ * @param a Material index.
+ * @param b Material index, or -1 for none (every material outranks none).
+ * @return 1 when @p a ranks above @p b, else 0. */
+int mod_mat_outranks(int a, int b);
 
 /** @brief Turn one material on or off; the caller holds the registry write lock.
  *
@@ -181,11 +206,23 @@ int mod_mat_view_static_slot(int m);
  * The callback runs at most once per present per material (memo keyed on
  * the counter openpete_mods_material_frame_reset advances); a block
  * identical to an interned slot of the same material reuses that slot.
+ * Sim thread only: extraction and openpete_mods_material_terrain_refine_present.
  * @param w Material index, or -1 for none.
  * @return 0 for no material or a declarative one, an interned slot, or
  *         OPENPETE_MATERIAL_TERRAIN_STOCK when the callback declined or
  *         the slot table is full. */
 int mod_mat_terrain_refine_slot(int w);
+
+/** @brief Return the refine outcome a retained-terrain bucket pass binds, without calling a callback.
+ *
+ * Reads the installed view's outcome for the material, else, with no view
+ * installed, the material's memo when it was computed this present. A memo
+ * from another present, or a view with no outcome for the material, reads as
+ * stock; it counts in the census (MOD_MAT_CENSUS_STALE_MEMO) when a baked
+ * face carries the material's bucket.
+ * @param w Material index of a per-instance material.
+ * @return An interned slot, or OPENPETE_MATERIAL_TERRAIN_STOCK. */
+int mod_mat_terrain_bucket_slot(int w);
 
 /** @brief Pick the material that shades a draw's provenance tag, without the GPU description.
  *
@@ -214,8 +251,10 @@ typedef struct {
 
 /** @brief Sort enabled postfx passes into run order and apply the renderer's cap.
  *
- * Ascending by load_index, then order, then table index; the first @p cap
- * entries are kept.
+ * Ascending by load_index, then order, then table index: the chain runs the
+ * lowest-priority pass first and the highest last, outermost. Over @p cap,
+ * the lowest-priority passes are dropped: the last @p cap entries move to
+ * the front, still ascending.
  * @param v The passes; sorted in place.
  * @param n Entries in @p v.
  * @param cap Passes the renderer runs.
@@ -249,6 +288,10 @@ void mod_mat_census_print(void);
 void mod_mat_census_force(int on);
 /** @brief Zero every census counter, for the unit test. */
 void mod_mat_census_reset(void);
+/** @brief Return the number of draw-time resolves made with a material view installed.
+ *
+ * @return The count since boot or the last mod_mat_census_reset. */
+unsigned mod_mat_census_view_resolves(void);
 
 enum {
     MOD_MAT_CENSUS_DRAWS = 0,        /* draw-time resolves won (walked runs) */
@@ -259,6 +302,7 @@ enum {
     MOD_MAT_CENSUS_FALLTHROUGHS,     /* decline handed to a lower material */
     MOD_MAT_CENSUS_DECLINE_SHADOWS,  /* decline drawn stock while a lower material matched */
     MOD_MAT_CENSUS_OUTRANKED,        /* refine called while a higher declarative matched its key */
+    MOD_MAT_CENSUS_STALE_MEMO,       /* bucket pass found no outcome of the present it composes */
     MOD_MAT_CENSUS_N
 };
 
