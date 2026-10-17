@@ -18,11 +18,9 @@
 # while the head is at rest: a window whose head rate is 0 adds the line
 # `hold-on/moving-head VACUOUS`, which reports the gap and leaves the
 # exit status to the hold-on verdict.
-# No off-schedule row covers a blocking CdSync: every guest CdSync site of
-# the three games passes mode 1, the poll, which cd_stream_pause_answer
-# answers CdlNoIntr while a stream read's closing CdlPause is owed; the
-# blocking wait that delivers VBLs (cd_stream_pause_wait) runs for mode 0
-# only, so no input can engage such a row.
+# No row covers a blocking CdSync: every guest CdSync site of the three
+# games passes mode 1, the poll, which cd_stream_pause_answer answers
+# CdlNoIntr while a stream read's closing CdlPause is owed.
 # Row cadence (spyro-2, headless under OPENPETE_FORCE_PACING=1 with
 # --pace-log): every VSync(n > 1) the game makes off the schedule after the
 # first paced VBL. Pass: the wait's n VBLs each have a VBL record, and the

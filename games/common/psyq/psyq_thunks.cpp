@@ -595,7 +595,6 @@ enum vbl_src {
     VBL_SRC_VSYNC = 0,  /* psyq_VSync's wait, its VSync and VSync(-1) charges */
     VBL_SRC_CHARGE,     /* the schedule's other charges (registration, anchor, load window, clock gate, CdRead, CdControl, CdSync) */
     VBL_SRC_SPIN,       /* the dispatcher's spin tick */
-    VBL_SRC_PAUSE,      /* a blocking CdSync waiting out a stream read's CdlPause */
     VBL_SRC_LOOP,       /* an emitted polling-loop back-edge */
     VBL_SRC_INCALL,     /* a device wait inside a kernel call */
     VBL_SRC_N
@@ -1092,7 +1091,7 @@ static void psyq_vbl_body(CPUState* cpu, int final_wait) {
  * VBL sets the flag for its duration, as the exception runs masked, so a
  * delivery falling due inside one is latched and flushed on return. */
 static const char* const k_vbl_src_name[VBL_SRC_N] = {
-    "vsync", "charge", "spin", "pause", "loop", "in-call"};
+    "vsync", "charge", "spin", "loop", "in-call"};
 static uint64_t s_dlv_taken[VBL_SRC_N], s_dlv_held[VBL_SRC_N];
 static uint64_t s_dlv_flushes = 0;
 static uint32_t s_dlv_since_wait = 0, s_dlv_since_wait_max = 0;  /* taken VBLs between two VSync waits */
@@ -1303,10 +1302,6 @@ static void deliver_vbl(CPUState* cpu, vbl_src src, int final_wait) {
     if (s_hw_dry) hold_window_close(cpu);
 }
 
-/* Blocking CdSync calls off the schedule, and those made while a stream
- * read's closing CdlPause was owed: the inputs the pause wait engages on
- * (cd_stream_pause_wait). */
-static uint64_t s_cd_sync0_calls = 0, s_cd_sync0_pause_owed = 0;
 /* Polling-loop quanta off the schedule at counted polls: counted, not
  * delivered, until a guest cycle clock supplies their quantum. */
 static uint64_t s_loop_counted_only = 0;
@@ -1388,8 +1383,6 @@ extern "C" void psyq_vbl_delivery_report(void) {
     OPL_INFO_F("delivery", "loop quanta at counted polls off the schedule, counted only: %llu; "
                "at spins before anchor 0 under the schedule, one VBL each: %llu",
                (unsigned long long)s_loop_counted_only, (unsigned long long)s_loop_pre_anchor);
-    OPL_INFO_F("delivery", "blocking CdSync off the schedule: %llu, with a stream CdlPause owed: %llu",
-               (unsigned long long)s_cd_sync0_calls, (unsigned long long)s_cd_sync0_pause_owed);
     openpete_vbl_leaf_report();
     openpete_loop_site_census_log();
     uint32_t hits[4], bad[4];
@@ -3966,19 +3959,6 @@ void psyq_CD_flush(CPUState* cpu)   { cpu->v0 = 0u; }
  * @param cpu Guest CPU state; v0 receives 0. */
 void psyq_CD_initvol(CPUState* cpu) { cpu->v0 = 0u; }
 
-/** @brief Pass the VBLs a blocking CdSync spends in libcd until a stream read's closing CdlPause completes.
- *
- * Delivers one VBL per owed VBL for mode 0 off the schedule (a held VBL
- * still counts the CdlPause down); does nothing for a poll, under the
- * schedule, or while the read itself is still in flight.
- * @param cpu Guest CPU state.
- * @param mode The CdSync mode. */
-static void cd_stream_pause_wait(CPUState* cpu, int mode) {
-    if (mode != 0 || openpete_sched_active()) return;
-    s_cd_sync0_calls++;
-    if (s_cd_pause_owed) s_cd_sync0_pause_owed++;
-    while (s_cd_pause_owed && !s_cd_defer_pending) deliver_vbl(cpu, VBL_SRC_PAUSE, 0);
-}
 /** @brief Answer a CdSync poll as libcd does while a stream read's closing CdlPause is in flight: no command complete.
  *
  * @param mode The CdSync mode.
@@ -4115,6 +4095,25 @@ static void cd_getlocp_answer(u_char* result) {
     result[7] = abs.sector;
 }
 
+/** @brief Complete the pending libcd command for a blocking CdSync, as libcd's CD_sync mode 0 waits for it.
+ *
+ * Mode 0 blocks in CD_sync until the status is CdlComplete or CdlDiskError
+ * (the `beqz $s5` back-edge at 0x800649EC in Spyro 1's libcd); a poll
+ * returns at once. No CdSync site in the three games passes mode 0. The
+ * pending command completes, charged to its completion VBLANK under the
+ * schedule, and the caller answers with PsyCross's poll (CdlComplete).
+ * The VBLs libcd would spend waiting out a stream read's closing CdlPause
+ * off the schedule are not passed; the first such call is warned.
+ * @param cpu Guest CPU state; ra names the call site in the warning. */
+static void cd_sync_blocking(CPUState* cpu) {
+    cd_charge_pending(cpu, "CdSync");
+    static int s_sync0_warned = 0;
+    if (!s_cd_pause_owed || openpete_sched_active() || s_sync0_warned) return;
+    s_sync0_warned = 1;
+    OPL_WARN_F("cd", "CdSync(0) ra=0x%08X with a stream CdlPause owed (%u VBLs): "
+               "answered CdlComplete without passing them", cpu->ra, s_cd_pause_owed);
+}
+
 /** @brief CdSync thunk: pumps the music override, then returns PsyCross's CD command status, with an optional per-VBL spin limit.
  *
  * @param cpu Guest CPU state; a0 is the mode, a1 the result buffer, v0 receives the status. */
@@ -4137,9 +4136,10 @@ void psyq_CdSync(CPUState* cpu) {
      * the drive head from the VBL body (cd_stream_pump). */
     music_override_pump();
 
-    if (mode == 0) cd_charge_pending(cpu, "CdSync");
-    cd_stream_pause_wait(cpu, mode);
-    int rc = cd_stream_pause_answer(mode, CdSync(mode, result));
+    /* PsyCross's mode 0 is unimplemented: a blocking call is completed
+     * first (cd_sync_blocking) and then answered by the poll. */
+    if (mode == 0) cd_sync_blocking(cpu);
+    int rc = cd_stream_pause_answer(mode, CdSync(1, result));
     /* A poll answers as the reference's poll at this call site did, from
      * the golden's CdSync sidecar, the VBLs to that poll's VBLANK passing
      * first (a game spinning on the drive spent them in the spin).
