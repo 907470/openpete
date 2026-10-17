@@ -656,6 +656,8 @@ static SDL_AtomicInt s_stall_ms;           /* the current stretch, ms */
 static SDL_AtomicInt s_stall_max_ms;       /* the longest stretch this run, ms */
 static SDL_AtomicInt s_stall_max_vbl;      /* openpete_vbl during it */
 static SDL_AtomicInt s_stall_samples;      /* samples taken, the engagement count */
+static SDL_AtomicInt s_stall_stop;         /* nonzero: the monitor leaves its loop */
+static void*         s_stall_thread;       /* the monitor's SDL_Thread*, swapped to NULL by the stop */
 
 /** @brief Take the stall monitor's dump request on the game fiber and dump at this entry or loop poll.
  * @param addr The function entered or the loop header polled. */
@@ -664,16 +666,17 @@ static void stall_take(uint32_t addr) {
     openpete_hang_dump_and_exit(addr, 0u, (uint32_t)SDL_GetAtomicInt(&s_stall_ms), 0);
 }
 
-/** @brief Body of the stall monitor thread: sample the game fiber's progress until a trip exits the process.
+/** @brief Body of the stall monitor thread: sample the game fiber's progress until a trip exits the process or a stop is requested.
  * @param arg Unused.
- * @return Never returns while the process runs. */
+ * @return 0 once openpete_stall_monitor_stop raised s_stall_stop. */
 static int SDLCALL stall_monitor_main(void* arg) {
     (void)arg;
     int32_t  last_vbl = SDL_GetAtomicInt(&openpete_vbl);
     uint32_t flat_ms = 0u, request_ms = 0u;
     uint64_t prev = SDL_GetTicksNS();  /* clock-guard: wall */
-    for (;;) {
+    while (!SDL_GetAtomicInt(&s_stall_stop)) {
         SDL_Delay(STALL_SAMPLE_MS);
+        if (SDL_GetAtomicInt(&s_stall_stop)) break;
         const uint64_t now = SDL_GetTicksNS();  /* clock-guard: wall */
         uint64_t dt = (now - prev) / 1000000u;
         prev = now;
@@ -706,7 +709,24 @@ static int SDLCALL stall_monitor_main(void* arg) {
     return 0;
 }
 
-/** @brief Read OPENPETE_HANG_STALL_SECONDS and start the stall monitor thread; 0 seconds still measures but never trips. */
+void openpete_stall_monitor_stop(void) {
+    SDL_Thread* th = (SDL_Thread*)SDL_SetAtomicPointer(&s_stall_thread, NULL);
+    if (!th) return;
+    SDL_SetAtomicInt(&s_stall_stop, 1);
+    SDL_WaitThread(th, NULL);
+}
+
+/** @brief atexit form of openpete_stall_monitor_stop. */
+static void stall_monitor_stop_atexit(void) { openpete_stall_monitor_stop(); }
+
+/** @brief Read OPENPETE_HANG_STALL_SECONDS and start the stall monitor thread; 0 seconds still measures but never trips.
+ *
+ * Keeps the thread for openpete_stall_monitor_stop and registers that stop
+ * with atexit. atexit handlers run in reverse registration order, so on an
+ * exit() the stop runs before every handler registered earlier, among them
+ * PsyCross's PsyX_Shutdown (registered by PsyX_Initialise, before the first
+ * guest entry starts the monitor), whose SDL_Quit the monitor's
+ * SDL_GetTicksNS must not overlap. */
 static void stall_monitor_start(void) {
     const char* env = getenv("OPENPETE_HANG_STALL_SECONDS");
     if (env && *env) s_stall_ms_limit = (uint32_t)strtoul(env, NULL, 0) * 1000u;
@@ -715,7 +735,8 @@ static void stall_monitor_start(void) {
         OPL_WARN_F("watchdog", "stall monitor thread not started: %s", SDL_GetError());
         return;
     }
-    SDL_DetachThread(th);
+    SDL_SetAtomicPointer(&s_stall_thread, th);
+    atexit(stall_monitor_stop_atexit);
 }
 
 /** @brief Read OPENPETE_HANG_THRESHOLD on the first call and start the stall monitor; 0 disarms every watchdog trip. */

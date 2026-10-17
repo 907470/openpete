@@ -7384,6 +7384,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * the worker leaves them alone and main runs them after the join -
      * tearing the window down from here would hang the process on exit. */
     if (!split) {
+        openpete_stall_monitor_stop();   /* its clock reads must not overlap SDL_Quit */
         openpete_native_render_shutdown();
         PsyX_Shutdown();
     }
@@ -7675,6 +7676,7 @@ static int run_split_threaded(const openpete_options_t* opts)
      * must be current on the destroying thread. */
     if (s_psyx_gl_ctx)
         SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx);
+    openpete_stall_monitor_stop();   /* its clock reads must not overlap SDL_Quit */
     openpete_native_render_shutdown();
     openpete_disc_cache_shutdown();
     PsyX_Shutdown();

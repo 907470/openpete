@@ -2176,20 +2176,13 @@ static int project_all_records(CPUState* cpu) {
     s_us_proj += (long)(openpete_phase_now_us() - t0); s_us_calls++;
     return n;
 }
-/* Engagement census of the per-face special-material hook: one count per
- * treatment the game's slot reported applying. */
-static long s_special_faces[3];
-/* Faces the walk emitted carrying the flag that selects the draw's second
- * dispatcher, which the walk does not model: the engagement count of the tag
- * a material compare reads. */
-static long s_bit4_faces;
-
 /* OPENPETE_MOBY_SPECIAL_CENSUS=1: run-cumulative counts of the faces carrying
  * either dispatcher flag, the material mode each bit-5 face selected, the
  * first moby address and VBL seen in each mode, and the total faces walked.
- * The counters above are cleared per draw pass, so they answer "at this
- * instant"; these accumulate over the run and answer "does this level draw
- * such a face at all", which is what locating a row for a treatment needs.
+ * The walk's special_faces and bit4_faces counters (mn_walkdiag) are cleared
+ * per walk, so they answer "at this instant"; these accumulate over the run
+ * and answer "does this level draw such a face at all", which is what
+ * locating a row for a treatment needs.
  * The total makes a zero line evidence rather than silence: a run that walked
  * no face proves nothing about the flag. */
 static long     s_cen_mode[8];      /* bit-5 faces by material mode 0..7 */
@@ -2405,8 +2398,6 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby);
  * record count. */
 static int project_all_records_inner(CPUState* cpu) {
     s_proj_n = 0; s_max_blend = 0; s_nrecs = 0;
-    s_special_faces[0] = s_special_faces[1] = s_special_faces[2] = 0;
-    s_bit4_faces = 0;
     int nrec = 0;
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
@@ -3564,6 +3555,13 @@ typedef struct {
     int emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearstraddle;
     int align_lo, align_hi, desync;
     int coinc_pairs, coinc_pulls;   /* moby_coincident_pull: matches, faces pulled */
+    /* Engagement census of the per-face special-material hook: one count per
+     * treatment the game's slot reported applying. */
+    int special_faces[3];
+    /* Faces emitted carrying the flag that selects the draw's second
+     * dispatcher, which the walk does not model: the engagement count of the
+     * tag a material compare reads. */
+    int bit4_faces;
 } mn_walkdiag;
 /* Slot 0 is the serial walk's, and the slot every parallel run sums into. */
 static mn_walkdiag s_wdiag[MN_MAX_WORKERS];
@@ -5124,7 +5122,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * emit, and the tag lets a material or colour compare separate
              * those faces from the ones the walk computes. */
             s_emit_special = (uint8_t)(F->hl == 2u ? 4u : 0u);
-            s_bit4_faces += (F->hl == 2u);
+            t_diag->bit4_faces += (F->hl == 2u);
             special_census_face(F, R->mscol, s_cur_moby_key, p0, p1, p2);
             int special_tex = 0;
             if (moby_game.special_face && F->hl) {
@@ -5151,7 +5149,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                         for (int q = 0; q < 4; q++) { u[q] = stex.u[q]; v[q] = stex.v[q]; }
                 }
                 if (applied) {
-                    s_special_faces[applied - 1]++;
+                    t_diag->special_faces[applied - 1]++;
                     s_emit_special = (uint8_t)applied;
                     c0 = cc[0]; c1 = cc[1]; c2 = cc[2]; c3 = cc[3];
                     textured = tex2;
@@ -5451,6 +5449,8 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         s_wdiag[0].align_lo += D->align_lo; s_wdiag[0].align_hi += D->align_hi;
         s_wdiag[0].desync += D->desync;
         s_wdiag[0].coinc_pairs += D->coinc_pairs; s_wdiag[0].coinc_pulls += D->coinc_pulls;
+        for (int k = 0; k < 3; k++) s_wdiag[0].special_faces[k] += D->special_faces[k];
+        s_wdiag[0].bit4_faces += D->bit4_faces;
     }
 }
 
@@ -5857,14 +5857,15 @@ static void compare_walk_vs_prims(void) {
         "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d nearstraddle=%d} "
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
         "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f "
-        "| special_faces=%ld/%ld/%ld bit4_faces=%ld coincident=%d/%d\n",
+        "| special_faces=%d/%d/%d bit4_faces=%d coincident=%d/%d\n",
         openpete_frame,
         s_wdiag[0].fresh_g, s_wdiag[0].fresh_t, s_wdiag[0].strip, s_wdiag[0].sprite,
         s_wdiag[0].skip, s_wdiag[0].quad, s_wdiag[0].oor, s_wdiag[0].nearstraddle,
         s_wdiag[0].align_lo, s_wdiag[0].align_hi, s_wdiag[0].desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
         prim_quad, prim_tri, s_wdiag[0].quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0,
-        s_special_faces[0], s_special_faces[1], s_special_faces[2], s_bit4_faces,
+        s_wdiag[0].special_faces[0], s_wdiag[0].special_faces[1], s_wdiag[0].special_faces[2],
+        s_wdiag[0].bit4_faces,
         s_wdiag[0].coinc_pairs, s_wdiag[0].coinc_pulls);
     fprintf(stderr, "[moby-walk-special vbl=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
             openpete_frame, spc_n, spc_n ? (double)spc_sum/(double)spc_n : 0.0, spc_max);

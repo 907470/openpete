@@ -442,6 +442,14 @@ uint32_t openpete_loop_anchor_ticks(void);
  * and the re-dispatches that skipped the entry observers. */
 void openpete_loop_site_census_log(void);
 
+/** @brief Stop the hang watchdog's stall monitor thread and join it; idempotent, a no-op when it never started.
+ *
+ * Runs before SDL_Quit on every teardown that reaches it: the host loop's
+ * exits call it ahead of PsyX_Shutdown, and the monitor registers it with
+ * atexit for exit() paths. The watchdog's own trips leave by _Exit and run
+ * neither. Never call it on the monitor thread. */
+void openpete_stall_monitor_stop(void);
+
 /** @brief Return the classified-loop instructions counted since the loop anchor's last entry.
  * @return The static body counts summed over every back-edge poll since the anchor. */
 uint64_t openpete_loop_insns_since_anchor(void);
