@@ -553,14 +553,21 @@ and refuses an empty dump.
 
 `games/spyro-2/oracle-cutscene-intro.conf` captures the Spyro 2 intro
 cutscene into `tests/golden/spyro-2/psxtrace-cutscene-intro.bin`: the
-attract recipe's recorders, `games/spyro-2/oracle-cutscene-intro.pad`
-(Cross every 60 VBLs until the top-level state word 0x800681C8 reads 5,
-then until it leaves 6, then 120 VBLs), the watched word 0x80068C50
-(the speech ring's chunk index: -1 at the stream read issue, the chunk at
-the ring refill), `.spuq` `spuwrite` rows and the final-mix dump:
+attract recipe's recorders, the consume-keyed movie
+`games/spyro-2/bk2/s2-cutscene-intro.bk2` on both sides (three Cross
+presses that start a new game, the reference one VBL early), the watched
+word 0x80068C50 (the speech ring's chunk index: -1 at the stream read
+issue, the chunk at the ring refill), `.spuq` `spuwrite` rows and the
+final-mix dump, over 1247 records (14 past the start of the load that
+follows the cutscene). The stock run diverges at record 216, after the
+load into the cutscene takes 272 VBLANKs inside work; the clock row
+(`OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1`) matches every
+region over every record:
 
 ```sh
 scripts/capture_psx_oracle_ds.sh --game spyro-2 --recipe games/spyro-2/oracle-cutscene-intro.conf
+OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1 \
+  tests/harness/check_psx_oracle.sh --game spyro-2 --recipe games/spyro-2/oracle-cutscene-intro.conf
 ```
 
 Re-blessing a golden (deleting it so the gate recaptures it under a new

@@ -78,9 +78,8 @@ def read_map(path):
     return writes, presents
 
 
-def default_bin(game):
-    n = game.split("-")[1]
-    return os.path.join(ROOT, "build", "linux-release", "games", game, f"openpete-spyro{n}")
+def default_bin():
+    return os.path.join(ROOT, "build", "linux-release", "openpete")
 
 
 def cmd_map(a):
@@ -93,7 +92,7 @@ def cmd_map(a):
     tmp = tempfile.mkdtemp(prefix="bk2_rekey_")
     try:
         mlog = os.path.join(tmp, "map.txt")
-        cmd = [a.bin or default_bin(a.game), "--headless", "--no-config", "--disc", disc,
+        cmd = [a.bin or default_bin(), "--game", a.game, "--headless", "--no-config", "--disc", disc,
                "--renderer", "vk", "--aspect", "4:3", "--lod", "original", "--mute", "1",
                "--frame-limit", str(a.frame_limit)]
         if a.bk2:

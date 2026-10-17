@@ -1,0 +1,6 @@
+# games/spyro-2/bk2/start-new-game.bk2 re-keyed to the consume key
+# (tools/bk2_rekey.py map --game spyro-2 --bk2 games/spyro-2/bk2/start-new-game.bk2
+# --frame-limit 1300 -- --no-card; bk2): three Cross presses from boot start
+# a new game; past the movie's end no button is held and the intro cutscene
+# plays.
+--no-card
