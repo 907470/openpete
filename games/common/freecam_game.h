@@ -29,8 +29,16 @@ typedef struct freecam_game_desc {
      * convention is the drive's: yaw 0 looks along +X and rises turning
      * left, pitch 0 is level and rises looking down. */
     int yaw_offset, yaw_sign, pitch_sign;
-    /* Pitch clamp in angle units, applied to the logical pitch. */
+    /* Pitch clamp in angle units, applied to the logical pitch: the gimbal
+     * bound, short of straight up or down where yaw degenerates. */
     int pitch_limit;
+    /* 1: the game builds its view matrix (game_layout.cam.view_matrix) as
+     * Rz(roll)·Rx(pitch)·Ry(yaw) over the GTE vector (camY - Y, camZ - Z,
+     * X - camX), which is the roll-free view of (yaw, pitch) when roll is 0;
+     * the stamp then writes roll 0 beside yaw and pitch, and
+     * OPENPETE_FREECAM_MATRIX_CHECK compares the built matrix with that
+     * view. 0: roll is left to the game. */
+    int builder_rz_rx_ry;
     /* 1: cam_follow / player_update are short-circuited only while
      * level_live; 0: whenever engaged. */
     int freeze_only_when_live;

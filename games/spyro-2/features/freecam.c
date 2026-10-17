@@ -35,7 +35,10 @@ static const int s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  5
 const freecam_game_desc spyro2_freecam_desc = {
     .angle_bits = 12,
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
-    .pitch_limit = 0x01C0,
+    /* The rotation builder (func_8001C2F8, from func_800156FC with a0 =
+     * +0x44) is Spyro 3's func_8004F6C4 instruction for instruction. */
+    .pitch_limit = 0x03E0,
+    .builder_rz_rx_ry = 1,
     .freeze_only_when_live = 1,
     /* func_8001D87C: the camera update (func_8001D8A4, whose angle store is
      * func_8001E270, then func_80021DC0), called from the update routines.

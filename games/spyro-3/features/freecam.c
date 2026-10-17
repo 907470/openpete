@@ -45,10 +45,14 @@ static const int s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  5
 const freecam_game_desc spyro3_freecam_desc = {
     .angle_bits = 12,
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
-    /* The rotation builder composes rotX(pitch)·rotY(yaw)·rotZ(roll); at
-     * 53° of pitch (0x260) the frame visibly rolls, at 31° (0x160) it does
-     * not. */
-    .pitch_limit = 0x01C0,
+    /* The rotation builder (func_8004F6C4) fills rotX(+0x46), rotY(+0x48)
+     * and rotZ(+0x44) in scratch and multiplies them (func_8005F35C, out =
+     * a0·a1) as Rz·(Rx·Ry): yaw turns about the vertical GTE axis first and
+     * pitch about the turned horizontal axis, so with roll 0 the view is
+     * roll-free at every pitch and the clamp is the Spyro 1 gimbal bound
+     * (~87°). */
+    .pitch_limit = 0x03E0,
+    .builder_rz_rx_ry = 1,
     /* The follow entry is also reached from the loading-state updates and
      * clears state before its follow work, so it and the player update are
      * frozen only while gameplay is live (loadStage -1, game.state 0). */

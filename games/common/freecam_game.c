@@ -114,10 +114,74 @@ static void pose_seed_if_needed(CPUState* cpu) {
         pose_seed(cpu);
 }
 
+/* The rotation triple the last stamp wrote, for the matrix check: the game's
+ * builder runs after the stamp, so the next drive reads its product. */
+static struct {
+    int     valid;
+    int32_t yaw, pitch, roll;
+} s_stamped;
+
+/** @brief Read OPENPETE_FREECAM_MATRIX_CHECK: unset is off, "roll=N" also stamps roll N.
+ *
+ * The roll form is the check's negative control: a stamped roll the check
+ * must report as a matrix error and a nonzero roll angle.
+ * @param roll Receives the roll to stamp, 0 unless the roll form is given.
+ * @return Non-zero while the check is armed. */
+static int matrix_check_armed(int32_t* roll) {
+    static int s_armed = -1;
+    static int32_t s_roll;
+    if (s_armed < 0) {
+        const char* e = getenv("OPENPETE_FREECAM_MATRIX_CHECK");
+        s_armed = (e && *e) ? 1 : 0;
+        s_roll  = (e && strncmp(e, "roll=", 5) == 0) ? atoi(e + 5) : 0;
+    }
+    *roll = s_roll;
+    return s_armed;
+}
+
+/** @brief Log the view matrix the game built from the last stamp against the roll-free matrix of its yaw and pitch.
+ *
+ * Runs only under a builder_rz_rx_ry descriptor with the check armed. The
+ * builder composes M = Rz(roll)·Rx(pitch)·Ry(yaw) over the GTE vector
+ * g = (camY - Y, camZ - Z, X - camX); the roll-free view has rows right =
+ * (sin yaw, -cos yaw, 0), down = forward × right and forward = (cos pitch
+ * cos yaw, cos pitch sin yaw, -sin pitch) in world axes, carried into g
+ * axes and scaled by 4096. Logs the largest element difference in Q12 units
+ * and the roll angle, the elevation of the game matrix's right row.
+ * @param cpu The guest CPU state. */
+static void matrix_check(CPUState* cpu) {
+    int32_t inject;
+    if (!D->builder_rz_rx_ry || !matrix_check_armed(&inject) || !s_stamped.valid) return;
+    int M[3][3];
+    for (uint32_t i = 0; i < 9u; i++)
+        M[i / 3u][i % 3u] = (int16_t)cpu->read_half(game_layout.cam.view_matrix + 2u * i);
+    const double ry = (double)((s_stamped.yaw - D->yaw_offset) * D->yaw_sign) * (2.0 * M_PI / ANGLE_FULL);
+    const double rp = (double)(s_stamped.pitch * D->pitch_sign) * (2.0 * M_PI / ANGLE_FULL);
+    const double fw[3] = { cos(rp) * cos(ry), cos(rp) * sin(ry), -sin(rp) };
+    const double rt[3] = { sin(ry), -cos(ry), 0.0 };
+    const double dn[3] = { fw[1] * rt[2] - fw[2] * rt[1], fw[2] * rt[0] - fw[0] * rt[2],
+                           fw[0] * rt[1] - fw[1] * rt[0] };
+    const double* W[3] = { rt, dn, fw };
+    double err = 0.0;
+    for (int i = 0; i < 3; i++) {
+        const double g[3] = { -W[i][1], -W[i][2], W[i][0] };   /* world row in g axes */
+        for (int j = 0; j < 3; j++) err = fmax(err, fabs(g[j] * 4096.0 - (double)M[i][j]));
+    }
+    const double rn = sqrt((double)(M[0][0] * M[0][0] + M[0][1] * M[0][1] + M[0][2] * M[0][2]));
+    const double roll_deg = rn > 0.0 ? asin(-(double)M[0][1] / rn) * 180.0 / M_PI : 0.0;
+    OPL_INFO_F("freecam", "matrix-check yaw=%d pitch=%d roll=%d maxerr=%.2f roll_deg=%.3f "
+               "M=[%d %d %d|%d %d %d|%d %d %d]", (int)s_stamped.yaw, (int)s_stamped.pitch,
+               (int)s_stamped.roll, err, roll_deg, M[0][0], M[0][1], M[0][2],
+               M[1][0], M[1][1], M[1][2], M[2][0], M[2][1], M[2][2]);
+}
+
 /** @brief Write the host pose into the game's camera bytes.
  *
  * Wraps yaw and pitch to the game's angle width first, then stores position
- * as words and the two angles as halfwords under game_layout.cam.
+ * as words and the two angles as halfwords under game_layout.cam. Under a
+ * builder_rz_rx_ry descriptor it also stores roll 0 (or the matrix check's
+ * injected roll), so the stored triple composes the roll-free view whatever
+ * roll the game left there.
  * @param cpu The guest CPU state. */
 static void pose_stamp(CPUState* cpu) {
     s_pose.yaw   = angle_wrap(s_pose.yaw);
@@ -127,6 +191,13 @@ static void pose_stamp(CPUState* cpu) {
     cpu->write_word(game_layout.cam.position + 8u, (uint32_t)s_pose.z);
     cpu->write_half(game_layout.cam.rotation + 4u, angle_stored(s_pose.yaw));
     cpu->write_half(game_layout.cam.rotation + 2u, angle_stored(s_pose.pitch));
+    int32_t roll = 0;
+    if (D->builder_rz_rx_ry) {
+        (void)matrix_check_armed(&roll);
+        cpu->write_half(game_layout.cam.rotation + 0u, angle_stored(roll));
+    }
+    s_stamped.valid = 1;
+    s_stamped.yaw = s_pose.yaw; s_stamped.pitch = s_pose.pitch; s_stamped.roll = roll;
 }
 
 /** @brief Report whether a level is running.
@@ -399,6 +470,7 @@ static void freecam_drive(CPUState* cpu) {
     const int committed = !openpete_speculative && !openpete_replaying;
 
     pose_seed_if_needed(cpu);
+    matrix_check(cpu);
 
     /* Stamp a queued scripted pose here, at the follow logic's own tick
      * point, before the axes are read: the same tick's matrix setup then
