@@ -103,6 +103,11 @@ pause-menu-midlevel@shrink-freeze|2013|200|freeze|2027,2028,2029
 # 2190-2197 from the other draw buffer, then draws the live world. Blessed
 # pre-fix.
 pause-unpause|2173|200||2189,2191,2193,2195,2197,2199
+# colour-cheat-red: the pause-menu colour cheat (Up Right Down Left Up Square
+# R1 R2 L1 L2 Up Left Down Right Up, then Circle) sets D_800698CC to 1, and
+# from VBL 2328 on the tick writer stores 0xA0000090 at g_Spyro+0x20: the player
+# draw cues the model colour table toward far colour (0x90, 0, 0) at IR0 0xA00.
+colour-cheat-red|2400|100||2400,2401,2500,2600
 #
 # start-new-game: same-moby self-interpenetration. Two faces of one
 # moby that cross in 3D show their crossing contour under true depth, where
