@@ -33,6 +33,9 @@
 # recipe that also sets CARD1_END (the slot 1 card the capture exported
 # after its last record) fails the run unless the card openpete left is
 # byte-identical to it; OPENPETE_ORACLE_CARD_OUT=PATH keeps openpete's card.
+# A recipe whose reference imports CARD1_IMPORT, the card another recipe's
+# capture left (CARD1_SOURCE_RECIPE, e.g. games/spyro-3/oracle-card-save.conf),
+# has that recipe captured first when the card is missing.
 #
 # Anything after `--` is forwarded verbatim to the openpete binary, so the
 # same golden can be used to prove a feature with a game-side producer is
@@ -146,7 +149,7 @@ CONF="${RECIPE:-games/$GAME/oracle.conf}"
 [[ -f "$CONF" ]] || { echo "[psx-oracle] no recipe: $CONF" >&2; exit 64; }
 CAPTURE_RECIPE=()
 [[ -n "$RECIPE" ]] && CAPTURE_RECIPE=(--recipe "$RECIPE")
-GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""; CARD1_END=""; CONSTANT_REGIONS_REASON=""
+GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""; CARD1_END=""; CARD1_IMPORT=""; CARD1_SOURCE_RECIPE=""; CONSTANT_REGIONS_REASON=""
 # shellcheck disable=SC1090
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
@@ -174,6 +177,15 @@ if [[ ! -f "$TRACE" ]]; then
         echo "[psx-oracle] golden $TRACE missing and DuckStation is not built" >&2
         echo "[psx-oracle] run scripts/setup_duckstation.sh, then rerun (the golden is captured on the first run)" >&2
         exit 64
+    fi
+    # A reference that boots on a card another recipe's capture left
+    # (CARD1_IMPORT, written by CARD1_SOURCE_RECIPE) captures that recipe first.
+    if [[ -n "$CARD1_IMPORT" && ! -f "$CARD1_IMPORT" && -n "$CARD1_SOURCE_RECIPE" ]]; then
+        echo "[psx-oracle] card $CARD1_IMPORT missing: capturing $CARD1_SOURCE_RECIPE first"
+        scripts/capture_psx_oracle_ds.sh --game "$GAME" --recipe "$CARD1_SOURCE_RECIPE" || {
+            echo "[psx-oracle] capture of $CARD1_SOURCE_RECIPE failed" >&2
+            exit 64
+        }
     fi
     echo "[psx-oracle] golden $TRACE missing: capturing it (scripts/capture_psx_oracle_ds.sh --game $GAME ${CAPTURE_RECIPE[*]})"
     scripts/capture_psx_oracle_ds.sh --game "$GAME" "${CAPTURE_RECIPE[@]}" || {

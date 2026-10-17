@@ -62,15 +62,41 @@
 #         Instrument and pass as save-ref, plus the clock row's own
 #         engagement (an in-work VBLANK delivered, exit 3 otherwise). Run by
 #         name only; ctest card_save_reference_clock.
+#   load-ref  Boot with the save present and load it: openpete against the
+#         fork's capture along games/<game>/bk2/s2-load-save.bk2 or
+#         s3-load-save.bk2 (games/<game>/oracle-card-load.conf), both sides
+#         booting the card the save-ref capture left (the reference's
+#         exported start image). The capture is generated on the first run.
+#         Instrument: the oracle's per-tick compare, the card image each
+#         side left, openpete's card window (B calls, C reads, R: the span
+#         and hash of each finished asynchronous read) and the reference's
+#         card commands (<golden>.cardwin).
+#         Pass: the verifier's PASS with 0 hard failures; the card images
+#         byte-identical; every open of the save returns fd 2; each read
+#         step runs one lseek returning its offset and one read returning
+#         0; each read's sectors are the file span's, in order, n / 128 of
+#         them; the bytes each read delivers hash equal to the card image's
+#         span; the reference reads the same sectors in the same calls, at
+#         the same per-sector VBL deltas and at the reference VBLANKs
+#         openpete's commands are keyed on. Engagement: no read of the save
+#         is VACUOUS. Run by name only; ctest card_load_reference (Spyro 2)
+#         and card_load_reference_s3.
+#   load-ref-clock  Spyro 2's load-ref into the level, 1300 records under
+#         the clock row (OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1)
+#         on its own capture (games/spyro-2/oracle-card-load-clock.conf): the
+#         level takes VBLANKs inside the game tick that only the clock row
+#         delivers where the reference took them. Instrument and pass as
+#         load-ref. Run by name only; ctest card_load_reference_clock.
 #
 # Verdict lines:
 #   [card-boot] row=boot game=spyro-3 exit=<rc> opens=<n> lseeks=<n> watchdog_vbl=<v|-> verdict=...
 #   [card-boot] row=save game=spyro-2 exit=<rc> bu_calls=<n> creat=<fd|-1|-> ... verdict=...
 #   [card-boot] row=save-ref game=<game> records=<n> verifier=<PASS|FAIL> hard_failed=<n> ... card_bytes_differ=<n> written=<op>/<ref> verdict=...
 #   [card-boot] row=save-ref-clock game=spyro-2 records=<n> ... verdict=...
+#   [card-boot] row=load-ref|load-ref-clock game=<game> records=<n> ... fd=<fds> reads=<bytes@offset:sectors/cadence,...> ref_sectors=<n> ... verdict=...
 #
-# Usage: tests/harness/check_card_boot.sh [--build-dir=DIR] [--row=boot|save|save-ref|save-ref-clock]
-#        [--game=spyro-2|spyro-3] (the save-ref row's game; default spyro-2)
+# Usage: tests/harness/check_card_boot.sh [--build-dir=DIR] [--row=boot|save|save-ref|save-ref-clock|load-ref|load-ref-clock]
+#        [--game=spyro-2|spyro-3] (the save-ref and load-ref rows' game; default spyro-2)
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, movie or fixture missing).
 set -u
 cd "$(dirname "$0")/../.."
@@ -262,6 +288,135 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+# row_load_ref ROW GAME RECIPE CLOCK: the load movie against the fork's capture along it. Prints the verdict line; returns 0, 1 or 64.
+row_load_ref() {
+    local ROW="$1" GAME="$2" RECIPE="$3" CLOCK="$4" SAVE_NAME
+    case "$GAME" in
+        spyro-2) SAVE_NAME=BASCUS-94425SP2RR ;;
+        spyro-3) SAVE_NAME=BASCUS-94467SPY3_1 ;;
+        *) echo "[card-boot] row=$ROW game=$GAME: no load reference for this game" >&2; return 1 ;;
+    esac
+    pg_resolve "$GAME"
+    [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
+        { echo "[card-boot] row=$ROW SKIP (binary or disc missing)"; return 64; }
+    local GOLDEN CARD1_FIXTURE CARD1_END
+    GOLDEN="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$GOLDEN"' _ "$RECIPE")"
+    CARD1_FIXTURE="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$CARD1_FIXTURE"' _ "$RECIPE")"
+    CARD1_END="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$CARD1_END"' _ "$RECIPE")"
+    local OUT="${PG_BUILD_DIR:-build/linux-release}/card-boot/$GAME"
+    mkdir -p "$OUT"
+    local LOG="$OUT/$ROW.log" CW="$OUT/$ROW-card-window.txt" CARD="$OUT/$ROW-card1.mcr"
+    rm -f "${OUT:?}/$ROW.log" "${OUT:?}/$ROW-card-window.txt" "${OUT:?}/$ROW-card1.mcr" "${OUT:?}/$ROW.out"
+    local clock_env=()
+    [[ "$CLOCK" == 1 ]] && clock_env=(OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1)
+    env OPENPETE_BIN="$PG_BIN" OPENPETE_CARD_WINDOW="$CW" OPENPETE_ORACLE_CARD_OUT="$CARD" \
+        OPENPETE_ORACLE_LOG="$LOG" PSXTRACE_KEEP_GOING=1 "${clock_env[@]}" \
+        tests/harness/check_psx_oracle.sh --game "$GAME" --recipe "$RECIPE" > "$OUT/$ROW.out" 2>&1
+    local rc=$?
+    (( rc == 64 )) && { echo "[card-boot] row=$ROW SKIP (no capture and DuckStation not built; see $OUT/$ROW.out)"; return 64; }
+    [[ -f "$LOG" && -f "$CW" && -f "$CARD" && -f "$CARD1_FIXTURE" && -f "$CARD1_END" && -f "$GOLDEN.cardwin" ]] ||
+        { echo "[card-boot] row=$ROW game=$GAME verdict=FAIL: missing log, card window or card (oracle exit $rc; $OUT/$ROW.out)"; return 1; }
+    python3 - "$LOG" "$CW" "$CARD" "$CARD1_FIXTURE" "$CARD1_END" "$GOLDEN.cardwin" "$rc" "$GAME" "$SAVE_NAME" "$ROW" <<'PY'
+import re, sys
+log, cw, card, fixture, ref_card, ref_cw, rc, game, save_name, row = sys.argv[1:11]
+text = open(log, errors='replace').read()
+m = re.findall(r'psxtrace: summary: records=(\d+) frames_compared=\d+ hash_mismatches=(\d+)', text)
+records, mism = (int(m[-1][0]), int(m[-1][1])) if m else (0, -1)
+v = re.findall(r'psxtrace: verdict: (PASS|FAIL) \(hard_failed=(\d+)', text)
+verdict, hard = (v[-1][0], int(v[-1][1])) if v else ('none', -1)
+img, a, b = open(fixture, 'rb').read(), open(card, 'rb').read(), open(ref_card, 'rb').read()
+card_diff = sum(x != y for x, y in zip(a, b)) + abs(len(a) - len(b))
+# The save's block chain from the directory: frame i names block i - 1,
+# whose data is sectors 64 * i ..; the frame's u16 at 8 links the next block.
+chain, i = [], None
+for f in range(1, 16):
+    if img[f * 128 + 10:f * 128 + 30].split(b'\0')[0] == save_name.encode():
+        i = f - 1
+        break
+while i is not None and i < 15 and len(chain) < 15:
+    chain.append(i)
+    nxt = int.from_bytes(img[(i + 1) * 128 + 8:(i + 1) * 128 + 10], 'little')
+    i = None if nxt == 0xFFFF else nxt
+def sector(off):
+    return 64 * (chain[off // 8192] + 1) + (off % 8192) // 128
+def fnv(data):
+    h = 0xCBF29CE484222325
+    for c in data:
+        h = ((h ^ c) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+rows = [l.split() for l in open(cw) if l[:1] in 'BCR']
+save_secs = {64 * (k + 1) + s for k in chain for s in range(64)}
+# Per file: open, then (lseek, read) per read step, then close.
+opens, fds, calls, bad = 0, set(), [], []
+fd, off, cur = None, 0, None
+for r in rows:
+    if r[0] == 'B' and r[3] == '32':
+        opens += 1
+        fd = int(r[7], 16)
+        fds.add(fd)
+        cur = None
+    elif r[0] == 'B' and r[3] == '33' and fd is not None and int(r[4], 16) == fd:
+        if cur is not None and cur.get('lseeks', 0) and 'read' not in cur:
+            bad.append('lseek twice before a read at VBL ' + r[1])
+        if int(r[7], 16) != int(r[5], 16) or int(r[6], 16) != 0:
+            bad.append('lseek at VBL %s returned 0x%s for 0x%s' % (r[1], r[7], r[5]))
+        off = int(r[7], 16)
+        cur = {'lseeks': 1, 'off': off}
+    elif r[0] == 'B' and r[3] == '34' and fd is not None and int(r[4], 16) == fd:
+        if cur is None or 'read' in cur:
+            bad.append('read without its own lseek at VBL ' + r[1])
+            cur = {'off': off}
+        n = int(r[6], 16)
+        if int(r[7], 16) != 0:
+            bad.append('read at VBL %s returned 0x%s' % (r[1], r[7]))
+        cur.update(read=n, buf=int(r[5], 16), cmds=[], vbl=int(r[1]))
+        calls.append(cur)
+    elif r[0] == 'C' and r[4] == '2' and int(r[5]) in save_secs and calls and 'done' not in calls[-1]:
+        calls[-1]['cmds'].append((int(r[1]), int(r[5]), int(r[6])))
+    elif r[0] == 'R' and calls and 'done' not in calls[-1]:
+        calls[-1]['done'] = (int(r[4], 16), int(r[5]), int(r[6], 16))
+# The reference's reads of the save's sectors, split by openpete's call lengths.
+ref = [(int(r.split()[1]), int(r.split()[5])) for r in open(ref_cw)
+       if r[:2] == 'C ' and r.split()[4] == '52' and int(r.split()[5]) in save_secs]
+pos, summ = 0, []
+for c in calls:
+    want = [sector(c['off'] + 128 * k) for k in range(c['read'] // 128)]
+    got = [s for _, s, _ in c['cmds']]
+    span = b''.join(img[s * 128:(s + 1) * 128] for s in want)
+    if got != want:
+        bad.append('read at VBL %d: sectors %s, file span %s' % (c['vbl'], got[:4], want[:4]))
+    if 'done' not in c:
+        bad.append('read at VBL %d never finished' % c['vbl'])
+    elif c['done'][1] != c['read'] or c['done'][2] != fnv(span):
+        bad.append('read at VBL %d delivered %d bytes hash %016x, card span hash %016x'
+                   % (c['vbl'], c['done'][1], c['done'][2], fnv(span)))
+    r_rows = ref[pos:pos + len(got)]
+    pos += len(got)
+    op_d = [y[0] - x[0] for x, y in zip(c['cmds'], c['cmds'][1:])]
+    ref_d = [y[0] - x[0] for x, y in zip(r_rows, r_rows[1:])]
+    if [s for _, s in r_rows] != got:
+        bad.append('read at VBL %d: reference sectors differ' % c['vbl'])
+    if op_d != ref_d or [k for _, _, k in c['cmds']] != [v for v, _ in r_rows]:
+        bad.append('read at VBL %d: cadence %s, reference %s' % (c['vbl'], sorted(set(op_d)), sorted(set(ref_d))))
+    cad = '/'.join(map(str, sorted(set(op_d)))) or '-'
+    summ.append('0x%x@0x%x:%ds/%s' % (c['read'], c['off'], len(got), cad))
+if pos != len(ref):
+    bad.append('the reference read %d save sectors, openpete %d' % (len(ref), pos))
+head = ('[card-boot] row=%s game=%s records=%d verifier=%s hard_failed=%d hash_mismatches=%d '
+        'card_bytes_differ=%d opens=%d fd=%s reads=%s ref_sectors=%d oracle_exit=%s'
+        % (row, game, records, verdict, hard, mism, card_diff, opens, ','.join(map(str, sorted(fds))) or '-',
+           ','.join(summ) or '-', len(ref), rc))
+if not calls:
+    print(head + ' verdict=VACUOUS: no asynchronous read of the save'); sys.exit(1)
+ok = (records > 0 and verdict == 'PASS' and hard == 0 and card_diff == 0 and rc == '0'
+      and fds == {2} and not bad)
+print(head + (' verdict=PASS' if ok else ' verdict=FAIL'))
+for x in bad[:8]:
+    print('[card-boot]   ' + x)
+sys.exit(0 if ok else 1)
+PY
+}
+
 # Exit 1 on any failing row, 64 when every row skipped, else 0.
 failed=0; ran=0
 for row in "${ROWS[@]}"; do
@@ -270,6 +425,8 @@ for row in "${ROWS[@]}"; do
         save) row_save; r=$? ;;
         save-ref) row_save_ref save-ref "$SAVE_REF_GAME" "games/$SAVE_REF_GAME/oracle-card-save.conf" 0; r=$? ;;
         save-ref-clock) row_save_ref save-ref-clock spyro-2 games/spyro-2/oracle-card-save-clock.conf 1; r=$? ;;
+        load-ref) row_load_ref load-ref "$SAVE_REF_GAME" "games/$SAVE_REF_GAME/oracle-card-load.conf" 0; r=$? ;;
+        load-ref-clock) row_load_ref load-ref-clock spyro-2 games/spyro-2/oracle-card-load-clock.conf 1; r=$? ;;
         *) echo "card-boot: unknown row $row" >&2; exit 64 ;;
     esac
     (( r == 1 )) && failed=1

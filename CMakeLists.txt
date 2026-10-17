@@ -1659,6 +1659,54 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The save loaded from the title against the fork's capture of the same
+    # movie (games/<game>/oracle-card-load.conf, games/<game>/bk2/s2-load-save.bk2
+    # or s3-load-save.bk2), both sides booting the card the save capture
+    # left: every record, the card image each side left, and each
+    # asynchronous read of the save (fd, one lseek per read, the file span's
+    # sectors and bytes, the reference's sectors and cadence).
+    add_test(NAME card_load_reference
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=load-ref --game=spyro-2)
+    add_test(NAME card_load_reference_s3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=load-ref --game=spyro-3)
+    # Spyro 2's load into the level, 1300 records under the clock row
+    # (games/spyro-2/oracle-card-load-clock.conf): the level takes VBLANKs
+    # inside the game tick that only the clock row delivers where the
+    # reference took them; the stock row's 330 records end before it.
+    add_test(NAME card_load_reference_clock
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=load-ref-clock)
+    set_tests_properties(card_load_reference card_load_reference_s3 card_load_reference_clock PROPERTIES
+        LABELS "slow;card;oracle"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # The card-present oracle goldens over the 20k attract demo: slot 1 holds
+    # the blank formatted card (games/<game>/oracle-card.conf) or the card
+    # holding the game's save (games/<game>/oracle-card-with-save.conf, whose
+    # first capture also captures the save reference that leaves the card);
+    # slot 2 is empty.
+    foreach(_g spyro-2 spyro-3)
+        openpete_game_bin(${_g} _gbin _gargs)
+        add_test(NAME psx_oracle_card_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh
+                         --game ${_g} --recipe games/${_g}/oracle-card.conf)
+        add_test(NAME psx_oracle_card_with_save_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh
+                         --game ${_g} --recipe games/${_g}/oracle-card-with-save.conf)
+        set_tests_properties(psx_oracle_card_${_g} psx_oracle_card_with_save_${_g} PROPERTIES
+            LABELS "slow;card;oracle"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 3600
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            ENVIRONMENT "OPENPETE_BIN=${_gbin}")
+    endforeach()
+
     # Sub-tick present gameplay-state gate. The psx oracle replays canonical
     # ticks only, so an intermediate present that writes gameplay-readable RAM
     # and mis-restores it is invisible to it. Per movie, two headless legs of

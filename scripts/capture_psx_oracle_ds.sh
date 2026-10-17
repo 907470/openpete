@@ -107,7 +107,9 @@
 #                                  none
 #           --card-import PATH     slot 1 holds the 131072-byte image at PATH
 #                                  (regtest -card1 PATH; the file is never
-#                                  written), in place of the formatted card
+#                                  written), in place of the formatted card;
+#                                  with --card-export the exported image must
+#                                  equal it, or the capture is refused
 #           --card-export-end PATH write the slot 1 card at shutdown, after the
 #                                  last record (regtest -card-export
 #                                  1:end:PATH): the card the run left;
@@ -412,6 +414,12 @@ fi
 if [[ -n "$CARD_EXPORT" ]]; then
     if [[ "$(stat -c %s "$CARD_EXPORT" 2>/dev/null || echo 0)" != 131072 ]]; then
         echo "[capture-ds] FAIL: card export $CARD_EXPORT is missing or not 131072 bytes" >&2
+        exit 1
+    fi
+    # An imported card is exported as the fork loaded it: the fixture
+    # openpete boots on must be the image the reference booted on.
+    if [[ -n "$CARD_IMPORT" ]] && ! cmp -s "$CARD_IMPORT" "$CARD_EXPORT"; then
+        echo "[capture-ds] FAIL: card export $CARD_EXPORT differs from the imported $CARD_IMPORT" >&2
         exit 1
     fi
     echo "[capture-ds] card fixture: $CARD_EXPORT"

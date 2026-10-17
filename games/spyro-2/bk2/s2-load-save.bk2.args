@@ -1,0 +1,7 @@
+# Synthetic movie (Cross held 6 of every 90 VBLs from VBL 300 to 1205, keyed
+# on the consume key): from the title with the card holding
+# BASCUS-94425SP2RR in slot 1, the game reads the save's first sector at
+# boot, loads the save (one asynchronous read of 0x1400 bytes) and enters
+# the level. The slot 1 card is given by the caller (--card1), the card
+# games/spyro-2/oracle-card-save.conf's capture leaves.
+--no-card2

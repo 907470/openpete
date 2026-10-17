@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "openpete_fiber.h"
+#include "openpete_fnv1a64.h"
 #include "openpete_guest_regs.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
@@ -97,6 +98,8 @@ static void bios_census(CPUState* cpu, uint32_t table, uint32_t fn) {
  * one row of <path>, stamped with openpete_vbl and openpete_frame:
  *   A vbl frame fn a0 v0              A0 card call (70h, ABh, ACh) and its result
  *   B vbl frame fn a0 a1 a2 v0        B0 file call (32h-36h) and its result
+ *   R vbl frame port buf bytes hash   an asynchronous read finished: its span
+ *                                     and the FNV-1a 64 hash of the bytes it holds
  *   C vbl frame port op sector key    a transfer started by the vblank step
  *                                     keyed on reference VBLANK `key`
  *   F vbl frame port flags            a transfer finished, with the port's status
@@ -1368,6 +1371,21 @@ static void bu_toc_step(CPUState* cpu, uint32_t port, uint32_t dev) {
     }
 }
 
+/* The span of each port's asynchronous read, kept for the card window's R
+ * row only: host state outside the guest, so a savestate taken mid-read
+ * leaves the row's span from the run that started the read. */
+static uint32_t s_cw_read_buf[2], s_cw_read_bytes[2];
+
+/** @brief Write the card window's R row for a finished asynchronous read: its buffer, length and the FNV-1a 64 hash of the bytes the buffer holds.
+ *
+ * @param port The port whose read finished. */
+static void cw_read_done(uint32_t port) {
+    if (!s_cw_state || port > 1u) return;
+    const void* p = guest_ptr(s_cw_read_buf[port], s_cw_read_bytes[port]);
+    cw_row("R %u %08x %u %016llx", port, s_cw_read_buf[port], s_cw_read_bytes[port],
+           (unsigned long long)(p ? openpete_fnv1a64(p, s_cw_read_bytes[port]) : 0u));
+}
+
 /** @brief Advance an asynchronous read after a sector arrived (ROM 0xBFC0B6BC).
  *
  * The last sector finishes the bu operation with EvSpIOE and then signals
@@ -1382,6 +1400,7 @@ static void bu_read_step(CPUState* cpu, uint32_t port, uint32_t dev) {
     kw_set(K_BU_REMAIN + 4u * port, remain);
     const uint32_t f = kw(K_BU_FILE + 4u * port);
     if (remain == 0u) {
+        cw_read_done(port);
         bu_finish(cpu, port, EV_SPEC_IOE);
         deliver_event(cpu, kw(f + 0x28u), EV_SPEC_IOE);
         return;
@@ -2146,6 +2165,10 @@ static int32_t bu_read_async(CPUState* cpu, uint32_t f, uint32_t buf, uint32_t n
     kw_set(K_BU_REMAIN + 4u * port, (uint32_t)count);
     kw_set(K_BU_BUFFER + 4u * port, buf);
     kw_set(K_BU_FILE + 4u * port, f);
+    if (port <= 1u) {
+        s_cw_read_buf[port] = buf;
+        s_cw_read_bytes[port] = (uint32_t)count * 128u;
+    }
     bu_ll_reset();
     if (count == 0) {
         kw_set(f + FCB_ERRNO, 0u);
