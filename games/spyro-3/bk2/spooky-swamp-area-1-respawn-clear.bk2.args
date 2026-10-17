@@ -1,0 +1,6 @@
+# Cross 6 VBLs every 30 from VBL 900 (scripts/make_bk2.py --feed-key vbl
+# --frames 3010 --load-delay 66 --hold 900:906:Cross ... --hold 2970:2976:Cross).
+# game.state 3 from VBL 2846 (func_80053A10, entered through
+# func_80053944): the fade subtracts 16 more per tick up to 240, then the
+# game DrawOTags empty OTs into buffers its DRAWENV auto-clears to black.
+--skip-to-area spooky_swamp:1

@@ -593,7 +593,8 @@ typedef struct {
     int       state;
     uint64_t  presented_serial;    /* rhi frame serial of its present */
     int       hold_area;           /* display area whose held scene an empty compose of this
-                                    * scene shows, -1 for the VRAM framebuffer (hold_verdict) */
+                                    * scene shows, -1 for the VRAM framebuffer, HOLD_V_CLEAR
+                                    * for an area auto-cleared since (hold_verdict) */
 } scene_slot_t;
 static scene_slot_t s_ring[SCENE_RING];
 static int          s_ring_head = -1;          /* last published */
@@ -611,6 +612,11 @@ static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
 static int      hold_verdict(const int geom[8]);
 static void     hold_retain_canonical(void);
+static void     hold_note_clear(int x, int y, int w, int h, int r, int g, int b);
+/* The clear colour an empty compose of an auto-cleared area draws
+ * (hold_redirect_begin), 0 outside such a compose; read by ps_drawenv_clear
+ * and scene_content_test. */
+static uint32_t s_hold_clear_bg;
 static int      hold_redirect_begin(const scene_slot_t **prev);
 static void     hold_redirect_end(int k, const scene_slot_t *prev);
 static uint32_t     s_eager_stamp;             /* build stamp for the scene being extracted */
@@ -14414,9 +14420,10 @@ static unsigned s_retained_only_draws;   /* composes drawn for an armed retained
 /** @brief Test whether a present's scene carries content of its own, the test scene_compose_has_content counts.
  *
  * The game's own triangles, a selected retained-terrain state with a live
- * sector, an armed retained backdrop, or, in isolation, a background
- * colour. Reads the terrain state openpete_tercache_frame_select chose, so
- * the caller selects the scene's stamp first.
+ * sector, an armed retained backdrop, the fill of an auto-cleared area
+ * (s_hold_clear_bg), or, in isolation, a background colour. Reads the
+ * terrain state openpete_tercache_frame_select chose, so the caller
+ * selects the scene's stamp first.
  * @param scene Scene triangles.
  * @param n Triangle count.
  * @param freeze The present's freeze word.
@@ -14432,6 +14439,7 @@ static bool scene_content_test(const scene_tri_t* scene, int n, uint32_t freeze,
     int retained_ok = 0;
     if (ps_freeze_retained() && (freeze & (1u << 31))) (void)active_frozen_tex(&retained_ok);
     if (retained_ok) { *retained_only = 1; return true; }
+    if (s_hold_clear_bg) return true;   /* the auto-cleared area's fill (hold_redirect_begin) */
     return s_isolation && bg != 0;
 }
 
@@ -18844,6 +18852,7 @@ static void ps_apply_geometry(void) {
  * with the one the live present carries.
  * @return The clear colour word (0: no auto-clear). */
 static uint32_t ps_drawenv_clear(void) {
+    if (s_hold_clear_bg) return s_hold_clear_bg;   /* an empty compose of an auto-cleared area */
     if (s_ps_slot) return s_ps_slot->drawenv_clear;
     if (s_fbsnap_want_frame && !s_fbsnap_game_sel) {
         const int slot = scene_hist_slot_at(scene_delay_depth());
@@ -19911,13 +19920,16 @@ static bool freeze_src_retain(float cap_wf) {
  * dropped: a double-buffered game refreshes each area every other tick, so
  * an area this far behind has left the buffer rotation. */
 #define HOLD_STALE 4
-enum { HOLD_W_NONE = 0, HOLD_W_VRAM, HOLD_W_SCENE };
+enum { HOLD_W_NONE = 0, HOLD_W_VRAM, HOLD_W_SCENE, HOLD_W_CLEAR };
+/* hold_verdict for an area whose last write was an auto-clear with nothing drawn over it. */
+#define HOLD_V_CLEAR (-2)
 typedef struct {
     int      x, y, w, h;   /* DRAWENV clip rect, VRAM texels */
     int      live;
     int      writer;       /* HOLD_W_*: what wrote the buffer last */
     int      entry;        /* pool entry holding the area's scene, -1 none */
     unsigned stale;        /* scenes retained into other areas since this one's */
+    uint32_t clear;        /* HOLD_W_CLEAR: the fill colour, s_drawenv_clear layout */
 } hold_area_t;
 typedef struct {
     scene_slot_t sl;       /* the kept scene and its compose inputs */
@@ -19930,7 +19942,7 @@ static struct {
     hold_entry_t e[HOLD_POOL];
     void        *mx;       /* SDL_Mutex, openpete_mutex_once */
     unsigned     retained, nofree, vram_marks, inherits, stale_drops;
-    unsigned     c_vram, c_held, c_lost;   /* empty composes by branch */
+    unsigned     c_vram, c_held, c_lost, c_clear;   /* empty composes by branch */
     unsigned     c_vram_area;              /* of c_vram: an area whose writer was VRAM */
 } s_hold;
 
@@ -20029,26 +20041,61 @@ static int hold_area_shown(const int geom[8])
 /** @brief Decide what an empty compose of a scene captured under a geometry shows.
  *
  * The area the display shows, when it was last written by a captured
- * scene and still holds it; -1 (the VRAM framebuffer) when an image op
- * wrote it last, no scene was ever captured into it, or the store is off.
+ * scene and still holds it; HOLD_V_CLEAR when an auto-clearing draw of
+ * an empty OT wrote it last (hold_note_clear); -1 (the VRAM
+ * framebuffer) when an image op wrote it last, no scene was ever captured
+ * into it, or the store is off.
  * @param geom Display x, y, w, h then clip x, y, w, h at the scene's capture.
- * @return The area index, or -1. */
+ * @return The area index, HOLD_V_CLEAR, or -1. */
 static int hold_verdict(const int geom[8])
 {
     if (!hold_on()) return -1;
     SDL_LockMutex(hold_mx());
     int i = hold_area_shown(geom);
-    if (i >= 0 && (s_hold.a[i].writer != HOLD_W_SCENE || s_hold.a[i].entry < 0)) i = -1;
+    if (i >= 0 && s_hold.a[i].writer == HOLD_W_CLEAR) i = HOLD_V_CLEAR;
+    else if (i >= 0 && (s_hold.a[i].writer != HOLD_W_SCENE || s_hold.a[i].entry < 0)) i = -1;
     SDL_UnlockMutex(hold_mx());
     return i;
+}
+
+/** @brief Record that an auto-clearing draw of an empty OT left a draw area holding only the fill.
+ *
+ * The PSX fills the DRAWENV clip rect with (r0, g0, b0) when isbg is set
+ * and draws the OT over it; with an empty OT the area holds the fill alone,
+ * so it no longer holds the scene kept for it. The rect is the one
+ * hold_retain_canonical keeps a scene under. The area's writer becomes
+ * HOLD_W_CLEAR with the colour, until a scene is retained into it or an
+ * image op writes it. Display state only; writes no PSX RAM.
+ * @param x Clip left, VRAM texels.
+ * @param y Clip top.
+ * @param w Clip width.
+ * @param h Clip height.
+ * @param r Fill red.
+ * @param g Fill green.
+ * @param b Fill blue. */
+static void hold_note_clear(int x, int y, int w, int h, int r, int g, int b)
+{
+    if (!hold_on() || w <= 0 || h <= 0) return;
+    SDL_LockMutex(hold_mx());
+    hold_area_t *a = hold_area_claim(x, y, w, h);
+    const int was = a->writer;
+    hold_area_release(a);
+    a->writer = HOLD_W_CLEAR; a->stale = 0;
+    a->clear = 0xFF000000u | (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8)
+             | ((uint32_t)(b & 0xFF) << 16);
+    SDL_UnlockMutex(hold_mx());
+    if (hold_census() && was != HOLD_W_CLEAR)
+        fprintf(stderr, "[hold] clear f=%u area=%d,%d %dx%d rgb=%d,%d,%d\n",
+                s_scene_frame, x, y, w, h, r & 0xFF, g & 0xFF, b & 0xFF);
 }
 
 /** @brief Keep the game's canonical scene as the content of the draw area it was drawn into.
  *
  * Runs at the canonical capture, after the tick's 2D is in. A re-extracted
- * scene, or one with neither a game triangle nor retained terrain of its
- * own, keeps nothing. The copy goes into a pool entry no area names and no
- * compose reads; its scene id is the next ring id, the id the VRAM journal
+ * scene keeps nothing; one with neither a game triangle nor retained
+ * terrain of its own keeps nothing either, and when its OT's env
+ * auto-clears it marks the area cleared (hold_note_clear). The copy goes
+ * into a pool entry no area names and no compose reads; its scene id is the next ring id, the id the VRAM journal
  * tags this tick's image ops with, so a compose of the copy applies the
  * texels the scene was drawn against. Every other area holding a scene ages
  * by one; past HOLD_STALE it drops its scene. */
@@ -20057,7 +20104,17 @@ static void hold_retain_canonical(void)
     if (!hold_on() || !s_nr.enabled || s_scene_replay) return;
     const uint32_t stamp = scene_live_stamp();
     const int tc = openpete_tercache_build_content(stamp) > 0;
-    if (!tc && !scene_has_game_tris(s_scene, s_scene_n)) return;
+    if (!tc && !scene_has_game_tris(s_scene, s_scene_n)) {
+        /* An empty scene whose OT's env auto-clears (the presented DRAWENV,
+         * openpete_native_note_present_draw_area) leaves the area it is kept
+         * under holding the fill: the clear colour stands in for the scene. */
+        if (s_present_area_valid && s_present_area_isbg) {
+            const uint32_t c = s_drawenv_clear;
+            hold_note_clear(s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7],
+                            (int)(c & 0xFFu), (int)((c >> 8) & 0xFFu), (int)((c >> 16) & 0xFFu));
+        }
+        return;
+    }
     const int g[8] = { s_geom_in[0], s_geom_in[1], s_geom_in[2], s_geom_in[3],
                        s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7] };
     if (g[6] <= 0 || g[7] <= 0) return;
@@ -20163,9 +20220,9 @@ static void hold_report(void)
 {
     unsigned tk = 0, tm = 0, td = 0;
     openpete_tercache_hold_counts(&tk, &tm, &td);
-    fprintf(stderr, "hold-scene: empty composes vram=%u held=%u lost=%u (vram by an image op=%u); "
+    fprintf(stderr, "hold-scene: empty composes vram=%u held=%u lost=%u clear=%u (vram by an image op=%u); "
             "retained=%u nofree=%u vram_marks=%u inherits=%u stale_drops=%u tc_takes=%u tc_misses=%u tc_drops=%u%s\n",
-            s_hold.c_vram, s_hold.c_held, s_hold.c_lost, s_hold.c_vram_area,
+            s_hold.c_vram, s_hold.c_held, s_hold.c_lost, s_hold.c_clear, s_hold.c_vram_area,
             s_hold.retained, s_hold.nofree, s_hold.vram_marks, s_hold.inherits,
             s_hold.stale_drops, tk, tm, td, hold_on() ? "" : " (OPENPETE_HOLD=0)");
 }
@@ -20212,13 +20269,18 @@ static uint32_t held_fade_compose(uint32_t kept, uint32_t present)
  * material view and the geometry) until hold_redirect_end. The held scene
  * composes with its kept fade and the present's (held_fade_compose): the
  * buffer holds the kept picture under every quad drawn into it since, and
- * the present's fade carries their sum (held_capture). Counts the empty
- * composes by branch.
+ * the present's fade carries their sum (held_capture). An area an
+ * auto-clearing draw of an empty OT wrote last (HOLD_V_CLEAR) holds its
+ * fill colour alone: the present composes as it is, with that colour as
+ * its background (s_hold_clear_bg, through ps_drawenv_clear and
+ * scene_content_test) until hold_redirect_end. Counts the empty composes
+ * by branch.
  * @param prev Receives the compose source to restore.
  * @return The pool entry composed, or -1 when the present composes as it is. */
 static int hold_redirect_begin(const scene_slot_t **prev)
 {
     *prev = s_ps_slot;
+    s_hold_clear_bg = 0;
     const scene_view_t v = scene_present_view();
     if (scene_has_game_tris(v.tri, v.n)) return -1;
     openpete_tercache_frame_select(v.stamp);
@@ -20226,6 +20288,21 @@ static int hold_redirect_begin(const scene_slot_t **prev)
     int retained_only = 0;
     if (scene_content_test(v.tri, v.n, v.freeze, bg, &retained_only)) return -1;
     const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in);
+    if (area == HOLD_V_CLEAR) {
+        /* The buffer holds the fill alone: the present composes it, under
+         * its own fade. */
+        const uint32_t own = ps_drawenv_clear();
+        SDL_LockMutex(hold_mx());
+        const int shown = hold_area_shown(s_ps_slot ? s_ps_slot->geom : s_geom_in);
+        s_hold_clear_bg = shown >= 0 && s_hold.a[shown].writer == HOLD_W_CLEAR
+                        ? s_hold.a[shown].clear : (own ? own : 0xFF000000u);
+        s_hold.c_clear++;
+        SDL_UnlockMutex(hold_mx());
+        if (hold_census())
+            fprintf(stderr, "[hold] empty f=%u stamp=%u slot=%d area=clear -> fill %08x\n",
+                    s_scene_frame, v.stamp, s_ps_slot ? 1 : 0, s_hold_clear_bg);
+        return -1;
+    }
     const int k = hold_take_for_compose(area, v.stamp);
     if (k < 0) return -1;
     s_hold_view = s_hold.e[k].sl;
@@ -20246,6 +20323,7 @@ static int hold_redirect_begin(const scene_slot_t **prev)
  * @param prev The source it saved. */
 static void hold_redirect_end(int k, const scene_slot_t *prev)
 {
+    s_hold_clear_bg = 0;
     if (k < 0) return;
     s_ps_slot = prev;
     openpete_mods_material_view_set(prev ? &prev->matview : NULL);
