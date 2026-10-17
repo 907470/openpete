@@ -78,14 +78,13 @@ echo "[ident-audit] bin=$BIN aspect=$CAP_ASPECT lods=[$CAP_LODS] jobs=$CORPUS_JO
 
 lod_tag() { [[ "$1" == "extended" ]] && echo "__lodext" || echo ""; }
 
-run_one() {  # name start frame_limit lodmode freeze
-  local name="$1" start="$2" flim="$3" lod="$4" freeze="$5"
+run_one() {  # name start frame_limit lodmode
+  local name="$1" start="$2" flim="$3" lod="$4"
   local tsv="$OUTDIR/${name}$(lod_tag "$lod").tsv"
   local log; log="$(mktemp)"
   # Stale outputs produce false verdicts: drop this row's TSV before the run and
   # assert it exists after.
   rm -f "$tsv"
-  local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
   # Same command line as the presentation corpus's capture legs, minus the
   # screenshot targets: --screenshot-native-only keeps PsyCross out of the
   # compose (the audit's two composes are both the native-only widescreen path),
@@ -94,7 +93,7 @@ run_one() {  # name start frame_limit lodmode freeze
   # OPENPETE_IDENT_AUDIT_DUMP would put its PNGs; no dump is taken without it.
   OPENPETE_IDENT_AUDIT="$start" op_own_run timeout -k 10 900 "$BIN" \
     --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
-    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" \
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     --screenshot-output "$OUTDIR/${name}__{n}.png" \
     --frame-limit "$flim" --max-runtime-seconds 880 >"$log" 2>&1
@@ -126,7 +125,6 @@ while IFS='|' read -r name start interval freeze pins; do
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   [[ "$name" == *"$FILTER"* ]] || continue
   start="$(echo "$start" | tr -d ' \t')"
-  freeze="$(echo "$freeze" | tr -d ' \t')"
   bk2="games/spyro-1/bk2/${name}.bk2"
   if [[ ! -f "$bk2" ]]; then echo "  SKIP row: no bk2 $bk2"; continue; fi
   # Authoritative movie length = the input-frame lines in the bk2's Input Log,
@@ -146,10 +144,10 @@ PY
     echo "  SKIP row $name: bad/short bk2 length ($fc) vs start ($start)"; continue; fi
   flim=$((fc + 1))
   ran=$((ran+1))
-  echo "[$name] movie=$fc audit from f=$start to f=$flim  lods=[$CAP_LODS]${freeze:+  freeze}"
+  echo "[$name] movie=$fc audit from f=$start to f=$flim  lods=[$CAP_LODS]"
   for lod in $CAP_LODS; do
     echo "$OUTDIR/${name}$(lod_tag "$lod").tsv" >> "$RUNLIST"
-    cj_run run_one "$name" "$start" "$flim" "$lod" "$freeze"
+    cj_run run_one "$name" "$start" "$flim" "$lod"
   done
 done < "$MANIFEST"
 cj_wait || fail=1

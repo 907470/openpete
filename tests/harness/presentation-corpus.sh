@@ -169,11 +169,6 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
     (( card1 )) && [[ "$ra" == --no-card ]] && continue
     run_args+=("$ra")
   done
-  # A freeze-marked row (a bk2 that reaches a pause / flight-results / level-exit
-  # state) needs the green freeze backdrop maintained during capture, else the
-  # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
-  # elsewhere - it renders an extra frame per present.
-  local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
   # A row with no movie file is the plain boot: the title screen and the attract
   # demo, which need no input. Everything else about the row is the same.
   local bk2_arg=(); [[ -f "$PG_BK2_DIR/${bk2name}.bk2" ]] && bk2_arg=(--bk2 "$PG_BK2_DIR/${bk2name}.bk2")
@@ -193,7 +188,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
   local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout -k 10 "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
-    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${run_args[@]}"
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${run_args[@]}"
     "${bk2_arg[@]}" --screenshot-native-only
     "$flag" "$targets" --screenshot-output "$out"
     --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${row_args[@]}")
@@ -279,7 +274,7 @@ while IFS= read -r row; do
     imported=$((imported+1)); echo "[$name] imported from the previous attempt"; continue; fi
   start="$(echo "$start" | tr -d ' \t')"
   interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
-  freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field non-empty => --screenshot-freeze-backdrop
+  freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field: a label for freeze-reaching rows, no launch effect
   pins="$(echo "$pins" | tr -d ' \t')"       # 5th field: explicit frames, never subsampled
   # 6th field: per-row launch tokens (CLI args and KEY=VALUE env entries). Only
   # the surrounding whitespace is trimmed; the tokens keep their own spacing.

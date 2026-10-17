@@ -491,8 +491,8 @@ openpete --disc <game>.cue --mods-dir mods --mods my-mod \
   whose VBL<->tick mapping drifts) `--screenshot-native-only
   --screenshot-output shot_{n}.png` -> `shot_<n>-vk.png`. Present hooks and
   postfx run on these presents. `--screenshot-intermediate-on-frame N` =
-  alpha 0.5 sub-tick captures. `--screenshot-freeze-backdrop` for
-  pause/results screens. `--screenshot-presents-start N
+  alpha 0.5 sub-tick captures; a headless capture of a pause or results
+  screen draws the frozen world behind it. `--screenshot-presents-start N
   --screenshot-presents-count K` = K consecutive presents. Windowed `-vk.png`
   is a readback of the presented frame; headless recomposes the canonical
   scene.

@@ -27,6 +27,10 @@ sunrise-spring-surface-swim|2473|150||2473,2573,2773
 # sunrise-spring-surface-swim@heldfade: a present of the held-fade loop after
 # the loading screen (isbg=0, one subtractive quad per VBL over the held picture).
 sunrise-spring-surface-swim@heldfade|1554|100|freeze|1556
+# sunrise-spring-surface-swim@entry: the level-entry loading screen, where the
+# game keeps its picture in VRAM (isbg=0) and draws only the progress strip.
+# No freeze field: the headless capture keeps the retained backdrop on its own.
+sunrise-spring-surface-swim@entry|1500|100||1500
 
 # icy-peak-reflective-mirror arms the player draw's mirrored copy.
 # g_Spyro+0x2C is the avatar's height above a material-class-4 surface; of the

@@ -21,11 +21,10 @@
 #             A start at or past the movie end samples the game running on
 #             without input; the row's length is then its last pin.
 #   interval  optional base VBL spacing (default 100).
-#   freeze    optional 4th field: any non-empty value (e.g. "freeze") enables
-#             --screenshot-freeze-backdrop for this row - needed for bk2s that
-#             reach a pause / flight-results / level-exit state so the green
-#             frozen-world backdrop is captured instead of a dark clear. Renders
-#             an extra frame per present, so set it ONLY on freeze-reaching bk2s.
+#   freeze    optional 4th field: any non-empty value (e.g. "freeze") marks a
+#             bk2 that reaches a pause / flight-results / level-exit state or a
+#             retained-framebuffer screen. A label only: every headless capture
+#             keeps the frozen-world backdrop those screens draw behind them.
 #   pins      optional 5th field: comma-separated frames that are ALWAYS sampled, on
 #             top of the evenly-spaced grid and never subsampled away. The grid is
 #             derived from movie length, so it lands where the arithmetic puts it and

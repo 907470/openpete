@@ -605,7 +605,7 @@ static const openpete_help_only_t k_help_only[] = {
       "headless: simulate holding the rewind key for N iterations once the feed key reaches A" },
     { "--screenshot-freeze-backdrop",        KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
       NULL, 190,
-      "maintain the green freeze backdrop during headless capture so pause/results/exit dumps aren't dark (renders an extra frame per present)" },
+      "no effect, accepted for existing command lines: every headless capture maintains the freeze backdrop" },
     { "--screenshot-intermediate-on-frame",  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N[,...]", 180,
       "deterministic sub-tick (alpha 0.5) native captures at each feed-key value, headless-capable; implies --screenshot-native-only" },
@@ -1357,7 +1357,7 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
     } else if (strcmp(a, "--screenshot-native-only") == 0) {
         opts->screenshot_native_only = true;
     } else if (strcmp(a, "--screenshot-freeze-backdrop") == 0) {
-        opts->screenshot_freeze_backdrop = true;
+        /* Accepted with no effect: every headless capture keeps the backdrop. */
     } else if (strcmp(a, "--screenshot-output") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->screenshot_output = v; i++;

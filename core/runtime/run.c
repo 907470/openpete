@@ -6256,8 +6256,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 const int eager_now = spine_on && openpete_present_thread_enabled() &&
                     !opts->record_path && (opts->screenshot_frame_count == 0 || eager_shot) &&
                     opts->screenshot_intermediate_count == 0 &&
-                    opts->screenshot_presents_start < 0 &&
-                    !opts->screenshot_freeze_backdrop;
+                    opts->screenshot_presents_start < 0;
                 if (eager_now != s_eager.active) {
                     openpete_present_thread_set_active(eager_now);   /* 0: drains */
                     s_eager.active = eager_now;
