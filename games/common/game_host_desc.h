@@ -15,6 +15,7 @@
 #include "openpete_game_runtime.h"
 
 #include "freecam_game.h"
+#include "game_frame_pre.h"
 #include "renderer/moby_game.h"
 #include "renderer/moby_game_spyro23.h"
 #include "renderer/orchestrator.h"
@@ -41,6 +42,7 @@ typedef struct game_host_desc {
     const freecam_game_desc*        freecam;
     const game_orchestrator_t*      orchestrator;  /* NULL: no sub-tick spine */
     void (*interp_register)(void);                 /* NULL: no interp regions */
+    const game_frame_pre_t*         frame_pre;     /* game_frame_pre_on_tick's steps; NULL: none */
 } game_host_desc_t;
 
 /** @brief Register a game's runtime descriptor with core and bind its host tables into the shared globals.

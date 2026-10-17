@@ -905,6 +905,14 @@ void text_moby_native_shimmer_tick(void) {
 
 unsigned text_moby_native_shimmer_phase(void) { return s_shimmer_phase; }
 
+void text_moby_native_layers_tick(CPUState* cpu) {
+    text_moby_native_shimmer_tick();
+    text_moby_native_perf_overlay(cpu);
+    text_moby_native_menu(cpu);
+    text_moby_native_osd(cpu);
+    text_moby_native_version(cpu);
+}
+
 /** @brief Installs SpecularUpdate's rotating light as the emission's light, with signed shading.
  *
  * The light direction is (cos a * 0.968, sin a * 1.549, -0.25) normalized,

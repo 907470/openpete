@@ -303,27 +303,11 @@ static void spyro1_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     spyro1_levelwarp_on_tick(cpu);
 
 
-    /* Advance the gold shimmer - SpecularUpdate's travelling light, reproduced
-     * host-side - once per tick, BEFORE the builders below, so the settings
-     * menu and the OSD's toasts are lit by the same instant of it. */
-    text_moby_native_shimmer_tick();
-
-    /* Build the performance-stats overlay from Spyro's own 3D HUD text mobys
-     * (digits 260-269, letters 426-451, punctuation) when the native renderer is
-     * showing it. Pure presentation: reads model geometry from RAM, never writes
-     * gameplay state. */
-    text_moby_native_perf_overlay(cpu);
-
-    /* Build the in-game settings-menu text (title + rows) from the same 3D gold
-     * glyph mobys when the menu (O) is open. Pure presentation. */
-    text_moby_native_menu(cpu);
-
-    /* Any live OSD toasts, rebuilt against the shimmer phase this tick's
-     * builders all share. Pure presentation. */
-    text_moby_native_osd(cpu);
-
-    /* The build-version line, from the same glyph models. Pure presentation. */
-    text_moby_native_version(cpu);
+    /* The host text layers (shimmer, performance readout, settings menu, OSD
+     * toasts, version line), built from Spyro's own 3D HUD glyph mobys. Pure
+     * presentation: reads model geometry from RAM, never writes gameplay
+     * state. */
+    text_moby_native_layers_tick(cpu);
 
     /* --skip-to-level: induce the title's demo-timeout transition early,
      * pointed at the target via g_DemoLevelIds[g_DemoIndex], and clamp

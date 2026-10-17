@@ -66,6 +66,9 @@ openpete_add_game(spyro-2
 
         # The overlay-id boot and restore hooks, shared with Spyro 3.
         ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c
+        # The shared pre-tick hook, run over this game's game_frame_pre_hooks;
+        # shared with Spyro 3.
+        ${CMAKE_SOURCE_DIR}/games/common/game_frame_pre.c
 
 
         # The engine layout: the terrain and texture groups, the environment

@@ -145,4 +145,12 @@ void     text_moby_native_shimmer_tick(void);
  * @return The phase, advanced by text_moby_native_shimmer_tick. */
 unsigned text_moby_native_shimmer_phase(void);
 
+/** @brief Runs the host text layers once per pre-tick hook call: the shimmer tick, then the performance readout, the settings menu, the OSD toasts and the version line.
+ *
+ * The shimmer advances first so every builder after it is lit by the same
+ * phase. Each builder reads glyph model geometry from guest RAM and writes
+ * renderer state only.
+ * @param cpu The guest CPU state. */
+void text_moby_native_layers_tick(struct CPUState* cpu);
+
 #endif /* OPENPETE_TEXT_MOBY_NATIVE_H */

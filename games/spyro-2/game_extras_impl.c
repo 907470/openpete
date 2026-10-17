@@ -21,7 +21,6 @@
 #include "skip_to_level.h"
 #include "features/levelwarp.h"
 #include "features/cutscene_skip.h"
-#include "write_census.h"
 #include "dispatch_preamble.h"
 #include "freecam_game.h"
 #include "feature_registry.h"
@@ -39,38 +38,15 @@
 void game_overlay_resync_on_boot(CPUState* cpu);
 void game_overlay_resync_on_state_loaded(CPUState* cpu);
 
-/** @brief Run Spyro 2's per-tick host hooks before the game fiber runs a tick: the level skip and warp, the scripted free camera, the write census phase and the host text layers.
- *
- * @param cpu Guest CPU state.
- * @param frame_counter The openpete_frame counter before the tick. */
-static void spyro2_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
-    /* --skip-to-level: drives the title's demo-timeout transition toward the
-     * target and holds the demo flag clear. Inert without the flag. */
-    spyro2_skip_on_tick(cpu, frame_counter);
-    /* Dev-overlay level warp (M): drains a queued Jump into the game's
-     * own level transition. Inert until one is clicked. */
-    spyro2_levelwarp_on_tick(cpu);
-    /* Scripted player placement (--player-pose) on the first placeable
-     * tick, then scripted engage of the debug free camera (OPENPETE_FREECAM=1
-     * / OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live;
-     * placement first so one run can view the placed player. */
-    freecam_player_pose_maybe_apply(cpu);
-    freecam_maybe_autoengage(cpu);
-    /* Write census: every fiber resume in a tick happens inside the draw's
-     * VSync waits, after the view matrix has been built, so a store seen from
-     * here until the next phase entry precedes it for that tick. */
-    if (write_census_active()) write_census_set_phase(0);
-
-    /* The host text layers, drawn with the game's own 3D glyph models: the
-     * shimmer's clock first, so the settings menu and the OSD toasts are lit
-     * by the same instant of it, then the performance readout, the menu and
-     * the toasts. Each reads model geometry and writes renderer state only. */
-    text_moby_native_shimmer_tick();
-    text_moby_native_perf_overlay(cpu);
-    text_moby_native_menu(cpu);
-    text_moby_native_osd(cpu);
-    text_moby_native_version(cpu);
-}
+/* The pre-tick sequence is the shared body in games/common/game_frame_pre.c:
+ * the level skip (drives the title's demo-timeout transition toward the
+ * target and holds the demo flag clear; inert without the flag), then the
+ * dev-overlay level warp (drains a queued Jump into the game's own level
+ * transition; inert until one is clicked). */
+static const game_frame_pre_t k_frame_pre = {
+    .skip_on_tick      = spyro2_skip_on_tick,
+    .levelwarp_on_tick = spyro2_levelwarp_on_tick,
+};
 
 /** @brief Runs this game's intercepts at a function entry: the shared preamble, then the feature modules.
  *
@@ -209,6 +185,7 @@ static const game_host_desc_t k_host = {
     .freecam         = &spyro2_freecam_desc,
     .orchestrator    = &spyro2_orchestrator,
     .interp_register = spyro2_interp_register,
+    .frame_pre       = &k_frame_pre,
 };
 
 /* The disc image the User docs pin, labelled by name in the library. */
@@ -258,7 +235,7 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .consume_pc           = 0x8001271Cu,
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = game_overlay_resync_on_boot,
-    .on_frame_pre         = spyro2_on_frame_pre,
+    .on_frame_pre         = game_frame_pre_on_tick,
     .on_state_loaded      = game_overlay_resync_on_state_loaded,
     .state_extra_size     = psyq_thunk_state_size,
     .state_extra_save     = psyq_thunk_state_save,
