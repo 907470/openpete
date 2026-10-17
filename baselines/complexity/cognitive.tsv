@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 50221e23f3f9d2ab169812c8d476a05450b8e995
+# head: cb08625a3e8f190cec2a77784888bd0d408fc5fb
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -15,7 +15,7 @@ core/diag/log.c	parse_spec	30	0
 core/diag/psxtrace_schedule.c	openpete_sched_anchor_window	29	0	
 core/diag/psxtrace_schedule.c	openpete_sched_next_vsync	48	0	
 core/diag/psxtrace_schedule.c	openpete_sched_query	46	0	
-core/diag/psxtrace_schedule.c	openpete_sched_read	38	0	
+core/diag/psxtrace_schedule.c	openpete_sched_read	28	0	
 core/diag/psxtrace_verify.c	openpete_psxtrace_advance	132	0	
 core/diag/psxtrace_verify.c	openpete_psxtrace_finalize	30	0	
 core/diag/psxtrace_verify.c	openpete_psxtrace_open	95	0	

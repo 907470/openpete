@@ -1753,7 +1753,7 @@ static uint32_t cd_read_or_stream_delay_for(CPUState* cpu, int sectors) {
  * @param addr Unused. */
 extern "C" void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!openpete_sched_active() || !s_cd_defer_pending) return;
+    if (!openpete_sched_active() || !s_cd_defer_pending || !openpete_sched_spin_due()) return;
     OPL_DEBUG_F("cd", "schedule: deferred read polled in a spin, 1 VBL passes (%u owed)", s_cd_defer_owed);
     sched_charge_to(cpu, openpete_sched_pos() + 1u, "spin", VBL_SRC_SPIN);
 }

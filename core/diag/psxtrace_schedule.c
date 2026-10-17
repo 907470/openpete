@@ -838,6 +838,32 @@ int openpete_sched_anchor_target(uint32_t record, uint32_t* target_out) {
     return 1;
 }
 
+/** @brief Return the reference VBLANK of its next event at or after a VBLANK: the next unissued read's issue, the first waited VSync entered at or after it, or the current record's anchor stamp, whichever comes first.
+ *
+ * The waited rows are scanned from the first, wherever the row pointer
+ * stands (the boot's rows are skipped, not consumed).
+ * @param from The reference VBLANK the search starts at.
+ * @return The VBLANK, or UINT32_MAX when no event bounds it. */
+static uint32_t sched_next_event(uint32_t from) {
+    uint32_t bound = 0xFFFFFFFFu;
+    if (s_rd && s_rd_next < s_rd_n) bound = s_rd[s_rd_next].issue_vbl;
+    for (uint32_t i = 0; s_vs && i < s_vs_n; i++) {
+        if (s_vs[i].mode < 0 || s_vs[i].entry_vbl < from) continue;
+        if (s_vs[i].entry_vbl < bound) bound = s_vs[i].entry_vbl;
+        break;
+    }
+    const uint32_t rec = sched_cur_rec();
+    if (s_stamps && rec < s_stamps_n && s_stamps[rec] < bound) bound = s_stamps[rec];
+    return bound;
+}
+
+int openpete_sched_spin_due(void) {
+    /* Inside a load window the records do not correspond; before the
+     * position is set or after a failure no row bounds the charge. */
+    if (!s_active || s_failed || !s_pos_set || s_in_load) return 1;
+    return s_pos < sched_next_event(s_pos);
+}
+
 int openpete_sched_read(int sectors, uint32_t dst, uint32_t* issue_vbl_out, uint32_t* done_vbl_out, uint32_t* done_rec_out, int* sync_out) {
     if (!s_active || !s_rd || s_failed) return 0;
     if (s_rd_next >= s_rd_n) {
@@ -858,27 +884,11 @@ int openpete_sched_read(int sectors, uint32_t dst, uint32_t* issue_vbl_out, uint
     }
     pos_init_from(r->issue_vbl);
     *issue_vbl_out = r->issue_vbl;
-    /* The reference's next event after this read: the following read's
-     * issue, the following waited VSync's entry or the next anchor stamp,
-     * whichever comes first. A read the game spun on ends by it, and the
+    /* A read the game spun on ends by the reference's next event, and the
      * VBLs between a completion and it are the tick's own work after the
      * read (a loader's parse), spent before the game samples its counters
      * again. */
-    uint32_t bound = 0xFFFFFFFFu;
-    if (s_rd_next < s_rd_n) bound = s_rd[s_rd_next].issue_vbl;
-    /* The first waited call entered at or after the issue, wherever the
-     * row pointer stands (the boot's rows are skipped, not consumed). */
-    for (uint32_t i = 0; s_vs && i < s_vs_n; i++) {
-        if (s_vs[i].mode < 0 || s_vs[i].entry_vbl < r->issue_vbl) continue;
-        if (s_vs[i].entry_vbl < bound) bound = s_vs[i].entry_vbl;
-        break;
-    }
-    {
-        extern uint32_t openpete_psxtrace_anchor_hits;
-        extern uint32_t openpete_psxtrace_anchor_hit_target;
-        const uint32_t next_rec = sched_cur_rec();
-        if (s_stamps && next_rec < s_stamps_n && s_stamps[next_rec] < bound) bound = s_stamps[next_rec];
-    }
+    const uint32_t bound = sched_next_event(r->issue_vbl);
     if (r->done) {
         /* The game waited on VSync while this read was in flight when a
          * waited row lies inside it: then the waits carry the VBLs and the

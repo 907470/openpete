@@ -430,6 +430,17 @@ int  openpete_sched_anchor_target(uint32_t record, uint32_t* target_out);
  *        when its completion is deferred.
  * @return 1 with every output set, else 0. */
 int  openpete_sched_read(int sectors, uint32_t dst, uint32_t* issue_vbl_out, uint32_t* done_vbl_out, uint32_t* done_rec_out, int* sync_out);
+/** @brief Report whether a guest spin may be charged one more VBL: the position is behind the reference's next event.
+ *
+ * The next event is the next unissued read's issue, the first waited
+ * VSync entered at or after the position, or the current record's anchor
+ * stamp.
+ * A VBL the reference spent in a tick's work before its wait lies below
+ * that wait's entry; the wait charges every VBL from its entry on.
+ * Off the schedule, inside a load window, before the position is set and
+ * after a failure nothing bounds the charge.
+ * @return 0 when the position has reached the bound, else 1. */
+int  openpete_sched_spin_due(void);
 /** @brief Answer an srand call with the reference's next seed.
  *
  * Seeds are consumed in order from the `.srand` sidecar. A call past the
