@@ -1502,7 +1502,7 @@ static const knob_desc_t g_builtin[] = {
       "BIN/CUE the game boots from.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .default_note = "none: the game library's most recent disc",
+      .default_note = "none: the launcher's pick from the game library",
       .help_arg = "PATH", .help_order = 10,
       .help_text = "disc image: the .cue, or the .bin/.img/.iso itself. A cue\n"
           "whose FILE line names a missing bin falls back to the cue's\n"
@@ -1636,8 +1636,8 @@ static const knob_desc_t g_builtin[] = {
 
     { "ingest", "Ingest disc image", "Paths", "--ingest", NULL,
       "Disc image copied into the game library next to the executable and "
-      "booted; later runs boot it with no --disc. A bare disc-image path on "
-      "the command line means the same.",
+      "booted; later runs list it in the launcher with no --disc. A bare "
+      "disc-image path on the command line means the same.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none",
@@ -1649,16 +1649,20 @@ static const knob_desc_t g_builtin[] = {
 
     { "game", "Game", "Paths", "--game", NULL,
       "The game this session runs (spyro-1, spyro-2, spyro-3), which "
-      "selects the [game.<id>] scope of openpete.toml. A disc of another "
-      "game refuses the launch, as does a game this executable does not "
-      "run.",
+      "selects the [game.<id>] scope of openpete.toml. Without --disc or "
+      "--ingest it boots that game's most recently played library entry "
+      "without the launcher's selector, or opens the drop screen when the "
+      "library holds none. A disc of another game refuses the launch, as "
+      "does a game this executable does not run.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .default_note = "the disc's game, else the library entry's, else this executable's",
+      .default_note = "the disc's game, else the game of the entry picked in the launcher",
       .cli_only = 1,
       .help_arg = "ID", .help_order = 25,
       .help_text = "the game to run: spyro-1, spyro-2 or spyro-3 (default: the\n"
-          "disc's game); a disc of another game refuses the launch" },
+          "disc's game); without --disc, boots its most recently played\n"
+          "library entry, or shows the drop screen when there is none;\n"
+          "a disc of another game refuses the launch" },
 
     { "compile_mods", "Compile mods and exit", "Paths", "--compile-mods", NULL,
       "Compile every mod with a src/ directory in the mods directory against "

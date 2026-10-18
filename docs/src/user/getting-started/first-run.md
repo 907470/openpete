@@ -41,9 +41,11 @@ another game can be added: ++up++ / ++down++ or the stick select,
 `.cue` onto this screen, or pressing ++space++ or the pad's ++x++ button
 to browse for one, adds that disc to the library and starts its game.
 
-A launch that names its game with `--game`, or a build that runs one game
-only, skips this screen when the library holds one disc of that game and
-starts it directly; with several, the screen reads **CHOOSE A VERSION**.
+A start without `--game` or `--disc` always opens this screen, whatever
+the library holds. A launch that names its game with `--game` skips it and
+starts that game's most recently played disc; see
+[Installing](install.md#opening-a-disc-image-directly). In a build that runs
+one game only, the screen reads **CHOOSE A VERSION**.
 
 ## Mods compile on start
 

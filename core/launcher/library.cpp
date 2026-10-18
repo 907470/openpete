@@ -419,22 +419,26 @@ std::string entry_label(const Meta& m) {
     return std::string(name) + " - " + m.label;
 }
 
-/** @brief Pick the entry to boot: the selector when a screen can show, else the most recently played.
+/** @brief Pick the entry to boot: the --game entry, else the selector, else the most recently played.
  *
- * One entry of a named game boots without the selector. While the launcher
- * names no game the selector shows for one entry too, so a second game's
- * disc can be dropped on it. The scripted drop (launcher_scripted_drop) is
- * taken in every case, ahead of any pick.
+ * A launch whose --game names the launcher's game boots that game's most
+ * recently played identified entry without the selector, and with none
+ * leaves the pick empty for the caller's drop screen. Any other launch
+ * shows the selector, for one entry too. The scripted drop
+ * (launcher_scripted_drop) is taken in every case, ahead of any pick.
+ * @param opts The options; game_selector is the --game value.
  * @param entries The scanned entries; not empty.
- * @param pick Receives the entry.
+ * @param pick Receives the entry, or NULL when --game names a game with no
+ *        entry.
  * @return 0, LAUNCHER_SEL_QUIT when the player quit, or
  *         LAUNCHER_SEL_DROPPED when a disc was dropped on the selector. */
-int pick_entry(std::vector<Meta>& entries, Meta*& pick) {
-    pick = &entries[0];
+int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*& pick) {
+    const bool direct = opts->game_selector && opts->game_selector[0] && !launcher_neutral();
+    const std::string id = direct ? launcher_game()->game_id : "";
+    pick = nullptr;
     for (auto& m : entries)
-        if (m.last_played > pick->last_played) pick = &m;
-    if (entries.size() == 1 && !launcher_neutral())
-        return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : 0;
+        if ((!direct || m.game == id) && (!pick || m.last_played > pick->last_played)) pick = &m;
+    if (direct) return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : 0;
     /* Version selector: most recent first, then the rest. */
     std::vector<Meta*> order{pick};
     for (auto& m : entries)
@@ -531,12 +535,13 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
     if (entries.empty()) return 0;
     note_missing_games(opts);
     Meta* pick = nullptr;
-    const int rc = pick_entry(entries, pick);
+    const int rc = pick_entry(opts, entries, pick);
     if (rc == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
     if (rc == LAUNCHER_SEL_DROPPED) {
         opts->ingest_path = launcher_dropped_path();
         return library_resolve(opts, module_path_out, module_path_cap);
     }
+    if (!pick) return 0;
     return boot_entry(opts, *pick, module_path_out, module_path_cap);
 }
 

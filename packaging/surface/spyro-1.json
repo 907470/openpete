@@ -1132,7 +1132,7 @@
    "build_cond": null,
    "cli_only": false,
    "def": null,
-   "default_note": "none: the game library's most recent disc",
+   "default_note": "none: the launcher's pick from the game library",
    "game": "core"
   },
   {
@@ -1142,7 +1142,7 @@
    "knob": "disc",
    "build_cond": null,
    "def": null,
-   "default_note": "none: the game library's most recent disc"
+   "default_note": "none: the launcher's pick from the game library"
   },
   {
    "id": "knob:disc_cache",
@@ -1474,7 +1474,7 @@
    "build_cond": null,
    "cli_only": true,
    "def": null,
-   "default_note": "the disc's game, else the library entry's, else this executable's",
+   "default_note": "the disc's game, else the game of the entry picked in the launcher",
    "game": "core"
   },
   {
@@ -1484,7 +1484,7 @@
    "knob": "game",
    "build_cond": null,
    "def": null,
-   "default_note": "the disc's game, else the library entry's, else this executable's"
+   "default_note": "the disc's game, else the game of the entry picked in the launcher"
   },
   {
    "id": "knob:compile_mods",

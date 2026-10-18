@@ -26,7 +26,6 @@ extern "C" {
 
 typedef struct openpete_game_build {
     const char* id;          /* "spyro-1": the game's config-scope id */
-    const char* exe_name;    /* "openpete-spyro1": the executable name that selects the game */
     const openpete_game_runtime_t* runtime;
     /* The game's entry after selection: parse, identify, attach, run
      * (openpete_game_main for a game with no entry of its own). */
@@ -69,8 +68,7 @@ extern const size_t openpete_game_build_count;
  *
  * With one linked game, that game. Otherwise, in order: the game whose
  * serial the SYSTEM.CNF of the image named by --disc or --ingest carries;
- * the --game selector; the game whose exe_name is the invoked name (a
- * copy of the one executable renamed to a game's executable name). A
+ * the --game selector. The executable's name selects no game. A
  * source naming a game this executable does not link is passed over; the
  * selected game's entry then identifies the session and refuses a
  * contradiction.

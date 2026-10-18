@@ -804,7 +804,6 @@ function(openpete_add_game GAME_ID)
     # headers it includes.
     set(GB_ID ${GAME_ID})
     set(GB_TAG ${_tag})
-    set(GB_EXE ${_exe})
     set(GB_MAIN ${G_MAIN})
     set(GB_IMPORTS_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/module_imports.h)
     set(GB_EXTRACT ${G_FIRST_BOOT_EXTRACT})

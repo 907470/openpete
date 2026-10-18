@@ -96,7 +96,6 @@ int @GB_EXTRACT@(const char* cue_path, const char* out_dir, const char* manifest
 
 const openpete_game_build_t @GB_TAG@_game_build = {
     .id       = "@GB_ID@",
-    .exe_name = "@GB_EXE@",
     .runtime  = &@GB_TAG@_game_runtime,
     .main     = @GB_MAIN@,
 #if GB_SHARED

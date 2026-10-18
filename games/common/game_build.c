@@ -46,31 +46,12 @@ static const openpete_game_build_t* disc_game(const char* path) {
     return linked(openpete_game_for_serial(serial));
 }
 
-/** @brief Return the linked game whose exe_name is the invoked name, without directory or ".exe".
- *
- * @param argv0 The invoked path, or NULL.
- * @return The game, or NULL. */
-static const openpete_game_build_t* named_game(const char* argv0) {
-    if (!argv0) return NULL;
-    const char* base = argv0;
-    for (const char* p = argv0; *p; p++)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    size_t n = strlen(base);
-    if (n > 4 && !strcmp(base + n - 4, ".exe")) n -= 4;
-    for (size_t i = 0; i < openpete_game_build_count; i++) {
-        const char* e = openpete_game_builds[i]->exe_name;
-        if (strlen(e) == n && !strncmp(e, base, n)) return openpete_game_builds[i];
-    }
-    return NULL;
-}
-
 const openpete_game_build_t* openpete_game_build_named(int argc, char** argv) {
     if (openpete_game_build_count == 0) return NULL;
     if (openpete_game_build_count == 1) return openpete_game_builds[0];
     const openpete_game_build_t* b = disc_game(flag_value(argc, argv, "--disc"));
     if (!b) b = disc_game(flag_value(argc, argv, "--ingest"));
     if (!b) b = linked(flag_value(argc, argv, "--game"));
-    if (!b) b = named_game(argc > 0 ? argv[0] : NULL);
     return b;
 }
 
