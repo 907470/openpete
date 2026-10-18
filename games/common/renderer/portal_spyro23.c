@@ -28,8 +28,9 @@
 // clamp (p3_native_opening), so the preview reaches the edges of a wider
 // frame. A record the pass rejects only because its pentagon lies off the
 // 4:3 frame's sides is re-gated natively from game state and added to the
-// tick's previews when it falls inside the wider frame (p3_band_admit). The
-// opening goes out as the portal's stencil mask and the picture
+// tick's previews when it falls inside the wider frame (p3_band_admit); under
+// extended LOD a record past its draw radius is re-gated the same way at every
+// aspect. The opening goes out as the portal's stencil mask and the picture
 // as portal-cyclorama triangles. Inside the pentagon both test at the
 // opening plane's depth minus the plane-cover margin, so terrain in front of
 // the opening occludes the picture per pixel and terrain behind it does not.
@@ -1331,7 +1332,22 @@ typedef struct {
     int32_t d;      /* the view depth of vertex 2 lowered 0x540, floored at 0 */
     int32_t face;   /* the facing term the edge-free case reads (+0x108 on the stack) */
     int     sh;     /* the projection's right shift, 3 at depth 0x4000 and beyond */
+    int     fit;    /* the right shift the depth gate applied, 2 unless radius-free */
+    int     beyond; /* 1 when the depth is at or past the record's draw radius */
 } p3_gate;
+
+/** @brief The smallest right shift, at least s, that leaves every component of v plus a margin inside int16.
+ * @param v The camera-relative vector.
+ * @param margin Added to each component's magnitude before the test.
+ * @param s The least shift.
+ * @return The shift. */
+static int p3g_fit_shift(const int32_t v[3], int32_t margin, int s) {
+    int64_t m = 0;
+    for (int k = 0; k < 3; k++) { const int64_t a = v[k] < 0 ? -(int64_t)v[k] : v[k]; if (a > m) m = a; }
+    m += margin;
+    while ((m >> s) > 0x7FFF) s++;
+    return s;
+}
 
 /** @brief The pass's depth gates of one record: the enable and draw radius byte, the centre cone and the depth floor.
  *
@@ -1343,29 +1359,43 @@ typedef struct {
  * are the pass's lateral cone of slope 1 about the view axis, and d * k for
  * d > 0 under a view whose screen-X half-tangent is k times the 4:3 one
  * (p3_cone_scale), so the cone keeps its margin to the visible frustum edge.
+ *
+ * Radius-free (radius_free = 1) the draw radius clause is skipped and the shift is
+ * the least one from 2 that keeps each component in int16
+ * (p3g_fit_shift), since the pass's int16 truncation wraps the vector past
+ * 131071 units. For a record past its radius g->sh also grows until the
+ * outcode projection's components fit, with a margin of 0x4000 for the
+ * other vertices. Within the radius and 131071 units the result equals
+ * the pass's own.
  * @param cpu Reads the record, the camera and the world matrix.
  * @param rec The record.
  * @param k The cone slope scale, 1.0 for the pass's own test.
- * @param g Receives the floored depth and the shift.
+ * @param radius_free 1 to drop the draw radius clause, 0 for the pass's test.
+ * @param g Receives the floored depth, the shifts and whether the depth is past the radius.
  * @return 1 when the record passes, else 0. */
-static int p3_gate_depth(CPUState* cpu, uint32_t rec, double k, p3_gate* g) {
+static int p3_gate_depth(CPUState* cpu, uint32_t rec, double k, int radius_free, p3_gate* g) {
     const uint32_t en = cpu->read_byte(rec + 0x40);
     if (!en) return 0;
     const uint32_t cp = game_layout.cam.position;
     int32_t v[3];
-    for (int k = 0; k < 3; k++)
-        v[k] = (int32_t)cpu->read_word(rec + 0x18 + (uint32_t)k * 4) - (int32_t)cpu->read_word(cp + (uint32_t)k * 4);
+    for (int a = 0; a < 3; a++)
+        v[a] = (int32_t)cpu->read_word(rec + 0x18 + (uint32_t)a * 4) - (int32_t)cpu->read_word(cp + (uint32_t)a * 4);
     v[2] -= 0x540;
-    for (int k = 0; k < 3; k++) v[k] = p3g_shr(v[k], 2);
+    const int32_t w[3] = { v[0], v[1], v[2] };
+    const int s = radius_free ? p3g_fit_shift(v, 0, 2) : 2;
+    for (int a = 0; a < 3; a++) v[a] = p3g_shr(v[a], s);
     int M[3][3];
     ngte_read_matrix(cpu, game_layout.cam.view_matrix, M);
     p3g_rotate(M, v, v);
-    const int32_t d = (int32_t)((uint32_t)v[0] << 2), l = (int32_t)((uint32_t)v[1] << 2);
-    if (d < -0x7FF || d >= (int32_t)(en << 10)) return 0;
+    const int32_t d = (int32_t)((uint32_t)v[0] << s), l = (int32_t)((uint32_t)v[1] << s);
+    g->beyond = d >= (int32_t)(en << 10);
+    if (d < -0x7FF || (g->beyond && !radius_free)) return 0;
     const double c = d > 0 ? (double)d * k : (double)d;
     if (!((double)(l - 0xA00) < c) || !((double)-(l + 0x800) < c)) return 0;
     g->d = d < 0 ? 0 : d;
     g->sh = g->d >= 0x4000 ? 3 : 0;
+    if (g->beyond) g->sh = p3g_fit_shift(w, 0x4000, g->sh);
+    g->fit = s;
     return 1;
 }
 
@@ -1377,10 +1407,12 @@ static int p3_gate_depth(CPUState* cpu, uint32_t rec, double k, p3_gate* g) {
  * when |sin t * |camera - vertex 2|_XY| >= 0xA0, and when the plane normal
  * (sin a, -cos a, 0) rotated by the world matrix has a depth term, negated
  * for t < 0, of at most 0x800 (func_8004C66C.s:93-207,
- * func_8001EDEC.s:143-268).
+ * func_8001EDEC.s:143-268). Under a radius-free depth gate's shift
+ * (g->fit > 2) c is taken of the XY vector shifted right by g->fit - 2,
+ * which keeps the arctangent's ratio from overflowing.
  * @param cpu Reads the record, the camera, the world matrix and the tables.
  * @param rec The record.
- * @param g Receives the facing term.
+ * @param g Carries the depth gate's shift; receives the facing term.
  * @return 1 when the record passes, else 0. */
 static int p3_gate_facing(CPUState* cpu, uint32_t rec, p3_gate* g) {
     const uint32_t cp = game_layout.cam.position;
@@ -1388,7 +1420,7 @@ static int p3_gate_facing(CPUState* cpu, uint32_t rec, p3_gate* g) {
     const int32_t cx = (int32_t)cpu->read_word(cp) - rx, cy = (int32_t)cpu->read_word(cp + 4) - ry;
     const int a = (int16_t)p3g_atan(cpu, (int32_t)cpu->read_word(rec + 0x30) - (int32_t)cpu->read_word(rec + 0x00),
                                     (int32_t)cpu->read_word(rec + 0x34) - (int32_t)cpu->read_word(rec + 0x04));
-    const int c = (int16_t)p3g_atan(cpu, cx, cy);
+    const int c = (int16_t)p3g_atan(cpu, p3g_shr(cx, g->fit - 2), p3g_shr(cy, g->fit - 2));
     int t = (a - c) & 0xFFF;
     if (t > 0x800) t -= 0x1000;
     if ((uint32_t)(t + 0x40) < 0x81u || (uint32_t)(t + 0x7BF) >= 0xF7Fu) return 0;
@@ -1520,6 +1552,7 @@ static int p3_band_ab(void) {
 /* Per-pass engagement of the band admission, for the census. */
 static int s_band_admit = 0;     /* records added this pass */
 static int s_band_disagree = 0;  /* records the 4:3 test admits that the pass did not draw */
+static int s_band_far = 0;       /* records added that lie at or past their draw radius */
 
 /** @brief Whether the tick's capture names a record.
  * @param T The tick.
@@ -1547,7 +1580,7 @@ static double p3_cone_scale(const ngte_view* v) {
     return k > 1.0 ? k : 1.0;
 }
 
-/** @brief Adds one record the pass did not draw to the tick when only the 4:3 frame's cone or X bounds rejected it.
+/** @brief Adds one record the pass did not draw to the tick when only the 4:3 frame's cone or X bounds, or under extended LOD its draw radius, rejected it.
  *
  * The depth and facing gates, then per call the outcode test, each twice:
  * as the pass runs them (the cone at slope 1, the X bits at [P3_FRAME_X0,
@@ -1557,7 +1590,11 @@ static double p3_cone_scale(const ngte_view* v) {
  * would have captured it (the background first, the picture only below
  * depth 0x5000) under the next slot. A call that passes the 4:3 evaluation
  * is counted in s_band_disagree and not added, since the pass's verdict
- * stands; under p3_band_ab the 4:3 evaluation is skipped.
+ * stands; under p3_band_ab the 4:3 evaluation is skipped. Under
+ * p3_lod_picture the view's depth gate is radius-free (p3_gate_depth), so a
+ * record past its draw radius is appended as its background, which
+ * p3_lod_tick follows with the picture; each such record is counted in
+ * s_band_far.
  * @param cpu Reads the record and game state.
  * @param T The tick; receives the previews.
  * @param vw The view being presented.
@@ -1568,8 +1605,8 @@ static double p3_cone_scale(const ngte_view* v) {
 static int p3_band_record(CPUState* cpu, p3_tick* T, const ngte_view* vw, const ngte_view* vc,
                           uint32_t rec, uint32_t idx) {
     p3_gate g, g43;
-    if (!p3_gate_depth(cpu, rec, p3_cone_scale(vw), &g) || !p3_gate_facing(cpu, rec, &g)) return 0;
-    const int ok43 = p3_gate_depth(cpu, rec, 1.0, &g43) && p3_gate_facing(cpu, rec, &g43);
+    if (!p3_gate_depth(cpu, rec, p3_cone_scale(vw), p3_lod_picture(), &g) || !p3_gate_facing(cpu, rec, &g)) return 0;
+    const int ok43 = p3_gate_depth(cpu, rec, 1.0, 0, &g43) && p3_gate_facing(cpu, rec, &g43);
     int added = 0;
     for (int call = 1; call >= 0 && T->n < P3_MAX_PORTALS * 2; call--) {
         if (call == 0 && g.d >= 0x5000) break;
@@ -1583,22 +1620,24 @@ static int p3_band_record(CPUState* cpu, p3_tick* T, const ngte_view* vw, const 
         p3_band_fill(cpu, &T->p[T->n++], rec, idx, &g, call, slot);
         added = 1;
     }
+    s_band_far += added && g.beyond;
     return added;
 }
 
-/** @brief Adds to the tick every record the pass rejected only because the 4:3 frame's cone or X bounds culled it.
+/** @brief Adds to the tick every record the pass rejected only because the 4:3 frame's cone or X bounds, or under extended LOD its draw radius, culled it.
  *
  * Runs p3_band_record on every record the tick's capture does not name and
  * marks RP_PORTAL drawn when it added any. Returns at once when the view is
- * no wider than the 4:3 frame. Under p3_band_ab the pass's captures are
- * discarded first. Reads PSX RAM only.
+ * no wider than the 4:3 frame, except under p3_lod_picture, where a record
+ * the draw radius alone rejects is admitted at every aspect. Under
+ * p3_band_ab the pass's captures are discarded first. Reads PSX RAM only.
  * @param cpu The guest CPU state.
  * @param T The tick the pass just captured. */
 static void p3_band_admit(CPUState* cpu, p3_tick* T) {
-    s_band_admit = s_band_disagree = 0;
+    s_band_admit = s_band_disagree = s_band_far = 0;
     ngte_view vw, vc;
     ngte_view_build(cpu, &vw);
-    if (!(vw.xlo < (float)P3_FRAME_X0 || vw.xhi > (float)P3_FRAME_X1)) return;
+    if (!p3_lod_picture() && !(vw.xlo < (float)P3_FRAME_X0 || vw.xhi > (float)P3_FRAME_X1)) return;
     ngte_view_canon(&vw, &vc);
     const uint32_t base = cpu->read_word(portal_game_s23.records);
     const uint32_t n = cpu->read_word(portal_game_s23.count);
@@ -1643,7 +1682,7 @@ typedef struct { int calls, agree, fields, fmis; } p3_gate_census;
 static void p3_band_census_record(CPUState* cpu, const p3_tick* T, const ngte_view* vc, uint32_t rec,
                                   uint32_t idx, p3_gate_census* c) {
     p3_gate g;
-    const int ok = p3_gate_depth(cpu, rec, 1.0, &g) && p3_gate_facing(cpu, rec, &g);
+    const int ok = p3_gate_depth(cpu, rec, 1.0, 0, &g) && p3_gate_facing(cpu, rec, &g);
     for (int call = 1; call >= 0; call--) {
         const p3_preview* cap = p3_tick_find(T, rec, call);
         const int mine = ok && !(call == 0 && g.d >= 0x5000) &&
@@ -1823,8 +1862,8 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
          * view" from "the hook never fired". */
         if (s_reports < 64 && (s_curr.n || s_passes <= 4) && openpete_feed_key_now() >= p3_dbg_from()) {
             s_reports++;
-            fprintf(stderr, "[portal3 f=%u] leaf-calls=%d captured=%d band=%d band-disagree=%d prim-bytes=%u emitted=%d faces=%d idx-drop=%d oc-drop=%d edge-drop=%d tris=%d",
-                    openpete_frame, s_leaf_calls, s_curr.n, s_band_admit, s_band_disagree, end - s_pass_start, s_emitted,
+            fprintf(stderr, "[portal3 f=%u] leaf-calls=%d captured=%d band=%d band-far=%d band-disagree=%d prim-bytes=%u emitted=%d faces=%d idx-drop=%d oc-drop=%d edge-drop=%d tris=%d",
+                    openpete_frame, s_leaf_calls, s_curr.n, s_band_admit, s_band_far, s_band_disagree, end - s_pass_start, s_emitted,
                     s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris);
             for (int i = 0; i < s_curr.n; i++) {
                 const p3_preview* p = &s_curr.p[i];
