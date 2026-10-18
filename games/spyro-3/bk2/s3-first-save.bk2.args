@@ -1,0 +1,4 @@
+# Hand-recorded (user, 2026-10-18): from the title on an empty card, New
+# Game, play to the first save point and save. The slot 1 card is given
+# by the caller (--card1).
+--no-card2
