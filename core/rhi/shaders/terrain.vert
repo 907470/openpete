@@ -167,7 +167,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     dvec2 dspare;   /* x: H_canon, the GTE's H (limit-regime mirrors);
                      * y: env-anim colour alpha (1.0 selects the current
                      * colours; TERRAIN_ANIM only)                          */
-    ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: unused  */
+    ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: the LP
+                     * insert's ordering-table terms (OT_* accessors)     */
     vec4  sdv[128]; /* per-tile scroll V offsets (lq, hqA, hqB, 0)        */
     /* Portal inner-rim cull frames (portal_rim_classify mirror, fp64).
      * rim_cnt.x = active plane count; 0 disables the test (no portal, or
@@ -820,6 +821,24 @@ bool nc4_tier4(double z0, double z1, double z2, double z3, uint w3_40, uint w3_8
     return min(min(z0, z1), min(z2, z3)) * 4.0lf < 320.0lf;
 }
 
+/** @brief Returns the LP insert's constant base, in 128-world slots. */
+uint ot_lp_base() { return uint(g.fog.w) & 0xFFu; }
+
+/** @brief Returns the HP insert's multiplier on the face's bias field. */
+uint ot_hp_mul() { return (uint(g.fog.w) >> 12) & 0xFu; }
+
+/** @brief Returns whether the LP far cull tests the whole LP bucket index. */
+bool ot_farcull_keyed() { return (uint(g.fog.w) & 0x10000u) != 0u; }
+
+/** @brief Returns an LP face's authored slot offset: the base plus its biased slots.
+ *
+ * Mirrors tface_ot_slots for an LP face.
+ * @param ob The face's bias field.
+ * @return The offset in 128-world slots. */
+double ot_lp_slots(uint ob) {
+    return double(ot_lp_base() + ((uint(g.fog.w) >> 8) & 0xFu) * ob);
+}
+
 void kill_vert() {
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);   /* degenerate: no raster */
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec2(0u);
@@ -1299,10 +1318,16 @@ void main()
         double z3g = quad ? m3c.z : m2.z;
         double slotv = (m0.z + m1.z + m2.z + z3g) / 32.0lf;
         if ((gf & GF_NOLOD) == 0) {
-            /* .s LP far cull: slot >= m_CullingDistance>>7 drops (all faces,
-             * fill tags included). Skipped under extended LOD, which keeps
-             * far faces. */
-            if (slotv >= double(g.fog.z)) { kill_vert(); return; }
+            /* .s LP far cull: slot >= cull_dist>>7 drops (all faces, fill
+             * tags included); a keyed game tests the whole LP bucket index
+             * against (cull_dist>>7) - 1. Skipped under extended LOD, which
+             * keeps far faces. */
+            int fclim = g.fog.z;
+            if (ot_farcull_keyed()) {
+                slotv += ot_lp_slots((ff >> 24) & 0x1Fu);
+                fclim -= 1;
+            }
+            if (slotv >= double(fclim)) { kill_vert(); return; }
         }
         double thr = double((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
         if (!gapfill_face && (gf & GF_LPNEAROUT) != 0 && thr > 0.0lf
@@ -1915,9 +1940,10 @@ void main()
         } else if (nearband && (gf & GF_NBKEYS) == 0) {
             koff = -float(double(ok) + 0.5lf);
         } else {
-            double slots = lp ? double(0x40u + 8u * ((ff >> 24) & 0x1Fu))
-                              : double(((ff & FF_LPKEY) != 0u ? 0x40u : 0u)
-                                       + 4u * ((ff >> 24) & 0x1Fu));
+            uint ob = (ff >> 24) & 0x1Fu;
+            double slots = lp ? ot_lp_slots(ob)
+                              : double(((ff & FF_LPKEY) != 0u ? ot_lp_base() : 0u)
+                                       + ot_hp_mul() * ob);
             koff = float(double(ok) + 128.0lf * slots + 0.5lf);
         }
     }

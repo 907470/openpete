@@ -452,6 +452,11 @@ typedef struct game_layout {
          * bias word. Ported onto the face's key as world units. */
         int      lp_base_slots;
         int      lp_bias_slots, hp_bias_slots;
+        /* The LP far cull's operand. 0 = the face's depth slot (4-corner
+         * SZ sum >> 5) is dropped at or beyond env.cull_dist >> 7. 1 = its
+         * whole LP bucket index (the depth slot plus lp_base_slots plus the
+         * biased slots) is dropped at or beyond (env.cull_dist >> 7) - 1. */
+        int      lp_farcull_keyed;
         /* 1 = the near/HQ-classified faces key through that same ordinary
          * insert, so each publishes a positive ordering key like every
          * other terrain face. 0 = the near/HQ queue carries no ordering

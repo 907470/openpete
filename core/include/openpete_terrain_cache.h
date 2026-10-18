@@ -205,6 +205,10 @@ typedef struct {
     int32_t fog_ref_base; /* ENV_LODDIST >> 2                                  */
     int32_t cull_ref_s2;  /* ENV_CULLDIST >> 7 (.s LP far-cull threshold)      */
     uint32_t gflags;      /* OPTC_GF_*                                         */
+    uint32_t ot_terms;    /* the LP insert's ordering-table terms, packed:
+                           * bits 0-7 lp_base_slots, 8-11 lp_bias_slots,
+                           * 12-15 hp_bias_slots, 16 lp_farcull_keyed
+                           * (game_layout.terrain)                            */
     /* Per-tile fractional UV-scroll V offsets for THIS build (env texture
      * anim, sub-tick lerp of the 7-bit accumulator): [0] = LQ/flat-face dv,
      * [1]/[2] = HQ record entries 1-2 / 3-4 (the two ring halves), [3] pad.

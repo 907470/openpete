@@ -472,7 +472,7 @@ typedef struct {
     float otkey;                                   /* parent face's .s OT key (full-world mean
                                                     * vz of the 4 corners; portal conformance) */
     uint16_t otslots;                              /* .s OT-slot depth offset for the TEST depth:
-                                                    * LP 0x40+8*((w1>>3)&0x1F), HP 4*((w3>>3)&0x7);
+                                                    * tface_ot_slots (LP base + biased slots, HP biased slots);
                                                     * 1 slot = 128 world units */
     float fx[3], fy[3];                            /* drain face-local coordinate per vertex */
     uint32_t kc[8];                                /* drain sub-cell key table of a face the
@@ -9098,6 +9098,7 @@ static const char* tn_lp_face_near_drop(const tn_secverd* SV, const tsface_t* F,
     return "admit";
 }
 
+
 #define TN_MAX_WORKERS 8
 /* Walked-face count below which the face walk runs inline instead of fanning
  * out - see the dispatch break-even derivation at the workpool call site. */
@@ -9391,6 +9392,42 @@ static uint16_t tface_ot_slots(const tsface_t* F, int lp) {
     const unsigned mul = lp ? (unsigned)game_layout.terrain.lp_bias_slots
                             : (unsigned)game_layout.terrain.hp_bias_slots;
     return (uint16_t)(base + mul * F->otbias);
+}
+
+/** @brief Applies the draw's world-pass distance gates to an LP face: the far cull, then the near rule.
+ *
+ * Far cull (Spyro 1 r_environment.s:792-793 quad / 930-931 tri): slot =
+ * (four corner SZ3s summed, a triangle counting its shared corner twice)
+ * >> 5, dropped iff slot >= s2 = cull_dist >> 7. Under
+ * terrain.lp_farcull_keyed the operand is the whole LP bucket index (slot
+ * plus tface_ot_slots) and s2 is (cull_dist >> 7) - 1. The slot is an
+ * integer in the .s, so the real-valued slot compares the same against an
+ * integer bound. The cull is a distinct, larger distance than
+ * m_LodDistance; every LP face takes it, fill tags included, since
+ * og-attested cover cannot extend past og's own draw distance. --lod
+ * extended skips it (extending the draw distance is that mode's purpose)
+ * and OPENPETE_TERRAIN_LP_FARCULL=0 disables it. A surviving face takes
+ * tn_lp_face_near_drop unless it is a fill-tagged face under gap fill
+ * (og-attested hole cover at any range).
+ * @param G The walk's shared inputs (lp_farcull, lp_admit, cullRefS2, fogRefBase).
+ * @param SV The sector's verdicts.
+ * @param F The LP face.
+ * @param cz The corners' view-Z (SZ3 scale) in i0..i3 order.
+ * @param quad Nonzero for a quad.
+ * @return The drop reason ("farcull", "nearout", "admit"), or NULL when the face draws. */
+static const char* tn_lp_face_world_drop(const tn_wcfg* G, const tn_secverd* SV,
+                                         const tsface_t* F, const double cz[4], int quad) {
+    if (G->lp_farcull && !openpete_no_lod) {
+        double slot = (cz[0] + cz[1] + cz[2] + (quad ? cz[3] : cz[2])) / 32.0;
+        int lim = G->cullRefS2;
+        if (game_layout.terrain.lp_farcull_keyed) {
+            slot += (double)tface_ot_slots(F, 1);
+            lim -= 1;
+        }
+        if (slot >= (double)lim) return "farcull";
+    }
+    if (s_gapfill_en && F->gapfill) return NULL;
+    return tn_lp_face_near_drop(SV, F, cz, quad, G->lp_admit, G->fogRefBase);
 }
 
 /** @brief Walks one visible sector's faces into W's triangle run.
@@ -9991,23 +10028,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * behaviour (A/B). A game with the LP near outcode
              * (terrain.lp_near_sz) takes that rule instead
              * (tn_lp_face_near_drop). */
-            /* .s LP far cull (r_environment.s:792-793 quad / 930-931 tri):
-             * slot = ΣSZ3>>5 tested against s2 = m_CullingDistance>>7 - drop
-             * iff slot >= s2. A distinct, larger distance than m_LodDistance;
-             * every LP face takes it, fill tags included (og-attested cover
-             * cannot extend past og's own draw distance). Skipped under
-             * --lod extended: extending the draw distance is that mode's
-             * purpose. OPENPETE_TERRAIN_LP_FARCULL=0 disables (A/B). */
-            if (passLP && !passFill && !openpete_no_lod) {
-                if (G->lp_farcull) {
-                    double fcz3 = quad ? sv[i3].m3 : sv[i2].m3;
-                    double fcslot = (sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + fcz3) / 32.0;
-                    if (fcslot >= (double)cullRefS2) { FARDBG_DROP("farcull"); continue; }
-                }
-            }
-            if (passLP && !passFill && !(s_gapfill_en && F->gapfill)) {
+            if (passLP && !passFill) {
                 const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
-                const char* why = tn_lp_face_near_drop(SV, F, cz, quad, G->lp_admit, fogRefBase);
+                const char* why = tn_lp_face_world_drop(G, SV, F, cz, quad);
                 if (why) { FARDBG_DROP(why); continue; }
             }
             if (lod_handoff) {
@@ -10396,6 +10419,20 @@ static void walk_sector_job(int item, int worker, void* arg) {
     s_pre_rec[item].start  = W->tri_n;
     walk_sector(W, G, item);
     s_pre_rec[item].count  = W->tri_n - s_pre_rec[item].start;
+}
+
+/** @brief Packs the layout's ordering-table terms for the retained path's vertex stage.
+ *
+ * Bits 0-7 terrain.lp_base_slots, 8-11 lp_bias_slots, 12-15 hp_bias_slots,
+ * 16 lp_farcull_keyed; the vertex stage unpacks them with its ot_*
+ * accessors to mirror tface_ot_slots and the LP far cull.
+ * @return The packed word (openpete_terrain_cache.h ot_terms). */
+static uint32_t tc_ot_terms(void) {
+    const uint32_t keyed = game_layout.terrain.lp_farcull_keyed ? 1u : 0u;
+    return ((uint32_t)game_layout.terrain.lp_base_slots & 0xFFu)
+         | (((uint32_t)game_layout.terrain.lp_bias_slots & 0xFu) << 8)
+         | (((uint32_t)game_layout.terrain.hp_bias_slots & 0xFu) << 12)
+         | (keyed << 16);
 }
 
 /** @brief Builds the retained path's global flag word (OPTC_GF_*) for this present.
@@ -11048,6 +11085,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
         tcg.fog_ref_base = fogRefBase;
         tcg.cull_ref_s2  = cullRefS2;
+        tcg.ot_terms     = tc_ot_terms();
         tcg.gflags = tc_global_flags(s_nearhq && hqTable, lod_handoff);
         {   /* OPENPETE_TERRAIN_GPU_TINT=1: retained draws tint by sector id
              * (temp bring-up attribution; unregistered). */
@@ -12928,8 +12966,9 @@ static void terrain_feed_native(CPUState* cpu) {
              * tie pull covers the pedestal cases without touching terrain.) */
             openpete_worldvz wz = openpete_worldvz_scaled((float)t->vz[k], 16.0f);
             /* TRUE stored depth, BOTH tiers. The .s's authored OT-slot
-             * offsets (LP += ((w1>>3)&0x1F)*8 + 0x40 slots, HP +=
-             * ((w3>>3)&0x7)*4, 128 world/slot) are ordering KEYS, not
+             * offsets (tface_ot_slots: LP += lp_base_slots + bias *
+             * lp_bias_slots, HP += bias * hp_bias_slots, 128 world/slot) are
+             * ordering KEYS, not
              * geometry: they ride tri.koff into the per-pixel key-resolve
              * contest (the HP key pass + the LP fragment discard in
              * quad_key.frag / psx_scene_key.frag) and never enter the depth

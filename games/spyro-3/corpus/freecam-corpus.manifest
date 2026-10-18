@@ -80,3 +80,6 @@ sunrise_spring@aspect32x9 | pos=(31890, 41448, 21584) yaw=-1993 pitch=45 | | --a
 # A rolled view (roll 228, about 20 degrees): the freecam stores the roll the
 # game's camera builder needs for a true view roll, so the horizon tilts.
 sunny_villa | pos=(79168, 34297, 14796) yaw=867 pitch=197 roll=228
+# terrain ordering: LP faces in front of HP faces whose keys differ by 48-64 slots
+# (the LP insert's base is 0x30 here, 0x40 in Spyro 1)
+sunny_villa | pos=(79168, 34297, 23296) yaw=896 pitch=-230

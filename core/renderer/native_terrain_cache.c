@@ -128,7 +128,7 @@ typedef struct {
     double dH[2];      /* H, poly-anim alpha */
     double dnear[2];   /* x: near-plane view-Z (near-stage clip); y unused */
     double dspare[2];  /* x: H_canon (limit-regime mirrors); y: env-anim colour alpha */
-    int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, 0 */
+    int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, ot_terms */
     float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
     /* Portal inner-rim cull frames (portal_rim_classify mirror; all fp64).
      * Offset here is 2208 = 32-aligned, so the dvec4 run below keeps
@@ -1723,6 +1723,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->fog[0] = g->fog_ref_base;
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;
+    gu->fog[3] = (int32_t)g->ot_terms;
     memcpy(gu->sdv, g->scroll_dv, sizeof(gu->sdv));
     memcpy(gu->sdvc, g->scroll_dvc, sizeof(gu->sdvc));
     gu->rim_cnt[0]  = g->rim_n;

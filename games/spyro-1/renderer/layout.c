@@ -236,11 +236,12 @@ const game_layout_t spyro1_game_layout = {
         .near_corner     = 0x140,
         .near_flag_excl  = 0x80u,
         .near_flag_tier2 = 0x40u,
-        .lp_base_slots   = 0x40,  /* unmeasured against this game's own ordering
-                                   * table; r_environment.s:1436-1448 computes
-                                   * (SZ sum >> 7) + 4*bias with no base term at
-                                   * one insert site, so the base wants its own
-                                   * table census before it moves */
+        .lp_base_slots   = 0x40,  /* the LP insert's bucket index is
+                                   * (4-corner SZ sum >> 5) + (word1 & 0xF8) + 0x40
+                                   * (r_environment.s:841-842) */
+        .lp_farcull_keyed = 0,    /* the far cull tests the depth slot alone
+                                   * against m_CullingDistance >> 7
+                                   * (r_environment.s:792-793) */
         .lp_bias_slots   = 8,
         .hp_bias_slots   = 4,
         .nearband_ot_keys = 1,    /* the near/HQ drain (func_800276A0) inserts

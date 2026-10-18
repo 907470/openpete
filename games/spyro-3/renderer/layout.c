@@ -255,18 +255,15 @@ const game_layout_t spyro3_game_layout = {
         .near_corner     = 0x140,
         .near_flag_excl  = 0u,
         .near_flag_tier2 = 0u,
-        .lp_base_slots   = 0x40,  /* the ordinary insert at
-                                   * environment.s:4216-4242,4667-4681,4783-4790
-                                   * is (SZ sum >> 7) + bias slots with no base
-                                   * term, and the faces this feed reports with
-                                   * 64 slots sit about 63 slots off the guest
-                                   * table's own line. The term is kept because
-                                   * it compensates another unmeasured term of
-                                   * the same insert: zeroing it alone moves the
-                                   * LP-versus-HP contest away from the original
-                                   * frame across the corpus. The base and the
-                                   * bias multiplier move together or not at
-                                   * all. */
+        .lp_base_slots   = 0x30,  /* the LP insert's bucket index is
+                                   * (4-corner SZ sum >> 5) + (word1 & 0xF) * 8
+                                   * + 0x30 (environment.s:7136-7138); the
+                                   * inserts at environment.s:4216-4242 and
+                                   * 4667-4681 are the HP textured triangle's,
+                                   * with no base */
+        .lp_farcull_keyed = 1,    /* that whole index is dropped at or beyond
+                                   * (G_ENVIRONMENT+0x2C >> 7) - 1
+                                   * (environment.s:6851-6858, 7140-7141) */
         .lp_bias_slots   = 8,
         .hp_bias_slots   = 4,
         .nearband_ot_keys = 1,    /* environment.s:4216-4242: the faces the
