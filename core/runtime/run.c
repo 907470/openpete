@@ -5348,8 +5348,8 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             /* Live on/off A/B for interpolation itself. Off = intermediate
              * renders present the lagged frame unchanged (a clean "is
-             * frame-gen doing anything perceptible?" test). A development
-             * instrument: unbound unless [keys.host] asks for it. */
+             * frame-gen doing anything perceptible?" test). Bound to I by
+             * default; the toast states the new mode. */
             if (openpete_key_pressed(OPK_INTERP_TOGGLE)) {
                 g_openpete_interp_enabled = !g_openpete_interp_enabled;
                 OPL_INFO_F("render", "interpolation -> %s",
