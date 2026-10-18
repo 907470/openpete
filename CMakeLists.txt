@@ -657,6 +657,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME presentation_identity_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_presentation_identity.py)
     set_tests_properties(presentation_identity_selftest PROPERTIES LABELS "fence")
+    # The docs-image pair check: an identical before/after pair, a missing
+    # tile and a malformed docs: tag fail; distinct pairs pass.
+    add_test(NAME docs_shot_pairs_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_docs_shot_pairs.py)
+    set_tests_properties(docs_shot_pairs_selftest PROPERTIES LABELS "fence")
 
     # The image-side gates below (native_visual_regression, the presentation
     # golden rows and the dragon tier) are defined over the pinned capture

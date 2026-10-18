@@ -294,12 +294,16 @@ pg_manifest() {
 # A corpus row's optional `launch` field holds whitespace-separated tokens
 # applied to every leg of that row and to no other row. A token spelled
 # KEY=VALUE with an upper-case key is an environment entry; every other token
-# is a command-line argument. Results land in the caller's ROW_ENV and ROW_ARGS
-# arrays, both emptied first so a row without the field adds nothing.
+# is a command-line argument. A token spelled docs:<page>#<anchor>[/before|/after]
+# is a documentation tag read by tests/harness/docs-shot-pairs.py and is passed
+# to no run, so tagging a row leaves its capture unchanged. Results land in the
+# caller's ROW_ENV and ROW_ARGS arrays, both emptied first so a row without the
+# field adds nothing.
 pg_split_launch() {  # launch-field
   ROW_ENV=(); ROW_ARGS=()
   local tok
   for tok in $1; do
+    if [[ "$tok" == docs:* ]]; then continue; fi
     if [[ "$tok" == [A-Z_]*=* ]]; then ROW_ENV+=("$tok"); else ROW_ARGS+=("$tok"); fi
   done
 }

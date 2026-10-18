@@ -293,6 +293,7 @@ vr_finish() {
     echo "credits-rc: $crc"
     echo "identity-rc: $irc"
     echo "diff-rc: $drc"
+    echo "docs-pairs-rc: ${prc:-}"
     pg_crash_list "crashed-leg: " "$OUT"
     [[ -f "$OUT/verdict-diff.log" ]] && awk '
       $1 == "DIVERGE" { print "divergent: " $2 " " substr($0, index($0, $3)) }
@@ -337,6 +338,19 @@ vr_verdict() {
     | tee "$OUT/verdict-diff.log"
   drc=${PIPESTATUS[0]}
   if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; vr_finish 64; fi
+  # Docs pairs: each before/after pair of docs: rows must differ in this
+  # capture (65 = the game has no docs rows).
+  rm -f "${OUT:?}/verdict-docs.log"
+  if [[ "$PG_TIER" == "presentation" ]]; then
+    python3 tests/harness/docs-shot-pairs.py check --game "$GAME" --dir "$OUT" "${subset[@]}" \
+      | tee "$OUT/verdict-docs.log"
+    prc=${PIPESTATUS[0]}
+    [[ $prc -eq 65 ]] && prc=0
+    if [[ $prc -ne 0 ]]; then
+      echo "[presentation-golden] FAIL: a docs before/after pair is identical or missing (see docs-shot-pairs lines above)."
+      [[ $drc -eq 0 ]] && vr_finish 1
+    fi
+  fi
   if [[ $crc -ne 0 && $crc -ne 64 ]]; then
     echo "[presentation-golden] FAIL: credits interpolation leg (see the credits-interp lines above)."
     [[ $drc -eq 0 ]] && vr_finish 1

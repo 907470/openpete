@@ -180,4 +180,15 @@ attract-collect-hud-jump|13058|2||13060,13061,13062,13063,13064
 # drawn into the capture by --screenshot-overlays, over Artisans. Its rows
 # are the menu's row table; the SETTINGS save row's removal diverges it.
 # Blessed pre-fix.
-settings-menu|1700|100||1760|--skip-to-level artisans OPENPETE_MENU_DEMO=1 --screenshot-overlays
+settings-menu|1700|100||1760|--skip-to-level artisans OPENPETE_MENU_DEMO=1 --screenshot-overlays docs:playing/settings-menu#rows
+# docs-look: images for the User docs (tests/harness/docs-shot-pairs.py). One
+# freecam pose over Artisans' ground at a pinned VBL; the plain row is the
+# shipped default and the /before side of every pair, each variant changes one
+# setting and is its pair's /after side. The pair check fails when a setting
+# stops changing the image.
+docs-look|1800|100||1900|--skip-to-level artisans --freecam-pose 84992,45582,9948,1024,160 docs:graphics/retro-look#wobble/before docs:graphics/retro-look#pixelation/before docs:graphics/retro-look#texture-warp/before docs:graphics/retro-look#dither/before docs:graphics/quality#level-of-detail/before
+docs-look@wobble|1800|100||1900|--skip-to-level artisans --freecam-pose 84992,45582,9948,1024,160 --vertex-precision integer --raster-quantize 0 docs:graphics/retro-look#wobble/after
+docs-look@pixelation|1800|100||1900|--skip-to-level artisans --freecam-pose 84992,45582,9948,1024,160 --raster-quantize 1 docs:graphics/retro-look#pixelation/after
+docs-look@affine|1800|100||1900|--skip-to-level artisans --freecam-pose 84992,45582,9948,1024,160 --texture-mapping affine docs:graphics/retro-look#texture-warp/after
+docs-look@dither|1800|100||1900|--skip-to-level artisans --freecam-pose 84992,45582,9948,1024,160 --dither 1 docs:graphics/retro-look#dither/after
+docs-look@lodext|1800|100||1900|--skip-to-level artisans --freecam-pose 84992,45582,9948,1024,160 --lod extended docs:graphics/quality#level-of-detail/after
