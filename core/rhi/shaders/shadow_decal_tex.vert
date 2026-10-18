@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_viewz.glsl"
+#include "psx_unorm8.glsl"
 
 /* Textured shadow-decal vertex stage - the MOBY drop-shadows.
  *
@@ -33,6 +34,6 @@ void main()
     vec4 sc = op_scene_clip(inPos.xy, vzo, true, DEPTH_REVERSED);
     gl_Position = vec4(inPos.xy * W, sc.z * W, W);
     vUV = inUV;
-    vColor = inColor;
+    vColor = op_unorm8(inColor);
     vKoff = inKoff;
 }

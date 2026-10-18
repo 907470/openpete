@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_unorm8.glsl"
 
 /* PSX VRAM sampler, vertex stage.
  *
@@ -20,5 +22,5 @@ void main()
 {
     gl_Position = vec4(inPos, 1.0);
     vUV = inUV;
-    vColor = inColor;
+    vColor = op_unorm8(inColor);
 }

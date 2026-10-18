@@ -1,5 +1,5 @@
 # row	px whose RGB differ, CPU terrain walk vs retained terrain cache (tests/harness/check_terrain_walk_cache.sh)
-attract-demo@3973__inter__original	1
-autumn-plains-skelos-badlands-portal-entry@1423__canon__original	3
-autumn-plains-skelos-badlands-portal-entry@1423__inter__original	4
+attract-demo@3973__inter__original	0
+autumn-plains-skelos-badlands-portal-entry@1423__canon__original	0
+autumn-plains-skelos-badlands-portal-entry@1423__inter__original	0
 glimmer-pogo-dialogue@1476__canon__original	0

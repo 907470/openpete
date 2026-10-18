@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_viewz.glsl"
+#include "psx_unorm8.glsl"
 
 /* Vertex-coloured scene stage - PERSPECTIVE-CORRECT (matches psx_scene.vert).
  * The CPU feeds post-projection 2D clip-space screen xy + the ordering view-Z
@@ -56,7 +57,7 @@ void main()
     float Wu  = max(inW, 1.0);                        /* colour perspective W   */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
     gl_Position = op_scene_clip(inPos.xy, vzo, AFFINE_UV, DEPTH_REVERSED);
-    vColor = inColor * q;
+    vColor = op_unorm8(inColor) * q;
     vUV = inUV * q;
     vQ = q;
     vKoff = inKoff;

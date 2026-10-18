@@ -10,18 +10,20 @@
 # compared with tests/golden/spyro-2/walk-cache-baseline.tsv.
 #
 # Plain boot (no attract-demo.bk2: the title screen and attract demo), VBL 3973
-# sub-tick present at alpha 0.5, --lod original: 1 px at (357,185) on one
-# untextured LP face (sector 96 face 5, one level in blue); the canonical
-# present at the same VBL reads 0.
+# sub-tick present at alpha 0.5, --lod original: untextured LP faces (sector
+# 96 face 5 at (357,185)), whose gouraud colour the walk and the cache agree
+# on only when both stages read the vertex byte on the exact c/255 grid
+# (core/rhi/shaders/psx_unorm8.glsl); off it, the pixel differs by one level
+# in one channel.
 attract-demo | 3973 | inter | original
 #
 # Near-band sub-cell keys: the drain inserts a near face's sub-cells at their
 # own keys, finer than the 2x2 and the whole triangles the mesh draws, and on
 # both feeds each fragment of those triangles keys and contests at the key of
 # the sub-cell containing it. Close camera over near-band ground under a moby
-# shadow, canonical present and the sub-tick present. autumn-plains 1423: 3 px
-# (canonical) and 4 px (sub-tick), each one level in one channel on
-# upper-screen terrain.
+# shadow, canonical present and the sub-tick present. The autumn-plains rows
+# also hold untextured LP terrain in the upper screen, which measures the
+# c/255 colour grid as the attract-demo row does.
 glimmer-pogo-dialogue | 1476 | canon | original
 autumn-plains-skelos-badlands-portal-entry | 1423 | canon | original
 autumn-plains-skelos-badlands-portal-entry | 1423 | inter | original
