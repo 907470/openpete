@@ -287,6 +287,13 @@ static struct {
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
     tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
+    /* ring[i]'s identity for the compose-side lookups (tc_state_for_stamp,
+     * tc_dup_probe): build_serial << 32 | stamp, 0 while ring[i] holds no
+     * state. The builder rewrites ring states while another thread composes
+     * against a different one, so the compose side reads only these words;
+     * the content of the state a scene's stamp names reaches it through
+     * that scene's publish. */
+    _Atomic uint64_t ring_key[TC_RING];
     tc_state      hold[OPENPETE_TERCACHE_HOLDS]; /* copies kept for held scenes (openpete_tercache_hold_take) */
     unsigned      hold_takes, hold_misses, hold_drops; /* hold census */
     int           ring_next;
@@ -1597,6 +1604,8 @@ static tc_state *tc_begin_state(uint32_t stamp, int immediate)
         if (tc_dbg()) fprintf(stderr, "[tc] state pick=%d for stamp=%08x (was %08x valid=%d) ctr=%u\n",
                               pick, stamp, T->stamp, T->valid, s_tc.present_ctr);
         T->stamp = stamp; T->valid = 1; T->build_serial = s_tc.present_ctr;
+        atomic_store_explicit(&s_tc.ring_key[pick],
+                              (uint64_t)T->build_serial << 32 | stamp, memory_order_release);
         return T;
     }
     if (immediate) {
@@ -1789,7 +1798,10 @@ static const tc_state *tc_state_for_stamp(uint32_t stamp, int *src)
     if (!s_tc.ready) return NULL;
     if (stamp & OPTC_STAMP_SCENE_BIT)
         for (int i = 0; i < TC_RING; i++)
-            if (s_tc.ring[i].valid && s_tc.ring[i].stamp == stamp) { *src = 1; return &s_tc.ring[i]; }
+            if ((uint32_t)atomic_load_explicit(&s_tc.ring_key[i], memory_order_acquire) == stamp) {
+                *src = 1;
+                return &s_tc.ring[i];
+            }
     if (s_tc.live.valid && stamp == s_tc.live.stamp) { *src = 2; return &s_tc.live; }
     if (s_tc.staged.valid && stamp == s_tc.staged.stamp) { *src = 3; return &s_tc.staged; }
     for (int i = 0; i < OPENPETE_TERCACHE_HOLDS; i++)
@@ -1807,11 +1819,13 @@ static const tc_state *tc_state_for_stamp(uint32_t stamp, int *src)
 static void tc_dup_probe(uint32_t stamp, const tc_state *R)
 {
     int n = 0, newer = 0;
+    const uint32_t mine = (uint32_t)(atomic_load_explicit(&s_tc.ring_key[R - s_tc.ring],
+                                                          memory_order_acquire) >> 32);
     for (int i = 0; i < TC_RING; i++) {
-        const tc_state *S = &s_tc.ring[i];
-        if (!S->valid || S->stamp != stamp) continue;
+        const uint64_t k = atomic_load_explicit(&s_tc.ring_key[i], memory_order_acquire);
+        if ((uint32_t)k != stamp) continue;
         n++;
-        newer |= (int32_t)(S->build_serial - R->build_serial) > 0;
+        newer |= (int32_t)((uint32_t)(k >> 32) - mine) > 0;
     }
     if (n > 1 && newer) {
         s_tc.ring_dup_selects++;

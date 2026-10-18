@@ -287,10 +287,11 @@ void openpete_native_request_fullscreen_toggle(void)
  * keeps PsyX_Exit (and its exit(0), which hangs on static teardown under
  * WSL+GL+libco) unreachable. */
 /* Guest-execution GPU audit (core/rhi/rhi_gpu_audit.h). Set around every
- * switch to the game fiber; the RHI records any Vulkan call made while it is
- * non-zero. Declared rather than included so run.c does not inherit the
- * header's vk* redirection macros. */
-extern int g_openpete_guest_running;
+ * switch to the game fiber; the RHI records any Vulkan call the setting
+ * thread makes while it is non-zero. Thread-local, so a present or compile
+ * thread never sees it set. Declared rather than included so run.c does not
+ * inherit the header's vk* redirection macros. */
+extern _Thread_local int g_openpete_guest_running;
 extern unsigned op_gpu_audit_total(void);
 extern int      op_gpu_audit_names(const char **out, int max);
 extern unsigned op_gpu_audit_map_writes(void);
@@ -5711,7 +5712,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * memory while it runs (core/rhi/rhi_gpu_audit.h measures
                  * this); under eager production the present thread keeps
                  * presenting through this switch. */
-                op_gpu_audit_bind_thread();
                 g_openpete_guest_running = 1;
                 co_switch((cothread_t)openpete_game_fiber);
                 g_openpete_guest_running = 0;
@@ -7404,6 +7404,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         }
     }
 
+    sfx_pack_shutdown();   /* its decode worker's SDL calls must not overlap SDL_Quit */
     /* Renderer + PsyCross teardown destroy the window and call SDL_Quit, which
      * belong to the thread that created them. Under the split that is main, so
      * the worker leaves them alone and main runs them after the join -

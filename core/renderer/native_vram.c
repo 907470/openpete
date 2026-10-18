@@ -25,6 +25,15 @@ static uint16_t s_model[(size_t)OPENPETE_VRAM_W * OPENPETE_VRAM_H];
 
 uint16_t* openpete_vram_data(void) { return s_model; }
 
+/* The texels the GPU VRAM texture holds for the scene being composed; see
+ * openpete_vram_composed. */
+static uint16_t s_composed[(size_t)OPENPETE_VRAM_W * OPENPETE_VRAM_H];
+static _Thread_local const uint16_t* s_read_view;
+
+uint16_t* openpete_vram_composed(void) { return s_composed; }
+void openpete_vram_bind_composed(void) { s_read_view = s_composed; }
+const uint16_t* openpete_vram_read(void) { return s_read_view ? s_read_view : s_model; }
+
 /* ---- op-rect log (verify census) ---------------------------------------- */
 #define NV_MAX_OP_RECTS 64
 static openpete_vram_op_rect s_op_rects[NV_MAX_OP_RECTS];

@@ -564,6 +564,13 @@ typedef struct {
     int      n;
     int      ter_rank;             /* keys first emitted before the terrain feed began */
 } bw_order_t;
+/* The texture pack's fog inputs a replaced draw reads (tp_pack_fog): the
+ * terrain walk's fog-ladder ramp (texture_pack_fog_ladder_get) and the mod
+ * fog shift (texture_pack_fog_shift_get), as of one scene's extraction. */
+typedef struct {
+    int   lad_on;   float lad[2];          /* t_scale, t_bias */
+    int   shift_on; float shift_s[3], shift_o[3];
+} nr_pack_fog;
 typedef struct {
     scene_tri_t *tri; int n;        /* tri = tri_v's run, re-read after each growth */
     mod_fvec  tri_v;
@@ -587,6 +594,7 @@ typedef struct {
                                               * held at publish (OPENPETE_PRESENT_TRACE only) */
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
     openpete_mods_material_view_t matview;   /* interned material slots at publish */
+    nr_pack_fog pack_fog;                    /* texture-pack fog inputs at publish */
     /* scheduling */
     uint32_t  scene_id;
     op_time_t target_ns;           /* the present instant alpha was computed for */
@@ -610,6 +618,7 @@ static const openpete_shadow_footprint *ps_shadow_foot(void);
 static const nr_cover_block *ps_cover(void);
 static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
+static const nr_pack_fog *ps_pack_fog(void);
 static void     ps_apply_geometry(void);
 static int      hold_verdict(const int geom[8]);
 static void     hold_retain_canonical(void);
@@ -2732,7 +2741,7 @@ static int held_texels_solid(const scene_tri_t* q) {
     /* Texels inside a draw buffer are pixels the game rendered there, which
      * the VRAM model does not hold under a native render. */
     if (openpete_fb_snapshot_area_holds(x0, y0, x1 - x0, y1 - y0)) return 1;
-    const uint16_t* vram = openpete_vram_data();
+    const uint16_t* vram = openpete_vram_read();
     for (int y = y0; y < y1; y++)
         for (int x = x0; x < x1; x++)
             if (vram[(size_t)y * OPENPETE_VRAM_W + (size_t)x] == 0) return 0;
@@ -7252,12 +7261,14 @@ static void nr_vram_dirty_cb(int x, int y, int w, int h)
  * composed against the pause's VRAM (the framebuffer effect writes over the
  * texture pages the ground samples): the freeze backdrop lost its ground.
  * Inline presents apply everything (one scene, extracted and composed in the
- * same breath). A full refresh (level load, list overflow) carries no copy:
- * it uploads the mirror when applied, which is exact for the newest scene
- * and the best available for an older one. */
+ * same breath). A full refresh (level load, list overflow) carries a copy of
+ * the whole mirror; only when that allocation fails does it upload the
+ * mirror itself when applied. Every applied entry is also written into the
+ * composed VRAM image (openpete_vram_composed), which the present thread's
+ * compose-time VRAM reads use in place of the mirror the guest rewrites. */
 typedef struct {
     uint32_t  scene_id;
-    int       full;                       /* upload the whole mirror */
+    int       full;                       /* the whole VRAM: pix holds it, or NULL for the mirror */
     int       nrects;
     rhi_rect  rects[NR_VRAM_MAX_RECTS];
     uint8_t  *pix;                        /* rects' texels, packed as the upload wants them */
@@ -7282,18 +7293,33 @@ static void vram_journal_pop(void)
     free(e->pix); e->pix = NULL; e->pix_bytes = 0;
     s_vj_head = (s_vj_head + 1) % VRAM_JOURNAL; s_vj_n--;
 }
-/** @brief Record one VRAM journal entry's upload into the current frame's command buffer.
+/** @brief Record one VRAM journal entry's upload into the current frame's command buffer and write it into the composed VRAM image.
  *
- * A full entry uploads the whole mirror; any other entry uploads its packed
- * rect texels. The caller holds the VRAM mutex.
+ * A full entry uploads its whole-VRAM copy, or the mirror when it holds
+ * none; any other entry uploads its packed rect texels, 4-byte aligned per
+ * rect as sync_vram_texture_locked packed them. The caller holds the VRAM
+ * mutex.
  * @param e Journal entry. */
 static void vram_journal_apply(const vram_jentry_t *e)
 {
+    uint16_t *comp = openpete_vram_composed();
     if (e->full) {   /* the mirror covers the PSX rows only, not the auxiliary bank */
         const rhi_rect all = { 0, 0, NR_VRAM_W, NR_VRAM_H };
-        rhi_update_vram_rects(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror, &all, 1);
-    } else if (e->nrects > 0 && e->pix)
+        const uint16_t *src = e->pix ? (const uint16_t *)e->pix : s_nr.vram_mirror;
+        rhi_update_vram_rects(s_nr.dev, s_nr.vram_tex, src, &all, 1);
+        memcpy(comp, src, (size_t)NR_VRAM_W * NR_VRAM_H * sizeof *comp);
+    } else if (e->nrects > 0 && e->pix) {
         rhi_update_vram_rects_packed(s_nr.dev, s_nr.vram_tex, e->pix, e->pix_bytes, e->rects, e->nrects);
+        size_t off = 0;
+        for (int i = 0; i < e->nrects; i++) {
+            const rhi_rect r = e->rects[i];
+            off = (off + 3) & ~(size_t)3;
+            for (int row = 0; row < r.h; row++)
+                memcpy(comp + (size_t)(r.y + row) * NR_VRAM_W + r.x,
+                       e->pix + off + (size_t)row * r.w * 2u, (size_t)r.w * 2u);
+            off += (size_t)r.w * r.h * 2u;
+        }
+    }
 }
 
 /* sync (guest side: drains the dirty rects, refreshes the mirror) and upload
@@ -7303,6 +7329,19 @@ static void *s_vram_mx;   /* SDL_Mutex, openpete_mutex_once */
 /** @brief The VRAM mirror lock, created on first use without a creation race. */
 static SDL_Mutex *vram_mx(void) { return openpete_mutex_once(&s_vram_mx); }
 static void sync_vram_texture_locked(void);
+/** @brief Make a journal entry a full refresh carrying its own copy of the whole mirror.
+ *
+ * A failed allocation leaves the entry without a copy, and its apply then
+ * uploads the mirror. The caller holds the VRAM mutex.
+ * @param e Journal entry, the mirror just refreshed whole. */
+static void vram_jentry_keep_full(vram_jentry_t *e)
+{
+    e->full = 1;
+    e->pix_bytes = (size_t)NR_VRAM_W * NR_VRAM_H * sizeof *s_nr.vram_mirror;
+    e->pix = (uint8_t *)malloc(e->pix_bytes);
+    if (e->pix) memcpy(e->pix, s_nr.vram_mirror, e->pix_bytes);
+    else e->pix_bytes = 0;
+}
 /** @brief Drain the dirty VRAM rects into the mirror under the VRAM lock (sync_vram_texture_locked). */
 static void sync_vram_texture(void)
 {
@@ -7318,7 +7357,8 @@ void openpete_native_vram_sync(void) { if (s_nr.enabled && !s_nr.headless) sync_
  * Runs the OPENPETE_VRAM_CENSUS, OPENPETE_VRAM_VERIFY and OPENPETE_VRAM_PEEK
  * instruments first. Returns when no region is dirty. A full journal ring pops
  * its oldest entry and forces a full refresh. A full refresh reads the whole of
- * VRAM into the mirror and journals a full entry. Otherwise each dirty rect is
+ * VRAM into the mirror and journals a full entry carrying a copy of it (none
+ * when the allocation fails). Otherwise each dirty rect is
  * read into the mirror and its texels are copied, 4-byte aligned, into one
  * malloc'd buffer owned by the entry; a failed allocation degrades the entry to
  * a full upload. The caller holds the VRAM mutex. */
@@ -7428,7 +7468,7 @@ static void sync_vram_texture_locked(void)
     e->pix = NULL; e->pix_bytes = 0; e->nrects = 0;
     if (s_vram_full) {
         GR_ReadVRAM(s_nr.vram_mirror, 0, 0, NR_VRAM_W, NR_VRAM_H);
-        e->full = 1;
+        vram_jentry_keep_full(e);
         s_vram_full = false;
         s_vram_nrects = 0;
         s_vj_n++;
@@ -11215,7 +11255,7 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
                           tp_fog_xform *out)
 {
     for (int c = 0; c < 3; c++) { out->a[c] = 1.0f; out->b[c] = 0.0f; }
-    const uint16_t *vr = openpete_vram_data();
+    const uint16_t *vr = openpete_vram_read();
     if (!vr || delta <= 0 || delta > TP_FOG_DELTA_MAX) return;
     int fog_y = (base_y + delta) & 0x1FF;
     if (clut_x < 0 || base_y < 0 || base_y > 511) return;
@@ -12051,7 +12091,8 @@ static int tp_pack_fit(const psx_material* m, int cly,
  * published, and OPENPETE_TEXPACK_FOG_CONT is not 0; a face carrying
  * TP_FOG_DELTA_FOGBIAS shifts the ramp by 8192/3840. Both offsets are
  * retargeted per texture through tp_pack_fit, with the global fog shift as
- * the fallback. Rung 0 leaves the identity transform.
+ * the fallback. The ramp and the fog shift are the composed scene's
+ * (ps_pack_fog). Rung 0 leaves the identity transform.
  * @param m Material.
  * @param cly Base CLUT row.
  * @param fog_delta The face's fog delta word (rung and TP_FOG_DELTA flags).
@@ -12075,8 +12116,9 @@ static void tp_pack_fog(const psx_material* m, int cly, int fog_delta,
 
     float fp[3], fq[3];
     int   fit = tp_pack_fit(m, cly, id, repl, pu0, pv0, fp, fq);
-    float fs[3], fo[3];
-    int   shift = fit ? 0 : texture_pack_fog_shift_get(fs, fo);
+    const nr_pack_fog *pf = ps_pack_fog();
+    const float *fs = pf->shift_s, *fo = pf->shift_o;
+    int   shift = fit ? 0 : pf->shift_on;
 
     int rung = fog_delta & TP_FOG_DELTA_RUNG;
     if (rung > 0) {
@@ -12090,9 +12132,8 @@ static void tp_pack_fog(const psx_material* m, int cly, int fog_delta,
         }
     }
 
-    float ts, tb;
-    if (s_cont_en && (fog_delta & TP_FOG_DELTA_CONT) &&
-        texture_pack_fog_ladder_get(&ts, &tb)) {
+    if (s_cont_en && (fog_delta & TP_FOG_DELTA_CONT) && pf->lad_on) {
+        const float ts = pf->lad[0], tb = pf->lad[1];
         tp_fog_xform fN;
         tp_fog_affine(m->clut_x, cly, TP_FOG_DELTA_MAX, m->bpp, &fN);
         for (int c = 0; c < 3; c++) {
@@ -14622,15 +14663,29 @@ static bool scene_compose_has_content(const scene_tri_t* scene, int n, uint32_t 
     return content;
 }
 
-/* Scene composes drawn so far (draw_native_scene calls), and whether the last
- * one fell back to the PSX VRAM framebuffer; openpete_native_compose_serial. */
-static unsigned s_compose_serial;
-static bool s_compose_vram;
+/* Scene composes drawn so far (draw_native_scene calls) in bits 31:1, and
+ * whether the last one fell back to the PSX VRAM framebuffer in bit 0; one
+ * word, so a reader on another thread than the composer (the capture legs
+ * on the sim thread under eager production) sees a serial and the flag of
+ * the same compose. Read by openpete_native_compose_serial. */
+static SDL_AtomicU32 s_compose_word;
+
+/** @brief Count one scene compose and record whether it fell back to the VRAM framebuffer.
+ *
+ * Only the thread that owns the display composes, so the read-modify-write
+ * has one writer.
+ * @param vram True when the compose showed the PSX VRAM framebuffer. */
+static void compose_note(bool vram)
+{
+    const Uint32 next = (SDL_GetAtomicU32(&s_compose_word) >> 1) + 1u;
+    SDL_SetAtomicU32(&s_compose_word, next << 1 | (Uint32)vram);
+}
 
 unsigned openpete_native_compose_serial(int *vram)
 {
-    if (vram) *vram = s_compose_vram;
-    return s_compose_serial;
+    const Uint32 w = SDL_GetAtomicU32(&s_compose_word);
+    if (vram) *vram = (int)(w & 1u);
+    return w >> 1;
 }
 
 /** @brief Report whether a present lifts 2D over its fade: it draws a fade and holds a triangle the game links after the fade quad.
@@ -14813,8 +14868,7 @@ static bool draw_native_scene(bool full_extent)
     uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
 
     const bool vram = !scene_compose_has_content(scene, scene_n, scene_freeze, bg);
-    s_compose_serial++;
-    s_compose_vram = vram;
+    compose_note(vram);
     if (vram) return false;
 
     s_render_full_extent = full_extent ? 1 : 0;
@@ -19071,6 +19125,29 @@ static const bw_order_t *ps_bw(void) { return s_ps_slot ? &s_ps_slot->bw : &s_bw
 static int ps_freeze_retained(void) { return s_ps_slot ? s_ps_slot->freeze_retained : s_freeze_retained; }
 /** @brief The VBL at which the composed scene was extracted: the slot's, or the live scene's inline. */
 static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
+/** @brief Copy the texture pack's current fog-ladder ramp and fog shift.
+ *
+ * Runs on the thread that extracts scenes, which is the thread that sets
+ * both.
+ * @param f Receives the inputs. */
+static void pack_fog_capture(nr_pack_fog *f)
+{
+    f->lad_on = texture_pack_fog_ladder_get(&f->lad[0], &f->lad[1]);
+    if (!f->lad_on) f->lad[0] = f->lad[1] = 0.0f;
+    f->shift_on = texture_pack_fog_shift_get(f->shift_s, f->shift_o);
+}
+/** @brief The texture-pack fog inputs of the composed scene: the slot's copy, or the live values inline.
+ *
+ * A slot compose may run on the present thread while the next walk
+ * rewrites the live values, so it reads the copy taken at publish.
+ * @return The inputs; the inline value is valid until the next call. */
+static const nr_pack_fog *ps_pack_fog(void)
+{
+    static nr_pack_fog live;
+    if (s_ps_slot) return &s_ps_slot->pack_fog;
+    pack_fog_capture(&live);
+    return &live;
+}
 
 /* Stamp the terrain builder tags its build with: the scene id while an eager
  * scene is being extracted, else the VBL counter as before. Scene ids carry
@@ -19165,6 +19242,7 @@ static void slot_capture_inputs(scene_slot_t *sl) {
     openpete_glitch_mark_last_walk(&sl->gwalk);
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
     openpete_mods_material_view_capture(&sl->matview);
+    pack_fog_capture(&sl->pack_fog);
     sl->hold_area = hold_verdict(s_geom_in);
 }
 /* Publish into any free ring slot; see the header. */

@@ -4,21 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <SDL3/SDL.h>
-
-int g_openpete_guest_running = 0;
-
-/* The audit asks whether GUEST EXECUTION touched the device. With a present
- * thread running concurrently, a call made on that thread while the guest
- * flag is up is the design working, not the guest reaching the device - so
- * only calls from the guest's own thread count. */
-static SDL_ThreadID s_guest_tid;
-void op_gpu_audit_bind_thread(void) { s_guest_tid = SDL_GetCurrentThreadID(); }
-/** @brief Report whether the calling thread is the bound guest thread.
- *
- * @return 1 when no thread is bound yet or the caller is the bound one, else
- *         0. */
-static int on_guest_thread(void) { return !s_guest_tid || SDL_GetCurrentThreadID() == s_guest_tid; }
+/* The audit asks whether GUEST EXECUTION touched the device. A present
+ * thread running concurrently makes Vulkan calls while the guest runs; the
+ * flag is per thread, so only the guest's own thread sees it set and counts. */
+_Thread_local int g_openpete_guest_running = 0;
 
 #define OP_GPU_AUDIT_MAX_NAMES 32
 
@@ -28,7 +17,6 @@ static int         s_name_n;
 
 void op_gpu_audit_hit(const char *fn)
 {
-    if (!on_guest_thread()) return;
     s_total++;
     /* The name comes from a #fn stringization, so every call site for one
      * entry point passes the same pointer -- compare by address first and
@@ -53,7 +41,6 @@ static unsigned long long s_map_bytes;
 
 void op_gpu_audit_map_write(size_t bytes)
 {
-    if (!on_guest_thread()) return;
     s_map_writes++;
     s_map_bytes += (unsigned long long)bytes;
 }

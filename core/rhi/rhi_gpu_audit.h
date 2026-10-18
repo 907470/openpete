@@ -28,29 +28,29 @@
 extern "C" {
 #endif
 
-/* Non-zero while the guest fiber is executing a tick on this thread. */
-extern int g_openpete_guest_running;
+/* Non-zero while the guest fiber is executing a tick on this thread.
+ * Thread-local: the thread that switches into the fiber sets it, so a
+ * present or pipeline-compile thread running at the same time reads its own
+ * copy, always 0, and its Vulkan calls are not counted. */
+#ifdef __cplusplus
+extern thread_local int g_openpete_guest_running;
+#else
+extern _Thread_local int g_openpete_guest_running;
+#endif
 
-/** @brief Record one Vulkan call made during guest execution on the guest thread.
+/** @brief Record one Vulkan call made during guest execution.
  *
- * A call from any thread other than the one bound by
- * op_gpu_audit_bind_thread() is ignored; before a thread is bound every call
- * counts. Increments the total and adds `fn` to the distinct-name set (at most
- * 32 names). Takes no lock.
+ * Reached only on the thread whose g_openpete_guest_running is set.
+ * Increments the total and adds `fn` to the distinct-name set (at most 32
+ * names). Takes no lock.
  * @param fn Name of the Vulkan entry point, from the OP_GPU_AUDIT stringization. */
 void op_gpu_audit_hit(const char *fn);
-/** @brief Bind the audit to the calling thread as the guest thread.
- *
- * The run loop calls it on the thread that runs the guest fiber, before every
- * switch into the guest; the stored id is overwritten each time. Until the
- * first call every thread counts as the guest thread. */
-void op_gpu_audit_bind_thread(void);
 
 /** @brief Record one host write into persistently-mapped device memory made during guest execution.
  *
  * These writes issue no Vulkan call, so op_gpu_audit_hit() does not see them,
- * and they are bytes a concurrent present thread may read. Calls from a
- * thread other than the bound guest thread are ignored. The write count and
+ * and they are bytes a concurrent present thread may read. Reached only on
+ * the thread whose g_openpete_guest_running is set. The write count and
  * byte total are kept apart from the call total and read back through
  * op_gpu_audit_map_writes() and op_gpu_audit_map_bytes().
  * @param bytes Number of bytes written. */

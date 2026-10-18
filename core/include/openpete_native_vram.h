@@ -37,6 +37,30 @@ extern "C" {
  * @return Pointer to texel (0, 0). */
 uint16_t* openpete_vram_data(void);
 
+/** @brief Return the composed VRAM image's storage, written only by the thread that owns the display.
+ *
+ * Same size and stride as the model. The native renderer applies each VRAM
+ * journal entry to it as it records the entry's upload, so it holds the
+ * texels the GPU VRAM texture holds for the scene being composed. A thread
+ * composing concurrently with the guest reads it instead of the model,
+ * which the guest's image ops and the mirror refresh rewrite meanwhile.
+ * @return Pointer to texel (0, 0). */
+uint16_t* openpete_vram_composed(void);
+
+/** @brief Bind the calling thread's VRAM reads (openpete_vram_read) to the composed image.
+ *
+ * Called once by the present thread at its start. The binding is
+ * thread-local; an unbound thread reads the model. */
+void openpete_vram_bind_composed(void);
+
+/** @brief Return the VRAM image the calling thread reads: the composed image when bound, else the model.
+ *
+ * Read-only consumers that run at compose time (texture-pack identity, the
+ * pack fog and grade fits, held-texel tests) read through this, so a
+ * present thread never reads the model the guest is writing.
+ * @return Pointer to texel (0, 0). */
+const uint16_t* openpete_vram_read(void);
+
 /** @brief Install the native image ops into PsyCross and initialise the texture-pack registry.
  *
  * Registers openpete_vram_load, openpete_vram_move and openpete_vram_clear

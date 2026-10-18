@@ -2306,7 +2306,7 @@ void     openpete_native_present_census_report(void);
  * framebuffer instead. Live presents and screenshot dumps both count.
  * @param vram Receives 1 when the last compose showed the VRAM framebuffer,
  *        else 0; may be NULL.
- * @return Scene composes so far. */
+ * @return Scene composes so far, modulo 2^31. */
 unsigned openpete_native_compose_serial(int *vram);
 /** @brief Return the refresh rate of the display the current swapchain presents to.
  *

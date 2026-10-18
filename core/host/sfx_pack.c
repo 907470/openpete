@@ -107,6 +107,7 @@ static sfx_pack_census_t s_census;
 static SDL_Mutex*     s_mx;
 static SDL_Condition* s_cv;          /* worker work, and decode completion */
 static SDL_Thread*    s_worker;
+static int            s_worker_quit; /* set under s_mx by sfx_pack_shutdown; never cleared */
 /* Callback wall time per committed key-on, 100 us buckets to 50 ms. */
 #define SP_CB_BUCKETS 501
 static uint32_t s_cb_hist[SP_CB_BUCKETS];
@@ -311,15 +312,19 @@ static void worker_publish(const char* path, long mtime, long size, int ok, sp_p
 }
 
 /** @brief Decode worker: decode every file entry without PCM, then wait for the next scan.
+ *
+ * Exits at the first check of s_worker_quit after sfx_pack_shutdown sets
+ * it: while waiting, or after publishing the decode in progress, so it
+ * leaves no entry claimed.
  * @param ud Unused.
- * @return 0 (never returns while the process runs). */
+ * @return 0. */
 static int SDLCALL sfx_decode_worker(void* ud)
 {
     (void)ud;
     char path[sizeof(((sp_entry*)0)->path)];
     long mtime = 0, size = 0;
     SDL_LockMutex(s_mx);
-    for (;;) {
+    while (!s_worker_quit) {
         if (!worker_claim(path, &mtime, &size)) {
             SDL_WaitCondition(s_cv, s_mx);
             continue;
@@ -331,6 +336,7 @@ static int SDLCALL sfx_decode_worker(void* ud)
         worker_publish(path, mtime, size, ok, &r);
         SDL_BroadcastCondition(s_cv);
     }
+    SDL_UnlockMutex(s_mx);
     return 0;
 }
 
@@ -345,14 +351,13 @@ static int ensure_lock(void)
 
 /** @brief Start the decode worker when file entries exist, and wake it to decode the current table.
  *
- * Caller holds s_mx. Without a worker (creation failed) the callback
- * decodes each entry on first use. */
+ * Caller holds s_mx. Without a worker (creation failed, or stopped by
+ * sfx_pack_shutdown) the callback decodes each entry on first use. */
 static void worker_kick(void)
 {
-    if (!s_worker && entry_count() > 0) {
+    if (!s_worker && !s_worker_quit && entry_count() > 0) {
         s_worker = SDL_CreateThread(sfx_decode_worker, "sfx-decode", NULL);
-        if (s_worker) SDL_DetachThread(s_worker);
-        else OPL_WARN_F("sfxpack", "decode worker unavailable (%s); decoding on first use",
+        if (!s_worker) OPL_WARN_F("sfxpack", "decode worker unavailable (%s); decoding on first use",
                         SDL_GetError());
     }
     SDL_BroadcastCondition(s_cv);
@@ -863,6 +868,18 @@ void sfx_pack_init(void)
         OPL_INFO_F("sfxpack", "sfx pack active: %d file%s (%d source%s)",
                    entry_count(), entry_count() == 1 ? "" : "s", src_count(),
                    src_count() == 1 ? "" : "s");
+}
+
+void sfx_pack_shutdown(void)
+{
+    if (!s_mx) return;
+    SDL_LockMutex(s_mx);
+    s_worker_quit = 1;
+    SDL_BroadcastCondition(s_cv);
+    SDL_Thread* w = s_worker;
+    s_worker = NULL;
+    SDL_UnlockMutex(s_mx);
+    if (w) SDL_WaitThread(w, NULL);
 }
 
 void sfx_pack_generation_bump(void)

@@ -33,6 +33,13 @@ extern "C" {
  *
  * Without the table lock the pack stays off (logged). */
 void sfx_pack_init(void);
+/** @brief Stop the decode worker and wait for it to exit.
+ *
+ * A decode in progress finishes and is published first. Called before
+ * SDL_Quit, which the worker's SDL calls must not overlap. Afterwards no
+ * worker starts again and the override callback decodes on first use.
+ * Safe to call more than once. */
+void sfx_pack_shutdown(void);
 /** @brief Name the base sfx directory in place of OPENPETE_SFXPACK_DIR and `assets/sfx`.
  *
  * Also suppresses the user data directory source. Read at each rescan,

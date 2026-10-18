@@ -976,6 +976,8 @@ static const tp_entry *tp_cover(int x, int y, int w, int h)
  * so a trimmed hash gives one tile several identities and containment
  * matching fails. Entries past the used range are stable because the VRAM
  * model is written only by the game's uploads, which are deterministic.
+ * The row is read through openpete_vram_read: the present thread hashes the
+ * composed image of the scene it draws, never the model the guest writes.
  * @param bpp Texture depth: 4, 8 or 16.
  * @param clut_x CLUT X in VRAM halfwords.
  * @param clut_y CLUT row in VRAM.
@@ -983,7 +985,7 @@ static const tp_entry *tp_cover(int x, int y, int w, int h)
 static uint64_t tp_clut_hash(int bpp, int clut_x, int clut_y)
 {
     if (bpp == 16) return 0;
-    const uint16_t *vr = openpete_vram_data();
+    const uint16_t *vr = openpete_vram_read();
     const uint16_t *clut = vr + (size_t)clut_y * OPENPETE_VRAM_W + clut_x;
     return XXH3_64bits(clut, (bpp == 8 ? 256 : 16) * 2);
 }
@@ -1293,7 +1295,7 @@ int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *r
         for (int c = 0; c < 3; c++) { p[c] = sl->p[c]; q[c] = sl->q[c]; }
         return 1;
     }
-    const uint16_t *vr = openpete_vram_data();
+    const uint16_t *vr = openpete_vram_read();
     if (!vr) return 0;
     /* Cache miss: the per-texel regression below is the expensive path, and
      * a level's worth of first-use fits lands in one tick. */
@@ -1620,7 +1622,7 @@ void texture_pack_dump_draw(const texture_pack_id *id,
     int pu0 = u0 - (id->box_x - u->bx);
     int pv0 = v0 - (id->box_y - u->by);
     int W = u->bw, H = u->bh;
-    const uint16_t *vr = openpete_vram_data();
+    const uint16_t *vr = openpete_vram_read();
     unsigned char *px = malloc((size_t)W * H * 4);
     if (!px) return;
     for (int y = 0; y < H; y++) {

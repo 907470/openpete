@@ -45,6 +45,7 @@
 #include "openpete.h"
 #include "openpete_time.h"
 #include "openpete_native_render.h"
+#include "openpete_native_vram.h"
 #include "openpete_pace_log.h"
 #include "openpete_log.h"
 
@@ -484,6 +485,9 @@ static int present_thread_main(void *unused)
 {
     (void)unused;
     openpete_crash_thread_attach();
+    /* Compose-time VRAM reads see the scene's journaled texels, not the
+     * model the guest rewrites while this thread draws. */
+    openpete_vram_bind_composed();
     int claimed = 0;   /* this thread has claimed the display for the current activation */
     SDL_LockMutex(s_pt.mx);
     for (;;) {
