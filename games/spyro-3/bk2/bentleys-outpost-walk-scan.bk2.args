@@ -1,0 +1,8 @@
+# Closed-loop scripted route (analog stick steered each VBL toward waypoints
+# planned over the level's terrain sectors, Cross to jump when stuck):
+# Bentley walks north from the Bentley's Outpost start up the east path and
+# jumps against the ledge near (102000, 25500). The class-79 moby at
+# (51128, 54098) is drawn from there, so its update runs and its scanner
+# func_level_36_80079D08 passes at VBL 5775 (1526 steps). The inputs are the
+# movie's own rows (6800 VBLs, feed key vbl).
+--skip-to-level bentleys_outpost
