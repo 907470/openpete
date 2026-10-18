@@ -20,28 +20,32 @@
 // the loader in state 7, 66 loads every demo level.
 //
 // Load-read classifier (spyro3_cd_read_in_load): a read belongs to a level
-// load while loadStage (the loading overlay's state machine, entry
-// 0x8007494C) is 2..7, the window the checksum walk runs in; those reads go
-// through the asynchronous path func_80050680 and are polled from the main
-// loop by func_800503F8. State 0 reads the loading overlay itself and states
-// below 2 belong to no load, so each pass through the loader opens a new
-// budget. Entering a level through a portal (game.state 0x8006E344 ==
-// GAMESTATE_LOADING_GLIDE, 7) runs the overlay's loading-image sequence
-// func_loading_80076538 on pauseData sub-state 0x8006FBC8: sub-state 2
-// fetches the loading image (the read issued at 0x8007665C, flagged in
-// D_8007232C) and polls it to completion without calling the walk; the state
-// machine's own reads start in sub-state 3, where the walk runs every
-// iteration. A budget spent on the image fetch leaves the walk with no read in
-// flight, the cursor never reaches its end, and the overlay's final
-// `while (loadStage < 8) func_8002CA50()` spin at 0x80076D98, which never
-// calls VSync, hangs; the image fetch is therefore not in load. A read is in
-// load only when it comes from the asynchronous reader, whose CdRead returns
-// to 0x80050758. The synchronous reader func_80050578 spins at 0x80050650 on
-// the read's completion flag without calling VSync, so a deferred completion
-// never arrives inside its spin: the game-over image fetch
-// (func_loading_80076FEC sub-state 1, issued with loadStage already 2) and
-// the title path's image read (GAMESTATE_LOADING_IMG, 5) both go through it
-// and both complete in the iteration that issued them.
+// load when the walk can observe it in flight, which holds for exactly the
+// reads the loadStage state machine issues. func_8002CA50 walks first and
+// then dispatches on loadStage; stages 2..7 run the loading overlay's state
+// machine func_loading_8007494C (0x8007494C..0x80075114, called only from
+// 0x8002CD14), whose reads go through the asynchronous reader func_80050680
+// and are polled by the next iteration's walk. State 0 reads the loading
+// overlay itself and states below 2 belong to no load, so each pass through
+// the loader opens a new budget. A read is classified at its CdRead: the
+// asynchronous reader's call returns to 0x80050758, and the reader saved its
+// own return address at sp+0x28 (0x800506A8) before it, which names the
+// issuer. Reads issued outside the state machine while loadStage is 2..7
+// are not in load. The loading overlay's image fetches are such reads: the
+// level-entry glide (game.state 0x8006E344 == 7, func_loading_80076538
+// sub-state 2, call at 0x80076658) and the vehicle ride (game.state 12,
+// func_loading_80078678 sub-state 2, call at 0x80078798) each issue one with
+// loadStage already 2 and poll it to completion without calling the walk;
+// the state machine's reads start in sub-state 3. A budget spent on the
+// image fetch leaves the walk with no read in flight, the cursor never
+// reaches its end, and the overlay's final `while (loadStage < 8)
+// func_8002CA50()` spin (0x80076D98 glide, 0x80078F40 vehicle), which never
+// calls VSync, hangs. The synchronous reader func_80050578 spins at
+// 0x80050650 on the read's completion flag without calling VSync, so a
+// deferred completion never arrives inside its spin: the game-over image
+// fetch (func_loading_80076FEC sub-state 1, issued with loadStage already 2)
+// and the title path's image read (GAMESTATE_LOADING_IMG, 5) both go through
+// it and both complete in the iteration that issued them.
 
 #include "game_extras.h"
 #include "game_host_desc.h"
@@ -147,18 +151,17 @@ static void spyro3_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id > 0) spyro3_cutscene_arm(cutscene_id, spyro3_skip_target());
 }
 
-/** @brief Classify a data read as part of a level load: asynchronous-reader reads in loadStage 2..7 except the portal loading-image fetch.
+/** @brief Classify a data read as part of a level load: a read the loadStage state machine issues in loadStage 2..7.
  *
  * The load-read classifier note in the file header gives the reasons.
  * @param cpu Guest CPU state at the CdRead call (ra is the call site).
  * @return 1 when the read is part of a level load, else 0. */
 static int spyro3_cd_read_in_load(CPUState* cpu) {
     if (cpu->ra != 0x80050758u) return 0;
-    uint32_t state = cpu->read_word(0x8006C518u);
+    const uint32_t state = cpu->read_word(0x8006C518u);
     if (state < 2u || state > 7u) return 0;
-    if (cpu->read_word(0x8006E344u) == 7u && cpu->read_word(0x8006FBC8u) == 2u)
-        return 0;
-    return 1;
+    const uint32_t issuer = cpu->read_word(cpu->sp + 0x28u);
+    return issuer >= 0x8007494Cu && issuer < 0x80075114u;
 }
 
 /* The level sound tables, loaded by func_8002C9F4 (loaders.c):

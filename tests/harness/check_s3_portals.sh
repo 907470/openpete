@@ -13,7 +13,9 @@
 #            (func_800584BC) type 0: state 5 into the destination.
 #   balloon  Spyro walks to the Midnight Mountain balloonist (class 516),
 #            bumps it, picks the destination in its menu: state 12
-#            (GAMESTATE_LOADING_VEHICLE) into the destination.
+#            (GAMESTATE_LOADING_VEHICLE) into the destination; a row whose
+#            hub is not Midnight Mountain rides there first and takes that
+#            hub's balloonist.
 # The inputs are the movie's own rows (frame-keyed); the movies were
 # recorded closed-loop against the portal records of the hub's portal
 # table (D_8006C530, D_8006C5E0 records of 0x44 bytes: five vertices,
