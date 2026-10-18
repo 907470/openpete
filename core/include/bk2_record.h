@@ -44,7 +44,8 @@ int  bk2_record_begin(const char* path, const char* args_sidecar);
 
 /** @brief Record the pad writes a just-logged entry's yield took and log its pad transitions while recording.
  *
- * The bits already live in the input log. The entry is written @p writes
+ * The bits already live in the input log. The caller holds input_log_lock
+ * across the append and this note. The entry is written @p writes
  * times at finalize: its first write as row @p j of the group of E @p e,
  * the rest as rows of the group of E @p e_rest. A
  * line is logged only when the bits differ from the previous call's. No
@@ -64,8 +65,10 @@ void bk2_record_note(uint16_t bits, int log_idx, unsigned writes, unsigned e,
  * The zip holds Header.txt (with a LoadDelay line when the CD load delay
  * is nonzero), Input Log.txt, Input Groups.txt, and, when any recorded VBL had a second port
  * present, SyncSettings.json declaring two DualShock ports; the args
- * sidecar is written after the zip. Recording ends on every path, so the
- * call is safe from an exit path.
+ * sidecar is written before the zip. Recording ends on every path, so the
+ * call is safe from an exit path. Holds input_log_lock while it reads the
+ * log and the recorder's rows, so a finalize on another thread waits out
+ * an append and its note in flight.
  * @return 0 on success or when recording is not active; -1 on an
  *         allocation or write failure, with the reason logged. */
 int  bk2_record_finalize(void);

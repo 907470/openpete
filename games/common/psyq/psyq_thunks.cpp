@@ -34,6 +34,7 @@ extern "C" {
 #include "openpete_psx.h"
 #include "openpete_memcard.h"
 #include "openpete_cdrom_mmio.h"
+#include "openpete_crash.h"
 #include "psyq/psyq_game_hooks.h"
 #include "renderer/ui_game.h"   /* the 2D chokepoint's deferred feed */
 
@@ -4139,6 +4140,8 @@ static void cd_sync_blocking(CPUState* cpu) {
 
 /** @brief CdSync thunk: pumps the music override, then returns PsyCross's CD command status, with an optional per-VBL spin limit.
  *
+ * A call past OPENPETE_PSYQ_CDSYNC_LIMIT calls at one `openpete_frame` runs the registered
+ * exit flush (openpete_crash_run_exit_flush) and exits with code 3.
  * @param cpu Guest CPU state; a0 is the mode, a1 the result buffer, v0 receives the status. */
 void psyq_CdSync(CPUState* cpu) {
     int mode = (int)cpu->a0;
@@ -4219,6 +4222,7 @@ void psyq_CdSync(CPUState* cpu) {
                         "(rc=%d s0=0x%08X ra=0x%08X) - exiting",
                         cs_calls_this_frame, openpete_frame, rc,
                         cpu->s0, cpu->ra);
+            openpete_crash_run_exit_flush();
             std::fflush(stdout); std::fflush(stderr);
             std::_Exit(3);
         }

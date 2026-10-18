@@ -395,7 +395,11 @@ static char* build_input_log(int frame_count, int players, size_t* out_len,
     return log;
 }
 
-int bk2_record_finalize(void) {
+/** @brief Write the recorded window of the input log as a .bk2 zip and end recording; the caller holds input_log_lock.
+ *
+ * @return 0 on success or when recording is not active; -1 on an
+ *         allocation or write failure, with the reason logged. */
+static int rec_write_and_end(void) {
     if (!s_rec.active) return 0;
 
     /* The movie is the input-log window [start_idx, count). */
@@ -486,5 +490,12 @@ out:
     free(log);
     free(groups);
     rec_reset();
+    return rc;
+}
+
+int bk2_record_finalize(void) {
+    input_log_lock();
+    const int rc = rec_write_and_end();
+    input_log_unlock();
     return rc;
 }

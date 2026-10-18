@@ -151,6 +151,19 @@ void input_log_truncate(int count);
 /** @brief Free the log, clear the frozen state, and reset the staged record with VBL 0. */
 void input_log_reset(void);
 
+/** @brief Take the log's writer lock, a recursive mutex created on first use.
+ *
+ * The host loop holds it around each append and the recorder note that
+ * follows it, and around a truncate; bk2_record_finalize holds it while it
+ * reads the log. A fatal-exit flush on another thread (the stall monitor)
+ * takes it and never releases it, so it waits out an append in flight and
+ * no append follows the finalize. The host loop never switches fibers while
+ * holding it, so a flush on the game fiber finds it free. */
+void input_log_lock(void);
+
+/** @brief Release the log's writer lock taken by input_log_lock. */
+void input_log_unlock(void);
+
 #ifdef __cplusplus
 }
 #endif

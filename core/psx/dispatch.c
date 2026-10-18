@@ -321,7 +321,8 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * On trip: write three rings of (addr, ra, sp) to `OPENPETE_HANG_TRACE`
  * (default hang-trace.bin in the logs state directory, beside the log
  * file) and guest RAM to `OPENPETE_HANG_RAM` (default hang-ram.bin there),
- * tell the player (openpete_fatal_message) and exit 2 (openpete_crash_terminate_now). Format: u32
+ * tell the player (openpete_fatal_message), run the registered exit flush
+ * (openpete_crash_run_exit_flush) and exit 2 (openpete_crash_terminate_now). Format: u32
  * magic 'HNG2', then
  * for each ring a u32 count, a u32 head index, and count*{u32 addr, u32 ra,
  * u32 sp}: the entry ring for the tripping interval, the entry ring as it
@@ -389,7 +390,7 @@ static void hang_output_path(const char* leaf, char* out, size_t cap) {
         snprintf(out, cap, "%s", leaf);
 }
 
-/** @brief Trip the hang watchdog: write the dispatch rings and guest RAM, tell the player, and exit with code 2.
+/** @brief Trip the hang watchdog: write the dispatch rings and guest RAM, tell the player, run the exit flush, and exit with code 2.
  *
  * The caller owns the dump (hang_claim). Called on the game fiber for every
  * trip but one: the stall monitor's fallback, which runs on the monitor
@@ -464,6 +465,9 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
     snprintf(msg, sizeof msg, "The game stopped responding and was closed. "
              "Diagnostic files were written to %s and %s.", path, rampath);
     openpete_fatal_message(OP_E_HANG, "OpenPete stopped responding", msg);
+    /* The registered flush writes what the exit would lose (the movie being
+     * recorded); its log lines precede the sync below. */
+    openpete_crash_run_exit_flush();
     fflush(stdout); fflush(stderr);
     /* stderr is a pipe drained by the log pump thread; exiting first would take the
      * watchdog's own diagnosis down with the process before it is copied. */

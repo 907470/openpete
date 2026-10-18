@@ -24,6 +24,8 @@
 #include "openpete_mods.h"   /* crash attribution: name the offending mod */
 #include "openpete_paths.h"
 
+#include <SDL3/SDL_atomic.h>
+
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -462,3 +464,19 @@ void openpete_crash_terminate_now(int code) {
 }
 
 #endif  /* !_WIN32 */
+
+/* The registered exit flush (openpete_crash_set_exit_flush) as an atomic
+ * pointer, since the stall monitor thread reads it, and 1 once a fatal exit
+ * has claimed the single run. */
+static void* s_exit_flush;
+static SDL_AtomicInt s_exit_flush_ran;
+
+void openpete_crash_set_exit_flush(void (*fn)(void)) {
+    SDL_SetAtomicPointer(&s_exit_flush, (void*)fn);
+}
+
+void openpete_crash_run_exit_flush(void) {
+    void (*fn)(void) = (void (*)(void))SDL_GetAtomicPointer(&s_exit_flush);
+    if (!fn || !SDL_CompareAndSwapAtomicInt(&s_exit_flush_ran, 0, 1)) return;
+    fn();
+}

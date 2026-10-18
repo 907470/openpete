@@ -758,17 +758,53 @@ static int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
  *
  * A recorded movie carries one row per pad write of a yield, grouped by
  * openpete_consume: the iteration's writes (bk2_feed_iter_take) are noted on
- * its last entry.
+ * its last entry. Holds input_log_lock across the appends and notes, so a
+ * finalize on another thread sees each entry with its rows or not at all.
  * @param ticks Yields the iteration ran (openpete_frame's advance).
  * @param recording True while --bk2-record is recording.
  * @param bits Player 1 pad bits the guest read, for the recorder's log. */
 static void input_log_commit_yields(unsigned ticks, bool recording, uint16_t bits) {
+    input_log_lock();
     unsigned e = 0u, e_last = 0u, j = 0u;
     const unsigned writes = bk2_feed_iter_take(&e, &e_last, &j);
     for (unsigned t = 0; t < ticks; t++) {
         const int idx = input_log_append_staged();
         if (recording) bk2_record_note(bits, idx, t + 1 == ticks ? writes : 0u, e, e_last, j);
     }
+    input_log_unlock();
+}
+
+/** @brief Read back the player 1 pad state the guest last read from PsyCross, with the axes in the log's order.
+ *
+ * @param bk2axes Receives the axes as LX, LY, RX, RY (PsyCross reports RX, RY, LX, LY).
+ * @return The player 1 pad bits (1 released, 0 pressed). */
+static uint16_t pad_p1_readback(unsigned char bk2axes[4]) {
+    unsigned char ax[4];
+    PsyX_Pad_GetLastP1Analog(ax);
+    bk2axes[0] = ax[2]; bk2axes[1] = ax[3]; bk2axes[2] = ax[0]; bk2axes[3] = ax[1];
+    return PsyX_Pad_GetLastP1Bits();
+}
+
+/** @brief Write the movie being recorded on a fatal exit: commit the yield in flight, then finalize, with input-log appends stopped for good.
+ *
+ * Registered with openpete_crash_set_exit_flush while --bk2-record records;
+ * a hang-watchdog trip runs it on the game fiber, or on the stall monitor
+ * thread for the monitor's fallback. Takes input_log_lock and never
+ * releases it: a flush on the monitor thread waits out a host-loop commit
+ * in flight, and the host loop's next commit blocks until the process
+ * ends. The yield the game fiber is inside has taken pad writes no commit
+ * has noted; its player 1 readback is appended as one entry carrying them,
+ * so the movie ends at the last pad write the guest took. Under a rewind
+ * replay the log already holds that entry and none is appended. */
+static void bk2_record_exit_flush(void) {
+    input_log_lock();
+    if (!openpete_replaying) {
+        unsigned char bk2axes[4];
+        const uint16_t bits = pad_p1_readback(bk2axes);
+        input_log_stage_p1_readback(bits, bk2axes);
+        input_log_commit_yields(1u, true, bits);
+    }
+    (void)bk2_record_finalize();
 }
 
 /** @brief Stamp a movie row into PsyCross's pad-override slot.
@@ -4087,7 +4123,9 @@ static bool rewind_seek_one_tick(bool bk2_active) {
     }
     openpete_replaying = 0;
     PsyX_SPUAL_Speculate(0, 0);
+    input_log_lock();
     input_log_truncate(kf->log_idx + (int)(target - kf->frame));
+    input_log_unlock();
     openpete_rewind_drop_after(openpete_frame);
     if (!bk2_active) g_PsyX_Pad_OverrideActive = 0;
     return true;
@@ -4826,6 +4864,9 @@ static int run_host_loop(const openpete_options_t* opts) {
         if (bk2_record_begin(opts->bk2_record_path, opts->bk2_record_args) != 0) {
             return OPENPETE_EXIT_SETUP_ERROR;
         }
+        /* A hang-watchdog exit skips the shutdown below; the flush writes
+         * the movie on that path. */
+        openpete_crash_set_exit_flush(bk2_record_exit_flush);
     }
 
     /* Level-load duration, constant for the run: the option, else the game's
@@ -6098,10 +6139,8 @@ static int run_host_loop(const openpete_options_t* opts) {
              * Consumers: bk2_record (window [begin,finalize)), the rewind
              * replay and the runahead inject drivers. */
             unsigned ticks = openpete_frame - frame_before_yield;
-            uint16_t bits = PsyX_Pad_GetLastP1Bits();
-            unsigned char ax[4];                 /* PSX pad->analog order: RX,RY,LX,LY */
-            PsyX_Pad_GetLastP1Analog(ax);
-            unsigned char bk2axes[4] = { ax[2], ax[3], ax[0], ax[1] };  /* -> LX,LY,RX,RY */
+            unsigned char bk2axes[4];
+            const uint16_t bits = pad_p1_readback(bk2axes);
             /* The guest readback stays the truth the log stores for slot 0.
              * When the override was stamped pre-yield the staged bytes are
              * that same value published early, and the counter proves it:
@@ -7073,6 +7112,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
     }
     if (bk2_recording) {
+        openpete_crash_set_exit_flush(NULL);
         bk2_record_finalize();
         sim_teardown_progress();
     }

@@ -3,6 +3,9 @@
 #include "openpete_input_log.h"
 #include "openpete_log.h"
 
+#include <SDL3/SDL_atomic.h>
+#include <SDL3/SDL_mutex.h>
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -97,3 +100,21 @@ void input_log_reset(void) {
     s_alloc_failed = 0;
     input_log_stage_reset(0);
 }
+
+/* The writer lock (input_log_lock), published once by compare-and-swap. */
+static SDL_Mutex* s_lock_mx;
+
+/** @brief Return the writer lock, creating it on first use; a compare-and-swap publishes exactly one.
+ *
+ * @return The mutex; NULL when creation failed, which SDL_LockMutex treats as a no-op. */
+static SDL_Mutex* input_log_mx(void) {
+    SDL_Mutex* m = (SDL_Mutex*)SDL_GetAtomicPointer((void**)&s_lock_mx);
+    if (m) return m;
+    SDL_Mutex* n = SDL_CreateMutex();
+    if (n && !SDL_CompareAndSwapAtomicPointer((void**)&s_lock_mx, NULL, n)) SDL_DestroyMutex(n);
+    return (SDL_Mutex*)SDL_GetAtomicPointer((void**)&s_lock_mx);
+}
+
+void input_log_lock(void) { SDL_LockMutex(input_log_mx()); }
+
+void input_log_unlock(void) { SDL_UnlockMutex(input_log_mx()); }
