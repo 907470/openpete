@@ -109,3 +109,6 @@ summer_forest@aspect32x9 | pos=(106616, 79875, 36925) yaw=-1522 pitch=154 | | --
 # The cone-widened band admits a far portal whose outline overlaps the near
 # arch; the near inner rim must hold inside the far outline.
 summer_forest@aspect32x9 | pos=(106616, 79875, 36925) yaw=-1650 pitch=154 | | --aspect 32:9
+# A rolled view (roll 228, about 20 degrees): the freecam stores the roll the
+# game's camera builder needs for a true view roll, so the horizon tilts.
+glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243 roll=-228

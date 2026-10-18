@@ -77,3 +77,6 @@ midnight_mountain | pos=(108418, 95872, 10261) yaw=-1196 pitch=205
 # The 16:9 row is the contrast leg.
 sunrise_spring | pos=(31890, 41448, 21584) yaw=-1993 pitch=45
 sunrise_spring@aspect32x9 | pos=(31890, 41448, 21584) yaw=-1993 pitch=45 | | --aspect 32:9
+# A rolled view (roll 228, about 20 degrees): the freecam stores the roll the
+# game's camera builder needs for a true view roll, so the horizon tilts.
+sunny_villa | pos=(79168, 34297, 14796) yaw=867 pitch=197 roll=228

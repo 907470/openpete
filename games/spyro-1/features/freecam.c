@@ -145,6 +145,11 @@ const freecam_game_desc spyro1_freecam_desc = {
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
     /* ~87° up/down so the camera can't flip (practice ROM value). */
     .pitch_limit = 0x03E0,
+    /* CameraUpdateMatrices (0x80033C50) loads m_Rotation pitch (+0x4E) into
+     * Rx, yaw (+0x50) into Ry and roll (+0x4C) into Rz, and multiplies
+     * MulMatrix(Rx, Ry) then MulMatrix(that, Rz): M = Rx·Ry·Rz, so +0x4C
+     * turns about world X before yaw. */
+    .builder_order = FREECAM_BUILDER_RX_RY_RZ,
     .freeze_only_when_live = 0,
     /* The practice ROM's StopCameraFollowSpyro / StopUpdateSpyro byte-patch
      * targets. CameraFollowSpyro stops re-deriving the camera from Spyro;

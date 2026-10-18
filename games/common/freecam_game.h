@@ -18,6 +18,25 @@
 
 typedef struct CPUState CPUState;
 
+/* How a game composes its view matrix from the rotation record (roll at +0,
+ * pitch at +2, yaw at +4), each factor in the game's own form: Rx(t) rows
+ * (1,0,0) (0,c,-s) (0,s,c); Ry(t) rows (c,0,s) (0,1,0) (-s,0,c); Rz(t) rows
+ * (c,s,0) (-s,c,0) (0,0,1). Rx(pitch)·Ry(yaw) is the roll-free view of
+ * (yaw, pitch) in both known orders. A pose's roll R is the view
+ * Rz(R)·Rx(pitch)·Ry(yaw), the roll applied about the view axis. */
+typedef enum freecam_builder_order {
+    /* Unknown: the stamp writes yaw and pitch only and leaves +0 to the
+     * game; a pose's roll is ignored. */
+    FREECAM_BUILDER_UNKNOWN = 0,
+    /* M = Rz(+0)·Rx(+2)·Ry(+4): the stored triple is the pose's (roll,
+     * pitch, yaw) as it is. */
+    FREECAM_BUILDER_RZ_RX_RY,
+    /* M = Rx(+2)·Ry(+4)·Rz(+0): +0 turns about the vector's third axis
+     * (world X) before yaw, not about the view axis; the stamp writes the
+     * triple of this order whose product equals the pose's view. */
+    FREECAM_BUILDER_RX_RY_RZ,
+} freecam_builder_order;
+
 typedef struct freecam_game_desc {
     /* The camera pose bytes come from game_layout.cam: the position (three
      * int32, Z up) and the rotation record (roll, pitch, yaw halfwords, so
@@ -32,13 +51,10 @@ typedef struct freecam_game_desc {
     /* Pitch clamp in angle units, applied to the logical pitch: the gimbal
      * bound, short of straight up or down where yaw degenerates. */
     int pitch_limit;
-    /* 1: the game builds its view matrix (game_layout.cam.view_matrix) as
-     * Rz(roll)·Rx(pitch)·Ry(yaw) over the GTE vector (camY - Y, camZ - Z,
-     * X - camX), which is the roll-free view of (yaw, pitch) when roll is 0;
-     * the stamp then writes roll 0 beside yaw and pitch, and
-     * OPENPETE_FREECAM_MATRIX_CHECK compares the built matrix with that
-     * view. 0: roll is left to the game. */
-    int builder_rz_rx_ry;
+    /* The product order in which the game builds its view matrix
+     * (game_layout.cam.view_matrix) from the rotation record, over the GTE
+     * vector (camY - Y, camZ - Z, X - camX); see freecam_builder_order. */
+    int builder_order;
     /* 1: cam_follow / player_update are short-circuited only while
      * level_live; 0: whenever engaged. */
     int freeze_only_when_live;

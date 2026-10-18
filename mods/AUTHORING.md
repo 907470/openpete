@@ -501,8 +501,10 @@ openpete --disc <game>.cue --mods-dir mods --mods my-mod \
   live (gameplay freezes: UpdateSpyro stops). Get coordinates interactively:
   press F (or left-stick click), fly with WASD / Space / LShift / arrows /
   `[` `]` speed, T drops Spyro at the camera; the pose is logged as
-  `pos=(x, y, z) yaw=N pitch=N`; feed it back as the flag. `--freecam-path
-  "[ticks=N;] x,y,z[,yaw,pitch];..."` flies a loop. `--window WxH`,
+  `pos=(x, y, z) yaw=N pitch=N`; feed it back as the flag. An optional
+  `roll=N` (4096 per turn, absent = 0) tilts the view about its forward
+  axis. `--freecam-path "[ticks=N;] x,y,z[,yaw,pitch[,roll]];..."` flies a
+  loop. `--window WxH`,
   `--aspect 16:9`, `--render-fps N` shape the capture.
 - **Place Spyro**: `--player-pose "x,y,z[,yaw]"` (yaw = facing, 4096 per
   turn) places him once gameplay is live under pad control, clears momentum

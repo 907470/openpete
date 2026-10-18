@@ -52,7 +52,7 @@ const freecam_game_desc spyro3_freecam_desc = {
      * roll-free at every pitch and the clamp is the Spyro 1 gimbal bound
      * (~87°). */
     .pitch_limit = 0x03E0,
-    .builder_rz_rx_ry = 1,
+    .builder_order = FREECAM_BUILDER_RZ_RX_RY,
     /* The follow entry is also reached from the loading-state updates and
      * clears state before its follow work, so it and the player update are
      * frozen only while gameplay is live (loadStage -1, game.state 0). */

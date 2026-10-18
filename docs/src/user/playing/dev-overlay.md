@@ -96,7 +96,9 @@ key ({{ key("key:host.frame_step") }} <!-- id: key:host.frame_step -->) does. It
 
 **Freecam pose** <!-- id: knob:freecam_pose --> engages the free camera
 at a pose (`pos=(x, y, z) yaw=N pitch=N`, the format the free camera logs)
-once the level is live. **Player pose** <!-- id: knob:player_pose --> places
+once the level is live. An optional `roll=N` after the pose tilts the view
+about its forward axis, 4096 per turn; the free camera never logs a roll, and
+a pose without one is level. **Player pose** <!-- id: knob:player_pose --> places
 Spyro at `x,y,z[,yaw]` once gameplay is live, with the camera re-seated
 behind him. Both are empty by default, and both change the game's state.
 

@@ -229,6 +229,15 @@ That prints the freecam pose, which is what `--freecam-pose` takes:
       --mute 1
     ```
 
+A pose takes an optional `roll=N` after the angles, as in
+`pos=(12480, -8032, 1216) yaw=1024 pitch=-256 roll=228`: the view turns
+about its forward axis by N, 4096 per turn. Without it the roll is 0. The
+free camera never logs a roll and has no roll control.
+
+`--freecam-path "[ticks=N;] WP;WP..."` flies the camera along a looping
+path instead, each waypoint `x,y,z[,yaw,pitch[,roll]]`, interpolated over N
+ticks per segment (default 120) with the angles along the shorter arc.
+
 ### Player placement
 
 Applies to a test at a spot in a level that needs Spyro there, not just the

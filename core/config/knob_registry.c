@@ -1811,15 +1811,16 @@ static const knob_desc_t g_builtin[] = {
      * getter shows either spelling. One-shot at boot. */
     { "freecam_pose", "Freecam pose", "Gameplay", "--freecam-pose", "OPENPETE_FREECAM_POSE",
       "Engage the debug free camera at this pose once the level is live "
-      "(\"pos=(x, y, z) yaw=N pitch=N\").",
+      "(\"pos=(x, y, z) yaw=N pitch=N\", optionally \"roll=N\").",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, env_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none: the camera follows the player",
       .help_arg = "STR", .help_order = 580,
       .help_text = "engage the debug free camera at a pose once the level is\n"
           "live (same format as the freecam log: \"pos=(x, y, z) yaw=N\n"
-          "pitch=N\"). CLI twin of OPENPETE_FREECAM_POSE - env vars don't\n"
-          "cross the WSL->Windows interop boundary." },
+          "pitch=N\", optionally followed by \"roll=N\", 4096 per turn,\n"
+          "absent = 0). CLI twin of OPENPETE_FREECAM_POSE - env vars\n"
+          "don't cross the WSL->Windows interop boundary." },
 
     { "player_pose", "Player pose", "Gameplay", "--player-pose", "OPENPETE_PLAYER_POSE",
       "Place the player at this position and facing once gameplay is live "

@@ -87,13 +87,15 @@ static uint16_t angle_stored(int32_t v) {
  * Stored units (the game's own), so a seed/stamp round trip is exact. */
 static struct {
     int32_t  x, y, z, yaw, pitch;
+    int32_t  roll;      /* about the view axis; set by a pose, 0 after a seed */
     int      seeded;
     unsigned gen_seen;
 } s_pose;
 
 /** @brief Load the host pose from the game's camera bytes.
  *
- * Reads position, yaw and pitch from game_layout.cam and records the current
+ * Reads position, yaw and pitch from game_layout.cam, sets roll 0 (the
+ * freecam starts level whatever roll the game held) and records the current
  * engage generation.
  * @param cpu The guest CPU state. */
 static void pose_seed(CPUState* cpu) {
@@ -102,6 +104,7 @@ static void pose_seed(CPUState* cpu) {
     s_pose.z     = (int32_t)cpu->read_word(game_layout.cam.position + 8u);
     s_pose.yaw   = angle_read(cpu, game_layout.cam.rotation + 4u);
     s_pose.pitch = angle_read(cpu, game_layout.cam.rotation + 2u);
+    s_pose.roll  = 0;
     s_pose.seeded   = 1;
     s_pose.gen_seen = openpete_freecam_engage_generation();
 }
@@ -114,18 +117,21 @@ static void pose_seed_if_needed(CPUState* cpu) {
         pose_seed(cpu);
 }
 
-/* The rotation triple the last stamp wrote, for the matrix check: the game's
- * builder runs after the stamp, so the next drive reads its product. */
+/* The pose the last stamp wrote, for the matrix check: the game's builder
+ * runs after the stamp, so the next drive reads its product. yaw, pitch and
+ * roll are the pose's; stored[] is the (+0, +2, +4) triple written. */
 static struct {
     int     valid;
     int32_t yaw, pitch, roll;
+    int32_t stored[3];
 } s_stamped;
 
-/** @brief Read OPENPETE_FREECAM_MATRIX_CHECK: unset is off, "roll=N" also stamps roll N.
+/** @brief Read OPENPETE_FREECAM_MATRIX_CHECK: unset is off, "roll=N" also adds N to the stored roll.
  *
- * The roll form is the check's negative control: a stamped roll the check
- * must report as a matrix error and a nonzero roll angle.
- * @param roll Receives the roll to stamp, 0 unless the roll form is given.
+ * The roll form is the check's negative control: a stored roll the pose
+ * does not hold, which the check must report as a matrix error and a roll
+ * off the pose's.
+ * @param roll Receives the roll to add, 0 unless the roll form is given.
  * @return Non-zero while the check is armed. */
 static int matrix_check_armed(int32_t* roll) {
     static int s_armed = -1;
@@ -139,19 +145,46 @@ static int matrix_check_armed(int32_t* roll) {
     return s_armed;
 }
 
-/** @brief Log the view matrix the game built from the last stamp against the roll-free matrix of its yaw and pitch.
+/** @brief Fill the game-form rotation matrices Rx, Ry and Rz of an angle.
  *
- * Runs only under a builder_rz_rx_ry descriptor with the check armed. The
- * builder composes M = Rz(roll)·Rx(pitch)·Ry(yaw) over the GTE vector
- * g = (camY - Y, camZ - Z, X - camX); the roll-free view has rows right =
- * (sin yaw, -cos yaw, 0), down = forward × right and forward = (cos pitch
- * cos yaw, cos pitch sin yaw, -sin pitch) in world axes, carried into g
- * axes and scaled by 4096. Logs the largest element difference in Q12 units
- * and the roll angle, the elevation of the game matrix's right row.
+ * The forms are freecam_builder_order's: Rx rows (1,0,0) (0,c,-s) (0,s,c),
+ * Ry rows (c,0,s) (0,1,0) (-s,0,c), Rz rows (c,s,0) (-s,c,0) (0,0,1).
+ * @param axis 0 for Rx, 1 for Ry, 2 for Rz.
+ * @param units The angle, 4096 units per turn.
+ * @param m Receives the matrix, unit scale. */
+static void rot_game(int axis, double units, double m[3][3]) {
+    const double r = units * (2.0 * M_PI / ANGLE_FULL), c = cos(r), sn = sin(r);
+    memset(m, 0, 9 * sizeof(double));
+    if (axis == 0) { m[0][0] = 1; m[1][1] = c; m[1][2] = -sn; m[2][1] = sn; m[2][2] = c; }
+    else if (axis == 1) { m[0][0] = c; m[0][2] = sn; m[1][1] = 1; m[2][0] = -sn; m[2][2] = c; }
+    else { m[0][0] = c; m[0][1] = sn; m[1][0] = -sn; m[1][1] = c; m[2][2] = 1; }
+}
+
+/** @brief Multiply two 3x3 matrices, out = a·b.
+ *
+ * @param a The left factor.
+ * @param b The right factor.
+ * @param out Receives the product; may not alias a or b. */
+static void mat3_mul(const double a[3][3], const double b[3][3], double out[3][3]) {
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+}
+
+/** @brief Log the view matrix the game built from the last stamp against the intended view of the pose.
+ *
+ * Runs only under a known builder order with the check armed. The intended
+ * view over the GTE vector g = (camY - Y, camZ - Z, X - camX) is Rz(roll)·W,
+ * with W the roll-free view: rows right = (sin yaw, -cos yaw, 0), down =
+ * forward × right and forward = (cos pitch cos yaw, cos pitch sin yaw,
+ * -sin pitch) in world axes, carried into g axes; scaled by 4096. Logs the
+ * largest element difference in Q12 units and the measured roll, the angle
+ * of the built right row about the view axis from W's right row toward W's
+ * down row, in angle units and degrees.
  * @param cpu The guest CPU state. */
 static void matrix_check(CPUState* cpu) {
     int32_t inject;
-    if (!D->builder_rz_rx_ry || !matrix_check_armed(&inject) || !s_stamped.valid) return;
+    if (!D->builder_order || !matrix_check_armed(&inject) || !s_stamped.valid) return;
     int M[3][3];
     for (uint32_t i = 0; i < 9u; i++)
         M[i / 3u][i % 3u] = (int16_t)cpu->read_half(game_layout.cam.view_matrix + 2u * i);
@@ -161,43 +194,98 @@ static void matrix_check(CPUState* cpu) {
     const double rt[3] = { sin(ry), -cos(ry), 0.0 };
     const double dn[3] = { fw[1] * rt[2] - fw[2] * rt[1], fw[2] * rt[0] - fw[0] * rt[2],
                            fw[0] * rt[1] - fw[1] * rt[0] };
-    const double* W[3] = { rt, dn, fw };
-    double err = 0.0;
-    for (int i = 0; i < 3; i++) {
-        const double g[3] = { -W[i][1], -W[i][2], W[i][0] };   /* world row in g axes */
-        for (int j = 0; j < 3; j++) err = fmax(err, fabs(g[j] * 4096.0 - (double)M[i][j]));
+    const double* Ww[3] = { rt, dn, fw };
+    double W[3][3], Rz[3][3], T[3][3];
+    for (int i = 0; i < 3; i++) {             /* world row in g axes */
+        W[i][0] = -Ww[i][1]; W[i][1] = -Ww[i][2]; W[i][2] = Ww[i][0];
     }
-    const double rn = sqrt((double)(M[0][0] * M[0][0] + M[0][1] * M[0][1] + M[0][2] * M[0][2]));
-    const double roll_deg = rn > 0.0 ? asin(-(double)M[0][1] / rn) * 180.0 / M_PI : 0.0;
-    OPL_INFO_F("freecam", "matrix-check yaw=%d pitch=%d roll=%d maxerr=%.2f roll_deg=%.3f "
-               "M=[%d %d %d|%d %d %d|%d %d %d]", (int)s_stamped.yaw, (int)s_stamped.pitch,
-               (int)s_stamped.roll, err, roll_deg, M[0][0], M[0][1], M[0][2],
-               M[1][0], M[1][1], M[1][2], M[2][0], M[2][1], M[2][2]);
+    rot_game(2, (double)s_stamped.roll, Rz);
+    mat3_mul(Rz, W, T);
+    double err = 0.0;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) err = fmax(err, fabs(T[i][j] * 4096.0 - (double)M[i][j]));
+    double along = 0.0, toward = 0.0;
+    for (int j = 0; j < 3; j++) { along += M[0][j] * W[0][j]; toward += M[0][j] * W[1][j]; }
+    const double roll_rad = atan2(toward, along);
+    OPL_INFO_F("freecam", "matrix-check yaw=%d pitch=%d roll=%d stored=(%d, %d, %d) maxerr=%.2f "
+               "roll_meas=%.2f roll_deg=%.3f M=[%d %d %d|%d %d %d|%d %d %d]",
+               (int)s_stamped.yaw, (int)s_stamped.pitch, (int)s_stamped.roll,
+               (int)s_stamped.stored[0], (int)s_stamped.stored[1], (int)s_stamped.stored[2],
+               err, roll_rad * ANGLE_FULL / (2.0 * M_PI), roll_rad * 180.0 / M_PI,
+               M[0][0], M[0][1], M[0][2], M[1][0], M[1][1], M[1][2], M[2][0], M[2][1], M[2][2]);
+}
+
+/** @brief Solve the Rx(b)·Ry(c)·Rz(a) triple whose product is Rz(roll)·Rx(pitch)·Ry(yaw).
+ *
+ * With M = Rx(b)·Ry(c)·Rz(a) in the game forms, M[0][2] = sin c,
+ * (M[0][0], M[0][1]) = cos c (cos a, sin a) and (M[1][2], M[2][2]) =
+ * cos c (-sin b, cos b). Of the two solutions, (a, b, c) and (a + 0x800,
+ * b + 0x800, 0x800 - c), the one whose c is nearer the pose's yaw is taken.
+ * At cos c = 0 only a + b or a - b is determined; a is set 0 and b read from
+ * rows 1 and 2. Angles are rounded to whole units.
+ * @param yaw The pose's yaw, stored units.
+ * @param pitch The pose's pitch, stored units.
+ * @param roll The pose's roll, stored units.
+ * @param out Receives the (+0, +2, +4) triple: a, b, c. */
+static void solve_rx_ry_rz(int32_t yaw, int32_t pitch, int32_t roll, int32_t out[3]) {
+    double X[3][3], Y[3][3], Z[3][3], XY[3][3], T[3][3];
+    rot_game(0, (double)pitch, X);
+    rot_game(1, (double)yaw, Y);
+    rot_game(2, (double)roll, Z);
+    mat3_mul(X, Y, XY);
+    mat3_mul(Z, XY, T);
+    const double k = ANGLE_FULL / (2.0 * M_PI);
+    const double sc = fmax(-1.0, fmin(1.0, T[0][2]));
+    const double cc = sqrt(fmax(0.0, 1.0 - sc * sc));
+    double a, b, c = atan2(sc, cc) * k;
+    if (cc < 1e-9) {
+        a = 0.0;
+        b = atan2(T[2][1], T[1][1]) * k;
+    } else {
+        a = atan2(T[0][1], T[0][0]) * k;
+        b = atan2(-T[1][2], T[2][2]) * k;
+    }
+    const double c2 = ANGLE_FULL / 2.0 - c;
+    const double d1 = fabs((double)angle_wrap((int32_t)lround(c) - yaw));
+    const double d2 = fabs((double)angle_wrap((int32_t)lround(c2) - yaw));
+    if (d2 < d1) { a += ANGLE_FULL / 2.0; b += ANGLE_FULL / 2.0; c = c2; }
+    out[0] = angle_wrap((int32_t)lround(a));
+    out[1] = angle_wrap((int32_t)lround(b));
+    out[2] = angle_wrap((int32_t)lround(c));
 }
 
 /** @brief Write the host pose into the game's camera bytes.
  *
- * Wraps yaw and pitch to the game's angle width first, then stores position
- * as words and the two angles as halfwords under game_layout.cam. Under a
- * builder_rz_rx_ry descriptor it also stores roll 0 (or the matrix check's
- * injected roll), so the stored triple composes the roll-free view whatever
- * roll the game left there.
+ * Wraps yaw, pitch and roll to the game's angle width first, then stores
+ * position as words and the rotation record as halfwords under
+ * game_layout.cam. The record written depends on the builder order: under
+ * an unknown order, yaw and pitch only; under Rz·Rx·Ry, (roll, pitch, yaw)
+ * as they are; under Rx·Ry·Rz, (0, pitch, yaw) at roll 0, else the triple
+ * solve_rx_ry_rz finds. Every known order thus composes the pose's view
+ * whatever roll the game left at +0. The matrix check's injected roll is
+ * added to the stored +0.
  * @param cpu The guest CPU state. */
 static void pose_stamp(CPUState* cpu) {
     s_pose.yaw   = angle_wrap(s_pose.yaw);
     s_pose.pitch = angle_wrap(s_pose.pitch);
+    s_pose.roll  = angle_wrap(s_pose.roll);
+    int32_t st[3] = { s_pose.roll, s_pose.pitch, s_pose.yaw };
+    if (D->builder_order == FREECAM_BUILDER_RX_RY_RZ && s_pose.roll != 0)
+        solve_rx_ry_rz(s_pose.yaw, s_pose.pitch, s_pose.roll, st);
     cpu->write_word(game_layout.cam.position + 0u, (uint32_t)s_pose.x);
     cpu->write_word(game_layout.cam.position + 4u, (uint32_t)s_pose.y);
     cpu->write_word(game_layout.cam.position + 8u, (uint32_t)s_pose.z);
-    cpu->write_half(game_layout.cam.rotation + 4u, angle_stored(s_pose.yaw));
-    cpu->write_half(game_layout.cam.rotation + 2u, angle_stored(s_pose.pitch));
-    int32_t roll = 0;
-    if (D->builder_rz_rx_ry) {
-        (void)matrix_check_armed(&roll);
-        cpu->write_half(game_layout.cam.rotation + 0u, angle_stored(roll));
+    cpu->write_half(game_layout.cam.rotation + 4u, angle_stored(st[2]));
+    cpu->write_half(game_layout.cam.rotation + 2u, angle_stored(st[1]));
+    if (D->builder_order) {
+        int32_t inject = 0;
+        (void)matrix_check_armed(&inject);
+        st[0] = angle_wrap(st[0] + inject);
+        cpu->write_half(game_layout.cam.rotation + 0u, angle_stored(st[0]));
     }
     s_stamped.valid = 1;
-    s_stamped.yaw = s_pose.yaw; s_stamped.pitch = s_pose.pitch; s_stamped.roll = roll;
+    s_stamped.yaw = s_pose.yaw; s_stamped.pitch = s_pose.pitch; s_stamped.roll = s_pose.roll;
+    memcpy(s_stamped.stored, st, sizeof st);
 }
 
 /** @brief Report whether a level is running.
@@ -233,6 +321,42 @@ static int freecam_parse_ints(const char* s, int32_t* out, int max) {
     return n;
 }
 
+/** @brief Take the optional "roll=N" key out of pose text.
+ *
+ * The key matches where "roll=" starts the text or follows a character that
+ * is not a letter, digit or underscore, and a signed decimal integer follows
+ * the '='. The first match is read; the text with that key blanked to spaces
+ * is copied into @p rest (truncated to @p cap - 1 characters), so the
+ * positional integers and a pose name parse from @p rest as from text that
+ * never held the key. Without a match @p rest is not written.
+ * @param s The pose text.
+ * @param rest Receives the text without the key when one is found.
+ * @param cap Capacity of @p rest, at least 1.
+ * @param roll Receives the key's value, 0 when absent.
+ * @return 1 when the key was found and @p rest written, else 0. */
+static int freecam_take_roll(const char* s, char* rest, size_t cap, int32_t* roll) {
+    *roll = 0;
+    for (const char* k = strstr(s, "roll="); k; k = strstr(k + 1, "roll=")) {
+        if (k > s) {
+            const char pc = k[-1];
+            if ((pc >= 'a' && pc <= 'z') || (pc >= 'A' && pc <= 'Z') ||
+                (pc >= '0' && pc <= '9') || pc == '_') continue;
+        }
+        const char* v = k + 5;
+        const char* d = (*v == '-' || *v == '+') ? v + 1 : v;
+        if (*d < '0' || *d > '9') continue;
+        char* end;
+        *roll = (int32_t)strtol(v, &end, 10);
+        size_t n = strlen(s);
+        if (n >= cap) n = cap - 1;
+        memcpy(rest, s, n);
+        rest[n] = '\0';
+        for (size_t i = (size_t)(k - s); i < (size_t)(end - s) && i < n; i++) rest[i] = ' ';
+        return 1;
+    }
+    return 0;
+}
+
 /** @brief Resolve a named pose through the game's resolver.
  *
  * A game without a resolver rejects every name with a WARN.
@@ -259,8 +383,9 @@ static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
  * `ticks` canonical ticks per segment, and the path loops so a run of any
  * length stays in motion.
  *
- * Spec: "[ticks=N;] WP(;WP)+" where WP is "x,y,z[,yaw,pitch]" or a name the
- * game's resolver knows ("topdown", "sweepN"). Names resolve against the live
+ * Spec: "[ticks=N;] WP(;WP)+" where WP is "x,y,z[,yaw,pitch[,roll]]" or a
+ * name the game's resolver knows ("topdown", "sweepN"); either may also
+ * carry the pose's "roll=N" key. Names resolve against the live
  * level once it is up, so a path can dive from above the level into a flight
  * across it without the caller knowing any level's bounds. */
 
@@ -268,8 +393,36 @@ static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
 #define FREECAM_PATH_DEFAULT_TICKS 120
 #define FREECAM_NAME_MAX 32
 
+/** @brief Parse pose text into its positional integers, its roll and, without three integers, a name.
+ *
+ * The grammar a pose and a path waypoint share. The optional "roll=N" key is
+ * taken out first (freecam_take_roll); up to @p max integers are then read
+ * positionally (freecam_parse_ints). With fewer than three, @p name receives
+ * the text with leading spaces skipped, truncated to FREECAM_NAME_MAX - 1
+ * characters and trailing spaces trimmed (empty for blank text); otherwise
+ * it is the empty string.
+ * @param text The pose text.
+ * @param v Receives the integers.
+ * @param max Capacity of @p v.
+ * @param roll Receives the key's roll, 0 when absent.
+ * @param name Receives the name.
+ * @return The count of integers read. */
+static int freecam_parse_pose_text(const char* text, int32_t* v, int max, int32_t* roll,
+                                   char name[FREECAM_NAME_MAX]) {
+    char rest[256];
+    if (freecam_take_roll(text, rest, sizeof rest, roll)) text = rest;
+    const int n = freecam_parse_ints(text, v, max);
+    name[0] = '\0';
+    if (n >= 3) return n;
+    while (*text == ' ') text++;
+    strncpy(name, text, FREECAM_NAME_MAX - 1);
+    name[FREECAM_NAME_MAX - 1] = '\0';
+    for (char* e = name + strlen(name); e > name && e[-1] == ' ';) *--e = '\0';
+    return n;
+}
+
 static struct {
-    int32_t wp[FREECAM_PATH_MAX][5];   /* x, y, z, yaw, pitch */
+    int32_t wp[FREECAM_PATH_MAX][6];   /* x, y, z, yaw, pitch, roll */
     char    named[FREECAM_PATH_MAX][FREECAM_NAME_MAX];  /* "" = numeric */
     int     n;
     int     ticks;      /* ticks per segment */
@@ -282,9 +435,12 @@ static struct {
 /** @brief Parse a flight-path spec into s_path and arm it.
  *
  * Segments split on ';'. A segment containing "ticks=" sets the ticks per
- * segment when positive; one with three or more integers is a numeric
- * waypoint, missing yaw and pitch reading 0; any other non-blank segment is
- * a named waypoint, resolved later. Each segment is copied into a 128-byte
+ * segment when positive. Any other segment parses as pose text
+ * (freecam_parse_pose_text): three or more integers make a numeric
+ * waypoint, missing yaw and pitch reading 0 and the roll the sixth integer,
+ * else the "roll=N" key's value, else 0; a non-blank name makes a named
+ * waypoint with the key's roll, resolved later. Each segment is copied into
+ * a 128-byte
  * buffer, truncating longer ones, and at most FREECAM_PATH_MAX waypoints are
  * kept. A named waypoint on a game without named poses refuses the spec.
  * @param spec The spec text.
@@ -310,26 +466,16 @@ static int freecam_path_parse(const char* spec) {
             int v = atoi(tk + 6);
             if (v > 0) s_path.ticks = v;
         } else {
-            int32_t v[5] = {0, 0, 0, 0, 0};
-            if (freecam_parse_ints(seg, v, 5) >= 3) {
-                memcpy(s_path.wp[s_path.n], v, sizeof v);
-                s_path.n++;
-            } else {
-                /* A name: the trimmed segment. */
-                char* q = seg;
-                while (*q == ' ') q++;
-                char* e = q + strlen(q);
-                while (e > q && e[-1] == ' ') *--e = '\0';
-                if (*q && !D->resolve_named_pose) {
-                    OPL_WARN_F("freecam", "--freecam-path: named waypoint '%s' but "
-                               "this game has no named poses", q);
-                    return 0;
-                }
-                if (*q) {
-                    strncpy(s_path.named[s_path.n], q, FREECAM_NAME_MAX - 1);
-                    s_path.n++;
-                }
+            int32_t v[6] = {0, 0, 0, 0, 0, 0}, roll;
+            const int nv = freecam_parse_pose_text(seg, v, 6, &roll, s_path.named[s_path.n]);
+            if (nv < 6) v[5] = roll;
+            memcpy(s_path.wp[s_path.n], v, sizeof v);
+            if (s_path.named[s_path.n][0] && !D->resolve_named_pose) {
+                OPL_WARN_F("freecam", "--freecam-path: named waypoint '%s' but "
+                           "this game has no named poses", s_path.named[s_path.n]);
+                return 0;
             }
+            if (nv >= 3 || s_path.named[s_path.n][0]) s_path.n++;
         }
         if (!end) break;
         p = end + 1;
@@ -357,12 +503,18 @@ static int freecam_path_resolve(CPUState* cpu) {
         int32_t v[5] = {0, 0, 0, 0, 0};
         if (!s_path.named[i][0]) continue;
         if (!resolve_named(cpu, s_path.named[i], v)) return 0;  /* not live yet */
-        memcpy(s_path.wp[i], v, sizeof v);
+        memcpy(s_path.wp[i], v, sizeof v);   /* roll, wp[i][5], is the spec's */
     }
-    for (int i = 0; i < s_path.n; i++)
-        OPL_INFO_F("freecam", "path wp%d = (%d, %d, %d) yaw=%d pitch=%d", i,
-                   s_path.wp[i][0], s_path.wp[i][1], s_path.wp[i][2],
-                   s_path.wp[i][3], s_path.wp[i][4]);
+    for (int i = 0; i < s_path.n; i++) {
+        if (s_path.wp[i][5])
+            OPL_INFO_F("freecam", "path wp%d = (%d, %d, %d) yaw=%d pitch=%d roll=%d", i,
+                       s_path.wp[i][0], s_path.wp[i][1], s_path.wp[i][2],
+                       s_path.wp[i][3], s_path.wp[i][4], s_path.wp[i][5]);
+        else
+            OPL_INFO_F("freecam", "path wp%d = (%d, %d, %d) yaw=%d pitch=%d", i,
+                       s_path.wp[i][0], s_path.wp[i][1], s_path.wp[i][2],
+                       s_path.wp[i][3], s_path.wp[i][4]);
+    }
     s_path.resolved = 1;
     return 1;
 }
@@ -401,6 +553,7 @@ static void freecam_path_step(CPUState* cpu, int committed) {
     s_pose.z     = a[2] + (int32_t)(((int64_t)(b[2] - a[2]) * num) / den);
     s_pose.yaw   = freecam_lerp_angle(a[3], b[3], num, den);
     s_pose.pitch = freecam_lerp_angle(a[4], b[4], num, den);
+    s_pose.roll  = freecam_lerp_angle(a[5], b[5], num, den);
 
     if (committed && ++s_path.t >= s_path.ticks) {
         s_path.t = 0;
@@ -410,22 +563,18 @@ static void freecam_path_step(CPUState* cpu, int committed) {
 
 /** @brief Set the host pose from an OPENPETE_FREECAM_POSE string.
  *
- * Text with three or more integers sets x, y, z and, when present, yaw and
- * pitch, keeping the current angles otherwise. Other text is trimmed and
- * resolved as a named pose, which sets all five. An unresolvable string is
- * logged and changes nothing.
+ * The text parses through freecam_parse_pose_text; the "roll=N" key sets
+ * the roll, 0 when absent. Three or more integers set x, y, z and, when
+ * present, yaw and pitch, keeping the current angles otherwise. Other text
+ * resolves as a named pose, which sets all five.
+ * An unresolvable string is logged and changes nothing.
  * @param cpu The guest CPU state.
  * @param s The pose text. */
 static void freecam_apply_pose(CPUState* cpu, const char* s) {
-    int32_t v[5] = {0, 0, 0, 0, 0};
-    int n = freecam_parse_ints(s, v, 5);
+    int32_t v[5] = {0, 0, 0, 0, 0}, roll;
+    char name[FREECAM_NAME_MAX];
+    int n = freecam_parse_pose_text(s, v, 5, &roll, name);
     if (n < 3) {
-        char name[FREECAM_NAME_MAX];
-        const char* q = s;
-        while (*q == ' ') q++;
-        strncpy(name, q, sizeof name - 1);
-        name[sizeof name - 1] = '\0';
-        for (char* e = name + strlen(name); e > name && e[-1] == ' ';) *--e = '\0';
         if (!name[0] || !resolve_named(cpu, name, v)) {
             OPL_WARN_F("freecam",
                        "OPENPETE_FREECAM_POSE needs at least x,y,z or a named pose (got %d numbers)", n);
@@ -434,15 +583,19 @@ static void freecam_apply_pose(CPUState* cpu, const char* s) {
         n = 5;
         s_pose.x = v[0]; s_pose.y = v[1]; s_pose.z = v[2];
         s_pose.yaw = angle_wrap(v[3]); s_pose.pitch = angle_wrap(v[4]);
+        s_pose.roll = angle_wrap(roll);
         OPL_INFO_F("freecam", "%s pose set to (%d, %d, %d) yaw=%d pitch=%d",
                    name, v[0], v[1], v[2], v[3], v[4]);
+        if (roll) OPL_INFO_F("freecam", "pose roll=%d", (int)roll);
         return;
     }
     s_pose.x = v[0]; s_pose.y = v[1]; s_pose.z = v[2];
     if (n >= 4) s_pose.yaw   = angle_wrap(v[3]);
     if (n >= 5) s_pose.pitch = angle_wrap(v[4]);
+    s_pose.roll = angle_wrap(roll);
     OPL_INFO_F("freecam", "pose set to (%d, %d, %d) yaw=%d pitch=%d",
                v[0], v[1], v[2], v[3], v[4]);
+    if (roll) OPL_INFO_F("freecam", "pose roll=%d", (int)roll);
 }
 
 /* A scripted pose (OPENPETE_FREECAM_POSE / --freecam-pose) waiting to be
