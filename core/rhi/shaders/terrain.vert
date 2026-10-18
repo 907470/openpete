@@ -1322,12 +1322,13 @@ void main()
              * tags included); a keyed game tests the whole LP bucket index
              * against (cull_dist>>7) - 1. Skipped under extended LOD, which
              * keeps far faces. */
+            double fcv = slotv;
             int fclim = g.fog.z;
             if (ot_farcull_keyed()) {
-                slotv += ot_lp_slots((ff >> 24) & 0x1Fu);
+                fcv += ot_lp_slots((ff >> 24) & 0x1Fu);
                 fclim -= 1;
             }
-            if (slotv >= double(fclim)) { kill_vert(); return; }
+            if (fcv >= double(fclim)) { kill_vert(); return; }
         }
         double thr = double((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
         if (!gapfill_face && (gf & GF_LPNEAROUT) != 0 && thr > 0.0lf
