@@ -16,7 +16,8 @@
 # already-built .tar.xz or .AppImage instead; with it set, no build tree is
 # needed, so the gate runs on a second machine from a copy of this script,
 # scripts/check_glibc_floor.sh and mods/r10-libc/. OPENPETE_DISC and
-# OPENPETE_TRACE name the disc and the golden.
+# OPENPETE_TRACE name the disc and the golden; the golden's sidecars
+# (<golden>.vsync, .loads, .srand) must sit beside it.
 #
 # OPENPETE_DIST_MASK_HOST_DEV=1 runs every launch of the artifact with
 # empty directories mounted over /usr/include and /usr/lib/gcc (bwrap, or
@@ -87,6 +88,12 @@ TRACE="${OPENPETE_TRACE:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
 ARTIFACT="${OPENPETE_DIST_ARTIFACT:-}"
 [[ -f "$DISC" ]] || { echo "[dist-gate] disc missing: $DISC" >&2; exit 64; }
 [[ -f "$TRACE" ]] || { echo "[dist-gate] golden missing: $TRACE (tests/harness/check_psx_oracle.sh captures it)" >&2; exit 64; }
+# The replay runs under the reference's schedule, read from the sidecars
+# beside the golden; every recipe records these three. A golden copied
+# without them replays unscheduled and diverges at the first load.
+for _sc in vsync loads srand; do
+    [[ -f "$TRACE.$_sc" ]] || { echo "[dist-gate] golden sidecar missing: $TRACE.$_sc (copy every $TRACE.* file with the golden)" >&2; exit 64; }
+done
 if [[ -n "$ARTIFACT" ]]; then
     [[ -f "$ARTIFACT" ]] || { echo "[dist-gate] artifact missing: $ARTIFACT" >&2; exit 64; }
     case "$ARTIFACT" in *.AppImage) APPIMAGE=1 ;; esac

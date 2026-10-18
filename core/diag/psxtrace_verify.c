@@ -321,6 +321,66 @@ static void gte_hash_summary(void) {
     if (s_gh.dump) { fclose(s_gh.dump); s_gh.dump = NULL; }
 }
 
+/** @brief Refuse a VBL-stamped golden whose schedule sidecars did not all load.
+ *
+ * Every DuckStation-fork capture stamps each record's VBLANK
+ * (PSXTRACE_FLAG_VBL_STAMP), and every capture recipe records the
+ * `.vsync`, `.loads` and `.srand` sidecars with it. Without them the replay
+ * runs under openpete's own VBL, read and seed timing and diverges at the
+ * first load, a verdict that reads as an engine defect; a golden copied
+ * without its sidecars is refused here instead. OPENPETE_PSXTRACE_UNSCHEDULED=1
+ * verifies such a golden unscheduled on purpose.
+ * @param path Path of the golden trace.
+ * @param has_vbl_stamps Nonzero when the trace header carries VBL stamps.
+ * @return 1 when the run must be refused, else 0. */
+static int psxtrace_schedule_missing(const char* path, int has_vbl_stamps) {
+    static const char* const k_ext[3] = { ".vsync", ".loads", ".srand" };
+    const unsigned loaded = openpete_sched_core_loaded();
+    if (!has_vbl_stamps || loaded == 7u) return 0;
+    const char* un = getenv("OPENPETE_PSXTRACE_UNSCHEDULED");
+    char missing[64] = "";
+    for (unsigned i = 0; i < 3u; i++) {
+        if (loaded & (1u << i)) continue;
+        if (missing[0]) strcat(missing, " ");
+        strcat(missing, k_ext[i]);
+    }
+    if (un && strcmp(un, "1") == 0) {
+        OPL_WARN_F("psxtrace", "%s: schedule sidecars %s not loaded; verifying without them "
+                   "(OPENPETE_PSXTRACE_UNSCHEDULED=1)", path, missing);
+        return 0;
+    }
+    OPL_ERROR_F("psxtrace", "golden %s: schedule sidecars missing or unreadable: %s "
+                "(unscheduled, the replay diverges at the first load); copy every %s.* file "
+                "with the golden, or set OPENPETE_PSXTRACE_UNSCHEDULED=1 to verify unscheduled",
+                path, missing, path);
+    return 1;
+}
+
+/** @brief Load the reference's schedule beside the golden and set the VBL policy from what loaded.
+ *
+ * The sidecars beside the golden are the reference's schedule (the CD MMIO
+ * rows and the openpete_sched_open() inputs); under it openpete's VBLs are
+ * the reference's, so the per-record delta compare is exact unless
+ * OPENPETE_PSXTRACE_VBL_POLICY=log. A VBL-stamped golden whose `.vsync`,
+ * `.loads` or `.srand` did not load is refused (psxtrace_schedule_missing).
+ * @param t Trace being opened, with its header read.
+ * @param path Path of the golden trace.
+ * @return 0 when the trace may be verified, -1 when it is refused. */
+static int psxtrace_open_schedule(openpete_psxtrace_t* t, const char* path) {
+    (void)openpete_cdrom_mmio_open(path);
+    if (openpete_sched_open(path) && t->has_vbl_stamps) {
+        const char* vp = getenv("OPENPETE_PSXTRACE_VBL_POLICY");
+        if (!(vp && strcmp(vp, "log") == 0)) t->vbl_policy_exact = 1;
+    }
+    if (psxtrace_schedule_missing(path, t->has_vbl_stamps)) return -1;
+    if (t->vbl_policy_exact && !t->has_vbl_stamps) {
+        OPL_ERROR_F("psxtrace", "%s: OPENPETE_PSXTRACE_VBL_POLICY=exact but the trace "
+                    "carries no VBL stamps - recapture", path);
+        return -1;
+    }
+    return 0;
+}
+
 /** @brief Read every record's VBL stamp (pad2) and, under header flag bit 5, its anchor tick (pad1) ahead, and give them to the schedule.
  *
  * The reference's VBLANK at each anchor hit is charged before that
@@ -482,19 +542,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         t->scm_hash[copy] = 0;
     }
     t->has_vbl_stamps = !!(t->flags & PSXTRACE_FLAG_VBL_STAMP);
-    /* The sidecars beside the golden are the reference's schedule; under
-     * it openpete's VBLs are the reference's, so the per-record delta
-     * compare is exact unless the policy was set to log by hand. */
-    (void)openpete_cdrom_mmio_open(path);
-    if (openpete_sched_open(path) && t->has_vbl_stamps) {
-        const char* vp = getenv("OPENPETE_PSXTRACE_VBL_POLICY");
-        if (!(vp && strcmp(vp, "log") == 0)) t->vbl_policy_exact = 1;
-    }
-    if (t->vbl_policy_exact && !t->has_vbl_stamps) {
-        OPL_ERROR_F("psxtrace", "%s: OPENPETE_PSXTRACE_VBL_POLICY=exact but the trace "
-                    "carries no VBL stamps - recapture", path);
-        goto fail;
-    }
+    if (psxtrace_open_schedule(t, path) != 0) goto fail;
     if (t->flags & PSXTRACE_FLAG_HAS_RAM) {
         if (t->flags & PSXTRACE_FLAG_ZSTD) {
             OPL_ERROR_F("psxtrace",

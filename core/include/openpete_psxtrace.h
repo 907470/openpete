@@ -225,6 +225,13 @@ int  openpete_sched_open(const char* trace_path);   /* 1 when any sidecar loaded
  * failed (openpete_sched_failed) stays active.
  * @return 1 when openpete_sched_open() loaded a schedule, else 0. */
 int  openpete_sched_active(void);
+/** @brief Report which sidecars of the schedule proper openpete_sched_open() read.
+ *
+ * Bit 0 is `<trace>.vsync`, bit 1 `<trace>.loads`, bit 2 `<trace>.srand`;
+ * a sidecar that is absent, unreadable or carries the wrong magic leaves
+ * its bit clear. 0 before openpete_sched_open().
+ * @return The bit mask of the sidecars read. */
+unsigned openpete_sched_core_loaded(void);
 /* The schedule tracks the reference VBLANK count openpete has reached
  * (`pos`). Each consumer returns a target; the thunk layer charges
  * `target - pos` VBLs (one psyq_vbl_body each) and advances pos. */

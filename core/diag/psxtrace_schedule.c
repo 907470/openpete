@@ -64,6 +64,11 @@ static void clock_open(const char* trace);
 static void clock_skip_to(uint32_t rec);
 
 int openpete_sched_active(void) { return s_active; }
+
+/* Bit 0 .vsync, bit 1 .loads, bit 2 .srand: the sidecars of the schedule
+ * proper that the last openpete_sched_open() read. */
+static unsigned s_core_loaded = 0;
+unsigned openpete_sched_core_loaded(void) { return s_core_loaded; }
 int openpete_sched_failed(const char** reason) {
     if (reason) *reason = s_fail_reason;
     return s_failed;
@@ -523,6 +528,7 @@ int openpete_sched_open(const char* trace_path) {
     int so = load_sio0(trace_path);
     int cs = load_cdsync(trace_path);
     int cd = load_card(trace_path);
+    s_core_loaded = (vs ? 1u : 0u) | (rd ? 2u : 0u) | (sd ? 4u : 0u);
     if (!vs && !rd && !sd) return 0;
     s_active = 1;
     clock_open(trace_path);

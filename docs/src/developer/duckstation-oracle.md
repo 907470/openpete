@@ -333,6 +333,14 @@ is a schedule failure: `hard fail: schedule` with the record. The gate
 script refuses a run whose consumption summary is missing or failed.
 `OPENPETE_SCHED_LOG=path` writes every consumed row with openpete's hit.
 
+`--psxtrace-verify` refuses a VBL-stamped golden (every DuckStation-fork
+capture) when `.vsync`, `.loads` or `.srand` does not load beside it,
+naming the golden and each missing sidecar; unscheduled, the replay
+diverges at the first load. `OPENPETE_PSXTRACE_UNSCHEDULED=1` verifies
+such a golden unscheduled on purpose. `check_psx_oracle.sh` exits 64 when
+any sidecar its recipe's capture flags record is absent, and
+`check_dist_first_boot.sh` exits 64 when one of the three is absent.
+
 Controls: a waited row's return VBLANK moved by 5 fails at that record
 (`vbl-delta`); a row deleted is absorbed (the stamps carry the record's
 total), so a missing row is not a detectable fault and the record count

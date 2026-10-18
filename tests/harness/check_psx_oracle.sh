@@ -163,7 +163,7 @@ CONF="${RECIPE:-games/$GAME/oracle.conf}"
 [[ -f "$CONF" ]] || { echo "[psx-oracle] no recipe: $CONF" >&2; exit 64; }
 CAPTURE_RECIPE=()
 [[ -n "$RECIPE" ]] && CAPTURE_RECIPE=(--recipe "$RECIPE")
-GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""; CARD1_END=""; CARD1_IMPORT=""; CARD1_SOURCE_RECIPE=""; CONSTANT_REGIONS_REASON=""
+GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); CAPTURE_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""; CARD1_END=""; CARD1_IMPORT=""; CARD1_SOURCE_RECIPE=""; CONSTANT_REGIONS_REASON=""
 # shellcheck disable=SC1090
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
@@ -298,6 +298,22 @@ BK2="${TRACE}.bk2"
     echo "[psx-oracle] seed CPU: $SEED_CPU"
 [[ -f "$BK2"      ]] && EXTRA+=(--bk2 "$BK2") && \
     echo "[psx-oracle] bk2:      $BK2"
+# Every sidecar the recipe's capture flags record must sit beside the
+# golden: a golden copied without one replays without that part of the
+# reference's schedule and diverges in a way that reads as an engine defect.
+declare -A _SC_OF=([--cd-read-pc]=loads [--vsync-pc]=vsync [--srand-pc]=srand [--watch-word]=watch
+    [--cd-irq]=cdirq [--pad-cmds]=padcmd [--cdsync-pc]=cdsync [--sio0-word]=sio0
+    [--card-active]=card [--rcnt2-pc]=rcnt2 [--vblpos]=vblpos [--spuq]=spuq [--spureg]=spureg)
+_missing=()
+for _a in "${CAPTURE_ARGS[@]}"; do
+    _sc="${_SC_OF[$_a]:-}"
+    [[ -n "$_sc" && ! -f "$TRACE.$_sc" && " ${_missing[*]} " != *" $TRACE.$_sc "* ]] && _missing+=("$TRACE.$_sc")
+done
+if (( ${#_missing[@]} )); then
+    echo "[psx-oracle] golden $TRACE: sidecars its recipe $CONF records are missing: ${_missing[*]}" >&2
+    echo "[psx-oracle] copy them with the golden, or recapture (delete the golden and its sidecars, rerun)" >&2
+    exit 64
+fi
 # The reference's schedule: openpete consumes these beside the golden and
 # runs under the reference's VBL, read and seed timing (psxtrace_schedule.c).
 for _sc in vsync loads srand cdctl cdirq padcmd cdsync sio0 card watch; do
