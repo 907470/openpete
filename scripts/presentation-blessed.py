@@ -484,9 +484,12 @@ def recomp_input_digest(game):
 GENERATED_FIXED = ("PSX.EXE_full.c", "PSX.EXE_dispatch.c",
                    "spyro_overlay_table.c", "psyq_stubs.c")
 GENERATED_CHANNEL = ("channel_sites.txt",)
-# spyro_overlay_table.c row: `{ <id>, "<name>", psx_dispatch_<name> },`.
+# spyro_overlay_table.c row: `{ <id>, "<name>", psx_dispatch_<name> },`, or
+# with a fourth column `psx_quiet_<name>` for an overlay that answers the
+# main EXE's deferred loop sites.
 OVERLAY_ROW_RE = re.compile(
-    r'^\s*\{\s*\d+,\s*"([A-Za-z0-9_]+)",\s*psx_dispatch_\1\s*\},\s*$',
+    r'^\s*\{\s*\d+,\s*"([A-Za-z0-9_]+)",\s*psx_dispatch_\1'
+    r'(?:\s*,\s*psx_quiet_\1)?\s*\},\s*$',
     re.MULTILINE)
 # The build compiles every file these globs match (file(GLOB) in
 # cmake/openpete_game.cmake), whoever wrote it.
