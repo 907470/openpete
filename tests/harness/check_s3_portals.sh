@@ -11,12 +11,22 @@
 #            portal: state 7 into the destination.
 #   trigger  the same route to a trigger moby that calls fWarpToLevel
 #            (func_800584BC) type 0: state 5 into the destination.
+#   sparx    the same route into the Sparx level, whose Exit Level lands
+#            Spyro beside the hub's Sparx sign (class 272); the sign lowers
+#            while Spyro is within 0x1000 of it and rises again only after
+#            he has been farther than 0x2800, so the stick walks him away
+#            and back, Triangle talks to the risen sign (func_80037BBC),
+#            Cross answers the speech (sign data byte 2 = 3) and the sign
+#            calls fWarpToLevel (type 0 in Sunrise Spring, type 4 in the
+#            other hubs): state 5 into the destination.
 #   balloon  Spyro walks to the Midnight Mountain balloonist (class 516),
 #            bumps it, picks the destination in its menu: state 12
 #            (GAMESTATE_LOADING_VEHICLE) into the destination; a row whose
 #            hub is not Midnight Mountain rides there first and takes that
 #            hub's balloonist.
-# The inputs are the movie's own rows (frame-keyed); the movies were
+# The inputs are the movie's own rows (frame-keyed), plus whatever its
+# .bk2.args sidecar adds (the binary splices it; one Sparx row places Spyro
+# with --player-pose); the movies were
 # recorded closed-loop against the portal records of the hub's portal
 # table (D_8006C530, D_8006C5E0 records of 0x44 bytes: five vertices,
 # +0x40 state, +0x42 destination level).
@@ -111,7 +121,7 @@ classify() {
     local name="$1" kind="$2" hub="$3" dest="$4" log="$OUT/$1.log" rc want
     [[ -f "$log" && -f "$OUT/$name.rc" ]] || { echo "FAIL no output"; return; }
     rc="$(cat "$OUT/$name.rc")"
-    case "$kind" in portal) want=7;; trigger) want=5;; balloon) want=12;; *) echo "FAIL kind $kind"; return;; esac
+    case "$kind" in portal) want=7;; trigger|sparx) want=5;; balloon) want=12;; *) echo "FAIL kind $kind"; return;; esac
     grep '^\[s3-state\]' "$log" | awk -v hub="$hub" -v dest="$dest" -v want="$want" -v rc="$rc" '
         { for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] } }
         !loaded && v["state"] == 5 && (want == 12 || v["level"] == dest) { loaded = 1 }

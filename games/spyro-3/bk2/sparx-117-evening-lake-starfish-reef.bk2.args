@@ -1,0 +1,7 @@
+# Closed-loop route recorded on the 117% card (frame-keyed rows): from the
+# title the movie loads slot 1 (the s3-load-save.bk2 input, Midnight
+# Mountain live at frame 1895), then
+# pause -> Atlas -> Square warp into level 38, pause -> Exit Level (back to hub 30 on the tower top beside the Sparx sign, class 272; the sign lowers while Spyro is within 0x1000 and rises only after he has been farther than 0x2800). The stick walks Spyro off the tower into the lake until he is farther than 0x2800 (the sign drops to its waiting state); the tower top has no route back up within that distance, so the placement below returns him to (42474, 66338, 39272), the point where the Exit Level glide itself lands him, at feed key 4353. The stick then walks him to the risen sign, Triangle talks to it, Cross answers, and the sign warps (state 5) into level 38; level 38 live from frame 4557.
+# The slot 1 card is given by the caller (--card1, a copy of
+# games/spyro-3/cards/117-percent.mcr); tests/harness/check_s3_portals.sh.
+--no-card2 --player-pose "42474,66338,39272@4353"

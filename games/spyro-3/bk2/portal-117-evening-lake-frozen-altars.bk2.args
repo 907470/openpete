@@ -1,0 +1,7 @@
+# Closed-loop route recorded on the 117% card (frame-keyed rows): from the
+# title the movie loads slot 1 (the s3-load-save.bk2 input, Midnight
+# Mountain live at frame 1895), then
+# pause -> Atlas -> Square warp into level 31, pause -> Exit Level (state 7 back to hub 30; the glide ends in the lake, Spyro diving, movement state 11), then the stick turns Spyro toward the level-31 portal record of D_8006C530 (underwater, its lower edge below the surface) and Square swims him into it; level 31 live from frame 4539.
+# The slot 1 card is given by the caller (--card1, a copy of
+# games/spyro-3/cards/117-percent.mcr); tests/harness/check_s3_portals.sh.
+--no-card2

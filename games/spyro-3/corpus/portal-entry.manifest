@@ -11,6 +11,8 @@ portal-117-midday-gardens-enchanted-towers | portal | 20 | 22
 portal-117-midday-gardens-bamboo-terrace | portal | 20 | 24
 portal-117-midday-gardens-country-speedway | portal | 20 | 25
 portal-117-midday-gardens-sgt-byrds-base | portal | 20 | 26
+portal-117-evening-lake-frozen-altars | portal | 30 | 31
+portal-117-evening-lake-lost-fleet | portal | 30 | 32
 portal-117-evening-lake-fireworks-factory | portal | 30 | 33
 portal-117-evening-lake-charmed-ridge | portal | 30 | 34
 portal-117-evening-lake-honey-speedway | portal | 30 | 35
@@ -23,6 +25,10 @@ portal-117-midnight-mountain-harbor-speedway | portal | 40 | 45
 portal-117-midnight-mountain-agent-9s-lab | portal | 40 | 46
 portal-117-midnight-mountain-super-bonus-round | portal | 40 | 50
 portal-117-midnight-mountain-sorceresss-lair | trigger | 40 | 47
+sparx-117-sunrise-spring-crawdad-farm | sparx | 10 | 18
+sparx-117-midday-gardens-spider-town | sparx | 20 | 28
+sparx-117-evening-lake-starfish-reef | sparx | 30 | 38
+sparx-117-midnight-mountain-bugbot-factory | sparx | 40 | 48
 balloon-117-midnight-mountain-sunrise-spring | balloon | 40 | 10
 balloon-117-midnight-mountain-buzzs-dungeon | balloon | 40 | 17
 balloon-117-midnight-mountain-spikes-arena | balloon | 40 | 27
