@@ -14,8 +14,16 @@
 #
 # OPENPETE_DIST_ARTIFACT=<file> skips the packaging step and gates that
 # already-built .tar.xz or .AppImage instead; with it set, no build tree is
-# needed, so the gate runs on a second machine from a copy of this script
-# alone. OPENPETE_DISC and OPENPETE_TRACE name the disc and the golden.
+# needed, so the gate runs on a second machine from a copy of this script,
+# scripts/check_glibc_floor.sh and mods/r10-libc/. OPENPETE_DISC and
+# OPENPETE_TRACE name the disc and the golden.
+#
+# OPENPETE_DIST_MASK_HOST_DEV=1 runs every launch of the artifact with
+# empty directories mounted over /usr/include and /usr/lib/gcc (bwrap, or
+# an unprivileged unshare mount namespace when bwrap is absent): a dev host
+# then has no libc headers, crt objects or libgcc, as on SteamOS, and the
+# first-boot module build and the mod drop-in must use only what the
+# artifact carries.
 #
 # The AppImage variant is the same chain against a different artifact,
 # plus the three things only a read-only, path-varying mount can get
@@ -135,6 +143,22 @@ else
     appdir=$(ls -d "$WORK"/install/*/)
     APP=("$appdir/openpete")
     BIN="$appdir/openpete"
+fi
+
+if [[ -n "${OPENPETE_DIST_MASK_HOST_DEV:-}" ]]; then
+    if command -v bwrap >/dev/null; then
+        MASK=(bwrap --dev-bind / / --tmpfs /usr/include --tmpfs /usr/lib/gcc)
+    else
+        MASK=(unshare -rm sh -c 'mount -t tmpfs none /usr/include &&
+              mount -t tmpfs none /usr/lib/gcc && exec "$@"' sh)
+    fi
+    # The mask must engage: both directories read empty through it.
+    "${MASK[@]}" sh -c '[ -z "$(ls -A /usr/include)$(ls -A /usr/lib/gcc)" ]' \
+        || { echo "[dist-gate] FAIL: ${MASK[0]} did not mask /usr/include" \
+                  "and /usr/lib/gcc" >&2; exit 2; }
+    APP=("${MASK[@]}" "${APP[@]}")
+    echo "[dist-gate] host development files masked by ${MASK[0]}:" \
+         "/usr/include and /usr/lib/gcc read empty"
 fi
 
 echo "[dist-gate] glibc floor (every ELF in the payload)..."
@@ -319,33 +343,77 @@ docsdir="$(dirname "$BIN")/docs"
     || { echo "[dist-gate] FAIL: $docsdir/index.html not staged" >&2; exit 2; }
 [[ -f "$docsdir/modding/index.html" ]] \
     || { echo "[dist-gate] FAIL: $docsdir/modding/index.html not staged (Modding section missing from a --with-mod-sdk package)" >&2; exit 2; }
-echo "[dist-gate] drop-in source mod (from sdk/examples) compiles + loads on boot..."
+# Every staged example and the libc fixture mods/r10-libc (string.h,
+# stdio.h, math.h, stdlib.h, stdatomic.h, an __int128 division) are dropped
+# in together and built by the next boot. Per mod: the object exists (a
+# mod with no src/ is declarative and builds none), its compile.log is
+# empty, the boot logs `loaded <id>`, and the object names no DT_NEEDED
+# (libc binds at dlopen from the process).
+fixture=mods/r10-libc
+[[ -f "$fixture/mod.toml" ]] \
+    || { echo "[dist-gate] FAIL: $fixture missing beside this script" >&2; exit 2; }
+echo "[dist-gate] drop-in: every sdk example + r10-libc compile + load on boot..."
 mkdir -p "$DATA/mods"
-cp -r "$sdkdir/examples/hello-anchor" "$DATA/mods/"
-rm -rf "$DATA/mods/hello-anchor/.build"
+dropins=()
+for d in "$sdkdir"/examples/*/ "$fixture"/; do
+    [[ -f "$d/mod.toml" ]] || continue
+    id=$(basename "$d")
+    cp -r "$d" "$DATA/mods/"
+    rm -rf "${DATA:?}/mods/$id/.build"
+    dropins+=("$id")
+done
 "${APP[@]}" --headless --frame-limit 300 \
- --max-runtime-seconds 300 \
+ --max-runtime-seconds 600 \
       > "$WORK/mod-boot.log" 2>&1 \
-    || { echo "[dist-gate] FAIL: boot with drop-in mod crashed" >&2;
+    || { echo "[dist-gate] FAIL: boot with drop-in mods crashed" >&2;
          tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
-[[ -f "$DATA/mods/hello-anchor/.build/spyro-1/hello-anchor.so" ]] \
-    || { echo "[dist-gate] FAIL: drop-in mod did not compile" >&2;
-         tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
-grep -q "loaded hello-anchor" "$WORK/mod-boot.log" \
-    || { echo "[dist-gate] FAIL: drop-in mod compiled but did not load" >&2;
-         tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
+drop_fail=0
+printf '[dist-gate]   %-20s %-4s %-12s %-7s %s\n' mod .so compile.log loaded NEEDED
+for id in "${dropins[@]}"; do
+    so="$DATA/mods/$id/.build/spyro-1/$id.so"
+    clog="$DATA/mods/$id/.build/spyro-1/compile.log"
+    if [[ -d "$DATA/mods/$id/src" ]]; then
+        so_ok=no; [[ -f "$so" ]] && so_ok=yes
+        log_ok=empty; [[ -s "$clog" ]] && log_ok="$(wc -c < "$clog")B"
+        needed=""
+        if [[ -f "$so" ]]; then
+            needed=$(readelf -d "$so" 2>/dev/null \
+                     | sed -n 's/.*NEEDED.*\[\(.*\)\].*/\1/p' | tr '\n' ' ')
+        fi
+        [[ -f "$so" && "$log_ok" == empty && -z "$needed" ]] || drop_fail=1
+    else
+        so_ok=n/a; log_ok=n/a; needed=""
+    fi
+    loaded=no; grep -q "loaded $id v" "$WORK/mod-boot.log" && loaded=yes
+    [[ $loaded == yes ]] || drop_fail=1
+    printf '[dist-gate]   %-20s %-4s %-12s %-7s %s\n' "$id" "$so_ok" "$log_ok" "$loaded" "${needed:--}"
+done
+if [[ $drop_fail -ne 0 ]]; then
+    echo "[dist-gate] FAIL: a drop-in mod did not compile clean, load, or" \
+         "link without DT_NEEDED" >&2
+    for id in "${dropins[@]}"; do
+        clog="$DATA/mods/$id/.build/spyro-1/compile.log"
+        [[ -s "$clog" ]] && { echo "[dist-gate]   $id compile.log:" >&2; head -3 "$clog" >&2; }
+    done
+    exit 2
+fi
 
 # The packaged SDK carries games/spyro-1/ only: a line with -I sdk alone
 # compiles through the root dispatchers, and a line naming Spyro 2 stops
 # at the dispatcher's #error naming it rather than a missing file.
 echo "[dist-gate] packaged SDK root dispatchers: -I sdk alone compiles, Spyro 2 refused..."
+# A host with no compiler (SteamOS) checks with the artifact's own clang
+# and its sysroot headers instead.
+tc="$(dirname "$BIN")/recomp/tools/clang"
+if command -v cc >/dev/null; then DCC=(cc)
+else DCC=("$tc/bin/clang" -nostdlibinc -isystem "$tc/sysroot/include"); fi
 printf '#include <openpete_mod_api.h>\n#include <openpete_sdk_symbols.h>\n#include <openpete_sdk_wrappers.h>\n#include <openpete_game_structs.h>\n' \
     > "$WORK/dispatch.c"
-cc -fsyntax-only -Wall -Wundef -I "$sdkdir" "$WORK/dispatch.c" \
+"${DCC[@]}" -fsyntax-only -Wall -Wundef -I "$sdkdir" "$WORK/dispatch.c" \
       > "$WORK/dispatch-s1.log" 2>&1 \
     || { echo "[dist-gate] FAIL: -I sdk alone did not compile against the packaged SDK" >&2;
          head -5 "$WORK/dispatch-s1.log" >&2; exit 2; }
-if cc -fsyntax-only -Wall -Wundef -DOPENPETE_GAME_ID='"spyro-2"' \
+if "${DCC[@]}" -fsyntax-only -Wall -Wundef -DOPENPETE_GAME_ID='"spyro-2"' \
       -DOPENPETE_GAME_SPYRO1=0 -DOPENPETE_GAME_SPYRO2=1 -DOPENPETE_GAME_SPYRO3=0 \
       -I "$sdkdir" "$WORK/dispatch.c" > "$WORK/dispatch-s2.log" 2>&1 \
    || ! grep -qF "has no Spyro 2 headers (sdk/games/spyro-2/ is absent)" "$WORK/dispatch-s2.log"; then
@@ -354,4 +422,4 @@ if cc -fsyntax-only -Wall -Wundef -DOPENPETE_GAME_ID='"spyro-2"' \
 fi
 
 what=$([[ $APPIMAGE -eq 1 ]] && echo AppImage || echo tarball)
-echo "[dist-gate] PASS - $what: unpack -> ingest -> self-build -> oracle-clean -> mod drop-in"
+echo "[dist-gate] PASS - $what: unpack -> ingest -> self-build -> oracle-clean -> mod drop-in (${#dropins[@]} mods)"

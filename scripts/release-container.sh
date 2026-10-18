@@ -124,5 +124,25 @@ mounts=(-v "$PWD:/src"
             --dump "$surf/$game.json" --help-file "$surf/$game.help" \
             --baseline "packaging/surface/$game.json"
     done
+    # The bundled clang carries glibc and Linux uapi headers for source
+    # mods (scripts/setup_linux_clang.sh fetches them on the host, pinned
+    # to this image'"'"'s package versions). Every one must be byte-equal to
+    # the file this image'"'"'s libc6-dev or linux-libc-dev installed, the
+    # multiarch x86_64-linux-gnu/ prefix dropped, and no other file may be
+    # staged: a Dockerfile snapshot bump that moves either package refuses
+    # here until the pins follow it.
+    sys=.tools/clang/sysroot/include
+    n=0
+    while read -r f; do
+        rel=${f#/usr/include/}; rel=${rel#x86_64-linux-gnu/}
+        cmp -s "$f" "$sys/$rel" \
+            || { echo "[release] staged header differs from this image: $f" >&2; exit 1; }
+        n=$((n + 1))
+    done < <(dpkg -L libc6-dev linux-libc-dev | grep "^/usr/include/" \
+             | while read -r p; do [[ -f $p ]] && echo "$p"; done)
+    staged=$(find "$sys" -type f | wc -l)
+    [[ $n -eq $staged ]] \
+        || { echo "[release] staged headers: $staged files, this image: $n" >&2; exit 1; }
+    echo "[release] sysroot headers match the image ($n files)"
     scripts/package-dist.sh linux --toolchain .tools/clang '"${pkg_args[*]}"'
 '

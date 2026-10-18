@@ -42,6 +42,8 @@ OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`)	
 SDL_GameControllerDB (`gamecontrollerdb.txt`)	all	packaging/licences/gamecontrollerdb.txt	SDL_GameControllerDB.txt
 llvm-mingw (LLVM/Clang, lld, llvm-ar, ...)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt
 LLVM/Clang 18.1.8 + lld (llvm.org build)	toolchain-linux	LICENSE.TXT	LLVM.txt
+glibc 2.31 headers (Debian 11 libc6-dev)	toolchain-linux	sysroot/licences/glibc.copyright	glibc-headers.txt
+Linux 5.10 uapi headers (Debian 11 linux-libc-dev)	toolchain-linux	sysroot/licences/linux.copyright	linux-uapi-headers.txt
 PSXRecomp (psxrecomp)	all	third_party/psxrecomp/LICENSE	PSXRecomp.txt
 fmt 9.1.1 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/fmt/LICENSE.rst	fmt.txt
 rabbitizer 1.7.10 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/rabbitizer/LICENSE	rabbitizer.txt

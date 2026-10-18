@@ -89,6 +89,18 @@ cc -shared -fPIC -D_GNU_SOURCE -O2 -fno-strict-aliasing -Wall -Wundef \
    -o .build/<game>/<id>.so src/*.c <sdk>/openpete_mod_abi.c
 ```
 
+With the bundled Linux compiler (`recomp/tools/clang/bin/clang`, which the
+engine prefers to the system `cc` when the package carries it), or any
+compiler whose directory's parent holds that `sysroot/`, the engine adds `-nostdlibinc -isystem
+<clang>/sysroot/include -nostdlib -nostartfiles` and appends
+`<clang>/sysroot/lib/libclang_rt.builtins.a` after the sources.
+`sysroot/include` holds the glibc 2.31 and Linux 5.10 uapi headers, so the
+line reads no header, crt object or library from the system. The object
+carries no `DT_NEEDED`: its C library and libm calls bind at load to the
+running engine. `atexit` is the exception: glibc defines it in the static
+`libc_nonshared.a`, which is not shipped, so a mod that calls it fails to
+load on this line.
+
 Windows, with the bundled llvm-mingw or any x86_64 MinGW compiler:
 
 ``` sh

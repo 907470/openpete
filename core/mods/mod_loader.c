@@ -3936,6 +3936,68 @@ static const char* mods_cc_identity(void) {
     return s_identity;
 }
 
+/** The bundled toolchain's mod sysroot (scripts/setup_linux_clang.sh),
+ *  resolved beside the mod compiler once per process. */
+typedef struct {
+    int  ok;                    /**< 1 when both inputs exist. */
+    char isystem[MOD_PATH_MAX + 32];  /**< <tree>/sysroot/include. */
+    char builtins[MOD_PATH_MAX + 64]; /**< <tree>/sysroot/lib/libclang_rt.builtins.a. */
+    char stamp[512];            /**< sysroot/STAMP's first line: the pins. */
+} mod_cc_sysroot_t;
+
+/** @brief Return the mod sysroot that sits beside the resolved compiler, probed once per process.
+ *
+ * The bundled Linux toolchain carries glibc and Linux uapi headers in
+ * <tree>/sysroot/include and the compiler-rt builtins archive in
+ * <tree>/sysroot/lib, where <tree> is the parent of the compiler's bin/
+ * directory. When both exist the mod compile line reads no header,
+ * crt object or library from the host (mod_compile). A compiler named
+ * without a directory, or one whose tree has no sysroot (a system
+ * compiler), leaves ok = 0 and the compile line unchanged. Always ok = 0
+ * on Windows, whose llvm-mingw toolchain carries its own CRT.
+ * @return The cached result, owned by the function; not thread-safe. */
+static const mod_cc_sysroot_t* mods_cc_sysroot(void) {
+    static int              s_probed = 0;
+    static mod_cc_sysroot_t s_sys;
+    if (s_probed) return &s_sys;
+    s_probed = 1;
+#ifndef _WIN32
+    char cc[MOD_PATH_MAX];
+    mods_resolve_cc(cc, sizeof cc);
+    char* slash = strrchr(cc, '/');
+    if (!slash) return &s_sys;
+    *slash = '\0'; /* cc now names its bin/ directory */
+    char probe[MOD_PATH_MAX + 48];
+    snprintf(s_sys.isystem, sizeof s_sys.isystem, "%s/../sysroot/include", cc);
+    snprintf(s_sys.builtins, sizeof s_sys.builtins,
+             "%s/../sysroot/lib/libclang_rt.builtins.a", cc);
+    snprintf(probe, sizeof probe, "%s/stdio.h", s_sys.isystem);
+    if (file_mtime(probe) == (time_t)-1 ||
+        file_mtime(s_sys.builtins) == (time_t)-1)
+        return &s_sys;
+    snprintf(probe, sizeof probe, "%s/../sysroot/STAMP", cc);
+    FILE* f = fopen(probe, "rb");
+    if (f) {
+        if (!fgets(s_sys.stamp, sizeof s_sys.stamp, f)) s_sys.stamp[0] = '\0';
+        fclose(f);
+    }
+    s_sys.ok = 1;
+#endif
+    return &s_sys;
+}
+
+/* The flags a compiler with a sysroot (mods_cc_sysroot) adds after
+ * mod_cc_flags: no host header directory (the sysroot's goes in with
+ * -isystem), no crt objects and no default libraries. The object then
+ * carries no DT_NEEDED; its libc and libm references bind at dlopen to
+ * the process, which already holds both, and the compiler runtime comes
+ * from the builtins archive appended after the sources. */
+static const char* const mod_cc_sysroot_flags[] = {
+    "-nostdlibinc", "-nostdlib", "-nostartfiles",
+};
+#define MOD_CC_SYSROOT_FLAG_COUNT \
+    (sizeof mod_cc_sysroot_flags / sizeof mod_cc_sysroot_flags[0])
+
 /* Census only: the list is freed as soon as it has been used, so a
  * named vec would be gone from the list by the exit report. One
  * process-global counter carries the population's high-water. */
@@ -4095,7 +4157,7 @@ static void sdk_prefix_recheck(const char* sdk_dir) {
 /** @brief Return the SHA-256 state that every mod's build key starts from.
  *
  * Hashes the API version, the compiler identity, the running game's id,
- * the compile line's fixed flags (mod_cc_flags), then for each file of sdk_inputs in order the directory it resolves in
+ * the compile line's fixed flags (mod_cc_flags), with a compiler sysroot its flags and the pins in its STAMP, then for each file of sdk_inputs in order the directory it resolves in
  * (sdk_input_path: per-game or root) and its bytes; an absent file
  * contributes its resolution byte only. The state is cached per (SDK
  * directory, game id) until sdk_prefix_recheck drops it, and callers
@@ -4119,6 +4181,17 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
     for (size_t i = 0; i < MOD_CC_FLAG_COUNT; i++)
         openpete_sha256_update(&hc, mod_cc_flags[i],
                                strlen(mod_cc_flags[i]) + 1);
+    {
+        /* The sysroot's pins, not its path: an AppImage mounts at a new
+         * path every launch, and the key must not change with it. */
+        const mod_cc_sysroot_t* sys = mods_cc_sysroot();
+        if (sys->ok) {
+            for (size_t i = 0; i < MOD_CC_SYSROOT_FLAG_COUNT; i++)
+                openpete_sha256_update(&hc, mod_cc_sysroot_flags[i],
+                                       strlen(mod_cc_sysroot_flags[i]) + 1);
+            openpete_sha256_update(&hc, sys->stamp, strlen(sys->stamp) + 1);
+        }
+    }
     for (size_t i = 0; i < SDK_INPUT_COUNT; i++) {
         char p[MOD_PATH_MAX];
         const uint8_t per_game =
@@ -4300,7 +4373,11 @@ static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
  * exported when a source marks one `dllexport`; elsewhere with
  * `-D_GNU_SOURCE`, so glibc's headers declare its extensions
  * (`RTLD_DEFAULT`, `dladdr`) to the mod's sources. The fixed flags come
- * from mod_cc_flags, which the build key hashes. Log lines carry the
+ * from mod_cc_flags, which the build key hashes. A compiler with a
+ * sysroot beside it (mods_cc_sysroot, the bundled Linux clang) adds
+ * mod_cc_sysroot_flags, `-isystem <sysroot>/include` and, after the
+ * sources, the builtins archive, so the build reads nothing from the
+ * host. Log lines carry the
  * label `<id> [<game-id>]`. `stamp`
  * = 1 records the build key on success so an unchanged mod never
  * recompiles (0 = hot-reload .hotN objects on Windows, where the base DLL
@@ -4364,16 +4441,25 @@ static int mod_compile(const char* mod_dir, const char* id,
     snprintf(inc, sizeof inc, "-I%s", sdk_dir);
     snprintf(rsp_arg, sizeof rsp_arg, "@%s", rsp_path);
     snprintf(log_path, sizeof log_path, "%s/compile.log", build_dir);
-    const char* argv[MOD_CC_FLAG_COUNT + 8];
+    const mod_cc_sysroot_t* sys = mods_cc_sysroot();
+    const char* argv[MOD_CC_FLAG_COUNT + MOD_CC_SYSROOT_FLAG_COUNT + 11];
     size_t argc = 0;
     argv[argc++] = cc;
     for (size_t i = 0; i < MOD_CC_FLAG_COUNT; i++)
         argv[argc++] = mod_cc_flags[i];
+    if (sys->ok) {
+        for (size_t i = 0; i < MOD_CC_SYSROOT_FLAG_COUNT; i++)
+            argv[argc++] = mod_cc_sysroot_flags[i];
+        argv[argc++] = "-isystem";
+        argv[argc++] = sys->isystem;
+    }
     argv[argc++] = inc_game;
     argv[argc++] = inc;
     argv[argc++] = "-o";
     argv[argc++] = out_path;
     argv[argc++] = rsp_arg;
+    /* After the sources, so the archive members they reference link. */
+    if (sys->ok) argv[argc++] = sys->builtins;
     argv[argc] = NULL;
 
     OPL_INFO_F("mods", "%s [%s]: compiling %d source file%s", id, game,

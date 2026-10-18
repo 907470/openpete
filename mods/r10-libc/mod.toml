@@ -1,0 +1,19 @@
+# r10-libc - CI fixture: a source mod that uses the C library.
+#
+# The entry calls into string.h, stdio.h, math.h, stdlib.h and
+# stdatomic.h and divides two __int128 values, then checks every result
+# against a known value. It proves that the compiler the loader resolves
+# finds libc headers and the compiler runtime (__divti3, __udivti3), and
+# that the object binds its libc and libm calls at load. The dist gate
+# drops it in at first boot (scripts/check_dist_first_boot.sh). No hooks
+# and no guest RAM access.
+
+[mod]
+id      = "r10-libc"
+name    = "libc Probe"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 1
+state    = "none"      # one-shot entry probe, no hooks
+runahead = "pure"      # no tick hooks at all
+sim_mutative = false  # touches no guest RAM
