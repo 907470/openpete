@@ -918,6 +918,12 @@ static uint32_t s_loop_quanta = 0u;         /* quanta since the last VBL */
 static uint32_t s_loop_quanta_max = 0u;
 static uint64_t s_loop_polls = 0u, s_loop_trips = 0u;
 static uint32_t s_loop_last_header = 0u;
+static uint64_t s_loop_vbls = 0u;            /* VBLs taken, held or flushed (openpete_loop_vbl) */
+/* The call-carrying spin guard: the header and VBL count of the previous
+ * poll. An iteration of a call-carrying spin counts only when the previous
+ * poll closed the previous iteration of the same loop with no VBL since. */
+static uint32_t s_spin_prev_header = 0u;
+static uint64_t s_spin_prev_vbls = UINT64_MAX;
 static int      s_loop_delivery = -1;       /* OPENPETE_LOOP_DELIVERY, read once */
 
 /** @brief Return whether loop delivery is on, reading OPENPETE_LOOP_DELIVERY on the first call (unset or empty means on). */
@@ -942,6 +948,8 @@ struct loop_site {
     uint32_t hdr;
     uint32_t runs, quanta;
     uint64_t polls;
+    uint64_t withheld;     /* call-carrying spin iterations that added nothing */
+    uint64_t unresolved;   /* deferred spin polls the resident overlay did not answer */
     int32_t  first_poll_vbl, first_quantum_vbl;
 };
 static struct loop_site s_loop_site[LOOP_SITES];
@@ -1092,6 +1100,10 @@ void openpete_loop_site_census_log(void) {
                    "first quantum at vbl %d",
                    r->hdr, (unsigned long long)r->polls, r->runs, r->quanta, r->first_poll_vbl,
                    r->first_quantum_vbl);
+        if (r->withheld || r->unresolved)
+            OPL_INFO_F("delivery", "loop site 0x%08X: call-carrying spin, %llu iterations withheld "
+                       "(not the loop's own previous poll, or a VBL arrived), %llu polls unresolved",
+                       r->hdr, (unsigned long long)r->withheld, (unsigned long long)r->unresolved);
     }
     if (s_pure_check <= 0) return;
     /* Register numbering: 1..31 = at..ra, 32 = hi, 33 = lo. */
@@ -1208,6 +1220,33 @@ void openpete_vbl_leaf_report(void) {
 void openpete_loop_vbl(void) {
     s_loop_acc = 0u;
     s_loop_quanta = 0u;
+    s_loop_vbls++;
+}
+
+/** @brief Apply the call-carrying spin guard to one back-edge poll and record it as the previous poll.
+ *
+ * An iteration counts when the previous poll was at the same header and no
+ * VBL was taken, held or flushed since: a VBL inside the iteration means
+ * its calls reached a delivery (a kernel wait, a flush, a handler), and the
+ * first iteration of a run has no measured start.
+ * @param header The loop's header address.
+ * @param kind The site kind; kinds 3 to 5 are call-carrying spins.
+ * @return 1 when the iteration's instructions count, else 0. */
+static int spin_guard(uint32_t header, uint32_t kind) {
+    const int counts = kind < 3u || (header == s_spin_prev_header && s_loop_vbls == s_spin_prev_vbls);
+    s_spin_prev_header = header;
+    s_spin_prev_vbls = s_loop_vbls;
+    return counts;
+}
+
+/** @brief Count a call-carrying spin poll that adds nothing in its census row.
+ * @param header The loop's header address.
+ * @param unresolved Nonzero for a deferred poll the resident overlay did not answer. */
+static void loop_site_withhold(uint32_t header, int unresolved) {
+    const uint32_t i = loop_site_row(header);
+    if (i == UINT32_MAX) return;
+    if (unresolved) s_loop_site[i].unresolved++;
+    else s_loop_site[i].withheld++;
 }
 
 void openpete_loop_report(uint64_t* polls, uint64_t* trips, uint64_t* acc_max_insns,
@@ -1224,6 +1263,11 @@ void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure
     s_loop_polls++;
     if (SDL_GetAtomicInt(&s_hang_state) == HANG_STALL_REQUESTED) stall_take(header);
     if (pure == 1u) loop_pure_check(cpu, header);
+    if (!spin_guard(header, pure) || pure == 5u) {
+        loop_site_withhold(header, pure == 5u);
+        loop_site_note(header, 0);
+        return;
+    }
     s_loop_insns_anchor += insns;
     s_loop_acc += (uint64_t)insns * LOOP_SCALE;
     if (s_loop_acc > s_loop_acc_max) s_loop_acc_max = s_loop_acc;

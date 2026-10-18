@@ -61,6 +61,7 @@ fi
     --extra-funcs="$MAN/main_exe.funcs.txt" \
     "${channel[@]}" \
     "${window[@]}" \
+    --defer-foreign-calls \
     --skip-on-error >/dev/null
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' "$TMP/main_exe/PSX.EXE_dispatch.c"
 check "main_exe (full)"     "$OUT/PSX.EXE_full.c"     "$TMP/main_exe/PSX.EXE_full.c"
@@ -80,9 +81,10 @@ while IFS=$'\t' read -r name wad load; do
         --func-prefix="func_${name}_" \
         --extra-funcs="$MAN/$name.funcs.txt" \
         --leaf-summary="$TMP/main_exe/PSX.EXE_leaves.tsv" \
+        --quiet-targets="$TMP/main_exe/PSX.EXE_loop_sites.tsv" \
         "${window[@]}" \
         --skip-on-error >/dev/null
-    sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
+    sed -i -E "s/\bpsx_(dispatch|quiet)_compiled\b/psx_\1_${name}/g" \
         "$TMP/$name/$name.bin_dispatch.c"
     check "$name (full)"     "$OUT/$name/$name.bin_full.c"     "$TMP/$name/$name.bin_full.c"
     check "$name (dispatch)" "$OUT/$name/$name.bin_dispatch.c" "$TMP/$name/$name.bin_dispatch.c"

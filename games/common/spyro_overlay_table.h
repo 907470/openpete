@@ -23,11 +23,17 @@ extern "C" {
 #endif
 
 typedef int (*spyro_overlay_dispatch_fn)(CPUState* cpu, uint32_t addr);
+/* An overlay's answer to a deferred call-carrying spin of the main EXE: 1
+ * and the callee's cheapest return cost when the callee is a function of
+ * the overlay whose call closure is quiet, reaches no VSync or
+ * device-status thunk and makes a kernel call, else 0. */
+typedef int (*spyro_overlay_quiet_fn)(uint32_t addr, uint32_t* cost);
 
 typedef struct {
     uint32_t                  magic;  /* overlay-id LONG at the overlay vaddr */
     const char*               name;
     spyro_overlay_dispatch_fn fn;
+    spyro_overlay_quiet_fn    quiet;  /* NULL: the overlay answers no deferred spin */
 } spyro_overlay_entry_t;
 
 extern const spyro_overlay_entry_t spyro_overlay_table[];

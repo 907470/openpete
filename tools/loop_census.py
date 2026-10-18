@@ -31,7 +31,22 @@ reaches and that reaches the source without passing through T. The classes:
   VSync reach          for a body with calls, whether psyq_VSync is in the
                        body, reachable through direct callees, unknown
                        (a register-indirect call somewhere on the path), or
-                       unreachable.
+                       unreachable;
+  call-carrying spins  the recompiler's kind 3 and 4 sites: a back-edge that
+                       is no emission site and no device-status poll (kind 2
+                       in the unit's <unit>_loop_sites.tsv), whose body stores nothing, makes
+                       no PSYQ, syscall or register call itself, carries no
+                       register, and calls only generated functions whose
+                       call closure is quiet (every call resolves, a kernel
+                       call excepted: a syscall or a `jr $t2` with t2 set to
+                       0xA0, 0xB0 or 0xC0), reaches no psyq_VSync and no
+                       device-status thunk (CdSync, CdReady,
+                       SpuIsTransferCompleted, MemCardSync), and does not
+                       hold the function of the loop (recursion); the
+                       callees' closures make at least one kernel call. A main
+                       EXE call to a target outside it is deferred (kind 4)
+                       and resolved here against every overlay unit given
+                       that defines it.
 
 A constant `call_by_address(cpu, 0xADDRu)` is a direct call: to the PSYQ
 symbol at that address when the game's psyq.toml names it, else to the
@@ -48,7 +63,8 @@ Usage:
   sites split by carry), novsync, callpoll (call-containing, store-free,
   back-edge condition on v0), emit (every emission site with its source
   region, arm, carry verdict and called leaves, the columns of the
-  recompiler's <unit>_loop_sites.tsv).
+  recompiler's <unit>_loop_sites.tsv), callspin (every call-carrying spin
+  with its kind, callees and, for a deferred one, each overlay's verdict).
   --range LO HI restricts to functions whose address is in [LO, HI).
 """
 import argparse, collections, os, re
@@ -62,6 +78,9 @@ LCALL  = re.compile(r'(?<![A-Za-z0-9_])func_\w*?([0-9A-F]{8})\(cpu\)|'
                     r'call_by_address\(cpu, 0x([0-9A-Fa-f]{8})u\)')
 PSYQ   = re.compile(r'\b(psyq_\w+)\(cpu')
 OPAQUE = re.compile(r'call_by_address\(cpu, cpu->|psx_syscall|call_by_address\(cpu, [a-z]')
+JTDEF  = re.compile(r'default: call_by_address\(cpu, cpu->\w+\); return;')
+KVEC   = re.compile(r'cpu->t2 = (160|176|192);')
+KFN    = re.compile(r'cpu->t1 = \d+;')
 TOK    = re.compile(r'(?<![A-Za-z0-9_])cpu->([A-Za-z0-9_]+)')
 DEF    = re.compile(r'\s*cpu->(\w+) = (.*)$')
 COND   = re.compile(r'int _bc_\w+ = \(([^;]*)\);')
@@ -117,11 +136,22 @@ def regions(body, psyq):
                 ps.add('psyq_' + psyq[addr])
             else:
                 calls.append(addr)
+        rest = JTDEF.sub('', st)
+        kread = 'cpu->t2 = 176;' in st and 'cpu->t1 = 92;' in st
+        if kread:
+            # B(5Ch) _card_status reads kernel RAM: a load, as the recompiler counts it.
+            st = st.replace('call_by_address(cpu, cpu->t2)', 'kernel_read(cpu)')
+        if KVEC.search(rest) and KFN.search(rest):
+            rest = rest.replace('call_by_address(cpu, cpu->t2)', '')
+        rest = rest.replace('psx_syscall', '')
+        kcall = kread or 'psx_syscall' in st or (KVEC.search(st) is not None and KFN.search(st) is not None
+                                                  and 'call_by_address(cpu, cpu->t2)' in st)
         out.append(dict(label=int(m.group(1), 16), raw=raw, text=st, gotos=gotos,
-                        falls=falls, calls=calls, psyq=ps,
+                        falls=falls, calls=calls, psyq=ps, kernel=kcall,
                         opaque=bool(OPAQUE.search(st)),
+                        unknown=bool(OPAQUE.search(rest)),
                         store=any(w >> 26 in STORE_OPS for w in words),
-                        load=any(is_load(w) for w in words), insns=len(words)))
+                        load=kread or any(is_load(w) for w in words), insns=len(words)))
     return out
 
 
@@ -238,7 +268,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('game')
     ap.add_argument('files', nargs='+')
-    ap.add_argument('--list', choices=['pure', 'counted', 'novsync', 'callpoll', 'emit'])
+    ap.add_argument('--list', choices=['pure', 'counted', 'novsync', 'callpoll', 'emit', 'callspin'])
     ap.add_argument('--range', nargs=2)
     a = ap.parse_args()
     lo, hi = (int(a.range[0], 16), int(a.range[1], 16)) if a.range else (0, 1 << 32)
@@ -282,10 +312,98 @@ def main():
                 reach[key] = (vs, unk)
                 changed = True
 
+    # Quiet closure per function: every call resolves, no register call
+    # other than a kernel call or a jump table's default, no psyq_VSync.
+    quiet = {}
+    status = {'psyq_CdSync', 'psyq_CdReady', 'psyq_SpuIsTransferCompleted', 'psyq_MemCardSync'}
+    for u in units:
+        for f, (_, regs, stub) in u.funcs.items():
+            q = not stub and not any(r['unknown'] or 'psyq_VSync' in r['psyq'] or r['psyq'] & status
+                                     for r in regs)
+            q = q and all(resolve(u, c) is not None for r in regs for c in r['calls'])
+            quiet[(u.path, f)] = q
+    changed = True
+    while changed:
+        changed = False
+        for key, out in edges.items():
+            if quiet[key] and not all(quiet[c] for c in out):
+                quiet[key] = False
+                changed = True
+    # Kernel reach per function: the closure makes a kernel call.
+    kreach = {(u.path, f): any(r['kernel'] for r in regs)
+              for u in units for f, (_, regs, _) in u.funcs.items()}
+    changed = True
+    while changed:
+        changed = False
+        for key, out in edges.items():
+            if not kreach[key] and any(kreach[c] for c in out):
+                kreach[key] = True
+                changed = True
+    overlays = [u for u in units if u is not main_unit]
+
+    def device_polls(u):
+        """Headers of the unit's kind-2 sites in the recompiler's site list beside it."""
+        p = u.path.replace('_full.c', '_loop_sites.tsv')
+        if not os.path.exists(p):
+            return set()
+        return {int(l.split('\t')[1], 16) for l in open(p)
+                if not l.startswith('#') and l.rstrip('\n').split('\t')[-1] == '2'}
+
+    def fname_of(u, regs):
+        return next(f for f, (_, rr, _) in u.funcs.items() if rr is regs)
+
+    def holds(hit, key):
+        seen, work = {(hit[0].path, hit[1])}, [(hit[0].path, hit[1])]
+        while work:
+            k = work.pop()
+            if k == key:
+                return True
+            for c in edges[k]:
+                if c not in seen:
+                    seen.add(c)
+                    work.append(c)
+        return False
+
+    def callspin(u, regs, succ, body, h):
+        """(kind, description) when the body is a call-carrying spin, else None."""
+        deferred, names, kernel = None, [], False
+        for i in body:
+            r = regs[i]
+            if r['store'] or r['opaque'] or r['psyq']:
+                return None
+            for c in r['calls']:
+                hit = resolve(u, c)
+                if hit is None:
+                    if u is not main_unit or (deferred is not None and deferred != c):
+                        return None
+                    deferred = c
+                    continue
+                if not quiet[(hit[0].path, hit[1])] or holds(hit, (u.path, fname_of(u, regs))):
+                    return None
+                names.append(hit[1])
+                kernel = kernel or kreach[(hit[0].path, hit[1])]
+        if deferred is None and not names:
+            return None
+        if deferred is None and not kernel:
+            return None
+        if carried(regs, succ, body, h):
+            return None
+        if deferred is None:
+            return 3, ','.join(names)
+        verdicts = []
+        for o in overlays:
+            if deferred in o.byaddr:
+                k = (o.path, o.byaddr[deferred])
+                verdicts.append('%s:%s' % (o.name.split('.')[0],
+                                           'quiet' if quiet[k] and kreach[k] else 'refused'))
+        return 4, '0x%08X [%s] %s' % (deferred, ' '.join(verdicts) or 'no overlay defines it',
+                                      ','.join(names))
+
     cnt = collections.Counter()
     listed = []
     thunks = collections.Counter()
     for u in units:
+        u.device_polls = device_polls(u)
         foreign = main_unit.leaves if main_unit is not None and u is not main_unit else {}
         for fname, (faddr, regs, stub) in u.funcs.items():
             if stub or not regs or not (lo <= faddr < hi):
@@ -318,6 +436,14 @@ def main():
                                 ','.join('0x%08X' % c for c in em[1]) or '-'),))
                         elif a.list == ('pure' if pure else 'counted'):
                             listed.append(row + ('src=0x%08X %s' % (r['label'], arm),))
+                    if not em and t not in u.device_polls:
+                        cs = callspin(u, regs, succ, body, h)
+                        if cs:
+                            cnt['call-carrying spins'] += 1
+                            cnt['  kind %d' % cs[0]] += 1
+                            if a.list == 'callspin':
+                                listed.append((u.name, fname, t, n, 'src=0x%08X %s kind=%d %s' % (
+                                    r['label'], arm, cs[0], cs[1])))
                     calls = [c for x in br for c in x['calls']]
                     ps = set().union(*[x['psyq'] for x in br])
                     ind = any(x['opaque'] for x in br)
@@ -364,7 +490,8 @@ def main():
     for k in ('back-edges', 'with a call', '  VSync in body', '  VSync via callees',
               '  unknown (indirect call)', '  no path to VSync', 'call-free',
               'call-free, store-free', '  with a load',
-              'emission sites (pure-leaf calls)', '  pure', '  counted'):
+              'emission sites (pure-leaf calls)', '  pure', '  counted',
+              'call-carrying spins', '  kind 3', '  kind 4'):
         print('  %-34s %d' % (k, cnt[k]))
     print('  thunks called from loops with no path to VSync:',
           ', '.join('%s x%d' % kv for kv in thunks.most_common()))

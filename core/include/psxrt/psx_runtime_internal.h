@@ -71,10 +71,16 @@ void psx_syscall(CPUState* cpu, uint32_t code);
 /** @brief Count one iteration of a polling loop and, once a VBL's worth of guest instructions has accumulated, offer a VBL.
  *
  * The recompiler emits the call on the back-edge of a loop whose body
- * stores nothing, calls only pure leaves and loads, and on the back-edge of
+ * stores nothing, calls only pure leaves and loads, on the back-edge of
  * a device-status poll: a store-free body whose one call returns the v0 the
  * branch tests, into a call closure that reaches a device-status thunk and
- * never VSync. Each call adds the body's static instruction count; at one
+ * never VSync, and on the back-edge of a call-carrying spin: a store-free
+ * body that carries no register across iterations and calls only
+ * functions whose call closure never reaches VSync (kernel calls allowed),
+ * at least one of which makes a kernel call.
+ * A call-carrying spin's iteration adds its count only when the previous
+ * poll was its own and no VBL arrived since; any other iteration adds
+ * nothing. Each call adds the body's static instruction count; at one
  * VBL of instructions at one instruction per cycle (33868800 x 37609 /
  * 2250000) a quantum is reached. Under the oracle's schedule the quantum
  * delivers only a VBLANK the reference shows taken before its next row; off
@@ -86,8 +92,24 @@ void psx_syscall(CPUState* cpu, uint32_t code);
  *        device-status poll counts its body alone.
  * @param pure The site kind: 1 for a pure spin (no register carries a value
  *        across iterations except through a load), 2 for a device-status
- *        poll, 0 for a counted poll. */
+ *        poll, 3 for a call-carrying spin, 4 for a deferred call-carrying
+ *        spin the resident overlay answered, 5 for one it did not (counted
+ *        in the census, adds nothing), 0 for a counted poll. */
 void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure);
+
+/** @brief Poll a call-carrying spin whose callee lies in the overlay window, deciding its closure against the resident overlay.
+ *
+ * The main EXE is translated before any overlay, so a loop calling an
+ * overlay function by constant address carries the callee here. The
+ * resident overlay's quiet table (psx_quiet_<name>) answers whether the
+ * callee's call closure is quiet, VSync-free and makes a kernel call, and
+ * its cheapest return cost; an answered poll is psx_loop_poll kind 4 with that cost added, any
+ * other kind 5.
+ * @param cpu The looping function's CPU state.
+ * @param header The loop's header address.
+ * @param insns The body's instruction count without the deferred callee.
+ * @param callee The overlay function the body calls. */
+void psx_loop_poll_deferred(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t callee);
 
 /** @brief Execute one GTE command against the GTE register banks in @p cpu.
  *

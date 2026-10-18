@@ -59,6 +59,16 @@ uint32_t spyro_get_active_overlay_magic(void) {
     return s_active ? s_active->magic : 0u;
 }
 
+void psx_loop_poll_deferred(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t callee) {
+    uint32_t cost = 0u;
+    /* The callee ran in this iteration through psx_dispatch_compiled, whose
+     * resync has made s_active the overlay resident at the call. */
+    if (s_active && s_active->quiet && s_active->quiet(callee, &cost))
+        psx_loop_poll(cpu, header, insns + cost, 4u);
+    else
+        psx_loop_poll(cpu, header, 0u, 5u);
+}
+
 /* Set by the recompiled code at every `jalr` site, immediately before its
  * call_by_address, and cleared by the first dispatch that follows: the
  * census cannot otherwise tell a `jalr` from a `jr <reg>` that follows a

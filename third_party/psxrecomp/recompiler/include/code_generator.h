@@ -246,17 +246,20 @@ private:
     /** @brief Record a call of a PSYQ or manual symbol in the current region.
      * @param target the symbol's address */
     void note_named_call(uint32_t target);
-    /// @brief Record a call through a register or a syscall in the current region.
+    /// @brief Record a call through a register, other than a kernel call, in the current region.
     void note_indirect_call();
+    /// @brief Record a kernel call (a syscall, or a constant A0, B0 or C0 vector call) in the current region.
+    void note_kernel_call();
     /** @brief Record a `jr $t2` kernel table call that on the console only reads kernel RAM, as the loads and instructions of the kernel path.
      *
      * The kernel functions so recorded store nothing, call nothing and do
-     * not loop (OpenBIOS card.c getCardStatus); any other kernel call, or a
-     * `jr $t2` whose t2 and t1 the block does not set to constants, is
-     * recorded by note_indirect_call().
+     * not loop (OpenBIOS card.c getCardStatus); any other call to the A0,
+     * B0 or C0 vector with constant t2 and t1 is recorded by
+     * note_kernel_call(), and a `jr $t2` whose t2 and t1 the block does not
+     * set to such constants by note_indirect_call().
      * @param block_start the first instruction of the block ending in the `jr`
      * @param jr_addr     the `jr $t2` instruction; its delay slot follows it
-     * @return true when the call was recorded as a kernel read */
+     * @return true when the call was recorded as a kernel read or a kernel call */
     bool note_kernel_read_call(uint32_t block_start, uint32_t jr_addr);
     /** @brief Record the conditional branch that exits the current region, before its delay slot is noted.
      *

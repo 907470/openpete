@@ -137,6 +137,8 @@ void CodeGenerator::note_instruction(uint32_t instr) {
     if (op == 0x00 && (fn == 0x0C || (fn == 0x08 && get_rs(instr) != 31))) {
         r.opaque_call = true;
         r.indirect = true;
+        r.unknown_target = r.unknown_target || fn == 0x08;
+        r.kernel = r.kernel || fn == 0x0C;
     }
 }
 
@@ -173,6 +175,15 @@ void CodeGenerator::note_named_call(uint32_t target) {
 
 void CodeGenerator::note_indirect_call() {
     if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().opaque_call = true;
+    facts_.back().regions.back().indirect = true;
+    facts_.back().regions.back().unknown_target = true;
+    facts_.back().regions.back().v0_out = V0Out::Unknown;
+}
+
+void CodeGenerator::note_kernel_call() {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().kernel = true;
     facts_.back().regions.back().opaque_call = true;
     facts_.back().regions.back().indirect = true;
     facts_.back().regions.back().v0_out = V0Out::Unknown;
@@ -220,11 +231,14 @@ bool CodeGenerator::note_kernel_read_call(uint32_t block_start, uint32_t jr_addr
         if (k.table != value[1] || k.fn != value[0]) continue;
         EmittedRegion& r = facts_.back().regions.back();
         r.loads = true;
+        r.kernel = true;
         r.insns += k.insns;
         r.v0_out = V0Out::Unknown;
         return true;
     }
-    return false;
+    if (value[1] != 0xA0u && value[1] != 0xB0u && value[1] != 0xC0u) return false;
+    note_kernel_call();
+    return true;
 }
 
 void CodeGenerator::note_branch(uint32_t instr) {

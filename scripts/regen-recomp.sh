@@ -316,8 +316,10 @@ process_overlay() {
 # resident whenever an overlay runs. The pass has the same inputs as the
 # converged one plus the summary, so the C it writes differs only by the
 # psx_loop_poll calls at the back-edges the summary qualifies; it is the
-# overlay's final C. process_overlay's extra arguments are not replayed
-# (the registry loop passes none).
+# overlay's final C. The main EXE's site list names the overlay targets of
+# its deferred call-carrying spins; the overlay's dispatch file answers for
+# those that are its functions (psx_quiet_<name>). process_overlay's extra
+# arguments are not replayed (the registry loop passes none).
 classify_overlay() {
     local name="$1"
     local ovl_path prefix load_addr final
@@ -334,8 +336,9 @@ classify_overlay() {
         ${PCTRACK_FLAG:+$PCTRACK_FLAG} \
         --extra-funcs="$final" \
         --emit-external-jals="$OUT/$name/external_jals.txt" \
-        --leaf-summary="$OUT/PSX.EXE_leaves.tsv" >/dev/null
-    sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
+        --leaf-summary="$OUT/PSX.EXE_leaves.tsv" \
+        --quiet-targets="$OUT/PSX.EXE_loop_sites.tsv" >/dev/null
+    sed -i -E "s/\bpsx_(dispatch|quiet)_compiled\b/psx_\1_${name}/g" \
         "$OUT/$name/$name.bin_dispatch.c"
 }
 
@@ -457,6 +460,7 @@ common_psx_args=(
     --external-symbols="$PSYQ_MANIFEST"
     --external-prefix=psyq_
     --skip-on-error
+    --defer-foreign-calls
     ${CHANNEL_MANIFEST:+--channel-sites="$CHANNEL_SITES"}
     ${PCTRACK_FLAG:+$PCTRACK_FLAG}
 )
@@ -544,12 +548,22 @@ echo "[regen] Generating $OUT/spyro_overlay_table.c (${#OVERLAY_NAMES[@]} overla
     echo
     for name in "${OVERLAY_NAMES[@]}"; do
         echo "extern int psx_dispatch_${name}(CPUState* cpu, uint32_t addr);"
+        if grep -q "^int psx_quiet_${name}(" "$OUT/$name/$name.bin_dispatch.c"; then
+            echo "extern int psx_quiet_${name}(uint32_t addr, uint32_t* cost);"
+        fi
     done
     echo
     echo "const spyro_overlay_entry_t spyro_overlay_table[] = {"
     for name in "${OVERLAY_NAMES[@]}"; do
-        printf '    { %3d, "%s", psx_dispatch_%s },\n' \
-            "${OVERLAY_MAGIC[$name]}" "$name" "$name"
+        # The quiet column is written only for an overlay that answers a
+        # deferred spin; an entry without it initializes the field to NULL.
+        if grep -q "^int psx_quiet_${name}(" "$OUT/$name/$name.bin_dispatch.c"; then
+            printf '    { %3d, "%s", psx_dispatch_%s, psx_quiet_%s },\n' \
+                "${OVERLAY_MAGIC[$name]}" "$name" "$name" "$name"
+        else
+            printf '    { %3d, "%s", psx_dispatch_%s },\n' \
+                "${OVERLAY_MAGIC[$name]}" "$name" "$name"
+        fi
     done
     echo "};"
     echo "const size_t spyro_overlay_table_count = sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);"

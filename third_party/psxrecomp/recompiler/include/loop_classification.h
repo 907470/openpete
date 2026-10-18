@@ -64,6 +64,10 @@ struct EmittedRegion {
     bool indirect = false;       ///< call_by_address on a register (a jump table's
                                  ///< out-of-range default and a kernel read call
                                  ///< excepted) or psx_syscall
+    bool unknown_target = false; ///< an `indirect` call that is not a kernel call: a
+                                 ///< kernel call is a syscall, or a `jr $t2` to the A0,
+                                 ///< B0 or C0 vector with t2 and t1 set to constants
+    bool kernel = false;         ///< makes a kernel call, a kernel read call included
     std::vector<uint32_t> named;     ///< PSYQ or manual symbols called, one entry per call
     std::vector<uint32_t> callees;   ///< generated functions of this unit called, one entry per call
     std::vector<uint32_t> foreign;   ///< constant `call_by_address` targets, one entry per call;
@@ -116,6 +120,11 @@ struct LoopSite {
     bool device_poll = false;    ///< device-status poll (see classify_loops); `leaves`
                                  ///< then names the polled callee and `insns` counts
                                  ///< the body plus the callee's busy-path cost
+    bool call_spin = false;      ///< call-carrying spin (see classify_loops); `leaves`
+                                 ///< names every callee, `insns` counts the body plus
+                                 ///< each resolved callee's cheapest return
+    uint32_t deferred = 0;       ///< a call-carrying spin's callee in no unit the
+                                 ///< recompiler sees, resolved at run time; 0 for none
 };
 
 /// A function of another unit as its summary states it.
@@ -124,6 +133,9 @@ struct LeafSummary {
     bool loads = false;
     bool leaf = true;            ///< a pure leaf; false for a row stating only a call closure
     bool status = false;         ///< the call closure reaches a device-status thunk
+    bool traced = true;          ///< the closure is traced; false for a row whose closure
+                                 ///< is quiet only (its traced verdict fails on kernel calls)
+    bool kernel = false;         ///< the closure makes a kernel call (EmittedRegion::kernel)
     ReturnCosts cost;            ///< shortest return-path costs (see classify_loops())
 };
 
@@ -175,21 +187,77 @@ bool is_device_status_thunk(const std::string& name);
  * path returns is the last constant a region writes (EmittedRegion::v0_out);
  * a region ending in a tail call returns the callee's. A site whose callee
  * has no such path is not classified.
+ *
+ * A back-edge that fails both tests is a call-carrying spin when the body
+ * stores nothing, calls no PSYQ or manual symbol and nothing through a
+ * register, makes at least one call, and every call it makes is to a
+ * generated function whose call closure is quiet, calls no `VSync` and
+ * calls no device-status thunk (such a wait is paced by its thunk), and the
+ * closures of the body's callees make at least one kernel call, so the
+ * loop waits on state that changes outside the iteration (a computation
+ * loop such as a random reroll makes none). Quiet
+ * is traced, except that a kernel call (a syscall, or a constant A0, B0 or
+ * C0 vector call; see EmittedRegion::unknown_target) does not untrace a
+ * closure. A callee of the unit whose closure holds the function of the
+ * loop disqualifies it (a recursive body is the function's own work, not a
+ * wait). A foreign callee qualifies when `foreign` has a row for it whose
+ * status is clear. A constant target no row names makes the body a deferred spin
+ * when `defer_foreign` is set and it is the body's only such target: its
+ * closure is decided at run time against the resident overlay's answer
+ * (quiet_targets(), quiet_function_c()). The site's insns are the body's
+ * instructions plus, per call, each resolved callee's cheapest path to any
+ * return; a resolved callee with no return path disqualifies the site.
+ * apply_loop_polls() drops a call-carrying spin whose body carries a
+ * register across iterations.
  * @param facts   every function the unit emitted
  * @param foreign pure leaves and call-closure rows of other units, by address
  * @param thunks  the unit's VSync, device-status and untraced symbols
+ * @param defer_foreign whether a constant target no row names may be resolved at
+ *                run time: set for the main EXE, which is translated with no other
+ *                unit's summary and whose foreign targets are overlay entries
  * @return the back-edges that qualify, in function then emission order */
 std::vector<LoopSite> classify_loops(const std::vector<FunctionFacts>& facts,
                                      const std::map<uint32_t, LeafSummary>& foreign,
-                                     const ThunkClasses& thunks);
+                                     const ThunkClasses& thunks, bool defer_foreign = false);
 
-/** @brief Write the unit's pure leaves and traced call closures as tab-separated rows.
+/** @brief Find which of the given addresses are functions of the unit whose call closure admits a call-carrying spin.
+ *
+ * The test is the call-carrying spin's closure test (see classify_loops()):
+ * quiet, VSync-free, reaching no device-status thunk and making a kernel
+ * call.
+ * @param facts   every function the unit emitted
+ * @param foreign rows of other units the unit's closures resolve against
+ * @param thunks  the unit's VSync, device-status and untraced symbols
+ * @param targets the addresses asked about
+ * @return each qualifying address with its cheapest path to any return */
+std::map<uint32_t, uint32_t> quiet_targets(const std::vector<FunctionFacts>& facts,
+                                           const std::map<uint32_t, LeafSummary>& foreign,
+                                           const ThunkClasses& thunks,
+                                           const std::set<uint32_t>& targets);
+
+/** @brief Read the deferred callees of another unit's site list (write_loop_sites()).
+ * @param path the list
+ * @param out  receives the callee of every deferred call-carrying spin (kind 4)
+ * @return false when the file cannot be opened */
+bool read_deferred_targets(const std::string& path, std::set<uint32_t>& out);
+
+/** @brief Spell the C of `psx_quiet_compiled`, the unit's answer to a deferred spin's closure query.
+ *
+ * The function returns 1 and stores the cheapest return cost for an
+ * address of `quiet`, 0 for any other address.
+ * @param quiet the unit's answers, from quiet_targets()
+ * @return the C text, empty when `quiet` is empty */
+std::string quiet_function_c(const std::map<uint32_t, uint32_t>& quiet);
+
+/** @brief Write the unit's pure leaves and quiet call closures as tab-separated rows.
  *
  * Columns: address, insns, loads (0 or 1), leaf (1 for a pure leaf), status
  * (1 when the call closure reaches a device-status thunk), then the return
- * costs any, zero, nonzero (`-` for no path; see classify_loops()). A pure
- * leaf writes `<insns> <loads> 1 0`; every other function whose call
- * closure is traced and calls no `VSync` writes `0 0 0 <status>`.
+ * costs any, zero, nonzero (`-` for no path; see classify_loops()), then
+ * traced (1 when the call closure is traced, 0 when it is only quiet), then
+ * kernel (1 when the call closure makes a kernel call). A
+ * pure leaf writes `<insns> <loads> 1 0`; every other function whose call
+ * closure is quiet and calls no `VSync` writes `0 0 0 <status>`.
  * Read back by read_leaf_summary().
  * @param path    output file
  * @param facts   every function the unit emitted
@@ -209,8 +277,10 @@ bool read_leaf_summary(const std::string& path, std::map<uint32_t, LeafSummary>&
 /** @brief Write the classified sites as tab-separated rows.
  *
  * Columns: function, header, source, arm, insns, leaves (comma-separated,
- * `-` when none), pure (the site kind apply_loop_polls() emits: 0 counted
- * poll, 1 pure spin, 2 device-status poll). A `#` header line names them.
+ * `-` when none; a deferred spin's callee first), pure (the site kind
+ * apply_loop_polls() emits: 0 counted poll, 1 pure spin, 2 device-status
+ * poll, 3 call-carrying spin, 4 deferred call-carrying spin). A `#` header
+ * line names them.
  * @param path  output file
  * @param sites the sites classify_loops() returned
  * @return false when the file cannot be opened */
@@ -235,8 +305,9 @@ std::string loop_poll_marker(const std::string& indent, const std::string& funct
  *
  * A placeholder whose back-edge is a site becomes
  * `psx_loop_poll(cpu, 0x<header>u, <insns>u, <kind>u);` at the same indent,
- * kind 0 for a counted poll, 1 for a pure spin and 2 for a device-status
- * poll;
+ * kind 0 for a counted poll, 1 for a pure spin, 2 for a device-status poll
+ * and 3 for a call-carrying spin, or, for a deferred call-carrying spin,
+ * `psx_loop_poll_deferred(cpu, 0x<header>u, <insns>u, 0x<callee>u);`;
  * every other placeholder line is removed, so the text without sites is the
  * text the generator writes with no placeholders at all. Each site's `pure`
  * is decided on the emitted text of its body regions: a register (not zero)
@@ -244,12 +315,13 @@ std::string loop_poll_marker(const std::string& indent, const std::string& funct
  * and that the body defines, carries a value across iterations and makes
  * the site a counted poll; with no such register the site is a pure spin.
  * A device-status poll keeps kind 2 and its `pure` stays false: its callee's
- * reads are not seen.
+ * reads are not seen. A call-carrying spin that carries a register is
+ * removed from `sites` and its placeholder line removed.
  * A call of a leaf defines v0, v1, a0-a3, t0-t9 and at.
  * @param code  generated C holding placeholder lines
  * @param sites the sites classify_loops() returned for the same unit; each
  *              site's `pure` is set
- * @param emitted receives the number of poll calls written
+ * @param emitted receives the number of poll calls written, one per site kept
  * @return the resolved C */
 std::string apply_loop_polls(const std::string& code, std::vector<LoopSite>& sites,
                              size_t& emitted);

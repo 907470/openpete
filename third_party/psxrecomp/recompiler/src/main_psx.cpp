@@ -281,6 +281,10 @@ int main(int argc, char** argv) {
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
         fmt::print("  --leaf-summary=<file>         Another unit's <stem>_leaves.tsv: its pure leaves count\n");
         fmt::print("                                as leaves of this unit's loop classification (repeatable)\n");
+        fmt::print("  --defer-foreign-calls         A loop calling a constant target outside this unit and\n");
+        fmt::print("                                every summary is a deferred call-carrying spin (main EXE)\n");
+        fmt::print("  --quiet-targets=<file>        Another unit's <stem>_loop_sites.tsv: emit psx_quiet_compiled\n");
+        fmt::print("                                for its deferred callees that are this unit's functions\n");
         fmt::print("  --raw-bin                     Input is a raw code blob (no PS-X EXE header);\n");
         fmt::print("                                requires --load-addr. Replaces the out-of-tree\n");
         fmt::print("                                synth_overlay_exe.py wrapper for overlay blobs.\n");
@@ -308,6 +312,8 @@ int main(int argc, char** argv) {
     std::string sony_image_window;
     bool emit_pc_tracking = false;
     std::vector<std::string> leaf_summary_paths;
+    bool defer_foreign_calls = false;
+    std::string quiet_targets_path;
 
     auto take_value = [](const std::string& a, const char* prefix) -> std::string {
         size_t plen = std::strlen(prefix);
@@ -340,6 +346,8 @@ int main(int argc, char** argv) {
         else if (a == "--skip-on-error")                              skip_on_error = true;
         else if (a == "--emit-pc-tracking")                           emit_pc_tracking = true;
         else if (!(v = take_value(a, "--leaf-summary")).empty())     leaf_summary_paths.push_back(v);
+        else if (a == "--defer-foreign-calls")                        defer_foreign_calls = true;
+        else if (!(v = take_value(a, "--quiet-targets")).empty())    quiet_targets_path = v;
         // Legacy form: `--extra-funcs <file>` (space-separated).
         else if (a == "--extra-funcs" && i + 1 < argc)                extra_funcs_path = argv[++i];
         else if (a == "--external-symbols" && i + 1 < argc)           external_syms_path = argv[++i];
@@ -844,9 +852,14 @@ int main(int argc, char** argv) {
     // only pure leaves (of this unit, or of another unit's --leaf-summary),
     // and loads, and the device-status polls (one call whose returned v0 the
     // back-edge tests, into a traced closure that reaches CdSync, CdReady,
-    // SpuIsTransferCompleted or MemCardSync and never VSync). Each such back-edge's placeholder becomes a psx_loop_poll
+    // SpuIsTransferCompleted or MemCardSync and never VSync), and the
+    // call-carrying spins (a store-free body that carries no register and
+    // calls only functions whose closure is quiet and never calls VSync;
+    // with --defer-foreign-calls, one overlay target is decided at run
+    // time). Each such back-edge's placeholder becomes a psx_loop_poll
     // call and every other placeholder is removed; the sites are written
-    // beside the C with this unit's own pure leaves.
+    // beside the C with this unit's own pure leaves and quiet closures.
+    std::string quiet_c;
     {
         std::string sites_path = output_dir + "/" + exe_stem + "_loop_sites.tsv";
         std::map<uint32_t, PSXRecomp::LeafSummary> foreign;
@@ -856,7 +869,17 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        auto sites = PSXRecomp::classify_loops(codegen.emitted_facts(), foreign, thunks);
+        auto sites = PSXRecomp::classify_loops(codegen.emitted_facts(), foreign, thunks,
+                                               defer_foreign_calls);
+        if (!quiet_targets_path.empty()) {
+            std::set<uint32_t> targets;
+            if (!PSXRecomp::read_deferred_targets(quiet_targets_path, targets)) {
+                fmt::print(stderr, "⚠ Cannot open --quiet-targets file: {}\n", quiet_targets_path);
+                return 1;
+            }
+            quiet_c = PSXRecomp::quiet_function_c(
+                PSXRecomp::quiet_targets(codegen.emitted_facts(), foreign, thunks, targets));
+        }
         size_t polls = 0;
         full_c_code = PSXRecomp::apply_loop_polls(full_c_code, sites, polls);
         if (polls != sites.size()) {
@@ -961,6 +984,7 @@ int main(int argc, char** argv) {
         ds << "        default: return 0;\n";
         ds << "    }\n";
         ds << "}\n";
+        ds << quiet_c;
 
         std::ofstream dispatch_file(dispatch_filename, std::ios::binary);
         if (dispatch_file.is_open()) {

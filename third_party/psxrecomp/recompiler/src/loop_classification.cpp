@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstring>
 #include <map>
+#include <set>
 #include <queue>
 #include <sstream>
 
@@ -349,9 +350,11 @@ std::vector<ReturnCosts> return_costs(const std::vector<FunctionFacts>& facts,
     return v;
 }
 
-/// What a function's call closure does, as the device-status poll criterion reads it.
+/// What a function's call closure does, as the device-status poll and call-spin criteria read it.
 struct Closure {
     bool traced = true;   ///< every call in the closure resolves to known code
+    bool quiet = true;    ///< traced, a kernel call excepted (EmittedRegion::unknown_target)
+    bool kernel = false;  ///< some function of the closure makes a kernel call
     bool vsync = false;   ///< some function of the closure calls `VSync`
     bool status = false;  ///< some function of the closure calls a device-status thunk
 };
@@ -367,23 +370,30 @@ Closure own_calls(const FunctionFacts& f, const std::map<uint32_t, size_t>& inde
                   const std::map<uint32_t, LeafSummary>& foreign, const ThunkClasses& thunks,
                   std::vector<size_t>& edges) {
     Closure c;
-    c.traced = !f.stub;
+    c.traced = c.quiet = !f.stub;
     for (const EmittedRegion& r : f.regions) {
         if (r.indirect) c.traced = false;
+        if (r.unknown_target) c.quiet = false;
+        if (r.kernel) c.kernel = true;
         for (uint32_t n : r.named) {
-            if (thunks.untraced.count(n)) c.traced = false;
+            if (thunks.untraced.count(n)) c.traced = c.quiet = false;
             if (thunks.vsync.count(n)) c.vsync = true;
             if (thunks.status.count(n)) c.status = true;
         }
         for (uint32_t t : r.callees) {
             auto it = index.find(t);
-            if (it == index.end()) c.traced = false;
+            if (it == index.end()) c.traced = c.quiet = false;
             else edges.push_back(it->second);
         }
         for (uint32_t t : r.foreign) {
             auto it = foreign.find(t);
-            if (it == foreign.end()) c.traced = false;
-            else c.status = c.status || it->second.status;
+            if (it == foreign.end()) {
+                c.traced = c.quiet = false;
+                continue;
+            }
+            c.traced = c.traced && it->second.traced;
+            c.kernel = c.kernel || it->second.kernel;
+            c.status = c.status || it->second.status;
         }
     }
     return c;
@@ -391,8 +401,9 @@ Closure own_calls(const FunctionFacts& f, const std::map<uint32_t, size_t>& inde
 
 /** @brief Compute every function's call-closure verdict.
  *
- * A foreign row states a traced, VSync-free closure (read_leaf_summary()
- * keeps no other kind); a constant target with no row is untraced.
+ * A foreign row states a quiet, VSync-free closure, traced unless the row
+ * says otherwise (write_leaf_summary() writes no other kind); a constant
+ * target with no row is neither traced nor quiet.
  * Verdicts propagate from callee to caller until none changes, so a
  * recursive cycle shares one verdict.
  * @param facts   every function the unit emitted
@@ -414,10 +425,13 @@ std::vector<Closure> closures(const std::vector<FunctionFacts>& facts,
             Closure c = v[i];
             for (size_t e : edges[i]) {
                 c.traced = c.traced && v[e].traced;
+                c.quiet = c.quiet && v[e].quiet;
+                c.kernel = c.kernel || v[e].kernel;
                 c.vsync = c.vsync || v[e].vsync;
                 c.status = c.status || v[e].status;
             }
-            if (c.traced != v[i].traced || c.vsync != v[i].vsync || c.status != v[i].status) {
+            if (c.traced != v[i].traced || c.quiet != v[i].quiet || c.vsync != v[i].vsync ||
+                c.status != v[i].status || c.kernel != v[i].kernel) {
                 v[i] = c;
                 changed = true;
             }
@@ -436,7 +450,28 @@ struct CalleeVerdicts {
     std::map<uint32_t, Closure> unit;                 ///< by function start address
     std::map<uint32_t, ReturnCosts> costs;            ///< by function start address
     const std::map<uint32_t, LeafSummary>* foreign;   ///< other units' rows
+    std::map<uint32_t, std::vector<uint32_t>> calls;  ///< generated callees of the unit, per function
 };
+
+/** @brief Report whether a function of the unit reaches another through generated calls of the unit.
+ * @param calls  generated callees per function
+ * @param from   the first function
+ * @param target the function looked for
+ * @return true when `target` is `from` or in its call closure */
+bool reaches(const std::map<uint32_t, std::vector<uint32_t>>& calls, uint32_t from, uint32_t target) {
+    std::set<uint32_t> seen{from};
+    std::vector<uint32_t> work{from};
+    while (!work.empty()) {
+        const uint32_t f = work.back();
+        work.pop_back();
+        if (f == target) return true;
+        auto it = calls.find(f);
+        if (it == calls.end()) continue;
+        for (uint32_t c : it->second)
+            if (seen.insert(c).second) work.push_back(c);
+    }
+    return false;
+}
 
 /** @brief Classify a back-edge as a device-status poll site.
  *
@@ -485,7 +520,7 @@ bool classify_device_poll(const FunctionFacts& f, const RegionGraph& g, const st
     ReturnCosts cost;
     if (foreign) {
         auto it = callees.foreign->find(callee);
-        if (it == callees.foreign->end() || !it->second.status) return false;
+        if (it == callees.foreign->end() || !it->second.traced || !it->second.status) return false;
         cost = it->second.cost;
     } else {
         auto it = callees.unit.find(callee);
@@ -505,6 +540,100 @@ bool classify_device_poll(const FunctionFacts& f, const RegionGraph& g, const st
         b.calls = i == call_region;
         for (size_t s : g.succ[i])
             if (in[s]) b.successors.push_back(f.regions[s].label);
+        if (i == header)
+            site.body.insert(site.body.begin(), std::move(b));
+        else
+            rest.push_back(std::move(b));
+    }
+    site.body.insert(site.body.end(), rest.begin(), rest.end());
+    return true;
+}
+
+/** @brief Report whether a closure verdict is quiet and VSync-free, the leaf summary's row condition.
+ * @param c the verdict
+ * @return true when quiet and VSync-free */
+bool quiet_closure(const Closure& c) { return c.quiet && !c.vsync; }
+
+/** @brief Report whether a closure verdict admits a call-carrying spin's callee.
+ *
+ * A closure that reaches a device-status thunk is excluded: that wait is
+ * paced by the thunk.
+ * @param c the verdict
+ * @return true when quiet, VSync-free and reaching no device-status thunk */
+bool quiet_callee(const Closure& c) { return quiet_closure(c) && !c.status; }
+
+/** @brief Report whether a closure verdict answers a deferred spin: a quiet callee that makes a kernel call.
+ * @param c the verdict
+ * @return true when quiet_callee() holds and the closure makes a kernel call */
+bool waiting_callee(const Closure& c) { return quiet_callee(c) && c.kernel; }
+
+/** @brief Classify a back-edge as a call-carrying spin site.
+ *
+ * See classify_loops(): a store-free body whose calls all go to generated
+ * functions with quiet, VSync-free closures, at most one of them a foreign
+ * target resolved at run time. The site counts the body's instructions plus
+ * each resolved callee's cheapest return, per call.
+ * @param f       function holding the back-edge
+ * @param g       its region graph
+ * @param in      body membership per region, from loop_body()
+ * @param header  index of the header region
+ * @param callees call-closure verdicts
+ * @param defer_foreign whether a target no row names may be resolved at run time
+ * @param site    filled with insns, callees, the deferred target and body regions
+ * @return true when the site qualifies */
+bool classify_call_spin(const FunctionFacts& f, const RegionGraph& g, const std::vector<char>& in,
+                        size_t header, const CalleeVerdicts& callees, bool defer_foreign,
+                        LoopSite& site) {
+    uint32_t insns = 0, deferred = 0;
+    bool kernel = false;
+    std::vector<uint32_t> called;
+    auto take = [&](uint32_t c, const ReturnCosts& cost) {
+        if (cost.any == kNoPath) return false;
+        insns += cost.any;
+        called.push_back(c);
+        return true;
+    };
+    for (size_t i = 0; i < f.regions.size(); i++) {
+        if (!in[i]) continue;
+        const EmittedRegion& r = f.regions[i];
+        if (r.stores || r.opaque_call) return false;
+        insns += r.insns;
+        for (uint32_t c : r.callees) {
+            auto it = callees.unit.find(c);
+            if (it == callees.unit.end() || !quiet_callee(it->second)) return false;
+            if (reaches(callees.calls, c, f.start)) return false;
+            if (!take(c, callees.costs.at(c))) return false;
+            kernel = kernel || it->second.kernel;
+        }
+        for (uint32_t c : r.foreign) {
+            auto it = callees.foreign->find(c);
+            if (it != callees.foreign->end()) {
+                if (it->second.status || !take(c, it->second.cost)) return false;
+                kernel = kernel || it->second.kernel;
+                continue;
+            }
+            if (!defer_foreign || (deferred != 0 && deferred != c)) return false;
+            deferred = c;
+        }
+    }
+    if (called.empty() && deferred == 0) return false;
+    // A deferred callee's kernel reach is decided with the rest of its closure
+    // at run time (quiet_targets()).
+    if (!kernel && deferred == 0) return false;
+    site.insns = insns;
+    site.call_spin = true;
+    site.deferred = deferred;
+    site.leaves.clear();
+    if (deferred != 0) site.leaves.push_back(deferred);
+    site.leaves.insert(site.leaves.end(), called.begin(), called.end());
+    std::vector<LoopBodyRegion> rest;
+    for (size_t i = 0; i < f.regions.size(); i++) {
+        if (!in[i]) continue;
+        LoopBodyRegion b;
+        b.label = f.regions[i].label;
+        b.calls = !f.regions[i].callees.empty() || !f.regions[i].foreign.empty();
+        for (size_t s2 : g.succ[i])
+            if (in[s2]) b.successors.push_back(f.regions[s2].label);
         if (i == header)
             site.body.insert(site.body.begin(), std::move(b));
         else
@@ -537,7 +666,7 @@ bool is_device_status_thunk(const std::string& name) {
 
 std::vector<LoopSite> classify_loops(const std::vector<FunctionFacts>& facts,
                                      const std::map<uint32_t, LeafSummary>& foreign,
-                                     const ThunkClasses& thunks) {
+                                     const ThunkClasses& thunks, bool defer_foreign) {
     const std::map<uint32_t, LeafSummary> leaves = pure_leaves(facts);
     CalleeVerdicts callees{{}, {}, &foreign};
     const std::vector<Closure> verdicts = closures(facts, foreign, thunks);
@@ -545,6 +674,9 @@ std::vector<LoopSite> classify_loops(const std::vector<FunctionFacts>& facts,
     for (size_t i = 0; i < facts.size(); i++) {
         callees.unit.emplace(facts[i].start, verdicts[i]);
         callees.costs.emplace(facts[i].start, costs[i]);
+        std::vector<uint32_t>& out = callees.calls[facts[i].start];
+        for (const EmittedRegion& r : facts[i].regions)
+            out.insert(out.end(), r.callees.begin(), r.callees.end());
     }
     std::vector<LoopSite> sites;
     for (const FunctionFacts& f : facts) {
@@ -570,10 +702,13 @@ std::vector<LoopSite> classify_loops(const std::vector<FunctionFacts>& facts,
                 site.arm = e.arm;
                 const std::vector<char> body = loop_body(g, h->second, i, from_header);
                 LoopSite poll = site;
+                LoopSite spin = site;
                 if (classify_body(f, g, body, h->second, leaves, foreign, site))
                     sites.push_back(std::move(site));
                 else if (classify_device_poll(f, g, body, h->second, i, e.arm, callees, poll))
                     sites.push_back(std::move(poll));
+                else if (classify_call_spin(f, g, body, h->second, callees, defer_foreign, spin))
+                    sites.push_back(std::move(spin));
             }
         }
     }
@@ -582,8 +717,10 @@ std::vector<LoopSite> classify_loops(const std::vector<FunctionFacts>& facts,
 
 /** @brief Spell a site's kind as psx_loop_poll and the site list carry it.
  * @param s the site
- * @return 2 for a device-status poll, 1 for a pure spin, 0 for a counted poll */
+ * @return 4 for a deferred call-carrying spin, 3 for a call-carrying spin, 2 for a
+ *         device-status poll, 1 for a pure spin, 0 for a counted poll */
 static unsigned site_kind(const LoopSite& s) {
+    if (s.call_spin) return s.deferred ? 4 : 3;
     if (s.device_poll) return 2;
     return s.pure ? 1 : 0;
 }
@@ -783,6 +920,7 @@ std::string loop_poll_marker(const std::string& indent, const std::string& funct
 std::string apply_loop_polls(const std::string& code, std::vector<LoopSite>& sites,
                              size_t& emitted) {
     std::map<std::string, LoopSite*> by_key;
+    std::set<const LoopSite*> dropped;
     for (LoopSite& s : sites)
         by_key[marker_key(s.function, s.header, s.source, s.arm)] = &s;
     std::string out;
@@ -801,15 +939,28 @@ std::string apply_loop_polls(const std::string& code, std::vector<LoopSite>& sit
         auto it = by_key.find(code.substr(key_at, close - key_at));
         if (it != by_key.end()) {
             LoopSite& site = *it->second;
-            site.pure = !site.device_poll && !carried_register(code, open, site);
-            out.append(code, line, open - line);
-            out += fmt::format("psx_loop_poll(cpu, 0x{:08X}u, {}u, {}u);\n", site.header,
-                               site.insns, site_kind(site));
-            emitted++;
+            const bool carried = !site.device_poll && carried_register(code, open, site);
+            site.pure = !site.device_poll && !site.call_spin && !carried;
+            if (site.call_spin && carried) {
+                dropped.insert(&site);
+            } else {
+                out.append(code, line, open - line);
+                if (site.deferred)
+                    out += fmt::format("psx_loop_poll_deferred(cpu, 0x{:08X}u, {}u, 0x{:08X}u);\n",
+                                       site.header, site.insns, site.deferred);
+                else
+                    out += fmt::format("psx_loop_poll(cpu, 0x{:08X}u, {}u, {}u);\n", site.header,
+                                       site.insns, site_kind(site));
+                emitted++;
+            }
         }
         pos = end;
     }
     out.append(code, pos, std::string::npos);
+    std::vector<LoopSite> kept;
+    for (LoopSite& s : sites)
+        if (!dropped.count(&s)) kept.push_back(std::move(s));
+    sites = std::move(kept);
     return out;
 }
 
@@ -828,19 +979,22 @@ bool write_leaf_summary(const std::string& path, const std::vector<FunctionFacts
             it->second.cost = costs[i];
             continue;
         }
-        if (!verdicts[i].traced || verdicts[i].vsync) continue;
+        if (!quiet_closure(verdicts[i])) continue;
         LeafSummary s;
         s.leaf = false;
         s.status = verdicts[i].status;
+        s.traced = verdicts[i].traced;
+        s.kernel = verdicts[i].kernel;
         s.cost = costs[i];
         rows.emplace(facts[i].start, s);
     }
     auto spell = [](uint32_t c) { return c == kNoPath ? std::string("-") : std::to_string(c); };
-    out << "# address\tinsns\tloads\tleaf\tstatus\tany\tzero\tnonzero\n";
+    out << "# address\tinsns\tloads\tleaf\tstatus\tany\tzero\tnonzero\ttraced\tkernel\n";
     for (const auto& [addr, s] : rows)
-        out << fmt::format("0x{:08X}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", addr, s.insns,
+        out << fmt::format("0x{:08X}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", addr, s.insns,
                            s.loads ? 1 : 0, s.leaf ? 1 : 0, s.status ? 1 : 0, spell(s.cost.any),
-                           spell(s.cost.zero), spell(s.cost.nonzero));
+                           spell(s.cost.zero), spell(s.cost.nonzero), s.traced ? 1 : 0,
+                           s.kernel ? 1 : 0);
     return true;
 }
 
@@ -856,18 +1010,65 @@ bool read_leaf_summary(const std::string& path, std::map<uint32_t, LeafSummary>&
         int loads = 0, leaf = 1, status = 0;
         if (!(row >> addr >> s.insns >> loads)) continue;
         if (row >> leaf) row >> status;
-        std::string any, zero, nonzero;
+        std::string any, zero, nonzero, traced, kernel;
         auto parse = [](const std::string& c) {
             return (c.empty() || c == "-") ? kNoPath : (uint32_t)std::strtoul(c.c_str(), nullptr, 10);
         };
-        row >> any >> zero >> nonzero;
+        row >> any >> zero >> nonzero >> traced >> kernel;
         s.cost = {parse(any), parse(zero), parse(nonzero)};
+        s.traced = traced != "0";
+        s.kernel = kernel == "1";
         s.loads = loads != 0;
         s.leaf = leaf != 0;
         s.status = status != 0;
         out[(uint32_t)std::strtoul(addr.c_str(), nullptr, 16)] = s;
     }
     return true;
+}
+
+std::map<uint32_t, uint32_t> quiet_targets(const std::vector<FunctionFacts>& facts,
+                                           const std::map<uint32_t, LeafSummary>& foreign,
+                                           const ThunkClasses& thunks,
+                                           const std::set<uint32_t>& targets) {
+    std::map<uint32_t, uint32_t> out;
+    if (targets.empty()) return out;
+    const std::vector<Closure> verdicts = closures(facts, foreign, thunks);
+    const std::vector<ReturnCosts> costs = return_costs(facts, foreign);
+    for (size_t i = 0; i < facts.size(); i++) {
+        if (!targets.count(facts[i].start) || !waiting_callee(verdicts[i])) continue;
+        if (costs[i].any == kNoPath) continue;
+        out.emplace(facts[i].start, costs[i].any);
+    }
+    return out;
+}
+
+bool read_deferred_targets(const std::string& path, std::set<uint32_t>& out) {
+    std::ifstream in(path);
+    if (!in.is_open()) return false;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream row(line);
+        std::string function, header, source, arm, insns, leaves, kind;
+        if (!(row >> function >> header >> source >> arm >> insns >> leaves >> kind)) continue;
+        if (kind != "4") continue;
+        out.insert((uint32_t)std::strtoul(leaves.substr(0, leaves.find(',')).c_str(), nullptr, 16));
+    }
+    return true;
+}
+
+std::string quiet_function_c(const std::map<uint32_t, uint32_t>& quiet) {
+    if (quiet.empty()) return {};
+    std::string c =
+        "\n/* Deferred call-carrying spins of another unit: 1 and the cheapest return cost\n"
+        " * when addr is a function of this unit whose call closure is quiet, calls no\n"
+        " * VSync or device-status thunk and makes a kernel call, 0 otherwise. */\n"
+        "int psx_quiet_compiled(uint32_t addr, uint32_t* cost) {\n"
+        "    switch (addr) {\n";
+    for (const auto& [addr, cost] : quiet)
+        c += fmt::format("        case 0x{:08X}u: *cost = {}u; return 1;\n", addr, cost);
+    c += "        default: return 0;\n    }\n}\n";
+    return c;
 }
 
 }  // namespace PSXRecomp
