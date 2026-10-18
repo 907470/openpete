@@ -28,7 +28,8 @@
 # turn the MinGW linker's export of every global off. -static-libgcc is mandatory: the exe ships no
 # mingw runtime DLLs, so the mod DLL must be self-contained.
 #
-# The per-mod stamp <id>.hash is deleted after a successful build. An
+# The per-mod stamps <id>.hash and <id>.fail are deleted after a
+# successful build. An
 # unstamped DLL is the loader's cross-handoff form: build_mod() loads it
 # silently on a host with no compiler and recompiles it once on a host
 # that has one, rather than reporting it as built from different
@@ -199,7 +200,7 @@ for dir in "${CANDIDATES[@]}"; do
         # The stamp would mark the DLL as built from a known source+SDK
         # key; a cross-built DLL carries none, so a Windows host with a
         # compiler rebuilds it instead of trusting this one.
-        rm -f -- "$build_dir/$id.hash"
+        rm -f -- "${build_dir:?}/$id.hash" "${build_dir:?}/$id.fail"
         printf '%-32s %-10s %s\n' "$id" OK \
             "$(du -h -- "$dll" | cut -f1) from ${#srcs[@]} source(s)"
         built=$((built + 1))

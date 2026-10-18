@@ -4183,25 +4183,33 @@ static int config_compute_key(const char* mod_dir, char key_out[65]) {
     return 0;
 }
 
-/** @brief Format the path of a mod's build-key stamp, <mod_dir>/.build/<game-id>/<id>.hash.
+/* Stamp suffixes: MOD_STAMP_OK holds the build key of the cached object,
+ * MOD_STAMP_FAIL the build key whose compile the compiler rejected. */
+#define MOD_STAMP_OK   ".hash"
+#define MOD_STAMP_FAIL ".fail"
+
+/** @brief Format the path of a mod's build-key stamp, <mod_dir>/.build/<game-id>/<id> plus @p suffix.
  *
+ * @param suffix MOD_STAMP_OK or MOD_STAMP_FAIL.
  * @param out Output buffer; the path is truncated to @p cap.
  * @param cap Size of @p out. */
 static void mod_stamp_path(const char* mod_dir, const char* id,
-                           char* out, size_t cap) {
-    snprintf(out, cap, "%s/.build/%s/%s.hash", mod_dir, mods_build_game(), id);
+                           const char* suffix, char* out, size_t cap) {
+    snprintf(out, cap, "%s/.build/%s/%s%s", mod_dir, mods_build_game(), id,
+             suffix);
 }
 
-/** @brief Read a mod's stored build key from its stamp file.
+/** @brief Read the build key a mod's stamp file holds.
  *
  * Reads at most 64 bytes and drops one trailing newline.
+ * @param suffix MOD_STAMP_OK or MOD_STAMP_FAIL.
  * @param stamped Output buffer of 65 bytes, always NUL-terminated; empty
  *        when the stamp file does not open. */
 static void mod_read_stamp(const char* mod_dir, const char* id,
-                           char stamped[65]) {
+                           const char* suffix, char stamped[65]) {
     stamped[0] = '\0';
     char stamp_path[MOD_PATH_MAX + 16];
-    mod_stamp_path(mod_dir, id, stamp_path, sizeof stamp_path);
+    mod_stamp_path(mod_dir, id, suffix, stamp_path, sizeof stamp_path);
     FILE* f = fopen(stamp_path, "rb");
     if (!f) return;
     size_t got = fread(stamped, 1, 64, f);
@@ -4221,8 +4229,34 @@ static int mod_key_cached(const char* mod_dir, const char* id,
     mod_obj_path(mod_dir, id, so_path, sizeof so_path);
     if (file_mtime(so_path) == (time_t)-1) return 0;
     char stamped[65];
-    mod_read_stamp(mod_dir, id, stamped);
+    mod_read_stamp(mod_dir, id, MOD_STAMP_OK, stamped);
     return strcmp(stamped, key) == 0;
+}
+
+/** @brief Test whether the compiler already rejected a mod's sources under a build key.
+ *
+ * The key covers the sources, the SDK, the compile flags and the
+ * compiler's identity, so an unchanged failing mod is not recompiled on
+ * every boot and any edit to those inputs compiles again. Inputs outside
+ * the key (system headers and libraries) do not clear it; --compile-mods
+ * recompiles regardless.
+ * @return 1 when `.build/<game-id>/<id>.fail` holds `key`, 0 otherwise. */
+static int mod_key_failed(const char* mod_dir, const char* id,
+                          const char* key) {
+    char stamped[65];
+    mod_read_stamp(mod_dir, id, MOD_STAMP_FAIL, stamped);
+    return strcmp(stamped, key) == 0;
+}
+
+/** @brief Write a build key, newline-terminated, to a mod's stamp file.
+ *
+ * @param suffix MOD_STAMP_OK or MOD_STAMP_FAIL. */
+static void mod_write_stamp(const char* mod_dir, const char* id,
+                            const char* suffix, const char* key) {
+    char stamp_path[MOD_PATH_MAX + 16], line[80];
+    mod_stamp_path(mod_dir, id, suffix, stamp_path, sizeof stamp_path);
+    int ln = snprintf(line, sizeof line, "%s\n", key);
+    (void)op_atomic_write_file(stamp_path, line, (size_t)ln);
 }
 
 /** @brief Write the compiler response file listing a mod's sources.
@@ -4271,7 +4305,9 @@ static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
  * = 1 records the build key on success so an unchanged mod never
  * recompiles (0 = hot-reload .hotN objects on Windows, where the base DLL
  * is file-locked and must go stale until the next boot). A failed compile
- * removes the stamp and keeps any existing object.
+ * removes the stamp and keeps any existing object; with `stamp` = 1 and a
+ * compiler exit status it records the key in the `.fail` stamp
+ * (mod_key_failed), which a later success removes.
  * @return 0 on success, -1 when there are no sources, no compiler, the
  *         response file cannot be written, or the compile fails. */
 static int mod_compile(const char* mod_dir, const char* id,
@@ -4301,8 +4337,9 @@ static int mod_compile(const char* mod_dir, const char* id,
     mod_game_build_dir(mod_dir, build_dir, sizeof build_dir);
     const char* game = mods_build_game();
 
-    char stamp_path[MOD_PATH_MAX + 16];
-    mod_stamp_path(mod_dir, id, stamp_path, sizeof stamp_path);
+    char stamp_path[MOD_PATH_MAX + 16], fail_path[MOD_PATH_MAX + 16];
+    mod_stamp_path(mod_dir, id, MOD_STAMP_OK, stamp_path, sizeof stamp_path);
+    mod_stamp_path(mod_dir, id, MOD_STAMP_FAIL, fail_path, sizeof fail_path);
 
     /* The sources go in a response file, not on the command line, whose
      * length the platform limits (32767 characters on Windows). The ABI
@@ -4351,12 +4388,16 @@ static int mod_compile(const char* mod_dir, const char* id,
          * still fall back to. Deleting it here destroyed exactly that
          * artifact once; don't repeat it. */
         remove(stamp_path);
+        /* A compiler exit status rejects these inputs; -1 (not started,
+         * killed by a signal) says nothing about them and is not
+         * recorded. */
+        if (stamp && rc > 0)
+            mod_write_stamp(mod_dir, id, MOD_STAMP_FAIL, key);
         return -1;
     }
     if (stamp) {
-        char line[80];
-        int ln = snprintf(line, sizeof line, "%s\n", key);
-        (void)op_atomic_write_file(stamp_path, line, (size_t)ln);
+        mod_write_stamp(mod_dir, id, MOD_STAMP_OK, key);
+        remove(fail_path);
     }
     return 0;
 }
@@ -4364,13 +4405,14 @@ static int mod_compile(const char* mod_dir, const char* id,
 /** @brief Build a mod's src/ C files into `.build/<game-id>/<id>` plus the object extension when the build key differs from the stamped one.
  *
  * Stores the computed key in mod->build_key, fills so_path with the
- * object path and mod->obj_kind with its mod_obj_kind_t. With no
+ * object path and mod->obj_kind with its mod_obj_kind_t. A key the
+ * compiler already rejected (mod_key_failed) is not compiled again. With no
  * compiler resolved, the prebuilt object mod_find_prebuilt finds is used,
  * with a warning when it is the per-game object and its stamp exists and
  * mismatches.
  * @return 0 on a cache hit, a fresh compile or a prebuilt fallback; -1
  *         when src/ has no .c files, no compiler and no prebuilt object
- *         exist, or the compile fails. */
+ *         exist, the key failed before, or the compile fails. */
 static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len) {
     char key[65];
@@ -4387,6 +4429,14 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                     mod->id, so_path, key);
         return 0;
     }
+    if (mod_key_failed(mod->dir, mod->id, key)) {
+        OPL_ERROR_F("mods", "%s [%s]: these sources failed to compile (see "
+                    "%s/.build/%s/compile.log); not recompiled until src/, "
+                    "the SDK or the compiler changes, or --compile-mods - "
+                    "disabled", mod->id, mods_build_game(), mod->dir,
+                    mods_build_game());
+        return -1;
+    }
 
     {
         char cc[MOD_PATH_MAX];
@@ -4402,7 +4452,7 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
             if (kind >= 0) {
                 char stamped[65];
                 mod->obj_kind = kind;
-                mod_read_stamp(mod->dir, mod->id, stamped);
+                mod_read_stamp(mod->dir, mod->id, MOD_STAMP_OK, stamped);
                 if (kind == MOD_OBJ_GAME && stamped[0])
                     OPL_WARN_F("mods", "%s: %s was built from DIFFERENT "
                                "sources/SDK than what is on disk - "
@@ -5714,8 +5764,9 @@ int openpete_mods_prepare(const openpete_options_t* opts,
         const mod_ref_t* r = ref_at(&c.refs, i);
         if (mod_compute_key(r->dir, c.sdk_dir, key) != 0)
             continue; /* assets-only or binary-only mod */
-        if (mod_key_cached(r->dir, r->id, key))
-            continue;
+        if (mod_key_cached(r->dir, r->id, key) ||
+            mod_key_failed(r->dir, r->id, key))
+            continue; /* current, or rejected before: init reports it */
         memcpy(((mod_key_row_t*)mod_fvec_at(&c.keys, (size_t)i))->k, key,
                sizeof key);
         slot = (int*)mod_fvec_push(&c.stale);
@@ -5742,7 +5793,9 @@ int openpete_mods_prepare(const openpete_options_t* opts,
  * Scans every candidate, ignoring enabled.txt so a disabled mod's breakage
  * still surfaces; the scan's game filter drops, with one log line each,
  * the mods for other games. A mod whose cached build matches its key is
- * counted up to date; assets-only and binary-only mods are skipped.
+ * counted up to date; assets-only and binary-only mods are skipped. A
+ * key the compiler rejected before (mod_key_failed) compiles again, so
+ * this mode retries a failure whose cause lies outside the build key.
  * @param mods_dir The mods root.
  * @param sdk_dir The SDK directory holding games/<mods_build_game()>/.
  * @return The number of failed compiles. */

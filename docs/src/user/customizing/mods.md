@@ -73,7 +73,9 @@ A mod that fails to compile or load is switched off and the game starts
 without it. The compiler's output is in
 `mods/<id>/.build/<game>/compile.log` (`<game>` is `spyro-1`, `spyro-2` or
 `spyro-3`),
-and `openpete.log` names the mod.
+and `openpete.log` names the mod. A mod that failed to compile is not
+compiled again until its sources, the mod SDK or the compiler change;
+`--compile-mods` retries it.
 
 `--compile-mods` <!-- id: flag:--compile-mods --> compiles every mod with
 `src/` in the mods folder, listed in `enabled.txt` or not, then exits; the
