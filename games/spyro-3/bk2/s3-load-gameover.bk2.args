@@ -1,0 +1,7 @@
+# Recorded by hand (consume-keyed) on games/spyro-3/bk2/s3-load-gameover.bk2.mcr,
+# the 117% card with 4 lives (also games/spyro-3/cards/117-percent-4-lives.mcr):
+# loads slot 1, loses the lives in level 40 to a game over (state 9 reload of
+# 40, no card write), then enters the level-41 portal; the loading overlay's
+# autosave writes the summary and record 0 at frames 4121 and 4137.
+# The game writes the card, so the caller gives --card1 a copy of the .mcr.
+--no-card2
