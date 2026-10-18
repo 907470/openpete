@@ -284,6 +284,13 @@ if(OPENPETE_COMPILE_MODS)
             if(NOT _mod_srcs)
                 continue() # assets-only/binary-only mod: nothing to build
             endif()
+            # This loop builds against the Spyro 1 SDK only; a mod whose
+            # manifest names its games without spyro-1 is compiled by the
+            # exe on boot for the game it runs under.
+            file(STRINGS ${_manifest} _mod_game_line REGEX "^[ \t]*game[ \t]*=")
+            if(_mod_game_line AND NOT _mod_game_line MATCHES "spyro-1")
+                continue()
+            endif()
             file(GLOB _mod_hdrs CONFIGURE_DEPENDS ${_src_mod_dir}/src/*.h)
             set(_mod_build_dir
                 ${OPENPETE_GAME_EXE_DIR}/mods/${_mod_id}/.build/spyro-1)
