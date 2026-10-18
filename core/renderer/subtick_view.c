@@ -198,6 +198,14 @@ static uint32_t s_drop_site_overflow;
 /* Lifetime count of CPU stores dropped while a view was open. */
 static uint32_t s_stat_writes_dropped;
 
+static void sv_guard_report(void);
+static void sv_fault_store(void);
+/* Fault-injection state (OPENPETE_SUBTICK_FAULT_STORE, below): -1 unread,
+ * the RAM offset of the rewritten word, and the stores made. */
+static int      s_fault = -1;
+static uint32_t s_fault_off;
+static uint32_t s_fault_stores;
+
 #if defined(__GNUC__) || defined(__clang__)
 #define SV_HOST_RA() __builtin_return_address(0)
 #else
@@ -206,6 +214,10 @@ static uint32_t s_stat_writes_dropped;
 
 void openpete_subtick_view_report_writes(void)
 {
+    sv_guard_report();
+    if (s_fault > 0)
+        OPL_WARN_F("subtick-view", "fault injection: %u store(s) to [%08x]",
+                   s_fault_stores, OPENPETE_PSX_KSEG0_BASE + s_fault_off);
     if (s_stat_stage_fail)
         OPL_WARN_F("subtick-view",
                    "%u stage() refusal(s) -- that many producer writes went to "
@@ -489,6 +501,7 @@ void openpete_subtick_view_begin(CPUState* cpu)
 
 void openpete_subtick_view_end(CPUState* cpu)
 {
+    sv_fault_store();
     sv_guard_end();
     s_active = 0;
     if (!cpu || !s_orig_read_word) return;
@@ -735,6 +748,9 @@ void* openpete_subtick_host_ptr(uint32_t addr)
 static int  s_guard = -1;
 static int  s_guard_armed;
 static uint32_t s_guard_hits;
+/* Presents the guard mapped guest RAM read-only for: the guard's engagement
+ * count. A zero-hit run with zero arms tested nothing. */
+static uint32_t s_guard_arms;
 static struct sigaction s_prev_segv;
 
 /** @brief Make guest RAM writable again and disarm the guard.
@@ -798,8 +814,10 @@ static void sv_guard_begin(void)
     }
     if (!s_guard) return;
     uint8_t* ram = openpete_psx_get_ram();
-    if (ram && mprotect(ram, OPENPETE_PSX_RAM_SIZE, PROT_READ) == 0)
+    if (ram && mprotect(ram, OPENPETE_PSX_RAM_SIZE, PROT_READ) == 0) {
         s_guard_armed = 1;
+        s_guard_arms++;
+    }
 }
 
 /** @brief Disarm the RAM guard at the end of a present: restore write access to guest RAM.
@@ -818,6 +836,18 @@ static void sv_guard_end(void)
  * OPENPETE_SUBTICK_RAM_GUARD.
  * @return Lifetime guard-hit count. */
 uint32_t openpete_subtick_view_guard_hits(void) { return s_guard_hits; }
+
+/** @brief Log the RAM guard's exit row: presents armed and writes caught.
+ *
+ * Printed only when OPENPETE_SUBTICK_RAM_GUARD armed the guard; a gate reads
+ * `armed_presents` as its engagement count and `hits` beside the per-write
+ * `GUEST RAM WRITTEN` lines. */
+static void sv_guard_report(void)
+{
+    if (s_guard > 0)
+        OPL_INFO_F("subtick-view", "RAM guard: armed_presents=%u hits=%u",
+                   s_guard_arms, s_guard_hits);
+}
 #else
 /** @brief Guard stub for platforms without mprotect: does nothing. */
 static void sv_guard_begin(void) {}
@@ -827,4 +857,42 @@ static void sv_guard_end(void)   {}
  *
  * @return 0. */
 uint32_t openpete_subtick_view_guard_hits(void) { return 0; }
+/** @brief Guard stub for platforms without mprotect: logs nothing. */
+static void sv_guard_report(void) {}
 #endif
+
+/* ---- fault injection: one guest store per present -------------------------
+ * The RAM guard's negative control. With OPENPETE_SUBTICK_FAULT_STORE set,
+ * every present the view brackets stores one guest word through a host
+ * pointer, inside the guard's window, as a producer publishing through
+ * gameplay memory would. The word stored is the word already there, so the
+ * write changes no byte: it is the shape of a write-and-restore that the
+ * oracle cannot see and the guard must. The value names the guest address
+ * (KSEG0, word-aligned down); any other nonzero value selects the word at
+ * RAM offset 0x10000, the start of the main executable's load area. */
+/** @brief Fault injection: rewrite one guest word through a host pointer while the view is open.
+ *
+ * Reads OPENPETE_SUBTICK_FAULT_STORE on the first call; does nothing unless
+ * it is set. Called from openpete_subtick_view_end before the guard disarms. */
+static void sv_fault_store(void)
+{
+    if (s_fault < 0) {
+        const char* e = getenv("OPENPETE_SUBTICK_FAULT_STORE");
+        s_fault = (e && *e && *e != '0');
+        if (s_fault) {
+            uint32_t a = (uint32_t)strtoul(e, NULL, 0);
+            if (a < OPENPETE_PSX_KSEG0_BASE || a >= OPENPETE_PSX_KSEG0_END)
+                a = OPENPETE_PSX_KSEG0_BASE + 0x10000u;
+            s_fault_off = (a - OPENPETE_PSX_KSEG0_BASE) & ~3u;
+            OPL_WARN_F("subtick-view",
+                       "fault injection: every bracketed present rewrites guest word [%08x]",
+                       OPENPETE_PSX_KSEG0_BASE + s_fault_off);
+        }
+    }
+    if (!s_fault) return;
+    uint8_t* ram = openpete_psx_get_ram();
+    if (!ram) return;
+    volatile uint32_t* w = (volatile uint32_t*)(void*)(ram + s_fault_off);
+    *w = *w;
+    s_fault_stores++;
+}

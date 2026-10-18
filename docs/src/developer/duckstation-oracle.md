@@ -635,6 +635,21 @@ included, ~95 s); it fails as VACUOUS unless the log carries
 without a display or the lvp ICD. Its controls: `OPENPETE_EAGER=0` trips
 the vacuity check; `OPENPETE_PSXTRACE_POKE` fails at the poked record.
 
+`tests/harness/check_subtick_ram_guard.sh` is the sub-tick RAM-write row
+(ctest `psx_oracle_subtick_ram_guard`, labels `slow;oracle;subtick`): the
+windowed row over the full golden on a private Xvfb display with
+`--render-fps 60`, and `OPENPETE_SUBTICK_RAM_GUARD=1` mapping guest RAM
+read-only for every present the sub-tick view brackets. The guard logs
+`GUEST RAM WRITTEN` and lets the store through, so a store that writes the
+canonical value back passes the oracle; the row fails on any such line, and
+is VACUOUS (exit 3) without a nonzero `sub-tick: N re-extract(s) presented`
+count and a `RAM guard: armed_presents=N` exit row with N above zero. It
+runs for a diff that touches the sub-tick path (`ctest -L subtick`). Its
+negative control is `OPENPETE_SUBTICK_FAULT_STORE=1`: every bracketed
+present rewrites one guest word (default RAM offset `0x10000`, or the address the
+value names) with the value already there; the oracle passes and the row
+fails.
+
 `scripts/check_psx_oracle_all.sh [-- flags]` runs every game's gate
 concurrently and prints one table (game, verdict, records consumed, first
 divergence outside the neutral rows); exit 2 when any game fails, 64 when

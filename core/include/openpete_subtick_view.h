@@ -191,7 +191,9 @@ uint32_t openpete_subtick_view_poke_drops(void);
  * guest address a dropped store named is listed with its hit count (256
  * addresses at most, overflow noted). These cover CPU-path stores only; a producer
  * that writes through a host pointer is found by the RAM guard
- * (OPENPETE_SUBTICK_RAM_GUARD). */
+ * (OPENPETE_SUBTICK_RAM_GUARD), whose row `RAM guard: armed_presents=N hits=M`
+ * this logs first when the guard is on, followed by the store count of the
+ * OPENPETE_SUBTICK_FAULT_STORE fault injection when that is set. */
 void openpete_subtick_view_report_writes(void);
 
 #ifdef __cplusplus

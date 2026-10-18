@@ -1551,6 +1551,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${_spyro3_bin};OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=4000")
 
+    # The sub-tick RAM-write row: the windowed oracle over the full Spyro 1
+    # golden on a private Xvfb display, --render-fps 60, with
+    # OPENPETE_SUBTICK_RAM_GUARD mapping guest RAM read-only for every
+    # sub-tick present. The guard logs a store and lets it through, so a
+    # write-and-restore passes the oracle; the row fails on any
+    # `GUEST RAM WRITTEN` line, and is VACUOUS at zero re-extracts or zero
+    # armed presents. Paced to the display (~12 min). Negative control:
+    # OPENPETE_SUBTICK_FAULT_STORE=1 must fail it.
+    add_test(NAME psx_oracle_subtick_ram_guard
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_subtick_ram_guard.sh)
+    set_tests_properties(psx_oracle_subtick_ram_guard PROPERTIES
+        LABELS "slow;oracle;subtick"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}")
+
     # Matrix determinism gate - broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
     # Divergence in an open channel of the game's channel registry is
