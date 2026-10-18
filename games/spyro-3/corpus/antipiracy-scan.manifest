@@ -45,3 +45,8 @@ sunny-villa-area-2-idle-scan 10573 1
 # bentleys-outpost-walk-scan: func_level_36_80079D08 (class 79, drawn from
 # the east path) passes at VBL 5775.
 bentleys-outpost-walk-scan 6800 1
+# agent-9s-lab-pose-scan: Cross taps close the two intro speeches after
+# --skip-to-level agent_9s_lab; --player-pose "...@2400" places Agent 9 at
+# (131311, 109998, 18400) after the second, and func_level_46_8008343C
+# passes while he idles at VBL 5445 (1526 steps).
+agent-9s-lab-pose-scan 6800 1

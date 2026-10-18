@@ -133,7 +133,11 @@ void freecam_maybe_autoengage(CPUState* cpu);
 
 /** @brief Place the player once from OPENPETE_PLAYER_POSE ("x,y,z[,yaw]", set by --player-pose).
  *
- * Fires on the first tick player_placeable holds, then never again. A spec
+ * Fires on the first tick player_placeable holds, then never again. An "@N"
+ * suffix defers it to the first such tick whose feed-key value
+ * (openpete_feed_key_now) is at least N, which serves a level whose intro
+ * re-seats the player after an early placeable gap; a suffix that is not a
+ * non-negative integer is logged and nothing is placed. A spec
  * with other than three or four integers is logged and not applied. The
  * placement writes the position and previous position, the facing when a yaw
  * is given, cancels momentum, and re-seats the follow camera. Called once

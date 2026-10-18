@@ -100,7 +100,8 @@ once the level is live. An optional `roll=N` after the pose tilts the view
 about its forward axis, 4096 per turn; the free camera never logs a roll, and
 a pose without one is level. **Player pose** <!-- id: knob:player_pose --> places
 Spyro at `x,y,z[,yaw]` once gameplay is live, with the camera re-seated
-behind him. Both are empty by default, and both change the game's state.
+behind him; a trailing `@N` waits until count `N` of the counter
+`--frame-limit` reads. Both are empty by default, and both change the game's state.
 
 **Render mode** offers **Textured**, **Untextured**
 <!-- id: knob:notex --> and **Wireframe** <!-- id: knob:wireframe -->.

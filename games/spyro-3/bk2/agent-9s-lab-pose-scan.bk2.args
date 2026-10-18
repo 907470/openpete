@@ -1,0 +1,8 @@
+# The level opens on two intro speeches with a live gap between them
+# (frames 1333-1393); the second re-seats Agent 9, so a placement in the gap
+# is lost. Cross taps close both speeches (scripts/make_bk2.py --feed-key vbl
+# --frames 6800 --hold V:V+6:Cross for V = 1700-1880 and 2000-2300 step 60),
+# and the placement waits for VBL 2400, after the second closes. From
+# (131311, 109998, 18400) the scanner moby is in update range while Agent 9
+# idles; func_level_46_8008343C passes at VBL 5445 (1526 steps).
+--skip-to-level agent_9s_lab --player-pose "131311,109998,18400@2400"

@@ -108,7 +108,7 @@ present.
 | `--screenshot-output PATH`       | Path template. `{n}` expands to the VBL.                                                                                                                                                |
 | `--screenshot-native-only`       | Write the native `-vk` image only.                                                                                                                                                      |
 | `--freecam-pose STR`             | Engage the free camera at a fixed pose once the level is live.                                                                                                                          |
-| `--player-pose STR`              | Place Spyro at `x,y,z[,yaw]` once gameplay is live and under pad control; every run prints its end state as `openpete-pose:` in this grammar.                                            |
+| `--player-pose STR`              | Place Spyro at `x,y,z[,yaw][@N]` once gameplay is live and under pad control (`@N`: at or after VBL N); every run prints its end state as `openpete-pose:` in this grammar. |
 | `--bk2 PATH`                     | Replay a recorded input movie.                                                                                                                                                          |
 | `--bk2-record [PATH]`            | Record live pad input to a movie.                                                                                                                                                       |
 | `--bk2-stop-on-end`              | Exit after the last recorded VBL instead of holding the last input.                                                                                                                     |
@@ -282,6 +282,11 @@ cleared and the camera is re-seated behind him, facing his facing. With
 camera engages. A `--bk2-record` run carries the flag in its `.args` sidecar,
 so the movie replays from the placement; the `OPENPETE_PLAYER_POSE` spelling
 is refused under record because the sidecar carries only the command line.
+
+A level whose intro hands Spyro to the pad between two speeches re-seats him
+after the first placeable tick. A trailing `@N` on the pose
+(`--player-pose "131311,109998,18400@2100"`) defers the placement to the first
+placeable tick at or after count `N` of the counter `--frame-limit` reads.
 
 ### Recorded input replay
 

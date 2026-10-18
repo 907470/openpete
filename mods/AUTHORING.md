@@ -513,7 +513,9 @@ openpete --disc <game>.cue --mods-dir mods --mods my-mod \
   and re-seats the follow camera behind him. Every run prints its end state
   after `openpete-exit:` as `openpete-pose: level=<id> pos=(x, y, z) yaw=N`
   (or `none reason=...`); paste it back with `--skip-to-level <id>`. Fires
-  before `--freecam-pose` in the same run; rides the bk2 `.args` sidecar.
+  before `--freecam-pose` in the same run; rides the bk2 `.args` sidecar. A
+  trailing `@N` (`"x,y,z@2100"`) waits for the first placeable tick at or
+  after count N of the counter `--frame-limit` reads.
 - **Reproducible input**: `--bk2 movie.bk2` replays a BizHawk movie
   (`--bk2-stop-on-end`); `--bk2-record [PATH]` records live play plus an
   `.args` sidecar. Same movie + same flags = same gameplay bytes unless the

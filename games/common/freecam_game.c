@@ -38,6 +38,7 @@
 #include "psx_runtime_internal.h"        /* CPUState + its read/write callbacks */
 
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -859,25 +860,46 @@ static int player_placeable(CPUState* cpu) {
  * fly-in ends, and freezes the player update and the follow, so a placement
  * gated on the ordinary follow would never fire under it. */
 static int s_player_pose_pending = -1;   /* -1: env not read yet */
+/* The feed-key value an "@N" suffix names, or -1 to place on the first
+ * placeable tick. */
+static long s_player_pose_at_key = -1;
 
 /** @brief Report whether OPENPETE_PLAYER_POSE is set and not yet applied.
  *
- * Reads the variable on the first call and caches the result until
- * freecam_player_pose_maybe_apply clears it.
+ * Reads the variable on the first call, caches the result until
+ * freecam_player_pose_maybe_apply clears it, and records the "@N" suffix's
+ * N, when one follows the pose, as the feed-key value the placement waits for.
  * @return 1 while a placement is waiting, else 0. */
 static int player_pose_pending(void) {
     if (s_player_pose_pending < 0) {
         const char* pose = getenv("OPENPETE_PLAYER_POSE");
         s_player_pose_pending = (pose && *pose) ? 1 : 0;
+        const char* at = s_player_pose_pending ? strchr(pose, '@') : NULL;
+        if (at) {
+            char* end;
+            const long n = strtol(at + 1, &end, 10);
+            while (*end == ' ') end++;
+            if (end == at + 1 || *end || n < 0) {
+                OPL_WARN_F("freecam", "OPENPETE_PLAYER_POSE: \"%s\" after '@' is not a feed-key value; not applied", at + 1);
+                s_player_pose_pending = 0;
+            } else {
+                s_player_pose_at_key = n;
+            }
+        }
     }
     return s_player_pose_pending;
 }
 
 void freecam_player_pose_maybe_apply(CPUState* cpu) {
     if (!player_pose_pending()) return;
+    if (s_player_pose_at_key >= 0 &&
+        openpete_feed_key_now() < (unsigned long)s_player_pose_at_key) return;
     if (!player_placeable(cpu)) return;
     s_player_pose_pending = 0;
-    const char* pose = getenv("OPENPETE_PLAYER_POSE");
+    char pose[256];
+    snprintf(pose, sizeof pose, "%s", getenv("OPENPETE_PLAYER_POSE"));
+    char* at = strchr(pose, '@');
+    if (at) *at = '\0';
     int32_t v[5] = {0, 0, 0, 0, 0};
     const int n = freecam_parse_ints(pose, v, 5);
     if (n < 3 || n > 4) {
@@ -885,8 +907,10 @@ void freecam_player_pose_maybe_apply(CPUState* cpu) {
         return;
     }
     freecam_teleport_player(cpu, v[0], v[1], v[2], v[3], n == 4, 1);
-    if (n == 4) OPL_INFO_F("freecam", "player placed at (%d, %d, %d) yaw=%d", v[0], v[1], v[2], v[3] & 0xFFF);
-    else        OPL_INFO_F("freecam", "player placed at (%d, %d, %d)", v[0], v[1], v[2]);
+    if (n == 4) OPL_INFO_F("freecam", "player placed at (%d, %d, %d) yaw=%d key=%u", v[0], v[1], v[2], v[3] & 0xFFF,
+                           openpete_feed_key_now());
+    else        OPL_INFO_F("freecam", "player placed at (%d, %d, %d) key=%u", v[0], v[1], v[2],
+                           openpete_feed_key_now());
 }
 
 int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
