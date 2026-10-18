@@ -1757,6 +1757,21 @@ int portal_s23_capture_follows(CPUState* cpu) {
         && s_curr.frame != openpete_frame;
 }
 
+/** @brief Queues the destination-sky build of the first portal record without one, one record per pass.
+ *
+ * Spreads the destination sky reads over the level's first passes and starts
+ * every record's registration on the background thread before its picture
+ * is in view (portal_sky_s23_prefetch). Reads PSX RAM only.
+ * @param cpu Reads the record array. */
+static void p3_sky_prefetch(CPUState* cpu) {
+    if (!portal_game_s23.records || !portal_game_s23.count) return;
+    const uint32_t base = cpu->read_word(portal_game_s23.records);
+    const uint32_t n = cpu->read_word(portal_game_s23.count);
+    if (base < 0x80000000u || base >= 0x80200000u || n > 16u) return;
+    for (uint32_t i = 0; i < n; i++)
+        if (portal_sky_s23_prefetch(cpu, base + i * P3_REC_STRIDE)) return;
+}
+
 /** @brief The portal pass's hook: rolls the tick buffers, runs the real pass, then feeds the previews.
  *
  * Returns 0 (the pass runs unhooked) when neither the native scene, a
@@ -1765,8 +1780,10 @@ int portal_s23_capture_follows(CPUState* cpu) {
  * (valid for up to 3 frames back) and the current list is emptied. Sets
  * s_in_pass so the leaf hook captures, dispatches the pass once, records the
  * pass's polybuf interval under RP_PORTAL, and feeds the captured previews
- * when the native scene is enabled. Then releases a terrain feed the world
- * draw held for this capture (portal_s23_capture_follows). Under
+ * when the native scene is enabled, after queueing one record's destination
+ * sky build (p3_sky_prefetch) unless OPENPETE_PORTAL3_SKY is 0. Then
+ * releases a terrain feed the world draw held for this capture
+ * (portal_s23_capture_follows). Under
  * OPENPETE_PORTAL3_DBG prints up to 64 capture reports. Writes no PSX RAM
  * itself.
  * @param cpu The guest CPU state.
@@ -1792,6 +1809,7 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     s_in_pass = 0;
     render_path_record(RP_PORTAL, s_pass_start, end);
     if (p3_dbg() && openpete_feed_key_now() >= p3_dbg_from()) p3_band_census(cpu, &s_curr);
+    if (feed && p3_sky_on()) p3_sky_prefetch(cpu);
     if (feed) {
         p3_band_admit(cpu, &s_curr);
         p3_feed(cpu, &s_curr);

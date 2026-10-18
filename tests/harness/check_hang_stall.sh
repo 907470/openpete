@@ -39,12 +39,22 @@
 #           fast-forward and the level transitions.
 #           Pass (demo, load): exit 0, samples > 0 (else VACUOUS), the
 #           longest stretch below N.
+#   portal  Linux and Windows. Spyro 3, --skip-to-level midnight_mountain
+#           --lod extended --aspect 16:9, no input, the native scene live
+#           through a screenshot at VBL 2600: the Crystal Islands portal's
+#           picture is in view from the spawn doorway when gameplay starts
+#           (VBL 1572), and its first draw registers the destination sky
+#           against the picture (renderer/portal_sky_s23.c).
+#           Pass: exit 0, samples > 0 (else VACUOUS), the longest stretch
+#           below PORTAL_MS (500 ms; the boot's own stretch at VBL 573 is
+#           100-170 ms, a synchronous registration on the game fiber
+#           1300-1700 ms).
 #
 # Outputs under <build-dir>/hang-stall/<row>-<platform>/, deleted before
 # each run.
 #
 # Usage: tests/harness/check_hang_stall.sh [--build-dir=DIR] [--win-build-dir=DIR]
-#            [--row=spin|callspin|triple|demo|load]... [--platform=linux|windows|both]
+#            [--row=spin|callspin|triple|demo|load|portal]... [--platform=linux|windows|both]
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 every row skipped.
 set -u
 cd "$(dirname "$0")/../.."
@@ -65,10 +75,11 @@ for a in "$@"; do
         *) echo "hang-stall: unknown argument $a" >&2; exit 64;;
     esac
 done
-(( ${#ROWS[@]} )) || ROWS=(spin callspin triple demo load)
+(( ${#ROWS[@]} )) || ROWS=(spin callspin triple demo load portal)
 
 GAME=spyro-1
 N_S=30
+PORTAL_MS=500
 MOVIE=games/spyro-1/bk2/level-transition-gems.bk2
 pg_resolve "$GAME"
 OUT_ROOT="${PG_BUILD_DIR:-build/linux-release}/hang-stall"
@@ -137,17 +148,18 @@ verdict_trip() {
     echo "$head verdict=PASS"
 }
 
-# verdict_clean ROW PLATFORM DIR: the pass test of a row that must not trip.
+# verdict_clean ROW PLATFORM DIR [LIMIT_MS]: the pass test of a row that must
+# not trip; the longest stretch must stay below LIMIT_MS (default N seconds).
 verdict_clean() {
-    local row="$1" plat="$2" dir="$3" rc samples ms head
+    local row="$1" plat="$2" dir="$3" limit="${4:-$((N_S * 1000))}" rc samples ms head
     rc="$(cat "$dir/rc")"; read -r samples ms < <(census "$dir")
-    head="[hang-stall] row=$row platform=$plat exit=$rc samples=$samples longest_ms=$ms limit_ms=$((N_S * 1000))"
+    head="[hang-stall] row=$row platform=$plat exit=$rc samples=$samples longest_ms=$ms limit_ms=$limit"
     if [[ "$rc" != 0 ]]; then
         echo "$head verdict=FAIL"; grep -E 'watchdog' "$dir/run.log" | head -n 3 | sed 's/^/[hang-stall]   /'
         return 1
     fi
     if [[ "$samples" == - || "$samples" == 0 ]]; then echo "$head verdict=VACUOUS: the monitor took no sample"; return 1; fi
-    if (( ms >= N_S * 1000 )); then echo "$head verdict=FAIL: stretch at the limit"; return 1; fi
+    if (( ms >= limit )); then echo "$head verdict=FAIL: stretch at the limit"; return 1; fi
     echo "$head verdict=PASS"
 }
 
@@ -180,6 +192,13 @@ EOF
     } > "$root/stall-probe/src/m.c"
 }
 
+# use_game G: resolve the binary, disc and Windows exe of game G for the next leg.
+use_game() {
+    GAME="$1"
+    pg_resolve "$GAME"
+    WIN_EXE="$(win_tree_exe "$WIN_BUILD_DIR" "$GAME")"
+}
+
 linux_ok() { [[ -x "$PG_BIN" && -f "$PG_DISC" ]]; }
 win_ok() { [[ -f "$WIN_EXE" && -f "$PG_DISC" ]] && command -v wslpath >/dev/null; }
 
@@ -187,6 +206,7 @@ FAILS=0 RAN=0
 LEG_ENV=()
 leg() {  # leg ROW PLATFORM: run and judge one leg
     local row="$1" plat="$2" dir="$OUT_ROOT/$1-$2"
+    if [[ "$row" == portal ]]; then use_game spyro-3; else use_game spyro-1; fi
     if [[ "$plat" == linux ]] && ! linux_ok; then echo "[hang-stall] row=$row platform=linux SKIP (binary or disc missing)"; return; fi
     if [[ "$plat" == windows ]] && ! win_ok; then echo "[hang-stall] row=$row platform=windows SKIP (no $WIN_EXE)"; return; fi
     RAN=$((RAN + 1))
@@ -243,6 +263,23 @@ leg() {  # leg ROW PLATFORM: run and judge one leg
         load)
             run_leg "$plat" "$dir" 900 - --bk2 "$MOVIE" --skip-to-level artisans --frame-limit 5350
             verdict_clean load "$plat" "$dir" || FAILS=$((FAILS + 1));;
+        portal)
+            rm -f "${dir:?}/shot__2600-vk.png"
+            mkdir -p "$dir"
+            local shot="$dir/shot__{n}.png"
+            [[ "$plat" == windows ]] && shot="$(wslpath -w "$dir")\\shot__{n}.png"
+            run_leg "$plat" "$dir" 900 - --renderer vk --aspect 16:9 --lod extended \
+                --skip-to-level midnight_mountain --screenshot-on-frame 2600 --screenshot-native-only \
+                --screenshot-output "$shot" --frame-limit 2610
+            if [[ ! -f "$dir/shot__2600-vk.png" ]]; then
+                echo "[hang-stall] row=portal platform=$plat verdict=VACUOUS: no native screenshot, the scene was not live"
+                FAILS=$((FAILS + 1))
+            elif ! grep -q "portal: picture of level 41" "$dir/run.log"; then
+                echo "[hang-stall] row=portal platform=$plat verdict=VACUOUS: the Crystal Islands picture was never drawn"
+                FAILS=$((FAILS + 1))
+            else
+                verdict_clean portal "$plat" "$dir" "$PORTAL_MS" || FAILS=$((FAILS + 1))
+            fi;;
         *) echo "hang-stall: unknown row $row" >&2; exit 64;;
     esac
 }

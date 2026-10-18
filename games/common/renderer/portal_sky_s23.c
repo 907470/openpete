@@ -23,6 +23,24 @@
 // vertices within PSK_SNAP pixels of a projected sky vertex wins, refined by
 // Horn over every such pair. Faces are tried fewest candidates first, and a
 // rotation that places every picture vertex ends the search.
+//
+// The search's cost. A picture whose best rotation misses a vertex tries every
+// hypothesis, a few thousand of them. Each is scored from the picture's side:
+// a picture vertex's view ray, rotated back into the world, finds the sky
+// corners whose directions lie near it in a hash of the sky's corner
+// directions, and each is projected and snapped as the forward score does, so
+// the count is the forward count. The scan stops once the vertices left cannot
+// lift the count to the larger of the best so far plus one and the acceptance
+// floor; such a hypothesis can neither replace the best nor be accepted, so the
+// chosen rotation is the exhaustive search's.
+//
+// Where the build runs. A registration takes milliseconds to a hundred, so it
+// never runs on the game fiber unasked: the portal pass hands each of the
+// level's records to portal_sky_s23_prefetch, which snapshots the picture,
+// reads the destination's sky and queues the build for one background thread.
+// A preview that needs an extension whose build has not finished waits for it,
+// building it on the calling thread when the worker has not started it, so
+// the triangles a present draws never depend on how far the worker got.
 
 #include "renderer/portal_sky_s23.h"
 #include "renderer/portal_spyro23.h"   /* portal_game_s23 */
@@ -31,6 +49,10 @@
 #include "openpete_disc_trace.h"       /* OPENPETE_DISC_TAG_TERRAIN */
 #include "openpete_log.h"
 #include "openpete_fnv1a64.h"
+#include "openpete_crash.h"
+#include "openpete_time.h"
+
+#include <SDL3/SDL.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -43,7 +65,7 @@
 #define PSK_SNAP  1.5              /* pixels: a picture vertex this close is the same sky vertex */
 #define PSK_NEAR  0.1              /* the cone a direction must lie in, as its unit view-Z */
 #define PSK_LEVELS 64
-#define PSK_CACHE  16
+#define PSK_CACHE  32
 #define PSK_MAX_PIC_V 1024
 #define PSK_MAX_PIC_F 4096
 #define PSK_MAX_SKY_F 16384
@@ -51,6 +73,10 @@
 #define PSK_GRID_Y0 (-1024)        /* [-1024, 1024) on both axes */
 #define PSK_GRID_N  512
 #define PSK_CELL    4
+#define PSK_DIR_R   0.0125         /* the chord about a view ray the search takes sky corners from */
+#define PSK_DIR_H   (2.0 * PSK_DIR_R) /* the sky-direction hash's cell edge, in unit-vector coordinates */
+#define PSK_DIR_HASH 16384         /* its bucket count, a power of two */
+#define PSK_MAX_CORNERS (PSK_MAX_SKY_F * 3)
 
 /* ---- the destination sky, per level ------------------------------------- */
 
@@ -324,12 +350,26 @@ static void psk_jacobi(double A[4][4], double V[4][4], int p, int r) {
     }
 }
 
+/** @brief Whether every off-diagonal element of a symmetric 4x4 matrix is below psk_jacobi's skip bound.
+ * @param A The matrix.
+ * @return 1 when a further sweep would rotate nothing, else 0. */
+static int psk_jacobi_done(const double A[4][4]) {
+    for (int p = 0; p < 3; p++)
+        for (int r = p + 1; r < 4; r++)
+            if (fabs(A[p][r]) >= 1e-15) return 0;
+    return 1;
+}
+
 /** @brief The eigenvector of a symmetric 4x4 matrix's largest eigenvalue, by cyclic Jacobi rotations.
+ *
+ * At most 32 sweeps; the sweeps stop once every off-diagonal element is below
+ * the bound under which psk_jacobi rotates nothing, since the rest would leave
+ * A and V unchanged.
  * @param A The matrix; destroyed.
  * @param q Receives the unit eigenvector. */
 static void psk_eig4(double A[4][4], double q[4]) {
     double V[4][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } };
-    for (int sweep = 0; sweep < 32; sweep++)
+    for (int sweep = 0; sweep < 32 && !psk_jacobi_done(A); sweep++)
         for (int p = 0; p < 3; p++)
             for (int r = p + 1; r < 4; r++) psk_jacobi(A, V, p, r);
     int m = 0;
@@ -366,6 +406,198 @@ static void psk_horn(const double (*d)[3], const double (*r)[3], int n, double R
 static void psk_unit(const double p[3], double d[3]) {
     const double n = sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
     for (int i = 0; i < 3; i++) d[i] = n > 0.0 ? p[i] / n : 0.0;
+}
+
+/* The sky's faces keyed for the search. A sky face's colours sorted ascending,
+ * and its index. */
+typedef struct {
+    uint32_t c[3];
+    int      sf;
+} psk_tkey;
+
+/* The search's index of the sky. The distinct corner positions, each with its
+ * unit direction and hash cell, chained per bucket of the direction hash; and
+ * the faces by sorted colour triple, then index, so the faces carrying a
+ * picture face's colours in some order are one ascending run. */
+typedef struct {
+    int      n;
+    int32_t  corner[PSK_MAX_CORNERS];   /* sky face * 3 + corner */
+    double   u[PSK_MAX_CORNERS][3];
+    int32_t  cell[PSK_MAX_CORNERS][3];
+    int32_t  next[PSK_MAX_CORNERS];
+    int32_t  head[PSK_DIR_HASH];
+    int      nt;
+    psk_tkey tri[PSK_MAX_SKY_F];
+} psk_index;
+
+/** @brief The direction-hash cell holding a unit direction.
+ * @param u The direction.
+ * @param c Receives the cell's three coordinates. */
+static void psk_dir_cell(const double u[3], int32_t c[3]) {
+    for (int i = 0; i < 3; i++) c[i] = (int32_t)floor((u[i] + 1.0) / PSK_DIR_H);
+}
+
+/** @brief The direction-hash bucket of a cell.
+ * @param c The cell.
+ * @return The bucket. */
+static int psk_dir_slot(const int32_t c[3]) {
+    const uint32_t h = (uint32_t)c[0] * 73856093u ^ (uint32_t)c[1] * 19349663u ^ (uint32_t)c[2] * 83492791u;
+    return (int)(h & (PSK_DIR_HASH - 1));
+}
+
+/** @brief Sorts three colours ascending.
+ * @param in The colours.
+ * @param out Receives them sorted. */
+static void psk_sort3(const uint32_t in[3], uint32_t out[3]) {
+    uint32_t a = in[0], b = in[1], c = in[2], t;
+    if (a > b) { t = a; a = b; b = t; }
+    if (b > c) { t = b; b = c; c = t; }
+    if (a > b) { t = a; a = b; b = t; }
+    out[0] = a; out[1] = b; out[2] = c;
+}
+
+/** @brief Orders two keyed sky faces by sorted colours, then by index.
+ * @param a The first.
+ * @param b The second.
+ * @return Negative, zero or positive as qsort expects. */
+static int psk_tkey_cmp(const void* a, const void* b) {
+    const psk_tkey *x = (const psk_tkey*)a, *y = (const psk_tkey*)b;
+    for (int i = 0; i < 3; i++)
+        if (x->c[i] != y->c[i]) return x->c[i] < y->c[i] ? -1 : 1;
+    return x->sf - y->sf;
+}
+
+/** @brief Builds the search's index of the sky's faces.
+ *
+ * A corner whose world position equals an indexed corner's bit for bit
+ * projects to the same point under every rotation and is not indexed again.
+ * @param S The sky's faces.
+ * @param X Receives the index. */
+static void psk_index_build(const psk_sky* S, psk_index* X) {
+    memset(X->head, 0xFF, sizeof X->head);
+    X->n = 0;
+    for (int f = 0; f < S->n; f++)
+        for (int k = 0; k < 3; k++) {
+            double u[3];
+            int32_t c[3];
+            psk_unit(S->p[f][k], u);
+            psk_dir_cell(u, c);
+            const int b = psk_dir_slot(c);
+            int dup = 0;
+            for (int i = X->head[b]; i >= 0 && !dup; i = X->next[i])
+                dup = !memcmp(S->p[X->corner[i] / 3][X->corner[i] % 3], S->p[f][k], sizeof S->p[f][k]);
+            if (dup) continue;
+            const int i = X->n++;
+            X->corner[i] = f * 3 + k;
+            memcpy(X->u[i], u, sizeof u);
+            memcpy(X->cell[i], c, sizeof c);
+            X->next[i] = X->head[b];
+            X->head[b] = i;
+        }
+    X->nt = S->n;
+    for (int f = 0; f < S->n; f++) { psk_sort3(S->c[f], X->tri[f].c); X->tri[f].sf = f; }
+    qsort(X->tri, (size_t)X->nt, sizeof X->tri[0], psk_tkey_cmp);
+}
+
+/** @brief The run of keyed sky faces whose colours are a picture face's colours in some order.
+ * @param X The index.
+ * @param P The picture.
+ * @param pf The picture face.
+ * @param lo Receives the run's first entry.
+ * @return The run's length. */
+static int psk_tri_run(const psk_index* X, const psk_pic* P, int pf, int* lo) {
+    psk_tkey k;
+    psk_sort3(P->c[pf], k.c);
+    k.sf = -1;
+    int a = 0, b = X->nt;
+    while (a < b) { const int m = (a + b) / 2; if (psk_tkey_cmp(&X->tri[m], &k) < 0) a = m + 1; else b = m; }
+    int e = a;
+    while (e < X->nt && !memcmp(X->tri[e].c, k.c, sizeof k.c)) e++;
+    *lo = a;
+    return e - a;
+}
+
+/* One picture-vertex query of the search: the vertex, its ray rotated back
+ * into the world, and what the test reads. */
+typedef struct {
+    const psk_pic*   P;
+    const psk_grid*  G;
+    const psk_sky*   S;
+    const psk_index* X;
+    const double   (*R)[3];
+    double           w[3];
+    int              v;
+} psk_query;
+
+/** @brief Whether a corner indexed in one direction-hash cell projects to a point whose nearest picture vertex is the query's.
+ * @param Q The query.
+ * @param c The cell.
+ * @return 1 when one does, else 0. */
+static int psk_hit_cell(const psk_query* Q, const int32_t c[3]) {
+    const psk_index* X = Q->X;
+    for (int i = X->head[psk_dir_slot(c)]; i >= 0; i = X->next[i]) {
+        if (X->cell[i][0] != c[0] || X->cell[i][1] != c[1] || X->cell[i][2] != c[2]) continue;
+        const double ex = X->u[i][0] - Q->w[0], ey = X->u[i][1] - Q->w[1], ez = X->u[i][2] - Q->w[2];
+        if (ex * ex + ey * ey + ez * ez > PSK_DIR_R * PSK_DIR_R) continue;
+        double x, y;
+        if (psk_project(Q->R, Q->S->p[X->corner[i] / 3][X->corner[i] % 3], &x, &y) &&
+            psk_near(Q->P, Q->G, x, y) == Q->v) return 1;
+    }
+    return 0;
+}
+
+/** @brief Whether some sky corner projects under `R` to a point whose nearest picture vertex is `v`.
+ *
+ * A corner within PSK_SNAP pixels of `v` lies within PSK_SNAP / PSK_FY radians
+ * (0.0070) of `v`'s view ray, since the inverse projection shrinks distances
+ * by at least the smaller scale. The corners searched are those whose
+ * direction lies within the chord PSK_DIR_R of the ray rotated back by `R`;
+ * the cell edge is twice that chord, so they lie in the one or two cells per
+ * axis that the chord's interval spans.
+ * @param P The picture.
+ * @param G Its grid.
+ * @param S The sky's faces.
+ * @param X The index.
+ * @param R The rotation.
+ * @param v The picture vertex.
+ * @return 1 when one does, else 0. */
+static int psk_hit(const psk_pic* P, const psk_grid* G, const psk_sky* S, const psk_index* X,
+                   const double R[3][3], int v) {
+    psk_query Q = { P, G, S, X, R, { 0, 0, 0 }, v };
+    double r[3];
+    psk_ray(P->x[v], P->y[v], r);
+    for (int j = 0; j < 3; j++) Q.w[j] = R[0][j] * r[0] + R[1][j] * r[1] + R[2][j] * r[2];
+    psk_unit(Q.w, Q.w);
+    double wl[3], wh[3];
+    for (int j = 0; j < 3; j++) { wl[j] = Q.w[j] - PSK_DIR_R; wh[j] = Q.w[j] + PSK_DIR_R; }
+    int32_t lo[3], hi[3];
+    psk_dir_cell(wl, lo);
+    psk_dir_cell(wh, hi);
+    for (int32_t cz = lo[2]; cz <= hi[2]; cz++)
+        for (int32_t cy = lo[1]; cy <= hi[1]; cy++)
+            for (int32_t cx = lo[0]; cx <= hi[0]; cx++) {
+                const int32_t c[3] = { cx, cy, cz };
+                if (psk_hit_cell(&Q, c)) return 1;
+            }
+    return 0;
+}
+
+/** @brief Scores a rotation as psk_score counts, giving up once the count cannot reach `need`.
+ * @param P The picture.
+ * @param G Its grid.
+ * @param S The sky's faces.
+ * @param X The index.
+ * @param R The rotation.
+ * @param need The count below which the score does not matter.
+ * @return The matched vertex count, or -1 when it is below `need`. */
+static int psk_score_from(const psk_pic* P, const psk_grid* G, const psk_sky* S, const psk_index* X,
+                          const double R[3][3], int need) {
+    int score = 0;
+    for (int v = 0; v < P->nv; v++) {
+        if (score + (P->nv - v) < need) return -1;
+        score += psk_hit(P, G, S, X, R, v);
+    }
+    return score >= need ? score : -1;
 }
 
 /* The search's scratch: per picture vertex the sky corner a rotation places
@@ -433,13 +665,12 @@ static int psk_order(const psk_pic* P, int pf, const psk_sky* S, int sf, int fro
 /** @brief Counts the sky faces whose colours a picture face can take, 0 for a face of one colour.
  * @param P The picture.
  * @param pf The picture face.
- * @param S The sky's faces.
+ * @param X The index.
  * @return The candidate count. */
-static int psk_candidates(const psk_pic* P, int pf, const psk_sky* S) {
+static int psk_candidates(const psk_pic* P, int pf, const psk_index* X) {
     if (P->c[pf][0] == P->c[pf][1] && P->c[pf][1] == P->c[pf][2]) return 0;
-    int n = 0;
-    for (int sf = 0; sf < S->n; sf++) n += psk_order(P, pf, S, sf, 0) >= 0;
-    return n;
+    int lo;
+    return psk_tri_run(X, P, pf, &lo);
 }
 
 /* A picture face and its candidate count, for the fewest-first order. */
@@ -454,72 +685,108 @@ static int psk_rank_cmp(const void* a, const void* b) {
     return x->n != y->n ? (x->n < y->n ? -1 : 1) : (x->pf - y->pf);
 }
 
-/** @brief Tries every candidate of one picture face, keeping the best-scoring rotation.
+/** @brief Tries every candidate of one picture face in sky-face order, keeping the best-scoring rotation.
+ *
+ * A hypothesis is scored only as far as it can still beat the best so far and
+ * reach `floor`.
  * @param P The picture.
  * @param G Its grid.
  * @param S The sky's faces.
+ * @param X The index.
  * @param pf The picture face.
- * @param M Scratch for the score.
+ * @param floor The least count the registration accepts.
  * @param best In/out: the best score so far.
  * @param R In/out: the best rotation so far.
  * @return 1 when a rotation places every picture vertex, else 0. */
-static int psk_try_face(const psk_pic* P, const psk_grid* G, const psk_sky* S, int pf, psk_match* M,
-                        int* best, double R[3][3]) {
-    for (int sf = 0; sf < S->n; sf++)
+static int psk_try_face(const psk_pic* P, const psk_grid* G, const psk_sky* S, const psk_index* X, int pf,
+                        int floor, int* best, double R[3][3]) {
+    int lo;
+    const int n = psk_tri_run(X, P, pf, &lo);
+    for (int t = lo; t < lo + n; t++) {
+        const int sf = X->tri[t].sf;
         for (int o = psk_order(P, pf, S, sf, 0); o >= 0; o = psk_order(P, pf, S, sf, o + 1)) {
             double H[3][3];
             psk_hypothesis(P, pf, S, sf, k_psk_ord[o], H);
-            const int sc = psk_score(P, G, S, H, M);
+            const int sc = psk_score_from(P, G, S, X, H, *best + 1 > floor ? *best + 1 : floor);
             if (sc > *best) { *best = sc; memcpy(R, H, sizeof H); }
             if (sc == P->nv) return 1;
         }
+    }
     return 0;
 }
+
+/* One builder's scratch: the worker thread and the game fiber each own one,
+ * so a build on either never shares memory with a build on the other. */
+typedef struct {
+    psk_grid  G;
+    psk_sky   S;
+    psk_index X;
+    psk_match M;
+    psk_rank  rank[PSK_MAX_PIC_F];
+} psk_ctx;
 
 /** @brief Recovers the rotation that projects the sky onto the picture.
  *
  * Accepts the best hypothesis when it places at least nine tenths of the
  * picture's vertices, then refines it by Horn over every matched pair.
+ * @param C The builder's scratch; its grid and sky faces are already built.
  * @param P The picture.
- * @param G Its grid.
- * @param S The sky's faces.
  * @param R Receives the rotation.
  * @return The matched vertex count of the refined rotation, 0 when none is accepted. */
-static int psk_register(const psk_pic* P, const psk_grid* G, const psk_sky* S, double R[3][3]) {
-    static psk_rank rank[PSK_MAX_PIC_F];
-    static psk_match M;
+static int psk_register(psk_ctx* C, const psk_pic* P, double R[3][3]) {
+    const psk_grid* G = &C->G;
+    const psk_sky* S = &C->S;
+    psk_match* M = &C->M;
+    psk_index_build(S, &C->X);
+    const int floor = (P->nv * 9 + 9) / 10;
     int nr = 0, best = 0;
     for (int pf = 0; pf < P->nf; pf++) {
-        const int n = psk_candidates(P, pf, S);
-        if (n > 0) { rank[nr].pf = pf; rank[nr].n = n; nr++; }
+        const int n = psk_candidates(P, pf, &C->X);
+        if (n > 0) { C->rank[nr].pf = pf; C->rank[nr].n = n; nr++; }
     }
-    qsort(rank, (size_t)nr, sizeof rank[0], psk_rank_cmp);
-    for (int i = 0; i < nr && !psk_try_face(P, G, S, rank[i].pf, &M, &best, R); i++) {}
+    qsort(C->rank, (size_t)nr, sizeof C->rank[0], psk_rank_cmp);
+    for (int i = 0; i < nr && !psk_try_face(P, G, S, &C->X, C->rank[i].pf, floor, &best, R); i++) {}
     if (best * 10 < P->nv * 9) return 0;
-    psk_score(P, G, S, R, &M);
+    psk_score(P, G, S, R, M);
     int n = 0;
     for (int v = 0; v < P->nv; v++) {
-        if (M.hit[v] < 0) continue;
-        psk_unit(S->p[M.hit[v] / 3][M.hit[v] % 3], M.d[n]);
-        psk_ray(P->x[v], P->y[v], M.r[n]);
+        if (M->hit[v] < 0) continue;
+        psk_unit(S->p[M->hit[v] / 3][M->hit[v] % 3], M->d[n]);
+        psk_ray(P->x[v], P->y[v], M->r[n]);
         n++;
     }
-    psk_horn((const double (*)[3])M.d, (const double (*)[3])M.r, n, R);
-    return psk_score(P, G, S, R, &M);
+    psk_horn((const double (*)[3])M->d, (const double (*)[3])M->r, n, R);
+    return psk_score(P, G, S, R, M);
 }
 
 /* ---- the extension -------------------------------------------------------- */
 
+/* An entry's build state. The game fiber moves an entry from FREE to QUEUED
+ * (or straight to DONE when the sky is unreadable); whichever thread takes it
+ * moves it from QUEUED to RUNNING and then DONE, all under s_mu. */
+enum { PSK_FREE, PSK_QUEUED, PSK_RUNNING, PSK_DONE };
+
+/* One record's extension. The key, the picture snapshot and the sky are
+ * written by the game fiber before the entry is queued; the triangles by the
+ * builder while it runs, and read only once the entry is DONE. */
 typedef struct {
-    uint32_t        rec, mesh;
-    int             level, used;
-    uint64_t        hash;
-    portal_sky_tri* tri;
-    int             n, cap;
+    uint32_t         rec, mesh;
+    int              level, state;
+    unsigned         seq;              /* queue order */
+    uint64_t         hash;
+    const psk_level* L;
+    psk_pic          pic;
+    portal_sky_tri*  tri;
+    int              n, cap;
 } psk_entry;
 
-static psk_entry s_cache[PSK_CACHE];
-static unsigned  s_cache_next = 0;
+static psk_entry      s_cache[PSK_CACHE];
+static unsigned       s_cache_next = 0;
+static unsigned       s_seq = 0;
+static SDL_Mutex*     s_mu;
+static SDL_Condition* s_cv_work;       /* the worker waits for a queued entry */
+static SDL_Condition* s_cv_done;       /* a waiter waits for an entry to finish */
+static int            s_sched = 0;     /* 1 once psk_sched_init ran */
 
 /* What the extension's face receiver needs. */
 typedef struct {
@@ -588,25 +855,152 @@ static void psk_extend_face(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gourau
     if (m == 4) psk_append(B, &out[0], &out[2], &out[3]);
 }
 
-/** @brief Registers a portal's picture against its destination's sky and builds the extension into `E`.
- * @param P The picture, already read.
- * @param L The destination's sky.
- * @param E Receives the triangles. */
-static void psk_build_entry(const psk_pic* P, const psk_level* L, psk_entry* E) {
-    static psk_grid G;
-    static psk_sky S;
+/** @brief Registers an entry's picture against its destination's sky and builds the extension into it.
+ * @param C The building thread's scratch, or NULL when it could not be allocated (no triangles).
+ * @param E The entry; its picture and sky are set, its triangle count is 0.
+ * @param who The building thread's name, for the log line. */
+static void psk_build_entry(psk_ctx* C, psk_entry* E, const char* who) {
     static const double I[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
-    psk_grid_build(P, &G);
-    S.n = 0;
-    psk_decode_sky(L, I, psk_collect, &S);
+    if (!C) return;
+    const op_time_t t0 = op_now();
+    const psk_pic* P = &E->pic;
+    psk_grid_build(P, &C->G);
+    C->S.n = 0;
+    psk_decode_sky(E->L, I, psk_collect, &C->S);
     double R[3][3];
-    const int matched = psk_register(P, &G, &S, R);
+    const int matched = psk_register(C, P, R);
     if (matched) {
-        const psk_build B = { P, &G, E };
-        psk_decode_sky(L, R, psk_extend_face, (void*)&B);
+        const psk_build B = { P, &C->G, E };
+        psk_decode_sky(E->L, R, psk_extend_face, (void*)&B);
     }
-    OPL_INFO_F("portal", "picture of level %d: %d of %d vertices registered, %d sky faces, %d extension triangles",
-               E->level, matched, P->nv, S.n, E->n);
+    OPL_INFO_F("portal", "picture of level %d: %d of %d vertices registered, %d sky faces, %d extension triangles"
+               " (%.1f ms, %s)", E->level, matched, P->nv, C->S.n, E->n, (double)(op_now() - t0) / 1e6, who);
+}
+
+/** @brief The background builder: takes the oldest queued entry, builds it, marks it done, forever.
+ * @param arg Unused.
+ * @return Never returns. */
+static int SDLCALL psk_worker(void* arg) {
+    (void)arg;
+    openpete_crash_thread_attach();
+    psk_ctx* C = (psk_ctx*)calloc(1, sizeof(psk_ctx));
+    SDL_LockMutex(s_mu);
+    for (;;) {
+        psk_entry* E = NULL;
+        for (int i = 0; i < PSK_CACHE; i++)
+            if (s_cache[i].state == PSK_QUEUED && (!E || s_cache[i].seq - E->seq > 0x80000000u)) E = &s_cache[i];
+        if (!E) { SDL_WaitCondition(s_cv_work, s_mu); continue; }
+        E->state = PSK_RUNNING;
+        SDL_UnlockMutex(s_mu);
+        psk_build_entry(C, E, "worker");
+        SDL_LockMutex(s_mu);
+        E->state = PSK_DONE;
+        SDL_BroadcastCondition(s_cv_done);
+    }
+    return 0;
+}
+
+/** @brief Creates the lock, the two conditions and the worker thread on first use.
+ *
+ * Without the lock or the conditions there is no worker and every build runs
+ * on the thread that needs it; without the thread, the same through psk_join. */
+static void psk_sched_init(void) {
+    if (s_sched) return;
+    s_sched = 1;
+    s_mu = SDL_CreateMutex();
+    s_cv_work = SDL_CreateCondition();
+    s_cv_done = SDL_CreateCondition();
+    if (!s_mu || !s_cv_work || !s_cv_done) {
+        if (s_mu) SDL_DestroyMutex(s_mu);
+        if (s_cv_work) SDL_DestroyCondition(s_cv_work);
+        if (s_cv_done) SDL_DestroyCondition(s_cv_done);
+        s_mu = NULL; s_cv_work = s_cv_done = NULL;
+    }
+    SDL_Thread* t = s_mu ? SDL_CreateThread(psk_worker, "openpete-portalsky", NULL) : NULL;
+    if (t) SDL_DetachThread(t);
+    else OPL_WARN_F("portal", "sky build thread not created (%s): builds run on the game fiber", SDL_GetError());
+}
+
+/** @brief Locks the entry table when a lock exists. */
+static void psk_lock(void) { if (s_mu) SDL_LockMutex(s_mu); }
+
+/** @brief Unlocks the entry table when a lock exists. */
+static void psk_unlock(void) { if (s_mu) SDL_UnlockMutex(s_mu); }
+
+/** @brief The cached entry of a record's picture, or NULL.
+ * @param rec The record.
+ * @param mesh Its +0x3C word.
+ * @param level Its destination.
+ * @param hash The picture's hash, or NULL to match any picture.
+ * @return The entry. */
+static psk_entry* psk_find(uint32_t rec, uint32_t mesh, int level, const uint64_t* hash) {
+    psk_entry* hit = NULL;
+    psk_lock();
+    for (int i = 0; i < PSK_CACHE && !hit; i++) {
+        psk_entry* E = &s_cache[i];
+        if (E->state != PSK_FREE && E->rec == rec && E->mesh == mesh && E->level == level &&
+            (!hash || E->hash == *hash)) hit = E;
+    }
+    psk_unlock();
+    return hit;
+}
+
+/** @brief Takes a slot for a record's picture and queues its build.
+ *
+ * The slot is the next free or finished one in round-robin order; a queued or
+ * running slot is never taken. The destination's sky is read here, on the
+ * game fiber. An unreadable sky leaves the entry done with no triangles.
+ * @param cpu Reads the slot table for the sky.
+ * @param rec The record.
+ * @param mesh Its +0x3C word.
+ * @param level Its destination.
+ * @param P The picture.
+ * @return The entry, or NULL when every slot is queued or running. */
+static psk_entry* psk_enqueue(CPUState* cpu, uint32_t rec, uint32_t mesh, int level, const psk_pic* P) {
+    psk_sched_init();
+    const psk_level* L = psk_level_sky(cpu, level);
+    psk_lock();
+    psk_entry* E = NULL;
+    for (int k = 0; k < PSK_CACHE && !E; k++) {
+        psk_entry* c = &s_cache[(s_cache_next + (unsigned)k) % PSK_CACHE];
+        if (c->state == PSK_FREE || c->state == PSK_DONE) { E = c; s_cache_next += (unsigned)k + 1u; }
+    }
+    if (E) {
+        E->rec = rec; E->mesh = mesh; E->level = level; E->hash = P->hash; E->L = L; E->n = 0;
+        memcpy(&E->pic, P, sizeof *P);
+        E->seq = s_seq++;
+        E->state = L->state > 0 ? PSK_QUEUED : PSK_DONE;
+        if (s_cv_work && E->state == PSK_QUEUED) SDL_SignalCondition(s_cv_work);
+    }
+    psk_unlock();
+    return E;
+}
+
+/** @brief Waits until an entry is built, building it on this thread when no thread has taken it.
+ * @param E The entry. */
+static void psk_join(psk_entry* E) {
+    static psk_ctx* s_inline;
+    psk_lock();
+    if (E->state == PSK_QUEUED) {
+        E->state = PSK_RUNNING;
+        psk_unlock();
+        if (!s_inline) s_inline = (psk_ctx*)calloc(1, sizeof(psk_ctx));
+        psk_build_entry(s_inline, E, "game fiber");
+        psk_lock();
+        E->state = PSK_DONE;
+        if (s_cv_done) SDL_BroadcastCondition(s_cv_done);
+    }
+    while (E->state == PSK_RUNNING && s_cv_done) SDL_WaitCondition(s_cv_done, s_mu);
+    psk_unlock();
+}
+
+int portal_sky_s23_prefetch(CPUState* cpu, uint32_t rec) {
+    static psk_pic Q;
+    if (!portal_game_s23.level_slots) return 0;
+    const int level = (int)cpu->read_byte(rec + 0x42);
+    const uint32_t mesh = cpu->read_word(rec + 0x3C);
+    if (psk_find(rec, mesh, level, NULL) || !psk_read_picture(cpu, rec, &Q)) return 0;
+    return psk_enqueue(cpu, rec, mesh, level, &Q) != NULL;
 }
 
 int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri** tris) {
@@ -615,17 +1009,10 @@ int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri**
     if (!portal_game_s23.level_slots || !psk_read_picture(cpu, rec, &P)) return 0;
     const int level = (int)cpu->read_byte(rec + 0x42);
     const uint32_t mesh = cpu->read_word(rec + 0x3C);
-    for (int i = 0; i < PSK_CACHE; i++) {
-        const psk_entry* E = &s_cache[i];
-        if (E->used && E->rec == rec && E->mesh == mesh && E->level == level && E->hash == P.hash) {
-            *tris = E->tri;
-            return E->n;
-        }
-    }
-    const psk_level* L = psk_level_sky(cpu, level);
-    psk_entry* E = &s_cache[s_cache_next++ % PSK_CACHE];
-    E->rec = rec; E->mesh = mesh; E->level = level; E->hash = P.hash; E->used = 1; E->n = 0;
-    if (L->state > 0) psk_build_entry(&P, L, E);
+    psk_entry* E = psk_find(rec, mesh, level, &P.hash);
+    if (!E) E = psk_enqueue(cpu, rec, mesh, level, &P);
+    if (!E) return 0;
+    psk_join(E);
     *tris = E->tri;
     return E->n;
 }
