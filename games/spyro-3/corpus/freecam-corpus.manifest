@@ -64,6 +64,11 @@ sunrise_spring | pos=(26335, 48384, 20634) yaw=1422 pitch=0
 # game draws the backdrop faded to its far colour; under --lod extended the
 # picture draws at every distance.
 sunrise_spring | pos=(39686, 29303, 22134) yaw=1422 pitch=40
+# A homeworld portal beyond its record's draw radius (+0x40 << 10): the
+# game's portal pass rejects the record before either leaf call, so
+# --lod original draws neither the picture nor the far colour; under
+# --lod extended the picture draws at every distance.
+sunrise_spring | pos=(47634, 11245, 23996) yaw=1360 pitch=68
 # moby vs terrain depth: the submarine draws at the wrong depth against the
 # ground
 super_bonus_round:1 | pos=(63716, 66117, 15554) yaw=507 pitch=155

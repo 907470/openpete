@@ -87,6 +87,11 @@ summer_forest | pos=(92227, 83198, 37023) yaw=2167 pitch=0
 # game draws the backdrop faded to its far colour; under --lod extended the
 # picture draws at every distance.
 summer_forest | pos=(117352, 87841, 38523) yaw=2167 pitch=40
+# A homeworld portal beyond its record's draw radius (+0x40 << 10): the
+# game's portal pass rejects the record before either leaf call, so
+# --lod original draws neither the picture nor the far colour; under
+# --lod extended the picture draws at every distance.
+autumn_plains | pos=(89729, 42806, 34729) yaw=1009 pitch=113
 # zephyr poly-anim sector 114: far away the guest re-packs only the LP bank,
 # so --lod extended draws the stale HP pose and the uncovered-LP ride adds
 # the current LP pose, two copies of the object (863 px over HP); original
