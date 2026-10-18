@@ -10,6 +10,18 @@ static thread_local long long co_active_buffer[64];
 static thread_local cothread_t co_active_handle = 0;
 static void (*co_swap)(cothread_t, cothread_t) = 0;
 
+#if defined(__SANITIZE_THREAD__)
+  /* ThreadSanitizer keeps a shadow call stack per fiber; each context records
+   * its TSan fiber in slot 15, past the 8 SysV slots co_swap saves. */
+  void* __tsan_get_current_fiber(void);
+  void* __tsan_create_fiber(unsigned flags);
+  void __tsan_switch_to_fiber(void* fiber, unsigned flags);
+  #define CO_TSAN_SLOT(h) (((void**)(h))[15])
+  #define CO_TSAN_INIT_ACTIVE() do { if(!CO_TSAN_SLOT(&co_active_buffer)) CO_TSAN_SLOT(&co_active_buffer) = __tsan_get_current_fiber(); } while(0)
+#else
+  #define CO_TSAN_INIT_ACTIVE() do {} while(0)
+#endif
+
 #ifdef LIBCO_MPROTECT
   alignas(4096)
 #else
@@ -121,7 +133,7 @@ static void crash(void) {
 }
 
 cothread_t co_active(void) {
-  if(!co_active_handle) co_active_handle = &co_active_buffer;
+  if(!co_active_handle) { co_active_handle = &co_active_buffer; CO_TSAN_INIT_ACTIVE(); }
   return co_active_handle;
 }
 
@@ -131,7 +143,7 @@ cothread_t co_derive(void* memory, unsigned int size, void (*entrypoint)(void)) 
     co_init();
     co_swap = (void (*)(cothread_t, cothread_t))co_swap_function;
   }
-  if(!co_active_handle) co_active_handle = &co_active_buffer;
+  if(!co_active_handle) { co_active_handle = &co_active_buffer; CO_TSAN_INIT_ACTIVE(); }
 
   #if defined(__VALGRIND_MAJOR__)
     VALGRIND_STACK_REGISTER(memory, memory + size);
@@ -146,6 +158,9 @@ cothread_t co_derive(void* memory, unsigned int size, void (*entrypoint)(void)) 
     *--p = (long long)crash;                 /* crash if entrypoint returns */
     *--p = (long long)entrypoint;            /* start of function */
     *(long long*)handle = (long long)p;      /* stack pointer */
+    #if defined(__SANITIZE_THREAD__)
+      CO_TSAN_SLOT(handle) = __tsan_create_fiber(0);
+    #endif
   }
 
   return handle;
@@ -163,6 +178,9 @@ void co_delete(cothread_t handle) {
 
 void co_switch(cothread_t handle) {
   register cothread_t co_previous_handle = co_active_handle;
+  #if defined(__SANITIZE_THREAD__)
+    __tsan_switch_to_fiber(CO_TSAN_SLOT(handle), 0);
+  #endif
   co_swap(co_active_handle = handle, co_previous_handle);
 }
 
