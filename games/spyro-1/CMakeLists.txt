@@ -284,36 +284,45 @@ if(OPENPETE_COMPILE_MODS)
             if(NOT _mod_srcs)
                 continue() # assets-only/binary-only mod: nothing to build
             endif()
-            # This loop builds against the Spyro 1 SDK only; a mod whose
-            # manifest names its games without spyro-1 is compiled by the
-            # exe on boot for the game it runs under.
+            # One DLL per game the manifest names, each against that game's
+            # SDK, into .build/<game>/ where the loader looks for a prebuilt
+            # object when no compiler is bundled; a manifest without a game
+            # key builds for spyro-1.
             file(STRINGS ${_manifest} _mod_game_line REGEX "^[ \t]*game[ \t]*=")
-            if(_mod_game_line AND NOT _mod_game_line MATCHES "spyro-1")
-                continue()
+            set(_mod_games "")
+            foreach(_g spyro-1 spyro-2 spyro-3)
+                if(NOT _mod_game_line OR _mod_game_line MATCHES "${_g}")
+                    list(APPEND _mod_games ${_g})
+                endif()
+            endforeach()
+            if(NOT _mod_game_line)
+                set(_mod_games spyro-1)
             endif()
             file(GLOB _mod_hdrs CONFIGURE_DEPENDS ${_src_mod_dir}/src/*.h)
-            set(_mod_build_dir
-                ${OPENPETE_GAME_EXE_DIR}/mods/${_mod_id}/.build/spyro-1)
-            set(_dll ${_mod_build_dir}/${_mod_id}.dll)
-            add_custom_command(OUTPUT ${_dll}
-                COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_build_dir}
-                # Same compile line mod_compile() (core/mods/mod_loader.c)
-                # uses on Windows - keep in sync - plus -static-libgcc:
-                # the exe ships no mingw runtime DLLs (mingw-w64.cmake
-                # links -static), so the mod DLL must be self-contained.
-                COMMAND ${CMAKE_C_COMPILER} -shared -Wl,--export-all-symbols
-                        -O2 -g -fno-strict-aliasing -Wall -Wundef -static-libgcc
-                        -I${OPENPETE_GAME_EXE_DIR}/sdk/games/spyro-1
-                        -I${OPENPETE_GAME_EXE_DIR}/sdk
-                        -o ${_dll} ${_mod_srcs}
-                        ${OPENPETE_GAME_EXE_DIR}/sdk/openpete_mod_abi.c
-                COMMAND ${CMAKE_COMMAND} -E rm -f
-                        ${_mod_build_dir}/${_mod_id}.hash
-                DEPENDS ${_mod_srcs} ${_mod_hdrs} ${_mod_sdk_deps}
-                        openpete-spyro1
-                COMMENT "Cross-compiling mod ${_mod_id}.dll"
-                VERBATIM)
-            list(APPEND _staged_mod_dlls ${_dll})
+            foreach(_g IN LISTS _mod_games)
+                set(_mod_build_dir
+                    ${OPENPETE_GAME_EXE_DIR}/mods/${_mod_id}/.build/${_g})
+                set(_dll ${_mod_build_dir}/${_mod_id}.dll)
+                add_custom_command(OUTPUT ${_dll}
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_build_dir}
+                    # Same compile line mod_compile() (core/mods/mod_loader.c)
+                    # uses on Windows - keep in sync - plus -static-libgcc:
+                    # the exe ships no mingw runtime DLLs (mingw-w64.cmake
+                    # links -static), so the mod DLL must be self-contained.
+                    COMMAND ${CMAKE_C_COMPILER} -shared -Wl,--export-all-symbols
+                            -O2 -g -fno-strict-aliasing -Wall -Wundef -static-libgcc
+                            -I${OPENPETE_GAME_EXE_DIR}/sdk/games/${_g}
+                            -I${OPENPETE_GAME_EXE_DIR}/sdk
+                            -o ${_dll} ${_mod_srcs}
+                            ${OPENPETE_GAME_EXE_DIR}/sdk/openpete_mod_abi.c
+                    COMMAND ${CMAKE_COMMAND} -E rm -f
+                            ${_mod_build_dir}/${_mod_id}.hash
+                    DEPENDS ${_mod_srcs} ${_mod_hdrs} ${_mod_sdk_deps}
+                            openpete-spyro1
+                    COMMENT "Cross-compiling mod ${_mod_id}.dll for ${_g}"
+                    VERBATIM)
+                list(APPEND _staged_mod_dlls ${_dll})
+            endforeach()
         endforeach()
         endif() # OPENPETE_STAGE_MOD_DLLS
         add_custom_target(spyro1_mods ALL DEPENDS ${_staged_mod_dlls})
