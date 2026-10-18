@@ -69,6 +69,14 @@ void feature_registry_apply_options(const openpete_options_t* opts) {
     }
 }
 
+void feature_registry_shutdown(void) {
+    const openpete_feature_list_t* fl = feature_list();
+    for (size_t i = 0; i < fl->count; i++) {
+        const feature_module_t* m = fl->modules[i];
+        if (m && m->shutdown) m->shutdown();
+    }
+}
+
 /* Address prefilter for feature_registry_dispatch: one bit per word address
  * modulo 2^18 bytes ((addr >> 2) & 0xFFFF), set for every dispatch-table
  * entry. The module list and its tables are const, so the filter is built

@@ -7297,8 +7297,9 @@ static void vram_journal_pop(void)
  *
  * A full entry uploads its whole-VRAM copy, or the mirror when it holds
  * none; any other entry uploads its packed rect texels, 4-byte aligned per
- * rect as sync_vram_texture_locked packed them. The caller holds the VRAM
- * mutex.
+ * rect as sync_vram_texture_locked packed them. Each entry steps the
+ * composed image's version (openpete_vram_composed_bump). The caller holds
+ * the VRAM mutex.
  * @param e Journal entry. */
 static void vram_journal_apply(const vram_jentry_t *e)
 {
@@ -7320,6 +7321,7 @@ static void vram_journal_apply(const vram_jentry_t *e)
             off += (size_t)r.w * r.h * 2u;
         }
     }
+    openpete_vram_composed_bump();
 }
 
 /* sync (guest side: drains the dirty rects, refreshes the mirror) and upload
@@ -14561,8 +14563,10 @@ static void utc_scatter(int lo, int hi, const scene_tri_t *scene, int scene_n, r
 
 /** @brief Print the screen bounding box of the composed scene's framebuffer-snapshot triangles under OPENPETE_FBSNAP_CENSUS.
  *
- * One line per compose that holds any: the VBL, the scene's tick and alpha
- * (0 inline), the triangle count and the bounding box in PSX screen units.
+ * One line per compose that holds any: the VBL (an inline compose only, on
+ * the thread that advances openpete_frame; `-` for a ring-slot compose,
+ * which may run on the present thread), the scene's tick and alpha (0
+ * inline), the triangle count and the bounding box in PSX screen units.
  * It reads the rect a window or a shrinking copy is drawn at on every
  * present, canonical and sub-tick alike.
  * @param scene Scene triangles.
@@ -14583,8 +14587,10 @@ static void fbsnap_present_census(const scene_tri_t* scene, int n)
     }
     if (!k) return;
     extern unsigned openpete_frame;
-    fprintf(stderr, "[fbsnap] present vbl=%u tick=%u alpha=%.3f tris=%d rect=%.2f,%.2f..%.2f,%.2f\n",
-            openpete_frame, ps_frame(), s_ps_slot ? s_ps_slot->alpha : 0.0, k, x0, y0, x1, y1);
+    char vbl[16] = "-";
+    if (!s_ps_slot) snprintf(vbl, sizeof vbl, "%u", openpete_frame);
+    fprintf(stderr, "[fbsnap] present vbl=%s tick=%u alpha=%.3f tris=%d rect=%.2f,%.2f..%.2f,%.2f\n",
+            vbl, ps_frame(), s_ps_slot ? s_ps_slot->alpha : 0.0, k, x0, y0, x1, y1);
 }
 
 /** @brief Reports whether the far-plane backdrop fills draw after the WORLD-opaque group.

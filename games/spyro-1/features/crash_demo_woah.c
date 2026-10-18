@@ -247,17 +247,25 @@ static int SDLCALL woah_load_main(void* unused) {
     return 0;
 }
 
-/** @brief Starts the woah decode on a detached worker thread, once per process.
+/** @brief Starts the woah decode on a worker thread, once per process.
  *
  * Called each tick the title screen is resident; the title sequence runs
  * for seconds before substate 3 takes the combo. Does nothing without a disc
  * path or after a first attempt, including one whose thread creation
- * failed. */
+ * failed. The thread is joined by crash_demo_woah_shutdown. */
 static void woah_load_start(void) {
     if (s_loader || !s_disc_path[0]) return;
     s_loader = SDL_CreateThread(woah_load_main, "openpete-crashwoah", NULL);
-    if (s_loader) SDL_DetachThread(s_loader);
-    else s_loader = (SDL_Thread*)-1;  /* thread refused; do not retry per tick */
+    if (!s_loader) s_loader = (SDL_Thread*)-1;  /* thread refused; do not retry per tick */
+}
+
+/** @brief Joins the woah decode thread when one was started.
+ *
+ * The feature module's shutdown callback, run before SDL_Quit. Waits for a
+ * decode still in progress; the decoded PCM stays allocated. */
+static void crash_demo_woah_shutdown(void) {
+    if (s_loader && s_loader != (SDL_Thread*)-1) SDL_WaitThread(s_loader, NULL);
+    s_loader = (SDL_Thread*)-1;  /* joined: never restarted */
 }
 
 /** @brief Reports whether the guest is inside the L1+Triangle branch of the title screen's substate 3.
@@ -378,4 +386,5 @@ const feature_module_t crash_demo_woah_module = {
     .name           = "crash-demo-woah",
     .apply_options  = crash_demo_woah_apply_options,
     .dispatch_table = k_dispatch,
+    .shutdown       = crash_demo_woah_shutdown,
 };

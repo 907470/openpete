@@ -90,6 +90,9 @@ typedef struct {
     rhi_buffer *pv;                   /* anim arenas: parallel prev-tick buffer
                                        * near arenas: parallel ctx buffer      */
     uint32_t    cap;
+    uint32_t    serial;               /* nonzero, distinct per pair made: the
+                                       * identity a state's marks are checked
+                                       * against (tc_state.mark_pair) */
 } tc_pair;
 
 /* One buffer of an arena and its allocator. Each buffer numbers its vertices
@@ -217,6 +220,14 @@ typedef struct {
     int            valid;
     uint32_t       build_serial;      /* present_ctr at the build: ranges freed at a
                                        * later serial may still be drawn by this state */
+    /* Each buffer's high-water mark as the builder left it for this build
+     * (tc_state_mark), and the serial of the pair that mark counts in (0 =
+     * no buffer). The draw ranges are bounded by these, never by the live
+     * marks the builder grows for later builds while a present draws this
+     * one, and a buffer whose live pair is not the marked one holds none of
+     * this build's chunks. */
+    uint32_t       mark_high[OPTC_ARENA_COUNT][TC_BUF_MAX];
+    uint32_t       mark_pair[OPTC_ARENA_COUNT][TC_BUF_MAX];
     tc_ranges      rl;                /* last: see tc_ranges */
 } tc_state;
 
@@ -335,8 +346,10 @@ static struct {
     uint32_t      present_ctr;
     tc_defer      defer[TC_DEFER_MAX];
     int           defer_n;
-    uint32_t      draws_last;   /* accumulating (this present) */
-    uint32_t      draws_prev;   /* completed previous present (census) */
+    _Atomic uint32_t draws_last; /* accumulating: buffer draws since the last
+                                  * build began (present thread adds, the
+                                  * builder takes it at frame_begin)     */
+    uint32_t      draws_prev;   /* the draws taken at the last frame_begin (census) */
     /* ---- level-edge arena replacement (see the header's contract) ----
      * One replacement is in flight at a time, as a three-state handshake
      * between the builder and the device-owning thread. IDLE: the builder
@@ -490,16 +503,20 @@ static void tc_pair_free(rhi_device *dev, tc_pair *pr)
  * Device-owning thread only. The twin is the anim arenas' previous-tick
  * buffer or the near arenas' emitted-tri context buffer, at the same element
  * count and its own stride; a base arena and a cell arena have none. A pair
- * missing any buffer it owes is freed.
+ * missing any buffer it owes is freed. Each pair takes the next serial of a
+ * process-wide counter, skipping 0.
  * @param dev Device.
  * @param arena Arena index.
  * @param cap Capacity in elements.
  * @return The pair, or NULL on an allocation failure. */
 static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
 {
+    static uint32_t s_serial;
     tc_pair *pr = (tc_pair *)calloc(1, sizeof(*pr));
     if (!pr) return NULL;
     pr->cap = cap;
+    if (++s_serial == 0) s_serial = 1;
+    pr->serial = s_serial;
     pr->vb = rhi_create_vertex_buffer_device(dev, (size_t)cap * tc_elem_size(arena));
     if (OPTC_ARENA_IS_ANIM(arena))
         pr->pv = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_prev));
@@ -1210,6 +1227,25 @@ static void tc_state_copy(tc_state *dst, const tc_state *src)
     memcpy(dst, src, offsetof(tc_state, rl.r) + (size_t)n * sizeof(tc_span));
 }
 
+/** @brief Record every arena buffer's high-water mark and pair serial into a state.
+ *
+ * Builder thread, the only writer of the marks and pairs it reads. Called
+ * when a build opens its state and again at its commit, so a state carries
+ * the marks covering every chunk its build allocated; buffers past the
+ * arena's count record 0 for both.
+ * @param T The state the build writes. */
+static void tc_state_mark(tc_state *T)
+{
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        const int n = atomic_load_explicit(&s_tc.arena[a].n, memory_order_relaxed);
+        for (int b = 0; b < TC_BUF_MAX; b++) {
+            const tc_pair *pr = b < n ? tc_live_pair(a, b) : NULL;
+            T->mark_high[a][b] = pr ? s_tc.arena[a].buf[b].high : 0u;
+            T->mark_pair[a][b] = pr ? pr->serial : 0u;
+        }
+    }
+}
+
 int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first,
                                   int *out_buf)
 {
@@ -1671,8 +1707,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     atomic_store_explicit(&s_tc.build_ctr, s_tc.present_ctr, memory_order_release);
     tc_adopt_pending();
     tc_adopt_overflow();
-    s_tc.draws_prev = s_tc.draws_last;
-    s_tc.draws_last = 0;
+    s_tc.draws_prev = atomic_exchange_explicit(&s_tc.draws_last, 0u, memory_order_relaxed);
     /* release deferred ranges older than the in-flight window */
     int w = 0;
     uint32_t floor_serial = 0;
@@ -1766,6 +1801,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     /* reset sector flags; origins are rewritten by sector_set */
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
     T->rl.n = -1;                         /* no range list until the commit */
+    tc_state_mark(T);
     s_tc.build_target = T->sec;
     s_tc.build_state = T;
 }
@@ -1782,6 +1818,7 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
     memset(&T->g, 0, sizeof(T->g));
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
     T->rl.n = -1;                         /* no range list until the commit */
+    tc_state_mark(T);
     s_tc.build_target = T->sec;
     s_tc.build_state = T;
 }
@@ -1887,8 +1924,12 @@ void openpete_tercache_frame_commit(void)
 {
     /* Build staging is complete; promotion happens at the next frame_begin
      * (hook builds) and the UBO flush at the present's first draw. The
-     * sector flags are final, so the state's draw ranges are listed now. */
-    if (s_tc.build_state) tc_ranges_build(s_tc.build_state);
+     * sector flags are final, so the state's draw ranges are listed now,
+     * and its marks cover every chunk the build allocated. */
+    if (s_tc.build_state) {
+        tc_state_mark(s_tc.build_state);
+        tc_ranges_build(s_tc.build_state);
+    }
     s_tc.build_target = NULL;
     s_tc.build_state = NULL;
 }
@@ -1983,6 +2024,9 @@ static void tc_issue(int cells, uint32_t per, uint32_t first, uint32_t n)
  * ascending order, clamped to the buffer's range, and so emits the
  * primitives a whole-range draw would rasterise, in the same order;
  * without one, or with OPENPETE_TC_RANGE_DRAW=0, it covers [0, high).
+ * `high` is the selected state's mark for the buffer (tc_state_mark), not
+ * the live mark the builder grows meanwhile; a buffer whose live pair is not
+ * the one the state marked holds none of the state's chunks and is skipped.
  * Pushes @p pc, binds the pair (with its twin when it has one), and counts
  * the submission for the census.
  * @param arena Arena index.
@@ -1992,12 +2036,10 @@ static void tc_issue(int cells, uint32_t per, uint32_t first, uint32_t n)
 static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
 {
     /* One load of the pair for the whole draw, and the range clamped to its
-     * capacity: the builder may swap the pair and reset `high` between this
-     * present's draws, and a stale `high` against a smaller fresh buffer
-     * would read past its end. */
+     * capacity. */
     const tc_pair *pr = atomic_load_explicit(&b->pair, memory_order_acquire);
-    if (!pr) return;
-    uint32_t nverts = b->high;            /* records, on a cell arena */
+    if (!pr || pr->serial != s_tc.sel.mark_pair[arena][bi]) return;
+    uint32_t nverts = s_tc.sel.mark_high[arena][bi];   /* records, on a cell arena */
     if (nverts > pr->cap) nverts = pr->cap;
     if (nverts == 0) return;
     const int cells = OPTC_ARENA_IS_CELL(arena);
@@ -2028,20 +2070,21 @@ static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
         }
     }
     if (cells) { s_tc.cell_draws++; s_tc.cell_instances += nverts; }
-    s_tc.draws_last++;
+    atomic_fetch_add_explicit(&s_tc.draws_last, 1u, memory_order_relaxed);
 }
 
-/** @brief Return an arena's high-water element count summed over its buffers.
+/** @brief Return an arena's high-water element count summed over its buffers, as the selected state marked them.
  *
- * tc_draw_anim's test for whether the arena has anything to draw.
+ * tc_draw_anim's test for whether the arena has anything to draw. Reads the
+ * selected state's marks (tc_state_mark), which the present thread owns,
+ * not the live marks the builder writes.
  * @param arena Arena index.
  * @return The summed high-water count; 0 for an empty arena. */
 static uint32_t tc_arena_high(int arena)
 {
-    const tc_arena *a = &s_tc.arena[arena];
     uint32_t h = 0;
-    for (int b = 0, n = atomic_load_explicit(&a->n, memory_order_acquire); b < n; b++)
-        h += a->buf[b].high;
+    for (int b = 0; b < TC_BUF_MAX; b++)
+        h += s_tc.sel.mark_high[arena][b];
     return h;
 }
 

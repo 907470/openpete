@@ -22,7 +22,7 @@ core/diag/psxtrace_verify.c	openpete_psxtrace_open	95	0
 core/host/host_spawn.c	openpete_host_spawn_argv	28	0	
 core/host/sfx_pack.c	override_cb	55	0	
 core/host/texture_pack.c	texture_pack_dump_draw	74	0	
-core/host/texture_pack.c	texture_pack_grade_fit	48	0	
+core/host/texture_pack.c	texture_pack_grade_fit_locked	33	0	
 core/host/texture_pack.c	texture_pack_match_locked	52	0	
 core/host/texture_pack.c	tp_census_report	67	0	
 core/input/host_input.c	vgamepad_maybe_attach	29	0	

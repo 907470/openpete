@@ -105,9 +105,11 @@ typedef struct {
  * from tpage_x). The first live entry whose rect contains the whole box
  * supplies thash, the asset name, the full upload size in this bpp's
  * texels, and the box relative to the upload origin. phash is the XXH3 of
- * the full 16- or 256-entry CLUT row read from the native VRAM model, 0
- * for 16bpp. Hits and misses are cached per material and box until the
- * registry generation changes.
+ * the full 16- or 256-entry CLUT row read from the VRAM image the calling
+ * thread reads (openpete_vram_read), 0 for 16bpp. Hits and misses are
+ * cached per material and box, in one cache per VRAM image, until the
+ * registry generation or that image's version (openpete_vram_read_view)
+ * changes.
  * @param tpage_x Texture page X in VRAM halfwords.
  * @param tpage_y Texture page Y in VRAM rows.
  * @param clut_x CLUT X in VRAM halfwords.
@@ -351,14 +353,16 @@ unsigned texture_pack_generation(void);
  * 0..1 units (5-bit stock channels over 31, pack bytes over 255): the
  * pack's regrade of this texture, exact where the pack is an affine of
  * stock and the best local approximation elsewhere. Each texel of the file
- * box reads its stock colour from the VRAM model, through the CLUT for 4
- * and 8 bpp, and its pack colour from the replacement pixel nearest the
+ * box reads its stock colour from the VRAM image the calling thread reads
+ * (openpete_vram_read), through the CLUT for 4 and 8 bpp, and its pack colour from the replacement pixel nearest the
  * texel centre. A 0x0000 stock texel and a pack pixel with alpha below 128
  * are skipped. A channel whose stock values are constant gets p = 1 and
  * the mean offset. Consumers: the fog-offset retarget
  * (fogged = a*pack + (p*b + (1-a)*q)) and pack-aware recolouring of
  * untextured geometry authored against the stock texels. Memoized per
- * (pixel buffer, phash) until the registry generation changes.
+ * (pixel buffer, phash), in one memo per VRAM image, until the registry
+ * generation or that image's version changes; the memo and the fit run
+ * under the registry lock.
  * @param id Resolved identity; its phash keys the memo.
  * @param repl Match result; supplies the pixels and the file box size.
  * @param tpage_x Texture page X in VRAM halfwords.

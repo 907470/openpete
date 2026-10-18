@@ -29,7 +29,7 @@
 
 #include <SDL3/SDL.h>
 
-/* Registry lock. The entry table, the resolve/match caches and the pack
+/* Registry lock. The entry table, the resolve/match/fit caches and the pack
  * table are written by the guest's VRAM ops (on the thread running the
  * guest) and read by resolve/match from the bake AND from the compose,
  * which may run on a present thread. One recursive mutex around every
@@ -76,6 +76,7 @@ typedef struct {
 typedef struct {                /* resolve cache slot */
     uint64_t key;               /* packed material+box; 0 = empty */
     uint32_t gen;
+    uint32_t ver;               /* VRAM image version (openpete_vram_read_view) */
     texture_pack_id id;
     int      hit;               /* 1 = resolves, 0 = negative entry */
 } tp_slot;
@@ -85,7 +86,12 @@ static int      s_ent_n = 0;          /* high-water mark */
 static tp_annot s_annot[TP_MAX_ANNOT];
 static int      s_annot_n = 0;
 static uint32_t s_gen = 1;            /* bumped on any registry mutation */
-static tp_slot  s_cache[TP_RESOLVE_SLOTS];
+/* One resolve cache per VRAM image a thread reads (openpete_vram_read_view):
+ * [0] the model, [1] the composed image. The phash a slot holds is computed
+ * from that image, and a present thread's composed image trails the model
+ * by the scenes it has not yet presented, so one cache shared by both would
+ * hand each thread the other's palette hashes. */
+static tp_slot  s_cache[2][TP_RESOLVE_SLOTS];
 static int      s_inited = 0;
 
 /* ---- replacement pack state ---------------------------------------------- */
@@ -993,8 +999,9 @@ static uint64_t tp_clut_hash(int bpp, int clut_x, int clut_y)
 /** @brief Body of texture_pack_resolve; the caller holds the registry lock.
  *
  * Returns 0 before init or for an inverted box. Otherwise it looks up a
- * direct-mapped cache slot keyed on the packed material and box, valid for
- * the current s_gen, including negative results. On a miss it maps the box
+ * direct-mapped slot of the calling thread's VRAM image's cache, keyed on
+ * the packed material and box, valid for the current s_gen and image
+ * version, including negative results. On a miss it maps the box
  * to VRAM halfword columns by bpp, finds a live entry containing them
  * (tp_cover), and fills out from that entry's hash, the CLUT hash and the
  * box relative to the upload origin. */
@@ -1012,12 +1019,14 @@ static int texture_pack_resolve_locked(int tpage_x, int tpage_y, int clut_x, int
                    ((uint64_t)(uint8_t)u0 << 8) ^ ((uint64_t)(uint8_t)v0 << 16) ^
                    ((uint64_t)(uint8_t)(u1 - u0) << 24) ^ ((uint64_t)(uint8_t)(v1 - v0) << 40);
     if (!key) key = 1;
-    tp_slot *sl = &s_cache[(key * 0x9E3779B97F4A7C15ull >> 32) & (TP_RESOLVE_SLOTS - 1)];
-    if (sl->key == key && sl->gen == s_gen) {
+    uint32_t ver;
+    const int view = openpete_vram_read_view(&ver);
+    tp_slot *sl = &s_cache[view][(key * 0x9E3779B97F4A7C15ull >> 32) & (TP_RESOLVE_SLOTS - 1)];
+    if (sl->key == key && sl->gen == s_gen && sl->ver == ver) {
         if (!sl->hit) return 0;
         *out = sl->id; return 1;
     }
-    sl->key = key; sl->gen = s_gen; sl->hit = 0;
+    sl->key = key; sl->gen = s_gen; sl->ver = ver; sl->hit = 0;
 
     /* The VRAM columns the texel box occupies depend on bpp packing. */
     int px0 = tpage_x, px1 = tpage_x;
@@ -1231,11 +1240,12 @@ unsigned texture_pack_generation(void) {
 
 typedef struct {
     uint64_t key; unsigned gen;
+    uint32_t ver;                        /* VRAM image version (openpete_vram_read_view) */
     float p[3], q[3];
     uint8_t state;                       /* 0 empty, 1 fit, 2 no-signal */
 } tp_fit_slot;
 #define TP_FIT_SLOTS 512
-static tp_fit_slot s_fit[TP_FIT_SLOTS];
+static tp_fit_slot s_fit[2][TP_FIT_SLOTS];   /* per VRAM image, as s_cache */
 
 /** @brief Return the 16-bit VRAM word a texel (u, v) of a texture page samples.
  *
@@ -1266,31 +1276,62 @@ static uint16_t tp_vram_texel(const uint16_t *vr, int tpage_x, int tpage_y,
     return vr[(size_t)clut_y * OPENPETE_VRAM_W + clut_x + ((w >> (4 * (u & 3))) & 0xF)];
 }
 
-int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *repl,
-                           int tpage_x, int tpage_y, int clut_x, int clut_y,
-                           int bpp, int pu0, int pv0, float p[3], float q[3])
+/** @brief Find a fit memo slot for a key: its live entry, else the slot to overwrite.
+ *
+ * Probes eight consecutive slots from the key's hash. A slot is live when
+ * its generation is s_gen and its version is @p ver. The first live slot
+ * holding the key is returned; failing that, the first empty slot, then a
+ * stale slot, preferring the key's own. Stale slots must be reusable:
+ * s_gen bumps on every VRAM upload, so each epoch would otherwise strand a
+ * fresh slot per live key, and once all eight filled every call re-ran
+ * the per-texel fit.
+ * @param memo The calling thread's VRAM image's memo.
+ * @param key Memo key.
+ * @param ver The image version.
+ * @return The slot, or NULL when all eight hold other live keys. */
+static tp_fit_slot *tp_fit_probe(tp_fit_slot *memo, uint64_t key, uint32_t ver)
+{
+    tp_fit_slot *empty = NULL, *stale = NULL;
+    const uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
+    for (int pr = 0; pr < 8; pr++) {
+        tp_fit_slot *c = &memo[(base + (uint64_t)pr) & (TP_FIT_SLOTS - 1)];
+        const int cur = c->gen == s_gen && c->ver == ver;
+        if (c->key == key && cur) return c;
+        if (c->state == 0) { if (!empty) empty = c; }
+        /* Prefer evicting this key's own stale slot - it is the one entry in
+         * the window guaranteed not to be some other texture's live fit. */
+        else if (!cur && (!stale || c->key == key)) stale = c;
+    }
+    return empty ? empty : stale;
+}
+
+/** @brief Body of texture_pack_grade_fit; the caller holds the registry lock.
+ *
+ * Looks the key (pixel buffer, phash) up in the calling thread's VRAM
+ * image's fit memo (tp_fit_probe), and on a miss runs the per-texel
+ * regression over the file box and stores the result in the probed slot.
+ * @param id Resolved identity.
+ * @param repl Match result.
+ * @param tpage_x Texture page X in VRAM halfwords.
+ * @param tpage_y Texture page Y in VRAM rows.
+ * @param clut_x CLUT X in VRAM halfwords.
+ * @param clut_y The base CLUT row.
+ * @param bpp 4, 8 or 16.
+ * @param pu0 File box origin U in page texels.
+ * @param pv0 File box origin V in page texels.
+ * @param p Receives the per-channel slope.
+ * @param q Receives the per-channel offset.
+ * @return 1 on a fit, 0 otherwise (texture_pack_grade_fit). */
+static int texture_pack_grade_fit_locked(const texture_pack_id *id, const texture_pack_repl *repl,
+                                         int tpage_x, int tpage_y, int clut_x, int clut_y,
+                                         int bpp, int pu0, int pv0, float p[3], float q[3])
 {
     if (!repl->pixels || repl->box_w <= 0 || repl->box_h <= 0) return 0;
     uint64_t key = (uint64_t)(uintptr_t)repl->pixels
                  ^ (id->phash * 0x9E3779B97F4A7C15ull);
-    /* Probe the window for a live hit; failing that, take a slot to overwrite.
-     * Stale-generation slots MUST be reusable: s_gen bumps on every VRAM
-     * upload, so each epoch would otherwise strand a fresh slot per live key
-     * and never reclaim it. Once all eight filled, the lookup fell through
-     * with no slot at all and every call re-ran the full per-texel fit - a
-     * permanent cliff on this path, which runs per replaced draw per frame. */
-    tp_fit_slot *sl = NULL, *empty = NULL, *stale = NULL;
-    uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
-    for (int pr = 0; pr < 8; pr++) {
-        tp_fit_slot *c = &s_fit[(base + (uint64_t)pr) & (TP_FIT_SLOTS - 1)];
-        if (c->key == key && c->gen == s_gen) { sl = c; break; }
-        if (c->state == 0) { if (!empty) empty = c; }
-        /* Prefer evicting this key's own stale slot - it is the one entry in
-         * the window guaranteed not to be some other texture's live fit. */
-        else if (c->gen != s_gen && (!stale || c->key == key)) stale = c;
-    }
-    if (!sl) sl = empty ? empty : stale;   /* NULL only if all eight are live */
-    if (sl && sl->key == key && sl->gen == s_gen && sl->state) {
+    uint32_t ver;
+    tp_fit_slot *sl = tp_fit_probe(s_fit[openpete_vram_read_view(&ver)], key, ver);
+    if (sl && sl->key == key && sl->gen == s_gen && sl->ver == ver && sl->state) {
         if (sl->state != 1) return 0;
         for (int c = 0; c < 3; c++) { p[c] = sl->p[c]; q[c] = sl->q[c]; }
         return 1;
@@ -1335,10 +1376,20 @@ int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *r
         }
     }
     if (sl) {
-        sl->key = key; sl->gen = s_gen; sl->state = ok ? 1 : 2;
+        sl->key = key; sl->gen = s_gen; sl->ver = ver; sl->state = ok ? 1 : 2;
         if (ok) for (int c = 0; c < 3; c++) { sl->p[c] = p[c]; sl->q[c] = q[c]; }
     }
     return ok;
+}
+int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *repl,
+                           int tpage_x, int tpage_y, int clut_x, int clut_y,
+                           int bpp, int pu0, int pv0, float p[3], float q[3])
+{
+    SDL_LockMutex(reg_mx());
+    const int r = texture_pack_grade_fit_locked(id, repl, tpage_x, tpage_y, clut_x, clut_y,
+                                                bpp, pu0, pv0, p, q);
+    SDL_UnlockMutex(s_reg_mx);
+    return r;
 }
 
 /* ---- identity/provenance census (temporary instrument) -------------------- */

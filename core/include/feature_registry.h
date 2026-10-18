@@ -26,6 +26,7 @@ typedef struct CPUState CPUState;
 
 typedef int  (*feature_dispatch_fn)(CPUState* cpu, uint32_t addr);
 typedef void (*feature_apply_options_fn)(const openpete_options_t* opts);
+typedef void (*feature_shutdown_fn)(void);
 
 typedef struct {
     uint32_t            addr;        /* PSX vaddr; 0 terminates the table */
@@ -45,6 +46,8 @@ typedef struct {
     const char*                       name;
     feature_apply_options_fn          apply_options;   /* nullable */
     const feature_dispatch_entry_t*   dispatch_table;  /* nullable; addr=0 terminates */
+    feature_shutdown_fn               shutdown;        /* nullable; joins the module's
+                                                        * threads before SDL_Quit */
 } feature_module_t;
 
 /* The modules walked are the registered game descriptor's feature list
@@ -57,6 +60,13 @@ typedef struct {
  * without the callback is skipped.
  * @param opts The parsed options. */
 void feature_registry_apply_options(const openpete_options_t* opts);
+
+/** @brief Run every registered feature module's shutdown callback.
+ *
+ * Calls each module's shutdown in list order; a null module or a module
+ * without the callback is skipped. Called once at teardown, before SDL_Quit,
+ * so a module's worker threads are joined while SDL still runs. */
+void feature_registry_shutdown(void);
 
 /** @brief Register the resident-overlay probe consulted for entries carrying a nonzero `overlay`.
  *

@@ -61,6 +61,24 @@ void openpete_vram_bind_composed(void);
  * @return Pointer to texel (0, 0). */
 const uint16_t* openpete_vram_read(void);
 
+/** @brief Count one write into the composed VRAM image.
+ *
+ * Called by the image's writer after each journal entry it applies. The
+ * count is the image's version: a value computed from the image (a palette
+ * hash, a grade fit) is reusable while the version it was computed at
+ * holds. */
+void openpete_vram_composed_bump(void);
+
+/** @brief Return which VRAM image the calling thread reads (openpete_vram_read) and that image's version.
+ *
+ * The model's version is reported as 0: every write to it passes the
+ * texture-pack registry's op hooks, which step the registry generation, so
+ * that generation already versions it. The composed image is versioned by
+ * openpete_vram_composed_bump.
+ * @param version Receives the version.
+ * @return 1 when the thread reads the composed image, 0 when it reads the model. */
+int openpete_vram_read_view(uint32_t* version);
+
 /** @brief Install the native image ops into PsyCross and initialise the texture-pack registry.
  *
  * Registers openpete_vram_load, openpete_vram_move and openpete_vram_clear

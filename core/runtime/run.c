@@ -7405,6 +7405,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     }
 
     sfx_pack_shutdown();   /* its decode worker's SDL calls must not overlap SDL_Quit */
+    feature_registry_shutdown();   /* the feature modules' workers, likewise */
     /* Renderer + PsyCross teardown destroy the window and call SDL_Quit, which
      * belong to the thread that created them. Under the split that is main, so
      * the worker leaves them alone and main runs them after the join -

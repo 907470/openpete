@@ -7,6 +7,7 @@
 #include "texture_pack.h"   /* texture-replacement registry: fed from this op seam */
 #include "openpete_fb_snapshot.h" /* framebuffer-window copies: recorded from this op seam */
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,10 +30,22 @@ uint16_t* openpete_vram_data(void) { return s_model; }
  * openpete_vram_composed. */
 static uint16_t s_composed[(size_t)OPENPETE_VRAM_W * OPENPETE_VRAM_H];
 static _Thread_local const uint16_t* s_read_view;
+/* Writes into s_composed so far (openpete_vram_composed_bump). */
+static _Atomic uint32_t s_composed_version;
 
 uint16_t* openpete_vram_composed(void) { return s_composed; }
 void openpete_vram_bind_composed(void) { s_read_view = s_composed; }
 const uint16_t* openpete_vram_read(void) { return s_read_view ? s_read_view : s_model; }
+void openpete_vram_composed_bump(void)
+{
+    atomic_fetch_add_explicit(&s_composed_version, 1u, memory_order_relaxed);
+}
+int openpete_vram_read_view(uint32_t* version)
+{
+    if (!s_read_view) { *version = 0u; return 0; }
+    *version = atomic_load_explicit(&s_composed_version, memory_order_relaxed);
+    return 1;
+}
 
 /* ---- op-rect log (verify census) ---------------------------------------- */
 #define NV_MAX_OP_RECTS 64
