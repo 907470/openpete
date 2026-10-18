@@ -616,6 +616,7 @@ static int pad_polls(uint32_t vbls);
 static uint32_t s_pad_card_free_prev = 1u; /* the card driver left SIO0 free at the previous VBLANK */
 static uint8_t  s_pad_last[8];            /* the first pad buffer as the last exchange with pad data left it */
 static uint32_t s_pad_last_ok = 0u;       /* s_pad_last holds such an exchange */
+static uint32_t s_pad_data_prev = 1u;     /* the previous vsync's controller command carried pad data */
 static void pad_poll_census(CPUState* cpu, uint32_t key, int pad_cmd, int ref, int held, const uint8_t prev[8]);
 static void cd_events_tick(uint32_t vbls);
 static int s_cd_at_anchor = 0;           /* inside the anchor hook, before the record's hash */
@@ -926,6 +927,7 @@ typedef struct {
     int ref_known;      /* the schedule's controller log covers this VBLANK */
     int ref_cmd;        /* the controller log records a command at it (1 off the schedule) */
     int pad_cmd;        /* the controller takes a command on this vsync */
+    int pad_data;       /* that command carries pad data (pad_polls) */
     int card_held_prev; /* the card held SIO0 at the previous VBLANK */
     int fresh;          /* the slots see this vsync's pad data */
     uint8_t prev[8];    /* the first pad buffer as the game left it */
@@ -956,7 +958,8 @@ static void pad_vsync_begin(CPUState* cpu, uint32_t key, int card_free, pad_vsyn
     pv->card_held_prev = !s_pad_card_free_prev;
     memset(pv->prev, 0, sizeof pv->prev);
     if (s_pad_buf0) for (uint32_t k = 0; k < 8u; k++) pv->prev[k] = (uint8_t)cpu->read_byte(s_pad_buf0 + k);
-    pv->fresh = pv->pad_cmd ? pad_polls(1u) : 0;
+    pv->pad_data = pv->pad_cmd ? pad_polls(1u) : 0;
+    pv->fresh = pv->pad_data;
 }
 
 /** @brief Count the host's pad write of a yield and choose what the slots see.
@@ -966,7 +969,11 @@ static void pad_vsync_begin(CPUState* cpu, uint32_t key, int card_free, pad_vsyn
  * host's write and records it as the last pad data; any other shows the
  * slots the last pad data (libpad rewrites the buffer at every vsync from
  * the last exchange that returned data), or the buffer as the game left
- * it before any.
+ * it before any. At a vsync whose VBLANK finds the card holding SIO0, the
+ * host's write is the data of the previous vsync's exchange: when that
+ * exchange carried pad data, the write becomes the last pad data after
+ * the slots are shown the previous one, so the next vsync, which has no
+ * exchange of its own to show, rewrites the buffer from it.
  * @param cpu Guest CPU state; the pad buffer holds the host's write.
  * @param key Reference VBLANK index of this VBLANK.
  * @param pv The vsync's verdicts; fresh is updated. */
@@ -976,22 +983,31 @@ static void pad_vsync_after_yield(CPUState* cpu, uint32_t key, pad_vsync_t* pv) 
     pad_poll_census(cpu, key, pv->pad_cmd, pv->ref_known ? pv->ref_cmd : -1, !pv->fresh, shown);
     openpete_feed_pad_write();
     if (!s_pad_buf0) return;
-    if (!pv->fresh) { pad_buf_put(cpu, shown); return; }
-    for (uint32_t k = 0; k < 8u; k++) s_pad_last[k] = (uint8_t)cpu->read_byte(s_pad_buf0 + k);
-    s_pad_last_ok = 1u;
+    uint8_t write[8];
+    for (uint32_t k = 0; k < 8u; k++) write[k] = (uint8_t)cpu->read_byte(s_pad_buf0 + k);
+    if (!pv->fresh) pad_buf_put(cpu, shown);
+    if (pv->fresh || (!pv->card_free && s_pad_data_prev)) {
+        memcpy(s_pad_last, write, sizeof s_pad_last);
+        s_pad_last_ok = 1u;
+    }
 }
 
 /** @brief Close a vsync's pad work after the slots ran.
  *
  * libpad's command sequence advances one command per vsync the controller
  * accepted one on. After a vsync with no pad data the buffer holds what
- * the game left in it before the VBLANK.
+ * the game left in it before the VBLANK, except after one whose command
+ * carries pad data following a vsync the card held: libpad's handler ran
+ * and rewrote the buffer from the last exchange that returned data, which
+ * stays.
  * @param cpu Guest CPU state.
  * @param pv The vsync's verdicts. */
 static void pad_vsync_end(CPUState* cpu, const pad_vsync_t* pv) {
     if (pv->pad_cmd) pad_busy_tick(1u);
     s_pad_card_free_prev = pv->card_free ? 1u : 0u;
-    if (s_pad_buf0 && !pv->fresh) pad_buf_put(cpu, pv->prev);
+    s_pad_data_prev = pv->pad_data ? 1u : 0u;
+    const int rewritten = pv->pad_data && pv->card_held_prev && s_pad_last_ok;
+    if (s_pad_buf0 && !pv->fresh && !rewritten) pad_buf_put(cpu, pv->prev);
 }
 
 /** @brief Run the CPU half's interrupt work for one VBLANK: the yield, then libetc's VSync slots, with the pad buffer kept unless libpad polled.
@@ -2023,9 +2039,13 @@ static uint32_t get_word(const uint8_t* p, uint32_t i) {
 }
 
 /** @brief Store the pad words of the latch pack: the card's hold at the previous VBLANK and the last pad data.
+ *
+ * Word 55 holds the card's hold (bit 0), whether the last pad data is set
+ * (bit 1) and whether the previous vsync's command carried no pad data
+ * (bit 2); words 56-57 the last pad data.
  * @param p The pack. */
 static void pad_state_save(uint8_t* p) {
-    put_word(p, 55, (s_pad_card_free_prev ? 0u : 1u) | (s_pad_last_ok ? 2u : 0u));
+    put_word(p, 55, (s_pad_card_free_prev ? 0u : 1u) | (s_pad_last_ok ? 2u : 0u) | (s_pad_data_prev ? 0u : 4u));
     uint32_t w0, w1;
     memcpy(&w0, s_pad_last, 4);
     memcpy(&w1, s_pad_last + 4, 4);
@@ -2037,13 +2057,15 @@ static void pad_state_save(uint8_t* p) {
  *
  * A pack before version 11 predates the card's hold on SIO0 and the last
  * pad data: the previous VBLANK left SIO0 free, and a vsync without data
- * keeps the buffer as the game left it until the next fresh one.
+ * keeps the buffer as the game left it until the next fresh one. A pack
+ * without bit 2 of word 55 had pad data on its previous vsync's command.
  * @param p The pack.
  * @param ver Its pack_ver. */
 static void pad_state_load(const uint8_t* p, uint32_t ver) {
     const uint32_t w = (ver >= 11u) ? get_word(p, 55) : 0u;
     s_pad_card_free_prev = (w & 1u) ? 0u : 1u;
     s_pad_last_ok = (w & 2u) ? 1u : 0u;
+    s_pad_data_prev = (w & 4u) ? 0u : 1u;
     const uint32_t w0 = (ver >= 11u) ? get_word(p, 56) : 0u, w1 = (ver >= 11u) ? get_word(p, 57) : 0u;
     memcpy(s_pad_last, &w0, 4);
     memcpy(s_pad_last + 4, &w1, 4);
@@ -2230,6 +2252,7 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_pad_busy_vbls    = 0xD5D5000Du;
     s_pad_seq_vbls     = 0xD5D5000Fu;
     s_pad_card_free_prev     = s_pad_card_free_prev ? 0u : 1u;
+    s_pad_data_prev          = s_pad_data_prev ? 0u : 1u;
     for (uint32_t k = 0; k < 8u; k++) s_pad_last[k] = (uint8_t)(s_pad_last[k] ^ (0x5Au + k));
     s_cd_defer_rec     = 0xD5D50011u;
     s_cd_defer_vbl     = 0xD5D50013u;
