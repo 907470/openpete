@@ -98,3 +98,7 @@ void game_state_regions_register(void) {
 void game_disc_boot_order_register(void) {
     if (s_build && s_build->disc_boot_order_register) s_build->disc_boot_order_register();
 }
+
+void game_save_icon_register(void) {
+    if (s_build && s_build->save_icon_register) s_build->save_icon_register();
+}

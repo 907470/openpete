@@ -515,7 +515,6 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 | `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-launcher` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `cmake/openpete_game.cmake` (`_openpete_game_shared_link`) forces IPO off on every shared-linkage Windows exe target as a guard, and keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
 | `OPENPETE_RECOMP_LINKAGE=shared` | `linux-release*`, `windows-mingw*` | the linkage axis |
 | `OPENPETE_RECOMP_FIRST_BOOT=ON` | `*-launcher` | the exe builds a missing module from the disc |
-| `OPENPETE_ROM_FREE_ICON=ON` | `*-launcher` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-launcher` | compiles out `--record`, dropping the libav dependency |
 | `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-launcher` | `--help` shows only the user-facing flag block. Display-only: `core/config/options.c` splits the help text, every flag still parses |
 | `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-launcher` | stage mod sources only, no cmake-side DLLs - the dist exe's first-boot mod compile is the validation surface, and pre-seeding `.build/` would mask it. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/spyro-1/` |

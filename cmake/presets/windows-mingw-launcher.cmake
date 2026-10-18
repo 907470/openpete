@@ -14,7 +14,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=op
 openpete_preset_default(OPENPETE_RECOMP_LINKAGE shared)
 openpete_preset_default(OPENPETE_RECOMP_FIRST_BOOT ON)
 openpete_preset_default(OPENPETE_STAGE_MOD_DLLS OFF)
-openpete_preset_default(OPENPETE_ROM_FREE_ICON ON)
 openpete_preset_default(OPENPETE_ENABLE_RECORD OFF)
 # Marks a distributed build: core/CMakeLists.txt refuses a GPL static
 # FFmpeg under it. Not a knob, so set unconditionally.

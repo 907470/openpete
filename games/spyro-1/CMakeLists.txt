@@ -2,9 +2,8 @@
 #
 # The module and executable skeleton come from cmake/openpete_game.cmake;
 # this file adds what only this game has: its first-boot extraction, the
-# mod SDK and its docs, the build-time mod compile,
-# the decomp-derived window icon, the SoundTable names, the state-region
-# tables, the Windows subsystem choice, and the browser link.
+# mod SDK and its docs, the build-time mod compile, the SoundTable names, the
+# state-region tables, the Windows subsystem choice, and the browser link.
 
 set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
 
@@ -22,40 +21,6 @@ if(OPENPETE_FUNC_TRACE AND NOT OPENPETE_RECOMP_LINKAGE STREQUAL "static")
                         "exe: configure with -DOPENPETE_RECOMP_LINKAGE=static")
 endif()
 
-# App icon. Two sources:
-#   OPENPETE_ROM_FREE_ICON=OFF (dev default) - decoded from the PSX
-#     save-file header's CLUT+icon data (save_file.h:39): the authentic
-#     memcard icon, which is GAME BYTES and must not ship.
-#   OPENPETE_ROM_FREE_ICON=ON (dist presets) - original procedural icon
-#     from tools/gen_dist_icon.py; also drops the build's dependency on
-#     the private decomp submodule's assets.
-# Either path emits the C source of the game window's icon
-# (SDL_SetWindowIcon), passed to openpete_add_game as the ICON_SOURCE. The
-# executable's own icon is OpenPete's (cmake/openpete_game.cmake).
-option(OPENPETE_ROM_FREE_ICON
-       "Use the original (non-ROM) distribution icon" OFF)
-set(_spyro_icon_c ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_spyro1_icon.c)
-if(OPENPETE_ROM_FREE_ICON)
-    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py)
-    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} --c ${_spyro_icon_c}
-        --c-name spyro1_game_icon)
-    set(_spyro_icon_deps ${_spyro_icon_tool})
-else()
-    set(_spyro_icon_src
-        ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/assets/save_header.databin.bin)
-    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/mcs_icon_to_ico.py)
-    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
-        --c ${_spyro_icon_c} --c-name spyro1_game_icon)
-    set(_spyro_icon_deps ${_spyro_icon_src} ${_spyro_icon_tool})
-endif()
-add_custom_command(
-    OUTPUT  ${_spyro_icon_c}
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            ${CMAKE_CURRENT_BINARY_DIR}/gen
-    COMMAND ${_spyro_icon_c_cmd}
-    DEPENDS ${_spyro_icon_deps}
-    COMMENT "Generating openpete_spyro1_icon.c")
-
 include(${CMAKE_SOURCE_DIR}/cmake/openpete_game.cmake)
 openpete_add_game(spyro-1
     MAIN           spyro1_main
@@ -65,7 +30,6 @@ openpete_add_game(spyro-1
     TERRAIN_GAME   renderer/terrain_game.c
     MOBY_GAME      renderer/moby_game.c
     PLAYER_GAME    renderer/player_game.c
-    ICON_SOURCE    ${_spyro_icon_c}
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
     MOD_SDK
     SOURCES

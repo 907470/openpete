@@ -13,7 +13,6 @@
 #                                     # default none
 #     [PLAYER_GAME <file>]            # the player feeder's per-game decoders and data;
 #                                     # default none
-#     [ICON_SOURCE <file>]            # the generated icon TU; default none
 #     [MODULE_LINKAGE static|shared]  # default OPENPETE_RECOMP_LINKAGE
 #     [FIRST_BOOT_SOURCES <file>...]  # the first-boot module build (shared
 #                                     # linkage under OPENPETE_RECOMP_FIRST_BOOT);
@@ -469,7 +468,7 @@ endfunction()
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         "MOD_SDK"
-        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST;FIRST_BOOT_EXTRACT"
+        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;MODULE_LINKAGE;SYMBOLS_MANIFEST;FIRST_BOOT_EXTRACT"
         "SOURCES;MODULE_SOURCES;FIRST_BOOT_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -740,6 +739,28 @@ function(openpete_add_game GAME_ID)
         set(_boot_order_sources ${_boot_order_header})
     endif()
 
+    # Save-header location: where the game's memory-card save-file header
+    # sits on its disc, generated into the C table the build record
+    # registers; the window icon is decoded from the player's disc there at
+    # run time. A game without the manifest keeps the OpenPete mark.
+    set(_save_icon_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/save_icon.toml)
+    set(_save_icon_sources)
+    set(GB_SAVE_ICON 0)
+    if(EXISTS ${_save_icon_manifest})
+        set(GB_SAVE_ICON 1)
+        set(_save_icon_header ${_gen_dir}/save_icon.gen.h)
+        add_custom_command(
+            OUTPUT  ${_save_icon_header}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_gen_dir}
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/save_icon.py header
+                    --manifest ${_save_icon_manifest}
+                    --out      ${_save_icon_header}
+            DEPENDS ${_save_icon_manifest}
+                    ${CMAKE_SOURCE_DIR}/tools/save_icon.py
+            COMMENT "Generating ${GAME_ID} save_icon.gen.h")
+        set(_save_icon_sources ${_save_icon_header})
+    endif()
+
     # Curated PSX symbol aliases: gen/<tag>_symbols.gen.h from the game's
     # alias table, validated by address against globals.toml / symbols.toml
     # (the build fails when an addr is not a manifest symbol start).
@@ -834,7 +855,7 @@ function(openpete_add_game GAME_ID)
         ${_build_c}
         ${_regions_sources}
         ${_boot_order_sources}
-        ${G_ICON_SOURCE}
+        ${_save_icon_sources}
         ${_symbols_sources}
         ${_own_sources}
         # This game's PSYQ stub addresses (generated above).
@@ -844,7 +865,8 @@ function(openpete_add_game GAME_ID)
     # The generated headers as a target of their own, so the source parsers
     # order after them without waiting for the host library.
     add_custom_target(${_tag}_generated_headers
-        DEPENDS ${_regions_sources} ${_boot_order_sources} ${_symbols_sources})
+        DEPENDS ${_regions_sources} ${_boot_order_sources} ${_save_icon_sources}
+                ${_symbols_sources})
     add_dependencies(${_host} ${_tag}_generated_headers)
     add_dependencies(openpete_generated_headers ${_tag}_generated_headers)
 

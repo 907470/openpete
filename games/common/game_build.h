@@ -5,7 +5,7 @@
 // what its sources define. This record holds what the build derives for the
 // game: its entry, its recomp-module name and host->module forwarders, its
 // first-boot pipeline, and the tables generated from its manifests (the
-// gameplay-state regions, the disc boot order). cmake/openpete_game.cmake
+// gameplay-state regions, the disc boot order, the save-header location). cmake/openpete_game.cmake
 // generates one per game, `<tag>_game_build`, from game_build.c.in, and one
 // list per executable, `openpete_game_builds`, of every game the executable
 // links: one game for a per-game executable, every built game for the one
@@ -57,6 +57,7 @@ typedef struct openpete_game_build {
     /* The tables generated from the game's manifests. */
     void (*state_regions_register)(void);
     void (*disc_boot_order_register)(void);
+    void (*save_icon_register)(void);
 } openpete_game_build_t;
 
 /* Every game this executable links, in OPENPETE_GAMES order (generated per
@@ -115,6 +116,12 @@ void game_state_regions_register(void);
  * The game's entry calls it before openpete_run() attaches the cache;
  * nothing is installed before a game is installed. */
 void game_disc_boot_order_register(void);
+
+/** @brief Register the running game's save-header location, which the window icon is decoded from.
+ *
+ * The game's entry calls it before openpete_run(); nothing is registered
+ * before a game is installed. */
+void game_save_icon_register(void);
 
 /** @brief Run a game with no host-side entry of its own: the launcher, identification, the one full parse, the module attach and the core loop.
  *

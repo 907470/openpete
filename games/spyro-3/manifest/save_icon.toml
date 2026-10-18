@@ -1,0 +1,14 @@
+# The save-file header Spyro 3 writes at the start of its memory-card file
+# ("SC", title, icon CLUT at +0x60, 16x16 4bpp icon frames from +0x80),
+# read from the player's disc at run time for the game window's icon.
+# Found by tools/save_icon.py locate against the decomp's copy
+# (D_title_8007ECA0 in the title overlay; the loading and options overlays,
+# WAD entries 69 and 179, carry identical copies);
+# compiled by tools/save_icon.py header.
+format = 1
+game = "spyro-3"
+
+[save_icon]
+wad_entry = 1
+offset = 0xA9D0
+sha256 = "2ec4561bec4b2d0e4ae44579dc05031d573fe8e2949c83503e5e29587f84e95a"

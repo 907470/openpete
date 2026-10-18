@@ -1,0 +1,13 @@
+# The save-file header Spyro the Dragon writes at the start of its memory-card file
+# ("SC", title, icon CLUT at +0x60, 16x16 4bpp icon frames from +0x80),
+# read from the player's disc at run time for the game window's icon.
+# Found by tools/save_icon.py locate against the decomp's copy
+# (assets/save_header.databin.bin);
+# compiled by tools/save_icon.py header.
+format = 1
+game = "spyro-1"
+
+[save_icon]
+input = "PSX.EXE"
+offset = 0x5FC94
+sha256 = "bb38831d747ed2a6dd322aa74cbd10b82f7f7b79600610718ea22891a232f332"

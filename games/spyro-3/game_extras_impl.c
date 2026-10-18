@@ -263,7 +263,6 @@ static int spyro3_cd_read_streamed(CPUState* cpu) {
 
 /* The tables of the game's other TUs the descriptor carries. */
 extern const openpete_game_identity_t spyro3_game_identity;   /* gen/game_identity.c */
-extern const openpete_game_icon_t     spyro3_game_icon;       /* gen/openpete_spyro3_icon.c */
 extern const game_layout_t            spyro3_game_layout;     /* renderer/layout.c */
 extern const ui_game_t                spyro3_ui_game;         /* renderer/layout.c */
 extern const terrain_game_t           spyro3_terrain_game;    /* renderer/terrain_game.c */
@@ -376,7 +375,6 @@ static const openpete_launcher_known_disc k_known_discs[] = {
  * layer's latch pack. */
 const openpete_game_runtime_t spyro3_game_runtime = {
     .identity             = &spyro3_game_identity,
-    .icon                 = &spyro3_game_icon,
     .layout               = &spyro3_game_layout,
     .load_delay_default   = 66u,
     .loop_anchor_pc       = 0x80055400u,

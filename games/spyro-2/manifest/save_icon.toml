@@ -1,0 +1,13 @@
+# The save-file header Spyro 2 writes at the start of its memory-card file
+# ("SC", title, icon CLUT at +0x60, 16x16 4bpp icon frames from +0x80),
+# read from the player's disc at run time for the game window's icon.
+# Found by tools/save_icon.py locate against the decomp's copy
+# (D_8006410C in asm/data/game.data.s);
+# compiled by tools/save_icon.py header.
+format = 1
+game = "spyro-2"
+
+[save_icon]
+input = "PSX.EXE"
+offset = 0x5490C
+sha256 = "a600c691eda1ec4f8b84fe5d4cb4f55e3f0a04059c126090868f3fecce053771"

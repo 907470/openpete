@@ -10,11 +10,13 @@
 #include "game_build.h"
 #include "openpete_psx.h"
 #include "openpete_disc_cache.h"
+#include "openpete_save_icon.h"
 
 #define GB_SHARED      @GB_SHARED@
 #define GB_FIRST_BOOT  @GB_FIRST_BOOT@
 #define GB_REGIONS     @GB_REGIONS@
 #define GB_BOOT_ORDER  @GB_BOOT_ORDER@
+#define GB_SAVE_ICON   @GB_SAVE_ICON@
 
 extern const openpete_game_runtime_t @GB_TAG@_game_runtime;
 int @GB_MAIN@(int argc, char** argv);
@@ -43,6 +45,19 @@ static void @GB_TAG@_disc_boot_order_register(void) {
 /** @brief Leave @GB_ID@'s disc cache loader in file order: the game has no boot-order manifest. */
 static void @GB_TAG@_disc_boot_order_register(void) {
     openpete_disc_cache_set_boot_order(NULL, 0);
+}
+#endif
+
+#if GB_SAVE_ICON
+#include "save_icon.gen.h"
+/** @brief Register @GB_ID@'s save-header location, generated from its manifest, for the window icon. */
+static void @GB_TAG@_save_icon_register(void) {
+    openpete_save_icon_set_location(&openpete_save_icon_loc);
+}
+#else
+/** @brief Register no save-header location: @GB_ID@ has no save_icon manifest, and its window keeps the OpenPete mark. */
+static void @GB_TAG@_save_icon_register(void) {
+    openpete_save_icon_set_location(NULL);
 }
 #endif
 
@@ -97,4 +112,5 @@ const openpete_game_build_t @GB_TAG@_game_build = {
 #endif
     .state_regions_register   = @GB_TAG@_state_regions_register,
     .disc_boot_order_register = @GB_TAG@_disc_boot_order_register,
+    .save_icon_register       = @GB_TAG@_save_icon_register,
 };

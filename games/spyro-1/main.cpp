@@ -341,6 +341,10 @@ extern "C" int spyro1_main(int argc, char** argv) {
     /* The disc cache loader's boot-order profile (games/common/
      * disc_boot_order.c); before openpete_run() attaches the cache. */
     game_disc_boot_order_register();
+    /* The save-header location the window icon is decoded from
+     * (openpete_save_icon.h); before openpete_run() hands the icon to the
+     * window. */
+    game_save_icon_register();
 
     /* High-FPS spine: register the sub-tick re-feed orchestrator with the
      * native renderer so intermediate presents rebuild the scene against an

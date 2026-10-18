@@ -44,7 +44,7 @@ typedef struct openpete_game_identity {
     const char* exe_filename;  /* "SCUS_942.28" */
 } openpete_game_identity_t;
 
-/* The window icon: RGBA8 rows, w * h pixels. */
+/* A window icon: RGBA8 rows, w * h pixels. */
 typedef struct openpete_game_icon {
     const uint8_t* rgba;
     int            w;
@@ -60,7 +60,6 @@ typedef struct openpete_feature_list {
 typedef struct openpete_game_runtime {
     /* Identity and constants. */
     const openpete_game_identity_t* identity;
-    const openpete_game_icon_t*     icon;            /* NULL: no window icon */
     const game_layout_t*            layout;          /* NULL: every field 0 */
     const game_disc_layout_t*       disc_layout;     /* NULL: no WAD overlay */
     uint32_t pad_read_pc;          /* game_get_pad_read_pc */

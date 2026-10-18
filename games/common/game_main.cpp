@@ -258,6 +258,11 @@ int openpete_game_main(int argc, char** argv) {
      * disc_boot_order.c); before openpete_run() attaches the cache. */
     game_disc_boot_order_register();
 
+    /* The save-header location the window icon is decoded from
+     * (openpete_save_icon.h); before openpete_run() hands the icon to the
+     * window. */
+    game_save_icon_register();
+
     /* The interp ring's region table and the sub-tick re-extract entry, both
      * before openpete_run() so openpete_interp_init() sees the regions; inert
      * on a game whose TUs are the none defaults. */

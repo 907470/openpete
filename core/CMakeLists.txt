@@ -240,6 +240,9 @@ add_library(openpete_core STATIC
     host/atomic_file.c
     # Host-backed PSX memory card (save/load).
     host/memcard.c
+    # The game window's icon, decoded from the save-file header on the
+    # player's disc (openpete_save_icon.h).
+    host/save_icon.c
 
     # Data-parallel extraction worker pool (--extract-threads). See
     # openpete_workpool.h for the threading contracts.
@@ -255,6 +258,20 @@ add_library(openpete_core STATIC
     # static_assert.
     renderer/debug_render.cpp
 )
+
+# The OpenPete mark as RGBA8 (openpete_mark_icon): the window icon before a
+# game is picked and whenever the disc's save header cannot be read.
+# tools/gen_dist_icon.py draws it; it holds no game bytes.
+set(_mark_icon_c ${CMAKE_BINARY_DIR}/gen/openpete_mark_icon.c)
+add_custom_command(
+    OUTPUT  ${_mark_icon_c}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py
+            --c ${_mark_icon_c} --c-name openpete_mark_icon
+    DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py
+    COMMENT "Generating openpete_mark_icon.c (gen_dist_icon.py)"
+    VERBATIM)
+target_sources(openpete_core PRIVATE ${_mark_icon_c})
 
 # libco: cooperative single-fiber scheduler. third_party/libco/libco.c
 # `#include`s a per-arch sibling (amd64.c on x86_64 Linux/macOS, fiber.c

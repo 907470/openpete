@@ -713,7 +713,6 @@ static int spyro1_override_dispatch(CPUState* cpu, uint32_t addr) {
 
 /* The tables of the game's other TUs the descriptor carries. */
 extern const openpete_game_identity_t spyro1_game_identity;   /* gen/game_identity.c */
-extern const openpete_game_icon_t     spyro1_game_icon;       /* gen/openpete_spyro1_icon.c */
 extern const game_layout_t            spyro1_game_layout;     /* renderer/layout.c */
 extern const ui_game_t                spyro1_ui_game;         /* renderer/layout.c */
 extern const terrain_game_t           spyro1_terrain_game;    /* renderer/terrain_game.c */
@@ -771,7 +770,6 @@ static const openpete_launcher_known_disc k_known_discs[] = {
  * dropdown. */
 const openpete_game_runtime_t spyro1_game_runtime = {
     .identity             = &spyro1_game_identity,
-    .icon                 = &spyro1_game_icon,
     .layout               = &spyro1_game_layout,
     .disc_layout          = &k_disc_layout,
     .pad_read_pc          = 0x80053C68u,

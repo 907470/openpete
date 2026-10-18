@@ -10,6 +10,7 @@
 #include "openpete_mutex_once.h"
 #include "openpete_fiber.h"
 #include "openpete_log.h"
+#include "openpete_save_icon.h"
 #include "openpete_knobs.h"
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
@@ -1482,6 +1483,34 @@ static void pad_restamp_if_due(int on_main) {
 /** @brief Without PsyCross there are no pad maps to restamp. */
 static void pad_restamp_if_due(int on_main) { (void)on_main; }
 #endif
+
+/** @brief Give the game window its icon: frame 0 of the save-file header's icon on the disc, else the OpenPete mark.
+ *
+ * The decode reads the disc through its own handle (openpete_save_icon.h),
+ * before the session's disc is attached. The PsyCross window, when one
+ * exists, takes the icon at once; the native window, which bring-up adopts
+ * from the launcher or creates afterwards, takes it at bring-up
+ * (openpete_native_set_icon), so the pixels live in a static buffer.
+ * @param opts The parsed options; disc_path names the disc, or is NULL. */
+static void hand_over_game_window_icon(const openpete_options_t* opts) {
+    static uint8_t s_disc_icon[OPENPETE_SAVE_ICON_WIDTH * OPENPETE_SAVE_ICON_HEIGHT * 4];
+    const openpete_game_icon_t* mark = &openpete_mark_icon;
+    const uint8_t* rgba = mark->rgba;
+    int w = mark->w, h = mark->h;
+    if (openpete_save_icon_decode(opts->disc_path, s_disc_icon) == 0) {
+        rgba = s_disc_icon;
+        w = OPENPETE_SAVE_ICON_WIDTH;
+        h = OPENPETE_SAVE_ICON_HEIGHT;
+    }
+    if (g_window) {
+        SDL_Surface* icon = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, (void*)rgba, w * 4);
+        if (icon) {
+            SDL_SetWindowIcon(g_window, icon);
+            SDL_DestroySurface(icon);
+        }
+    }
+    openpete_native_set_icon(rgba, w, h);
+}
 
 /** @brief Open the sector image behind --disc as the session's disc and attach the disc cache to it.
  *
@@ -3185,27 +3214,10 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_host_input_load_mappings(opts->controller_db);
     openpete_host_input_drop_unread_events();
 
-    /* App icon: the registered descriptor's RGBA8 image, emitted at build
-     * time by the game's own icon step; a descriptor without one sets
-     * none. The Win32 .rc resource handles taskbar / .exe shortcut /
-     * alt-tab on Windows; SDL_SetWindowIcon covers the live window on
-     * every platform. */
-    const openpete_game_icon_t* game_icon = openpete_game_runtime()->icon;
-    if (game_icon && game_icon->w <= 0) game_icon = NULL;
-    if (g_window && game_icon) {
-        SDL_Surface* icon = SDL_CreateSurfaceFrom(
-            game_icon->w, game_icon->h, SDL_PIXELFORMAT_RGBA32,
-            (void*)game_icon->rgba, game_icon->w * 4);
-        if (icon) {
-            SDL_SetWindowIcon(g_window, icon);
-            SDL_DestroySurface(icon);
-        }
-    }
-    /* Same icon for the native Vulkan window, which is the visible one in the
-     * default path (PsyCross runs null-GPU and creates no window at all).
-     * Handed over rather than applied: that window does not exist yet. */
-    if (game_icon)
-        openpete_native_set_icon(game_icon->rgba, game_icon->w, game_icon->h);
+    /* The game window's icon: the save-file header's icon decoded from the
+     * player's disc, else the OpenPete mark. A headless run shows no window
+     * and reads nothing for it. */
+    if (!opts->headless) hand_over_game_window_icon(opts);
 
     if (opts->headless && g_window) {
         /* Window was created unmapped (PsyX_Initialise startHidden=1) - no

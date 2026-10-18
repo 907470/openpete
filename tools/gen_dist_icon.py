@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Generate the OpenPete icon (original art, authored here - no game bytes).
 
-Emits the same artifacts as mcs_icon_to_ico.py: a C file defining a runtime
-descriptor's icon (openpete_game_icon_t, named by --c-name) for
-SDL_SetWindowIcon, a Windows .ico (16, 32, 48 and 256 px entries scaled
-nearest-neighbour from the mark), and/or a PNG for the Linux .desktop /
-AppImage icon. Without --game the mark is the executable's own (the Win32
-resource and the AppImage icon); --game selects a game's ROM-free window
-icon, which is the same mark for every game today.
+Emits a C file defining the mark as an openpete_game_icon_t (named by
+--c-name; the window icon before a game is picked and whenever the disc's
+save header cannot be read, core/include/openpete_save_icon.h), a Windows
+.ico (16, 32, 48 and 256 px entries scaled nearest-neighbour from the mark;
+the executable's Win32 resource), and/or a PNG for the Linux .desktop /
+AppImage icon.
 
 The design is a 16x16 pixel mark: dark-purple rounded tile, two orange
 "horn" triangles and eyes - abstract, geometric, original.
@@ -49,15 +48,6 @@ PALETTE = {
 }
 
 W = H = 16
-
-# The ROM-free window icon per game. Every game currently shows the
-# executable's mark above; a game gains its own by naming a different grid
-# here.
-GAME_GRIDS = {
-    "spyro-1": GRID,
-    "spyro-2": GRID,
-    "spyro-3": GRID,
-}
 
 
 def pixels(grid):
@@ -164,14 +154,11 @@ def main() -> int:
                     help="the openpete_game_icon_t the --c file defines")
     ap.add_argument("--ico", type=Path)
     ap.add_argument("--png", type=Path)
-    ap.add_argument("--game", choices=sorted(GAME_GRIDS),
-                    help="emit this game's window icon instead of the "
-                         "executable's mark")
     ap.add_argument("--png-size", type=int, default=256,
                     help="PNG edge in pixels; rounded down to a whole "
                          "multiple of the 16px mark")
     args = ap.parse_args()
-    px = pixels(GAME_GRIDS[args.game] if args.game else GRID)
+    px = pixels(GRID)
     if args.c and not args.c_name:
         ap.error("--c needs --c-name")
     if args.c:

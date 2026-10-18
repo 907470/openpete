@@ -33,6 +33,7 @@
 #include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
 #include "openpete_paths.h"         /* pipeline cache directory */
 #include "openpete_launcher.h"      /* the progress screen the compile stage draws */
+#include "openpete_save_icon.h"     /* openpete_mark_icon: the window icon before the pick */
 #include "openpete_config.h"        /* device-creation knobs from the game-neutral tiers */
 #include "openpete_error_ids.h"     /* the device-lost line's error id */
 #include "openpete_atomic_file.h"   /* pipeline cache write-back */
@@ -4621,9 +4622,10 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
     OPL_INFO_F("native", "window precreated on the host thread (%dx%d)", w, h);
 }
 
-/* Window icon pixels, handed over before bring-up (the decoded image lives in
- * the game module). Stored rather than applied immediately because the window
- * does not exist yet at the point the caller has them. */
+/* Window icon pixels, handed over before bring-up (the save-header icon the
+ * runtime decoded from the disc, or the OpenPete mark). Stored rather than
+ * applied immediately because the window does not exist yet at the point the
+ * caller has them. */
 static const unsigned char* s_icon_rgba;
 static int s_icon_w, s_icon_h;
 
@@ -4632,6 +4634,31 @@ void openpete_native_set_icon(const void* rgba32, int w, int h)
     s_icon_rgba = (const unsigned char*)rgba32;
     s_icon_w = w;
     s_icon_h = h;
+}
+
+/** @brief Set a window's icon from RGBA8 pixels and log the image's size and FNV-1a 32 digest.
+ *
+ * The digest is over the w * h * 4 bytes as given, so a readback of the
+ * window's icon property can be matched against the line.
+ * @param win The window.
+ * @param rgba RGBA8 pixels, stride w * 4.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @param what The icon's name for the log line. */
+static void nr_set_window_icon(SDL_Window *win, const unsigned char *rgba, int w, int h,
+                               const char *what)
+{
+    SDL_Surface *ico = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, (void *)rgba, w * 4);
+    if (!ico) {
+        OPL_WARN_F("native", "window icon (%s) not set: %s", what, SDL_GetError());
+        return;
+    }
+    const bool ok = SDL_SetWindowIcon(win, ico);
+    SDL_DestroySurface(ico);
+    uint32_t fnv = 2166136261u;
+    for (size_t i = 0; i < (size_t)w * (size_t)h * 4u; i++) fnv = (fnv ^ rgba[i]) * 16777619u;
+    OPL_INFO_F("native", "window icon %s: %s %dx%d fnv1a32 %08x", ok ? "applied" : "refused", what,
+               w, h, fnv);
 }
 
 /* How long after an app-driven size change (a fullscreen toggle) the next size
@@ -6237,6 +6264,10 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
         OPL_ERROR_F("native", "%s", s_launch_error);
         return -1;
     }
+    /* Before a game is picked the window carries the OpenPete mark; bring-up
+     * replaces it with the picked game's icon (nr_apply_game_window_icon). */
+    nr_set_window_icon(win, openpete_mark_icon.rgba, openpete_mark_icon.w, openpete_mark_icon.h,
+                       "OpenPete mark");
     /* Window, instance and device come from the game-neutral tiers, so a
      * device created before the game is known is the one created after it. */
     const int created_vsync = nr_device_knobs_install();
@@ -6417,27 +6448,19 @@ void openpete_native_launcher_close(void)
     memset(&s_launch, 0, sizeof s_launch);
 }
 
-/** @brief Apply the game's window icon to the adopted window.
+/** @brief Apply the game's window icon to the adopted window: the one handed over by openpete_native_set_icon, else the OpenPete mark.
  *
  * The icon is set on the native window rather than PsyCross's: in the
  * default (null-GPU) path PsyCross never creates one.
  * @param win The window. */
 static void nr_apply_game_window_icon(SDL_Window *win)
 {
-    if (s_icon_rgba && s_icon_w > 0 && s_icon_h > 0) {
-        SDL_Surface* ico = SDL_CreateSurfaceFrom(
-            s_icon_w, s_icon_h, SDL_PIXELFORMAT_RGBA32,
-            (void*)s_icon_rgba, s_icon_w * 4);
-        if (ico) {
-            SDL_SetWindowIcon(win, ico);
-            SDL_DestroySurface(ico);
-            OPL_INFO_F("native", "window icon applied (%dx%d)", s_icon_w, s_icon_h);
-        }
-    } else {
-        /* Weakly linked: a build without the icon generator step resolves
-         * the symbol to NULL and silently ships a default icon. Say so. */
-        OPL_WARN_F("native", "%s", "no window icon available (icon data not linked)");
-    }
+    if (s_icon_rgba && s_icon_w > 0 && s_icon_h > 0)
+        nr_set_window_icon(win, s_icon_rgba, s_icon_w, s_icon_h,
+                           s_icon_rgba == openpete_mark_icon.rgba ? "OpenPete mark" : "game save icon");
+    else
+        nr_set_window_icon(win, openpete_mark_icon.rgba, openpete_mark_icon.w, openpete_mark_icon.h,
+                           "OpenPete mark");
 }
 
 /** @brief Present a black frame at the window's current size and wait until the display shows it, ahead of a bring-up window operation.
