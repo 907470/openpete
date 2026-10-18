@@ -29,7 +29,7 @@ each row to its text, and packaging fails on a row with no text.
 | Vulkan-Headers 1.3.204               | Apache-2.0                                     | https://github.com/KhronosGroup/Vulkan-Headers                                              |
 | libstdc++ / libgcc (static)          | GPL-3.0 **with GCC Runtime Library Exception** | GCC - the exception explicitly permits distributing the compiled binary in proprietary form |
 | MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows) | Zlib / BSD / public domain (permissive) | https://www.mingw-w64.org                                                          |
-| OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`) | LGPL v2 | https://github.com/kcat/openal-soft                                                  |
+| OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`) | LGPL v2 | https://github.com/kcat/openal-soft; source: https://dl.openpete.com/sources/openal-soft-1.25.1.tar.bz2 |
 
 ## Bundled data - shipped alongside the binary
 
@@ -84,7 +84,7 @@ notice.
 
 | Component                              | License                              | Notes                                                              |
 | -------------------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
-| OpenAL Soft 1.19.1, Debian 11 package (`usr/lib/libopenal.so.1`) | LGPL v2    | dynamic linking preserved                                          |
+| OpenAL Soft 1.19.1, Debian 11 package (`usr/lib/libopenal.so.1`) | LGPL v2    | dynamic linking preserved; source: Debian `openal-soft` 1:1.19.1-2 (see OpenAL Soft source code) |
 | sndio (`usr/lib/libsndio.so.7`)        | ISC                                  | required by OpenAL Soft (`DT_NEEDED`), unmodified                  |
 | libbsd (`usr/lib/libbsd.so.0`)         | BSD-2/BSD-3/ISC and others           | required by sndio, unmodified                                      |
 | libmd (`usr/lib/libmd.so.0`)           | BSD-2/BSD-3 and others               | required by libbsd, unmodified                                     |
@@ -96,6 +96,42 @@ being an audio library because it is a client of the `sndiod` daemon rather
 than of a device: with no daemon running, OpenAL falls through to its ALSA
 or PulseAudio backend, both of which still resolve against the host. ALSA
 itself stays unbundled, so `libasound.so.2` remains a host requirement.
+
+## OpenAL Soft source code
+
+OpenAL Soft is licensed under the GNU Library General Public License
+version 2. Both packages carry it unmodified, as a separate shared library
+the executable loads at run time; a user may replace it with a compatible
+build of their own. Its complete corresponding source is offered from
+https://dl.openpete.com/, the same place as the packages, at the URLs
+below. SHA-256 follows each file.
+
+Windows zip, `OpenAL32.dll`: `bin/Win64/soft_oal.dll` from upstream's
+binary release `openal-soft-1.25.1-bin.zip`
+(https://github.com/kcat/openal-soft/releases/tag/1.25.1,
+`0915af01928b17e46f7c59ffc44a7413486bbef8424a3465109f489a80cb68a2`),
+renamed and otherwise unchanged
+(`c5b7aa0c5237c4d202f798fe7825f59af5bb4b9a1ac1e654e7011908843fbb83`).
+Upstream built it from tag 1.25.1, commit
+`c41d64c6a35f6174bf4a27010aeac52a8d3bb2c6`, the commit the DLL reports.
+
+- https://dl.openpete.com/sources/openal-soft-1.25.1.tar.bz2
+  `4c2aff6f81975f46ecc5148d092c4948c71dbfb76e4b9ba4bf1fce287f47d4b5`
+  (upstream's release tarball, https://openal-soft.org/openal-releases/;
+  `XCompile.txt` in it is the MinGW cross-compile toolchain file)
+
+Linux AppImage, `usr/lib/libopenal.so.1`: the file from Debian 11 package
+`libopenal1` 1:1.19.1-2, amd64, unchanged
+(`4c0acaa919cbdd14830d1ce30dab448cfc33aa6262dd49f7b605aa6bbd07c889`).
+`dpkg-source -x openal-soft_1.19.1-2.dsc` unpacks the three files below
+into the patched source tree; `debian/rules` in it is the build recipe.
+
+- https://dl.openpete.com/sources/openal-soft_1.19.1-2.dsc
+  `d014f787306e55bbd034dbb3aeeeff1bfbde1e941f5fb5975572475c67c117b1`
+- https://dl.openpete.com/sources/openal-soft_1.19.1.orig.tar.gz
+  `9f3536ab2bb7781dbafabc6a61e0b34b17edd16bd6c2eaf2ae71bc63078f98c7`
+- https://dl.openpete.com/sources/openal-soft_1.19.1-2.debian.tar.xz
+  `9d8a56f44caa0104f9d3a5e53e6c2edf2b1c631229a2b60c0396b7b9c6af5a89`
 
 ## In the repository, not in any distributed build
 
@@ -131,8 +167,10 @@ archive carries them, so they have no table row and no text under
   `runner/lib/glad`. No openpete CMake file configures that project.
 
 The MinGW OpenAL Soft prebuilt in `third_party/OpenAL-mingw/` (version in
-`VERSION`, licence in `COPYING`) is the import library, headers and
-`OpenAL32.dll` of the OpenAL Soft 1.25.1 row above.
+`VERSION`, licence in `COPYING`) is the Win64 import library, headers and
+`soft_oal.dll` (renamed `OpenAL32.dll`) of upstream's
+`openal-soft-1.25.1-bin.zip`, byte-identical to it; its source is named
+under OpenAL Soft source code.
 
 ## Trademarks
 
