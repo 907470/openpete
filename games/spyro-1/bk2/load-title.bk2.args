@@ -1,0 +1,3 @@
+# openpete --bk2-record: launch args auto-captured for replay via --bk2
+# (excludes --bk2* flags and anything sourced from openpete.toml)
+--card1 games/spyro-1/bk2/load-title.bk2.mcr
