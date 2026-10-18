@@ -1,0 +1,7 @@
+# Recorded by hand on the 117% card (consume-keyed): from the title the
+# movie loads slot 1, warps into Midday Gardens, and walks Spyro up the
+# step into the level-23 portal (Spooky Swamp), a route with no unattended
+# placement because the step lies inside the portal's trigger volume.
+# The slot 1 card is given by the caller (--card1, a copy of
+# games/spyro-3/cards/117-percent.mcr); tests/harness/check_s3_portals.sh.
+--no-card2
