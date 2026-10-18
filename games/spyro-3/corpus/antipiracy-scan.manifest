@@ -15,6 +15,10 @@
 # func_level_16_80079654 takes one step and stops while idle; it is not
 # counted.
 sheilas-alp-idle-scan 9173 3
+# sheilas-alp-idle-scan-2: hand-recorded walk from --skip-to-level
+# sheilas_alp to the four class-154 mushroom houses; their one-function
+# scanner func_level_16_80079654 passes at VBL 8731 (1526 steps each).
+sheilas-alp-idle-scan-2 9173 4
 # cloud-spires-npc-scan: func_level_12_8007C2B8 (data byte 0 == 1) passes
 # at VBL 9367.
 cloud-spires-npc-scan 10373 1
