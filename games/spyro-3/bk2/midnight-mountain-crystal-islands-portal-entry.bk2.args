@@ -1,0 +1,6 @@
+# Closed-loop scripted route (analog stick steered each VBL toward waypoints
+# planned over the hub's terrain sectors, Cross to jump on rises): Spyro walks
+# from the Midnight Mountain start to the Crystal Islands portal and through
+# it; state 7 from VBL 2986, Crystal Islands (level 41) live from VBL 3638.
+# The inputs are the movie's own rows (4400 VBLs, feed key vbl).
+--skip-to-level midnight_mountain
