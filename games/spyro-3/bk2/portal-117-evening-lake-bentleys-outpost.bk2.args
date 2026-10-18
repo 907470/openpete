@@ -1,0 +1,7 @@
+# Closed-loop route recorded on the 117% card (frame-keyed rows): from the
+# title the movie loads slot 1 (the s3-load-save.bk2 input, Midnight
+# Mountain live at frame 1895), then
+# pause -> Atlas -> Square warp into level 36, pause -> Exit Level (state 7 back to hub 30), then the stick steers Spyro into the level-36 portal (portal record of D_8006C530 with dest 36); level 36 live from frame 5365.
+# The slot 1 card is given by the caller (--card1, a copy of
+# games/spyro-3/cards/117-percent.mcr); tests/harness/check_s3_portals.sh.
+--no-card2

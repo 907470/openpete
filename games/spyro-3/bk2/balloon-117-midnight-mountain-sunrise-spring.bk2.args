@@ -1,0 +1,7 @@
+# Closed-loop route recorded on the 117% card (frame-keyed rows): from the
+# title the movie loads slot 1 (the s3-load-save.bk2 input, Midnight
+# Mountain live at frame 1895), then
+# Spyro walks to the class-516 balloonist, bumps it with Cross, picks Down (Sunrise Spring) in its menu and confirms: state 12 into level 10. Today the load stalls at loadStage 7 and the hang watchdog ends the run.
+# The slot 1 card is given by the caller (--card1, a copy of
+# games/spyro-3/cards/117-percent.mcr); tests/harness/check_s3_portals.sh.
+--no-card2
