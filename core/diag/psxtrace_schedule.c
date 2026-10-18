@@ -480,12 +480,20 @@ int openpete_sched_cdsync_peek(uint32_t* ra_out, uint64_t* tick_out) {
     return 1;
 }
 
-/* The reference's card transfer starts (.card): per start the VBLANK and
- * the tick offset from it, in VBLANK order. */
-typedef struct { uint32_t vbl, off; } sched_card_t;
+/* The reference's card transfer starts (.card): per start the VBLANK, the
+ * tick offset from it and, when the row carries them, the step ticks from
+ * the start (a count, then the ticks; held in s_card_steps from `first`),
+ * in VBLANK order. */
+typedef struct { uint32_t vbl, off, first, n; } sched_card_t;
 static sched_card_t* s_card = NULL; static uint32_t s_card_n = 0;
+static uint32_t* s_card_steps = NULL; static uint32_t s_card_steps_n = 0, s_card_steps_cap = 0;
+static uint32_t s_card_timed = 0;   /* rows carrying steps */
 
-/** @brief Load the `.card` sidecar into s_card, the reference's card transfer starts.
+/** @brief Load the reference's card transfer starts and their steps from the `.card` sidecar into s_card.
+ *
+ * A row is `idx rec vbl off`, then, from version 2, the step count and
+ * that many step ticks; a row without them leaves the transfer to the
+ * cadence table.
  * @param trace Path of the golden trace.
  * @return 1 when at least one start loaded, else 0. */
 static int load_card(const char* trace) {
@@ -495,10 +503,22 @@ static int load_card(const char* trace) {
     s_card = (sched_card_t*)malloc(cap * sizeof(*s_card));
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
-        unsigned idx, rec, vbl; unsigned long long off;
-        if (sscanf(line, "%u %u %u %llu", &idx, &rec, &vbl, &off) != 4) continue;
+        unsigned idx, rec, vbl, nsteps = 0; unsigned long long off; int used = 0;
+        if (sscanf(line, "%u %u %u %llu%n", &idx, &rec, &vbl, &off, &used) != 4) continue;
         if (s_card_n == cap) { cap *= 2; s_card = (sched_card_t*)realloc(s_card, cap * sizeof(*s_card)); }
-        s_card[s_card_n].vbl = vbl; s_card[s_card_n].off = (uint32_t)off; s_card_n++;
+        sched_card_t* row = &s_card[s_card_n++];
+        row->vbl = vbl; row->off = (uint32_t)off; row->first = s_card_steps_n; row->n = 0;
+        const char* p = line + used; int adv = 0;
+        if (sscanf(p, "%u%n", &nsteps, &adv) != 1) continue;
+        p += adv;
+        while (s_card_steps_n + nsteps > s_card_steps_cap) {
+            s_card_steps_cap = s_card_steps_cap ? s_card_steps_cap * 2u : 4096u;
+            s_card_steps = (uint32_t*)realloc(s_card_steps, s_card_steps_cap * sizeof(*s_card_steps));
+        }
+        for (unsigned i = 0; i < nsteps && sscanf(p, "%u%n", &s_card_steps[s_card_steps_n], &adv) == 1; i++, p += adv) {
+            s_card_steps_n++; row->n++;
+        }
+        if (row->n) s_card_timed++;
     }
     free(buf);
     return s_card_n != 0;
@@ -511,6 +531,16 @@ int openpete_sched_card_start(uint32_t vbl, uint32_t* off_out) {
     if (lo >= s_card_n || s_card[lo].vbl != vbl) return 0;
     *off_out = s_card[lo].off;
     return 1;
+}
+
+const uint32_t* openpete_sched_card_steps(uint32_t vbl, uint32_t* n_out) {
+    *n_out = 0;
+    if (!s_active || !s_card_n) return NULL;
+    uint32_t lo = 0, hi = s_card_n;
+    while (lo < hi) { const uint32_t mid = (lo + hi) / 2u; if (s_card[mid].vbl < vbl) lo = mid + 1u; else hi = mid; }
+    if (lo >= s_card_n || s_card[lo].vbl != vbl || !s_card[lo].n) return NULL;
+    *n_out = s_card[lo].n;
+    return s_card_steps + s_card[lo].first;
 }
 
 int openpete_sched_sio0_served(uint32_t vbl, int* known) { return vbl_set_has(&s_sio0, vbl, known); }
@@ -536,7 +566,7 @@ int openpete_sched_open(const char* trace_path) {
     if (pc) OPL_INFO_F("psxtrace", "schedule: controller commands known from vblank %u to %u", s_padcmd.first, s_padcmd.n - 1u);
     if (so) OPL_INFO_F("psxtrace", "schedule: controller handler vblanks known from %u to %u", s_sio0.first, s_sio0.n - 1u);
     if (cs) OPL_INFO_F("psxtrace", "schedule: %u CdSync poll rows", s_cs_n);
-    if (cd) OPL_INFO_F("psxtrace", "schedule: %u card transfer starts", s_card_n);
+    if (cd) OPL_INFO_F("psxtrace", "schedule: %u card transfer starts, %u with their steps", s_card_n, s_card_timed);
     if (r2) {
         openpete_psx_set_root_counter2_reader(openpete_sched_rcnt2_read);
         OPL_INFO_F("psxtrace", "schedule: %u game reads of root counter 2", s_rc2_n);

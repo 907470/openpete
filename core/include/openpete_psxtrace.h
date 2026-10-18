@@ -266,6 +266,16 @@ int      openpete_sched_anchor(uint32_t rec, uint32_t* vbl_out, uint32_t* tick_o
  * @param off_out Receives the start's tick offset from that VBLANK.
  * @return 1 when the sidecar has a start on vbl, else 0. */
 int      openpete_sched_card_start(uint32_t vbl, uint32_t* off_out);
+/** @brief Return the reference's step ticks of the card transfer started on a VBLANK.
+ *
+ * A step is one SIO0 interrupt the card driver serviced after the select
+ * byte: a handler state (the store of its byte counter) or a fast-track
+ * byte (the store of the fast-track count), as ticks from the store that
+ * marked the transfer active, in order.
+ * @param vbl Reference VBLANK the card step ran on.
+ * @param n_out Receives the number of steps.
+ * @return The step ticks, or NULL when the sidecar row carries none. */
+const uint32_t* openpete_sched_card_steps(uint32_t vbl, uint32_t* n_out);
 /** @brief Return the reference VBLANK count openpete has reached.
  *
  * The position is set when the schedule opens or a consumer first meets it

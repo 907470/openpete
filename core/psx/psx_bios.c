@@ -602,6 +602,7 @@ static uint32_t mc_queue(uint32_t device_id, uint32_t handler, uint32_t sector, 
     const uint32_t status = handler == MC_HANDLER_READ ? MC_STATUS_READ
                           : handler == MC_HANDLER_WRITE ? MC_STATUS_WRITE : MC_STATUS_INFO;
     if (s_census > 0) OPL_INFO_F("bios", "card command 0x%X on port %d queued at record %u, position %u (flip %u, status 0x%X)", handler, port, openpete_sched_current_record(), openpete_sched_pos(), kb(K_MC_FLIP), kb(K_MC_FLAGS + port));
+    cw_row("Q %d %x %u %x %u", port, handler, kb(K_MC_FLIP), kb(K_MC_FLAGS + (uint32_t)port), sector);
     if ((kb(K_MC_FLAGS + (uint32_t)port) & 1u) == 0u) return 0u;
     if (handler != MC_HANDLER_INFO && sector > 0x400u) return 0u;
     kw_set(K_MC_OPERATION, 0u);
@@ -673,7 +674,10 @@ static void mc_handler_error(CPUState* cpu, uint32_t flag_addr, uint32_t spec) {
  * wait): from the active store to state 2, between handler states, from
  * the last state before the fast track to its first byte, between
  * fast-track bytes, and from the last fast-track byte to the next state.
- * Info commands take the read cadence. */
+ * Info commands take the read cadence. A held transfer whose `.card` row
+ * carries the reference's own step ticks uses those instead: the spacing
+ * depends on the kernel's interrupt queues and on the rest of the VBLANK
+ * exception that started the transfer, so it differs per game. */
 typedef struct { uint32_t first, state, ft_in, ft, ft_out; } mc_cadence_t;
 static const mc_cadence_t k_mc_cadence_write = { 5202u, 2978u, 1958u, 1530u, 2806u };
 static const mc_cadence_t k_mc_cadence_read  = { 5163u, 2989u, 1977u, 1525u, 2784u };
@@ -689,10 +693,12 @@ typedef struct {
     int       held;        /* oracle: steps wait for the record's anchor */
     uint32_t  hold_rec;    /* the record whose anchor falls inside */
     uint32_t  hold_ticks;  /* that anchor's ticks after the active store */
+    const uint32_t* ref_steps; /* oracle: the reference's step ticks, when its `.card` row has them */
+    uint32_t  ref_n;       /* their count; 0 takes the cadence table */
     CPUState* cpu;         /* the CPU the completion's handlers run on */
 } mc_xfer_t;
 static mc_xfer_t s_xf;
-static uint32_t s_xf_held = 0, s_xf_anchor_steps = 0, s_xf_fallbacks = 0;
+static uint32_t s_xf_held = 0, s_xf_ref_timed = 0, s_xf_anchor_steps = 0, s_xf_fallbacks = 0;
 
 static void mc_end(CPUState* cpu, int result);
 
@@ -709,6 +715,16 @@ static uint32_t mc_step_ticks(uint32_t handler, uint32_t k) {
     const uint32_t ft_start = c->first + (ft0 - 1u) * c->state + c->ft_in;
     if (k < ft0 + ftn) return ft_start + (k - ft0) * c->ft;
     return ft_start + (ftn - 1u) * c->ft + c->ft_out + (k - ft0 - ftn) * c->state;
+}
+
+/** @brief Return the ticks from the active store to step k of the transfer in flight.
+ *
+ * The reference's own step tick when the oracle's sidecar carries the
+ * transfer's steps, else the cadence table's.
+ * @param k Step index.
+ * @return The step's tick offset. */
+static uint32_t mc_xf_step_ticks(uint32_t k) {
+    return k < s_xf.ref_n ? s_xf.ref_steps[k] : mc_step_ticks(s_xf.handler, k);
 }
 
 /** @brief Report whether a transfer stops at its FLAG byte (state 3): a new card, a write error on info, or a sector the host card cannot give.
@@ -855,7 +871,7 @@ static int mc_write_step(CPUState* cpu, uint32_t k) {
  * @param until The last tick after the active store to run steps at;
  *        UINT32_MAX runs every step. */
 static void mc_xfer_run(CPUState* cpu, uint32_t until) {
-    while (s_xf.live && (until == UINT32_MAX || mc_step_ticks(s_xf.handler, s_xf.step) <= until)) {
+    while (s_xf.live && (until == UINT32_MAX || mc_xf_step_ticks(s_xf.step) <= until)) {
         const uint32_t k = s_xf.step++;
         const int r = s_xf.handler == MC_HANDLER_WRITE ? mc_write_step(cpu, k)
                     : s_xf.handler == MC_HANDLER_READ  ? mc_read_step(cpu, k)
@@ -904,8 +920,13 @@ static int mc_xfer_hold(uint32_t vbl) {
     const uint32_t rec = openpete_sched_current_record();
     uint32_t start, rvbl, rtick;
     if (!openpete_sched_card_start(vbl, &start) || !openpete_sched_anchor(rec, &rvbl, &rtick)) return 0;
-    if (rvbl != vbl || rtick <= start || rtick - start >= mc_step_ticks(s_xf.handler, s_xf.steps - 1u)) return 0;
+    /* A row whose step count is not the transfer's (a sidecar without
+     * steps, or a transfer that ended differently) takes the table. */
+    s_xf.ref_steps = openpete_sched_card_steps(vbl, &s_xf.ref_n);
+    if (s_xf.ref_n != s_xf.steps) { s_xf.ref_steps = NULL; s_xf.ref_n = 0; }
+    if (rvbl != vbl || rtick <= start || rtick - start >= mc_xf_step_ticks(s_xf.steps - 1u)) return 0;
     s_xf.held = 1;
+    if (s_xf.ref_n) s_xf_ref_timed++;
     s_xf.hold_rec = rec;
     s_xf.hold_ticks = rtick - start;
     s_xf_held++;
@@ -923,8 +944,9 @@ void openpete_psx_bios_card_anchor_end(void) {
     if (s_xf.live && s_xf.held) mc_xfer_run(s_xf.cpu, UINT32_MAX);
 }
 
-void openpete_psx_bios_card_anchor_counts(uint32_t* held, uint32_t* anchor_steps, uint32_t* fallbacks) {
+void openpete_psx_bios_card_anchor_counts(uint32_t* held, uint32_t* ref_timed, uint32_t* anchor_steps, uint32_t* fallbacks) {
     *held = s_xf_held;
+    *ref_timed = s_xf_ref_timed;
     *anchor_steps = s_xf_anchor_steps;
     *fallbacks = s_xf_fallbacks;
 }
@@ -1029,12 +1051,13 @@ void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
     int known = 0;
     const int served = openpete_sched_sio0_served(vbl, &known);
     const int active = kb(K_MC_ACTIVE) != 0u;
-    if (known && !served && !(active && openpete_sched_sio0_served(vbl + 1u, NULL))) return;
+    if (known && !served && !(active && openpete_sched_sio0_served(vbl + 1u, NULL))) { cw_row("P - %u", vbl); return; }
     static const uint16_t k_specs[5] = { EV_SPEC_IOE, EV_SPEC_ERROR, EV_SPEC_TIMOUT, 0x0200u, EV_SPEC_NEW };
     for (int i = 0; i < 5; i++) undeliver_event(EV_CLASS_CARD, k_specs[i]);
-    if (active) { mc_timeout(cpu); return; }
+    if (active) { cw_row("P a %u", vbl); mc_timeout(cpu); return; }
     const uint32_t port = 1u - (kb(K_MC_FLIP) & 1u);
     kb_set(K_MC_FLIP, port);
+    cw_row("P %u %u", port, vbl);
     if (kb(K_MC_FLAGS + port) & 1u) return;
     if (s_census > 0) OPL_INFO_F("bios", "card command on port %u started at record %u, position %u", port, openpete_sched_current_record(), openpete_sched_pos());
     mc_begin(port);

@@ -1015,10 +1015,10 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     openpete_cdrom_mmio_summary();
     gte_hash_summary();
     {
-        uint32_t held, steps, fallbacks;
-        openpete_psx_bios_card_anchor_counts(&held, &steps, &fallbacks);
-        OPL_INFO_F("psxtrace", "card: transfers held for an anchor=%u steps run to an anchor tick=%u completed without their anchor=%u",
-                   held, steps, fallbacks);
+        uint32_t held, ref_timed, steps, fallbacks;
+        openpete_psx_bios_card_anchor_counts(&held, &ref_timed, &steps, &fallbacks);
+        OPL_INFO_F("psxtrace", "card: transfers held for an anchor=%u timed by the reference's steps=%u steps run to an anchor tick=%u completed without their anchor=%u",
+                   held, ref_timed, steps, fallbacks);
     }
     if (t->hard_failed) {
         int32_t r = t->hard_fail_region;

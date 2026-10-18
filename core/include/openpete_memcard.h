@@ -273,11 +273,12 @@ void openpete_psx_bios_vbl_complete(struct CPUState* cpu);
 void openpete_psx_bios_card_anchor(uint32_t rec);
 /** @brief Complete the held card transfer after the record is compared: its remaining bytes, the bu layer's step and HwCARD's event. */
 void openpete_psx_bios_card_anchor_end(void);
-/** @brief Read the counts of transfers held for an anchor, steps run at anchors, and held transfers completed without their anchor.
+/** @brief Read the counts of transfers held, held ones the reference timed, steps run at anchors, and held ones never anchored.
  * @param held Receives the transfers held.
+ * @param ref_timed Receives the held transfers whose steps the `.card` sidecar timed (the rest take the cadence table).
  * @param anchor_steps Receives the steps run up to an anchor tick.
  * @param fallbacks Receives the held transfers completed at another record's anchor or at the next vblank step. */
-void openpete_psx_bios_card_anchor_counts(uint32_t* held, uint32_t* anchor_steps, uint32_t* fallbacks);
+void openpete_psx_bios_card_anchor_counts(uint32_t* held, uint32_t* ref_timed, uint32_t* anchor_steps, uint32_t* fallbacks);
 /** @brief Close the five events the ROM's boot opened, as libetc's ResetCallback does through _96_remove (A0 0x72).
  *
  * The thunked ResetCallback calls this so the event table's first entries
