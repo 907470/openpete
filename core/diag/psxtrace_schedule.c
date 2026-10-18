@@ -838,17 +838,22 @@ int openpete_sched_anchor_target(uint32_t record, uint32_t* target_out) {
     return 1;
 }
 
-/** @brief Return the reference VBLANK of its next event at or after a VBLANK: the next unissued read's issue, the first waited VSync entered at or after it, or the current record's anchor stamp, whichever comes first.
+/** @brief Return the reference VBLANK of its next event at or after a VBLANK: the next unissued read's issue, the first waited VSync or unmatched callback registration at or after it, or the current record's anchor stamp, whichever comes first.
  *
- * The waited rows are scanned from the first, wherever the row pointer
- * stands (the boot's rows are skipped, not consumed).
+ * The VSync rows are scanned from the first, wherever the row pointer
+ * stands (the boot's rows are skipped, not consumed). A registration row
+ * (mode -2) bounds like a waited row: the reference's tick reached the
+ * registration at that VBLANK, and openpete_sched_registration charges
+ * the position to it, so VBLs past it belong to the work after the
+ * registration. Queries (mode -1) and matched registrations (mode -3) do
+ * not bound.
  * @param from The reference VBLANK the search starts at.
  * @return The VBLANK, or UINT32_MAX when no event bounds it. */
 static uint32_t sched_next_event(uint32_t from) {
     uint32_t bound = 0xFFFFFFFFu;
     if (s_rd && s_rd_next < s_rd_n) bound = s_rd[s_rd_next].issue_vbl;
     for (uint32_t i = 0; s_vs && i < s_vs_n; i++) {
-        if (s_vs[i].mode < 0 || s_vs[i].entry_vbl < from) continue;
+        if ((s_vs[i].mode < 0 && s_vs[i].mode != -2) || s_vs[i].entry_vbl < from) continue;
         if (s_vs[i].entry_vbl < bound) bound = s_vs[i].entry_vbl;
         break;
     }
