@@ -76,6 +76,8 @@ static void spyro2_surface(struct openpete_surface_sink* sink) {
 
 /** @brief Arm a --skip-to-cutscene target, riding a --skip-to-level to its source level; a different explicit --skip-to-level refuses it.
  *
+ * An exit row rides no --skip-to-level of its own (its source level is
+ * reached by play or by an explicit one).
  * @param cutscene_id The cutscene id; 0 or less disables it. */
 static void spyro2_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id <= 0) return;
@@ -89,7 +91,8 @@ static void spyro2_set_skip_to_cutscene(int cutscene_id) {
         return;
     }
     spyro2_cutscene_skip_arm(cutscene_id);
-    if (level <= 0) spyro2_skip_set(source);
+    if (level <= 0 && spyro2_cutscene_rides_level_skip(cutscene_id))
+        spyro2_skip_set(source);
 }
 /* The level sound tables, loaded by func_8001D5FC (loaders.s): the
  * SoundTable pointer D_80067020 and the SoundDefinition pointer D_80067068.

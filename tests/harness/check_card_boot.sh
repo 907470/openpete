@@ -109,6 +109,31 @@
 #         level takes VBLANKs inside the game tick that only the clock row
 #         delivers where the reference took them. Instrument and pass as
 #         load-ref. Run by name only; ctest card_load_reference_clock.
+#   autosave  Spyro 2's story-step autosave on leaving Glimmer for Summer
+#         Forest: games/spyro-2/bk2/s2-create-save.bk2 (New Game on the blank
+#         card, which creates the save, selects it and reaches Glimmer), with
+#         --skip-to-cutscene summer_forest_story taking Glimmer's exit on its
+#         first live tick; the game then plays the story cutscene, runs the
+#         next story step's loading loop (func_80019364, back-edge header
+#         0x800194F8), whose autosave waits on libmcrd's done flag that only
+#         a VBL's slot-7 callback sets, and loads Summer Forest.
+#         --frame-limit 3600. A second run of the movie alone to
+#         --frame-limit 1400 (the save row's) leaves the card as it stands
+#         before the autosave. Instrument: the exit status and the watchdog's
+#         trip address, the loop-site census line of 0x800194F8 (quanta: VBLs
+#         delivered at the back-edge), the card window (B(33h) lseek and
+#         B(35h) write of the autosave, the vblank step's sector writes) and
+#         the two card images.
+#         Pass: exit 0; quanta > 0 at 0x800194F8; a B(35h) write of 0x600
+#         bytes that the bu device accepts (result 0, the asynchronous start)
+#         after an lseek to 0x200 + idx * 0x600; the 12 sectors of that span
+#         in the save's block written; and the span of the end image differs
+#         from the pre-autosave image. Engagement: the skip's exit call logged
+#         with the save selected (0x80067E20 1) and the story cutscene
+#         released (k 4); without them VACUOUS. A wait that never sees a VBL
+#         trips the hang watchdog (exit 2, trip 0x80070AD0, the autosave's
+#         MemCardSync state). Run by name only (--row=autosave); ctest
+#         card_autosave.
 #
 # Verdict lines:
 #   [card-boot] row=boot game=spyro-3 exit=<rc> opens=<n> lseeks=<n> watchdog_vbl=<v|-> verdict=...
@@ -117,6 +142,7 @@
 #   [card-boot] row=save-ref-clock game=spyro-2 records=<n> ... verdict=...
 #   [card-boot] row=format-ref|format-ref-clock game=spyro-2 records=<n> verifier=<PASS|FAIL> hard_failed=<n> ... card_bytes_differ=<n> commands=<op>/<ref> written=<op>/<ref> [vblpos_delivered=<n> gte_ops=<n>] verdict=...
 #   [card-boot] row=load-ref|load-ref-clock game=<game> records=<n> ... fd=<fds> reads=<bytes@offset:sectors/cadence,...> ref_sectors=<n> ... verdict=...
+#   [card-boot] row=autosave game=spyro-2 exit=<rc> trip=<addr|-> selected=<0|1|-> released=<0|1> quanta=<n> write=<bytes@offset:result|-> written=<n>/12 changed=<n> verdict=...
 #
 # Usage: tests/harness/check_card_boot.sh [--build-dir=DIR] [--row=boot|save|save-ref|save-ref-clock|format-ref|format-ref-clock|load-ref|load-ref-clock]
 #        [--game=spyro-2|spyro-3] (the save-ref and load-ref rows' game; default spyro-2)
@@ -513,6 +539,80 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+# row_autosave: Spyro 2's story-step autosave on leaving Glimmer. Prints the verdict line; returns 0, 1 or 64.
+row_autosave() {
+    local GAME=spyro-2 LIMIT=3600 PRE_LIMIT=1400 MOVIE=games/spyro-2/bk2/s2-create-save.bk2
+    pg_resolve "$GAME"
+    [[ -x "$PG_BIN" && -f "$PG_DISC" && -f "$MOVIE" ]] ||
+        { echo "[card-boot] row=autosave SKIP (binary, disc or movie missing)"; return 64; }
+    local OUT="${PG_BUILD_DIR:-build/linux-release}/card-boot/$GAME"
+    mkdir -p "$OUT"
+    local CARD="$OUT/autosave-card1.mcr" PRE="$OUT/autosave-pre-card1.mcr"
+    local LOG="$OUT/autosave.log" PRE_LOG="$OUT/autosave-pre.log" CW="$OUT/autosave-card-window.txt"
+    rm -f "${OUT:?}/autosave-card1.mcr" "${OUT:?}/autosave-card1.mcr.modset" \
+        "${OUT:?}/autosave-pre-card1.mcr" "${OUT:?}/autosave-pre-card1.mcr.modset" \
+        "${OUT:?}/autosave.log" "${OUT:?}/autosave-pre.log" "${OUT:?}/autosave-card-window.txt"
+    cp "$FIXTURE" "$PRE"
+    cp "$FIXTURE" "$CARD"
+    local common=(--game "$GAME" --headless --no-config --disc "$PG_DISC" --disc-cache 0
+                  --no-log-file --mute 1 --vibration 0 --bk2 "$MOVIE" --no-card2)
+    op_own_run env OPENPETE_VIBRATION=0 timeout -k 10 900 \
+        "$PG_BIN" "${common[@]}" --card1 "$PRE" --frame-limit "$PRE_LIMIT" </dev/null > "$PRE_LOG" 2>&1
+    local pre_rc=$?
+    op_own_run env OPENPETE_VIBRATION=0 OPENPETE_CARD_WINDOW="$CW" timeout -k 10 900 \
+        "$PG_BIN" "${common[@]}" --card1 "$CARD" --skip-to-cutscene summer_forest_story \
+        --frame-limit "$LIMIT" </dev/null > "$LOG" 2>&1
+    local rc=$?
+    [[ "$pre_rc" == 0 && -f "$PRE" ]] ||
+        { echo "[card-boot] row=autosave game=$GAME verdict=FAIL: the pre-autosave run exited $pre_rc ($PRE_LOG)"; return 1; }
+    [[ -f "$LOG" && -f "$CW" && -f "$CARD" ]] ||
+        { echo "[card-boot] row=autosave game=$GAME verdict=FAIL: the run left no log, card window or card (exit $rc)"; return 1; }
+    python3 - "$LOG" "$CW" "$PRE" "$CARD" "$rc" <<'PY'
+import re, sys
+log, cw, pre, card, rc = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+text = open(log, errors='replace').read()
+trip = re.findall(r'hang detected:.*?trip addr=(0x[0-9A-Fa-f]+)', text)
+sel = re.findall(r'summer_forest_story: save selected 0x80067E20 = (\d+)', text)
+called = 'summer_forest_story: completion stores, func_80019928(0)' in text
+released = re.search(r'level playable .* cutscene=summer_forest_story k=4 D_800681C8=6', text) is not None
+q = re.findall(r'loop site 0x800194F8: \d+ polls, \d+ runs, (\d+) quanta', text)
+quanta = int(q[-1]) if q else 0
+rows = [l.split() for l in open(cw) if l[:1] in 'BC']
+a, b = open(pre, 'rb').read(), open(card, 'rb').read()
+first = None
+for i in range(1, 16):
+    if b[i * 128 + 10:i * 128 + 30].split(b'\0')[0] == b'BASCUS-94425SP2RR':
+        first = i - 1
+        break
+# The autosave's write: B(35h) of 0x600 bytes, the offset from the lseek
+# on the same fd before it.
+write, off, seek = None, None, {}
+for k, r in enumerate(rows):
+    if r[0] == 'B' and r[3] == '33':
+        seek[r[4]] = int(r[7], 16)
+    elif r[0] == 'B' and r[3] == '35' and r[6] == '00000600':
+        write, off = (k, r), seek.get(r[4])
+written = changed = 0
+if write and off is not None and first is not None:
+    lo = 64 * (first + 1) + off // 128
+    span = set(range(lo, lo + 12))
+    wsec = {int(r[5]) for r in rows[write[0]:] if r[0] == 'C' and r[3] == '0' and r[4] == '4'}
+    written = len(span & wsec)
+    changed = sum(a[s * 128:(s + 1) * 128] != b[s * 128:(s + 1) * 128] for s in span)
+wr = '-' if not write else '0x600@0x%x:0x%s' % (off if off is not None else -1, write[1][7])
+head = ('[card-boot] row=autosave game=spyro-2 exit=%d trip=%s selected=%s released=%d quanta=%d '
+        'write=%s written=%d/12 changed=%d'
+        % (rc, trip[-1] if trip else '-', sel[-1] if sel else '-', released, quanta, wr, written, changed))
+if not called or sel[-1:] != ['1'] or not released:
+    print(head + ' verdict=VACUOUS: the exit call with a save selected or the story cutscene did not run'); sys.exit(1)
+ok = (rc == 0 and quanta > 0 and write is not None and write[1][7] == '00000000'
+      and off is not None and off >= 0x200 and (off - 0x200) % 0x600 == 0
+      and written == 12 and changed > 0)
+print(head + (' verdict=PASS' if ok else ' verdict=FAIL'))
+sys.exit(0 if ok else 1)
+PY
+}
+
 # Exit 1 on any failing row, 64 when every row skipped, else 0.
 failed=0; ran=0
 for row in "${ROWS[@]}"; do
@@ -525,6 +625,7 @@ for row in "${ROWS[@]}"; do
         format-ref-clock) row_format_ref format-ref-clock games/spyro-2/oracle-card-format-clock.conf 1; r=$? ;;
         load-ref) row_load_ref load-ref "$SAVE_REF_GAME" "games/$SAVE_REF_GAME/oracle-card-load.conf" 0; r=$? ;;
         load-ref-clock) row_load_ref load-ref-clock spyro-2 games/spyro-2/oracle-card-load-clock.conf 1; r=$? ;;
+        autosave) row_autosave; r=$? ;;
         *) echo "card-boot: unknown row $row" >&2; exit 64 ;;
     esac
     (( r == 1 )) && failed=1

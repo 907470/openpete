@@ -25,10 +25,19 @@ void spyro2_cutscene_surface(struct openpete_surface_sink* sink);
 /** @brief Returns the level a cutscene is entered from, the --skip-to-level it rides.
  *
  * Dragon Shores (65) for a story cutscene, the level's homeworld for an
- * intro, the level itself for an outro.
+ * intro, the level itself for an outro or an exit row.
  * @param id The cutscene id.
  * @return The level, or -1 for an unknown id. */
 int spyro2_cutscene_source_level(int id);
+
+/** @brief Reports whether a cutscene rides a --skip-to-level to its source level when none is given.
+ *
+ * False for an exit row (a story step entered by leaving a level), whose
+ * source level is reached by play or by an explicit --skip-to-level, so
+ * that a save selected at the title stays selected.
+ * @param id The cutscene id.
+ * @return 1 when the cutscene implies a --skip-to-level, else 0. */
+int spyro2_cutscene_rides_level_skip(int id);
 
 /** @brief Arms a cutscene for the skip hook, which acts once on the first non-speculative tick of the source level's gameplay.
  *
@@ -47,7 +56,7 @@ int spyro2_cutscene_skip_watching(void);
 /** @brief Tests the armed cutscene's release predicate and formats its engagement values.
  *
  * True once the hook has made its call and cutscene playback runs
- * (D_800681C8 6), with D_800698F4 equal to k for a story row, or with
+ * (D_800681C8 6), with D_800698F4 equal to k for a story or exit row, or with
  * StartCutscene's slot (0x80068C40; 1 for an outro, 0 for an intro) and
  * entry (0x80068C3C) equal to the row's for a level row. A story row's
  * release starts the watch for the replay's return to Dragon Shores.

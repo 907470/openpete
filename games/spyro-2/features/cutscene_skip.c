@@ -46,6 +46,26 @@
 //   0x80066E72[idx] & 0x80066FF0; the hook makes the stores without it and
 //   logs the tested values.
 //
+// A story step entered by leaving a level (the exit route). Leaving Glimmer
+// (level 11, idx 1) with Summer Forest unvisited reaches a story cutscene
+// without the theater: Glimmer's exit (func_level_11_80075024, 0x80075544)
+// calls func_80019928(0), and state 7's transition machine
+// (func_titlescreen_and_loading_80071BD4), at the end of its counter wait on
+// 0x800698EC, calls func_80019230(4) (0x80071DC4) when
+// g_LevelIndex is 1 and Summer Forest's visited byte 0x8006B084[0] is 0. The
+// title overlay is then resident, so the loader word D_80063250[4] the call
+// stores runs the loader as on the game's own path, and byte 0x800698BD stays
+// 0: at the cutscene's end the game calls func_80019230(5) itself, the step
+// whose loading loop runs the autosave of the selected save, and goes on to
+// Summer Forest. An exit row for level L is a --skip-to-level L, or L reached
+// by play, then the outro row's completion stores and func_80019928(0). It
+// rides no --skip-to-level of its own: the level skip passes the title's file
+// select by, so with it no save is selected and the step's autosave does
+// nothing; a movie that starts a New Game on a card reaches Glimmer with the
+// save selected (0x80067E20 1). Refused when g_LevelIndex is not the row's or
+// the visited byte is set (the transition machine then loads Summer Forest
+// with no cutscene).
+//
 // Every call is made from a dispatch hook on the draw function func_800156FC
 // (0x800156FC) entry on the first tick of the source level's gameplay
 // (D_800681C8 0). The game's own callers call from inside the update
@@ -103,6 +123,7 @@
 #define ADDR_MASK_TABLE       0x80066E72u /* bytes [idx], idx >= 22 test */
 #define ADDR_SLOT             0x80068C40u /* StartCutscene's slot */
 #define ADDR_ENTRY            0x80068C3Cu /* StartCutscene's WAD entry */
+#define ADDR_SAVE_SELECTED    0x80067E20u /* word: 1 while a card save is selected */
 #define COUNTED_IDX_LIMIT     22
 
 #define TOP_GAMEPLAY    0u
@@ -113,7 +134,7 @@
 
 void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
 
-typedef enum { ROUTE_THEATER, ROUTE_INTRO, ROUTE_OUTRO } route_t;
+typedef enum { ROUTE_THEATER, ROUTE_INTRO, ROUTE_OUTRO, ROUTE_EXIT } route_t;
 
 /* One row per cutscene. Story rows (the theater route): id is k
  * (func_80019230's argument) and level the pseudo-level the theater's pair
@@ -121,7 +142,11 @@ typedef enum { ROUTE_THEATER, ROUTE_INTRO, ROUTE_OUTRO } route_t;
  * table, and k 0 is the return from a replay. Level rows (the portal route):
  * level is L, idx its g_LevelIndex, entry the WAD entry StartCutscene plays
  * (D_80064914[idx], + 1 for the outro); ids from 20. source is the
- * --skip-to-level the row rides. */
+ * --skip-to-level the row rides. Exit rows (the exit route): level is the
+ * pseudo-level D_8006323C[k] of the step, idx the source level's
+ * g_LevelIndex, entry the k the transition machine passes to func_80019230;
+ * source is the level the exit is taken from, which the row does not ride a
+ * --skip-to-level to. */
 typedef struct {
     const char* name;
     int         id;
@@ -134,6 +159,8 @@ typedef struct {
 
 #define STORY(name, k, pseudo) \
     { name, k, ROUTE_THEATER, pseudo, THEATER_LEVEL, 0u, 0u }
+#define EXIT_STORY(name, id, k, pseudo, source, idx) \
+    { name, id, ROUTE_EXIT, pseudo, source, idx, k }
 #define LEVEL_PAIR(stem, id, level, idx, home, entry)                    \
     { stem "_intro", id, ROUTE_INTRO, level, home, idx, entry },          \
     { stem "_outro", (id) + 1, ROUTE_OUTRO, level, level, idx, (entry) + 1 }
@@ -168,6 +195,8 @@ static const cutscene_t k_cutscenes[] = {
     LEVEL_PAIR("cloud_temples",   48, 52u, 23u, 50u, 30u),
     LEVEL_PAIR("robotica_farms",  50, 61u, 25u, 50u, 32u),
     LEVEL_PAIR("metropolis",      52, 62u, 26u, 50u, 34u),
+    /*          name                   id  k   pseudo source idx */
+    EXIT_STORY("summer_forest_story", 60, 4u, 72u,   11u,   1u),
 };
 
 /** @brief Finds the cutscene table row with the given id.
@@ -197,6 +226,11 @@ int spyro2_cutscene_source_level(int id) {
     return r ? (int)r->source : -1;
 }
 
+int spyro2_cutscene_rides_level_skip(int id) {
+    const cutscene_t* r = row_of(id);
+    return r && r->route != ROUTE_EXIT;
+}
+
 static const cutscene_t* s_row       = NULL; /* armed row, NULL when idle */
 static int               s_induced   = 0;    /* the hook has called */
 static int               s_watching  = 0;
@@ -212,19 +246,22 @@ void spyro2_cutscene_skip_arm(int id) {
 int  spyro2_cutscene_skip_watching(void) { return s_watching; }
 void spyro2_cutscene_skip_finish(void)   { s_watching = 0; }
 
-/* A story row plays with D_800698F4 == k; a level row with StartCutscene's
- * slot and entry words equal to the row's. See cutscene_skip.h. */
+/* A story row plays with D_800698F4 == k, an exit row with D_800698F4 == the
+ * k of its entry field; a level row with StartCutscene's slot and entry words
+ * equal to the row's. See cutscene_skip.h. */
 int spyro2_cutscene_skip_released(CPUState* cpu, char* eng, size_t cap) {
     if (!s_row || !s_induced) return 0;
     uint32_t top = cpu->read_word(ADDR_TOP_STATE);
     if (top != TOP_PLAYBACK) return 0;
     uint32_t next = cpu->read_word(ADDR_NEXT_LEVEL_NUM);
-    if (s_row->route == ROUTE_THEATER) {
+    if (s_row->route == ROUTE_THEATER || s_row->route == ROUTE_EXIT) {
+        uint32_t want_k = s_row->route == ROUTE_EXIT ? s_row->entry
+                                                     : (uint32_t)s_row->id;
         uint32_t k = cpu->read_word(ADDR_CUTSCENE_K);
-        if (k != (uint32_t)s_row->id) return 0;
+        if (k != want_k) return 0;
         snprintf(eng, cap, " cutscene=%s k=%u D_800681C8=%u next_level=%u",
                  s_row->name, (unsigned)k, (unsigned)top, (unsigned)next);
-        s_returning = 1;
+        s_returning = s_row->route == ROUTE_THEATER;
         return 1;
     }
     uint32_t slot  = cpu->read_word(ADDR_SLOT);
@@ -346,20 +383,15 @@ static void intro_hook(CPUState* cpu, const cutscene_t* r) {
                (unsigned)cpu->read_word(ADDR_DESTINATION));
 }
 
-/** @brief Makes a level outro row's completion stores, then the level's exit call func_80019928(0).
+/** @brief Makes a level's completion stores, then the level's exit call func_80019928(0), and logs both.
  *
  * Stores byte 0x80066FF4 = 1 and, when the completion byte
  * 0x8006B264[idx] is 0, sets it and for idx below 22 increments
  * 0x80067108. The idx >= 22 mask test the game's completion runs under is
- * not applied; its value is logged. Refuses the row when g_LevelIndex is
- * not the row's.
+ * not applied; its value is logged.
  * @param cpu The guest CPU state.
- * @param r The armed row. */
-static void outro_hook(CPUState* cpu, const cutscene_t* r) {
-    if (cpu->read_word(ADDR_LEVEL_INDEX) != r->idx) {
-        refuse(r->name, "g_LevelIndex is not the row's");
-        return;
-    }
+ * @param r The armed row; idx is the level's g_LevelIndex. */
+static void complete_and_leave(CPUState* cpu, const cutscene_t* r) {
     unsigned mask = cpu->read_byte(ADDR_MASK_TABLE + r->idx) &
                     cpu->read_byte(ADDR_COMPLETE_MASK);
     cpu->write_byte(ADDR_OUTRO_PENDING, 1u);
@@ -376,6 +408,41 @@ static void outro_hook(CPUState* cpu, const cutscene_t* r) {
                (unsigned)cpu->read_word(ADDR_TOP_STATE),
                (unsigned)cpu->read_word(ADDR_DESTINATION),
                (unsigned)cpu->read_word(ADDR_COMPLETE_COUNT), mask);
+}
+
+/** @brief Makes a level outro row's completion stores and exit call, refusing the row when g_LevelIndex is not the row's.
+ *
+ * @param cpu The guest CPU state.
+ * @param r The armed row. */
+static void outro_hook(CPUState* cpu, const cutscene_t* r) {
+    if (cpu->read_word(ADDR_LEVEL_INDEX) != r->idx) {
+        refuse(r->name, "g_LevelIndex is not the row's");
+        return;
+    }
+    complete_and_leave(cpu, r);
+}
+
+/** @brief Makes an exit row's completion stores and exit call, after which the game's transition machine calls func_80019230(k) itself.
+ *
+ * Refuses the row when g_LevelIndex is not the row's (the transition
+ * machine tests it at 0x80071D9C) or Summer Forest's visited byte
+ * 0x8006B084[0] is set (tested at 0x80071DB0); either sends the transition
+ * to a level load with no story step. Also logs the save-selected word
+ * 0x80067E20, which decides whether the step's autosave writes the card.
+ * @param cpu The guest CPU state.
+ * @param r The armed row. */
+static void exit_hook(CPUState* cpu, const cutscene_t* r) {
+    if (cpu->read_word(ADDR_LEVEL_INDEX) != r->idx) {
+        refuse(r->name, "g_LevelIndex is not the row's");
+        return;
+    }
+    if (cpu->read_byte(ADDR_VISITED)) {
+        refuse(r->name, "visited byte 0x8006B084[0] set");
+        return;
+    }
+    OPL_INFO_F("skip-to-cutscene", "%s: save selected 0x80067E20 = %u",
+               r->name, (unsigned)cpu->read_word(ADDR_SAVE_SELECTED));
+    complete_and_leave(cpu, r);
 }
 
 /** @brief Logs a story row's return to Dragon Shores after its release and ends the return watch.
@@ -397,6 +464,7 @@ static void (*const k_hooks[])(CPUState*, const cutscene_t*) = {
     [ROUTE_THEATER] = theater_hook,
     [ROUTE_INTRO]   = intro_hook,
     [ROUTE_OUTRO]   = outro_hook,
+    [ROUTE_EXIT]    = exit_hook,
 };
 
 /** @brief Draw-entry hook that runs the armed row's call once on the source level's first live tick.

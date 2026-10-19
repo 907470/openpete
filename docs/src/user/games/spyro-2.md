@@ -79,6 +79,7 @@ C. With no value, or an unknown name, it prints the list.
 | `intro`, `intro_arrival`, `summer_forest`, `crush_intro`, `crush_defeated`, `autumn_plains`, `gulp_intro`, `gulp_defeated`, `winter_tundra`, `ripto_intro`, `ending` | a story cutscene, through the Dragon Shores theater's replay | level 65, `dragon_shores`; playback returns to Dragon Shores |
 | `<level>_intro` | the level's arrival cutscene | the level's homeworld, through its portal, as on a first visit |
 | `<level>_outro` | the level's departure cutscene | the level, completed and left |
+| `summer_forest_story` | the story cutscene of leaving Glimmer for Summer Forest, then the story step after it: the save selected at the title is autosaved and Summer Forest loads | Glimmer, completed and left through its exit; Glimmer is reached by play (a New Game from the title selects a save) or by `--skip-to-level glimmer` (no save is selected, so nothing is saved) |
 
 `<level>` is one of `idol_springs`, `colossus`, `hurricos`,
 `aquaria_towers`, `sunny_beach`, `skelos_badlands`, `crystal_glacier`,

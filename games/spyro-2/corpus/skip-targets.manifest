@@ -7,7 +7,9 @@
 # line. The story rows enter from Dragon Shores (level 65). The level intro
 # and outro rows carry StartCutscene's slot (0 intro, 1 outro) and WAD entry
 # words and g_NextLevelNum, the level the cutscene belongs to; an intro
-# enters from the level's homeworld, an outro from the level.
+# enters from the level's homeworld, an outro from the level. The exit row
+# summer_forest_story carries the story step's k, entered by Glimmer's exit;
+# it rides no --skip-to-level of its own, so its args name one.
 #
 # name           | args                               | frames | expect
 intro            | --skip-to-cutscene intro           | 2573   | cutscene=intro k=1 D_800681C8=6 next_level=70
@@ -55,3 +57,4 @@ robotica_farms_intro   | --skip-to-cutscene robotica_farms_intro   | 3573   | cu
 robotica_farms_outro   | --skip-to-cutscene robotica_farms_outro   | 3573   | cutscene=robotica_farms_outro slot=1 entry=33 level=61
 metropolis_intro       | --skip-to-cutscene metropolis_intro       | 3573   | cutscene=metropolis_intro slot=0 entry=34 level=62
 metropolis_outro       | --skip-to-cutscene metropolis_outro       | 3573   | cutscene=metropolis_outro slot=1 entry=35 level=62
+summer_forest_story    | --skip-to-level glimmer --skip-to-cutscene summer_forest_story | 3573 | cutscene=summer_forest_story k=4 D_800681C8=6 next_level=72
