@@ -103,6 +103,24 @@ size_t openpete_mod_glsl_compile(const char* src, int stage,
                                  const char* preamble, const char* log_path,
                                  uint32_t** out_words);
 
+/** @brief Run only the glslang preprocessor over a source, under the same settings and include resolution as openpete_mod_glsl_compile.
+ *
+ * The result is glslang's preprocessed text: comments removed, macros
+ * expanded, includes inlined, `#version`, `#extension`, `#pragma` and
+ * `#line` directives kept. A failure writes the phase and the glslang info
+ * logs to log_path.
+ * @param src The NUL-terminated shader source.
+ * @param stage OPENPETE_MOD_GLSL_STAGE_VERT or OPENPETE_MOD_GLSL_STAGE_FRAG.
+ * @param inc The include context; must outlive the call.
+ * @param preamble Text injected after #version, or NULL.
+ * @param log_path The file a failure log is written to.
+ * @param len_out Receives the text length on success; may be NULL.
+ * @return The malloc'd NUL-terminated text, or NULL on failure. */
+char* openpete_mod_glsl_preprocess(const char* src, int stage,
+                                   const openpete_mod_glsl_include_t* inc,
+                                   const char* preamble, const char* log_path,
+                                   size_t* len_out);
+
 #ifdef __cplusplus
 }
 #endif

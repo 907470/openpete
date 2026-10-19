@@ -1455,6 +1455,29 @@ const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words);
  * @param words Receives the word count; may be NULL.
  * @return The words, or NULL. */
 const uint32_t* openpete_mods_shader_spv_portal(int handle, size_t* words);
+struct openpete_mod_link_member;
+/** @brief Return a material fragment shader's prepared composition member for one profile (mod_mat_link.h).
+ *
+ * Inspected at registration (identity, discard, block layout; verdict
+ * pending) and decided by openpete_mods_shader_link_resolve (the verdict
+ * and its reason, the preprocessed text a combined module is built from).
+ * The caller holds the registry lock; the member lives until the shader is
+ * swept.
+ * @param handle Shader handle.
+ * @param profile 0 stock, 1 terrain, 2 portal (the decal contract has 0 only).
+ * @return The member, or NULL when the handle is out of range or swept, the
+ *         shader is no material fragment, or it has no such profile. */
+const struct openpete_mod_link_member* openpete_mods_shader_link(int handle, int profile);
+/** @brief Decide a material fragment shader's pending composition members and copy the verdicts onto its materials.
+ *
+ * Registration only inspects the members (verdict pending); this runs the
+ * source read, the source checks and the one-member compiles, cached under
+ * the mod's `.build/shaders/`. File IO: entry or tick context, never a
+ * present hook. The caller holds the registry write lock.
+ * @param handle Shader handle.
+ * @return The profiles decided; 0 when none was pending or the source no
+ *         longer reads. */
+int openpete_mods_shader_link_resolve(int handle);
 /** @brief Free every shader a mod registered and mark its slots dead.
  *
  * Takes the registry write lock. Both SPIR-V profiles are freed and the

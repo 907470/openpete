@@ -1,0 +1,11 @@
+/* The module of a prebuilt .spv: the test compiles this file and hands
+ * only the words to the link layer, as registration does for a .spv that
+ * ships without source. The extension keeps the census from reading it
+ * as source. */
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "openpete_psx_material.glsl"
+
+layout(set = 3, binding = 1, std140) uniform op_instance { vec4 tint; };
+
+vec4 op_material(vec4 base) { return vec4(base.rgb * tint.rgb, base.a); }

@@ -428,6 +428,44 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
                      ${CMAKE_CURRENT_SOURCE_DIR}/data/spv-cdata-mods
                      ${_shader_dir}/sdk "${_spirv_val}" --expect-moved)
     set_tests_properties(mod_shader_table_move PROPERTIES LABELS "mods")
+
+    # mod_material_link_test - material composition by source prefixing
+    # (core/mods/mod_mat_link.c): every in-tree material shader classified
+    # linkable or not with its reason, the fixture cases under
+    # data/mat-link/cases.tsv, and every combined module compiled, checked by
+    # spirv-val and rebuilt in other member orders to the same bytes. The
+    # _vk test creates each module's pipelines on a headless device under
+    # the Khronos validation layer (exit 77 without a device or the layer).
+    add_executable(mod_material_link_test
+        mod_material_link_test.c
+        mod_material_link_vk.c
+        ${CMAKE_SOURCE_DIR}/core/mods/mod_mat_link.c
+        ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_reflect.c
+        ${CMAKE_SOURCE_DIR}/core/mods/mod_glsl.c
+        ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_cdata.c
+        ${CMAKE_SOURCE_DIR}/core/host/sha256.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(mod_material_link_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/mods
+        ${CMAKE_SOURCE_DIR}/core/rhi
+        ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_BINARY_DIR}/third_party/glslang/include)
+    target_link_libraries(mod_material_link_test PRIVATE
+        glslang glslang-default-resource-limits openpete_rhi SDL3::SDL3-static ${CMAKE_DL_LIBS})
+    set_target_properties(mod_material_link_test PROPERTIES C_STANDARD 11)
+    add_dependencies(mod_material_link_test spyro1_sdk_stage)
+    add_test(NAME mod_material_link
+             COMMAND mod_material_link_test ${_shader_dir}/sdk "${_spirv_val}"
+                     --expect-linkable --census ${CMAKE_SOURCE_DIR}/mods
+                     --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/data/mat-link)
+    set_tests_properties(mod_material_link PROPERTIES LABELS "mods")
+    add_test(NAME mod_material_link_vk
+             COMMAND mod_material_link_test ${_shader_dir}/sdk "${_spirv_val}" --vk
+                     --expect-linkable --census ${CMAKE_SOURCE_DIR}/mods
+                     --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/data/mat-link)
+    set_tests_properties(mod_material_link_vk PROPERTIES LABELS "mods;vulkan"
+                         SKIP_RETURN_CODE 77)
 endif()
 
 # rhi_memtype_candidates_test - the memory-type preference order behind the
@@ -609,6 +647,8 @@ set(RHI_STRESS_SOURCES
     ${CMAKE_SOURCE_DIR}/core/mods/mod_shader.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_material_resolve.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_cdata.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_reflect.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_mat_link.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
     ${CMAKE_SOURCE_DIR}/core/host/sha256.c
     ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c

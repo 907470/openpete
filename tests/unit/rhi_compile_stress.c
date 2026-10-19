@@ -294,6 +294,15 @@ size_t openpete_mod_glsl_compile(const char *src, int stage, const openpete_mod_
     memcpy(*out_words, s_frag_words, s_frag_n * 4);
     return s_frag_n;
 }
+/** @brief Preprocess nothing: the stress mod's module names no op_material, so no composition member is prepared.
+ *
+ * @return NULL. */
+char *openpete_mod_glsl_preprocess(const char *src, int stage, const openpete_mod_glsl_include_t *inc,
+                                   const char *preamble, const char *log_path, size_t *len_out)
+{
+    (void)src; (void)stage; (void)inc; (void)preamble; (void)log_path; (void)len_out;
+    return NULL;
+}
 
 /* ---- the job queue ----------------------------------------------------- */
 

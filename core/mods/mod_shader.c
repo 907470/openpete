@@ -29,6 +29,8 @@
 #include "../host/sha256.h"
 #include "mod_glsl.h"
 #include "mod_spv_cdata.h"
+#include "mod_spv_reflect.h"
+#include "mod_mat_link.h"
 #include "mod_material_resolve.h"
 
 #ifndef OPENPETE_NO_GLSLANG
@@ -109,6 +111,7 @@ void openpete_mods_registry_read_unlock(void) {
 typedef struct {
     const char* owner;       /* mod id (loader-owned string) */
     char        path[MOD_SHADER_PATH_MAX]; /* as registered, mod-relative */
+    char        mod_dir[MOD_SHADER_PATH_MAX * 2]; /* the owner's directory, for a later source read */
     int         stage;       /* GLSLANG_STAGE_VERTEX / _FRAGMENT */
     uint32_t*   spv;         /* malloc'd SPIR-V words */
     size_t      spv_words;
@@ -130,8 +133,17 @@ typedef struct {
      * each one's device copy. */
     openpete_mod_spv_cdata_t cdata[3];
     void*       cdata_gpu[3];
+    /* The composition member of each fragment profile (mod_mat_link.h),
+     * prepared at registration for a material fragment; link_n is the
+     * profile count prepared, 0 for anything else. */
+    openpete_mod_link_member_t link[OPENPETE_MOD_LINK_PROFILES];
+    int         link_n;
     int         live;        /* 0 = swept slot (stale handle) */
 } mod_shader_t;
+
+_Static_assert(OPENPETE_MOD_LINK_CONTRACT_SCENE == OPENPETE_MATERIAL_CONTRACT_SCENE &&
+               OPENPETE_MOD_LINK_CONTRACT_DECAL == OPENPETE_MATERIAL_CONTRACT_DECAL,
+               "mod_mat_link.h contracts mirror openpete_mods.h");
 
 /* Chunked: a handle is an index into this table and the renderer reads
  * an entry's SPIR-V under the registry read lock; entries never move, so a
@@ -144,28 +156,6 @@ static int shader_count(void) { return (int)mod_cvec_count(&s_shaders); }
 /** @brief Return the shader table slot at an index; the caller bounds the index by shader_count(). */
 static mod_shader_t* shader_at(int i) {
     return (mod_shader_t*)mod_cvec_at(&s_shaders, (size_t)i);
-}
-
-/** @brief Return 1 when a SPIR-V module has an OpName whose string starts with the given bytes.
- *
- * A trailing NUL included in @p len makes the match exact. The walk stops
- * at a zero word count or one that runs past the module.
- * @param w The SPIR-V words, starting with the magic number.
- * @param n The word count.
- * @param name The bytes to match.
- * @param len Their count.
- * @return 1 on a match, 0 otherwise. */
-static int shader_spv_names(const uint32_t* w, size_t n, const char* name, size_t len) {
-    if (!w || n < 5 || w[0] != 0x07230203u) return 0;
-    for (size_t i = 5; i < n;) {
-        const uint32_t wc = w[i] >> 16;
-        if (wc == 0 || wc > n - i) break;
-        if ((w[i] & 0xFFFFu) == 5u && wc >= 2u && (wc - 2u) * 4u >= len &&
-            memcmp(&w[i + 2], name, len) == 0)
-            return 1;
-        i += wc;
-    }
-    return 0;
 }
 
 /** @brief Return the shading contract a SPIR-V module was compiled against.
@@ -181,7 +171,7 @@ static int shader_spv_names(const uint32_t* w, size_t n, const char* name, size_
  * @return The OPENPETE_MATERIAL_CONTRACT_* value. */
 static int shader_spv_contract(const uint32_t* w, size_t n) {
     static const char k_decal_block[] = "OP_DECAL_PC";
-    return shader_spv_names(w, n, k_decal_block, sizeof k_decal_block)
+    return openpete_mod_spv_has_name(w, n, k_decal_block, sizeof k_decal_block)
         ? OPENPETE_MATERIAL_CONTRACT_DECAL : OPENPETE_MATERIAL_CONTRACT_SCENE;
 }
 
@@ -201,7 +191,7 @@ static void shader_move_tables(mod_shader_t* sh, const char* id) {
     static const char k_material_fn[] = "op_material(";
     const char* off = getenv("OPENPETE_MOD_SPV_CDATA");
     if ((off && strcmp(off, "0") == 0) || sh->stage != OPENPETE_MOD_GLSL_STAGE_FRAG ||
-        !shader_spv_names(sh->spv, sh->spv_words, k_material_fn, sizeof k_material_fn - 1))
+        !openpete_mod_spv_has_name(sh->spv, sh->spv_words, k_material_fn, sizeof k_material_fn - 1))
         return;
     uint32_t** spv[3] = { &sh->spv, &sh->spv_ter, &sh->spv_portal };
     size_t* words[3] = { &sh->spv_words, &sh->spv_ter_words, &sh->spv_portal_words };
@@ -501,6 +491,255 @@ static void compile_material_profiles(const char* src, int stage,
 }
 
 /* ------------------------------------------------------------------ */
+/* composition members                                                 */
+
+/* The link context of the staged SDK (mod_mat_link.h); created by the first
+ * material registration, under the registry write lock or on the compose
+ * thread that holds the read side, which never run at once. */
+static openpete_mod_link_ctx_t* s_link_ctx;
+
+/** @brief Return the link context, created on first use; NULL on allocation failure. */
+static openpete_mod_link_ctx_t* link_ctx(void) {
+    if (!s_link_ctx) s_link_ctx = openpete_mod_link_ctx_new(openpete_mods_sdk_dir());
+    return s_link_ctx;
+}
+
+/** @brief Return whether registration decides composition members at once (OPENPETE_MATERIAL_LINK_EAGER=1), a census instrument; read on each call. */
+static int link_eager(void) {
+    const char* e = getenv("OPENPETE_MATERIAL_LINK_EAGER");
+    return e && *e && *e != '0';
+}
+
+/* What a one-member compile needs to go through the shader's compile cache. */
+typedef struct {
+    const openpete_mod_glsl_include_t* inc;
+    const char* key;          /* the shader's build key                  */
+    const char* build_dir;
+    const char* flat;
+    const char* suffix;       /* the profile's cache-file suffix         */
+    const char* id;
+    const char* path;
+} link_cache_t;
+
+/** @brief Compile a one-member module through the shader's compile cache (an openpete_mod_link_compile_fn).
+ *
+ * The cache files are `<flat><suffix>.spv` and `.hash`; the stamp is
+ * SHA-256 over the shader's build key, the preamble and the module text,
+ * so an edit to the source, the interface files, the compiler or the
+ * generated text recompiles.
+ * @param user The link_cache_t.
+ * @param text The module text.
+ * @param preamble The profile preamble, or NULL.
+ * @param log_path The failure log path.
+ * @param out Receives the words.
+ * @return The word count, 0 on failure. */
+static size_t link_compile_cached(void* user, const char* text, const char* preamble,
+                                  const char* log_path, uint32_t** out) {
+    const link_cache_t* c = (const link_cache_t*)user;
+    openpete_sha256_ctx hc;
+    openpete_sha256_init(&hc);
+    openpete_sha256_update(&hc, c->key, strlen(c->key) + 1);
+    if (preamble) openpete_sha256_update(&hc, preamble, strlen(preamble));
+    openpete_sha256_update(&hc, "", 1);
+    key_update_str(&hc, text);
+    uint8_t digest[32];
+    char key[65];
+    openpete_sha256_final(&hc, digest);
+    openpete_sha256_hex(digest, key);
+    return compile_profile(text, MOD_SHADER_STAGE_FRAG, c->inc, key, c->build_dir, c->flat,
+                           c->suffix, preamble, log_path, c->id, c->path, out);
+}
+
+/** @brief Return whether a module is a material fragment: it names the contract function `op_material(`. */
+static int shader_is_material(int stage, const uint32_t* w, size_t n) {
+    static const char k_material_fn[] = "op_material(";
+    return stage == MOD_SHADER_STAGE_FRAG &&
+           openpete_mod_spv_has_name(w, n, k_material_fn, sizeof k_material_fn - 1);
+}
+
+/** @brief Refuse the modules of a material fragment pinned at api 13 or later whose op_material reaches a discard.
+ *
+ * The stock module's refusal refuses the shader; a refused terrain or
+ * portal profile is freed and its draws stay on the engine's own stages,
+ * as for a profile that fails to compile.
+ * @param pin The owner's api pin.
+ * @param words The stock module.
+ * @param n Its word count.
+ * @param prof The extra profiles; a refused one is freed and cleared.
+ * @return 0, or -1 when the stock module is refused. */
+static int shader_refuse_discard(int pin, const char* id, const char* path, const uint32_t* words,
+                                 size_t n, mod_shader_t* prof) {
+    if (openpete_mod_link_discard_refused(pin, words, n)) {
+        OPL_ERROR_F("mods", "%s: shader %s: op_material reaches a discard, which the material "
+                    "contract forbids (api %d) - refused", id, path, pin);
+        return -1;
+    }
+    uint32_t** spv[2] = { &prof->spv_ter, &prof->spv_portal };
+    size_t* words_n[2] = { &prof->spv_ter_words, &prof->spv_portal_words };
+    for (int p = 0; p < 2; p++) {
+        if (!*spv[p] || !openpete_mod_link_discard_refused(pin, *spv[p], *words_n[p])) continue;
+        OPL_ERROR_F("mods", "%s: shader %s: %s profile's op_material reaches a discard - "
+                    "refused, its draws stay stock", id, path, p ? "portal" : "terrain");
+        free(*spv[p]);
+        *spv[p] = NULL;
+        *words_n[p] = 0;
+    }
+    return 0;
+}
+
+/** @brief Log a material fragment's composition verdict per profile. */
+static void shader_link_log(const char* id, const char* path, const mod_shader_t* prof) {
+    static const char* const k_prof[OPENPETE_MOD_LINK_PROFILES] = { "stock", "terrain", "portal" };
+    for (int p = 0; p < prof->link_n; p++) {
+        const openpete_mod_link_member_t* m = &prof->link[p];
+        OPL_INFO_F("mods", "%s: shader %s [%s]: composition %s%s%s%s", id, path, k_prof[p],
+                   openpete_mod_link_verdict_name(m->verdict), m->identity ? ", identity" : "",
+                   m->reason[0] ? " - " : "", m->reason);
+    }
+}
+
+/** @brief Inspect the composition member of each profile of a material fragment at registration (mod_mat_link.h).
+ *
+ * Reads SPIR-V only: identity, discard and the block layout, verdict
+ * pending until openpete_mods_shader_link_resolve runs the source checks
+ * and the one-member compile. A prebuilt (no source) is unlinkable on every
+ * profile; a profile with no module (its compile failed or it was refused)
+ * is unlinkable.
+ * @param has_src Nonzero when the shader was compiled from source.
+ * @param words The stock module, before the table move.
+ * @param n Its word count.
+ * @param prof The extra profiles; receives link and link_n. */
+static void shader_link_members(int has_src, const uint32_t* words, size_t n, mod_shader_t* prof) {
+    const int contract = shader_spv_contract(words, n);
+    const uint32_t* spv[OPENPETE_MOD_LINK_PROFILES] = { words, prof->spv_ter, prof->spv_portal };
+    const size_t wn[OPENPETE_MOD_LINK_PROFILES] = { n, prof->spv_ter_words, prof->spv_portal_words };
+    prof->link_n = contract == OPENPETE_MATERIAL_CONTRACT_SCENE ? OPENPETE_MOD_LINK_PROFILES : 1;
+    for (int p = 0; p < prof->link_n; p++) {
+        openpete_mod_link_member_t* m = &prof->link[p];
+        if (!spv[p]) {
+            memset(m, 0, sizeof *m);
+            m->verdict = OPENPETE_MOD_LINK_COMPILE;
+            m->contract = contract;
+            m->profile = p;
+            m->block_fields = -1;
+            snprintf(m->reason, sizeof m->reason, "no module in this profile");
+        } else if (has_src) {
+            openpete_mod_link_inspect(contract, p, spv[p], wn[p], m);
+        } else {
+            openpete_mod_link_prebuilt(contract, p, spv[p], wn[p], m);
+        }
+    }
+}
+
+/** @brief Apply the discard refusal to a material fragment's modules and inspect its composition members.
+ *
+ * @param pin The owner's api pin.
+ * @param has_src Nonzero when the shader was compiled from source.
+ * @param id The mod id, for log lines.
+ * @param path The shader's mod-relative path, for log lines.
+ * @param words The stock module.
+ * @param n Its word count.
+ * @param prof The extra profiles; receives link and link_n.
+ * @return 0, or -1 when the stock module is refused. */
+static int shader_material_members(int pin, int has_src, const char* id, const char* path,
+                                   const uint32_t* words, size_t n, mod_shader_t* prof) {
+    if (shader_refuse_discard(pin, id, path, words, n, prof) != 0) return -1;
+    shader_link_members(has_src, words, n, prof);
+    return 0;
+}
+
+/** @brief Decide the pending composition members of one shader: preprocess, source checks and the one-member compile through its compile cache.
+ *
+ * Reads the source again from `<mod>/<path>` and recomputes its build key;
+ * a source that no longer reads, or whose key cannot be computed, leaves
+ * the members pending. Logs each decided profile's verdict.
+ * @param sh The shader.
+ * @return The number of profiles decided. */
+static int shader_link_decide(mod_shader_t* sh) {
+    static const char* const k_suffix[OPENPETE_MOD_LINK_PROFILES] = { ".link", ".terrain.link",
+                                                                      ".portal.link" };
+    openpete_mod_link_ctx_t* ctx = link_ctx();
+    char src_path[MOD_SHADER_PATH_MAX * 3], key[65], build_dir[MOD_SHADER_PATH_MAX * 3];
+    char flat[MOD_SHADER_PATH_MAX], log_path[MOD_SHADER_PATH_MAX * 4];
+    snprintf(src_path, sizeof src_path, "%s/%s", sh->mod_dir, sh->path);
+    snprintf(build_dir, sizeof build_dir, "%s/.build/shaders", sh->mod_dir);
+    flatten_path(sh->path, flat, sizeof flat);
+    snprintf(log_path, sizeof log_path, "%s/%s.link.log", build_dir, flat);
+    char* src = ctx ? openpete_mod_glsl_read_file(src_path, NULL) : NULL;
+    if (!src || shader_compute_key(sh->mod_dir, sh->path, key) != 0) { free(src); return 0; }
+    openpete_mod_glsl_include_t inc;
+    openpete_mod_glsl_include_init(&inc, src_path, openpete_mods_sdk_dir());
+    int decided = 0;
+    for (int p = 0; p < sh->link_n; p++) {
+        if (sh->link[p].verdict != OPENPETE_MOD_LINK_PENDING) continue;
+        link_cache_t c = { &inc, key, build_dir, flat, k_suffix[p], sh->owner, sh->path };
+        openpete_mod_link_prepare(ctx, src, src_path, link_compile_cached, &c, log_path, &sh->link[p]);
+        decided++;
+    }
+    free(src);
+    if (decided) shader_link_log(sh->owner, sh->path, sh);
+    return decided;
+}
+
+/** @brief Load an author-shipped prebuilt module: `<path>.spv` beside a missing source, accepted only with a `<path>.spv.ihash` sidecar equal to the current interface hash.
+ *
+ * @param id The mod id, for log lines.
+ * @param path The shader's mod-relative path, for log lines.
+ * @param src_path The missing source's full path.
+ * @param words Receives the malloc'd words.
+ * @param n_words Receives their count.
+ * @return 0, or -1 (logged) for a missing or stale sidecar or a missing or malformed module. */
+static int shader_load_prebuilt(const char* id, const char* path, const char* src_path,
+                                uint32_t** words, size_t* n_words) {
+    char pre_path[MOD_SHADER_PATH_MAX * 2 + 8];
+    char side_path[MOD_SHADER_PATH_MAX * 2 + 16];
+    snprintf(pre_path, sizeof pre_path, "%s.spv", src_path);
+    snprintf(side_path, sizeof side_path, "%s.spv.ihash", src_path);
+    size_t side_len = 0;
+    char* side = openpete_mod_glsl_read_file(side_path, &side_len);
+    if (!side) {
+        OPL_ERROR_F("mods", "%s: shader %s: no source and no %s.spv.ihash "
+                    "sidecar - refusing the prebuilt (unverifiable "
+                    "interface)", id, path, path);
+        return -1;
+    }
+    while (side_len && (side[side_len - 1] == '\n' ||
+                        side[side_len - 1] == '\r'))
+        side[--side_len] = '\0';
+    char want[65];
+    interface_hash(want);
+    const int stale = strcmp(side, want) != 0;
+    free(side);
+    if (stale) {
+        OPL_ERROR_F("mods", "%s: shader %s: prebuilt .spv was built "
+                    "against a DIFFERENT shader interface - refused "
+                    "(re-issue with the current SDK)", id, path);
+        return -1;
+    }
+    size_t len = 0;
+    char* pre = openpete_mod_glsl_read_file(pre_path, &len);
+    if (!pre || len < 4 || (len & 3u) != 0) {
+        OPL_ERROR_F("mods", "%s: shader %s: missing/malformed %s.spv",
+                    id, path, path);
+        free(pre);
+        return -1;
+    }
+    *words = (uint32_t*)pre;
+    *n_words = len / 4;
+    OPL_INFO_F("mods", "%s: shader %s: prebuilt .spv accepted (%zu words)",
+               id, path, *n_words);
+    return 0;
+}
+
+/** @brief Free a registration's modules before they reach the table: the stock words, the extra profiles and the composition members. */
+static void shader_modules_free(uint32_t* words, mod_shader_t* prof) {
+    free(words);
+    free(prof->spv_ter);
+    free(prof->spv_portal);
+    for (int p = 0; p < prof->link_n; p++) openpete_mod_link_member_free(&prof->link[p]);
+}
+
+/* ------------------------------------------------------------------ */
 /* the service                                                         */
 
 /** @brief Body of openpete_mods_shader_register, run under the registry write lock. */
@@ -542,10 +781,10 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
 
     size_t src_len = 0;
     char* src = openpete_mod_glsl_read_file(src_path, &src_len);
+    char key[65] = "";
+    openpete_mod_glsl_include_t ctx;
     if (src) {
-        char key[65];
         if (shader_compute_key(mod_dir, path, key) != 0) { free(src); return -1; }
-        openpete_mod_glsl_include_t ctx;
         openpete_mod_glsl_include_init(&ctx, src_path, openpete_mods_sdk_dir());
 
         n_words = compile_profile(src, stage, &ctx, key, build_dir, flat,
@@ -558,48 +797,14 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
         }
         compile_material_profiles(src, stage, &ctx, key, build_dir, flat, log_path,
                                   id, path, &prof);
-        free(src);
-    } else {
-        /* No source: author-shipped prebuilt "<path>.spv" + mandatory
-         * "<path>.spv.ihash" interface sidecar. */
-        char pre_path[MOD_SHADER_PATH_MAX * 2 + 8];
-        char side_path[MOD_SHADER_PATH_MAX * 2 + 16];
-        snprintf(pre_path, sizeof pre_path, "%s.spv", src_path);
-        snprintf(side_path, sizeof side_path, "%s.spv.ihash", src_path);
-        size_t side_len = 0;
-        char* side = openpete_mod_glsl_read_file(side_path, &side_len);
-        if (!side) {
-            OPL_ERROR_F("mods", "%s: shader %s: no source and no %s.spv.ihash "
-                        "sidecar - refusing the prebuilt (unverifiable "
-                        "interface)", id, path, path);
-            return -1;
-        }
-        while (side_len && (side[side_len - 1] == '\n' ||
-                            side[side_len - 1] == '\r'))
-            side[--side_len] = '\0';
-        char want[65];
-        interface_hash(want);
-        if (strcmp(side, want) != 0) {
-            OPL_ERROR_F("mods", "%s: shader %s: prebuilt .spv was built "
-                        "against a DIFFERENT shader interface - refused "
-                        "(re-issue with the current SDK)", id, path);
-            free(side);
-            return -1;
-        }
-        free(side);
-        size_t len = 0;
-        char* pre = openpete_mod_glsl_read_file(pre_path, &len);
-        if (!pre || len < 4 || (len & 3u) != 0) {
-            OPL_ERROR_F("mods", "%s: shader %s: missing/malformed %s.spv",
-                        id, path, path);
-            free(pre);
-            return -1;
-        }
-        words = (uint32_t*)pre;
-        n_words = len / 4;
-        OPL_INFO_F("mods", "%s: shader %s: prebuilt .spv accepted (%zu words)",
-                   id, path, n_words);
+    } else if (shader_load_prebuilt(id, path, src_path, &words, &n_words) != 0) {
+        return -1;
     }
+    const int refused = shader_is_material(stage, words, n_words) &&
+        shader_material_members(openpete_mods_api_pin_of(self), src != NULL, id, path, words,
+                                n_words, &prof) != 0;
+    free(src);
+    if (refused) { shader_modules_free(words, &prof); return -1; }
 
     if (!s_shaders.elem_size)
         mod_cvec_init(&s_shaders, sizeof(mod_shader_t), MOD_SHADER_BLOCK,
@@ -607,13 +812,12 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     mod_shader_t* sh = (mod_shader_t*)mod_cvec_push(&s_shaders);
     if (!sh) {
         OPL_ERROR_F("mods", "%s: shader table allocation failed", id);
-        free(words);
-        free(prof.spv_ter);
-        free(prof.spv_portal);
+        shader_modules_free(words, &prof);
         return -1;
     }
     sh->owner = id;
     snprintf(sh->path, sizeof sh->path, "%s", path);
+    snprintf(sh->mod_dir, sizeof sh->mod_dir, "%s", mod_dir);
     sh->stage = stage;
     sh->spv = words;
     sh->spv_words = n_words;
@@ -622,10 +826,13 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     sh->spv_portal = prof.spv_portal;
     sh->spv_portal_words = prof.spv_portal_words;
     sh->contract = shader_spv_contract(words, n_words);
+    memcpy(sh->link, prof.link, sizeof sh->link);
+    sh->link_n = prof.link_n;
     memset(sh->cdata, 0, sizeof sh->cdata);
     memset(sh->cdata_gpu, 0, sizeof sh->cdata_gpu);
     shader_move_tables(sh, id);
     sh->live = 1;
+    if (link_eager()) shader_link_decide(sh);
     return shader_count() - 1;
 }
 int openpete_mods_shader_register(openpete_mod_t* self, const char* path) { REG_WR(); int r_ = openpete_mods_shader_register_locked(self, path); REG_WR_END(); return r_; }
@@ -662,6 +869,35 @@ const uint32_t* openpete_mods_shader_spv_portal(int handle, size_t* words) {
     return sh->spv_portal;
 }
 
+const struct openpete_mod_link_member* openpete_mods_shader_link(int handle, int profile) {
+    if (handle < 0 || handle >= shader_count()) return NULL;
+    const mod_shader_t* sh = shader_at(handle);
+    if (!sh->live || profile < 0 || profile >= sh->link_n) return NULL;
+    return &sh->link[profile];
+}
+
+/** @brief Copy a fragment shader's composition verdicts onto every material it shades: bit p of the link mask for each linkable profile p, of the identity mask for each identity profile.
+ *
+ * @param handle The fragment shader handle.
+ * @param sh The shader. */
+static void shader_link_to_materials(int handle, const mod_shader_t* sh) {
+    unsigned link = 0, ident = 0;
+    for (int p = 0; p < sh->link_n; p++) {
+        if (sh->link[p].verdict == OPENPETE_MOD_LINK_OK) link |= 1u << p;
+        if (sh->link[p].identity) ident |= 1u << p;
+    }
+    mod_mat_set_link_of_frag(handle, link, ident);
+}
+
+int openpete_mods_shader_link_resolve(int handle) {
+    if (handle < 0 || handle >= shader_count()) return 0;
+    mod_shader_t* sh = shader_at(handle);
+    if (!sh->live) return 0;
+    const int decided = shader_link_decide(sh);
+    if (decided) shader_link_to_materials(handle, sh);
+    return decided;
+}
+
 /** @brief Describe one fragment profile's moved constant tables for the renderer.
  *
  * @param handle Shader handle; out of range, swept or negative gives none.
@@ -680,8 +916,9 @@ static void shader_cdata(int handle, int profile, openpete_mod_cdata_t* out) {
 
 /** @brief Body of openpete_mods_shader_remove_owner, run under the registry write lock.
  *
- * Frees both SPIR-V profiles of every live shader the mod owns and marks
- * the slot dead; the slot is not reused, so a stale handle reads as swept. */
+ * Frees the SPIR-V profiles, moved tables and composition members of every
+ * live shader the mod owns and marks the slot dead; the slot is not reused,
+ * so a stale handle reads as swept. */
 static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < shader_count(); i++) {
         mod_shader_t* sh = shader_at(i);
@@ -700,6 +937,8 @@ static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
             free(sh->cdata[p].bytes);
             memset(&sh->cdata[p], 0, sizeof sh->cdata[p]);
         }
+        for (int p = 0; p < sh->link_n; p++) openpete_mod_link_member_free(&sh->link[p]);
+        sh->link_n = 0;
         sh->live = 0;   /* slot stays dead: stale handles error */
     }
 }
@@ -1105,9 +1344,12 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
     if (per_instance && !mod_mat_refine_valid(id, sel, contract)) return -1;
     /* A generation is drawn only for a material the table accepts. */
     const int fits = (vert_shader >= 0 || frag_shader >= 0) && mod_mat_count() < MOD_MATERIAL_MAX;
-    return mod_mat_append(id, sel, vert_shader, frag_shader, contract, per_instance,
-                          openpete_mods_load_index_of(self), openpete_mods_api_pin_of(self),
-                          fits ? slot_generation_next() : 0u);
+    const int idx = mod_mat_append(id, sel, vert_shader, frag_shader, contract, per_instance,
+                                   openpete_mods_load_index_of(self),
+                                   openpete_mods_api_pin_of(self),
+                                   fits ? slot_generation_next() : 0u);
+    if (idx >= 0 && frag_shader >= 0) shader_link_to_materials(frag_shader, shader_at(frag_shader));
+    return idx;
 }
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,

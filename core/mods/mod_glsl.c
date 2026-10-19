@@ -81,6 +81,15 @@ size_t openpete_mod_glsl_compile(const char* src, int stage,
               "ship a prebuilt .spv + .spv.ihash sidecar instead", NULL);
     return 0;
 }
+char* openpete_mod_glsl_preprocess(const char* src, int stage,
+                                   const openpete_mod_glsl_include_t* inc,
+                                   const char* preamble, const char* log_path,
+                                   size_t* len_out) {
+    (void)src; (void)stage; (void)inc; (void)preamble; (void)len_out;
+    write_log(log_path, "preprocess",
+              "engine built without glslang (OPENPETE_BUILD_GLSLANG=OFF)", NULL);
+    return NULL;
+}
 #else
 /** @brief Read an include file from a directory into a glslang include result.
  *
@@ -149,40 +158,84 @@ static int include_free(void* ctx, glsl_include_result_t* r) {
     return 0;
 }
 
-size_t openpete_mod_glsl_compile(const char* src, int stage,
-                                 const openpete_mod_glsl_include_t* inc,
-                                 const char* preamble, const char* log_path,
-                                 uint32_t** out_words) {
+/** @brief Fill a glslang input for one mod source under the engine's compile settings.
+ *
+ * vulkan1.0 and SPIR-V 1.0, default version 450, the default resource
+ * limits, and include resolution through @p inc (include_system and
+ * include_local). Initializes the glslang process on the first call and
+ * never finalizes it.
+ * @param input The input to fill.
+ * @param src The NUL-terminated source; must outlive the input.
+ * @param stage OPENPETE_MOD_GLSL_STAGE_VERT or OPENPETE_MOD_GLSL_STAGE_FRAG.
+ * @param inc The include context; must outlive the input. */
+static void glsl_input_init(glslang_input_t* input, const char* src, int stage,
+                            const openpete_mod_glsl_include_t* inc) {
     static int s_glslang_up = 0;
     if (!s_glslang_up) {
         glslang_initialize_process();  /* process-lifetime; never finalized */
         s_glslang_up = 1;
     }
-
-    glslang_input_t input;
-    memset(&input, 0, sizeof input);
-    input.language = GLSLANG_SOURCE_GLSL;
-    input.stage = (glslang_stage_t)stage;
-    input.client = GLSLANG_CLIENT_VULKAN;
+    memset(input, 0, sizeof *input);
+    input->language = GLSLANG_SOURCE_GLSL;
+    input->stage = (glslang_stage_t)stage;
+    input->client = GLSLANG_CLIENT_VULKAN;
     /* vulkan1.0 - matches the engine's own `glslangValidator -V` builds */
-    input.client_version = GLSLANG_TARGET_VULKAN_1_0;
-    input.target_language = GLSLANG_TARGET_SPV;
-    input.target_language_version = GLSLANG_TARGET_SPV_1_0;
-    input.code = src;
-    input.default_version = 450;
-    input.default_profile = GLSLANG_NO_PROFILE;
-    input.messages = GLSLANG_MSG_DEFAULT_BIT;
-    input.resource = glslang_default_resource();
-    input.callbacks.include_system = include_system;
-    input.callbacks.include_local = include_local;
-    input.callbacks.free_include_result = include_free;
-    input.callbacks_ctx = (void*)inc;
+    input->client_version = GLSLANG_TARGET_VULKAN_1_0;
+    input->target_language = GLSLANG_TARGET_SPV;
+    input->target_language_version = GLSLANG_TARGET_SPV_1_0;
+    input->code = src;
+    input->default_version = 450;
+    input->default_profile = GLSLANG_NO_PROFILE;
+    input->messages = GLSLANG_MSG_DEFAULT_BIT;
+    input->resource = glslang_default_resource();
+    input->callbacks.include_system = include_system;
+    input->callbacks.include_local = include_local;
+    input->callbacks.free_include_result = include_free;
+    input->callbacks_ctx = (void*)inc;
+}
 
-    glslang_shader_t* sh = glslang_shader_create(&input);
+/** @brief Create a glslang shader for an input and inject a preamble after its `#version`.
+ *
+ * The preamble lets a profile define reach the contract include without
+ * the mod's source knowing which profile it is in.
+ * @param input The filled input.
+ * @param preamble The text to inject, or NULL.
+ * @return The shader, or NULL when glslang cannot create one. */
+static glslang_shader_t* glsl_shader_new(const glslang_input_t* input, const char* preamble) {
+    glslang_shader_t* sh = glslang_shader_create(input);
+    if (sh && preamble) glslang_shader_set_preamble(sh, preamble);
+    return sh;
+}
+
+char* openpete_mod_glsl_preprocess(const char* src, int stage,
+                                   const openpete_mod_glsl_include_t* inc,
+                                   const char* preamble, const char* log_path,
+                                   size_t* len_out) {
+    glslang_input_t input;
+    glsl_input_init(&input, src, stage, inc);
+    glslang_shader_t* sh = glsl_shader_new(&input, preamble);
+    if (!sh) return NULL;
+    char* out = NULL;
+    if (glslang_shader_preprocess(sh, &input)) {
+        const char* code = glslang_shader_get_preprocessed_code(sh);
+        out = code ? strdup(code) : NULL;
+        if (out && len_out) *len_out = strlen(out);
+    } else {
+        write_log(log_path, "preprocess", glslang_shader_get_info_log(sh),
+                  glslang_shader_get_info_debug_log(sh));
+    }
+    glslang_shader_delete(sh);
+    return out;
+}
+
+size_t openpete_mod_glsl_compile(const char* src, int stage,
+                                 const openpete_mod_glsl_include_t* inc,
+                                 const char* preamble, const char* log_path,
+                                 uint32_t** out_words) {
+    glslang_input_t input;
+    glsl_input_init(&input, src, stage, inc);
+    glslang_shader_t* sh = glsl_shader_new(&input, preamble);
     if (!sh) return 0;
-    /* Injected after #version, so a profile define reaches the contract
-     * include without the mod's source knowing which profile it is in. */
-    if (preamble) glslang_shader_set_preamble(sh, preamble);
     if (!glslang_shader_preprocess(sh, &input) ||
         !glslang_shader_parse(sh, &input)) {
         write_log(log_path, "parse", glslang_shader_get_info_log(sh),

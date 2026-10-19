@@ -48,6 +48,13 @@ typedef struct {
     /* OPENPETE_MATERIAL_CONTRACT_* of the fragment stage; SCENE for a
      * material with the stock fragment stage. */
     int  contract;
+    /* Composition verdicts of the fragment stage, copied from its shader at
+     * registration and again when openpete_mods_shader_link_resolve decides
+     * them (mod_mat_link.h): bit p (0 stock, 1 terrain, 2 portal) of
+     * link_mask is set when that profile is linkable into a combined module
+     * (0 while pending), of identity_mask when its op_material returns its
+     * parameter. Both 0 for the stock fragment stage. */
+    unsigned char link_mask, identity_mask;
     /* One built pipeline per draw-state variant this material can be
      * asked for: [0..3] = PSX blend classes (0 opaque, 1 average,
      * 2 additive, 3 subtract; a material reshades inside whatever group
@@ -163,6 +170,14 @@ int mod_mat_append(const char* owner, const openpete_mod_material_selector_t* se
                    int vert, int frag, int contract,
                    openpete_mod_material_fn per_instance, int load_index,
                    int api_pin, unsigned generation);
+
+/** @brief Record the composition verdicts of a fragment shader on every material it shades: its linkable and identity profiles.
+ *
+ * The caller holds the registry write lock.
+ * @param frag The fragment shader handle.
+ * @param link_mask Bit p set for each linkable profile p.
+ * @param identity_mask Bit p set for each identity profile p. */
+void mod_mat_set_link_of_frag(int frag, unsigned link_mask, unsigned identity_mask);
 
 /** @brief Test whether material @p a ranks above material @p b.
  *

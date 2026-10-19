@@ -415,6 +415,14 @@ int mod_mat_refine_valid(const char* id, const openpete_mod_material_selector_t*
     return 1;
 }
 
+void mod_mat_set_link_of_frag(int frag, unsigned link_mask, unsigned identity_mask) {
+    for (int i = 0; i < s_mat_count; i++) {
+        if (s_mats[i].frag != frag) continue;
+        s_mats[i].link_mask = (unsigned char)link_mask;
+        s_mats[i].identity_mask = (unsigned char)identity_mask;
+    }
+}
+
 int mod_mat_append(const char* id, const openpete_mod_material_selector_t* sel,
                    int vert_shader, int frag_shader, int contract,
                    openpete_mod_material_fn per_instance, int load_index,

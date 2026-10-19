@@ -1,0 +1,37 @@
+# mod_material_link_test fixture cases (tab-separated; see the test's header comment).
+member	shared-a/flame.frag	all	ok
+member	shared-b/flame.frag	all	ok
+member	tables/tables.frag	all	ok
+member	tables-local/atlas.frag	all	ok
+member	shadow/shadow.frag	all	ok
+member	identity/identity.frag	all	ok	identity
+member	discard/discard.frag	all	discard	kills
+member	struct-block/struct.frag	all	ok
+member	big-block/big.frag	all	block-size
+member	iface-sampler/sampler.frag	all	interface
+member	iface-out/out.frag	all	interface
+member	iface-buffer/buffer.frag	all	interface
+member	iface-second/second.frag	all	interface
+member	has-main/main.frag	stock	has-main
+member	unused-block/unused.frag	all	ok
+member	ext/ext.frag	all	ok
+member	decal-a/decal.frag	stock	ok
+member	decal-b/decal.frag	stock	ok
+prebuilt	prebuilt/tint.frag.src	stock
+refuse	discard/discard.frag	12	0
+refuse	discard/discard.frag	13	1
+refuse	shared-a/flame.frag	13	0
+combine	stock	ok	shared-a/flame.frag	shared-b/flame.frag
+combine	stock	tables>=4	tables/tables.frag	tables-local/atlas.frag
+combine	stock	ok	shared-a/flame.frag	shared-b/flame.frag	shadow/shadow.frag	struct-block/struct.frag	ext/ext.frag	unused-block/unused.frag
+combine	stock	discard	shared-a/flame.frag	discard/discard.frag
+combine	terrain	ok	shared-a/flame.frag	shared-b/flame.frag
+combine	terrain	tables>=4	tables/tables.frag	tables-local/atlas.frag
+combine	terrain	ok	shared-a/flame.frag	shared-b/flame.frag	shadow/shadow.frag	struct-block/struct.frag	ext/ext.frag	unused-block/unused.frag
+combine	terrain	discard	shared-a/flame.frag	discard/discard.frag
+combine	portal	ok	shared-a/flame.frag	shared-b/flame.frag
+combine	portal	tables>=4	tables/tables.frag	tables-local/atlas.frag
+combine	portal	ok	shared-a/flame.frag	shared-b/flame.frag	shadow/shadow.frag	struct-block/struct.frag	ext/ext.frag	unused-block/unused.frag
+combine	portal	discard	shared-a/flame.frag	discard/discard.frag
+combine	stock	ok	decal-a/decal.frag	decal-b/decal.frag
+vkbad	iface-sampler/sampler.frag
