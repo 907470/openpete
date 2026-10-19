@@ -236,17 +236,19 @@ static void psk_collect(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, v
 }
 
 /** @brief Decodes every sector of a sky payload through the shared cyclorama decode under the rotation `R`.
+ * @param D The building thread's decode scratch.
  * @param L The level's sky.
  * @param R The rotation, unit scale.
  * @param fn Receives each face.
  * @param ctx Passed to `fn`. */
-static void psk_decode_sky(const psk_level* L, const double R[3][3], cyclorama_tri_fn fn, void* ctx) {
+static void psk_decode_sky(cyclorama_sector_buf* D, const psk_level* L, const double R[3][3],
+                           cyclorama_tri_fn fn, void* ctx) {
     const cyclorama_src src = { NULL, L->buf, 0u, L->len };
     const cyclorama_fade none[2] = { { 0u, 0 }, { 0u, 0 } };
     const uint32_t n = psk_w(L->buf, L->len, 4u);
     for (uint32_t i = 0; i < n && i < 1024u; i++) {
         const uint32_t off = psk_w(L->buf, L->len, 8u + i * 4u);
-        if (off && off < L->len) cyclorama_decode_sector(&src, off, R, 1.0, none, fn, ctx);
+        if (off && off < L->len) cyclorama_decode_sector(D, &src, off, R, 1.0, none, fn, ctx);
     }
 }
 
@@ -716,8 +718,10 @@ static int psk_try_face(const psk_pic* P, const psk_grid* G, const psk_sky* S, c
 }
 
 /* One builder's scratch: the worker thread and the game fiber each own one,
- * so a build on either never shares memory with a build on the other. */
+ * so a build on either never shares memory with a build on the other or
+ * with the game fiber's sky feed, whose sector decode has its own buffer. */
 typedef struct {
+    cyclorama_sector_buf D;
     psk_grid  G;
     psk_sky   S;
     psk_index X;
@@ -866,12 +870,12 @@ static void psk_build_entry(psk_ctx* C, psk_entry* E, const char* who) {
     const psk_pic* P = &E->pic;
     psk_grid_build(P, &C->G);
     C->S.n = 0;
-    psk_decode_sky(E->L, I, psk_collect, &C->S);
+    psk_decode_sky(&C->D, E->L, I, psk_collect, &C->S);
     double R[3][3];
     const int matched = psk_register(C, P, R);
     if (matched) {
         const psk_build B = { P, &C->G, E };
-        psk_decode_sky(E->L, R, psk_extend_face, (void*)&B);
+        psk_decode_sky(&C->D, E->L, R, psk_extend_face, (void*)&B);
     }
     OPL_INFO_F("portal", "picture of level %d: %d of %d vertices registered, %d sky faces, %d extension triangles"
                " (%.1f ms, %s)", E->level, matched, P->nv, C->S.n, E->n, (double)(op_now() - t0) / 1e6, who);

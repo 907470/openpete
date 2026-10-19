@@ -68,6 +68,16 @@ typedef struct { uint32_t rgb; int ir0; } cyclorama_fade;
  * colours, and 1 for gouraud or 0 for flat. */
 typedef void (*cyclorama_tri_fn)(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, void* ctx);
 
+/* One decoded sector: its camera-space vertices and faded colours, the
+ * scratch cyclorama_decode_sector fills before it walks the faces. Each
+ * thread that decodes owns its own: the sky feed's on the thread that runs
+ * the guest, each portal-sky builder's in its builder scratch. */
+typedef struct cyclorama_sector_buf {
+    double   m1[4096], m2[4096], m3[4096];
+    uint32_t col[4096];
+    uint32_t nv, nc;
+} cyclorama_sector_buf;
+
 /** @brief Decodes one cyclorama sector into camera-space faces, the sky draw's own decode.
  *
  * The sector header holds the centre at +0x08/+0x0E and the counts at
@@ -77,8 +87,9 @@ typedef void (*cyclorama_tri_fn)(ngte_cvert a, ngte_cvert b, ngte_cvert c, int g
  * two fade stages in order. Faces (Spyro 1) or strips (Spyro 2/3) are walked
  * and each face goes to `fn`; a face with a vertex index past the vertex
  * count is dropped and a colour index past the colour count reads black.
- * Counts are clamped to 4096. Reads only; not reentrant (one static decode
- * buffer).
+ * Counts are clamped to 4096. Reads the source and writes only `D`, so
+ * calls with distinct buffers may run on different threads at once.
+ * @param D The caller's decode scratch.
  * @param src Where the sector's bytes are read.
  * @param S The sector's address.
  * @param M The rotation, in units of `scale`.
@@ -86,8 +97,9 @@ typedef void (*cyclorama_tri_fn)(ngte_cvert a, ngte_cvert b, ngte_cvert c, int g
  * @param fade The two colour fade stages.
  * @param fn Receives each face.
  * @param ctx Passed to `fn`. */
-void cyclorama_decode_sector(const cyclorama_src* src, uint32_t S, const double M[3][3], double scale,
-                             const cyclorama_fade fade[2], cyclorama_tri_fn fn, void* ctx);
+void cyclorama_decode_sector(cyclorama_sector_buf* D, const cyclorama_src* src, uint32_t S,
+                             const double M[3][3], double scale, const cyclorama_fade fade[2],
+                             cyclorama_tri_fn fn, void* ctx);
 
 #ifdef __cplusplus
 }

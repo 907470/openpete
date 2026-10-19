@@ -61,6 +61,11 @@ typedef struct { cyc_vert v[3]; int gouraud; } cyc_tri;
 #define MAX_TRIS 16384
 static cyc_tri s_native[MAX_TRIS]; static int s_native_n;
 static cyc_tri s_gte[MAX_TRIS];    static int s_gte_n;
+/* cyc_extract_m's sector decode scratch. Its callers (the sky-draw hook, the
+ * re-extract and the cross-fade dome) run on the thread that runs the guest,
+ * the re-extract while the guest is parked, so they share it as they share
+ * s_native; the portal-sky builder decodes into its own. */
+static cyclorama_sector_buf s_cyc_decode;
 
 /* ---- helpers -------------------------------------------------------- */
 
@@ -307,7 +312,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
             double cull_mac3 = project(Mcull, cull_vx, cull_vy, cull_vz, 0, 0, &vw, &dsx, &dsy, NULL);
             if (cull_mac3 <= (double)radius) continue;
         }
-        cyclorama_decode_sector(&src, S, Md, 4096.0, fade, cyc_emit_cb, &vw);
+        cyclorama_decode_sector(&s_cyc_decode, &src, S, Md, 4096.0, fade, cyc_emit_cb, &vw);
     }
 }
 
@@ -336,13 +341,6 @@ static uint32_t cyc_rd16(const cyclorama_src* s, uint32_t a) {
     return (uint32_t)s->buf[o] | ((uint32_t)s->buf[o + 1] << 8);
 }
 
-/* One decoded sector: its camera-space vertices and faded colours. */
-typedef struct {
-    double   m1[4096], m2[4096], m3[4096];
-    uint32_t col[4096];
-    uint32_t nv, nc;
-} cyc_sector;
-
 /** @brief Emits one face of a decoded sector by its vertex and colour indices.
  *
  * A face with a vertex index at or past the vertex count is dropped; a colour
@@ -353,7 +351,7 @@ typedef struct {
  * @param k The three colour indices.
  * @param fn Receives the face.
  * @param ctx The receiver's context. */
-static void cyc_sector_face(const cyc_sector* D, const uint32_t v[3], const uint32_t k[3],
+static void cyc_sector_face(const cyclorama_sector_buf* D, const uint32_t v[3], const uint32_t k[3],
                             cyclorama_tri_fn fn, void* ctx) {
     if (v[0] >= D->nv || v[1] >= D->nv || v[2] >= D->nv) return;
     const int gouraud = !(k[0] == k[1] && k[0] == k[2]);
@@ -382,7 +380,7 @@ static void cyc_sector_face(const cyc_sector* D, const uint32_t v[3], const uint
  * @param fn Receives each face.
  * @param ctx The receiver's context. */
 static void cyc_sector_strips(const cyclorama_src* s, uint32_t faceBase, uint32_t hF,
-                              const cyc_sector* D, cyclorama_tri_fn fn, void* ctx) {
+                              const cyclorama_sector_buf* D, cyclorama_tri_fn fn, void* ctx) {
     uint32_t hw = faceBase + (hF >> 16);
     const uint32_t hwEnd = hw + (hF & 0xFFFF);
     uint32_t fw = faceBase;
@@ -405,9 +403,9 @@ static void cyc_sector_strips(const cyclorama_src* s, uint32_t faceBase, uint32_
     }
 }
 
-void cyclorama_decode_sector(const cyclorama_src* src, uint32_t S, const double M[3][3], double scale,
-                             const cyclorama_fade fade[2], cyclorama_tri_fn fn, void* ctx) {
-    static cyc_sector D;
+void cyclorama_decode_sector(cyclorama_sector_buf* D, const cyclorama_src* src, uint32_t S,
+                             const double M[3][3], double scale, const cyclorama_fade fade[2],
+                             cyclorama_tri_fn fn, void* ctx) {
     const uint32_t h8 = cyc_rd32(src, S + 0x08), hC = cyc_rd32(src, S + 0x0C);
     const uint32_t hF = cyc_rd32(src, S + 0x10);
     const int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16);
@@ -431,25 +429,25 @@ void cyclorama_decode_sector(const cyclorama_src* src, uint32_t S, const double 
         const int vx = centerX - (int)((w >> 10) & 0x7FF);
         const int vy = centerY - (int)(w & 0x3FF);
         const int vz = centerZ + (int)(w >> 21);
-        D.m1[i] = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / scale;
-        D.m2[i] = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / scale;
-        D.m3[i] = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / scale;
+        D->m1[i] = (M[0][0]*(double)vx + M[0][1]*(double)vy + M[0][2]*(double)vz) / scale;
+        D->m2[i] = (M[1][0]*(double)vx + M[1][1]*(double)vy + M[1][2]*(double)vz) / scale;
+        D->m3[i] = (M[2][0]*(double)vx + M[2][1]*(double)vy + M[2][2]*(double)vz) / scale;
     }
     for (uint32_t j = 0; j < colorCount; j++) {
         uint32_t c = cyc_rd32(src, colorBase + j * 4) & 0xFFFFFF;
         for (int f = 0; f < 2; f++)
             if (fade[f].ir0) c = ngte_depth_cue(c, fade[f].rgb, fade[f].ir0);
-        D.col[j] = c;
+        D->col[j] = c;
     }
-    D.nv = vertexCount; D.nc = colorCount;
-    if (s3) { cyc_sector_strips(src, faceBase, hF, &D, fn, ctx); return; }
+    D->nv = vertexCount; D->nc = colorCount;
+    if (s3) { cyc_sector_strips(src, faceBase, hF, D, fn, ctx); return; }
     /* Faces: word0 = vertex indices, word1 = colour indices. */
     const uint32_t faceCount = hF & 0x1FFF;
     for (uint32_t f = 0; f < faceCount; f++) {
         const uint32_t w0 = cyc_rd32(src, faceBase + f * 8), w1 = cyc_rd32(src, faceBase + f * 8 + 4);
         const uint32_t v[3] = { (w0 >> 22) & 0x3FF, (w0 >> 12) & 0xFF, (w0 >> 2) & 0xFF };
         const uint32_t k[3] = { (w1 >> 22) & 0x3FF, (w1 >> 12) & 0xFF, (w1 >> 2) & 0xFF };
-        cyc_sector_face(&D, v, k, fn, ctx);
+        cyc_sector_face(D, v, k, fn, ctx);
     }
 }
 
