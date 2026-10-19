@@ -1,6 +1,7 @@
 /* games/common/write_census.h - address-range write attribution.
  *
- * OPENPETE_WRITE_CENSUS=lo..hi[,lo..hi] (hex, inclusive) installs wrappers
+ * OPENPETE_WRITE_CENSUS=lo..hi[,lo..hi...] (hex, inclusive, any count of
+ * ranges; a malformed range refuses the whole spec) installs wrappers
  * over the five store hooks at boot and appends one row per store that lands
  * in a range to OPENPETE_WRITE_CENSUS_OUT (default write-census.csv):
  *
@@ -26,18 +27,22 @@ extern "C" {
 
 /** @brief Installs the census wrappers over the CPU's five store hooks when OPENPETE_WRITE_CENSUS parses.
  *
- * Parses up to eight hex lo..hi ranges, opens OPENPETE_WRITE_CENSUS_OUT
+ * Parses every hex lo..hi range, opens OPENPETE_WRITE_CENSUS_OUT
  * (default write-census.csv) and writes its header, saves the original
  * write_word, write_half, write_byte, swl and swr hooks, installs the
  * wrappers, latches OPENPETE_WRITE_CENSUS_PHASE, and registers an atexit
- * close. An unset knob, a NULL cpu, no parsed range, or an unopenable output
- * leaves the hooks untouched.
+ * close. An unset knob, a NULL cpu, a malformed range (reported on stderr)
+ * or an unopenable output leaves the hooks untouched.
  * @param cpu The guest CPU state whose store hooks are wrapped. */
 void write_census_install(CPUState* cpu);
 /** @brief Reports whether the census wrappers are installed.
  *
  * @return Nonzero after write_census_install wrapped the store hooks. */
 int  write_census_active(void);
+/** @brief Reports how many in-range stores the census has logged.
+ *
+ * @return The CSV row count written since install, header excluded. */
+unsigned write_census_rows(void);
 /** @brief Records a dispatch entry address as the entry column of subsequent rows.
  *
  * An address equal to the OPENPETE_WRITE_CENSUS_PHASE entry sets phase 1.

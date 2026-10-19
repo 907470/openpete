@@ -7,9 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CENSUS_MAX_RANGES 8
+typedef struct { uint32_t lo, hi; } census_range_t;
 
-static struct { uint32_t lo, hi; } s_ranges[CENSUS_MAX_RANGES];
+static census_range_t* s_ranges = NULL;
 static int      s_nranges = 0;
 static FILE*    s_out = NULL;
 static int      s_active = 0;
@@ -80,27 +80,63 @@ static void census_close(void) {
     fprintf(stderr, "[write-census] %u rows, %u phase marks\n", s_rows, s_seq);
 }
 
-void write_census_install(CPUState* cpu) {
-    const char* spec = getenv("OPENPETE_WRITE_CENSUS");
-    if (!spec || !*spec || !cpu) return;
+/** @brief Parses a comma-separated list of hex lo..hi ranges into a heap table.
+ *
+ * The table grows with the spec, so every range in it is kept. The whole
+ * spec is refused on the first malformed range (no "..", a missing bound,
+ * hi below lo, or text other than ',' after a range): a partial table
+ * would log nothing for the ranges after the fault and read as clean.
+ * @param spec The OPENPETE_WRITE_CENSUS value.
+ * @param out_ranges Receives the malloc'd table on success, else NULL.
+ * @return The range count, or -1 with a message on stderr. */
+static int parse_ranges(const char* spec, census_range_t** out_ranges) {
+    census_range_t* ranges = NULL;
+    int n = 0, cap = 0;
     const char* p = spec;
-    while (*p && s_nranges < CENSUS_MAX_RANGES) {
+    *out_ranges = NULL;
+    while (*p) {
         char* end = NULL;
         uint32_t lo = (uint32_t)strtoul(p, &end, 16);
-        if (end == p || strncmp(end, "..", 2) != 0) break;
-        p = end + 2;
-        uint32_t hi = (uint32_t)strtoul(p, &end, 16);
-        if (end == p || hi < lo) break;
-        s_ranges[s_nranges].lo = lo;
-        s_ranges[s_nranges].hi = hi;
-        s_nranges++;
+        int ok = end != p && strncmp(end, "..", 2) == 0;
+        uint32_t hi = 0;
+        if (ok) {
+            const char* q = end + 2;
+            hi = (uint32_t)strtoul(q, &end, 16);
+            ok = end != q && hi >= lo && (*end == ',' || *end == '\0');
+        }
+        if (!ok) {
+            fprintf(stderr, "[write-census] OPENPETE_WRITE_CENSUS: malformed range %d at offset %d "
+                    "(\"%s\"); census refused\n", n + 1, (int)(p - spec), p);
+            free(ranges);
+            return -1;
+        }
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            census_range_t* grown = (census_range_t*)realloc(ranges, (size_t)cap * sizeof *ranges);
+            if (!grown) {
+                fprintf(stderr, "[write-census] out of memory at range %d; census refused\n", n + 1);
+                free(ranges);
+                return -1;
+            }
+            ranges = grown;
+        }
+        ranges[n].lo = lo;
+        ranges[n].hi = hi;
+        n++;
         p = end;
         if (*p == ',') p++;
     }
-    if (!s_nranges) {
-        fprintf(stderr, "[write-census] OPENPETE_WRITE_CENSUS=%s: no range parsed\n", spec);
-        return;
-    }
+    *out_ranges = ranges;
+    return n;
+}
+
+void write_census_install(CPUState* cpu) {
+    const char* spec = getenv("OPENPETE_WRITE_CENSUS");
+    if (!spec || !*spec || !cpu) return;
+    /* A non-empty spec parses to at least one range or is refused. */
+    int n = parse_ranges(spec, &s_ranges);
+    if (n <= 0) return;
+    s_nranges = n;
     const char* path = getenv("OPENPETE_WRITE_CENSUS_OUT");
     if (!path || !*path) path = "write-census.csv";
     s_out = fopen(path, "w");
@@ -128,6 +164,7 @@ void write_census_install(CPUState* cpu) {
 }
 
 int  write_census_active(void)           { return s_active; }
+unsigned write_census_rows(void)         { return s_rows; }
 void write_census_note_entry(uint32_t a) {
     s_entry = a;
     if (a == s_phase_entry) write_census_set_phase(1);

@@ -691,3 +691,22 @@ if(NOT WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     # openpete_rhi's build generates the embedded-shader source.
     add_dependencies(rhi_compile_stress_tsan openpete_rhi)
 endif()
+
+# write_census_test - the write census range table: a spec of twelve ranges
+# logs a row for a store into each range past the eighth, and a malformed
+# range refuses the whole spec. Compiles write_census.c with stubs for the
+# overlay table; the CPU is a struct with counting store hooks. SDL3 is
+# linked for the headers openpete_fiber.h (openpete_frame) includes.
+add_executable(write_census_test
+    write_census_test.c
+    ${CMAKE_SOURCE_DIR}/games/common/write_census.c)
+target_include_directories(write_census_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/games/common)
+set_target_properties(write_census_test PROPERTIES C_STANDARD 11)
+target_link_libraries(write_census_test PRIVATE SDL3::SDL3-static)
+add_test(NAME write_census_ranges COMMAND write_census_test ranges
+    ${CMAKE_CURRENT_BINARY_DIR}/write_census_ranges.csv)
+add_test(NAME write_census_refuse COMMAND write_census_test refuse
+    ${CMAKE_CURRENT_BINARY_DIR}/write_census_refuse.csv)
