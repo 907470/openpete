@@ -21,10 +21,13 @@
 # Usage: tests/harness/check_mod_channels.sh [--game SLUG]
 # Exit: 0 pass, 1 failures, 64 skip (no binary / disc / vulkan / PIL).
 #
-# The gallery mod, the bk2 corpus and the pinned frames of the gallery rungs
-# are Spyro 1's. --game spyro-2 or spyro-3 runs that game's per-channel
+# The pinned frames of the gallery rungs after the per-game block are
+# Spyro 1's. --game spyro-2 or spyro-3 runs that game's per-channel
 # engagement rungs instead: one declarative row per render channel against
-# a disabled-row baseline, at pins from the game's own corpus.
+# a disabled-row baseline, at pins from the game's own corpus. On every
+# game the gallery's rows are then measured one by one against that game's
+# row labels (gallery_rows_rung), with a no-mod control and the class
+# picker's list at a named level.
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -117,6 +120,97 @@ delay_rung() {
         ok "the delayed compose draws the history scene's block: ${m} px <= stock ${bestn} px (reach ${reach} px, ${views} view-installed resolves)"
     else
         bad "the delayed compose differs from VBL $best by ${m} px, stock ${bestn} px: the history scene bound another scene's material block"
+    fi
+}
+
+# ── the gallery, row by row, on the running game ──────────────────────
+# Each row of mods/channel-gallery lit alone, at a pin where its geometry
+# is on screen, against a baseline with the gallery loaded and no row lit.
+# The row's label and tooltip on that game (k_text in channel_gallery.c)
+# are the claim: a row the game's table labels a known gap must paint
+# nothing (min 0), every other row must paint at least min px. A gap row
+# sits at a pin where its channel draws (the per-channel rungs above prove
+# the particle, shadow and portal channels at the same pins), so its 0 px
+# is the key missing the draws, not an empty screen.
+#
+# Controls: at every pin a no-mod capture must equal the baseline (the
+# gallery with no row lit draws nothing), and the baseline leg logs the
+# class picker's list (gallery.census_log), which must hold the named
+# class the class row lights and not the absent class, whose row paints
+# nothing.
+#
+# Table rows: row|scene|pin|min px (0 = known gap)|config line. Census:
+# scene|pin|listed class|absent class. Scene "attract" is the plain boot.
+gallery_leg() {  # gallery_leg <tag> <scene> <pin> <rows|-> <config line>
+    local tag="$1" scene="$2" pin="$3" rows="$4" cfg="$5"
+    local md="$WORK/gal-mods-$tag"
+    local -a movie=() extra=()
+    if [ "$scene" != attract ]; then
+        movie=(--bk2 "$PG_BK2_DIR/$scene.bk2")
+        if [ -f "$PG_BK2_DIR/$scene.bk2.args" ]; then
+            read -ra extra < <(grep -v '^#' "$PG_BK2_DIR/$scene.bk2.args" | tr '\n' ' ')
+            movie+=("${extra[@]}")
+        fi
+    fi
+    rm -rf "${md:?}"
+    mkdir -p "$md"
+    : > "$md/enabled.txt"
+    if [ "$rows" != - ]; then
+        cp -r mods/channel-gallery "$md/"
+        rm -rf "${md:?}/channel-gallery/.build"
+        printf 'gallery.rows = "%s"\ngallery.strength = 1.0\n%s\n' "$rows" "$cfg" \
+            > "$md/channel-gallery/config.toml"
+        echo channel-gallery > "$md/enabled.txt"
+    fi
+    local PG_CAPTURE_TIMEOUT=900
+    pg_capture "$WORK/gal-$tag.log" "$WORK/gal-$tag-$pin-vk.png" -- \
+        --renderer vk --mute 1 --aspect 4:3 --lod original --no-card \
+        "${movie[@]}" --screenshot-native-only --mods-dir "$md" \
+        --screenshot-on-frame "$pin" \
+        --screenshot-output "$WORK/gal-$tag-{n}.png" --frame-limit $((pin + 2))
+}
+gallery_rows_rung() {  # gallery_rows_rung <table> <census>
+    local table="$1" census="$2" row scene pin minpx cfg key n
+    say "channel-gallery row by row on $PG_GAME"
+    local -A based=()
+    while IFS='|' read -r row scene pin minpx cfg; do
+        [ -z "${row// }" ] && continue
+        key="$scene-$pin"
+        if [ -z "${based[$key]:-}" ]; then
+            based[$key]=1
+            gallery_leg "base-$key" "$scene" "$pin" "" "gallery.census_log = 1" &&
+            gallery_leg "nomod-$key" "$scene" "$pin" - "" ||
+                { bad "no baseline or no-mod capture at $scene $pin"; based[$key]=bad; continue; }
+            n=$(diffpx "$WORK/gal-base-$key-$pin-vk.png" "$WORK/gal-nomod-$key-$pin-vk.png")
+            if [ "${n:-1}" -eq 0 ]; then ok "control: the gallery with no row lit equals no mod at $scene $pin"
+            else bad "control: the unlit gallery differs from no mod by ${n:-?} px at $scene $pin"; based[$key]=bad; fi
+        fi
+        [ "${based[$key]}" = bad ] && { bad "row $row: no valid baseline at $scene $pin"; continue; }
+        if ! gallery_leg "r$row-$key" "$scene" "$pin" "$row" "$cfg" ||
+           ! grep -q "selector rows armed, 1 lit" "$WORK/gal-r$row-$key.log"; then
+            bad "row $row: no capture, or the row did not light (see $WORK/gal-r$row-$key.log)"; continue
+        fi
+        n=$(diffpx "$WORK/gal-base-$key-$pin-vk.png" "$WORK/gal-r$row-$key-$pin-vk.png")
+        if [ "$minpx" -eq 0 ]; then
+            if [ "${n:-1}" -eq 0 ]; then ok "row $row paints nothing at $scene $pin${cfg:+ with $cfg}, as its label or the class census claims"
+            else bad "row $row painted $n px at $scene $pin but is labelled a known gap on $PG_GAME: relabel it in k_text"; fi
+        elif [ "${n:-0}" -ge "$minpx" ]; then
+            ok "row $row repainted $n px at $scene $pin (>= $minpx)"
+        else
+            bad "row $row repainted ${n:-0} px at $scene $pin, expected >= $minpx"
+        fi
+    done <<< "$table"
+
+    local listed absent line count
+    IFS='|' read -r scene pin listed absent <<< "$census"
+    line=$(grep -o 'class census at tick [0-9]*: [0-9]* classes:.*' \
+           "$WORK/gal-base-$scene-$pin.log" 2>/dev/null | tail -1)
+    count=$(sed -n 's/.*: \([0-9]*\) classes:.*/\1/p' <<< "$line")
+    if [ "${count:-0}" -gt 0 ] && grep -qw "$listed" <<< "${line#*classes:}" &&
+       ! grep -qw "$absent" <<< "${line#*classes:}"; then
+        ok "class picker at $scene $pin lists $count classes, $listed among them, $absent not"
+    else
+        bad "class picker at $scene $pin: '${line:-no census line}' (want > 0 classes, $listed listed, $absent not)"
     fi
 }
 
@@ -220,6 +314,57 @@ PY
     delay_scene=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\1/p' <<< "$S23_RUNGS")
     delay_frame=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\2/p' <<< "$S23_RUNGS")
     delay_rung "$delay_scene" "$delay_frame"
+    case "$PG_GAME" in
+        spyro-2) GALLERY_TABLE="
+0|shady-oasis-flame|1421|100000|
+1|shady-oasis-flame|1421|100000|
+2|shady-oasis-flame|1421|10000|
+3|shady-oasis-flame|1421|3000|gallery.class = 583
+3|shady-oasis-flame|1421|0|gallery.class = 0
+4|shady-oasis-flame|1421|2000|
+5|autumn-plains-skelos-badlands-portal-entry|1423|1000|
+6|shady-oasis-flame|1421|1000|
+7|shady-oasis-flame|1421|300|
+8|shady-oasis-flame|1421|400|
+9|shady-oasis-flame|1421|0|
+10|shady-oasis-flame|1421|0|
+11|glimmer-pogo-dialogue|1435|700|
+12|shady-oasis-flame|1897|150|
+13|shady-oasis-flame|1421|0|
+14|attract|14575|150|
+15|autumn-plains-skelos-badlands-portal-entry|1669|100000|
+16|autumn-plains-skelos-badlands-portal-entry|1669|80000|
+17|autumn-plains-skelos-badlands-portal-entry|1669|25000|
+18|autumn-plains-skelos-badlands-portal-entry|1669|0|
+19|shady-oasis-flame|1421|3000|gallery.class = 583
+20|autumn-plains-skelos-badlands-portal-entry|1423|15000|"
+            GALLERY_CENSUS="shady-oasis-flame|1421|583|0" ;;
+        spyro-3) GALLERY_TABLE="
+0|crystal-islands-flame|1653|100000|
+1|crystal-islands-flame|1653|100000|
+2|crystal-islands-flame|1653|4000|
+3|crystal-islands-flame|1653|1300|gallery.class = 743
+3|crystal-islands-flame|1653|0|gallery.class = 0
+4|crystal-islands-flame|1653|2500|
+5|crystal-islands-flame|1653|25000|
+6|crystal-islands-flame|1653|1500|
+7|crystal-islands-flame|1653|300|
+8|sheilas-alp-sheila-water-invisible|5105|500|
+9|sheilas-alp-sheila-water-invisible|5105|0|
+10|crystal-islands-flame|1653|0|
+11|sunrise-spring-camera-swing|1807|600|
+12|sunrise-spring-camera-swing|1807|30|
+13|crystal-islands-flame|1653|0|
+14|attract|5074|1500|
+15|sunrise-spring-sunny-villa-portal-entry|3103|75000|
+16|sunrise-spring-sunny-villa-portal-entry|3103|70000|
+17|sunrise-spring-sunny-villa-portal-entry|3103|5000|
+18|sunrise-spring-sunny-villa-portal-entry|3103|0|
+19|crystal-islands-flame|1653|1300|gallery.class = 743
+20|crystal-islands-flame|1653|20000|"
+            GALLERY_CENSUS="crystal-islands-flame|1653|743|0" ;;
+    esac
+    gallery_rows_rung "$GALLERY_TABLE" "$GALLERY_CENSUS"
     echo
     if [ "$fail" -eq 0 ]; then echo "[modchan] ALL GREEN"; else echo "[modchan] FAILURES - see above"; fi
     exit $fail
@@ -631,6 +776,31 @@ else
 fi
 
 delay_rung flame 1800
+
+# Row 12 (sparkle flares) has no pin: no corpus bk2 tried puts a sparkle
+# twinkle on screen at a pinned VBL, so the row is unmeasured here.
+gallery_rows_rung "
+0|flame|1800|100000|
+1|flame|1800|100000|
+2|flame|1800|800|
+3|flame|1800|300|gallery.class = 348
+3|flame|1800|0|gallery.class = 1
+4|flame|1800|2500|
+5|cyclorama-portal|2000|3000|
+6|flame|1800|10000|
+7|flame|1790|300|
+8|artisans-bridge|1986|60|
+9|artisans-bridge|1986|0|
+10|flame|1800|50|
+11|stone-hill-gem-spyro-occlusion|1900|3000|
+13|stone-hill-lindar-rescue|2120|1500|
+14|gnasty_gnorc_attack|1800|500|
+15|cyclorama-portal|2000|10000|
+16|cyclorama-portal|2000|10000|
+17|beast-makers-distant-portal|2000|250|
+18|beast-makers-distant-portal|2000|40|
+19|flame|1800|300|gallery.class = 348
+20|flame|1800|350|" "flame|1800|348|1"
 
 echo
 if [ "$fail" -eq 0 ]; then

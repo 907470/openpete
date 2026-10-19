@@ -282,14 +282,14 @@ enum {
 /**
  * @brief Portal preview kinds: the `ident` key for #OP_CHAN_PORTAL.
  *
- * The game draws a portal three ways across the approach; a material
- * keyed on one kind pops as the player walks up, so -1 (all three) is the
- * usual choice.
+ * Spyro 1 draws a portal three ways across the approach, Spyro 2 and 3
+ * two ways; a material keyed on one kind pops as the player walks up, so
+ * -1 (every kind) is the usual choice.
  */
 enum {
-    OP_PORTAL_FLAT    = 0,  /**< Far colour chip / close backstop. */
-    OP_PORTAL_DOME    = 1,  /**< Full gouraud dome, close up. */
-    OP_PORTAL_BLENDED = 2,  /**< Fogged dome, medium cross-dissolve. */
+    OP_PORTAL_FLAT    = 0,  /**< Far colour chip / close backstop; on Spyro 2 and 3 the background quad. */
+    OP_PORTAL_DOME    = 1,  /**< Full gouraud dome, close up; on Spyro 2 and 3 the destination picture. */
+    OP_PORTAL_BLENDED = 2,  /**< Fogged dome, medium cross-dissolve; Spyro 1 only. */
 };
 /**
  * @brief Particle kinds: the high byte of the `ident` key for `OP_CHAN_PARTICLE`.
@@ -303,8 +303,8 @@ enum {
  * glow-only or sparkle-only material keys on the kind with `sel` 0.
  */
 enum {
-    OP_PART_QUAD  = 0,  /**< Textured billboard quads; `sel` = particle class. */
-    OP_PART_LINE  = 1,  /**< Streak lines; `sel` = particle class. */
+    OP_PART_QUAD  = 0,  /**< Billboard quads; `sel` = particle class on Spyro 1, the GPU primitive code on Spyro 2 and 3. */
+    OP_PART_LINE  = 1,  /**< Streak lines; `sel` = particle class on Spyro 1, the GPU primitive code on Spyro 2 and 3. */
     OP_PART_GLOW  = 2,  /**< Additive glow rings around collectables. */
     OP_PART_FLARE = 3,  /**< Sparkle flares (the twinkle quads). */
     OP_PART_SPARK = 4,  /**< Sparkle lines. */
@@ -979,7 +979,10 @@ typedef struct openpete_mod_api {
      * a live instance at this instant, and the set worth offering a user
      * to choose from. On Spyro 3, whose model table keeps the rows of
      * earlier levels, the set is the classes of the load's own model
-     * lists. Class ids run to 511 on Spyro 1 and 767 on Spyro 3; at most
+     * lists; on Spyro 2, whose table also keeps them and whose loads keep
+     * no list, it is the classes of the level's moby array that have a
+     * model row, spawned ones included. Class ids run to 511 on Spyro 1
+     * and 767 on Spyro 2 and 3; at most
      * @p cap entries are copied. Reads an engine-side snapshot refreshed
      * once per tick, so it is safe from a UI section. Empty before the
      * first level finishes loading.

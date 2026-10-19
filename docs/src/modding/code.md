@@ -339,7 +339,7 @@ returns -1.
 | `draw_text` | yes | yes |
 | `[[material]]` rows | every render channel | every render channel |
 | `material_register`, `material_register_refine`, `material_enable`, `material_set_params`, `material_set_selector` | yes | yes |
-| `moby_classes` | yes | Spyro 3: yes. Spyro 2: no moby census, returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
+| `moby_classes` | yes | yes |
 | `read_level_data` | yes | returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
 | `[[level]]` rows | yes | refused with one log line |
 | `vstream_handle` | yes | no vertex-stream field: a per-game build is refused at compile time; a `"*"` object gets 0 and one log line |

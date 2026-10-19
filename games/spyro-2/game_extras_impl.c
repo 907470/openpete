@@ -150,22 +150,24 @@ static const psyq_game_hooks_t k_psyq = {
 };
 
 GAME_MOD_TABLES_DECLARE(spyro2);
+const openpete_moby_ops_t* spyro2_moby_ops(void);
 
-/** @brief Return Spyro 2's mod-layer descriptor: its generated SDK symbol table and overlay entry arrays, and no game-specific surface.
+/** @brief Return Spyro 2's mod-layer descriptor: its generated SDK symbol table and overlay entry arrays, and its moby ops.
  *
  * Built on the first call into static storage. Overlay-window overrides
  * bind through override_ovl or a name scoped to one overlay only
- * (legacy_window_links 0). Every render channel is a material channel,
- * and mod text draws through the text-moby rasterizer. Moby ops, level
- * ops, the sfx canonicaliser and the render-function list stay NULL, so
- * the loader treats those surfaces as unsupported on this game; the arena
- * keeps the core default base.
+ * (legacy_window_links 0). The moby ops are mods/mod_moby_ops.c's, every
+ * render channel is a material channel, and mod text draws through the
+ * text-moby rasterizer. Level ops, the sfx canonicaliser and the
+ * render-function list stay NULL, so the loader treats those surfaces as
+ * unsupported on this game; the arena keeps the core default base.
  * @return The descriptor, never NULL. */
 static const game_mod_desc_t* spyro2_mod_desc(void) {
     static game_mod_desc_t s_desc;
     static int             s_built = 0;
     if (!s_built) {
         GAME_MOD_TABLES_FILL(&s_desc, spyro2);
+        s_desc.moby_ops     = spyro2_moby_ops();
         s_desc.channel_mask = OPENPETE_MODS_CHANNELS_ALL;
         s_desc.text_emit    = text_moby_native_mod_emit;
         s_built = 1;

@@ -36,7 +36,7 @@
 #   vstream refusal (Spyro 2 and 3) a per-game object using vstream_handle
 #                   is refused at compile time; a "*" object gets 0 from two
 #                   calls with one log line.
-#   classes cap     (Spyro 1 and 3) a mod built with a 512-entry buffer gets
+#   classes cap     a mod built with a 512-entry buffer gets
 #                   min(size, capacity) ascending ids from moby_classes, ids
 #                   of 512 and above on Spyro 3, and its link on the moby
 #                   ops' update anchor counts calls above 0.
@@ -415,8 +415,8 @@ fi
 # A "*" object calls read_level_data and moby_classes twice each at entry.
 # A game whose descriptor leaves the member NULL returns
 # OPENPETE_MOD_ERR_UNSUPPORTED from both calls of that entry and logs one
-# line naming the game: neither on Spyro 1, both on Spyro 2,
-# read_level_data alone on Spyro 3, which serves the moby class census.
+# line naming the game: neither on Spyro 1, read_level_data alone on
+# Spyro 2 and Spyro 3, which serve the moby class census.
 say "unsupported: read_level_data and moby_classes on $PG_GAME"
 d="$WORK/unsup/unsup-probe"
 mod_toml "$d" unsup-probe
@@ -448,8 +448,7 @@ if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
     n_moby="$(printf '%s\n' "$out" | grep -c "moby_classes: $PG_GAME serves no moby class census - unsupported")"
     case "$PG_GAME" in
         spyro-1) want_unsup=0 want_rld=0 want_moby=0 ;;
-        spyro-3) want_unsup=2 want_rld=1 want_moby=0 ;;
-        *)       want_unsup=4 want_rld=1 want_moby=1 ;;
+        *)       want_unsup=2 want_rld=1 want_moby=0 ;;
     esac
     if [ "$n_calls" -eq 2 ] && [ "$n_unsup" -eq "$want_unsup" ] &&
        [ "$n_rld" -eq "$want_rld" ] && [ "$n_moby" -eq "$want_moby" ]; then
@@ -512,9 +511,9 @@ CEOF
 fi
 
 # ── M7c. moby_classes through a buffer of the pre-768 cap ────────────────
-# On a game with moby ops (Spyro 1 and 3) a "*" object built with a
-# 512-entry buffer links the master update the ops anchor on (Spyro 1
-# GamestateUpdate 0x8003385C, Spyro 3 Update 0x80055400) and, each time the
+# On each game a "*" object built with a 512-entry buffer links the master
+# update the moby ops anchor on (Spyro 1 GamestateUpdate 0x8003385C, Spyro
+# 2 func_8001B140, Spyro 3 Update 0x80055400) and, each time the
 # set's size changes, sizes it (NULL, 0), copies it into the 512-entry buffer
 # and into an 8-entry one. Every copy returns min(size, capacity) ids in
 # ascending order, the link counts calls above 0, and a nonempty set is seen
@@ -522,6 +521,7 @@ fi
 # of 512 or above arrives through the 512-entry buffer.
 case "$PG_GAME" in
     spyro-1) upd=0x8003385Cu cls_frames=6000 ;;
+    spyro-2) upd=0x8001B140u cls_frames=4073 ;;
     spyro-3) upd=0x80055400u cls_frames=6573 ;;
     *)       upd="" ;;
 esac

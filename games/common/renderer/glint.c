@@ -832,7 +832,8 @@ static void glint_feed_line(const glint_item* it, const glint_rebase* rb,
  * moves its corners; with mode 2 or more each cross line goes through
  * glint_feed_line. The depth is the rebase's when active, else the depth the
  * pairing gave. Counts the triangles fed in s_fed_star_tris and
- * s_fed_cross_tris and tags them as flare and spark particles. */
+ * s_fed_cross_tris and tags them as flare and spark particles with sel 0,
+ * since neither kind carries a game particle class. */
 static void glint_feed_native(void) {
     const int mode = glint_feed_mode();
     if (mode <= 0) return;
@@ -844,7 +845,7 @@ static void glint_feed_native(void) {
         const float depth = rb->active ? rb->depth : s_item[i].depth;
         if (p->code == GLINT_QUAD && p->nv == 4) {
             openpete_native_scene_set_tag(
-                OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_FLARE, GLINT_QUAD, 0));
+                OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_FLARE, 0, 0));
             float x[4] = { p->x[0], p->x[1], p->x[2], p->x[3] };
             float y[4] = { p->y[0], p->y[1], p->y[2], p->y[3] };
             const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[3] };
@@ -853,7 +854,7 @@ static void glint_feed_native(void) {
             s_fed_star_tris += 2;
         } else if (p->code == GLINT_LINE && mode >= 2) {
             openpete_native_scene_set_tag(
-                OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_SPARK, GLINT_LINE, 0));
+                OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_SPARK, 0, 0));
             glint_feed_line(&s_item[i], rb, depth, s_item[i].blend);
             s_fed_cross_tris += 2;
         }

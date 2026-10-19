@@ -372,7 +372,7 @@ Selector keys (manifest row or `openpete_mod_material_selector_t`; omitted
 | Key | Values |
 |---|---|
 | `channel` | `any moby terrain player flame particle sky shadow tracer portal` / `OP_CHAN_*` (1..9) |
-| `ident` | flame: 0 ribbon, 1 caps; particle: `OP_PART_IDENT(kind, sel)` = `(kind<<8)\|sel`, kinds QUAD 0 (sel = particle class), LINE 1 (sel = class), GLOW 2, FLARE 3, SPARK 4, STAR 5; shadow caster kind; portal `OP_PORTAL_FLAT 0 / DOME 1 / BLENDED 2` (use -1: the portal pops through all three on approach); player/sky/tracer emit 0 |
+| `ident` | flame: 0 ribbon, 1 caps; particle: `OP_PART_IDENT(kind, sel)` = `(kind<<8)\|sel`, kinds QUAD 0 (sel = particle class; Spyro 2/3: GPU primitive code), LINE 1 (same), GLOW 2, FLARE 3, SPARK 4 (sel 0), STAR 5 (Spyro 1 only); shadow caster kind; portal `OP_PORTAL_FLAT 0 / DOME 1 / BLENDED 2` (Spyro 2/3: FLAT background quad, DOME picture, no BLENDED; use -1: the portal pops through every kind on approach); player/sky/tracer emit 0 |
 | `class` / `moby_class` | moby class |
 | `texture` | terrain texture record 0..127, per level: pair with `level` |
 | `level` | `g_LevelId` |
@@ -389,7 +389,7 @@ the game does not serve, as `[[material]]` rows are) ->
 `material_set_params(self, mat, &blk, len ≤ 256)`, `material_enable`,
 `material_set_selector` (re-key a live material; from present/UI applies at
 next tick), `moby_classes(self, out, cap)` (classes the current level's
-load placed, ids to 767 on Spyro 3, at most cap copied, tick-boundary
+load placed, ids to 767 on Spyro 2 and 3, at most cap copied, tick-boundary
 snapshot, safe from UI; NULL,0 sizes). Manifest rows
 arm before entry, so C registrations win overlapping pixels.
 `material_register_refine(self, &sel, frag, cb)`: `cb(key, out, cap)`

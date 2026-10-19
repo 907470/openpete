@@ -305,12 +305,12 @@ static int glow_feed_enabled(void) {
  * at its item's depth (also used as the constant W), moved by the item's dx and
  * dy, with the item's blend and the vertex colours made opaque. Draw-mode
  * packets are skipped. Counts the triangles in s_fed_tris and tags them as glow
- * particles. */
+ * particles with sel 0, since a glow ring carries no game particle class. */
 static void glow_feed_native(void) {
     if (!glow_feed_enabled()) return;
     if (s_item_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_tag(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, GLOW_TRI, 0));
+    openpete_native_scene_set_tag(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0));
     for (int i = 0; i < s_item_n; i++) {
         const ngte_prim* p = &s_item[i].p;
         if (p->nv != 3) continue;

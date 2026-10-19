@@ -118,7 +118,7 @@ Every selector key is optional; an omitted key matches everything:
 |---|---|
 | `frag`, `vert` | Shader paths relative to the mod |
 | `channel` | `any`, `moby`, `terrain`, `player`, `flame`, `particle`, `sky`, `shadow`, `tracer`, `portal` |
-| `ident` | Channel-local identity: flame ribbon (0) or caps (1); particle `(kind << 8) \| sel` with kinds 0 quads, 1 lines, 2 glow rings, 3 sparkle flares, 4 sparkle lines, 5 dragon star (`OP_PART_*`); shadow caster kind; portal preview kind; on `moby`, the moby class |
+| `ident` | Channel-local identity: flame ribbon (0) or caps (1); particle `(kind << 8) \| sel` with kinds 0 quads, 1 lines, 2 glow rings, 3 sparkle flares, 4 sparkle lines, 5 dragon star (`OP_PART_*`; `sel` is the particle class of a quad or line on Spyro 1, its GPU primitive code on Spyro 2 and 3, and 0 for the other kinds; the dragon star is Spyro 1 only); shadow caster kind; portal preview kind (Spyro 2 and 3 draw the background quad and the picture, no fogged dome); on `moby`, the moby class |
 | `class` | Moby class |
 | `texture` | Terrain texture-record ID, 0 to 127 |
 | `level` | Level ID. Texture IDs are per level, so a `texture` row usually needs this |
@@ -205,8 +205,11 @@ level's load placed in the game's model table, ascending, from an
 engine-side snapshot refreshed once per tick, so it is safe from a UI
 section and gives a class picker no dead entries. On Spyro 3, whose
 model table keeps the rows of earlier levels, the set is the classes of
-the load's own model lists, not every filled row. Class ids run to 767
-on Spyro 3; the call copies at most `cap` entries, so a buffer of any
+the load's own model lists, not every filled row. Spyro 2's model table
+also keeps earlier levels' rows and its loads keep no list, so there the
+set is the classes of the level's moby array that have a model row:
+every class the level placed, plus any spawned since. Class ids run to
+767 on Spyro 2 and 3; the call copies at most `cap` entries, so a buffer of any
 size is safe, and `moby_classes(self, NULL, 0)` returns the count.
 
 ### Write a material shader
@@ -242,9 +245,9 @@ subtractively, so a brighter tint darkens the ground more.
 
 `mods/channel-gallery` registers one highlight shader once per channel
 with a different selector each time, toggled live; it shows what each
-selector claims. It loads on all three games from one source; on Spyro 2,
-which serves no `moby_classes` census, its class picker stays empty and
-the class rows take `gallery.class` from `config.toml`.
+selector claims. It loads on all three games from one source; each row's
+label and tooltip name what the row lights on the running game, and a
+row that lights nothing there is labelled a known gap with the reason.
 
 ### Refine callbacks
 

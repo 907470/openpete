@@ -26,14 +26,12 @@
  *
  * Reading the result:
  *
- * - No row is a known gap in this build: every routed channel is
- *   reshadeable, moby shadows included. The label stays because the
- *   next new channel will need it.
- * - A row marked unverified is wired but has never been observed to
- *   paint, because no capture yet puts its geometry on screen.
+ * - A row labelled a known gap lights nothing on the running game, and
+ *   its tooltip says why. The labels are per game (k_text): the same
+ *   selector can reach a draw path on one game and none on another.
  * - An unmarked row that lights nothing has no geometry on screen at
  *   the moment: breathe fire for the flame rows, find a gem for the
- *   sparkle rows, rescue a dragon for the star.
+ *   sparkle rows, walk up to a portal for the portal rows.
  * - Two rows claiming the same pixels means the selectors overlap. The
  *   later registration wins; that is the documented priority.
  * - Blended rows tint rather than replace. The material inherits its
@@ -71,8 +69,6 @@ static openpete_mod_t*           g_self;
 
 /** @brief One gallery row: a selector, a colour, and its live state. */
 typedef struct {
-    const char* label;
-    const char* help;         /**< Tooltip; states what the row proves. */
     int   channel;            /**< OP_CHAN_*; -1 = any */
     int   ident;              /**< -1 = any */
     int   moby_class;         /**< -1 = any */
@@ -87,25 +83,14 @@ typedef struct {
  *        from the end at entry.
  */
 static row_t g_rows[] = {
-  { "Everything",      "No key at all - every channel this build can route.",
-    -1, -1, -1, {1.00f, 0.20f, 0.80f}, 0, -1 },
-  { "Terrain",         "The whole world mesh, both LOD tiers.",
-    OP_CHAN_TERRAIN, -1, -1, {0.20f, 0.90f, 0.40f}, 0, -1 },
-  { "Mobys (all)",     "Every pooled object: gems, chests, critters, decor.",
-    OP_CHAN_MOBY, -1, -1, {1.00f, 0.75f, 0.10f}, 0, -1 },
-  { "Mobys of one class", "Pick the class from the list below - it holds "
-                          "exactly the classes this level loaded.",
-    OP_CHAN_MOBY, -1, 0, {1.00f, 0.35f, 0.10f}, 0, -1 },
-  { "Player",          "Spyro. He is not a moby - the moby rows never hit him.",
-    OP_CHAN_PLAYER, -1, -1, {0.30f, 0.60f, 1.00f}, 0, -1 },
-  { "Sky",             "The cyclorama dome behind everything.",
-    OP_CHAN_SKY, -1, -1, {0.70f, 0.40f, 1.00f}, 0, -1 },
-  { "Flame (ribbon)",  "The additive plume. The tint reads yellow rather than "
-                       "orange because the material inherits the group's "
-                       "additive blend - orange added over green grass.",
-    OP_CHAN_FLAME, 0, -1, {1.00f, 0.30f, 0.00f}, 0, -1 },
-  { "Flame (caps)",    "The opaque base caps of the same effect.",
-    OP_CHAN_FLAME, 1, -1, {0.10f, 1.00f, 1.00f}, 0, -1 },
+  /*  0 */ { -1, -1, -1, {1.00f, 0.20f, 0.80f}, 0, -1 },
+  /*  1 */ { OP_CHAN_TERRAIN, -1, -1, {0.20f, 0.90f, 0.40f}, 0, -1 },
+  /*  2 */ { OP_CHAN_MOBY, -1, -1, {1.00f, 0.75f, 0.10f}, 0, -1 },
+  /*  3 */ { OP_CHAN_MOBY, -1, 0, {1.00f, 0.35f, 0.10f}, 0, -1 },
+  /*  4 */ { OP_CHAN_PLAYER, -1, -1, {0.30f, 0.60f, 1.00f}, 0, -1 },
+  /*  5 */ { OP_CHAN_SKY, -1, -1, {0.70f, 0.40f, 1.00f}, 0, -1 },
+  /*  6 */ { OP_CHAN_FLAME, 0, -1, {1.00f, 0.30f, 0.00f}, 0, -1 },
+  /*  7 */ { OP_CHAN_FLAME, 1, -1, {0.10f, 1.00f, 1.00f}, 0, -1 },
   /* Moby shadows are tagged and blend-plumbed like every other channel,
    * but their draw path's fragment stage owns per-pixel occlusion
    * against walls and steep faces, and the fragment stage is the one a
@@ -114,78 +99,191 @@ static row_t g_rows[] = {
    * verdict to apply. The row is refused on the non-decal fallback pipe
    * (OPENPETE_MOBY_SHADOW_DECAL=0), so a mod's reach never depends on
    * whether the host can sample depth. */
-  { "Shadows (moby)",  "Drawn by the depth-aware decal pipe, whose fragment "
-                       "stage owns per-pixel occlusion - so this row uses the "
-                       "decal material profile, which hands the shader that "
-                       "verdict to apply instead of letting it delete the "
-                       "logic. Subtractive: a brighter tint darkens more.",
-    OP_CHAN_SHADOW, 0, -1, {0.90f, 0.90f, 0.20f}, 0, -1 },
+  /*  8 */ { OP_CHAN_SHADOW, 0, -1, {0.90f, 0.90f, 0.20f}, 0, -1 },
   /* Known gap. Spyro's silhouette is drawn by a third fragment stage, an
    * untextured depth-aware decal whose vertex interface differs from both
    * the scene contract and the textured decal profile. It has no engine
    * half yet, so the tag reaches it and the override does not; lighting
    * the row leaves the shadow as the game drew it. */
-  { "Shadows (player)","Spyro's own silhouette. Known gap: routable but not "
-                       "yet reshadeable - it is drawn by an untextured "
-                       "depth-aware decal stage that has no material profile "
-                       "of its own, so this row paints nothing.",
-    OP_CHAN_SHADOW, 1, -1, {0.20f, 1.00f, 0.60f}, 0, -1 },
-  { "Particle billboards", "The textured sparkle quads. Toggle it against the "
-                           "glow row to see the ident key split one channel: "
-                           "the quads recolour, the glow ring stays stock.",
-    OP_CHAN_PARTICLE, PART(OP_PART_QUAD), -1, {1.00f, 0.50f, 0.50f}, 0, -1 },
-  { "Particle glows",  "Glow rings around collectables.",
-    OP_CHAN_PARTICLE, PART(OP_PART_GLOW), -1, {0.50f, 1.00f, 0.50f}, 0, -1 },
-  { "Particle sparkles","Gem sparkle flares.",
-    OP_CHAN_PARTICLE, PART(OP_PART_FLARE), -1, {1.00f, 1.00f, 0.40f}, 0, -1 },
-  { "Dragon star",     "The rescue star - only during a dragon cutscene.",
-    OP_CHAN_PARTICLE, PART(OP_PART_STAR), -1, {0.40f, 0.90f, 1.00f}, 0, -1 },
-  { "Tracers",         "Beam streaks (Gnasty's zaps).",
-    OP_CHAN_TRACER, -1, -1, {1.00f, 0.10f, 0.10f}, 0, -1 },
+  /*  9 */ { OP_CHAN_SHADOW, 1, -1, {0.20f, 1.00f, 0.60f}, 0, -1 },
+  /* 10 */ { OP_CHAN_PARTICLE, PART(OP_PART_QUAD), -1, {1.00f, 0.50f, 0.50f}, 0, -1 },
+  /* 11 */ { OP_CHAN_PARTICLE, PART(OP_PART_GLOW), -1, {0.50f, 1.00f, 0.50f}, 0, -1 },
+  /* 12 */ { OP_CHAN_PARTICLE, PART(OP_PART_FLARE), -1, {1.00f, 1.00f, 0.40f}, 0, -1 },
+  /* 13 */ { OP_CHAN_PARTICLE, PART(OP_PART_STAR), -1, {0.40f, 0.90f, 1.00f}, 0, -1 },
+  /* 14 */ { OP_CHAN_TRACER, -1, -1, {1.00f, 0.10f, 0.10f}, 0, -1 },
   /* A portal shows the destination level's sky through a different
-   * feeder from the cyclorama, so the Sky row never reaches it. It is
-   * drawn three ways across the approach (far colour chip, fogged dome,
-   * close gouraud dome); a material wants all three, or the portal pops
-   * as the player walks up to it. */
-  { "Portal preview (all)",
-    "The destination sky seen through a portal - another level's sky, which "
-    "is why the Sky row never reaches it. All three approach rungs at once.",
-    OP_CHAN_PORTAL, -1, -1, {0.60f, 0.20f, 1.00f}, 0, -1 },
-  { "Portal preview (close dome)",
-    "Only the full gouraud dome seen up close. Toggle this against the far "
-    "chip row to watch one rung of the ladder change and the other stay.",
-    OP_CHAN_PORTAL, OP_PORTAL_DOME, -1, {0.30f, 0.10f, 0.90f}, 0, -1 },
-  { "Portal preview (far chip)",
-    "Only the flat colour chip a distant portal shows. Lights nothing when "
-    "every portal in view is already close enough to draw its dome.",
-    OP_CHAN_PORTAL, OP_PORTAL_FLAT, -1, {1.00f, 0.60f, 0.20f}, 0, -1 },
-  { "Portal preview (fogged dome)",
-    "Only the medium-distance dome, DPCS-fogged toward the level's fog "
-    "colour - the cross-dissolve rung between the chip and the close dome.",
-    OP_CHAN_PORTAL, OP_PORTAL_BLENDED, -1, {0.20f, 0.80f, 0.90f}, 0, -1 },
+   * feeder from the cyclorama, so the Sky row never reaches it. Spyro 1
+   * draws it three ways across the approach (far colour chip, fogged
+   * dome, close gouraud dome); Spyro 2 and 3 draw a background quad
+   * (OP_PORTAL_FLAT) and, near, the destination picture (OP_PORTAL_DOME).
+   * A material wants every kind, or the portal pops as the player walks
+   * up to it. */
+  /* 15 */ { OP_CHAN_PORTAL, -1, -1, {0.60f, 0.20f, 1.00f}, 0, -1 },
+  /* 16 */ { OP_CHAN_PORTAL, OP_PORTAL_DOME, -1, {0.30f, 0.10f, 0.90f}, 0, -1 },
+  /* 17 */ { OP_CHAN_PORTAL, OP_PORTAL_FLAT, -1, {1.00f, 0.60f, 0.20f}, 0, -1 },
+  /* 18 */ { OP_CHAN_PORTAL, OP_PORTAL_BLENDED, -1, {0.20f, 0.80f, 0.90f}, 0, -1 },
   /* The moby refine row. Registered separately below, because a selector
    * alone cannot express "and in this state". */
-  { "Moby class + state (refine)",
-    "The selector prunes to a moby class, then a callback reads each "
-    "instance's state byte (Moby +0x48) and declines the ones that do not match. Set the "
-    "state slider to -1 to claim every instance of the class, which is what "
-    "the plain class row already does - the point is what happens when you "
-    "narrow it.",
-    OP_CHAN_MOBY, -1, 0, {0.10f, 1.00f, 0.35f}, 0, -1 },
+  /* 19 */ { OP_CHAN_MOBY, -1, 0, {0.10f, 1.00f, 0.35f}, 0, -1 },
   /* The terrain refine row. Terrain is the only channel the engine draws
    * two ways: walked near the camera, and redrawn from GPU buffers baked
    * at level load everywhere else. A callback cannot run per baked face,
    * so the engine runs it once per present for the selector's single key
    * and hands the answer to both paths. Keyed on the untextured band so
    * the row is level-independent. */
-  { "Terrain untextured band (refine)",
-    "A refine callback on terrain. Terrain is drawn two ways - walked near "
-    "the camera, redrawn from baked GPU buffers everywhere else - and this "
-    "row reaches both with the same colour. What a face looks like is a "
-    "function of the face, never of where it lives.",
-    OP_CHAN_TERRAIN, -1, -1, {1.00f, 0.45f, 0.10f}, 0, -1 },
+  /* 20 */ { OP_CHAN_TERRAIN, -1, -1, {1.00f, 0.45f, 0.10f}, 0, -1 },
 };
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
+
+/** @brief A row's overlay label and tooltip on one game. */
+typedef struct {
+    const char* label;
+    const char* help;         /**< Tooltip; states what the row lights. */
+} row_text_t;
+
+/**
+ * @name Per-game row text
+ * One label and tooltip per row of g_rows, in the same order, for each
+ * game. A row's selector is the same on every game; what it reaches is
+ * not, so each game's table names what the row lights there, and a row
+ * that lights nothing there says so and why. The tables are what the
+ * engine's channel gate measures: check_mod_channels lights each row
+ * alone and asserts a known-gap row paints nothing.
+ * @{
+ */
+#if OPENPETE_GAME_SPYRO1
+static const row_text_t k_text[] = {
+  /*  0 */ { "Everything",      "No key at all - every channel this build can route." },
+  /*  1 */ { "Terrain",         "The whole world mesh, both LOD tiers." },
+  /*  2 */ { "Mobys (all)",     "Every pooled object: gems, chests, critters, decor." },
+  /*  3 */ { "Mobys of one class", "Pick the class from the list below - it holds "
+                                   "exactly the classes this level loaded." },
+  /*  4 */ { "Player",          "Spyro. He is not a moby - the moby rows never hit him." },
+  /*  5 */ { "Sky",             "The cyclorama dome behind everything." },
+  /*  6 */ { "Flame (ribbon)",  "The additive plume. The tint reads yellow rather than "
+                                "orange because the material inherits the group's "
+                                "additive blend - orange added over green grass." },
+  /*  7 */ { "Flame (caps)",    "The opaque base caps of the same effect." },
+  /*  8 */ { "Shadows (moby)",  "Drawn by the depth-aware decal pipe, whose fragment "
+                                "stage owns per-pixel occlusion - so this row uses the "
+                                "decal material profile, which hands the shader that "
+                                "verdict to apply instead of letting it delete the "
+                                "logic. Subtractive: a brighter tint darkens more." },
+  /*  9 */ { "Shadows (player) - known gap",
+                                "Spyro's own silhouette. Known gap: routable but not "
+                                "yet reshadeable - it is drawn by an untextured "
+                                "depth-aware decal stage that has no material profile "
+                                "of its own, so this row paints nothing." },
+  /* 10 */ { "Particle billboards", "The textured sparkle quads (particle class 0). Toggle "
+                                    "it against the glow row to see the ident key split one "
+                                    "channel: the quads recolour, the glow ring stays stock." },
+  /* 11 */ { "Particle glows",  "Glow rings around collectables." },
+  /* 12 */ { "Particle sparkles", "Gem sparkle flares." },
+  /* 13 */ { "Dragon star",     "The rescue star - only during a dragon cutscene." },
+  /* 14 */ { "Tracers",         "Beam streaks (Gnasty's zaps)." },
+  /* 15 */ { "Portal preview (all)",
+             "The destination sky seen through a portal - another level's sky, which "
+             "is why the Sky row never reaches it. All three approach rungs at once." },
+  /* 16 */ { "Portal preview (close dome)",
+             "Only the full gouraud dome seen up close. Toggle this against the far "
+             "chip row to watch one rung of the ladder change and the other stay." },
+  /* 17 */ { "Portal preview (far chip)",
+             "Only the flat colour chip a distant portal shows. Lights nothing when "
+             "every portal in view is already close enough to draw its dome." },
+  /* 18 */ { "Portal preview (fogged dome)",
+             "Only the medium-distance dome, DPCS-fogged toward the level's fog "
+             "colour - the cross-dissolve rung between the chip and the close dome." },
+  /* 19 */ { "Moby class + state (refine)",
+             "The selector prunes to a moby class, then a callback reads each "
+             "instance's state byte (Moby +0x48) and declines the ones that do not "
+             "match. Set the state slider to -1 to claim every instance of the class, "
+             "which is what the plain class row already does - the point is what "
+             "happens when you narrow it." },
+  /* 20 */ { "Terrain untextured band (refine)",
+             "A refine callback on terrain. Terrain is drawn two ways - walked near "
+             "the camera, redrawn from baked GPU buffers everywhere else - and this "
+             "row reaches both with the same colour. What a face looks like is a "
+             "function of the face, never of where it lives." },
+};
+#elif OPENPETE_GAME_SPYRO2 || OPENPETE_GAME_SPYRO3
+#if OPENPETE_GAME_SPYRO2
+#define GAME_NAME "Spyro 2"
+#define GLOW_EXAMPLE " (Sparx's glow on Spyro 2)"
+#else
+#define GAME_NAME "Spyro 3"
+#define GLOW_EXAMPLE ""
+#endif
+/* Spyro 2 and Spyro 3 run the same draw routines at different
+ * addresses, and the engine's feeders for them are shared, so one table
+ * serves both. */
+static const row_text_t k_text[] = {
+  /*  0 */ { "Everything",      "No key at all - every channel this build routes on " GAME_NAME "." },
+  /*  1 */ { "Terrain",         "The level mesh, both LOD tiers." },
+  /*  2 */ { "Mobys (all)",     "Every object of the moby array: gems, enemies, NPCs, props." },
+  /*  3 */ { "Mobys of one class", "Pick the class from the list below - it holds the "
+                                   "classes of this level's moby array that have a model." },
+  /*  4 */ { "Player",          "Spyro. He is drawn by his own routine, not as a moby - "
+                                "the moby rows never hit him." },
+  /*  5 */ { "Sky",             "The cyclorama dome behind everything." },
+  /*  6 */ { "Flame (ribbon)",  "Spyro's fire-breath plume. The tint reads lighter than "
+                                "asked because the material inherits the plume's "
+                                "additive blend." },
+  /*  7 */ { "Flame (caps)",    "The opaque base caps of the fire breath." },
+  /*  8 */ { "Shadows (moby)",  "The drop shadows under mobys, drawn by the depth-aware "
+                                "decal pipe; this row uses the decal material profile, "
+                                "which applies the engine's occlusion verdict. "
+                                "Subtractive: a brighter tint darkens more." },
+  /*  9 */ { "Shadows (player) - known gap",
+                                "Spyro's own shadow. Known gap: routable but not yet "
+                                "reshadeable - it is drawn by an untextured depth-aware "
+                                "decal stage that has no material profile, so this row "
+                                "paints nothing." },
+  /* 10 */ { "Particle billboards - known gap",
+                                "Known gap on " GAME_NAME ": its particle routine's quads "
+                                "are keyed by their GPU primitive code, not by a particle "
+                                "class, so this row's class-0 key matches none of them. "
+                                "A selector on the particle channel with ident -1 "
+                                "reaches them." },
+  /* 11 */ { "Particle glows",  "Glow rings: the screen-facing fans of the glow-ring "
+                                "routine" GLOW_EXAMPLE "." },
+  /* 12 */ { "Particle sparkles", "Gem glints: the four-point stars the glint routine "
+                                  "draws over gems." },
+  /* 13 */ { "Dragon star - known gap",
+                                "Known gap on " GAME_NAME ": the dragon-rescue star is a "
+                                "Spyro 1 effect; nothing on this game draws that kind, "
+                                "so this row paints nothing." },
+  /* 14 */ { "Tracers",         "Textured ribbon trails: the tracer ribbons and meshes, "
+                                "and Zoe's zap." },
+  /* 15 */ { "Portal preview (all)",
+             "Another level seen through a homeworld portal: the background quad and "
+             "the destination picture. The Sky row never reaches it." },
+  /* 16 */ { "Portal preview (picture)",
+             "Only the baked picture of the destination level, drawn while the "
+             "portal is near. Toggle it against the background row." },
+  /* 17 */ { "Portal preview (background)",
+             "Only the background quad a portal draws at every distance, behind "
+             "the picture." },
+  /* 18 */ { "Portal preview (fogged dome) - known gap",
+             "Known gap on " GAME_NAME ": a portal here is a background quad and a "
+             "picture, with no fogged middle rung, so this row paints nothing." },
+  /* 19 */ { "Moby class + state (refine)",
+             "The selector prunes to a moby class, then a callback reads each "
+             "instance's state byte (+0x48 of the 0x58-byte moby record) and declines "
+             "the ones that do not match. At state -1 it claims every instance of "
+             "the class, which the plain class row already does." },
+  /* 20 */ { "Terrain untextured band (refine)",
+             "A refine callback on the untextured terrain faces. Terrain is drawn two "
+             "ways - walked near the camera, redrawn from baked GPU buffers "
+             "elsewhere - and this row reaches both with the same colour." },
+};
+#undef GAME_NAME
+#undef GLOW_EXAMPLE
+#else
+#error "channel-gallery: no row text for this game"
+#endif
+_Static_assert(sizeof k_text / sizeof k_text[0] == sizeof g_rows / sizeof g_rows[0],
+               "channel-gallery: one row text per row");
+/** @} */
 
 static int   g_shader = -1;        /**< highlight.frag handle. */
 /**
@@ -354,7 +452,7 @@ static void retune_class_rows(void) {
         sel.moby_class = g_class;
         if (g_api->material_set_selector(g_self, r->mat, &sel) != 0)
             g_api->log(g_self, OP_MOD_LOG_WARN, "row '%s' retune refused",
-                       r->label);
+                       k_text[rows[k]].label);
     }
 }
 
@@ -373,8 +471,8 @@ static int g_switch_tick = -1;
 static int g_switch_class;
 static int g_switched;
 
-/** @brief Present hook for the scripted switch; fires once. */
-static void on_present(const openpete_present_ctx_t* ctx) {
+/** @brief Re-key the class rows once the scripted switch's tick arrives. */
+static void class_switch_tick(const openpete_present_ctx_t* ctx) {
     if (g_switched || g_switch_tick < 0 || (int)ctx->tick < g_switch_tick)
         return;
     g_switched = 1;
@@ -385,6 +483,45 @@ static void on_present(const openpete_present_ctx_t* ctx) {
                g_class, ctx->tick);
 }
 /** @} */
+
+/**
+ * @name Scripted class census
+ * gallery.census_log = 1 logs the class list the picker would offer each
+ * time it changes: the count and every id. It reads the same moby_classes
+ * snapshot the picker reads, from the same present context, so a headless
+ * run can check the picker without the overlay. Unset, no line is logged.
+ * @{
+ */
+static int g_census_log;
+static int g_census_last = -1;   /**< Count last logged; -1 = none yet. */
+
+/** @brief Log the picker's class list when its count changes. */
+static void class_census_tick(const openpete_present_ctx_t* ctx) {
+    if (!g_census_log || g_class_unsupported) return;
+    class_list_refresh();
+    if (g_class_unsupported) {
+        g_api->log(g_self, OP_MOD_LOG_INFO,
+                   "class census at tick %u: unsupported", ctx->tick);
+        return;
+    }
+    if (g_class_n == g_census_last) return;
+    g_census_last = g_class_n;
+    char line[CLASSES_MAX * 4 + 1];
+    int at = 0;
+    for (int i = 0; i < g_class_n && at < (int)sizeof line - 5; i++)
+        at += snprintf(line + at, sizeof line - (size_t)at, " %u",
+                       (unsigned)g_classes[i]);
+    line[at] = '\0';
+    g_api->log(g_self, OP_MOD_LOG_INFO, "class census at tick %u: %d classes:%s",
+               ctx->tick, g_class_n, line);
+}
+/** @} */
+
+/** @brief Present hook: the scripted class switch and the scripted census. */
+static void on_present(const openpete_present_ctx_t* ctx) {
+    class_switch_tick(ctx);
+    class_census_tick(ctx);
+}
 
 /**
  * @brief Register one row's material with the engine.
@@ -415,7 +552,8 @@ static void register_row(row_t* r) {
         r->mat = g_api->material_register(g_self, &sel, sh);
     }
     if (r->mat < 0) {
-        g_api->log(g_self, OP_MOD_LOG_WARN, "row '%s' refused", r->label);
+        g_api->log(g_self, OP_MOD_LOG_WARN, "row '%s' refused",
+                   k_text[r - g_rows].label);
         return;
     }
     push_params(r);
@@ -443,10 +581,10 @@ static void ui(const openpete_mod_ui_t* ui) {
     int live = 0;
     for (int i = 0; i < NROWS; i++) {
         row_t* r = &g_rows[i];
-        if (r->mat < 0) { ui->text_disabled("%s - unavailable", r->label); continue; }
-        if (ui->checkbox(r->label, &r->on))
+        if (r->mat < 0) { ui->text_disabled("%s - unavailable", k_text[i].label); continue; }
+        if (ui->checkbox(k_text[i].label, &r->on))
             g_api->material_enable(g_self, r->mat, r->on);
-        ui->tooltip(r->help);
+        ui->tooltip(k_text[i].help);
         live += r->on ? 1 : 0;
     }
     ui->separator();
@@ -519,6 +657,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_refine_state = (int)api->config_int(self, "gallery.refine_state", -1);
     for (int i = 0; i < NROWS; i++) register_row(&g_rows[i]);
 
+    g_census_log = (int)api->config_int(self, "gallery.census_log", 0);
     char sw[64];
     api->config_str(self, "gallery.class_switch", "", sw, (int)sizeof sw);
     if (sw[0]) {
@@ -527,13 +666,14 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         if (*end == ':') {
             g_switch_tick  = (int)t;
             g_switch_class = (int)strtol(end + 1, NULL, 10);
-            api->register_present_hook(self, on_present);
         } else {
             api->log(self, OP_MOD_LOG_WARN,
                      "gallery.class_switch: want \"<tick>:<class>\", got \"%s\"",
                      sw);
         }
     }
+    if (g_switch_tick >= 0 || g_census_log)
+        api->register_present_hook(self, on_present);
 
     /* gallery.rows: a comma-separated list of row numbers, or "all". */
     char want[128];

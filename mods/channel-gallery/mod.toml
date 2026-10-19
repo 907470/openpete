@@ -7,10 +7,10 @@
 # reshade what the renderer already drew and cannot move, reorder or
 # re-composite anything.
 #
-# One source serves all three games; the refine row's state byte offset is
-# the only per-game arm. Row labels name Spyro 1 content (Gnasty's zaps, the
-# dragon rescue star); on Spyro 2 and 3 a row lights whatever that game
-# draws on the channel and ident.
+# One source serves all three games. The selectors are the same on every
+# game; each row's label and tooltip come from the running game's table,
+# which names what the row lights there and labels a row that lights
+# nothing there a known gap, with the reason.
 #
 # uses: `api->shader_register` - compiles the one highlight shader every row shares
 # uses: `api->material_register` - registers a row's selector against that shader
@@ -18,9 +18,9 @@
 # uses: `api->material_set_selector` - re-keys a live row when the class combo changes, instead of tearing the material down
 # uses: `api->material_set_params` - pushes the highlight strength slider into the shared block
 # uses: `api->material_enable` - a row's checkbox, since a material is registered disabled
-# uses: `api->moby_classes` - lists the classes the current level actually loaded, so the combo offers only rows that can light (Spyro 2 serves no census; the picker stays empty there)
+# uses: `api->moby_classes` - lists the classes the current level actually loaded, so the combo offers only rows that can light
 # uses: `api->guest` - reads the matched moby's state byte inside a refine callback to decide the instance's block
-# uses: `api->register_present_hook` - counts what lit this present for the row tally
+# uses: `api->register_present_hook` - runs the scripted class switch and the scripted class census from present context
 # uses: `api->config_float`, `api->config_int`, `api->config_str` - the rows the harness drives from config.toml
 # uses: `openpete_mod_ui.h` widget vtable - checkbox, combo, sliders, tooltips and separators build the panel with no ImGui version in the mod's build
 
@@ -45,7 +45,10 @@ sim_mutative = false
 # All three are still read from config.toml at load, which is how
 # headless runs drive the gallery. Config keys are looked up by name, not
 # through this schema: gallery.strength = 0.65, gallery.class = <moby
-# class, -1 = any>, gallery.refine_state = <m_State, -1 = any>.
+# class, -1 = any>, gallery.refine_state = <m_State, -1 = any>,
+# gallery.class_switch = "<tick>:<class>" (re-key the class rows from a
+# present hook), gallery.census_log = 1 (log the picker's class list each
+# time it changes).
 
 [[config]]
 key = "gallery.rows"
