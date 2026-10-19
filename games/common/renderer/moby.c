@@ -2095,7 +2095,6 @@ static long s_tier_lpskip;   /* far-tier records skipped by the LP vertex count 
 static long s_shband_cull;   /* SHADED-walk mobys skipped by the .s 3-axis distance-band
                               * cull mirror (block_80022B40..90 - the distant-gem hide) */
 static long s_tier_mirror_ok, s_tier_mirror_bad;
-static long s_hold_replayed;   /* Tier-2 hold: moby replays served per census window */
 /** @brief Whether the tier census and extraction timers are on (OPENPETE_MOBY_TIER_DBG).
  *
  * Read on the first call and latched.
@@ -2582,12 +2581,12 @@ static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
  *
  * This is the single derivation of the centre: the canonical record pass,
  * the host record builder (widescreen reveal and sub-tick re-extract), and
- * the hold capture and replay reach it directly or through
- * build_moby_record_tr, so a present's centre for a moby is a function of
+ * the occlusion cache's origin anchor and bounds refresh reach it directly or
+ * through build_moby_record_tr, so a present's centre for a moby is a function of
  * that present's camera and the moby's position alone. At alpha 1 the interp
  * resolvers return the tick's own positions, so the sub-tick present's centre
  * is the canonical present's. No rotation compose and no model read happen
- * here: the hold replay needs only the origin projection.
+ * here: the bounds refresh needs only the origin projection.
  *
  * OPENPETE_REG_INTERP_MISS logs, at most 12 lines per second, a moby with no
  * fractional position on a pass whose camera is interpolated.
@@ -2776,6 +2775,23 @@ static int moby_is_shiny(CPUState* cpu, uint32_t moby) {
 }
 static int append_revealed_regular_inner(CPUState* cpu);
 static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fields* f);
+/* The previous pose a sub-tick decode of one host-built record reads, filled
+ * by moby_record_prev_pose. dprev may point at prev or held, so the struct is
+ * used in place and never copied. */
+typedef struct {
+    moby_pose_t prev;          /* the previous pose; zeroed unless the verdict lerps */
+    moby_pose_t held;          /* the pose a hold decodes from (moby_decode_prev) */
+    const moby_pose_t* dprev;  /* the decode's previous pose: &prev, &held or NULL */
+    double alpha;              /* the pair's alpha */
+    double dalpha;             /* the decode's alpha */
+    int verdict;               /* moby_prev_keyframe's verdict */
+    uint32_t model_held;       /* moby_fields_hold_prev's result */
+} moby_prev_decode;
+static void moby_record_prev_pose(CPUState* cpu, uint32_t moby, moby_fields* f,
+                                  moby_prev_decode* pd);
+/* Reveal-walk records per moby_prev_keyframe verdict (MOBY_PREV_SNAP, LERP,
+ * HOLD) on sub-tick presents, for the OPENPETE_MOBY_CENSUS pose_snap line. */
+static long s_reveal_verdict[3];
 /** @brief Run append_revealed_regular_inner, adding its wall time to s_us_reveal while the tier census is on.
  *
  * The timing is taken only under OPENPETE_MOBY_TIER_DBG; otherwise the call is
@@ -2793,8 +2809,9 @@ static int append_revealed_regular(CPUState* cpu) {
  *
  * Those are the mobys at the widescreen edges and in the --no-lod range; each
  * record is decoded and appended to the scene. On a sub-tick present each
- * record takes the pose of the tick the canonical present showed. Returns the
- * records admitted, occlusion-culled ones included. */
+ * record takes the pose of the tick the canonical present showed and reads
+ * the previous tick's pose as the queue pass does (moby_record_prev_pose).
+ * Returns the records admitted, occlusion-culled ones included. */
 static int append_revealed_regular_inner(CPUState* cpu) {
     /* The reveal rebuilds cull records in the game's own encoding, so it runs
      * only where the game's provider supplies that builder. Without it the walk
@@ -2854,11 +2871,11 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             m += game_layout.moby.array_stride; continue;
         }
         /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus -
-         * on the sub-tick re-extract - occl-culled and hold-replayed mobys, so
-         * a held off-4:3 speck is never double-drawn by the reveal) */
+         * on the sub-tick re-extract - occl-culled mobys, so an occluded
+         * queue moby is not drawn by the reveal instead) */
         int dup = 0;
         for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
-        if (dup) { TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += game_layout.moby.array_stride; continue; }
+        if (dup) { TRC("skip=REG-dedup (queued/culled this pass)"); m += game_layout.moby.array_stride; continue; }
         /* SPECULAR-queue mobys are fed by the SPEC pass (its cone cull is not
          * 4:3 - the native walk draws the whole queue), WITH the per-face
          * specular treatment the REG walk lacks. Revealing them here too drew
@@ -3024,10 +3041,15 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             int v = (rmd << 8) - (int)f.TR_raw[2];
             rzsf4 = v < -32768 ? -32768 : (v > 32767 ? 32767 : v);
         }
+        /* The sub-tick shape lerp, hold and colour crossfade of the queue
+         * pass; a canonical present (interp off) reads no previous pose. */
+        moby_prev_decode pd;
+        moby_record_prev_pose(cpu, m, &f, &pd);
+        if (s_walk_in_rex && pd.verdict >= 0 && pd.verdict < 3) s_reveal_verdict[pd.verdict]++;
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           pose_hold_begin(m, f.header, f.header_b, f.frameA, f.frameB, f.w0);
-          got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0, NULL, 0.0, -1.0, moby_record_depth_k(cpu, m), f.TR_raw, f.TR_frac, f.M,
+          got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0, pd.dprev, pd.dalpha, -1.0, moby_record_depth_k(cpu, m), f.TR_raw, f.TR_frac, f.M,
                                     rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           pose_hold_end(got);
           if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
@@ -3039,7 +3061,9 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header, f.header_b,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
-            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
+            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
+            pd.prev.frame_a, pd.prev.header, (float)pd.alpha };
+        s_recs[s_nrecs].model_held = pd.model_held;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         /* Sole feeder: the walk applies the SPEC face treatment for this moby,
@@ -7970,14 +7994,14 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier vbl=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | "
-                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus faces=%ld/%ld calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld fcovf=%ld/%ld\n",
+                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus faces=%ld/%ld calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld par=%ld/%ld fcovf=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad,
                     s_us_proj, s_us_walk, s_us_walk_rex, s_us_dec, s_us_fields,
                     s_us_rvdec, s_us_rvfields, s_us_reveal,
                     s_us_fanout, s_us_merge, s_walk_faces, s_walk_runs,
                     s_us_calls, s_fc_hit, s_fc_miss,
-                    s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed,
+                    s_fp_hit, s_fp_miss, s_clerp_recs,
                     s_walk_par, s_walk_par + s_walk_serial,
                     s_fc_ovf_used, s_fc_ovf_full);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = 0;
@@ -7986,7 +8010,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
             s_us_dec = s_us_fields = s_us_rvdec = s_us_rvfields = s_us_reveal = 0;
             s_us_fanout = s_us_merge = 0;
             s_walk_faces = s_walk_runs = 0;
-            s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
+            s_fc_hit = s_fc_miss = 0; s_clerp_recs = 0;
             s_fc_ovf_used = s_fc_ovf_full = 0;
             s_walk_par = s_walk_serial = 0;
         }
@@ -10715,7 +10739,24 @@ static long s_occl_f[4];   /* feeder-side pre-query outcomes: ui-exempt / no-cac
 static long s_occl_leg_culled[2], s_occl_leg_seen[2];
 extern int g_openpete_canon_lag_leg;
 
-static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, double* sy);
+/** @brief Project a record's origin (v = 0) to the screen: sx = OFX + TRx·H/TRz.
+ *
+ * H is the view's effective projection distance (s_view.H_eff). The m_Scale
+ * shift cancels in the x/z ratio, so the raw translation is exact here.
+ * @param tr The record's view-space translation.
+ * @param sx Receives the screen X.
+ * @param sy Receives the screen Y.
+ * @return 1, or 0 with *sx and *sy unwritten when TRz is below 64 (too near
+ *         or behind). */
+static int moby_project_origin(const double tr[3], double* sx, double* sy) {
+    if (tr[2] < 64.0) return 0;                    /* too near or behind */
+    double ofx = s_view.ofx;
+    double ofy = s_view.ofy;
+    double H   = s_view.H_eff;
+    *sx = ofx + tr[0] * H / tr[2];
+    *sy = ofy + tr[1] * H / tr[2];
+    return 1;
+}
 
 /* ---- extraction-free bounds refresh ---------------------------------------
  * A culled record never reaches occl_cache_update, so its bounds age out and
@@ -10746,7 +10787,7 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  * Refuses (0) an entry with no usable anchor (radius, TR.z or view-Z not
  * positive), an anchor older than OCCL_ANCHOR_MAX_VBL VBLs, a moby whose
  * class changed since the anchor, and an origin nearer than
- * hold_project_origin accepts. Writes nothing to the cache or guest memory.
+ * moby_project_origin accepts. Writes nothing to the cache or guest memory.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param e The cache entry holding the anchor.
@@ -10763,7 +10804,7 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
     if ((uint16_t)cpu->read_half(moby + game_layout.moby.class_off) != e->acls) return 0;   /* slot recycled */
     double tr[3], sx, sy;
     build_moby_record_tr(cpu, moby, tr);
-    if (!hold_project_origin(cpu, tr, &sx, &sy)) return 0;   /* too near to project: extract */
+    if (!moby_project_origin(tr, &sx, &sy)) return 0;   /* too near to project: extract */
     double H     = s_view.H_eff;
     double scale = (double)e->atrz / tr[2];                  /* screen px per anchor px */
     double hr    = (double)e->arad * H / tr[2];              /* radius box half-extent */
@@ -11033,92 +11074,13 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
     e->arad = 0.0f;
     if (header >= 0x80000000u && tr && tr[2] > 1.0) {
         double asx, asy;
-        if (hold_project_origin(cpu, tr, &asx, &asy)) {
+        if (moby_project_origin(tr, &asx, &asy)) {
             e->asx  = (float)asx; e->asy = (float)asy;
             e->atrz = (float)tr[2];
             e->arad = (float)((int)cpu->read_byte(header + game_layout.moby.anim_radius) << 4);
             e->acls = (uint16_t)cpu->read_half(moby + game_layout.moby.class_off);
         }
     }
-}
-
-/* ---- Tier-2 small-moby extraction hold ------------------------------------
- * A moby only a few px on screen moves sub-pixel between the presents of one
- * sim tick: its per-present decode+project+walk buys nothing visible. On the
- * FIRST present of each canonical epoch it extracts fully and its built tris
- * are captured; every later present of that epoch REPLAYS the capture,
- * translated by the delta of the moby ORIGIN's projection (one TR projection
- * through the current interpolated camera vs the captured one) with view-Z
- * rescaled by the TR.z ratio. Translation error across the moby is bounded by
- * its screen size (< the hold threshold) - imperceptible at speck scale, and
- * the pose lerp it skips is equally sub-pixel there. Gates: screen extent
- * from the occl cache (< OPENPETE_MOBY_HOLD_PX, default 10, 0 = off), not
- * HUD/UI (special projection), origin safely in front of the camera, same
- * canonical epoch (a new tick always re-extracts - gameplay state only
- * changes at ticks, so no discontinuity can hide inside an epoch).
- * Display-only. */
-#define HOLD_TRI_MAX  32768
-#define HOLD_MOBY_MAX 512
-static ntri_t   s_hold_tri[HOLD_TRI_MAX];
-static uint32_t s_hold_fkey[HOLD_TRI_MAX];
-static uint8_t  s_hold_mode[HOLD_TRI_MAX];
-/* Per-face verdicts of the capturing walk. They are properties of the face,
- * not of the present, so a replay restores them rather than recomputing or
- * clearing them: mangle gates the og OT key and the rank snapshot, dofs is the
- * authored OT bias inside that key, special names the material that produced
- * the face's colours. */
-static uint8_t  s_hold_mangle[HOLD_TRI_MAX];
-static int8_t   s_hold_dofs[HOLD_TRI_MAX];
-static uint8_t  s_hold_special[HOLD_TRI_MAX];
-typedef struct { uint32_t moby; unsigned epoch; int off, n, spec;
-                 double sx, sy, trz;              /* captured origin projection + view-Z */
-                 double H;                        /* projection distance the tris were built with */
-                 uint16_t cls;                    /* m_Class at capture (provenance tag) */
-                 uint8_t front; } hold_t;         /* per-moby emit flags at capture */
-static hold_t   s_hold[HOLD_MOBY_MAX];
-static int      s_hold_n, s_hold_tri_n;
-static unsigned s_hold_epoch;
-
-/** @brief The Tier-2 hold's screen-extent bound in px, 0 when the hold is off, latched on first use.
- *
- * OPENPETE_MOBY_HOLD_PX sets it, default 10; a negative value reads as 0.
- * @return The bound. */
-static int hold_px_max(void) {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_HOLD_PX"); v = e ? atoi(e) : 10; if (v < 0) v = 0; }
-    return v;
-}
-/** @brief The hold entry captured for a moby and pass this epoch, or NULL.
- *
- * The table is emptied when the canonical epoch changes, so every entry belongs
- * to the current epoch.
- * @param moby The moby's PSX address.
- * @param spec 1 for the specular pass's capture, 0 for the regular pass's.
- * @return The entry, or NULL. */
-static hold_t* hold_find(uint32_t moby, int spec) {
-    for (int i = 0; i < s_hold_n; i++)
-        if (s_hold[i].moby == moby && s_hold[i].spec == spec) return &s_hold[i];
-    return NULL;
-}
-/** @brief Project a record's origin (v = 0) to the screen: sx = OFX + TRx·H/TRz.
- *
- * H is the view's effective projection distance (s_view.H_eff). The m_Scale
- * shift cancels in the x/z ratio, so the raw translation is exact here.
- * @param cpu Unused.
- * @param tr The record's view-space translation.
- * @param sx Receives the screen X.
- * @param sy Receives the screen Y.
- * @return 1, or 0 with *sx and *sy unwritten when TRz is below 64 (too near
- *         or behind). */
-static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, double* sy) {
-    if (tr[2] < 64.0) return 0;                    /* too near / behind: no hold */
-    (void)cpu;
-    double ofx = s_view.ofx;
-    double ofy = s_view.ofy;
-    double H   = s_view.H_eff;
-    *sx = ofx + tr[0] * H / tr[2];
-    *sy = ofy + tr[1] * H / tr[2];
-    return 1;
 }
 
 /** @brief The object's prev/curr snapshot pair, with the present's phase past the curr stamp.
@@ -11588,6 +11550,32 @@ static const moby_pose_t* moby_decode_prev(const moby_pose_t* prev, int verdict,
     return copy;
 }
 
+/** @brief Resolve the previous pose a sub-tick decode of one host-built record reads, rewriting the record on a hold.
+ *
+ * moby_prev_keyframe names the previous pose and its verdict,
+ * moby_fields_hold_prev gives the record the previous pose whole on a hold,
+ * and moby_decode_prev picks the pose and alpha the decode lerps from. pd->prev
+ * is zeroed unless the verdict lerps, so the record's colour crossfade reads
+ * a previous keyframe only for a lerp. On a canonical present (interp off)
+ * the verdict is a snap and the decode reads no previous pose.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param f The record fields, rewritten on a hold.
+ * @param pd Receives the pose, verdict and alphas; used in place. */
+static void moby_record_prev_pose(CPUState* cpu, uint32_t moby, moby_fields* f,
+                                  moby_prev_decode* pd) {
+    memset(&pd->prev, 0, sizeof pd->prev);
+    pd->alpha = 0.0;
+    pd->verdict = moby_prev_keyframe(cpu, moby, f->header, &pd->prev, &pd->alpha);
+    pd->model_held = moby_fields_hold_prev(cpu, moby, f, &pd->prev, pd->verdict, pd->alpha);
+    /* The held pose is the whole shape, not one end of a lerp: it decodes
+     * alone, or from the vertices a canonical pass kept for it, as the
+     * alpha 0 end of the lerp. */
+    pd->dalpha = pd->alpha;
+    pd->dprev = moby_decode_prev(&pd->prev, pd->verdict, pd->model_held, &pd->held, &pd->dalpha);
+    if (pd->verdict != MOBY_PREV_LERP) memset(&pd->prev, 0, sizeof pd->prev);
+}
+
 /* Per present, the host-built records moby_fields_pose_from_snapshot
  * rewrote (applied), those whose pose the rewrite changed (differ), and those
  * it left because the sub-tick view holds the moby at its previous tick
@@ -11596,14 +11584,19 @@ static struct { long applied, differ, held_skip; } s_pose_snap;
 
 /** @brief OPENPETE_MOBY_CENSUS: emit one `pose_snap` line per sub-tick present, then reset its counts.
  *
- * The line carries the counts moby_fields_pose_from_snapshot accumulated. */
+ * The line carries the counts moby_fields_pose_from_snapshot accumulated and
+ * the reveal walk's records per previous-pose verdict (s_reveal_verdict). */
 static void moby_pose_snap_census(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }
     if (s)
-        fprintf(stderr, "[moby-census vbl=%u] pose_snap applied=%ld differ=%ld held_skip=%ld\n",
-                openpete_frame, s_pose_snap.applied, s_pose_snap.differ, s_pose_snap.held_skip);
+        fprintf(stderr, "[moby-census vbl=%u] pose_snap applied=%ld differ=%ld held_skip=%ld"
+                " reveal_snap=%ld reveal_lerp=%ld reveal_hold=%ld\n",
+                openpete_frame, s_pose_snap.applied, s_pose_snap.differ, s_pose_snap.held_skip,
+                s_reveal_verdict[MOBY_PREV_SNAP], s_reveal_verdict[MOBY_PREV_LERP],
+                s_reveal_verdict[MOBY_PREV_HOLD]);
     memset(&s_pose_snap, 0, sizeof s_pose_snap);
+    memset(s_reveal_verdict, 0, sizeof s_reveal_verdict);
 }
 
 /** @brief The pose the snapshot pair's curr anim-state bytes derive, for a moby whose live class matches that state's.
@@ -11745,13 +11738,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     s_walk_in_rex = 1;
     s_pass_overlay = !is_spec && s_canon_overlay;
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
-    /* Tier-2 hold pool is per canonical epoch: a new tick invalidates every
-     * hold (its first present re-extracts everything and re-captures). */
-    unsigned epoch = spyro_native_canon_epoch_stamp();
-    if (epoch != s_hold_epoch) { s_hold_epoch = epoch; s_hold_n = 0; s_hold_tri_n = 0; }
-    static struct { const hold_t* h; double dx, dy, vzs; } replays[MAX_RECORDS];
-    int nreplay = 0;
-    static uint32_t replay_moby[MAX_RECORDS]; int nreplay_moby = 0;
     s_rec_base = game_layout.moby.rec_base ? game_layout.moby.rec_base : s_rec_base_canon;
     if (!s_rec_base) { s_walk_in_rex = 0; s_pass_overlay = 0; return 0; }
     for (int r = 0; r < MAX_RECORDS; r++) {
@@ -11801,38 +11787,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 continue;
             }
         }
-        /* Tier-2 hold: a speck-sized moby captured earlier THIS epoch replays
-         * its built tris translated by the origin-projection delta - skipping
-         * the record rebuild AND decode+project+walk. TR comes from the slim
-         * TR-only slice (no euler compose). See the hold block above
-         * occl_cache_update. */
-        if (hold_px_max() > 0) {
-            const hold_t* h = hold_find(mobys[i], is_spec);
-            if (h && h->n > 0 && h->trz > 1.0 && h->H == s_view.H_eff && nreplay < MAX_RECORDS) {
-                double tr[3], sx, sy;
-                build_moby_record_tr(cpu, mobys[i], tr);
-                if (hold_project_origin(cpu, tr, &sx, &sy)) {
-                    replays[nreplay].h  = h;
-                    replays[nreplay].dx = sx - h->sx;
-                    replays[nreplay].dy = sy - h->sy;
-                    replays[nreplay].vzs = tr[2] / h->trz;
-                    /* OPENPETE_HOLD_PROBE=1: one line per Tier-2 replay with the
-                     * capture and present view-Z references and the rescale they
-                     * produce. A static moby under a static camera must read
-                     * vzs = 1: any other constant is a unit mismatch between the
-                     * two references, which shifts the held moby's depth on every
-                     * intermediate present. */
-                    { static int s_hp = -1;
-                      if (s_hp < 0) { const char* e = getenv("OPENPETE_HOLD_PROBE"); s_hp = (e && *e && *e != '0'); }
-                      if (s_hp) fprintf(stderr, "[hold-probe vbl=%u] m=%08x trz_now=%.3f trz_cap=%.3f vzs=%.5f dx=%.3f dy=%.3f n=%d\n",
-                                        openpete_frame, mobys[i], tr[2], h->trz, tr[2] / h->trz,
-                                        sx - h->sx, sy - h->sy, h->n); }
-                    nreplay++;
-                    if (!is_spec && nreplay_moby < MAX_RECORDS) replay_moby[nreplay_moby++] = mobys[i];
-                    continue;
-                }
-            }
-        }
         moby_fields f;
         double gpf_frac = -1.0;
         if (!moby_game.host_reveal) {
@@ -11875,16 +11829,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * when the two animations share vertex topology; snaps to curr (no prev
          * pose, prev zeroed for the trace and the record) on spawn or a
          * topology-changing clip switch. */
-        moby_pose_t prev = {0}; double balpha = 0.0;
-        int prevkf = moby_prev_keyframe(cpu, mobys[i], f.header, &prev, &balpha);
-        uint32_t model_held =
-            moby_fields_hold_prev(cpu, mobys[i], &f, &prev, prevkf, balpha);
-        /* The held pose is the whole shape, not one end of a lerp: it decodes
-         * alone, or from the vertices a canonical pass kept for it, as the
-         * alpha 0 end of the lerp. prevkf keeps the verdict for the trace. */
-        moby_pose_t dpose; double dalpha = balpha;
-        const moby_pose_t* dprev = moby_decode_prev(&prev, prevkf, model_held, &dpose, &dalpha);
-        if (prevkf != MOBY_PREV_LERP) memset(&prev, 0, sizeof prev);
+        moby_prev_decode pd;
+        moby_record_prev_pose(cpu, mobys[i], &f, &pd);
+        const moby_pose_t* prev = &pd.prev;
         /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
          * traces the anim channel here. This block sits in the sub-tick
          * re-extract pass, so a run that presents only canonical ticks prints
@@ -11897,12 +11844,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 uint32_t mrot = cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u);
                 fprintf(stderr, "[moby-anim vbl=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u nid=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x hdr=%08x hdrp=%08x rot=%06x\n",
                         openpete_feed_key_now(), mobys[i], tcls2,
-                        prevkf, balpha,
+                        pd.verdict, pd.alpha,
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 2u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 3u),
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 4u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 0u),
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 1u),
-                        f.frameA, f.frameB, prev.frame_a, prev.frame_b, f.w0 & 0xFFFFu, (prev.blend << 8) & 0xFFFFu,
-                        f.header, prev.header,
+                        f.frameA, f.frameB, prev->frame_a, prev->frame_b, f.w0 & 0xFFFFu, (prev->blend << 8) & 0xFFFFu,
+                        f.header, prev->header,
                         mrot & 0xFFFFFFu);
             }
         }
@@ -11915,7 +11862,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
-                                    dprev, dalpha, gpf_frac, moby_record_depth_k(cpu, mobys[i]),
+                                    pd.dprev, pd.dalpha, gpf_frac, moby_record_depth_k(cpu, mobys[i]),
                                     f.TR_raw, f.TR_frac, f.M, zsf4, moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
@@ -11969,8 +11916,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             moby_tier_faceblock(cpu, f.header, zsf4),
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
-            prev.frame_a, prev.header, (float)balpha };
-        s_recs[s_nrecs].model_held = model_held;
+            prev->frame_a, prev->header, (float)pd.alpha };
+        s_recs[s_nrecs].model_held = pd.model_held;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         /* The colour fade follows this present's centre and the authored term
@@ -11987,9 +11934,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * BOTH queues would slip past the dedup and draw via SPEC anyway. */
         for (int c = 0; c < culled_n && s_reg_moby_n < MAX_RECORDS; c++)
             s_reg_moby[s_reg_moby_n++] = culled_moby[c];
-        /* Hold-replayed REG mobys likewise (they render, just from the hold). */
-        for (int c = 0; c < nreplay_moby && s_reg_moby_n < MAX_RECORDS; c++)
-            s_reg_moby[s_reg_moby_n++] = replay_moby[c];
         /* Widescreen reveal on SUB-TICKS too: the render set above is the .s
          * cull-record queue, which never contains the off-4:3 mobys the 4:3
          * cone cull skipped - the canonical feed host-builds those via
@@ -12002,82 +11946,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         append_revealed_regular(cpu);
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
-    /* Tier-2 hold capture: any freshly-extracted speck-sized moby (extent from
-     * its just-refreshed occl rect) banks its built tris. Runs whenever a small
-     * moby extracted (not just the epoch's first present): dedup via hold_find. */
-    if (hold_px_max() > 0) {
-        int hpx = hold_px_max();
-        for (int r = 0; r < s_nrecs && s_hold_n < HOLD_MOBY_MAX; r++) {
-            uint32_t mob = s_recs[r].moby;
-            if (moby_is_hud(mob)) continue;
-            const occl_rect_t* e = &s_occl_cache[occl_slot(mob)];
-            if (e->moby != mob) continue;
-            if ((e->x1 - e->x0) >= (float)hpx || (e->y1 - e->y0) >= (float)hpx) continue;
-            if (hold_find(mob, is_spec)) continue;      /* already banked this epoch */
-            /* The capture reference comes from build_moby_record_tr, the same
-             * derivation the replay re-measures against, so the replay's view-Z
-             * rescale is the ratio of one quantity to itself and is exactly 1
-             * for a moby that has not moved. The record's own TR is not
-             * interchangeable with it: on a game whose cull stores view-space
-             * records, that TR carries the cull's unit scaling (a factor of 4
-             * on the quarter-world translation, times the per-moby size
-             * rescale), so a ratio taken across the two derivations pulls every
-             * held moby that many times nearer and punches it through whatever
-             * stands in front of it. */
-            double htr[3], sx, sy;
-            build_moby_record_tr(cpu, mob, htr);
-            if (!hold_project_origin(cpu, htr, &sx, &sy)) continue;
-            int off = s_hold_tri_n, n = 0;
-            uint16_t hcls = 0; uint8_t hfront = 0;
-            for (int wi = 0; wi < s_gout.n && s_hold_tri_n < HOLD_TRI_MAX; wi++) {
-                if (s_wtri_moby[wi] != mob) continue;
-                if (n == 0) { hcls = s_wtri_cls[wi]; hfront = s_wtri_front[wi]; }
-                s_hold_tri[s_hold_tri_n]  = s_wtri[wi];
-                s_hold_fkey[s_hold_tri_n] = s_wtri_fkey[wi];
-                s_hold_mode[s_hold_tri_n] = s_wtri_mode[wi];
-                s_hold_mangle[s_hold_tri_n]  = s_wtri_mangle[wi];
-                s_hold_dofs[s_hold_tri_n]    = s_wtri_dofs[wi];
-                s_hold_special[s_hold_tri_n] = s_wtri_special[wi];
-                s_hold_tri_n++; n++;
-            }
-            hold_t* h = &s_hold[s_hold_n++];
-            h->moby = mob; h->epoch = s_hold_epoch; h->off = off; h->n = n;
-            h->spec = is_spec; h->sx = sx; h->sy = sy; h->trz = htr[2];
-            h->H = s_view.H_eff;
-            h->cls = hcls; h->front = hfront;
-        }
-    }
-    /* Tier-2 hold replay: append the banked tris, translated by the origin
-     * delta, view-Z rescaled. */
-    for (int k = 0; k < nreplay; k++) {
-        const hold_t* h = replays[k].h;
-        float dx = (float)replays[k].dx, dy = (float)replays[k].dy;
-        float vzs = (float)replays[k].vzs;
-        /* cls/front are re-stamped per replayed tri below: without
-         * them the replayed tris kept whatever stale values these arrays
-         * held at their indices, so a held moby lost its mod material on
-         * every intermediate present (distant decor flickering stock-bright
-         * at high FPS). The material SLOT is no longer among them - it is
-         * resolved from (moby, class) at stamp time in push_scene_moby,
-         * after the per-cycle intern table has been reset, which is the
-         * only point where a slot id is meaningful. */
-        s_hold_replayed++;
-        for (int t = 0; t < h->n && s_gout.n < MAX_NTRI; t++) {
-            s_wtri_ui[s_gout.n]      = 0;
-            s_wtri_front[s_gout.n]   = h->front;
-            s_wtri_cls[s_gout.n]     = h->cls;
-            s_wtri_moby[s_gout.n]    = h->moby;
-            s_wtri_fkey[s_gout.n]    = s_hold_fkey[h->off + t];
-            s_wtri_mode[s_gout.n]    = s_hold_mode[h->off + t];
-            s_wtri_mangle[s_gout.n]  = s_hold_mangle[h->off + t];
-            s_wtri_dofs[s_gout.n]    = s_hold_dofs[h->off + t];
-            s_wtri_special[s_gout.n] = s_hold_special[h->off + t];
-            ntri_t* o = &s_wtri[s_gout.n];
-            *o = s_hold_tri[h->off + t];
-            for (int vv = 0; vv < 3; vv++) { o->v[vv].sx += dx; o->v[vv].sy += dy; o->v[vv].vz *= vzs; }
-            s_gout.n++;
-        }
-    }
     push_scene_moby(cpu);
     moby_rot_census(mat, rot_bins);
     moby_centre_census(mat);

@@ -1,0 +1,11 @@
+# subtick-repeat-corpus.manifest - rows of tests/harness/check_subtick_repeat.sh:
+# a second sub-tick re-extract inside one canonical epoch (alpha 0.25, then
+# 0.5) must draw exactly what a single alpha 0.5 re-extract draws.
+#
+# One row per pose:  <level> | <freecam pose> | [lod] | [feed key]
+#   lod       original (default) or extended
+#   feed key  default: the freecam corpus's canonical start + 50
+#
+# Distant mobys whose shape, rotation and colour stayed at the first
+# present's phase on later presents of the same tick.
+sunny_villa | pos=(38808, 15597, 36603) yaw=1450 pitch=447 | extended

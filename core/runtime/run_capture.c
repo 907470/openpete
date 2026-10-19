@@ -54,11 +54,16 @@ static struct {
     bool vk_armed[OPENPETE_MAX_SCREENSHOT_FRAMES];
     bool int_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];  /* intermediate leg */
     double int_alpha;            /* OPENPETE_INTERMEDIATE_ALPHA, < 0 until read */
+    /* OPENPETE_INTERMEDIATE_PRE_ALPHA: the phases re-extracted, in order and
+     * uncaptured, before each intermediate leg's own; -1 entries until read. */
+    double int_pre[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    int int_pre_n;
     /* Intermediate legs taken, and how many of them the game's re-extract
      * bracketed. A leg with no bracket rendered the canonical pose under a
      * sub-tick filename, so a harness that reads only the file reports a pass
      * on an image the sub-tick path never produced. */
     unsigned inter_shots, inter_bracketed;
+    unsigned inter_pre, inter_pre_bracketed;   /* the uncaptured re-extracts */
     /* --screenshot-presents-start/count: presents captured since the feed key
      * reached the start, shared by the canonical and the intermediate legs so
      * both contribute to one sequence; and the bookkeeping that logs each
@@ -72,7 +77,7 @@ static struct {
     int vd_read;
     const char *vd;
     bool vram_dumped;
-} s_cap = { .int_alpha = -1.0 };
+} s_cap = { .int_alpha = -1.0, .int_pre_n = -1 };
 
 /** @brief Log one captured present and warn once when the sequence mixes pixel extents.
  *
@@ -418,7 +423,63 @@ static double intermediate_alpha(void)
     return s_cap.int_alpha;
 }
 
+/** @brief Return the uncaptured phases each intermediate leg re-extracts first, reading OPENPETE_INTERMEDIATE_PRE_ALPHA once.
+ *
+ * The variable is a comma-separated list of phases, each clamped to 0..1 and
+ * read as intermediate_alpha reads its one; unset or empty is no list. A
+ * second re-extract inside one canonical epoch is what a live run's later
+ * sub-tick presents are, so a leg that runs these first captures what such a
+ * present draws.
+ * @param n Receives the list's length.
+ * @return The list. */
+static const double *intermediate_pre_alphas(int *n)
+{
+    if (s_cap.int_pre_n < 0) {
+        s_cap.int_pre_n = 0;
+        const char *e = getenv("OPENPETE_INTERMEDIATE_PRE_ALPHA");
+        while (e && *e && s_cap.int_pre_n < OPENPETE_MAX_SCREENSHOT_FRAMES) {
+            char *end = NULL;
+            double a = strtod(e, &end);
+            if (end == e) break;
+            s_cap.int_pre[s_cap.int_pre_n++] = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+            e = (*end == ',') ? end + 1 : end;
+            if (*end != ',') break;
+        }
+    }
+    *n = s_cap.int_pre_n;
+    return s_cap.int_pre;
+}
+
+/** @brief Re-extract the scene at one sub-tick phase of the newest tick.
+ *
+ * alpha 1 is the identity leg: every consumer must land on its own curr
+ * state, and a consumer whose distinct-state gap exceeds one tick period is
+ * still mid-blend one nominal period past the ring's curr stamp. The identity
+ * instant saturates the slowest live gap; every faster consumer clamps its
+ * own phase at 1.
+ * @param ire The game's re-extract.
+ * @param cpu The guest CPU it reads.
+ * @param curr_ns The ring's curr stamp.
+ * @param alpha The phase, 0..1.
+ * @return Nonzero when the game's re-extract bracketed the pass. */
+static int intermediate_reextract(openpete_native_reextract_fn ire, void *cpu,
+                                  op_time_t curr_ns, double alpha)
+{
+    openpete_interp_set_present_target(
+        alpha >= 1.0
+            ? openpete_interp_identity_present_ns()
+            : curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * alpha));
+    ire(cpu);                                  /* s_scene @ sub-tick phase */
+    openpete_interp_set_present_target(0);     /* restore op_now() fallback */
+    /* The bracket verdict of the pass just run: the game-side re-extract
+     * publishes it with the alpha it drew at. */
+    return openpete_pace_last_alpha_paired();
+}
+
 /** @brief Re-extract the scene at the intermediate phase and write one target's -vk dump.
+ *
+ * The phases of OPENPETE_INTERMEDIATE_PRE_ALPHA are re-extracted first, in
+ * order and uncaptured, at the same feed key.
  * @param opts Session options.
  * @param ire The game's re-extract.
  * @param cpu The guest CPU it reads.
@@ -434,23 +495,16 @@ static void intermediate_shot(const openpete_options_t *opts,
                    "(spawn/load/static) - capturing canonical pose", target);
     op_time_t curr_ns = openpete_interp_curr_tick_ns();
     const double alpha = intermediate_alpha();
-    /* alpha 1 is the identity leg: every consumer must land on its own curr
-     * state, and a consumer whose distinct-state gap exceeds one tick period
-     * is still mid-blend one nominal period past the ring's curr stamp. The
-     * identity instant saturates the slowest live gap; every faster consumer
-     * clamps its own phase at 1. */
     /* The re-extract rebuilds the current scene and its terrain: a kept
      * freeze-backdrop source renders first (a no-op when none is kept). */
     openpete_native_render_snapshot_settle();
-    openpete_interp_set_present_target(
-        alpha >= 1.0
-            ? openpete_interp_identity_present_ns()
-            : curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * alpha));
-    ire(cpu);                                  /* s_scene @ sub-tick phase */
-    openpete_interp_set_present_target(0);     /* restore op_now() fallback */
-    /* The bracket verdict of the pass just run: the game-side re-extract
-     * publishes it with the alpha it drew at. */
-    const int bracketed = openpete_pace_last_alpha_paired();
+    int npre = 0;
+    const double *pre = intermediate_pre_alphas(&npre);
+    for (int k = 0; k < npre; ++k) {
+        s_cap.inter_pre++;
+        s_cap.inter_pre_bracketed += intermediate_reextract(ire, cpu, curr_ns, pre[k]) ? 1u : 0u;
+    }
+    const int bracketed = intermediate_reextract(ire, cpu, curr_ns, alpha);
     s_cap.inter_shots++;
     s_cap.inter_bracketed += bracketed ? 1u : 0u;
     char base[1024];
@@ -462,8 +516,8 @@ static void intermediate_shot(const openpete_options_t *opts,
     openpete_native_render_screenshot_all(base);
     openpete_native_render_set_capture_nodelay(0);
     OPL_INFO_F("screenshot",
-               "wrote intermediate alpha=%.3f native -vk on frame %u (target=%d, paired=%d, bracketed=%d)",
-               alpha, openpete_frame, target, paired, bracketed);
+               "wrote intermediate alpha=%.3f native -vk on frame %u (target=%d, paired=%d, bracketed=%d, pre=%d)",
+               alpha, openpete_frame, target, paired, bracketed, npre);
 }
 
 void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *cpu)
@@ -506,4 +560,8 @@ void openpete_capture_report_intermediate(void)
         OPL_INFO_F("sub-tick", "%u intermediate screenshot leg(s): %u bracketed, %u unbracketed",
                    s_cap.inter_shots, s_cap.inter_bracketed,
                    s_cap.inter_shots - s_cap.inter_bracketed);
+    if (s_cap.inter_pre)
+        OPL_INFO_F("sub-tick", "%u uncaptured pre-alpha re-extract(s): %u bracketed, %u unbracketed",
+                   s_cap.inter_pre, s_cap.inter_pre_bracketed,
+                   s_cap.inter_pre - s_cap.inter_pre_bracketed);
 }

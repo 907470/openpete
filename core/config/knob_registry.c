@@ -2465,8 +2465,6 @@ static const knob_desc_t g_builtin_debug[] = {
         "(256 = one turn); 0 interpolates every interval."),
     ENVROW_LATCHED("MOBY_IDLE", "Debug", "0",
         "Idle animation for frozen mobys."),
-    ENVROW_LATCHED("MOBY_HOLD_PX", "Debug", "10",
-        "Max screen motion for tier-2 moby hold replay (default 10)."),
     ENVROW_LATCHED("SHADED_NOHL", "Debug", "0",
         "Disable shaded-walk highlight."),
     ENVROW_LATCHED("ACTOR_FRONT", "Debug", "1",

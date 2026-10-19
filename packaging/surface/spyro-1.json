@@ -4463,23 +4463,6 @@
    "game": "core"
   },
   {
-   "id": "knob:MOBY_HOLD_PX",
-   "flag": null,
-   "env": "OPENPETE_MOBY_HOLD_PX",
-   "config_key": null,
-   "schema_type": null,
-   "vocab": [],
-   "aliases": [],
-   "type": "string",
-   "section": "Debug",
-   "block": "debug",
-   "build_cond": null,
-   "cli_only": false,
-   "def": "10",
-   "default_note": null,
-   "game": "core"
-  },
-  {
    "id": "knob:SHADED_NOHL",
    "flag": null,
    "env": "OPENPETE_SHADED_NOHL",
@@ -7935,7 +7918,7 @@
   },
   "env": {
    "checked": 0,
-   "unchecked": 188,
+   "unchecked": 187,
    "failed": 0
   },
   "failures": []

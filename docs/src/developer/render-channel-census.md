@@ -39,7 +39,7 @@ All paths under `games/spyro-1/features/`.
 
 | Feeder | Categories | Tag | Blend | Textured | Identity at emit | Cross-tick caching |
 |---|---|---|---|---|---|---|
-| `moby.c` | ACTOR / HUD3D / HUD / ACTOR_FRONT (routed at :3202-3205) | `TAG_MOBY_SLOT` :3319, cleared :3323 | both | both | stable - guest record ptr, `m_Class`, packed face key | faceblock decode cache; Tier-2 speck hold banked per canonical epoch (:5171) |
+| `moby.c` | ACTOR / HUD3D / HUD / ACTOR_FRONT (routed at :3202-3205) | `TAG_MOBY_SLOT` :3319, cleared :3323 | both | both | stable - guest record ptr, `m_Class`, packed face key | faceblock decode cache |
 | `terrain.c` | WORLD / WORLD_FILL (:6633); PORTAL_GUARD (:6651, env-gated, default off) | `TAG_TERRAIN*` :6569, cleared :6635 | both | both | stable - sector, face, texid, tier, env | sector decode cache; retained GPU sector-mesh cache; sub-tick lerp banks |
 | `spyro.c` | PLAYER (:1288 walk) | `TAG_PLAYER` :1263 | both | both | singleton (`G_SPYRO`); no per-face key | seg prev/curr snapshots (sub-tick shape lerp) |
 | `portal.c` | PORTAL_CYCLORAMA, PORTAL_MASK (via `add_tri_grouped`) | `TAG_PORTAL(kind)` :1030, :1485; the aperture mask tris at :1583 and :1612 are untagged | 0 | no | stable per group - destination skybox guest ptr; preview kind in the tag | sub-tick capture-and-replay |
@@ -159,7 +159,7 @@ answer.
 
 | Channel | Retention identity | State |
 |---|---|---|
-| moby | record ptr + class (+ face key) | proven - the Tier-2 hold replay re-resolves per present from exactly this |
+| moby | record ptr + class (+ face key) | proven - push_scene_moby resolves each face's material slot per present from exactly this |
 | terrain | sector + face (+ texid, tier, env) | proven - the retained GPU sector-mesh cache uses it |
 | portal | destination skybox guest ptr (per group) | available |
 | player | singleton | trivial |

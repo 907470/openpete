@@ -60,8 +60,9 @@ void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
 /** @brief Write the intermediate capture of each --screenshot-intermediate-on-frame target reached.
  *
  * Each target re-extracts the scene at a sub-tick phase of the newest tick
- * (OPENPETE_INTERMEDIATE_ALPHA, default 0.5; 1 is the identity instant) and
- * composes it at depth 0. Fires on the first present at or after the
+ * (OPENPETE_INTERMEDIATE_ALPHA, default 0.5; 1 is the identity instant),
+ * after an uncaptured re-extract at each phase OPENPETE_INTERMEDIATE_PRE_ALPHA
+ * lists, and composes it at depth 0. Fires on the first present at or after the
  * target's feed key.
  * @param opts Session options.
  * @param cpu The guest CPU the re-extract reads. */
@@ -82,7 +83,7 @@ void openpete_capture_subtick_present(const openpete_options_t *opts);
  * @param opts Session options. */
 void openpete_capture_report_presents(const openpete_options_t *opts);
 
-/** @brief Log how many intermediate capture legs ran and how many the re-extract bracketed. */
+/** @brief Log how many intermediate capture legs and uncaptured pre-alpha re-extracts ran and how many the re-extract bracketed. */
 void openpete_capture_report_intermediate(void);
 
 #ifdef __cplusplus

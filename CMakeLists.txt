@@ -1042,6 +1042,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # A second sub-tick re-extract inside one canonical epoch: per row of
+    # games/<slug>/corpus/subtick-repeat-corpus.manifest, an alpha 0.25
+    # re-extract followed by a captured alpha 0.5 one must be pixel-identical
+    # to a single alpha 0.5 re-extract, with no geometry replayed from the
+    # first. Fails as vacuous when a re-extract is unbracketed or the alpha
+    # 0.25 leg equals the alpha 0.5 leg.
+    foreach(_subtick_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME subtick_repeat_${_subtick_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_subtick_repeat.sh
+                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(subtick_repeat_${_subtick_game} PROPERTIES
+            LABELS "presentation;subtick_repeat"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     foreach(_subtick_game spyro-2 spyro-3)
         add_test(NAME glint_subtick_${_subtick_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_glint_subtick.sh
