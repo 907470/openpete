@@ -78,6 +78,23 @@ target_include_directories(psx_region_test PRIVATE
 set_target_properties(psx_region_test PROPERTIES C_STANDARD 99)
 add_test(NAME psx_region_test COMMAND psx_region_test)
 
+# psxtrace_schedule_test - the oracle schedule's account of a CdRead or
+# waited VSync its sidecars have no row left for: counted past the trace's
+# last record, a failure inside the records. One process per case, since
+# the schedule keeps its state in file statics. Compiles
+# psxtrace_schedule.c and log.c directly; the test defines the anchor
+# counters and the root counter 2 hook the schedule links against.
+add_executable(psxtrace_schedule_test
+    psxtrace_schedule_test.c
+    ${CMAKE_SOURCE_DIR}/core/diag/psxtrace_schedule.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(psxtrace_schedule_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+set_target_properties(psxtrace_schedule_test PROPERTIES C_STANDARD 11)
+add_test(NAME psxtrace_schedule_past_end COMMAND psxtrace_schedule_test past-end)
+add_test(NAME psxtrace_schedule_beyond_inside COMMAND psxtrace_schedule_test inside)
+
 # psx_runtime_layout_test - static assertions that CPUState in
 # core/include/psxrt/psx_runtime.h has the offset, size and type of every
 # field of the recompiler runner's CPUState, which savestates and mods built

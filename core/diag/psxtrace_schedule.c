@@ -50,6 +50,9 @@ static uint32_t s_query_logged = 0;
 static int      s_failed = 0;
 static char     s_fail_reason[256];
 static uint32_t s_reads_sync = 0, s_reads_async = 0, s_vsync_consumed = 0, s_long_frames = 0, s_boot_waits = 0;
+/* Calls made past the trace's last record, which no sidecar row serves:
+ * the capture stopped before the reference made them. */
+static uint32_t s_vs_past_end = 0, s_rd_past_end = 0;
 static int64_t  s_boot_offset = 0;   /* stamp[0] minus the position the boot reached */
 static int32_t  s_counter_k = 0;    /* VBLANK count minus the libetc counter, constant per capture */
 static int      s_counter_k_set = 0;
@@ -607,7 +610,7 @@ int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
      * made: the record after the hit the call follows. openpete's current
      * record is the same count. */
     const uint32_t cur_rec = sched_cur_rec();
-    if (s_stamps && cur_rec >= s_stamps_n) return 0;   /* past the trace's last record */
+    if (s_stamps && cur_rec >= s_stamps_n) { s_vs_past_end++; return 0; }   /* past the trace's last record */
     if (s_in_load) {
         /* Inside a load window the records do not correspond and neither do
          * the waits: each charges its own count; the window's end sets the
@@ -905,10 +908,27 @@ int openpete_sched_spin_due(void) {
     return s_pos < sched_next_event(s_pos);
 }
 
+/** @brief Account a CdRead the `.loads` sidecar has no row left for.
+ *
+ * Past the trace's last record the capture stopped before the reference
+ * issued the read: it is counted and runs under openpete's own timing.
+ * Inside the records the reference made no such read, a schedule failure.
+ * @param sectors The read's sector count.
+ * @param dst The read's destination address. */
+static void sched_read_beyond(int sectors, uint32_t dst) {
+    const uint32_t rec = sched_cur_rec();
+    if (s_stamps && rec >= s_stamps_n) {
+        s_rd_past_end++;
+        if (s_log) fprintf(s_log, "read past the trace end rec=%u sectors=%d dst=0x%08X\n", rec, sectors, dst);
+        return;
+    }
+    openpete_sched_fail("CdRead %u beyond the sidecar's %u reads (%d sectors to 0x%08X)", s_rd_next, s_rd_n, sectors, dst);
+}
+
 int openpete_sched_read(int sectors, uint32_t dst, uint32_t* issue_vbl_out, uint32_t* done_vbl_out, uint32_t* done_rec_out, int* sync_out) {
     if (!s_active || !s_rd || s_failed) return 0;
     if (s_rd_next >= s_rd_n) {
-        openpete_sched_fail("CdRead %u beyond the sidecar's %u reads (%d sectors to 0x%08X)", s_rd_next, s_rd_n, sectors, dst);
+        sched_read_beyond(sectors, dst);
         return 0;
     }
     const sched_read_t* r = &s_rd[s_rd_next++];
@@ -1411,6 +1431,7 @@ static void clock_summary(void) {
 void openpete_sched_summary(void) {
     if (!s_active) return;
     OPL_INFO_F("psxtrace", "schedule: consumed %u/%u waited VSync rows, %u/%u reads (%u sync, %u async), %u/%u seeds, "
+               "%u VSync call(s) and %u read(s) past the trace end, "
                "queries: %llu/%llu answered from the reference's rows, %llu past the record's rows, %llu of the reference's unmade, "
                "%u VBL(s) charged at a query, %u rows behind the position dropped; "
                "registrations: %u/%u matched, %u VBL(s) charged; "
@@ -1420,7 +1441,7 @@ void openpete_sched_summary(void) {
                "controller handler: %u vblanks served, %u skipped, commands on %u, none on %u; "
                "CdSync polls: %u answered from the reference's rows, %u of the reference's unmade, %u VBL(s) charged%s%s",
                s_vsync_consumed, s_vs_waits, s_rd_next, s_rd_n, s_reads_sync, s_reads_async,
-               s_seed_next, s_seed_n,
+               s_seed_next, s_seed_n, s_vs_past_end, s_rd_past_end,
                (unsigned long long)s_q_answered, (unsigned long long)s_q_total, (unsigned long long)s_q_extra,
                (unsigned long long)s_q_unmade, s_q_charged, s_q_behind,
                s_reg_matched, s_reg_total, s_reg_charged,

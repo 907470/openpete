@@ -408,9 +408,9 @@ int openpete_sched_rcnt2_read(uint16_t* value_out);
  * @param target_out Receives the reference VBLANK to charge the position
  *        to.
  * @return 1 with target_out set; 0 when the schedule is inactive or
- *         failed, openpete is past the trace's last record, no row or
- *         stamp answers, or the position is unknown inside a window or
- *         the boot. */
+ *         failed, openpete is past the trace's last record (counted as
+ *         past the trace end), no row or stamp answers, or the position
+ *         is unknown inside a window or the boot. */
 int  openpete_sched_next_vsync(int mode, uint32_t* target_out);
 /** @brief Return the reference's VBLANK stamp at anchor hit record and check the position against it.
  *
@@ -427,8 +427,10 @@ int  openpete_sched_anchor_target(uint32_t record, uint32_t* target_out);
 /** @brief Answer a CdRead with the next read row's issue and completion VBLANKs.
  *
  * A row whose sector count or destination differs from the issued read,
- * or a read past the sidecar's rows, records a schedule failure and returns
- * 0. The read's next event bound is the earliest of the following read's
+ * or a read past the sidecar's rows inside the trace's records, records a
+ * schedule failure and returns 0; a read past the sidecar's rows after the
+ * trace's last record is counted as past the trace end and returns 0. The
+ * read's next event bound is the earliest of the following read's
  * issue, the first waited VSync entered at or after this issue, and the
  * next anchor stamp. A read with a recorded completion is asynchronous when
  * a waited VSync entered between its issue and completion: the completion
@@ -586,8 +588,9 @@ int  openpete_sched_failed(const char** reason);
 
 /** @brief Log one line of the schedule's consumption counters, with the failure reason when one was recorded.
  *
- * Covers waited rows, reads, seeds, queries, registrations, long frames,
- * boot waits, load windows, controller handler vblanks and CdSync polls.
+ * Covers waited rows, reads, seeds, the VSync calls and reads past the
+ * trace end, queries, registrations, long frames, boot waits, load
+ * windows, controller handler vblanks and CdSync polls.
  * Does nothing when the schedule is inactive. */
 void openpete_sched_summary(void);
 

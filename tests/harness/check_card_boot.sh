@@ -62,6 +62,28 @@
 #         Instrument and pass as save-ref, plus the clock row's own
 #         engagement (an in-work VBLANK delivered, exit 3 otherwise). Run by
 #         name only; ctest card_save_reference_clock.
+#   format-ref  Spyro 2 formats an unformatted card in slot 1 and saves to
+#         it: openpete against the fork's capture along
+#         games/spyro-2/bk2/s2-format-card.bk2 (consume-keyed, the fork one
+#         VBL early; games/spyro-2/oracle-card-format.conf, 500 records,
+#         ending before the in-work VBLANK of record 502). The row writes the
+#         unformatted card (131072 zero bytes, the recipe's CARD1_FIXTURE)
+#         before the run; the capture is generated on the first run.
+#         Instrument: the oracle's per-tick compare over every record, the
+#         card image each side left, and the slot 1 card commands of each
+#         side (openpete OPENPETE_CARD_WINDOW, the fork's <golden>.cardwin).
+#         Pass: the verifier's PASS with 0 hard failures and oracle exit 0;
+#         the two card images byte-identical. Engagement: a side that issued
+#         no card command or wrote no sector is VACUOUS. Run by name only;
+#         ctest card_format_reference.
+#   format-ref-clock  format-ref along 800 records under the clock row
+#         (OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1) on its own
+#         capture (games/spyro-2/oracle-card-format-clock.conf): from record
+#         502 the level takes a VBLANK inside the game tick that only the
+#         clock row delivers where the reference took it. Pass as
+#         format-ref; engagement as format-ref plus in-work VBLANKs delivered
+#         (the clock summary's vblpos delivered) and GTE ops hashed, zero
+#         VACUOUS. Run by name only; ctest card_format_reference_clock.
 #   load-ref  Boot with the save present and load it: openpete against the
 #         fork's capture along games/<game>/bk2/s2-load-save.bk2 or
 #         s3-load-save.bk2 (games/<game>/oracle-card-load.conf), both sides
@@ -93,9 +115,10 @@
 #   [card-boot] row=save game=spyro-2 exit=<rc> bu_calls=<n> creat=<fd|-1|-> ... verdict=...
 #   [card-boot] row=save-ref game=<game> records=<n> verifier=<PASS|FAIL> hard_failed=<n> ... card_bytes_differ=<n> written=<op>/<ref> verdict=...
 #   [card-boot] row=save-ref-clock game=spyro-2 records=<n> ... verdict=...
+#   [card-boot] row=format-ref|format-ref-clock game=spyro-2 records=<n> verifier=<PASS|FAIL> hard_failed=<n> ... card_bytes_differ=<n> commands=<op>/<ref> written=<op>/<ref> [vblpos_delivered=<n> gte_ops=<n>] verdict=...
 #   [card-boot] row=load-ref|load-ref-clock game=<game> records=<n> ... fd=<fds> reads=<bytes@offset:sectors/cadence,...> ref_sectors=<n> ... verdict=...
 #
-# Usage: tests/harness/check_card_boot.sh [--build-dir=DIR] [--row=boot|save|save-ref|save-ref-clock|load-ref|load-ref-clock]
+# Usage: tests/harness/check_card_boot.sh [--build-dir=DIR] [--row=boot|save|save-ref|save-ref-clock|format-ref|format-ref-clock|load-ref|load-ref-clock]
 #        [--game=spyro-2|spyro-3] (the save-ref and load-ref rows' game; default spyro-2)
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, movie or fixture missing).
 set -u
@@ -288,6 +311,79 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+# row_format_ref ROW RECIPE CLOCK: the Spyro 2 format movie against the fork's capture along it. Prints the verdict line; returns 0, 1 or 64.
+row_format_ref() {
+    local ROW="$1" RECIPE="$2" CLOCK="$3" GAME=spyro-2
+    pg_resolve "$GAME"
+    [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
+        { echo "[card-boot] row=$ROW SKIP (binary or disc missing)"; return 64; }
+    local GOLDEN CARD1_FIXTURE CARD1_END
+    GOLDEN="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$GOLDEN"' _ "$RECIPE")"
+    CARD1_FIXTURE="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$CARD1_FIXTURE"' _ "$RECIPE")"
+    CARD1_END="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$CARD1_END"' _ "$RECIPE")"
+    [[ -n "$CARD1_FIXTURE" ]] ||
+        { echo "[card-boot] row=$ROW game=$GAME verdict=FAIL: $RECIPE sets no CARD1_FIXTURE"; return 1; }
+    # The unformatted card both sides boot, written fresh each run.
+    rm -f "${CARD1_FIXTURE:?}"
+    mkdir -p "$(dirname "$CARD1_FIXTURE")"
+    head -c 131072 /dev/zero > "$CARD1_FIXTURE"
+    local OUT="${PG_BUILD_DIR:-build/linux-release}/card-boot/$GAME"
+    mkdir -p "$OUT"
+    local LOG="$OUT/$ROW.log" CW="$OUT/$ROW-card-window.txt" CARD="$OUT/$ROW-card1.mcr"
+    rm -f "${OUT:?}/$ROW.log" "${OUT:?}/$ROW-card-window.txt" "${OUT:?}/$ROW-card1.mcr" "${OUT:?}/$ROW.out"
+    local clock_env=()
+    [[ "$CLOCK" == 1 ]] && clock_env=(OPENPETE_ORACLE_CLOCK=1 OPENPETE_ORACLE_GTE_STRICT=1)
+    env OPENPETE_BIN="$PG_BIN" OPENPETE_CARD_WINDOW="$CW" OPENPETE_ORACLE_CARD_OUT="$CARD" \
+        OPENPETE_ORACLE_LOG="$LOG" PSXTRACE_KEEP_GOING=1 "${clock_env[@]}" \
+        tests/harness/check_psx_oracle.sh --game "$GAME" --recipe "$RECIPE" > "$OUT/$ROW.out" 2>&1
+    local rc=$?
+    (( rc == 64 )) && { echo "[card-boot] row=$ROW SKIP (no capture and DuckStation not built; see $OUT/$ROW.out)"; return 64; }
+    [[ -f "$LOG" && -f "$CW" && -f "$CARD" && -f "$CARD1_END" && -f "$GOLDEN.cardwin" ]] ||
+        { echo "[card-boot] row=$ROW game=$GAME verdict=FAIL: missing log, card window or card (oracle exit $rc; $OUT/$ROW.out)"; return 1; }
+    python3 - "$LOG" "$CW" "$CARD" "$CARD1_END" "$GOLDEN.cardwin" "$rc" "$ROW" "$GAME" "$CLOCK" <<'PY'
+import re, sys
+log, cw, card, ref_card, ref_cw, rc, row, game, clock = sys.argv[1:10]
+text = open(log, errors='replace').read()
+m = re.findall(r'psxtrace: summary: records=(\d+) frames_compared=\d+ hash_mismatches=(\d+)', text)
+records, mism = (int(m[-1][0]), int(m[-1][1])) if m else (0, -1)
+div = sorted({int(x) for x in re.findall(r'DIVERGED[^\n]*?at frame=(\d+)', text)})
+v = re.findall(r'psxtrace: verdict: (PASS|FAIL) \(hard_failed=(\d+)', text)
+verdict, hard = (v[-1][0], int(v[-1][1])) if v else ('none', -1)
+a, b = open(card, 'rb').read(), open(ref_card, 'rb').read()
+diff = [i for i in range(min(len(a), len(b))) if a[i] != b[i]] + list(range(min(len(a), len(b)), max(len(a), len(b))))
+secs = sorted({i // 128 for i in diff})
+# Slot 1 card commands: openpete's C rows carry port 0 and command 2 (read)
+# or 4 (write); the fork's carry port 0 and the command byte (0x57 write).
+op = [r.split() for r in open(cw) if r[:2] == 'C ' and r.split()[3] == '0']
+ref = [r.split() for r in open(ref_cw) if r[:2] == 'C ' and r.split()[3] == '0']
+opw, refw = {int(r[5]) for r in op if r[4] == '4'}, {int(r[5]) for r in ref if r[4] == '57'}
+head = ('[card-boot] row=%s game=%s records=%d verifier=%s hard_failed=%d hash_mismatches=%d '
+        'first_differing=%s card_bytes_differ=%d card_sectors_differ=%s commands=%d/%d written=%d/%d'
+        % (row, game, records, verdict, hard, mism, div[0] if div else '-', len(diff),
+           ','.join(map(str, secs[:12])) or '-', len(op), len(ref), len(opw), len(refw)))
+vacuous = []
+if not op or not ref:
+    vacuous.append('a side issued no card command')
+if not opw or not refw:
+    vacuous.append('a side wrote no sector')
+if clock == '1':
+    c = re.findall(r'psxtrace: clock: vblpos delivered=(\d+)', text)
+    g = re.findall(r'psxtrace: gte: records=\d+ mismatches=\d+ ops_hashed=(\d+)', text)
+    deliv, ops = (int(c[-1]) if c else 0), (int(g[-1]) if g else 0)
+    head += ' vblpos_delivered=%d gte_ops=%d' % (deliv, ops)
+    if deliv == 0:
+        vacuous.append('no in-work VBLANK delivered')
+    if ops == 0:
+        vacuous.append('no GTE op hashed')
+head += ' oracle_exit=%s' % rc
+if vacuous:
+    print(head + ' verdict=VACUOUS: ' + '; '.join(vacuous)); sys.exit(1)
+ok = records > 0 and verdict == 'PASS' and hard == 0 and not diff and rc == '0'
+print(head + (' verdict=PASS' if ok else ' verdict=FAIL'))
+sys.exit(0 if ok else 1)
+PY
+}
+
 # row_load_ref ROW GAME RECIPE CLOCK: the load movie against the fork's capture along it. Prints the verdict line; returns 0, 1 or 64.
 row_load_ref() {
     local ROW="$1" GAME="$2" RECIPE="$3" CLOCK="$4" SAVE_NAME
@@ -425,6 +521,8 @@ for row in "${ROWS[@]}"; do
         save) row_save; r=$? ;;
         save-ref) row_save_ref save-ref "$SAVE_REF_GAME" "games/$SAVE_REF_GAME/oracle-card-save.conf" 0; r=$? ;;
         save-ref-clock) row_save_ref save-ref-clock spyro-2 games/spyro-2/oracle-card-save-clock.conf 1; r=$? ;;
+        format-ref) row_format_ref format-ref games/spyro-2/oracle-card-format.conf 0; r=$? ;;
+        format-ref-clock) row_format_ref format-ref-clock games/spyro-2/oracle-card-format-clock.conf 1; r=$? ;;
         load-ref) row_load_ref load-ref "$SAVE_REF_GAME" "games/$SAVE_REF_GAME/oracle-card-load.conf" 0; r=$? ;;
         load-ref-clock) row_load_ref load-ref-clock spyro-2 games/spyro-2/oracle-card-load-clock.conf 1; r=$? ;;
         *) echo "card-boot: unknown row $row" >&2; exit 64 ;;

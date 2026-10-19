@@ -1735,6 +1735,34 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Spyro 2 formats an unformatted card and saves to it along
+    # games/spyro-2/bk2/s2-format-card.bk2 against the fork's capture of the
+    # same movie (games/spyro-2/oracle-card-format.conf, 500 records): every
+    # record and the card image each side left.
+    add_test(NAME card_format_reference
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=format-ref)
+    set_tests_properties(card_format_reference PROPERTIES
+        LABELS "slow;card;oracle"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 2400
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # The same format movie along 800 records under the clock row
+    # (games/spyro-2/oracle-card-format-clock.conf, its own capture): from
+    # record 502 the level takes a VBLANK inside the game tick that only the
+    # clock row delivers where the reference took it.
+    add_test(NAME card_format_reference_clock
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=format-ref-clock)
+    set_tests_properties(card_format_reference_clock PROPERTIES
+        LABELS "slow;card;oracle"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 2400
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # The Spyro 3 save along games/spyro-3/bk2/s3-create-save.bk2 against the
     # fork's capture of the same movie (games/spyro-3/oracle-card-save.conf):
     # every record, the card image each side left, and the 59 sectors of the

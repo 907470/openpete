@@ -1,6 +1,8 @@
-# Synthetic movie (scripts/make_bk2.py, VBL-keyed, load delay 0): Cross held 6
+# Synthetic movie (scripts/make_bk2.py, VBL-keyed, load delay 0: Cross held 6
 # of every 90 VBLs from VBL 300 to 2100, Left held 6 VBLs ending 4 before each
-# Cross from VBL 900: on an unformatted card in slot 1 a new game answers
-# "not formatted, format it?" with Format, then creates and writes the save.
+# Cross from VBL 900) re-keyed to the consume key (tools/bk2_rekey.py map
+# --game spyro-2 on an unformatted card in slot 1, then bk2; 1627 rows in
+# 512 groups): on an unformatted card in slot 1 a new game answers "not
+# formatted, format it?" with Format, then creates and writes the save.
 # The slot 1 card is given by the caller (--card1).
 --no-card2
