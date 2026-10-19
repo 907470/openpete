@@ -1,7 +1,8 @@
 /* openpete_profile.c - see openpete_profile.h.
  *
  * Streams a compact binary `.opp` trace: an interned name table plus fixed
- * 32-byte records for presents, CPU spans, GPU zones, and census counts.
+ * 32-byte records for presents, published scenes, CPU spans, GPU zones, and
+ * census counts.
  *
  * Producers are concurrent: the sim worker raises spans and closes presents
  * while the present thread renders. Every fixed record therefore carries a
@@ -13,7 +14,8 @@
  *
  * Writer: each thread appends lock-free into its own `_Thread_local` chunk.
  * The chunk is written to the stream when it fills, at that thread's marker
- * record (a present, or the end of a rendered frame), and at close. The mutex
+ * record (a present, a published scene, or the end of a rendered frame), and
+ * at close. The mutex
  * is taken once per chunk, not once per record, so the append path on the
  * pacing-critical present thread has no synchronisation point. Chunk-
  * granularity interleaving in the file carries no meaning: `tid` and absolute
@@ -37,16 +39,18 @@ enum {
     OPP_REC_GPUZ    = 4,  /* fixed 32                                           */
     OPP_REC_COUNT   = 5,  /* fixed 32                                           */
     OPP_REC_FUNC    = 6,  /* fixed 32: per-function aggregate (func trace)      */
+    OPP_REC_SCENE   = 7,  /* fixed 32, PRESENT layout: a scene published (eager) */
 };
 #define OPP_REC_SIZE   32
 #define OPP_REC_TID    28   /* u8 thread index, same offset in every fixed record */
 #define OPP_MAGIC      "OPPR"
-#define OPP_VERSION    2u
+#define OPP_VERSION    3u   /* 3: OPP_REC_SCENE; PRESENT at the present itself */
 
 /* ---- global state (mutex-guarded unless noted) ----------------------------- */
 static FILE*       s_fp = NULL;
 static int         s_on = 0;       /* plain load on the emitter fast path       */
-static uint32_t    s_present_index = 0;
+static SDL_AtomicInt s_present_index;   /* written by the presenting thread, read by op_prof_count */
+static uint32_t    s_scene_index = 0;     /* sim worker only */
 static SDL_Mutex*  s_mu = NULL;    /* guards s_fp writes, the name table, s_threads */
 
 #define OPP_MAX_NAMES 8192
@@ -189,7 +193,8 @@ int op_prof_open(const char* path) {
     fwrite(hdr, 1, sizeof(hdr), s_fp);
 
     s_us_per_tick = 1e6 / (double)SDL_GetPerformanceFrequency();
-    s_present_index = 0;
+    SDL_SetAtomicInt(&s_present_index, 0);
+    s_scene_index = 0;
     s_name_count = 0;
     /* Reuse the registered blocks so a live s_tls pointer stays valid; no other
      * producer can be running, since s_on is still 0. */
@@ -211,7 +216,7 @@ void op_prof_close(void) {
     s_on = 0;   /* producers past this point return before touching any state */
     SDL_LockMutex(s_mu);
     /* Every producer's pending buckets and chunk, not only the closing
-     * thread's: a render thread never reaches a present boundary under eager. */
+     * thread's: each still holds what it raised after its last marker. */
     for (int i = 0; i < s_thread_count; i++) {
         struct opp_tls* t = s_threads[i];
         accum_flush(t);
@@ -344,9 +349,8 @@ void op_prof_accum(int name_id, uint64_t us) {
 /** @brief Emit one depth-0 span per bucket with a nonzero sum and empty the bucket table.
  *
  * Each span starts at the bucket's first entry, lasts the summed time, and
- * carries the call count in aux. Called at the thread's marker (a present
- * on the sim worker, the end of a rendered frame on the renderer) and at
- * close. */
+ * carries the call count in aux. Called at the thread's marker (a present,
+ * a published scene, the end of a rendered frame) and at close. */
 static void accum_flush(struct opp_tls* t) {
     for (int i = 0; i < t->accum_count; i++) {
         struct opp_accum* a = &t->accum[i];
@@ -373,7 +377,7 @@ void op_prof_count(int name_id, uint64_t value) {
     memset(r, 0, sizeof(r));
     r[0] = OPP_REC_COUNT;
     le_u16(r + 2, (uint16_t)name_id);
-    le_u32(r + 4, s_present_index);   /* informational: the reader bins by thread */
+    le_u32(r + 4, (uint32_t)SDL_GetAtomicInt(&s_present_index));   /* informational: the reader bins by thread */
     le_u64(r + 8, value);
     r[OPP_REC_TID] = (uint8_t)t->tid;
     chunk_put(t, r, sizeof(r));
@@ -415,26 +419,44 @@ void op_prof_func(int name_id, uint32_t addr, uint64_t calls,
     chunk_put(t, r, sizeof(r));
 }
 
-/* ---- present boundary ------------------------------------------------------ */
-uint32_t op_prof_present(uint32_t canon_tick, int kind) {
-    if (!s_on) return s_present_index;
-    struct opp_tls* t = tls_get();
-    if (!t) return s_present_index;
-    accum_flush(t);          /* before the PRESENT record: the buckets bind here */
+/* ---- markers: present, scene ---------------------------------------------- */
+/** @brief Flush the thread's buckets, append one PRESENT-layout marker record, and flush its chunk.
+ *
+ * The buckets are emitted first, so they precede the marker they bind to in
+ * the thread's stream. The record carries the type, kind, index, canon_tick,
+ * the thread's span count since its last marker (then reset), the time and
+ * the thread index. */
+static void emit_marker(struct opp_tls* t, uint8_t type, int kind,
+                        uint32_t index, uint32_t canon_tick) {
+    accum_flush(t);
     uint8_t r[OPP_REC_SIZE];
     memset(r, 0, sizeof(r));
-    r[0] = OPP_REC_PRESENT;
+    r[0] = type;
     r[1] = (uint8_t)kind;
-    le_u32(r + 4, s_present_index);
+    le_u32(r + 4, index);
     le_u32(r + 8, canon_tick);
-    le_u32(r + 12, t->spans_since_flush);   /* this thread's spans since its last marker */
+    le_u32(r + 12, t->spans_since_flush);
     le_u64(r + 16, op_prof_now_us());
     r[OPP_REC_TID] = (uint8_t)t->tid;
     chunk_put(t, r, sizeof(r));
     chunk_flush(t);
-
-    uint32_t idx = s_present_index;
-    s_present_index++;
     t->spans_since_flush = 0;
+}
+
+uint32_t op_prof_present(uint32_t canon_tick, int kind) {
+    if (!s_on) return (uint32_t)SDL_GetAtomicInt(&s_present_index);
+    struct opp_tls* t = tls_get();
+    if (!t) return (uint32_t)SDL_GetAtomicInt(&s_present_index);
+    const uint32_t idx = (uint32_t)SDL_AddAtomicInt(&s_present_index, 1);
+    emit_marker(t, OPP_REC_PRESENT, kind, idx, canon_tick);
+    return idx;
+}
+
+uint32_t op_prof_scene(uint32_t canon_tick, int kind) {
+    if (!s_on) return s_scene_index;
+    struct opp_tls* t = tls_get();
+    if (!t) return s_scene_index;
+    const uint32_t idx = s_scene_index++;
+    emit_marker(t, OPP_REC_SCENE, kind, idx, canon_tick);
     return idx;
 }

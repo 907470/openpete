@@ -7,9 +7,16 @@ Usage:
   profile-summary.py TRACE.opp [--skip-ticks N] [--label STR] [--json OUT.json]
 
 Notes:
-  * "present_busy" is the wall-time union of all CPU spans in a present (the
-    real CPU cost; parent/child scope overlap is de-duplicated). "fps" is the
-    present cadence (includes pacing/vsync waits).
+  * Spans bin to markers (_opp_reader.py): SCENE records under eager
+    production, PRESENT records on the inline path. "present_busy" is the
+    wall-time union of all CPU spans binned to a marker (the real CPU cost;
+    parent/child scope overlap is de-duplicated); "presents_total" and the
+    per-kind "presents" count markers.
+  * "fps" and [present] are the cadence of PRESENT records, each written at a
+    present to the display (includes pacing/vsync waits). [scene] is the
+    cadence of SCENE records, each written when a scene is published to the
+    scene ring. A format 2 trace has no SCENE: under eager its PRESENT records
+    were written at scene publication, and [present] says so.
   * rex.* scopes are children of rex_total; compose/* GPU zones are children of
     compose. Per-scope share% is of the kind's total present_busy and will sum
     to >100% because of that nesting - it's a breakdown, not a partition.
@@ -48,15 +55,51 @@ def interval_union_us(spans):
     return present_busy_us(p)
 
 
+def cadence(records):
+    """Interval statistics of marker records in time order: count, p50, p99
+    and max of the positive gaps between consecutive t_now_us, the time span
+    they cover, and the first record's time."""
+    t = sorted(r.t_now_us for r in records)
+    iv = sorted(t[i] - t[i - 1] for i in range(1, len(t)) if t[i] > t[i - 1])
+    return {
+        "records": len(t),
+        "first_t_us": t[0] if t else 0,
+        "interval_p50_us": pct(iv, 0.50),
+        "interval_p99_us": pct(iv, 0.99),
+        "interval_max_us": iv[-1] if iv else 0,
+        "intervals": len(iv),
+        "span_us": sum(iv),
+    }
+
+
+def present_source(tr):
+    """Name the event a trace's PRESENT records stamp.
+
+    "present-thread": the trace has SCENE records and no PRESENT shares a
+    thread with them (eager production throughout). "inline": no SCENE
+    (every present on the sim worker). "mixed": both kinds of thread (eager
+    toggled during the run). "format-2": the format carries no SCENE, and
+    under eager its PRESENT records were written at scene publication."""
+    if tr.version < 3:
+        return "format-2"
+    if not tr.scenes:
+        return "inline"
+    if tr.present_tids.isdisjoint(tr.scene_tids):
+        return "present-thread"
+    return "mixed"
+
+
 def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     tr = read_opp(path)
-    presents, funcs = tr.presents, tr.funcs
-    presents = [p for p in presents if p.canon_tick >= skip_ticks]
+    funcs = tr.funcs
+    presents = [p for p in tr.markers if p.canon_tick >= skip_ticks]
     presents, transients = partition_transients(presents, transient_ms * 1000)
+    transient_ids = set(id(p) for p in transients)
 
     kinds = {KIND_CANONICAL: "canonical", KIND_INTERMEDIATE: "intermediate"}
     out = {
         "trace": os.path.basename(path),
+        "format": tr.version,
         "label": label or "",
         "presents_total": len(presents),
         "transients_excluded": len(transients),
@@ -84,11 +127,10 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
             "self_us_per_tick": round(fn["self_us"] / ncanon_ticks, 1),
         })
 
-    # ---- per-present busy + present cadence -------------------------------
-    all_t = [p.t_now_us for p in presents]
+    # ---- per-marker busy + present cadence --------------------------------
     busy_by_kind = {k: [] for k in kinds}
     for p in presents:
-        busy_by_kind[p.kind].append(present_busy_us(p))
+        busy_by_kind.setdefault(p.kind, []).append(present_busy_us(p))
 
     for k, kname in kinds.items():
         b = sorted(busy_by_kind[k])
@@ -99,8 +141,19 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
             "busy_max_us": max(b) if b else 0,
         }
 
-    # fps from present cadence (all kinds interleaved, time order)
-    all_t.sort()
+    # fps from the cadence of PRESENT records (all kinds interleaved, time
+    # order). A PRESENT that is a marker and a load transient is dropped, as
+    # its marker is; a present-thread PRESENT carries no spans and never is.
+    shown = [p for p in tr.presents
+             if p.canon_tick >= skip_ticks and id(p) not in transient_ids]
+    all_t = sorted(p.t_now_us for p in shown)
+    out["present"] = dict(cadence(shown), source=present_source(tr),
+                          threads=sorted(tr.present_tids),
+                          present_thread_records=sum(
+                              1 for p in shown
+                              if tr.scenes and p.tid not in tr.scene_tids))
+    out["scene"] = dict(cadence([p for p in tr.scenes if p.canon_tick >= skip_ticks]),
+                        threads=sorted(tr.scene_tids))
     intervals = [all_t[i] - all_t[i - 1] for i in range(1, len(all_t)) if all_t[i] > all_t[i - 1]]
     if intervals:
         total_s = sum(intervals) / 1e6
@@ -209,8 +262,8 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     }
 
     # ---- sim-tick split (fiber hooks) ---------------------------------------
-    # Canonical presents only: the hooks run on the game fiber, which only the
-    # canonical present yields to. Sums are per-canonical-tick averages so the
+    # Canonical markers only: the hooks run on the game fiber, which only the
+    # canonical scene or present yields to. Sums are per-canonical-tick averages so the
     # rows compare directly against sim_tick's p50.
     canon = [p for p in presents if p.kind == KIND_CANONICAL]
     tot = {}
@@ -277,11 +330,11 @@ def render_text(s):
     L = []
     ncanon = s["kinds"].get("canonical", {}).get("presents", 0)
     ninter = s["kinds"].get("intermediate", {}).get("presents", 0)
-    hdr = "# openpete-profile v2  trace=%s" % s["trace"]
+    hdr = "# openpete-profile v%d  trace=%s" % (s.get("format", 3), s["trace"])
     if s["label"]:
         hdr += "  label=%s" % s["label"]
     L.append(hdr)
-    L.append("# presents=%d canonical=%d intermediate=%d"
+    L.append("# markers=%d canonical=%d intermediate=%d"
              % (s["presents_total"], ncanon, ninter))
     if s.get("transients_excluded"):
         L.append("# excluded %d load-transient present(s) >%dms (%.0f ms total - level "
@@ -295,6 +348,22 @@ def render_text(s):
     f = s.get("fps", {})
     L.append("# fps avg %s  1%%low %s  frame_p99_us %s"
              % (f.get("avg", "?"), f.get("1pct_low", "?"), f.get("frame_p99_us", "?")))
+    pr, sc = s.get("present", {}), s.get("scene", {})
+    note = {"present-thread": "written on the present thread at each present",
+            "inline": "written on the sim worker at each inline present",
+            "mixed": "on the present thread and the sim worker (eager inactive for part of the run)",
+            "format-2": "format 2 trace: under eager these were written at scene "
+                        "publication, so this is publication cadence"}
+    L.append("[present] records=%d (%d on the present thread)  interval_us "
+             "p50/p99/max %d/%d/%d  - %s"
+             % (pr.get("records", 0), pr.get("present_thread_records", 0),
+                pr.get("interval_p50_us", 0), pr.get("interval_p99_us", 0),
+                pr.get("interval_max_us", 0), note.get(pr.get("source"), "?")))
+    if sc.get("records"):
+        L.append("[scene]   records=%d  interval_us p50/p99/max %d/%d/%d  - "
+                 "scene publication on the sim worker"
+                 % (sc["records"], sc["interval_p50_us"], sc["interval_p99_us"],
+                    sc["interval_max_us"]))
     L.append("# producer threads: %s" % ", ".join(str(t) for t in s.get("threads", [])))
     gf = s.get("gpu_frames", {})
     if gf.get("frames"):
@@ -359,9 +428,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("trace")
     ap.add_argument("--skip-ticks", type=int, default=0,
-                    help="drop presents with canon_tick < N (warm-up exclusion)")
+                    help="drop markers and PRESENT records with canon_tick < N "
+                         "(warm-up exclusion)")
     ap.add_argument("--transient-ms", type=int, default=40,
-                    help="exclude presents whose CPU busy exceeds N ms as load "
+                    help="exclude markers whose CPU busy exceeds N ms as load "
                          "transients (level loads / CD stalls); 0 disables")
     ap.add_argument("--label", default=None)
     ap.add_argument("--json", default=None, help="also write JSON summary here")

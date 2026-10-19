@@ -3,7 +3,8 @@
 Perfetto (https://ui.perfetto.dev) or chrome://tracing, and loadable by
 speedscope. CPU scopes render as a nested flame chart, one Perfetto track per producer
 thread; GPU zones on a second process, one track per rendered frame's submit
-time; census values as counters; canonical ticks as instant markers.
+time; census values as counters; canonical ticks as instant markers; each
+present to the display as an instant on the presenting thread's track.
 
 Usage:
   profile-to-trace.py TRACE.opp -o OUT.json[.gz] [--ticks A:B]
@@ -39,7 +40,7 @@ def main():
     except OppTraceError as e:
         sys.stderr.write("profile-to-trace: %s\n" % e)
         return 2
-    presents = tr.presents
+    presents = tr.markers
 
     def in_window(p):
         return (lo is None or p.canon_tick >= lo) and (hi is None or p.canon_tick < hi)
@@ -56,7 +57,15 @@ def main():
     for t in tr.threads:
         ev.append({"ph": "M", "name": "thread_name", "pid": PID_CPU, "tid": t,
                    "args": {"name": "producer %d%s"
-                            % (t, " (presents)" if t in tr.present_tids else "")}})
+                            % (t, "".join(lbl for lbl, tids in
+                                         ((" (scenes)", tr.scene_tids),
+                                          (" (presents)", tr.present_tids))
+                                         if t in tids))}})
+    # One instant per present to the display, on the presenting thread's track.
+    for p in tr.presents:
+        if in_window(p):
+            ev.append({"name": "present", "ph": "i", "s": "t", "ts": p.t_now_us,
+                       "pid": PID_CPU, "tid": p.tid})
 
     prev_tick = None
     # GPU zones are keyed by RHI frame serial. Anchor each frame's set at the
@@ -99,7 +108,7 @@ def main():
     else:
         with open(args.out, "wb") as f:
             f.write(blob)
-    print("wrote %s (%d events, %d presents)" % (args.out, len(ev), len(presents)),
+    print("wrote %s (%d events, %d markers)" % (args.out, len(ev), len(presents)),
           file=sys.stderr)
     return 0
 

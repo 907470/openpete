@@ -2270,8 +2270,8 @@ static void eager_produce_one(op_time_t t, int canonical)
     else s_eager.refused++;
     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
     if (op_prof_on())
-        op_prof_present((uint32_t)openpete_canon_tick,
-                        canonical ? OP_PROF_CANONICAL : OP_PROF_INTERMEDIATE);
+        op_prof_scene((uint32_t)openpete_canon_tick,
+                      canonical ? OP_PROF_CANONICAL : OP_PROF_INTERMEDIATE);
     const op_time_t span = op_now() - t0;
     openpete_pace_present_span((uint8_t)kind, t0, t0 + span, rex_ns);
     if (s_eager.cost_n) {
@@ -2358,18 +2358,22 @@ static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.la
 static struct { openpete_frame_time_log_t *log; int64_t *start_ns, *period_ns; } s_eager_ftl;
 static void ftl_record_present(openpete_frame_time_log_t* log, int64_t start_ns,
                                int64_t period_ns, uint32_t frame);
-/** @brief Record a present made on the present thread in the frame-time log.
+/** @brief Record a present made on the present thread in the profiler trace and the frame-time log.
  *
- * Does nothing when no log was registered. The log start and period are read
- * through the pointers registered at startup, and the frame is
- * openpete_frame at the call. The arguments are unused.
+ * Runs on the present thread after each present that reached the display.
+ * The profiler's PRESENT record carries the kind and openpete_canon_tick at
+ * the call. The frame-time log is skipped when none was registered; its
+ * start and period are read through the pointers registered at startup, and
+ * the frame is openpete_frame at the call.
  * @param ctx Unused.
- * @param kind Unused.
+ * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT.
  * @param alpha Unused.
  * @param paired Unused. */
 static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
 {
-    (void)ctx; (void)kind; (void)alpha; (void)paired;
+    (void)ctx; (void)alpha; (void)paired;
+    if (op_prof_on())
+        op_prof_present((uint32_t)openpete_canon_tick, kind);
     if (s_eager_ftl.log)
         ftl_record_present(s_eager_ftl.log, *s_eager_ftl.start_ns, *s_eager_ftl.period_ns,
                            openpete_frame);

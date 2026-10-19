@@ -1,7 +1,9 @@
 /* openpete_profile.h - empirical CPU+GPU performance trace (--profile-out PATH)
  *
- * A performance trace that attributes CPU scope time to presents, keyed by
- * (present_index, canon_tick, kind), and GPU zone time to rendered frames,
+ * A performance trace that attributes CPU scope time to markers (a scene
+ * published under eager production, else a present), keyed by
+ * (index, canon_tick, kind), records every present to the display on the
+ * thread that made it, and attributes GPU zone time to rendered frames,
  * keyed by the RHI frame serial. Records are
  * streamed to a compact binary `.opp` file; post-run Python converters turn it
  * into a Chrome/Perfetto trace (human flame charts) and a plain-text
@@ -28,8 +30,9 @@
 extern "C" {
 #endif
 
-/* frame_kind of a present */
-enum { OP_PROF_CANONICAL = 0, OP_PROF_INTERMEDIATE = 1 };
+/* Kind of a present or scene; the values equal OP_PACE_CANONICAL,
+ * OP_PACE_INTERMEDIATE and OP_PACE_REPEAT. */
+enum { OP_PROF_CANONICAL = 0, OP_PROF_INTERMEDIATE = 1, OP_PROF_REPEAT = 2 };
 
 /** @brief Open the trace stream at path, write the 32-byte header, and turn the profiler on.
  *
@@ -47,8 +50,8 @@ int  op_prof_open(const char* path);
  *
  * The profiler is turned off first, so producers entered afterwards return
  * before touching any state. Every registered thread is flushed, not only
- * the caller, since a render thread under eager production never reaches a
- * present boundary. The mutex is kept because op_prof_intern and the
+ * the caller, since every producer still holds the records it raised after
+ * its last marker. The mutex is kept because op_prof_intern and the
  * emitters may still be entered from another thread. No-op when no trace is
  * open. */
 void op_prof_close(void);
@@ -115,9 +118,10 @@ void op_prof_count(int name_id, uint64_t value);
  * For regions entered many times per tick (dispatch hooks fire once per hooked
  * guest call - the 2D addPrim chokepoint runs hundreds of times a tick), one
  * SPAN record per entry would bloat the trace and put an fwrite in the hot path.
- * op_prof_accum() instead sums into a per-name bucket; the present boundary
- * emits ONE span per non-empty bucket, carrying the per-present call count in
- * the span's aux field.
+ * op_prof_accum() instead sums into a per-name bucket; the thread's next marker
+ * (op_prof_present, op_prof_scene, op_prof_thread_flush) emits ONE span per
+ * non-empty bucket, carrying the call count since the previous marker in the
+ * span's aux field.
  *
  * Emitted spans are depth 0 and anchored at the bucket's FIRST entry this
  * present (t0 = first entry, dur = summed time), so the interval stays inside
@@ -131,25 +135,42 @@ void op_prof_count(int name_id, uint64_t value);
  *
  * A bucket created by this call is anchored at now - us, the first entry of
  * the flush interval. Buckets are emitted as depth-0 spans by
- * op_prof_present, op_prof_thread_flush and op_prof_close. A thread holds at
- * most 64 buckets; a new name past that is dropped with one warning per
- * thread.
+ * op_prof_present, op_prof_scene, op_prof_thread_flush and op_prof_close. A
+ * thread holds at most 64 buckets; a new name past that is dropped with one
+ * warning per thread.
  * @param name_id Id from op_prof_intern; negative is ignored.
  * @param us Time measured for this entry, in microseconds. */
 void op_prof_accum(int name_id, uint64_t us);
 
-/** @brief Close the current present: flush the calling thread's buckets, emit a PRESENT record, and flush its chunk.
+/** @brief Record a present to the display: flush the calling thread's buckets, emit a PRESENT record, and flush its chunk.
  *
- * Spans raised on the closing thread since its previous marker bind to this
- * present by stream order; spans from other threads bind by interval
- * containment in the consumer. The record carries the kind, the present
- * index, canon_tick, the thread's span count since its last marker, and the
- * time. The present index then advances.
+ * Called on the thread that presented, after the present: the present
+ * thread under eager production, the sim worker on the inline path. The
+ * record carries the kind, the present index, canon_tick, the thread's span
+ * count since its last marker, and the time. The present index then
+ * advances; it is atomic, since op_prof_count reads it on another thread.
+ * In a trace with no SCENE record the PRESENT records are the markers:
+ * spans raised on the sim worker since its previous marker bind to the
+ * present by stream order, spans from other threads by interval
+ * containment in the consumer.
  * @param canon_tick openpete_canon_tick.
- * @param kind OP_PROF_CANONICAL or OP_PROF_INTERMEDIATE.
+ * @param kind OP_PROF_CANONICAL, OP_PROF_INTERMEDIATE or OP_PROF_REPEAT.
  * @return This present's index; while the profiler is off, the current
  *         index, which does not advance. */
 uint32_t op_prof_present(uint32_t canon_tick, int kind);
+
+/** @brief Record a scene published to the scene ring: flush the calling thread's buckets, emit a SCENE record, and flush its chunk.
+ *
+ * The sim worker's marker under eager production, called once per produced
+ * scene, published or refused, in place of op_prof_present: spans raised on
+ * the sim worker since its previous marker bind to the scene by stream
+ * order. The record has the PRESENT layout with the scene index in place of
+ * the present index. The scene index then advances.
+ * @param canon_tick openpete_canon_tick.
+ * @param kind OP_PROF_CANONICAL or OP_PROF_INTERMEDIATE.
+ * @return This scene's index; while the profiler is off, the current index,
+ *         which does not advance. */
+uint32_t op_prof_scene(uint32_t canon_tick, int kind);
 
 /** @brief Emit a GPUZ record for one GPU zone result harvested from a rendered frame.
  *
@@ -214,7 +235,7 @@ static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
         OP_PROF__CAT(op_prof_began_, __LINE__) = 1; \
     }
 /* Accumulating variant: same block-scoped usage, but the measured time is
- * summed into a per-name bucket and emitted once per present (see
+ * summed into a per-name bucket and emitted once per marker (see
  * op_prof_accum). Use for hooks that fire many times per tick. */
 #define OP_PROF_ACCUM_SCOPE(lit) \
     static int OP_PROF__CAT(op_prof_aid_, __LINE__) = -1; \

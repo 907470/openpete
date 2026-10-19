@@ -1354,6 +1354,27 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Profiler present cadence under eager production, on the Windows exe and
+    # the real GPU: --profile-out's present interval p99 (profile-summary.py)
+    # within 0.5 ms of the pace log's OP_PACE_PRESENT interval p99, both after
+    # canonical tick 300 of one run of row s1_h0_r1 (Spyro 1 town_square high
+    # pose, --vsync 0 --render-fps 1000). Exit 3 = vacuous (no eager scene, no
+    # present after the cut) and fails; 64 = SKIP (no Windows exe or disc);
+    # 65 = the bench preconditions refused a contended machine. The windows
+    # label names the device it needs. Plain ctest has no label exclusion, so
+    # the test SKIPs unless OPENPETE_WINDOWS_TESTS=1: `OPENPETE_WINDOWS_TESTS=1
+    # ctest -L windows`. The Linux analogue
+    # (lavapipe under xvfb-run, --platform linux) is run by hand.
+    add_test(NAME profile_present_cadence_windows
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_profile_present_cadence.py
+                     --platform windows --ctest)
+    set_tests_properties(profile_present_cadence_windows PROPERTIES
+        LABELS "slow;pacing;windows"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # --record video-capture smoke test. Boots the headless demo with
     # --record and uses ffprobe to assert a playable VFR H.264 stream with
     # even dimensions, the reported frame count, monotonic non-uniform PTS,
