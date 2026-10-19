@@ -22,6 +22,12 @@
 #               imports it and captures the rest, streams the uninterrupted
 #               run's lines (sets of verb, tile and detail), the imported ones
 #               tagged `imported`, the credits leg included
+#   repeat      repeat copies (`<key>~r<k>`): pg_copy_keys; the diff's
+#               per-row accounting (all copies SAME and no EXTRA, one
+#               divergent copy tile, a missing copy tile, a copy number past
+#               N); copies stream SAME and IDENT against the original rows
+#               and baseline; list_tiles and promote_select leave copies out;
+#               a copy's stamp imports only into a repeat run holding it
 # Coordinator (tests/harness/fleet-stream-check.py, golden-fleet.py imported,
 # a fake supervisor on this machine): poll framing, the unit-end check and
 # its refusals under OPENPETE_STREAM_DROP, kill in the last poll interval and
@@ -186,6 +192,91 @@ if [[ "$(keys "$W/a2.stream" | grep -v '^END')" == "$(keys "$W/full.stream" | gr
   pass "resume: attempt 2 streams the uninterrupted run's $(grep -vc '^END' "$W/a2.stream") lines; $imp tagged imported (3 tiles, CREDITS)"
 else fail resume "$(cat "$W/import.log"; diff <(keys "$W/a2.stream") <(keys "$W/full.stream"))"; fi
 unset OPENPETE_RESUME_RUN OPENPETE_STREAM_FILE
+
+# Repeat copies (PRESENTATION_REPEAT, `<key>~r<k>`): pg_copy_keys, the
+# diff's per-row accounting against the original rows, the stream's verbs
+# for copies, and the copy rule of the stamp import.
+keys3="$(PRESENTATION_REPEAT=3 bash -c 'source scripts/presentation-game.sh; pg_repeat; pg_copy_keys rowa' | tr '\n' ' ')"
+PRESENTATION_REPEAT=x bash -c 'source scripts/presentation-game.sh; pg_repeat' >/dev/null 2>&1; badrc=$?
+[[ "$keys3" == "rowa~r01 rowa~r02 rowa~r03 " && $badrc -eq 64 ]] \
+  && pass "repeat-keys: 3 copy keys rowa~r01..rowa~r03; PRESENTATION_REPEAT=x exits 64" \
+  || fail repeat-keys "keys '$keys3', bad rc $badrc"
+# rep/<case>: 3 copies of rowa (canon, inter, ident: 3 legs each) and of
+# rowb, whose ident is 1 px off its canon, within rowb's baseline row of 1.
+python3 - "$W" <<'PY'
+import os, sys
+from PIL import Image
+w = sys.argv[1]
+ref, other = (10, 20, 30), (200, 20, 30)
+def img(d, name, rgb, odd=0):
+    os.makedirs(d, exist_ok=True)
+    im = Image.new("RGB", (8, 8), rgb)
+    for i in range(odd):
+        im.putpixel((i, 0), (255, 255, 255))
+    im.save(os.path.join(d, name))
+def copies(d, n=3):
+    for k in range(1, n + 1):
+        for leg in ("canon", "inter", "ident"):
+            img(d, f"rowa~r{k:02d}__{leg}__100-vk.png", ref)
+        img(d, f"rowb~r{k:02d}__canon__100-vk.png", ref); img(d, f"rowb~r{k:02d}__inter__100-vk.png", ref)
+        img(d, f"rowb~r{k:02d}__ident__100-vk.png", ref, odd=1)
+for case in ("same", "div", "short", "outside"):
+    copies(os.path.join(w, "rep", case))
+img(os.path.join(w, "rep", "div"), "rowa~r02__inter__100-vk.png", other)
+os.remove(os.path.join(w, "rep", "short", "rowa~r03__inter__100-vk.png"))
+img(os.path.join(w, "rep", "outside"), "rowa~r04__canon__100-vk.png", ref)
+PY
+rdiff() { python3 tests/harness/presentation-corpus-diff.py "$W/rep/$1" --manifest "$PG_BLESSED" --diff-out "$W/rep/$1.diff" \
+            --expect-subset --repeat 3 --baseline "$PG_IDENT_BASELINE" >"$W/rep/$1.log" 2>&1; }
+rdiff same; rc=$?
+if [[ $rc -eq 0 ]] && grep -q '^REPEAT   rowa  divergent=0 of=9 compared=9 copies=3$' "$W/rep/same.log" \
+   && grep -q '^REPEAT   rowb  divergent=0 of=9 compared=9 copies=3$' "$W/rep/same.log" \
+   && ! grep -q '^EXTRA' "$W/rep/same.log" \
+   && grep -q 'repeat 3: 2 row(s), 0 divergent of 18 legs, 18 compared' "$W/rep/same.log"; then
+  pass "repeat-same: 2 rows x 3 copies, 0 divergent of 18 legs, no EXTRA, exit 0"
+else fail repeat-same "rc $rc; $(cat "$W/rep/same.log")"; fi
+rdiff div; rc=$?
+[[ $rc -eq 1 ]] && grep -q '^DIVERGE  rowa~r02__inter__100-vk.png ' "$W/rep/div.log" \
+  && grep -q '^REPEAT   rowa  divergent=1 of=9 compared=9 ' "$W/rep/div.log" \
+  && pass "repeat-div: one divergent copy tile: DIVERGE under the copy's name, rowa divergent=1 of 9, exit 1" \
+  || fail repeat-div "rc $rc; $(cat "$W/rep/div.log")"
+rdiff short; rc=$?
+[[ $rc -eq 1 ]] && grep -q '^REPEAT   rowa  divergent=0 of=9 compared=8 ' "$W/rep/short.log" \
+  && pass "repeat-short: a missing copy tile: compared 8 of 9 legs, exit 1" \
+  || fail repeat-short "rc $rc; $(cat "$W/rep/short.log")"
+rdiff outside; rc=$?
+[[ $rc -eq 1 ]] && grep -q '^REPEAT   rowa  divergent=0 of=9 compared=9 copies=3 outside=1..3:4$' "$W/rep/outside.log" \
+  && pass "repeat-outside: copy 4 of a repeat 3 is refused, exit 1" \
+  || fail repeat-outside "rc $rc; $(cat "$W/rep/outside.log")"
+census="$(python3 -c '
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("pb", "scripts/presentation-blessed.py"); pb = importlib.util.module_from_spec(s); s.loader.exec_module(pb)
+print(len(pb.list_tiles(sys.argv[1])), len(pb.list_copies(sys.argv[1])), len(pb.list_copies(sys.argv[1], ident=True)),
+      len(pb.promote_select(sys.argv[1], True, [])), len(pb.promote_select(sys.argv[1], False, ["rowa"])))' "$W/rep/same")"
+[[ "$census" == "0 12 6 0 0" ]] && pass "repeat-select: 12 golden and 6 identity copies; list_tiles and promote (--all, a filter) select none" \
+  || fail repeat-select "$census"
+python3 tests/harness/presentation-stream.py "$W/rep/same" $(cd "$W/rep/same" && ls -- *-vk.png) --manifest "$PG_BLESSED" \
+  --baseline "$PG_IDENT_BASELINE" --stream "$W/rep/same.stream" >"$W/rep/stream.log" 2>&1
+sv="$(awk '{ n[$1]++ } END { printf "SAME=%d IDENT=%d EXTRA=%d EXCEED=%d", n["SAME"], n["IDENT"], n["EXTRA"], n["EXCEED"] }' "$W/rep/same.stream" 2>/dev/null)"
+[[ "$sv" == "SAME=12 IDENT=6 EXTRA=0 EXCEED=0" ]] \
+  && pass "repeat-stream: copies stream SAME against the original rows and IDENT within the original's baseline" \
+  || fail repeat-stream "$sv; $(cat "$W/rep/stream.log")"
+# A copy's stamp imports only into a repeat run whose copies include it.
+export OPENPETE_RESUME_RUN=run-rep
+OUT="$W/repimp"; mkdir -p "$OUT"; rs_init "$OUT" "$W/bin" default
+for lg in canon inter ident; do cp "$W/rep/same/rowa~r02__${lg}__100-vk.png" "$OUT/"
+  rs_leg_done bk2 'rowa~r02' "$ROW_A" "original-$lg" "$W/leg.log" "rowa~r02__${lg}__100-vk.png"; done
+cp -a "$OUT" "$W/repimp.keep"
+nimp=""
+for r in 0 1 3; do
+  rm -rf "${OUT:?}"; cp -a "$W/repimp.keep" "$OUT"
+  PG_REPEAT=$r rs_import "$OUT" "" "" >"$W/repimp-$r.log"; nimp+="$(wc -l <"$OUT/resume/imported.tsv")"
+done
+unset OPENPETE_RESUME_RUN
+[[ "$nimp" == "001" ]] && grep -q 'outside this run.s repeat 0' "$W/repimp-0.log" \
+  && grep -q 'outside this run.s repeat 1' "$W/repimp-1.log" \
+  && pass "repeat-import: copy 2's stamp imports under repeat 3, not under repeat 0 or 1" \
+  || fail repeat-import "imported under repeat 0/1/3: $nimp; $(cat "$W"/repimp-*.log)"
 
 python3 tests/harness/fleet-stream-check.py || fails=$((fails + 1))
 

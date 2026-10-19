@@ -151,6 +151,8 @@ scripts/golden-fleet.py run --all --hosts local,box2 --wait
 scripts/golden-fleet.py run --all --no-local --wait         # keep the dev box free
 scripts/golden-fleet.py run --game spyro-2 --pull all --wait
 scripts/golden-fleet.py run --all --expect moves.txt        # tag streamed moves against predictions
+scripts/golden-fleet.py run --game spyro-2 --hosts ptah \
+  --filter summer_forest-12609f --freecam-filter summer_forest-12609f --repeat 40 --wait   # a repeat row
 scripts/golden-fleet.py stop <run-id> --unit spyro-3-presentation
 scripts/golden-fleet.py stop <run-id>                       # every running and pending unit
 ```
@@ -163,6 +165,9 @@ scripts/golden-fleet.py stop <run-id>                       # every running and 
 | `--no-local` | Leave the local host out. Exclusive with `--hosts`. |
 | `--pull divergent\|all` | `divergent` (default): the report files, divergent tiles and identity pairs; `all`: the whole candidate directory. |
 | `--wait` | Follow the detached coordinator and exit with its code. |
+| `--filter S` | bk2 rows whose name contains `S`. With either filter the unit captures part of its corpus and is decided by its capture's own verdict; a partial run decides nothing for landing. |
+| `--freecam-filter S` | Freecam rows whose level field or tile key (`<level>-<pose md5 prefix>`) contains `S`; a tile key selects one pose. |
+| `--repeat N` | Capture every row the filters select `N` times on its one host and compare every copy against the blessed row (Repeat rows). Needs a filter. |
 | `--expect FILE` | Expected-moves file (Streamed divergences); a line naming a unit not in the run, or a substring matching nothing, refuses the run with exit 2 before it detaches. |
 
 `run` detaches the coordinator (`setsid`) and prints its log and done
@@ -312,6 +317,58 @@ a synthetic candidate directory (no binary or image): a finished, a
 partial and a tampered row, another run id, binary, tree, LOD set,
 manifest line and filter, an interrupted import, concurrent legs, and
 resume off.
+
+## Repeat rows
+
+A defect that moves a tile in some processes and not others (a data race
+between the game thread and a renderer worker) passes a single capture
+most of the time. `run --repeat N` measures such a row: each unit captures
+every row its filters select `N` times as repeat copies and compares every
+copy against the original row.
+
+- The unit runs `check_presentation_golden.sh --repeat=N` with its filters.
+  The harness exports `PRESENTATION_REPEAT=N`; `presentation-corpus.sh` and
+  `freecam-corpus.sh` then capture copy `k` (1 to `N`) of each selected row
+  under the tile key `<key>~r<k>` (`summer_forest-12609f~r07__lodext__canon__2473-vk.png`)
+  and do not capture the original row. The copies are queued one after
+  another through `cj_run`, so `CORPUS_JOBS` (the host's `slots`) of their
+  legs run at once, at the host's `LP_NUM_THREADS`.
+- `scripts/presentation-blessed.py` `copy_origin` maps a copy's tile to its
+  original's. A copy's golden tile is compared against the original row's
+  blessed digest (`SAME` or `DIVERGE` under the copy's name, never `EXTRA`),
+  and its identity tile against the copy's own canon tile with the original
+  tile's baseline row. `list_tiles` leaves copies out, so a promote, a
+  `write` or a `verify` never sees one, and an identity `--bless` writes no
+  copy row.
+- `presentation-corpus-diff.py --repeat N` prints one line per repeated
+  row, `REPEAT <key> divergent=D of=T compared=C copies=N`, where `T` is `N`
+  x the row's legs (its blessed tiles plus one identity pair per canon
+  tile). A row fails when `C` is under `T`, a copy number lies outside
+  1..`N`, or `D` is nonzero. `verdict-report.txt` adds `repeat: N`, one
+  `repeat-row:` line per row and the totals `repeat-divergent`,
+  `repeat-legs` and `repeat-compared`; the census's `compared` counts the
+  copies' golden tiles.
+- The coordinator refuses the unit when the report's `repeat` differs from
+  the run's or `repeat-compared` is under `repeat-legs` (the engagement
+  bound), and prints each row's divergent count of `N` x legs on the
+  unit's result line. `run-args.json` records `N`, so `resume` repeats it;
+  a copy's resume stamp imports only into a repeat run whose copies
+  include it.
+
+The pass criterion is 0 divergent of `N` x legs. The committed repeat row:
+
+| Game | Row (tile key) | N | Host | Command |
+|---|---|---|---|---|
+| spyro-2 | `summer_forest-12609f` (homeworld portal sky, lodext) | 40 | ptah | `scripts/golden-fleet.py run --game spyro-2 --hosts ptah --filter summer_forest-12609f --freecam-filter summer_forest-12609f --repeat 40 --wait` |
+
+`--filter` names the tile key too, so the bk2 corpus selects no row. The
+row covers the cyclorama sector decode the game thread's sky feed and the
+portal-sky worker share; with a decode buffer shared between the two, 24
+of 240 legs diverged at `N` = 40 on ptah.
+`N` = 40 separates at the measured pre-fix rate of the most frequent leg (11
+of 40 copies); a build with a 15 % per-copy rate passes 40 copies with
+probability 0.0015. 0 of 40 bounds a residual rate only below 7.5 % per
+copy (95 %).
 
 ## Streamed divergences
 

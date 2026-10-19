@@ -24,6 +24,9 @@
 #                and manifest through scripts/presentation-game.sh
 #
 # Environment:
+#   PRESENTATION_REPEAT       N: capture each selected row N times as repeat
+#                             copies (scripts/presentation-game.sh, repeat
+#                             copies), the original row not at all
 #   PRESENTATION_TIER         corpus tier (default presentation); selects the
 #                             manifest through scripts/presentation-game.sh
 #   PRESENTATION_LEG_TIMEOUT  seconds one capture process may run (default
@@ -64,6 +67,7 @@ source scripts/presentation-game.sh
 # shellcheck source=scripts/corpus-resume.sh
 source scripts/corpus-resume.sh
 pg_cap_settings
+pg_repeat
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -138,9 +142,11 @@ lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 # the plain row's; the bk2 is everything before the first `@`.
 row_bk2() { echo "${1%%@*}"; }
 
-run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
-  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7" launch="${8:-}" row="${9:-}"
-  local bk2name; bk2name="$(row_bk2 "$name")"
+# The tile key `key` is the row name, or a repeat copy's key (pg_copy_keys);
+# the bk2 is the row name's.
+run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-line
+  local bk2name; bk2name="$(row_bk2 "$1")"
+  local name="$2" flim="$3" leg="$4" flag="$5" targets="$6" lod="$7" freeze="$8" launch="${9:-}" row="${10:-}"
   local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
   # A launch token PRESENTATION_LEG_TIMEOUT=N is the harness's, not the run's:
   # it raises this row's leg bound to N seconds (never lowers it) and is not
@@ -270,8 +276,14 @@ while IFS= read -r row; do
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   [[ "$name" == *"$FILTER"* ]] || continue
-  if rs_imported bk2 "$name"; then
-    imported=$((imported+1)); echo "[$name] imported from the previous attempt"; continue; fi
+  mapfile -t row_keys < <(pg_copy_keys "$name")
+  pending_keys=()
+  for key in "${row_keys[@]}"; do
+    if rs_imported bk2 "$key"; then
+      imported=$((imported+1)); echo "[$key] imported from the previous attempt"
+    else pending_keys+=("$key"); fi
+  done
+  (( ${#pending_keys[@]} )) || continue
   start="$(echo "$start" | tr -d ' \t')"
   interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
   freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field: a label for freeze-reaching rows, no launch effect
@@ -307,13 +319,15 @@ while IFS= read -r row; do
     echo "  FAIL row $name: $ncanon canon / $ninter inter samples exceed the 64-frame"
     echo "        screenshot cap - lower OPENPETE_MAX_SAMPLES or raise this row's interval."
     fail=1; continue; fi
-  ran=$((ran+1))
-  echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}${launch:+  launch=$launch}"
-  # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
-  for lod in $CAP_LODS; do
-    cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
-    cj_run run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" "$launch" "$row"
-    cj_run run_one "$name" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
+  for key in "${pending_keys[@]}"; do
+    ran=$((ran+1))
+    echo "[$key] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}${launch:+  launch=$launch}"
+    # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
+    for lod in $CAP_LODS; do
+      cj_run run_one "$name" "$key" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
+      cj_run run_one "$name" "$key" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" "$launch" "$row"
+      cj_run run_one "$name" "$key" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
+    done
   done
 done < "$MANIFEST"
 cj_wait || fail=1

@@ -62,6 +62,12 @@ write. Cases (each prints its counts):
               accepted attempt that imported stamped rows write none, so the
               deadline on a speed-0.25 host stays the whole unit's time /
               speed x 2
+  repeat      run --repeat N: the unit's FILTERS carry --repeat=N (a
+              canary's do not); a unit of copy tiles streams SAME, equals its
+              report and passes; its result names the row's divergent count
+              of N x legs; check_report refuses fewer compared than N x legs,
+              a report repeat count unlike the run's, a repeat that compared
+              nothing and a report without a repeat-row line
 
 Exit: 0 every case holds, 1 a case failed (named).
 """
@@ -861,6 +867,60 @@ def case_ledger(tmp):
           f"before, {after:.0f} s after (norm_s {norm:.0f} / 0.25 x 2)")
 
 
+def case_repeat(tmp):
+    """run --repeat: the unit's FILTERS carry --repeat=N, copy tiles stream SAME and equal the report, the result names each row's divergent count of N x legs, and the report refusals (engagement, repeat count) hold."""
+    key, n = "summer_forest-12609f", 3
+    orig = sorted(t for t in TILES if t.startswith(key + "__"))
+    copies = [t.replace(key, f"{key}~r{k:02d}", 1) for k in range(1, n + 1) for t in orig]
+    idents = [t.replace("__canon__", "__ident__") for t in copies if "__canon__" in t]
+    legs = len(copies) + len(idents)
+    co = FakeCo(tmp, "repeat")
+    co.a.filter, co.a.freecam_filter, co.a.repeat = key, key, n
+    hs, att = co.hs, gf.Attempt(gf.Job("unit", GAME, TIER), co.hs, 1)
+    env_unit = [e for e in co.job_env(att.job, hs, att) if e.startswith("FILTERS=")]
+    canary = gf.Job("canary", GAME, TIER, pinned="local")
+    env_canary = [e for e in co.job_env(canary, hs, gf.Attempt(canary, hs, 1)) if e.startswith("FILTERS=")]
+    row = f"repeat-row: {key}  divergent=0 of={legs} compared={legs} copies={n}"
+    body = full_unit(div=[], same=copies, extra=[], ident=idents, exceed=[])
+    body = body.replace("\nreport ", f"\nreport 'repeat: {n}' '{row}' 'repeat-divergent: 0' "
+                        f"'repeat-legs: {legs}' 'repeat-compared: {legs}' ", 1)
+    co.plan(UNIT, body)
+    job = gf.Job("unit", GAME, TIER)
+    co.go([job])
+    r = job.result
+    check("repeat-unit", r["rc"] == 0 and not r.get("stream_mismatch") and r.get("stream") != "exempt"
+          and env_unit == [f"FILTERS=--filter={key} --freecam-filter={key} --repeat={n}"]
+          and "--repeat" not in env_canary[0]
+          and r.get("repeat") == f"{key}: 0 divergent of {legs} legs ({legs} compared)",
+          f"rc {r['rc']}; {env_unit[0]}; canary {env_canary[0]}; result repeat '{r.get('repeat')}'")
+    golden = os.path.join(TREE, "tests", "golden", GAME, TIER)
+    fields = {"blessed-sha256": gf.sha256_path(os.path.join(golden, "blessed.tsv")),
+              "ident-baseline-sha256": gf.sha256_path(os.path.join(golden, "ident-baseline.tsv")),
+              "compared": str(len(copies)), "exit": "0", "repeat": str(n),
+              "repeat-legs": str(legs), "repeat-compared": str(legs)}
+    job.result["rc"] = 0
+    outs = {}
+    for name, over, rows in (("whole", {}, [row]), ("short", {"repeat-compared": str(legs - 1)}, [row]),
+                             ("count", {"repeat": "2"}, [row]), ("none", {"repeat-compared": "0",
+                              "repeat-legs": "0", "compared": "0"}, []),
+                             ("no-row", {}, [])):
+        rep = {"fields": dict(fields, **over), "divergent": [], "extra": [], "identity": [],
+               "repeat-rows": rows}
+        outs[name] = co.check_report(job, rep)
+    check("repeat-refusals", outs["whole"] == []
+          and any("did not engage every copy" in e for e in outs["short"])
+          and any("differs from run --repeat 3" in e for e in outs["count"])
+          and any("compared nothing" in e for e in outs["none"])
+          and any("no repeat-row line" in e for e in outs["no-row"]),
+          "; ".join(f"{k}: {v or 'accepted'}" for k, v in outs.items()))
+    parsed_path = os.path.join(co.tmp, "report.txt")
+    with open(parsed_path, "w") as f:
+        f.write(f"verdict: PASS\n{row}\nrepeat-row: other-1 divergent=2 of=6 compared=6 copies=1\n")
+    parsed = gf.parse_report(parsed_path)
+    check("repeat-parse", parsed["repeat-rows"] == [row.partition(": ")[2], "other-1 divergent=2 of=6 compared=6 copies=1"],
+          f"repeat-rows {parsed['repeat-rows']}")
+
+
 def read_verdict(run_dir):
     """The `key=value` lines of a run directory's canary-verdict.txt as a dict; None when absent."""
     try:
@@ -970,7 +1030,7 @@ def main():
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_extra, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
-                     case_keep_and_resume_inputs, case_keep_exhausted, case_ledger):
+                     case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat):
             case(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

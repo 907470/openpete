@@ -28,6 +28,22 @@ the two images differ in size, as a size change. A divergent row whose
 reference neither holds is reported with both digests and the golden-at command
 that resolves it.
 
+Repeat copies (`<key>~r<k>__...`, scripts/presentation-game.sh) are
+compared against their original row: a copy whose digest equals the row's is
+`ok`, one that differs is DIVERGE under the copy's own name, and a copy of a
+tile no row names is EXTRA. --repeat N (with --baseline, the identity
+baseline) also accounts each repeated row: for every row key with a copy in
+the candidate, one line
+
+    REPEAT   <key>  divergent=<d> of=<N x legs> compared=<c> copies=<N>
+
+where legs is the row's blessed tiles plus one identity pair per canon tile,
+compared counts the copies' golden tiles and identity pairs present, and
+divergent the DIVERGE tiles and the identity pairs over the original tile's
+baseline row (or without a canon twin). A row fails when compared is under
+N x legs, a copy number lies outside 1..N, or anything diverged; a run with
+no repeated row fails as vacuous.
+
 --game selects the manifest (tests/golden/<game>/presentation/blessed.tsv);
 --manifest names another (the dragon tier's).
 
@@ -109,15 +125,17 @@ def classify_tiles(rows, cand_dir, names):
     Returns one (name, verb, row digest, candidate digest) per name, in
     order: SAME when the tile's decoded verdict digest equals its row's,
     DIVERGE when it differs or the tile does not decode (candidate digest
-    None), EXTRA when no row names the tile (row digest None). Candidate
-    digests are pb.digest_files results, (hex, (width, height)) or None.
+    None), EXTRA when no row names the tile (row digest None). A repeat
+    copy is classified against its original's row (pb.copy_origin).
+    Candidate digests are pb.digest_files results, (hex, (width, height))
+    or None.
     """
     names = list(names)
     digs = pb.digest_files(os.path.join(cand_dir, n) for n in names)
     out = []
     for n in names:
         got = digs[os.path.join(cand_dir, n)]
-        row = rows.get(n)
+        row = rows.get(pb.copy_origin(n)[0])
         if row is None:
             out.append((n, "EXTRA", None, got))
         elif got is not None and got[0] == row["digest"]:
@@ -125,6 +143,56 @@ def classify_tiles(rows, cand_dir, names):
         else:
             out.append((n, "DIVERGE", row["digest"], got))
     return out
+
+
+def repeat_account(args, rows, copies, divergent):
+    """Print one REPEAT line per repeated row key and the run's repeat totals.
+
+    Returns the number of failing rows, or 1 when no row was repeated.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "presentation_ident_check", os.path.join(HERE, "presentation-ident-check.py"))
+    ident = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ident)
+    # The ident script's import of presentation-blessed.py replaced pb in
+    # sys.modules; pb.digest_files pickles its worker by that name.
+    ident.pb = pb
+    sys.modules["presentation_blessed"] = pb
+    base = ident.read_baseline(args.baseline)
+    idents = pb.list_copies(args.candidate, ident=True)
+    legs = {}
+    for t in rows:
+        legs[pb.tile_key(t)] = legs.get(pb.tile_key(t), 0) + 1 + ("__canon__" in t)
+    keys = {}
+    for t in copies + idents:
+        orig, k = pb.copy_origin(t)
+        keys.setdefault(pb.tile_key(orig), []).append((t, k))
+    if not keys:
+        print("[presentation-diff] FAIL: VACUOUS - --repeat set and no repeat copy captured")
+        return 1
+    bad_rows = tot_div = tot_of = tot_cmp = 0
+    for key in sorted(keys):
+        of = args.repeat * legs.get(key, 0)
+        compared = div = 0
+        outside = sorted({k for _t, k in keys[key] if not 1 <= k <= args.repeat})
+        for t, k in keys[key]:
+            if not 1 <= k <= args.repeat:
+                continue
+            if "__ident__" in t:
+                verb, _n, _allowed = ident.classify_pair(args.candidate, t, base)
+                compared += 1
+                div += verb in ("EXCEED", "NOCANON")
+            elif pb.copy_origin(t)[0] in rows:
+                compared += 1
+                div += t in divergent
+        note = f" outside=1..{args.repeat}:{','.join(map(str, outside))}" if outside else ""
+        print(f"REPEAT   {key}  divergent={div} of={of} compared={compared} "
+              f"copies={args.repeat}{note}")
+        bad_rows += bool(div or compared < of or outside or of == 0)
+        tot_div, tot_of, tot_cmp = tot_div + div, tot_of + of, tot_cmp + compared
+    print(f"[presentation-diff] repeat {args.repeat}: {len(keys)} row(s), {tot_div} divergent "
+          f"of {tot_of} legs, {tot_cmp} compared")
+    return bad_rows
 
 
 def manifest_tile_dir(game, manifest):
@@ -162,7 +230,13 @@ def main():
     ap.add_argument("--expect-subset", action="store_true",
                     help="the candidate covers part of the corpus: rows it "
                          "does not hold are counted, not failed")
+    ap.add_argument("--repeat", type=int, default=0, metavar="N",
+                    help="account each row's N repeat copies (needs --baseline)")
+    ap.add_argument("--baseline", default=None,
+                    help="identity baseline the repeat accounting classifies copy pairs against")
     args = ap.parse_args()
+    if args.repeat < 0 or (args.repeat and not args.baseline):
+        ap.error("--repeat takes a positive N and needs --baseline")
     if args.manifest is None:
         args.manifest = pb.manifest_path(args.game, "presentation")
 
@@ -178,12 +252,13 @@ def main():
     size_set = {s for s in m.header.get("size", "").split(",") if "x" in s}
 
     cand = pb.list_tiles(args.candidate)
+    copies = pb.list_copies(args.candidate)
     gset, cset = set(rows), set(cand)
     diff_out = args.diff_out or os.path.join(args.candidate, "diff")
     fails = 0
 
     missing = sorted(gset - cset)
-    extra = sorted(cset - gset)
+    extra = sorted((cset - gset) | {c for c in copies if pb.copy_origin(c)[0] not in gset})
     if args.expect_subset:
         print(f"SUBSET   {len(missing)} golden tile(s) outside the captured scope, not compared")
     else:
@@ -192,7 +267,7 @@ def main():
     for e in extra:
         print(f"EXTRA    {e}  (captured, not in golden)"); fails += 1
 
-    common = sorted(gset & cset)
+    common = sorted((gset & cset) | {c for c in copies if pb.copy_origin(c)[0] in gset})
     if not common:
         print("[presentation-diff] FAIL: VACUOUS - no candidate tile has a golden twin")
         return 1
@@ -209,10 +284,12 @@ def main():
             continue
         if arch is None:
             arch = pb.Archive()
-        print(divergent_line(name, rows[name], os.path.join(args.candidate, name), got,
-                             tdir, arch, diff_out, args.game, size_set))
+        print(divergent_line(name, rows[pb.copy_origin(name)[0]], os.path.join(args.candidate, name),
+                             got, tdir, arch, diff_out, args.game, size_set))
     if arch is not None:
         arch.close()
+    if args.repeat:
+        fails += repeat_account(args, rows, copies, set(divergent))
 
     miss_label = "outside scope" if args.expect_subset else "missing"
     print(f"[presentation-diff] {args.game}: {len(common)} compared, {len(divergent)} divergent, "

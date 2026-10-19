@@ -65,12 +65,12 @@ def classify_pair(cand_dir, name, base):
 
     Returns (verb, differing pixels, allowed): NOCANON (pixels None) when the
     candidate holds no canon twin, EXCEED when the count is over the tile's
-    baseline row (0 without one), `within` when it is under it and nonzero,
-    `ident` at zero.
+    baseline row (0 without one; a repeat copy reads its original's row),
+    `within` when it is under it and nonzero, `ident` at zero.
     """
     canon = name.replace("__ident__", "__canon__")
     cpath = os.path.join(cand_dir, canon)
-    allowed = base.get(name, 0)
+    allowed = base.get(pb.copy_origin(name)[0], 0)
     if not os.path.isfile(cpath):
         return "NOCANON", None, allowed
     n = diff_count(cpath, os.path.join(cand_dir, name))
@@ -177,6 +177,9 @@ def main():
         # stays. A candidate captured with a row filter holds a few pairs, and
         # a whole-file rewrite from it would drop the rest of the corpus's
         # baseline.
+        # A repeat copy is never a baseline row: it is measured against its
+        # original's.
+        counts = {k: v for k, v in counts.items() if pb.copy_origin(k)[1] is None}
         merged = dict(base)
         merged.update(counts)
         write_baseline(args.baseline, header, merged)

@@ -31,8 +31,9 @@
 # Import (rs_import, by the gate before it captures). The previous attempt's
 # output directory is set aside; a stamp is imported only when its run, tree,
 # binary and params equal this attempt's, its row line is a line of the
-# current manifest that this run's filter selects, its key is the row's key,
-# and every tile it lists is present with its sha256. An imported row's tiles
+# current manifest that this run's filter selects, its key is the row's key
+# (a repeat copy's key `<key>~r<k>` only under PG_REPEAT >= k; a row's own key
+# only without repeat), and every tile it lists is present with its sha256. An imported row's tiles
 # and stamp move into the fresh output directory and its device lines are
 # appended to capture-device.txt; everything else of the previous attempt is
 # deleted before the capture starts. OUT/resume/imported.tsv lists the
@@ -215,19 +216,30 @@ rs_check_stamp() {
   [[ "$bin" == "$RS_BIN" ]] || { echo "binary ${bin:0:12}, this attempt's ${RS_BIN:0:12}"; return; }
   [[ "$params" == "$(rs_params "$kind" "$RS_AFFINE")" ]] || { echo "params '$params' differ from '$(rs_params "$kind" "$RS_AFFINE")'"; return; }
   (( ntiles > 0 )) || { echo "no tile"; return; }
+  # A repeat copy's key is its row's key and `~r<k>` (pg_copy_keys): it
+  # imports only into a repeat run whose copies include k, and a row's own
+  # key only into a run without repeat.
+  local rkey="$key"
+  if [[ "$kind" != credits && "$key" =~ ^(.+)~r([0-9]+)$ ]]; then
+    rkey="${BASH_REMATCH[1]}"
+    (( ${PG_REPEAT:-0} > 0 && 10#${BASH_REMATCH[2]} >= 1 && 10#${BASH_REMATCH[2]} <= ${PG_REPEAT:-0} )) \
+      || { echo "repeat copy ${BASH_REMATCH[2]} outside this run's repeat ${PG_REPEAT:-0}"; return; }
+  elif [[ "$kind" != credits ]] && (( ${PG_REPEAT:-0} > 0 )); then
+    echo "not a repeat copy, and this run repeats ${PG_REPEAT}"; return
+  fi
   case "$kind" in
     bk2)
       manifest="$PG_CORPUS_MANIFEST"
       rname="$(tr -d ' \t' <<<"${row%%|*}")"
-      [[ "$rname" == "$key" ]] || { echo "row names $rname, the stamp $key"; return; }
+      [[ "$rname" == "$rkey" ]] || { echo "row names $rname, the stamp $key"; return; }
       [[ "$rname" == *"$filter"* ]] || { echo "row outside the filter '$filter'"; return; };;
     freecam)
       manifest="$PG_FREECAM_MANIFEST"
       [[ -n "$manifest" ]] || { echo "the tier has no freecam manifest"; return; }
       rname="$(tr -d ' \t' <<<"${row%%|*}")"
       pose="${row#*|}"; pose="$(rs_trim "${pose%%|*}")"
-      [[ "$(pg_pose_slug "$rname" "$pose")" == "$key" ]] || { echo "row keys $(pg_pose_slug "$rname" "$pose"), the stamp $key"; return; }
-      [[ -z "$ffilter" || "$rname" == *"$ffilter"* ]] || { echo "row outside the freecam filter '$ffilter'"; return; };;
+      [[ "$(pg_pose_slug "$rname" "$pose")" == "$rkey" ]] || { echo "row keys $(pg_pose_slug "$rname" "$pose"), the stamp $key"; return; }
+      [[ -z "$ffilter" || "$rname" == *"$ffilter"* || "$rkey" == *"$ffilter"* ]] || { echo "row outside the freecam filter '$ffilter'"; return; };;
     credits)
       [[ "$key" == credits && "$row" == credits-interp && "$PG_TIER" == presentation ]] \
         || { echo "not this tier's credits leg"; return; }

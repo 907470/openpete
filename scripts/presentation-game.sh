@@ -223,6 +223,36 @@ pg_pose_slug() {
   echo "${1//:/-}-${h}"
 }
 
+# ---- repeat copies ---------------------------------------------------------
+#
+# PRESENTATION_REPEAT=N (N >= 1) captures every selected row N times instead
+# of once, the copies queued one after another through cj_run so CORPUS_JOBS
+# of their legs run at once, and the original row not at all. Copy k writes
+# its tiles under the key `<key>~r<k>` (k from 1, two digits at least), which
+# scripts/presentation-blessed.py copy_origin maps back to the original
+# tile: every copy is compared against the original row's blessed digest and
+# identity baseline, so a race that moves a tile in some copies is counted
+# per copy. Unset or empty is off.
+
+# Set PG_REPEAT from PRESENTATION_REPEAT (0 = off); exit 64 on a value that
+# is not a positive integer.
+pg_repeat() {
+  PG_REPEAT=0
+  local v="${PRESENTATION_REPEAT:-}"
+  [[ -z "$v" ]] && return 0
+  if ! [[ "$v" =~ ^[1-9][0-9]*$ ]]; then
+    echo "FAIL: PRESENTATION_REPEAT must be a positive integer (got '$v')" >&2; exit 64; fi
+  PG_REPEAT="$v"
+}
+
+# The tile keys a row captures: the key itself without repeat, else its N
+# copy keys. args: key
+pg_copy_keys() {
+  if (( ${PG_REPEAT:-0} == 0 )); then echo "$1"; return 0; fi
+  local k
+  for (( k = 1; k <= PG_REPEAT; k++ )); do printf '%s~r%02d\n' "$1" "$k"; done
+}
+
 # The skip arguments of a freecam row's level (the level field before any
 # `@<variant>`): `<level>:<area>` with an integer area enters that sub-area
 # (--skip-to-area), any other level the level itself (--skip-to-level).

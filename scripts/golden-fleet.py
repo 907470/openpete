@@ -10,7 +10,7 @@
     golden-fleet.py calibrate [--hosts a,b] [--dry-run]
     golden-fleet.py run [--game G | --all] [--tier T | --all-tiers]
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
-                    [--expect FILE] [--filter S] [--freecam-filter S]
+                    [--expect FILE] [--filter S] [--freecam-filter S] [--repeat N]
     golden-fleet.py stop <run-id> [--unit U]
     golden-fleet.py move <run-id> --unit U --to <host> [--no-wait]
     golden-fleet.py resume <run-id> --unit U --to <host> [--from DIR]
@@ -191,11 +191,22 @@ EXTRA tile and both members of every EXCEED pair must be in the unit's
 stream directory; a mismatch sets the unit's rc to 1 (`stream mismatch`).
 Stopped and SKIP units and attempts without END are exempt.
 --filter S / --freecam-filter S: each unit captures only the bk2 rows whose
-name contains S and the freecam rows whose level contains the freecam
-substring (an unset one selects all of its corpus); the unit is decided by
-its capture's own verdict (out-of-scope tiles are not missing) instead of
---verdict-only, and the report's compared count must be nonzero instead of
+name contains S and the freecam rows whose level field or tile key
+(`<level>-<pose md5 prefix>`) contains the freecam substring (an unset one
+selects all of its corpus); the unit is decided by its capture's own
+verdict (out-of-scope tiles are not missing) instead of --verdict-only, and
+the report's compared count must be nonzero instead of
 equal to the manifest's rows. A partial run decides nothing for landing.
+--repeat N (with a filter): each unit captures every row its filters select
+N times as repeat copies (check_presentation_golden.sh --repeat=N), queued
+on its one host at the host's slots and LP_NUM_THREADS, and compares every
+copy's tiles and identity pairs against the original row's blessed digest
+and identity baseline row; a matching copy is SAME, not EXTRA. The unit's
+report must carry `repeat: N` and repeat-compared at least repeat-legs (N x
+the selected rows' blessed tiles plus one identity pair per canon tile),
+else the unit is refused (engagement); the unit's result line names each
+row's divergent count of N x legs. The repeat count is recorded in
+run-args.json, so `resume` repeats the same N.
 --expect FILE: `<unit> <substring> <reason>` lines (unit = job name); a
 unit not in the run or a substring matching no blessed tile and no manifest
 row refuses the run (2). Streamed moves are tagged EXPECTED or UNEXPECTED;
@@ -274,7 +285,8 @@ coordinator for the same run id (log coordinator-resume-<n>.log in the run
 directory; the done marker becomes done.<n> and the stop request
 stop-request.<n>), which:
   1. takes the unit filters from --filter/--freecam-filter, else the run's
-     run-args.json (written at run start), else none; reads the saved rows
+     run-args.json (written at run start), else none, and the run's --repeat
+     from run-args.json; reads the saved rows
      from --from DIR (the unit directory itself, or a
      directory holding u-<unit>/) or <run dir>/kept, the fields file
      (ship/fields-<game>.txt, else the unit's fields.txt) and
@@ -2615,6 +2627,10 @@ class Coordinator:
         """True when run --filter or --freecam-filter scopes the units to part of their corpus."""
         return bool(getattr(self.a, "filter", None) or getattr(self.a, "freecam_filter", None))
 
+    def repeat(self):
+        """Return run --repeat's copy count, 0 without it."""
+        return int(getattr(self.a, "repeat", None) or 0)
+
     def deadline(self, job, hs):
         """Return a job's deadline in seconds on a host (first-run rule from the size table)."""
         if job.kind == "canary":
@@ -2637,6 +2653,8 @@ class Coordinator:
         filters = f"--filter={canary[0]} --freecam-filter={canary[1]}" if canary else ""
         if job.kind == "unit" and self.filtered():
             filters = f"--filter={self.a.filter or ''} --freecam-filter={self.a.freecam_filter or ''}"
+            if self.repeat():
+                filters += f" --repeat={self.repeat()}"
         poke = self.poke_for(self.poke, job, hs)
         env = {"RUN_ID": self.run_id, "JOB": job.name, "KIND": job.kind, "GAME": game,
                "TIER": tier, "RUN_DIR": hs.run_dir, "UNIT_DIR": att.unit_dir,
@@ -3292,8 +3310,8 @@ class Coordinator:
             return "undecodable"
         if self.archive is None:
             self.archive = self.pb.Archive()
-        return diff.divergent_line(name, rows[name], path, dig, tdir, self.archive, heat_dir,
-                                   job.game, sizes)
+        return diff.divergent_line(name, rows[self.pb.copy_origin(name)[0]], path, dig, tdir,
+                                   self.archive, heat_dir, job.game, sizes)
 
     def check_stream(self, job, report_path):
         """Unit-end check: the accepted attempt's stream equals its verdict report and its moved tiles are in the stream directory; a mismatch sets rc 1.
@@ -3490,6 +3508,11 @@ class Coordinator:
         job.result["census"] = census
         job.result["imported_rows"] = int(f.get("imported-rows") or 0)
         print(f"[fleet] {job.name}: census {census}")
+        if self.repeat() and job.kind == "unit":
+            rows = [repeat_row_text(r) for r in report["repeat-rows"]]
+            job.result["repeat"] = "; ".join(rows) or "no repeat-row line"
+            for r in rows:
+                print(f"[fleet] {job.name}: repeat {r}")
 
     def canary_dir(self, host_name):
         """Return the local directory one host's canary tiles are pulled into."""
@@ -3516,6 +3539,8 @@ class Coordinator:
         if self.filtered():
             if not compared.isdigit() or int(compared) == 0:
                 errs.append(f"census compared={compared or 'absent'}: the filtered unit compared nothing")
+            if self.repeat():
+                errs += repeat_refusals(report, self.repeat())
         elif compared != str(rows):
             errs.append(f"census compared={compared or 'absent'} differs from the local "
                         f"blessed row count {rows}")
@@ -3717,8 +3742,8 @@ class Coordinator:
         return rc
 
     def write_run_args(self):
-        """Record the unit filters and pull mode in <local run dir>/run-args.json, which `resume` reads."""
-        args = {k: getattr(self.a, k, None) for k in ("filter", "freecam_filter", "pull")}
+        """Record the unit filters, repeat count and pull mode in <local run dir>/run-args.json, which `resume` reads."""
+        args = {k: getattr(self.a, k, None) for k in ("filter", "freecam_filter", "pull", "repeat")}
         with open(os.path.join(self.local_run_dir, "run-args.json.tmp"), "w") as f:
             json.dump(args, f)
         os.replace(os.path.join(self.local_run_dir, "run-args.json.tmp"),
@@ -3763,6 +3788,8 @@ class Coordinator:
             moved = "".join(f"; moved {a} -> {b}" for a, b in j.moved)
             print(f"[fleet] result {j.name}: {verdict} on {r['host']} (rc {r['rc']}, "
                   f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']}{census}{moved})")
+            if r.get("repeat"):
+                print(f"[fleet] result {j.name}: repeat {r['repeat']}")
             if r.get("stream_mismatch"):
                 print(f"[fleet] result {j.name}: stream mismatch: {r['stream_mismatch']}")
         if self.expect:
@@ -3792,7 +3819,7 @@ class Resumer(Coordinator):
                 rec = json.load(f)
         except (OSError, ValueError):
             rec = {}
-        for k in ("filter", "freecam_filter"):
+        for k in ("filter", "freecam_filter", "repeat"):
             if getattr(a, k, None) is None:
                 setattr(a, k, rec.get(k))
         a.hosts, a.no_local, a.expect = a.to, False, None
@@ -4210,9 +4237,35 @@ def first_hex(value):
     return tok if re.fullmatch(r"[0-9a-f]{64}", tok) else ""
 
 
+def repeat_row_text(line):
+    """Return a report `repeat-row:` value as `<key>: D divergent of T legs (C compared)`."""
+    words = line.split()
+    kv = dict(w.split("=", 1) for w in words[1:] if "=" in w)
+    extra = f", copies outside 1..N: {kv['outside']}" if "outside" in kv else ""
+    return (f"{words[0] if words else '?'}: {kv.get('divergent', '?')} divergent of "
+            f"{kv.get('of', '?')} legs ({kv.get('compared', '?')} compared{extra})")
+
+
+def repeat_refusals(report, n):
+    """Return the refusals of a repeat unit's report: its repeat count, and fewer tiles compared than N x legs (engagement)."""
+    f = report["fields"]
+    errs = []
+    if f.get("repeat") != str(n):
+        errs.append(f"report repeat {f.get('repeat') or 'absent'} differs from run --repeat {n}")
+    legs, cmp_ = f.get("repeat-legs", ""), f.get("repeat-compared", "")
+    if not (legs.isdigit() and cmp_.isdigit()) or int(legs) == 0:
+        errs.append(f"repeat-legs {legs or 'absent'}, repeat-compared {cmp_ or 'absent'}: "
+                    "the repeat compared nothing")
+    elif int(cmp_) < int(legs):
+        errs.append(f"repeat compared {cmp_} of {legs} legs (N x legs): the repeat did not engage every copy")
+    if not report["repeat-rows"]:
+        errs.append("no repeat-row line in the report")
+    return errs
+
+
 def parse_report(path):
-    """Parse verdict-report.txt into fields, divergent and extra tiles and identity-pair members."""
-    out = {"fields": {}, "divergent": [], "extra": [], "identity": []}
+    """Parse verdict-report.txt into fields, divergent and extra tiles, identity-pair members and repeat-row lines."""
+    out = {"fields": {}, "divergent": [], "extra": [], "identity": [], "repeat-rows": []}
     try:
         text = open(path, encoding="utf-8").read()
     except OSError:
@@ -4223,6 +4276,8 @@ def parse_report(path):
             out[key].append(val.split()[0])
         elif key.startswith("identity-"):
             out["identity"] += [t for t in val.split()[:2] if t.endswith(".png")]
+        elif key == "repeat-row":
+            out["repeat-rows"].append(val.strip())
         elif key:
             out["fields"].setdefault(key, val.strip())
     out["identity"] = sorted(set(out["identity"]))
@@ -4825,6 +4880,8 @@ def cmd_run(a):
             raise FleetError("expected-moves file refused: " + "; ".join(errs), 2)
     if any(re.search(r"\s", f or "") for f in (a.filter, a.freecam_filter)):
         raise FleetError("--filter and --freecam-filter take a substring without whitespace", 2)
+    if a.repeat is not None and (a.repeat < 1 or not (a.filter or a.freecam_filter)):
+        raise FleetError("--repeat takes N >= 1 and needs --filter or --freecam-filter", 2)
     a.run_id = new_run_id()
     run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
     os.makedirs(run_dir)
@@ -4889,7 +4946,10 @@ def main(argv=None):
     p.add_argument("--pull", choices=("divergent", "all"), default="divergent")
     p.add_argument("--filter", help="bk2-name substring each unit captures (with "
                    "--freecam-filter: a partial run, decided by the capture's own verdict)")
-    p.add_argument("--freecam-filter", help="freecam level substring each unit captures")
+    p.add_argument("--freecam-filter", help="freecam level or tile-key substring each unit captures")
+    p.add_argument("--repeat", type=int, metavar="N",
+                   help="capture each filtered row N times concurrently on its host and "
+                        "compare every copy against the blessed row (needs a filter)")
     p.add_argument("--wait", action="store_true", help="follow the detached run to its end")
     p.add_argument("--expect", metavar="FILE",
                    help="expected-moves file: `<unit> <tile substring> <reason>` per line")

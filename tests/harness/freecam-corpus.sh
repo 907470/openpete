@@ -34,7 +34,9 @@
 #   tests/harness/freecam-corpus.sh <off|on> <outdir> [level-filter] [--game SLUG]
 #     off|on        OPENPETE_DEPTH_AFFINE for the run (default off = HEAD behavior)
 #     outdir        where the -vk PNGs are written (created)
-#     level-filter  substring; only rows whose level contains it are run (default: all)
+#     level-filter  substring; only rows whose level field or tile key
+#                   (`<level>-<pose md5 prefix>`) contains it are run
+#                   (default: all), so a key selects one pose of a level
 #     --game        game slug (default spyro-1); selects binary, disc and
 #                   manifest through scripts/presentation-game.sh
 #
@@ -50,6 +52,9 @@
 # finishes is stamped.
 #
 # Environment:
+#   PRESENTATION_REPEAT       N: capture each selected row N times as repeat
+#                             copies (scripts/presentation-game.sh, repeat
+#                             copies), the original row not at all
 #   PRESENTATION_LEG_TIMEOUT  seconds one capture process may run (default
 #                             300); the binary's own --max-runtime-seconds is
 #                             20 less, as in presentation-corpus.sh.
@@ -73,6 +78,7 @@ source scripts/presentation-game.sh
 # shellcheck source=scripts/corpus-resume.sh
 source scripts/corpus-resume.sh
 pg_cap_settings
+pg_repeat
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -179,18 +185,21 @@ while IFS= read -r row; do
   start="$(echo "$start" | tr -d ' \t')"; start="${start:-$START_DEFAULT}"
   launch="$(echo "${launch:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [[ -z "$pose" ]] && { echo "  SKIP row: no pose for level '$level'"; continue; }
-  [[ -n "$FILTER" && "$name" != *"$FILTER"* ]] && continue
+  row_key="$(pg_pose_slug "$name" "$pose")"
+  [[ -n "$FILTER" && "$name" != *"$FILTER"* && "$row_key" != *"$FILTER"* ]] && continue
   local_istart=$((start + 50))
   flim=$((local_istart + 51))
-  slug="$(pg_pose_slug "$name" "$pose")"
-  if rs_imported freecam "$slug"; then
-    imported=$((imported+1)); echo "[$slug] imported from the previous attempt"; continue; fi
-  ran=$((ran+1))
-  echo "[$slug] level=$level start=$start pose='$pose'${launch:+  launch=$launch}"
-  for lod in $CAP_LODS; do
-    cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
-    cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" "$launch" "$row"
-    cj_run run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
+  mapfile -t row_keys < <(pg_copy_keys "$row_key")
+  for slug in "${row_keys[@]}"; do
+    if rs_imported freecam "$slug"; then
+      imported=$((imported+1)); echo "[$slug] imported from the previous attempt"; continue; fi
+    ran=$((ran+1))
+    echo "[$slug] level=$level start=$start pose='$pose'${launch:+  launch=$launch}"
+    for lod in $CAP_LODS; do
+      cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
+      cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" "$launch" "$row"
+      cj_run run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
+    done
   done
 done < "$MANIFEST"
 cj_wait || fail=1

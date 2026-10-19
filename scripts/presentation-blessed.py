@@ -93,8 +93,10 @@ Subcommands:
                                   print the header's comparison surface beside
                                   a candidate's (or this process's) environment
   census <game> [--tier T] [--candidate DIR]
-                                  print `rows=N matched=M`: manifest rows, and
-                                  candidate tiles naming a row
+                                  print `rows=N matched=M copies=C`: manifest
+                                  rows, candidate tiles naming a row, and
+                                  repeat copies (`<key>~r<k>__...`) whose
+                                  original names a row
   promote <game> [--tier T] <candidate> [--all | <tile-filter>...]
           [--exclude SUBSTR]... [--create] [--environment-accept REASON]
                                   rewrite the rows of changed candidate tiles
@@ -304,13 +306,45 @@ def all_reference_manifest_paths():
     return [p for g in GAMES for p, _, _ in reference_manifests(g)]
 
 
+# A repeat copy's tile key: the row's key followed by `~r<k>`, k counting
+# from 1 (the corpus harnesses under PRESENTATION_REPEAT). A copy is compared
+# against its original row and is never a row itself.
+COPY_RE = re.compile(r"^(?P<key>(?:(?!__).)+?)~r(?P<k>[0-9]+)(?P<rest>__.*)$")
+
+
+def copy_origin(name):
+    """The original tile name and copy number of a repeat copy's tile,
+    or (name, None) when name is not a copy."""
+    m = COPY_RE.match(name)
+    if not m:
+        return name, None
+    return m.group("key") + m.group("rest"), int(m.group("k"))
+
+
+def tile_key(name):
+    """A tile's row key: the name before its first `__`."""
+    return name.split("__", 1)[0]
+
+
 def list_tiles(d):
     """Golden tiles of a directory: every `-vk.png` except the
-    identity leg's `__ident__` tiles, which are never golden."""
+    identity leg's `__ident__` tiles, which are never golden, and repeat
+    copies, which name no row (list_copies)."""
     if not os.path.isdir(d):
         return []
     return sorted(f for f in os.listdir(d)
-                  if f.endswith("-vk.png") and "__ident__" not in f)
+                  if f.endswith("-vk.png") and "__ident__" not in f
+                  and copy_origin(f)[1] is None)
+
+
+def list_copies(d, ident=False):
+    """Repeat copy tiles of a directory: the golden legs', or with ident
+    the identity leg's."""
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d)
+                  if f.endswith("-vk.png") and ("__ident__" in f) == ident
+                  and copy_origin(f)[1] is not None)
 
 
 # ---- manifest read/write ---------------------------------------------------
@@ -1599,8 +1633,8 @@ def cmd_environment(a):
 
 
 def cmd_census(a):
-    """Print a manifest's row count and how many candidate tiles name a
-    row: `rows=N matched=M`."""
+    """Print a manifest's row count, how many candidate tiles name a row
+    and how many repeat copies name one: `rows=N matched=M copies=C`."""
     try:
         m = load_manifest(a.game, a.tier)
     except (OSError, ValueError) as e:
@@ -1608,7 +1642,9 @@ def cmd_census(a):
         return 1
     names = {r["tile"] for r in m.rows}
     tiles = set(list_tiles(a.candidate)) if a.candidate else set()
-    print("rows=%d matched=%d" % (len(names), len(tiles & names)))
+    copies = list_copies(a.candidate) if a.candidate else []
+    ncopy = sum(1 for c in copies if copy_origin(c)[0] in names)
+    print("rows=%d matched=%d copies=%d" % (len(names), len(tiles & names), ncopy))
     return 0
 
 

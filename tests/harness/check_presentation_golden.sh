@@ -16,15 +16,29 @@
 # Usage:
 #   tests/harness/check_presentation_golden.sh [--build-dir=DIR] [--filter=SUBSTR]
 #                                        [--freecam-filter=SUBSTR] [--bless]
-#                                        [--game SLUG]
+#                                        [--repeat=N] [--game SLUG]
 #   tests/harness/check_presentation_golden.sh --verdict-only DIR [--game SLUG]
 #   tests/harness/check_presentation_golden.sh --materialize-ref [--game SLUG]
 #                                        [--tier T] [--at REV] <tile>...
 #     --filter          bk2-name substring (default all bk2s)
-#     --freecam-filter  freecam level substring (default all poses)
+#     --freecam-filter  freecam level or tile-key substring (default all poses)
 #                       Either filter scopes the run to part of the corpus: the
 #                       golden tiles it does not capture are then reported as
 #                       out of scope instead of missing.
+#     --repeat=N        capture each row the filters select N times as repeat
+#                       copies (PRESENTATION_REPEAT, scripts/presentation-game.sh)
+#                       and compare every copy's tiles and identity pairs
+#                       against the original row's blessed digest and baseline
+#                       row. Needs --filter or --freecam-filter; takes no
+#                       --bless. The report adds `repeat: N`, one
+#                       `repeat-row: <key> divergent=D of=T compared=C copies=N`
+#                       per repeated row and the totals repeat-divergent,
+#                       repeat-legs and repeat-compared; the run fails when a
+#                       row's compared count is under N x its legs (its blessed
+#                       tiles plus one identity pair per canon tile) or any
+#                       copy diverged. Each copy is its own process at the
+#                       run's CORPUS_JOBS, so a tile that differs between
+#                       processes diverges in some copies only.
 #     --bless           (re)capture, promote --all (rewrite the changed rows of
 #                       blessed.tsv, file the tiles into the store) and
 #                       re-baseline the identity leg, instead of gating
@@ -144,6 +158,7 @@ fi
 FILTER=""           # bk2-name substring; default = the whole fanned-out corpus
 FREECAM_FILTER=""   # level substring for the freecam corpus; default = all poses
 BLESS=0
+REPEAT=""          # --repeat=N: repeat copies per selected row
 BUILD_ARG=""
 ENV_ACCEPT=""
 VERDICT_ONLY=""     # candidate directory decided without a capture
@@ -154,6 +169,7 @@ for a in "$@"; do
   --bless) BLESS=1;;
   --filter=*) FILTER="${a#--filter=}";;
   --freecam-filter=*) FREECAM_FILTER="${a#--freecam-filter=}";;
+  --repeat=*) REPEAT="${a#--repeat=}";;
   --build-dir=*) BUILD_ARG="$a";;
   --environment-accept=*) ENV_ACCEPT="${a#--environment-accept=}";;
   --verdict-only) next_verdict=1;;
@@ -162,9 +178,17 @@ esac; done
 if (( next_verdict )) || [[ "$*" == *--verdict-only* && -z "$VERDICT_ONLY" ]]; then
   echo "[presentation-golden] FAIL: --verdict-only takes a candidate directory"; exit 1
 fi
-if [[ -n "$VERDICT_ONLY" && ( $BLESS -eq 1 || -n "$FILTER" || -n "$FREECAM_FILTER" ) ]]; then
-  echo "[presentation-golden] FAIL: --verdict-only takes no --bless, --filter or --freecam-filter"; exit 1
+if [[ -n "$VERDICT_ONLY" && ( $BLESS -eq 1 || -n "$FILTER" || -n "$FREECAM_FILTER" || -n "$REPEAT" ) ]]; then
+  echo "[presentation-golden] FAIL: --verdict-only takes no --bless, --filter, --freecam-filter or --repeat"; exit 1
 fi
+if [[ -n "$REPEAT" ]]; then
+  if ! [[ "$REPEAT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[presentation-golden] FAIL: --repeat takes a positive integer (got '$REPEAT')"; exit 1; fi
+  if [[ $BLESS -eq 1 || ( -z "$FILTER" && -z "$FREECAM_FILTER" ) ]]; then
+    echo "[presentation-golden] FAIL: --repeat needs --filter or --freecam-filter and takes no --bless"; exit 1; fi
+fi
+export PRESENTATION_REPEAT="$REPEAT"
+pg_repeat
 GAME="$(pg_parse_game "$@")" || exit 64
 BUILD_DIR="build/linux-release"
 [[ -n "$BUILD_ARG" ]] && BUILD_DIR="${BUILD_ARG#--build-dir=}"
@@ -220,7 +244,7 @@ REPORT_NAME="verdict-report.txt"
 # produced nothing proves nothing about the renderer, so it is refused here;
 # a capture no row matches is refused by the diff. Sets captured, compared,
 # goldrows.
-captured=0 imported=0 imported_rows=0 compared=0 goldrows=0 irc="not run" crc="not run" drc="not run"
+captured=0 imported=0 imported_rows=0 compared=0 copies=0 goldrows=0 irc="not run" crc="not run" drc="not run"
 vr_census() {
   local f census total=0
   for f in "$OUT"/*-vk.png; do [[ -e "$f" ]] && total=$((total+1)); done
@@ -230,8 +254,11 @@ vr_census() {
   census="$(python3 scripts/presentation-blessed.py census "$GAME" --tier "$PG_TIER" --candidate "$OUT")" \
     || { echo "[presentation-golden] FAIL: $PG_BLESSED unreadable (see above)"; vr_finish 1; }
   goldrows="${census#rows=}"; goldrows="${goldrows%% *}"
-  compared="${census##*matched=}"
-  echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured imported=$imported imported-rows=$imported_rows compared=$compared golden=$goldrows"
+  local matched="${census##*matched=}"; matched="${matched%% *}"
+  copies="${census##*copies=}"
+  # A repeat copy's tile is compared against its original's row.
+  compared=$((matched + copies))
+  echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured imported=$imported imported-rows=$imported_rows compared=$compared golden=$goldrows$( (( PG_REPEAT )) && echo " copies=$copies")"
   if [[ $total -eq 0 ]]; then
     echo "[presentation-golden] VACUOUS: $GAME captured 0 rows - nothing was rendered,"
     echo "  so nothing was verified. Populate $PG_CORPUS_MANIFEST"
@@ -294,6 +321,18 @@ vr_finish() {
     echo "identity-rc: $irc"
     echo "diff-rc: $drc"
     echo "docs-pairs-rc: ${prc:-}"
+    if (( PG_REPEAT )); then
+      echo "repeat: $PG_REPEAT"
+      [[ -f "$OUT/verdict-diff.log" ]] && awk '
+        $1 == "REPEAT" { print "repeat-row: " $2 " " substr($0, index($0, $3)) }
+        $1 == "[presentation-diff]" && $2 == "repeat" {
+          for (i = 1; i <= NF; i++) {
+            if ($(i + 1) == "divergent") d = $i
+            if ($(i + 1) == "legs,") l = $i
+            if ($(i + 1) == "compared") c = $i
+          }
+          print "repeat-divergent: " d; print "repeat-legs: " l; print "repeat-compared: " c }' "$OUT/verdict-diff.log"
+    fi
     pg_crash_list "crashed-leg: " "$OUT"
     [[ -f "$OUT/verdict-diff.log" ]] && awk '
       $1 == "DIVERGE" { print "divergent: " $2 " " substr($0, index($0, $3)) }
@@ -332,9 +371,10 @@ vr_verdict() {
   # tiles it did not capture are out of scope rather than missing. An
   # unfiltered run and --verdict-only keep the strict shape check: every
   # golden tile must be captured.
-  local -a subset=()
+  local -a subset=() repeat=()
   [[ -n "$FILTER" || -n "$FREECAM_FILTER" ]] && subset=(--expect-subset)
-  python3 tests/harness/presentation-corpus-diff.py "$OUT" --game "$GAME" --manifest "$PG_BLESSED" --diff-out "$OUT/diff" "${subset[@]}" \
+  (( PG_REPEAT )) && repeat=(--repeat "$PG_REPEAT" --baseline "$PG_IDENT_BASELINE")
+  python3 tests/harness/presentation-corpus-diff.py "$OUT" --game "$GAME" --manifest "$PG_BLESSED" --diff-out "$OUT/diff" "${subset[@]}" "${repeat[@]}" \
     | tee "$OUT/verdict-diff.log"
   drc=${PIPESTATUS[0]}
   if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; vr_finish 64; fi
