@@ -178,7 +178,11 @@ static const row_text_t k_text[] = {
                                     "it against the glow row to see the ident key split one "
                                     "channel: the quads recolour, the glow ring stays stock." },
   /* 11 */ { "Particle glows",  "Glow rings around collectables." },
-  /* 12 */ { "Particle sparkles", "Gem sparkle flares." },
+  /* 12 */ { "Particle sparkles - known gap",
+                                "Known gap on Spyro 1: this row keys the flare kind, the "
+                                "four-point stars of the glint routine, and Spyro 1 draws "
+                                "none. Its sparkles are cross lines, the sparkle-line kind, "
+                                "which no row keys, so this row paints nothing." },
   /* 13 */ { "Dragon star",     "The rescue star - only during a dragon cutscene." },
   /* 14 */ { "Tracers",         "Beam streaks (Gnasty's zaps)." },
   /* 15 */ { "Portal preview (all)",

@@ -777,8 +777,9 @@ fi
 
 delay_rung flame 1800
 
-# Row 12 (sparkle flares) has no pin: no corpus bk2 tried puts a sparkle
-# twinkle on screen at a pinned VBL, so the row is unmeasured here.
+# Row 12 keys the flare kind, which Spyro 1 never draws: its sparkle
+# renderer emits cross lines (the sparkle-line kind) and no four-point star,
+# so the row is a known gap pinned where the renderer builds six crosses.
 gallery_rows_rung "
 0|flame|1800|100000|
 1|flame|1800|100000|
@@ -793,6 +794,7 @@ gallery_rows_rung "
 9|artisans-bridge|1986|0|
 10|flame|1800|50|
 11|stone-hill-gem-spyro-occlusion|1900|3000|
+12|key|2441|0|
 13|stone-hill-lindar-rescue|2120|1500|
 14|gnasty_gnorc_attack|1800|500|
 15|cyclorama-portal|2000|10000|
