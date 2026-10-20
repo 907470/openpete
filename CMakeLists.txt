@@ -365,13 +365,13 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # under the pad-format fixtures, chained load legs, checksum repair,
     # fixture-driven saves, and the api legs, which report SKIP until the
     # engine has the save-record api (tests/harness/check_modsave.sh).
-    # TIMEOUT is twice the measured wall time on an idle machine (590 s).
+    # TIMEOUT is twice the measured wall time (360 s; calibrate 79 s).
     add_test(NAME modsave_harness
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_modsave.sh)
     set_tests_properties(modsave_harness PROPERTIES
         LABELS "slow;mods"
         RESOURCE_LOCK openpete_game
-        TIMEOUT 1200
+        TIMEOUT 720
         SKIP_RETURN_CODE 64
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -382,7 +382,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(modsave_harness_calibrate PROPERTIES
         LABELS "slow;mods"
         RESOURCE_LOCK openpete_game
-        TIMEOUT 600
+        TIMEOUT 160
         SKIP_RETURN_CODE 64
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
