@@ -175,3 +175,6 @@ s2-create-save|1022|82||1022,1104|--card1 {legdir}/card1.mcr --no-card2
 # are sub-tick presents with gems in flight: a spawn or a landing moves every
 # later gem to another slot.
 idol-springs-level-entry|3000|200||3060,3120
+# Cutscene letterbox bars growing 2 PSX rows per tick (VBL 1413-1435): the
+# intermediate leg must show them between the two ticks. Blessed pre-fix.
+riptos_arena-letterbox|1413|2||1415,1425|--skip-to-level riptos_arena
