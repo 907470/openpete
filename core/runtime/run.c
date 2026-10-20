@@ -4549,7 +4549,7 @@ static void host_paused_repaint(const openpete_options_t *opts)
  * for their whole life.
  * @param opts The parsed options.
  * @return The process exit code. */
-static int run_host_loop(const openpete_options_t* opts) {
+static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
     /* Which half of the input seam this thread owns (see run_host_init). */
     const bool split = openpete_split_applies(opts);
 
@@ -6291,10 +6291,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * recorded them keyed off the render functions, not DrawOTag, so the
              * mask stays valid without it. Unconditional (not inside the spine gate
              * below) so the bookkeeping runs every frame even with the spine off. */
-            {
-                openpete_native_commit_fn commit = openpete_native_get_commit();
-                if (commit) commit();
-            }
+            openpete_native_run_commit();
 
             /* Sub-tick spine: lag the CANONICAL native present too. The game's
              * render just built s_scene at the LATEST pose (tick N), but the
@@ -7528,7 +7525,7 @@ static void log_frame_on_exit(void) {
  * run_split_threaded cannot create the worker thread.
  * @param opts The parsed options.
  * @return The init error code, or the host loop's exit code. */
-static int run_recomp_fiber(const openpete_options_t* opts) {
+static int run_recomp_fiber(const openpete_options_t* opts) OP_REQUIRES(sim) {
     int rc = run_host_init(opts);
     if (rc != 0) return rc;
     rc = run_host_loop(opts);

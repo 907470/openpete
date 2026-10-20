@@ -49,6 +49,7 @@
 #include <string.h>
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_thread_roles.h"  /* sim: every static below is the sim role's */
 
 extern void     func_8004EBA8(CPUState* cpu);  /* the real dome renderer */
 extern unsigned openpete_frame;
@@ -59,13 +60,15 @@ typedef struct { float sx, sy; uint32_t rgb; unsigned char sat; } cyc_vert; /* r
 typedef struct { cyc_vert v[3]; int gouraud; } cyc_tri;
 
 #define MAX_TRIS 16384
-static cyc_tri s_native[MAX_TRIS]; static int s_native_n;
-static cyc_tri s_gte[MAX_TRIS];    static int s_gte_n;
+static cyc_tri s_native[MAX_TRIS] OP_GUARDED_BY(sim); /* thread-roles: built and pushed on sim */
+static int     s_native_n OP_GUARDED_BY(sim);         /* thread-roles: built and pushed on sim */
+static cyc_tri s_gte[MAX_TRIS] OP_GUARDED_BY(sim);    /* thread-roles: the verify capture, on sim */
+static int     s_gte_n OP_GUARDED_BY(sim);            /* thread-roles: the verify capture, on sim */
 /* cyc_extract_m's sector decode scratch. Its callers (the sky-draw hook, the
  * re-extract and the cross-fade dome) run on the thread that runs the guest,
  * the re-extract while the guest is parked, so they share it as they share
  * s_native; the portal-sky builder decodes into its own. */
-static cyclorama_sector_buf s_cyc_decode;
+static cyclorama_sector_buf s_cyc_decode OP_GUARDED_BY(sim); /* thread-roles: the sky feed's decode scratch */
 
 /* ---- helpers -------------------------------------------------------- */
 
@@ -117,7 +120,7 @@ static double project(const int M[3][3], int vx, int vy, int vz,
  * @param gouraud Nonzero for a gouraud triangle, 0 for flat.
  * @param vw The projection view. */
 static void cyc_push_tri(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
-                         const ngte_view* vw) {
+                         const ngte_view* vw) OP_REQUIRES(sim) {
     const float xlo = vw->xlo, xhi = vw->xhi;
     const double ofx = vw->ofx, ofy = vw->ofy, H = vw->H_eff;
     ngte_cvert v[3] = { a, b, c }; float sx[3], sy[3];
@@ -148,7 +151,7 @@ static void cyc_push_tri(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
  * @param gouraud Nonzero for a gouraud triangle, 0 for flat.
  * @param vw The projection view. */
 static void cyc_clip_emit(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
-                          const ngte_view* vw) {
+                          const ngte_view* vw) OP_REQUIRES(sim) {
     ngte_cvert in[3] = { a, b, c }, out[4]; int nout = 0;
     for (int i = 0; i < 3; i++) {
         ngte_cvert cur = in[i], nxt = in[(i + 1) % 3];
@@ -164,7 +167,7 @@ static void cyc_clip_emit(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
 /* ---- native extraction ---------------------------------------------- */
 static void cyc_extract_m(CPUState* cpu, uint32_t a0,
                           const int Mcull[3][3], const int Mdraw[3][3],
-                          uint32_t fade_rgb, int fade_ir0);
+                          uint32_t fade_rgb, int fade_ir0) OP_REQUIRES(sim);
 /** @brief Read the sky draw's cull and draw matrices from guest RAM and extract the dome into s_native.
  *
  * When the layout's sky draw takes no matrix arguments (cyc.hook_args is 0),
@@ -178,7 +181,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
  * @param fade_rgb Fade target colour (low 24 bits) for the depth cue.
  * @param fade_ir0 Depth-cue factor; 0 leaves colours unfaded. */
 static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
-                        uint32_t fade_rgb, int fade_ir0) {
+                        uint32_t fade_rgb, int fade_ir0) OP_REQUIRES(sim) {
     int Mcull[3][3], Mdraw[3][3];
     if (!game_layout.cyc.hook_args) {
         /* The draw loads the camera's projection matrix for both the cull
@@ -190,8 +193,8 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
     cyc_extract_m(cpu, a0, Mcull, Mdraw, fade_rgb, fade_ir0);
 }
 
-static uint8_t s_cyc_vis[1024];
-static uint32_t s_cyc_vis_n = 0;
+static uint8_t s_cyc_vis[1024] OP_GUARDED_BY(sim);   /* thread-roles: copied after the draw on sim */
+static uint32_t s_cyc_vis_n OP_GUARDED_BY(sim) = 0;  /* thread-roles: copied after the draw on sim */
 /** @brief Copy the sky's per-sector visibility bytes out of guest scratch memory.
  *
  * The bytes (game_layout.cyc.visibility, one per sector, nonzero = drawn) are
@@ -200,7 +203,7 @@ static uint32_t s_cyc_vis_n = 0;
  * The count is the sector count clamped to 1024. A layout without a
  * visibility range leaves the count at 0.
  * @param cpu The guest CPU state, read only. */
-static void cyc_capture_visibility(CPUState* cpu) {
+static void cyc_capture_visibility(CPUState* cpu) OP_REQUIRES(sim) {
     s_cyc_vis_n = 0;
     if (!game_layout.cyc.visibility) return;
     uint32_t n = cpu->read_word(game_layout.cyc.sector_count);
@@ -214,7 +217,7 @@ static void cyc_capture_visibility(CPUState* cpu) {
  * @param c The third corner.
  * @param gouraud Nonzero for a gouraud face.
  * @param ctx The ngte_view the face projects under. */
-static void cyc_emit_cb(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, void* ctx) {
+static void cyc_emit_cb(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, void* ctx) OP_REQUIRES(sim) {
     cyc_clip_emit(a, b, c, gouraud, (const ngte_view*)ctx);
 }
 
@@ -232,7 +235,7 @@ static void cyc_emit_cb(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, v
  * @param ws Nonzero when the view is wider than 4:3.
  * @param sectors Receives the sector addresses.
  * @return The number of sectors written. */
-static uint32_t cyc_sector_list(CPUState* cpu, uint32_t a0, int ws, uint32_t sectors[1024]) {
+static uint32_t cyc_sector_list(CPUState* cpu, uint32_t a0, int ws, uint32_t sectors[1024]) OP_REQUIRES_SHARED(sim) {
     uint32_t sectorCount = cpu->read_word(game_layout.cyc.sector_count);
     const uint32_t sectorsBase = cpu->read_word(game_layout.cyc.sectors);
     const uint32_t occGroups   = cpu->read_word(game_layout.cyc.occ_groups);
@@ -273,7 +276,7 @@ static uint32_t cyc_sector_list(CPUState* cpu, uint32_t a0, int ws, uint32_t sec
  * @param fade_ir0 Depth-cue factor; 0 leaves colours unfaded. */
 static void cyc_extract_m(CPUState* cpu, uint32_t a0,
                           const int Mcull[3][3], const int Mdraw[3][3],
-                          uint32_t fade_rgb, int fade_ir0) {
+                          uint32_t fade_rgb, int fade_ir0) OP_REQUIRES(sim) {
     s_native_n = 0;
     /* One projection view for this pass: offsets, H and the Hor+ bounds. The
      * cull/draw matrices come from the hook's a1/a2, not the view. */
@@ -405,7 +408,7 @@ static void cyc_sector_strips(const cyclorama_src* s, uint32_t faceBase, uint32_
 
 void cyclorama_decode_sector(cyclorama_sector_buf* D, const cyclorama_src* src, uint32_t S,
                              const double M[3][3], double scale, const cyclorama_fade fade[2],
-                             cyclorama_tri_fn fn, void* ctx) {
+                             cyclorama_tri_fn fn OP_SYNC_FN, void* ctx) {
     const uint32_t h8 = cyc_rd32(src, S + 0x08), hC = cyc_rd32(src, S + 0x0C);
     const uint32_t hF = cyc_rd32(src, S + 0x10);
     const int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16);
@@ -475,7 +478,7 @@ static void unpack_xy(uint32_t xy, float* x, float* y) {
  * @param cpu The guest CPU state, read only.
  * @param start Start of the prim interval.
  * @param end End of the prim interval. */
-static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
+static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) OP_REQUIRES(sim) {
     s_gte_n = 0;
     uint32_t p = start;
     int guard = 0;
@@ -542,10 +545,10 @@ static int onscreen(const cyc_vert* v) {
  * X error, the floor-match rate within one pixel, and the worst vertex.
  * Off-screen or saturated vertices are counted separately. Pairing is
  * quadratic in the triangle counts. */
-static void compare_and_report(void) {
+static void compare_and_report(void) OP_REQUIRES(sim) {
     /* Match gte->native greedily by the summed per-vertex distance; the
      * nearest unused native triangle wins. */
-    static int used[MAX_TRIS];
+    static int used[MAX_TRIS] OP_GUARDED_BY(sim);   /* thread-roles: the verify report runs on sim */
     memset(used, 0, sizeof(int) * (s_native_n > 0 ? s_native_n : 1));
     int matched = 0, color_exact = 0, fg_disagree = 0;
     /* on-screen, non-saturated verts: the visible result, expected ~exact */
@@ -652,7 +655,8 @@ static void hex_dump(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
  *
  * @return 1 when the float-versus-GTE sky comparison is armed, else 0. */
 static int cyc_verify_enabled(void) {
-    static int s = -1;
+    OP_ROLE_ASSERT(sim);
+    static int s OP_GUARDED_BY(sim) = -1;   /* thread-roles: read by the hook bracket on sim */
     if (s < 0) { const char* v = getenv("OPENPETE_CYC_VERIFY"); s = (v && v[0] && v[0] != '0') ? 1 : 0; }
     return s;
 }
@@ -660,8 +664,9 @@ static int cyc_verify_enabled(void) {
  *
  * Read once from OPENPETE_CYC_VERIFY_FRAME with atoi (default 2000) and cached.
  * @return The VBL number. */
-static unsigned cyc_verify_frame(void) {
-    static unsigned f = 0; static int init = 0;
+static unsigned cyc_verify_frame(void) OP_REQUIRES(sim) {
+    static unsigned f OP_GUARDED_BY(sim) = 0;  /* thread-roles: read by the sky-draw hook on sim */
+    static int init OP_GUARDED_BY(sim) = 0;    /* thread-roles: read by the sky-draw hook on sim */
     if (!init) { const char* v = getenv("OPENPETE_CYC_VERIFY_FRAME"); f = v ? (unsigned)atoi(v) : 2000u; init = 1; }
     return f;
 }
@@ -677,8 +682,8 @@ static unsigned cyc_verify_frame(void) {
  * go to the SKY group at the far view Z, untextured and opaque, tagged
  * OPENPETE_TAG_SKY(0). The first non-empty push logs once.
  * @param cpu The guest CPU state, read only. */
-static void push_scene(CPUState* cpu) {
-    static int s_logged = 0;
+static void push_scene(CPUState* cpu) OP_REQUIRES(sim) {
+    static int s_logged OP_GUARDED_BY(sim) = 0;   /* thread-roles: the push runs on sim */
     if (!s_logged && s_native_n > 0) {
         s_logged = 1;
         fprintf(stderr, "[cyc-native] feeding panel 0: %d cyclorama tris from gamestate (frame %u)\n",
@@ -729,7 +734,9 @@ static void push_scene(CPUState* cpu) {
 /* Camera-matrix args from the last real render (cyc_extract reads the matrices
  * at a1/a2; they persist in RAM across the tick). Reused by the sub-tick
  * re-extract, which has no register context. */
-static uint32_t s_cyc_a0 = 0xFFFFFFFFu, s_cyc_a1 = 0, s_cyc_a2 = 0;
+static uint32_t s_cyc_a0 OP_GUARDED_BY(sim) = 0xFFFFFFFFu; /* thread-roles: written by cyc_pre on sim */
+static uint32_t s_cyc_a1 OP_GUARDED_BY(sim) = 0;           /* thread-roles: written by cyc_pre on sim */
+static uint32_t s_cyc_a2 OP_GUARDED_BY(sim) = 0;           /* thread-roles: written by cyc_pre on sim */
 
 /* The two matrices themselves, snapshotted prev+curr per canonical tick. In
  * gameplay a1/a2 are g_Camera's own view/projection fields, which the spine's
@@ -743,10 +750,13 @@ static uint32_t s_cyc_a0 = 0xFFFFFFFFu, s_cyc_a1 = 0, s_cyc_a2 = 0;
  * camera motion and spin are both baked into the two endpoints, so both
  * interpolate with no extrapolation. prev is valid only when the preceding
  * canonical tick also drew the dome from the same kind of source. */
-static int      s_cyc_prev[2][3][3], s_cyc_curr[2][3][3];
-static int      s_cyc_prev_valid = 0, s_cyc_curr_valid = 0;
-static int      s_cyc_prev_cam = 0,   s_cyc_curr_cam = 0;   /* source = g_Camera fields */
-static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr capture */
+static int      s_cyc_prev[2][3][3] OP_GUARDED_BY(sim);     /* thread-roles: rolled by cyc_pre on sim */
+static int      s_cyc_curr[2][3][3] OP_GUARDED_BY(sim);     /* thread-roles: rolled by cyc_pre on sim */
+static int      s_cyc_prev_valid OP_GUARDED_BY(sim) = 0;    /* thread-roles: rolled by cyc_pre on sim */
+static int      s_cyc_curr_valid OP_GUARDED_BY(sim) = 0;    /* thread-roles: rolled by cyc_pre on sim */
+static int      s_cyc_prev_cam OP_GUARDED_BY(sim) = 0;      /* source = g_Camera fields; thread-roles: rolled by cyc_pre on sim */
+static int      s_cyc_curr_cam OP_GUARDED_BY(sim) = 0;      /* thread-roles: rolled by cyc_pre on sim */
+static unsigned s_cyc_curr_frame OP_GUARDED_BY(sim) = 0xFFFFFFFFu; /* VBL of the curr capture; thread-roles: rolled by cyc_pre on sim */
 
 /** @brief Capture the sky draw's argument registers and roll the prev/curr matrix pair before the draw clobbers them.
  *
@@ -758,6 +768,7 @@ static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr c
  * @param feed Unused.
  * @param verify Unused. */
 static void cyc_pre(CPUState* cpu, int feed, int verify) {
+    OP_ROLE_ASSERT(sim);
     (void)feed; (void)verify;
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
     /* Normalize before the capture: where the sky draw takes no matrix
@@ -786,7 +797,7 @@ static void cyc_pre(CPUState* cpu, int feed, int verify) {
     s_cyc_curr_valid = 1;
 }
 
-static hook_bracket_state s_cyc_hb;
+static hook_bracket_state s_cyc_hb OP_GUARDED_BY(sim);   /* thread-roles: the sky-draw bracket's latch, on sim */
 static const hook_bracket_desc k_cyc_bracket = {
     .path = RP_CYCLORAMA, .prof_tag = "cyclorama.srend",
     .verify_enabled = cyc_verify_enabled, .pre = cyc_pre,
@@ -805,6 +816,7 @@ static const hook_bracket_desc k_cyc_bracket = {
  * @return 0 when the bracket declined to take over, else the bracket's end
  *         result (the body has already run). */
 static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t start, end; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_cyc_bracket, &start, &end, &feed, &verify))
         return 0;
@@ -819,8 +831,8 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
                                              * dome tris gated inside on RP_CYCLORAMA */
 
     if (verify) {
-        static int s_dumped = 0;
-        static int s_reports = 0;
+        static int s_dumped OP_GUARDED_BY(sim) = 0;    /* thread-roles: the hook runs on sim */
+        static int s_reports OP_GUARDED_BY(sim) = 0;   /* thread-roles: the hook runs on sim */
         int target = (openpete_frame >= cyc_verify_frame() && s_reports < 16);
         if (target && !s_dumped) { hex_dump(cpu, a0, a1, a2, start, end); s_dumped = 1; }
         if (target) {
@@ -833,7 +845,7 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick sky re-extract; documented at the declaration in cyclorama.h. */
-void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) {
+void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) OP_REQUIRES(sim) {
     /* Only replay the sky dome if the canonical frame drew it. In cyclorama-less
      * states (e.g. the black level-name flyby) the saved matrices are stale; the
      * draw-env clear (black) shows through instead. The sky-having transitions
@@ -878,7 +890,7 @@ void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) {
 }
 
 /* ---- the cross-fade dome (func_8004F000); documented in cyclorama.h ---- */
-int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int max) {
+int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int max) OP_REQUIRES(sim) {
     cyc_extract(cpu, 0xFFFFFFFFu, game_layout.cam.view_matrix, game_layout.cam.proj_matrix,
                 cpu->read_word(game_layout.fog.far_colour) & 0xFFFFFFu,
                 (int)cpu->read_word(game_layout.fog.factor));
@@ -897,12 +909,12 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
 /* The env a repeat-site row set for the canonical present in flight
  * (isbg, r0, g0, b0); valid from cyclorama_native_repeat_resolve to the
  * next one. */
-static uint8_t s_site_env[4];
-static int     s_site_env_valid;
+static uint8_t s_site_env[4] OP_GUARDED_BY(sim);     /* thread-roles: resolved by the commit on sim */
+static int     s_site_env_valid OP_GUARDED_BY(sim);  /* thread-roles: resolved by the commit on sim */
 /* The env the last canonical present cleared under (isbg, r0, g0, b0), kept
  * for a hold row; valid after the first commit that named one. */
-static uint8_t s_presented_env[4];
-static int     s_presented_env_valid;
+static uint8_t s_presented_env[4] OP_GUARDED_BY(sim);    /* thread-roles: latched by the commit on sim */
+static int     s_presented_env_valid OP_GUARDED_BY(sim); /* thread-roles: latched by the commit on sim */
 
 /** @brief Return the PSYQ DRAWENV in the draw buffer g_CurDB points at, read through the sub-tick view.
  *
@@ -946,7 +958,7 @@ static int repeat_site_mode(void) {
     return REPEAT_SITE_NONE;
 }
 
-void cyclorama_native_repeat_resolve(void) {
+void cyclorama_native_repeat_resolve(void) OP_REQUIRES(sim) {
     s_site_env_valid = 0;
     if (!openpete_native_scene_canon_repeat()) return;
     uint8_t env[4];
@@ -974,13 +986,13 @@ void cyclorama_native_repeat_resolve(void) {
     openpete_native_scene_open_empty();
 }
 
-int cyclorama_native_present_env(uint8_t env[4]) {
+int cyclorama_native_present_env(uint8_t env[4]) OP_REQUIRES_SHARED(sim) {
     if (openpete_native_drawn_env(env)) return 1;   /* the scene's DrawOTag already ran */
     if (s_site_env_valid) { memcpy(env, s_site_env, sizeof s_site_env); return 1; }
     return cur_db_env(env);
 }
 
-void cyclorama_native_env_clear_commit(void) {
+void cyclorama_native_env_clear_commit(void) OP_REQUIRES(sim) {
     /* The area the presented scene's OT draws into: the held-fade sum the
      * capture presents is that area's, not the PutDrawEnv latch's. */
     const uint8_t* de = cur_db_drawenv();
@@ -1000,7 +1012,7 @@ void cyclorama_native_env_clear_commit(void) {
 
 /* The hook address is the layout's sky-draw site, bound at boot: a static
  * initializer cannot read another TU's const. */
-static feature_dispatch_entry_t cyc_dispatch[] = {
+static feature_dispatch_entry_t cyc_dispatch[] OP_GUARDED_BY(sim) = {   /* thread-roles: bound in the boot window, which holds sim */
     { 0u, on_sky_draw_cyc },
     { 0u, NULL },
 };
@@ -1009,6 +1021,7 @@ static feature_dispatch_entry_t cyc_dispatch[] = {
  *
  * @param opts Unused. */
 static void cyc_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     cyc_dispatch[0].addr = game_layout.hooks.sky_draw;
 }

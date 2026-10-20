@@ -43,6 +43,7 @@
 #include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_thread_roles.h"
 
 extern void     func_8004F000(CPUState* cpu);   /* the real cross-fade renderer */
 extern void     func_8001C694(CPUState* cpu);   /* the real GS_ExitLevel screen */
@@ -88,7 +89,7 @@ static int  s_cross_n;
  * against the widened bounds instead. Does nothing on a speculative
  * runahead tick, whose results the rollback would not revert.
  * @param cpu The guest CPU state. */
-static void crossfade_extract(CPUState* cpu) {
+static void crossfade_extract(CPUState* cpu) OP_REQUIRES(sim) {
     /* Runahead lookahead: a speculative tick crossing a level-exit trigger
      * would leave its tris in these host buffers; the rollback does not revert
      * them. The committed re-run re-extracts for real. */
@@ -177,6 +178,7 @@ static void probe_log(const char* name, const char* what, CPUState* cpu, unsigne
  * @param addr Unused.
  * @return 1 when the hook ran the renderer, 0 to let normal dispatch run it. */
 static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     int feed = openpete_native_scene_enabled();
     static unsigned last_probe = 0xFFFFFFFFu;
@@ -288,7 +290,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract of the cross-fade dome and backdrop; see reextract.h. */
-void transition_reextract(CPUState* cpu) {
+void transition_reextract(CPUState* cpu) OP_REQUIRES(sim) {
     if (!hook_reextract_ready(RP_TRANSITION)) return;  /* scene on, selected, canon-drawn */
     crossfade_extract(cpu);
     render_material_level_push(cpu);

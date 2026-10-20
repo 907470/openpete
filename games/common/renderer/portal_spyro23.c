@@ -72,6 +72,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define P3_MAX_PORTALS 16
 #define P3_MAX_EDGES   8
@@ -880,7 +881,7 @@ static int p3_sky_on(void) {
  * @param E The preview's emission context.
  * @param B The preview's bounds.
  * @param f The preview's fade terms, the probe sentinel for the extension. */
-static void p3_emit_sky(CPUState* cpu, const p3_preview* p, const p3_emit_ctx* E, p3_bounds B, const p3_fade* f) {
+static void p3_emit_sky(CPUState* cpu, const p3_preview* p, const p3_emit_ctx* E, p3_bounds B, const p3_fade* f) OP_REQUIRES(sim) {
     const portal_sky_tri* t = NULL;
     const int n = p->rec ? portal_sky_s23_extension(cpu, p->rec, &t) : 0;
     for (int i = 0; i < n; i++) {
@@ -916,7 +917,7 @@ static void p3_emit_sky(CPUState* cpu, const p3_preview* p, const p3_emit_ctx* E
  * @param env_far The environment far colour.
  * @param mask_done Per-slot flags, set once the slot's mask is emitted. */
 static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening* op, const ngte_view* vw,
-                           int sky_ir0, uint32_t env_far, int mask_done[P3_MAX_PORTALS]) {
+                           int sky_ir0, uint32_t env_far, int mask_done[P3_MAX_PORTALS]) OP_REQUIRES(sim) {
     static float vx[P3_MAX_VERTS], vy[P3_MAX_VERTS];
     static uint8_t oc[P3_MAX_VERTS];
     static uint32_t col[P3_MAX_COLS];
@@ -1026,7 +1027,7 @@ static void p3_lod_tick(const p3_tick* T, p3_tick* O) {
  * emitted. Under extended LOD the previews are p3_lod_tick's.
  * @param cpu The guest CPU state.
  * @param T The captured (or lerped) previews. */
-static void p3_feed(CPUState* cpu, const p3_tick* T) {
+static void p3_feed(CPUState* cpu, const p3_tick* T) OP_REQUIRES(sim) {
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_PORTAL)) return;
     s_emitted = 0;
     s_cen_faces = s_cen_idx = s_cen_oc = s_cen_edge = s_cen_tris = 0;
@@ -1734,6 +1735,7 @@ static void p3_band_census(CPUState* cpu, const p3_tick* T) {
  * @param addr The leaf's address, dispatched.
  * @return 1 when the hook ran the leaf, else 0. */
 static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     int feed = openpete_native_scene_enabled();
     if (!feed && !p3_dbg()) return 0;
     if (!s_in_pass) return 0;
@@ -1802,7 +1804,7 @@ int portal_s23_capture_follows(CPUState* cpu) {
  * every record's registration on the background thread before its picture
  * is in view (portal_sky_s23_prefetch). Reads PSX RAM only.
  * @param cpu Reads the record array. */
-static void p3_sky_prefetch(CPUState* cpu) {
+static void p3_sky_prefetch(CPUState* cpu) OP_REQUIRES(sim) {
     if (!portal_game_s23.records || !portal_game_s23.count) return;
     const uint32_t base = cpu->read_word(portal_game_s23.records);
     const uint32_t n = cpu->read_word(portal_game_s23.count);
@@ -1829,6 +1831,7 @@ static void p3_sky_prefetch(CPUState* cpu) {
  * @param addr The pass's address, dispatched.
  * @return 1 after running the pass, else 0. */
 static int on_portal_pass(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     int feed = openpete_native_scene_enabled();
     if (!feed && !render_paths_active() && !p3_dbg()) return 0;
     static int s_in = 0;
@@ -1941,7 +1944,7 @@ static void p3_lerp_preview(p3_preview* O, const p3_preview* P, const p3_preview
 }
 
 /* Sub-tick re-extract: replays the tick's previews, lerped per portal. */
-void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) {
+void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) OP_REQUIRES(sim) {
     if (!hook_reextract_ready(RP_PORTAL)) return;  /* scene on, selected, canon-drawn */
     if (!s_curr.valid || s_curr.n == 0) return;
     p3_tick T = s_curr;
@@ -1972,7 +1975,7 @@ static feature_dispatch_entry_t portal_dispatch[3];
  * @param opts Unused. */
 static void portal_apply_options(const openpete_options_t* opts) {
     (void)opts;
-    const struct { uint32_t addr; feature_dispatch_fn fn; } hooks[] = {
+    const feature_dispatch_entry_t hooks[] = {
         { portal_game_s23.pass, on_portal_pass },
         { portal_game_s23.leaf, on_portal_leaf },
     };

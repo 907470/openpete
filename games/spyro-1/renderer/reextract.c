@@ -53,6 +53,7 @@ static int ra_rebase_on(void) {
 #include "game_layout.h"
 #include "renderer/player.h"   /* per-call records of the player hooks */
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
+#include "openpete_thread_roles.h"
 
 /* The engine layout of the player feeder: every span the record loop stages
  * and every scratch block it overlays. */
@@ -1815,6 +1816,7 @@ static void particle_pools_check(const part_save_t* save, int n) {
  * (renderer/reextract_view.c), which owns the view's begin/end pairing: an
  * unpaired view would leave staged bytes visible to the next tick. */
 static void game_reextract_body(void* cpu_v) {
+    OP_ROLE_ASSERT(sim);
     CPUState* cpu = (CPUState*)cpu_v;
     game_interp_hud_batch_begin();   /* HUD pool keys: one table for this present's lookups */
 

@@ -13,6 +13,7 @@
 #define OPENPETE_COMMON_RENDERER_ORCHESTRATOR_H
 
 #include <stdint.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,7 +61,7 @@ void spyro_native_canon_epoch_supersede(void);
  * present becomes an empty scene (openpete_native_scene_open_empty) cleared
  * to that colour; with isbg 0, without a valid g_CurDB, or on a HOLD row it
  * stays a repeat. Defined by the shared cyclorama feeder for every game. */
-void cyclorama_native_repeat_resolve(void);
+void cyclorama_native_repeat_resolve(void) OP_REQUIRES(sim);
 
 /** @brief Report the DRAWENV the scene being presented is cleared with: isbg, r0, g0, b0.
  *
@@ -72,7 +73,7 @@ void cyclorama_native_repeat_resolve(void);
  * @param env Receives isbg, r0, g0, b0 when the function returns 1.
  * @return 1 when one of the three names the env, else 0 (no g_CurDB located
  *         or it points at neither draw buffer). */
-int cyclorama_native_present_env(uint8_t env[4]);
+int cyclorama_native_present_env(uint8_t env[4]) OP_REQUIRES_SHARED(sim);
 
 /** @brief Set the native clear colour from the DRAWENV the game will apply to the scene being presented.
  *
@@ -92,7 +93,7 @@ int cyclorama_native_present_env(uint8_t env[4]);
  * rect and isbg go to openpete_native_note_present_draw_area (no area
  * without a valid g_CurDB). Defined by the shared cyclorama feeder
  * (games/common/renderer/cyclorama.c) for every game. */
-void cyclorama_native_env_clear_commit(void);
+void cyclorama_native_env_clear_commit(void) OP_REQUIRES(sim);
 
 /* Canonical-render epoch. A feeder that snapshots transient render-pass
  * scratch stamps the epoch at capture time and replays the capture on the

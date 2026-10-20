@@ -29,6 +29,8 @@ cursors and the AST:
   - every non-call reference to a role-relevant function classified as
     synchronous, slot, entry (the row's registration form) or test, any
     other refused; a row function carrying role attributes;
+  - a read of an OP_SLOT slot that is not a call, a test or a store into a
+    slot holding the source slot's roles;
   - a call of a boot function outside openpete_run and run_split_threaded;
     a call of co_switch outside openpete_fiber_switch;
   - declarations of one function whose role attributes differ; a local
@@ -41,10 +43,18 @@ cursors and the AST:
     `thread-roles: <reason>` marker.
 
 Check 4 (engagement, LAW 8). TUs analysed per database, annotated
-functions and globals, rows evaluated and references classified are
-printed; zero TUs to analyse while in-scope sources changed, a missing or
-unparsable database, or a selected TU that does not parse under clang is
-VACUOUS and refuses. A row neither database defines is reported.
+functions and globals, rows, accessors and escapes evaluated and references
+classified are printed; zero TUs to analyse while in-scope sources changed,
+a missing or unparsable database, or a selected TU that does not parse
+under clang is VACUOUS and refuses. A binding-table, accessor or escape row
+neither database defines is reported (check --all).
+
+The escape table (OP_ESCAPE_TABLE) lists the functions that reach owned
+state through a pointer the analysis does not follow, each with the
+protocol that orders the accesses; it is reported, not checked.
+
+scripts/thread_roles_annotate.py runs check 1 to a fixed point and writes
+the OP_REQUIRES / OP_REQUIRES_SHARED attributes its diagnostics ask for.
 
 Modes:
   hook            git pre-commit: the staged in-scope sources; a staged
@@ -65,6 +75,10 @@ Environment:
                                   windows-mingw preset is configured.
   OPENPETE_THREAD_ROLES_JOBS      parallel TUs (default half the CPUs, at most 16).
   OPENPETE_NO_COMMITS=1           `check --armed` passes unarmed.
+  OPENPETE_THREAD_ROLES_NO_REWRITE=1  calibration control: synchronous
+                                  references and slot calls are not
+                                  rewritten into helper calls, so check 1
+                                  does not see them as calls.
 """
 import concurrent.futures
 import hashlib
@@ -95,7 +109,7 @@ CLANG_CHECK = ["-fsyntax-only", "-Wno-unknown-warning-option",
                "-Wno-everything", "-Werror=thread-safety",
                "-Werror=ignored-attributes",
                "-Wincompatible-pointer-types-discards-qualifiers",
-               "-Wcast-qual", "-USDL_THREAD_SAFETY_ANALYSIS",
+               "-Wcast-qual", "-USDL_THREAD_SAFETY_ANALYSIS", "-ferror-limit=0",
                "-fno-caret-diagnostics", "-fno-diagnostics-color"]
 
 ATTR_MACROS = ("OP_REQUIRES", "OP_REQUIRES_SHARED", "OP_REQUIRES_CAP",
@@ -137,11 +151,13 @@ class Tables:
         for seal, usr in re.findall(r'SEAL\((\w+),\s*"([^"]+)"\)', hdr):
             self.seal_writers.setdefault(seal, set()).add(usr)
         self.accessors = set(re.findall(r'ACCESSOR\("([^"]+)"\)', hdr))
+        self.escapes = dict(re.findall(r'ESCAPE\("([^"]+)",\s*"([^"]+)"\)', hdr))
         # name -> seal, over every declaration that carries OP_SEALED
         self.sealed = {}
         self.sealed_files = set()
         self.candidates = set()     # names of possibly role-annotated functions
-        self.slot_names = set()
+        self.slot_names = set()     # slot declarator names (fields, variables, parameters)
+        self.slot_walk = set()      # the names a TU spells to store into or call a slot
         self.nested = []            # (file, line, macro) role macro in a #define
         self.guarded = 0            # declarations carrying an OP_GUARDED_BY form
         for rel in files:
@@ -167,8 +183,32 @@ class Tables:
             self.sealed_files.add(rel)
         self.guarded += len(re.findall(r"\bOP_(?:PT_)?GUARDED_BY(?:_CAP)?\(", text))
         for m in re.finditer(r"\bOP_SLOT\(\w+\)", text):
-            start = text.rfind("\n", 0, m.start()) + 1
-            self.slot_names |= set(IDENT.findall(text[start:m.start()]))
+            # The slot's declarator name; for a parameter slot also the
+            # function whose parameter it is, the name its callers spell.
+            stop = max(text.rfind(c, 0, m.start()) for c in ";}{")
+            decl = text[stop + 1:m.start()]
+            # `T name OP_SLOT` or a function-pointer declarator `T (*name)(...) OP_SLOT`
+            ptr = re.findall(r"\(\s*\*\s*([A-Za-z_]\w*)\s*\)", decl)
+            last = re.search(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$", decl)
+            name = last.group(1) if last else (ptr[-1] if ptr else "")
+            if not name:
+                continue
+            self.slot_names.add(name)
+            depth, opened = 0, None
+            for k in range(len(decl) - 1, -1, -1):
+                if decl[k] == ")":
+                    depth += 1
+                elif decl[k] == "(":
+                    if depth == 0:
+                        opened = k
+                        break
+                    depth -= 1
+            if opened is not None:
+                fn = re.search(r"([A-Za-z_]\w*)\s*$", decl[:opened])
+                if fn:
+                    self.slot_walk.add(fn.group(1))
+            else:
+                self.slot_walk.add(name)
         for m in re.finditer(r"\b(%s)\(" % "|".join(ATTR_MACROS), text):
             stop = max(text.rfind(c, 0, m.start()) for c in ";}{")
             stmt = text[stop + 1:m.start()]
@@ -271,6 +311,26 @@ def lang_of(rel, flags):
     return "c"
 
 
+_CXX_INCLUDES = {}
+
+
+def cxx_includes(mingw):
+    """-> the C++ standard library directories of the build's compiler (g++
+    or the mingw g++), which libclang 14 does not find on its own."""
+    if mingw not in _CXX_INCLUDES:
+        cxx = "x86_64-w64-mingw32-g++-posix" if mingw else "g++"
+        try:
+            p = subprocess.run([cxx, "-x", "c++", "-E", "-v", "-"], input="",
+                               capture_output=True, text=True)
+            text = p.stderr
+        except OSError:
+            text = ""
+        block = text.split("#include <...> search starts here:")[-1].split("End of search list.")[0]
+        _CXX_INCLUDES[mingw] = [os.path.normpath(d.strip()) for d in block.splitlines()
+                                if "/c++" in d]
+    return _CXX_INCLUDES[mingw]
+
+
 def macro_args(cur):
     toks = [t.spelling for t in cur.get_tokens()]
     if len(toks) >= 3 and toks[1] == "(":
@@ -308,6 +368,7 @@ class Walk:
         self.helpers = {}         # (line, col) of the enclosing definition -> [text]
         self.helper_names = {}    # helper -> original name
         self.annotated = {}       # usr -> attrs tuple
+        self.slot_stores = []     # (usr, name, slot roles) of every slot store
         self.n = 0
         K = ci().CursorKind
         args = list(flags) + ["-Wno-everything"]
@@ -315,6 +376,9 @@ class Walk:
             # libclang 14 finds its builtin headers (stdbool.h, stdarg.h) for
             # the host target only; name its resource directory for mingw.
             args += ["-resource-dir", LIBCLANG_RESOURCE]
+        if lang_of(rel, flags) == "c++":
+            for d in cxx_includes(MINGW_TARGET in flags):
+                args += ["-isystem", d]
         self.tu = ci().Index.create().parse(
             self.main, args=args,
             options=ci().TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD)
@@ -372,7 +436,9 @@ class Walk:
                 usr = c.get_usr()
                 attrs = self._attrs_of(c)
                 rel = os.path.relpath(f.name, self.ctx["root"])
-                if attrs or usr in self.ctx["rows"]:
+                # Every declaration is kept: one without attributes beside an
+                # annotated one is the mismatch the report refuses.
+                if attrs or FENCE.in_scope(rel):
                     self.decl_attrs.setdefault(usr, []).append(
                         ("%s:%d" % (rel, c.location.line), attrs))
                 if attrs:
@@ -381,7 +447,8 @@ class Walk:
                     if f.name == self.main:
                         self.defs.append(((c.extent.start.line, c.extent.start.column),
                                           (c.extent.end.line, c.extent.end.column), c))
-                    if usr in self.ctx["rows"]:
+                    if usr in self.ctx["rows"] or usr in self.ctx["escapes"] \
+                            or usr in self.ctx["accessors"]:
                         self.rows_defined.add(usr)
                     if NTSA in attrs and usr not in self.ctx["accessors"] \
                             and rel != RUNTIME_C:
@@ -578,6 +645,12 @@ class Walk:
     def _ref(self, c, chain, stmt_macro_at):
         K = ci().CursorKind
         tgt = c.referenced
+        if tgt is not None and tgt.kind in (K.VAR_DECL, K.PARM_DECL, K.FIELD_DECL) \
+                and tgt.spelling in self.ctx["slot_names"]:
+            role = slot_role(tgt)
+            if role:
+                self._slot_read(c, chain, role)
+            return
         if tgt is None or tgt.kind not in (K.FUNCTION_DECL, K.CXX_METHOD):
             return
         i, use = self._use(chain)
@@ -591,6 +664,11 @@ class Walk:
             or name in ("op_role_leave", "op_role_check_at")
         row = self.ctx["rows"].get(usr)
         if not (attrs or row or internal or name == "co_switch"):
+            # A slot store is recorded so the annotator never gives the
+            # function a role the slot does not hold.
+            _, _, slot = self._classify(c, chain, i, use)
+            if slot is not None:
+                self.slot_stores.append((usr, name, slot))
             return
         if internal or name == "co_switch":
             self.refuse(c, "non-call reference to %s" % name)
@@ -614,6 +692,7 @@ class Walk:
             self._rewrite(c, "op__ref_%s" % name, attrs, name)
             return
         if slot is not None:
+            self.slot_stores.append((usr, name, slot))
             need = self._roles_of(attrs)
             if need is None or not need <= {slot}:
                 self.refuse(c, "%s (%s) stored into an OP_SLOT(%s) slot"
@@ -624,6 +703,26 @@ class Walk:
         self.refuse(c, "non-call reference to the role-annotated %s (%s) is neither "
                     "synchronous, a slot store, a binding-table form nor a test"
                     % (name, ", ".join(attrs)))
+
+    def _slot_read(self, c, chain, role):
+        """A read of an OP_SLOT slot: a call (rewritten by _slot_call), a
+        test, or a store into a slot whose roles hold the source's."""
+        K = ci().CursorKind
+        i, use = self._use(chain)
+        if use is not None and use.kind == K.CALL_EXPR \
+                and self._child_index(use, chain[i + 1]) == 0:
+            return
+        if use is not None and use.kind == K.BINARY_OPERATOR and self._binop(use) == "=" \
+                and self._child_index(use, chain[i + 1]) == 0:
+            return   # the slot is the store's target
+        kind, _, slot = self._classify(c, chain, i, use)
+        if kind == "test":
+            self._count("slot-test")
+        elif slot is not None and set(role.split("|")) <= set(slot.split("|")):
+            self._count("slot-copy")
+        else:
+            self.refuse(c, "read of the OP_SLOT(%s) slot %s is neither a call, a test nor "
+                        "a store into a slot holding its roles" % (role, c.spelling))
 
     def _count(self, k):
         self.kinds[k] = self.kinds.get(k, 0) + 1
@@ -855,7 +954,7 @@ def analyse(task):
     t0 = time.time()
     res = {"rel": rel, "db": dbname, "refusals": [], "parse": [], "decl_attrs": {},
            "rows_defined": [], "kinds": {}, "walked": False, "rewritten": False,
-           "tsa": 0, "seal": 0}
+           "tsa": 0, "seal": 0, "diags": [], "slot_stores": []}
     root = ctx["root"]
     main = os.path.join(root, rel)
     text = read_text(main)
@@ -880,7 +979,8 @@ def analyse(task):
         res["decl_attrs"] = w.decl_attrs
         res["rows_defined"] = sorted(w.rows_defined)
         res["kinds"] = w.kinds
-        if w.edits or w.helpers:
+        res["slot_stores"] = w.slot_stores
+        if (w.edits or w.helpers) and not ctx["no_rewrite"]:
             rewritten_main = apply_edits(text, w.edits, w.helpers)
         helper_names = w.helper_names
     else:
@@ -936,6 +1036,7 @@ def analyse(task):
         if "-Wthread-safety" in msg:
             res["refusals"].append("%s:%d: %s" % (relp, ln, msg))
             res["tsa"] += 1
+            res["diags"].append((relp, ln, int(m.group(3)), msg))
         elif sealed_re and sealed_re.search(src_line(path, ln)) and (
                 SEAL_ERR.search(msg) or "discards-qualifiers" in msg or "cast-qual" in msg
                 or "redeclaration of" in msg):
@@ -972,7 +1073,7 @@ def scope_hashes(root, files):
 
 def build_ctx(root, tables, tmp):
     walk_names = set(tables.candidates) | set(BOOT_FNS) | {"co_switch"} \
-        | set(tables.slot_names) | set(STMT_MACROS) | {"OP_TSA_SUPPRESS_BEGIN", NTSA}
+        | set(tables.slot_walk) | set(STMT_MACROS) | {"OP_TSA_SUPPRESS_BEGIN", NTSA}
     walk_names = {n for n in walk_names if n and n not in ("if", "while", "for", "sizeof",
                                                           "return", "switch")}
     writer_usrs = set().union(*tables.seal_writers.values()) if tables.seal_writers else set()
@@ -982,10 +1083,13 @@ def build_ctx(root, tables, tmp):
         if m:
             writer_files.add(m.group(1))
     return {"root": root, "rows": tables.rows, "accessors": tables.accessors,
+            "escapes": tables.escapes,
             "sealed": tables.sealed, "sealed_files": set(tables.sealed_files),
             "writer_names": sorted({usr_name(u) for u in writer_usrs}),
             "writer_files_base": writer_files, "writer_files": set(),
-            "walk_names": sorted(walk_names), "tmp": tmp}
+            "no_rewrite": os.environ.get("OPENPETE_THREAD_ROLES_NO_REWRITE") == "1",
+            "walk_names": sorted(walk_names), "slot_names": set(tables.slot_names),
+            "tmp": tmp}
 
 
 def compile_patterns(ctx):
@@ -1043,7 +1147,7 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
     # declarations whose role attributes differ (per USR, over every TU)
     for usr, decls in sorted(attrs.items()):
         sets = {tuple(x for x in a if x != NTSA) for _, a in decls}
-        if len(sets) > 1:
+        if len(sets) > 1 and any(sets):
             refusals.append("%s: declarations carry different role attributes: %s"
                             % (usr, "; ".join("%s %s" % (w, " ".join(a) or "(none)")
                                               for w, a in sorted(decls))))
@@ -1063,13 +1167,16 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
         "guarded %d), TUs rewritten %d, thread-safety diagnostics %d, sealed write "
         "sites %d" % (n_annot_fns, len(tables.sealed) + tables.guarded, len(tables.sealed),
                       tables.guarded, rewritten, tsa, seal))
-    say("  check 3: TUs walked %d, rows %d (defined in an analysed TU %d), "
-        "references classified %s"
+    say("  check 3: TUs walked %d, rows %d (defined in an analysed TU %d), accessors %d "
+        "(defined %d), escapes %d (defined %d), references classified %s"
         % (walked, len(tables.rows), len(rows_defined & set(tables.rows)),
+           len(tables.accessors), len(rows_defined & tables.accessors),
+           len(tables.escapes), len(rows_defined & set(tables.escapes)),
            ", ".join("%s %d" % kv for kv in sorted(kinds.items())) or "none"))
-    unseen = sorted(set(tables.rows) - rows_defined)
+    listed = set(tables.rows) | tables.accessors | set(tables.escapes)
+    unseen = sorted(listed - rows_defined)
     if unseen and mode.startswith("check --all"):
-        say("  rows no analysed TU defines: %s" % ", ".join(unseen))
+        say("  table rows no analysed TU defines: %s" % ", ".join(unseen))
     slow = sorted(results, key=lambda r: -r.get("sec", 0))[:5]
     if results:
         say("  slowest TUs: %s" % ", ".join("%s[%s] %.2f s" % (r["rel"], r["db"], r.get("sec", 0))
@@ -1132,7 +1239,7 @@ def marker_refusals(root, base, staged):
                 code = code_lines[n - 1] if n - 1 < len(code_lines) else ""
                 if code.lstrip().startswith("#"):
                     continue
-                table = path == ROLES_H and re.search(r"\b(ROW|SEAL|ACCESSOR)\(\"?\w", code)
+                table = path == ROLES_H and re.search(r"\b(ROW|SEAL|ACCESSOR|ESCAPE)\(\"?\w", code)
                 form = path != ROLES_H and re.search(r"\b(%s)\(" % "|".join(FORM_MACROS), code)
                 if (table or form) and not MARKER.search(s):
                     out.append("%s:%d: a row or a global's form changes without a "

@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include "renderer/native_gte.h"   /* ngte_cvert */
+#include "openpete_thread_roles.h"  /* OP_SYNC_FN */
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,7 +29,7 @@ struct CPUState;
  * @param cpu The guest CPU state, read only.
  * @param alpha The present's sub-tick fraction between prev and curr.
  * @param interp_on Nonzero when the camera is bracketed this present. */
-void cyclorama_reextract(struct CPUState* cpu, double alpha, int interp_on);
+void cyclorama_reextract(struct CPUState* cpu, double alpha, int interp_on) OP_REQUIRES(sim);
 
 /* One extracted cyclorama dome triangle: screen space (float), per-vertex PSX
  * 0xBBGGRR colour. */
@@ -48,7 +49,7 @@ typedef struct { float sx[3], sy[3]; unsigned int rgb[3]; } cyclorama_native_tri
  * @param out Receives the triangles in screen space.
  * @param max Capacity of `out`.
  * @return The number of triangles written, at most `max`. */
-int cyclorama_native_extract_faded(struct CPUState* cpu, cyclorama_native_tri* out, int max);
+int cyclorama_native_extract_faded(struct CPUState* cpu, cyclorama_native_tri* out, int max) OP_REQUIRES(sim);
 
 /* Where a sky sector's bytes are read from: guest RAM through `cpu` when
  * `buf` is NULL, else a host copy whose byte 0 stands for address `base` and
@@ -95,11 +96,11 @@ typedef struct cyclorama_sector_buf {
  * @param M The rotation, in units of `scale`.
  * @param scale The divisor applied after the rotation (4096 for a Q12 matrix).
  * @param fade The two colour fade stages.
- * @param fn Receives each face.
+ * @param fn Receives each face, during this call only.
  * @param ctx Passed to `fn`. */
 void cyclorama_decode_sector(cyclorama_sector_buf* D, const cyclorama_src* src, uint32_t S,
                              const double M[3][3], double scale, const cyclorama_fade fade[2],
-                             cyclorama_tri_fn fn, void* ctx);
+                             cyclorama_tri_fn fn OP_SYNC_FN, void* ctx);
 
 #ifdef __cplusplus
 }

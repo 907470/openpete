@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 /* Offsets inside the camera transform block, all confirmed against the layout
  * descriptor's read sites: the sky matrix the cyclorama draw loads with ctc2
@@ -409,8 +410,12 @@ static uint32_t rx_scene_tris(void) {
         rx_line[sizeof rx_line - 1] = '\0'; \
         fprintf(stderr, "%s\n", rx_line); }
 
-/** @brief Composes one sub-tick present: brackets the camera between the tick pair, then runs every feeder's re-extract in draw order. */
-static void game_reextract_body(CPUState* cpu) {
+/** @brief Composes one sub-tick present: brackets the camera between the tick pair, then runs every feeder's re-extract in draw order.
+ *
+ * @param cpu_v The guest CPUState, as the void pointer game_reextract_view_install's callback takes. */
+static void game_reextract_body(void* cpu_v) {
+    OP_ROLE_ASSERT(sim);
+    CPUState* cpu = (CPUState*)cpu_v;
     double qa = 0.0;
     const openpete_interp_snapshot_t *prev2 = NULL, *prev = NULL, *curr = NULL;
     /* One per-object hold verdict per present, read by every channel. */
@@ -542,16 +547,9 @@ static void game_reextract_body(CPUState* cpu) {
     cut_obj_present_end();
 }
 
-/** @brief Adapts game_reextract_body to the void-pointer signature the view installer takes.
- *
- * @param cpu_v The CPUState pointer the renderer passes. */
-static void game_reextract_body_v(void* cpu_v) {
-    game_reextract_body((CPUState*)cpu_v);
-}
-
 /** @brief Install the sub-tick re-extract body with the native renderer (game_reextract_init). */
 static void orch_reextract_init(void) {
-    game_reextract_view_install(game_reextract_body_v);
+    game_reextract_view_install(game_reextract_body);
 }
 
 /* The orchestrator spyro2_game_runtime carries (game_extras_impl.c); the

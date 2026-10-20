@@ -32,6 +32,7 @@
 #include "psx_runtime_internal.h"
 #include "renderer/native_gte.h"     /* ngte_view: the caller's projection view */
 #include "renderer/terrain_game.h"   /* openpete_portal_skyplane */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* What the two games do not share. Each game's renderer/portal_game.c defines
  * the instance; a game that leaves `pass` or `leaf` zero registers no hook and
@@ -108,7 +109,7 @@ extern portal_game_s23_consts_t portal_game_s23;
  * @param cpu The guest CPU state.
  * @param alpha The sub-tick alpha in [0, 1].
  * @param interp_on Nonzero when the caller brackets the present between two ticks. */
-void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on);
+void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) OP_REQUIRES(sim);
 
 /** @brief Reports whether a portal preview emitted geometry within the last two VBLs.
  *

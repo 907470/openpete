@@ -42,6 +42,7 @@
 #include <math.h>
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 extern unsigned openpete_frame;
 
@@ -2205,7 +2206,7 @@ static unsigned s_freeze_retain_n = 0;
 
 unsigned ui_freeze_retain_count(void) { return s_freeze_retain_n; }
 
-void ui_freeze_retain_commit(void) {
+void ui_freeze_retain_commit(void) OP_REQUIRES_SHARED(sim) {
     if (!ui_game.freeze_retained) return;
     uint8_t env[4];
     if (!cyclorama_native_present_env(env)) return;   /* no valid DB* yet */

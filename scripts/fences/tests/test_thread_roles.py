@@ -76,7 +76,7 @@ static void (*s_cb)(void) OP_SLOT(sim);
 void lay_register(void) { op_seal_check(lay); g_lay.a = 1; memset(&g_lay, 0, sizeof g_lay); }
 void lay_read(void) { const int* q = &g_lay.a; g_lay.p[0] = *q; }
 void ok_sync(void) OP_REQUIRES(sim);
-void ok_sync(void) { call_it(need); s_cb(); }
+void ok_sync(void) OP_REQUIRES(sim) { call_it(need); s_cb(); }
 void ok_store(void) { s_cb = need; }
 void ok_test(void) { if (need) { } }
 '''
@@ -96,6 +96,8 @@ CONTROLS = {
     "direct_assert_call": ("void bad(void) { op_role__assert_sim(0); }", "direct call"),
     "reference_before_assert": ("void bad(void) { need(); OP_ROLE_ASSERT(sim); need(); }",
                                 "calling function 'need'"),
+    "slot_read_escapes": ("void bad(void) { void (*p)(void) = s_cb; (void)p; }",
+                          "read of the OP_SLOT(sim) slot"),
 }
 
 
@@ -144,6 +146,45 @@ class AnalyseTest(unittest.TestCase):
                 self.assertEqual(r["parse"], [], name)
                 hits = [x for x in r["refusals"] if want in x]
                 self.assertEqual(len(hits), 1, "%s: %s" % (name, r["refusals"]))
+
+    def test_unannotated_redeclaration_is_refused(self):
+        r = self.analyse("void ok_sync(void);")
+        self.assertEqual(r["refusals"], [])
+        tables = tr.Tables(self.tmp, [tr.ROLES_H, "core/fixture.c"])
+        rc, _ = tr.report(self.tmp, tables, {}, [r], 0.0, set(), "test")
+        self.assertEqual(rc, 1)
+
+    def test_slot_store_recorded(self):
+        r = self.analyse("")
+        self.assertIn(("c:fixture.c@F@need", "need", "sim"), r["slot_stores"])
+
+
+class AnnotatorTextTest(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, "scripts"))
+        import thread_roles_annotate as ta
+        self.ta = ta
+
+    def test_place_adds_and_upgrades(self):
+        b = b"static int f(int a,\n              int b) {\n  return a;\n}\n"
+        out, changed = self.ta.place(b, 1, 12, "f", "sim", False)
+        self.assertTrue(changed)
+        self.assertIn(b"int b) OP_REQUIRES_SHARED(sim) {", out)
+        out2, changed = self.ta.place(out, 1, 12, "f", "sim", True)
+        self.assertTrue(changed)
+        self.assertIn(b"int b) OP_REQUIRES(sim) {", out2)
+        out3, changed = self.ta.place(out2, 1, 12, "f", "sim", False)
+        self.assertFalse(changed)
+
+    def test_place_refuses_a_name_not_spelled_there(self):
+        with self.assertRaises(ValueError):
+            self.ta.place(b"#define G f\nint G(void);\n", 2, 5, "f", "sim", True)
+
+    def test_ensure_include_after_the_last_top_include(self):
+        b = b'#include <a.h>\n#include "b.h"\nstruct s { int x; };\n#include "c.h"\n'
+        out = self.ta.ensure_include(b)
+        self.assertTrue(out.startswith(b'#include <a.h>\n#include "b.h"\n#include "openpete_thread_roles.h"'))
+        self.assertEqual(self.ta.ensure_include(out), out)
 
 
 if __name__ == "__main__":

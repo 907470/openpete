@@ -26,6 +26,7 @@
 #include "renderer/terrain.h"        /* the shared terrain feeder's entries */
 #include "renderer/cyclorama.h"      /* cyclorama_reextract, cyclorama_native_extract_faded */
 #include "renderer/moby.h"          /* the shared moby feeder's entries */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -114,7 +115,7 @@ void tracer_reextract(struct CPUState* cpu);
  * stops once the transition stops emitting. OPENPETE_LOAD_CENSUS logs the
  * replay count every 100 openpete_frame values.
  * @param cpu The guest CPU state with the sub-tick view staged. */
-void transition_reextract(struct CPUState* cpu);
+void transition_reextract(struct CPUState* cpu) OP_REQUIRES(sim);
 
 #ifdef __cplusplus
 }

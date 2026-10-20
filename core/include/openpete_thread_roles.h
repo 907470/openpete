@@ -33,7 +33,10 @@
 #define OPENPETE_THREAD_ROLES_H
 
 #ifdef __cplusplus
+/* C++ linkage even when an includer wraps this header in extern "C". */
+extern "C++" {
 #  include <atomic>
+}
 #  define OP_ROLE_ATOMIC(T) std::atomic<T>
 extern "C" {
 #else
@@ -146,6 +149,13 @@ extern "C" {
 
 typedef struct OP_CAPABILITY_TYPE("role") op_role_cap { char unused; } op_role_cap_t;
 
+/* A module's own lock object: a capability with no run-time content. The
+ * module's lock and unlock wrappers carry OP_ACQUIRE_CAP / OP_RELEASE_CAP of
+ * it and are listed in OP_TSA_ACCESSOR_TABLE, since their bodies call an
+ * unannotated lock; the state the lock protects carries
+ * OP_GUARDED_BY_CAP(<object>). */
+typedef struct OP_CAPABILITY_TYPE("mutex") op_lock_cap { char unused; } op_lock_cap_t;
+
 #define OP_ROLE_DECLARE_CAP_(name, bit) extern const op_role_cap_t op_role_##name;
 OP_ROLE_LIST(OP_ROLE_DECLARE_CAP_)
 extern const op_role_cap_t op_role_display;
@@ -170,7 +180,16 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
  * a row carries a `thread-roles:` reason on its line. */
 #define OP_ROLE_BINDING_TABLE(ROW) \
     ROW("c:run.c@F@openpete_sim_thread", "prop:SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER", "sim") /* thread-roles: the sim thread entry binds sim */ \
-    ROW("c:run.c@F@game_fiber_entry", "arg:openpete_fiber_create_guarded", "sim") /* thread-roles: the game fiber runs on the thread holding sim */
+    ROW("c:run.c@F@game_fiber_entry", "arg:openpete_fiber_create_guarded", "sim") /* thread-roles: the game fiber runs on the thread holding sim */ \
+    ROW("c:portal_sky_s23.c@F@psk_worker", "arg:SDL_CreateThreadRuntime", "portalsky") /* thread-roles: the portal-sky build thread binds portalsky */ \
+    ROW("c:cyclorama.c@F@on_sky_draw_cyc", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:cyclorama.c@F@cyc_pre", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket pre step, run inside on_sky_draw_cyc */ \
+    ROW("c:cyclorama.c@F@cyc_verify_enabled", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket verify latch, run inside on_sky_draw_cyc */ \
+    ROW("c:cyclorama.c@F@cyc_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature options, run by run_host_init in the boot window */ \
+    ROW("c:portal_spyro23.c@F@on_portal_pass", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:portal_spyro23.c@F@on_portal_leaf", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:transition.c@F@on_8004F000_crossfade", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:reextract.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: each game's sub-tick re-extract, run by the host loop */
 
 /* SEAL(seal, usr): the function with USR `usr` may write the globals sealed
  * as `seal` (before op_seal), and calls op_seal_check(seal). */
@@ -179,11 +198,24 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     SEAL(time, "c:@F@op_time_reload_env") /* thread-roles: re-reads the slack and census knobs */ \
     SEAL(time, "c:openpete_time.c@F@parse_slack_env") /* thread-roles: called by the two above */ \
     SEAL(time, "c:openpete_time.c@F@parse_census_env") /* thread-roles: called by the two above */ \
-    SEAL(game_layout, "c:@F@openpete_game_runtime_register") /* thread-roles: copies the descriptor's layout */
+    SEAL(game_layout, "c:@F@openpete_game_runtime_register") /* thread-roles: copies the descriptor's layout */ \
+    SEAL(psk, "c:portal_sky_s23.c@F@psk_sched_init") /* thread-roles: creates the portal-sky lock and conditions before the worker */
 
-/* ACCESSOR(usr): a partitioned accessor whose body may carry
- * OP_NO_THREAD_SAFETY_ANALYSIS. */
-#define OP_TSA_ACCESSOR_TABLE(ACCESSOR)
+/* ACCESSOR(usr): a partitioned accessor or a module's lock wrapper, whose
+ * body may carry OP_NO_THREAD_SAFETY_ANALYSIS. */
+#define OP_TSA_ACCESSOR_TABLE(ACCESSOR) \
+    ACCESSOR("c:portal_sky_s23.c@F@psk_lock") /* thread-roles: acquires s_psk_lock through SDL_LockMutex */ \
+    ACCESSOR("c:portal_sky_s23.c@F@psk_unlock") /* thread-roles: releases s_psk_lock through SDL_UnlockMutex */
+
+/* ESCAPE(usr, reason): a function that reaches role- or lock-owned state
+ * through a pointer the analysis does not follow, with the protocol that
+ * orders the accesses. The fence reports each row and the rows no analysed
+ * TU defines; TSan checks the accesses. */
+#define OP_ESCAPE_TABLE(ESCAPE) \
+    ESCAPE("c:portal_sky_s23.c@F@psk_build_entry", "E->pic, E->L and E->level are written by psk_enqueue before the entry is QUEUED; the QUEUED to RUNNING to DONE moves are made under s_psk_lock, and only the thread that moved the entry to RUNNING touches E->tri, E->n and E->cap until DONE") /* thread-roles: the s_cache entry a builder owns */ \
+    ESCAPE("c:portal_sky_s23.c@F@psk_append", "E->tri, E->n and E->cap of the entry the calling builder moved to RUNNING") /* thread-roles: the s_cache entry a builder owns */ \
+    ESCAPE("c:portal_sky_s23.c@F@psk_decode_sky", "L is an s_lv entry psk_level_sky filled on sim before the entry naming it was QUEUED under s_psk_lock; it is never written again") /* thread-roles: the s_lv entry a queued build reads */ \
+    ESCAPE("c:@F@portal_sky_s23_extension", "E->tri and E->n are read after psk_join saw the entry DONE under s_psk_lock; a DONE entry is rewritten only by psk_enqueue on the same thread") /* thread-roles: a finished s_cache entry */
 
 /* ------------------------------------------------------------------ *
  * Run-time check sites                                                *

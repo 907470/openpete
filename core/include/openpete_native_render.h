@@ -24,6 +24,7 @@
 #include <stdint.h>
 
 #include "openpete.h" /* openpete_options_t */
+#include "openpete_thread_roles.h" /* OP_SLOT */
 
 #ifdef __cplusplus
 extern "C" {
@@ -2375,13 +2376,12 @@ typedef void (*openpete_native_commit_fn)(void);
  * the mask of render paths the canonical render drew, which the spine gates
  * each feeder on, and clears the per-render interval table. It runs from
  * the host loop rather than inside psyq_DrawOTag, so it does not depend on
- * the PsyCross OT submission. NULL = no commit step.
+ * the PsyCross OT submission. NULL = no commit step. The callback runs on
+ * the thread holding the sim role, so it may require sim and no other role.
  * @param fn The callback, or NULL. */
-void openpete_native_register_commit(openpete_native_commit_fn fn);
-/** @brief Return the registered commit callback.
- *
- * @return The callback, or NULL when none is registered. */
-openpete_native_commit_fn openpete_native_get_commit(void);
+void openpete_native_register_commit(openpete_native_commit_fn fn OP_SLOT(sim));
+/** @brief Run the registered commit callback, when one is registered. */
+void openpete_native_run_commit(void) OP_REQUIRES(sim);
 
 /* ---- moby occlusion culling (native-side, display-only) ---------------------
  *

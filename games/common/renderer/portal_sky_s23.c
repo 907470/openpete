@@ -51,6 +51,7 @@
 #include "openpete_fnv1a64.h"
 #include "openpete_crash.h"
 #include "openpete_time.h"
+#include "openpete_thread_roles.h"
 
 #include <SDL3/SDL.h>
 
@@ -87,7 +88,7 @@ typedef struct {
     uint32_t len;
 } psk_level;
 
-static psk_level s_lv[PSK_LEVELS];
+static psk_level s_lv[PSK_LEVELS] OP_GUARDED_BY(sim);   /* thread-roles: filled by psk_level_sky on sim; a build reads an entry through E->L */
 
 /** @brief Reads a little-endian word of a host buffer, 0 when it does not fit.
  * @param b The buffer.
@@ -127,13 +128,13 @@ static uint32_t psk_walk(const uint8_t* b, uint32_t n, uint32_t* len) {
  * @param cpu Reads the slot table.
  * @param level The level number.
  * @return The level's entry; its state is 1 when the payload is held. */
-static const psk_level* psk_level_sky(CPUState* cpu, int level) {
+static const psk_level* psk_level_sky(CPUState* cpu, int level) OP_REQUIRES_SHARED(sim) {
     psk_level* free_slot = NULL;
     for (int i = 0; i < PSK_LEVELS; i++) {
         if (s_lv[i].state && s_lv[i].level == level) return &s_lv[i];
         if (!s_lv[i].state && !free_slot) free_slot = &s_lv[i];
     }
-    static psk_level s_none = { 0, -1, NULL, 0 };
+    static const psk_level s_none = { 0, -1, NULL, 0 };
     if (!free_slot || !portal_game_s23.level_slots || level < 0 || level > 255) return &s_none;
     psk_level* L = free_slot;
     L->level = level;
@@ -239,10 +240,10 @@ static void psk_collect(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, v
  * @param D The building thread's decode scratch.
  * @param L The level's sky.
  * @param R The rotation, unit scale.
- * @param fn Receives each face.
+ * @param fn Receives each face, during this call only.
  * @param ctx Passed to `fn`. */
 static void psk_decode_sky(cyclorama_sector_buf* D, const psk_level* L, const double R[3][3],
-                           cyclorama_tri_fn fn, void* ctx) {
+                           cyclorama_tri_fn fn OP_SYNC_FN, void* ctx) {
     const cyclorama_src src = { NULL, L->buf, 0u, L->len };
     const cyclorama_fade none[2] = { { 0u, 0 }, { 0u, 0 } };
     const uint32_t n = psk_w(L->buf, L->len, 4u);
@@ -784,13 +785,17 @@ typedef struct {
     int              n, cap;
 } psk_entry;
 
-static psk_entry      s_cache[PSK_CACHE];
-static unsigned       s_cache_next = 0;
-static unsigned       s_seq = 0;
-static SDL_Mutex*     s_mu;
-static SDL_Condition* s_cv_work;       /* the worker waits for a queued entry */
-static SDL_Condition* s_cv_done;       /* a waiter waits for an entry to finish */
-static int            s_sched = 0;     /* 1 once psk_sched_init ran */
+/* The entry table's lock as the analysis sees it: psk_lock and psk_unlock
+ * take and drop s_mu and carry this capability. */
+static const op_lock_cap_t s_psk_lock;
+static psk_entry      s_cache[PSK_CACHE] OP_GUARDED_BY_CAP(s_psk_lock);  /* thread-roles: under s_mu */
+static unsigned       s_cache_next OP_GUARDED_BY_CAP(s_psk_lock) = 0;    /* thread-roles: under s_mu */
+static unsigned       s_seq OP_GUARDED_BY_CAP(s_psk_lock) = 0;           /* thread-roles: under s_mu */
+static SDL_Mutex*     s_mu OP_SEALED(psk);        /* thread-roles: created before the worker starts */
+static SDL_Condition* s_cv_work OP_SEALED(psk);   /* the worker waits for a queued entry; thread-roles: created before the worker starts */
+static SDL_Condition* s_cv_done OP_SEALED(psk);   /* a waiter waits for an entry to finish; thread-roles: created before the worker starts */
+static int            s_sched OP_GUARDED_BY(sim) = 0;   /* 1 once psk_sched_init ran; thread-roles: psk_sched_init runs on sim */
+OP_SEAL_DEFINE(psk);
 
 /* What the extension's face receiver needs. */
 typedef struct {
@@ -881,23 +886,34 @@ static void psk_build_entry(psk_ctx* C, psk_entry* E, const char* who) {
                " (%.1f ms, %s)", E->level, matched, P->nv, C->S.n, E->n, (double)(op_now() - t0) / 1e6, who);
 }
 
+/** @brief Locks the entry table when a lock exists. */
+static void psk_lock(void) OP_ACQUIRE_CAP(s_psk_lock) OP_NO_THREAD_SAFETY_ANALYSIS {
+    if (s_mu) SDL_LockMutex(s_mu);
+}
+
+/** @brief Unlocks the entry table when a lock exists. */
+static void psk_unlock(void) OP_RELEASE_CAP(s_psk_lock) OP_NO_THREAD_SAFETY_ANALYSIS {
+    if (s_mu) SDL_UnlockMutex(s_mu);
+}
+
 /** @brief The background builder: takes the oldest queued entry, builds it, marks it done, forever.
  * @param arg Unused.
  * @return Never returns. */
 static int SDLCALL psk_worker(void* arg) {
+    OP_ROLE_BIND(portalsky);
     (void)arg;
     openpete_crash_thread_attach();
     psk_ctx* C = (psk_ctx*)calloc(1, sizeof(psk_ctx));
-    SDL_LockMutex(s_mu);
+    psk_lock();
     for (;;) {
         psk_entry* E = NULL;
         for (int i = 0; i < PSK_CACHE; i++)
             if (s_cache[i].state == PSK_QUEUED && (!E || s_cache[i].seq - E->seq > 0x80000000u)) E = &s_cache[i];
         if (!E) { SDL_WaitCondition(s_cv_work, s_mu); continue; }
         E->state = PSK_RUNNING;
-        SDL_UnlockMutex(s_mu);
+        psk_unlock();
         psk_build_entry(C, E, "worker");
-        SDL_LockMutex(s_mu);
+        psk_lock();
         E->state = PSK_DONE;
         SDL_BroadcastCondition(s_cv_done);
     }
@@ -908,9 +924,10 @@ static int SDLCALL psk_worker(void* arg) {
  *
  * Without the lock or the conditions there is no worker and every build runs
  * on the thread that needs it; without the thread, the same through psk_join. */
-static void psk_sched_init(void) {
+static void psk_sched_init(void) OP_REQUIRES(sim) {
     if (s_sched) return;
     s_sched = 1;
+    op_seal_check(psk);
     s_mu = SDL_CreateMutex();
     s_cv_work = SDL_CreateCondition();
     s_cv_done = SDL_CreateCondition();
@@ -920,16 +937,11 @@ static void psk_sched_init(void) {
         if (s_cv_done) SDL_DestroyCondition(s_cv_done);
         s_mu = NULL; s_cv_work = s_cv_done = NULL;
     }
+    op_seal(psk);
     SDL_Thread* t = s_mu ? SDL_CreateThread(psk_worker, "openpete-portalsky", NULL) : NULL;
     if (t) SDL_DetachThread(t);
     else OPL_WARN_F("portal", "sky build thread not created (%s): builds run on the game fiber", SDL_GetError());
 }
-
-/** @brief Locks the entry table when a lock exists. */
-static void psk_lock(void) { if (s_mu) SDL_LockMutex(s_mu); }
-
-/** @brief Unlocks the entry table when a lock exists. */
-static void psk_unlock(void) { if (s_mu) SDL_UnlockMutex(s_mu); }
 
 /** @brief The cached entry of a record's picture, or NULL.
  * @param rec The record.
@@ -960,7 +972,7 @@ static psk_entry* psk_find(uint32_t rec, uint32_t mesh, int level, const uint64_
  * @param level Its destination.
  * @param P The picture.
  * @return The entry, or NULL when every slot is queued or running. */
-static psk_entry* psk_enqueue(CPUState* cpu, uint32_t rec, uint32_t mesh, int level, const psk_pic* P) {
+static psk_entry* psk_enqueue(CPUState* cpu, uint32_t rec, uint32_t mesh, int level, const psk_pic* P) OP_REQUIRES(sim) {
     psk_sched_init();
     const psk_level* L = psk_level_sky(cpu, level);
     psk_lock();
@@ -982,8 +994,8 @@ static psk_entry* psk_enqueue(CPUState* cpu, uint32_t rec, uint32_t mesh, int le
 
 /** @brief Waits until an entry is built, building it on this thread when no thread has taken it.
  * @param E The entry. */
-static void psk_join(psk_entry* E) {
-    static psk_ctx* s_inline;
+static void psk_join(psk_entry* E) OP_REQUIRES(sim) {
+    static psk_ctx* s_inline OP_GUARDED_BY(sim);   /* thread-roles: psk_join runs on sim */
     psk_lock();
     if (E->state == PSK_QUEUED) {
         E->state = PSK_RUNNING;
@@ -998,8 +1010,8 @@ static void psk_join(psk_entry* E) {
     psk_unlock();
 }
 
-int portal_sky_s23_prefetch(CPUState* cpu, uint32_t rec) {
-    static psk_pic Q;
+int portal_sky_s23_prefetch(CPUState* cpu, uint32_t rec) OP_REQUIRES(sim) {
+    static psk_pic Q OP_GUARDED_BY(sim);   /* thread-roles: the prefetch runs on sim */
     if (!portal_game_s23.level_slots) return 0;
     const int level = (int)cpu->read_byte(rec + 0x42);
     const uint32_t mesh = cpu->read_word(rec + 0x3C);
@@ -1007,8 +1019,8 @@ int portal_sky_s23_prefetch(CPUState* cpu, uint32_t rec) {
     return psk_enqueue(cpu, rec, mesh, level, &Q) != NULL;
 }
 
-int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri** tris) {
-    static psk_pic P;
+int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri** tris) OP_REQUIRES(sim) {
+    static psk_pic P OP_GUARDED_BY(sim);   /* thread-roles: the extension runs on sim */
     *tris = NULL;
     if (!portal_game_s23.level_slots || !psk_read_picture(cpu, rec, &P)) return 0;
     const int level = (int)cpu->read_byte(rec + 0x42);

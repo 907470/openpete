@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* One extension triangle in the picture's authored screen space, with the
  * destination sky's colours before any fade (0x00BBGGRR). */
@@ -44,7 +45,7 @@ typedef struct portal_sky_tri {
  *        entry (the cache holds 32 portals).
  * @return The triangle count; 0 when the destination's sky cannot be read
  *         or no camera registers it to the picture. */
-int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri** tris);
+int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri** tris) OP_REQUIRES(sim);
 
 /** @brief Queues the extension of one portal record for the background build thread.
  *
@@ -56,6 +57,6 @@ int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri**
  * @param cpu Reads the record and its picture mesh.
  * @param rec The portal record.
  * @return 1 when a build was queued, else 0. */
-int portal_sky_s23_prefetch(CPUState* cpu, uint32_t rec);
+int portal_sky_s23_prefetch(CPUState* cpu, uint32_t rec) OP_REQUIRES(sim);
 
 #endif /* OPENPETE_COMMON_RENDERER_PORTAL_SKY_S23_H */

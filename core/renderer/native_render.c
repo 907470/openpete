@@ -72,6 +72,7 @@ extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
 #include "openpete_native_vram.h"   /* the owned VRAM model + native ops */
 #include "openpete_terrain_cache.h" /* terrain sector-mesh GPU cache (retained terrain) */
 #include "texture_pack.h"           /* texture-replacement registry */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
@@ -19049,9 +19050,9 @@ static openpete_native_reextract_fn s_reextract_cb = NULL;
 void openpete_native_register_reextract(openpete_native_reextract_fn fn) { s_reextract_cb = fn; }
 openpete_native_reextract_fn openpete_native_get_reextract(void) { return s_reextract_cb; }
 
-static openpete_native_commit_fn s_commit_cb = NULL;
-void openpete_native_register_commit(openpete_native_commit_fn fn) { s_commit_cb = fn; }
-openpete_native_commit_fn openpete_native_get_commit(void) { return s_commit_cb; }
+static openpete_native_commit_fn s_commit_cb OP_SLOT(sim) = NULL;   /* called only through openpete_native_run_commit */
+void openpete_native_register_commit(openpete_native_commit_fn fn OP_SLOT(sim)) { s_commit_cb = fn; }
+void openpete_native_run_commit(void) OP_REQUIRES(sim) { if (s_commit_cb) s_commit_cb(); }
 
 /* --record async capture: persistent host buffer the readback ring swizzles
  * into before handing off to the encoder thread. Process-lifetime; freed in

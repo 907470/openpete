@@ -19,6 +19,7 @@
 #include "renderer/env_knob.h"
 #include "game_layout.h"             /* level_id: the level push */
 #include "openpete_mods.h"           /* openpete_mods_set_level */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
@@ -310,7 +311,7 @@ static void render_paths_census(void) {
  * a repeat present, openpete_native_scene_canon_repeat), then syncs the
  * native background clear and the retained freeze backdrop from the draw
  * environment the next DrawOTag applies. */
-static void render_paths_commit(void) {
+static void render_paths_commit(void) OP_REQUIRES(sim) {
     terrain_native_flush_deferred_late();   /* a feed held past its portal draw */
     moby_native_overlay_commit();           /* the menu overlay pass, at the moby's present state */
     /* A present with no game render where the game cleared the screen shows
