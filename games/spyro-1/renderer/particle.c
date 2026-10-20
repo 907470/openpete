@@ -1066,14 +1066,43 @@ static void particle_compare(CPUState* cpu) {
 }
 
 /* ---- native feed ------------------------------------------------------- */
+/** @brief Returns the native scene layer a g_Particles sel feeds its primitives into.
+ *
+ * sel 5, the key-collected FT4 burst (block_80057750), holds view-space
+ * positions around a g_Hud icon, so its depth is HUD-space Z, which is not
+ * comparable with world depth; the .s sorts it into a near particle bucket,
+ * (Z>>7)-lod, that paints over the world. It takes the flat HUD layer
+ * (OPENPETE_SCENE_HUD: depth-test off, drawn after the world and, outside
+ * the level-transition flyby, the player, and under the HUD3D icons). sel 4, the egg-tally LINE_G burst (block_80057954),
+ * is HUD-space too but keeps WORLD: its lines interleave with the egg counter
+ * moby, which the moby feed draws as ACTOR at its projected view-Z, and
+ * true Z keeps that icon over the lines behind it, where the flat HUD layer
+ * would paint every line over it. Every other sel is world geometry and
+ * takes WORLD at its true view-Z, as does a sel outside the table.
+ * @param sel The record's sel, header bits 15:8.
+ * @return An OPENPETE_SCENE_* layer. */
+static int part_sel_layer(int sel) {
+    static const int k_layer[] = {
+        OPENPETE_SCENE_WORLD,   /* 0: TILE / dot */
+        OPENPETE_SCENE_WORLD,   /* 1: motion-streak LINE_G */
+        OPENPETE_SCENE_WORLD,   /* 2: affine billboard */
+        OPENPETE_SCENE_WORLD,   /* 3: depth-cued screen rect */
+        OPENPETE_SCENE_WORLD,   /* 4: egg-tally LINE_G burst */
+        OPENPETE_SCENE_HUD,     /* 5: key-collected FT4 burst */
+    };
+    return (sel >= 0 && sel < (int)(sizeof k_layer / sizeof k_layer[0]))
+        ? k_layer[sel] : OPENPETE_SCENE_WORLD;
+}
+
 /** @brief Builds the g_Particles pool walk and feeds its quads and lines into the native scene.
  *
  * Lines (sel 1 world streaks, sel 4 HUD egg bursts) become two-triangle
  * ribbons 1 px wide, gouraud along the line, untextured. Quads (sel 0
  * tiles, sel 2, 3 and 5 billboards) become two triangles with the decoded
  * material and blend. Each primitive takes one depth, its centre or first
- * endpoint view-Z, because particles are small billboards. Every triangle
- * carries its OPENPETE_TAG_PARTICLE tag. Glows and sparkles feed through
+ * endpoint view-Z, because particles are small billboards, and the layer
+ * part_sel_layer names for its sel. Every triangle carries its
+ * OPENPETE_TAG_PARTICLE tag. Glows and sparkles feed through
  * their own functions. Display-only: the .s already ran and wrote every
  * verdict byte. OPENPETE_PARTICLE_MATDBG=<n> prints each quad's material for
  * three openpete_frame values starting at n.
@@ -1108,7 +1137,7 @@ static void particle_feed_native(CPUState* cpu) {
             st.textured = 0;
             st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
             st.blend = l->blend;
-            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
+            openpete_native_scene_add_tri(&st, part_sel_layer(l->sel), 0);
         }
     }
     openpete_native_scene_set_tag(0);
@@ -1155,7 +1184,7 @@ static void particle_feed_native(CPUState* cpu) {
             st.tpage_x = q->tpx; st.tpage_y = q->tpy;
             st.clut_x = q->clx; st.clut_y = q->cly; st.bpp = q->bpp;
             st.blend = q->blend;
-            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
+            openpete_native_scene_add_tri(&st, part_sel_layer(q->sel), 0);
         }
     }
     openpete_native_scene_set_tag(0);
