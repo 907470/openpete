@@ -8,7 +8,6 @@
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
-#include "openpete_state.h"
 #include "mod_vec.h"
 #include "game_extras.h" /* game_is_gameplay_live, game_read_player_pose */
 
@@ -84,49 +83,6 @@ void openpete_mods_game_state_sampled(openpete_mods_game_state_t* out) {
     out->live = w[0]; out->pose_rc = w[1];
     out->x = w[2]; out->y = w[3]; out->z = w[4];
     out->yaw = w[5]; out->level = w[6]; out->tick = (uint32_t)w[7];
-}
-
-static int         s_pending_op = 0; /* 0 none, 1 save, 2 load */
-static unsigned    s_pending_slot = 0;
-static const char* s_pending_owner = NULL; /* loader-owned mod id */
-
-int openpete_mods_savestate_request(int op, unsigned slot,
-                                    const char* owner) {
-    if (op != 1 && op != 2) return -1;
-    if (slot >= OPENPETE_STATE_NUM_SLOTS) {
-        OPL_ERROR_F("mods", "%s: savestate slot %u out of range (0..%d)",
-                    owner ? owner : "?", slot,
-                    OPENPETE_STATE_NUM_SLOTS - 1);
-        return -1;
-    }
-    if (s_pending_op != 0) {
-        OPL_WARN_F("mods", "%s: a savestate op is already pending - "
-                   "request dropped", owner ? owner : "?");
-        return -1;
-    }
-    s_pending_op = op;
-    s_pending_slot = slot;
-    s_pending_owner = owner;
-    OPL_INFO_F("mods", "%s queued savestate %s on slot %u",
-               owner ? owner : "?", op == 1 ? "SAVE" : "LOAD", slot);
-    return 0;
-}
-
-/* Drops an op whose owner mod was disabled after the request. */
-int openpete_mods_pending_state_op(unsigned* out_slot) {
-    int         op    = s_pending_op;
-    const char* owner = s_pending_owner;
-    s_pending_op    = 0;
-    s_pending_owner = NULL;
-    if (op && owner && openpete_mods_build_key(owner) &&
-        !openpete_mods_is_enabled(owner)) {
-        OPL_INFO_F("mods", "%s was disabled before its queued savestate "
-                   "%s on slot %u ran - dropped", owner,
-                   op == 1 ? "SAVE" : "LOAD", s_pending_slot);
-        return 0;
-    }
-    if (out_slot) *out_slot = s_pending_slot;
-    return op;
 }
 
 /* ---- asset-overlay roots (logical-ID asset overlay v1) --------------- */

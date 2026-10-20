@@ -2332,35 +2332,6 @@ int openpete_mods_texture_scan_root(const char* dir, const char* owner);
 
 /* ── Engine services (core/mods/mod_services.c) ────────────────────── */
 
-/** @brief Queue a mod-requested savestate save or load for the host loop's quiescent point.
- *
- * One op is pending at a time; a request while one is pending is dropped
- * with a warning. core/runtime/run.c consumes it through
- * openpete_mods_pending_state_op.
- * @param op 1 = save, 2 = load.
- * @param slot Savestate slot, below OPENPETE_STATE_NUM_SLOTS.
- * @param owner Requesting mod id, kept by pointer until the op is
- *        consumed; NULL logs as "?".
- * @return 0 when queued, -1 for a bad op or slot or when an op is already
- *         pending. */
-int openpete_mods_savestate_request(int op, unsigned slot,
-                                    const char* owner);
-
-/** @brief Take the pending mod savestate op, clearing it.
- *
- * core/runtime/run.c calls it once per host iteration and executes the op
- * at the same point as the savestate hotkeys: the game fiber is yielded
- * and the pad state is not yet refreshed. An op whose owner is a loaded
- * mod (openpete_mods_build_key returns non-NULL) that is no longer enabled
- * is dropped with a log line, since the tick boundary may disable the mod
- * between the request and this call; an owner that is not a loaded mod is
- * never filtered.
- * @param out_slot Receives the op's slot when an op is returned; may be
- *        NULL.
- * @return 1 = save, 2 = load, 0 when none is pending or the op was
- *         dropped. */
-int openpete_mods_pending_state_op(unsigned* out_slot);
-
 /** @brief Append a mod's assets directory to the asset-overlay root table.
  *
  * The loader registers one root per entered mod with an assets/ dir, in

@@ -3965,7 +3965,7 @@ static void ra_end_log(int left, int adopted) {
                    "its bound; adopted the led timeline through f=%u", openpete_frame);
 }
 
-/** @brief Queue the savestate requests raised this iteration: the hotkeys, a mod's request and the scheduled one-shots.
+/** @brief Queue the savestate requests raised this iteration: the hotkeys and the scheduled one-shots.
  *
  * The scheduled save is queued before the scheduled load, so a save and a load
  * armed for the same tick capture and then restore (a same-tick roundtrip).
@@ -3975,9 +3975,6 @@ static void state_ops_collect(const openpete_options_t* opts, unsigned slot) {
     static bool sched_saved = false, sched_loaded = false;
     if (openpete_key_pressed(OPK_STATE_SAVE)) state_op_push(STATE_OP_SAVE_SLOT, slot, NULL);
     if (openpete_key_pressed(OPK_STATE_LOAD)) state_op_push(STATE_OP_LOAD_SLOT, slot, NULL);
-    unsigned mod_slot = 0;
-    const int mod_op = openpete_mods_pending_state_op(&mod_slot);
-    if (mod_op) state_op_push(mod_op == 2 ? STATE_OP_LOAD_SLOT : STATE_OP_SAVE_SLOT, mod_slot, NULL);
     const int key = (int)openpete_feed_key_now();
     if (!sched_saved && opts->state_save_on_frame >= 0 && key >= opts->state_save_on_frame) {
         sched_saved = true;
