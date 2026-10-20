@@ -320,6 +320,7 @@ endif()
 
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
     add_subdirectory(tests/unit)
+    add_subdirectory(tests/modsave)
 
     # The executables the game-launching tests below run (OPENPETE_BIN); each
     # harness passes --disc, which selects the game in the one executable.
