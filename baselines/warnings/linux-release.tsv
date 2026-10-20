@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: a7f133a25c9eab2c006f7a1b9e9684bba2ce1a31
+# head: 72b4793ebb14f93e5e7fc86e21fcdd258517eb49
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
@@ -31,7 +31,6 @@ core/mods/mod_shader.c	-Wformat-truncation=	me	shader_link_decide	1
 core/mods/mod_texture.c	-Wformat-truncation=	me	openpete_mods_texture_scan_root	1	
 core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/mods/mod_texture.c	-Wunused-function	me	-	34	
-core/psx/disc_image.c	-Wmaybe-uninitialized	me	disc_image_open	1	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'aN' of 'hd_pc'	2	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'clear' of 'hold_area_t'	1	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'sx' of 'rhi_vertex'	8	

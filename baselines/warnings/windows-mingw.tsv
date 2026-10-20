@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 44df978d84f89953a8798d836034fa9688b11a79
+# head: 72b4793ebb14f93e5e7fc86e21fcdd258517eb49
 file	option	kind	detail	count	accepted
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
@@ -13,7 +13,6 @@ core/input/host_input.c	-Warray-bounds	me	openpete_host_input_publish_sdl	1
 core/input/keymap.c	-Wmissing-field-initializers	fe	missing initializer for field 'menu_exempt' of 'km_resolve_t'	3	
 core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/mods/mod_texture.c	-Wunused-function	me	-	34	
-core/psx/disc_image.c	-Wmaybe-uninitialized	me	disc_image_open	1	
 core/record/record.c	-Wdeprecated-declarations	fe	'channel_layout' is deprecated	2	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg
 core/record/record.c	-Wdeprecated-declarations	fe	'channels' is deprecated	2	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg
 core/record/record.c	-Wdeprecated-declarations	fe	'swr_alloc_set_opts' is deprecated	1	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg

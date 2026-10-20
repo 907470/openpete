@@ -121,6 +121,7 @@ static int64_t file_size(FILE* fp) {
 
 disc_image_t* disc_image_open(const char* path, int mode, int tag) {
     char bin[4096], tried[4096];
+    tried[0] = '\0';   /* the resolver writes it; a NULL path never reaches the resolver */
     if (!path || openpete_psx_resolve_disc_bin(path, bin, sizeof bin, tried, sizeof tried) != 0) {
         OPL_ERROR_F("disc", "no disc image at %s (tried: %s)", path ? path : "(null)",
                     tried[0] ? tried : "(nothing)");
