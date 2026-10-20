@@ -21,8 +21,9 @@ and on the reference state, invariants written apart from both models:
       identity the next tick's delivery arm serves;
   I3  at most one read per mod per tick;
   I4  the card image changes only by the game's own writes, a restore of
-      led writes, a process restart or an outside edit (the engine never
-      writes the card);
+      led writes, a process restart (the image is unread until first
+      access) or the card's first access, which reads the file with any
+      outside edit made before it (the engine never writes the card);
   I5  no index holds two snapshots with one (hash, lineage), nor more than
       the cap;
   I6  round trip: an OK, GAP or STALE read delivers a value the mod
@@ -301,6 +302,10 @@ def _card_change_ok(ev, before, after):
         if kind == "COMPLETE":
             return all(c == ev[1] for c, _ in changed)
         return all(c == ev[1] for c, _ in changed)
+    if kind in ("MOUNT", "MOUNT_ADOPT"):
+        slot = ev[1]
+        return not before.mounted[slot] and after.s_card[slot] == after.s_disk[slot] and all(
+            before.s_card[c] == after.s_card[c] for c in range(before.cfg.n_slots) if c != slot)
     return kind in ("RA_ROLLBACK", "RA_PARTIAL", "RESTART", "HANDOFF")
 
 
@@ -436,6 +441,26 @@ def _fresh(after, ev, t):
             if M.active(after, m) and not t.played[m] and after.blk.arena[m] != 0]
 
 
+# Engagement of single rules (LAW §8): edge kinds each suite must apply at
+# least once, counted by edge_marks().
+ENGAGE = {
+    "legacy": ("edit-before-first-access",),
+    "async": ("issue-replaces-pending",),
+}
+
+
+def edge_marks(ev, before):
+    """The ENGAGE marks one edge earns: an outside edit of a card file the
+    process has not read yet (its first access must see it), an issue
+    replacing a pending entry."""
+    marks = []
+    if ev[0] == "EDIT" and not before.mounted[ev[1]]:
+        marks.append("edit-before-first-access")
+    if ev[0] == "ISSUE" and before.blk.entries[ev[1]] is not None:
+        marks.append("issue-replaces-pending")
+    return marks
+
+
 def _short(ev):
     return ev[0] + ("(" + ",".join(str(x) for x in ev[1:]) + ")" if len(ev) > 1 else "")
 
@@ -458,6 +483,7 @@ def run_suite(cm, name, spec, depth, fault):
     stats = Counter()
     statuses = Counter()
     kinds = Counter()
+    marks = Counter()
     failures = []
     t0 = time.time()
     for d in range(depth):
@@ -474,6 +500,7 @@ def run_suite(cm, name, spec, depth, fault):
                 c2, fx_c = cm.apply(c, ev)
                 stats["edges"] += 1
                 kinds[ev[0]] += 1
+                marks.update(edge_marks(ev, py))
                 where = " <- " + " ".join(_short(x) for x in path + (ev,))
                 if fx_py != fx_c:
                     failures.append(f"reference: {ev} effects C {fx_c} vs reference {fx_py}{where}")
@@ -507,7 +534,7 @@ def run_suite(cm, name, spec, depth, fault):
             break
     stats["states"] = len(seen)
     stats["seconds"] = round(time.time() - t0, 1)
-    return stats, statuses, kinds, failures
+    return stats, statuses, kinds, marks, failures
 
 
 def main(argv):
@@ -546,7 +573,7 @@ def main(argv):
     for n in names:
         sp = table[n]
         depth = sp[4] if a.quick else sp[5]
-        stats, statuses, kinds, failures = run_suite(cm, n, sp, depth, a.fault)
+        stats, statuses, kinds, marks, failures = run_suite(cm, n, sp, depth, a.fault)
         engaged = stats["edges"] > 0 and stats["effects"] > 0
         print(f"[state-model] {n}: depth {depth}, {stats['states']} states, {stats['edges']} edges, "
               f"{stats['effects']} effects compared, {stats['seconds']} s")
@@ -555,6 +582,11 @@ def main(argv):
         if missing:
             failures.append(f"engagement: never produced {missing}")
         print(f"[state-model]   events applied: {dict(sorted(kinds.items()))}")
+        if n in ENGAGE:
+            print(f"[state-model]   rule edges: {dict((x, marks[x]) for x in ENGAGE[n])}")
+            unmet = [x for x in ENGAGE[n] if not marks[x]]
+            if unmet:
+                failures.append(f"engagement: never applied {unmet}")
         verdict = "FAIL" if failures else ("PASS" if engaged else "VACUOUS")
         print(f"[state-model]   verdict: {verdict}")
         for f in failures[:5]:

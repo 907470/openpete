@@ -18,7 +18,7 @@ magic), T (torn, checksum fails); the content stands for its hash.
 READINGS lists each point the rules leave open and the reading this model
 takes. On the ids in ALIGNED the model takes modsave_model.c's choice where
 it differs from its own reading; MODSAVE_INDEP_OWN=1 runs every own reading,
-MODSAVE_INDEP_OWN=R1,R12 the named ones.
+MODSAVE_INDEP_OWN=R1,R9 the named ones.
 """
 import os
 from typing import NamedTuple, Optional
@@ -95,10 +95,9 @@ READINGS = {
            "holds the handed-off state",
     "R11": "port-rebind lookup: the key's record hash at the key's index in each port's sidecar "
            "(in memory when mounted, else on disk), the key's port first",
-    "R12": "outside edit: own, the card image is read at first access, so an edit before it is "
-           "seen; aligned, the image is read at process start",
-    "R13": "issue with an entry pending on the slot: own, the new entry replaces it; aligned, "
-           "the event is not enabled",
+    "R12": "outside edit: the card image is read at the card's first access (MOUNT), not at "
+           "process start, so an edit before it is seen",
+    "R13": "issue with an entry pending on the slot: the new entry replaces it",
     "R14": "deferred first entry: own, the mod's arena is reset to the fresh value; aligned, it "
            "keeps the arena the block holds",
     "R15": "savestate load: own, the rewind keyframe stays; aligned, it is cleared",
@@ -108,7 +107,7 @@ READINGS = {
 
 
 # Readings on which this model takes modsave_model.c's choice (READINGS).
-_ALIGNABLE = frozenset(("R1", "R9", "R10", "R12", "R13", "R14", "R15", "R16"))
+_ALIGNABLE = frozenset(("R1", "R9", "R10", "R14", "R15", "R16"))
 _OWN = os.environ.get("MODSAVE_INDEP_OWN", "")
 ALIGNED = frozenset() if _OWN == "1" else _ALIGNABLE - frozenset(_OWN.split(","))
 
@@ -588,7 +587,7 @@ def _new_process(s, loaded, entered):
     s.enabled = s.loaded
     s.armed = any(s.loaded)
     s.mounted = (False,) * s.cfg.n_slots
-    s.s_card = s.s_disk
+    s.s_card = (("E",) * s.cfg.n_idx,) * s.cfg.n_slots   # no image read before first access
     s.dirty = (False,) * s.cfg.n_slots
     s.sc_mem = (None,) * s.cfg.n_slots
     s.sc_fault = False
@@ -614,6 +613,7 @@ def ev_handoff(s, fx, ev):
 
 def _mount(s, fx, slot):
     s.mounted = tset(s.mounted, slot, True)
+    s.s_card = tset(s.s_card, slot, s.s_disk[slot])
     d = s.sc_disk[slot]
     if d == CORRUPT:
         _log(s, fx, "sidecar-unparseable")
@@ -710,8 +710,6 @@ def ev_ra_partial(s, fx, ev):
 def ev_edit(s, fx, ev):
     slot, idx, c = ev[1], ev[2], ev[3]
     s.s_disk = tset(s.s_disk, slot, tset(s.s_disk[slot], idx, c))
-    if own("R12") and not s.mounted[slot]:
-        s.s_card = tset(s.s_card, slot, s.s_disk[slot])
 
 
 def ev_sc_corrupt(s, fx, ev):
@@ -748,8 +746,6 @@ def enabled(s, ev):
         return False
     if k in ("LOAD", "LOAD_STALE"):
         return s.mounted[ev[1]] and nonempty(s.s_card[ev[1]][ev[2]])
-    if k == "ISSUE" and not own("R13") and s.blk.entries[ev[1]] is not None:
-        return False
     if k in ("WRITE", "WRITE_FAIL", "ISSUE", "FILE_CREATE", "FORMAT"):
         return s.mounted[ev[1]]
     if k == "SC_CORRUPT":

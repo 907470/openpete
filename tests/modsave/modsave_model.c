@@ -331,7 +331,11 @@ static msm_rec_t entry_rec(msm_state_t* s, int m, const msm_rec_t* prev, uint8_t
     return w;
 }
 
-/** @brief Write issue: decide the lineage (the key's when it names this save, else the pending lineage, consumed at completion: Q1), the carry source and refusals, call each write. */
+/** @brief Write issue: decide the lineage (the key's when it names this save, else the pending lineage, consumed at completion: Q1), the carry source and refusals, call each write.
+ *
+ * At most one entry is pending per card slot: an issue before the pending
+ * entry's completion replaces that entry, which then never reaches the card.
+ */
 static void issue(msm_state_t* s, int slot, int idx, uint8_t content, uint8_t fails, fxbuf_t* fx) {
     msm_block_t* b = &s->blk;
     msm_entry_t* e = &b->entry[slot];
@@ -393,7 +397,7 @@ static void complete(msm_state_t* s, int slot, int outcome, fxbuf_t* fx) {
     host_op(s, &op, fx);
 }
 
-/** @brief An issue while unarmed: an uncaptured entry that only writes the card at completion. */
+/** @brief An issue while unarmed: an uncaptured entry, replacing any pending one, that only writes the card at completion. */
 static void issue_plain(msm_state_t* s, int slot, int idx, uint8_t content) {
     msm_entry_t* e = &s->blk.entry[slot];
     memset(e, 0, sizeof *e);
@@ -488,7 +492,11 @@ static void tick_action(msm_state_t* s, const msm_event_t* ev, fxbuf_t* fx) {
 
 /* ── host events ───────────────────────────────────────────────────────── */
 
-/** @brief A new process: the mod list, a boot block, cards reloaded from disk, no sidecar read yet. */
+/** @brief A new process: the mod list, a boot block, no card image or sidecar read yet.
+ *
+ * Cards load lazily: the image stays unread (empty) until the card's first
+ * access, so an outside edit made before that access is seen.
+ */
 static void ev_restart(msm_state_t* s, uint8_t loaded, uint8_t entered) {
     s->loaded = loaded;
     s->entered = (uint8_t)(entered & loaded);
@@ -496,7 +504,7 @@ static void ev_restart(msm_state_t* s, uint8_t loaded, uint8_t entered) {
     block_boot(s, &s->blk);
     s->armed = loaded != 0;
     memset(s->mounted, 0, sizeof s->mounted);
-    memcpy(s->card, s->disk, sizeof s->card);
+    memset(s->card, MSM_C_E, sizeof s->card);
     memset(s->dirty, 0, sizeof s->dirty);
     memset(s->sc_mem, 0, sizeof s->sc_mem);
     s->sc_fault = 0;
@@ -504,9 +512,10 @@ static void ev_restart(msm_state_t* s, uint8_t loaded, uint8_t entered) {
     s->have_rw = 0;
 }
 
-/** @brief First card access: read its sidecar (an unparseable one is set aside), arm when one exists. */
+/** @brief First card access: read the card image and its sidecar (an unparseable one is set aside), arm when one exists. */
 static void ev_mount(msm_state_t* s, int slot, fxbuf_t* fx) {
     s->mounted[slot] = 1;
+    memcpy(s->card[slot], s->disk[slot], sizeof s->card[slot]);
     if (s->sc_disk[slot].state == MSM_SC_CORRUPT) {
         fx_log(s, fx, "sidecar-unparseable");
         memset(&s->sc_disk[slot], 0, sizeof s->sc_disk[slot]);
@@ -643,8 +652,9 @@ static int tick_enabled(const msm_state_t* s, const msm_event_t* ev) {
     switch (ev->kind) {
     case MSM_EV_LOAD: case MSM_EV_LOAD_STALE:
         return s->mounted[ev->a] && s->card[ev->a][ev->b] != MSM_C_E;
-    case MSM_EV_WRITE: case MSM_EV_WRITE_FAIL: case MSM_EV_ISSUE:
+    case MSM_EV_WRITE: case MSM_EV_WRITE_FAIL:
         return s->mounted[ev->a] && !s->blk.entry[ev->a].used;
+    case MSM_EV_ISSUE:       return s->mounted[ev->a]; /* replaces a pending entry */
     case MSM_EV_COMPLETE:    return s->blk.entry[ev->a].used;
     case MSM_EV_FILE_CREATE: case MSM_EV_FORMAT:
         return s->mounted[ev->a] && !s->blk.entry[ev->a].used;

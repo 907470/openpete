@@ -18,6 +18,8 @@ typedef struct { msm_event_t ev; const char* fx; } step_t;
 #define RESET_     { MSM_EV_RESET, 0, 0, 0, 0 }
 #define LOAD(i)    { MSM_EV_LOAD, 0, i, 0, 0 }
 #define WRITE(i,c) { MSM_EV_WRITE, 0, i, c, 0 }
+#define ISSUE(i,c) { MSM_EV_ISSUE, 0, i, c, 0 }
+#define DONE_      { MSM_EV_COMPLETE, 0, 0, 0, 0 }
 #define PLAY(m,v)  { MSM_EV_PLAY, m, v, 0, 0 }
 #define TOGGLE(m)  { MSM_EV_TOGGLE, m, 0, 0, 0 }
 #define SCHEMA(m)  { MSM_EV_SCHEMA, m, 0, 0, 0 }
@@ -138,6 +140,22 @@ static const case_t k_cases[] = {
         { MOUNT_, "" },
         { LOAD(0), "" },
         { T_, "R0:STALE:1:0;R1:STALE:1:0" },
+        { END_, NULL } } },
+    { "record edited outside openpete after start, before first access: STALE", {
+        { WRITE(0, X), "L:write-key-unknown;W0;W1;S0.0:put" },
+        { RESTART_, "" },
+        { EDIT(0, Y), "" },
+        { MOUNT_, "" },
+        { LOAD(0), "" },
+        { T_, "R0:STALE:1:0;R1:STALE:1:0" },
+        { END_, NULL } } },
+    { "second issue before completion replaces the pending entry", {
+        { ISSUE(0, X), "L:write-key-unknown;W0;W1" },
+        { PLAY(0, 1), "" },
+        { ISSUE(0, Y), "L:write-key-unknown;W0;W1" },
+        { DONE_, "S0.0:put" },
+        { LOAD(0), "" },
+        { T_, "R0:OK:1:1;R1:OK:1:0" },
         { END_, NULL } } },
     { "a record with a legacy pad and no snapshot: LEGACY_PAD", {
         { EDIT(0, P), "" },

@@ -577,6 +577,11 @@ def r_issue(s, slot, idx, content, fails=()):
                         Entry(slot, idx, b.gen, content, None, (), (), False)))
 
 
+def g_issue(s, slot, idx, content, fails=()):
+    """An issue replaces the slot's pending entry (one entry per card slot)."""
+    return s.mounted[slot]
+
+
 def g_complete(s, slot, outcome):
     return s.blk.entries[slot] is not None
 
@@ -655,7 +660,8 @@ def r_restart(s, loaded, entered):
     s.blk = boot_block(s, cfg)
     s.armed = bool(loaded)
     s.mounted = (False,) * cfg.n_slots
-    s.s_card = s.s_disk
+    # Cards load lazily: no image is read until the card's first access.
+    s.s_card = (("E",) * cfg.n_idx,) * cfg.n_slots
     s.dirty = (False,) * cfg.n_slots
     s.sc_mem = (None,) * cfg.n_slots
     s.sc_fault = False
@@ -668,7 +674,9 @@ def g_mount(s, slot):
 
 
 def r_mount(s, slot):
+    """First card access: the card image and the sidecar are read."""
     s.mounted = tset(s.mounted, slot, True)
+    s.s_card = tset(s.s_card, slot, s.s_disk[slot])
     d = s.sc_disk[slot]
     if d == "CORRUPT":
         log(s, "sidecar-unparseable")
@@ -844,7 +852,7 @@ RULES = {
     "RESET":       (TICK, g_tick, r_reset),
     "WRITE":       (TICK, g_write, r_write),
     "WRITE_FAIL":  (TICK, g_write, r_write_fail),
-    "ISSUE":       (TICK, g_write, r_issue),
+    "ISSUE":       (TICK, g_issue, r_issue),
     "COMPLETE":    (TICK, g_complete, r_complete),
     "FILE_CREATE": (TICK, g_mounted, r_file_create),
     "FORMAT":      (TICK, g_mounted, r_format),

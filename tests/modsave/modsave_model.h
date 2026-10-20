@@ -51,7 +51,7 @@ enum {
     MSM_EV_RESET,        /* new-playthrough reset */
     MSM_EV_WRITE,        /* a slot, b index, c content, d mask of mods whose write returns -1 */
     MSM_EV_WRITE_FAIL,   /* a, b, c - the write's card flush fails */
-    MSM_EV_ISSUE,        /* a, b, c, d - asynchronous write issued */
+    MSM_EV_ISSUE,        /* a, b, c, d - asynchronous write issued; replaces the slot's pending entry */
     MSM_EV_COMPLETE,     /* a slot, b outcome (0 ok, 1 fail, 2 torn) */
     MSM_EV_FILE_CREATE,  /* a slot - one write of empty records over every index */
     MSM_EV_FORMAT,       /* a slot */
@@ -59,8 +59,8 @@ enum {
     MSM_EV_TOGGLE,       /* a mod */
     MSM_EV_ENTER,        /* a mod - deferred first entry */
     MSM_EV_SCHEMA,       /* a mod - hot reload with the schema flipped 1 <-> 2 */
-    MSM_EV_RESTART,      /* a loaded mask, b entered mask - new process */
-    MSM_EV_MOUNT,        /* a slot - first card access */
+    MSM_EV_RESTART,      /* a loaded mask, b entered mask - new process, no card read yet */
+    MSM_EV_MOUNT,        /* a slot - first card access: the image and the sidecar are read */
     MSM_EV_MOUNT_ADOPT,  /* a slot - first card access under --adopt-saves */
     MSM_EV_SS_TAKE,
     MSM_EV_SS_LOAD,
