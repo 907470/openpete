@@ -148,6 +148,7 @@ static void spyro1_mirror_resetgraph(CPUState* cpu, int mode) {
  * @param cpu Guest CPU state.
  * @param cb The registered handler's guest address (a0 holds the same). */
 static void spyro1_mirror_vsync_callback(CPUState* cpu, uint32_t cb) {
+    (void)cb;
     /* Real PSYQ VSyncCallback also stashes the cb pointer in libgpu's
      * vtable at 0x800749D0 (the slot func_8005DE58 reads on each VSync
      * IRQ). PsyCross dispatches the cb host-side, so we mirror the write

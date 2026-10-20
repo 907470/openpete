@@ -12015,6 +12015,7 @@ static double s_rim_ofx, s_rim_ofy, s_rim_H;
  * @param cpu Unused.
  */
 static void rim_frames_derive(CPUState* cpu) {
+    (void)cpu;
     s_rim_ofx = s_view.ofx;
     s_rim_ofy = s_view.ofy;
     s_rim_H   = s_view.H_eff;

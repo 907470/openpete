@@ -337,7 +337,7 @@ static int rib_ring_point(const uint8_t* rec, uint32_t len, int age, int32_t hw[
  * the head's SZ3 at or past TR.far_sz (:2540). Each point's outcode, SZ3,
  * MAC3 and rebase corner (keyed by the record, aged by its place from the
  * head) are written to pt.
- * @param cpu The guest CPU state.
+ * @param cpu Unused.
  * @param v The tick's view.
  * @param rec The record's guest address.
  * @param cam The camera position shifted right one, as the routine reads it.
@@ -345,6 +345,7 @@ static int rib_ring_point(const uint8_t* rec, uint32_t len, int age, int32_t hw[
  * @return The point count, or 0 when the routine drops the record. */
 static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
                               const int32_t cam[3], rib_pt* pt) {
+    (void)cpu;
     const uint8_t* host = (const uint8_t*)openpete_psx_to_host_span(rec, TR.stride);
     if (!host) return 0;
     int32_t hw[3];

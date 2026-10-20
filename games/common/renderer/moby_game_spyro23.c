@@ -508,6 +508,7 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
                            uint32_t moby, uint32_t rec, const moby_wface_t* F,
                            uint32_t c[4], const float ev[4][3], int* textured,
                            moby_face_tex_t* tex) {
+    (void)moby;
     (void)textured;   /* every treatment keeps the face's own textured flag */
     if (F->hl != 1) return 0;                      /* bit 4: the other dispatcher */
     int mode = mat ? (int)((mat >> 28) & 7u) : 0;

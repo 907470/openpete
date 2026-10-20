@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 46b7b3d9a9c1aa129959468544c06c3b981778a7
+# head: 09a90934701ad650ac3348f1c73de87685e76c5f
 file	option	kind	detail	count	accepted
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
@@ -45,7 +45,6 @@ games/common/renderer/moby.c	-Wunused-but-set-variable	fe	variable 'revnv' set b
 games/common/renderer/moby.c	-Wunused-but-set-variable	fe	variable 'revsx' set but not used	1	
 games/common/renderer/moby.c	-Wunused-but-set-variable	fe	variable 'revsy' set but not used	1	
 games/common/renderer/moby.c	-Wunused-parameter	fe	unused parameter 'cpu'	1	
-games/common/renderer/moby_game_spyro23.c	-Wunused-parameter	fe	unused parameter 'moby'	1	
 games/common/renderer/particles.c	-Wmissing-field-initializers	fe	missing initializer for field 'n' of 'struct <anonymous>'	1	
 games/common/renderer/particles.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/render_paths.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	1	
@@ -56,9 +55,7 @@ games/common/renderer/terrain.c	-Wmaybe-uninitialized	me	terrain_build	1
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'osx' of 'ngte_cvert'	8	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/terrain.c	-Wunused-function	me	-	1	
-games/common/renderer/terrain.c	-Wunused-parameter	fe	unused parameter 'cpu'	1	
 games/common/renderer/tracers.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
-games/common/renderer/tracers.c	-Wunused-parameter	fe	unused parameter 'cpu'	1	
 games/common/renderer/ui_sprite.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	8	
 games/common/renderer/zap.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-1/features/crash_demo_woah.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	4	
@@ -73,7 +70,6 @@ games/spyro-1/psyq_hooks.cpp	-Wmissing-field-initializers	fe	missing initializer
 games/spyro-1/psyq_hooks.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'psyq_game_hooks::load_window_active'	1	
 games/spyro-1/psyq_hooks.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'psyq_game_hooks::load_window_word'	1	
 games/spyro-1/psyq_hooks.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'psyq_game_hooks::root_counterN'	1	
-games/spyro-1/psyq_hooks.cpp	-Wunused-parameter	fe	unused parameter 'cb'	1	
 games/spyro-1/renderer/interp_regions.c	-Wmissing-field-initializers	fe	missing initializer for field 'ra_commit' of 'game_interp_row_t' {aka 'const struct game_interp_row'}	3	
 games/spyro-1/renderer/layout.c	-Wmissing-field-initializers	fe	missing initializer for field 'dy' of 'struct <anonymous>'	2	
 games/spyro-1/renderer/layout.c	-Wmissing-field-initializers	fe	missing initializer for field 'moby_off' of 'game_moby_director_t' {aka 'const struct game_moby_director'}	1	
