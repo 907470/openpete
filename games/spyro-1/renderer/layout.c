@@ -451,6 +451,11 @@ const ui_game_t spyro1_ui_game = {
     .ot_insert    = F_UI_OT_INSERT,
     .fade_emitter = F_UI_FADE,
 
+    /* The cutscene letterbox: func_80018F30 steps D_800756C0 and draws the
+     * bars over rows 0..h and 240-h..240 (src/gamestates/draw.c:427-473). */
+    .letterbox = { .emitter = F_UI_LETTERBOX, .height = 0x800756C0u,
+                   .top_y = 0, .bottom_y = 240 },
+
     /* The pause / inventory / flight-results freeze quad: setRGB0(0x4C, 0x80,
      * 0x40) packed B,G,R, sampling the grayscale CLUT the desaturation writes
      * to VRAM (512, 224). */

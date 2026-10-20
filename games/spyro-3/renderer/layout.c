@@ -682,6 +682,11 @@ const ui_game_t spyro3_ui_game = {
     .fade_emitter_ovl     = F_CREDITS_FADE,
     .fade_emitter_overlay = 7u,
 
+    /* The cutscene letterbox: func_8001FF44 steps D_8006C64C and draws the
+     * bars over rows 12..12+h and 228-h..228 (drawutil/func_8001FF44.s:4-99). */
+    .letterbox = { .emitter = F_UI_LETTERBOX, .height = 0x8006C64Cu,
+                   .top_y = 12, .bottom_y = 228 },
+
     /* No freeze-frame backdrop quad is located on this game: the pause screen
      * is not reproduced from the native renderer's last world frame yet. */
     .freeze_tint   = 0u,

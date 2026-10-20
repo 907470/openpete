@@ -1062,6 +1062,8 @@ static CPUState* s_cpu = NULL;        /* the game CPU (stable), for the OT-walk 
 static int      s_in_fade = 0;        /* set across the fade emitter's real-function call so
                                        * the chokepoint hook can tell the fade's 0x2A F4 from
                                        * a dark panel's (both go through the chokepoint) */
+static int      s_in_letterbox = 0;   /* set across the letterbox emitter's real call
+                                       * (ui_game.letterbox.emitter) */
 static int      s_in_grid = 0;        /* set across the framebuffer grid emitter's real call
                                        * (ui_game.fb_grid_emitter) */
 static unsigned s_grid_ord;           /* primitives linked through the chokepoint since that
@@ -1988,6 +1990,9 @@ static void claim_linked(CPUState* cpu, uint32_t prim) {
     else if (is_freeze_mask_line(cpu, prim)) s_freeze_mask_dropped++;   /* see is_freeze_mask_line */
     else if (is_ft4(cpu, prim))        claim(cpu, prim, QK_FT4);
     else if (is_dr_mode(cpu, prim))    claim(cpu, prim, QK_DR_MODE);   /* the GPU draw-mode's ABR */
+    else if (s_in_letterbox && is_f4_opaque(cpu, prim)) {
+        /* the letterbox bars: drawn from the game's height, not fed */
+    }
     else if (is_f4_opaque(cpu, prim))                                   /* letterbox bars, */
         claim_aux(cpu, prim, QK_F4_BAR, s_in_grid ? grid_elem_key(grid_ord) : 0u); /* grid borders */
     else if (is_f4_semitrans(cpu, prim) && !s_in_fade)
@@ -2178,6 +2183,31 @@ static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief Hooks the cutscene letterbox emitter and records the bar height it leaves for the native scene.
+ *
+ * The real emitter runs unchanged with s_in_letterbox set, so the
+ * chokepoint does not feed the bars it links; the height word
+ * (ui_game.letterbox.height) read after the call is the height those bars
+ * were drawn at, and openpete_native_scene_set_letterbox draws them from it
+ * at the game's rows. Skipped, apart from the real call, when a render-path
+ * selection leaves RP_UI out. Reads guest RAM only.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the native scene is off or on re-entry (the ordinary
+ *         dispatch runs the emitter), 1 having run it. */
+static int on_letterbox_emitter(CPUState* cpu, uint32_t addr) {
+    if (!openpete_native_scene_enabled() || s_in_letterbox) return 0;
+    openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
+    s_in_letterbox = 1;
+    openpete_recomp_module_get()->dispatch(cpu, addr);   /* the real emitter (ref unchanged) */
+    s_in_letterbox = 0;
+    if (render_path_enabled(RP_UI))
+        openpete_native_scene_set_letterbox((float)ui_game.letterbox.top_y,
+                                            (float)ui_game.letterbox.bottom_y,
+                                            (float)(int32_t)cpu->read_word(ui_game.letterbox.height));
+    return 1;
+}
+
 /* The hook addresses are the descriptor's, bound at boot: a static
  * initializer cannot read another TU's const. A game whose descriptor names
  * neither address registers no hook and the module is inert. */
@@ -2187,6 +2217,7 @@ static feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0u, on_fade_emitter, 0u },
     { 0u, on_fade_emitter, 0u },
     { 0u, on_fb_grid_emitter, 0u },
+    { 0u, on_letterbox_emitter, 0u },
     { 0u, on_ot_rank_link, 0u },
     { 0u, on_ot_stitch, 0u },
     { 0u, NULL, 0u },
@@ -2228,7 +2259,7 @@ static void ui_freeze_retain_census(void) {
  * When ui_game.freeze_retained is set, turns on the scene's retained
  * freeze mode and registers the exit census. The named ot_insert,
  * ot_insert_slot, fade_emitter, fade_emitter_ovl (with its overlay id),
- * fb_grid_emitter, ot_rank_slot_insert and (on a rank_by_link game)
+ * fb_grid_emitter, letterbox.emitter, ot_rank_slot_insert and (on a rank_by_link game)
  * ot_stitch addresses are packed to the front of the table and a zero
  * address ends it.
  * @param opts The options; unused. */
@@ -2261,6 +2292,10 @@ static void ui_sprite_apply_options(const openpete_options_t* opts) {
     if (ui_game.fb_grid_emitter) {
         ui_sprite_dispatch[n].addr = ui_game.fb_grid_emitter;
         ui_sprite_dispatch[n].fn   = on_fb_grid_emitter; n++;
+    }
+    if (ui_game.letterbox.emitter) {
+        ui_sprite_dispatch[n].addr = ui_game.letterbox.emitter;
+        ui_sprite_dispatch[n].fn   = on_letterbox_emitter; n++;
     }
     if (ui_game.ot_rank_slot_insert) {
         ui_sprite_dispatch[n].addr = ui_game.ot_rank_slot_insert;

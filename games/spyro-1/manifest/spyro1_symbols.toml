@@ -406,6 +406,12 @@ kind = "function"
 note = "func_800190D4(abrMode, r, g, b) - the full-screen fade emitter: a DR_MODE carrying the ABR alone, then a full-screen 0x2A POLY_F4; the 2D feeder's fade hook site"
 
 [[symbol]]
+name = "F_UI_LETTERBOX"
+addr = 0x80018F30
+kind = "function"
+note = "func_80018F30() (src/gamestates/draw.c:427-473) - the cutscene letterbox emitter: steps the bar height D_800756C0 by g_DeltaTime toward 22 while g_ScreenBorderEnabled is set and toward 0 otherwise, then links two frame-width black 0x28 POLY_F4s through func_800168DC, y 0..D_800756C0 and 240-D_800756C0..240; the dragon-cutscene draw calls it while the flag or the height is nonzero (src/gamestates/draw.c:1821-1823)"
+
+[[symbol]]
 name = "F_FLAME_DRAW"
 addr = 0x80058D64
 kind = "function"

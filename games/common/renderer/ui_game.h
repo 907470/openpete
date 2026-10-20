@@ -63,6 +63,17 @@ typedef struct ui_game {
      * with the cells on presents between ticks. 0 = the game has none. */
     uint32_t fb_grid_emitter;
 
+    /* The cutscene letterbox emitter, called with no arguments: it steps
+     * the bar height word at `height` toward its target and, when the height
+     * is above 0, links two frame-width opaque black POLY_F4s through
+     * `ot_insert`, the top one over PSX rows top_y .. top_y + height and the
+     * bottom one over bottom_y - height .. bottom_y. The feeder drops those
+     * primitives and hands the height the call leaves to the native scene
+     * (openpete_native_scene_set_letterbox), which draws the bars lerped
+     * between ticks. emitter 0 = the game has none; its bars, if any, feed
+     * as frame-width F4s. */
+    struct { uint32_t emitter, height; int top_y, bottom_y; } letterbox;
+
     /* The freeze-frame backdrop quad's signature: its setRGB0 tint as the
      * primitive packs it (0x00BBGGRR) and the VRAM position of the grayscale
      * CLUT it samples through. A quad matching both is reproduced from the

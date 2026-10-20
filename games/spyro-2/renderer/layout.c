@@ -719,6 +719,11 @@ const ui_game_t spyro2_ui_game = {
      * draw/func_800145AC.s:95,336). */
     .fb_grid_emitter = F_UI_FB_GRID,
 
+    /* The cutscene letterbox: func_8004D604 steps D_8006701C and draws the
+     * bars over rows 12..12+h and 228-h..228 (drawutil/func_8004D604.s:6-94). */
+    .letterbox = { .emitter = F_UI_LETTERBOX, .height = 0x8006701Cu,
+                   .top_y = 12, .bottom_y = 228 },
+
     /* No freeze-frame backdrop quad is located on this game: the frozen frame
      * comes from the retained framebuffer below instead. */
     .freeze_tint   = 0u,

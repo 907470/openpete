@@ -206,6 +206,12 @@ kind = "function"
 note = "func_8004DF84(step) (drawutil/func_8004DF84.s:6-123) - the pause window's per-tick framebuffer grid: two black 0x28 POLY_F4 borders through func_8004DD28 (drawutil/func_8004DD28.s:6-34, rect x0..x1, y0..y1 from a0..a3), the first spanning x 0..D_800633BA[step], y D_800633DF[step]..D_800633E0[step] and the second x D_800633BC[step]..D_800633BA[step], y D_800633E0[step]..0xE4, then a 4x4 grid of 0x2C POLY_FT4 cells over x 0..D_800633BC[step], y D_800633E0[step]..0xE4, every primitive linked through func_8001B390 in that order. The borders are the band between the box of step-1 and the box of step. draw/func_800145AC.s:95 calls it for steps 1..16 (the shrink on pause), :336 for steps 14, 12, ..., 2 (the grow back on unpause)"
 
 [[symbol]]
+name = "F_UI_LETTERBOX"
+addr = 0x8004D604
+kind = "function"
+note = "func_8004D604() (drawutil/func_8004D604.s:6-94) - the cutscene letterbox emitter: steps the bar height D_8006701C by 1 toward 12 while D_80067100 is set and toward 0 otherwise, then, when the height is above 0, links two frame-width black 0x28 POLY_F4s through func_8001B390, y 0x0C..0x0C+D_8006701C and 0xE4-D_8006701C..0xE4; draw/func_800155A0.s:94 calls it"
+
+[[symbol]]
 name = "F_TEXT_SPRT"
 addr = 0x8004A374
 kind = "function"

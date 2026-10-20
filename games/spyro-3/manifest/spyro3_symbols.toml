@@ -228,6 +228,12 @@ kind = "function"
 note = "func_800200A0(abrMode, r, g, b) (asm/nonmatchings/drawutil/func_800200A0.s:4-55) - the full-screen fade emitter: func_8005C564(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4, each linked through func_8004E758; src/draw.c:121 drives it from D_8006C598"
 
 [[symbol]]
+name = "F_UI_LETTERBOX"
+addr = 0x8001FF44
+kind = "function"
+note = "func_8001FF44() (asm/nonmatchings/drawutil/func_8001FF44.s:4-99) - the cutscene letterbox emitter: steps the bar height D_8006C64C by 1 toward 12 while D_8006C74C is set (cleared first when bit 0x80000 of D_80070328+0x210 is set) and toward 0 otherwise, then, when the height is above 0, links two frame-width black 0x28 POLY_F4s through func_8004E758, y 0x0C..0x0C+D_8006C64C and 0xE4-D_8006C64C..0xE4; draw/func_8001E460.s:117 calls it"
+
+[[symbol]]
 name = "F_CREDITS_FADE"
 addr = 0x800744BC
 kind = "function"

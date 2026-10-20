@@ -2417,6 +2417,77 @@ static op_time_t          s_overlay_curr_ns, s_overlay_prev_ns;
  * 30 Hz (intermediates hold the previous tick's brightness). */
 static uint32_t s_fade_prev, s_fade_curr;
 
+/* The cutscene letterbox, drawn from the game's bar height rather than from
+ * the bars it emits: s_lb_accum is the record set_letterbox took this tick,
+ * committed by the canonical capture into s_lb_curr with the previous tick
+ * rolled into s_lb_prev. The emitted bars are not fed, so the height that
+ * moves one row per tick is lerped instead of a carry pair that the box
+ * height keys apart. */
+typedef struct { int set; float top, bottom, h; } letterbox_rec_t;
+static letterbox_rec_t s_lb_accum, s_lb_prev, s_lb_curr;
+
+void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h) {
+    s_lb_accum.set = 1; s_lb_accum.top = top_y; s_lb_accum.bottom = bottom_y; s_lb_accum.h = h;
+}
+
+/** @brief Commit this tick's letterbox record as the current one and roll the previous.
+ *
+ * A tick with no record keeps the bar geometry of the last one at height 0,
+ * so the bars lerp out to nothing on the presents after it. */
+static void letterbox_commit(void) {
+    s_lb_prev = s_lb_curr;
+    if (s_lb_accum.set) s_lb_curr = s_lb_accum;
+    else { s_lb_curr.h = 0.0f; s_lb_curr.set = 0; }
+    s_lb_accum.set = 0;
+}
+
+/** @brief Append the letterbox bars at the height lerped between the previous and current tick.
+ *
+ * Each bar is a frame-width opaque black quad (two triangles) on the
+ * OVERLAY layer, re-applied (carry 2) so the next capture does not take it
+ * into the 2D carry. Under widescreen the bar is widened about x 256 by the
+ * Hor+ factor with a 4-pixel bleed the scene scissor clips, as an emitted
+ * frame-width bar is. Nothing is appended at a height of 0 or less.
+ * OPENPETE_LETTERBOX_CENSUS prints one line per append with both heights,
+ * the alpha and the drawn height.
+ * @param alpha Sub-tick alpha, 0 = previous tick, 1 = current tick.
+ * @param leg Census label of the caller. */
+static void letterbox_append(double alpha, const char* leg) {
+    const letterbox_rec_t* g = s_lb_curr.h > 0.0f || !(s_lb_prev.h > 0.0f) ? &s_lb_curr : &s_lb_prev;
+    const float h = (float)(s_lb_prev.h + (s_lb_curr.h - s_lb_prev.h) * alpha);
+    { static int lc = -1;
+      if (lc < 0) { const char* e = getenv("OPENPETE_LETTERBOX_CENSUS"); lc = (e && *e && *e != '0'); }
+      if (lc && (s_lb_prev.h > 0.0f || s_lb_curr.h > 0.0f))
+          fprintf(stderr, "[letterbox vbl=%u leg=%s] prev=%.2f curr=%.2f alpha=%.3f h=%.3f\n",
+                  s_scene_frame, leg, (double)s_lb_prev.h, (double)s_lb_curr.h, alpha, (double)h); }
+    if (!(h > 0.0f)) return;
+    int x0 = 0, x1 = 512;
+    const float F = openpete_native_widescreen_factor();
+    if (F > 1.0f) {
+        const float kBleed = 4.0f;   /* PSX px of edge bleed (scissor-clipped) */
+        x0 = 256 + (int)(-256.0f * F - kBleed);
+        x1 = 256 + (int)(256.0f * F + kBleed);
+    }
+    const float ys[2][2] = { { g->top, g->top + h }, { g->bottom - h, g->bottom } };
+    const uint32_t prim = s_cur_prim, seq = s_cur_seq, cell = s_cur_fb_cell;
+    s_cur_prim = 0; s_cur_seq = 0; s_cur_fb_cell = 0;
+    for (int b = 0; b < 2; b++) {
+        const float sx[4] = { (float)x0, (float)x1, (float)x0, (float)x1 };
+        const float sy[4] = { ys[b][0], ys[b][0], ys[b][1], ys[b][1] };
+        static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
+        for (int t = 0; t < 2; t++) {
+            openpete_scene_tri tri; memset(&tri, 0, sizeof tri);
+            for (int j = 0; j < 3; j++) {
+                const int c = idx[t][j];
+                tri.v[j].sx = sx[c]; tri.v[j].sy = sy[c];
+                tri.v[j].z = 1.0f; tri.v[j].pvz = 1.0f; tri.v[j].rgba = 0xFF000000u;
+            }
+            openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_OVERLAY, 2);
+        }
+    }
+    s_cur_prim = prim; s_cur_seq = seq; s_cur_fb_cell = cell;
+}
+
 /** @brief Report whether OPENPETE_LOAD_CENSUS is set to a value other than one starting with `0`.
  *
  * Read once.
@@ -2959,6 +3030,7 @@ static void held_capture(void) {
  * cadence. The retained area's held list and replay count stay as that
  * capture left them, since the buffer holds the same content. */
 static void overlay_carry_hold(void) {
+    s_lb_prev = s_lb_curr;   /* the letterbox stands still with the rest */
     if (s_overlay_carry_n > 0)
         memcpy(s_overlay_prev, s_overlay_carry, (size_t)s_overlay_carry_n * sizeof(s_overlay_carry[0]));
     s_overlay_prev_n = s_overlay_carry_n;
@@ -2969,7 +3041,7 @@ int openpete_native_scene_canon_repeat(void) {
         /* The 2D feeder's deferred primitive belongs to this present's tick:
          * flush it first, as the capture does. */
         if (s_overlay_precapture) s_overlay_precapture();
-        s_canon_repeat = !s_game_fed && s_overlay_accum_n == 0;
+        s_canon_repeat = !s_game_fed && s_overlay_accum_n == 0 && !s_lb_accum.set;
     }
     return s_canon_repeat;
 }
@@ -2990,6 +3062,15 @@ static void feed_census_note(void) {
     if (!s_game_fed) return;
     s_feed_census.fed++;
     s_feed_census.tris += (uint64_t)s_scene_n;
+}
+
+/** @brief Report whether the live scene holds re-applied 2D carry (carry 2), which apply_overlay composes.
+ *
+ * @return 1 when any live triangle is a re-applied copy, else 0. */
+static int scene_holds_reapplied(void) {
+    for (int t = 0; t < s_scene_n; t++)
+        if (s_scene[t].carry == 2) return 1;
+    return 0;
 }
 
 void openpete_native_scene_capture_overlay(void) {
@@ -3029,6 +3110,7 @@ void openpete_native_scene_capture_overlay(void) {
      * at: the two differ by scheduling jitter, and a 2D slide phased by wall
      * time would judder against the 3D scene it sits over. */
     s_overlay_curr_ns = openpete_interp_tick_stamp();
+    letterbox_commit();
     /* Commit the feed-time accumulation as this tick's carry set. Only the GAME
      * RENDER's fresh emission ever accumulates: OVERLAY/HUD_PANEL by category,
      * 2D-UI sprites/lines by carry==1, and apply_overlay's re-applied (carry==2)
@@ -3058,13 +3140,13 @@ void openpete_native_scene_capture_overlay(void) {
      * block is skipped: the scene keeps its own tris, in their own order,
      * untouched. Skipped too when the scene already holds re-applied carry
      * (carry == 2) - apply_overlay has composed this set into it already. */
+    /* Taken before the compose below, which itself appends re-applied
+     * copies. */
+    const int reapplied = scene_holds_reapplied();
     {
         int stale = 0, mismatch = 0;
         for (int t = 0; t < s_overlay_carry_n; t++)
             if (s_overlay_carry_epoch[t] != s_scene_epoch) { stale = 1; mismatch++; }
-        int reapplied = 0;
-        for (int t = 0; t < s_scene_n && !reapplied; t++)
-            if (s_scene[t].carry == 2) reapplied = 1;
         /* OPENPETE_CARRY_EPOCH_PROBE=1: one line per canonical capture, zeros
          * included, naming how many carry entries carry an epoch other than the
          * scene's and whether that swapped the scene's carry-eligible tris for
@@ -3109,6 +3191,9 @@ void openpete_native_scene_capture_overlay(void) {
                         s_scene_frame, s_overlay_carry_n, s_scene_n);
         }
     }
+    /* The canonical scene shows the current tick's letterbox, unless
+     * apply_overlay has already composed the bars into it. */
+    if (!reapplied) letterbox_append(1.0, "canon");
     seq_sort_scene_2d(s_scene, s_scene_n);   /* both paths end in emission order */
     held_capture();
     hold_retain_canonical();                 /* the area this scene was drawn into holds it */
@@ -4222,6 +4307,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
         s_scene[s_scene_n++] = tri;
     }
     if (census) carry_census_flush(&cz, s_overlay_carry_n, paired, oalpha, &rst);
+    letterbox_append(oalpha, "apply");
     { static int pf = -2;
       if (pf == -2) { const char* e = getenv("OPENPETE_APPLY_PROBE"); pf = (e && *e) ? atoi(e) : -1; }
       if (pf >= 0 && (int)s_scene_frame >= pf - 4 && (int)s_scene_frame <= pf + 4) {

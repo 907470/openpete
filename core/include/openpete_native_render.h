@@ -1946,6 +1946,19 @@ unsigned openpete_native_scene_presenting(void);
  * @param g Green, 0..255.
  * @param b Blue, 0..255. */
 void openpete_native_scene_set_fade(int mode, int r, int g, int b);
+/** @brief Record the cutscene letterbox the game's emitter drew this tick, by its bar height.
+ *
+ * The emitter draws two frame-width black bars, the top one over PSX rows
+ * top_y .. top_y + h and the bottom one over bottom_y - h .. bottom_y. The
+ * native scene draws them from this record instead of from the emitted
+ * primitives: the canonical capture commits it as the current tick's
+ * height, rolling the previous one, and every present draws the bars at the
+ * height lerped between the two by its sub-tick alpha, so the bars slide
+ * between ticks. A tick with no record has height 0. Renderer state only.
+ * @param top_y PSX row of the top bar's outer edge.
+ * @param bottom_y PSX row of the bottom bar's outer edge.
+ * @param h Bar height in PSX rows; 0 or less draws no bars. */
+void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h);
 /** @brief Record an opaque screen quad the game drew that the scene holds no triangles for.
  *
  * The freeze backdrop's POLY_FT4s draw the frozen frame over the whole buffer
