@@ -1166,8 +1166,13 @@ def corpus_for(root, argv, mode):
     if miss:
         raise Refusal(miss)
     # The completeness check of the shared ratchets, with the mod sources as
-    # entries (openpete_mod_abi.c stays on the UNSCORED list).
-    known = {r: 1 for r in c.db_rels | set(c.mod_games)}
+    # entries (openpete_mod_abi.c stays on the UNSCORED list). Under --no-mods
+    # the mod sources are not measured but are still accounted for.
+    mod_rels = set(c.mod_games)
+    if "--no-mods" in argv:
+        mod_rels |= {f for f in lib.git(root, "ls-files", "--", "mods/*/src/*.c"
+                                        ).stdout.split("\n") if f}
+    known = {r: 1 for r in c.db_rels | mod_rels}
     if dbname == "linux-release":
         lib.check_unscored(root, known, FENCE, complete=True)
     measure_corpus(c, jobs)

@@ -2,8 +2,8 @@
 # compiler: x86_64-w64-mingw32-gcc-posix 10-posix
 # options: -Wall -Wextra
 # key-columns: 4
-# written-by: baseline
-# head: 96f1d2917f4b3379ecbac28ddbb81e0ce95cbdde
+# written-by: tighten
+# head: 102f741502abda06449621c39b5e513368bd13e5
 file	option	kind	detail	count	accepted
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
@@ -20,6 +20,9 @@ core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declare
 core/mods/mod_texture.c	-Wunused-function	me	-	34	
 core/psx/disc_image.c	-Wmaybe-uninitialized	me	disc_image_open	1	
 core/psx/psx_bios.c	-Wstringop-truncation	me	bu_create	1	
+core/record/record.c	-Wdeprecated-declarations	fe	'channel_layout' is deprecated	2	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg
+core/record/record.c	-Wdeprecated-declarations	fe	'channels' is deprecated	2	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg
+core/record/record.c	-Wdeprecated-declarations	fe	'swr_alloc_set_opts' is deprecated	1	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg
 core/renderer/native_fb_snapshot.c	-Wmisleading-indentation	fe	this 'if' clause does not guard...	2	
 core/renderer/native_render.c	-Wmisleading-indentation	fe	this 'if' clause does not guard...	15	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'aN' of 'hd_pc'	2	
