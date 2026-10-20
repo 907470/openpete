@@ -1,0 +1,26 @@
+# modsave-probe - stock GamestateUpdate counter for the save-record harness.
+#
+# Listed first in enabled.txt, so it is the innermost GamestateUpdate
+# override and runs only when every outer override reaches the base: its
+# count is the number of stock updates the game ran. The count lives in
+# the arena, so runahead and rewind roll it back with the timeline.
+# Driven by tests/harness/check_modsave.sh. Writes no guest RAM.
+
+[mod]
+id      = "modsave-probe"
+name    = "Save Record Probe"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 13
+state    = "none"      # the count lives in the arena
+runahead = "host-fx"   # log lines only
+sim_mutative = false
+
+[[config]]
+key = "log_every"
+type = "int"
+default = 1
+min = 1
+max = 100000
+label = "Log interval"
+help = "Stock updates between count lines; 1 logs every update, so the last line is the exact count"

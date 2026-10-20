@@ -1,0 +1,50 @@
+# modsave-fixture-a - save-record test fixture, portal-randomizer pad format (PRND).
+#
+# Stores a save-derived arena counter in Spyro 1's 112-byte SaveFile pad
+# (legacy path) or through the save-record api, and changes no gameplay,
+# so the save and load recordings replay under every fixture set.
+# Driven by tests/harness/check_modsave.sh; src/ holds the codec, and the
+# shared body is modsave-fixture-a/src/fixture_core.h.
+
+[mod]
+id      = "modsave-fixture-a"
+name    = "Save Record Fixture A"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 13
+state    = "none"      # every save-derived value lives in the arena
+runahead = "host-fx"   # log lines only
+sim_mutative = true   # writes the SaveFile pad on the legacy path
+
+[[config]]
+key = "mode"
+type = "string"
+default = "auto"
+label = "Save path"
+help = "auto (the save-record api when available, else the pad), legacy (the pad path), baseline (no save hooks)"
+
+[[config]]
+key = "schema"
+type = "int"
+default = 1
+min = 1
+max = 9
+label = "Record schema"
+help = "Schema passed to save_register (api path)"
+
+[[config]]
+key = "write_fails"
+type = "bool"
+default = false
+label = "write returns -1"
+help = "The api write callback refuses every save (api path)"
+
+[[config]]
+key = "seed_fault"
+type = "int"
+default = 0
+min = 0
+max = 2
+label = "Calibration fault"
+help = "1: flip record byte 0x40 at SaveCreate; 2: skip the GamestateUpdate base every 500th call"
+

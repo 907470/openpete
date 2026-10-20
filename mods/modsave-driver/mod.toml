@@ -1,0 +1,35 @@
+# modsave-driver - drives Spyro 1 save writes and loads for the save-record harness.
+#
+# From its GamestateUpdate override, at the stock-update counts its
+# `actions` key names, it calls SaveCreate on an arena scratch record and
+# writes it through the MemCardWriteFile thunk, or reads a record and calls
+# SaveLoad on it, so multi-save scenarios run without a recording per
+# scenario. Every call goes through the dispatch layer, so the other
+# mods' overrides of SaveCreate and SaveLoad run. Driven by
+# tests/harness/check_modsave.sh.
+
+[mod]
+id      = "modsave-driver"
+name    = "Save Record Driver"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 13
+state    = "none"      # the counter lives in the arena
+runahead = "host-fx"   # log lines only
+sim_mutative = true   # writes the card and loads saves
+
+[[config]]
+key = "actions"
+type = "string"
+default = ""
+label = "Actions"
+help = "Comma-separated op:index@count, op one of save, load, badload; count is this mod's stock GamestateUpdate count, e.g. save:1@600,load:1@900"
+
+[[config]]
+key = "port"
+type = "int"
+default = 0
+min = 0
+max = 1
+label = "Card port"
+help = "0 for slot 1, 1 for slot 2 (the libmcrd channel is port << 4)"
