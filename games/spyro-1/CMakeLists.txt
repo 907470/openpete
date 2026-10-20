@@ -374,12 +374,12 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
     VERBATIM)
 
 # Under OPENPETE_FUNC_TRACE the main EXE TU carries -finstrument-functions
-# on top of its -w (per-function CPU tracing). The exclude-list keeps the hot
+# (per-function CPU tracing). The exclude-list keeps the hot
 # unaligned-access helpers and the dispatch switch uninstrumented. When the
 # option is OFF nothing is added: zero instrumentation, byte-identical code.
 if(OPENPETE_FUNC_TRACE)
     set(_functrace_full_flags
-        "-w -finstrument-functions -finstrument-functions-exclude-function-list=psx_lwl,psx_lwr,psx_swl,psx_swr,psx_dispatch")
+        "-finstrument-functions -finstrument-functions-exclude-function-list=psx_lwl,psx_lwr,psx_swl,psx_swr,psx_dispatch")
 
     # Generate the pointer->name symtab func_trace.c resolves the hooks against.
     set(_functrace_symtab ${CMAKE_CURRENT_BINARY_DIR}/gen/func_trace_symtab.c)
@@ -396,7 +396,6 @@ if(OPENPETE_FUNC_TRACE)
         COMMENT "Generating func-trace symtab")
     target_sources(openpete-spyro1 PRIVATE ${_functrace_symtab})
     set_source_files_properties(${_functrace_symtab} PROPERTIES
-        COMPILE_FLAGS "-w"
         INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/core/include")
     set_source_files_properties(
         ${SPYRO_GENERATED}/PSX.EXE_full.c

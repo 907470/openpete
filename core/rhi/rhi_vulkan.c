@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stddef.h>
 
 #include "rhi_gpu_audit.h" /* must follow volk.h: redirects the vk* globals */
@@ -186,8 +187,8 @@ static void seam_check(const char *where)
     static int fatal = -1;
     if (fatal < 0) { const char *e = getenv("OPENPETE_SEAM_GUARD_FATAL"); fatal = (e && *e && *e != '0'); }
     if (s_seam_violations < 8)
-        RHI_LOG("SEAM: %s on thread %" SDL_PRIu64 " but the display is owned by %" SDL_PRIu64 "\n",
-                where, (Uint64)me, (Uint64)owner);
+        RHI_LOG("SEAM: %s on thread %" PRIu64 " but the display is owned by %" PRIu64 "\n",
+                where, (uint64_t)me, (uint64_t)owner);
     s_seam_violations++;
     if (fatal) abort();
 }

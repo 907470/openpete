@@ -1925,3 +1925,62 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+# Error set: GCC diagnostics that mark a defect class (an undeclared call
+# compiled against an int-returning guess, int/pointer conversions, a
+# missing return, a format/argument mismatch) fail the build. Added to
+# every compiling target defined outside third_party/, generated module
+# code included; the targets third_party/ defines keep their own flags.
+# GCC only: the clang, MSVC and wasm presets keep theirs. g++ rejects the
+# five C-only members. Truncation stays a warning, since -Werror=format
+# alone also makes -Wformat-truncation an error.
+set(OPENPETE_ERROR_SET_COMMON
+    -Werror=return-type -Werror=int-to-pointer-cast
+    -Werror=builtin-declaration-mismatch -Werror=format
+    -Wno-error=format-truncation -Werror=return-local-addr
+    -Werror=shift-count-overflow -Werror=shift-count-negative
+    -Werror=sizeof-pointer-memaccess -Werror=nonnull -Werror=address
+    -Werror=memset-transposed-args -Werror=div-by-zero)
+set(OPENPETE_ERROR_SET_C_ONLY
+    -Werror=implicit-function-declaration -Werror=implicit-int
+    -Werror=int-conversion -Werror=incompatible-pointer-types
+    -Werror=pointer-to-int-cast)
+
+# Appends the compiling targets defined in dir and its subdirectories to
+# the list named by out_var; directories under third_party/ are skipped.
+function(openpete_collect_project_targets dir out_var)
+    set(_found ${${out_var}})
+    get_property(_targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_t IN LISTS _targets)
+        get_target_property(_type ${_t} TYPE)
+        if(_type MATCHES "^(EXECUTABLE|STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY|OBJECT_LIBRARY)$")
+            list(APPEND _found ${_t})
+        endif()
+    endforeach()
+    get_property(_subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    foreach(_sub IN LISTS _subdirs)
+        file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_sub}")
+        if(NOT _rel MATCHES "^third_party(/|$)")
+            openpete_collect_project_targets("${_sub}" _found)
+        endif()
+    endforeach()
+    set(${out_var} ${_found} PARENT_SCOPE)
+endfunction()
+
+# Adds the error set to every project target, prints the target count, and
+# fails the configure at zero.
+function(openpete_apply_error_set)
+    set(_targets "")
+    openpete_collect_project_targets("${CMAKE_SOURCE_DIR}" _targets)
+    list(LENGTH _targets _count)
+    if(_count EQUAL 0)
+        message(FATAL_ERROR "error set: no project target found")
+    endif()
+    foreach(_t IN LISTS _targets)
+        target_compile_options(${_t} PRIVATE
+            "$<$<C_COMPILER_ID:GNU>:${OPENPETE_ERROR_SET_COMMON}>"
+            "$<$<AND:$<C_COMPILER_ID:GNU>,$<COMPILE_LANGUAGE:C>>:${OPENPETE_ERROR_SET_C_ONLY}>")
+    endforeach()
+    message(STATUS "error set: ${_count} project targets")
+endfunction()
+openpete_apply_error_set()

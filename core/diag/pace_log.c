@@ -319,7 +319,7 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         "interp=%d\n"
         "runahead=%d\n"
         "tick_scale=%.6f\n"
-        "pacer_slack_ns=%lld\n"
+        "pacer_slack_ns=%" SDL_PRIs64 "\n"
         "virtual_clock=%d\n"
         /* The three fields that decide whether an INPUT metric from this log
          * means anything. With the split off, producer and consumer are the
@@ -351,7 +351,7 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         comp,
         present_mode ? present_mode : "unknown",
         fullscreen, render_fps, interp_on, runahead_n, tick_scale,
-        (long long)op_pacer_slack_ns(),
+        (Sint64)op_pacer_slack_ns(),
         op_virtual_clock_active(),
         thread_split, input_legacy, headless,
         openpete_host_input_pulse_count(),
@@ -944,15 +944,15 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
          * so no phase error is defined; the line reports VBL, present and
          * slip counts instead. */
         SDL_snprintf(buf, buf_bytes,
-            "unpaced (%llu VBL, %llu present) - no deadline was in force; "
-            "slips sim %llu/%llu render %llu/%llu",
-            (unsigned long long)c->vbls,
-            (unsigned long long)(c->presents[0] + c->presents[1]
+            "unpaced (%" SDL_PRIu64 " VBL, %" SDL_PRIu64 " present) - no deadline was in force; "
+            "slips sim %" SDL_PRIu64 "/%" SDL_PRIu64 " render %" SDL_PRIu64 "/%" SDL_PRIu64,
+            (Uint64)c->vbls,
+            (Uint64)(c->presents[0] + c->presents[1]
                                  + c->presents[2]),
-            (unsigned long long)c->slip_events[0],
-            (unsigned long long)c->slip_periods[0],
-            (unsigned long long)c->slip_events[1],
-            (unsigned long long)c->slip_periods[1]);
+            (Uint64)c->slip_events[0],
+            (Uint64)c->slip_periods[0],
+            (Uint64)c->slip_events[1],
+            (Uint64)c->slip_periods[1]);
         return;
     }
 
@@ -972,9 +972,9 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
      * is worse than an absent one. */
     char latch[96], early_s[48];
     if (c->latch_samples)
-        SDL_snprintf(latch, sizeof(latch), "%.3f ms over %llu VBL",
+        SDL_snprintf(latch, sizeof(latch), "%.3f ms over %" SDL_PRIu64 " VBL",
                      (double)c->latch_offset_max_ns / 1e6,
-                     (unsigned long long)c->latch_samples);
+                     (Uint64)c->latch_samples);
     else
         SDL_strlcpy(latch, "n/a", sizeof(latch));
     /* A run where another writer owned the pad throughout (bk2 replay) has no
@@ -982,13 +982,13 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
      * absent measurement and a flattering one. */
     if (c->vbls_claimed) {
         char tail[48];
-        SDL_snprintf(tail, sizeof(tail), " (+%llu claimed)",
-                     (unsigned long long)c->vbls_claimed);
+        SDL_snprintf(tail, sizeof(tail), " (+%" SDL_PRIu64 " claimed)",
+                     (Uint64)c->vbls_claimed);
         SDL_strlcat(latch, tail, sizeof(latch));
     }
     if (early)
-        SDL_snprintf(early_s, sizeof(early_s), ", %llu early (max %+.3f ms)",
-                     (unsigned long long)early,
+        SDL_snprintf(early_s, sizeof(early_s), ", %" SDL_PRIu64 " early (max %+.3f ms)",
+                     (Uint64)early,
                      (double)c->phase_err_min_ns / 1e6);
     else
         early_s[0] = '\0';
@@ -1002,8 +1002,8 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
      * cannot quietly mean "one per VBL plus some others we ignored". */
     char unattr[48];
     if (c->pad_reads_unattributed)
-        SDL_snprintf(unattr, sizeof(unattr), " (+%llu speculative/replayed)",
-                     (unsigned long long)c->pad_reads_unattributed);
+        SDL_snprintf(unattr, sizeof(unattr), " (+%" SDL_PRIu64 " speculative/replayed)",
+                     (Uint64)c->pad_reads_unattributed);
     else
         unattr[0] = '\0';
 
@@ -1014,10 +1014,10 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
         SDL_strlcpy(padr, "pad read: NEVER (probe armed)", sizeof(padr));
     else
         SDL_snprintf(padr, sizeof(padr),
-                     "pad read: %llu in %llu VBL(s)%s, <=%+.3f ms into the "
+                     "pad read: %" SDL_PRIu64 " in %" SDL_PRIu64 " VBL(s)%s, <=%+.3f ms into the "
                      "VBL, sample age <=%+.3f ms",
-                     (unsigned long long)c->pad_reads,
-                     (unsigned long long)c->pad_read_vbls,
+                     (Uint64)c->pad_reads,
+                     (Uint64)c->pad_read_vbls,
                      unattr,
                      (double)c->pad_read_offset_max_ns / 1e6,
                      (double)c->pad_read_age_max_ns / 1e6);
@@ -1032,10 +1032,10 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     char pump[160];
     if (c->host_pump_iters)
         SDL_snprintf(pump, sizeof(pump),
-                     "; pump %llu iter(s), %.3f ms mean active + %.3f ms "
+                     "; pump %" SDL_PRIu64 " iter(s), %.3f ms mean active + %.3f ms "
                      "parked, max %.3f ms active (events alone %.3f ms) / "
-                     "%.3f ms parked, %llu long",
-                     (unsigned long long)c->host_pump_iters,
+                     "%.3f ms parked, %" SDL_PRIu64 " long",
+                     (Uint64)c->host_pump_iters,
                      (double)c->host_pump_active_ns
                          / (double)c->host_pump_iters / 1e6,
                      (double)c->host_pump_park_ns
@@ -1043,7 +1043,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
                      (double)c->host_pump_max_ns / 1e6,
                      (double)c->host_pump_events_max_ns / 1e6,
                      (double)c->host_pump_park_max_ns / 1e6,
-                     (unsigned long long)c->host_pump_long);
+                     (Uint64)c->host_pump_long);
     else
         pump[0] = '\0';
 
@@ -1054,31 +1054,31 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     else    seqfail[0] = '\0';
 
     SDL_snprintf(buf, buf_bytes,
-        "%llu VBL (%llu paced, %llu clean); %llu+%llu+%llu present; "
+        "%" SDL_PRIu64 " VBL (%" SDL_PRIu64 " paced, %" SDL_PRIu64 " clean); %" SDL_PRIu64 "+%" SDL_PRIu64 "+%" SDL_PRIu64 " present; "
         "phase %.2f%% within 250us, max %+.3f ms%s; "
-        "transient %llu VBL max %+.3f ms; wake<=%+.3f ms behind<=%+.3f ms; "
-        "latch<=%s; %s; %llu input edge(s); "
-        "slips sim %llu/%llu render %llu/%llu; sheds %llu%s%s",
-        (unsigned long long)c->vbls,
-        (unsigned long long)c->vbls_paced,
-        (unsigned long long)c->vbls_clean,
-        (unsigned long long)c->presents[0],
-        (unsigned long long)c->presents[1],
-        (unsigned long long)c->presents[2],
+        "transient %" SDL_PRIu64 " VBL max %+.3f ms; wake<=%+.3f ms behind<=%+.3f ms; "
+        "latch<=%s; %s; %" SDL_PRIu64 " input edge(s); "
+        "slips sim %" SDL_PRIu64 "/%" SDL_PRIu64 " render %" SDL_PRIu64 "/%" SDL_PRIu64 "; sheds %" SDL_PRIu64 "%s%s",
+        (Uint64)c->vbls,
+        (Uint64)c->vbls_paced,
+        (Uint64)c->vbls_clean,
+        (Uint64)c->presents[0],
+        (Uint64)c->presents[1],
+        (Uint64)c->presents[2],
         pct,
         (double)c->phase_err_max_ns / 1e6,
         early_s,
-        (unsigned long long)c->vbls_transient,
+        (Uint64)c->vbls_transient,
         (double)c->phase_err_transient_max_ns / 1e6,
         (double)c->wake_overshoot_max_ns / 1e6,
         (double)c->wake_behind_max_ns / 1e6,
         latch, padr,
-        (unsigned long long)c->input_edges,
-        (unsigned long long)c->slip_events[0],
-        (unsigned long long)c->slip_periods[0],
-        (unsigned long long)c->slip_events[1],
-        (unsigned long long)c->slip_periods[1],
-        (unsigned long long)c->sheds,
+        (Uint64)c->input_edges,
+        (Uint64)c->slip_events[0],
+        (Uint64)c->slip_periods[0],
+        (Uint64)c->slip_events[1],
+        (Uint64)c->slip_periods[1],
+        (Uint64)c->sheds,
         pump, seqfail);
 }
 

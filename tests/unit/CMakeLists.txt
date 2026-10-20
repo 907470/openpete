@@ -688,6 +688,19 @@ target_link_libraries(sfx_smpl_walk_test PRIVATE SDL3::SDL3-static)
 set_target_properties(sfx_smpl_walk_test PROPERTIES C_STANDARD 11)
 add_test(NAME sfx_smpl_walk_test COMMAND sfx_smpl_walk_test)
 
+# sfx_name_parse_test - sound pack file names classify as hash, symbolic or
+# ignored, with case-insensitive ".wav" and "-flat". sfx_ident.c compiles
+# with PsyCross's include/psx on the path, as in openpete_core.
+add_executable(sfx_name_parse_test
+    sfx_name_parse_test.c
+    ${CMAKE_SOURCE_DIR}/core/host/sfx_ident.c)
+target_include_directories(sfx_name_parse_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/host
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx
+    ${CMAKE_SOURCE_DIR}/third_party/xxhash)
+set_target_properties(sfx_name_parse_test PROPERTIES C_STANDARD 11)
+add_test(NAME sfx_name_parse_test COMMAND sfx_name_parse_test)
+
 # rhi_compile_stress - variant-explicit compile jobs run on worker threads
 # while the mod registry's per-tick writers, enable toggles and hot reloads
 # run on a guest thread and the display owner makes jobs, edits the

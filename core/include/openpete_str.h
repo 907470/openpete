@@ -1,10 +1,8 @@
 /* openpete_str.h - small string helpers with no libc portability traps.
  *
- * Why this exists rather than <strings.h>: PsyCross carries a header of its
- * own named strings.h (psx/strings.h). Any translation unit compiled with
- * that directory on its include path resolves #include <strings.h> to it,
- * so the POSIX declaration never arrives and strcasecmp compiles as an
- * implicit int(). Windows hides it behind a different spelling again. */
+ * op_strcasecmp folds ASCII only, so its result does not depend on the
+ * host locale the way strcasecmp's does, and it has one spelling on every
+ * platform (MSVC names the libc function _stricmp). */
 
 #ifndef OPENPETE_STR_H
 #define OPENPETE_STR_H

@@ -650,15 +650,8 @@ function(openpete_add_game GAME_ID)
     # reordering or dropping those accesses.
     target_compile_options(${_module} PRIVATE -fno-strict-aliasing)
 
-    # The generated translation units are enormous and entirely machine-
-    # written: warnings on them are noise. The hand-written module TUs keep
-    # theirs.
-    set_source_files_properties(
-        ${_generated}/PSX.EXE_full.c
-        ${_generated}/PSX.EXE_dispatch.c
-        ${_overlay_full_c}
-        ${_overlay_dispatch_c}
-        PROPERTIES COMPILE_FLAGS "-w")
+    # The generated translation units carry no -w: it would also silence the
+    # error set the top-level CMakeLists.txt adds to this target.
 
     # Identity: the game_extras.h identity accessors and the address-only
     # PSYQ hooks, from recomp.conf.

@@ -615,6 +615,12 @@ else
     GAME="$GAME" bash scripts/emit-recomp-manifest.sh
 fi
 
+# First boot compiles this C with the bundled clang under -w, which still
+# refuses diagnostics GCC accepts; compile it the same way here so an
+# emission defect fails the regen instead of a player's first boot. SKIPs
+# (exit 0) without the bundled clang or the linux-release database.
+python3 scripts/regen_clang_check.py "$GAME"
+
 if [[ "$REGEN_SCOPE" == "full" ]]; then
     python3 scripts/fences/recomp_stamp.py write "$GAME"
 fi
