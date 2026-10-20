@@ -631,6 +631,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME doc_ratchet_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_doc_ratchet.py)
     set_tests_properties(doc_ratchet_selftest PROPERTIES LABELS "fence")
+    # Thread-role fence, the ctest spelling of the per-build check
+    # (core/CMakeLists.txt, openpete_thread_roles). Exit 64 = no compile
+    # database.
+    add_test(NAME thread_roles
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/thread_roles.py
+                     check --ctest
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(thread_roles PROPERTIES
+        LABELS "fence"
+        ENVIRONMENT "OPENPETE_THREAD_ROLES_DB=${CMAKE_BINARY_DIR}/compile_commands.json"
+        SKIP_RETURN_CODE 64)
+    # The thread-role fence's own tests: the text scans and rewrites.
+    add_test(NAME thread_roles_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_thread_roles.py)
+    set_tests_properties(thread_roles_selftest PROPERTIES LABELS "fence")
     # The baselines' merge driver: the three-way merge by row key, and a
     # cherry-pick across a landing in a scratch repository.
     add_test(NAME ratchet_tsv_merge_selftest

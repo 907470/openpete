@@ -112,7 +112,8 @@ typedef struct openpete_game_runtime {
  * entry, game_layout read or recompiled function runs. Copies the layout
  * into game_layout (zero when the descriptor names none), sets
  * psx_runtime_g_sony_image_base and installs the descriptor's
- * override_dispatch as the recompiled path's per-game arm.
+ * override_dispatch as the recompiled path's per-game arm. game_layout is
+ * sealed by openpete_run; a call after the seal counts a failed seal check.
  * @param rt The descriptor; it must outlive the process. */
 void openpete_game_runtime_register(const openpete_game_runtime_t* rt);
 

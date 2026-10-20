@@ -30,7 +30,7 @@ extern int openpete_unlock_fps;
  * paid before the first VBL instead of inside it. Idempotent. */
 void openpete_ticker_start(void);
 
-/** @brief Release the pacing clock's OS resources (op_time_shutdown), undoing the timer-resolution boost.
+/** @brief Finish the pacing clock (op_time_shutdown): undo the timer-resolution boost, once.
  *
  * Safe to call without a prior start. */
 void openpete_ticker_stop(void);

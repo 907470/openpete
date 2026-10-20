@@ -42,7 +42,8 @@ add_test(NAME portal_cover_slot_test COMMAND portal_cover_slot_test)
 # needs winmm; Linux is link-clean.
 add_executable(openpete_time_test
     openpete_time_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
 target_include_directories(openpete_time_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include)
 set_target_properties(openpete_time_test PROPERTIES C_STANDARD 99)
@@ -615,7 +616,8 @@ add_executable(exe_loader_cap_test
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
     ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
 target_include_directories(exe_loader_cap_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/core/include/psxrt)
@@ -634,7 +636,8 @@ add_executable(disc_cache_short_read_test
     ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
 target_include_directories(disc_cache_short_read_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/core/include/psxrt
@@ -657,7 +660,8 @@ add_executable(disc_image_test
     ${CMAKE_SOURCE_DIR}/core/psx/disc_cache.c
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
 target_include_directories(disc_image_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/core/include/psxrt

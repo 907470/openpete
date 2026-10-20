@@ -57,6 +57,9 @@ set -u
 # place, and a flag appended to the wrong one is a silent miss.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0
+# A failed thread-role check (openpete_thread_roles.h) aborts the run, so a
+# role or seal violation on a gated path fails the gate instead of a log line.
+export OPENPETE_THREAD_ROLE_FATAL=1
 
 
 cd "$(dirname "$0")/../.."

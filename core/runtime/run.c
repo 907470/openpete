@@ -71,6 +71,7 @@
 #include "music_override.h"
 #include "openpete_memcard.h"
 #include "openpete_handoff.h"
+#include "openpete_thread_roles.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -2386,6 +2387,7 @@ static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
  * g_game.dispatch_ok and g_game.done; sets openpete_game_running at entry
  * and clears it before the permanent yield. */
 static void game_fiber_entry(void) {
+    OP_ROLE_ASSERT(sim);
     SDL_SetAtomicInt(&openpete_game_running, 1);
     openpete_crash_test();
     if (g_game.gp != 0u) {
@@ -2407,7 +2409,7 @@ static void game_fiber_entry(void) {
     g_game.done = 1;
     SDL_SetAtomicInt(&openpete_game_running, 0);
     /* Permanent yield - never resume. */
-    while (1) co_switch((cothread_t)openpete_host_fiber);
+    while (1) openpete_fiber_switch(openpete_host_fiber);
 }
 
 /** @brief Write one frame-time-log record for a present, canonical or sub-tick.
@@ -3939,7 +3941,7 @@ static int ra_speculate_to_final(openpete_park_site_t site, int cap, int* left) 
     for (int v = 0; v < cap && !(*left && openpete_yield_final); v++) {
         game_on_frame_pre(&g_game.cpu, openpete_frame);
         g_openpete_guest_running = 1;
-        co_switch((cothread_t)openpete_game_fiber);
+        openpete_fiber_switch(openpete_game_fiber);
         g_openpete_guest_running = 0;
         if (!game_is_gameplay_live(&g_game.cpu)) *left = 1;
         if (openpete_park_site_matches(&site)) return 0;
@@ -4132,7 +4134,7 @@ static bool rewind_seek_one_tick(bool bk2_active) {
         game_on_frame_pre(&g_game.cpu, openpete_frame);
         openpete_pace_vbl_suspend(1);
         g_openpete_guest_running = 1;
-        co_switch((cothread_t)openpete_game_fiber);
+        openpete_fiber_switch(openpete_game_fiber);
         g_openpete_guest_running = 0;
         openpete_pace_vbl_suspend(0);
         if (openpete_frame == before) break;   /* the fiber made no tick */
@@ -5770,7 +5772,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * this); under eager production the present thread keeps
                  * presenting through this switch. */
                 g_openpete_guest_running = 1;
-                co_switch((cothread_t)openpete_game_fiber);
+                openpete_fiber_switch(openpete_game_fiber);
                 g_openpete_guest_running = 0;
                 if (pt0) openpete_phase_add(OPPT_SIM_TICK, openpete_phase_now_us() - pt0);
             }
@@ -5959,7 +5961,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                         unsigned bf = openpete_frame;
                         game_on_frame_pre(&g_game.cpu, openpete_frame);
                         g_openpete_guest_running = 1;
-                        co_switch((cothread_t)openpete_game_fiber);
+                        openpete_fiber_switch(openpete_game_fiber);
                         g_openpete_guest_running = 0;
                         if (openpete_frame == bf) break;   /* safety */
                         /* Speculation left gameplay (a load, a cutscene):
@@ -6333,7 +6335,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                 /* Eager production takes the whole present path from here:
                  * the canonical scene is the first of the span's plan, and
                  * the present thread shows it. Never with a recording or a
-                 * screenshot target -- those read the inline present. */
+                 * screenshot target -- those read the inline present -- and
+                 * never under the virtual clock (--record-cfr): the sim
+                 * pacer is then the clock's one writer, and the present
+                 * thread's wall-clock waits have no meaning against it. */
                 /* OPENPETE_EAGER_SHOT=1 (diagnostic): keep eager engaged with a
                  * --screenshot-on-frame target; the dump then drains the
                  * present thread, renders from the scene the producer holds,
@@ -6341,7 +6346,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 static int eager_shot = -1;
                 if (eager_shot < 0) { const char *e = getenv("OPENPETE_EAGER_SHOT"); eager_shot = (e && *e && *e != '0'); }
                 const int eager_now = spine_on && openpete_present_thread_enabled() &&
-                    !opts->record_path && (opts->screenshot_frame_count == 0 || eager_shot) &&
+                    !opts->record_path && !op_virtual_clock_active() && (opts->screenshot_frame_count == 0 || eager_shot) &&
                     opts->screenshot_intermediate_count == 0 &&
                     opts->screenshot_presents_start < 0;
                 if (eager_now != s_eager.active) {
@@ -7549,6 +7554,7 @@ static SDL_Window*   s_psyx_gl_win;
 /** @brief Body of the sim thread under the thread split: take the GL context and run the game loop until it exits. */
 static int SDLCALL openpete_sim_thread(void* unused)
 {
+    OP_ROLE_BIND(sim);
     (void)unused;
     openpete_crash_thread_attach();
     if (s_psyx_gl_ctx && !SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx))
@@ -7627,11 +7633,14 @@ static void sim_liveness_check(sim_liveness_t* L)
  * silent for 5 s and forces exit when the worker makes no progress for
  * 3 s after a quit request (20 s between teardown heartbeats). After the join it retakes the GL
  * context and shuts down the native renderer, the disc cache and PsyCross.
- * openpete_thread_split_enabled gives the reason for the split.
+ * openpete_thread_split_enabled gives the reason for the split. Main
+ * holds `sim` through init, hands it to the sim thread just before creating
+ * it (holding `main` while it pumps), and takes it back after the join or
+ * when the creation fails.
  * @param opts The parsed options.
  * @return The init error code, the worker's exit code, or
  *         run_recomp_fiber's when the thread cannot be created. */
-static int run_split_threaded(const openpete_options_t* opts)
+static int run_split_threaded(const openpete_options_t* opts) OP_REQUIRES(sim)
 {
     /* Bring SDL video up here, on the thread that will pump; the
      * SDL_Init(SDL_INIT_VIDEO) inside PsyX_Initialise (run_host_init, also on
@@ -7674,6 +7683,9 @@ static int run_split_threaded(const openpete_options_t* opts)
      * default-sized thread stack is a fraction of that, and this call tree is
      * deep (recompiled dispatch, feeders, extraction, the RHI). */
     SDL_PropertiesID props = SDL_CreateProperties();
+    /* Main drops `sim` before the sim thread exists, and holds `main` while
+     * it pumps; the sim thread's entry binds `sim`. */
+    op_role_boot_handoff();
     SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER,
                            (void*)openpete_sim_thread);
     SDL_SetStringProperty(props, SDL_PROP_THREAD_CREATE_NAME_STRING, "openpete-sim");
@@ -7684,6 +7696,7 @@ static int run_split_threaded(const openpete_options_t* opts)
     if (!th) {
         OPL_ERROR_F("boot", "SDL_CreateThread(openpete-sim) failed: %s - "
                             "running single-threaded", SDL_GetError());
+        op_role_boot_reacquire();
         if (s_psyx_gl_ctx)
             SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx);
         return run_recomp_fiber(opts);
@@ -7752,6 +7765,7 @@ static int run_split_threaded(const openpete_options_t* opts)
     }
 
     SDL_WaitThread(th, NULL);
+    op_role_boot_reacquire();   /* the sim thread is joined: main owns its state again */
 
     /* Worker is joined, so nothing else touches the device or the window.
      * These run here because they own main-thread resources (see the matching
@@ -7788,7 +7802,11 @@ static void headless_disable_session_bus_autolaunch(bool headless) {
         SDL_setenv_unsafe("DBUS_SESSION_BUS_ADDRESS", "disabled:", 0);
 }
 
-int openpete_run(const openpete_options_t* opts) {
+/** @brief Run the host on main's `sim` hold: the body of openpete_run.
+ *
+ * @param opts The parsed options.
+ * @return The process exit code. */
+static int run_on_sim(const openpete_options_t* opts) OP_REQUIRES(sim) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
     openpete_disc_trace_set_vbl_source(disc_trace_vbl);
     /* The stderr mirror is normally already up (main() opens it before
@@ -7949,4 +7967,18 @@ int openpete_run(const openpete_options_t* opts) {
     fprintf(stdout, "openpete-exit: reason=%s frames=%d ms=%llu code=%d\n",
             exit_reason, frame, (unsigned long long)elapsed_ms, exit_code);
     return exit_code;
+}
+
+int openpete_run(const openpete_options_t* opts) {
+    /* main reaches this through a function pointer, so `sim` is acquired
+     * here rather than in main. The time init group and the game layout are
+     * complete (the options parse re-read the clock's knobs; the game build
+     * was installed) and sealed before any thread that reads them starts. */
+    op_role_boot_acquire();
+    op_time_init();
+    op_seal(time);
+    op_seal(game_layout);
+    const int rc = run_on_sim(opts);
+    op_role_boot_release();
+    return rc;
 }

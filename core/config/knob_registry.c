@@ -2125,6 +2125,16 @@ static const knob_desc_t g_builtin_debug[] = {
       "and the event pump, so dragging or resizing the window cannot stall "
       "the game. On by default; set 0 to put the loop back on the main "
       "thread. Windowed native-vk only."),
+    ENVROW_LATCHED("THREAD_ROLE_FATAL", "Debug", "0",
+      "1 aborts the process at the first failed thread-role check (a role "
+      "assert or check whose thread lacks the role, or a write to a sealed "
+      "group after its seal); otherwise a failure is counted and logged once "
+      "per site. Read at the first failure. The gate harnesses set 1."),
+    ENVROW_LATCHED_NOTE("THREAD_ROLE_REPORT", "Debug", "none: no report",
+      "Path of a tab-separated report written at exit: one row per "
+      "thread-role check site the run reached, with its evaluation and "
+      "failure counts. scripts/fences/thread_roles.py join <path> adds "
+      "the sites the run did not reach as zero rows."),
     ENVROW_LATCHED("GLINT", "Debug", "2",
       "What the gem-glint feeder emits: 0 nothing, 1 the near four-point "
       "stars alone, 2 the near stars and the far crosses. The guest draw "

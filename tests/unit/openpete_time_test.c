@@ -9,11 +9,18 @@
  *      deadlines land on floor(n * period) forever, 2 VBL == 1 tick, a
  *      multi-step slip advance == the same number of single steps, and
  *      every --record-cfr subdivision reconstitutes the tick exactly.
+ *   6. The init group's seal: a re-read before op_seal(time) counts no
+ *      failure, one after it counts exactly one, op_time_init after the
+ *      seal returns before its check, and op_time_shutdown runs once and
+ *      leaves the clock initialized.
+ *   7. The virtual clock: op_now returns its value, op_sleep_until moves it
+ *      forward to a later deadline and never back.
  *
  * Compiled directly from the .c source (no openpete_core link) per the
  * pattern in psx_region_test.c - keeps the test binary SDL-free. */
 
 #include "../../core/include/openpete_time.h"
+#include "../../core/include/openpete_thread_roles.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,21 +88,70 @@ static int env_unset(const char* k)                 { return unsetenv(k); }
 #endif
 
 static int test_slack_env_override(void) {
-    /* Reset the lazy-init by simulating a fresh process: env_set then
-     * teardown+re-init. shutdown/init are documented idempotent. */
+    /* The knobs are re-read after the configuration is materialized; this
+     * runs before the seal, as the options parse does. */
     if (env_set("OPENPETE_PACER_SLACK_US", "3300") != 0) {
         FAIL("env_set failed\n");
     }
-    op_time_shutdown();
-    op_time_init();
+    op_time_reload_env();
     op_time_t got = op_pacer_slack_ns();
     if (got != 3300 * OP_NS_PER_US) {
         FAIL("slack override expected 3300 us, got %" PRId64 " ns\n",
              (int64_t)got);
     }
     env_unset("OPENPETE_PACER_SLACK_US");
+    op_time_reload_env();   /* a fixed slack returns to adaptive */
+    got = op_pacer_slack_ns();
+    if (got <= 0 || got > 2500 * OP_NS_PER_US) {
+        FAIL("unset slack expected the adaptive default, got %" PRId64 " ns\n",
+             (int64_t)got);
+    }
+    return 0;
+}
+
+/* The seal of the init group. Run after every case that re-reads the env. */
+static int test_time_seal(void) {
+    const unsigned long long f0 = op_role_failures();
+    op_time_reload_env();
+    if (op_role_failures() != f0)
+        FAIL("a re-read before the seal counted %llu failures\n", op_role_failures() - f0);
+    op_seal(time);
+    if (!op_seal_is_sealed(&op_seal_obj_time))
+        FAIL("op_seal(time) did not seal\n");
+    op_time_init();   /* initialized: returns before its check */
+    if (op_role_failures() != f0)
+        FAIL("op_time_init after the seal counted a failure\n");
+    op_time_reload_env();
+    if (op_role_failures() != f0 + 2)   /* op_time_reload_env and parse_census_env */
+        FAIL("a re-read after the seal counted %llu failures, want 2\n",
+             op_role_failures() - f0);
     op_time_shutdown();
-    op_time_init();  /* restore defaults for subsequent runs */
+    op_time_shutdown();   /* runs once */
+    op_time_init();       /* still initialized: no write, no failure */
+    if (op_role_failures() != f0 + 2)
+        FAIL("shutdown then init after the seal counted a failure\n");
+    op_time_t a = op_now(), b = op_now();
+    if (a <= 0 || b < a) FAIL("op_now after shutdown: %" PRId64 " then %" PRId64 "\n",
+                              (int64_t)a, (int64_t)b);
+    return 0;
+}
+
+/* The virtual clock never turns off, so this case runs last. */
+static int test_virtual_clock(void) {
+    if (op_virtual_clock_active()) FAIL("virtual clock active before enable\n");
+    op_virtual_clock_enable(5 * OP_NS_PER_SEC);
+    if (!op_virtual_clock_active()) FAIL("virtual clock not active after enable\n");
+    if (op_now() != 5 * OP_NS_PER_SEC)
+        FAIL("virtual op_now %" PRId64 ", want 5 s\n", (int64_t)op_now());
+    op_sleep_until(6 * OP_NS_PER_SEC);
+    if (op_now() != 6 * OP_NS_PER_SEC)
+        FAIL("sleep to 6 s left op_now at %" PRId64 "\n", (int64_t)op_now());
+    op_sleep_until(5 * OP_NS_PER_SEC + OP_NS_PER_SEC / 2);
+    if (op_now() != 6 * OP_NS_PER_SEC)
+        FAIL("an earlier deadline moved the clock to %" PRId64 "\n", (int64_t)op_now());
+    op_virtual_clock_enable(0);   /* <= 0 starts at one second */
+    if (op_now() != OP_NS_PER_SEC)
+        FAIL("enable(0) gave %" PRId64 ", want 1 s\n", (int64_t)op_now());
     return 0;
 }
 
@@ -224,6 +280,8 @@ static int test_rate_constants_agree(void) {
 }
 
 int main(void) {
+    /* A failed seal check is counted, not fatal, in this process. */
+    env_unset("OPENPETE_THREAD_ROLE_FATAL");
     op_time_init();
 
     if (test_ntsc_periods_are_exact())       return 1;
@@ -234,8 +292,9 @@ int main(void) {
     if (test_sleep_reaches_deadline())       return 1;
     if (test_sleep_in_the_past_returns_fast()) return 1;
     if (test_slack_env_override())           return 1;
+    if (test_time_seal())                    return 1;
+    if (test_virtual_clock())                return 1;
 
-    op_time_shutdown();
     printf("PASS openpete_time_test\n");
     return 0;
 }

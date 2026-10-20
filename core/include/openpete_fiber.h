@@ -36,6 +36,15 @@ extern void*    openpete_game_fiber;
  * @return The fiber handle, or NULL when the mapping fails. */
 void* openpete_fiber_create_guarded(unsigned size, void (*entry)(void));
 
+/** @brief Switch the calling thread to another fiber; the only caller of libco's co_switch.
+ *
+ * Counts a run-time check that the switching thread holds the `sim` role
+ * (openpete_thread_roles.h): the host loop and the game fiber alternate
+ * through this call and are one ordering domain only while both run on the
+ * thread holding `sim`.
+ * @param to The fiber to resume (openpete_host_fiber or openpete_game_fiber). */
+void openpete_fiber_switch(void* to);
+
 /** @brief Delete a fiber made by openpete_fiber_create_guarded and release its stack.
  *
  * @param fiber The handle; NULL is a no-op. */

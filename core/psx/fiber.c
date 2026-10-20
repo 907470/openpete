@@ -6,6 +6,7 @@
 
 #include "openpete_fiber.h"
 #include "openpete_func_trace.h"
+#include "openpete_thread_roles.h"
 
 #include <libco.h>
 #include <stddef.h>
@@ -88,10 +89,15 @@ int openpete_fiber_guard_contains(uintptr_t addr) {
 }
 #endif
 
+void openpete_fiber_switch(void* to) {
+    OP_ROLE_CHECK(sim);
+    co_switch((cothread_t)to);
+}
+
 /** @brief Park the game fiber at a yield: clear openpete_game_running, switch to the host fiber, and set it again on resume. */
 static void switch_to_host(void) {
     SDL_SetAtomicInt(&openpete_game_running, 0);
-    co_switch((cothread_t)openpete_host_fiber);
+    openpete_fiber_switch(openpete_host_fiber);
     SDL_SetAtomicInt(&openpete_game_running, 1);
 }
 

@@ -12,7 +12,8 @@
 #   env "${WSLENV_ARGS[@]}" ./build/windows-mingw/.../foo.exe ...
 #
 # WSLENV_ARGS holds the assignments plus the WSLENV entry that makes them
-# actually arrive. Safe on native Linux: WSLENV is simply ignored there.
+# actually arrive. OPENPETE_THREAD_ROLE_FATAL and OPENPETE_THREAD_ROLE_REPORT,
+# when set in the caller's environment, are forwarded too. Safe on native Linux: WSLENV is simply ignored there.
 
 wslenv_forward() {
   WSLENV_ARGS=()
@@ -21,6 +22,12 @@ wslenv_forward() {
     WSLENV_ARGS+=("$a")
     names="${names}${names:+:}${a%%=*}/w"
   done
+  # The thread-role knobs a gate harness exports cross with every forward:
+  # the fatal flag as is, the report path translated (/p).
+  [ -n "${OPENPETE_THREAD_ROLE_FATAL:-}" ] && [[ ":$names:" != *":OPENPETE_THREAD_ROLE_FATAL/"* ]] &&
+    names="${names}${names:+:}OPENPETE_THREAD_ROLE_FATAL/w"
+  [ -n "${OPENPETE_THREAD_ROLE_REPORT:-}" ] && [[ ":$names:" != *":OPENPETE_THREAD_ROLE_REPORT/"* ]] &&
+    names="${names}${names:+:}OPENPETE_THREAD_ROLE_REPORT/wp"
   [ -n "$names" ] && WSLENV_ARGS+=("WSLENV=${WSLENV:+$WSLENV:}${names}")
 }
 

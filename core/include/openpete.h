@@ -1037,7 +1037,9 @@ void openpete_game_window_size(const openpete_options_t* opts, int* out_w, int* 
 
 /** @brief Run the program: boot the guest and drive the host loop until exit.
  *
- * Initializes logging and the stderr log mirror, sets the extraction worker
+ * Acquires the `sim` role on the calling thread (openpete_thread_roles.h),
+ * initializes the clock and seals its init group and the game layout, and
+ * releases `sim` at return. Initializes logging and the stderr log mirror, sets the extraction worker
  * pool's requested size (its threads spawn on first parallel use), installs
  * the crash handler, then runs the recompiled-call smoke
  * test when one is requested. PsyCross builds dispatch the guest entry on a

@@ -14,6 +14,7 @@
 #define OPENPETE_GAME_LAYOUT_H
 
 #include <stdint.h>
+#include "openpete_thread_roles.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -1122,8 +1123,10 @@ typedef struct game_layout {
 #define GAME_FONT_WAD_MODEL       2
 
 /* The running game's layout: openpete_game_runtime_register copies the
- * registered descriptor's layout here before any feeder runs. */
-extern game_layout_t game_layout;
+ * registered descriptor's layout here before any feeder runs, and
+ * openpete_run seals it; read-only afterwards. */
+OP_SEAL_DECLARE(game_layout);
+extern game_layout_t game_layout OP_SEALED(game_layout); /* thread-roles: written before openpete_run seals it, read-only after */
 
 /** @brief Return the default window width in window pixels: the 4:3 width of twice the DISPENV height.
  *

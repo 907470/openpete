@@ -23,6 +23,8 @@
 
 #include <stdint.h>
 
+#include "openpete_thread_roles.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -305,6 +307,11 @@ void op_virtual_clock_enable(op_time_t start_ns);
  * @return 1 after op_virtual_clock_enable, else 0. */
 int  op_virtual_clock_active(void);
 
+/* The clock's init group (the sleep margin, the census flag and the Win32
+ * timer state), sealed by openpete_run after op_time_init; op_time_init and
+ * op_time_reload_env are its writers. */
+OP_SEAL_DECLARE(time);
+
 /** @brief Initialize the clock module: the sleep margin, and on Win32 the QPC frequency and timer.
  *
  * Parses OPENPETE_PACER_SLACK_US and OPENPETE_PACER_CENSUS. On Win32 it
@@ -312,8 +319,8 @@ int  op_virtual_clock_active(void);
  * (Windows 10 1803 and later; the Sleep fallback serves when that fails),
  * and requests a 1 ms system timer period with timeBeginPeriod(1) on either
  * path, since every millisecond timeout in the process (Sleep, SDL event
- * and condition-variable waits) is otherwise quantised to 15.6 ms. Idempotent until
- * op_time_shutdown. op_now, op_sleep_until and op_pacer_slack_ns call it on
+ * and condition-variable waits) is otherwise quantised to 15.6 ms. Idempotent:
+ * a call after the first returns at once. op_now, op_sleep_until and op_pacer_slack_ns call it on
  * first use; calling it early moves that cost out of the host loop. */
 void op_time_init(void);
 
@@ -326,14 +333,14 @@ void op_time_init(void);
  * fixed one to adaptive at its starting value. */
 void op_time_reload_env(void);
 
-/** @brief Release the clock module's OS resources and mark it uninitialized.
+/** @brief Undo the timer-resolution boost and print the pace census, once.
  *
- * On Win32 it closes the probe timer and every per-thread waitable timer
- * and pairs timeBeginPeriod with timeEndPeriod. With OPENPETE_PACER_CENSUS=1
- * it first prints the pace census line to stderr. Idempotent. The per-thread
- * timer handles are not cleared from their threads, so a later sleep on a
- * thread that slept before fails to arm its closed timer and spins the
- * whole wait. */
+ * On Win32 it pairs timeBeginPeriod with timeEndPeriod. With
+ * OPENPETE_PACER_CENSUS=1 it prints the pace census line to stderr. Runs
+ * once behind an atomic flag; later calls, and a call before op_time_init,
+ * do nothing. The clock stays initialized and the waitable timers stay
+ * open, so a thread that sleeps after it (a detached worker) still sleeps
+ * on its own timer; process exit releases them. */
 void op_time_shutdown(void);
 
 /** @brief Wake every thread blocked in the OS-sleep stage of op_sleep_until on Win32.

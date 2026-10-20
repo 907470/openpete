@@ -87,6 +87,9 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
+# A failed thread-role check (openpete_thread_roles.h) aborts the run, so a
+# role or seal violation on a gated path fails the gate instead of a log line.
+export OPENPETE_THREAD_ROLE_FATAL=1
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
 

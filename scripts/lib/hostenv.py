@@ -18,13 +18,21 @@ import shutil
 import tempfile
 
 
+# Knobs a gate harness exports that cross with every forward, with their
+# WSLENV flags (/p translates a path).
+FORWARDED = {"OPENPETE_THREAD_ROLE_FATAL": "/w", "OPENPETE_THREAD_ROLE_REPORT": "/wp"}
+
+
 def child_env(knobs, base=None):
-    """os.environ (or `base`) plus `knobs`, with WSLENV extended to match."""
+    """os.environ (or `base`) plus `knobs`, with WSLENV extended to match;
+    the FORWARDED knobs set in the environment cross too."""
     env = dict(os.environ if base is None else base)
-    if not knobs:
-        return env
+    knobs = knobs or {}
     env.update({k: str(v) for k, v in knobs.items()})
-    names = ":".join(f"{k}/w" for k in knobs)
+    names = ":".join([f"{k}/w" for k in knobs]
+                     + [k + f for k, f in FORWARDED.items() if env.get(k) and k not in knobs])
+    if not names:
+        return env
     env["WSLENV"] = f"{env['WSLENV']}:{names}" if env.get("WSLENV") else names
     return env
 

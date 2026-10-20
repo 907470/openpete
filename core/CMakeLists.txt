@@ -187,6 +187,9 @@ add_library(openpete_core STATIC
     # High-resolution monotonic clock + hybrid sleep+spin waiter. Leaf
     # module (no SDL); used by ticker + dual-pacer.
     runtime/openpete_time.c
+    # Thread-role masks, check sites and seals (openpete_thread_roles.h);
+    # SDL-free like the clock, which seals its init group through it.
+    runtime/thread_roles.c
 
     runtime/present_thread.c
     renderer/native_terrain_cache.c
@@ -813,4 +816,25 @@ if(NOT CMAKE_HOST_WIN32)
         COMMENT "documentation fence: the pre-commit hook calls it, and every function is documented or has a row"
         VERBATIM)
     add_dependencies(openpete_doc_ratchet openpete_generated_headers)
+
+    # Thread-role fence (openpete_thread_roles.h), the same shape: the hook
+    # must call it (`check --armed`), and `check` runs clang-19
+    # -Wthread-safety and the binding-table checks over the TUs changed since
+    # its last pass (a stamp beside the database; a changed header reruns
+    # every TU) in this database and the windows-mingw one, configured on
+    # demand. linux-release only, like the ratchets.
+    set(_openpete_roles_check "")
+    if(_openpete_bindir_name STREQUAL "linux-release")
+        set(_openpete_roles_check
+            COMMAND ${CMAKE_COMMAND} -E env
+                    OPENPETE_THREAD_ROLES_DB=${CMAKE_BINARY_DIR}/compile_commands.json
+                    python3 ${CMAKE_SOURCE_DIR}/scripts/fences/thread_roles.py check)
+    endif()
+    add_custom_target(openpete_thread_roles ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking thread-role ownership..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/thread_roles.py check --armed
+        ${_openpete_roles_check}
+        COMMENT "thread-role fence: the pre-commit hook calls it, and the changed TUs pass clang -Wthread-safety and the binding table"
+        VERBATIM)
+    add_dependencies(openpete_thread_roles openpete_generated_headers)
 endif()

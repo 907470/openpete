@@ -16,14 +16,17 @@
 static const openpete_game_runtime_t k_unregistered = { 0 };
 static const openpete_game_runtime_t* s_rt = &k_unregistered;
 
-/* The registered game's layout; the feeders read its fields. */
-game_layout_t game_layout;
+/* The registered game's layout; the feeders read its fields. Sealed by
+ * openpete_run; this file's register call is its one writer. */
+OP_SEAL_DEFINE(game_layout);
+game_layout_t game_layout OP_SEALED(game_layout); /* thread-roles: written before openpete_run seals it, read-only after */
 
 /* The g_SonyImage pool base the recompiled code adds its pool offsets to;
  * the registered descriptor's sony_image_base. */
 uint32_t psx_runtime_g_sony_image_base;
 
 void openpete_game_runtime_register(const openpete_game_runtime_t* rt) {
+    op_seal_check(game_layout);
     s_rt = rt ? rt : &k_unregistered;
     if (s_rt->layout) game_layout = *s_rt->layout;
     else memset(&game_layout, 0, sizeof game_layout);

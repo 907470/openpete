@@ -40,13 +40,18 @@
  * Lazy init                                                         *
  * ---------------------------------------------------------------- */
 
-static int s_initialized = 0;
+/* The init group: written by op_time_init, op_time_reload_env and the two
+ * env parsers they call, then sealed by openpete_run before any thread that
+ * reads it starts, and read-only afterwards. */
+OP_SEAL_DEFINE(time);
+
+static int s_initialized OP_SEALED(time) = 0; /* thread-roles: written before openpete_run seals it, read-only after */
 /* Margin before a deadline at which op_sleep_until stops OS-sleeping and
  * spins. With OPENPETE_PACER_SLACK_US set it is that fixed value; otherwise
  * it is sized per thread from the measured wake error of that thread's
  * timer, never above OP_SLACK_CAP_NS. */
-static op_time_t s_slack_ns = 0;
-static int       s_slack_fixed = 0;
+static op_time_t s_slack_ns OP_SEALED(time) = 0; /* thread-roles: written before openpete_run seals it, read-only after */
+static int       s_slack_fixed OP_SEALED(time) = 0; /* thread-roles: written before openpete_run seals it, read-only after */
 
 /* Adaptive slack. Each OS sleep records how far past its target it woke;
  * the slack is the largest of the last OP_WAKE_WINDOW errors plus
@@ -81,29 +86,34 @@ static _Thread_local op_wake_window t_wake;
  * op_sleep_until that had time left, printed by op_time_shutdown. Lateness
  * is the return instant minus the deadline, bucketed at 10 us up to 5 ms. */
 #define OP_CENSUS_BUCKETS 501
-static int s_census = 0;
+static int s_census OP_SEALED(time) = 0; /* thread-roles: written before openpete_run seals it, read-only after */
 static _Atomic uint64_t s_cen_calls, s_cen_os_sleeps, s_cen_spin_ns;
 static _Atomic int64_t  s_cen_spin_max, s_cen_late_max, s_cen_slack_sum;
 static _Atomic uint32_t s_cen_late_hist[OP_CENSUS_BUCKETS];
 
 #if defined(_WIN32)
 /* QPC frequency, ticks per second. */
-static int64_t s_qpc_freq = 0;
+static int64_t s_qpc_freq OP_SEALED(time) = 0; /* thread-roles: written before openpete_run seals it, read-only after */
 /* High-resolution waitable timer (Win10 1803+). NULL on older Windows;
  * the fallback path uses timeBeginPeriod(1) + Sleep. */
-static HANDLE  s_hi_res_timer = NULL;   /* capability probe + the first thread's timer */
-static int     s_timeperiod_set = 0;
+/* The high-resolution timer capability probe. */
+static HANDLE  s_hi_res_timer OP_SEALED(time) = NULL; /* thread-roles: written before openpete_run seals it, read-only after */
+static int     s_timeperiod_set OP_SEALED(time) = 0; /* thread-roles: written before openpete_run seals it, read-only after */
 /* One waitable timer PER THREAD. A waitable timer is a single-shot signal:
  * a second thread arming the same handle re-arms the wait the first thread
  * is blocked in with INFINITE, which parked the sim thread for good once a
  * present thread started sleeping through this path too. Every thread that
- * sleeps gets its own; the table lets a shutdown wake all of them. */
+ * sleeps gets its own; the table lets a shutdown wake all of them. The
+ * slots and their count are atomic: any thread's first sleep claims a slot
+ * while another thread may be waking them. Handles are never closed: a
+ * thread may still sleep on its timer after shutdown (the portal-sky worker
+ * is never joined), and the process exit releases them. */
 #  ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #    define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #  endif
 #define OP_TIMER_MAX_THREADS 8
-static HANDLE  s_thread_timers[OP_TIMER_MAX_THREADS];
-static volatile LONG s_thread_timer_n = 0;
+static _Atomic(HANDLE) s_thread_timers[OP_TIMER_MAX_THREADS];
+static atomic_int      s_thread_timer_n;
 static _Thread_local HANDLE t_timer = NULL;
 static HANDLE thread_timer(void) {
     if (t_timer) return t_timer;
@@ -111,8 +121,8 @@ static HANDLE thread_timer(void) {
     HANDLE h = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                       TIMER_ALL_ACCESS);
     if (!h) return NULL;
-    LONG i = InterlockedIncrement(&s_thread_timer_n) - 1;
-    if (i < OP_TIMER_MAX_THREADS) s_thread_timers[i] = h;
+    const int i = atomic_fetch_add(&s_thread_timer_n, 1);
+    if (i < OP_TIMER_MAX_THREADS) atomic_store(&s_thread_timers[i], h);
     t_timer = h;
     return h;
 }
@@ -121,11 +131,9 @@ static HANDLE thread_timer(void) {
 /* Monotonicity guard. clock_gettime is monotonic by definition, but
  * QueryPerformanceCounter can - extremely rarely - go backwards by a few
  * ticks across cores in pathological cases. Keep the prior return and
- * clamp. The variable is shared without synchronization by every thread
- * that calls op_now (sim, present, host loop): the clamp orders calls on one
- * thread, and across threads it can pass a step backwards of at most the
- * clock's own skew, which is harmless for pacing. */
-static op_time_t s_last_now = 0;
+ * clamp. Per thread: the clamp orders the calls of one thread, and no
+ * thread reads another's (on mingw each access is one emutls call). */
+static _Thread_local op_time_t t_last_now = 0;
 
 /** @brief Read OPENPETE_PACER_SLACK_US into s_slack_ns and s_slack_fixed.
  *
@@ -133,6 +141,7 @@ static op_time_t s_last_now = 0;
  * the slack for every thread; unset or empty leaves the slack adaptive with
  * OP_SLACK_CAP_NS as its starting value. */
 static void parse_slack_env(void) {
+    op_seal_check(time);
     const char* s = getenv("OPENPETE_PACER_SLACK_US");
     if (!s || !*s) {
         s_slack_fixed = 0;
@@ -147,11 +156,13 @@ static void parse_slack_env(void) {
 
 /** @brief Read OPENPETE_PACER_CENSUS into s_census: on unless unset, empty or starting with '0'. */
 static void parse_census_env(void) {
+    op_seal_check(time);
     const char* c = getenv("OPENPETE_PACER_CENSUS");
     s_census = (c && *c && *c != '0');
 }
 
 void op_time_reload_env(void) {
+    op_seal_check(time);
     const char* s = getenv("OPENPETE_PACER_SLACK_US");
     /* Unset now and before: the adaptive slack keeps what it learned. */
     if ((s && *s) || s_slack_fixed) parse_slack_env();
@@ -160,6 +171,7 @@ void op_time_reload_env(void) {
 
 void op_time_init(void) {
     if (s_initialized) return;
+    op_seal_check(time);
     parse_slack_env();
     parse_census_env();
 
@@ -293,32 +305,27 @@ void op_time_wake_pending_sleeps(void) {
          * with a 0 time instead, on every thread's timer. */
         LARGE_INTEGER due;
         due.QuadPart = 0;
-        LONG n = s_thread_timer_n; if (n > OP_TIMER_MAX_THREADS) n = OP_TIMER_MAX_THREADS;
-        for (LONG i = 0; i < n; i++)
-            if (s_thread_timers[i]) SetWaitableTimer(s_thread_timers[i], &due, 0, NULL, NULL, FALSE);
+        int n = atomic_load(&s_thread_timer_n);
+        if (n > OP_TIMER_MAX_THREADS) n = OP_TIMER_MAX_THREADS;
+        for (int i = 0; i < n; i++) {
+            HANDLE h = atomic_load(&s_thread_timers[i]);
+            if (h) SetWaitableTimer(h, &due, 0, NULL, NULL, FALSE);
+        }
     }
 #endif
 }
 
+/* Set by the first op_time_shutdown; later calls return at once. */
+static atomic_int s_shutdown_done;
+
 void op_time_shutdown(void) {
     if (!s_initialized) return;
+    int expect = 0;
+    if (!atomic_compare_exchange_strong(&s_shutdown_done, &expect, 1)) return;
 #if defined(_WIN32)
-    if (s_hi_res_timer) {
-        CloseHandle(s_hi_res_timer);
-        s_hi_res_timer = NULL;
-    }
-    {
-        LONG n = s_thread_timer_n; if (n > OP_TIMER_MAX_THREADS) n = OP_TIMER_MAX_THREADS;
-        for (LONG i = 0; i < n; i++)
-            if (s_thread_timers[i]) { CloseHandle(s_thread_timers[i]); s_thread_timers[i] = NULL; }
-    }
-    if (s_timeperiod_set) {
-        timeEndPeriod(1);
-        s_timeperiod_set = 0;
-    }
+    if (s_timeperiod_set) timeEndPeriod(1);
 #endif
     if (s_census) census_print();
-    s_initialized = 0;
 }
 
 /** @brief Run op_time_init on first use, so the clock functions work without an explicit init call. */
@@ -326,16 +333,22 @@ static void ensure_initialized(void) {
     if (!s_initialized) op_time_init();
 }
 
-/* Virtual clock (see the header). Advanced only by op_sleep_until. */
-static int       s_virtual_on = 0;
-static op_time_t s_virtual_ns = 0;
+/* Virtual clock (see the header). Advanced only by op_sleep_until on the
+ * sim pacer, its one writer (eager production stays off under the virtual
+ * clock, so the present thread never sleeps on it); every thread's op_now
+ * reads it. Release store by the writer, acquire load by readers. */
+static atomic_int         s_virtual_on;
+static _Atomic(op_time_t) s_virtual_ns;
 
 void op_virtual_clock_enable(op_time_t start_ns) {
-    s_virtual_ns = (start_ns > 0) ? start_ns : OP_NS_PER_SEC;
-    s_virtual_on = 1;
+    atomic_store_explicit(&s_virtual_ns, (start_ns > 0) ? start_ns : OP_NS_PER_SEC,
+                          memory_order_release);
+    atomic_store_explicit(&s_virtual_on, 1, memory_order_release);
 }
 
-int op_virtual_clock_active(void) { return s_virtual_on; }
+int op_virtual_clock_active(void) {
+    return atomic_load_explicit(&s_virtual_on, memory_order_acquire);
+}
 
 op_time_t op_pacer_slack_ns(void) {
     ensure_initialized();
@@ -347,7 +360,8 @@ op_time_t op_pacer_slack_ns(void) {
  * ---------------------------------------------------------------- */
 
 op_time_t op_now(void) {
-    if (s_virtual_on) return s_virtual_ns;
+    if (atomic_load_explicit(&s_virtual_on, memory_order_acquire))
+        return atomic_load_explicit(&s_virtual_ns, memory_order_acquire);
     ensure_initialized();
     op_time_t ns;
 #if defined(_WIN32)
@@ -371,13 +385,13 @@ op_time_t op_now(void) {
 #else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return s_last_now;
+        return t_last_now;
     }
     ns = (op_time_t)ts.tv_sec * OP_NS_PER_SEC + (op_time_t)ts.tv_nsec;
 #endif
-    /* Monotonicity clamp - see s_last_now comment. */
-    if (ns < s_last_now) ns = s_last_now;
-    s_last_now = ns;
+    /* Monotonicity clamp - see t_last_now comment. */
+    if (ns < t_last_now) ns = t_last_now;
+    t_last_now = ns;
     return ns;
 }
 
@@ -459,8 +473,9 @@ static void sleep_until_posix(op_time_t deadline_ns) {
 void op_sleep_until(op_time_t deadline_ns) {
     /* Virtual clock: the deadline IS the next instant. Never block - the
      * caller's schedule advances, wall time doesn't enter into it. */
-    if (s_virtual_on) {
-        if (deadline_ns > s_virtual_ns) s_virtual_ns = deadline_ns;
+    if (atomic_load_explicit(&s_virtual_on, memory_order_acquire)) {
+        if (deadline_ns > atomic_load_explicit(&s_virtual_ns, memory_order_relaxed))
+            atomic_store_explicit(&s_virtual_ns, deadline_ns, memory_order_release);
         return;
     }
     ensure_initialized();
