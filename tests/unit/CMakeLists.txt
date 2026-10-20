@@ -66,6 +66,59 @@ target_include_directories(keymap_test PRIVATE
 set_target_properties(keymap_test PROPERTIES C_STANDARD 11)
 add_test(NAME keymap_test COMMAND keymap_test)
 
+# log_snapshot_test - the logger's level filter, spec read-back and format
+# (the `semantics` mode), and the same state reconfigured on one thread
+# while others log and read the spec back (the `race` mode). The race runs
+# twice, under AddressSanitizer (a rule list freed under a reader) and
+# ThreadSanitizer (any unsynchronized access to the logger's state).
+# sanitizer_run.sh exits 64 (skipped) where the sanitizer runtime does not
+# start; a compiler that cannot build the sanitizer registers the same skip.
+# The harness uses POSIX threads, pread and setenv, so it is not built for
+# Windows.
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    add_executable(log_snapshot_test
+        log_snapshot_test.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(log_snapshot_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include)
+    set_target_properties(log_snapshot_test PROPERTIES C_STANDARD 11)
+    target_link_libraries(log_snapshot_test PRIVATE Threads::Threads)
+    add_test(NAME log_snapshot_semantics COMMAND log_snapshot_test semantics)
+    set_tests_properties(log_snapshot_semantics PROPERTIES LABELS "log")
+    include(CheckCSourceCompiles)
+    foreach(san address thread)
+        set(CMAKE_REQUIRED_FLAGS "-fsanitize=${san}")
+        set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=${san}")
+        check_c_source_compiles("int main(void) { return 0; }"
+            OPENPETE_HAVE_FSANITIZE_${san})
+        unset(CMAKE_REQUIRED_FLAGS)
+        unset(CMAKE_REQUIRED_LINK_OPTIONS)
+        set(test_name log_snapshot_race_${san})
+        if(OPENPETE_HAVE_FSANITIZE_${san})
+            set(target log_snapshot_test_${san})
+            add_executable(${target}
+                log_snapshot_test.c
+                ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+            target_include_directories(${target} PRIVATE
+                ${CMAKE_SOURCE_DIR}/core/include)
+            set_target_properties(${target} PROPERTIES C_STANDARD 11)
+            target_compile_options(${target} PRIVATE
+                -fsanitize=${san} -fno-omit-frame-pointer -g -O1)
+            target_link_options(${target} PRIVATE -fsanitize=${san})
+            target_link_libraries(${target} PRIVATE Threads::Threads)
+            add_test(NAME ${test_name}
+                COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/sanitizer_run.sh
+                        $<TARGET_FILE:${target}> race 2 3 200000)
+        else()
+            add_test(NAME ${test_name} COMMAND sh -c
+                "echo '-fsanitize=${san} does not build here; skipped'; exit 64")
+        endif()
+        set_tests_properties(${test_name} PROPERTIES
+            LABELS "log;sanitizer" SKIP_RETURN_CODE 64 TIMEOUT 120)
+    endforeach()
+endif()
+
 # psx_region_test - verifies the PSX RAM virtualization region table
 # (registration / lookup / overlap-rejection). Compiles psx_region.c
 # directly so openpete_core's SDL3 and OpenAL dependencies stay out of a

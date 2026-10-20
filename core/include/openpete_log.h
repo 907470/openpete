@@ -61,6 +61,9 @@ openpete_log_format_t openpete_log_get_format(void);
  * @param spec Level rules in the openpete_log_init syntax, or NULL. */
 void openpete_log_set_spec(const char* spec);
 /** @brief Return the last applied level spec.
+ *
+ * Safe on any thread while another reconfigures the logger. The string is
+ * never modified or freed, so a held pointer keeps the spec it was read as.
  * @return The spec string, "" when none was applied; truncated to 127 bytes. */
 const char* openpete_log_get_spec(void);
 

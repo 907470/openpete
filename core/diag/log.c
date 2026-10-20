@@ -2,27 +2,57 @@
 //
 // Output goes to stderr so stdout stays usable for stand-alone messages
 // (e.g. the smoke-test exit line). Per-subsystem level filters are parsed
-// once at init and stored as a small linked list:
+// from a spec into a rule array:
 //   "cd:debug,gpu:trace,*:info"  ->  cd->DEBUG, gpu->TRACE, default->INFO
+//
+// The whole configuration (format, rules, default level, spec string and
+// timestamp origin) is one immutable snapshot behind an atomic pointer.
+// openpete_log_init, openpete_log_set_spec and openpete_log_set_format
+// build a new snapshot and publish it with a release compare-and-swap;
+// every reader takes one acquire load and sees one consistent snapshot.
+// Any thread may log while another reconfigures (the devui knob rows run
+// inside a present, on the present thread under eager production). A
+// replaced snapshot is never freed: a reader may still hold it, no
+// quiescent point exists to reclaim it, and openpete_log_get_spec hands its
+// spec string to callers. Each publish links the snapshot it replaced, so
+// the retired chain stays reachable; reconfiguration is a rare human
+// action and the chain grows by one small allocation per change.
 
 #include "openpete_log.h"
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 typedef struct level_rule {
-    char prefix[32];          /* subsystem prefix, or "*" for default */
+    char prefix[32];          /* subsystem name; "" matches a NULL subsystem */
     openpete_log_level_t lvl;
-    struct level_rule* next;
 } level_rule_t;
 
-static openpete_log_format_t g_fmt = OPENPETE_LOG_PLAIN;
-static level_rule_t* g_rules = NULL;
-static openpete_log_level_t g_default = OPL_INFO;
-static char g_spec[128];   /* last applied level spec, for display */
+typedef struct log_snapshot {
+    const struct log_snapshot* retired;  /* snapshot this one replaced, kept reachable */
+    openpete_log_format_t fmt;
+    openpete_log_level_t dflt;           /* level of the "*" rule, OPL_INFO when unset */
+    double t0;                           /* monotonic origin of the timestamps, 0.0 before init */
+    char spec[128];                      /* last applied level spec, for display */
+    size_t n_rules;
+    level_rule_t rules[];                /* in spec order: the last match wins */
+} log_snapshot_t;
+
+/* The configuration in force before the first openpete_log_init. */
+static const log_snapshot_t k_boot_snapshot = {
+    NULL, OPENPETE_LOG_PLAIN, OPL_INFO, 0.0, "", 0
+};
+
+static _Atomic(const log_snapshot_t*) g_snap = &k_boot_snapshot;
+
+/** @brief Return the snapshot in force, with acquire ordering so its contents are visible. */
+static const log_snapshot_t* snapshot_load(void) {
+    return atomic_load_explicit(&g_snap, memory_order_acquire);
+}
 
 #if defined(_WIN32)
 # include <sys/time.h>
@@ -33,22 +63,33 @@ static char g_spec[128];   /* last applied level spec, for display */
 #endif
 
 /* ANSI colour for the plain-text log, only when stderr is an interactive
- * terminal (piped/redirected output - grep, files, the oracle - stays clean). */
-static int g_tty = -1;
+ * terminal (piped/redirected output - grep, files, the oracle - stays clean).
+ * -1 until tested or pinned, then 0 or 1. */
+static atomic_int g_tty = -1;
 
 /* Pinned by the stderr mirror before it replaces fd 2 with a pipe. */
-void openpete_log_pin_stderr_tty(int is_tty) { g_tty = is_tty ? 1 : 0; }
+void openpete_log_pin_stderr_tty(int is_tty) {
+    atomic_store_explicit(&g_tty, is_tty ? 1 : 0, memory_order_relaxed);
+}
 
-/** @brief Return whether stderr is a terminal, testing once and caching the answer unless it was pinned. */
+/** @brief Return whether stderr is a terminal, testing once and caching the answer unless it was pinned.
+ *
+ * Racing first callers each test, and the first answer stored wins; a pin
+ * stored before or after overrides it. */
 static int stderr_is_tty(void) {
-    if (g_tty < 0) {
+    int v = atomic_load_explicit(&g_tty, memory_order_relaxed);
+    if (v >= 0) return v;
 #if defined(_WIN32)
-        g_tty = _isatty(_fileno(stderr)) ? 1 : 0;
+    int tested = _isatty(_fileno(stderr)) ? 1 : 0;
 #else
-        g_tty = isatty(fileno(stderr)) ? 1 : 0;
+    int tested = isatty(fileno(stderr)) ? 1 : 0;
 #endif
-    }
-    return g_tty;
+    int expected = -1;
+    if (atomic_compare_exchange_strong_explicit(&g_tty, &expected, tested,
+                                                memory_order_relaxed,
+                                                memory_order_relaxed))
+        return tested;
+    return expected;
 }
 
 /** @brief Return the ANSI escape that colours a line of level l, "" for info. */
@@ -69,8 +110,6 @@ static double monotonic_seconds(void) {
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0.0;
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
-
-static double g_t0 = 0.0;
 
 /** @brief Return the lowercase name of level l, or a placeholder outside the enum. */
 static const char* level_name(openpete_log_level_t l) {
@@ -96,21 +135,50 @@ static int parse_level(const char* s, openpete_log_level_t* out) {
     return -1;
 }
 
-/** @brief Free every per-subsystem level rule and empty the rule list; the default level is untouched. */
-static void clear_rules(void) {
-    level_rule_t* r = g_rules;
-    while (r) { level_rule_t* n = r->next; free(r); r = n; }
-    g_rules = NULL;
+/* A configuration under construction, private to the building thread. */
+typedef struct {
+    openpete_log_level_t dflt;
+    level_rule_t* rules;
+    size_t n_rules, cap;
+    int oom;                  /* a rule allocation failed; the rule was dropped */
+} spec_build_t;
+
+/** @brief Append a rule for prefix at lvl, truncating the name to 31 bytes; on allocation failure drop it. */
+static void build_push_rule(spec_build_t* b, const char* prefix,
+                            openpete_log_level_t lvl) {
+    if (b->n_rules == b->cap) {
+        size_t cap = b->cap ? b->cap * 2 : 8;
+        level_rule_t* r = (level_rule_t*)realloc(b->rules, cap * sizeof(*r));
+        if (!r) { b->oom = 1; return; }
+        b->rules = r;
+        b->cap = cap;
+    }
+    level_rule_t* r = &b->rules[b->n_rules++];
+    size_t n = strlen(prefix);
+    if (n >= sizeof(r->prefix)) n = sizeof(r->prefix) - 1;
+    memcpy(r->prefix, prefix, n);
+    r->prefix[n] = '\0';
+    r->lvl = lvl;
 }
 
-/** @brief Apply a comma-separated "subsystem:level" spec to the rule list and the default level.
+/** @brief Apply one "subsystem:level" segment to b; a segment without a colon or with an unknown level is skipped. */
+static void build_apply_segment(spec_build_t* b, char* seg) {
+    char* colon = strchr(seg, ':');
+    if (!colon) return;
+    *colon = '\0';
+    openpete_log_level_t lvl;
+    if (parse_level(colon + 1, &lvl) != 0) return;
+    if (strcmp(seg, "*") == 0) b->dflt = lvl;
+    else build_push_rule(b, seg, lvl);
+}
+
+/** @brief Apply a comma-separated "subsystem:level" spec to b.
  *
  * Segments longer than 63 bytes are truncated and subsystem names longer than
- * 31 bytes are truncated. A segment without a colon or with an unknown level
- * is skipped. "*" sets the default level; any other name is pushed at the
- * head of the rule list, so a later segment for the same name wins. A NULL or
- * empty spec changes nothing. */
-static void parse_spec(const char* spec) {
+ * 31 bytes are truncated. "*" sets the default level; any other name appends
+ * a rule, and lookup_level takes the last rule of a name, so a later segment
+ * for the same name wins. A NULL or empty spec changes nothing. */
+static void build_parse_spec(spec_build_t* b, const char* spec) {
     if (!spec || !*spec) return;
     const char* p = spec;
     while (*p) {
@@ -120,80 +188,121 @@ static void parse_spec(const char* spec) {
         if (seg_len >= sizeof(seg)) seg_len = sizeof(seg) - 1;
         memcpy(seg, p, seg_len);
         seg[seg_len] = '\0';
-
-        char* colon = strchr(seg, ':');
-        if (colon) {
-            *colon = '\0';
-            const char* prefix = seg;
-            const char* lvl_s  = colon + 1;
-            openpete_log_level_t lvl;
-            if (parse_level(lvl_s, &lvl) == 0) {
-                if (strcmp(prefix, "*") == 0) {
-                    g_default = lvl;
-                } else {
-                    level_rule_t* r = (level_rule_t*)calloc(1, sizeof(*r));
-                    if (r) {
-                        size_t n = strlen(prefix);
-                        if (n >= sizeof(r->prefix)) n = sizeof(r->prefix) - 1;
-                        memcpy(r->prefix, prefix, n);
-                        r->prefix[n] = '\0';
-                        r->lvl = lvl;
-                        r->next = g_rules;
-                        g_rules = r;
-                    }
-                }
-            }
-        }
+        build_apply_segment(b, seg);
         if (!comma) break;
         p = comma + 1;
     }
 }
 
-/** @brief Return the level filter for subsystem.
+/** @brief Allocate a snapshot carrying b's rules and default level, with the other fields zeroed.
+ *
+ * @return The snapshot, or NULL when the allocation fails. */
+static log_snapshot_t* snapshot_from_build(const spec_build_t* b) {
+    log_snapshot_t* s = (log_snapshot_t*)calloc(
+        1, sizeof(*s) + b->n_rules * sizeof(level_rule_t));
+    if (!s) return NULL;
+    s->dflt = b->dflt;
+    s->n_rules = b->n_rules;
+    if (b->n_rules) memcpy(s->rules, b->rules, b->n_rules * sizeof(level_rule_t));
+    return s;
+}
+
+/** @brief Allocate a copy of src, rules and spec included.
+ *
+ * @return The copy, or NULL when the allocation fails. */
+static log_snapshot_t* snapshot_clone(const log_snapshot_t* src) {
+    size_t sz = sizeof(*src) + src->n_rules * sizeof(level_rule_t);
+    log_snapshot_t* s = (log_snapshot_t*)malloc(sz);
+    if (s) memcpy(s, src, sz);
+    return s;
+}
+
+/** @brief Publish next in place of cur, linking cur as retired.
+ *
+ * @return 1 when published; 0 when another thread published first, in which
+ *         case next is freed and the caller rebuilds from the new snapshot. */
+static int snapshot_publish(const log_snapshot_t* cur, log_snapshot_t* next) {
+    next->retired = cur;
+    if (atomic_compare_exchange_strong_explicit(&g_snap, &cur, next,
+                                                memory_order_release,
+                                                memory_order_relaxed))
+        return 1;
+    free(next);
+    return 0;
+}
+
+/** @brief Return the level filter for subsystem under snapshot s.
  *
  * The rule whose stored name equals the subsystem exactly wins, the most
  * recently added of equal names first; otherwise the default level.
+ * @param s Snapshot in force.
  * @param subsystem Subsystem name, or NULL for the default. */
-static openpete_log_level_t lookup_level(const char* subsystem) {
-    if (!subsystem) return g_default;
-    for (level_rule_t* r = g_rules; r; r = r->next) {
-        if (strcmp(r->prefix, subsystem) == 0) return r->lvl;
+static openpete_log_level_t lookup_level(const log_snapshot_t* s,
+                                         const char* subsystem) {
+    if (!subsystem) return s->dflt;
+    for (size_t i = s->n_rules; i-- > 0;) {
+        if (strcmp(s->rules[i].prefix, subsystem) == 0) return s->rules[i].lvl;
     }
-    return g_default;
+    return s->dflt;
+}
+
+/** @brief Build and publish a snapshot of fmt and the rules of the given specs layered in order.
+ *
+ * Rules start empty with the default OPL_INFO; first then second are parsed.
+ * The timestamp origin is carried over from the snapshot in force; with
+ * anchor_t0 set and that origin still 0.0 it is taken now instead. The spec
+ * string is display. A failed snapshot allocation leaves the configuration
+ * in force unchanged.
+ * @param fmt Output format, or -1 to keep the format in force.
+ * @param anchor_t0 Nonzero to take the timestamp origin if none is set.
+ * @param first Spec parsed first, or NULL.
+ * @param second Spec parsed second, or NULL.
+ * @param display Spec string read back by openpete_log_get_spec, or NULL for "". */
+static void apply_config(int fmt, int anchor_t0, const char* first,
+                         const char* second, const char* display) {
+    spec_build_t b = { OPL_INFO, NULL, 0, 0, 0 };
+    build_parse_spec(&b, first);
+    build_parse_spec(&b, second);
+    for (;;) {
+        const log_snapshot_t* cur = snapshot_load();
+        log_snapshot_t* next = snapshot_from_build(&b);
+        if (!next) break;
+        next->fmt = fmt < 0 ? cur->fmt : (openpete_log_format_t)fmt;
+        next->t0 = (cur->t0 == 0.0 && anchor_t0) ? monotonic_seconds() : cur->t0;
+        snprintf(next->spec, sizeof next->spec, "%s", display ? display : "");
+        if (snapshot_publish(cur, next)) break;
+    }
+    free(b.rules);
 }
 
 void openpete_log_init(openpete_log_format_t fmt, const char* level_spec) {
-    g_fmt = fmt;
-    /* Anchor the timeline once. main() initialises the logger before the
-     * recomp module is attached (so a first-boot build failure is logged
-     * with real timestamps) and openpete_run() initialises again; a second
-     * reset would rewind every timestamp mid-file. */
-    if (g_t0 == 0.0) g_t0 = monotonic_seconds();
-    clear_rules();
-    g_default = OPL_INFO;
-
-    /* Env var first, then explicit spec overrides. */
+    /* Env var first, then explicit spec overrides. main() initialises the
+     * logger before the recomp module is attached (so a first-boot build
+     * failure is logged with real timestamps) and openpete_run() initialises
+     * again; the timestamp origin is anchored by the first call only, since
+     * a second reset would rewind every timestamp mid-file. */
     const char* env = getenv("OPENPETE_LOG");
-    if (env) parse_spec(env);
-    if (level_spec) parse_spec(level_spec);
-    {
-        const char* eff = level_spec ? level_spec : env;
-        snprintf(g_spec, sizeof g_spec, "%s", eff ? eff : "");
-    }
+    apply_config((int)fmt, 1, env, level_spec, level_spec ? level_spec : env);
 }
 
 /* Live re-configuration from the knob registry; see openpete_log.h. */
-void openpete_log_set_format(openpete_log_format_t fmt) { g_fmt = fmt; }
-openpete_log_format_t openpete_log_get_format(void) { return g_fmt; }
-
-void openpete_log_set_spec(const char* spec) {
-    clear_rules();
-    g_default = OPL_INFO;
-    parse_spec(spec);
-    snprintf(g_spec, sizeof g_spec, "%s", spec ? spec : "");
+void openpete_log_set_format(openpete_log_format_t fmt) {
+    for (;;) {
+        const log_snapshot_t* cur = snapshot_load();
+        log_snapshot_t* next = snapshot_clone(cur);
+        if (!next) return;
+        next->fmt = fmt;
+        if (snapshot_publish(cur, next)) return;
+    }
 }
 
-const char* openpete_log_get_spec(void) { return g_spec; }
+openpete_log_format_t openpete_log_get_format(void) { return snapshot_load()->fmt; }
+
+void openpete_log_set_spec(const char* spec) {
+    apply_config(-1, 0, spec, NULL, spec);
+}
+
+const char* openpete_log_get_spec(void) { return snapshot_load()->spec; }
 
 /** @brief Write s to f as a quoted JSON string literal.
  *
@@ -221,7 +330,8 @@ static void emit_json_string(FILE* f, const char* s) {
 
 void openpete_logf(openpete_log_level_t level, const char* subsystem,
                    const char* fmt, ...) {
-    if (level < lookup_level(subsystem ? subsystem : "")) return;
+    const log_snapshot_t* snap = snapshot_load();
+    if (level < lookup_level(snap, subsystem ? subsystem : "")) return;
 
     char msg[1024];
     va_list ap;
@@ -229,9 +339,9 @@ void openpete_logf(openpete_log_level_t level, const char* subsystem,
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
-    double t = monotonic_seconds() - g_t0;
+    double t = monotonic_seconds() - snap->t0;
 
-    if (g_fmt == OPENPETE_LOG_JSON) {
+    if (snap->fmt == OPENPETE_LOG_JSON) {
         fprintf(stderr, "{\"t\":%.4f,\"level\":\"%s\",\"subsystem\":",
                 t, level_name(level));
         emit_json_string(stderr, subsystem ? subsystem : "");
