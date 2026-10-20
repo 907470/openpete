@@ -201,7 +201,8 @@ static void p3_capture(CPUState* cpu, int arg) {
     p->far_rgb = r | (g << 8) | (b << 16);
     p->ir0 = (int16_t)cpu->read_half(B + 0x1E);
     int ne = (int32_t)cpu->read_word(B + 0x20);
-    if (ne < 0) ne = 0; if (ne > P3_MAX_EDGES) ne = P3_MAX_EDGES;
+    if (ne < 0) ne = 0;
+    if (ne > P3_MAX_EDGES) ne = P3_MAX_EDGES;
     p->nedge = ne;
     for (int i = 0; i < ne; i++) {
         uint32_t a = cpu->read_word(B + 0x24 + i * 8), b2 = cpu->read_word(B + 0x28 + i * 8);

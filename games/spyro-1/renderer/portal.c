@@ -333,7 +333,8 @@ static int portal_outline_world(CPUState* cpu, uint32_t p, double W[16][3], int 
         const double r[3] = { W[k][0]-ox, W[k][1]-oy, W[k][2]-oz };
         const double rh = r[0]*hx + r[1]*hy + r[2]*hz;
         const double rv = r[0]*ux + r[1]*uy + r[2]*uz;
-        if (rh < hlo) hlo = rh; if (rh > hhi) hhi = rh;
+        if (rh < hlo) hlo = rh;
+        if (rh > hhi) hhi = rh;
         if (rv < vlo) vlo = rv;
     }
     const double ah = 0.5 * (hlo + hhi);            /* horizontal centre */
@@ -835,7 +836,9 @@ static int portal_outline_screen(CPUState* cpu, const ngte_view* v, uint32_t p, 
  * @return 1 on success, 0 when the samples coincide or are collinear. */
 static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
     int i0 = 0, i1 = n / 3, i2 = (2 * n) / 3;
-    if (i1 == i0) i1 = 1; if (i2 == i1) i2 = n - 1; if (i2 == i0) return 0;
+    if (i1 == i0) i1 = 1;
+    if (i2 == i1) i2 = n - 1;
+    if (i2 == i0) return 0;
     double x0 = poly[i0].x, y0 = poly[i0].y, w0 = 1.0 / poly[i0].vz;
     double x1 = poly[i1].x, y1 = poly[i1].y, w1 = 1.0 / poly[i1].vz;
     double x2 = poly[i2].x, y2 = poly[i2].y, w2 = 1.0 / poly[i2].vz;
@@ -929,8 +932,11 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
  * @return The push-back in world units. */
 static double portal_band_back_vz(void) {
     static int init = 0; static double v = 24.0;
-    if (!init) { const char* e = getenv("OPENPETE_PORTAL_BAND_BACK");
-                 if (e && *e) v = atof(e); init = 1; }
+    if (!init) {
+        const char* e = getenv("OPENPETE_PORTAL_BAND_BACK");
+        if (e && *e) v = atof(e);
+        init = 1;
+    }
     return v;
 }
 /** @brief Returns the push-back that places the ring and spill sky constructions behind the opening plane, in world units.
@@ -1313,8 +1319,10 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
         o->push_vz = sky_ot_push_for(o->ot_vz);
         float x0 = poly[0].x, x1 = poly[0].x, y0 = poly[0].y, y1 = poly[0].y;
         for (int k = 1; k < pn; k++) {
-            if (poly[k].x < x0) x0 = poly[k].x; if (poly[k].x > x1) x1 = poly[k].x;
-            if (poly[k].y < y0) y0 = poly[k].y; if (poly[k].y > y1) y1 = poly[k].y;
+            if (poly[k].x < x0) x0 = poly[k].x;
+            if (poly[k].x > x1) x1 = poly[k].x;
+            if (poly[k].y < y0) y0 = poly[k].y;
+            if (poly[k].y > y1) y1 = poly[k].y;
         }
         o->x0 = x0; o->x1 = x1; o->y0 = y0; o->y1 = y1;
         o->pn = pn;
@@ -2099,7 +2107,9 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
         const pgv* tv[3] = { &v[0], &v[i], &v[i + 1] };
         for (int k = 0; k < 3; k++) {
             uint32_t r = (uint32_t)(tv[k]->r + 0.5f), g = (uint32_t)(tv[k]->g + 0.5f), bl = (uint32_t)(tv[k]->b + 0.5f);
-            if (r > 255) r = 255; if (g > 255) g = 255; if (bl > 255) bl = 255;
+            if (r > 255) r = 255;
+            if (g > 255) g = 255;
+            if (bl > 255) bl = 255;
             float cz2 = 0.0f;
             int cm2 = sky_const_depth(&cz2);
             float pz2 = (use_plane == 2) ? plane_depth_back(pa, pb, pc, tv[k]->x, tv[k]->y)
@@ -2248,8 +2258,10 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     if (pn >= 3) {
         float oxlo=poly[0].x, oxhi=poly[0].x, oylo=poly[0].y, oyhi=poly[0].y;
         for (int i = 1; i < pn; i++) {
-            if (poly[i].x < oxlo) oxlo = poly[i].x; if (poly[i].x > oxhi) oxhi = poly[i].x;
-            if (poly[i].y < oylo) oylo = poly[i].y; if (poly[i].y > oyhi) oyhi = poly[i].y;
+            if (poly[i].x < oxlo) oxlo = poly[i].x;
+            if (poly[i].x > oxhi) oxhi = poly[i].x;
+            if (poly[i].y < oylo) oylo = poly[i].y;
+            if (poly[i].y > oyhi) oyhi = poly[i].y;
         }
         /* This rect is NOT widened by the aperture margin. Tried, and it made
          * no difference on any of the 29 portals - the mask reaches past the
@@ -2334,12 +2346,18 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
             for (int i2 = 0; i2 < nf; i2++) {
                 const dome_face* f2 = &faces[i2];
                 float bx0 = f2->a.x, bx1 = f2->a.x, by0 = f2->a.y, by1 = f2->a.y;
-                if (f2->b.x < bx0) bx0 = f2->b.x; if (f2->b.x > bx1) bx1 = f2->b.x;
-                if (f2->c.x < bx0) bx0 = f2->c.x; if (f2->c.x > bx1) bx1 = f2->c.x;
-                if (f2->b.y < by0) by0 = f2->b.y; if (f2->b.y > by1) by1 = f2->b.y;
-                if (f2->c.y < by0) by0 = f2->c.y; if (f2->c.y > by1) by1 = f2->c.y;
-                if (bx0 < fx0) fx0 = bx0; if (bx1 > fx1) fx1 = bx1;
-                if (by0 < fy0) fy0 = by0; if (by1 > fy1) fy1 = by1;
+                if (f2->b.x < bx0) bx0 = f2->b.x;
+                if (f2->b.x > bx1) bx1 = f2->b.x;
+                if (f2->c.x < bx0) bx0 = f2->c.x;
+                if (f2->c.x > bx1) bx1 = f2->c.x;
+                if (f2->b.y < by0) by0 = f2->b.y;
+                if (f2->b.y > by1) by1 = f2->b.y;
+                if (f2->c.y < by0) by0 = f2->c.y;
+                if (f2->c.y > by1) by1 = f2->c.y;
+                if (bx0 < fx0) fx0 = bx0;
+                if (bx1 > fx1) fx1 = bx1;
+                if (by0 < fy0) fy0 = by0;
+                if (by1 > fy1) fy1 = by1;
                 if (bx1 >= x0 && bx0 <= x1 && by1 >= y0 && by0 <= y1) inrect++;
             }
             fprintf(stderr, "[portal-domedbg f=%u] sb=%08X sectors=%u faces=%d (inrect=%d, span x[%.0f,%.0f] y[%.0f,%.0f]) "
@@ -2390,8 +2408,10 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
         if (pn >= 3) {
             float oxlo = poly[0].x, oxhi = poly[0].x, oylo = poly[0].y, oyhi = poly[0].y;
             for (int i = 1; i < pn; i++) {
-                if (poly[i].x < oxlo) oxlo = poly[i].x; if (poly[i].x > oxhi) oxhi = poly[i].x;
-                if (poly[i].y < oylo) oylo = poly[i].y; if (poly[i].y > oyhi) oyhi = poly[i].y;
+                if (poly[i].x < oxlo) oxlo = poly[i].x;
+                if (poly[i].x > oxhi) oxhi = poly[i].x;
+                if (poly[i].y < oylo) oylo = poly[i].y;
+                if (poly[i].y > oyhi) oyhi = poly[i].y;
             }
             fprintf(stderr, "    outline-bbox x[%.0f,%.0f] y[%.0f,%.0f] (rect x[%d,%d]) wsF=%.3f visX[%.0f,%.0f]\n",
                     oxlo, oxhi, oylo, oyhi, rx0, rx1,
@@ -2797,8 +2817,10 @@ static void feed_revealed_portals(CPUState* cpu) {
         if (pn < 3) continue;
         float oxlo = poly[0].x, oxhi = poly[0].x, oylo = poly[0].y, oyhi = poly[0].y;
         for (int k = 1; k < pn; k++) {
-            if (poly[k].x < oxlo) oxlo = poly[k].x; if (poly[k].x > oxhi) oxhi = poly[k].x;
-            if (poly[k].y < oylo) oylo = poly[k].y; if (poly[k].y > oyhi) oyhi = poly[k].y;
+            if (poly[k].x < oxlo) oxlo = poly[k].x;
+            if (poly[k].x > oxhi) oxhi = poly[k].x;
+            if (poly[k].y < oylo) oylo = poly[k].y;
+            if (poly[k].y > oyhi) oyhi = poly[k].y;
         }
         /* Gate by the outline BBOX, not its centroid: a centroid test skips
          * an opening that straddles a boundary while its centroid lies
@@ -3085,7 +3107,8 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
             for (int i = 0; i < 3; i++)
                 for (int j = 0; j < 3; j++) {
                     long d = (long)s_dome_curr[i][j] - s_dome_prev[i][j];
-                    if (d < 0) d = -d; if (d > worst) worst = d;
+                    if (d < 0) d = -d;
+                    if (d > worst) worst = d;
                 }
             if (worst > 1200) do_lerp = 0;
         }

@@ -301,8 +301,10 @@ static unsigned char *fb_crop_image(const unsigned char *src, int sw, int sh,
     if (aw <= 0 || ah <= 0) return NULL;
     int x0 = (sx - asx) * sw / aw, x1 = (sx + w - asx) * sw / aw;
     int y0 = (sy - asy) * sh / ah, y1 = (sy + h - asy) * sh / ah;
-    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-    if (x1 > sw) x1 = sw; if (y1 > sh) y1 = sh;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > sw) x1 = sw;
+    if (y1 > sh) y1 = sh;
     const int pw = x1 - x0, ph = y1 - y0;
     if (pw <= 0 || ph <= 0) return NULL;
     unsigned char *px = (unsigned char *)malloc((size_t)pw * (size_t)ph * 4u);

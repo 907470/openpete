@@ -4354,7 +4354,8 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
      * input is summed *before* it, so the music gain carries both stages. */
     if (attr && (attr->mask & (SPU_COMMON_MVOLL | SPU_COMMON_MVOLR))) {
         int l = attr->mvol.left, r = attr->mvol.right;
-        if (l < 0) l = 0; if (r < 0) r = 0;
+        if (l < 0) l = 0;
+        if (r < 0) r = 0;
         /* Main volume lands in a sweep-capable register whose fixed mode
          * carries the level halved; the SPU doubles it on application, so
          * 0x3CCC is applied as 31128 and full scale here is 16384. CD input
@@ -4366,7 +4367,8 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
     if (attr && (attr->mask & (SPU_COMMON_CDVOLL | SPU_COMMON_CDVOLR))) {
         int l = attr->cd.volume.left;
         int r = attr->cd.volume.right;
-        if (l < 0) l = 0; if (r < 0) r = 0;
+        if (l < 0) l = 0;
+        if (r < 0) r = 0;
         s_cdVolume = (float)((l + r) / 2) / 32768.0f;
         spyro_apply_music_gain();
     }

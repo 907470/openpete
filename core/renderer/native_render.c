@@ -2185,9 +2185,12 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
     uint32_t v;
     if (mode < 0) { v = 0; }
     else {
-        if (r < 0) r = 0; if (r > 255) r = 255;
-        if (g < 0) g = 0; if (g > 255) g = 255;
-        if (b < 0) b = 0; if (b > 255) b = 255;
+        if (r < 0) r = 0;
+        if (r > 255) r = 255;
+        if (g < 0) g = 0;
+        if (g > 255) g = 255;
+        if (b < 0) b = 0;
+        if (b > 255) b = 255;
         v = (1u << 31) | ((uint32_t)(mode & 3) << 24)
           | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
     }
@@ -2204,9 +2207,12 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
 void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     if (r < 0) { s_scene_freeze = 0; return; }
     if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (b < 0) b = 0; if (b > 255) b = 255;
-    if (fade < 0) fade = 0; if (fade > 127) fade = 127;   /* 7-bit fade shift in bits 24-30 */
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    if (fade < 0) fade = 0;
+    if (fade > 127) fade = 127;   /* 7-bit fade shift in bits 24-30 */
     s_scene_freeze = (1u << 31) | ((uint32_t)fade << 24)
                    | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
     s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
@@ -4226,8 +4232,12 @@ void openpete_native_scene_apply_overlay(double alpha) {
             if (q->seq) { if (q->seq < lo) lo = q->seq; if (q->seq > hi) hi = q->seq; } else nz++;
             if (q->category >= 0 && q->category < 16) cat[q->category]++;
             for (int k = 0; k < 3; k++) {
-                if (q->v[k].sx < x0) x0 = q->v[k].sx; if (q->v[k].sx > x1) x1 = q->v[k].sx;
-                if (q->v[k].sy < y0) y0 = q->v[k].sy; if (q->v[k].sy > y1) y1 = q->v[k].sy; } }
+                if (q->v[k].sx < x0) x0 = q->v[k].sx;
+                if (q->v[k].sx > x1) x1 = q->v[k].sx;
+                if (q->v[k].sy < y0) y0 = q->v[k].sy;
+                if (q->v[k].sy > y1) y1 = q->v[k].sy;
+            }
+        }
         fprintf(stderr, "[apply f=%u sort=%d] n=%d paired=%d seq=%u..%u zero=%d"
                         " bbox=[%.0f,%.0f]x[%.0f,%.0f] cats:", s_scene_frame, seq_sort_on(),
                 s_overlay_carry_n, paired, lo, hi, nz, x0, x1, y0, y1);
@@ -10624,7 +10634,8 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
      * the moby could produce is behind nearer opaque WORLD => cullable. */
     int cx0 = (int)floorf(r.u0 * (float)OCCL_GW) - 1, cx1 = (int)floorf(r.u1 * (float)OCCL_GW) + 1;
     int cy0 = (int)floorf(r.v0 * (float)OCCL_GH) - 1, cy1 = (int)floorf(r.v1 * (float)OCCL_GH) + 1;
-    if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
+    if (cx0 < 0) cx0 = 0;
+    if (cy0 < 0) cy0 = 0;
     if (cx1 >= OCCL_GW) cx1 = OCCL_GW - 1;
     if (cy1 >= OCCL_GH) cy1 = OCCL_GH - 1;
     float scan_max = 0.0f;
@@ -13251,8 +13262,10 @@ static void alpha_census(const scene_tri_t* scene, int scene_n)
         float x0 = scene[t].v[0].sx, x1 = x0, y0 = scene[t].v[0].sy, y1 = y0, zs = scene[t].v[0].z;
         for (int k = 1; k < 3; k++) {
             float x = scene[t].v[k].sx, y = scene[t].v[k].sy, z = scene[t].v[k].z;
-            if (x < x0) x0 = x; if (x > x1) x1 = x;
-            if (y < y0) y0 = y; if (y > y1) y1 = y;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
             zs += z;
         }
         cz[m] = zs / 3.0f; bx0[m] = x0; by0[m] = y0; bx1[m] = x1; by1[m] = y1;
@@ -15085,8 +15098,10 @@ static bool draw_native_scene(bool full_extent)
                 float x0 = scene[t].v[0].sx, x1 = x0, y0 = scene[t].v[0].sy, y1 = y0;
                 for (int k = 1; k < 3; k++) {
                     float sx2 = scene[t].v[k].sx, sy2 = scene[t].v[k].sy;
-                    if (sx2 < x0) x0 = sx2; if (sx2 > x1) x1 = sx2;
-                    if (sy2 < y0) y0 = sy2; if (sy2 > y1) y1 = sy2;
+                    if (sx2 < x0) x0 = sx2;
+                    if (sx2 > x1) x1 = sx2;
+                    if (sy2 < y0) y0 = sy2;
+                    if (sy2 > y1) y1 = sy2;
                 }
                 if (i >= hn - 12 || (x1 >= 308.0f && x0 <= 336.0f && y1 >= 183.0f && y0 <= 214.0f)) {
                     float c[3][2];
@@ -21018,8 +21033,10 @@ static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch, floa
     int x1 = (int)(fx1 + 0.5f), y1 = (int)(fy1 + 0.5f);
     if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
     if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
-    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-    if (x1 > cw) x1 = cw; if (y1 > ch) y1 = ch;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > cw) x1 = cw;
+    if (y1 > ch) y1 = ch;
     const int pw = x1 - x0, ph = y1 - y0;
     if (pw <= 0 || ph <= 0) return NULL;
     unsigned char *px = (unsigned char *)malloc((size_t)pw * (size_t)ph * 4u);

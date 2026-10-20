@@ -207,7 +207,8 @@ static void spyro_compare_geometry(void) {
             }
             float dist = sqrtf(bestd);
             total++; errsum += dist; if (dist > emax) emax = dist;
-            if (dist <= 4.0f) hit4++; if (dist <= 2.0f) hit2++;
+            if (dist <= 4.0f) hit4++;
+            if (dist <= 2.0f) hit2++;
         }
     }
     fprintf(stderr, "[spyro-verify f=%u] proj=%d primVerts=%d  match<=4px=%.1f%% <=2px=%.1f%%  mean=%.2fpx max=%.1fpx\n",
@@ -368,7 +369,9 @@ static void spyro_walk_eval(CPUState* cpu, walk_stats* st) {
             if (wc[j] != exp[k].rgb[j]) rok=0;
             if (wu[j] != exp[k].u[j] || wv[j] != exp[k].v[j]) uok=0;
         }
-        if (pok) st->pos_ok++; if (rok) st->rgb_ok++; if (uok) st->uv_ok++;
+        if (pok) st->pos_ok++;
+        if (rok) st->rgb_ok++;
+        if (uok) st->uv_ok++;
         if (!(rok&&uok) && st->first_bad<0) st->first_bad=k;
     }
     st->walk = s_walk_n; st->expected = en; st->n = n; st->cnt_ok = (s_walk_n == en);

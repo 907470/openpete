@@ -98,7 +98,8 @@ static int slot_for(uint32_t rect_va, const rect_t* rc)
     {
         int32_t scroll = op_read_s32(g_api, OP_GADDR_D_800757CC);
         int j = (rc->x - scroll - 232) / 24;
-        if (j < 0) j = 0; if (j >= (int)INV_LEVEL_COLS) j = (int)INV_LEVEL_COLS - 1;
+        if (j < 0) j = 0;
+        if (j >= (int)INV_LEVEL_COLS) j = (int)INV_LEVEL_COLS - 1;
         unsigned r;
         for (r = 0; r < s_row_n; r++) if (s_row_y[r] == rc->y) break;
         if (r == s_row_n) {
@@ -201,7 +202,8 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
     s_park_host = (Moby*)host;
     {
         double deg = api->config_float(self, "spin.degrees_per_tick", 12.0);
-        if (deg < 1.0) deg = 1.0; if (deg > 60.0) deg = 60.0;
+        if (deg < 1.0) deg = 1.0;
+        if (deg > 60.0) deg = 60.0;
         /* Negative: the flipbook's spots travel the other way from a positive
          * z-byte step (verified against the sprite). */
         s_step_units = -deg * 256.0 / 360.0;

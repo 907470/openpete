@@ -178,7 +178,9 @@ static void tracer_build_and_feed(CPUState* cpu) {
                 px = dy * scale; py = -dx * scale;
             }
             int Rc = 150 - 2 * f, Gc = 150 - 4 * f, Bc = 150 - 10 * f;
-            if (Rc < 0) Rc = 0; if (Gc < 0) Gc = 0; if (Bc < 0) Bc = 0;
+            if (Rc < 0) Rc = 0;
+            if (Gc < 0) Gc = 0;
+            if (Bc < 0) Bc = 0;
             if (is_gnasty) { int t = Rc; Rc = Gc; Gc = t; }  /* func_800189F8: g_LevelId==63 swaps R<->G */
             uint32_t col = (uint32_t)(Rc | (Gc << 8) | (Bc << 16));
             double c0x = sx + px, c0y = sy + py;

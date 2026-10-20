@@ -222,8 +222,13 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
             if (!s_dumped && openpete_frame >= 1) {
                 float minx=1e9f,maxx=-1e9f,miny=1e9f,maxy=-1e9f;
                 for (int i = 0; i < s_cross_n; i++)
-                    for (int k=0;k<3;k++){ float X=s_cross[i].sx[k],Y=s_cross[i].sy[k];
-                        if(X<minx)minx=X; if(X>maxx)maxx=X; if(Y<miny)miny=Y; if(Y>maxy)maxy=Y; }
+                    for (int k=0;k<3;k++){
+                        float X=s_cross[i].sx[k],Y=s_cross[i].sy[k];
+                        if(X<minx)minx=X;
+                        if(X>maxx)maxx=X;
+                        if(Y<miny)miny=Y;
+                        if(Y>maxy)maxy=Y;
+                    }
                 /* The .s's own prim bytes are the 4:3-culled subset; the extent
                  * below is the widened re-derivation actually fed. */
                 fprintf(stderr, CRED "[transition-dump f=%u] polybuf %u bytes -> %d dome tris  "

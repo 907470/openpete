@@ -606,9 +606,12 @@ static double cl_fit_pose(const int16_t* live, double* out_yaw, double* out_pitc
     for (int pass = 0; pass < 3; pass++) {
         double ys, ye, ps, pe, step;
         if (pass == 0) { ys = 0; ye = 4096; ps = -992; pe = 992; step = 32; }
-        else { step = (pass == 1) ? 4 : 1;
-               ys = by - 32; ye = by + 32; ps = bp - 32; pe = bp + 32;
-               if (ps < -992) ps = -992; if (pe > 992) pe = 992; }
+        else {
+            step = (pass == 1) ? 4 : 1;
+            ys = by - 32; ye = by + 32; ps = bp - 32; pe = bp + 32;
+            if (ps < -992) ps = -992;
+            if (pe > 992) pe = 992;
+        }
         for (double y = ys; y < ye + 0.5; y += step)
             for (double p = ps; p < pe + 0.5; p += step) {
                 int16_t v[9], pr[9];

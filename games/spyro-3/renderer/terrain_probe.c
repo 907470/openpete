@@ -513,7 +513,10 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
                     if (near_z < 256.0) S.miss_z_near++; else if (near_z < 1536.0) S.miss_z_mid++; else S.miss_z_far++;
                     if (((S.verts + verts) & 7u) == 0u) {
                         S.mid_sampled++; int m = pv_midpoint(sx, sy, s_tol);
-                        if (m & 1) S.mid_hit++; if (m & 2) S.mid_cross++; if (m & 4) S.seg_same++; if (m & 8) S.seg_cross++;
+                        if (m & 1) S.mid_hit++;
+                        if (m & 2) S.mid_cross++;
+                        if (m & 4) S.seg_same++;
+                        if (m & 8) S.seg_cross++;
                     }
                     if (near <= 4.0) S.miss_le4++; else if (near <= 16.0) S.miss_le16++;
                     else if (near <= 64.0) S.miss_le64++; else S.miss_far++;

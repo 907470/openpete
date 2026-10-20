@@ -946,8 +946,10 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
                 for (int k = 0; k < 3; k++) {
                     double sx = s_swtri[i].v[k].sx, sy = s_swtri[i].v[k].sy;
                     cx += sx; cy += sy; nv++;
-                    if (sx < x0) x0 = sx; if (sx > x1) x1 = sx;
-                    if (sy < y0) y0 = sy; if (sy > y1) y1 = sy;
+                    if (sx < x0) x0 = sx;
+                    if (sx > x1) x1 = sx;
+                    if (sy < y0) y0 = sy;
+                    if (sy > y1) y1 = sy;
                 }
             fprintf(stderr, "[player-screen f=%u] leg=%s slot=%d ntri=%d nv=%d "
                             "c=(%.3f,%.3f) bb=(%.3f,%.3f,%.3f,%.3f) mirror=%d\n",

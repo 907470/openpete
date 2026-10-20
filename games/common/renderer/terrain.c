@@ -689,8 +689,12 @@ static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3
             int r = (int)(fs[0] * (float)(farC & 0xFF)         + fo[0] + 0.5f);
             int g = (int)(fs[1] * (float)((farC >> 8) & 0xFF)  + fo[1] + 0.5f);
             int b = (int)(fs[2] * (float)((farC >> 16) & 0xFF) + fo[2] + 0.5f);
-            if (r < 0) r = 0; if (g < 0) g = 0; if (b < 0) b = 0;
-            if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+            if (r < 0) r = 0;
+            if (g < 0) g = 0;
+            if (b < 0) b = 0;
+            if (r > 255) r = 255;
+            if (g > 255) g = 255;
+            if (b > 255) b = 255;
             farC = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
         }
     }
@@ -3343,7 +3347,8 @@ static uint32_t lp_grade_apply(const tscache_t* C, uint32_t rgb) {
     uint32_t out = 0;
     for (int c = 0; c < 3; c++) {
         int v = (int)(p[c] * (float)((rgb >> (8 * c)) & 0xFF) + q[c] * 255.0f + 0.5f);
-        if (v < 0) v = 0; if (v > 255) v = 255;
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
         out |= (uint32_t)v << (8 * c);
     }
     return out;
@@ -10095,8 +10100,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                         for (int q2 = 0; q2 < nc; q2++) {
                             const tsvert_t* V = &cverts[ci2[q2]];
                             const lvert* P = &sv[ci2[q2]];
-                            if (P->sx < bx0) bx0 = P->sx; if (P->sx > bx1) bx1 = P->sx;
-                            if (P->sy < by0) by0 = P->sy; if (P->sy > by1) by1 = P->sy;
+                            if (P->sx < bx0) bx0 = P->sx;
+                            if (P->sx > bx1) bx1 = P->sx;
+                            if (P->sy < by0) by0 = P->sy;
+                            if (P->sy > by1) by1 = P->sy;
                             fprintf(stderr, " v%d=%d,%d,%d", q2,
                                     originX + V->x, originY + V->y, originZ + V->z);
                         }
@@ -10159,7 +10166,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             if (faceStride == 16 && s_caldbg && front) {  /* front-facing only */
                 double rs = sv[i0].m3+sv[i1].m3+sv[i2].m3+sv[i3].m3;
                 double rmn = sv[i0].m3; if(sv[i1].m3<rmn)rmn=sv[i1].m3;
-                if(sv[i2].m3<rmn)rmn=sv[i2].m3; if(sv[i3].m3<rmn)rmn=sv[i3].m3;
+                if(sv[i2].m3<rmn)rmn=sv[i2].m3;
+                if(sv[i3].m3<rmn)rmn=sv[i3].m3;
                 if (is_deferred(faces + (uint32_t)f * 16u)) {
                     s_cal_qn++; if (rs > s_cal_qsum_max) s_cal_qsum_max = rs;
                     if (rmn > s_cal_qmin_max) s_cal_qmin_max = rmn;
@@ -10270,8 +10278,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     int nc = quad ? 4 : 3;
                     for (int q2 = 0; q2 < nc; q2++) {
                         const lvert* V = &sv[ci[q2]];
-                        if (V->sx < bx0) bx0 = V->sx; if (V->sx > bx1) bx1 = V->sx;
-                        if (V->sy < by0) by0 = V->sy; if (V->sy > by1) by1 = V->sy;
+                        if (V->sx < bx0) bx0 = V->sx;
+                        if (V->sx > bx1) bx1 = V->sx;
+                        if (V->sy < by0) by0 = V->sy;
+                        if (V->sy > by1) by1 = V->sy;
                     }
                     if (bx1 >= s_cd[1] && bx0 <= s_cd[3] && by1 >= s_cd[2] && by0 <= s_cd[4]) {
                         fprintf(stderr, "[culldbg] s=%u f=%d hp=%d q=%d flip=%d abe=%d w3=%08X "
@@ -11597,7 +11607,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             for (int k = 0; k < 3; k++) {
                 float ax = T->sx[k] < 0 ? -T->sx[k] : T->sx[k];
                 float ay = T->sy[k] < 0 ? -T->sy[k] : T->sy[k];
-                if (ax > mx) mx = ax; if (ay > mx) mx = ay;
+                if (ax > mx) mx = ax;
+                if (ay > mx) mx = ay;
             }
             if (mx > 1500.0f) { skipped_giant++; continue; }
             for (int gy = 0; gy < GH; gy++) for (int gx = 0; gx < GW; gx++) {
@@ -11642,8 +11653,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     prim_t* g = &s_gte[p];
                     float mnx=1e9f,mny=1e9f,mxx=-1e9f,mxy=-1e9f;
                     for (int k = 0; k < g->nv; k++) {
-                        if (g->x[k]<mnx)mnx=g->x[k]; if (g->x[k]>mxx)mxx=g->x[k];
-                        if (g->y[k]<mny)mny=g->y[k]; if (g->y[k]>mxy)mxy=g->y[k];
+                        if (g->x[k]<mnx)mnx=g->x[k];
+                        if (g->x[k]>mxx)mxx=g->x[k];
+                        if (g->y[k]<mny)mny=g->y[k];
+                        if (g->y[k]>mxy)mxy=g->y[k];
                     }
                     if (mxx < bx0 || mnx > bx1 || mxy < by0 || mny > by1) continue;
                     fprintf(stderr, "  [pixbox-psx] code=%02X nv=%d tex=%d xy=", g->code, g->nv, g->textured);
@@ -11654,8 +11667,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     ttri* T = &s_tri[t];
                     float mnx=1e9f,mny=1e9f,mxx=-1e9f,mxy=-1e9f;
                     for (int k = 0; k < 3; k++) {
-                        if (T->sx[k]<mnx)mnx=T->sx[k]; if (T->sx[k]>mxx)mxx=T->sx[k];
-                        if (T->sy[k]<mny)mny=T->sy[k]; if (T->sy[k]>mxy)mxy=T->sy[k];
+                        if (T->sx[k]<mnx)mnx=T->sx[k];
+                        if (T->sx[k]>mxx)mxx=T->sx[k];
+                        if (T->sy[k]<mny)mny=T->sy[k];
+                        if (T->sy[k]>mxy)mxy=T->sy[k];
                     }
                     if (mxx < bx0 || mnx > bx1 || mxy < by0 || mny > by1) continue;
                     fprintf(stderr, "  [pixbox-nat] s=%d f=%d tier=%d fill=%d tex=%d blend=%d "
@@ -12284,8 +12299,10 @@ static int portal_rim_classify(CPUState* cpu, const ttri* t, int* plane) {
             const double r[3] = { V[k][0]-O[0], V[k][1]-O[1], V[k][2]-O[2] };
             fuv[k].u = r[0]*U[0] + r[1]*U[1] + r[2]*U[2];
             fuv[k].v = r[0]*W[0] + r[1]*W[1] + r[2]*W[2];
-            if (fuv[k].u < fulo) fulo = fuv[k].u; if (fuv[k].u > fuhi) fuhi = fuv[k].u;
-            if (fuv[k].v < fvlo) fvlo = fuv[k].v; if (fuv[k].v > fvhi) fvhi = fuv[k].v;
+            if (fuv[k].u < fulo) fulo = fuv[k].u;
+            if (fuv[k].u > fuhi) fuhi = fuv[k].u;
+            if (fuv[k].v < fvlo) fvlo = fuv[k].v;
+            if (fuv[k].v > fvhi) fvhi = fuv[k].v;
         }
         if (fuhi < pulo - RIM_CAND_MARGIN || fulo > puhi + RIM_CAND_MARGIN ||
             fvhi < pvlo - RIM_CAND_MARGIN || fvlo > pvhi + RIM_CAND_MARGIN) continue;
@@ -12655,8 +12672,10 @@ static void terrain_feed_native(CPUState* cpu) {
             fprintf(stderr, "[pfit]   out %d %.2f %.2f\n", k, pv[k].u, pv[k].v);
           double pulo = pv[0].u, puhi = pv[0].u, pvlo = pv[0].v, pvhi = pv[0].v;
           for (int i = 1; i < pp->vn; i++) {
-            if (pv[i].u < pulo) pulo = pv[i].u; if (pv[i].u > puhi) puhi = pv[i].u;
-            if (pv[i].v < pvlo) pvlo = pv[i].v; if (pv[i].v > pvhi) pvhi = pv[i].v;
+            if (pv[i].u < pulo) pulo = pv[i].u;
+            if (pv[i].u > puhi) puhi = pv[i].u;
+            if (pv[i].v < pvlo) pvlo = pv[i].v;
+            if (pv[i].v > pvhi) pvhi = pv[i].v;
           }
           /* Search box: the opening grown by its own size, so the arch jamb and
            * the ground meeting the sill are both included without dragging in
@@ -12683,8 +12702,10 @@ static void terrain_feed_native(CPUState* cpu) {
               const double r[3] = { V[k][0]-O[0], V[k][1]-O[1], V[k][2]-O[2] };
               f[k].u = r[0]*U[0] + r[1]*U[1] + r[2]*U[2];
               f[k].v = r[0]*W[0] + r[1]*W[1] + r[2]*W[2];
-              if (f[k].u < fulo) fulo = f[k].u; if (f[k].u > fuhi) fuhi = f[k].u;
-              if (f[k].v < fvlo) fvlo = f[k].v; if (f[k].v > fvhi) fvhi = f[k].v;
+              if (f[k].u < fulo) fulo = f[k].u;
+              if (f[k].u > fuhi) fuhi = f[k].u;
+              if (f[k].v < fvlo) fvlo = f[k].v;
+              if (f[k].v > fvhi) fvhi = f[k].v;
             }
             if (fuhi < pulo - gu || fulo > puhi + gu ||
                 fvhi < pvlo - gv || fvlo > pvhi + gv) continue;
@@ -13315,7 +13336,8 @@ static void terrain_compare(void) {
             if (ncx<bx0||ncx>bx1||ncy<by0||ncy>by1) continue;
             /* nearest captured textured prim by centroid */
             float bd=1e18f; int bj=uvdbg_nn_prim(ncx, ncy, &bd);
-            if (bj<0) continue; bd=sqrtf(bd);
+            if (bj<0) continue;
+            bd=sqrtf(bd);
             if (bd > 6.0f) continue;                /* loose match - skip */
             prim_t* g=&s_gte[bj];
             /* decode captured material the same way terrain_texmat does */

@@ -133,8 +133,11 @@ void openpete_camlock_set_pose(double x, double y, double z,
 
 void openpete_camlock_get_pose(double* x, double* y, double* z,
                                double* yaw, double* pitch) {
-    if (x) *x = s_x;  if (y) *y = s_y;  if (z) *z = s_z;
-    if (yaw) *yaw = s_yaw;  if (pitch) *pitch = s_pitch;
+    if (x) *x = s_x;
+    if (y) *y = s_y;
+    if (z) *z = s_z;
+    if (yaw) *yaw = s_yaw;
+    if (pitch) *pitch = s_pitch;
 }
 
 /* Mouse look markers, this consumer's own: the count total at the last
