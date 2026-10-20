@@ -42,7 +42,9 @@ games the database's configuration leaves out (their rows are held).
 Modes:
   hook              git pre-commit. Runs when an in-scope source, header,
                     mod source, CMake file or this fence is staged.
-                    linux-release is always decided; windows-mingw when its
+                    linux-release is always decided, its database
+                    configured and its build-produced inputs built on
+                    demand (MISSING-INPUT below); windows-mingw when its
                     database exists, else SKIP. An entry is altered when its
                     dependency set holds a staged path (every entry, when this
                     fence is staged), or when a staged CMake file changed its
@@ -70,12 +72,25 @@ Modes:
 Bins: DIRTY (dirty paths outside every altered entry's dependencies,
 reported); DIRTY-DEP (an unstaged or untracked path in an altered entry's
 dependencies) and DIRTY-HEADER (a staged path with unstaged hunks): hook
-refuses; VACUOUS (no linux database, a staged in-scope source in no entry
-set and not exempt, zero entries measured): refuses; STALE-DB (a CMake
-file newer than the database, or an error-kind diagnostic with no option):
-refuses, never baselined; ERROR (an error-set diagnostic): refuses;
-MISSING-INPUT (a build-produced header or the staged SDK is absent):
-linux-release refuses naming the target, windows-mingw SKIPs.
+refuses; VACUOUS (no linux database where the mode does not configure
+one, a staged in-scope source in no entry set and not exempt, zero entries
+measured): refuses; STALE-DB (a CMake file newer than the database, or an
+error-kind diagnostic with no option): refuses, never baselined; ERROR (an
+error-set diagnostic): refuses; MISSING-INPUT (a header a build rule
+generates, or the mod SDK, is absent from the build directory): on
+linux-release the hook, tighten and baseline build openpete_generated_headers
+plus the SDK staging targets under nice -n 10, re-run the -M pass and
+refuse only when the build fails or an input is still absent (the build's
+seconds are printed on the decision line); `check` (run inside `cmake
+--build` of the same directory) and OPENPETE_FENCE_NO_BUILD=1 refuse
+naming the targets; windows-mingw SKIPs.
+
+Mod SDK: the mod entries compile against <build>/sdk (openpete_sdk_stage,
+which depends on the executable) when it holds every configured game, else
+against <build>/mod-sdk-test/sdk, the same files staged by
+openpete_mod_sdk_test_root and <tag>_mod_sdk_test_stage without the
+executable; those are the targets the on-demand build names.
+OPENPETE_FENCE_BUILD_SDK=1 keeps <build>/sdk and builds openpete_sdk_stage.
 
 Escape: `#pragma GCC diagnostic ignored "-W<x>"` (or `warning`) between a
 push and a pop, with `// warning-ratchet: <reason>` on the pragma line or
@@ -86,6 +101,12 @@ Environment:
   OPENPETE_WARNING_DB          linux-release database path.
   OPENPETE_WARNING_MINGW_DB    windows-mingw database path.
   OPENPETE_WARNING_JOBS        parallel compiles (default 16, the ratchets' JOBS).
+  OPENPETE_FENCE_NO_BUILD=1    refuse MISSING-INPUT and a missing database
+                               instead of building or configuring.
+  OPENPETE_FENCE_BUILD_JOBS    -j of the on-demand build (default the
+                               build tool's).
+  OPENPETE_FENCE_BUILD_SDK=1   the mod SDK is <build>/sdk, built by
+                               openpete_sdk_stage (and the executable).
   OPENPETE_NO_COMMITS=1        `check --armed` passes unarmed.
 """
 import concurrent.futures
@@ -271,14 +292,32 @@ def mod_games(manifest):
     return [g for g in ("spyro-1", "spyro-2", "spyro-3") if g in m.group(1)]
 
 
+def sdk_root(build_dir, games):
+    """-> (the SDK directory the mod entries compile against, the targets
+    that stage it). <build>/sdk (openpete_sdk_stage) when it holds every game
+    of games; else <build>/mod-sdk-test/sdk, the same root files, shaders
+    and per-game headers staged by openpete_mod_sdk_test_root and
+    <tag>_mod_sdk_test_stage, which do not depend on the executable as
+    openpete_sdk_stage does. OPENPETE_FENCE_BUILD_SDK=1 keeps <build>/sdk
+    and names openpete_sdk_stage."""
+    staged = os.path.join(build_dir, "sdk")
+    if os.environ.get("OPENPETE_FENCE_BUILD_SDK", "") not in ("", "0") or all(
+            os.path.isdir(os.path.join(staged, "games", g)) for g in games):
+        return staged, ["openpete_sdk_stage"]
+    return (os.path.join(build_dir, "mod-sdk-test", "sdk"),
+            ["openpete_mod_sdk_test_root"]
+            + ["%s_mod_sdk_test_stage" % g.replace("-", "") for g in sorted(games)])
+
+
 def mod_entries(root, db_path, dbname, cc, config, errset):
-    """-> ([Entry], {mod rel: [games]}, missing sdk dirs) of the in-tree mod
-    sources and the SDK's openpete_mod_abi.c, per configured game."""
-    sdk = os.path.join(os.path.dirname(os.path.abspath(db_path)), "sdk")
+    """-> ([Entry], {mod rel: [games]}, missing sdk dirs, the targets that
+    stage the SDK) of the in-tree mod sources and the SDK's
+    openpete_mod_abi.c, per configured game, against sdk_root's directory."""
     out, games_of, missing = [], {}, []
     mods = os.path.join(root, "mods")
     if not cc or not os.path.isdir(mods):
-        return out, games_of, missing
+        return out, games_of, missing, []
+    pending = []
     games_used = set()
     for mod in sorted(os.listdir(mods)):
         src_dir = os.path.join(mods, mod, "src")
@@ -294,12 +333,15 @@ def mod_entries(root, db_path, dbname, cc, config, errset):
                 if config.games and g not in config.games:
                     continue
                 games_used.add(g)
-                out.append(_mod_entry(root, dbname, rel, g, sdk, cc, errset))
+                pending.append((rel, g))
+    sdk, targets = sdk_root(os.path.dirname(os.path.abspath(db_path)), games_used)
+    for rel, g in pending:
+        out.append(_mod_entry(root, dbname, rel, g, sdk, cc, errset))
     for g in sorted(games_used):
         out.append(_mod_entry(root, dbname, MOD_ABI, g, sdk, cc, errset))
         if not os.path.isdir(os.path.join(sdk, "games", g)):
             missing.append(os.path.join(sdk, "games", g))
-    return out, games_of, missing
+    return out, games_of, missing, targets
 
 
 def _mod_entry(root, dbname, rel, game, sdk, cc, errset):
@@ -334,31 +376,6 @@ def compiler_version(cc):
     return "%s %s" % (os.path.basename(cc), out.strip())
 
 
-def parse_make_deps(text, directory):
-    """-> [absolute path] of a `-M` rule (escaped spaces honoured)."""
-    body = text.replace("\\\n", " ")
-    if ":" not in body:
-        return []
-    body = body.split(":", 1)[1]
-    paths, cur, i = [], "", 0
-    while i < len(body):
-        c = body[i]
-        if c == "\\" and i + 1 < len(body) and body[i + 1] == " ":
-            cur += " "
-            i += 2
-            continue
-        if c.isspace():
-            if cur:
-                paths.append(cur)
-            cur = ""
-        else:
-            cur += c
-        i += 1
-    if cur:
-        paths.append(cur)
-    return [os.path.normpath(os.path.join(directory, p)) for p in paths]
-
-
 class Hasher:
     """Content hashes of files under the root, (mtime, size) of files
     outside it, memoised per run."""
@@ -387,11 +404,9 @@ def dep_pass(entries, jobs):
     """Fill entry.deps (absolute paths) and entry.missing (dependencies -MG
     could not find) for every entry."""
     def one(e):
-        rc, out, err = run(e.dep(), e.dir)
-        if rc != 0:
-            e.dep_error = err.strip()[-600:] or "rc %d" % rc
+        e.deps, e.dep_error = lib.make_deps(e.dep(), e.dir)
+        if e.dep_error:
             return
-        e.deps = parse_make_deps(out, e.dir)
         e.missing = [d for d in e.deps if not os.path.exists(d)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
         list(ex.map(one, entries))
@@ -743,9 +758,10 @@ def load_corpus(root, dbname, db_path, mods=True, jobs=16):
     c.db_rels = {e.rel for e in entries}
     c.mod_games = {}
     c.missing_sdk = []
+    c.sdk_targets = []
     if mods:
-        m, c.mod_games, c.missing_sdk = mod_entries(root, db_path, dbname, cc,
-                                                    c.config, errset)
+        m, c.mod_games, c.missing_sdk, c.sdk_targets = mod_entries(
+            root, db_path, dbname, cc, c.config, errset)
         entries += m
     c.entries = entries
     if not entries:
@@ -828,23 +844,40 @@ def tracked_cmake(root):
                                                                "games/spyro-3/spyro-3/"))]
 
 
-def missing_refusal(c, linux):
-    """MISSING-INPUT: -> None, or the text (linux refuses it, mingw SKIPs)."""
-    if not c.missing and not c.missing_sdk:
+def missing_probe(c):
+    """-> (the absent build-produced inputs, the SDK staging targets when the
+    SDK is absent): lib.ensure_inputs's probe result for a Corpus."""
+    return c.missing + c.missing_sdk, c.sdk_targets if c.missing_sdk else []
+
+
+def missing_refusal(c):
+    """MISSING-INPUT: -> None, or the text (windows-mingw SKIPs on it)."""
+    missing, extra = missing_probe(c)
+    if not missing:
         return None
-    names = c.missing[:6] + c.missing_sdk[:3]
-    build = os.path.dirname(os.path.abspath(c.db_path))
-    return ("MISSING-INPUT: %d build-produced input(s) absent from %s: %s. Build them: "
-            "cmake --build %s --target openpete_generated_headers%s"
-            % (len(c.missing) + len(c.missing_sdk), c.name, ", ".join(names), build,
-               " openpete_sdk_stage" if c.missing_sdk else ""))
+    return lib.missing_input_text(c.name, os.path.dirname(os.path.abspath(c.db_path)),
+                                  missing, [lib.HEADER_TARGET] + extra)
+
+
+def ready_corpus(root, dbname, db_path, mods, jobs, build):
+    """load_corpus, with linux-release's absent build-produced inputs built
+    on demand (lib.ensure_inputs; the corpus is reloaded after the build,
+    since the SDK directory and every -M dependency set may change).
+    -> (Corpus, the build note: empty when nothing was built)."""
+    held = []
+
+    def probe():
+        held[:] = [load_corpus(root, dbname, db_path, mods=mods, jobs=jobs)]
+        return missing_probe(held[0])
+    _, note = lib.ensure_inputs(FENCE, dbname, db_path, probe, build=build)
+    return held[0], note
 
 
 # --------------------------------------------------------------------------
 # hook
 # --------------------------------------------------------------------------
 def database_paths(root, configure_mingw=False):
-    linux = os.environ.get(FENCE.db_env) or os.path.join(root, lib.DB_DEFAULT)
+    linux = lib.linux_db(root, FENCE)
     mingw = lib.mingw_db(root, FENCE, "OPENPETE_WARNING_MINGW_DB", configure=configure_mingw)
     return linux, mingw
 
@@ -911,13 +944,15 @@ def hook_database(root, dbname, db_path, staged, staged_cmake, fence_staged, del
     """Decide one database for the hook. -> (rc, text to stage or None, the
     source paths its entries compile)."""
     tsv = tsv_path(dbname)
-    c = load_corpus(root, dbname, db_path, jobs=jobs)
-    miss = missing_refusal(c, linux)
-    if miss:
-        if linux:
-            raise Refusal(miss)
-        say("warning-ratchet: %s SKIP: %s" % (dbname, miss))
-        return 0, None, {e.rel for e in c.entries}
+    note = ""
+    if linux:
+        c, note = ready_corpus(root, dbname, db_path, True, jobs, True)
+    else:
+        c = load_corpus(root, dbname, db_path, jobs=jobs)
+        miss = missing_refusal(c)
+        if miss:
+            say("warning-ratchet: %s SKIP: %s" % (dbname, miss))
+            return 0, None, {e.rel for e in c.entries}
     stale = stale_cmake(root, db_path, staged_cmake)
     if stale:
         raise Refusal("STALE-DB: staged CMake files newer than the %s database: %s. "
@@ -959,8 +994,8 @@ def hook_database(root, dbname, db_path, staged, staged_cmake, fence_staged, del
     rows.update(held)
     bins["DIRTY"] = sorted(p for p in dirty if p not in dirty_dep and p not in staged
                            and in_scope(p))
-    say("warning-ratchet: %s: baseline source %s, %d altered entries" % (
-        dbname, source, len(altered)))
+    say("warning-ratchet: %s: baseline source %s, %d altered entries%s" % (
+        dbname, source, len(altered), "; " + note if note else ""))
     engagement(c, len(after), len(after.keys() | before.keys()))
     if bins["INHERITED"]:
         say("  INHERITED rises (not from this commit; `check` refuses them; repair: fix, or "
@@ -1067,11 +1102,8 @@ def mode_hook(root):
     if prag:
         raise Refusal("diagnostic pragmas:\n    " + "\n    ".join(prag))
     jobs = lib.jobs("OPENPETE_WARNING_JOBS", JOBS)
-    linux_path, mingw_path = database_paths(root)
-    if not os.path.isfile(linux_path):
-        raise Refusal("VACUOUS: no linux-release compile database at %s. Run: %s"
-                      % (linux_path, lib.CONFIGURE))
     t0 = time.time()
+    linux_path, mingw_path = database_paths(root)
     rc, texts = 0, {}
     known = set()
     for dbname, path, linux in (("linux-release", linux_path, True),
@@ -1147,8 +1179,12 @@ def corpus_for(root, argv, mode):
         say("warning-ratchet: SKIP: %s is not a baselined database (%s)"
             % (dbname, ", ".join(DATABASES)))
         sys.exit(64 if ctest else 0)
+    linux = dbname == "linux-release"
+    if linux and mode != "check" and not os.environ.get(FENCE.db_env) \
+            and path == os.path.join(root, lib.DB_DEFAULT):
+        lib.configure_db(root, FENCE, dbname, path)
     if path is None or not os.path.isfile(path):
-        if dbname == "linux-release" and not ctest:
+        if linux and not ctest:
             raise Refusal("VACUOUS: no compile database at %s. Run: cmake --preset %s"
                           % (path, dbname))
         say("warning-ratchet: SKIP: no %s compile database" % dbname)
@@ -1157,14 +1193,19 @@ def corpus_for(root, argv, mode):
         FENCE.config = lib.read_configuration(root, path)
         lib.refuse_partial(FENCE, mode)
     jobs = lib.jobs("OPENPETE_WARNING_JOBS", JOBS)
-    c = load_corpus(root, dbname, path, mods="--no-mods" not in argv, jobs=jobs)
+    mods = "--no-mods" not in argv
+    if linux:
+        # check runs inside `cmake --build` of this directory: never builds.
+        c, note = ready_corpus(root, dbname, path, mods, jobs, mode != "check")
+    else:
+        c = load_corpus(root, dbname, path, mods=mods, jobs=jobs)
+        miss = missing_refusal(c)
+        if miss:
+            raise Refusal(miss)
     stale = stale_cmake(root, path, tracked_cmake(root))
     if stale:
         raise Refusal("STALE-DB: CMake files newer than the %s database: %s. Re-run "
                       "`cmake --preset %s`." % (dbname, ", ".join(stale[:5]), dbname))
-    miss = missing_refusal(c, dbname == "linux-release")
-    if miss:
-        raise Refusal(miss)
     # The completeness check of the shared ratchets, with the mod sources as
     # entries (openpete_mod_abi.c stays on the UNSCORED list). Under --no-mods
     # the mod sources are not measured but are still accounted for.

@@ -12,7 +12,13 @@ by a reduction in the same commit.
 Modes:
   hook              git pre-commit (githooks/pre-commit). Scores the working
                     tree, decides over the index, writes and stages the
-                    baseline on PASS. Exit 1 aborts the commit.
+                    baseline on PASS. Exit 1 aborts the commit. A missing
+                    linux-release database is configured, and headers a
+                    build rule generates that the -M -MG pass finds absent
+                    (over every TU when a header is acted on, else the
+                    staged sources) are built (openpete_generated_headers,
+                    nice -n 10) before scoring; OPENPETE_FENCE_NO_BUILD=1
+                    refuses MISSING-INPUT instead.
   check             every build. The same inequality over TUs clean against
                     HEAD, against HEAD's baseline. Exit 1 on a rise or an
                     UNWIRED row; 64 = SKIP (no compile database) under --ctest.
@@ -627,6 +633,7 @@ def mode_hook(root):
 
     tool = find_tool()
     verify_config(tool)
+    lib.linux_db(root, FENCE)
     db_path, entries = load_db(root)
     if entries is None:
         raise Refusal("no compile database at %s. Run: %s" % (db_path, CONFIGURE))
@@ -635,6 +642,17 @@ def mode_hook(root):
     check_unscored(root, entries)
 
     renames, acted_on, need_entry, moved = lib.acted_on_paths(root, base, scope)
+    # Build-produced inputs are built before scoring: a staged source that
+    # does not parse refuses below, and an includer that does not parse
+    # holds its headers' rows unscored. The whole corpus is probed when a
+    # header is acted on, the staged sources otherwise.
+    if any(is_header(f) for f in acted_on):
+        probe = None
+    else:
+        probe = {rel for rel in need_entry if rel in entries}
+    if probe is None or probe:
+        say("complexity-ratchet: %s" % lib.ensure_db_inputs(root, FENCE, db_path,
+                                                            probe, JOBS))
 
     corpus, cbins = score_corpus(tool, root, entries, moved)
 

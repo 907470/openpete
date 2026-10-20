@@ -46,7 +46,14 @@ Check 4 (engagement, LAW 8). TUs analysed per database, annotated
 functions and globals, rows, accessors and escapes evaluated and references
 classified are printed; zero TUs to analyse while in-scope sources changed,
 a missing or unparsable database, or a selected TU that does not parse
-under clang is VACUOUS and refuses. A binding-table, accessor or escape row
+under clang is VACUOUS and refuses. Before the analysis the hook
+configures a missing linux-release database and builds the headers a
+build rule generates (openpete_generated_headers, under nice -n 10) when
+the -M -MG pass of the selected entries finds one absent; the mode line
+prints the entries probed, the seconds, and the build when one ran. `check`
+runs inside `cmake --build` of the same directory, after that target, and
+never builds; OPENPETE_FENCE_NO_BUILD=1 makes the hook refuse
+MISSING-INPUT instead. A binding-table, accessor or escape row
 neither database defines is reported (check --all).
 
 The escape table (OP_ESCAPE_TABLE) lists the functions that reach owned
@@ -1229,19 +1236,20 @@ def mode_hook(root):
         raise Refusal("staged with unstaged hunks: %s. The fence reads the working "
                       "file and the commit carries the index blob. `git add` them, "
                       "or stash the rest." % ", ".join(unstaged))
-    linux, mingw = databases(root)
-    if linux is None:
-        raise Refusal("VACUOUS: no linux-release compile database. Run: %s" % lib.CONFIGURE)
+    linux_path = lib.linux_db(root, FENCE)
     whole = any(is_header(f) for f in scope) or "scripts/fences/thread_roles.py" in scope
     sources = {f for f in scope if not is_header(f) and FENCE.in_scope(f)}
+    inputs = lib.ensure_db_inputs(root, FENCE, linux_path,
+                                  None if whole else sources, jobs())
+    linux, mingw = databases(root)
     missing = sorted(f for f in sources if f not in linux and f not in mingw
                      and f not in lib.UNSCORED)
     if missing:
         raise Refusal("VACUOUS: staged sources with no compile-database entry: %s. "
                       "Re-run: %s" % (", ".join(missing), lib.CONFIGURE))
     sel = select_all(linux, mingw, None if whole else sources)
-    mode = "hook (%s)" % ("whole tree: a staged header" if whole
-                          else "%d staged source(s)" % len(sources))
+    mode = "hook (%s; %s)" % ("whole tree: a staged header" if whole
+                              else "%d staged source(s)" % len(sources), inputs)
     if not any(sel.values()) and sources:
         raise Refusal("VACUOUS: zero TUs analysed for %d staged source(s)" % len(sources))
     tables, ctx, results, wall = run_analysis(root, sel, jobs(), mode)

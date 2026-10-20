@@ -37,7 +37,11 @@ canonical site of an acted-on key are refused.
 Modes:
   hook          git pre-commit (githooks/pre-commit). Parses the working
                 tree, decides over the index, writes and stages the baseline
-                on PASS. Exit 1 aborts the commit.
+                on PASS. Exit 1 aborts the commit. A missing linux-release
+                database is configured, and headers a build rule generates
+                that the parsed TUs' -M -MG pass finds absent are built
+                (openpete_generated_headers, nice -n 10) before parsing;
+                OPENPETE_FENCE_NO_BUILD=1 refuses MISSING-INPUT instead.
   check         every build. The clauses over every key in a TU clean
                 against HEAD, against HEAD's baseline. Exit 1 on a failure;
                 64 = SKIP (no compile database) under --ctest.
@@ -1115,6 +1119,7 @@ def mode_hook(root):
             validate_source(root, shead, srows, {}, None)
         return 0
 
+    lib.linux_db(root, FENCE)
     db_path, entries = lib.load_db(root, FENCE)
     if entries is None:
         raise Refusal("no compile database at %s. Run: %s" % (db_path, lib.CONFIGURE))
@@ -1135,6 +1140,8 @@ def mode_hook(root):
         parse_files = ([f for f in entries if os.path.isfile(os.path.join(root, f))
                         and f not in moved] if full else
                        [f for f in acted_files if f in entries and f not in identical])
+        say("doc-ratchet: %s" % lib.ensure_db_inputs(root, FENCE, db_path,
+                                                     set(parse_files), JOBS))
         corpus = merge_results(scorer.score(entry_tasks(root, entries, parse_files)))
     finally:
         scorer.close()

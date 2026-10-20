@@ -8,8 +8,12 @@ share; each fence supplies its scorer, its decision function, its touched
 rule and its scope roots (`Fence`).
 
   - compile database lookup: exact entries per in-scope TU, entry flags;
-    the windows-mingw database, configured on demand; the job count;
-    the per-database engagement line;
+    the linux-release and windows-mingw databases, configured on demand;
+    the job count; the per-database engagement line;
+  - the build-produced inputs (generated headers, the staged mod SDK):
+    the -M -MG probe, and their on-demand build under nice -n 10 in the
+    hook and the hand-run modes (`ensure_inputs`); the per-build check
+    and OPENPETE_FENCE_NO_BUILD=1 refuse MISSING-INPUT instead;
   - the configuration of that database (OPENPETE_GAMES from the
     CMakeCache.txt beside it) and the UNCONFIGURED bin of a partial one;
   - the UNSCORED list and its self-check;
@@ -26,12 +30,16 @@ rule and its scope roots (`Fence`).
   - the libclang TU parse and the definition walk, with the comment
     accessors the python bindings do not export (ctypes).
 """
+# rumble-guard: no-launch  input-lock-guard: no-launch  (the one launch-like
+# name below is a CMake target named in a comment; the module runs cmake and
+# compilers, never the game)
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import time
 
 DB_DEFAULT = "build/linux-release/compile_commands.json"
 CONFIGURE = "cmake --preset linux-release"
@@ -245,6 +253,197 @@ def db_entries(root, path, fence):
 MINGW_DB = "build/windows-mingw/compile_commands.json"
 MINGW_CONFIGURE = ["cmake", "--preset", "windows-mingw"]
 
+# On-demand build of the inputs a build rule produces and tracked sources
+# include. Only the hook and the hand-run tighten/baseline modes build; the
+# per-build `check` (a target of the same build directory, run inside
+# `cmake --build`) and ctest pass build=False, since a nested cmake --build
+# of the directory being built races its own ninja. NO_BUILD_ENV set makes
+# every caller refuse instead.
+NO_BUILD_ENV = "OPENPETE_FENCE_NO_BUILD"
+BUILD_JOBS_ENV = "OPENPETE_FENCE_BUILD_JOBS"
+HEADER_TARGET = "openpete_generated_headers"
+NICE = ["nice", "-n", "10"]
+
+
+def may_build(build=True):
+    """True when an on-demand configure or build is allowed: the caller
+    allows it and NO_BUILD_ENV is unset (or 0)."""
+    return build and os.environ.get(NO_BUILD_ENV, "") in ("", "0")
+
+
+def _cmake(cmd, root, what):
+    """Run a cmake command under nice -n 10. -> seconds taken; Refusal
+    naming `what` with the output tail on a nonzero exit."""
+    t0 = time.time()
+    p = subprocess.run(NICE + cmd, cwd=root, capture_output=True, text=True,
+                       errors="replace")
+    if p.returncode != 0:
+        tail = (p.stdout + p.stderr).strip()[-1200:]
+        raise Refusal("%s failed (rc %d, `%s`):\n%s"
+                      % (what, p.returncode, " ".join(cmd), tail))
+    return time.time() - t0
+
+
+def configure_db(root, fence, preset, path, build=True):
+    """Configure `preset` (under nice -n 10) so the compile database at path
+    exists. -> True when it was configured, False when it already existed.
+    Refusal when it is missing and building is not allowed."""
+    if os.path.isfile(path):
+        return False
+    cmd = ["cmake", "--preset", preset]
+    if not may_build(build):
+        raise Refusal("VACUOUS: no %s compile database at %s, and this caller does "
+                      "not configure (%s). Run: %s"
+                      % (preset, path, "%s set" % NO_BUILD_ENV if build else
+                         "a build-time check", " ".join(cmd)))
+    say("%s: no %s database; configuring: %s" % (fence.name, preset, " ".join(cmd)))
+    secs = _cmake(cmd, root, "configuring %s" % preset)
+    if not os.path.isfile(path):
+        raise Refusal("configuring %s wrote no %s" % (preset, path))
+    say("%s: configured %s in %.1f s" % (fence.name, preset, secs))
+    return True
+
+
+def linux_db(root, fence, build=True):
+    """-> the linux-release compile database path: fence.db_env when set (it
+    must exist), else DB_DEFAULT, configured on demand (configure_db)."""
+    env = os.environ.get(fence.db_env)
+    if env:
+        if not os.path.isfile(env):
+            raise Refusal("VACUOUS: %s=%s does not exist" % (fence.db_env, env))
+        return env
+    path = os.path.join(root, DB_DEFAULT)
+    configure_db(root, fence, "linux-release", path, build)
+    return path
+
+
+def missing_input_text(dbname, build_dir, missing, targets):
+    """The MISSING-INPUT message: the absent build-produced paths and the
+    build command that produces them."""
+    return ("MISSING-INPUT: %d build-produced input(s) absent from %s: %s. Build them: "
+            "cmake --build %s --target %s"
+            % (len(missing), dbname, ", ".join(missing[:9])
+               + (", ... %d more" % (len(missing) - 9) if len(missing) > 9 else ""),
+               build_dir, " ".join(targets)))
+
+
+def ensure_inputs(fence, dbname, db_path, probe, build=True):
+    """Build the build-produced inputs the compile database's entries read
+    and the build directory lacks.
+
+    probe() -> (missing paths, extra targets): the absent inputs, and the
+    targets besides HEADER_TARGET that produce some of them. None absent:
+    nothing is built. Else, when may_build(build), HEADER_TARGET and the
+    extra targets are built in the database's directory under nice -n 10
+    (OPENPETE_FENCE_BUILD_JOBS parallel jobs, default the build tool's) and
+    the probe is re-run; still absent, or the build failing, refuses with
+    the output tail. When building is not allowed, MISSING-INPUT refuses.
+    -> (the last probe's result, a note for the fence's output line: empty
+    when nothing was built, else the targets and the seconds taken)."""
+    missing, extra = probe()
+    if not missing:
+        return (missing, extra), ""
+    build_dir = os.path.dirname(os.path.abspath(db_path))
+    targets = [HEADER_TARGET] + [t for t in extra if t != HEADER_TARGET]
+    if not may_build(build):
+        raise Refusal(missing_input_text(dbname, build_dir, missing, targets)
+                      + " (%s)" % ("%s set" % NO_BUILD_ENV if build
+                                   else "a build-time check does not build"))
+    cmd = ["cmake", "--build", build_dir, "--target"] + targets
+    jobs_env = os.environ.get(BUILD_JOBS_ENV, "")
+    if jobs_env.isdigit() and int(jobs_env) > 0:
+        cmd += ["-j", jobs_env]
+    say("%s: %d build-produced input(s) absent from %s; building: %s"
+        % (fence.name, len(missing), dbname, " ".join(cmd)))
+    secs = _cmake(cmd, os.path.dirname(build_dir), "building %s inputs in %s"
+                  % (" ".join(targets), build_dir))
+    missing2, extra2 = probe()
+    if missing2:
+        raise Refusal("%s still absent after building %s (%.1f s)"
+                      % (missing_input_text(dbname, build_dir, missing2, targets),
+                         " ".join(targets), secs))
+    note = "built %s in %.1f s" % (" ".join(targets), secs)
+    say("%s: %s" % (fence.name, note))
+    return (missing2, extra2), note
+
+
+def make_deps(cmd, directory):
+    """Run a `-M -MG` compile command. -> (deps: [absolute path], error text:
+    empty on success)."""
+    env = dict(os.environ, LC_ALL="C")
+    env.pop("LANGUAGE", None)
+    p = subprocess.run(cmd, cwd=directory, capture_output=True, text=True,
+                       errors="replace", env=env)
+    if p.returncode != 0:
+        return [], p.stderr.strip()[-600:] or "rc %d" % p.returncode
+    return parse_make_deps(p.stdout, directory), ""
+
+
+def parse_make_deps(text, directory):
+    """-> [absolute path] of a `-M` rule (escaped spaces honoured)."""
+    body = text.replace("\\\n", " ")
+    if ":" not in body:
+        return []
+    body = body.split(":", 1)[1]
+    paths, cur, i = [], "", 0
+    while i < len(body):
+        c = body[i]
+        if c == "\\" and i + 1 < len(body) and body[i + 1] == " ":
+            cur += " "
+            i += 2
+            continue
+        if c.isspace():
+            if cur:
+                paths.append(cur)
+            cur = ""
+        else:
+            cur += c
+        i += 1
+    if cur:
+        paths.append(cur)
+    return [os.path.normpath(os.path.join(directory, p)) for p in paths]
+
+
+def entries_missing_inputs(root, path, fence, rels=None, jobs=8):
+    """The -M -MG pass of the database's own compiler over its in-scope
+    entries (those whose source is in rels, when given), one per distinct
+    (directory, command). -> (sorted absent dependency paths, entries
+    probed). A failing pass is skipped: the fence's own compile reports it."""
+    import concurrent.futures
+    cmds = {}
+    for rel, e in db_entries(root, path, fence):
+        if rels is not None and rel not in rels:
+            continue
+        toks = e.get("arguments") or shlex.split(e["command"])
+        src = os.path.normpath(os.path.join(e["directory"], e["file"]))
+        cmd = [toks[0]] + entry_flags(e) + ["-M", "-MG", src]
+        cmds[(e["directory"], tuple(cmd))] = None
+
+    def one(key):
+        deps, err = make_deps(list(key[1]), key[0])
+        return [] if err else [d for d in deps if not os.path.exists(d)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
+        missing = {d for lst in ex.map(one, cmds) for d in lst}
+    return sorted(missing), len(cmds)
+
+
+def ensure_db_inputs(root, fence, path, rels=None, jobs=8, build=True):
+    """ensure_inputs over the -M -MG pass of the linux-release database's
+    entries (entries_missing_inputs; the entries of rels, every entry when
+    None), for a fence that compiles or parses the database's TUs as they
+    are. -> the note for the fence's output line: entries probed, seconds,
+    and the build when one ran."""
+    t0 = time.time()
+    probed = []
+
+    def probe():
+        missing, n = entries_missing_inputs(root, path, fence, rels, jobs)
+        probed.append(n)
+        return missing, []
+    _, note = ensure_inputs(fence, "linux-release", path, probe, build)
+    return "inputs: %d entries probed, %.1f s%s" % (
+        probed[-1], time.time() - t0, ", " + note if note else "")
+
 
 def mingw_db(root, fence, env_var, configure=True):
     """-> the windows-mingw compile database path: env_var when set (it must
@@ -259,19 +458,9 @@ def mingw_db(root, fence, env_var, configure=True):
         raise Refusal("%s=%s does not exist" % (env_var, path))
     if not configure:
         return None
-    say("%s: no windows-mingw database; configuring: %s"
-        % (fence.name, " ".join(MINGW_CONFIGURE)))
-    p = subprocess.run(["nice", "-n", "10"] + MINGW_CONFIGURE, cwd=root,
-                       capture_output=True, text=True)
-    if p.returncode != 0 or not os.path.isfile(path):
-        raise Refusal("configuring windows-mingw failed (rc %d): %s"
-                      % (p.returncode, p.stderr.strip()[-800:]))
-    p = subprocess.run(["nice", "-n", "10", "cmake", "--build", os.path.dirname(path),
-                        "--target", "openpete_generated_headers"], cwd=root,
-                       capture_output=True, text=True)
-    if p.returncode != 0:
-        raise Refusal("building the windows-mingw generated headers failed (rc %d): %s"
-                      % (p.returncode, p.stdout.strip()[-800:]))
+    configure_db(root, fence, "windows-mingw", path)
+    _cmake(["cmake", "--build", os.path.dirname(path), "--target", HEADER_TARGET],
+           root, "building the windows-mingw generated headers")
     return path
 
 

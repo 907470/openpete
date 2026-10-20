@@ -11,6 +11,10 @@ produce is INHERITED, only rows the mode may lower shrink, an accepted rise
 carries its reason. CompileTest compiles a scratch TU with the host GCC and
 reads one front-end and one middle-end row from it; skipped without gcc.
 
+OnDemandInputTest drives ratchet_lib's on-demand configure and build of
+build-produced inputs against a stub cmake, and the mod SDK directory
+choice.
+
 Run: python3 scripts/fences/tests/test_warning_ratchet.py
 """
 import os
@@ -24,6 +28,7 @@ FENCES = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(FENCES))
 sys.path.insert(0, FENCES)
 
+import ratchet_lib as lib  # noqa: E402
 import warning_ratchet as wr  # noqa: E402
 
 ERRSET = {"-Werror=format", "-Wno-error=format-truncation",
@@ -183,6 +188,143 @@ class CompileTest(unittest.TestCase):
             ("core/t.c", "-Wunused-variable", "fe", "unused variable 'unused'"),
             ("core/t.c", "-Wunused-function", "me", "-")})
         self.assertFalse(errors or stale)
+
+
+# A stand-in for cmake: appends its argv to $STUB_LOG, creates each path of
+# $STUB_CREATE (os.pathsep-separated) on a --build or --preset run, prints
+# $STUB_OUT and exits $STUB_RC.
+STUB_CMAKE = """#!/usr/bin/env python3
+import os, sys
+with open(os.environ["STUB_LOG"], "a") as fh:
+    fh.write(" ".join(sys.argv[1:]) + "\\n")
+if os.environ.get("STUB_RC", "0") == "0":
+    for p in filter(None, os.environ.get("STUB_CREATE", "").split(os.pathsep)):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").close()
+sys.stdout.write(os.environ.get("STUB_OUT", ""))
+sys.exit(int(os.environ.get("STUB_RC", "0")))
+"""
+
+
+class OnDemandInputTest(unittest.TestCase):
+    """ratchet_lib's on-demand configure and build of build-produced
+    inputs, against a stub cmake on PATH: build, already present, build
+    fails, still absent after the build, a no-build caller, and the SDK
+    directory choice."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="warning-ratchet-ondemand-")
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        stub = os.path.join(bindir, "cmake")
+        with open(stub, "w") as fh:
+            fh.write(STUB_CMAKE)
+        os.chmod(stub, 0o755)
+        self.log = os.path.join(self.tmp, "cmake.log")
+        self.build = os.path.join(self.tmp, "build", "linux-release")
+        os.makedirs(self.build)
+        self.db = os.path.join(self.build, "compile_commands.json")
+        self.header = os.path.join(self.build, "gen", "x.gen.h")
+        self.saved = dict(os.environ)
+        for k in (lib.NO_BUILD_ENV, lib.BUILD_JOBS_ENV, "STUB_CREATE", "STUB_RC",
+                  "STUB_OUT", "OPENPETE_FENCE_BUILD_SDK", "OPENPETE_WARNING_DB"):
+            os.environ.pop(k, None)
+        os.environ["PATH"] = bindir + os.pathsep + os.environ["PATH"]
+        os.environ["STUB_LOG"] = self.log
+        self.calls = 0
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.saved)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def probe(self):
+        self.calls += 1
+        return ([self.header] if not os.path.exists(self.header) else []), ["extra_t"]
+
+    def cmake_runs(self):
+        try:
+            with open(self.log) as fh:
+                return fh.read().splitlines()
+        except OSError:
+            return []
+
+    def ensure(self, build=True):
+        return lib.ensure_inputs(wr.FENCE, "linux-release", self.db, self.probe, build)
+
+    def test_absent_inputs_are_built_once_then_reprobed(self):
+        os.environ["STUB_CREATE"] = self.header
+        os.environ[lib.BUILD_JOBS_ENV] = "8"
+        (missing, _), note = self.ensure()
+        self.assertEqual(missing, [])
+        self.assertEqual(self.calls, 2)
+        self.assertEqual(self.cmake_runs(), [
+            "--build %s --target openpete_generated_headers extra_t -j 8" % self.build])
+        self.assertRegex(note, r"^built openpete_generated_headers extra_t in \d+\.\d s$")
+
+    def test_present_inputs_build_nothing(self):
+        os.makedirs(os.path.dirname(self.header))
+        open(self.header, "w").close()
+        (missing, _), note = self.ensure()
+        self.assertEqual((missing, note, self.calls, self.cmake_runs()), ([], "", 1, []))
+
+    def test_failed_build_refuses_with_its_output_tail(self):
+        os.environ.update(STUB_RC="2", STUB_OUT="ninja: error: boom\n")
+        with self.assertRaises(lib.Refusal) as cm:
+            self.ensure()
+        self.assertIn("failed (rc 2", str(cm.exception))
+        self.assertIn("ninja: error: boom", str(cm.exception))
+        self.assertEqual(self.calls, 1)
+
+    def test_inputs_still_absent_after_the_build_refuse(self):
+        with self.assertRaises(lib.Refusal) as cm:
+            self.ensure()
+        self.assertIn("MISSING-INPUT: 1 build-produced input(s)", str(cm.exception))
+        self.assertIn("still absent after building", str(cm.exception))
+        self.assertEqual((self.calls, len(self.cmake_runs())), (2, 1))
+
+    def test_no_build_caller_refuses_without_running_cmake(self):
+        for build, env, why in ((False, None, "a build-time check does not build"),
+                                (True, "1", lib.NO_BUILD_ENV + " set")):
+            if env:
+                os.environ[lib.NO_BUILD_ENV] = env
+            with self.assertRaises(lib.Refusal) as cm:
+                self.ensure(build)
+            msg = str(cm.exception)
+            self.assertIn("MISSING-INPUT", msg)
+            self.assertIn("cmake --build %s --target openpete_generated_headers extra_t"
+                          % self.build, msg)
+            self.assertIn(why, msg)
+        self.assertEqual(self.cmake_runs(), [])
+
+    def test_missing_database_is_configured_unless_the_caller_does_not_build(self):
+        os.environ[lib.NO_BUILD_ENV] = "1"
+        with self.assertRaises(lib.Refusal) as cm:
+            lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db)
+        self.assertIn("VACUOUS: no linux-release compile database", str(cm.exception))
+        with self.assertRaises(lib.Refusal):
+            os.environ.pop(lib.NO_BUILD_ENV)
+            lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db, build=False)
+        self.assertEqual(self.cmake_runs(), [])
+        os.environ["STUB_CREATE"] = self.db
+        self.assertTrue(lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db))
+        self.assertFalse(lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db))
+        self.assertEqual(self.cmake_runs(), ["--preset linux-release"])
+
+    def test_sdk_directory_choice(self):
+        games = {"spyro-1", "spyro-2"}
+        test_sdk = os.path.join(self.build, "mod-sdk-test", "sdk")
+        self.assertEqual(wr.sdk_root(self.build, games), (test_sdk, [
+            "openpete_mod_sdk_test_root", "spyro1_mod_sdk_test_stage",
+            "spyro2_mod_sdk_test_stage"]))
+        os.makedirs(os.path.join(self.build, "sdk", "games", "spyro-1"))
+        self.assertEqual(wr.sdk_root(self.build, games)[0], test_sdk)
+        os.environ["OPENPETE_FENCE_BUILD_SDK"] = "1"
+        staged = (os.path.join(self.build, "sdk"), ["openpete_sdk_stage"])
+        self.assertEqual(wr.sdk_root(self.build, games), staged)
+        os.environ.pop("OPENPETE_FENCE_BUILD_SDK")
+        os.makedirs(os.path.join(self.build, "sdk", "games", "spyro-2"))
+        self.assertEqual(wr.sdk_root(self.build, games), staged)
 
 
 if __name__ == "__main__":
