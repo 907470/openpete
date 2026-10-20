@@ -1842,7 +1842,11 @@ static int32_t bu_create(CPUState* cpu, uint32_t f, const char* path, uint32_t m
             kw_set(e, BU_DIR_FIRST);
             kw_set(e + 4u, len);
             char* name = (char*)openpete_psx_get_ram() + e + 0xA;
+#pragma GCC diagnostic push
+            // warning-ratchet: the entry's name field is 20 bytes; strncpy zero-pads a shorter name and cuts a longer one there
+#pragma GCC diagnostic ignored "-Wstringop-truncation"
             strncpy(name, path, 20);
+#pragma GCC diagnostic pop
             bitmap[i] = BU_DIR_FIRST;
             first = i;
         } else {
