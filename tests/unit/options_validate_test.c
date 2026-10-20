@@ -48,8 +48,28 @@ uint32_t game_get_load_delay_default(void) { return 66u; }
 
 /* ---- host seams options.c reaches ---------------------------------- */
 
-/** @brief Stub name lookup: every key, button and axis name resolves to code 1. */
-static int any_name(int kind, const char* name) { (void)kind; (void)name; return 1; }
+/** @brief Whether name is one of the six SDL gamepad axis names. */
+static int is_axis_name(const char* name) {
+    static const char* const axes[] = { "leftx", "lefty", "rightx", "righty",
+                                        "lefttrigger", "righttrigger" };
+    for (size_t i = 0; i < sizeof axes / sizeof axes[0]; i++)
+        if (!strcmp(name, axes[i])) return 1;
+    return 0;
+}
+
+/** @brief Stub name lookup: every key and mouse name resolves to code 1, a pad name to code 1 in the table SDL holds it in.
+ *
+ * The keymap parser tries the button table before the axis table, as SDL
+ * names buttons and axes from disjoint tables; a stub that resolved an axis
+ * name as a button would refuse the built-in "pad:-lefty" defaults.
+ * @param kind The source kind the parser looks the name up in.
+ * @param name The token name.
+ * @return 1, or -1 when the name is an axis looked up as a button or a non-axis looked up as an axis. */
+static int any_name(int kind, const char* name) {
+    if (kind == KM_SRC_PADBTN)  return is_axis_name(name) ? -1 : 1;
+    if (kind == KM_SRC_PADAXIS) return is_axis_name(name) ? 1 : -1;
+    return 1;
+}
 /** @brief Stub reverse lookup: every code is named "k". */
 static const char* any_code(int kind, int code) { (void)kind; (void)code; return "k"; }
 /** @brief Stub for the SDL key-name install: the keymap's built-in defaults need a lookup to parse, and the options do not care which. */
@@ -332,7 +352,32 @@ static void window_values(void) {
 }
 
 /** @brief Run every case; exit 1 on any failure. */
+#ifdef _WIN32
+  #define environ_portable _environ
+#else
+extern char** environ;
+  #define environ_portable environ
+#endif
+
+/** @brief Unset every OPENPETE_* variable the process inherited, so each case sees only the env values it sets.
+ *
+ * The names are copied before any is unset, since unsetting edits the
+ * environment array being walked. */
+static void scrub_inherited_env(void) {
+    static char names[64][64];
+    int n = 0;
+    for (char** e = environ_portable; e && *e && n < 64; e++) {
+        const char* eq = strchr(*e, '=');
+        size_t len = eq ? (size_t)(eq - *e) : strlen(*e);
+        if (strncmp(*e, "OPENPETE_", 9) != 0 || len >= sizeof names[0]) continue;
+        memcpy(names[n], *e, len);
+        names[n++][len] = '\0';
+    }
+    for (int i = 0; i < n; i++) unsetenv_portable(names[i]);
+}
+
 int main(void) {
+    scrub_inherited_env();
     const char* tmp = getenv("TMPDIR");
     snprintf(g_toml, sizeof g_toml, "%s/options_validate_test.toml",
              (tmp && *tmp) ? tmp : "/tmp");
