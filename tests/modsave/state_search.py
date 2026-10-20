@@ -2,8 +2,10 @@
 """Exhaustive state-model test of the per-mod save-record rules.
 
 Breadth-first search over canonicalized states of the C module
-(tests/modsave/modsave_model.c, loaded through ctypes) with the Python
-reference model (model_ref.py) applied to every edge alongside it. A run
+(tests/modsave/modsave_model.c, loaded through ctypes) with a Python
+reference model applied to every edge alongside it: model_ref.py, or with
+--ref indep (or MODSAVE_REF=indep) model_ref_indep.py, a second reference
+written apart from both model_ref.py and the C module. A run
 is a list of suites; each suite fixes the domain, a setup prefix, the
 event alphabet and the depth bound. On every edge the search requires:
 
@@ -32,8 +34,10 @@ and on the reference state, invariants written apart from both models:
       plays, from the first tick after the reset.
 
 Usage: state_search.py --lib PATH [--suite NAME ...] [--quick] [--fault N]
-                       [--list]
+                       [--ref model_ref|indep] [--list]
   --quick      each suite at its quick depth (the ctest default)
+  --ref        the reference model (default model_ref, or MODSAVE_REF); faults
+               2 and 3 patch model_ref internals and need --ref model_ref
   --fault N    calibration: seed defect N (see FAULTS) and require that the
                search reports it
 Exit 0 every suite passed with nonzero engagement, 1 a check failed,
@@ -41,6 +45,8 @@ Exit 0 every suite passed with nonzero engagement, 1 a check failed,
 """
 import argparse
 import ctypes
+import importlib
+import os
 import sys
 import time
 from collections import Counter
@@ -141,6 +147,10 @@ def _fault_cross():
         return orig(s, b, 1 - m)
     M.status_for = status_for
 
+
+# Reference models: model_ref.py, and model_ref_indep.py, a second reference
+# written from the design text apart from both model_ref.py and the C module.
+REFS = {"model_ref": "model_ref", "indep": "model_ref_indep"}
 
 FAULTS = {
     1: ("C only: GAP and OK swapped in the status precedence", "reference", None),
@@ -507,7 +517,11 @@ def main(argv):
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--fault", type=int, default=0)
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--ref", choices=sorted(REFS), default=os.environ.get("MODSAVE_REF", "model_ref"))
     a = ap.parse_args(argv[1:])
+    global M
+    M = importlib.import_module(REFS[a.ref])
+    print(f"[state-model] reference: {REFS[a.ref]}")
     table = suites()
     if a.list:
         for n, sp in table.items():
@@ -517,6 +531,9 @@ def main(argv):
         return 0
     cm = CModel(a.lib)
     if a.fault:
+        if a.ref != "model_ref" and a.fault in (2, 3):
+            print(f"fault {a.fault} patches model_ref internals; run it with --ref model_ref")
+            return 64
         if a.fault not in FAULTS:
             print(f"unknown fault {a.fault}")
             return 64

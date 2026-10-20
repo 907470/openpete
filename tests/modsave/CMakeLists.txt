@@ -6,7 +6,9 @@
 # to its quick depth, the C module and the Python reference model
 # (model_ref.py) applied to every edge, effects and canonical shapes
 # compared, invariants checked; the slow variant runs the full depths.
-# The search loads the module through ctypes from modsave_model_py.
+# modsave_state_model_indep runs it against the second reference,
+# model_ref_indep.py. The search loads the module through ctypes from
+# modsave_model_py.
 # Timeouts are twice the measured wall time (quick 49 s, full 326 s).
 
 add_library(modsave_model STATIC modsave_model.c)
@@ -33,6 +35,20 @@ add_test(NAME modsave_state_model_full
                  --lib $<TARGET_FILE:modsave_model_py>
          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 set_tests_properties(modsave_state_model_full PROPERTIES LABELS "slow;mods" TIMEOUT 660)
+
+# The same search against model_ref_indep.py, the second reference written
+# apart from model_ref.py and the C module (quick 45 s, full 372 s).
+add_test(NAME modsave_state_model_indep
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/state_search.py
+                 --lib $<TARGET_FILE:modsave_model_py> --quick --ref indep
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(modsave_state_model_indep PROPERTIES LABELS "mods" TIMEOUT 120)
+
+add_test(NAME modsave_state_model_indep_full
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/state_search.py
+                 --lib $<TARGET_FILE:modsave_model_py> --ref indep
+         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(modsave_state_model_indep_full PROPERTIES LABELS "slow;mods" TIMEOUT 750)
 
 # Calibration (LAW §13): each seeded rule defect must be reported by the
 # check that guards it; the test passes only when it is.
