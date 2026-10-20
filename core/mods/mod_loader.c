@@ -1591,23 +1591,6 @@ static int api_level_id(openpete_mod_t* self, CPUState* cpu) {
     return st.level;
 }
 
-/** @brief Report whether the host key with the given SDL name is held.
- *
- * Reads the host input snapshot rather than SDL's live keyboard array, since
- * mods run on the game fiber, which need not be the thread that pumps events.
- * No API table entry and no other caller reaches it.
- * @param key_name SDL scancode name; NULL or unknown reads as not held.
- * @return 1 when held, else 0. */
-static int api_host_key_down(const char* key_name) {
-    if (!key_name) return 0;
-    SDL_Scancode sc = SDL_GetScancodeFromName(key_name);
-    if (sc == SDL_SCANCODE_UNKNOWN) return 0;
-    /* Snapshot, not live SDL: mods call this from their tick, which runs on
-     * the game fiber - not necessarily the thread that pumps events and so
-     * refreshes SDL's keyboard array. */
-    return openpete_host_input_key_down((int)sc);
-}
-
 static char s_sdk_dir[MOD_PATH_MAX];
 
 /* ---- per-game object paths and identity ------------------------------ */

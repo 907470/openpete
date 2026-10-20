@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 09a90934701ad650ac3348f1c73de87685e76c5f
+# head: d3071ad8664fd198e43445d1058ed7efcdfc7d5b
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
@@ -24,7 +24,6 @@ core/mods/mod_loader.c	-Wformat-truncation=	me	mod_list_srcs	1
 core/mods/mod_loader.c	-Wformat-truncation=	me	mods_prepare_task	1	
 core/mods/mod_loader.c	-Wformat-truncation=	me	openpete_mods_compile_all	3	
 core/mods/mod_loader.c	-Wformat-truncation=	me	sdk_prefix	1	
-core/mods/mod_loader.c	-Wunused-function	me	-	1	
 core/mods/mod_shader.c	-Wformat-truncation=	me	list_dir_sorted	1	
 core/mods/mod_shader.c	-Wformat-truncation=	me	openpete_mods_shader_register_locked	1	
 core/mods/mod_shader.c	-Wformat-truncation=	me	openpete_mods_shader_watch_key	1	
@@ -48,7 +47,6 @@ core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::seg_n'	6	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::seg_val'	6	
 games/common/renderer/cyclorama.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
-games/common/renderer/cyclorama.c	-Wunused-function	me	-	1	
 games/common/renderer/flame.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/glint.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/glow.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
@@ -70,7 +68,6 @@ games/common/renderer/terrain.c	-Wmaybe-uninitialized	me	terrain_build	1
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'osx' of 'ngte_cvert'	8	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/terrain.c	-Wstringop-overflow=	me	tsc_hp_d2	1	
-games/common/renderer/terrain.c	-Wunused-function	me	-	1	
 games/common/renderer/tracers.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/ui_sprite.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	8	
 games/common/renderer/zap.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
@@ -89,10 +86,8 @@ games/spyro-1/psyq_hooks.cpp	-Wmissing-field-initializers	fe	missing initializer
 games/spyro-1/renderer/interp_regions.c	-Wmissing-field-initializers	fe	missing initializer for field 'ra_commit' of 'game_interp_row_t' {aka 'const struct game_interp_row'}	3	
 games/spyro-1/renderer/layout.c	-Wmissing-field-initializers	fe	missing initializer for field 'moby_off' of 'game_moby_director_t' {aka 'const struct game_moby_director'}	1	
 games/spyro-1/renderer/particle.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
-games/spyro-1/renderer/particle.c	-Wunused-function	me	-	1	
 games/spyro-1/renderer/portal.c	-Wmaybe-uninitialized	me	emit_aperture_ring	1	
 games/spyro-1/renderer/portal.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
-games/spyro-1/renderer/portal.c	-Wunused-function	me	-	1	
 games/spyro-1/renderer/reextract.c	-Wmissing-field-initializers	fe	missing initializer for field 'warned' of 'scratch_region_t'	5	
 games/spyro-1/renderer/reextract.c	-Wsign-compare	fe	comparison of integer expressions of different signedness: 'int' and 'unsigned int'	1	
 games/spyro-1/renderer/shadow_spyro.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	

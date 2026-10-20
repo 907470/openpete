@@ -514,17 +514,6 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) OP_REQUIRES
 }
 
 /* ---- comparison ----------------------------------------------------- */
-/** @brief A triangle's screen-space centroid.
- *
- * No caller in this file uses it; compare_and_report pairs triangles by
- * per-vertex distance.
- * @param t The triangle.
- * @param cx Receives the mean X.
- * @param cy Receives the mean Y. */
-static void centroid(const cyc_tri* t, float* cx, float* cy) {
-    *cx = (t->v[0].sx + t->v[1].sx + t->v[2].sx) / 3.0f;
-    *cy = (t->v[0].sy + t->v[1].sy + t->v[2].sy) / 3.0f;
-}
 /** @brief Whether a captured GTE vertex lies inside the 512x240 display area with a 1-pixel margin.
  *
  * compare_and_report bins off-screen vertices separately: there the GTE's

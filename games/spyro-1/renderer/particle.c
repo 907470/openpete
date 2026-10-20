@@ -81,11 +81,6 @@ static uint32_t s_part_pool;
 static uint32_t s_code_hist[256];  /* keyed on the GPU code byte (word[+4]>>24) */
 static uint32_t s_tag_hist[256];   /* keyed on the OT tag length (word[+0]>>24) */
 
-/** @brief Sign-extends the low 16 bits of an int.
- *
- * No function calls it. */
-static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
-
 /** @brief Appends one walked primitive to s_prim.
  *
  * Copies the decoded fields and the raw words. Tiles and lines are not

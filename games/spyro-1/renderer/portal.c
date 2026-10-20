@@ -1657,8 +1657,8 @@ static void register_skyout(const ppt* poly, int pn) {
         mx += poly[i].x; my += poly[i].y;
     }
     mx /= pn; my /= pn;
-    /* orient so the polygon interior (its centroid) is LEFT of edge 0 -
-     * the side clip_dir keeps on the inside pass */
+    /* orient so the polygon interior (its centroid) is LEFT of edge 0, the
+     * side where (p1 - p0) x (p - p0) >= 0 */
     double sgn = ((double)poly[1].x - poly[0].x) * (my - poly[0].y)
                - ((double)poly[1].y - poly[0].y) * (mx - poly[0].x);
     for (int i = 0; i < pn; i++) {
@@ -2005,43 +2005,6 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
         }
     }
     s_aperture_ok = 1;
-}
-
-/** @brief Clips a gouraud polygon against the half-plane on one side of the line a->b.
- *
- * The side is the sign of the cross product (b - a) x (p - a): keepLeft
- * keeps >= 0, the interior of an outline register_skyout oriented. Colour
- * is interpolated at each crossing; output stops at 24 vertices.
- * @param in The polygon.
- * @param n Its vertex count.
- * @param out Receives the clipped polygon, at most 24 vertices.
- * @param ax The line start X.
- * @param ay The line start Y.
- * @param bx The line end X.
- * @param by The line end Y.
- * @param keepLeft 1 keeps the >= 0 side, 0 the <= 0 side.
- * @return The clipped vertex count. */
-static int clip_dir(const pgv* in, int n, pgv* out,
-                    float ax, float ay, float bx, float by, int keepLeft) {
-    int m = 0;
-    for (int i = 0; i < n; i++) {
-        const pgv* p0 = &in[i];
-        const pgv* p1 = &in[(i + 1) % n];
-        float s0 = (bx-ax)*(p0->y-ay) - (by-ay)*(p0->x-ax);
-        float s1 = (bx-ax)*(p1->y-ay) - (by-ay)*(p1->x-ax);
-        int in0 = keepLeft ? (s0 >= 0.0f) : (s0 <= 0.0f);
-        int in1 = keepLeft ? (s1 >= 0.0f) : (s1 <= 0.0f);
-        if (in0) { if (m < 24) out[m++] = *p0; }
-        if (in0 != in1) {
-            float t = (s1 != s0) ? (0.0f - s0) / (s1 - s0) : 0.0f;
-            pgv c;
-            c.x = p0->x + t * (p1->x - p0->x);  c.y = p0->y + t * (p1->y - p0->y);
-            c.r = p0->r + t * (p1->r - p0->r);  c.g = p0->g + t * (p1->g - p0->g);
-            c.b = p0->b + t * (p1->b - p0->b);
-            if (m < 24) out[m++] = c;
-        }
-    }
-    return m;
 }
 
 /* use_plane: 0 = const_depth, 1 = the opening plane, 2 = that plane pushed

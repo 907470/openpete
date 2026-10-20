@@ -6975,7 +6975,6 @@ static int s_tgpu_pplane_n = 0;
 static int s_tgpu_claim_all = 0;
 static int s_tgpu_rim_ok = 0;         /* rim frames derived for THIS walk */
 static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-statics */
-static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
 static void tgpu_rim_globals_fill(openpete_tercache_globals* g);
 static void tgpu_cover_globals_fill(openpete_tercache_globals* g);
 
@@ -12081,9 +12080,7 @@ static int rim_sec_cand(int sec) {
 
 /** @brief Tests whether a view-space bounding sphere can contain an inner-rim candidate of any active portal.
  *
- * Called by the feed broadphase (rim_sector_cands) and by
- * tgpu_rim_sphere_cand, the retained-GPU claim's wrapper over the same test.
- * The radius is inflated by
+ * Called by the feed broadphase (rim_sector_cands). The radius is inflated by
  * 5% plus 64 units, plus about 4 px of screen-snap reconstruction error at
  * the sphere's far view-Z. The sphere is a candidate for a portal when it
  * reaches within RIM_CAND_WINDOW of the opening plane and within
@@ -12159,23 +12156,6 @@ static int tgpu_portal_frames(CPUState* cpu) {
     rim_frames_derive(cpu);
     return 1;
 }
-/** @brief Tests a sector's bounding sphere against the active portal rim frames.
- *
- * Rounds the inputs to float, scales them by 16 into world units (the radius
- * also by s_rim_rowmax) and returns rim_sphere_cand_core of the result.
- * @param oc1 The sphere centre's horizontal view coordinate, in local units
- *        of 16 world units.
- * @param oc2 The sphere centre's vertical view coordinate, likewise.
- * @param oc3 The sphere centre's view depth, likewise.
- * @param radius The sphere radius, likewise.
- * @return 1 when some valid portal frame admits the sphere, else 0. */
-static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius) {
-    return rim_sphere_cand_core(
-        (double)(float)oc1 * 16.0, (double)(float)oc2 * 16.0,
-        (double)(float)oc3 * 16.0,
-        (double)(float)radius * 16.0 * s_rim_rowmax);
-}
-
 /** @brief Stages the walk's rim frames and classifier knobs into the retained globals.
  *
  * terrain.vert then runs portal_rim_classify on each emitted triangle,

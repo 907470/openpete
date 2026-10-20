@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 09a90934701ad650ac3348f1c73de87685e76c5f
+# head: d3071ad8664fd198e43445d1058ed7efcdfc7d5b
 file	option	kind	detail	count	accepted
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
@@ -11,9 +11,7 @@ core/host/texture_pack.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declar
 core/host/texture_pack.c	-Wunused-function	me	-	34	
 core/input/host_input.c	-Warray-bounds	me	openpete_host_input_publish_sdl	1	
 core/input/keymap.c	-Wmissing-field-initializers	fe	missing initializer for field 'menu_exempt' of 'km_resolve_t'	3	
-core/mods/handoff.c	-Wunused-function	me	-	1	
 core/mods/mod_loader.c	-Wcomment	fe	"/*" within comment	2	
-core/mods/mod_loader.c	-Wunused-function	me	-	1	
 core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/mods/mod_texture.c	-Wunused-function	me	-	34	
 core/psx/disc_image.c	-Wmaybe-uninitialized	me	disc_image_open	1	
@@ -34,7 +32,6 @@ core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::seg_n'	6	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::seg_val'	6	
 games/common/renderer/cyclorama.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
-games/common/renderer/cyclorama.c	-Wunused-function	me	-	1	
 games/common/renderer/flame.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/glint.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/glow.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
@@ -54,7 +51,6 @@ games/common/renderer/shadow_player.c	-Wmissing-field-initializers	fe	missing in
 games/common/renderer/terrain.c	-Wmaybe-uninitialized	me	terrain_build	1	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'osx' of 'ngte_cvert'	8	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
-games/common/renderer/terrain.c	-Wunused-function	me	-	1	
 games/common/renderer/tracers.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/ui_sprite.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	8	
 games/common/renderer/zap.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
@@ -74,9 +70,7 @@ games/spyro-1/renderer/interp_regions.c	-Wmissing-field-initializers	fe	missing 
 games/spyro-1/renderer/layout.c	-Wmissing-field-initializers	fe	missing initializer for field 'dy' of 'struct <anonymous>'	2	
 games/spyro-1/renderer/layout.c	-Wmissing-field-initializers	fe	missing initializer for field 'moby_off' of 'game_moby_director_t' {aka 'const struct game_moby_director'}	1	
 games/spyro-1/renderer/particle.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
-games/spyro-1/renderer/particle.c	-Wunused-function	me	-	1	
 games/spyro-1/renderer/portal.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
-games/spyro-1/renderer/portal.c	-Wunused-function	me	-	1	
 games/spyro-1/renderer/reextract.c	-Wmissing-field-initializers	fe	missing initializer for field 'warned' of 'scratch_region_t'	5	
 games/spyro-1/renderer/reextract.c	-Wsign-compare	fe	comparison of integer expressions of different signedness: 'int' and 'unsigned int'	1	
 games/spyro-1/renderer/shadow_spyro.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	

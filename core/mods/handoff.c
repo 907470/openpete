@@ -63,6 +63,7 @@ void openpete_handoff_request(void) {
     s_requested = 1;
 }
 
+#ifndef _WIN32
 /** @brief Format the handoff checkpoint path, "handoff.state" in the states directory.
  *
  * The states directory comes from openpete_state_resolve_dir; its status is
@@ -75,6 +76,7 @@ static void handoff_path(char* out, size_t cap) {
     (void)openpete_state_resolve_dir(dir, sizeof dir);
     snprintf(out, cap, "%s/handoff.state", dir);
 }
+#endif
 
 void openpete_handoff_poll(CPUState* cpu) {
     /* Resume leg: first quiescent point of the fresh process. Consumes
