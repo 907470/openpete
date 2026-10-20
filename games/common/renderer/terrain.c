@@ -1203,9 +1203,9 @@ static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, 
  * @param m The face's material. */
 static void emit_tri(tn_wctx* W, const lvert* sv, int a, int b, int c,
                      lcorner ka, lcorner kb, lcorner kc, const tmat* m) {
-    ngte_cvert A = { sv[a].m1, sv[a].m2, sv[a].m3, ka.rgb, ka.u, ka.v };
-    ngte_cvert B = { sv[b].m1, sv[b].m2, sv[b].m3, kb.rgb, kb.u, kb.v };
-    ngte_cvert C = { sv[c].m1, sv[c].m2, sv[c].m3, kc.rgb, kc.u, kc.v };
+    ngte_cvert A = { .m1 = sv[a].m1, .m2 = sv[a].m2, .m3 = sv[a].m3, .rgb = ka.rgb, .u = ka.u, .v = ka.v };
+    ngte_cvert B = { .m1 = sv[b].m1, .m2 = sv[b].m2, .m3 = sv[b].m3, .rgb = kb.rgb, .u = kb.u, .v = kb.v };
+    ngte_cvert C = { .m1 = sv[c].m1, .m2 = sv[c].m2, .m3 = sv[c].m3, .rgb = kc.rgb, .u = kc.u, .v = kc.v };
     clip_push_tri(W, A, B, C, m);
 }
 
@@ -1214,7 +1214,7 @@ static void emit_tri(tn_wctx* W, const lvert* sv, int a, int b, int c,
  * @param k The corner's colour and UV.
  * @return The cvert; the screen position, outcode flag and fx/fy are zero. */
 static ngte_cvert tn_cv(const lvert* p, lcorner k) {
-    ngte_cvert c = { p->m1, p->m2, p->m3, k.rgb, k.u, k.v };
+    ngte_cvert c = { .m1 = p->m1, .m2 = p->m2, .m3 = p->m3, .rgb = k.rgb, .u = k.u, .v = k.v };
     return c;
 }
 
@@ -9194,10 +9194,10 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     uint32_t r[4];
     for (int q = 0; q < 4; q++)
         r[q] = (host_col ? t_le32(h_near + co[q]) : rd(cpu, nearBase + (uint32_t)co[q])) & 0xFFFFFFu;
-    ngte_cvert TL = { sv[F->i0].m1, sv[F->i0].m2, sv[F->i0].m3, r[0], 0, 0 };
-    ngte_cvert TR = { sv[F->i1].m1, sv[F->i1].m2, sv[F->i1].m3, r[1], 0, 0 };
-    ngte_cvert BL = { sv[F->i3].m1, sv[F->i3].m2, sv[F->i3].m3, r[3], 0, 0 };
-    ngte_cvert BR = { sv[F->i2].m1, sv[F->i2].m2, sv[F->i2].m3, r[2], 0, 0 };
+    ngte_cvert TL = { .m1 = sv[F->i0].m1, .m2 = sv[F->i0].m2, .m3 = sv[F->i0].m3, .rgb = r[0] };
+    ngte_cvert TR = { .m1 = sv[F->i1].m1, .m2 = sv[F->i1].m2, .m3 = sv[F->i1].m3, .rgb = r[1] };
+    ngte_cvert BL = { .m1 = sv[F->i3].m1, .m2 = sv[F->i3].m2, .m3 = sv[F->i3].m3, .rgb = r[3] };
+    ngte_cvert BR = { .m1 = sv[F->i2].m1, .m2 = sv[F->i2].m2, .m3 = sv[F->i2].m3, .rgb = r[2] };
     int spikeTri0 = W->tri_n;
     const tn_nearface nf = {
         .hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
@@ -13856,9 +13856,9 @@ int terrain_visibility_capture(const uint8_t** out) {
 }
 
 static feature_dispatch_entry_t terrain_dispatch[] = {
-    { 0u, on_world_draw_terrain },
-    { 0u, on_visibility_terrain },
-    { 0u, NULL },
+    { 0u, on_world_draw_terrain, 0u },
+    { 0u, on_visibility_terrain, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Binds the terrain module's dispatch entries to the layout's hook addresses.

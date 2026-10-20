@@ -115,8 +115,8 @@ static int on_draw(CPUState* cpu, uint32_t addr) {
 }
 
 static const feature_dispatch_entry_t k_dispatch[] = {
-    { ADDR_DRAW, on_draw },
-    { 0, NULL },
+    { ADDR_DRAW, on_draw, 0u },
+    { 0, NULL, 0u },
 };
 
 const feature_module_t transition_call_module = {

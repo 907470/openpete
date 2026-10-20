@@ -48,21 +48,21 @@
  *                     lerp + animation-clock feeders. Singleton, so it lives
  *                     here rather than in the per-object (indirect) table. */
 static const game_interp_row_t s_spyro_interp_rows[] = {
-    { "g_Spyro",  0x80078A58, 0x2A4 },
+    { "g_Spyro",  0x80078A58, 0x2A4, 0 },
     /* g_SpyroFlame (0xD0 captured): the flame-breath struct. The ribbon is
      * rigidly attached to Spyro's mouth/head via m_Position (+0x00) and the
      * flame-attach matrix (+0xB8), both updated at the tick rate - captured so
      * the sub-tick spine can lerp the flame POSE to track the (also-interpolated)
      * Spyro instead of snapping each tick. Read-only; rendered only while
      * breathing fire. */
-    { "g_SpyroFlame", 0x800786C8, 0xD0 },
+    { "g_SpyroFlame", 0x800786C8, 0xD0, 0 },
     /* SpyroShadow (0x28 captured): the player's drop-shadow scratch. Its ground
      * anchor (m_Position @ +0x10, int32 x/y/z) is computed each tick by the
      * canonical shadow render and tracks Spyro's ground projection - captured so
      * the sub-tick spine can lerp it to follow the (interpolated) Spyro instead of
      * stepping at the tick rate. (Moby shadows need no capture: they re-derive from each
      * moby's already-interpolated m_Position.) Read-only. */
-    { "g_SpyroShadow", 0x8007AA10, 0x28 },
+    { "g_SpyroShadow", 0x8007AA10, 0x28, 0 },
     /* g_GameState (4 bytes): which simulation regime produced the tick -
      * gameplay, level transition, respawn, entrance, pause. The moby regime
      * markers (game_moby_regime_t) read it on the snapshots of a ring pair

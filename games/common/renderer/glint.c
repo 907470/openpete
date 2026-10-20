@@ -1203,8 +1203,8 @@ void glint_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
  * initializer cannot read another TU's const. A game with no located routine
  * leaves it 0 and the registry dispatches nothing. */
 static feature_dispatch_entry_t glint_dispatch[] = {
-    { 0u, on_glint_draw },
-    { 0u, NULL },
+    { 0u, on_glint_draw, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Bind the glint dispatch entry to the layout's routine address.

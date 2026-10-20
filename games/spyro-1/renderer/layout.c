@@ -94,7 +94,7 @@ static const game_moby_regime_t s_moby_regime[] = {
  * (D_8006EA4C[m_Homeworld]) over the position of m_BalloonMoby (+0x68), the
  * balloon record the ride copied out of g_LevelMobys before LoadLevel. */
 static const game_moby_director_t s_moby_director[] = {
-    { "g_BalloonState", "g_BalloonMoby", 4u, 5u },
+    { "g_BalloonState", "g_BalloonMoby", 4u, 5u, 0u },
 };
 
 const game_layout_t spyro1_game_layout = {
@@ -419,8 +419,8 @@ const game_layout_t spyro1_game_layout = {
         .model_table = G_MODELS,
         .digit_base  = 260,
         .letter_base = 426,
-        .punct       = { {'%', 272}, {'/', 277}, {'?', 278}, {'+', 317},
-                         {'^', 321}, {'.', 327}, {'\'', 76} },
+        .punct       = { {'%', 272, 0}, {'/', 277, 0}, {'?', 278, 0}, {'+', 317, 0},
+                         {'^', 321, 0}, {'.', 327, 0}, {'\'', 76, 0} },
         .colon_recenter = -50.0f, .colon_spread = 44.0f, .colon_scale = 0.72f,
         .model_h     = 152.0f,
         .light_add   = { 118.0f, 118.0f, 118.0f },

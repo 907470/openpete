@@ -895,21 +895,21 @@ static uint8_t s_seg_buf[2][0x100];
 static scratch_region_t s_scratch_rows[] = {
     /* per-vertex fog-lit colour scratch [0x1100,0x1600) */
     { "colour", G_SCRATCH + 0x1100u, 0x500u, SPROD_MOBYREG, SPHASE_ENTER,
-      s_colour_buf[0], s_colour_buf[1], 0, 0, 0 },
+      s_colour_buf[0], s_colour_buf[1], 0, 0, NULL, 0 },
     /* full REGULAR cull records [0x1600,0x2400) (<=64 @ 0x38) - captured at
      * the MOBY hook while live, BEFORE the Spyro pass reuses 0x1900 */
     { "recs",   G_SCRATCH + 0x1600u, 0xE00u, SPROD_MOBYREG, SPHASE_ENTER,
-      s_recs_buf[0], s_recs_buf[1], 0, 0, 0 },
+      s_recs_buf[0], s_recs_buf[1], 0, 0, NULL, 0 },
     /* shaded Moby* list + lit scratch [0x2400,0x2C00) */
     { "shaded", G_SCRATCH + 0x2400u, 0x800u, SPROD_SHADED, SPHASE_ENTER,
-      s_shaded_buf[0], s_shaded_buf[1], 0, 0, 0 },
+      s_shaded_buf[0], s_shaded_buf[1], 0, 0, NULL, 0 },
     /* Spyro's projected int16 SXY (the NCLIP cull verdict) - full 1 KB
      * hardware scratchpad */
     { "sxy",    SXY_BASE,            0x400u, SPROD_SPYRO,  SPHASE_ENTER,
-      s_sxy_buf[0], s_sxy_buf[1], 0, 0, 0 },
+      s_sxy_buf[0], s_sxy_buf[1], 0, 0, NULL, 0 },
     /* Spyro per-segment scratch [0x1900,0x1A00) - overlaps recs */
     { "seg",    G_SCRATCH + 0x1900u, 0x100u, SPROD_SPYRO,  SPHASE_SEG_OVERLAY,
-      s_seg_buf[0], s_seg_buf[1], 0, 0, 0 },
+      s_seg_buf[0], s_seg_buf[1], 0, 0, NULL, 0 },
 };
 #define SCRATCH_ROWS ((int)(sizeof s_scratch_rows / sizeof s_scratch_rows[0]))
 static int s_any_captured = 0;

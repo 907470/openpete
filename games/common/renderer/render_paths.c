@@ -388,7 +388,7 @@ int psyq_game_render_path_addr_visible(uint32_t addr) {
  * filter above and the per-canonical-present commit below. */
 
 static const feature_dispatch_entry_t render_paths_dispatch[] = {
-    { 0u, NULL },
+    { 0u, NULL, 0u },
 };
 
 /* Dev-overlay adapters: the registry row lives in core, which cannot link

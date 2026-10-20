@@ -1002,8 +1002,8 @@ void cyclorama_native_env_clear_commit(void) OP_REQUIRES(sim) {
 /* The hook address is the layout's sky-draw site, bound at boot: a static
  * initializer cannot read another TU's const. */
 static feature_dispatch_entry_t cyc_dispatch[] OP_GUARDED_BY(sim) = {   /* thread-roles: bound in the boot window, which holds sim */
-    { 0u, on_sky_draw_cyc },
-    { 0u, NULL },
+    { 0u, on_sky_draw_cyc, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Bind the sky-draw dispatch entry to the layout's hook address.

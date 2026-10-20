@@ -34,8 +34,8 @@ typedef struct {
     /* Overlay-id qualifier. Every overlay of a game loads at one vaddr, so a
      * function address inside that window names a different function in each
      * overlay. An entry with a nonzero id dispatches only while that overlay
-     * is the resident one; 0 (the value every base-binary entry gets from a
-     * two-field initializer) dispatches unconditionally. */
+     * is the resident one; 0 (written by every base-binary entry and the
+     * terminator) dispatches unconditionally. */
     uint32_t            overlay;
 } feature_dispatch_entry_t;
 

@@ -376,10 +376,10 @@ static void crash_demo_woah_apply_options(const openpete_options_t* opts) {
 }
 
 static const feature_dispatch_entry_t k_dispatch[] = {
-    { ADDR_KILL_SOUNDS_MUSIC, on_kill_sounds_and_music },
-    { ADDR_TS_PLAY_SOUND,     on_titlescreen_play_sound },
-    { ADDR_CRASH_DEMO_LAUNCH, on_crash_demo_launch },
-    { 0, NULL },
+    { ADDR_KILL_SOUNDS_MUSIC, on_kill_sounds_and_music, 0u },
+    { ADDR_TS_PLAY_SOUND,     on_titlescreen_play_sound, 0u },
+    { ADDR_CRASH_DEMO_LAUNCH, on_crash_demo_launch, 0u },
+    { 0, NULL, 0u },
 };
 
 const feature_module_t crash_demo_woah_module = {

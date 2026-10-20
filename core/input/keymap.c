@@ -1512,20 +1512,20 @@ static float km_action_axis(const km_resolve_t* c, openpete_action_t a) {
 
 int openpete_keymap_action_down_via(openpete_action_t a, int default_slot,
                                     const openpete_keymap_reader_t* rd) {
-    const km_resolve_t c = { rd, default_slot };
+    const km_resolve_t c = { .rd = rd, .default_slot = default_slot };
     return km_action_down(&c, a);
 }
 
 float openpete_keymap_action_axis_via(openpete_action_t a, int default_slot,
                                       const openpete_keymap_reader_t* rd) {
-    const km_resolve_t c = { rd, default_slot };
+    const km_resolve_t c = { .rd = rd, .default_slot = default_slot };
     return km_action_axis(&c, a);
 }
 
 int openpete_keymap_action_axis_raw_via(openpete_action_t a, int default_slot,
                                         const openpete_keymap_reader_t* rd) {
     if ((unsigned)a >= OPK_ACTION_COUNT) return 0;
-    const km_resolve_t c = { rd, default_slot };
+    const km_resolve_t c = { .rd = rd, .default_slot = default_slot };
     const km_binding_t* b = &g_bind[a];
     /* Same first-non-neutral-source rule as the float form, returning the
      * unscaled value: a pad decode has to reproduce the game's own

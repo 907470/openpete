@@ -301,10 +301,10 @@ static int on_80018880_drain(CPUState* cpu, uint32_t addr) {
 }
 
 static const feature_dispatch_entry_t text_moby_id_dispatch[] = {
-    { 0x80017FE4u, on_80017FE4_text },   /* func_80017FE4 - plain text */
-    { 0x800181ACu, on_800181AC_text },   /* func_800181AC - spacing-aware */
-    { 0x80018880u, on_80018880_drain },  /* func_80018880 - pool drain */
-    { 0u, NULL },
+    { 0x80017FE4u, on_80017FE4_text, 0u },   /* func_80017FE4 - plain text */
+    { 0x800181ACu, on_800181AC_text, 0u },   /* func_800181AC - spacing-aware */
+    { 0x80018880u, on_80018880_drain, 0u },  /* func_80018880 - pool drain */
+    { 0u, NULL, 0u },
 };
 
 const feature_module_t text_moby_id_module = {

@@ -1946,13 +1946,13 @@ enum lay_kind {
 
 struct lay_row {
     lay_kind           kind;
-    const char        *label;    /* caption; LAY_REST: the registry section */
-    const char        *ids[3];   /* knob ids; unused slots NULL */
-    const char *const *seg;      /* LAY_SEG captions; NULL = the enum's values */
-    const double      *seg_val;  /* value each caption sets; NULL = its index */
-    int                seg_n;
-    const char        *caption;   /* LAY_ONOFF checkbox caption */
-    int                fallback;  /* LAY_ONOFF first on value */
+    const char        *label    = nullptr; /* caption; LAY_REST: the registry section */
+    const char        *ids[3]   = {};      /* knob ids; unused slots NULL */
+    const char *const *seg      = nullptr; /* LAY_SEG captions; NULL = the enum's values */
+    const double      *seg_val  = nullptr; /* value each caption sets; NULL = its index */
+    int                seg_n    = 0;
+    const char        *caption  = nullptr; /* LAY_ONOFF checkbox caption */
+    int                fallback = 0;       /* LAY_ONOFF first on value */
 };
 
 /* What a section draws: its layout rows, or one of the sections with a

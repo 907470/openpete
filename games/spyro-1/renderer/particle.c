@@ -2520,11 +2520,11 @@ void particle_reextract(CPUState* cpu, int hold) {
 }
 
 static const feature_dispatch_entry_t particle_dispatch[] = {
-    { 0x800573C8u, on_800573C8_particles },
-    { 0x800580F4u, on_800580F4_glows },
-    { 0x800584C4u, on_800584C4_sparkles },
-    { 0x80058864u, on_80058864_dragonstar },
-    { 0u, NULL },
+    { 0x800573C8u, on_800573C8_particles, 0u },
+    { 0x800580F4u, on_800580F4_glows, 0u },
+    { 0x800584C4u, on_800584C4_sparkles, 0u },
+    { 0x80058864u, on_80058864_dragonstar, 0u },
+    { 0u, NULL, 0u },
 };
 
 const feature_module_t particle_module = {

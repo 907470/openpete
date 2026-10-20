@@ -137,7 +137,7 @@ static int s_list_n;
 /* The canonical epoch the copy was taken in, and the previous epoch's copy,
  * which a held camera cut walks (shadow_replay_prev_list). */
 static uint32_t s_list_epoch;
-static struct { shadow_list_rec* list; uint32_t base, epoch; int n; } s_list_prev = { s_list_buf[1] };
+static struct { shadow_list_rec* list; uint32_t base, epoch; int n; } s_list_prev = { .list = s_list_buf[1] };
 
 /** @brief Exchange the current list copy, its base and epoch for the previous epoch's. */
 static void shadow_list_swap(void) {
@@ -1121,8 +1121,8 @@ int shadow_replay_prev_list(int on) {
 /* The hook address is the layout's moby-shadow draw site, bound at boot: a
  * static initializer cannot read another TU's const. */
 static feature_dispatch_entry_t shadow_dispatch[] = {
-    { 0u, on_moby_shadows },
-    { 0u, NULL },
+    { 0u, on_moby_shadows, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Binds the dispatch entry to the layout's moby-shadow draw address.

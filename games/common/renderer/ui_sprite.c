@@ -2182,14 +2182,14 @@ static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
  * initializer cannot read another TU's const. A game whose descriptor names
  * neither address registers no hook and the module is inert. */
 static feature_dispatch_entry_t ui_sprite_dispatch[] = {
-    { 0u, on_ot_insert },
-    { 0u, on_ot_insert },
-    { 0u, on_fade_emitter },
-    { 0u, on_fade_emitter },
-    { 0u, on_fb_grid_emitter },
-    { 0u, on_ot_rank_link },
-    { 0u, on_ot_stitch },
-    { 0u, NULL },
+    { 0u, on_ot_insert, 0u },
+    { 0u, on_ot_insert, 0u },
+    { 0u, on_fade_emitter, 0u },
+    { 0u, on_fade_emitter, 0u },
+    { 0u, on_fb_grid_emitter, 0u },
+    { 0u, on_ot_rank_link, 0u },
+    { 0u, on_ot_stitch, 0u },
+    { 0u, NULL, 0u },
 };
 
 /* Retained-framebuffer freeze backdrop (see ui_game_t::freeze_retained).

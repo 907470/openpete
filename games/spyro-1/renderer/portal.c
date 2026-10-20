@@ -3180,11 +3180,11 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
 }
 
 static const feature_dispatch_entry_t portal_dispatch[] = {
-    { 0x80050BE0u, on_80050BE0 },
-    { 0x8004FEA0u, on_8004FEA0 },
-    { 0x80050240u, on_80050240 },
-    { 0x8004F4BCu, on_8004F4BC },
-    { 0u, NULL },
+    { 0x80050BE0u, on_80050BE0, 0u },
+    { 0x8004FEA0u, on_8004FEA0, 0u },
+    { 0x80050240u, on_80050240, 0u },
+    { 0x8004F4BCu, on_8004F4BC, 0u },
+    { 0u, NULL, 0u },
 };
 
 const feature_module_t spyro1_portal_module = {

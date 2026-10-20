@@ -129,7 +129,7 @@ static int         s_item_n;
  * (particles_replay_prev). */
 static uint32_t  s_item_epoch;
 static op_time_t s_item_ref_ns;
-static struct { part_item* item; int n; uint32_t epoch; op_time_t ref_ns; } s_item_prev = { s_item_buf[1] };
+static struct { part_item* item; int n; uint32_t epoch; op_time_t ref_ns; } s_item_prev = { .item = s_item_buf[1] };
 /* While the previous set is replayed: its records show each pool slot's state
  * as of that set's draw, the pair's prev for a slot that rolled after
  * s_item_ref_cut and its curr otherwise. */
@@ -1003,8 +1003,8 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
 /* The hook address is the layout's particle draw site, bound at boot: a static
  * initializer cannot read another translation unit's const. */
 static feature_dispatch_entry_t particles_dispatch[] = {
-    { 0u, on_particles_draw },
-    { 0u, NULL },
+    { 0u, on_particles_draw, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Binds the dispatch table's hook address to the layout's particle draw site.

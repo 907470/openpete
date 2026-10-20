@@ -252,8 +252,8 @@ void tracer_reextract(CPUState* cpu) {
 }
 
 static const feature_dispatch_entry_t tracer_dispatch[] = {
-    { 0x800189F0u, on_800189F0_tracer },
-    { 0u, NULL },
+    { 0x800189F0u, on_800189F0_tracer, 0u },
+    { 0u, NULL, 0u },
 };
 
 const feature_module_t tracer_module = {

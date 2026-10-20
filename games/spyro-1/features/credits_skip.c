@@ -341,9 +341,9 @@ static int on_gamestate_draw(CPUState* cpu, uint32_t addr) {
 }
 
 static const feature_dispatch_entry_t k_dispatch[] = {
-    { ADDR_GAMESTATE_UPDATE, on_gamestate_update },
-    { ADDR_GAMESTATE_DRAW,   on_gamestate_draw },
-    { 0, NULL },
+    { ADDR_GAMESTATE_UPDATE, on_gamestate_update, 0u },
+    { ADDR_GAMESTATE_DRAW,   on_gamestate_draw, 0u },
+    { 0, NULL, 0u },
 };
 
 const feature_module_t credits_skip_module = {

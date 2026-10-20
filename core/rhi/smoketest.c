@@ -99,10 +99,10 @@ static void put4(uint16_t *vram, int bx, int by, int u, int v, int idx)
 static void make_quad(rhi_vertex *o, float x0, float y0, float x1, float y1,
                       float u0, float v0, float u1, float v1, uint32_t rgba)
 {
-    rhi_vertex tl = { x0, y0, 0.0f, u0, v0, rgba, 0 };
-    rhi_vertex tr = { x1, y0, 0.0f, u1, v0, rgba, 0 };
-    rhi_vertex br = { x1, y1, 0.0f, u1, v1, rgba, 0 };
-    rhi_vertex bl = { x0, y1, 0.0f, u0, v1, rgba, 0 };
+    rhi_vertex tl = { x0, y0, 0.0f, u0, v0, rgba, 0, .w = 0.0f };
+    rhi_vertex tr = { x1, y0, 0.0f, u1, v0, rgba, 0, .w = 0.0f };
+    rhi_vertex br = { x1, y1, 0.0f, u1, v1, rgba, 0, .w = 0.0f };
+    rhi_vertex bl = { x0, y1, 0.0f, u0, v1, rgba, 0, .w = 0.0f };
     o[0] = tl; o[1] = tr; o[2] = br;
     o[3] = tl; o[4] = br; o[5] = bl;
 }
@@ -210,12 +210,12 @@ int main(int argc, char **argv)
     rhi_buffer *tex_vb = rhi_create_vertex_buffer(dev, sizeof(tex_verts));
 
     const rhi_vertex ref[6] = {
-        { -0.45f, -0.18f, 0.0f, 0.0f, 0.0f, 0xFF0000FFu, 0 }, /* red    */
-        {  0.45f, -0.18f, 0.0f, 1.0f, 0.0f, 0xFF00FF00u, 0 }, /* green  */
-        {  0.45f, -0.92f, 0.0f, 1.0f, 1.0f, 0xFFFF0000u, 0 }, /* blue   */
-        { -0.45f, -0.18f, 0.0f, 0.0f, 0.0f, 0xFF0000FFu, 0 }, /* red    */
-        {  0.45f, -0.92f, 0.0f, 1.0f, 1.0f, 0xFFFF0000u, 0 }, /* blue   */
-        { -0.45f, -0.92f, 0.0f, 0.0f, 1.0f, 0xFFFFFFFFu, 0 }, /* white  */
+        { -0.45f, -0.18f, 0.0f, 0.0f, 0.0f, 0xFF0000FFu, 0, .w = 0.0f }, /* red    */
+        {  0.45f, -0.18f, 0.0f, 1.0f, 0.0f, 0xFF00FF00u, 0, .w = 0.0f }, /* green  */
+        {  0.45f, -0.92f, 0.0f, 1.0f, 1.0f, 0xFFFF0000u, 0, .w = 0.0f }, /* blue   */
+        { -0.45f, -0.18f, 0.0f, 0.0f, 0.0f, 0xFF0000FFu, 0, .w = 0.0f }, /* red    */
+        {  0.45f, -0.92f, 0.0f, 1.0f, 1.0f, 0xFFFF0000u, 0, .w = 0.0f }, /* blue   */
+        { -0.45f, -0.92f, 0.0f, 0.0f, 1.0f, 0xFFFFFFFFu, 0, .w = 0.0f }, /* white  */
     };
     rhi_buffer *ref_vb = rhi_create_vertex_buffer(dev, sizeof(ref));
 

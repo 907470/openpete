@@ -433,8 +433,8 @@ void shadow_player_reextract(CPUState* cpu, int slot) {
 /* The hook address is the layout's player-shadow draw site, bound at boot: a
  * static initializer cannot read another TU's const. */
 static feature_dispatch_entry_t shadow_player_dispatch[] = {
-    { 0u, on_player_shadow },
-    { 0u, NULL },
+    { 0u, on_player_shadow, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Binds the dispatch entry to the layout's player-shadow draw address.

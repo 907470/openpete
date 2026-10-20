@@ -556,8 +556,8 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
 /* Hook addresses are the layout's, bound at boot: a static initializer
  * cannot read another TU's const. */
 static feature_dispatch_entry_t probe_dispatch[] = {
-    { 0u, on_world_draw },
-    { 0u, NULL },
+    { 0u, on_world_draw, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Binds the probe's dispatch entry to the layout's world-draw address.

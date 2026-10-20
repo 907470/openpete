@@ -853,27 +853,32 @@ static int env_set_str(knob_desc_t *k, const char *v) {
     return portable_setenv(k->env, v);
 }
 
-/* Compact row builders for the Debug sections. LIVE = FRESH consumer. */
+/* Compact row builders for the Debug sections. LIVE = FRESH consumer.
+ * Designated, so every member they leave out is zero. */
 #define ENVROW_LIVE(name, sect, def, helptext) \
-    { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
-      KNOB_LIVE, NULL, 0, 0, 0, NULL, NULL, env_get_str, env_set_str, \
-      KNOB_SRC_DEFAULT, 0, {0}, 0, def }
+    { .id = name, .label = name, .section = sect, .env = "OPENPETE_" name, \
+      .help = helptext, .type = KNOB_STRING, .mut = KNOB_LIVE, \
+      .get_str = env_get_str, .set_str = env_set_str, \
+      .boot_src = KNOB_SRC_DEFAULT, .def_str = def }
 #define ENVROW_LATCHED(name, sect, def, helptext) \
-    { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
-      KNOB_RESTART_ONLY, NULL, 0, 0, 0, NULL, NULL, env_get_str, NULL, \
-      KNOB_SRC_DEFAULT, 0, {0}, 0, def }
+    { .id = name, .label = name, .section = sect, .env = "OPENPETE_" name, \
+      .help = helptext, .type = KNOB_STRING, .mut = KNOB_RESTART_ONLY, \
+      .get_str = env_get_str, \
+      .boot_src = KNOB_SRC_DEFAULT, .def_str = def }
 /* An ENVROW_LATCHED row read while the device is created: device-creation
  * class 1 (openpete_knobs.h device_creation). */
 #define ENVROW_DEVICE(name, sect, def, helptext) \
-    { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
-      KNOB_RESTART_ONLY, NULL, 0, 0, 0, NULL, NULL, env_get_str, NULL, \
-      KNOB_SRC_DEFAULT, 0, {0}, 0, def, .device_creation = 1 }
+    { .id = name, .label = name, .section = sect, .env = "OPENPETE_" name, \
+      .help = helptext, .type = KNOB_STRING, .mut = KNOB_RESTART_ONLY, \
+      .get_str = env_get_str, \
+      .boot_src = KNOB_SRC_DEFAULT, .def_str = def, .device_creation = 1 }
 /* An ENVROW_LATCHED row whose unset value the program decides: `note` says
  * how, and the overlay shows "(unset)". */
 #define ENVROW_LATCHED_NOTE(name, sect, note, helptext) \
-    { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
-      KNOB_RESTART_ONLY, NULL, 0, 0, 0, NULL, NULL, env_get_str, NULL, \
-      KNOB_SRC_DEFAULT, 0, {0}, 0, NULL, .default_note = note }
+    { .id = name, .label = name, .section = sect, .env = "OPENPETE_" name, \
+      .help = helptext, .type = KNOB_STRING, .mut = KNOB_RESTART_ONLY, \
+      .get_str = env_get_str, \
+      .boot_src = KNOB_SRC_DEFAULT, .default_note = note }
 
 /* ---- Gameplay / debug ---- */
 
@@ -2391,7 +2396,8 @@ static const knob_desc_t g_builtin_debug[] = {
       "widget and read the result out of the log instead of needing a hand "
       "on the mouse.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      NULL, NULL, injectmouse_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      NULL, NULL, injectmouse_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = NULL },
 
     ENVROW_LATCHED("MOUSE_INJECT", "Debug", "",
         "Path of a mouse-event script (\"<pump-iteration> move x y | down b | "

@@ -318,9 +318,9 @@ static void transition_native_apply_options(const openpete_options_t* opts) {
 }
 
 static const feature_dispatch_entry_t transition_dispatch[] = {
-    { 0x8004F000u, on_8004F000_crossfade },
-    { 0x8001C694u, on_8001C694 },
-    { 0u, NULL },
+    { 0x8004F000u, on_8004F000_crossfade, 0u },
+    { 0x8001C694u, on_8001C694, 0u },
+    { 0u, NULL, 0u },
 };
 
 const feature_module_t transition_module = {

@@ -187,12 +187,13 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
 }
 
 static const feature_dispatch_entry_t k_dispatch[] = {
-    { ADDR_BUILD_ORDER_TABLE, on_build_order_table },
-    { 0u, NULL },
+    { ADDR_BUILD_ORDER_TABLE, on_build_order_table, 0u },
+    { 0u, NULL, 0u },
 };
 
 const feature_module_t polybuf_guard_module = {
     "polybuf_guard",
     NULL,            /* no options to apply; environment-gated */
     k_dispatch,
+    NULL,            /* no threads to join */
 };

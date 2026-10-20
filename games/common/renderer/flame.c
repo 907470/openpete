@@ -947,8 +947,8 @@ void flame_records_present(CPUState* cpu, int paired, int cam_cut, double alpha,
  * initializer cannot read another TU's const. A game with no located emitter
  * leaves it 0 and the registry dispatches nothing. */
 static feature_dispatch_entry_t flame_dispatch[] = {
-    { 0u, on_flame_draw },
-    { 0u, NULL },
+    { 0u, on_flame_draw, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Bind the flame dispatch entry to the layout's emitter address.

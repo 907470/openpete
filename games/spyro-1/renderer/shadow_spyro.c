@@ -398,8 +398,8 @@ void shadow_spyro_reextract(CPUState* cpu, int slot) {
 }
 
 static const feature_dispatch_entry_t shadow_spyro_dispatch[] = {
-    { 0x80059A48u, on_80059A48_shadow_spyro },
-    { 0u, NULL },
+    { 0x80059A48u, on_80059A48_shadow_spyro, 0u },
+    { 0u, NULL, 0u },
 };
 
 const feature_module_t shadow_spyro_module = {

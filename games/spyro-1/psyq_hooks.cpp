@@ -428,6 +428,8 @@ extern "C" const psyq_game_hooks_t spyro1_psyq_hooks = {
     .mirror_memcard_init     = spyro1_mirror_memcard_init,
     /* PSYQ's rand seed, in the library's own data at D_80075AC0. */
     .rand_seed_addr          = 0x80075AC0u,
+    /* No captured root-counter-2 count. */
+    .root_counter2           = 0u,
     /* libgpu's environment block and fill-packet block (psx.map
      * D_80074A64, D_80075978). */
     .libgpu_env_addr         = 0x80074A64u,
@@ -435,6 +437,15 @@ extern "C" const psyq_game_hooks_t spyro1_psyq_hooks = {
     .cd_setloc               = spyro1_cd_setloc,
     .cd_apply_buf            = spyro1_cd_apply_buf,
     .cd_read_done            = spyro1_cd_read_done,
+    /* No level-load delay classifier, load window or raw-command floor; the
+     * accessors answer their none values. */
+    .cd_read_in_load         = nullptr,
+    .cd_read_delay_cap       = 0u,
+    .cd_read_streamed        = nullptr,
+    .load_window_word        = 0u,
+    .load_window_active      = nullptr,
+    .cd_raw_pc_min           = 0u,
+    .cd_done_witness_ra      = 0u,
     .music_route             = spyro1_music_route,
     .sfx_slots               = &k_sfx_slots,
 };

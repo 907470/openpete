@@ -925,8 +925,8 @@ void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
  * static initializer cannot read another TU's const. A game with no located
  * routine leaves it 0 and the registry dispatches nothing. */
 static feature_dispatch_entry_t zap_dispatch[] = {
-    { 0u, on_zap_draw },
-    { 0u, NULL },
+    { 0u, on_zap_draw, 0u },
+    { 0u, NULL, 0u },
 };
 
 /// @brief Binds the module's dispatch entry to the layout's zap draw address.

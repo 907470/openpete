@@ -5000,10 +5000,10 @@ void openpete_native_set_isolation(bool on) { s_isolation = on; }
 static void build_panel_tinted(rhi_vertex out[6], float cx, float cy, float hx, float hy,
                                float u0, float v0, float u1, float v1, uint32_t rgba)
 {
-    const rhi_vertex tl = { cx - hx, cy + hy, 0.0f, u0, v0, rgba, 0 };
-    const rhi_vertex tr = { cx + hx, cy + hy, 0.0f, u1, v0, rgba, 0 };
-    const rhi_vertex br = { cx + hx, cy - hy, 0.0f, u1, v1, rgba, 0 };
-    const rhi_vertex bl = { cx - hx, cy - hy, 0.0f, u0, v1, rgba, 0 };
+    const rhi_vertex tl = { cx - hx, cy + hy, 0.0f, u0, v0, rgba, 0, .w = 0.0f };
+    const rhi_vertex tr = { cx + hx, cy + hy, 0.0f, u1, v0, rgba, 0, .w = 0.0f };
+    const rhi_vertex br = { cx + hx, cy - hy, 0.0f, u1, v1, rgba, 0, .w = 0.0f };
+    const rhi_vertex bl = { cx - hx, cy - hy, 0.0f, u0, v1, rgba, 0, .w = 0.0f };
     out[0] = tl; out[1] = tr; out[2] = br;
     out[3] = tl; out[4] = br; out[5] = bl;
 }
@@ -9098,7 +9098,7 @@ static struct {
     const mod_fvec* abuf;
     int vw, vh;                     /* the pass's viewport in the key image */
     openpete_tercache_clip clip;    /* the pass's screen->clip mapping */
-} s_tk_last = { NULL, 0, -1, -1, -1, -1, NULL, NULL, NULL, 0, 0, { 0 } };
+} s_tk_last = { .full_extent = -1, .m = -1, .mm = -1, .am = -1 };
 
 /** @brief Count the triangles of a packed key batch that key per drain sub-cell.
  *
@@ -12743,7 +12743,8 @@ static void draw_fb_snapshot_run(const tex_run* r, int idx, int texel_space,
     }
     const float bw = texel_space ? (float)rw : (float)sw, bh = texel_space ? (float)rh : (float)sh;
     const hd_pc pc = { 0.f, 0.f, bw, bh,
-                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
+                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f },
+                       { 0 }, { 0 }, { 0 } };
     bind_scene_pipe(hd_pipe);
     rhi_bind_vram(s_nr.dev, tex);
     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
@@ -12844,7 +12845,8 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                     /* Mod-registered textures are not palette-laddered, so
                      * they push the identity fog transform. */
                     const hd_pc pc = { 0.f, 0.f, (float)mw, (float)mh,
-                                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
+                                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f },
+                                       { 0 }, { 0 }, { 0 } };
                     bind_scene_pipe(hd_pipe);
                     rhi_bind_vram(s_nr.dev, tex);
                     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
@@ -15348,10 +15350,10 @@ static bool draw_native_scene(bool full_extent)
          * not stretch); it recomputes each present, tracking live resizes. */
         float l, r, t, b;
         cover_rect(full_extent, &l, &r, &t, &b);
-        const rhi_vertex tl = { l, t, 1.0f, 0.0f, 0.0f, trgba, 0 };
-        const rhi_vertex tr = { r, t, 1.0f, 1.0f, 0.0f, trgba, 0 };
-        const rhi_vertex br = { r, b, 1.0f, 1.0f, 1.0f, trgba, 0 };
-        const rhi_vertex bl = { l, b, 1.0f, 0.0f, 1.0f, trgba, 0 };
+        const rhi_vertex tl = { l, t, 1.0f, 0.0f, 0.0f, trgba, 0, .w = 0.0f };
+        const rhi_vertex tr = { r, t, 1.0f, 1.0f, 0.0f, trgba, 0, .w = 0.0f };
+        const rhi_vertex br = { r, b, 1.0f, 1.0f, 1.0f, trgba, 0, .w = 0.0f };
+        const rhi_vertex bl = { l, b, 1.0f, 0.0f, 1.0f, trgba, 0, .w = 0.0f };
         freeze_first = n;
         buf[n+0] = tl; buf[n+1] = tr; buf[n+2] = br;
         buf[n+3] = tl; buf[n+4] = br; buf[n+5] = bl;
@@ -20323,7 +20325,7 @@ static hold_area_t *hold_area_claim(int x, int y, int w, int h)
     if (idx < 0) { idx = s_hold.a_next; s_hold.a_next = (s_hold.a_next + 1) % HOLD_AREAS; }
     hold_area_t *a = &s_hold.a[idx];
     hold_area_release(a);
-    *a = (hold_area_t){ x, y, w, h, 1, HOLD_W_NONE, -1, 0 };
+    *a = (hold_area_t){ .x = x, .y = y, .w = w, .h = h, .live = 1, .writer = HOLD_W_NONE, .entry = -1 };
     return a;
 }
 

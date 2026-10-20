@@ -945,9 +945,9 @@ void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
  * static initializer cannot read another TU's const. A game with no located
  * routine leaves either 0 and the registry dispatches nothing for it. */
 static feature_dispatch_entry_t tracers_dispatch[] = {
-    { 0u, on_ribbon },
-    { 0u, on_mesh },
-    { 0u, NULL },
+    { 0u, on_ribbon, 0u },
+    { 0u, on_mesh, 0u },
+    { 0u, NULL, 0u },
 };
 
 /** @brief Binds the two dispatch rows to the layout's ribbon and mesh hook addresses.
