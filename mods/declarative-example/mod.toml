@@ -7,16 +7,14 @@
 # subtree per game, assets/<game>/, each named in that game's own terms;
 # Spyro 2 and 3 have no music override, so their subtrees carry no track.
 # The [[material]] rows then reshade the engine's own draws through
-# selector keys alone; Spyro 2 and 3 serve no material channel, so each row
-# is skipped there with a log line. Custom levels are the one declarative
+# selector keys alone, on every game. Custom levels are the one declarative
 # feature not shown here; the Custom levels page covers them. [[binding]]
 # and [[config]] rows are read by a mod's own code, so they belong to a code
 # mod, and hud-stopwatch shows both.
 #
 # uses: `[[material]]` rows - five selectors, each pairing one fragment shader with a different channel, so the same shader shades a different subset per row
 # uses: `assets/<game>/` - one asset subtree per game, chosen by the running game
-# uses: `assets/spyro-1/textures/` - one HD replacement named by content identity, the form the texture dump writes
-# uses: `assets/spyro-2/textures/`, `assets/spyro-3/textures/` - the UI atlas replaced by its symbolic name, ui_atlas
+# uses: `assets/<game>/textures/` - one replacement per game, the title logo named by its content identity, the form the texture dump writes
 # uses: `assets/spyro-1/music/` - a track replacement plus a manifest.txt mapping index to file
 # uses: `assets/<game>/sfx/` - a symbolic slot replacement (gemPickup on Spyro 1, gemCollect on Spyro 2 and 3), the form that follows whatever the current level maps to that slot
 # uses: `shaders/*.frag` - the material shader the rows share, written against openpete_psx_material.glsl
