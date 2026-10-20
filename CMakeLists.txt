@@ -495,6 +495,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # SIGTERM in each phase of a headless Spyro 1 run: under
+    # OPENPETE_FAST_BOOT_HOLD (quit from the fast-boot VBL path), after fast
+    # boot, the second-signal escape (rc 130) and the quit backstop (panic
+    # within 35 s) over OPENPETE_TEARDOWN_STALL_MS, and --max-runtime-seconds
+    # under the hold. About 55 s. Exit 64 = no binary or disc.
+    add_test(NAME sigterm_exit
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_sigterm_exit.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(sigterm_exit PROPERTIES
+        LABELS "slow;quit"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Spyro 2/3 cutscene speech ring: per row, run to the speech voice's
     # key-off; every ring refill lands behind the guest voice head (0
     # overwrite, 0 stale samples), the OpenAL offset takes no slip step,

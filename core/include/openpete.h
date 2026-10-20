@@ -1058,6 +1058,14 @@ int  openpete_run(const openpete_options_t* opts);
  * unrecoverable device loss. */
 void openpete_request_shutdown(void);
 
+/** @brief Report whether the run is to stop: a shutdown request, or an expired --max-runtime-seconds deadline.
+ *
+ * Read from any thread. The host loop quits on either at its next
+ * iteration; code that runs the guest without returning to the host loop
+ * (the fast-boot VBL path) polls this to hand control back to it.
+ * @return Nonzero once a shutdown is requested or the deadline has passed. */
+int openpete_shutdown_requested(void);
+
 /** @brief Set the render-fps target of present pacing at runtime.
  *
  * Queues the target; at the top of its next iteration the host loop takes

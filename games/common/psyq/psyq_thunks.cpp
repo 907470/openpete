@@ -26,6 +26,7 @@
 #include <cstdlib>
 
 extern "C" {
+#include "openpete.h"          /* openpete_shutdown_requested */
 #include "openpete_fiber.h"
 #include "openpete_guest_regs.h"
 #include "openpete_psxtrace.h"
@@ -1028,6 +1029,9 @@ static void pad_vsync_end(CPUState* cpu, const pad_vsync_t* pv) {
  * wait's park site before it switches. The host's pad write during a
  * yield, and its first stamp at the first fast-boot VBL, advance the bk2
  * row position (openpete_feed_pad_write) whether or not the vsync polls.
+ * Once the run is to stop (openpete_shutdown_requested) a fast-boot VBL
+ * takes the yield, so the host loop sees the request and quits; a boot
+ * that never draws a scene otherwise never returns to it.
  * @param cpu Guest CPU state.
  * @param key Reference VBLANK index the card step and pad command belong to.
  * @param final_wait Nonzero when this yield ends a psyq_VSync wait. */
@@ -1038,7 +1042,7 @@ static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
     pad_vsync_t pv;
     pad_vsync_begin(cpu, key, card_free, &pv);
 
-    if (openpete_fast_boot_active) {
+    if (openpete_fast_boot_active && !openpete_shutdown_requested()) {
         /* The host's first stamp, made before the fiber first ran, is the
          * pad write every fast-boot VBL repeats: one write, at (E, j) 0. */
         static int s_boot_pad_write = 0;
@@ -2806,6 +2810,26 @@ static size_t ot_payload_bytes(uint32_t addr, const uint8_t* host, uint8_t plen)
     return openpete_psx_to_host_span(addr, (uint32_t)(4u + needed)) ? needed : OT_PAYLOAD_UNMAPPED;
 }
 
+/** @brief Report whether OPENPETE_FAST_BOOT_HOLD=1 keeps fast boot on past the OT that would end it.
+ *
+ * Harness only: holds the run in the fast-boot VBL path, where the host
+ * loop never runs, so a quit request can be tested there. The variable is
+ * read once; the first held OT logs one line.
+ * @param prims The drawing primitives of the OT that would end fast boot.
+ * @return Nonzero when the hold is set. */
+static int fast_boot_hold(unsigned prims) {
+    static int s_hold = -1;
+    if (s_hold < 0) {
+        const char* e = std::getenv("OPENPETE_FAST_BOOT_HOLD");
+        s_hold = (e && e[0] == '1' && e[1] == '\0') ? 1 : 0;
+        if (s_hold)
+            OPL_WARN_F("boot", "OPENPETE_FAST_BOOT_HOLD: fast boot held at vbl=%d "
+                       "(OT with %u drawing primitives)",
+                       SDL_GetAtomicInt(&openpete_vbl), prims);
+    }
+    return s_hold;
+}
+
 /** @brief DrawOTag thunk: copy the guest ordering-table chain into host slots and submit it to PsyCross.
  *
  * Walks the chain from a0, one slot per entry (at most OT_MAX_SLOTS), each a
@@ -3213,7 +3237,7 @@ void psyq_DrawOTag(CPUState* cpu) {
      * dropped, so a filter that selects no path the first scene draws does not
      * hold fast boot. */
     const unsigned guest_draw_prims = draw_prims_this_call + filtered_prims_this_call;
-    if (openpete_fast_boot_active && guest_draw_prims > 1u) {
+    if (openpete_fast_boot_active && guest_draw_prims > 1u && !fast_boot_hold(guest_draw_prims)) {
         openpete_fast_boot_active = 0;
         OPL_INFO_F("boot",
                    "fast-boot ended at vbl=%d (first OT with %u drawing "

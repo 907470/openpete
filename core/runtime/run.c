@@ -255,6 +255,65 @@ static atomic_int g_shutdown_requested = 0;
 /* Sets g_shutdown_requested; documented at the declaration. */
 void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
 
+/* --max-runtime-seconds as an absolute SDL_GetTicks deadline, 0 for none.
+ * Written by the host loop before the game fiber first runs, read by
+ * openpete_shutdown_requested on the sim thread. */
+static atomic_ullong g_run_deadline_ms = 0;
+
+/** @brief Publish the --max-runtime-seconds deadline for openpete_shutdown_requested.
+ *
+ * Measured from the instant the host loop's own deadline test measures
+ * from, so a fast-boot yield taken on the deadline meets a loop that quits
+ * on it. No deadline is published when the option is 0.
+ * @param opts The parsed options.
+ * @param start The host loop's start, in SDL ticks. */
+static void run_deadline_arm(const openpete_options_t* opts, Uint64 start) {
+    if (opts->max_runtime_seconds <= 0) return;
+    atomic_store(&g_run_deadline_ms,
+                 (unsigned long long)(start + (Uint64)opts->max_runtime_seconds * 1000));
+}
+
+/* Reads the flag and the deadline; documented at the declaration. */
+int openpete_shutdown_requested(void) {
+    if (g_shutdown_requested) return 1;
+    const unsigned long long d =
+        atomic_load_explicit(&g_run_deadline_ms, memory_order_relaxed);
+    return d != 0 && SDL_GetTicks() > d;
+}
+
+#ifndef _WIN32
+/* Seconds the process may go without reaching the next teardown step
+ * after a SIGINT or SIGTERM before the backstop ends it. The first signal
+ * arms alarm(); each sim_teardown_progress re-arms it, so the bound is per
+ * step, not on the whole teardown (a recorder flush may take seconds). */
+#define QUIT_BACKSTOP_S 30
+#define QUIT_BACKSTOP_STR2(x) #x
+#define QUIT_BACKSTOP_STR(x) QUIT_BACKSTOP_STR2(x)
+/* Set by the first SIGINT/SIGTERM; re-arming happens only while set. */
+static atomic_int g_quit_backstop_armed = 0;
+
+/** @brief SIGALRM handler: the quit request went unanswered for QUIT_BACKSTOP_S seconds; report and exit with the panic code.
+ *
+ * Writes one line to the descriptors the crash report uses (the original
+ * stderr and the log file when the file sink is active), since text in the
+ * stderr pipe dies with the process. Only write and _exit are called.
+ * @param sig The signal number, unused. */
+static void openpete_on_quit_backstop(int sig) {
+    (void)sig;
+    static const char msg[] =
+        "quit-backstop: no shutdown progress for "
+        QUIT_BACKSTOP_STR(QUIT_BACKSTOP_S) " s "
+        "after the quit signal, forcing exit\n";
+    int fds[2];
+    const int n = openpete_log_file_crash_fds(fds);
+    for (int i = 0; i < n; i++) {
+        ssize_t w = write(fds[i], msg, sizeof msg - 1);
+        (void)w;
+    }
+    _exit(OPENPETE_EXIT_PANIC);
+}
+#endif
+
 /* Set by the event pump on a window double-click, by
  * openpete_native_request_fullscreen_toggle from any thread, and by the
  * host loop on its own key edge under the thread split; consumed with an
@@ -375,8 +434,13 @@ static SDL_AtomicInt g_sim_heartbeat;
  * longer teardown bound between heartbeats. */
 static SDL_AtomicInt g_sim_teardown;
 
-/** @brief Report teardown progress to the pump's liveness check: one heartbeat. */
-static void sim_teardown_progress(void) { SDL_AddAtomicInt(&g_sim_heartbeat, 1); }
+/** @brief Report teardown progress: one heartbeat for the pump's liveness check, and a re-arm of the quit backstop when a signal armed it. */
+static void sim_teardown_progress(void) {
+    SDL_AddAtomicInt(&g_sim_heartbeat, 1);
+#ifndef _WIN32
+    if (atomic_load(&g_quit_backstop_armed)) alarm(QUIT_BACKSTOP_S);
+#endif
+}
 
 /** @brief Take a key event while a binding capture owns the keyboard.
  *
@@ -662,7 +726,10 @@ static bool openpete_handle_event(SDL_Event* ev) {
 
 /** @brief SIGINT and SIGTERM handler: request a graceful shutdown, and exit at once on a second signal.
  *
- * The first signal sets g_shutdown_requested; a second calls _exit(130).
+ * The first signal sets g_shutdown_requested and, on POSIX, arms the quit
+ * backstop (alarm, QUIT_BACKSTOP_S), which ends a process whose shutdown
+ * stops making progress with no second signal coming; a second signal
+ * calls _exit(130).
  * @param sig The signal number, unused. */
 static void openpete_on_sigint(int sig) {
     (void)sig;
@@ -672,6 +739,10 @@ static void openpete_on_sigint(int sig) {
         _exit(130);  /* 128 + SIGINT */
     }
     g_shutdown_requested = 1;
+#ifndef _WIN32
+    atomic_store(&g_quit_backstop_armed, 1);
+    alarm(QUIT_BACKSTOP_S);
+#endif
 }
 
 /** @brief Test whether a frame index lies in any of the options' unlock ranges, bounds inclusive.
@@ -3344,6 +3415,9 @@ static int run_host_init(const openpete_options_t* opts) {
 #ifdef SIGTERM
     signal(SIGTERM, openpete_on_sigint);
 #endif
+#ifndef _WIN32
+    signal(SIGALRM, openpete_on_quit_backstop);
+#endif
 
     if (opts->disc_path) {
         int disc_rc = attach_disc_image(opts);
@@ -4591,6 +4665,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
     int    exit_code = OPENPETE_EXIT_OK;
     const char* exit_reason = "frame-limit";
     int    quit = 0;
+    run_deadline_arm(opts, start);
 
     /* Monitor refresh rate (primary display - the window spawns there; 60
      * when headless / query failure). Feeds the --render-fps default below
