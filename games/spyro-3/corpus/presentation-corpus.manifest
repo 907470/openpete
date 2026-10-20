@@ -234,3 +234,14 @@ spooky-swamp-area-1-respawn-clear|2900|100||2900,3000
 # the CreditsLetter records in states 1-3 into consecutive moby slots, so a
 # departing or reused record moves every later letter to another slot.
 credits-cheat|2013|200||2025,2256,2600,3690,3708,3720
+#
+# sunny-villa-level-entry: the level entry from Sunrise Spring into Sunny
+# Villa, ending on the loading screen's treasure tally (VBL ~4240-4720; the
+# gems fly 4320-4470). The movie ends at 3949 and the row samples the game
+# running on without input. In builder state 3 (D_8006FBC8) the loading
+# overlay rebuilds the moby array every tick: one class-1 moby per active
+# tally record (*D_8006C764, stride 8, active byte +4), then the counter gem
+# (+0x0C 0x154, +0x14 0xC00), then the total gem (+0x0C 0xB4). 4370 and 4430
+# are sub-tick presents with gems in flight: a spawn or a landing moves every
+# later gem to another slot.
+sunny-villa-level-entry|4300|200||4370,4430

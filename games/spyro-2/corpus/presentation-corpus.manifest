@@ -164,3 +164,14 @@ glimmer-32x9-leftedge|2471|2||2473|--skip-to-level glimmer --aspect 32:9 OPENPET
 # where the game draws nothing: the display shows the last image drawn into
 # the buffer it shows, the world under the card box.
 s2-create-save|1022|82||1022,1104|--card1 {legdir}/card1.mcr --no-card2
+#
+# idol-springs-level-entry: the level entry from Summer Forest into Idol
+# Springs, ending on the loading screen's treasure tally (VBL ~2960-3460; the
+# gems fly 2980-3160). The movie ends at 2596 and the row samples the game
+# running on without input. In builder state 2 (D_800698F0) the loading
+# overlay rebuilds the moby array every tick: one class-1 moby per active
+# tally record (*D_80067110, stride 8, active byte +4), then the counter gem
+# (+0x0C 0x154, +0x14 0xC00), then the total gem (+0x0C 0xB4). 3060 and 3120
+# are sub-tick presents with gems in flight: a spawn or a landing moves every
+# later gem to another slot.
+idol-springs-level-entry|3000|200||3060,3120
