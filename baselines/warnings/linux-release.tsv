@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 4ea8913f4b6e2476b212d1849d532a8c14ed6a53
+# head: b28e9fd81b61c8f832e52fa03afdddaa8d32af0b
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
@@ -14,7 +14,6 @@ core/host/sfx_pack.c	-Wformat-truncation=	me	rescan	2
 core/host/sfx_pack.c	-Wformat-truncation=	me	scan_dir	1	
 core/host/texture_pack.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/host/texture_pack.c	-Wunused-function	me	-	34	
-core/input/host_input.c	-Warray-bounds	me	openpete_host_input_publish_sdl	1	
 core/input/keymap.c	-Wmissing-field-initializers	fe	missing initializer for field 'menu_exempt' of 'km_resolve_t'	3	
 core/mods/mod_loader.c	-Wformat-truncation=	me	api_notify	1	
 core/mods/mod_loader.c	-Wformat-truncation=	me	build_mod	1	

@@ -1047,6 +1047,7 @@ void openpete_host_input_publish_sdl(void)
     int nkeys = 0;
     const bool* keys = SDL_GetKeyboardState(&nkeys);
     if (keys) {
+        if (nkeys < 0) nkeys = 0;
         if (nkeys > SDL_SCANCODE_COUNT) nkeys = SDL_SCANCODE_COUNT;
         memcpy(d->keys, keys, (size_t)nkeys * sizeof(bool));
         if (nkeys < SDL_SCANCODE_COUNT)
