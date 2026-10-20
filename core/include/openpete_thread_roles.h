@@ -153,8 +153,15 @@ typedef struct OP_CAPABILITY_TYPE("role") op_role_cap { char unused; } op_role_c
  * module's lock and unlock wrappers carry OP_ACQUIRE_CAP / OP_RELEASE_CAP of
  * it and are listed in OP_TSA_ACCESSOR_TABLE, since their bodies call an
  * unannotated lock; the state the lock protects carries
- * OP_GUARDED_BY_CAP(<object>). */
-typedef struct OP_CAPABILITY_TYPE("mutex") op_lock_cap { char unused; } op_lock_cap_t;
+ * OP_GUARDED_BY_CAP(<object>). The object is named only in those
+ * attributes, which GCC does not see, so the type is marked possibly
+ * unused. */
+#if defined(__GNUC__)
+#  define OP_LOCK_CAP_UNUSED_ __attribute__((unused))
+#else
+#  define OP_LOCK_CAP_UNUSED_
+#endif
+typedef struct OP_CAPABILITY_TYPE("mutex") OP_LOCK_CAP_UNUSED_ op_lock_cap { char unused; } op_lock_cap_t;
 
 #define OP_ROLE_DECLARE_CAP_(name, bit) extern const op_role_cap_t op_role_##name;
 OP_ROLE_LIST(OP_ROLE_DECLARE_CAP_)

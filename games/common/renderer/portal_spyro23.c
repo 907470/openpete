@@ -1976,8 +1976,8 @@ static feature_dispatch_entry_t portal_dispatch[3];
 static void portal_apply_options(const openpete_options_t* opts) {
     (void)opts;
     const feature_dispatch_entry_t hooks[] = {
-        { portal_game_s23.pass, on_portal_pass },
-        { portal_game_s23.leaf, on_portal_leaf },
+        { .addr = portal_game_s23.pass, .fn = on_portal_pass },
+        { .addr = portal_game_s23.leaf, .fn = on_portal_leaf },
     };
     int n = 0;
     for (size_t i = 0; i < sizeof hooks / sizeof hooks[0]; i++)
