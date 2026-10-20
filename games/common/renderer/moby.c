@@ -3449,7 +3449,14 @@ static int32_t  s_wtri_otk[MAX_NTRI];
  * every prim of the record into one world ordering-table bucket
  * (moby_otk_row_single_bucket): the record paints whole against the terrain. */
 static uint8_t  s_wtri_single[MAX_NTRI];
+/* The world ordering-table bucket the draw splices the triangle's face into
+ * (moby_otk_splice_bucket), one value for every triangle of a face; -1 when
+ * the face carries no bucket word or its record no splice. */
+static int16_t  s_wtri_wbk[MAX_NTRI];
 static _Thread_local int32_t s_emit_otk = -1;
+/* s_wtri_wbk of every triangle emitted while it is >= 0: the second model
+ * kind's record links all its prims into one world bucket. */
+static _Thread_local int16_t  s_cur_wbk = -1;
 static _Thread_local uint8_t  s_cur_single;     /* s_wtri_single of the record being walked */
 static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
 static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
@@ -3600,11 +3607,12 @@ typedef struct {
     int8_t*   dofs; uint8_t*  special;
     int32_t*  otk;  int16_t (*isxy)[6];
     uint8_t*  single;
+    int16_t*  wbk;
     int n, cap;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
                          s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
-                         s_wtri_otk, s_wtri_isxy, s_wtri_single, 0, MAX_NTRI };
+                         s_wtri_otk, s_wtri_isxy, s_wtri_single, s_wtri_wbk, 0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
 /** @brief Append one float triangle to the current emit target, unless the near-plane cull drops it.
@@ -3686,6 +3694,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     O->special[O->n] = s_emit_special;
     O->otk[O->n] = s_emit_otk;
     O->single[O->n] = s_cur_single;
+    O->wbk[O->n] = s_cur_wbk;
     O->isxy[O->n][0] = a->iv.sx; O->isxy[O->n][1] = a->iv.sy;
     O->isxy[O->n][2] = b->iv.sx; O->isxy[O->n][3] = b->iv.sy;
     O->isxy[O->n][4] = c->iv.sx; O->isxy[O->n][5] = c->iv.sy;
@@ -3742,6 +3751,7 @@ void moby_simple_record(CPUState* cpu, uint32_t moby) {
     s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
     s_cur_screen = 0;
     s_cur_single = 0;
+    s_cur_wbk = -1;
     s_emit_fkey = 0u;
     s_emit_special = 0u;
 }
@@ -3767,6 +3777,10 @@ void moby_simple_project(const double p[3], float* sx, float* sy) {
     moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[0], p[1], p[2],
                         vzz, ofx, ofy, view, &x, &y);
     *sx = (float)x; *sy = (float)y;
+}
+
+void moby_simple_world_bucket(int w) {
+    s_cur_wbk = (int16_t)(w < 0 ? -1 : (w > INT16_MAX ? INT16_MAX : w));
 }
 
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out) {
@@ -4618,6 +4632,50 @@ static float           s_pre_clra[MAX_RECORDS];
 /* Where each record's triangles landed, for the ordered merge. */
 static struct { int worker, start, count; } s_pre_rec[MAX_RECORDS];
 
+/** @brief Give a record's emitted triangles the world ordering-table bucket the draw splices each face into.
+ *
+ * Every triangle of a face takes one value: the face's local bucket array
+ * entry (its bucket word's bucket plus the record's array offset) through
+ * moby_otk_splice_bucket with the splice the game's otkey_splice reads from
+ * the cull record. Triangles of a face with no bucket word, and every
+ * triangle of a record with no splice (no hook, no cull record address, no
+ * paint key, no filled entry), keep -1.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @param otk The record's paint key.
+ * @param ltop The highest local bucket array entry any face of the record fills, -1 for none.
+ * @param tri0 The record's first triangle in the current emit target. */
+static void moby_record_world_buckets(CPUState* cpu, const rec_meta* R,
+                                      const moby_otk_rec_t* otk, int ltop, int tri0) {
+    int wbase = 0, n = 0;
+    if (ltop < 0 || ltop >= MOBY_OTK_ARRAY_LIMIT || otk->row == MOBY_OTK_NONE ||
+        !moby_game.otkey_splice || !moby_game.otkey_splice(cpu, R->addr, &wbase, &n))
+        return;
+    wbase = moby_otk_depth_bucket(wbase);
+    mn_out* O = t_out;
+    for (int i = tri0; i < O->n; i++) {
+        int l = moby_otk_array_entry(otk, O->otk[i]);
+        if (l < 0) continue;
+        int w = moby_otk_splice_bucket(wbase, n, ltop, l);
+        O->wbk[i] = (int16_t)(w > INT16_MAX ? INT16_MAX : w);
+    }
+}
+
+/** @brief Whether a moby face's contest key is its world ordering-table bucket where the game's layout sorts by one ordering table.
+ *
+ * On where game_layout.terrain.slot_ot_contest is set, unless
+ * OPENPETE_MOBY_WORLD_KEY is set to a value starting with '0' (read once),
+ * which keeps the per-triangle mean-depth key.
+ * @return 1 when the world bucket keys the face, else 0. */
+static int moby_world_key_on(void) {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_MOBY_WORLD_KEY");
+        s_on = game_layout.terrain.slot_ot_contest && !(e && *e == '0');
+    }
+    return s_on;
+}
+
 /** @brief The bucket word of the prim a regular-walk face becomes to the draw, or -1.
  *
  * The draw's facing test runs on the GTE's integer SXY (proj_xy.iv) and
@@ -4796,6 +4854,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             if (dup) continue;
         }
         s_cur_moby_key = mob;     /* face identity for this record's tris */
+        s_cur_wbk = -1;
         s_cur_single = rec_single_bucket(R);
         s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + game_layout.moby.class_off) : 0; /* m_Class */
         s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + game_layout.moby.angle_off + 3u) : 0; /* og OT bias */
@@ -4903,6 +4962,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         else if (FC->align == 1) t_diag->align_hi++;
         else                     t_diag->desync++;
         const int rec_tri0 = t_out->n;   /* this record's first emitted triangle */
+        int ltop = -1;                   /* highest local bucket array entry the draw fills */
         for (int fi = 0; fi < FC->nfaces; fi++) {
             const wface_t* F = &FC->f[fi];
             int fresh = F->fresh, textured = F->textured;
@@ -4951,6 +5011,14 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                  * (.L800203B8 vs .L800203D0 -- bit0 strips carry either winding). */
                 if (F->bit0 ? (ncl1 != 0.0) : (ncl1 > 0.0)) emit_a = 1;
             }
+            /* The face's bucket word, from the draw's integer facing test: a
+             * face the float test drops can still fill the local bucket array,
+             * and the array's top entry places the whole record in the world
+             * ordering table (moby_record_world_buckets). */
+            uint64_t rt0 = rt_now();
+            int ot_bk = moby_face_otkey(&s_proj[base], F, p0, p1, p2, p3);
+            rt_add(RT_KEY, rt0, 1);
+            ltop = moby_otk_top_entry(&s_proj[base].otk, ot_bk, ltop);
             if (!emit_a && !emit_b) continue;
 
             /* per-vertex colour: cbase indexed by the cached w1 fields. DPCS-faded
@@ -5212,9 +5280,6 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                             bpp, (int)abr, (int)F->blendbit);
             }
 
-            uint64_t rt0 = rt_now();
-            int ot_bk = moby_face_otkey(&s_proj[base], F, p0, p1, p2, p3);
-            rt_add(RT_KEY, rt0, 1);
             if (emit_a) {
                 s_emit_otk = moby_otk_tri(ot_bk, MOBY_OTK_TRI_A);
                 s_emit_fkey = PACK_FKEY(i0,i1,i2);
@@ -5239,6 +5304,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 }
             }
         }
+        moby_record_world_buckets(cpu, R, &s_proj[base].otk, ltop, rec_tri0);
         moby_coincident_pull(t_out, rec_tri0);
     }
 }
@@ -5387,10 +5453,11 @@ static int walk_slabs_ready(int nw) {
         O->otk    = (int32_t*) malloc(sizeof(int32_t) * MAX_NTRI);
         O->isxy   = (int16_t (*)[6])malloc(sizeof(int16_t[6]) * MAX_NTRI);
         O->single = (uint8_t*) malloc(MAX_NTRI);
+        O->wbk    = (int16_t*) malloc(sizeof(int16_t) * MAX_NTRI);
         O->cap = MAX_NTRI;
         if (!O->tri || !O->fkey || !O->moby || !O->cls || !O->ui || !O->front ||
             !O->mangle || !O->dofs || !O->special || !O->otk || !O->isxy ||
-            !O->single) return 0;
+            !O->single || !O->wbk) return 0;
     }
     return 1;
 }
@@ -5460,6 +5527,7 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         memcpy(&s_wtri_otk[s_gout.n],    &O->otk[st],    (size_t)n * sizeof(int32_t));
         memcpy(&s_wtri_isxy[s_gout.n],   &O->isxy[st],   (size_t)n * sizeof(int16_t[6]));
         memcpy(&s_wtri_single[s_gout.n], &O->single[st], (size_t)n);
+        memcpy(&s_wtri_wbk[s_gout.n],    &O->wbk[st],    (size_t)n * sizeof(int16_t));
         s_gout.n += n;
     }
     if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
@@ -6844,7 +6912,7 @@ static void native_rank_build(void) {
 #define RC_SIZE (1 << RC_BITS)
 /* An entry belongs to its table only while its generation is the table's, so
  * a new epoch empties a table by giving it a fresh generation. */
-typedef struct { uint32_t moby, fkey; int32_t rank; uint32_t gen : 31, cont : 1; } rc_ent;
+typedef struct { uint32_t moby, fkey; int32_t rank; uint32_t gen : 31, cont : 1; int16_t wbk; } rc_ent;
 typedef struct {
     rc_ent   e[RC_SIZE];
     uint32_t gen;     /* generation of this table's live entries */
@@ -6915,27 +6983,32 @@ static rc_tab* rank_carry_table_for(uint32_t ep, unsigned scene) {
     rank_carry_empty(t, ep, scene);
     return t;
 }
-/** @brief Store this feed's face ranks in the carry table of its scene build.
+/** @brief Store this feed's face ranks and world buckets in the carry table of its scene build.
  *
  * Runs for every feed that is not a sub-tick re-extract, runahead's
  * speculated builds included: the ranks come from the host walk of the build
  * the canonical present shows, not from guest scratch a later tick reuses.
  * The table is the one rank_carry_table_for gives the current canonical epoch
- * and native scene build. For each s_gout triangle with a positive s_nrank
- * and a nonzero moby it inserts or replaces the entry keyed by (moby, face
- * key) with the rank and the contest flag, probing linearly from rc_hash.
- * Once the table holds three quarters of RC_SIZE keys every remaining
- * triangle is skipped, replacements included. */
+ * and native scene build. For each s_gout triangle with a nonzero moby and a
+ * positive s_nrank or a world bucket (s_wtri_wbk) it inserts or replaces the
+ * entry keyed by (moby, face key) with the rank and the contest flag (0 and
+ * 0 when the rank is not positive, which reads back as a miss) and the world
+ * bucket, probing linearly from rc_hash. Once the table holds three quarters
+ * of RC_SIZE keys every remaining triangle is skipped, replacements
+ * included. */
 static void rank_carry_store(void) {
     rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp(), openpete_native_scene_frame());
     for (int i = 0; i < s_gout.n; i++) {
-        if (s_nrank[i] <= 0 || !s_wtri_moby[i] || t->n >= RC_SIZE - (RC_SIZE >> 2)) continue;
+        if ((s_nrank[i] <= 0 && s_wtri_wbk[i] < 0) || !s_wtri_moby[i] ||
+            t->n >= RC_SIZE - (RC_SIZE >> 2)) continue;
         uint32_t h = rc_hash(s_wtri_moby[i], s_wtri_fkey[i]);
         while (t->e[h].gen == t->gen &&
                !(t->e[h].moby == s_wtri_moby[i] && t->e[h].fkey == s_wtri_fkey[i]))
             h = (h + 1) & (RC_SIZE - 1);
         if (t->e[h].gen != t->gen) t->n++;
-        t->e[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], s_nrank[i], t->gen, s_wtri_contest[i] };
+        const int ranked = s_nrank[i] > 0;
+        t->e[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], ranked ? s_nrank[i] : 0, t->gen,
+                            ranked ? s_wtri_contest[i] : 0u, s_wtri_wbk[i] };
     }
 }
 /** @brief Look up a face's carry entry in one table.
@@ -6969,13 +7042,14 @@ static const rc_tab* rank_carry_endpoint(void) {
     s_rc_prev_used = 1;
     return (prev->valid && prev->epoch + 1u == latest->epoch) ? prev : NULL;
 }
-/** @brief Give this present's triangles the ranks and contest flags of its carry table.
+/** @brief Give this present's triangles the ranks, contest flags and world buckets of its carry table.
  *
  * Each s_gout triangle takes the entry of its (moby, face key) from
  * rank_carry_endpoint's table into s_nrank and s_wtri_contest, and 0 for both
- * when there is no table, no moby, or no entry. Counts triangles with a
- * positive rank into s_rc_hit and the others into s_rc_miss, and empties the
- * intersection pair list (s_ip_n). */
+ * when there is no table, no moby, or no entry. A triangle the walk left with
+ * no world bucket takes the entry's. Counts triangles with a positive rank
+ * into s_rc_hit and the others into s_rc_miss, and empties the intersection
+ * pair list (s_ip_n). */
 static void rank_carry_apply(void) {
     const rc_tab* t = rank_carry_endpoint();
     for (int i = 0; i < s_gout.n; i++) {
@@ -6983,6 +7057,7 @@ static void rank_carry_apply(void) {
                                                  : NULL;
         s_nrank[i] = e ? e->rank : 0;
         s_wtri_contest[i] = e ? e->cont : 0;
+        if (e && s_wtri_wbk[i] < 0) s_wtri_wbk[i] = e->wbk;
         if (s_nrank[i] > 0) s_rc_hit++; else s_rc_miss++;
     }
     s_ip_n = 0;
@@ -7316,6 +7391,24 @@ static uint32_t moby_scene_identity(uint32_t moby)
     return moby ? ((moby & 0x1FFFFCu) >> 2) + 1u : 0u;
 }
 
+/** @brief The ordering-table key a walk triangle contests the terrain with, in world units.
+ *
+ * Where moby_world_key_on holds and the triangle carries a world bucket
+ * (s_wtri_wbk), the middle of that bucket: every triangle of a face shares
+ * it, as the draw links each face once. Otherwise the mean of the three
+ * vertices' true view-Z less the authored m_DepthOffset (OPENPETE_OT_SLOT_WORLD
+ * per unit), floored at 1 since the game floors its slot at 0.
+ * @param i The walk triangle's index.
+ * @return The key. */
+static double moby_tri_contest_key(int i) {
+    if (s_wtri_wbk[i] >= 0 && moby_world_key_on())
+        return OPENPETE_OT_SLOT_WORLD * (double)s_wtri_wbk[i] + 0.5 * OPENPETE_OT_SLOT_WORLD;
+    const double mean = ((double)s_wtri[i].v[0].tvz + (double)s_wtri[i].v[1].tvz
+                       + (double)s_wtri[i].v[2].tvz) / 3.0;
+    const double key = mean - OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i];
+    return key < 1.0 ? 1.0 : key;
+}
+
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
  * Does nothing unless the moby render path is selected. Appends to the scene
@@ -7378,7 +7471,9 @@ static void push_scene_moby_tris(void) {
          * each moby face at its average-Z slot minus the authored
          * m_DepthOffset (the angle word's top byte, which the cull packs into record
          * w0 bits 16-23 / the shaded walk's rot>>24) - an ordering KEY,
-         * never stored depth. The face's ABSOLUTE key rasters into the
+         * never stored depth. Where the scene sorts by one ordering table
+         * (S2/S3) the face's key is the world bucket the draw splices it
+         * into (moby_tri_contest_key). The face's ABSOLUTE key rasters into the
          * MOBY key image (set 1, split from the terrain keys), where the
          * contest scopes the yield by the covering face's own TRUE view-Z
          * (MOBY_TRUESCOPE, psx_scene_key.frag): keyed terrain within the
@@ -7400,12 +7495,7 @@ static void push_scene_moby_tris(void) {
           if (moby_face_key_on() && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
               !s_wtri_mangle[i] &&
               s_wtri_moby[i] && openpete_native_key_resolve_on()) {
-              int dofs = (int)s_wtri_dofs[i];
-              double mean = ((double)s_wtri[i].v[0].tvz + (double)s_wtri[i].v[1].tvz
-                           + (double)s_wtri[i].v[2].tvz) / 3.0;
-              double key = mean - OPENPETE_OT_SLOT_WORLD * (double)dofs;
-              if (key < 1.0) key = 1.0;      /* og floors the slot at 0 */
-              t.koff = (float)(key + 0.5);
+              t.koff = (float)(moby_tri_contest_key(i) + 0.5);
               /* Embedded-PROP classes: rendered whole from every angle. */
               t.prop = moby_class_is_prop(s_wtri_cls[i]);
           } }
@@ -10349,6 +10439,7 @@ int moby_native_simple_fresh(void) {
 static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
     (void)addr;
     s_simple_ntri = moby_game.simple_pass(cpu);
+    s_cur_wbk = -1;
     extern int openpete_speculative;
     if (!openpete_speculative) {
         s_canon_simple_valid = 1;
@@ -12072,6 +12163,7 @@ static void moby_reextract_body(CPUState* cpu) {
         moby_view_build(cpu);
         s_gout.n = 0;
         moby_game.simple_replay(cpu);
+        s_cur_wbk = -1;
         sim_walk = s_gout.n;
         push_scene_moby(cpu);
     }

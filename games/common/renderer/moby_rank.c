@@ -147,7 +147,9 @@ static const otk_spec_t k_otk_rows[MOBY_OTK_ROWS] = {
      * adds that many buckets before the shift by 5, dropped when negative
      * (4436, 4493-4495, 4584, 4636-4638). The facing test: 4420-4470,
      * 4584-4605; the array links highest bucket first into the record's world
-     * bucket (4956-4974). */
+     * bucket (4956-4974) when the moby's colour index (Moby+0x54) is non-zero,
+     * and is otherwise spliced down from it eight entries per world bucket
+     * (S2 0x80047ED0-0x80047F88, moby_otk_splice_bucket with shift 2). */
     [MOBY_OTK_S23_SIMPLE] = {
         .tri_w = { 2, 4, 2 }, .quad_w = { 2, 2, 2, 2 },
         .base_form = OTK_BASE_X4, .base_c = 0x400, .base_min = 1,
@@ -178,15 +180,56 @@ void moby_otk_record(moby_otk_row_t row, int a, int trz, moby_otk_rec_t* out)
     out->trz = trz;
     out->base = 0;
     out->shift = 0;
+    out->aoff = 0;
     if (row <= MOBY_OTK_NONE || row >= MOBY_OTK_ROWS) { out->row = MOBY_OTK_NONE; return; }
     const otk_spec_t* s = &k_otk_rows[row];
     int sa = s->base_by_a ? (a & 31) : 0;
     int64_t d = (int64_t)trz - ((int64_t)s->base_c << sa);
     int64_t b = s->base_form == OTK_BASE_X4 ? 4 * d
                                             : 8 * (int64_t)(int16_t)(int32_t)(d >> 1);
+    out->shift = (int8_t)(((s->shift_by_a ? a : 0) + s->shift_add) & 31);
+    /* A base <= 0 moves the array base up by (-base) >> shift entries
+     * (S2 mobydraw.s 0x80044DD4-0x80044DF8: neg, srlv, sll 3). */
+    if (b <= 0) out->aoff = (int32_t)((uint32_t)(-b) >> out->shift);
     if (b <= 0) b = s->base_min;
     out->base = b > INT32_MAX ? INT32_MAX : (int32_t)b;
-    out->shift = (int8_t)(((s->shift_by_a ? a : 0) + s->shift_add) & 31);
+}
+
+int moby_otk_array_entry(const moby_otk_rec_t* r, int32_t otk)
+{
+    return otk < 0 ? -1 : (int)MOBY_OTK_BUCKET(otk) + r->aoff;
+}
+
+int moby_otk_top_entry(const moby_otk_rec_t* r, int32_t otk, int top)
+{
+    const int l = moby_otk_array_entry(r, otk);
+    return l > top ? l : top;
+}
+
+int moby_otk_world_key(int key)
+{
+    return key >= 0x110 ? key + 0x20 : key;
+}
+
+int moby_otk_depth_bucket(int w)
+{
+    return w >= 0x130 ? w - 0x20 : w;
+}
+
+int moby_otk_splice_bucket(int wbase, int n, int ltop, int l)
+{
+    /* at = wbase*8 - (((0x400 - 8*ltop) << n) >> 8)*8 - 8, floored at 0
+     * (sllv, sra 8, sll 3, addi -8, bgez). */
+    int64_t d = ((int64_t)(0x400 - 8 * ltop) * ((int64_t)1 << (n & 31))) >> 8;
+    int64_t w0 = (int64_t)wbase - d - 1;
+    if (w0 < 0) w0 = 0;
+    /* Each world bucket takes a run of 0x100 >> n bytes of the array,
+     * counted down from the top entry; a run shorter than one entry is
+     * treated as one entry. */
+    int run = (n >= 0 && n < 5) ? (0x100 >> n) : 8;
+    int64_t c = ((int64_t)8 * (ltop - l)) / run;
+    int64_t w = w0 - c;
+    return w < 0 ? 0 : (int)(w > INT32_MAX ? INT32_MAX : w);
 }
 
 /* ---- integer RTPS / NCLIP mirror -------------------------------------------- */

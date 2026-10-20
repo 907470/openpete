@@ -270,7 +270,7 @@ int moby_native_simple_fresh(void);
  *
  * Sets the current record's moby, class, HUD tag (static or UI address
  * range) and cutscene-actor front flag, and clears the screen-space origin
- * and the per-face emit keys.
+ * and the per-face emit keys and world bucket.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address, or 0. */
 void moby_simple_record(struct CPUState* cpu, uint32_t moby);
@@ -327,6 +327,13 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
  * @param trz The GTE TRZ the draw loaded.
  * @param out Receives the paint key. */
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out);
+/** @brief The world ordering-table bucket every prim of the current second-kind record is linked into.
+ *
+ * Each following triangle of the record carries it as its contest key's
+ * bucket (moby_record_world_buckets for the animated kind); moby_simple_record
+ * clears it.
+ * @param w The bucket, or -1 for none. */
+void moby_simple_world_bucket(int w);
 /** @brief One model-space vertex's integer RTPS under rotation R and translation tr, through the current record's view.
  *
  * Nothing is written when r carries no key. The projection distance is the

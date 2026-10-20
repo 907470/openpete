@@ -340,6 +340,12 @@ typedef struct moby_game {
     moby_otk_row_t specular_otkey_row;
     moby_otk_row_t shaded_otkey_row;
     void (*shaded_otkey_face)(uint32_t w0, uint32_t w1, moby_otk_face_t* f);
+    /* `otkey_splice` reads the world ordering-table splice of one animated
+     * cull record: the world bucket its local bucket array is spliced from
+     * (`wbase`) and the shift `n` that sets 0x100 >> n array bytes per world
+     * bucket (moby_otk_splice_bucket). Returns 0 when the record carries
+     * none. NULL: the game's moby faces keep their per-triangle contest key. */
+    int (*otkey_splice)(CPUState* cpu, uint32_t rec, int* wbase, int* n);
 
     /* ---- identity ----------------------------------------------------- */
     /* The key the sub-tick interp ring stores a moby's prev/curr snapshots

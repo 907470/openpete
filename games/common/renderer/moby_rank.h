@@ -59,12 +59,16 @@ typedef enum moby_otk_row {
 int moby_otk_row_single_bucket(moby_otk_row_t row);
 
 /* One record's key parameters: `base` the depth base the draw subtracts,
- * `shift` the bucket shift, `trz` the GTE TRZ it loaded. */
+ * `shift` the bucket shift, `trz` the GTE TRZ it loaded, `aoff` the local
+ * buckets the draw moves its bucket array base up by when the depth base came
+ * out <= 0 (the base is then replaced by base_min, and a face's array entry is
+ * its bucket plus `aoff`). */
 typedef struct moby_otk_rec {
     int8_t  row;
     int8_t  shift;
     int32_t base;
     int32_t trz;
+    int32_t aoff;
 } moby_otk_rec_t;
 
 /** @brief Fills one record's key parameters for a row of the paint-key table.
@@ -135,6 +139,62 @@ typedef struct moby_otk_face {
  *         draw culls the face or drops the prim from its table, or the record's
  *         row is MOBY_OTK_NONE. */
 int moby_otk_face_bucket(const moby_otk_rec_t* r, const moby_otk_face_t* f);
+
+/** @brief The world ordering-table bucket the draw splices one local bucket array entry into.
+ *
+ * The record's local bucket array holds 0x80 eight-byte entries from the
+ * array base; `ltop` is the highest entry any face of the record filled. The
+ * splice (S2 mobydraw.s 0x8004539C-0x80045488, S3 func_80031124's copy of
+ * it) starts at world bucket wbase - ((8 * (0x80 - ltop)) << n >> 8) - 1,
+ * floored at 0, and walks the array down from `ltop` in runs of 0x100 >> n
+ * bytes, one world bucket nearer per run, staying at bucket 0 once it
+ * reaches it.
+ * @param wbase The record's world bucket base (cull record +0x18).
+ * @param n The record's splice shift (cull record +0x1B), 0..5.
+ * @param ltop The highest filled array entry.
+ * @param l The entry, at most `ltop`.
+ * @return The world bucket, >= 0. */
+int moby_otk_splice_bucket(int wbase, int n, int ltop, int l);
+
+/* The regular draw keeps its local bucket array 0x2000 bytes below its record
+ * list (S2 mobydraw.s 0x8004453C-0x80044548: the list at GTE data 2 + 0x2000,
+ * the array at GTE data 2), so an entry at 0x400 or beyond lands on the list:
+ * no record the draw keeps fills one, and a record that would (one revealed
+ * past the cull's range, whose depth base wraps) has no splice to mirror. */
+#define MOBY_OTK_ARRAY_LIMIT 0x400
+
+/** @brief The local bucket array entry a face's prim fills: its bucket plus the record's array offset.
+ *
+ * @param r The record's key parameters.
+ * @param otk The face's bucket word.
+ * @return The entry, or -1 when the word is negative (the draw keeps no prim of the face). */
+int moby_otk_array_entry(const moby_otk_rec_t* r, int32_t otk);
+
+/** @brief The record's highest filled local bucket array entry once one more face is keyed.
+ *
+ * The splice starts from that entry (moby_otk_splice_bucket).
+ * @param r The record's key parameters.
+ * @param otk The face's bucket word; a negative word fills nothing.
+ * @param top The highest entry before this face, -1 for none.
+ * @return The larger of `top` and the face's entry. */
+int moby_otk_top_entry(const moby_otk_rec_t* r, int32_t otk, int top);
+
+/** @brief The world ordering-table bucket of a record's depth key: the key, moved 0x20 buckets on at 0x110 and beyond.
+ *
+ * Both S2/S3 moby draws leave world buckets 0x110-0x12F unused that way: the
+ * animated cull (mobydraw.s 0x80043FC4-0x80043FD0) and the second kind's
+ * draw (0x800474FC-0x80047508).
+ * @param key The record's depth key, >= 0.
+ * @return The world bucket. */
+int moby_otk_world_key(int key);
+
+/** @brief A world bucket in the depth scale of the terrain's contest keys: moby_otk_world_key undone.
+ *
+ * The terrain's keys carry no such move, so a bucket at 0x130 or beyond is
+ * taken 0x20 buckets back before it contests them.
+ * @param w The world bucket.
+ * @return The bucket on the depth scale. */
+int moby_otk_depth_bucket(int w);
 
 /* A walk triangle's bucket word: its face's bucket word, with MOBY_OTK_Q2 set
  * on the second triangle of a prim whose first triangle carries the same

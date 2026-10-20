@@ -656,6 +656,25 @@ static int s23_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
     return 1;
 }
 
+/** @brief The world ordering-table splice the regular draw reads from an animated cull record.
+ *
+ * The cull stores the world bucket base at +0x18 (halfword) and the splice
+ * shift at +0x1B (mobydraw.s 0x80043FA4-0x8004402C); the draw loads them into
+ * GTE control 9 and 11 (0x80044DA4-0x80044DC8) and splices from them
+ * (0x8004539C).
+ * @param cpu The guest CPU state, read only.
+ * @param rec The cull record's address.
+ * @param wbase Receives the world bucket base.
+ * @param n Receives the splice shift.
+ * @return 1, or 0 when `rec` is not a KSEG0 address. */
+static int s23_otkey_splice(CPUState* cpu, uint32_t rec, int* wbase, int* n) {
+    if (rec < 0x80000000u) return 0;
+    const uint32_t w = moby_rec_word(cpu, rec + 0x18u);
+    *wbase = (int)(w & 0xFFFFu);
+    *n = (int)(w >> 24);
+    return 1;
+}
+
 /** @brief Whether a model-table entry is an animated model.
  *
  * A KSEG0 pointer is an animated model; a KUSEG one is the second kind, drawn
@@ -1357,37 +1376,51 @@ static int s23_abr_in_force(const int32_t* bucket, int i) {
     return best < 0 ? (int)S23_RECORD_TPAGE_ABR : s_abr_face[best].tex_abr;
 }
 
-/** @brief Resolve each semi-transparent face's blend class from the ABR in force, then emit the record's held triangles.
+/** @brief Resolve each semi-transparent face's blend class from the ABR in force, then emit the record's held triangles with their world buckets.
  *
  * The buckets come from the draw's own integer RTPS and key arithmetic for
  * this record (moby_otk_record, moby_otk_rtps), evaluated here whether or not
  * the paint rank is on, so the verdict is the same on every present. The
  * screen offset does not enter NCLIP or the key; H is the GTE's.
+ *
+ * Each held triangle carries the world ordering-table bucket the draw links
+ * its face into (moby_simple_world_bucket). A record whose Moby+0x54 colour
+ * index is non-zero links every prim into the world bucket `wkey`
+ * (mobydraw.s 0x80047F8C-0x80048014; the index clears the sign bit of $t9 at
+ * 0x8004771C-0x80047720, which selects that branch at 0x80047EC4); one whose
+ * index is zero splices its local bucket array down from `wkey` in runs of
+ * eight entries (0x80047ED0-0x80047F88), moby_otk_splice_bucket with shift 2.
+ * A face the draw drops keeps no bucket.
  * @param cpu The guest CPU state, read only.
  * @param nv The record's vertex count.
  * @param vmod The record's model-space vertices.
  * @param itr The integer translation the draw loaded.
  * @param R The composed rotation.
+ * @param wkey The record's world bucket on the depth scale: its ordering-table key without the draw's
+ *        move of 0x20 buckets at 0x110 and beyond (moby_otk_depth_bucket).
+ * @param single 1 when the record's colour index is non-zero.
  * @return The number of triangles emitted. */
 static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
-                         const int itr[3], const int R[3][3]) {
+                         const int itr[3], const int R[3][3], int wkey, int single) {
+    static moby_otk_vert_t kv[S23_SIMPLE_VERTS];
+    static int32_t bucket[S23_SIMPLE_FACES];
+    ngte_view view;
+    ngte_view_build(cpu, &view);
+    moby_otk_rec_t ork[2];
+    moby_otk_record(MOBY_OTK_S23_SIMPLE, 0, itr[2], &ork[0]);
+    moby_otk_record(MOBY_OTK_S23_SIMPLE_FLAT, 0, itr[2], &ork[1]);
+    for (int k = 0; k < nv; k++)
+        moby_otk_rtps(itr, R, vmod[k][0], vmod[k][1], vmod[k][2],
+                      view.ofx, view.ofy, (int)view.H_canon, &kv[k]);
+    int ltop = -1;
+    for (int j = 0; j < s_abr_face_n; j++) {
+        const s23_abr_face* F = &s_abr_face[j];
+        const int32_t b = s23_simple_face_otk(ork, kv, F->idx, F->tri, F->f0, F->f1);
+        bucket[j] = b < 0 ? -1 : MOBY_OTK_BUCKET(b);
+        ltop = moby_otk_top_entry(&ork[0], b, ltop);
+    }
     if (s_abr_semi_n > 0) {
-        static moby_otk_vert_t kv[S23_SIMPLE_VERTS];
-        static int32_t bucket[S23_SIMPLE_FACES];
         static int8_t  abr[S23_SIMPLE_FACES];
-        ngte_view view;
-        ngte_view_build(cpu, &view);
-        moby_otk_rec_t ork[2];
-        moby_otk_record(MOBY_OTK_S23_SIMPLE, 0, itr[2], &ork[0]);
-        moby_otk_record(MOBY_OTK_S23_SIMPLE_FLAT, 0, itr[2], &ork[1]);
-        for (int k = 0; k < nv; k++)
-            moby_otk_rtps(itr, R, vmod[k][0], vmod[k][1], vmod[k][2],
-                          view.ofx, view.ofy, (int)view.H_canon, &kv[k]);
-        for (int j = 0; j < s_abr_face_n; j++) {
-            const s23_abr_face* F = &s_abr_face[j];
-            const int32_t b = s23_simple_face_otk(ork, kv, F->idx, F->tri, F->f0, F->f1);
-            bucket[j] = b < 0 ? -1 : MOBY_OTK_BUCKET(b);
-        }
         for (int j = 0; j < s_abr_face_n; j++)
             abr[j] = s_abr_face[j].semi ? (int8_t)s23_abr_in_force(bucket, j) : 0;
         for (int t = 0; t < s_held_n; t++)
@@ -1396,6 +1429,10 @@ static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
     }
     for (int t = 0; t < s_held_n; t++) {
         const s23_held_tri* T = &s_held[t];
+        const int32_t b = bucket[T->face];
+        moby_simple_world_bucket(b < 0 ? -1 : single ? wkey
+                                 : moby_otk_splice_bucket(wkey, 2, ltop,
+                                                          moby_otk_array_entry(&ork[0], b)));
         moby_simple_tri(T->p, T->rgb, T->u, T->v, T->textured, T->tpx, T->tpy,
                         T->clx, T->cly, T->bpp, T->blend, T->fkey, T->otk, T->iv);
     }
@@ -1722,7 +1759,8 @@ static int s23_simple_decode(CPUState* cpu) {
             }
             fp += adv;
         }
-        emitted += s23_abr_flush(cpu, nv, (const double (*)[3])vmod, itr, R);
+        emitted += s23_abr_flush(cpu, nv, (const double (*)[3])vmod, itr, R,
+                                 key, mcol != 0u);
     }
     return emitted;
 }
@@ -2033,6 +2071,17 @@ static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reas
     const int key = (int)s23_sat((((int64_t)tr[2] - ((int64_t)0x200 << (int)s23_sat(span, 0, 30))) >> 1),
                                  -32768, 32767);
     s23_write_anim_record(w, &f, moby, colour, frame_a, patch, tier, key, tr);
+    /* The world ordering-table splice at +0x18: the bucket base from the
+     * depth before the rescale less the moby's depth offset (the angle
+     * word's top byte), floored at 0 and moved 0x20 buckets on at 0x110 and
+     * beyond; +0x1A the span, +0x1B the span plus the scale byte
+     * (mobydraw.s 0x80043FA4-0x8004402C). */
+    const int dofs = (int)(int8_t)(cpu->read_word(moby + game_layout.moby.angle_off) >> 24);
+    int wbase = (int)((((int64_t)f.centre[2] * 4) >> 7) - dofs);
+    wbase = moby_otk_world_key(wbase < 0 ? 0 : wbase);
+    const int scale = (int)(cpu->read_byte(f.header + game_layout.moby.anim_scale_off) & 0xFFu);
+    w[0x18u / 4u] = (uint32_t)(wbase & 0xFFFF) | ((uint32_t)(span & 0xFF) << 16)
+                  | ((uint32_t)((scale + span) & 0xFF) << 24);
     *why = MOBY_REVEAL_OK;
     return 1;
 }
@@ -2244,6 +2293,7 @@ const moby_game_t moby_game_spyro23 = {
     .special_face      = s23_special_face,
     .material_tint     = s23_material_tint,
     .otkey_record      = s23_otkey_record,
+    .otkey_splice      = s23_otkey_splice,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so
      * nothing the host widens may reach it and the walk feeds the records the
      * cull queued, no more. */
