@@ -1029,9 +1029,13 @@ static double reveal_lateral_margin(CPUState* cpu, uint32_t header, double rr,
  * Returns vertex count. The caller set-matches these vs the emitted prims. */
 typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  float ex, ey, ez; float tvz;
+                 float kvz;            /* key depth: vz before the tie pull and the near-floor lift */
                  moby_otk_vert_t iv;   /* the draw's integer RTPS output (paint key) */
                  moby_otk_rec_t otk;   /* the record's paint key; first vertex only */
                } proj_xy;  /* vz=view-Z; rec=source record (diag);
+                 kvz = the written depth at the true distance (size correction
+                 and GPF depth restore applied) before the one-slot tie pull and
+                 the near-floor lift, the depth a face's true-depth key averages;
                  unr = this vertex fell in the GTE divide-overflow regime (see
                  moby_gte_near_fixup); sx/sy are then the hardware-clamped pair;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
@@ -1659,6 +1663,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
          * pairs og calls a tie. */
         if (ot_centre > 0.0) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
         if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
+        out[i].kvz = (float)((vzz + vz_bias) * (double)(1 << ds) * depth_k);
         out[i].vz = (float)fvz; out[i].sat = sat; out[i].unr = unr;
         moby_otk_vertex(&otr, itr, M, vx, vy, vz, v->ofx, v->ofy, (int)v->H_canon, &out[i]);
         /* Perspective W = the view-Z the SCREEN PROJECTION divided by, so it
@@ -3351,10 +3356,11 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
  * jitter-free (exact word0 indices) where a screen-proximity match against
  * the captured prims would jitter. */
 typedef struct { float sx, sy, vz; int u, v; uint32_t rgb;
-                 float ex, ey, ez; float tvz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input;
+                 float ex, ey, ez; float tvz; float kvz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input;
                  tvz = the same vertex's UNSHIFTED view-Z, the perspective W (see
                  openpete_scene_vert.pvz): vz carries the OT-slot pull, which can
-                 reach 16256 world units on a saturated authored bias. */
+                 reach 16256 world units on a saturated authored bias.
+                 kvz = the vertex's key depth (proj_xy.kvz). */
 typedef struct {
     ntri_vert v[3];
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
@@ -3707,9 +3713,9 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     s_emit_otk = -1;
     O->cls[O->n] = s_cur_moby_cls;            /* provenance tag for mod shaders */
     ntri_t* t = &O->tri[O->n++];
-    t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
-    t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz};
-    t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez, c->tvz};
+    t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz, a->kvz};
+    t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz, b->kvz};
+    t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez, c->tvz, c->kvz};
     t->textured=tex;t->tpage_x=tpx;t->tpage_y=tpy;t->clut_x=clx;t->clut_y=cly;t->bpp=bpp;t->blend=blend;
     t->tmix = s_emit_tmix;
     s_emit_tmix = 0;
@@ -3819,7 +3825,7 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
         int unr = moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[k][0], p[k][1], p[k][2],
                                       vzz, ofx, ofy, view, &sx, &sy);
         q[k].sx = (float)sx; q[k].sy = (float)sy;
-        q[k].vz = (float)vzz; q[k].tvz = (float)vzz;
+        q[k].vz = (float)vzz; q[k].tvz = (float)vzz; q[k].kvz = (float)vzz;
         q[k].sat = sat; q[k].unr = unr; q[k].rec = -1;
         q[k].ex = q[k].ey = q[k].ez = 0.0f;
         if (iv) q[k].iv = *iv[k];
@@ -7397,22 +7403,36 @@ static uint32_t moby_scene_identity(uint32_t moby)
     return moby ? ((moby & 0x1FFFFCu) >> 2) + 1u : 0u;
 }
 
+/** @brief The true-depth key of a walk triangle, in world units.
+ *
+ * The mean of the three vertices' key depths (ntri_vert.kvz: the written
+ * depth at the true distance, a sized record's size correction and a GPF
+ * record's depth restore applied, before the tie pull and the near-floor
+ * lift) less the authored m_DepthOffset (OPENPETE_OT_SLOT_WORLD per unit),
+ * floored at 1 since the game floors its slot at 0. The projection W (tvz)
+ * is not used: for a sized or GPF record it is the scaled projection's
+ * depth, not the distance the face is drawn at.
+ * @param i The walk triangle's index.
+ * @return The key. */
+static double moby_tri_true_key(int i) {
+    const double mean = ((double)s_wtri[i].v[0].kvz + (double)s_wtri[i].v[1].kvz
+                       + (double)s_wtri[i].v[2].kvz) / 3.0;
+    const double key = mean - OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i];
+    return key < 1.0 ? 1.0 : key;
+}
+
 /** @brief The ordering-table key a walk triangle contests the terrain with, in world units.
  *
  * Where moby_world_key_on holds and the triangle carries a world bucket
  * (s_wtri_wbk), the middle of that bucket: every triangle of a face shares
- * it, as the draw links each face once. Otherwise the mean of the three
- * vertices' true view-Z less the authored m_DepthOffset (OPENPETE_OT_SLOT_WORLD
- * per unit), floored at 1 since the game floors its slot at 0.
+ * it, as the draw links each face once. Otherwise the true-depth key
+ * (moby_tri_true_key).
  * @param i The walk triangle's index.
  * @return The key. */
 static double moby_tri_contest_key(int i) {
     if (s_wtri_wbk[i] >= 0 && moby_world_key_on())
         return OPENPETE_OT_SLOT_WORLD * (double)s_wtri_wbk[i] + 0.5 * OPENPETE_OT_SLOT_WORLD;
-    const double mean = ((double)s_wtri[i].v[0].tvz + (double)s_wtri[i].v[1].tvz
-                       + (double)s_wtri[i].v[2].tvz) / 3.0;
-    const double key = mean - OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i];
-    return key < 1.0 ? 1.0 : key;
+    return moby_tri_true_key(i);
 }
 
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
@@ -9659,6 +9679,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat; out[n].unr=unr;
             out[n].tvz=(float)(vzz*vz_scale);            /* pre-bias: the perspective W */
+            out[n].kvz=out[n].tvz;                        /* key depth: no pull, no lift */
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
             moby_otk_vertex(&sk.rec, sk.tr, M, VX, VY, VZ, sk.ofx, sk.ofy, (int)rv->H_canon,
                             &out[n]);
@@ -9965,6 +9986,7 @@ static proj_xy metal_plane_vertex(const metal_tri* t, mclip_pt p) {
     o.sx = (float)p.x; o.sy = (float)p.y;
     o.vz  = (float)(1.0 / (wa / a->vz + wb / b->vz + wc / c->vz));
     o.tvz = (float)(1.0 / (wa / a->tvz + wb / b->tvz + wc / c->tvz));
+    o.kvz = (float)(1.0 / (wa / a->kvz + wb / b->kvz + wc / c->kvz));
     o.ex = (float)(wa * a->ex + wb * b->ex + wc * c->ex);
     o.ey = (float)(wa * a->ey + wb * b->ey + wc * c->ey);
     o.ez = (float)(wa * a->ez + wb * b->ez + wc * c->ez);
