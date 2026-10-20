@@ -3,12 +3,11 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: e6dcb3da8d9781c47fe88d98f6ca5e84737f50c7
+# head: 46b7b3d9a9c1aa129959468544c06c3b981778a7
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
-core/diag/psxtrace_schedule.c	-Wunused-but-set-variable	fe	variable 'left' set but not used	1	
 core/host/memcard.c	-Wformat-truncation=	me	openpete_memcard_startup_check	1	
 core/host/music_override.c	-Wformat-truncation=	me	music_override_init	1	
 core/host/sfx_pack.c	-Wformat-truncation=	me	rescan	2	

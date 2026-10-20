@@ -455,8 +455,8 @@ int openpete_sched_cdsync(int mode, uint32_t ra, int32_t* ret_out, uint32_t* tar
     if (!s_active || !s_cs || s_failed) return 0;
     const uint32_t cur_rec = sched_cur_rec();
     while (s_cs_next < s_cs_n && s_cs[s_cs_next].rec < cur_rec) { s_cs_unmade += s_cs_left ? s_cs_left : s_cs[s_cs_next].n; s_cs_next++; s_cs_left = 0; }
-    uint32_t k = s_cs_next; uint32_t left = s_cs_left;
-    while (k < s_cs_n && s_cs[k].rec == cur_rec && (s_cs[k].mode != mode || s_cs[k].ra != ra)) { k++; left = 0; }
+    uint32_t k = s_cs_next;
+    while (k < s_cs_n && s_cs[k].rec == cur_rec && (s_cs[k].mode != mode || s_cs[k].ra != ra)) k++;
     if (k >= s_cs_n || s_cs[k].rec != cur_rec) return 0;
     if (k != s_cs_next) { s_cs_unmade += s_cs_left ? s_cs_left : 0; s_cs_next = k; s_cs_left = 0; }
     if (!s_cs_left) s_cs_left = s_cs[k].n;
