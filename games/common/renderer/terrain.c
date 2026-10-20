@@ -3965,7 +3965,7 @@ static double tsc_hp_d2(const tsmesh_t* M, int nm, const double p[3], double sto
             double q[4][3];
             tsc_face_corners(M[m].V, H, q);
             best = fmin(best, tsc_tri_d2(p, (const double (*)[3])q));
-            if (H->quad) best = fmin(best, tsc_tri_d2(p, (const double (*)[3])&q[1]));
+            if (H->quad) best = fmin(best, tsc_tri_d2(p, (const double (*)[3])(q + 1)));
         }
     }
     return best;

@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 44df978d84f89953a8798d836034fa9688b11a79
+# head: a7f133a25c9eab2c006f7a1b9e9684bba2ce1a31
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
@@ -63,7 +63,6 @@ games/common/renderer/shadow_player.c	-Wmissing-field-initializers	fe	missing in
 games/common/renderer/terrain.c	-Wmaybe-uninitialized	me	terrain_build	1	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'osx' of 'ngte_cvert'	8	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
-games/common/renderer/terrain.c	-Wstringop-overflow=	me	tsc_hp_d2	1	
 games/common/renderer/tracers.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/ui_sprite.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	8	
 games/common/renderer/zap.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
