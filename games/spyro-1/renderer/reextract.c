@@ -439,7 +439,7 @@ static void fpos_reset(void) { s_fpos_n = 0; fpos_index_clear(); }
  *
  * @return The entry, or NULL when the table is full. */
 static double* fpos_append(uint32_t key) {
-    if (s_fpos_n >= FPOS_MAX) return NULL;
+    if ((unsigned)s_fpos_n >= FPOS_MAX) return NULL;
     s_fpos[s_fpos_n].key = key;
     fpos_index(key, s_fpos_n);
     return s_fpos[s_fpos_n++].p;

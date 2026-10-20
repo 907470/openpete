@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 2df3dc5f8c547086e108dc37da4a5aa506e727e5
+# head: b5ddd85ad336af4458ae61ba85a6a43a28cc65d1
 file	option	kind	detail	count	accepted
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
@@ -22,7 +22,6 @@ core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initialize
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'clear' of 'hold_area_t'	1	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'sx' of 'rhi_vertex'	8	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'x_span' of 'openpete_tercache_clip'	1	
-core/rhi/rhi_vulkan.c	-Wsign-compare	fe	comparison of integer expressions of different signedness: 'int' and 'unsigned int'	1	
 core/rhi/smoketest.c	-Wmissing-field-initializers	fe	missing initializer for field 'sx' of 'rhi_vertex'	10	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::caption'	7	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::fallback'	7	
@@ -71,7 +70,6 @@ games/spyro-1/renderer/layout.c	-Wmissing-field-initializers	fe	missing initiali
 games/spyro-1/renderer/particle.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
 games/spyro-1/renderer/portal.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
 games/spyro-1/renderer/reextract.c	-Wmissing-field-initializers	fe	missing initializer for field 'warned' of 'scratch_region_t'	5	
-games/spyro-1/renderer/reextract.c	-Wsign-compare	fe	comparison of integer expressions of different signedness: 'int' and 'unsigned int'	1	
 games/spyro-1/renderer/shadow_spyro.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-1/renderer/text_moby_id.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	4	
 games/spyro-1/renderer/tracer.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	

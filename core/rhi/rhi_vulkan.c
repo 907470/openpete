@@ -3397,7 +3397,7 @@ static void pcache_name(rhi_device *dev, const VkPhysicalDeviceProperties *props
     int n = snprintf(dev->pcache_path, sizeof dev->pcache_path,
                      "%s/vk-pipelines-%s-%04x-%04x-", dir, s_pcache_build,
                      props->vendorID, props->deviceID);
-    for (int i = 0; i < VK_UUID_SIZE && n > 0 && (size_t)n + 3 < sizeof dev->pcache_path; i++)
+    for (int i = 0; (unsigned)i < VK_UUID_SIZE && n > 0 && (size_t)n + 3 < sizeof dev->pcache_path; i++)
         n += snprintf(dev->pcache_path + n, sizeof dev->pcache_path - (size_t)n, "%02x",
                       props->pipelineCacheUUID[i]);
     const char *ext = (dev->headless || s_pcache_sync_class) ? "-headless.bin" : ".bin";
