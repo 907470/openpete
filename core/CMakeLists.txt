@@ -239,6 +239,7 @@ add_library(openpete_core STATIC
     host/sfx_ident.c
     host/sfx_pack.c
     host/texture_pack.c
+    host/stb_image_impl.c
     host/wav_loader.c
 
     # Temp-file-and-rename replacement shared by every persisted file.

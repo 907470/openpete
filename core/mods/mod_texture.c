@@ -47,12 +47,7 @@
 #include <string.h>
 #include <dirent.h>
 
-/* Static PNG-only decoder instance, same pattern as texture_pack.c -
- * the stb implementation is file-local in each consumer. */
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_PNG
-#include "../../third_party/stb/stb_image.h"
+#include "stb_image.h"   /* stbi_load; the decoder is stb_image_impl.c */
 
 /* Entries the first block holds; the table grows by whole blocks. */
 #define MOD_TEXTURE_BLOCK 64

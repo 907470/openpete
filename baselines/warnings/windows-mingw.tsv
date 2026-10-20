@@ -3,12 +3,8 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 94a46ae28871017849c2479376a3ce3500aa0240
+# head: 3e34f9abd4a11b1f7e170e52f4790ed52e1875a6
 file	option	kind	detail	count	accepted
-core/host/texture_pack.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
-core/host/texture_pack.c	-Wunused-function	me	-	34	
-core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
-core/mods/mod_texture.c	-Wunused-function	me	-	34	
 core/record/record.c	-Wdeprecated-declarations	fe	'channel_layout' is deprecated	2	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg
 core/record/record.c	-Wdeprecated-declarations	fe	'channels' is deprecated	2	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg
 core/record/record.c	-Wdeprecated-declarations	fe	'swr_alloc_set_opts' is deprecated	1	the ffmpeg-enabled windows-mingw configuration compiles record.c against FFmpeg headers that deprecate these fields; the baseline census ran in a worktree without FFmpeg

@@ -44,10 +44,7 @@ static SDL_Mutex *reg_mx(void) { if (!s_reg_mx) s_reg_mx = SDL_CreateMutex(); re
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_PNG
-#include "stb_image.h"
+#include "stb_image.h"   /* stbi_load; the decoder is stb_image_impl.c */
 
 #include <SDL3/SDL.h>  /* SDL_GetBasePath - same discovery music_override uses */
 #include "openpete_paths.h" /* the writable user pack root */
