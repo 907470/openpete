@@ -100,12 +100,16 @@ bool render_path_enabled(render_path_t p);
  *
  * A non-empty table is copied into the previous bank, which the OT-walk filter
  * consults for the OT built on the previous render VBL; an empty table leaves
- * the previous bank as it was. The per-canonical-present commit calls it after
- * render_paths_canon_snapshot. */
+ * the previous bank as it was. Logs the count of ranges render_path_record
+ * dropped on a full table since the previous reset, when nonzero. The
+ * per-canonical-present commit calls it after render_paths_canon_snapshot. */
 void render_paths_frame_reset(void);
 /** @brief Appends one path's emitted polybuf range [start, end) to the interval table.
  *
- * An empty range and an append past the table's 1024 entries are dropped.
+ * An empty range is dropped. A range that continues the table's last range
+ * of the same path on the same VBL extends it. A new range past the table's
+ * 1024 entries is dropped, the first such drop since the last
+ * render_paths_frame_reset logs a warning, and the reset logs the count.
  * OPENPETE_RENDER_PATH_IVDUMP=N prints every range recorded while
  * openpete_frame equals N.
  * @param p The path that emitted the range.

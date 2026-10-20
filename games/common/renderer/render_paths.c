@@ -20,6 +20,7 @@
 #include "game_layout.h"             /* level_id: the level push */
 #include "openpete_mods.h"           /* openpete_mods_set_level */
 #include "openpete_thread_roles.h"   /* OP_REQUIRES */
+#include "openpete_log.h"            /* table-full warning */
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
@@ -102,6 +103,10 @@ static interval_t s_iv[MAX_INTERVALS];
 static int        s_iv_n = 0;
 static interval_t s_iv_prev[MAX_INTERVALS];
 static int        s_iv_prev_n = 0;
+/* Ranges render_path_record refused because the table was full, since the
+ * last frame reset. The first refusal of each such run prints a warning and
+ * the reset prints the run's total. */
+static unsigned   s_iv_dropped = 0;
 
 /* Interval-less canon-drawn marks (render_path_mark_drawn). Kept separate from
  * the intervals so they can never leak into the OT-walk addr filter. */
@@ -109,6 +114,11 @@ static uint32_t s_pending_marks = 0;
 static unsigned s_mark_vbl[RP_COUNT];   /* VBL of each path's pending mark */
 
 void render_paths_frame_reset(void) {
+    if (s_iv_dropped) {
+        OPL_WARN_F("render-paths", "interval table full: %u ranges dropped since the last "
+                   "present commit (vbl %u)", s_iv_dropped, openpete_frame);
+        s_iv_dropped = 0;
+    }
     if (s_iv_n) {   /* roll into the drawn-OT bank; keep it across idle VBLs */
         memcpy(s_iv_prev, s_iv, (size_t)s_iv_n * sizeof(s_iv[0]));
         s_iv_prev_n = s_iv_n;
@@ -123,7 +133,7 @@ void render_path_mark_drawn(render_path_t p) {
 }
 
 void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
-    if (end <= start || s_iv_n >= MAX_INTERVALS) return;
+    if (end <= start) return;
     /* OPENPETE_RENDER_PATH_IVDUMP=frame: print every recorded polybuf interval
      * on that openpete_frame with its path name (OT-prim producer attribution). */
     {
@@ -139,6 +149,14 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     if (s_iv_n > 0 && s_iv[s_iv_n - 1].path == p && s_iv[s_iv_n - 1].end == start &&
         s_iv[s_iv_n - 1].vbl == openpete_frame) {
         s_iv[s_iv_n - 1].end = end;
+        return;
+    }
+    if (s_iv_n >= MAX_INTERVALS) {
+        if (!s_iv_dropped++)
+            OPL_WARN_F("render-paths", "interval table full (%d ranges) at vbl %u: dropping "
+                       "%s [0x%08X,0x%08X) and later ranges until the next present commit; "
+                       "the OT-walk filter hides their prims", MAX_INTERVALS, openpete_frame,
+                       k_names[p], start, end);
         return;
     }
     s_iv[s_iv_n].start = start;

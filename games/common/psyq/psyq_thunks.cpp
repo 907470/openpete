@@ -2892,6 +2892,10 @@ void psyq_DrawOTag(CPUState* cpu) {
      * background fill -- so this is what separates "rendering" from "still
      * loading" for the fast-boot anchor below. */
     unsigned draw_prims_this_call = 0;
+    /* Geometry prims the --render-paths filter dropped from this walk. The
+     * fast-boot anchor counts them with the submitted ones, so the anchor
+     * reads the guest's OT, not the filtered submission. */
+    unsigned filtered_prims_this_call = 0;
 
     static uint32_t s_hist[16] = {0};
     static uint32_t s_anchor_slots = 0;
@@ -2969,6 +2973,7 @@ void psyq_DrawOTag(CPUState* cpu) {
             uint8_t hi = cb & 0xF0u;
             bool is_geom = (plen != 0u) && (hi >= 0x20u && hi <= 0x70u);
             if (is_geom && !psyq_game_render_path_addr_visible(addr)) {
+                filtered_prims_this_call++;
                 if (next == 0x00FFFFFFu) break;
                 addr = next | 0x80000000u;
                 continue;
@@ -3204,13 +3209,16 @@ void psyq_DrawOTag(CPUState* cpu) {
      * reads from the disc; anchoring on that runs the whole load at wall-clock
      * pace behind a blank screen. Requiring more than one drawing primitive
      * holds fast boot until real content, and is inert for a game whose first
-     * OT is already a scene. */
-    if (openpete_fast_boot_active && draw_prims_this_call > 1u) {
+     * OT is already a scene. The count includes the prims --render-paths
+     * dropped, so a filter that selects no path the first scene draws does not
+     * hold fast boot. */
+    const unsigned guest_draw_prims = draw_prims_this_call + filtered_prims_this_call;
+    if (openpete_fast_boot_active && guest_draw_prims > 1u) {
         openpete_fast_boot_active = 0;
         OPL_INFO_F("boot",
                    "fast-boot ended at vbl=%d (first OT with %u drawing "
                    "primitives); openpete_frame anchored to 0",
-                   SDL_GetAtomicInt(&openpete_vbl), draw_prims_this_call);
+                   SDL_GetAtomicInt(&openpete_vbl), guest_draw_prims);
     }
 
     s_hist_calls++;
