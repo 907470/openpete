@@ -231,10 +231,12 @@ def load_db(root, fence):
     return path, entries
 
 
-def db_entries(root, path, fence):
+def db_entries(root, path, fence, absent=None):
     """-> [(rel, entry)] of the in-scope source entries of the compile
     database at path, in database order, one per entry (a source two targets
-    compile appears twice). Refusal when the file does not parse."""
+    compile appears twice). Refusal when the file does not parse. absent, a
+    list: an entry whose source file does not exist (the database predates
+    the source's removal) is appended to it as rel instead of returned."""
     with open(path) as fh:
         try:
             db = json.load(fh)
@@ -246,8 +248,26 @@ def db_entries(root, path, fence):
         rel = os.path.relpath(f, root)
         if rel.startswith("..") or not fence.in_scope(rel) or is_header(rel):
             continue
+        if absent is not None and not os.path.isfile(f):
+            if rel not in absent:
+                absent.append(rel)
+            continue
         out.append((rel, e))
     return out
+
+
+def stale_db_text(fence, dbname, absent, configure):
+    """The STALE-DB line for the entries db_entries set aside as absent: the
+    database names sources no longer in the tree, and the configure that
+    rewrites it."""
+    return ("%s: STALE-DB (skipped): %d %s %s a source absent from the "
+            "tree: %s. Re-run: %s" % (fence.name, len(absent), dbname,
+                                      "entry names" if len(absent) == 1
+                                      else "entries name",
+                                      ", ".join(sorted(absent)[:5]) +
+                                      (" ..." if len(absent) > 5 else ""),
+                                      " ".join(configure) if isinstance(configure, list)
+                                      else configure))
 
 
 MINGW_DB = "build/windows-mingw/compile_commands.json"

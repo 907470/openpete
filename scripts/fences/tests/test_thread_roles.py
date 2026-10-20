@@ -11,6 +11,9 @@ missing.
 
 Run: python3 scripts/fences/tests/test_thread_roles.py
 """
+import contextlib
+import io
+import json
 import os
 import shutil
 import sys
@@ -99,6 +102,32 @@ CONTROLS = {
     "slot_read_escapes": ("void bad(void) { void (*p)(void) = s_cb; (void)p; }",
                           "read of the OP_SLOT(sim) slot"),
 }
+
+
+class DatabaseTest(unittest.TestCase):
+    def test_entry_with_an_absent_source_is_skipped(self):
+        tmp = tempfile.mkdtemp(prefix="thread-roles-test-")
+        try:
+            os.makedirs(os.path.join(tmp, "core"))
+            with open(os.path.join(tmp, "core", "here.c"), "w") as fh:
+                fh.write("int here;\n")
+            db = os.path.join(tmp, "compile_commands.json")
+            with open(db, "w") as fh:
+                json.dump([{"directory": tmp, "file": f, "arguments": ["cc", "-c", f]}
+                           for f in ("core/here.c", "core/gone.c")], fh)
+            out = io.StringIO()
+            with contextlib.redirect_stderr(out):
+                ent = tr.load_entries(tmp, db, True)
+            self.assertEqual(sorted(ent), ["core/here.c"])
+            self.assertIn("STALE-DB (skipped): 1 windows-mingw entry names a source "
+                          "absent from the tree: core/gone.c. Re-run: cmake --preset "
+                          "windows-mingw", out.getvalue())
+            # The selection a whole-tree hook analyses holds no absent source,
+            # so no worker opens one.
+            sel = tr.select_all({}, ent)
+            self.assertNotIn("core/gone.c", sel["mingw"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 @unittest.skipUnless(shutil.which("clang-19") and os.path.isfile(tr.lib.LIBCLANG),

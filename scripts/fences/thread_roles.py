@@ -252,9 +252,12 @@ def usr_name(usr):
 # --------------------------------------------------------------------------
 def load_entries(root, path, mingw):
     """-> {rel: [flags]} of the in-scope sources, one flag list per distinct
-    (file, flags) entry."""
+    (file, flags) entry. An entry whose source is absent from the tree is
+    skipped with a STALE-DB line: it holds no code to analyse, and a staged
+    or present source always has its own file."""
     out = {}
-    for rel, e in lib.db_entries(root, path, FENCE):
+    absent = []
+    for rel, e in lib.db_entries(root, path, FENCE, absent):
         flags = entry_flags(e)
         flags = [t for t in flags if not t.startswith(("-fdiagnostics-color",
                                                        "-fmax-errors"))]
@@ -263,6 +266,9 @@ def load_entries(root, path, mingw):
         lst = out.setdefault(rel, [])
         if (e["directory"], flags) not in lst:
             lst.append((e["directory"], flags))
+    if absent:
+        say(lib.stale_db_text(FENCE, "windows-mingw" if mingw else "linux-release", absent,
+                              lib.MINGW_CONFIGURE if mingw else lib.CONFIGURE))
     return out
 
 
