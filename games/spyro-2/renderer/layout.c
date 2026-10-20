@@ -687,6 +687,20 @@ const game_layout_t spyro2_game_layout = {
         .slot_base = 0x80066F14u, .slot_dir = 1, .slot_stride = 0x58u,
         .letter_class = 0x2A6u,
     },
+    /* The loading screen's treasure tally: in builder state 2 (D_800698F0)
+     * func_titlescreen_and_loading_80070EEC rewrites the moby array from
+     * *D_80066F14 every tick. While (D_800698EC - 0x21) < 0x48 unsigned it
+     * writes one class-1 moby per record of the 24 at *D_80067110 (stride 8)
+     * whose byte +4 is nonzero (0x80070FB4-0x8007120C), then the counter gem
+     * (+0x0C 0x154, +0x14 0xC00; 0x800713C0) and the total gem (+0x0C 0xB4;
+     * 0x8007162C), each under its own timer gate. */
+    .tally = {
+        .state = 0x800698F0u, .state_value = 2u,
+        .timer = 0x800698ECu, .timer_lo = 0x21u, .timer_span = 0x48u,
+        .recs = 0x80067110u, .rec_stride = 8u, .active_off = 4u, .rec_count = 24u,
+        .slot_base = 0x80066F14u, .slot_stride = 0x58u, .prefix_max = 0u,
+        .gem_class = 1u, .hud_x = { 0x154, 0xB4 }, .hud_z = 0xC00,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

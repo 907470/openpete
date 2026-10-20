@@ -76,8 +76,9 @@ int game_interp_row_index(const char* name);
  * The array (game_layout.moby: array_head/array_direct, array_stride,
  * state_off, state_term) is fixed and ends at a sentinel element whose state
  * byte is state_term, so a moby's PSX address is its slot and its key across
- * ticks, except a credits letter, which is captured under its record key
- * (game_credits_letter_key, the key moby_game.interp_key looks it up by). A
+ * ticks, except a credits letter or a loading-screen tally gem, which is
+ * captured under its record key (game_credits_letter_key, the key
+ * moby_game.interp_key looks it up by). A
  * moby whose state byte is 0x80 or above is dormant and skipped. Each
  * record captured is one moby record and no bytes of the next, taken from the
  * draw-time stash when it holds the moby and live RAM otherwise. The walk

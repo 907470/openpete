@@ -1116,6 +1116,35 @@ typedef struct game_layout {
         uint32_t slot_stride;
         uint32_t letter_class;
     } credits;
+
+    /* The loading screen's treasure tally (renderer/credits_key.h): while
+     * the builder state word `state` holds `state_value`, the overlay's draw
+     * rewrites the moby array from the word at `slot_base` every tick,
+     * `slot_stride` bytes a slot: at most `prefix_max` slots of another class
+     * first, then one `gem_class` moby per tally record whose byte at
+     * `active_off` is nonzero, in record order, while (unsigned)(word at
+     * `timer` - `timer_lo`) < `timer_span`, then the HUD gems, `gem_class`
+     * mobys told apart by the word at +0x0C (`hud_x`, one value per role)
+     * with `hud_z` at +0x14. The records are `rec_count` entries of
+     * `rec_stride` bytes at the address the word at `recs` holds. A game
+     * with no tally leaves `state` 0. */
+    struct {
+        uint32_t state;
+        uint32_t state_value;
+        uint32_t timer;
+        uint32_t timer_lo;
+        uint32_t timer_span;
+        uint32_t recs;
+        uint32_t rec_stride;
+        uint32_t active_off;
+        uint32_t rec_count;
+        uint32_t slot_base;
+        uint32_t slot_stride;
+        uint32_t prefix_max;
+        uint32_t gem_class;
+        int32_t  hud_x[2];
+        int32_t  hud_z;
+    } tally;
 } game_layout_t;
 
 #define GAME_FONT_NONE            0

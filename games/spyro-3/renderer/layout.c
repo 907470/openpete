@@ -651,6 +651,21 @@ const game_layout_t spyro3_game_layout = {
         .slot_base = 0x8006C550u, .slot_dir = 1, .slot_stride = 0x58u,
         .letter_class = 0x3Bu,
     },
+    /* The loading screen's treasure tally: in builder state 3 (D_8006FBC8)
+     * func_loading_80075B74 and func_loading_80077964 rewrite the moby array
+     * from *D_8006C550 every tick; the second first writes one moby of class
+     * *D_8006C528 into slot 0 (0x800779F8-0x80077BE0). While (D_8006FBC4 -
+     * 0x21) < 0x48 unsigned each writes one class-1 moby per record of the 24
+     * at *D_8006C764 (stride 8) whose byte +4 is nonzero (0x80075C60-
+     * 0x80075EB8), then the counter gem (+0x0C 0x154, +0x14 0xC00;
+     * 0x80076074) and the total gem (+0x0C 0xB4; 0x800762E0). */
+    .tally = {
+        .state = 0x8006FBC8u, .state_value = 3u,
+        .timer = 0x8006FBC4u, .timer_lo = 0x21u, .timer_span = 0x48u,
+        .recs = 0x8006C764u, .rec_stride = 8u, .active_off = 4u, .rec_count = 24u,
+        .slot_base = 0x8006C550u, .slot_stride = 0x58u, .prefix_max = 1u,
+        .gem_class = 1u, .hud_x = { 0x154, 0xB4 }, .hud_z = 0xC00,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade
