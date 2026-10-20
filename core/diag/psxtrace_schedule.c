@@ -605,7 +605,6 @@ int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
     s_last_tick = 0;
     s_wait_tick = 0;
     extern uint32_t openpete_psxtrace_anchor_hits;
-    extern uint32_t openpete_psxtrace_anchor_hit_target;
     /* The sidecar's rec column is the records written when the call was
      * made: the record after the hit the call follows. openpete's current
      * record is the same count. */

@@ -16,8 +16,10 @@
 #endif
 
 static rhi_device* s_dev;
+#ifndef _WIN32
 static int s_saved_fd = -1;
 static const char* const k_capture = "mod_material_link_vk.stderr";
+#endif
 
 /* Push block sizes of the engine's material pipelines: psx_material_hd
  * (native_render.c, 80 B), tc_pc (native_terrain_cache.c, 112 B) and

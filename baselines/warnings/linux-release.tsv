@@ -3,13 +3,12 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 59e0774aedaf66faa634f018c2b8fc7f8bffdc7c
+# head: 43848e7f1e69a0112a27ae326f8b76b61728ff49
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
 core/diag/psxtrace_schedule.c	-Wunused-but-set-variable	fe	variable 'left' set but not used	1	
-core/diag/psxtrace_schedule.c	-Wunused-variable	fe	unused variable 'openpete_psxtrace_anchor_hit_target'	1	
 core/host/memcard.c	-Wformat-truncation=	me	openpete_memcard_startup_check	1	
 core/host/music_override.c	-Wformat-truncation=	me	music_override_init	1	
 core/host/sfx_pack.c	-Wformat-truncation=	me	rescan	2	
@@ -41,19 +40,14 @@ core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initialize
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'clear' of 'hold_area_t'	1	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'sx' of 'rhi_vertex'	8	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'x_span' of 'openpete_tercache_clip'	1	
-core/renderer/native_render.c	-Wunused-variable	fe	unused variable 'ch'	1	
-core/renderer/native_render.c	-Wunused-variable	fe	unused variable 'cw'	1	
-core/renderer/native_render.c	-Wunused-variable	fe	unused variable 'want_scene'	1	
 core/rhi/rhi_vulkan.c	-Wsign-compare	fe	comparison of integer expressions of different signedness: 'int' and 'unsigned int'	1	
 core/rhi/smoketest.c	-Wmissing-field-initializers	fe	missing initializer for field 'sx' of 'rhi_vertex'	10	
-core/runtime/run.c	-Wunused-variable	fe	unused variable 'split'	1	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::caption'	7	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::fallback'	7	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::ids'	6	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::seg'	6	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::seg_n'	6	
 core/ui/devui.cpp	-Wmissing-field-initializers	fe	missing initializer for member 'lay_row::seg_val'	6	
-core/ui/docs_open.c	-Wunused-variable	fe	unused variable 'local'	1	
 games/common/renderer/cyclorama.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/cyclorama.c	-Wunused-function	me	-	1	
 games/common/renderer/flame.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
@@ -80,8 +74,6 @@ games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initiali
 games/common/renderer/terrain.c	-Wstringop-overflow=	me	tsc_hp_d2	1	
 games/common/renderer/terrain.c	-Wunused-function	me	-	1	
 games/common/renderer/terrain.c	-Wunused-parameter	fe	unused parameter 'cpu'	1	
-games/common/renderer/terrain.c	-Wunused-variable	fe	unused variable 'sv'	1	
-games/common/renderer/terrain.c	-Wunused-variable	me	-	10	
 games/common/renderer/tracers.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/tracers.c	-Wunused-parameter	fe	unused parameter 'cpu'	1	
 games/common/renderer/ui_sprite.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	8	
@@ -119,6 +111,5 @@ games/spyro-3/features/transition_call.c	-Wmissing-field-initializers	fe	missing
 games/spyro-3/renderer/terrain_probe.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 tests/unit/atomic_write_test.c	-Wformat-truncation=	me	main	1	
 tests/unit/mod_material_link_test.c	-Wformat-truncation=	me	collect	1	
-tests/unit/mod_material_resolve_test.c	-Wunused-variable	fe	unused variable 'mu'	1	
 tests/unit/mod_vec_test.c	-Wmaybe-uninitialized	me	main	1	
 third_party/PsyCross/include/psx/libcd.h	-Wparentheses	fe	unnecessary parentheses in declaration of 'CdDataCallback'	1	

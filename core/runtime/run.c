@@ -2987,11 +2987,6 @@ void openpete_game_window_size(const openpete_options_t* opts, int* out_w, int* 
  * @return 0 on success, else an OPENPETE_EXIT_* code for the caller to
  *         return. */
 static int run_host_init(const openpete_options_t* opts) {
-    /* True when main owns the window, the pump and the SDL-state publish and
-     * the host loop runs on a worker. This function itself runs on main in
-     * that case, before the worker exists. Currently unused below. */
-    const bool split = openpete_split_applies(opts);
-
     memset(&g_game, 0, sizeof(g_game));
     openpete_psx_runtime_init(&g_game.cpu);
     openpete_psx_set_diag_cpu(&g_game.cpu);

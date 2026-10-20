@@ -44,6 +44,7 @@ int openpete_docs_open(void) {
 #if defined(__APPLE__)
     snprintf(url, sizeof url, "%s%s", local ? "file://" : "", target);
 #else
+    (void)local;
     snprintf(url, sizeof url, "%s", target);
 #endif
     if (SDL_OpenURL(url)) {

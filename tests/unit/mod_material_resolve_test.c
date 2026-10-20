@@ -637,7 +637,7 @@ static void case_f3b_terrain_refine(void) {
     r.texture = 6;
     u.flags = OP_SEL_UNTEXTURED;
     const int mr = reg(a, r, SCENE, rf_accept);
-    const int mu = reg(a, u, SCENE, rf_decline);
+    reg(a, u, SCENE, rf_decline);
     reg(a, sel_ch(-1), SCENE, rf_accept);   /* unkeyed: never asked on terrain */
     mod_mat_census_force(1);
     const int c6 = bake(6, 0, 0), cu = bake(-1, 0, 0);

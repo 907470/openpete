@@ -17971,8 +17971,6 @@ static void compose_variant(void)
 
     int sn; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL, NULL);
-    uint32_t bg = sbg;   /* gamestate clear (== the PSX draw-env clear) */
-    bool want_scene = scene_has_game_tris(scene, sn) || (s_isolation && bg != 0);
 
     /* native_rtt is the OFF-DISPLAY reference-resolution render that the
      * freeze-backdrop snapshot copies. The LIVE panel does NOT blit from it - it
@@ -21167,7 +21165,7 @@ void openpete_native_render_snapshot_fb_window(void)
 {
     if (!s_nr.enabled) return;
     if (!openpete_fb_snapshot_pending()) return;
-    int idx, sx, sy, w, h, cw = 0, ch = 0; unsigned frame = 0;
+    int idx, sx, sy, w, h; unsigned frame = 0;
     while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
         unsigned char *px = fbsnap_capture_crop(frame, idx, sx, sy, w, h, &pw, &ph);

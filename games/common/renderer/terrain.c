@@ -482,18 +482,6 @@ typedef struct {
     float kn[12];                                  /* the face's fold-space corners (tn_fold_corner),
                                                     * set when a quadrant of it folds */
 } ttri;
-static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
-static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
-static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing */
-static int s_emit_fptag = 0;    /* current LP face's fill-tag class (inspector tint) */
-static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
-static int s_emit_env = 0;      /* current face is in the env-anim rewrite set */
-static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conformance) */
-static uint16_t s_emit_otslots = 0;  /* current face's authored OT-slot offset */
-static uint8_t  s_emit_nearband = 0; /* current face is .s near-band (defer/HQ classified):
-                                      * NEVER an OT face, so it neither emits nor contests
-                                      * the og key raster - near geometry resolves by
-                                      * TRUE depth, like the mask-bit-protected defer queues */
 /* The walk's triangle stream (before the scene feed), sized by the walk: a
  * dense extended-LOD vista routes every eligible face through the 4x4 cell
  * path and emits well past 100k triangles. s_tri reads the run's current
@@ -10945,7 +10933,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (wantOracle) terrain_read_defer(cpu);   /* oracle only (verify/debug) - see above */
     else s_defer_n = 0;
 
-    static lvert sv[256];
     uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
     uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
     tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
