@@ -11102,7 +11102,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * unregistered; GPU_-prefixed so it is safe with the cache engaged. */
     static int s_cen = -1;
     ENV_FLAG_LATCH(s_cen, "OPENPETE_TERRAIN_GPU_CENSUS");
-    long cen0[13];
+    long cen0[13] = { 0 };
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
      * dumps), and several latch mid-walk. */

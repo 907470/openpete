@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 72b4793ebb14f93e5e7fc86e21fcdd258517eb49
+# head: 4ea8913f4b6e2476b212d1849d532a8c14ed6a53
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
@@ -59,7 +59,6 @@ games/common/renderer/render_paths.c	-Wmissing-field-initializers	fe	missing ini
 games/common/renderer/shadow.c	-Wmissing-field-initializers	fe	missing initializer for field 'base' of 'struct <anonymous>'	1	
 games/common/renderer/shadow.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/shadow_player.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
-games/common/renderer/terrain.c	-Wmaybe-uninitialized	me	terrain_build	1	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'osx' of 'ngte_cvert'	8	
 games/common/renderer/terrain.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/tracers.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
@@ -80,7 +79,6 @@ games/spyro-1/psyq_hooks.cpp	-Wmissing-field-initializers	fe	missing initializer
 games/spyro-1/renderer/interp_regions.c	-Wmissing-field-initializers	fe	missing initializer for field 'ra_commit' of 'game_interp_row_t' {aka 'const struct game_interp_row'}	3	
 games/spyro-1/renderer/layout.c	-Wmissing-field-initializers	fe	missing initializer for field 'moby_off' of 'game_moby_director_t' {aka 'const struct game_moby_director'}	1	
 games/spyro-1/renderer/particle.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
-games/spyro-1/renderer/portal.c	-Wmaybe-uninitialized	me	emit_aperture_ring	1	
 games/spyro-1/renderer/portal.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	5	
 games/spyro-1/renderer/reextract.c	-Wmissing-field-initializers	fe	missing initializer for field 'warned' of 'scratch_region_t'	5	
 games/spyro-1/renderer/shadow_spyro.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
@@ -93,5 +91,4 @@ games/spyro-3/features/transition_call.c	-Wmissing-field-initializers	fe	missing
 games/spyro-3/renderer/terrain_probe.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 tests/unit/atomic_write_test.c	-Wformat-truncation=	me	main	1	
 tests/unit/mod_material_link_test.c	-Wformat-truncation=	me	collect	1	
-tests/unit/mod_vec_test.c	-Wmaybe-uninitialized	me	main	1	
 third_party/PsyCross/include/psx/libcd.h	-Wparentheses	fe	unnecessary parentheses in declaration of 'CdDataCallback'	1	

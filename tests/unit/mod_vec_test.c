@@ -28,7 +28,7 @@ typedef struct { int v; char pad[12]; } elem_t;
 
 static void test_cvec_growth_and_stability(void) {
     mod_cvec v;
-    void* first;
+    void* first = NULL;
     void* second_block;
     int i;
     mod_cvec_init(&v, sizeof(elem_t), BLOCK, NULL, 0);

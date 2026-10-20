@@ -1863,7 +1863,7 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     float rx[16], ry[16];
-    double outward[16];
+    double outward[16] = { 0 };
     for (int i = 0; i < pn; i++) outward[i] = -dpx[i];
     outline_offset(poly, pn, outward, rx, ry);
     for (int i = 0; i < pn; i++) {
