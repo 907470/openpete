@@ -1780,7 +1780,7 @@ static void release_batch(void) {
                                    s_verify[vi].kind = s_claim[i].kind;
                                    s_verify[vi].xy_link = s_claim[i].xy_link;
                                    s_verify[vi].xy_rel  = cpu->read_word(prim + 0x08u); } }
-        const uint32_t w1 = cpu->read_word(prim + 4);
+        (void)cpu->read_word(prim + 4);
         feed_one_claim(cpu, prim, s_claim[i].kind, s_claim[i].aux);
     }
     openpete_native_scene_set_prim(0u);

@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 43848e7f1e69a0112a27ae326f8b76b61728ff49
+# head: e6dcb3da8d9781c47fe88d98f6ca5e84737f50c7
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
@@ -77,7 +77,6 @@ games/common/renderer/terrain.c	-Wunused-parameter	fe	unused parameter 'cpu'	1
 games/common/renderer/tracers.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
 games/common/renderer/tracers.c	-Wunused-parameter	fe	unused parameter 'cpu'	1	
 games/common/renderer/ui_sprite.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	8	
-games/common/renderer/ui_sprite.c	-Wunused-variable	fe	unused variable 'wN'	1	
 games/common/renderer/zap.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-1/features/crash_demo_woah.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	4	
 games/spyro-1/features/credits_skip.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
