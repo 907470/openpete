@@ -6,6 +6,7 @@
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_span */
+#include "openpete_str.h"          /* op_appendf */
 #include "game_layout.h"
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"     /* cut_jump_census_capture */
@@ -90,20 +91,35 @@ int game_interp_row_index(const char* name) {
  * ticks sampled and the ticks whose bytes changed. The table goes out in one
  * raw write to the stderr descriptor: the process mirrors stderr to a log
  * file and tears that stream down in its own exit hook, which can run before
- * this one and swallow anything written through the FILE*. */
+ * this one and swallow anything written through the FILE*. A row that does
+ * not fit is dropped whole with the rows after it, and a closing line names
+ * how many rows were printed; the write covers only the bytes formatted. */
 static void census_report(void) {
+    enum { TAIL = 96 };   /* room kept for the truncation line */
     char buf[128 * OPENPETE_INTERP_MAX_REGIONS + 128];
-    int n = snprintf(buf, sizeof buf, "[interp-region-census] %-14s %-10s %6s %3s %10s %10s\n",
-            "region", "addr", "len", "rac", "ticks", "changed");
-    for (unsigned i = 0; i < s_count && n > 0 && (size_t)n < sizeof buf; ++i) {
-        n += snprintf(buf + n, sizeof buf - (size_t)n,
-                      "[interp-region-census] %-14s 0x%08X %6u %3d %10lu %10lu\n",
-                      s_regions[i].name ? s_regions[i].name : "?",
-                      s_regions[i].psx_addr, s_regions[i].length,
-                      s_regions[i].ra_commit, s_census[i].ticks, s_census[i].changed);
+    size_t n = 0;
+    unsigned rows = 0;
+    (void)op_appendf(buf, sizeof buf - TAIL, &n,
+                     "[interp-region-census] %-14s %-10s %6s %3s %10s %10s\n",
+                     "region", "addr", "len", "rac", "ticks", "changed");
+    for (; rows < s_count; ++rows) {
+        const size_t row_start = n;
+        if (op_appendf(buf, sizeof buf - TAIL, &n,
+                       "[interp-region-census] %-14s 0x%08X %6u %3d %10lu %10lu\n",
+                       s_regions[rows].name ? s_regions[rows].name : "?",
+                       s_regions[rows].psx_addr, s_regions[rows].length,
+                       s_regions[rows].ra_commit, s_census[rows].ticks,
+                       s_census[rows].changed) != 0) {
+            n = row_start;
+            break;
+        }
     }
+    if (rows < s_count)
+        (void)op_appendf(buf, sizeof buf, &n,
+                         "[interp-region-census] truncated: %u of %u rows\n",
+                         rows, s_count);
     fflush(stderr);
-    const long written = (long)census_write(2, buf, n > 0 ? n : 0);
+    const long written = (long)census_write(2, buf, n);
     (void)written;   /* a failed write to stderr has nowhere to be reported */
 }
 

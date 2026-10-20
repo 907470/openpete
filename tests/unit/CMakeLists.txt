@@ -28,6 +28,14 @@ target_include_directories(fnv1a64_test PRIVATE
 set_target_properties(fnv1a64_test PROPERTIES C_STANDARD 99)
 add_test(NAME fnv1a64_test COMMAND fnv1a64_test)
 
+# op_appendf_test - header-only. op_appendf keeps its length at the bytes
+# the buffer holds when the text overflows it.
+add_executable(op_appendf_test op_appendf_test.c)
+target_include_directories(op_appendf_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(op_appendf_test PROPERTIES C_STANDARD 99)
+add_test(NAME op_appendf_test COMMAND op_appendf_test)
+
 # portal_cover_slot_test - header-only. The feed-plane to published
 # cover-plane slot map an inner-rim face names its accepting plane by.
 add_executable(portal_cover_slot_test portal_cover_slot_test.c)
