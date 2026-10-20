@@ -331,6 +331,7 @@ const game_layout_t spyro2_game_layout = {
                                            * mobyfunc.s:631 lw 0xC */
         .moby_ot_bias = 0x47u,             /* mobyfunc.s 80049AE8 lb 0x47, 80049CA4 addi -3 */
         .moby_ot_bias_sub = 3,
+        .frame_radius_off = 0x07u, /* mobydraw.s 80043AB8-80043AC8 lbu 0x24 of header + frame*8 + 7 */
         .player = {
             .hook         = F_PLAYER_SHADOW,
             .state        = D_PLAYERSHADOW,

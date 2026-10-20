@@ -267,6 +267,7 @@ const game_layout_t spyro1_game_layout = {
         .ground_plane = D_SPYROSHADOW + 0x18u,   /* SpyroShadow ground height */
         .moby_ot_bias = 0x47u,             /* r_shadows.s 8005A294 lb 0x47, 8005A320 addi -1 */
         .moby_ot_bias_sub = 1,
+        .frame_radius_off = offsetof(AnimationFrame, m_Shadow), /* r_moby.s 8001F358-8001F36C lbu 0x24 of header + frame*8 + 6 */
         .player = { .hook = 0u },         /* the player silhouette is its own
                                            * renderer, func_80059A48, fed by
                                            * renderer/shadow_spyro.c */

@@ -2691,6 +2691,12 @@ static int reveal_prev_has(uint32_t m) {
     return 0;
 }
 
+/* The last host-reveal set; documented at the declaration in moby.h. */
+int moby_native_revealed_mobys(const uint32_t** out) {
+    *out = s_rev_prev;
+    return (openpete_frame - s_canon_drawn_frame <= 2u) ? s_rev_prev_n : 0;
+}
+
 /** @brief Publish one builder call's admitted set, drawn and occlusion-culled, as the next call's hysteresis set.
  *
  * Both lists hold 0 for a record that was admitted without a lateral verdict

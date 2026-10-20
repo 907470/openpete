@@ -540,6 +540,14 @@ typedef struct game_layout {
          * carry no key. */
         uint32_t moby_ot_bias;
         int      moby_ot_bias_sub;
+        /* The moby cull appends a list record for a moby whose `moby_ground`
+         * word has its sign bit set and whose view-space Z is below 0x1200,
+         * once its lateral test has passed; the record's size word is the
+         * byte at `frame_radius_off` inside the moby's current keyframe
+         * record (AnimationHeader + moby.anim_frames + frame *
+         * moby.anim_frame_stride). 0 = the list is not extended past the
+         * cull's own records. */
+        uint32_t frame_radius_off;
 
         /* The player's own ground shadow, where the game draws it as a leg of
          * this feeder. `hook` = 0 on a game whose player shadow is a separate

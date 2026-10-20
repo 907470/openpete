@@ -144,7 +144,6 @@ games/common/renderer/player.c	player_reextract_record	26	0
 games/common/renderer/player.c	player_verify_report	109	0	
 games/common/renderer/player.c	pv_capture	60	0	
 games/common/renderer/player_game_spyro23.c	s23_part_record	28	0	
-games/common/renderer/shadow.c	shadow_moby_build	35	0	
 games/common/renderer/shadow.c	shadow_moby_compare	61	0	
 games/common/renderer/shadow_player.c	shadow_player_compare	70	0	
 games/common/renderer/terrain.c	clip_push_tri	35	0	

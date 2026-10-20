@@ -217,6 +217,20 @@ void moby_native_set_occl_pan(float px_per_tick);
  * @return The entry count. */
 int moby_native_canon_drawn_mobys(const uint32_t** out);
 
+/** @brief The mobys the last host reveal walk admitted (moby_game.host_reveal), the ones no cull record holds.
+ *
+ * The set is the walk's published hysteresis set: the admitted mobys that
+ * drew plus the admitted ones the occlusion cull dropped, without a moby
+ * admitted only because its extent sphere straddles the camera plane. A walk
+ * that returns before admitting (a canonical view without --no-lod, or a
+ * cutscene that owns the draw) leaves the previous walk's set in place.
+ * Reports no entries when the regular pass last ran more than two VBLs ago,
+ * the bound moby_native_canon_drawn_mobys keeps. Empty on a game without
+ * host_reveal.
+ * @param out Receives the borrowed array.
+ * @return The entry count. */
+int moby_native_revealed_mobys(const uint32_t** out);
+
 /** @brief Sub-tick re-extract entry: rebuild this present's moby contribution from the captured cull records and the interpolated camera.
  *
  * Inert while the native scene is off or the canonical present did not draw
