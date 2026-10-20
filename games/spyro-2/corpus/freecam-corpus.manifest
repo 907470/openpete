@@ -126,3 +126,6 @@ fracture_hills | pos=(160297, 144885, 34144) yaw=1543 pitch=112
 # The Earthshaper at the right edge of the 16:9 field: a large moby that
 # stops drawing while its body is still inside the frame. Blessed pre-fix.
 fracture_hills | pos=(111293, 143960, 32528) yaw=-450 pitch=66
+# A Bonebuilder at the left edge of the 16:9 field: its shadow stops drawing
+# while the shadow is still inside the frame. Blessed pre-fix.
+skelos_badlands | pos=(79872, 75897, 31120) yaw=164 pitch=188
