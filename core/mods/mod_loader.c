@@ -3913,7 +3913,7 @@ static const char* mods_cc_identity(void) {
     char out[1024];
     if (openpete_host_spawn_argv(argv, NULL, out, sizeof out) < 0) return s_identity;
     out[strcspn(out, "\r\n")] = '\0';
-    snprintf(s_identity, sizeof s_identity, "%s", out);
+    snprintf(s_identity, sizeof s_identity, "%.*s", (int)sizeof s_identity - 1, out);
     return s_identity;
 }
 
@@ -5957,7 +5957,8 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
     }
     int n_failed = 0;
     for (int g = 0; g < n_games; g++) {
-        snprintf(s_build_game, sizeof s_build_game, "%s", id_row(&games, g));
+        snprintf(s_build_game, sizeof s_build_game, "%.*s",
+                 (int)sizeof s_build_game - 1, id_row(&games, g));
         OPL_INFO_F("mods", "--compile-mods: staged %s (%s/games/%s)",
                    s_build_game, sdk_dir, s_build_game);
         n_failed += compile_all_for_game(mods_dir, sdk_dir);

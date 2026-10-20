@@ -160,7 +160,8 @@ static void mc_follow_link(int slot)
 static int mc_resolve_path(int slot)
 {
     if (s_path_override[slot][0]) {
-        snprintf(s_path[slot], sizeof(s_path[slot]), "%s", s_path_override[slot]);
+        snprintf(s_path[slot], sizeof(s_path[slot]), "%.*s",
+                 (int)sizeof(s_path_override[slot]) - 1, s_path_override[slot]);
         mc_follow_link(slot);
         return 0;
     }

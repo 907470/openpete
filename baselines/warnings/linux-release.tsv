@@ -3,12 +3,11 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: b28e9fd81b61c8f832e52fa03afdddaa8d32af0b
+# head: 113db1dfae4f3731f90def1d8248a6b477964da8
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
-core/host/memcard.c	-Wformat-truncation=	me	openpete_memcard_startup_check	1	
 core/host/music_override.c	-Wformat-truncation=	me	music_override_init	1	
 core/host/sfx_pack.c	-Wformat-truncation=	me	rescan	2	
 core/host/sfx_pack.c	-Wformat-truncation=	me	scan_dir	1	
@@ -20,12 +19,9 @@ core/mods/mod_loader.c	-Wformat-truncation=	me	build_mod	1
 core/mods/mod_loader.c	-Wformat-truncation=	me	mod_hot_reload	3	
 core/mods/mod_loader.c	-Wformat-truncation=	me	mod_list_srcs	1	
 core/mods/mod_loader.c	-Wformat-truncation=	me	mods_prepare_task	1	
-core/mods/mod_loader.c	-Wformat-truncation=	me	openpete_mods_compile_all	3	
-core/mods/mod_loader.c	-Wformat-truncation=	me	sdk_prefix	1	
+core/mods/mod_loader.c	-Wformat-truncation=	me	openpete_mods_compile_all	2	
 core/mods/mod_shader.c	-Wformat-truncation=	me	list_dir_sorted	1	
 core/mods/mod_shader.c	-Wformat-truncation=	me	openpete_mods_shader_register_locked	1	
-core/mods/mod_shader.c	-Wformat-truncation=	me	openpete_mods_shader_watch_key	1	
-core/mods/mod_shader.c	-Wformat-truncation=	me	shader_compute_key	1	
 core/mods/mod_shader.c	-Wformat-truncation=	me	shader_link_decide	1	
 core/mods/mod_texture.c	-Wformat-truncation=	me	openpete_mods_texture_scan_root	1	
 core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
@@ -84,7 +80,6 @@ games/spyro-1/renderer/shadow_spyro.c	-Wmissing-field-initializers	fe	missing in
 games/spyro-1/renderer/text_moby_id.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	4	
 games/spyro-1/renderer/tracer.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-1/renderer/transition.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	3	
-games/spyro-1/sfx_census.cpp	-Wformat-truncation=	me	void {anonymous}::dump_banks(const std::vector<{anonymous}::Bank>&, const std::filesystem::__cxx11::path&, std::ofstream&, std::map<std::pair<long unsigned int, int>, {anonymous}::Seen>&, {anonymous}::Stats&)	1	
 games/spyro-2/features/cutscene_skip.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-3/features/transition_call.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-3/renderer/terrain_probe.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	

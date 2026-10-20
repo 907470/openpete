@@ -376,7 +376,7 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
         int n = list_dir_sorted(dir, ".vert;.frag;.glsl", names, 64);
         for (int i = 0; i < n; i++) {
             char p[MOD_SHADER_PATH_MAX * 2 + 128];
-            snprintf(p, sizeof p, "%s/%s", dir, names[i]);
+            snprintf(p, sizeof p, "%s/%.*s", dir, (int)sizeof names[i] - 1, names[i]);
             (void)key_update_file(&hc, p);
         }
     }
@@ -956,7 +956,7 @@ int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]) {
     openpete_sha256_init(&hc);
     for (int i = 0; i < n; i++) {
         char p[MOD_SHADER_PATH_MAX * 2 + 128];
-        snprintf(p, sizeof p, "%s/%s", dir, names[i]);
+        snprintf(p, sizeof p, "%s/%.*s", dir, (int)sizeof names[i] - 1, names[i]);
         key_update_str(&hc, names[i]);
         (void)key_update_file(&hc, p);
     }

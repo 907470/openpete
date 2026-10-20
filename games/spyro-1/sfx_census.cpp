@@ -417,7 +417,7 @@ void dump_banks(const std::vector<Bank>& banks, const std::filesystem::path& out
                 file = it->second.file;
                 st.dup++;
             }
-            char pitch_s[8];
+            char pitch_s[12];
             if (s.pitch >= 0) std::snprintf(pitch_s, sizeof pitch_s, "%04x", s.pitch);
             else std::snprintf(pitch_s, sizeof pitch_s, "-");
             char line[512];
