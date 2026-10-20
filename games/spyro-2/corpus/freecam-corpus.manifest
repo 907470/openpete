@@ -117,3 +117,9 @@ summer_forest@aspect32x9 | pos=(106616, 79875, 36925) yaw=-1650 pitch=154 | | --
 # A rolled view (roll 228, about 20 degrees): the freecam stores the roll the
 # game's camera builder needs for a true view roll, so the horizon tilts.
 glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243 roll=-228
+# A wall moby (55 triangles) standing on a floor sector: the game keys each
+# moby face once into its record's local bucket array and splices that array
+# into the world ordering table below the floor's bucket, so the wall paints
+# over the floor; a per-triangle key ties the floor's bucket and a 733-px
+# floor wedge draws over the wall's bottom edge. Blessed pre-fix.
+fracture_hills | pos=(160297, 144885, 34144) yaw=1543 pitch=112
