@@ -123,3 +123,6 @@ glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243 roll=-228
 # over the floor; a per-triangle key ties the floor's bucket and a 733-px
 # floor wedge draws over the wall's bottom edge. Blessed pre-fix.
 fracture_hills | pos=(160297, 144885, 34144) yaw=1543 pitch=112
+# The Earthshaper at the right edge of the 16:9 field: a large moby that
+# stops drawing while its body is still inside the frame. Blessed pre-fix.
+fracture_hills | pos=(111293, 143960, 32528) yaw=-450 pitch=66
