@@ -103,7 +103,8 @@ static void census_report(void) {
                       s_regions[i].ra_commit, s_census[i].ticks, s_census[i].changed);
     }
     fflush(stderr);
-    (void)census_write(2, buf, n > 0 ? n : 0);
+    const long written = (long)census_write(2, buf, n > 0 ? n : 0);
+    (void)written;   /* a failed write to stderr has nowhere to be reported */
 }
 
 /** @brief Sample each registered region: count the tick and whether its bytes differ from the previous sample. */

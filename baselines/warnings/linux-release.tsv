@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: b5ddd85ad336af4458ae61ba85a6a43a28cc65d1
+# head: 3b617ddfc01858baf6585106cf66148574c5f625
 file	option	kind	detail	count	accepted
 core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
@@ -48,7 +48,6 @@ games/common/renderer/cyclorama.c	-Wmissing-field-initializers	fe	missing initia
 games/common/renderer/flame.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/glint.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/common/renderer/glow.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
-games/common/renderer/interp_regions_gen.c	-Wunused-result	me	census_report	1	
 games/common/renderer/moby.c	-Wmisleading-indentation	fe	this 'if' clause does not guard...	14	
 games/common/renderer/moby.c	-Wmissing-field-initializers	fe	missing initializer for field 'base' of 'struct <anonymous>'	1	
 games/common/renderer/moby.c	-Wmissing-field-initializers	fe	missing initializer for field 'spec_solo' of 'rec_meta'	3	
