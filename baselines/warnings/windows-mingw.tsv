@@ -3,7 +3,7 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: d3071ad8664fd198e43445d1058ed7efcdfc7d5b
+# head: 2df3dc5f8c547086e108dc37da4a5aa506e727e5
 file	option	kind	detail	count	accepted
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
@@ -11,7 +11,6 @@ core/host/texture_pack.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declar
 core/host/texture_pack.c	-Wunused-function	me	-	34	
 core/input/host_input.c	-Warray-bounds	me	openpete_host_input_publish_sdl	1	
 core/input/keymap.c	-Wmissing-field-initializers	fe	missing initializer for field 'menu_exempt' of 'km_resolve_t'	3	
-core/mods/mod_loader.c	-Wcomment	fe	"/*" within comment	2	
 core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/mods/mod_texture.c	-Wunused-function	me	-	34	
 core/psx/disc_image.c	-Wmaybe-uninitialized	me	disc_image_open	1	

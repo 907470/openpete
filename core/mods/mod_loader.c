@@ -242,11 +242,9 @@ typedef struct {
 } mod_level_row_t;
 
 #define MOD_PATH_MAX      1024
-/* One src/*.c path. The list is heap-held: it used to be a
- * srcs[64][1024] local, 64 KiB of stack per caller, and the 64 was a
- * stand-in for the cmd.exe line-length limit rather than a real bound.
- * The sources now reach the compiler through a response file, which
- * removes that limit. */
+/* One src/<n>.c path. The list is heap-held and has no fixed count: the
+ * sources reach the compiler through a response file, so the cmd.exe
+ * line-length limit does not bound it. */
 typedef struct { char path[MOD_PATH_MAX]; } mod_src_t;
 #define MOD_SRCS_INIT     64
 #define MOD_DEPS_INIT     8
@@ -3986,7 +3984,7 @@ static const char* const mod_cc_sysroot_flags[] = {
  * process-global counter carries the population's high-water. */
 static mod_fixed s_census_srcs;
 
-/** @brief List <mod_dir>/src/*.c into a vec of mod_src_t, sorted by path.
+/** @brief List <mod_dir>/src/<n>.c as a vec of mod_src_t, sorted by path.
  *
  * Non-recursive; the sort makes the build key independent of directory
  * order. A row that cannot be allocated ends the listing early with the
