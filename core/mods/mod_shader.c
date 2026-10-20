@@ -660,7 +660,8 @@ static int shader_link_decide(mod_shader_t* sh) {
                                                                       ".portal.link" };
     openpete_mod_link_ctx_t* ctx = link_ctx();
     char src_path[MOD_SHADER_PATH_MAX * 3], key[65], build_dir[MOD_SHADER_PATH_MAX * 3];
-    char flat[MOD_SHADER_PATH_MAX], log_path[MOD_SHADER_PATH_MAX * 4];
+    char flat[MOD_SHADER_PATH_MAX];
+    char log_path[sizeof build_dir + sizeof flat + sizeof ".link.log"];
     snprintf(src_path, sizeof src_path, "%s/%s", sh->mod_dir, sh->path);
     snprintf(build_dir, sizeof build_dir, "%s/.build/shaders", sh->mod_dir);
     flatten_path(sh->path, flat, sizeof flat);
@@ -768,7 +769,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     shader_mkdir(build_dir);
     char flat[MOD_SHADER_PATH_MAX];
     flatten_path(path, flat, sizeof flat);
-    char log_path[MOD_SHADER_PATH_MAX * 3];
+    char log_path[sizeof build_dir + sizeof flat + sizeof ".log"];
     snprintf(log_path, sizeof log_path, "%s/%s.log", build_dir, flat);
 
     char src_path[MOD_SHADER_PATH_MAX * 2];

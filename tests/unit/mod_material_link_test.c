@@ -146,7 +146,10 @@ static void collect(const char* root, const char* dir) {
     qsort(names, (size_t)n, sizeof names[0], (int (*)(const void*, const void*))strcmp);
     for (int i = 0; i < n; i++) {
         char p[PATH_MAX_T];
-        snprintf(p, sizeof p, "%s/%s", dir, names[i]);
+        if (snprintf(p, sizeof p, "%s/%s", dir, names[i]) >= (int)sizeof p) {
+            fail("path too long", names[i]);
+            continue;
+        }
         if (is_dir(p)) { collect(root, p); continue; }
         if (openpete_mod_glsl_stage_from_path(p) != OPENPETE_MOD_GLSL_STAGE_FRAG) continue;
         char* src = openpete_mod_glsl_read_file(p, NULL);

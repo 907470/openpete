@@ -3,27 +3,14 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 113db1dfae4f3731f90def1d8248a6b477964da8
+# head: 4456dee2be564127ffadfafb54d0e4f5dd4857c7
 file	option	kind	detail	count	accepted
-core/config/config.c	-Wformat-truncation=	me	saved_keys_copy_table	1	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
-core/host/music_override.c	-Wformat-truncation=	me	music_override_init	1	
-core/host/sfx_pack.c	-Wformat-truncation=	me	rescan	2	
-core/host/sfx_pack.c	-Wformat-truncation=	me	scan_dir	1	
 core/host/texture_pack.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/host/texture_pack.c	-Wunused-function	me	-	34	
 core/input/keymap.c	-Wmissing-field-initializers	fe	missing initializer for field 'menu_exempt' of 'km_resolve_t'	3	
-core/mods/mod_loader.c	-Wformat-truncation=	me	api_notify	1	
-core/mods/mod_loader.c	-Wformat-truncation=	me	build_mod	1	
-core/mods/mod_loader.c	-Wformat-truncation=	me	mod_hot_reload	3	
-core/mods/mod_loader.c	-Wformat-truncation=	me	mod_list_srcs	1	
-core/mods/mod_loader.c	-Wformat-truncation=	me	mods_prepare_task	1	
-core/mods/mod_loader.c	-Wformat-truncation=	me	openpete_mods_compile_all	2	
 core/mods/mod_shader.c	-Wformat-truncation=	me	list_dir_sorted	1	
-core/mods/mod_shader.c	-Wformat-truncation=	me	openpete_mods_shader_register_locked	1	
-core/mods/mod_shader.c	-Wformat-truncation=	me	shader_link_decide	1	
-core/mods/mod_texture.c	-Wformat-truncation=	me	openpete_mods_texture_scan_root	1	
 core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/mods/mod_texture.c	-Wunused-function	me	-	34	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'aN' of 'hd_pc'	2	
@@ -83,6 +70,4 @@ games/spyro-1/renderer/transition.c	-Wmissing-field-initializers	fe	missing init
 games/spyro-2/features/cutscene_skip.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-3/features/transition_call.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
 games/spyro-3/renderer/terrain_probe.c	-Wmissing-field-initializers	fe	missing initializer for field 'overlay' of 'feature_dispatch_entry_t'	2	
-tests/unit/atomic_write_test.c	-Wformat-truncation=	me	main	1	
-tests/unit/mod_material_link_test.c	-Wformat-truncation=	me	collect	1	
 third_party/PsyCross/include/psx/libcd.h	-Wparentheses	fe	unnecessary parentheses in declaration of 'CdDataCallback'	1	

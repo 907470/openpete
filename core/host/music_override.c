@@ -182,7 +182,9 @@ void music_override_init(void)
         OPL_WARN_F("music", "shipped wav overrides disabled: SDL_GetBasePath: %s",
                    SDL_GetError());
 
-    char user[1024];
+    /* openpete_paths_data_dir fails when the path does not fit, so sizing
+     * `user` short of a dir by "/music/" keeps the joined path whole. */
+    char user[sizeof(s.dir[0]) - (sizeof "/music/" - 1)];
     if (openpete_paths_data_dir("assets", user, sizeof user, 0) == 0) {
         char dir[sizeof(s.dir[0])];
         snprintf(dir, sizeof dir, "%s/music/", user);

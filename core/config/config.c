@@ -1014,8 +1014,9 @@ static void saved_keys_copy_table(const toml_table_t *tab, const char *domain) {
             for (int j = 0; j < m && n < CFG_SAVED_KEY_TOKS; j++) {
                 toml_datum_t d = toml_string_at(arr, j);
                 if (!d.ok) continue;
-                snprintf(bufs[n], CFG_KEY_MAX, "%s", d.u.s);
+                const int len = snprintf(bufs[n], CFG_KEY_MAX, "%s", d.u.s);
                 free(d.u.s);
+                if (len >= CFG_KEY_MAX) continue;   /* no key name is this long */
                 toks[n] = bufs[n];
                 n++;
             }
@@ -1025,7 +1026,8 @@ static void saved_keys_copy_table(const toml_table_t *tab, const char *domain) {
             int ib = 0, bv = 0;
             if (!raw || toml_scalar_to_string(raw, val, sizeof val, &ib, &bv) != 0)
                 continue;
-            snprintf(bufs[0], CFG_KEY_MAX, "%s", val);
+            if (snprintf(bufs[0], CFG_KEY_MAX, "%s", val) >= CFG_KEY_MAX)
+                continue;   /* no key name is this long */
             toks[0] = bufs[0];
             n = 1;
         }

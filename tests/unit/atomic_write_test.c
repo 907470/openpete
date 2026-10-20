@@ -228,7 +228,7 @@ static int case_dir(void) {
 
 int main(int argc, char** argv) {
     snprintf(s_root, sizeof s_root, "%s", argc > 1 ? argv[1] : "/tmp/atomic_write_test.d");
-    char cmd[600];
+    char cmd[2 * sizeof s_root + 32];
     snprintf(cmd, sizeof cmd, "rm -rf '%s' && mkdir -p '%s'", s_root, s_root);
     if (system(cmd) != 0) return fail("cannot create the test directory");
 

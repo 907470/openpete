@@ -229,7 +229,7 @@ int openpete_mods_texture_scan_root(const char* dir, const char* owner) {
                        "hex id - skipped", path, de->d_name);
             continue;
         }
-        char file[1440];
+        char file[sizeof path + 1 + sizeof de->d_name];
         snprintf(file, sizeof file, "%s/%s", path, de->d_name);
         int w = 0, h = 0, comp = 0;
         unsigned char* px = stbi_load(file, &w, &h, &comp, 4);

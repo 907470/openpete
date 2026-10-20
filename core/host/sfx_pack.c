@@ -442,11 +442,15 @@ static void scan_dir(int si)
     int added = 0;
     while ((de = readdir(d)) != NULL) {
         op_sfx_name id;
-        char path[640];
+        char path[sizeof(((sp_entry*)0)->path)];
         struct stat st;
         sp_entry* e;
         if (op_sfx_name_parse(de->d_name, &id) == OP_SFX_NAME_NONE) continue;
-        snprintf(path, sizeof path, "%s/%s", src_at(si)->dir, de->d_name);
+        if (snprintf(path, sizeof path, "%s/%s", src_at(si)->dir, de->d_name) >= (int)sizeof path) {
+            OPL_WARN_F("sfxpack", "%s/%s: path exceeds %zu bytes - skipped",
+                       src_at(si)->dir, de->d_name, sizeof path - 1);
+            continue;
+        }
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
         e = entry_upsert(si, path, id, &st);
         if (!e) break;
@@ -518,7 +522,9 @@ static void rescan(void)
     snprintf(base_src->label, sizeof base_src->label, "base pack");
     scan_dir(0);
     if (!s_dir_override[0] && !(env && *env)) {
-        char user[512];
+        /* openpete_paths_data_dir fails when the path does not fit, so sizing
+         * `user` short of a source dir by "/sfx" keeps the joined path whole. */
+        char user[sizeof(((sp_source*)0)->dir) - (sizeof "/sfx" - 1)];
         if (openpete_paths_data_dir("assets", user, sizeof user, 0) == 0) {
             sp_source* us = src_push();
             if (us) {

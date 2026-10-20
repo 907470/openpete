@@ -1324,10 +1324,12 @@ static void api_notify(openpete_mod_t* self, const char* key,
     va_start(ap, fmt);
     vsnprintf(text, sizeof text, fmt, ap);
     va_end(ap);
+    /* A namespaced key that does not fit the OSD's key field posts without
+     * coalescing rather than sharing a truncated key with another one. */
     char nskey[OPENPETE_OSD_KEY_MAX];
-    if (key && *key) snprintf(nskey, sizeof nskey, "%s/%s", m->id, key);
-    openpete_osd_notify(m->id, (key && *key) ? nskey : NULL,
-                        timeout_ms, "%s", text);
+    const int keyed = key && *key &&
+                      snprintf(nskey, sizeof nskey, "%s/%s", m->id, key) < (int)sizeof nskey;
+    openpete_osd_notify(m->id, keyed ? nskey : NULL, timeout_ms, "%s", text);
 }
 
 /** @brief Set the mod's callback for live enable and disable notifications.
@@ -1614,14 +1616,20 @@ static void mod_game_build_dir(const char* mod_dir, char* out, size_t cap) {
 
 /** @brief Format the path of a mod's object for the running game, <mod_dir>/.build/<game-id>/<id> plus the platform extension.
  *
+ * A path that does not fit is logged; @p out then holds it truncated.
  * @param mod_dir Mod directory.
  * @param id Mod id.
- * @param out Output buffer; the path is truncated to @p cap.
- * @param cap Size of @p out. */
-static void mod_obj_path(const char* mod_dir, const char* id, char* out,
-                         size_t cap) {
-    snprintf(out, cap, "%s/.build/%s/%s" MOD_DL_EXT, mod_dir, mods_build_game(),
-             id);
+ * @param out Output buffer.
+ * @param cap Size of @p out.
+ * @return 0 when the whole path fits, else -1. */
+static int mod_obj_path(const char* mod_dir, const char* id, char* out,
+                        size_t cap) {
+    const int n = snprintf(out, cap, "%s/.build/%s/%s" MOD_DL_EXT, mod_dir,
+                           mods_build_game(), id);
+    if (n >= 0 && (size_t)n < cap) return 0;
+    OPL_ERROR_F("mods", "%s: object path under %s exceeds %zu bytes", id,
+                mod_dir, cap - 1);
+    return -1;
 }
 
 /** @brief Create <mod_dir>/.build and the running game's directory below it.
@@ -1652,11 +1660,12 @@ static int mod_find_prebuilt(const char* mod_dir, const char* id, char* out,
     static const char* const k_dirs[] = { NULL, "any/", "" };
     struct stat st;
     for (int k = MOD_OBJ_GAME; k <= MOD_OBJ_LEGACY; k++) {
-        if (k == MOD_OBJ_GAME)
-            mod_obj_path(mod_dir, id, out, cap);
-        else
+        if (k == MOD_OBJ_GAME) {
+            if (mod_obj_path(mod_dir, id, out, cap) != 0) return -1;
+        } else {
             snprintf(out, cap, "%s/.build/%s%s" MOD_DL_EXT, mod_dir,
                      k_dirs[k], id);
+        }
         if (stat(out, &st) == 0 && S_ISREG(st.st_mode)) return k;
     }
     mod_obj_path(mod_dir, id, out, cap);
@@ -1808,9 +1817,14 @@ static void mod_hot_reload(struct openpete_mod* mod) {
      * Mods-panel Apply reaches this path, so a stray syntax error must
      * cost a log line, not the session's mod. */
     static unsigned s_hot_n = 0;
-    char hot_path[MOD_PATH_MAX + 32];
-    snprintf(hot_path, sizeof hot_path, "%s/.build/%s/%s.hot%u" MOD_DL_EXT,
-             mod->dir, mods_build_game(), mod->id, ++s_hot_n);
+    char hot_path[sizeof mod->obj_path];
+    if (snprintf(hot_path, sizeof hot_path, "%s/.build/%s/%s.hot%u" MOD_DL_EXT,
+                 mod->dir, mods_build_game(), mod->id, ++s_hot_n)
+        >= (int)sizeof hot_path) {
+        OPL_ERROR_F("mods", "%s: reload object path exceeds %zu bytes - keeping "
+                    "the running object", mod->id, sizeof hot_path - 1);
+        return;
+    }
     const char* src_obj = mod->obj_path;
     int obj_kind = mod->obj_kind;   /* a compile below makes it MOD_OBJ_GAME */
     if (need_compile) {
@@ -4006,9 +4020,15 @@ static int mod_list_srcs(const char* mod_dir, mod_fvec* out) {
     while ((e = readdir(d)) != NULL) {
         size_t len = strlen(e->d_name);
         if (len < 3 || strcmp(e->d_name + len - 2, ".c") != 0) continue;
+        char path[sizeof ((mod_src_t*)0)->path];
+        if (snprintf(path, sizeof path, "%s/%s", src_dir, e->d_name) >= (int)sizeof path) {
+            OPL_ERROR_F("mods", "%s/%s: source path exceeds %zu bytes - not compiled",
+                        src_dir, e->d_name, sizeof path - 1);
+            continue;
+        }
         mod_src_t* slot = (mod_src_t*)mod_fvec_push(out);
         if (!slot) break;
-        snprintf(slot->path, MOD_PATH_MAX, "%s/%s", src_dir, e->d_name);
+        memcpy(slot->path, path, sizeof path);
     }
     closedir(d);
     /* The build key hashes the sources in order, so the order must not
@@ -4280,7 +4300,7 @@ static void mod_read_stamp(const char* mod_dir, const char* id,
 static int mod_key_cached(const char* mod_dir, const char* id,
                           const char* key) {
     char so_path[MOD_PATH_MAX];
-    mod_obj_path(mod_dir, id, so_path, sizeof so_path);
+    if (mod_obj_path(mod_dir, id, so_path, sizeof so_path) != 0) return 0;
     if (file_mtime(so_path) == (time_t)-1) return 0;
     char stamped[65];
     mod_read_stamp(mod_dir, id, MOD_STAMP_OK, stamped);
@@ -4489,7 +4509,7 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
     }
     snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
 
-    mod_obj_path(mod->dir, mod->id, so_path, so_path_len);
+    if (mod_obj_path(mod->dir, mod->id, so_path, so_path_len) != 0) return -1;
     mod->obj_kind = MOD_OBJ_GAME;
     if (mod_key_cached(mod->dir, mod->id, key)) {
         OPL_DEBUG_F("mods", "%s: cached %s up to date (key %.12s)",
@@ -5776,7 +5796,7 @@ static int mods_prepare_task(void* ud) {
         const mod_ref_t* r = ref_at(&c->refs, si);
         if (c->progress) c->progress("COMPILING MODS", i, c->n_stale);
         char so_path[MOD_PATH_MAX];
-        mod_obj_path(r->dir, r->id, so_path, sizeof so_path);
+        if (mod_obj_path(r->dir, r->id, so_path, sizeof so_path) != 0) continue;
         /* A failure is logged (+ compile.log) and left for init to
          * report as disabled - prepare never aborts the boot. */
         (void)mod_compile(r->dir, r->id, c->sdk_dir,
@@ -5885,7 +5905,10 @@ static int compile_all_for_game(const char* mods_dir, const char* sdk_dir) {
             continue;
         }
         char so_path[MOD_PATH_MAX];
-        mod_obj_path(r.dir, r.id, so_path, sizeof so_path);
+        if (mod_obj_path(r.dir, r.id, so_path, sizeof so_path) != 0) {
+            n_failed++;
+            continue;
+        }
         if (mod_compile(r.dir, r.id, sdk_dir, key, so_path, 1) == 0)
             n_compiled++;
         else
@@ -5907,7 +5930,8 @@ static int compile_all_for_game(const char* mods_dir, const char* sdk_dir) {
  * @return The number of staged games. */
 static int sdk_staged_games(const char* sdk_dir, mod_fvec* ids) {
     char games_dir[MOD_PATH_MAX];
-    snprintf(games_dir, sizeof games_dir, "%s/games", sdk_dir);
+    if (snprintf(games_dir, sizeof games_dir, "%s/games", sdk_dir) >= (int)sizeof games_dir)
+        return 0;
     DIR* d = opendir(games_dir);
     if (!d) return 0;
     struct dirent* e;
