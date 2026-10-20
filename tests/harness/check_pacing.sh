@@ -25,12 +25,21 @@
 #      wherever it cannot run.
 #
 # Usage: tests/harness/check_pacing.sh [--game SLUG] [--windows] [--seconds N]
-#        [--p99-us N] [--tier-b]
+#        [--p99-us N] [--tier-b] [--ctest]
+#
+# --ctest: the ctest entry; the gate SKIPs unless OPENPETE_PACING_TESTS=1,
+# since plain ctest has no label exclusion and the gate opens windows on the
+# desktop for about eight minutes.
 #
 # Exit: 0 pass, 2 a real regression, 3 vacuous (nothing engaged), 64 skip.
 set -uo pipefail
 
-
+for a in "$@"; do
+  if [ "$a" = --ctest ] && [ "${OPENPETE_PACING_TESTS:-}" != 1 ]; then
+    echo "[pacing] SKIP: a ctest run opens windows on the desktop only with OPENPETE_PACING_TESTS=1"
+    exit 64
+  fi
+done
 
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
@@ -63,6 +72,7 @@ while [ $# -gt 0 ]; do
     --p99-us)   P99_US="$2"; shift 2 ;;
     --inject-us) INJECT_US="$2"; shift 2 ;;
     --tier-b)   TIER_B=1; shift ;;
+    --ctest)    shift ;;   # opt-in checked above
     --late-per-1000) LATE_PER_1000="$2"; shift 2 ;;
     --game)     shift 2 ;;   # consumed by pg_parse_game above
     --game=*)   shift ;;

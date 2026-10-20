@@ -1383,10 +1383,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # and fails the test deliberately: a gate that cannot reach its own subject
     # must never read as a pass. 64 = SKIP (no binary / disc / display).
     #
-    # NOT in the default set: it runs four 120 s legs and needs a display for
-    # three of them. Run with `ctest -L pacing`.
+    # It runs four 120 s legs and opens a window for three of them. Plain
+    # ctest has no label exclusion, so the test SKIPs unless
+    # OPENPETE_PACING_TESTS=1: `OPENPETE_PACING_TESTS=1 ctest -L pacing`.
     add_test(NAME pacing_strict
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_pacing.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_pacing.sh --ctest)
     set_tests_properties(pacing_strict PROPERTIES
         LABELS "slow;pacing"
         RESOURCE_LOCK openpete_game
@@ -1749,8 +1750,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # trips within the stall limit (Linux, and Windows when the MinGW exe is
     # built), the community-mod triple trips on Windows when
     # OPENPETE_HANG_STALL_MODS names its copies, and the attract demo and the
-    # level-transition movie never trip. VACUOUS (fail) when the monitor took
-    # no sample; skips (exit 64) when every row lacks its binary or inputs.
+    # level-transition movie never trip, and the Spyro 3 portal row's first
+    # sight of the Crystal Islands picture at midnight_mountain under
+    # --lod extended holds the game fiber under 500 ms. VACUOUS (fail) when
+    # the monitor took no sample; skips (exit 64) when every row lacks its
+    # binary or inputs.
     add_test(NAME hang_stall
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_hang_stall.sh
                      --build-dir=${CMAKE_BINARY_DIR})
