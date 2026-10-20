@@ -241,7 +241,7 @@ static int list_dir_sorted(const char* dir, const char* exts,
         snprintf(hay, sizeof hay, "%s;", exts);
         if (!strstr(hay, pat)) continue;
         if (strlen(name) >= 128) continue;
-        snprintf(names[n++], 128, "%s", name);
+        snprintf(names[n++], 128, "%.127s", name);
     }
     closedir(d);
     for (int i = 1; i < n; i++)          /* insertion sort, tiny n */

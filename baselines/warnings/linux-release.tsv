@@ -3,14 +3,13 @@
 # options: -Wall -Wextra
 # key-columns: 4
 # written-by: hook
-# head: 4456dee2be564127ffadfafb54d0e4f5dd4857c7
+# head: b5d4ca2b534742cfe6290eec0e64be97b8484d47
 file	option	kind	detail	count	accepted
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'action_label' of 'knob_desc_t' {aka 'const struct knob_desc'}	186	
 core/config/knob_registry.c	-Wmissing-field-initializers	fe	missing initializer for field 'def_str' of 'knob_desc_t' {aka 'const struct knob_desc'}	1	
 core/host/texture_pack.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/host/texture_pack.c	-Wunused-function	me	-	34	
 core/input/keymap.c	-Wmissing-field-initializers	fe	missing initializer for field 'menu_exempt' of 'km_resolve_t'	3	
-core/mods/mod_shader.c	-Wformat-truncation=	me	list_dir_sorted	1	
 core/mods/mod_texture.c	-Wunused-function	fe	'stbi_load_gif_from_memory' declared 'static' but never defined	1	
 core/mods/mod_texture.c	-Wunused-function	me	-	34	
 core/renderer/native_render.c	-Wmissing-field-initializers	fe	missing initializer for field 'aN' of 'hd_pc'	2	
