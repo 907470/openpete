@@ -32,7 +32,8 @@
 # a fake supervisor on this machine): poll framing, the unit-end check and
 # its refusals under OPENPETE_STREAM_DROP, kill in the last poll interval and
 # re-queue, the exemptions, stop (running, pending, local, racing
-# completion, no ledger row), expected moves, the run candidate an accepted
+# completion, no ledger row), the transport retry of a connect failure
+# (transient, persistent, a remote exit not retried), expected moves, the run candidate an accepted
 # pull leaves in the stream directory, the kept rows of a stopped and
 # of an attempts-exhausted unit, and no ledger row from a filtered unit or an
 # attempt that imported rows.

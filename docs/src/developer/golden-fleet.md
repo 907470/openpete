@@ -269,6 +269,37 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
     `stop-request` and `crashes/`. A host unreachable at teardown keeps its directory for
     `clean`.
 
+## Connect retries
+
+A connect failure is retried. It is an ssh or rsync command of a remote
+host that exits 255 (rsync: 255 or 12) with one of ssh's pre-session
+messages on stderr: `ssh: connect to host <h> port <p>:` followed by
+`Connection timed out`, `Connection refused`, `No route to host`,
+`Network is unreachable` or `Operation timed out`; `ssh: Could not
+resolve hostname`; `kex_exchange_identification:`; or `Connection timed
+out during banner exchange`. The remote command never started, so a
+retry repeats no work. Each retry waits 5, 15, then 30 s (at most 3
+retries, `TRANSPORT_BACKOFF_S`) and logs
+`[fleet] <host>: <operation>: <ssh line>; retry k/3 in N s`; a stop
+request ends the wait. A remote command's own nonzero exit, 255
+included, is not retried.
+
+Retried: preflight's probe, `clean`, the image load (the save restarts
+with it), run-directory creation, base check and refresh, every sync
+push, the torn-sync recheck, the build seed, the binary and build-tree
+pulls, disc and binary hashes, unit launch, kill, row carry and pulls,
+crash pulls, reap and teardown deletion. Not retried: the per-unit poll
+(a host unreachable for 10 min is dropped instead), the clock-skew
+measurement (a retry would widen its bound) and `status`.
+
+A recheck whose rsync connects after a retry compares as usual; one that
+cannot connect after the retries fails the run with
+`<host>: recheck of <dir> could not connect after 4 attempts: <ssh
+line>`, not as a torn sync. Any other call that exhausts its retries
+fails as before, the message naming the host, after
+`[fleet] <host>: <operation>: connect failed 4 times, giving up: <ssh
+line>`.
+
 ## Row resume
 
 A unit's or canary's supervisor sets `OPENPETE_RESUME_RUN=<run-id>`
@@ -632,6 +663,8 @@ set by hand does not reach a unit.
 | `local: 3 loaded legs at slots N; the machine is not idle` | The local machine was busy through three legs; rerun when it is idle. |
 | `leg calib-... compared N of M blessed rows, K missing; not a full unit` | A capture leg timed out or failed; the `add` printed the tails of the leg's `capture.log` and `verdict.log` before deleting the run directory. |
 | `torn sync: <host> snapshot differs from ...` | The checkout changed during the sync; rerun when no edit or build is in flight. |
+| `<host>: script exited 255: ssh: connect to host ...` (or `rsync ... exited 255`) after `<host>: <operation>: connect failed 4 times, giving up` | Four connects to the host failed over about 70 s (Connect retries); check its network and sshd, then rerun. |
+| `<host>: recheck of <dir> could not connect after 4 attempts: ...` | The same during the torn-sync recheck; the copy was not found torn. |
 | `synced <file> hashes to ..., blessed header disc-... is ...` | The disc image differs from the one the golden was blessed on. |
 | `canary: REFUSED: N of M tile(s) differ between ...` | The hosts render differently; take the named host out (`enabled = false`) until the difference is explained. |
 | `REFUSED: blessed-sha256 ... differs from the local blessed.tsv` | The host decided against another manifest; the checkout changed after the sync. |

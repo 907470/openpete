@@ -720,6 +720,76 @@ def write_host_table(path, name, cfg):
 
 # ---- transport --------------------------------------------------------------
 
+# ssh's messages for a session that ended before the remote command started
+# (TCP connect, name lookup, or the server's identification banner); rsync
+# relays them on stderr when its remote shell fails the same way. Only these
+# are retried: the remote side ran nothing, so the retry cannot repeat work.
+CONNECT_FAIL_RE = re.compile(
+    r"^(?:ssh: connect to host \S+ port \d+: (?:Connection timed out|Connection refused|"
+    r"No route to host|Network is unreachable|Operation timed out)"
+    r"|ssh: Could not resolve hostname \S+: .*"
+    r"|kex_exchange_identification: .*"
+    r"|Connection timed out during banner exchange)\s*$", re.M)
+# ssh exits 255 on its own failure; rsync exits 255 or 12 when its remote shell does.
+CONNECT_FAIL_RCS = (255, 12)
+TRANSPORT_BACKOFF_S = (5, 15, 30)   # sleep before retry k; len() = retries after the first try
+
+
+def connect_failure(cp):
+    """Return ssh's connect-failure line when a CompletedProcess failed before its remote command started, else ''.
+
+    @param cp a CompletedProcess of an ssh or rsync command; stderr str, bytes or None
+    @return the matched stderr line, or '' for success, a remote command's own exit, or no match
+    """
+    if cp.returncode not in CONNECT_FAIL_RCS:
+        return ""
+    err = cp.stderr if isinstance(cp.stderr, str) else (cp.stderr or b"").decode(errors="replace")
+    m = CONNECT_FAIL_RE.search(err)
+    return m.group(0).strip() if m else ""
+
+
+def backoff_sleep(seconds):
+    """Sleep seconds in STOP_POLL_S steps, raising StopRequested when the installed stop predicate holds."""
+    end = time.monotonic() + seconds
+    while True:
+        stop_point()
+        left = end - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(STOP_POLL_S, left))
+
+
+def transport_run(host, what, argv, retry=True, **kw):
+    """Run an ssh or rsync argv for a host through run_proc, retrying a connect failure with backoff.
+
+    A try whose stderr carries ssh's connect-failure line (connect_failure)
+    is retried after TRANSPORT_BACKOFF_S[k], each retry logged with the
+    host and the operation; any other exit, the remote command's own nonzero
+    status included, returns at once. The last try's result is returned
+    after the retries are spent, logged as given up.
+    @param host the Host the command reaches (a local host runs once)
+    @param what the operation named in the retry log
+    @param argv the command
+    @param retry false runs once (callers that tolerate a miss: poll, clock skew, status)
+    @param kw run_proc's keyword arguments; input is re-fed on each try
+    @return the CompletedProcess of the last try
+    """
+    tries = 1 + (len(TRANSPORT_BACKOFF_S) if retry and not host.local else 0)
+    for k in range(tries):
+        cp = run_proc(argv, **kw)
+        line = connect_failure(cp)
+        if not line or host.local:
+            return cp
+        if k + 1 == tries:
+            if retry:
+                print(f"[fleet] {host.name}: {what}: connect failed {tries} times, giving up: {line}")
+            return cp
+        wait = TRANSPORT_BACKOFF_S[k]
+        print(f"[fleet] {host.name}: {what}: {line}; retry {k + 1}/{tries - 1} in {wait} s")
+        backoff_sleep(wait)
+    return cp
+
+
 class Host:
     """One fleet host: its config and a local or ssh transport."""
 
@@ -751,12 +821,18 @@ class Host:
             remote_cmd = f"{RUN_TAG_VAR}={shlex.quote(_run_tag)} {remote_cmd}"
         return ["ssh", *SSH_OPTS, self.cfg["ssh"], remote_cmd]
 
-    def run_script(self, script, args=(), timeout=120, check=False, binary=False, tag=True):
-        """Run a bash script on the host via `bash -s`, script on stdin; binary keeps stdout as bytes."""
+    def run_script(self, script, args=(), timeout=120, check=False, binary=False, tag=True,
+                   retry=True, what="script"):
+        """Run a bash script on the host via `bash -s`, script on stdin; binary keeps stdout as bytes.
+
+        A connect failure is retried (transport_run) unless retry is false;
+        timeout bounds each try.
+        """
         cmd = "bash -s -- " + " ".join(shlex.quote(str(a)) for a in args)
         try:
-            cp = run_proc(self.argv(cmd, tag), input=script.encode() if binary else script,
-                          text=not binary, timeout=timeout)
+            cp = transport_run(self, what, self.argv(cmd, tag), retry=retry,
+                               input=script.encode() if binary else script,
+                               text=not binary, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise FleetError(f"{self.name}: script timed out after {timeout} s")
         if check and cp.returncode != 0:
@@ -818,11 +894,11 @@ if [ -d "$root" ]; then echo "root_bytes=$(du -sb "$root" 2>/dev/null | cut -f1)
 '''
 
 
-def probe(host):
-    """Probe a host in one script; returns a dict with reachable=False on failure."""
+def probe(host, retry=True):
+    """Probe a host in one script; returns a dict with reachable=False on failure; retry=False makes one connect attempt."""
     try:
         cp = host.run_script(PROBE_SCRIPT, [host.fleet_root, host.cfg.get("engine", ""),
-                                            IMAGE_TAG], timeout=60)
+                                            IMAGE_TAG], timeout=60, retry=retry, what="probe")
     except FleetError as e:
         return {"reachable": False, "error": str(e)}
     if cp.returncode != 0 or "root=" not in cp.stdout:
@@ -984,7 +1060,12 @@ exit 0
 
 
 def transfer_image(host, engine, host_engine, local_id, dry_run):
-    """Stream the image saved under the :fleet tag alone into the host's engine."""
+    """Stream the image saved under the :fleet tag alone into the host's engine.
+
+    The save restarts with each try of the load: a load whose ssh failed to
+    connect (connect_failure) read none of the stream, and is retried after
+    TRANSPORT_BACKOFF_S like transport_run's.
+    """
     subprocess.run([engine, "tag", local_id, IMAGE_TAG], check=True, capture_output=True)
     save = [engine, "save", IMAGE_TAG]
     load = host.stream_command([host_engine, "load"])
@@ -993,14 +1074,23 @@ def transfer_image(host, engine, host_engine, local_id, dry_run):
         return
     before = set(host.run_script(NAMES_PRESENT, [host_engine, *LOAD_NAMES]).stdout.split())
     t0 = time.monotonic()
-    src = subprocess.Popen(save, stdout=subprocess.PIPE, start_new_session=True)
-    try:
-        dst = run_proc(load, stdin=src.stdout, text=True)
-    except BaseException:
+    for k in range(1 + len(TRANSPORT_BACKOFF_S)):
+        src = subprocess.Popen(save, stdout=subprocess.PIPE, start_new_session=True)
+        try:
+            dst = run_proc(load, stdin=src.stdout, text=True)
+        except BaseException:
+            kill_group(src)
+            raise
+        finally:
+            src.stdout.close()
+        line = connect_failure(dst)
+        if not line or k == len(TRANSPORT_BACKOFF_S):
+            break
         kill_group(src)
-        raise
-    finally:
-        src.stdout.close()
+        wait = TRANSPORT_BACKOFF_S[k]
+        print(f"[fleet] {host.name}: image load: {line}; retry {k + 1}/{len(TRANSPORT_BACKOFF_S)} "
+              f"in {wait} s")
+        backoff_sleep(wait)
     if src.wait() != 0 or dst.returncode != 0:
         raise FleetError(f"{host.name}: image transfer failed (save {src.returncode}, "
                          f"load {dst.returncode}): {dst.stderr.strip()[-300:]}")
@@ -1127,7 +1217,7 @@ def cmd_status(a):
     print(f"host file: {path}")
     print(f"local image: {local_image()} {local_id[:12] or 'absent'}")
     for h in select_hosts(hosts, a.hosts):
-        i = probe(h)
+        i = probe(h, retry=False)
         where = "local" if h.local else h.cfg["ssh"]
         print(f"[{h.name}] {where}")
         if not i["reachable"]:
@@ -2046,6 +2136,8 @@ def binary_rels():
 
     The tree is a shared-linkage Linux build: one executable, `openpete` at its
     root, with each game's <tag>-recomp.so beside it."""
+    # rumble-guard: no-launch  input-lock-guard: no-launch  (the path is hashed and synced; the
+    # coordinator never runs the binary, the capture image's supervisor does)
     return [f"{BUILD_TREE}/openpete"] + [f"{BUILD_TREE}/{g.replace('-', '')}-recomp.so" for g in GAMES]
 
 
@@ -2088,7 +2180,7 @@ def rsync_push(host, src, listfile, dest, link_dest=None):
         argv.append(f"--link-dest={link_dest}")
     argv += [src.rstrip("/") + "/", remote_path(host, dest.rstrip("/")) + "/"]
     t0 = time.monotonic()
-    cp = run_proc(argv, text=True)
+    cp = transport_run(host, f"rsync to {dest}", argv, text=True)
     if cp.returncode != 0:
         raise FleetError(f"{host.name}: rsync to {dest} exited {cp.returncode}: "
                          f"{cp.stderr.strip()[-400:]}")
@@ -2097,10 +2189,18 @@ def rsync_push(host, src, listfile, dest, link_dest=None):
 
 
 def rsync_recheck(host, src, listfile, dest):
-    """Return the content changes between local src and dest over a list (empty when equal)."""
+    """Return the content changes between local src and dest over a list (empty when equal).
+
+    A connect failure is retried (transport_run) and, once the retries are
+    spent, raised naming the host: an unreachable host is not a torn copy.
+    """
     argv = ["rsync", "-n", "-i", "-c", "-L", "--from0", f"--files-from={listfile}",
             *rsync_base(host), src.rstrip("/") + "/", remote_path(host, dest.rstrip("/")) + "/"]
-    cp = run_proc(argv, text=True)
+    cp = transport_run(host, f"recheck of {dest}", argv, text=True)
+    line = connect_failure(cp)
+    if line and not host.local:
+        raise FleetError(f"{host.name}: recheck of {dest} could not connect after "
+                         f"{1 + len(TRANSPORT_BACKOFF_S)} attempts: {line}")
     changes = [ln for ln in cp.stdout.splitlines()
                if ln[:1] in "<>ch*" and ln[1:2] in "fLS" or ln.startswith("*deleting")]
     if cp.returncode != 0:
@@ -2133,7 +2233,7 @@ def rsync_pull(host, src_dir, dst_dir, names=None, includes=None):
     if includes:
         argv.append("--exclude=*")
     argv += [remote_path(host, src_dir.rstrip("/")) + "/", dst_dir.rstrip("/") + "/"]
-    cp = run_proc(argv, text=True)
+    cp = transport_run(host, f"rsync from {src_dir}", argv, text=True)
     if lst:
         os.unlink(lst)
     return cp.returncode, cp.stderr.strip()[-300:]
@@ -2389,13 +2489,13 @@ class Coordinator:
 
     # -- small remote helpers --
 
-    def script(self, hs, script, args, timeout=300, check=True):
-        """Run a script on a host; on failure raise naming the host."""
-        return hs.host.run_script(script, args, timeout=timeout, check=check)
+    def script(self, hs, script, args, timeout=300, check=True, what="script"):
+        """Run a script on a host, a connect failure retried; on failure raise naming the host."""
+        return hs.host.run_script(script, args, timeout=timeout, check=check, what=what)
 
     def mkdirs(self, hs):
         """Create the run directory on a host and mark it touched."""
-        self.script(hs, "set -eu; mkdir -p \"$1/ship\" \"$1/tree\"", [hs.run_dir])
+        self.script(hs, "set -eu; mkdir -p \"$1/ship\" \"$1/tree\"", [hs.run_dir], what="mkdir")
         hs.touched = True
 
     def push_ship(self, hs):
@@ -2412,12 +2512,12 @@ class Coordinator:
         src = [f"coordinator={os.uname().nodename}", f"path={self.tree}",
                f"last-run={int(time.time())}"]
         self.script(hs, REFRESH_BASE, [hs.root, tree_key(self.tree), self.run_id, *src],
-                    timeout=1800)
+                    timeout=1800, what="base refresh")
 
     def base_exists(self, hs):
         """True when the host holds trees/<key>."""
         cp = self.script(hs, 'test -d "$1"', [f"{hs.root}/trees/{tree_key(self.tree)}"],
-                         check=False)
+                         check=False, what="base check")
         return cp.returncode == 0
 
     # -- sync --
@@ -2533,7 +2633,8 @@ class Coordinator:
     def remote_build(self):
         """Build in the build host's snapshot, then relay its build tree to the other hosts."""
         bh = self.build_hs
-        cp = self.script(bh, SEED_BUILD, [bh.root, tree_key(self.tree), self.run_id], timeout=1800)
+        cp = self.script(bh, SEED_BUILD, [bh.root, tree_key(self.tree), self.run_id], timeout=1800,
+                         what="build seed")
         print(f"[fleet] {bh.name}: build tree {cp.stdout.strip()} from its base")
         self.push_ship(bh)
         job = Job("build", pinned=bh.name)
@@ -2576,7 +2677,7 @@ class Coordinator:
             cue, bin_rel = disc_paths(self.tree, self.pb, g)
             want = self.blessed_disc(g)
             for hs in hosts or self.hosts:
-                cp = self.script(hs, HASH_SCRIPT, [f"{hs.run_dir}/tree", cue, bin_rel])
+                cp = self.script(hs, HASH_SCRIPT, [f"{hs.run_dir}/tree", cue, bin_rel], what="disc hash")
                 got = {ln.split(None, 1)[1]: ln.split(None, 1)[0]
                        for ln in cp.stdout.splitlines() if ln.strip()}
                 for key, rel in (("disc-cue", cue), ("disc-bin", bin_rel)):
@@ -2683,7 +2784,7 @@ class Coordinator:
         att = Attempt(job, hs, deadline_s)
         args = [f"{hs.run_dir}/ship/supervise.sh", f"{att.base}.env", f"{att.base}.log",
                 *self.job_env(job, hs, att)]
-        cp = self.script(hs, LAUNCH_SCRIPT, args, timeout=60, check=False)
+        cp = self.script(hs, LAUNCH_SCRIPT, args, timeout=60, check=False, what="launch")
         if cp.returncode != 0:
             job.attempts -= 1
             self.drop(hs, f"launch failed: {cp.stderr.strip()[-200:]}")
@@ -2750,7 +2851,7 @@ class Coordinator:
         """Run POLL_SCRIPT for an attempt; take its new stream lines; return its state words ([] when unreachable)."""
         try:
             cp = att.hs.host.run_script(POLL_SCRIPT, [att.base, att.stream_off], timeout=60,
-                                        binary=True)
+                                        binary=True, retry=False)
             frames = parse_poll(cp.stdout) if cp.returncode == 0 else {}
         except (FleetError, ValueError) as e:
             print(f"[fleet] {att.hs.name}: poll of {att.job.name} failed: {e}")
@@ -2882,7 +2983,7 @@ class Coordinator:
             alt = relay if label == "build" and os.path.isdir(relay) else self.tree
             argv = ["rsync", "-a", "-c", "--from0", f"--files-from={lst}", *rsync_base(ref.host),
                     f"--copy-dest={alt}", src, root + "/"]
-            cp = run_proc(argv, text=True)
+            cp = transport_run(ref.host, f"pull of the {label} snapshot", argv, text=True)
             if cp.returncode != 0:
                 raise FleetError(f"{ref.name}: pulling its {label} snapshot exited {cp.returncode}: "
                                  f"{cp.stderr.strip()[-300:]}")
@@ -2894,7 +2995,7 @@ class Coordinator:
                     "--exclude=/golden-disc-hash.tsv",
                     f"--copy-dest={os.path.join(self.tree, BUILD_TREE)}",
                     remote_path(ref.host, f"{ref.run_dir}/tree/{BUILD_TREE}") + "/", dst + "/"]
-            cp = run_proc(argv, text=True)
+            cp = transport_run(ref.host, "pull of the build tree", argv, text=True)
             if cp.returncode != 0:
                 raise FleetError(f"{ref.name}: pulling its build tree exited {cp.returncode}: "
                                  f"{cp.stderr.strip()[-300:]}")
@@ -2904,7 +3005,7 @@ class Coordinator:
         for label, lst in lists:
             argv = ["rsync", "-n", "-i", "-c", "--from0", f"--files-from={lst}",
                     *rsync_base(ref.host), src, root + "/"]
-            cp = run_proc(argv, text=True)
+            cp = transport_run(ref.host, f"recheck of the staged {label} snapshot", argv, text=True)
             changes = [ln for ln in cp.stdout.splitlines() if ln[:1] in "<>ch*" and ln[1:2] in "fLS"]
             if cp.returncode != 0 or changes:
                 raise FleetError(f"{ref.name}: staged {label} snapshot differs from it "
@@ -2941,7 +3042,7 @@ class Coordinator:
         src = remote_path(host, cand.rstrip("/")) + "/"
         argv = ["rsync", "-a", *rsync_base(host), *link, "--include=/resume/",
                 "--include=/resume/*.stamp", "--exclude=*", src, dst + "/"]
-        cp = run_proc(argv, text=True)
+        cp = transport_run(host, f"pull of the stamps of {cand}", argv, text=True)
         if cp.returncode != 0:
             raise FleetError(f"{host.name}: pulling the stamps of {cand} exited {cp.returncode}: "
                              f"{cp.stderr.strip()[-300:]}")
@@ -2950,8 +3051,9 @@ class Coordinator:
         if tiles:
             lst = os.path.join(os.path.dirname(dst.rstrip("/")), ".rows.lst")
             write_list(lst, tiles)
-            cp = run_proc(["rsync", "-a", "--from0", f"--files-from={lst}", *rsync_base(host),
-                           *link, src, dst + "/"], text=True)
+            cp = transport_run(host, f"pull of the stamped tiles of {cand}",
+                               ["rsync", "-a", "--from0", f"--files-from={lst}", *rsync_base(host),
+                                *link, src, dst + "/"], text=True)
             os.unlink(lst)
             if cp.returncode not in (0, 23):
                 raise FleetError(f"{host.name}: pulling the stamped tiles of {cand} exited "
@@ -3193,7 +3295,7 @@ class Coordinator:
                 continue
             t0 = time.time()
             try:
-                cp = hs.host.run_script("date +%s.%N", timeout=30)
+                cp = hs.host.run_script("date +%s.%N", timeout=30, retry=False)
                 remote = float(cp.stdout.strip())
             except (FleetError, ValueError):
                 print(f"[fleet] {hs.name}: clock skew not measured")
@@ -3650,7 +3752,7 @@ class Coordinator:
                 "--include=u-*/cand.crashes/***", "--exclude=*",
                 remote_path(hs.host, hs.run_dir.rstrip("/")) + "/", dst + "/"]
         os.makedirs(dst, exist_ok=True)
-        cp = subprocess.run(argv, capture_output=True, text=True)
+        cp = transport_run(hs.host, "crash pull", argv, text=True)
         if cp.returncode != 0:
             print(f"[fleet] {hs.name}: crash pull failed (rc {cp.returncode}): {cp.stderr.strip()[-300:]}")
         legs = sorted(glob.glob(os.path.join(dst, "u-*", "cand.crashes", "*", "*", "rc.txt")))

@@ -32,6 +32,13 @@ write. Cases (each prints its counts):
               request naming another unit does not cover the run
   reap        REAP_SCRIPT ends a process carrying the run tag and spares an
               untagged one; a remote command and rsync's server carry the tag
+  transport   a connect failure (ssh exit 255 with ssh's connect line,
+              through a stand-in ssh on PATH) retried and logged for a
+              script, an rsync push and a recheck; a remote command's own
+              exit, 255 included, run once; a content change still a torn
+              sync; a persistent failure fails script, push and recheck
+              naming the host after 1 + len(TRANSPORT_BACKOFF_S) tries, and
+              is not reported torn; retry=False tries once
   clean       build/fleet-stream/<run-id> removed once its run directory is gone
   expect      EXPECTED 1/0/0, UNEXPECTED 0/1/0, EXPECTED-NOT-MOVED 0/0/1,
               NOT-REACHED on a stopped unit and a timed-out row, typo and
@@ -583,6 +590,143 @@ def case_reap(tmp):
           f"remote command {argv[-1]!r}; rsync {rsync[-1]!r}")
 
 
+FAKE_SSH = r'''#!/usr/bin/env bash
+# A stand-in ssh: the first $(cat fails) calls (every call for `always`)
+# fail as a connect timeout does; the rest run the remote command here.
+d="$FAKE_SSH_DIR"
+echo call >>"$d/calls"
+n=$(wc -l <"$d/calls"); fails=$(cat "$d/fails")
+if [ "$fails" = always ] || [ "$n" -le "$fails" ]; then
+    echo "ssh: connect to host 192.0.2.1 port 22: Connection timed out" >&2
+    exit 255
+fi
+while [ $# -gt 0 ]; do
+    case "$1" in -o|-l|-p) shift 2 ;; -*) shift ;; *) break ;; esac
+done
+shift
+exec bash -c "$*"
+'''
+
+
+class FakeSsh:
+    """A FAKE_SSH on PATH whose connect failures a case sets; calls counts its invocations."""
+
+    def __init__(self, tmp):
+        """Write the stand-in into tmp/fake-ssh/bin and put it first on PATH."""
+        self.dir = os.path.join(tmp, "fake-ssh")
+        os.makedirs(os.path.join(self.dir, "bin"))
+        path = os.path.join(self.dir, "bin", "ssh")
+        with open(path, "w") as f:
+            f.write(FAKE_SSH)
+        os.chmod(path, 0o755)
+        self.env = {"PATH": os.environ["PATH"], "FAKE_SSH_DIR": os.environ.get("FAKE_SSH_DIR")}
+        os.environ["PATH"] = os.path.join(self.dir, "bin") + os.pathsep + os.environ["PATH"]
+        os.environ["FAKE_SSH_DIR"] = self.dir
+
+    def arm(self, fails):
+        """Fail the next `fails` calls (an int, or 'always') and reset the call count."""
+        with open(os.path.join(self.dir, "fails"), "w") as f:
+            f.write(f"{fails}\n")
+        open(os.path.join(self.dir, "calls"), "w").close()
+
+    def calls(self):
+        """Return the number of calls since arm."""
+        with open(os.path.join(self.dir, "calls")) as f:
+            return len(f.read().splitlines())
+
+    def restore(self):
+        """Restore PATH and FAKE_SSH_DIR."""
+        for k, v in self.env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def captured(fn):
+    """Run fn with stdout captured; return (its result or the FleetError it raised, the output)."""
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            res = fn()
+        except gf.FleetError as e:
+            res = e
+    return res, buf.getvalue()
+
+
+def case_transport(tmp):
+    """A connect failure of ssh or rsync is retried and logged; a remote command's own exit is not; a persistent one fails naming the host, and a recheck that cannot connect is not a torn sync."""
+    fake = FakeSsh(tmp)
+    backoff, gf.TRANSPORT_BACKOFF_S = gf.TRANSPORT_BACKOFF_S, (0, 0, 0)
+    host = gf.Host("flaky", {"transport": "ssh", "ssh": "u@flaky"})
+    src, dst = os.path.join(tmp, "tr-src"), os.path.join(tmp, "tr-dst")
+    os.makedirs(src)
+    os.makedirs(dst)
+    for i in range(3):
+        with open(os.path.join(src, f"f{i}"), "w") as f:
+            f.write(f"{i}\n")
+    lst = os.path.join(tmp, "tr.lst")
+    gf.write_list(lst, ["f0", "f1", "f2"])
+    hs = argparse.Namespace(host=host, name=host.name, run_dir=dst)
+    try:
+        # Transient: two connect failures, then the script runs.
+        fake.arm(2)
+        cp, out = captured(lambda: host.run_script("echo hi", check=True, what="probe"))
+        retries = [ln for ln in out.splitlines() if ln.startswith("[fleet] flaky: probe: ssh: connect to host")]
+        check("transport-transient-ssh", not isinstance(cp, Exception) and cp.stdout.strip() == "hi"
+              and fake.calls() == 3 and len(retries) == 2 and "retry 2/3" in retries[1],
+              f"{fake.calls()} calls, {len(retries)} retry lines, "
+              f"result {cp if isinstance(cp, Exception) else cp.stdout.strip()!r:.80}")
+        # Transient rsync: the push, then a recheck whose first try cannot connect.
+        fake.arm(1)
+        res, out = captured(lambda: gf.rsync_push(host, src, lst, os.path.join(dst, "tree")))
+        push_calls = fake.calls()
+        fake.arm(1)
+        rc, out2 = captured(lambda: gf.Coordinator.recheck(None, hs, src, lst, "source"))
+        check("transport-transient-rsync", not isinstance(res, Exception) and push_calls == 2
+              and rc is None and fake.calls() == 2 and "recheck source: 0 changes" in out2
+              and "retry 1/3" in out2 and "torn" not in out2,
+              f"push {push_calls} calls ({res!r:.60}); recheck {fake.calls()} calls, result {rc!r:.80}; "
+              f"log {out2.strip().splitlines()[-1] if out2.strip() else ''!r}")
+        # A remote command's own exit (255 included) runs once.
+        fake.arm(0)
+        cp, _ = captured(lambda: host.run_script("echo boom >&2; exit 255"))
+        n255 = fake.calls()
+        fake.arm(0)
+        cp3, _ = captured(lambda: host.run_script(
+            "echo 'ssh: connect to host x port 22: Connection timed out' >&2; exit 3"))
+        check("transport-remote-exit", cp.returncode == 255 and n255 == 1 and cp3.returncode == 3
+              and fake.calls() == 1, f"exit 255: {n255} call(s); exit 3 with a connect line: {fake.calls()} call(s)")
+        # A real content change is still a torn sync.
+        with open(os.path.join(src, "f1"), "w") as f:
+            f.write("changed\n")
+        fake.arm(0)
+        err, _ = captured(lambda: gf.Coordinator.recheck(None, hs, src, lst, "source"))
+        check("transport-torn", isinstance(err, gf.FleetError) and str(err).startswith("torn sync: flaky")
+              and fake.calls() == 1, f"{fake.calls()} call(s): {str(err)[:80]!r}")
+        # Persistent: every try fails; script, push and recheck fail naming the host.
+        tries = 1 + len(gf.TRANSPORT_BACKOFF_S)
+        got = []
+        for name, fn in (("script", lambda: host.run_script("echo hi", check=True)),
+                         ("push", lambda: gf.rsync_push(host, src, lst, os.path.join(dst, "tree"))),
+                         ("recheck", lambda: gf.Coordinator.recheck(None, hs, src, lst, "source"))):
+            fake.arm("always")
+            err, out = captured(fn)
+            got.append((name, fake.calls(), isinstance(err, gf.FleetError) and str(err).startswith("flaky: ")
+                        and "torn" not in str(err), "giving up" in out))
+        check("transport-persistent", all(n == tries and ok and gave for _nm, n, ok, gave in got),
+              "; ".join(f"{nm}: {n} calls, error names the host {ok}, logged {gave}" for nm, n, ok, gave in got))
+        # poll's one try.
+        fake.arm(1)
+        captured(lambda: host.run_script("true", retry=False))
+        check("transport-no-retry", fake.calls() == 1, f"retry=False: {fake.calls()} call(s)")
+    finally:
+        gf.TRANSPORT_BACKOFF_S = backoff
+        fake.restore()
+
+
 def case_clean(tmp):
     """clean removes build/fleet-stream/<run-id> (STOPPED marker included) once the run directory is gone."""
     tree, root = os.path.join(tmp, "clean-tree"), os.path.join(tmp, "clean-root")
@@ -1028,7 +1172,7 @@ def main():
     gf.ledger_path = lambda: os.path.join(tmp, "ledger.tsv")
     try:
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_extra, case_exempt,
-                     case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
+                     case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_transport, case_clean,
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
                      case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat):
             case(tmp)
