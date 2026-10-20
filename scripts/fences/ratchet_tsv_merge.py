@@ -5,7 +5,8 @@ Registered by .gitattributes (`merge=ratchet-tsv`) and armed per clone:
   git config merge.ratchet-tsv.driver 'python3 scripts/fences/ratchet_tsv_merge.py %O %A %B %P'
 
 A baseline is a set of rows keyed by their first two columns (file,
-function) under a header of `#` lines and one column line. Every
+function), or by the first N columns its `# key-columns: N` header line
+names, under a header of `#` lines and one column line. Every
 hook-written file records the HEAD it was computed against in `# head:`,
 so a text merge of two branches cut from different commits conflicts on
 that line even when no row differs. This driver merges three ways by key
@@ -31,7 +32,8 @@ The driver overwrites %A, so it refuses, writing nothing, any invocation
 that is not git's: git passes exactly four arguments, %O %A %B are
 untracked temporary files (`.merge_file_XXXXXX` at the worktree top, the
 driver's working directory) and %P is a baseline path. Each of %O %A %B
-must hold a baseline (a `#` header over a `file\tfunction...` column line);
+must hold a baseline (a `#` header over a `file\tfunction...` column line,
+or a `file...` column line under a `# key-columns:` header);
 %O alone may be empty (both sides added the path).
 """
 import fnmatch
@@ -45,6 +47,18 @@ ARM_MERGE = "git config merge.%s.driver '%s'" % (DRIVER_NAME, DRIVER_CONFIG)
 VOLATILE = re.compile(r"#\s*(written-by|head):")
 
 
+KEY_COLUMNS = re.compile(r"#\s*key-columns:\s*(\d+)\s*$")
+
+
+def key_columns(header):
+    """-> the key width the header names (`# key-columns: N`), else 2."""
+    for h in header:
+        m = KEY_COLUMNS.match(h)
+        if m:
+            return max(1, int(m.group(1)))
+    return 2
+
+
 def split(text):
     """-> (header lines, {key: row line}, key order). The header is every
     line up to and including the first non-`#` line (the column line)."""
@@ -54,6 +68,7 @@ def split(text):
     while i < len(lines) and lines[i].startswith("#"):
         header.append(lines[i])
         i += 1
+    width = key_columns(header)
     if i < len(lines):
         header.append(lines[i])
         i += 1
@@ -61,7 +76,7 @@ def split(text):
         if not line:
             continue
         cols = line.split("\t")
-        key = "\t".join(cols[:2])
+        key = "\t".join(cols[:width])
         if key not in rows:
             order.append(key)
         rows[key] = line
@@ -112,13 +127,18 @@ USAGE = ("usage: ratchet_tsv_merge.py %O %A %B %P -- git merge driver for "
 
 def is_baseline(text):
     """True when text has a baseline's shape: `#` header lines, then a
-    column line whose first two columns are `file` and `function`."""
+    column line whose first two columns are `file` and `function`, or
+    whose first column is `file` under a `# key-columns:` header line."""
     lines = text.splitlines()
     i = 0
     while i < len(lines) and lines[i].startswith("#"):
         i += 1
-    return i > 0 and i < len(lines) and lines[i].split("\t")[:2] == [
-        "file", "function"]
+    if i == 0 or i >= len(lines):
+        return False
+    cols = lines[i].split("\t")
+    if cols[:2] == ["file", "function"]:
+        return True
+    return cols[0] == "file" and any(KEY_COLUMNS.match(h) for h in lines[:i])
 
 
 def tracked(path):

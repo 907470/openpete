@@ -8,6 +8,8 @@ share; each fence supplies its scorer, its decision function, its touched
 rule and its scope roots (`Fence`).
 
   - compile database lookup: exact entries per in-scope TU, entry flags;
+    the windows-mingw database, configured on demand; the job count;
+    the per-database engagement line;
   - the configuration of that database (OPENPETE_GAMES from the
     CMakeCache.txt beside it) and the UNCONFIGURED bin of a partial one;
   - the UNSCORED list and its self-check;
@@ -219,6 +221,76 @@ def load_db(root, fence):
             continue
         entries.setdefault(rel, []).append(e)
     return path, entries
+
+
+def db_entries(root, path, fence):
+    """-> [(rel, entry)] of the in-scope source entries of the compile
+    database at path, in database order, one per entry (a source two targets
+    compile appears twice). Refusal when the file does not parse."""
+    with open(path) as fh:
+        try:
+            db = json.load(fh)
+        except ValueError:
+            raise Refusal("compile database %s does not parse; re-configure" % path)
+    out = []
+    for e in db:
+        f = os.path.normpath(os.path.join(e["directory"], e["file"]))
+        rel = os.path.relpath(f, root)
+        if rel.startswith("..") or not fence.in_scope(rel) or is_header(rel):
+            continue
+        out.append((rel, e))
+    return out
+
+
+MINGW_DB = "build/windows-mingw/compile_commands.json"
+MINGW_CONFIGURE = ["cmake", "--preset", "windows-mingw"]
+
+
+def mingw_db(root, fence, env_var, configure=True):
+    """-> the windows-mingw compile database path: env_var when set (it must
+    exist), else build/windows-mingw/compile_commands.json. Missing and
+    configure: the preset is configured and openpete_generated_headers (the
+    headers a build rule generates, which tracked sources include) is built
+    there, both under nice -n 10. Missing and not configure: None."""
+    path = os.environ.get(env_var) or os.path.join(root, MINGW_DB)
+    if os.path.isfile(path):
+        return path
+    if os.environ.get(env_var):
+        raise Refusal("%s=%s does not exist" % (env_var, path))
+    if not configure:
+        return None
+    say("%s: no windows-mingw database; configuring: %s"
+        % (fence.name, " ".join(MINGW_CONFIGURE)))
+    p = subprocess.run(["nice", "-n", "10"] + MINGW_CONFIGURE, cwd=root,
+                       capture_output=True, text=True)
+    if p.returncode != 0 or not os.path.isfile(path):
+        raise Refusal("configuring windows-mingw failed (rc %d): %s"
+                      % (p.returncode, p.stderr.strip()[-800:]))
+    p = subprocess.run(["nice", "-n", "10", "cmake", "--build", os.path.dirname(path),
+                        "--target", "openpete_generated_headers"], cwd=root,
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        raise Refusal("building the windows-mingw generated headers failed (rc %d): %s"
+                      % (p.returncode, p.stdout.strip()[-800:]))
+    return path
+
+
+def jobs(env_var, default=None, cap=16):
+    """-> the parallel job count: env_var when it parses, else default, else
+    half the CPUs, at most cap."""
+    if default is None:
+        default = max(1, min(cap, (os.cpu_count() or 2) // 2))
+    try:
+        return max(1, int(os.environ.get(env_var, default)))
+    except ValueError:
+        return default
+
+
+def report_engagement(fence, rows):
+    """Print one engagement line per database (LAW 8): rows is
+    [(database name, [(label, count)])]."""
+    for name, counts in rows:
+        say("  %-14s %s" % (name, ", ".join("%s %s" % (k, v) for k, v in counts)))
 
 
 def entry_flags(entry):

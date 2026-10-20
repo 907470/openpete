@@ -642,6 +642,10 @@ function(openpete_add_game GAME_ID)
         # Include dirs only: a shared module must not link openpete_core (a
         # second copy of core state inside the module would be wrong).
         $<TARGET_PROPERTY:openpete_core,INTERFACE_INCLUDE_DIRECTORIES>)
+    # The same directories keep their system marking (SDL, imgui), which
+    # the copy above drops.
+    target_include_directories(${_module} SYSTEM PRIVATE
+        $<TARGET_PROPERTY:openpete_core,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>)
     set_target_properties(${_module} PROPERTIES
         C_STANDARD 99
         C_STANDARD_REQUIRED ON)

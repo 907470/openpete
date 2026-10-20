@@ -366,7 +366,8 @@ if(OPENPETE_BUILD_GLSLANG)
     target_link_libraries(openpete_core PUBLIC
         glslang glslang-default-resource-limits)
     target_include_directories(openpete_core PRIVATE
-        ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_SOURCE_DIR}/third_party)
+    target_include_directories(openpete_core SYSTEM PRIVATE
         ${CMAKE_BINARY_DIR}/third_party/glslang/include)
 else()
     target_compile_definitions(openpete_core PRIVATE OPENPETE_NO_GLSLANG)
@@ -572,9 +573,10 @@ set_source_files_properties(
 # volk + vulkan headers are PUBLIC: imgui_impl_vulkan.h #includes volk.h under
 # IMGUI_IMPL_VULKAN_USE_VOLK, so any TU that includes the backend header (the
 # dev UI) needs the same include paths and defines.
-target_include_directories(openpete_imgui PUBLIC
+target_include_directories(openpete_imgui SYSTEM PUBLIC
     ${IMGUI_DIR}
-    ${IMGUI_DIR}/backends
+    ${IMGUI_DIR}/backends)
+target_include_directories(openpete_imgui PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include
     ${CMAKE_SOURCE_DIR}/third_party/volk)
 target_compile_definitions(openpete_imgui PUBLIC

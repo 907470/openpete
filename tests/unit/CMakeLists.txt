@@ -383,7 +383,8 @@ add_executable(openpete_osd_test
     openpete_osd_test.c
     ${CMAKE_SOURCE_DIR}/core/ui/openpete_osd.c)
 target_include_directories(openpete_osd_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include)
+target_include_directories(openpete_osd_test SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/SDL/include)
 set_target_properties(openpete_osd_test PROPERTIES C_STANDARD 11)
 add_test(NAME openpete_osd_test COMMAND openpete_osd_test)
@@ -457,7 +458,8 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
     target_include_directories(mod_shader_compile_test PRIVATE
         ${CMAKE_SOURCE_DIR}/core/include
         ${CMAKE_SOURCE_DIR}/core/mods
-        ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_SOURCE_DIR}/third_party)
+    target_include_directories(mod_shader_compile_test SYSTEM PRIVATE
         ${CMAKE_BINARY_DIR}/third_party/glslang/include)
     target_link_libraries(mod_shader_compile_test PRIVATE
         glslang glslang-default-resource-limits)
@@ -503,7 +505,8 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
         ${CMAKE_SOURCE_DIR}/core/include
         ${CMAKE_SOURCE_DIR}/core/mods
         ${CMAKE_SOURCE_DIR}/core/rhi
-        ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_SOURCE_DIR}/third_party)
+    target_include_directories(mod_material_link_test SYSTEM PRIVATE
         ${CMAKE_BINARY_DIR}/third_party/glslang/include)
     target_link_libraries(mod_material_link_test PRIVATE
         glslang glslang-default-resource-limits openpete_rhi SDL3::SDL3-static ${CMAKE_DL_LIBS})

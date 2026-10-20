@@ -3,10 +3,10 @@
 #   git config core.hooksPath githooks
 # The build's `check --armed` of each fence refuses an unarmed clone.
 # Dispatcher: the golden-image scan (golden-png-guard.py: no image staged
-# under tests/golden outside the tracked exception set), then both ratchet
-# fences and the thread-role fence (their shared machinery is
-# scripts/fences/ratchet_lib.py). Every report prints, and the commit aborts
-# when any refuses, so one retry answers all four.
+# under tests/golden outside the tracked exception set), then the complexity,
+# documentation and warning ratchets and the thread-role fence (their shared
+# machinery is scripts/fences/ratchet_lib.py). Every report prints, and the
+# commit aborts when any refuses, so one retry answers all five.
 fences="$(git rev-parse --show-toplevel)/scripts/fences"
 python3 "$fences/golden-png-guard.py" hook
 golden=$?
@@ -16,4 +16,7 @@ python3 "$fences/doc_ratchet.py" hook
 docs=$?
 python3 "$fences/thread_roles.py" hook
 roles=$?
-[ "$golden" -eq 0 ] && [ "$complexity" -eq 0 ] && [ "$docs" -eq 0 ] && [ "$roles" -eq 0 ]
+python3 "$fences/warning_ratchet.py" hook
+warnings=$?
+[ "$golden" -eq 0 ] && [ "$complexity" -eq 0 ] && [ "$docs" -eq 0 ] && [ "$roles" -eq 0 ] \
+    && [ "$warnings" -eq 0 ]

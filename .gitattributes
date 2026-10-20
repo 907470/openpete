@@ -2,3 +2,4 @@
 # the driver is local config, set by scripts/setup.sh and verified by `complexity_ratchet.py check --armed`.
 baselines/complexity/*.tsv merge=ratchet-tsv
 baselines/docs/*.tsv merge=ratchet-tsv
+baselines/warnings/*.tsv merge=ratchet-tsv

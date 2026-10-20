@@ -55,6 +55,24 @@ set(SDL_TEST   OFF CACHE BOOL "" FORCE)
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/SDL)
 
+# Marks the include directories target exports as system directories for its
+# consumers (-isystem): GCC then reports no warning located in those headers.
+# Only for submodules the project does not edit (SDL, glslang, imgui):
+# -isystem also drops error-set diagnostics in a macro a system header
+# defines, so PsyCross, libco and the third_party/ root stay -I.
+function(openpete_system_includes target)
+    get_target_property(_real ${target} ALIASED_TARGET)
+    if(NOT _real)
+        set(_real ${target})
+    endif()
+    get_target_property(_dirs ${_real} INTERFACE_INCLUDE_DIRECTORIES)
+    if(_dirs)
+        set_property(TARGET ${_real} APPEND PROPERTY
+            INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${_dirs})
+    endif()
+endfunction()
+openpete_system_includes(SDL3::Headers)
+
 # Which games to enable. A game whose generated/ has no recompiled output
 # warns and skips itself, so listing one costs nothing until it is regenerated.
 set(OPENPETE_GAMES "spyro-1;spyro-2;spyro-3" CACHE STRING "Games to build (semicolon-separated)")
@@ -76,6 +94,8 @@ if(OPENPETE_BUILD_GLSLANG)
     set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/glslang)
+    openpete_system_includes(glslang)
+    openpete_system_includes(glslang-default-resource-limits)
 endif()
 
 # PsyCross integration. Builds the static lib and links it
@@ -646,6 +666,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME thread_roles_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_thread_roles.py)
     set_tests_properties(thread_roles_selftest PROPERTIES LABELS "fence")
+    # Warning ratchet: the command rewrite, the GCC text parser, row
+    # attribution, the decision and one scratch compile.
+    add_test(NAME warning_ratchet_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_warning_ratchet.py)
+    set_tests_properties(warning_ratchet_selftest PROPERTIES LABELS "fence")
     # The baselines' merge driver: the three-way merge by row key, and a
     # cherry-pick across a landing in a scratch repository.
     add_test(NAME ratchet_tsv_merge_selftest
@@ -1999,3 +2024,90 @@ function(openpete_apply_error_set)
     message(STATUS "error set: ${_count} project targets")
 endfunction()
 openpete_apply_error_set()
+
+# Build-output warnings: plain -Wall -Wextra on every source of a project
+# target that lies in the warning ratchet's scope (core/, games/, tests/,
+# outside generated/ directories, the decomp checkouts and the build tree),
+# set per source so vendored sources compiled into project targets (miniz,
+# toml, libco, volk, imgui) and generated sources never take it. The
+# property is set in the scope of each target's own directory
+# (TARGET_DIRECTORY); a top-level call without it reaches no target defined
+# in a subdirectory. No -Wno- for the classes not yet cleared: the build log
+# shows every warning, and scripts/fences/warning_ratchet.py decides which
+# may not grow. Prints the source count and fails the configure at zero.
+function(openpete_apply_build_warnings)
+    set(_targets "")
+    openpete_collect_project_targets("${CMAKE_SOURCE_DIR}" _targets)
+    set(_seen "")
+    set(_count 0)
+    foreach(_t IN LISTS _targets)
+        get_target_property(_srcs ${_t} SOURCES)
+        get_target_property(_dir ${_t} SOURCE_DIR)
+        if(NOT _srcs)
+            continue()
+        endif()
+        foreach(_s IN LISTS _srcs)
+            if(_s MATCHES "\\$<" OR NOT _s MATCHES "\\.(c|cc|cpp|cxx)$")
+                continue()
+            endif()
+            get_filename_component(_abs "${_s}" ABSOLUTE BASE_DIR "${_dir}")
+            file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_abs}")
+            string(FIND "${_abs}/" "${CMAKE_BINARY_DIR}/" _in_build)
+            if(NOT _in_build EQUAL -1
+               OR NOT _rel MATCHES "^(core|games|tests)/"
+               OR _rel MATCHES "(^|/)(generated|third_party|build)/"
+               OR _rel MATCHES "^games/(spyro-[123])/spyro-[123]/")
+                continue()
+            endif()
+            # One append per (directory scope, source): two targets of one
+            # directory share the source's property.
+            set(_id "${_dir}|${_abs}")
+            if(_id IN_LIST _seen)
+                continue()
+            endif()
+            list(APPEND _seen "${_id}")
+            set_property(SOURCE "${_abs}" TARGET_DIRECTORY ${_t} APPEND PROPERTY
+                COMPILE_OPTIONS "$<$<C_COMPILER_ID:GNU>:-Wall>"
+                                "$<$<C_COMPILER_ID:GNU>:-Wextra>")
+            math(EXPR _count "${_count} + 1")
+        endforeach()
+    endforeach()
+    if(_count EQUAL 0)
+        message(FATAL_ERROR "build warnings: no in-scope source found")
+    endif()
+    message(STATUS "build warnings: -Wall -Wextra on ${_count} in-scope sources")
+endfunction()
+openpete_apply_build_warnings()
+
+# Warning ratchet (scripts/fences/warning_ratchet.py), the per-build half of
+# the pre-commit fence: `check --armed` fails the build of an unarmed clone,
+# and `check` measures the whole corpus from its result cache against HEAD's
+# baselines/warnings/<database>.tsv in the two baselined build directories
+# (linux-release, windows-mingw; elsewhere it SKIPs). It runs after every
+# compiling target, the generated headers and the staged mod SDK, which its
+# compiles read.
+function(openpete_add_warning_ratchet)
+    if(CMAKE_HOST_WIN32)
+        return()
+    endif()
+    set(_targets "")
+    openpete_collect_project_targets("${CMAKE_SOURCE_DIR}" _targets)
+    get_filename_component(_name "${CMAKE_BINARY_DIR}" NAME)
+    set(_check "")
+    if(_name STREQUAL "linux-release" OR _name STREQUAL "windows-mingw")
+        set(_check
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/warning_ratchet.py check
+                    --database-path ${CMAKE_BINARY_DIR}/compile_commands.json)
+    endif()
+    add_custom_target(openpete_warning_ratchet ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking the warning ratchet..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/warning_ratchet.py check --armed
+        ${_check}
+        COMMENT "warning fence: the pre-commit hook calls it, and no -Wall -Wextra row rose"
+        VERBATIM)
+    add_dependencies(openpete_warning_ratchet ${_targets} openpete_generated_headers)
+    if(TARGET openpete_sdk_stage)
+        add_dependencies(openpete_warning_ratchet openpete_sdk_stage)
+    endif()
+endfunction()
+openpete_add_warning_ratchet()

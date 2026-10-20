@@ -93,6 +93,24 @@ class MergeTest(unittest.TestCase):
         other = base.replace("clang-tidy 14", "clang-tidy 15")
         self.assertEqual(rm.merge(base, base, other)[1], 1)
 
+    def test_key_columns_header_widens_the_key(self):
+        # The warning ratchet keys a row by (file, option, kind, detail):
+        # two rows sharing file and option stay distinct, and a count change
+        # on one side merges by that key.
+        def wtsv(head, rows):
+            out = ["# warning ratchet baseline", "# compiler: cc 11.4.0",
+                   "# key-columns: 4", "# written-by: hook", "# head: " + head,
+                   "file\toption\tkind\tdetail\tcount\taccepted"]
+            return "\n".join(out + ["\t".join(r) for r in rows]) + "\n"
+        a = ("core/a.c", "-Wunused-variable", "fe", "unused variable 'x'", "1", "")
+        b = ("core/a.c", "-Wunused-variable", "fe", "unused variable 'y'", "2", "")
+        b1 = b[:4] + ("1", "")
+        base = wtsv("a", [a, b])
+        self.assertTrue(rm.is_baseline(base))
+        text, conflicts = rm.merge(base, wtsv("b", [b]), wtsv("c", [a, b1]))
+        self.assertEqual(conflicts, 0)
+        self.assertEqual(list(self.rows(text).values()), ["\t".join(b1)])
+
     def test_rows_render_in_fence_order(self):
         # `file:function` order: "a.c:x" sorts after "a.c_y:" is false, the
         # tab-joined key would sort the other way.

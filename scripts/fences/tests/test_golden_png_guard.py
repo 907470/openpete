@@ -99,7 +99,7 @@ class HookTest(unittest.TestCase):
             json.dump([{"directory": self.repo, "file": "core/tail.c",
                         "command": "cc -std=c11 -c core/tail.c -o tail.o"}], fh)
         self.env = dict(os.environ, OPENPETE_COMPLEXITY_DB=self.cdb,
-                        OPENPETE_DOCS_DB=self.cdb,
+                        OPENPETE_DOCS_DB=self.cdb, OPENPETE_WARNING_DB=self.cdb,
                         GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                         GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
         for k in ("OPENPETE_COMPLEXITY_ACCEPT", "OPENPETE_DOCS_ACCEPT",
@@ -115,7 +115,7 @@ class HookTest(unittest.TestCase):
         self.write("tests/golden/spyro-1/native-vk/demo-1-vk.png", TINY_PNG)
         self.git("add", "githooks", "core", "tests")
         self.git("commit", "-q", "-m", "init")
-        for fence in ("complexity_ratchet.py", "doc_ratchet.py"):
+        for fence in ("complexity_ratchet.py", "doc_ratchet.py", "warning_ratchet.py"):
             p = subprocess.run([sys.executable, os.path.join(FENCES, fence),
                                 "baseline"],
                 cwd=self.repo, capture_output=True, text=True, env=self.env)

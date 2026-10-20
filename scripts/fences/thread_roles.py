@@ -99,8 +99,6 @@ FENCE = lib.Fence("thread-roles", "thread_roles.py", "", SCOPE_ROOTS,
                   "OPENPETE_THREAD_ROLES_DB")
 ROLES_H = "core/include/openpete_thread_roles.h"
 RUNTIME_C = "core/runtime/thread_roles.c"
-MINGW_DB = "build/windows-mingw/compile_commands.json"
-MINGW_CONFIGURE = ["cmake", "--preset", "windows-mingw"]
 STAMP = "thread_roles.stamp"
 CLANG = {"c": "clang-19", "c++": "clang++-19"}
 MINGW_TARGET = "--target=x86_64-w64-mingw32"
@@ -248,17 +246,8 @@ def usr_name(usr):
 def load_entries(root, path, mingw):
     """-> {rel: [flags]} of the in-scope sources, one flag list per distinct
     (file, flags) entry."""
-    with open(path) as fh:
-        try:
-            db = json.load(fh)
-        except ValueError:
-            raise Refusal("compile database %s does not parse; re-configure" % path)
     out = {}
-    for e in db:
-        f = os.path.normpath(os.path.join(e["directory"], e["file"]))
-        rel = os.path.relpath(f, root)
-        if rel.startswith("..") or not FENCE.in_scope(rel) or is_header(rel):
-            continue
+    for rel, e in lib.db_entries(root, path, FENCE):
         flags = entry_flags(e)
         flags = [t for t in flags if not t.startswith(("-fdiagnostics-color",
                                                        "-fmax-errors"))]
@@ -271,25 +260,7 @@ def load_entries(root, path, mingw):
 
 
 def mingw_db(root):
-    path = os.environ.get("OPENPETE_THREAD_ROLES_MINGW_DB") or os.path.join(root, MINGW_DB)
-    if os.path.isfile(path):
-        return path
-    if os.environ.get("OPENPETE_THREAD_ROLES_MINGW_DB"):
-        raise Refusal("OPENPETE_THREAD_ROLES_MINGW_DB=%s does not exist" % path)
-    say("thread-roles: no windows-mingw database; configuring: %s" % " ".join(MINGW_CONFIGURE))
-    p = subprocess.run(["nice", "-n", "10"] + MINGW_CONFIGURE, cwd=root,
-                       capture_output=True, text=True)
-    if p.returncode != 0 or not os.path.isfile(path):
-        raise Refusal("configuring windows-mingw failed (rc %d): %s"
-                      % (p.returncode, p.stderr.strip()[-800:]))
-    # The headers a build rule generates, which tracked sources include.
-    p = subprocess.run(["nice", "-n", "10", "cmake", "--build", os.path.dirname(path),
-                        "--target", "openpete_generated_headers"], cwd=root,
-                       capture_output=True, text=True)
-    if p.returncode != 0:
-        raise Refusal("building the windows-mingw generated headers failed (rc %d): %s"
-                      % (p.returncode, p.stdout.strip()[-800:]))
-    return path
+    return lib.mingw_db(root, FENCE, "OPENPETE_THREAD_ROLES_MINGW_DB")
 
 
 # --------------------------------------------------------------------------
@@ -1204,11 +1175,7 @@ def databases(root, need_mingw=True):
 
 
 def jobs():
-    default = max(1, min(16, (os.cpu_count() or 2) // 2))
-    try:
-        return max(1, int(os.environ.get("OPENPETE_THREAD_ROLES_JOBS", default)))
-    except ValueError:
-        return default
+    return lib.jobs("OPENPETE_THREAD_ROLES_JOBS")
 
 
 def select_all(linux, mingw, files=None):
