@@ -111,6 +111,7 @@ const game_layout_t spyro2_game_layout = {
          * (environment.s:1685-1737 bins the tiers, 1743 LP, 1935 HP). */
         .kf_lp_poly = D_ENV_ANIM_REGISTRY + 0x10u,
         .kf_hp_poly = D_ENV_ANIM_REGISTRY + 0x20u,
+        .kf_hide    = 1,             /* environment.s:1756-1762, 1948-1954 */
         .sub = {
             { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR, ENV_ANIM_MODEL_COLOUR },
             { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT,   ENV_ANIM_MODEL_WAVE1 },

@@ -251,6 +251,15 @@ typedef struct game_layout {
          * older pose. 0 when the game packs every animated bank each tick. */
         uint32_t kf_lp_poly;        /* LP deferred keyframe vertex animations */
         uint32_t kf_hp_poly;        /* HP deferred keyframe vertex animations */
+        /* Deferred keyframe colour animations, the same scheme with pending
+         * bytes +0x19 LP and +0x1B HP; 0 when the game has none. */
+        uint32_t kf_lp_col;         /* LP deferred keyframe colour animations */
+        uint32_t kf_hp_col;         /* HP deferred keyframe colour animations */
+        /* 1: byte 3 of a vertex keyframe word is the tier-hide verdict the
+         * pack writes into the sector's no-draw flag; 0: the pack writes no
+         * flag. A vertex pose lands at bank index byte +5 on a game whose
+         * descriptor names its sector in a byte (poly_sec_u8), else at 0. */
+        uint32_t kf_hide;
 
         /* ENV_ANIM_ARENA. `block_ptr` is the address of the word holding the
          * block base. `live_table` is a byte table indexed by an entry's low

@@ -4492,38 +4492,109 @@ static unsigned tface_envm(const tsface_t* F, uint32_t sec, int lp, int foreign)
     return k;
 }
 
-/* Pending bytes of the deferred keyframe vertex banks (env_anim.kf_lp_poly,
- * kf_hp_poly): the world draw packs a bank only while bit 7 of its byte is
- * clear and the sector bins in that tier, then stores 0xFF there (Spyro 2
- * environment.s:1737-1743 LP, 1932-1935 HP). */
-#define TSC_KF_PEND_LP 0x18u
-#define TSC_KF_PEND_HP 0x1Au
+/* Deferred keyframe animations (env_anim.kf_*). The animation update posts a
+ * descriptor's list index into its sector's pending byte for one bank when
+ * the descriptor's keyframe advances: +0x18 LP vertices, +0x19 LP colours,
+ * +0x1A HP vertices, +0x1B HP colours (TSC_KF_PEND + bank). The world draw
+ * packs the posted pose into that bank and stores 0xFF in the byte only
+ * while it bins the sector in the bank's tier (Spyro 1 r_environment.s
+ * 80025BC4, 80025D20, 80025E68, 80025FD8; Spyro 2 environment.s:1743 LP,
+ * 1935 HP), so a bank the draw does not bin holds an older pose. The pose is
+ * a function of the descriptor alone: byte +2 is the current keyframe, whose
+ * 8-byte entry at +0xC + 8 * kf carries in its word at +4 the blend factor
+ * (byte 0) and keyframes A and B (bytes 1, 2); keyframe k's data starts at
+ * desc + word(+8) + k * stride (u16 at +6). */
+enum { TSC_KF_LPV, TSC_KF_LPC, TSC_KF_HPV, TSC_KF_HPC, TSC_KF_BANKS };
+#define TSC_KF_PEND 0x18u
+#define TSC_KF_POSE_MAX 512
 
-/** @brief Returns the descriptor whose posted pose a sector's tier bank has not packed yet, or 0.
+/* One posted pose: n words, word k landing at index at[k] of its bank's
+ * array (vertex bank, LP colours, or the HP near-then-far colours). */
+typedef struct {
+    int      n;
+    uint16_t at[TSC_KF_POSE_MAX];
+    uint32_t w[TSC_KF_POSE_MAX];
+} tsc_kf_pose_t;
+
+/** @brief Returns the layout address of a bank's deferred keyframe registry, 0 when the game has none.
+ * @param b The bank, TSC_KF_*.
+ * @return The registry's count address. */
+static uint32_t tsc_kf_registry(int b) {
+    switch (b) {
+    case TSC_KF_LPV: return game_layout.env_anim.kf_lp_poly;
+    case TSC_KF_LPC: return game_layout.env_anim.kf_lp_col;
+    case TSC_KF_HPV: return game_layout.env_anim.kf_hp_poly;
+    default:         return game_layout.env_anim.kf_hp_col;
+    }
+}
+
+/** @brief Tests whether the deferred keyframe overlay is enabled (OPENPETE_TERRAIN_KFMODEL, default 1).
+ * @return 1 enabled, 0 disabled by the variable set to 0. */
+static int tsc_kf_on(void) {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_KFMODEL");
+        s_on = !(e && *e == '0');
+    }
+    return s_on;
+}
+
+/** @brief Returns the guest address of index 0 of a sector bank's array and its word count.
  *
- * Bit 7 of the tier's pending byte set means the bank holds the latest
- * posted pose. A clear byte is the descriptor's index in the tier's deferred
- * keyframe registry; a game without that registry, an index at or past the
- * registry count and a null entry return 0.
+ * The LP vertex bank is at s + 0x1C, the LP colours follow it, the HP
+ * vertices follow the LP colours (byte +0x17 words in), and the HP near and
+ * far colours follow the HP vertices; *n is the vertex count, the LP colour
+ * count, or twice the HP colour count.
  * @param cpu The guest CPU state, read only.
  * @param s The sector's guest address.
- * @param hp 1 for the HP bank, 0 for the LP bank.
+ * @param b The bank, TSC_KF_*.
+ * @param n Receives the word count.
+ * @return The array's guest address. */
+static uint32_t tsc_kf_bank(CPUState* cpu, uint32_t s, int b, uint32_t* n) {
+    const uint32_t w3 = rd(cpu, s + 0x10u), w4 = rd(cpu, s + 0x14u);
+    const uint32_t hpV = s + 0x1Cu + ((w4 >> 24) & 0xFFu) * 4u;
+    switch (b) {
+    case TSC_KF_LPV: *n = w3 & 0xFFu;               return s + 0x1Cu;
+    case TSC_KF_LPC: *n = (w3 >> 8) & 0xFFu;        return s + 0x1Cu + (w3 & 0xFFu) * 4u;
+    case TSC_KF_HPV: *n = w4 & 0xFFu;               return hpV;
+    default:         *n = ((w4 >> 8) & 0xFFu) * 2u; return hpV + (w4 & 0xFFu) * 4u;
+    }
+}
+
+/** @brief Returns the descriptor whose posted pose a sector bank has not packed yet, or 0.
+ *
+ * Bit 7 of the bank's pending byte set means the bank holds the latest
+ * posted pose. A clear byte is the descriptor's index in the bank's
+ * registry; a game without that registry, an index at or past the registry
+ * count, a null entry and a descriptor that names another sector return 0.
+ * A vertex descriptor of a poly_sec_u8 game names its sector in the byte at
+ * +4, any other descriptor in the u16 there.
+ * @param cpu The guest CPU state, read only.
+ * @param s The sector's guest address.
+ * @param b The bank, TSC_KF_*.
  * @return The descriptor's guest address, or 0. */
-static uint32_t tsc_kf_pending(CPUState* cpu, uint32_t s, int hp) {
-    uint32_t reg = hp ? game_layout.env_anim.kf_hp_poly : game_layout.env_anim.kf_lp_poly;
+static uint32_t tsc_kf_pending(CPUState* cpu, uint32_t s, int b) {
+    const uint32_t reg = tsc_kf_registry(b);
     if (!reg) return 0;
-    uint32_t b = cpu->read_byte(s + (hp ? TSC_KF_PEND_HP : TSC_KF_PEND_LP));
-    if (b & 0x80u) return 0;
-    uint32_t cnt = rd(cpu, reg), arr = rd(cpu, reg + 4u);
-    if (!arr || b >= cnt || cnt > ENV_ANIM_COUNT_MAX) return 0;
-    return rd(cpu, arr + b * 4u);
+    const uint32_t p = cpu->read_byte(s + TSC_KF_PEND + (uint32_t)b);
+    if (p & 0x80u) return 0;
+    const uint32_t cnt = rd(cpu, reg), arr = rd(cpu, reg + 4u);
+    if (!arr || p >= cnt || cnt > ENV_ANIM_COUNT_MAX) return 0;
+    const uint32_t desc = rd(cpu, arr + p * 4u);
+    if (!desc) return 0;
+    const int vert = b == TSC_KF_LPV || b == TSC_KF_HPV;
+    const uint32_t sec = (vert && game_layout.env_anim.poly_sec_u8) ? cpu->read_byte(desc + 4u)
+                                                                    : cpu->read_half(desc + 4u);
+    if (sec >= tenv_rd(cpu, game_layout.env.sector_count)) return 0;
+    return rd(cpu, tenv_rd(cpu, game_layout.env.sector_ptr) + sec * 4u) == s ? desc : 0;
 }
 
 /** @brief Returns a keyframe descriptor's posted keyframe word.
  *
  * The descriptor's current keyframe is the byte at +2; its 8-byte entry
  * starts at +0xC and the word at entry +4 holds the blend factor (byte 0),
- * keyframes A and B (bytes 1, 2) and the tier-hide byte (byte 3).
+ * keyframes A and B (bytes 1, 2) and, on a kf_hide game, the tier-hide
+ * byte (byte 3).
  * @param cpu The guest CPU state, read only.
  * @param desc The descriptor's guest address.
  * @return The keyframe word. */
@@ -4532,61 +4603,161 @@ static uint32_t tsc_kf_word(CPUState* cpu, uint32_t desc) {
     return rd(cpu, desc + 0xCu + kf * 8u + 4u);
 }
 
-/** @brief Overwrites a decoded tier bank with the pose its pending keyframe descriptor posts.
+/** @brief Blends one colour word toward another by GTE DPCS at IR0 = f << 4, keeping no code byte.
  *
- * Reproduces the world draw's pack (Spyro 2 environment.s:1744-1830 LP,
- * 1936-2042 HP) without storing to guest RAM. The keyframe block is at desc
- * plus the word at +8, one keyframe every stride bytes (u16 at +6); blend
- * factor 0 copies keyframe A's packed words, else each packed axis is GTE
- * INTPL's ((A << 12) + (B - A) * (f << 4)) >> 12. Word k lands at bank index
- * (byte at +5) + k; indices at or past nv are dropped.
+ * Per channel R + ((c - R) * f >> 8) (ngte_dpcs_ch with the far colour
+ * c << 4), the pack's DPCS with RGBC = a and RFC/GFC/BFC = b's channels
+ * (Spyro 1 r_environment.s 80025E04-80025E38).
+ * @param a Keyframe A's word; its RGB is the start colour.
+ * @param b Keyframe B's word; its RGB is the far colour.
+ * @param f The blend factor, 1..255.
+ * @return The blended RGB, top byte 0. */
+static uint32_t tsc_kf_dpcs(uint32_t a, uint32_t b, uint32_t f) {
+    uint32_t out = 0;
+    for (int sh = 0; sh < 24; sh += 8)
+        out |= (uint32_t)ngte_dpcs_ch((int)((a >> sh) & 0xFFu), (int)((b >> sh) & 0xFFu) << 4,
+                                      (int)(f << 4)) << sh;
+    return out;
+}
+
+/** @brief Appends the packed vertex words a vertex keyframe pack writes, INTPL-blended at factor f.
+ *
+ * Blend factor 0 copies keyframe A's stride / 4 packed words, else each
+ * 11/11/10 axis is GTE INTPL's ((A << 12) + (B - A) * (f << 4)) >> 12 (Spyro
+ * 1 r_environment.s 80025C08-80025D10, 80025EAC-80025FCC; Spyro 2
+ * environment.s:1744-1830, 1936-2042). Word k lands at index first + k; an
+ * index at or past nb ends the pose.
+ * @param cpu The guest CPU state, read only.
+ * @param kA Keyframe A's data address.
+ * @param kB Keyframe B's data address.
+ * @param stride The keyframe size in bytes.
+ * @param f The blend factor.
+ * @param first The bank index of word 0.
+ * @param nb The bank's word count.
+ * @param P The pose; appended to. */
+static void tsc_kf_pose_verts(CPUState* cpu, uint32_t kA, uint32_t kB, uint32_t stride, uint32_t f,
+                              uint32_t first, uint32_t nb, tsc_kf_pose_t* P) {
+    for (uint32_t k = 0; k < stride / 4u && first + k < nb && P->n < TSC_KF_POSE_MAX; k++) {
+        uint32_t v = rd(cpu, kA + k * 4u);
+        if (f) {
+            const uint32_t c = rd(cpu, kB + k * 4u);
+            const int32_t a3[3] = { (int32_t)(v >> 21), (int32_t)((v >> 10) & 0x7FFu), (int32_t)(v & 0x3FFu) };
+            const int32_t b3[3] = { (int32_t)(c >> 21), (int32_t)((c >> 10) & 0x7FFu), (int32_t)(c & 0x3FFu) };
+            int32_t r[3];
+            for (int j = 0; j < 3; j++) r[j] = ((a3[j] << 12) + (b3[j] - a3[j]) * (int32_t)(f << 4)) >> 12;
+            v = ((uint32_t)r[0] << 21) + ((uint32_t)r[1] << 10) + (uint32_t)r[2];
+        }
+        P->at[P->n] = (uint16_t)(first + k); P->w[P->n++] = v;
+    }
+}
+
+/** @brief Appends the colour words an LP or HP colour keyframe pack writes, DPCS-blended at factor f.
+ *
+ * LP (Spyro 1 r_environment.s 80025D64-80025E58): stride / 4 words, each
+ * word's bits 24-31 times 4 a byte step added to the running offset before
+ * the store, the word's RGB (top byte 0) or its blend (tsc_kf_dpcs) stored
+ * there. HP (8002601C-80026194): stride / 8 near/far word pairs, the near
+ * word's step advancing both cursors; near takes the near word's RGB or
+ * blend with top byte 0, far (index nb / 2 + near index) takes the far word
+ * whole, or its blend with the far word's top byte. An index past the array
+ * is dropped.
+ * @param cpu The guest CPU state, read only.
+ * @param kA Keyframe A's data address.
+ * @param kB Keyframe B's data address.
+ * @param stride The keyframe size in bytes.
+ * @param f The blend factor.
+ * @param hp 1 for the HP near-then-far colours, 0 for the LP colours.
+ * @param nb The bank's word count (twice the HP colour count).
+ * @param P The pose; appended to. */
+static void tsc_kf_pose_cols(CPUState* cpu, uint32_t kA, uint32_t kB, uint32_t stride, uint32_t f,
+                             int hp, uint32_t nb, tsc_kf_pose_t* P) {
+    const uint32_t step = hp ? 8u : 4u, nArr = hp ? nb / 2u : nb;
+    uint32_t off = 0;
+    for (uint32_t k = 0; k < stride / step; k++) {
+        const uint32_t a0 = rd(cpu, kA + k * step);
+        off += (a0 >> 22) & 0x3FCu;
+        const uint32_t i = off / 4u;
+        if (i >= nArr || P->n + 2 > TSC_KF_POSE_MAX) continue;
+        P->at[P->n] = (uint16_t)i;
+        P->w[P->n++] = f ? tsc_kf_dpcs(a0, rd(cpu, kB + k * step), f) : (a0 & 0xFFFFFFu);
+        if (!hp) continue;
+        const uint32_t a1 = rd(cpu, kA + k * 8u + 4u);
+        P->at[P->n] = (uint16_t)(nArr + i);
+        P->w[P->n++] = f ? (tsc_kf_dpcs(a1, rd(cpu, kB + k * 8u + 4u), f) | (a1 & 0xFF000000u)) : a1;
+    }
+}
+
+/** @brief Computes the words the world draw's pack writes into a sector bank for a descriptor's posted pose.
+ *
+ * Reproduces the pack without storing to guest RAM: tsc_kf_pose_verts for a
+ * vertex bank, whose word 0 lands at byte +5 on a poly_sec_u8 game and at
+ * index 0 otherwise, tsc_kf_pose_cols for a colour bank.
+ * @param cpu The guest CPU state, read only.
+ * @param s The sector's guest address.
+ * @param b The bank, TSC_KF_*.
+ * @param desc The descriptor's guest address.
+ * @param P Receives the pose. */
+static void tsc_kf_pose(CPUState* cpu, uint32_t s, int b, uint32_t desc, tsc_kf_pose_t* P) {
+    const uint32_t w = tsc_kf_word(cpu, desc), f = w & 0xFFu;
+    const uint32_t stride = cpu->read_half(desc + 6u);
+    const uint32_t blk = desc + rd(cpu, desc + 8u);
+    const uint32_t kA = blk + ((w >> 8) & 0xFFu) * stride, kB = blk + ((w >> 16) & 0xFFu) * stride;
+    uint32_t nb;
+    (void)tsc_kf_bank(cpu, s, b, &nb);
+    P->n = 0;
+    if (b == TSC_KF_LPV || b == TSC_KF_HPV)
+        tsc_kf_pose_verts(cpu, kA, kB, stride, f,
+                          game_layout.env_anim.poly_sec_u8 ? cpu->read_byte(desc + 5u) : 0u, nb, P);
+    else
+        tsc_kf_pose_cols(cpu, kA, kB, stride, f, b == TSC_KF_HPC, nb, P);
+}
+
+/** @brief Overwrites a decoded vertex bank with the pose its pending keyframe descriptor posts.
+ *
+ * No-op while the overlay is disabled (tsc_kf_on), without a pending
+ * descriptor (tsc_kf_pending), or without a bank.
  * @param cpu The guest CPU state, read only.
  * @param s The sector's guest address.
  * @param hp 1 for the HP bank, 0 for the LP bank.
- * @param nv The bank's vertex count.
+ * @param nv The decoded bank's vertex count.
  * @param flat The sector's flat flag (tvert_unpack).
  * @param out The decoded bank.
- * @return The posted tier-hide verdict (1 hidden, 0 shown), or -1 when the bank holds the posted pose. */
-static int tsc_kf_overlay(CPUState* cpu, uint32_t s, int hp, int nv, int flat, tsvert_t* out) {
-    uint32_t desc = tsc_kf_pending(cpu, s, hp);
-    if (!desc || !out) return -1;
-    uint32_t w = tsc_kf_word(cpu, desc);
-    int32_t f16 = (int32_t)(w & 0xFFu) << 4;
-    uint32_t stride = cpu->read_half(desc + 6u);
-    uint32_t blk = desc + rd(cpu, desc + 8u);
-    uint32_t kA = blk + ((w >> 8) & 0xFFu) * stride, kB = blk + ((w >> 16) & 0xFFu) * stride;
-    int first = (int)cpu->read_byte(desc + 5u);
-    for (uint32_t k = 0; k < stride / 4u && first + (int)k < nv; k++) {
-        uint32_t v = rd(cpu, kA + k * 4u);
-        if (f16) {
-            uint32_t b = rd(cpu, kB + k * 4u);
-            const int32_t a3[3] = { (int32_t)(v >> 21), (int32_t)((v >> 10) & 0x7FFu), (int32_t)(v & 0x3FFu) };
-            const int32_t b3[3] = { (int32_t)(b >> 21), (int32_t)((b >> 10) & 0x7FFu), (int32_t)(b & 0x3FFu) };
-            int32_t r[3];
-            for (int j = 0; j < 3; j++) r[j] = ((a3[j] << 12) + (b3[j] - a3[j]) * f16) >> 12;
-            v = ((uint32_t)r[0] << 21) + ((uint32_t)r[1] << 10) + (uint32_t)r[2];
-        }
-        int x, y, z; tvert_unpack(v, flat, &x, &y, &z);
-        tsvert_t* o = &out[first + (int)k];
+ * @param hide Receives the posted tier-hide verdict (1 hidden, 0 shown), or
+ *        -1 on a game whose pack writes no flag (kf_hide 0).
+ * @return 1 when the bank took the posted pose, 0 when it holds it already. */
+static int tsc_kf_overlay(CPUState* cpu, uint32_t s, int hp, int nv, int flat, tsvert_t* out,
+                          int* hide) {
+    const int b = hp ? TSC_KF_HPV : TSC_KF_LPV;
+    const uint32_t desc = tsc_kf_on() ? tsc_kf_pending(cpu, s, b) : 0u;
+    if (!desc || !out) return 0;
+    tsc_kf_pose_t P;
+    tsc_kf_pose(cpu, s, b, desc, &P);
+    for (int k = 0; k < P.n; k++) {
+        if ((int)P.at[k] >= nv) continue;
+        int x, y, z; tvert_unpack(P.w[k], flat, &x, &y, &z);
+        tsvert_t* o = &out[P.at[k]];
         o->x = (int16_t)x; o->y = (int16_t)y; o->z = (int16_t)z;
     }
-    return (w >> 24) != 0;
+    *hide = game_layout.env_anim.kf_hide ? (tsc_kf_word(cpu, desc) >> 24) != 0 : -1;
+    return 1;
 }
 
 /** @brief Brings a decoded sector's vertex banks and tier flags to the poses its deferred keyframe animations post.
  *
  * A bank the world draw has not packed since its descriptor advanced takes
- * the posted pose (tsc_kf_overlay), and the tier's no-draw flag follows the
- * posted hide byte, as the pack writes it (Spyro 2 environment.s:1756-1762,
- * 1948-1954). Either bank of a sector then shows the pose the animation is
- * at, whichever tier the guest bins. No-op on a game without the registry.
+ * the posted pose (tsc_kf_overlay), and on a kf_hide game the tier's no-draw
+ * flag follows the posted hide byte, as the pack writes it (Spyro 2
+ * environment.s:1756-1762, 1948-1954). Either bank of a sector then shows
+ * the pose the animation is at, whichever tier the guest bins. No-op on a
+ * game without the registry.
  * @param cpu The guest CPU state, read only.
  * @param C The cached sector. */
 static void tsc_kf_apply(CPUState* cpu, tscache_t* C) {
     for (int hp = 0; hp < 2; hp++) {
-        int hide = tsc_kf_overlay(cpu, C->s, hp, hp ? C->nHpV : C->nLpV, C->flat,
-                                  hp ? C->hpV : C->lpV);
-        if (hide < 0) continue;
+        int hide = -1;
+        if (!tsc_kf_overlay(cpu, C->s, hp, hp ? C->nHpV : C->nLpV, C->flat,
+                            hp ? C->hpV : C->lpV, &hide) || hide < 0)
+            continue;
         int bit = (int)(hp ? game_layout.terrain.no_hp_flag : game_layout.terrain.no_lp_flag);
         C->flags = hide ? (C->flags | bit) : (C->flags & ~bit);
     }
@@ -4929,8 +5100,8 @@ static uint32_t tsc_vhash(CPUState* cpu, uint32_t s, const uint32_t g[5]) {
     uint32_t h = 2166136261u;
     for (uint32_t k = 0; k < nLpV; k++) h = (h ^ rd(cpu, s + 0x1Cu + k * 4u)) * 16777619u;
     for (uint32_t k = 0; k < nHpV; k++) h = (h ^ rd(cpu, hpVerts + k * 4u)) * 16777619u;
-    for (int hp = 0; hp < 2; hp++) {              /* a posted, unpacked keyframe */
-        uint32_t d = tsc_kf_pending(cpu, s, hp);
+    for (int hp = 0; hp < 2 && tsc_kf_on(); hp++) {   /* a posted, unpacked keyframe */
+        uint32_t d = tsc_kf_pending(cpu, s, hp ? TSC_KF_HPV : TSC_KF_LPV);
         if (d) h = (((h ^ d) * 16777619u) ^ tsc_kf_word(cpu, d)) * 16777619u;
     }
     return h ? h : 1u;
@@ -6230,7 +6401,8 @@ typedef struct canim {
     uint32_t* mix;                /* the walk's present colours (alpha < 1) */
     uint32_t rollPres;            /* s_vanim_pres of the canonical build that rolled it */
     int havePrev;
-    int model;                    /* cur's HP words come from the walker model, not RAM */
+    int model;                    /* cur holds words RAM does not: the walker model's HP
+                                   * words or a posted, unpacked keyframe pose */
 } canim_t;
 static canim_t  s_canim[CANIM_SLOTS];
 static uint32_t s_canim_canon_pres;   /* s_vanim_pres of the last canonical roll */
@@ -6288,13 +6460,40 @@ static void canim_read(CPUState* cpu, const canim_t* A, uint32_t* out) {
     for (uint32_t k = 0; k < A->nHp; k++) out[A->nLp + k] = rd(cpu, A->hpBase + k * 4u);
 }
 
+/** @brief Overwrites a colour slot's cur words with the poses its pending keyframe colour descriptors post.
+ *
+ * The LP and HP colour banks each take the pose of their pending
+ * descriptor (tsc_kf_pending, tsc_kf_pose); a bank without one keeps the
+ * words read from RAM. No-op while the overlay is disabled (tsc_kf_on).
+ * @param cpu The guest CPU state, read only.
+ * @param A The slot, read from RAM this roll.
+ * @return 1 when a bank took a posted pose, else 0. */
+static int canim_kf_overlay(CPUState* cpu, canim_t* A) {
+    int any = 0;
+    for (int hp = 0; hp < 2 && tsc_kf_on(); hp++) {
+        const int b = hp ? TSC_KF_HPC : TSC_KF_LPC;
+        const uint32_t desc = tsc_kf_pending(cpu, A->s, b);
+        if (!desc) continue;
+        tsc_kf_pose_t P;
+        tsc_kf_pose(cpu, A->s, b, desc, &P);
+        uint32_t* dst = A->cur + (hp ? A->nLp : 0u);
+        const uint32_t n = hp ? A->nHp : A->nLp;
+        for (int k = 0; k < P.n; k++)
+            if (P.at[k] < n) dst[P.at[k]] = P.w[k];
+        any = 1;
+    }
+    return any;
+}
+
 /** @brief Rolls one sector's colour slot on a canonical build: prev takes the last roll's words, cur the words in RAM now.
  *
  * A slot whose header geometry moved (a new level reusing the address) is
  * reallocated and restarts without a previous tick. A full table, a slot
  * already rolled this build, or a failed allocation leaves the sector
  * without a roll. A sector the game's colour walker skips (envm_dormant)
- * takes the walker model's HP words into cur and sets `model`.
+ * takes the walker model's HP words into cur, and a bank with a posted,
+ * unpacked keyframe takes that pose (canim_kf_overlay); either sets
+ * `model`.
  * @param cpu The guest CPU state.
  * @param s The sector's address.
  * @param idx The sector index.
@@ -6322,6 +6521,7 @@ static void canim_roll(CPUState* cpu, uint32_t s, uint32_t idx, uint32_t sectorC
     if (A->nHp && envm_dormant(cpu, idx)
         && envm_words(cpu, idx, s, sectorCnt, 1, envm_timer(), A->cur + A->nLp, (int)A->nHp))
         A->model = 1;
+    if (canim_kf_overlay(cpu, A)) A->model = 1;
     A->rollPres = s_vanim_pres;
 }
 
@@ -6497,16 +6697,38 @@ static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sec
  * ran, envm_anchor). A summary line
  * gives the verdict: FAIL when a sector drawn natively stayed frozen on a
  * list it is named by, or the model differed from RAM; VACUOUS when no listed
- * sector was drawn or, on a game with the model, none was compared. */
-#define ACEN_SECTORS 256
+ * sector was drawn or, on a game with the model, none was compared.
+ *
+ * On a game whose animations are deferred keyframes and which has no walker
+ * model (acen_kf_game), a sector's liveness is its posted pose instead: per
+ * bank (LP and HP vertices and colours) the line gives the ticks the posted
+ * pose changed (adv), the ticks the native bank changed (moved) and the
+ * ticks the pending byte held an unpacked post (pend); the native tier
+ * counts are HP/LP. The model is the pack (tsc_kf_pose), compared with RAM
+ * on every bank whose pending byte is 0xFF, the pose the draw packed last;
+ * the summary adds the compares on banks the draw packed this tick (the
+ * descriptor's keyframe changed since the last tick) by vertex and colour,
+ * all and blended (factor > 0). A bank is frozen when its tier was drawn
+ * natively on two ticks and its posted pose changed while the native bank
+ * did not; a paused descriptor posts nothing and is never judged. */
+#define ACEN_SECTORS 1024
 typedef struct {
     uint8_t  lists;                /* 1 wave1 / vertex, 2 wave2, 4 colour */
     uint8_t  drawnNow;             /* the prepass drew its HP tier since the last tick */
+    uint8_t  drawnNowLP;           /* ... its LP tier */
     uint8_t  vhOk, chOk;           /* vh / ch hold a previous tick's hash */
-    uint32_t live, drawnGame, drawnNative, vmoved, cmoved, meq, mn;
+    uint8_t  kfBanks;              /* kf game: banks a descriptor names (1 << TSC_KF_*) */
+    uint8_t  phOk[4], bhOk[4], kfOk[4];
+    uint32_t live, drawnGame, drawnNative, drawnNativeLP, vmoved, cmoved, meq, mn;
     uint32_t vh, ch;
+    uint32_t ph[4], bh[4];         /* kf game: posted-pose and native-bank hashes per bank */
+    uint32_t adv[4], bmoved[4], pend[4];
+    uint8_t  kf[4];                /* the bank descriptor's keyframe byte last tick */
     double   dist;
 } acen_t;
+/* kf game: this window's compares on banks the draw packed this tick,
+ * [0 vertex, 1 colour][0 all, 1 blended]. */
+static uint32_t s_acen_ceq[2][2], s_acen_cn[2][2];
 static int      s_acen_n = -2;     /* window length in ticks; 0 = off */
 static acen_t   s_acen[ACEN_SECTORS];
 static uint32_t s_acen_ticks, s_acen_win, s_acen_sectors;
@@ -6522,15 +6744,19 @@ static int acen_on(void) {
 /** @brief Records the prepass verdict of one visible sector for the census.
  *
  * Counts only canonical builds; a sector index past ACEN_SECTORS is ignored.
+ * The distance is noted for an HP draw.
  * @param i The sector index.
  * @param drawHP The sector's native HP verdict.
+ * @param drawLP The sector's native LP verdict.
  * @param SC The decoded sector.
  * @param camx The camera X in sector units (world / 16).
  * @param camy The camera Y.
  * @param camz The camera Z. */
-static void acen_note_drawn(uint32_t i, int drawHP, const tscache_t* SC,
+static void acen_note_drawn(uint32_t i, int drawHP, int drawLP, const tscache_t* SC,
                             double camx, double camy, double camz) {
-    if (!acen_on() || s_vanim_sub || i >= ACEN_SECTORS || !drawHP) return;
+    if (!acen_on() || s_vanim_sub || i >= ACEN_SECTORS) return;
+    if (drawLP) s_acen[i].drawnNowLP = 1;
+    if (!drawHP) return;
     s_acen[i].drawnNow = 1;
     const double dx = SC->centreX - camx, dy = SC->centreY - camy, dz = SC->centreZ - camz;
     s_acen[i].dist = 16.0 * sqrt(dx * dx + dy * dy + dz * dz);
@@ -6577,47 +6803,99 @@ static void acen_lists_name(char* out, size_t n, uint32_t lists, int game_model)
     }
 }
 
+/** @brief Tests whether the census judges liveness by deferred keyframe posts: a kf registry and no walker model.
+ * @return 1 for such a game, else 0. */
+static int acen_kf_game(void) {
+    if (game_layout.env_anim.wave_table && game_layout.env_anim.timer) return 0;
+    for (int b = 0; b < TSC_KF_BANKS; b++)
+        if (tsc_kf_registry(b)) return 1;
+    return 0;
+}
+
 /** @brief Tests whether a census row drawn natively stayed frozen on a list it is named by.
  *
  * Motion needs two drawn ticks to be seen, so a row drawn on one tick of the
- * window is not judged.
+ * window is not judged. On a kf game a bank is frozen when its tier was
+ * drawn on two ticks and its posted pose changed while the native bank did
+ * not.
  * @param A The row.
+ * @param kf 1 on a kf game (acen_kf_game).
  * @return 1 when frozen, else 0. */
-static int acen_frozen(const acen_t* A) {
+static int acen_frozen(const acen_t* A, int kf) {
+    if (kf) {
+        for (int b = 0; b < TSC_KF_BANKS; b++) {
+            const uint32_t drawn = b >= TSC_KF_HPV ? A->drawnNative : A->drawnNativeLP;
+            if ((A->kfBanks >> b & 1u) && drawn >= 2 && A->adv[b] && !A->bmoved[b]) return 1;
+        }
+        return 0;
+    }
     if (A->drawnNative < 2) return 0;
     return ((A->lists & 3u) && !A->vmoved) || ((A->lists & 4u) && !A->cmoved);
+}
+
+/** @brief Prints one kf-game census row: per bank the posted-pose changes, native-bank changes and pending ticks.
+ * @param i The sector index.
+ * @param A The row.
+ * @param lists The row's list names.
+ * @param bad 1 to mark the row BAD. */
+static void acen_kf_print(uint32_t i, const acen_t* A, const char* lists, int bad) {
+    static const char* bank[TSC_KF_BANKS] = { "LPv", "LPc", "HPv", "HPc" };
+    char kf[160];
+    size_t o = 0;
+    kf[0] = 0;
+    for (int b = 0; b < TSC_KF_BANKS && o < sizeof(kf); b++)
+        if (A->kfBanks >> b & 1u)
+            o += (size_t)snprintf(kf + o, sizeof(kf) - o, " %s=%u/%u/%u", bank[b], A->adv[b],
+                                  A->bmoved[b], A->pend[b]);
+    fprintf(stderr, "[animcensus] w=%u sec=%3u lists=%-8s drawn_native=%u/%u dist=%.0f "
+                    "adv/moved/pend%s model_eq=%u/%u%s\n",
+            s_acen_win, i, lists, A->drawnNative, A->drawnNativeLP, A->dist, kf, A->meq, A->mn,
+            bad ? " BAD" : "");
 }
 
 /** @brief Prints the census window's sector lines and verdict, then clears the window.
  * @param game_model 1 when the game's layout carries the walker model. */
 static void acen_flush(int game_model) {
+    const int kf = acen_kf_game();
     uint32_t listed = 0, drawn = 0, frozen = 0, meq = 0, mn = 0;
     for (uint32_t i = 0; i < ACEN_SECTORS; i++) {
         acen_t* A = &s_acen[i];
         if (!A->lists) continue;
-        const int fz = acen_frozen(A);
+        const int fz = acen_frozen(A, kf);
         listed++;
-        drawn += A->drawnNative != 0;
+        drawn += A->drawnNative != 0 || (kf && A->drawnNativeLP != 0);
         frozen += (uint32_t)fz;
         meq += A->meq; mn += A->mn;
         char lists[16];
         acen_lists_name(lists, sizeof(lists), A->lists, game_model);
+        if (kf) { acen_kf_print(i, A, lists, fz || A->meq != A->mn); continue; }
         fprintf(stderr, "[animcensus] w=%u sec=%3u lists=%-8s live=%u drawn_native=%u drawn_game=%u "
                         "dist=%.0f vmoved=%u/%u cmoved=%u/%u model_eq=%u/%u%s\n",
                 s_acen_win, i, lists, A->live, A->drawnNative, A->drawnGame, A->dist,
                 A->vmoved, s_acen_ticks, A->cmoved, s_acen_ticks, A->meq, A->mn,
                 (fz || A->meq != A->mn) ? " BAD" : "");
     }
-    const char* verdict = (!drawn || (game_model && !mn)) ? "VACUOUS"
+    const char* verdict = (!drawn || ((game_model || kf) && !mn)) ? "VACUOUS"
                         : (frozen || meq != mn) ? "FAIL" : "PASS";
-    fprintf(stderr, "[animcensus] w=%u verdict=%s ticks=%u listed=%u drawn=%u frozen=%u model_eq=%u/%u\n",
-            s_acen_win, verdict, s_acen_ticks, listed, drawn, frozen, meq, mn);
+    char packed[128] = "";
+    if (kf)
+        snprintf(packed, sizeof(packed), " packed_now v=%u/%u vblend=%u/%u c=%u/%u cblend=%u/%u",
+                 s_acen_ceq[0][0], s_acen_cn[0][0], s_acen_ceq[0][1], s_acen_cn[0][1],
+                 s_acen_ceq[1][0], s_acen_cn[1][0], s_acen_ceq[1][1], s_acen_cn[1][1]);
+    fprintf(stderr, "[animcensus] w=%u verdict=%s ticks=%u listed=%u drawn=%u frozen=%u model_eq=%u/%u%s\n",
+            s_acen_win, verdict, s_acen_ticks, listed, drawn, frozen, meq, mn, packed);
     fflush(stderr);
     for (uint32_t i = 0; i < ACEN_SECTORS; i++) {
         acen_t* A = &s_acen[i];
-        A->live = A->drawnGame = A->drawnNative = A->vmoved = A->cmoved = A->meq = A->mn = 0;
-        A->lists = 0;
+        A->live = A->drawnGame = A->drawnNative = A->drawnNativeLP = A->vmoved = A->cmoved = 0;
+        A->meq = A->mn = 0;
+        A->lists = A->kfBanks = 0;
+        memset(A->adv, 0, sizeof(A->adv));
+        memset(A->bmoved, 0, sizeof(A->bmoved));
+        memset(A->pend, 0, sizeof(A->pend));
     }
+    memset(s_acen_ceq, 0, sizeof(s_acen_ceq));
+    memset(s_acen_cn, 0, sizeof(s_acen_cn));
     s_acen_ticks = 0;
     s_acen_win++;
 }
@@ -6648,6 +6926,94 @@ static void acen_motion(uint32_t h, uint32_t* last, uint8_t* ok, uint32_t* moved
     *last = h; *ok = 1;
 }
 
+/** @brief Returns a sector bank's keyframe descriptor: the pending one, else the first registry entry naming the sector.
+ * @param cpu The guest CPU state, read only.
+ * @param s The sector's guest address.
+ * @param idx The sector index.
+ * @param b The bank, TSC_KF_*.
+ * @return The descriptor's guest address, or 0. */
+static uint32_t acen_kf_desc(CPUState* cpu, uint32_t s, uint32_t idx, int b) {
+    const uint32_t reg = tsc_kf_registry(b);
+    if (!reg) return 0;
+    if (!(cpu->read_byte(s + TSC_KF_PEND + (uint32_t)b) & 0x80u)) return tsc_kf_pending(cpu, s, b);
+    const uint32_t cnt = rd(cpu, reg), arr = rd(cpu, reg + 4u);
+    if (!arr || cnt > ENV_ANIM_COUNT_MAX) return 0;
+    const int u8 = (b == TSC_KF_LPV || b == TSC_KF_HPV) && game_layout.env_anim.poly_sec_u8;
+    for (uint32_t k = 0; k < cnt; k++) {
+        const uint32_t d = rd(cpu, arr + k * 4u);
+        if (d && (u8 ? cpu->read_byte(d + 4u) : cpu->read_half(d + 4u)) == idx) return d;
+    }
+    return 0;
+}
+
+/** @brief Returns the FNV-1a hash of a sector bank as the native pass holds it: the decoded vertices or the colour slot's cur words.
+ * @param b The bank, TSC_KF_*.
+ * @param C The decoded sector, or NULL.
+ * @param S The sector's colour slot, or NULL.
+ * @param h Receives the hash.
+ * @return 1 when the bank is held, else 0. */
+static int acen_kf_bank_hash(int b, const tscache_t* C, const canim_t* S, uint32_t* h) {
+    const int hp = b >= TSC_KF_HPV;
+    if (b == TSC_KF_LPV || b == TSC_KF_HPV) {
+        const tsvert_t* v = C ? (hp ? C->hpV : C->lpV) : NULL;
+        const int n = C ? (hp ? C->nHpV : C->nLpV) : 0;
+        if (!v || n <= 0) return 0;
+        *h = acen_fnv(2166136261u, v, sizeof(tsvert_t) * (size_t)n);
+        return 1;
+    }
+    if (!S || !S->cur) return 0;
+    *h = acen_fnv(2166136261u, S->cur + (hp ? S->nLp : 0u),
+                  sizeof(uint32_t) * (hp ? S->nHp : S->nLp));
+    return 1;
+}
+
+/** @brief Accumulates one tick of one sector's deferred keyframe banks into its census row.
+ *
+ * Per bank a descriptor names: the posted pose's change (adv), the pending
+ * byte (pend), the native bank's change (bmoved), and on a bank whose
+ * pending byte is 0xFF the compare of the pose with RAM (meq / mn), counted
+ * also into the packed-this-tick totals when the descriptor's keyframe byte
+ * changed since the last tick.
+ * @param cpu The guest CPU state, read only.
+ * @param i The sector index.
+ * @param s The sector's guest address.
+ * @param A The row. */
+static void acen_kf_sector(CPUState* cpu, uint32_t i, uint32_t s, acen_t* A) {
+    const tscache_t* C = tsc_find(s);
+    const canim_t* S = canim_slot(s);
+    if (S && S->s != s) S = NULL;
+    for (int b = 0; b < TSC_KF_BANKS; b++) {
+        const uint32_t desc = acen_kf_desc(cpu, s, i, b);
+        if (!desc) continue;
+        A->kfBanks |= (uint8_t)(1u << b);
+        tsc_kf_pose_t P;
+        tsc_kf_pose(cpu, s, b, desc, &P);
+        acen_motion(acen_fnv(acen_fnv(2166136261u, P.at, sizeof(P.at[0]) * (size_t)P.n),
+                             P.w, sizeof(P.w[0]) * (size_t)P.n),
+                    &A->ph[b], &A->phOk[b], &A->adv[b]);
+        const uint8_t kfb = cpu->read_byte(desc + 2u);
+        const int packedNow = A->kfOk[b] && kfb != A->kf[b];
+        A->kf[b] = kfb; A->kfOk[b] = 1;
+        if (!(cpu->read_byte(s + TSC_KF_PEND + (uint32_t)b) & 0x80u)) {
+            A->pend[b]++;
+        } else if (P.n) {
+            uint32_t nb;
+            const uint32_t base = tsc_kf_bank(cpu, s, b, &nb);
+            int eq = 1;
+            for (int k = 0; k < P.n && eq; k++) eq = rd(cpu, base + P.at[k] * 4u) == P.w[k];
+            A->mn++; A->meq += (uint32_t)eq;
+            if (packedNow) {
+                const int col = b == TSC_KF_LPC || b == TSC_KF_HPC;
+                const int blend = (tsc_kf_word(cpu, desc) & 0xFFu) != 0;
+                s_acen_cn[col][0]++; s_acen_ceq[col][0] += (uint32_t)eq;
+                s_acen_cn[col][1] += (uint32_t)blend; s_acen_ceq[col][1] += (uint32_t)(blend && eq);
+            }
+        }
+        uint32_t h;
+        if (acen_kf_bank_hash(b, C, S, &h)) acen_motion(h, &A->bh[b], &A->bhOk[b], &A->bmoved[b]);
+    }
+}
+
 /** @brief Accumulates one tick of one listed sector into its census row.
  * @param cpu The guest CPU state, read only.
  * @param i The sector index.
@@ -6664,8 +7030,10 @@ static void acen_sector(CPUState* cpu, uint32_t i, uint8_t lists, uint32_t secto
     A->live += lb & 1u;
     A->drawnGame += (lb & 3u) != 0u;
     A->drawnNative += A->drawnNow && (!game_model || s_envm_ran);
-    A->drawnNow = 0;
+    A->drawnNativeLP += A->drawnNowLP;
+    A->drawnNow = A->drawnNowLP = 0;
     if (!s) return;
+    if (acen_kf_game()) acen_kf_sector(cpu, i, s, A);
     if (game_model && s_envm_ran && (lb & 1u)) {
         if (lists & 3u) acen_model_check(cpu, i, s, sectorCnt, 0, A);
         if (lists & 4u) acen_model_check(cpu, i, s, sectorCnt, 1, A);
@@ -6702,7 +7070,7 @@ static void acen_tick(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
     acen_collect_lists(cpu, sectorCnt, lists);
     for (uint32_t i = 0; i < ACEN_SECTORS; i++) {
         if (lists[i]) acen_sector(cpu, i, lists[i], sectorPtr, sectorCnt, game_model);
-        else s_acen[i].drawnNow = 0;
+        else s_acen[i].drawnNow = s_acen[i].drawnNowLP = 0;
     }
     if (++s_acen_ticks >= (uint32_t)N) acen_flush(game_model);
 }
@@ -8930,18 +9298,19 @@ static void tgpu_prev_cols(const canim_t* CA, int arr, uint32_t c0, uint32_t c1,
         out[q] = (co[q] / 4u < n) ? (CA->prev[base + co[q] / 4u] & 0xFFFFFFu) : cur[q];
 }
 
-/** @brief Replaces four current HP colours with a model slot's current words.
+/** @brief Replaces four current colours with a model slot's current words.
  *
- * A slot whose cur words come from the walker model (canim_t.model) holds
- * colours guest RAM does not; any other slot, or none, leaves cur as read.
- * An index past the array keeps its colour.
+ * A slot whose cur words come from a model (canim_t.model) holds colours
+ * guest RAM does not; any other slot, or none, leaves cur as read. An index
+ * past the array keeps its colour.
  * @param CA The sector's colour-anim slot, or NULL.
- * @param arr The array: 1 HP near, 2 HP far.
+ * @param arr The array: 0 LP, 1 HP near, 2 HP far.
  * @param co The four colour indices, byte offsets.
  * @param cur The four current colours; updated. */
 static void tgpu_model_cols(const canim_t* CA, int arr, const uint16_t co[4], uint32_t cur[4]) {
     if (!CA || !CA->model) return;
-    const uint32_t base = CA->nLp + (arr == 2 ? CA->nHp / 2u : 0u), n = CA->nHp / 2u;
+    const uint32_t base = arr == 0 ? 0u : CA->nLp + (arr == 2 ? CA->nHp / 2u : 0u);
+    const uint32_t n = arr == 0 ? CA->nLp : CA->nHp / 2u;
     for (int q = 0; q < 4; q++)
         if (co[q] / 4u < n) cur[q] = CA->cur[base + co[q] / 4u] & 0xFFFFFFu;
 }
@@ -9176,6 +9545,13 @@ static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
     rc[1] = rd(cpu, L->colBase + F->c1) & 0xFFFFFFu;
     rc[2] = rd(cpu, L->colBase + F->c2) & 0xFFFFFFu;
     rc[3] = F->quad ? (rd(cpu, L->colBase + F->c3) & 0xFFFFFFu) : 0u;
+    {
+        const uint16_t lco[4] = { (uint16_t)F->c0, (uint16_t)F->c1, (uint16_t)F->c2,
+                                  (uint16_t)(F->quad ? F->c3 : F->c2) };
+        const uint32_t rc3 = rc[3];
+        tgpu_model_cols(L->CA, 0, lco, rc);
+        if (!F->quad) rc[3] = rc3;
+    }
     uint32_t prc[4];
     tgpu_prev_cols(L->CA, 0, F->c0, F->c1, F->c2, F->quad ? F->c3 : F->c2, rc, prc);
     uint32_t fixrgb;   /* authored-data corrections (unpainted vertex colours) - the
@@ -12115,7 +12491,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Sector-level tier/fill verdicts - one computation site, consumed
          * by both the retained-GPU claim below and the face walk. */
         sector_verdicts(SC, &G, &s_pre_verd[vi]);
-        acen_note_drawn(i, s_pre_verd[vi].drawHP, SC, camx, camy, camz);
+        acen_note_drawn(i, s_pre_verd[vi].drawHP, s_pre_verd[vi].drawLP, SC, camx, camy, camz);
         /* Level-mean accumulator for the pack LP grade: every visible fitted
          * sector whose LP tier draws contributes - the same set the walk's
          * pass-0 entry used to accumulate, now gathered here (serially) so

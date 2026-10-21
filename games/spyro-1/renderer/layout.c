@@ -137,6 +137,16 @@ const game_layout_t spyro1_game_layout = {
          * (80025FD0 onward) in place. */
         .lp_col  = G_ENVANIM + offsetof(EnvironmentAnimations, m_LowColorAnimationCount),
         .hp_col  = G_ENVANIM + offsetof(EnvironmentAnimations, m_HighColorAnimationCount),
+        /* All four lists are deferred: func_8002A6FC posts a descriptor's
+         * list index into sector +0x18..+0x1B on a keyframe advance
+         * (r_environment.s 8002AAE4 LP verts); the world draw's bin pre-pass
+         * func_800258F0 packs the pose and stores 0xFF only for a tier it
+         * bins (80025BC4 LP verts, 80025D20 LP colours, 80025E68 HP verts,
+         * 80025FD8 HP colours). */
+        .kf_lp_poly = G_ENVANIM + offsetof(EnvironmentAnimations, m_LowPolyAnimationCount),
+        .kf_hp_poly = G_ENVANIM + offsetof(EnvironmentAnimations, m_HighPolyAnimationCount),
+        .kf_lp_col  = G_ENVANIM + offsetof(EnvironmentAnimations, m_LowColorAnimationCount),
+        .kf_hp_col  = G_ENVANIM + offsetof(EnvironmentAnimations, m_HighColorAnimationCount),
     },
     .visibility = {
         .base = D_VISIBILITY,
