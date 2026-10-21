@@ -211,6 +211,7 @@ const game_layout_t spyro2_game_layout = {
                                                      * pre-pass reads shifted right 11 (mobyfunc.s:32-39) */
     },
     .level_id = G_LEVELID,
+    .game_state = G_GAMESTATE,
     .terrain = {
         .radius_mask  = 0xFFFu,                     /* world draw: andi $t2, $a0, 0xFFF (environment.s:1624) */
         .flags_mask   = 0xF000u,                    /* world draw: andi $t1, $a0, 0xF000 (environment.s:1623) */

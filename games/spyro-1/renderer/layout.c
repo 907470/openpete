@@ -202,6 +202,7 @@ const game_layout_t spyro1_game_layout = {
         .xform_end   = G_CAMERA + offsetof(Camera, m_DestinationPosition),
     },
     .level_id = G_LEVELID,
+    .game_state = 0x800757D8u,   /* g_Gamestate (renderer/interp_regions.c's G_GAMESTATE) */
     .terrain = {
         .radius_mask  = 0x1FFFu,
         .flags_mask   = 0xE000u,

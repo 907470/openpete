@@ -664,44 +664,6 @@ static void part_rebase_xy(const part_item* it, const part_rebase* r, int second
     *y += second ? r->dy2 : r->dy;
 }
 
-/** @brief Feeds a screen-space quad to the native scene as two triangles at one depth.
- *
- * The triangles are (0,1,2) and (1,3,2) in the world layer, every vertex at
- * `depth` with constant W and full alpha. Each adds to s_fed_tris.
- * @param x The corners' screen X, PSX pixels.
- * @param y The corners' screen Y, PSX pixels.
- * @param u The corners' texture U.
- * @param vv The corners' texture V.
- * @param rgb The corners' 24-bit colours.
- * @param depth The scene depth.
- * @param tp The texture page and CLUT; read only when `textured`, and NULL is
- *        allowed otherwise.
- * @param textured 1 to sample the texture page.
- * @param blend The renderer blend code, 0 for opaque. */
-static void part_add_quad(const float x[4], const float y[4], const float u[4],
-                          const float vv[4], const uint32_t rgb[4], float depth,
-                          const ngte_tpage* tp, int textured, int blend) {
-    static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
-    for (int s = 0; s < 2; s++) {
-        openpete_scene_tri st = {0};
-        for (int k = 0; k < 3; k++) {
-            const int j = split[s][k];
-            st.v[k].sx = x[j]; st.v[k].sy = y[j]; st.v[k].z = depth;
-            st.v[k].pvz = depth;   /* flat billboard: constant W */
-            st.v[k].u = u[j];  st.v[k].v = vv[j];
-            st.v[k].rgba = (rgb[j] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = textured;
-        if (textured) {
-            st.tpage_x = tp->tpx; st.tpage_y = tp->tpy;
-            st.clut_x  = tp->clx; st.clut_y  = tp->cly; st.bpp = tp->bpp;
-        }
-        st.blend = blend;
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-        s_fed_tris++;
-    }
-}
-
 /** @brief Feeds a LINE_F2 or LINE_G2 primitive as a one-pixel-wide quad across its own perpendicular.
  *
  * A line has no area, so the quad extends half a pixel to each side, the width
@@ -729,15 +691,7 @@ static void part_feed_line(const part_item* it, const part_rebase* r,
     const int two = (it->cls == PART_TWO_POINT_CLASS);
     part_rebase_xy(it, r, 0, &ax, &ay);
     part_rebase_xy(it, r, two, &bx, &by);
-    float dx = bx - ax, dy = by - ay;
-    float len = sqrtf(dx * dx + dy * dy);
-    float ox = 0.5f, oy = 0.0f;
-    if (len > 1e-3f) { ox = -dy / len * 0.5f; oy = dx / len * 0.5f; }
-    const float qx[4] = { ax - ox, ax + ox, bx - ox, bx + ox };
-    const float qy[4] = { ay - oy, ay + oy, by - oy, by + oy };
-    const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    const uint32_t cc[4] = { rgb0, rgb0, rgb1, rgb1 };
-    part_add_quad(qx, qy, zu, zu, cc, depth, NULL, 0, stp ? 1 : 0);
+    s_fed_tris += (uint32_t)ngte_feed_flat_line(ax, ay, bx, by, rgb0, rgb1, depth, stp ? 1 : 0);
 }
 
 /** @brief Feeds every captured primitive to the native scene: polygons as quads, lines as thin quads.
@@ -762,13 +716,7 @@ static void part_feed_native(void) {
             openpete_native_scene_set_tag(
                 OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, (uint32_t)p->code, 0));
             ngte_tpage tp;
-            int blend = p->stp ? 1 : 0;
-            if (p->textured) {
-                ngte_decode_tpage((unsigned)p->tpage, (unsigned)p->clut, 0u, &tp);
-                if (p->stp) blend = ngte_abr_blend(tp.abr, NGTE_ABR_QUARTER_AS_ADD);
-            } else {
-                memset(&tp, 0, sizeof tp);
-            }
+            const int blend = ngte_prim_tpage_blend(p, &tp);
             /* A triangle repeats its last corner, so one split covers both. */
             const int last = p->nv - 1;
             float x[4] = { p->x[0], p->x[1], p->x[2], p->x[last] };
@@ -777,7 +725,8 @@ static void part_feed_native(void) {
             const float u[4] = { (float)p->u[0], (float)p->u[1], (float)p->u[2], (float)p->u[last] };
             const float vt[4] = { (float)p->v[0], (float)p->v[1], (float)p->v[2], (float)p->v[last] };
             const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[last] };
-            part_add_quad(x, y, u, vt, c, depth, &tp, p->textured, blend);
+            s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, vt, c, depth,
+                                                        p->textured ? &tp : NULL, blend, 2);
         } else if ((p->code & 0xF8u) == 0x40u || (p->code & 0xF8u) == 0x50u) {
             openpete_native_scene_set_tag(
                 OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_LINE, (uint32_t)p->code, 0));

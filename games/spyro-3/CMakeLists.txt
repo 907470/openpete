@@ -12,7 +12,7 @@ openpete_add_game(spyro-3
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro3_symbols.toml
     MOD_SDK
     ORCHESTRATOR     ${CMAKE_SOURCE_DIR}/games/common/renderer/reextract_spyro23.c
-    INTERP_REGIONS   renderer/interp_regions.c
+    INTERP_REGIONS   ${CMAKE_SOURCE_DIR}/games/common/renderer/interp_regions_spyro23.c
     TERRAIN_GAME     renderer/terrain_game.c
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
     PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c

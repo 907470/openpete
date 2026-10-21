@@ -204,6 +204,7 @@ const game_layout_t spyro3_game_layout = {
                                                      * copy the visibility computation reads */
     },
     .level_id = G_LEVELID,
+    .game_state = G_GAMESTATE,
     .terrain = {
         .radius_mask  = 0xFFFu,                     /* world draw: andi $t2, $a0, 0xFFF */
         .flags_mask   = 0xF000u,                    /* world draw: andi $t1, $a0, 0xF000 */

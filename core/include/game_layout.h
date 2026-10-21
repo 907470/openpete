@@ -354,6 +354,9 @@ typedef struct game_layout {
     } cam;
 
     uint32_t level_id;
+    /* The simulation regime word the tick dispatcher branches on (4 bytes);
+     * the interp ring's g_GameState row. 0 = not located. */
+    uint32_t game_state;
 
     /* The terrain decode switches. The 7-word sector header and the 11/11/10
      * vertex packing are common; the games differ in the header's radius and

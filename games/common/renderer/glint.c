@@ -769,33 +769,6 @@ static void glint_rebase_xy(const glint_item* it, const glint_rebase* r,
     *y += r->dy;
 }
 
-/** @brief Push a four-corner primitive to the native scene as two untextured triangles.
- *
- * The triangles are (0,1,2) and (1,3,2) in the WORLD group, all corners at one
- * depth, with the corner colours' low 24 bits made opaque.
- * @param x Corner screen X coordinates.
- * @param y Corner screen Y coordinates.
- * @param rgb Corner colour words.
- * @param depth The scene depth every corner takes.
- * @param blend The native blend mode. */
-static void glint_add_quad(const float x[4], const float y[4],
-                           const uint32_t rgb[4], float depth, int blend) {
-    static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
-    for (int s = 0; s < 2; s++) {
-        openpete_scene_tri st = {0};
-        for (int k = 0; k < 3; k++) {
-            const int j = split[s][k];
-            st.v[k].sx = x[j]; st.v[k].sy = y[j]; st.v[k].z = depth;
-            st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
-            st.v[k].u = 0.0f;  st.v[k].v = 0.0f;
-            st.v[k].rgba = (rgb[j] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = 0;
-        st.blend = blend;
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-    }
-}
-
 /** @brief Feed one captured LINE_F2 as a one-pixel-wide quad.
  *
  * A line has no area, so it feeds as a quad extending half a pixel either
@@ -815,21 +788,14 @@ static void glint_feed_line(const glint_item* it, const glint_rebase* rb,
     float bx = (float)(int16_t)(xy1 & 0xFFFFu), by = (float)(int16_t)(xy1 >> 16);
     glint_rebase_xy(it, rb, &ax, &ay);
     glint_rebase_xy(it, rb, &bx, &by);
-    const float dx = bx - ax, dy = by - ay;
-    const float len = sqrtf(dx * dx + dy * dy);
-    float ox = 0.5f, oy = 0.0f;
-    if (len > 1e-3f) { ox = -dy / len * 0.5f; oy = dx / len * 0.5f; }
-    const float qx[4] = { ax - ox, ax + ox, bx - ox, bx + ox };
-    const float qy[4] = { ay - oy, ay + oy, by - oy, by + oy };
-    const uint32_t cc[4] = { rgb, rgb, rgb, rgb };
-    glint_add_quad(qx, qy, cc, depth, blend);
+    (void)ngte_feed_flat_line(ax, ay, bx, by, rgb, rgb, depth, blend);
 }
 
 /** @brief Push every captured primitive to the native scene, rebased when its rebase is active.
  *
  * Does nothing when OPENPETE_GLINT selects 0 or nothing was captured. Each
- * star quad (code GLINT_QUAD) goes through glint_add_quad after the rebase
- * moves its corners; with mode 2 or more each cross line goes through
+ * star quad (code GLINT_QUAD) goes through ngte_feed_flat_quad after the
+ * rebase moves its corners; with mode 2 or more each cross line goes through
  * glint_feed_line. The depth is the rebase's when active, else the depth the
  * pairing gave. Counts the triangles fed in s_fed_star_tris and
  * s_fed_cross_tris and tags them as flare and spark particles with sel 0,
@@ -850,7 +816,8 @@ static void glint_feed_native(void) {
             float y[4] = { p->y[0], p->y[1], p->y[2], p->y[3] };
             const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[3] };
             for (int k = 0; k < 4; k++) glint_rebase_xy(&s_item[i], rb, &x[k], &y[k]);
-            glint_add_quad(x, y, c, depth, s_item[i].blend);
+            static const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            (void)ngte_feed_flat_quad(x, y, zu, zu, c, depth, NULL, s_item[i].blend, 2);
             s_fed_star_tris += 2;
         } else if (p->code == GLINT_LINE && mode >= 2) {
             openpete_native_scene_set_tag(

@@ -272,7 +272,7 @@ extern const portal_game_s23_consts_t spyro3_portal_game_s23; /* renderer/portal
 extern const freecam_game_desc        spyro3_freecam_desc;    /* features/freecam.c */
 extern const game_orchestrator_t      spyro23_orchestrator;   /* common renderer/reextract_spyro23.c */
 extern const openpete_feature_list_t  spyro3_feature_list;    /* feature_list.c */
-void spyro3_interp_register(void);                             /* renderer/interp_regions.c */
+void spyro23_interp_register(void);                            /* common renderer/interp_regions_spyro23.c */
 extern const psyq_game_conf_t         spyro3_psyq_conf;       /* gen/game_identity.c */
 extern const psyq_stub_table_t        spyro3_psyq_stub_table; /* gen/psyq_stub_table.c */
 
@@ -340,7 +340,7 @@ static const game_host_desc_t k_host = {
     .portal_s23      = &spyro3_portal_game_s23,
     .freecam         = &spyro3_freecam_desc,
     .orchestrator    = &spyro23_orchestrator,
-    .interp_register = spyro3_interp_register,
+    .interp_register = spyro23_interp_register,
     .frame_pre       = &k_frame_pre,
 };
 

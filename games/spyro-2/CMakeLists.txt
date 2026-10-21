@@ -9,7 +9,7 @@ include(${CMAKE_SOURCE_DIR}/cmake/openpete_game.cmake)
 openpete_add_game(spyro-2
     FEATURE_LIST     feature_list.c
     ORCHESTRATOR     ${CMAKE_SOURCE_DIR}/games/common/renderer/reextract_spyro23.c
-    INTERP_REGIONS   renderer/interp_regions.c
+    INTERP_REGIONS   ${CMAKE_SOURCE_DIR}/games/common/renderer/interp_regions_spyro23.c
     TERRAIN_GAME     renderer/terrain_game.c
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
     PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c

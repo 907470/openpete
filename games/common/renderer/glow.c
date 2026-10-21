@@ -314,21 +314,16 @@ static void glow_feed_native(void) {
     for (int i = 0; i < s_item_n; i++) {
         const ngte_prim* p = &s_item[i].p;
         if (p->nv != 3) continue;
-        openpete_scene_tri st = {0};
-        for (int k = 0; k < 3; k++) {
-            st.v[k].sx = (float)p->x[k] + s_item[i].dx;
-            st.v[k].sy = (float)p->y[k] + s_item[i].dy;
-            st.v[k].z = s_item[i].depth;
-            /* The fan is flat in view-Z, so any constant W interpolates its
-             * colour screen-linearly: the slot view-Z serves as W. */
-            st.v[k].pvz = s_item[i].depth;
-            st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-            st.v[k].rgba = (p->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = 0;
-        st.blend = s_item[i].blend;
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-        s_fed_tris++;
+        /* The fan is flat in view-Z, so any constant W interpolates its
+         * colour screen-linearly: the slot view-Z serves as W. */
+        static const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        const float x[4] = { (float)p->x[0] + s_item[i].dx, (float)p->x[1] + s_item[i].dx,
+                             (float)p->x[2] + s_item[i].dx, 0.0f };
+        const float y[4] = { (float)p->y[0] + s_item[i].dy, (float)p->y[1] + s_item[i].dy,
+                             (float)p->y[2] + s_item[i].dy, 0.0f };
+        const uint32_t rgb[4] = { p->rgb[0], p->rgb[1], p->rgb[2], 0u };
+        s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, zu, zu, rgb, s_item[i].depth,
+                                                    NULL, s_item[i].blend, 1);
     }
     openpete_native_scene_set_tag(0);
 }

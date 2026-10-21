@@ -557,6 +557,60 @@ typedef struct {
 void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
                      const ngte_walk_policy* pol, ngte_prim_sink sink, void* ctx);
 
+/* ---- flat-depth screen primitive feed ------------------------------------
+ * A feeder that replays a captured screen-space primitive at one depth (a
+ * particle, a gem glint, a zap or tracer ribbon segment) hands its corners
+ * here; the corners may already carry the feeder's rebase or widening. */
+
+/** @brief The texture page and native blend of a captured polygon, from its own tpage and CLUT words.
+ *
+ * A textured primitive decodes its page (no flags) and, when
+ * semi-transparent, blends by its ABR with rate 3 drawn additive
+ * (NGTE_ABR_QUARTER_AS_ADD); an untextured one zeroes `tp` and blends with
+ * code 1 when semi-transparent. Opaque is 0.
+ * @param p The captured primitive.
+ * @param tp Receives the decoded page; zeroed for an untextured primitive.
+ * @return The native blend code. */
+int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp);
+
+/** @brief Feeds a four-corner screen-space primitive at one depth to the native scene's world layer as one or two triangles.
+ *
+ * The triangles are corners (0,1,2) and (1,3,2); a triangle primitive passes
+ * its last corner as corner 3, or `ntri` 1 to feed (0,1,2) alone. Every
+ * vertex takes `depth` as its Z and as its W, so the attributes interpolate
+ * screen-linearly, and each colour's low 24 bits with full alpha.
+ * @param x The corners' screen X, PSX pixels.
+ * @param y The corners' screen Y, PSX pixels.
+ * @param u The corners' texture U.
+ * @param v The corners' texture V.
+ * @param rgb The corners' colour words.
+ * @param depth The scene depth.
+ * @param tp The texture page and CLUT to sample, or NULL for untextured.
+ * @param blend The native blend code, 0 for opaque.
+ * @param ntri 2 for both triangles, 1 for the first alone.
+ * @return The number of triangles fed. */
+int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
+                        const float v[4], const uint32_t rgb[4], float depth,
+                        const ngte_tpage* tp, int blend, int ntri);
+
+/** @brief Feeds a screen-space line at one depth as a one-pixel-wide untextured quad across its own perpendicular.
+ *
+ * A line has no area, so the quad extends half a pixel to each side, the
+ * width the GPU rasterizes it at; a line shorter than 1e-3 pixels widens
+ * along X. Corners 0 and 1 straddle endpoint a, 2 and 3 endpoint b, fed
+ * through ngte_feed_flat_quad as two triangles.
+ * @param ax Endpoint a's screen X, PSX pixels.
+ * @param ay Endpoint a's screen Y.
+ * @param bx Endpoint b's screen X.
+ * @param by Endpoint b's screen Y.
+ * @param rgb_a Endpoint a's colour word.
+ * @param rgb_b Endpoint b's colour word.
+ * @param depth The scene depth.
+ * @param blend The native blend code, 0 for opaque.
+ * @return The number of triangles fed. */
+int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
+                        uint32_t rgb_b, float depth, int blend);
+
 /* ---- near-plane clip corner --------------------------------------------- */
 /*
  * A corner in camera space, the form a Sutherland-Hodgman cut against a

@@ -369,6 +369,56 @@ int ngte_abr_blend(int abr, ngte_abr_policy policy) {
     }
 }
 
+/* ---- flat-depth screen primitive feed ----------------------------------- */
+
+int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp) {
+    if (!p->textured) {
+        memset(tp, 0, sizeof *tp);
+        return p->stp ? 1 : 0;
+    }
+    ngte_decode_tpage((unsigned)p->tpage, (unsigned)p->clut, 0u, tp);
+    return p->stp ? ngte_abr_blend(tp->abr, NGTE_ABR_QUARTER_AS_ADD) : 0;
+}
+
+int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
+                        const float v[4], const uint32_t rgb[4], float depth,
+                        const ngte_tpage* tp, int blend, int ntri) {
+    static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
+    int fed = 0;
+    for (int s = 0; s < ntri && s < 2; s++) {
+        openpete_scene_tri st = {0};
+        for (int k = 0; k < 3; k++) {
+            const int j = split[s][k];
+            st.v[k].sx = x[j]; st.v[k].sy = y[j]; st.v[k].z = depth;
+            st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
+            st.v[k].u = u[j]; st.v[k].v = v[j];
+            st.v[k].rgba = (rgb[j] & 0xFFFFFFu) | 0xFF000000u;
+        }
+        st.textured = tp ? 1 : 0;
+        if (tp) {
+            st.tpage_x = tp->tpx; st.tpage_y = tp->tpy;
+            st.clut_x  = tp->clx; st.clut_y  = tp->cly; st.bpp = tp->bpp;
+        }
+        st.blend = blend;
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
+        fed++;
+    }
+    return fed;
+}
+
+int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
+                        uint32_t rgb_b, float depth, int blend) {
+    const float dx = bx - ax, dy = by - ay;
+    const float len = sqrtf(dx * dx + dy * dy);
+    float ox = 0.5f, oy = 0.0f;
+    if (len > 1e-3f) { ox = -dy / len * 0.5f; oy = dx / len * 0.5f; }
+    const float qx[4] = { ax - ox, ax + ox, bx - ox, bx + ox };
+    const float qy[4] = { ay - oy, ay + oy, by - oy, by + oy };
+    const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const uint32_t cc[4] = { rgb_a, rgb_a, rgb_b, rgb_b };
+    return ngte_feed_flat_quad(qx, qy, zu, zu, cc, depth, NULL, blend, 2);
+}
+
 /* ---- screen-space backface test ----------------------------------------- */
 
 double ngte_nclip(double ax, double ay, double bx, double by,

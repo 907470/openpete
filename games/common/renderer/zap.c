@@ -604,7 +604,6 @@ static void zap_width_note(float cx, float cy, const zap_pivot* pv, int k) {
  * is skipped.
  * @param h The held primitive with its depth and pivots. */
 static void zap_add_prim(const zap_held* h) {
-    static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     const ngte_prim* p = &h->p;
     float depth = h->depth;
     if (p->nv != 3 && p->nv != 4) return;
@@ -628,33 +627,21 @@ static void zap_add_prim(const zap_held* h) {
         depth = openpete_native_scene_viewz(openpete_worldvz_full((float)vz));
     }
     ngte_tpage tp;
-    int blend = p->stp ? 1 : 0;
-    if (p->textured) {
-        ngte_decode_tpage((unsigned)p->tpage, (unsigned)p->clut, 0u, &tp);
-        if (p->stp) blend = ngte_abr_blend(tp.abr, NGTE_ABR_QUARTER_AS_ADD);
-    } else {
-        memset(&tp, 0, sizeof tp);
-    }
+    const int blend = ngte_prim_tpage_blend(p, &tp);
     const int last = p->nv - 1;           /* a triangle repeats its last corner */
-    for (int s = 0; s < 2; s++) {
-        openpete_scene_tri st = {0};
-        for (int k = 0; k < 3; k++) {
-            const int j = split[s][k] == 3 ? last : split[s][k];
-            st.v[k].sx = px[j]; st.v[k].sy = py[j]; st.v[k].z = depth;
-            st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
-            st.v[k].u = (float)p->u[j]; st.v[k].v = (float)p->v[j];
-            st.v[k].rgba = (p->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = p->textured;
-        if (p->textured) {
-            st.tpage_x = tp.tpx; st.tpage_y = tp.tpy;
-            st.clut_x  = tp.clx; st.clut_y  = tp.cly; st.bpp = tp.bpp;
-        }
-        st.blend = blend;
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-        s_fed_tris++;
-        if (p->nv == 3) break;            /* a triangle is one scene triangle */
+    const int idx[4] = { 0, 1, 2, last };
+    float x[4], y[4], u[4], v[4];
+    uint32_t rgb[4];
+    for (int k = 0; k < 4; k++) {
+        const int j = idx[k];
+        x[k] = px[j]; y[k] = py[j];
+        u[k] = (float)p->u[j]; v[k] = (float)p->v[j];
+        rgb[k] = p->rgb[j];
     }
+    /* A triangle is one scene triangle. */
+    s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, depth,
+                                                p->textured ? &tp : NULL, blend,
+                                                p->nv == 3 ? 1 : 2);
 }
 
 /** @brief Feeds a held set of ribbon primitives to the native scene under the tracer tag.
