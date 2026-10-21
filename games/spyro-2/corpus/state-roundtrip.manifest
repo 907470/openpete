@@ -5,3 +5,14 @@
 pause-menu-midlevel.bk2                          | none | - | -    |
 autumn-plains-skelos-badlands-portal-entry.bk2   | none | - | -    |
 shady-oasis-flame.bk2                            | none | - | 1500 |
+# The card-status waits of the title overlay's format path
+# (func_titlescreen_and_loading_8007EA9C: headers 0x8007EB28 and 0x8007EB78,
+# each `jal 0x8007EFFC` (B(5Ch) _card_status) then `beqz` back) and
+# 0x8007DFDC take 580 of the 582 VBLs 1119-1700 from emitted delivery points,
+# with no VSync wait between. The save and load armed at VBL 1200 wait there
+# for the first final yield after the format, VBL 1700; the state saved then
+# is loaded at VBL 1705 by the saving run and by a fresh process. A later
+# load key diverges in kernel_bu_dir from VBL 1709: the game writes its save
+# to the card after the format, and a state does not carry the card's
+# contents.
+s2-format-card.bk2                               | unformatted | - | 1200 | loop | 1705

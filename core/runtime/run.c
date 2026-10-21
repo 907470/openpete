@@ -3875,11 +3875,28 @@ static unsigned long long s_ra_deferred[2];
 static unsigned long long s_ra_adopted = 0;  /* speculations adopted: no rollback at the snapshot's park site */
 static unsigned long long s_ra_left[2];  /* speculations that left gameplay: [0] rolled back, [1] adopted */
 
+/* The share of s_state_ops_deferred first deferred at a yield an emitted
+ * polling loop's delivery took (openpete_yield_loop_header), and the first
+ * such loop's header and feed key. */
+static unsigned long long s_loop_deferred = 0;
+static uint32_t s_loop_deferred_header = 0u;
+static unsigned s_loop_deferred_key = 0u;
+
+/** @brief Attribute one deferred request to the emitted polling loop whose delivery the fiber is yielding under, if any. */
+static void count_loop_deferral(void) {
+    if (!openpete_yield_loop_header) return;
+    if (s_loop_deferred++ == 0u) {
+        s_loop_deferred_header = openpete_yield_loop_header;
+        s_loop_deferred_key = openpete_feed_key_now();
+    }
+}
+
 /** @brief Count one runahead snapshot (kind 0) or rollback (kind 1) deferred to a final yield.
  * @param kind 0 for a snapshot, 1 for a rollback. */
 static void ra_count_deferral(int kind) {
     s_ra_deferred[kind]++;
     s_state_ops_deferred[kind]++;
+    count_loop_deferral();
 }
 
 /** @brief Carry a runahead snapshot owed to a later yield, counting the request once when it first waits.
@@ -3961,6 +3978,7 @@ static int state_ops_drain(void) {
             if (op->deferred) continue;
             op->deferred = 1;
             s_state_ops_deferred[op->kind == STATE_OP_LOAD_SLOT || op->kind == STATE_OP_LOAD_FILE]++;
+            count_loop_deferral();
         }
         return 0;
     }
@@ -7478,6 +7496,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                s_site_deferred[SITE_DEF_LOAD], s_site_wait_yields, s_site_deferred[SITE_DEF_REWIND],
                s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
                s_site_refused, s_site_abandoned);
+    OPL_INFO_F("savestate", "deferred at an emitted loop site: %llu request(s); first at loop header "
+               "0x%08X, feed key %u", s_loop_deferred, s_loop_deferred_header, s_loop_deferred_key);
     {
         /* The VBL delivery census (games/common/psyq/psyq_thunks.cpp). */
         extern void psyq_vbl_delivery_report(void) __attribute__((weak));

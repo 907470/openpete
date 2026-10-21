@@ -24,6 +24,11 @@
 #                                 marked `>0` must report a nonzero deferred
 #                                 snapshot count and load count: K falls on a
 #                                 yield that is not a VSync wait's final one.
+#                                 A row marked `loop` must also report a
+#                                 nonzero count deferred at an emitted
+#                                 polling-loop delivery, with the loop's
+#                                 header address: K falls inside a loop the
+#                                 recompiler emitted a delivery point in.
 #   load-key                    - --state-save-on-frame K and
 #                                 --state-load-on-frame L (L > K) on one
 #                                 run: the run returns to the state it saved
@@ -45,8 +50,12 @@
 #                                 refusal and the hash log is byte-identical
 #                                 to clean (nothing was restored)
 #
-# Usage: tests/harness/check_state_roundtrip.sh [--game SLUG] [movie.bk2 ...]
-#   (default: the manifest's rows; a movie argument is the row `movie|-|-|-`)
+# Usage: tests/harness/check_state_roundtrip.sh [--game SLUG] [--row NAME]
+#                                                [movie.bk2 ...]
+#   (default: the manifest's rows; a movie argument is the row `movie|-|-|-`;
+#   --row runs only the manifest rows whose source file name, or `boot-<i>`
+#   for the movie-less row at index i, is NAME, and none of the game's
+#   runahead, transition or rewind-driver legs)
 # Exit 0 = all gates PASS. Runs from the repo root.
 
 set -u
@@ -93,15 +102,22 @@ trap 'rm -rf "$OUT"' EXIT
 
 # --game and its slug are consumed above; what remains is the movie list.
 MOVIES=()
-skip_next=0
+ROW_ONLY=""
+skip_next=""
 for a in "$@"; do
-    if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+    case "$skip_next" in
+        game) skip_next=""; continue ;;
+        row)  skip_next=""; ROW_ONLY="$a"; continue ;;
+    esac
     case "$a" in
-        --game)   skip_next=1 ;;
+        --game)   skip_next=game ;;
         --game=*) ;;
+        --row)    skip_next=row ;;
+        --row=*)  ROW_ONLY="${a#--row=}" ;;
         *) MOVIES+=("$a") ;;
     esac
 done
+if [ -n "$ROW_ONLY" ]; then RA_MOVIE=""; XL_LEGS=(); fi
 
 # One entry per row: source, card, boot flags, save key, deferral; an empty
 # field reads as `-`.
@@ -121,6 +137,18 @@ else
         R_KEY+=("$(trim "${f_key:-}")"); R_DEF+=("$(trim "${f_def:-}")")
         R_LKEY+=("$(trim "${f_lkey:-}")")
     done < <(sed 's/#.*//' "$MANIFEST")
+fi
+if [ -n "$ROW_ONLY" ]; then
+    K_SRC=(); K_CARD=(); K_FLAGS=(); K_KEY=(); K_DEF=(); K_LKEY=()
+    for i in "${!R_SRC[@]}"; do
+        if [ "${R_SRC[$i]}" = - ]; then rn="boot-$i"; else rn="$(basename "${R_SRC[$i]}")"; fi
+        [ "$rn" = "$ROW_ONLY" ] || continue
+        K_SRC+=("${R_SRC[$i]}"); K_CARD+=("${R_CARD[$i]}"); K_FLAGS+=("${R_FLAGS[$i]}")
+        K_KEY+=("${R_KEY[$i]}"); K_DEF+=("${R_DEF[$i]}"); K_LKEY+=("${R_LKEY[$i]}")
+    done
+    R_SRC=("${K_SRC[@]}"); R_CARD=("${K_CARD[@]}"); R_FLAGS=("${K_FLAGS[@]}")
+    R_KEY=("${K_KEY[@]}"); R_DEF=("${K_DEF[@]}"); R_LKEY=("${K_LKEY[@]}")
+    [ ${#R_SRC[@]} -gt 0 ] || { echo "FAIL: no row $ROW_ONLY in $MANIFEST"; exit 1; }
 fi
 [ ${#R_SRC[@]} -gt 0 ] || { echo "FAIL: no rows in $MANIFEST"; exit 1; }
 
@@ -144,6 +172,13 @@ row_launch() { # $1 row index  $2 scratch card file name
             local has=0
             for t in "${ROW_BASE[@]}"; do [ "$t" = --no-card ] && has=1; done
             [ $has = 1 ] || ROW_ARGS+=(--no-card) ;;
+        unformatted)
+            # A never-formatted card: 131072 zero bytes, written fresh.
+            ROW_BASE=()
+            for t in "${PG_RUN_ARGS[@]}"; do [ "$t" = --no-card ] || ROW_BASE+=("$t"); done
+            rm -f "${OUT:?}/$2" "${OUT:?}/$2.modset"
+            head -c 131072 /dev/zero > "$OUT/$2"
+            ROW_ARGS+=(--card1 "$OUT/$2" --no-card2) ;;
         *)
             local fx="tests/golden/$PG_GAME/$card"
             [ -f "$fx" ] || { echo "  SKIP: no card fixture $fx"; return 64; }
@@ -241,15 +276,21 @@ EOF
         || { echo "  same-key run FAILED"; fail=1; continue; }
     sk_def="$(deferred "$OUT/$name-sk.csv.log")"
     echo "  same-key($key) $sk_def"
+    sk_loop_line="$(grep -o 'deferred at an emitted loop site: .*' "$OUT/$name-sk.csv.log" | tail -1)"
+    sk_loop=$(sed -n 's/.*loop site: \([0-9]*\) request.*/\1/p' <<<"$sk_loop_line")
+    echo "  same-key($key) ${sk_loop_line:-no loop-site line}"
     sk_saves=$(sed -n 's/.*deferred to a final yield: \([0-9]*\) snapshot.*/\1/p' <<<"$sk_def")
     sk_loads=$(sed -n 's/.* \([0-9]*\) load request.*/\1/p' <<<"$sk_def")
     sk_eng=0
     grep -q "saved $OUT/$name-sk.state" "$OUT/$name-sk.csv.log" &&
         grep -q "loaded $OUT/$name-sk.state" "$OUT/$name-sk.csv.log" && sk_eng=1
-    if [ $sk_eng = 0 ] || [ -z "$sk_saves" ] || [ -z "$sk_loads" ]; then
+    if [ $sk_eng = 0 ] || [ -z "$sk_saves" ] || [ -z "$sk_loads" ] || [ -z "$sk_loop" ]; then
         echo "  same-key($key): VACUOUS FAIL (save/load not both logged, or no deferral line)"; fail=1
-    elif [ "${R_DEF[$i]}" = ">0" ] && { [ "$sk_saves" -eq 0 ] || [ "$sk_loads" -eq 0 ]; }; then
+    elif { [ "${R_DEF[$i]}" = ">0" ] || [ "${R_DEF[$i]}" = loop ]; } &&
+         { [ "$sk_saves" -eq 0 ] || [ "$sk_loads" -eq 0 ]; }; then
         echo "  same-key($key): key is not below an intermediate yield (deferred $sk_saves/$sk_loads) FAIL"; fail=1
+    elif [ "${R_DEF[$i]}" = loop ] && [ "${sk_loop:-0}" -eq 0 ]; then
+        echo "  same-key($key): no request deferred at an emitted loop site FAIL"; fail=1
     elif cmp -s "$OUT/$name-clean.csv" "$OUT/$name-sk.csv"; then
         echo "  same-key($key): byte-identical PASS"
     else

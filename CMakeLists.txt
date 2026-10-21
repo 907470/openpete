@@ -1773,6 +1773,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The savestate deferral row at an emitted polling-loop delivery: Spyro 2
+    # formats an unformatted card (games/spyro-2/bk2/s2-format-card.bk2),
+    # whose card-status waits take their VBLs at the loops' back edges. A
+    # save and a load armed inside the wait must be deferred to the next
+    # final yield (a nonzero count, at least one attributed to a loop header)
+    # and leave the hash log identical to clean; the state is then loaded by
+    # the saving run and by a fresh process. Six headless runs, ~50 s.
+    add_test(NAME state_roundtrip_loop_deferral
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_state_roundtrip.sh
+                     --game spyro-2 --row s2-format-card.bk2)
+    set_tests_properties(state_roundtrip_loop_deferral PROPERTIES
+        LABELS "slow;determinism;savestate"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Memory-card gate over the kernel's bu file device, with a formatted card
     # in port A and port B empty: Spyro 3 boots past its title's card probe,
     # and Spyro 2 creates, writes and reads back its save from

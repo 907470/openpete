@@ -1330,7 +1330,7 @@ static uint64_t s_loop_counted_only = 0;
  * pure spin or device-status poll: one VBL each, on openpete's own count. */
 static uint64_t s_loop_pre_anchor = 0;
 
-/** @brief Act on the quantum an emitted polling-loop back-edge reached (psx_loop_poll).
+/** @brief Act on the quantum an emitted polling-loop back-edge reached.
  *
  * Under the schedule a quantum is a charge, never a count of its own: it
  * charges to the VBLANK the reference's rows show due before their next
@@ -1344,10 +1344,8 @@ static uint64_t s_loop_pre_anchor = 0;
  * spins on a device the VBLs pass for, take one VBL; a counted poll, where
  * the static instruction count is not the CPU's time, is counted only.
  * @param cpu Guest CPU state, mid-loop.
- * @param header The loop's header address.
  * @param pure The site kind: 1 pure spin, 2 device-status poll, 0 counted poll. */
-extern "C" void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t pure) {
-    (void)header;
+static void loop_deliver(CPUState* cpu, uint32_t pure) {
     if (openpete_sched_active()) {
         uint32_t target = 0;
         if (openpete_sched_loop_due(openpete_loop_insns_since_anchor(), &target) &&
@@ -1361,6 +1359,21 @@ extern "C" void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t p
     }
     if (!pure) { s_loop_counted_only++; return; }
     deliver_vbl(cpu, VBL_SRC_LOOP, 0);
+}
+
+/** @brief Deliver the quantum an emitted polling-loop back-edge reached (psx_loop_poll), publishing the loop's header for the yields it takes.
+ *
+ * openpete_yield_loop_header names the header while loop_deliver runs and
+ * returns to its previous value after, so a yield inside the delivery is
+ * attributed to the loop and every other yield reads 0.
+ * @param cpu Guest CPU state, mid-loop.
+ * @param header The loop's header address.
+ * @param pure The site kind: 1 pure spin, 2 device-status poll, 0 counted poll. */
+extern "C" void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t pure) {
+    const uint32_t outer_header = openpete_yield_loop_header;
+    openpete_yield_loop_header = header;
+    loop_deliver(cpu, pure);
+    openpete_yield_loop_header = outer_header;
 }
 
 /** @brief Deliver one VBL for a device wait inside a kernel call.

@@ -256,6 +256,12 @@ extern int openpete_yield_final;
  * set. */
 extern openpete_park_site_t openpete_yield_site;
 
+/* The header address of the emitted polling loop whose back-edge quantum
+ * delivered the VBL the fiber is yielding under, 0 at every other yield.
+ * Written by the game fiber around a loop delivery, read by the host loop
+ * between yields (the deferral census names the site). */
+extern uint32_t openpete_yield_loop_header;
+
 /** @brief Report whether the game fiber is parked at a final yield whose site equals @p site.
  *
  * A site with ra 0 (none recorded) matches any final yield.

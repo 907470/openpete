@@ -25,6 +25,7 @@ SDL_AtomicInt openpete_game_running    = {0};
 int openpete_speculative               = 0;
 int openpete_yield_final               = 0;
 openpete_park_site_t openpete_yield_site = {0u, 0u};
+uint32_t     openpete_yield_loop_header = 0u;
 int openpete_replaying                 = 0;
 int openpete_ra_input_edge             = 0;
 unsigned     openpete_frame            = 0u;
