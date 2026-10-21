@@ -719,12 +719,6 @@ typedef struct game_layout {
         /* A moby step longer than this many world units in one tick is a
          * jump, for a moby no game marker decides; 0 = no distance bound. */
         uint32_t    jump_bound;
-        /* Whether the sub-tick re-extract stages the captured cull-record
-         * queue when the last canonical present's regular moby draw did not
-         * capture it (1): the moby replay then runs with only the regular
-         * pass skipped. 0 stages only a queue that present captured, and the
-         * replay runs only when the second kind is fresh. */
-        int         rx_stage_stale_recs;
         /* The placement markers (game_moby_place_t), `place_n` rows; NULL
          * where the game names none. */
         const game_moby_place_t* place;

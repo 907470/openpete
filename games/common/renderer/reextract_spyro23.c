@@ -7,9 +7,9 @@
  * of the present; guest RAM is never written.
  *
  * Provides the renderer/orchestrator.h entries through spyro23_orchestrator.
- * Every engine address it reads comes from game_layout, and the one policy
- * the two games differ on, whether a stale moby cull queue is staged, is
- * game_layout.moby.rx_stage_stale_recs. The per-producer camera bracket
+ * Every engine address it reads comes from game_layout. A moby cull queue the
+ * last canonical present did not capture is never staged, so the moby replay
+ * cannot decode a previous state's records. The per-producer camera bracket
  * reports "nothing captured": every producer draws under the tick-end
  * camera. */
 #include "renderer/orchestrator.h"
@@ -93,9 +93,9 @@ static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh
  * the last level's records. */
 static uint32_t s_mobyreg_epoch;
 /* Whether that queue is staged over its own address for the present in flight.
- * The regular record pass decodes through the staged view, so this and the
- * epoch together are the pass's freshness: a present that could not stage the
- * queue must not walk it. */
+ * Only a queue captured in the last closed epoch is staged, so this is the
+ * regular record pass's freshness: a present that could not stage the queue
+ * must not walk it. */
 static int      s_recs_staged;
 
 /** @brief Reports whether OPENPETE_CAM_DBG is set to anything but 0, latched on first call.
@@ -157,8 +157,8 @@ static void orch_epoch_supersede(void) { s_epoch_now++; }
 static uint32_t orch_epoch_stamp(void) { return s_epoch_now; }
 /** @brief Report whether a capture stamp is the last closed epoch (spyro_native_canon_epoch_fresh). */
 static int orch_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
-/** @brief Report whether the moby cull queue is staged and was captured in the last closed epoch (spyro_native_canon_mobyreg_fresh). */
-static int orch_mobyreg_fresh(void) { return s_recs_staged && s_mobyreg_epoch == s_epoch_ok; }
+/** @brief Report whether the moby cull queue is staged, which implies the last closed epoch captured it (spyro_native_canon_mobyreg_fresh). */
+static int orch_mobyreg_fresh(void) { return s_recs_staged; }
 /* No second material pass: the shaded producer is never fresh (the inert
  * entry). */
 
@@ -194,15 +194,15 @@ static void orch_capture_recs(void* cpu) {
 /** @brief Stages the captured moby cull-record queue over its own address for the present in flight.
  *
  * Sets s_recs_staged to the result, which orch_mobyreg_fresh reads. Nothing
- * is staged when no queue was captured or the stage fails, nor, unless
- * game_layout.moby.rx_stage_stale_recs is set, when the capture's epoch is
- * not the last canonical one (a tick that ran no moby draw), so the caller
- * skips the replay rather than decoding whatever now lives there.
+ * is staged when no queue was captured, when the capture's epoch is not the
+ * last canonical one (a tick that ran no moby draw), or when the stage fails,
+ * so the caller skips the replay rather than decoding a previous state's
+ * records or whatever now lives at the queue's address.
  * @return 1 when the queue is staged, else 0. */
 static int stage_moby_records(void) {
     s_recs_staged = 0;
     if (!s_recs_len) return 0;
-    if (!game_layout.moby.rx_stage_stale_recs && s_mobyreg_epoch != s_epoch_ok) return 0;
+    if (s_mobyreg_epoch != s_epoch_ok) return 0;
     void* stage = openpete_subtick_view_stage(s_recs_base, s_recs_len);
     if (!stage) return 0;
     memcpy(stage, s_recs_copy, s_recs_len);
