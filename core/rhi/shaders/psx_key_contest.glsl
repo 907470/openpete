@@ -550,14 +550,13 @@ bool op_rank_is_prop(float rank)
 /* The key contest. koff is the face's key channel: positive = its absolute
  * OT key + 0.5 (OT-band terrain and moby faces); negative = near-band
  * terrain, contest-only, where the fragment's own view-Z is the limit.
- * actor = an unranked moby face. prop = an actor face of a curated
- * embedded prop, which never loses to a terrain key: terrain within the
+ * actor = an unranked moby face; no actor face loses to a terrain key.
+ * prop = an actor face of a curated embedded prop: terrain within the
  * embed bound in front of it yields to it, terrain beyond the bound in
  * front occludes it by true depth, terrain behind it loses by true depth.
- * Without the exemption both sides of the embed rule discard and the pixel
- * keeps whatever is behind them. truescope = moby keys yield by the
- * fragment's own true view-Z (the default; false restores the full
- * compound painter).
+ * The verdict reads prop through actor alone. truescope = moby keys yield
+ * by the fragment's own true view-Z (the default; false restores the full
+ * compound painter among moby keys).
  *
  * Under truescope, terrain never yields to general moby keys: the authored
  * pulls (-128*dofs) float pickups and decor over whatever the OT sorts them
@@ -576,21 +575,21 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
 {
     if (koff > 0.0) {
         float band = (koff - 0.5) - 64.0;      /* strict, by half an OT slot */
-        if (slot_contest) {
-            /* One ordering table, OP_KEY_SLOT world per bucket. Terrain
-             * against terrain compares buckets, the table's own granularity:
-             * a difference smaller than a bucket is no difference at all,
-             * and a terrain fragment keeps a tie (it must never lose to its
-             * own key). An actor face is not compared against the terrain
-             * key: the table paints a terrain face over a nearer moby face
-             * whose bucket is the same or farther, so a moby resting on a
-             * step loses its lower half to the step's lip. Terrain against
-             * moby is decided by true depth with the -127 stored tie pull,
-             * a deliberate departure from the table's order. */
-            if (!prop && !actor &&
-                op_key_bucket(tkey) < floor((koff - 0.5) / OP_KEY_SLOT))
-                return true;
-        } else if (!prop && tkey < band) return true;
+        /* Terrain against terrain only. An actor face (an embedded prop
+         * included: its rank reads as an actor's) is not compared against
+         * the terrain key: the table paints a terrain face over a nearer
+         * moby face whose key is the same or farther, so a moby resting on
+         * a step loses its lower half to the step's lip. Terrain against
+         * moby is decided by true depth with the -127 stored tie pull, a
+         * deliberate departure from the table's order. On one ordering
+         * table (slot_contest, OP_KEY_SLOT world per bucket) terrain
+         * compares buckets, the table's own granularity: a difference
+         * smaller than a bucket is no difference at all, and a terrain
+         * fragment keeps a tie (it must never lose to its own key). */
+        if (!actor && (slot_contest
+                ? op_key_bucket(tkey) < floor((koff - 0.5) / OP_KEY_SLOT)
+                : tkey < band))
+            return true;
         if ((actor || !truescope) && akey < band &&
             (!truescope || akey < own - 64.0)) return true;
         return truescope && !actor && mkey < own + 1024.0;

@@ -93,16 +93,15 @@ void main()
         float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
         float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
         bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
-        bool prop = op_rank_is_prop(vRank.x);  /* never loses a terrain key */
         if (koff > 0.0) {
-            if (SLOT_CONTEST) {
-                /* Slot-quantized arm, psx_key_contest.glsl's rule: terrain
-                 * against terrain by bucket, a terrain face keeping a tie;
-                 * an actor face is decided against terrain by true depth. */
-                if (!prop && !actor &&
-                    floor(tkey / 128.0) < floor((koff - 0.5) / 128.0))
-                    discard;
-            } else if (!prop && tkey < (koff - 0.5) - 64.0) discard;
+            /* Terrain against terrain only, psx_key_contest.glsl's rule:
+             * by bucket on one ordering table (a terrain face keeping a
+             * tie), strict by half a slot otherwise; an actor face is
+             * decided against terrain by true depth. */
+            if (!actor && (SLOT_CONTEST
+                    ? floor(tkey / 128.0) < floor((koff - 0.5) / 128.0)
+                    : tkey < (koff - 0.5) - 64.0))
+                discard;
             if ((actor || !MOBY_TRUESCOPE) &&
                 akey < (koff - 0.5) - 64.0 &&
                 (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
