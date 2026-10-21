@@ -1,0 +1,28 @@
+# texture-thread-probe - CI fixture for api->texture_register called
+# from a thread the mod starts.
+#
+# Entry starts a thread that registers a 256x256 magenta image as mod
+# texture 0x7E01. After each model-install pass the post-hook rewrites
+# every textured face of the wooden chest model (class 194) to select
+# that id (tpage mode 3, id in the CLUT halfword), so the native renderer
+# draws the chests magenta once the registration lands. With
+# `register = false` the faces still select the id but nothing registers
+# it, and the renderer draws nothing for them: the control leg. Face
+# words are gameplay-readable model data, so the mod is mutative.
+
+[mod]
+id      = "texture-thread-probe"
+name    = "Texture Register Thread Probe"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 13
+state    = "rebuildable"
+runahead = "pure"
+sim_mutative = true
+
+[[config]]
+key = "register"
+type = "bool"
+default = true
+label = "Register from a thread"
+help = "false = faces select the id but nothing registers it (control)."

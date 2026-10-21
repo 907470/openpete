@@ -20,6 +20,9 @@ openpete.com; the changelog page of the shipped docs makes it relative.
 
 ## Unreleased
 
+- Mod SDK: `texture_register` registers a mod-owned texture from code, the run-time form of
+  `assets/textures/own/<hexid>.png`, legal from any context including a thread the mod starts. See
+  [Textures](https://openpete.com/docs/modding/textures.html).
 - Mod SDK: the Linux mod compile line defines `_GNU_SOURCE`, so a mod source can use glibc extensions such as
   `RTLD_DEFAULT` and `dladdr` from `<dlfcn.h>`; a mod that failed to compile on them now builds.
   The mod build key now covers the compile flags, so every source mod recompiles once on first boot after the update.

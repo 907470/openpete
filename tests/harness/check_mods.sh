@@ -925,6 +925,63 @@ else
     bad "mode 2 (streams in the arena): DIFFERS from stock"
 fi
 
+# ── 13d. texture_register from a mod-started thread ────────────────────
+# texture-thread-probe registers a 256x256 magenta image as mod texture
+# 0x7E01 from a thread it starts at entry, and its install-pass post-hook
+# points every textured face of the wooden chest (class 194) at that id.
+# The control leg (register = false) leaves the faces selecting an id
+# nobody registered, which the renderer draws as nothing. The pose frames
+# the stone_hill wooden chest at (125952, 118374). Engagement is the
+# engine's own "first drawn" line; the native capture must hold magenta
+# chest pixels with the registration and none without (stone_hill has
+# no magenta of its own: the control counts 0).
+say "texture_register: a thread-registered texture draws on the faces selecting it"
+for v in on off; do
+    rm -rf "${WORK:?}/tr-$v"; mkdir -p "$WORK/tr-$v"
+    cp -r "$MODS_SRC/texture-thread-probe" "$WORK/tr-$v/texture-thread-probe"
+    rm -rf "${WORK:?}/tr-$v/texture-thread-probe/.build"
+    echo texture-thread-probe > "$WORK/tr-$v/enabled.txt"
+done
+printf 'register = false\n' > "$WORK/tr-off/texture-thread-probe/config.toml"
+tr_run() { # tr_run <variant> -> log on stdout; capture at $WORK/tr-<variant>-vk.png
+    rm -f "${WORK:?}/tr-$1-vk.png"
+    run_game "$WORK/tr-$1" 2300 --skip-to-level stone_hill \
+        --freecam-pose "pos=(124900, 118374, 21500) yaw=0 pitch=150" \
+        --screenshot-on-frame 2200 --screenshot-native-only \
+        --screenshot-output "$WORK/tr-$1.png"
+}
+magenta_px() { # magenta_px <png> -> count of strongly magenta pixels
+    python3 - "$1" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+print(sum(1 for r, g, b in im.getdata() if r >= 96 and b >= 96 and 3 * g < min(r, b)))
+PY
+}
+out_on="$(tr_run on)"
+out_off="$(tr_run off)"
+if printf '%s\n' "$out_on" | grep -q "texture-thread-probe: registered from the mod's thread" && \
+   printf '%s\n' "$out_on" | grep -q "texture: id 0x7e01 first drawn (owner texture-thread-probe)" && \
+   printf '%s\n' "$out_on" | grep -qE "texture-thread-probe: [1-9][0-9]* chest faces select 0x7e01"; then
+    ok "registered from the thread; chest faces retargeted; renderer resolved the id"
+else
+    bad "thread registration, face retarget or the renderer's resolve never engaged"
+fi
+if printf '%s\n' "$out_off" | grep -q "texture: id 0x7e01 first drawn"; then
+    bad "control leg resolved an id nobody registered"
+fi
+if [ -s "$WORK/tr-on-vk.png" ] && [ -s "$WORK/tr-off-vk.png" ]; then
+    n_on="$(magenta_px "$WORK/tr-on-vk.png")"
+    n_off="$(magenta_px "$WORK/tr-off-vk.png")"
+    if [ "${n_on:-0}" -gt 0 ] && [ "${n_off:-1}" -eq 0 ]; then
+        ok "magenta chest pixels: $n_on registered, $n_off control"
+    else
+        bad "magenta chest pixels: ${n_on:-?} registered, ${n_off:-?} control (want >0 and 0)"
+    fi
+else
+    bad "a texture_register capture is missing"
+fi
+
 # supercharge-anywhere injects a captured Spyro animation whose frame words
 # are halved-encoding fields: capture on a ramp level, then inject on a
 # level without one - every frame word must carry a handle.

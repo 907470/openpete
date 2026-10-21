@@ -28,7 +28,22 @@ fog colours; a pack whose art re-grades a level retargets that blend with
 `api->texpack_fog_shift`.
 
 `assets/textures/own/<hexid>.png` registers a texture under an ID the
-mod chooses, for models the mod installs itself.
+mod chooses, for models the mod installs itself. The directory is read
+once, when the mod loads.
+
+`api->texture_register(self, id, rgba, w, h)` is the code form, for
+pixels the mod builds at run time (decoded from a disc, generated, or
+read from its own data). It copies `w` x `h` RGBA8 pixels, rows top to
+bottom, at most 1024 on a side, and is legal from any context, including
+a thread the mod starts: the renderer draws either the previous image
+or the whole new one. Registering an ID again replaces the image for
+every face that selects it.
+
+A model face selects an own texture with tpage mode bits
+(`attr >> 7 & 3`) equal to 3 and the ID in the CLUT halfword; its UVs
+are texel coordinates into the image. Only the native renderer draws
+these faces. A face whose ID has no registration draws nothing, so
+register before installing a model whose faces select it.
 
 `--texpack-dir DIR` or `OPENPETE_TEXPACK_DIR` points the base pack at a
 directory outside any mod; mod roots always join it.

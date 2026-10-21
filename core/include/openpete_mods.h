@@ -2289,9 +2289,12 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
  * 3 and the id in the CLUT halfword; the native renderer fetches it with
  * openpete_mods_texture_get() and binds it through the HD pipeline. The
  * texture is host-side only: guest RAM and VRAM are untouched. The pixels
- * are copied. Re-registering an id replaces its image; the old buffer is
- * freed when it was never drawn, else retired and never freed, so its
- * address cannot key a new GPU texture while the old one stays cached.
+ * are copied. Re-registering an id replaces its image; the old image is
+ * retired and never freed, so its address cannot key a new GPU texture
+ * while the old one stays cached, and a resolve on another thread that
+ * loaded it keeps valid pixels. Legal from any thread: registrations
+ * serialize on a lock, and each image is published whole with a release
+ * store, so the resolver never sees a half-written entry.
  * @param self Registering mod; its id becomes the owner.
  * @param id Texture id.
  * @param rgba @p w * @p h RGBA8 pixels.
@@ -2301,12 +2304,13 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
  *         allocation failure. */
 int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
                                    const void* rgba, int w, int h);
-/** @brief Return the RGBA8 pixels of a registered mod texture and mark them handed to the renderer.
+/** @brief Return the RGBA8 pixels of a registered mod texture.
  *
- * Linear scan by id, called from the renderer. Marking the entry drawn
- * makes a later re-registration retire its buffer instead of freeing it. A
- * texture whose owner is disabled is still served, with one log line per
- * toggle epoch; the first draw of an id also logs once.
+ * Lock-free linear scan by id, called from the one thread that renders:
+ * each slot's image is acquire-loaded, so its pixels, width and height
+ * belong to one registration. A texture whose owner is disabled is still
+ * served, with one log line per toggle epoch; the first draw of each
+ * registered image also logs once.
  *
  * @param id Texture id.
  * @param w Receives the width; may be NULL.

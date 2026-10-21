@@ -1344,6 +1344,40 @@ typedef struct openpete_mod_api {
      */
     int (*game_installed)(openpete_mod_t* self, const char* game);
     /** @} */
+
+    /** @name Mod-owned textures
+     * @{ */
+    /**
+     * @brief Register or replace a mod-owned RGBA8 texture under a 16-bit id.
+     *
+     * The code form of `assets/textures/own/<hexid>.png`, for pixels the
+     * mod builds at run time. A model face selects the texture with the
+     * PSX-reserved Tiledef encoding: tpage mode bits (attr >> 7 & 3) = 3
+     * and the id in the CLUT halfword; its UVs are texel coordinates into
+     * the registered image. The native renderer draws the face through
+     * the replacement pipeline; the PSX path has no mode 3 and samples
+     * VRAM noise there. Nothing reaches guest RAM or VRAM.
+     *
+     * The pixels are copied, so @p rgba may be freed on return.
+     * Re-registering an id replaces its image for every face that selects
+     * it, whichever mod registered it before; the superseded image stays
+     * allocated for the session, so register at entry or once per asset
+     * rather than per tick. A face selecting an id with no registration
+     * draws nothing. The registration outlives the mod's disable, since
+     * the faces selecting it are the mod's guest writes and revert with
+     * them. Legal from any context, including a thread the mod starts:
+     * the renderer sees either the previous image or the whole new one.
+     * @param id The texture id the faces carry in the CLUT halfword.
+     * @param rgba @p w * @p h pixels, 4 bytes each, rows top to bottom.
+     * @param w Width, 1 to 1024.
+     * @param h Height, 1 to 1024.
+     * @return 0, or -1 for a NULL @p rgba, a size out of range, or an
+     *         allocation failure.
+     * @since api 13
+     */
+    int (*texture_register)(openpete_mod_t* self, uint16_t id,
+                            const void* rgba, int w, int h);
+    /** @} */
 } openpete_mod_api_t;
 
 /**

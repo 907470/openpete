@@ -3061,6 +3061,8 @@ static const openpete_mod_api_t s_api = {
     /* other games' discs (api 13) */
     .game_disc_path = api_game_disc_path,
     .game_installed = api_game_installed,
+    /* mod-owned textures (api 13) */
+    .texture_register = openpete_mods_texture_register,
     /* game-neutral services (api 13) */
     .game_id       = api_game_id,
     .gameplay_live = api_gameplay_live,

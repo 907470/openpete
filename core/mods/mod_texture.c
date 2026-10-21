@@ -53,83 +53,106 @@
 #define MOD_TEXTURE_BLOCK 64
 #define MOD_TEXTURE_DIM_MAX 1024
 
-typedef struct {
-    uint16_t id;
-    int w, h;
+/* One registered image. Immutable once published except for the
+ * renderer-side bookkeeping below the divider, which only the one thread
+ * that resolves textures (the display owner) touches. A replacement
+ * publishes a new image; a superseded one is never freed (see
+ * tex_retire), so a resolve that loaded it keeps valid pixels. */
+typedef struct mod_tex_image {
     unsigned char* rgba;          /* malloc'd copy, 4*w*h */
+    int w, h;
     const char* owner;            /* mod id (loader-owned, lives for the session) */
+    /* resolver-owned */
     unsigned owner_epoch;         /* toggle epoch + 1 the owner verdict was taken at
                                    * (0 = never taken; epoch 0 is itself valid) */
     unsigned char owner_off;      /* owner was disabled as of owner_epoch */
     unsigned char warned;         /* disabled-owner draw already logged this epoch */
-    unsigned char drawn;          /* pixels have been handed to the renderer */
-    unsigned char announced;      /* "first drawn" already logged for this id */
+    unsigned char announced;      /* "first drawn" already logged */
+} mod_tex_image;
+
+/* A table slot: the id and the current image. A slot is zeroed by the
+ * push before the count admits it, its id is written before its first
+ * image is published, and the image pointer is the only field written
+ * after that, so a resolver that acquire-loads a non-NULL image may read
+ * the id and the image's fields without a lock. */
+typedef struct {
+    uint16_t id;
+    mod_tex_image* img;           /* __atomic_* access only */
 } mod_texture_t;
 
-/* Chunked: openpete_mods_texture_get walks this from the present thread
- * while a registration appends on the sim thread, and a block never
- * moves. */
+/* Chunked: openpete_mods_texture_get walks this from the display thread
+ * while a registration appends from any thread; a block never moves. */
 static mod_cvec s_tex;   /* mod_texture_t */
 
-/* Superseded pixel buffers, kept alive forever.
+/* Registrations come from entry, tick hooks and threads a mod starts, so
+ * writers serialize on this spin lock (the vec has one writer at a time).
+ * Resolves never take it. Registration is an entry/reload-time event, so
+ * the lock is never contended on a hot path. */
+static char s_tex_lock;
+
+/** @brief Take the registration spin lock. */
+static void tex_lock(void) {
+    while (__atomic_test_and_set(&s_tex_lock, __ATOMIC_ACQUIRE)) { }
+}
+
+/** @brief Release the registration spin lock. */
+static void tex_unlock(void) {
+    __atomic_clear(&s_tex_lock, __ATOMIC_RELEASE);
+}
+
+/* Superseded images, kept alive forever.
  *
  * The renderer's GPU-texture cache keys on the PIXEL POINTER and never
  * evicts, so an address that has been handed out once must never be
  * handed out again: a recycled malloc block would resolve to the GPU
  * texture uploaded from the OLD image and the new pixels would never
- * appear. Freeing a superseded buffer puts its address straight back in
- * the allocator's fast bins, where the very next same-sized
- * registration picks it up - the failure mode is a second hot reload
- * rendering the FIRST build's image. Retiring instead of freeing makes
- * the pointer identity monotone for the session. (The GPU texture the
- * old buffer keyed is retained by the same cache anyway.)
- *
- * Only buffers the renderer actually took can be keyed, so an image
- * replaced before it was ever drawn is freed normally. Retention also
- * closes a use-after-free: a draw only QUEUES the upload, and the
- * renderer reads the pixels at the next frame start, after a
- * re-registration in the same tick would have freed them. The list
- * keeps every retained buffer reachable, so a leak checker reports
+ * appear. A resolver on another thread may also hold a superseded image
+ * it loaded just before the replacement was published, and a draw only
+ * QUEUES the upload, which reads the pixels at the next frame start.
+ * Retiring every superseded image instead of freeing it makes the pointer
+ * identity monotone for the session and closes both use-after-frees. The
+ * list keeps every retained image reachable, so a leak checker reports
  * them as live rather than lost. */
-typedef struct retired_px {
-    struct retired_px* next;
-    unsigned char* px;
-} retired_px;
+typedef struct retired_img {
+    struct retired_img* next;
+    mod_tex_image* img;
+} retired_img;
 
-static retired_px* s_retired;
+static retired_img* s_retired;
 static int s_retired_n;
 
 #define MOD_TEXTURE_RETIRE_WARN 32    /* re-registration is an entry/hot-reload
                                        * event; a flood means per-tick churn,
                                        * which also floods the GPU cache */
 
-/** @brief Keep a superseded pixel buffer alive for the rest of the session.
+/** @brief Keep a superseded image alive for the rest of the session.
  *
- * The address is never handed to the allocator again, so the renderer's
- * pointer-keyed GPU texture cache cannot resolve a new image to an old
- * texture. The buffer is chained on s_retired; when the node cannot be
- * allocated the buffer is still not freed and is only untracked. A warning
- * logs when the retained count reaches MOD_TEXTURE_RETIRE_WARN.
+ * Its pixel address is never handed to the allocator again, so the
+ * renderer's pointer-keyed GPU texture cache cannot resolve a new image to
+ * an old texture, and a resolver still holding it reads valid memory. When
+ * the list node cannot be allocated the image is still not freed and is
+ * only untracked. A warning logs when the retained count reaches
+ * MOD_TEXTURE_RETIRE_WARN. Called with the registration lock held.
  *
- * @param px Malloc'd pixel buffer the renderer has been handed. */
-static void tex_retire(unsigned char* px) {
-    retired_px* r = (retired_px*)malloc(sizeof *r);
-    if (r) { r->px = px; r->next = s_retired; s_retired = r; }
-    /* No node: the buffer simply leaks untracked - still never recycled. */
+ * @param img The superseded image. */
+static void tex_retire(mod_tex_image* img) {
+    retired_img* r = (retired_img*)malloc(sizeof *r);
+    if (r) { r->img = img; r->next = s_retired; s_retired = r; }
+    /* No node: the image simply leaks untracked - still never recycled. */
     if (++s_retired_n == MOD_TEXTURE_RETIRE_WARN)
         OPL_WARN_F("mods", "texture: %d superseded images retained - "
                    "register textures at entry, not per tick",
                    s_retired_n);
 }
 
-/** @brief Refresh a texture's cached owner-disabled flag when the mod toggle epoch has moved.
+/** @brief Refresh an image's cached owner-disabled flag when the mod toggle epoch has moved.
  *
  * One epoch compare on the render path; the owner lookup runs only when
  * the epoch differs from the one the flag was taken at (stored as epoch + 1,
  * so 0 means never taken). A refresh also clears the disabled-owner
- * warning latch, so each epoch logs at most once per texture.
- * @param t Texture entry to refresh. */
-static void tex_poll_owner(mod_texture_t* t) {
+ * warning latch, so each epoch logs at most once per image.
+ * @param t Image to refresh. */
+static void tex_poll_owner(mod_tex_image* t) {
     unsigned ep = openpete_mods_toggle_epoch() + 1u;
     if (t->owner_epoch == ep) return;
     t->owner_epoch = ep;
@@ -140,12 +163,12 @@ static void tex_poll_owner(mod_texture_t* t) {
 
 /** @brief Register or replace the RGBA8 image of a texture id for an owner.
  *
- * Copies the pixels, so the source may be freed after the call. An existing
- * entry with the id is replaced whatever its owner, and its old buffer is
- * retired when it was drawn and freed otherwise. The copy is allocated
- * before the old buffer is released. A new id appends an entry; when the
- * copy then fails to allocate, the entry stays with no pixels. Never gated
- * on the owner's enabled state.
+ * Copies the pixels into a new image outside the lock, so the source may be
+ * freed after the call, then publishes it under the registration lock with
+ * a release store: an existing slot with the id gets the new image
+ * whatever its owner, and its old image is retired; a new id appends a
+ * slot whose id is written before its image is published. Never gated on
+ * the owner's enabled state. Legal from any thread.
  *
  * @param owner Owning mod id, kept by pointer; may be NULL.
  * @param id Texture id.
@@ -159,39 +182,43 @@ static int tex_register_owned(const char* owner, uint16_t id,
     if (!rgba || w <= 0 || h <= 0 ||
         w > MOD_TEXTURE_DIM_MAX || h > MOD_TEXTURE_DIM_MAX)
         return -1;
+    mod_tex_image* img = (mod_tex_image*)calloc(1, sizeof *img);
+    unsigned char* copy = (unsigned char*)malloc((size_t)(4 * w * h));
+    if (!img || !copy) { free(img); free(copy); return -1; }
+    memcpy(copy, rgba, (size_t)(4 * w * h));
+    img->rgba = copy;
+    img->w = w;
+    img->h = h;
+    img->owner = owner;
+
+    tex_lock();
     mod_texture_t* t = NULL;
     for (size_t i = 0; i < mod_cvec_count(&s_tex); i++) {
         mod_texture_t* c = (mod_texture_t*)mod_cvec_at(&s_tex, i);
-        if (c->id == id) { t = c; break; }
+        if (c->id == id && __atomic_load_n(&c->img, __ATOMIC_RELAXED)) {
+            t = c;
+            break;
+        }
     }
     if (!t) {
         if (!s_tex.elem_size)
             mod_cvec_init(&s_tex, sizeof(mod_texture_t), MOD_TEXTURE_BLOCK,
                           "mod_texture", MOD_TEXTURE_BLOCK);
         t = (mod_texture_t*)mod_cvec_push(&s_tex);
-        if (!t) return -1;
+        if (!t) {
+            tex_unlock();
+            free(copy);
+            free(img);
+            return -1;
+        }
         t->id = id;
     }
-    unsigned char* copy = (unsigned char*)malloc((size_t)(4 * w * h));
-    if (!copy) return -1;
-    memcpy(copy, rgba, (size_t)(4 * w * h));
-    /* Re-registration (hot reload): the new pixel pointer keys a fresh
-     * GPU texture; the old GPU entry stays cached (frame-safe, same
-     * policy as the HD cache) and its buffer is retired, not freed, so
-     * the address can never key it again. The copy is allocated BEFORE
-     * the old buffer is released for the same reason. */
-    if (t->rgba) {
-        if (t->drawn) tex_retire(t->rgba);
-        else          free(t->rgba);
-    }
-    t->rgba = copy;
-    t->w = w;
-    t->h = h;
-    t->drawn = 0;
-    t->owner = owner;
-    t->owner_epoch = 0;           /* re-take the enabled verdict on next draw */
+    mod_tex_image* old = __atomic_load_n(&t->img, __ATOMIC_RELAXED);
+    __atomic_store_n(&t->img, img, __ATOMIC_RELEASE);
+    if (old) tex_retire(old);
+    tex_unlock();
     OPL_INFO_F("mods", "texture: id %#06x %dx%d registered by %s",
-               id, w, h, t->owner ? t->owner : "?");
+               id, w, h, owner ? owner : "?");
     return 0;
 }
 
@@ -246,23 +273,23 @@ int openpete_mods_texture_scan_root(const char* dir, const char* owner) {
 const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h) {
     for (size_t i = 0; i < mod_cvec_count(&s_tex); i++) {
         mod_texture_t* t = (mod_texture_t*)mod_cvec_at(&s_tex, i);
-        if (t->id != id) continue;
-        tex_poll_owner(t);
-        if (t->owner_off && !t->warned) {
-            t->warned = 1;
+        mod_tex_image* img = __atomic_load_n(&t->img, __ATOMIC_ACQUIRE);
+        if (!img || t->id != id) continue;
+        tex_poll_owner(img);
+        if (img->owner_off && !img->warned) {
+            img->warned = 1;
             OPL_INFO_F("mods", "texture: id %#06x still drawn while owner %s "
                        "is disabled - the faces selecting it are that mod's "
-                       "guest writes, and revert with them", id, t->owner);
+                       "guest writes, and revert with them", id, img->owner);
         }
-        t->drawn = 1;             /* pixels are now GPU-cache-keyed by address */
-        if (!t->announced) {
-            t->announced = 1;
+        if (!img->announced) {
+            img->announced = 1;
             OPL_INFO_F("mods", "texture: id %#06x first drawn (owner %s)",
-                       id, t->owner ? t->owner : "?");
+                       id, img->owner ? img->owner : "?");
         }
-        if (w) *w = t->w;
-        if (h) *h = t->h;
-        return t->rgba;
+        if (w) *w = img->w;
+        if (h) *h = img->h;
+        return img->rgba;
     }
     return NULL;
 }
