@@ -8,7 +8,9 @@ recording's audio track (tests/harness/check_audio_host_mix.sh).
 Dump leg: DIFF = mod dump - base dump (stereo s16, the same SPU render with
 and without the clips). Every maximal run of nonzero DIFF samples, merged
 across gaps shorter than the tone, is one copy; a copy matches when it is the
-tone's length (its leading zero samples counted) and DIFF equals the tone on both channels to within the
+tone's length (its leading zero samples counted) and DIFF equals the clip as the
+mixer plays it, the tone through the SPU's 4-point gaussian at index 0 (a
+44100 Hz clip steps one sample per output), on both channels to within the
 render's saturation (corr >= 0.999 per channel). Pass: copies == the mod's
 play lines (`sfx-play-probe: play ... rc=0`) > 0, every copy matches, and no
 nonzero DIFF sample lies outside a copy.
@@ -20,16 +22,31 @@ copies == the record leg's play lines > 0.
 
 Exit 0 PASS, 2 FAIL.
 """
-import argparse, re, subprocess, sys, wave
+import argparse, os, re, subprocess, sys, wave
 import numpy as np
 
 SR = 44100
+GAUSS_INC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "third_party", "PsyCross",
+                         "src", "audio", "PsyX_SPUAL_tables.inc")
 
 
 def tone():
     n = SR // 4
     t = np.arange(n) / SR
     return np.round(0.5 * 32767 * np.sin(2 * np.pi * 1000 * t)).astype(np.int16)
+
+
+def played(tn):
+    """The clip as the mixer plays it at one sample per output: the SPU gaussian
+    at index 0, output k = (g[FFh]*t[k-1] >> 15) + (g[1FFh]*t[k] >> 15)
+    + (g[100h]*t[k+1] >> 15) + (g[0]*t[k+2] >> 15), 0 outside the clip."""
+    body = open(GAUSS_INC).read().split("kGauss[512] = {")[1].split("};")[0]
+    g = [int(v, 16) for v in re.findall(r"-?0x[0-9A-Fa-f]+", body)]
+    assert len(g) == 512
+    t = np.concatenate([[0], tn.astype(np.int64), [0, 0]])
+    n = len(tn)
+    return ((g[0xFF] * t[0:n]) >> 15) + ((g[0x1FF] * t[1:n + 1]) >> 15) + \
+        ((g[0x100] * t[2:n + 2]) >> 15) + ((g[0] * t[3:n + 3]) >> 15)
 
 
 def write_tone(path):
@@ -139,7 +156,7 @@ def main():
     if a.write_tone:
         write_tone(a.write_tone)
         return 0
-    tn = tone().astype(np.int64)
+    tn = played(tone())
     fails = dump_leg(a, tn)
     if a.record:
         fails += record_leg(a, tn)

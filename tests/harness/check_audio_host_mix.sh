@@ -10,7 +10,8 @@
 # difference is the clips alone.
 #
 # Instrument: tools/audio_host_mix_check.py. In the dump difference it
-# finds each clip copy by correlation with the tone (corr >= 0.999 at a
+# finds each clip copy by correlation with the tone as the mixer plays it
+# (through the SPU gaussian; corr >= 0.999 at a
 # copy) and counts them against the mod's play lines. With --record it
 # runs a third, windowed leg (WSLg or X; --input-lock --vibration 0) with
 # --record, decodes the recording's audio track with ffmpeg and counts the
