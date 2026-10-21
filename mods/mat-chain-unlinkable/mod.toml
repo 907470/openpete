@@ -1,0 +1,17 @@
+# mat-chain-unlinkable - material composition fixture: a channel-wide moby green tint whose shader declares a buffer of its own, so it is unlinkable: at a chain's top it draws alone, below a composable material it is skipped.
+# Never enable it to play.
+
+[mod]
+id      = "mat-chain-unlinkable"
+name    = "Material Fixture: Chain Unlinkable"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/tint_table.frag"
+channel = "moby"
+params  = [0.0, 1.0, 0.0, 0.5]

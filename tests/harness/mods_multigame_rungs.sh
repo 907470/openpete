@@ -277,7 +277,8 @@ fi
 # Row 0 names spyro-1 on terrain, row 1 names spyro-2 and spyro-3 on moby,
 # row 2 has no game key on channel "any". Every game serves every channel,
 # so one row leaves by its game key and two stay: rows 0 and 2 on Spyro 1,
-# rows 1 and 2 on Spyro 2 and 3.
+# rows 1 and 2 on Spyro 2 and 3. The rows are exclusive (terminal at api
+# 13), so the overlapping moby and any rows never compose.
 say "materials: [[material]] game key and channel mask on $PG_GAME"
 d="$WORK/matsrc/mat-games"
 mod_toml "$d" mat-games 'game = ["spyro-1", "spyro-2", "spyro-3"]'
@@ -290,15 +291,18 @@ cat >> "$d/mod.toml" <<TEOF
 game    = "spyro-1"
 channel = "terrain"
 frag    = "$frag"
+exclusive = true
 
 [[material]]
 game    = ["spyro-2", "spyro-3"]
 channel = "moby"
 frag    = "$frag"
+exclusive = true
 
 [[material]]
 channel = "any"
 frag    = "$frag"
+exclusive = true
 TEOF
 mkdir -p "$WORK/mat"
 ln -sfn "$d" "$WORK/mat/mat-games"

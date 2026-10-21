@@ -34,6 +34,9 @@
 /* The first manifest api pin whose same-mod material ties go to the later
  * registration; a lower pin keeps the first registration. */
 #define MOD_MAT_API_LATER_TIE 13
+/* The first manifest api pin whose materials compose: a material of a mod
+ * pinned below it is terminal. */
+#define MOD_MAT_API_COMPOSE 13
 
 typedef struct {
     const char* owner;
@@ -123,7 +126,8 @@ void mod_mat_reset(void);
 /** @brief Check that this engine can honour a material selector exactly as written.
  *
  * Refuses, with an error log, a struct_size other than this SDK's, flag
- * bits outside OP_SEL_FLAGS_KNOWN, a channel other than -1 outside
+ * bits outside OP_SEL_FLAGS_KNOWN, OP_SEL_EXCLUSIVE on a mod pinned below
+ * MOD_MAT_API_COMPOSE, a channel other than -1 outside
  * OP_CHAN_MOBY..OP_CHAN_PORTAL, and a texture key other than a Tiledef id
  * 0..127 on channel -1 or OP_CHAN_TERRAIN without OP_SEL_UNTEXTURED. The
  * flag check exists because a new flag bit never changes sizeof. Register
@@ -131,8 +135,9 @@ void mod_mat_reset(void);
  * path would refuse.
  * @param id Mod id for log lines.
  * @param sel The selector.
+ * @param api_pin The owner's manifest api pin.
  * @return 1 when valid, 0 when refused. */
-int mod_mat_sel_valid(const char* id, const openpete_mod_material_selector_t* sel);
+int mod_mat_sel_valid(const char* id, const openpete_mod_material_selector_t* sel, int api_pin);
 
 /** @brief Check that a refine material can take effect where its selector points.
  *
@@ -291,6 +296,42 @@ int mod_mat_terrain_class_resolved(int c);
  * @return The material index, or -1 for stock. */
 int mod_mat_resolve_index(uint32_t tag, int contract, int* slot);
 
+/** @brief Return whether a material is terminal: pinned below MOD_MAT_API_COMPOSE or carrying OP_SEL_EXCLUSIVE.
+ *
+ * A terminal material takes no material beneath it; a material that is
+ * not terminal composes over the accepting materials below it.
+ * @param m The material.
+ * @return 1 when terminal, else 0. */
+int mod_mat_terminal(const mod_material_t* m);
+
+/** @brief Return the material table generation, which moves on every table change and level change.
+ *
+ * @return The generation. */
+unsigned mod_mat_table_gen(void);
+
+/** @brief A moby chain draw resolved at compose time. */
+typedef struct {
+    int entry;      /* chain entry id in the installed view */
+    int n;          /* members, lowest-ranked first */
+    int mat[OPENPETE_MATERIAL_CHAIN_CAP];
+    int slot[OPENPETE_MATERIAL_CHAIN_CAP];        /* uniform slot in the view; 0 = no params */
+    int set_index[OPENPETE_MATERIAL_CHAIN_CAP];   /* index in `set`; -1 for a vertex-only member */
+    const openpete_mods_material_chain_set_t* set; /* the installed member set it maps to */
+} mod_mat_chain_res_t;
+
+/** @brief Resolve a moby tag that names a chain entry into its members and their places in the installed member set.
+ *
+ * A chain draws stock, counted in the census, when its entry is past the
+ * view's chain count (stale), the draw site's contract is not the scene
+ * contract, a member is no longer usable or has another contract, a
+ * member's owner is held for this compose, or the installed set lacks a
+ * member's fragment shader (a set replaced since the extraction).
+ * @param tag Provenance tag.
+ * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
+ * @param out Receives the members on a resolve.
+ * @return 1 resolved, 0 when the tag names no chain, -1 when the chain draws stock. */
+int mod_mat_resolve_chain(uint32_t tag, int contract, mod_mat_chain_res_t* out);
+
 /** @brief Return whether the compose in progress holds an owner's passes and materials back.
  *
  * @param owner Mod id.
@@ -351,6 +392,24 @@ unsigned mod_mat_census_memo_replays(void);
  *
  * @return The count since boot or the last mod_mat_census_reset. */
 unsigned mod_mat_census_view_resolves(void);
+
+/* Composition census counters (mod_mat_census_chain). */
+enum {
+    MOD_MAT_CHAIN_WALKS = 0,     /* chains the extraction walk formed */
+    MOD_MAT_CHAIN_ABSENT,        /* members excluded at extraction as absent from the installed set */
+    MOD_MAT_CHAIN_FULL,          /* chain outcomes a full slot or chain table sent to stock */
+    MOD_MAT_CHAIN_HELD,          /* chain draws stock: a held member */
+    MOD_MAT_CHAIN_LACKED,        /* chain draws stock: the installed set lacks a member */
+    MOD_MAT_CHAIN_UNUSABLE,      /* chain draws stock: a member disabled, swept or of another contract */
+    MOD_MAT_CHAIN_STALE,         /* chain draws stock: an entry past the view */
+    MOD_MAT_CHAIN_CENSUS_N,
+    MOD_MAT_CHAIN_DRAWS_2 = MOD_MAT_CHAIN_CENSUS_N   /* chain draws of 2, +1 of 3, +2 of 4 members */
+};
+/** @brief Return a composition census counter.
+ *
+ * @param which MOD_MAT_CHAIN_*.
+ * @return The count since boot or the last mod_mat_census_reset; 0 out of range. */
+unsigned mod_mat_census_chain(int which);
 
 enum {
     MOD_MAT_CENSUS_DRAWS = 0,        /* draw-time resolves won (walked runs) */

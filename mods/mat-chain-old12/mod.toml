@@ -1,0 +1,17 @@
+# mat-chain-old12 - material composition fixture: a channel-wide moby blue tint pinned at api 12: terminal, so above composable materials it draws alone and below them it ends the chain.
+# Never enable it to play.
+
+[mod]
+id      = "mat-chain-old12"
+name    = "Material Fixture: Chain Pinned 12"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 12
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "moby"
+params  = [0.0, 0.0, 1.0, 0.5]

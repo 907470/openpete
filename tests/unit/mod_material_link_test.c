@@ -7,7 +7,9 @@
  * terrain, portal for the scene contract; stock for the decal contract),
  * prepared, and printed with its verdict and reason, identity and discard.
  * --expect-linkable fails the run on any census member that is not
- * linkable. Then per contract and profile every linkable non-identity
+ * linkable, except a shader named by --expect-unlinkable <label> (its
+ * census label, <mod>/<path>), which fails the run when it is linkable
+ * in any profile. Then per contract and profile every linkable non-identity
  * member enters one combined module.
  *
  * Fixtures (--fixtures <dir>): <dir>/cases.tsv holds one case per line,
@@ -28,7 +30,8 @@
  * any `Validation Error` fails the run.
  *
  * Usage: mod_material_link_test <sdk-dir> <spirv-val|""> [--vk]
- *          [--expect-linkable] [--census <mods-dir>]... [--fixtures <dir>]
+ *          [--expect-linkable] [--expect-unlinkable <label>]... [--census <mods-dir>]...
+ *          [--fixtures <dir>]
  * Exit 0 when every check passes and at least one combined module was
  * built and checked; 1 otherwise; 77 under --vk when no Vulkan device or
  * no validation layer is present. */
@@ -452,17 +455,31 @@ static void run_fixtures(const char* dir) {
     free(txt);
 }
 
-/** @brief Print the census verdicts and fail on an unlinkable census member when asked. */
+/* Census labels --expect-unlinkable names: shaders built to be unlinkable. */
+static const char* s_unlinkable[8];
+static int s_unlinkable_n;
+
+/** @brief Return whether --expect-unlinkable names a census label. */
+static int expected_unlinkable(const char* label) {
+    for (int i = 0; i < s_unlinkable_n; i++)
+        if (strcmp(s_unlinkable[i], label) == 0) return 1;
+    return 0;
+}
+
+/** @brief Print the census verdicts and fail on an unlinkable census member when asked, or on a linkable one --expect-unlinkable names. */
 static void report_census(int first, int expect_linkable) {
     int linkable = 0, total = 0, ident = 0;
     for (int i = first; i < s_n; i++) {
         const entry_t* e = &s_e[i];
+        const int want_ok = !expected_unlinkable(e->label);
         print_entry(e);
         for (int p = 0; p < e->profiles; p++) {
+            const int ok = e->m[p].verdict == OPENPETE_MOD_LINK_OK;
             total++;
-            linkable += e->m[p].verdict == OPENPETE_MOD_LINK_OK;
+            linkable += ok;
             ident += e->m[p].identity;
-            if (expect_linkable && e->m[p].verdict != OPENPETE_MOD_LINK_OK) fail("census member unlinkable", e->label);
+            if (expect_linkable && ok != want_ok)
+                fail(want_ok ? "census member unlinkable" : "census member linkable", e->label);
         }
     }
     printf("census    %d shader(s), %d member(s), %d linkable, %d identity\n", s_n - first, total,
@@ -472,7 +489,8 @@ static void report_census(int first, int expect_linkable) {
 int main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s <sdk-dir> <spirv-val|\"\"> [--vk] [--expect-linkable] "
-                        "[--census <mods-dir>]... [--fixtures <dir>]\n", argv[0]);
+                        "[--expect-unlinkable <label>]... [--census <mods-dir>]... [--fixtures <dir>]\n",
+                argv[0]);
         return 1;
     }
     s_sdk = argv[1];
@@ -481,6 +499,8 @@ int main(int argc, char** argv) {
     for (int i = 3; i < argc; i++) {
         s_vk |= strcmp(argv[i], "--vk") == 0;
         expect_linkable |= strcmp(argv[i], "--expect-linkable") == 0;
+        if (i + 1 < argc && strcmp(argv[i], "--expect-unlinkable") == 0 && s_unlinkable_n < 8)
+            s_unlinkable[s_unlinkable_n++] = argv[i + 1];
     }
     if (s_vk) {
         const int rc = link_vk_open();

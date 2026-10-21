@@ -296,7 +296,8 @@ enum {
     OPENPETE_LAZY_BUILTIN = 0,  /* the engine's raster quantize (index 0) or dither (index 1) pass */
     OPENPETE_LAZY_POSTFX,       /* a mod postfx pass                                             */
     OPENPETE_LAZY_MATERIAL,     /* a mod material's scene, sky, portal or decal slot             */
-    OPENPETE_LAZY_TERRAIN       /* a mod material's retained-terrain slot                        */
+    OPENPETE_LAZY_TERRAIN,      /* a mod material's retained-terrain slot                        */
+    OPENPETE_LAZY_CHAIN         /* a combined module's scene or portal slot (index: module id)   */
 };
 
 /* Where a lazy pipeline slot lives in the registry: the late compile path

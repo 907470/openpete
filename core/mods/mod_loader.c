@@ -153,6 +153,9 @@ int  openpete_mods_chain_add_ovl(uint32_t addr, uint32_t overlay,
  * api that adds override_ovl. A manifest pinned below it, or with no pin,
  * was written against the Spyro 1 SDK. */
 #define MOD_API_SCOPED 13
+/* The first api whose materials compose and whose [[material]] rows read
+ * the exclusive key; mod_material_resolve.h's MOD_MAT_API_COMPOSE. */
+#define MOD_API_COMPOSE 13
 void openpete_mods_base(CPUState* cpu);
 
 /* Mods the live table's first block holds; it grows by whole blocks. */
@@ -2410,6 +2413,9 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         }
     }
     mod_fvec_truncate(&s_toggle_q, kept);
+    /* A registration, toggle or hot reload above can change the member
+     * set of the combined material modules; unchanged, this returns at once. */
+    openpete_mods_material_chain_sync();
 }
 
 const char* openpete_mods_build_key(const char* id) {
@@ -3595,36 +3601,20 @@ static int parse_material_params(toml_table_t* mt, mod_material_row_t* r,
     return 0;
 }
 
-/** @brief Parse the narrowing selector keys of one [[material]] row.
+/** @brief Parse the flag keys of one [[material]] row into its OP_SEL_* flags.
  *
- * channel (by name, through mod_channel_from_name), ident, class,
- * texture, level and enabled set the row's fields; tier ("hp" or "lp"),
- * textured and env_anim add OP_SEL_* flags, and an absent tier or
- * textured narrows nothing. A key of the wrong TOML type is ignored.
+ * tier ("hp" or "lp"), textured and env_anim narrow and mirror the C
+ * flags exactly; an absent tier or textured narrows nothing. exclusive =
+ * true adds OP_SEL_EXCLUSIVE on a mod pinned at MOD_API_COMPOSE or later
+ * and is ignored below it, as an unknown key is.
  * @param mt The [[material]] table.
  * @param r The row to fill.
+ * @param api_pin The mod's manifest api pin.
  * @param path Manifest path for log lines.
- * @return 0, or -1 after an error line when channel or tier names a value
- *         the engine does not know. */
-static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
-                                   const char* path) {
+ * @return 0, or -1 after an error line when tier names a value the engine does not know. */
+static int parse_material_flags(toml_table_t* mt, mod_material_row_t* r, int api_pin,
+                                const char* path) {
     toml_datum_t d;
-    if ((d = toml_string_in(mt, "channel")).ok) {
-        r->channel = mod_channel_from_name(d.u.s);
-        int bad = r->channel == -2;
-        if (bad)
-            OPL_ERROR_F("mods", "%s: [[material]] unknown channel \"%s\" "
-                        "- skipped", path, d.u.s);
-        free(d.u.s);
-        if (bad) return -1;
-    }
-    if ((d = toml_int_in(mt, "ident")).ok)   r->ident      = (int)d.u.i;
-    if ((d = toml_int_in(mt, "class")).ok)   r->moby_class = (int)d.u.i;
-    if ((d = toml_int_in(mt, "texture")).ok) r->texture    = (int)d.u.i;
-    if ((d = toml_int_in(mt, "level")).ok)   r->level      = (int)d.u.i;
-    if ((d = toml_bool_in(mt, "enabled")).ok) r->enabled   = d.u.b ? 1 : 0;
-    /* tier / textured are narrowing: omit for both, name one to
-     * restrict. They mirror the C flags exactly. */
     if ((d = toml_string_in(mt, "tier")).ok) {
         int bad = 0;
         if (strcmp(d.u.s, "hp") == 0)      r->flags |= OP_SEL_HP_TIER;
@@ -3641,7 +3631,40 @@ static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
         r->flags |= d.u.b ? OP_SEL_TEXTURED : OP_SEL_UNTEXTURED;
     if ((d = toml_bool_in(mt, "env_anim")).ok && d.u.b)
         r->flags |= OP_SEL_ENV_ANIM;
+    if (api_pin >= MOD_API_COMPOSE && (d = toml_bool_in(mt, "exclusive")).ok && d.u.b)
+        r->flags |= OP_SEL_EXCLUSIVE;
     return 0;
+}
+
+/** @brief Parse the narrowing selector keys of one [[material]] row.
+ *
+ * channel (by name, through mod_channel_from_name), ident, class,
+ * texture, level and enabled set the row's fields; the flag keys go
+ * through parse_material_flags. A key of the wrong TOML type is ignored.
+ * @param mt The [[material]] table.
+ * @param r The row to fill.
+ * @param api_pin The mod's manifest api pin.
+ * @param path Manifest path for log lines.
+ * @return 0, or -1 after an error line when channel or tier names a value
+ *         the engine does not know. */
+static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r, int api_pin,
+                                   const char* path) {
+    toml_datum_t d;
+    if ((d = toml_string_in(mt, "channel")).ok) {
+        r->channel = mod_channel_from_name(d.u.s);
+        int bad = r->channel == -2;
+        if (bad)
+            OPL_ERROR_F("mods", "%s: [[material]] unknown channel \"%s\" "
+                        "- skipped", path, d.u.s);
+        free(d.u.s);
+        if (bad) return -1;
+    }
+    if ((d = toml_int_in(mt, "ident")).ok)   r->ident      = (int)d.u.i;
+    if ((d = toml_int_in(mt, "class")).ok)   r->moby_class = (int)d.u.i;
+    if ((d = toml_int_in(mt, "texture")).ok) r->texture    = (int)d.u.i;
+    if ((d = toml_int_in(mt, "level")).ok)   r->level      = (int)d.u.i;
+    if ((d = toml_bool_in(mt, "enabled")).ok) r->enabled   = d.u.b ? 1 : 0;
+    return parse_material_flags(mt, r, api_pin, path);
 }
 
 /** @brief Test whether a [[material]] row's game key selects the running game.
@@ -3736,7 +3759,7 @@ static void parse_materials(toml_table_t* root, struct openpete_mod* mod,
             continue;
         }
         if (!material_row_selects_game(mt, path, i)) continue;
-        if (parse_material_selector(mt, &r, path) != 0) continue;
+        if (parse_material_selector(mt, &r, (int)mod->api_pin, path) != 0) continue;
         if (!material_row_channel_served(&r, path, i)) continue;
         if (parse_material_params(mt, &r, path) != 0) continue;
         mod_material_row_t* slot =

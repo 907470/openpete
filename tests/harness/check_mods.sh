@@ -1568,7 +1568,7 @@ cen_mod cenrows
         printf ']\n'
     done
     for m in $(seq 1 17); do
-        printf '\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "player"\nparams = [1.0, 0.5, 0.2, 0.01]\n'
+        printf '\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "player"\nparams = [1.0, 0.5, 0.2, 0.01]\nexclusive = true\n'
     done
     for l in $(seq 1 5); do
         printf '\n[[level]]\nname = "Rows %d"\nfiles = "rows%d"\ndonor = "%s"\n' "$l" "$l" "$CEN_DONOR"
@@ -1577,10 +1577,11 @@ cen_mod cenrows
 mkdir -p "$CEN/cenrows/shaders"
 cp "$MODS_SRC/declarative-reshade/shaders/tint.frag" "$CEN/cenrows/shaders/"
 
-# 16 more material rows, so the engine-wide material table passes 32.
+# 16 more material rows, so the engine-wide material table passes 32. The
+# census rows are exclusive (terminal at api 13), so they never compose.
 cen_mod cenmats
 for m in $(seq 1 16); do
-    printf '\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "moby"\nparams = [0.2, 0.9, 0.4, 0.01]\n' \
+    printf '\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "moby"\nparams = [0.2, 0.9, 0.4, 0.01]\nexclusive = true\n' \
         >> "$CEN/cenmats/mod.toml"
 done
 mkdir -p "$CEN/cenmats/shaders"

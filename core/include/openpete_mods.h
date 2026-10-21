@@ -1690,6 +1690,13 @@ typedef struct {
     int   uniform_slot;
     unsigned generation;  /* the material's slot generation: moves when its pipelines are retired */
     int   index;          /* the material's registry index (openpete_mods_material_enum_at) */
+    /* A composed draw: the chain entry the tag names (its block pair in the
+     * chain uniform set), the combined module the stages and slots above
+     * belong to, and the module's vertex variant (the lowest member's
+     * vertex stage). chain -1 for a one-material draw. */
+    int   chain;
+    int   chain_module;
+    int   chain_vvar;
 } openpete_mod_material_gpu_t;
 /** @brief Resolve a draw's provenance tag to the material override that applies.
  *
@@ -1734,11 +1741,13 @@ void openpete_mods_material_remove_owner(const char* mod_id);
  * and rebuild on next use. */
 void openpete_mods_material_retire_all(void);
 
-/** @brief Return 1 when any live material selector carries a per-instance callback.
+/** @brief Return 1 when any live material selector carries a per-instance callback or is a composable moby material.
  *
  * A cached flag, recomputed whenever a selector registers, toggles, is
- * retuned or is swept. The moby walk skips the per-instance resolve while
- * it is 0.
+ * retuned or is swept. A composable moby material is a scene-contract
+ * material on channel -1 or OP_CHAN_MOBY of a mod pinned at api 13 or
+ * later without OP_SEL_EXCLUSIVE: a chain is a per-moby outcome only the
+ * walk stamps. The moby walk skips the per-instance resolve while it is 0.
  * @return 1 or 0. */
 int  openpete_mods_material_has_instance(void);
 /* Moby tag slot field [27:16], the extraction walk's outcome: 0 defers to
@@ -1749,6 +1758,89 @@ int  openpete_mods_material_has_instance(void);
  * is an exhausted walk (draw stock). */
 #define OPENPETE_MATERIAL_SLOT_STOCK 0xFFF
 #define OPENPETE_MATERIAL_SLOT_DECL  0x800
+/* OPENPETE_MATERIAL_SLOT_CHAIN + id (0x080-0x17F) names chain entry id of
+ * the present: two to OPENPETE_MATERIAL_CHAIN_CAP members composed, the
+ * lowest-ranked first. Added, not OR'd: ids 0x80-0xFF would fold onto
+ * 0x080-0x0FF under an OR. */
+#define OPENPETE_MATERIAL_SLOT_CHAIN 0x080
+#define OPENPETE_MATERIAL_CHAINS     256
+#define OPENPETE_MATERIAL_CHAIN_CAP  4
+/* Fragment shaders one installed member set holds, and its profiles
+ * (0 stock, 1 portal). */
+#define OPENPETE_MATERIAL_CHAIN_SET_MAX 64
+#define OPENPETE_MATERIAL_CHAIN_PROFILES 2
+/* The member set of the installed combined modules: the fragment shaders
+ * whose op_material a composed draw can call, and each one's case id in
+ * the stock and the portal module (-1 when that module lacks it). Built
+ * with the modules and immutable once published. */
+typedef struct {
+    unsigned generation;                  /* nonzero; moves with every published set */
+    int      module;                      /* the combined module pair it describes */
+    int      n;
+    int      shader[OPENPETE_MATERIAL_CHAIN_SET_MAX];
+    int      case_id[OPENPETE_MATERIAL_CHAIN_PROFILES][OPENPETE_MATERIAL_CHAIN_SET_MAX];
+} openpete_mods_material_chain_set_t;
+/** @brief Publish the member set of the combined modules the compose installed; the extraction walk reads it from its next moby.
+ *
+ * Takes no lock: one atomic pointer store. The record must stay valid
+ * while published and while any scene extracted against it can be
+ * composed; the publisher never frees a published record.
+ * @param set The record, or NULL for none installed. */
+void openpete_mods_material_chain_set_publish(const openpete_mods_material_chain_set_t* set);
+/** @brief Return the published member set, or NULL when no combined module is installed.
+ *
+ * @return The record. */
+const openpete_mods_material_chain_set_t* openpete_mods_material_chain_set_current(void);
+/* Bytes of one chain uniform block: the chain header (member count at 0,
+ * the member case ids as a uvec4 at 16) in the first 256 bytes, then one
+ * 256-byte member block per chain position, lowest-ranked first. */
+#define OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES 1280u
+/** @brief Write one chain entry's uniform block for one profile's combined module: the header and each member's block.
+ *
+ * Reads the installed view (else the live tables) and the published
+ * member set. A member's block is its uniform slot's bytes, or the engine
+ * block for a member with no params, which its own draw binds in that
+ * place. Fails for an entry that draws stock (mod_mat_resolve_chain's
+ * cases) and for a member the profile's module lacks.
+ * @param entry Chain entry id.
+ * @param profile 0 stock, 1 portal.
+ * @param engine The engine block bytes, or NULL.
+ * @param engine_len Their count.
+ * @param out Receives OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES bytes.
+ * @return 0, or -1 when the entry draws stock in this profile. */
+int openpete_mods_material_chain_block(int entry, int profile, const void* engine, uint32_t engine_len,
+                                       void* out);
+/** @brief Return the chain entries interned this present in the live table.
+ *
+ * @return The count. */
+int  openpete_mods_material_chain_count(void);
+/** @brief Build the combined module pair of the current member set when it changed; the sim thread calls it at the tick boundary and the precompile before it runs.
+ *
+ * Takes the registry write lock, and returns at once while the material
+ * table has not changed since the last call. The member set: the
+ * fragment shaders of live scene-contract materials whose stock profile
+ * is linkable and not identity; it is built only while a composable
+ * material (pinned at api 13 or later, not OP_SEL_EXCLUSIVE) is live,
+ * whose first appearance also decides every pending member
+ * (openpete_mods_shader_link_resolve). A set equal to the newest built
+ * one builds nothing. The new pair is not installed: the compose installs
+ * it (openpete_mods_material_chain_install) once its pipeline exists. */
+void openpete_mods_material_chain_sync(void);
+/** @brief Return the newest combined module pair that is built and not installed, or -1.
+ *
+ * @return The module id. */
+int  openpete_mods_material_chain_pending(void);
+/** @brief Install a built combined module pair: publish its member set to the extraction walk.
+ *
+ * @param module The module id. */
+void openpete_mods_material_chain_install(int module);
+/** @brief Describe one combined module pair and vertex variant as a draw's GPU description: the module's stages, pipeline slots and moved tables.
+ *
+ * @param module The module id.
+ * @param vvar Vertex variant, 0 for the stock vertex stage.
+ * @param out Receives the description, chain -1.
+ * @return 0, or -1 for an unknown module or variant. */
+int  openpete_mods_material_chain_gpu(int module, int vvar, openpete_mod_material_gpu_t* out);
 /* Terrain tag slot field [24:16], 9 bits, the walked face class's resolved
  * member: 0 defers to the draw-time resolve (no material was registered
  * at extraction); 1..OPENPETE_MODS_MATERIAL_VIEW_SLOTS-1 is an interned
@@ -1758,14 +1850,21 @@ int  openpete_mods_material_has_instance(void);
 #define OPENPETE_MATERIAL_TERRAIN_DECL  0x100
 /** @brief Walk the materials matching one moby at extraction and return the outcome stamped into its tag.
  *
- * Takes no lock. Returns 0 when no live selector has a callback. Otherwise
- * walks the materials one predicate accepts for the moby (channel -1 or
- * moby, class and identity equal to the class or -1, level key in scope,
- * scene contract, enabled; a texture key or an env, tier or untextured
- * flag rejects) from the highest ranked down: a declarative material
- * lands; a refine material's callback runs, inside a guarded stretch
- * owned by its mod (openpete_mods_guard_enter), and lands on acceptance,
- * while its -1 passes the moby to the next material. An accepted block,
+ * Takes no lock. Returns 0 while openpete_mods_material_has_instance is 0.
+ * Otherwise walks the materials one predicate accepts for the moby
+ * (channel -1 or moby, class and identity equal to the class or -1, level
+ * key in scope, scene contract, enabled; a texture key or an env, tier or
+ * untextured flag rejects) from the highest ranked down: a declarative
+ * material accepts; a refine material's callback runs, inside a guarded
+ * stretch owned by its mod (openpete_mods_guard_enter), and accepts unless
+ * it returns -1, which passes the moby to the next material. The first
+ * acceptance draws alone when it is terminal (pinned below 13 or
+ * OP_SEL_EXCLUSIVE), has a vertex stage, or is not linkable into the
+ * installed combined module (openpete_mods_material_chain_set_current);
+ * otherwise the walk continues, skipping unlinkable materials unasked,
+ * adding each accepting linkable one, and stopping after a terminal one
+ * or at OPENPETE_MATERIAL_CHAIN_CAP members; identity members are left
+ * out. Two or more members intern a chain entry. An accepted block,
  * capped at OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned slot of
  * the same material with identical bytes, else takes a new one; the slot
  * table is reset by openpete_mods_material_frame_reset(), so a slot is
@@ -1778,8 +1877,10 @@ int  openpete_mods_material_has_instance(void);
  * @param moby_vaddr Guest address of the moby.
  * @return 0 to defer to the draw-time resolve, an interned slot,
  *         OPENPETE_MATERIAL_SLOT_DECL | material index for a declarative
- *         landing, or OPENPETE_MATERIAL_SLOT_STOCK when every material
- *         declined or none matched, or the slot table is full. */
+ *         landing, OPENPETE_MATERIAL_SLOT_CHAIN + chain entry id for a
+ *         composed moby, or OPENPETE_MATERIAL_SLOT_STOCK when every
+ *         material declined or none matched, or the slot or chain table
+ *         is full. */
 int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
                                       uint32_t moby_vaddr);
 /** @brief Resolve one walked terrain face's resolution class and return the outcome stamped into its tag.
@@ -2073,6 +2174,12 @@ typedef struct {
      * (an interned slot or OPENPETE_MATERIAL_TERRAIN_STOCK), 0 for none. */
     int ter_refine[OPENPETE_MODS_MATERIAL_VIEW_MATS];
     int level;                                    /* level pushed at capture */
+    /* The moby chain entries interned this present: per entry its members,
+     * lowest-ranked first, and each member's uniform slot (a refine
+     * outcome, the material's static slot, or 0 for no params). */
+    int chain_n;
+    struct { int n; short mat[OPENPETE_MATERIAL_CHAIN_CAP]; short slot[OPENPETE_MATERIAL_CHAIN_CAP]; }
+        chains[OPENPETE_MATERIAL_CHAINS];
 } openpete_mods_material_view_t;
 /** @brief Copy the interned slots, per-material static slots, terrain refine outcomes, class-to-pass table, pass list and level into a view.
  *

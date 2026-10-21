@@ -1,0 +1,37 @@
+# mat-chain-cap - material composition fixture: five channel-wide moby tint rows in one mod; at api 13 the later row ranks higher, so the chain keeps rows 2-5 and drops row 1, the lowest-ranked.
+# Never enable it to play.
+
+[mod]
+id      = "mat-chain-cap"
+name    = "Material Fixture: Chain Over Cap"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "moby"
+params  = [1.0, 1.0, 1.0, 0.5]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "moby"
+params  = [1.0, 0.0, 0.0, 0.25]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "moby"
+params  = [0.0, 1.0, 0.0, 0.25]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "moby"
+params  = [0.0, 0.0, 1.0, 0.25]
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "moby"
+params  = [1.0, 1.0, 0.0, 0.25]

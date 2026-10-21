@@ -1321,7 +1321,7 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
                     "with material_set_selector", id);
         return -1;
     }
-    if (!mod_mat_sel_valid(id, sel)) return -1;
+    if (!mod_mat_sel_valid(id, sel, openpete_mods_api_pin_of(self))) return -1;
     if (frag_shader >= 0) {
         size_t w = 0; int st = -1;
         if (!openpete_mods_shader_spv(frag_shader, &w, &st) ||
@@ -1429,18 +1429,12 @@ static int material_fill_gpu(int best, int uniform_slot,
     out->owner = m->owner;
     out->generation = m->generation;
     out->index = best;
+    out->chain = out->chain_module = -1;
+    out->chain_vvar = 0;
     /* A per-instance slot always wins; otherwise fall back to this
      * material's static block (0 = no params at all). */
     out->uniform_slot = uniform_slot > 0 ? uniform_slot : mod_mat_view_static_slot(best);
     return best;
-}
-
-int openpete_mods_material_resolve(uint32_t tag, int contract,
-                                   openpete_mod_material_gpu_t* out) {
-    int slot = 0;
-    const int best = mod_mat_resolve_index(tag, contract, &slot);
-    if (best < 0) return -1;
-    return material_fill_gpu(best, slot, out);
 }
 
 int openpete_mods_material_enum_count(void) { return mod_mat_count(); }
@@ -1516,6 +1510,8 @@ static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
 void openpete_mods_material_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_material_remove_owner_locked(mod_id); REG_WR_END(); }
 
 
+static void chain_retire_pipelines(void);
+
 /** @brief Body of openpete_mods_material_retire_all, run under the registry write lock.
  *
  * Moves the cached pipelines of every live material to the retirement list
@@ -1527,5 +1523,251 @@ static void openpete_mods_material_retire_all_locked(void) {
         material_retire_pipelines(m);
         m->generation = slot_generation_next();
     }
+    chain_retire_pipelines();
 }
 void openpete_mods_material_retire_all(void) { REG_WR(); openpete_mods_material_retire_all_locked(); REG_WR_END(); }
+
+/* ------------------------------------------------------------------ */
+/* combined modules: the composition stages of the scene contract       */
+
+/* Vertex variants one combined module serves: the stock vertex stage and
+ * the vertex stages of chains whose lowest member has one. */
+#define CHAIN_VVARS 8
+/* Combined module pairs kept for the session: each member-set change
+ * builds one; an installed pair stays until a newer one installs. */
+#define CHAIN_MODULES 32
+
+/* One combined module pair (stock and portal profile of the scene
+ * contract) with its member set and pipeline slots. Never moved or freed
+ * before shutdown, so a published set and every slot pointer stay valid. */
+typedef struct {
+    openpete_mods_material_chain_set_t set;
+    openpete_mod_link_module_t mod[OPENPETE_MATERIAL_CHAIN_PROFILES];   /* words 0 = none */
+    void*    cdata_gpu[OPENPETE_MATERIAL_CHAIN_PROFILES];
+    int      vvar_shader[CHAIN_VVARS];   /* [0] = -1, the stock vertex stage */
+    int      vvar_n;
+    void*    pipeline[CHAIN_VVARS][OPENPETE_MATERIAL_PIPE_VARIANTS];
+    void*    pipeline_mark[CHAIN_VVARS];
+    void*    pipeline_portal[CHAIN_VVARS][OPENPETE_MATERIAL_PORTAL_PIPES];
+    unsigned generation;                 /* slot generation of every pipeline slot */
+} chain_module_t;
+
+static chain_module_t* s_chain_mods[CHAIN_MODULES];
+static int      s_chain_mod_n;
+static int      s_chain_installed = -1;   /* published module, or -1 */
+static unsigned s_chain_seen_gen;         /* material table generation last synced */
+static int      s_chain_seen;
+static unsigned s_chain_set_gen;
+
+/** @brief Return whether a shader has a composition member still pending its source checks. */
+static int shader_link_pending(const mod_shader_t* sh) {
+    for (int p = 0; p < sh->link_n; p++)
+        if (sh->link[p].verdict == OPENPETE_MOD_LINK_PENDING) return 1;
+    return 0;
+}
+
+/** @brief Collect the member shaders of one profile: distinct fragment shaders of live scene-contract materials, linkable and not identity in that profile, ascending by handle.
+ *
+ * @param bit The profile's bit in the material link and identity masks.
+ * @param out Receives the handles, OPENPETE_MATERIAL_CHAIN_SET_MAX at most.
+ * @return The count. */
+static int chain_members(unsigned bit, int* out) {
+    int n = 0;
+    for (int i = 0; i < mod_mat_count(); i++) {
+        const mod_material_t* m = mod_mat_at(i);
+        if (!m->live || m->frag < 0 || m->contract != OPENPETE_MATERIAL_CONTRACT_SCENE) continue;
+        if (!(m->link_mask & bit) || (m->identity_mask & bit)) continue;
+        int j = n, dup = 0;
+        for (int k = 0; k < n; k++) dup |= out[k] == m->frag;
+        if (dup || n == OPENPETE_MATERIAL_CHAIN_SET_MAX) continue;
+        while (j > 0 && out[j - 1] > m->frag) { out[j] = out[j - 1]; j--; }
+        out[j] = m->frag;
+        n++;
+    }
+    return n;
+}
+
+/** @brief Build one profile's combined module of a member list; logs and returns -1 on failure.
+ *
+ * @param members Shader handles.
+ * @param n Their count.
+ * @param profile OPENPETE_MOD_LINK_STOCK or OPENPETE_MOD_LINK_PORTAL.
+ * @param case_of Receives each member's case id.
+ * @param out Receives the module. */
+static int chain_build_profile(const int* members, int n, int profile, int* case_of,
+                               openpete_mod_link_module_t* out) {
+    const openpete_mod_link_member_t* mm[OPENPETE_MATERIAL_CHAIN_SET_MAX];
+    for (int k = 0; k < n; k++) mm[k] = &shader_at(members[k])->link[profile];
+    char log_path[MOD_SHADER_PATH_MAX * 3];
+    snprintf(log_path, sizeof log_path, "%s/.build/shaders/chain-%s.log", shader_at(members[0])->mod_dir,
+             profile == OPENPETE_MOD_LINK_PORTAL ? "portal" : "stock");
+    if (openpete_mod_link_build(link_ctx(), mm, n, OPENPETE_MATERIAL_CONTRACT_SCENE, profile, NULL, NULL,
+                                log_path, case_of, out) == 0)
+        return 0;
+    OPL_ERROR_F("mods", "material composition: the %s combined module of %d member(s) failed (%s) - "
+                "the installed module stays, and the new members draw alone",
+                profile == OPENPETE_MOD_LINK_PORTAL ? "portal" : "stock", n, out->log);
+    openpete_mod_link_module_free(out);
+    return -1;
+}
+
+/** @brief Body of openpete_mods_material_chain_sync, run under the registry write lock. */
+static void chain_sync_locked(void) {
+    int composable = 0;
+    for (int i = 0; i < mod_mat_count() && !composable; i++) {
+        const mod_material_t* m = mod_mat_at(i);
+        composable = m->live && m->frag >= 0 && m->contract == OPENPETE_MATERIAL_CONTRACT_SCENE &&
+                     !mod_mat_terminal(m);
+    }
+    if (!composable) return;
+    for (int i = 0; i < mod_mat_count(); i++) {
+        const mod_material_t* m = mod_mat_at(i);
+        if (m->live && m->frag >= 0 && m->contract == OPENPETE_MATERIAL_CONTRACT_SCENE &&
+            shader_link_pending(shader_at(m->frag)))
+            (void)openpete_mods_shader_link_resolve(m->frag);
+    }
+    int stock[OPENPETE_MATERIAL_CHAIN_SET_MAX], portal[OPENPETE_MATERIAL_CHAIN_SET_MAX];
+    const int ns = chain_members(1u << OPENPETE_MOD_LINK_STOCK, stock);
+    int np = chain_members(1u << OPENPETE_MOD_LINK_PORTAL, portal);
+    if (ns == 0) return;
+    if (s_chain_mod_n) {
+        const openpete_mods_material_chain_set_t* last = &s_chain_mods[s_chain_mod_n - 1]->set;
+        if (last->n == ns && memcmp(last->shader, stock, (size_t)ns * sizeof *stock) == 0) return;
+    }
+    if (s_chain_mod_n == CHAIN_MODULES) {
+        OPL_ERROR_F("mods", "material composition: %d combined modules built this session - no more; "
+                    "the installed module stays", CHAIN_MODULES);
+        return;
+    }
+    chain_module_t* cm = calloc(1, sizeof *cm);
+    if (!cm) return;
+    int cs[OPENPETE_MATERIAL_CHAIN_SET_MAX], cp[OPENPETE_MATERIAL_CHAIN_SET_MAX];
+    if (chain_build_profile(stock, ns, OPENPETE_MOD_LINK_STOCK, cs, &cm->mod[0]) != 0) { free(cm); return; }
+    if (np && chain_build_profile(portal, np, OPENPETE_MOD_LINK_PORTAL, cp, &cm->mod[1]) != 0) np = 0;
+    cm->set.generation = ++s_chain_set_gen;
+    cm->set.module = s_chain_mod_n;
+    cm->set.n = ns;
+    for (int k = 0; k < ns; k++) {
+        cm->set.shader[k] = stock[k];
+        cm->set.case_id[0][k] = cs[k];
+        cm->set.case_id[1][k] = -1;
+        for (int j = 0; j < np; j++)
+            if (portal[j] == stock[k]) cm->set.case_id[1][k] = cp[j];
+    }
+    cm->vvar_shader[0] = -1;
+    cm->vvar_n = 1;
+    cm->generation = slot_generation_next();
+    s_chain_mods[s_chain_mod_n++] = cm;
+    OPL_INFO_F("mods", "material composition: combined module %d built: %d member shader(s), %d case(s) "
+               "(%zu words), portal profile %d member(s)", cm->set.module, ns, cm->mod[0].cases,
+               cm->mod[0].words, np);
+}
+
+void openpete_mods_material_chain_sync(void) {
+    const unsigned gen = mod_mat_table_gen();
+    if (s_chain_seen && gen == s_chain_seen_gen) return;
+    REG_WR();
+    s_chain_seen = 1;
+    s_chain_seen_gen = mod_mat_table_gen();
+    chain_sync_locked();
+    REG_WR_END();
+}
+
+/** @brief Fill a draw's GPU description from one combined module pair and vertex variant. */
+static void chain_fill_gpu(chain_module_t* cm, int vvar, openpete_mod_material_gpu_t* out) {
+    memset(out, 0, sizeof *out);
+    const int vs = cm->vvar_shader[vvar];
+    out->vert_spv = vs >= 0 ? openpete_mods_shader_spv(vs, &out->vert_words, NULL) : NULL;
+    if (!out->vert_spv) out->vert_words = 0;
+    out->frag_spv = cm->mod[0].spv;
+    out->frag_words = cm->mod[0].words;
+    out->frag_portal_spv = cm->mod[1].words ? cm->mod[1].spv : NULL;
+    out->frag_portal_words = cm->mod[1].words;
+    for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) out->pipeline_slot[b] = &cm->pipeline[vvar][b];
+    out->pipeline_mark_slot = &cm->pipeline_mark[vvar];
+    for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++)
+        out->pipeline_portal_slot[b] = &cm->pipeline_portal[vvar][b];
+    for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_PROFILES; p++) {
+        openpete_mod_cdata_t* cd = p ? &out->frag_portal_cdata : &out->frag_cdata;
+        if (!cm->mod[p].cdata.len) continue;
+        cd->bytes = cm->mod[p].cdata.bytes;
+        cd->len = cm->mod[p].cdata.len;
+        cd->gpu = &cm->cdata_gpu[p];
+    }
+    out->owner = "material-composition";
+    out->generation = cm->generation;
+    out->index = -1;
+    out->chain = -1;
+    out->chain_module = cm->set.module;
+    out->chain_vvar = vvar;
+}
+
+int openpete_mods_material_chain_gpu(int module, int vvar, openpete_mod_material_gpu_t* out) {
+    if (!out || module < 0 || module >= s_chain_mod_n) return -1;
+    chain_module_t* cm = s_chain_mods[module];
+    if (vvar < 0 || vvar >= cm->vvar_n) return -1;
+    chain_fill_gpu(cm, vvar, out);
+    return 0;
+}
+
+int openpete_mods_material_chain_pending(void) {
+    return s_chain_mod_n > 0 && s_chain_installed != s_chain_mod_n - 1 ? s_chain_mod_n - 1 : -1;
+}
+
+void openpete_mods_material_chain_install(int module) {
+    if (module < 0 || module >= s_chain_mod_n) return;
+    s_chain_installed = module;
+    openpete_mods_material_chain_set_publish(&s_chain_mods[module]->set);
+    OPL_INFO_F("mods", "material composition: combined module %d installed (member set generation %u)",
+               module, s_chain_mods[module]->set.generation);
+}
+
+/** @brief Return a module's vertex variant for a vertex shader, adding it when there is room; -1 when full. */
+static int chain_vvar(chain_module_t* cm, int vert) {
+    for (int v = 0; v < cm->vvar_n; v++)
+        if (cm->vvar_shader[v] == vert) return v;
+    if (cm->vvar_n == CHAIN_VVARS) return -1;
+    cm->vvar_shader[cm->vvar_n] = vert;
+    return cm->vvar_n++;
+}
+
+int openpete_mods_material_resolve(uint32_t tag, int contract,
+                                   openpete_mod_material_gpu_t* out) {
+    mod_mat_chain_res_t ch;
+    const int c = mod_mat_resolve_chain(tag, contract, &ch);
+    if (c < 0) return -1;
+    if (c > 0) {
+        if (!ch.set || ch.set->module < 0 || ch.set->module >= s_chain_mod_n) return -1;
+        chain_module_t* cm = s_chain_mods[ch.set->module];
+        const int vvar = chain_vvar(cm, mod_mat_at(ch.mat[0])->vert);
+        if (vvar < 0) return -1;
+        chain_fill_gpu(cm, vvar, out);
+        out->chain = ch.entry;
+        out->uniform_slot = ch.entry;
+        return ch.mat[ch.n - 1];
+    }
+    int slot = 0;
+    const int best = mod_mat_resolve_index(tag, contract, &slot);
+    if (best < 0) return -1;
+    return material_fill_gpu(best, slot, out);
+}
+
+/** @brief Move every combined module's cached pipelines to the retirement list and clear them; they rebuild on next use. */
+static void chain_retire_pipelines(void) {
+    for (int i = 0; i < s_chain_mod_n; i++) {
+        chain_module_t* cm = s_chain_mods[i];
+        for (int v = 0; v < CHAIN_VVARS; v++) {
+            for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) {
+                retire_pipeline(cm->pipeline[v][b]);
+                cm->pipeline[v][b] = NULL;
+            }
+            retire_pipeline(cm->pipeline_mark[v]);
+            cm->pipeline_mark[v] = NULL;
+            for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++) {
+                retire_pipeline(cm->pipeline_portal[v][b]);
+                cm->pipeline_portal[v][b] = NULL;
+            }
+        }
+        cm->generation = slot_generation_next();
+    }
+}

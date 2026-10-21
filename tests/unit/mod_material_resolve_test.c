@@ -4,7 +4,7 @@
  * Each case registers materials for stub mods (id, enabled-list position,
  * manifest api pin), drives the extraction, bake and draw-time entry
  * points, and asserts the outcome the resolver produces. The cases record
- * the current rules: one material per draw; the moby extraction walk down
+ * the current rules: one material per draw outside a chain; the moby extraction walk down
  * the priority order, where a refine's decline passes the moby to the next
  * matching material and the walk's outcome is stamped into the tag; one
  * moby predicate (level, contract, identity) at extraction and draw time;
@@ -18,9 +18,15 @@
  * next member of its class, one terrain predicate (level and contract) on
  * both paths, terrain class resolutions computed on the sim thread and
  * read by the compose from the view, and the level read from the installed
- * view at draw time. Every stub mod carries
+ * view at draw time; moby chains of composable materials (pinned at 13 or
+ * later, not OP_SEL_EXCLUSIVE) against a stubbed installed member set and
+ * hold list: terminal, unlinkable, identity and vertex-stage members, the
+ * cap, absence from the set, a set change between extraction and compose,
+ * held members and the chain block. Every stub mod carries
  * its api pin, so a rule keyed on the pin changes only the cases whose mods
- * sit on the changed side of it.
+ * sit on the changed side of it. A material registered through reg() has
+ * no link verdict, so it is unlinkable and draws alone as before
+ * composition.
  *
  * Exit 0 when every check holds, 1 otherwise. */
 #include "mod_material_resolve.h"
@@ -107,7 +113,7 @@ static stub_mod_t* mod(const char* id, int load, int api) {
  * @return The handle, or -1 when refused. */
 static int reg(const stub_mod_t* m, openpete_mod_material_selector_t sel, int contract,
                openpete_mod_material_fn fn) {
-    if (!mod_mat_sel_valid(m->id, &sel)) return -1;
+    if (!mod_mat_sel_valid(m->id, &sel, m->api)) return -1;
     if (fn && !mod_mat_refine_valid(m->id, &sel, contract)) return -1;
     return mod_mat_append(m->id, &sel, -1, 0, contract, fn, m->load_index, m->api, 1u);
 }
@@ -1008,6 +1014,338 @@ static void case_slot_table_full(void) {
 
 
 /* ------------------------------------------------------------------ */
+/* Composition (moby chains). Each composable material below carries its
+ * own fragment shader handle; a stub installed member set lists the
+ * shaders the combined module serves. */
+
+/** @brief Register a scene-contract material with a fragment shader handle and set that shader's link and identity masks.
+ *
+ * @param m Owner.
+ * @param sel Selector.
+ * @param frag Fragment shader handle.
+ * @param link Link mask (bit 0 the stock profile).
+ * @param ident Identity mask.
+ * @param fn Refine callback, or NULL.
+ * @return The handle, or -1 when refused. */
+static int regf(const stub_mod_t* m, openpete_mod_material_selector_t sel, int frag, unsigned link,
+                unsigned ident, openpete_mod_material_fn fn) {
+    if (!mod_mat_sel_valid(m->id, &sel, m->api)) return -1;
+    const int h = mod_mat_append(m->id, &sel, -1, frag, SCENE, fn, m->load_index, m->api, 1u);
+    if (h >= 0) mod_mat_set_link_of_frag(frag, link, ident);
+    return h;
+}
+
+static openpete_mods_material_chain_set_t s_set_a, s_set_b;
+/** @brief Fill and publish a stub member set: generation, shader handles, case id = list position in both profiles.
+ *
+ * @param s The record.
+ * @param gen Generation.
+ * @param n Shader count.
+ * @param shaders The handles. */
+static void set_publish(openpete_mods_material_chain_set_t* s, unsigned gen, int n, const int* shaders) {
+    memset(s, 0, sizeof *s);
+    s->generation = gen;
+    s->n = n;
+    for (int i = 0; i < n; i++) { s->shader[i] = shaders[i]; s->case_id[0][i] = s->case_id[1][i] = i; }
+    openpete_mods_material_chain_set_publish(s);
+}
+/** @brief The moby tag field naming chain entry @p id. */
+#define CHAIN(id) (OPENPETE_MATERIAL_SLOT_CHAIN + (id))
+
+/** @brief Resolve a chain tag: its member count, -1 for stock, 0 when the tag names no chain; fills the members. */
+static int chain_of(uint32_t tag, mod_mat_chain_res_t* r) {
+    const int c = mod_mat_resolve_chain(tag, SCENE, r);
+    return c == 1 ? r->n : c;
+}
+
+/** @brief Two and three composable declaratives compose lowest first; a chain over the cap keeps the highest four. */
+static void case_chain_compose(void) {
+    begin("Chain: two, three and five composable declaratives");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    stub_mod_t* c = mod("fx-c", 2, 13);
+    const int ma = regf(a, sel_moby(-1), 10, 1, 0, NULL);
+    const int mb = regf(b, sel_moby(-1), 11, 1, 0, NULL);
+    const float blk[4] = {1, 0, 0, 1};
+    CHECK(mod_mat_set_params(mb, blk, sizeof blk) == 0, "params");
+    const int sh[3] = {10, 11, 12};
+    set_publish(&s_set_a, 1, 3, sh);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    const int s2 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    mod_mat_chain_res_t r;
+    CHECK(s2 == CHAIN(0), "two-member field %#x", s2);
+    CHECK(chain_of(moby_tag(5, s2), &r) == 2 && r.mat[0] == ma && r.mat[1] == mb, "lowest first");
+    CHECK(r.slot[0] == 0 && r.slot[1] == mod_mat_view_static_slot(mb) && r.slot[1] > 0, "member slots");
+    CHECK(resolve(moby_tag(5, s2), SCENE) == -1, "the one-material resolve does not take a chain tag");
+    const int mc = regf(c, sel_moby(-1), 12, 1, 0, NULL);
+    openpete_mods_material_frame_reset(1);
+    const int s3 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s3), &r) == 3 && r.mat[0] == ma && r.mat[2] == mc, "three members");
+    stub_mod_t* d = mod("fx-d", 3, 13);
+    stub_mod_t* e = mod("fx-e", 4, 13);
+    const int md = regf(d, sel_moby(-1), 10, 1, 0, NULL);
+    const int me = regf(e, sel_moby(-1), 11, 1, 0, NULL);
+    openpete_mods_material_frame_reset(1);
+    const int s5 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s5), &r) == 4 && r.mat[0] == mb && r.mat[1] == mc && r.mat[2] == md &&
+          r.mat[3] == me, "over the cap: the four highest");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2) == 1 && mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2 + 1) == 1 &&
+          mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2 + 2) == 1, "census by members");
+    unsigned char blkout[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+    const unsigned char eng[4] = {9, 9, 9, 9};
+    CHECK(openpete_mods_material_chain_block(0, 0, eng, 4, blkout) == 0, "block");
+    uint32_t n = 0, ids[4];
+    memcpy(&n, blkout, 4);
+    memcpy(ids, blkout + 16, sizeof ids);
+    CHECK(n == 4 && ids[0] == 1 && ids[1] == 2 && ids[2] == 0 && ids[3] == 1, "header n %u ids %u %u %u %u", n,
+          ids[0], ids[1], ids[2], ids[3]);
+    CHECK(memcmp(blkout + 256, blk, sizeof blk) == 0, "position 0 holds b's params");
+    CHECK(memcmp(blkout + 512, eng, sizeof eng) == 0, "position 1 (c, no params) holds the engine block");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("a,b: chain [a b]; a,b,c: [a b c]; five: [b c d e], a dropped; the block header lists case ids lowest first");
+}
+
+/** @brief A terminal top draws alone; a terminal member below a composable one ends the chain; OP_SEL_EXCLUSIVE is terminal and refused below pin 13. */
+static void case_chain_terminal(void) {
+    begin("Chain: terminal members");
+    stub_mod_t* o = mod("fx-old", 0, 12);
+    stub_mod_t* a = mod("fx-a", 1, 13);
+    stub_mod_t* t = mod("fx-top12", 2, 12);
+    const int mo = regf(o, sel_moby(-1), 10, 1, 0, NULL);
+    const int ma = regf(a, sel_moby(-1), 11, 1, 0, NULL);
+    const int sh[3] = {10, 11, 12};
+    set_publish(&s_set_a, 1, 3, sh);
+    openpete_mods_material_frame_reset(1);
+    mod_mat_chain_res_t r;
+    const int s = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s), &r) == 2 && r.mat[0] == mo && r.mat[1] == ma, "pin 12 below ends the chain");
+    const int mt = regf(t, sel_moby(-1), 12, 1, 0, NULL);
+    openpete_mods_material_frame_reset(1);
+    CHECK(openpete_mods_material_moby_slot(NULL, 5, 0x80010000u) == DECL(mt), "pin 12 on top draws alone");
+    openpete_mod_material_selector_t ex = sel_moby(-1);
+    ex.flags = OP_SEL_EXCLUSIVE;
+    CHECK(regf(t, ex, 12, 1, 0, NULL) == -1, "OP_SEL_EXCLUSIVE refused at pin 12");
+    OUTCOME("pin 12 below a composable member: the chain ends on it; pin 12 on top: alone; exclusive at pin 12: refused");
+
+    begin("Chain: OP_SEL_EXCLUSIVE at pin 13");
+    stub_mod_t* x = mod("fx-x", 0, 13);
+    a = mod("fx-a", 1, 13);
+    stub_mod_t* b = mod("fx-b", 2, 13);
+    const int mx = regf(x, sel_moby(-1), 10, 1, 0, NULL);
+    const int ma2 = regf(a, ex, 11, 1, 0, NULL);
+    regf(b, sel_moby(-1), 12, 1, 0, NULL);
+    set_publish(&s_set_a, 1, 3, sh);
+    openpete_mods_material_frame_reset(1);
+    const int s2 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s2), &r) == 2 && r.mat[0] == ma2, "the exclusive member ends the chain under b");
+    openpete_mod_material_selector_t plain = sel_moby(-1);
+    CHECK(mod_mat_set_selector("fx-a", ma2, &plain) == 0, "retune drops exclusive");
+    openpete_mods_material_frame_reset(1);
+    const int s3 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s3), &r) == 3 && r.mat[0] == mx, "composable again at the next walk");
+    openpete_mods_material_chain_set_publish(NULL);
+    OUTCOME("exclusive at pin 13: terminal, the chain ends on it; a retune that drops it composes the member below");
+}
+
+/** @brief An unlinkable member at the top draws alone; below a composable member it is skipped without being asked; an identity member is elided. */
+static void case_chain_unlinkable(void) {
+    begin("Chain: unlinkable members");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* u = mod("fx-unl", 1, 13);
+    stub_mod_t* b = mod("fx-b", 2, 13);
+    const int ma = regf(a, sel_moby(-1), 10, 1, 0, NULL);
+    regf(u, sel_moby(-1), 20, 0, 0, rf_accept);         /* an unlinkable refine */
+    const int mb = regf(b, sel_moby(-1), 11, 1, 0, NULL);
+    const int sh[2] = {10, 11};
+    set_publish(&s_set_a, 1, 2, sh);
+    openpete_mods_material_frame_reset(1);
+    s_calls = 0;
+    mod_mat_chain_res_t r;
+    const int s = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s), &r) == 2 && r.mat[0] == ma && r.mat[1] == mb && s_calls == 0,
+          "unlinkable below b: skipped, never asked (calls %d)", s_calls);
+    stub_mod_t* t = mod("fx-unl-top", 3, 13);
+    const int mt = regf(t, sel_moby(-1), 21, 0, 0, NULL);
+    openpete_mods_material_frame_reset(1);
+    CHECK(openpete_mods_material_moby_slot(NULL, 5, 0x80010000u) == DECL(mt), "unlinkable on top draws alone");
+    openpete_mods_material_chain_set_publish(NULL);
+    OUTCOME("unlinkable below a composable member: skipped, 0 refine calls; on top: alone");
+
+    begin("Chain: identity member");
+    a = mod("fx-a", 0, 13);
+    stub_mod_t* i = mod("fx-id", 1, 13);
+    b = mod("fx-b", 2, 13);
+    const int ma2 = regf(a, sel_moby(-1), 10, 1, 0, NULL);
+    regf(i, sel_moby(-1), 30, 1, 1, NULL);
+    const int mb2 = regf(b, sel_moby(-1), 11, 1, 0, NULL);
+    set_publish(&s_set_a, 1, 2, sh);
+    openpete_mods_material_frame_reset(1);
+    const int s2 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s2), &r) == 2 && r.mat[0] == ma2 && r.mat[1] == mb2, "identity elided");
+    mod_mat_enable(mb2, 0);
+    openpete_mods_material_frame_reset(1);
+    CHECK(openpete_mods_material_moby_slot(NULL, 5, 0x80010000u) == DECL(ma2),
+          "identity top over one member: that member alone");
+    openpete_mods_material_chain_set_publish(NULL);
+    OUTCOME("an identity member is left out of the chain; over one member, that member draws alone");
+}
+
+/** @brief A member with a vertex stage joins only as the chain's lowest; on top it draws alone. */
+static void case_chain_vertex(void) {
+    begin("Chain: vertex-stage member");
+    stub_mod_t* v = mod("fx-v", 0, 13);
+    stub_mod_t* a = mod("fx-a", 1, 13);
+    openpete_mod_material_selector_t s = sel_moby(-1);
+    const int mv = mod_mat_append(v->id, &s, 40, 10, SCENE, NULL, v->load_index, 13, 1u);
+    mod_mat_set_link_of_frag(10, 1, 0);
+    const int ma = regf(a, sel_moby(-1), 11, 1, 0, NULL);
+    const int sh[3] = {10, 11, 12};
+    set_publish(&s_set_a, 1, 3, sh);
+    openpete_mods_material_frame_reset(1);
+    mod_mat_chain_res_t r;
+    const int f = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, f), &r) == 2 && r.mat[0] == mv && r.mat[1] == ma, "lowest: kept");
+    stub_mod_t* w = mod("fx-w", 2, 13);
+    const int mw = mod_mat_append(w->id, &s, 41, 12, SCENE, NULL, w->load_index, 13, 1u);
+    openpete_mods_material_frame_reset(1);
+    CHECK(openpete_mods_material_moby_slot(NULL, 5, 0x80010000u) == DECL(mw), "vertex stage on top: alone");
+    mod_mat_enable(mw, 0);
+    stub_mod_t* x = mod("fx-x", 3, 13);
+    mod_mat_append(x->id, &s, 42, 11, SCENE, NULL, x->load_index, 13, 1u);   /* a vertex member in the middle */
+    stub_mod_t* y = mod("fx-y", 4, 13);
+    const int my = regf(y, sel_moby(-1), 12, 1, 0, NULL);
+    openpete_mods_material_frame_reset(1);
+    const int g = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, g), &r) == 3 && r.mat[0] == mv && r.mat[1] == ma && r.mat[2] == my,
+          "a vertex member above a kept one is dropped");
+    openpete_mods_material_chain_set_publish(NULL);
+    OUTCOME("a vertex-stage member joins only as the lowest; above a kept member it is dropped; on top it draws alone");
+}
+
+/** @brief Members absent from the installed set: at the top the member draws alone, below a composable member it is skipped; each counted. */
+static void case_chain_absent(void) {
+    begin("Chain: members absent from the installed set");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    stub_mod_t* c = mod("fx-c", 2, 13);
+    const int ma = regf(a, sel_moby(-1), 10, 1, 0, NULL);
+    regf(b, sel_moby(-1), 11, 1, 0, NULL);
+    const int mc = regf(c, sel_moby(-1), 12, 1, 0, NULL);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    CHECK(openpete_mods_material_moby_slot(NULL, 5, 0x80010000u) == DECL(mc), "no set installed: the top draws alone");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_ABSENT) == 1, "absent top counted");
+    const int sh[2] = {10, 11};
+    set_publish(&s_set_a, 1, 2, sh);
+    openpete_mods_material_frame_reset(1);
+    CHECK(openpete_mods_material_moby_slot(NULL, 5, 0x80010000u) == DECL(mc), "top absent from the set: alone");
+    const int sh2[2] = {10, 12};
+    set_publish(&s_set_b, 2, 2, sh2);
+    openpete_mods_material_frame_reset(1);
+    mod_mat_chain_res_t r;
+    const int s = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(chain_of(moby_tag(5, s), &r) == 2 && r.mat[0] == ma && r.mat[1] == mc, "b absent below c: skipped");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_ABSENT) == 3, "absent %u", mod_mat_census_chain(MOD_MAT_CHAIN_ABSENT));
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("absent top: alone; absent below a composable member: skipped; 3 exclusions counted");
+}
+
+/** @brief A set published between extraction and compose that lacks a stamped member sends the chain stock, counted; a re-extract under the new set walks again. */
+static void case_chain_generation(void) {
+    begin("Chain: set generation change between extraction and present");
+    static openpete_mods_material_view_t v;
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    const int ma = regf(a, sel_moby(-1), 10, 1, 0, NULL);
+    const int mb = regf(b, sel_moby(-1), 11, 1, 0, rf_accept);
+    const int sh[2] = {10, 11};
+    set_publish(&s_set_a, 1, 2, sh);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    s_calls = 0;
+    const int s = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    openpete_mods_material_view_capture(&v);
+    mod_mat_chain_res_t r;
+    openpete_mods_material_view_set(&v);
+    CHECK(chain_of(moby_tag(5, s), &r) == 2 && r.set == &s_set_a, "composes under generation 1");
+    const int sh2[1] = {11};
+    set_publish(&s_set_b, 2, 1, sh2);   /* a's shader left the installed module */
+    CHECK(chain_of(moby_tag(5, s), &r) == -1 && mod_mat_census_chain(MOD_MAT_CHAIN_LACKED) == 1,
+          "the stamped chain draws stock, counted");
+    openpete_mods_material_view_set(NULL);
+    openpete_mods_material_frame_reset(0);    /* a re-extract of the same tick */
+    const int s2 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(s_calls == 2, "walked again, not replayed (calls %d)", s_calls);
+    CHECK(s2 > 0 && s2 < OPENPETE_MATERIAL_SLOT_CHAIN && resolve(moby_tag(5, s2), SCENE) == mb,
+          "under generation 2 the refine draws alone (%#x)", s2);
+    set_publish(&s_set_a, 3, 2, sh);
+    openpete_mods_material_frame_reset(0);
+    const int s3 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    openpete_mods_material_frame_reset(0);
+    const int s4 = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    CHECK(s3 == CHAIN(0) && s4 == CHAIN(0) && s_calls == 3, "one generation: replayed (calls %d)", s_calls);
+    CHECK(chain_of(moby_tag(5, s4), &r) == 2 && r.mat[0] == ma && r.slot[1] > 0, "replayed refine block re-interned");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("a set lacking a stamped member: stock, counted; the re-extract under it walks again; one set: replayed");
+}
+
+/** @brief A held member sends a stamped chain stock for the compose, and so does holding every member. */
+static void case_chain_held(void) {
+    begin("Chain: held members");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    regf(a, sel_moby(-1), 10, 1, 0, NULL);
+    regf(b, sel_moby(-1), 11, 1, 0, NULL);
+    const int sh[2] = {10, 11};
+    set_publish(&s_set_a, 1, 2, sh);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    const int s = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
+    mod_mat_chain_res_t r;
+    const char* one[1] = {"fx-a"};
+    openpete_mods_hold_owners(one, 1);
+    CHECK(chain_of(moby_tag(5, s), &r) == -1, "one member held: stock");
+    const char* both[2] = {"fx-a", "fx-b"};
+    openpete_mods_hold_owners(both, 2);
+    CHECK(chain_of(moby_tag(5, s), &r) == -1, "all held: stock");
+    unsigned char blk[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+    CHECK(openpete_mods_material_chain_block(0, 0, NULL, 0, blk) == -1, "no block for a held chain");
+    openpete_mods_hold_owners(NULL, 0);
+    CHECK(chain_of(moby_tag(5, s), &r) == 2, "released");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_HELD) == 2, "held counted %u", mod_mat_census_chain(MOD_MAT_CHAIN_HELD));
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("one member held or all held: the chain draws stock for that compose, counted; released: composes");
+}
+
+/** @brief A chain whose refine block finds the slot table full draws stock for the present, counted. */
+static void case_chain_table_full(void) {
+    begin("Chain: slot table full");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    regf(a, sel_moby(-1), 10, 1, 0, NULL);
+    regf(b, sel_moby(-1), 11, 1, 0, rf_accept);
+    const int sh[2] = {10, 11};
+    set_publish(&s_set_a, 1, 2, sh);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    int last = 0;
+    for (int i = 0; i < MOD_MATERIAL_SLOTS - 1; i++)
+        last = openpete_mods_material_moby_slot(NULL, 5, 0x80100000u + (uint32_t)i * 0x100u);
+    CHECK(last == CHAIN(MOD_MATERIAL_SLOTS - 2), "127 distinct chains, last %#x", last);
+    const int over = openpete_mods_material_moby_slot(NULL, 5, 0x80900000u);
+    CHECK(over == OPENPETE_MATERIAL_SLOT_STOCK && mod_mat_census_chain(MOD_MAT_CHAIN_FULL) == 1,
+          "slot table full: stock, counted");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("the 128th distinct refine block fills the slot table: that chain draws stock, counted");
+}
+
+/* ------------------------------------------------------------------ */
 /* Overlap diagnostic. */
 
 /** @brief Recompute the overlap pairs when their inputs moved, as the tick boundary does, without the registry lock. */
@@ -1235,6 +1573,14 @@ int main(void) {
     case_moby_predicate();
     case_tick_memo();
     case_slot_table_full();
+    case_chain_compose();
+    case_chain_terminal();
+    case_chain_unlinkable();
+    case_chain_vertex();
+    case_chain_absent();
+    case_chain_generation();
+    case_chain_held();
+    case_chain_table_full();
     case_ovl_fixture_decl();
     case_ovl_fixture_wild();
     case_ovl_fixture_levelkey();

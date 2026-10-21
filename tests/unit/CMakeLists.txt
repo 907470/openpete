@@ -507,7 +507,8 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
 
     # mod_material_link_test - material composition by source prefixing
     # (core/mods/mod_mat_link.c): every in-tree material shader classified
-    # linkable or not with its reason, the fixture cases under
+    # linkable or not with its reason (each linkable but mat-chain-unlinkable,
+    # which declares a buffer of its own to be unlinkable), the fixture cases under
     # data/mat-link/cases.tsv, and every combined module compiled, checked by
     # spirv-val and rebuilt in other member orders to the same bytes. The
     # _vk test creates each module's pipelines on a headless device under
@@ -534,12 +535,16 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
     add_dependencies(mod_material_link_test spyro1_sdk_stage)
     add_test(NAME mod_material_link
              COMMAND mod_material_link_test ${_shader_dir}/sdk "${_spirv_val}"
-                     --expect-linkable --census ${CMAKE_SOURCE_DIR}/mods
+                     --expect-linkable
+                     --expect-unlinkable mat-chain-unlinkable/shaders/tint_table.frag
+                     --census ${CMAKE_SOURCE_DIR}/mods
                      --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/data/mat-link)
     set_tests_properties(mod_material_link PROPERTIES LABELS "mods")
     add_test(NAME mod_material_link_vk
              COMMAND mod_material_link_test ${_shader_dir}/sdk "${_spirv_val}" --vk
-                     --expect-linkable --census ${CMAKE_SOURCE_DIR}/mods
+                     --expect-linkable
+                     --expect-unlinkable mat-chain-unlinkable/shaders/tint_table.frag
+                     --census ${CMAKE_SOURCE_DIR}/mods
                      --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/data/mat-link)
     set_tests_properties(mod_material_link_vk PROPERTIES LABELS "mods;vulkan"
                          SKIP_RETURN_CODE 77)

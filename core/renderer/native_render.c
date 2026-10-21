@@ -11513,6 +11513,8 @@ typedef struct {
     int mark;           /* stencil-MARK variant (SCENE: the MARK slot; PORTAL: the stencil) */
 } nr_mat_req;
 
+static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal);
+
 /** @brief Return the material slot that caches the pipeline of one request.
  *
  * @param mg Resolved or enumerated mod material.
@@ -11626,6 +11628,13 @@ static void** late_slot(const openpete_lazy_ref* r, unsigned* gen) {
         openpete_mod_material_gpu_t mg;
         if (openpete_mods_material_enum_at(r->index, NULL, NULL, &mg) != 0) return NULL;
         const nr_mat_req q = late_unpack_req(r->sub);
+        *gen = mg.generation;
+        return nr_material_slot(&mg, &q);
+    }
+    case OPENPETE_LAZY_CHAIN: {
+        openpete_mod_material_gpu_t mg;
+        if (openpete_mods_material_chain_gpu(r->index, r->sub >> 13, &mg) != 0) return NULL;
+        const nr_mat_req q = late_unpack_req(r->sub & 0x1FFF);
         *gen = mg.generation;
         return nr_material_slot(&mg, &q);
     }
@@ -11918,9 +11927,11 @@ static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_ma
             .push_const_size = sizeof(shadow_decal_tex_pc),
         };
     }
-    const openpete_lazy_ref ref = { .kind = OPENPETE_LAZY_MATERIAL, .index = mg->index,
-                                    .sub = late_pack_req(q), .generation = mg->generation,
-                                    .point = -1, .owner = mg->owner };
+    const int chain = mg->chain_module >= 0;
+    const openpete_lazy_ref ref = { .kind = chain ? OPENPETE_LAZY_CHAIN : OPENPETE_LAZY_MATERIAL,
+                                    .index = chain ? mg->chain_module : mg->index,
+                                    .sub = late_pack_req(q) | (chain ? mg->chain_vvar << 13 : 0),
+                                    .generation = mg->generation, .point = -1, .owner = mg->owner };
     if (openpete_native_lazy_pipe(&md, mg->vert_spv, mg->vert_words, frag, frag_n, slot, &ref) < 0 &&
         *slot == PFX_PIPE_FAILED)
         fprintf(stderr, "[native] material: pipeline build FAILED for %s "
@@ -11996,7 +12007,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                 if (s_nr.mat_pack_dummy)   /* op_pack_tex: no pack art for gouraud */
                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
                 bind_material_keys();
-                openpete_native_material_bind(s_nr.dev, mg.uniform_slot, &mg.frag_cdata);
+                nr_material_bind(&mg, 0);
                 psx_material_hd zm;                     /* bpp 0 = untextured */
                 memset(&zm, 0, sizeof zm);
                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
@@ -12735,6 +12746,11 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     if (openpete_mods_material_resolve(s0->tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) < 0) return 0;
     const nr_cover_twin* tw = nr_cover_entry(restore);
     const int portal = tw ? (tw->rim ? 2 : 1) : 0;
+    if (mg.chain >= 0 && portal) {
+        /* A chain whose portal module lacks a member leaves the run to the twin. */
+        unsigned char blk[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+        if (openpete_mods_material_chain_block(mg.chain, 1, NULL, 0, blk) != 0) return 0;
+    }
     rhi_pipeline* pipe = material_run_pipe(&mg, ov_mark, blend_class, portal);
     if (!pipe) return 0;
     bind_scene_pipe(pipe);
@@ -12746,8 +12762,7 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     bind_material_keys();
     /* engine block 0 + the per-instance slot's mod block (block 1+slot;
      * slot 0 = declarative binds the engine block as the mod block too). */
-    openpete_native_material_bind(s_nr.dev, mg.uniform_slot,
-                                  portal ? &mg.frag_portal_cdata : &mg.frag_cdata);
+    nr_material_bind(&mg, portal);
     psx_material_hd mh;
     memset(&mh, 0, sizeof mh);
     mh.tpage_x = r->m.tpage_x; mh.tpage_y = r->m.tpage_y;
@@ -18377,18 +18392,20 @@ static void write_engine_block(rhi_ubo* u, int blk, int w, int h)
  * distinct block content. A profile's cache slot holds
  * (s_cdata_epoch << 16) | (index + 1), so a slot written before a renderer
  * shutdown never resolves to an entry made after it. */
-typedef struct { void* bytes; size_t len; rhi_ubo_data* data; } nr_cdata_t;
+typedef struct { void* bytes; size_t len; rhi_ubo* ubo; rhi_ubo_data* data; } nr_cdata_t;
 static nr_cdata_t* s_cdata;
 static int         s_cdata_n, s_cdata_cap;
 static uintptr_t   s_cdata_epoch = 1;
 
-/** @brief Return the entry holding a table block's bytes, adding and uploading it when no entry matches.
+/** @brief Return the entry holding a table block's bytes for a uniform block set, adding and uploading it when no entry matches.
  *
  * @param cd The block.
+ * @param ubo The uniform block set whose blocks the entry's descriptor set views.
  * @return The entry index, or -1 when the copy or the upload fails. */
-static int nr_cdata_intern(const openpete_mod_cdata_t* cd) {
+static int nr_cdata_intern(const openpete_mod_cdata_t* cd, rhi_ubo* ubo) {
     for (int i = 0; i < s_cdata_n; i++)
-        if (s_cdata[i].len == cd->len && memcmp(s_cdata[i].bytes, cd->bytes, cd->len) == 0)
+        if (s_cdata[i].ubo == ubo && s_cdata[i].len == cd->len &&
+            memcmp(s_cdata[i].bytes, cd->bytes, cd->len) == 0)
             return i;
     if (s_cdata_n == s_cdata_cap) {
         int cap = s_cdata_cap ? s_cdata_cap * 2 : 8;
@@ -18400,22 +18417,26 @@ static int nr_cdata_intern(const openpete_mod_cdata_t* cd) {
     nr_cdata_t* e = &s_cdata[s_cdata_n];
     e->bytes = malloc(cd->len);
     e->len = cd->len;
-    e->data = e->bytes ? rhi_ubo_data_create(s_nr.dev, s_mat_ubo, cd->bytes, cd->len) : NULL;
+    e->ubo = ubo;
+    e->data = e->bytes ? rhi_ubo_data_create(s_nr.dev, ubo, cd->bytes, cd->len) : NULL;
     if (!e->data) { free(e->bytes); return -1; }
     memcpy(e->bytes, cd->bytes, cd->len);
     OPL_INFO_F("native", "material table block %d: %zu B uploaded", s_cdata_n, cd->len);
     return s_cdata_n++;
 }
 
-/** @brief Return the device copy of a profile's table block, resolving and caching it in the profile's slot on first use.
+/** @brief Return the device copy of a profile's table block for a uniform block set, resolving and caching it in the profile's slot on first use.
  *
+ * A profile's slot serves one uniform block set: a material's the material
+ * set, a combined module's the chain set.
  * @param cd The profile's moved tables; NULL or len 0 for none.
+ * @param ubo The uniform block set the copy binds with.
  * @return The copy, or NULL for none or a failed upload. */
-static rhi_ubo_data* nr_material_cdata(const openpete_mod_cdata_t* cd) {
-    if (!cd || !cd->len || !cd->bytes || !cd->gpu || !s_mat_ubo) return NULL;
+static rhi_ubo_data* nr_material_cdata(const openpete_mod_cdata_t* cd, rhi_ubo* ubo) {
+    if (!cd || !cd->len || !cd->bytes || !cd->gpu || !ubo) return NULL;
     uintptr_t v = (uintptr_t)*cd->gpu;
     if ((v >> 16) != s_cdata_epoch) {
-        const int i = nr_cdata_intern(cd);
+        const int i = nr_cdata_intern(cd, ubo);
         if (i < 0) return NULL;
         v = (s_cdata_epoch << 16) | (uintptr_t)(i + 1);
         *cd->gpu = (void*)v;
@@ -18439,7 +18460,78 @@ void openpete_native_material_bind(struct rhi_device *dev, int uniform_slot,
                                    const struct openpete_mod_cdata *cd) {
     if (!s_mat_ubo) return;
     rhi_ubo_bind_data(dev, s_mat_ubo, 0, uniform_slot > 0 ? 1u + (uint32_t)uniform_slot : 0u,
-                      nr_material_cdata(cd));
+                      nr_material_cdata(cd, s_mat_ubo));
+}
+
+/* The chain uniform set: block 0 the engine block, then per chain entry e
+ * block 1 + 2e for the stock combined module and 2 + 2e for the portal one
+ * (their case ids differ), each OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES. Created
+ * when a combined module first installs. */
+#define CHAIN_UBO_BLOCKS (1 + 2 * OPENPETE_MATERIAL_CHAINS)
+static rhi_ubo* s_chain_ubo;
+
+/** @brief Bind a draw's material uniforms: a chain entry's block pair in the chain set, else the material slot (openpete_native_material_bind).
+ *
+ * @param mg The resolved material or chain.
+ * @param portal Nonzero when the draw uses the portal profile. */
+static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal) {
+    const openpete_mod_cdata_t* cd = portal ? &mg->frag_portal_cdata : &mg->frag_cdata;
+    if (mg->chain < 0) {
+        openpete_native_material_bind(s_nr.dev, mg->uniform_slot, cd);
+        return;
+    }
+    if (!s_chain_ubo) return;
+    rhi_ubo_bind_data(s_nr.dev, s_chain_ubo, 0, 1u + 2u * (uint32_t)mg->chain + (portal ? 1u : 0u),
+                      nr_material_cdata(cd, s_chain_ubo));
+}
+
+/** @brief Install the newest built combined module pair once its opaque scene pipeline exists: publish its member set to the extraction walk.
+ *
+ * Compose only. In a synchronous context the pipeline builds here; in the
+ * live present of a windowed run it queues as a late compile and the pair
+ * installs at the first compose after it returns. Until then the
+ * previously installed pair, or none, stays: the walk treats the new
+ * members as absent. A pair whose pipeline failed never installs. */
+static void nr_chain_install(void) {
+    const int m = openpete_mods_material_chain_pending();
+    if (m < 0) return;
+    openpete_mod_material_gpu_t mg;
+    if (openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return;
+    const nr_mat_req q = { NR_MAT_SCENE, 0, 0, 0 };
+    void* v = nr_material_pipe(&mg, &q);
+    if (nr_pipe_of(v)) {
+        openpete_mods_material_chain_install(m);
+        return;
+    }
+    static int s_failed_logged = -1;
+    if (v == PFX_PIPE_FAILED && s_failed_logged != m) {
+        s_failed_logged = m;
+        OPL_ERROR_F("native", "material composition: combined module %d has no pipeline - it is not "
+                    "installed, and its new members draw alone", m);
+    }
+}
+
+/** @brief Write the chain uniform set: the engine block and, per chain entry of the view, its stock and portal blocks.
+ *
+ * Installs a built combined module first (nr_chain_install). Nothing is
+ * written while no member set is published. An entry whose block cannot be
+ * written (it draws stock) keeps the previous content, which no draw binds.
+ * @param mv The installed material view, or NULL for the live tables. */
+static void fill_chain_ubo(const openpete_mods_material_view_t* mv) {
+    nr_chain_install();
+    if (!openpete_mods_material_chain_set_current()) return;
+    if (!s_chain_ubo)
+        s_chain_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES, CHAIN_UBO_BLOCKS);
+    if (!s_chain_ubo) return;
+    pfx_engine_ubo_t eng;
+    fill_engine_block(&eng, 0, 0);
+    rhi_ubo_write(s_chain_ubo, 0, &eng, sizeof eng);
+    const int n = mv ? mv->chain_n : openpete_mods_material_chain_count();
+    unsigned char blk[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+    for (int e = 0; e < n && e < OPENPETE_MATERIAL_CHAINS; e++)
+        for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_PROFILES; p++)
+            if (openpete_mods_material_chain_block(e, p, &eng, (uint32_t)sizeof eng, blk) == 0)
+                rhi_ubo_write(s_chain_ubo, (uint32_t)(1 + 2 * e + p), blk, sizeof blk);
 }
 
 /** @brief Refill the material UBO: the engine block and each interned slot's uniform bytes.
@@ -18481,6 +18573,7 @@ static void fill_material_ubo(void)
                            : openpete_mods_material_slot_uniforms(s, &len);
         if (p && len) rhi_ubo_write(s_mat_ubo, 1 + s, p, len);
     }
+    fill_chain_ubo(mv);
 }
 
 /* Ping-pong RT pool: two sizes in practice (window for live presents,
@@ -18823,6 +18916,24 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
     return ran;
 }
 
+/** @brief List the draw-site requests of a scene-contract material or combined module: the four blend classes, the MARK twin, the portal sky and, with a portal profile on a device binding 8 descriptor sets, the blended cover rule per class and the inner-rim rule with its MARK twin.
+ *
+ * @param mg The material or module.
+ * @param q Receives the requests, 13 at most.
+ * @return The count. */
+static int nr_scene_reqs(const openpete_mod_material_gpu_t* mg, nr_mat_req* q) {
+    int nq = 0;
+    for (int b = 0; b < 4; b++) q[nq++] = (nr_mat_req){ NR_MAT_SCENE, b, 0, 0 };
+    q[nq++] = (nr_mat_req){ NR_MAT_SCENE, 0, 0, 1 };
+    q[nq++] = (nr_mat_req){ NR_MAT_SKY, 0, 0, 0 };
+    if (mg->frag_portal_spv && rhi_device_max_descriptor_sets(s_nr.dev) >= 8u) {
+        for (int b = 1; b < 4; b++) q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, b, b, 0 };
+        q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM, 0 };
+        q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM_MARK, 1 };
+    }
+    return nq;
+}
+
 /** @brief Install the current variant of every mod material slot a scene or terrain draw site can request for one material, enabled or not.
  *
  * Scene contract: the four blend classes, the MARK twin, the portal sky,
@@ -18839,18 +18950,8 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
     if (openpete_mods_material_enum_at(i, &contract, &terrain, &mg) != 0) return 0;
     nr_mat_req q[13];
     int nq = 0;
-    if (contract == OPENPETE_MATERIAL_CONTRACT_DECAL) {
-        q[nq++] = (nr_mat_req){ NR_MAT_DECAL, 0, 0, 0 };
-    } else {
-        for (int b = 0; b < 4; b++) q[nq++] = (nr_mat_req){ NR_MAT_SCENE, b, 0, 0 };
-        q[nq++] = (nr_mat_req){ NR_MAT_SCENE, 0, 0, 1 };
-        q[nq++] = (nr_mat_req){ NR_MAT_SKY, 0, 0, 0 };
-        if (mg.frag_portal_spv && rhi_device_max_descriptor_sets(s_nr.dev) >= 8u) {
-            for (int b = 1; b < 4; b++) q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, b, b, 0 };
-            q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM, 0 };
-            q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM_MARK, 1 };
-        }
-    }
+    if (contract == OPENPETE_MATERIAL_CONTRACT_DECAL) q[nq++] = (nr_mat_req){ NR_MAT_DECAL, 0, 0, 0 };
+    else nq = nr_scene_reqs(&mg, q);
     unsigned n = 0;
     for (int k = 0; k < nq; k++, n++) {
         nr_material_pipe(&mg, &q[k]);
@@ -18867,6 +18968,25 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
         if (pump) pump(NULL);
     }
     return n;
+}
+
+/** @brief Install the current variant of every scene-site pipeline of the newest built combined module pair not yet installed, with the stock vertex stage.
+ *
+ * The request set of a scene-contract material (nr_scene_reqs). A chain
+ * whose lowest member has a vertex stage builds its variant at first use.
+ * @param pump Event pump run after each slot, or NULL.
+ * @return The slots visited. */
+static unsigned nr_precompile_chains(void (*pump)(void*)) {
+    const int m = openpete_mods_material_chain_pending();
+    openpete_mod_material_gpu_t mg;
+    if (m < 0 || openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return 0;
+    nr_mat_req q[13];
+    const int nq = nr_scene_reqs(&mg, q);
+    for (int k = 0; k < nq; k++) {
+        nr_material_pipe(&mg, &q[k]);
+        if (pump) pump(NULL);
+    }
+    return (unsigned)nq;
 }
 
 /** @brief Queue the current variant of every lazy slot of the mods a live toggle entered since the last present.
@@ -18945,6 +19065,7 @@ static void nr_precompile(void) {
     openpete_boot_mark(OP_BOOT_PRECOMPILE_START);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
     rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
+    openpete_mods_material_chain_sync();
     openpete_mods_registry_read_lock();
     rhi_pipeline_batch_begin(s_nr.dev);
     nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, &k_rq_ref);
@@ -18962,6 +19083,7 @@ static void nr_precompile(void) {
         mats += n > 0;
         slots += n;
     }
+    slots += nr_precompile_chains(pump);
     if (background) {
         /* Nothing is queued after the lazy slots: the total is final here. */
         unsigned queued = 0;
@@ -21591,11 +21713,17 @@ void openpete_native_render_shutdown(void)
                 rhi_destroy_texture(s_nr.dev, s_pfx_pool[i].t[j]);
                 s_pfx_pool[i].t[j] = NULL;
             }
-    if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
-    if (s_shfoot_ubo) { rhi_destroy_ubo(s_nr.dev, s_shfoot_ubo); s_shfoot_ubo = NULL; }
-    if (s_cover_ubo) { rhi_destroy_ubo(s_nr.dev, s_cover_ubo); s_cover_ubo = NULL; }
+    rhi_destroy_ubo(s_nr.dev, s_pfx_ubo);   /* NULL is ignored */
+    s_pfx_ubo = NULL;
+    rhi_destroy_ubo(s_nr.dev, s_shfoot_ubo);
+    s_shfoot_ubo = NULL;
+    rhi_destroy_ubo(s_nr.dev, s_cover_ubo);
+    s_cover_ubo = NULL;
     nr_cdata_shutdown();
-    if (s_mat_ubo) { rhi_destroy_ubo(s_nr.dev, s_mat_ubo); s_mat_ubo = NULL; }
+    rhi_destroy_ubo(s_nr.dev, s_mat_ubo);
+    s_mat_ubo = NULL;
+    rhi_destroy_ubo(s_nr.dev, s_chain_ubo);
+    s_chain_ubo = NULL;
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     late_shutdown();
     nr_builtin_postfx_free();

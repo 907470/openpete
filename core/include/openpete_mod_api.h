@@ -326,6 +326,10 @@ enum {
     OP_SEL_LP_TIER    = 1u << 2,  /**< Low-poly tier only. */
     OP_SEL_UNTEXTURED = 1u << 3,  /**< Gouraud faces only; neither texture bit = both. */
     OP_SEL_TEXTURED   = 1u << 4,  /**< Textured faces only; on the moby channel every moby triangle. */
+    /** Not a narrowing bit: it selects nothing and narrows nothing. It marks
+     *  the material terminal, so no lower material composes beneath it, on a
+     *  mod pinned at api 13 or later; a mod pinned below 13 is refused it. */
+    OP_SEL_EXCLUSIVE  = 1u << 5,
 };
 /**
  * @brief Every flag the engine understands.
@@ -335,7 +339,7 @@ enum {
  */
 #define OP_SEL_FLAGS_KNOWN (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | \
                             OP_SEL_LP_TIER  | OP_SEL_UNTEXTURED | \
-                            OP_SEL_TEXTURED)
+                            OP_SEL_TEXTURED | OP_SEL_EXCLUSIVE)
 
 /** @brief Chooses the geometry a material may claim. */
 typedef struct openpete_mod_material_selector {

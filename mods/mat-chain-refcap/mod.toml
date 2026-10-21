@@ -1,0 +1,18 @@
+# mat-chain-refcap - material composition fixture: one material whose shader applies mat-chain-cap's rows 2-5 lowest first, written by hand. exclusive, so it never composes.
+# Never enable it to play.
+
+[mod]
+id      = "mat-chain-refcap"
+name    = "Material Fixture: Chain Reference (cap)"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/refcap.frag"
+channel = "moby"
+params  = [1.0, 0.0, 0.0, 0.25, 0.0, 1.0, 0.0, 0.25, 0.0, 0.0, 1.0, 0.25, 1.0, 1.0, 0.0, 0.25]
+exclusive = true

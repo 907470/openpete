@@ -214,6 +214,97 @@ gallery_rows_rung() {  # gallery_rows_rung <table> <census>
     fi
 }
 
+# ── material composition: moby chains of pinned-13 materials ──────────
+# The mat-chain-* fixtures are channel-wide moby declaratives. a, b and c
+# (tint, scale, lift) and the five rows of mat-chain-cap are composable
+# (api 13); mat-chain-old12 is pinned at 12, so terminal; mat-chain-unlinkable
+# declares a buffer of its own, so it is unlinkable. Each mat-chain-ref*
+# mod is one exclusive material whose shader is the members' functions
+# written by hand in chain order, so a composed capture must equal its
+# reference pixel for pixel: a,b = ref2; a,b,c = ref3; mat-chain-cap = the
+# four highest rows (refcap); a,unlinkable,b = ref2 (the unlinkable member
+# below b is skipped); a,b,unlinkable = unlinkable alone (on top it draws
+# alone); a,old12 = old12 alone (a pinned-12 material on top is terminal).
+# Engagement: every reference repaints the stock frame, a,b differs from
+# a alone, the census counts chain draws of 2, 3 and 4 members, and the
+# a,b leg counts members excluded at extraction as absent from the
+# installed set: the first moby scene after entry is extracted before
+# the compose installs the combined module, so that count is never 0.
+# chain_leg <tag> <scene> <frame> <mod>...: one capture, the mods enabled
+# in the listed order (lowest priority first).
+chain_leg() {
+    local tag="$1" scene="$2" frame="$3"; shift 3
+    local md="$WORK/mods-$tag"
+    local -a movie=() extra=()
+    if [ "$scene" != attract ]; then
+        movie=(--bk2 "$PG_BK2_DIR/$scene.bk2")
+        if [ -f "$PG_BK2_DIR/$scene.bk2.args" ]; then
+            read -ra extra < <(grep -v '^#' "$PG_BK2_DIR/$scene.bk2.args" | tr '\n' ' ')
+            movie+=("${extra[@]}")
+        fi
+    fi
+    rm -rf "${md:?}"
+    mkdir -p "$md"
+    : > "$md/enabled.txt"
+    local m
+    for m in "$@"; do
+        cp -r "mods/$m" "$md/"
+        rm -rf "${md:?}/$m/.build"
+        echo "$m" >> "$md/enabled.txt"
+    done
+    local PG_CAPTURE_TIMEOUT=900
+    local -a PG_CAPTURE_ENV=(OPENPETE_MATERIAL_STATS=1)
+    pg_capture "$WORK/$tag.log" "$WORK/$tag-$frame-vk.png" -- \
+        --renderer vk --mute 1 --aspect 4:3 --lod original --no-card \
+        "${movie[@]}" --screenshot-native-only --mods-dir "$md" \
+        --screenshot-on-frame "$frame" \
+        --screenshot-output "$WORK/$tag-{n}.png" --frame-limit $((frame + 2))
+}
+# chain_census <tag> <field>: a value of the census chain line.
+chain_census() {
+    sed -n "s/.*\[material-census\] chains: .*$2=\([0-9]*\).*/\1/p" "$WORK/$1.log" | tail -1
+}
+chain_rung() {  # chain_rung <scene> <frame>
+    local scene="$1" frame="$2" leg spec tag
+    say "material composition: moby chains at $scene $frame"
+    for spec in "stock|" "a|mat-chain-a" "ab|mat-chain-a mat-chain-b" "ref2|mat-chain-ref2" \
+                "abc|mat-chain-a mat-chain-b mat-chain-c" "ref3|mat-chain-ref3" \
+                "aub|mat-chain-a mat-chain-unlinkable mat-chain-b" \
+                "abu|mat-chain-a mat-chain-b mat-chain-unlinkable" "unl|mat-chain-unlinkable" \
+                "cap|mat-chain-cap" "refcap|mat-chain-refcap" \
+                "aold|mat-chain-a mat-chain-old12" "old|mat-chain-old12"; do
+        tag="chain-${spec%%|*}"
+        read -ra leg <<< "${spec#*|}"
+        chain_leg "$tag" "$scene" "$frame" "${leg[@]}" ||
+            { bad "chains: no capture for $tag (see $WORK/$tag.log)"; return; }
+    done
+    local f="-$frame-vk.png" n pair want
+    for pair in "a stock" "ref2 stock" "ref3 stock" "refcap stock" "unl stock" "old stock" "ab a"; do
+        set -- $pair
+        n=$(diffpx "$WORK/chain-$1$f" "$WORK/chain-$2$f")
+        if [ "${n:-0}" -gt 0 ]; then ok "chains: $1 repaints $n px against $2"
+        else bad "chains: $1 equals $2 - the comparison below proves nothing"; fi
+    done
+    for pair in "ab ref2" "abc ref3" "cap refcap" "aub ref2" "abu unl" "aold old"; do
+        set -- $pair
+        n=$(diffpx "$WORK/chain-$1$f" "$WORK/chain-$2$f")
+        if [ "${n:-1}" -eq 0 ]; then ok "chains: $1 is pixel-identical to $2"
+        else bad "chains: $1 differs from $2 by ${n:-?} px"; fi
+    done
+    for want in "ab 2" "abc 3" "cap 4" "aub 2"; do
+        set -- $want
+        n=$(chain_census "chain-$1" "$2")
+        if [ "${n:-0}" -gt 0 ]; then ok "chains: $1 drew $n chain(s) of $2 members"
+        else bad "chains: $1 drew no chain of $2 members (see $WORK/chain-$1.log)"; fi
+    done
+    n=$(chain_census chain-ab absent-excluded)
+    if [ "${n:-0}" -gt 0 ]; then ok "chains: $n member(s) excluded at extraction as absent from the installed set"
+    else bad "chains: no member excluded as absent before the combined module installed"; fi
+    n=$(chain_census chain-aold walks)
+    if [ "${n:-1}" -eq 0 ]; then ok "chains: a pinned-12 material on top formed no chain"
+    else bad "chains: a pinned-12 material on top formed $n chain(s)"; fi
+}
+
 # ── Spyro 2 and 3: per-channel engagement ─────────────────────────────
 # The gallery mod and the frame pins of the rungs after this block are
 # Spyro 1's. On Spyro 2 and 3 each render channel is proven live by one
@@ -314,6 +405,7 @@ PY
     delay_scene=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\1/p' <<< "$S23_RUNGS")
     delay_frame=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\2/p' <<< "$S23_RUNGS")
     delay_rung "$delay_scene" "$delay_frame"
+    chain_rung "$delay_scene" "$delay_frame"
     case "$PG_GAME" in
         spyro-2) GALLERY_TABLE="
 0|shady-oasis-flame|1421|100000|
@@ -776,6 +868,7 @@ else
 fi
 
 delay_rung flame 1800
+chain_rung flame 1800
 
 # Row 12 keys the flare kind, which Spyro 1 never draws: its sparkle
 # renderer emits cross lines (the sparkle-line kind) and no four-point star,
