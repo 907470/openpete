@@ -6822,7 +6822,8 @@ void rhi_set_moby_truescope(int on) { variant_store(&s_fs_moby_truescope, on ? V
 
 /* Fragment-stage specialization constant 4 (`SLOT_CONTEST`): the key
  * contest compares 128-world ordering-table slot indices instead of world
- * distances and resolves an equal slot to the terrain. A per-game constant
+ * distances for terrain against terrain, an equal slot keeping the fragment;
+ * an actor face is decided against terrain by true depth. A per-game constant
  * (game_layout.terrain.slot_ot_contest), set before the pipelines are built
  * and never toggled after. */
 static VkBool32 s_fs_slot_contest = VK_FALSE;

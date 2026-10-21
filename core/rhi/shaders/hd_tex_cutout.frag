@@ -46,8 +46,9 @@ layout(constant_id = 0) const bool DEPTH_REVERSED = false;
  * contest block). Default true; false restores og's compound painter. */
 layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
- * 128-world ordering-table slot indices and resolves an equal slot to the
- * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
+ * 128-world ordering-table slot indices for terrain against terrain, an
+ * equal slot keeping the fragment, and leaves terrain against an actor face
+ * to true depth. Set per game from game_layout.terrain.slot_ot_contest. */
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 #ifdef OP_PORTAL_COVER
@@ -95,11 +96,11 @@ void main()
         bool prop = op_rank_is_prop(vRank.x);  /* never loses a terrain key */
         if (koff > 0.0) {
             if (SLOT_CONTEST) {
-                /* Slot-quantized arm, psx_key_contest.glsl's rule: an actor
-                 * face loses a tie to the terrain, a terrain face keeps one. */
-                float own_slot = floor((koff - 0.5) / 128.0);
-                float t_slot   = floor(tkey / 128.0);
-                if (!prop && (actor ? (t_slot <= own_slot) : (t_slot < own_slot)))
+                /* Slot-quantized arm, psx_key_contest.glsl's rule: terrain
+                 * against terrain by bucket, a terrain face keeping a tie;
+                 * an actor face is decided against terrain by true depth. */
+                if (!prop && !actor &&
+                    floor(tkey / 128.0) < floor((koff - 0.5) / 128.0))
                     discard;
             } else if (!prop && tkey < (koff - 0.5) - 64.0) discard;
             if ((actor || !MOBY_TRUESCOPE) &&

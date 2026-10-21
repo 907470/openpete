@@ -577,17 +577,18 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
     if (koff > 0.0) {
         float band = (koff - 0.5) - 64.0;      /* strict, by half an OT slot */
         if (slot_contest) {
-            /* One ordering table, OP_KEY_SLOT world per bucket. Both classes
-             * carry their absolute key, so quantizing each to its bucket
-             * reproduces the table's own granularity: a difference smaller
-             * than a bucket is no difference at all. The moby pass is
-             * submitted before the terrain pass, so a terrain face in the
-             * same bucket is appended after an actor face and paints over
-             * it - the actor loses a tie, the terrain keeps one (a terrain
-             * fragment must never lose to its own key). */
-            float own_slot = floor((koff - 0.5) / OP_KEY_SLOT);
-            float t_slot   = op_key_bucket(tkey);
-            if (!prop && (actor ? (t_slot <= own_slot) : (t_slot < own_slot)))
+            /* One ordering table, OP_KEY_SLOT world per bucket. Terrain
+             * against terrain compares buckets, the table's own granularity:
+             * a difference smaller than a bucket is no difference at all,
+             * and a terrain fragment keeps a tie (it must never lose to its
+             * own key). An actor face is not compared against the terrain
+             * key: the table paints a terrain face over a nearer moby face
+             * whose bucket is the same or farther, so a moby resting on a
+             * step loses its lower half to the step's lip. Terrain against
+             * moby is decided by true depth with the -127 stored tie pull,
+             * a deliberate departure from the table's order. */
+            if (!prop && !actor &&
+                op_key_bucket(tkey) < floor((koff - 0.5) / OP_KEY_SLOT))
                 return true;
         } else if (!prop && tkey < band) return true;
         if ((actor || !truescope) && akey < band &&

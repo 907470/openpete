@@ -6896,10 +6896,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 
     /* Key-contest granularity (SLOT_CONTEST, fragment spec-constant 4): a
      * game whose draw submits mobys and terrain through ONE ordering table
-     * has both classes' keys on one 128-world scale, so the contest compares
-     * bucket indices and gives an equal bucket to the terrain (the moby pass
-     * is submitted first, so the terrain face is appended after it). A game
-     * whose two classes do not share a table keeps the world-distance rule.
+     * has both classes' keys on one 128-world scale, so the terrain contest
+     * compares bucket indices, an equal bucket keeping the fragment; an
+     * actor face is decided against terrain by true depth. A game whose two
+     * classes do not share a table keeps the world-distance rule.
      * Per-game data, baked here before the pipelines below are built. */
     rhi_set_slot_contest(game_layout.terrain.slot_ot_contest);
     openpete_boot_mark(OP_BOOT_SLOT_CONTEST);

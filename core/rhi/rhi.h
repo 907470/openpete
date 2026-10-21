@@ -1272,7 +1272,8 @@ void          rhi_set_moby_truescope(int on);
 /** @brief Select the key contest's unit (fragment specialization constant 4, SLOT_CONTEST).
  *
  * On, the key contest compares 128-world ordering-table slot indices instead
- * of world distances and resolves an equal slot to the terrain. Applies to
+ * of world distances for terrain against terrain, an equal slot keeping the
+ * fragment; an actor face is decided against terrain by true depth. Applies to
  * pipelines created after this call. Global.
  * @param on Nonzero to compare slot indices; 0 compares world distances. */
 void          rhi_set_slot_contest(int on);

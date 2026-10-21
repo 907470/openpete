@@ -70,8 +70,9 @@ layout(constant_id = 0) const bool DEPTH_REVERSED = false;
  * contest block). Default true; false restores og's compound painter. */
 layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
- * 128-world ordering-table slot indices and resolves an equal slot to the
- * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
+ * 128-world ordering-table slot indices for terrain against terrain, an
+ * equal slot keeping the fragment, and leaves terrain against an actor face
+ * to true depth. Set per game from game_layout.terrain.slot_ot_contest. */
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 

@@ -12992,9 +12992,8 @@ static void terrain_feed_native(CPUState* cpu) {
          *
          * nearband_ot_keys = 1: the classified faces key through the
          * ordinary insert like every other face, so each publishes a
-         * positive key on the one shared scale and emits it. That is what
-         * puts a near ground face and a moby face in the same 128-world
-         * slot, which the slot contest then resolves to the terrain.
+         * positive key on the one shared scale and emits it, which the
+         * terrain-against-terrain slot contest compares by bucket.
          *
          * nearband_ot_keys = 0: the faces reach a queue with no OT index,
          * so they are contest-only (negative koff = |key|, no slot offsets).

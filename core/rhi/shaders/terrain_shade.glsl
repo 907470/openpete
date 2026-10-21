@@ -106,8 +106,9 @@ bool ter_portal_discards()
                              int(vRim) - 1);
 }
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
- * 128-world ordering-table slot indices and resolves an equal slot to the
- * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
+ * 128-world ordering-table slot indices for terrain against terrain, an
+ * equal slot keeping the fragment, and leaves terrain against an actor face
+ * to true depth. Set per game from game_layout.terrain.slot_ot_contest. */
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
 /* Fragment spec-constant 2 (`NOTEX`): the untextured lighting view (and the
  * wireframe view, which bakes it on): a textured face's texel colour is

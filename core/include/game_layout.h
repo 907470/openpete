@@ -464,13 +464,13 @@ typedef struct game_layout {
          * key, and those faces contest per-pixel against their own view-Z
          * without publishing one. */
         int      nearband_ot_keys;
-        /* 1 = the moby-versus-terrain key contest compares 128-world slot
-         * indices rather than world distances, and resolves an equal slot
-         * to the terrain: the draw submits both classes through one
-         * ordering table with the moby pass first, so a terrain face in
-         * the same bucket is appended after the moby face and paints over
-         * it. An actor face in a farther-or-equal slot than the terrain
-         * key owning the pixel loses the pixel. */
+        /* 1 = the draw submits mobys and terrain through one ordering
+         * table, so both classes' keys share one 128-world bucket scale:
+         * the terrain-versus-terrain key contest compares slot indices
+         * rather than world distances, an equal slot keeping the
+         * fragment, and a moby face takes its world bucket as its key.
+         * An actor face is not compared against the terrain key; true
+         * depth with the stored tie pull decides it against terrain. */
         int      slot_ot_contest;
         /* The WAD entry of a level whose terrain another scene reuses: a
          * scene sector whose LP faces all occur, in world space, in one
