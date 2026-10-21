@@ -80,7 +80,7 @@ It changes one built-in default: `fullscreen = true`<!-- id: knob:fullscreen @sp
 
 A setting's key is its flag name without the leading dashes, with `-`
 written as `_`: `--fog-scale` is `fog_scale`. The
-[config key reference](https://openpete.com/docs/user/reference/config-keys.html) lists every key.
+[config key reference](../reference/config-keys.md) lists every key.
 
 ```toml
 aspect = "21:9"

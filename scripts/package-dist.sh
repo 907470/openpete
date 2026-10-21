@@ -29,8 +29,8 @@
 #
 # --with-mod-sdk additionally stages the mod SDK headers the boot-time
 # mod compiler needs (plus, where mods live next to the exe, a mods/ drop
-# folder). Releases ship without it; the dist gate passes it to keep that
-# path exercised.
+# folder). Releases pass it (create-release.sh, release-container.sh), as
+# does the dist gate. The documentation site ships with or without it.
 #
 # Inputs: the corresponding *-launcher preset build (linux-release-launcher /
 # windows-mingw-launcher) with its staged recomp/ directory: the one
@@ -265,15 +265,22 @@ sys.exit(0 if any(g in games for g in sys.argv[2:]) else 3)
                 > "$STAGE/mods/README.txt"
         fi
     fi
-    # The documentation site (the `docs` CMake target) beside the exe:
-    # User always, Modding with the SDK. The target builds both sets, so a
-    # missing one means mkdocs was absent at build time.
-    local site="$DOCS/docs-site-user"
-    [[ $WITH_MOD_SDK -eq 1 ]] && site="$DOCS/docs-site"
-    [[ -f "$site/index.html" ]] \
-        || { echo "[package-dist] $site/index.html missing: install" \
-                  "mkdocs-material and build the docs target" >&2; exit 1; }
+    # The documentation site (the `docs` CMake target, User and Modding)
+    # beside the exe, in every package: the target builds it with the
+    # executable, so a missing site means mkdocs was absent at build time.
+    # Its links between the two sections are relative, so docs/index.html
+    # browses from disk.
+    local site="$DOCS/docs-site"
+    [[ -f "$site/index.html" && -f "$site/modding/index.html" ]] \
+        || { echo "[package-dist] $site/index.html or modding/index.html" \
+                  "missing: install mkdocs-material and build the docs" \
+                  "target" >&2; exit 1; }
     cp -a "$site" "$STAGE/docs"
+    # Web-server files: 404.html links site-absolute (/assets/...), which
+    # resolves to the filesystem root from disk, and no page links it or the
+    # sitemap. openpete.com serves them from the build directory's copy.
+    rm -f "${STAGE:?}/docs/404.html" "${STAGE:?}/docs/sitemap.xml" \
+          "${STAGE:?}/docs/sitemap.xml.gz"
     cp gamecontrollerdb.txt "$STAGE/" 2>/dev/null || true
     cp LICENSE NOTICE.md "$STAGE/"
     local scopes=(--scope all)

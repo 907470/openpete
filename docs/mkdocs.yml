@@ -3,8 +3,10 @@
 #   scripts/build-docs.sh            every section, to build/docs-site/
 #   scripts/build-docs.sh --serve    live preview
 #   cmake --build --preset <preset> --target docs
-#                                    the shipped sections, to
-#                                    build/<preset>/games/spyro-1/docs-site/
+#                                    the published sections (User,
+#                                    Modding), to build/<preset>/games/
+#                                    spyro-1/docs-site/, which every
+#                                    package ships as docs/
 # Generated pages, written before mkdocs runs and ignored by git:
 # modding/reference/ and modding/imgui.md (tools/gen_mod_docs.py),
 # developer/reference/ (tools/gen_code_docs.py, the `code_docs` target).

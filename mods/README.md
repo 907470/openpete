@@ -26,7 +26,8 @@ game:
 cmake --build --preset linux-release --target docs
 ```
 
-The site lands in `build/<preset>/games/spyro-1/docs-site/index.html`.
+The site lands in `build/<preset>/games/spyro-1/docs-site/index.html`;
+every package ships it as `docs/` beside the executable.
 `scripts/build-docs.sh --serve` runs a live preview (needs
 `pip install mkdocs-material`). Sources: `docs/src/modding/`.
 `AUTHORING.md` is a single-file reference for writing mods against the

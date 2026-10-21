@@ -643,8 +643,8 @@ Archives land in `dist/`. Flags:
   (library, mods, user assets and recordings resolve through
   `openpete_paths`). It always bundles a compiler.
 - `--with-mod-sdk`: stage the mod SDK headers the boot-time mod compiler
-  needs. Releases ship without it; the dist gate passes it to keep the path
-  exercised.
+  needs and the example mods under `sdk/examples/`. Releases pass it
+  (`create-release.sh`, `release-container.sh`), as does the dist gate.
 - `--dry-run`: print the shipped game, the build input, and each archive
   with the executable's path inside it, and exit.
 - `--sign '<command>'` (Windows): Authenticode hook, invoked once per
@@ -697,7 +697,19 @@ injects it, so disabling XTEST drops the `libXtst-dev` build dependency).
 
 ## Documentation site
 
-The site config is `docs/mkdocs.yml`. The Developer section's
+The site config is `docs/mkdocs.yml`. The CMake target `docs` (in `ALL`,
+stamp-guarded) runs `tools/gen_mod_docs.py` and builds the published
+sections, User and Modding, into one offline site at
+`build/<preset>/games/spyro-1/docs-site/`; `scripts/package-dist.sh`
+stages that site as `docs/` beside the executable in every archive (zip,
+tarball, AppImage) and refuses a tree without it. `use_directory_urls:
+false`, the `offline` plugin and relative links let `docs/index.html`
+browse from `file://`; a link into Developer or Spyro, which are not
+published, renders as its text. Packaging therefore needs `mkdocs==1.6.1`
+and `mkdocs-material==9.7.6` importable when the `*-launcher` preset is
+built: `pip install mkdocs==1.6.1 mkdocs-material==9.7.6` on the host;
+the release container (`packaging/linux-release.Dockerfile`) pins both.
+ The Developer section's
 `reference/` pages are generated from the doxygen comments and are not
 committed, so the generator runs before `mkdocs`:
 

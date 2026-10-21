@@ -115,13 +115,15 @@ add_dependencies(openpete_generated_headers spyro1_sfx_names)
 # surface (api header, symbol/global/prototype manifests, typed structs,
 # mod examples) into the Modding section's markdown, then builds the site
 # with mkdocs when it is installed (notice + green build when it isn't;
-# scripts/package-dist.sh refuses a tree without the site). Two builds,
-# the sets a package ships: docs-site/ holds User and Modding (packages
-# with the mod SDK, and openpete.com), docs-site-user/ holds User alone.
-# Developer and Spyro are not shipped, so this target neither builds them
-# nor runs gen_code_docs.py (`code_docs`; scripts/build-docs.sh with no
-# --sections builds every section). Stamp-guarded: the docs rebuild
-# exactly when an input changed.
+# scripts/package-dist.sh refuses a tree without the site). One build of
+# the published sections, User and Modding, into docs-site/: every package
+# (Windows zip, Linux tarball, AppImage, with or without the mod SDK)
+# stages it as docs/, and openpete.com serves the same set. Developer and
+# Spyro are not published, so this target neither builds them nor runs
+# gen_code_docs.py (`code_docs`; scripts/build-docs.sh with no --sections
+# builds every section); a link into them renders as its text
+# (tools/mkdocs_sections.py). Stamp-guarded: the docs rebuild exactly when
+# an input changed.
 set(_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/docs-site.stamp)
 # The reference pages cover every game's manifests and decomp headers and
 # link each symbol to the decomp checkout at its commit; the reflog is
@@ -164,9 +166,6 @@ add_custom_command(
             --structs ${_mod_sdk_gen}/openpete_game_structs.h
             --sdk-dir ${CMAKE_BINARY_DIR}/mod-sdk-test/sdk
             --site-dir ${CMAKE_CURRENT_BINARY_DIR}/docs-site
-    COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
-            --sections user
-            --site-dir ${CMAKE_CURRENT_BINARY_DIR}/docs-site-user
     COMMAND ${CMAKE_COMMAND} -E touch ${_docs_stamp}
     DEPENDS ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h

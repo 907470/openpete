@@ -340,8 +340,8 @@ grep -q "rebuilding it from your disc" "$WORK/repair.log" \
 # The staged example is the drop-in: sdk/examples/ sits next to the
 # binary (AppImage: usr/), as does the documentation site docs/. The
 # compile writes the object for the running game, .build/spyro-1/. The
-# example and the site's Modding section prove the --with-mod-sdk staging,
-# and the compile proves the example.
+# example proves the --with-mod-sdk staging, the site's Modding section
+# the docs staging every package carries, and the compile the example.
 sdkdir="$(dirname "$BIN")/sdk"
 docsdir="$(dirname "$BIN")/docs"
 [[ -f "$sdkdir/examples/hello-anchor/mod.toml" ]] \
@@ -349,7 +349,7 @@ docsdir="$(dirname "$BIN")/docs"
 [[ -f "$docsdir/index.html" ]] \
     || { echo "[dist-gate] FAIL: $docsdir/index.html not staged" >&2; exit 2; }
 [[ -f "$docsdir/modding/index.html" ]] \
-    || { echo "[dist-gate] FAIL: $docsdir/modding/index.html not staged (Modding section missing from a --with-mod-sdk package)" >&2; exit 2; }
+    || { echo "[dist-gate] FAIL: $docsdir/modding/index.html not staged (Modding section missing from the package)" >&2; exit 2; }
 # Every staged example and the libc fixture mods/r10-libc (string.h,
 # stdio.h, math.h, stdlib.h, stdatomic.h, an __int128 division) are dropped
 # in together and built by the next boot. Per mod: the object exists (a

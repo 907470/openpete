@@ -36,8 +36,9 @@ The level notes are in the Spyro section.
 - [Modding](../modding/index.md) - the mod-author section of this site
   (guides plus a reference generated from the API header, the symbol
   manifests and the mod gallery by `tools/gen_mod_docs.py`). The CMake
-  target `docs` builds the shipped sections into
-  `build/<preset>/games/spyro-1/docs-site/`; `scripts/build-docs.sh`
+  target `docs` builds the published sections (User, Modding) into
+  `build/<preset>/games/spyro-1/docs-site/`, which every package ships as
+  `docs/`; `scripts/build-docs.sh`
   builds every section, and `scripts/build-docs.sh --serve` runs a live
   preview.
 - [`mod-api-audit.md`](mod-api-audit.md) - caller census of every mod-API
