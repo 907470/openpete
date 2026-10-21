@@ -1830,12 +1830,89 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
     return (rad << 8) + (int)((drawn_bits & 3u) << 8);
 }
 
+/** @brief One sphere's near, lateral and vertical arms as the cull runs them, the lateral slope scaled by `widen`.
+ *
+ * The thresholds are the radius's sums of shifts (mobydraw.s:128-138,158-163
+ * for the first sphere, :385-393,412-415 for the second; S3 the same
+ * instructions at :383-411):
+ *   near      z + r <= 0 rejects
+ *   lateral   4(|x| - a2) - 3(z + a3) >= 0 rejects, the 3 scaled by `widen`
+ *   vertical  (z + t1) - 3(|y| - t0) <= 0 rejects
+ * The lateral arm's 3:4 slope is the 4:3 half-angle; the vertical arm keeps
+ * the game's slope, since Hor+ leaves the vertical field of view alone.
+ * @param c The sphere's view-space centre, x y z.
+ * @param r The sphere's radius.
+ * @param widen The lateral slope factor, 1.0 at 4:3.
+ * @return MOBY_WIDE_NEAR, MOBY_WIDE_LATERAL or MOBY_WIDE_VERTICAL for the
+ *         first arm that rejects, else MOBY_WIDE_ADMIT. */
+static moby_wide_verdict_t s23_sphere_arms(const int64_t c[3], int64_t r, double widen) {
+    const int64_t a2 = (r >> 1) + (r >> 2) + (r >> 5), a3 = (r >> 1) + (r >> 4) + (r >> 5);
+    const int64_t t0 = (r >> 1) + (r >> 4),            t1 = (r >> 2) + (r >> 4);
+    const int64_t ax = c[0] < 0 ? -c[0] : c[0], ay = c[1] < 0 ? -c[1] : c[1];
+    if (c[2] + r <= 0) return MOBY_WIDE_NEAR;
+    if (4.0 * (double)(ax - a2) - 3.0 * widen * (double)(c[2] + a3) >= 0.0) return MOBY_WIDE_LATERAL;
+    if ((c[2] + t1) - 3 * (ay - t0) <= 0) return MOBY_WIDE_VERTICAL;
+    return MOBY_WIDE_ADMIT;
+}
+
+/** @brief Whether a sphere the arms admit lies wholly inside the cone, the cull's verdict 2.
+ *
+ * mobydraw.s:194-217 (S2 0x80043B10-0x80043B64): the lateral test
+ * 4(|x| + a2) - 3(z - a3) < 0, its 3 scaled by `widen`, then the vertical
+ * (z - t1) - 3(|y| + t0) > 0. Verdict 1, a sphere straddling an edge, is the
+ * one the cull tests a second sphere for.
+ * @param c The sphere's view-space centre, x y z.
+ * @param r The sphere's radius.
+ * @param widen The lateral slope factor, 1.0 at 4:3.
+ * @return 1 for verdict 2, 0 for verdict 1. */
+static int s23_sphere_inside(const int64_t c[3], int64_t r, double widen) {
+    const int64_t a2 = (r >> 1) + (r >> 2) + (r >> 5), a3 = (r >> 1) + (r >> 4) + (r >> 5);
+    const int64_t t0 = (r >> 1) + (r >> 4),            t1 = (r >> 2) + (r >> 4);
+    const int64_t ax = c[0] < 0 ? -c[0] : c[0], ay = c[1] < 0 ? -c[1] : c[1];
+    if (4.0 * (double)(ax + a2) - 3.0 * widen * (double)(c[2] - a3) >= 0.0) return 0;
+    return (c[2] - t1) - 3 * (ay + t0) > 0;
+}
+
+/** @brief The second sphere's view-space centre and radius, from the AnimationHeader +0x08 word.
+ *
+ * mobydraw.s:366-396 (S2 0x80043DA8-0x80043E20; S3 :364-394,
+ * 0x800309C8-0x80030A40):
+ * the word's bytes 3, 2 and 1, sign-extended and scaled by 8, are the offset
+ * in the moby's model space, loaded as IR3 = byte 3, IR1 = -byte 2 and
+ * IR2 = -byte 1; byte 0 scaled by 8 is the radius. One MVMVA through the
+ * matrix the cull composed for the record (the camera matrix times the
+ * moby's euler rotation, mobydraw.s:227-354) with the first sphere's centre
+ * as the translation gives the centre: c = c1 + (M . IR) >> 12.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address, for its rotation word.
+ * @param cam_m The camera matrix the first sphere was projected through.
+ * @param word The +0x08 word, nonzero.
+ * @param c1 The first sphere's view-space centre.
+ * @param c Receives the second sphere's centre.
+ * @return The second sphere's radius. */
+static int64_t s23_second_sphere(CPUState* cpu, uint32_t moby, const int cam_m[3][3],
+                                 uint32_t word, const int64_t c1[3], int64_t c[3]) {
+    ngte_euler_sc e;
+    ngte_euler_sincos(cpu, cpu->read_word(moby + game_layout.moby.angle_off), &e);
+    int M[3][3];
+    ngte_compose_euler(cam_m, &e, M);
+    const int64_t ir1 = -(int64_t)(int8_t)(word >> 16) * 8;
+    const int64_t ir2 = -(int64_t)(int8_t)(word >> 8) * 8;
+    const int64_t ir3 =  (int64_t)(int8_t)(word >> 24) * 8;
+    for (int i = 0; i < 3; i++)
+        c[i] = c1[i] + (((int64_t)M[i][0] * ir1 + (int64_t)M[i][1] * ir2 + (int64_t)M[i][2] * ir3) >> 12);
+    return (int64_t)(word & 0xFFu) << 3;
+}
+
 /** @brief The animated kind's admission as the cull runs it, with the lateral slope scaled by `widen`.
  *
- * mobydraw.s:62-187; Spyro 2 0x80043920-0x80043AFC, the same instructions. The cull clears the drawn-verdict byte and writes 1 or 2
- * only on a moby that passes every test (mobydraw.s:73,224), so a byte of 0
- * inside the box names a moby one of these tests rejected; under a view wider
- * than 4:3 the lateral arm is the one whose answer changes.
+ * mobydraw.s:62-187 and 355-450; Spyro 2 0x80043920-0x80043EE8, Spyro 3 the
+ * same instructions, the second sphere at mobydraw.s:353-448. The cull
+ * clears the drawn-verdict byte, writes 1 or 2 once the first sphere passes
+ * (mobydraw.s:73,224), and then drops a verdict-1 moby whose AnimationHeader
+ * +0x08 word names a second sphere that fails its arms, leaving the byte at 1
+ * with no record. Under a view wider than 4:3 the lateral arms are the ones
+ * whose answer changes.
  *
  * The box is the cull's own (s23_cull_box_threshold) on the quarter-world
  * deltas (moby - cam) >> 2, (cam - moby) >> 2 and (cam - moby) >> 2
@@ -1844,26 +1921,27 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
  * layout's env_anim.live_table) is non-zero (mobydraw.s:95-106); a
  * KUSEG model-table entry is the simple kind, which the second queue tests
  * (mobydraw.s:109-116). The draw radius is the animation header's byte 7
- * scaled by 16 (mobydraw.s:118-124), and the three thresholds are its sums of
- * shifts (mobydraw.s:128-138, 158-163). The centre is the GTE MVMVA of the
+ * scaled by 16 (mobydraw.s:118-124). The centre is the GTE MVMVA of the
  * deltas through the camera matrix at G_CAMERA+0x00, IR1 the Y delta, IR2 the
  * Z and IR3 the X, each loaded into a 16-bit IR register (mobydraw.s:119-141).
- * The arms, in the cull's order:
- *   range     MAC3 - box >= 0 rejects                     (mobydraw.s:142-143)
- *   near      MAC3 + r <= 0 rejects                       (mobydraw.s:144-145)
- *   lateral   4(|MAC1| - a2) - 3(MAC3 + a3) >= 0 rejects  (mobydraw.s:147-157)
- *   vertical  (MAC3 + t1) - 3(|MAC2| - t0) <= 0 rejects   (mobydraw.s:178-187)
- * The lateral arm's 3:4 slope is the 4:3 half-angle, so the widened view
- * multiplies its MAC3 term by `widen`; the vertical arm keeps the game's
- * slope, since Hor+ leaves the vertical field of view alone. At `widen` 1.0 the
- * widened and canonical lateral arms are one test and nothing is admitted.
+ * The range arm MAC3 - box >= 0 rejects (mobydraw.s:142-143); then the first
+ * sphere's arms (s23_sphere_arms) with the widened slope.
+ *
+ * A moby the 4:3 first sphere admits is revealed only when the cull dropped it
+ * by its second sphere's 4:3 lateral arm: under the widened view the second
+ * sphere is skipped when the widened first sphere is verdict 2, and otherwise
+ * tested with the widened slope (s23_second_sphere). A moby only the widened
+ * first sphere admits takes the same second-sphere test at verdict 1. At
+ * `widen` 1.0 the widened and canonical arms are one test and nothing is
+ * admitted.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param drawn_bits The drawn-verdict byte the box threshold widens by.
  * @param widen The lateral slope factor, 1.0 at 4:3.
- * @return The first test that rejects the moby, MOBY_WIDE_CANONICAL when the
- *         game's own lateral arm also admits it, or MOBY_WIDE_ADMIT when only
- *         the widened arm does. */
+ * @return The first test that rejects the moby (MOBY_WIDE_SPHERE2 for the
+ *         second sphere under the widened view), MOBY_WIDE_CANONICAL when the
+ *         game's own arms also admit it, or MOBY_WIDE_ADMIT when only the
+ *         widened arms do. */
 static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
                                                 unsigned drawn_bits, double widen) {
     const int64_t t = s23_cull_box_threshold(cpu, moby, drawn_bits);
@@ -1884,23 +1962,28 @@ static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
     const uint32_t id     = cpu->read_byte(moby + game_layout.moby.anim_state_off);
     const uint32_t header = cpu->read_word(model + game_layout.moby.model_anims_off + id * 4u);
     if (header < 0x80000000u) return MOBY_WIDE_OTHER_KIND;
-    const int64_t r  = (int64_t)cpu->read_byte(header + 7u) << 4;
-    const int64_t a2 = (r >> 1) + (r >> 2) + (r >> 5), a3 = (r >> 1) + (r >> 4) + (r >> 5);
-    const int64_t t0 = (r >> 1) + (r >> 4),            t1 = (r >> 2) + (r >> 4);
+    const int64_t r = (int64_t)cpu->read_byte(header + 7u) << 4;
     int R[3][3];
     ngte_read_matrix(cpu, cam, R);
     const int64_t ir1 = (int16_t)dy, ir2 = (int16_t)dz, ir3 = (int16_t)dx;
     int64_t mac[3];
     for (int i = 0; i < 3; i++)
         mac[i] = ((int64_t)R[i][0] * ir1 + (int64_t)R[i][1] * ir2 + (int64_t)R[i][2] * ir3) >> 12;
-    const int64_t ax = mac[0] < 0 ? -mac[0] : mac[0], ay = mac[1] < 0 ? -mac[1] : mac[1];
     if (mac[2] - t >= 0) return MOBY_WIDE_RANGE;
-    if (mac[2] + r <= 0) return MOBY_WIDE_NEAR;
-    const double lat = 4.0 * (double)(ax - a2);
-    if (lat - 3.0 * widen * (double)(mac[2] + a3) >= 0.0) return MOBY_WIDE_LATERAL;
-    if ((mac[2] + t1) - 3 * (ay - t0) <= 0) return MOBY_WIDE_VERTICAL;
-    if (lat - 3.0 * (double)(mac[2] + a3) < 0.0) return MOBY_WIDE_CANONICAL;
-    return MOBY_WIDE_ADMIT;
+    const moby_wide_verdict_t first = s23_sphere_arms(mac, r, widen);
+    if (first != MOBY_WIDE_ADMIT) return first;
+    const uint32_t word = cpu->read_word(header + 0x08u);
+    const int canon = s23_sphere_arms(mac, r, 1.0) == MOBY_WIDE_ADMIT;
+    if (canon && (!word || s23_sphere_inside(mac, r, 1.0))) return MOBY_WIDE_CANONICAL;
+    if (!word || s23_sphere_inside(mac, r, widen)) return MOBY_WIDE_ADMIT;
+    int64_t c2[3];
+    const int64_t r2 = s23_second_sphere(cpu, moby, R, word, mac, c2);
+    if (canon) {
+        const moby_wide_verdict_t v = s23_sphere_arms(c2, r2, 1.0);
+        if (v == MOBY_WIDE_ADMIT) return MOBY_WIDE_CANONICAL;
+        if (v != MOBY_WIDE_LATERAL) return MOBY_WIDE_SPHERE2;
+    }
+    return s23_sphere_arms(c2, r2, widen) == MOBY_WIDE_ADMIT ? MOBY_WIDE_ADMIT : MOBY_WIDE_SPHERE2;
 }
 
 /** @brief Saturating narrow of a full-width intermediate to the range the cull's register or field holds.

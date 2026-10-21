@@ -3225,30 +3225,45 @@ static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
 /** @brief The widened-view clause of the reveal for one live moby.
  *
  * The cull tests an animated moby against a 4:3 cone, so under a wider
- * presentation view a moby inside its distance box that the lateral arm alone
- * rejected is in the frame but has no record. A moby whose drawn-verdict byte
- * the cull left at 0 is offered to the game's record builder when
- * moby_game.cull_view_admits, the cull's admission re-evaluated with the
- * lateral slope scaled to the view, admits it and the occlusion cull does not
- * reject it. The drawn byte is read, never written.
+ * presentation view a moby inside its distance box that a lateral arm alone
+ * rejected is in the frame but has no record. A candidate is a moby the cull
+ * left without a record: drawn-verdict byte 0 (the first sphere failed), or 1
+ * with no record in the host copy of the queue taken at the cull hook (the
+ * second sphere failed after the byte was written). It is offered to the
+ * game's record builder when moby_game.cull_view_admits, the cull's admission
+ * re-evaluated with the lateral slope scaled to the view, admits it and the
+ * occlusion cull does not reject it. The drawn byte is read, never written.
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address.
  * @param head The moby array head, for the pre-cull drawn byte.
  * @param widen The view's horizontal widening (moby_native_view_widen).
  * @param verdicts Tallies the admission verdict.
  * @param occl Counts an admitted moby the occlusion cull rejected.
+ * @param requeued Counts an appended record whose drawn byte the cull left at 1.
  * @return 1 when a record was appended, else 0. */
 static int moby_reveal_widened(CPUState* cpu, uint32_t m, uint32_t head, double widen,
-                               long verdicts[MOBY_WIDE_VERDICTS], long* occl) {
-    if (cpu->read_byte(m + game_layout.moby.drawn_off) != 0u) return 0;
+                               long verdicts[MOBY_WIDE_VERDICTS], long* occl, long* requeued) {
+    const unsigned drawn = cpu->read_byte(m + game_layout.moby.drawn_off);
+    if (drawn > 1u || (drawn == 1u && moby_rec_holds_moby(cpu, m))) return 0;
     const moby_wide_verdict_t v = moby_game.cull_view_admits(
         cpu, m, moby_precull_drawn(cpu, m, head), widen);
     verdicts[v]++;
+    const int trace = moby_trace_target() && m == moby_trace_target();
+    if (trace)
+        fprintf(stderr, "[moby-trace vbl=%u] %08X WIDE drawn=%u verdict=%d widen=%.4f\n",
+                openpete_frame, m, drawn, (int)v, widen);
     if (v != MOBY_WIDE_ADMIT) return 0;
     if (occl_record_culled(cpu, m)) { (*occl)++; return 0; }
     moby_reveal_reason_t why = MOBY_REVEAL_OK;
-    if (!moby_game.reveal_record(cpu, m, MOBY_REVEAL_ANIMATED, &why)) return 0;
+    if (!moby_game.reveal_record(cpu, m, MOBY_REVEAL_ANIMATED, &why)) {
+        if (trace) fprintf(stderr, "[moby-trace vbl=%u] %08X WIDE declined=%d\n",
+                           openpete_frame, m, (int)why);
+        return 0;
+    }
     moby_rec_append_note(m);
+    if (drawn == 1u) (*requeued)++;
+    if (trace) fprintf(stderr, "[moby-trace vbl=%u] %08X REVEALED wide drawn=%u\n",
+                       openpete_frame, m, drawn);
     return 1;
 }
 
@@ -3257,6 +3272,7 @@ typedef struct {
     long seen, canon, occl;
     long declined[MOBY_REVEAL_REASONS];
     long wide_v[MOBY_WIDE_VERDICTS];
+    long requeued;
     int  added, wide_added;
 } moby_reveal_census_t;
 
@@ -3312,7 +3328,8 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
     fprintf(stderr, "[moby-reveal vbl=%u] kind=%s live=%ld canon=%ld occluded=%ld added=%d "
                     "declined{nomodel=%ld otherkind=%ld dup=%ld nopose=%ld full=%ld} "
                     "wide{widen=%.4f added=%d outside=%ld sector=%ld otherkind=%ld range=%ld "
-                    "near=%ld lateral=%ld vertical=%ld canonical=%ld admit=%ld}\n",
+                    "near=%ld lateral=%ld vertical=%ld sphere2=%ld canonical=%ld admit=%ld "
+                    "requeued=%ld}\n",
             openpete_frame, (kind == MOBY_REVEAL_ANIMATED) ? "anim" : "simple",
             c->seen, c->canon, c->occl, c->added,
             c->declined[MOBY_REVEAL_NO_MODEL], c->declined[MOBY_REVEAL_OTHER_KIND],
@@ -3322,7 +3339,8 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
             c->wide_v[MOBY_WIDE_SECTOR], c->wide_v[MOBY_WIDE_OTHER_KIND],
             c->wide_v[MOBY_WIDE_RANGE], c->wide_v[MOBY_WIDE_NEAR],
             c->wide_v[MOBY_WIDE_LATERAL], c->wide_v[MOBY_WIDE_VERTICAL],
-            c->wide_v[MOBY_WIDE_CANONICAL], c->wide_v[MOBY_WIDE_ADMIT]);
+            c->wide_v[MOBY_WIDE_SPHERE2], c->wide_v[MOBY_WIDE_CANONICAL],
+            c->wide_v[MOBY_WIDE_ADMIT], c->requeued);
 }
 
 int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
@@ -3342,7 +3360,7 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
         if (moby_run_once_hidden(cpu, m,
                 (unsigned)cpu->read_half(m + game_layout.moby.class_off))) continue;
         c.seen++;
-        if (wide && moby_reveal_widened(cpu, m, head, widen, c.wide_v, &c.occl)) {
+        if (wide && moby_reveal_widened(cpu, m, head, widen, c.wide_v, &c.occl, &c.requeued)) {
             c.wide_added++; continue;
         }
         if (openpete_no_lod) moby_reveal_extended(cpu, m, kind, &c);

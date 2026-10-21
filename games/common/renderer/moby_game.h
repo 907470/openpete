@@ -163,11 +163,12 @@ typedef enum moby_reveal_reason {
     MOBY_REVEAL_REASONS
 } moby_reveal_reason_t;
 
-/* The widened-view verdict on one animated moby whose drawn-verdict byte the
- * cull left at 0: the first admission test it fails, re-evaluated natively
- * with the lateral arm widened to the presentation's view, or ADMIT when the
- * widened view shows it and the canonical 4:3 view does not. The candidate
- * walk tallies these on its census line. */
+/* The widened-view verdict on one animated moby the cull left without a
+ * record (drawn-verdict byte 0, or 1 with no record): the first admission
+ * test it fails, re-evaluated natively with the lateral arms widened to the
+ * presentation's view, or ADMIT when the widened view shows it and the
+ * canonical 4:3 view does not. The candidate walk tallies these on its census
+ * line. */
 typedef enum moby_wide_verdict {
     MOBY_WIDE_OUTSIDE = 0,      /* outside the cull's distance box */
     MOBY_WIDE_SECTOR,           /* the moby's sector byte names a dormant sector */
@@ -176,6 +177,7 @@ typedef enum moby_wide_verdict {
     MOBY_WIDE_NEAR,             /* behind the near bound */
     MOBY_WIDE_LATERAL,          /* outside the widened horizontal cone */
     MOBY_WIDE_VERTICAL,         /* outside the vertical cone */
+    MOBY_WIDE_SPHERE2,          /* the cull's second sphere fails under the widened view */
     MOBY_WIDE_CANONICAL,        /* passes the 4:3 cone too: the cull rejected it
                                  * for a reason these arms do not express */
     MOBY_WIDE_ADMIT,
@@ -310,10 +312,10 @@ typedef struct moby_game {
     /* The canonical cull's admission of one animated moby, re-evaluated under a
      * view `widen` times wider than 4:3: the distance box with `drawn_bits` as
      * the verdict byte the cull read, the sector byte, the model kind, then
-     * the range, near, lateral and vertical arms, the lateral slope scaled by
-     * `widen`. ADMIT only when the widened lateral arm passes where the 4:3 one
-     * fails. Reads gamestate only. NULL: the walk re-admits nothing inside the
-     * box. */
+     * the range, near, lateral and vertical arms and any second sphere the
+     * cull tests, the lateral slopes scaled by `widen`. ADMIT only when a
+     * widened lateral arm passes where the 4:3 one fails. Reads gamestate
+     * only. NULL: the walk re-admits nothing inside the box. */
     moby_wide_verdict_t (*cull_view_admits)(CPUState* cpu, uint32_t moby,
                                             unsigned drawn_bits, double widen);
 
