@@ -1041,6 +1041,7 @@ typedef struct {
      * of keyed quads (tn_quad_folds) */
     int drain_skip[3];
     int tex_faces, tex_tris;
+    int envm_n[7];        /* faces walked per ENVM_* bit (4), member, untextured member, non-member */
     int near_q_agree, near_c_only;
     int walk_sectors;
     int serial;   /* 1 = single-thread walk: also fills the s_tv/s_cv A/B arrays */
@@ -4137,6 +4138,7 @@ typedef struct {
     uint32_t  cnt, k;
     int       kind;         /* ENV_ANIM_KIND_* of the open list */
     int       skip_top;     /* ARENA: this list skips bit-31 entries */
+    int       listed;       /* ARENA: yield every list member, skipping no liveness test */
     uint32_t  seen;         /* entries examined, live or not (engagement) */
 } env_anim_iter_t;
 
@@ -4215,7 +4217,7 @@ static int env_anim_iter_open(env_anim_iter_t* it) {
  * ENV_ANIM_LISTS entries are descriptor pointers, the sector in the u16 at
  * +4, and a null pointer is skipped. ENV_ANIM_ARENA entries carry the sector
  * in the low byte; a list that skips bit-31 entries skips them, and an
- * entry whose liveness byte has bit 0 clear is skipped. An index at or past
+ * entry whose liveness byte has bit 0 clear is skipped unless `listed` is set. An index at or past
  * the sector count is skipped. Every examined entry counts into `seen`.
  * @param it The iterator.
  * @param sector Receives the sector index.
@@ -4238,7 +4240,7 @@ static int env_anim_iter_next(env_anim_iter_t* it, uint32_t* sector, int* kind) 
         } else {
             if (it->skip_top && (int32_t)w < 0) continue;
             idx = w & 0xFFu;
-            if (game_layout.env_anim.live_table
+            if (!it->listed && game_layout.env_anim.live_table
                 && !(cpu->read_byte(game_layout.env_anim.live_table + idx) & 1u))
                 continue;                            /* animation not running */
         }
@@ -4268,6 +4270,214 @@ static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
         if (rd(cpu, sectorPtr + idx * 4) == s) return 1;
     }
     return 0;
+}
+
+/* Environment-animation membership of terrain faces, the key of a mod
+ * material's env_anim selector. A face is a member when a list the game's
+ * environment-animation update walks (Spyro 1 func_8002A6FC, Spyro 2
+ * func_800225F8, Spyro 3 func_80020E74, and the Spyro 2/3 block walkers)
+ * rewrites something the face reads:
+ * - its Tiledef: a texture-swap descriptor's destination tile (word at
+ *   desc+4) or a UV-scroll descriptor's tile (u16 at desc+4);
+ * - one of its vertices or colours. The registry pairs at +0x10..+0x2C (LP
+ *   geometry, LP colour, HP geometry, HP colour) name a sector and the
+ *   words their keyframe pack writes (tsc_envm_registry). An entry of
+ *   the ENV_ANIM_ARENA block's two vertex-wave sub-lists rewrites HP
+ *   vertices 0..n-1 and one of its colour sub-list rewrites HP near colours
+ *   0..n-1, n = entry bits 8-15 (Spyro 2 func_80023994, func_80023A9C,
+ *   func_80023778: the walkers start at sector + 0x1C + byte +0x17 * 4, the
+ *   HP vertex block, and at the colour array after it).
+ * Every listed entry counts, paused or not, and the block's liveness byte is
+ * not read: it is the draw's tier bin for the tick, so reading it would move
+ * the set with the camera. Faces of an imported sector and borrowed faces
+ * are never members; their source level's animations do not run. The table
+ * is rebuilt each build; s_envm_gen steps when its content changes, which
+ * re-bakes the retained-cache material buckets. */
+#define ENVM_SWAP   1u
+#define ENVM_SCROLL 2u
+#define ENVM_VERT   4u
+#define ENVM_COLOUR 8u
+#define ENVM_SEC_MAX 2048u
+static uint8_t  s_envm_tile[128];                    /* ENVM_SWAP | ENVM_SCROLL per Tiledef id */
+static uint32_t s_envm_v[ENVM_SEC_MAX][2][8];        /* [sector][tier 0 LP, 1 HP] rewritten vertex indices */
+static uint32_t s_envm_c[ENVM_SEC_MAX][2][8];        /* [sector][tier] rewritten colour word indices */
+static uint32_t s_envm_cnt;                          /* sectors the masks cover this build */
+static uint32_t s_envm_hash;
+static uint32_t s_envm_gen = 1;
+
+/** @brief Sets bits [first, first + n) of a 256-bit index mask, clipped to 256.
+ *
+ * @param m The mask.
+ * @param first The first index.
+ * @param n The index count. */
+static void envm_mask_set(uint32_t m[8], uint32_t first, uint32_t n) {
+    for (uint32_t k = first; k < first + n && k < 256u; k++) m[k >> 5] |= 1u << (k & 31u);
+}
+
+/** @brief Tests whether any of four indices is set in a 256-bit index mask.
+ *
+ * @param m The mask.
+ * @param a The first index.
+ * @param b The second index.
+ * @param c The third index.
+ * @param d The fourth index.
+ * @return 1 when one is set, else 0. */
+static int envm_mask_any4(const uint32_t m[8], uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    const uint32_t q[4] = { a, b, c, d };
+    for (int i = 0; i < 4; i++)
+        if (q[i] < 256u && (m[q[i] >> 5] >> (q[i] & 31u) & 1u)) return 1;
+    return 0;
+}
+
+/** @brief Marks the tile each descriptor of one {count, descriptor-pointer array} texture list names.
+ *
+ * A list with no layout address, a null array, or a count of 0 or above
+ * ENV_ANIM_COUNT_MAX marks nothing; a null descriptor and a tile of 128 or
+ * above are skipped.
+ * @param cpu The guest CPU state, read only.
+ * @param reg The list's count address, or 0.
+ * @param half 1 when the tile is the u16 at desc+4, 0 when it is the word.
+ * @param kind The ENVM_* bit to set. */
+static void tsc_envm_tiles(CPUState* cpu, uint32_t reg, int half, uint8_t kind) {
+    if (!reg) return;
+    uint32_t cnt = rd(cpu, reg), arr = rd(cpu, reg + 4u);
+    if (!arr || cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) return;
+    for (uint32_t k = 0; k < cnt; k++) {
+        uint32_t desc = rd(cpu, arr + k * 4u);
+        if (!desc) continue;
+        uint32_t t = rd(cpu, desc + 4u);
+        if (half) t &= 0xFFFFu;
+        if (t < 128u) s_envm_tile[t] |= kind;
+    }
+}
+
+/** @brief Marks what each descriptor of one registry geometry or colour list rewrites.
+ *
+ * A list with no layout address, a null array, or a count of 0 or above
+ * ENV_ANIM_COUNT_MAX marks nothing; a null descriptor and a sector at or
+ * past s_envm_cnt are skipped. A descriptor marks the words its keyframe
+ * pack writes, stride = u16 at +6 bytes per keyframe: a geometry
+ * descriptor of a game whose walkers read the sector byte (poly_sec_u8)
+ * from bank index byte +5, any other geometry or LP colour descriptor from
+ * index 0 (Spyro 1 r_environment.s 80025C20 LP verts, 80025D14 LP colours,
+ * 80025E68 HP verts; Spyro 2 environment.s 8002402C LP colours). An HP
+ * colour descriptor marks every HP colour, the count the pack takes from
+ * the sector header (Spyro 1 80025FD8, Spyro 2 8002431C).
+ * @param cpu The guest CPU state, read only.
+ * @param reg The list's count address, or 0.
+ * @param hp 1 for an HP list, 0 for an LP list.
+ * @param colour 1 for a colour list, 0 for a geometry list. */
+static void tsc_envm_registry(CPUState* cpu, uint32_t reg, int hp, int colour) {
+    if (!reg) return;
+    uint32_t cnt = rd(cpu, reg), arr = rd(cpu, reg + 4u);
+    if (!arr || cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) return;
+    const int u8 = !colour && game_layout.env_anim.poly_sec_u8;
+    for (uint32_t k = 0; k < cnt; k++) {
+        uint32_t desc = rd(cpu, arr + k * 4u);
+        if (!desc) continue;
+        uint32_t sec = u8 ? cpu->read_byte(desc + 4u) : cpu->read_half(desc + 4u);
+        if (sec >= s_envm_cnt) continue;
+        uint32_t* m = colour ? s_envm_c[sec][hp] : s_envm_v[sec][hp];
+        const uint32_t words = cpu->read_half(desc + 6u) / 4u;
+        if (u8)                  envm_mask_set(m, cpu->read_byte(desc + 5u), words);
+        else if (!colour || !hp) envm_mask_set(m, 0u, words);
+        else                     envm_mask_set(m, 0u, 256u);
+    }
+}
+
+/** @brief Hashes the membership table into a generation, stepping s_envm_gen when it changed.
+ *
+ * @param sectorCnt The sectors the table covers. */
+static void tsc_envm_stamp(uint32_t sectorCnt) {
+    uint32_t h = 2166136261u;
+    for (int t = 0; t < 128; t++) h = (h ^ s_envm_tile[t]) * 16777619u;
+    const uint32_t* w = &s_envm_v[0][0][0];
+    for (uint32_t i = 0; i < sectorCnt * 16u; i++) h = (h ^ w[i]) * 16777619u;
+    w = &s_envm_c[0][0][0];
+    for (uint32_t i = 0; i < sectorCnt * 16u; i++) h = (h ^ w[i]) * 16777619u;
+    h ^= sectorCnt;
+    if (h != s_envm_hash) { s_envm_hash = h; s_envm_gen++; }
+}
+
+/** @brief Tests whether a 256-bit index mask has any bit set.
+ *
+ * @param m The mask.
+ * @return 1 when a bit is set, else 0. */
+static int envm_mask_nonzero(const uint32_t m[8]) {
+    for (int j = 0; j < 8; j++) if (m[j]) return 1;
+    return 0;
+}
+
+/** @brief Prints the [envm] line: member tiles per kind and member sectors per tier and kind.
+ *
+ * @param sectorCnt The sectors the table covers. */
+static void tsc_envm_census_print(uint32_t sectorCnt) {
+    int n[6] = { 0, 0, 0, 0, 0, 0 };
+    for (int t = 0; t < 128; t++) {
+        n[0] += s_envm_tile[t] & ENVM_SWAP;
+        n[1] += (s_envm_tile[t] & ENVM_SCROLL) >> 1;
+    }
+    for (uint32_t i = 0; i < sectorCnt; i++)
+        for (int tier = 0; tier < 2; tier++) {
+            n[2 + tier * 2] += envm_mask_nonzero(s_envm_v[i][tier]);
+            n[3 + tier * 2] += envm_mask_nonzero(s_envm_c[i][tier]);
+        }
+    fprintf(stderr, "[envm f=%u] gen=%u tiles swap=%d scroll=%d sectors lp_vert=%d lp_colour=%d hp_vert=%d hp_colour=%d\n",
+            openpete_frame, s_envm_gen, n[0], n[1], n[2], n[3], n[4], n[5]);
+}
+
+/** @brief Rebuilds the env-animation membership table from the game's animation lists.
+ *
+ * Steps s_envm_gen when the table differs from the previous build's.
+ * Prints an [envm] line with the member tile and sector counts under
+ * OPENPETE_TERRAIN_ENVMDBG.
+ * @param cpu The guest CPU state, read only.
+ * @param sectorCnt The level's sector count. */
+static void tsc_envm_refresh(CPUState* cpu, uint32_t sectorCnt) {
+    static int s_dbg = -1;
+    ENV_FLAG_LATCH(s_dbg, "OPENPETE_TERRAIN_ENVMDBG");
+    if (sectorCnt > ENVM_SEC_MAX) sectorCnt = ENVM_SEC_MAX;
+    memset(s_envm_tile, 0, sizeof s_envm_tile);
+    const uint32_t clr = s_envm_cnt > sectorCnt ? s_envm_cnt : sectorCnt;
+    memset(s_envm_v, 0, sizeof s_envm_v[0] * clr);
+    memset(s_envm_c, 0, sizeof s_envm_c[0] * clr);
+    s_envm_cnt = sectorCnt;
+    tsc_envm_tiles(cpu, game_layout.env_anim.swap, 0, ENVM_SWAP);
+    tsc_envm_tiles(cpu, game_layout.env_anim.scroll, 1, ENVM_SCROLL);
+    tsc_envm_registry(cpu, game_layout.env_anim.lp_poly, 0, 0);
+    tsc_envm_registry(cpu, game_layout.env_anim.lp_col, 0, 1);
+    tsc_envm_registry(cpu, game_layout.env_anim.hp_poly, 1, 0);
+    tsc_envm_registry(cpu, game_layout.env_anim.hp_col, 1, 1);
+    if (game_layout.env_anim.form == ENV_ANIM_ARENA) {
+        env_anim_iter_t it;
+        uint32_t idx; int kind;
+        env_anim_iter_init(&it, cpu, sectorCnt);
+        it.listed = 1;
+        while (env_anim_iter_next(&it, &idx, &kind)) {
+            uint32_t n = (rd(cpu, it.base + (it.k - 1u) * 4u) >> 8) & 0xFFu;
+            envm_mask_set(kind == ENV_ANIM_KIND_COLOUR ? s_envm_c[idx][1] : s_envm_v[idx][1], 0u, n);
+        }
+    }
+    tsc_envm_stamp(sectorCnt);
+    if (s_dbg) tsc_envm_census_print(sectorCnt);
+}
+
+/** @brief Returns the ENVM_* kinds a terrain face is a member of.
+ *
+ * @param F The face; its vertex indices and colour byte offsets index the
+ *        tier's own banks.
+ * @param sec The face's level sector index; UINT32_MAX (an import) matches nothing.
+ * @param lp 1 for an LP-tier face, which carries no Tiledef.
+ * @param foreign 1 for an imported sector's or a borrowed face.
+ * @return The kinds, 0 for a non-member. */
+static unsigned tface_envm(const tsface_t* F, uint32_t sec, int lp, int foreign) {
+    if (foreign || sec >= s_envm_cnt) return 0;
+    const int tier = lp ? 0 : 1;
+    unsigned k = 0;
+    if (envm_mask_any4(s_envm_v[sec][tier], F->i0, F->i1, F->i2, F->i3)) k |= ENVM_VERT;
+    if (envm_mask_any4(s_envm_c[sec][tier], F->c0 / 4u, F->c1 / 4u, F->c2 / 4u, F->c3 / 4u)) k |= ENVM_COLOUR;
+    if (!lp && F->tb != -1) k |= s_envm_tile[F->tb & 0x7F];
+    return k;
 }
 
 /* Pending bytes of the deferred keyframe vertex banks (env_anim.kf_lp_poly,
@@ -6928,6 +7138,7 @@ typedef struct {
                                        * fold-claimed (unbuildable=5) sector
                                        * retries when interns or an upload
                                        * drain moved it */
+    uint32_t bakeEnvmGen;             /* s_envm_gen at build: the env-anim membership the buckets key on */
     unsigned bakeSelEpoch;            /* material_epoch at build - the baked
                                        * faces carry material BUCKET ids, so a
                                        * selector set that moved makes them
@@ -8161,6 +8372,7 @@ typedef struct {
     int canim_only;          /* an env-anim colour sector: no near variants */
     uint32_t base_ff;        /* face_flags slot and generation bits */
     uint32_t hqTable;
+    int sec_index;           /* level sector index (env-anim membership), -1 for an import (tgpu_envm_sec) */
 } tgpu_hpctx;
 
 /* One set of HP faces in a sector's frame: its own tier or its borrowed faces. */
@@ -8292,7 +8504,8 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
      * Tiledef id names the source table: it keys no selector, and the
      * face stays textured. */
     const int hp_bucket = openpete_mods_material_terrain_class(
-        (F->tb == -1 || S->ff) ? -1 : (F->tb & 0x7F), F->tb == -1, F->tgen != 0, 0);
+        (F->tb == -1 || S->ff) ? -1 : (F->tb & 0x7F), F->tb == -1,
+        tface_envm(F, (uint32_t)X->sec_index, 0, S->ff != 0) != 0, 0);
     T.matf0 = tgpu_pack_mat0(&F->mat) | ((uint32_t)hp_bucket << 24);
     T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
     T.matn0 = tgpu_pack_mat0(&F->matN); T.matn1 = (uint32_t)(F->matN.clut_raw & 0xFFFF);
@@ -8399,6 +8612,16 @@ static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
     return 0;
 }
 
+/** @brief Returns the sector index a decoded sector's own faces key env-anim membership with.
+ *
+ * @param SC The decoded sector.
+ * @param sec_index The level sector index, or -1.
+ * @return sec_index, or UINT32_MAX for an imported sector or no index. */
+static uint32_t tgpu_envm_sec(const tscache_t* SC, int sec_index) {
+    if (SC->virt || sec_index < 0) return UINT32_MAX;
+    return (uint32_t)sec_index;
+}
+
 /** @brief Builds and uploads all of one sector's chunks.
  *
  * Bakes the LP tier (the sector's own faces, then its borrowed LP faces)
@@ -8459,14 +8682,18 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     }
 
     /* ---- LP tier: untextured; drawn in WORLD and re-drawn in FILL ---- */
-    /* Every LP face keys the same (untextured, LP tier), so its material
-     * bucket (resolution class) is a per-sector constant. 0 = no material
-     * is a candidate for these faces. */
+    /* Every LP face keys untextured and LP tier, so its material bucket
+     * (resolution class) is one of two per-sector constants, chosen by the
+     * face's env-anim membership. 0 = no material is a candidate. */
     const int lp_bucket = openpete_mods_material_terrain_class(-1, 1, 0, 1);
+    const int lp_buckets[2] = { lp_bucket, openpete_mods_material_terrain_class(-1, 1, 1, 1) };
+    const uint32_t own_sec = tgpu_envm_sec(SC, sec_index);
     const tgpu_lpset own_lp = { SC->lpV, (anim && !vsnap) ? SC->lpVprev : NULL, SC->nLpV,
                                 SC->lpColBase, CA, sec_index };
     for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++)
-        if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff, lp_bucket, &own_lp, &SC->lpF[f], f) != 0)
+        if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff,
+                              lp_buckets[tface_envm(&SC->lpF[f], own_sec, 1, 0) != 0],
+                              &own_lp, &SC->lpF[f], f) != 0)
             goto done;
     if (SC->imp && SC->imp->lpV && SC->imp->lpF) {
         /* Borrowed LP faces: the source LP colours through the host window,
@@ -8481,7 +8708,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     /* ---- HP tier: flat variant + the HQ 2x2 subdivide variant; the
      * sector's own faces, then the faces it borrows from the HP source
      * level (host colours, no previous-tick state: FF_BORROWED) ---- */
-    tgpu_hpctx X = { cpu, buf, ab, with_var, anim && !vsnap, hdfold, canim_only, base_ff, hqTable };
+    tgpu_hpctx X = { cpu, buf, ab, with_var, anim && !vsnap, hdfold, canim_only, base_ff, hqTable,
+                     (int)own_sec };
     tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u };
     tgpu_own_bank(SC, &X, &own);
     for (int f = 0; SC->hpV && SC->hpF && f < SC->nHpF; f++)
@@ -8689,6 +8917,8 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
              /* Material buckets are baked into the faces, so a selector set
               * that moved leaves them naming the wrong pass. */
              || (T->bakeSelEpoch != T->selEpoch)
+             /* The env-anim membership the buckets key on moved. */
+             || (T->bakeEnvmGen != s_envm_gen)
              || tgpu_claim_retry(T);
     if (!dirty && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick). */
@@ -8715,6 +8945,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->bakeHdEpoch = openpete_native_hdfold_epoch();
         T->bakeAllocEpoch = openpete_tercache_alloc_epoch();
         T->bakeSelEpoch = T->selEpoch;
+        T->bakeEnvmGen = s_envm_gen;
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);
@@ -9422,6 +9653,43 @@ static const char* tn_lp_face_world_drop(const tn_wcfg* G, const tn_secverd* SV,
     return tn_lp_face_near_drop(SV, F, cz, quad, G->lp_admit, G->fogRefBase);
 }
 
+/** @brief Sets a walked face's env-anim tag bit and counts it into the worker's census.
+ *
+ * @param W The worker context.
+ * @param F The face.
+ * @param sec The level sector index.
+ * @param passLP 1 on an LP pass.
+ * @param passBorLP 1 on a borrowed-LP pass.
+ * @param textured 1 when the face draws textured. */
+static void tn_emit_envm(tn_wctx* W, const tsface_t* F, uint32_t sec, int passLP, int passBorLP, int textured) {
+    const unsigned ek = tface_envm(F, sec, passLP, W->emit_bank || passBorLP);
+    W->emit_env = ek != 0;
+    for (int b = 0; b < 4; b++) W->envm_n[b] += (int)((ek >> b) & 1u);
+    W->envm_n[ek ? 4 : 6]++;
+    W->envm_n[5] += ek && !textured;
+}
+
+/** @brief Adds one worker's env-anim face census into the walk's.
+ *
+ * @param dst The walk's census, seven counters.
+ * @param W The worker context. */
+static void tn_envm_rollup(int dst[7], const tn_wctx* W) {
+    for (int b = 0; b < 7; b++) dst[b] += W->envm_n[b];
+}
+
+/** @brief Prints the walk's [envm-faces] census line under OPENPETE_TERRAIN_ENVMDBG.
+ *
+ * The counters are the faces walked per ENVM_* kind (swap, scroll, vertex,
+ * colour), members, untextured members and non-members.
+ * @param n The walk's census, seven counters. */
+static void tn_envm_faces_print(const int n[7]) {
+    static int s_edbg = -1;
+    ENV_FLAG_LATCH(s_edbg, "OPENPETE_TERRAIN_ENVMDBG");
+    if (!s_edbg) return;
+    fprintf(stderr, "[envm-faces f=%u] swap=%d scroll=%d vert=%d colour=%d member=%d member_untex=%d nonmember=%d\n",
+            openpete_frame, n[0], n[1], n[2], n[3], n[4], n[5], n[6]);
+}
+
 /** @brief Walks one visible sector's faces into W's triangle run.
  *
  * Reads the sector's precomputed verdicts (drawHP, drawLP, the fill and
@@ -9717,7 +9985,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             /* Inspector tint class: a listed FILL tag vs a face preview forced
              * through (the untagged candidates). HP faces carry neither. */
             W->emit_fptag = (passLP && F->gapfill) ? (F->fillcand ? 2 : 1) : 0;
-            W->emit_env = (F->tgen != 0);            /* env-anim member (rewrite set) */
+            tn_emit_envm(W, F, i, passLP, passBorLP, mat->textured);
             /* Portal OT-conformance key: the face's .s OT bucket base - the
              * raw 4-corner view-Z sum ((Σ4 SZ)>>7 in the walk; .s tris sum
              * the shared i2==i3 corner twice, and so does this), in emit_otkey
@@ -10919,6 +11187,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     uint32_t lqTable = tenv_rd(cpu, game_layout.env.lq_tex);  /* HP-walk per-quad Tiledef */
     uint32_t hqTable = tenv_rd(cpu, game_layout.env.hq_tex);  /* near/detail Tiledef (bpp8 tiles) */
     tsc_tile_gens(cpu, lqTable, tenv_rd(cpu, game_layout.env.tex_count));  /* env-anim liveness */
+    tsc_envm_refresh(cpu, tenv_rd(cpu, game_layout.env.sector_count));   /* env-anim membership */
     tsc_scroll_refresh(cpu);                                           /* env-anim UV scroll (sub-tick) */
     tface_differ_refresh(cpu, hqTable, tenv_rd(cpu, game_layout.env.tex_count));
     /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near->HQ,far->LQ) 1=force LQ 2=force HQ (debug) */
@@ -11159,6 +11428,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         memset(W->cells4_faces, 0, sizeof(W->cells4_faces));
         memset(W->drain_skip, 0, sizeof(W->drain_skip));
         W->tex_faces = W->tex_tris = 0;
+        memset(W->envm_n, 0, sizeof W->envm_n);
         W->near_q_agree = W->near_c_only = 0;
         W->walk_sectors = 0;
         W->serial = wserial;
@@ -11456,6 +11726,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     } else {
         s_tri_n = s_wctx[0].tri_n;
     }
+    int envm_n[7] = { 0 };
     for (int w = 0; w < nw_used; w++) {   /* census roll-up */
         tn_wctx* W = &s_wctx[w];
         s_dbg_faces += W->dbg_faces; s_dbg_oob += W->dbg_oob;
@@ -11465,9 +11736,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_dbg_spike_tris += W->dbg_spike_tris;
         trisplit_sum(W);
         s_tex_faces += W->tex_faces; s_tex_tris += W->tex_tris;
+        tn_envm_rollup(envm_n, W);
         s_near_q_agree += W->near_q_agree; s_near_c_only += W->near_c_only;
         s_walk_sectors += W->walk_sectors;
     }
+    tn_envm_faces_print(envm_n);
     {   /* OPENPETE_TERRAIN_NEARCEN=1: one line per terrain walk carrying the
          * near/HQ routing counts and the walk's triangle total. Headless runs
          * one walk per tick, so the line is that tick's per-present count. */

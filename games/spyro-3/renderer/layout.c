@@ -120,7 +120,16 @@ const game_layout_t spyro3_game_layout = {
         /* The scroll registry's base; no symbol names it, and the geometry
          * registry above is a different structure with no header of its own. */
         .base       = 0x8006E350u,
+        .swap       = 0x8006E350u + 0x00u,           /* func_80020E74 (80020E80) */
         .scroll     = 0x8006E350u + 0x08u,
+        /* The registry func_80020E74 walks: LP geometry, LP colour, HP geometry,
+         * HP colour; the geometry walkers read the sector with lbu +4, the
+         * colour walkers with lhu +4. */
+        .lp_poly    = 0x8006E350u + 0x10u,
+        .lp_col     = 0x8006E350u + 0x18u,
+        .hp_poly    = 0x8006E350u + 0x20u,
+        .hp_col     = 0x8006E350u + 0x28u,
+        .poly_sec_u8 = 1,
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = 0x80072330u,    /* D_8006FCF4 + 0x263C */
         .sub = {

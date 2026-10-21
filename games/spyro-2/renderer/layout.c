@@ -92,7 +92,16 @@ const game_layout_t spyro2_game_layout = {
     .env_anim = {
         .form       = ENV_ANIM_ARENA,
         .base       = D_ENV_ANIM_REGISTRY,
+        .swap       = D_ENV_ANIM_REGISTRY + 0x00u,   /* func_800225F8 (environment.s:17-18) */
         .scroll     = D_ENV_ANIM_REGISTRY + 0x08u,
+        /* The registry func_800225F8 walks: LP geometry, LP colour, HP geometry,
+         * HP colour; the geometry walkers read the sector with lbu +4, the
+         * colour walkers with lhu +4. */
+        .lp_poly    = D_ENV_ANIM_REGISTRY + 0x10u,
+        .lp_col     = D_ENV_ANIM_REGISTRY + 0x18u,
+        .hp_poly    = D_ENV_ANIM_REGISTRY + 0x20u,
+        .hp_col     = D_ENV_ANIM_REGISTRY + 0x28u,
+        .poly_sec_u8 = 1,
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = D_ENV_ANIM_LIVE,
         /* Registry pairs 2 and 4. func_800225F8 advances each descriptor's

@@ -207,14 +207,20 @@ typedef struct game_layout {
 
         /* Each is {count, pointer to a descriptor-pointer array}; the field
          * is the address of the count and the array pointer follows at +4.
-         * `lp_poly` and `hp_poly` are the ENV_ANIM_LISTS geometry registry
-         * and `lp_col` and `hp_col` its vertex-colour registry;
-         * `scroll` carries the same shape under either form. */
+         * `lp_poly` and `hp_poly` are the geometry registry and `lp_col`
+         * and `hp_col` the vertex-colour registry the animation update
+         * walks in every game; the iterator reads them only under
+         * ENV_ANIM_LISTS. `swap` and `scroll` carry the same shape. A
+         * colour descriptor names its sector in the u16 at +4. */
+        uint32_t swap;              /* texture-swap descriptors: the destination
+                                     * tile is the word at desc+4 */
         uint32_t scroll;            /* scrolling-texture descriptors */
         uint32_t lp_poly;           /* LP geometry animations */
         uint32_t hp_poly;           /* HP geometry animations */
         uint32_t lp_col;            /* LP vertex-colour animations */
         uint32_t hp_col;            /* HP vertex-colour animations */
+        uint32_t poly_sec_u8;       /* 1: a geometry descriptor names its sector in
+                                     * the byte at +4; 0: in the u16 at +4 */
 
         /* Deferred keyframe vertex animations, each {count, descriptor-
          * pointer array}. The animation update posts a descriptor's list

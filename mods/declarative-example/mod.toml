@@ -51,8 +51,9 @@ channel  = "terrain"
 textured = false
 params   = [0.20, 0.90, 0.40, 0.35]
 
-# Animated environment faces only: water and lava surfaces the game
-# scrolls or cycles. env_anim = true narrows to those.
+# Animated environment faces only: the faces whose texture the game
+# swaps or scrolls, or whose vertices or colours it moves or recolours.
+# env_anim = true narrows to those.
 [[material]]
 frag     = "shaders/tint.frag"
 channel  = "terrain"

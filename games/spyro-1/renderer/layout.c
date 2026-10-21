@@ -124,6 +124,8 @@ const game_layout_t spyro1_game_layout = {
     .env_anim = {
         .form    = ENV_ANIM_LISTS,
         .base    = G_ENVANIM,
+        /* Walked by func_8002A6FC (r_environment.s:8002A708 swap, 8002A840 scroll). */
+        .swap    = G_ENVANIM + offsetof(EnvironmentAnimations, m_TextureAnimationCount),
         .scroll  = G_ENVANIM + offsetof(EnvironmentAnimations, m_ScrollingTextureCount),
         .lp_poly = G_ENVANIM + offsetof(EnvironmentAnimations, m_LowPolyAnimationCount),
         .hp_poly = G_ENVANIM + offsetof(EnvironmentAnimations, m_HighPolyAnimationCount),
