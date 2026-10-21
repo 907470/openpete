@@ -140,3 +140,6 @@ magma_cone | pos=(93407, 88746, 41508) yaw=-1999 pitch=236
 # Lava in Crush's Dungeon from near to far: the far lava stops undulating
 # at extended LOD. Blessed pre-fix.
 crushs_dungeon | pos=(-1501, 29835, 47171) yaw=17 pitch=563
+# Crush's Dungeon lava ring split half near (animated) and half far
+# (frozen at extended LOD). Blessed pre-fix.
+crushs_dungeon | pos=(3080, 30039, 31217) yaw=29 pitch=548
