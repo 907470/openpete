@@ -94,3 +94,6 @@ midday_gardens@aspect21x9 | pos=(45002, 68223, 11357) yaw=673 pitch=39 | | --asp
 # A panda at the left edge of the 16:9 field: its shadow stops drawing while
 # the shadow is still inside the frame. Blessed pre-fix.
 bamboo_terrace | pos=(81096, 78349, 17263) yaw=1054 pitch=198
+# A star-animation moby in front of a sub-area portal does not draw over
+# the portal surface. Blessed pre-fix.
+sunny_villa | pos=(51542, 35158, 19550) yaw=-1020 pitch=35
