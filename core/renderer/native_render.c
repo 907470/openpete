@@ -45,6 +45,7 @@
 #include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
 #include "openpete_interp_objs.h" /* tick stamp + period for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
+#include "openpete_view_rect.h" /* the view layout and its pixel rect */
 #include "rhi.h"
 #include "mod_vec.h"      /* the scene triangle store and compose scratch runs */
 #include "game_layout.h"  /* game_layout.terrain: the per-game ordering-table key policy */
@@ -4871,7 +4872,7 @@ static struct {
      * horizontal world the render aspect reveals vs 4:3 (1.0 = plain 4:3) -
      * window-derived under AUTO, --aspect-derived when fixed. The panel-0
      * content mapping (scene_to_clip via p0_hx) is the centred 4:3 sub-rect;
-     * the reveal extends to ±p0_hx*ws_factor (the render rect), which fit_cell
+     * the reveal extends to ±p0_hx*ws_factor (the render rect), which openpete_view_fit_cell
      * fits into the window with bars (none under AUTO - the rect IS the
      * window shape). Applies to the native scene only; the psycross-mode
      * reference blit stays 4:3. See update_layout. */
@@ -5118,35 +5119,6 @@ static void build_panel(rhi_vertex out[6], float cx, float cy, float hx, float h
                         float u0, float v0, float u1, float v1)
 {
     build_panel_tinted(out, cx, cy, hx, hy, u0, v0, u1, v1, 0xFFFFFFFFu);
-}
-
-/** @brief Aspect-fit content inside a clip-space cell and return the fitted half-extents.
- *
- * The content is scaled uniformly by the smaller of the cell-to-content
- * width and height ratios, measured in window pixels, so it is letterboxed
- * or pillarboxed; the clear fills the bars.
- * @param cx Cell centre x in clip space; unused.
- * @param cy Cell centre y in clip space; unused.
- * @param chx Cell half-extent x in clip space.
- * @param chy Cell half-extent y in clip space.
- * @param content_w Content width in pixels.
- * @param content_h Content height in pixels.
- * @param win_w Window width in pixels.
- * @param win_h Window height in pixels.
- * @param out_hx Receives the fitted half-extent x in clip space.
- * @param out_hy Receives the fitted half-extent y in clip space. */
-static void fit_cell(float cx, float cy, float chx, float chy,
-                     int content_w, int content_h, int win_w, int win_h,
-                     float *out_hx, float *out_hy)
-{
-    (void)cx; (void)cy;
-    float cell_w = chx * (float)win_w;  /* cell size in px (full clip = win px) */
-    float cell_h = chy * (float)win_h;
-    float s = cell_w / (float)content_w;
-    float sy = cell_h / (float)content_h;
-    if (sy < s) s = sy;
-    *out_hx = ((float)content_w * s) / (float)win_w;
-    *out_hy = ((float)content_h * s) / (float)win_h;
 }
 
 /** @brief Destroy every member of a blend family and clear its slots.
@@ -7867,6 +7839,19 @@ static void ensure_ss_rtt(void)
     }
 }
 
+/** @brief Return the window pixels the native view's render rect covers.
+ *
+ * The render rect is panel 0's 4:3 content sub-rect widened by ws_factor;
+ * the background quad and the 2D bars are drawn to its edges, so the scene
+ * scissor and the freeze-backdrop copy take its pixel-centre set
+ * (openpete_view_px_rect) and stop where those quads stop.
+ * @return The pixel rect. */
+static openpete_px_rect_t view_px_rect(void)
+{
+    return openpete_view_px_rect(s_nr.p0_cx, s_nr.p0_hx * s_nr.ws_factor, s_nr.p0_hy,
+                                 s_nr.win_w, s_nr.win_h);
+}
+
 /** @brief Rebuild the panel vertex buffer and the scene mapping when the window, reference or display size changes.
  *
  * The layout is one full-window cell. Panel 0 is the native scene's rect:
@@ -7891,9 +7876,7 @@ static void update_layout(void)
         s_nr.disp_w == s_nr.layout_disp_w && s_nr.clip_h == s_nr.layout_clip_h)
         return;
 
-    /* One full-window cell. */
-    const int   np  = 1;
-    const float chx = 1.0f / (float)np;
+    /* One full-window cell (openpete_view_layout). */
     rhi_vertex verts[NR_PANELS * 6] = {0};
 
     /* Panel 0 - native render of the PSX display region, sampled from the VRAM
@@ -7911,44 +7894,20 @@ static void update_layout(void)
         int fit_w = have_clip ? s_nr.ref_w  : NR_VRAM_W;  /* 4:3 display shape */
         int fit_h = have_clip ? s_nr.ref_h  : NR_VRAM_H;
 
-        /* Hor+ widen factor: how much wider the render view is than 4:3.
-         * Native scene only; the reference panel is 4:3. FIXED --aspect (>0)
-         * derives it from the flag; AUTO (0, the default) derives it from the
-         * CELL shape so the render rect exactly fills the window - re-derived
-         * here on every size change (resize/fullscreen), since the layout
-         * change-cache keys on the window size. fit_w/fit_h is the crop-
-         * corrected 4:3 display shape, so the AUTO ratio is exact regardless
-         * of the overscan crop. Clamp ≥1 in both modes - Hor+ only ADDS
-         * world; a narrower target just renders 4:3 and the window
-         * letterboxes. */
-        float wf = 1.0f;
-        int wf_auto_fill = 0;   /* AUTO derived from the cell -> rect == cell */
-        if (s_nr.aspect_wh > 0.0f)
-            wf = s_nr.aspect_wh / (4.0f / 3.0f);
-        else if (fit_w > 0 && fit_h > 0) {
-            wf = ((float)s_nr.win_w * (float)fit_h * chx) /
-                 ((float)s_nr.win_h * (float)fit_w);
-            wf_auto_fill = (wf >= 1.0f);
-        }
-        if (wf < 1.0f) wf = 1.0f;
+        /* Hor+ widen factor and render rect (openpete_view_layout): FIXED
+         * --aspect (>0) derives the factor from the flag and fits that rect
+         * into the window with letterbox/pillarbox bars; AUTO (0, the
+         * default) derives it from the window shape so the render rect
+         * fills the window, re-derived here on every size change since the
+         * layout change-cache keys on the window size. fit_w/fit_h is the
+         * crop-corrected 4:3 display shape. The factor is at least 1: Hor+
+         * only adds world, and a narrower window renders 4:3 and
+         * letterboxes. The 4:3 content sub-rect scene_to_clip maps the
+         * 512-wide screen onto is 1/wf of the render rect's width, centred. */
+        const openpete_view_layout_t vl =
+            openpete_view_layout(s_nr.win_w, s_nr.win_h, fit_w, fit_h, s_nr.aspect_wh);
+        const float wf = vl.wf, cx = vl.cx, hx = vl.hx, hy = vl.hy;
         s_nr.ws_factor = wf;
-
-        /* Fit the FULL render rect (4:3 content widened by wf) into the
-         * window -> letterbox/pillarbox bars where the window ≠ the fixed
-         * --aspect (under AUTO the rect is the window shape -> no bars). The
-         * 4:3 CONTENT sub-rect (what scene_to_clip maps the canonical
-         * 512-wide screen onto, unstretched) is 1/wf of that width and
-         * centred; the Hor+ reveal fills the rest of the render rect. */
-        float cx = -1.0f + chx, hx, hy;
-        if (wf_auto_fill) {
-            /* AUTO: wf was derived so the render rect IS the cell - set it
-             * exactly instead of round-tripping through fit_cell's integer
-             * target aspect, whose rounding left ~1px pillar slivers. */
-            hx = chx; hy = 1.0f;
-        } else {
-            fit_cell(cx, 0.0f, chx, 1.0f, (int)((float)fit_w * wf + 0.5f), fit_h,
-                     s_nr.win_w, s_nr.win_h, &hx, &hy);
-        }
         s_nr.p0_cx = cx; s_nr.p0_hx = hx / wf; s_nr.p0_hy = hy; /* 4:3 sub-rect for the scene map */
         /* VRAM fallback panel (loading screens / OT-empty): the canonical 4:3
          * framebuffer, shown at the 4:3 sub-rect (unstretched, pillarboxed within
@@ -7965,8 +7924,8 @@ static void update_layout(void)
      * one clamped edge texel and fills the window with a flat colour. */
     if (!s_nr.scene_live) {
         float hx, hy;
-        fit_cell(0.0f, 0.0f, 1.0f, 1.0f, s_nr.ref_w, s_nr.ref_h,
-                 s_nr.win_w, s_nr.win_h, &hx, &hy);
+        openpete_view_fit_cell(1.0f, 1.0f, s_nr.ref_w, s_nr.ref_h,
+                               s_nr.win_w, s_nr.win_h, &hx, &hy);
         build_panel(&verts[6], 0.0f, 0.0f, hx, hy, 0.0f, 1.0f, 1.0f, 0.0f);
     }
 
@@ -7977,10 +7936,15 @@ static void update_layout(void)
     s_nr.layout_win_w = s_nr.win_w; s_nr.layout_win_h = s_nr.win_h;
     s_nr.layout_ref_w = s_nr.ref_w; s_nr.layout_ref_h = s_nr.ref_h;
     s_nr.layout_disp_w = s_nr.disp_w; s_nr.layout_clip_h = s_nr.clip_h;
-    OPL_DEBUG_F("native", "layout: window %dx%d ref %dx%d wf=%.3f (%s)",
+    const openpete_view_edges_t ve = openpete_view_edges(
+        s_nr.p0_cx, s_nr.p0_hx * s_nr.ws_factor, s_nr.p0_hy, s_nr.win_w, s_nr.win_h);
+    const openpete_px_rect_t vp = view_px_rect();
+    OPL_DEBUG_F("native", "layout: window %dx%d ref %dx%d wf=%.3f (%s) view=%.4f,%.4f,%.4f,%.4f"
+                " scissor=%d,%d,%dx%d",
                 s_nr.win_w, s_nr.win_h, s_nr.ref_w, s_nr.ref_h,
                 (double)s_nr.ws_factor,
-                s_nr.aspect_wh > 0.0f ? "fixed --aspect" : "AUTO");
+                s_nr.aspect_wh > 0.0f ? "fixed --aspect" : "AUTO",
+                (double)ve.l, (double)ve.t, (double)ve.r, (double)ve.b, vp.x, vp.y, vp.w, vp.h);
 }
 
 /** @brief Map a PSX screen point to clip space for the current render target.
@@ -15495,12 +15459,8 @@ static bool draw_native_scene(bool full_extent)
          * out to this rect; everything beyond is the letterbox/pillarbox bars
          * (left clear -> black/bg), so the render respects --aspect instead of
          * stretching to the window. ws_factor==1 -> exactly the 4:3 rect. */
-        float fhx = s_nr.p0_hx * s_nr.ws_factor;
-        int sx = (int)(((s_nr.p0_cx - fhx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
-        int sw = (int)((fhx) * (float)s_nr.win_w + 0.5f);
-        int sy = (int)((0.5f - 0.5f * s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
-        int sh = (int)((s_nr.p0_hy) * (float)s_nr.win_h + 0.5f);
-        rhi_set_scissor(s_nr.dev, sx, sy, sw, sh);
+        const openpete_px_rect_t sc = view_px_rect();
+        rhi_set_scissor(s_nr.dev, sc.x, sc.y, sc.w, sc.h);
     }
 
     /* Background fill: the panel-rect far-plane quad built at buf[0..6) above.
@@ -17698,11 +17658,8 @@ static void draw_osd_overlay(void) {
 static void capture_freeze_from_offscreen(bool world_frame)
 {
     if (!(world_frame && s_nr.frozen_tex && s_nr.win_w > 0 && s_nr.win_h > 0)) return;
-    float fhx = s_nr.p0_hx * s_nr.ws_factor;
-    int sx = (int)(((s_nr.p0_cx - fhx) * 0.5f + 0.5f) * (float)s_nr.win_w + 0.5f);
-    int sw = (int)(fhx * (float)s_nr.win_w + 0.5f);
-    int sy = (int)(((1.0f - s_nr.p0_hy) * 0.5f) * (float)s_nr.win_h + 0.5f);
-    int sh = (int)(s_nr.p0_hy * (float)s_nr.win_h + 0.5f);
+    const openpete_px_rect_t rc = view_px_rect();
+    const int sx = rc.x, sy = rc.y, sw = rc.w, sh = rc.h;
     if (sw > 0 && sh > 0) {
         static int s_pt = -1;
         if (s_pt < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_pt = (e && *e && *e != '0'); }
@@ -19815,7 +19772,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * compose draws nothing -> black. Derive it from GAMESTATE instead: the
      * bars-free PSX display is 4:3 corrected for the vertical overscan crop
      * (aspect = 4/3 * disp_h/clip_h), at a ~2x-internal reference so the
-     * off-display RT stays crisp. Only the aspect matters to the layout (fit_cell
+     * off-display RT stays crisp. Only the aspect matters to the layout (openpete_view_fit_cell
      * cancels the absolute scale); the size feeds native_rtt.
      *
      * Gated on the SCENE predicate, and it has to be. In PsyCross display mode
