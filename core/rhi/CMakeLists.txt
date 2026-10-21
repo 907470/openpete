@@ -101,14 +101,29 @@ foreach(s IN ITEMS quad_key psx_scene_key hd_tex_cutout quad)
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_rim.frag.spv)
 endforeach()
-# <stage>_shell.frag: the fragment stage of every opaque ACTOR pipeline
+# <stage>_actor.frag: the fragment stage of every opaque ACTOR pipeline
 # (plain, stencil-MARK and HD cutout share these stages) recompiled with the
-# front-shell depth export (moby_shell.glsl, OP_MOBY_SHELL); their layout adds
-# the shell image pair at set 5.
+# tie-pull depth export (psx_key_contest.glsl op_actor_tie_depth,
+# OP_ACTOR_TIE); same layout as the stock stage.
+foreach(s IN ITEMS quad_key psx_scene_key hd_tex_cutout)
+    add_custom_command(
+        OUTPUT ${RHI_SHADER_OUT_DIR}/${s}_actor.frag.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro OP_ACTOR_TIE=1
+                ${RHI_SHADER_SRC_DIR}/${s}.frag
+                -o ${RHI_SHADER_OUT_DIR}/${s}_actor.frag.spv
+        DEPENDS ${RHI_SHADER_SRC_DIR}/${s}.frag ${RHI_SHADER_INCLUDES}
+        COMMENT "glslangValidator ${s}.frag (OP_ACTOR_TIE) -> ${s}_actor.frag.spv"
+        VERBATIM)
+    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_actor.frag.spv)
+endforeach()
+# <stage>_shell.frag: the _actor stage plus the front-shell depth export
+# (moby_shell.glsl, OP_MOBY_SHELL); their layout adds the shell image pair at
+# set 5.
 foreach(s IN ITEMS quad_key psx_scene_key hd_tex_cutout)
     add_custom_command(
         OUTPUT ${RHI_SHADER_OUT_DIR}/${s}_shell.frag.spv
         COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro OP_MOBY_SHELL=1
+                --define-macro OP_ACTOR_TIE=1
                 ${RHI_SHADER_SRC_DIR}/${s}.frag
                 -o ${RHI_SHADER_OUT_DIR}/${s}_shell.frag.spv
         DEPENDS ${RHI_SHADER_SRC_DIR}/${s}.frag ${RHI_SHADER_INCLUDES}

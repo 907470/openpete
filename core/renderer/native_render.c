@@ -517,11 +517,14 @@ typedef struct {
     int rim;                    /* 1: the inner-rim rule, 0: the blended cover rule */
 } nr_cover_twin;
 #define NR_COVER_TWINS 17
-/* An opaque ACTOR pipeline and its front-shell twin: the same description
- * with the fragment stage's _shell variant (moby_shell.glsl) and the shell
- * and intruder image pairs at sets 5 and 6. */
+/* An opaque ACTOR pipeline and its twins: actor = the same description with
+ * the fragment stage's _actor variant (the tie-pull depth export,
+ * psx_key_contest.glsl op_actor_tie_depth); twin = the _shell variant
+ * (moby_shell.glsl, the tie-pull export included) with the shell and
+ * intruder image pairs at sets 5 and 6. */
 typedef struct {
     rhi_pipeline *stock;
+    rhi_pipeline *actor;
     rhi_pipeline *twin;
 } nr_shell_twin;
 #define NR_SHELL_TWINS 6
@@ -5272,36 +5275,57 @@ static const char* shell_frag_of(const char* frag)
     return NULL;
 }
 
+/** @brief The _actor variant of an opaque scene fragment stage, by its stock SPIR-V name.
+ * @param frag The stock stage's .spv name.
+ * @return The variant's .spv name, or NULL for a stage without one. */
+static const char* actor_frag_of(const char* frag)
+{
+    static const char* const k_map[][2] = {
+        { "quad_key.frag.spv",      "quad_key_actor.frag.spv" },
+        { "psx_scene_key.frag.spv", "psx_scene_key_actor.frag.spv" },
+        { "hd_tex_cutout.frag.spv", "hd_tex_cutout_actor.frag.spv" },
+    };
+    for (size_t i = 0; frag && i < sizeof k_map / sizeof k_map[0]; i++)
+        if (strcmp(frag, k_map[i][0]) == 0) return k_map[i][1];
+    return NULL;
+}
+
 /** @brief A stock opaque ACTOR pipeline and the description it was built from (shell_family_create input). */
 typedef struct {
     const rhi_pipeline_desc *desc;
     rhi_pipeline *stock;
 } nr_shell_src;
 
-/** @brief Build the front-shell twin of each opaque ACTOR pipeline.
+/** @brief Build the tie-pull twin and, when asked, the front-shell twin of each opaque ACTOR pipeline.
  *
- * Each twin is its stock description with the fragment stage's _shell
+ * The tie-pull twin is the stock description with the fragment stage's
+ * _actor variant (actor_frag_of); the front-shell twin takes the _shell
  * variant (shell_frag_of) and the shell and intruder image pairs at sets 5
- * and 6, created now or at the end of the open eager batch. A NULL stock
- * pipeline is skipped; a stage without the variant or a twin that fails to
- * build leaves the twin NULL, and that pipeline draws stock.
+ * and 6. Both are created now or at the end of the open eager batch. A NULL
+ * stock pipeline is skipped; a stage without the variant or a twin that
+ * fails to build leaves that twin NULL (nr_shell_twin_of falls back to the
+ * next one).
  * @param dev Device.
  * @param src The stock pipelines and their descriptions.
  * @param n Entries in @p src; at most NR_SHELL_TWINS are kept.
+ * @param shell Nonzero to build the front-shell twins.
  * @param out Receives the twins.
  * @return The number of entries written to @p out. */
 static int shell_family_create(rhi_device* dev, const nr_shell_src* src, int n,
-                               nr_shell_twin* out)
+                               int shell, nr_shell_twin* out)
 {
     int k = 0;
     for (int i = 0; i < n && k < NR_SHELL_TWINS; i++) {
         if (!src[i].stock) continue;
+        out[k].stock = src[i].stock;
+        out[k].actor = out[k].twin = NULL;
+        rhi_pipeline_desc a = *src[i].desc;
+        a.frag_spv = actor_frag_of(src[i].desc->frag_spv);
+        if (a.frag_spv) nr_eager_pipe(dev, &a, &out[k].actor);
         rhi_pipeline_desc d = *src[i].desc;
         d.frag_spv = shell_frag_of(src[i].desc->frag_spv);
         d.pair_set56 = true;
-        out[k].stock = src[i].stock;
-        out[k].twin = NULL;
-        if (d.frag_spv) nr_eager_pipe(dev, &d, &out[k].twin);
+        if (shell && d.frag_spv) nr_eager_pipe(dev, &d, &out[k].twin);
         k++;
     }
     return k;
@@ -5324,7 +5348,8 @@ static void shell_family_destroy(rhi_device* dev, nr_shell_twin* tw, int* n)
 {
     for (int i = 0; i < *n; i++) {
         if (tw[i].twin) rhi_destroy_pipeline(dev, tw[i].twin);
-        tw[i].stock = tw[i].twin = NULL;
+        if (tw[i].actor) rhi_destroy_pipeline(dev, tw[i].actor);
+        tw[i].stock = tw[i].actor = tw[i].twin = NULL;
     }
     *n = 0;
 }
@@ -6244,7 +6269,7 @@ typedef struct {
     rhi_pipeline **shell_pipe, **intr_pipe;   /* the shell and intruder pre-passes */
 } nr_twin_out;
 
-/** @brief Create the portal twins of the scene pipelines and, when asked, the moby front shell's pre-passes and opaque ACTOR twins, now or at the end of the open eager batch.
+/** @brief Create the portal twins of the scene pipelines, the opaque ACTOR tie-pull twins and, when asked, the moby front shell's pre-passes and twins, now or at the end of the open eager batch.
  *
  * Runs after nr_eager_core: each twin is its stock pipeline's description
  * with another fragment stage (cover_family_create, shell_family_create),
@@ -6271,14 +6296,14 @@ static int nr_eager_twins(rhi_device *dev, const nr_eager_descs *d, const nr_eag
     };
     *o->cover_n = cover_family_create(dev, cover_src,
                                       (int)(sizeof cover_src / sizeof cover_src[0]), o->cover);
-    if (!shell) return 0;
     const nr_shell_src shell_src[] = {
         { &d->gouraud_desc, p->gouraud_pipe }, { &d->gouraud_mark_desc, p->gouraud_mark_pipe },
         { &d->scene_tex_desc, p->scene_tex_pipe }, { &d->scene_tex_mark_desc, p->scene_tex_mark_pipe },
         { &d->hd_cutout_desc, p->hd_cutout_pipe }, { &d->hd_cutout_mark_desc, p->hd_cutout_mark_pipe },
     };
     *o->shell_n = shell_family_create(dev, shell_src,
-                                      (int)(sizeof shell_src / sizeof shell_src[0]), o->shell);
+                                      (int)(sizeof shell_src / sizeof shell_src[0]), shell, o->shell);
+    if (!shell) return 0;
     nr_eager_pipe(dev, &d->moby_shell_desc, o->shell_pipe);
     nr_eager_pipe(dev, &d->moby_shell_intr_desc, o->intr_pipe);
     return 1;
@@ -7016,8 +7041,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_qadd_pipe = P.scene_tex_qadd_pipe;
     s_nr.gouraud_qadd_pipe = P.gouraud_qadd_pipe;
     /* Moby front shell, built when the rank pass (the key images' companion)
-     * came up and OPENPETE_MOBY_SHELL leaves it on: the twins replace the
-     * opaque ACTOR pipes on a present that drew a shell. */
+     * came up and OPENPETE_MOBY_SHELL leaves it on: the shell twins replace
+     * the opaque ACTOR pipes on a present that drew a shell, the tie-pull
+     * twins on every other present. */
     const int shell_built = moby_shell_on() && P.moby_rank_pipe != NULL;
     const nr_twin_out twins = { s_nr.cover_twins, &s_nr.cover_twin_n, s_nr.shell_twins,
                                 &s_nr.shell_twin_n, &s_nr.moby_shell_pipe,
@@ -10244,25 +10270,40 @@ static void bind_cover_block(uint32_t set, int rim)
     rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, set, rim ? 1u + (uint32_t)plane : 0u);
 }
 
-/** @brief The stock pipeline of a front-shell twin.
+/** @brief The stock pipeline of an opaque ACTOR twin (tie-pull or front-shell).
  * @param p Pipeline, or NULL.
- * @return The stock pipeline when @p p is a shell twin, else @p p. */
+ * @return The stock pipeline when @p p is a twin, else @p p. */
 static rhi_pipeline* nr_shell_stock_of(rhi_pipeline* p)
 {
     for (int i = 0; p && i < s_nr.shell_twin_n; i++)
-        if (p == s_nr.shell_twins[i].twin) return s_nr.shell_twins[i].stock;
+        if (p == s_nr.shell_twins[i].twin || p == s_nr.shell_twins[i].actor)
+            return s_nr.shell_twins[i].stock;
     return p;
+}
+
+/** @brief Whether a pipeline is a front-shell twin, which samples the shell images at sets 5 and 6.
+ * @param p Pipeline, or NULL.
+ * @return 1 for a front-shell twin, else 0. */
+static int nr_is_shell_twin(const rhi_pipeline* p)
+{
+    for (int i = 0; p && i < s_nr.shell_twin_n; i++)
+        if (p == s_nr.shell_twins[i].twin) return 1;
+    return 0;
 }
 
 /** @brief The pipeline an opaque ACTOR draw takes in place of a stock pipeline.
  * @param stock Stock pipeline, or NULL.
  * @return Its front-shell twin while the last shell pass drew a shell
- *         (s_shell_live) and the twin exists, else @p stock. */
+ *         (s_shell_live) and the twin exists, else its tie-pull twin when it
+ *         exists, else @p stock. */
 static rhi_pipeline* nr_shell_twin_of(rhi_pipeline* stock)
 {
-    for (int i = 0; s_shell_live && stock && i < s_nr.shell_twin_n; i++)
-        if (stock == s_nr.shell_twins[i].stock && s_nr.shell_twins[i].twin)
-            return s_nr.shell_twins[i].twin;
+    for (int i = 0; stock && i < s_nr.shell_twin_n; i++) {
+        if (stock != s_nr.shell_twins[i].stock) continue;
+        if (s_shell_live && s_nr.shell_twins[i].twin) return s_nr.shell_twins[i].twin;
+        if (s_nr.shell_twins[i].actor) return s_nr.shell_twins[i].actor;
+        break;
+    }
     return stock;
 }
 
@@ -10288,7 +10329,8 @@ static rhi_pipeline* opaque_group_hd_pipe(rhi_pipeline* tex)
  * when its stock pipeline is a key-resolve pipe. A front-shell twin takes
  * the shell image's depth and owner colour at set 5, the intruder image at
  * set 6, and the key sets of
- * its stock pipeline. Binding them here keeps every call site correct
+ * its stock pipeline; a tie-pull twin takes the key sets of its stock
+ * pipeline. Binding them here keeps every call site correct
  * without per-site handling. Any other pipeline is bound alone.
  * @param p Pipeline to bind. */
 static void bind_scene_pipe(rhi_pipeline* p)
@@ -10297,7 +10339,7 @@ static void bind_scene_pipe(rhi_pipeline* p)
     const nr_cover_twin* const tw = nr_cover_entry(p);
     if (tw) bind_cover_block(5, tw->rim);
     rhi_pipeline* const st = tw ? tw->stock : nr_shell_stock_of(p);
-    if (st != p && !tw) {
+    if (!tw && nr_is_shell_twin(p)) {
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.moby_shell_rt, s_nr.moby_shell_rt, 5);
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.moby_shell_intr_rt, s_nr.moby_shell_intr_rt, 6);
     }

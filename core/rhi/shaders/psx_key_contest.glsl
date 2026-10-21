@@ -562,7 +562,8 @@ bool op_rank_is_prop(float rank)
  * pulls (-128*dofs) float pickups and decor over whatever the OT sorts them
  * against, and a per-pixel window derived from them re-admits punch-through
  * (a chest through a wall lip, a gem through a near wall). Terrain over
- * moby is decided by true depth plus the -127 stored tie pull, the prop
+ * moby is decided by true depth plus the -127 stored tie pull where the
+ * terrain key is not in a nearer slot (op_actor_tie_depth), the prop
  * embed rule, and the actor-front pass.
  *
  * Prop embed: a curated embedded prop (pedestal discs, statue bases; a
@@ -580,8 +581,10 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
          * the terrain key: the table paints a terrain face over a nearer
          * moby face whose key is the same or farther, so a moby resting on
          * a step loses its lower half to the step's lip. Terrain against
-         * moby is decided by true depth with the -127 stored tie pull, a
-         * deliberate departure from the table's order. On one ordering
+         * moby is decided by true depth with the -127 stored tie pull
+         * where the terrain key is not in a nearer slot
+         * (op_actor_tie_depth), a deliberate departure from the table's
+         * order. On one ordering
          * table (slot_contest, OP_KEY_SLOT world per bucket) terrain
          * compares buckets, the table's own granularity: a difference
          * smaller than a bucket is no difference at all, and a terrain
@@ -598,6 +601,43 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
     return tkey < own - 64.0 ||
            (!truescope && akey < own - 64.0) ||
            mkey < own + 1024.0;
+}
+
+/* ---- the tie pull against terrain -------------------------------------
+ *
+ * Every moby vertex is stored OP_ACTOR_TIE_PULL world nearer than its true
+ * view-Z (OPENPETE_MOBY_TIE_PULL_VZ in openpete_native_render.h), so a moby
+ * face wins terrain the game puts in its ordering-table slot: the table
+ * resolves a same-slot moby-against-terrain pair to the moby. Where the
+ * terrain key at the pixel sits in a strictly nearer slot the table paints
+ * the terrain over the moby, so the pull would only pass a moby that lies
+ * behind a nearer surface. There an opaque moby fragment writes its true
+ * view-Z instead (the pull added back) and true depth decides the pixel
+ * against terrain; where the terrain key is in the same slot or a farther
+ * one it keeps the pulled depth. Nearer is the terrain-against-terrain test
+ * of op_key_loses: a smaller bucket on one ordering table (slot_contest),
+ * else a key smaller by more than half a slot.
+ *
+ * Residual: the image holds the nearest terrain key at the pixel, which is
+ * not always the key of the face that lies nearest in true depth. */
+#define OP_ACTOR_TIE_PULL 127.0
+
+/* The window depth an opaque moby fragment writes. zwin = the depth it
+ * would write otherwise (gl_FragCoord.z, or the front-shell depth); rank =
+ * its rank pair (a ranked face, an actor -1 or an embedded prop -1.25; any
+ * other face, terrain and the glow fan included, keeps zwin); koff = its key
+ * channel (absolute key + 0.5, <= 0.25 unkeyed: keeps zwin); tkey = the
+ * decoded terrain key at the pixel. */
+float op_actor_tie_depth(float zwin, vec2 rank, float koff, float tkey,
+                         bool slot_contest, bool reversed)
+{
+    bool moby = rank.x > 0.5 || (rank.x < -0.5 && rank.x > -1.5);
+    if (!moby || koff <= 0.25) return zwin;
+    bool nearer = slot_contest ? op_key_bucket(tkey) < floor((koff - 0.5) / OP_KEY_SLOT)
+                               : tkey < (koff - 0.5) - 64.0;
+    if (!nearer) return zwin;
+    float vz = op_vz_from_depth(zwin, reversed) + OP_ACTOR_TIE_PULL;
+    return reversed ? 1.0 / vz : 1.0 - 1.0 / vz;
 }
 
 /* ---- key order against terrain --------------------------------------

@@ -48,9 +48,18 @@ layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 void main()
 {
-#ifdef OP_MOBY_SHELL
+#if defined(OP_MOBY_SHELL) || defined(OP_ACTOR_TIE)
     /* Written before any discard; a discarded fragment writes nothing. */
-    gl_FragDepth = op_shell_depth(vRank, DEPTH_REVERSED);
+    float zout = gl_FragCoord.z;
+#ifdef OP_MOBY_SHELL
+    zout = op_shell_depth(vRank, DEPTH_REVERSED);
+#endif
+#ifdef OP_ACTOR_TIE
+    zout = op_actor_tie_depth(zout, vRank, vKoff,
+        op_key_from_stored(texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r),
+        SLOT_CONTEST, DEPTH_REVERSED);
+#endif
+    gl_FragDepth = zout;
 #endif
     bool ranked = vRank.x > 0.5;
     float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);

@@ -7284,13 +7284,16 @@ static int moby_face_rank(int i) {
     return (openpete_mobyrank_on() && isect_eligible(i) && s_wtri_contest[i]) ? s_nrank[i] : 0;
 }
 
+static double moby_tri_contest_key(int i);
+
 /** @brief Log the walk triangles whose centroid falls in a PSX-screen box over a VBL range (OPENPETE_MOBY_TRIDBG).
  *
  * The variable is "x0,y0,x1,y1,fA,fB" and is parsed once. For each VBL in
  * [fA, fB] every triangle whose centroid is in the box prints one line with
  * its identity (moby, fkey), material, contest flag, rank, bucket word and
- * per-vertex screen position, depths, UV and colour, for an offline identity
- * diff across VBLs. */
+ * per-vertex screen position, depths, UV and colour, and its contest key
+ * (moby_tri_contest_key), for an offline identity diff across VBLs and
+ * offline key-contest rasters. */
 static void moby_tri_debug(void) {
     static int s_td = -1; static int tx0, ty0, tx1, ty1, tfa, tfb;
     if (s_td < 0) {
@@ -7313,6 +7316,7 @@ static void moby_tri_debug(void) {
             fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%d,%d,%06X", k,
                     w->v[k].sx, w->v[k].sy, w->v[k].vz, w->v[k].tvz,
                     w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
+        fprintf(stderr, " ck=%.1f", moby_tri_contest_key(i));
         fputc('\n', stderr);
     }
 }
