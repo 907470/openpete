@@ -97,3 +97,17 @@ bamboo_terrace | pos=(81096, 78349, 17263) yaw=1054 pitch=198
 # A star-animation moby in front of a sub-area portal does not draw over
 # the portal surface. Blessed pre-fix.
 sunny_villa | pos=(51542, 35158, 19550) yaw=-1020 pitch=35
+# Sub-area door effects (class 3: opaque stars and a blended swirl) in
+# front of the door's void plate: native loses them to the plate by true
+# depth on these doors; the game sorts the plate behind them by its HP
+# push. Blessed pre-fix.
+bamboo_terrace | pos=(67021, 51211, 20056) yaw=1024 pitch=35
+desert_ruins | pos=(79114, 47350, 18182) yaw=-2048 pitch=35
+desert_ruins | pos=(115592, 61523, 23640) yaw=576 pitch=35
+icy_peak | pos=(80284, 63461, 10860) yaw=-1136 pitch=35
+icy_peak | pos=(63645, 40747, 18520) yaw=-1792 pitch=35
+seashell_shore | pos=(58996, 73315, 29968) yaw=-1248 pitch=35
+# Controls for the door-effect rule: a door whose effect draws today
+# (plate 650 world behind), and a locked door that must stay closed.
+cloud_spires | pos=(24353, 50583, 12028) yaw=-1200 pitch=35
+sunny_villa | pos=(82456, 64619, 21592) yaw=-144 pitch=35
