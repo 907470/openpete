@@ -49,7 +49,7 @@ colossus-ice-skating|1473|200||1494,1503,1694,1696,1734
 # colossus-ice-skating@wall: the player beside the rink's wall, VBL 1886;
 # native draws the mirrored copy's tail and horns but not its body under
 # the player, which the guest draws. Blessed pre-fix.
-colossus-ice-skating@wall|1860|200||1886
+colossus-ice-skating@wall|1886|200||1886
 
 # summer-forest-collect-orb: the orb pickup with the 3D orb HUD icon at the
 # bottom edge. 1455 is the reported tick where the guest frames the orb icon

@@ -18,12 +18,18 @@
 #   tests/harness/presentation-corpus.sh <off|on> <outdir> [bk2-filter] [--game SLUG]
 #     off|on     OPENPETE_DEPTH_AFFINE for the run (default off = HEAD behavior)
 #     outdir     where the -vk PNGs are written (created)
-#     bk2-filter substring; only manifest rows whose name contains it are run
-#                (default: cliff-town-vista, the single-bk2 bring-up scope)
+#     bk2-filter substring; only manifest rows whose name (the tile key)
+#                contains it are run (default: all rows; pg_row_selected, the
+#                rule every corpus applies)
 #     --game     game slug (default spyro-1); selects binary, disc, bk2 dir
 #                and manifest through scripts/presentation-game.sh
 #
 # Environment:
+#   PRESENTATION_LIST         1: print `[presentation-corpus] select <key>` and
+#                             the row's sample grid for each row the filter
+#                             selects, and the reason for each selected row
+#                             skipped, then capture nothing (no binary, disc
+#                             or output directory needed)
 #   PRESENTATION_REPEAT       N: capture each selected row N times as repeat
 #                             copies (scripts/presentation-game.sh, repeat
 #                             copies), the original row not at all
@@ -114,7 +120,9 @@ case "$AFFINE" in
   *) echo "presentation-corpus: first arg must be off|on|default (got '$AFFINE')" >&2; exit 64;; esac
 
 pg_manifest "$MANIFEST" pipe
+LIST="${PRESENTATION_LIST:-0}"
 
+if [[ "$LIST" != 1 ]]; then
 if [[ ! -x "$BIN" ]]; then echo "[presentation-corpus] SKIP: no binary at $BIN"; exit 64; fi
 if [[ ! -f "$DISC" ]]; then echo "[presentation-corpus] SKIP: no disc at $DISC"; exit 64; fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
@@ -132,6 +140,7 @@ mkdir -p "$OUTDIR"
 pg_crash_init "$OUTDIR"
 rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
 echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
+fi
 
 # The golden filename encodes the LOD mode: `original` (the authentic PSX band)
 # stays UNTAGGED so its golden is unchanged, `extended` (--no-lod, full detail at
@@ -278,7 +287,7 @@ while IFS= read -r row; do
   IFS='|' read -r name start interval freeze pins launch <<<"$row"
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
-  [[ "$name" == *"$FILTER"* ]] || continue
+  pg_row_selected "$FILTER" "$name" || continue
   mapfile -t row_keys < <(pg_copy_keys "$name")
   pending_keys=()
   for key in "${row_keys[@]}"; do
@@ -295,24 +304,28 @@ while IFS= read -r row; do
   # the surrounding whitespace is trimmed; the tokens keep their own spacing.
   launch="${launch:-}"; launch="$(echo "$launch" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   bk2="$PG_BK2_DIR/$(row_bk2 "$name").bk2"
+  pinned_len=0
   if [[ -f "$bk2" ]]; then
     fc="$(bk2_frames "$bk2")"
     # A row that starts at or past the movie end samples the game running on
     # without input (e.g. a scripted freecam engaged after the last input);
-    # its length is its last pin, as for a movie-less row.
+    # its length is its last pin, as for a movie-less row. The run is not
+    # stopped at the movie end (no --bk2-stop-on-end), so it reaches the pin.
     if [[ -n "$pins" && "$fc" =~ ^[0-9]+$ && "$start" -ge "$fc" ]]; then
-      fc="$(tr ',' '\n' <<<"$pins" | sort -n | tail -1)"
+      fc="$(tr ',' '\n' <<<"$pins" | sort -n | tail -1)"; pinned_len=1
       echo "  [$name] starts past the movie end: length from the last pin ($fc)"
     fi
   else
     # No movie: the plain boot (title screen, attract demo). The row's length is
     # its last pin, so a movie-less row must pin every frame it wants.
     if [[ -z "$pins" ]]; then echo "  SKIP row $name: no bk2 and no pins"; continue; fi
-    fc="$(tr ',' '\n' <<<"$pins" | sort -n | tail -1)"
+    fc="$(tr ',' '\n' <<<"$pins" | sort -n | tail -1)"; pinned_len=1
     echo "  [$name] no bk2: plain boot, length from the last pin ($fc)"
   fi
-  if ! [[ "$fc" =~ ^[0-9]+$ ]] || [[ "$fc" -le "$start" ]]; then
-    echo "  SKIP row $name: bad/short bk2 length ($fc) vs start ($start)"; continue; fi
+  # A length from the movie must pass the start; a length from the last pin
+  # may equal it (a row pinned at its own start captures that VBL).
+  if ! [[ "$fc" =~ ^[0-9]+$ ]] || (( fc < start || (fc == start && ! pinned_len) )); then
+    echo "  SKIP row $name: bad/short $( (( pinned_len )) && echo "last pin" || echo "bk2 length") ($fc) vs start ($start)"; continue; fi
   grid="$(compute_grid "$start" "$fc" "$interval" "$MAX_SAMPLES" "$pins")"
   canon="${grid%%|*}"; rest="${grid#*|}"; inter="${rest%%|*}"; flim="${rest##*|}"
   ncanon=$(awk -F, '{print NF}' <<<"$canon"); ninter=$(awk -F, '{print NF}' <<<"$inter")
@@ -324,6 +337,7 @@ while IFS= read -r row; do
     fail=1; continue; fi
   for key in "${pending_keys[@]}"; do
     ran=$((ran+1))
+    if [[ "$LIST" == 1 ]]; then echo "[presentation-corpus] select $key movie=$fc canon=[$canon] inter=[$inter]"; continue; fi
     echo "[$key] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}${launch:+  launch=$launch}"
     # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
     for lod in $CAP_LODS; do
@@ -335,6 +349,9 @@ while IFS= read -r row; do
 done < "$MANIFEST"
 cj_wait || fail=1
 
+if [[ "$LIST" == 1 ]]; then
+  echo "[presentation-corpus] $GAME: $ran row(s) selected by '$FILTER'"
+  (( ran )) || exit 65; exit 0; fi
 if [[ $fail -ne 0 ]]; then echo "[presentation-corpus] FAIL: missing captures"; exit 1; fi
 if [[ $ran -eq 0 && $imported -eq 0 ]]; then
   echo "[presentation-corpus] $GAME: no manifest rows matched '$FILTER' - 0 rows"; exit 65; fi

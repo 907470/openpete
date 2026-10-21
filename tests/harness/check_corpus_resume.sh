@@ -18,6 +18,8 @@
 #   params      another LOD set: no corpus row is imported
 #   row-edit    the bk2 row's manifest line edited: that row is refused
 #   filter      a bk2 filter that excludes the row: that row is refused
+#   off-kinds   bk2 and credits named as kinds the run selects no row of:
+#               only the freecam row is imported
 #   prev-left   a previous import interrupted (prev beside a partial outdir):
 #               the prev directory is the import source and is consumed
 #   race        the three legs of one row finish at once: one stamp, 3 tiles
@@ -80,10 +82,11 @@ grep -q '^tile: .* rowa__ident__100-vk.png$' "$OUT/resume/bk2.rowa.stamp" \
 cp -a "$OUT" "$W/snapshot"
 
 # Run rs_import on a fresh copy of the interrupted attempt. args: [filter]
+# [off-kinds]
 import_copy() {
   OUT="$W/cand"; rm -rf "$OUT" "$OUT.resume-prev"; cp -a "$W/snapshot" "$OUT"
   rs_init "$OUT" "$W/bin" default
-  rs_import "$OUT" "${1:-}" "" >"$W/import.log"
+  rs_import "$OUT" "${1:-}" "" "${2:-}" >"$W/import.log"
   rs_census "$OUT"
 }
 stamped() { [[ -f "$OUT/resume/$1.stamp" ]]; }   # args: kind.key
@@ -127,6 +130,9 @@ cp "$W/manifest.orig" "$PG_CORPUS_MANIFEST"
 import_copy rowb
 ! stamped bk2.rowa && [[ $RS_IMPORTED_ROWS -eq 2 ]] && pass "filter: a row outside the bk2 filter is refused" \
   || fail filter "$(cat "$W/import.log")"
+import_copy "" "bk2 credits"
+[[ $RS_IMPORTED_ROWS -eq 1 ]] && stamped "freecam.$SLUG" && ! stamped bk2.rowa && ! stamped credits.credits \
+  && pass "off-kinds: only the freecam row imported" || fail off-kinds "rows=$RS_IMPORTED_ROWS; $(cat "$W/import.log")"
 
 # An interrupted import: prev beside a partial outdir.
 OUT="$W/cand"; rm -rf "$OUT" "$OUT.resume-prev"; cp -a "$W/snapshot" "$OUT.resume-prev"

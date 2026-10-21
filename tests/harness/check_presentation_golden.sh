@@ -16,15 +16,27 @@
 # Usage:
 #   tests/harness/check_presentation_golden.sh [--build-dir=DIR] [--filter=SUBSTR]
 #                                        [--freecam-filter=SUBSTR] [--bless]
-#                                        [--repeat=N] [--game SLUG]
+#                                        [--repeat=N] [--list] [--game SLUG]
 #   tests/harness/check_presentation_golden.sh --verdict-only DIR [--game SLUG]
 #   tests/harness/check_presentation_golden.sh --materialize-ref [--game SLUG]
 #                                        [--tier T] [--at REV] <tile>...
-#     --filter          bk2-name substring (default all bk2s)
-#     --freecam-filter  freecam level or tile-key substring (default all poses)
+#     --filter          row substring applied to every corpus leg by one
+#                       rule (pg_row_selected): a bk2 row runs when its name
+#                       contains it, a freecam row when its name field or tile
+#                       key (`<level>-<pose md5 prefix>`) contains it, the
+#                       credits leg when `credits-interp` contains it. A
+#                       corpus with no matching row runs none of it and says
+#                       so. Default: every row of every corpus.
+#     --freecam-filter  the freecam corpus's filter in place of --filter (same
+#                       rule). Given without --filter, the bk2 corpus and the
+#                       credits leg run none of their rows.
 #                       Either filter scopes the run to part of the corpus: the
 #                       golden tiles it does not capture are then reported as
-#                       out of scope instead of missing.
+#                       out of scope instead of missing, and --bless promotes
+#                       only the tiles it captured.
+#     --list            print the rows each corpus leg selects under the
+#                       filters (PRESENTATION_LIST in the corpus scripts) and
+#                       exit 0; captures nothing and needs no binary
 #     --repeat=N        capture each row the filters select N times as repeat
 #                       copies (PRESENTATION_REPEAT, scripts/presentation-game.sh)
 #                       and compare every copy's tiles and identity pairs
@@ -87,7 +99,8 @@
 # sub-tick interpolation of the credits-roll letters (settled-line pose,
 # fly-in position/depth/rotation, key stability), a case the corpus bk2s do
 # not reach. It runs whether or not the diff passes, so one run reports every
-# verdict; it is not gated by --filter. The leg is a capture: its exit code
+# verdict. A filter that does not select it (above) records rc=64, reported
+# as skipped. The leg is a capture: its exit code
 # and output lines are recorded in credits-verdict.txt in the candidate
 # directory (first line `rc=N`), and the verdict reads its result from that
 # file, so --verdict-only decides a candidate captured elsewhere the same way.
@@ -158,6 +171,7 @@ fi
 FILTER=""           # bk2-name substring; default = the whole fanned-out corpus
 FREECAM_FILTER=""   # level substring for the freecam corpus; default = all poses
 BLESS=0
+LIST=0              # --list: print the selected rows, capture nothing
 REPEAT=""          # --repeat=N: repeat copies per selected row
 BUILD_ARG=""
 ENV_ACCEPT=""
@@ -170,6 +184,7 @@ for a in "$@"; do
   --filter=*) FILTER="${a#--filter=}";;
   --freecam-filter=*) FREECAM_FILTER="${a#--freecam-filter=}";;
   --repeat=*) REPEAT="${a#--repeat=}";;
+  --list) LIST=1;;
   --build-dir=*) BUILD_ARG="$a";;
   --environment-accept=*) ENV_ACCEPT="${a#--environment-accept=}";;
   --verdict-only) next_verdict=1;;
@@ -178,8 +193,19 @@ esac; done
 if (( next_verdict )) || [[ "$*" == *--verdict-only* && -z "$VERDICT_ONLY" ]]; then
   echo "[presentation-golden] FAIL: --verdict-only takes a candidate directory"; exit 1
 fi
-if [[ -n "$VERDICT_ONLY" && ( $BLESS -eq 1 || -n "$FILTER" || -n "$FREECAM_FILTER" || -n "$REPEAT" ) ]]; then
-  echo "[presentation-golden] FAIL: --verdict-only takes no --bless, --filter, --freecam-filter or --repeat"; exit 1
+if [[ -n "$VERDICT_ONLY" && ( $BLESS -eq 1 || $LIST -eq 1 || -n "$FILTER" || -n "$FREECAM_FILTER" || -n "$REPEAT" ) ]]; then
+  echo "[presentation-golden] FAIL: --verdict-only takes no --bless, --list, --filter, --freecam-filter or --repeat"; exit 1
+fi
+# Row selection per corpus leg. One filter selects in every leg; a
+# --freecam-filter replaces it for the freecam leg. A leg the scoped run
+# leaves without a filter (the bk2 and credits legs under --freecam-filter
+# alone) runs none of its rows.
+SCOPED=0; [[ -n "$FILTER" || -n "$FREECAM_FILTER" ]] && SCOPED=1
+BK2_ON=1 CREDITS_ON=1
+FC_SEL="${FREECAM_FILTER:-$FILTER}"
+if (( SCOPED )); then
+  [[ -n "$FILTER" ]] || BK2_ON=0
+  [[ -n "$FILTER" && "credits-interp" == *"$FILTER"* ]] || CREDITS_ON=0
 fi
 if [[ -n "$REPEAT" ]]; then
   if ! [[ "$REPEAT" =~ ^[1-9][0-9]*$ ]]; then
@@ -193,6 +219,19 @@ GAME="$(pg_parse_game "$@")" || exit 64
 BUILD_DIR="build/linux-release"
 [[ -n "$BUILD_ARG" ]] && BUILD_DIR="${BUILD_ARG#--build-dir=}"
 PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME" || exit 64
+# --list reads the manifests only, so it runs outside the capture image.
+if (( LIST )); then
+  if (( BK2_ON )); then
+    PRESENTATION_LIST=1 tests/harness/presentation-corpus.sh default "build/presentation-list" "$FILTER" "--game=$GAME"
+  else echo "[presentation-corpus] $GAME: no rows selected (--freecam-filter without --filter)"; fi
+  if [[ -n "$PG_FREECAM_MANIFEST" ]]; then
+    PRESENTATION_LIST=1 tests/harness/freecam-corpus.sh default "build/presentation-list" "$FC_SEL" "--game=$GAME"
+  fi
+  if [[ "$PG_TIER" == "presentation" ]]; then
+    if (( CREDITS_ON )); then echo "[credits] select credits-interp"; else echo "[credits] not selected by the filter"; fi
+  fi
+  exit 0
+fi
 if ! pg_in_capture_image; then
   if [[ -n "$VERDICT_ONLY" ]]; then
     # The container sees this tree and the store's parent directory only.
@@ -430,7 +469,7 @@ OUT="${PRESENTATION_GOLDEN_OUT:-$PG_CAND_DIR}"
 [[ $BLESS -eq 1 ]] && unset OPENPETE_RESUME_RUN
 rs_init "$OUT" "$PG_BIN" default
 if (( RS_ON )); then
-  rs_import "$OUT" "$FILTER" "$FREECAM_FILTER"
+  rs_import "$OUT" "$FILTER" "$FC_SEL" "$( (( BK2_ON )) || echo bk2) $( (( CREDITS_ON )) || echo credits)"
 else
   rm -rf "$OUT"; mkdir -p "$OUT"
 fi
@@ -453,8 +492,12 @@ python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER"
 # (presentation-corpus.sh off = the legacy encoding via the kill switch).
 # Both corpora write into the SAME dir so the diff covers their union: the bk2
 # set (presentation-corpus.sh) + the debug-freecam poses (freecam-corpus.sh).
-tests/harness/presentation-corpus.sh default "$OUT" "$FILTER" $BUILD_ARG "$GAME_ARG"
-rc=$?
+if (( BK2_ON )); then
+  tests/harness/presentation-corpus.sh default "$OUT" "$FILTER" $BUILD_ARG "$GAME_ARG"
+  rc=$?
+else
+  echo "[presentation-corpus] $GAME: no rows selected (--freecam-filter without --filter) - 0 rows"; rc=65
+fi
 if [[ $rc -eq 64 ]]; then echo "[presentation-golden] SKIP (capture prereqs missing)"; exit 64; fi
 # 65 = the bk2 corpus had no rows for this game. Not a failure on its own: the
 # freecam corpus may still carry rows, and the row count below decides.
@@ -464,7 +507,7 @@ if [[ $rc -ne 0 && $rc -ne 65 ]]; then echo "[presentation-golden] FAIL: capture
 # capture), a missing Vulkan loader returns 64 (skip that corpus, keep the bk2
 # result), and a missing capture or a missing manifest (1) fails the gate.
 if [[ -n "$PG_FREECAM_MANIFEST" ]]; then
-  tests/harness/freecam-corpus.sh default "$OUT" "$FREECAM_FILTER" $BUILD_ARG "$GAME_ARG"
+  tests/harness/freecam-corpus.sh default "$OUT" "$FC_SEL" $BUILD_ARG "$GAME_ARG"
   frc=$?
   if [[ $frc -eq 1 ]]; then echo "[presentation-golden] FAIL: freecam capture incomplete"; vr_finish 1; fi
 fi
@@ -491,7 +534,11 @@ fi
 # recorded in OUT and read back by vr_verdict.
 # A passed leg is stamped as the row `credits-interp`, so a resumed attempt
 # imports its record instead of running it again.
-if [[ "$PG_TIER" == "presentation" ]]; then
+if [[ "$PG_TIER" == "presentation" ]] && (( ! CREDITS_ON )); then
+  echo "[presentation-golden] credits leg not selected by the filter"
+  vr_record_credits 64 <(echo "[credits-interp] SKIP: not selected by the filter")
+  rs_stream_credits 64
+elif [[ "$PG_TIER" == "presentation" ]]; then
   if rs_imported credits credits; then
     echo "[presentation-golden] credits leg imported from the previous attempt ($(head -n 1 "$OUT/$CREDITS_NAME"))"
   else

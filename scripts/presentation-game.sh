@@ -223,6 +223,15 @@ pg_pose_slug() {
   echo "${1//:/-}-${h}"
 }
 
+# The row filter every corpus applies: a row is selected when the filter is
+# empty or a substring of the row's name field or of its tile key (the bk2
+# row's key is its name, a freecam row's is pg_pose_slug). One rule for
+# every corpus, so one substring selects the same row wherever it lives.
+# args: filter name [tile-key]
+pg_row_selected() {
+  [[ -z "$1" || "$2" == *"$1"* || ( -n "${3:-}" && "$3" == *"$1"* ) ]]
+}
+
 # ---- repeat copies ---------------------------------------------------------
 #
 # PRESENTATION_REPEAT=N (N >= 1) captures every selected row N times instead

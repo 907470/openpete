@@ -190,9 +190,10 @@ rs_files_done() {
 rs_trim() { sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$1"; }
 
 # Print why a stamp of the previous attempt cannot be imported; print nothing
-# when it can. args: stamp prev-dir bk2-filter freecam-filter
+# when it can. args: stamp prev-dir bk2-filter freecam-filter [off-kinds]
+# (off-kinds: space-separated kinds the run selects no row of)
 rs_check_stamp() {
-  local s="$1" prev="$2" filter="$3" ffilter="$4"
+  local s="$1" prev="$2" filter="$3" ffilter="$4" off=" ${5:-} "
   local base="${1##*/}"; base="${base%.stamp}"
   local kind="${base%%.*}" key="${base#*.}"
   local run="" tree="" bin="" params="" row="" line k sha name ntiles=0 manifest="" rname pose
@@ -216,6 +217,7 @@ rs_check_stamp() {
   [[ "$bin" == "$RS_BIN" ]] || { echo "binary ${bin:0:12}, this attempt's ${RS_BIN:0:12}"; return; }
   [[ "$params" == "$(rs_params "$kind" "$RS_AFFINE")" ]] || { echo "params '$params' differ from '$(rs_params "$kind" "$RS_AFFINE")'"; return; }
   (( ntiles > 0 )) || { echo "no tile"; return; }
+  [[ "$off" == *" $kind "* ]] && { echo "the filters select no $kind row"; return; }
   # A repeat copy's key is its row's key and `~r<k>` (pg_copy_keys): it
   # imports only into a repeat run whose copies include k, and a row's own
   # key only into a run without repeat.
@@ -232,14 +234,14 @@ rs_check_stamp() {
       manifest="$PG_CORPUS_MANIFEST"
       rname="$(tr -d ' \t' <<<"${row%%|*}")"
       [[ "$rname" == "$rkey" ]] || { echo "row names $rname, the stamp $key"; return; }
-      [[ "$rname" == *"$filter"* ]] || { echo "row outside the filter '$filter'"; return; };;
+      pg_row_selected "$filter" "$rname" || { echo "row outside the filter '$filter'"; return; };;
     freecam)
       manifest="$PG_FREECAM_MANIFEST"
       [[ -n "$manifest" ]] || { echo "the tier has no freecam manifest"; return; }
       rname="$(tr -d ' \t' <<<"${row%%|*}")"
       pose="${row#*|}"; pose="$(rs_trim "${pose%%|*}")"
       [[ "$(pg_pose_slug "$rname" "$pose")" == "$rkey" ]] || { echo "row keys $(pg_pose_slug "$rname" "$pose"), the stamp $key"; return; }
-      [[ -z "$ffilter" || "$rname" == *"$ffilter"* || "$rkey" == *"$ffilter"* ]] || { echo "row outside the freecam filter '$ffilter'"; return; };;
+      pg_row_selected "$ffilter" "$rname" "$rkey" || { echo "row outside the freecam filter '$ffilter'"; return; };;
     credits)
       [[ "$key" == credits && "$row" == credits-interp && "$PG_TIER" == presentation ]] \
         || { echo "not this tier's credits leg"; return; }
@@ -251,6 +253,7 @@ rs_check_stamp() {
 
 # Set the previous attempt's output aside, move its importable rows into a
 # fresh outdir and delete the rest. args: outdir bk2-filter freecam-filter
+# [off-kinds] (rs_check_stamp)
 rs_import() {
   local out="$1" prev="$1.resume-prev" s why line k sha name rows=0 png=0 files n p
   local -a streamed=()
@@ -261,7 +264,7 @@ rs_import() {
   : >"$out/resume/imported.tsv"
   for s in "$prev"/resume/*.stamp; do
     [[ -e "$s" ]] || continue
-    why="$(rs_check_stamp "$s" "$prev" "$2" "$3")"
+    why="$(rs_check_stamp "$s" "$prev" "$2" "$3" "${4:-}")"
     if [[ -n "$why" ]]; then echo "[resume] not imported: ${s##*/}: $why"; continue; fi
     n=0 p=0
     while IFS= read -r line; do

@@ -191,10 +191,12 @@ EXTRA tile and both members of every EXCEED pair must be in the unit's
 stream directory; a mismatch sets the unit's rc to 1 (`stream mismatch`).
 Stopped and SKIP units and attempts without END are exempt.
 --filter S / --freecam-filter S: each unit captures only the bk2 rows whose
-name contains S and the freecam rows whose level field or tile key
-(`<level>-<pose md5 prefix>`) contains the freecam substring (an unset one
-selects all of its corpus); the unit is decided by its capture's own
-verdict (out-of-scope tiles are not missing) instead of --verdict-only, and
+name contains S, the freecam rows whose name field or tile key
+(`<level>-<pose md5 prefix>`) contains the freecam substring (unset: S),
+and the credits leg when `credits-interp` contains S; with --freecam-filter
+alone the bk2 rows and the credits leg run none
+(tests/harness/check_presentation_golden.sh, --filter); the unit is decided
+by its capture's own verdict (out-of-scope tiles are not missing) instead of --verdict-only, and
 the report's compared count must be nonzero instead of
 equal to the manifest's rows. A partial run decides nothing for landing.
 --repeat N (with a filter): each unit captures every row its filters select
@@ -5046,9 +5048,10 @@ def main(argv=None):
     h.add_argument("--hosts", default="")
     h.add_argument("--no-local", action="store_true", help="leave the local host out")
     p.add_argument("--pull", choices=("divergent", "all"), default="divergent")
-    p.add_argument("--filter", help="bk2-name substring each unit captures (with "
+    p.add_argument("--filter", help="row substring each unit captures in every corpus (with "
                    "--freecam-filter: a partial run, decided by the capture's own verdict)")
-    p.add_argument("--freecam-filter", help="freecam level or tile-key substring each unit captures")
+    p.add_argument("--freecam-filter", help="freecam name or tile-key substring each unit "
+                   "captures, in place of --filter for the freecam corpus")
     p.add_argument("--repeat", type=int, metavar="N",
                    help="capture each filtered row N times concurrently on its host and "
                         "compare every copy against the blessed row (needs a filter)")

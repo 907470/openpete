@@ -34,9 +34,10 @@
 #   tests/harness/freecam-corpus.sh <off|on> <outdir> [level-filter] [--game SLUG]
 #     off|on        OPENPETE_DEPTH_AFFINE for the run (default off = HEAD behavior)
 #     outdir        where the -vk PNGs are written (created)
-#     level-filter  substring; only rows whose level field or tile key
+#     level-filter  substring; only rows whose name field or tile key
 #                   (`<level>-<pose md5 prefix>`) contains it are run
 #                   (default: all), so a key selects one pose of a level
+#                   (pg_row_selected, the rule every corpus applies)
 #     --game        game slug (default spyro-1); selects binary, disc and
 #                   manifest through scripts/presentation-game.sh
 #
@@ -52,6 +53,9 @@
 # finishes is stamped.
 #
 # Environment:
+#   PRESENTATION_LIST         1: print `[freecam-corpus] select <key>` for each
+#                             row the filter selects and capture nothing (no
+#                             binary, disc or output directory needed)
 #   PRESENTATION_REPEAT       N: capture each selected row N times as repeat
 #                             copies (scripts/presentation-game.sh, repeat
 #                             copies), the original row not at all
@@ -112,7 +116,9 @@ case "$AFFINE" in
   *) echo "freecam-corpus: first arg must be off|on|default (got '$AFFINE')" >&2; exit 64;; esac
 
 pg_manifest "$MANIFEST" pipe
+LIST="${PRESENTATION_LIST:-0}"
 
+if [[ "$LIST" != 1 ]]; then
 if [[ ! -x "$BIN" ]]; then echo "[freecam-corpus] SKIP: no binary at $BIN"; exit 64; fi
 if [[ ! -f "$DISC" ]]; then echo "[freecam-corpus] SKIP: no disc at $DISC"; exit 64; fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
@@ -127,6 +133,7 @@ mkdir -p "$OUTDIR"
 pg_crash_init "$OUTDIR"
 rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
 echo "[freecam-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT lods=[$CAP_LODS] filter='$FILTER' -> $OUTDIR"
+fi
 
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
@@ -186,11 +193,12 @@ while IFS= read -r row; do
   launch="$(echo "${launch:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [[ -z "$pose" ]] && { echo "  SKIP row: no pose for level '$level'"; continue; }
   row_key="$(pg_pose_slug "$name" "$pose")"
-  [[ -n "$FILTER" && "$name" != *"$FILTER"* && "$row_key" != *"$FILTER"* ]] && continue
+  pg_row_selected "$FILTER" "$name" "$row_key" || continue
   local_istart=$((start + 50))
   flim=$((local_istart + 51))
   mapfile -t row_keys < <(pg_copy_keys "$row_key")
   for slug in "${row_keys[@]}"; do
+    if [[ "$LIST" == 1 ]]; then ran=$((ran+1)); echo "[freecam-corpus] select $slug level=$level start=$start"; continue; fi
     if rs_imported freecam "$slug"; then
       imported=$((imported+1)); echo "[$slug] imported from the previous attempt"; continue; fi
     ran=$((ran+1))
@@ -205,6 +213,7 @@ done < "$MANIFEST"
 cj_wait || fail=1
 
 if [[ $ran -eq 0 && $imported -eq 0 ]]; then echo "[freecam-corpus] $GAME: no rows matched '$FILTER' - 0 rows"; exit 0; fi
+if [[ "$LIST" == 1 ]]; then echo "[freecam-corpus] $GAME: $ran row(s) selected by '$FILTER'"; exit 0; fi
 if [[ $fail -ne 0 ]]; then echo "[freecam-corpus] FAIL: missing captures"; exit 1; fi
 echo "[freecam-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images in $OUTDIR across $ran pose(s) captured, $imported imported"
 exit 0

@@ -165,8 +165,8 @@ scripts/golden-fleet.py stop <run-id>                       # every running and 
 | `--no-local` | Leave the local host out. Exclusive with `--hosts`. |
 | `--pull divergent\|all` | `divergent` (default): the report files, divergent tiles and identity pairs; `all`: the whole candidate directory. |
 | `--wait` | Follow the detached coordinator and exit with its code. |
-| `--filter S` | bk2 rows whose name contains `S`. With either filter the unit captures part of its corpus and is decided by its capture's own verdict; a partial run decides nothing for landing. |
-| `--freecam-filter S` | Freecam rows whose level field or tile key (`<level>-<pose md5 prefix>`) contains `S`; a tile key selects one pose. |
+| `--filter S` | In every corpus, the rows whose name or tile key contains `S`: bk2 rows by name, freecam rows by name field or tile key, the credits leg when `credits-interp` contains `S`. A corpus with no matching row runs none of it. With either filter the unit captures part of its corpus and is decided by its capture's own verdict; a partial run decides nothing for landing. |
+| `--freecam-filter S` | Freecam rows whose name field or tile key (`<level>-<pose md5 prefix>`) contains `S`, in place of `--filter` for the freecam corpus; a tile key selects one pose. Without `--filter`, the bk2 rows and the credits leg run none. |
 | `--repeat N` | Capture every row the filters select `N` times on its one host and compare every copy against the blessed row (Repeat rows). Needs a filter. |
 | `--expect FILE` | Expected-moves file (Streamed divergences); a line naming a unit not in the run, or a substring matching nothing, refuses the run with exit 2 before it detaches. |
 
