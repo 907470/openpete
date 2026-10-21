@@ -463,6 +463,11 @@ const game_layout_t spyro3_game_layout = {
          * key sorts it in front of the door's plate, which lies in front of
          * it in true depth. */
         .key_order_cls  = 3u,
+        /* Update (0x80055400) dispatches game.state 6 to UpdateCutscene and
+         * 11 to the title overlay (func_title_8007566C); both draw through
+         * the same model table filled with their own models, where index 3
+         * is Spyro, not the door effect. */
+        .key_order_off_states = (1u << 6) | (1u << 11),
 
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,

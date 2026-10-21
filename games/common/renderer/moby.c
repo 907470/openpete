@@ -7367,16 +7367,33 @@ static int moby_class_is_prop(uint16_t cls) {
     return 0;
 }
 
+/** @brief Report whether the model table holds the models key_order_cls names.
+ *
+ * The class halfword indexes the game's model table, which a cutscene or the
+ * title screen refills with its own models. Reads game.state
+ * (game_layout.game_state) and answers 0 while it is one of
+ * game_layout.moby.key_order_off_states. Reads guest RAM only.
+ * @param cpu Guest CPU state.
+ * @return 1 when the key-order class is the game's door effect this tick. */
+static int moby_key_order_table_live(CPUState* cpu) {
+    if (game_layout.moby.key_order_cls == 0u) return 0;
+    if (game_layout.moby.key_order_off_states == 0u || game_layout.game_state == 0u) return 1;
+    const uint32_t st = cpu->read_word(game_layout.game_state);
+    return !(st < 32u && (game_layout.moby.key_order_off_states >> st) & 1u);
+}
+
 /** @brief Report whether a moby class draws by the game's key order against terrain.
  *
  * The class is game_layout.moby.key_order_cls (Spyro 3's sub-area door
  * effect, whose stars and swirl lie behind the door's terrain plate in true
- * depth and sort in front of it by key). Its keyed faces mark the actor key
+ * depth and sort in front of it by key), counted only while
+ * moby_key_order_table_live holds. Its keyed faces mark the actor key
  * image, and a terrain fragment keyed behind the marked key yields the pixel.
  * @param cls The moby's m_Class.
+ * @param live moby_key_order_table_live for this walk.
  * @return 1 for that class, 0 otherwise or when the game names none. */
-static int moby_class_draws_by_key(uint16_t cls) {
-    return game_layout.moby.key_order_cls != 0u && cls == game_layout.moby.key_order_cls;
+static int moby_class_draws_by_key(uint16_t cls, int live) {
+    return live && cls == game_layout.moby.key_order_cls;
 }
 
 /** @brief Return the rank sentinel an unranked opaque actor face carries into the key contest.
@@ -7482,9 +7499,11 @@ static double moby_tri_contest_key(int i) {
  * opaque unmangled actor faces while key resolve is on, its rank while it contests a face of its own
  * moby, its material slot (resolved per moby at emit time, since slot ids are
  * interned per feed cycle) and whether a reveal added it. Writes host scene
- * state only. */
-static void push_scene_moby_tris(void) {
+ * state only.
+ * @param cpu Guest CPU state, read for moby_key_order_table_live. */
+static void push_scene_moby_tris(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
+    const int ko_live = moby_key_order_table_live(cpu);
     static int s_logged = 0;
     if (!s_logged && s_gout.n > 0) {
         s_logged = 1;
@@ -7558,7 +7577,7 @@ static void push_scene_moby_tris(void) {
               t.koff = (float)(moby_tri_contest_key(i) + 0.5);
               /* Embedded-PROP classes: rendered whole from every angle. */
               t.prop = moby_class_is_prop(s_wtri_cls[i]);
-              t.key_order = moby_class_draws_by_key(s_wtri_cls[i]);
+              t.key_order = moby_class_draws_by_key(s_wtri_cls[i], ko_live);
           } }
         /* Rank: the face's paint position while it intersects another face
          * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate
@@ -7627,7 +7646,7 @@ static void push_scene_moby(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
-    push_scene_moby_tris();
+    push_scene_moby_tris(cpu);
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts -- */
@@ -8076,7 +8095,7 @@ void moby_native_overlay_commit(void) {
     /* The held scene is still the open one; the next Draw's 2D is in it, so
      * the triangles go in front of that 2D, where the pass would have fed them. */
     openpete_native_scene_front_begin();
-    push_scene_moby_tris();
+    push_scene_moby_tris(cpu);
     openpete_native_scene_front_end();
     s_pass_overlay = 0;
     if (borrow) {

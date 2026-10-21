@@ -833,6 +833,12 @@ typedef struct game_layout {
          * (moby_class_draws_by_key in games/common/renderer/moby.c). 0: no
          * class draws by key. */
         uint16_t key_order_cls;
+        /* The game.state values (bit n = state n, game_layout.game_state)
+         * whose regime draws an overlay's own models: the class halfword
+         * indexes the model table, which a cutscene or the title screen
+         * fills with its own set, so key_order_cls names the door effect
+         * only outside these states. 0: every state. */
+        uint32_t key_order_off_states;
 
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it
