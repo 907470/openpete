@@ -111,3 +111,7 @@ seashell_shore | pos=(58996, 73315, 29968) yaw=-1248 pitch=35
 # (plate 650 world behind), and a locked door that must stay closed.
 cloud_spires | pos=(24353, 50583, 12028) yaw=-1200 pitch=35
 sunny_villa | pos=(82456, 64619, 21592) yaw=-144 pitch=35
+# Lava past the game's draw range stops undulating at extended LOD while
+# the near lava keeps moving: a seam between near and far lava.
+# Blessed pre-fix.
+fireworks_factory | pos=(-18130, 83228, 13192) yaw=-78 pitch=119
