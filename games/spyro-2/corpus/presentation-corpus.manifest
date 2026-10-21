@@ -46,6 +46,10 @@ autumn-plains-skelos-badlands-portal-entry|1723|200||1423,1424,1425,1646,1658,17
 # under the ice. 1494, 1694 and 1734 are intermediate legs whose tick pair spans a
 # body keyframe advance; 1696 is the leg after one.
 colossus-ice-skating|1473|200||1494,1503,1694,1696,1734
+# colossus-ice-skating@wall: the player beside the rink's wall, VBL 1886;
+# native draws the mirrored copy's tail and horns but not its body under
+# the player, which the guest draws. Blessed pre-fix.
+colossus-ice-skating@wall|1886|200||1886
 
 # summer-forest-collect-orb: the orb pickup with the 3D orb HUD icon at the
 # bottom edge. 1455 is the reported tick where the guest frames the orb icon
