@@ -356,8 +356,8 @@ static void log_state(const char* what) {
  * state. LOD also re-reads the fog state the LOD setter resolved. EXIT
  * requests a cooperative shutdown once armed twice. DOCUMENTATION opens the
  * documentation in the system browser and toasts whether one opened.
- * ADVANCED closes the menu and opens the dev overlay on its Controls
- * section, or toasts NOT AVAILABLE without an overlay. DISPLAY and the mod rows apply nothing
+ * ADVANCED closes the menu and opens the dev overlay scrolled to its top,
+ * or toasts NOT AVAILABLE without an overlay. DISPLAY and the mod rows apply nothing
  * here. A row whose ROW_SURFACE persist flag is set marks its
  * knob for the settings writer, which saves it after the debounce interval,
  * on menu close or at shutdown; DISPLAY is marked too, since the writer
@@ -395,13 +395,13 @@ static void apply_row(int row) {
         break;
     case ROW_ADVANCED:
         /* The dev overlay is the full settings UI; this row closes the menu
-         * and opens the overlay on its Controls section. */
+         * and opens the overlay at its top. */
         if (!openpete_devui_available()) {
             openpete_osd_notify("host", ROW_SURFACE[ROW_ADVANCED].id, 0, "NOT AVAILABLE");
             break;
         }
         if (s_open) openpete_menu_toggle();
-        openpete_devui_open_section("Controls");
+        openpete_devui_open_top();
         break;
     case ROW_DOCS:
         /* The menu stays open: the browser takes the focus, and the player

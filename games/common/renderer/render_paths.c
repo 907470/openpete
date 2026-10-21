@@ -418,10 +418,9 @@ static int rp_knob_set(knob_desc_t* k, const char* v) {
 
 /** @brief Parses --render-paths, syncs the native isolation background, and registers the per-canonical-present commit.
  *
- * Also binds the dev overlay's render_paths row and its path vocabulary; the
- * binds fail silently in
- * builds without that row. The module hooks no guest address: each path's
- * own feature module records its polybuf interval.
+ * Also binds the dev overlay's render_paths row and its path vocabulary.
+ * The module hooks no guest address: each path's own feature module records
+ * its polybuf interval.
  * @param opts The parsed options; NULL leaves every path rendering. */
 static void render_paths_apply_options(const openpete_options_t* opts) {
     render_paths_init(opts ? opts->render_paths : NULL);
@@ -432,8 +431,7 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
      * loop (renderer-agnostic), not psyq_DrawOTag (future-removed). */
     openpete_native_register_commit(render_paths_commit);
     openpete_native_scene_register_superseded(render_paths_superseded);
-    /* Attach the live channel to the dev overlay's row (absent in dist
-     * builds - ignore the miss). */
+    /* Attach the live channel to the dev overlay's row. */
     (void)openpete_knob_bind_str("render_paths", rp_knob_get, rp_knob_set);
     (void)openpete_knob_bind_vocab("render_paths", k_names, RP_COUNT);
 }

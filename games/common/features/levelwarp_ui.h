@@ -12,8 +12,9 @@
  * A game supplies a levelwarp_game_t: its target table, the words its route
  * and arrival read, and the hooks only it can supply - entering its own
  * transition toward a target and, where the transition is retargeted on the
- * way, the leaving phase. The title-screen route is the same for every game
- * (game_set_skip_to_level), so this module owns it. */
+ * way, the leaving phase. The title-screen route hands the target to the
+ * --skip-to-level machinery (game_set_skip_to_level, or the game's
+ * title_start), so this module owns it. */
 
 #include "features/level_table.h"
 #include "openpete_knobs.h" /* knob_desc_t */
@@ -55,8 +56,12 @@ typedef struct levelwarp_game {
     uint32_t demo_word;
     int (*live)(CPUState* cpu);
     /* The target number the player is at, read for the dropdown's
-     * auto-follow and on arrival. */
+     * auto-follow and on arrival: current() when set, else current_word. */
     uint32_t current_word;
+    uint32_t (*current)(CPUState* cpu);
+    /* Optional title route for a target: NULL is
+     * game_set_skip_to_level(target). */
+    void (*title_start)(int target);
     /* Optional: a reason the selected target cannot be warped to from the
      * current state, shown as the button's status; NULL when it can. */
     const char* (*target_refused)(CPUState* cpu, int target);

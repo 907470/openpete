@@ -237,6 +237,16 @@ void levelwarp_called(levelwarp_t* w) {
     w->ticks = 0;
 }
 
+/** @brief Read the target number the player is at.
+ *
+ * @param g The game.
+ * @param cpu The guest CPU state.
+ * @return g->current(cpu) when the game supplies it, else the word at
+ *         g->current_word. */
+static uint32_t current_of(const levelwarp_game_t* g, CPUState* cpu) {
+    return g->current ? g->current(cpu) : cpu->read_word(g->current_word);
+}
+
 /** @brief Pick the route the live guest state allows.
  *
  * The title route when title_word reads title_value; the in-level route when
@@ -265,8 +275,9 @@ static void drain(levelwarp_t* w, CPUState* cpu, int target) {
         /* The --skip-to-level machinery owns this one: it induces the
          * demo-timeout transition at the next Press-Start window, which also
          * gets the progress and lives reset a fresh session needs. */
-        game_set_skip_to_level(target);
-        OPL_INFO_F(g->log_tag, "queued title-screen boot into level %d", target);
+        if (g->title_start) g->title_start(target);
+        else                game_set_skip_to_level(target);
+        OPL_INFO_F(g->log_tag, "queued title-screen boot into %s %d", g->unit, target);
     } else if (w->route == LEVELWARP_ROUTE_LEVEL && !w->refused) {
         w->target = (uint32_t)target;
         const int ph = g->start(w, cpu, target);
@@ -299,7 +310,7 @@ static int ui_tick(levelwarp_t* w, CPUState* cpu) {
         ? g->target_refused(cpu, g->table->levels[w->sel].number) : NULL;
 
     if (!w->sel_touched && w->phase == LEVELWARP_IDLE) {
-        int idx = game_level_index(g->table, (int)cpu->read_word(g->current_word));
+        int idx = game_level_index(g->table, (int)current_of(g, cpu));
         if (idx >= 0) w->sel = idx;
     }
 
@@ -318,7 +329,7 @@ static int ui_tick(levelwarp_t* w, CPUState* cpu) {
  * @param cpu The guest CPU state. */
 static void arrive(levelwarp_t* w, CPUState* cpu) {
     const levelwarp_game_t* g = w->game;
-    const uint32_t landed = cpu->read_word(g->current_word);
+    const uint32_t landed = current_of(g, cpu);
     if (landed != w->target)
         OPL_INFO_F(g->log_tag, "landed in %s %u, wanted %u", g->unit,
                    (unsigned)landed, (unsigned)w->target);

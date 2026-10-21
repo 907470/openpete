@@ -22,6 +22,12 @@
 // No sub-area portal leads to another sub-area, so a warp between two
 // sub-areas goes by way of area 0, as play does.
 //
+// The dropdown lists every sub-area of every level in skip_to_area.c's table,
+// "<level name> - Area N". From another level the warp first loads the level
+// in area 0 with the level warp's own request (WarpToLevel, levelwarp.c), and
+// once that level is live enters the area as above. From the title screen it
+// arms --skip-to-area, which does the same at boot.
+//
 // The warp makes the portal's call through the transition queue
 // (transition_call.c), at Draw func_8001E638 entry after the tick's whole
 // Update, as the portal moby calls from inside Update. The portal's path
@@ -43,55 +49,95 @@
 #include "transition_call.h"
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"   /* CPUState + its read callbacks */
+#include "levelwarp.h"
 #include "spyro-3/skip_to_level.h"
 
+#include <stdio.h>
+
+#define S3_GAME_STATE       0x8006E344u
 #define S3_CURRENT_LEVEL    0x8006C5BCu
 #define S3_AREA             0x8006C5C8u
 #define S3_IS_DEMO_MODE     0x8006C658u
+#define S3_GS_TITLE         11u
 
-/* The dropdown's entries: the area index is the area word's value. No area
- * name is held by the game (its strings name levels, eggs and the pause
- * rows), so the entries are numbered. */
-static const game_level_t k_areas[] = {
-    { "main", "Main area", 0 },
-    { "1",    "Area 1",    1 },
-    { "2",    "Area 2",    2 },
-    { "3",    "Area 3",    3 },
-};
+/* A dropdown entry's number packs the level and the area: level * 16 +
+ * area. Every area count of the sub-area table is below 16. */
+#define AREA_KEY(level, area) ((level) * 16 + (area))
+#define KEY_LEVEL(key)        ((key) / 16)
+#define KEY_AREA(key)         ((key) % 16)
 
-static const game_level_table_t k_area_table = {
-    GAME_LEVEL_ROWS(k_areas), NULL, 0, "area", "OPENPETE_AREAWARP_TEST", 0u,
+/* The entries, built at registration from the sub-area table and the level
+ * table's display names. The game holds no area name (its strings name
+ * levels, eggs and the pause rows), so the areas are numbered. */
+#define AREA_ENTRIES_MAX 64
+static game_level_t k_areas[AREA_ENTRIES_MAX];
+static char         s_area_slug[AREA_ENTRIES_MAX][32];
+static char         s_area_display[AREA_ENTRIES_MAX][48];
+
+static game_level_table_t k_area_table = {
+    k_areas, 0, NULL, 0, "area", "OPENPETE_AREAWARP_TEST", 0u,
 };
 
 static const knob_desc_t k_area_rows[2] = {
     { .id = "warp_area", .label = "Area warp", .section = "Gameplay",
-      .help = "Destination for the area Warp button, in a Spyro 3 level with "
-              "sub-areas: the main area or a numbered sub-area. Follows the "
-              "area you are in until you pick something.",
+      .help = "Destination for the area Warp button: a sub-area of a Spyro 3 "
+              "level. Follows the sub-area you are in until you pick "
+              "something.",
       .type = KNOB_ENUM, .mut = KNOB_LIVE,
-      .default_note = "the area the player is in" },
+      .default_note = "the sub-area the player is in" },
     { .id = "warp_area_go", .label = "Warp to area", .section = "Gameplay",
-      .help = "Enter the selected area the way its portal does, keeping "
-              "progress. From one sub-area to another the warp passes "
-              "through the main area.",
+      .help = "Enter the selected sub-area the way its portal does, keeping "
+              "progress. From another level the warp loads that level first, "
+              "as the level warp does; from another sub-area of the same "
+              "level it passes through the main area. From the title screen "
+              "it starts a fresh session there, as --skip-to-area does.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Warp" },
 };
 
 static levelwarp_t s_warp;
-static int         s_level = 0;  /* the level the request was made in */
-static int         s_from  = 0;  /* the area the queued leg leaves */
+static int         s_level = 0;  /* the level the warp ends in */
+static int         s_from  = 0;  /* the area the queued area leg leaves */
 static int         s_final = 0;  /* the area the warp ends in */
 
-/** @brief Report why an area cannot be warped to from the current state.
+/** @brief Fill the dropdown's entries from the sub-area table, one per sub-area.
+ *
+ * The slug is "<level name>:<area>", the --skip-to-area spelling; the
+ * display is "<level display name> - Area <area>". */
+static void build_entries(void) {
+    size_t n = 0;
+    int    areas = 0;
+    for (size_t i = 0; spyro3_area_level_at(i, &areas) >= 0; i++) {
+        const int level = spyro3_area_level_at(i, NULL);
+        const int li    = game_level_index(&spyro3_levels, level);
+        for (int a = 1; a < areas && n < AREA_ENTRIES_MAX; a++, n++) {
+            snprintf(s_area_slug[n], sizeof s_area_slug[n], "%s:%d",
+                     li >= 0 ? spyro3_levels.levels[li].name : "?", a);
+            snprintf(s_area_display[n], sizeof s_area_display[n], "%s - Area %d",
+                     li >= 0 ? spyro3_levels.levels[li].display : "?", a);
+            k_areas[n].name    = s_area_slug[n];
+            k_areas[n].display = s_area_display[n];
+            k_areas[n].number  = AREA_KEY(level, a);
+        }
+    }
+    k_area_table.count = n;
+}
+
+/** @brief Read the entry number the player is at: the current level and area word packed by AREA_KEY.
  *
  * @param cpu The guest CPU state.
- * @param target The area index.
- * @return The status text, or NULL when the warp may start. */
+ * @return AREA_KEY(currentLevel, area word). */
+static uint32_t area_current(CPUState* cpu) {
+    return (uint32_t)AREA_KEY((int)cpu->read_word(S3_CURRENT_LEVEL),
+                              (int)cpu->read_word(S3_AREA));
+}
+
+/** @brief Report why an entry cannot be warped to from the current state.
+ *
+ * @param cpu The guest CPU state.
+ * @param target The entry number.
+ * @return "already here" in that level and area, else NULL. */
 static const char* area_refused(CPUState* cpu, int target) {
-    const int count = spyro3_area_count((int)cpu->read_word(S3_CURRENT_LEVEL));
-    if (count <= 1) return "no sub-areas in this level";
-    if (target >= count) return "no such area in this level";
-    if ((uint32_t)target == cpu->read_word(S3_AREA)) return "already here";
+    if ((uint32_t)target == area_current(cpu)) return "already here";
     return NULL;
 }
 
@@ -148,33 +194,51 @@ static int queue_leg(levelwarp_t* w, CPUState* cpu) {
         OPL_INFO_F("areawarp", "%s", "ignored (a transition is already queued)");
         return LEVELWARP_IDLE;
     }
-    w->target = (uint32_t)leg;
+    w->target = (uint32_t)AREA_KEY(s_level, leg);
     OPL_INFO_F("areawarp", "queued: level %d area %d -> area %d (warp to area %d)",
                s_level, from, leg, s_final);
     return LEVELWARP_QUEUED;
 }
 
-/** @brief Start an area warp: record the level and the final area, then queue the first leg.
+/** @brief Start an area warp: record the level and area, then queue the level leg or the first area leg.
+ *
+ * In another level the first leg is the level warp's WarpToLevel request to
+ * the target level, landing in area 0; in the target level it is queue_leg.
+ * @param w The warp.
+ * @param cpu The guest CPU state.
+ * @param target The entry number.
+ * @return LEVELWARP_QUEUED, or LEVELWARP_IDLE when the request is ignored. */
+static int area_start(levelwarp_t* w, CPUState* cpu, int target) {
+    s_level = KEY_LEVEL(target);
+    s_final = KEY_AREA(target);
+    if (cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_level)
+        return queue_leg(w, cpu);
+    if (!spyro3_levelwarp_enqueue("areawarp", s_level, leg_called, leg_dropped)) {
+        OPL_INFO_F("areawarp", "%s", "ignored (a transition is already queued)");
+        return LEVELWARP_IDLE;
+    }
+    w->target = (uint32_t)AREA_KEY(s_level, 0);
+    OPL_INFO_F("areawarp", "queued: level %u -> level %d (warp to area %d)",
+               (unsigned)cpu->read_word(S3_CURRENT_LEVEL), s_level, s_final);
+    return LEVELWARP_QUEUED;
+}
+
+/** @brief Queue the area leg after a leg's arrival in the target level's area 0.
  *
  * @param w The warp.
  * @param cpu The guest CPU state.
- * @param target The area index.
- * @return queue_leg's phase. */
-static int area_start(levelwarp_t* w, CPUState* cpu, int target) {
-    s_level = (int)cpu->read_word(S3_CURRENT_LEVEL);
-    s_final = target;
+ * @param landed The entry number read on arrival.
+ * @return LEVELWARP_QUEUED for the leg to the final area, else LEVELWARP_IDLE. */
+static int area_arrival(levelwarp_t* w, CPUState* cpu, uint32_t landed) {
+    if (landed != (uint32_t)AREA_KEY(s_level, 0) || s_final == 0) return LEVELWARP_IDLE;
     return queue_leg(w, cpu);
 }
 
-/** @brief Queue the leg from area 0 to the final area after a first leg's arrival in area 0.
+/** @brief Arm --skip-to-area for an entry chosen at the title screen.
  *
- * @param w The warp.
- * @param cpu The guest CPU state.
- * @param landed The area word read on arrival.
- * @return LEVELWARP_QUEUED for a second leg, else LEVELWARP_IDLE. */
-static int area_arrival(levelwarp_t* w, CPUState* cpu, uint32_t landed) {
-    if (landed != 0u || s_final == 0) return LEVELWARP_IDLE;
-    return queue_leg(w, cpu);
+ * @param target The entry number. */
+static void area_title_start(int target) {
+    spyro3_area_set(KEY_LEVEL(target), KEY_AREA(target));
 }
 
 static const levelwarp_game_t k_area_game = {
@@ -183,9 +247,12 @@ static const levelwarp_game_t k_area_game = {
     .test_env         = "OPENPETE_AREAWARP_TEST",
     .table            = &k_area_table,
     .unit             = "area",
+    .title_word       = S3_GAME_STATE,
+    .title_value      = S3_GS_TITLE,
     .demo_word        = S3_IS_DEMO_MODE,
     .live             = spyro3_skip_gameplay_live,
-    .current_word     = S3_AREA,
+    .current          = area_current,
+    .title_start      = area_title_start,
     .target_refused   = area_refused,
     .start            = area_start,
     .on_arrival       = area_arrival,
@@ -195,7 +262,10 @@ static const levelwarp_game_t k_area_game = {
 
 static levelwarp_t s_warp = { .game = &k_area_game };
 
-void spyro3_areawarp_register(void) { levelwarp_register(&s_warp); }
+void spyro3_areawarp_register(void) {
+    build_entries();
+    levelwarp_register(&s_warp);
+}
 
 void spyro3_areawarp_surface(struct openpete_surface_sink* sink) {
     levelwarp_surface(sink, k_area_rows);

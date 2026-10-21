@@ -10,11 +10,10 @@
 # and --bk2-record as the port-0 recorder.
 #
 # The script opens the settings menu, moves to ADVANCED and changes it
-# (the overlay opens on Controls), starts the capture the page's button
+# (the overlay opens at its top), starts the capture the page's button
 # posts (`rebind pad.cross 1`), presses pad east as the candidate, closes
 # the overlay with Escape, then presses pad east again.
-# Pass: "open section Controls" and "section Controls expanded" logged; the
-# commit logged; the recording's records hold one run of Cross and no
+# Pass: "open at top" logged; the commit logged; the recording's records hold one run of Cross and no
 # Circle (the post-close press; the capture press is held neutral); and
 # main's restamp count > 0 in the exit summary. A neutral record during the
 # windowed capture proves nothing about the capture term (the focused page
@@ -81,8 +80,7 @@ print(runs, n)
 PY
 }
 
-opened=$(count "devui: open section Controls")
-expanded=$(count "devui: section Controls expanded")
+opened=$(count "devui: open at top")
 commits=$(count "rebind commit pad.cross pad:east")
 main_restamps=$(sed -n 's/.*restamps main=\([0-9]*\).*/\1/p' "$OUT/win.log" | tail -1)
 if [ ! -f "$OUT/win.bk2" ]; then
@@ -90,11 +88,11 @@ if [ ! -f "$OUT/win.bk2" ]; then
 fi
 read -r cross_runs cross_n < <(runs 9)
 read -r circle_runs circle_n < <(runs 8)
-detail="open_section=$opened expanded=$expanded commits=$commits restamps_main=${main_restamps:-?} cross_runs=$cross_runs circle_records=$circle_n"
+detail="open_top=$opened commits=$commits restamps_main=${main_restamps:-?} cross_runs=$cross_runs circle_records=$circle_n"
 if [ "$commits" = 0 ] || [ "$opened" = 0 ]; then
     echo "[rebind-win] VACUOUS $detail"; exit 2
 fi
-if [ "$expanded" -ge 1 ] && [ "$cross_runs" = 1 ] && [ "$circle_n" = 0 ] &&
+if [ "$cross_runs" = 1 ] && [ "$circle_n" = 0 ] &&
    [ "${main_restamps:-0}" -gt 0 ]; then
     echo "[rebind-win] PASS $detail"; exit 0
 fi

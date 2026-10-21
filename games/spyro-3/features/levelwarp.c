@@ -79,19 +79,11 @@ static const s3_transition_store_t k_warp_stores[] = {
     { S3_AREA, 4u, 0u, 0u },
 };
 
-/** @brief Queues WarpToLevel func_800584BC(0, target_id) through the transition queue.
- *
- * The request drains at the next Draw func_8001E638 entry, after this tick's
- * Update; the drain re-reads warp_route_level, then writes 0 to the area word
- * 0x8006C5C8 before the call. A request made while another is queued is
- * ignored with a log line.
- * @param w The warp; unused.
- * @param cpu The guest CPU state.
- * @param target_id The level number to warp to.
- * @return LEVELWARP_QUEUED, or LEVELWARP_IDLE when ignored. */
-static int warp_start(levelwarp_t* w, CPUState* cpu, int target_id) {
+int spyro3_levelwarp_enqueue(const char* tag, int target_id,
+                             void (*called)(CPUState* cpu),
+                             void (*dropped)(CPUState* cpu)) {
     s3_transition_request_t req = {
-        .tag      = "levelwarp",
+        .tag      = tag,
         .entry    = S3_TRANSITION_AT_DRAW,
         .fn       = S3_FN_WARP_TO_LEVEL,
         .a0       = 0u,
@@ -99,12 +91,23 @@ static int warp_start(levelwarp_t* w, CPUState* cpu, int target_id) {
         .stores   = k_warp_stores,
         .n_stores = sizeof(k_warp_stores) / sizeof(k_warp_stores[0]),
         .route    = warp_route_level,
-        .called   = warp_called,
-        .dropped  = warp_dropped,
+        .called   = called,
+        .dropped  = dropped,
     };
+    return s3_transition_enqueue(&req);
+}
+
+/** @brief Queues the level warp's WarpToLevel request through spyro3_levelwarp_enqueue.
+ *
+ * A request made while another is queued is ignored with a log line.
+ * @param w The warp; unused.
+ * @param cpu The guest CPU state.
+ * @param target_id The level number to warp to.
+ * @return LEVELWARP_QUEUED, or LEVELWARP_IDLE when ignored. */
+static int warp_start(levelwarp_t* w, CPUState* cpu, int target_id) {
     uint32_t cur = cpu->read_word(S3_CURRENT_LEVEL);
     (void)w;
-    if (!s3_transition_enqueue(&req)) {
+    if (!spyro3_levelwarp_enqueue("levelwarp", target_id, warp_called, warp_dropped)) {
         OPL_INFO_F("levelwarp", "%s", "ignored (a transition is already queued)");
         return LEVELWARP_IDLE;
     }

@@ -2013,6 +2013,19 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "NAME", .help_order = 70,
       .help_text = "libavcodec audio encoder (default {def})" },
 
+    { "render_paths", "Render paths", "Display", "--render-paths", NULL,
+      "Draw only the named render paths (cyclorama,spyro,moby,terrain,"
+      "shadow,flame,particles,tracer,transition,portal,glow,sparkle,"
+      "moby_shadow,ui); none draws no path. Empty clears the selection. "
+      "Changes only the picture.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .default_note = "every path",
+      .help_arg = "LIST", .help_order = 100,
+      .help_text = "draw ONLY these paths, e.g.\n"
+          "cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
+          "tracer,transition,portal,moby_shadow,ui (default: every path).\n"
+          "Lets a path be compared in isolation; the picture only" },
 };
 
 #ifndef OPENPETE_HIDE_DEBUG_FLAGS
@@ -2020,19 +2033,6 @@ static const knob_desc_t g_builtin[] = {
  * each copy debug_block, which is how the surface dump tells them apart. */
 static const knob_desc_t g_builtin_debug[] = {
     /* -------- Debug (toggles / tunables) -------- */
-    { "render_paths", "Render paths", "Debug", "--render-paths", NULL,
-      "Render only the named paths in isolation (cyclorama,spyro,moby,"
-      "terrain,shadow,flame,particles,tracer,transition,portal,glow,sparkle,"
-      "moby_shadow,ui); none renders no path. Empty or \"(all)\" clears the "
-      "selection.",
-      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .help_arg = "LIST", .help_order = 100,
-      .help_text = "render ONLY these paths in both renderers, e.g.\n"
-          "cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
-          "tracer,transition,portal,moby_shadow,ui. Lets a path be\n"
-          "compared in isolation." },
-
     { "log_level", "Log level", "Debug", "--log-level", "OPENPETE_LOG",
       "Per-subsystem stderr log levels, e.g. cd:debug,*:info. Applying "
       "REPLACES all boot rules with the typed spec (empty = *:info).",

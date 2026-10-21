@@ -19,3 +19,18 @@ typedef struct CPUState CPUState;
  * whether it is the target. This function writes no guest word itself.
  * @param cpu The guest CPU state. */
 void spyro3_levelwarp_on_tick(CPUState* cpu);
+
+/** @brief Queues WarpToLevel func_800584BC(0, target_id) through the transition queue.
+ *
+ * The request drains at the next Draw func_8001E638 entry, after this tick's
+ * Update. The drain re-reads the in-level route (gameplay live, isDemoMode 0,
+ * game.state not the title), then writes 0 to the area word 0x8006C5C8 and
+ * makes the call. The level warp and the area warp's level leg both use it.
+ * @param tag The request's log tag.
+ * @param target_id The level number to warp to.
+ * @param called Run by the drain after the call.
+ * @param dropped Run by the drain when the route no longer holds.
+ * @return Non-zero when queued; 0 when another request is already queued. */
+int spyro3_levelwarp_enqueue(const char* tag, int target_id,
+                             void (*called)(CPUState* cpu),
+                             void (*dropped)(CPUState* cpu));

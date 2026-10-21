@@ -26,6 +26,13 @@ int spyro3_area_resolve(const char* arg, int* out_area);
  * @return The count; 1 (area 0 only) for a level with no sub-area. */
 int spyro3_area_count(int level);
 
+/** @brief Returns one row of the sub-area table, in level order.
+ *
+ * @param i The row index, from 0.
+ * @param areas Receives the row's area count (area 0 included); may be NULL.
+ * @return The row's level number, or -1 past the last row. */
+int spyro3_area_level_at(size_t i, int* areas);
+
 /** @brief Finds the paired moby of the portal standing in one area and leading to another.
  *
  * Walks the moby table from *(0x8006C550) to *(0x8006C704) in 88-byte

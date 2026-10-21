@@ -279,34 +279,17 @@ int  openpete_devui_available(void) { return s_inited; }
 int  openpete_devui_is_open(void)   { return s_inited && s_open; }
 void openpete_devui_close(void)     { s_open = false; }
 
-/* A section the next panel frame expands and scrolls to
- * (openpete_devui_open_section): written on the host loop, consumed on the
- * frame thread. */
-static SDL_AtomicInt s_section_req;
-static char          s_section_title[32];
+/* A scroll-to-top request the next panel frame consumes
+ * (openpete_devui_open_top): set on the host loop, taken on the frame
+ * thread. */
+static SDL_AtomicInt s_top_req;
 
-void openpete_devui_open_section(const char *title)
+void openpete_devui_open_top(void)
 {
-    if (!s_inited || !title) return;
-    snprintf(s_section_title, sizeof s_section_title, "%s", title);
-    SDL_MemoryBarrierRelease();
-    SDL_SetAtomicInt(&s_section_req, 1);
+    if (!s_inited) return;
+    SDL_SetAtomicInt(&s_top_req, 1);
     s_open = true;
-    OPL_INFO_F("devui", "open section %s", title);
-}
-
-/** @brief Take the pending section request when it names this section; frame thread.
- *
- * @param title the section's header title.
- * @return true once per request for the section it names. */
-static bool section_requested(const char *title)
-{
-    if (!SDL_GetAtomicInt(&s_section_req)) return false;
-    SDL_MemoryBarrierAcquire();
-    if (strcmp(s_section_title, title) != 0) return false;
-    SDL_SetAtomicInt(&s_section_req, 0);
-    OPL_INFO_F("devui", "section %s expanded", title);
-    return true;
+    OPL_INFO_F("devui", "%s", "open at top");
 }
 
 int openpete_devui_toggle(void)
@@ -2059,6 +2042,7 @@ static const lay_section k_layout[] = {
  * --help, --config-report, the config file and saving still carry them. */
 static const char *const k_lay_hidden[] = {
     "background", "version_osd", "mouse", "input_lock", "camlock", "bk2_stop_on_end", "cheats",
+    "launcher_fullscreen", "launcher_window",
 };
 
 /** @brief Report whether a knob id is named by a layout row or hidden from the panel.
@@ -2668,9 +2652,14 @@ static const char *reset_layer_word(const char *origin)
     return "global";
 }
 
-/** @brief Report whether an action's row is listed: KM_DEV rows only in a build that compiles the debug flags in. */
-static bool controls_row_listed(const openpete_keymap_action_info_t &info)
+/** @brief Report whether an action's row is listed: never a fill-tag inspector action, and KM_DEV rows only in a build that compiles the debug flags in.
+ *
+ * @param a The action.
+ * @param info The action's description.
+ * @return true when the binding page shows the row. */
+static bool controls_row_listed(openpete_action_t a, const openpete_keymap_action_info_t &info)
 {
+    if (a >= OPK_FILLPICK && a <= OPK_FILLPICK_UNDO) return false;
 #ifdef OPENPETE_HIDE_DEBUG_FLAGS
     if (info.flags & KM_DEV) return false;
 #endif
@@ -2762,7 +2751,7 @@ static void draw_binding_group(const ImGuiTextFilter &filter, const char *table_
         openpete_keymap_action_info_t info;
         if (!openpete_keymap_action_info((openpete_action_t)a, &info)) continue;
         if (ctx >= 0 && info.ctx != ctx) continue;
-        if (!controls_row_listed(info)) continue;
+        if (!controls_row_listed((openpete_action_t)a, info)) continue;
         if (filter.IsActive() && !filter.PassFilter(info.purpose) && !filter.PassFilter(info.id))
             continue;
         draw_binding_row((openpete_action_t)a, info);
@@ -2772,15 +2761,13 @@ static void draw_binding_group(const ImGuiTextFilter &filter, const char *table_
 
 /** @brief Draw the Controls section: player 1's PlayStation pad, then the host hotkeys grouped by the context that reads them.
  *
- * A section request (openpete_devui_open_section) expands it and scrolls
- * to it once. The last edit's message (committed, refused or cancelled)
+ * The fill-tag inspector's actions are left out: they stay bindable in the
+ * config file. The last edit's message (committed, refused or cancelled)
  * shows under the header. */
 static void draw_controls_section(const ImGuiTextFilter &filter)
 {
-    const bool requested = section_requested("Controls");
-    if (requested || filter.IsActive()) ImGui::SetNextItemOpen(true);
+    if (filter.IsActive()) ImGui::SetNextItemOpen(true);
     if (!ImGui::CollapsingHeader("Controls")) return;
-    if (requested) ImGui::SetScrollHereY(0.0f);
     char msg[224];
     (void)openpete_rebind_last_message(msg, sizeof msg);
     if (msg[0]) ImGui::TextWrapped("%s", msg);
@@ -2796,7 +2783,6 @@ static void draw_controls_section(const ImGuiTextFilter &filter)
         { KM_CTX_GAMEPLAY, "During play" },
         { KM_CTX_MENU,     "Settings menu" },
         { KM_CTX_FREECAM,  "Free camera" },
-        { KM_CTX_FILLPICK, "Fill-tag inspector" },
         { KM_CTX_DEVUI,    "This overlay" },
     };
     for (const auto &g : groups) {
@@ -2851,7 +2837,8 @@ static void draw_panel(void)
     ImGuiIO &io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(24, 24), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(540, io.DisplaySize.y - 96), ImGuiCond_FirstUseEver);
-    if (s_boot_reveal) ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
+    const bool to_top = SDL_GetAtomicInt(&s_top_req) != 0;
+    if (s_boot_reveal || to_top) ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
 
     bool open = s_open;
     if (!ImGui::Begin("openpete config", &open)) {
@@ -2859,6 +2846,11 @@ static void draw_panel(void)
         draw_capture_prompt();
         s_open = open;
         return;
+    }
+
+    if (to_top) {
+        SDL_SetAtomicInt(&s_top_req, 0);
+        ImGui::SetScrollY(0.0f);
     }
 
     static ImGuiTextFilter s_filter;

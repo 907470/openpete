@@ -99,6 +99,12 @@ int spyro3_area_count(int level) {
     return 1;
 }
 
+int spyro3_area_level_at(size_t i, int* areas) {
+    if (i >= AREA_LEVEL_COUNT) return -1;
+    if (areas) *areas = k_area_levels[i].areas;
+    return k_area_levels[i].level;
+}
+
 /** @brief Parses a non-negative decimal area index.
  *
  * The string must be non-empty and all decimal digits. The value is atoi's,

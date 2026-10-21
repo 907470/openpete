@@ -57,7 +57,7 @@ closed; click a title to open it.
 | Section | Rows |
 | --- | --- |
 | Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
-| Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths (absent from release packages) |
+| Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths |
 | Gameplay | Freecam, Tick scale, Pause sim, Runahead, Rewind, Level warp, Area warp (Spyro 3) |
 | Gameplay, Audio (collapsed) | Mute, SFX volume, Music volume |
 | Gameplay, Input (collapsed) | Vibration, Mouse sensitivity |
@@ -82,10 +82,16 @@ stats' position, Notifications' position and timeout, Fog's scale, and the
 **SFX volume** and **Music volume** sliders beside their **Override**
 checkbox.
 
-**Render paths** draws only the chosen render paths (sky, Spyro, mobys,
-terrain, shadows, flame, particles, the 2D UI and the rest), one checkbox
-each, for comparing one path in isolation; **All** returns to normal drawing
-and **None** draws no path. It changes only the picture.
+**Render paths** <!-- id: knob:render_paths --> draws only the chosen
+render paths (sky, Spyro, mobys, terrain, shadows, flame, particles, the 2D
+UI and the rest), one checkbox each, for comparing one path in isolation;
+**All** returns to normal drawing and **None** draws no path. It changes
+only the picture, and the overlay's **Save settings** does not save it.
+The default is every path <!-- id: knob:render_paths -->. At launch,
+`--render-paths LIST` <!-- id: flag:--render-paths --> takes the same names,
+comma-separated: `cyclorama`, `spyro`, `moby`, `terrain`, `shadow`,
+`flame`, `particles`, `tracer`, `transition`, `portal`, `glow`, `sparkle`,
+`moby_shadow`, `ui`, or `none`.
 
 **Pause sim** <!-- id: knob:pause --> stops the game's ticks while the
 picture keeps presenting, as the pause key ({{ key("key:host.pause") }} <!-- id: key:host.pause -->)
@@ -121,8 +127,8 @@ key, `camlock`, is unbound unless configured <!-- id: key:host.camlock -->.
 
 The **Controls** section edits key and button bindings in place of
 `[keys.pad]` and `[keys.host]` lines in [`openpete.toml`](../customizing/key-bindings.md).
-**ADVANCED** in the [settings menu](settings-menu.md#advanced) opens the
-overlay on this section.
+It starts collapsed. The fill-tag inspector's keys are not listed; they
+are bound in the file (see [Development actions](../customizing/key-bindings.md#development-actions)).
 
 **Player 1** lists the PlayStation pad in port 1; **Hotkeys** lists
 OpenPete's own keys, grouped by when they are read. Each row shows the
@@ -187,17 +193,19 @@ active**) or when no route exists (**not in a level**).
 
 ### Area warp
 
-On Spyro: Year of the Dragon, the **Area warp** row moves between the
-[sub-areas](../games/spyro-3.md#sub-areas) of the level you are in. Its list
-<!-- id: knob:warp_area --> holds **Main area** and **Area 1** to **Area 3**
-and follows the area you are in until you pick one; the **Warp** button
-<!-- id: knob:warp_area_go --> enters the chosen area the way its portal
-does, and progress is kept. From one sub-area to another the warp passes
-through the main area, as the level's portals do. The button is disabled in
-a level with no sub-areas (**no sub-areas in this level**), for an area the
-level does not have (**no such area in this level**), in the chosen area
-(**already here**), while the free camera is on, and outside gameplay (during
-a speech, a load or a menu).
+On Spyro: Year of the Dragon, the **Area warp** row moves to any
+[sub-area](../games/spyro-3.md#sub-areas). Its list
+<!-- id: knob:warp_area --> holds one entry per sub-area, such as
+**Sunny Villa - Area 1**, and follows the sub-area you are in until you pick
+one; the **Warp** button <!-- id: knob:warp_area_go --> starts the warp, and
+progress is kept. From another level the warp first loads the chosen level,
+as the level warp does, then enters the area the way its portal does. From
+another sub-area of the same level it passes through the main area, as the
+level's portals do. From the title screen it starts a new session in the
+chosen sub-area, as `--skip-to-area` does, with progress and lives reset.
+The button is disabled in the chosen area (**already here**), while the free
+camera is on, and outside gameplay (during a speech, a load or a menu). The
+main area of a level is reached with the level warp.
 
 ## Mods
 
