@@ -345,7 +345,9 @@ static void shadow_moby_dump(CPUState* cpu) {
  *  Reproduces the per-moby ground-point projection, the oriented-quad matrix
  *  assembly (two MVMVA passes per packed orientation index), the 4 fan corners
  *  and the distance fade, projecting in float so the geometry carries
- *  sub-pixel/HD precision and sub-tick interpolation. The VERIFY path compares
+ *  sub-pixel/HD precision and sub-tick interpolation. Which records draw is the
+ *  game's own verdict on the GTE's integer values (shadow_record_verdict),
+ *  never a float re-test. The VERIFY path compares
  *  the SXY shape against the captured FT3 prims (the .s int16 output as the
  *  oracle).
  * =========================================================================== */
@@ -372,18 +374,6 @@ void shadow_project(const int R[3][3], const double TR[3], double ofx, double of
     ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, v, 1, &r);
     o->sx = (float)r.sx; o->sy = (float)r.sy; o->sz = (float)r.m3;
     o->m1 = (float)r.m1; o->m2 = (float)r.m2;
-}
-
-/** @brief Signed twice-area of a screen triangle on the float SXY, the sign of GTE NCLIP's MAC0.
- *
- * The GTE's integer SXY is not applied: rounding flips a near-zero-area fan's
- * sign at grazing angles, which culls the whole moby drop-shadow.
- * @param a The first vertex.
- * @param b The second vertex.
- * @param c The third vertex.
- * @return The signed twice-area; negative is a back face. */
-static double sh_nclip(const shadow_pt* a, const shadow_pt* b, const shadow_pt* c) {
-    return ngte_nclip(a->sx, a->sy, b->sx, b->sy, c->sx, c->sy, NGTE_NCLIP_FLOAT);
 }
 
 /** @brief Assembles the oriented-quad matrix R' from the two packed orientation indices.
@@ -515,7 +505,8 @@ float shadow_slot_koff(int slot) {
 #define MOBY_SHADOW_SKIP (-2)
 /** @brief The ordering-table slot of one moby shadow triangle (anchor, p1, p2).
  *
- * The slot is the quarter-world key >> 7 less the moby's signed depth byte
+ * The key is (SZ1 + SZ2) * 3/2 + SZA on the GTE's integer SZ (each sum's
+ * half a logical shift); the slot is key >> 7 less the moby's signed depth byte
  * less the game's constant. Returns -1 (not keyed) on a game whose layout
  * does not mirror it (moby_ot_bias 0). A mirrored slot below zero is returned
  * as MOBY_SHADOW_SKIP: the game does not insert that triangle (the bltz after
@@ -524,16 +515,18 @@ float shadow_slot_koff(int slot) {
  * the build keeps it, where the GTE A/B compares four triangles per moby.
  * @param cpu The guest CPU state.
  * @param mob The moby's address.
- * @param anchor The projected ground anchor.
- * @param p1 The fan triangle's second vertex.
- * @param p2 The fan triangle's third vertex.
+ * @param sza The anchor's SZ.
+ * @param sz1 The fan triangle's second vertex SZ.
+ * @param sz2 The fan triangle's third vertex SZ.
  * @return The slot, -1, or MOBY_SHADOW_SKIP. */
-static int moby_shadow_slot(CPUState* cpu, uint32_t mob, const shadow_pt* anchor,
-                            const shadow_pt* p1, const shadow_pt* p2) {
+static int moby_shadow_slot(CPUState* cpu, uint32_t mob, int sza, int sz1, int sz2) {
     const uint32_t off = game_layout.shadow.moby_ot_bias;
     if (!off) return -1;
     int bias = (int)(int8_t)cpu->read_byte(mob + off) - game_layout.shadow.moby_ot_bias_sub;
-    int slot = shadow_ot_slot(anchor->sz, p1->sz, p2->sz, 7, bias);
+    uint32_t key = (uint32_t)sz1 + (uint32_t)sz2;
+    key += key >> 1;
+    key += (uint32_t)sza;
+    int slot = (int)(key >> 7) - bias;
     return slot < 0 ? MOBY_SHADOW_SKIP : slot;
 }
 
@@ -543,14 +536,12 @@ typedef struct { float sx[3], sy[3], sz[3]; int u[3], v[3]; uint32_t rgb;
 #define MAX_MOSH 1024
 static moshtri s_mosh[MAX_MOSH]; static int s_mosh_n;
 
-/** @brief Packs a projected point as the GTE's (SY << 16) | (SX & 0xFFFF) word.
+/** @brief Packs a float-projected point as the GTE's (SY << 16) | (SX & 0xFFFF) word.
  *
- * The screen-extent rejections below are integer tests on that packed word,
- * so the float corners are packed back to it first. Each component is
- * MAC0 >> 16, an arithmetic shift, which rounds toward negative infinity, so
- * the float is floored and not rounded to nearest: a corner whose true X lies
- * in (-1, 0) packs as -1 with its sign bit set, and that sign bit is what the
- * left-of-column-0 rejection reads.
+ * Each component is floored, the arithmetic shift MAC0 >> 16 takes, so a
+ * point whose X lies in (-1, 0) packs as -1 with its sign bit set. The
+ * admission reads the integer evaluation's words; this form serves the
+ * calibration's float verdict.
  * @param p The point.
  * @return The packed word. */
 static int32_t packed_sxy(const shadow_pt* p) {
@@ -558,18 +549,24 @@ static int32_t packed_sxy(const shadow_pt* p) {
     return (int32_t)(((uint32_t)yi << 16) | ((uint32_t)xi & 0xFFFFu));
 }
 
+/** @brief The sign-extended SX of a packed SXY word.
+ *
+ * @param p The packed word.
+ * @return SX. */
+static int sxy_x(int32_t p) { return shadow_s16((int)((uint32_t)p & 0xFFFFu)); }
+
 /** @brief The anchor-extent rejection, used when the layout's cull form is not the four-corner one.
  *
  * The anchor alone must be on screen. Its packed word is rejected when it is
  * at most 0 (a negative SY, or SX and SY both 0) or at least 0xF00000, and
- * its sign-extended SX when it is at most -8 or at least 0x208.
- * @param anchor The projected anchor.
+ * its sign-extended SX when it is at most -8 or at least 0x208 (r_shadows.s
+ * 8005A32C-8005A350).
+ * @param packed The anchor's packed SXY word.
  * @return 1 to reject the shadow, else 0. */
-static int cull_anchor(const shadow_pt* anchor) {
-    int32_t packed = packed_sxy(anchor);
+static int cull_anchor(int32_t packed) {
     if (packed <= 0) return 1;
     if (packed - 0xF00000 >= 0) return 1;
-    int xext = shadow_s16((int)((uint32_t)packed & 0xFFFFu));
+    int xext = sxy_x(packed);
     if (xext + 8 <= 0) return 1;
     if (xext - 0x208 >= 0) return 1;
     return 0;
@@ -584,14 +581,11 @@ static int cull_anchor(const shadow_pt* anchor) {
  * first bound is folded into the running OR: the handwritten routine keeps
  * the constant in the register it accumulates into, so those two tests answer
  * for three corners only.
- * @param c The four projected corners.
+ * @param p The four corners' packed SXY words.
  * @return 1 to reject the shadow, else 0. */
-static int cull_corners(const shadow_pt c[4]) {
-    int32_t p[4], xs[4];
-    for (int k = 0; k < 4; k++) {
-        p[k]  = packed_sxy(&c[k]);
-        xs[k] = (int32_t)((uint32_t)p[k] << 16);      /* X into the high half */
-    }
+static int cull_corners(const int32_t p[4]) {
+    int32_t xs[4];
+    for (int k = 0; k < 4; k++) xs[k] = (int32_t)((uint32_t)p[k] << 16);   /* X into the high half */
     if ((p[0] & p[1] & p[2] & p[3]) < 0) return 1;
     const int32_t ybound = 0x00E40000;
     int32_t ory = ybound | (p[1] - ybound) | (p[2] - ybound) | (p[3] - ybound);
@@ -605,52 +599,50 @@ static int cull_corners(const shadow_pt c[4]) {
 
 /** @brief The vertical arm of cull_anchor: rejects an anchor whose packed word is at most 0 or at least 0xF00000.
  *
- * @param anchor The projected anchor.
+ * @param packed The anchor's packed SXY word.
  * @return 1 to reject the shadow, else 0. */
-static int cull_anchor_vertical(const shadow_pt* anchor) {
-    int32_t packed = packed_sxy(anchor);
+static int cull_anchor_vertical(int32_t packed) {
     return packed <= 0 || packed - 0xF00000 >= 0;
 }
 
 /** @brief The vertical arms of cull_corners: every corner above the screen, or corners 1..3 all at or below row 0xE4.
  *
- * @param c The four projected corners.
+ * @param p The four corners' packed SXY words.
  * @return 1 to reject the shadow, else 0. */
-static int cull_corners_vertical(const shadow_pt c[4]) {
-    int32_t p[4];
-    for (int k = 0; k < 4; k++) p[k] = packed_sxy(&c[k]);
+static int cull_corners_vertical(const int32_t p[4]) {
     if ((p[0] & p[1] & p[2] & p[3]) < 0) return 1;
     const int32_t ybound = 0x00E40000;
     return (ybound | (p[1] - ybound) | (p[2] - ybound) | (p[3] - ybound)) >= 0;
 }
 
-/** @brief cull_anchor's lateral arm on the screen-X window [xlo, xhi]: rejects a floored anchor X at most xlo - 8 or at least xhi + 8.
+/** @brief cull_anchor's lateral arm on the screen-X window [xlo, xhi]: rejects an anchor SX at most xlo - 8 or at least xhi + 8.
  *
  * At xlo 0 and xhi 512 it is cull_anchor's own bound, (-8, 0x208).
- * @param anchor The projected anchor.
- * @param c The four projected corners; unread.
+ * @param anchor The anchor's packed SXY word.
+ * @param c The four corners' packed SXY words; unread.
  * @param xlo The window's left bound.
  * @param xhi The window's right bound.
  * @return 1 to reject the shadow, else 0. */
-static int lateral_anchor(const shadow_pt* anchor, const shadow_pt c[4], float xlo, float xhi) {
+static int lateral_anchor(int32_t anchor, const int32_t c[4], float xlo, float xhi) {
     (void)c;
-    const double x = (double)shadow_s16((int)((uint32_t)packed_sxy(anchor) & 0xFFFFu));
+    const double x = (double)sxy_x(anchor);
     return x <= (double)xlo - 8.0 || x >= (double)xhi + 8.0;
 }
 
 /** @brief The footprint's lateral test on the screen-X window [xlo, xhi]: rejects when all four corners lie left of xlo or all at or right of xhi.
  *
- * @param anchor The projected anchor; unread.
- * @param c The four projected corners.
+ * @param anchor The anchor's packed SXY word; unread.
+ * @param c The four corners' packed SXY words.
  * @param xlo The window's left bound.
  * @param xhi The window's right bound.
  * @return 1 to reject the shadow, else 0. */
-static int lateral_footprint(const shadow_pt* anchor, const shadow_pt c[4], float xlo, float xhi) {
+static int lateral_footprint(int32_t anchor, const int32_t c[4], float xlo, float xhi) {
     (void)anchor;
     int left = 1, right = 1;
     for (int k = 0; k < 4; k++) {
-        left  &= c[k].sx < xlo;
-        right &= c[k].sx >= xhi;
+        const float x = (float)sxy_x(c[k]);
+        left  &= x < xlo;
+        right &= x >= xhi;
     }
     return left || right;
 }
@@ -660,21 +652,22 @@ typedef struct { int listed, game_admit, wide_admit, synth; } shadow_wide_census
 
 /** @brief The screen-extent rejection of one moby shadow under the view's screen-X window.
  *
- * In a view no wider than the game's 4:3 frame (Hor+ factor F at most 1) the
- * result is the game's own test, cull_corners or cull_anchor. In a wider view
- * each game keeps its own vertical test and takes the lateral test on the
- * widened window [xlo, xhi]: SHADOW_CULL_SPYRO3 layouts by the footprint
+ * The points are the integer evaluation's packed SXY words. In a view no
+ * wider than the game's 4:3 frame (Hor+ factor F at most 1) the result is the
+ * game's own test, cull_corners or cull_anchor. In a wider view each game
+ * keeps its own vertical test and takes the lateral test on the widened
+ * window [xlo, xhi]: SHADOW_CULL_SPYRO3 layouts by the footprint
  * (lateral_footprint over the four corners), SHADOW_CULL_SPYRO1 by the game's
  * anchor bound widened to the window (lateral_anchor). The two lateral forms
  * take the same arguments, so a layout's form is the one name it calls.
  * @param v The projection view; supplies F, xlo and xhi.
- * @param anchor The projected anchor.
- * @param c The four projected corners.
+ * @param anchor The anchor's packed SXY word.
+ * @param c The four corners' packed SXY words.
  * @param cs Tallies the game's verdict and the widened admissions; NULL off
  *        the canonical walk.
  * @param game_only 1 answers the game's own test in every view.
  * @return 1 to reject the shadow, else 0. */
-static int shadow_screen_reject(const ngte_view* v, const shadow_pt* anchor, const shadow_pt c[4],
+static int shadow_screen_reject(const ngte_view* v, int32_t anchor, const int32_t c[4],
                                 shadow_wide_census* cs, int game_only) {
     const int spyro3 = game_layout.shadow.cull_layout == SHADOW_CULL_SPYRO3;
     const int game = spyro3 ? cull_corners(c) : cull_anchor(anchor);
@@ -751,12 +744,16 @@ static int shadow_entry_world(CPUState* cpu, const ngte_view* v, uint32_t mob,
     return 1;
 }
 
-/* One walk's invariants: the projection view, the camera in world/4 units,
- * the FT3 material the fans share, and the screen-test mode. */
+/* One walk's invariants: the projection view, the camera in world/4 units
+ * (fractional for the drawn geometry, the game's floored camera/4 for the
+ * integer evaluation), the GTE's H, the FT3 material the fans share, and the
+ * screen-test mode. */
 typedef struct {
     const ngte_view* v;
     int C[3][3];
     double cam[3];
+    uint32_t icam[3];
+    int H;
     int u[3], vt[3];
     int tpx, tpy, clx, cly, bpp, blend;
     shadow_wide_census* cs;
@@ -764,8 +761,23 @@ typedef struct {
 } shadow_walk;
 
 /* One admitted list record: the projected ground anchor, the four diamond
- * corners and the anchor's view-space Z. */
-typedef struct { shadow_pt anchor, c[4]; double trz; } shadow_fan_pts;
+ * corners, the anchor's view-space Z and each fan triangle's ordering-table
+ * slot from the integer evaluation. */
+typedef struct { shadow_pt anchor, c[4]; double trz; int slot[4]; } shadow_fan_pts;
+
+/* The integer evaluation of one list record, the values the game's GTE holds:
+ * the packed SXY and SZ of the anchor and of the four corners, the anchor's
+ * MAC3 (the view-space Z the corners translate by), the NCLIP MAC0 and each
+ * fan triangle's ordering-table slot. */
+typedef struct {
+    int32_t anchor, c[4];
+    int32_t asz, sz[4];
+    int32_t trz, nclip;
+    int slot[4];
+} shadow_int_pts;
+
+/* The integer evaluation's verdict: admitted, or the first test that rejects. */
+enum { SHADOW_ADMIT = 0, SHADOW_REJ_GROUND, SHADOW_REJ_Z, SHADOW_REJ_NCLIP, SHADOW_REJ_SCREEN };
 
 /** @brief Decodes the shadow sprite's FT3 material from the descriptor's UV words.
  *
@@ -790,19 +802,149 @@ static void shadow_walk_material(CPUState* cpu, uint32_t desc, shadow_walk* w) {
     w->blend = ngte_abr_blend(tp.abr, NGTE_ABR_QUARTER_AS_ADD);
 }
 
-/** @brief Projects one list record's shadow and applies the game's rejections.
+/** @brief Fills a walk's camera, projection and material from the view.
  *
- * A record is rejected when its moby lies outside the first 8 MiB, its
- * ground word is zero (shadow_entry_world), the anchor's view-space Z is at
- * least 4096, the fan's first triangle faces away (NCLIP on the float SXY), or
- * the screen-extent test (shadow_screen_reject under the walk's mode) rejects
- * it. The corners are V0 = (0, 0, r), V1 = (r.lo, r.hi, 0), V2 = (0, 0, -r),
- * V3 = (-r, 0, 0) through the oriented-quad matrix from the ground word's two
- * angle indices; r is the record's size word shifted by shadow.size_shl.
+ * The drawn geometry takes the camera in world/4 units as a fraction (not
+ * >> 2), keeping the low 2 bits: a floored /4 integer would step the shadow
+ * in 4-world-unit chunks under camera motion, and the view's interpolated
+ * camera is used un-rounded. The integer evaluation takes the game's own
+ * camera, the staged RAM words shifted right by 2 as unsigned values
+ * (r_shadows.s 80059FB4-80059FBC; Spyro 2 mobyfunc.s 80049A30-80049A38).
+ * @param cpu The guest CPU state, read only.
+ * @param desc The descriptor's address.
+ * @param view The projection view.
+ * @param w Receives the walk; its census and mode fields are left as given. */
+static void shadow_walk_init(CPUState* cpu, uint32_t desc, const ngte_view* view, shadow_walk* w) {
+    w->v = view;
+    memcpy(w->C, view->cam_M, sizeof w->C);
+    for (int i = 0; i < 3; i++) {
+        w->cam[i] = view->cam[i] / 4.0;
+        w->icam[i] = cpu->read_word(game_layout.cam.base + 0x28u + 4u * (uint32_t)i) >> 2;
+    }
+    w->H = (int)view->H_canon;
+    shadow_walk_material(cpu, desc, w);
+}
+
+/** @brief GTE RTPS of one vertex in the walk's projection, as packed SXY and SZ.
+ *
+ * @param w The walk; supplies OFX, OFY and H.
+ * @param M The rotation, Q12.
+ * @param tr The translation.
+ * @param vx VX0.
+ * @param vy VY0.
+ * @param vz VZ0.
+ * @param sxy Receives the packed (SY << 16) | SX word.
+ * @param sz Receives SZ3.
+ * @param mac Receives MAC1..MAC3 when non-NULL. */
+static void shadow_rtps_word(const shadow_walk* w, const int M[3][3], const int tr[3],
+                             int vx, int vy, int vz, int32_t* sxy, int32_t* sz, int32_t mac[3]) {
+    ngte_rtps_out o;
+    ngte_rtps_int(M, tr, vx, vy, vz, w->v->ofx, w->v->ofy, w->H, &o);
+    *sxy = (int32_t)(((uint32_t)(uint16_t)o.sy << 16) | (uint32_t)(uint16_t)o.sx);
+    *sz = o.sz3;
+    if (!mac) return;
+    for (int k = 0; k < 3; k++)
+        mac[k] = (int32_t)((((int64_t)tr[k] << 12) + (int64_t)M[k][0] * vx
+                            + (int64_t)M[k][1] * vy + (int64_t)M[k][2] * vz) >> 12);
+}
+
+/** @brief The game's admission of one list record, evaluated on the GTE's integer values.
+ *
+ * Reproduces the draw's own arithmetic (Spyro 1 r_shadows.s 8005A07C-8005A350,
+ * Spyro 2 mobyfunc.s 80049AA4-80049DA8, Spyro 3 mobyfunc.s 8002DE78-8002E17C).
+ * The anchor vector is VZ0 = (X >> 2) - camX/4 and the word
+ * ((camZ/4 - ground) << 16) + (camY/4 - (Y >> 2)) as VXY0, every shift
+ * logical, so a negative VX0 borrows one from VY0 as the 32-bit add does.
+ * RTPS of it under the camera matrix gives MAC1..3, the translation the
+ * corners take, and the anchor SXY; the record is rejected when the ground
+ * halfword is zero, when MAC3 - 0x1000 >= 0, when NCLIP over corners 0..2
+ * is negative, or by shadow_screen_reject on the integer SXY words. The
+ * corners are RTPT (0, 0, r), (r.lo, r.hi, 0), (0, 0, -r) and RTPS (-r, 0, 0)
+ * under the oriented-quad matrix, with r the record's size word shifted by
+ * shadow.size_shl and each component the low halfword the GTE loads. The
+ * per-triangle slots are moby_shadow_slot over the integer SZ.
  * @param cpu The guest CPU state, read only.
  * @param w The walk.
  * @param rec The list record.
- * @param f Receives the projected points when admitted.
+ * @param sd The moby's packed ground word.
+ * @param ip Receives the integer values computed before the verdict.
+ * @return SHADOW_ADMIT, or the SHADOW_REJ_* code of the rejecting test. */
+static int shadow_record_verdict(CPUState* cpu, const shadow_walk* w, const shadow_list_rec* rec,
+                                 uint32_t sd, shadow_int_pts* ip) {
+    const uint32_t mob = rec->moby;
+    const uint32_t gz = sd & 0xFFFFu;
+    if (!gz) return SHADOW_REJ_GROUND;
+    const uint32_t px = cpu->read_word(mob + game_layout.shadow.moby_pos + 0);
+    const uint32_t py = cpu->read_word(mob + game_layout.shadow.moby_pos + 4);
+    const uint32_t vxy = ((w->icam[2] - gz) << 16) + (w->icam[1] - (py >> 2));
+    const int vx = shadow_s16((int)(vxy & 0xFFFFu)), vy = shadow_s16((int)(vxy >> 16));
+    const int vz = shadow_s16((int)(((px >> 2) - w->icam[0]) & 0xFFFFu));
+    static const int ZERO[3] = { 0, 0, 0 };
+    int32_t mac[3];
+    shadow_rtps_word(w, w->C, ZERO, vx, vy, vz, &ip->anchor, &ip->asz, mac);
+    ip->trz = mac[2];
+    if (mac[2] - 0x1000 >= 0) return SHADOW_REJ_Z;
+
+    int Rp[3][3];
+    assemble_matrix(cpu, w->C, (int)((sd >> 22) & 0x3F), (int)((sd >> 16) & 0x3F), Rp);
+    const uint32_t radius = rec->size << game_layout.shadow.size_shl;
+    const int rlo = shadow_s16((int)(radius & 0xFFFF)), rhi = shadow_s16((int)((radius >> 16) & 0xFFFF));
+    const int nlo = shadow_s16(-rlo);
+    const int tr[3] = { mac[0], mac[1], mac[2] };
+    shadow_rtps_word(w, Rp, tr, 0,   0,   rlo, &ip->c[0], &ip->sz[0], NULL);   /* RTPT V0 */
+    shadow_rtps_word(w, Rp, tr, rlo, rhi, 0,   &ip->c[1], &ip->sz[1], NULL);   /* RTPT V1 */
+    shadow_rtps_word(w, Rp, tr, 0,   0,   nlo, &ip->c[2], &ip->sz[2], NULL);   /* RTPT V2 */
+    shadow_rtps_word(w, Rp, tr, nlo, 0,   0,   &ip->c[3], &ip->sz[3], NULL);   /* RTPS 4th */
+    int64_t x[3], y[3];
+    for (int k = 0; k < 3; k++) { x[k] = sxy_x(ip->c[k]); y[k] = (int16_t)((uint32_t)ip->c[k] >> 16); }
+    ip->nclip = (int32_t)(x[0] * y[1] + x[1] * y[2] + x[2] * y[0] - x[0] * y[2] - x[1] * y[0] - x[2] * y[1]);
+    if (ip->nclip < 0) return SHADOW_REJ_NCLIP;
+    if (shadow_screen_reject(w->v, ip->anchor, ip->c, w->cs, w->game_only)) return SHADOW_REJ_SCREEN;
+    for (int k = 0; k < 4; k++) ip->slot[k] = moby_shadow_slot(cpu, mob, ip->asz, ip->sz[k], ip->sz[(k + 1) & 3]);
+    return SHADOW_ADMIT;
+}
+
+/** @brief Projects one list record's shadow in float: the ground anchor, its view-space Z and the four corners.
+ *
+ * The corners are V0 = (0, 0, r), V1 = (r.lo, r.hi, 0), V2 = (0, 0, -r),
+ * V3 = (-r, 0, 0) through the oriented-quad matrix from the ground word's two
+ * angle indices; r is the record's size word shifted by shadow.size_shl.
+ * @param cpu The guest CPU state, read only.
+ * @param w The walk; supplies the fractional camera.
+ * @param rec The list record.
+ * @param ep The entry's world pose.
+ * @param f Receives the points and the anchor's view-space Z. */
+static void shadow_record_project(CPUState* cpu, const shadow_walk* w, const shadow_list_rec* rec,
+                                  const shadow_entry_pose* ep, shadow_fan_pts* f) {
+    const double ofx = w->v->ofx, ofy = w->v->ofy;
+    const double vx = w->cam[1] - ep->py / 4.0;
+    const double vy = w->cam[2] - ep->gnd;
+    const double vz = ep->px / 4.0 - w->cam[0];
+    double TR[3]; shadow_ground_tr(w->C, vx, vy, vz, TR);
+    const double ZERO[3] = {0, 0, 0};
+    shadow_project(w->C, ZERO, ofx, ofy, w->v, vx, vy, vz, &f->anchor);
+    int Rp[3][3];
+    assemble_matrix(cpu, w->C, (int)((ep->sd >> 22) & 0x3F), (int)((ep->sd >> 16) & 0x3F), Rp);
+    const uint32_t radius = rec->size << game_layout.shadow.size_shl;
+    const int rlo = shadow_s16((int)(radius & 0xFFFF)), rhi = shadow_s16((int)((radius >> 16) & 0xFFFF));
+    shadow_project(Rp, TR, ofx, ofy, w->v,  0,    0,    rlo, &f->c[0]);
+    shadow_project(Rp, TR, ofx, ofy, w->v,  rlo,  rhi,  0,   &f->c[1]);
+    shadow_project(Rp, TR, ofx, ofy, w->v,  0,    0,   -rlo, &f->c[2]);
+    shadow_project(Rp, TR, ofx, ofy, w->v, -rlo,  0,    0,   &f->c[3]);
+    f->trz = TR[2];
+}
+
+/** @brief Admits one list record by the game's integer verdict and projects its drawn shadow in float.
+ *
+ * A record is rejected when its moby lies outside the first 8 MiB, its
+ * ground word is zero (shadow_entry_world), or shadow_record_verdict rejects
+ * it. The verdict reads the tick's own camera and moby words, so a sub-tick
+ * present admits the set the tick admitted; the drawn points are
+ * shadow_record_project under the view's camera and the entry's pose.
+ * @param cpu The guest CPU state, read only.
+ * @param w The walk.
+ * @param rec The list record.
+ * @param f Receives the projected points and the integer slots when admitted.
  * @return 1 when the shadow is drawn, else 0. */
 static int shadow_record_admit(CPUState* cpu, const shadow_walk* w, const shadow_list_rec* rec,
                                shadow_fan_pts* f) {
@@ -811,40 +953,21 @@ static int shadow_record_admit(CPUState* cpu, const shadow_walk* w, const shadow
     shadow_entry_pose ep;
     if (!shadow_entry_world(cpu, w->v, mob, game_layout.shadow.moby_pos,
                             game_layout.shadow.moby_ground, &ep)) return 0;
-    const double ofx = w->v->ofx, ofy = w->v->ofy;
-    const double vx = w->cam[1] - ep.py / 4.0;
-    const double vy = w->cam[2] - ep.gnd;
-    const double vz = ep.px / 4.0 - w->cam[0];
-    double TR[3]; shadow_ground_tr(w->C, vx, vy, vz, TR);
-    if (TR[2] - 4096.0 >= 0.0) return 0;                 /* Z cull (floor(x)>=N ⟺ x>=N) */
-    const double ZERO[3] = {0, 0, 0};
-    shadow_project(w->C, ZERO, ofx, ofy, w->v, vx, vy, vz, &f->anchor);
-
-    int Rp[3][3];
-    assemble_matrix(cpu, w->C, (int)((ep.sd >> 22) & 0x3F), (int)((ep.sd >> 16) & 0x3F), Rp);
-    const uint32_t radius = rec->size << game_layout.shadow.size_shl;
-    const int rlo = shadow_s16((int)(radius & 0xFFFF)), rhi = shadow_s16((int)((radius >> 16) & 0xFFFF));
-    shadow_project(Rp, TR, ofx, ofy, w->v,  0,    0,    rlo, &f->c[0]);   /* RTPT V0 */
-    shadow_project(Rp, TR, ofx, ofy, w->v,  rlo,  rhi,  0,   &f->c[1]);   /* RTPT V1 */
-    shadow_project(Rp, TR, ofx, ofy, w->v,  0,    0,   -rlo, &f->c[2]);   /* RTPT V2 */
-    shadow_project(Rp, TR, ofx, ofy, w->v, -rlo,  0,    0,   &f->c[3]);   /* RTPS 4th */
-    if (sh_nclip(&f->c[0], &f->c[1], &f->c[2]) < 0.0) return 0;          /* backface */
-    /* screen-extent rejections (the .s prim count at 4:3) */
-    if (shadow_screen_reject(w->v, &f->anchor, f->c, w->cs, w->game_only)) return 0;
-    f->trz = TR[2];
+    shadow_int_pts ip;
+    if (shadow_record_verdict(cpu, w, rec, ep.sd, &ip) != SHADOW_ADMIT) return 0;
+    shadow_record_project(cpu, w, rec, &ep, f);
+    memcpy(f->slot, ip.slot, sizeof f->slot);
     return 1;
 }
 
 /** @brief Stores one admitted shadow's four fan triangles (anchor, c[k], c[k+1]) in s_mosh, up to MAX_MOSH.
  *
  * The grey is 0x80 below a view-space Z of 0xC00 and (0x1000 - Z) >> 3
- * floored at 0 beyond it; each triangle carries its ordering slot
- * (moby_shadow_slot) and the walk's material.
- * @param cpu The guest CPU state, read only.
+ * floored at 0 beyond it; each triangle carries the integer evaluation's
+ * ordering slot and the walk's material.
  * @param w The walk.
- * @param mob The moby's address.
  * @param f The projected points. */
-static void shadow_fan_emit(CPUState* cpu, const shadow_walk* w, uint32_t mob, const shadow_fan_pts* f) {
+static void shadow_fan_emit(const shadow_walk* w, const shadow_fan_pts* f) {
     const int trz = (int)f->trz;
     int g = (trz < 0xC00) ? 0x80 : ((0x1000 - trz) >> 3);
     if (g < 0) g = 0;
@@ -852,7 +975,7 @@ static void shadow_fan_emit(CPUState* cpu, const shadow_walk* w, uint32_t mob, c
     for (int k = 0; k < 4 && s_mosh_n < MAX_MOSH; k++) {
         const shadow_pt* p[3] = { &f->anchor, &f->c[k], &f->c[(k + 1) & 3] };
         moshtri* t = &s_mosh[s_mosh_n++];
-        t->slot = moby_shadow_slot(cpu, mob, p[0], p[1], p[2]);
+        t->slot = f->slot[k];
         for (int i = 0; i < 3; i++) {
             t->sx[i] = p[i]->sx; t->sy[i] = p[i]->sy; t->sz[i] = p[i]->sz;
             t->u[i] = w->u[i];   t->v[i] = w->vt[i];
@@ -863,13 +986,27 @@ static void shadow_fan_emit(CPUState* cpu, const shadow_walk* w, uint32_t mob, c
     }
 }
 
+/** @brief Re-reads a fixed-address list and appends the widened-view records; a list in a copy is left as copied.
+ *
+ * A list at a fixed scratch address stays the game's live list until the
+ * next draw, and a sub-tick present reads it as it stands then; a list in the
+ * primitive buffer's tail is overwritten later in the tick, so that source
+ * walks the copy taken at hook entry.
+ * @param cpu The guest CPU state, read only.
+ * @param desc The descriptor's address.
+ * @param cs Receives the listed count when non-NULL and the list is re-read. */
+static void shadow_list_refresh(CPUState* cpu, uint32_t desc, shadow_wide_census* cs) {
+    if (game_layout.shadow.list_source == SHADOW_LIST_GTE_DATA) return;
+    shadow_list_read(cpu, cpu->read_word(desc + 0x08));
+    if (cs) cs->listed = s_list_n;
+    shadow_list_append_synth();
+}
+
 /** @brief Rebuilds the moby drop-shadow triangles from the drawn-moby list.
  *
  * Empties s_mosh, then stores four fan triangles for each list record
- * shadow_record_admit admits (shadow_fan_emit). A list in the primitive
- * buffer's tail is walked from the copy taken at hook entry; a fixed-address
- * list is re-read here, and the widened-view entries (shadow_synth_update)
- * are appended to it. Pushes the decal camera parameters. Reads PSX RAM only.
+ * shadow_record_admit admits (shadow_fan_emit). The list is refreshed by
+ * shadow_list_refresh. Pushes the decal camera parameters. Reads PSX RAM only.
  * @param cpu The guest CPU state.
  * @param cs Tallies the screen tests for the census; NULL off the canonical
  *        walk.
@@ -880,8 +1017,8 @@ static void shadow_moby_build(CPUState* cpu, shadow_wide_census* cs, int game_on
     const uint32_t desc = game_layout.shadow.desc;
     if (!desc || !s_list_base) return;
     ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per walk */
-    shadow_walk w = { .v = &view, .cs = cs, .game_only = game_only };
-    memcpy(w.C, view.cam_M, sizeof w.C);
+    shadow_walk w = { .cs = cs, .game_only = game_only };
+    shadow_walk_init(cpu, desc, &view, &w);
     /* Hand the depth-aware decal the camera-reconstruction params so the TEXTURED
      * moby-shadow decal (shadow_decal_tex.frag) can reject wall/steep/raised
      * terrain per pixel. Set here (not only in a player-shadow feeder) so moby
@@ -889,27 +1026,151 @@ static void shadow_moby_build(CPUState* cpu, shadow_wide_census* cs, int game_on
      * Identical params to the player feeder's (same camera; ground_up read from
      * the layout), so feeder order is irrelevant. Display-only. */
     shadow_push_decal_params(cpu, &view, w.C, view.ofx, view.ofy, view.H_eff, NULL);
-    /* The camera is taken in world/4 units as a fraction (not >>2), keeping the
-     * low 2 bits: a floored /4 integer would step the shadow in 4-world-unit
-     * chunks under camera motion. The view's interpolated camera is used
-     * un-rounded, so the shadow also tracks it below the 1-world-unit grid. */
-    for (int i = 0; i < 3; i++) w.cam[i] = view.cam[i] / 4.0;
-    shadow_walk_material(cpu, desc, &w);
-
-    /* A list at a fixed scratch address stays the game's live list until
-     * the next draw, and a sub-tick present reads it as it stands then; a
-     * list in the primitive buffer's tail is overwritten later in the tick,
-     * so that source walks the copy taken at hook entry. */
-    if (game_layout.shadow.list_source != SHADOW_LIST_GTE_DATA) {
-        shadow_list_read(cpu, cpu->read_word(desc + 0x08));
-        if (cs) cs->listed = s_list_n;
-        shadow_list_append_synth();
-    }
+    shadow_list_refresh(cpu, desc, cs);
     const int n_walk = game_only ? s_list_game_n : s_list_n;
     for (int li = 0; li < n_walk; li++) {
         shadow_fan_pts f;
-        if (shadow_record_admit(cpu, &w, &s_list[li], &f)) shadow_fan_emit(cpu, &w, s_list[li].moby, &f);
+        if (shadow_record_admit(cpu, &w, &s_list[li], &f)) shadow_fan_emit(&w, &f);
     }
+}
+
+/* ---- admission calibration (OPENPETE_SHADOW_ADMIT_CAL) -------------------- */
+/* One triangle the integer verdict says the game emits: the record it belongs
+ * to and its three packed SXY words (anchor, corner k, corner k+1). */
+typedef struct { int rec; int32_t p[3]; } shadow_cal_tri;
+#define SHADOW_CAL_MAX 1024
+static shadow_cal_tri s_cal_tri[SHADOW_CAL_MAX];
+
+/** @brief The float verdict the walk took before the integer evaluation, on the same record.
+ *
+ * Rejects at a float view-space Z of at least 4096, at a negative NCLIP on the
+ * float SXY, or by the game's screen test on the floored float points.
+ * @param cpu The guest CPU state, read only.
+ * @param w The walk.
+ * @param rec The list record.
+ * @param slot Receives each triangle's slot from the rounded float SZ.
+ * @return SHADOW_ADMIT or a SHADOW_REJ_* code. */
+static int shadow_cal_float_verdict(CPUState* cpu, const shadow_walk* w, const shadow_list_rec* rec,
+                                    int slot[4]) {
+    shadow_entry_pose ep;
+    if (!shadow_entry_world(cpu, w->v, rec->moby, game_layout.shadow.moby_pos,
+                            game_layout.shadow.moby_ground, &ep)) return SHADOW_REJ_GROUND;
+    shadow_fan_pts f;
+    shadow_record_project(cpu, w, rec, &ep, &f);
+    if (f.trz - 4096.0 >= 0.0) return SHADOW_REJ_Z;
+    if (ngte_nclip(f.c[0].sx, f.c[0].sy, f.c[1].sx, f.c[1].sy, f.c[2].sx, f.c[2].sy, NGTE_NCLIP_FLOAT) < 0.0)
+        return SHADOW_REJ_NCLIP;
+    int32_t c[4];
+    for (int k = 0; k < 4; k++) c[k] = packed_sxy(&f.c[k]);
+    if (shadow_screen_reject(w->v, packed_sxy(&f.anchor), c, NULL, 1)) return SHADOW_REJ_SCREEN;
+    for (int k = 0; k < 4; k++)
+        slot[k] = moby_shadow_slot(cpu, rec->moby, (int)shadow_sz16(f.anchor.sz),
+                                   (int)shadow_sz16(f.c[k].sz), (int)shadow_sz16(f.c[(k + 1) & 3].sz));
+    return SHADOW_ADMIT;
+}
+
+/** @brief The number of a verdict's triangles the game inserts: 0 when rejected, else those whose slot is not MOBY_SHADOW_SKIP.
+ *
+ * @param verdict SHADOW_ADMIT or a SHADOW_REJ_* code.
+ * @param slot The four slots.
+ * @return The triangle count. */
+static int shadow_cal_tris(int verdict, const int slot[4]) {
+    if (verdict != SHADOW_ADMIT) return 0;
+    int n = 0;
+    for (int k = 0; k < 4; k++) n += slot[k] != MOBY_SHADOW_SKIP;
+    return n;
+}
+
+/** @brief Compares the integer verdict's expected triangles against the game's emitted FT3 prims, in emission order.
+ *
+ * A triangle matches when its anchor SXY and both corners' SX equal the
+ * prim's, and each corner's SY is within one row (the draw's nearer/farther
+ * corner nudge moves it). Each mismatching triangle, and each triangle one
+ * side has beyond the other's count, counts once and marks its record.
+ * @param n The expected triangle count in s_cal_tri.
+ * @param bad Receives 1 per mismatching record index; zeroed by the caller.
+ * @param nrec The record count bad holds.
+ * @param game_tris Receives the game's FT3 count.
+ * @return The mismatching triangle count. */
+static int shadow_cal_match(int n, unsigned char* bad, int nrec, int* game_tris) {
+    int t = 0, mm = 0;
+    for (int p = 0; p < s_gte_n; p++) {
+        const shadow_prim* pr = &s_gte[p];
+        if (!(pr->textured && pr->nv == 3)) continue;
+        if (t >= n) { mm++; t++; continue; }
+        const int32_t* e = s_cal_tri[t].p;
+        int ok = sxy_x(e[0]) == (int)pr->x[0] && (int16_t)((uint32_t)e[0] >> 16) == (int)pr->y[0];
+        for (int k = 1; k < 3; k++) {
+            const int dy = (int16_t)((uint32_t)e[k] >> 16) - (int)pr->y[k];
+            ok &= sxy_x(e[k]) == (int)pr->x[k] && dy >= -1 && dy <= 1;
+        }
+        if (!ok) { mm++; if (s_cal_tri[t].rec < nrec) bad[s_cal_tri[t].rec] = 1; }
+        t++;
+    }
+    *game_tris = t;
+    for (int i = t; i < n; i++) { mm++; if (s_cal_tri[i].rec < nrec) bad[s_cal_tri[i].rec] = 1; }
+    return mm;
+}
+
+/** @brief The first VBL the [shadow-admit-cal] line prints at, from OPENPETE_SHADOW_ADMIT_CAL; -1 when unset.
+ *
+ * A harness knob, latched on the first call.
+ * @return The VBL, or -1. */
+static int shadow_admit_cal_from(void) {
+    static int v = -2;
+    ENV_INT_LATCH(v, "OPENPETE_SHADOW_ADMIT_CAL", -1);
+    return v;
+}
+
+/** @brief Prints one canonical walk's admission calibration: the integer and float verdicts of the game's records against the game's emitted prims.
+ *
+ * Walks the game's own records under the game's own screen test. The
+ * integer verdict's triangles are matched against the captured FT3 prims
+ * (shadow_cal_match); a record whose float verdict or float triangle count
+ * differs from the integer one counts in float_diff, and each such record
+ * prints a detail line. Reads PSX RAM only.
+ * @param cpu The guest CPU state.
+ * @param have_prims 1 when the draw emitted prims and s_gte holds them. */
+static void shadow_admit_cal(CPUState* cpu, int have_prims) {
+    const uint32_t desc = game_layout.shadow.desc;
+    if (!desc || !s_list_base) return;
+    ngte_view view; ngte_view_build(cpu, &view);
+    shadow_walk w = { .cs = NULL, .game_only = 1 };
+    shadow_walk_init(cpu, desc, &view, &w);
+    shadow_list_refresh(cpu, desc, NULL);
+    if (!have_prims) s_gte_n = 0;
+    static unsigned char bad[SHADOW_LIST_MAX];
+    memset(bad, 0, sizeof bad);
+    int n = 0, admit = 0, float_diff = 0, int_tris = 0, float_tris = 0;
+    for (int li = 0; li < s_list_game_n; li++) {
+        const shadow_list_rec* rec = &s_list[li];
+        if (rec->moby < 0x80000000u || rec->moby >= 0x80800000u) continue;
+        const uint32_t sd = cpu->read_word(rec->moby + game_layout.shadow.moby_ground);
+        shadow_int_pts ip;
+        int fslot[4] = { 0, 0, 0, 0 };
+        const int iv = shadow_record_verdict(cpu, &w, rec, sd, &ip);
+        const int fv = shadow_cal_float_verdict(cpu, &w, rec, fslot);
+        const int it = shadow_cal_tris(iv, ip.slot), ft = shadow_cal_tris(fv, fslot);
+        admit += iv == SHADOW_ADMIT; int_tris += it; float_tris += ft;
+        for (int k = 0; k < 4 && iv == SHADOW_ADMIT && n < SHADOW_CAL_MAX; k++) {
+            if (ip.slot[k] == MOBY_SHADOW_SKIP) continue;
+            s_cal_tri[n++] = (shadow_cal_tri){ li, { ip.anchor, ip.c[k], ip.c[(k + 1) & 3] } };
+        }
+        if (iv == fv && it == ft) continue;
+        float_diff++;
+        fprintf(stderr, "  [shadow-admit-cal vbl=%u] rec=%d mob=%08X int=%d/%dtri float=%d/%dtri "
+                        "trz=%d nclip=%d anchor=(%d,%d)\n",
+                openpete_frame, li, rec->moby, iv, it, fv, ft, ip.trz, ip.nclip,
+                sxy_x(ip.anchor), (int16_t)((uint32_t)ip.anchor >> 16));
+    }
+    int game_tris = 0;
+    const int tri_mm = shadow_cal_match(n, bad, SHADOW_LIST_MAX, &game_tris);
+    int rec_mm = 0;
+    for (int i = 0; i < s_list_game_n; i++) rec_mm += bad[i];
+    fprintf(stderr, "[shadow-admit-cal vbl=%u] records=%d int_admit=%d int_tris=%d game_tris=%d "
+                    "tri_mismatch=%d rec_mismatch=%d float_tris=%d float_rec_diff=%d\n",
+            openpete_frame, s_list_game_n, admit, int_tris, game_tris, tri_mm, rec_mm,
+            float_tris, float_diff);
 }
 
 /* View-Z to native scene depth; see shadow.h. */
@@ -1350,7 +1611,8 @@ static const hook_bracket_desc k_shadow_bracket = {
  * shadows are fed from gamestate while RP_MOBY_SHADOW is selected, and the
  * path is marked drawn when the feed emitted triangles the draw did not.
  * Under OPENPETE_SHADOW_VERIFY the first eligible tick dumps once and the
- * first 60 compare; OPENPETE_SHADOW_WIDE_CENSUS prints the [shadow-wide]
+ * first 60 compare; OPENPETE_SHADOW_ADMIT_CAL prints the [shadow-admit-cal]
+ * calibration and OPENPETE_SHADOW_WIDE_CENSUS the [shadow-wide]
  * census from the VBL it names.
  * @param cpu  guest CPU state
  * @param addr the hooked draw's address
@@ -1379,6 +1641,8 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
     }
     const int from = shadow_wide_census_from();
     if (from >= 0 && openpete_frame >= (unsigned)from) shadow_wide_census_print(&cs);
+    const int cal = shadow_admit_cal_from();
+    if (cal >= 0 && openpete_frame >= (unsigned)cal && feed) shadow_admit_cal(cpu, endp > startp);
 
     if (verify && endp > startp && openpete_frame >= shadow_verify_frame()) {
         static int s_dumped = 0, s_reports = 0;
