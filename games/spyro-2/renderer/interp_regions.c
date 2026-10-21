@@ -19,7 +19,7 @@
  *
  * The game-state row is the loader/simulation regime word, so a pair whose two
  * ticks came from different regimes is marked as a discontinuity and the camera
- * cut guard in renderer/reextract.c holds instead of lerping across it. */
+ * cut guard in renderer/reextract_spyro23.c holds instead of lerping across it. */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/orchestrator.h"
 #include "game_layout.h"

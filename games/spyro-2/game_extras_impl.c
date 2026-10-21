@@ -132,7 +132,7 @@ extern const moby_game_s23_consts_t   spyro2_moby_game_s23;   /* renderer/moby_g
 extern const player_game_s23_consts_t spyro2_player_game_s23; /* renderer/player_game.c */
 extern const portal_game_s23_consts_t spyro2_portal_game_s23; /* renderer/portal_game.c */
 extern const freecam_game_desc        spyro2_freecam_desc;    /* features/freecam.c */
-extern const game_orchestrator_t      spyro2_orchestrator;    /* renderer/reextract.c */
+extern const game_orchestrator_t      spyro23_orchestrator;   /* common renderer/reextract_spyro23.c */
 extern const openpete_feature_list_t  spyro2_feature_list;    /* feature_list.c */
 void spyro2_interp_register(void);                             /* renderer/interp_regions.c */
 extern const psyq_game_conf_t         spyro2_psyq_conf;       /* gen/game_identity.c */
@@ -187,7 +187,7 @@ static const game_host_desc_t k_host = {
     .player_s23      = &spyro2_player_game_s23,
     .portal_s23      = &spyro2_portal_game_s23,
     .freecam         = &spyro2_freecam_desc,
-    .orchestrator    = &spyro2_orchestrator,
+    .orchestrator    = &spyro23_orchestrator,
     .interp_register = spyro2_interp_register,
     .frame_pre       = &k_frame_pre,
 };

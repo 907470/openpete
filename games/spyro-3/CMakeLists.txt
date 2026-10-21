@@ -11,7 +11,7 @@ openpete_add_game(spyro-3
     FEATURE_LIST     feature_list.c
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro3_symbols.toml
     MOD_SDK
-    ORCHESTRATOR     renderer/reextract.c
+    ORCHESTRATOR     ${CMAKE_SOURCE_DIR}/games/common/renderer/reextract_spyro23.c
     INTERP_REGIONS   renderer/interp_regions.c
     TERRAIN_GAME     renderer/terrain_game.c
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c

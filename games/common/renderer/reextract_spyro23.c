@@ -1,32 +1,34 @@
-/* games/spyro-3/renderer/reextract.c - Spyro 3's sub-tick re-extract
- * orchestrator: on every present between two canonical ticks it installs the
- * camera transform interpolated between the interp ring's prev and curr
- * snapshots (region 0) into the sub-tick view, and re-runs the terrain
- * feeder against it. The staged bytes are what every feeder read resolves to
- * for the duration of the present; guest RAM is never written.
+/* games/common/renderer/reextract_spyro23.c - the sub-tick re-extract
+ * orchestrator Spyro 2 and Spyro 3 share: on every present between two
+ * canonical ticks it installs the camera transform interpolated between the
+ * interp ring's prev and curr snapshots (region 0) into the sub-tick view, and
+ * re-runs the sky, terrain, portal, moby, player and effect feeders against
+ * it. The staged bytes are what every feeder read resolves to for the duration
+ * of the present; guest RAM is never written.
  *
- * Provides the renderer/orchestrator.h entries: the fractional camera
- * position for the projection's floor fix, the canonical-render epoch (commit,
- * stamp and freshness queries), and the captures of the moby cull records and
- * of the player's part-record and colour ranges. The per-producer camera
- * install and the shaded-moby freshness are inert on this game. */
+ * Provides the renderer/orchestrator.h entries through spyro23_orchestrator.
+ * Every engine address it reads comes from game_layout, and the one policy
+ * the two games differ on, whether a stale moby cull queue is staged, is
+ * game_layout.moby.rx_stage_stale_recs. The per-producer camera bracket
+ * reports "nothing captured": every producer draws under the tick-end
+ * camera. */
 #include "renderer/orchestrator.h"
-#include "renderer/terrain.h"
 #include "renderer/cyclorama.h"
-#include "renderer/portal_spyro23.h"
-#include "renderer/shadow.h"
+#include "renderer/moby.h"
+#include "renderer/terrain.h"
+#include "renderer/player.h"
+#include "renderer/player_ranges.h"   /* the player hook's scratch ranges */
+#include "renderer/shadow.h"        /* shadow_reextract, shadow_player_reextract */
 #include "renderer/particles.h"
+#include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
+#include "renderer/portal_spyro23.h" /* portal_s23_reextract */
+#include "openpete_psx.h"          /* openpete_psx_to_host_span */
+#include "openpete_interp.h"
+#include "renderer/flame.h"          /* the shared fire-breath producer */
 #include "renderer/tracers.h"
 #include "renderer/glow.h"
 #include "renderer/glint.h"
 #include "renderer/zap.h"
-#include "renderer/moby.h"
-#include "renderer/player.h"
-#include "renderer/player_ranges.h"   /* the player hook's scratch ranges */
-#include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
-#include "openpete_psx.h"          /* openpete_psx_to_host_span */
-#include "openpete_interp.h"
-#include "renderer/flame.h"          /* the shared fire-breath producer */
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/cut_guard.h"      /* the shared camera-cut guard and its census */
@@ -39,18 +41,23 @@
 #include "openpete_fiber.h"   /* openpete_frame */
 #include "psx_runtime_internal.h"
 #include "game_layout.h"
-#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
 #include "openpete_thread_roles.h"
 
+/* Offsets inside the camera transform block, all confirmed against the layout
+ * descriptor's read sites in Spyro 2's asm: the sky matrix the cyclorama draw loads with ctc2
+ * (cyclorama.s:32-40), the world matrix the terrain draw loads the same way
+ * (environment.s:1572-1581) and the world position the sector cull reads
+ * (environment.s:1585-1588). */
 #define CAM_OFF_SKY   0x00u
 #define CAM_OFF_VIEW  0x14u
 #define CAM_OFF_POS   0x28u
 /* The world position inside the player-shadow state block
- * (game_layout.shadow.player, asm/mobyfunc.s:630-632). */
+ * (game_layout.player.shadow_base; Spyro 2 asm/mobyfunc.s:626-628, Spyro 3
+ * asm/mobyfunc.s:630-632). */
 #define SHADOW_POS_OFF 0x04u
 
 /* The un-rounded interpolated camera position of this present, for the
@@ -73,39 +80,46 @@ static int orch_interp_pos(unsigned int key, double out[3]) {
     out[0] = src[0]; out[1] = src[1]; out[2] = src[2];
     return 1;
 }
+
 /* The canonical-render epoch (renderer/orchestrator.h): every canonical
  * present closes one, and a producer that ran inside the one just closed is
- * fresh, so a sub-tick pass replays only what the canonical present drew. A
- * pause or load screen that runs no moby draw leaves that producer stale and
- * its replay is skipped, instead of painting the last gameplay tick's set over
- * a frozen backdrop. */
+ * fresh, so a sub-tick pass replays only what the canonical present drew. The
+ * player and moby record captures stamp the epoch in flight; the terrain
+ * feeder re-derives from the camera and stamps nothing. */
 static uint32_t s_epoch_now = 1;   /* the stamp captures take (present in flight) */
 static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh */
-static uint32_t s_prod_epoch[3];
+/* The stamp the moby cull's record capture took, so a tick that ran no moby
+ * draw (a pause or a load screen) leaves the queue stale instead of replaying
+ * the last level's records. */
+static uint32_t s_mobyreg_epoch;
+/* Whether that queue is staged over its own address for the present in flight.
+ * The regular record pass decodes through the staged view, so this and the
+ * epoch together are the pass's freshness: a present that could not stage the
+ * queue must not walk it. */
+static int      s_recs_staged;
 
-
-/** @brief Reports whether OPENPETE_CAM_DBG is set to a value other than 0, read once.
+/** @brief Reports whether OPENPETE_CAM_DBG is set to anything but 0, latched on first call.
  *
  * When set, each canonical present and each sub-tick re-extract prints the
  * camera transform the pass draws with: the world matrix at +0x14 as nine
  * shorts, the position at +0x28 as three words and the sky matrix's first
  * short. The canonical line reads live guest memory; the re-extract lines read
- * live memory, the staged camera and the ring's two endpoints, so a camera the
+ * live memory, the staged lerp and the ring's two endpoints, so a camera the
  * two passes disagree on is a printed number. Diagnostic only.
- * @return 1 when the trace is on, else 0. */
+ * @return 1 when the variable is set, else 0. */
 static int cam_dbg_on(void) {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_CAM_DBG"); v = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(v, "OPENPETE_CAM_DBG");
     return v;
 }
-/** @brief Prints one camera-transform trace line to stderr.
+/** @brief Prints one OPENPETE_CAM_DBG line of a camera transform block to stderr.
  *
- * The line holds the frame, the tag, the position words at +0x28, the nine
- * view-matrix shorts at +0x14 and the first sky-matrix short at +0x00. A NULL
- * block prints "(null)" in place of the values.
- *
- * @param tag The label printed on the line.
- * @param c The camera block base, or NULL. */
+ * Prints the position (+0x28, three words), the view matrix (+0x14, nine
+ * shorts) and the first short of the sky matrix (+0x00), or "(null)" for a
+ * null block.
+ * @param tag Label for the line.
+ * @param c A camera transform block of at least CAM_OFF_POS + 12 bytes, or
+ *        NULL. */
 static void cam_dbg_line(const char* tag, const uint8_t* c) {
     if (!c) { fprintf(stderr, "[cam-dbg f=%u %s] (null)\n", openpete_frame, tag); return; }
     const int16_t* m = (const int16_t*)(c + CAM_OFF_VIEW);
@@ -115,12 +129,13 @@ static void cam_dbg_line(const char* tag, const uint8_t* c) {
             openpete_frame, tag, p[0], p[1], p[2],
             m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], sk[0]);
 }
-/** @brief Returns where this game's camera fields sit, for the shared cut guard.
+
+/** @brief Returns the shared cut guard's descriptor of this game's camera fields, resolving the ring row on first call.
  *
- * The sky matrix at +0x00 decides the rotation tests and the world position at
- * +0x28 the position tests. The camera row index is resolved on the first
- * call.
- * @return The descriptor, static storage. */
+ * The sky matrix (+0x00) decides the rotation tests and the world position
+ * (+0x28) the position tests. The camera row index is looked up once and
+ * cached in the static descriptor.
+ * @return The descriptor, valid for the process lifetime. */
 static const cut_cam_desc_t* cut_desc(void) {
     static cut_cam_desc_t d = { -2, CAM_OFF_POS, CAM_OFF_SKY };
     if (d.cam_region == -2) d.cam_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
@@ -131,39 +146,28 @@ static const cut_cam_desc_t* cut_desc(void) {
 static void orch_epoch_commit(void) {
     if (cam_dbg_on())
         cam_dbg_line("CANON", (const uint8_t*)openpete_psx_to_host_span(game_layout.cam.base, CAM_OFF_POS + 12u));
-
     if (cut_census_on()) cut_locate_camera(cut_desc());
     s_epoch_ok = s_epoch_now;
     s_epoch_now++;
     player_records_epoch_commit();               /* close the hooks' record epoch */
 }
-/* Whether the moby cull queue is staged over its own address for the present in
- * flight. The regular record pass decodes through the staged view, so its
- * freshness is this and its producer's epoch together: a present that could not
- * stage the queue must not walk it. */
-static int s_recs_staged;
-
 /** @brief Move the in-flight epoch past the captures of a render no canonical present showed (spyro_native_canon_epoch_supersede). */
 static void orch_epoch_supersede(void) { s_epoch_now++; }
 /** @brief Return the in-flight canonical-render epoch (spyro_native_canon_epoch_stamp). */
 static uint32_t orch_epoch_stamp(void) { return s_epoch_now; }
 /** @brief Report whether a capture stamp is the last closed epoch (spyro_native_canon_epoch_fresh). */
 static int orch_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
-/** @brief Report whether the moby cull queue is staged and its producer stamped the last closed epoch (spyro_native_canon_mobyreg_fresh). */
-static int orch_mobyreg_fresh(void) {
-    return s_recs_staged && s_prod_epoch[SPYRO_PROD_MOBYREG] == s_epoch_ok;
-}
+/** @brief Report whether the moby cull queue is staged and was captured in the last closed epoch (spyro_native_canon_mobyreg_fresh). */
+static int orch_mobyreg_fresh(void) { return s_recs_staged && s_mobyreg_epoch == s_epoch_ok; }
 /* No second material pass: the shaded producer is never fresh (the inert
  * entry). */
+
 /* The moby cull records live in the draw scratch this tick carved out of the
- * polybuf, and the draw passes that follow the moby draw reuse that memory
- * before any sub-tick present runs, so the queue's leading records read back
- * as unrelated words one VBL later. So the queue is copied at the moby
+ * primitive buffer, and the draw passes that follow the moby draw reuse that
+ * memory before any sub-tick present runs. So the queue is copied at the moby
  * hook and staged back over its own address for the duration of each
  * intermediate present, which is what makes the replay read the records the
- * tick actually drew. The moby hooks' capture_range requests (0x500 and 0x800
- * bytes) exceed the player range slots (player_ranges_capture) and capture
- * nothing. */
+ * tick actually drew rather than whatever overwrote them. */
 static uint8_t  s_recs_copy[0x1000];
 static uint32_t s_recs_base;
 static uint32_t s_recs_len;
@@ -172,9 +176,6 @@ static uint32_t s_recs_len;
 static void orch_capture_range(void* cpu_v, unsigned off, unsigned len) {
     player_ranges_capture((CPUState*)cpu_v, off, len);
 }
-
-/* The SXY capture is the inert entry: the player walk decodes the captured
- * part records, not the SXY block. */
 /** @brief Copy the moby cull-record queue at the moby hook for staging on the sub-tick presents (spyro_native_canon_capture_recs). */
 static void orch_capture_recs(void* cpu) {
     (void)cpu;
@@ -187,31 +188,31 @@ static void orch_capture_recs(void* cpu) {
     memcpy(s_recs_copy, host, len);
     s_recs_base = base;
     s_recs_len  = len;
+    s_mobyreg_epoch = s_epoch_now;
 }
 
-/** @brief Stages the captured moby cull queue over its own address for this present.
+/** @brief Stages the captured moby cull-record queue over its own address for the present in flight.
  *
- * Sets the staged flag that orch_mobyreg_fresh reads. With no
- * capture, or when the sub-tick view cannot stage it, the caller skips the
- * replay rather than reading whatever now lives there.
- * @return 1 when staged, else 0. */
+ * Sets s_recs_staged to the result, which orch_mobyreg_fresh reads. Nothing
+ * is staged when no queue was captured or the stage fails, nor, unless
+ * game_layout.moby.rx_stage_stale_recs is set, when the capture's epoch is
+ * not the last canonical one (a tick that ran no moby draw), so the caller
+ * skips the replay rather than decoding whatever now lives there.
+ * @return 1 when the queue is staged, else 0. */
 static int stage_moby_records(void) {
     s_recs_staged = 0;
     if (!s_recs_len) return 0;
+    if (!game_layout.moby.rx_stage_stale_recs && s_mobyreg_epoch != s_epoch_ok) return 0;
     void* stage = openpete_subtick_view_stage(s_recs_base, s_recs_len);
     if (!stage) return 0;
     memcpy(stage, s_recs_copy, s_recs_len);
     s_recs_staged = 1;
     return 1;
 }
-/** @brief Stamp a producer's capture with the in-flight epoch; the camera itself is not recorded (spyro_native_canon_capture_camera). */
-static void orch_capture_camera(void* cpu, int producer) {
-    (void)cpu;
-    if ((unsigned)producer < sizeof s_prod_epoch / sizeof s_prod_epoch[0])
-        s_prod_epoch[producer] = s_epoch_now;
-}
-/* The producer-camera bracket is the inert entry: every producer draws under
- * the tick-end camera. */
+
+/* The SXY capture and the producer cameras are the inert entries: the player
+ * walk decodes the captured part records, not the SXY block, and every
+ * producer draws under the tick-end camera. */
 
 /** @brief The player's ground shadow, at its own place in the record order.
  *
@@ -251,10 +252,10 @@ static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_
  * a mirrored copy first, with the height above the surface in the state word,
  * the world Z moved to twice that height below it and its own ordering bias
  * in the sort byte, then the avatar with those three fields restored
- * (asm/nonmatchings/drawutil/func_8001EC5C.s:39-90). Live gamestate at present
- * time therefore describes neither call: the driver put it back. The record
- * store holds each call's own state block (its shown state: the led tick's
- * under --runahead), so the loop stages that block into
+ * (the Spyro 3 decomp's asm/nonmatchings/drawutil/func_8001EC5C.s:39-90).
+ * Live gamestate at present time therefore describes neither call: the driver
+ * put it back. The record store holds each call's own state block (its shown
+ * state: the led tick's under --runahead), so the loop stages that block into
  * the sub-tick view and runs the walk once per record, with the mirrored
  * verdict taken from the record rather than re-read. Reproducing the copy from
  * the capture is what makes it draw on an intermediate present; without it the
@@ -371,21 +372,18 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
 
 /** @brief Reports whether openpete_frame lies in the OPENPETE_RX_CENSUS range (LO-HI, or one value).
  *
- * While it does, each sub-tick re-extract prints the triangles each producer
- * added to the scene, in call order. A producer that returns early reads as
- * zero, which separates a missing producer from an empty one. Diagnostic
- * only.
+ * While it does, each sub-tick re-extract prints one line of the triangles
+ * each producer added to the scene, in call order. A producer that returns
+ * early reads as zero, which separates a missing producer from an empty one.
+ * The range is read once. Diagnostic only.
  * @return 1 inside the range, else 0. */
 static int rx_census_on(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     return env_frame_range_active(&s_range, "OPENPETE_RX_CENSUS", openpete_frame);
 }
-/** @brief Counts the triangles the scene being accumulated has accepted so far.
+/** @brief Counts the triangles currently in the native scene across all tag families.
  *
- * Sums the 16 tag-family counts; the census takes differences of it around each
- * producer.
- *
- * @return The triangle count. */
+ * @return The sum of the 16 family counts. */
 static uint32_t rx_scene_tris(void) {
     uint32_t n[16], t = 0;
     openpete_native_scene_tag_family_counts(n);
@@ -423,7 +421,6 @@ static uint32_t rx_scene_tris(void) {
 static void game_reextract_body(void* cpu_v) {
     OP_ROLE_ASSERT(sim);
     CPUState* cpu = (CPUState*)cpu_v;
-    (void)cpu;
     double qa = 0.0;
     const openpete_interp_snapshot_t *prev2 = NULL, *prev = NULL, *curr = NULL;
     /* One per-object hold verdict per present, read by every channel. */
@@ -498,15 +495,13 @@ static void game_reextract_body(void* cpu_v) {
         moby_native_set_tick_camera(tickcam ? (const int16_t*)(tickcam + CAM_OFF_SKY) : NULL,
                                     tickcam ? (const int32_t*)(tickcam + CAM_OFF_POS) : NULL);
         /* A held cut shows tick N-1's camera for the whole interval: replay the
-         * queues the cull built against that camera, so a moby only N-1 could
+         * queue the cull built against that camera, so a moby only N-1 could
          * see stays on screen until the cut lands. */
         moby_native_replay_prev_queue(hold);
         /* Arm the per-object sub-tick clock for this feeder pass: it is the
          * timebase the keyframe crossfade reads, so without it every replayed
-         * record holds the tick's mesh while its translation sweeps, and a clip
-         * whose keyframes carry baked whole-body translation moves against
-         * itself for the whole interior of the tick. Reset after the pass so the
-         * canonical inline render stays byte-exact. */
+         * record holds the tick's mesh while its translation sweeps. Reset
+         * after the pass so the canonical inline render stays byte-exact. */
         moby_native_set_rot_interp(1);
         moby_native_set_verdict_alpha(alpha, bracketed);
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
@@ -545,12 +540,12 @@ static void game_reextract_body(void* cpu_v) {
     RX_CENSUS_STEP("glint");
     zap_reextract(cpu, bracketed, alpha, hold);       /* Zoe's zap, the ribbons the tick captured */
     RX_CENSUS_STEP("zap");
-    /* The HUD, dialog boxes, text and screen fades are produced by the 2D-UI
-     * feeder during the game's own render and cannot be re-derived here, so the
-     * canonical present banks them and every re-extract re-applies that carry on
-     * top of the re-derived 3D scene (fade interpolated by the alpha, held
-     * panels re-emitted as captured). Without it a sub-tick present draws the
-     * world with no 2D layer at all. */
+    /* The HUD, dialog boxes, text and screen fades are produced during the
+     * game's own render and cannot be re-derived here, so the canonical present
+     * banks them and every re-extract re-applies that carry on top of the
+     * re-derived 3D scene (fade interpolated by the alpha, held panels
+     * re-emitted as captured). Without it a sub-tick present draws the world
+     * with no 2D layer at all. */
     openpete_native_scene_apply_overlay(bracketed ? alpha : 0.0);
     RX_CENSUS_END(bracketed, alpha);
     s_fpos_active = 0;
@@ -562,9 +557,10 @@ static void orch_reextract_init(void) {
     game_reextract_view_install(game_reextract_body);
 }
 
-/* The orchestrator spyro3_game_runtime carries (game_extras_impl.c); the
- * slots left NULL take the inert entries. */
-const game_orchestrator_t spyro3_orchestrator = {
+/* The orchestrator spyro2_game_runtime and spyro3_game_runtime carry
+ * (games/spyro-{2,3}/game_extras_impl.c); the slots left NULL take the inert
+ * entries. */
+const game_orchestrator_t spyro23_orchestrator = {
     .reextract_init  = orch_reextract_init,
     .interp_pos      = orch_interp_pos,
     .epoch_commit    = orch_epoch_commit,
@@ -574,5 +570,4 @@ const game_orchestrator_t spyro3_orchestrator = {
     .mobyreg_fresh   = orch_mobyreg_fresh,
     .capture_range   = orch_capture_range,
     .capture_recs    = orch_capture_recs,
-    .capture_camera  = orch_capture_camera,
 };

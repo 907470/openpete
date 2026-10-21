@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 7fb9d705a1faeeeeb8a42b8d190af225591ad6b5
+# head: 5c617537b3098758238ff64f226058f29e56d531
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -141,6 +141,8 @@ games/common/renderer/player.c	player_reextract_record	26	0
 games/common/renderer/player.c	player_verify_report	109	0	
 games/common/renderer/player.c	pv_capture	60	0	
 games/common/renderer/player_game_spyro23.c	s23_part_record	28	0	
+games/common/renderer/reextract_spyro23.c	game_reextract_body	31	0	
+games/common/renderer/reextract_spyro23.c	player_records_replay	48	0	
 games/common/renderer/shadow.c	shadow_moby_compare	61	0	
 games/common/renderer/shadow_player.c	shadow_player_compare	70	0	
 games/common/renderer/terrain.c	clip_push_tri	35	0	
@@ -212,10 +214,6 @@ games/spyro-1/renderer/transition.c	on_8004F000_crossfade	63	0
 games/spyro-1/sfx_census.cpp	dump_banks	28	0	
 games/spyro-1/sfx_census.cpp	spyro1_dump_sfx_pack	47	0	
 games/spyro-1/sfx_census.cpp	walk_entry	29	0	
-games/spyro-2/renderer/reextract.c	game_reextract_body	31	0	
-games/spyro-2/renderer/reextract.c	player_records_replay	48	0	
-games/spyro-3/renderer/reextract.c	game_reextract_body	31	0	
-games/spyro-3/renderer/reextract.c	player_records_replay	48	0	
 games/spyro-3/renderer/terrain_probe.c	on_world_draw	216	0	
 games/spyro-3/renderer/terrain_probe.c	probe_report	32	0	
 games/spyro-3/renderer/terrain_probe.c	pv_match	35	0	

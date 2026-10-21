@@ -196,7 +196,8 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:portal_spyro23.c@F@on_portal_pass", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:portal_spyro23.c@F@on_portal_leaf", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:transition.c@F@on_8004F000_crossfade", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
-    ROW("c:reextract.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: each game's sub-tick re-extract, run by the host loop */
+    ROW("c:reextract.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: each game's sub-tick re-extract, run by the host loop */ \
+    ROW("c:reextract_spyro23.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: the Spyro 2/3 sub-tick re-extract, run by the host loop */
 
 /* SEAL(seal, usr): the function with USR `usr` may write the globals sealed
  * as `seal` (before op_seal), and calls op_seal_check(seal). */

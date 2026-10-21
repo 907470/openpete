@@ -394,6 +394,7 @@ const game_layout_t spyro3_game_layout = {
          * about 31000 units a tick while other mobys jump as little as about
          * 1000, so a moby the sampler does not drive is held only on a
          * placement marker. */
+        .rx_stage_stale_recs = 1,
         .place   = s_moby_place,
         .place_n = sizeof s_moby_place / sizeof s_moby_place[0],
         .director   = s_moby_director,
