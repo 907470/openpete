@@ -47,18 +47,13 @@ static int s1_fill_tag(int level, int sec, int face) {
 
 /** @brief Writes the level's name as the fill-tag verdict files spell it.
  *
- * Looks level up in spyro1_level_table and copies its name; a level absent
- * from the table gets "level<id>". Truncates to cap, which snprintf
- * terminates.
+ * The name is spyro1_levels' row for the level; a level absent from the
+ * table gets "level<id>". Truncates to cap, which snprintf terminates.
  * @param level The level id.
  * @param out Receives the NUL-terminated name.
  * @param cap The size of out in bytes; must be at least 1. */
 static void s1_level_name(int level, char* out, size_t cap) {
-    size_t nlv = 0;
-    const spyro1_level_t* lv = spyro1_level_table(&nlv);
-    snprintf(out, cap, "level%d", level);
-    for (size_t k = 0; k < nlv; k++)
-        if (lv[k].id == level) { snprintf(out, cap, "%s", lv[k].name); break; }
+    game_level_name(&spyro1_levels, level, out, cap);
 }
 
 /* Level-data authoring bugs corrected at the native colour fetch, keyed on

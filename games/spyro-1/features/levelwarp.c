@@ -6,9 +6,10 @@
 // dropdown + Warp button to the overlay's Gameplay section that works
 // mid-session, so switching levels for an A/B is not a relaunch.
 //
-// The dropdown, the Warp button and the click queue are the shared overlay
-// half (games/common/features/levelwarp_ui.c); this file supplies the level
-// table, the route probe and the two guest-write phases below.
+// The dropdown, the Warp button, the click queue and the in-flight phases
+// are the shared warp (games/common/features/levelwarp_ui.c); this file
+// supplies the level table, the route words and the two guest-write steps
+// below (the arm, and the retarget in the leaving phase).
 //
 // TWO ROUTES, picked from the live gamestate:
 //
@@ -66,8 +67,6 @@
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
 
-#include <stdio.h>
-
 #define ADDR_G_GAMESTATE         0x800757D8u
 #define ADDR_G_DEMOMODE          0x80075714u /* DEMO_MODE_NONE = 0 */
 #define ADDR_G_LEVELID           0x8007596Cu
@@ -92,21 +91,12 @@
 #define GS_EXITLEVEL       10u
 #define GS_TITLESCREEN     13u
 
-/* Backstop for a warp that never resolves. Both phases end on a gamestate
- * the game itself reaches, so this only fires if the game parks somewhere we
- * did not anticipate; it must not double as a deadline. Counted in hook
- * calls (one per sim yield), which is a looser unit than it looks - the
- * exit-level hand-off is ~90 calls, but a CD load plus fly-in ran past 3600
- * in a headless free-running session, which is exactly why neither phase
- * leans on this number to decide it is done. */
-#define WARP_STUCK_CALLS 20000u
-
 /* ---- the level table ------------------------------------------------- */
 
 /* Ids follow the game's scheme: tens digit = homeworld, units = HOME(0),
  * levels(1-3), boss(4), flight(5). Names are g_LevelNames (decomp
  * strings.c) lower_snake_cased. */
-static const spyro1_level_t k_levels[] = {
+static const game_level_t k_levels[] = {
     { "artisans",        "Artisans",         10 },
     { "stone_hill",      "Stone Hill",       11 },
     { "dark_hollow",     "Dark Hollow",      12 },
@@ -143,169 +133,77 @@ static const spyro1_level_t k_levels[] = {
     { "gnasty_gnorc",    "Gnasty Gnorc",     63 },
     { "gnastys_loot",    "Gnasty's Loot",    64 },
 };
-#define LEVEL_COUNT (sizeof(k_levels) / sizeof(k_levels[0]))
 
 /* Alternate spellings accepted on the command line. Kept out of k_levels so
  * the dropdown lists each level once. */
-typedef struct { const char* name; int id; } level_alias_t;
-static const level_alias_t k_level_aliases[] = {
-    { "gnastys_world",    60 },
-    { "twilight_harbour", 62 },
+static const game_level_t k_level_aliases[] = {
+    { "gnastys_world",    NULL, 60 },
+    { "twilight_harbour", NULL, 62 },
 };
 
-/* Display names in table order - the dropdown's enum_values. Built once at
- * apply-options time; the registry copies the row but NOT the strings it
- * points at, so this array has to outlive the process (it is static). */
-static const char* s_level_display[LEVEL_COUNT];
+/* Names are matched case-insensitive with '-' for '_' and apostrophes kept.
+ * An all-digit id passes through unchecked: the warp takes the id the
+ * caller names rather than indexing the table with it. */
+const game_level_table_t spyro1_levels = {
+    GAME_LEVEL_ROWS(k_levels), GAME_LEVEL_ROWS(k_level_aliases), "level",
+    "--skip-to-level", NAMED_TARGET_NUMERIC_ANY,
+};
 
-const spyro1_level_t* spyro1_level_table(size_t* out_count) {
-    if (out_count) *out_count = LEVEL_COUNT;
-    return k_levels;
-}
-
-void spyro1_level_surface(struct openpete_surface_sink* sink) {
-    const named_target_table_t levels =
-        NAMED_TARGET_TABLE(k_levels, spyro1_level_t, name, id);
-    const named_target_table_t aliases =
-        NAMED_TARGET_TABLE(k_level_aliases, level_alias_t, name, id);
-    named_target_surface(sink, "level", "--skip-to-level", &levels);
-    named_target_surface(sink, "level", "--skip-to-level", &aliases);
-}
-
-/* A numeric argument passes through unchecked (see levelwarp.h). */
 int spyro1_level_resolve(const char* arg) {
-    const named_target_table_t levels =
-        NAMED_TARGET_TABLE(k_levels, spyro1_level_t, name, id);
-    const named_target_table_t aliases =
-        NAMED_TARGET_TABLE(k_level_aliases, level_alias_t, name, id);
-    return named_target_resolve(arg, "level", &levels, &aliases,
-                                NAMED_TARGET_NUMERIC_ANY);
+    return game_level_resolve(&spyro1_levels, arg);
 }
 
-/* ---- state ----------------------------------------------------------- */
-
-typedef enum {
-    WARP_IDLE = 0,
-    WARP_ARMED,     /* exit-level sequence running; waiting for the hand-off */
-    WARP_LOADING    /* destination retargeted; waiting for arrival */
-} warp_phase_t;
+/* ---- the warp itself -------------------------------------------------- */
 
 /* Timeline state - travels with every savestate (see *_state_save/load).
  * A savestate load during an in-flight warp restores the guest RAM the warp
  * had written, so the phase driving those writes has to be restored with it;
- * otherwise a quick-load back to before the warp leaves an armed FSM that
+ * otherwise a quick-load back to before the warp leaves an armed warp that
  * hijacks whatever level transition the player triggers next.
  *
  * Rewind and runahead need no separate handling. Both are hard-gated on
  * game_is_gameplay_live() (g_Gamestate == GS_Playing && a level loaded), and
  * arming a warp leaves GS_Playing on its first tick - so the whole in-flight
  * window is outside the window they capture or restore in. */
-static uint32_t s_phase  = WARP_IDLE;
-static uint32_t s_target = 0;
-static uint32_t s_ticks  = 0;
+static levelwarp_t s_warp;
 
 void spyro1_levelwarp_state_save(uint32_t* phase, uint32_t* target,
                                  uint32_t* ticks) {
-    *phase  = s_phase;
-    *target = s_target;
-    *ticks  = s_ticks;
+    *phase  = s_warp.phase;
+    *target = s_warp.target;
+    *ticks  = s_warp.ticks;
 }
 
 void spyro1_levelwarp_state_load(uint32_t phase, uint32_t target,
                                  uint32_t ticks) {
-    s_phase  = phase;
-    s_target = target;
-    s_ticks  = ticks;
+    s_warp.phase  = phase;
+    s_warp.target = target;
+    s_warp.ticks  = ticks;
 }
 
-/* ---- the shared overlay half ------------------------------------------ */
-
-/** @brief Returns the level id at a level-table index, for the shared overlay half.
+/** @brief Reports whether the in-level route is open, before the demo and free-camera tests.
  *
- * @param index An index into k_levels.
- * @return The level id. */
-static int warp_level_id(int index) { return k_levels[index].id; }
-
-/** @brief Reports whether a warp is armed or loading.
- *
- * @return Nonzero when the warp phase is not idle. */
-static int warp_in_flight(void) { return s_phase != WARP_IDLE; }
-
-/** @brief Writes the overlay status text for a running warp phase.
- *
- * Writes "exiting level..." while armed and "loading..." while loading;
- * writes nothing when idle.
- * @param buf Destination for the text.
- * @param cap Size of buf in bytes.
- * @return 1 when text was written, 0 when the warp is idle. */
-static int warp_in_flight_status(char* buf, size_t cap) {
-    if (s_phase == WARP_ARMED)   { snprintf(buf, cap, "exiting level..."); return 1; }
-    if (s_phase == WARP_LOADING) { snprintf(buf, cap, "loading...");       return 1; }
-    return 0;
-}
-
-/** @brief Returns the route a warp click would take from the current game state.
- *
- * Derived from guest state only; whether a warp is already queued or
- * running is asked at the button. Pause and inventory count as in a level:
- * they are gameplay with the sim paused, and the exit sequence takes over
- * g_Gamestate. The attract demo runs GS_Playing with a level loaded, so a
- * nonzero g_DemoMode excludes it.
+ * Pause and inventory count as in a level: they are gameplay with the sim
+ * paused, and the exit sequence takes over g_Gamestate. The attract demo
+ * runs GS_Playing with a level loaded; the shared route excludes it on
+ * g_DemoMode.
  * @param cpu The guest CPU state.
- * @return LEVELWARP_ROUTE_TITLE at GS_TitleScreen, LEVELWARP_ROUTE_LEVEL in
- *     play, pause or inventory with a level loaded and no demo, else
- *     LEVELWARP_ROUTE_NONE. */
-static int warp_route(CPUState* cpu) {
+ * @return 1 in play, pause or inventory with a level loaded, else 0. */
+static int warp_live(CPUState* cpu) {
     uint32_t gs = cpu->read_word(ADDR_G_GAMESTATE);
-    if (gs == GS_TITLESCREEN) return LEVELWARP_ROUTE_TITLE;
-    if ((gs == GS_PLAYING || gs == GS_PAUSEMENU || gs == GS_INVENTORYMENU) &&
-        cpu->read_word(ADDR_G_LEVELID) != 0u &&
-        cpu->read_word(ADDR_G_DEMOMODE) == 0u)
-        return LEVELWARP_ROUTE_LEVEL;
-    return LEVELWARP_ROUTE_NONE;
+    return (gs == GS_PLAYING || gs == GS_PAUSEMENU || gs == GS_INVENTORYMENU) &&
+           cpu->read_word(ADDR_G_LEVELID) != 0u;
 }
 
-/** @brief Reads the id of the level the guest currently has loaded.
+/** @brief Reports the warp's arrival: g_Gamestate back at GS_Playing.
  *
  * @param cpu The guest CPU state.
- * @return g_LevelId as an int. */
-static int warp_current_level(CPUState* cpu) {
-    return (int)cpu->read_word(ADDR_G_LEVELID);
+ * @return 1 at GS_Playing, else 0. */
+static int warp_arrived(CPUState* cpu) {
+    return cpu->read_word(ADDR_G_GAMESTATE) == GS_PLAYING;
 }
 
-static void warp_arm(CPUState* cpu, int target_id);
-
-static const levelwarp_ui_desc_t k_ui = {
-    .log_tag           = "levelwarp",
-    .display           = s_level_display,
-    .count             = (int)LEVEL_COUNT,
-    .level_id          = warp_level_id,
-    .resolve           = spyro1_level_resolve,
-    .route             = warp_route,
-    .current_level     = warp_current_level,
-    .start_level_route = warp_arm,
-    .in_flight         = warp_in_flight,
-    .in_flight_status  = warp_in_flight_status,
-};
-
-/** @brief Resets the warp state and registers the level dropdown with the overlay.
- *
- * Fills the display-name array in table order and hands the overlay
- * descriptor to the shared warp UI.
- * @param opts Unused. */
-static void levelwarp_apply_options(const openpete_options_t* opts) {
-    size_t i;
-    (void)opts;
-    s_phase  = WARP_IDLE;
-    s_target = 0;
-    s_ticks  = 0;
-    for (i = 0; i < LEVEL_COUNT; i++) s_level_display[i] = k_levels[i].display;
-    levelwarp_ui_register(&k_ui);
-}
-
-/* ---- the warp itself -------------------------------------------------- */
-
-/** @brief Puts the game into its exit-level sequence and arms the warp toward a level.
+/** @brief Puts the game into its exit-level sequence toward a level.
  *
  * Makes the practice ROM's inventory level-select stores minus its
  * collectable wipe, so progress is kept: g_Gamestate GS_ExitLevel, Spyro's
@@ -314,20 +212,20 @@ static void levelwarp_apply_options(const openpete_options_t* opts) {
  * D_8007568C == 16 and only while D_800758B8 == 0, so a mid-cycle
  * D_8007568C skips the glide and Spyro exits standing. Zeroing both makes
  * the animation the same every time.
+ * @param w The warp; unused.
  * @param cpu The guest CPU state.
- * @param target_id The destination level id. */
-static void warp_arm(CPUState* cpu, int target_id) {
+ * @param target_id The destination level id.
+ * @return LEVELWARP_LEAVING. */
+static int warp_arm(levelwarp_t* w, CPUState* cpu, int target_id) {
+    (void)w;
     cpu->write_word(ADDR_G_GAMESTATE, GS_EXITLEVEL);
     cpu->write_word(ADDR_G_SPYRO + SPYRO_M_STATE, 0u);
     cpu->write_word(ADDR_G_SPYRO + SPYRO_M_AIRTIME, 1u); /* Tree Tops */
     cpu->write_word(ADDR_D_8007568C, 0u);
     cpu->write_word(ADDR_D_800758B8, 0u);
-
-    s_phase  = WARP_ARMED;
-    s_target = (uint32_t)target_id;
-    s_ticks  = 0;
     OPL_INFO_F("levelwarp", "exiting level %u for %d",
                (unsigned)cpu->read_word(ADDR_G_LEVELID), target_id);
+    return LEVELWARP_LEAVING;
 }
 
 /** @brief Retargets the load func_8002C664 kicked off to the armed level, entered as a portal entry is.
@@ -339,81 +237,69 @@ static void warp_arm(CPUState* cpu, int target_id) {
  * Spyro's m_FlyingAbility 0, and g_Camera.m_SphericalPreset NULL, which
  * restores the transition camera's own preset pick (func_80037A20
  * auto-picks only when the field is NULL, and the exit sequence leaves a
- * stale non-NULL one). Moves the phase to loading.
- * @param cpu The guest CPU state. */
-static void warp_retarget(CPUState* cpu) {
-    uint32_t target = s_target;
-
+ * stale non-NULL one).
+ * @param cpu The guest CPU state.
+ * @param target The destination level id. */
+static void warp_retarget(CPUState* cpu, uint32_t target) {
     cpu->write_word(ADDR_G_NEXTLEVELID, target);
     cpu->write_word(ADDR_G_PORTALLEVELID, 0u);
     cpu->write_word(ADDR_G_HASLEVELTRANSITION, (target % 10u) ? 1u : 0u);
     cpu->write_word(ADDR_G_SPYRO + SPYRO_M_FLYINGABILITY, 0u);
     cpu->write_word(ADDR_G_CAMERA + CAMERA_M_SPHERICALPRESET, 0u);
-
-    s_phase = WARP_LOADING;
-    s_ticks = 0;
     OPL_INFO_F("levelwarp", "retargeted transition to level %u",
                (unsigned)target);
 }
 
-/** @brief Cancels the warp in progress and returns the phase to idle.
+/** @brief Steps the exit sequence: retarget on its hand-off edge, abort when the game leaves it.
  *
- * Logs the reason and clears the phase, target and tick count; no guest
- * word is written.
- * @param why Short reason text for the log line. */
-static void warp_abort(const char* why) {
-    OPL_INFO_F("levelwarp", "aborted (%s)", why);
-    s_phase  = WARP_IDLE;
-    s_target = 0;
-    s_ticks  = 0;
+ * func_8002C664 flips the gamestate to GS_LevelTransition as its last act,
+ * so that edge means the hand-off has run and its clobber of g_NextLevelId
+ * and g_PortalLevelId is behind; LoadLevel does not read them until
+ * gamestate 1 dispatches later in this tick, so the retarget lands. Any
+ * state other than GS_ExitLevel means the sequence is no longer this warp's
+ * to steer (a savestate load restoring gameplay, a death, a cutscene).
+ * @param w The warp.
+ * @param cpu The guest CPU state.
+ * @return LEVELWARP_LOADING after the retarget, LEVELWARP_IDLE after an
+ *         abort, else LEVELWARP_LEAVING. */
+static int warp_leaving(levelwarp_t* w, CPUState* cpu) {
+    uint32_t gs = cpu->read_word(ADDR_G_GAMESTATE);
+    if (gs == GS_LEVELTRANSITION) { warp_retarget(cpu, w->target); return LEVELWARP_LOADING; }
+    if (gs != GS_EXITLEVEL) { levelwarp_abort(w, "left the exit sequence"); return LEVELWARP_IDLE; }
+    return LEVELWARP_LEAVING;
 }
 
-void spyro1_levelwarp_on_tick(CPUState* cpu) {
-    uint32_t gs;
+/* The title route opens at GS_TitleScreen. The loading phase ends when the
+ * game hands back to gameplay, however long the CD load and fly-in take. */
+static const levelwarp_game_t k_warp_game = {
+    .log_tag                = "levelwarp",
+    .rows                   = levelwarp_level_rows,
+    .test_env               = "OPENPETE_LEVELWARP_TEST",
+    .table                  = &spyro1_levels,
+    .unit                   = "level",
+    .title_word             = ADDR_G_GAMESTATE,
+    .title_value            = GS_TITLESCREEN,
+    .demo_word              = ADDR_G_DEMOMODE,
+    .live                   = warp_live,
+    .current_word           = ADDR_G_LEVELID,
+    .start                  = warp_arm,
+    .leaving                = warp_leaving,
+    .arrived                = warp_arrived,
+    .leaving_status         = "exiting level...",
+    .reset_ticks_on_loading = 1,
+};
 
-    /* The shared half refreshes the route, follows the dropdown and drains a
-     * queued click into warp_arm below or into the title route. It reports
-     * back whether this tick may advance the sequence. (The FSM phase itself
-     * IS snapshotted, so the rollback of an in-flight warp stays
-     * consistent.) */
-    if (levelwarp_ui_tick(cpu)) return;
+static levelwarp_t s_warp = { .game = &k_warp_game };
 
-    if (s_phase == WARP_IDLE) return;
-
-    gs = cpu->read_word(ADDR_G_GAMESTATE);
-
-    if (++s_ticks > WARP_STUCK_CALLS) { warp_abort("stuck"); return; }
-
-    if (s_phase == WARP_ARMED) {
-        /* func_8002C664 flips the gamestate as its last act, so this edge
-         * means the hand-off has run and its clobber of g_NextLevelId /
-         * g_PortalLevelId is behind us. LoadLevel does not read them until
-         * gamestate 1 dispatches later in THIS tick, so writing now lands. */
-        if (gs == GS_LEVELTRANSITION) { warp_retarget(cpu); return; }
-        /* Anything other than the sequence we started means it is no longer
-         * ours to steer - a savestate load restoring gameplay, a death, a
-         * cutscene. Bail rather than retarget someone else's transition. */
-        if (gs != GS_EXITLEVEL) warp_abort("left the exit sequence");
-        return;
-    }
-
-    /* WARP_LOADING: the loader has the wheel and we write nothing more -
-     * this phase only reports status and keeps a second warp from stacking.
-     * It ends when the game hands back to gameplay, however long the CD load
-     * and fly-in take (a fly-in can outlast any tick budget worth setting,
-     * so the exit condition is the gamestate, not a clock). */
-    if (gs == GS_PLAYING) {
-        uint32_t landed = cpu->read_word(ADDR_G_LEVELID);
-        if (landed == s_target)
-            OPL_INFO_F("levelwarp", "arrived in level %u", (unsigned)landed);
-        else
-            OPL_INFO_F("levelwarp", "landed in level %u, wanted %u",
-                       (unsigned)landed, (unsigned)s_target);
-        s_phase  = WARP_IDLE;
-        s_target = 0;
-        s_ticks  = 0;
-    }
+/** @brief Feature-module option hook that registers the warp's overlay rows.
+ *
+ * @param opts Unused. */
+static void levelwarp_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    levelwarp_register(&s_warp);
 }
+
+void spyro1_levelwarp_on_tick(CPUState* cpu) { levelwarp_on_tick(&s_warp, cpu); }
 
 const feature_module_t spyro1_levelwarp_module = {
     .name           = "levelwarp",

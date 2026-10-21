@@ -62,6 +62,8 @@ openpete_add_game(spyro-1
         features/crash_demo_woah.c
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/level_table.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/level_skip.c
 
         sfx_census.cpp
         write_trace.cpp

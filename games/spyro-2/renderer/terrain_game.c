@@ -5,7 +5,6 @@
 #include "renderer/portal_spyro23.h"  /* the opening-plane provider */
 #include "renderer/portal_plane.h"    /* the shared plane-cover margin */
 #include "spyro-2/skip_to_level.h"            /* level id -> name */
-#include <stdio.h>
 
 /** @brief Writes a level's name from the Spyro 2 level table, or "level<N>" for an unlisted id.
  *
@@ -13,11 +12,7 @@
  * @param out Receives the name, truncated to cap.
  * @param cap Size of out in bytes. */
 static void s2_level_name(int level, char* out, size_t cap) {
-    size_t nlv = 0;
-    const spyro2_level_t* lv = spyro2_level_table(&nlv);
-    snprintf(out, cap, "level%d", level);
-    for (size_t k = 0; k < nlv; k++)
-        if (lv[k].number == level) { snprintf(out, cap, "%s", lv[k].name); break; }
+    game_level_name(&spyro2_levels, level, out, cap);
 }
 
 /** @brief Reports every LP face as not a fill face: this game has no frozen LP fill-face list.

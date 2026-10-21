@@ -58,7 +58,7 @@ closed; click a title to open it.
 | --- | --- |
 | Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
 | Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths (absent from release packages) |
-| Gameplay | Freecam, Tick scale, Pause sim, Runahead, Rewind, Level warp |
+| Gameplay | Freecam, Tick scale, Pause sim, Runahead, Rewind, Level warp, Area warp (Spyro 3) |
 | Gameplay, Audio (collapsed) | Mute, SFX volume, Music volume |
 | Gameplay, Input (collapsed) | Vibration, Mouse sensitivity |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
@@ -184,6 +184,20 @@ session in the chosen level, with progress and lives reset as with
 `--skip-to-level`; the button's tooltip reads **from title (resets
 progress)**. The button is disabled while the free camera is on (**freecam
 active**) or when no route exists (**not in a level**).
+
+### Area warp
+
+On Spyro: Year of the Dragon, the **Area warp** row moves between the
+[sub-areas](../games/spyro-3.md#sub-areas) of the level you are in. Its list
+<!-- id: knob:warp_area --> holds **Main area** and **Area 1** to **Area 3**
+and follows the area you are in until you pick one; the **Warp** button
+<!-- id: knob:warp_area_go --> enters the chosen area the way its portal
+does, and progress is kept. From one sub-area to another the warp passes
+through the main area, as the level's portals do. The button is disabled in
+a level with no sub-areas (**no sub-areas in this level**), for an area the
+level does not have (**no such area in this level**), in the chosen area
+(**already here**), while the free camera is on, and outside gameplay (during
+a speech, a load or a menu).
 
 ## Mods
 

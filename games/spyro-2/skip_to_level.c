@@ -26,16 +26,11 @@
 // counter reaches the recording's length.
 
 #include "skip_to_level.h"
-#include "openpete_fiber.h"
-#include "openpete_skip.h"
-#include "named_target.h"
 #include "features/cutscene_skip.h"
+#include "features/level_skip.h"
 #include "spyro-2/gen/spyro2_symbols.gen.h"
 
-#include <ctype.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define S2_TITLE_SUBSTATE  0x80067E0Cu
 #define S2_TITLE_TIMER     0x80067E00u
@@ -53,7 +48,7 @@
 
 /* Level numbers are the game's own (g_NextLevelNum); names are the overlay
  * filenames' lower_snake_case and displays the levels' own titles. */
-static const spyro2_level_t k_levels[] = {
+static const game_level_t k_levels[] = {
     { "summer_forest",   "Summer Forest",   10 },
     { "glimmer",         "Glimmer",         11 },
     { "idol_springs",    "Idol Springs",    12 },
@@ -84,52 +79,13 @@ static const spyro2_level_t k_levels[] = {
     { "dragon_shores",   "Dragon Shores",   65 },
     { "riptos_arena",    "Ripto's Arena",   66 },
 };
-#define LEVEL_COUNT (sizeof(k_levels) / sizeof(k_levels[0]))
-
-const spyro2_level_t* spyro2_level_table(size_t* out_count) {
-    if (out_count) *out_count = LEVEL_COUNT;
-    return k_levels;
-}
-
-void spyro2_level_surface(struct openpete_surface_sink* sink) {
-    const named_target_table_t levels =
-        NAMED_TARGET_TABLE(k_levels, spyro2_level_t, name, number);
-    named_target_surface(sink, "level", "--skip-to-level", &levels);
-}
+const game_level_table_t spyro2_levels = {
+    GAME_LEVEL_ROWS(k_levels), NULL, 0, "level", "--skip-to-level", 0u,
+};
 
 int spyro2_level_resolve(const char* arg) {
-    const named_target_table_t levels =
-        NAMED_TARGET_TABLE(k_levels, spyro2_level_t, name, number);
-    return named_target_resolve(arg, "level", &levels, NULL, 0u);
+    return game_level_resolve(&spyro2_levels, arg);
 }
-
-/* ---- state ----------------------------------------------------------- */
-
-typedef enum {
-    SKIP_IDLE = 0,
-    SKIP_ARMED,    /* waiting for the press-start idle sub-state */
-    SKIP_SEEDED,   /* list slot seeded, timeout induced; waiting for the pick */
-    SKIP_PICKED,   /* loader took the target; holding g_DemoMode clear */
-} skip_phase_t;
-
-static int          s_target = 0;
-static skip_phase_t s_phase  = SKIP_IDLE;
-/* Present fast-forward stop cap, set relative to arming so a runtime warp
- * (armed tens of thousands of frames in) is not cleared instantly. */
-static uint32_t     s_ffwd_deadline = 0;
-
-void spyro2_skip_set(int number) {
-    s_target = number;
-    s_phase  = number > 0 ? SKIP_ARMED : SKIP_IDLE;
-    if (number > 0 && openpete_skip_ffwd_windowed) {
-        openpete_skip_present_until_level = 1;
-        s_ffwd_deadline = 0;
-        fprintf(stderr, "[skip-to-level] fast-forwarding presents until "
-                        "level %d loads\n", number);
-    }
-}
-
-int spyro2_skip_target(void) { return s_phase != SKIP_IDLE ? s_target : 0; }
 
 int spyro2_skip_gameplay_live(CPUState* cpu) {
     /* The loader reports the overlay resident about 45 VBLs before the level
@@ -139,76 +95,78 @@ int spyro2_skip_gameplay_live(CPUState* cpu) {
            cpu->read_word(S2_LEVEL_TICK) != 0u;
 }
 
-/** @brief Releases a skip's present fast-forward and cutscene watch on the playable edge or the fail-safe deadline.
+/** @brief Induces the title's demo-timeout transition toward the target at the press-start idle sub-state.
  *
- * Runs every tick while a present fast-forward or a cutscene target is
- * watched, whatever the phase. Presents resume
- * (openpete_skip_present_until_level clears) on the playable edge: the picked
- * level's first live tick, or, while a cutscene target is watched, that
- * target's release predicate (features/cutscene_skip.c), which is tested
- * outside the SKIP_PICKED gate because the cutscene's loader-word-0 store ends
- * the phase. The release line names the engagement values read back at
- * release. A deadline openpete_skip_failsafe_vbls() after the first check is
- * the fail-safe against a never-reached edge and logs its own line. The
- * cutscene watch runs headless too, where there is no fast-forward, so a
- * harness reads the same lines. Either release ends the cutscene watch.
+ * Writes the target into the demo level list at g_DemoIndex, sub-state 6 and
+ * the title timer 0.
  * @param cpu The guest CPU state.
- * @param frame_counter The openpete_frame counter. */
-static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
-    int watching = spyro2_cutscene_skip_watching();
-    if (!openpete_skip_present_until_level && !watching) return;
-    if (!s_ffwd_deadline)
-        s_ffwd_deadline = frame_counter + openpete_skip_failsafe_vbls();
-    char eng[128] = "";
-    int playable = watching
-        ? spyro2_cutscene_skip_released(cpu, eng, sizeof eng)
-        : s_phase == SKIP_PICKED && spyro2_skip_gameplay_live(cpu);
-    if (playable) {
-        fprintf(stderr, "[skip-to-level] level playable - presents resume "
-                        "at frame=%u%s\n", openpete_feed_key_now(), eng);
-    } else if (frame_counter > s_ffwd_deadline) {
-        fprintf(stderr, "[skip-to-level] fail-safe release (no playable "
-                        "edge) at frame=%u\n", openpete_feed_key_now());
-    } else {
-        return;
-    }
-    openpete_skip_present_until_level = 0;
-    s_ffwd_deadline = 0;
-    spyro2_cutscene_skip_finish();
+ * @param target The level number.
+ * @param log_frame The frame value the log line prints.
+ * @return 1 when induced, 0 while the sub-state is not idle. */
+static int skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
+    if (cpu->read_word(S2_TITLE_SUBSTATE) != S2_SUBSTATE_IDLE) return 0;
+    uint32_t idx = cpu->read_word(S2_DEMO_INDEX);
+    cpu->write_byte(S2_DEMO_LEVEL_LIST + idx, (uint8_t)target);
+    cpu->write_word(S2_TITLE_SUBSTATE, S2_SUBSTATE_TIMEOUT);
+    cpu->write_word(S2_TITLE_TIMER, 0u);
+    fprintf(stderr, "[skip-to-level] induced demo-timeout: level=%d "
+                    "(slot=%u) at frame=%u\n",
+            target, (unsigned)idx, (unsigned)log_frame);
+    return 1;
 }
 
-void spyro2_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
-    if (s_phase == SKIP_ARMED) {
-        if (cpu->read_word(S2_TITLE_SUBSTATE) == S2_SUBSTATE_IDLE) {
-            uint32_t idx = cpu->read_word(S2_DEMO_INDEX);
-            cpu->write_byte(S2_DEMO_LEVEL_LIST + idx, (uint8_t)s_target);
-            cpu->write_word(S2_TITLE_SUBSTATE, S2_SUBSTATE_TIMEOUT);
-            cpu->write_word(S2_TITLE_TIMER, 0u);
-            s_phase = SKIP_SEEDED;
-            fprintf(stderr, "[skip-to-level] induced demo-timeout: level=%d "
-                            "(slot=%u) at frame=%u\n",
-                    s_target, (unsigned)idx, openpete_feed_key_now());
-        }
-    } else if (s_phase == SKIP_SEEDED) {
-        if (cpu->read_word(S2_LOADER_STATE) == S2_LOADER_LOADING &&
-            cpu->read_word(S2_NEXT_LEVEL_NUM) == (uint32_t)s_target) {
-            s_phase = SKIP_PICKED;
-            fprintf(stderr, "[skip-to-level] loader took level=%d at "
-                            "frame=%u\n", s_target, openpete_feed_key_now());
-        }
-    }
-    if (s_phase == SKIP_PICKED) {
-        /* Hold the demo flag clear from the pick through the level: the pad
-         * path reads the controller and the demo-end check never fires. The
-         * hold ends when the loader returns to the title (a level exit). */
-        if (cpu->read_word(S2_LOADER_STATE) != 0u) {
-            cpu->write_word(S2_DEMO_MODE, 0u);
-        } else {
-            s_phase = SKIP_IDLE;
-            fprintf(stderr, "[skip-to-level] loader left the level; demo-mode "
-                            "hold ends at frame=%u\n", openpete_feed_key_now());
-        }
-    }
+/** @brief Tests whether the loader took the target: loader state 2 with g_NextLevelNum equal to it.
+ *
+ * @param cpu The guest CPU state.
+ * @param target The level number.
+ * @return 1 when taken, else 0. */
+static int skip_picked(CPUState* cpu, int target) {
+    return cpu->read_word(S2_LOADER_STATE) == S2_LOADER_LOADING &&
+           cpu->read_word(S2_NEXT_LEVEL_NUM) == (uint32_t)target;
+}
 
-    skip_release_on_tick(cpu, frame_counter);
+/** @brief Holds g_DemoMode clear for one tick until the loader returns to the title.
+ *
+ * The pad path then reads the controller and the demo-end check never
+ * fires. The hold ends when the loader state reads 0 (a level exit).
+ * @param cpu The guest CPU state.
+ * @return 1 while the hold runs, 0 when it ends. */
+static int skip_hold(CPUState* cpu) {
+    if (cpu->read_word(S2_LOADER_STATE) == 0u) return 0;
+    cpu->write_word(S2_DEMO_MODE, 0u);
+    return 1;
+}
+
+/** @brief Tests the picked level's playable edge: its first live tick.
+ *
+ * @param cpu The guest CPU state.
+ * @return 1 when gameplay is live, else 0. */
+static int skip_playable(CPUState* cpu) { return spyro2_skip_gameplay_live(cpu); }
+
+static const level_skip_watch_t k_watches[] = {
+    { spyro2_cutscene_skip_watching, spyro2_cutscene_skip_released,
+      spyro2_cutscene_skip_finish },
+};
+
+/* The cutscene watch's release predicate is tested before the level skip's
+ * own edge: the cutscene's loader-word-0 store ends the picked phase. */
+const level_skip_game_t spyro2_level_skip = {
+    .induce          = skip_induce,
+    .picked          = skip_picked,
+    .hold            = skip_hold,
+    .hold_end_log    = "loader left the level; demo-mode hold ends",
+    .playable        = skip_playable,
+    .watches         = k_watches,
+    .n_watches       = sizeof k_watches / sizeof k_watches[0],
+    .cutscene_source = spyro2_cutscene_source_level,
+    .cutscene_rides  = spyro2_cutscene_rides_level_skip,
+    .cutscene_arm    = spyro2_cutscene_skip_arm,
+};
+
+void spyro2_skip_set(int number) { level_skip_set(&spyro2_level_skip, number); }
+
+int spyro2_skip_target(void) { return level_skip_target(&spyro2_level_skip); }
+
+void spyro2_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
+    level_skip_on_tick(&spyro2_level_skip, cpu, frame_counter);
 }

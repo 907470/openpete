@@ -3,23 +3,19 @@
 #define SPYRO3_SKIP_TO_LEVEL_H
 
 #include "openpete_psx.h"
+#include "features/level_table.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-/* One selectable level. `name` is the --skip-to-level spelling, `display`
- * the dev-overlay dropdown label. Table order is level-number order. */
-typedef struct {
-    const char* name;
-    const char* display;
-    int         number;
-} spyro3_level_t;
+struct level_skip_game;
 
-/** @brief Return the table of the 37 selectable levels, in level-number order.
- *
- * @param out_count Receives the entry count when non-NULL.
- * @return The first entry of the static table. */
-const spyro3_level_t* spyro3_level_table(size_t* out_count);
+/* The 37 selectable levels, in level-number order. */
+extern const game_level_table_t spyro3_levels;
+
+/* The level skip's per-game steps (skip_to_level.c), for the shared
+ * driver (games/common/features/level_skip.h). */
+extern const struct level_skip_game spyro3_level_skip;
 
 /** @brief Resolve a --skip-to-level argument, a level number or lower_snake_case name, to a level number.
  *
@@ -31,12 +27,6 @@ const spyro3_level_t* spyro3_level_table(size_t* out_count);
  * @return The level number, or -1 after printing the valid names for an
  *         empty, NULL, or unknown argument. */
 int spyro3_level_resolve(const char* arg);
-
-struct openpete_surface_sink;
-/** @brief Report every level name --skip-to-level accepts to the surface dump.
- *
- * @param sink The dump's collector. */
-void spyro3_level_surface(struct openpete_surface_sink* sink);
 
 /** @brief Arm the level skip for `number`, or disarm it for 0 or below.
  *

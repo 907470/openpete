@@ -20,6 +20,27 @@ typedef struct CPUState CPUState;
  * @return The level number, or -1. */
 int spyro3_area_resolve(const char* arg, int* out_area);
 
+/** @brief Returns the number of areas of a level, from the level WAD header's area table.
+ *
+ * @param level The level number.
+ * @return The count; 1 (area 0 only) for a level with no sub-area. */
+int spyro3_area_count(int level);
+
+/** @brief Finds the paired moby of the portal standing in one area and leading to another.
+ *
+ * Walks the moby table from *(0x8006C550) to *(0x8006C704) in 88-byte
+ * strides for a class-1022 moby (the half at moby+54) whose props, *(moby+0),
+ * hold `from` at props+64 (the area it stands in) and `to` at props+52 (its
+ * destination). The fade-in's sub-area re-entry (func_80053A10, 0x80053D14)
+ * walks it so from area 0, the pause menu's Exit Area (func_80057834,
+ * 0x80058278) from the current area to area 0; both then call
+ * EnterSubArea(props+52, table base + props+48 * 88).
+ * @param cpu The guest CPU state.
+ * @param from The area the portal stands in.
+ * @param to The destination area.
+ * @return The paired moby's address, or 0 when no such portal exists. */
+uint32_t spyro3_area_portal_pair(CPUState* cpu, int from, int to);
+
 struct openpete_surface_sink;
 /** @brief Report every --skip-to-area target to the surface dump, as "<level name>:<area>".
  *

@@ -3,25 +3,21 @@
 #define SPYRO2_SKIP_TO_LEVEL_H
 
 #include "openpete_psx.h"
+#include "features/level_table.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-/* One selectable level. `name` is the --skip-to-level spelling, `display`
- * the dev-overlay dropdown label. Table order is level-number order. */
-typedef struct {
-    const char* name;
-    const char* display;
-    int         number;
-} spyro2_level_t;
+struct level_skip_game;
 
-/** @brief Returns the table of the 29 selectable levels, in level-number order.
- *
- * It is the one list --skip-to-level, the dev-overlay level warp and the terrain
- * feeder's level names resolve against.
- * @param out_count Receives the entry count when non-NULL.
- * @return The table, static storage. */
-const spyro2_level_t* spyro2_level_table(size_t* out_count);
+/* The 29 selectable levels, in level-number order: the one list
+ * --skip-to-level, the dev-overlay level warp and the terrain feeder's
+ * level names resolve against. */
+extern const game_level_table_t spyro2_levels;
+
+/* The level skip's per-game steps (skip_to_level.c), for the shared
+ * driver (games/common/features/level_skip.h). */
+extern const struct level_skip_game spyro2_level_skip;
 
 /** @brief Resolves a --skip-to-level argument to a level number (game_resolve_level_arg).
  *
@@ -31,12 +27,6 @@ const spyro2_level_t* spyro2_level_table(size_t* out_count);
  * @param arg The command-line value, or NULL.
  * @return The level number, or -1. */
 int spyro2_level_resolve(const char* arg);
-
-struct openpete_surface_sink;
-/** @brief Report every level name --skip-to-level accepts to the surface dump.
- *
- * @param sink The dump's collector. */
-void spyro2_level_surface(struct openpete_surface_sink* sink);
 
 /** @brief Arms the skip to a level number, or disarms it with 0 or less (game_set_skip_to_level).
  *

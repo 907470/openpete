@@ -36,7 +36,10 @@ openpete_add_game(spyro-3
 
         # The dev-overlay level warp (M) and its shared overlay half.
         features/levelwarp.c
+        features/areawarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/level_table.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/level_skip.c
 
         # OPENPETE_S3_STATE_LOG: the read-only game.state change log.
         features/state_log.c

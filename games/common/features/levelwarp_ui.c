@@ -1,131 +1,127 @@
-// games/common/features/levelwarp_ui.c - the dev-overlay level warp's
-// game-independent half: the dropdown, the Warp button, the click queue and
-// the scripted driver. See levelwarp_ui.h for the contract.
+// games/common/features/levelwarp_ui.c - the dev-overlay warp: the
+// dropdown, the Warp button, the click queue, the scripted driver and the
+// in-flight state machine. See levelwarp_ui.h for the contract.
 
 #include "features/levelwarp_ui.h"
 
 #include "game_extras.h"    /* game_set_skip_to_level (title-screen route) */
-#include "openpete_fiber.h" /* openpete_speculative */
+#include "openpete_fiber.h" /* openpete_speculative, openpete_frame */
 #include "openpete_freecam.h"
-#include "openpete_knobs.h" /* dev-overlay rows (M key) */
 #include "openpete_log.h"
 #include "openpete_surface.h"
+#include "psx_runtime_internal.h" /* CPUState + its read callbacks */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Host-side UI state - deliberately NOT in any savestate. A click is the
- * user's intent right now; restoring an older pending flag over it (the
- * quiet rewind/runahead path reloads the blob every tick) would either eat a
- * fresh click or resurrect a stale one.
- *   s_sel         - dropdown index into the descriptor's table
- *   s_sel_touched - the user has picked something, so stop auto-following
- *                   the level they are in
- *   s_pending     - a click waiting for the next non-speculative tick
- *   s_route       - cached "what would Warp do right now", for the gate and
- *                   the status line */
-static const levelwarp_ui_desc_t* s_desc;
-static int s_sel         = 0;
-static int s_sel_touched = 0;
-static int s_pending     = 0;
-static int s_pending_id  = 0;
-static int s_route       = LEVELWARP_ROUTE_NONE;
+/* Backstop for a warp that never resolves. Every phase ends on a state the
+ * game itself reaches, so this only fires if the game parks somewhere
+ * unanticipated; it must not double as a deadline. Counted in calls (one per
+ * sim yield): a CD load plus fly-in can run past 3600 in a headless
+ * free-running session, which is why no phase leans on it. */
+#define WARP_STUCK_CALLS 20000u
 
-/** @brief Find a level id's index in the descriptor's level table.
+/* The registered warps, for the row callbacks, which receive only the row. */
+static levelwarp_t* s_warps[2];
+
+/** @brief Find the warp a dev-overlay row belongs to, by the row's id.
  *
- * @param id The level id.
- * @return The table index; -1 when the id is not in the table. */
-static int level_index_for_id(int id) {
-    int i;
-    for (i = 0; i < s_desc->count; i++)
-        if (s_desc->level_id(i) == id) return i;
-    return -1;
+ * @param k The row.
+ * @return The warp whose templates carry the id; the first warp when none does. */
+static levelwarp_t* warp_of(const knob_desc_t* k) {
+    for (size_t i = 0; i < sizeof s_warps / sizeof s_warps[0]; i++) {
+        const levelwarp_t* w = s_warps[i];
+        if (w && (strcmp(k->id, w->game->rows[0].id) == 0 ||
+                  strcmp(k->id, w->game->rows[1].id) == 0))
+            return s_warps[i];
+    }
+    return s_warps[0];
+}
+
+/** @brief Report whether the warp has a request queued or a warp in flight, the Warp button's second gate.
+ *
+ * @param w The warp.
+ * @return Non-zero while a click is queued or the phase is not idle. */
+static int warp_busy(const levelwarp_t* w) {
+    return w->pending || w->phase != LEVELWARP_IDLE;
 }
 
 /* ---- dev-overlay rows ------------------------------------------------- */
 
 /** @brief Read the dropdown row's selected index.
  *
- * @param k The row; unused.
- * @return The index into the descriptor's level table. */
-static double sel_get(const knob_desc_t* k) { (void)k; return (double)s_sel; }
+ * @param k The row.
+ * @return The index into the warp's target table. */
+static double sel_get(const knob_desc_t* k) { return (double)warp_of(k)->sel; }
 
-/** @brief Select a dropdown entry and stop the dropdown following the player's level.
+/** @brief Select a dropdown entry and stop the dropdown following the current target.
  *
- * @param k The row; unused.
- * @param v The index into the descriptor's level table.
+ * @param k The row.
+ * @param v The index into the warp's target table.
  * @return 0 when applied; -1 when the index is outside the table. */
 static int sel_set(knob_desc_t* k, double v) {
+    levelwarp_t* w = warp_of(k);
     int idx = (int)v;
-    (void)k;
-    if (idx < 0 || idx >= s_desc->count) return -1;
-    s_sel         = idx;
-    s_sel_touched = 1;
+    if (idx < 0 || idx >= w->count) return -1;
+    w->sel         = idx;
+    w->sel_touched = 1;
     return 0;
 }
 
-/** @brief Report whether a warp is queued or in flight, the Warp button's second gate.
+/** @brief Gate the Warp button on a usable route, an accepted target and no warp in progress.
  *
- * Kept apart from s_route because the tick also consults s_route when it
- * drains the queue: a route that read none while a click is pending would
- * make every click discard itself.
- * @return Non-zero while a click is queued or the descriptor reports a warp
- *         in flight. */
-static int warp_busy(void) {
-    return s_pending || (s_desc->in_flight && s_desc->in_flight());
-}
-
-/** @brief Gate the Warp button on a usable route and no warp in progress.
- *
- * @param k The row; unused.
- * @return 1 when the cached route is not none and no warp is queued or in
- *         flight, else 0. */
+ * @param k The row.
+ * @return 1 when the button may fire, else 0. */
 static double go_ready(const knob_desc_t* k) {
-    (void)k;
-    return (s_route != LEVELWARP_ROUTE_NONE && !warp_busy()) ? 1.0 : 0.0;
+    const levelwarp_t* w = warp_of(k);
+    return (w->route != LEVELWARP_ROUTE_NONE && !w->refused && !warp_busy(w))
+        ? 1.0 : 0.0;
 }
 
-/** @brief Queue a warp to the selected level when the Warp button is pressed.
+/** @brief Queue a warp to the selected target when the Warp button is pressed.
  *
- * Snapshots the selected level id, since the dropdown can move before the tick
- * drains the queue.
- * @param k The row; unused.
+ * Snapshots the selected target number, since the dropdown can move before
+ * the tick drains the queue.
+ * @param k The row.
  * @param v The press value; unused.
- * @return 0 when queued; -1 when the route is none or a warp is queued or in
- *         flight. */
+ * @return 0 when queued; -1 when the button is gated. */
 static int go_fire(knob_desc_t* k, double v) {
-    (void)k;
+    levelwarp_t* w = warp_of(k);
     (void)v;
-    if (s_route == LEVELWARP_ROUTE_NONE || warp_busy()) return -1;
-    s_pending_id = s_desc->level_id(s_sel);  /* snapshot: the combo may move */
-    s_pending    = 1;
+    if (go_ready(k) == 0.0) return -1;
+    w->pending_id = w->game->table->levels[w->sel].number;
+    w->pending    = 1;
     return 0;
 }
 
 /** @brief Write the status text shown beside the Warp button.
  *
- * Reads queued while a click waits; else the descriptor's in-flight status
- * when it supplies one; else a note for the title route, an empty string for
- * the level route, freecam active, or not in a level.
- * @param k The row; unused.
+ * Reads queued while a click waits; the game's leaving status, or
+ * "loading..." from LEVELWARP_LOADING, while a warp is in flight; else a
+ * note for the title route, the refusal reason or an empty string for the
+ * level route, freecam active, or the game's no-route text.
+ * @param k The row.
  * @param buf Receives the text.
  * @param cap Size of @p buf in bytes. */
 static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
-    (void)k;
-    if (s_pending)                              snprintf(buf, cap, "queued");
-    else if (s_desc->in_flight_status &&
-             s_desc->in_flight_status(buf, cap)) { /* the game wrote it */ }
-    else if (s_route == LEVELWARP_ROUTE_TITLE)  snprintf(buf, cap, "from title (resets progress)");
-    else if (s_route == LEVELWARP_ROUTE_LEVEL)  snprintf(buf, cap, "%s", "");
-    else if (openpete_freecam_active())         snprintf(buf, cap, "freecam active");
-    else                                        snprintf(buf, cap, "not in a level");
+    const levelwarp_t* w = warp_of(k);
+    const levelwarp_game_t* g = w->game;
+    const char* s;
+    if (w->pending)                             s = "queued";
+    else if (w->phase == LEVELWARP_LOADING)     s = "loading...";
+    else if (w->phase != LEVELWARP_IDLE)        s = g->leaving_status;
+    else if (w->route == LEVELWARP_ROUTE_TITLE) s = "from title (resets progress)";
+    else if (w->route == LEVELWARP_ROUTE_LEVEL) s = w->refused ? w->refused : "";
+    else if (openpete_freecam_active())         s = "freecam active";
+    else s = g->none_status ? g->none_status : "not in a level";
+    snprintf(buf, cap, "%s", s);
 }
 
-/* The two dev-overlay rows, as templates: register_rows fills in the
- * dropdown's display names and the value plumbing, and levelwarp_ui_surface
+/* The level warp's rows, as templates: register_rows fills in the
+ * dropdown's display names and the value plumbing, and levelwarp_surface
  * hands the templates to the surface dump as they are. */
-static const knob_desc_t k_warp_rows[] = {
+const knob_desc_t levelwarp_level_rows[2] = {
     { .id = "warp_level", .label = "Level warp", .section = "Gameplay",
       .help = "Destination for the Warp button. Follows the level you "
               "are in until you pick something.",
@@ -140,133 +136,220 @@ static const knob_desc_t k_warp_rows[] = {
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Warp" },
 };
 
-/** @brief Add the dropdown and Warp rows to the dev overlay's Gameplay section. */
-static void register_rows(void) {
-    knob_desc_t row = k_warp_rows[0];
-    row.enum_values = s_desc->display;
-    row.enum_count  = s_desc->count;
+/** @brief Add the warp's dropdown and Warp rows to the dev overlay.
+ *
+ * @param w The warp. */
+static void register_rows(levelwarp_t* w) {
+    knob_desc_t row = w->game->rows[0];
+    row.enum_values = w->display;
+    row.enum_count  = w->count;
     row.get_num     = sel_get;
     row.set_num     = sel_set;
     (void)openpete_knob_add(&row);
 
-    row         = k_warp_rows[1];
+    row         = w->game->rows[1];
     row.get_num = go_ready;
     row.set_num = go_fire;
     row.get_str = go_status;
     (void)openpete_knob_add(&row);
 }
 
-void levelwarp_ui_surface(struct openpete_surface_sink* sink) {
-    for (size_t i = 0; i < sizeof k_warp_rows / sizeof k_warp_rows[0]; i++)
-        openpete_surface_row(sink, &k_warp_rows[i]);
+void levelwarp_surface(struct openpete_surface_sink* sink,
+                       const knob_desc_t* rows) {
+    openpete_surface_row(sink, &rows[0]);
+    openpete_surface_row(sink, &rows[1]);
 }
 
 /* ---- scripted driver --------------------------------------------------- */
 
-/* OPENPETE_LEVELWARP_TEST=<vbl>:<level> queues the same request the Warp
- * button does, at the given VBL counter. The warp is a multi-tick ride
- * through the game's own state machine, so firing it from a script is what
- * makes it testable from a script. Deliberately not a knob
- * registry row (harness variable, not a config knob):
+/* <test_env>=<vbl>:<target> queues the same request the Warp button does,
+ * at the given VBL counter. The warp is a multi-tick ride through the game's
+ * own state machine, so firing it from a script is what makes it testable
+ * from a script. A harness variable, not a knob registry row:
  *   OPENPETE_LEVELWARP_TEST=2200:tree_tops build/linux-release/openpete --skip-to-level artisans
  */
-static int s_test_frame = -1;
-static int s_test_id    = 0;
 
-extern unsigned openpete_frame;
-
-/** @brief Arm the scripted warp from OPENPETE_LEVELWARP_TEST.
+/** @brief Arm the scripted warp from the game's test variable.
  *
- * The variable reads <vbl>:<level>. The level text after the colon is
- * resolved through the callback, truncated to 31 bytes; an unset or malformed
- * variable, or a level that resolves negative, leaves the trigger disarmed.
- * @param resolve The level-argument resolver. */
-static void test_trigger_init(int (*resolve)(const char* arg)) {
-    const char* spec = getenv("OPENPETE_LEVELWARP_TEST");
+ * The variable reads <vbl>:<target>. The text after the colon, truncated to
+ * 31 bytes, is resolved against the warp's table; an unset or malformed
+ * variable, or a target that does not resolve, leaves the trigger disarmed.
+ * @param w The warp. */
+static void test_trigger_init(levelwarp_t* w) {
+    const char* spec = w->game->test_env ? getenv(w->game->test_env) : NULL;
     const char* colon;
     char        lvl[32];
     size_t      n;
 
+    w->test_frame = -1;
     if (!spec || !spec[0]) return;
     colon = strchr(spec, ':');
     if (!colon) return;
     for (n = 0; colon[1 + n] && n < sizeof(lvl) - 1; n++) lvl[n] = colon[1 + n];
     lvl[n] = '\0';
 
-    s_test_id = resolve(lvl);
-    if (s_test_id < 0) { s_test_id = 0; return; }
-    s_test_frame = atoi(spec);
-    OPL_INFO_F(s_desc->log_tag, "harness: warp to level %d at frame %d",
-               s_test_id, s_test_frame);
+    w->test_id = game_level_resolve(w->game->table, lvl);
+    if (w->test_id < 0) { w->test_id = 0; return; }
+    w->test_frame = atoi(spec);
+    OPL_INFO_F(w->game->log_tag, "harness: warp to %s %d at frame %d",
+               w->game->unit, w->test_id, w->test_frame);
 }
 
 /** @brief Queue the scripted warp once the frame counter reaches its trigger.
  *
- * Fires once, then disarms. */
-static void test_trigger_tick(void) {
-    if (s_test_frame < 0 || (int)openpete_frame < s_test_frame) return;
-    s_test_frame = -1;
-    s_pending_id = s_test_id;
-    s_pending    = 1;
+ * Fires once, then disarms.
+ * @param w The warp. */
+static void test_trigger_tick(levelwarp_t* w) {
+    if (w->test_frame < 0 || (int)openpete_frame < w->test_frame) return;
+    w->test_frame = -1;
+    w->pending_id = w->test_id;
+    w->pending    = 1;
 }
 
 /* ---- entry points ------------------------------------------------------ */
 
-void levelwarp_ui_register(const levelwarp_ui_desc_t* desc) {
-    s_desc        = desc;
-    s_sel         = 0;
-    s_sel_touched = 0;
-    s_pending     = 0;
-    s_route       = LEVELWARP_ROUTE_NONE;
-    register_rows();
-    test_trigger_init(desc->resolve);
+void levelwarp_register(levelwarp_t* w) {
+    const game_level_table_t* t = w->game->table;
+    w->count = (int)(t->count < 64 ? t->count : 64);
+    for (int i = 0; i < w->count; i++) w->display[i] = t->levels[i].display;
+    levelwarp_reset(w);
+    w->sel = w->sel_touched = w->pending = 0;
+    w->route   = LEVELWARP_ROUTE_NONE;
+    w->refused = NULL;
+    s_warps[s_warps[0] && s_warps[0] != w ? 1 : 0] = w;
+    register_rows(w);
+    test_trigger_init(w);
 }
 
-int levelwarp_ui_tick(CPUState* cpu) {
+void levelwarp_reset(levelwarp_t* w) {
+    w->phase  = LEVELWARP_IDLE;
+    w->target = 0;
+    w->ticks  = 0;
+}
+
+void levelwarp_abort(levelwarp_t* w, const char* why) {
+    OPL_INFO_F(w->game->log_tag, "aborted (%s)", why);
+    levelwarp_reset(w);
+}
+
+void levelwarp_called(levelwarp_t* w) {
+    w->phase = LEVELWARP_LEAVING;
+    w->ticks = 0;
+}
+
+/** @brief Pick the route the live guest state allows.
+ *
+ * The title route when title_word reads title_value; the in-level route when
+ * live() holds, demo_word reads 0 and the free camera is off, since the
+ * camera is detached from the player under it; else none.
+ * @param g The game.
+ * @param cpu The guest CPU state.
+ * @return A LEVELWARP_ROUTE_* value. */
+static int route_of(const levelwarp_game_t* g, CPUState* cpu) {
+    if (g->title_word && cpu->read_word(g->title_word) == g->title_value)
+        return LEVELWARP_ROUTE_TITLE;
+    if (g->live(cpu) && (!g->demo_word || cpu->read_word(g->demo_word) == 0u) &&
+        !openpete_freecam_active())
+        return LEVELWARP_ROUTE_LEVEL;
+    return LEVELWARP_ROUTE_NONE;
+}
+
+/** @brief Start a queued request through the route it drained under.
+ *
+ * @param w The warp.
+ * @param cpu The guest CPU state.
+ * @param target The target number. */
+static void drain(levelwarp_t* w, CPUState* cpu, int target) {
+    const levelwarp_game_t* g = w->game;
+    if (w->route == LEVELWARP_ROUTE_TITLE) {
+        /* The --skip-to-level machinery owns this one: it induces the
+         * demo-timeout transition at the next Press-Start window, which also
+         * gets the progress and lives reset a fresh session needs. */
+        game_set_skip_to_level(target);
+        OPL_INFO_F(g->log_tag, "queued title-screen boot into level %d", target);
+    } else if (w->route == LEVELWARP_ROUTE_LEVEL && !w->refused) {
+        w->target = (uint32_t)target;
+        const int ph = g->start(w, cpu, target);
+        if (ph == LEVELWARP_IDLE) { levelwarp_reset(w); return; }
+        w->phase = (uint32_t)ph;
+        w->ticks = 0;
+    } else {
+        OPL_INFO_F(g->log_tag, "%s", "ignored (no route from this state)");
+    }
+}
+
+/** @brief Run the front half: refresh the route, follow the dropdown, and drain a queued request.
+ *
+ * @param w The warp.
+ * @param cpu The guest CPU state.
+ * @return 1 when the in-flight half must not run this tick: a speculative
+ *         tick, a tick holding a request behind an in-flight warp, or a tick
+ *         that drained a request; else 0. */
+static int ui_tick(levelwarp_t* w, CPUState* cpu) {
+    const levelwarp_game_t* g = w->game;
     /* Runahead: a speculative tick's guest writes are rolled back, so
-     * consuming the click here would drop the warp on the floor. Let the
-     * committed tick do it. */
+     * consuming the click here would drop the warp. */
     if (openpete_speculative) return 1;
+    /* The harness request queues before anything reads `pending`, so it
+     * lands where a click lands: set between ticks, drained on the next. */
+    test_trigger_tick(w);
 
-    /* Queue the harness request BEFORE anything else reads s_pending, so it
-     * lands where a UI click lands: set between ticks, drained on the next
-     * one. Firing it mid-tick instead would let the harness take a path the
-     * button never takes. */
-    test_trigger_tick();
+    w->route   = route_of(g, cpu);
+    w->refused = (w->route == LEVELWARP_ROUTE_LEVEL && g->target_refused)
+        ? g->target_refused(cpu, g->table->levels[w->sel].number) : NULL;
 
-    s_route = s_desc->route(cpu);
-    /* The camera is detached from the player under the debug free camera, so
-     * a transition's fly-in would be meaningless. */
-    if (s_route == LEVELWARP_ROUTE_LEVEL && openpete_freecam_active())
-        s_route = LEVELWARP_ROUTE_NONE;
-
-    /* Keep the dropdown on the level the player is actually in until they
-     * pick one themselves. */
-    if (!s_sel_touched && !(s_desc->in_flight && s_desc->in_flight())) {
-        int idx = level_index_for_id(s_desc->current_level(cpu));
-        if (idx >= 0) s_sel = idx;
+    if (!w->sel_touched && w->phase == LEVELWARP_IDLE) {
+        int idx = game_level_index(g->table, (int)cpu->read_word(g->current_word));
+        if (idx >= 0) w->sel = idx;
     }
 
-    if (s_pending && s_desc->in_flight && s_desc->in_flight())
-        return 1;                    /* drain when idle */
+    if (!w->pending) return 0;
+    if (w->phase != LEVELWARP_IDLE) return 1;   /* drain when idle */
+    w->pending = 0;
+    if (w->route == LEVELWARP_ROUTE_LEVEL && g->target_refused)
+        w->refused = g->target_refused(cpu, w->pending_id);
+    drain(w, cpu, w->pending_id);
+    return 1;
+}
 
-    if (s_pending) {
-        int target = s_pending_id;
-        s_pending  = 0;
-        if (s_route == LEVELWARP_ROUTE_TITLE) {
-            /* The --skip-to-level machinery owns this one: it induces the
-             * demo-timeout transition at the next Press-Start window, which
-             * also gets the progress and lives reset a fresh session needs. */
-            game_set_skip_to_level(target);
-            OPL_INFO_F(s_desc->log_tag,
-                       "queued title-screen boot into level %d", target);
-        } else if (s_route == LEVELWARP_ROUTE_LEVEL) {
-            s_desc->start_level_route(cpu, target);
-        } else {
-            OPL_INFO_F(s_desc->log_tag, "%s",
-                       "ignored (no route from this state)");
-        }
-        return 1;
+/** @brief Log the arrival, then run the game's arrival hook.
+ *
+ * @param w The warp.
+ * @param cpu The guest CPU state. */
+static void arrive(levelwarp_t* w, CPUState* cpu) {
+    const levelwarp_game_t* g = w->game;
+    const uint32_t landed = cpu->read_word(g->current_word);
+    if (landed != w->target)
+        OPL_INFO_F(g->log_tag, "landed in %s %u, wanted %u", g->unit,
+                   (unsigned)landed, (unsigned)w->target);
+    else if (g->arrival_logs_vbl)
+        OPL_INFO_F(g->log_tag, "arrived in %s %u at vbl=%u", g->unit,
+                   (unsigned)landed, (unsigned)openpete_frame);
+    else
+        OPL_INFO_F(g->log_tag, "arrived in %s %u", g->unit, (unsigned)landed);
+    const int ph = g->on_arrival ? g->on_arrival(w, cpu, landed) : LEVELWARP_IDLE;
+    if (ph == LEVELWARP_IDLE) { levelwarp_reset(w); return; }
+    w->phase = (uint32_t)ph;
+    w->ticks = 0;
+}
+
+void levelwarp_on_tick(levelwarp_t* w, CPUState* cpu) {
+    const levelwarp_game_t* g = w->game;
+    if (ui_tick(w, cpu)) return;
+    if (w->phase == LEVELWARP_IDLE || w->phase == LEVELWARP_QUEUED) return;
+    if (++w->ticks > WARP_STUCK_CALLS) { levelwarp_abort(w, "stuck"); return; }
+
+    /* The game has the wheel: LEAVING writes only through the game's hook,
+     * LOADING writes nothing. The level the warp left is still live on the
+     * tick its transition is entered, so arrival is read only once it has
+     * gone, however long the CD load takes. */
+    if (w->phase == LEVELWARP_LEAVING) {
+        const int ph = g->leaving ? g->leaving(w, cpu)
+                     : g->live(cpu) ? LEVELWARP_LEAVING : LEVELWARP_LOADING;
+        if (ph == LEVELWARP_IDLE) { levelwarp_reset(w); return; }
+        if (ph == LEVELWARP_LOADING && g->reset_ticks_on_loading) w->ticks = 0;
+        w->phase = (uint32_t)ph;
+        return;
     }
-    return 0;
+    if (g->arrived ? g->arrived(cpu) : g->live(cpu)) arrive(w, cpu);
 }

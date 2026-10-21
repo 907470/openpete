@@ -9,9 +9,10 @@
 // props+48 the index of its paired moby) calls EnterSubArea(props+52,
 // *(0x8006C550) + props+48 * 88), the paired moby in the destination area,
 // after its proximity test (func_level_11_8007A238, one copy per level
-// overlay). The pause menu's return path finds the pair the same way,
-// walking the moby table from *(0x8006C550) to *(0x8006C704) in 88-byte
-// strides (func_8005783C). The portal's path from its entry to the call
+// overlay). The fade-in's sub-area re-entry (func_80053A10, 0x80053D14) and
+// the pause menu's Exit Area (func_80057834, 0x80058278) find the pair the
+// same way, walking the moby table from *(0x8006C550) to *(0x8006C704) in
+// 88-byte strides. The portal's path from its entry to the call
 // stores only its own stack frame, so the request carries no store.
 //
 // The portal moby's gate refuses game.state 1 (speech) and 15 (egg
@@ -70,11 +71,8 @@ static const area_level_t k_area_levels[] = {
  * @param number The level number.
  * @return The table's name string, or "?" when the table has no such level. */
 static const char* level_name(int number) {
-    size_t n, i;
-    const spyro3_level_t* t = spyro3_level_table(&n);
-    for (i = 0; i < n; i++)
-        if (t[i].number == number) return t[i].name;
-    return "?";
+    const int i = game_level_index(&spyro3_levels, number);
+    return i >= 0 ? spyro3_levels.levels[i].name : "?";
 }
 
 /** @brief Prints every valid --skip-to-area target to stderr.
@@ -94,12 +92,7 @@ static void print_targets(void) {
     }
 }
 
-/** @brief Returns the number of areas of a level.
- *
- * @param level The level number.
- * @return The count from k_area_levels, or 1 (area 0 only) for a level not
- *     listed. */
-static int area_count(int level) {
+int spyro3_area_count(int level) {
     size_t i;
     for (i = 0; i < AREA_LEVEL_COUNT; i++)
         if (k_area_levels[i].level == level) return k_area_levels[i].areas;
@@ -150,7 +143,7 @@ int spyro3_area_resolve(const char* arg, int* out_area) {
     level = spyro3_level_resolve(lvl);
     if (level < 0) return -1;
     area = parse_index(colon + 1);
-    if (area < 1 || area >= area_count(level)) {
+    if (area < 1 || area >= spyro3_area_count(level)) {
         fprintf(stderr, "level %d (%s) has no sub-area '%s'\n", level,
                 level_name(level), colon + 1);
         print_targets();
@@ -227,16 +220,7 @@ static void area_called(CPUState* cpu)  { (void)cpu; s_phase = AREA_CALLED; }
  * @param cpu Unused. */
 static void area_dropped(CPUState* cpu) { (void)cpu; s_phase = AREA_ARMED; }
 
-/** @brief Finds the paired moby of the area-0 portal leading to a sub-area.
- *
- * Walks the moby table from *(0x8006C550) to *(0x8006C704) in 88-byte strides
- * for a class-1022 moby (the half at moby+54) whose props, *(moby+0), hold 0
- * at props+64 (the area it stands in) and `area` at props+52 (its
- * destination), as the pause menu's return path func_8005783C does.
- * @param cpu The guest CPU state.
- * @param area The destination sub-area index.
- * @return The table base plus props+48 times 88, or 0 when no such portal exists. */
-static uint32_t find_portal_pair(CPUState* cpu, int area) {
+uint32_t spyro3_area_portal_pair(CPUState* cpu, int from, int to) {
     uint32_t base = cpu->read_word(S3_MOBY_TABLE);
     uint32_t end  = cpu->read_word(S3_MOBY_TABLE_END);
     uint32_t m;
@@ -244,8 +228,8 @@ static uint32_t find_portal_pair(CPUState* cpu, int area) {
         uint32_t props;
         if ((int16_t)cpu->read_half(m + MOBY_CLASS_OFF) != PORTAL_CLASS) continue;
         props = cpu->read_word(m);
-        if (cpu->read_word(props + PROPS_IN_AREA_OFF) == 0u &&
-            cpu->read_word(props + PROPS_DEST_OFF) == (uint32_t)area)
+        if (cpu->read_word(props + PROPS_IN_AREA_OFF) == (uint32_t)from &&
+            cpu->read_word(props + PROPS_DEST_OFF) == (uint32_t)to)
             return base + cpu->read_word(props + PROPS_PAIR_OFF) * MOBY_STRIDE;
     }
     return 0u;
@@ -253,7 +237,7 @@ static uint32_t find_portal_pair(CPUState* cpu, int area) {
 
 /** @brief Queues EnterSubArea(area, paired portal moby) for the armed target through the transition queue.
  *
- * The second argument is find_portal_pair's result, and the request carries no
+ * The second argument is spyro3_area_portal_pair's result from area 0, and the request carries no
  * store. With no portal found the module logs a warning and goes to AREA_IDLE,
  * staying in area 0. The phase becomes AREA_QUEUED when the queue accepts the
  * request; when a request is already pending the phase stays AREA_ARMED and the
@@ -270,7 +254,7 @@ static void area_enqueue(CPUState* cpu) {
         .called  = area_called,
         .dropped = area_dropped,
     };
-    req.a1 = find_portal_pair(cpu, s_area);
+    req.a1 = spyro3_area_portal_pair(cpu, 0, s_area);
     if (!req.a1) {
         OPL_WARN_F("skip-to-area", "level %d has no area-0 portal to area %d; "
                    "staying in area 0", s_level, s_area);

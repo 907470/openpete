@@ -27,6 +27,8 @@ openpete_add_game(spyro-2
         # The dev-overlay level warp (M) and its shared overlay half.
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/level_table.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/level_skip.c
 
         # The overlay-id boot and restore hooks, shared with Spyro 3.
         ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c

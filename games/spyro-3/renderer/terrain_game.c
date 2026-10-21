@@ -16,11 +16,7 @@
  * @param out Receives the NUL-terminated name, truncated to cap.
  * @param cap The size of out in bytes. */
 static void s3_level_name(int level, char* out, size_t cap) {
-    size_t nlv = 0;
-    const spyro3_level_t* lv = spyro3_level_table(&nlv);
-    snprintf(out, cap, "level%d", level);
-    for (size_t k = 0; k < nlv; k++)
-        if (lv[k].number == level) { snprintf(out, cap, "%s", lv[k].name); break; }
+    game_level_name(&spyro3_levels, level, out, cap);
 }
 
 /** @brief Reports every LP face as not a fill face: this game has no frozen LP fill-face list.

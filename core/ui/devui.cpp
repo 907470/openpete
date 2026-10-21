@@ -2007,6 +2007,7 @@ static const lay_row k_lay_gameplay[] = {
     { LAY_ONOFF,  "Rewind", { "rewind" }, nullptr, nullptr, 0, "", 30 },
     { LAY_REST,   "Gameplay" },
     { LAY_WARP,   "Level warp", { "warp_level", "warp_go" } },
+    { LAY_WARP,   "Area warp", { "warp_area", "warp_area_go" } },
     { LAY_SUB,    "Audio" },
     { LAY_REST,   "Audio" },
     { LAY_OVERRIDE, nullptr, { "sfx" } },

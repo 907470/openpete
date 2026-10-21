@@ -41,14 +41,10 @@
 #include "skip_to_level.h"
 #include "features/cutscene_skip.h"
 #include "features/skip_to_area.h"
-#include "openpete_fiber.h"
-#include "openpete_skip.h"
+#include "features/level_skip.h"
 #include "named_target.h"
 
-#include <ctype.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define S3_TITLE_SUBSTATE   0x8007F12Cu
 #define S3_TITLE_PREVSTATE  0x8007F12Du
@@ -71,7 +67,7 @@
 
 /* Level numbers are the game's own (currentLevel); names are the levels'
  * titles in lower_snake_case and displays those titles. */
-static const spyro3_level_t k_levels[] = {
+static const game_level_t k_levels[] = {
     { "sunrise_spring",    "Sunrise Spring",    10 },
     { "sunny_villa",       "Sunny Villa",       11 },
     { "cloud_spires",      "Cloud Spires",      12 },
@@ -110,168 +106,102 @@ static const spyro3_level_t k_levels[] = {
     { "bugbot_factory",    "Bugbot Factory",    48 },
     { "super_bonus_round", "Super Bonus Round", 50 },
 };
-#define LEVEL_COUNT (sizeof(k_levels) / sizeof(k_levels[0]))
-
-const spyro3_level_t* spyro3_level_table(size_t* out_count) {
-    if (out_count) *out_count = LEVEL_COUNT;
-    return k_levels;
-}
-
-void spyro3_level_surface(struct openpete_surface_sink* sink) {
-    const named_target_table_t levels =
-        NAMED_TARGET_TABLE(k_levels, spyro3_level_t, name, number);
-    named_target_surface(sink, "level", "--skip-to-level", &levels);
-}
+/* Resolution drops apostrophes, so "sheila's_alp" matches "sheilas_alp". */
+const game_level_table_t spyro3_levels = {
+    GAME_LEVEL_ROWS(k_levels), NULL, 0, "level", "--skip-to-level",
+    NAMED_TARGET_DROP_APOSTROPHE,
+};
 
 int spyro3_level_resolve(const char* arg) {
-    const named_target_table_t levels =
-        NAMED_TARGET_TABLE(k_levels, spyro3_level_t, name, number);
-    return named_target_resolve(arg, "level", &levels, NULL, NAMED_TARGET_DROP_APOSTROPHE);
+    return game_level_resolve(&spyro3_levels, arg);
 }
-
-/* ---- state ----------------------------------------------------------- */
-
-typedef enum {
-    SKIP_IDLE = 0,
-    SKIP_ARMED,    /* waiting for the press-start idle sub-state */
-    SKIP_SEEDED,   /* list slot seeded, timeout induced; waiting for the pick */
-    SKIP_PICKED,   /* loader took the target; holding isDemoMode clear */
-} skip_phase_t;
-
-static int          s_target = 0;
-static skip_phase_t s_phase  = SKIP_IDLE;
-/* Present fast-forward stop cap, set relative to arming so a runtime warp
- * (armed tens of thousands of frames in) is not cleared instantly. */
-static uint32_t     s_ffwd_deadline = 0;
-
-void spyro3_skip_ffwd_arm(const char* until) {
-    if (!openpete_skip_ffwd_windowed) return;
-    openpete_skip_present_until_level = 1;
-    s_ffwd_deadline = 0;
-    fprintf(stderr, "[skip-to-level] fast-forwarding presents until %s\n", until);
-}
-
-void spyro3_skip_set(int number) {
-    char until[40];
-    s_target = number;
-    s_phase  = number > 0 ? SKIP_ARMED : SKIP_IDLE;
-    if (number <= 0) return;
-    snprintf(until, sizeof until, "level %d loads", number);
-    spyro3_skip_ffwd_arm(until);
-}
-
-int spyro3_skip_target(void) { return s_target; }
-
-int spyro3_skip_level_picked(void) { return s_phase == SKIP_PICKED; }
 
 int spyro3_skip_gameplay_live(CPUState* cpu) {
     return cpu->read_word(S3_LOAD_STAGE) == S3_LOAD_RESIDENT &&
            cpu->read_word(S3_GAME_STATE) == S3_GS_GAMEPLAY;
 }
 
-/** @brief Test for the playable edge that ends the skip's present fast-forward.
+/** @brief Induces the title's idle timeout toward the target, without its isDemoMode = 1 store.
  *
- * An armed --skip-to-area watch decides first, then an armed
- * --skip-to-cutscene watch; with neither, the edge is the first call after
- * the pick on which spyro3_skip_gameplay_live holds.
+ * Waits for the title (game.state 11) in the press-start idle sub-state at
+ * phase 1: the idle sub-state's first frames still fade the menu in (phase
+ * 0), and the timeout fires from phase 1. Writes the target into the demo
+ * level list at g_DemoIndex with sub-area 0, then the timeout's own store
+ * plus the update tail's change handling: sub-state 21 into g_TitleSubState
+ * and g_TitlePrevState, and the five phase bytes zeroed.
  * @param cpu The guest CPU state.
- * @param eng Buffer the area or cutscene predicate fills with the words it
- *        appends to the release log line.
- * @param cap Size of `eng` in bytes.
- * @return Nonzero on the playable edge. */
-static int target_released(CPUState* cpu, char* eng, size_t cap) {
-    if (spyro3_area_watching()) return spyro3_area_released(cpu, eng, cap);
-    if (spyro3_cutscene_watching()) return spyro3_cutscene_released(cpu, eng, cap);
-    return s_phase == SKIP_PICKED && spyro3_skip_gameplay_live(cpu);
+ * @param target The level number.
+ * @param log_frame The frame value the log line prints.
+ * @return 1 when induced, 0 while the window is not open. */
+static int skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
+    if (cpu->read_word(S3_GAME_STATE) != S3_GS_TITLE ||
+        cpu->read_byte(S3_TITLE_SUBSTATE) != S3_SUBSTATE_IDLE ||
+        cpu->read_byte(S3_TITLE_PHASE) != 1u)
+        return 0;
+    uint32_t idx = cpu->read_word(S3_DEMO_INDEX);
+    cpu->write_byte(S3_DEMO_LEVEL_LIST + idx, (uint8_t)target);
+    cpu->write_byte(S3_DEMO_AREA_LIST + idx, 0u);
+    cpu->write_byte(S3_TITLE_SUBSTATE, S3_SUBSTATE_TIMEOUT);
+    cpu->write_byte(S3_TITLE_PREVSTATE, S3_SUBSTATE_TIMEOUT);
+    for (int i = 0; i < 5; i++) cpu->write_byte(S3_TITLE_PHASE + i, 0u);
+    fprintf(stderr, "[skip-to-level] induced demo-timeout: level=%d "
+                    "(slot=%u) at frame=%u\n",
+            target, (unsigned)idx, (unsigned)log_frame);
+    return 1;
 }
 
-/** @brief Ends the armed --skip-to-area and --skip-to-cutscene watches.
+/** @brief Tests whether the loader took the target: game.state 5 (loading image) with currentLevel equal to it.
  *
- * Each module's finish runs only while its watch is armed. */
-static void target_finish(void) {
-    if (spyro3_area_watching()) spyro3_area_finish();
-    if (spyro3_cutscene_watching()) spyro3_cutscene_finish();
+ * @param cpu The guest CPU state.
+ * @param target The level number.
+ * @return 1 when taken, else 0. */
+static int skip_picked(CPUState* cpu, int target) {
+    return cpu->read_word(S3_GAME_STATE) == S3_GS_LOADING_IMG &&
+           cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)target;
 }
 
-/** @brief Release the skip on its playable edge or on the fail-safe deadline.
+/** @brief Holds isDemoMode clear for one tick until the game returns to the title.
  *
- * Runs on every call while a present fast-forward, a --skip-to-area target
- * or a --skip-to-cutscene target is armed. On the edge (target_released) it
- * logs "level playable", with the words the area and cutscene modules read
- * back at release. The deadline is openpete_skip_failsafe_vbls() past the
- * first check and is re-set on each game.state 6 (cutscene) entry, since a
- * cutscene chain holds the game out of gameplay for longer than one
- * deadline; passing it logs "fail-safe release (no playable edge)". Either
- * release clears openpete_skip_present_until_level, zeroes the deadline and
- * finishes the armed area or cutscene watch. The area and cutscene watches
- * run headless too, where there is no fast-forward, so a harness reads the
- * same lines.
+ * The pad path then reads the controller, the loader takes its non-demo
+ * branches and the recording's end never exits the level. The hold ends at
+ * game.state 11 (a level exit).
  * @param cpu The guest CPU state.
- * @param frame_counter openpete_frame, compared with the deadline and
- *        printed in the log lines. */
-static void skip_release_tick(CPUState* cpu, uint32_t frame_counter) {
-    static uint32_t s_prev_state = 0;
-    uint32_t state = cpu->read_word(S3_GAME_STATE);
-    char eng[96] = "";
-    if (!s_ffwd_deadline || (state == S3_GS_CUTSCENE && s_prev_state != S3_GS_CUTSCENE))
-        s_ffwd_deadline = frame_counter + openpete_skip_failsafe_vbls();
-    s_prev_state = state;
-    if (target_released(cpu, eng, sizeof eng)) {
-        fprintf(stderr, "[skip-to-level] level playable - presents resume "
-                        "at frame=%u%s\n", openpete_feed_key_now(), eng);
-    } else if (frame_counter > s_ffwd_deadline) {
-        fprintf(stderr, "[skip-to-level] fail-safe release (no playable edge) "
-                        "at frame=%u\n", openpete_feed_key_now());
-    } else {
-        return;
-    }
-    openpete_skip_present_until_level = 0;
-    s_ffwd_deadline = 0;
-    target_finish();
+ * @return 1 while the hold runs, 0 when it ends. */
+static int skip_hold(CPUState* cpu) {
+    if (cpu->read_word(S3_GAME_STATE) == S3_GS_TITLE) return 0;
+    cpu->write_word(S3_IS_DEMO_MODE, 0u);
+    return 1;
 }
+
+/* An armed --skip-to-area watch decides first, then a --skip-to-cutscene
+ * watch; with neither, the first live tick after the pick. The fail-safe
+ * deadline re-sets on each game.state 6 (cutscene) entry, since a cutscene
+ * chain holds the game out of gameplay for longer than one deadline. */
+static const level_skip_watch_t k_watches[] = {
+    { spyro3_area_watching, spyro3_area_released, spyro3_area_finish },
+    { spyro3_cutscene_watching, spyro3_cutscene_released, spyro3_cutscene_finish },
+};
+
+const level_skip_game_t spyro3_level_skip = {
+    .induce          = skip_induce,
+    .picked          = skip_picked,
+    .hold            = skip_hold,
+    .playable        = spyro3_skip_gameplay_live,
+    .watches         = k_watches,
+    .n_watches       = sizeof k_watches / sizeof k_watches[0],
+    .rearm_word      = S3_GAME_STATE,
+    .rearm_value     = S3_GS_CUTSCENE,
+    .target_persists = 1,
+};
+
+void spyro3_skip_set(int number) { level_skip_set(&spyro3_level_skip, number); }
+
+int spyro3_skip_target(void) { return level_skip_target(&spyro3_level_skip); }
+
+int spyro3_skip_level_picked(void) { return level_skip_picked(); }
+
+void spyro3_skip_ffwd_arm(const char* until) { level_skip_ffwd_arm(until); }
 
 void spyro3_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
-    if (s_phase == SKIP_ARMED) {
-        /* The idle sub-state's first frames still fade the menu in (phase 0);
-         * the timeout fires from phase 1, so the induction waits for it. */
-        if (cpu->read_word(S3_GAME_STATE) == S3_GS_TITLE &&
-            cpu->read_byte(S3_TITLE_SUBSTATE) == S3_SUBSTATE_IDLE &&
-            cpu->read_byte(S3_TITLE_PHASE) == 1u) {
-            uint32_t idx = cpu->read_word(S3_DEMO_INDEX);
-            int i;
-            cpu->write_byte(S3_DEMO_LEVEL_LIST + idx, (uint8_t)s_target);
-            cpu->write_byte(S3_DEMO_AREA_LIST + idx, 0u);
-            /* The timeout's own store plus the update tail's change handling
-             * (previous state mirrored, phase counters zeroed), without the
-             * isDemoMode = 1 that precedes it. */
-            cpu->write_byte(S3_TITLE_SUBSTATE, S3_SUBSTATE_TIMEOUT);
-            cpu->write_byte(S3_TITLE_PREVSTATE, S3_SUBSTATE_TIMEOUT);
-            for (i = 0; i < 5; i++) cpu->write_byte(S3_TITLE_PHASE + i, 0u);
-            s_phase = SKIP_SEEDED;
-            fprintf(stderr, "[skip-to-level] induced demo-timeout: level=%d "
-                            "(slot=%u) at frame=%u\n",
-                    s_target, (unsigned)idx, openpete_feed_key_now());
-        }
-    } else if (s_phase == SKIP_SEEDED) {
-        if (cpu->read_word(S3_GAME_STATE) == S3_GS_LOADING_IMG &&
-            cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_target) {
-            s_phase = SKIP_PICKED;
-            fprintf(stderr, "[skip-to-level] loader took level=%d at "
-                            "frame=%u\n", s_target, openpete_feed_key_now());
-        }
-    }
-    if (s_phase == SKIP_PICKED) {
-        /* Hold the demo flag clear from the pick through the level: the pad
-         * path reads the controller, the loader takes its non-demo branches
-         * and the recording's end never exits the level. The hold ends when
-         * the game returns to the title (a level exit). */
-        if (cpu->read_word(S3_GAME_STATE) != S3_GS_TITLE)
-            cpu->write_word(S3_IS_DEMO_MODE, 0u);
-        else
-            s_phase = SKIP_IDLE;
-    }
-
-    if (openpete_skip_present_until_level || spyro3_area_watching() ||
-        spyro3_cutscene_watching())
-        skip_release_tick(cpu, frame_counter);
+    level_skip_on_tick(&spyro3_level_skip, cpu, frame_counter);
 }

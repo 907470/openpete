@@ -59,6 +59,7 @@
 #include "freecam_game.h"
 #include "skip_to_level.h"
 #include "features/levelwarp.h"
+#include "features/areawarp.h"
 #include "features/cutscene_skip.h"
 #include "features/skip_to_area.h"
 #include "features/state_log.h"
@@ -138,8 +139,9 @@ static const game_frame_pre_t k_frame_pre = {
  *
  * @param sink The dump's collector. */
 static void spyro3_surface(struct openpete_surface_sink* sink) {
-    levelwarp_ui_surface(sink);
-    spyro3_level_surface(sink);
+    levelwarp_surface(sink, levelwarp_level_rows);
+    spyro3_areawarp_surface(sink);
+    game_level_surface(&spyro3_levels, sink);
     spyro3_cutscene_surface(sink);
     spyro3_area_surface(sink);
 }

@@ -27,6 +27,7 @@
 #include "features/vibration.h"
 #include "features/cheats.h"
 #include "features/credits_skip.h"
+#include "features/level_skip.h"
 #include "features/crash_demo_woah.h"
 #include "freecam_game.h"
 #include "write_census.h"
@@ -113,7 +114,8 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
 }
 
 /* --skip-to-level: load directly into a specific level instead of the
- * title-screen, Press-Start and save-file-picker flow.
+ * title-screen, Press-Start and save-file-picker flow, through the shared
+ * driver (games/common/features/level_skip.c).
  *
  * The skip induces the transition the title's 990-tick demo timeout takes
  * (overlays/titlescreen.c:190), seeded so it loads the target. The game's
@@ -129,59 +131,139 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
  * The skip (a) overwrites g_DemoLevelIds[g_DemoIndex] with the target and
  * (b) forces the TSM_Init->TSM_Demo transition the timeout path takes. The
  * game's state machine then runs the state reset, level load and flyby
- * intro as it does for the demo.
+ * intro as it does for the demo. (TSD_DemoLevel sets g_DemoMode = PLAY at
+ * tick 384 of the flyby; that is the only difference between the demo and
+ * play, since the same TSM_Demo, LoadLevel and flyby sequence runs when a
+ * player picks New Game.) TSD_DemoLevel, unlike TSD_Level, runs
+ * func_8001277C's progress/lives/health reset, which a freshly booted
+ * TSD_Level skip would miss.
  *
  * Hook point: TSM_Init SubState 3 (Press-Start wait, after the title's own
  * load and intro animation finish). Earlier races the CD load of the title
  * data; at SubState 4/5 the player already pressed Start or the timeout
- * already fired. */
-static int s_skip_to_level    = 0;
-static int s_skip_applied     = 0;
-/* Present fast-forward stop cap, set relative to arming (a boot skip arms
- * near frame 0, a runtime title-screen warp arms tens of thousands of
- * frames in - an absolute cap would clear the latter instantly). */
-static uint32_t s_skip_ffwd_deadline = 0;
+ * already fired.
+ *
+ * Addresses (spyro-1/manifest/globals.toml):
+ *   g_Gamestate         = 0x800757D8  (GS_TitleScreen = 13,
+ *                                      GS_Playing = 0)
+ *   g_DemoMode          = 0x80075714  (clamp to 0 each tick)
+ *   g_DemoLevelIds      = 0x8006EE7C  (int[] in .data)
+ *   g_DemoIndex         = 0x800757B8
+ *   g_TitlescreenState  = 0x80078D78
+ *     +0x00 m_Mode      (TSM_Init=0, TSM_Demo=3)
+ *     +0x04 m_State     (TSS_Setup=0)
+ *     +0x10 m_SubState  (TSM_Init's =3 means "Press Start" wait)
+ *     +0x1C m_DemoType  (TSD_DemoLevel=2) */
+#define S1_GAMESTATE   0x800757D8u
+#define S1_DEMO_MODE   0x80075714u
+#define S1_DEMO_LEVELS 0x8006EE7Cu
+#define S1_DEMO_INDEX  0x800757B8u
+#define S1_TSM         0x80078D78u
+
+/** @brief Induces the title's demo-timeout transition toward the target at the Press-Start wait.
+ *
+ * Refuses a target whose guest WAD TOC entry is empty (data length 0):
+ * loading one chases garbage and crashes. The free slot (id 65) only gains
+ * an entry once a custom level's warp claims it, so it cannot be skip
+ * targeted cold; OPENPETE_CUSTOM_WARP covers that.
+ * @param cpu The guest CPU state.
+ * @param target The level id.
+ * @param log_frame The frame value the log lines print.
+ * @return 1 when induced, 0 while not at TSM_Init sub-state 3 on the title
+ *         screen, -1 when refused. */
+static int s1_skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
+    if (cpu->read_word(S1_GAMESTATE) != 13u ||
+        cpu->read_word(S1_TSM + 0x00u) != 0u /* TSM_Init */ ||
+        cpu->read_word(S1_TSM + 0x10u) != 3u)
+        return 0;
+    int ti = (target / 10 - 1) * 6 + target % 10;
+    if (ti < 0 || ti > 35 ||
+        !cpu->read_word(0x8007A6D0u + 72u + 16u * (uint32_t)ti + 12u)) {
+        fprintf(stderr,
+                "[skip-to-level] level=%d has no WAD TOC data "
+                "(unclaimed slot?) - refusing; for a custom "
+                "level use OPENPETE_CUSTOM_WARP\n", target);
+        return -1;
+    }
+    uint32_t demo_idx = cpu->read_word(S1_DEMO_INDEX);
+    cpu->write_word(S1_DEMO_LEVELS + demo_idx * 4u, (uint32_t)target);
+    cpu->write_word(S1_TSM + 0x00u, 3u); /* m_Mode = TSM_Demo */
+    cpu->write_word(S1_TSM + 0x04u, 0u); /* m_State = TSS_Setup */
+    cpu->write_word(S1_TSM + 0x1Cu, 2u); /* m_DemoType = TSD_DemoLevel */
+    fprintf(stderr,
+            "[skip-to-level] induced demo-transition: "
+            "level=%d (slot=%u) at frame=%u\n",
+            target, (unsigned)demo_idx, (unsigned)log_frame);
+    return 1;
+}
+
+/** @brief Holds the title screen's demo state off the demo-input path, every tick after the induction.
+ *
+ * After TSS_Setup runs, m_DemoType goes from TSD_DemoLevel to TSD_Level.
+ * TSS_Setup uses TSD_DemoLevel to call func_8001277C() (the progress and
+ * lives reset), but the tick-384 hand-off (gamestates/update.c:770) gates
+ * `g_DemoMode = DEMO_MODE_PLAY` on TSD_DemoLevel, and leaving it set makes
+ * LoadLevel's stage-13 pass run the demo-input playback path
+ * (loaders.c:672). g_DemoMode is also clamped to 0 while the title-screen
+ * overlay is live, so no other path can set PLAY. The hold never ends.
+ * @param cpu The guest CPU state.
+ * @return 1. */
+static int s1_skip_hold(CPUState* cpu) {
+    uint32_t gs     = cpu->read_word(S1_GAMESTATE);
+    uint32_t tsm_st = cpu->read_word(S1_TSM + 0x04u);
+    if (gs == 13u /*GS_TitleScreen*/) {
+        if (tsm_st != 0u /* past TSS_Setup */)
+            cpu->write_word(S1_TSM + 0x1Cu, 1u); /* TSD_Level */
+        cpu->write_word(S1_DEMO_MODE, 0u); /* DEMO_MODE_NONE */
+    }
+    return 1;
+}
+
+/** @brief Tests the level skip's playable edge: g_Gamestate GS_Playing.
+ *
+ * TSS_Active is not the edge: the homeworld flyby after it is a title card
+ * over black for about 380 VBLs.
+ * @param cpu The guest CPU state.
+ * @return 1 at GS_Playing, else 0. */
+static int s1_skip_playable(CPUState* cpu) {
+    return cpu->read_word(S1_GAMESTATE) == 0u;
+}
+
+static const level_skip_watch_t k_skip_watches[] = {
+    { spyro1_cutscene_skip_watching, spyro1_cutscene_skip_released,
+      spyro1_cutscene_skip_finish },
+};
+
+/* No pick phase: the hold starts on the tick after the induction. `intro`
+ * runs no level skip; the credits rows, which name no source, ride
+ * Artisans (10). */
+static const level_skip_game_t k_level_skip = {
+    .induce                 = s1_skip_induce,
+    .hold                   = s1_skip_hold,
+    .playable               = s1_skip_playable,
+    .watches                = k_skip_watches,
+    .n_watches              = sizeof k_skip_watches / sizeof k_skip_watches[0],
+    .log_frame_counter      = 1,
+    .target_persists        = 1,
+    .cutscene_source        = spyro1_cutscene_source_level,
+    .cutscene_arm           = spyro1_cutscene_skip_arm,
+    .cutscene_default_level = 10,
+};
 
 /** @brief Arm a skip into a level through the title screen and fast-forward presents to it in a windowed run.
  *
+ * The dev levelwarp's title route and the custom-level menu both come
+ * through here.
  * @param level_id The target level id; 0 disables the skip. */
 static void spyro1_set_skip_to_level(int level_id) {
-    s_skip_to_level = level_id;
-    s_skip_applied  = 0;
-    /* Fast-forward presents to the level for runtime warps exactly as for
-     * the boot CLI flag - the dev levelwarp's title route and the
-     * custom-level menu both come through here. */
-    if (level_id > 0 && openpete_skip_ffwd_windowed) {
-        openpete_skip_present_until_level = 1;
-        s_skip_ffwd_deadline = 0;
-        fprintf(stderr, "[skip-to-level] fast-forwarding presents until "
-                        "level %d loads\n", level_id);
-    }
+    level_skip_set(&k_level_skip, level_id);
 }
 
 /** @brief Arm a --skip-to-cutscene target from features/credits_skip.c; `intro` runs no level skip and the credits default to Artisans (10).
  *
  * @param cutscene_id The cutscene id; 0 or less disables it. */
 static void spyro1_set_skip_to_cutscene(int cutscene_id) {
-    if (cutscene_id <= 0) return;
-    int source = spyro1_cutscene_source_level(cutscene_id);
-    if (source >= 0 && s_skip_to_level > 0 && s_skip_to_level != source) {
-        char from[24] = "the title";
-        if (source > 0) snprintf(from, sizeof from, "level %d", source);
-        fprintf(stderr, "openpete: --skip-to-cutscene: this cutscene starts "
-                        "from %s, not --skip-to-level %d; refused\n",
-                from, s_skip_to_level);
-        return;
-    }
-    spyro1_cutscene_skip_arm(cutscene_id);
-    if (source == 0) {
-        if (openpete_skip_ffwd_windowed) {
-            openpete_skip_present_until_level = 1;
-            s_skip_ffwd_deadline = 0;
-        }
-        return;
-    }
-    if (s_skip_to_level <= 0) spyro1_set_skip_to_level(source > 0 ? source : 10);
+    level_skip_arm_cutscene(&k_level_skip, cutscene_id);
 }
 
 /** @brief Report Spyro 1's cheat and level-warp rows and its cheat, level and cutscene vocabularies to the surface dump.
@@ -189,47 +271,9 @@ static void spyro1_set_skip_to_cutscene(int cutscene_id) {
  * @param sink The dump's collector. */
 static void spyro1_surface(struct openpete_surface_sink* sink) {
     spyro1_cheats_surface(sink);
-    levelwarp_ui_surface(sink);
-    spyro1_level_surface(sink);
+    levelwarp_surface(sink, levelwarp_level_rows);
+    game_level_surface(&spyro1_levels, sink);
     spyro1_cutscene_surface(sink);
-}
-
-/** @brief Releases a skip's present fast-forward on the playable edge or the fail-safe deadline.
- *
- * Runs every tick while a skip fast-forward or a cutscene target is armed.
- * Presents resume (openpete_skip_present_until_level clears) on the playable
- * edge: g_Gamestate reaching GS_Playing after the level skip's induction
- * (TSS_Active is not the edge: the homeworld flyby after it is a title card
- * over black for about 380 VBLs), or, while a cutscene target is watched,
- * that target's release predicate. The release line names the engagement
- * values read back at release. A deadline openpete_skip_failsafe_vbls()
- * (4000 by default) after the first check is the fail-safe against a
- * never-reached edge and logs its own line. The cutscene watch runs headless
- * too, where there is no fast-forward, so a harness reads the same lines.
- * Either release also ends the cutscene watch.
- * @param cpu The guest CPU state.
- * @param frame_counter The openpete_frame counter. */
-static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
-    int watching = spyro1_cutscene_skip_watching();
-    if (!openpete_skip_present_until_level && !watching) return;
-    if (!s_skip_ffwd_deadline)
-        s_skip_ffwd_deadline = frame_counter + openpete_skip_failsafe_vbls();
-    char eng[128] = "";
-    int playable = watching
-        ? spyro1_cutscene_skip_released(cpu, eng, sizeof eng)
-        : s_skip_applied && cpu->read_word(0x800757D8u) == 0u; /* GS_Playing */
-    if (playable) {
-        fprintf(stderr, "[skip-to-level] level playable - presents resume "
-                        "at frame=%u%s\n", (unsigned)frame_counter, eng);
-    } else if (frame_counter > s_skip_ffwd_deadline) {
-        fprintf(stderr, "[skip-to-level] fail-safe release (no playable "
-                        "edge) at frame=%u\n", (unsigned)frame_counter);
-    } else {
-        return;
-    }
-    openpete_skip_present_until_level = 0;
-    s_skip_ffwd_deadline = 0;
-    spyro1_cutscene_skip_finish();
 }
 
 /** @brief Run Spyro 1's per-tick host hooks before the game fiber runs a tick: the HUD range, the scripted player pose and free camera, the features, the level skip and its release.
@@ -309,93 +353,10 @@ static void spyro1_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * state. */
     text_moby_native_layers_tick(cpu);
 
-    /* --skip-to-level: induce the title's demo-timeout transition early,
-     * pointed at the target via g_DemoLevelIds[g_DemoIndex], and clamp
-     * g_DemoMode = DEMO_MODE_NONE so the pad controls Spyro instead of the
-     * demo playback. (TSD_DemoLevel sets g_DemoMode = PLAY at tick 384 of
-     * the flyby; that is the only difference between the demo and play,
-     * since the same TSM_Demo, LoadLevel and flyby sequence runs when a
-     * player picks New Game.) TSD_DemoLevel, unlike TSD_Level, runs
-     * func_8001277C's progress/lives/health reset, which a freshly booted
-     * TSD_Level skip would miss.
-     *
-     * Addresses (spyro-1/manifest/globals.toml):
-     *   g_Gamestate         = 0x800757D8  (GS_TitleScreen = 13,
-     *                                      GS_Playing = 0)
-     *   g_DemoMode          = 0x80075714  (clamp to 0 each tick)
-     *   g_DemoLevelIds      = 0x8006EE7C  (int[] in .data)
-     *   g_DemoIndex         = 0x800757B8
-     *   g_TitlescreenState  = 0x80078D78
-     *     +0x00 m_Mode      (TSM_Init=0, TSM_Demo=3)
-     *     +0x04 m_State     (TSS_Setup=0)
-     *     +0x10 m_SubState  (TSM_Init's =3 means "Press Start" wait)
-     *     +0x1C m_DemoType  (TSD_DemoLevel=2)
-     */
-    if (s_skip_to_level > 0) {
-        if (!s_skip_applied) {
-            uint32_t gs       = cpu->read_word(0x800757D8u);
-            uint32_t tsm_mode = cpu->read_word(0x80078D78u + 0x00u);
-            uint32_t tsm_sub  = cpu->read_word(0x80078D78u + 0x10u);
-            if (gs == 13u && tsm_mode == 0u /*TSM_Init*/ && tsm_sub == 3u) {
-                /* Refuse targets whose guest WAD TOC entry is empty (data
-                 * len 0) - loading one chases garbage and crashes. The
-                 * free slot (id 65) only gains an entry once a custom
-                 * level's warp claims it, so it can't be skip targeted
-                 * cold; use OPENPETE_CUSTOM_WARP instead. */
-                int ti = (s_skip_to_level / 10 - 1) * 6 +
-                         s_skip_to_level % 10;
-                if (ti < 0 || ti > 35 ||
-                    !cpu->read_word(0x8007A6D0u + 72u + 16u * (uint32_t)ti +
-                                    12u)) {
-                    fprintf(stderr,
-                            "[skip-to-level] level=%d has no WAD TOC data "
-                            "(unclaimed slot?) - refusing; for a custom "
-                            "level use OPENPETE_CUSTOM_WARP\n",
-                            s_skip_to_level);
-                    s_skip_to_level = 0;
-                    /* A refused skip never induces, so the playable-edge
-                     * clear below can't fire - drop the fast-forward now
-                     * rather than leaving a black window to the cap. */
-                    openpete_skip_present_until_level = 0;
-                    s_skip_ffwd_deadline = 0;
-                } else {
-                    uint32_t demo_idx = cpu->read_word(0x800757B8u);
-                    uint32_t slot     = 0x8006EE7Cu + (demo_idx * 4u);
-                    cpu->write_word(slot, (uint32_t)s_skip_to_level);
-                    cpu->write_word(0x80078D78u + 0x00u, 3u); /* m_Mode = TSM_Demo */
-                    cpu->write_word(0x80078D78u + 0x04u, 0u); /* m_State = TSS_Setup */
-                    cpu->write_word(0x80078D78u + 0x1Cu, 2u); /* m_DemoType = TSD_DemoLevel */
-                    s_skip_applied = 1;
-                    fprintf(stderr,
-                            "[skip-to-level] induced demo-transition: "
-                            "level=%d (slot=%u) at frame=%u\n",
-                            s_skip_to_level, (unsigned)demo_idx,
-                            (unsigned)frame_counter);
-                }
-            }
-        } else {
-            /* After TSS_Setup runs, downgrade m_DemoType from TSD_DemoLevel
-             * to TSD_Level. TSS_Setup uses TSD_DemoLevel to call
-             * func_8001277C() (free progress/lives reset), but the
-             * tick-384 hand-off code (gamestates/update.c:770) gates
-             * `g_DemoMode = DEMO_MODE_PLAY` on TSD_DemoLevel - leaving it
-             * set means LoadLevel's stage-13 pass runs the demo-input
-             * playback path (loaders.c:672). Switching DemoType to
-             * TSD_Level once Setup is done sidesteps both. g_DemoMode is
-             * also clamped to 0 while the title-screen overlay is live, so
-             * no other path can set PLAY. */
-            uint32_t gs     = cpu->read_word(0x800757D8u);
-            uint32_t tsm_st = cpu->read_word(0x80078D78u + 0x04u);
-            if (gs == 13u /*GS_TitleScreen*/) {
-                if (tsm_st != 0u /* past TSS_Setup */) {
-                    cpu->write_word(0x80078D78u + 0x1Cu, 1u); /* TSD_Level */
-                }
-                cpu->write_word(0x80075714u, 0u); /* DEMO_MODE_NONE */
-            }
-        }
-    }
-
-    skip_release_on_tick(cpu, frame_counter);
+    /* --skip-to-level: induce the title's demo-timeout transition toward
+     * the target, hold the title off the demo path, and release the present
+     * fast-forward on the playable edge. Inert without the flag. */
+    level_skip_on_tick(&k_level_skip, cpu, frame_counter);
 }
 
 /* Each overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON burns LONG(id) at +0x00). */

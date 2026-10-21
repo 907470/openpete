@@ -91,6 +91,9 @@ replaces `--skip-to-level`'s level.
 openpete --game spyro-3 --skip-to-area seashell_shore:2
 ```
 
+The dev overlay's **Area warp** moves between a level's sub-areas during
+play ([Dev overlay](../playing/dev-overlay.md#area-warp)).
+
 ## Cutscenes
 
 `--skip-to-cutscene C`<!-- id: flag:--skip-to-cutscene --> plays cutscene

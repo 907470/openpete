@@ -25,6 +25,7 @@
 #include "freecam_game.h"
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
+#include "features/level_skip.h"
 #include "renderer/text_moby.h"
 #include "spyro-2/gen/spyro2_sfx_names.h" /* generated: the 256 SoundTable slot names */
 
@@ -69,30 +70,19 @@ static int spyro2_override_dispatch(CPUState* cpu, uint32_t addr) {
  *
  * @param sink The dump's collector. */
 static void spyro2_surface(struct openpete_surface_sink* sink) {
-    levelwarp_ui_surface(sink);
-    spyro2_level_surface(sink);
+    levelwarp_surface(sink, levelwarp_level_rows);
+    game_level_surface(&spyro2_levels, sink);
     spyro2_cutscene_surface(sink);
 }
 
-/** @brief Arm a --skip-to-cutscene target, riding a --skip-to-level to its source level; a different explicit --skip-to-level refuses it.
+/** @brief Arm a --skip-to-cutscene target through the shared level skip, riding a --skip-to-level to its source level.
  *
  * An exit row rides no --skip-to-level of its own (its source level is
- * reached by play or by an explicit one).
+ * reached by play or by an explicit one); a different explicit
+ * --skip-to-level refuses the cutscene.
  * @param cutscene_id The cutscene id; 0 or less disables it. */
 static void spyro2_set_skip_to_cutscene(int cutscene_id) {
-    if (cutscene_id <= 0) return;
-    int source = spyro2_cutscene_source_level(cutscene_id);
-    if (source <= 0) return;
-    int level = spyro2_skip_target();
-    if (level > 0 && level != source) {
-        fprintf(stderr, "openpete: --skip-to-cutscene: this cutscene starts "
-                        "from level %d, not --skip-to-level %d; refused\n",
-                source, level);
-        return;
-    }
-    spyro2_cutscene_skip_arm(cutscene_id);
-    if (level <= 0 && spyro2_cutscene_rides_level_skip(cutscene_id))
-        spyro2_skip_set(source);
+    level_skip_arm_cutscene(&spyro2_level_skip, cutscene_id);
 }
 /* The level sound tables, loaded by func_8001D5FC (loaders.s): the
  * SoundTable pointer D_80067020 and the SoundDefinition pointer D_80067068.

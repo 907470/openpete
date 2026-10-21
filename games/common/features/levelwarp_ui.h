@@ -1,93 +1,147 @@
 #pragma once
-/* levelwarp_ui.h - the game-independent half of the dev-overlay level warp
- * (M key): the level dropdown, the Warp button, the click queue and the
- * scripted driver.
+/* levelwarp_ui.h - the dev-overlay warp (M key): a destination dropdown, a
+ * Warp button, the click queue, the scripted driver, and the in-flight
+ * state machine that follows a warp to its arrival.
  *
- * The overlay runs outside the sim, so a click only queues a request. The
- * queue is drained on the next non-speculative tick, and every guest write
- * happens in the per-game half this module calls back into. Unclicked and
- * undriven, nothing here reads or writes guest memory beyond the route
- * probe the descriptor supplies.
+ * One levelwarp_t is one warp row pair: the level warp of every game, and
+ * Spyro 3's area warp. The overlay runs outside the sim, so a click only
+ * queues a request; the queue is drained on the next non-speculative tick,
+ * and every guest write happens in the game's start and leaving hooks. Idle,
+ * nothing here writes guest memory; the route probe reads it.
  *
- * A game supplies a levelwarp_ui_desc_t: its level table, the route its
- * current guest state allows, and the two things only it can do - start the
- * in-level route and report an in-flight warp. The title-screen route is the
- * same for every game (game_set_skip_to_level), so this module owns it. */
+ * A game supplies a levelwarp_game_t: its target table, the words its route
+ * and arrival read, and the hooks only it can supply - entering its own
+ * transition toward a target and, where the transition is retargeted on the
+ * way, the leaving phase. The title-screen route is the same for every game
+ * (game_set_skip_to_level), so this module owns it. */
+
+#include "features/level_table.h"
+#include "openpete_knobs.h" /* knob_desc_t */
 
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct CPUState CPUState;
+struct openpete_surface_sink;
 
 enum {
     LEVELWARP_ROUTE_NONE = 0,  /* no warp is possible from this guest state */
-    LEVELWARP_ROUTE_LEVEL,     /* in a level: the game's own level transition */
+    LEVELWARP_ROUTE_LEVEL,     /* in a level: the game's own transition */
     LEVELWARP_ROUTE_TITLE      /* at the title: the --skip-to-level machinery */
 };
 
-typedef struct {
-    /* Log tag and the dropdown's entries, in table order. `display` must
-     * outlive the process: the knob registry copies the row, not the
-     * strings it points at. */
-    const char*        log_tag;
-    const char* const* display;
-    int                count;
+/* Warp phases. The values are a savestate format (Spyro 1 saves the phase):
+ * new phases take new numbers. */
+enum {
+    LEVELWARP_IDLE    = 0,
+    LEVELWARP_LEAVING = 1,  /* the transition is entered; the target not yet loading */
+    LEVELWARP_LOADING = 2,  /* waiting for arrival */
+    LEVELWARP_QUEUED  = 3   /* the game's request waits for a later drain */
+};
 
-    /* index -> the game's own level number, and the reverse of the
-     * --skip-to-level resolver's numeric arm. */
-    int  (*level_id)(int index);
+typedef struct levelwarp levelwarp_t;
 
-    /* The --skip-to-level argument resolver, for the scripted driver. */
-    int  (*resolve)(const char* arg);
+typedef struct levelwarp_game {
+    const char*               log_tag;
+    const knob_desc_t*        rows;      /* [0] the dropdown, [1] the button */
+    const char*               test_env;  /* scripted driver: <vbl>:<target> */
+    const game_level_table_t* table;     /* the dropdown's targets */
+    const char*               unit;      /* "level" or "area", in log lines */
 
-    /* The route the live guest state allows, ignoring whether a warp is
-     * already queued or running. LEVELWARP_ROUTE_LEVEL is vetoed here when
-     * the debug free camera is engaged. */
-    int  (*route)(CPUState* cpu);
+    /* Route. The title route opens while title_word reads title_value
+     * (title_word 0: no title route); the in-level route while live() holds
+     * and demo_word (0: none) reads 0, and never under the free camera. */
+    uint32_t title_word, title_value;
+    uint32_t demo_word;
+    int (*live)(CPUState* cpu);
+    /* The target number the player is at, read for the dropdown's
+     * auto-follow and on arrival. */
+    uint32_t current_word;
+    /* Optional: a reason the selected target cannot be warped to from the
+     * current state, shown as the button's status; NULL when it can. */
+    const char* (*target_refused)(CPUState* cpu, int target);
+    /* Status text with no route; NULL reads "not in a level". */
+    const char* none_status;
 
-    /* The level number the player is in, or -1. Drives the dropdown's
-     * auto-follow until the user picks something. */
-    int  (*current_level)(CPUState* cpu);
+    /* Enter the game's transition toward `target` (w->target holds it on
+     * entry). Returns the phase to enter: LEVELWARP_IDLE when the request is
+     * ignored. */
+    int (*start)(levelwarp_t* w, CPUState* cpu, int target);
+    /* Optional LEVELWARP_LEAVING step returning the next phase; NULL leaves
+     * for LEVELWARP_LOADING once live() stops holding. A hook that aborts
+     * logs its reason and returns LEVELWARP_IDLE. */
+    int (*leaving)(levelwarp_t* w, CPUState* cpu);
+    /* Optional arrival test in LEVELWARP_LOADING; NULL is live(). */
+    int (*arrived)(CPUState* cpu);
+    /* Optional, run on arrival after its log line: returns the next phase
+     * (LEVELWARP_IDLE ends the warp). */
+    int (*on_arrival)(levelwarp_t* w, CPUState* cpu, uint32_t landed);
+    const char* leaving_status;          /* status text before LOADING */
+    unsigned char arrival_logs_vbl;      /* the arrival line names the VBL */
+    unsigned char reset_ticks_on_loading;
+} levelwarp_game_t;
 
-    /* Put the game into its own level transition toward `target_id`. Called
-     * on a non-speculative tick with LEVELWARP_ROUTE_LEVEL live. */
-    void (*start_level_route)(CPUState* cpu, int target_id);
+/* One warp row pair's state. Host-side, outside every savestate except where
+ * a game saves the phase itself: a click is the user's intent now, and
+ * restoring an older pending flag over it (the quiet rewind and runahead
+ * paths reload the blob every tick) would eat a fresh click or resurrect a
+ * stale one. */
+struct levelwarp {
+    const levelwarp_game_t* game;
+    uint32_t    phase, target, ticks;
+    const char* display[64];
+    int         count;
+    int         sel, sel_touched;
+    int         pending, pending_id;
+    int         route;
+    const char* refused;
+    int         test_frame, test_id;
+};
 
-    /* A warp this module started has not finished. Gates the button and the
-     * dropdown's auto-follow. */
-    int  (*in_flight)(void);
+/* The level warp's two rows ("warp_level", "warp_go"). */
+extern const knob_desc_t levelwarp_level_rows[2];
 
-    /* Optional status text for an in-flight warp ("loading...", ...).
-     * Writes nothing and returns 0 when no warp is in flight. */
-    int  (*in_flight_status)(char* buf, size_t cap);
-} levelwarp_ui_desc_t;
-
-/** @brief Register the two dev-overlay rows and arm the scripted driver.
+/** @brief Reset a warp, add its two dev-overlay rows and arm its scripted driver.
  *
- * Resets the dropdown selection, the queued click and the cached route, adds
- * the "Warp: level" dropdown and the "Warp: jump to level" action row, and
- * reads OPENPETE_LEVELWARP_TEST through the descriptor's resolver. Called once
- * from the feature module's apply_options.
- * @param desc The game's descriptor; it must outlive the process. */
-void levelwarp_ui_register(const levelwarp_ui_desc_t* desc);
+ * Called once from the feature module's apply_options. At most two warps
+ * register per process.
+ * @param w The warp; it and its game must outlive the process. */
+void levelwarp_register(levelwarp_t* w);
 
-struct openpete_surface_sink;
-/** @brief Report the dropdown and Warp row templates to the surface dump, without registering them.
+/** @brief Report two row templates to the surface dump, without registering them.
  *
- * @param sink The dump's collector. */
-void levelwarp_ui_surface(struct openpete_surface_sink* sink);
+ * @param sink The dump's collector.
+ * @param rows The two templates. */
+void levelwarp_surface(struct openpete_surface_sink* sink,
+                       const knob_desc_t* rows);
 
-/** @brief Run the per-tick front half: refresh the route, follow the dropdown, and drain a queued request.
+/** @brief Run one tick: drain a queued request, then follow an in-flight warp to arrival.
  *
- * Queues a due scripted request first, so it lands where a click lands. The
- * route is the descriptor's, with LEVELWARP_ROUTE_LEVEL vetoed while the free
- * camera is engaged. Until the user picks a level and while no warp is in
- * flight, the dropdown follows the current level. A queued request drains
- * once no warp is in flight: the title route through game_set_skip_to_level,
- * the in-level route through the descriptor's start_level_route, and with no
- * route it is logged and dropped.
- * @param cpu The guest CPU state.
- * @return 1 when the caller must not advance its own state machine this
- *         tick: a speculative tick, a tick holding a request behind an
- *         in-flight warp, or a tick that drained a request; else 0. */
-int levelwarp_ui_tick(CPUState* cpu);
+ * Runs every tick, even with no warp pending, so the button's route stays
+ * current. A speculative tick does nothing. A due scripted request queues
+ * first, so it lands where a click lands. The dropdown follows the current
+ * target until the user picks one. A queued request drains once no warp is
+ * in flight: the title route through game_set_skip_to_level, the in-level
+ * route through the game's start hook. An in-flight warp then advances:
+ * LEVELWARP_LEAVING through the leaving hook, LEVELWARP_LOADING to arrival,
+ * which logs whether the target was reached; a warp in flight past 20000
+ * calls is aborted.
+ * @param w The warp.
+ * @param cpu The guest CPU state. */
+void levelwarp_on_tick(levelwarp_t* w, CPUState* cpu);
+
+/** @brief Move a queued warp to LEVELWARP_LEAVING once its request was made, restarting the call count.
+ *
+ * @param w The warp. */
+void levelwarp_called(levelwarp_t* w);
+
+/** @brief End a warp with no log line: its request was dropped, or a hook aborted it.
+ *
+ * @param w The warp. */
+void levelwarp_reset(levelwarp_t* w);
+
+/** @brief Log "aborted (<why>)" and end the warp.
+ *
+ * @param w The warp.
+ * @param why The reason. */
+void levelwarp_abort(levelwarp_t* w, const char* why);

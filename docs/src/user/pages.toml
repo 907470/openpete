@@ -186,6 +186,8 @@
 "knob:vertex_precision" = "graphics/retro-look.md#the-playstation-look"
 "knob:vibration" = "customizing/controllers.md#vibration"
 "knob:vsync" = "graphics/display.md#vsync"
+"knob:warp_area" = "playing/dev-overlay.md#area-warp"
+"knob:warp_area_go" = "playing/dev-overlay.md#area-warp"
 "knob:warp_go" = "playing/dev-overlay.md#level-warp"
 "knob:warp_level" = "playing/dev-overlay.md#level-warp"
 "knob:window" = "graphics/display.md#window"
