@@ -1064,6 +1064,9 @@ static int      s_in_fade = 0;        /* set across the fade emitter's real-func
                                        * a dark panel's (both go through the chokepoint) */
 static int      s_in_letterbox = 0;   /* set across the letterbox emitter's real call
                                        * (ui_game.letterbox.emitter) */
+static unsigned s_fade_ran_frame = ~0u; /* openpete_frame of the last fade emitter call not yet
+                                       * consumed by a letterbox emitter call: the fade's F4
+                                       * is linked before the bars that tick */
 static int      s_in_grid = 0;        /* set across the framebuffer grid emitter's real call
                                        * (ui_game.fb_grid_emitter) */
 static unsigned s_grid_ord;           /* primitives linked through the chokepoint since that
@@ -2141,6 +2144,7 @@ static int on_ot_stitch(CPUState* cpu, uint32_t addr) {
 static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
     if (!openpete_native_scene_enabled()) return 0;   /* inert: normal dispatch runs it */
     if (openpete_frame == s_cap_frame) s_post_fade++;
+    s_fade_ran_frame = openpete_frame;   /* this tick's fade is linked before any bars after it */
     static int s_in = 0;
     if (s_in) return 0;                                /* re-entry from our own call -> real body */
     s_in = 1;
@@ -2189,8 +2193,12 @@ static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
  * chokepoint does not feed the bars it links; the height word
  * (ui_game.letterbox.height) read after the call is the height those bars
  * were drawn at, and openpete_native_scene_set_letterbox draws them from it
- * at the game's rows. Skipped, apart from the real call, when a render-path
- * selection leaves RP_UI out. Reads guest RAM only.
+ * at the game's rows. Every game links the fade's F4 and the bars through
+ * one tail-append list (S1 func_800168DC, S2 func_8001B390, S3
+ * func_8004E758), so call order is draw order: a fade emitter call earlier
+ * in the same tick (s_fade_ran_frame) puts the bars over the fade, and a
+ * fade called after them draws over the bars. Skipped, apart from the real
+ * call, when a render-path selection leaves RP_UI out. Reads guest RAM only.
  * @param cpu The guest CPU state.
  * @param addr The hooked entry address.
  * @return 0 when the native scene is off or on re-entry (the ordinary
@@ -2201,10 +2209,13 @@ static int on_letterbox_emitter(CPUState* cpu, uint32_t addr) {
     s_in_letterbox = 1;
     openpete_recomp_module_get()->dispatch(cpu, addr);   /* the real emitter (ref unchanged) */
     s_in_letterbox = 0;
+    const int over_fade = s_fade_ran_frame == openpete_frame;
+    s_fade_ran_frame = ~0u;
     if (render_path_enabled(RP_UI))
         openpete_native_scene_set_letterbox((float)ui_game.letterbox.top_y,
                                             (float)ui_game.letterbox.bottom_y,
-                                            (float)(int32_t)cpu->read_word(ui_game.letterbox.height));
+                                            (float)(int32_t)cpu->read_word(ui_game.letterbox.height),
+                                            over_fade);
     return 1;
 }
 

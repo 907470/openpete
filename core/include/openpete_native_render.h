@@ -1957,8 +1957,10 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b);
  * between ticks. A tick with no record has height 0. Renderer state only.
  * @param top_y PSX row of the top bar's outer edge.
  * @param bottom_y PSX row of the bottom bar's outer edge.
- * @param h Bar height in PSX rows; 0 or less draws no bars. */
-void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h);
+ * @param h Bar height in PSX rows; 0 or less draws no bars.
+ * @param over_fade 1 when the game linked the bars after this tick's fade
+ *        quad, so they draw over the fade; 0 draws them under it. */
+void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h, int over_fade);
 /** @brief Record an opaque screen quad the game drew that the scene holds no triangles for.
  *
  * The freeze backdrop's POLY_FT4s draw the frozen frame over the whole buffer

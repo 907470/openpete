@@ -2423,11 +2423,12 @@ static uint32_t s_fade_prev, s_fade_curr;
  * rolled into s_lb_prev. The emitted bars are not fed, so the height that
  * moves one row per tick is lerped instead of a carry pair that the box
  * height keys apart. */
-typedef struct { int set; float top, bottom, h; } letterbox_rec_t;
+typedef struct { int set; float top, bottom, h; int over_fade; } letterbox_rec_t;
 static letterbox_rec_t s_lb_accum, s_lb_prev, s_lb_curr;
 
-void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h) {
+void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h, int over_fade) {
     s_lb_accum.set = 1; s_lb_accum.top = top_y; s_lb_accum.bottom = bottom_y; s_lb_accum.h = h;
+    s_lb_accum.over_fade = over_fade ? 1 : 0;
 }
 
 /** @brief Commit this tick's letterbox record as the current one and roll the previous.
@@ -2445,11 +2446,16 @@ static void letterbox_commit(void) {
  *
  * Each bar is a frame-width opaque black quad (two triangles) on the
  * OVERLAY layer, re-applied (carry 2) so the next capture does not take it
- * into the 2D carry. Under widescreen the bar is widened about x 256 by the
+ * into the 2D carry. The triangles carry over_fade from the record whose
+ * bar rows they take (the current tick's, or the previous one's while the
+ * bars lerp out of a tick that drew none), so they draw after the fade when
+ * the game linked them after its fade quad and under it otherwise. An
+ * intermediate present takes the order of the tick whose rows it draws,
+ * the newer one unless that tick drew no bars. Under widescreen the bar is widened about x 256 by the
  * Hor+ factor with a 4-pixel bleed the scene scissor clips, as an emitted
  * frame-width bar is. Nothing is appended at a height of 0 or less.
  * OPENPETE_LETTERBOX_CENSUS prints one line per append with both heights,
- * the alpha and the drawn height.
+ * the alpha, the drawn height and the order flag (over = after the fade).
  * @param alpha Sub-tick alpha, 0 = previous tick, 1 = current tick.
  * @param leg Census label of the caller. */
 static void letterbox_append(double alpha, const char* leg) {
@@ -2458,8 +2464,9 @@ static void letterbox_append(double alpha, const char* leg) {
     { static int lc = -1;
       if (lc < 0) { const char* e = getenv("OPENPETE_LETTERBOX_CENSUS"); lc = (e && *e && *e != '0'); }
       if (lc && (s_lb_prev.h > 0.0f || s_lb_curr.h > 0.0f))
-          fprintf(stderr, "[letterbox vbl=%u leg=%s] prev=%.2f curr=%.2f alpha=%.3f h=%.3f\n",
-                  s_scene_frame, leg, (double)s_lb_prev.h, (double)s_lb_curr.h, alpha, (double)h); }
+          fprintf(stderr, "[letterbox vbl=%u leg=%s] prev=%.2f curr=%.2f alpha=%.3f h=%.3f order=%s\n",
+                  s_scene_frame, leg, (double)s_lb_prev.h, (double)s_lb_curr.h, alpha, (double)h,
+                  g->over_fade ? "over" : "under"); }
     if (!(h > 0.0f)) return;
     int x0 = 0, x1 = 512;
     const float F = openpete_native_widescreen_factor();
@@ -2482,7 +2489,9 @@ static void letterbox_append(double alpha, const char* leg) {
                 tri.v[j].sx = sx[c]; tri.v[j].sy = sy[c];
                 tri.v[j].z = 1.0f; tri.v[j].pvz = 1.0f; tri.v[j].rgba = 0xFF000000u;
             }
+            const int n0 = s_scene_n;
             openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_OVERLAY, 2);
+            if (s_scene_n > n0) s_scene[n0].over_fade = g->over_fade;
         }
     }
     s_cur_prim = prim; s_cur_seq = seq; s_cur_fb_cell = cell;
@@ -16002,10 +16011,12 @@ static bool draw_native_scene(bool full_extent)
                      draw_hud3d_layer(scene, tx_start, ut_first[9], ut_count[9],
                                       txg_first[12], txg_count[12]));
 
-    /* OVERLAY layer (HUD-OT 2D flat quads - the cutscene letterbox bars): drawn
-     * after every scene group, over everything incl. the player, depth-test off
-     * (the opaque untextured HUD pipe). Before the fade, matching the PSX HUD-OT order (the fade
-     * F4 is linked after the border, so it draws on top of the bars). */
+    /* OVERLAY layer (2D flat quads, among them the cutscene letterbox bars):
+     * drawn after every scene group, over everything incl. the player,
+     * depth-test off (the opaque untextured HUD pipe), and before the fade.
+     * The OVERLAY triangles the game links after its fade quad (over_fade,
+     * the letterbox bars of a tick whose fade was called first) draw in the
+     * over-fade pass after it (draw_over_fade_2d) instead. */
     draw_overlay_quads(ut_first[7], ut_count[7]);
 
     /* Draw the full-screen fade overlay last (over every layer above), in the PSX
