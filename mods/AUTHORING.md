@@ -378,7 +378,7 @@ Selector keys (manifest row or `openpete_mod_material_selector_t`; omitted
 | `level` | `g_LevelId` |
 | `tier` / flags | `"hp"` `"lp"` / `OP_SEL_HP_TIER`, `OP_SEL_LP_TIER`; neither = both |
 | `textured` / flags | `true` `false` / `OP_SEL_TEXTURED`, `OP_SEL_UNTEXTURED` |
-| `env_anim` / flags | `true` / `OP_SEL_ENV_ANIM` |
+| `env_anim` / flags | `true` `false` / `OP_SEL_ENV_ANIM`, `OP_SEL_ENV_STATIC` (api 13+); neither = both, both refused |
 | `params` | floats = the std140 block |
 | `enabled` | `false` ships off |
 

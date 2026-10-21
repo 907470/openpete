@@ -16,7 +16,8 @@
 #            usually needs this too
 #   tier     "hp" | "lp"        (omit = both)
 #   textured true | false       (omit = both)
-#   env_anim true               (animated terrain env faces only)
+#   env_anim true | false       (animated / static terrain faces; omit = both;
+#                                false needs api 13)
 #   params   floats handed to the shader as its uniform block
 #   enabled  false to ship a row switched off
 #

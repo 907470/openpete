@@ -156,6 +156,9 @@ int  openpete_mods_chain_add_ovl(uint32_t addr, uint32_t overlay,
 /* The first api whose materials compose and whose [[material]] rows read
  * the exclusive key; mod_material_resolve.h's MOD_MAT_API_COMPOSE. */
 #define MOD_API_COMPOSE 13
+/* The first api whose [[material]] env_anim = false selects the static
+ * terrain faces (OP_SEL_ENV_STATIC); below it false narrows nothing. */
+#define MOD_API_ENV_STATIC 13
 void openpete_mods_base(CPUState* cpu);
 
 /* Mods the live table's first block holds; it grows by whole blocks. */
@@ -3604,7 +3607,9 @@ static int parse_material_params(toml_table_t* mt, mod_material_row_t* r,
 /** @brief Parse the flag keys of one [[material]] row into its OP_SEL_* flags.
  *
  * tier ("hp" or "lp"), textured and env_anim narrow and mirror the C
- * flags exactly; an absent tier or textured narrows nothing. exclusive =
+ * flags exactly; an absent tier, textured or env_anim narrows nothing.
+ * env_anim = false adds OP_SEL_ENV_STATIC on a mod pinned at
+ * MOD_API_ENV_STATIC or later and narrows nothing below it. exclusive =
  * true adds OP_SEL_EXCLUSIVE on a mod pinned at MOD_API_COMPOSE or later
  * and is ignored below it, as an unknown key is.
  * @param mt The [[material]] table.
@@ -3629,8 +3634,10 @@ static int parse_material_flags(toml_table_t* mt, mod_material_row_t* r, int api
     }
     if ((d = toml_bool_in(mt, "textured")).ok)
         r->flags |= d.u.b ? OP_SEL_TEXTURED : OP_SEL_UNTEXTURED;
-    if ((d = toml_bool_in(mt, "env_anim")).ok && d.u.b)
-        r->flags |= OP_SEL_ENV_ANIM;
+    if ((d = toml_bool_in(mt, "env_anim")).ok) {
+        if (d.u.b)                                r->flags |= OP_SEL_ENV_ANIM;
+        else if (api_pin >= MOD_API_ENV_STATIC)   r->flags |= OP_SEL_ENV_STATIC;
+    }
     if (api_pin >= MOD_API_COMPOSE && (d = toml_bool_in(mt, "exclusive")).ok && d.u.b)
         r->flags |= OP_SEL_EXCLUSIVE;
     return 0;

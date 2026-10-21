@@ -124,14 +124,15 @@ Every selector key is optional; an omitted key matches everything:
 | `level` | Level ID. Texture IDs are per level, so a `texture` row usually needs this |
 | `tier` | `"hp"` or `"lp"`; omit for both. Terrain only: a row with it never matches a moby |
 | `textured` | `true` or `false`; omit for both. On `moby`, `true` matches every moby triangle and `false` none |
-| `env_anim` | `true` selects only the terrain faces the game animates: a face whose texture record a texture swap or UV scroll rewrites, or whose vertex or vertex colour a geometry or colour animation rewrites, textured or not. `false` narrows nothing |
+| `env_anim` | `true` selects only the terrain faces the game animates: a face whose texture record a texture swap or UV scroll rewrites, or whose vertex or vertex colour a geometry or colour animation rewrites, textured or not. `false` selects only the terrain faces the game does not animate (from `api = 13`; below it `false` narrows nothing). Omit for both. Terrain only: a row with it never matches a moby |
 | `params` | Floats handed to the shader as its uniform block |
 | `enabled` | `false` ships the row switched off |
 | `game` | One game id or an array of them; the row registers on those games only. Omit for every game the mod loads on |
 
 A far surface the game draws from its static low-detail mesh is not an
-animated face, so at original LOD an `env_anim` row can select a lava
-pool near the camera and not far from it.
+animated face, so at original LOD an `env_anim = true` row can select
+a lava pool near the camera and not far from it, and an
+`env_anim = false` row the far one.
 
 A key the engine does not recognise is refused with an error, since a
 typo that silently widened a selector would repaint geometry the row

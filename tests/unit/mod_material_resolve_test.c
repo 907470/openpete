@@ -389,6 +389,37 @@ static void case_terrain_decline(void) {
             "retained and walked agree");
 }
 
+/** @brief OP_SEL_ENV_STATIC takes the non-env terrain faces OP_SEL_ENV_ANIM leaves, never a moby or another channel, and both bits together are refused. */
+static void case_env_static(void) {
+    begin("Env static: the complement of env_anim on terrain only");
+    stub_mod_t* a = mod("fx-env", 0, 13);
+    stub_mod_t* b = mod("fx-static", 1, 13);
+    openpete_mod_material_selector_t e = sel_ch(-1), st = sel_ch(-1), both = sel_ch(OP_CHAN_TERRAIN);
+    e.flags = OP_SEL_ENV_ANIM;
+    st.flags = OP_SEL_ENV_STATIC;
+    both.flags = OP_SEL_ENV_ANIM | OP_SEL_ENV_STATIC;
+    CHECK(reg(b, both, SCENE, NULL) == -1, "both env bits refused");
+    const int me = reg(a, e, SCENE, NULL);
+    const int ms = reg(b, st, SCENE, NULL);
+    openpete_mods_material_frame_reset(1);
+    for (int tex = -1; tex < 3; tex++)
+        for (int lp = 0; lp < 2; lp++) {
+            CHECK(walk(tex, 1, lp) == TDECL(me) && resolve(ter_tag(tex, 1, lp, 0), SCENE) == me,
+                  "env face tex %d lp %d: env_anim row", tex, lp);
+            CHECK(walk(tex, 0, lp) == TDECL(ms) && resolve(ter_tag(tex, 0, lp, 0), SCENE) == ms,
+                  "static face tex %d lp %d: env_static row", tex, lp);
+        }
+    const int ce = bake(2, 1, 0), cs = bake(2, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(ce) == me && retained(cs) == ms, "retained env %d static %d", retained(ce), retained(cs));
+    CHECK(openpete_mods_material_moby_slot(NULL, 5, 0x80010000u) == OPENPETE_MATERIAL_SLOT_STOCK &&
+          resolve(moby_tag(5, 0), SCENE) == -1, "a moby matches neither env bit");
+    CHECK(resolve(chan_tag(OP_CHAN_PLAYER, 0), SCENE) == -1 &&
+          resolve(chan_tag(OP_CHAN_FLAME, 0), SCENE) == -1, "player and flame match neither env bit");
+    OUTCOME("env faces take the env_anim row, the rest the env_static row on both paths; "
+            "mobys, player and flame stay stock; both bits refused");
+}
+
 /* The level rf_band reads. */
 static int s_band_level;
 /** @brief Refine: claim the untextured band on an odd level, decline it on an even one. */
@@ -1549,6 +1580,7 @@ int main(void) {
     case_f2();
     case_f3();
     case_terrain_decline();
+    case_env_static();
     case_terrain_fallthrough();
     case_terrain_pass_bound();
     case_f4();

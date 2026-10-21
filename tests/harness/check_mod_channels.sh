@@ -305,6 +305,99 @@ chain_rung() {  # chain_rung <scene> <frame>
     else bad "chains: a pinned-12 material on top formed $n chain(s)"; fi
 }
 
+# ── env_anim splits the terrain ───────────────────────────────────────
+# A [[material]] row with env_anim = true selects the terrain faces the
+# game animates and env_anim = false the rest. Against a no-mod capture
+# the union of the two rows' repainted pixel sets is the set a terrain row
+# with no env_anim key repaints, and each row leaves part of that set to
+# the other: a false row that narrowed nothing would repaint all of it.
+# The sets are not required to be disjoint: a translucent animated face
+# (Spyro 3's blended water) over a static one changes the pixel under
+# either row. The overlap is reported. A second no-mod capture is the
+# control: a nonzero diff there voids the counts. <scene> is a bk2 name,
+# or "<level>@<freecam pose>".
+# env_leg <tag> <scene> <frame> <env>: <env> is true, false, any (the row
+# has no env_anim key) or none (no mod).
+env_leg() {
+    local tag="$1" scene="$2" frame="$3" env="$4"
+    local md="$WORK/mods-$tag"
+    local -a movie=() extra=()
+    if [[ "$scene" == *@* ]]; then
+        movie=(--skip-to-level "${scene%%@*}" --freecam-pose "${scene#*@}")
+    else
+        movie=(--bk2 "$PG_BK2_DIR/$scene.bk2")
+        if [ -f "$PG_BK2_DIR/$scene.bk2.args" ]; then
+            read -ra extra < <(grep -v '^#' "$PG_BK2_DIR/$scene.bk2.args" | tr '\n' ' ')
+            movie+=("${extra[@]}")
+        fi
+    fi
+    rm -rf "${md:?}"
+    mkdir -p "$md/env-probe/shaders"
+    if [ "$env" = none ]; then
+        : > "$md/enabled.txt"
+    else
+        cp mods/declarative-reshade/shaders/tint.frag "$md/env-probe/shaders/"
+        local key=""
+        [ "$env" != any ] && key="env_anim = $env\n"
+        printf '[mod]\nid = "env-probe"\nversion = "0.0.1"\napi = 13\ngame = ["%s"]\n\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "terrain"\n'"$key"'params = [1.0, 0.0, 1.0, 1.0]\n' \
+            "$PG_GAME" > "$md/env-probe/mod.toml"
+        echo env-probe > "$md/enabled.txt"
+    fi
+    local PG_CAPTURE_TIMEOUT=900
+    pg_capture "$WORK/$tag.log" "$WORK/$tag-$frame-vk.png" -- \
+        --renderer vk --mute 1 --aspect 4:3 --lod original --no-card \
+        "${movie[@]}" --screenshot-native-only --mods-dir "$md" \
+        --screenshot-on-frame "$frame" \
+        --screenshot-output "$WORK/$tag-{n}.png" --frame-limit $((frame + 2))
+}
+env_split_rung() {  # env_split_rung <scene> <frame>
+    local scene="$1" frame="$2" leg
+    say "env_anim true and false split the terrain at ${scene%%@*} $frame"
+    for leg in none ctl true false any; do
+        env_leg "env-$leg" "$scene" "$frame" "$([ $leg = ctl ] && echo none || echo $leg)" ||
+            { bad "env_anim: no capture for $leg (see $WORK/env-$leg.log)"; return; }
+    done
+    for leg in true false any; do
+        grep -q "env-probe: 1 declarative material row" "$WORK/env-$leg.log" ||
+            { bad "env_anim: the $leg row was not kept (see $WORK/env-$leg.log)"; return; }
+    done
+    local verdict
+    verdict=$(python3 - "$WORK" "$frame" <<'PY'
+import sys
+from PIL import Image, ImageChops
+w, f = sys.argv[1], sys.argv[2]
+def img(t): return Image.open(f"{w}/env-{t}-{f}-vk.png").convert("RGB")
+base = img("none")
+def px(t):
+    d = ImageChops.difference(base, img(t)).getdata()
+    return {i for i, p in enumerate(d) if p != (0, 0, 0)}
+c, t, s, a = px("ctl"), px("true"), px("false"), px("any")
+print(len(c), len(t), len(s), len(a), len(t & s), len(a ^ (t | s)), len(a - s), len(a - t))
+PY
+)
+    local nc nt nf na nov nx nts ntt
+    read -r nc nt nf na nov nx nts ntt <<< "$verdict"
+    if [ "${nc:-1}" -ne 0 ]; then
+        bad "env_anim: the no-mod control differs by ${nc:-?} px; the counts are void"; return
+    fi
+    ok "env_anim: the no-mod control repeats exactly"
+    if [ "${nt:-0}" -gt 0 ] && [ "${nf:-0}" -gt 0 ]; then
+        ok "env_anim: true repaints $nt px, false $nf px, terrain $na px"
+    else
+        bad "env_anim: true repaints ${nt:-0} px and false ${nf:-0} px; each must be nonzero"
+    fi
+    if [ "${nx:-1}" -eq 0 ]; then
+        ok "env_anim: the union of the true and false sets is the terrain row's (overlap ${nov:-?} px)"
+    else
+        bad "env_anim: the union of the true and false sets differs from the terrain row's on ${nx:-?} px"
+    fi
+    if [ "${nts:-0}" -gt 0 ] && [ "${ntt:-0}" -gt 0 ]; then
+        ok "env_anim: false leaves $nts terrain px to true, true leaves $ntt to false"
+    else
+        bad "env_anim: false leaves ${nts:-0} terrain px and true ${ntt:-0}; a row that leaves none narrowed nothing"
+    fi
+}
+
 # ── Spyro 2 and 3: per-channel engagement ─────────────────────────────
 # The gallery mod and the frame pins of the rungs after this block are
 # Spyro 1's. On Spyro 2 and 3 each render channel is proven live by one
@@ -406,6 +499,10 @@ PY
     delay_frame=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\2/p' <<< "$S23_RUNGS")
     delay_rung "$delay_scene" "$delay_frame"
     chain_rung "$delay_scene" "$delay_frame"
+    case "$PG_GAME" in
+        spyro-2) env_split_rung "crushs_dungeon@pos=(3080, 30039, 31217) yaw=29 pitch=548" 2473 ;;
+        spyro-3) env_split_rung "sunny_villa@pos=(79168, 34297, 14796) yaw=867 pitch=197" 2473 ;;
+    esac
     case "$PG_GAME" in
         spyro-2) GALLERY_TABLE="
 0|shady-oasis-flame|1421|100000|
@@ -869,6 +966,7 @@ fi
 
 delay_rung flame 1800
 chain_rung flame 1800
+env_split_rung moving-terrain 2262
 
 # Row 12 keys the flare kind, which Spyro 1 never draws: its sparkle
 # renderer emits cross lines (the sparkle-line kind) and no four-point star,

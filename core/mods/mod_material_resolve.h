@@ -126,7 +126,8 @@ void mod_mat_reset(void);
 /** @brief Check that this engine can honour a material selector exactly as written.
  *
  * Refuses, with an error log, a struct_size other than this SDK's, flag
- * bits outside OP_SEL_FLAGS_KNOWN, OP_SEL_EXCLUSIVE on a mod pinned below
+ * bits outside OP_SEL_FLAGS_KNOWN, OP_SEL_ENV_ANIM with OP_SEL_ENV_STATIC,
+ * OP_SEL_EXCLUSIVE on a mod pinned below
  * MOD_MAT_API_COMPOSE, a channel other than -1 outside
  * OP_CHAN_MOBY..OP_CHAN_PORTAL, and a texture key other than a Tiledef id
  * 0..127 on channel -1 or OP_CHAN_TERRAIN without OP_SEL_UNTEXTURED. The

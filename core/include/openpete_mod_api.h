@@ -321,7 +321,7 @@ enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
  * Each pair narrows: setting neither member of a pair selects both.
  */
 enum {
-    OP_SEL_ENV_ANIM   = 1u << 0,  /**< Env-animated faces only. */
+    OP_SEL_ENV_ANIM   = 1u << 0,  /**< Terrain faces the game animates only; neither env bit = both, both = refused. */
     OP_SEL_HP_TIER    = 1u << 1,  /**< High-poly tier only; neither tier bit = both. */
     OP_SEL_LP_TIER    = 1u << 2,  /**< Low-poly tier only. */
     OP_SEL_UNTEXTURED = 1u << 3,  /**< Gouraud faces only; neither texture bit = both. */
@@ -330,6 +330,10 @@ enum {
      *  the material terminal, so no lower material composes beneath it, on a
      *  mod pinned at api 13 or later; a mod pinned below 13 is refused it. */
     OP_SEL_EXCLUSIVE  = 1u << 5,
+    /** Terrain faces the game does not animate only (every terrain face
+     *  outside the #OP_SEL_ENV_ANIM set); a moby or any other channel's
+     *  draw never matches it. Added at api 13. */
+    OP_SEL_ENV_STATIC = 1u << 6,
 };
 /**
  * @brief Every flag the engine understands.
@@ -339,7 +343,8 @@ enum {
  */
 #define OP_SEL_FLAGS_KNOWN (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | \
                             OP_SEL_LP_TIER  | OP_SEL_UNTEXTURED | \
-                            OP_SEL_TEXTURED | OP_SEL_EXCLUSIVE)
+                            OP_SEL_TEXTURED | OP_SEL_EXCLUSIVE | \
+                            OP_SEL_ENV_STATIC)
 
 /** @brief Chooses the geometry a material may claim. */
 typedef struct openpete_mod_material_selector {

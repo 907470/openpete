@@ -445,6 +445,11 @@ int mod_mat_sel_valid(const char* id, const openpete_mod_material_selector_t* se
                     id, sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN);
         return 0;
     }
+    if ((sel->flags & (unsigned)OP_SEL_ENV_ANIM) && (sel->flags & (unsigned)OP_SEL_ENV_STATIC)) {
+        OPL_ERROR_F("mods", "%s: material: OP_SEL_ENV_ANIM and OP_SEL_ENV_STATIC together "
+                    "select no face (env_anim is true or false, never both) - refused", id);
+        return 0;
+    }
     if ((sel->flags & (unsigned)OP_SEL_EXCLUSIVE) && api_pin < MOD_MAT_API_COMPOSE) {
         OPL_ERROR_F("mods", "%s: material: OP_SEL_EXCLUSIVE needs a manifest api pin of %d or "
                     "later (this mod pins %d, whose materials are terminal already) - refused",
@@ -781,7 +786,7 @@ static int terrain_refine_key_matches(const mod_material_t* m, int untex, int te
 /** @brief Test whether a declarative terrain material's selector accepts a face key.
  *
  * The draw-time resolve's predicate over the face's keys: the texture key
- * and the OP_SEL_ENV_ANIM, tier and textured/untextured flags. Texturedness
+ * and the OP_SEL_ENV_ANIM / OP_SEL_ENV_STATIC, tier and textured/untextured flags. Texturedness
  * is the face's own, not inferred from the texid: a textured face whose
  * Tiledef id keys no selector (an imported sector's borrowed face) passes
  * texid -1 with @p untex 0, matches OP_SEL_TEXTURED and no texture key.
@@ -793,6 +798,7 @@ static int terrain_refine_key_matches(const mod_material_t* m, int untex, int te
 static int terrain_decl_matches(const mod_material_t* m, int texid, int untex, int env, int lp) {
     if (m->sel.texture != -1 && (untex || texid < 0 || m->sel.texture != texid)) return 0;
     if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) return 0;
+    if ((m->sel.flags & OP_SEL_ENV_STATIC) && env) return 0;
     if ((m->sel.flags & OP_SEL_HP_TIER) && lp) return 0;
     if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) return 0;
     if ((m->sel.flags & OP_SEL_TEXTURED) && untex) return 0;
@@ -1104,7 +1110,7 @@ const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len) {
  * @p contract, on channel -1 or OP_CHAN_MOBY, whose class key and identity
  * are -1 or @p cls (a moby's identity is its class) and whose level key is
  * -1 or @p level (every level key matches while @p level is negative). A
- * texture key or an env, HP-tier, LP-tier or untextured flag excludes the
+ * texture key or an env (animated or static), HP-tier, LP-tier or untextured flag excludes the
  * material, since those keys exist on terrain only; OP_SEL_TEXTURED
  * accepts, since moby tags carry no texturedness. The owner hold is not
  * tested: the extraction runs outside the compose that holds owners.
@@ -1121,8 +1127,8 @@ static int material_matches_moby(const mod_material_t* m, int cls, int level, in
     if (m->sel.ident != -1 && m->sel.ident != cls) return 0;
     if (m->sel.moby_class != -1 && m->sel.moby_class != cls) return 0;
     if (m->sel.texture != -1) return 0;
-    return (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER |
-                            OP_SEL_UNTEXTURED)) == 0;
+    return (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_ENV_STATIC | OP_SEL_HP_TIER |
+                            OP_SEL_LP_TIER | OP_SEL_UNTEXTURED)) == 0;
 }
 
 /** @brief Return the highest-ranked scene material matching a moby that ranks below a given one, or -1.
@@ -1795,8 +1801,8 @@ static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
  * Each selector field narrows only when set: channel, level (inert while
  * no level has been pushed), identity (not on terrain, whose [15:0] holds
  * sector and texture id), moby class (moby path only), texture (textured
- * terrain only), and the env, HP-tier, LP-tier, textured and untextured
- * flags. Setting neither textured nor untextured selects both.
+ * terrain only), and the env-animated, env-static (terrain only),
+ * HP-tier, LP-tier, textured and untextured flags. Setting neither textured nor untextured selects both.
  * @return 1 when accepted, else 0. */
 static int material_selector_matches(const mod_material_t* m,
                                      const material_key_t* k) {
@@ -1815,6 +1821,9 @@ static int material_selector_matches(const mod_material_t* m,
     if (m->sel.texture != -1 && (k->tex < 0 || m->sel.texture != k->tex))
         return 0;
     if ((m->sel.flags & OP_SEL_ENV_ANIM) && !k->env) return 0;
+    /* The static complement exists on terrain only: a tag of any other
+     * path carries env 0 and is not a static terrain face. */
+    if ((m->sel.flags & OP_SEL_ENV_STATIC) && (k->path != 1 || k->env)) return 0;
     if ((m->sel.flags & OP_SEL_HP_TIER) && k->lp) return 0;
     if ((m->sel.flags & OP_SEL_LP_TIER) && !k->lp) return 0;
     /* Texturedness narrows: setting neither member selects both, so an
