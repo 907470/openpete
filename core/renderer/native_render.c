@@ -8896,9 +8896,10 @@ static int key_order_mode(void)
  * @return The alpha byte in bits 24-31. */
 static uint32_t key_order_owner_alpha(const scene_tri_t* T, int prop_class)
 {
-    if (prop_class != 2 || !T->key_order || T->pkey > 0.25f) return 0xFF000000u;
+    if (prop_class != 2 || !T->key_order || T->pkey > 0.25f) return 0xFFu << 24;
     const int m = key_order_mode();
-    return m == 1 ? 0x80000000u : m == 2 ? 0x40000000u : 0xFF000000u;
+    const uint32_t a = m == 1 ? 0x80u : m == 2 ? 0x40u : 0xFFu;
+    return a << 24;
 }
 
 /** @brief Write one keyed scene face's three vertices for a key batch.
