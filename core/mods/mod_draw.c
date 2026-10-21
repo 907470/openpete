@@ -348,8 +348,9 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * under deferred-entry load-all the very first enable can happen
      * while no mod owns a chain yet - an active-gated boundary would
      * never drain the queue, bricking every toggle. Zero mods loaded
-     * still skips everything (pristine modless run). */
-    if (canonical && openpete_mods_count() > 0) {
+     * still skips everything (pristine modless run). After the exit
+     * pass no boundary runs, so no toggle or reload calls mod code. */
+    if (canonical && openpete_mods_count() > 0 && !openpete_mods_api_closed()) {
         static unsigned s_canonical_ticks = 0;
         static unsigned s_report_ticks = 0;
         openpete_mods_tick_boundary(cpu, ++s_canonical_ticks);
@@ -419,7 +420,9 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         s_pctx_alpha = ctx.alpha;
         s_pctx_canonical = canonical ? 1 : 0;
 
-        if (phook_count() > 0) {
+        /* After the exit pass no mod code runs: a present the teardown
+         * still makes calls no hook. */
+        if (phook_count() > 0 && !openpete_mods_api_closed()) {
         openpete_mods_in_present = 1;
         for (int i = 0; i < phook_count(); i++) {
             const present_hook_t* h = phook_at(i);

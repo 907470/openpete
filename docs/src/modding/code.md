@@ -252,6 +252,56 @@ after the mod is enabled or disabled from the Mods section. The engine
 freezes a disabled mod's registrations but never rewinds guest state, so a
 mod that wrote guest bytes restores the stock bytes on `on = 0`.
 
+## Threads and shutdown
+
+The engine never unloads a mod's library. A thread the mod starts runs
+until the mod stops it, and `register_shutdown_hook` (api 13) is where it
+stops it:
+
+```c
+static atomic_int s_stop;
+static pthread_t  s_worker;
+
+static void on_shutdown(void) {
+    atomic_store(&s_stop, 1);        /* the worker polls this between units of work */
+    pthread_join(s_worker, NULL);
+}
+
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    /* ... start s_worker ... */
+    api->register_shutdown_hook(self, on_shutdown);
+    return 0;
+}
+```
+
+The hook runs once per mod whose entry ran, enabled or disabled, when the
+game exits on purpose: a quit from the menu or a binding, a closed window,
+SIGINT or SIGTERM, the end of `--frame-limit`, `--max-runtime-seconds` or
+`--record-frames`, the game returning, and a setup error after mods
+loaded. It runs on the thread that runs ticks, after the last tick, in
+reverse load order (a mod's hook before the hooks of the mods it depends
+on), and before the engine tears down the renderer, the texture registry,
+the mod registries or audio. A hot reload runs the outgoing object's hook
+before the new object's entry.
+
+Inside the hook every entry legal in tick context may be called; a
+registration made there never runs. When the hook returns, every api call
+the mod makes from any thread is refused: the call does nothing and
+returns the entry's failure value (a config read returns its default), and
+the first refusal logs one warning naming the mod and the entry. A mod
+with no hook gets the same refusal from the moment the exit pass reaches
+it, so a thread left running cannot reach torn-down engine state, but it
+is not joined.
+
+A hook has 500 ms. One that runs longer logs a warning with its time and
+the engine keeps waiting; after a quit request the default threaded host
+ends the process when a hook has run 20 s. Check the stop flag between
+units of work of a few milliseconds each (one file decode, one texture
+build) and join.
+
+A crash, a hang the engine's watchdog ends, a second SIGINT and any other
+forced exit run no hook.
+
 ## One mod for several games
 
 A mod with `src/` compiles once for each game its manifest selects
@@ -331,7 +381,7 @@ returns -1.
 |---|---|---|
 | `override_name`, `override_ovl`, `base`, `call` | yes | yes |
 | `override_addr` | yes | main-executable addresses; an address inside the overlay window is refused, use `override_ovl` |
-| `guest`, `guest_addr`, `guest_alloc`, `log`, `data_dir`, `register_toggle_hook`, `config_*`, `ui_status`, `register_present_hook`, `binding_down`, `notify`, `mouse_*`, `pad_*`, `disc_path`, `read_sector` | yes | yes |
+| `guest`, `guest_addr`, `guest_alloc`, `log`, `data_dir`, `register_toggle_hook`, `register_shutdown_hook`, `config_*`, `ui_status`, `register_present_hook`, `binding_down`, `notify`, `mouse_*`, `pad_*`, `disc_path`, `read_sector` | yes | yes |
 | `game_id`, `gameplay_live`, `player_pose`, `level_id` | yes | yes |
 | `game_disc_path`, `game_installed` | yes | yes |
 | `shader_register`, `postfx_*` | yes | yes |

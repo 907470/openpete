@@ -745,14 +745,16 @@ struct openpete_mod_ui;
  * would otherwise run twice per present. A mod without a body draws its
  * status lines only.
  * @param i Index into the loaded mod table.
- * @param ui The overlay's widget vtable. A NULL table, a disabled mod, or
- *        an index out of range draws nothing. */
+ * @param ui The overlay's widget vtable. A NULL table, a disabled mod, an
+ *        index out of range, or a call after openpete_mods_shutdown draws
+ *        nothing. */
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
 
 /** @brief Run a mod's UI body in the always pass when its section is flagged OPENPETE_MOD_UI_ALWAYS.
  *
  * No-op for an index out of range, a NULL @p ui, a disabled mod, an
- * unflagged section or a mod without a body. Draws no ui_status lines;
+ * unflagged section, a mod without a body, or a call after
+ * openpete_mods_shutdown. Draws no ui_status lines;
  * those stay in the mod's node of the Mods panel. The body runs under the
  * render-purity guard (openpete_mods_in_present).
  * @param i Index into the loaded mod table.
@@ -814,6 +816,28 @@ int  openpete_mods_set_mod_enabled(const char* id, int on);
  *        guest access is legal.
  * @param canonical_tick The running canonical-tick counter. */
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
+/** @brief Run the exit pass: every mod's shutdown hook in reverse load order, then close the mod api.
+ *
+ * Runs once; a later call returns at once. For each mod, last-loaded
+ * first, runs its registered shutdown hook when its entry ran (timed;
+ * over 500 ms logs a warning), marks the mod closed so every api entry
+ * it calls from any thread is refused with one logged warning, and calls
+ * @p progress. Then closes the api for every caller, waits up to 1000 ms
+ * for counted api calls in progress on other threads to return, and
+ * logs the hook count. After it, tick boundaries, present hooks and UI
+ * bodies call no mod code. run.c calls it on the thread that runs ticks,
+ * after the host loop ends and the present thread is joined, before any
+ * teardown, and again (a no-op then) after a host loop or host init that
+ * returned early.
+ * @param progress Called after each mod; NULL for none. The host passes
+ *        its teardown heartbeat, which bounds each hook by the pump's
+ *        teardown grace. */
+void openpete_mods_shutdown(void (*progress)(void));
+/** @brief Report whether openpete_mods_shutdown has closed the mod api.
+ *
+ * Callable from any thread.
+ * @return 1 after the exit pass, else 0. */
+int  openpete_mods_api_closed(void);
 /** @brief Return 1 while the player is inside, or entering, a level that @p mod_id owns.
  *
  * True when one of the mod's claimed level slots, or its active custom
@@ -937,15 +961,16 @@ const char* openpete_mods_modset_tag(void);
  *
  * Called once per present: by the eager producer for each scene it
  * produces, and otherwise from run.c's canonical and sub-tick present
- * legs. A canonical call with a mod loaded first runs
- * openpete_mods_tick_boundary (the live-toggle apply point) and, every 512
- * canonical calls, openpete_mods_time_report. The rest runs only once a
+ * legs. A canonical call with a mod loaded, before openpete_mods_shutdown,
+ * first runs openpete_mods_tick_boundary (the live-toggle apply point)
+ * and, every 512 canonical calls, openpete_mods_time_report. The rest runs only once a
  * mod has drawn or registered a present hook: a canonical call swaps the
  * staging and committed tick buffers and clears the new staging, with or
  * without a native renderer. With the native renderer enabled it records
  * the present context (tick openpete_frame; alpha 0 on a canonical call,
  * else the interpolation phase at the present instant), runs every enabled
- * present hook with openpete_mods_in_present set, lays out the committed
+ * present hook with openpete_mods_in_present set (none after
+ * openpete_mods_shutdown), lays out the committed
  * tick texts and this present's texts through the game's text emitter,
  * and passes the vertices to openpete_native_set_mod_overlay.
  * @param cpu the game CPU, passed to the tick boundary.

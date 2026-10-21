@@ -20,6 +20,12 @@ openpete.com; the changelog page of the shipped docs makes it relative.
 
 ## Unreleased
 
+- Mod SDK: `register_shutdown_hook` installs a callback the engine runs once per mod on every deliberate exit (a quit,
+  a closed window, SIGINT or SIGTERM, the end of `--frame-limit`, `--max-runtime-seconds` or `--record-frames`) and
+  before a hot reload's new entry, in reverse load order and before the renderer, the texture registry and audio are
+  torn down, so a mod stops and joins the threads it started. After it returns, the mod's api calls from any thread
+  are refused with one logged warning. See
+  [Code mods](https://openpete.com/docs/modding/code.html#threads-and-shutdown).
 - Mod SDK: `texture_register` registers a mod-owned texture from code, the run-time form of
   `assets/textures/own/<hexid>.png`, legal from any context including a thread the mod starts. See
   [Textures](https://openpete.com/docs/modding/textures.html).

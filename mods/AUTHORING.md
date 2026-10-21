@@ -274,6 +274,19 @@ guest state: restore stock bytes on `on = 0`. `OPENPETE_MOD_HOT_RELOAD=1`:
 recompile; others re-enter against the cached object). A broken reload
 keeps the running instance.
 
+### Threads and shutdown
+
+The engine never unloads a mod. A mod that starts a thread registers
+`api->register_shutdown_hook(self, fn)` (api 13): `fn` sets the thread's
+stop flag and joins it. It runs once per entered mod on every deliberate
+exit (quit, window close, SIGINT/SIGTERM, `--frame-limit`,
+`--max-runtime-seconds`, `--record-frames`, a setup error after load) and
+before a hot reload's new entry, on the tick thread, in reverse load
+order, before the renderer, texture registry, mod registries and audio are
+torn down. Budget 500 ms (a warning names a slower hook). After it returns
+every api call the mod makes from any thread is refused with one warning.
+Crashes, watchdog exits and a second SIGINT run no hook.
+
 ### Services
 
 | Need | Call | Context | Guest RAM |

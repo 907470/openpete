@@ -367,6 +367,12 @@ struct openpete_mod {
     int      status_trunc;
     unsigned status_tick;
     openpete_mod_toggle_fn toggle_fn; /* live-toggle notification */
+    openpete_mod_shutdown_fn shutdown_fn; /* exit pass and hot reload */
+    /* Set when the exit pass has run this mod's shutdown hook (or found
+     * none): from then on every api entry the mod calls is refused. Read
+     * by the mod's own threads, hence atomic. */
+    _Atomic int api_closed;
+    _Atomic int api_refuse_logged; /* the first refusal has been logged */
     uint64_t imgui_calls;  /* ImGui calls the last body made */
     int      imgui_engaged;/* the first non-zero count has been logged */
     void* dl;
@@ -600,6 +606,7 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     mod->ui_body   = NULL;
     mod->ui_always = 0;
     mod->toggle_fn = NULL;
+    mod->shutdown_fn = NULL;
 }
 
 /** @brief Resolve a mod object's UI section descriptor into its ui_body and ui_always fields.
@@ -919,6 +926,68 @@ static int purity_violation(const char* what) {
     return 1;
 }
 
+/* ---- the api gate: refusal after the exit pass ---------------------------
+ * The exit pass (openpete_mods_shutdown) closes each mod when its shutdown
+ * hook returns and then closes the whole api. Every entry but the four
+ * named below brackets its work in mod_api_enter/mod_api_leave, which counts
+ * the call in s_api_inflight; the close stores the flag and then waits
+ * for the count to drain, so with sequentially consistent atomics a call
+ * either sees the flag and is refused or is counted before the wait reads
+ * the count, and no call is inside the engine when teardown starts. base()
+ * and call() run guest code, which may park the fiber mid-call, so they
+ * test the flags without being counted; nothing runs guest code once the
+ * loop has ended. guest() and guest_addr() translate addresses into
+ * memory that outlives teardown and are uncounted for their per-access
+ * cost. */
+static _Atomic int s_api_closed;    /* every mod closed: entries refuse */
+static _Atomic int s_api_inflight;  /* counted entries between enter and leave */
+static _Atomic int s_api_anon_refuse_logged; /* first refusal of a self-less entry */
+
+/** @brief Log the first api refusal of a mod after its shutdown hook returned.
+ *
+ * @param self The calling mod, or NULL for an entry that takes none.
+ * @param what The entry name. */
+static void mod_api_refused(openpete_mod_t* self, const char* what) {
+    _Atomic int* logged = self ? &self->api_refuse_logged
+                               : &s_api_anon_refuse_logged;
+    if (atomic_exchange(logged, 1)) return;
+    OPL_WARN_F(self ? self->log_tag : "mods",
+               "%s refused: the exit pass has closed %s; later refusals "
+               "are not logged", what, self ? "this mod" : "the mod api");
+}
+
+/** @brief Report whether an api entry is closed for a mod.
+ *
+ * @param self The calling mod, or NULL.
+ * @return 1 once the mod or the whole api is closed, else 0. */
+static int mod_api_is_closed(openpete_mod_t* self) {
+    return atomic_load(&s_api_closed) ||
+           (self && atomic_load(&self->api_closed));
+}
+
+/** @brief Enter a counted api entry, or refuse it once the mod is closed.
+ *
+ * A 1 return obliges the caller to call mod_api_leave on every path out.
+ * @param self The calling mod, or NULL for an entry that takes none.
+ * @param what The entry name for the refusal line.
+ * @return 1 to proceed, 0 refused (logged once per mod). */
+static int mod_api_enter(openpete_mod_t* self, const char* what) {
+    atomic_fetch_add(&s_api_inflight, 1);
+    if (!mod_api_is_closed(self)) return 1;
+    atomic_fetch_sub(&s_api_inflight, 1);
+    mod_api_refused(self, what);
+    return 0;
+}
+
+/** @brief Leave a counted api entry that mod_api_enter admitted. */
+static void mod_api_leave(void) {
+    atomic_fetch_sub(&s_api_inflight, 1);
+}
+
+int openpete_mods_api_closed(void) {
+    return atomic_load(&s_api_closed);
+}
+
 /* ---- native-renderer visual-bypass advisory ------------------------------
  * The default --renderer vk draws the 3D world from gamestate and does NOT
  * rasterize the PSX ordering table, so overriding one of the original PSX
@@ -1162,10 +1231,12 @@ static int api_override_ovl(openpete_mod_t* self, uint32_t overlay_id,
  *
  * The text is formatted into a 512-byte buffer and truncated to fit. A
  * level outside OPL_TRACE..OPL_ERROR logs as OPL_INFO, a NULL fmt logs an
- * empty message and a NULL self logs under the tag "mod:?".
+ * empty message and a NULL self logs under the tag "mod:?". Refused, with
+ * nothing logged, once the mod's shutdown hook has returned.
  * @param self The calling mod, or NULL.
  * @param level An OPL_* level. */
 static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
+    if (!mod_api_enter(self, "log")) return;
     char msg[512];
     va_list ap;
     va_start(ap, fmt);
@@ -1174,6 +1245,7 @@ static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
     if (level < OPL_TRACE || level > OPL_ERROR) level = OPL_INFO;
     openpete_logf((openpete_log_level_t)level,
                   self ? self->log_tag : "mod:?", "%s", msg);
+    mod_api_leave();
 }
 
 /* Region-table inverse (psx_runtime_internal.h; declared here for the same
@@ -1292,10 +1364,11 @@ static unsigned s_current_tick;
  *
  * The line list resets on the first call of each tick, holds 24 lines of
  * 120 bytes, and truncates a longer line; lines past the 24th are dropped
- * and status_trunc is set. A NULL self or fmt does nothing.
+ * and status_trunc is set. A NULL self or fmt does nothing, and so does a
+ * call after the mod's shutdown hook returned.
  * @param self The calling mod. */
 static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
-    if (!self || !fmt) return;
+    if (!self || !fmt || !mod_api_enter(self, "ui_status")) return;
     struct openpete_mod* m = self;
     if (m->status_tick != s_current_tick) {
         m->status_n = 0;
@@ -1304,13 +1377,14 @@ static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
     }
     if (m->status_n >= (int)(sizeof m->status / sizeof m->status[0])) {
         m->status_trunc = 1;
-        return;
+    } else {
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(m->status[m->status_n], sizeof m->status[0], fmt, ap);
+        va_end(ap);
+        m->status_n++;
     }
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(m->status[m->status_n], sizeof m->status[0], fmt, ap);
-    va_end(ap);
-    m->status_n++;
+    mod_api_leave();
 }
 
 /** @brief Post an OSD toast attributed to the calling mod.
@@ -1320,10 +1394,11 @@ static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
  * and the mod id is the openpete_osd_notify source, whose rate-limit bucket
  * is per source, so one mod in a tick loop cannot starve another's
  * notifications or the engine's. A NULL or empty key posts an uncoalesced
- * toast. The text is formatted into OPENPETE_OSD_TEXT_MAX bytes. */
+ * toast. The text is formatted into OPENPETE_OSD_TEXT_MAX bytes. Refused
+ * once the mod's shutdown hook has returned. */
 static void api_notify(openpete_mod_t* self, const char* key,
                        uint32_t timeout_ms, const char* fmt, ...) {
-    if (!self || !fmt) return;
+    if (!self || !fmt || !mod_api_enter(self, "notify")) return;
     struct openpete_mod* m = self;
     char text[OPENPETE_OSD_TEXT_MAX];
     va_list ap;
@@ -1336,6 +1411,7 @@ static void api_notify(openpete_mod_t* self, const char* key,
     const int keyed = key && *key &&
                       snprintf(nskey, sizeof nskey, "%s/%s", m->id, key) < (int)sizeof nskey;
     openpete_osd_notify(m->id, keyed ? nskey : NULL, timeout_ms, "%s", text);
+    mod_api_leave();
 }
 
 /** @brief Set the mod's callback for live enable and disable notifications.
@@ -1349,6 +1425,20 @@ static int api_register_toggle_hook(openpete_mod_t* self,
     if (!self) return -1;
     if (purity_violation("register_toggle_hook")) return -1;
     self->toggle_fn = fn;
+    return 0;
+}
+
+/** @brief Set the mod's exit callback, run by the exit pass and by a hot reload.
+ *
+ * Replaces any earlier callback; refused inside a present hook.
+ * @param self The calling mod; NULL returns -1.
+ * @param fn The callback, or NULL to clear it.
+ * @return 0, or -1 for a NULL self or a present-hook call. */
+static int api_register_shutdown_hook(openpete_mod_t* self,
+                                      openpete_mod_shutdown_fn fn) {
+    if (!self) return -1;
+    if (purity_violation("register_shutdown_hook")) return -1;
+    self->shutdown_fn = fn;
     return 0;
 }
 
@@ -1792,6 +1882,35 @@ static mod_entry_fn mod_reload_open(struct openpete_mod* mod,
     return entry;
 }
 
+/* Per-hook budget of the exit pass, and the bound on the wait for api
+ * calls other threads have in progress when the api closes. */
+enum { MOD_SHUTDOWN_BUDGET_MS = 500, MOD_SHUTDOWN_DRAIN_MS = 1000 };
+
+/** @brief Run a mod's shutdown hook under the guest guard, timing it against the budget.
+ *
+ * A no-op for a mod without one or whose entry never ran.
+ * @param mod The mod.
+ * @param why "exit" or "reload", for the log lines.
+ * @return 1 when a hook ran, else 0. */
+static int mod_run_shutdown_hook(struct openpete_mod* mod, const char* why) {
+    openpete_mod_shutdown_fn fn = mod->shutdown_fn;
+    if (!fn || !mod->entered) return 0;
+    const Uint64 t0 = SDL_GetTicks(); /* clock-guard: wall */
+    openpete_mods_guard_enter(mod->id);
+    fn();
+    openpete_mods_guard_leave();
+    const Uint64 ms = SDL_GetTicks() - t0; /* clock-guard: wall */
+    if (ms > MOD_SHUTDOWN_BUDGET_MS)
+        OPL_WARN_F(mod->log_tag, "shutdown hook (%s) took %llu ms, over the "
+                   "%d ms budget: signal the mod's threads and join them "
+                   "without waiting on more work", why,
+                   (unsigned long long)ms, (int)MOD_SHUTDOWN_BUDGET_MS);
+    else
+        OPL_INFO_F(mod->log_tag, "shutdown hook (%s) returned in %llu ms",
+                   why, (unsigned long long)ms);
+    return 1;
+}
+
 /** @brief Reload one mod in place at a tick boundary under a fresh object.
  *
  * First produces a loadable object under a unique
@@ -1881,7 +2000,9 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     /* A loadable object exists: now retire the running one. From here a
      * failure leaves the mod INERT - the old registrations are gone and
      * the new entry never completed - which the log says in as many
-     * words. */
+     * words. The outgoing object's shutdown hook runs first, so threads
+     * it started stop before its registrations go. */
+    (void)mod_run_shutdown_hook(mod, "reload");
     mod_strip_registrations(mod);
     /* Drop every manifest row in place, keeping the storage: the rows
      * are re-parsed below, and appending to them would duplicate every
@@ -2132,7 +2253,7 @@ static void mod_ui_run_body(struct openpete_mod* m, int i,
 }
 
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
-    if (i < 0 || i >= mod_count() || !ui) return;
+    if (i < 0 || i >= mod_count() || !ui || atomic_load(&s_api_closed)) return;
     struct openpete_mod* m = mod_at(i);
     if (!m->enabled) return;
     for (int l = 0; l < m->status_n; l++)
@@ -2149,7 +2270,7 @@ void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
 
 void openpete_mods_ui_draw_always(int i, const struct openpete_mod_ui* ui,
                                   int no_input) {
-    if (i < 0 || i >= mod_count() || !ui) return;
+    if (i < 0 || i >= mod_count() || !ui || atomic_load(&s_api_closed)) return;
     struct openpete_mod* m = mod_at(i);
     if (!m->enabled || !m->ui_always) return;
     openpete_mod_ui_body_fn body = m->ui_body;
@@ -2419,6 +2540,32 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     /* A registration, toggle or hot reload above can change the member
      * set of the combined material modules; unchanged, this returns at once. */
     openpete_mods_material_chain_sync();
+}
+
+void openpete_mods_shutdown(void (*progress)(void)) {
+    static int s_ran;
+    if (s_ran) return;
+    s_ran = 1;
+    int hooks = 0;
+    for (int i = mod_count() - 1; i >= 0; i--) {
+        struct openpete_mod* mod = mod_at(i);
+        hooks += mod_run_shutdown_hook(mod, "exit");
+        atomic_store(&mod->api_closed, 1);
+        if (progress) progress();
+    }
+    atomic_store(&s_api_closed, 1);
+    const Uint64 t0 = SDL_GetTicks(); /* clock-guard: wall */
+    int left;
+    while ((left = atomic_load(&s_api_inflight)) > 0 &&
+           SDL_GetTicks() - t0 < MOD_SHUTDOWN_DRAIN_MS) /* clock-guard: wall */
+        SDL_Delay(1);
+    if (left > 0)
+        OPL_WARN_F("mods", "shutdown: %d api call(s) still in progress "
+                   "after %d ms; tearing down anyway", left,
+                   (int)MOD_SHUTDOWN_DRAIN_MS);
+    if (mod_count() > 0)
+        OPL_INFO_F("mods", "shutdown: %d hook(s) ran over %d mod(s); the api "
+                   "is closed", hooks, mod_count());
 }
 
 const char* openpete_mods_build_key(const char* id) {
@@ -3023,73 +3170,177 @@ static int api_material_set_selector(openpete_mod_t* self, int material,
     return openpete_mods_material_set_selector(self, material, sel);
 }
 
+/* Every counted api entry that takes the calling mod, as
+ * X(return type, member, implementation, refused value, parameters,
+ * arguments). MOD_API_GATED below defines gate_<member> from each row: the
+ * implementation runs between mod_api_enter and mod_api_leave, and a
+ * refusal returns the entry's failure value (a config read its default).
+ * log, ui_status and notify are variadic and gate inside their bodies;
+ * guest_alloc and config_str write an out parameter on refusal and are
+ * written out below; guest, guest_addr and draw_text take no mod; base,
+ * call, guest and guest_addr are not counted (see mod_api_enter). */
+#define MOD_API_GATED_ENTRIES(X) \
+    X(int, override_addr, api_override_addr, -1, (openpete_mod_t* self, uint32_t addr, openpete_mod_override_fn fn), (self, addr, fn)) \
+    X(int, override_name, api_override_name, -1, (openpete_mod_t* self, const char* name, openpete_mod_override_fn fn), (self, name, fn)) \
+    X(const char*, data_dir, api_data_dir, NULL, (openpete_mod_t* self), (self)) \
+    X(int, register_toggle_hook, api_register_toggle_hook, -1, (openpete_mod_t* self, openpete_mod_toggle_fn fn), (self, fn)) \
+    X(int, config_bool, openpete_mods_config_bool, def, (openpete_mod_t* self, const char* key, int def), (self, key, def)) \
+    X(int64_t, config_int, openpete_mods_config_int, def, (openpete_mod_t* self, const char* key, int64_t def), (self, key, def)) \
+    X(double, config_float, openpete_mods_config_float, def, (openpete_mod_t* self, const char* key, double def), (self, key, def)) \
+    X(uint32_t, vstream_handle, api_vstream_handle, 0, (openpete_mod_t* self, uint32_t stream_vaddr), (self, stream_vaddr)) \
+    X(int, register_present_hook, api_register_present_hook, -1, (openpete_mod_t* self, openpete_mod_present_fn fn), (self, fn)) \
+    X(int, shader_register, openpete_mods_shader_register, -1, (openpete_mod_t* self, const char* path), (self, path)) \
+    X(int, postfx_register, openpete_mods_postfx_register, -1, (openpete_mod_t* self, int frag_shader, int point, int order), (self, frag_shader, point, order)) \
+    X(int, postfx_enable, openpete_mods_postfx_enable, -1, (openpete_mod_t* self, int fx, int enabled), (self, fx, enabled)) \
+    X(int, postfx_set_uniforms, openpete_mods_postfx_set_uniforms, -1, (openpete_mod_t* self, int fx, const void* data, uint32_t size), (self, fx, data, size)) \
+    X(int, sfx_replace, openpete_mods_sfx_replace, -1, (openpete_mod_t* self, const char* name, const void* adpcm_body, uint32_t len, uint16_t pitch), (self, name, adpcm_body, len, pitch)) \
+    X(int, sfx_play, api_sfx_play, -1, (openpete_mod_t* self, const char* name, float gain), (self, name, gain)) \
+    X(int, mouse_read, api_mouse_read, -1, (openpete_mod_t* self, openpete_mod_mouse_t* out), (self, out)) \
+    X(int, mouse_capture, api_mouse_capture, -1, (openpete_mod_t* self, int on), (self, on)) \
+    X(int, pad_read, api_pad_read, -1, (openpete_mod_t* self, uint32_t slot, openpete_mod_pad_t* out), (self, slot, out)) \
+    X(int, pad_rumble, api_pad_rumble, -1, (openpete_mod_t* self, uint32_t slot, uint32_t small_byte, uint32_t large_byte), (self, slot, small_byte, large_byte)) \
+    X(const char*, disc_path, api_disc_path, NULL, (openpete_mod_t* self, int want_bin), (self, want_bin)) \
+    X(int, read_sector, api_read_sector, -1, (openpete_mod_t* self, const char* game, uint32_t lba, uint8_t* buf), (self, game, lba, buf)) \
+    X(int, override_ovl, api_override_ovl, -1, (openpete_mod_t* self, uint32_t overlay_id, uint32_t addr, openpete_mod_override_fn fn), (self, overlay_id, addr, fn)) \
+    X(const char*, game_disc_path, api_game_disc_path, NULL, (openpete_mod_t* self, const char* game, int want_bin), (self, game, want_bin)) \
+    X(int, game_installed, api_game_installed, 0, (openpete_mod_t* self, const char* game), (self, game)) \
+    X(int, texture_register, openpete_mods_texture_register, -1, (openpete_mod_t* self, uint16_t id, const void* rgba, int w, int h), (self, id, rgba, w, h)) \
+    X(const char*, game_id, api_game_id, NULL, (openpete_mod_t* self), (self)) \
+    X(int, gameplay_live, api_gameplay_live, 0, (openpete_mod_t* self, CPUState* cpu), (self, cpu)) \
+    X(int, player_pose, api_player_pose, -1, (openpete_mod_t* self, CPUState* cpu, openpete_mod_pose_t* out), (self, cpu, out)) \
+    X(int, level_id, api_level_id, -1, (openpete_mod_t* self, CPUState* cpu), (self, cpu)) \
+    X(int, binding_down, api_binding_down, 0, (openpete_mod_t* self, const char* name), (self, name)) \
+    X(int, read_level_data, api_read_level_data, -1, (openpete_mod_t* self, int level_id, void* buf, uint32_t cap), (self, level_id, buf, cap)) \
+    X(int, texpack_fog_shift, api_texpack_fog_shift, -1, (openpete_mod_t* self, const float scale_rgb[3], const float offset_rgb[3]), (self, scale_rgb, offset_rgb)) \
+    X(int, material_register, api_material_register, -1, (openpete_mod_t* self, const openpete_mod_material_selector_t* sel, int shader), (self, sel, shader)) \
+    X(int, material_register_refine, api_material_register_refine, -1, (openpete_mod_t* self, const openpete_mod_material_selector_t* sel, int shader, openpete_mod_refine_fn refine), (self, sel, shader, refine)) \
+    X(int, material_enable, openpete_mods_material_enable, -1, (openpete_mod_t* self, int material, int on), (self, material, on)) \
+    X(int, material_set_params, openpete_mods_material_set_params, -1, (openpete_mod_t* self, int material, const void* block, uint32_t len), (self, material, block, len)) \
+    X(int, material_set_selector, api_material_set_selector, -1, (openpete_mod_t* self, int material, const openpete_mod_material_selector_t* sel), (self, material, sel)) \
+    X(int, moby_classes, api_moby_classes, -1, (openpete_mod_t* self, uint16_t* out, int cap), (self, out, cap)) \
+    X(int, register_shutdown_hook, api_register_shutdown_hook, -1, (openpete_mod_t* self, openpete_mod_shutdown_fn fn), (self, fn))
+
+/* One gate_<member> per MOD_API_GATED_ENTRIES row. */
+#define MOD_API_GATED(ret, name, impl, refused, params, args)             \
+    static ret gate_##name params {                                       \
+        if (!mod_api_enter(self, #name)) return refused;                  \
+        ret gate_rc_ = impl args;                                         \
+        mod_api_leave();                                                  \
+        return gate_rc_;                                                  \
+    }
+MOD_API_GATED_ENTRIES(MOD_API_GATED)
+#undef MOD_API_GATED
+
+/** @brief Gate guest_alloc: a refused call returns 0 and clears @p host_view.
+ *
+ * @param self The calling mod.
+ * @param size Bytes.
+ * @param align Alignment.
+ * @param flags `OP_GALLOC_*`.
+ * @param host_view Receives the host alias, NULL on refusal.
+ * @return The guest vaddr, or 0. */
+static uint32_t gate_guest_alloc(openpete_mod_t* self, uint32_t size,
+                                 uint32_t align, uint32_t flags,
+                                 void** host_view) {
+    if (!mod_api_enter(self, "guest_alloc")) {
+        if (host_view) *host_view = NULL;
+        return 0;
+    }
+    const uint32_t va = api_guest_alloc(self, size, align, flags, host_view);
+    mod_api_leave();
+    return va;
+}
+
+/** @brief Gate config_str: a refused call copies the default into @p buf.
+ *
+ * @param self The calling mod.
+ * @param key Dotted key.
+ * @param def Default string.
+ * @param buf Output buffer.
+ * @param cap Capacity of @p buf.
+ * @return 1 when the key was present, 0 when the default was copied. */
+static int gate_config_str(openpete_mod_t* self, const char* key,
+                           const char* def, char* buf, int cap) {
+    if (!mod_api_enter(self, "config_str")) {
+        if (buf && cap > 0) snprintf(buf, (size_t)cap, "%s", def ? def : "");
+        return 0;
+    }
+    const int rc = openpete_mods_config_str(self, key, def, buf, cap);
+    mod_api_leave();
+    return rc;
+}
+
+/** @brief Gate guest, which takes no mod: uncounted, refused once every mod is closed.
+ *
+ * Every typed guest accessor calls it, so it pays one flag load instead
+ * of the counted bracket. It only translates an address into guest RAM,
+ * the scratchpad or the arena, which live until the process ends, so no
+ * teardown can overlap a call in progress.
+ * @param vaddr Guest vaddr.
+ * @return The host pointer, or NULL. */
+static void* gate_guest(uint32_t vaddr) {
+    if (mod_api_is_closed(NULL)) { mod_api_refused(NULL, "guest"); return NULL; }
+    return api_guest(vaddr);
+}
+
+/** @brief Gate guest_addr, which takes no mod: uncounted like gate_guest, refused once every mod is closed.
+ *
+ * @param host Host pointer.
+ * @return The guest vaddr, or 0. */
+static uint32_t gate_guest_addr(const void* host) {
+    if (mod_api_is_closed(NULL)) { mod_api_refused(NULL, "guest_addr"); return 0; }
+    return api_guest_addr(host);
+}
+
+/** @brief Gate draw_text, which takes no mod: refused once every mod is closed.
+ *
+ * @param x Overlay x.
+ * @param y Overlay y.
+ * @param cap_h Cap height.
+ * @param rgb Tint.
+ * @param str Text. */
+static void gate_draw_text(float x, float y, float cap_h, uint32_t rgb,
+                           const char* str) {
+    if (!mod_api_enter(NULL, "draw_text")) return;
+    openpete_mods_draw_text(x, y, cap_h, rgb, str);
+    mod_api_leave();
+}
+
+/** @brief Gate base: uncounted, since the continuation may park the fiber; refused once every mod is closed.
+ *
+ * @param cpu Guest CPU. */
+static void gate_base(CPUState* cpu) {
+    if (mod_api_is_closed(NULL)) { mod_api_refused(NULL, "base"); return; }
+    openpete_mods_base(cpu);
+}
+
+/** @brief Gate call: uncounted, since the callee may park the fiber; refused once every mod is closed.
+ *
+ * @param cpu Guest CPU.
+ * @param addr Guest function address. */
+static void gate_call(CPUState* cpu, uint32_t addr) {
+    if (mod_api_is_closed(NULL)) { mod_api_refused(NULL, "call"); return; }
+    api_call_addr(cpu, addr);
+}
+
+/* Every entry routes through a gate, so a refusal after the exit pass
+ * holds for each one. */
+#define MOD_API_ROW(ret, name, impl, refused, params, args) .name = gate_##name,
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
-    /* pillar 1: the override chain */
-    .override_addr = api_override_addr,
-    .override_name = api_override_name,
-    .base          = openpete_mods_base,
-    .call          = api_call_addr,
-    /* pillar 2: guest memory */
-    .guest         = api_guest,
-    .guest_addr    = api_guest_addr,
-    .guest_alloc   = api_guest_alloc,
-    /* pillar 3: lifecycle and identity */
+    .base          = gate_base,
+    .call          = gate_call,
+    .guest         = gate_guest,
+    .guest_addr    = gate_guest_addr,
+    .guest_alloc   = gate_guest_alloc,
     .log           = api_log,
-    .data_dir      = api_data_dir,
-    .register_toggle_hook = api_register_toggle_hook,
-    /* pillar 4: settings */
-    .config_bool   = openpete_mods_config_bool,
-    .config_int    = openpete_mods_config_int,
-    .config_float  = openpete_mods_config_float,
-    .config_str    = openpete_mods_config_str,
     .ui_status     = api_ui_status,
     .notify        = api_notify,
-    .vstream_handle = api_vstream_handle,
-    /* pillar 5: present and screen-space draw */
-    .register_present_hook = api_register_present_hook,
-    .draw_text     = openpete_mods_draw_text,
-    /* pillar 6: post-process shaders */
-    .shader_register     = openpete_mods_shader_register,
-    .postfx_register     = openpete_mods_postfx_register,
-    .postfx_enable       = openpete_mods_postfx_enable,
-    .postfx_set_uniforms = openpete_mods_postfx_set_uniforms,
-    /* pillar 8: audio */
-    .sfx_replace   = openpete_mods_sfx_replace,
-    .sfx_play      = api_sfx_play,
-    /* pillar 9: the host mouse (api 12) */
-    .mouse_read    = api_mouse_read,
-    .mouse_capture = api_mouse_capture,
-    /* pillar 9: the host pads (api 12) */
-    .pad_read      = api_pad_read,
-    .pad_rumble    = api_pad_rumble,
-    /* pillar 9: the booted disc (disc_path api 12, read_sector api 13) */
-    .disc_path     = api_disc_path,
-    .read_sector   = api_read_sector,
-    .override_ovl  = api_override_ovl,
-    /* other games' discs (api 13) */
-    .game_disc_path = api_game_disc_path,
-    .game_installed = api_game_installed,
-    /* mod-owned textures (api 13) */
-    .texture_register = openpete_mods_texture_register,
-    /* game-neutral services (api 13) */
-    .game_id       = api_game_id,
-    .gameplay_live = api_gameplay_live,
-    .player_pose   = api_player_pose,
-    .level_id      = api_level_id,
-    /* declared input bindings */
-    .binding_down  = api_binding_down,
-    /* pillar 9: game data + texture packs (api 2) */
-    .read_level_data   = api_read_level_data,
-    .texpack_fog_shift = api_texpack_fog_shift,
-    /* pillar 10: materials */
-    .material_register   = api_material_register,
-    .material_register_refine = api_material_register_refine,
-    .material_enable     = openpete_mods_material_enable,
-    .material_set_params = openpete_mods_material_set_params,
-    .material_set_selector = api_material_set_selector,
-    .moby_classes        = api_moby_classes,
+    .config_str    = gate_config_str,
+    .draw_text     = gate_draw_text,
+    MOD_API_GATED_ENTRIES(MOD_API_ROW)
 };
+#undef MOD_API_ROW
 
 /* ---- discovery / manifest / build / load --------------------------- */
 

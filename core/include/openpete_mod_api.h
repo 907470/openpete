@@ -209,6 +209,16 @@ typedef void (*openpete_mod_present_fn)(const openpete_present_ctx_t* ctx);
  */
 typedef void (*openpete_mod_toggle_fn)(CPUState* cpu, int on);
 
+/**
+ * @brief Exit callback (openpete_mod_api::register_shutdown_hook).
+ *
+ * Runs once, on the sim thread, after the last tick of a session and
+ * before the engine tears down anything an api entry reaches. The body
+ * signals every thread the mod started and joins it.
+ * @since api 13
+ */
+typedef void (*openpete_mod_shutdown_fn)(void);
+
 /** @brief Log levels for openpete_mod_api::log. */
 enum {
     OP_MOD_LOG_DEBUG = 1,
@@ -1403,6 +1413,58 @@ typedef struct openpete_mod_api {
      */
     int (*texture_register)(openpete_mod_t* self, uint16_t id,
                             const void* rgba, int w, int h);
+    /** @} */
+
+    /** @name Shutdown
+     * @{ */
+    /**
+     * @brief Register the exit callback that stops the mod's own threads.
+     *
+     * The engine runs the callback once per mod whose entry ran, enabled
+     * or disabled, on each exit it takes deliberately: a quit from the
+     * menu or a binding, a closed window, SIGINT or SIGTERM, the end of
+     * `--frame-limit`, `--max-runtime-seconds` or `--record-frames`, a
+     * finished `--psxtrace`, the game returning, and a setup error after
+     * mods loaded. It runs on the sim thread after the last tick, with
+     * the present thread stopped, in reverse load order (a mod's hook
+     * before the hooks of the mods it depends on), and before the engine
+     * tears down the renderer, the texture registry, the mod registries
+     * or audio. A hot reload runs the outgoing object's callback before
+     * the new object's entry, so a reloaded mod's threads stop as well.
+     *
+     * Inside the callback every entry that tick context allows may be
+     * called, and texture_register and log are the expected ones.
+     * Registrations made there never run: no tick, present or UI body
+     * follows. The callback sets the flag its threads poll, joins each
+     * thread, and returns.
+     *
+     * When the callback returns, every api entry the mod calls from any
+     * thread is refused: it does nothing and returns the entry's failure
+     * value (-1, 0 or NULL; a config read returns its default), and the
+     * first refusal logs one warning naming the mod and the entry. Once
+     * every callback has returned the engine waits up to 1000 ms for api
+     * calls already in progress on other threads to return, then tears
+     * down.
+     *
+     * Budget: 500 ms per callback. A callback that runs longer logs a
+     * warning with its time, and the engine keeps waiting for it. The
+     * budget keeps a quit prompt for the player while leaving a worker
+     * that checks its stop flag between units of work (one file decode,
+     * one texture build) time to finish the unit in progress. The engine
+     * cannot interrupt a callback: after a quit request from the menu, a
+     * binding, the window or a signal, the default threaded host ends the
+     * process when one callback runs 20 s without returning, and a
+     * scripted end (`--frame-limit` and the others) waits for it.
+     *
+     * A crash, a hang the watchdog ends, a second SIGINT and any other
+     * forced exit run no callback.
+     * @param fn The callback, or NULL to clear it. One registration per
+     *           mod; re-registering replaces.
+     * @return 0, or -1 for a NULL self or a call from a present hook.
+     * @since api 13
+     */
+    int (*register_shutdown_hook)(openpete_mod_t* self,
+                                  openpete_mod_shutdown_fn fn);
     /** @} */
 } openpete_mod_api_t;
 

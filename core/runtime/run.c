@@ -7202,6 +7202,9 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
     sim_teardown_progress();
     openpete_present_thread_stop();
     sim_teardown_progress();
+    /* Mods stop their own threads before anything they call is torn down:
+     * the renderer, the texture registry, the mod registries, audio. */
+    openpete_mods_shutdown(sim_teardown_progress);
     sim_teardown_injected_stall();
     openpete_settings_save_flush("shutdown");   /* changes still inside the debounce */
     openpete_rebind_log_summary();
@@ -7609,13 +7612,19 @@ static void log_frame_on_exit(void) {
 /** @brief Run host init and the host loop on the calling thread.
  *
  * The path when the thread split does not apply, and the fallback when
- * run_split_threaded cannot create the worker thread.
+ * run_split_threaded cannot create the worker thread. The mod exit pass
+ * runs inside the host loop before its teardown; the calls here run it
+ * for a host init or host loop that returned before reaching it.
  * @param opts The parsed options.
  * @return The init error code, or the host loop's exit code. */
 static int run_recomp_fiber(const openpete_options_t* opts) OP_REQUIRES(sim) {
     int rc = run_host_init(opts);
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        openpete_mods_shutdown(NULL);
+        return rc;
+    }
     rc = run_host_loop(opts);
+    openpete_mods_shutdown(NULL);   /* a no-op unless the loop returned early */
     openpete_ticker_stop();   /* the loop's threads are joined; nothing reads the clock now */
     return rc;
 }
@@ -7635,7 +7644,10 @@ static const openpete_options_t* s_worker_opts;
 static SDL_GLContext s_psyx_gl_ctx;
 static SDL_Window*   s_psyx_gl_win;
 
-/** @brief Body of the sim thread under the thread split: take the GL context and run the game loop until it exits. */
+/** @brief Body of the sim thread under the thread split: take the GL context and run the game loop until it exits.
+ *
+ * Runs the mod exit pass after the loop (a no-op unless the loop returned
+ * before reaching it), so it precedes main's teardown after the join. */
 static int SDLCALL openpete_sim_thread(void* unused)
 {
     OP_ROLE_BIND(sim);
@@ -7645,6 +7657,7 @@ static int SDLCALL openpete_sim_thread(void* unused)
         OPL_ERROR_F("boot", "GL context handoff to the sim thread failed: %s",
                     SDL_GetError());
     s_worker_rc = run_host_loop(s_worker_opts);
+    openpete_mods_shutdown(NULL);
     if (s_psyx_gl_ctx)
         SDL_GL_MakeCurrent(s_psyx_gl_win, NULL);
     SDL_SetAtomicInt(&g_worker_done, 1);
@@ -7717,6 +7730,7 @@ static void sim_liveness_check(sim_liveness_t* L)
  * silent for 5 s and forces exit when the worker makes no progress for
  * 3 s after a quit request (20 s between teardown heartbeats). After the join it retakes the GL
  * context and shuts down the native renderer, the disc cache and PsyCross.
+ * A host init failure runs the mod exit pass before returning.
  * openpete_thread_split_enabled gives the reason for the split. Main
  * holds `sim` through init, hands it to the sim thread just before creating
  * it (holding `main` while it pumps), and takes it back after the join or
@@ -7744,7 +7758,10 @@ static int run_split_threaded(const openpete_options_t* opts) OP_REQUIRES(sim)
      * that thread. Initialising before main starts pumping serialises the
      * two without a barrier. */
     int init_rc = run_host_init(opts);
-    if (init_rc != 0) return init_rc;
+    if (init_rc != 0) {
+        openpete_mods_shutdown(NULL);   /* mods may have loaded before the failure */
+        return init_rc;
+    }
 
     /* Seed the input seam before the worker exists: its first latch must find
      * a valid snapshot, or pad injection falls back to reading SDL on the

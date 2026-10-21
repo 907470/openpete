@@ -10,6 +10,14 @@
 #                   both mods.
 #   arena-probe     the guest arena is live and the host/guest round trip
 #                   holds.
+#   shutdown hook   two copies of shutdown-join-probe, each with a thread
+#                   calling texture_register every 2 ms, and arena-probe
+#                   (no hook): both hooks join their thread, the later-loaded
+#                   copy's first, the exit pass counts 2 hooks over 3 mods,
+#                   no api call is refused and the run exits 0. Control leg:
+#                   with `hook = false` the thread outlives the pass, its
+#                   next texture_register is refused with one warning, and
+#                   the run still exits 0.
 #   postfx          crt-beans, crt-filter and scene-sepia from copies with no
 #                   .build/ (so no shader cache hit, which logs nothing):
 #                   every one of their 5 shaders logs `compiled`, none logs
@@ -197,6 +205,44 @@ if printf '%s\n' "$out" | grep -q "guest arena live @ 0x80700000" &&
 else
     bad "arena-probe: arena or round-trip line missing"
     printf '%s\n' "$out" | grep -E 'arena' | head -5
+fi
+
+# ── M2b. shutdown hook: mod threads joined before teardown ───────────────
+say "shutdown hook: mod threads joined in reverse load order on $PG_GAME"
+sd="$WORK/shutdown"
+mkdir -p "$sd"
+for m in shutdown-join-probe arena-probe; do
+    cp -r "$MODS_SRC/$m" "$sd/$m"
+    rm -rf "${sd:?}/$m/.build"
+done
+cp -r "$sd/shutdown-join-probe" "$sd/shutdown-join-probe-b"
+sed -i 's/^id      = "shutdown-join-probe"$/id      = "shutdown-join-probe-b"/' \
+    "$sd/shutdown-join-probe-b/mod.toml"
+printf 'arena-probe\nshutdown-join-probe\nshutdown-join-probe-b\n' > "$sd/enabled.txt"
+out="$(run_game "$sd" $((600 + KEY0)))"; rc=$?
+ln_a="$(printf '%s\n' "$out" | grep -n "mod:shutdown-join-probe: shutdown-join-probe: worker joined after [1-9]" | head -1 | cut -d: -f1)"
+ln_b="$(printf '%s\n' "$out" | grep -n "mod:shutdown-join-probe-b: shutdown-join-probe: worker joined after [1-9]" | head -1 | cut -d: -f1)"
+n_ref="$(printf '%s\n' "$out" | grep -c "refused: the exit pass has closed")"
+if [ "$rc" -eq 0 ] && [ -n "$ln_a" ] && [ -n "$ln_b" ] && [ "$ln_b" -lt "$ln_a" ] &&
+   [ "$n_ref" -eq 0 ] &&
+   printf '%s\n' "$out" | grep -q "mods: shutdown: 2 hook(s) ran over 3 mod(s)"; then
+    ok "both threads joined (b at log line $ln_b before a at $ln_a), 2 hooks over 3 mods, 0 refusals, rc 0"
+else
+    bad "shutdown hook: rc $rc, joined a@${ln_a:-none} b@${ln_b:-none}, $n_ref refusal(s)"
+    printf '%s\n' "$out" | grep -E "shutdown|refused" | grep -v "registered by" | head -8
+fi
+printf 'hook = false\n' > "$sd/shutdown-join-probe/config.toml"
+printf 'shutdown-join-probe\n' > "$sd/enabled.txt"
+out="$(run_game "$sd" $((600 + KEY0)))"; rc=$?
+if [ "$rc" -eq 0 ] &&
+   printf '%s\n' "$out" | grep -q "shutdown hook not registered" &&
+   printf '%s\n' "$out" | grep -q "mods: shutdown: 0 hook(s) ran over 1 mod(s)" &&
+   printf '%s\n' "$out" | grep -q "mod:shutdown-join-probe: texture_register refused: the exit pass has closed this mod" &&
+   ! printf '%s\n' "$out" | grep -q "worker joined"; then
+    ok "control: no hook, the thread's late texture_register refused with one warning, rc 0"
+else
+    bad "shutdown hook control: rc $rc; refusal line or hook count missing"
+    printf '%s\n' "$out" | grep -E "shutdown|refused" | grep -v "registered by" | head -8
 fi
 
 # ── M3. postfx mods: every shader compiles from an empty cache ───────────

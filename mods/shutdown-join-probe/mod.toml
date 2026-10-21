@@ -1,0 +1,32 @@
+# shutdown-join-probe - CI fixture for api->register_shutdown_hook.
+#
+# Entry starts a thread that calls api->texture_register with a 4x4 image
+# every 2 ms until its stop flag is set. The shutdown hook sets
+# the flag, joins the thread and logs the registration count, so no
+# registration reaches the engine after the hook returns. With
+# `hook = false` no hook is registered and the thread runs past the exit
+# pass: its next texture_register is refused with one logged warning, the
+# control leg. No face selects the texture id and the mod reads and
+# writes no guest RAM, so the source is the same on every game.
+#
+# uses: `api->register_shutdown_hook` - stops and joins the thread at exit
+# uses: `api->texture_register` - the thread's call, legal from any thread
+# uses: `api->config_bool` - `hook`, the control-leg switch
+# uses: `api->log` - the entry line and the joined line
+
+[mod]
+id      = "shutdown-join-probe"
+name    = "Shutdown Join Probe"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"      # host thread only; nothing in guest RAM
+runahead = "pure"      # no guest reads or writes
+sim_mutative = false
+
+[[config]]
+key = "hook"
+type = "bool"
+default = true
+label = "Join the thread at exit"
+help = "false = no shutdown hook; the thread outlives the exit pass (control)."

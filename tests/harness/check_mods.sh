@@ -21,8 +21,9 @@
 #   games     runs on every game: the mod SDK and object identity rungs
 #             (tests/harness/mods_sdk_rungs.sh), the rungs of the in-tree
 #             mods that load on every game (tests/harness/mods_multigame_rungs.sh:
-#             lib-and-client, arena-probe, the postfx mods, per-game asset
-#             roots, [[material]] and [[level]] rows by game), the
+#             lib-and-client, arena-probe, the shutdown hook, the postfx
+#             mods, per-game asset roots, [[material]] and [[level]] rows
+#             by game), the
 #             other-games rungs (tests/harness/mods_games_rungs.sh:
 #             requires_games, optional_games and the disc calls against a
 #             scratch library), the declarative materials and the table
