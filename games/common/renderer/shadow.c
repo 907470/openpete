@@ -615,29 +615,13 @@ static int cull_corners_vertical(const int32_t p[4]) {
     return (ybound | (p[1] - ybound) | (p[2] - ybound) | (p[3] - ybound)) >= 0;
 }
 
-/** @brief cull_anchor's lateral arm on the screen-X window [xlo, xhi]: rejects an anchor SX at most xlo - 8 or at least xhi + 8.
- *
- * At xlo 0 and xhi 512 it is cull_anchor's own bound, (-8, 0x208).
- * @param anchor The anchor's packed SXY word.
- * @param c The four corners' packed SXY words; unread.
- * @param xlo The window's left bound.
- * @param xhi The window's right bound.
- * @return 1 to reject the shadow, else 0. */
-static int lateral_anchor(int32_t anchor, const int32_t c[4], float xlo, float xhi) {
-    (void)c;
-    const double x = (double)sxy_x(anchor);
-    return x <= (double)xlo - 8.0 || x >= (double)xhi + 8.0;
-}
-
 /** @brief The footprint's lateral test on the screen-X window [xlo, xhi]: rejects when all four corners lie left of xlo or all at or right of xhi.
  *
- * @param anchor The anchor's packed SXY word; unread.
  * @param c The four corners' packed SXY words.
  * @param xlo The window's left bound.
  * @param xhi The window's right bound.
  * @return 1 to reject the shadow, else 0. */
-static int lateral_footprint(int32_t anchor, const int32_t c[4], float xlo, float xhi) {
-    (void)anchor;
+static int lateral_footprint(const int32_t c[4], float xlo, float xhi) {
     int left = 1, right = 1;
     for (int k = 0; k < 4; k++) {
         const float x = (float)sxy_x(c[k]);
@@ -655,11 +639,12 @@ typedef struct { int listed, game_admit, wide_admit, synth; } shadow_wide_census
  * The points are the integer evaluation's packed SXY words. In a view no
  * wider than the game's 4:3 frame (Hor+ factor F at most 1) the result is the
  * game's own test, cull_corners or cull_anchor. In a wider view each game
- * keeps its own vertical test and takes the lateral test on the widened
- * window [xlo, xhi]: SHADOW_CULL_SPYRO3 layouts by the footprint
- * (lateral_footprint over the four corners), SHADOW_CULL_SPYRO1 by the game's
- * anchor bound widened to the window (lateral_anchor). The two lateral forms
- * take the same arguments, so a layout's form is the one name it calls.
+ * keeps its own vertical test (cull_corners_vertical, cull_anchor_vertical)
+ * and every layout takes the lateral test by the footprint on the widened
+ * window [xlo, xhi] (lateral_footprint over the four corners): a shadow whose
+ * anchor has left the window while part of its diamond is still inside is
+ * drawn. Spyro 1's corners are the fan's own RTPT and RTPS results
+ * (r_shadows.s), evaluated before the screen test.
  * @param v The projection view; supplies F, xlo and xhi.
  * @param anchor The anchor's packed SXY word.
  * @param c The four corners' packed SXY words.
@@ -673,9 +658,8 @@ static int shadow_screen_reject(const ngte_view* v, int32_t anchor, const int32_
     const int game = spyro3 ? cull_corners(c) : cull_anchor(anchor);
     if (cs && !game) cs->game_admit++;
     if (game_only || !(v->F > 1.0f)) return game;
-    const int rej = spyro3
-        ? (cull_corners_vertical(c) || lateral_footprint(anchor, c, v->xlo, v->xhi))
-        : (cull_anchor_vertical(anchor) || lateral_anchor(anchor, c, v->xlo, v->xhi));
+    const int vert = spyro3 ? cull_corners_vertical(c) : cull_anchor_vertical(anchor);
+    const int rej = vert || lateral_footprint(c, v->xlo, v->xhi);
     if (cs && game && !rej) cs->wide_admit++;
     return rej;
 }
