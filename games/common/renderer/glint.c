@@ -817,7 +817,7 @@ static void glint_feed_native(void) {
             const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[3] };
             for (int k = 0; k < 4; k++) glint_rebase_xy(&s_item[i], rb, &x[k], &y[k]);
             static const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-            (void)ngte_feed_flat_quad(x, y, zu, zu, c, depth, NULL, s_item[i].blend, 2);
+            (void)ngte_feed_flat_quad(x, y, zu, zu, c, depth, NULL, s_item[i].blend, 4);
             s_fed_star_tris += 2;
         } else if (p->code == GLINT_LINE && mode >= 2) {
             openpete_native_scene_set_tag(

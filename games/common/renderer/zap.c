@@ -628,7 +628,7 @@ static void zap_add_prim(const zap_held* h) {
     }
     ngte_tpage tp;
     const int blend = ngte_prim_tpage_blend(p, &tp);
-    const int last = p->nv - 1;           /* a triangle repeats its last corner */
+    const int last = p->nv - 1;           /* a triangle fills the unread corner 3 */
     const int idx[4] = { 0, 1, 2, last };
     float x[4], y[4], u[4], v[4];
     uint32_t rgb[4];
@@ -638,10 +638,8 @@ static void zap_add_prim(const zap_held* h) {
         u[k] = (float)p->u[j]; v[k] = (float)p->v[j];
         rgb[k] = p->rgb[j];
     }
-    /* A triangle is one scene triangle. */
     s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, depth,
-                                                p->textured ? &tp : NULL, blend,
-                                                p->nv == 3 ? 1 : 2);
+                                                p->textured ? &tp : NULL, blend, p->nv);
 }
 
 /** @brief Feeds a held set of ribbon primitives to the native scene under the tracer tag.

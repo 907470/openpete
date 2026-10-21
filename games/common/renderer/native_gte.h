@@ -573,10 +573,10 @@ void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
  * @return The native blend code. */
 int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp);
 
-/** @brief Feeds a four-corner screen-space primitive at one depth to the native scene's world layer as one or two triangles.
+/** @brief Feeds a three- or four-corner screen-space primitive at one depth to the native scene's world layer.
  *
- * The triangles are corners (0,1,2) and (1,3,2); a triangle primitive passes
- * its last corner as corner 3, or `ntri` 1 to feed (0,1,2) alone. Every
+ * A quad (`nv` 4) feeds corners (0,1,2) and (1,3,2), the GPU's split; a
+ * triangle (any other `nv`) feeds (0,1,2) alone and corner 3 is not read. Every
  * vertex takes `depth` as its Z and as its W, so the attributes interpolate
  * screen-linearly, and each colour's low 24 bits with full alpha.
  * @param x The corners' screen X, PSX pixels.
@@ -587,11 +587,11 @@ int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp);
  * @param depth The scene depth.
  * @param tp The texture page and CLUT to sample, or NULL for untextured.
  * @param blend The native blend code, 0 for opaque.
- * @param ntri 2 for both triangles, 1 for the first alone.
+ * @param nv The primitive's corner count, 4 for a quad, 3 for a triangle.
  * @return The number of triangles fed. */
 int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
-                        const ngte_tpage* tp, int blend, int ntri);
+                        const ngte_tpage* tp, int blend, int nv);
 
 /** @brief Feeds a screen-space line at one depth as a one-pixel-wide untextured quad across its own perpendicular.
  *

@@ -717,7 +717,7 @@ static void part_feed_native(void) {
                 OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, (uint32_t)p->code, 0));
             ngte_tpage tp;
             const int blend = ngte_prim_tpage_blend(p, &tp);
-            /* A triangle repeats its last corner, so one split covers both. */
+            /* A triangle fills the unread corner 3 with its last corner. */
             const int last = p->nv - 1;
             float x[4] = { p->x[0], p->x[1], p->x[2], p->x[last] };
             float y[4] = { p->y[0], p->y[1], p->y[2], p->y[last] };
@@ -726,7 +726,7 @@ static void part_feed_native(void) {
             const float vt[4] = { (float)p->v[0], (float)p->v[1], (float)p->v[2], (float)p->v[last] };
             const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[last] };
             s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, vt, c, depth,
-                                                        p->textured ? &tp : NULL, blend, 2);
+                                                        p->textured ? &tp : NULL, blend, p->nv);
         } else if ((p->code & 0xF8u) == 0x40u || (p->code & 0xF8u) == 0x50u) {
             openpete_native_scene_set_tag(
                 OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_LINE, (uint32_t)p->code, 0));

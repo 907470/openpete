@@ -382,10 +382,11 @@ int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp) {
 
 int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
-                        const ngte_tpage* tp, int blend, int ntri) {
+                        const ngte_tpage* tp, int blend, int nv) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
+    const int ntri = (nv == 4) ? 2 : 1;
     int fed = 0;
-    for (int s = 0; s < ntri && s < 2; s++) {
+    for (int s = 0; s < ntri; s++) {
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             const int j = split[s][k];
@@ -416,7 +417,7 @@ int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
     const float qy[4] = { ay - oy, ay + oy, by - oy, by + oy };
     const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     const uint32_t cc[4] = { rgb_a, rgb_a, rgb_b, rgb_b };
-    return ngte_feed_flat_quad(qx, qy, zu, zu, cc, depth, NULL, blend, 2);
+    return ngte_feed_flat_quad(qx, qy, zu, zu, cc, depth, NULL, blend, 4);
 }
 
 /* ---- screen-space backface test ----------------------------------------- */

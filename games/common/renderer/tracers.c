@@ -577,10 +577,10 @@ static int tr_feed_enabled(void) {
  * the captured corners verbatim. */
 static int s_reb_active;
 
-/** @brief Feeds one item to the native scene as two world triangles.
+/** @brief Feeds one item to the native scene as world triangles.
  *
- * A quad is split into (0,1,2) and (1,3,2); a triangle repeats its last
- * corner. Every vertex takes the item's single depth. While the rebase is
+ * A quad is split into (0,1,2) and (1,3,2); a triangle feeds (0,1,2) alone.
+ * Every vertex takes the item's single depth. While the rebase is
  * active each corner is moved by its screen displacement. Only 3 and 4
  * vertex primitives are fed. Counts the triangles fed.
  * @param it The item. */
@@ -589,7 +589,7 @@ static void tr_add_prim(const tr_item* it) {
     if (p->nv != 3 && p->nv != 4) return;
     ngte_tpage tp;
     const int blend = ngte_prim_tpage_blend(p, &tp);
-    const int last = p->nv - 1;           /* a triangle repeats its last corner */
+    const int last = p->nv - 1;           /* a triangle fills the unread corner 3 */
     const int idx[4] = { 0, 1, 2, last };
     float x[4], y[4], u[4], v[4];
     uint32_t rgb[4];
@@ -601,7 +601,7 @@ static void tr_add_prim(const tr_item* it) {
         rgb[k] = p->rgb[j];
     }
     s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, it->depth,
-                                                p->textured ? &tp : NULL, blend, 2);
+                                                p->textured ? &tp : NULL, blend, p->nv);
 }
 
 /** @brief Feeds a set of items to the native scene under the tracer tag.

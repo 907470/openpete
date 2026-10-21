@@ -323,7 +323,7 @@ static void glow_feed_native(void) {
                              (float)p->y[2] + s_item[i].dy, 0.0f };
         const uint32_t rgb[4] = { p->rgb[0], p->rgb[1], p->rgb[2], 0u };
         s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, zu, zu, rgb, s_item[i].depth,
-                                                    NULL, s_item[i].blend, 1);
+                                                    NULL, s_item[i].blend, 3);
     }
     openpete_native_scene_set_tag(0);
 }
