@@ -457,6 +457,12 @@ const game_layout_t spyro3_game_layout = {
         .cal_world_ot   = 0x8006C634u,
         .cal_ot_buckets = 0x580u,
 
+        /* Class 3 (m_Class at +0x36): the effect moby beside every sub-area
+         * door, drawn by func_80031124 from the func_80030478 records. Its
+         * key sorts it in front of the door's plate, which lies in front of
+         * it in true depth. */
+        .key_order_cls  = 3u,
+
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,
         .hook_draw_specular = 0u,       /* no specular material: the draw issues no

@@ -146,6 +146,14 @@ void main()
                 MOBY_TRUESCOPE, SLOT_CONTEST))
             discard;
     }
+    /* A terrain fragment (unranked, not an actor or glow-fan face) keyed
+     * behind a key-order moby's key yields to it (op_key_order_yields). */
+    int ko = (!ranked && vRank.x > -0.5)
+        ? op_key_order_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
+                              texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
+                              koff, SLOT_CONTEST)
+        : 0;
+    if (ko == 1) discard;
     vec4 col = vColor / vQ;
     ivec2 ti = op_texel(uv, tg);
     vec4 c = op_decode555(sample_word(ti.x, ti.y));
@@ -153,5 +161,5 @@ void main()
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     rgb = clut_fog_mix(rgb, col, ti.x, ti.y);
-    outColor = vec4(rgb, c.a);
+    outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(rgb, c.a);
 }

@@ -1120,6 +1120,12 @@ typedef struct {
                   * faces write depth inside it. 0 = none, and on a blended
                   * face whose screen footprint is not the true projection
                   * (near-plane fixup or coordinate saturation).           */
+    int key_order;/* 1 = a keyed actor face of a class that draws by the
+                  * game's key order against terrain (game_layout.moby
+                  * key_order_cls): the actor key pass marks its texels, and
+                  * a terrain fragment whose key sorts behind the marked key
+                  * yields the pixel (psx_key_contest.glsl
+                  * op_key_order_yields). 0 = true depth decides.          */
 } openpete_scene_tri;
 
 /* Rank sentinels for faces that are not ranked but must still be told

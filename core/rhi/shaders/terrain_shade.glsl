@@ -183,6 +183,25 @@ bool ter_key_loses()
         false, false, true, SLOT_CONTEST);
 }
 
+#ifdef OP_TERRAIN_ACTOR_KEY
+/* The actor key image and its owner colour (set 7, stock terrain pipelines
+ * only: rhi_pipeline_desc.pair_set7). */
+layout(set = 7, binding = 0) uniform sampler2D u_actorkey;
+layout(set = 7, binding = 1) uniform sampler2D u_actorown;
+
+/* The key-order verdict for this fragment (op_key_order_yields): 0 keep,
+ * 1 discard, 2 paint. */
+int ter_key_order()
+{
+    if (vKoff <= 0.25) return 0;
+    float koff = op_drain_koff_pf(vKoff, vKfl / vKq, vKc0, vKc1, vKd / vKq, vKn0.xyz,
+                                  vec3(vKn0.w, vKn1.xy), vec3(vKn1.zw, vKn2.x), vKn2.yzw);
+    return op_key_order_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
+                               texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
+                               koff, SLOT_CONTEST);
+}
+#endif
+
 /* The texel coordinate's screen gradient (op_texel_grad) for ter_stock_shade,
  * set by ter_texel_grad_init at the top of main(), before any discard. */
 vec2 ter_texel_grad;

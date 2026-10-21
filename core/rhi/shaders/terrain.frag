@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#define OP_TERRAIN_ACTOR_KEY 1
 #include "terrain_shade.glsl"
 
 /* Terrain sector-mesh fragment stage. Everything it does lives in
@@ -15,7 +16,9 @@ void main()
     if (ter_debug_shade(c)) { outColor = c; return; }
     if (ter_portal_discards()) discard;   /* portal plane-cover rule */
     if (ter_key_loses()) discard;
+    int ko = ter_key_order();             /* key-order moby in front by key */
+    if (ko == 1) discard;
     c = ter_stock_shade();
     if (c.a == 0.0) discard;              /* PSX transparent-texel sentinel */
-    outColor = c;
+    outColor = ko == 2 ? vec4(0.0, 1.0, 1.0, 1.0) : c;
 }

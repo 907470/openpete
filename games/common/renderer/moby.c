@@ -7363,6 +7363,18 @@ static int moby_class_is_prop(uint16_t cls) {
     return 0;
 }
 
+/** @brief Report whether a moby class draws by the game's key order against terrain.
+ *
+ * The class is game_layout.moby.key_order_cls (Spyro 3's sub-area door
+ * effect, whose stars and swirl lie behind the door's terrain plate in true
+ * depth and sort in front of it by key). Its keyed faces mark the actor key
+ * image, and a terrain fragment keyed behind the marked key yields the pixel.
+ * @param cls The moby's m_Class.
+ * @return 1 for that class, 0 otherwise or when the game names none. */
+static int moby_class_draws_by_key(uint16_t cls) {
+    return game_layout.moby.key_order_cls != 0u && cls == game_layout.moby.key_order_cls;
+}
+
 /** @brief Return the rank sentinel an unranked opaque actor face carries into the key contest.
  *
  * The contest reads the sentinel as the class whose arms to run: an actor
@@ -7542,6 +7554,7 @@ static void push_scene_moby_tris(void) {
               t.koff = (float)(moby_tri_contest_key(i) + 0.5);
               /* Embedded-PROP classes: rendered whole from every angle. */
               t.prop = moby_class_is_prop(s_wtri_cls[i]);
+              t.key_order = moby_class_draws_by_key(s_wtri_cls[i]);
           } }
         /* Rank: the face's paint position while it intersects another face
          * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate

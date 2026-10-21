@@ -6959,7 +6959,9 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * planes); pair_set56 puts the two-sampler pair layout at sets 5 and 6 (the
  * moby front-shell and intruder images of the _shell variants); uniform_set7
  * puts the dynamic-UBO layout at set 7 above a material layout's seven sets
- * (the portal profile of a mod material).
+ * (the portal profile of a mod material); pair_set7 puts the two-sampler
+ * pair layout at set 7 above the terrain's seven sets (the actor key image
+ * and its owner colour of the stock terrain stage).
  *
  * material: the mod layout PLUS the engine's occlusion inputs, which a
  * material's fragment stage runs before the mod's colour maths. They sit
@@ -6973,21 +6975,19 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * @return max(@p a, @p b). */
 static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
-/** @brief Replace the single-sampler sets of a pipeline's layout that hold an image pair with the two-sampler pair layout.
+/** @brief Replace the single-sampler sets of a kind's layout that hold an image pair with the two-sampler pair layout.
  *
  * The key-resolve scene layouts (uses_vram3 outside the terrain, postfx and
  * mod kinds) pair the terrain key image with the drain records at set 2
  * and, once uses_vram4 declares the moby key sets, the actor key image's
  * depth with its owner colour at set 1. A material layout pairs the terrain
- * keys at set 2 and the actor key with its owner at set 5. pair_set56 makes
- * sets 5 and 6 pairs on any other layout (the moby front-shell images).
+ * keys at set 2 and the actor key with its owner at set 5.
  * @param dev Device holding the set layouts.
  * @param desc Pipeline description.
  * @param out The pipeline's eight set layouts, rewritten in place. */
 static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
                              VkDescriptorSetLayout out[8])
 {
-    if (desc->pair_set56) out[5] = out[6] = dev->pair_set_layout;
     if (desc->material_pipeline) {
         out[2] = out[5] = dev->pair_set_layout;
         return;
@@ -6998,9 +6998,54 @@ static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *des
     if (desc->uses_vram4) out[1] = dev->pair_set_layout;
 }
 
+/** @brief Return how many descriptor sets, from set 0, a pipeline kind's own layout uses.
+ *
+ * Material: sets 0..3 plus the og keys and rank at 4..6. Terrain: sets 0..3
+ * plus the HD atlas at 4 and the two terrain blocks at 5/6. Postfx and mod:
+ * sets 0..3. Otherwise the highest declared VRAM-kind set. The per-set
+ * flags of k_set_flags raise the count further.
+ * @param desc Pipeline description.
+ * @return The kind's set count. */
+static uint32_t kind_set_count(const rhi_pipeline_desc *desc)
+{
+    if (desc->material_pipeline || desc->terrain_pipeline) return 7u;
+    if (desc->postfx || desc->mod_pipeline) return 4u;
+    if (desc->uses_vram5) return 5u;
+    if (desc->uses_vram4) return 4u;
+    if (desc->uses_vram3) return 3u;
+    if (desc->uses_vram) return desc->uses_vram2 ? 2u : 1u;
+    return 0u;
+}
+
+/* The descriptor set layouts a per-set flag selects. */
+typedef enum { SET_FLAG_PAIR, SET_FLAG_UBO1 } set_flag_layout;
+
+/* One per-set flag of rhi_pipeline_desc: when the bool at `flag` is set, set
+ * `set` takes `layout` and the pipeline layout spans sets 0..set. A flag
+ * that names two sets has two rows. Rows apply in order, a later row
+ * overriding an earlier one on the same set. */
+typedef struct {
+    size_t          flag;     /* offsetof the bool in rhi_pipeline_desc */
+    uint8_t         set;
+    set_flag_layout layout;
+} set_flag_row;
+
+static const set_flag_row k_set_flags[] = {
+    { offsetof(rhi_pipeline_desc, set1_vram_depth), 1u, SET_FLAG_PAIR },
+    { offsetof(rhi_pipeline_desc, uniform_set2),    2u, SET_FLAG_UBO1 },
+    { offsetof(rhi_pipeline_desc, uniform_set5),    5u, SET_FLAG_UBO1 },
+    { offsetof(rhi_pipeline_desc, pair_set56),      5u, SET_FLAG_PAIR },
+    { offsetof(rhi_pipeline_desc, pair_set56),      6u, SET_FLAG_PAIR },
+    { offsetof(rhi_pipeline_desc, uniform_set7),    7u, SET_FLAG_UBO1 },
+    { offsetof(rhi_pipeline_desc, pair_set7),       7u, SET_FLAG_PAIR },
+};
+
 /** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..7].
  *
- * The per-kind assignment is the table in the comment above rhi_max_u32.
+ * The kind gives the base layout (the table in the comment above
+ * rhi_max_u32) and its set count (kind_set_count); each set flag row of
+ * k_set_flags then places its layout and extends the count to its set;
+ * the kind's image pairs (pair_set_layouts) apply last.
  * @param dev Device holding the set layouts.
  * @param desc Pipeline description.
  * @param out Receives eight set layouts.
@@ -7016,26 +7061,16 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     out[3] = ubo_pair ? dev->ubo_set_layout : dev->vram_set_layout;
     out[5] = high;
     out[6] = high;
-    if (desc->set1_vram_depth) out[1] = dev->pair_set_layout;
-    if (desc->uniform_set2) out[2] = dev->ubo1_set_layout;
-    if (desc->uniform_set5) out[5] = dev->ubo1_set_layout;
-    if (desc->uniform_set7) out[7] = dev->ubo1_set_layout;
+    uint32_t n = kind_set_count(desc);
+    for (size_t r = 0; r < sizeof k_set_flags / sizeof k_set_flags[0]; r++) {
+        const set_flag_row *row = &k_set_flags[r];
+        if (!*(const bool *)((const char *)desc + row->flag)) continue;
+        out[row->set] = row->layout == SET_FLAG_PAIR ? dev->pair_set_layout
+                                                     : dev->ubo1_set_layout;
+        n = rhi_max_u32(n, row->set + 1u);
+    }
     pair_set_layouts(dev, desc, out);
-    uint32_t n = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
-               : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
-               : (desc->postfx || desc->mod_pipeline) ? 4u
-               : desc->uses_vram5 ? 5u
-               : desc->uses_vram4 ? 4u
-               : desc->uses_vram3 ? 3u
-               : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
-    /* set1_vram_depth implies sets 0..1, uniform_set2 sets 0..2,
-     * uniform_set5 sets 0..5, pair_set56 sets 0..6, uniform_set7 sets 0..7 */
-    const uint32_t lo = rhi_max_u32(rhi_max_u32(2u * (uint32_t)desc->set1_vram_depth,
-                                                3u * (uint32_t)desc->uniform_set2),
-                                    rhi_max_u32(rhi_max_u32(6u * (uint32_t)desc->uniform_set5,
-                                                            7u * (uint32_t)desc->pair_set56),
-                                                8u * (uint32_t)desc->uniform_set7));
-    return rhi_max_u32(n, lo);
+    return n;
 }
 
 /* Creation feedback for one create: the pipeline and up to two stages. */

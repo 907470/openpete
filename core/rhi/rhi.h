@@ -972,6 +972,13 @@ typedef struct rhi_pipeline_desc {
                                  * to both stages, above the seven sets of a
                                  * material layout; implies sets 0..7 and a
                                  * device with 8 descriptor sets.            */
+    bool           pair_set7;   /* with terrain_pipeline: set 7 holds the
+                                 * two-sampler pair layout (bind with
+                                 * rhi_bind_depth_tex_pair): the actor key
+                                 * image and its owner colour, which
+                                 * terrain.frag reads for the key-order
+                                 * contest. Implies sets 0..7 and a device
+                                 * with 8 descriptor sets.                   */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex - pair with the

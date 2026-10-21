@@ -822,6 +822,15 @@ typedef struct game_layout {
         uint32_t prop_state_addr;
         uint32_t prop_state_scene;
 
+        /* The door-effect class: the stars and swirl the game draws in front
+         * of a sub-area door, whose black plate is terrain the effect lies
+         * behind in true depth. The native key contest draws this class by
+         * the game's ordering-table key against terrain, so it paints over
+         * the plate where its key sorts in front, as the ordering table does
+         * (moby_class_draws_by_key in games/common/renderer/moby.c). 0: no
+         * class draws by key. */
+        uint16_t key_order_cls;
+
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it
          * names. `draw_simple` is the second model kind's own pass. */

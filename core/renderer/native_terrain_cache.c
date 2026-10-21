@@ -708,7 +708,7 @@ static void tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_cells = true,
         .terrain_anim = anim != 0, .terrain_near = anim == 0,
-        .push_const_size = sizeof(tc_pc),
+        .pair_set7 = true, .push_const_size = sizeof(tc_pc),
     };
     rhi_pipeline_desc d[TC_CP_N];
     for (int i = 0; i < TC_CP_N; i++) d[i] = base;
@@ -749,7 +749,8 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     const rhi_pipeline_desc world_desc = {
         .vert_spv = "terrain.vert.spv", .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .terrain_pipeline = true, .push_const_size = sizeof(tc_pc),
+        .terrain_pipeline = true, .pair_set7 = true,
+        .push_const_size = sizeof(tc_pc),
     };
     rhi_pipeline_desc d;
     d = world_desc;
@@ -783,7 +784,7 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     const rhi_pipeline_desc anim_desc = {
         .vert_spv = "terrain_anim.vert.spv", .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .terrain_pipeline = true, .terrain_anim = true,
+        .terrain_pipeline = true, .terrain_anim = true, .pair_set7 = true,
         .push_const_size = sizeof(tc_pc),
     };
     d = anim_desc;
@@ -812,7 +813,7 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     const rhi_pipeline_desc near_desc = {
         .vert_spv = "terrain_near.vert.spv", .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .terrain_pipeline = true, .terrain_near = true,
+        .terrain_pipeline = true, .terrain_near = true, .pair_set7 = true,
         .push_const_size = sizeof(tc_pc),
     };
     d = near_desc;
@@ -2371,9 +2372,68 @@ static void tc_draw_material_passes(int which, const int *buckets, int bn,
     }
 }
 
+/** @brief Write the selected state into this rhi frame's UBO ring slot on the frame's first terrain draw.
+ *
+ * One selection can render across several rhi frames (ubo_flush_serial), so
+ * the flush runs once per frame serial; it also latches the vertex-snap
+ * mode every draw of the frame pushes. */
+static void tc_ubo_flush_frame(void)
+{
+    const int snap_now = openpete_native_vertex_snap_active();   /* 0 or 1 */
+    const uint64_t fs = rhi_frame_serial(s_tc.dev);
+    if (s_tc.ubo_flush_serial == fs) return;
+    rhi_ubo_write(s_tc.ubo, 0, &s_tc.sel.g, sizeof(s_tc.sel.g));
+    rhi_ubo_write(s_tc.ubo, 1, s_tc.sel.sec, sizeof(s_tc.sel.sec));
+    s_tc.ubo_flush_serial = fs;
+    s_tc_snap = snap_now;
+}
+
+/** @brief Return the GPU zone name of a terrain draw pass.
+ * @param which Pass, an OPTC_DRAW_* value.
+ * @return The zone name; "ter.gpu" for a value outside the passes. */
+static const char *tc_zone_name(int which)
+{
+    static const char *k_zone[] = { "ter.world", "ter.alpha", "ter.add",
+                                    "ter.sub", "ter.fill", "ter.prepass",
+                                    "ter.prepass_depth", "ter.key" };
+    return (which >= 0 && which <= OPTC_DRAW_KEY) ? k_zone[which] : "ter.gpu";
+}
+
+/** @brief Bind the scene's key-contest images at the sets terrain.frag declares.
+ *
+ * Same bind-at-pipe discipline as bind_scene_pipe: an absent image leaves
+ * its set unbound, and fragments with vKoff == 0 never sample it.
+ * @param keys The images; each NULL member is skipped. */
+static void tc_bind_keys(const openpete_tercache_keys *keys)
+{
+    if (keys->hp)    rhi_bind_depth_sampler(s_tc.dev, keys->hp, 1);
+    if (keys->prop)  rhi_bind_depth_sampler(s_tc.dev, keys->prop, 2);
+    if (keys->actor) rhi_bind_depth_tex_pair(s_tc.dev, keys->actor, keys->actor, 7);
+}
+
+/** @brief Bind every input a terrain pass reads besides its pipeline.
+ *
+ * The VRAM page, the key-contest images, the HD-fold atlas at set 4 (the
+ * init-time 1x1 dummy when no fold entry exists: terrain.frag references the
+ * set statically and vHd == 0 fragments never sample it), and the two
+ * terrain blocks at sets 5/6 - not the contract set 3, whose binding 1 is a
+ * mod's own uniform block, and a descriptor set views one buffer per binding.
+ * @param vram VRAM texture, or NULL to leave the binding.
+ * @param keys Key-contest images, or NULL for a pass that contests nothing. */
+static void tc_bind_draw_inputs(rhi_texture *vram, const openpete_tercache_keys *keys)
+{
+    if (vram) rhi_bind_vram(s_tc.dev, vram);
+    if (keys) tc_bind_keys(keys);
+    rhi_texture *at = openpete_native_hdfold_atlas();
+    if (!at) at = s_tc.hd_dummy;
+    if (at) rhi_bind_texture_set(s_tc.dev, at, 4);
+    rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
+    rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);
+}
+
 void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                             rhi_texture *vram, int use_mark,
-                            rhi_texture *key_hp, rhi_texture *key_prop)
+                            const openpete_tercache_keys *keys)
 {
     if (!s_tc.ready || !s_tc.draw_open || !s_tc.ubo) return;
     rhi_pipeline *p = NULL;
@@ -2388,43 +2448,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         case OPTC_DRAW_KEY:     p = s_tc.ps.pipe_key;     break;
     }
     if (!p) return;
-    int snap_now = openpete_native_vertex_snap_active();   /* 0 or 1 */
-    {   /* First draw of each RHI FRAME: flush the selected state into this
-         * frame's UBO ring slot (see ubo_flush_serial - one selection can
-         * render across several rhi frames), and latch the vertex-snap mode
-         * the frame's draws all push. */
-        uint64_t fs = rhi_frame_serial(s_tc.dev);
-        if (s_tc.ubo_flush_serial != fs) {
-            rhi_ubo_write(s_tc.ubo, 0, &s_tc.sel.g, sizeof(s_tc.sel.g));
-            rhi_ubo_write(s_tc.ubo, 1, s_tc.sel.sec, sizeof(s_tc.sel.sec));
-            s_tc.ubo_flush_serial = fs;
-            s_tc_snap = snap_now;
-        }
-    }
-    static const char *k_zone[] = { "ter.world", "ter.alpha", "ter.add",
-                                    "ter.sub", "ter.fill", "ter.prepass",
-                                    "ter.prepass_depth", "ter.key" };
-    rhi_gpu_zone_begin(s_tc.dev,
-                       (which >= 0 && which <= OPTC_DRAW_KEY) ? k_zone[which]
-                                                             : "ter.gpu");
+    tc_ubo_flush_frame();
+    rhi_gpu_zone_begin(s_tc.dev, tc_zone_name(which));
     rhi_bind_pipeline(s_tc.dev, p);
-    if (vram) rhi_bind_vram(s_tc.dev, vram);
-    /* og key contest inputs (scene slots only; same bind-at-pipe discipline
-     * as bind_scene_pipe - absent images leave vKoff==0 fragments alone). */
-    if (key_hp)   rhi_bind_depth_sampler(s_tc.dev, key_hp, 1);
-    if (key_prop) rhi_bind_depth_sampler(s_tc.dev, key_prop, 2);
-    {   /* set 4: the HD-fold atlas. terrain.frag references it statically,
-         * so the init-time 1x1 dummy stands in whenever no fold entry
-         * exists (vHd == 0 fragments never sample it). */
-        rhi_texture *at = openpete_native_hdfold_atlas();
-        if (!at) at = s_tc.hd_dummy;
-        if (at) rhi_bind_texture_set(s_tc.dev, at, 4);
-    }
-    /* Sets 5/6, not the contract set: set 3 binding 1 belongs to a mod's own
-     * uniform block, and a descriptor set views one buffer per binding - so
-     * the terrain blocks cannot sit beside it. */
-    rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
-    rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);
+    tc_bind_draw_inputs(vram, keys);
     /* Every colour slot runs its stock pass filtered (mat_pass 0, the
      * classes resolved to stock) and then one pass per listed member. The
      * depth and key passes shade nothing, so they draw every face
@@ -2528,9 +2555,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
     tc_draw_material_passes(which, buckets, bn, use_mark ? 1 : 0, clip);
     if (tc_dbg())
         fprintf(stderr, "[tc] %s mat_passes=%u stock_fallback=%u\n",
-                (which >= 0 && which <= OPTC_DRAW_KEY) ? k_zone[which]
-                                                       : "ter.gpu",
-                s_tc_mat_passes, s_tc_mat_stock);
+                tc_zone_name(which), s_tc_mat_passes, s_tc_mat_stock);
     s_tc_mat_pass = -1;
     rhi_gpu_zone_end(s_tc.dev);
 }

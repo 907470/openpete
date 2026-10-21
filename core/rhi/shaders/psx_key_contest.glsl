@@ -600,4 +600,41 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
            mkey < own + 1024.0;
 }
 
+/* ---- key order against terrain --------------------------------------
+ *
+ * A moby class the game draws in front of terrain that lies in front of it
+ * in true depth (Spyro 3's sub-area door effect against the door's plate)
+ * marks its actor key texels in the owner colour's alpha
+ * (openpete_scene_tri.key_order): 0x80 yields, 0x40 yields painted (a
+ * diagnostic), 0xFF unmarked and the clear value. A terrain fragment at a
+ * marked texel yields the pixel when the marked key sorts in front of its
+ * own: on one ordering table (slot_contest) a nearer bucket, the table's
+ * granularity, else by more than half a slot. This is the table's painter
+ * order, applied to that class against terrain alone; true depth decides
+ * every other pair. A terrain face keyed in front of the effect (a closed
+ * door, a wall between it and the camera) keeps its pixels. */
+
+/* The mark of an actor key owner texel: 0 none, 1 yield, 2 yield painted. */
+int op_key_order_mark(vec4 owner)
+{
+    float a = floor(owner.a * 255.0 + 0.5);
+    return abs(a - 128.0) < 0.5 ? 1 : abs(a - 64.0) < 0.5 ? 2 : 0;
+}
+
+/* The verdict for a terrain fragment: 0 keep, 1 yield (discard), 2 yield
+ * painted. akey_stored = the raw actor key texel, owner = its owner colour,
+ * tkoff = the fragment's key channel (absolute key + 0.5; <= 0.25 = not
+ * keyed or near band, never yields). */
+int op_key_order_yields(float akey_stored, vec4 owner, float tkoff, bool slot_contest)
+{
+    if (tkoff <= 0.25) return 0;
+    int m = op_key_order_mark(owner);
+    if (m == 0 || op_pkey_is(akey_stored)) return 0;
+    float akey = op_key_from_stored(akey_stored);
+    float tk = tkoff - 0.5;
+    bool front = slot_contest ? op_key_bucket(akey) < floor(tk / OP_KEY_SLOT)
+                              : akey < tk - 64.0;
+    return front ? m : 0;
+}
+
 #endif /* OPENPETE_PSX_KEY_CONTEST_GLSL */

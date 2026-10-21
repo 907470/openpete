@@ -348,6 +348,7 @@ typedef struct {
     float pkey;     /* player ordering key - see openpete_scene_tri */
     uint32_t mid;   /* moby identity - see openpete_scene_tri */
     int shell;      /* front-shell record member - see openpete_scene_tri */
+    int key_order;  /* draws by key order against terrain - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -8535,7 +8536,7 @@ static void native_depth_prepass(void)
     rhi_draw(s_nr.dev, (uint32_t)(mw - mt), (uint32_t)mt);   /* the backstop */
     const int tc_open = openpete_tercache_frame_open();
     if (tc_open)
-        openpete_tercache_draw(OPTC_DRAW_PREPASS, &s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
+        openpete_tercache_draw(OPTC_DRAW_PREPASS, &s_od_taff, s_nr.vram_tex, 0, NULL);
     rhi_gpu_zone_end(s_nr.dev);   /* prepass */
     rhi_gpu_zone_begin(s_nr.dev, "prepass_depth");
     prepass_draw_world_footprints();
@@ -8545,7 +8546,7 @@ static void native_depth_prepass(void)
         rhi_draw(s_nr.dev, (uint32_t)(m - mw), (uint32_t)mw);
     }
     if (tc_open)
-        openpete_tercache_draw(OPTC_DRAW_PREPASS_DEPTH, &s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
+        openpete_tercache_draw(OPTC_DRAW_PREPASS_DEPTH, &s_od_taff, s_nr.vram_tex, 0, NULL);
     rhi_end_render_target(s_nr.dev, s_nr.opaque_depth);
     rhi_gpu_zone_end(s_nr.dev);   /* prepass_depth */
     s_od_vw = (float)vw; s_od_vh = (float)vh;
@@ -8865,6 +8866,41 @@ static int actor_own_key_on(void)
     return s_on;
 }
 
+/** @brief Return the OPENPETE_KEY_ORDER mode, read once.
+ *
+ * 1 (unset, the default): faces of the key-order class mark the actor key
+ * image and terrain keyed behind them yields. 0: no face marks it, true
+ * depth decides. 2: the yield paints the terrain fragment magenta (walked)
+ * or cyan (retained) instead of discarding it, so an image diff against
+ * mode 1 counts the pixels where the rule decides.
+ * @return The mode. */
+static int key_order_mode(void)
+{
+    static int s_m = -1;
+    if (s_m < 0) {
+        const char* e = getenv("OPENPETE_KEY_ORDER");
+        s_m = (e && *e) ? atoi(e) : 1;
+    }
+    return s_m;
+}
+
+/** @brief Return the owner-colour alpha byte, shifted into place, an actor key face writes.
+ *
+ * The actor key image's colour alpha marks a texel whose nearest key belongs
+ * to a face that draws by key order against terrain
+ * (openpete_scene_tri.key_order): 0x80 yields, 0x40 yields painted
+ * (key_order_mode 2), 0xFF (also the clear value) is unmarked
+ * (psx_key_contest.glsl op_key_order_mark).
+ * @param T Scene triangle.
+ * @param prop_class Key batch class; 2 is the actor key image.
+ * @return The alpha byte in bits 24-31. */
+static uint32_t key_order_owner_alpha(const scene_tri_t* T, int prop_class)
+{
+    if (prop_class != 2 || !T->key_order || T->pkey > 0.25f) return 0xFF000000u;
+    const int m = key_order_mode();
+    return m == 1 ? 0x80000000u : m == 2 ? 0x40000000u : 0xFF000000u;
+}
+
 /** @brief Write one keyed scene face's three vertices for a key batch.
  *
  * Each vertex carries the clip position, the true view-Z in w, the UV when
@@ -8886,7 +8922,8 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
                                   : T->koff - 0.5f;   /* the key K as view-Z */
     const int owner = prop_class == 2 && T->category == OPENPETE_SCENE_ACTOR &&
                       actor_own_key_on();
-    const uint32_t rgba = 0xFF000000u | (owner ? (T->mid & 0xFFFFFFu) : 0u);
+    const uint32_t rgba = key_order_owner_alpha(T, prop_class) |
+                          (owner ? (T->mid & 0xFFFFFFu) : 0u);
     for (int k = 0; k < 3; k++) {
         float cx, cy;
         scene_to_clip(T->v[k].sx, T->v[k].sy, &cx, &cy);
@@ -10080,7 +10117,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         s_render_full_extent = full_extent ? 1 : 0;
         openpete_tercache_clip taff; tercache_clip_params(&taff);
         s_render_full_extent = prev_fe;
-        openpete_tercache_draw(OPTC_DRAW_KEY, &taff, s_nr.vram_tex, 0, NULL, NULL);
+        openpete_tercache_draw(OPTC_DRAW_KEY, &taff, s_nr.vram_tex, 0, NULL);
     }
     rhi_end_render_target(s_nr.dev, s_nr.terrain_key_depth);
     rhi_begin_render_target(s_nr.dev, s_nr.moby_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -13869,6 +13906,21 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
     draw_tex_runs(first_vert, vert_count, tx_start, scene, &pipe, 1, hd, 1, bl);
 }
 
+/** @brief Return the scene's key-contest images for a retained terrain colour pass.
+ *
+ * The terrain key image (set 1), the moby key image (set 2) and the actor
+ * key image with its owner colour (set 7), as this present's key pass left
+ * them; a member is NULL while its image is not allocated.
+ * @return The images, valid until the next call. */
+static const openpete_tercache_keys *nr_tercache_keys(void)
+{
+    static openpete_tercache_keys s_keys;
+    s_keys.hp    = s_nr.terrain_key_depth;
+    s_keys.prop  = s_nr.moby_key_depth;
+    s_keys.actor = s_nr.actor_key_depth;
+    return &s_keys;
+}
+
 /** @brief Draw one blended class of the retained terrain cache.
  *
  * The draw carries the portal cover flag: terrain.frag discards a fragment
@@ -13883,8 +13935,7 @@ static void bw_draw_tercache(int c, int tercache_on) {
     openpete_tercache_clip aff;
     tercache_clip_params(&aff);
     aff.cover = 1;
-    openpete_tercache_draw(k_pass[c], &aff, s_nr.vram_tex, 0,
-                           s_nr.terrain_key_depth, s_nr.moby_key_depth);
+    openpete_tercache_draw(k_pass[c], &aff, s_nr.vram_tex, 0, nr_tercache_keys());
 }
 
 /** @brief Whether a scene triangle came from the terrain feed (its provenance tag's top nibble is 2).
@@ -15811,7 +15862,7 @@ static bool draw_native_scene(bool full_extent)
         if (gi == 0 && openpete_tercache_frame_open()) {
             openpete_tercache_clip aff; tercache_clip_params(&aff);
             openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
-                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
+                                   nr_tercache_keys());
         }
         /* WORLD_FILL - terrain LP hole-fill: depth-tested at TRUE LP
          * depth, gated on stencil==0 so it can only paint pixels no opaque
@@ -15837,8 +15888,7 @@ static bool draw_native_scene(bool full_extent)
          * same slot as the scene-fed fill (before the portal stencil clear). */
         if (gi == 2 && holefill_on && openpete_tercache_frame_open()) {
             openpete_tercache_clip aff; tercache_clip_params(&aff);
-            openpete_tercache_draw(OPTC_DRAW_FILL, &aff, s_nr.vram_tex, 0,
-                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
+            openpete_tercache_draw(OPTC_DRAW_FILL, &aff, s_nr.vram_tex, 0, nr_tercache_keys());
         }
         /* The four blended world classes draw here, in the scene's own emission
          * order, with the terrain cache's blended classes inside the terrain

@@ -889,6 +889,16 @@ typedef struct {
                              * target (fax, fbx, fay, fby); read with cover */
 } openpete_tercache_clip;
 
+/* The scene's key-contest images a terrain colour pass reads, bound at
+ * the sets terrain.frag declares. A NULL member leaves its set unbound;
+ * fragments that carry no key (vKoff == 0) never sample it. */
+typedef struct openpete_tercache_keys {
+    struct rhi_texture *hp;     /* terrain key image, set 1                  */
+    struct rhi_texture *prop;   /* moby key image (prop true depth), set 2   */
+    struct rhi_texture *actor;  /* actor key image with its owner colour,
+                                 * set 7 (the key-order contest)             */
+} openpete_tercache_keys;
+
 /** @brief Draw one pass of the selected retained terrain state.
  *
  * Called from native_render.c. @p which picks the pass (OPTC_DRAW_WORLD,
@@ -902,12 +912,11 @@ typedef struct {
  * @param clip The target's screen-to-clip mapping (tercache_clip_params).
  * @param vram VRAM texture, or NULL to leave the binding.
  * @param use_mark Nonzero for the stencil-MARK world variant (hole-fill on).
- * @param key_hp Terrain key depth image for the fragment key contest, or
- *        NULL; passed for the WORLD and blend passes.
- * @param key_prop Moby key depth image for the key contest, or NULL. */
+ * @param keys The scene's key-contest images for the colour passes, or
+ *        NULL for a pass that contests nothing (prepass, key emit). */
 void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                             struct rhi_texture *vram, int use_mark,
-                            struct rhi_texture *key_hp, struct rhi_texture *key_prop);
+                            const openpete_tercache_keys *keys);
 
 /* Census (builder increments rebuild counts; the module tracks the rest). */
 typedef struct {
