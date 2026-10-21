@@ -859,9 +859,9 @@ static uint32_t player_tri_tag(const swtri* w) {
  * built no triangle. The sortDepth byte at PL.sort_depth_off selects the depth
  * policy: the provider's front sentinel pulls the whole model toward the near
  * plane by a cap shared across the tick's calls (player_flat_min), any other
- * value applies a one-slot tie pull, and the mirrored copy adds its own
- * negative bias to the depth key; moby_player_sort_pull_on() off
- * (OPENPETE_PLAYER_SORT_PULL=0 or OPENPETE_MOBY_OTBIAS=0) disables all of them.
+ * value, the mirrored copy's negative one included, applies a one-slot tie
+ * pull and enters only the ordering key; moby_player_sort_pull_on() off
+ * (OPENPETE_PLAYER_SORT_PULL=0 or OPENPETE_MOBY_OTBIAS=0) disables both pulls.
  * Perspective W is taken from the unpulled view-Z. Each triangle carries the
  * PLAYER tag player_tri_tag gives it, and an opaque one an ordering key from
  * its first vertex's part. OPENPETE_SPYRO_UNTEX draws every triangle untextured;
@@ -906,15 +906,16 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
             if (fmin - sp_pull < 1.0) sp_pull = fmin > 1.0 ? fmin - 1.0 : 0.0;
             if (minvz - sp_pull < 1.0) sp_pull = minvz > 1.0 ? minvz - 1.0 : 0.0;
         } else if (pull_on) {
-            /* One-slot tie pull: 127 world is under one ordering slot, so it
-             * can only flip pairs the original called a tie. */
+            /* One-slot tie pull, on the avatar and the mirrored copy alike:
+             * 127 world is under one ordering slot, so it can only flip pairs
+             * the original called a tie. The mirrored copy's byte is negative
+             * (-12 or -6): the draw keys it at (originZ >> 7) - sortDepth, so
+             * the copy sorts that many slots behind the avatar. The byte stays
+             * in the part key (player_part_key) and out of stored depth: the
+             * copy at its true mirrored depth meets the reflected geometry
+             * under the surface as the draw shows it, and a push of sortDepth
+             * slots puts it behind a reflected wall the draw paints it over. */
             tie_pull = 127.0;
-            /* The mirrored copy carries its own ordering bias in the same
-             * byte, negative: the draw keys it at (originZ >> 7) - sortDepth,
-             * so the copy sorts that many slots BEHIND the avatar. Applied to
-             * the depth key only, like the front-layer pull above: the
-             * reflection's geometry is already below the surface. */
-            if (s_mirror_pass && sd < 0) sp_pull = OPENPETE_OT_SLOT_WORLD * (double)sd;
         }
     }
     render_material_level_push(cpu);

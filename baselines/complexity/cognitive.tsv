@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 2a23f06413bad04c2d842ee4f43bb58612e1dbd5
+# head: e3efd81d6828958b0f64c0ad647ce0ace91b5ff1
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -137,7 +137,7 @@ games/common/renderer/native_gte.c	ngte_walk_prims	80	0
 games/common/renderer/player.c	pair_lists	27	0	
 games/common/renderer/player.c	plane_emit	32	0	
 games/common/renderer/player.c	player_build_walk	80	0	
-games/common/renderer/player.c	player_feed_walk_ex	60	0	
+games/common/renderer/player.c	player_feed_walk_ex	57	0	
 games/common/renderer/player.c	player_records_epoch_commit	200	0	
 games/common/renderer/player.c	player_reextract_record	26	0	
 games/common/renderer/player.c	player_verify_report	109	0	
