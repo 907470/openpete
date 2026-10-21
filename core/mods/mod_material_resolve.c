@@ -42,12 +42,21 @@ static mod_fixed s_mat_census;
 static int s_mat_sel_dirty;      /* any material carries a parked selector */
 static int s_mat_has_instance;   /* cached: any live selector has a callback */
 
+/* Advanced by every compose-side change a draw-time outcome depends on: a
+ * view install, a hold change, a member set publish, a pending module. */
+static unsigned s_dt_epoch = 1;
+/* Set while a combined module is built and not installed: the member set it
+ * replaces lacks its new members. */
+static int s_chain_module_pending;
+
 int mod_mat_count(void) { return s_mat_count; }
 /* Forward: the reset clears state defined further down. */
 static void reset_level_and_view(void);
 static void overlap_reset(void);
 static void ter_class_reset(void);
 void mod_mat_reset(void) {
+    s_chain_module_pending = 0;
+    s_dt_epoch++;
     memset(s_mats, 0, sizeof s_mats);
     s_mat_count = 0;
     s_mat_sel_dirty = 0;
@@ -99,6 +108,14 @@ typedef struct {
 /* Chains the tick computed, for the moby memo to re-intern on replay. */
 static chain_walk_t s_tick_chain[OPENPETE_MATERIAL_CHAINS];
 static int s_tick_chain_n;
+
+/* The draw-time chain entries of the compose in progress, members
+ * lowest-ranked first, each with the contract of the draw site it was
+ * walked for: entry id OPENPETE_MATERIAL_DT_CHAIN_BASE + id. Compose-owned,
+ * emptied when the draw-time inputs move (dt_sync). */
+static mat_chain_t s_dt_chains[OPENPETE_MATERIAL_DT_CHAINS];
+static int s_dt_contract[OPENPETE_MATERIAL_DT_CHAINS];
+static int s_dt_chain_n;
 
 
 /* The present thread's view of the slot table (NULL = the live table, for
@@ -169,6 +186,9 @@ static _Atomic unsigned s_cen_chain_draws[OPENPETE_MATERIAL_CHAIN_CAP + 1];
 static _Atomic unsigned s_cen_chain_held, s_cen_chain_lacked, s_cen_chain_unusable, s_cen_chain_stale;
 /* Terrain chains the class resolution formed, and retained chain pass binds resolved. */
 static _Atomic unsigned s_cen_chain_ter_walks, s_cen_chain_ter_passes;
+/* Draw-time chains formed, candidates excluded for a held owner and for
+ * absence while a module is pending, and matched draws that drew stock. */
+static _Atomic unsigned s_cen_dt_walks, s_cen_dt_held, s_cen_dt_pending, s_cen_dt_stock;
 static int s_cen_atexit;
 
 int mod_mat_census_on(void) {
@@ -194,7 +214,8 @@ void mod_mat_census_reset(void) {
     atomic_store_explicit(&s_cen_pass_max, 0, memory_order_relaxed);
     _Atomic unsigned* chain[] = { &s_cen_chain_walks, &s_cen_chain_absent, &s_cen_chain_full, &s_cen_chain_held,
                                   &s_cen_chain_lacked, &s_cen_chain_unusable, &s_cen_chain_stale,
-                                  &s_cen_chain_ter_walks, &s_cen_chain_ter_passes };
+                                  &s_cen_chain_ter_walks, &s_cen_chain_ter_passes, &s_cen_dt_walks,
+                                  &s_cen_dt_held, &s_cen_dt_pending, &s_cen_dt_stock };
     for (size_t i = 0; i < sizeof chain / sizeof *chain; i++) atomic_store_explicit(chain[i], 0u, memory_order_relaxed);
     for (int i = 0; i <= OPENPETE_MATERIAL_CHAIN_CAP; i++)
         atomic_store_explicit(&s_cen_chain_draws[i], 0u, memory_order_relaxed);
@@ -203,7 +224,8 @@ unsigned mod_mat_census_chain(int which) {
     _Atomic unsigned* const c[MOD_MAT_CHAIN_CENSUS_N] = {
         &s_cen_chain_walks, &s_cen_chain_absent, &s_cen_chain_full, &s_cen_chain_held,
         &s_cen_chain_lacked, &s_cen_chain_unusable, &s_cen_chain_stale,
-        &s_cen_chain_ter_walks, &s_cen_chain_ter_passes };
+        &s_cen_chain_ter_walks, &s_cen_chain_ter_passes, &s_cen_dt_walks, &s_cen_dt_held,
+        &s_cen_dt_pending, &s_cen_dt_stock };
     if (which >= MOD_MAT_CHAIN_DRAWS_2 && which < MOD_MAT_CHAIN_DRAWS_2 + OPENPETE_MATERIAL_CHAIN_CAP - 1)
         return atomic_load_explicit(&s_cen_chain_draws[which - MOD_MAT_CHAIN_DRAWS_2 + 2], memory_order_relaxed);
     return which >= 0 && which < MOD_MAT_CHAIN_CENSUS_N ? atomic_load_explicit(c[which], memory_order_relaxed) : 0;
@@ -213,6 +235,12 @@ unsigned mod_mat_census_view_resolves(void) {
 }
 unsigned mod_mat_census_memo_replays(void) {
     return atomic_load_explicit(&s_cen_memo_replays, memory_order_relaxed);
+}
+/** @brief Census: count one composition event.
+ *
+ * @param c The counter. */
+static void cen_chain(_Atomic unsigned* c) {
+    if (mod_mat_census_on()) atomic_fetch_add_explicit(c, 1u, memory_order_relaxed);
 }
 /** @brief Count one outcome replayed from the tick's memo when the census is on. */
 static void cen_memo_replay(void) {
@@ -317,13 +345,16 @@ void mod_mat_census_print(void) {
             atomic_load_explicit(&s_cen_memo_replays, memory_order_relaxed));
     fprintf(stderr, "[material-census] chains: walks=%u absent-excluded=%u table-full=%u; draws by members "
                     "2=%u 3=%u 4=%u; draws stock: held=%u lacked=%u unusable=%u stale=%u; "
-                    "terrain-chains=%u terrain-passes=%u\n",
+                    "terrain-chains=%u terrain-passes=%u; draw-time: dt-chains=%u held-excluded=%u "
+                    "pending-excluded=%u matched-stock=%u\n",
             mod_mat_census_chain(MOD_MAT_CHAIN_WALKS), mod_mat_census_chain(MOD_MAT_CHAIN_ABSENT),
             mod_mat_census_chain(MOD_MAT_CHAIN_FULL), mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2),
             mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2 + 1), mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2 + 2),
             mod_mat_census_chain(MOD_MAT_CHAIN_HELD), mod_mat_census_chain(MOD_MAT_CHAIN_LACKED),
             mod_mat_census_chain(MOD_MAT_CHAIN_UNUSABLE), mod_mat_census_chain(MOD_MAT_CHAIN_STALE),
-            mod_mat_census_chain(MOD_MAT_CHAIN_TER_WALKS), mod_mat_census_chain(MOD_MAT_CHAIN_TER_PASSES));
+            mod_mat_census_chain(MOD_MAT_CHAIN_TER_WALKS), mod_mat_census_chain(MOD_MAT_CHAIN_TER_PASSES),
+            mod_mat_census_chain(MOD_MAT_CHAIN_DT_WALKS), mod_mat_census_chain(MOD_MAT_CHAIN_DT_HELD),
+            mod_mat_census_chain(MOD_MAT_CHAIN_DT_PENDING), mod_mat_census_chain(MOD_MAT_CHAIN_DT_STOCK));
     census_print_terrain();
     census_print_classes();
     fprintf(stderr, "[material-census] engaged=%llu (draws + bucket passes + refine calls)\n", engaged);
@@ -340,6 +371,7 @@ static const char* s_hold_ids[MOD_HOLD_MAX];
 static int s_hold_n;
 
 void openpete_mods_hold_owners(const char* const* ids, int n) {
+    s_dt_epoch++;
     s_hold_n = 0;
     for (int i = 0; ids && i < n && s_hold_n < MOD_HOLD_MAX; i++) s_hold_ids[s_hold_n++] = ids[i];
 }
@@ -1168,7 +1200,10 @@ void openpete_mods_material_view_capture(openpete_mods_material_view_t* out) {
     if (mod_mat_census_on() && out->ter_bucket_n > atomic_load_explicit(&s_cen_pass_max, memory_order_relaxed))
         atomic_store_explicit(&s_cen_pass_max, out->ter_bucket_n, memory_order_relaxed);
 }
-void openpete_mods_material_view_set(const openpete_mods_material_view_t* v) { s_mat_view = v; }
+void openpete_mods_material_view_set(const openpete_mods_material_view_t* v) {
+    s_mat_view = v;
+    s_dt_epoch++;
+}
 const openpete_mods_material_view_t* openpete_mods_material_view_get(void) { return s_mat_view; }
 
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len) {
@@ -1301,6 +1336,11 @@ static void refine_observe(mod_material_t* m, int declined) {
 
 void openpete_mods_material_chain_set_publish(const openpete_mods_material_chain_set_t* set) {
     atomic_store_explicit(&s_chain_set, set, memory_order_release);
+    s_dt_epoch++;
+}
+void mod_mat_chain_pending_set(int on) {
+    if (s_chain_module_pending != !!on) s_dt_epoch++;
+    s_chain_module_pending = !!on;
 }
 const openpete_mods_material_chain_set_t* openpete_mods_material_chain_set_current(void) {
     return atomic_load_explicit(&s_chain_set, memory_order_acquire);
@@ -1318,7 +1358,8 @@ static int chain_set_index(const openpete_mods_material_chain_set_t* set, int fr
 
 /** @brief Return a chain profile's bit in a material's link and identity masks, whose bits order the profiles stock, terrain, portal.
  *
- * @param profile 0 stock, 1 portal, OPENPETE_MATERIAL_CHAIN_TERRAIN. */
+ * A decal-contract shader has one profile, recorded in the stock bit.
+ * @param profile 0 stock, 1 portal, OPENPETE_MATERIAL_CHAIN_TERRAIN, OPENPETE_MATERIAL_CHAIN_DECAL. */
 static unsigned chain_link_bit(int profile) {
     return profile == OPENPETE_MATERIAL_CHAIN_TERRAIN ? 2u : profile == 1 ? 4u : 1u;
 }
@@ -1326,7 +1367,7 @@ static unsigned chain_link_bit(int profile) {
 /** @brief Test whether a material's op_material returns its parameter in a chain profile.
  *
  * @param m The material.
- * @param profile 0 stock, OPENPETE_MATERIAL_CHAIN_TERRAIN for retained terrain. */
+ * @param profile A chain profile (chain_link_bit). */
 static int chain_identity(const mod_material_t* m, int profile) {
     return m->frag >= 0 && (m->identity_mask & chain_link_bit(profile));
 }
@@ -1340,7 +1381,7 @@ static int chain_identity(const mod_material_t* m, int profile) {
  * failed, or none installed) counts in the census as excluded for absence.
  * @param m The material.
  * @param set The installed member set, or NULL.
- * @param profile 0 stock, OPENPETE_MATERIAL_CHAIN_TERRAIN for retained terrain. */
+ * @param profile A chain profile (chain_link_bit). */
 static int chain_linkable(const mod_material_t* m, const openpete_mods_material_chain_set_t* set, int profile) {
     if (m->frag < 0) return m->vert >= 0;
     if (!(m->link_mask & chain_link_bit(profile))) return 0;
@@ -2055,23 +2096,6 @@ static int material_decl_matches_key(const mod_material_t* m, const material_key
            openpete_mods_is_enabled(m->owner) && material_selector_matches(m, k);
 }
 
-/** @brief Return the declarative material that wins a decoded tag key, or -1.
- *
- * Considers live, user-enabled materials of enabled mods with the shading
- * contract @p contract and without a per-instance callback, which resolve
- * through slots only; among those the key's predicate accepts
- * (material_matches_moby for a moby tag, material_selector_matches
- * otherwise), the highest ranked (mod_mat_outranks) wins.
- * @param k The decoded tag key.
- * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*. */
-static int material_winner(const material_key_t* k, int contract) {
-    int best = -1;
-    for (int i = 0; i < s_mat_count; i++) {
-        if (material_decl_matches_key(&s_mats[i], k, contract) && mod_mat_outranks(i, best)) best = i;
-    }
-    return best;
-}
-
 /** @brief Census: record a draw-time outcome per material.
  *
  * @param best The resolved material, or -1 for stock. */
@@ -2079,7 +2103,179 @@ static void census_resolve(int best) {
     if (mod_mat_census_on()) cen_bump(best, MOD_MAT_CENSUS_DRAWS);
 }
 
-int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
+static int resolve_chain(int id, int contract, mod_mat_chain_res_t* out, int count);
+
+/** @brief Return the highest-ranked declarative matching a decoded tag key at a contract that ranks below a given one, or -1.
+ *
+ * One step of the draw-time walk down the priority order.
+ * @param k The decoded tag key.
+ * @param contract The draw site's contract.
+ * @param above The material the step continues below, or -1 for the top. */
+static int dt_next(const material_key_t* k, int contract, int above) {
+    int best = -1;
+    for (int i = 0; i < s_mat_count; i++) {
+        if (above >= 0 && !mod_mat_outranks(above, i)) continue;
+        if (material_decl_matches_key(&s_mats[i], k, contract) && mod_mat_outranks(i, best)) best = i;
+    }
+    return best;
+}
+
+/** @brief Test whether a material at the top of a draw-time walk is a composable member an installed set lacks, which the walk leaves out while a newer module is pending.
+ *
+ * Composable (not terminal), no vertex stage, a linkable non-identity
+ * fragment stage in @p profile, and no case for it in the installed set's
+ * module of that profile.
+ * @param m The material.
+ * @param set The installed member set, or NULL.
+ * @param profile A chain profile (chain_link_bit). */
+static int dt_absent_composable(const mod_material_t* m, const openpete_mods_material_chain_set_t* set,
+                                int profile) {
+    if (mod_mat_terminal(m) || m->vert >= 0 || m->frag < 0 || !(m->link_mask & chain_link_bit(profile)) ||
+        chain_identity(m, profile))
+        return 0;
+    const int i = chain_set_index(set, m->frag);
+    return i < 0 || set->case_id[profile][i] < 0;
+}
+
+/* A draw-time outcome naming a chain: DT_OUT_CHAIN + draw-time entry id. */
+#define DT_OUT_CHAIN 0x10000
+
+/** @brief Walk the declaratives matching a decoded tag key at a contract: every one down the priority order, to the first terminal one, as the extraction walk does.
+ *
+ * Runs on the compose. A candidate whose owner is held for this compose is
+ * left out, so the draw shows what it showed before the owner entered; so
+ * is a composable top an installed member set lacks while a newer combined
+ * module is pending (dt_absent_composable): a material registered since
+ * that set was built, whose chain waits for the newer module. With no set
+ * installed every member is absent and the top draws alone. Otherwise the
+ * extraction walk's rules apply (walk_accept): a terminal, vertex-stage or
+ * unlinkable top draws alone, members below a composable top join while
+ * linkable, identity members are left out, and the chain stops at a
+ * terminal member or at OPENPETE_MATERIAL_CHAIN_CAP members. Two or more
+ * members intern a draw-time chain entry.
+ * @param k The decoded tag key.
+ * @param contract The draw site's contract.
+ * @param matched Receives 1 when any declarative matches the key.
+ * @return The material that draws alone, DT_OUT_CHAIN + entry id, or -1 for stock. */
+static int dt_walk(const material_key_t* k, int contract, int* matched) {
+    const int profile = contract == OPENPETE_MATERIAL_CONTRACT_DECAL ? OPENPETE_MATERIAL_CHAIN_DECAL : 0;
+    static chain_walk_t cw;   /* compose only */
+    walk_state_t st = { -1, -1, NULL, &cw, openpete_mods_material_chain_set_current(), profile, NULL };
+    cw.n = 0;
+    *matched = 0;
+    for (int w = dt_next(k, contract, -1); w >= 0; w = dt_next(k, contract, w)) {
+        const mod_material_t* m = &s_mats[w];
+        *matched = 1;
+        if (mod_owner_held(m->owner)) { cen_chain(&s_cen_dt_held); continue; }
+        if (st.top >= 0 && !chain_identity(m, profile) && !chain_linkable(m, st.set, profile)) continue;
+        if (st.top < 0 && st.set && s_chain_module_pending && dt_absent_composable(m, st.set, profile)) {
+            cen_chain(&s_cen_dt_pending);
+            continue;
+        }
+        if (walk_accept(&st, w, MOBY_ASK_DECL, NULL)) break;
+    }
+    int len;
+    const int w = walk_result(&st, &len);
+    if (cw.n < 2) return w;
+    mat_chain_t e;
+    e.n = cw.n;
+    for (int j = 0; j < cw.n; j++) {
+        const int i = cw.mat[cw.n - 1 - j];      /* entries hold the lowest-ranked member first */
+        e.mat[j] = (short)i;
+        e.slot[j] = (short)mod_mat_view_static_slot(i);
+    }
+    const int before = s_dt_chain_n;
+    const int id = chain_intern(s_dt_chains, &s_dt_chain_n, OPENPETE_MATERIAL_DT_CHAINS, &e);
+    if (id < 0) { cen_chain(&s_cen_chain_full); return -1; }
+    if (s_dt_chain_n != before) {
+        s_dt_contract[id] = contract;
+        cen_chain(&s_cen_dt_walks);
+    }
+    return DT_OUT_CHAIN + id;
+}
+
+/* The draw-time resolve cache: one outcome per (masked tag, contract) for the
+ * current draw-time inputs (dt_sync). */
+#define DT_CACHE_N 512
+typedef struct {
+    uint32_t key;
+    int      contract;
+    unsigned gen;       /* s_dt_gen at the walk; another value is an empty entry */
+    int      out;       /* dt_walk's outcome */
+    int      matched;
+} dt_cache_t;
+static dt_cache_t s_dt_cache[DT_CACHE_N];
+static unsigned s_dt_gen = 1;
+static unsigned s_dt_in_epoch, s_dt_in_table, s_dt_in_toggle, s_dt_in_present;
+
+/** @brief Void the draw-time cache and chain entries when an input of the draw-time walk moved.
+ *
+ * The inputs: the compose-side epoch (view install, hold change, member set
+ * publish, pending module), the material table generation (every table and
+ * level change), the mod toggle epoch and, with no view installed, the
+ * present counter, which the live tables' static slots follow. */
+static void dt_sync(void) {
+    const unsigned t = mod_mat_table_gen(), g = openpete_mods_toggle_epoch();
+    const unsigned p = s_mat_view ? 0u : s_mat_present;
+    if (s_dt_in_epoch == s_dt_epoch && s_dt_in_table == t && s_dt_in_toggle == g && s_dt_in_present == p) return;
+    s_dt_in_epoch = s_dt_epoch;
+    s_dt_in_table = t;
+    s_dt_in_toggle = g;
+    s_dt_in_present = p;
+    if (++s_dt_gen == 0) s_dt_gen = 1;
+    s_dt_chain_n = 0;
+}
+
+/** @brief Return the part of a tag the declarative predicates read: the path nibble and, per path, its key bits.
+ *
+ * A terrain tag keeps bits 31:25 (path, env, LP, untextured) and the
+ * Tiledef id in 15:9; every other tag keeps the path nibble and the
+ * identity in 15:0. */
+static uint32_t dt_key_of(uint32_t tag) {
+    return (tag >> 28) == 2u ? tag & 0xFE00FE00u : tag & 0xF000FFFFu;
+}
+
+/** @brief Resolve a tag with no stamped outcome at draw time: the cached draw-time walk.
+ *
+ * @param tag Provenance tag.
+ * @param k Its decoded keys.
+ * @param contract The draw site's contract.
+ * @param slot Receives a lone material's static slot.
+ * @param chain Receives a chain's members, or NULL.
+ * @return The lone material, MOD_MAT_RESOLVE_CHAIN for a chain, or -1 for stock. */
+static int dt_resolve(uint32_t tag, const material_key_t* k, int contract, int* slot, mod_mat_chain_res_t* chain) {
+    dt_sync();
+    const uint32_t key = dt_key_of(tag);
+    unsigned h = (key * 2654435761u) ^ (unsigned)contract;
+    dt_cache_t* e = NULL;
+    for (int n = 0; n < 8; n++, h++) {
+        dt_cache_t* c = &s_dt_cache[h & (DT_CACHE_N - 1)];
+        if (c->gen != s_dt_gen) { if (!e) e = c; break; }
+        if (c->key == key && c->contract == contract) { e = c; break; }
+    }
+    int out, matched;
+    if (e && e->gen == s_dt_gen) {
+        out = e->out;
+        matched = e->matched;
+    } else {
+        out = dt_walk(k, contract, &matched);
+        if (e) { e->key = key; e->contract = contract; e->gen = s_dt_gen; e->out = out; e->matched = matched; }
+    }
+    if (out >= DT_OUT_CHAIN) {
+        mod_mat_chain_res_t local;
+        if (resolve_chain(OPENPETE_MATERIAL_DT_CHAIN_BASE + out - DT_OUT_CHAIN, contract, chain ? chain : &local, 1) == 1)
+            return MOD_MAT_RESOLVE_CHAIN;
+        out = -1;
+    }
+    if (out >= 0) *slot = mod_mat_view_static_slot(out);
+    else if (matched) cen_chain(&s_cen_dt_stock);
+    census_resolve(out);
+    return out;
+}
+
+unsigned openpete_mods_material_dt_chain_gen(void) { return s_dt_gen; }
+
+int mod_mat_resolve_index(uint32_t tag, int contract, int* slot, mod_mat_chain_res_t* chain) {
     material_key_t k;
     int best;
     *slot = 0;
@@ -2101,19 +2297,9 @@ int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
     case -1: census_resolve(-1); return -1;
     default: break;   /* declarative resolve */
     }
-    *slot = 0;
-    best = material_winner(&k, contract);
-    if (best >= 0 && mod_owner_held(s_mats[best].owner)) best = -1;
-    census_resolve(best);
-    return best;
+    return dt_resolve(tag, &k, contract, slot, chain);
 }
 
-/** @brief Census: count one chain draw sent to stock.
- *
- * @param c The counter. */
-static void cen_chain(_Atomic unsigned* c) {
-    if (mod_mat_census_on()) atomic_fetch_add_explicit(c, 1u, memory_order_relaxed);
-}
 
 
 /** @brief Return the chain entry id a moby or terrain tag names, or -1 when it names none.
@@ -2135,14 +2321,22 @@ static int chain_id_of_tag(uint32_t tag) {
     return -1;
 }
 
-/** @brief Read a moby or terrain chain entry of the installed view, else of the live tables.
+/** @brief Read a chain entry: a moby or terrain entry of the installed view, else of the live tables, or a draw-time entry of the compose.
  *
- * @param id Entry id: a moby entry, or OPENPETE_MATERIAL_CHAINS + a terrain entry.
+ * @param id Entry id: a moby entry, OPENPETE_MATERIAL_CHAINS + a terrain
+ *        entry, or OPENPETE_MATERIAL_DT_CHAIN_BASE + a draw-time entry.
  * @param mat Receives its members' material indices, lowest-ranked first.
  * @param slot Receives its members' uniform slots.
  * @return The member count, or 0 for an id past the entry count. */
 static int chain_entry(int id, const short** mat, const short** slot) {
-    if (id < 0 || id >= OPENPETE_MATERIAL_CHAIN_ENTRIES) return 0;
+    if (id < 0 || id >= OPENPETE_MATERIAL_CHAIN_IDS) return 0;
+    if (id >= OPENPETE_MATERIAL_DT_CHAIN_BASE) {
+        const int t = id - OPENPETE_MATERIAL_DT_CHAIN_BASE;
+        if (t >= s_dt_chain_n) return 0;
+        *mat = s_dt_chains[t].mat;
+        *slot = s_dt_chains[t].slot;
+        return s_dt_chains[t].n;
+    }
     if (id >= OPENPETE_MATERIAL_CHAINS) {
         const int t = id - OPENPETE_MATERIAL_CHAINS;
         if (s_mat_view) {
@@ -2201,8 +2395,10 @@ static int resolve_chain(int id, int contract, mod_mat_chain_res_t* out, int cou
     if (id < 0 || s_mat_count == 0) return 0;
     const short *mat = NULL, *slot = NULL;
     const int n = chain_entry(id, &mat, &slot);
-    _Atomic unsigned* fail = n < 2 || n > OPENPETE_MATERIAL_CHAIN_CAP || contract != OPENPETE_MATERIAL_CONTRACT_SCENE
-                                 ? &s_cen_chain_stale : NULL;
+    /* A stamped entry serves scene draws; a draw-time entry the contract it was walked for. */
+    const int want = id >= OPENPETE_MATERIAL_DT_CHAIN_BASE && id - OPENPETE_MATERIAL_DT_CHAIN_BASE < s_dt_chain_n
+                         ? s_dt_contract[id - OPENPETE_MATERIAL_DT_CHAIN_BASE] : OPENPETE_MATERIAL_CONTRACT_SCENE;
+    _Atomic unsigned* fail = n < 2 || n > OPENPETE_MATERIAL_CHAIN_CAP || contract != want ? &s_cen_chain_stale : NULL;
     out->entry = id;
     out->n = n;
     out->set = openpete_mods_material_chain_set_current();
@@ -2247,7 +2443,9 @@ int openpete_mods_material_chain_block(int entry, int profile, const void* engin
                                        void* out) {
     if (openpete_mods_material_chain_ubo_block(entry, profile) < 0 || !out) return -1;
     mod_mat_chain_res_t ch;
-    if (resolve_chain(entry, OPENPETE_MATERIAL_CONTRACT_SCENE, &ch, 0) != 1) return -1;
+    const int contract = profile == OPENPETE_MATERIAL_CHAIN_DECAL ? OPENPETE_MATERIAL_CONTRACT_DECAL
+                                                                 : OPENPETE_MATERIAL_CONTRACT_SCENE;
+    if (resolve_chain(entry, contract, &ch, 0) != 1) return -1;
     unsigned char* o = (unsigned char*)out;
     memset(o, 0, OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES);
     uint32_t n = 0, ids[OPENPETE_MATERIAL_CHAIN_CAP];
@@ -2292,6 +2490,10 @@ typedef struct {
     uint64_t  ter[OVL_TER_WORDS];
     int load, pin, refine;
     int asked, declined;                /* moby refine observation */
+    /* Composition: terminal; linkable (a linkable fragment stage, or
+     * vertex-only); continues (composable with no vertex stage and a
+     * linkable or identity fragment stage: below it the walk goes on). */
+    int term, link, cont;
 } ovl_foot_t;
 
 static _Atomic unsigned s_ovl_gen = 1;
@@ -2392,6 +2594,9 @@ void mod_mat_overlap_snapshot(void) {
         f->refine = m->per_instance != NULL;
         f->asked = m->obs_calls > 0;
         f->declined = m->obs_declines > 0;
+        f->term = mod_mat_terminal(m);
+        f->link = m->frag < 0 ? m->vert >= 0 : (m->link_mask & chain_link_bit(0)) != 0;
+        f->cont = !f->term && m->vert < 0 && m->frag >= 0 && (f->link || chain_identity(m, 0));
         f->ch[OP_CHAN_MOBY] = ovl_moby_set(m, level);
         for (int ch = OP_CHAN_PLAYER; ch <= OP_CHAN_PORTAL; ch++) f->ch[ch] = ovl_chan_set(m, ch, level);
         ovl_terrain_bits(m, level, f->ter);
@@ -2423,14 +2628,46 @@ static int ovl_ter_meets(const ovl_foot_t* h, const ovl_foot_t* l, int* within) 
     return meet;
 }
 
+/** @brief Test whether two footprints share a key on any channel. */
+static int ovl_any_meet(const ovl_foot_t* a, const ovl_foot_t* b) {
+    for (int w = 0; w < OVL_TER_WORDS; w++)
+        if (a->ter[w] & b->ter[w]) return 1;
+    for (int ch = OP_CHAN_MOBY; ch <= OP_CHAN_PORTAL; ch++)
+        if (ch != OP_CHAN_TERRAIN && ovl_meets(a->ch[ch], b->ch[ch])) return 1;
+    return 0;
+}
+
+/** @brief Test whether a material that lets the walk continue below it (ovl_foot_t cont) ranks above @p hi and shares a key with @p lo: there an unlinkable @p hi is skipped and @p lo is reached.
+ *
+ * @param hi Higher-ranked material index of the pair.
+ * @param lo Lower-ranked material index of the pair. */
+static int ovl_continued_above(int hi, int lo) {
+    const ovl_foot_t* h = &s_ovl_foot[hi];
+    for (int c = 0; c < s_ovl_n; c++) {
+        const ovl_foot_t* f = &s_ovl_foot[c];
+        if (c != hi && c != lo && f->cont && rank_above(c, f->load, f->pin, hi, h->load) &&
+            ovl_any_meet(f, &s_ovl_foot[lo]))
+            return 1;
+    }
+    return 0;
+}
+
 /** @brief Return the shadow verdict of a higher-ranked material over a lower-ranked one from their footprints.
  *
- * Full when the higher takes every key of the lower: on the moby walk and
- * on terrain, where a refine's decline passes the key to the next
+ * The keys: full when the higher takes every key of the lower: on the moby
+ * walk and on terrain, where a refine's decline passes the key to the next
  * candidate, a declarative takes the keys it matches, and a refine takes
  * them only when it has been asked and never declined (accept-all); on the
  * declarative channels only declaratives match. Partial when a key is
  * shared but not every key is taken; none when no key is shared.
+ * Composition: a higher material that lets the walk continue (composable,
+ * no vertex stage, linkable or identity) over a linkable lower one
+ * composes with it, none; over an unlinkable one it shadows by the key
+ * test. A higher material that stops the walk shadows by the key test
+ * when it is terminal and linkable; otherwise (unlinkable, or a vertex
+ * stage) it stops the walk only where it is the top, so the pair is
+ * partial when a material letting the walk continue ranks above it and
+ * shares a key with the lower one.
  * @param hi Higher-ranked material index.
  * @param lo Lower-ranked material index.
  * @param chans Receives the OP_CHAN_* bits of the channels with a shared key.
@@ -2451,8 +2688,9 @@ static int ovl_pair(int hi, int lo, unsigned* chans, int* accept_all) {
         if (ovl_meets(l->ch[ch], h->ch[ch])) *chans |= 1u << ch;
         if (!takes || !ovl_within(l->ch[ch], h->ch[ch])) full = 0;
     }
+    if (!*chans || (h->cont && l->link)) { *accept_all = 0; return MOD_MAT_SHADOW_NONE; }
+    if (full && !h->cont && !(h->term && h->link) && ovl_continued_above(hi, lo)) full = 0;
     *accept_all = full && h->refine && (*chans & (1u << OP_CHAN_MOBY | 1u << OP_CHAN_TERRAIN)) != 0;
-    if (!*chans) return MOD_MAT_SHADOW_NONE;
     return full ? MOD_MAT_SHADOW_FULL : MOD_MAT_SHADOW_PARTIAL;
 }
 

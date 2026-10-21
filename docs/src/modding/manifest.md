@@ -10,7 +10,7 @@ id      = "my-mod"        # the directory or zip name; enabled.txt and --mods us
 name    = "My Mod"        # shown in the Mods section; defaults to id
 game    = "spyro-1"       # or ["spyro-1", "spyro-3"]; omitted: see below
 version = "0.1.0"
-api     = 13              # minimum OPENPETE_MOD_API_VERSION; also selects the overlay-address rules
+api     = 13              # minimum OPENPETE_MOD_API_VERSION; also selects the overlay-address rules and material composition
 deps    = ["other-mod"]   # hard dependencies: their entry points run first
 requires_games = ["spyro-2"]  # other games' discs the mod needs; see below
 optional_games = ["spyro-3"]  # other games' discs the mod reads when present
@@ -57,18 +57,21 @@ list is refused (see [Code mods](code.md#other-games-discs)).
 
 **`api`.** The lowest engine API version the mod needs (see
 [Publishing](publishing.md#pin-the-api-as-a-minimum)). The pin also
-selects the overlay-address behaviour, and the boundary is api 13, the
-version that adds `override_ovl`:
+selects the overlay-address behaviour and material composition, and the
+boundary for both is api 13, the version that adds `override_ovl` and
+composition:
 
-| pin | `override_addr` inside the overlay window, `override_name` on a raw `func_XXXXXXXX` name found in more than one overlay | `game` key absent |
-|---|---|---|
-| 13 or later | refused on every game: the call returns -1 and logs every overlay the address or name occurs in, with that overlay's names for it | every game |
-| below 13, or no `api` key | Spyro 1: binds in every overlay with a function at that address, and logs a deprecation once per mod; Spyro 2 and 3: refused | Spyro 1 only |
+| pin | `override_addr` inside the overlay window, `override_name` on a raw `func_XXXXXXXX` name found in more than one overlay | `game` key absent | `[[material]]` rows and `material_register` |
+|---|---|---|---|
+| 13 or later | refused on every game: the call returns -1 and logs every overlay the address or name occurs in, with that overlay's names for it | every game | compose with the materials ranked below them, on every channel, terrain included; `exclusive = true` makes a row terminal |
+| below 13, or no `api` key | Spyro 1: binds in every overlay with a function at that address, and logs a deprecation once per mod; Spyro 2 and 3: refused | Spyro 1 only | terminal: shade alone over the materials ranked below them; `exclusive` is ignored |
 
 Raising a pin to the boundary for any other api entry therefore turns
 the mod's window `override_addr` and ambiguous raw `override_name` calls
-into refusals, and a game-less manifest below the boundary loads on
-Spyro 1 only. Bind an overlay function with `override_ovl` or the
+into refusals and makes its materials compose with the materials ranked
+below them ([Shaders](shaders.md#compose-materials)); `exclusive = true`
+on a row keeps that row's output as below the boundary. A game-less
+manifest below the boundary loads on Spyro 1 only. Bind an overlay function with `override_ovl` or the
 `OP_OVLID_<name>` wrappers (see the game's
 [functions page](reference/spyro-1/functions.md)).
 

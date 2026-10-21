@@ -25,11 +25,16 @@ that asks for a newer API than it has, before the entry point runs. The
 API struct is append-only, so a mod built for api N loads on every later
 engine.
 
-The pin also selects the overlay-address behaviour and, for a manifest
-with no `game` key, the games the mod loads on: raising a pin to 13 for
-any other api entry turns the mod's window `override_addr` and ambiguous
-raw `override_name` calls into refusals, and a game-less manifest below 13
-loads on Spyro 1 only ([Manifest](manifest.md)).
+The pin also selects the overlay-address behaviour, material
+composition and, for a manifest with no `game` key, the games the mod
+loads on: raising a pin to 13 for any other api entry turns the mod's
+window `override_addr` and ambiguous raw `override_name` calls into
+refusals and makes its materials compose with the materials ranked below
+them on every channel, terrain included, and a game-less manifest below
+13 loads on Spyro 1 only ([Manifest](manifest.md),
+[Shaders](shaders.md#compose-materials)). A row that must keep shading
+alone at 13 sets `exclusive = true`. Ship each material's shader source:
+a prebuilt `.spv` without it draws alone and never composes.
 
 ## Prefer source
 

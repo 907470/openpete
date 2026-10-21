@@ -26,7 +26,11 @@
  * pinned-13 declaratives, chain resolution per profile against the set,
  * the walked 0x080 | id stamp and its decode, chain pass ids and their
  * stock fallback, the terrain chain table in the view and its capacity,
- * and the terrain epoch skip for an OP_SEL_EXCLUSIVE-only retune. Every stub mod carries
+ * and the terrain epoch skip for an OP_SEL_EXCLUSIVE-only retune; draw-time
+ * chains on the declarative channels: composition, the resolve cache, held
+ * owners, absence while a module is pending, terminal and unlinkable
+ * members, and decal-contract chains on moby shadows; and the overlap
+ * verdict per composition pairing. Every stub mod carries
  * its api pin, so a rule keyed on the pin changes only the cases whose mods
  * sit on the changed side of it. A material registered through reg() has
  * no link verdict, so it is unlinkable and draws alone as before
@@ -155,7 +159,7 @@ static uint32_t chan_tag(int ch, int ident) { return ((uint32_t)ch << 28) | ((ui
 /** @brief Resolve a tag for a contract and return the material index, or -1 for stock. */
 static int resolve(uint32_t tag, int contract) {
     int slot = 0;
-    return mod_mat_resolve_index(tag, contract, &slot);
+    return mod_mat_resolve_index(tag, contract, &slot, NULL);
 }
 
 /** @brief Retained bake: the resolution class of a face key; @p tex -1 is an untextured face. */
@@ -942,7 +946,7 @@ static void case_landing_state(void) {
     const int s = openpete_mods_material_moby_slot(NULL, 5, 0x80010000u);
     CHECK(s == DECL(ma), "slot %#x", s);
     int slot = -1;
-    CHECK(mod_mat_resolve_index(moby_tag(5, s), SCENE, &slot) == ma && slot == 0, "static block, slot %d", slot);
+    CHECK(mod_mat_resolve_index(moby_tag(5, s), SCENE, &slot, NULL) == ma && slot == 0, "static block, slot %d", slot);
     CHECK(mod_mat_view_static_slot(ma) > 0, "static slot interned");
     CHECK(resolve(moby_tag(5, s), DECAL) == -1, "other contract");
     mod_mat_enable(ma, 0);
@@ -1071,7 +1075,7 @@ static int regf(const stub_mod_t* m, openpete_mod_material_selector_t sel, int f
 }
 
 static openpete_mods_material_chain_set_t s_set_a, s_set_b;
-/** @brief Fill and publish a stub member set: generation, shader handles, case id = list position in both profiles.
+/** @brief Fill and publish a stub member set: generation, shader handles, case id = list position in the scene profiles, none in the decal one.
  *
  * @param s The record.
  * @param gen Generation.
@@ -1084,6 +1088,7 @@ static void set_publish(openpete_mods_material_chain_set_t* s, unsigned gen, int
     for (int i = 0; i < n; i++) {
         s->shader[i] = shaders[i];
         s->case_id[0][i] = s->case_id[1][i] = s->case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][i] = i;
+        s->case_id[OPENPETE_MATERIAL_CHAIN_DECAL][i] = -1;
     }
     openpete_mods_material_chain_set_publish(s);
 }
@@ -1698,6 +1703,206 @@ static void case_ter_epoch_skip(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Draw-time chains. */
+
+/** @brief Register a material of a contract with a fragment handle and its link verdicts. */
+static int regc(const stub_mod_t* m, openpete_mod_material_selector_t sel, int frag, unsigned link, int contract) {
+    if (!mod_mat_sel_valid(m->id, &sel, m->api)) return -1;
+    const int h = mod_mat_append(m->id, &sel, -1, frag, contract, NULL, m->load_index, m->api, 1u);
+    if (h >= 0) mod_mat_set_link_of_frag(frag, link, 0);
+    return h;
+}
+/** @brief Fill and publish a stub member set whose shaders have a case in one profile only: case id = list position.
+ *
+ * @param s The record.
+ * @param gen Generation.
+ * @param n Shader count.
+ * @param shaders The handles.
+ * @param profile The profile with cases. */
+static void set_publish_profile(openpete_mods_material_chain_set_t* s, unsigned gen, int n, const int* shaders,
+                                int profile) {
+    memset(s, 0, sizeof *s);
+    s->generation = gen;
+    s->n = n;
+    for (int i = 0; i < n; i++) {
+        s->shader[i] = shaders[i];
+        for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_PROFILES; p++) s->case_id[p][i] = p == profile ? i : -1;
+    }
+    openpete_mods_material_chain_set_publish(s);
+}
+/** @brief Draw-time resolve of a tag: the member count of a chain (filling @p r), 1 for one material, 0 for stock. */
+static int dt_of(uint32_t tag, int contract, mod_mat_chain_res_t* r, int* mat) {
+    int slot = 0;
+    const int m = mod_mat_resolve_index(tag, contract, &slot, r);
+    if (mat) *mat = m;
+    return m == MOD_MAT_RESOLVE_CHAIN ? r->n : m >= 0 ? 1 : 0;
+}
+
+/** @brief Two composable declaratives on the player channel compose at draw time; the outcome is cached per tag and contract; over the cap the highest four stay. */
+static void case_dt_chain(void) {
+    begin("Draw-time chain: player channel");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    const int ma = regf(a, sel_ch(OP_CHAN_PLAYER), 10, 1, 0, NULL);
+    const int mb = regf(b, sel_ch(OP_CHAN_PLAYER), 11, 1, 0, NULL);
+    const float blk[4] = {0, 1, 0, 1};
+    CHECK(mod_mat_set_params(mb, blk, sizeof blk) == 0, "params");
+    const int sh[5] = {10, 11, 12, 13, 14};
+    set_publish(&s_set_a, 1, 5, sh);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    mod_mat_chain_res_t r;
+    CHECK(dt_of(chan_tag(OP_CHAN_PLAYER, 0) | (7u << 16), SCENE, &r, NULL) == 2 && r.mat[0] == ma &&
+          r.mat[1] == mb && r.entry == OPENPETE_MATERIAL_DT_CHAIN_BASE, "a,b: chain [a b] at the first draw-time entry");
+    CHECK(r.slot[1] == mod_mat_view_static_slot(mb) && r.slot[0] == 0, "member slots: static blocks");
+    CHECK(dt_of(chan_tag(OP_CHAN_PLAYER, 0) | (9u << 16), SCENE, &r, NULL) == 2 &&
+          mod_mat_census_chain(MOD_MAT_CHAIN_DT_WALKS) == 1, "another model record: the cached chain, one walk");
+    unsigned char out[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+    CHECK(openpete_mods_material_chain_block(r.entry, 0, NULL, 0, out) == 0, "stock block");
+    CHECK(openpete_mods_material_chain_block(r.entry, OPENPETE_MATERIAL_CHAIN_DECAL, NULL, 0, out) == -1,
+          "no decal block for a scene chain");
+    CHECK(memcmp(out + 512, blk, sizeof blk) == 0, "position 1 holds b's params");
+    CHECK(openpete_mods_material_chain_ubo_block(r.entry, 0) ==
+              1 + 2 * OPENPETE_MATERIAL_CHAINS + 3 * OPENPETE_MATERIAL_TERRAIN_CHAINS &&
+          openpete_mods_material_chain_ubo_block(r.entry, OPENPETE_MATERIAL_CHAIN_TERRAIN) == -1,
+          "draw-time blocks follow the terrain entries");
+    CHECK(dt_of(chan_tag(OP_CHAN_FLAME, 0), SCENE, &r, NULL) == 0, "flame: no candidate, stock");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_DT_STOCK) == 0, "stock with no candidate is not counted");
+    stub_mod_t* c = mod("fx-c", 2, 13);
+    stub_mod_t* d = mod("fx-d", 3, 13);
+    stub_mod_t* e = mod("fx-e", 4, 13);
+    regf(c, sel_ch(OP_CHAN_PLAYER), 12, 1, 0, NULL);
+    regf(d, openpete_mod_material_sel_any(), 13, 1, 0, NULL);
+    const int me = regf(e, sel_ch(OP_CHAN_PLAYER), 14, 1, 0, NULL);
+    CHECK(dt_of(chan_tag(OP_CHAN_PLAYER, 0), SCENE, &r, NULL) == 4 && r.mat[0] == mb && r.mat[3] == me,
+          "five members over the cap: the four highest, a channel -1 member among them");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2 + 2) == 1, "a draw of 4 members");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("player a,b: chain [a b] in the draw-time range, cached across model records; five: [b c d e]");
+}
+
+/** @brief A held owner is left out of the draw-time walk, so the draw keeps the outcome it had before the owner entered; matched stock is counted. */
+static void case_dt_held(void) {
+    begin("Draw-time chain: held owners");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    const int ma = regf(a, sel_ch(OP_CHAN_PLAYER), 10, 1, 0, NULL);
+    regf(b, sel_ch(OP_CHAN_PLAYER), 11, 1, 0, NULL);
+    const int sh[2] = {10, 11};
+    set_publish(&s_set_a, 1, 2, sh);
+    mod_mat_census_force(1);
+    mod_mat_chain_res_t r;
+    int m = -1;
+    const char* top[1] = {"fx-b"};
+    openpete_mods_hold_owners(top, 1);
+    CHECK(dt_of(chan_tag(OP_CHAN_PLAYER, 0), SCENE, &r, &m) == 1 && m == ma, "b held: a alone, as before b entered");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_DT_HELD) == 1, "held exclusion counted");
+    const char* both[2] = {"fx-a", "fx-b"};
+    openpete_mods_hold_owners(both, 2);
+    CHECK(dt_of(chan_tag(OP_CHAN_PLAYER, 0), SCENE, &r, NULL) == 0, "both held: stock");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_DT_STOCK) == 1, "matched stock counted");
+    openpete_mods_hold_owners(NULL, 0);
+    CHECK(dt_of(chan_tag(OP_CHAN_PLAYER, 0), SCENE, &r, NULL) == 2, "released: composes");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_DT_HELD) == 3, "held %u", mod_mat_census_chain(MOD_MAT_CHAIN_DT_HELD));
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("top held: the member below alone; all held: stock (counted); released: chain");
+}
+
+/** @brief A composable top an installed set lacks is left out while a newer module is pending, else draws alone; below a composable member it is skipped. */
+static void case_dt_pending(void) {
+    begin("Draw-time chain: a member absent while its module is pending");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    const int ma = regf(a, sel_ch(OP_CHAN_FLAME), 10, 1, 0, NULL);
+    const int mb = regf(b, sel_ch(OP_CHAN_FLAME), 11, 1, 0, NULL);
+    const int sh[1] = {10};
+    set_publish(&s_set_a, 1, 1, sh);
+    mod_mat_census_force(1);
+    mod_mat_chain_res_t r;
+    int m = -1;
+    mod_mat_chain_pending_set(1);
+    openpete_mods_material_chain_set_publish(NULL);
+    CHECK(dt_of(chan_tag(OP_CHAN_FLAME, 1), SCENE, &r, &m) == 1 && m == mb, "no set installed: the top alone");
+    set_publish(&s_set_a, 1, 1, sh);
+    CHECK(dt_of(chan_tag(OP_CHAN_FLAME, 1), SCENE, &r, &m) == 1 && m == ma, "pending: b left out, a alone");
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_DT_PENDING) == 1, "pending exclusion counted");
+    mod_mat_chain_pending_set(0);
+    CHECK(dt_of(chan_tag(OP_CHAN_FLAME, 1), SCENE, &r, &m) == 1 && m == mb, "nothing pending: absent b draws alone");
+    const int sh2[2] = {10, 11};
+    set_publish(&s_set_b, 2, 2, sh2);
+    CHECK(dt_of(chan_tag(OP_CHAN_FLAME, 1), SCENE, &r, NULL) == 2, "installed: chain");
+    const int sh3[1] = {11};
+    set_publish(&s_set_a, 3, 1, sh3);
+    CHECK(dt_of(chan_tag(OP_CHAN_FLAME, 1), SCENE, &r, &m) == 1 && m == mb, "a absent below b: skipped, b alone");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("no set: top alone; absent top while pending: left out; not pending: alone; installed: chain; absent below: skipped");
+}
+
+/** @brief Terminal, pinned-below-13 and unlinkable members follow the extraction walk's rules at draw time; a retune or enable change voids the cache. */
+static void case_dt_rules(void) {
+    begin("Draw-time chain: terminal and unlinkable members, cache inputs");
+    stub_mod_t* o = mod("fx-old", 0, 12);
+    stub_mod_t* a = mod("fx-a", 1, 13);
+    stub_mod_t* u = mod("fx-unl", 2, 13);
+    const int mo = regf(o, sel_ch(OP_CHAN_SKY), 10, 1, 0, NULL);
+    const int ma = regf(a, sel_ch(OP_CHAN_SKY), 11, 1, 0, NULL);
+    const int sh[2] = {10, 11};
+    set_publish(&s_set_a, 1, 2, sh);
+    mod_mat_chain_res_t r;
+    int m = -1;
+    CHECK(dt_of(chan_tag(OP_CHAN_SKY, 0), SCENE, &r, NULL) == 2 && r.mat[0] == mo, "pin 12 below a: the chain ends on it");
+    const int mu = regf(u, sel_ch(OP_CHAN_SKY), 20, 0, 0, NULL);
+    CHECK(dt_of(chan_tag(OP_CHAN_SKY, 0), SCENE, &r, &m) == 1 && m == mu, "unlinkable on top: alone");
+    mod_mat_enable(mu, 0);
+    CHECK(dt_of(chan_tag(OP_CHAN_SKY, 0), SCENE, &r, NULL) == 2, "disabled: the cache follows");
+    openpete_mod_material_selector_t ex = sel_ch(OP_CHAN_SKY);
+    ex.flags = OP_SEL_EXCLUSIVE;
+    CHECK(mod_mat_set_selector("fx-a", ma, &ex) == 0, "retune to exclusive");
+    CHECK(dt_of(chan_tag(OP_CHAN_SKY, 0), SCENE, &r, &m) == 1 && m == ma, "exclusive top: alone");
+    openpete_mods_material_chain_set_publish(NULL);
+    OUTCOME("pin 12 below: ends the chain; unlinkable top: alone; enable and retune void the cached outcome");
+}
+
+/** @brief Decal-contract composable declaratives on moby shadows (shadow ident 0) compose in the decal module; scene sites never take them. */
+static void case_dt_decal(void) {
+    begin("Draw-time chain: decal contract on shadow ident 0");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    openpete_mod_material_selector_t s0 = sel_ch(OP_CHAN_SHADOW);
+    s0.ident = 0;
+    const int ma = regc(a, s0, 30, 1, DECAL);
+    const int mb = regc(b, s0, 31, 1, DECAL);
+    const int sh[2] = {30, 31};
+    set_publish_profile(&s_set_a, 1, 2, sh, OPENPETE_MATERIAL_CHAIN_DECAL);
+    mod_mat_census_force(1);
+    mod_mat_chain_res_t r;
+    CHECK(dt_of(chan_tag(OP_CHAN_SHADOW, 0), DECAL, &r, NULL) == 2 && r.mat[0] == ma && r.mat[1] == mb,
+          "decal a,b: chain");
+    unsigned char out[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+    CHECK(openpete_mods_material_chain_block(r.entry, OPENPETE_MATERIAL_CHAIN_DECAL, NULL, 0, out) == 0,
+          "decal block");
+    CHECK(openpete_mods_material_chain_block(r.entry, 0, NULL, 0, out) == -1, "no stock block for a decal chain");
+    CHECK(openpete_mods_material_chain_ubo_block(r.entry, OPENPETE_MATERIAL_CHAIN_DECAL) ==
+              openpete_mods_material_chain_ubo_block(r.entry, 0), "the decal profile takes the stock block");
+    uint32_t n = 0, ids[2];
+    memcpy(&n, out, 4);
+    memcpy(ids, out + 16, sizeof ids);
+    CHECK(n == 2 && ids[0] == 0 && ids[1] == 1, "decal case ids");
+    CHECK(dt_of(chan_tag(OP_CHAN_SHADOW, 0), SCENE, &r, NULL) == 0, "a scene site takes no decal material");
+    CHECK(dt_of(chan_tag(OP_CHAN_SHADOW, 1), DECAL, &r, NULL) == 0, "the player shadow (ident 1): none");
+    const int sh1[2] = {30, 31};
+    set_publish(&s_set_b, 2, 2, sh1);   /* cases in the scene profiles only */
+    int m = -1;
+    CHECK(dt_of(chan_tag(OP_CHAN_SHADOW, 0), DECAL, &r, &m) == 1 && m == mb, "a set without decal cases: the top alone");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("shadow ident 0, decal a,b: chain in the decal profile; scene sites and ident 1 take none");
+}
+
+/* ------------------------------------------------------------------ */
 /* Overlap diagnostic. */
 
 /** @brief Recompute the overlap pairs when their inputs moved, as the tick boundary does, without the registry lock. */
@@ -1894,6 +2099,66 @@ static void case_ovl_inputs(void) {
     OUTCOME("same retune or enable: no recompute; retune, enable change, level change, applied parked retune: recompute");
 }
 
+/** @brief Composition pairings of the overlap verdict: which higher material shadows a lower one once materials compose. */
+static void case_ovl_compose(void) {
+    begin("Overlap: composition pairings");
+    stub_mod_t* l = mod("fx-lo", 0, 13);
+    stub_mod_t* h = mod("fx-hi", 1, 13);
+    const int lo = regf(l, sel_moby(5), 10, 1, 0, NULL);                 /* linkable, composable */
+    const int hc = regf(h, sel_moby(5), 11, 1, 0, NULL);                 /* linkable, composable */
+    CHECK(ovl(hc, lo) == NONE, "composable linkable over linkable: composes, no shadow");
+    OUTCOME("composable over linkable: none");
+
+    begin("Overlap: a linkable terminal declarative");
+    l = mod("fx-lo", 0, 13);
+    stub_mod_t* t = mod("fx-t", 1, 12);
+    stub_mod_t* c = mod("fx-c", 2, 13);
+    const int lo2 = regf(l, sel_moby(5), 10, 1, 0, NULL);
+    const int ht = regf(t, sel_moby(5), 11, 1, 0, NULL);
+    CHECK(ovl(ht, lo2) == FULL, "pin 12 linkable over lo: full");
+    regf(c, sel_moby(5), 12, 1, 0, NULL);
+    CHECK(ovl(ht, lo2) == FULL, "a composable member above it: still full (it joins and ends the chain)");
+    OUTCOME("linkable terminal over lo: full, with or without a composable member above");
+
+    begin("Overlap: an unlinkable declarative draws alone only on top");
+    l = mod("fx-lo", 0, 13);
+    stub_mod_t* u = mod("fx-u", 1, 13);
+    c = mod("fx-c", 2, 13);
+    const int lo3 = regf(l, sel_moby(5), 10, 1, 0, NULL);
+    const int hu = regf(u, sel_moby(5), 20, 0, 0, NULL);
+    CHECK(ovl(hu, lo3) == FULL, "unlinkable on top over lo: full");
+    const int mc = regf(c, sel_moby(5), 12, 1, 0, NULL);
+    CHECK(ovl(hu, lo3) == PART, "a composable linkable member above it: skipped there, partial");
+    CHECK(ovl(mc, hu) == FULL && ovl(mc, lo3) == NONE, "composable over unlinkable: full; over linkable lo: none");
+    OUTCOME("unlinkable over lo: full alone, partial under a composable member; composable over unlinkable: full");
+
+    begin("Overlap: a vertex-stage declarative");
+    l = mod("fx-lo", 0, 13);
+    stub_mod_t* v = mod("fx-v", 1, 13);
+    c = mod("fx-c", 2, 13);
+    const int lo4 = regf(l, sel_moby(5), 10, 1, 0, NULL);
+    openpete_mod_material_selector_t s5 = sel_moby(5);
+    const int hv = mod_mat_append(v->id, &s5, 40, 11, SCENE, NULL, v->load_index, 13, 1u);
+    mod_mat_set_link_of_frag(11, 1, 0);
+    CHECK(ovl(hv, lo4) == FULL, "vertex stage on top over lo: full");
+    regf(c, sel_moby(5), 12, 1, 0, NULL);
+    CHECK(ovl(hv, lo4) == PART, "under a composable member it is dropped above lo: partial");
+    OUTCOME("vertex-stage over lo: full on top, partial under a composable member");
+
+    begin("Overlap: refines among composable members");
+    l = mod("fx-lo", 0, 13);
+    stub_mod_t* r = mod("fx-r", 1, 13);
+    stub_mod_t* rt = mod("fx-rt", 2, 12);
+    const int lo5 = regf(l, sel_moby(5), 20, 0, 0, NULL);               /* unlinkable */
+    const int hr = regf(r, sel_moby(5), 11, 1, 0, rf_accept);          /* composable linkable refine */
+    CHECK(ovl(hr, lo5) == PART, "composable refine over unlinkable lo, not yet asked: partial");
+    const int lo6 = regf(l, sel_moby(6), 10, 1, 0, NULL);
+    const int ht2 = regf(rt, sel_moby(6), 12, 1, 0, rf_decline);       /* terminal refine */
+    CHECK(ovl(ht2, lo6) == PART, "terminal refine over lo: partial");
+    CHECK(ovl(hr, lo6) == NONE, "disjoint keys");
+    OUTCOME("composable refine over unlinkable lo: partial; terminal refine over lo: partial");
+}
+
 int main(void) {
     case_f1();
     case_f1a_level();
@@ -1941,6 +2206,11 @@ int main(void) {
     case_ter_chain_fallback();
     case_ter_chain_table_full();
     case_ter_epoch_skip();
+    case_dt_chain();
+    case_dt_held();
+    case_dt_pending();
+    case_dt_rules();
+    case_dt_decal();
     case_ovl_fixture_decl();
     case_ovl_fixture_wild();
     case_ovl_fixture_levelkey();
@@ -1950,6 +2220,7 @@ int main(void) {
     case_ovl_je_portals();
     case_ovl_accept_all();
     case_ovl_inputs();
+    case_ovl_compose();
     CHECK(s_split == 1, "tag split armed while materials are live");
     printf("%s: %d checks\n", s_fail ? "FAIL" : "PASS", s_checks);
     return s_fail;

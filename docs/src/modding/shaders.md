@@ -126,6 +126,7 @@ Every selector key is optional; an omitted key matches everything:
 | `textured` | `true` or `false`; omit for both. On `moby`, `true` matches every moby triangle and `false` none |
 | `env_anim` | `true` selects only the terrain faces the game animates: a face whose texture record a texture swap or UV scroll rewrites, or whose vertex or vertex colour a geometry or colour animation rewrites, textured or not. `false` selects only the terrain faces the game does not animate (from `api = 13`; below it `false` narrows nothing). Omit for both. Terrain only: a row with it never matches a moby |
 | `params` | Floats handed to the shader as its uniform block |
+| `exclusive` | `true` makes the material terminal: no material ranked below it composes beneath it ([Compose materials](#compose-materials)). From `api = 13`; below 13 every material is terminal and the key is ignored |
 | `enabled` | `false` ships the row switched off |
 | `game` | One game id or an array of them; the row registers on those games only. Omit for every game the mod loads on |
 
@@ -165,12 +166,14 @@ fields; never zero-initialise it. The struct carries its own size and
 flag mask, and the engine refuses a selector it cannot honour exactly.
 
 Where two materials claim one draw, the mod later in the enabled list
-wins, on every channel and on terrain alike, refine or declarative.
-Inside one mod the registration order decides, selected by the mod's
-`api` pin: from `api = 13` the later registration wins, and below 13 the
-first one does. Manifest rows arm before the entry point runs, so from
-`api = 13` a C registration wins over a manifest row on the same
-selector, and below 13 the row wins.
+ranks higher, on every channel and on terrain alike, refine or
+declarative. Inside one mod the registration order decides, selected by
+the mod's `api` pin: from `api = 13` the later registration ranks
+higher, and below 13 the first one does. Manifest rows arm before the
+entry point runs, so from `api = 13` a C registration ranks above a
+manifest row on the same selector, and below 13 the row does. Whether
+the higher material alone shades the draw or composes over the lower
+ones is the pin's other effect ([Compose materials](#compose-materials)).
 
 On the moby channel a refine callback's `-1` means "not mine": the moby
 passes to the next material in this order that matches it. A declarative
@@ -189,7 +192,54 @@ enabled. A restart applies `enabled.txt` order. A dependency ranks below
 the mods that depend on it. In a windowed run, on the present that
 enables such a mod, mobys keep the material outcome computed before it
 entered, and its materials draw stock on the presents that follow until
-their pipelines finish compiling.
+their pipelines finish compiling. On the other channels, and on a
+terrain face or moby the extraction left to the draw, the draws keep the
+outcome they had before the mod entered until its composition module is
+installed; a moby or terrain chain stamped with one of its materials
+draws stock on the present that enables it.
+
+### Compose materials
+
+The `api` pin selects composition on every channel, terrain included. A
+material of a mod pinned at `api = 13` or later composes. A material of a
+mod pinned below 13 or with no `api` key, and a row with `exclusive =
+true` (`OP_SEL_EXCLUSIVE` in a C selector's `flags`, refused below 13),
+is terminal.
+
+The engine walks the materials that match a draw from the highest rank
+down. A composable material that takes the draw continues the walk; a
+terminal one ends it. The draw runs every material the walk took, lowest
+rank first: each `op_material` receives the previous one's output, alpha
+included and unclamped, and the lowest receives `base`. A material that
+returns without reading `base` replaces the ones below it. A material on
+channel `any` composes on every channel it matches. A refine material
+composes on the moby and terrain channels, and a refine ranked below a
+composable material that takes the draw is asked as well, unless it
+cannot be linked.
+
+- The highest material that takes the draw shades it alone, and the walk
+  stops there, when it is terminal, has a vertex stage, or cannot be
+  linked.
+- Below a composable material, a material that cannot be linked is
+  skipped, a material with a vertex stage joins only as the lowest (the
+  draw uses its vertex stage), and a material whose `op_material`
+  returns its parameter unchanged is left out.
+- At most 4 materials compose on one draw. Over 4, the walk keeps the 4
+  highest-ranked and drops the rest, the lowest-ranked first.
+- Linking recompiles each member from its source into one module per
+  shading contract, every member's identifiers renamed, so a mod's
+  shader needs no change to compose. A prebuilt `.spv` shipped without
+  its source cannot be linked and draws alone. From `api = 13` a shader
+  whose `op_material` reaches a `discard` is refused; below 13 it cannot
+  be linked.
+- Moby drop-shadows (channel `shadow`, `ident = 0`) compose among decal
+  shaders (`openpete_psx_decal.glsl`). Spyro's own shadow (`ident = 1`)
+  has no material stage: a material selecting it draws nothing.
+
+A material pinned below 13 takes no material beneath it, so it shades
+as it did before composition unless a composable material ranked above
+it composes over it. `exclusive = true` gives a material pinned at 13 or
+later the same behaviour.
 
 `material_register` is refused inside a present, and a UI section runs
 inside one. A material that follows a value the player is changing

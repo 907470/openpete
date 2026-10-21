@@ -253,6 +253,8 @@ chain_leg() {
         cp -r "mods/$m" "$md/"
         rm -rf "${md:?}/$m/.build"
         echo "$m" >> "$md/enabled.txt"
+        # CHAIN_ROWS="<channel>..." keeps only the [[material]] rows on those channels.
+        [ -n "${CHAIN_ROWS:-}" ] && chain_keep_rows "$md/$m/mod.toml" "$CHAIN_ROWS"
     done
     local PG_CAPTURE_TIMEOUT=900
     local -a PG_CAPTURE_ENV=(OPENPETE_MATERIAL_STATS=1) cache=()
@@ -267,6 +269,18 @@ chain_leg() {
         "${movie[@]}" "${cache[@]}" --screenshot-native-only --mods-dir "$md" \
         --screenshot-on-frame "$frame" \
         --screenshot-output "$WORK/$tag-{n}.png" --frame-limit $((frame + 2))
+}
+# chain_keep_rows <mod.toml> <channels>: drop every [[material]] row whose
+# channel is not one of <channels> (space separated).
+chain_keep_rows() {
+    python3 - "$1" "$2" <<'PY'
+import re, sys
+path, keep = sys.argv[1], set(sys.argv[2].split())
+parts = re.split(r'(?m)^(?=\[\[material\]\])', open(path).read())
+out = [parts[0]] + [p for p in parts[1:]
+                    if re.search(r'(?m)^channel\s*=\s*"([^"]*)"', p).group(1) in keep]
+open(path, "w").write("".join(out))
+PY
 }
 # chain_census <tag> <field>: a value of the census chain line.
 chain_census() {
@@ -397,6 +411,168 @@ ter_chain_rung() {  # ter_chain_rung <scene> <frame>
         bad "terrain chains: the chain moved the cache from secs=$secs0 claims=$cl0 to secs=$secs1 claims=$cl1"
     fi
 }
+
+# ── material composition: draw-time chains ───────────────────────────
+# mat-chain-dt-a and mat-chain-dt-b are pinned-13 declaratives on the
+# player, the flame and moby shadows (shadow ident 0, decal contract);
+# mat-chain-dt-ref2 is their composition written by hand as one exclusive
+# material per row. Nothing stamps these channels: the compose walks the
+# matching declaratives per draw. At the player/flame pin the composed a,b
+# capture must equal ref2 pixel for pixel; at the shadow pin, with only the
+# shadow rows kept, so must the decal-module composition. Engagement: a and
+# ref2 repaint the stock frame, a,b differs from a, the census counts
+# draw-time chains and chain draws of 2 members, and the shadow leg's log
+# names a combined module with 2 decal members.
+dt_chain_rung() {  # dt_chain_rung <scene> <frame> <shadow scene> <shadow frame>
+    local scene="$1" frame="$2" sscene="$3" sframe="$4" spec tag n pair pre ff want
+    local -a leg
+    say "material composition: draw-time chains at $scene $frame, decal chains at $sscene $sframe"
+    for spec in "stock|" "a|mat-chain-dt-a" "ab|mat-chain-dt-a mat-chain-dt-b" "ref2|mat-chain-dt-ref2"; do
+        tag="dtchain-${spec%%|*}"
+        read -ra leg <<< "${spec#*|}"
+        chain_leg "$tag" "$scene" "$frame" "${leg[@]}" ||
+            { bad "draw-time chains: no capture for $tag (see $WORK/$tag.log)"; return; }
+        tag="dtshadow-${spec%%|*}"
+        CHAIN_ROWS=shadow chain_leg "$tag" "$sscene" "$sframe" "${leg[@]}" ||
+            { bad "decal chains: no capture for $tag (see $WORK/$tag.log)"; return; }
+    done
+    for pre in dtchain dtshadow; do
+        ff="-$frame-vk.png"
+        [ "$pre" = dtshadow ] && ff="-$sframe-vk.png"
+        for pair in "a stock" "ref2 stock" "ab a"; do
+            set -- $pair
+            n=$(diffpx "$WORK/$pre-$1$ff" "$WORK/$pre-$2$ff")
+            if [ "${n:-0}" -gt 0 ]; then ok "$pre: $1 repaints $n px against $2"
+            else bad "$pre: $1 equals $2 - the comparison below proves nothing"; fi
+        done
+        n=$(diffpx "$WORK/$pre-ab$ff" "$WORK/$pre-ref2$ff")
+        if [ "${n:-1}" -eq 0 ]; then ok "$pre: a,b is pixel-identical to ref2"
+        else bad "$pre: a,b differs from ref2 by ${n:-?} px"; fi
+        for want in dt-chains 2; do
+            n=$(chain_census "$pre-ab" "$want")
+            if [ "${n:-0}" -gt 0 ]; then ok "$pre: census $want=$n"
+            else bad "$pre: census $want=${n:-none} (see $WORK/$pre-ab.log)"; fi
+        done
+    done
+    if grep -q 'combined module [0-9]* built: 0 scene member shader(s).* decal 2 member(s)' "$WORK/dtshadow-ab.log"; then
+        ok "decal chains: a combined module with 2 decal members was built"
+    else
+        bad "decal chains: no combined module with 2 decal members (see $WORK/dtshadow-ab.log)"
+    fi
+}
+
+# ── material composition: a held owner at draw time ──────────────────
+# A live toggle enters mat-chain-dt-b (composable, boot-disabled) over
+# mat-chain-dt-a (enabled at boot) in a windowed non-synchronous run on a
+# private Xvfb display, with no screenshot (a capture would make the run
+# deterministic). The mods directory is OPENPETE_MODS_DIR with an
+# enabled.txt naming only dt-a, so the load-all path loads dt-b with its
+# entry deferred, and OPENPETE_MODS_TOGGLE enables it at tick <tick> (a
+# windowed run's canonical tick counts from the level becoming playable). The
+# present that queues dt-b's compiles holds its owner, and the combined
+# module that adds dt-b installs through the late path, so for that present
+# and until the install the draw-time walk leaves dt-b out and the draws
+# dt-a's selectors match draw dt-a alone. Pass: the toggle and the late
+# entry ran; the census counts held-owner exclusions (refuses 0); draws
+# with a matching declarative that drew stock are 0; a second combined
+# module was built and installed, and the walk then formed chains
+# (dt-chains and chain draws of 2, each refusing 0); the late-compile
+# census reports no stock draw.
+hold_rung() {  # hold_rung <scene> <frame-limit> <toggle tick>
+    local scene="$1" limit="$2" tick="$3" md="$WORK/mods-hold" n want cards
+    local log="$WORK/hold.log"
+    say "material composition: a live-entered composable mod is held at draw time ($scene, toggle at tick $tick)"
+    if ! command -v xvfb-run >/dev/null 2>&1; then bad "hold: xvfb-run not installed"; return; fi
+    local -a movie=() extra=()
+    if [ "$scene" != attract ]; then
+        movie=(--bk2 "$PG_BK2_DIR/$scene.bk2")
+        if [ -f "$PG_BK2_DIR/$scene.bk2.args" ]; then
+            read -ra extra < <(grep -v '^#' "$PG_BK2_DIR/$scene.bk2.args" | tr '\n' ' ')
+            movie+=("${extra[@]}")
+        fi
+    fi
+    rm -rf "${md:?}"
+    mkdir -p "$md"
+    cp -r mods/mat-chain-dt-a mods/mat-chain-dt-b "$md/"
+    rm -rf "${md:?}/mat-chain-dt-a/.build" "${md:?}/mat-chain-dt-b/.build"
+    echo mat-chain-dt-a > "$md/enabled.txt"
+    rm -f "${log:?}"
+    cards="$(mktemp -d "$OPENPETE_CARD_DIR/run.XXXXXX")" || { bad "hold: no card directory"; return; }
+    # The window goes to the Xvfb display: SDL would pick a Wayland
+    # compositor (WSLg) over X11 when WAYLAND_DISPLAY is set.
+    # OPENPETE_PRECOMPILE_FORCE=1: a software device skips the boot precompile,
+    # which a GPU runs, so every draw before the toggle would wait on a late compile.
+    env -u WAYLAND_DISPLAY -u OPENPETE_MODS SDL_VIDEODRIVER=x11 OPENPETE_VIBRATION=0 OPENPETE_PRECOMPILE_FORCE=1 \
+        OPENPETE_CARD_DIR="$cards" OPENPETE_MODS_DIR="$md" OPENPETE_MATERIAL_STATS=1 \
+        OPENPETE_MODS_TOGGLE="$tick:mat-chain-dt-b:1" \
+        timeout -k 10 900 xvfb-run -a -s "-screen 0 1024x768x24" \
+        "$PG_BIN" --game "$PG_GAME" --no-config --disc "$PG_DISC" --disc-cache 0 --no-card --mute 1 \
+            --input-lock --vibration 0 --renderer vk --aspect 4:3 --lod original \
+            "${movie[@]}" --frame-limit "$limit" > "$log" 2>&1
+    rm -rf "${cards:?}"
+    if ! grep -q 'live toggle: mat-chain-dt-b ENABLED' "$log"; then
+        bad "hold: the toggle never ran (see $log)"; return
+    fi
+    if grep -q 'late enable path: [1-9]' "$log"; then
+        ok "hold: the late enable path ran: $(grep -o 'late enable path: [^;]*' "$log" | tail -1)"
+    else
+        bad "hold: no late entry was enumerated (see $log)"
+    fi
+    n=$(chain_census hold held-excluded)
+    if [ "${n:-0}" -gt 0 ]; then ok "hold: the draw-time walk excluded a held owner $n time(s)"
+    else bad "hold: held-owner exclusions ${n:-none} (see $log)"; fi
+    n=$(chain_census hold matched-stock)
+    if [ -n "$n" ] && [ "$n" -eq 0 ]; then ok "hold: 0 draws with a matching declarative drew stock"
+    else bad "hold: ${n:-no count of} draws with a matching declarative drew stock"; fi
+    n=$(chain_census hold pending-excluded)
+    ok "hold: ${n:-0} exclusion(s) of a member absent while its module was pending"
+    if grep -q 'combined module [0-9]* installed' "$log" &&
+       [ "$(grep -c 'material composition: combined module [0-9]* built' "$log")" -ge 2 ]; then
+        ok "hold: a second combined module was built at the entry and installed"
+    else
+        bad "hold: no combined module rebuilt and installed after the entry (see $log)"
+    fi
+    for want in dt-chains 2; do
+        n=$(chain_census hold "$want")
+        if [ "${n:-0}" -gt 0 ]; then ok "hold: census $want=$n after the install"
+        else bad "hold: census $want=${n:-none} (see $log)"; fi
+    done
+    n=$(sed -n 's/.*late compiles: .* stock draws \([0-9]*\) over.*/\1/p' "$log" | tail -1)
+    if [ -n "$n" ] && [ "$n" -eq 0 ]; then ok "hold: the late compiles drew stock 0 times"
+    else bad "hold: the late compiles drew stock ${n:-?} time(s) (see $log)"; fi
+}
+
+# MODCHAN_ONLY="<rung>..." runs only the named composition rungs (chain,
+# ter_chain, dt_chain, hold) at this game's pins, then exits.
+if [ -n "${MODCHAN_ONLY:-}" ]; then
+    diffpx() {
+        python3 - "$1" "$2" <<'PY'
+import sys
+from PIL import Image, ImageChops
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+print(sum(1 for p in ImageChops.difference(a, b).getdata() if p != (0, 0, 0)))
+PY
+    }
+    case "$PG_GAME" in
+        spyro-1) cs=flame cf=1800 ss=artisans-bridge sf=1986 ;;
+        spyro-2) cs=shady-oasis-flame cf=1421 ss=shady-oasis-flame sf=1421 ;;
+        spyro-3) cs=crystal-islands-flame cf=1653 ss=sheilas-alp-sheila-water-invisible sf=5105 ;;
+        *) echo "[modchan] SKIP: no composition pins for $PG_GAME"; exit 64 ;;
+    esac
+    for r in $MODCHAN_ONLY; do
+        case "$r" in
+            chain) chain_rung "$cs" "$cf" ;;
+            ter_chain) ter_chain_rung "$cs" "$cf" ;;
+            dt_chain) dt_chain_rung "$cs" "$cf" "$ss" "$sf" ;;
+            hold) hold_rung "$cs" $((cf + 700)) 150 ;;
+            *) bad "MODCHAN_ONLY: no rung \"$r\"" ;;
+        esac
+    done
+    echo
+    if [ "$fail" -eq 0 ]; then echo "[modchan] ALL GREEN"; else echo "[modchan] FAILURES - see above"; fi
+    exit $fail
+fi
 
 # ── env_anim splits the terrain ───────────────────────────────────────
 # A [[material]] row with env_anim = true selects the terrain faces the
@@ -593,6 +769,10 @@ PY
     delay_rung "$delay_scene" "$delay_frame"
     chain_rung "$delay_scene" "$delay_frame"
     ter_chain_rung "$delay_scene" "$delay_frame"
+    shadow_scene=$(sed -n 's/^shadow|\([^|]*\)|\([0-9]*\)$/\1/p' <<< "$S23_RUNGS")
+    shadow_frame=$(sed -n 's/^shadow|\([^|]*\)|\([0-9]*\)$/\2/p' <<< "$S23_RUNGS")
+    dt_chain_rung "$delay_scene" "$delay_frame" "$shadow_scene" "$shadow_frame"
+    hold_rung "$delay_scene" $((delay_frame + 700)) 150
     case "$PG_GAME" in
         spyro-2) env_split_rung "crushs_dungeon@pos=(3080, 30039, 31217) yaw=29 pitch=548" 2473 ;;
         spyro-3) env_split_rung "sunny_villa@pos=(79168, 34297, 14796) yaw=867 pitch=197" 2473 ;;
@@ -1075,6 +1255,8 @@ fi
 delay_rung flame 1800
 chain_rung flame 1800
 ter_chain_rung flame 1800
+dt_chain_rung flame 1800 artisans-bridge 1986
+hold_rung flame 2500 150
 env_split_rung moving-terrain 2262
 
 # Row 12 keys the flare kind, which Spyro 1 never draws: its sparkle

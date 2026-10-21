@@ -1698,21 +1698,22 @@ typedef struct {
     int   chain_module;
     int   chain_vvar;
 } openpete_mod_material_gpu_t;
-/** @brief Resolve a draw's provenance tag to the material override that applies.
+/** @brief Resolve a draw's provenance tag to the material override or chain that applies.
  *
  * Takes no lock; the compose calls it under the registry read lock. Only
  * materials whose shading contract equals @p contract take part. A moby
  * slot (bits 27:16) selects its material directly: an interned refine
- * outcome, or OPENPETE_MATERIAL_SLOT_DECL | index for a declarative
- * landing, which draws with that material's static block; a moby tag with
- * slot 0 resolves through the extraction walk's predicate over the
- * declarative materials. A held owner draws stock. A terrain slot (bits
- * 24:16) carries the walked face's resolved class member
- * (openpete_mods_material_terrain_walk_slot): an interned refine outcome,
- * OPENPETE_MATERIAL_TERRAIN_DECL | index for a declarative landing, or
- * OPENPETE_MATERIAL_TERRAIN_STOCK. Slot 0 falls through to the declarative
- * winner among live, user-enabled materials of enabled mods. Rank is the
- * owner's enabled-list position, later higher, and inside one mod the
+ * outcome, OPENPETE_MATERIAL_SLOT_DECL | index for a declarative landing,
+ * which draws with that material's static block, or a stamped chain
+ * entry; a held owner there draws stock. A terrain slot (bits 24:16)
+ * carries the walked face's resolved class outcome
+ * (openpete_mods_material_terrain_walk_slot) the same way. A tag with slot
+ * 0, and every tag of the player, flame, particle, sky, shadow, tracer and
+ * portal channels, resolves at draw time from the declaratives matching it
+ * (mod_mat_resolve_index): owners held for this compose are left out, and
+ * composable materials compose into a draw-time chain entry; a decal
+ * contract chain draws through the decal module. Rank is the owner's
+ * enabled-list position, later higher, and inside one mod the
  * registration order selected by its api pin (later from 13, earlier
  * below). The level a level key tests is the installed view's. An
  * OPENPETE_MATERIAL_SLOT_STOCK slot, a slot past the view, a slot whose
@@ -1769,17 +1770,28 @@ int  openpete_mods_material_has_instance(void);
  * as OPENPETE_MATERIAL_TERRAIN_CHAIN | id (0x080-0x0FF), a retained pass as
  * OPENPETE_MATERIAL_TER_PASS_CHAIN + id. */
 #define OPENPETE_MATERIAL_TERRAIN_CHAINS 128
-/* Chain entry ids across both tables: moby entry id is id, terrain entry id
- * is OPENPETE_MATERIAL_CHAINS + id. */
+/* Chain entry ids across both stamped tables: moby entry id is id, terrain
+ * entry id is OPENPETE_MATERIAL_CHAINS + id. */
 #define OPENPETE_MATERIAL_CHAIN_ENTRIES (OPENPETE_MATERIAL_CHAINS + OPENPETE_MATERIAL_TERRAIN_CHAINS)
+/* Draw-time chain entries one compose holds: the chains the compose walks
+ * from the declaratives matching a tag of a channel nothing stamps (every
+ * channel but moby and terrain, a moby tag with slot 0, a terrain tag with
+ * slot 0). Entry id is OPENPETE_MATERIAL_DT_CHAIN_BASE + id. */
+#define OPENPETE_MATERIAL_DT_CHAINS     64
+#define OPENPETE_MATERIAL_DT_CHAIN_BASE OPENPETE_MATERIAL_CHAIN_ENTRIES
+/* Every chain entry id: the stamped tables, then the draw-time range. */
+#define OPENPETE_MATERIAL_CHAIN_IDS     (OPENPETE_MATERIAL_DT_CHAIN_BASE + OPENPETE_MATERIAL_DT_CHAINS)
 /* Fragment shaders one installed member set holds, and its profiles
- * (0 stock, 1 portal, 2 terrain). */
+ * (0 stock, 1 portal, 2 terrain of the scene contract; 3 the decal
+ * contract's one profile). */
 #define OPENPETE_MATERIAL_CHAIN_SET_MAX 64
-#define OPENPETE_MATERIAL_CHAIN_PROFILES 3
+#define OPENPETE_MATERIAL_CHAIN_PROFILES 4
 #define OPENPETE_MATERIAL_CHAIN_TERRAIN  2
+#define OPENPETE_MATERIAL_CHAIN_DECAL    3
 /* The member set of the installed combined modules: the fragment shaders
- * whose op_material a composed draw can call, and each one's case id in
- * the stock, the portal and the terrain module (-1 when that module lacks
+ * whose op_material a composed draw can call (the scene-contract members,
+ * then the decal-contract members), and each one's case id in the stock,
+ * the portal, the terrain and the decal module (-1 when that module lacks
  * it). Built with the modules and immutable once published. */
 typedef struct {
     unsigned generation;                  /* nonzero; moves with every published set */
@@ -1804,17 +1816,29 @@ const openpete_mods_material_chain_set_t* openpete_mods_material_chain_set_curre
  * 256-byte member block per chain position, lowest-ranked first. */
 #define OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES 1280u
 /* Blocks of the chain uniform set: the engine block, two per moby entry
- * (stock, portal) and three per terrain entry (stock, portal, terrain). */
-#define OPENPETE_MATERIAL_CHAIN_UBO_BLOCKS (1 + 2 * OPENPETE_MATERIAL_CHAINS + 3 * OPENPETE_MATERIAL_TERRAIN_CHAINS)
-/** @brief Return the chain uniform set block of one chain entry and profile, or -1 for a moby entry's terrain profile or an id out of range.
+ * (stock, portal), three per terrain entry (stock, portal, terrain) and two
+ * per draw-time entry (stock or decal, portal). */
+#define OPENPETE_MATERIAL_CHAIN_UBO_BLOCKS \
+    (1 + 2 * OPENPETE_MATERIAL_CHAINS + 3 * OPENPETE_MATERIAL_TERRAIN_CHAINS + 2 * OPENPETE_MATERIAL_DT_CHAINS)
+/** @brief Return the chain uniform set block of one chain entry and profile, or -1 for a profile the entry's draws never use or an id out of range.
  *
- * @param entry Chain entry id, 0 to OPENPETE_MATERIAL_CHAIN_ENTRIES - 1.
- * @param profile 0 stock, 1 portal, 2 terrain.
+ * A moby entry uses the stock and portal profiles, a terrain entry those
+ * and the terrain profile, a draw-time entry the stock and portal profiles
+ * or, for a decal-contract chain, the decal profile in the stock one's
+ * block.
+ * @param entry Chain entry id, 0 to OPENPETE_MATERIAL_CHAIN_IDS - 1.
+ * @param profile 0 stock, 1 portal, 2 terrain, 3 decal.
  * @return The block index. */
 static inline int openpete_mods_material_chain_ubo_block(int entry, int profile) {
-    if (entry < 0 || entry >= OPENPETE_MATERIAL_CHAIN_ENTRIES || profile < 0 ||
+    if (entry < 0 || entry >= OPENPETE_MATERIAL_CHAIN_IDS || profile < 0 ||
         profile >= OPENPETE_MATERIAL_CHAIN_PROFILES)
         return -1;
+    if (entry >= OPENPETE_MATERIAL_DT_CHAIN_BASE) {
+        if (profile == OPENPETE_MATERIAL_CHAIN_TERRAIN) return -1;
+        return 1 + 2 * OPENPETE_MATERIAL_CHAINS + 3 * OPENPETE_MATERIAL_TERRAIN_CHAINS +
+               2 * (entry - OPENPETE_MATERIAL_DT_CHAIN_BASE) + (profile == 1);
+    }
+    if (profile == OPENPETE_MATERIAL_CHAIN_DECAL) return -1;
     if (entry < OPENPETE_MATERIAL_CHAINS)
         return profile < OPENPETE_MATERIAL_CHAIN_TERRAIN ? 1 + 2 * entry + profile : -1;
     return 1 + 2 * OPENPETE_MATERIAL_CHAINS + 3 * (entry - OPENPETE_MATERIAL_CHAINS) + profile;
@@ -1835,6 +1859,10 @@ static inline int openpete_mods_material_chain_ubo_block(int entry, int profile)
  * @return 0, or -1 when the entry draws stock in this profile. */
 int openpete_mods_material_chain_block(int entry, int profile, const void* engine, uint32_t engine_len,
                                        void* out);
+/** @brief Return the draw-time generation: it moves whenever the draw-time chain entries are emptied, so an entry id names one chain while it holds.
+ *
+ * @return The generation, nonzero. */
+unsigned openpete_mods_material_dt_chain_gen(void);
 /** @brief Return the chain entries interned this present in the live table.
  *
  * @return The count. */
@@ -1843,17 +1871,19 @@ int  openpete_mods_material_chain_count(void);
  *
  * @return The count. */
 int  openpete_mods_material_terrain_chain_count(void);
-/** @brief Build the combined module pair of the current member set when it changed; the sim thread calls it at the tick boundary and the precompile before it runs.
+/** @brief Build the combined module set of the current member set when it changed; the sim thread calls it at the tick boundary and the precompile before it runs.
  *
  * Takes the registry write lock, and returns at once while the material
  * table has not changed since the last call. The member set: the
  * fragment shaders of live scene-contract materials whose stock profile
- * is linkable and not identity; it is built only while a composable
- * material (pinned at api 13 or later, not OP_SEL_EXCLUSIVE) is live,
- * whose first appearance also decides every pending member
- * (openpete_mods_shader_link_resolve). A set equal to the newest built
- * one builds nothing. The new pair is not installed: the compose installs
- * it (openpete_mods_material_chain_install) once its pipeline exists. */
+ * is linkable and not identity, built while a composable scene material
+ * (pinned at api 13 or later, not OP_SEL_EXCLUSIVE) is live, and those of
+ * live decal-contract materials, built while a composable decal material
+ * is live; the first composable material also decides every pending
+ * member (openpete_mods_shader_link_resolve). A set equal to the newest
+ * built one builds nothing. The new set is not installed: the compose
+ * installs it (openpete_mods_material_chain_install) once its pipelines
+ * exist. */
 void openpete_mods_material_chain_sync(void);
 /** @brief Return the newest combined module pair that is built and not installed, or -1.
  *
@@ -1870,6 +1900,13 @@ void openpete_mods_material_chain_install(int module);
  * @param out Receives the description, chain -1.
  * @return 0, or -1 for an unknown module or variant. */
 int  openpete_mods_material_chain_gpu(int module, int vvar, openpete_mod_material_gpu_t* out);
+/** @brief Describe one module set's decal-contract module and vertex variant as a decal draw's GPU description.
+ *
+ * @param module The module id.
+ * @param vvar Vertex variant, 0 for the stock vertex stage.
+ * @param out Receives the description, chain -1.
+ * @return 0, or -1 for an unknown module or variant or a set with no decal module. */
+int  openpete_mods_material_chain_decal_gpu(int module, int vvar, openpete_mod_material_gpu_t* out);
 /* Terrain tag slot field [24:16], 9 bits, the walked face class's resolved
  * outcome: 0 defers to the draw-time resolve (no material was registered
  * at extraction); 1..OPENPETE_MODS_MATERIAL_VIEW_SLOTS-1 is an interned

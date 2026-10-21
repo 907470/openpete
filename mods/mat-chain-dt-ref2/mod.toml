@@ -1,0 +1,31 @@
+# mat-chain-dt-ref2 - material composition fixture: mat-chain-dt-b over mat-chain-dt-a written by hand on the player, the flame and moby shadows, the reference a composed a,b capture must equal. exclusive, so it never composes.
+# Never enable it to play.
+
+[mod]
+id      = "mat-chain-dt-ref2"
+name    = "Material Fixture: Draw-time Chain Reference (2)"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/ref2.frag"
+channel = "player"
+params  = [1.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0]
+exclusive = true
+
+[[material]]
+frag    = "shaders/ref2.frag"
+channel = "flame"
+params  = [1.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0]
+exclusive = true
+
+[[material]]
+frag    = "shaders/ref2_decal.frag"
+channel = "shadow"
+ident   = 0
+params  = [1.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0]
+exclusive = true

@@ -1,0 +1,28 @@
+# mat-chain-dt-b - material composition fixture: a per-channel scale on the player, the flame and moby shadows (shadow ident 0, decal contract), pinned at api 13 (composable).
+# Never enable it to play.
+
+[mod]
+id      = "mat-chain-dt-b"
+name    = "Material Fixture: Draw-time Chain B"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/scale.frag"
+channel = "player"
+params  = [0.5, 1.0, 1.0, 0.0]
+
+[[material]]
+frag    = "shaders/scale.frag"
+channel = "flame"
+params  = [0.5, 1.0, 1.0, 0.0]
+
+[[material]]
+frag    = "shaders/scale_decal.frag"
+channel = "shadow"
+ident   = 0
+params  = [0.5, 1.0, 1.0, 0.0]

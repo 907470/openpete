@@ -310,17 +310,6 @@ int mod_mat_terrain_class_retained(int c);
 int mod_mat_sel_same_but_exclusive(const openpete_mod_material_selector_t* a,
                                    const openpete_mod_material_selector_t* b);
 
-/** @brief Pick the material that shades a draw's provenance tag, without the GPU description.
- *
- * The draw-time half of openpete_mods_material_resolve: a slot the tag
- * carries names its material (stock when the slot declined, is stale, is
- * unusable, has another contract or a held owner); slot 0 runs the
- * declarative scan.
- * @param tag Provenance tag.
- * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
- * @param slot Receives the uniform slot (0 for the static block).
- * @return The material index, or -1 for stock. */
-int mod_mat_resolve_index(uint32_t tag, int contract, int* slot);
 
 /** @brief Return whether a material is terminal: pinned below MOD_MAT_API_COMPOSE or carrying OP_SEL_EXCLUSIVE.
  *
@@ -337,7 +326,7 @@ unsigned mod_mat_table_gen(void);
 
 /** @brief A moby or terrain chain draw resolved at compose time. */
 typedef struct {
-    int entry;      /* chain entry id in the installed view (OPENPETE_MATERIAL_CHAINS + id for terrain) */
+    int entry;      /* chain entry id (OPENPETE_MATERIAL_CHAINS + id terrain, OPENPETE_MATERIAL_DT_CHAIN_BASE + id draw-time) */
     int n;          /* members, lowest-ranked first */
     int mat[OPENPETE_MATERIAL_CHAIN_CAP];
     int slot[OPENPETE_MATERIAL_CHAIN_CAP];        /* uniform slot in the view; 0 = no params */
@@ -368,6 +357,35 @@ int mod_mat_resolve_chain(uint32_t tag, int contract, mod_mat_chain_res_t* out);
  * @param out Receives the members on a resolve.
  * @return 1 resolved, 0 when the pass id names no chain, -1 when the chain draws stock. */
 int mod_mat_resolve_terrain_chain(int pass, mod_mat_chain_res_t* out);
+
+/* mod_mat_resolve_index's outcome for a draw-time chain. */
+#define MOD_MAT_RESOLVE_CHAIN (-2)
+
+/** @brief Pick what shades a draw's provenance tag with no stamped chain, without the GPU description.
+ *
+ * The draw-time half of openpete_mods_material_resolve. A slot or landing
+ * the tag carries names its material (stock when the slot declined, is
+ * stale, is unusable, has another contract or a held owner). A tag with
+ * slot 0, and every tag of a channel the extraction does not stamp, runs
+ * the draw-time walk over the declaratives matching its keys, in priority
+ * order: an owner held for this compose is left out, and so is a
+ * composable top an installed member set lacks while a newer combined
+ * module is pending; the walk's rules are the extraction walk's, so a
+ * terminal, vertex-stage or unlinkable top draws alone and composable
+ * linkable members compose, up to OPENPETE_MATERIAL_CHAIN_CAP. The outcome
+ * is cached per (masked tag, contract) until the view, the hold set, the
+ * installed member set, the material table or the mod toggles change.
+ * @param tag Provenance tag.
+ * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
+ * @param slot Receives the uniform slot (0 for the static block).
+ * @param chain Receives a draw-time chain's members, or NULL.
+ * @return The material index, MOD_MAT_RESOLVE_CHAIN for a chain, or -1 for stock. */
+int mod_mat_resolve_index(uint32_t tag, int contract, int* slot, mod_mat_chain_res_t* chain);
+
+/** @brief Record whether a combined module is built and not yet installed; the draw-time walk leaves out a composable top an installed set lacks while one is.
+ *
+ * @param on Nonzero while a newer module than the installed one is pending. */
+void mod_mat_chain_pending_set(int on);
 
 /** @brief Return whether the compose in progress holds an owner's passes and materials back.
  *
@@ -441,6 +459,10 @@ enum {
     MOD_MAT_CHAIN_STALE,         /* chain draws stock: an entry past the view */
     MOD_MAT_CHAIN_TER_WALKS,     /* terrain chains the class resolution formed */
     MOD_MAT_CHAIN_TER_PASSES,    /* retained-terrain chain pass binds resolved */
+    MOD_MAT_CHAIN_DT_WALKS,      /* chains the draw-time walk formed */
+    MOD_MAT_CHAIN_DT_HELD,       /* candidates the draw-time walk excluded for a held owner */
+    MOD_MAT_CHAIN_DT_PENDING,    /* absent composable tops the draw-time walk excluded while a module is pending */
+    MOD_MAT_CHAIN_DT_STOCK,      /* draw-time resolves with a matching declarative that drew stock */
     MOD_MAT_CHAIN_CENSUS_N,
     MOD_MAT_CHAIN_DRAWS_2 = MOD_MAT_CHAIN_CENSUS_N   /* chain draws of 2, +1 of 3, +2 of 4 members */
 };

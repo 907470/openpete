@@ -15731,8 +15731,7 @@ static bool draw_native_scene(bool full_extent)
                 bind_scene_pipe(dpipe);
                 rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
                 pc.key_contest = shadow_decal_bind_keys();              /* set 1 */
-                if (dslot_ok)
-                    openpete_native_material_bind(s_nr.dev, dmg.uniform_slot, &dmg.frag_cdata);
+                if (dslot_ok) nr_material_bind(&dmg, 0);
                 rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)txg_count[1], (uint32_t)txg_first[1]);
@@ -15924,8 +15923,7 @@ static bool draw_native_scene(bool full_extent)
                                 if (s_nr.mat_pack_dummy)
                                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
                                 bind_material_keys();
-                                openpete_native_material_bind(s_nr.dev, mg.uniform_slot,
-                                                              &mg.frag_cdata);
+                                nr_material_bind(&mg, 0);
                                 psx_material_hd zm;
                                 memset(&zm, 0, sizeof zm);
                                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
@@ -18476,9 +18474,33 @@ void openpete_native_material_bind(struct rhi_device *dev, int uniform_slot,
  * OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES. Created when a combined module first
  * installs. */
 static rhi_ubo* s_chain_ubo;
+/* Per draw-time chain entry: the draw-time generation
+ * (openpete_mods_material_dt_chain_gen) its blocks were last written for. */
+static unsigned s_dt_chain_written[OPENPETE_MATERIAL_DT_CHAINS];
 
-/** @brief Bind a draw's material uniforms: a chain entry's block pair in the chain set, else the material slot (openpete_native_material_bind).
+static void fill_chain_entries(int first, int n, const void* eng, uint32_t eng_len);
+static int nr_scene_reqs(const openpete_mod_material_gpu_t* mg, nr_mat_req* q);
+
+/** @brief Write a draw-time chain entry's blocks the first time a draw binds it under the current draw-time generation.
  *
+ * Draw-time entries are interned by the draw sites' resolves, after the
+ * chain uniform set's fill, so each is written on its first bind: the
+ * stock, portal and decal profile blocks whose members its modules hold.
+ * @param entry OPENPETE_MATERIAL_DT_CHAIN_BASE + draw-time entry id. */
+static void nr_dt_chain_write(int entry) {
+    const int t = entry - OPENPETE_MATERIAL_DT_CHAIN_BASE;
+    const unsigned gen = openpete_mods_material_dt_chain_gen();
+    if (t < 0 || t >= OPENPETE_MATERIAL_DT_CHAINS || s_dt_chain_written[t] == gen) return;
+    s_dt_chain_written[t] = gen;
+    pfx_engine_ubo_t eng;
+    fill_engine_block(&eng, 0, 0);
+    fill_chain_entries(entry, 1, &eng, (uint32_t)sizeof eng);
+}
+
+/** @brief Bind a draw's material uniforms: a chain entry's block in the chain set, else the material slot (openpete_native_material_bind).
+ *
+ * A draw-time chain entry's blocks are written on its first bind
+ * (nr_dt_chain_write).
  * @param mg The resolved material or chain.
  * @param portal Nonzero when the draw uses the portal profile. */
 static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal) {
@@ -18487,6 +18509,7 @@ static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal) 
         openpete_native_material_bind(s_nr.dev, mg->uniform_slot, cd);
         return;
     }
+    if (s_chain_ubo && mg->chain >= OPENPETE_MATERIAL_DT_CHAIN_BASE) nr_dt_chain_write(mg->chain);
     const int blk = openpete_mods_material_chain_ubo_block(mg->chain, portal ? 1 : 0);
     if (!s_chain_ubo || blk < 0) return;
     rhi_ubo_bind_data(s_nr.dev, s_chain_ubo, 0, (uint32_t)blk, nr_material_cdata(cd, s_chain_ubo));
@@ -18501,26 +18524,40 @@ void openpete_native_material_chain_bind(struct rhi_device *dev, int entry,
     rhi_ubo_bind_data(dev, s_chain_ubo, 0, (uint32_t)blk, nr_material_cdata(cd, s_chain_ubo));
 }
 
-/** @brief Install the newest built combined module pair once its opaque scene pipeline exists: publish its member set to the extraction walk.
+/** @brief Install the newest built combined module set once every pipeline its draw sites request with the stock vertex stage exists: publish its member set to the walks.
  *
- * Compose only. In a synchronous context the pipeline builds here; in the
- * live present of a windowed run it queues as a late compile and the pair
- * installs at the first compose after it returns. Until then the
- * previously installed pair, or none, stays: the walk treats the new
- * members as absent. A pair whose pipeline failed never installs. */
+ * The requests: a scene module's (nr_scene_reqs) and a decal module's
+ * decal profile. Compose only. In a synchronous context the pipelines
+ * build here; in the live present of a windowed run they queue as late
+ * compiles and the set installs at the first compose after the last
+ * returns, so no draw of the new set reaches a pending pipeline. Until
+ * then the previously installed set, or none, stays: the walks treat the
+ * new members as absent. A set with a failed pipeline never installs. */
 static void nr_chain_install(void) {
     const int m = openpete_mods_material_chain_pending();
     if (m < 0) return;
-    openpete_mod_material_gpu_t mg;
+    openpete_mod_material_gpu_t mg, dg;
     if (openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return;
-    const nr_mat_req q = { NR_MAT_SCENE, 0, 0, 0 };
-    void* v = nr_material_pipe(&mg, &q);
-    if (nr_pipe_of(v)) {
+    nr_mat_req q[13];
+    const int nq = mg.frag_words ? nr_scene_reqs(&mg, q) : 0;
+    const int decal = openpete_mods_material_chain_decal_gpu(m, 0, &dg) == 0;
+    int ready = 1, failed = 0;
+    for (int k = 0; k < nq + decal; k++) {
+        static const nr_mat_req dq = { NR_MAT_DECAL, 0, 0, 0 };
+        const openpete_mod_material_gpu_t* d = k < nq ? &mg : &dg;
+        const nr_mat_req* r = k < nq ? &q[k] : &dq;
+        /* A pending slot is waited on, not asked: asking counts a stock draw. */
+        if (*nr_material_slot(d, r) == OPENPETE_POSTFX_PIPE_PENDING) { ready = 0; continue; }
+        void* v = nr_material_pipe(d, r);
+        ready &= nr_pipe_of(v) != NULL;
+        failed |= v == PFX_PIPE_FAILED;
+    }
+    if (ready && nq + decal > 0) {
         openpete_mods_material_chain_install(m);
         return;
     }
     static int s_failed_logged = -1;
-    if (v == PFX_PIPE_FAILED && s_failed_logged != m) {
+    if (failed && s_failed_logged != m) {
         s_failed_logged = m;
         OPL_ERROR_F("native", "material composition: combined module %d has no pipeline - it is not "
                     "installed, and its new members draw alone", m);
@@ -19001,11 +19038,12 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
     return n;
 }
 
-/** @brief Install the current variant of every scene-site pipeline of the newest built combined module set not yet installed, with the stock vertex stage, and of its terrain module's retained-terrain slots.
+/** @brief Install the current variant of every scene-site pipeline of the newest built combined module set not yet installed, with the stock vertex stage, of its decal module and of its terrain module's retained-terrain slots.
  *
- * The request set of a scene-contract material (nr_scene_reqs), then the
- * OPENPETE_MATERIAL_TER_PIPES retained-terrain slots while the terrain
- * cache is ready and the set has a terrain module. A chain whose lowest
+ * The request set of a scene-contract material (nr_scene_reqs) when the
+ * set has a scene module, the decal profile when it has a decal module,
+ * then the OPENPETE_MATERIAL_TER_PIPES retained-terrain slots while the
+ * terrain cache is ready and the set has a terrain module. A chain whose lowest
  * member has a vertex stage builds its variant at first use.
  * @param pump Event pump run after each slot, or NULL.
  * @return The slots visited. */
@@ -19014,10 +19052,17 @@ static unsigned nr_precompile_chains(void (*pump)(void*)) {
     openpete_mod_material_gpu_t mg;
     if (m < 0 || openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return 0;
     nr_mat_req q[13];
-    const int nq = nr_scene_reqs(&mg, q);
+    const int nq = mg.frag_words ? nr_scene_reqs(&mg, q) : 0;
     unsigned n = 0;
     for (int k = 0; k < nq; k++, n++) {
         nr_material_pipe(&mg, &q[k]);
+        if (pump) pump(NULL);
+    }
+    openpete_mod_material_gpu_t dg;
+    if (openpete_mods_material_chain_decal_gpu(m, 0, &dg) == 0) {
+        const nr_mat_req dq = { NR_MAT_DECAL, 0, 0, 0 };
+        nr_material_pipe(&dg, &dq);
+        n++;
         if (pump) pump(NULL);
     }
     openpete_mod_material_terrain_t tm;
