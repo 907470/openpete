@@ -16,6 +16,10 @@
 #   load key   optional; a feed key L above the save key K: the state saved
 #              at K is loaded at L by the run that saved it and by a fresh
 #              process, and every row of both must match clean
+#   rewind     optional; `-` the rewind(25) leg must replay at least one
+#              tick (it arms only while gameplay is live); `no-gameplay`
+#              the row's movie never reaches gameplay and the leg must
+#              replay none
 artisans-lp-waterfall.bk2      | - | - | - |
 town-square-portal-entry.bk2   | - | - | - |
 exit-level.bk2                 | - | - | - |

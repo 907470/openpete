@@ -2,7 +2,7 @@
 # tests/harness/check_state_roundtrip.sh - savestate restore-at-yield gates.
 #
 # Rows come from games/<slug>/corpus/state-roundtrip.manifest, fields
-#   source | card | boot flags | save key | deferral
+#   source | card | boot flags | save key | deferral | load key | rewind
 # (field values: the Spyro 1 manifest's header). A row's source is a bk2,
 # replayed with --bk2-stop-on-end, or `-`, a boot with no movie; both run to
 # --frame-limit 6000. For each row, three headless runs:
@@ -13,7 +13,11 @@
 #   --state-stress-rewind 25    - save, run 25 iters, roll back, replay
 #                                 (the runahead rollback shape); replayed
 #                                 frames must self-match pass 1 AND match
-#                                 the clean run
+#                                 the clean run; the leg arms only in
+#                                 gameplay, so it must replay at least one
+#                                 tick (zero is VACUOUS FAIL) unless the row
+#                                 is marked `no-gameplay`, which asserts it
+#                                 replays none
 # and, on a row with a save key, a fourth (and, with a load key, a fifth and
 # sixth):
 #   same-key                    - --state-save-on-frame K and
@@ -119,38 +123,46 @@ for a in "$@"; do
 done
 if [ -n "$ROW_ONLY" ]; then RA_MOVIE=""; XL_LEGS=(); fi
 
-# One entry per row: source, card, boot flags, save key, deferral; an empty
-# field reads as `-`.
-R_SRC=(); R_CARD=(); R_FLAGS=(); R_KEY=(); R_DEF=(); R_LKEY=()
+# One entry per row: source, card, boot flags, save key, deferral, load key,
+# rewind; an empty field reads as `-`.
+R_SRC=(); R_CARD=(); R_FLAGS=(); R_KEY=(); R_DEF=(); R_LKEY=(); R_RW=()
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; echo "${v:--}"; }
 if [ ${#MOVIES[@]} -gt 0 ]; then
     for m in "${MOVIES[@]}"; do
-        R_SRC+=("$m"); R_CARD+=(-); R_FLAGS+=(-); R_KEY+=(-); R_DEF+=(-); R_LKEY+=(-)
+        R_SRC+=("$m"); R_CARD+=(-); R_FLAGS+=(-); R_KEY+=(-); R_DEF+=(-); R_LKEY+=(-); R_RW+=(-)
     done
 else
     pg_manifest "$MANIFEST" pipe
-    while IFS='|' read -r f_src f_card f_flags f_key f_def f_lkey; do
+    while IFS='|' read -r f_src f_card f_flags f_key f_def f_lkey f_rw; do
         [[ -z "${f_src//[[:space:]]/}" ]] && continue
         f_src="$(trim "$f_src")"
         [[ "$f_src" != - ]] && f_src="$PG_BK2_DIR/$f_src"
         R_SRC+=("$f_src"); R_CARD+=("$(trim "${f_card:-}")"); R_FLAGS+=("$(trim "${f_flags:-}")")
         R_KEY+=("$(trim "${f_key:-}")"); R_DEF+=("$(trim "${f_def:-}")")
-        R_LKEY+=("$(trim "${f_lkey:-}")")
+        R_LKEY+=("$(trim "${f_lkey:-}")"); R_RW+=("$(trim "${f_rw:-}")")
     done < <(sed 's/#.*//' "$MANIFEST")
 fi
 if [ -n "$ROW_ONLY" ]; then
-    K_SRC=(); K_CARD=(); K_FLAGS=(); K_KEY=(); K_DEF=(); K_LKEY=()
+    K_SRC=(); K_CARD=(); K_FLAGS=(); K_KEY=(); K_DEF=(); K_LKEY=(); K_RW=()
     for i in "${!R_SRC[@]}"; do
         if [ "${R_SRC[$i]}" = - ]; then rn="boot-$i"; else rn="$(basename "${R_SRC[$i]}")"; fi
         [ "$rn" = "$ROW_ONLY" ] || continue
         K_SRC+=("${R_SRC[$i]}"); K_CARD+=("${R_CARD[$i]}"); K_FLAGS+=("${R_FLAGS[$i]}")
         K_KEY+=("${R_KEY[$i]}"); K_DEF+=("${R_DEF[$i]}"); K_LKEY+=("${R_LKEY[$i]}")
+        K_RW+=("${R_RW[$i]}")
     done
     R_SRC=("${K_SRC[@]}"); R_CARD=("${K_CARD[@]}"); R_FLAGS=("${K_FLAGS[@]}")
     R_KEY=("${K_KEY[@]}"); R_DEF=("${K_DEF[@]}"); R_LKEY=("${K_LKEY[@]}")
+    R_RW=("${K_RW[@]}")
     [ ${#R_SRC[@]} -gt 0 ] || { echo "FAIL: no row $ROW_ONLY in $MANIFEST"; exit 1; }
 fi
 [ ${#R_SRC[@]} -gt 0 ] || { echo "FAIL: no rows in $MANIFEST"; exit 1; }
+for i in "${!R_RW[@]}"; do
+    case "${R_RW[$i]}" in
+        -|no-gameplay) ;;
+        *) echo "FAIL: rewind field '${R_RW[$i]}' of row ${R_SRC[$i]} is not - or no-gameplay"; exit 1 ;;
+    esac
+done
 
 for m in "${R_SRC[@]}"; do
     [ "$m" = - ] && continue
@@ -242,9 +254,9 @@ for i in "${!R_SRC[@]}"; do
     else
         echo "  stress(1): DIVERGED FAIL"; fail=1
     fi
-    python3 - "$OUT/$name-clean.csv" "$OUT/$name-rw.csv" <<'EOF' || fail=1
+    python3 - "$OUT/$name-clean.csv" "$OUT/$name-rw.csv" "${R_RW[$i]}" <<'EOF' || fail=1
 import csv, sys
-clean_p, rw_p = sys.argv[1], sys.argv[2]
+clean_p, rw_p, expect = sys.argv[1], sys.argv[2], sys.argv[3]
 rows = [r for r in csv.reader(open(rw_p)) if r and r[0] != 'frame']
 first = {}; mism = dup = 0
 for r in rows:
@@ -258,8 +270,19 @@ clean = {r[0]: r[2] for r in csv.reader(open(clean_p)) if r and r[0] != 'frame'}
 shared = [f for f in first if f in clean]
 xm = sum(1 for f in shared if clean[f] != first[f])
 ok = mism == 0 and xm == 0
-print(f"  rewind(25): {dup} replayed, {mism} self-mism, {xm}/{len(shared)} vs clean -> "
-      + ("PASS" if ok else "FAIL"))
+# The rollback arms only in gameplay (game_is_gameplay_live): a row whose
+# movie never reaches gameplay replays nothing and declares so; on any other
+# row zero replayed ticks means the leg tested nothing.
+if expect == 'no-gameplay':
+    verdict = ("no-gameplay row, none replayed PASS" if dup == 0 else
+               "FAIL: row marked no-gameplay replayed ticks; drop the marker")
+    ok = ok and dup == 0
+elif dup == 0:
+    verdict = "VACUOUS FAIL (no rollback replayed a tick)"
+    ok = False
+else:
+    verdict = "PASS" if ok else "FAIL"
+print(f"  rewind(25): {dup} replayed, {mism} self-mism, {xm}/{len(shared)} vs clean -> {verdict}")
 sys.exit(0 if ok else 1)
 EOF
 

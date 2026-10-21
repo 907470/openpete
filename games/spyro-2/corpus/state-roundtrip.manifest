@@ -14,5 +14,7 @@ shady-oasis-flame.bk2                            | none | - | 1500 |
 # is loaded at VBL 1705 by the saving run and by a fresh process. A later
 # load key diverges in kernel_bu_dir from VBL 1709: the game writes its save
 # to the card after the format, and a state does not carry the card's
-# contents.
-s2-format-card.bk2                               | unformatted | - | 1200 | loop | 1705
+# contents. The movie ends at VBL 2192 before gameplay is live (the run's
+# end pose is `none reason=not-live`), so the rewind(25) leg, which arms
+# only in gameplay, replays no tick.
+s2-format-card.bk2                               | unformatted | - | 1200 | loop | 1705 | no-gameplay
