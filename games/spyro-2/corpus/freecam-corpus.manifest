@@ -137,3 +137,6 @@ glimmer | pos=(37180, 45817, 12643) yaw=-59 pitch=238
 # the near lava keeps moving: a seam between near and far lava.
 # Blessed pre-fix.
 magma_cone | pos=(93407, 88746, 41508) yaw=-1999 pitch=236
+# Lava in Crush's Dungeon from near to far: the far lava stops undulating
+# at extended LOD. Blessed pre-fix.
+crushs_dungeon | pos=(-1501, 29835, 47171) yaw=17 pitch=563
