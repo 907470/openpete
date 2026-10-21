@@ -2158,7 +2158,8 @@ static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
 
 void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
                                       const uint32_t *frag, size_t frag_words,
-                                      const char *owner, int mat_index, unsigned generation)
+                                      const char *owner, int mat_index, int chain_module,
+                                      unsigned generation)
 {
     if (*pslot == OPENPETE_POSTFX_PIPE_FAILED) return NULL;
     if (*pslot && *pslot != OPENPETE_POSTFX_PIPE_PENDING) return *pslot;
@@ -2189,7 +2190,8 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
         default: break;
     }
     const openpete_lazy_ref ref = {
-        .kind = OPENPETE_LAZY_TERRAIN, .index = mat_index,
+        .kind = chain_module >= 0 ? OPENPETE_LAZY_CHAIN_TERRAIN : OPENPETE_LAZY_TERRAIN,
+        .index = chain_module >= 0 ? chain_module : mat_index,
         .sub = variant * OPENPETE_MATERIAL_TER_SLOTS + slot, .generation = generation,
         .point = -1, .owner = owner,
     };
@@ -2203,8 +2205,10 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
 
 /** @brief Bind one pass's terrain material pipeline for a vertex variant and colour slot, or the stock pipeline.
  *
- * The material pipeline is built lazily, once per material, variant and
- * slot, and bound with the material UBO pair at set 3. @p stock is the
+ * The material pipeline is built lazily, once per material (or combined
+ * module, for a chain pass), variant and slot, and bound with the material
+ * UBO pair at set 3, or for a chain pass the chain entry's terrain block
+ * of the chain uniform set (openpete_native_material_chain_bind). @p stock is the
  * pipeline this pass's faces would have been drawn with had they not been
  * claimed; it is bound instead whenever the material cannot serve them (a
  * held or disabled owner, a pipeline that failed to build, a shader with
@@ -2212,7 +2216,8 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
  * such fallback counts in s_tc_mat_stock. The pass always runs: the stock
  * pass has already dropped these faces, so skipping it would leave a hole in
  * the world rather than an unreshaded patch.
- * @param bucket Terrain material pass id (material index + 1).
+ * @param bucket Terrain material pass id: a material index + 1, or
+ *        OPENPETE_MATERIAL_TER_PASS_CHAIN + terrain chain entry id.
  * @param variant Vertex variant: 0 plain, 1 anim, 2 near, 3 anim cells,
  *        4 near cells.
  * @param slot Colour slot: 0 world, 1 world with stencil mark, 2 fill,
@@ -2229,12 +2234,17 @@ static int tc_bind_material(int bucket, int variant, int slot,
         goto draw_stock;
     rhi_pipe_site_visit(RHI_PIPE_SITE_TERRAIN_MATERIAL, 1);
     if (!openpete_tercache_material_pipe(mg.pipeline_slot, variant, slot, mg.frag_spv,
-                                         mg.frag_words, mg.owner, mg.index, mg.generation))
+                                         mg.frag_words, mg.owner, mg.index, mg.chain_module,
+                                         mg.generation))
         goto draw_stock;
     {
         if (!openpete_native_material_ubo()) goto draw_stock;   /* no uniform source yet */
+        if (mg.chain >= 0 && !openpete_native_material_chain_ready()) goto draw_stock;
         rhi_bind_pipeline(s_tc.dev, (rhi_pipeline *)*mg.pipeline_slot);
-        openpete_native_material_bind(s_tc.dev, mg.uniform_slot, &mg.frag_cdata);
+        if (mg.chain >= 0)
+            openpete_native_material_chain_bind(s_tc.dev, mg.chain, &mg.frag_cdata);
+        else
+            openpete_native_material_bind(s_tc.dev, mg.uniform_slot, &mg.frag_cdata);
         return 1;
     }
 draw_stock:

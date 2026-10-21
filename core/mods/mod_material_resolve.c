@@ -81,6 +81,11 @@ typedef struct {
 } mat_chain_t;
 static mat_chain_t s_mat_chains[OPENPETE_MATERIAL_CHAINS];
 static int s_mat_chain_n;
+/* The terrain chain entries interned this present: the terrain field names
+ * entry id as OPENPETE_MATERIAL_TERRAIN_CHAIN | id, a retained pass as
+ * OPENPETE_MATERIAL_TER_PASS_CHAIN + id. */
+static mat_chain_t s_ter_chains[OPENPETE_MATERIAL_TERRAIN_CHAINS];
+static int s_ter_chain_n;
 
 /* The members of one walk's chain, highest-ranked first, with each kept
  * refine block (len -1 for a declarative member). */
@@ -110,13 +115,17 @@ int mod_mat_view_static_slot(int m) { return s_mat_view ? s_mat_view->static_slo
 /* Slot ids are minted from ONE global counter but stamped into per-path
  * tag fields of differing width, so the table can never outgrow the
  * NARROWEST field that carries an id. Terrain's is the narrowest at 9
- * bits: its slot ids stay below the declarative bit
- * OPENPETE_MATERIAL_TERRAIN_DECL, every landing OPENPETE_MATERIAL_TERRAIN_DECL
+ * bits: its slot ids stay below the chain range
+ * OPENPETE_MATERIAL_TERRAIN_CHAIN (0x080-0x0FF), the chain ids below the
+ * declarative bit OPENPETE_MATERIAL_TERRAIN_DECL, every landing OPENPETE_MATERIAL_TERRAIN_DECL
  * | index stays below the stock outcome 0x1FF, and the decode masks
  * (tag >> 16) & 0x1FF, so a wider id would come back as another outcome
  * with no log. Raising MOD_MATERIAL_SLOTS or MOD_MATERIAL_MAX means
  * widening that field first. */
-_Static_assert(MOD_MATERIAL_SLOTS <= OPENPETE_MATERIAL_TERRAIN_DECL, "slot ids stay below the terrain declarative bit");
+_Static_assert(MOD_MATERIAL_SLOTS <= OPENPETE_MATERIAL_TERRAIN_CHAIN, "slot ids stay below the terrain chain range");
+_Static_assert(OPENPETE_MATERIAL_TERRAIN_CHAIN + OPENPETE_MATERIAL_TERRAIN_CHAINS <= OPENPETE_MATERIAL_TERRAIN_DECL,
+               "terrain chain ids stay below the terrain declarative bit");
+_Static_assert(OPENPETE_MATERIAL_TER_PASS_CHAIN > MOD_MATERIAL_MAX, "chain pass ids start above the material passes");
 _Static_assert(MOD_MATERIAL_MAX - 1 < 0xFF, "material index fits the terrain declarative landing");
 _Static_assert((OPENPETE_MATERIAL_TERRAIN_DECL | (MOD_MATERIAL_MAX - 1)) < OPENPETE_MATERIAL_TERRAIN_STOCK,
                "no terrain declarative landing aliases the stock outcome");
@@ -158,6 +167,8 @@ static _Atomic int      s_cen_pass_max;        /* most terrain material passes o
 static _Atomic unsigned s_cen_chain_walks, s_cen_chain_absent, s_cen_chain_full;
 static _Atomic unsigned s_cen_chain_draws[OPENPETE_MATERIAL_CHAIN_CAP + 1];
 static _Atomic unsigned s_cen_chain_held, s_cen_chain_lacked, s_cen_chain_unusable, s_cen_chain_stale;
+/* Terrain chains the class resolution formed, and retained chain pass binds resolved. */
+static _Atomic unsigned s_cen_chain_ter_walks, s_cen_chain_ter_passes;
 static int s_cen_atexit;
 
 int mod_mat_census_on(void) {
@@ -182,7 +193,8 @@ void mod_mat_census_reset(void) {
     atomic_store_explicit(&s_cen_memo_replays, 0u, memory_order_relaxed);
     atomic_store_explicit(&s_cen_pass_max, 0, memory_order_relaxed);
     _Atomic unsigned* chain[] = { &s_cen_chain_walks, &s_cen_chain_absent, &s_cen_chain_full, &s_cen_chain_held,
-                                  &s_cen_chain_lacked, &s_cen_chain_unusable, &s_cen_chain_stale };
+                                  &s_cen_chain_lacked, &s_cen_chain_unusable, &s_cen_chain_stale,
+                                  &s_cen_chain_ter_walks, &s_cen_chain_ter_passes };
     for (size_t i = 0; i < sizeof chain / sizeof *chain; i++) atomic_store_explicit(chain[i], 0u, memory_order_relaxed);
     for (int i = 0; i <= OPENPETE_MATERIAL_CHAIN_CAP; i++)
         atomic_store_explicit(&s_cen_chain_draws[i], 0u, memory_order_relaxed);
@@ -190,7 +202,8 @@ void mod_mat_census_reset(void) {
 unsigned mod_mat_census_chain(int which) {
     _Atomic unsigned* const c[MOD_MAT_CHAIN_CENSUS_N] = {
         &s_cen_chain_walks, &s_cen_chain_absent, &s_cen_chain_full, &s_cen_chain_held,
-        &s_cen_chain_lacked, &s_cen_chain_unusable, &s_cen_chain_stale };
+        &s_cen_chain_lacked, &s_cen_chain_unusable, &s_cen_chain_stale,
+        &s_cen_chain_ter_walks, &s_cen_chain_ter_passes };
     if (which >= MOD_MAT_CHAIN_DRAWS_2 && which < MOD_MAT_CHAIN_DRAWS_2 + OPENPETE_MATERIAL_CHAIN_CAP - 1)
         return atomic_load_explicit(&s_cen_chain_draws[which - MOD_MAT_CHAIN_DRAWS_2 + 2], memory_order_relaxed);
     return which >= 0 && which < MOD_MAT_CHAIN_CENSUS_N ? atomic_load_explicit(c[which], memory_order_relaxed) : 0;
@@ -303,12 +316,14 @@ void mod_mat_census_print(void) {
             atomic_load_explicit(&s_cen_view_resolves, memory_order_relaxed),
             atomic_load_explicit(&s_cen_memo_replays, memory_order_relaxed));
     fprintf(stderr, "[material-census] chains: walks=%u absent-excluded=%u table-full=%u; draws by members "
-                    "2=%u 3=%u 4=%u; draws stock: held=%u lacked=%u unusable=%u stale=%u\n",
+                    "2=%u 3=%u 4=%u; draws stock: held=%u lacked=%u unusable=%u stale=%u; "
+                    "terrain-chains=%u terrain-passes=%u\n",
             mod_mat_census_chain(MOD_MAT_CHAIN_WALKS), mod_mat_census_chain(MOD_MAT_CHAIN_ABSENT),
             mod_mat_census_chain(MOD_MAT_CHAIN_FULL), mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2),
             mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2 + 1), mod_mat_census_chain(MOD_MAT_CHAIN_DRAWS_2 + 2),
             mod_mat_census_chain(MOD_MAT_CHAIN_HELD), mod_mat_census_chain(MOD_MAT_CHAIN_LACKED),
-            mod_mat_census_chain(MOD_MAT_CHAIN_UNUSABLE), mod_mat_census_chain(MOD_MAT_CHAIN_STALE));
+            mod_mat_census_chain(MOD_MAT_CHAIN_UNUSABLE), mod_mat_census_chain(MOD_MAT_CHAIN_STALE),
+            mod_mat_census_chain(MOD_MAT_CHAIN_TER_WALKS), mod_mat_census_chain(MOD_MAT_CHAIN_TER_PASSES));
     census_print_terrain();
     census_print_classes();
     fprintf(stderr, "[material-census] engaged=%llu (draws + bucket passes + refine calls)\n", engaged);
@@ -560,6 +575,14 @@ int mod_mat_set_params(int material, const void* block, uint32_t len) {
     return 0;
 }
 
+int mod_mat_sel_same_but_exclusive(const openpete_mod_material_selector_t* a,
+                                   const openpete_mod_material_selector_t* b) {
+    openpete_mod_material_selector_t x = *a, y = *b;
+    x.flags &= ~(unsigned)OP_SEL_EXCLUSIVE;
+    y.flags &= ~(unsigned)OP_SEL_EXCLUSIVE;
+    return memcmp(&x, &y, sizeof x) == 0;
+}
+
 /** @brief Install a selector on a material; a change of its bytes restarts the refine observation and bumps the overlap inputs.
  *
  * A retune to the bytes already installed changes nothing.
@@ -596,9 +619,10 @@ int mod_mat_set_selector(const char* id, int material,
         return 0;
     }
     const int was_ter = terrain_sel_relevant(m);
+    const int ter_same = mod_mat_sel_same_but_exclusive(&m->sel, sel);
     sel_store(m, sel);
     m->sel_dirty = 0;
-    if (was_ter || terrain_sel_relevant(m)) s_mat_ter_epoch++;
+    if ((was_ter || terrain_sel_relevant(m)) && !ter_same) s_mat_ter_epoch++;
     mod_mat_rearm_split();
     return 0;
 }
@@ -612,9 +636,10 @@ void mod_mat_apply_pending(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].sel_dirty) continue;
         const int was_ter = terrain_sel_relevant(&s_mats[i]);
+        const int ter_same = mod_mat_sel_same_but_exclusive(&s_mats[i].sel, &s_mats[i].sel_pending);
         sel_store(&s_mats[i], &s_mats[i].sel_pending);
         s_mats[i].sel_dirty = 0;
-        if (was_ter || terrain_sel_relevant(&s_mats[i])) s_mat_ter_epoch++;
+        if ((was_ter || terrain_sel_relevant(&s_mats[i])) && !ter_same) s_mat_ter_epoch++;
         n++;
     }
     if (n) mod_mat_rearm_split();
@@ -647,6 +672,7 @@ static void reset_level_and_view(void) {
     s_mat_gen++;
     s_mat_slot_n = 1;
     s_mat_chain_n = 0;
+    s_ter_chain_n = 0;
     s_tick_chain_n = 0;
     openpete_mods_material_chain_set_publish(NULL);
     s_mat_view = NULL;
@@ -705,6 +731,7 @@ static unsigned memo_stamp(void) {
 void openpete_mods_material_frame_reset(int tick_open) {
     s_mat_slot_n = 1;
     s_mat_chain_n = 0;
+    s_ter_chain_n = 0;
     s_mat_present++;
     if (tick_open) s_mat_tick++;
     if (mod_mat_census_on()) atomic_fetch_add_explicit(&s_cen_presents, 1u, memory_order_relaxed);
@@ -807,15 +834,19 @@ static int terrain_decl_matches(const mod_material_t* m, int texid, int untex, i
 }
 
 /* Terrain resolution classes. A face key (texid, texturedness, env, tier)
- * has a candidate list: the refine materials whose key is the face's and
- * that outrank the face's declarative winner, highest first, then that
- * declarative winner when there is one. Refines below the declarative
- * winner are never reached, since the declarative takes every face it
- * matches. Equal lists are one class. The retained bake stamps the class
- * id into the face; each present resolves every class to one member, the
- * first accepting refine, else the declarative, else stock, and the
- * walked path stamps that member. The class id has the 8 bits of the
- * baked face field (OPENPETE_MATERIAL_TER_BUCKET_MAX), 0 = no candidate. */
+ * has a candidate list: every material matching the key (a declarative
+ * whose selector accepts it, a refine whose one key is the face's) in rank
+ * order, highest first, down to and including the first declarative of a
+ * mod pinned below MOD_MAT_API_COMPOSE, which takes every face it matches
+ * and composes over nothing, so nothing below it is reached. The pin is
+ * fixed per registration and OP_SEL_EXCLUSIVE does not end the list, so a
+ * retune of the bit leaves every list unchanged. With every terrain
+ * material pinned below 13 the list is the refines above the declarative
+ * winner, then that winner. Equal lists are one class. The retained bake
+ * stamps the class id into the face; each present resolves every class
+ * (ter_class_resolve) to stock, one member or a chain, and the walked path
+ * stamps that outcome. The class id has the 8 bits of the baked face field
+ * (OPENPETE_MATERIAL_TER_BUCKET_MAX), 0 = no candidate. */
 #define TER_CLASS_N (OPENPETE_MATERIAL_TER_BUCKET_MAX + 1)
 /* Members kept per class. A key with more refines above its declarative
  * winner keeps the highest-ranked ones; the rest are never asked. */
@@ -828,8 +859,14 @@ typedef struct {
     short    m[TER_CLASS_MEMBERS];       /* material indices */
     unsigned epoch;                      /* terrain epoch of the last intern, either path */
     unsigned bake_epoch;                 /* terrain epoch of the last retained-bake intern */
-    unsigned res_present;                /* s_mat_present of `res` */
-    int      res;                        /* resolved member, or -1 for stock */
+    unsigned res_present;                /* s_mat_present of `res` and `res_ret` */
+    /* The outcome for the walked path (stock profile) and for the retained
+     * path (terrain profile): a material index, MOD_MAT_TER_OUT_CHAIN + a
+     * terrain chain entry id of res_present, or -1 for stock. */
+    int      res, res_ret;
+    /* Census: each outcome's members, lowest-ranked first (0 for stock). */
+    signed char res_n, ret_n;
+    short    res_m[OPENPETE_MATERIAL_CHAIN_CAP], ret_m[OPENPETE_MATERIAL_CHAIN_CAP];
 } ter_class_t;
 static ter_class_t s_cls[TER_CLASS_N];   /* [0] unused: no candidate */
 static int s_cls_n = 1;
@@ -856,13 +893,24 @@ static int ter_key_index(int texid, int untex, int env, int lp) {
     return (((texid + 1) * 2 + (untex ? 1 : 0)) * 2 + (env ? 1 : 0)) * 2 + (lp ? 1 : 0);
 }
 
+/** @brief Test whether a material is a terrain face key's candidate: a declarative whose selector accepts the key, or a refine whose one key is the face's.
+ *
+ * @param m The material, usable at the level (terrain_sel_usable).
+ * @param texid Tiledef id, or -1.
+ * @param untex Nonzero for an untextured face.
+ * @param env Env-rewrite flag.
+ * @param lp LP-tier flag. */
+static int ter_key_candidate(const mod_material_t* m, int texid, int untex, int env, int lp) {
+    return m->per_instance ? terrain_refine_key_matches(m, untex, texid)
+                           : terrain_decl_matches(m, texid, untex, env, lp);
+}
+
 /** @brief Compute a face key's candidate list at the pushed level.
  *
- * Over the materials terrain_sel_usable() accepts: the declarative winner
- * among those terrain_decl_matches() accepts (mod_mat_outranks), and the
- * refines whose one key is the face's (terrain_refine_key_matches) that
- * outrank it, highest first, at most TER_CLASS_MEMBERS - 1 of them; the
- * declarative winner ends the list.
+ * Every material terrain_sel_usable() and ter_key_candidate() accept,
+ * highest ranked first (mod_mat_outranks), down to and including the
+ * first declarative of a mod pinned below MOD_MAT_API_COMPOSE: at most
+ * TER_CLASS_MEMBERS - 1 above it, then it.
  * @param texid Tiledef id, or -1.
  * @param untex Nonzero for an untextured face.
  * @param env Env-rewrite flag.
@@ -871,26 +919,22 @@ static int ter_key_index(int texid, int untex, int env, int lp) {
  * @return The member count, 0 when no material matches. */
 static int ter_candidates(int texid, int untex, int env, int lp, short* out) {
     const int level = openpete_mods_current_level();
-    int d = -1, n = 0;
-    for (int i = 0; i < s_mat_count; i++) {
-        const mod_material_t* m = &s_mats[i];
-        if (!m->per_instance && terrain_sel_usable(m, level) &&
-            terrain_decl_matches(m, texid, untex, env, lp) && mod_mat_outranks(i, d))
-            d = i;
-    }
     short r[MOD_MATERIAL_MAX];
     int rn = 0;
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
-        if (!m->per_instance || !terrain_sel_usable(m, level) ||
-            !terrain_refine_key_matches(m, untex, texid) || !mod_mat_outranks(i, d))
-            continue;
+        if (!terrain_sel_usable(m, level) || !ter_key_candidate(m, texid, untex, env, lp)) continue;
         int j = rn++;
         while (j > 0 && mod_mat_outranks(i, r[j - 1])) { r[j] = r[j - 1]; j--; }
         r[j] = (short)i;
     }
-    for (n = 0; n < rn && n < TER_CLASS_MEMBERS - 1; n++) out[n] = r[n];
-    if (d >= 0) out[n++] = (short)d;
+    int end = -1;   /* the first declarative pinned below MOD_MAT_API_COMPOSE */
+    for (int j = 0; j < rn && end < 0; j++)
+        if (!s_mats[r[j]].per_instance && s_mats[r[j]].api_pin < MOD_MAT_API_COMPOSE) end = j;
+    const int above = end >= 0 ? end : rn;
+    int n;
+    for (n = 0; n < above && n < TER_CLASS_MEMBERS - 1; n++) out[n] = r[n];
+    if (end >= 0) out[n++] = r[end];
     return n;
 }
 
@@ -956,42 +1000,47 @@ int openpete_mods_material_terrain_class(int texid, int untex, int env, int lp) 
     return c;
 }
 
-/** @brief Return the pass a class draws in for the present the live memo describes: its resolved member + 1, or 0 for stock.
+/** @brief Return the pass a class draws in for the present the live memo describes: its retained outcome's pass id, or 0 for stock.
  *
- * Stock for a class the retained bake has not stamped in the current
- * terrain epoch, one not resolved this present, and one resolved to stock.
+ * A material outcome is its index + 1, a chain outcome
+ * OPENPETE_MATERIAL_TER_PASS_CHAIN + its terrain chain entry id. Stock for
+ * a class the retained bake has not stamped in the current terrain epoch,
+ * one not resolved this present, and one resolved to stock.
  * @param c Class id.
  * @param ep The current terrain epoch. */
 static int ter_class_pass_live(int c, unsigned ep) {
     const ter_class_t* k = &s_cls[c];
-    if (c <= 0 || c >= s_cls_n || k->bake_epoch != ep || k->res_present != s_mat_present || k->res < 0)
+    if (c <= 0 || c >= s_cls_n || k->bake_epoch != ep || k->res_present != s_mat_present || k->res_ret < 0)
         return 0;
-    return k->res + 1;
+    if (k->res_ret >= MOD_MAT_TER_OUT_CHAIN)
+        return OPENPETE_MATERIAL_TER_PASS_CHAIN + (k->res_ret - MOD_MAT_TER_OUT_CHAIN);
+    return k->res_ret + 1;
 }
 
 /** @brief Fill the pass of every class id from the live memo.
  *
  * @param out Receives TER_CLASS_N entries; class 0 and unused ids read 0. */
-static void ter_class_pass_table_live(unsigned char* out) {
+static void ter_class_pass_table_live(uint16_t* out) {
     const unsigned ep = openpete_mods_material_terrain_epoch();
-    memset(out, 0, TER_CLASS_N);
-    for (int c = 1; c < s_cls_n; c++) out[c] = (unsigned char)ter_class_pass_live(c, ep);
+    memset(out, 0, TER_CLASS_N * sizeof *out);
+    for (int c = 1; c < s_cls_n; c++) out[c] = (uint16_t)ter_class_pass_live(c, ep);
 }
 
-/** @brief List the material passes of a class-to-pass table, ascending.
+/** @brief List the material and chain passes of a class-to-pass table, ascending.
  *
- * A pass is a material index + 1 that at least one class resolves to; the
- * stock pass 0 is not listed.
+ * A pass is a material index + 1 or a chain pass id that at least one
+ * class resolves to; the stock pass 0 is not listed.
  * @param cp The class-to-pass table, TER_CLASS_N entries.
  * @param out Receives the pass ids.
  * @param cap Capacity of @p out.
  * @return Ids written. */
-static int ter_pass_list(const unsigned char* cp, int* out, int cap) {
-    unsigned char seen[TER_CLASS_N];
+static int ter_pass_list(const uint16_t* cp, int* out, int cap) {
+    unsigned char seen[OPENPETE_MATERIAL_TER_PASS_IDS];
     memset(seen, 0, sizeof seen);
-    for (int c = 1; c < TER_CLASS_N; c++) seen[cp[c]] = 1;
+    for (int c = 1; c < TER_CLASS_N; c++)
+        if (cp[c] < OPENPETE_MATERIAL_TER_PASS_IDS) seen[cp[c]] = 1;
     int n = 0;
-    for (int p = 1; p < TER_CLASS_N && n < cap; p++)
+    for (int p = 1; p < OPENPETE_MATERIAL_TER_PASS_IDS && n < cap; p++)
         if (seen[p]) out[n++] = p;
     return n;
 }
@@ -1004,7 +1053,7 @@ int openpete_mods_material_terrain_bucket_list(int* out, int cap) {
         for (int i = 0; i < n; i++) out[i] = s_mat_view->ter_bucket[i];
         return n;
     }
-    unsigned char cp[TER_CLASS_N];
+    uint16_t cp[TER_CLASS_N];
     ter_class_pass_table_live(cp);
     const int n = ter_pass_list(cp, out, cap);
     if (mod_mat_census_on() && n > atomic_load_explicit(&s_cen_pass_max, memory_order_relaxed))
@@ -1013,24 +1062,39 @@ int openpete_mods_material_terrain_bucket_list(int* out, int cap) {
 }
 
 int openpete_mods_material_terrain_pass_mask(int pass, uint32_t mask[8]) {
-    unsigned char live[TER_CLASS_N];
-    const unsigned char* cp = s_mat_view ? s_mat_view->ter_class_pass : live;
+    uint16_t live[TER_CLASS_N];
+    const uint16_t* cp = s_mat_view ? s_mat_view->ter_class_pass : live;
     if (!s_mat_view) ter_class_pass_table_live(live);
     int n = 0;
     memset(mask, 0, 8 * sizeof *mask);
     for (int c = 0; c < TER_CLASS_N; c++)
-        if (cp[c] == pass) { mask[c >> 5] |= 1u << (c & 31); n++; }
+        if (cp[c] == (uint16_t)pass) { mask[c >> 5] |= 1u << (c & 31); n++; }
     return n;
 }
 
-/** @brief Census: return a class's last resolved member, or -1 for stock, no resolution or no class.
+/** @brief Census: return a class's last walked outcome, or -1 for stock, no resolution or no class; a chain reads MOD_MAT_TER_OUT_CHAIN.
  *
  * @param c Class id. */
 static int census_class_member(int c) {
-    return c > 0 && c < s_cls_n && s_cls[c].res_present ? s_cls[c].res : -1;
+    if (c <= 0 || c >= s_cls_n || !s_cls[c].res_present) return -1;
+    return s_cls[c].res >= MOD_MAT_TER_OUT_CHAIN ? MOD_MAT_TER_OUT_CHAIN : s_cls[c].res;
 }
 
-/** @brief Census: print the class count, the passes per colour slot, and each class's members and last resolution. */
+/** @brief Census: format one class outcome's members, lowest-ranked first.
+ *
+ * Writes "stock", the material index, or "chain" and the indices joined
+ * by ">".
+ * @param n Member count, 0 for stock.
+ * @param m The members.
+ * @param buf Receives the text.
+ * @param cap Capacity of @p buf. */
+static void census_outcome_text(int n, const short* m, char* buf, size_t cap) {
+    if (n <= 0) { snprintf(buf, cap, "stock"); return; }
+    size_t k = (size_t)snprintf(buf, cap, n == 1 ? "%d" : "chain %d", m[0]);
+    for (int j = 1; j < n && k < cap; j++) k += (size_t)snprintf(buf + k, cap - k, ">%d", m[j]);
+}
+
+/** @brief Census: print the class count, the passes per colour slot, and each class's members and last walked and retained outcomes. */
 static void census_print_classes_ter(void) {
     const unsigned ep = openpete_mods_material_terrain_epoch();
     int baked = 0;
@@ -1045,7 +1109,10 @@ static void census_print_classes_ter(void) {
         for (int j = 0; j < s_cls[c].n && n < (int)sizeof buf - 8; j++)
             n += snprintf(buf + n, sizeof buf - (size_t)n, "%s%d%s", j ? " > " : "", s_cls[c].m[j],
                           s_mats[s_cls[c].m[j]].per_instance ? "r" : "d");
-        fprintf(stderr, "[material-census] terrain class %d: %s; last resolved %d\n", c, buf, census_class_member(c));
+        char wo[48], ro[48];
+        census_outcome_text(s_cls[c].res_n, s_cls[c].res_m, wo, sizeof wo);
+        census_outcome_text(s_cls[c].ret_n, s_cls[c].ret_m, ro, sizeof ro);
+        fprintf(stderr, "[material-census] terrain class %d: %s; walked %s; retained %s\n", c, buf, wo, ro);
     }
 }
 
@@ -1053,6 +1120,10 @@ int mod_mat_terrain_class_count(void) { return s_cls_n - 1; }
 int mod_mat_terrain_class_resolved(int c) {
     if (c <= 0 || c >= s_cls_n || s_cls[c].res_present != s_mat_present) return -1;
     return s_cls[c].res;
+}
+int mod_mat_terrain_class_retained(int c) {
+    if (c <= 0 || c >= s_cls_n || s_cls[c].res_present != s_mat_present) return -1;
+    return s_cls[c].res_ret;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1084,6 +1155,12 @@ void openpete_mods_material_view_capture(openpete_mods_material_view_t* out) {
         out->chains[i].n = s_mat_chains[i].n;
         memcpy(out->chains[i].mat, s_mat_chains[i].mat, sizeof out->chains[i].mat);
         memcpy(out->chains[i].slot, s_mat_chains[i].slot, sizeof out->chains[i].slot);
+    }
+    out->ter_chain_n = s_ter_chain_n;
+    for (int i = 0; i < s_ter_chain_n; i++) {
+        out->ter_chains[i].n = s_ter_chains[i].n;
+        memcpy(out->ter_chains[i].mat, s_ter_chains[i].mat, sizeof out->ter_chains[i].mat);
+        memcpy(out->ter_chains[i].slot, s_ter_chains[i].slot, sizeof out->ter_chains[i].slot);
     }
     /* The live tables, whatever view the compose thread has installed. */
     ter_class_pass_table_live(out->ter_class_pass);
@@ -1239,24 +1316,36 @@ static int chain_set_index(const openpete_mods_material_chain_set_t* set, int fr
     return -1;
 }
 
-/** @brief Test whether a material's stock-profile op_material returns its parameter. */
-static int chain_identity(const mod_material_t* m) {
-    return m->frag >= 0 && (m->identity_mask & 1u);
+/** @brief Return a chain profile's bit in a material's link and identity masks, whose bits order the profiles stock, terrain, portal.
+ *
+ * @param profile 0 stock, 1 portal, OPENPETE_MATERIAL_CHAIN_TERRAIN. */
+static unsigned chain_link_bit(int profile) {
+    return profile == OPENPETE_MATERIAL_CHAIN_TERRAIN ? 2u : profile == 1 ? 4u : 1u;
 }
 
-/** @brief Test whether a material can enter a chain drawn through the installed modules, counting an exclusion for absence.
+/** @brief Test whether a material's op_material returns its parameter in a chain profile.
+ *
+ * @param m The material.
+ * @param profile 0 stock, OPENPETE_MATERIAL_CHAIN_TERRAIN for retained terrain. */
+static int chain_identity(const mod_material_t* m, int profile) {
+    return m->frag >= 0 && (m->identity_mask & chain_link_bit(profile));
+}
+
+/** @brief Test whether a material can enter a chain drawn through the installed modules of a profile, counting an exclusion for absence.
  *
  * A vertex-only material contributes its vertex stage and no op_material,
  * so it needs no module. A material with a fragment stage needs a linkable
- * stock profile and a place in the installed member set; a linkable one
- * the set lacks (its module compile pending or failed, or none installed)
- * counts in the census as excluded for absence.
+ * profile and a case in the installed member set's module of that
+ * profile; a linkable one the set lacks (its module compile pending or
+ * failed, or none installed) counts in the census as excluded for absence.
  * @param m The material.
- * @param set The installed member set, or NULL. */
-static int chain_linkable(const mod_material_t* m, const openpete_mods_material_chain_set_t* set) {
+ * @param set The installed member set, or NULL.
+ * @param profile 0 stock, OPENPETE_MATERIAL_CHAIN_TERRAIN for retained terrain. */
+static int chain_linkable(const mod_material_t* m, const openpete_mods_material_chain_set_t* set, int profile) {
     if (m->frag < 0) return m->vert >= 0;
-    if (!(m->link_mask & 1u)) return 0;
-    if (chain_set_index(set, m->frag) >= 0) return 1;
+    if (!(m->link_mask & chain_link_bit(profile))) return 0;
+    const int i = chain_set_index(set, m->frag);
+    if (i >= 0 && set->case_id[profile][i] >= 0) return 1;
     if (mod_mat_census_on()) atomic_fetch_add_explicit(&s_cen_chain_absent, 1u, memory_order_relaxed);
     return 0;
 }
@@ -1265,21 +1354,24 @@ _Static_assert(OPENPETE_MATERIAL_SLOT_CHAIN >= MOD_MATERIAL_SLOTS, "chain ids st
 _Static_assert(OPENPETE_MATERIAL_SLOT_CHAIN + OPENPETE_MATERIAL_CHAINS <= OPENPETE_MATERIAL_SLOT_DECL,
                "chain ids stay below the declarative bit");
 
-/** @brief Intern a chain entry into this present's table, reusing an equal one.
+/** @brief Intern a chain entry into one of this present's tables, reusing an equal one.
  *
+ * @param tab The table: the moby or the terrain chain entries.
+ * @param n Its entry count, advanced on an append.
+ * @param cap Its capacity.
  * @param c The entry.
  * @return The entry id, or -1 when the table is full. */
-static int chain_intern(const mat_chain_t* c) {
-    for (int i = 0; i < s_mat_chain_n; i++) {
-        const mat_chain_t* e = &s_mat_chains[i];
+static int chain_intern(mat_chain_t* tab, int* n, int cap, const mat_chain_t* c) {
+    for (int i = 0; i < *n; i++) {
+        const mat_chain_t* e = &tab[i];
         if (e->n != c->n) continue;
         int same = 1;
         for (int k = 0; k < c->n && same; k++) same = e->mat[k] == c->mat[k] && e->slot[k] == c->slot[k];
         if (same) return i;
     }
-    if (s_mat_chain_n >= OPENPETE_MATERIAL_CHAINS) return -1;
-    s_mat_chains[s_mat_chain_n] = *c;
-    return s_mat_chain_n++;
+    if (*n >= cap) return -1;
+    tab[*n] = *c;
+    return (*n)++;
 }
 
 /** @brief Keep a walk's chain in the tick's list, reusing an equal entry.
@@ -1326,7 +1418,7 @@ static int chain_field(const chain_walk_t* c) {
         e.mat[k] = (short)w;
         e.slot[k] = (short)sl;
     }
-    const int id = chain_intern(&e);
+    const int id = chain_intern(s_mat_chains, &s_mat_chain_n, OPENPETE_MATERIAL_CHAINS, &e);
     if (id < 0) {
         if (mod_mat_census_on()) atomic_fetch_add_explicit(&s_cen_chain_full, 1u, memory_order_relaxed);
         return OPENPETE_MATERIAL_SLOT_STOCK;
@@ -1379,13 +1471,17 @@ static void chain_push(chain_walk_t* c, int w, int a, const unsigned char* buf) 
     c->n++;
 }
 
-/* The state of one moby's extraction walk: the top acceptance and its
- * block, the chain below it, and the member set it links against. */
+/* The state of one composition walk (a moby's extraction walk or a
+ * terrain class's resolution): the top acceptance and its block, the chain
+ * below it, the member set it links against, the profile whose linkability
+ * and identity it tests, and the census counter of the chains it forms. */
 typedef struct {
     int top, top_len;
-    unsigned char* buf;             /* the top's block */
+    unsigned char* buf;             /* the top's block; NULL on terrain, whose members keep their slots */
     chain_walk_t* cw;
     const openpete_mods_material_chain_set_t* set;
+    int profile;                    /* 0 stock, OPENPETE_MATERIAL_CHAIN_TERRAIN */
+    _Atomic unsigned* walks;        /* NULL: the walk counts nothing in the census */
 } walk_state_t;
 
 /** @brief Take one acceptance into a walk: the top, or a member below it.
@@ -1401,13 +1497,14 @@ typedef struct {
  * @return 1 when the walk stops, else 0. */
 static int walk_accept(walk_state_t* st, int w, int a, const unsigned char* tmp) {
     const mod_material_t* m = &s_mats[w];
-    const int identity = chain_identity(m);
-    cen_bump(w, MOD_MAT_CENSUS_EXTRACT_WINS);
+    const int identity = chain_identity(m, st->profile);
+    if (st->walks) cen_bump(w, MOD_MAT_CENSUS_EXTRACT_WINS);
     if (st->top < 0) {
         st->top = w;
         st->top_len = a == MOBY_ASK_DECL ? -1 : a;
         if (st->top_len > 0) memcpy(st->buf, tmp, (size_t)st->top_len);
-        if (mod_mat_terminal(m) || m->vert >= 0 || (!identity && !chain_linkable(m, st->set))) return 1;
+        if (mod_mat_terminal(m) || m->vert >= 0 || (!identity && !chain_linkable(m, st->set, st->profile)))
+            return 1;
         if (!identity) chain_push(st->cw, w, a, tmp);
         return 0;
     }
@@ -1424,14 +1521,14 @@ static int walk_accept(walk_state_t* st, int w, int a, const unsigned char* tmp)
 static int walk_result(walk_state_t* st, int* len) {
     chain_walk_t* cw = st->cw;
     if (cw->n >= 2) {
-        if (mod_mat_census_on()) atomic_fetch_add_explicit(&s_cen_chain_walks, 1u, memory_order_relaxed);
+        if (st->walks && mod_mat_census_on()) atomic_fetch_add_explicit(st->walks, 1u, memory_order_relaxed);
         *len = -1;
         return -1;
     }
     *len = st->top_len;
     if (cw->n == 1 && cw->mat[0] != st->top) {
         *len = cw->len[0];
-        if (*len > 0) memcpy(st->buf, cw->bytes[0], (size_t)*len);
+        if (*len > 0 && st->buf) memcpy(st->buf, cw->bytes[0], (size_t)*len);
         st->top = cw->mat[0];
     }
     cw->n = 0;
@@ -1458,13 +1555,13 @@ static int walk_result(walk_state_t* st, int* len) {
  * @return The material that draws alone, -1 for a composed moby (cw) or an exhausted walk. */
 static int moby_walk(int cls, uint32_t vaddr, unsigned char* buf, int* len, chain_walk_t* cw) {
     const int level = s_cur_level;
-    walk_state_t st = { -1, -1, buf, cw, openpete_mods_material_chain_set_current() };
+    walk_state_t st = { -1, -1, buf, cw, openpete_mods_material_chain_set_current(), 0, &s_cen_chain_walks };
     int declined = -1;
     unsigned char tmp[OPENPETE_MATERIAL_UNIFORMS_MAX];
     cw->n = 0;
     for (int w = moby_walk_next(cls, level, -1); w >= 0; w = moby_walk_next(cls, level, w)) {
         const mod_material_t* m = &s_mats[w];
-        if (st.top >= 0 && !chain_identity(m) && !chain_linkable(m, st.set)) continue;   /* skipped below the top */
+        if (st.top >= 0 && !chain_identity(m, 0) && !chain_linkable(m, st.set, 0)) continue;   /* skipped below the top */
         if (declined >= 0) cen_bump(declined, MOD_MAT_CENSUS_FALLTHROUGHS);
         const int a = moby_ask(w, cls, vaddr, tmp);
         if (a == MOBY_ASK_DECLINE) { declined = w; continue; }
@@ -1610,35 +1707,136 @@ int mod_mat_terrain_refine_slot(int w) {
     return (m->refine_slot = s);
 }
 
-/** @brief Resolve a terrain class to its member for this present.
+/* A terrain class member's answer for this present (ter_ask). */
+#define TER_ASK_ACCEPT  0
+#define TER_ASK_DECLINE 1
+#define TER_ASK_FULL    2   /* a refine accepted, the slot table is full */
+
+/** @brief Ask one terrain class member whether it takes the class this present: a declarative accepts, a refine answers through mod_mat_terrain_refine_slot.
  *
- * Walks the class's members, highest ranked first, skipping one no longer
- * usable (terrain_sel_usable): a declarative member lands; a refine member
- * is asked through mod_mat_terrain_refine_slot and lands on acceptance,
- * while its decline passes the class to the next member, counted as a
- * fall-through when one follows. An accepted block that finds the slot
- * table full resolves to stock for this present. Memoised per present.
- * Sim thread only.
+ * @param i Material index.
+ * @return TER_ASK_ACCEPT, TER_ASK_DECLINE or TER_ASK_FULL. */
+static int ter_ask(int i) {
+    const mod_material_t* m = &s_mats[i];
+    if (!m->per_instance) return TER_ASK_ACCEPT;
+    const int s = mod_mat_terrain_refine_slot(i);
+    if (s > 0 && s != OPENPETE_MATERIAL_TERRAIN_STOCK) return TER_ASK_ACCEPT;
+    return m->refine_kept_len >= 0 ? TER_ASK_FULL : TER_ASK_DECLINE;
+}
+
+/** @brief Walk a terrain class's members for one profile under the moby walk's composition rules.
+ *
+ * Skips a member no longer usable (terrain_sel_usable). The first
+ * acceptance is the top; below a composable top an unlinkable member is
+ * skipped unasked, an accepting member joins, and a terminal member or the
+ * cap ends the walk (walk_accept). A decline passes the class on, counted
+ * as a fall-through when another member is asked after it and @p count is
+ * set (and only then the acceptances and the chain formed). An accepted
+ * refine block that finds the slot table full sends the
+ * class to stock for this present. Refines are asked at most once per
+ * present, so a second walk for another profile asks nothing.
+ * @param k The class.
+ * @param profile 0 stock (walked), OPENPETE_MATERIAL_CHAIN_TERRAIN (retained).
+ * @param set The installed member set.
+ * @param count Nonzero to count fall-throughs and formed chains.
+ * @param cw Receives the chain; cw->n is 2 or more when the class composes.
+ * @return The material that draws alone, -1 for a chain (cw) or stock. */
+static int ter_class_walk(const ter_class_t* k, int profile, const openpete_mods_material_chain_set_t* set,
+                          int count, chain_walk_t* cw) {
+    walk_state_t st = { -1, -1, NULL, cw, set, profile, count ? &s_cen_chain_ter_walks : NULL };
+    int declined = -1;
+    cw->n = 0;
+    for (int j = 0; j < k->n; j++) {
+        const int i = k->m[j];
+        const mod_material_t* m = &s_mats[i];
+        if (!terrain_sel_usable(m, s_cur_level)) continue;
+        if (st.top >= 0 && !chain_identity(m, profile) && !chain_linkable(m, set, profile)) continue;
+        if (declined >= 0 && count) cen_bump(declined, MOD_MAT_CENSUS_FALLTHROUGHS);
+        const int a = ter_ask(i);
+        if (a == TER_ASK_DECLINE) { declined = i; continue; }
+        if (a == TER_ASK_FULL) { cw->n = 0; return -1; }
+        declined = -1;
+        if (walk_accept(&st, i, MOBY_ASK_DECL, NULL)) break;
+    }
+    int len;
+    return walk_result(&st, &len);
+}
+
+/** @brief Test whether every member of a terrain class has the same linkability and identity in the stock and the terrain profile, so both paths' walks agree.
+ *
+ * @param k The class.
+ * @param set The installed member set. */
+static int ter_profiles_agree(const ter_class_t* k, const openpete_mods_material_chain_set_t* set) {
+    for (int j = 0; j < k->n; j++) {
+        const mod_material_t* m = &s_mats[k->m[j]];
+        if (m->frag < 0) continue;
+        const unsigned sb = chain_link_bit(0), tb = chain_link_bit(OPENPETE_MATERIAL_CHAIN_TERRAIN);
+        if (!(m->link_mask & sb) != !(m->link_mask & tb) || !(m->identity_mask & sb) != !(m->identity_mask & tb))
+            return 0;
+        const int i = chain_set_index(set, m->frag);
+        if (i >= 0 && (set->case_id[0][i] >= 0) != (set->case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][i] >= 0)) return 0;
+    }
+    return 1;
+}
+
+/** @brief Turn one walk of a terrain class into its outcome: a material, a terrain chain entry of this present, or stock; record its members for the census.
+ *
+ * A chain member's uniform slot is its refine outcome this present or its
+ * static slot. A full terrain chain table sends the class to stock,
+ * counted.
+ * @param w The walk's single material, or -1.
+ * @param cw The walk's chain, highest-ranked first.
+ * @param cn Receives the outcome's member count (0 stock).
+ * @param cm Receives its members, lowest-ranked first.
+ * @return The material index, MOD_MAT_TER_OUT_CHAIN + entry id, or -1. */
+static int ter_outcome(int w, const chain_walk_t* cw, signed char* cn, short* cm) {
+    *cn = 0;
+    if (cw->n < 2) {
+        if (w >= 0) { *cn = 1; cm[0] = (short)w; }
+        return w;
+    }
+    mat_chain_t e;
+    e.n = cw->n;
+    for (int k = 0; k < cw->n; k++) {
+        const int i = cw->mat[cw->n - 1 - k];
+        e.mat[k] = (short)i;
+        e.slot[k] = (short)(s_mats[i].per_instance ? s_mats[i].refine_slot : s_mats[i].static_slot);
+    }
+    const int id = chain_intern(s_ter_chains, &s_ter_chain_n, OPENPETE_MATERIAL_TERRAIN_CHAINS, &e);
+    if (id < 0) {
+        if (mod_mat_census_on()) atomic_fetch_add_explicit(&s_cen_chain_full, 1u, memory_order_relaxed);
+        return -1;
+    }
+    *cn = (signed char)e.n;
+    memcpy(cm, e.mat, (size_t)e.n * sizeof *cm);
+    return MOD_MAT_TER_OUT_CHAIN + id;
+}
+
+/** @brief Resolve a terrain class to its walked and retained outcomes for this present.
+ *
+ * The walked outcome comes from the class walk under the stock profile's
+ * linkability and identity, the retained one under the terrain profile's
+ * (ter_class_walk); both are the same walk while every member agrees
+ * across the profiles. Memoised per present. Sim thread only.
  * @param c Class id 1..s_cls_n-1.
- * @return The material index, or -1 for stock. */
+ * @return The walked outcome: a material index, MOD_MAT_TER_OUT_CHAIN +
+ *         terrain chain entry id, or -1 for stock. */
 static int ter_class_resolve(int c) {
     ter_class_t* k = &s_cls[c];
     if (k->res_present == s_mat_present) return k->res;
     k->res_present = s_mat_present;
-    k->res = -1;
-    const int level = s_cur_level;
-    int declined = -1;
-    for (int j = 0; j < k->n; j++) {
-        const int i = k->m[j];
-        const mod_material_t* m = &s_mats[i];
-        if (!terrain_sel_usable(m, level)) continue;
-        if (declined >= 0) cen_bump(declined, MOD_MAT_CENSUS_FALLTHROUGHS);
-        if (!m->per_instance) { k->res = i; break; }
-        const int s = mod_mat_terrain_refine_slot(i);
-        if (s > 0 && s != OPENPETE_MATERIAL_TERRAIN_STOCK) { k->res = i; break; }
-        if (m->refine_kept_len >= 0) break;     /* accepted, slot table full: stock */
-        declined = i;
+    static chain_walk_t cw;   /* sim thread only */
+    const openpete_mods_material_chain_set_t* set = openpete_mods_material_chain_set_current();
+    int w = ter_class_walk(k, 0, set, 1, &cw);
+    k->res = ter_outcome(w, &cw, &k->res_n, k->res_m);
+    if (ter_profiles_agree(k, set)) {
+        k->res_ret = k->res;
+        k->ret_n = k->res_n;
+        memcpy(k->ret_m, k->res_m, sizeof k->ret_m);
+        return k->res;
     }
+    w = ter_class_walk(k, OPENPETE_MATERIAL_CHAIN_TERRAIN, set, 0, &cw);
+    k->res_ret = ter_outcome(w, &cw, &k->ret_n, k->ret_m);
     return k->res;
 }
 
@@ -1648,8 +1846,10 @@ int openpete_mods_material_terrain_walk_slot(CPUState* cpu, int texid, int untex
     const int c = ter_class_of(texid, untex, env, lp);
     const int r = c ? ter_class_resolve(c) : -1;
     if (mod_mat_census_on() && texid >= -1 && texid <= 127)
-        cen_ter(s_cen_walk_n, s_cen_walk_b, ter_key_index(texid < 0 ? -1 : texid, untex, env, lp), r + 1);
+        cen_ter(s_cen_walk_n, s_cen_walk_b, ter_key_index(texid < 0 ? -1 : texid, untex, env, lp),
+                (r >= MOD_MAT_TER_OUT_CHAIN ? MOD_MAT_TER_OUT_CHAIN : r) + 1);
     if (r < 0) return OPENPETE_MATERIAL_TERRAIN_STOCK;
+    if (r >= MOD_MAT_TER_OUT_CHAIN) return OPENPETE_MATERIAL_TERRAIN_CHAIN | (r - MOD_MAT_TER_OUT_CHAIN);
     if (!s_mats[r].per_instance) return OPENPETE_MATERIAL_TERRAIN_DECL | r;
     return s_mats[r].refine_slot;
 }
@@ -1780,8 +1980,12 @@ static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
         return 0;
     }
     if (s == stock) return -1;
-    /* A chain entry resolves through mod_mat_resolve_chain only. */
+    /* A chain entry resolves through mod_mat_resolve_chain only; ahead of
+     * the stale-slot test, which would read every chain id as stale. */
     if (path == 0 && s >= OPENPETE_MATERIAL_SLOT_CHAIN && s < OPENPETE_MATERIAL_SLOT_CHAIN + OPENPETE_MATERIAL_CHAINS)
+        return -1;
+    if (path == 1 && s >= OPENPETE_MATERIAL_TERRAIN_CHAIN &&
+        s < OPENPETE_MATERIAL_TERRAIN_CHAIN + OPENPETE_MATERIAL_TERRAIN_CHAINS)
         return -1;
     if (s & decl) {
         s &= decl - 1;
@@ -1912,21 +2116,46 @@ static void cen_chain(_Atomic unsigned* c) {
 }
 
 
-/** @brief Return the chain entry id a moby tag names, or -1 when it names none. */
+/** @brief Return the chain entry id a moby or terrain tag names, or -1 when it names none.
+ *
+ * A moby tag's [27:16] field OPENPETE_MATERIAL_SLOT_CHAIN + id names moby
+ * entry id; a terrain tag's [24:16] field OPENPETE_MATERIAL_TERRAIN_CHAIN |
+ * id names entry OPENPETE_MATERIAL_CHAINS + id. */
 static int chain_id_of_tag(uint32_t tag) {
-    if ((tag >> 28) != 1u) return -1;
-    const int f = (int)((tag >> 16) & 0xFFFu);
-    return f >= OPENPETE_MATERIAL_SLOT_CHAIN && f < OPENPETE_MATERIAL_SLOT_CHAIN + OPENPETE_MATERIAL_CHAINS
-               ? f - OPENPETE_MATERIAL_SLOT_CHAIN : -1;
+    if ((tag >> 28) == 1u) {
+        const int f = (int)((tag >> 16) & 0xFFFu);
+        return f >= OPENPETE_MATERIAL_SLOT_CHAIN && f < OPENPETE_MATERIAL_SLOT_CHAIN + OPENPETE_MATERIAL_CHAINS
+                   ? f - OPENPETE_MATERIAL_SLOT_CHAIN : -1;
+    }
+    if ((tag >> 28) == 2u) {
+        const int f = (int)((tag >> 16) & 0x1FFu);
+        return f >= OPENPETE_MATERIAL_TERRAIN_CHAIN && f < OPENPETE_MATERIAL_TERRAIN_CHAIN + OPENPETE_MATERIAL_TERRAIN_CHAINS
+                   ? OPENPETE_MATERIAL_CHAINS + (f - OPENPETE_MATERIAL_TERRAIN_CHAIN) : -1;
+    }
+    return -1;
 }
 
-/** @brief Read a chain entry of the installed view, else of the live table.
+/** @brief Read a moby or terrain chain entry of the installed view, else of the live tables.
  *
- * @param id Entry id.
+ * @param id Entry id: a moby entry, or OPENPETE_MATERIAL_CHAINS + a terrain entry.
  * @param mat Receives its members' material indices, lowest-ranked first.
  * @param slot Receives its members' uniform slots.
  * @return The member count, or 0 for an id past the entry count. */
 static int chain_entry(int id, const short** mat, const short** slot) {
+    if (id < 0 || id >= OPENPETE_MATERIAL_CHAIN_ENTRIES) return 0;
+    if (id >= OPENPETE_MATERIAL_CHAINS) {
+        const int t = id - OPENPETE_MATERIAL_CHAINS;
+        if (s_mat_view) {
+            if (t >= s_mat_view->ter_chain_n) return 0;
+            *mat = s_mat_view->ter_chains[t].mat;
+            *slot = s_mat_view->ter_chains[t].slot;
+            return s_mat_view->ter_chains[t].n;
+        }
+        if (t >= s_ter_chain_n) return 0;
+        *mat = s_ter_chains[t].mat;
+        *slot = s_ter_chains[t].slot;
+        return s_ter_chains[t].n;
+    }
     if (s_mat_view) {
         if (id >= s_mat_view->chain_n) return 0;
         *mat = s_mat_view->chains[id].mat;
@@ -1961,16 +2190,15 @@ static void census_chain_draw(const mod_mat_chain_res_t* r) {
     for (int k = 0; k < r->n; k++) cen_bump(r->mat[k], MOD_MAT_CENSUS_DRAWS);
 }
 
-/** @brief Resolve a chain tag at a draw site (mod_mat_resolve_chain), counting in the census only when @p count is set.
+/** @brief Resolve a chain entry at a draw site (mod_mat_resolve_chain), counting in the census only when @p count is set.
  *
- * @param tag Provenance tag.
+ * @param id Chain entry id, or -1 for none.
  * @param contract The draw site's contract.
  * @param out Receives the members.
  * @param count Nonzero to count.
- * @return 1 resolved, 0 when the tag names no chain, -1 when the chain draws stock. */
-static int resolve_chain(uint32_t tag, int contract, mod_mat_chain_res_t* out, int count) {
-    const int id = s_mat_count ? chain_id_of_tag(tag) : -1;
-    if (id < 0) return 0;
+ * @return 1 resolved, 0 when @p id names no chain, -1 when the chain draws stock. */
+static int resolve_chain(int id, int contract, mod_mat_chain_res_t* out, int count) {
+    if (id < 0 || s_mat_count == 0) return 0;
     const short *mat = NULL, *slot = NULL;
     const int n = chain_entry(id, &mat, &slot);
     _Atomic unsigned* fail = n < 2 || n > OPENPETE_MATERIAL_CHAIN_CAP || contract != OPENPETE_MATERIAL_CONTRACT_SCENE
@@ -1992,27 +2220,34 @@ static int resolve_chain(uint32_t tag, int contract, mod_mat_chain_res_t* out, i
 }
 
 int mod_mat_resolve_chain(uint32_t tag, int contract, mod_mat_chain_res_t* out) {
-    return resolve_chain(tag, contract, out, 1);
+    return resolve_chain(chain_id_of_tag(tag), contract, out, 1);
 }
 
-/** @brief Resolve a chain tag of the scene contract without counting, for the chain block fill.
- *
- * @param tag Provenance tag.
- * @param out Receives the members. */
-static int mod_mat_resolve_chain_quiet(uint32_t tag, mod_mat_chain_res_t* out) {
-    return resolve_chain(tag, OPENPETE_MATERIAL_CONTRACT_SCENE, out, 0);
+int mod_mat_resolve_terrain_chain(int pass, mod_mat_chain_res_t* out) {
+    const int t = pass - OPENPETE_MATERIAL_TER_PASS_CHAIN;
+    if (t < 0 || t >= OPENPETE_MATERIAL_TERRAIN_CHAINS) return 0;
+    const int id = OPENPETE_MATERIAL_CHAINS + t;
+    const int c = resolve_chain(id, OPENPETE_MATERIAL_CONTRACT_SCENE, out, 0);
+    if (c < 0) (void)resolve_chain(id, OPENPETE_MATERIAL_CONTRACT_SCENE, out, 1);   /* count the reason */
+    if (c != 1) return c;
+    for (int k = 0; k < out->n; k++)
+        if (out->set_index[k] >= 0 && out->set->case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][out->set_index[k]] < 0) {
+            cen_chain(&s_cen_chain_lacked);
+            return -1;
+        }
+    census_chain_draw(out);
+    cen_chain(&s_cen_chain_ter_passes);
+    return 1;
 }
 
 int openpete_mods_material_chain_count(void) { return s_mat_chain_n; }
+int openpete_mods_material_terrain_chain_count(void) { return s_ter_chain_n; }
 
 int openpete_mods_material_chain_block(int entry, int profile, const void* engine, uint32_t engine_len,
                                        void* out) {
-    if (entry < 0 || entry >= OPENPETE_MATERIAL_CHAINS || profile < 0 ||
-        profile >= OPENPETE_MATERIAL_CHAIN_PROFILES || !out)
-        return -1;
+    if (openpete_mods_material_chain_ubo_block(entry, profile) < 0 || !out) return -1;
     mod_mat_chain_res_t ch;
-    const uint32_t tag = (1u << 28) | ((uint32_t)(OPENPETE_MATERIAL_SLOT_CHAIN + entry) << 16);
-    if (mod_mat_resolve_chain_quiet(tag, &ch) != 1) return -1;
+    if (resolve_chain(entry, OPENPETE_MATERIAL_CONTRACT_SCENE, &ch, 0) != 1) return -1;
     unsigned char* o = (unsigned char*)out;
     memset(o, 0, OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES);
     uint32_t n = 0, ids[OPENPETE_MATERIAL_CHAIN_CAP];

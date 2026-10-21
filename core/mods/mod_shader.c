@@ -1270,10 +1270,13 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_
  * handles, takes the registry lock around each mutator, and fills the
  * renderer's GPU descriptions (SPIR-V, pipeline slots, constant tables). */
 
+static int chain_terrain_bucket_gpu(int bucket, int pipe_idx, openpete_mod_material_terrain_t* out);
+
 int openpete_mods_material_terrain_bucket_gpu(
         int bucket, int pipe_idx, openpete_mod_material_terrain_t* out) {
-    if (!out || bucket <= 0 || bucket > mod_mat_count()) return -1;
-    if (pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES) return -1;
+    if (!out || pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES) return -1;
+    if (bucket >= OPENPETE_MATERIAL_TER_PASS_CHAIN) return chain_terrain_bucket_gpu(bucket, pipe_idx, out);
+    if (bucket <= 0 || bucket > mod_mat_count()) return -1;
     mod_material_t* m = mod_mat_at(bucket - 1);
     if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner) ||
         mod_owner_held(m->owner))
@@ -1299,6 +1302,7 @@ int openpete_mods_material_terrain_bucket_gpu(
     out->owner = m->owner;
     out->generation = m->generation;
     out->index = bucket - 1;
+    out->chain = out->chain_module = -1;
     mod_mat_census_bucket_pass(bucket - 1);
     return 0;
 }
@@ -1468,6 +1472,7 @@ int openpete_mods_material_enum_terrain(int i, int pipe_idx,
     out->owner = m->owner;
     out->generation = m->generation;
     out->index = i;
+    out->chain = out->chain_module = -1;
     return 0;
 }
 
@@ -1537,9 +1542,10 @@ void openpete_mods_material_retire_all(void) { REG_WR(); openpete_mods_material_
  * builds one; an installed pair stays until a newer one installs. */
 #define CHAIN_MODULES 32
 
-/* One combined module pair (stock and portal profile of the scene
- * contract) with its member set and pipeline slots. Never moved or freed
- * before shutdown, so a published set and every slot pointer stay valid. */
+/* One combined module set (stock, portal and terrain profile of the
+ * scene contract) with its member set and pipeline slots. Never moved or
+ * freed before shutdown, so a published set and every slot pointer stay
+ * valid. */
 typedef struct {
     openpete_mods_material_chain_set_t set;
     openpete_mod_link_module_t mod[OPENPETE_MATERIAL_CHAIN_PROFILES];   /* words 0 = none */
@@ -1549,6 +1555,9 @@ typedef struct {
     void*    pipeline[CHAIN_VVARS][OPENPETE_MATERIAL_PIPE_VARIANTS];
     void*    pipeline_mark[CHAIN_VVARS];
     void*    pipeline_portal[CHAIN_VVARS][OPENPETE_MATERIAL_PORTAL_PIPES];
+    /* Retained-terrain pipelines of the terrain module, one per (arena
+     * vertex stage x colour slot), as a material's pipeline_ter. */
+    void*    pipeline_ter[OPENPETE_MATERIAL_TER_PIPES];
     unsigned generation;                 /* slot generation of every pipeline slot */
 } chain_module_t;
 
@@ -1591,7 +1600,7 @@ static int chain_members(unsigned bit, int* out) {
  *
  * @param members Shader handles.
  * @param n Their count.
- * @param profile OPENPETE_MOD_LINK_STOCK or OPENPETE_MOD_LINK_PORTAL.
+ * @param profile OPENPETE_MOD_LINK_STOCK, OPENPETE_MOD_LINK_TERRAIN or OPENPETE_MOD_LINK_PORTAL.
  * @param case_of Receives each member's case id.
  * @param out Receives the module. */
 static int chain_build_profile(const int* members, int n, int profile, int* case_of,
@@ -1599,27 +1608,60 @@ static int chain_build_profile(const int* members, int n, int profile, int* case
     const openpete_mod_link_member_t* mm[OPENPETE_MATERIAL_CHAIN_SET_MAX];
     for (int k = 0; k < n; k++) mm[k] = &shader_at(members[k])->link[profile];
     char log_path[MOD_SHADER_PATH_MAX * 3];
+    static const char* const k_name[OPENPETE_MOD_LINK_PROFILES] = { "stock", "terrain", "portal" };
     snprintf(log_path, sizeof log_path, "%s/.build/shaders/chain-%s.log", shader_at(members[0])->mod_dir,
-             profile == OPENPETE_MOD_LINK_PORTAL ? "portal" : "stock");
+             k_name[profile]);
     if (openpete_mod_link_build(link_ctx(), mm, n, OPENPETE_MATERIAL_CONTRACT_SCENE, profile, NULL, NULL,
                                 log_path, case_of, out) == 0)
         return 0;
     OPL_ERROR_F("mods", "material composition: the %s combined module of %d member(s) failed (%s) - "
                 "the installed module stays, and the new members draw alone",
-                profile == OPENPETE_MOD_LINK_PORTAL ? "portal" : "stock", n, out->log);
+                k_name[profile], n, out->log);
     openpete_mod_link_module_free(out);
     return -1;
 }
 
-/** @brief Body of openpete_mods_material_chain_sync, run under the registry write lock. */
-static void chain_sync_locked(void) {
-    int composable = 0;
-    for (int i = 0; i < mod_mat_count() && !composable; i++) {
+/** @brief Return whether a composable material is live: scene contract, a fragment stage, not terminal; with @p terrain set, also on channel -1 or OP_CHAN_TERRAIN with a linkable terrain profile.
+ *
+ * @param terrain Nonzero to ask for a composable material retained terrain can draw. */
+static int chain_composable_live(int terrain) {
+    for (int i = 0; i < mod_mat_count(); i++) {
         const mod_material_t* m = mod_mat_at(i);
-        composable = m->live && m->frag >= 0 && m->contract == OPENPETE_MATERIAL_CONTRACT_SCENE &&
-                     !mod_mat_terminal(m);
+        if (!m->live || m->frag < 0 || m->contract != OPENPETE_MATERIAL_CONTRACT_SCENE || mod_mat_terminal(m))
+            continue;
+        if (!terrain) return 1;
+        if ((m->link_mask & (1u << OPENPETE_MOD_LINK_TERRAIN)) &&
+            (m->sel.channel == -1 || m->sel.channel == OP_CHAN_TERRAIN))
+            return 1;
     }
-    if (!composable) return;
+    return 0;
+}
+
+/** @brief Write one profile's case ids into a member set: each set shader's case in that profile's module, -1 where the module lacks it.
+ *
+ * @param set The member set, its shaders filled.
+ * @param profile 1 portal, OPENPETE_MATERIAL_CHAIN_TERRAIN.
+ * @param members The profile module's member shaders.
+ * @param n Their count, 0 for no module.
+ * @param cases Their case ids. */
+static void chain_map_cases(openpete_mods_material_chain_set_t* set, int profile, const int* members, int n,
+                            const int* cases) {
+    for (int k = 0; k < set->n; k++) {
+        set->case_id[profile][k] = -1;
+        for (int j = 0; j < n; j++)
+            if (members[j] == set->shader[k]) set->case_id[profile][k] = cases[j];
+    }
+}
+
+/** @brief Body of openpete_mods_material_chain_sync, run under the registry write lock.
+ *
+ * Builds the stock module of the member set, the portal module of its
+ * members with a linkable portal profile, and the terrain module of those
+ * with a linkable terrain profile while a composable material retained
+ * terrain can draw is live. A failed portal or terrain module leaves that
+ * profile without cases. */
+static void chain_sync_locked(void) {
+    if (!chain_composable_live(0)) return;
     for (int i = 0; i < mod_mat_count(); i++) {
         const mod_material_t* m = mod_mat_at(i);
         if (m->live && m->frag >= 0 && m->contract == OPENPETE_MATERIAL_CONTRACT_SCENE &&
@@ -1627,12 +1669,16 @@ static void chain_sync_locked(void) {
             (void)openpete_mods_shader_link_resolve(m->frag);
     }
     int stock[OPENPETE_MATERIAL_CHAIN_SET_MAX], portal[OPENPETE_MATERIAL_CHAIN_SET_MAX];
+    int ter[OPENPETE_MATERIAL_CHAIN_SET_MAX];
     const int ns = chain_members(1u << OPENPETE_MOD_LINK_STOCK, stock);
     int np = chain_members(1u << OPENPETE_MOD_LINK_PORTAL, portal);
+    int nt = chain_composable_live(1) ? chain_members(1u << OPENPETE_MOD_LINK_TERRAIN, ter) : 0;
     if (ns == 0) return;
     if (s_chain_mod_n) {
-        const openpete_mods_material_chain_set_t* last = &s_chain_mods[s_chain_mod_n - 1]->set;
-        if (last->n == ns && memcmp(last->shader, stock, (size_t)ns * sizeof *stock) == 0) return;
+        const chain_module_t* last = s_chain_mods[s_chain_mod_n - 1];
+        if (last->set.n == ns && memcmp(last->set.shader, stock, (size_t)ns * sizeof *stock) == 0 &&
+            (last->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN].words != 0) == (nt != 0))
+            return;
     }
     if (s_chain_mod_n == CHAIN_MODULES) {
         OPL_ERROR_F("mods", "material composition: %d combined modules built this session - no more; "
@@ -1641,26 +1687,26 @@ static void chain_sync_locked(void) {
     }
     chain_module_t* cm = calloc(1, sizeof *cm);
     if (!cm) return;
-    int cs[OPENPETE_MATERIAL_CHAIN_SET_MAX], cp[OPENPETE_MATERIAL_CHAIN_SET_MAX];
+    int cs[OPENPETE_MATERIAL_CHAIN_SET_MAX], cp[OPENPETE_MATERIAL_CHAIN_SET_MAX], ct[OPENPETE_MATERIAL_CHAIN_SET_MAX];
     if (chain_build_profile(stock, ns, OPENPETE_MOD_LINK_STOCK, cs, &cm->mod[0]) != 0) { free(cm); return; }
     if (np && chain_build_profile(portal, np, OPENPETE_MOD_LINK_PORTAL, cp, &cm->mod[1]) != 0) np = 0;
+    if (nt && chain_build_profile(ter, nt, OPENPETE_MOD_LINK_TERRAIN, ct,
+                                  &cm->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN]) != 0)
+        nt = 0;
     cm->set.generation = ++s_chain_set_gen;
     cm->set.module = s_chain_mod_n;
     cm->set.n = ns;
-    for (int k = 0; k < ns; k++) {
-        cm->set.shader[k] = stock[k];
-        cm->set.case_id[0][k] = cs[k];
-        cm->set.case_id[1][k] = -1;
-        for (int j = 0; j < np; j++)
-            if (portal[j] == stock[k]) cm->set.case_id[1][k] = cp[j];
-    }
+    memcpy(cm->set.shader, stock, (size_t)ns * sizeof *stock);
+    memcpy(cm->set.case_id[0], cs, (size_t)ns * sizeof *cs);
+    chain_map_cases(&cm->set, 1, portal, np, cp);
+    chain_map_cases(&cm->set, OPENPETE_MATERIAL_CHAIN_TERRAIN, ter, nt, ct);
     cm->vvar_shader[0] = -1;
     cm->vvar_n = 1;
     cm->generation = slot_generation_next();
     s_chain_mods[s_chain_mod_n++] = cm;
     OPL_INFO_F("mods", "material composition: combined module %d built: %d member shader(s), %d case(s) "
-               "(%zu words), portal profile %d member(s)", cm->set.module, ns, cm->mod[0].cases,
-               cm->mod[0].words, np);
+               "(%zu words), portal profile %d member(s), terrain profile %d member(s)", cm->set.module, ns,
+               cm->mod[0].cases, cm->mod[0].words, np, nt);
 }
 
 void openpete_mods_material_chain_sync(void) {
@@ -1687,7 +1733,7 @@ static void chain_fill_gpu(chain_module_t* cm, int vvar, openpete_mod_material_g
     out->pipeline_mark_slot = &cm->pipeline_mark[vvar];
     for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++)
         out->pipeline_portal_slot[b] = &cm->pipeline_portal[vvar][b];
-    for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_PROFILES; p++) {
+    for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_TERRAIN; p++) {   /* the stock and portal stages */
         openpete_mod_cdata_t* cd = p ? &out->frag_portal_cdata : &out->frag_cdata;
         if (!cm->mod[p].cdata.len) continue;
         cd->bytes = cm->mod[p].cdata.bytes;
@@ -1707,6 +1753,29 @@ int openpete_mods_material_chain_gpu(int module, int vvar, openpete_mod_material
     chain_module_t* cm = s_chain_mods[module];
     if (vvar < 0 || vvar >= cm->vvar_n) return -1;
     chain_fill_gpu(cm, vvar, out);
+    return 0;
+}
+
+int openpete_mods_material_chain_terrain_gpu(int module, int pipe_idx, openpete_mod_material_terrain_t* out) {
+    if (!out || module < 0 || module >= s_chain_mod_n || pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES)
+        return -1;
+    chain_module_t* cm = s_chain_mods[module];
+    const openpete_mod_link_module_t* tm = &cm->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN];
+    if (!tm->words) return -1;
+    memset(out, 0, sizeof *out);
+    out->frag_spv = tm->spv;
+    out->frag_words = tm->words;
+    out->pipeline_slot = &cm->pipeline_ter[pipe_idx];
+    if (tm->cdata.len) {
+        out->frag_cdata.bytes = tm->cdata.bytes;
+        out->frag_cdata.len = tm->cdata.len;
+        out->frag_cdata.gpu = &cm->cdata_gpu[OPENPETE_MATERIAL_CHAIN_TERRAIN];
+    }
+    out->owner = "material-composition";
+    out->generation = cm->generation;
+    out->index = -1;
+    out->chain = -1;
+    out->chain_module = module;
     return 0;
 }
 
@@ -1752,6 +1821,21 @@ int openpete_mods_material_resolve(uint32_t tag, int contract,
     return material_fill_gpu(best, slot, out);
 }
 
+/** @brief Fill a retained-terrain chain pass's GPU binding: the installed set's terrain module, its slot for the variant, and the chain entry.
+ *
+ * @param bucket OPENPETE_MATERIAL_TER_PASS_CHAIN + terrain chain entry id.
+ * @param pipe_idx Variant * OPENPETE_MATERIAL_TER_SLOTS + colour slot.
+ * @param out Receives the binding.
+ * @return 0, or -1 when the chain draws stock (mod_mat_resolve_terrain_chain) or no terrain module serves it. */
+static int chain_terrain_bucket_gpu(int bucket, int pipe_idx, openpete_mod_material_terrain_t* out) {
+    mod_mat_chain_res_t ch;
+    if (mod_mat_resolve_terrain_chain(bucket, &ch) != 1) return -1;
+    if (!ch.set || openpete_mods_material_chain_terrain_gpu(ch.set->module, pipe_idx, out) != 0) return -1;
+    out->chain = ch.entry;
+    out->uniform_slot = ch.entry;
+    return 0;
+}
+
 /** @brief Move every combined module's cached pipelines to the retirement list and clear them; they rebuild on next use. */
 static void chain_retire_pipelines(void) {
     for (int i = 0; i < s_chain_mod_n; i++) {
@@ -1767,6 +1851,10 @@ static void chain_retire_pipelines(void) {
                 retire_pipeline(cm->pipeline_portal[v][b]);
                 cm->pipeline_portal[v][b] = NULL;
             }
+        }
+        for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) {
+            retire_pipeline(cm->pipeline_ter[b]);
+            cm->pipeline_ter[b] = NULL;
         }
         cm->generation = slot_generation_next();
     }

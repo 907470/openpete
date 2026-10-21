@@ -255,10 +255,16 @@ chain_leg() {
         echo "$m" >> "$md/enabled.txt"
     done
     local PG_CAPTURE_TIMEOUT=900
-    local -a PG_CAPTURE_ENV=(OPENPETE_MATERIAL_STATS=1)
+    local -a PG_CAPTURE_ENV=(OPENPETE_MATERIAL_STATS=1) cache=()
+    # CHAIN_CACHE=1 forces the retained terrain cache on with its per-walk
+    # census; CHAIN_CACHE=0 turns it off, so every face is walked.
+    if [ -n "${CHAIN_CACHE:-}" ]; then
+        PG_CAPTURE_ENV+=(OPENPETE_TERRAIN_CACHE_FORCE="$CHAIN_CACHE" OPENPETE_TERRAIN_GPU_CENSUS="$CHAIN_CACHE")
+        [ "$CHAIN_CACHE" = 0 ] && cache=(--terrain-cache 0)
+    fi
     pg_capture "$WORK/$tag.log" "$WORK/$tag-$frame-vk.png" -- \
         --renderer vk --mute 1 --aspect 4:3 --lod original --no-card \
-        "${movie[@]}" --screenshot-native-only --mods-dir "$md" \
+        "${movie[@]}" "${cache[@]}" --screenshot-native-only --mods-dir "$md" \
         --screenshot-on-frame "$frame" \
         --screenshot-output "$WORK/$tag-{n}.png" --frame-limit $((frame + 2))
 }
@@ -305,6 +311,91 @@ chain_rung() {  # chain_rung <scene> <frame>
     n=$(chain_census chain-aold walks)
     if [ "${n:-1}" -eq 0 ]; then ok "chains: a pinned-12 material on top formed no chain"
     else bad "chains: a pinned-12 material on top formed $n chain(s)"; fi
+}
+
+# ── material composition: terrain chains on both residencies ─────────
+# mat-chain-ter-a and mat-chain-ter-b are pinned-13 terrain declaratives on
+# every face key; mat-chain-ter-ref2 is their composition written by hand
+# as one exclusive material. Each leg runs with the retained terrain cache
+# on (CACHE=1) and off (CACHE=0, every face walked). Per residency the
+# composed capture must equal the reference pixel for pixel. The census
+# prints each resolution class's walked and retained outcome (members
+# lowest first): on CACHE=1 the two agree per class, and the CACHE=0 walked
+# outcome of a class equals its CACHE=1 retained outcome, with at least one
+# chain. Engagement: a and ref2 repaint the stock frame, a,b differs from a
+# alone, the CACHE=1 leg counts retained chain passes and the CACHE=0 leg
+# walked chain draws (each refuses 0). LAW §16: the a,b residency delta
+# (CACHE=1 against CACHE=0) does not exceed the stock one, and the cache
+# serves and claims back the same sectors with the chain as without.
+# ter_classes <tag> <walked|retained>: "members -> outcome" per class.
+ter_classes() {
+    sed -n "s/.*\[material-census\] terrain class [0-9]*: \(.*\); walked \(.*\); retained \(.*\)$/\1|\2|\3/p" \
+        "$WORK/$1.log" | while IFS='|' read -r list walked ret; do
+            if [ "$2" = walked ]; then echo "$list -> $walked"; else echo "$list -> $ret"; fi
+        done | sort
+}
+ter_chain_rung() {  # ter_chain_rung <scene> <frame>
+    local scene="$1" frame="$2" spec tag c n pair
+    local -a leg
+    say "material composition: terrain chains at $scene $frame, CACHE=0 and CACHE=1"
+    for c in 0 1; do
+        for spec in "stock|" "a|mat-chain-ter-a" "ab|mat-chain-ter-a mat-chain-ter-b" "ref2|mat-chain-ter-ref2"; do
+            tag="terchain-${spec%%|*}-c$c"
+            read -ra leg <<< "${spec#*|}"
+            CHAIN_CACHE=$c chain_leg "$tag" "$scene" "$frame" "${leg[@]}" ||
+                { bad "terrain chains: no capture for $tag (see $WORK/$tag.log)"; return; }
+        done
+    done
+    local f="-$frame-vk.png"
+    for c in 0 1; do
+        for pair in "a stock" "ref2 stock" "ab a"; do
+            set -- $pair
+            n=$(diffpx "$WORK/terchain-$1-c$c$f" "$WORK/terchain-$2-c$c$f")
+            if [ "${n:-0}" -gt 0 ]; then ok "terrain chains CACHE=$c: $1 repaints $n px against $2"
+            else bad "terrain chains CACHE=$c: $1 equals $2 - the comparison below proves nothing"; fi
+        done
+        n=$(diffpx "$WORK/terchain-ab-c$c$f" "$WORK/terchain-ref2-c$c$f")
+        if [ "${n:-1}" -eq 0 ]; then ok "terrain chains CACHE=$c: a,b is pixel-identical to ref2"
+        else bad "terrain chains CACHE=$c: a,b differs from ref2 by ${n:-?} px"; fi
+        n=$(chain_census "terchain-ab-c$c" terrain-chains)
+        if [ "${n:-0}" -gt 0 ]; then ok "terrain chains CACHE=$c: the class resolution formed $n terrain chain(s)"
+        else bad "terrain chains CACHE=$c: no terrain chain formed (see $WORK/terchain-ab-c$c.log)"; fi
+    done
+    n=$(chain_census terchain-ab-c1 terrain-passes)
+    if [ "${n:-0}" -gt 0 ]; then ok "terrain chains CACHE=1: $n retained chain pass bind(s)"
+    else bad "terrain chains CACHE=1: zero retained chain passes (see $WORK/terchain-ab-c1.log)"; fi
+    n=$(chain_census terchain-ab-c0 2)
+    if [ "${n:-0}" -gt 0 ]; then ok "terrain chains CACHE=0: $n walked chain draw(s) of 2 members"
+    else bad "terrain chains CACHE=0: no walked chain draw (see $WORK/terchain-ab-c0.log)"; fi
+    local w0 r1 w1
+    w0=$(ter_classes terchain-ab-c0 walked)
+    w1=$(ter_classes terchain-ab-c1 walked)
+    r1=$(ter_classes terchain-ab-c1 retained)
+    if [ -z "$r1" ] || ! grep -q -- '-> chain ' <<< "$r1"; then
+        bad "terrain chains: no class resolved to a chain on CACHE=1 (see $WORK/terchain-ab-c1.log)"
+    elif [ "$w1" != "$r1" ]; then
+        bad "terrain chains CACHE=1: a class's walked and retained outcomes differ: $(diff <(echo "$w1") <(echo "$r1") | tr '\n' ' ')"
+    elif [ "$w0" != "$r1" ]; then
+        bad "terrain chains: the CACHE=0 walked outcomes differ from the CACHE=1 retained ones: $(diff <(echo "$w0") <(echo "$r1") | tr '\n' ' ')"
+    else
+        ok "terrain chains: the same outcome per class on both paths ($(grep -c -- '-> chain ' <<< "$r1") class(es) chained: $(grep -- '-> chain ' <<< "$r1" | head -1))"
+    fi
+    local base_delta secs0 secs1 cl0 cl1
+    base_delta=$(diffpx "$WORK/terchain-stock-c1$f" "$WORK/terchain-stock-c0$f")
+    n=$(diffpx "$WORK/terchain-ab-c1$f" "$WORK/terchain-ab-c0$f")
+    if [ "${n:-999}" -le "${base_delta:-0}" ]; then ok "terrain chains: residency delta ${n} px <= stock ${base_delta} px"
+    else bad "terrain chains: residency delta ${n} px EXCEEDS the stock ${base_delta} px"; fi
+    secs0=$(sed -n 's/.*\[tgpu-cen [^]]*\].* secs=\([0-9-]*\).*/\1/p' "$WORK/terchain-stock-c1.log" | tail -1)
+    secs1=$(sed -n 's/.*\[tgpu-cen [^]]*\].* secs=\([0-9-]*\).*/\1/p' "$WORK/terchain-ab-c1.log" | tail -1)
+    cl0=$(sed -n 's/.*\[tgpu-cen [^]]*\].* claims=\([0-9-]*\).*/\1/p' "$WORK/terchain-stock-c1.log" | tail -1)
+    cl1=$(sed -n 's/.*\[tgpu-cen [^]]*\].* claims=\([0-9-]*\).*/\1/p' "$WORK/terchain-ab-c1.log" | tail -1)
+    if [ -z "$secs0" ] || [ "${secs0:-0}" -eq 0 ]; then
+        bad "terrain chains: the cache served no sectors on CACHE=1 (secs=${secs0:-none}) - the retained leg walked"
+    elif [ "$secs0" = "$secs1" ] && [ "$cl0" = "$cl1" ]; then
+        ok "terrain chains: the cache serves secs=$secs1 claims=$cl1 with the chain, as without"
+    else
+        bad "terrain chains: the chain moved the cache from secs=$secs0 claims=$cl0 to secs=$secs1 claims=$cl1"
+    fi
 }
 
 # ── env_anim splits the terrain ───────────────────────────────────────
@@ -501,6 +592,7 @@ PY
     delay_frame=$(sed -n 's/^moby|\([^|]*\)|\([0-9]*\)$/\2/p' <<< "$S23_RUNGS")
     delay_rung "$delay_scene" "$delay_frame"
     chain_rung "$delay_scene" "$delay_frame"
+    ter_chain_rung "$delay_scene" "$delay_frame"
     case "$PG_GAME" in
         spyro-2) env_split_rung "crushs_dungeon@pos=(3080, 30039, 31217) yaw=29 pitch=548" 2473 ;;
         spyro-3) env_split_rung "sunny_villa@pos=(79168, 34297, 14796) yaw=867 pitch=197" 2473 ;;
@@ -982,6 +1074,7 @@ fi
 
 delay_rung flame 1800
 chain_rung flame 1800
+ter_chain_rung flame 1800
 env_split_rung moving-terrain 2262
 
 # Row 12 keys the flare kind, which Spyro 1 never draws: its sparkle

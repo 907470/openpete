@@ -277,13 +277,38 @@ int mod_mat_terrain_bucket_slot(int w);
  * @return The count; class ids run 1 to the count. */
 int mod_mat_terrain_class_count(void);
 
-/** @brief Return the member a terrain resolution class resolved to this present.
+/* A terrain class outcome naming a chain: MOD_MAT_TER_OUT_CHAIN + terrain
+ * chain entry id of the present. */
+#define MOD_MAT_TER_OUT_CHAIN 0x10000
+
+/** @brief Return the outcome a terrain resolution class resolved to this present for the walked path.
  *
  * Reads the live memo, without resolving.
  * @param c Class id.
- * @return The material index, or -1 for stock, a class not resolved this
- *         present, or no such class. */
+ * @return The material index, MOD_MAT_TER_OUT_CHAIN + terrain chain entry
+ *         id, or -1 for stock, a class not resolved this present, or no
+ *         such class. */
 int mod_mat_terrain_class_resolved(int c);
+
+/** @brief Return the outcome a terrain resolution class resolved to this present for the retained path.
+ *
+ * The walked outcome reduced under the terrain profile's linkability and
+ * identity (equal to it when every member has a linkable, non-identity
+ * terrain profile). Reads the live memo, without resolving.
+ * @param c Class id.
+ * @return As mod_mat_terrain_class_resolved. */
+int mod_mat_terrain_class_retained(int c);
+
+/** @brief Test whether two selectors differ only in OP_SEL_EXCLUSIVE.
+ *
+ * A terrain resolution class's candidate list does not read the bit, so a
+ * retune between two such selectors leaves every class and bake valid:
+ * the store sites skip the terrain epoch bump for it.
+ * @param a The installed selector.
+ * @param b The new selector.
+ * @return 1 when equal with OP_SEL_EXCLUSIVE masked from both, else 0. */
+int mod_mat_sel_same_but_exclusive(const openpete_mod_material_selector_t* a,
+                                   const openpete_mod_material_selector_t* b);
 
 /** @brief Pick the material that shades a draw's provenance tag, without the GPU description.
  *
@@ -310,9 +335,9 @@ int mod_mat_terminal(const mod_material_t* m);
  * @return The generation. */
 unsigned mod_mat_table_gen(void);
 
-/** @brief A moby chain draw resolved at compose time. */
+/** @brief A moby or terrain chain draw resolved at compose time. */
 typedef struct {
-    int entry;      /* chain entry id in the installed view */
+    int entry;      /* chain entry id in the installed view (OPENPETE_MATERIAL_CHAINS + id for terrain) */
     int n;          /* members, lowest-ranked first */
     int mat[OPENPETE_MATERIAL_CHAIN_CAP];
     int slot[OPENPETE_MATERIAL_CHAIN_CAP];        /* uniform slot in the view; 0 = no params */
@@ -320,7 +345,7 @@ typedef struct {
     const openpete_mods_material_chain_set_t* set; /* the installed member set it maps to */
 } mod_mat_chain_res_t;
 
-/** @brief Resolve a moby tag that names a chain entry into its members and their places in the installed member set.
+/** @brief Resolve a moby or terrain tag that names a chain entry into its members and their places in the installed member set.
  *
  * A chain draws stock, counted in the census, when its entry is past the
  * view's chain count (stale), the draw site's contract is not the scene
@@ -332,6 +357,17 @@ typedef struct {
  * @param out Receives the members on a resolve.
  * @return 1 resolved, 0 when the tag names no chain, -1 when the chain draws stock. */
 int mod_mat_resolve_chain(uint32_t tag, int contract, mod_mat_chain_res_t* out);
+
+/** @brief Resolve a retained-terrain chain pass id into its members, for the terrain-profile combined module.
+ *
+ * The stock cases of mod_mat_resolve_chain at the scene contract, and a
+ * member whose fragment shader the installed terrain module lacks (case
+ * id -1 in the terrain profile), each counted in the census; a resolved
+ * pass counts in MOD_MAT_CHAIN_TER_PASSES.
+ * @param pass OPENPETE_MATERIAL_TER_PASS_CHAIN + terrain chain entry id.
+ * @param out Receives the members on a resolve.
+ * @return 1 resolved, 0 when the pass id names no chain, -1 when the chain draws stock. */
+int mod_mat_resolve_terrain_chain(int pass, mod_mat_chain_res_t* out);
 
 /** @brief Return whether the compose in progress holds an owner's passes and materials back.
  *
@@ -403,6 +439,8 @@ enum {
     MOD_MAT_CHAIN_LACKED,        /* chain draws stock: the installed set lacks a member */
     MOD_MAT_CHAIN_UNUSABLE,      /* chain draws stock: a member disabled, swept or of another contract */
     MOD_MAT_CHAIN_STALE,         /* chain draws stock: an entry past the view */
+    MOD_MAT_CHAIN_TER_WALKS,     /* terrain chains the class resolution formed */
+    MOD_MAT_CHAIN_TER_PASSES,    /* retained-terrain chain pass binds resolved */
     MOD_MAT_CHAIN_CENSUS_N,
     MOD_MAT_CHAIN_DRAWS_2 = MOD_MAT_CHAIN_CENSUS_N   /* chain draws of 2, +1 of 3, +2 of 4 members */
 };

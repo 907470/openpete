@@ -1765,14 +1765,22 @@ int  openpete_mods_material_has_instance(void);
 #define OPENPETE_MATERIAL_SLOT_CHAIN 0x080
 #define OPENPETE_MATERIAL_CHAINS     256
 #define OPENPETE_MATERIAL_CHAIN_CAP  4
+/* Terrain chain entries a present holds: the terrain field names entry id
+ * as OPENPETE_MATERIAL_TERRAIN_CHAIN | id (0x080-0x0FF), a retained pass as
+ * OPENPETE_MATERIAL_TER_PASS_CHAIN + id. */
+#define OPENPETE_MATERIAL_TERRAIN_CHAINS 128
+/* Chain entry ids across both tables: moby entry id is id, terrain entry id
+ * is OPENPETE_MATERIAL_CHAINS + id. */
+#define OPENPETE_MATERIAL_CHAIN_ENTRIES (OPENPETE_MATERIAL_CHAINS + OPENPETE_MATERIAL_TERRAIN_CHAINS)
 /* Fragment shaders one installed member set holds, and its profiles
- * (0 stock, 1 portal). */
+ * (0 stock, 1 portal, 2 terrain). */
 #define OPENPETE_MATERIAL_CHAIN_SET_MAX 64
-#define OPENPETE_MATERIAL_CHAIN_PROFILES 2
+#define OPENPETE_MATERIAL_CHAIN_PROFILES 3
+#define OPENPETE_MATERIAL_CHAIN_TERRAIN  2
 /* The member set of the installed combined modules: the fragment shaders
  * whose op_material a composed draw can call, and each one's case id in
- * the stock and the portal module (-1 when that module lacks it). Built
- * with the modules and immutable once published. */
+ * the stock, the portal and the terrain module (-1 when that module lacks
+ * it). Built with the modules and immutable once published. */
 typedef struct {
     unsigned generation;                  /* nonzero; moves with every published set */
     int      module;                      /* the combined module pair it describes */
@@ -1795,15 +1803,32 @@ const openpete_mods_material_chain_set_t* openpete_mods_material_chain_set_curre
  * the member case ids as a uvec4 at 16) in the first 256 bytes, then one
  * 256-byte member block per chain position, lowest-ranked first. */
 #define OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES 1280u
+/* Blocks of the chain uniform set: the engine block, two per moby entry
+ * (stock, portal) and three per terrain entry (stock, portal, terrain). */
+#define OPENPETE_MATERIAL_CHAIN_UBO_BLOCKS (1 + 2 * OPENPETE_MATERIAL_CHAINS + 3 * OPENPETE_MATERIAL_TERRAIN_CHAINS)
+/** @brief Return the chain uniform set block of one chain entry and profile, or -1 for a moby entry's terrain profile or an id out of range.
+ *
+ * @param entry Chain entry id, 0 to OPENPETE_MATERIAL_CHAIN_ENTRIES - 1.
+ * @param profile 0 stock, 1 portal, 2 terrain.
+ * @return The block index. */
+static inline int openpete_mods_material_chain_ubo_block(int entry, int profile) {
+    if (entry < 0 || entry >= OPENPETE_MATERIAL_CHAIN_ENTRIES || profile < 0 ||
+        profile >= OPENPETE_MATERIAL_CHAIN_PROFILES)
+        return -1;
+    if (entry < OPENPETE_MATERIAL_CHAINS)
+        return profile < OPENPETE_MATERIAL_CHAIN_TERRAIN ? 1 + 2 * entry + profile : -1;
+    return 1 + 2 * OPENPETE_MATERIAL_CHAINS + 3 * (entry - OPENPETE_MATERIAL_CHAINS) + profile;
+}
 /** @brief Write one chain entry's uniform block for one profile's combined module: the header and each member's block.
  *
  * Reads the installed view (else the live tables) and the published
  * member set. A member's block is its uniform slot's bytes, or the engine
  * block for a member with no params, which its own draw binds in that
  * place. Fails for an entry that draws stock (mod_mat_resolve_chain's
- * cases) and for a member the profile's module lacks.
- * @param entry Chain entry id.
- * @param profile 0 stock, 1 portal.
+ * cases), for a member the profile's module lacks and for a moby entry's
+ * terrain profile.
+ * @param entry Chain entry id, 0 to OPENPETE_MATERIAL_CHAIN_ENTRIES - 1.
+ * @param profile 0 stock, 1 portal, 2 terrain.
  * @param engine The engine block bytes, or NULL.
  * @param engine_len Their count.
  * @param out Receives OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES bytes.
@@ -1814,6 +1839,10 @@ int openpete_mods_material_chain_block(int entry, int profile, const void* engin
  *
  * @return The count. */
 int  openpete_mods_material_chain_count(void);
+/** @brief Return the terrain chain entries interned this present in the live table.
+ *
+ * @return The count. */
+int  openpete_mods_material_terrain_chain_count(void);
 /** @brief Build the combined module pair of the current member set when it changed; the sim thread calls it at the tick boundary and the precompile before it runs.
  *
  * Takes the registry write lock, and returns at once while the material
@@ -1842,12 +1871,15 @@ void openpete_mods_material_chain_install(int module);
  * @return 0, or -1 for an unknown module or variant. */
 int  openpete_mods_material_chain_gpu(int module, int vvar, openpete_mod_material_gpu_t* out);
 /* Terrain tag slot field [24:16], 9 bits, the walked face class's resolved
- * member: 0 defers to the draw-time resolve (no material was registered
+ * outcome: 0 defers to the draw-time resolve (no material was registered
  * at extraction); 1..OPENPETE_MODS_MATERIAL_VIEW_SLOTS-1 is an interned
- * refine outcome; OPENPETE_MATERIAL_TERRAIN_DECL | index is a declarative
- * landing; OPENPETE_MATERIAL_TERRAIN_STOCK is stock. */
+ * refine outcome; OPENPETE_MATERIAL_TERRAIN_CHAIN | id (0x080-0x0FF) is
+ * terrain chain entry id of the present; OPENPETE_MATERIAL_TERRAIN_DECL |
+ * index is a declarative landing; OPENPETE_MATERIAL_TERRAIN_STOCK is
+ * stock. */
 #define OPENPETE_MATERIAL_TERRAIN_STOCK 0x1FF
 #define OPENPETE_MATERIAL_TERRAIN_DECL  0x100
+#define OPENPETE_MATERIAL_TERRAIN_CHAIN 0x080
 /** @brief Walk the materials matching one moby at extraction and return the outcome stamped into its tag.
  *
  * Takes no lock. Returns 0 while openpete_mods_material_has_instance is 0.
@@ -1889,21 +1921,27 @@ int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
  * face key is its Tiledef id (-1 when it has none: an imported sector's
  * borrowed face, or an untextured face), its own texturedness, env-rewrite
  * membership and tier. Its class
- * (openpete_mods_material_terrain_class) resolves once per present: the
- * refine members, highest ranked first, are asked through their refine
- * callbacks (at most once per present and once per tick per material,
- * inside a guarded stretch owned by the material's mod), the first
- * accepting one lands, and a decline passes the face to the next member;
- * the trailing declarative member lands when every refine declined.
+ * (openpete_mods_material_terrain_class) resolves once per present, down
+ * its members from the highest ranked: a refine member is asked through
+ * its callback (at most once per present and once per tick per material,
+ * inside a guarded stretch owned by the material's mod) and a decline
+ * passes the face to the next member; a declarative member accepts. The
+ * first acceptance draws alone when it is terminal (pinned below 13 or
+ * OP_SEL_EXCLUSIVE), has a vertex stage, or is not linkable into the
+ * installed combined module; otherwise the walk continues under the moby
+ * walk's rules (openpete_mods_material_moby_slot) and two or more members
+ * intern a terrain chain entry.
  * @param cpu Unused.
  * @param texid Tiledef id, or -1.
  * @param untex Nonzero for an untextured face.
  * @param env Nonzero for a face in the env-rewrite set.
  * @param lp Nonzero for an LP-tier face.
  * @return The [24:16] field: an interned slot, OPENPETE_MATERIAL_TERRAIN_DECL
- *         | material index for a declarative landing, or
- *         OPENPETE_MATERIAL_TERRAIN_STOCK when the class has no member, every
- *         member declined, or the slot table is full. */
+ *         | material index for a declarative landing,
+ *         OPENPETE_MATERIAL_TERRAIN_CHAIN | chain entry id for a composed
+ *         class, or OPENPETE_MATERIAL_TERRAIN_STOCK when the class has no
+ *         member, every member declined, or the slot or chain table is
+ *         full. */
 int  openpete_mods_material_terrain_walk_slot(CPUState* cpu, int texid, int untex, int env, int lp);
 /** @brief Return the epoch the retained terrain cache latches its bake against.
  *
@@ -1920,10 +1958,12 @@ unsigned openpete_mods_material_terrain_epoch(void);
  * A retained face is baked once and redrawn for many presents without a
  * walk, so it cannot carry a per-present outcome. It carries its
  * RESOLUTION CLASS instead, 0 = no candidate: the candidate list of its
- * face key (the refines that outrank its declarative winner, then that
- * winner). Each present resolves every class to one member and publishes
- * a class-to-pass table; a pass is a resolved member (its material index
- * + 1), and pass 0 draws stock. The vertex stage keeps only the faces
+ * face key (every matching material in rank order down to and including
+ * the first declarative of a mod pinned below 13). Each present resolves
+ * every class to stock, one member or a chain and publishes a
+ * class-to-pass table; a pass is a resolved member (its material index +
+ * 1) or a terrain chain entry (OPENPETE_MATERIAL_TER_PASS_CHAIN + id),
+ * and pass 0 draws stock. The vertex stage keeps only the faces
  * whose class maps to the pass being drawn (a 256-bit class mask in the
  * push constants); the material epoch invalidates the bake. Identity,
  * never an outcome: a refine's outcome may change every tick without a
@@ -1936,19 +1976,25 @@ unsigned openpete_mods_material_terrain_epoch(void);
 #define OPENPETE_MATERIAL_TER_SLOTS    6
 #define OPENPETE_MATERIAL_TER_PIPES \
     (OPENPETE_MATERIAL_TER_VARIANTS * OPENPETE_MATERIAL_TER_SLOTS)
-/* Class ids are stamped into 8 spare bits of the baked face material, and
- * a pass id (material index + 1) has the same bound. */
+/* Class ids are stamped into 8 spare bits of the baked face material; a
+ * pass list holds at most one pass per class. */
 #define OPENPETE_MATERIAL_TER_BUCKET_MAX 255
+/* The first chain pass id: a pass id below it is a material index + 1. */
+#define OPENPETE_MATERIAL_TER_PASS_CHAIN 0x100
+/* One past the largest pass id. */
+#define OPENPETE_MATERIAL_TER_PASS_IDS (OPENPETE_MATERIAL_TER_PASS_CHAIN + OPENPETE_MATERIAL_TERRAIN_CHAINS)
 
 /** @brief Return the retained-terrain resolution class of a face key, or 0 for none.
  *
  * The candidates of the key are the live, user-enabled, scene-contract
  * materials of enabled mods on channel -1 or OP_CHAN_TERRAIN in scope for
- * the current level: the declarative winner among those whose selector
- * accepts the face (texture key, env, tier, texturedness), and the refine
- * materials whose one key (a Tiledef id, or OP_SEL_UNTEXTURED for the
- * untextured band) is the face's and that rank above that winner, highest
- * first, at most 31. Rank is the owner's enabled-list position, later
+ * the current level: the declaratives whose selector accepts the face
+ * (texture key, env, tier, texturedness) and the refine materials whose
+ * one key (a Tiledef id, or OP_SEL_UNTEXTURED for the untextured band) is
+ * the face's, highest ranked first, down to and including the first
+ * declarative of a mod pinned below 13, at most 32 (31 above a trailing
+ * pinned-below declarative). OP_SEL_EXCLUSIVE does not end the list.
+ * Rank is the owner's enabled-list position, later
  * higher, and inside one mod the registration order selected by its api
  * pin. Equal candidate lists share one class id. Ids are interned for the
  * session; with the table full a class no path used under the current
@@ -1964,10 +2010,11 @@ unsigned openpete_mods_material_terrain_epoch(void);
 int  openpete_mods_material_terrain_class(int texid, int untex, int env, int lp);
 /** @brief Write the retained-terrain material pass ids in ascending order.
  *
- * A pass id is a material index + 1, listed when a class the retained
- * bake stamped in the current terrain epoch resolved to that material this
- * present, so the count is at most the live terrain materials with baked
- * faces; the stock pass 0 is not listed. The terrain cache draws one pass
+ * A pass id is a material index + 1, or OPENPETE_MATERIAL_TER_PASS_CHAIN +
+ * terrain chain entry id, listed when a class the retained bake stamped in
+ * the current terrain epoch resolved to that outcome this present, so the
+ * count is at most the distinct outcomes of the baked classes; the stock
+ * pass 0 is not listed. The terrain cache draws one pass
  * per listed id after the stock pass. With a material view installed the
  * list is the one the view captured.
  * @param out Receives the ids.
@@ -1996,6 +2043,11 @@ typedef struct {
     int             uniform_slot;  /* material-UBO block (0 = no params)    */
     unsigned        generation;    /* the material's slot generation        */
     int             index;         /* the material's registry index         */
+    /* A chain pass: the chain entry id whose terrain block the draw binds in
+     * the chain uniform set, and the combined module the stage and slot
+     * belong to; both -1 for a one-material pass. */
+    int             chain;
+    int             chain_module;
 } openpete_mod_material_terrain_t;
 /** @brief Fill the GPU binding of one retained-terrain material pass for one pipeline variant.
  *
@@ -2007,15 +2059,28 @@ typedef struct {
  * outcome, or none for that scene, returns -1. A declarative material
  * binds its static slot, read through the installed material view when one
  * is set.
+ * A chain pass binds the terrain-profile combined module with the chain
+ * entry; it fails when mod_mat_resolve_terrain_chain sends the chain to
+ * stock (a member held, unusable, or lacked by the installed terrain
+ * module) or no terrain module is built.
  * On -1 the caller draws the pass's faces with the stock pipeline, since
  * the stock pass has already dropped them.
- * @param bucket Pass id, a material index + 1.
+ * @param bucket Pass id: a material index + 1, or
+ *        OPENPETE_MATERIAL_TER_PASS_CHAIN + terrain chain entry id.
  * @param pipe_idx Pipeline variant index, 0 to OPENPETE_MATERIAL_TER_PIPES - 1.
  * @param out Receives the terrain module, the cached pipeline slot, the
  *        owner and the uniform slot.
  * @return 0 on success, -1 otherwise. */
 int  openpete_mods_material_terrain_bucket_gpu(
         int bucket, int pipe_idx, openpete_mod_material_terrain_t* out);
+/** @brief Describe one combined module's retained-terrain pipeline slot: the terrain-profile module, its moved tables and the slot.
+ *
+ * Takes no lock. The uniform slot and chain entry are not filled.
+ * @param module The module id.
+ * @param pipe_idx Variant * OPENPETE_MATERIAL_TER_SLOTS + colour slot.
+ * @param out Receives the description, chain -1 and chain_module @p module.
+ * @return 0, or -1 for an unknown module, an index out of range or a module without a terrain profile. */
+int  openpete_mods_material_chain_terrain_gpu(int module, int pipe_idx, openpete_mod_material_terrain_t* out);
 /** @brief Recompute the material overlap pairs when a register, enable, retune, owner removal, mod toggle, level change or refine observation moved them.
  *
  * Tick boundary, sim thread. Takes the registry write lock to snapshot the
@@ -2167,9 +2232,10 @@ typedef struct {
      * (openpete_mods_material_terrain_bucket_list). */
     int ter_bucket_n;
     int ter_bucket[OPENPETE_MODS_MATERIAL_VIEW_MATS];
-    /* Per terrain class id: the pass it draws in, a material index + 1, or
-     * 0 for the stock pass (openpete_mods_material_terrain_pass_mask). */
-    unsigned char ter_class_pass[OPENPETE_MATERIAL_TER_BUCKET_MAX + 1];
+    /* Per terrain class id: the pass it draws in, a material index + 1, a
+     * chain pass OPENPETE_MATERIAL_TER_PASS_CHAIN + id, or 0 for the stock
+     * pass (openpete_mods_material_terrain_pass_mask). */
+    uint16_t ter_class_pass[OPENPETE_MATERIAL_TER_BUCKET_MAX + 1];
     /* Per material: the terrain refine outcome computed for this scene
      * (an interned slot or OPENPETE_MATERIAL_TERRAIN_STOCK), 0 for none. */
     int ter_refine[OPENPETE_MODS_MATERIAL_VIEW_MATS];
@@ -2180,6 +2246,10 @@ typedef struct {
     int chain_n;
     struct { int n; short mat[OPENPETE_MATERIAL_CHAIN_CAP]; short slot[OPENPETE_MATERIAL_CHAIN_CAP]; }
         chains[OPENPETE_MATERIAL_CHAINS];
+    /* The terrain chain entries interned this present, the same layout. */
+    int ter_chain_n;
+    struct { int n; short mat[OPENPETE_MATERIAL_CHAIN_CAP]; short slot[OPENPETE_MATERIAL_CHAIN_CAP]; }
+        ter_chains[OPENPETE_MATERIAL_TERRAIN_CHAINS];
 } openpete_mods_material_view_t;
 /** @brief Copy the interned slots, per-material static slots, terrain refine outcomes, class-to-pass table, pass list and level into a view.
  *
@@ -2187,7 +2257,8 @@ typedef struct {
  * push and when the game-render scene is kept. Copies slots 1 up to the
  * live count, the static slot and this present's terrain refine outcome of
  * every material index, the terrain class-to-pass table and pass list
- * from this present's class resolutions, and the pushed level.
+ * from this present's class resolutions, the moby and terrain chain
+ * entries interned this present, and the pushed level.
  *
  * @param out Receives the snapshot. */
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);

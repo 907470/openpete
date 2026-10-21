@@ -297,7 +297,8 @@ enum {
     OPENPETE_LAZY_POSTFX,       /* a mod postfx pass                                             */
     OPENPETE_LAZY_MATERIAL,     /* a mod material's scene, sky, portal or decal slot             */
     OPENPETE_LAZY_TERRAIN,      /* a mod material's retained-terrain slot                        */
-    OPENPETE_LAZY_CHAIN         /* a combined module's scene or portal slot (index: module id)   */
+    OPENPETE_LAZY_CHAIN,        /* a combined module's scene or portal slot (index: module id)   */
+    OPENPETE_LAZY_CHAIN_TERRAIN /* a combined module's retained-terrain slot (index: module id)  */
 };
 
 /* Where a lazy pipeline slot lives in the registry: the late compile path
@@ -357,12 +358,14 @@ int openpete_native_lazy_pipe(const struct rhi_pipeline_desc *desc,
  * @param frag_words Their count.
  * @param owner Owning mod id for the failure log, or NULL.
  * @param mat_index The material's registry index.
- * @param generation The material's slot generation.
+ * @param chain_module The combined module whose slot @p pslot is, or -1 for a material's.
+ * @param generation The material's or module's slot generation.
  * @return The pipeline (an rhi_pipeline*), or NULL when the slot failed,
  *         the build was queued or is pending, or the cache has no device. */
 void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
                                       const uint32_t *frag, size_t frag_words,
-                                      const char *owner, int mat_index, unsigned generation);
+                                      const char *owner, int mat_index, int chain_module,
+                                      unsigned generation);
 
 /* Per-build protocol (driven by the terrain feeder). The sub-tick spine
  * presents the PREVIOUS canonical extraction (the canonical-lag leg), so
@@ -651,6 +654,23 @@ struct rhi_ubo *openpete_native_material_ubo(void);
  * @param cd The profile's moved tables; NULL or len 0 for none. */
 void openpete_native_material_bind(struct rhi_device *dev, int uniform_slot,
                                    const struct openpete_mod_cdata *cd);
+
+/** @brief Return whether the chain uniform set exists, which it does once a combined module installed and a present filled it.
+ *
+ * @return 1 or 0. */
+int openpete_native_material_chain_ready(void);
+
+/** @brief Bind the material contract set of a retained-terrain chain pass: the chain uniform set's engine block, the chain entry's terrain block and the terrain module's table block.
+ *
+ * Binds set 3 of the bound pipeline as openpete_native_material_bind
+ * does, from the chain uniform set
+ * (openpete_mods_material_chain_ubo_block with the terrain profile).
+ * Does nothing before the chain uniform set exists.
+ * @param dev Device whose current frame records the bind.
+ * @param entry Chain entry id of a terrain chain.
+ * @param cd The terrain module's moved tables; NULL or len 0 for none. */
+void openpete_native_material_chain_bind(struct rhi_device *dev, int entry,
+                                         const struct openpete_mod_cdata *cd);
 
 /** @brief Return the number of fold atlas uploads still queued.
  *

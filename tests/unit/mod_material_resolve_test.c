@@ -22,7 +22,11 @@
  * later, not OP_SEL_EXCLUSIVE) against a stubbed installed member set and
  * hold list: terminal, unlinkable, identity and vertex-stage members, the
  * cap, absence from the set, a set change between extraction and compose,
- * held members and the chain block. Every stub mod carries
+ * held members and the chain block; terrain chains: the class list past
+ * pinned-13 declaratives, chain resolution per profile against the set,
+ * the walked 0x080 | id stamp and its decode, chain pass ids and their
+ * stock fallback, the terrain chain table in the view and its capacity,
+ * and the terrain epoch skip for an OP_SEL_EXCLUSIVE-only retune. Every stub mod carries
  * its api pin, so a rule keyed on the pin changes only the cases whose mods
  * sit on the changed side of it. A material registered through reg() has
  * no link verdict, so it is unlinkable and draws alone as before
@@ -1077,7 +1081,10 @@ static void set_publish(openpete_mods_material_chain_set_t* s, unsigned gen, int
     memset(s, 0, sizeof *s);
     s->generation = gen;
     s->n = n;
-    for (int i = 0; i < n; i++) { s->shader[i] = shaders[i]; s->case_id[0][i] = s->case_id[1][i] = i; }
+    for (int i = 0; i < n; i++) {
+        s->shader[i] = shaders[i];
+        s->case_id[0][i] = s->case_id[1][i] = s->case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][i] = i;
+    }
     openpete_mods_material_chain_set_publish(s);
 }
 /** @brief The moby tag field naming chain entry @p id. */
@@ -1377,6 +1384,320 @@ static void case_chain_table_full(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Terrain chains. */
+
+/** @brief The terrain tag field naming terrain chain entry @p id. */
+#define TCHAIN(id) (OPENPETE_MATERIAL_TERRAIN_CHAIN | (id))
+/** @brief The retained pass id of terrain chain entry @p id. */
+#define TPASS(id) (OPENPETE_MATERIAL_TER_PASS_CHAIN + (id))
+
+/** @brief Retained path: the pass id that draws class @p c (0 the stock pass), or -2 when no pass, or more than one, holds it. */
+static int retained_pass(int c) {
+    int passes[OPENPETE_MATERIAL_TER_BUCKET_MAX + 1];
+    const int n = openpete_mods_material_terrain_bucket_list(passes + 1, OPENPETE_MATERIAL_TER_BUCKET_MAX);
+    passes[0] = 0;
+    int hit = -2, hits = 0;
+    for (int i = 0; i <= n; i++) {
+        uint32_t mask[8];
+        (void)openpete_mods_material_terrain_pass_mask(passes[i], mask);
+        if ((mask[c >> 5] >> (c & 31)) & 1u) { hit = passes[i]; hits++; }
+    }
+    return hits == 1 ? hit : -2;
+}
+/** @brief A terrain selector on the textured faces. */
+static openpete_mod_material_selector_t sel_ter(void) {
+    openpete_mod_material_selector_t t = sel_ch(OP_CHAN_TERRAIN);
+    t.flags = OP_SEL_TEXTURED;
+    return t;
+}
+
+/** @brief The class list continues past pinned-13 declaratives, OP_SEL_EXCLUSIVE included, and ends at the first declarative pinned below 13. */
+static void case_ter_class_list(void) {
+    begin("Terrain chain: the class list past pinned-13 declaratives");
+    stub_mod_t* o = mod("fx-old", 0, 12);
+    stub_mod_t* a = mod("fx-a", 1, 13);
+    stub_mod_t* x = mod("fx-x", 2, 13);
+    stub_mod_t* b = mod("fx-b", 3, 13);
+    const int mo = regf(o, sel_ter(), 20, 3, 0, NULL);
+    const int ma = regf(a, sel_ter(), 21, 3, 0, NULL);
+    openpete_mod_material_selector_t ex = sel_ter();
+    ex.flags |= OP_SEL_EXCLUSIVE;
+    const int mx = regf(x, ex, 22, 3, 0, NULL);
+    openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN);
+    r.texture = 3;
+    const int mr = regf(b, r, 23, 3, 0, rf_accept);
+    const int sh[4] = {20, 21, 22, 23};
+    set_publish(&s_set_a, 1, 4, sh);
+    openpete_mods_material_frame_reset(1);
+    const int c = bake(3, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    mod_mat_chain_res_t ch;
+    CHECK(chain_of(ter_tag(3, 0, 0, walk(3, 0, 0)), &ch) == 2 && ch.mat[0] == mx && ch.mat[1] == mr,
+          "exclusive x ends the walk: [x r]");
+    const unsigned ep = openpete_mods_material_terrain_epoch();
+    openpete_mod_material_selector_t open = sel_ter();
+    CHECK(mod_mat_set_selector("fx-x", mx, &open) == 0 && openpete_mods_material_terrain_epoch() == ep,
+          "exclusive off: the same class, no rebake");
+    openpete_mods_material_frame_reset(1);
+    CHECK(bake(3, 0, 0) == c, "same class id");
+    openpete_mods_material_terrain_refine_present();
+    CHECK(chain_of(ter_tag(3, 0, 0, walk(3, 0, 0)), &ch) == 4 && ch.mat[0] == mo && ch.mat[1] == ma &&
+          ch.mat[2] == mx && ch.mat[3] == mr, "the list held a and old12 under x: [old a x r]");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_reset();
+    s_mod_n = 0;
+    stub_mod_t* o2 = mod("fx-old", 0, 12);
+    stub_mod_t* b2 = mod("fx-b", 1, 12);
+    reg(o2, sel_ter(), SCENE, NULL);
+    const int d2 = reg(b2, sel_ter(), SCENE, NULL);
+    reg(b2, r, SCENE, rf_decline);
+    openpete_mods_material_frame_reset(1);
+    const int cp = bake(3, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(cp) == d2 && walk(3, 0, 0) == TDECL(d2), "pins below 13: the refine declines onto the declarative winner");
+    OUTCOME("pin 13: one class [r x a old12]; x exclusive ends the walk at [x r], "
+            "an exclusive-only retune keeps the class and composes [old12 a x r]; pins below 13: P4's list");
+}
+
+/** @brief Two composable terrain declaratives chain on both paths: the walked stamp, the chain pass, the view, the decode and the block. */
+static void case_ter_chain_resolve(void) {
+    begin("Terrain chain: two composable declaratives on both paths");
+    static openpete_mods_material_view_t v;
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    const int ma = regf(a, sel_ter(), 20, 3, 0, NULL);
+    const int mb = regf(b, sel_ter(), 21, 3, 0, NULL);
+    const float blk[4] = {0.5f, 1, 1, 0};
+    CHECK(mod_mat_set_params(mb, blk, sizeof blk) == 0, "params");
+    const int sh[2] = {20, 21};
+    set_publish(&s_set_a, 1, 2, sh);
+    s_set_a.case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][0] = 5;   /* the terrain module numbers its cases its own way */
+    s_set_a.case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][1] = 6;
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    const int c = bake(2, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    const int f = walk(2, 0, 0);
+    CHECK(f == TCHAIN(0), "walked stamp %#x", f);
+    CHECK(retained_pass(c) == TPASS(0) && retained_passes() == 1, "retained: the chain pass %#x", retained_pass(c));
+    CHECK(mod_mat_terrain_class_resolved(c) == MOD_MAT_TER_OUT_CHAIN && mod_mat_terrain_class_retained(c) == MOD_MAT_TER_OUT_CHAIN,
+          "one outcome on both paths");
+    mod_mat_chain_res_t r;
+    CHECK(chain_of(ter_tag(2, 0, 0, f), &r) == 2 && r.mat[0] == ma && r.mat[1] == mb &&
+          r.entry == OPENPETE_MATERIAL_CHAINS, "walked decode: lowest first, entry %d", r.entry);
+    CHECK(resolve(ter_tag(2, 0, 0, f), SCENE) == -1, "the one-material resolve does not take a chain field");
+    CHECK(mod_mat_resolve_terrain_chain(TPASS(0), &r) == 1 && r.n == 2, "retained decode");
+    CHECK(mod_mat_resolve_terrain_chain(1 + ma, &r) == 0, "a material pass names no chain");
+    unsigned char out[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+    uint32_t n = 0, ids[4];
+    CHECK(openpete_mods_material_chain_block(OPENPETE_MATERIAL_CHAINS, OPENPETE_MATERIAL_CHAIN_TERRAIN, NULL, 0, out) == 0,
+          "terrain block");
+    memcpy(&n, out, 4);
+    memcpy(ids, out + 16, sizeof ids);
+    CHECK(n == 2 && ids[0] == 5 && ids[1] == 6, "terrain case ids %u %u", ids[0], ids[1]);
+    CHECK(memcmp(out + 512, blk, sizeof blk) == 0, "position 1 holds b's params");
+    CHECK(openpete_mods_material_chain_block(OPENPETE_MATERIAL_CHAINS, 0, NULL, 0, out) == 0 &&
+          (memcpy(ids, out + 16, sizeof ids), ids[0] == 0 && ids[1] == 1), "stock block: stock case ids");
+    CHECK(openpete_mods_material_chain_block(0, OPENPETE_MATERIAL_CHAIN_TERRAIN, NULL, 0, out) == -1,
+          "a moby entry has no terrain block");
+    CHECK(openpete_mods_material_chain_ubo_block(OPENPETE_MATERIAL_CHAINS, 2) == 1 + 2 * OPENPETE_MATERIAL_CHAINS + 2 &&
+          openpete_mods_material_chain_ubo_block(1, 1) == 4 && openpete_mods_material_chain_ubo_block(0, 2) == -1,
+          "chain uniform blocks");
+    openpete_mods_material_view_capture(&v);
+    openpete_mods_material_frame_reset(1);
+    CHECK(chain_of(ter_tag(2, 0, 0, f), &r) == -1 && mod_mat_census_chain(MOD_MAT_CHAIN_STALE) == 1,
+          "live table after the reset: stale, counted");
+    openpete_mods_material_view_set(&v);
+    CHECK(v.ter_chain_n == 1 && v.ter_class_pass[c] == TPASS(0), "the view holds the chain and its pass id");
+    CHECK(retained_pass(c) == TPASS(0) && chain_of(ter_tag(2, 0, 0, f), &r) == 2, "composed through the view");
+    openpete_mods_material_view_set(NULL);
+    CHECK(mod_mat_census_chain(MOD_MAT_CHAIN_TER_WALKS) == 1 && mod_mat_census_chain(MOD_MAT_CHAIN_TER_PASSES) == 1,
+          "census: %u chains formed, %u passes", mod_mat_census_chain(MOD_MAT_CHAIN_TER_WALKS),
+          mod_mat_census_chain(MOD_MAT_CHAIN_TER_PASSES));
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("a,b on terrain: walked field 0x080, retained pass 0x100, entry 256 lowest first; terrain block with the terrain case ids");
+}
+
+/** @brief A terrain refine over a composable declarative chains while it accepts and leaves the declarative alone when it declines; an exclusive top or no installed set draws alone. */
+static void case_ter_chain_refine_terminal(void) {
+    begin("Terrain chain: refine over a declarative, exclusive and absent tops");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    const int md = regf(a, sel_ter(), 20, 3, 0, NULL);
+    openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN);
+    r.texture = 1;
+    const int mr = regf(b, r, 21, 3, 0, rf_accept);
+    const int sh[2] = {20, 21};
+    set_publish(&s_set_a, 1, 2, sh);
+    openpete_mods_material_frame_reset(1);
+    s_calls = 0;
+    const int c = bake(1, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    mod_mat_chain_res_t ch;
+    const int f = walk(1, 0, 0);
+    CHECK(f == TCHAIN(0) && chain_of(ter_tag(1, 0, 0, f), &ch) == 2 && ch.mat[0] == md && ch.mat[1] == mr &&
+          ch.slot[1] > 0, "refine over declarative: chain with the refine's slot");
+    CHECK(s_calls == 1 && retained_pass(c) == TPASS(0), "one call for both paths, %d", s_calls);
+    openpete_mods_material_chain_set_publish(NULL);
+    openpete_mods_material_frame_reset(1);
+    openpete_mods_material_terrain_refine_present();
+    const int f2 = walk(1, 0, 0);
+    CHECK(f2 > 0 && f2 < TCHAIN(0) && resolve(ter_tag(1, 0, 0, f2), SCENE) == mr && retained(c) == mr,
+          "no installed set: the refine draws alone (%#x)", f2);
+    set_publish(&s_set_a, 2, 2, sh);
+    openpete_mod_material_selector_t rx = r;
+    rx.flags |= OP_SEL_EXCLUSIVE;
+    CHECK(mod_mat_set_selector("fx-b", mr, &rx) == 0, "retune exclusive");
+    openpete_mods_material_frame_reset(1);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(c) == mr && resolve(ter_tag(1, 0, 0, walk(1, 0, 0)), SCENE) == mr, "exclusive top draws alone");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_reset();
+    s_mod_n = 0;
+    a = mod("fx-a", 0, 13);
+    b = mod("fx-b", 1, 13);
+    const int md2 = regf(a, sel_ter(), 20, 3, 0, NULL);
+    const int mr2 = regf(b, r, 21, 3, 0, rf_decline);
+    set_publish(&s_set_a, 3, 2, sh);
+    openpete_mods_material_frame_reset(1);
+    const int c2 = bake(1, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    CHECK(retained(c2) == md2 && walk(1, 0, 0) == TDECL(md2), "declining refine: the declarative alone");
+    (void)mr2;
+    openpete_mods_material_chain_set_publish(NULL);
+    OUTCOME("refine accepts: chain [decl refine] on both paths; no set: the refine alone; exclusive: alone; declines: decl alone");
+}
+
+/** @brief A member without a linkable terrain profile reduces the retained outcome while the walked stamp names the full chain. */
+static void case_ter_chain_profiles(void) {
+    begin("Terrain chain: per-profile linkability");
+    stub_mod_t* c = mod("fx-c", 0, 13);
+    stub_mod_t* a = mod("fx-a", 1, 13);
+    stub_mod_t* b = mod("fx-b", 2, 13);
+    const int ma = regf(a, sel_ter(), 20, 3, 0, NULL);
+    const int mb = regf(b, sel_ter(), 21, 3, 0, NULL);
+    const int mc = regf(c, sel_ter(), 22, 1, 0, NULL);   /* stock profile only */
+    const int sh[3] = {20, 21, 22};
+    set_publish(&s_set_a, 1, 3, sh);
+    s_set_a.case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][2] = -1;
+    openpete_mods_material_frame_reset(1);
+    const int k = bake(2, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    mod_mat_chain_res_t r, t;
+    const int f = walk(2, 0, 0);
+    CHECK(chain_of(ter_tag(2, 0, 0, f), &r) == 3 && r.mat[0] == mc, "walked: the full chain [c a b]");
+    const int p = retained_pass(k);
+    CHECK(p == TPASS(1) && mod_mat_resolve_terrain_chain(p, &t) == 1 && t.n == 2 && t.mat[0] == ma && t.mat[1] == mb,
+          "retained: c, without a terrain profile, is skipped below the top - pass %#x", p);
+    CHECK(mod_mat_terrain_class_resolved(k) == MOD_MAT_TER_OUT_CHAIN && mod_mat_terrain_class_retained(k) ==
+          MOD_MAT_TER_OUT_CHAIN + 1, "two outcomes, two entries");
+    openpete_mods_material_chain_set_publish(NULL);
+    OUTCOME("c (lowest) lacks a terrain profile: walked chain [c a b], retained chain [a b]");
+}
+
+/** @brief A retained chain pass draws stock for a held member, a member the installed terrain module lacks and a stale entry. */
+static void case_ter_chain_fallback(void) {
+    begin("Terrain chain: pass fallback to stock");
+    static openpete_mods_material_view_t v;
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    stub_mod_t* b = mod("fx-b", 1, 13);
+    regf(a, sel_ter(), 20, 3, 0, NULL);
+    regf(b, sel_ter(), 21, 3, 0, NULL);
+    const int sh[2] = {20, 21};
+    set_publish(&s_set_a, 1, 2, sh);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    const int c = bake(2, 0, 0);
+    openpete_mods_material_terrain_refine_present();
+    openpete_mods_material_view_capture(&v);
+    openpete_mods_material_view_set(&v);
+    mod_mat_chain_res_t r;
+    CHECK(mod_mat_resolve_terrain_chain(retained_pass(c), &r) == 1, "resolves");
+    const char* one[1] = {"fx-b"};
+    openpete_mods_hold_owners(one, 1);
+    CHECK(mod_mat_resolve_terrain_chain(TPASS(0), &r) == -1 && mod_mat_census_chain(MOD_MAT_CHAIN_HELD) == 1,
+          "held member: stock, counted");
+    openpete_mods_hold_owners(NULL, 0);
+    s_set_b = s_set_a;
+    s_set_b.generation = 2;
+    s_set_b.case_id[OPENPETE_MATERIAL_CHAIN_TERRAIN][1] = -1;
+    openpete_mods_material_chain_set_publish(&s_set_b);
+    CHECK(mod_mat_resolve_terrain_chain(TPASS(0), &r) == -1 && mod_mat_census_chain(MOD_MAT_CHAIN_LACKED) == 1,
+          "the installed terrain module lacks b: stock, counted");
+    openpete_mods_material_chain_set_publish(&s_set_a);
+    CHECK(mod_mat_resolve_terrain_chain(TPASS(1), &r) == -1 && mod_mat_census_chain(MOD_MAT_CHAIN_STALE) == 1,
+          "an entry past the view: stock, counted");
+    openpete_mods_material_view_set(NULL);
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("held, lacked by the terrain module, stale: the chain pass draws stock, each counted");
+}
+
+/** @brief A full terrain chain table sends the next class's chain to stock, counted. */
+static void case_ter_chain_table_full(void) {
+    begin("Terrain chain: table full");
+    stub_mod_t* d = mod("fx-d", 0, 13);
+    stub_mod_t* km = mod("fx-k", 1, 13);
+    openpete_mod_material_selector_t all = sel_ch(OP_CHAN_TERRAIN);
+    regf(d, all, 20, 3, 0, NULL);
+    int sh[2] = {20, 21};
+    for (int t = 0; t < 128; t++) {   /* one keyed declarative per Tiledef id over the channel-wide one */
+        openpete_mod_material_selector_t r = sel_ch(OP_CHAN_TERRAIN);
+        r.texture = t;
+        regf(km, r, 21, 3, 0, NULL);
+    }
+    openpete_mod_material_selector_t u = sel_ch(OP_CHAN_TERRAIN);
+    u.flags = OP_SEL_UNTEXTURED;
+    regf(km, u, 21, 3, 0, NULL);
+    set_publish(&s_set_a, 1, 2, sh);
+    mod_mat_census_force(1);
+    openpete_mods_material_frame_reset(1);
+    int last = 0;
+    for (int t = 0; t < 128; t++) last = walk(t, 0, 0);
+    CHECK(last == TCHAIN(127) && openpete_mods_material_terrain_chain_count() == 128, "128 chains, last %#x", last);
+    CHECK(walk(-1, 0, 0) == TSTOCK && mod_mat_census_chain(MOD_MAT_CHAIN_FULL) == 1, "the 129th: stock, counted");
+    openpete_mods_material_chain_set_publish(NULL);
+    mod_mat_census_force(0);
+    OUTCOME("128 distinct terrain chains fill the table; the 129th class draws stock, counted");
+}
+
+/** @brief An OP_SEL_EXCLUSIVE-only retune leaves the terrain epoch; any other change moves it. */
+static void case_ter_epoch_skip(void) {
+    begin("Terrain epoch: OP_SEL_EXCLUSIVE masked");
+    openpete_mod_material_selector_t x = sel_ter(), y = sel_ter();
+    y.flags |= OP_SEL_EXCLUSIVE;
+    CHECK(mod_mat_sel_same_but_exclusive(&x, &y) && mod_mat_sel_same_but_exclusive(&y, &x) &&
+          mod_mat_sel_same_but_exclusive(&x, &x), "differ only in the bit: same");
+    openpete_mod_material_selector_t z = y;
+    z.texture = 4;
+    CHECK(!mod_mat_sel_same_but_exclusive(&x, &z), "a key differs: not same");
+    z = x;
+    z.flags |= OP_SEL_ENV_ANIM;
+    CHECK(!mod_mat_sel_same_but_exclusive(&x, &z), "another flag differs: not same");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    const int m = reg(a, x, SCENE, NULL);
+    const unsigned e0 = openpete_mods_material_terrain_epoch();
+    CHECK(mod_mat_set_selector("fx-a", m, &y) == 0 && openpete_mods_material_terrain_epoch() == e0,
+          "exclusive on: no bump");
+    CHECK(mod_mat_set_selector("fx-a", m, &x) == 0 && openpete_mods_material_terrain_epoch() == e0,
+          "exclusive off: no bump");
+    CHECK(mod_mat_set_selector("fx-a", m, &x) == 0 && openpete_mods_material_terrain_epoch() == e0,
+          "same bytes: no bump");
+    z = x;
+    z.texture = 4;
+    CHECK(mod_mat_set_selector("fx-a", m, &z) == 0 && openpete_mods_material_terrain_epoch() == e0 + 1, "a key: bump");
+    openpete_mods_in_present = 1;
+    openpete_mod_material_selector_t zx = z;
+    zx.flags |= OP_SEL_EXCLUSIVE;
+    CHECK(mod_mat_set_selector("fx-a", m, &zx) == 0, "parked");
+    openpete_mods_in_present = 0;
+    mod_mat_apply_pending();
+    CHECK(openpete_mods_material_terrain_epoch() == e0 + 1, "parked exclusive-only retune: no bump");
+    OUTCOME("an exclusive-only retune at either store site keeps the epoch; a key change bumps it");
+}
+
+/* ------------------------------------------------------------------ */
 /* Overlap diagnostic. */
 
 /** @brief Recompute the overlap pairs when their inputs moved, as the tick boundary does, without the registry lock. */
@@ -1613,6 +1934,13 @@ int main(void) {
     case_chain_generation();
     case_chain_held();
     case_chain_table_full();
+    case_ter_class_list();
+    case_ter_chain_resolve();
+    case_ter_chain_refine_terminal();
+    case_ter_chain_profiles();
+    case_ter_chain_fallback();
+    case_ter_chain_table_full();
+    case_ter_epoch_skip();
     case_ovl_fixture_decl();
     case_ovl_fixture_wild();
     case_ovl_fixture_levelkey();

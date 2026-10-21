@@ -1,0 +1,17 @@
+# mat-chain-ter-a - material composition fixture: a terrain tint toward red, pinned at api 13 (composable).
+# Never enable it to play.
+
+[mod]
+id      = "mat-chain-ter-a"
+name    = "Material Fixture: Terrain Chain A"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "terrain"
+params  = [1.0, 0.0, 0.0, 0.5]

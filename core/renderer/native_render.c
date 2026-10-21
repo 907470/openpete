@@ -11638,6 +11638,12 @@ static void** late_slot(const openpete_lazy_ref* r, unsigned* gen) {
         *gen = mg.generation;
         return nr_material_slot(&mg, &q);
     }
+    case OPENPETE_LAZY_CHAIN_TERRAIN: {
+        openpete_mod_material_terrain_t tm;
+        if (openpete_mods_material_chain_terrain_gpu(r->index, r->sub, &tm) != 0) return NULL;
+        *gen = tm.generation;
+        return tm.pipeline_slot;
+    }
     default: {
         openpete_mod_material_terrain_t tm;
         if (openpete_mods_material_enum_terrain(r->index, r->sub, &tm) != 0) return NULL;
@@ -18463,11 +18469,12 @@ void openpete_native_material_bind(struct rhi_device *dev, int uniform_slot,
                       nr_material_cdata(cd, s_mat_ubo));
 }
 
-/* The chain uniform set: block 0 the engine block, then per chain entry e
- * block 1 + 2e for the stock combined module and 2 + 2e for the portal one
- * (their case ids differ), each OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES. Created
- * when a combined module first installs. */
-#define CHAIN_UBO_BLOCKS (1 + 2 * OPENPETE_MATERIAL_CHAINS)
+/* The chain uniform set: block 0 the engine block, then per chain entry one
+ * block per profile its draws use (openpete_mods_material_chain_ubo_block:
+ * stock and portal for a moby entry, stock, portal and terrain for a
+ * terrain entry; their case ids differ), each
+ * OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES. Created when a combined module first
+ * installs. */
 static rhi_ubo* s_chain_ubo;
 
 /** @brief Bind a draw's material uniforms: a chain entry's block pair in the chain set, else the material slot (openpete_native_material_bind).
@@ -18480,9 +18487,18 @@ static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal) 
         openpete_native_material_bind(s_nr.dev, mg->uniform_slot, cd);
         return;
     }
-    if (!s_chain_ubo) return;
-    rhi_ubo_bind_data(s_nr.dev, s_chain_ubo, 0, 1u + 2u * (uint32_t)mg->chain + (portal ? 1u : 0u),
-                      nr_material_cdata(cd, s_chain_ubo));
+    const int blk = openpete_mods_material_chain_ubo_block(mg->chain, portal ? 1 : 0);
+    if (!s_chain_ubo || blk < 0) return;
+    rhi_ubo_bind_data(s_nr.dev, s_chain_ubo, 0, (uint32_t)blk, nr_material_cdata(cd, s_chain_ubo));
+}
+
+int openpete_native_material_chain_ready(void) { return s_chain_ubo != NULL; }
+
+void openpete_native_material_chain_bind(struct rhi_device *dev, int entry,
+                                         const struct openpete_mod_cdata *cd) {
+    const int blk = openpete_mods_material_chain_ubo_block(entry, OPENPETE_MATERIAL_CHAIN_TERRAIN);
+    if (!s_chain_ubo || blk < 0) return;
+    rhi_ubo_bind_data(dev, s_chain_ubo, 0, (uint32_t)blk, nr_material_cdata(cd, s_chain_ubo));
 }
 
 /** @brief Install the newest built combined module pair once its opaque scene pipeline exists: publish its member set to the extraction walk.
@@ -18511,7 +18527,23 @@ static void nr_chain_install(void) {
     }
 }
 
-/** @brief Write the chain uniform set: the engine block and, per chain entry of the view, its stock and portal blocks.
+/** @brief Write the blocks of a run of chain entries for every profile each entry's draws use.
+ *
+ * @param first The first entry id.
+ * @param n Entries in the run.
+ * @param eng The engine block.
+ * @param eng_len Its byte count. */
+static void fill_chain_entries(int first, int n, const void* eng, uint32_t eng_len) {
+    unsigned char blk[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
+    for (int e = first; e < first + n; e++)
+        for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_PROFILES; p++) {
+            const int b = openpete_mods_material_chain_ubo_block(e, p);
+            if (b >= 0 && openpete_mods_material_chain_block(e, p, eng, eng_len, blk) == 0)
+                rhi_ubo_write(s_chain_ubo, (uint32_t)b, blk, sizeof blk);
+        }
+}
+
+/** @brief Write the chain uniform set: the engine block and, per moby and terrain chain entry of the view, its profile blocks.
  *
  * Installs a built combined module first (nr_chain_install). Nothing is
  * written while no member set is published. An entry whose block cannot be
@@ -18521,17 +18553,16 @@ static void fill_chain_ubo(const openpete_mods_material_view_t* mv) {
     nr_chain_install();
     if (!openpete_mods_material_chain_set_current()) return;
     if (!s_chain_ubo)
-        s_chain_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES, CHAIN_UBO_BLOCKS);
+        s_chain_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES, OPENPETE_MATERIAL_CHAIN_UBO_BLOCKS);
     if (!s_chain_ubo) return;
     pfx_engine_ubo_t eng;
     fill_engine_block(&eng, 0, 0);
     rhi_ubo_write(s_chain_ubo, 0, &eng, sizeof eng);
     const int n = mv ? mv->chain_n : openpete_mods_material_chain_count();
-    unsigned char blk[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
-    for (int e = 0; e < n && e < OPENPETE_MATERIAL_CHAINS; e++)
-        for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_PROFILES; p++)
-            if (openpete_mods_material_chain_block(e, p, &eng, (uint32_t)sizeof eng, blk) == 0)
-                rhi_ubo_write(s_chain_ubo, (uint32_t)(1 + 2 * e + p), blk, sizeof blk);
+    const int nt = mv ? mv->ter_chain_n : openpete_mods_material_terrain_chain_count();
+    fill_chain_entries(0, n < OPENPETE_MATERIAL_CHAINS ? n : OPENPETE_MATERIAL_CHAINS, &eng, (uint32_t)sizeof eng);
+    fill_chain_entries(OPENPETE_MATERIAL_CHAINS, nt < OPENPETE_MATERIAL_TERRAIN_CHAINS ? nt : OPENPETE_MATERIAL_TERRAIN_CHAINS,
+                       &eng, (uint32_t)sizeof eng);
 }
 
 /** @brief Refill the material UBO: the engine block and each interned slot's uniform bytes.
@@ -18963,17 +18994,19 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
         if (openpete_mods_material_enum_terrain(i, idx, &tm) != 0) continue;
         openpete_tercache_material_pipe(tm.pipeline_slot, idx / OPENPETE_MATERIAL_TER_SLOTS,
                                         idx % OPENPETE_MATERIAL_TER_SLOTS, tm.frag_spv,
-                                        tm.frag_words, tm.owner, i, tm.generation);
+                                        tm.frag_words, tm.owner, i, -1, tm.generation);
         n++;
         if (pump) pump(NULL);
     }
     return n;
 }
 
-/** @brief Install the current variant of every scene-site pipeline of the newest built combined module pair not yet installed, with the stock vertex stage.
+/** @brief Install the current variant of every scene-site pipeline of the newest built combined module set not yet installed, with the stock vertex stage, and of its terrain module's retained-terrain slots.
  *
- * The request set of a scene-contract material (nr_scene_reqs). A chain
- * whose lowest member has a vertex stage builds its variant at first use.
+ * The request set of a scene-contract material (nr_scene_reqs), then the
+ * OPENPETE_MATERIAL_TER_PIPES retained-terrain slots while the terrain
+ * cache is ready and the set has a terrain module. A chain whose lowest
+ * member has a vertex stage builds its variant at first use.
  * @param pump Event pump run after each slot, or NULL.
  * @return The slots visited. */
 static unsigned nr_precompile_chains(void (*pump)(void*)) {
@@ -18982,11 +19015,21 @@ static unsigned nr_precompile_chains(void (*pump)(void*)) {
     if (m < 0 || openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return 0;
     nr_mat_req q[13];
     const int nq = nr_scene_reqs(&mg, q);
-    for (int k = 0; k < nq; k++) {
+    unsigned n = 0;
+    for (int k = 0; k < nq; k++, n++) {
         nr_material_pipe(&mg, &q[k]);
         if (pump) pump(NULL);
     }
-    return (unsigned)nq;
+    openpete_mod_material_terrain_t tm;
+    for (int idx = 0; openpete_tercache_ready() && idx < OPENPETE_MATERIAL_TER_PIPES &&
+                      openpete_mods_material_chain_terrain_gpu(m, idx, &tm) == 0;
+         idx++, n++) {
+        openpete_tercache_material_pipe(tm.pipeline_slot, idx / OPENPETE_MATERIAL_TER_SLOTS,
+                                        idx % OPENPETE_MATERIAL_TER_SLOTS, tm.frag_spv, tm.frag_words,
+                                        tm.owner, -1, m, tm.generation);
+        if (pump) pump(NULL);
+    }
+    return n;
 }
 
 /** @brief Queue the current variant of every lazy slot of the mods a live toggle entered since the last present.
