@@ -3226,6 +3226,7 @@ typedef struct {
     float* lpVf; float* hpVf;
     uint32_t vrollPres, vfracPres;
     int polyanim;   /* named by an env poly-anim descriptor (vert banks animate) */
+    uint8_t envModel; /* HP bank from the walker model this tick (tsc_envm_apply) */
     uint32_t vhash; /* LP+HP packed vertex words: catches an in-place rewrite */
     /* Pack-aware LP grade (tsc_lp_grade): face-weighted mean stock->pack
      * affine of this sector's HP textures. 0 = uncomputed, 1 = fit,
@@ -4121,7 +4122,9 @@ static void tsc_tag_uncovered(tscache_t* C) {
  * An arena entry is live only while bit 0 of the liveness byte for that index
  * is set, which is the same test the game's walkers make before rewriting the
  * sector; skipping a dormant entry keeps the cached decode valid instead of
- * re-decoding unchanged RAM every tick.
+ * re-decoding unchanged RAM every tick. An iterator with `listed` set skips
+ * no entry on liveness: it yields every sector the lists name, the set whose
+ * banks animate whether or not the game rewrites them this tick.
  *
  * The scrolling-texture list stays out: its consumer needs the per-descriptor
  * accumulator record, which exists only in the LISTS form (tsc_scroll_refresh).
@@ -4140,6 +4143,9 @@ typedef struct {
     int       skip_top;     /* ARENA: this list skips bit-31 entries */
     int       listed;       /* ARENA: yield every list member, skipping no liveness test */
     uint32_t  seen;         /* entries examined, live or not (engagement) */
+    uint32_t  lst;          /* ARENA: the open list's count word */
+    int       model;        /* ARENA: the open list's ENV_ANIM_MODEL_* */
+    uint32_t  w;            /* the yielded entry word */
 } env_anim_iter_t;
 
 /** @brief Resets an environment-animation iterator to its first list.
@@ -4207,6 +4213,8 @@ static int env_anim_iter_open(env_anim_iter_t* it) {
         it->cnt = cnt; it->base = lst + S->entry_off; it->k = 0;
         it->kind = S->kind;
         it->skip_top = S->skip_top;
+        it->lst = lst;
+        it->model = S->model;
         return 1;
     }
     return 0;
@@ -4216,9 +4224,10 @@ static int env_anim_iter_open(env_anim_iter_t* it) {
  *
  * ENV_ANIM_LISTS entries are descriptor pointers, the sector in the u16 at
  * +4, and a null pointer is skipped. ENV_ANIM_ARENA entries carry the sector
- * in the low byte; a list that skips bit-31 entries skips them, and an
- * entry whose liveness byte has bit 0 clear is skipped unless `listed` is set. An index at or past
- * the sector count is skipped. Every examined entry counts into `seen`.
+ * in the low byte; a list that skips bit-31 entries skips them, and, unless
+ * `listed` is set, an entry whose liveness byte has bit 0 clear is skipped.
+ * An index at or past the sector count is skipped. Every examined entry
+ * counts into `seen`; the yielded entry word is left in `w`.
  * @param it The iterator.
  * @param sector Receives the sector index.
  * @param kind Receives the list's ENV_ANIM_KIND_*.
@@ -4245,6 +4254,7 @@ static int env_anim_iter_next(env_anim_iter_t* it, uint32_t* sector, int* kind) 
                 continue;                            /* animation not running */
         }
         if (idx >= it->sectorCnt) continue;
+        it->w = w;
         *sector = idx;
         *kind = it->kind;
         return 1;
@@ -4253,8 +4263,9 @@ static int env_anim_iter_next(env_anim_iter_t* it, uint32_t* sector, int* kind) 
 
 /** @brief Tests whether an env poly-anim descriptor names the sector at address s.
  *
- * Walks the animation registry and compares the sector-table entry of each
- * vertex-kind entry with s; colour entries are read live and skipped.
+ * Walks every entry of the animation registry, live or dormant, and compares
+ * the sector-table entry of each vertex-kind entry with s; colour entries are
+ * read live and skipped.
  * @param cpu The guest CPU state.
  * @param s The sector's guest address.
  * @param sectorPtr The sector pointer table's guest address.
@@ -4265,6 +4276,7 @@ static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
     env_anim_iter_t it;
     uint32_t idx; int kind;
     env_anim_iter_init(&it, cpu, sectorCnt);
+    it.listed = 1;      /* membership, not this tick's liveness */
     while (env_anim_iter_next(&it, &idx, &kind)) {
         if (kind != ENV_ANIM_KIND_VERT) continue;    /* colours are read live */
         if (rd(cpu, sectorPtr + idx * 4) == s) return 1;
@@ -4578,6 +4590,322 @@ static void tsc_kf_apply(CPUState* cpu, tscache_t* C) {
         int bit = (int)(hp ? game_layout.terrain.no_hp_flag : game_layout.terrain.no_lp_flag);
         C->flags = hide ? (C->flags | bit) : (C->flags & ~bit);
     }
+}
+
+/* ---- env-anim walker model -------------------------------------------------
+ * The Spyro 2 and Spyro 3 walkers (game_layout.env_anim.sub[].model) rewrite
+ * a sector's HP vertex and colour words only while bit 0 of its liveness byte
+ * is set, which the world draw sets for the sectors it bins HP; a sector it
+ * bins LP keeps the HP bank of the tick it left the HP bin. Each walker is a
+ * closed form of the timer and the list's own data words, so the native
+ * decode computes the words the walker would write for every listed sector
+ * and uses them where the game left the bank dormant. Guest RAM is never
+ * written. */
+
+static uint32_t s_envm_T;   /* the walkers' timer value on their last run (envm_live_roll) */
+
+/** @brief Returns the timer value the env-anim walkers ran with on their last run.
+ * @return The walkers' T, as envm_live_roll last established it. */
+static uint32_t envm_timer(void) {
+    return s_envm_T;
+}
+
+/** @brief Returns the walkers' s16 sine table entry at byte offset off.
+ * @param cpu The guest CPU state, read only.
+ * @param off The byte offset from env_anim.wave_table.
+ * @return The table entry. */
+static int32_t envm_tab(CPUState* cpu, uint32_t off) {
+    return (int16_t)cpu->read_half(game_layout.env_anim.wave_table + off);
+}
+
+/** @brief Applies one WAVE1 or WAVE2 list entry to a copy of a sector's HP vertex words.
+ *
+ * Reproduces Spyro 2 func_80023994 (WAVE1) and func_80023A9C (WAVE2) for one
+ * entry (environment.s:1390, 1465); ENV_ANIM_MODEL_* states the formulas. A
+ * word index at or past n is dropped.
+ * @param cpu The guest CPU state, read only.
+ * @param model ENV_ANIM_MODEL_WAVE1 or ENV_ANIM_MODEL_WAVE2.
+ * @param lst The list's count word address.
+ * @param e The entry word.
+ * @param T The walkers' timer value.
+ * @param hp The HP vertex words; updated.
+ * @param n The HP vertex count. */
+static void envm_wave(CPUState* cpu, int model, uint32_t lst, uint32_t e, uint32_t T,
+                      uint32_t* hp, int n) {
+    const uint32_t t4 = T + (T >> 1);
+    const uint32_t a = lst + (e >> 16) * 4u, cnt = (e >> 8) & 0xFFu;
+    if (model == ENV_ANIM_MODEL_WAVE1) {
+        for (uint32_t k = 0; k < cnt && (int)k < n; k++) {
+            uint32_t d = rd(cpu, a + k * 4u);
+            int32_t c = envm_tab(cpu, 0x80u + ((d + t4) & 0xFFu) * 2u);
+            int32_t lo = (c * 320) >> 16;                 /* (c << 8) + (c << 6), sra 16 */
+            hp[k] = (uint32_t)(lo + (int32_t)(d >> 16)) | (hp[k] & 0xFFFFFC00u);
+        }
+        return;
+    }
+    for (uint32_t k = 0; k < cnt; k++) {
+        uint32_t d0 = rd(cpu, a + k * 8u), d1 = rd(cpu, a + k * 8u + 4u);
+        uint32_t i2 = ((d0 + t4) & 0xFFu) * 2u;
+        uint32_t v = d1 + (uint32_t)(envm_tab(cpu, i2 + 0x40u) >> 10)
+                   + ((uint32_t)(envm_tab(cpu, i2) >> 8) << 10)
+                   + ((uint32_t)(envm_tab(cpu, i2 + 0x80u) >> 8) << 21);
+        uint32_t vi = (d0 >> 16) & 0xFFu;
+        if ((int)vi < n) hp[vi] = v;
+    }
+}
+
+/** @brief Applies one COLOUR list entry to a copy of a sector's HP colour words.
+ *
+ * Reproduces Spyro 2 func_80023778 for one entry (environment.s:1236): each
+ * data word's top byte phases the cosine index, the index steps at T times
+ * 1, 2, 2 or 3 by that byte's low two bits, and GTE DPCS cues the word's RGB
+ * toward the far colour word at lst + 4 by IR0 = (c >> 3) + (c >> 4) +
+ * 0x480. A word index at or past n is dropped.
+ * @param cpu The guest CPU state, read only.
+ * @param lst The list's count word address.
+ * @param e The entry word.
+ * @param T The walkers' timer value.
+ * @param col The HP near-then-far colour words; updated.
+ * @param n The word count of col. */
+static void envm_colour(CPUState* cpu, uint32_t lst, uint32_t e, uint32_t T,
+                        uint32_t* col, int n) {
+    static const uint32_t step[4] = { 1u, 2u, 2u, 3u };
+    const uint32_t fc = rd(cpu, lst + 4u);
+    const int fc12[3] = { (int)(fc & 0xFFu) << 4, (int)((fc >> 8) & 0xFFu) << 4,
+                          (int)((fc >> 16) & 0xFFu) << 4 };
+    const uint32_t a = lst + (e >> 16) * 4u, cnt = (e >> 8) & 0xFFu;
+    for (uint32_t k = 0; k < cnt && (int)k < n; k++) {
+        uint32_t d = rd(cpu, a + k * 4u), ph = d >> 24;
+        int32_t c = envm_tab(cpu, 0x80u + ((ph + T * step[ph & 3u]) & 0xFFu) * 2u);
+        int ir0 = (int)((c >> 3) + (c >> 4) + 0x480);
+        uint32_t out = 0;
+        for (int ch = 0; ch < 3; ch++)
+            out |= (uint32_t)ngte_dpcs_ch((int)((d >> (ch * 8)) & 0xFFu), fc12[ch], ir0) << (ch * 8);
+        col[k] = out;
+    }
+}
+
+/** @brief Builds the HP vertex or colour words the walkers leave in one sector this tick.
+ *
+ * Starts from the sector's words in guest RAM (the HP vertex bank, or the
+ * HP near-then-far colour words) and applies every entry of the model lists
+ * of that kind naming the sector, in the game's call order (colour, wave 1,
+ * wave 2). Colour entries with bit 31 set are skipped as the walker skips
+ * them. n is capped at 512.
+ * @param cpu The guest CPU state, read only.
+ * @param idx The sector index.
+ * @param s The sector's guest address.
+ * @param sectorCnt The sector count.
+ * @param colour 1 for the colour words, 0 for the vertex words.
+ * @param T The walkers' timer value.
+ * @param w Receives n words.
+ * @param n The word count.
+ * @return The number of list entries applied. */
+static int envm_words(CPUState* cpu, uint32_t idx, uint32_t s, uint32_t sectorCnt,
+                      int colour, uint32_t T, uint32_t* w, int n) {
+    const uint32_t w4 = rd(cpu, s + 0x14u);
+    uint32_t base = s + 0x1Cu + ((w4 >> 24) & 0xFFu) * 4u;
+    if (colour) base += (w4 & 0xFFu) * 4u;
+    if (n > 512) n = 512;
+    for (int k = 0; k < n; k++) w[k] = rd(cpu, base + (uint32_t)k * 4u);
+    env_anim_iter_t it;
+    uint32_t i; int kind, applied = 0;
+    env_anim_iter_init(&it, cpu, sectorCnt);
+    it.listed = 1;
+    while (env_anim_iter_next(&it, &i, &kind)) {
+        if (i != idx || it.model == ENV_ANIM_MODEL_NONE) continue;
+        if ((it.model == ENV_ANIM_MODEL_COLOUR) != (colour != 0)) continue;
+        if (colour) envm_colour(cpu, it.lst, it.w, T, w, n);
+        else        envm_wave(cpu, it.model, it.lst, it.w, T, w, n);
+        applied++;
+    }
+    return applied;
+}
+
+/** @brief Tests whether the walker model at timer value T equals one sector's vertex or colour words in guest RAM.
+ * @param cpu The guest CPU state, read only.
+ * @param idx The sector index.
+ * @param s The sector's guest address.
+ * @param sectorCnt The sector count.
+ * @param colour 1 for the HP colour words, 0 for the HP vertex words.
+ * @param T The timer value.
+ * @return 1 equal, 0 different, -1 when no model entry or no word applies. */
+static int envm_matches(CPUState* cpu, uint32_t idx, uint32_t s, uint32_t sectorCnt,
+                        int colour, uint32_t T) {
+    const uint32_t w4 = rd(cpu, s + 0x14u);
+    int n = colour ? (int)((w4 >> 8) & 0xFFu) * 2 : (int)(w4 & 0xFFu);
+    if (n > 512) n = 512;
+    uint32_t w[512];
+    if (n <= 0 || !envm_words(cpu, idx, s, sectorCnt, colour, T, w, n)) return -1;
+    const uint32_t base = s + 0x1Cu + ((w4 >> 24) & 0xFFu) * 4u + (colour ? (w4 & 0xFFu) * 4u : 0u);
+    for (int k = 0; k < n; k++)
+        if (rd(cpu, base + (uint32_t)k * 4u) != w[k]) return 0;
+    return 1;
+}
+
+static int s_envm_en = -1;   /* OPENPETE_TERRAIN_ENVMODEL (default 1) */
+
+/* The liveness bytes the walkers read on the current tick. The update runs
+ * the walkers before the world draw bins this tick's sectors and rewrites
+ * the table, so a canonical build sees the bytes the next update will read;
+ * the walkers' own bytes are the ones the previous canonical build saw.
+ * envm_live_roll keeps both: s_envm_live_next (read this build) and
+ * s_envm_live_ran (the previous build's, which the walkers read). */
+static uint8_t  s_envm_live_ran[256], s_envm_live_next[256];
+static int      s_envm_live_ok;            /* s_envm_live_ran holds the previous tick's bytes */
+static uint32_t s_envm_live_sectors;       /* sector table of the snapshots */
+static unsigned s_envm_live_frame = 0xFFFFFFFFu;
+
+/** @brief Steps the liveness snapshots on a canonical tick.
+ *
+ * The bytes read on the last canonical tick become the walkers' bytes for
+ * this tick; a change of sector table (a level load) restarts without a
+ * previous tick. The caller runs it on canonical builds only; a repeat
+ * build of the same VBL and a game without a liveness table are no-ops.
+ * @param cpu The guest CPU state, read only.
+ * @param sectorPtr The sector table's guest address. */
+static void envm_live_roll(CPUState* cpu, uint32_t sectorPtr) {
+    if (!game_layout.env_anim.live_table || openpete_frame == s_envm_live_frame) return;
+    s_envm_live_frame = openpete_frame;
+    s_envm_live_ok = sectorPtr == s_envm_live_sectors;
+    s_envm_live_sectors = sectorPtr;
+    memcpy(s_envm_live_ran, s_envm_live_next, sizeof(s_envm_live_ran));
+    for (uint32_t i = 0; i < 256u; i++)
+        s_envm_live_next[i] = cpu->read_byte(game_layout.env_anim.live_table + i);
+}
+
+/** @brief Returns the liveness byte the game's walkers read for sector idx on this tick.
+ *
+ * The previous canonical tick's byte; before a previous tick exists (the
+ * first tick of a level), the byte in RAM now.
+ * @param cpu The guest CPU state, read only.
+ * @param idx The sector index.
+ * @return The liveness byte. */
+static uint32_t envm_live_ran(CPUState* cpu, uint32_t idx) {
+    if (s_envm_live_ok && idx < 256u) return s_envm_live_ran[idx];
+    return cpu->read_byte(game_layout.env_anim.live_table + idx);
+}
+
+static int s_envm_ran;    /* the walkers ran on this tick (envm_anchor) */
+static int s_envm_seen;   /* they have run since the sector table last changed */
+
+/** @brief Establishes whether the walkers ran on this tick and with which timer value (s_envm_ran, s_envm_T).
+ *
+ * The walkers run only in the game states whose update calls them, while the
+ * timer word steps on every pad read, so the timer alone says neither
+ * whether they ran nor, on the tick the game resets the word, which value
+ * they read. The first listed sector they were to animate this tick
+ * (envm_live_ran bit 0) decides, through its words in RAM: the model at the
+ * timer word, then at one less, equal to them means the walkers ran with
+ * that value; the model equal only at the held s_envm_T, or at no
+ * candidate, means they did not run and s_envm_T is held, so a dormant
+ * sector holds its pose as the animated ones do. With no such sector the
+ * walkers count as run at the timer word. s_envm_seen clears on a change of
+ * sector table and sets on the first run. Runs on canonical builds after
+ * envm_live_roll.
+ * @param cpu The guest CPU state, read only.
+ * @param sectorPtr The sector table's guest address.
+ * @param sectorCnt The sector count. */
+static void envm_anchor(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
+    if (!game_layout.env_anim.wave_table || !game_layout.env_anim.timer
+        || !game_layout.env_anim.live_table)
+        return;
+    if (!s_envm_live_ok) s_envm_seen = 0;   /* a new sector table */
+    const uint32_t T = rd(cpu, game_layout.env_anim.timer);
+    env_anim_iter_t it;
+    uint32_t idx; int kind;
+    env_anim_iter_init(&it, cpu, sectorCnt);
+    it.listed = 1;
+    while (env_anim_iter_next(&it, &idx, &kind)) {
+        if (it.model == ENV_ANIM_MODEL_NONE || !(envm_live_ran(cpu, idx) & 1u)) continue;
+        const uint32_t s = rd(cpu, sectorPtr + idx * 4u);
+        if (!s) continue;
+        const int colour = it.model == ENV_ANIM_MODEL_COLOUR;
+        const uint32_t cand[2] = { T, T - 1u };
+        int any = 0;
+        for (int c = 0; c < 2; c++) {
+            const int m = envm_matches(cpu, idx, s, sectorCnt, colour, cand[c]);
+            if (m < 0) break;
+            any = 1;
+            if (m == 1 && (c == 0 || cand[c] != s_envm_T)) {
+                s_envm_T = cand[c]; s_envm_ran = 1; s_envm_seen = 1;
+                return;
+            }
+        }
+        if (!any) continue;
+        s_envm_ran = 0;                     /* RAM is not this tick's walk: hold */
+        return;
+    }
+    s_envm_T = T; s_envm_ran = 1; s_envm_seen = 1;
+}
+
+/** @brief Steps the walker model's per-tick state once per VBL on a canonical build: the liveness snapshots, then the walkers' run and timer.
+ * @param cpu The guest CPU state, read only.
+ * @param sectorPtr The sector table's guest address.
+ * @param sectorCnt The sector count.
+ * @param sub Nonzero on a sub-tick build, which steps nothing. */
+static void envm_tick(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, int sub) {
+    if (sub || openpete_frame == s_envm_live_frame) return;
+    envm_live_roll(cpu, sectorPtr);
+    envm_anchor(cpu, sectorPtr, sectorCnt);
+}
+
+/** @brief Tests whether the walker model drives sector idx's HP banks this tick.
+ *
+ * True on a game whose layout carries the model inputs, with the model
+ * enabled and the walkers run at least once on this sector table
+ * (envm_anchor), when the liveness byte the walkers read this tick has bit
+ * 0 clear: they skipped the sector, so guest RAM holds an older pose.
+ * @param cpu The guest CPU state, read only.
+ * @param idx The sector index.
+ * @return 1 when the model drives the sector, else 0. */
+static int envm_dormant(CPUState* cpu, uint32_t idx) {
+    if (s_envm_en < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_ENVMODEL");
+        s_envm_en = !(e && *e == '0');
+    }
+    if (!s_envm_en || !s_envm_seen || !game_layout.env_anim.wave_table
+        || !game_layout.env_anim.timer || !game_layout.env_anim.live_table)
+        return 0;
+    return !(envm_live_ran(cpu, idx) & 1u);
+}
+
+/** @brief Returns the index of the sector at address s in the sector table, or -1.
+ * @param cpu The guest CPU state, read only.
+ * @param s The sector's guest address.
+ * @param sectorPtr The sector table's guest address.
+ * @param sectorCnt The sector count; indices stop at 256 (the entries' index byte).
+ * @return The index, or -1. */
+static int envm_sector_index(CPUState* cpu, uint32_t s, uint32_t sectorPtr, uint32_t sectorCnt) {
+    for (uint32_t i = 0; i < sectorCnt && i < 256u; i++)
+        if (rd(cpu, sectorPtr + i * 4u) == s) return (int)i;
+    return -1;
+}
+
+/** @brief Overwrites a decoded dormant sector's HP vertex bank with the pose the wave walkers post this tick.
+ *
+ * A sector the game animates (envm_dormant false) keeps its RAM decode, as
+ * does a sector no wave entry names. Sets envModel when the model drew the
+ * bank.
+ * @param cpu The guest CPU state, read only.
+ * @param C The cached sector.
+ * @param idx The sector index, or -1 to look it up.
+ * @param sectorPtr The sector table's guest address.
+ * @param sectorCnt The sector count. */
+static void tsc_envm_apply(CPUState* cpu, tscache_t* C, int idx,
+                           uint32_t sectorPtr, uint32_t sectorCnt) {
+    C->envModel = 0;
+    if (C->virt || !C->hpV || C->nHpV <= 0 || !C->polyanim) return;
+    if (idx < 0) idx = envm_sector_index(cpu, C->s, sectorPtr, sectorCnt);
+    if (idx < 0 || !envm_dormant(cpu, (uint32_t)idx)) return;
+    uint32_t w[512];
+    int n = C->nHpV < 512 ? C->nHpV : 512;
+    if (!envm_words(cpu, (uint32_t)idx, C->s, sectorCnt, 0, envm_timer(), w, n)) return;
+    for (int k = 0; k < n; k++) {
+        int x, y, z; tvert_unpack(w[k], C->flat, &x, &y, &z);
+        C->hpV[k].x = (int16_t)x; C->hpV[k].y = (int16_t)y; C->hpV[k].z = (int16_t)z;
+    }
+    C->envModel = 1;
 }
 
 /** @brief Returns the FNV-1a hash of a sector's packed LP and HP vertex words.
@@ -5672,6 +6000,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
             for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
             C->nGapfill = 0;
         }
+        tsc_envm_apply(cpu, C, -1, sectorPtr, sectorCnt);
         tsc_tag_uncovered(C);
         if (tsimp_attach(cpu, C, texTblMode, hiDetail, sectorPtr, sectorCnt)) {
             tsc_tag_uncovered(C);
@@ -5747,7 +6076,10 @@ static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
  * sector is in the decode cache, once per build (vrollPres, vfracPres): a
  * canonical build copies lpV and hpV into the previous banks (allocated on
  * the first roll), re-decodes them from RAM, and steps vertGen when the
- * hash of the decoded words changed; a sub-tick build with a camera pair
+ * hash of the decoded words changed. The walk covers every listed sector,
+ * live or dormant; a dormant sector's HP bank takes the walker model
+ * (tsc_envm_apply), after a canonical build steps the liveness snapshots
+ * (envm_live_roll). A sub-tick build with a camera pair
  * (s_vanim_on) fills the float banks lpVf and hpVf with the previous-to-
  * current lerp at s_vanim_alpha, except for a sector where tsc_vanim_jump
  * fires, which stays on the current bank. A failed allocation leaves the
@@ -5757,6 +6089,7 @@ static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
  * @param sectorCnt The sector count. */
 static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
     if (!sectorPtr) return;
+    envm_tick(cpu, sectorPtr, sectorCnt, s_vanim_sub);
     static int s_vdbg = -1;
     ENV_FLAG_LATCH(s_vdbg, "OPENPETE_TERRAIN_VANIMDBG");
     int dbg_desc = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
@@ -5765,6 +6098,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
         env_anim_iter_t it;
         uint32_t idx; int kind;
         env_anim_iter_init(&it, cpu, sectorCnt);
+        it.listed = 1;      /* dormant sectors animate through the walker model */
         while (env_anim_iter_next(&it, &idx, &kind)) {
             if (kind != ENV_ANIM_KIND_VERT) continue;   /* colours are read live */
             uint32_t s = rd(cpu, sectorPtr + idx * 4);
@@ -5800,6 +6134,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                                      nHp, C->flat, C->hpV);
                 }
                 tsc_kf_apply(cpu, C);
+                tsc_envm_apply(cpu, C, (int)idx, sectorPtr, sectorCnt);
                 {   /* GPU-cache liveness: the re-decode is unconditional per tick,
                      * so hash the decoded verts and bump vertGen only when the
                      * geometry actually moved (else anim-listed sectors would
@@ -5895,6 +6230,7 @@ typedef struct canim {
     uint32_t* mix;                /* the walk's present colours (alpha < 1) */
     uint32_t rollPres;            /* s_vanim_pres of the canonical build that rolled it */
     int havePrev;
+    int model;                    /* cur's HP words come from the walker model, not RAM */
 } canim_t;
 static canim_t  s_canim[CANIM_SLOTS];
 static uint32_t s_canim_canon_pres;   /* s_vanim_pres of the last canonical roll */
@@ -5957,10 +6293,13 @@ static void canim_read(CPUState* cpu, const canim_t* A, uint32_t* out) {
  * A slot whose header geometry moved (a new level reusing the address) is
  * reallocated and restarts without a previous tick. A full table, a slot
  * already rolled this build, or a failed allocation leaves the sector
- * without a roll.
+ * without a roll. A sector the game's colour walker skips (envm_dormant)
+ * takes the walker model's HP words into cur and sets `model`.
  * @param cpu The guest CPU state.
- * @param s The sector's address. */
-static void canim_roll(CPUState* cpu, uint32_t s) {
+ * @param s The sector's address.
+ * @param idx The sector index.
+ * @param sectorCnt The sector count. */
+static void canim_roll(CPUState* cpu, uint32_t s, uint32_t idx, uint32_t sectorCnt) {
     canim_t g; canim_geom(cpu, s, &g);
     canim_t* A = canim_slot(s);
     if (!A || A->rollPres == s_vanim_pres) return;   /* table full, or named twice */
@@ -5979,6 +6318,10 @@ static void canim_roll(CPUState* cpu, uint32_t s) {
         A->havePrev = 1;
     }
     canim_read(cpu, A, A->cur);
+    A->model = 0;
+    if (A->nHp && envm_dormant(cpu, idx)
+        && envm_words(cpu, idx, s, sectorCnt, 1, envm_timer(), A->cur + A->nLp, (int)A->nHp))
+        A->model = 1;
     A->rollPres = s_vanim_pres;
 }
 
@@ -6047,12 +6390,13 @@ static const canim_t* tsc_canim(const tscache_t* SC) {
 /** @brief Returns the colour-anim slot whose mix words the walk reads, or NULL to read guest RAM.
  *
  * The slot is returned while this build's colour alpha is not 1 and the
- * slot holds a previous tick.
+ * slot holds a previous tick, and always for a slot whose current words come
+ * from the walker model, which RAM does not hold.
  * @param SC The decoded sector.
  * @return The slot, or NULL. */
 static const canim_t* tsc_canim_mix(const tscache_t* SC) {
     const canim_t* A = tsc_canim(SC);
-    return (A && A->havePrev && s_canim_a != 1.0) ? A : NULL;
+    return (A && (A->model || (A->havePrev && s_canim_a != 1.0))) ? A : NULL;
 }
 
 /** @brief Rolls every sector the colour sub-lists name on a canonical build and frees the slots whose sector left them.
@@ -6069,10 +6413,11 @@ static int canim_roll_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
     env_anim_iter_t it;
     uint32_t idx; int kind, named = 0;
     env_anim_iter_init(&it, cpu, sectorCnt);
+    it.listed = 1;      /* dormant sectors animate through the walker model */
     while (sectorPtr && env_anim_iter_next(&it, &idx, &kind)) {
         uint32_t s = kind == ENV_ANIM_KIND_COLOUR ? rd(cpu, sectorPtr + idx * 4) : 0u;
         if (!s) continue;
-        canim_roll(cpu, s);
+        canim_roll(cpu, s, idx, sectorCnt);
         named++;
         const canim_t* A = census ? canim_slot(s) : NULL;
         int d = (A && A->s == s) ? canim_maxd(A) : 0;
@@ -6087,8 +6432,8 @@ static int canim_roll_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
 /** @brief Stamps each slot of the last canonical roll on its decode-cache slot and fills its `mix` words.
  *
  * Runs on every build. A slot whose sector is not in the decode cache is
- * not stamped. `mix` is filled only while the alpha is below 1 and the slot
- * holds a previous tick.
+ * not stamped. `mix` is the prev-to-cur lerp while the alpha is below 1 and
+ * the slot holds a previous tick; a model slot otherwise takes cur.
  * @param a This build's colour alpha.
  * @return The slots stamped. */
 static int canim_stamp_all(double a) {
@@ -6100,9 +6445,10 @@ static int canim_stamp_all(double a) {
         if (!C) continue;
         C->canim = A; C->canimPres = s_vanim_pres;
         stamped++;
-        if (a == 1.0 || !A->havePrev) continue;
+        const int lerp = a != 1.0 && A->havePrev;
+        if (!lerp && !A->model) continue;
         for (uint32_t k = 0; k < A->nLp + A->nHp; k++)
-            A->mix[k] = canim_lerp(A->prev[k], A->cur[k], a);
+            A->mix[k] = lerp ? canim_lerp(A->prev[k], A->cur[k], a) : A->cur[k];
     }
     return stamped;
 }
@@ -6136,6 +6482,229 @@ static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sec
         fprintf(stderr, "[canim f=%u sub=%d on=%d en=%d a=%.3f named=%d stamped=%d maxd=%d]\n",
                 openpete_frame, s_vanim_sub, s_vanim_on, s_canim_en, s_canim_a, named,
                 stamped, maxd);
+}
+
+/* ---- env-anim motion census (OPENPETE_TERRAIN_ANIMCENSUS=<ticks>) ----------
+ * Over each window of <ticks> canonical ticks, one line per sector the
+ * animation lists name: the lists (w1, w2, c; v and c on a LISTS game), the
+ * ticks the game animated it (bit 0 of the liveness byte its walkers read,
+ * envm_live_ran), the ticks the native pass drew its HP tier (on a game
+ * with the walker model, ticks the walkers ran, envm_anchor), the ticks the
+ * game drew it (bits 0-1 of that byte, the previous draw's bins), its
+ * distance at its last native draw, the ticks its decoded HP bank and its
+ * colour slot's words changed, and the ticks the walker model equalled guest
+ * RAM out of the ticks it was compared (live sectors, on ticks the walkers
+ * ran, envm_anchor). A summary line
+ * gives the verdict: FAIL when a sector drawn natively stayed frozen on a
+ * list it is named by, or the model differed from RAM; VACUOUS when no listed
+ * sector was drawn or, on a game with the model, none was compared. */
+#define ACEN_SECTORS 256
+typedef struct {
+    uint8_t  lists;                /* 1 wave1 / vertex, 2 wave2, 4 colour */
+    uint8_t  drawnNow;             /* the prepass drew its HP tier since the last tick */
+    uint8_t  vhOk, chOk;           /* vh / ch hold a previous tick's hash */
+    uint32_t live, drawnGame, drawnNative, vmoved, cmoved, meq, mn;
+    uint32_t vh, ch;
+    double   dist;
+} acen_t;
+static int      s_acen_n = -2;     /* window length in ticks; 0 = off */
+static acen_t   s_acen[ACEN_SECTORS];
+static uint32_t s_acen_ticks, s_acen_win, s_acen_sectors;
+static unsigned s_acen_frame = 0xFFFFFFFFu;
+
+/** @brief Returns the window length of OPENPETE_TERRAIN_ANIMCENSUS, 0 when the census is off.
+ * @return The ticks per window. */
+static int acen_on(void) {
+    ENV_INT_LATCH(s_acen_n, "OPENPETE_TERRAIN_ANIMCENSUS", 0);
+    return s_acen_n > 0 ? s_acen_n : 0;
+}
+
+/** @brief Records the prepass verdict of one visible sector for the census.
+ *
+ * Counts only canonical builds; a sector index past ACEN_SECTORS is ignored.
+ * @param i The sector index.
+ * @param drawHP The sector's native HP verdict.
+ * @param SC The decoded sector.
+ * @param camx The camera X in sector units (world / 16).
+ * @param camy The camera Y.
+ * @param camz The camera Z. */
+static void acen_note_drawn(uint32_t i, int drawHP, const tscache_t* SC,
+                            double camx, double camy, double camz) {
+    if (!acen_on() || s_vanim_sub || i >= ACEN_SECTORS || !drawHP) return;
+    s_acen[i].drawnNow = 1;
+    const double dx = SC->centreX - camx, dy = SC->centreY - camy, dz = SC->centreZ - camz;
+    s_acen[i].dist = 16.0 * sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/** @brief FNV-1a over a byte range, continuing h.
+ * @param h The running hash.
+ * @param p The bytes.
+ * @param n The byte count.
+ * @return The hash. */
+static uint32_t acen_fnv(uint32_t h, const void* p, size_t n) {
+    const uint8_t* b = (const uint8_t*)p;
+    for (size_t k = 0; k < n; k++) h = (h ^ b[k]) * 16777619u;
+    return h;
+}
+
+/** @brief Compares the walker model of one live sector with guest RAM, for its vertex or colour words.
+ * @param cpu The guest CPU state, read only.
+ * @param idx The sector index.
+ * @param s The sector's guest address.
+ * @param sectorCnt The sector count.
+ * @param colour 1 for the colour words, 0 for the vertex words.
+ * @param A The sector's census row; meq and mn advance. */
+static void acen_model_check(CPUState* cpu, uint32_t idx, uint32_t s, uint32_t sectorCnt,
+                             int colour, acen_t* A) {
+    const int eq = envm_matches(cpu, idx, s, sectorCnt, colour, envm_timer());
+    if (eq < 0) return;
+    A->mn++;
+    A->meq += (uint32_t)eq;
+}
+
+/** @brief Writes a census row's list names (w1, w2, c; v for a vertex list on a LISTS game) joined by '+'.
+ * @param out Receives the names.
+ * @param n The size of out.
+ * @param lists The row's list bits.
+ * @param game_model 1 when the layout carries the walker model. */
+static void acen_lists_name(char* out, size_t n, uint32_t lists, int game_model) {
+    const char* name[3] = { game_model ? "w1" : "v", "w2", "c" };
+    size_t o = 0;
+    out[0] = 0;
+    for (int b = 0; b < 3 && o < n; b++) {
+        if (!(lists & (1u << b))) continue;
+        o += (size_t)snprintf(out + o, n - o, "%s%s", o ? "+" : "", name[b]);
+    }
+}
+
+/** @brief Tests whether a census row drawn natively stayed frozen on a list it is named by.
+ *
+ * Motion needs two drawn ticks to be seen, so a row drawn on one tick of the
+ * window is not judged.
+ * @param A The row.
+ * @return 1 when frozen, else 0. */
+static int acen_frozen(const acen_t* A) {
+    if (A->drawnNative < 2) return 0;
+    return ((A->lists & 3u) && !A->vmoved) || ((A->lists & 4u) && !A->cmoved);
+}
+
+/** @brief Prints the census window's sector lines and verdict, then clears the window.
+ * @param game_model 1 when the game's layout carries the walker model. */
+static void acen_flush(int game_model) {
+    uint32_t listed = 0, drawn = 0, frozen = 0, meq = 0, mn = 0;
+    for (uint32_t i = 0; i < ACEN_SECTORS; i++) {
+        acen_t* A = &s_acen[i];
+        if (!A->lists) continue;
+        const int fz = acen_frozen(A);
+        listed++;
+        drawn += A->drawnNative != 0;
+        frozen += (uint32_t)fz;
+        meq += A->meq; mn += A->mn;
+        char lists[16];
+        acen_lists_name(lists, sizeof(lists), A->lists, game_model);
+        fprintf(stderr, "[animcensus] w=%u sec=%3u lists=%-8s live=%u drawn_native=%u drawn_game=%u "
+                        "dist=%.0f vmoved=%u/%u cmoved=%u/%u model_eq=%u/%u%s\n",
+                s_acen_win, i, lists, A->live, A->drawnNative, A->drawnGame, A->dist,
+                A->vmoved, s_acen_ticks, A->cmoved, s_acen_ticks, A->meq, A->mn,
+                (fz || A->meq != A->mn) ? " BAD" : "");
+    }
+    const char* verdict = (!drawn || (game_model && !mn)) ? "VACUOUS"
+                        : (frozen || meq != mn) ? "FAIL" : "PASS";
+    fprintf(stderr, "[animcensus] w=%u verdict=%s ticks=%u listed=%u drawn=%u frozen=%u model_eq=%u/%u\n",
+            s_acen_win, verdict, s_acen_ticks, listed, drawn, frozen, meq, mn);
+    fflush(stderr);
+    for (uint32_t i = 0; i < ACEN_SECTORS; i++) {
+        acen_t* A = &s_acen[i];
+        A->live = A->drawnGame = A->drawnNative = A->vmoved = A->cmoved = A->meq = A->mn = 0;
+        A->lists = 0;
+    }
+    s_acen_ticks = 0;
+    s_acen_win++;
+}
+
+/** @brief Fills each sector's list bits from every list entry naming it, live or dormant.
+ * @param cpu The guest CPU state, read only.
+ * @param sectorCnt The sector count.
+ * @param lists Receives ACEN_SECTORS list-bit bytes (1 wave1 / vertex, 2 wave2, 4 colour). */
+static void acen_collect_lists(CPUState* cpu, uint32_t sectorCnt, uint8_t* lists) {
+    env_anim_iter_t it;
+    uint32_t idx; int kind;
+    env_anim_iter_init(&it, cpu, sectorCnt);
+    it.listed = 1;
+    while (env_anim_iter_next(&it, &idx, &kind)) {
+        if (idx >= ACEN_SECTORS) continue;
+        lists[idx] |= kind == ENV_ANIM_KIND_COLOUR ? 4u
+                    : it.model == ENV_ANIM_MODEL_WAVE2 ? 2u : 1u;
+    }
+}
+
+/** @brief Advances a census row's motion counter when a hashed bank differs from the last tick's.
+ * @param h The bank's hash this tick.
+ * @param last The last tick's hash; updated.
+ * @param ok Nonzero when last holds a hash; set.
+ * @param moved The motion counter; advanced on a change. */
+static void acen_motion(uint32_t h, uint32_t* last, uint8_t* ok, uint32_t* moved) {
+    *moved += (uint32_t)(*ok && h != *last);
+    *last = h; *ok = 1;
+}
+
+/** @brief Accumulates one tick of one listed sector into its census row.
+ * @param cpu The guest CPU state, read only.
+ * @param i The sector index.
+ * @param lists The sector's list bits this tick.
+ * @param sectorPtr The sector table's guest address.
+ * @param sectorCnt The sector count.
+ * @param game_model 1 when the layout carries the walker model. */
+static void acen_sector(CPUState* cpu, uint32_t i, uint8_t lists, uint32_t sectorPtr,
+                        uint32_t sectorCnt, int game_model) {
+    acen_t* A = &s_acen[i];
+    A->lists |= lists;
+    const uint32_t s = rd(cpu, sectorPtr + i * 4u);
+    const uint32_t lb = game_layout.env_anim.live_table ? envm_live_ran(cpu, i) : 0u;
+    A->live += lb & 1u;
+    A->drawnGame += (lb & 3u) != 0u;
+    A->drawnNative += A->drawnNow && (!game_model || s_envm_ran);
+    A->drawnNow = 0;
+    if (!s) return;
+    if (game_model && s_envm_ran && (lb & 1u)) {
+        if (lists & 3u) acen_model_check(cpu, i, s, sectorCnt, 0, A);
+        if (lists & 4u) acen_model_check(cpu, i, s, sectorCnt, 1, A);
+    }
+    const tscache_t* C = tsc_find(s);
+    if (C && C->hpV && C->nHpV > 0)
+        acen_motion(acen_fnv(2166136261u, C->hpV, sizeof(tsvert_t) * (size_t)C->nHpV),
+                    &A->vh, &A->vhOk, &A->vmoved);
+    const canim_t* S = canim_slot(s);
+    if (S && S->s == s && S->cur)
+        acen_motion(acen_fnv(2166136261u, S->cur + S->nLp, sizeof(uint32_t) * S->nHp),
+                    &A->ch, &A->chOk, &A->cmoved);
+}
+
+/** @brief Accumulates one canonical tick of the env-anim motion census.
+ *
+ * Runs once per tick, after the vertex and colour refreshes. A change of the
+ * sector table (a level load) clears the census. Prints a window every
+ * OPENPETE_TERRAIN_ANIMCENSUS ticks (acen_flush).
+ * @param cpu The guest CPU state, read only.
+ * @param sectorPtr The sector table's guest address.
+ * @param sectorCnt The scene sector count. */
+static void acen_tick(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
+    const int N = acen_on();
+    if (!N || s_vanim_sub || !sectorPtr || openpete_frame == s_acen_frame) return;
+    s_acen_frame = openpete_frame;
+    if (sectorPtr != s_acen_sectors) {
+        memset(s_acen, 0, sizeof(s_acen));
+        s_acen_ticks = 0;
+        s_acen_sectors = sectorPtr;
+    }
+    const int game_model = game_layout.env_anim.wave_table && game_layout.env_anim.timer;
+    uint8_t lists[ACEN_SECTORS] = { 0 };
+    acen_collect_lists(cpu, sectorCnt, lists);
+    for (uint32_t i = 0; i < ACEN_SECTORS; i++) {
+        if (lists[i]) acen_sector(cpu, i, lists[i], sectorPtr, sectorCnt, game_model);
+        else s_acen[i].drawnNow = 0;
+    }
+    if (++s_acen_ticks >= (uint32_t)N) acen_flush(game_model);
 }
 
 /* Texture (UV-scroll) env-anim sub-tick interpolation. The scrolling-texture list (`game_layout.env_anim.scroll`: Spyro 1's
@@ -8361,6 +8930,22 @@ static void tgpu_prev_cols(const canim_t* CA, int arr, uint32_t c0, uint32_t c1,
         out[q] = (co[q] / 4u < n) ? (CA->prev[base + co[q] / 4u] & 0xFFFFFFu) : cur[q];
 }
 
+/** @brief Replaces four current HP colours with a model slot's current words.
+ *
+ * A slot whose cur words come from the walker model (canim_t.model) holds
+ * colours guest RAM does not; any other slot, or none, leaves cur as read.
+ * An index past the array keeps its colour.
+ * @param CA The sector's colour-anim slot, or NULL.
+ * @param arr The array: 1 HP near, 2 HP far.
+ * @param co The four colour indices, byte offsets.
+ * @param cur The four current colours; updated. */
+static void tgpu_model_cols(const canim_t* CA, int arr, const uint16_t co[4], uint32_t cur[4]) {
+    if (!CA || !CA->model) return;
+    const uint32_t base = CA->nLp + (arr == 2 ? CA->nHp / 2u : 0u), n = CA->nHp / 2u;
+    for (int q = 0; q < 4; q++)
+        if (co[q] / 4u < n) cur[q] = CA->cur[base + co[q] / 4u] & 0xFFFFFFu;
+}
+
 /* The per-sector state an HP face bake reads (tgpu_bake_hp_face). */
 typedef struct {
     CPUState* cpu;
@@ -8520,6 +9105,8 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
         nearC[q] = (S->nearCol ? t_le32(S->nearCol + co[q]) : rd(X->cpu, S->nearBase + co[q])) & 0xFFFFFFu;
         farC[q]  = (S->farCol  ? t_le32(S->farCol  + co[q]) : rd(X->cpu, S->farBase  + co[q])) & 0xFFFFFFu;
     }
+    tgpu_model_cols(S->CA, 1, co, nearC);
+    tgpu_model_cols(S->CA, 2, co, farC);
     tgpu_prev_cols(S->CA, 1, co[0], co[1], co[2], co[3], nearC, pnearC);
     tgpu_prev_cols(S->CA, 2, co[0], co[1], co[2], co[3], farC, pfarC);
     tgpu_corner_t k[4];
@@ -11205,6 +11792,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
     tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
     tsc_col_anim_refresh(cpu, sectorPtr, sectorCnt);   /* colour env-anim (sub-tick) */
+    acen_tick(cpu, sectorPtr, sectorCnt);              /* OPENPETE_TERRAIN_ANIMCENSUS */
     /* Under extended LOD the walk's sector table extends past the scene's
      * with the HP source level's sectors the scene lacks (tsv_refresh); the
      * scene's own sectors keep their indices and the guest's verdicts. */
@@ -11527,6 +12115,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Sector-level tier/fill verdicts - one computation site, consumed
          * by both the retained-GPU claim below and the face walk. */
         sector_verdicts(SC, &G, &s_pre_verd[vi]);
+        acen_note_drawn(i, s_pre_verd[vi].drawHP, SC, camx, camy, camz);
         /* Level-mean accumulator for the pack LP grade: every visible fitted
          * sector whose LP tier draws contributes - the same set the walk's
          * pass-0 entry used to accumulate, now gathered here (serially) so

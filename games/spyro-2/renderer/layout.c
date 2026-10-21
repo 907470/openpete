@@ -112,10 +112,12 @@ const game_layout_t spyro2_game_layout = {
         .kf_lp_poly = D_ENV_ANIM_REGISTRY + 0x10u,
         .kf_hp_poly = D_ENV_ANIM_REGISTRY + 0x20u,
         .sub = {
-            { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR },
-            { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT },
-            { 0x04u, 1, 4u, 0, ENV_ANIM_KIND_VERT },
+            { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR, ENV_ANIM_MODEL_COLOUR },
+            { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT,   ENV_ANIM_MODEL_WAVE1 },
+            { 0x04u, 1, 4u, 0, ENV_ANIM_KIND_VERT,   ENV_ANIM_MODEL_WAVE2 },
         },
+        .wave_table = G_SIN,          /* the walkers' sine table; cosine at +0x80 */
+        .timer      = 0x8006700Cu,   /* the timer word the walkers read (environment.s:1249, 1403, 1478) */
     },
     .visibility = {
         .base = 0x1F800000u,   /* one byte per sector, written by func_80048D18(0), consumed and

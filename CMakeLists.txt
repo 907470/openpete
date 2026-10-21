@@ -464,6 +464,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Terrain env-anim motion census at extended LOD: four Spyro 2 and
+    # Spyro 3 freecam poses, two game processes at a time (~90 s). Every
+    # listed sector the native pass draws must animate, and the walker model
+    # must equal guest RAM on every sector the game animates. Slow;
+    # `ctest -L terrain_anim` or the script directly. Exit 64 = no binary,
+    # disc or Vulkan loader.
+    add_test(NAME terrain_anim_census
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_anim_census.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(terrain_anim_census PROPERTIES
+        LABELS "slow;presentation;terrain_anim"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Hor+ presentation symmetry - boots the headless demo at 4:3, 16:9
     # and 21:9, takes a screenshot at the same frame, and pixel-diffs the
     # central 4:3 region. Asserts that widening the GTE projection does

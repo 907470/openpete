@@ -133,10 +133,12 @@ const game_layout_t spyro3_game_layout = {
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = 0x80072330u,    /* D_8006FCF4 + 0x263C */
         .sub = {
-            { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR },
-            { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT },
-            { 0x04u, 1, 4u, 0, ENV_ANIM_KIND_VERT },
+            { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR, ENV_ANIM_MODEL_COLOUR },
+            { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT,   ENV_ANIM_MODEL_WAVE1 },
+            { 0x04u, 1, 4u, 0, ENV_ANIM_KIND_VERT,   ENV_ANIM_MODEL_WAVE2 },
         },
+        .wave_table = G_SIN,          /* the walkers' sine table; cosine at +0x80 */
+        .timer      = 0x8006C644u,   /* the timer word the walkers read (environment.s:1237, 1334, 1407) */
     },
     .visibility = {
         .base = 0x1F800000u,   /* one byte per sector, written by func_8002D0D8(0), consumed and

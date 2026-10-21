@@ -75,6 +75,25 @@ enum { ENV_ANIM_KIND_VERT = 0, ENV_ANIM_KIND_COLOUR = 1 };
 
 #define ENV_ANIM_SUBLISTS 3
 
+/* The closed form a sub-list's walker computes, which the native mirror
+ * reproduces for a sector the game's walker skips. Spyro 2 func_80023778,
+ * func_80023994, func_80023A9C; Spyro 3 func_80021FF4, func_80022158,
+ * func_80022260 (environment.s), called in that order each update:
+ * - COLOUR: per HP colour word k, i = ((d >> 24) + T * {1,2,2,3}[(d >> 24) & 3])
+ *   & 0xFF, IR0 = (c >> 3) + (c >> 4) + 0x480 with c the s16 at
+ *   wave_table + 0x80 + 2i, then DPCS of d & 0xFFFFFF toward the far colour
+ *   word at count + 4.
+ * - WAVE1: per HP vertex word k, i = (d + T + T/2) & 0xFF, low 10 bits =
+ *   (d >> 16) + ((c * 320) >> 16) with c the s16 at wave_table + 0x80 + 2i,
+ *   bits 10-31 kept.
+ * - WAVE2: per word pair (d0, d1), i = (d0 + T + T/2) & 0xFF, vertex
+ *   (d0 >> 16) & 0xFF = d1 + (s[i+0x20] >> 10) + ((s[i] >> 8) << 10) +
+ *   ((s[i+0x40] >> 8) << 21), s the s16 table at wave_table.
+ * An entry's data starts at the count word + (entry >> 16) * 4 and runs
+ * (entry >> 8) & 0xFF words or pairs; T is the update's timer word. */
+enum { ENV_ANIM_MODEL_NONE = 0, ENV_ANIM_MODEL_COLOUR = 1,
+       ENV_ANIM_MODEL_WAVE1 = 2, ENV_ANIM_MODEL_WAVE2 = 3 };
+
 /* Particle classes that link at a depth bucket: the routine dispatches
  * classes 0-4 to their own bodies and links class 5 and up at a fixed front
  * entry, which stamps nothing. */
@@ -89,6 +108,7 @@ typedef struct env_anim_sublist {
     uint8_t  entry_off;  /* bytes from the count word to the first entry */
     uint8_t  skip_top;   /* 1: the walker skips an entry with bit 31 set */
     uint8_t  kind;       /* ENV_ANIM_KIND_* */
+    uint8_t  model;      /* ENV_ANIM_MODEL_*: the walker's closed form */
 } env_anim_sublist_t;
 
 /* One moby placement marker: a moby of class `cls` whose state byte goes
@@ -239,6 +259,12 @@ typedef struct game_layout {
         uint32_t block_ptr;
         uint32_t live_table;
         env_anim_sublist_t sub[ENV_ANIM_SUBLISTS];
+
+        /* The sub-list models' inputs (ENV_ANIM_MODEL_*): the s16 sine table
+         * the walkers index (cosine at +0x80) and the timer word they read.
+         * 0 = no model; every sector then follows guest RAM alone. */
+        uint32_t wave_table;
+        uint32_t timer;
     } env_anim;
 
     /* The world visibility verdict: one byte per sector, 0xFF = drawn. */
