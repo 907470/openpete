@@ -20,6 +20,19 @@ openpete.com; the changelog page of the shipped docs makes it relative.
 
 ## Unreleased
 
+- Mod SDK: materials of mods pinned at `api = 13` or later compose: on mobys, terrain and every other channel, the
+  matching materials down to the first one pinned below 13 draw as one chain of up to four members, highest priority
+  last, where the highest-priority material used to draw alone. When more than four match, the lowest-ranked member
+  drops. A material sets `OP_SEL_EXCLUSIVE` (manifest key `exclusive = true`) to draw alone. A mod pinned below 13 is
+  unchanged. See [Compose materials](https://openpete.com/docs/modding/shaders.html#compose-materials).
+- Mod SDK: `env_anim = true` selects the terrain faces the game animates (texture swaps and scrolls, and faces whose
+  vertices or colours the game moves), textured or not; it used to match every textured face. `env_anim = false`
+  (`OP_SEL_ENV_STATIC`) selects the terrain faces the game does not animate, on a mod pinned at `api = 13` or later.
+  See [Shaders](https://openpete.com/docs/modding/shaders.html).
+- Mod SDK: the player and tracer channels carry an `ident` per draw kind: `OP_PLAYER_AVATAR`, `OP_PLAYER_MIRROR` (the
+  reflection on ice) and `OP_PLAYER_SUBMERGED` (the half below the water plane) on Spyro 2 and 3; `OP_TRACER_RIBBON`,
+  `OP_TRACER_MESH` and `OP_TRACER_ZAP` (Zoe's zap). A player row with `ident = 0` no longer tints the reflection or
+  the submerged half. See [Shaders](https://openpete.com/docs/modding/shaders.html).
 - Mod SDK: `register_shutdown_hook` installs a callback the engine runs once per mod on every deliberate exit (a quit,
   a closed window, SIGINT or SIGTERM, the end of `--frame-limit`, `--max-runtime-seconds` or `--record-frames`) and
   before a hot reload's new entry, in reverse load order and before the renderer, the texture registry and audio are
