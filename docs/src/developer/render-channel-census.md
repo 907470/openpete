@@ -72,12 +72,12 @@ shared layout and use their own payloads
 |---|---|---|
 | 1 | `OPENPETE_TAG_MOBY_SLOT(cls, slot)` | `m_Class` in `[15:0]`, slot in `[27:16]` |
 | 2 | `OPENPETE_TAG_TERRAIN{,_TEX,_UNTEX}` | sector `[8:0]`, texid `[15:9]`, slot `[24:16]`, untex bit 25, LP tier bit 26, env bit 27 |
-| 3 | `OPENPETE_TAG_PLAYER(slot)` | 0 - the walk keeps per-vertex indices, not a segment id |
+| 3 | `OPENPETE_TAG_PLAYER(kind, slot)` | `PLAYER_AVATAR` 0, `PLAYER_MIRROR` 1 (the mirrored call, Spyro 2 and 3), `PLAYER_SUBMERGED` 2 (the water-plane split's negative half, Spyro 2 and 3); no segment id: the walk keeps per-vertex indices |
 | 4 | `OPENPETE_TAG_FLAME(part, slot)` | `FLAME_RIBBON` 0, `FLAME_CAPS` 1 |
 | 5 | `OPENPETE_TAG_PARTICLE(kind, sel, slot)` | `(kind << 8) | sel`; kinds `PART_QUAD` 0, `PART_LINE` 1, `PART_GLOW` 2, `PART_FLARE` 3, `PART_SPARK` 4, `PART_STAR` 5; `sel` is the game's own class for quads and lines, 0 otherwise |
 | 6 | `OPENPETE_TAG_SKY(slot)` | 0 - the feeder carries a loop index only |
 | 7 | `OPENPETE_TAG_SHADOW(kind, slot)` | `SHADOW_MOBY` 0, `SHADOW_PLAYER` 1 |
-| 8 | `OPENPETE_TAG_TRACER(slot)` | 0 |
+| 8 | `OPENPETE_TAG_TRACER(kind, slot)` | `TRACER_RIBBON` 0 (Spyro 1 beam, Spyro 2 and 3 ribbon routine), `TRACER_MESH` 1, `TRACER_ZAP` 2 |
 | 9 | `OPENPETE_TAG_PORTAL(kind, slot)` | `PORTAL_FLAT` 0, `PORTAL_DOME` 1, `PORTAL_BLENDED` 2 |
 
 The path numbers are the mod-facing `OP_CHAN_*` values

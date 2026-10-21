@@ -132,7 +132,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
     const ngte_view* v = &view;
     int is_gnasty = (cpu->read_word(G_LEVELID) == 63u);   /* level 63: thin + green */
     int wshift    = is_gnasty ? 2 : 0;
-    openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
+    openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(OPENPETE_TAG_TRACER_RIBBON, 0));
 
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);

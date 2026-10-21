@@ -667,7 +667,7 @@ static void zap_feed_set(const zap_held* set, int n) {
     if (!zap_feed_enabled()) return;
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
+    openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(OPENPETE_TAG_TRACER_ZAP, 0));
     s_hw_sum = 0.0; s_hw_n = 0;
     for (int i = 0; i < n; i++) zap_add_prim(&set[i]);
     openpete_native_scene_set_tag(0);

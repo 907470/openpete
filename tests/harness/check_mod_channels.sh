@@ -148,7 +148,9 @@ gallery_leg() {  # gallery_leg <tag> <scene> <pin> <rows|-> <config line>
     if [ "$scene" != attract ]; then
         movie=(--bk2 "$PG_BK2_DIR/$scene.bk2")
         if [ -f "$PG_BK2_DIR/$scene.bk2.args" ]; then
-            read -ra extra < <(grep -v '^#' "$PG_BK2_DIR/$scene.bk2.args" | tr '\n' ' ')
+            # shlex keeps a quoted value (--player-pose "pos=(x, y, z) ...") one word.
+            mapfile -t extra < <(python3 -c 'import shlex, sys; print("\n".join(shlex.split(open(sys.argv[1]).read(), comments=True)))' \
+                                 "$PG_BK2_DIR/$scene.bk2.args")
             movie+=("${extra[@]}")
         fi
     fi
@@ -503,6 +505,9 @@ PY
         spyro-2) env_split_rung "crushs_dungeon@pos=(3080, 30039, 31217) yaw=29 pitch=548" 2473 ;;
         spyro-3) env_split_rung "sunny_villa@pos=(79168, 34297, 14796) yaw=867 pitch=197" 2473 ;;
     esac
+    # Spyro 2 has no row 23 (the player's submerged half): no Spyro 2 corpus
+    # movie swims, and the player-plane census arms the split on none of
+    # them. Spyro 3's row 23 measures the same feeder code.
     case "$PG_GAME" in
         spyro-2) GALLERY_TABLE="
 0|shady-oasis-flame|1421|100000|
@@ -526,7 +531,12 @@ PY
 17|autumn-plains-skelos-badlands-portal-entry|1669|25000|
 18|autumn-plains-skelos-badlands-portal-entry|1669|0|
 19|shady-oasis-flame|1421|3000|gallery.class = 583
-20|autumn-plains-skelos-badlands-portal-entry|1423|15000|"
+20|autumn-plains-skelos-badlands-portal-entry|1423|15000|
+21|shady-oasis-flame|1421|2000|
+22|colossus-ice-skating|2500|600|
+24|attract|14575|60|
+25|attract|14575|60|
+26|attract|13875|3000|"
             GALLERY_CENSUS="shady-oasis-flame|1421|583|0" ;;
         spyro-3) GALLERY_TABLE="
 0|crystal-islands-flame|1653|100000|
@@ -550,7 +560,13 @@ PY
 17|sunrise-spring-sunny-villa-portal-entry|3103|5000|
 18|sunrise-spring-sunny-villa-portal-entry|3103|0|
 19|crystal-islands-flame|1653|1300|gallery.class = 743
-20|crystal-islands-flame|1653|20000|"
+20|crystal-islands-flame|1653|20000|
+21|crystal-islands-flame|1653|2500|
+22|icy-peak-reflective-mirror|2523|1200|
+23|sunrise-spring-surface-swim|2500|250|
+24|attract|5074|1200|
+25|attract|14101|800|
+26|attract|13427|2000|"
             GALLERY_CENSUS="crystal-islands-flame|1653|743|0" ;;
     esac
     gallery_rows_rung "$GALLERY_TABLE" "$GALLERY_CENSUS"
@@ -993,7 +1009,13 @@ gallery_rows_rung "
 17|beast-makers-distant-portal|2000|250|
 18|beast-makers-distant-portal|2000|40|
 19|flame|1800|300|gallery.class = 348
-20|flame|1800|350|" "flame|1800|348|1"
+20|flame|1800|350|
+21|flame|1800|2500|
+22|flame|1800|0|
+23|flame|1800|0|
+24|gnasty_gnorc_attack|1800|500|
+25|gnasty_gnorc_attack|1800|0|
+26|gnasty_gnorc_attack|1800|0|" "flame|1800|348|1"
 
 echo
 if [ "$fail" -eq 0 ]; then

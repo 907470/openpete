@@ -313,6 +313,23 @@ enum {
 /** @brief The `ident` key for one particle kind and class; `sel` is 0 for kinds without a class. */
 #define OP_PART_IDENT(kind, sel) \
     ((int)(((unsigned)(kind) << 8) | ((unsigned)(sel) & 0xFFu)))
+/**
+ * @brief Player draw kinds: the `ident` key for #OP_CHAN_PLAYER.
+ *
+ * The player channel carries Spyro only; Spyro 3's other playable
+ * characters draw on the moby channel. Spyro 1 draws only the avatar.
+ */
+enum {
+    OP_PLAYER_AVATAR    = 0,  /**< Spyro as the player draw renders him. */
+    OP_PLAYER_MIRROR    = 1,  /**< The mirrored reflection copy; Spyro 2 and 3. */
+    OP_PLAYER_SUBMERGED = 2,  /**< The depth-cued half below the water plane; Spyro 2 and 3. */
+};
+/** @brief Tracer producers: the `ident` key for #OP_CHAN_TRACER. Spyro 1's beam is a ribbon. */
+enum {
+    OP_TRACER_RIBBON = 0,  /**< Point-ring ribbons: Spyro 1's beam, the Spyro 2 and 3 ribbon routine. */
+    OP_TRACER_MESH   = 1,  /**< Indexed tracer meshes; Spyro 2 and 3. */
+    OP_TRACER_ZAP    = 2,  /**< Zoe's zap; Spyro 2 and 3. */
+};
 /** @brief Legacy 0-based path values; prefer `OP_CHAN_*`. */
 enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
 /**
@@ -353,7 +370,7 @@ typedef struct openpete_mod_material_selector {
     int      ident;       /**< Channel-local identity, meaning per channel: flame ribbon or cap,
                            *   particle `OP_PART_*` kind `(kind << 8 | sel)`, shadow caster kind,
                            *   portal preview kind, the moby class on the moby channel. -1 = any.
-                           *   Player, sky and tracer emit only 0. */
+                           *   player `OP_PLAYER_*`, tracer `OP_TRACER_*`; sky emits only 0. */
     int      moby_class;  /**< Moby only; -1 = any. */
     int      texture;     /**< Terrain texture-record id 0..127; -1 = any. */
     int      level;       /**< `g_LevelId`; -1 = any. Sector and texture ids are per level, so a

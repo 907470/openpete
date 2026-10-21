@@ -544,6 +544,7 @@ typedef struct { float sx,sy,vz; int u,v; uint32_t rgb; int idx; } swv;
 typedef struct {
     swv v[3];
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend;
+    int submerged;   /* the plane split's negative half */
 } swtri;
 #define MAX_SWTRI (MAX_SPROJ * 4)
 #define MAX_SWFACE 8192
@@ -614,8 +615,9 @@ typedef struct { double sx, sy, vz, u, v, pd; uint32_t rgb; int idx; } pclv;
  * Screen position and view-Z narrow to float and the texture coordinates
  * truncate to int. The triangle is dropped when the store holds MAX_SWTRI.
  * @param v The three vertices.
- * @param m The triangle's material. */
-static void emit_raw(const pclv v[3], const swmat* m) {
+ * @param m The triangle's material.
+ * @param submerged Nonzero for a triangle of the plane split's negative half. */
+static void emit_raw(const pclv v[3], const swmat* m, int submerged) {
     if (s_swtri_n >= MAX_SWTRI) return;
     swtri* t = &s_swtri[s_swtri_n++];
     for (int k = 0; k < 3; k++)
@@ -623,6 +625,7 @@ static void emit_raw(const pclv v[3], const swmat* m) {
                          (int)v[k].u, (int)v[k].v, v[k].rgb, v[k].idx };
     t->textured=m->tex; t->tpage_x=m->tpx; t->tpage_y=m->tpy;
     t->clut_x=m->clx; t->clut_y=m->cly; t->bpp=m->bpp; t->blend=m->blend;
+    t->submerged = submerged;
 }
 
 /** @brief Cuts one triangle at the water plane and emits each half under its own policy.
@@ -640,7 +643,7 @@ static void emit_raw(const pclv v[3], const swmat* m) {
  * @param in The triangle's three vertices with their plane distances.
  * @param m The triangle's material. */
 static void plane_emit(const pclv in[3], const swmat* m) {
-    if (!s_plane.active) { emit_raw(in, m); return; }
+    if (!s_plane.active) { emit_raw(in, m, 0); return; }
     pclv pos[4], neg[4]; int np = 0, nn = 0;
     for (int k = 0; k < 3; k++) {
         const pclv* A = &in[k];
@@ -670,13 +673,13 @@ static void plane_emit(const pclv in[3], const swmat* m) {
     }
     for (int k = 2; k < np; k++) {
         pclv f[3] = { pos[0], pos[k-1], pos[k] };
-        emit_raw(f, m);
+        emit_raw(f, m, 0);
     }
     if (s_plane.drop_below) return;
     for (int k = 0; k < nn; k++) neg[k].rgb = plane_shade(neg[k].rgb);
     for (int k = 2; k < nn; k++) {
         pclv f[3] = { neg[0], neg[k-1], neg[k] };
-        emit_raw(f, m);
+        emit_raw(f, m, 1);
     }
 }
 
@@ -835,6 +838,20 @@ static float player_part_key(int vidx, int sd)
     if (slot < 0) slot = 0;
     return (float)(slot + 1);
 }
+/** @brief The provenance tag of one walk triangle: its draw kind and the call's record slot.
+ *
+ * The mirrored call's triangles are all OPENPETE_TAG_PLAYER_MIRROR; on the
+ * avatar call a triangle of the plane split's negative half is
+ * OPENPETE_TAG_PLAYER_SUBMERGED and every other OPENPETE_TAG_PLAYER_AVATAR.
+ * @param w The triangle.
+ * @return The tag. */
+static uint32_t player_tri_tag(const swtri* w) {
+    const uint32_t kind = s_mirror_pass ? OPENPETE_TAG_PLAYER_MIRROR
+                        : w->submerged  ? OPENPETE_TAG_PLAYER_SUBMERGED
+                        : OPENPETE_TAG_PLAYER_AVATAR;
+    return OPENPETE_TAG_PLAYER(kind, (uint32_t)s_player_slot);
+}
+
 /** @brief Builds the face walk over the projection and adds its triangles to the scene.
  *
  * With `reproject` set the pose is projected first; otherwise the projection
@@ -845,9 +862,9 @@ static float player_part_key(int vidx, int sd)
  * value applies a one-slot tie pull, and the mirrored copy adds its own
  * negative bias to the depth key; moby_player_sort_pull_on() off
  * (OPENPETE_PLAYER_SORT_PULL=0 or OPENPETE_MOBY_OTBIAS=0) disables all of them.
- * Perspective W is taken from the unpulled view-Z. Triangles carry the PLAYER
- * tag of s_player_slot, and an opaque one an ordering key from its first
- * vertex's part. OPENPETE_SPYRO_UNTEX draws every triangle untextured;
+ * Perspective W is taken from the unpulled view-Z. Each triangle carries the
+ * PLAYER tag player_tri_tag gives it, and an opaque one an ordering key from
+ * its first vertex's part. OPENPETE_SPYRO_UNTEX draws every triangle untextured;
  * OPENPETE_PLAYER_POSTRACE prints the submitted centroid and bounding box.
  * @param cpu Reads the pose and the sortDepth byte.
  * @param reproject Nonzero to run player_project_all first. */
@@ -902,9 +919,9 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
     }
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_tag(OPENPETE_TAG_PLAYER((uint32_t)s_player_slot));
     for (int i = 0; i < s_swtri_n; i++) {
         swtri* w = &s_swtri[i];
+        openpete_native_scene_set_tag(player_tri_tag(w));
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;

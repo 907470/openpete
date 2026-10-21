@@ -1770,12 +1770,17 @@ void openpete_native_scene_mark_terrain_feed(void);
     (((uint32_t)(p) & 0xFu) << 28 | (((uint32_t)(slot) & 0xFFFu) << 16) | \
      ((uint32_t)(ident) & 0xFFFFu))
 
-/* Player (Spyro) - drawn by r_pete.s, NOT the moby pool walk, so no
- * moby-class selector can ever reach him. The emitted tri carries no
- * sub-model marker (the walk keeps per-vertex indices, not a segment
- * id), so identity is 0 = the whole player; splitting head/body/wing
- * would mean threading the segment through the walk first. */
-#define OPENPETE_TAG_PLAYER(slot)         OPENPETE_TAG_PATH(3u, 0u, (slot))
+/* Player (Spyro) - drawn by the player draw routine, not the moby pool
+ * walk, so no moby-class selector reaches him. Identity names the draw
+ * kind: the avatar, the mirrored reflection copy (its own call of the
+ * routine), or the half below the water plane that the plane split
+ * depth-cues. The emitted tri carries no sub-model marker (the walk keeps
+ * per-vertex indices, not a segment id), so head, body and wings share
+ * one identity. */
+#define OPENPETE_TAG_PLAYER_AVATAR    0u
+#define OPENPETE_TAG_PLAYER_MIRROR    1u
+#define OPENPETE_TAG_PLAYER_SUBMERGED 2u
+#define OPENPETE_TAG_PLAYER(kind, slot)   OPENPETE_TAG_PATH(3u, (kind), (slot))
 /* Flame breath. Identity distinguishes the ADDITIVE ribbon from the
  * OPAQUE G3 caps - one feeder, two blend modes, so a material that
  * reshades the ribbon must be able to leave the caps alone. */
@@ -1809,9 +1814,14 @@ void openpete_native_scene_mark_terrain_feed(void);
 #define OPENPETE_TAG_SHADOW_MOBY   0u
 #define OPENPETE_TAG_SHADOW_PLAYER 1u
 #define OPENPETE_TAG_SHADOW(kind, slot)   OPENPETE_TAG_PATH(7u, (kind), (slot))
-/* Tracer/beam streaks. The .s drains its source point arrays every
- * frame, so nothing survives to identify a streak. */
-#define OPENPETE_TAG_TRACER(slot)         OPENPETE_TAG_PATH(8u, 0u, (slot))
+/* Tracer/beam streaks. Identity names the producer: the point-ring
+ * ribbon (Spyro 1's beam among them), the indexed mesh, or Zoe's zap.
+ * The routines drain their source arrays every tick, so nothing survives
+ * to identify one streak. */
+#define OPENPETE_TAG_TRACER_RIBBON 0u
+#define OPENPETE_TAG_TRACER_MESH   1u
+#define OPENPETE_TAG_TRACER_ZAP    2u
+#define OPENPETE_TAG_TRACER(kind, slot)   OPENPETE_TAG_PATH(8u, (kind), (slot))
 /* Portal destination-sky previews. Identity is the preview KIND, because
  * the game draws a portal three ways across the approach and they are
  * genuinely different art: a flat colour chip far out, a DPCS-fogged dome

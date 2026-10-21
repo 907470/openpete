@@ -127,6 +127,7 @@ typedef struct {
     float     depth;
     int       paired;
     int       src;             /* TR_SRC_*: which producer's point each corner holds */
+    uint32_t  ident;           /* OPENPETE_TAG_TRACER_RIBBON or _MESH: the producer */
     tr_corner c[4];
     float     dx[4], dy[4];    /* the sub-tick screen displacement of each corner */
 } tr_item;
@@ -620,16 +621,26 @@ static void tr_add_prim(const tr_item* it) {
 
 /** @brief Feeds a set of items to the native scene under the tracer tag.
  *
- * Does nothing when OPENPETE_TRACERS disables the feed or the set is empty.
+ * Each item is tagged with its producer's identity (ribbon or mesh). Does
+ * nothing when OPENPETE_TRACERS disables the feed or the set is empty.
  * @param set The items.
  * @param n The item count. */
 static void tr_feed_native(const tr_item* set, int n) {
     if (!tr_feed_enabled()) return;
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
-    for (int i = 0; i < n; i++) tr_add_prim(&set[i]);
+    for (int i = 0; i < n; i++) {
+        openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(set[i].ident, 0));
+        tr_add_prim(&set[i]);
+    }
     openpete_native_scene_set_tag(0);
+}
+
+/** @brief Stamps every item of the call's capture with its producer's identity.
+ *
+ * @param ident OPENPETE_TAG_TRACER_RIBBON or OPENPETE_TAG_TRACER_MESH. */
+static void tr_set_ident(uint32_t ident) {
+    for (int i = 0; i < s_item_n; i++) s_item[i].ident = ident;
 }
 
 /** @brief Appends the call's items to the tick's held set for the sub-tick replay.
@@ -715,6 +726,7 @@ static int on_ribbon(CPUState* cpu, uint32_t addr) {
     const uint32_t fed_before = s_fed_tris;
     {
         if (endp > startp) tr_capture_prims(cpu, startp, endp);
+        tr_set_ident(OPENPETE_TAG_TRACER_RIBBON);
         ngte_view view;
         ngte_view_build(cpu, &view);
         rib_pair_depths(cpu, &view);
@@ -745,6 +757,7 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
     const uint32_t fed_before = s_fed_tris;
     if (endp > startp) {
         tr_capture_prims(cpu, startp, endp);
+        tr_set_ident(OPENPETE_TAG_TRACER_MESH);
         ngte_view view;
         ngte_view_build(cpu, &view);
         msh_pair_depths(cpu, &view, s_msh_desc);

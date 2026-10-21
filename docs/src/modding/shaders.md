@@ -22,7 +22,7 @@ A mod shades what the engine draws; it cannot add draws of its own.
 |---|---|
 | selector | The set of keys deciding which of the engine's draws a material repaints. Every key is optional and an omitted key matches everything, so a selector widens as keys are left out. |
 | channel | The family of draws a selector names: `moby`, `terrain`, `player`, `flame`, `particle`, `sky`, `shadow`, `tracer`, `portal`, or `any`. |
-| ident | An identity within one channel, since a channel covers several kinds of draw: a flame's ribbon against its caps, a particle kind and class, a portal preview kind. |
+| ident | An identity within one channel, since a channel covers several kinds of draw: a flame's ribbon against its caps, a particle kind and class, a portal preview kind, Spyro against his reflection, a tracer ribbon against Zoe's zap. |
 | tier | Which terrain detail level a face belongs to, `hp` or `lp`. Omit the key to take both. |
 | pass | One fullscreen post-process draw a mod registers. Passes run every present. |
 | point | Where in the frame a pass runs: `OP_POSTFX_SCENE` before the HUD, `OP_POSTFX_COMPOSITE` after it. |
@@ -118,7 +118,7 @@ Every selector key is optional; an omitted key matches everything:
 |---|---|
 | `frag`, `vert` | Shader paths relative to the mod |
 | `channel` | `any`, `moby`, `terrain`, `player`, `flame`, `particle`, `sky`, `shadow`, `tracer`, `portal` |
-| `ident` | Channel-local identity: flame ribbon (0) or caps (1); particle `(kind << 8) \| sel` with kinds 0 quads, 1 lines, 2 glow rings, 3 sparkle flares, 4 sparkle lines, 5 dragon star (`OP_PART_*`; `sel` is the particle class of a quad or line on Spyro 1, its GPU primitive code on Spyro 2 and 3, and 0 for the other kinds; the dragon star is Spyro 1 only); shadow caster kind; portal preview kind (Spyro 2 and 3 draw the background quad and the picture, no fogged dome); on `moby`, the moby class |
+| `ident` | Channel-local identity: flame ribbon (0) or caps (1); particle `(kind << 8) \| sel` with kinds 0 quads, 1 lines, 2 glow rings, 3 sparkle flares, 4 sparkle lines, 5 dragon star (`OP_PART_*`; `sel` is the particle class of a quad or line on Spyro 1, its GPU primitive code on Spyro 2 and 3, and 0 for the other kinds; the dragon star is Spyro 1 only); shadow caster kind; portal preview kind (Spyro 2 and 3 draw the background quad and the picture, no fogged dome); player kind, 0 Spyro, 1 his mirrored reflection on a reflective floor, 2 the part of him below the water surface while he swims (`OP_PLAYER_*`; 1 and 2 are Spyro 2 and 3 only); tracer producer, 0 ribbons, 1 meshes, 2 Zoe's zap (`OP_TRACER_*`; Spyro 1 draws ribbons only); on `moby`, the moby class |
 | `class` | Moby class |
 | `texture` | Terrain texture-record ID, 0 to 127 |
 | `level` | Level ID. Texture IDs are per level, so a `texture` row usually needs this |

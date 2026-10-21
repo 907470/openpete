@@ -79,8 +79,8 @@ typedef struct {
 
 /**
  * @brief The row table. Order is part of the gate's contract; append
- *        only. The last two rows are the refine rows and are located
- *        from the end at entry.
+ *        only. Rows 19 and 20 are the refine rows (REFINE_MOBY_ROW,
+ *        REFINE_TERRAIN_ROW).
  */
 static row_t g_rows[] = {
   /*  0 */ { -1, -1, -1, {1.00f, 0.20f, 0.80f}, 0, -1 },
@@ -132,8 +132,21 @@ static row_t g_rows[] = {
    * and hands the answer to both paths. Keyed on the untextured band so
    * the row is level-independent. */
   /* 20 */ { OP_CHAN_TERRAIN, -1, -1, {1.00f, 0.45f, 0.10f}, 0, -1 },
+  /* The player channel split by draw kind: the avatar, the mirrored
+   * reflection copy the routine draws over a reflective floor, and the
+   * half below a water plane that the routine depth-cues. Spyro 1 draws
+   * the avatar only. */
+  /* 21 */ { OP_CHAN_PLAYER, OP_PLAYER_AVATAR, -1, {0.20f, 0.40f, 1.00f}, 0, -1 },
+  /* 22 */ { OP_CHAN_PLAYER, OP_PLAYER_MIRROR, -1, {1.00f, 0.90f, 0.20f}, 0, -1 },
+  /* 23 */ { OP_CHAN_PLAYER, OP_PLAYER_SUBMERGED, -1, {0.10f, 1.00f, 0.80f}, 0, -1 },
+  /* The tracer channel split by producer. Spyro 1's beam is a ribbon. */
+  /* 24 */ { OP_CHAN_TRACER, OP_TRACER_RIBBON, -1, {1.00f, 0.50f, 0.10f}, 0, -1 },
+  /* 25 */ { OP_CHAN_TRACER, OP_TRACER_MESH, -1, {0.40f, 1.00f, 0.30f}, 0, -1 },
+  /* 26 */ { OP_CHAN_TRACER, OP_TRACER_ZAP, -1, {0.80f, 0.30f, 1.00f}, 0, -1 },
 };
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
+#define REFINE_MOBY_ROW    19
+#define REFINE_TERRAIN_ROW 20
 
 /** @brief A row's overlay label and tooltip on one game. */
 typedef struct {
@@ -208,6 +221,20 @@ static const row_text_t k_text[] = {
              "the camera, redrawn from baked GPU buffers everywhere else - and this "
              "row reaches both with the same colour. What a face looks like is a "
              "function of the face, never of where it lives." },
+  /* 21 */ { "Player (avatar)", "Spyro himself, ident 0: on Spyro 1 the same as the Player row." },
+  /* 22 */ { "Player (mirror) - known gap",
+             "Known gap on Spyro 1: the reflection copy is a Spyro 2 and 3 draw; "
+             "Spyro 1 has none, so this row paints nothing." },
+  /* 23 */ { "Player (submerged) - known gap",
+             "Known gap on Spyro 1: the water-plane split is a Spyro 2 and 3 draw; "
+             "Spyro 1 has none, so this row paints nothing." },
+  /* 24 */ { "Tracers (ribbon)", "Beam streaks (Gnasty's zaps), ident 0: Spyro 1's only tracer." },
+  /* 25 */ { "Tracers (mesh) - known gap",
+             "Known gap on Spyro 1: the indexed tracer mesh is a Spyro 2 and 3 "
+             "routine, so this row paints nothing." },
+  /* 26 */ { "Tracers (zap) - known gap",
+             "Known gap on Spyro 1: Zoe's zap is a Spyro 2 and 3 routine, so this "
+             "row paints nothing." },
 };
 #elif OPENPETE_GAME_SPYRO2 || OPENPETE_GAME_SPYRO3
 #if OPENPETE_GAME_SPYRO2
@@ -279,6 +306,15 @@ static const row_text_t k_text[] = {
              "A refine callback on the untextured terrain faces. Terrain is drawn two "
              "ways - walked near the camera, redrawn from baked GPU buffers "
              "elsewhere - and this row reaches both with the same colour." },
+  /* 21 */ { "Player (avatar)", "Spyro himself, without his reflection or the half "
+                                "below a water surface." },
+  /* 22 */ { "Player (mirror)", "The mirrored copy of Spyro drawn over a reflective "
+                                "floor (ice)." },
+  /* 23 */ { "Player (submerged)", "The part of Spyro below the water surface while he "
+                                   "swims, which the game shades toward the water colour." },
+  /* 24 */ { "Tracers (ribbon)", "The point-ring tracer ribbons." },
+  /* 25 */ { "Tracers (mesh)",   "The indexed tracer meshes." },
+  /* 26 */ { "Tracers (zap)",    "Zoe's zap." },
 };
 #undef GAME_NAME
 #undef GLOW_EXAMPLE
@@ -651,10 +687,8 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         return 0;
     }
     g_strength = (float)api->config_float(self, "gallery.strength", 0.65);
-    /* The two refine rows are the last two in the table, in that order.
-     * Counted from the end because rows are appended, never inserted. */
-    g_ter_refine_row = NROWS - 1;
-    g_refine_row     = NROWS - 2;
+    g_ter_refine_row = REFINE_TERRAIN_ROW;
+    g_refine_row     = REFINE_MOBY_ROW;
     g_class = (int)api->config_int(self, "gallery.class", 0);
     g_rows[g_class_row].moby_class  = g_class;
     g_rows[g_refine_row].moby_class = g_class;
