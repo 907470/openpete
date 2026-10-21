@@ -129,3 +129,7 @@ fracture_hills | pos=(111293, 143960, 32528) yaw=-450 pitch=66
 # A Bonebuilder at the left edge of the 16:9 field: its shadow stops drawing
 # while the shadow is still inside the frame. Blessed pre-fix.
 skelos_badlands | pos=(79872, 75897, 31120) yaw=164 pitch=188
+# Two gems resting on a stone step: the step's near lip paints over their
+# lower halves (native and the ordering-table reference alike) although
+# the gems sit on top of it. Blessed pre-fix.
+glimmer | pos=(37180, 45817, 12643) yaw=-59 pitch=238
