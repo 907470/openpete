@@ -1,5 +1,5 @@
 {
- "source_sha": "cb78a471dfb907d516b5490d16629b4ee92a927d",
+ "source_sha": "8770c57c32fd70c37044635acd245af22d782da7",
  "format": 1,
  "game": "spyro-1",
  "entries": [
@@ -741,6 +741,58 @@
    "build_cond": null,
    "def": "0",
    "default_note": null
+  },
+  {
+   "id": "knob:launcher_fullscreen",
+   "flag": "--launcher-fullscreen",
+   "env": "OPENPETE_LAUNCHER_FULLSCREEN",
+   "config_key": "launcher_fullscreen",
+   "schema_type": "bool",
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Display",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--launcher-fullscreen",
+   "flag": "--launcher-fullscreen",
+   "takes_arg": "required",
+   "knob": "launcher_fullscreen",
+   "build_cond": null,
+   "def": "0",
+   "default_note": null
+  },
+  {
+   "id": "knob:launcher_window",
+   "flag": "--launcher-window",
+   "env": "OPENPETE_LAUNCHER_WINDOW",
+   "config_key": "launcher_window",
+   "schema_type": "string",
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Display",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "the game window's size and state (--window)",
+   "game": "core"
+  },
+  {
+   "id": "flag:--launcher-window",
+   "flag": "--launcher-window",
+   "takes_arg": "required",
+   "knob": "launcher_window",
+   "build_cond": null,
+   "def": null,
+   "default_note": "the game window's size and state (--window)"
   },
   {
    "id": "knob:render_fps",
@@ -1594,8 +1646,8 @@
    "id": "knob:no_card1",
    "flag": "--no-card1",
    "env": null,
-   "config_key": null,
-   "schema_type": null,
+   "config_key": "no_card1",
+   "schema_type": "bool",
    "vocab": [],
    "aliases": [],
    "type": "bool",
@@ -1620,8 +1672,8 @@
    "id": "knob:no_card2",
    "flag": "--no-card2",
    "env": null,
-   "config_key": null,
-   "schema_type": null,
+   "config_key": "no_card2",
+   "schema_type": "bool",
    "vocab": [],
    "aliases": [],
    "type": "bool",
@@ -1906,7 +1958,7 @@
    "build_cond": null,
    "cli_only": false,
    "def": null,
-   "default_note": "0: bk2 frame 0 plays at openpete_frame 0",
+   "default_note": "0: bk2 frame 0 plays at counter value 0",
    "game": "core"
   },
   {
@@ -1916,7 +1968,7 @@
    "knob": "bk2_frame_offset",
    "build_cond": null,
    "def": null,
-   "default_note": "0: bk2 frame 0 plays at openpete_frame 0"
+   "default_note": "0: bk2 frame 0 plays at counter value 0"
   },
   {
    "id": "knob:bk2_stop_on_end",
@@ -2281,12 +2333,12 @@
    "vocab": [],
    "aliases": [],
    "type": "string",
-   "section": "Debug",
-   "block": "debug",
+   "section": "Display",
+   "block": "release",
    "build_cond": null,
    "cli_only": false,
    "def": null,
-   "default_note": null,
+   "default_note": "every path",
    "game": "core"
   },
   {
@@ -2296,7 +2348,7 @@
    "knob": "render_paths",
    "build_cond": null,
    "def": null,
-   "default_note": null
+   "default_note": "every path"
   },
   {
    "id": "knob:log_level",
@@ -2431,6 +2483,23 @@
    "game": "core"
   },
   {
+   "id": "knob:HEADLESS_NATIVE",
+   "flag": null,
+   "env": "OPENPETE_HEADLESS_NATIVE",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:CRASH_TEST",
    "flag": null,
    "env": "OPENPETE_CRASH_TEST",
@@ -2516,6 +2585,40 @@
    "game": "core"
   },
   {
+   "id": "knob:LOOP_DELIVERY",
+   "flag": null,
+   "env": "OPENPETE_LOOP_DELIVERY",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:HANG_STALL_SECONDS",
+   "flag": null,
+   "env": "OPENPETE_HANG_STALL_SECONDS",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "30",
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:THREAD_SPLIT",
    "flag": null,
    "env": "OPENPETE_THREAD_SPLIT",
@@ -2530,6 +2633,40 @@
    "cli_only": false,
    "def": "1",
    "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:THREAD_ROLE_FATAL",
+   "flag": null,
+   "env": "OPENPETE_THREAD_ROLE_FATAL",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:THREAD_ROLE_REPORT",
+   "flag": null,
+   "env": "OPENPETE_THREAD_ROLE_REPORT",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "none: no report",
    "game": "core"
   },
   {
@@ -2788,6 +2925,23 @@
    "game": "core"
   },
   {
+   "id": "knob:MOBY_SHELL",
+   "flag": null,
+   "env": "OPENPETE_MOBY_SHELL",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:MOBY_SHADOW_DECAL",
    "flag": null,
    "env": "OPENPETE_MOBY_SHADOW_DECAL",
@@ -2842,6 +2996,23 @@
    "id": "knob:PORTAL3_INTERP",
    "flag": null,
    "env": "OPENPETE_PORTAL3_INTERP",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:PORTAL3_SKY",
+   "flag": null,
+   "env": "OPENPETE_PORTAL3_SKY",
    "config_key": null,
    "schema_type": null,
    "vocab": [],
@@ -4123,6 +4294,32 @@
    "default_note": null
   },
   {
+   "id": "knob:screenshot_overlays",
+   "flag": "--screenshot-overlays",
+   "env": "OPENPETE_SCREENSHOT_OVERLAYS",
+   "config_key": "screenshot_overlays",
+   "schema_type": "bool",
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--screenshot-overlays",
+   "flag": "--screenshot-overlays",
+   "takes_arg": "optional",
+   "knob": "screenshot_overlays",
+   "build_cond": null,
+   "def": "0",
+   "default_note": null
+  },
+  {
    "id": "knob:devui_inject_mouse",
    "flag": null,
    "env": "OPENPETE_DEVUI_INJECT_MOUSE",
@@ -4188,6 +4385,23 @@
    "cli_only": false,
    "def": "0",
    "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:PSYX_DITHER",
+   "flag": null,
+   "env": "OPENPETE_PSYX_DITHER",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "0 in a run that writes -og screenshots, else 1",
    "game": "core"
   },
   {
@@ -6244,6 +6458,18 @@
    "displayed": true
   },
   {
+   "id": "menu:menu.docs",
+   "knob": null,
+   "hint": "OPEN THE DOCUMENTATION IN A BROWSER",
+   "displayed": true
+  },
+  {
+   "id": "menu:menu.advanced",
+   "knob": null,
+   "hint": "MORE SETTINGS AND CONTROLS",
+   "displayed": true
+  },
+  {
    "id": "menu:menu.quit",
    "knob": null,
    "hint": "QUIT THE GAME",
@@ -7902,8 +8128,8 @@
  ],
  "selfcheck": {
   "flag": {
-   "checked": 42,
-   "unchecked": 33,
+   "checked": 44,
+   "unchecked": 34,
    "failed": 0
   },
   "switch": {
@@ -7918,7 +8144,7 @@
   },
   "env": {
    "checked": 0,
-   "unchecked": 187,
+   "unchecked": 195,
    "failed": 0
   },
   "failures": []
