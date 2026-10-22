@@ -14,6 +14,7 @@ typedef enum {
     SKIP_ARMED,    /* waiting for the title's induction window */
     SKIP_SEEDED,   /* induced; waiting for the loader to take the target */
     SKIP_PICKED,   /* the loader took the target; holding the demo flag clear */
+    SKIP_REACHED,  /* the hold ended; level_skip_picked still reports the pick */
 } skip_phase_t;
 
 static int          s_target = 0;
@@ -25,13 +26,11 @@ static uint32_t     s_ffwd_deadline = 0;
 /* The game.state word at the previous release check, for the re-arm edge. */
 static uint32_t     s_prev_state = 0;
 
-/** @brief Return the frame value a log line prints.
+/** @brief Return the VBL counter every log line prints.
  *
- * @param g The game.
- * @param frame_counter The tick's openpete_frame counter.
- * @return frame_counter when the game logs it, else the feed key. */
-static uint32_t log_frame(const level_skip_game_t* g, uint32_t frame_counter) {
-    return g->log_frame_counter ? frame_counter : openpete_feed_key_now();
+ * @return openpete_vbl. */
+static uint32_t log_vbl(void) {
+    return (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
 }
 
 void level_skip_ffwd_arm(const char* until) {
@@ -45,7 +44,7 @@ void level_skip_ffwd_arm(const char* until) {
 void level_skip_set(const level_skip_game_t* g, int number) {
     char until[40];
     (void)g;
-    s_target = number;
+    s_target = number > 0 ? number : 0;
     s_phase  = number > 0 ? SKIP_ARMED : SKIP_IDLE;
     if (number <= 0) return;
     snprintf(until, sizeof until, "level %d loads", number);
@@ -53,10 +52,13 @@ void level_skip_set(const level_skip_game_t* g, int number) {
 }
 
 int level_skip_target(const level_skip_game_t* g) {
-    return (g->target_persists || s_phase != SKIP_IDLE) ? s_target : 0;
+    (void)g;
+    return s_target;
 }
 
-int level_skip_picked(void) { return s_phase == SKIP_PICKED; }
+int level_skip_picked(void) {
+    return s_phase == SKIP_PICKED || s_phase == SKIP_REACHED;
+}
 
 /** @brief Return the first watching release watch.
  *
@@ -107,10 +109,10 @@ static void release_tick(const level_skip_game_t* g, CPUState* cpu,
                            : s_phase == SKIP_PICKED && g->playable(cpu);
     if (playable) {
         fprintf(stderr, "[skip-to-level] level playable - presents resume "
-                        "at frame=%u%s\n", log_frame(g, frame_counter), eng);
+                        "at vbl=%u%s\n", log_vbl(), eng);
     } else if (frame_counter > s_ffwd_deadline) {
         fprintf(stderr, "[skip-to-level] fail-safe release (no playable edge) "
-                        "at frame=%u\n", log_frame(g, frame_counter));
+                        "at vbl=%u\n", log_vbl());
     } else {
         return;
     }
@@ -123,12 +125,10 @@ static void release_tick(const level_skip_game_t* g, CPUState* cpu,
 /** @brief Advance the armed and seeded phases one tick.
  *
  * @param g The game.
- * @param cpu The guest CPU state.
- * @param frame_counter The openpete_frame counter. */
-static void advance(const level_skip_game_t* g, CPUState* cpu,
-                    uint32_t frame_counter) {
+ * @param cpu The guest CPU state. */
+static void advance(const level_skip_game_t* g, CPUState* cpu) {
     if (s_phase == SKIP_ARMED) {
-        const int r = g->induce(cpu, s_target, log_frame(g, frame_counter));
+        const int r = g->induce(cpu, s_target, log_vbl());
         if (r > 0) {
             s_phase = SKIP_SEEDED;
         } else if (r < 0) {
@@ -140,26 +140,31 @@ static void advance(const level_skip_game_t* g, CPUState* cpu,
             s_ffwd_deadline = 0;
         }
     } else if (s_phase == SKIP_SEEDED) {
-        if (!g->picked) {
-            s_phase = SKIP_PICKED;
-        } else if (g->picked(cpu, s_target)) {
-            s_phase = SKIP_PICKED;
-            fprintf(stderr, "[skip-to-level] loader took level=%d at frame=%u\n",
-                    s_target, log_frame(g, frame_counter));
-        }
+        if (g->picked && !g->picked(cpu, s_target)) return;
+        s_phase = SKIP_PICKED;
+        if (g->picked)
+            fprintf(stderr, "[skip-to-level] loader took level=%d at vbl=%u\n",
+                    s_target, log_vbl());
+        g->restore(cpu);
     }
 }
 
 void level_skip_on_tick(const level_skip_game_t* g, CPUState* cpu,
                         uint32_t frame_counter) {
-    advance(g, cpu, frame_counter);
-    if (s_phase == SKIP_PICKED && !g->hold(cpu)) {
-        s_phase = SKIP_IDLE;
-        if (g->hold_end_log)
-            fprintf(stderr, "[skip-to-level] %s at frame=%u\n", g->hold_end_log,
-                    log_frame(g, frame_counter));
-    }
+    advance(g, cpu);
+    /* The hold runs on the playable tick too, and the release check reads
+     * the picked phase, so the hold ends after both: on the playable edge
+     * into SKIP_REACHED, or, when the game left the level first, disarmed. */
+    skip_phase_t next = s_phase;
+    if (s_phase == SKIP_PICKED)
+        next = !g->hold(cpu) ? SKIP_IDLE
+             : g->playable(cpu) ? SKIP_REACHED : SKIP_PICKED;
     release_tick(g, cpu, frame_counter);
+    if (next == s_phase) return;
+    s_phase  = next;
+    s_target = 0;
+    fprintf(stderr, "[skip-to-level] demo-mode hold ends at vbl=%u\n",
+            log_vbl());
 }
 
 void level_skip_arm_cutscene(const level_skip_game_t* g, int id) {

@@ -2,8 +2,9 @@
 //
 // Loads directly into a level by inducing the title screen's own
 // demo-timeout transition, seeded so its picker loads the target instead of
-// the next attract demo, then holding isDemoMode clear so the controller
-// drives Spyro and the level never ends as a demo would.
+// the next attract demo, then holding isDemoMode clear until the level is
+// playable so the controller drives Spyro and the level never ends as a demo
+// would.
 //
 // The title overlay's state machine (title.ovl, SCUS-94467), updated once per
 // frame by func_title_8007566C while game.state == GAMESTATE_TITLE_SCREEN:
@@ -42,7 +43,6 @@
 #include "features/cutscene_skip.h"
 #include "features/skip_to_area.h"
 #include "features/level_skip.h"
-#include "named_target.h"
 
 #include <stdio.h>
 
@@ -108,8 +108,7 @@ static const game_level_t k_levels[] = {
 };
 /* Resolution drops apostrophes, so "sheila's_alp" matches "sheilas_alp". */
 const game_level_table_t spyro3_levels = {
-    GAME_LEVEL_ROWS(k_levels), NULL, 0, "level", "--skip-to-level",
-    NAMED_TARGET_DROP_APOSTROPHE,
+    GAME_LEVEL_ROWS(k_levels), NULL, 0, "level", "--skip-to-level", 0u,
 };
 
 int spyro3_level_resolve(const char* arg) {
@@ -121,6 +120,11 @@ int spyro3_skip_gameplay_live(CPUState* cpu) {
            cpu->read_word(S3_GAME_STATE) == S3_GS_GAMEPLAY;
 }
 
+/* The demo level and area list bytes the induction overwrote, put back on
+ * the pick. */
+static uint32_t s_demo_slot;
+static uint8_t  s_demo_slot_level, s_demo_slot_area;
+
 /** @brief Induces the title's idle timeout toward the target, without its isDemoMode = 1 store.
  *
  * Waits for the title (game.state 11) in the press-start idle sub-state at
@@ -131,22 +135,25 @@ int spyro3_skip_gameplay_live(CPUState* cpu) {
  * and g_TitlePrevState, and the five phase bytes zeroed.
  * @param cpu The guest CPU state.
  * @param target The level number.
- * @param log_frame The frame value the log line prints.
+ * @param log_vbl The VBL the log line prints.
  * @return 1 when induced, 0 while the window is not open. */
-static int skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
+static int skip_induce(CPUState* cpu, int target, uint32_t log_vbl) {
     if (cpu->read_word(S3_GAME_STATE) != S3_GS_TITLE ||
         cpu->read_byte(S3_TITLE_SUBSTATE) != S3_SUBSTATE_IDLE ||
         cpu->read_byte(S3_TITLE_PHASE) != 1u)
         return 0;
     uint32_t idx = cpu->read_word(S3_DEMO_INDEX);
+    s_demo_slot       = idx;
+    s_demo_slot_level = cpu->read_byte(S3_DEMO_LEVEL_LIST + idx);
+    s_demo_slot_area  = cpu->read_byte(S3_DEMO_AREA_LIST + idx);
     cpu->write_byte(S3_DEMO_LEVEL_LIST + idx, (uint8_t)target);
     cpu->write_byte(S3_DEMO_AREA_LIST + idx, 0u);
     cpu->write_byte(S3_TITLE_SUBSTATE, S3_SUBSTATE_TIMEOUT);
     cpu->write_byte(S3_TITLE_PREVSTATE, S3_SUBSTATE_TIMEOUT);
     for (int i = 0; i < 5; i++) cpu->write_byte(S3_TITLE_PHASE + i, 0u);
     fprintf(stderr, "[skip-to-level] induced demo-timeout: level=%d "
-                    "(slot=%u) at frame=%u\n",
-            target, (unsigned)idx, (unsigned)log_frame);
+                    "(slot=%u) at vbl=%u\n",
+            target, (unsigned)idx, (unsigned)log_vbl);
     return 1;
 }
 
@@ -160,13 +167,31 @@ static int skip_picked(CPUState* cpu, int target) {
            cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)target;
 }
 
-/** @brief Holds isDemoMode clear for one tick until the game returns to the title.
+/** @brief Puts back the demo level and area list bytes the induction overwrote.
+ *
+ * Runs on the pick. The picker func_title_800777DC loads both bytes
+ * (0x80077814, 0x80077828) before its WarpToLevel call sets the game.state 5
+ * the pick test reads; nothing else reads the lists. A later attract demo of
+ * the slot then loads the slot's own level and sub-area.
+ * @param cpu The guest CPU state. */
+static void skip_restore(CPUState* cpu) {
+    cpu->write_byte(S3_DEMO_LEVEL_LIST + s_demo_slot, s_demo_slot_level);
+    cpu->write_byte(S3_DEMO_AREA_LIST + s_demo_slot, s_demo_slot_area);
+    fprintf(stderr, "[skip-to-level] demo slot %u restored to level %u "
+                    "area %u\n", (unsigned)s_demo_slot,
+            (unsigned)s_demo_slot_level, (unsigned)s_demo_slot_area);
+}
+
+/** @brief Holds isDemoMode clear for one tick, from the pick to the playable edge.
  *
  * The pad path then reads the controller, the loader takes its non-demo
- * branches and the recording's end never exits the level. The hold ends at
- * game.state 11 (a level exit).
+ * branches and the recording's end never exits the level. The flag's only
+ * nonzero stores are the title update's (func_title_8007566C at 0x80075D50
+ * and 0x800779F8), so it stays clear through the level once the hold ends
+ * on the playable edge. game.state 11 before that edge means the level was
+ * left.
  * @param cpu The guest CPU state.
- * @return 1 while the hold runs, 0 when it ends. */
+ * @return 1 while the hold runs, 0 at game.state 11. */
 static int skip_hold(CPUState* cpu) {
     if (cpu->read_word(S3_GAME_STATE) == S3_GS_TITLE) return 0;
     cpu->write_word(S3_IS_DEMO_MODE, 0u);
@@ -185,13 +210,13 @@ static const level_skip_watch_t k_watches[] = {
 const level_skip_game_t spyro3_level_skip = {
     .induce          = skip_induce,
     .picked          = skip_picked,
+    .restore         = skip_restore,
     .hold            = skip_hold,
     .playable        = spyro3_skip_gameplay_live,
     .watches         = k_watches,
     .n_watches       = sizeof k_watches / sizeof k_watches[0],
     .rearm_word      = S3_GAME_STATE,
     .rearm_value     = S3_GS_CUTSCENE,
-    .target_persists = 1,
 };
 
 void spyro3_skip_set(int number) { level_skip_set(&spyro3_level_skip, number); }

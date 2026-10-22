@@ -1,7 +1,8 @@
 #pragma once
 /* level_skip.h - the --skip-to-level driver every game shares: the phase
  * machine that induces the title screen's demo-timeout transition toward a
- * target, holds the demo flag clear through the level, and releases the
+ * target, holds the demo flag clear until the level is playable, and
+ * releases the
  * windowed present fast-forward on the playable edge or a fail-safe
  * deadline.
  *
@@ -28,17 +29,20 @@ typedef struct level_skip_game {
     /* Armed: make the title's induction stores once its window is open.
      * Returns 1 when made, 0 while the window is not open, -1 to refuse the
      * target (the skip disarms, its target clears and the fast-forward is
-     * dropped). `log_frame` is the frame value the induction line prints. */
-    int  (*induce)(CPUState* cpu, int target, uint32_t log_frame);
+     * dropped). `log_vbl` is the VBL the induction line prints. */
+    int  (*induce)(CPUState* cpu, int target, uint32_t log_vbl);
     /* Seeded: the loader has taken the target. NULL passes on the next
      * call, with no log line. */
     int  (*picked)(CPUState* cpu, int target);
-    /* Picked: hold the demo flag clear for one tick. Returns 0 when the
-     * hold ends (the skip disarms). */
+    /* Called once on the pick: put back the demo-list entries induce
+     * overwrote, so a later attract demo of that slot loads its own level.
+     * The pick follows the game's last read of the entry. */
+    void (*restore)(CPUState* cpu);
+    /* Picked: hold the demo flag clear for one tick. Returns 0 when the game
+     * has left the level before its playable edge, which ends the hold. */
     int  (*hold)(CPUState* cpu);
-    /* Logged when the hold ends, with " at frame=%u" appended; NULL: none. */
-    const char* hold_end_log;
-    /* The level skip's own playable edge, tested in the picked phase. */
+    /* The level skip's own playable edge, tested in the picked phase; the
+     * hold ends on it. */
     int  (*playable)(CPUState* cpu);
     /* The other skips' release watches, the first watching one deciding. */
     const level_skip_watch_t* watches;
@@ -46,10 +50,6 @@ typedef struct level_skip_game {
     /* A game.state word and value whose entry edge re-sets the fail-safe
      * deadline (a cutscene chain outlasts one deadline); word 0: none. */
     uint32_t rearm_word, rearm_value;
-    /* Log lines print the tick's frame_counter rather than the feed key. */
-    unsigned char log_frame_counter;
-    /* level_skip_target keeps the target after the skip disarms. */
-    unsigned char target_persists;
 
     /* --skip-to-cutscene's ride, for level_skip_arm_cutscene: the level a
      * cutscene starts from (0 the title, -1 none named), whether it rides a
@@ -72,13 +72,16 @@ void level_skip_set(const level_skip_game_t* g, int number);
 /** @brief Return the armed target.
  *
  * @param g The game.
- * @return The target; while disarmed 0, or the last target when the game's
- *         target_persists is set. */
+ * @return The target from the arm until the hold ends; 0 once the skip is
+ *         disarmed or its hold has ended. */
 int level_skip_target(const level_skip_game_t* g);
 
-/** @brief Report whether the loader took the target and the demo-flag hold runs.
+/** @brief Report whether the loader took the armed target.
  *
- * @return 1 in the picked phase, else 0. */
+ * Stays 1 after the demo-flag hold ends on the playable edge, until the skip
+ * is armed or disarmed again; a hold ended by the game leaving the level
+ * first reports 0.
+ * @return 1 from the pick on, else 0. */
 int level_skip_picked(void);
 
 /** @brief Hold presents in a windowed run until the skip's release.
@@ -92,13 +95,15 @@ void level_skip_ffwd_arm(const char* until);
 
 /** @brief Advance the skip one tick, then run the release check.
  *
- * Armed, it calls the game's induce; seeded, its picked test; picked, its
- * hold, which ends the skip when it reports 0. The release check runs while
+ * Armed, it calls the game's induce; seeded, its picked test, then its
+ * restore on the pick; picked, its hold. The release check then runs while
  * a present fast-forward or a watch is armed: on the first watching watch's
  * release, or with none watching on the picked phase's playable edge, it
  * logs "level playable"; past openpete_skip_failsafe_vbls() from the first
  * check it logs the fail-safe line. Either clears the fast-forward and
- * finishes every watching watch.
+ * finishes every watching watch. Last, the hold ends on the playable edge or
+ * when the game's hold reports the level left, with the line "demo-mode hold
+ * ends at vbl=N". Every line names openpete_vbl.
  * @param g The game.
  * @param cpu The guest CPU state.
  * @param frame_counter The openpete_frame counter, for the deadline. */

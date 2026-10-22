@@ -160,6 +160,9 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
 #define S1_DEMO_INDEX  0x800757B8u
 #define S1_TSM         0x80078D78u
 
+/* The g_DemoLevelIds entry the induction overwrote, put back on the pick. */
+static uint32_t s_demo_slot, s_demo_slot_level;
+
 /** @brief Induces the title's demo-timeout transition toward the target at the Press-Start wait.
  *
  * Refuses a target whose guest WAD TOC entry is empty (data length 0):
@@ -168,10 +171,10 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
  * targeted cold; OPENPETE_CUSTOM_WARP covers that.
  * @param cpu The guest CPU state.
  * @param target The level id.
- * @param log_frame The frame value the log lines print.
+ * @param log_vbl The VBL the log lines print.
  * @return 1 when induced, 0 while not at TSM_Init sub-state 3 on the title
  *         screen, -1 when refused. */
-static int s1_skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
+static int s1_skip_induce(CPUState* cpu, int target, uint32_t log_vbl) {
     if (cpu->read_word(S1_GAMESTATE) != 13u ||
         cpu->read_word(S1_TSM + 0x00u) != 0u /* TSM_Init */ ||
         cpu->read_word(S1_TSM + 0x10u) != 3u)
@@ -186,18 +189,20 @@ static int s1_skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
         return -1;
     }
     uint32_t demo_idx = cpu->read_word(S1_DEMO_INDEX);
+    s_demo_slot       = demo_idx;
+    s_demo_slot_level = cpu->read_word(S1_DEMO_LEVELS + demo_idx * 4u);
     cpu->write_word(S1_DEMO_LEVELS + demo_idx * 4u, (uint32_t)target);
     cpu->write_word(S1_TSM + 0x00u, 3u); /* m_Mode = TSM_Demo */
     cpu->write_word(S1_TSM + 0x04u, 0u); /* m_State = TSS_Setup */
     cpu->write_word(S1_TSM + 0x1Cu, 2u); /* m_DemoType = TSD_DemoLevel */
     fprintf(stderr,
             "[skip-to-level] induced demo-transition: "
-            "level=%d (slot=%u) at frame=%u\n",
-            target, (unsigned)demo_idx, (unsigned)log_frame);
+            "level=%d (slot=%u) at vbl=%u\n",
+            target, (unsigned)demo_idx, (unsigned)log_vbl);
     return 1;
 }
 
-/** @brief Holds the title screen's demo state off the demo-input path, every tick after the induction.
+/** @brief Holds the title screen's demo state off the demo-input path, every tick from the induction to the playable edge.
  *
  * After TSS_Setup runs, m_DemoType goes from TSD_DemoLevel to TSD_Level.
  * TSS_Setup uses TSD_DemoLevel to call func_8001277C() (the progress and
@@ -205,7 +210,10 @@ static int s1_skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
  * `g_DemoMode = DEMO_MODE_PLAY` on TSD_DemoLevel, and leaving it set makes
  * LoadLevel's stage-13 pass run the demo-input playback path
  * (loaders.c:672). g_DemoMode is also clamped to 0 while the title-screen
- * overlay is live, so no other path can set PLAY. The hold never ends.
+ * overlay is live, so no other path can set PLAY. The shared driver ends the
+ * hold at GS_Playing, which LoadLevel's stage 13 sets after the hand-off;
+ * g_DemoMode's only PLAY store is that hand-off, under GS_TitleScreen, so a
+ * later return to the title runs the attract demo as the game does.
  * @param cpu The guest CPU state.
  * @return 1. */
 static int s1_skip_hold(CPUState* cpu) {
@@ -217,6 +225,29 @@ static int s1_skip_hold(CPUState* cpu) {
         cpu->write_word(S1_DEMO_MODE, 0u); /* DEMO_MODE_NONE */
     }
     return 1;
+}
+
+/** @brief Tests whether TSS_Setup has taken the target: m_State past TSS_Setup.
+ *
+ * TSS_Setup reads g_DemoLevelIds[g_DemoIndex] (gamestates/update.c:640) and
+ * sets m_State to TSS_Loading in the same call.
+ * @param cpu The guest CPU state.
+ * @param target Unused.
+ * @return 1 once m_State is not TSS_Setup, else 0. */
+static int s1_skip_picked(CPUState* cpu, int target) {
+    (void)target;
+    return cpu->read_word(S1_TSM + 0x04u) != 0u;
+}
+
+/** @brief Puts back the g_DemoLevelIds entry the induction overwrote.
+ *
+ * Runs on the pick. TSS_Setup is the entry's only reader, so a later attract
+ * demo of the slot loads the slot's own level for its recording.
+ * @param cpu The guest CPU state. */
+static void s1_skip_restore(CPUState* cpu) {
+    cpu->write_word(S1_DEMO_LEVELS + s_demo_slot * 4u, s_demo_slot_level);
+    fprintf(stderr, "[skip-to-level] demo slot %u restored to level %u\n",
+            (unsigned)s_demo_slot, (unsigned)s_demo_slot_level);
 }
 
 /** @brief Tests the level skip's playable edge: g_Gamestate GS_Playing.
@@ -234,17 +265,17 @@ static const level_skip_watch_t k_skip_watches[] = {
       spyro1_cutscene_skip_finish },
 };
 
-/* No pick phase: the hold starts on the tick after the induction. `intro`
+/* The pick is TSS_Setup's run, after which the hold starts. `intro`
  * runs no level skip; the credits rows, which name no source, ride
  * Artisans (10). */
 static const level_skip_game_t k_level_skip = {
     .induce                 = s1_skip_induce,
+    .picked                 = s1_skip_picked,
+    .restore                = s1_skip_restore,
     .hold                   = s1_skip_hold,
     .playable               = s1_skip_playable,
     .watches                = k_skip_watches,
     .n_watches              = sizeof k_skip_watches / sizeof k_skip_watches[0],
-    .log_frame_counter      = 1,
-    .target_persists        = 1,
     .cutscene_source        = spyro1_cutscene_source_level,
     .cutscene_arm           = spyro1_cutscene_skip_arm,
     .cutscene_default_level = 10,

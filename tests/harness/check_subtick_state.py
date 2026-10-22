@@ -177,8 +177,12 @@ def run_leg(bk2, hashlog, frames, armed, shotdir, verbose, head=0):
     if m:
         presents = int(m.group(1))
     leaks = re.findall(r"\[bracket-check [^\]]*\] RESTORE MISMATCH ([^\n]*)", p.stderr)
-    # Where the level actually starts, for the armed leg's grid.
-    skip = re.search(r"\[skip-to-level\][^\n]*at frame=(\d+)", p.stderr)
+    # Where the level actually starts, for the armed leg's grid: the VBL the
+    # level skip's demo-mode hold ends on, its playable edge. openpete_vbl
+    # leads Spyro 1's feed key (openpete_frame) by the fast-boot VBLs, so as
+    # a feed-key position it falls that many frames after the edge.
+    skip = re.search(r"\[skip-to-level\] demo-mode hold ends at vbl=(\d+)",
+                     p.stderr)
     skip_at = int(skip.group(1)) if skip else 0
     return p.returncode, presents, leaks, skip_at
 
@@ -247,10 +251,9 @@ def main():
                 failures.append(f"{bk2}: canonical leg wrote no hash rows")
                 continue
             # True movie length, observed. The armed leg replays the same movie,
-            # so its grid is built from this rather than from a guess. The +600
-            # covers the level load that follows the skip's transition.
+            # so its grid is built from this rather than from a guess.
             real_frames = len(log_p)
-            head = skip_at + 600 if skip_at else 0
+            head = skip_at
 
             if args.mode in ("both", "ab"):
                 rc_a, pres_a, leaks, _ = run_leg(bk2, armed_log, real_frames, True, tmp,

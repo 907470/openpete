@@ -87,7 +87,7 @@ int named_target_resolve(const char* arg, const char* kind,
 
     for (i = 0, n = 0; arg[i] && n < sizeof(norm) - 1; i++) {
         char c = (char)tolower((unsigned char)arg[i]);
-        if (c == '\'' && (flags & NAMED_TARGET_DROP_APOSTROPHE)) continue;
+        if (c == '\'') continue;
         norm[n++] = (c == '-') ? '_' : c;
     }
     norm[n] = '\0';

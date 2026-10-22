@@ -4,7 +4,7 @@
 # Runs every row of games/<slug>/corpus/skip-targets.manifest headless. Each row is
 # a target of --skip-to-cutscene (or --skip-to-area); the skip module prints
 # one release line, "[skip-to-level] level playable - presents resume at
-# frame=N" followed by the engagement values it reads back from RAM at the
+# vbl=N" followed by the engagement values it reads back from RAM at the
 # release edge (the cutscene index, the credits sequence, the return level,
 # the area word), or its fail-safe line, "[skip-to-level] fail-safe release
 # (no playable edge)", when the deadline passes first.

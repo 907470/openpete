@@ -2,8 +2,8 @@
 //
 // Loads directly into a level by inducing the title screen's own
 // demo-timeout transition, seeded so it loads the target instead of the next
-// attract demo, then holding the demo-mode flag clear so the controller
-// drives Spyro instead of the recorded demo input.
+// attract demo, then holding the demo-mode flag clear until the level is
+// playable so the controller drives Spyro instead of the recorded demo input.
 //
 // The title overlay's state machine (titlescreen_and_loading, SCUS-94425):
 //   g_TitleSubState  0x80067E0C  2 = press-start idle, 6 = demo-timeout fade
@@ -95,23 +95,29 @@ int spyro2_skip_gameplay_live(CPUState* cpu) {
            cpu->read_word(S2_LEVEL_TICK) != 0u;
 }
 
+/* The demo level list byte the induction overwrote, put back on the pick. */
+static uint32_t s_demo_slot;
+static uint8_t  s_demo_slot_level;
+
 /** @brief Induces the title's demo-timeout transition toward the target at the press-start idle sub-state.
  *
  * Writes the target into the demo level list at g_DemoIndex, sub-state 6 and
  * the title timer 0.
  * @param cpu The guest CPU state.
  * @param target The level number.
- * @param log_frame The frame value the log line prints.
+ * @param log_vbl The VBL the log line prints.
  * @return 1 when induced, 0 while the sub-state is not idle. */
-static int skip_induce(CPUState* cpu, int target, uint32_t log_frame) {
+static int skip_induce(CPUState* cpu, int target, uint32_t log_vbl) {
     if (cpu->read_word(S2_TITLE_SUBSTATE) != S2_SUBSTATE_IDLE) return 0;
     uint32_t idx = cpu->read_word(S2_DEMO_INDEX);
+    s_demo_slot       = idx;
+    s_demo_slot_level = cpu->read_byte(S2_DEMO_LEVEL_LIST + idx);
     cpu->write_byte(S2_DEMO_LEVEL_LIST + idx, (uint8_t)target);
     cpu->write_word(S2_TITLE_SUBSTATE, S2_SUBSTATE_TIMEOUT);
     cpu->write_word(S2_TITLE_TIMER, 0u);
     fprintf(stderr, "[skip-to-level] induced demo-timeout: level=%d "
-                    "(slot=%u) at frame=%u\n",
-            target, (unsigned)idx, (unsigned)log_frame);
+                    "(slot=%u) at vbl=%u\n",
+            target, (unsigned)idx, (unsigned)log_vbl);
     return 1;
 }
 
@@ -125,12 +131,26 @@ static int skip_picked(CPUState* cpu, int target) {
            cpu->read_word(S2_NEXT_LEVEL_NUM) == (uint32_t)target;
 }
 
-/** @brief Holds g_DemoMode clear for one tick until the loader returns to the title.
+/** @brief Puts back the demo level list byte the induction overwrote.
+ *
+ * Runs on the pick. The picker's load of the byte (0x8007A40C) precedes its
+ * loader-state-2 store, which the pick test reads; nothing else reads the
+ * list. A later attract demo of the slot then loads the slot's own level.
+ * @param cpu The guest CPU state. */
+static void skip_restore(CPUState* cpu) {
+    cpu->write_byte(S2_DEMO_LEVEL_LIST + s_demo_slot, s_demo_slot_level);
+    fprintf(stderr, "[skip-to-level] demo slot %u restored to level %u\n",
+            (unsigned)s_demo_slot, (unsigned)s_demo_slot_level);
+}
+
+/** @brief Holds g_DemoMode clear for one tick, from the pick to the playable edge.
  *
  * The pad path then reads the controller and the demo-end check never
- * fires. The hold ends when the loader state reads 0 (a level exit).
+ * fires. The flag's only nonzero store is the title picker's (0x8007A450),
+ * so it stays clear through the level once the hold ends on the playable
+ * edge. Loader state 0 before that edge means the level was left.
  * @param cpu The guest CPU state.
- * @return 1 while the hold runs, 0 when it ends. */
+ * @return 1 while the hold runs, 0 when the loader state reads 0. */
 static int skip_hold(CPUState* cpu) {
     if (cpu->read_word(S2_LOADER_STATE) == 0u) return 0;
     cpu->write_word(S2_DEMO_MODE, 0u);
@@ -149,12 +169,12 @@ static const level_skip_watch_t k_watches[] = {
 };
 
 /* The cutscene watch's release predicate is tested before the level skip's
- * own edge: the cutscene's loader-word-0 store ends the picked phase. */
+ * own edge. */
 const level_skip_game_t spyro2_level_skip = {
     .induce          = skip_induce,
     .picked          = skip_picked,
+    .restore         = skip_restore,
     .hold            = skip_hold,
-    .hold_end_log    = "loader left the level; demo-mode hold ends",
     .playable        = skip_playable,
     .watches         = k_watches,
     .n_watches       = sizeof k_watches / sizeof k_watches[0],

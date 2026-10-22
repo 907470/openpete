@@ -131,8 +131,6 @@ static const levelwarp_game_t k_warp_game = {
     .live             = spyro3_skip_gameplay_live,
     .current_word     = S3_CURRENT_LEVEL,
     .start            = warp_start,
-    .leaving_status   = "loading...",
-    .arrival_logs_vbl = 1,
 };
 
 static levelwarp_t s_warp = { .game = &k_warp_game };

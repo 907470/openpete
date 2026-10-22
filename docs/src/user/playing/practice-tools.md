@@ -42,7 +42,8 @@ same ticks at any speed; only the time between them changes.
 
 `--skip-to-level L` <!-- id: knob:skip_to_level --> starts a new game directly
 in level L, given as the game's level number or its name in
-`lower_snake_case`. `--skip-to-level` with no value, or an unknown name,
+`lower_snake_case`, with or without its apostrophes (`gnasty's_loot` and
+`gnastys_loot` both name Gnasty's Loot). `--skip-to-level` with no value, or an unknown name,
 prints the list. The game pages list each game's names:
 [Spyro the Dragon](../games/spyro-1.md),
 [Spyro 2](../games/spyro-2.md#levels),

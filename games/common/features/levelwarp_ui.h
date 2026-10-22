@@ -81,9 +81,6 @@ typedef struct levelwarp_game {
     /* Optional, run on arrival after its log line: returns the next phase
      * (LEVELWARP_IDLE ends the warp). */
     int (*on_arrival)(levelwarp_t* w, CPUState* cpu, uint32_t landed);
-    const char* leaving_status;          /* status text before LOADING */
-    unsigned char arrival_logs_vbl;      /* the arrival line names the VBL */
-    unsigned char reset_ticks_on_loading;
 } levelwarp_game_t;
 
 /* One warp row pair's state. Host-side, outside every savestate except where
@@ -129,8 +126,9 @@ void levelwarp_surface(struct openpete_surface_sink* sink,
  * in flight: the title route through game_set_skip_to_level, the in-level
  * route through the game's start hook. An in-flight warp then advances:
  * LEVELWARP_LEAVING through the leaving hook, LEVELWARP_LOADING to arrival,
- * which logs whether the target was reached; a warp in flight past 20000
- * calls is aborted.
+ * which logs whether the target was reached, naming openpete_vbl. The call
+ * count restarts on entering LEVELWARP_LOADING; a phase that runs past 20000
+ * calls aborts the warp.
  * @param w The warp.
  * @param cpu The guest CPU state. */
 void levelwarp_on_tick(levelwarp_t* w, CPUState* cpu);

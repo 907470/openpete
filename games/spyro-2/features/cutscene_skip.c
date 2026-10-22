@@ -72,9 +72,9 @@
 // func_8001B140, so the whole update has run when they call; a call at the
 // draw entry follows the tick's whole update, and the draw reads the call's
 // stores as it does after the game's. The hook returns 0 so the draw runs.
-// The loader-word-0 store (the theater's, or func_80019928's own) ends the
-// level skip's demo-mode hold (skip_to_level.c), as on the game's own
-// level-exit path.
+// The level skip's demo-mode hold (skip_to_level.c) has ended on the
+// source level's playable edge by then: that edge (the level tick nonzero)
+// precedes or shares the first tick with D_800681C8 0.
 //
 // The hook is inert until armed (the attract demo never arms it) and does
 // nothing on a speculative (runahead) tick: a request acted on there is

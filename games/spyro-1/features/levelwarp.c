@@ -141,7 +141,7 @@ static const game_level_t k_level_aliases[] = {
     { "twilight_harbour", NULL, 62 },
 };
 
-/* Names are matched case-insensitive with '-' for '_' and apostrophes kept.
+/* Names are matched case-insensitive with '-' for '_' and apostrophes dropped.
  * An all-digit id passes through unchecked: the warp takes the id the
  * caller names rather than indexing the table with it. */
 const game_level_table_t spyro1_levels = {
@@ -285,8 +285,6 @@ static const levelwarp_game_t k_warp_game = {
     .start                  = warp_arm,
     .leaving                = warp_leaving,
     .arrived                = warp_arrived,
-    .leaving_status         = "exiting level...",
-    .reset_ticks_on_loading = 1,
 };
 
 static levelwarp_t s_warp = { .game = &k_warp_game };

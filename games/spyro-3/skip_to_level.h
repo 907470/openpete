@@ -19,8 +19,8 @@ extern const struct level_skip_game spyro3_level_skip;
 
 /** @brief Resolve a --skip-to-level argument, a level number or lower_snake_case name, to a level number.
  *
- * Backs game_resolve_level_arg. Resolution goes through named_target_resolve
- * with apostrophes dropped, so "sheila's_alp" matches "sheilas_alp". A
+ * Backs game_resolve_level_arg. Resolution goes through named_target_resolve,
+ * which drops apostrophes, so "sheila's_alp" matches "sheilas_alp". A
  * numeric argument is accepted only when the table holds it; an unknown
  * number would index the level table past its end.
  * @param arg The command-line value, or NULL.

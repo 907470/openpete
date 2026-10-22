@@ -24,7 +24,7 @@ pressings. The [library](../help/glossary.md#library) names an image with this S
 
 `--skip-to-level L`<!-- id: flag:--skip-to-level --> (config key
 `skip_to_level`) starts in level L, given by name or by number. Names are
-not case-sensitive and accept `-` for `_`. In a window, the logos, title
+not case-sensitive, accept `-` for `_` and may keep their apostrophes. In a window, the logos, title
 and loading screens are [fast-forwarded](../help/glossary.md#fast-forward) behind a black window with the
 sound muted, until the level is playable. `--skip-to-level` with no value,
 or an unknown name, prints this list.

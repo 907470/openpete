@@ -18,7 +18,7 @@ typedef struct CPUState CPUState;
 /* The 35 levels, in id order, with the alias spellings (gnastys_world,
  * twilight_harbour) in their own list so the dropdown shows each level once.
  * Names resolve case-insensitive with '-' accepted for '_' and apostrophes
- * not dropped; an all-digit id passes through unchecked
+ * dropped; an all-digit id passes through unchecked
  * (NAMED_TARGET_NUMERIC_ANY): the warp takes the id the caller names rather
  * than indexing the table with it. */
 extern const game_level_table_t spyro1_levels;

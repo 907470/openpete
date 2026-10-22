@@ -256,8 +256,6 @@ static const levelwarp_game_t k_area_game = {
     .target_refused   = area_refused,
     .start            = area_start,
     .on_arrival       = area_arrival,
-    .leaving_status   = "entering...",
-    .arrival_logs_vbl = 1,
 };
 
 static levelwarp_t s_warp = { .game = &k_area_game };

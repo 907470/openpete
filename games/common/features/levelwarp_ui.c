@@ -97,8 +97,8 @@ static int go_fire(knob_desc_t* k, double v) {
 
 /** @brief Write the status text shown beside the Warp button.
  *
- * Reads queued while a click waits; the game's leaving status, or
- * "loading..." from LEVELWARP_LOADING, while a warp is in flight; else a
+ * Reads queued while a click waits; "loading..." while a warp is in
+ * flight; else a
  * note for the title route, the refusal reason or an empty string for the
  * level route, freecam active, or the game's no-route text.
  * @param k The row.
@@ -109,8 +109,7 @@ static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
     const levelwarp_game_t* g = w->game;
     const char* s;
     if (w->pending)                             s = "queued";
-    else if (w->phase == LEVELWARP_LOADING)     s = "loading...";
-    else if (w->phase != LEVELWARP_IDLE)        s = g->leaving_status;
+    else if (w->phase != LEVELWARP_IDLE)        s = "loading...";
     else if (w->route == LEVELWARP_ROUTE_TITLE) s = "from title (resets progress)";
     else if (w->route == LEVELWARP_ROUTE_LEVEL) s = w->refused ? w->refused : "";
     else if (openpete_freecam_active())         s = "freecam active";
@@ -330,14 +329,13 @@ static int ui_tick(levelwarp_t* w, CPUState* cpu) {
 static void arrive(levelwarp_t* w, CPUState* cpu) {
     const levelwarp_game_t* g = w->game;
     const uint32_t landed = current_of(g, cpu);
+    const unsigned vbl = (unsigned)SDL_GetAtomicInt(&openpete_vbl);
     if (landed != w->target)
-        OPL_INFO_F(g->log_tag, "landed in %s %u, wanted %u", g->unit,
-                   (unsigned)landed, (unsigned)w->target);
-    else if (g->arrival_logs_vbl)
-        OPL_INFO_F(g->log_tag, "arrived in %s %u at vbl=%u", g->unit,
-                   (unsigned)landed, (unsigned)openpete_frame);
+        OPL_INFO_F(g->log_tag, "landed in %s %u, wanted %u, at vbl=%u", g->unit,
+                   (unsigned)landed, (unsigned)w->target, vbl);
     else
-        OPL_INFO_F(g->log_tag, "arrived in %s %u", g->unit, (unsigned)landed);
+        OPL_INFO_F(g->log_tag, "arrived in %s %u at vbl=%u", g->unit,
+                   (unsigned)landed, vbl);
     const int ph = g->on_arrival ? g->on_arrival(w, cpu, landed) : LEVELWARP_IDLE;
     if (ph == LEVELWARP_IDLE) { levelwarp_reset(w); return; }
     w->phase = (uint32_t)ph;
@@ -358,7 +356,7 @@ void levelwarp_on_tick(levelwarp_t* w, CPUState* cpu) {
         const int ph = g->leaving ? g->leaving(w, cpu)
                      : g->live(cpu) ? LEVELWARP_LEAVING : LEVELWARP_LOADING;
         if (ph == LEVELWARP_IDLE) { levelwarp_reset(w); return; }
-        if (ph == LEVELWARP_LOADING && g->reset_ticks_on_loading) w->ticks = 0;
+        if (ph == LEVELWARP_LOADING) w->ticks = 0;
         w->phase = (uint32_t)ph;
         return;
     }

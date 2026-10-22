@@ -166,8 +166,7 @@ void spyro3_cutscene_surface(struct openpete_surface_sink* sink) {
 int spyro3_cutscene_resolve(const char* arg) {
     const named_target_table_t cutscenes =
         NAMED_TARGET_TABLE(k_cutscenes, cutscene_t, name, id);
-    return named_target_resolve(arg, "cutscene", &cutscenes, NULL,
-                                NAMED_TARGET_DROP_APOSTROPHE);
+    return named_target_resolve(arg, "cutscene", &cutscenes, NULL, 0u);
 }
 
 /* ---- state ----------------------------------------------------------- */

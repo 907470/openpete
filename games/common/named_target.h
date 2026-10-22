@@ -41,9 +41,6 @@ typedef struct {
  * Without it an id the table does not hold is rejected, which is what keeps a
  * number from indexing a game's level table past its end. */
 #define NAMED_TARGET_NUMERIC_ANY 0x1u
-/* Apostrophes are dropped while normalising, so a name written with the
- * possessive still matches a table key spelled without one. */
-#define NAMED_TARGET_DROP_APOSTROPHE 0x2u
 
 /** @brief Print the heading "valid KIND names:" and each entry's name and id, one line each, to stderr.
  *
@@ -55,8 +52,8 @@ void named_target_print(const char* kind, const named_target_table_t* tbl);
  *
  * An all-digit `arg` is parsed as an id and returned when `tbl` holds it or
  * NAMED_TARGET_NUMERIC_ANY is set. Any other `arg` is normalised
- * (lowercased, '-' mapped to '_', apostrophes dropped under
- * NAMED_TARGET_DROP_APOSTROPHE, cut at 31 bytes) and looked up in `tbl`,
+ * (lowercased, '-' mapped to '_', apostrophes dropped so a possessive
+ * matches a key spelled without one, cut at 31 bytes) and looked up in `tbl`,
  * then in `aliases`. An empty or NULL `arg` prints the names and returns
  * -1, which is what `--skip-to-level` with no value does; every other
  * failure also prints the valid names of `tbl`.
