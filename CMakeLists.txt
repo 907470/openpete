@@ -1472,6 +1472,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Eager decimation-level recovery after a stall: one windowed row (the
+    # spyro-3 icy-peak bk2, whose level entries each run one VBL far past its
+    # period) fails while the level stays above what the span budget needs
+    # for longer than one headroom run plus the stalled span. Eager
+    # production needs a window, so no headless gate reaches the planner.
+    # Runs under xvfb-run without a display; skips (exit 64) without either,
+    # or without a binary, disc, card or bk2.
+    add_test(NAME eager_ladder_recovery_spyro-3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_eager_ladder_recovery.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(eager_ladder_recovery_spyro-3 PROPERTIES
+        LABELS "pacing;windowed"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1200
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Profiler present cadence under eager production, on the Windows exe and
     # the real GPU: --profile-out's present interval p99 (profile-summary.py)
     # within 0.5 ms of the pace log's OP_PACE_PRESENT interval p99, both after

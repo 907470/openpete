@@ -1885,9 +1885,12 @@ static struct {
     int       afford_pin;             /* OPENPETE_EAGER_AFFORD: force the budget's verdict (A/B) */
     int       policy;                 /* 0 divisor, 1 greedy */
     int       headroom_runs;
+    int       hold_level;             /* the highest level a span of the current headroom run needs */
     op_time_t cost_ema, cost_dev; int cost_n;   /* per-scene production cost */
     op_time_t vbl_ema;                /* cost of a non-drawing VBL on this thread */
     op_time_t tick_ema, tick_dev;     /* execution time of a drawing VBL (the tick) */
+    op_time_t tick_late;              /* the last tick's start past its pacer deadline, when a stall */
+    int       span_late;              /* the open span was planned after a stalled tick start */
     op_time_t tick_peak;              /* decaying peak of the tick's execution time */
     op_time_t lag;                    /* animation lag behind the display instant */
     op_time_t lag_pin;                /* OPENPETE_EAGER_LAG_US */
@@ -1956,6 +1959,41 @@ static op_time_t eager_tail_cost(void)
 {
     return s_eager.cost_n >= EAGER_COST_WARMUP
         ? s_eager.cost_ema + 3 * s_eager.cost_dev : 0;
+}
+
+/* The plan's budget keeps this much of the span unplanned against estimate
+ * error; lateness beyond it is lateness the produce guard absorbs. */
+#define EAGER_BUDGET_SAFETY_NS 1000000
+
+/** @brief Fold one VBL's execution into the update-VBL and tick averages the eager planner reads.
+ *
+ * A VBL that queued no draw is the update VBL, whose mean the plan
+ * subtracts from the span budget; one that did is the tick, whose
+ * execution sets the lag. An execution of half a tick or more is a load or
+ * a stall, not a VBL of either kind, and enters neither mean: it would plan
+ * a lag of a hundred targets, or price every later span as if each update
+ * VBL were a load. By the same line, a tick that starts half a tick or more
+ * past its pacer deadline was delayed by a load or a stall, and its
+ * lateness is kept in tick_late (0 for any later start, which is pacer
+ * jitter or a production overrun the budget must keep seeing).
+ * @param ex The VBL's execution time on this thread.
+ * @param start_late Execution start minus the pacer deadline, or 0 when unpaced.
+ * @param drawing Nonzero when the VBL queued a draw (a tick). */
+static void eager_note_vbl(op_time_t ex, op_time_t start_late, int drawing)
+{
+    const int stall = ex >= (op_time_t)g_openpete_tick_period_ns / 2;
+    if (!drawing) {
+        if (!stall) s_eager.vbl_ema = s_eager.vbl_ema ? (s_eager.vbl_ema * 7 + ex) / 8 : ex;
+        return;
+    }
+    s_eager.tick_late = start_late >= (op_time_t)g_openpete_tick_period_ns / 2 ? start_late : 0;
+    if (stall) return;
+    if (s_eager.tick_ema) {
+        const op_time_t d = ex > s_eager.tick_ema ? ex - s_eager.tick_ema : s_eager.tick_ema - ex;
+        s_eager.tick_dev = (s_eager.tick_dev * 7 + d) / 8;
+    }
+    s_eager.tick_ema = s_eager.tick_ema ? (s_eager.tick_ema * 7 + ex) / 8 : ex;
+    if (ex > s_eager.tick_peak) s_eager.tick_peak = ex;
 }
 
 /** @brief Record one intermediate scene the eager producer dropped as a SHED record.
@@ -2082,7 +2120,8 @@ static void eager_span_slots(op_time_t now, op_time_t first, op_time_t span_end,
 
 /** @brief Write eager_plan's OPENPETE_EAGER_DBG lines for the span just planned.
  *
- * OPENPETE_EAGER_DBG=1 writes the plan line on a cut span or a level change.
+ * OPENPETE_EAGER_DBG=1 writes the plan line on a cut span, a level change, or
+ * a tick that started half a tick or more past its deadline (late=).
  * 2 or more also writes one span line per plan: the offsets from now of the
  * render-grid slot passed in (in), the span's first display instant, its end
  * after the lag extension and the previous span's last target, the lag, the
@@ -2107,10 +2146,11 @@ static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, 
     static int dbg = -1;
     if (dbg < 0) { const char *e = getenv("OPENPETE_EAGER_DBG"); dbg = (e && *e) ? atoi(e) : 0; }
     if (dbg <= 0) return;
-    if (s_eager.span_cut || s_eager.level != s_eager.dbg_level) {
-        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d cut=%d lag=%.2fms vbl=%.2fms\n",
+    if (s_eager.span_cut || s_eager.level != s_eager.dbg_level || s_eager.tick_late > 0) {
+        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d cut=%d lag=%.2fms vbl=%.2fms late=%.2fms\n",
                 openpete_frame, sp->ns, (double)budget / 1e6, (double)eager_tail_cost() / 1e6, afford,
-                s_eager.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6);
+                s_eager.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6,
+                (double)s_eager.tick_late / 1e6);
         s_eager.dbg_level = s_eager.level;
     }
     if (dbg < 2) return;
@@ -2134,6 +2174,86 @@ static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, 
     fprintf(stderr, "%s\n", buf);
 }
 
+/** @brief Return how many scenes the span's production budget affords.
+ *
+ * The budget runs from now, less the start lateness a stall left the tick
+ * (tick_late), to prod_end, less the update VBL's mean cost and
+ * EAGER_BUDGET_SAFETY_NS. A stall's lateness is not capacity: the produce
+ * guard stops a late span at its deadline, and a budget priced from now
+ * would read one load as the machine affording one scene, raising the
+ * level to the slot count. The tick's own execution stays in the
+ * budget, so a run of long ticks still prices the spans it shortens. Past
+ * warmup the scenes are priced on their sum, N times the mean cost plus a
+ * spread allowance of eight deviations (two sigma of a sum of sixteen);
+ * before it, on the per-scene tail, or one per slot before any cost exists.
+ * OPENPETE_EAGER_AFFORD overrides the result, which is at least 1.
+ * @param now The plan instant.
+ * @param prod_end The pacer grid instant production must finish before.
+ * @param ns The span's slot count.
+ * @param budget_out Receives the budget in nanoseconds, floored at 0.
+ * @return The number of scenes afforded. */
+static int eager_afford(op_time_t now, op_time_t prod_end, int ns, op_time_t *budget_out)
+{
+    /* How many scenes fit is a question about their SUM, not about one of
+     * them. `eager_tail_cost()` is a per-scene p99.7 bound, which is the right
+     * question between scenes (the produce guard) and the wrong one here:
+     * pricing all N at once at p99.7 charges every scene the worst scene's
+     * cost, ~2x the true sum, since independent costs average out. The sum's
+     * own spread grows as sqrt(N), so bound it that way -- with
+     * N <= EAGER_MAX_TARGETS the sqrt term is a constant. Being wrong is also
+     * cheap in one direction only: the produce guard still stops at the
+     * deadline, and a cut span is observed and answered by the ladder. */
+    const op_time_t tail = eager_tail_cost();
+    op_time_t budget = prod_end - (now - s_eager.tick_late) - s_eager.vbl_ema - EAGER_BUDGET_SAFETY_NS;
+    if (budget < 0) budget = 0;
+    *budget_out = budget;
+    int afford;
+    if (s_eager.cost_n >= EAGER_COST_WARMUP && s_eager.cost_ema > 0) {
+        const op_time_t spread = 8 * s_eager.cost_dev;      /* 2 sigma at N = 16 */
+        const op_time_t room = budget > spread ? budget - spread : 0;
+        afford = (int)(room / s_eager.cost_ema);
+    } else {
+        afford = tail > 0 ? (int)(budget / tail) : ns;
+    }
+    if (s_eager.afford_pin > 0) afford = s_eager.afford_pin;   /* a forced budget, for the policy A/B */
+    return afford < 1 ? 1 : afford;
+}
+
+/** @brief Move the decimation level for a span of ns slots of which afford scenes fit.
+ *
+ * Fast down, slow up, since an overrun is the harmful direction and a level
+ * that flickers judders the rate. The level rises at once to ceil(ns /
+ * afford), and by at least one when the previous span was cut short,
+ * unless that span was planned after a stalled tick start (span_late): its
+ * cut is the stall's, which the produce guard absorbed at the deadline, not
+ * a verdict on what the steady span affords. It falls only after
+ * EAGER_HEADROOM_RUNS consecutive spans each of which a lower level covers
+ * with a quarter margin (afford * 4 >= ceil(ns / level) * 5), and then in one
+ * move to the highest level any span of that run needed: the run measured
+ * that level, so stepping down one level per run would only spread the same
+ * verdict over several runs at a rate the run has already shown too low.
+ * @param ns The span's slot count.
+ * @param afford The scenes the budget affords, at least 1. */
+static void eager_ladder_step(int ns, int afford)
+{
+    int need = (ns + afford - 1) / afford;      /* ceil(ns / afford) */
+    if (need < 1) need = 1;
+    if (s_eager.span_cut && !s_eager.span_late && need <= s_eager.level) need = s_eager.level + 1;
+    if (need > s_eager.level) {
+        s_eager.level = need; s_eager.level_down++;
+        s_eager.headroom_runs = 0; s_eager.hold_level = 0;
+        return;
+    }
+    const int m = afford * 4 / 5;                /* scenes afforded with a quarter margin */
+    const int cover = m >= 1 ? (ns + m - 1) / m : s_eager.level;
+    if (cover >= s_eager.level) { s_eager.headroom_runs = 0; s_eager.hold_level = 0; return; }
+    if (cover > s_eager.hold_level) s_eager.hold_level = cover;
+    if (++s_eager.headroom_runs < EAGER_HEADROOM_RUNS) return;
+    s_eager.level = s_eager.hold_level > 1 ? s_eager.hold_level : 1;
+    s_eager.level_up++;
+    s_eager.headroom_runs = 0; s_eager.hold_level = 0;
+}
+
 /** @brief Plan the display instants of the span that starts now and adjust the decimation level.
  *
  * Counts the previous span as cut when it left targets unproduced. Pulls
@@ -2148,9 +2268,9 @@ static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, 
  * before the cost is measured. Enumerates the slots with eager_span_slots
  * (span_end raised to first and extended by the lag, continuing after the
  * previous span's last target). Estimates how many scenes fit
- * before prod_end (afford), raises the level at once when the slots need it
- * or the last span was cut, and lowers it after a run of spans with a
- * quarter margin. Stores every level-th slot (policy 0) or afford evenly
+ * before prod_end (eager_afford) and moves the level (eager_ladder_step),
+ * Records whether the span follows a stalled tick start. Stores every
+ * level-th slot (policy 0) or afford evenly
  * spaced instants (policy 1) in s_eager.target, sets last_target and counts
  * the span.
  * @param now Current time on the op_now() clock.
@@ -2232,60 +2352,23 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
     eager_span_slots(now, first, span_end, period, &lat, &sp);
     const int ns = sp.ns;
 
-    /* Budget on the tail of the per-scene cost, against what this thread
-     * has left of the span once the update VBL has run.
-     *
-     * Against `prod_end` (the pacer grid instant the produce deadlines are
-     * derived from), never the span endpoint. The span is anchored on the
-     * capture stamp, which PLL-locks to average tick completion, so it lands
-     * about one tick execution past the moment production actually stops;
-     * the lag extension above adds more. Budgeting against either prices
-     * time this thread never has, so `afford` would exceed the slot count
-     * even at a level that cannot keep up, the proactive step below would
-     * never fire, and the level would fall only after a span was cut short,
-     * which is the oscillation the divisor ladder exists to prevent. */
-    /* How many scenes fit is a question about their SUM, not about one of
-     * them. `eager_tail_cost()` is a per-scene p99.7 bound, which is the right
-     * question between scenes (the produce guard below) and the wrong one
-     * here: pricing all N at once at p99.7 charges every scene the worst
-     * scene's cost, ~2x the true sum, since independent costs average out.
-     * The sum's own spread grows as sqrt(N), so bound it that way -- with
-     * N <= EAGER_MAX_TARGETS the sqrt term is a constant. Being wrong is also
-     * cheap in one direction only: the produce guard still stops at the
-     * deadline, and a cut span is observed and answered by the ladder. */
-    const op_time_t tail = eager_tail_cost();
-    op_time_t budget = prod_end - now - s_eager.vbl_ema - 1000000;   /* 1 ms safety */
-    if (budget < 0) budget = 0;
-    int afford;
-    if (s_eager.cost_n >= EAGER_COST_WARMUP && s_eager.cost_ema > 0) {
-        const op_time_t spread = 8 * s_eager.cost_dev;      /* 2 sigma at N = 16 */
-        op_time_t room = budget > spread ? budget - spread : 0;
-        afford = (int)(room / s_eager.cost_ema);
-    } else {
-        afford = tail > 0 ? (int)(budget / tail) : ns;
-    }
-    if (s_eager.afford_pin > 0) afford = s_eager.afford_pin;   /* a forced budget, for the policy A/B */
-    if (afford < 1) afford = 1;
-
-    if (!s_eager.pinned) {
-        int need = (ns + afford - 1) / afford;      /* ceil(ns / afford) */
-        if (need < 1) need = 1;
-        if (s_eager.span_cut && need <= s_eager.level) need = s_eager.level + 1;
-        if (need > s_eager.level) {
-            s_eager.level = need; s_eager.level_down++; s_eager.headroom_runs = 0;
-        } else if (s_eager.level > 1) {
-            /* Climb only with a quarter margin over the next level's demand,
-             * held for several spans: a level that flickers judders the RATE. */
-            const int next_need = (ns + s_eager.level - 2) / (s_eager.level - 1);
-            if (afford * 4 >= next_need * 5) {
-                if (++s_eager.headroom_runs >= EAGER_HEADROOM_RUNS) {
-                    s_eager.level--; s_eager.level_up++; s_eager.headroom_runs = 0;
-                }
-            } else s_eager.headroom_runs = 0;
-        }
-    }
+    /* Budget against what this thread has left of the span once the update
+     * VBL has run, and against `prod_end` (the pacer grid instant the produce
+     * deadlines are derived from), never the span endpoint. The span is
+     * anchored on the capture stamp, which PLL-locks to average tick
+     * completion, so it lands about one tick execution past the moment
+     * production actually stops; the lag extension above adds more.
+     * Budgeting against either prices time this thread never has, so
+     * `afford` would exceed the slot count even at a level that cannot keep
+     * up, the proactive step would never fire, and the level would fall only
+     * after a span was cut short, which is the oscillation the divisor ladder
+     * exists to prevent. */
+    op_time_t budget;
+    const int afford = eager_afford(now, prod_end, ns, &budget);
+    if (!s_eager.pinned) eager_ladder_step(ns, afford);
     eager_plan_dbg(now, first_in, span_end, period, &lat, &sp, budget, afford);
     s_eager.span_cut = 0;
+    s_eager.span_late = s_eager.tick_late > 0;
 
     s_eager.n = 0; s_eager.i = 0;
     if (s_eager.policy == 1) {
@@ -5909,26 +5992,9 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * so only the committed timeline can reach a motor. */
             if (ticked_this_iter)
                 openpete_rumble_sample();
-            {
-                /* What this VBL cost on this thread. A VBL that queued no
-                 * draw is the update VBL, which the eager planner subtracts
-                 * from the span budget; one that did is the tick, whose
-                 * execution tail sets the eager lag. */
-                const op_time_t ex = pace_exec_end_ns - pace_exec_start_ns;
-                if (!openpete_present_pending)
-                    s_eager.vbl_ema = s_eager.vbl_ema ? (s_eager.vbl_ema * 7 + ex) / 8 : ex;
-                else if (ex < (op_time_t)g_openpete_tick_period_ns / 2) {
-                    /* Longer than half a tick is a load or a stall, not a
-                     * tick: it must not set the lag, which would plan a
-                     * span of a hundred targets and overflow the ring. */
-                    if (s_eager.tick_ema) {
-                        const op_time_t d = ex > s_eager.tick_ema ? ex - s_eager.tick_ema : s_eager.tick_ema - ex;
-                        s_eager.tick_dev = (s_eager.tick_dev * 7 + d) / 8;
-                    }
-                    s_eager.tick_ema = s_eager.tick_ema ? (s_eager.tick_ema * 7 + ex) / 8 : ex;
-                    if (ex > s_eager.tick_peak) s_eager.tick_peak = ex;
-                }
-            }
+            eager_note_vbl(pace_exec_end_ns - pace_exec_start_ns,
+                           pace_deadline_ns ? pace_exec_start_ns - pace_deadline_ns : 0,
+                           openpete_present_pending);
 
             bool ra_speculated = false;
             bool ra_skip_capture = false;
