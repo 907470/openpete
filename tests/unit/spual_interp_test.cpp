@@ -9,6 +9,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"     // warning-ratchet: PsyCross source compiled in unchanged; its stubs leave parameters unused
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"  // warning-ratchet: PsyCross source compiled in unchanged; ADPCM decode history GCC cannot prove set
+#pragma GCC diagnostic ignored "-Wsign-compare"         // warning-ratchet: PsyCross source compiled in unchanged; its mingw-only u_int against long comparison
 #include "../../third_party/PsyCross/src/audio/PsyX_SPUAL.cpp"
 #pragma GCC diagnostic pop
 
