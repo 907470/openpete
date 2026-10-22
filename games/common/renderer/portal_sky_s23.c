@@ -34,6 +34,14 @@
 // floor; such a hypothesis can neither replace the best nor be accepted, so the
 // chosen rotation is the exhaustive search's.
 //
+// Which sky. A picture is registered against its destination's sky first. A
+// picture the destination's sky does not register was baked from another
+// level's sky (Spyro 3's Mushroom Speedway and Sheila's Alp pictures are
+// Sunny Villa's sky), so the skies of the other destinations in the same
+// record array are tried next under the same acceptance rule. The extension
+// takes the one fallback sky that registers; when two or more do, the choice
+// is ambiguous and the picture keeps no extension.
+//
 // Where the build runs. A registration takes milliseconds to a hundred, so it
 // never runs on the game fiber unasked: the portal pass hands each of the
 // level's records to portal_sky_s23_prefetch, which snapshots the picture,
@@ -78,6 +86,7 @@
 #define PSK_DIR_H   (2.0 * PSK_DIR_R) /* the sky-direction hash's cell edge, in unit-vector coordinates */
 #define PSK_DIR_HASH 16384         /* its bucket count, a power of two */
 #define PSK_MAX_CORNERS (PSK_MAX_SKY_F * 3)
+#define PSK_MAX_SKIES 16           /* the destination plus the record array's other destinations */
 
 /* ---- the destination sky, per level ------------------------------------- */
 
@@ -88,7 +97,7 @@ typedef struct {
     uint32_t len;
 } psk_level;
 
-static psk_level s_lv[PSK_LEVELS] OP_GUARDED_BY(sim);   /* thread-roles: filled by psk_level_sky on sim; a build reads an entry through E->L */
+static psk_level s_lv[PSK_LEVELS] OP_GUARDED_BY(sim);   /* thread-roles: filled by psk_level_sky on sim; a build reads an entry through E->L[] */
 
 /** @brief Reads a little-endian word of a host buffer, 0 when it does not fit.
  * @param b The buffer.
@@ -736,14 +745,18 @@ typedef struct {
  * picture's vertices, then refines it by Horn over every matched pair.
  * @param C The builder's scratch; its grid and sky faces are already built.
  * @param P The picture.
+ * @param prune The least count a hypothesis is scored to the end for: the
+ *        acceptance floor for a build, 1 for the census, whose best count is
+ *        then the exhaustive one.
  * @param R Receives the rotation.
+ * @param best_out Receives the best hypothesis's count before refinement.
  * @return The matched vertex count of the refined rotation, 0 when none is accepted. */
-static int psk_register(psk_ctx* C, const psk_pic* P, double R[3][3]) {
+static int psk_register(psk_ctx* C, const psk_pic* P, int prune, double R[3][3], int* best_out) {
     const psk_grid* G = &C->G;
     const psk_sky* S = &C->S;
     psk_match* M = &C->M;
     psk_index_build(S, &C->X);
-    const int floor = (P->nv * 9 + 9) / 10;
+    const int floor = prune;
     int nr = 0, best = 0;
     for (int pf = 0; pf < P->nf; pf++) {
         const int n = psk_candidates(P, pf, &C->X);
@@ -751,6 +764,7 @@ static int psk_register(psk_ctx* C, const psk_pic* P, double R[3][3]) {
     }
     qsort(C->rank, (size_t)nr, sizeof C->rank[0], psk_rank_cmp);
     for (int i = 0; i < nr && !psk_try_face(P, G, S, &C->X, C->rank[i].pf, floor, &best, R); i++) {}
+    *best_out = best;
     if (best * 10 < P->nv * 9) return 0;
     psk_score(P, G, S, R, M);
     int n = 0;
@@ -779,7 +793,8 @@ typedef struct {
     int              level, state;
     unsigned         seq;              /* queue order */
     uint64_t         hash;
-    const psk_level* L;
+    const psk_level* L[PSK_MAX_SKIES]; /* the destination's sky, then the fallbacks */
+    int              nl;
     psk_pic          pic;
     portal_sky_tri*  tri;
     int              n, cap;
@@ -864,26 +879,87 @@ static void psk_extend_face(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gourau
     if (m == 4) psk_append(B, &out[0], &out[2], &out[3]);
 }
 
-/** @brief Registers an entry's picture against its destination's sky and builds the extension into it.
+/** @brief Whether OPENPETE_PORTAL3_SKY_CENSUS registers every picture against every candidate sky and logs each count.
+ *
+ * Latched on the first call; set, non-empty and not starting with '0'
+ * enables it. The choice of sky is the same with it on.
+ * @return 1 when enabled, else 0. */
+static int psk_census_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_SKY_CENSUS"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief Registers the picture against one candidate sky, decoding the sky into the scratch first.
+ * @param C The building thread's scratch; its picture grid is built.
+ * @param P The picture.
+ * @param level The picture's destination, for the census line.
+ * @param L The candidate sky.
+ * @param R Receives the rotation.
+ * @return The registered vertex count, 0 when the sky is not accepted. */
+static int psk_try_sky(psk_ctx* C, const psk_pic* P, int level, const psk_level* L, double R[3][3]) {
+    static const double I[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+    C->S.n = 0;
+    psk_decode_sky(&C->D, L, I, psk_collect, &C->S);
+    int best = 0;
+    const int matched = psk_register(C, P, psk_census_on() ? 1 : (P->nv * 9 + 9) / 10, R, &best);
+    if (psk_census_on())
+        OPL_INFO_F("portal", "sky census: picture of level %d against the sky of level %d: best %d, "
+                   "registered %d of %d", level, L->level, best, matched, P->nv);
+    return matched;
+}
+
+/** @brief Picks the sky that registers the entry's picture: the destination's, else the one fallback that registers.
+ *
+ * The destination's sky is taken when it registers. Otherwise every fallback
+ * is tried; exactly one registering is taken, and two or more leave the
+ * picture without a sky (ambiguous). Under OPENPETE_PORTAL3_SKY_CENSUS every
+ * candidate is registered and logged, and the choice is the same.
+ * @param C The building thread's scratch; its picture grid is built.
+ * @param E The entry.
+ * @param R Receives the chosen sky's rotation.
+ * @param matched Receives the chosen sky's registered count.
+ * @return The chosen candidate's index in E->L, -1 when none is taken. */
+static int psk_choose_sky(psk_ctx* C, const psk_entry* E, double R[3][3], int* matched) {
+    const psk_pic* P = &E->pic;
+    double Rk[3][3];
+    int pick = -1, hits = 0;
+    *matched = 0;
+    for (int k = 0; k < E->nl; k++) {
+        if (pick == 0 && !psk_census_on()) break;
+        const int m = psk_try_sky(C, P, E->level, E->L[k], Rk);
+        if (!m || pick == 0) continue;
+        if (k > 0) hits++;
+        if (pick < 0) { pick = k; *matched = m; memcpy(R, Rk, sizeof Rk); }
+    }
+    if (pick > 0 && hits > 1) {
+        OPL_WARN_F("portal", "picture of level %d: %d fallback skies register; ambiguous, no extension",
+                   E->level, hits);
+        *matched = 0;
+        return -1;
+    }
+    return pick;
+}
+
+/** @brief Registers an entry's picture against its sky (psk_choose_sky) and builds the extension into it.
  * @param C The building thread's scratch, or NULL when it could not be allocated (no triangles).
- * @param E The entry; its picture and sky are set, its triangle count is 0.
+ * @param E The entry; its picture and candidate skies are set, its triangle count is 0.
  * @param who The building thread's name, for the log line. */
 static void psk_build_entry(psk_ctx* C, psk_entry* E, const char* who) {
-    static const double I[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
-    if (!C) return;
+    if (!C || E->nl <= 0) return;
     const op_time_t t0 = op_now();
     const psk_pic* P = &E->pic;
     psk_grid_build(P, &C->G);
-    C->S.n = 0;
-    psk_decode_sky(&C->D, E->L, I, psk_collect, &C->S);
     double R[3][3];
-    const int matched = psk_register(C, P, R);
-    if (matched) {
+    int matched = 0;
+    const int k = psk_choose_sky(C, E, R, &matched);
+    if (k >= 0) {
         const psk_build B = { P, &C->G, E };
-        psk_decode_sky(&C->D, E->L, R, psk_extend_face, (void*)&B);
+        psk_decode_sky(&C->D, E->L[k], R, psk_extend_face, (void*)&B);
     }
-    OPL_INFO_F("portal", "picture of level %d: %d of %d vertices registered, %d sky faces, %d extension triangles"
-               " (%.1f ms, %s)", E->level, matched, P->nv, C->S.n, E->n, (double)(op_now() - t0) / 1e6, who);
+    OPL_INFO_F("portal", "picture of level %d: %d of %d vertices registered against the sky of level %d, "
+               "%d extension triangles (%.1f ms, %s)", E->level, matched, P->nv,
+               k >= 0 ? E->L[k]->level : -1, E->n, (double)(op_now() - t0) / 1e6, who);
 }
 
 /** @brief Locks the entry table when a lock exists. */
@@ -961,6 +1037,37 @@ static psk_entry* psk_find(uint32_t rec, uint32_t mesh, int level, const uint64_
     return hit;
 }
 
+/** @brief The skies a record's picture is registered against: its destination's, then each other destination's in the record array.
+ *
+ * Each level appears once, in record order after the destination; a
+ * fallback sky that cannot be read is left out, and an unreadable
+ * destination sky yields none. Reads the record array and the slot table, and reads each sky from
+ * the disc on first use (psk_level_sky).
+ * @param cpu Reads the record array.
+ * @param level The destination.
+ * @param L Receives the readable skies.
+ * @return The count written, at most PSK_MAX_SKIES; 0 when no sky reads. */
+static int psk_candidates_of(CPUState* cpu, int level, const psk_level* L[PSK_MAX_SKIES]) OP_REQUIRES(sim) {
+    int lv[PSK_MAX_SKIES], n = 0;
+    lv[n++] = level;
+    const uint32_t base = portal_game_s23.records ? cpu->read_word(portal_game_s23.records) : 0u;
+    const uint32_t cnt = portal_game_s23.count ? cpu->read_word(portal_game_s23.count) : 0u;
+    if (base >= 0x80000000u && base < 0x80200000u && cnt <= 16u)
+        for (uint32_t i = 0; i < cnt && n < PSK_MAX_SKIES; i++) {
+            const int d = (int)cpu->read_byte(base + i * 0x44u + 0x42u);
+            int seen = 0;
+            for (int k = 0; k < n; k++) seen |= lv[k] == d;
+            if (!seen) lv[n++] = d;
+        }
+    int m = 0;
+    for (int k = 0; k < n; k++) {
+        const psk_level* S = psk_level_sky(cpu, lv[k]);
+        if (S->state > 0) L[m++] = S;
+        else if (k == 0) return 0;
+    }
+    return m;
+}
+
 /** @brief Takes a slot for a record's picture and queues its build.
  *
  * The slot is the next free or finished one in round-robin order; a queued or
@@ -974,7 +1081,8 @@ static psk_entry* psk_find(uint32_t rec, uint32_t mesh, int level, const uint64_
  * @return The entry, or NULL when every slot is queued or running. */
 static psk_entry* psk_enqueue(CPUState* cpu, uint32_t rec, uint32_t mesh, int level, const psk_pic* P) OP_REQUIRES(sim) {
     psk_sched_init();
-    const psk_level* L = psk_level_sky(cpu, level);
+    const psk_level* L[PSK_MAX_SKIES];
+    const int nl = psk_candidates_of(cpu, level, L);
     psk_lock();
     psk_entry* E = NULL;
     for (int k = 0; k < PSK_CACHE && !E; k++) {
@@ -982,10 +1090,12 @@ static psk_entry* psk_enqueue(CPUState* cpu, uint32_t rec, uint32_t mesh, int le
         if (c->state == PSK_FREE || c->state == PSK_DONE) { E = c; s_cache_next += (unsigned)k + 1u; }
     }
     if (E) {
-        E->rec = rec; E->mesh = mesh; E->level = level; E->hash = P->hash; E->L = L; E->n = 0;
+        E->rec = rec; E->mesh = mesh; E->level = level; E->hash = P->hash; E->n = 0;
+        E->nl = nl;
+        memcpy(E->L, L, sizeof(L[0]) * (size_t)nl);
         memcpy(&E->pic, P, sizeof *P);
         E->seq = s_seq++;
-        E->state = L->state > 0 ? PSK_QUEUED : PSK_DONE;
+        E->state = nl > 0 ? PSK_QUEUED : PSK_DONE;
         if (s_cv_work && E->state == PSK_QUEUED) SDL_SignalCondition(s_cv_work);
     }
     psk_unlock();

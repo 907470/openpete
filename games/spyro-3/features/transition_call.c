@@ -108,7 +108,7 @@ static int on_draw(CPUState* cpu, uint32_t addr) {
     for (i = 0; i < r.n_pre_calls; i++) call_guest(cpu, r.pre_calls[i], 0u, 0u);
     for (i = 0; i < r.n_stores; i++) store(cpu, &r.stores[i]);
     call_guest(cpu, r.fn, r.a0, r.a1);
-    OPL_INFO_F(r.tag, "called 0x%08X(0x%X, 0x%X) at vbl=%u", (unsigned)r.fn,
+    OPL_INFO_F(r.tag, "called 0x%08X(0x%X, 0x%X) at frame=%u", (unsigned)r.fn,
                (unsigned)r.a0, (unsigned)r.a1, (unsigned)openpete_frame);
     if (r.called) r.called(cpu);
     return 0;
