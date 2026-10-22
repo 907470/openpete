@@ -114,7 +114,7 @@ present.
 | `--bk2-stop-on-end`              | Exit after the last recorded VBL instead of holding the last input.                                                                                                                     |
 | `--render-paths LIST`            | Draw only the named render paths. Presentation only: gameplay state is unaffected.                                                                                                      |
 | `--log-file PATH`                | Mirror the log to PATH.                                                                                                                                                                 |
-| `--devui-open 1`                 | Open the dev overlay with every mod node expanded as soon as it initializes, so an unattended windowed run reaches a mod's UI section body.                                             |
+| `--devui-open 1`                 | Open the dev overlay on its Mods tab, with every mod node expanded, as soon as it initializes, so an unattended windowed run reaches a mod's UI section body.                                             |
 
 A capture writes two files: `<out>-vk.png` is the native render,
 `<out>-og.png` the PsyCross reference. The recipes below pass

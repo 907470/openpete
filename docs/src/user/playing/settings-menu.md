@@ -92,7 +92,7 @@ closes, and a browser installed as a snap cannot read them.
 ## ADVANCED
 
 Changing **ADVANCED** <!-- id: menu:menu.advanced --> closes the menu and
-opens the [dev overlay](dev-overlay.md) at its top, where every other
+opens the [dev overlay](dev-overlay.md) at the top of its Settings tab, where every other
 setting and, under [Controls](dev-overlay.md#controls), the key bindings are. When the overlay is not available it shows
 **NOT AVAILABLE**.
 

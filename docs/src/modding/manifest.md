@@ -7,7 +7,7 @@
 ``` toml
 [mod]
 id      = "my-mod"        # the directory or zip name; enabled.txt and --mods use that name
-name    = "My Mod"        # shown in the Mods section; defaults to id
+name    = "My Mod"        # shown in the Mods tab; defaults to id
 game    = "spyro-1"       # or ["spyro-1", "spyro-3"]; omitted: see below
 version = "0.1.0"
 api     = 13              # minimum OPENPETE_MOD_API_VERSION; also selects the overlay-address rules and material composition
@@ -41,7 +41,7 @@ it; any release of the game counts, and the disc booted with `--disc`
 counts for the running game only.
 
 - `requires_games`: while a listed game is not installed the mod does
-  not load. The log names the mod and the game, the Mods section lists
+  not load. The log names the mod and the game, the Mods tab lists
   the mod as not loaded with the same reason, and the launcher's version
   selector, when it shows, reads `MOD <ID> NEEDS <GAME> - ADD ITS DISC`;
   dropping that game's disc on it adds the disc to the library. A mod that depends on a refused mod is
@@ -129,7 +129,7 @@ while the dev overlay owns the keyboard, like every host action.
 ### `[[config]]`
 
 Rows declare the mod's settings. The engine renders them in the M
-overlay's Mods section as checkboxes, sliders, inputs, and combo boxes,
+overlay's Mods tab as checkboxes, sliders, inputs, and combo boxes,
 grouped and tooltipped. Apply writes the edit into `config.toml` with
 comments preserved and reloads the mod at the next tick boundary, so the
 entry point re-reads the values through `api->config_*`.

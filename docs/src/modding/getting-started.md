@@ -24,7 +24,7 @@ mods, then the original game code.
 `--mods ""` runs without mods.
 
 The in-game settings overlay (opened with the M key, "the M overlay"
-below) has a Mods section that toggles a loaded mod at the next tick
+below) has a Mods tab that toggles a loaded mod at the next tick
 boundary and edits its settings. It does not reorder mods.
 
 A distribution packaged with the SDK carries working examples under

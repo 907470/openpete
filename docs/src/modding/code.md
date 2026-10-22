@@ -191,7 +191,7 @@ blocks you do not link to `OP_GALLOC_NO_DMA`.
 - The log holds one line per mod per session, after its entry returns
   (or after its first block, when that comes later):
   `guest arena: my-mod holds 65536 B DMA-reachable (0 B IMMUTABLE), 0 B general (0 B IMMUTABLE)`.
-- The Mods section of the dev overlay shows
+- The Mods tab of the dev overlay shows
   **Mod memory: X of 14 MiB DMA-reachable, Y MiB general** for all mods,
   and **Runahead snapshot: Z ms per tick** once runahead has run.
 - Hovering a mod's row shows its own
@@ -248,7 +248,7 @@ thread the mod starts is not reverted.
 ## Toggling and reload
 
 `register_toggle_hook` installs a callback that runs at the tick boundary
-after the mod is enabled or disabled from the Mods section. The engine
+after the mod is enabled or disabled from the Mods tab. The engine
 freezes a disabled mod's registrations but never rewinds guest state, so a
 mod that wrote guest bytes restores the stock bytes on `on = 0`.
 
@@ -401,7 +401,7 @@ returns -1.
 | Goal | Service | Writes guest RAM |
 |---|---|---|
 | Draw HUD text | `draw_text` | No |
-| Show status lines in the Mods section | `ui_status` | No |
+| Show status lines in the Mods tab | `ui_status` | No |
 | Draw a panel of your own | `openpete_mod_ui.h`, or `openpete_imgui.h` for the whole ImGui API | No |
 | Announce an event on screen | `notify` | No |
 | Replace a game sound from code | `sfx_replace` | No |
@@ -422,7 +422,7 @@ returns -1.
 | Ask whether a game is installed | `game_installed` | No |
 
 **`ui_status` or `notify`.** `ui_status` reports state: lines in the mod's
-block of the Mods section, visible while that overlay is open, repainted
+block of the Mods tab, visible while that overlay shows the tab, repainted
 whenever the mod prints again. `notify` reports an event: a toast in the
 game's gold chrome, shown for a few seconds regardless of any overlay.
 `notify` renders with the game's glyph set (`0-9`, `A-Z`, space, and
@@ -434,7 +434,7 @@ and rewind ticks.
 checkbox, sliders, combo, input text, separator, same-line, tooltip) over
 the engine's overlay; register a body with `OPENPETE_MOD_UI_SECTION(fn)` at
 file scope in one source file and it draws inside the mod's node of the
-Mods section, while that overlay is open. For anything beyond those eleven
+Mods tab, while that overlay shows the tab. For anything beyond those eleven
 - windows, tables, plots, tree nodes, tabs, popups, colour editors, draw
 lists, fonts - `openpete_imgui.h` hands a mod the whole ImGui C API:
 see [ImGui](imgui.md).

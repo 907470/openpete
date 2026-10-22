@@ -1522,7 +1522,7 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
         "Inside a UI section body, and nowhere else. A body runs on the "
         "compose thread, inside the engine's ImGui frame, while the mod is "
         "enabled. A plain `OPENPETE_MOD_UI_SECTION` body runs in the mod's "
-        "node of the Mods section, so only while the dev overlay is open; "
+        "node of the Mods tab, so only while the dev overlay is open on that tab; "
         "an always section (below) runs on every present.\n")
     out.append(
         "A call from a [present hook or a tick hook]"
@@ -1578,7 +1578,7 @@ OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
         "paint over it.\n"
         "- **[`ui_status`](reference/api.md#api-ui_status) lines stay in the "
         "mod's node** in the Mods "
-        "section, where the rest of the mod's row is.\n")
+        "tab, where the rest of the mod's row is.\n")
     out.append(
         "ImGui draws into the live present "
         "only, so an always window is never in a `--record` capture or a "

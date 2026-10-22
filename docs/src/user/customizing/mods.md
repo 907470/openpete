@@ -55,7 +55,7 @@ my-music
 `OPENPETE_MODS`) loads exactly the listed mods in that order and ignores
 `enabled.txt`. `--mods ""` loads none.
 
-The [dev overlay](../help/glossary.md#dev-overlay)'s **Mods** section lists the mods, with a checkbox that
+The [dev overlay](../help/glossary.md#dev-overlay)'s **Mods** tab lists the mods, with a checkbox that
 turns each one on or off while the game runs. With an `enabled.txt`, the
 mods it does not list appear there switched off. A checkbox lasts for the
 session; `enabled.txt` is not rewritten.

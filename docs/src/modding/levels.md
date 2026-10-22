@@ -90,7 +90,7 @@ eggs    = 1                # optional: replace-mode, first three worlds only
 
 ## In play
 
-The M overlay's Mods section shows one row per level, with a Warp
+The M overlay's Mods tab shows one row per level, with a Warp
 button, a switch between own-slot and replace-donor mode, and a tooltip
 naming the level's Custom World number and donor. Levels from all mods
 sort alphabetically, five per world.

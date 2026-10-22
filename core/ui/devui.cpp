@@ -64,8 +64,9 @@ static bool        s_ctx    = false;
 /* The overlay is attached to the session's options (openpete_devui_init). */
 static bool        s_inited = false;
 static bool        s_open   = false;
-/* One present's worth of "reveal": the panel window uncollapsed, the Mods
- * header and every mod node open. Set only when --devui-open opened the
+/* The "reveal", held until the panel has drawn it: the panel window
+ * uncollapsed, the Mods tab selected when any mod is loaded, and every mod
+ * node open. Set only when --devui-open opened the
  * overlay, because a run nobody is driving has no way to click a tree node
  * open, and a mod's UI section body runs only inside its node. ImGui
  * does not persist node state, so this is the only way an unattended
@@ -1727,11 +1728,9 @@ static void open_mods_folder(void)
                    SDL_GetError());
 }
 
-/** @brief Draw the Open folder button at the right end of the header just submitted.
+/** @brief Draw the Open folder button at the right end of the line just submitted.
  *
- * The header must carry ImGuiTreeNodeFlags_AllowOverlap so the button takes
- * its own clicks. Disabled when no mods root resolved; the tooltip names the
- * folder.
+ * Disabled when no mods root resolved; the tooltip names the folder.
  * @param right The content region's right edge in window coordinates. */
 static void draw_mods_folder_button(float right)
 {
@@ -1863,39 +1862,39 @@ static void draw_material_overlaps()
     ImGui::TreePop();
 }
 
-/** @brief Draw the Mods header with an Open folder button and one row per loaded mod that passes the filter.
+/** @brief Draw the Mods tab: a status line with the Open folder button at its right end, then one row per loaded mod that passes the filter.
  *
- * Draws nothing when an active filter matches no mod. With no mod loaded and
- * no filter the header still draws, holding a line that says so, so the
- * folder button is reachable before the first mod is installed. Each row has
- * an enable checkbox that queues the toggle (disabled while the mod owns the
- * level being played) and a name; an enabled mod with a UI section, config
- * rows or custom levels gets a tree node holding its config rows, its
- * bracketed UI body and its level rows. Mods refused at load follow, each
- * with its reason. An active filter or the boot reveal forces the header
- * open. */
+ * The status line says no mod is installed (the folder button shows where
+ * they go), that no mod matches an active filter, or how many mods are
+ * loaded and enabled. Each row has an enable checkbox that queues the toggle
+ * (disabled while the mod owns the level being played) and a name; an
+ * enabled mod with a UI section, config rows or custom levels gets a tree
+ * node holding its config rows, its bracketed UI body and its level rows.
+ * Mods refused at load follow, each with its reason, then the material
+ * overlaps and the memory summary while no filter hides every mod. With no
+ * mod installed or refused only the status line draws. */
 static void draw_mods_section(const ImGuiTextFilter &filter)
 {
     const int n = openpete_mods_count();
-
-    bool any = false;
-    for (int i = 0; i < n && !any; i++) {
+    int shown = 0, enabled = 0;
+    for (int i = 0; i < n; i++) {
         openpete_mods_menu_info_t mi;
-        if (openpete_mods_menu_info(i, &mi) && mod_row_matches(filter, &mi))
-            any = true;
+        if (!openpete_mods_menu_info(i, &mi)) continue;
+        if (mi.enabled) enabled++;
+        if (mod_row_matches(filter, &mi)) shown++;
     }
-    if (!any && (n > 0 || filter.IsActive())) return;
 
-    if (filter.IsActive() || s_boot_reveal) ImGui::SetNextItemOpen(true);
+    const bool none = n == 0 && openpete_mods_refused_count() == 0;
     const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const bool open = ImGui::CollapsingHeader(
-        "Mods", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
-    draw_mods_folder_button(right);
-    if (!open) return;
-    if (n == 0 && openpete_mods_refused_count() == 0) {
+    if (none)
         ImGui::TextDisabled("No mods installed. Open folder shows where they go.");
-        return;
-    }
+    else if (shown == 0 && filter.IsActive())
+        ImGui::TextDisabled("No mod matches the search.");
+    else
+        ImGui::TextDisabled("%d loaded, %d enabled", n, enabled);
+    draw_mods_folder_button(right);
+    if (none) return;
+    ImGui::Separator();
 
     for (int i = 0; i < n; i++) {
         openpete_mods_menu_info_t mi;
@@ -1906,6 +1905,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         ImGui::PopID();
     }
     draw_refused_mod_rows(filter);
+    if (shown == 0 && filter.IsActive()) return;
     draw_material_overlaps();
     draw_mods_memory_summary(n);
 }
@@ -2041,8 +2041,14 @@ struct lay_row {
  * drawer of their own. */
 enum lay_section_kind { LAY_SEC_ROWS, LAY_SEC_MODS, LAY_SEC_CONTROLS };
 
+/* The panel's tabs, in tab-bar order. A registry section no LAY_REST entry
+ * names draws on the Settings tab. */
+enum lay_tab { LAY_TAB_SETTINGS, LAY_TAB_MODS, LAY_TAB_COUNT };
+static const char *const k_lay_tab_names[LAY_TAB_COUNT] = { "Settings", "Mods" };
+
 struct lay_section {
-    const char       *title;
+    const char       *title;     /* header caption; a LAY_SEC_MODS section draws no header */
+    lay_tab           tab;
     bool              open;      /* expanded until the user collapses it */
     lay_section_kind  kind;
     const lay_row    *rows;
@@ -2090,18 +2096,18 @@ static const lay_row k_lay_gameplay[] = {
     { LAY_REST,   "Gameplay" },
     { LAY_WARP,   "Level warp", { "warp_level", "warp_go" } },
     { LAY_WARP,   "Area warp", { "warp_area", "warp_area_go" } },
-    { LAY_SUB,    "Audio" },
-    { LAY_REST,   "Audio" },
-    { LAY_OVERRIDE, nullptr, { "sfx" } },
-    { LAY_OVERRIDE, nullptr, { "music" } },
-    { LAY_SUB_END, nullptr },
-    { LAY_SUB,    "Input" },
-    { LAY_REST,   "Input" },
-    { LAY_SUB_END, nullptr },
     { LAY_SUB,    "Cheats" },
     { LAY_REST,   "Cheats" },
     { LAY_SUB_END, nullptr },
 };
+
+static const lay_row k_lay_audio[] = {
+    { LAY_REST,   "Audio" },
+    { LAY_OVERRIDE, nullptr, { "sfx" } },
+    { LAY_OVERRIDE, nullptr, { "music" } },
+};
+
+static const lay_row k_lay_input[] = { { LAY_REST, "Input" } };
 
 static const lay_row k_lay_info[] = {
     { LAY_ROW,    nullptr, { "skip_to_level" } },
@@ -2128,13 +2134,15 @@ static const lay_row k_lay_debug[] = {
 };
 
 static const lay_section k_layout[] = {
-    { "Display",   true,  LAY_SEC_ROWS,     k_lay_display,   LAY_N(k_lay_display) },
-    { "Gameplay",  true,  LAY_SEC_ROWS,     k_lay_gameplay,  LAY_N(k_lay_gameplay) },
-    { "Controls",  false, LAY_SEC_CONTROLS, nullptr,         0 },
-    { "Mods",      true,  LAY_SEC_MODS,     nullptr,         0 },
-    { "Info",      false, LAY_SEC_ROWS,     k_lay_info,      LAY_N(k_lay_info) },
-    { "Recording", true,  LAY_SEC_ROWS,     k_lay_recording, LAY_N(k_lay_recording) },
-    { "Debug",     false, LAY_SEC_ROWS,     k_lay_debug,     LAY_N(k_lay_debug) },
+    { "Display",   LAY_TAB_SETTINGS, true,  LAY_SEC_ROWS,     k_lay_display,   LAY_N(k_lay_display) },
+    { "Gameplay",  LAY_TAB_SETTINGS, true,  LAY_SEC_ROWS,     k_lay_gameplay,  LAY_N(k_lay_gameplay) },
+    { "Audio",     LAY_TAB_SETTINGS, false, LAY_SEC_ROWS,     k_lay_audio,     LAY_N(k_lay_audio) },
+    { "Input",     LAY_TAB_SETTINGS, false, LAY_SEC_ROWS,     k_lay_input,     LAY_N(k_lay_input) },
+    { "Controls",  LAY_TAB_SETTINGS, false, LAY_SEC_CONTROLS, nullptr,         0 },
+    { "Info",      LAY_TAB_SETTINGS, false, LAY_SEC_ROWS,     k_lay_info,      LAY_N(k_lay_info) },
+    { "Recording", LAY_TAB_SETTINGS, true,  LAY_SEC_ROWS,     k_lay_recording, LAY_N(k_lay_recording) },
+    { "Debug",     LAY_TAB_SETTINGS, false, LAY_SEC_ROWS,     k_lay_debug,     LAY_N(k_lay_debug) },
+    { "Mods",      LAY_TAB_MODS,     true,  LAY_SEC_MODS,     nullptr,         0 },
 };
 
 /* Registry rows the panel does not show. They stay in the registry, so
@@ -2677,7 +2685,7 @@ static void lay_draw_section(const lay_ctx &c, const char *title, bool open,
     ImGui::PopID();
 }
 
-/** @brief Draw, after the laid-out sections, each registry section no LAY_REST entry names, under its own name.
+/** @brief Draw, after the Settings tab's laid-out sections, each registry section no LAY_REST entry names, under its own name.
  *
  * Sections come in registry order and hold their unclaimed rows; a Debug*
  * section starts collapsed. */
@@ -2699,8 +2707,9 @@ static void lay_draw_unplaced(const lay_ctx &c)
 
 /** @brief Draw the search field and the Save settings button on one line spanning the section headers' width, a magnifier drawn inside the field's left edge.
  *
- * @param f The panel's filter; rebuilt when the text changes. */
-static void draw_search(ImGuiTextFilter &f)
+ * @param f The panel's filter; rebuilt when the text changes.
+ * @param hint The field's text while empty. */
+static void draw_search(ImGuiTextFilter &f, const char *hint)
 {
     /* The section headers overhang the content region by half the window
      * padding on each side; the search field and the Save button span the
@@ -2717,7 +2726,7 @@ static void draw_search(ImGuiTextFilter &f)
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(pad.x * 2.0f + icon, pad.y));
     ImGui::SetNextItemWidth(search_w);
-    if (ImGui::InputTextWithHint("##search", "Search settings", f.InputBuf,
+    if (ImGui::InputTextWithHint("##search", hint, f.InputBuf,
                                  IM_COUNTOF(f.InputBuf)))
         f.Build();
     ImGui::PopStyleVar();
@@ -2927,11 +2936,51 @@ static void draw_capture_prompt(void)
     ImGui::End();
 }
 
-/** @brief Draw the "openpete config" window: search field and Save button, the laid-out sections, then any unplaced registry section.
+/** @brief Draw the layout sections of one tab in table order; the Settings tab then draws each registry section no LAY_REST entry names. */
+static void draw_tab_sections(const lay_ctx &c, lay_tab tab)
+{
+    for (const lay_section &s : k_layout) {
+        if (s.tab != tab) continue;
+        switch (s.kind) {
+        case LAY_SEC_MODS:     draw_mods_section(*c.filter); break;
+        case LAY_SEC_CONTROLS: draw_controls_section(*c.filter); break;
+        default:               lay_draw_section(c, s.title, s.open, s.rows, s.n); break;
+        }
+    }
+    if (tab == LAY_TAB_SETTINGS) lay_draw_unplaced(c);
+}
+
+/** @brief Draw the tab bar, then the selected tab's sections below it.
  *
- * Gives the window navigation focus on the first frame after an open,
- * clears the open flag when its close button is pressed, and clears the
- * boot reveal. */
+ * The tab bar ends before the sections draw, because a mod's UI body runs
+ * inside an error-recovery bracket that ends every tab bar open in the
+ * window. imgui keeps the selected tab for the session; a SetSelected tab
+ * draws from the next frame on.
+ * @param pick The tab to select, or LAY_TAB_COUNT to keep the selection.
+ * @return The tab drawn this frame, or LAY_TAB_COUNT when none was. */
+static lay_tab draw_tabs(const lay_ctx &c, lay_tab pick)
+{
+    lay_tab drawn = LAY_TAB_COUNT;
+    if (!ImGui::BeginTabBar("##tabs")) return drawn;
+    for (int t = 0; t < LAY_TAB_COUNT; t++) {
+        const ImGuiTabItemFlags fl = (t == pick) ? ImGuiTabItemFlags_SetSelected : 0;
+        if (!ImGui::BeginTabItem(k_lay_tab_names[t], nullptr, fl)) continue;
+        drawn = (lay_tab)t;
+        ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+    if (drawn != LAY_TAB_COUNT) draw_tab_sections(c, drawn);
+    return drawn;
+}
+
+/** @brief Draw the "openpete config" window: search field and Save button, then the Settings and Mods tabs.
+ *
+ * The search field filters the selected tab. A scroll-to-top request
+ * (openpete_devui_open_top) selects the Settings tab and scrolls to the
+ * top; the boot reveal selects the Mods tab when any mod is loaded. Gives
+ * the window navigation focus on the first frame after an open, clears the
+ * open flag when its close button is pressed, and clears the boot reveal
+ * once the frame drew what it reveals. */
 static void draw_panel(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -2955,13 +3004,18 @@ static void draw_panel(void)
         return;
     }
 
+    lay_tab pick = LAY_TAB_COUNT;
+    if (s_boot_reveal && openpete_mods_count() > 0) pick = LAY_TAB_MODS;
     if (to_top) {
         SDL_SetAtomicInt(&s_top_req, 0);
         ImGui::SetScrollY(0.0f);
+        pick = LAY_TAB_SETTINGS;
     }
 
+    /* The tab drawn last frame names the field's hint. */
+    static lay_tab s_tab = LAY_TAB_SETTINGS;
     static ImGuiTextFilter s_filter;
-    draw_search(s_filter);
+    draw_search(s_filter, s_tab == LAY_TAB_MODS ? "Search mods" : "Search settings");
 
     lay_ctx c;
     c.ks = knob_registry(&c.n);
@@ -2969,19 +3023,15 @@ static void draw_panel(void)
     lay_claim_refresh(c.ks, c.n);
     title_edge_roll();
 
-    for (const lay_section &s : k_layout) {
-        switch (s.kind) {
-        case LAY_SEC_MODS:     draw_mods_section(s_filter); break;
-        case LAY_SEC_CONTROLS: draw_controls_section(s_filter); break;
-        default:               lay_draw_section(c, s.title, s.open, s.rows, s.n); break;
-        }
-    }
-    lay_draw_unplaced(c);
+    const lay_tab drawn = draw_tabs(c, pick);
+    if (drawn != LAY_TAB_COUNT) s_tab = drawn;
 
     ImGui::End();
     draw_capture_prompt();
     if (!open) s_open = false;
-    s_boot_reveal = false;
+    /* A tab selected by SetSelected draws from the next frame on, so the
+     * reveal holds until the Mods tab has drawn its mod nodes open. */
+    if (pick != LAY_TAB_MODS || drawn == LAY_TAB_MODS) s_boot_reveal = false;
 }
 
 /* ------------------------------------------------------------------ */

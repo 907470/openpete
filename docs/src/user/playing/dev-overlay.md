@@ -1,8 +1,9 @@
 # The dev overlay
 
 The dev overlay is a panel titled **openpete config** listing every setting
-OpenPete has, grouped by section, with each row's current value and where it
-came from. It changes live settings without a restart, saves them to the
+OpenPete has, grouped by section on its **Settings** tab, with each row's
+current value and where it came from, and the installed mods on its **Mods**
+tab. It changes live settings without a restart, saves them to the
 config file, and carries the cheat buttons and the level warp.
 
 {{ key("key:host.devui") }} <!-- id: key:host.devui home --> opens it, and
@@ -37,7 +38,8 @@ These actions are rebindable in `[keys.host]`; see
 
 | Part | Meaning |
 | --- | --- |
-| Search field | Shows the rows whose name, flag or environment variable contains the text, with every section holding a match opened. |
+| Search field | Filters the selected tab: on Settings, the rows whose name, flag or environment variable contains the text, with every section holding a match opened; on Mods, the mods whose id or name contains it. The text stays when the tab changes. |
+| Tabs | **Settings** holds every section below; **Mods** holds the [mods](#mods). The selected tab lasts until the game closes. |
 | Row value | Changes apply at once on a live row. A row that needs a restart is drawn greyed out. |
 | Row title tooltip | The setting's description, its flag and variable spellings, the key bound to it (as the current keyboard layout and the connected controller label it) when a key action changes it, "restart to apply" on a restart row, and where the value came from: the command line, the environment or the default, "edited this session" once changed, and the `openpete.toml` section that set it, for example `[saved]`. **pinned** marks a setting that a flag or variable of this launch overrides; saving it takes effect once that override is gone. |
 | Button tooltip | A button's status, such as **not in a level**, above its description. |
@@ -52,20 +54,20 @@ menu are saved as they are made. See
 
 ## Sections
 
-The graphics rows are described under [Graphics](../graphics/display.md);
-each Graphics page names its settings. Sections marked collapsed start
-closed; click a title to open it.
+The Settings tab holds these sections, in this order. The graphics rows are
+described under [Graphics](../graphics/display.md); each Graphics page names
+its settings. Sections marked collapsed start closed; click a title to open
+it.
 
 | Section | Rows |
 | --- | --- |
 | Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
 | Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths |
 | Gameplay | Freecam, Tick scale, Pause sim, Runahead, Rewind, Level warp, Area warp (Spyro 3) |
-| Gameplay, Audio (collapsed) | Mute, SFX volume, Music volume |
-| Gameplay, Input (collapsed) | Vibration, Mouse sensitivity |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
+| Audio (collapsed) | Mute, SFX volume, Music volume |
+| Input (collapsed) | Vibration, Pad while unfocused, Mouse sensitivity |
 | Controls (collapsed) | every binding of the PlayStation pad in port 1 and of OpenPete's keys; see [below](#controls) |
-| Mods | one row per installed mod |
 | Info (collapsed) | the launch-only rows: Skip to level, Skip to cutscene, Skip to sub-area, Freecam pose, Player pose, bk2 replay, bk2 frame offset, bk2 recording, Renderer, Extraction threads, Window size |
 | Info, Paths (collapsed) | every path and memory card row |
 | Recording | the video capture rows, shown only while recording |
@@ -211,10 +213,11 @@ main area of a level is reached with the level warp.
 
 ## Mods
 
-The Mods section lists each installed mod with a checkbox that enables or
-disables it at the next tick. The **Open folder** button on its header opens
-the mods folder in the file manager, creating it when it is missing; with no
-mod installed the section shows only that button and a line saying so. A mod that registers its own controls shows
+The Mods tab lists each installed mod with a checkbox that enables or
+disables it at the next tick. Its first line counts the loaded and enabled
+mods; the **Open folder** button at the line's right end opens the mods
+folder in the file manager, creating it when it is missing. With no mod
+installed the tab shows only that line and button. A mod that registers its own controls shows
 them under its name. A mod that adds levels lists each with a **Warp**
 button. See [Mods](../customizing/mods.md).
 

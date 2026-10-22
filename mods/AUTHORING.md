@@ -58,7 +58,7 @@ lexicographic. ORDER IS PRIORITY: later line = runs first on a shared
 override, wins asset/material/shader collisions; `base()` descends toward
 earlier mods, then the original. `--mods a,b` / `OPENPETE_MODS=a,b` replaces
 the list for one run; `--mods ""` = vanilla. `deps` topo-sort ahead of list
-order (library entry runs before clients). M-key overlay Mods section toggles
+order (library entry runs before clients). M-key overlay Mods tab toggles
 a mod at the next tick boundary and edits `[[config]]` rows; it cannot
 reorder.
 
@@ -245,7 +245,7 @@ stored in a 24-bit field go here. `OP_GALLOC_NO_DMA` (api 13): general pool,
 480 MiB at 0x81000000, for every block nothing truncates to 24 bits. A full
 pool fails the call (0, `guest arena exhausted: ...` plus every mod's use of
 that pool) and never spills. One `guest arena: <id> holds ...` line per mod
-per session; the dev overlay's Mods section shows the totals. Snapshot cost
+per session; the dev overlay's Mods tab shows the totals. Snapshot cost
 is per used byte in both pools, IMMUTABLE included: savestate files and
 runahead copy the used ranges; rewind keyframes share unchanged 4 KiB pages,
 so only pages rewritten each second cost rewind per second of window.
