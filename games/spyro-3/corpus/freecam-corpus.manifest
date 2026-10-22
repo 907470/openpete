@@ -115,3 +115,6 @@ sunny_villa | pos=(82456, 64619, 21592) yaw=-144 pitch=35
 # the near lava keeps moving: a seam between near and far lava.
 # Blessed pre-fix.
 fireworks_factory | pos=(-18130, 83228, 13192) yaw=-78 pitch=119
+# skateboard pads (patch-animated colour) flicker at the tick cadence on
+# sub-tick presents under extended LOD
+sunny_villa:2 | pos=(169418, 57750, 40535) yaw=1402 pitch=574
