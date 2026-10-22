@@ -2787,7 +2787,11 @@ int scene_2d_count_fwd(const scene_tri_t* sc, int n) {
  * the list bounded while a menu redraws itself. The list starts afresh when the
  * area's content epoch changes (openpete_fb_snapshot_retained_area). */
 #define HELD_MAX   16384                 /* entries per area */
-#define HELD_GRID_W 512                  /* coverage grid, PSX screen pixels */
+/* The coverage grid, in PSX screen pixels: column 0 is screen x HELD_GRID_X0,
+ * so the grid spans the visible frame up to a widescreen factor of 3 (a
+ * framebuffer copy is placed in the widened frame, ui_sprite UI_WIDEN_FRAME). */
+#define HELD_GRID_X0 (-512)
+#define HELD_GRID_W 1536
 #define HELD_GRID_H 256
 typedef struct {
     scene_tri_t *t; int n, cap;
@@ -2871,12 +2875,13 @@ static int held_raster(const scene_tri_t* q, int set) {
     const float area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
     if (area == 0.0f) return 1;
     const float sg = area > 0.0f ? 1.0f : -1.0f;
-    const int bx0 = (int)floorf(fminf(x0, fminf(x1, x2))), bx1 = (int)ceilf(fmaxf(x0, fmaxf(x1, x2)));
+    const int bx0 = (int)floorf(fminf(x0, fminf(x1, x2))) - HELD_GRID_X0,
+              bx1 = (int)ceilf(fmaxf(x0, fmaxf(x1, x2))) - HELD_GRID_X0;
     const int by0 = (int)floorf(fminf(y0, fminf(y1, y2))), by1 = (int)ceilf(fmaxf(y0, fmaxf(y1, y2)));
     if (!set && (bx0 < 0 || by0 < 0 || bx1 > HELD_GRID_W || by1 > HELD_GRID_H)) return 0;
     for (int y = by0 < 0 ? 0 : by0; y < by1 && y < HELD_GRID_H; y++)
         for (int x = bx0 < 0 ? 0 : bx0; x < bx1 && x < HELD_GRID_W; x++) {
-            const float px = (float)x + 0.5f, py = (float)y + 0.5f;
+            const float px = (float)(x + HELD_GRID_X0) + 0.5f, py = (float)y + 0.5f;
             const float e0 = sg * ((x1 - x0) * (py - y0) - (y1 - y0) * (px - x0));
             const float e1 = sg * ((x2 - x1) * (py - y1) - (y2 - y1) * (px - x1));
             const float e2 = sg * ((x0 - x2) * (py - y2) - (y0 - y2) * (px - x2));
@@ -3098,6 +3103,30 @@ static void fbwin_bbox_add(float b[4], const scene_tri_t* q) {
     }
 }
 
+/** @brief Name the frame a present's framebuffer-copy entries were placed in, for the census.
+ *
+ * The union of the classes' boxes is tested against the edges of the
+ * visible frame (xlo, xhi) and of the 4:3 frame (x 256 - 256 and 256 + 256,
+ * the centred inset at a widescreen aspect), each within half a pixel: a
+ * union reaching a visible edge is "wide", one reaching a 4:3 edge
+ * instead is "4:3" (at a widescreen aspect, a pillarboxed composition), and
+ * one reaching neither is "inner". At 4:3 both edge pairs coincide and the
+ * verdict is "wide".
+ * @param b Per class: the box x0, y0, x1, y1.
+ * @param n Per class: the entry count; a class with none is skipped.
+ * @param xlo Visible frame left, screen x.
+ * @param xhi Visible frame right, screen x.
+ * @return The verdict, or "-" when neither class has an entry. */
+static const char* fbwin_space(const float b[2][4], const int n[2], float xlo, float xhi) {
+    float u0 = 1e9f, u1 = -1e9f;
+    for (int c = 0; c < 2; c++)
+        if (n[c]) { u0 = fminf(u0, b[c][0]); u1 = fmaxf(u1, b[c][2]); }
+    if (u0 > u1) return "-";
+    if (u0 <= xlo + 0.5f || u1 >= xhi - 0.5f) return "wide";
+    if (fabsf(u0) <= 0.5f || fabsf(u1 - 512.0f) <= 0.5f) return "4:3";
+    return "inner";
+}
+
 /** @brief Print one line per present describing the framebuffer-window copy the scene draws (OPENPETE_FBWIN_CENSUS=1).
  *
  * A snapshot entry is a 2D triangle sampling a stored framebuffer image
@@ -3109,8 +3138,10 @@ static void fbwin_bbox_add(float b[4], const scene_tri_t* q) {
  * ("canon", "repeat", "inter"), the overlay phase, the present clock in
  * milliseconds, the world triangle count, the retained area and its replay
  * count, the DISPENV origin, the snapshot index and its UV mode (tpage_y:
- * 1 while the image is pending), and per class the count and screen
- * bounding box with its width and height in sixteenths of the DISPENV rect.
+ * 1 while the image is pending), per class the count and screen bounding
+ * box with its width and height in sixteenths of the DISPENV rect and its
+ * x span in sixteenths of the visible frame (fx16, 0 to 16 across the
+ * widened frame), and the frame the entries were placed in (fbwin_space).
  * @param kind The present kind.
  * @param alpha The overlay's sub-tick phase; 1 for a canonical capture. */
 static void fbwin_census(const char* kind, double alpha) {
@@ -3132,6 +3163,9 @@ static void fbwin_census(const char* kind, double alpha) {
         fbwin_bbox_add(b[c], q);
     }
     const int dw = s_geom_in[2] > 0 ? s_geom_in[2] : 512, dh = s_geom_in[3] > 0 ? s_geom_in[3] : 240;
+    float xlo = 0.0f, xhi = 512.0f;
+    openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    const float fs = 16.0f / (xhi - xlo);
     fprintf(stderr, "[fbwin key=%u f=%u %s alpha=%.3f t=%.3f] world=%d held_area=%d held_replay=%d disp=%d,%d snapidx=%d texel_space=%d",
             openpete_feed_key_now(), s_scene_frame, kind, alpha,
             (double)openpete_interp_present_now() / 1e6, world, s_held_area, s_held_replay,
@@ -3139,11 +3173,12 @@ static void fbwin_census(const char* kind, double alpha) {
     static const char* const name[2] = { "snap", "cell" };
     for (int c = 0; c < 2; c++) {
         if (!n[c]) { fprintf(stderr, " %s=0", name[c]); continue; }
-        fprintf(stderr, " %s=%d[%.1f,%.1f,%.1f,%.1f w16=%.2f h16=%.2f]", name[c], n[c],
+        fprintf(stderr, " %s=%d[%.1f,%.1f,%.1f,%.1f w16=%.2f h16=%.2f fx16=%.2f..%.2f]", name[c], n[c],
                 b[c][0], b[c][1], b[c][2], b[c][3],
-                (b[c][2] - b[c][0]) * 16.0f / (float)dw, (b[c][3] - b[c][1]) * 16.0f / (float)dh);
+                (b[c][2] - b[c][0]) * 16.0f / (float)dw, (b[c][3] - b[c][1]) * 16.0f / (float)dh,
+                (b[c][0] - xlo) * fs, (b[c][2] - xlo) * fs);
     }
-    fprintf(stderr, "\n");
+    fprintf(stderr, " space=%s\n", fbwin_space((const float (*)[4])b, n, xlo, xhi));
 }
 
 void openpete_native_scene_capture_overlay(void) {
@@ -4039,6 +4074,8 @@ static int carry_snapshot_same_cell(const scene_tri_t* a, const scene_tri_t* b) 
  * identifies it instead (carry_snapshot_same_cell);
  * the first unclaimed previous holder within CARRY_MOVE_MAX of every vertex
  * is taken, and the per-vertex lerp then scales the box with the image held.
+ * The bound is scaled by the widescreen factor, since a framebuffer copy is
+ * placed in the widened frame and its x moves that much farther per tick.
  * The pair is anchored.
  * @param prev Previous capture.
  * @param prev_n Previous entry count.
@@ -4049,11 +4086,12 @@ static int carry_snapshot_same_cell(const scene_tri_t* a, const scene_tri_t* b) 
 static int carry_pair_snapshot(const scene_tri_t* prev, int prev_n,
                                const scene_tri_t* curr, int curr_n, carry_match_t* mt) {
     int paired = 0;
+    const float bound = CARRY_MOVE_MAX * openpete_native_widescreen_factor();
     for (int t = 0; t < curr_n; t++) {
         if (mt->match[t] >= 0 || !carry_fb_entry(&curr[t])) continue;
         for (int j = 0; j < prev_n; j++) {
             if (mt->prev_taken[j] || !carry_snapshot_same_cell(&prev[j], &curr[t])) continue;
-            if (tri_pos_dist(&prev[j], &curr[t]) > CARRY_MOVE_MAX) continue;
+            if (tri_pos_dist(&prev[j], &curr[t]) > bound) continue;
             mt->match[t] = j; mt->prev_taken[j] = 1; mt->anchored[t] = 1; paired++;
             break;
         }
@@ -21438,38 +21476,40 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
     return r || !*out;
 }
 
-/** @brief Map a PSX framebuffer screen point to a pixel position of a full-extent capture.
+/** @brief Map a PSX framebuffer screen point of the widened frame to a pixel position of a full-extent capture.
  *
- * The point goes through scene_to_clip under the full-extent mapping at
- * the capture's widen, so the crop cannot drift from where the scene itself
- * lands; the previous mapping state is restored.
+ * A quad drawing a snapshot image is placed in the widened frame: its x is
+ * scaled about the frame's centre column by the widescreen factor
+ * (ui_sprite's UI_WIDEN_FRAME), so screen x 0 and disp_w land on the
+ * visible frame's edges. The image is cropped under the same map: the
+ * point goes through scene_to_clip under the full-extent mapping with a
+ * widen of 1, which spreads x 0..disp_w over the capture's whole width
+ * whatever widen it was composed at, and y over its height. At 4:3 this is
+ * the capture's own mapping. The previous mapping state is restored.
  * @param sx Screen x.
  * @param sy Screen y.
  * @param capw Capture width in pixels.
  * @param caph Capture height in pixels.
- * @param wf Widescreen factor the capture was composed at.
  * @param px Receives the pixel x.
  * @param py Receives the pixel y. */
-static void fbsnap_px(float sx, float sy, int capw, int caph, float wf,
-                      float *px, float *py)
+static void fbsnap_px(float sx, float sy, int capw, int caph, float *px, float *py)
 {
     const int   prev_fe = s_render_full_extent;
     const float prev_wf = s_render_freeze_wf;
-    s_render_full_extent = 1; s_render_freeze_wf = wf;
+    s_render_full_extent = 1; s_render_freeze_wf = 1.0f;
     float cx, cy; scene_to_clip(sx, sy, &cx, &cy);
     s_render_full_extent = prev_fe; s_render_freeze_wf = prev_wf;
     *px = (cx + 1.0f) * 0.5f * (float)capw;
     *py = (1.0f - cy) * 0.5f * (float)caph;
 }
 
-/** @brief Crop a full-extent capture to a framebuffer screen rectangle.
+/** @brief Crop a full-extent capture to a framebuffer screen rectangle of the widened frame.
  *
  * The rectangle's corners map through fbsnap_px, round to the nearest
  * pixel and clamp to the capture.
  * @param cap Capture, RGBA.
  * @param cw Capture width in pixels.
  * @param ch Capture height in pixels.
- * @param wf Widescreen factor the capture was composed at.
  * @param sx Rectangle left in screen coordinates.
  * @param sy Rectangle top in screen coordinates.
  * @param w Rectangle width.
@@ -21478,12 +21518,12 @@ static void fbsnap_px(float sx, float sy, int capw, int caph, float wf,
  * @param out_h Receives the crop height.
  * @return A malloc'd RGBA crop owned by the caller, or NULL when the
  *         rectangle maps to no pixel or the allocation fails. */
-static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch, float wf,
+static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch,
                                   int sx, int sy, int w, int h, int *out_w, int *out_h)
 {
     float fx0, fy0, fx1, fy1;
-    fbsnap_px((float)sx, (float)sy, cw, ch, wf, &fx0, &fy0);
-    fbsnap_px((float)(sx + w), (float)(sy + h), cw, ch, wf, &fx1, &fy1);
+    fbsnap_px((float)sx, (float)sy, cw, ch, &fx0, &fy0);
+    fbsnap_px((float)(sx + w), (float)(sy + h), cw, ch, &fx1, &fy1);
     int x0 = (int)(fx0 + 0.5f), y0 = (int)(fy0 + 0.5f);
     int x1 = (int)(fx1 + 0.5f), y1 = (int)(fy1 + 0.5f);
     if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
@@ -21561,8 +21601,8 @@ static void fbsnap_resolve_census(unsigned frame, int sx, int sy, int w, int h)
  * s_fbsnap_want_frame selects the scene from the completed-scene ring for
  * the compose, which is the one the -vk dump and the live present produce;
  * the kept game-render scene wins where fbsnap_use_game_scene says so.
- * The crop uses the widen the compose used, capture width over ref_w, not
- * the one requested. A NULL result leaves the caller's slot unresolved, so
+ * The crop is taken over the widened frame (fbsnap_px), so at a widescreen
+ * aspect it holds the scene's Hor+ sides. A NULL result leaves the caller's slot unresolved, so
  * its quads keep drawing the previous snapshot.
  * A window slot's compose samples the VRAM texels its copy overwrote
  * (s_vram_under), since the scene was drawn before the copy.
@@ -21596,9 +21636,7 @@ static unsigned char *fbsnap_capture_crop(unsigned frame, int win, int sx, int s
     s_fbsnap_want_frame = 0;
     s_fbsnap_game_sel = 0;
     if (r != 0) return NULL;
-    /* The widen the compose actually used, not the one it was asked for. */
-    const float wf = (s_nr.ref_w > 0) ? (float)cw / (float)s_nr.ref_w : 1.0f;
-    unsigned char *px = fbsnap_crop(cap, cw, ch, wf, sx, sy, w, h, out_w, out_h);
+    unsigned char *px = fbsnap_crop(cap, cw, ch, sx, sy, w, h, out_w, out_h);
     free(cap);
     return px;
 }

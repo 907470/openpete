@@ -469,6 +469,51 @@ static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri
     s_uvedge_bad += (unsigned)uvedge_tri_differs(orig, fed);
 }
 
+/* The PSX 4:3 frame the 2D layer is authored in: x runs 0..512 whatever the
+ * window is, and the widescreen widen mirrors about its centre column. */
+#define UI_FRAME_W 512
+
+/* How a 2D quad's x is mapped under widescreen (ui_widen_x). */
+enum {
+    UI_WIDEN_NONE = 0,   /* authored 4:3 position, inside the centred 4:3 inset */
+    UI_WIDEN_BAR,        /* a frame-width bar: widened, edges overshot by a bleed */
+    UI_WIDEN_FRAME       /* a piece of the framebuffer: placed in the widened frame */
+};
+
+/** @brief Map a 2D x through a widescreen widen mode.
+ *
+ * Both widening modes scale the offset from the frame's centre column by the
+ * Hor+ factor F, so x 0 and UI_FRAME_W land on the visible frame's edges.
+ * UI_WIDEN_BAR truncates the offset toward zero after pushing it 4 pixels
+ * outward: a widened edge lands exactly on clip -1 or +1, where the
+ * rasteriser can leave a 1-pixel sliver uncovered, and the scene scissor
+ * clips the overshoot. UI_WIDEN_FRAME keeps the exact float offset, the map
+ * a framebuffer snapshot image is cropped under (the widened frame), so a
+ * window and the cells drawing it cover the visible frame as the game's
+ * window and cells cover the 4:3 frame. At F <= 1 every mode returns @p x.
+ * @param x Screen x in the 4:3 frame.
+ * @param mode UI_WIDEN_NONE, UI_WIDEN_BAR or UI_WIDEN_FRAME.
+ * @param F The widescreen factor (openpete_native_widescreen_factor).
+ * @return The mapped x. */
+static float ui_widen_x(float x, int mode, float F) {
+    if (mode == UI_WIDEN_NONE || !(F > 1.0f)) return x;
+    const float c = (float)(UI_FRAME_W / 2), w = (x - c) * F;
+    if (mode == UI_WIDEN_FRAME) return c + w;
+    const float kBleed = 4.0f;   /* PSX px of edge bleed (scissor-clipped) */
+    const float b = w < 0.0f ? w - kBleed : (w > 0.0f ? w + kBleed : w);
+    return c + (float)(int)b;
+}
+
+/** @brief Map the x of every vertex of a quad's two triangles through a widescreen widen mode (ui_widen_x).
+ *
+ * @param quad The quad's two triangles, rewritten in place.
+ * @param mode UI_WIDEN_NONE, UI_WIDEN_BAR or UI_WIDEN_FRAME. */
+static void ui_widen_quad(openpete_scene_tri quad[2], int mode) {
+    const float F = openpete_native_widescreen_factor();
+    for (int t = 0; t < 2; t++)
+        for (int j = 0; j < 3; j++) quad[t].v[j].sx = ui_widen_x(quad[t].v[j].sx, mode, F);
+}
+
 /** @brief Redirects a quad that samples a framebuffer window to the stored native snapshot of that window.
  *
  * A quad sampling a MoveImage'd copy of a draw buffer reads texels the
@@ -549,7 +594,10 @@ static uint32_t fb_cell_key(const openpete_scene_tri* t) {
  * primitives holds. Every other quad (opaque, ABR 0, a framebuffer-snapshot
  * window, whose image carries no STP bit) is fed once. A triangle whose
  * primitive samples a draw buffer carries its framebuffer cell key
- * (fb_cell_key), computed from the primitive before any redirect.
+ * (fb_cell_key), computed from the primitive before any redirect. A quad
+ * showing a piece of the framebuffer (redirected to a snapshot, or keyed as
+ * a cell) is placed in the widened frame (UI_WIDEN_FRAME), the frame its
+ * snapshot image is cropped from.
  * @param in The quad's two triangles.
  * @return 1 for a quad fed as an STP pair, else 0. */
 static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
@@ -564,6 +612,7 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
         tex_tri_psx_texel_centre(&quad[t]);
         uvedge_note(&in[t], &quad[t]);
     }
+    if (!vram || cell[0] || cell[1]) ui_widen_quad(quad, UI_WIDEN_FRAME);
     /* ui_blend's classes 2-4 are ABR 1-3. */
     const int split = quad[0].blend > 1 && vram;
     if (split) {
@@ -668,10 +717,6 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     s_fed_prims++;
 }
 
-/* The PSX 4:3 frame the 2D layer is authored in: x runs 0..512 whatever the
- * window is, and the widescreen widen mirrors about its centre column. */
-#define UI_FRAME_W 512
-
 /** @brief Feeds one screen-space untextured POLY_F4 (flat quad) into a native 2D layer.
  *
  * Three uses, chosen by the caller:
@@ -693,37 +738,18 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
  * @param category The scene layer (OPENPETE_SCENE_*).
  * @param alpha The vertex alpha.
  * @param blend The scene blend class.
- * @param full_width Nonzero to widen the quad about x 256 by the widescreen
- *        factor, with a 4-pixel edge overshoot the scene scissor clips. */
+ * @param widen The widescreen map of x (ui_widen_x): UI_WIDEN_BAR for the
+ *        letterbox, which is authored at the 4:3 width and would otherwise
+ *        stop at the centred 4:3 inset; UI_WIDEN_FRAME for a framebuffer
+ *        grid border; UI_WIDEN_NONE otherwise. */
 static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32_t alpha, int blend,
-                    int full_width) {
-    int sx[4], sy[4];
-    uint32_t xyw[4];
-    xyw[0]=cpu->read_word(p+0x08); xyw[1]=cpu->read_word(p+0x0C);
-    xyw[2]=cpu->read_word(p+0x10); xyw[3]=cpu->read_word(p+0x14);
-    for (int k=0;k<4;k++){ sx[k]=(int16_t)(xyw[k]&0xFFFF); sy[k]=(int16_t)(xyw[k]>>16); }
-    /* Widescreen: a FULL-SCREEN bar (the cutscene letterbox) is authored at the PSX
-     * 4:3 width (x 0..512), which scene_to_clip maps to the centred 4:3 inset - so
-     * in a wide window the bars stop at the inset and the revealed side strips show
-     * the world at top/bottom. Widen such a bar about screen-centre 256 by the Hor+
-     * factor F so x 0->xlo and 512->xhi map to the full panel [-1,+1] (same vertical
-     * extent - the widened bar stays continuous with the central one). No-op at 4:3
-     * (F=1). Vertical bars are unchanged.
-     *
-     * Over-extend each side edge a few PSX px past the content rect: the exact
-     * widened edge lands sub-pixel-precisely on clip ±1, where the rasteriser drops
-     * a 1px sliver along the window border, leaving the letterbox short of the
-     * edge. The scene scissor clips the overshoot, so the bleed is never visible
-     * beyond the edge - it only guarantees the border column is covered. */
-    if (full_width) {
-        float F = openpete_native_widescreen_factor();
-        if (F > 1.0f) for (int k=0;k<4;k++) {
-            const float kBleed = 4.0f;   /* PSX px of edge bleed (scissor-clipped) */
-            float w = ((float)sx[k] - (float)(UI_FRAME_W / 2)) * F;
-            if (w < 0.0f)      w -= kBleed;
-            else if (w > 0.0f) w += kBleed;
-            sx[k] = UI_FRAME_W / 2 + (int)w;
-        }
+                    int widen) {
+    float sx[4], sy[4];
+    const float F = openpete_native_widescreen_factor();
+    for (int k = 0; k < 4; k++) {
+        const uint32_t xy = cpu->read_word(p + 0x08u + 4u * (uint32_t)k);
+        sx[k] = ui_widen_x((float)(int16_t)(xy & 0xFFFFu), widen, F);
+        sy[k] = (float)(int16_t)(xy >> 16);
     }
     uint32_t rgba = (w1 & 0xFFFFFFu) | (alpha << 24);
 
@@ -732,13 +758,13 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
         for (int j=0;j<3;j++){ int c=idx[t][j];
-            tri.v[j].sx=(float)sx[c]; tri.v[j].sy=(float)sy[c];
+            tri.v[j].sx=sx[c]; tri.v[j].sy=sy[c];
             tri.v[j].z=1.0f; tri.v[j].pvz=1.0f; tri.v[j].rgba=rgba; }
         tri.textured=0; tri.blend=blend;
         openpete_native_scene_add_tri(&tri, category, 0);
     }
     bbox_note(category == OPENPETE_SCENE_OVERLAY ? UICLS_BAR : UICLS_PANEL,
-              (float)sx[0], (float)sy[0], (float)sx[3], (float)sy[3]);
+              sx[0], sy[0], sx[3], sy[3]);
     s_fed_prims++;
 }
 
@@ -1569,11 +1595,14 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * samples the emulated vram scratch). Tint = the FT4's setRGB0 (B,G,R
          * packed in w1), r=lo byte, g=mid, b=hi. */
         scene_begin_for_feed();
-        {   /* the quad paints the frozen frame over what the buffer held */
+        {   /* the quad paints the frozen frame over what the buffer held; the
+             * native backdrop draws it over the widened frame */
+            const float F = openpete_native_widescreen_factor();
             float x[4], y[4];
             for (int k = 0; k < 4; k++) {
                 const uint32_t xy = cpu->read_word(prim + 0x08u + 8u * (uint32_t)k);
-                x[k] = (float)(int16_t)xy; y[k] = (float)(int16_t)(xy >> 16);
+                x[k] = ui_widen_x((float)(int16_t)xy, UI_WIDEN_FRAME, F);
+                y[k] = (float)(int16_t)(xy >> 16);
             }
             openpete_native_scene_note_cover_quad(x, y);
         }
@@ -1600,12 +1629,14 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * key (the claim's aux word, grid_elem_key), so the carry moves it
          * with the grid's cells between ticks. Such a border is the scaled
          * window's edge, not a letterbox bar, even on the first shrink step
-         * where it spans x 0..512: it feeds the panel layer unwidened, inside
-         * the 4:3 window, on every step. */
+         * where it spans x 0..512: it feeds the panel layer in the widened
+         * frame the grid's cells are placed in (UI_WIDEN_FRAME), on every
+         * step. */
         const int full = !aux && f4_spans_frame_width(cpu, prim);
         openpete_native_scene_set_fb_cell(aux);
-        if (full) feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1);
-        else      feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0, 0);
+        if (full) feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, UI_WIDEN_BAR);
+        else      feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0,
+                          aux ? UI_WIDEN_FRAME : UI_WIDEN_NONE);
         openpete_native_scene_set_fb_cell(0u);
         break; }
     case QK_F4_PANEL: {
@@ -1614,7 +1645,7 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * when the quad draws. */
         semi_note(SEMI_F4, (unsigned)s_last_abr, 0);
         const ui_blend_t b = ui_blend(1, (unsigned)s_last_abr);
-        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, b.alpha, b.blend, 0);
+        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, b.alpha, b.blend, UI_WIDEN_NONE);
         break; }
     case QK_SPRT:    feed_sprt_now(cpu, prim, s_last_tpage); break;
     case QK_LINE_G2: feed_line_g2(cpu, prim, w1); break;
