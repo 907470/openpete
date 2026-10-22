@@ -105,8 +105,11 @@ pause-menu-midlevel@shrink|2013|200||2027,2028,2029,2030,2031,2032,2033,2034,203
 pause-menu-midlevel@shrink-freeze|2013|200|freeze|2027,2028,2029
 # pause-unpause: Start again at 2173; the game grows the window back over
 # 2190-2197 from the other draw buffer, then draws the live world. Blessed
-# pre-fix.
-pause-unpause|2173|200||2189,2191,2193,2195,2197,2199
+# pre-fix. 2192 is the first grow step after the draw buffer's image is
+# stored: its cells were fed in texel space at 2191 and in image pixels at
+# 2192, and the intermediate leg shows whether they pair across that change
+# (the window between the 9/16 and 10/16 boxes) or stand at 10/16.
+pause-unpause|2173|200||2189,2191,2192,2193,2195,2197,2199
 # colour-cheat-red: the pause-menu colour cheat (Up Right Down Left Up Square
 # R1 R2 L1 L2 Up Left Down Right Up, then Circle) sets D_800698CC to 1, and
 # from VBL 2328 on the tick writer stores 0xA0000090 at g_Spyro+0x20: the player
