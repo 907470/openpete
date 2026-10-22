@@ -2134,7 +2134,10 @@ static int on_ot_rank_link(CPUState* cpu, uint32_t addr) {
     ui_sprite_link_note(cpu->a0, (int)cpu->a1);
     /* Inside a fade emitter that links here (ui_game.fade_emitter_ovl), the
      * last link of the call is its F4: ranked with the 2D as the fade quad. */
-    if (s_in_fade) openpete_native_scene_set_fade_prim(cpu->a0);
+    if (s_in_fade) {
+        openpete_native_scene_set_fade_prim(cpu->a0);
+        openpete_native_scene_set_fade_slot((int)cpu->a1);
+    }
     return 0;
 }
 

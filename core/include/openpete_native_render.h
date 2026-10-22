@@ -1126,6 +1126,10 @@ typedef struct {
                   * a terrain fragment whose key sorts behind the marked key
                   * yields the pixel (psx_key_contest.glsl
                   * op_key_order_yields). 0 = true depth decides.          */
+    int ot_slot1;/* 1 + the ordering-table slot the game links the face
+                  * into (moby faces: the world bucket the draw splices the
+                  * face into), 0 = unknown. The compose compares it with
+                  * the fade's slot (openpete_native_scene_set_fade_slot).  */
 } openpete_scene_tri;
 
 /* Rank sentinels for faces that are not ranked but must still be told
@@ -1523,6 +1527,18 @@ void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
  * fade among the frame's 2D. Cleared at each game-feed frame boundary.
  * @param prim The fade quad's guest address; 0 = none. */
 void openpete_native_scene_set_fade_prim(uint32_t prim);
+
+/** @brief Record the ordering-table slot this tick's fade quad was linked into on a slotted table.
+ *
+ * Stored as slot + 1 in bits 26-30 of the fade word the emitter set this
+ * tick (openpete_native_scene_set_fade), so it travels with the fade through
+ * the sub-tick lerp and every scene snapshot; a slot above 30, or no fade
+ * set, records nothing. The stitch draws higher slots first, so a face the
+ * game links into a lower slot draws after the fade: the compose draws the
+ * HUD3D layer after the fade when every slotted HUD3D face is below it.
+ * Renderer state only.
+ * @param slot The slot index (the slotted insert's a1). */
+void openpete_native_scene_set_fade_slot(int slot);
 
 /** @brief Return the guest address of this frame's fade POLY_F4, as openpete_native_scene_set_fade_prim recorded it.
  *
@@ -1951,7 +1967,9 @@ unsigned openpete_native_scene_presenting(void);
  * semi-transparent full-screen POLY_F4 whose ABR mode is the direction: 2
  * (B-F) fades to black, 1 (B+F) to white. The native renderer draws a
  * full-panel quad last, over world, actors, HUD and 2D UI, in the matching
- * blend mode with the depth test passing everywhere. The fade clears at each
+ * blend mode with the depth test passing everywhere; the HUD3D faces and the
+ * 2D the game links after a slotted fade quad
+ * (openpete_native_scene_set_fade_slot) draw after it. The fade clears at each
  * scene begin, so the game's per-tick call is what keeps it on; the
  * re-extract treats it as active only on a tick the game set it. Colour
  * components are clamped to 0..255. Under the retained freeze mode the

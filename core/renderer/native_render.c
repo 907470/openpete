@@ -349,6 +349,7 @@ typedef struct {
     uint32_t mid;   /* moby identity - see openpete_scene_tri */
     int shell;      /* front-shell record member - see openpete_scene_tri */
     int key_order;  /* draws by key order against terrain - see openpete_scene_tri */
+    int ot_slot1;   /* 1 + ordering-table slot, 0 unknown - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -2247,6 +2248,13 @@ int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
 }
 
 void openpete_native_scene_set_fade_prim(uint32_t prim) { s_scene_fade_prim = prim; }
+
+void openpete_native_scene_set_fade_slot(int slot) {
+    if (!(s_game_fade & (1u << 31)) || slot < 0 || slot > 30) return;
+    const uint32_t enc = (uint32_t)(slot + 1) << 26;
+    s_game_fade = (s_game_fade & ~(0x1Fu << 26)) | enc;
+    if (s_scene_fade & (1u << 31)) s_scene_fade = (s_scene_fade & ~(0x1Fu << 26)) | enc;
+}
 
 uint32_t openpete_native_scene_fade_prim(void) { return s_scene_fade_prim; }
 
@@ -15056,6 +15064,56 @@ static int scene_lifts_over_fade(const scene_tri_t* scene, int scene_n, uint32_t
     return 0;
 }
 
+/** @brief Report whether a present draws its HUD3D layer after the fade: the fade carries an ordering-table slot and every slotted HUD3D face links below it.
+ *
+ * On a slotted table the stitch draws the higher slots first, so a face the
+ * game links below the fade quad's slot is drawn after the fade and is not
+ * darkened by it (the Spyro 3 credits letters at slot 0 under the fade at
+ * slot 8). The layer is lifted whole: a HUD3D face with no slot follows the
+ * layer, and a present holding a slotted HUD3D face at or above the fade's
+ * slot keeps the layer under the fade. OPENPETE_UI_FADE_CENSUS prints one
+ * line per present that draws a slotted fade.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param fade The present's fade word (openpete_native_scene_set_fade layout).
+ * @return 1 to draw the HUD3D layer after the fade, else 0. */
+static int hud3d_over_fade(const scene_tri_t* scene, int scene_n, uint32_t fade)
+{
+    const int fslot1 = (int)((fade >> 26) & 0x1Fu);
+    if (!(fade & (1u << 31)) || !fslot1) return 0;
+    int below = 0, above = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].category != OPENPETE_SCENE_HUD3D || !scene[t].ot_slot1) continue;
+        if (scene[t].ot_slot1 < fslot1) below++; else above++;
+    }
+    static int fc = -1;
+    if (fc < 0) { const char* e = getenv("OPENPETE_UI_FADE_CENSUS"); fc = e && *e && *e != '0'; }
+    if (fc) fprintf(stderr, "[hud3d-fade] slot=%d below=%d above=%d lifted=%d\n",
+                    fslot1 - 1, below, above, below > 0 && !above);
+    return below > 0 && !above;
+}
+
+/** @brief Draw the HUD3D layer (untextured bucket 9, textured bucket 12) when this call's place in the compose is the one hud3d_over_fade chose.
+ *
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param tx_start First vertex of the textured block.
+ * @param ut_first First vertex of each untextured bucket.
+ * @param ut_count Vertex count of each untextured bucket.
+ * @param txg_first First vertex of each textured bucket.
+ * @param txg_count Vertex count of each textured bucket.
+ * @param lift The hud3d_over_fade verdict of the present.
+ * @param after_fade 1 for the call after the fade pass, 0 for the one before it. */
+static void draw_hud3d_pass(const scene_tri_t* scene, int scene_n, int tx_start,
+                            const int* ut_first, const int* ut_count, const int* txg_first,
+                            const int* txg_count, int lift, int after_fade)
+{
+    if ((lift != 0) != (after_fade != 0)) return;
+    hud3d_tex_census(scene, scene_n,
+                     draw_hud3d_layer(scene, tx_start, ut_first[9], ut_count[9],
+                                      txg_first[12], txg_count[12]));
+}
+
 /** @brief Pack the untextured HUD triangles of the over-fade pass, in scene order, from vertex n.
  *
  * They are 2D at one depth, so the back-to-front sort of bucket 6 would keep
@@ -16214,9 +16272,11 @@ static bool draw_native_scene(bool full_extent)
     if (!hud_under)
         draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6], 0);
 
-    hud3d_tex_census(scene, scene_n,
-                     draw_hud3d_layer(scene, tx_start, ut_first[9], ut_count[9],
-                                      txg_first[12], txg_count[12]));
+    /* The HUD3D layer draws here, under the fade, unless the game links
+     * every slotted HUD3D face below the fade quad's slot (hud3d_over_fade):
+     * then it draws after the fade, as the stitch orders it. */
+    const int hud3d_lift = hud3d_over_fade(scene, scene_n, scene_fade);
+    draw_hud3d_pass(scene, scene_n, tx_start, ut_first, ut_count, txg_first, txg_count, hud3d_lift, 0);
 
     /* OVERLAY layer (2D flat quads, among them the cutscene letterbox bars):
      * drawn after every scene group, over everything incl. the player,
@@ -16244,6 +16304,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
         }
     }
+    draw_hud3d_pass(scene, scene_n, tx_start, ut_first, ut_count, txg_first, txg_count, hud3d_lift, 1);
     draw_over_fade_2d(scene, scene_n, ut_first, ut_count, tx_start,
                       txg_first[TX_BUCKET_OVER_HUD], txg_count[TX_BUCKET_OVER_HUD]);
     rhi_gpu_zone_end(s_nr.dev);   /* sc.hud */

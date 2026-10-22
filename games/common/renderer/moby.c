@@ -7541,6 +7541,16 @@ static double moby_tri_contest_key(int i) {
     return moby_tri_true_key(i);
 }
 
+/** @brief Return a face's ordering-table slot plus one, or 0 for a face with no world bucket.
+ *
+ * The slot is the world bucket back on the table's scale
+ * (moby_otk_world_key), the slot the draw links the face into.
+ * @param wbk The face's world bucket, negative when it has none.
+ * @return The slot plus one, or 0. */
+static int moby_face_ot_slot1(int wbk) {
+    return wbk >= 0 ? moby_otk_world_key(wbk) + 1 : 0;
+}
+
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
  * Does nothing unless the moby render path is selected. Appends to the scene
@@ -7601,6 +7611,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
         t.blend    = s_wtri[i].blend;
         t.mid      = moby_scene_identity(s_wtri_moby[i]);
         t.shell    = moby_shell_face(i, &shell_run);
+        t.ot_slot1 = moby_face_ot_slot1(s_wtri_wbk[i]);
         /* og OT key channel, moby twin of the terrain emit: the .s inserts
          * each moby face at its average-Z slot minus the authored
          * m_DepthOffset (the angle word's top byte, which the cull packs into record
