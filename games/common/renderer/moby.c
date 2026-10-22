@@ -4542,16 +4542,6 @@ static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t rec, uint32_t mode
     }
     return fcache_get(cpu, fb);
 }
-/** @brief The face decode for a cull record, from the record's own faceblock, header, keyframe and tier.
- *
- * @param cpu The guest CPU state; a patched decode writes and restores the
- *        faceblock.
- * @param R The record.
- * @return The decode, or NULL when the faceblock does not decode. */
-static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
-    return moby_faces_for(cpu, R->addr, R->model_held, R->faceblock,
-                          R->header, R->frameA, R->zsf4);
-}
 /** @brief The model whose own table resolves the patch list of a keyframe no cull record names.
  *
  * Where the record holds the keyframe as its stream word
@@ -4571,6 +4561,67 @@ static uint32_t moby_prev_patch_model(CPUState* cpu, const rec_meta* R) {
     uint32_t cls   = cpu->read_half(R->moby + game_layout.moby.class_off);
     uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
     return (model >= 0x80000000u) ? model : 0u;
+}
+static int moby_snapshot_curr_pose(CPUState* cpu, uint32_t moby,
+                                   const openpete_interp_obj_t** oc, moby_pose_t* pose);
+/** @brief Whether a derived pose is the keyframe a cull record names, the record's word carrying the cull's low-tier mark.
+ *
+ * The cull ORs 0xFC000000 into the stored keyframe word when its ZSF4
+ * (mobydraw.s:455-457) is negative, the low tier that applies no patch list
+ * (mobydraw.s:530-533), which overwrites the word's patch-table index bits.
+ * @param p The derived pose.
+ * @param R The record.
+ * @return 1 when the pose's header is the record's and its keyframe word
+ *         with the mark is the record's word. */
+static int moby_pose_is_marked_frame(const moby_pose_t* p, const rec_meta* R) {
+    return p->header == R->header && (p->frame_a | 0xFC000000u) == R->frameA;
+}
+/** @brief The keyframe word and model through which a record's draw resolves its keyframe patch list.
+ *
+ * A record holding a previous pose resolves through its model (model_held).
+ * A host-built record (addr 0: the reveal walk's, which no cull wrote) has no
+ * +0x14 store, so on a word-form game its keyframe resolves through the
+ * moby's model table as the cull resolves it (moby_prev_patch_model). A cull
+ * record whose tier --no-lod raised to the high tier (zsf4 > 0) while its
+ * keyframe word carries the cull's low-tier mark draws the high-tier faces,
+ * which the game patches by keyframe: the unmarked word is the keyframe the
+ * moby's animation state names (live, else the interp snapshot's current
+ * state), accepted only when it marks to the record's word, and its list
+ * resolves through the model table. Any other record reads the list off its
+ * own +0x14 store (model 0) by its own word.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @param model Receives the model, or 0 for the record's own store.
+ * @return The keyframe word. */
+static uint32_t moby_curr_patch_frame(CPUState* cpu, const rec_meta* R, uint32_t* model) {
+    *model = R->model_held;
+    if (R->model_held) return R->frameA;
+    const uint32_t cls_model = moby_prev_patch_model(cpu, R);
+    if (!R->addr) { *model = cls_model; return R->frameA; }
+    *model = 0u;
+    if (!cls_model || R->zsf4 <= 0 || (int32_t)R->frameA >= 0) return R->frameA;
+    uint8_t st[5];
+    for (unsigned k = 0; k < 5u; k++)
+        st[k] = (uint8_t)cpu->read_byte(R->moby + game_layout.moby.anim_state_off + k);
+    moby_pose_t p;
+    const openpete_interp_obj_t* o = NULL;
+    if ((moby_pose_derive(cpu, cls_model, st, &p) && moby_pose_is_marked_frame(&p, R)) ||
+        (moby_snapshot_curr_pose(cpu, R->moby, &o, &p) && moby_pose_is_marked_frame(&p, R))) {
+        *model = cls_model;
+        return p.frame_a;
+    }
+    return R->frameA;
+}
+/** @brief The face decode for a record, from its faceblock, header, keyframe and tier.
+ *
+ * @param cpu The guest CPU state; a patched decode writes and restores the
+ *        faceblock.
+ * @param R The record.
+ * @return The decode, or NULL when the faceblock does not decode. */
+static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
+    uint32_t model;
+    const uint32_t frame = moby_curr_patch_frame(cpu, R, &model);
+    return moby_faces_for(cpu, R->addr, model, R->faceblock, R->header, frame, R->zsf4);
 }
 /** @brief The previous keyframe's faces for the sub-tick colour crossfade: the faces the game drew last tick, with last tick's patches.
  *
@@ -4612,8 +4663,10 @@ static const fcache_t* moby_clerp_prev_faces(CPUState* cpu, const rec_meta* R,
         !moby_pose_live(R->header_p, R->frameA_p)) return NULL;
     uint32_t model = moby_prev_patch_model(cpu, R);
     if (game_layout.moby.rec_frame_is_word && !model) return NULL;
-    int curr_p = moby_pose_live(R->header, R->frameA) &&
-        moby_game.frame_patch_list(cpu, R->addr, R->model_held, R->frameA) >= 0x80000000u;
+    uint32_t curr_model;
+    const uint32_t curr_frame = moby_curr_patch_frame(cpu, R, &curr_model);
+    int curr_p = moby_pose_live(R->header, curr_frame) &&
+        moby_game.frame_patch_list(cpu, R->addr, curr_model, curr_frame) >= 0x80000000u;
     int prev_p = moby_game.frame_patch_list(cpu, R->addr, model, R->frameA_p) >= 0x80000000u;
     if (!curr_p && !prev_p) return NULL;
     const fcache_t* FCp = moby_faces_for_prev(cpu, R, model);
