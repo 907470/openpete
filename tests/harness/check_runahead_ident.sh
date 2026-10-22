@@ -21,7 +21,7 @@
 # of a tick's VBL pair carry the same image.
 #
 # Per row of games/<slug>/corpus/runahead-corpus.manifest
-# (bk2 | vbl | depth | deferral | card, the last two optional), two
+# (bk2 | vbl | depth | deferral | card | rex, the last three optional), two
 # headless replays of the movie:
 #   (a) --runahead <depth>, native capture at <vbl>;
 #   (b) no runahead, native capture at <vbl> + 2*<depth>.
@@ -40,6 +40,21 @@
 # adopted, its led state is not captured) or was adopted into the real
 # timeline (`adopted the led timeline`) before its VBL is also VACUOUS:
 # nothing led that capture.
+#
+# Re-extract leg: a second pair of replays captures the same two VBLs through
+# the sub-tick re-extract (--screenshot-intermediate-on-frame, alpha 0.5),
+# the path every windowed present takes. It replays the producer captures the
+# canonical epoch holds fresh, so a speculative tick that moves the epoch or
+# leaves a capture set behind drops or duplicates geometry there while the
+# canonical capture above stays exact. Statistic: rex_diffpx, the differing
+# pixels of the two re-extract captures; pass criterion 0. Engagement: both
+# legs log a bracketed intermediate (`bracketed=1`), and the canonical leg's
+# OPENPETE_SCENE_SIG census shows actor and player triangles (A>0, P>0);
+# otherwise the row is VACUOUS. The runahead leg's census is printed beside it.
+# The presented camera rides the committed timeline under runahead, so the
+# re-extract pair is exact only where the camera holds across the 2N window;
+# a row whose sixth manifest field (rex) is `-` skips the pair
+# (rex_diffpx=-), and its comment names the reason.
 #
 # Deferral: the runahead leg's `deferred to a final yield:` line is printed
 # per row; its `runahead:` part counts the speculation snapshots owed to a
@@ -60,8 +75,8 @@
 #
 # Verdict line, one per row:
 #   [runahead-ident] game=<g> row=<bk2>@<vbl> depth=<n> diffpx=<n>
-#                    maxabs=<n> checked=<n> ra_deferred=<owed>/<rollbacks>
-#                    verdict=PASS|FAIL|VACUOUS
+#                    maxabs=<n> rex_diffpx=<n> checked=<n>
+#                    ra_deferred=<owed>/<rollbacks> verdict=PASS|FAIL|VACUOUS
 #
 # Usage: tests/harness/check_runahead_ident.sh [--game SLUG] [--filter SUBSTR]
 #                                        [--build-dir=DIR] [--help]
@@ -76,7 +91,7 @@ FILTER=""
 for a in "$@"; do
     case "$a" in
         --build-dir=*) PG_BUILD_DIR="${a#--build-dir=}";;
-        -h|--help) sed -n '2,50p' "$0"; exit 0;;
+        -h|--help) sed -n '2,80p' "$0"; exit 0;;
     esac
 done
 # --filter takes its value as the next argument.
@@ -97,11 +112,43 @@ python3 -c 'import PIL' 2>/dev/null || { echo "runahead-ident: SKIP (python3 or 
 OUT="${PG_BUILD_DIR:-build/linux-release}/runahead-ident/$GAME"
 mkdir -p "$OUT"
 
+# png_diff A B: prints the differing pixel count and the worst channel
+# difference of two captures (a size mismatch counts every pixel of both).
+png_diff() {
+    python3 - "$1" "$2" <<'PYEOF'
+import sys
+from PIL import Image, ImageChops
+A = Image.open(sys.argv[1]).convert("RGB")
+B = Image.open(sys.argv[2]).convert("RGB")
+if A.size != B.size:
+    print(A.size[0] * A.size[1] + B.size[0] * B.size[1], 255)
+    raise SystemExit
+d = ImageChops.difference(A, B)
+if d.getbbox() is None:
+    print(0, 0)
+    raise SystemExit
+bands = d.split()
+mx = max(b.getextrema()[1] for b in bands)
+n = sum(1 for px in d.getdata() if px != (0, 0, 0))
+print(n, mx)
+PYEOF
+}
+
+# scene_sig LOG: prints the A= and P= counts of the log's last [scene-sig]
+# line, or "0 0" without one.
+scene_sig() {
+    local l
+    l="$(grep -o 'A=[0-9]* S=[0-9]* P=[0-9]*' "$1" | tail -1)"
+    local a="${l#A=}"; a="${a%% *}"
+    local p="${l##*P=}"
+    echo "${a:-0} ${p:-0}"
+}
+
 fail=0
 rows=0
-while IFS='|' read -r bk2 vbl depth want_def card; do
+while IFS='|' read -r bk2 vbl depth want_def card rex; do
     bk2="${bk2// /}"; vbl="${vbl// /}"; depth="${depth// /}"; want_def="${want_def//[[:space:]]/}"
-    card="${card//[[:space:]]/}"
+    card="${card//[[:space:]]/}"; rex="${rex//[[:space:]]/}"
     [[ -z "$bk2" || "$bk2" == \#* ]] && continue
     [[ -n "$FILTER" && "$bk2" != *"$FILTER"* ]] && continue
     MOVIE="$PG_BK2_DIR/$bk2"
@@ -150,6 +197,37 @@ while IFS='|' read -r bk2 vbl depth want_def card; do
         --screenshot-output "$OUT/$tag-canon-{n}.png" \
         --frame-limit $((led + 30)) \
         || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (canonical run, see $CN_LOG)"; fail=1; PG_RUN_ARGS=("${saved_run_args[@]}"); continue; }
+
+    # The re-extract pair: the same two VBLs through the sub-tick re-extract.
+    # A card row replays on its own fresh copies of the fixture, since the
+    # movie's menus depend on the card.
+    RXR_LOG="$OUT/$tag-ra-rex.log"; RXR_PNG="$OUT/$tag-ra-rex-$vbl-vk.png"
+    RXC_LOG="$OUT/$tag-canon-rex.log"; RXC_PNG="$OUT/$tag-canon-rex-$led-vk.png"
+    if [[ "$rex" != - ]]; then
+        if [[ -n "$FX" ]]; then
+            rm -f "${OUT:?}/$tag-ra-rex.mcr" "${OUT:?}/$tag-ra-rex.mcr.modset" \
+                  "${OUT:?}/$tag-canon-rex.mcr" "${OUT:?}/$tag-canon-rex.mcr.modset"
+            cp "$FX" "$OUT/$tag-ra-rex.mcr"; cp "$FX" "$OUT/$tag-canon-rex.mcr"
+            RA_CARD_ARGS=(--card1 "$OUT/$tag-ra-rex.mcr" --no-card2)
+            CN_CARD_ARGS=(--card1 "$OUT/$tag-canon-rex.mcr" --no-card2)
+        fi
+        PG_CAPTURE_ENV=(OPENPETE_SCENE_SIG=1 OPENPETE_INTERMEDIATE_ALPHA=0.5)
+        pg_capture "$RXR_LOG" "$RXR_PNG" -- \
+            --renderer vk --mute 1 --aspect 4:3 --lod original --vsync 0 \
+            --bk2 "$MOVIE" --runahead "$depth" "${RA_CARD_ARGS[@]}" \
+            --screenshot-native-only --screenshot-intermediate-on-frame "$vbl" \
+            --screenshot-output "$OUT/$tag-ra-rex-{n}.png" \
+            --frame-limit $((led + 30)) \
+            || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (runahead re-extract run, see $RXR_LOG)"; fail=1; PG_CAPTURE_ENV=(); PG_RUN_ARGS=("${saved_run_args[@]}"); continue; }
+        pg_capture "$RXC_LOG" "$RXC_PNG" -- \
+            --renderer vk --mute 1 --aspect 4:3 --lod original --vsync 0 \
+            --bk2 "$MOVIE" "${CN_CARD_ARGS[@]}" \
+            --screenshot-native-only --screenshot-intermediate-on-frame "$led" \
+            --screenshot-output "$OUT/$tag-canon-rex-{n}.png" \
+            --frame-limit $((led + 30)) \
+            || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (canonical re-extract run, see $RXC_LOG)"; fail=1; PG_CAPTURE_ENV=(); PG_RUN_ARGS=("${saved_run_args[@]}"); continue; }
+        PG_CAPTURE_ENV=()
+    fi
     PG_RUN_ARGS=("${saved_run_args[@]}")
 
     armed=0
@@ -160,24 +238,20 @@ while IFS='|' read -r bk2 vbl depth want_def card; do
     checked="${checked##*checked=}"
     [[ -n "$checked" ]] || checked=0
 
-    read -r diffpx maxabs < <(python3 - "$CN_PNG" "$RA_PNG" <<'PYEOF'
-import sys
-from PIL import Image, ImageChops
-A = Image.open(sys.argv[1]).convert("RGB")
-B = Image.open(sys.argv[2]).convert("RGB")
-if A.size != B.size:
-    print(A.size[0] * A.size[1] + B.size[0] * B.size[1], 255)
-    raise SystemExit
-d = ImageChops.difference(A, B)
-if d.getbbox() is None:
-    print(0, 0)
-    raise SystemExit
-bands = d.split()
-mx = max(b.getextrema()[1] for b in bands)
-n = sum(1 for px in d.getdata() if px != (0, 0, 0))
-print(n, mx)
-PYEOF
-    )
+    read -r diffpx maxabs < <(png_diff "$CN_PNG" "$RA_PNG")
+    rex_diffpx=0; rex_eng=1
+    if [[ "$rex" != - ]]; then
+        read -r rex_diffpx _ < <(png_diff "$RXC_PNG" "$RXR_PNG")
+        grep -q 'wrote intermediate .*bracketed=1' "$RXR_LOG" || rex_eng=0
+        grep -q 'wrote intermediate .*bracketed=1' "$RXC_LOG" || rex_eng=0
+        read -r rxc_a rxc_p < <(scene_sig "$RXC_LOG")
+        read -r rxr_a rxr_p < <(scene_sig "$RXR_LOG")
+        [[ "$rxc_a" -gt 0 && "$rxc_p" -gt 0 ]] || rex_eng=0
+        echo "[runahead-ident] game=$GAME row=$bk2@$vbl re-extract scene census:" \
+             "runahead A=$rxr_a P=$rxr_p canonical A=$rxc_a P=$rxc_p engaged=$rex_eng"
+    else
+        rex_diffpx=-
+    fi
 
     def_line="$(grep -o 'deferred to a final yield: .*' "$RA_LOG" | tail -1)"
     ra_owed="$(sed -n 's/.*runahead: \([0-9]*\) snapshot.*/\1/p' <<<"$def_line")"
@@ -195,9 +269,9 @@ PYEOF
     fi
 
     verdict=PASS
-    if [[ $armed -eq 0 || "$checked" -eq 0 || $adopted -eq 1 || $card_eng -eq 0 ]]; then
+    if [[ $armed -eq 0 || "$checked" -eq 0 || $adopted -eq 1 || $card_eng -eq 0 || $rex_eng -eq 0 ]]; then
         verdict=VACUOUS; fail=1
-    elif [[ "$diffpx" -ne 0 || $card_ok -eq 0 ]]; then
+    elif [[ "$diffpx" -ne 0 || ( "$rex_diffpx" != - && "$rex_diffpx" -ne 0 ) || $card_ok -eq 0 ]]; then
         verdict=FAIL; fail=1
     elif [[ -z "$ra_owed" || -z "$ra_rb" ]]; then
         verdict=FAIL; fail=1
@@ -207,9 +281,9 @@ PYEOF
         echo "[runahead-ident]   deferral field >0, runahead deferred nothing"
     fi
     echo "[runahead-ident] game=$GAME row=$bk2@$vbl depth=$depth diffpx=$diffpx" \
-         "maxabs=$maxabs checked=$checked ra_deferred=${ra_owed:-?}/${ra_rb:-?} verdict=$verdict"
+         "maxabs=$maxabs rex_diffpx=$rex_diffpx checked=$checked ra_deferred=${ra_owed:-?}/${ra_rb:-?} verdict=$verdict"
     [[ "$verdict" == VACUOUS ]] && echo "[runahead-ident]   armed=$armed adopted=$adopted checked=$checked ($RA_LOG)"
-    [[ "$verdict" == FAIL ]] && echo "[runahead-ident]   led $RA_PNG vs $CN_PNG"
+    [[ "$verdict" == FAIL ]] && echo "[runahead-ident]   led $RA_PNG vs $CN_PNG; re-extract $RXR_PNG vs $RXC_PNG"
 done < "$MANIFEST"
 
 if [[ $rows -eq 0 ]]; then

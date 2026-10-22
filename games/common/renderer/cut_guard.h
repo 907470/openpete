@@ -79,14 +79,19 @@ typedef struct cut_held_sets {
     const int*  n;            /* the current set's item count */
     const char* kind;         /* the census name */
     uint32_t    epoch[2];     /* canonical epoch of the current set, of the retired set */
+    unsigned    vbl;          /* the VBL of the render the current set was opened in */
 } cut_held_sets_t;
 
 /** @brief Open one capture in the canonical epoch in flight: the epoch's first capture retires the current set.
  *
  * On retirement the producer's sets are exchanged, so the current buffer is
  * the one retired an epoch earlier; the caller empties it before appending.
+ * A runahead speculation renders its ticks inside the committed tick's epoch;
+ * a speculative render's first capture empties the current set without
+ * retiring it, so the set holds the last speculative render's items alone.
  * @param s The producer's sets.
- * @return 1 on the epoch's first capture, else 0. */
+ * @return 1 on the epoch's first capture and on a speculative render's first
+ *         capture, else 0. */
 int cut_held_sets_capture(cut_held_sets_t* s);
 
 /** @brief Select the set a re-extract shows and, on a held cut, swap tick N-1's set in.

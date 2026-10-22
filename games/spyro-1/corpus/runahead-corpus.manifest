@@ -1,8 +1,13 @@
-# Runahead prediction-contract corpus for Spyro 1 (fields: bk2 | vbl | depth).
+# Runahead prediction-contract corpus for Spyro 1 (fields: bk2 | vbl | depth | deferral | card | rex;
+# see tests/harness/check_runahead_ident.sh).
 # The led capture at <vbl> under --runahead <depth> must be pixel-identical to
 # the unaccelerated capture at <vbl> + 2*<depth>.
 #
 # beast_makers_wall is the control row: it is the movie the state-roundtrip
 # gate already replays under --runahead 2, and the comparand was calibrated on
 # it (VBL 1828 led matches 1832 exactly and no other VBL in 1824..1834).
+# Its re-extract pair measures the moby and player feeds under speculation: a
+# speculative render that moves the canonical epoch leaves the committed
+# tick's moby and player captures stale, and the led re-extract then carries
+# no actor or player triangle (A=0 P=0, 8921 pixels off the canonical one).
 beast_makers_wall.bk2 | 1828 | 2

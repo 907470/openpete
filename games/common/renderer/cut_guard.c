@@ -93,10 +93,17 @@ static void cut_held_sets_exchange(cut_held_sets_t* s) {
 
 int cut_held_sets_capture(cut_held_sets_t* s) {
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
-    if (s->epoch[0] == epoch) return 0;
+    if (s->epoch[0] == epoch) {
+        /* A render never spans a VBL boundary: a new VBL in the epoch is a
+         * speculative tick's render, which replaces the earlier one's set. */
+        if (spyro_native_canon_capture_open() || s->vbl == openpete_frame) return 0;
+        s->vbl = openpete_frame;
+        return 1;
+    }
     s->swap();
     s->epoch[1] = s->epoch[0];
     s->epoch[0] = epoch;
+    s->vbl = openpete_frame;
     return 1;
 }
 

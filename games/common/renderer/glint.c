@@ -168,7 +168,7 @@ static void glint_sets_swap(void) {
     const int n = s_item_n; s_item_n = s_item_old_n; s_item_old_n = n;
 }
 
-static cut_held_sets_t s_sets = { glint_sets_swap, &s_item_n, "glint", { 0u, 0u } };
+static cut_held_sets_t s_sets = { glint_sets_swap, &s_item_n, "glint", { 0u, 0u }, 0u };
 
 /** @brief Append one walked primitive to s_item, unpaired at the near-guard depth.
  *

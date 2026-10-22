@@ -1062,9 +1062,13 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # capture at that VBL plus 2*<depth> without runahead. --runahead presents
     # the state <depth> ticks ahead of the committed timeline, so the two are
     # the same picture and any pixel between them is a canonical presentation
-    # latch that a speculative tick wrote. Fails as vacuous when the run never
-    # armed runahead, retired no led prediction, or had its speculation
-    # adopted into the real timeline before the row's VBL.
+    # latch that a speculative tick wrote. A second pair captures the same two
+    # VBLs through the sub-tick re-extract (the windowed present path), which
+    # replays the canonical epoch's producer captures; a speculative tick that
+    # moves the epoch or leaves a capture set behind shows there. Fails as
+    # vacuous when the run never armed runahead, retired no led prediction, had
+    # its speculation adopted into the real timeline before the row's VBL, or
+    # the re-extract pair drew no actor or player triangle.
     foreach(_ra_game spyro-1 spyro-2 spyro-3)
         add_test(NAME runahead_ident_${_ra_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_runahead_ident.sh

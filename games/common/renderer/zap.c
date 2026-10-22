@@ -173,7 +173,7 @@ static void zap_sets_swap(void) {
     const int n = s_tick_n; s_tick_n = s_tick_old_n; s_tick_old_n = n;
 }
 
-static cut_held_sets_t s_sets = { zap_sets_swap, &s_tick_n, "zap", { 0u, 0u } };
+static cut_held_sets_t s_sets = { zap_sets_swap, &s_tick_n, "zap", { 0u, 0u }, 0u };
 
 /** @brief Stores one decoded primitive in s_item as an unpaired item at the near-guard depth 1.
  *

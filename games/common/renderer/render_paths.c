@@ -189,6 +189,14 @@ void render_paths_canon_snapshot(void) {
  * the superseded render stamped (spyro_native_canon_epoch_supersede). A
  * render never spans a VBL boundary, so a path the new scene's render
  * recorded before its first feed opened the scene stays.
+ *
+ * A scene a runahead speculation opens drops the intervals and marks but
+ * keeps the epoch: the producers gated to the committed tick's render
+ * (spyro_native_canon_capture_open) stamp no speculative capture, so a new
+ * epoch would leave their committed captures stale at the canonical present
+ * that follows the rollback, and the re-extract would drop every moby and
+ * the player. Producers that capture on every render replace their set
+ * within the epoch.
  * @param frame The VBL stamp of the scene being opened. */
 static void render_paths_superseded(unsigned frame) {
     int w = 0;
@@ -197,7 +205,7 @@ static void render_paths_superseded(unsigned frame) {
     s_iv_n = w;
     for (int p = 0; p < RP_COUNT; p++)
         if (s_mark_vbl[p] < frame) s_pending_marks &= ~(1u << (unsigned)p);
-    spyro_native_canon_epoch_supersede();
+    if (spyro_native_canon_capture_open()) spyro_native_canon_epoch_supersede();
 }
 
 bool render_path_canon_drawn(render_path_t p) {

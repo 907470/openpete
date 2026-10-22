@@ -2197,10 +2197,10 @@ static void part_pool_swap(void)  { pool_copies_swap(&s_part_pc); }
 /** @brief Exchange the dragon-star record's two copies. */
 static void star_rec_swap(void)   { pool_copies_swap(&s_star_pc); }
 
-static cut_held_sets_t s_glow_held  = { glow_pool_swap,  &s_glow_pc.n,  "glow",      { 0u, 0u } };
-static cut_held_sets_t s_spark_held = { spark_pool_swap, &s_spark_pc.n, "sparkle",   { 0u, 0u } };
-static cut_held_sets_t s_part_held  = { part_pool_swap,  &s_part_pc.n,  "particles", { 0u, 0u } };
-static cut_held_sets_t s_star_held  = { star_rec_swap,   &s_star_pc.n,  "star",      { 0u, 0u } };
+static cut_held_sets_t s_glow_held  = { glow_pool_swap,  &s_glow_pc.n,  "glow",      { 0u, 0u }, 0u };
+static cut_held_sets_t s_spark_held = { spark_pool_swap, &s_spark_pc.n, "sparkle",   { 0u, 0u }, 0u };
+static cut_held_sets_t s_part_held  = { part_pool_swap,  &s_part_pc.n,  "particles", { 0u, 0u }, 0u };
+static cut_held_sets_t s_star_held  = { star_rec_swap,   &s_star_pc.n,  "star",      { 0u, 0u }, 0u };
 
 /* A pool record's liveness: 1 live, 0 dead, -1 the pool's end (no later record
  * is read). */
