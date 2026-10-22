@@ -68,6 +68,11 @@ an-evil-plot-unfolds-egg-edge|1773|10||1773,1779,1783,1793|--skip-to-cutscene an
 # span, the COUNTSW hold re-derives the previous pose from a header the game
 # has rewritten, and the throne vanishes on intermediate presents 5643-5731.
 a-powerful-villain-emerges-throne|5653|10||5667|--skip-to-cutscene a_powerful_villain_emerges
+# no-hard-feelings-sheila-portal: the Sheila's Alp portal (record level 16)
+# opens in this cutscene; its picture is baked from Sunny Villa's sky, not its
+# destination's, so the destination-sky extension leaves the 16:9 left band
+# showing the flat backdrop. VBL 3304 is openpete_frame 2731 under this boot.
+no-hard-feelings-sheila-portal|3304|10||3304|--skip-to-cutscene no_hard_feelings
 
 # sunrise-spring-camera-swing holds R2 from VBL 2073 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
