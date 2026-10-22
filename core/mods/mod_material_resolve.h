@@ -73,6 +73,8 @@ typedef struct {
     void* pipeline_ter[OPENPETE_MATERIAL_TER_PIPES];
     /* Portal-profile pipelines (OPENPETE_MATERIAL_PORTAL_PIPES). */
     void* pipeline_portal[OPENPETE_MATERIAL_PORTAL_PIPES];
+    /* Actor-profile pipelines (OPENPETE_MATERIAL_ACTOR_PIPES). */
+    void* pipeline_actor[OPENPETE_MATERIAL_ACTOR_PIPES];
     int   user_enabled;    /* material_enable - the mod's own on/off */
     /* Static uniform block (material_set_params). Declarative materials have
      * no per-instance callback to mint a slot, so the block is interned into

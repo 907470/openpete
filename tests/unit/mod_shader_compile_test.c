@@ -3,7 +3,8 @@
  * mod_glsl.c): the same glslang settings, the same include resolution
  * (<sdk>/shaders, then the shader's own dir) and the same profiles (every
  * stage once; a material fragment a second time under the retained-terrain
- * preamble, and a third under the portal preamble).
+ * preamble, a third under the portal preamble and a fourth under the actor
+ * preamble).
  *
  * Every fragment profile then goes through the constant-table move the
  * engine applies at registration (core/mods/mod_spv_cdata.c); a module it
@@ -182,7 +183,9 @@ int main(int argc, char** argv) {
                                   OPENPETE_MOD_GLSL_TERRAIN_PREAMBLE, log_path);
             failed += compile_one(r, src, stage, &inc, "portal",
                                   OPENPETE_MOD_GLSL_PORTAL_PREAMBLE, log_path);
-            profiles += 2;
+            failed += compile_one(r, src, stage, &inc, "actor",
+                                  OPENPETE_MOD_GLSL_ACTOR_PREAMBLE, log_path);
+            profiles += 3;
             materials++;
             if (!strstr(material_mods, r->mod)) {
                 strncat(material_mods, " ", sizeof material_mods - strlen(material_mods) - 1);

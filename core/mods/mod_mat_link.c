@@ -373,7 +373,16 @@ const char* openpete_mod_link_profile_preamble(int contract, int profile) {
     if (contract != OPENPETE_MOD_LINK_CONTRACT_SCENE) return NULL;
     if (profile == OPENPETE_MOD_LINK_TERRAIN) return OPENPETE_MOD_GLSL_TERRAIN_PREAMBLE;
     if (profile == OPENPETE_MOD_LINK_PORTAL) return OPENPETE_MOD_GLSL_PORTAL_PREAMBLE;
+    if (profile == OPENPETE_MOD_LINK_ACTOR) return OPENPETE_MOD_GLSL_ACTOR_PREAMBLE;
     return NULL;
+}
+
+/** @brief Return the profile whose members and header names a build profile uses: the stock profile for OPENPETE_MOD_LINK_ACTOR, else the profile itself.
+ *
+ * @param profile A build profile.
+ * @return The member profile. */
+static int member_profile(int profile) {
+    return profile == OPENPETE_MOD_LINK_ACTOR ? OPENPETE_MOD_LINK_STOCK : profile;
 }
 
 openpete_mod_link_ctx_t* openpete_mod_link_ctx_new(const char* sdk_dir) {
@@ -999,15 +1008,16 @@ static void module_move_tables(openpete_mod_link_module_t* out) {
     out->words = moved_n;
 }
 
-/** @brief Check a build's inputs: a member count of 1 to 64, members of the requested contract and profile, each with text. */
+/** @brief Check a build's inputs: a member count of 1 to 64, members of the requested contract and member profile (member_profile), each with text; the actor profile on the scene contract only. */
 static int build_inputs_ok(const openpete_mod_link_member_t* const* members, int n, int contract,
                            int profile) {
     if (n < 1 || n > 64 || contract < 0 || contract > 1 || profile < 0 ||
-        profile >= OPENPETE_MOD_LINK_PROFILES)
+        (profile >= OPENPETE_MOD_LINK_PROFILES && profile != OPENPETE_MOD_LINK_ACTOR) ||
+        (profile == OPENPETE_MOD_LINK_ACTOR && contract != OPENPETE_MOD_LINK_CONTRACT_SCENE))
         return 0;
     for (int i = 0; i < n; i++)
         if (!members[i] || !members[i]->text || members[i]->contract != contract ||
-            members[i]->profile != profile)
+            members[i]->profile != member_profile(profile))
             return 0;
     return 1;
 }
@@ -1019,7 +1029,7 @@ int openpete_mod_link_build(openpete_mod_link_ctx_t* ctx,
                             openpete_mod_link_module_t* out) {
     memset(out, 0, sizeof *out);
     const strset_t* header = build_inputs_ok(members, n, contract, profile)
-        ? header_names(ctx, contract, profile) : NULL;
+        ? header_names(ctx, contract, member_profile(profile)) : NULL;
     if (!header) { snprintf(out->log, sizeof out->log, "bad inputs or unreadable contract header"); return -1; }
     order_t ord[64];
     int sorted_case[64];

@@ -48,6 +48,10 @@ extern "C" {
 #define OPENPETE_MOD_LINK_TERRAIN  1
 #define OPENPETE_MOD_LINK_PORTAL   2
 #define OPENPETE_MOD_LINK_PROFILES 3
+/* A build profile with no members of its own: the stock members' text
+ * compiled under the actor preamble (openpete_psx_material.glsl
+ * OP_PROFILE_ACTOR), whose engine half adds only a statement to main(). */
+#define OPENPETE_MOD_LINK_ACTOR    3
 
 /* Chain positions a module serves, and the bytes of one member block. The
  * set 3 binding 1 range a chain draw binds is the 256-byte header plus one
@@ -132,7 +136,7 @@ void openpete_mod_link_ctx_free(openpete_mod_link_ctx_t* ctx);
 /** @brief Return the preamble that compiles a contract's profile, the text mod_shader.c injects after `#version`.
  *
  * @param contract OPENPETE_MOD_LINK_CONTRACT_*.
- * @param profile OPENPETE_MOD_LINK_STOCK, _TERRAIN or _PORTAL.
+ * @param profile OPENPETE_MOD_LINK_STOCK, _TERRAIN, _PORTAL or _ACTOR.
  * @return The preamble, or NULL for the stock profile. */
 const char* openpete_mod_link_profile_preamble(int contract, int profile);
 
@@ -200,10 +204,11 @@ void openpete_mod_link_prebuilt(int contract, int profile, const uint32_t* spv, 
  * move then runs on it (openpete_mod_spv_cdata_extract) unless
  * OPENPETE_MOD_SPV_CDATA is 0.
  * @param ctx The link context.
- * @param members The members, each linkable or in preparation, all of one contract and profile.
+ * @param members The members, each linkable or in preparation, all of one contract and profile
+ *        (the stock profile for OPENPETE_MOD_LINK_ACTOR).
  * @param n Their count, at least 1.
  * @param contract OPENPETE_MOD_LINK_CONTRACT_*.
- * @param profile The profile.
+ * @param profile The profile; OPENPETE_MOD_LINK_ACTOR on the scene contract only.
  * @param compile The compile, or NULL.
  * @param user Passed to @p compile.
  * @param log_path The file a glslang failure is written to.

@@ -107,6 +107,10 @@ void openpete_mods_registry_read_unlock(void) {
 /* Shaders the table's first block holds; it grows by whole blocks. */
 #define MOD_SHADER_BLOCK    256
 #define MOD_SHADER_PATH_MAX OPENPETE_MOD_GLSL_PATH_MAX
+/* Fragment profiles a material compiles, indexed 0 stock, 1 terrain,
+ * 2 portal (the OPENPETE_MOD_LINK_* order) and MOD_SHADER_ACTOR. */
+#define MOD_SHADER_PROFILES 4
+#define MOD_SHADER_ACTOR    3
 
 typedef struct {
     const char* owner;       /* mod id (loader-owned string) */
@@ -125,14 +129,19 @@ typedef struct {
      * half that discards what a portal preview covers. NULL like spv_ter. */
     uint32_t*   spv_portal;
     size_t      spv_portal_words;
+    /* The same source compiled with OP_PROFILE_ACTOR, the walked scene half
+     * the opaque ACTOR group draws (the tie-pull depth export). NULL like
+     * spv_ter. */
+    uint32_t*   spv_actor;
+    size_t      spv_actor_words;
     /* OPENPETE_MATERIAL_CONTRACT_* of the stock profile, read from its
      * SPIR-V at registration (shader_spv_contract). */
     int         contract;
     /* The constant tables moved out of each fragment profile (stock,
-     * terrain, portal; mod_spv_cdata.h) and the renderer's cache slot for
-     * each one's device copy. */
-    openpete_mod_spv_cdata_t cdata[3];
-    void*       cdata_gpu[3];
+     * terrain, portal, actor: MOD_SHADER_PROFILES; mod_spv_cdata.h) and the
+     * renderer's cache slot for each one's device copy. */
+    openpete_mod_spv_cdata_t cdata[MOD_SHADER_PROFILES];
+    void*       cdata_gpu[MOD_SHADER_PROFILES];
     /* The composition member of each fragment profile (mod_mat_link.h),
      * prepared at registration for a material fragment; link_n is the
      * profile count prepared, 0 for anything else. */
@@ -193,9 +202,11 @@ static void shader_move_tables(mod_shader_t* sh, const char* id) {
     if ((off && strcmp(off, "0") == 0) || sh->stage != OPENPETE_MOD_GLSL_STAGE_FRAG ||
         !openpete_mod_spv_has_name(sh->spv, sh->spv_words, k_material_fn, sizeof k_material_fn - 1))
         return;
-    uint32_t** spv[3] = { &sh->spv, &sh->spv_ter, &sh->spv_portal };
-    size_t* words[3] = { &sh->spv_words, &sh->spv_ter_words, &sh->spv_portal_words };
-    for (int p = 0; p < 3; p++) {
+    static const char* const k_suffix[MOD_SHADER_PROFILES] = { "", ".terrain", ".portal", ".actor" };
+    uint32_t** spv[MOD_SHADER_PROFILES] = { &sh->spv, &sh->spv_ter, &sh->spv_portal, &sh->spv_actor };
+    size_t* words[MOD_SHADER_PROFILES] = { &sh->spv_words, &sh->spv_ter_words, &sh->spv_portal_words,
+                                           &sh->spv_actor_words };
+    for (int p = 0; p < MOD_SHADER_PROFILES; p++) {
         uint32_t* out = NULL;
         size_t out_n = 0;
         if (!*spv[p] ||
@@ -205,8 +216,7 @@ static void shader_move_tables(mod_shader_t* sh, const char* id) {
         *spv[p] = out;
         *words[p] = out_n;
         OPL_INFO_F("mods", "%s: shader %s%s: %d constant table(s), %zu B, moved to "
-                   "the material table block", id, sh->path,
-                   p == 1 ? ".terrain" : p == 2 ? ".portal" : "",
+                   "the material table block", id, sh->path, k_suffix[p],
                    sh->cdata[p].tables, sh->cdata[p].len);
     }
 }
@@ -450,11 +460,12 @@ static size_t compile_profile(const char* src, int stage,
     return n;
 }
 
-/** @brief Compile the extra profiles of a material fragment: the retained-terrain half and the portal profile.
+/** @brief Compile the extra profiles of a material fragment: the retained-terrain half, the portal profile and the actor profile.
  *
  * The retained terrain pipelines take flat per-face varyings instead of a
  * per-draw push block (OP_PROFILE_TERRAIN); terrain that yields to a portal
- * preview draws through the portal profile (OP_PROFILE_PORTAL). The source
+ * preview draws through the portal profile (OP_PROFILE_PORTAL); the opaque
+ * ACTOR group draws through the actor profile (OP_PROFILE_ACTOR). The source
  * is the same source: only the profile define differs. Anything that is not
  * a material fragment (postfx, decal, mesh vertex stages) has one profile
  * and gets neither. A failed profile is logged and left NULL; its draws stay
@@ -468,7 +479,7 @@ static size_t compile_profile(const char* src, int stage,
  * @param log_path The compile log path.
  * @param id The mod id, for log lines.
  * @param path The shader's mod-relative path, for log lines.
- * @param sh Receives spv_ter and spv_portal with their word counts. */
+ * @param sh Receives spv_ter, spv_portal and spv_actor with their word counts. */
 static void compile_material_profiles(const char* src, int stage,
                                       const openpete_mod_glsl_include_t* ctx,
                                       const char* key, const char* build_dir,
@@ -488,6 +499,12 @@ static void compile_material_profiles(const char* src, int stage,
     if (sh->spv_portal_words == 0)
         OPL_ERROR_F("mods", "%s: shader %s: portal profile FAILED (see %s) - "
                     "terrain behind portal previews draws stock", id, path, log_path);
+    sh->spv_actor_words = compile_profile(src, stage, ctx, key, build_dir, flat, ".actor",
+                                          OPENPETE_MOD_GLSL_ACTOR_PREAMBLE, log_path, id,
+                                          path, &sh->spv_actor);
+    if (sh->spv_actor_words == 0)
+        OPL_ERROR_F("mods", "%s: shader %s: actor profile FAILED (see %s) - "
+                    "opaque mobys draw the stock profile", id, path, log_path);
 }
 
 /* ------------------------------------------------------------------ */
@@ -559,9 +576,10 @@ static int shader_is_material(int stage, const uint32_t* w, size_t n) {
 
 /** @brief Refuse the modules of a material fragment pinned at api 13 or later whose op_material reaches a discard.
  *
- * The stock module's refusal refuses the shader; a refused terrain or
- * portal profile is freed and its draws stay on the engine's own stages,
- * as for a profile that fails to compile.
+ * The stock module's refusal refuses the shader; a refused terrain,
+ * portal or actor profile is freed and its draws stay on the engine's own
+ * stages (the actor profile's on the stock profile), as for a profile that
+ * fails to compile.
  * @param pin The owner's api pin.
  * @param words The stock module.
  * @param n Its word count.
@@ -574,12 +592,13 @@ static int shader_refuse_discard(int pin, const char* id, const char* path, cons
                     "contract forbids (api %d) - refused", id, path, pin);
         return -1;
     }
-    uint32_t** spv[2] = { &prof->spv_ter, &prof->spv_portal };
-    size_t* words_n[2] = { &prof->spv_ter_words, &prof->spv_portal_words };
-    for (int p = 0; p < 2; p++) {
+    static const char* const k_name[3] = { "terrain", "portal", "actor" };
+    uint32_t** spv[3] = { &prof->spv_ter, &prof->spv_portal, &prof->spv_actor };
+    size_t* words_n[3] = { &prof->spv_ter_words, &prof->spv_portal_words, &prof->spv_actor_words };
+    for (int p = 0; p < 3; p++) {
         if (!*spv[p] || !openpete_mod_link_discard_refused(pin, *spv[p], *words_n[p])) continue;
         OPL_ERROR_F("mods", "%s: shader %s: %s profile's op_material reaches a discard - "
-                    "refused, its draws stay stock", id, path, p ? "portal" : "terrain");
+                    "refused, its draws stay stock", id, path, k_name[p]);
         free(*spv[p]);
         *spv[p] = NULL;
         *words_n[p] = 0;
@@ -737,6 +756,7 @@ static void shader_modules_free(uint32_t* words, mod_shader_t* prof) {
     free(words);
     free(prof->spv_ter);
     free(prof->spv_portal);
+    free(prof->spv_actor);
     for (int p = 0; p < prof->link_n; p++) openpete_mod_link_member_free(&prof->link[p]);
 }
 
@@ -826,6 +846,8 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     sh->spv_ter_words = prof.spv_ter_words;
     sh->spv_portal = prof.spv_portal;
     sh->spv_portal_words = prof.spv_portal_words;
+    sh->spv_actor = prof.spv_actor;
+    sh->spv_actor_words = prof.spv_actor_words;
     sh->contract = shader_spv_contract(words, n_words);
     memcpy(sh->link, prof.link, sizeof sh->link);
     sh->link_n = prof.link_n;
@@ -870,6 +892,21 @@ const uint32_t* openpete_mods_shader_spv_portal(int handle, size_t* words) {
     return sh->spv_portal;
 }
 
+/** @brief Return the actor profile of a material fragment (OP_PROFILE_ACTOR), the walked scene half the opaque ACTOR group draws.
+ *
+ * @param handle Shader handle.
+ * @param words Receives the word count.
+ * @return The words, or NULL when the handle is out of range or swept, or
+ *         the shader has no actor profile. */
+static const uint32_t* shader_spv_actor(int handle, size_t* words) {
+    *words = 0;
+    if (handle < 0 || handle >= shader_count()) return NULL;
+    const mod_shader_t* sh = shader_at(handle);
+    if (!sh->live || !sh->spv_actor) return NULL;
+    *words = sh->spv_actor_words;
+    return sh->spv_actor;
+}
+
 const struct openpete_mod_link_member* openpete_mods_shader_link(int handle, int profile) {
     if (handle < 0 || handle >= shader_count()) return NULL;
     const mod_shader_t* sh = shader_at(handle);
@@ -902,7 +939,7 @@ int openpete_mods_shader_link_resolve(int handle) {
 /** @brief Describe one fragment profile's moved constant tables for the renderer.
  *
  * @param handle Shader handle; out of range, swept or negative gives none.
- * @param profile 0 stock, 1 terrain, 2 portal.
+ * @param profile 0 stock, 1 terrain, 2 portal, MOD_SHADER_ACTOR.
  * @param out Receives the table block bytes, their length (0 = none) and
  *        the renderer's cache slot for the device copy. */
 static void shader_cdata(int handle, int profile, openpete_mod_cdata_t* out) {
@@ -934,7 +971,10 @@ static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
         free(sh->spv_portal);
         sh->spv_portal = NULL;
         sh->spv_portal_words = 0;
-        for (int p = 0; p < 3; p++) {
+        free(sh->spv_actor);
+        sh->spv_actor = NULL;
+        sh->spv_actor_words = 0;
+        for (int p = 0; p < MOD_SHADER_PROFILES; p++) {
             free(sh->cdata[p].bytes);
             memset(&sh->cdata[p], 0, sizeof sh->cdata[p]);
         }
@@ -1407,8 +1447,8 @@ int openpete_mods_material_overlap_at(int i, openpete_mods_material_overlap_info
 /** @brief Fill a draw's GPU material description from a material index and a uniform slot.
  *
  * Copies the vertex and fragment SPIR-V (NULL with 0 words for a stock
- * stage), the pipeline variant slots, the stencil-mark pipeline slot and
- * the owner. The uniform slot is `uniform_slot` when positive, else the
+ * stage), the portal and actor profiles, the pipeline variant slots, the
+ * stencil-mark pipeline slot and the owner. The uniform slot is `uniform_slot` when positive, else the
  * material's static slot in the current view (0 = no params).
  * @return `best`. */
 static int material_fill_gpu(int best, int uniform_slot,
@@ -1428,8 +1468,12 @@ static int material_fill_gpu(int best, int uniform_slot,
     if (!out->frag_portal_spv) out->frag_portal_words = 0;
     for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++)
         out->pipeline_portal_slot[b] = &m->pipeline_portal[b];
+    out->frag_actor_spv = shader_spv_actor(m->frag, &out->frag_actor_words);
+    for (int b = 0; b < OPENPETE_MATERIAL_ACTOR_PIPES; b++)
+        out->pipeline_actor_slot[b] = &m->pipeline_actor[b];
     shader_cdata(m->frag, 0, &out->frag_cdata);
     shader_cdata(m->frag, 2, &out->frag_portal_cdata);
+    shader_cdata(m->frag, MOD_SHADER_ACTOR, &out->frag_actor_cdata);
     out->owner = m->owner;
     out->generation = m->generation;
     out->index = best;
@@ -1489,6 +1533,10 @@ static void material_retire_pipelines(mod_material_t* m) {
         retire_pipeline(m->pipeline_portal[b]);
         m->pipeline_portal[b] = NULL;
     }
+    for (int b = 0; b < OPENPETE_MATERIAL_ACTOR_PIPES; b++) {
+        retire_pipeline(m->pipeline_actor[b]);
+        m->pipeline_actor[b] = NULL;
+    }
     for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) m->pipeline[b] = NULL;
     for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) m->pipeline_ter[b] = NULL;
     m->pipeline_mark = NULL;
@@ -1544,7 +1592,9 @@ void openpete_mods_material_retire_all(void) { REG_WR(); openpete_mods_material_
 
 /* One combined module set (stock, portal and terrain profile of the
  * scene contract, and the decal contract's module) with its member set and
- * pipeline slots. Never moved or freed before shutdown, so a published set
+ * pipeline slots; and the actor module, the stock members compiled under
+ * the actor preamble (OPENPETE_MOD_LINK_ACTOR), which shares the stock
+ * profile's case ids and chain blocks. Never moved or freed before shutdown, so a published set
  * and every slot pointer stay valid. */
 typedef struct {
     openpete_mods_material_chain_set_t set;
@@ -1559,6 +1609,9 @@ typedef struct {
     void*    pipeline[CHAIN_VVARS][OPENPETE_MATERIAL_PIPE_VARIANTS];
     void*    pipeline_mark[CHAIN_VVARS];
     void*    pipeline_portal[CHAIN_VVARS][OPENPETE_MATERIAL_PORTAL_PIPES];
+    openpete_mod_link_module_t actor;    /* words 0 = none: the ACTOR group draws mod[0] */
+    void*    actor_cdata_gpu;
+    void*    pipeline_actor[CHAIN_VVARS][OPENPETE_MATERIAL_ACTOR_PIPES];
     /* Retained-terrain pipelines of the terrain module, one per (arena
      * vertex stage x colour slot), as a material's pipeline_ter. */
     void*    pipeline_ter[OPENPETE_MATERIAL_TER_PIPES];
@@ -1607,15 +1660,16 @@ static int chain_members(int contract, unsigned bit, int* out, int cap) {
  * @param members Shader handles.
  * @param n Their count.
  * @param contract OPENPETE_MATERIAL_CONTRACT_*: the decal contract has the stock profile only.
- * @param profile OPENPETE_MOD_LINK_STOCK, OPENPETE_MOD_LINK_TERRAIN or OPENPETE_MOD_LINK_PORTAL.
+ * @param profile OPENPETE_MOD_LINK_STOCK, _TERRAIN, _PORTAL or _ACTOR (the stock members).
  * @param case_of Receives each member's case id.
  * @param out Receives the module. */
 static int chain_build_profile(const int* members, int n, int contract, int profile, int* case_of,
                                openpete_mod_link_module_t* out) {
     const openpete_mod_link_member_t* mm[OPENPETE_MATERIAL_CHAIN_SET_MAX];
-    for (int k = 0; k < n; k++) mm[k] = &shader_at(members[k])->link[profile];
+    const int mp = profile == OPENPETE_MOD_LINK_ACTOR ? OPENPETE_MOD_LINK_STOCK : profile;
+    for (int k = 0; k < n; k++) mm[k] = &shader_at(members[k])->link[mp];
     char log_path[MOD_SHADER_PATH_MAX * 3];
-    static const char* const k_name[OPENPETE_MOD_LINK_PROFILES] = { "stock", "terrain", "portal" };
+    static const char* const k_name[OPENPETE_MOD_LINK_ACTOR + 1] = { "stock", "terrain", "portal", "actor" };
     const char* name = contract == OPENPETE_MATERIAL_CONTRACT_DECAL ? "decal" : k_name[profile];
     snprintf(log_path, sizeof log_path, "%s/.build/shaders/chain-%s.log", shader_at(members[0])->mod_dir, name);
     if (openpete_mod_link_build(link_ctx(), mm, n, contract, profile, NULL, NULL,
@@ -1626,6 +1680,26 @@ static int chain_build_profile(const int* members, int n, int contract, int prof
                 name, n, out->log);
     openpete_mod_link_module_free(out);
     return -1;
+}
+
+/** @brief Build the actor module of a scene member list: the stock members under the actor preamble, kept only when its case ids equal the stock module's.
+ *
+ * A failed or mismatched build leaves @p out empty; the opaque ACTOR group
+ * then draws the stock module.
+ * @param members The stock module's member shaders.
+ * @param n Their count.
+ * @param stock_cases The stock module's case id per member.
+ * @param out Receives the module. */
+static void chain_build_actor(const int* members, int n, const int* stock_cases,
+                              openpete_mod_link_module_t* out) {
+    int ca[OPENPETE_MATERIAL_CHAIN_SET_MAX];
+    if (chain_build_profile(members, n, OPENPETE_MATERIAL_CONTRACT_SCENE, OPENPETE_MOD_LINK_ACTOR, ca,
+                            out) != 0)
+        return;
+    if (memcmp(ca, stock_cases, (size_t)n * sizeof *ca) == 0) return;
+    OPL_ERROR_F("mods", "material composition: the actor combined module numbers its cases unlike the "
+                "stock module - dropped, opaque mobys draw the stock module");
+    openpete_mod_link_module_free(out);
 }
 
 /** @brief Return whether a composable material of a contract is live: a fragment stage, not terminal; with @p terrain set, also on channel -1 or OP_CHAN_TERRAIN with a linkable terrain profile.
@@ -1728,6 +1802,7 @@ static void chain_sync_locked(void) {
         if (!ns) { free(cm); return; }
         nd = 0;
     }
+    if (ns) chain_build_actor(stock, ns, cs, &cm->actor);
     cm->set.generation = ++s_chain_set_gen;
     cm->set.module = s_chain_mod_n;
     cm->set.n = ns + nd;
@@ -1745,8 +1820,9 @@ static void chain_sync_locked(void) {
     s_chain_mods[s_chain_mod_n++] = cm;
     mod_mat_chain_pending_set(1);
     OPL_INFO_F("mods", "material composition: combined module %d built: %d scene member shader(s), %d case(s) "
-               "(%zu words), portal profile %d member(s), terrain profile %d member(s), decal %d member(s)",
-               cm->set.module, ns, cm->mod[0].cases, cm->mod[0].words, np, nt, nd);
+               "(%zu words), portal profile %d member(s), terrain profile %d member(s), decal %d member(s), "
+               "actor module %zu words", cm->set.module, ns, cm->mod[0].cases, cm->mod[0].words, np, nt, nd,
+               cm->actor.words);
 }
 
 void openpete_mods_material_chain_sync(void) {
@@ -1773,6 +1849,15 @@ static void chain_fill_gpu(chain_module_t* cm, int vvar, openpete_mod_material_g
     out->pipeline_mark_slot = &cm->pipeline_mark[vvar];
     for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++)
         out->pipeline_portal_slot[b] = &cm->pipeline_portal[vvar][b];
+    out->frag_actor_spv = cm->actor.words ? cm->actor.spv : NULL;
+    out->frag_actor_words = cm->actor.words;
+    for (int b = 0; b < OPENPETE_MATERIAL_ACTOR_PIPES; b++)
+        out->pipeline_actor_slot[b] = &cm->pipeline_actor[vvar][b];
+    if (cm->actor.cdata.len) {
+        out->frag_actor_cdata.bytes = cm->actor.cdata.bytes;
+        out->frag_actor_cdata.len = cm->actor.cdata.len;
+        out->frag_actor_cdata.gpu = &cm->actor_cdata_gpu;
+    }
     for (int p = 0; p < OPENPETE_MATERIAL_CHAIN_TERRAIN; p++) {   /* the stock and portal stages */
         openpete_mod_cdata_t* cd = p ? &out->frag_portal_cdata : &out->frag_cdata;
         if (!cm->mod[p].cdata.len) continue;
@@ -1927,6 +2012,10 @@ static void chain_retire_pipelines(void) {
             for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++) {
                 retire_pipeline(cm->pipeline_portal[v][b]);
                 cm->pipeline_portal[v][b] = NULL;
+            }
+            for (int b = 0; b < OPENPETE_MATERIAL_ACTOR_PIPES; b++) {
+                retire_pipeline(cm->pipeline_actor[v][b]);
+                cm->pipeline_actor[v][b] = NULL;
             }
         }
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) {

@@ -1675,6 +1675,9 @@ void openpete_mods_registry_read_unlock(void);
 #define OPENPETE_MATERIAL_PORTAL_PIPES  7
 #define OPENPETE_MATERIAL_PORTAL_RIM    5
 #define OPENPETE_MATERIAL_PORTAL_RIM_MARK 6
+/* Actor-profile pipelines (OP_PROFILE_ACTOR, the opaque ACTOR group's
+ * tie-pull depth export): [0] plain, [1] its stencil-MARK twin. */
+#define OPENPETE_MATERIAL_ACTOR_PIPES   2
 
 /* The moved constant tables of one fragment profile (mod_spv_cdata.h):
  * the std430 bytes the profile's SPIR-V reads at set 3 binding 2, and the
@@ -1709,8 +1712,14 @@ typedef struct {
      * OPENPETE_MATERIAL_PORTAL_PIPES describes. */
     const uint32_t* frag_portal_spv; size_t frag_portal_words;
     void** pipeline_portal_slot[OPENPETE_MATERIAL_PORTAL_PIPES];
-    /* The moved tables of the stock and portal fragment profiles. */
-    openpete_mod_cdata_t frag_cdata, frag_portal_cdata;
+    /* The actor profile of the fragment stage (OP_PROFILE_ACTOR; NULL when
+     * the material has none: the opaque ACTOR group then draws the stock
+     * profile) and its pipelines, indexed as OPENPETE_MATERIAL_ACTOR_PIPES
+     * describes. */
+    const uint32_t* frag_actor_spv; size_t frag_actor_words;
+    void** pipeline_actor_slot[OPENPETE_MATERIAL_ACTOR_PIPES];
+    /* The moved tables of the stock, portal and actor fragment profiles. */
+    openpete_mod_cdata_t frag_cdata, frag_portal_cdata, frag_actor_cdata;
     const char* owner;
     int   uniform_slot;
     unsigned generation;  /* the material's slot generation: moves when its pipelines are retired */

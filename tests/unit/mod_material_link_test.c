@@ -10,7 +10,8 @@
  * linkable, except a shader named by --expect-unlinkable <label> (its
  * census label, <mod>/<path>), which fails the run when it is linkable
  * in any profile. Then per contract and profile every linkable non-identity
- * member enters one combined module.
+ * member enters one combined module, and the scene stock members also enter
+ * the actor module (OPENPETE_MOD_LINK_ACTOR).
  *
  * Fixtures (--fixtures <dir>): <dir>/cases.tsv holds one case per line,
  * tab-separated, paths relative to <dir>:
@@ -299,22 +300,31 @@ static int build_and_check(const char* name, const openpete_mod_link_member_t* c
     return bad;
 }
 
-/** @brief Build the census module of each contract and profile from every linkable non-identity census member. */
+/** @brief Build one census module from every linkable non-identity census member of a contract and member profile.
+ *
+ * @param c The contract.
+ * @param mp The member profile.
+ * @param bp The build profile: @p mp, or OPENPETE_MOD_LINK_ACTOR over the scene stock members.
+ * @param label The build profile's name in the module line. */
+static void census_module(int c, int mp, int bp, const char* label) {
+    const openpete_mod_link_member_t* mem[MAX_MEMBERS];
+    int n = 0;
+    for (int i = 0; i < s_n && n < MAX_MEMBERS; i++) {
+        const entry_t* e = &s_e[i];
+        if (!e->census || e->contract != c || mp >= e->profiles) continue;
+        if (e->m[mp].verdict == OPENPETE_MOD_LINK_OK && !e->m[mp].identity) mem[n++] = &e->m[mp];
+    }
+    if (!n) return;
+    char name[64];
+    snprintf(name, sizeof name, "census %s/%s", c ? "decal" : "scene", label);
+    build_and_check(name, mem, n, c, bp, 0, 0);
+}
+
+/** @brief Build the census module of each contract and profile, and the scene actor module over the stock members. */
 static void census_modules(void) {
     for (int c = 0; c < 2; c++)
-        for (int p = 0; p < OPENPETE_MOD_LINK_PROFILES; p++) {
-            const openpete_mod_link_member_t* mem[MAX_MEMBERS];
-            int n = 0;
-            for (int i = 0; i < s_n && n < MAX_MEMBERS; i++) {
-                const entry_t* e = &s_e[i];
-                if (!e->census || e->contract != c || p >= e->profiles) continue;
-                if (e->m[p].verdict == OPENPETE_MOD_LINK_OK && !e->m[p].identity) mem[n++] = &e->m[p];
-            }
-            if (!n) continue;
-            char name[64];
-            snprintf(name, sizeof name, "census %s/%s", c ? "decal" : "scene", k_prof[p]);
-            build_and_check(name, mem, n, c, p, 0, 0);
-        }
+        for (int p = 0; p < OPENPETE_MOD_LINK_PROFILES; p++) census_module(c, p, p, k_prof[p]);
+    census_module(OPENPETE_MOD_LINK_CONTRACT_SCENE, OPENPETE_MOD_LINK_STOCK, OPENPETE_MOD_LINK_ACTOR, "actor");
 }
 
 /** @brief Find or add the fixture entry for a path relative to the fixture directory. */

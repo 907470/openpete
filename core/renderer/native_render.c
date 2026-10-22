@@ -11584,16 +11584,19 @@ typedef enum {
     NR_MAT_SCENE = 0,   /* walked scene runs and untextured spans: pipeline_slot[blend], or MARK */
     NR_MAT_PORTAL,      /* the portal profile: pipeline_portal_slot[pslot]                       */
     NR_MAT_SKY,         /* portal sky: pipeline_slot[4]                                          */
-    NR_MAT_DECAL        /* the moby-shadow decal profile: pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL] */
+    NR_MAT_DECAL,       /* the moby-shadow decal profile: pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL] */
+    NR_MAT_ACTOR        /* the opaque ACTOR group's actor profile: pipeline_actor_slot[mark]           */
 } nr_mat_kind;
 typedef struct {
     nr_mat_kind kind;
     int blend_class;    /* the group's blend class, 0 opaque to 3 subtract (SCENE, PORTAL) */
     int pslot;          /* portal slot (PORTAL)                                            */
-    int mark;           /* stencil-MARK variant (SCENE: the MARK slot; PORTAL: the stencil) */
+    int mark;           /* stencil-MARK variant (SCENE, ACTOR: the MARK slot; PORTAL: the stencil) */
 } nr_mat_req;
+/* The most requests nr_scene_reqs writes for one material. */
+#define NR_SCENE_REQS_MAX 13
 
-static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal);
+static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal, int actor);
 
 /** @brief Return the material slot that caches the pipeline of one request.
  *
@@ -11605,6 +11608,7 @@ static void** nr_material_slot(const openpete_mod_material_gpu_t* mg, const nr_m
     case NR_MAT_PORTAL: return mg->pipeline_portal_slot[q->pslot];
     case NR_MAT_SKY:    return mg->pipeline_slot[4];
     case NR_MAT_DECAL:  return mg->pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL];
+    case NR_MAT_ACTOR:  return mg->pipeline_actor_slot[q->mark & 1];
     default:            return q->mark ? mg->pipeline_mark_slot : mg->pipeline_slot[q->blend_class];
     }
 }
@@ -11968,7 +11972,8 @@ static void late_shutdown(void) {
  * fallbacks, the group's blend class inherited (a blended class does not
  * write depth: blended groups are painter-ordered), depth tested, the MARK
  * stencil when asked; PORTAL adds the cover planes at set 7 and the
- * fragment stage's portal profile. SKY: opaque, depth tested without depth
+ * fragment stage's portal profile. ACTOR is SCENE's opaque description with
+ * the fragment stage's actor profile. SKY: opaque, depth tested without depth
  * writes (the sky must not occlude what shows through the aperture) and the
  * stencil TEST against the aperture mask, which confines the sky to the
  * portal's opening. DECAL: the shadow_decal_tex stages as fallbacks,
@@ -11997,8 +12002,10 @@ static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_ma
         .uniform_set7 = q->kind == NR_MAT_PORTAL,
         .push_const_size = sizeof(psx_material_hd),
     };
-    const uint32_t* frag = q->kind == NR_MAT_PORTAL ? mg->frag_portal_spv : mg->frag_spv;
-    const size_t frag_n = q->kind == NR_MAT_PORTAL ? mg->frag_portal_words : mg->frag_words;
+    const uint32_t* frag = q->kind == NR_MAT_PORTAL ? mg->frag_portal_spv
+                         : q->kind == NR_MAT_ACTOR  ? mg->frag_actor_spv : mg->frag_spv;
+    const size_t frag_n = q->kind == NR_MAT_PORTAL ? mg->frag_portal_words
+                        : q->kind == NR_MAT_ACTOR  ? mg->frag_actor_words : mg->frag_words;
     if (q->kind == NR_MAT_SKY) {
         md.blend = RHI_BLEND_NONE;
         md.depth_write_off = true;
@@ -12024,6 +12031,20 @@ static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_ma
                         "(kind %d, blend %d, portal slot %d, mark %d)\n",
                 mg->owner, (int)q->kind, b, q->pslot, q->mark);
     return *slot;
+}
+
+/** @brief Return whether a material draw takes the material's actor profile: an opaque draw whose group pipe is an opaque ACTOR twin, of a material with an actor profile.
+ *
+ * The group pipe is a twin exactly where the stock draw exports the
+ * tie-pull depth (nr_shell_twin_of), so the material draw exports it where
+ * the stock draw does.
+ * @param mg Resolved mod material.
+ * @param group The pipe the group's stock draws use.
+ * @param blend_class The group's blend class.
+ * @return 1 for the actor profile, else 0. */
+static int nr_material_actor(const openpete_mod_material_gpu_t* mg, rhi_pipeline* group,
+                             int blend_class) {
+    return blend_class == 0 && mg->frag_actor_spv && group && nr_shell_stock_of(group) != group;
 }
 
 /** @brief Return whether an untextured bucket draws its deferred material spans.
@@ -12085,7 +12106,8 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
         openpete_mod_material_gpu_t mg;
         if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
             rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-            const nr_mat_req q = { NR_MAT_SCENE, blend_class, 0, want_mark };
+            const int actor = nr_material_actor(&mg, stock, blend_class);
+            const nr_mat_req q = { actor ? NR_MAT_ACTOR : NR_MAT_SCENE, blend_class, 0, want_mark };
             pipe = nr_pipe_of(nr_material_pipe(&mg, &q));
             if (pipe) {
                 bind_scene_pipe(pipe);
@@ -12093,7 +12115,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                 if (s_nr.mat_pack_dummy)   /* op_pack_tex: no pack art for gouraud */
                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
                 bind_material_keys();
-                nr_material_bind(&mg, 0);
+                nr_material_bind(&mg, 0, actor);
                 psx_material_hd zm;                     /* bpp 0 = untextured */
                 memset(&zm, 0, sizeof zm);
                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
@@ -12728,21 +12750,24 @@ static void texsel_draw_forensics(const scene_tri_t* s0, int allow_override, int
  * slot and its MARK twin for the inner-rim rule. A material without a
  * portal profile, and a device that binds fewer than 8 descriptor sets,
  * have no such pipeline: the run then draws through the engine's portal
- * twin without the material.
+ * twin without the material. With @p actor set (and no portal) the
+ * pipeline is the material's actor profile, cached in its actor slots.
  * @param mg Resolved mod material.
  * @param ov_mark Nonzero for the stencil-MARK variant.
  * @param blend_class Blend class index into k_blend_class_rhi, 0 opaque.
  * @param portal 0 none, 1 the blended cover rule, 2 the inner-rim rule.
+ * @param actor Nonzero for the actor profile (nr_material_actor).
  * @return The pipeline, or NULL when it has no portal profile, its build failed, or its compile is pending. */
 static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
-                                       int ov_mark, int blend_class, int portal) {
+                                       int ov_mark, int blend_class, int portal, int actor) {
     if (portal && (!mg->frag_portal_spv || rhi_device_max_descriptor_sets(s_nr.dev) < 8u))
         return NULL;
     const int pslot = portal == 2 ? (ov_mark ? OPENPETE_MATERIAL_PORTAL_RIM_MARK
                                              : OPENPETE_MATERIAL_PORTAL_RIM)
                                   : blend_class;
     rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-    const nr_mat_req q = { portal ? NR_MAT_PORTAL : NR_MAT_SCENE, blend_class, pslot, ov_mark };
+    const nr_mat_req q = { portal ? NR_MAT_PORTAL : actor ? NR_MAT_ACTOR : NR_MAT_SCENE,
+                           blend_class, pslot, ov_mark };
     return nr_pipe_of(nr_material_pipe(mg, &q));
 }
 
@@ -12816,6 +12841,9 @@ static void draw_material_pack_walk(const tex_run* r, psx_material_hd* mh,
  * When @p restore is a portal twin (nr_cover_entry) the run draws through
  * the material's portal profile with the cover planes at set 7, so it keeps
  * the twin's discard; a material without one leaves the run to the twin.
+ * When @p restore is an opaque ACTOR twin the run draws through the
+ * material's actor profile (nr_material_actor), so it keeps the twin's
+ * tie-pull depth export.
  * @param r The run.
  * @param ov_mark Nonzero to build the stencil-MARK pipeline variant.
  * @param blend_class The caller group's blend class, inherited by the pipeline.
@@ -12837,7 +12865,8 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
         unsigned char blk[OPENPETE_MATERIAL_CHAIN_BLOCK_BYTES];
         if (openpete_mods_material_chain_block(mg.chain, 1, NULL, 0, blk) != 0) return 0;
     }
-    rhi_pipeline* pipe = material_run_pipe(&mg, ov_mark, blend_class, portal);
+    const int actor = !portal && nr_material_actor(&mg, restore, blend_class);
+    rhi_pipeline* pipe = material_run_pipe(&mg, ov_mark, blend_class, portal, actor);
     if (!pipe) return 0;
     bind_scene_pipe(pipe);
     if (portal) bind_cover_block(7, portal == 2);
@@ -12848,7 +12877,7 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     bind_material_keys();
     /* engine block 0 + the per-instance slot's mod block (block 1+slot;
      * slot 0 = declarative binds the engine block as the mod block too). */
-    nr_material_bind(&mg, portal);
+    nr_material_bind(&mg, portal, actor);
     psx_material_hd mh;
     memset(&mh, 0, sizeof mh);
     mh.tpage_x = r->m.tpage_x; mh.tpage_y = r->m.tpage_y;
@@ -15825,7 +15854,7 @@ static bool draw_native_scene(bool full_extent)
                 bind_scene_pipe(dpipe);
                 rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
                 pc.key_contest = shadow_decal_bind_keys();              /* set 1 */
-                if (dslot_ok) nr_material_bind(&dmg, 0);
+                if (dslot_ok) nr_material_bind(&dmg, 0, 0);
                 rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)txg_count[1], (uint32_t)txg_first[1]);
@@ -16016,7 +16045,7 @@ static bool draw_native_scene(bool full_extent)
                                 if (s_nr.mat_pack_dummy)
                                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
                                 bind_material_keys();
-                                nr_material_bind(&mg, 0);
+                                nr_material_bind(&mg, 0, 0);
                                 psx_material_hd zm;
                                 memset(&zm, 0, sizeof zm);
                                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
@@ -18593,11 +18622,14 @@ static void nr_dt_chain_write(int entry) {
 /** @brief Bind a draw's material uniforms: a chain entry's block in the chain set, else the material slot (openpete_native_material_bind).
  *
  * A draw-time chain entry's blocks are written on its first bind
- * (nr_dt_chain_write).
+ * (nr_dt_chain_write). The actor profile reads the stock profile's chain
+ * block, since its module numbers its cases as the stock module does.
  * @param mg The resolved material or chain.
- * @param portal Nonzero when the draw uses the portal profile. */
-static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal) {
-    const openpete_mod_cdata_t* cd = portal ? &mg->frag_portal_cdata : &mg->frag_cdata;
+ * @param portal Nonzero when the draw uses the portal profile.
+ * @param actor Nonzero when the draw uses the actor profile. */
+static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal, int actor) {
+    const openpete_mod_cdata_t* cd = portal ? &mg->frag_portal_cdata
+                                   : actor  ? &mg->frag_actor_cdata : &mg->frag_cdata;
     if (mg->chain < 0) {
         openpete_native_material_bind(s_nr.dev, mg->uniform_slot, cd);
         return;
@@ -18631,7 +18663,7 @@ static void nr_chain_install(void) {
     if (m < 0) return;
     openpete_mod_material_gpu_t mg, dg;
     if (openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return;
-    nr_mat_req q[13];
+    nr_mat_req q[NR_SCENE_REQS_MAX];
     const int nq = mg.frag_words ? nr_scene_reqs(&mg, q) : 0;
     const int decal = openpete_mods_material_chain_decal_gpu(m, 0, &dg) == 0;
     int ready = 1, failed = 0;
@@ -19092,6 +19124,10 @@ static int nr_scene_reqs(const openpete_mod_material_gpu_t* mg, nr_mat_req* q) {
         q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM, 0 };
         q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM_MARK, 1 };
     }
+    if (mg->frag_actor_spv) {
+        q[nq++] = (nr_mat_req){ NR_MAT_ACTOR, 0, 0, 0 };
+        q[nq++] = (nr_mat_req){ NR_MAT_ACTOR, 0, 0, 1 };
+    }
     return nq;
 }
 
@@ -19109,7 +19145,7 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
     openpete_mod_material_gpu_t mg;
     int contract = 0, terrain = 0;
     if (openpete_mods_material_enum_at(i, &contract, &terrain, &mg) != 0) return 0;
-    nr_mat_req q[13];
+    nr_mat_req q[NR_SCENE_REQS_MAX];
     int nq = 0;
     if (contract == OPENPETE_MATERIAL_CONTRACT_DECAL) q[nq++] = (nr_mat_req){ NR_MAT_DECAL, 0, 0, 0 };
     else nq = nr_scene_reqs(&mg, q);
@@ -19144,7 +19180,7 @@ static unsigned nr_precompile_chains(void (*pump)(void*)) {
     const int m = openpete_mods_material_chain_pending();
     openpete_mod_material_gpu_t mg;
     if (m < 0 || openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return 0;
-    nr_mat_req q[13];
+    nr_mat_req q[NR_SCENE_REQS_MAX];
     const int nq = mg.frag_words ? nr_scene_reqs(&mg, q) : 0;
     unsigned n = 0;
     for (int k = 0; k < nq; k++, n++) {

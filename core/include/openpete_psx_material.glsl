@@ -52,8 +52,15 @@
  * defined, for terrain that must yield to a portal preview (blended terrain
  * behind an opening, a portal's inner rim): its main() discards what the
  * preview covers before the painter verdicts, exactly as the engine's own
- * stages do. The retained-terrain half always runs that rule. Neither adds
- * anything the mod's source sees or writes. */
+ * stages do. The retained-terrain half always runs that rule.
+ *
+ * The walked scene half is compiled a third time with OP_PROFILE_ACTOR
+ * defined, for the opaque moby (ACTOR) group: its main() writes the
+ * fragment's depth through op_actor_tie_depth (psx_key_contest.glsl), as
+ * the engine's own actor stages do, so a moby face whose stored depth
+ * carries the tie pull writes its true depth where the terrain key is in a
+ * strictly nearer ordering-table slot. No profile adds anything the mod's
+ * source sees or writes. */
 
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
 #define OPENPETE_PSX_MATERIAL_GLSL
@@ -301,6 +308,13 @@ vec4 op_material(vec4 base);
 
 void main()
 {
+#ifdef OP_PROFILE_ACTOR
+    /* The tie-pull depth export of the opaque actor group, written before
+     * any discard; a discarded fragment writes nothing. */
+    gl_FragDepth = op_actor_tie_depth(gl_FragCoord.z, vRank, vKoff,
+        op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r),
+        OP_SLOT_CONTEST, OP_DEPTH_REVERSED);
+#endif
     /* The painter verdicts, as the stock stages run them: which surface
      * exists at this pixel is the engine's decision. */
 #ifdef OP_PROFILE_PORTAL

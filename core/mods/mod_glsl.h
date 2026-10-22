@@ -32,6 +32,10 @@ extern "C" {
 /* The define that selects the portal profile of the walked scene half of
  * openpete_psx_material.glsl (terrain that yields to a portal preview). */
 #define OPENPETE_MOD_GLSL_PORTAL_PREAMBLE "#define OP_PROFILE_PORTAL 1\n"
+/* The define that selects the actor profile of the walked scene half of
+ * openpete_psx_material.glsl (the opaque moby group's tie-pull depth
+ * export). */
+#define OPENPETE_MOD_GLSL_ACTOR_PREAMBLE "#define OP_PROFILE_ACTOR 1\n"
 
 /* Include resolution: a name resolves in the staged SDK shader dir
  * (<sdk>/shaders) first, then in the including shader's own dir. */
