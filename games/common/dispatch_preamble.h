@@ -18,6 +18,8 @@ typedef void (*game_dispatch_verdict_fn)(CPUState* cpu, uint32_t addr);
 /** @brief Run the intercepts every game's dispatch performs first, in one fixed order.
  *
  * In order: the debug free camera's freeze test (ends the call), the
+ * particle-owner note of player_hide_note_entry while
+ * player_hide_tracking holds, the
  * game's verdict hook, the write census's entry note, then the mod
  * override chains behind openpete_mods_active (end the call when a chain
  * ran). A mod override therefore cannot skip the verdict hook or the

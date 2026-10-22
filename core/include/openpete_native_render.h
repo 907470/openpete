@@ -527,6 +527,20 @@ void openpete_native_set_dither(int on);
  * @return 1 when on, else 0. */
 int  openpete_native_get_dither(void);
 
+/** @brief Turn hiding the player on or off.
+ *
+ * On, the native feeders drop the avatar, its fire breath, its ground
+ * shadow, the companion and the particles their updates spawn. Read per
+ * feed, so a change applies at the next present; particles spawned while
+ * both this and the ownership census were off stay drawn until they expire.
+ * Renderer state only.
+ * @param on Non-zero for on. */
+void openpete_native_set_hide_player(int on);
+/** @brief Return whether the player's draws are hidden.
+ *
+ * @return 1 when hidden, else 0. */
+int  openpete_native_get_hide_player(void);
+
 /** @brief Queue the texture and colour interpolation mode: perspective-correct or PSX affine.
  *
  * The mode is a vertex specialization constant baked into every scene

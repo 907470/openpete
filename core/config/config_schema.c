@@ -42,6 +42,7 @@ static const cfg_knob_t g_schema[] = {
     { "notex",            "--notex",            "OPENPETE_NOTEX",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "wireframe",        "--wireframe",        "OPENPETE_WIREFRAME",    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "dither",           "--dither",           NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "hide_player",      "--hide-player",      NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "texture_mapping",  "--texture-mapping",  NULL,                    CFG_ENUM,   v_texmap,   NULL,       NULL,       0 },
     { "lod",              "--lod",              NULL,                    CFG_ENUM,   v_lod,      "--no-lod", "extended", 0 },
     { "fog_scale",        "--fog-scale",        NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },

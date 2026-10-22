@@ -26,6 +26,7 @@
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
+#include "renderer/player_hide.h"  /* --hide-player */
 
 #include <math.h>
 #include <stdint.h>
@@ -286,13 +287,17 @@ static void shadow_spyro_build(CPUState* cpu) {
  * Builds the fan (shadow_spyro_build) and passes it to shadow_fan_feed,
  * which draws it subtractive (ABR mode 2) and colours each pixel by the
  * footprint decal. Returns without feeding when the player shadow feed is
- * disabled or the fan is empty (Spyro over water).
+ * disabled, the fan is empty (Spyro over water) or the player is hidden
+ * (player_hide_active).
  * @param cpu The guest CPU state.
  * @param slot The model record the shadow renders under (spyro_records.h), the player slot of its tag; negative reads as 0. */
 static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
     if (!shadow_player_feed_enabled()) return;
     shadow_spyro_build(cpu);
     if (s_sptri_n <= 0) return;
+    const int hide = player_hide_active();
+    player_hide_count(PH_CAT_PLAYER_SHADOW, s_sptri_n, hide);
+    if (hide) return;
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, (uint32_t)(slot < 0 ? 0 : slot)));

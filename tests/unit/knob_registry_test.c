@@ -113,6 +113,9 @@ int    openpete_disc_cache_active(void)            { return 0; }
 int    openpete_cd_load_delay = 0;
 int    openpete_native_get_dither(void)            { return s_native_dither; }
 void   openpete_native_set_dither(int on)          { s_native_dither = on ? 1 : 0; }
+static int s_native_hide_player;
+int    openpete_native_get_hide_player(void)       { return s_native_hide_player; }
+void   openpete_native_set_hide_player(int on)     { s_native_hide_player = on ? 1 : 0; }
 static int s_native_tervis;
 void   openpete_native_set_terrain_visibility(int mode) { s_native_tervis = mode; }
 int    openpete_native_get_terrain_visibility(void)     { return s_native_tervis; }

@@ -1691,6 +1691,7 @@ static int s_cur_presnap = 0;
  * hardware rasterizer produced. */
 static int s_raster_mult = 0;
 static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dither (engine SCENE pass) */
+static int s_hide_player = 0;  /* --hide-player: the feeders drop the player's draws */
 /* --terrain-visibility: the terrain feeder's candidate-set policy
  * (openpete_terrain_visibility_t), seeded at init and moved by the setter. */
 static int s_terrain_vis = OPENPETE_TERRAIN_VIS_FRUSTUM;
@@ -7029,6 +7030,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_raster_mult = (opts->raster_quantize >= 0) ? opts->raster_quantize
                  : (s_vertex_snap ? 1 : 0);
     s_dither = opts->dither ? 1 : 0;   /* PS1 15-bit colour + hardware dither */
+    s_hide_player = opts->hide_player != 0;
     /* --terrain-visibility: the terrain feeder's candidate set (frustum =
      * every sector inside the displayed frame, hidden or not). */
     s_terrain_vis = (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_GAME)
@@ -16499,6 +16501,13 @@ void openpete_native_set_dither(int on) {
 }
 
 int openpete_native_get_dither(void) { return s_dither; }
+
+void openpete_native_set_hide_player(int on) {
+    s_hide_player = on ? 1 : 0;
+    OPL_INFO_F("native", "hide player -> %s", s_hide_player ? "on" : "off");
+}
+
+int openpete_native_get_hide_player(void) { return s_hide_player; }
 
 /* Read by the terrain feeder at the top of every sector walk. */
 void openpete_native_set_terrain_visibility(int mode) {

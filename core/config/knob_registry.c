@@ -397,6 +397,21 @@ static int dither_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief 1 when the native feeders drop the player's draws, else 0.
+ *
+ * The renderer seeds the flag from the options at its init, as it does the
+ * untextured view's. */
+static double hide_player_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_get_hide_player();
+}
+/** @brief Set whether the native feeders drop the player's draws from `v` (nonzero is on). */
+static int hide_player_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_hide_player(v != 0.0);
+    return 0;
+}
+
 static const char *const k_lod_names[] = { "original", "extended" };
 static const char *const k_tervis_names[] = { "game", "frustum" };
 /** @brief 1 when terrain visibility uses the view frustum, 0 when it follows the game's own verdict. */
@@ -1213,6 +1228,21 @@ static const knob_desc_t g_builtin[] = {
           "GPU's 4x4 ordered dither matrix on the PSX 512x240 framebuffer\n"
           "grid (the authentic banding + crosshatch the smooth float\n"
           "pipeline removed). {def} = off (default)." },
+
+    { "hide_player", "Hide player", "Display", "--hide-player", NULL,
+      "Draw the scene without the player: Spyro, his fire breath and ground "
+      "shadow and Sparx are not drawn, nor the particles Spyro spawns "
+      "(Spyro 2 and 3) and those Sparx spawns and his glow (Spyro 3). Every "
+      "other actor, effect and the HUD stay; the game plays on as before. "
+      "Native renderer only.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      hide_player_get, hide_player_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "0",
+      .help_arg = "0|1", .help_order = 315,
+      .help_text = "1 = draw the scene without the player: Spyro, his fire breath\n"
+          "and shadow, Sparx, Spyro's particles (Spyro 2 and 3), Sparx's\n"
+          "particles and glow (Spyro 3). Other actors, effects and the HUD\n"
+          "stay. {def} = off (default). Native renderer only." },
 
     { "texture_mapping", "Texture mapping", "Display", "--texture-mapping", NULL,
       "perspective = modern perspective-correct interpolation; affine = the "

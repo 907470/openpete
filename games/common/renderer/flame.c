@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "renderer/player_hide.h"
 
 extern unsigned openpete_frame;
 
@@ -746,7 +747,8 @@ static void flame_census_line(const char* src, int slot, int tris) {
  * re-renders. Each strip quad splits into two textured additive triangles
  * (blend 2) and each cap is an untextured opaque triangle, all in the WORLD
  * group with per-vertex view Z, tagged as the ribbon and caps of `slot`.
- * Nothing is pushed when the walk produced no geometry.
+ * Nothing is pushed when the walk produced no geometry or the player is
+ * hidden (player_hide_active).
  * @param cpu The guest CPU state, read only.
  * @param slot The model record the ribbon renders under; negative is 0.
  * @param src The caller's label in the census line. */
@@ -757,6 +759,9 @@ static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
         if (cen) flame_census_line(src, slot, 0);
         return;
     }
+    const int hide = player_hide_active();
+    player_hide_count(PH_CAT_FLAME, s_fquad_n * 2 + s_fcap_n, hide);
+    if (hide) return;
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     const uint32_t tslot = (uint32_t)(slot < 0 ? 0 : slot);   /* the model record it renders under */

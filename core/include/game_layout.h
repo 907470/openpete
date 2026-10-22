@@ -1212,6 +1212,31 @@ typedef struct game_layout {
         int32_t  hud_x[2];
         int32_t  hud_z;
     } tally;
+
+    /* What the player owns among the shared draws, for drawing a view
+     * without the player (renderer/player_hide.h). `sparx_class` is the
+     * moby class of the companion that follows the player (0 = none).
+     *
+     * The particle pool records no owner, and the type byte a spawn writes
+     * is shared between the player's spawn sites and other actors'. The
+     * owner is therefore the spawn's call site: a slot `part_alloc` returns
+     * while the call of `player_update` is on the guest stack is the
+     * player's; one it returns while the resident overlay's moby update for
+     * `sparx_class` runs on a moby of that class is the companion's. The
+     * word at `moby_update` holds that overlay's per-class update table,
+     * indexed by the class halfword at game_layout.moby.class_off.
+     * `part_alloc` 0 leaves every particle unattributed.
+     *
+     * `sparx_glow_off` is the offset, in the moby tag the companion's moby
+     * points at through its word at +0x00, of the pointer to the glow-pool
+     * record the companion's update owns (0 = none). */
+    struct {
+        uint32_t sparx_class;
+        uint32_t player_update;
+        uint32_t moby_update;
+        uint32_t part_alloc;
+        uint32_t sparx_glow_off;
+    } owner;
 } game_layout_t;
 
 #define GAME_FONT_NONE            0

@@ -58,6 +58,7 @@
 #include "renderer/hook_bracket.h"
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"     /* cut_held_sets_t: the held cut's tick N-1 set */
+#include "renderer/player_hide.h"   /* --hide-player: the companion's ring */
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
@@ -100,6 +101,7 @@ typedef struct {
     int       blend;
     float     dx, dy;     /* the sub-tick screen displacement of its fan */
     glow_rec  src;
+    int       sparx;      /* its record is the companion's (player_hide_sparx_glow) */
 } glow_item;
 
 static glow_item  s_item_buf[2][GLOW_MAX_PRIMS];
@@ -139,6 +141,7 @@ static int glow_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].dx = 0.0f;
     s_item[s_item_n].dy = 0.0f;
     memset(&s_item[s_item_n].src, 0, sizeof s_item[s_item_n].src);
+    s_item[s_item_n].sparx = 0;
     s_item_n++;
     return 1;
 }
@@ -286,6 +289,18 @@ static void glow_pair_depths(CPUState* cpu, const ngte_view* v) {
     }
 }
 
+/** @brief Mark every paired triangle whose record is the companion's glow record.
+ *
+ * The companion's record is the one its moby tag points at
+ * (player_hide_sparx_glow); an unpaired triangle has no record and stays
+ * unmarked.
+ * @param cpu The guest CPU state, read only. */
+static void glow_mark_sparx(CPUState* cpu) {
+    const uint32_t rec = player_hide_sparx_glow(cpu);
+    for (int i = 0; i < s_item_n; i++)
+        s_item[i].sparx = rec != 0u && s_item[i].paired && s_item[i].src.addr == rec;
+}
+
 /** @brief Whether this feeder emits the glow fans, latched on first use.
  *
  * OPENPETE_GLOW with a value starting with '0' suppresses this feed alone.
@@ -304,16 +319,22 @@ static int glow_feed_enabled(void) {
  * captured. Each three-vertex primitive becomes one untextured WORLD triangle
  * at its item's depth (also used as the constant W), moved by the item's dx and
  * dy, with the item's blend and the vertex colours made opaque. Draw-mode
- * packets are skipped. Counts the triangles in s_fed_tris and tags them as glow
+ * packets are skipped, and so is a triangle of the companion's ring while the
+ * player is hidden (player_hide_active). Counts the triangles in s_fed_tris and tags them as glow
  * particles with sel 0, since a glow ring carries no game particle class. */
 static void glow_feed_native(void) {
     if (!glow_feed_enabled()) return;
     if (s_item_n <= 0) return;
+    const int hide_player = player_hide_active();
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0));
     for (int i = 0; i < s_item_n; i++) {
         const ngte_prim* p = &s_item[i].p;
         if (p->nv != 3) continue;
+        const int sparx = s_item[i].sparx;
+        player_hide_count_data(sparx ? PH_CAT_SPARX_GLOW : PH_CAT_OTHER_GLOW,
+                               sparx && hide_player, p, sizeof *p);
+        if (sparx && hide_player) continue;
         /* The fan is flat in view-Z, so any constant W interpolates its
          * colour screen-linearly: the slot view-Z serves as W. */
         static const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -393,6 +414,7 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         glow_pair_depths(cpu, &view);
+        glow_mark_sparx(cpu);
         render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_GLOW)) glow_feed_native();
     }

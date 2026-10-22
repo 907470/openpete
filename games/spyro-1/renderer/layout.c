@@ -458,6 +458,9 @@ const game_layout_t spyro1_game_layout = {
         .slot_base = 0x800756FCu, .slot_dir = -1, .slot_stride = 0x58u,
         .letter_class = 0u,
     },
+    /* Sparx is m_Class 120. The particle renderer walks Spyro 1's own pool
+     * (renderer/particle.c), which carries no owner attribution. */
+    .owner = { .sparx_class = 120u },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). */

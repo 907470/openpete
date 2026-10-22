@@ -1241,6 +1241,10 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->dither = (atoi(v) != 0);
         i++;
+    } else if (strcmp(a, "--hide-player") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->hide_player = (atoi(v) != 0);
+        i++;
     } else if (strcmp(a, "--notex") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->notex = (atoi(v) != 0);

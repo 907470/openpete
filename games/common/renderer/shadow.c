@@ -46,6 +46,7 @@
 #include "openpete_profile.h"       /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"         /* cut_held_set_pick, cut_census_held_set */
+#include "renderer/player_hide.h"       /* --hide-player: the companion's shadow */
 
 extern unsigned openpete_frame;
 
@@ -994,7 +995,8 @@ static void shadow_list_refresh(CPUState* cpu, uint32_t desc, shadow_wide_census
 /** @brief Rebuilds the moby drop-shadow triangles from the drawn-moby list.
  *
  * Empties s_mosh, then stores four fan triangles for each list record
- * shadow_record_admit admits (shadow_fan_emit). The list is refreshed by
+ * shadow_record_admit admits (shadow_fan_emit), except the companion's while
+ * the player is hidden (player_hide_active) outside `game_only`. The list is refreshed by
  * shadow_list_refresh. Pushes the decal camera parameters. Reads PSX RAM only.
  * @param cpu The guest CPU state.
  * @param cs Tallies the screen tests for the census; NULL off the canonical
@@ -1017,9 +1019,17 @@ static void shadow_moby_build(CPUState* cpu, shadow_wide_census* cs, int game_on
     shadow_push_decal_params(cpu, &view, w.C, view.ofx, view.ofy, view.H_eff, NULL);
     shadow_list_refresh(cpu, desc, cs);
     const int n_walk = game_only ? s_list_game_n : s_list_n;
+    const int hide_player = !game_only && player_hide_active();
     for (int li = 0; li < n_walk; li++) {
         shadow_fan_pts f;
-        if (shadow_record_admit(cpu, &w, &s_list[li], &f)) shadow_fan_emit(&w, &f);
+        if (!shadow_record_admit(cpu, &w, &s_list[li], &f)) continue;
+        /* --hide-player: the companion casts no drop shadow; the GTE
+         * comparison (game_only) keeps the game's whole list. */
+        if (!game_only && player_hide_is_sparx_moby(cpu, s_list[li].moby)) {
+            player_hide_count(PH_CAT_SPARX_SHADOW, 4, hide_player);
+            if (hide_player) continue;
+        }
+        shadow_fan_emit(&w, &f);
     }
 }
 

@@ -5,6 +5,7 @@
 #include "freecam_game.h"
 #include "openpete_mods.h"
 #include "psyq/psyq_game_hooks.h"
+#include "renderer/player_hide.h"
 #include "spyro_overlay_table.h"
 #include "write_census.h"
 
@@ -14,6 +15,10 @@ int game_dispatch_preamble(CPUState* cpu, uint32_t addr,
      * the game's camera follow and suppresses it and the player update.
      * Inactive: one bool test. */
     if (freecam_should_freeze(cpu, addr)) return 1;
+    /* --hide-player: the owner of the running call subtree, which the
+     * particle allocator hook tags each slot with. Off: one call reading
+     * two flags. */
+    if (player_hide_tracking()) player_hide_note_entry(cpu, addr);
     if (verdict) verdict(cpu, addr);
     if (write_census_active() && !openpete_mods_bypass_pending(addr))
         write_census_note_entry(addr);

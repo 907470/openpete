@@ -45,6 +45,7 @@
 #include "renderer/orchestrator.h"  /* the canonical-render epoch */
 #include "renderer/cut_guard.h"     /* cut_held_set_pick, cut_census_held_set */
 #include "renderer/moby.h"          /* moby_native_canon_ref_ns */
+#include "renderer/player_hide.h"   /* --hide-player: the player's records */
 
 extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 #include "game_layout.h"
@@ -101,6 +102,7 @@ typedef struct {
     int       cls;        /* the record's class, or -1 when unpaired */
     uint32_t  rec;        /* the record that appended it, 0 when unpaired */
     uint32_t  w0, w1, w2; /* the record's position words as the tick read them */
+    int       owner;      /* player_hide_particle_owner of the record that appended it */
 } part_item;
 
 /* The screen-space rebase of one captured primitive onto the sub-tick pose:
@@ -164,6 +166,7 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].cls = -1;
     s_item[s_item_n].rec = 0u;
     s_item[s_item_n].w0 = s_item[s_item_n].w1 = s_item[s_item_n].w2 = 0u;
+    s_item[s_item_n].owner = 0;
     memset(&s_reb[s_item_n], 0, sizeof s_reb[0]);
     s_reb[s_item_n].scl = 1.0;
     s_item_n++;
@@ -280,7 +283,8 @@ static int part_stamp_skipped(CPUState* cpu, const ngte_view* v, uint32_t rec, i
  * class links at the fixed front bucket, where the routine stamps nothing and
  * always appends; the latter take the front depth and keep no record. A paired record keeps its
  * position words, its projected point (and a two-point class's second point)
- * and its view-Z. The walk ends at the pool's end sentinel or the last
+ * and its view-Z. Every primitive matched to a record, fixed-bucket ones
+ * included, takes that record's player_hide_particle_owner. The walk ends at the pool's end sentinel or the last
  * captured primitive, and does nothing when the pool pointer is outside RAM.
  * @param cpu Reads the pool.
  * @param v The tick's view. */
@@ -304,6 +308,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
         const int cls = (sel >> PART_CLASS_SHIFT) & PART_CLASS_MASK;
         if ((uint32_t)cls >= game_layout.particles.fixed_layer_class) {
             s_item[i].cls = cls;
+            s_item[i].owner = player_hide_particle_owner(cpu, rec);
             s_item[i++].depth = front;
             continue;
         }
@@ -313,6 +318,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
         part_item* it = &s_item[i];
         it->cls = cls;
         it->rec = rec;
+        it->owner = player_hide_particle_owner(cpu, rec);
         it->w0 = cpu->read_word(rec + game_layout.particles.pos_off);
         it->w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
         it->w2 = cpu->read_word(rec + game_layout.particles.pos_off + 8u);
@@ -702,15 +708,22 @@ static void part_feed_line(const part_item* it, const part_rebase* r,
  * from its ABR when semi-transparent (rate 3 drawn additive), an untextured
  * one's is 1 when semi-transparent; corners pass through the rebase. A code in
  * the 0x40 or 0x50 line ranges goes to part_feed_line; any other code is
- * ignored. Clears the scene tag on exit. */
+ * ignored. While player_hide_active holds, a primitive whose record the
+ * player's or the companion's update spawned is not fed. Clears the scene
+ * tag on exit. */
 static void part_feed_native(void) {
     if (!part_feed_enabled()) return;
     if (s_item_n <= 0) return;
+    const int hide_player = player_hide_active();
     openpete_native_scene_begin_frame(openpete_frame);
     for (int i = 0; i < s_item_n; i++) {
         const part_item* it = &s_item[i];
         const part_rebase* r = &s_reb[i];
         const ngte_prim* p = &it->p;
+        player_hide_count_data(it->owner == 1 ? PH_CAT_PLAYER_PART
+                               : it->owner == 2 ? PH_CAT_SPARX_PART : PH_CAT_OTHER_PART,
+                               it->owner && hide_player, p, sizeof *p);
+        if (it->owner && hide_player) continue;
         const float depth = r->active ? r->depth : it->depth;
         if (p->nv == 4 || p->nv == 3) {
             openpete_native_scene_set_tag(

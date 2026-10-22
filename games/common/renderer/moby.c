@@ -50,6 +50,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/cut_guard.h"     /* the per-object discontinuity hold */
+#include "renderer/player_hide.h"  /* --hide-player: the companion's faces */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 #include "openpete_mods.h"     /* per-instance material slot resolve */
 #include "openpete_workpool.h" /* data-parallel face walk (--extract-threads) */
@@ -7463,6 +7464,47 @@ static float moby_actor_rank_marker(int prop) {
     return prop ? OPENPETE_SCENE_RANK_PROP : OPENPETE_SCENE_RANK_ACTOR;
 }
 
+/* The ranked mobys of one scene emit in first-ranked order: a ranked face's
+ * ordinal (openpete_scene_tri.mordinal) is its moby's position here plus 1. */
+typedef struct { uint32_t moby[256]; int n; } moby_rank_ordinals_t;
+
+/** @brief The index of `moby` among the emit's ranked mobys, appending it when new.
+ *
+ * Once the table holds 256 mobys a new one is not appended and gets index 256.
+ * @param o The emit's ordinal table, zeroed before the first call.
+ * @param moby The ranked face's moby.
+ * @return The index; at most 256. */
+static int moby_rank_ordinal(moby_rank_ordinals_t* o, uint32_t moby) {
+    int oi = 0;
+    while (oi < o->n && o->moby[oi] != moby) oi++;
+    if (oi == o->n && o->n < 256) o->moby[o->n++] = moby;
+    return oi;
+}
+
+/* The last material-slot resolve of one scene emit, keyed on the moby. */
+typedef struct { uint32_t moby; uint16_t slot; int have; } moby_matslot_memo_t;
+
+/** @brief The per-instance material slot of a face of `moby`, resolved once per moby.
+ *
+ * Slot ids are interned per feed cycle and the emit runs after the scene
+ * frame has reset that table, so a slot captured during the walk would name
+ * nothing, or another instance's block; the slot is resolved here from the
+ * moby's identity (pointer and class). The walk emits a moby's faces
+ * contiguously, so the memo holds one resolve per moby.
+ * @param m The emit's memo, zeroed before the first call.
+ * @param cls The moby's class.
+ * @param moby The moby's guest address.
+ * @return The slot, 0 when no mod material is per instance. */
+static uint16_t moby_matslot_memo(moby_matslot_memo_t* m, uint16_t cls, uint32_t moby) {
+    if (!openpete_mods_material_has_instance()) return 0;
+    if (!m->have || m->moby != moby) {
+        m->slot = (uint16_t)openpete_mods_material_moby_slot(NULL, cls, moby);
+        m->moby = moby;
+        m->have = 1;
+    }
+    return m->slot;
+}
+
 /* The front-shell verdict of the moby run the scene emit is inside: walk
  * triangles [.., end) belong to one moby, and on says whether it is a
  * front-shell record (moby_shell_face). */
@@ -7563,8 +7605,9 @@ static int moby_face_ot_slot1(int wbk) {
  * front flag (HUD3D, HUD, actor-front, actor), its ordering-table key for
  * opaque unmangled actor faces while key resolve is on, its rank while it contests a face of its own
  * moby, its material slot (resolved per moby at emit time, since slot ids are
- * interned per feed cycle) and whether a reveal added it. Writes host scene
- * state only.
+ * interned per feed cycle) and whether a reveal added it. While
+ * player_hide_active holds, an actor-layer triangle of the companion's class
+ * is not appended. Writes host scene state only.
  * @param cpu Guest CPU state, read for moby_key_order_table_live. */
 static void push_scene_moby_tris(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
@@ -7582,10 +7625,8 @@ static void push_scene_moby_tris(CPUState* cpu) {
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
     moby_rank_prepare();
     moby_tri_debug();
-    uint32_t rord_moby[256]; int rord_n = 0;  /* this walk's ranked-moby ordinals */
-    /* Per-moby memo for the material-slot resolve below (faces of one moby
-     * are contiguous in this stream). */
-    uint32_t mat_last_moby = 0; uint16_t mat_last_slot = 0; int mat_have = 0;
+    moby_rank_ordinals_t rord = { .n = 0 };  /* this walk's ranked-moby ordinals */
+    moby_matslot_memo_t mat = { 0u, 0u, 0 };  /* the material-slot resolve below */
     moby_shell_run_t shell_run = { 0, 0 };
     for (int i = 0; i < s_gout.n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
@@ -7652,10 +7693,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * would discard content far outside the real silhouette. */
         int rank = moby_face_rank(i);
         if (rank > 0) {
-            int oi;
-            for (oi = 0; oi < rord_n; oi++)
-                if (rord_moby[oi] == s_wtri_moby[i]) break;
-            if (oi == rord_n && rord_n < 256) rord_moby[rord_n++] = s_wtri_moby[i];
+            const int oi = moby_rank_ordinal(&rord, s_wtri_moby[i]);
             if (oi < 255) { t.rank = (float)rank; t.mordinal = oi + 1; }
         } else if (cat == OPENPETE_SCENE_ACTOR && t.blend == 0) {
             /* Actor-fragment marker (still "unranked" to every rank
@@ -7667,29 +7705,15 @@ static void push_scene_moby_tris(CPUState* cpu) {
              * yielded to in turn, which would leave the pixel to neither. */
             t.rank = moby_actor_rank_marker(t.prop);
         }
-        /* Per-instance material slot, resolved HERE rather than banked at
-         * extraction. Slot ids are interned per feed cycle and this loop
-         * runs AFTER scene_begin_frame() has reset that table, so a slot
-         * captured during the walk names nothing by the time it would be
-         * stamped - and because ids are handed out in first-seen order, a
-         * stale one can even name another instance's block. Re-resolving
-         * from the banked IDENTITY (moby ptr + class) is the same rule the
-         * residency ladder applies everywhere else: bank identity, never
-         * outcomes. Memoized on the moby ptr - the walk emits a moby's
-         * faces contiguously, so this is one resolve per moby, not per
-         * face. */
-        uint16_t matslot = 0;
-        if (openpete_mods_material_has_instance()) {
-            if (mat_have && s_wtri_moby[i] == mat_last_moby) {
-                matslot = mat_last_slot;
-            } else {
-                matslot = (uint16_t)openpete_mods_material_moby_slot(
-                    NULL, s_wtri_cls[i], s_wtri_moby[i]);
-                mat_last_moby = s_wtri_moby[i];
-                mat_last_slot = matslot;
-                mat_have = 1;
-            }
-        }
+        /* Per-instance material slot, resolved from the moby's identity
+         * at emit time (moby_matslot_memo). */
+        const uint16_t matslot = moby_matslot_memo(&mat, s_wtri_cls[i], s_wtri_moby[i]);
+        /* --hide-player drops the companion's actor faces here, after every
+         * per-moby memo above has advanced, so every other moby's
+         * triangles are submitted as without the flag. */
+        if (player_hide_moby_face(cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT,
+                                  s_wtri_cls[i], &t, sizeof t))
+            continue;
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], matslot));
         /* Origin: a record the extended-LOD reveal appended is host-added

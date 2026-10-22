@@ -12,6 +12,7 @@ extern const feature_module_t flame_module;
 extern const feature_module_t shadow_module;
 extern const feature_module_t shadow_spyro_module;
 extern const feature_module_t particle_module;
+extern const feature_module_t player_hide_module;
 extern const feature_module_t tracer_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t ui_sprite_module;
@@ -64,6 +65,10 @@ static const feature_module_t* const k_modules[] = {
      * mode; inert otherwise. Records the RP_PARTICLES polybuf range itself (so
      * the render_paths thin bracket on func_800573C8 is retired). */
     &particle_module,
+    /* --hide-player: tags each particle-pool slot with the owner of the
+     * call that allocated it (a game whose layout names no allocator
+     * registers no hook) and prints the per-category census. */
+    &player_hide_module,
     /* Native-renderer TRACER/beam: the additive gouraud quad-strip
      * tracer (func_800189F0 -> func_800189F8), e.g. the dream-weavers fireball's
      * glowing streak. Capture-and-feed: runs the real renderer (verdict) then

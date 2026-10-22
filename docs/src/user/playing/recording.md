@@ -76,6 +76,27 @@ settings menu, the notifications, the stats readout and the version line.
 `OPENPETE_SCREENSHOT_OVERLAYS=1`) draws them into those captures as the
 window shows them. The default is `0` (off).
 
+## Without the player
+
+`--hide-player 1` <!-- id: knob:hide_player home --> draws the scene
+without Spyro: Spyro, his fire breath and his shadow, Sparx and his glow,
+and the particles their moves spawn are not drawn. Every other character,
+effect and the HUD stay, and the game plays on as before, so a movie
+replays the same with the setting on or off. It applies to screenshots, to
+video and to the window, with the native renderer only. The default is
+`0` <!-- id: knob:hide_player --> (off).
+
+What is hidden differs by game:
+
+| Game | Not drawn | Still drawn |
+| --- | --- | --- |
+| Spyro the Dragon | Spyro, his fire breath, his shadow, Sparx | the particles of both, Sparx's glow |
+| Spyro 2: Ripto's Rage! | the same, and the particles Spyro spawns | Sparx's sparkles and glow |
+| Spyro: Year of the Dragon | the same, and the particles Spyro and Sparx spawn, and Sparx's glow | none of theirs |
+
+In Spyro 2 and Spyro 3 a particle spawned by another particle, not by
+Spyro or Sparx themselves, stays drawn.
+
 ## Video
 
 The released packages are built without video recording. The `--record`

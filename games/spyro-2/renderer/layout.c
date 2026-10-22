@@ -715,6 +715,19 @@ const game_layout_t spyro2_game_layout = {
         .slot_base = 0x80066F14u, .slot_stride = 0x58u, .prefix_max = 0u,
         .gem_class = 1u, .hud_x = { 0x154, 0xB4 }, .hud_z = 0xC00,
     },
+    .owner = {
+        .sparx_class   = 0x78u,
+        /* The player update: func_8001B050 (update flags) calls it under
+         * flag 0x8 (asm/nonmatchings/update/func_8001B050.s). The moby
+         * updates run through the overlay's own entry at D_800670F0 under
+         * flag 0x2 rather than a per-class table, so Sparx's spawns are not
+         * attributed (moby_update 0). */
+        .player_update = 0x8002A07Cu,
+        /* The slot allocator of the pool at D_PARTS_ARRAY, the same
+         * handwritten routine as Spyro 3's func_80056434
+         * (asm/updatemobys.s func_80041C50). */
+        .part_alloc    = 0x80041C50u,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

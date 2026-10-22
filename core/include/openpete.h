@@ -259,6 +259,13 @@ typedef struct openpete_options {
      * Display-only; native renderer only. Default 0. */
     int dither;
 
+    /* Hide the player (`--hide-player 0|1`). 1 = the native scene drops the
+     * avatar, its fire breath, its ground shadow, the companion (moby,
+     * drop shadow, glow ring) and the particles their updates spawn; every
+     * other draw, the HUD and the game state are unchanged. Display-only;
+     * native renderer only. Default 0. */
+    int hide_player;
+
     /* Untextured view (`--notex 0|1`, env OPENPETE_NOTEX; the flag wins).
      * 1 = textured scene fragments output the raw gouraud vertex colour;
      * cutout silhouettes keep their texture alpha. Display-only; native

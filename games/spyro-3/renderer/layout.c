@@ -690,6 +690,30 @@ const game_layout_t spyro3_game_layout = {
         .slot_base = 0x8006C550u, .slot_stride = 0x58u, .prefix_max = 1u,
         .gem_class = 1u, .hud_x = { 0x154, 0xB4 }, .hud_z = 0xC00,
     },
+    .owner = {
+        /* MobyUpdate_120, Sparx (src/overlays/level_17/moby.c,
+         * func_level_17_80075384; entry 120 of each level overlay's
+         * update table). */
+        .sparx_class   = 0x78u,
+        /* UpdateSpyro (src/update.c func_80055294 calls it under
+         * UPDATE_SPYRO): every particle spawn of the player's update module
+         * (asm/nonmatchings/spyroupdate) and of the overlays' animation
+         * module it calls runs inside this call. */
+        .player_update = 0x8003E83Cu,
+        /* ovlHeader.MobyUpdate (include/ovl_header.h, 0x800742D8); the moby
+         * update loop func_8003038C calls entry [moby+0x36] with a0 = moby
+         * (asm/nonmatchings/mobyupdate/func_8003038C.s). */
+        .moby_update   = 0x800742D8u,
+        /* The slot allocator every overlay's SpawnParticle calls with
+         * a0 = 2 (asm/updatemobys.s func_80056434): it returns the slot
+         * at the pool cursor D_8006C614, or a random slot without the
+         * class byte's bit 4 when the 0x2000-byte pool is full. */
+        .part_alloc    = 0x80056434u,
+        /* Sparx's update keeps its glow record at tag+0x10: it stores the
+         * func_8002EC50 result there and clears the record's shape byte
+         * through it (func_level_17_80075384, 0x80075560-0x80075584). */
+        .sparx_glow_off = 0x10u,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

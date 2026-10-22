@@ -50,6 +50,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "renderer/player_hide.h"
 
 extern unsigned openpete_frame;
 
@@ -253,8 +254,8 @@ static void shadow_player_build(CPUState* cpu) {
 
 /** @brief Rebuilds the player shadow fan and feeds it to the native scene as the footprint decal.
  *
- * Returns without feeding when OPENPETE_SHADOW_PLAYER=0 or the build linked
- * no triangle. The fan's footprint prism hull draws subtractive (ABR mode 2,
+ * Returns without feeding when OPENPETE_SHADOW_PLAYER=0, the build linked
+ * no triangle or the player is hidden (player_hide_active). The fan's footprint prism hull draws subtractive (ABR mode 2,
  * blend 3), coloured per pixel by the decal, under the scene tag
  * OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, slot).
  * @param cpu The guest CPU state.
@@ -263,6 +264,9 @@ static void shadow_player_feed_native(CPUState* cpu, int slot) {
     if (!shadow_player_feed_enabled()) return;
     shadow_player_build(cpu);
     if (s_tri_n <= 0) return;
+    const int hide = player_hide_active();
+    player_hide_count(PH_CAT_PLAYER_SHADOW, s_tri_n, hide);
+    if (hide) return;
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER,

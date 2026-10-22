@@ -10,6 +10,7 @@ extern const feature_module_t portal_module;
 extern const feature_module_t shadow_module;
 extern const feature_module_t shadow_player_module;
 extern const feature_module_t particles_module;
+extern const feature_module_t player_hide_module;
 extern const feature_module_t tracers_module;
 extern const feature_module_t glow_module;
 extern const feature_module_t glint_module;
@@ -49,6 +50,10 @@ static const feature_module_t* const k_modules[] = {
        names and feeds the primitives it appended, which link into the 3D
        ordering table and so never reach the 2D chokepoint. */
     &particles_module,
+    /* --hide-player: tags each particle-pool slot with the owner of the
+     * call that allocated it (a game whose layout names no allocator
+     * registers no hook) and prints the per-category census. */
+    &player_hide_module,
     /* The shared fire-breath feeder: hooks the flame emitter
      * game_layout.flame names and re-derives its additive ribbon from the
      * flame state block; inert unless the native scene is enabled or

@@ -45,6 +45,7 @@
 #include <string.h>
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"     /* cut_census_held_set */
+#include "renderer/player_hide.h"
 
 extern unsigned openpete_frame;
 extern op_time_t g_openpete_tick_stamp;      /* per-VBL stamp (PLL) */
@@ -852,11 +853,43 @@ static uint32_t player_tri_tag(const swtri* w) {
     return OPENPETE_TAG_PLAYER(kind, (uint32_t)s_player_slot);
 }
 
+/** @brief Print the submitted walk's screen-space centroid and bounding box when OPENPETE_PLAYER_POSTRACE is set.
+ *
+ * One line per call, for the record the feed just submitted. The centroid
+ * follows the record's position and rotation brackets; the box also follows
+ * the pose, so a centroid that glides across the sub-tick phases while the
+ * box steps separates a translation defect from a keyframe-blend one. Prints
+ * nothing for an empty walk. */
+static void player_postrace(void) {
+    static int s_pt = -1;
+    ENV_FLAG_LATCH(s_pt, "OPENPETE_PLAYER_POSTRACE");
+    if (!s_pt || s_swtri_n <= 0) return;
+    extern int g_openpete_canon_lag_leg;
+    double cx = 0.0, cy = 0.0;
+    double x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
+    int nv = 0;
+    for (int i = 0; i < s_swtri_n; i++)
+        for (int k = 0; k < 3; k++) {
+            double sx = s_swtri[i].v[k].sx, sy = s_swtri[i].v[k].sy;
+            cx += sx; cy += sy; nv++;
+            if (sx < x0) x0 = sx;
+            if (sx > x1) x1 = sx;
+            if (sy < y0) y0 = sy;
+            if (sy > y1) y1 = sy;
+        }
+    fprintf(stderr, "[player-screen f=%u] leg=%s slot=%d ntri=%d nv=%d "
+                    "c=(%.3f,%.3f) bb=(%.3f,%.3f,%.3f,%.3f) mirror=%d\n",
+            openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
+            s_player_slot, s_swtri_n, nv, cx / nv, cy / nv, x0, y0, x1, y1,
+            s_mirror_pass);
+}
+
 /** @brief Builds the face walk over the projection and adds its triangles to the scene.
  *
  * With `reproject` set the pose is projected first; otherwise the projection
  * already in s_sproj is used. Returns without touching the scene when the walk
- * built no triangle. The sortDepth byte at PL.sort_depth_off selects the depth
+ * built no triangle or the player is hidden (player_hide_active). The
+ * sortDepth byte at PL.sort_depth_off selects the depth
  * policy: the provider's front sentinel pulls the whole model toward the near
  * plane by a cap shared across the tick's calls (player_flat_min), any other
  * value, the mirrored copy's negative one included, applies a one-slot tie
@@ -872,6 +905,9 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
     if (reproject) player_project_all(cpu);
     player_build_walk(cpu);
     if (s_swtri_n <= 0) return;
+    const int hide = player_hide_active();
+    player_hide_count(PH_CAT_PLAYER, s_swtri_n, hide);
+    if (hide) return;
 
     /* The draw keys every part at max(0, (part-origin viewZ >> 7) -
      * sortDepth); one ordering slot is 128 full-world view-Z units. Like the
@@ -947,35 +983,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
         st.pkey = w->blend == 0 ? player_part_key(w->v[0].idx, sd) : 0.0f;
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_PLAYER, 0);
     }
-    /* OPENPETE_PLAYER_POSTRACE: the submitted screen-space centroid and
-     * bounding box of one player record, per present. The centroid follows the
-     * record's position and rotation brackets; the box additionally follows the
-     * pose, so a centroid that glides across the sub-tick phases while the box
-     * steps separates a translation defect from a keyframe-blend one. */
-    {
-        static int s_pt = -1;
-        ENV_FLAG_LATCH(s_pt, "OPENPETE_PLAYER_POSTRACE");
-        if (s_pt && s_swtri_n > 0) {
-            extern int g_openpete_canon_lag_leg;
-            double cx = 0.0, cy = 0.0;
-            double x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
-            int nv = 0;
-            for (int i = 0; i < s_swtri_n; i++)
-                for (int k = 0; k < 3; k++) {
-                    double sx = s_swtri[i].v[k].sx, sy = s_swtri[i].v[k].sy;
-                    cx += sx; cy += sy; nv++;
-                    if (sx < x0) x0 = sx;
-                    if (sx > x1) x1 = sx;
-                    if (sy < y0) y0 = sy;
-                    if (sy > y1) y1 = sy;
-                }
-            fprintf(stderr, "[player-screen f=%u] leg=%s slot=%d ntri=%d nv=%d "
-                            "c=(%.3f,%.3f) bb=(%.3f,%.3f,%.3f,%.3f) mirror=%d\n",
-                    openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
-                    s_player_slot, s_swtri_n, nv, cx / nv, cy / nv, x0, y0, x1, y1,
-                    s_mirror_pass);
-        }
-    }
+    player_postrace();
     openpete_native_scene_set_tag(0);
 }
 
