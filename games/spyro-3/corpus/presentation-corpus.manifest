@@ -234,6 +234,17 @@ s3-create-save|1678|663||1678,2341|--card1 {legdir}/card1.mcr --no-card2
 # where the area's last scene showed under its kept fade before.
 spooky-swamp-area-1-respawn-clear|2900|100||2900,3000
 
+# sunrise_spring-load-exit: the level-load exit after the loading screen's
+# fade to black. The game puts DRAWENV 0,12 with isbg (8,8,8) under a
+# subtractive fade of 255 and draws an empty OT, then shows that buffer;
+# next it fills buffer 0,240 with the level's clear (82,186,68) and draws an
+# empty OT, ClearImages both buffers black, and only then shows 0,240. The
+# PSX shows black throughout; 1571 and 1572 are sub-tick presents of the
+# empty scene, which composed the buffer it shows as the level's clear. The
+# 1569 capture takes the canonical capture of the 0,12 draw, which a live
+# present takes every tick. Blessed pre-fix.
+sunrise_spring-load-exit|1569|4||1569,1571,1572|--skip-to-level sunrise_spring
+
 # credits-cheat: the pause-menu credits cheat from Sunrise Spring. The credits
 # overlay emits one subtractive full-width quad of grey D_8006C598 << 4 per
 # tick while D_8006C598 != 0: the fade-in from black at VBL 2013-2043 and the
