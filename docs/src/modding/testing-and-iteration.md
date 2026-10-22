@@ -237,6 +237,11 @@ free camera never logs a roll and has no roll control.
 `--freecam-path "[ticks=N;] WP;WP..."` flies the camera along a looping
 path instead, each waypoint `x,y,z[,yaw,pitch[,roll]]`, interpolated over N
 ticks per segment (default 120) with the angles along the shorter arc.
+With `ticks=1` each waypoint is the camera of one tick. `--freecam-path
+@FILE` reads the spec from FILE, with a newline or `;` between segments and
+no limit on the waypoint count; use it for a path longer than the command
+line takes. In PowerShell quote the value (`"@path.txt"`), since a bare
+leading `@` is PowerShell syntax.
 
 ### Player placement
 

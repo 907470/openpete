@@ -382,17 +382,22 @@ static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
  * refill, LOD tier crossings, moby extraction churn - are invisible to it.
  * This flies the camera instead: waypoints are linearly interpolated over
  * `ticks` canonical ticks per segment, and the path loops so a run of any
- * length stays in motion.
+ * length stays in motion. With ticks=1 every waypoint is the pose of one
+ * tick, which replays a keyed camera path (the Spyro 3 credits' one key per
+ * tick) without interpolation.
  *
  * Spec: "[ticks=N;] WP(;WP)+" where WP is "x,y,z[,yaw,pitch[,roll]]" or a
  * name the game's resolver knows ("topdown", "sweepN"); either may also
- * carry the pose's "roll=N" key. Names resolve against the live
+ * carry the pose's "roll=N" key. A newline separates segments as ';' does.
+ * "@FILE" reads the spec from FILE, which carries a path of any length past
+ * a command line's limit. Names resolve against the live
  * level once it is up, so a path can dive from above the level into a flight
  * across it without the caller knowing any level's bounds. */
 
-#define FREECAM_PATH_MAX 16
 #define FREECAM_PATH_DEFAULT_TICKS 120
 #define FREECAM_NAME_MAX 32
+#define FREECAM_PATH_FILE_MAX (64u << 20)
+#define FREECAM_PATH_LOG_MAX 16
 
 /** @brief Parse pose text into its positional integers, its roll and, without three integers, a name.
  *
@@ -422,10 +427,16 @@ static int freecam_parse_pose_text(const char* text, int32_t* v, int max, int32_
     return n;
 }
 
+/* One path waypoint: a numeric pose, or a name resolved from the live level. */
+typedef struct {
+    int32_t v[6];                      /* x, y, z, yaw, pitch, roll */
+    char    named[FREECAM_NAME_MAX];   /* "" = numeric */
+} freecam_waypoint;
+
 static struct {
-    int32_t wp[FREECAM_PATH_MAX][6];   /* x, y, z, yaw, pitch, roll */
-    char    named[FREECAM_PATH_MAX][FREECAM_NAME_MAX];  /* "" = numeric */
+    freecam_waypoint* wp;   /* heap, cap entries, n used */
     int     n;
+    int     cap;
     int     ticks;      /* ticks per segment */
     int     t;          /* tick index within the current segment */
     int     seg;
@@ -433,54 +444,131 @@ static struct {
     int     active;
 } s_path;
 
+/** @brief Read a whole spec file into a NUL-terminated heap buffer.
+ *
+ * Refuses a file that cannot be opened or read, or that is larger than
+ * FREECAM_PATH_FILE_MAX bytes, with a WARN.
+ * @param file The file path.
+ * @return The text, owned by the caller (free), or NULL on failure. */
+static char* freecam_path_read_file(const char* file) {
+    FILE* f = fopen(file, "rb");
+    if (!f) {
+        OPL_WARN_F("freecam", "--freecam-path: cannot open '%s'", file);
+        return NULL;
+    }
+    char* buf = NULL;
+    size_t len = 0;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        const long size = ftell(f);
+        if (size >= 0 && (unsigned long)size <= FREECAM_PATH_FILE_MAX &&
+            fseek(f, 0, SEEK_SET) == 0 && (buf = malloc((size_t)size + 1)) != NULL) {
+            len = fread(buf, 1, (size_t)size, f);
+            if (len != (size_t)size) { free(buf); buf = NULL; }
+        }
+    }
+    fclose(f);
+    if (!buf) {
+        OPL_WARN_F("freecam", "--freecam-path: cannot read '%s' (at most %u bytes)",
+                   file, FREECAM_PATH_FILE_MAX);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+/** @brief Append one waypoint to s_path, growing the array by doubling.
+ *
+ * @param v The six pose integers.
+ * @param named The name, "" for a numeric waypoint.
+ * @return 1 on success, 0 when the allocation failed. */
+static int freecam_path_push(const int32_t v[6], const char* named) {
+    if (s_path.n == s_path.cap) {
+        const int cap = s_path.cap ? s_path.cap * 2 : 16;
+        freecam_waypoint* wp = realloc(s_path.wp, (size_t)cap * sizeof *wp);
+        if (!wp) return 0;
+        s_path.wp = wp;
+        s_path.cap = cap;
+    }
+    freecam_waypoint* w = &s_path.wp[s_path.n++];
+    memcpy(w->v, v, sizeof w->v);
+    memcpy(w->named, named, sizeof w->named);
+    return 1;
+}
+
+/** @brief Parse one ';'- or newline-delimited segment of a path spec into s_path.
+ *
+ * A segment containing "ticks=" sets the ticks per segment when positive.
+ * Any other segment parses as pose text (freecam_parse_pose_text): three or
+ * more integers make a numeric waypoint, missing yaw and pitch reading 0 and
+ * the roll the sixth integer, else the "roll=N" key's value, else 0; a
+ * non-blank name makes a named waypoint with the key's roll, resolved later.
+ * The segment is truncated to 127 characters.
+ * @param p The segment's first character.
+ * @param len The segment's length.
+ * @return 1 to continue; 0 to refuse the spec (a named waypoint on a game
+ *         without named poses, or an allocation failure). */
+static int freecam_path_parse_segment(const char* p, size_t len) {
+    char seg[128];
+    if (len >= sizeof seg) len = sizeof seg - 1;
+    memcpy(seg, p, len);
+    seg[len] = '\0';
+    for (char* e = seg + len; e > seg && (e[-1] == '\r' || e[-1] == ' ' || e[-1] == '\t');)
+        *--e = '\0';
+
+    const char* tk = strstr(seg, "ticks=");
+    if (tk) {
+        const int v = atoi(tk + 6);
+        if (v > 0) s_path.ticks = v;
+        return 1;
+    }
+    int32_t v[6] = {0, 0, 0, 0, 0, 0}, roll;
+    char named[FREECAM_NAME_MAX];
+    const int nv = freecam_parse_pose_text(seg, v, 6, &roll, named);
+    if (nv < 6) v[5] = roll;
+    if (named[0] && !D->resolve_named_pose) {
+        OPL_WARN_F("freecam", "--freecam-path: named waypoint '%s' but "
+                   "this game has no named poses", named);
+        return 0;
+    }
+    if (nv < 3 && !named[0]) return 1;
+    if (!freecam_path_push(v, named)) {
+        OPL_WARN_F("freecam", "--freecam-path: out of memory at waypoint %d", s_path.n);
+        return 0;
+    }
+    return 1;
+}
+
 /** @brief Parse a flight-path spec into s_path and arm it.
  *
- * Segments split on ';'. A segment containing "ticks=" sets the ticks per
- * segment when positive. Any other segment parses as pose text
- * (freecam_parse_pose_text): three or more integers make a numeric
- * waypoint, missing yaw and pitch reading 0 and the roll the sixth integer,
- * else the "roll=N" key's value, else 0; a non-blank name makes a named
- * waypoint with the key's roll, resolved later. Each segment is copied into
- * a 128-byte
- * buffer, truncating longer ones, and at most FREECAM_PATH_MAX waypoints are
- * kept. A named waypoint on a game without named poses refuses the spec.
- * @param spec The spec text.
+ * A spec starting with '@' names a file whose whole text is the spec. The
+ * spec splits into segments on ';' and newline, each parsed by
+ * freecam_path_parse_segment; the waypoint count is bounded only by memory.
+ * A refused segment, an unreadable file or fewer than two waypoints leave
+ * the path inactive.
+ * @param spec The spec text, or "@" and a file path.
  * @return 1 when two or more waypoints were parsed and the path is active,
  *         else 0. */
 static int freecam_path_parse(const char* spec) {
+    free(s_path.wp);
     memset(&s_path, 0, sizeof s_path);
     s_path.ticks = FREECAM_PATH_DEFAULT_TICKS;
 
-    const char* p = spec;
-    while (*p && s_path.n < FREECAM_PATH_MAX) {
-        while (*p == ' ' || *p == ';') p++;
-        if (!*p) break;
-        const char* end = strchr(p, ';');
-        size_t len = end ? (size_t)(end - p) : strlen(p);
-        char seg[128];
-        if (len >= sizeof seg) len = sizeof seg - 1;
-        memcpy(seg, p, len);
-        seg[len] = '\0';
-
-        const char* tk = strstr(seg, "ticks=");
-        if (tk) {
-            int v = atoi(tk + 6);
-            if (v > 0) s_path.ticks = v;
-        } else {
-            int32_t v[6] = {0, 0, 0, 0, 0, 0}, roll;
-            const int nv = freecam_parse_pose_text(seg, v, 6, &roll, s_path.named[s_path.n]);
-            if (nv < 6) v[5] = roll;
-            memcpy(s_path.wp[s_path.n], v, sizeof v);
-            if (s_path.named[s_path.n][0] && !D->resolve_named_pose) {
-                OPL_WARN_F("freecam", "--freecam-path: named waypoint '%s' but "
-                           "this game has no named poses", s_path.named[s_path.n]);
-                return 0;
-            }
-            if (nv >= 3 || s_path.named[s_path.n][0]) s_path.n++;
-        }
-        if (!end) break;
-        p = end + 1;
+    char* text = NULL;
+    if (spec[0] == '@') {
+        text = freecam_path_read_file(spec + 1);
+        if (!text) return 0;
+        spec = text;
     }
+    int ok = 1;
+    for (const char* p = spec; ok && *p;) {
+        while (*p == ' ' || *p == ';' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+        if (!*p) break;
+        const size_t len = strcspn(p, ";\n");
+        ok = freecam_path_parse_segment(p, len);
+        p += len;
+    }
+    free(text);
+    if (!ok) return 0;
 
     if (s_path.n < 2) {
         OPL_WARN_F("freecam",
@@ -495,27 +583,30 @@ static int freecam_path_parse(const char* spec) {
 
 /** @brief Fill in the path's named waypoints from the live level, once.
  *
- * Logs every waypoint after the first success.
+ * After the first success logs the first FREECAM_PATH_LOG_MAX waypoints and
+ * the count of the rest.
  * @param cpu The guest CPU state.
  * @return 1 once resolved; 0 while a name cannot resolve yet. */
 static int freecam_path_resolve(CPUState* cpu) {
     if (s_path.resolved) return 1;
     for (int i = 0; i < s_path.n; i++) {
         int32_t v[5] = {0, 0, 0, 0, 0};
-        if (!s_path.named[i][0]) continue;
-        if (!resolve_named(cpu, s_path.named[i], v)) return 0;  /* not live yet */
-        memcpy(s_path.wp[i], v, sizeof v);   /* roll, wp[i][5], is the spec's */
+        if (!s_path.wp[i].named[0]) continue;
+        if (!resolve_named(cpu, s_path.wp[i].named, v)) return 0;  /* not live yet */
+        memcpy(s_path.wp[i].v, v, sizeof v);   /* roll, v[5], is the spec's */
     }
-    for (int i = 0; i < s_path.n; i++) {
-        if (s_path.wp[i][5])
+    for (int i = 0; i < s_path.n && i < FREECAM_PATH_LOG_MAX; i++) {
+        const int32_t* w = s_path.wp[i].v;
+        if (w[5])
             OPL_INFO_F("freecam", "path wp%d = (%d, %d, %d) yaw=%d pitch=%d roll=%d", i,
-                       s_path.wp[i][0], s_path.wp[i][1], s_path.wp[i][2],
-                       s_path.wp[i][3], s_path.wp[i][4], s_path.wp[i][5]);
+                       w[0], w[1], w[2], w[3], w[4], w[5]);
         else
             OPL_INFO_F("freecam", "path wp%d = (%d, %d, %d) yaw=%d pitch=%d", i,
-                       s_path.wp[i][0], s_path.wp[i][1], s_path.wp[i][2],
-                       s_path.wp[i][3], s_path.wp[i][4]);
+                       w[0], w[1], w[2], w[3], w[4]);
     }
+    if (s_path.n > FREECAM_PATH_LOG_MAX)
+        OPL_INFO_F("freecam", "path: %d more waypoint(s) not logged",
+                   s_path.n - FREECAM_PATH_LOG_MAX);
     s_path.resolved = 1;
     return 1;
 }
@@ -545,8 +636,8 @@ static int32_t freecam_lerp_angle(int32_t a, int32_t b, int num, int den) {
 static void freecam_path_step(CPUState* cpu, int committed) {
     if (!freecam_path_resolve(cpu)) return;
 
-    const int32_t* a = s_path.wp[s_path.seg];
-    const int32_t* b = s_path.wp[(s_path.seg + 1) % s_path.n];
+    const int32_t* a = s_path.wp[s_path.seg].v;
+    const int32_t* b = s_path.wp[(s_path.seg + 1) % s_path.n].v;
     const int num = s_path.t, den = s_path.ticks;
 
     s_pose.x     = a[0] + (int32_t)(((int64_t)(b[0] - a[0]) * num) / den);
