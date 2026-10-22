@@ -1345,6 +1345,7 @@ typedef struct PsyX_SPUFeed_Stats {
     unsigned long long data_out, silence_out;
     unsigned long long pitch_n;
     double pitch_med_c, pitch_p99_c, pitch_max_c;
+    unsigned long long out_hash;
     PsyX_SPUFeed_PhaseStats phase[PSYX_SPUFEED_PHASES];
     char phase_name[PSYX_SPUFEED_PHASES][16];
 } PsyX_SPUFeed_Stats;
@@ -1381,6 +1382,7 @@ static void audio_feed_exit_summary(void) {
                st.consumed, st.data_out, st.silence_out);
     OPL_INFO_F("audio", "feed: pitch: pumps=%llu median=%+.2fc p99=%.2fc max=%+.2fc",
                st.pitch_n, st.pitch_med_c, st.pitch_p99_c, st.pitch_max_c);
+    OPL_INFO_F("audio", "feed: out_hash=%016llx data_out=%llu", st.out_hash, st.data_out);
     for (int i = 0; i < PSYX_SPUFEED_PHASES; i++) {
         const PsyX_SPUFeed_PhaseStats* p = &st.phase[i];
         if (!p->pushed && !p->held) continue;
@@ -2752,6 +2754,31 @@ void openpete_set_tick_scale(double scale) {
     s_knob_shown.scale = scale;
     knob_unlock();
     SDL_SetAtomicInt(&s_knob_pending, 1);
+}
+
+/** @brief Apply the OPENPETE_TICK_SCALE_AT schedule: each `VBL:SCALE` entry calls openpete_set_tick_scale once the device VBL count reaches VBL.
+ *
+ * The harness form of a live tick-scale change (the devui row's setter, at
+ * a reproducible VBL); entries are comma-separated and in VBL order. Read
+ * once; a no-op when the variable is unset. */
+static void tick_scale_schedule_poll(void) {
+    static const char* s_next = NULL;
+    static int s_init = 0;
+    if (!s_init) {
+        s_init = 1;
+        const char* e = getenv("OPENPETE_TICK_SCALE_AT");
+        s_next = (e && *e) ? e : NULL;
+    }
+    while (s_next) {
+        char* end = NULL;
+        const long vbl = strtol(s_next, &end, 10);
+        if (end == s_next || *end != ':') { s_next = NULL; return; }
+        if (SDL_GetAtomicInt(&openpete_vbl_device) < vbl) return;
+        const double scale = strtod(end + 1, &end);
+        openpete_set_tick_scale(scale);
+        OPL_INFO_F("pacer", "tick-scale schedule: VBL %ld -> %.3f", vbl, scale);
+        s_next = (*end == ',') ? end + 1 : NULL;
+    }
 }
 
 double openpete_get_tick_scale(void) {
@@ -5155,6 +5182,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         /* Live tick-scale change: re-derive every scaled period, then fall
          * through the render-fps dirty path below for the render period +
          * deadline re-anchor + interp-gate re-sync. */
+        tick_scale_schedule_poll();
         live_knob_drain();
         if (s_tick_scale_dirty) {
             s_tick_scale_dirty = 0;

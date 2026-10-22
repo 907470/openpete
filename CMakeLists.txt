@@ -541,6 +541,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Audio feed across live tick-scale changes: per game, a headless run
+    # on the feed's synthetic device under a 0.25-3.0 schedule of
+    # openpete_set_tick_scale calls; 0 underruns and 0 overflows, the
+    # queued depth within 45 ms of its target per scale, and back within
+    # the band <= 1 s after each change. Exit 64 = no binary or disc.
+    add_test(NAME audio_tick_scale
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_audio_tick_scale.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(audio_tick_scale PROPERTIES
+        LABELS "slow;audio"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # CD drive head: the CdlGetlocP head model replayed against every
     # reference answer of the Spyro 2/3 20k goldens (|diff| <= 2 LBA), and
     # the XA decoder head's rate on a Spyro 2 boot run (37609/15000 LBA per
