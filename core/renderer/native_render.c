@@ -611,6 +611,7 @@ typedef struct {
     int       hold_area;           /* display area whose held scene an empty compose of this
                                     * scene shows, -1 for the VRAM framebuffer, HOLD_V_CLEAR
                                     * for an area auto-cleared since (hold_verdict) */
+    uint32_t  hold_fill;           /* HOLD_V_CLEAR: the area's fill colour at the capture */
 } scene_slot_t;
 static scene_slot_t s_ring[SCENE_RING];
 static int          s_ring_head = -1;          /* last published */
@@ -627,7 +628,7 @@ static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static const nr_pack_fog *ps_pack_fog(void);
 static void     ps_apply_geometry(void);
-static int      hold_verdict(const int geom[8]);
+static int      hold_verdict(const int geom[8], uint32_t *fill);
 static void     hold_retain_canonical(void);
 static void     hold_note_clear(int x, int y, int w, int h, int r, int g, int b);
 /* The clear colour an empty compose of an auto-cleared area draws
@@ -1302,6 +1303,10 @@ static int s_game_fed;
  * presents at (Spyro 1 GS_ExitLevel, the loader loops), that DrawOTag drew
  * the presented scene and its env is the one the scene was cleared with. */
 static uint8_t s_drawenv_put[4];
+/* The scene open (s_scene_frame) when the game last put a DRAWENV: equal to
+ * the captured scene's stamp when the game put the env that scene draws
+ * under before the capture, as a game that draws before its VSync does. */
+static unsigned s_drawenv_put_scene = 0xFFFFFFFEu;
 static uint8_t s_drawenv_drawn[4];
 static int     s_drawenv_drawn_valid;
 /* 1 when the game put a DRAWENV since the last canonical capture
@@ -2042,6 +2047,7 @@ static uint32_t area_fade_word(int a, unsigned ep) {
 void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) {
     s_drawenv_put[0] = (uint8_t)isbg; s_drawenv_put[1] = (uint8_t)r;
     s_drawenv_put[2] = (uint8_t)g;    s_drawenv_put[3] = (uint8_t)b;
+    s_drawenv_put_scene = s_scene_frame;
 }
 static int s_geom_in[8];   /* disp x,y,w,h, clip x,y,w,h - guest-side */
 
@@ -17995,6 +18001,9 @@ static struct {
 /* What the compose put on screen, set by compose_variant, read once the
  * present is known to have gone out. -1 = no compose ran. */
 static int s_pc_cur = -1;
+/* The clear colour and hold branch of the last compose (hold_redirect_begin), for the trace line. */
+static uint32_t s_pc_clear;
+static int      s_pc_hold = -1;
 
 /** @brief Return whether OPENPETE_PRESENT_TRACE requests the per-present census.
  *
@@ -18042,6 +18051,33 @@ static void pc_ring_audit(int kind, int tc_drawn)
     }
     if (mask & (1u << 16)) { s_ra.fam[16]++; fprintf(stderr, " tercache=%d/%d", tc_drawn, sl->tc_built); }
     fputc('\n', stderr);
+}
+
+/** @brief Print the OPENPETE_PRESENT_TRACE line of one composed present.
+ *
+ * The line names the present's kind and outcome, the scene's tick and
+ * stamp, its triangle and retained-sector counts, alpha and pairing, the
+ * window extent, openpete_frame at the present, the non-2D and 2D triangles of
+ * the composed scene, the clear colour the compose drew and
+ * the hold branch it took (s_pc_hold: -1 its own scene, HOLD_V_CLEAR a
+ * fill, else the held pool entry).
+ * @param kind PC_CANON, PC_INTER or PC_INLINE.
+ * @param outcome PC_SCENE, PC_VRAM, PC_REF or PC_CLEAR.
+ * @param ntri Triangles of the composed scene.
+ * @param tc_drawn Retained sectors the present draws. */
+static void pc_trace_print(int kind, int outcome, int ntri, int tc_drawn)
+{
+    extern unsigned openpete_frame;
+    const scene_view_t pv = scene_present_view();
+    const int twod = scene_2d_count_fwd(pv.tri, pv.n);
+    const unsigned frame = s_ps_slot ? s_ps_slot->frame : s_scene_frame;
+    const double alpha = s_ps_slot ? s_ps_slot->alpha : 0.0;
+    const int paired = s_ps_slot ? s_ps_slot->paired : 0;
+    fprintf(stderr, "[present] #%u kind=%s shows=%s frame=%u stamp=%08x n=%d tc=%d alpha=%.4f paired=%d %dx%d fe=%d"
+                    " now=%u world=%d twod=%d clear=%08x hold=%d\n",
+            s_pc.total, s_pc_kind_name[kind], s_pc_outcome_name[outcome], frame, scene_present_stamp(),
+            ntri, tc_drawn, alpha, paired, s_nr.win_w, s_nr.win_h, s_render_full_extent,
+            openpete_frame, pv.n - twod, twod, s_pc_clear, s_pc_hold);
 }
 
 /** @brief Tally one composed present into the per-present census.
@@ -18108,12 +18144,7 @@ static void pc_note(void)
         else           openpete_glitch_mark_last_walk(&g.walk);
         openpete_glitch_mark_note_present(&g);
     }
-    if (pc_trace_on())
-        fprintf(stderr, "[present] #%u kind=%s shows=%s frame=%u stamp=%08x n=%d tc=%d alpha=%.4f paired=%d %dx%d fe=%d\n",
-                s_pc.total, s_pc_kind_name[kind], s_pc_outcome_name[outcome],
-                s_ps_slot ? s_ps_slot->frame : s_scene_frame, scene_present_stamp(), ntri, tc_drawn,
-                s_ps_slot ? s_ps_slot->alpha : 0.0, s_ps_slot ? s_ps_slot->paired : 0,
-                s_nr.win_w, s_nr.win_h, s_render_full_extent);
+    if (pc_trace_on()) pc_trace_print(kind, outcome, ntri, tc_drawn);
 }
 
 void openpete_native_present_census_report(void)
@@ -19781,7 +19812,7 @@ static void slot_capture_inputs(scene_slot_t *sl) {
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
     openpete_mods_material_view_capture(&sl->matview);
     pack_fog_capture(&sl->pack_fog);
-    sl->hold_area = hold_verdict(s_geom_in);
+    sl->hold_area = hold_verdict(s_geom_in, &sl->hold_fill);
 }
 /* Publish into any free ring slot; see the header. */
 int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
@@ -20842,17 +20873,19 @@ static int hold_area_shown(const int geom[8])
  *
  * The area the display shows, when it was last written by a captured
  * scene and still holds it; HOLD_V_CLEAR when an auto-clearing draw of
- * an empty OT wrote it last (hold_note_clear); -1 (the VRAM
- * framebuffer) when an image op wrote it last, no scene was ever captured
- * into it, or the store is off.
+ * an empty OT wrote it last (hold_note_clear), with the fill colour as of
+ * now in @p fill; -1 (the VRAM framebuffer) when an image op wrote it last,
+ * no scene was ever captured into it, or the store is off.
  * @param geom Display x, y, w, h then clip x, y, w, h at the scene's capture.
+ * @param fill Receives the fill colour (s_drawenv_clear layout) for HOLD_V_CLEAR, else 0.
  * @return The area index, HOLD_V_CLEAR, or -1. */
-static int hold_verdict(const int geom[8])
+static int hold_verdict(const int geom[8], uint32_t *fill)
 {
+    *fill = 0;
     if (!hold_on()) return -1;
     SDL_LockMutex(hold_mx());
     int i = hold_area_shown(geom);
-    if (i >= 0 && s_hold.a[i].writer == HOLD_W_CLEAR) i = HOLD_V_CLEAR;
+    if (i >= 0 && s_hold.a[i].writer == HOLD_W_CLEAR) { *fill = s_hold.a[i].clear; i = HOLD_V_CLEAR; }
     else if (i >= 0 && (s_hold.a[i].writer != HOLD_W_SCENE || s_hold.a[i].entry < 0)) i = -1;
     SDL_UnlockMutex(hold_mx());
     return i;
@@ -20889,12 +20922,57 @@ static void hold_note_clear(int x, int y, int w, int h, int r, int g, int b)
                 s_scene_frame, x, y, w, h, r & 0xFF, g & 0xFF, b & 0xFF);
 }
 
+/** @brief Apply a fade word to a flat colour as the PSX blends the fade quad over it.
+ *
+ * Mode 2 (B-F) subtracts and mode 1 (B+F) adds per channel, clamped to
+ * 0..255; mode 0 averages ((B+F)/2). A word that is off leaves the colour.
+ * @param fade The fade word (openpete_native_scene_set_fade layout: r in bits 16-23, b in 0-7).
+ * @param rgb Red, green, blue, 0..255; overwritten with the blended colour. */
+static void fade_apply_fill(uint32_t fade, int rgb[3])
+{
+    if (!(fade >> 31)) return;
+    const int mode = (int)((fade >> 24) & 3u);
+    for (int c = 0; c < 3; c++) {
+        const int f = (int)((fade >> (16 - 8 * c)) & 0xFFu);
+        const int v = mode == 2 ? rgb[c] - f : mode == 1 ? rgb[c] + f : (rgb[c] + f) / 2;
+        rgb[c] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+}
+
+/** @brief Mark the area an empty scene is kept under as holding the fill its DRAWENV wrote, under the scene's fade.
+ *
+ * Called for an empty canonical scene. The PSX PutDrawEnv with isbg set
+ * fills the DRAWENV clip with (r0, g0, b0); the scene's OT drawn after it
+ * holds no game triangle, and its fade quad blends over the fill. The
+ * scene's DRAWENV is the last PutDrawEnv when the game put it while the
+ * scene was open (s_drawenv_put_scene): a game that draws before its VSync.
+ * Otherwise the game puts it after the capture, and it is the env the game
+ * wrote into its current double buffer (s_present_area_isbg,
+ * s_drawenv_clear). The area is the one held scenes are kept under, the
+ * last PutDrawEnv's clip (s_geom_in). OPENPETE_HOLD_CENSUS logs each mark
+ * whose isbg or colour differs from the current-buffer env, unfaded. */
+static void hold_note_put(void)
+{
+    const int own = s_drawenv_put_scene == s_scene_frame;
+    const uint32_t c = s_drawenv_clear;
+    const int next = s_present_area_valid && s_present_area_isbg;
+    const int isbg = own ? s_drawenv_put[0] != 0 : next;
+    int rgb[3] = { (int)(c & 0xFFu), (int)((c >> 8) & 0xFFu), (int)((c >> 16) & 0xFFu) };
+    if (own) { rgb[0] = s_drawenv_put[1]; rgb[1] = s_drawenv_put[2]; rgb[2] = s_drawenv_put[3]; }
+    fade_apply_fill(s_scene_fade, rgb);
+    const uint32_t fill = (uint32_t)rgb[0] | ((uint32_t)rgb[1] << 8) | ((uint32_t)rgb[2] << 16);
+    if (hold_census() && (isbg != next || (isbg && fill != (c & 0xFFFFFFu))))
+        fprintf(stderr, "[hold] clear-src f=%u clip=%d,%d own=%d isbg=%d fill=%06x next=%d:%06x fade=%08x\n",
+                s_scene_frame, s_geom_in[4], s_geom_in[5], own, isbg, fill, next, c & 0xFFFFFFu, s_scene_fade);
+    if (isbg) hold_note_clear(s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7], rgb[0], rgb[1], rgb[2]);
+}
+
 /** @brief Keep the game's canonical scene as the content of the draw area it was drawn into.
  *
  * Runs at the canonical capture, after the tick's 2D is in. A re-extracted
  * scene keeps nothing; one with neither a game triangle nor retained
- * terrain of its own keeps nothing either, and when its OT's env
- * auto-clears it marks the area cleared (hold_note_clear). The copy goes
+ * terrain of its own keeps nothing either, and when its DRAWENV
+ * auto-clears it marks the area cleared (hold_note_put). The copy goes
  * into a pool entry no area names and no compose reads; its scene id is the next ring id, the id the VRAM journal
  * tags this tick's image ops with, so a compose of the copy applies the
  * texels the scene was drawn against. Every other area holding a scene ages
@@ -20905,14 +20983,9 @@ static void hold_retain_canonical(void)
     const uint32_t stamp = scene_live_stamp();
     const int tc = openpete_tercache_build_content(stamp) > 0;
     if (!tc && !scene_has_game_tris(s_scene, s_scene_n)) {
-        /* An empty scene whose OT's env auto-clears (the presented DRAWENV,
-         * openpete_native_note_present_draw_area) leaves the area it is kept
-         * under holding the fill: the clear colour stands in for the scene. */
-        if (s_present_area_valid && s_present_area_isbg) {
-            const uint32_t c = s_drawenv_clear;
-            hold_note_clear(s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7],
-                            (int)(c & 0xFFu), (int)((c >> 8) & 0xFFu), (int)((c >> 16) & 0xFFu));
-        }
+        /* An empty scene leaves the area it is kept under holding the fill
+         * of its auto-clearing DRAWENV (hold_note_put). */
+        hold_note_put();
         return;
     }
     const int g[8] = { s_geom_in[0], s_geom_in[1], s_geom_in[2], s_geom_in[3],
@@ -21058,6 +21131,23 @@ static uint32_t held_fade_compose(uint32_t kept, uint32_t present)
     return out;
 }
 
+/** @brief Log an empty compose whose fill differs from the one the area it shows holds at the compose.
+ *
+ * OPENPETE_HOLD_CENSUS only. The compose draws the fill its verdict read
+ * when the scene was captured; an image op or a later mark since then
+ * changes what the area holds now. The line gives both colours. The
+ * caller holds the store's lock.
+ * @param fill The fill the compose draws. */
+static void hold_fill_census(uint32_t fill)
+{
+    const int shown = hold_area_shown(s_ps_slot ? s_ps_slot->geom : s_geom_in);
+    const uint32_t own = ps_drawenv_clear();
+    const uint32_t now = shown >= 0 && s_hold.a[shown].writer == HOLD_W_CLEAR
+                       ? s_hold.a[shown].clear : (own ? own : 0xFF000000u);
+    if (now != fill)
+        fprintf(stderr, "[hold] fill-src f=%u fill=%08x area-now=%08x\n", s_scene_frame, fill, now);
+}
+
 /** @brief Point the compose at the held scene of the area an empty present shows.
  *
  * Runs at the entry of every compose: the live present (ring slot or live
@@ -21081,23 +21171,26 @@ static int hold_redirect_begin(const scene_slot_t **prev)
 {
     *prev = s_ps_slot;
     s_hold_clear_bg = 0;
+    s_pc_hold = -1; s_pc_clear = ps_drawenv_clear();
     const scene_view_t v = scene_present_view();
     if (scene_has_game_tris(v.tri, v.n)) return -1;
     openpete_tercache_frame_select(v.stamp);
     const uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : v.bg;
     int retained_only = 0;
     if (scene_content_test(v.tri, v.n, v.freeze, bg, &retained_only)) return -1;
-    const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in);
+    uint32_t fill = 0;
+    const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in, &fill);
+    if (s_ps_slot) fill = s_ps_slot->hold_fill;
     if (area == HOLD_V_CLEAR) {
         /* The buffer holds the fill alone: the present composes it, under
-         * its own fade. */
-        const uint32_t own = ps_drawenv_clear();
+         * its own fade. The colour is the one the verdict read, as of the
+         * scene: a later write into the area belongs to a later scene. */
+        s_hold_clear_bg = fill;
         SDL_LockMutex(hold_mx());
-        const int shown = hold_area_shown(s_ps_slot ? s_ps_slot->geom : s_geom_in);
-        s_hold_clear_bg = shown >= 0 && s_hold.a[shown].writer == HOLD_W_CLEAR
-                        ? s_hold.a[shown].clear : (own ? own : 0xFF000000u);
         s_hold.c_clear++;
+        if (hold_census()) hold_fill_census(fill);
         SDL_UnlockMutex(hold_mx());
+        s_pc_hold = HOLD_V_CLEAR; s_pc_clear = s_hold_clear_bg;
         if (hold_census())
             fprintf(stderr, "[hold] empty f=%u stamp=%u slot=%d area=clear -> fill %08x\n",
                     s_scene_frame, v.stamp, s_ps_slot ? 1 : 0, s_hold_clear_bg);
@@ -21106,6 +21199,7 @@ static int hold_redirect_begin(const scene_slot_t **prev)
     const int k = hold_take_for_compose(area, v.stamp);
     if (k < 0) return -1;
     s_hold_view = s_hold.e[k].sl;
+    s_pc_hold = k;
     const uint32_t kept_fade = s_hold_view.fade;
     s_hold_view.fade = held_fade_compose(kept_fade, v.fade);
     if (hold_census())
