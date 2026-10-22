@@ -77,6 +77,17 @@ no-hard-feelings-sheila-portal|3304|10||3304|--skip-to-cutscene no_hard_feelings
 # the right inner edge of the pink shell gateway flickers at VBL 5912
 # (openpete_frame 5339 after the 573-VBL fast boot). Blessed pre-fix.
 the-end-shell-gateway|5905|2||5905,5907,5909,5911,5912,5913,5915,5917|--skip-to-cutscene the_end
+# the-end-portal-rim: scene 1, the bottom-left outer rim of the octagonal
+# portal seen from above flickers at VBL 7046 (openpete_frame 6473).
+the-end-portal-rim|7039|2||7041,7043,7045,7046,7047,7049,7051|--skip-to-cutscene the_end
+# the-end-icy-peak-pop: scene 2 (Icy Peak terrain), a cliff-band triangle at
+# the right edge of the 16:9 frame (x 756-789, y 175-191 of 853x432) changes
+# between the ticks around VBL 7910 (openpete_frame 7337) at --lod extended.
+the-end-icy-peak-pop|7901|2||7905,7907,7909,7910,7911,7913|--skip-to-cutscene the_end
+# the-end-haunted-tomb-archway: scene 9 (Haunted Tomb terrain), a side face
+# of the archway shows through the wall left of its top at VBL 20570
+# (openpete_frame 19997); the -og reference shows it too.
+the-end-haunted-tomb-archway|20565|2||20567,20569,20570,20571|--skip-to-cutscene the_end
 
 # sunrise-spring-camera-swing holds R2 from VBL 2073 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
