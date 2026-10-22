@@ -626,8 +626,8 @@ tree has, loads first.
 ```bash
 scripts/setup_linux_clang.sh          # -> .tools/clang (bundled compiler)
 scripts/setup_appimagetool.sh         # pinned appimagetool, for --appimage
-scripts/package-dist.sh linux --toolchain .tools/clang --appimage
-scripts/package-dist.sh windows --toolchain /path/to/llvm-mingw-ucrt-x86_64
+scripts/package-dist.sh linux --toolchain .tools/clang --with-mod-sdk --appimage
+scripts/package-dist.sh windows --toolchain /path/to/llvm-mingw-ucrt-x86_64 --with-mod-sdk
 ```
 
 Archives land in `dist/`. Flags:
@@ -652,6 +652,53 @@ Archives land in `dist/`. Flags:
   package. The RFC3161 timestamp is not optional with Azure Artifact
   Signing - its certs live about three days, and only the countersignature
   keeps a release valid past that.
+
+`.tools/` is the main checkout's: from a linked worktree the setup scripts,
+`package-dist.sh` and `release-container.sh` resolve it through the common
+git directory (`scripts/lib/tools_dir.sh`; `OPENPETE_TOOLS_DIR` overrides).
+`setup_linux_clang.sh --check` and `setup_appimagetool.sh --check` verify the
+pinned tools without downloading (exit 1 naming what is missing or stale).
+
+#### Test packages: `scripts/test-dist.sh`
+
+```bash
+scripts/test-dist.sh                    # all: Windows zip, Linux tarball + AppImage
+scripts/test-dist.sh windows --out /tmp/pkgs
+scripts/test-dist.sh linux --container  # Linux in the Debian 11 release image
+scripts/test-dist.sh all --preflight-only
+```
+
+One command from a checkout or a worktree to the archives a tester runs. It
+preflights, configures and builds the `*-launcher` presets, and packages
+with the flags a release passes: `--with-mod-sdk`, the llvm-mingw tree
+(`--toolchain-windows DIR`, default
+`<spyro>/toolchains/llvm-mingw-20260616-ucrt-x86_64` beside the main
+checkout) for Windows, `.tools/clang` and `--appimage` for Linux. The
+version is `OPENPETE_DIST_VERSION` or the short HEAD (`-dirty` when tracked
+files differ), with `-test` appended; it names each archive and is the
+version line the executable shows. The archive paths and sizes print at the
+end.
+
+The preflight runs before any build and lists every failure with its fix:
+cmake, ninja, python3 with tomllib or tomli; mkdocs and mkdocs-material at
+the versions `packaging/linux-release.Dockerfile` pins; every submodule at
+the commit HEAD records; each game's untracked build inputs; for Windows
+the mingw-w64 cross tools and the llvm-mingw tree; for Linux the setup
+scripts' `--check` (a stale tool is fetched by its setup script, or refused
+under `--no-fetch`), the host `PSXRecomp` and `readelf`/`ldd`, or a
+container engine under `--container`; and the licence staging
+`package-dist.sh` runs for each bundled toolchain.
+
+`--container` runs `scripts/release-container.sh --test --appimage`: the
+release image, a build from empty directories, the surface-baseline compare
+and the sysroot header check, as a release. `--test` drops only the tag,
+HEAD-is-tag and clean-tree refusals, prints a surface-baseline difference
+without refusing (main's surface moves between releases; the release commit
+updates `packaging/surface/<game>.json`), and requires a version ending in
+`-test`. Without `--container` the Linux package carries the dev box's
+glibc floor. A test package skips what `create-release.sh` adds: the docs
+build of every section, the release-commit and docs-coverage checks, the
+leak scan, signing, and the Windows first-boot e2e with the oracle.
 
 Extract the archive anywhere and run the exe with no arguments; a bare path
 to a `.cue/.bin/.img/.iso/.chd/.pbp` means `--ingest`, which copies the disc

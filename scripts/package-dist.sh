@@ -52,6 +52,11 @@ set -euo pipefail
 export OPENPETE_VIBRATION=0
 
 cd "$(dirname "$0")/.."
+# The fetched tools (appimagetool, its runtime, the Linux clang) live in the
+# main checkout's .tools/, also when this runs from a linked worktree.
+# shellcheck source=scripts/lib/tools_dir.sh
+source scripts/lib/tools_dir.sh
+TOOLS=$(openpete_tools_dir .)
 
 PLATFORM="${1:-}"
 shift || true
@@ -386,7 +391,7 @@ assert_appdir_closure() {  # assert_appdir_closure <appdir> <file>...
 
 build_appimage() {  # build_appimage <stage-dir>
     local S="$1"
-    local TOOL="${OPENPETE_APPIMAGETOOL:-.tools/appimagetool-x86_64.AppImage}"
+    local TOOL="${OPENPETE_APPIMAGETOOL:-$TOOLS/appimagetool-x86_64.AppImage}"
     [[ -x "$TOOL" ]] || {
         echo "[package] --appimage needs appimagetool: run" \
              "scripts/setup_appimagetool.sh" >&2; exit 64; }
@@ -404,7 +409,7 @@ build_appimage() {  # build_appimage <stage-dir>
     # development packages at all - that is the reason it exists. Ship a
     # compiler whether or not the tarball stage got one.
     if [[ ! -x "$APPDIR/usr/recomp/tools/clang/bin/clang" ]]; then
-        local CC_TREE="${TOOLCHAIN:-.tools/clang}"
+        local CC_TREE="${TOOLCHAIN:-$TOOLS/clang}"
         [[ -x "$CC_TREE/bin/clang" ]] || {
             echo "[package] --appimage needs a compiler to bundle: run" \
                  "scripts/setup_linux_clang.sh (or pass --toolchain DIR)" >&2
@@ -470,7 +475,7 @@ build_appimage() {  # build_appimage <stage-dir>
     # --runtime-file: without it appimagetool downloads the launcher stub
     # from a rolling tag at package time, so the artifact would depend on
     # the network and on whatever that tag points at today.
-    local RT="${OPENPETE_APPIMAGE_RUNTIME:-.tools/appimage-runtime-x86_64}"
+    local RT="${OPENPETE_APPIMAGE_RUNTIME:-$TOOLS/appimage-runtime-x86_64}"
     local rt_arg=()
     if [[ -f "$RT" ]]; then rt_arg=(--runtime-file "$RT")
     else echo "[package] NOTE: no pinned AppImage runtime at $RT -" \

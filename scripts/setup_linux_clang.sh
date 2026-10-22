@@ -59,15 +59,25 @@
 # process and shadow a host library.
 #
 # Idempotent - re-running with the tree already present verifies and exits.
+# --check runs only that verification: exit 0 when the tree is current,
+# 1 (naming what differs) when it is missing or stale, with no download.
+#
+# .tools/ is the main checkout's, also from a linked worktree
+# (scripts/lib/tools_dir.sh; OPENPETE_TOOLS_DIR overrides).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/tools_dir.sh
+source scripts/lib/tools_dir.sh
+TOOLS=$(openpete_tools_dir .)
+CHECK=0
+[[ "${1:-}" == --check ]] && CHECK=1
 
 VERSION="18.1.8"
 STEM="clang+llvm-${VERSION}-x86_64-linux-gnu-ubuntu-18.04"
 SHA256="54ec30358afcc9fb8aa74307db3046f5187f9fb89fb37064cdde906e062ebf36"
 URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${VERSION}/${STEM}.tar.xz"
 MAJOR="${VERSION%%.*}"
-DEST=".tools/clang"
+DEST="$TOOLS/clang"
 # The binary tarball carries only a pointer to the license, not its text,
 # and Apache-2.0 requires the text to accompany a binary distribution -
 # so fetch the canonical file from the same tag.
@@ -93,9 +103,18 @@ if [[ -x "$DEST/bin/clang" ]] && "$DEST/bin/clang" --version 2>/dev/null \
     echo "[setup-clang] $DEST already at $VERSION with its sysroot"
     exit 0
 fi
+if [[ $CHECK -eq 1 ]]; then
+    if [[ ! -x "$DEST/bin/clang" ]]; then
+        echo "[setup-clang] $DEST missing" >&2
+    else
+        echo "[setup-clang] $DEST stale: sysroot/STAMP is" \
+             "'$(cat "$DEST/sysroot/STAMP" 2>/dev/null || echo absent)', want '$STAMP'" >&2
+    fi
+    exit 1
+fi
 
-mkdir -p .tools
-tarball=".tools/${STEM}.tar.xz"
+mkdir -p "$TOOLS"
+tarball="$TOOLS/${STEM}.tar.xz"
 if [[ ! -f "$tarball" ]] || ! echo "$SHA256  $tarball" | sha256sum -c --status -; then
     echo "[setup-clang] downloading $STEM (~1 GB)"
     curl --fail --retry 5 -L -o "$tarball.tmp" "$URL"
@@ -104,14 +123,14 @@ if [[ ! -f "$tarball" ]] || ! echo "$SHA256  $tarball" | sha256sum -c --status -
 fi
 
 echo "[setup-clang] extracting the parts the module build uses"
-rm -rf "$DEST" .tools/clang-x
-mkdir -p .tools/clang-x
-tar xf "$tarball" -C .tools/clang-x \
+rm -rf "${DEST:?}" "${TOOLS:?}/clang-x"
+mkdir -p "$TOOLS/clang-x"
+tar xf "$tarball" -C "$TOOLS/clang-x" \
     "$STEM/bin/clang" "$STEM/bin/clang-$MAJOR" "$STEM/bin/clang-cpp" \
     "$STEM/bin/lld" "$STEM/bin/ld.lld" \
     "$STEM/lib/clang/$MAJOR/include" "$STEM/$BUILTINS"
-mv ".tools/clang-x/$STEM" "$DEST"
-rmdir .tools/clang-x
+mv "$TOOLS/clang-x/$STEM" "$DEST"
+rmdir "$TOOLS/clang-x"
 ln -sf lld "$DEST/bin/ld"
 
 echo "[setup-clang] sysroot: compiler-rt builtins"
@@ -125,13 +144,13 @@ debs=$(mktemp -d)
 for spec in "$LIBC_DEB $LIBC_URL $LIBC_SHA256 glibc" \
             "$LINUX_DEB $LINUX_URL $LINUX_SHA256 linux"; do
     read -r deb url sha lic <<<"$spec"
-    if [[ ! -f ".tools/$deb" ]] || ! echo "$sha  .tools/$deb" | sha256sum -c --status -; then
-        curl --fail --retry 5 -L -o ".tools/$deb.tmp" "$url"
-        echo "$sha  .tools/$deb.tmp" | sha256sum -c -
-        mv ".tools/$deb.tmp" ".tools/$deb"
+    if [[ ! -f "$TOOLS/$deb" ]] || ! echo "$sha  $TOOLS/$deb" | sha256sum -c --status -; then
+        curl --fail --retry 5 -L -o "$TOOLS/$deb.tmp" "$url"
+        echo "$sha  $TOOLS/$deb.tmp" | sha256sum -c -
+        mv "$TOOLS/$deb.tmp" "$TOOLS/$deb"
     fi
     mkdir -p "$debs/$lic"
-    dpkg-deb -x ".tools/$deb" "$debs/$lic"
+    dpkg-deb -x "$TOOLS/$deb" "$debs/$lic"
     cp "$debs/$lic"/usr/share/doc/*/copyright "$DEST/sysroot/licences/$lic.copyright"
     # Merge the multiarch directory into include/; a name present in both
     # would make one -isystem ambiguous, so it is refused.

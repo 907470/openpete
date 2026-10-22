@@ -8,9 +8,18 @@
 # presets, older libc.
 #
 #   OPENPETE_DIST_VERSION=vX.Y.Z scripts/release-container.sh [package-dist args...]
+#   scripts/release-container.sh --test [package-dist args...]
 #
 # It packages a tagged release: it refuses unless OPENPETE_DIST_VERSION names
-# a tag, HEAD is that tag's commit, and the tracked tree is clean. Inside the
+# a tag, HEAD is that tag's commit, and the tracked tree is clean. --test
+# (first argument) drops those three refusals and packages any HEAD, tracked
+# changes included, under a version ending in -test: OPENPETE_DIST_VERSION
+# when it ends so (anything else is refused, so a test artifact never
+# carries a release name), else <short HEAD>[-dirty]-test. The surface
+# compare below still runs and prints every difference, but a difference
+# does not stop a test build: main moves its surface between releases, and
+# the release commit updates the baseline. Everything else below runs in
+# both modes. Inside the
 # container, after the build and before packaging, each shipped game's
 # binary dumps its surface (OPENPETE_SURFACE_DUMP, which exits before the
 # recomp module attaches), and the release subset of that dump must equal the
@@ -19,7 +28,7 @@
 #
 # Everything after the script name goes to package-dist.sh, e.g.
 #   scripts/release-container.sh --appimage
-# The release always bundles the fetched clang (`--toolchain .tools/clang`):
+# The release always bundles the fetched clang (`--toolchain /tools/clang`):
 # a stranger's machine has no compiler for the first-boot module build.
 # Pass `--out` relative to the tree: the packager runs inside the
 # container, where only /src (this tree) is mounted.
@@ -34,10 +43,16 @@
 # skips its own build when the image already exists.
 #
 # The bundled clang and appimagetool are fetched on the HOST (they are
-# just pinned downloads, and .tools/ is bind-mounted in), so the
-# container does no network work of its own beyond its own apt layer.
+# just pinned downloads), so the container does no network work of its own
+# beyond its own apt layer. The main checkout's .tools/
+# (scripts/lib/tools_dir.sh; a linked worktree has none of its own) is
+# mounted read-only at /tools, and the container reads it through
+# OPENPETE_TOOLS_DIR.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+TEST=0
+if [[ "${1:-}" == --test ]]; then TEST=1; shift; fi
 
 # The image is tagged with a hash of its Dockerfile, so an edited Dockerfile
 # names an image that does not exist yet and is built, rather than silently
@@ -56,6 +71,9 @@ fi
 
 scripts/setup_linux_clang.sh
 scripts/setup_appimagetool.sh
+# shellcheck source=scripts/lib/tools_dir.sh
+source scripts/lib/tools_dir.sh
+TOOLS=$(openpete_tools_dir .)
 
 # --userns=keep-id (podman) / --user (docker): the build writes into the
 # bind-mounted source tree, and root-owned objects there would be a
@@ -87,15 +105,29 @@ fi
 # The version is the tag create-release.sh made, passed by the caller and
 # checked against the tree on the host: inside the container /src/.git of a
 # worktree points outside the mount and git cannot answer.
-[[ -n "${OPENPETE_DIST_VERSION:-}" ]] \
-    || { echo "[release] set OPENPETE_DIST_VERSION=vX.Y.Z, the release tag" >&2; exit 64; }
-tag_sha=$(git rev-parse -q --verify "${OPENPETE_DIST_VERSION}^{commit}" 2>/dev/null) \
-    || { echo "[release] refused: no tag or commit $OPENPETE_DIST_VERSION" >&2; exit 1; }
-[[ "$(git rev-parse HEAD)" == "$tag_sha" ]] \
-    || { echo "[release] refused: HEAD is not $OPENPETE_DIST_VERSION ($tag_sha)" >&2; exit 1; }
-git diff --quiet HEAD -- \
-    || { echo "[release] refused: tracked changes in the tree" >&2; exit 1; }
-env_args=(-e OPENPETE_NO_COMMITS=1 -e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION")
+if [[ $TEST -eq 1 ]]; then
+    if [[ -z "${OPENPETE_DIST_VERSION:-}" ]]; then
+        OPENPETE_DIST_VERSION=$(git rev-parse --short HEAD)
+        git diff --quiet HEAD -- || OPENPETE_DIST_VERSION+=-dirty
+        OPENPETE_DIST_VERSION+=-test
+    fi
+    [[ "$OPENPETE_DIST_VERSION" == *-test ]] \
+        || { echo "[release] --test: OPENPETE_DIST_VERSION '$OPENPETE_DIST_VERSION'" \
+                  "does not end in -test" >&2; exit 64; }
+    echo "[release] test build $OPENPETE_DIST_VERSION: tag, HEAD and clean-tree checks skipped"
+else
+    [[ -n "${OPENPETE_DIST_VERSION:-}" ]] \
+        || { echo "[release] set OPENPETE_DIST_VERSION=vX.Y.Z, the release tag" >&2; exit 64; }
+    tag_sha=$(git rev-parse -q --verify "${OPENPETE_DIST_VERSION}^{commit}" 2>/dev/null) \
+        || { echo "[release] refused: no tag or commit $OPENPETE_DIST_VERSION" >&2; exit 1; }
+    [[ "$(git rev-parse HEAD)" == "$tag_sha" ]] \
+        || { echo "[release] refused: HEAD is not $OPENPETE_DIST_VERSION ($tag_sha)" >&2; exit 1; }
+    git diff --quiet HEAD -- \
+        || { echo "[release] refused: tracked changes in the tree" >&2; exit 1; }
+fi
+env_args=(-e OPENPETE_NO_COMMITS=1 -e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION"
+          -e OPENPETE_TOOLS_DIR=/tools -e OPENPETE_VIBRATION=0
+          -e "OPENPETE_RELEASE_TEST=$TEST")
 
 # The release builds from nothing, in directories only the container uses.
 # The host tree's third_party/psxrecomp/build and build/linux-release-launcher
@@ -106,9 +138,20 @@ PRIV="build/release-container"
 rm -rf "$PRIV"
 mkdir -p "$PRIV/psxrecomp" "$PRIV/linux-release-launcher" \
          third_party/psxrecomp/build build/linux-release-launcher
-mounts=(-v "$PWD:/src"
-        -v "$PWD/$PRIV/psxrecomp:/src/third_party/psxrecomp/build"
-        -v "$PWD/$PRIV/linux-release-launcher:/src/build/linux-release-launcher")
+# A linked worktree's untracked build inputs (generated C, the decomp build
+# directories, the psxrecomp build) are absolute symlinks into the main
+# checkout, so the main checkout is mounted read-only at its own path, and a
+# private directory replacing a symlinked path is mounted at the symlink's
+# target, which the container runtime refuses to mount through.
+main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+mounts=(-v "$PWD:/src" -v "$TOOLS:/tools:ro")
+[[ "$main" == "$PWD" ]] || mounts+=(-v "$main:$main:ro")
+for d in third_party/psxrecomp/build:psxrecomp \
+         build/linux-release-launcher:linux-release-launcher; do
+    dst=/src/${d%%:*}
+    [[ -L "${d%%:*}" ]] && dst=$(realpath "${d%%:*}")
+    mounts+=(-v "$PWD/$PRIV/${d#*:}:$dst")
+done
 "$ENGINE" "${CTR_ENGINE_ARGS[@]}" run --rm "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -122,7 +165,11 @@ mounts=(-v "$PWD:/src"
         "$exe" --game "$game" --help >"$surf/$game.help" 2>&1
         python3 scripts/fences/surface_coverage.py compare --game "$game" \
             --dump "$surf/$game.json" --help-file "$surf/$game.help" \
-            --baseline "packaging/surface/$game.json"
+            --baseline "packaging/surface/$game.json" && continue
+        [[ $OPENPETE_RELEASE_TEST == 1 ]] || exit 1
+        echo "[release] test build: the $game surface differs from" \
+             "packaging/surface/$game.json (above); a release of this HEAD" \
+             "refuses until the release commit updates the baseline" >&2
     done
     # The bundled clang carries glibc and Linux uapi headers for source
     # mods (scripts/setup_linux_clang.sh fetches them on the host, pinned
@@ -131,7 +178,7 @@ mounts=(-v "$PWD:/src"
     # multiarch x86_64-linux-gnu/ prefix dropped, and no other file may be
     # staged: a Dockerfile snapshot bump that moves either package refuses
     # here until the pins follow it.
-    sys=.tools/clang/sysroot/include
+    sys=/tools/clang/sysroot/include
     n=0
     while read -r f; do
         rel=${f#/usr/include/}; rel=${rel#x86_64-linux-gnu/}
@@ -144,5 +191,5 @@ mounts=(-v "$PWD:/src"
     [[ $n -eq $staged ]] \
         || { echo "[release] staged headers: $staged files, this image: $n" >&2; exit 1; }
     echo "[release] sysroot headers match the image ($n files)"
-    scripts/package-dist.sh linux --toolchain .tools/clang '"${pkg_args[*]}"'
+    scripts/package-dist.sh linux --toolchain /tools/clang '"${pkg_args[*]}"'
 '
