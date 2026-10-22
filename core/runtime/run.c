@@ -3776,7 +3776,9 @@ static bool overlay_pad_stamp(bool bk2_active, bool bk2_in_range, bool* prev_hol
  * freecam or other pad-bound action, and the freecam axes are zeroed as
  * the settings menu zeroes them. `devui` and the KM_CTX_DEVUI actions are
  * exempt (devui_suspend_exempt), except from the keyboard suspension while
- * a text field takes input, which swallows every key. While the settings
+ * a text field takes input, which swallows every key; a key held then stays
+ * latched until released (openpete_keymap_latch_held_keys), so the field
+ * letting go does not turn it into a press. While the settings
  * menu is open every live pad source outside the menu's own actions and
  * the overlay toggles (openpete_keymap_menu_pad_exempt) is suspended the
  * same way, so a hold: pad hotkey sharing a button with menu navigation
@@ -3786,9 +3788,10 @@ static void overlay_input_suspend(void) {
     int n_exempt = 0;
     const openpete_action_t* exempt = devui_suspend_exempt(&n_exempt);
     const bool padnav = openpete_devui_padnav_engaged() != 0;
+    const bool text = openpete_devui_wants_text_input() != 0;
     openpete_keymap_suspend_keyboard(
-        openpete_devui_wants_keyboard() ? 1 : 0,
-        openpete_devui_wants_text_input() ? NULL : exempt, n_exempt);
+        openpete_devui_wants_keyboard() ? 1 : 0, text ? NULL : exempt, n_exempt);
+    if (text) openpete_keymap_latch_held_keys();
     if (padnav) {
         openpete_keymap_suspend_pad(1, exempt, n_exempt);
     } else if (openpete_menu_is_open()) {

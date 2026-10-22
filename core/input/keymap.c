@@ -261,6 +261,11 @@ static void km_latch_held(void) {
     }
 }
 
+void openpete_keymap_latch_held_keys(void) {
+    for (int c = 0; c < KM_SCAN_KEYS; c++)
+        if (km_raw_held(KM_SRC_KEY, c)) openpete_keymap_consume_input(KM_SRC_KEY, c);
+}
+
 /** @brief Clear every latch bit. */
 static void km_latch_clear(void) {
     for (size_t i = 0; i < KM_LAT_WORDS(KM_SCAN_KEYS); i++) atomic_store(&g_lat_key[i], 0u);

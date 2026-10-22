@@ -414,12 +414,38 @@ void openpete_devui_pump_text_input(void)
     s_text_active = want;
 }
 
+/* Frame-thread open state: the open flag at the last openpete_devui_render,
+ * and a focus request for the panel's next Begin. */
+static bool s_frame_prev_open = false;
+static bool s_focus_panel     = false;
+
+/** @brief Drop the keyboard state imgui kept from before the overlay opened, and request focus for the panel.
+ *
+ * imgui runs no frame while the overlay is closed, so it still holds the
+ * keys down at the close, the item active at the close (a text field
+ * left by Escape) and that field's text-input want. They are released and
+ * cleared here, on the frame thread before the open's first drain, so the
+ * first frame starts from no key held and no field active. The panel then
+ * takes navigation focus on every open, as on the first one, which is how a
+ * controller reaches it after a click gave the game focus. */
+static void devui_reset_on_open(void)
+{
+    ImGui::GetIO().ClearInputKeys();
+    ImGui::ClearActiveID();
+    ImGui::GetCurrentContext()->WantTextInputNextFrame = -1;
+    s_focus_panel = true;
+}
+
 /** @brief Feed every queued SDL event to imgui's SDL3 backend and advance the ring's tail.
  *
  * Runs on the thread that records the imgui frame, immediately before it.
  * While openpete_keymap_capture_active reads 1 the press, wheel, text and
- * axis events are dropped and the releases fed. */
-static void devui_drain_events(void)
+ * axis events are dropped and the releases fed. Key and text events are
+ * also dropped when no imgui frame follows: imgui consumes its input queue
+ * only in NewFrame, so a key event queued while the overlay is closed
+ * would be replayed into the panel when it next opens.
+ * @param frame_follows an imgui frame is recorded after this drain. */
+static void devui_drain_events(bool frame_follows)
 {
     int tail = SDL_GetAtomicInt(&s_evq_tail);
     int head = SDL_GetAtomicInt(&s_evq_head);
@@ -431,10 +457,12 @@ static void devui_drain_events(void)
     const bool capturing = openpete_keymap_capture_active() != 0;
     while (tail != head) {
         const Uint32 t = s_evq[tail].type;
-        const bool drop = capturing &&
+        const bool key = t == SDL_EVENT_KEY_DOWN || t == SDL_EVENT_KEY_UP ||
+                         t == SDL_EVENT_TEXT_INPUT;
+        const bool drop = (!frame_follows && key) || (capturing &&
             (t == SDL_EVENT_KEY_DOWN || t == SDL_EVENT_TEXT_INPUT ||
              t == SDL_EVENT_MOUSE_BUTTON_DOWN || t == SDL_EVENT_MOUSE_WHEEL ||
-             t == SDL_EVENT_GAMEPAD_BUTTON_DOWN || t == SDL_EVENT_GAMEPAD_AXIS_MOTION);
+             t == SDL_EVENT_GAMEPAD_BUTTON_DOWN || t == SDL_EVENT_GAMEPAD_AXIS_MOTION));
         if (!drop) ImGui_ImplSDL3_ProcessEvent(&s_evq[tail]);
         tail = (tail + 1) % DEVUI_EVQ_CAP;
     }
@@ -549,6 +577,9 @@ static ImGuiID       s_padnav_prev_nav_id; /* frame: NavId after the last NewFra
  * activated one, on a frame whose navigation input source is the gamepad. */
 static SDL_AtomicInt s_imgui_moves;
 static SDL_AtomicInt s_imgui_activations;
+/* Frame-side: gamepad key presses fed to imgui while no overlay window held
+ * navigation focus. */
+static SDL_AtomicInt s_imgui_unengaged_presses;
 
 /** @brief Turn the host loop's published pad navigation levels into imgui gamepad key events.
  *
@@ -561,8 +592,12 @@ static void devui_feed_padnav(ImGuiIO &io)
 {
     const unsigned bits = s_open ? (unsigned)SDL_GetAtomicInt(&s_padnav_bits) : 0u;
     const unsigned diff = bits ^ s_padnav_fed;
-    for (const auto &m : kPadnavKeys)
-        if (diff & m.bit) io.AddKeyEvent(m.key, (bits & m.bit) != 0);
+    const bool engaged = SDL_GetAtomicInt(&s_nav_engaged) != 0;
+    for (const auto &m : kPadnavKeys) {
+        if (!(diff & m.bit)) continue;
+        io.AddKeyEvent(m.key, (bits & m.bit) != 0);
+        if (!engaged && (bits & m.bit)) SDL_AddAtomicInt(&s_imgui_unengaged_presses, 1);
+    }
     s_padnav_fed = bits;
 }
 
@@ -588,17 +623,20 @@ static bool               s_close_armed;
 static unsigned           s_open_count;
 static unsigned long long s_open_engaged, s_open_moves, s_open_activations;
 static int                s_open_imgui_moves0, s_open_imgui_activations0;
+static int                s_open_imgui_unengaged0;
 
 /** @brief Log the close of the current open with its pad navigation counts. */
 static void devui_log_close(void)
 {
     OPL_INFO_F("devui",
                "pad nav #%u closed at frame %u: engaged_iterations=%llu "
-               "moves=%llu activations=%llu imgui_moves=%d imgui_activations=%d",
+               "moves=%llu activations=%llu imgui_moves=%d imgui_activations=%d "
+               "imgui_unengaged_presses=%d",
                s_open_count, openpete_frame, s_open_engaged, s_open_moves,
                s_open_activations,
                SDL_GetAtomicInt(&s_imgui_moves) - s_open_imgui_moves0,
-               SDL_GetAtomicInt(&s_imgui_activations) - s_open_imgui_activations0);
+               SDL_GetAtomicInt(&s_imgui_activations) - s_open_imgui_activations0,
+               SDL_GetAtomicInt(&s_imgui_unengaged_presses) - s_open_imgui_unengaged0);
 }
 
 /** @brief Apply this iteration's `devui` edges: a press opens a closed overlay, a release after a press closes an open one. */
@@ -638,24 +676,85 @@ static unsigned devui_padnav_levels(void)
     return bits;
 }
 
+/** @brief Log each change of the toggle's inputs and the overlay's keyboard and pad ownership under OPENPETE_DEVUI_TOGGLE_TRACE=1.
+ *
+ * One line per host-loop iteration whose word differs from the last: the
+ * `devui` action's level and press edge, the open flag, the armed close,
+ * and the published text-input, keyboard and pad navigation wants, which
+ * decide whether the action's keyboard source is read. */
+static void devui_toggle_trace(void)
+{
+    static int en = -1;
+    if (en < 0) {
+        const char *e = getenv("OPENPETE_DEVUI_TOGGLE_TRACE");
+        en = (e && *e == '1') ? 1 : 0;
+    }
+    if (!en) return;
+    static int last = -1;
+    const int v = (openpete_key_down(OPK_DEVUI) ? 1 : 0) |
+                  (openpete_key_pressed(OPK_DEVUI) ? 2 : 0) |
+                  (s_open ? 4 : 0) | (s_close_armed ? 8 : 0) |
+                  (openpete_devui_wants_text_input() ? 16 : 0) |
+                  (openpete_devui_wants_keyboard() ? 32 : 0) |
+                  (openpete_devui_padnav_engaged() ? 64 : 0);
+    if (v == last) return;
+    last = v;
+    OPL_INFO_F("devui",
+               "toggle trace frame=%u ms=%llu held=%d pressed=%d open=%d armed=%d "
+               "wtext=%d wkb=%d nav=%d",
+               openpete_frame, (unsigned long long)SDL_GetTicks(), v & 1, (v >> 1) & 1,
+               (v >> 2) & 1, (v >> 3) & 1, (v >> 4) & 1, (v >> 5) & 1, (v >> 6) & 1);
+}
+
+/* Host loop: navigation buttons held when engagement last began, withheld
+ * from imgui until each is released. */
+static unsigned s_padnav_withheld;
+
+/** @brief Reduce the pad navigation levels to what imgui may see: none while no overlay window holds navigation focus.
+ *
+ * While unengaged the game owns the pad, so imgui gets no gamepad key: West
+ * (Square), the game's charge, would otherwise start imgui's window
+ * switching and the d-pad resize the panel. The frame feeds releases for
+ * the keys imgui holds when the bits drop (devui_feed_padnav). A button
+ * held when engagement begins is withheld until released, so a held
+ * Square does not reach imgui as a press on the click that focuses the
+ * panel. PADNAV_HAVE_PAD passes either way.
+ * @param levels the levels from devui_padnav_levels.
+ * @param engaged openpete_devui_padnav_engaged this iteration.
+ * @return the levels to publish. */
+static unsigned devui_padnav_gate(unsigned levels, bool engaged)
+{
+    const unsigned nav = levels & ~(unsigned)PADNAV_HAVE_PAD;
+    if (!engaged) {
+        s_padnav_withheld = nav;
+        return levels & PADNAV_HAVE_PAD;
+    }
+    s_padnav_withheld &= nav;
+    return levels & ~s_padnav_withheld;
+}
+
 void openpete_devui_host_poll(void)
 {
     if (!s_inited) return;
     devui_host_toggle();
+    devui_toggle_trace();
 
     if (s_open && !s_host_prev_open) {
         s_open_count++;
         s_open_engaged = s_open_moves = s_open_activations = 0;
         s_open_imgui_moves0 = SDL_GetAtomicInt(&s_imgui_moves);
         s_open_imgui_activations0 = SDL_GetAtomicInt(&s_imgui_activations);
+        s_open_imgui_unengaged0 = SDL_GetAtomicInt(&s_imgui_unengaged_presses);
         OPL_INFO_F("devui", "open #%u at frame %u", s_open_count, openpete_frame);
     } else if (!s_open && s_host_prev_open) {
         devui_log_close();
     }
     s_host_prev_open = s_open;
 
-    SDL_SetAtomicInt(&s_padnav_bits, s_open ? (int)devui_padnav_levels() : 0);
-    if (!openpete_devui_padnav_engaged()) return;
+    const bool engaged = openpete_devui_padnav_engaged() != 0;
+    SDL_SetAtomicInt(&s_padnav_bits,
+                     s_open ? (int)devui_padnav_gate(devui_padnav_levels(), engaged) : 0);
+    if (!engaged) return;
     s_open_engaged++;
     if (openpete_key_pressed(OPK_DEVUI_UP) || openpete_key_pressed(OPK_DEVUI_DOWN) ||
         openpete_key_pressed(OPK_DEVUI_LEFT) || openpete_key_pressed(OPK_DEVUI_RIGHT))
@@ -2830,8 +2929,9 @@ static void draw_capture_prompt(void)
 
 /** @brief Draw the "openpete config" window: search field and Save button, the laid-out sections, then any unplaced registry section.
  *
- * Writes the window's close state back to the open flag and clears the boot
- * reveal. */
+ * Gives the window navigation focus on the first frame after an open,
+ * clears the open flag when its close button is pressed, and clears the
+ * boot reveal. */
 static void draw_panel(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -2839,12 +2939,19 @@ static void draw_panel(void)
     ImGui::SetNextWindowSize(ImVec2(540, io.DisplaySize.y - 96), ImGuiCond_FirstUseEver);
     const bool to_top = SDL_GetAtomicInt(&s_top_req) != 0;
     if (s_boot_reveal || to_top) ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
+    if (s_focus_panel) {
+        ImGui::SetNextWindowFocus();
+        s_focus_panel = false;
+    }
 
-    bool open = s_open;
+    /* Only the title bar's close button writes the flag: copying it back
+     * whole would undo a close the host loop or the pump applied while
+     * this frame was being recorded. */
+    bool open = true;
     if (!ImGui::Begin("openpete config", &open)) {
         ImGui::End();
         draw_capture_prompt();
-        s_open = open;
+        if (!open) s_open = false;
         return;
     }
 
@@ -2873,7 +2980,7 @@ static void draw_panel(void)
 
     ImGui::End();
     draw_capture_prompt();
-    s_open = open;
+    if (!open) s_open = false;
     s_boot_reveal = false;
 }
 
@@ -3031,15 +3138,17 @@ void openpete_devui_render(struct rhi_device *dev)
      * behind a 540px panel is not the workflow). */
     if (!s_inited) return;
 
-    /* Feed imgui every frame, open or not: its IO bookkeeping (key/mouse
-     * state, focus) must stay current or the overlay opens holding whatever
-     * was down when it last drew. Draining only while open would also let the
-     * queue fill and start dropping. */
-    devui_drain_events();
-
     bool fillpick = openpete_fillpick_active() != 0;
     const int always_n = openpete_mods_ui_always_count();
-    if (!s_open && !fillpick && always_n == 0) { devui_publish_none(); return; }
+    const bool frame = s_open || fillpick || always_n > 0;
+    if (s_open && !s_frame_prev_open) devui_reset_on_open();
+    s_frame_prev_open = s_open;
+    /* Drain every present, open or not, so the ring never fills and drops;
+     * key events with no frame to consume them are discarded (see
+     * devui_drain_events), mouse events keep the pointer current. */
+    devui_drain_events(frame);
+
+    if (!frame) { devui_publish_none(); return; }
     if (dev != s_dev) { devui_publish_none(); return; }
     void *cb = rhi_current_command_buffer(dev);
     if (!cb) { devui_publish_none(); return; }
@@ -3105,7 +3214,7 @@ int openpete_devui_render_frame(struct rhi_device *dev, void (*draw)(void *ud), 
     if (!s_ctx || dev != s_dev || !draw) return 0;
     void *cb = rhi_current_command_buffer(dev);
     if (!cb) return 0;
-    devui_drain_events();
+    devui_drain_events(true);
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     ImGui_ImplVulkan_NewFrame();

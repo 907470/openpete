@@ -858,6 +858,16 @@ void openpete_keymap_consume_key(int scancode);
  * @param code the scancode, button, axis or KM_MOUSE_* code. */
 void openpete_keymap_consume_input(int kind, int code);
 
+/** @brief Latch every physically held key as consumed until openpete_keymap_poll sees it released.
+ *
+ * The run loop calls this every iteration a dev overlay text field takes
+ * input, before openpete_keymap_poll. A key that field swallowed then
+ * reads released to every polled binding until it is let go, so the
+ * field letting go of the keyboard while the key is still down produces
+ * no press: the key that opened the overlay cannot close it that way.
+ * Pad, axis and mouse inputs are not touched. */
+void openpete_keymap_latch_held_keys(void);
+
 /** @brief Return the display spelling of a mod binding's stored first source.
  *
  * The cross-mod conflict scan compares these, so a clash resolved by a

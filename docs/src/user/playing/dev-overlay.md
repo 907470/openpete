@@ -12,11 +12,13 @@ pad's Select. ++esc++ also closes it. It is drawn by the native renderer in
 the game window.
 
 The game keeps running behind the panel. While the panel has focus (it
-takes focus when it opens), the PlayStation pad is released, the
+takes focus each time it opens), the PlayStation pad is released, the
 controller moves through the panel, and the keyboard's game and hotkey
 bindings and the controller's OpenPete bindings pause. Click the game
 outside the panel to give the game the keyboard and controller back; click
-the panel to take them again. Mouse use alone leaves the game playable.
+the panel to take them again. While the game has focus every controller
+button reaches only the game. On a controller alone, close and reopen the
+panel to give it focus. Mouse use alone leaves the game playable.
 
 ## Controller
 
