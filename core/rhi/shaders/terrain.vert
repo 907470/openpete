@@ -1269,7 +1269,7 @@ void main()
     int    fogRef   = g.fog.x + (((ff & FF_FOGBIAS) != 0u) ? 0x2000 : 0);
     double fogscale = g.dcam_zf.y;
 
-    /* ---- NCLIP (both halves; the near verdict gates on half 1) ----
+    /* ---- NCLIP (both halves; either half admits the near verdict) ----
      * Cross products run on DOUBLES OF THE FLOAT screen coords (the CPU's
      * NSAT(sv.sx)); the GTE [-1024,1023] saturation is waived in the UNR
      * divide-overflow regime (any corner m3 < H_canon/8, the GTE's H, so
@@ -1376,8 +1376,10 @@ void main()
     }
 
     /* ---- face_is_near: flat-vs-HQ variant select (HP quads only).
-     * The CPU gate is (straddle ? front3d : front). `front` is NCLIP on the
-     * PROJECTED corners, which is not the .s verdict for a straddler: an HP
+     * The CPU gate is (straddle ? front3d : front || front2): the .s sends
+     * a face either NCLIP half accepts to the same depth-sum classifier
+     * (r_environment.s 0x80026CB8/0x80026CD0 -> .L80026CFC). The projected
+     * NCLIP is not the .s verdict for a straddler: an HP
      * face with a corner carrying the .s vertex flag 0x10 (terrain.c
      * tface_gte_flagged: m3 <= 0, or m3 < 0x600/4 with SX/SY outside
      * [-1024, 1023] or m3 in the UNR divide-overflow regime) skips the face
@@ -1407,7 +1409,7 @@ void main()
         front3d = ((ff & FF_DSIDE) != 0u) || f1 || f2;
     }
     bool near = false;
-    if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (straddle ? front3d : front)
+    if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (straddle ? front3d : (front || front2))
         && (ff & FF_HQELIG) != 0u) {
         if ((gf & GF_HQPIN) != 0) {
             /* --no-lod: HQ pinned ON for every eligible face at every

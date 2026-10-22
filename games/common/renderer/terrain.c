@@ -1432,10 +1432,15 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
 
 /** @brief Computes a face's two facing verdicts: the near/HQ subdivide gate and the back-face cull.
  *
- * *near_front gates the near/HQ subdivide (half 1 of the projected NCLIP,
- * like the .s classifier's input); *cull_front gates the back-face cull
- * (either half). A straddling face (an HP corner carrying the .s vertex flag
- * 0x10, tface_gte_flagged; an LP corner at or behind the eye) has no usable
+ * *near_front gates the near/HQ subdivide and *cull_front the back-face
+ * cull; for a face with a usable projected NCLIP both are either half (or
+ * the double-sided bit): the .s walk sends a face its second half accepts
+ * to the same depth-sum classifier as one its first half accepts
+ * (r_environment.s 0x80026CB8 and 0x80026CD0 jump to .L80026CFC;
+ * Spyro 3 environment.s 0x80023308 and 0x80023320 to .L8002334C), so the
+ * subdivide never depends on which half accepted. A straddling face (an
+ * HP corner carrying the .s vertex flag 0x10, tface_gte_flagged; an LP
+ * corner at or behind the eye) has no usable
  * projected NCLIP. HP takes tface_front3d for the near gate. Its cull
  * follows the .s path after the skipped face NCLIPs: a face the classifier
  * queues for the near drain (face_is_near_canonical, the tests at
@@ -1468,7 +1473,7 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
 static int tface_facing(const lvert* sv, int i0, int i1, int i2, int i3,
                         int quad, int flip, int dside, int hp, int straddle, uint32_t w3,
                         int front, int front2, int* near_front, int* cull_front) {
-    if (!straddle) { *near_front = front; *cull_front = front || front2; return 0; }
+    if (!straddle) { *near_front = *cull_front = front || front2; return 0; }
     if (!hp) { *near_front = *cull_front = 1; return 0; }
     const int f3 = tface_front3d(sv, i0, i1, i2, i3, quad, flip, dside);
     const int i3q = quad ? i3 : i2;
