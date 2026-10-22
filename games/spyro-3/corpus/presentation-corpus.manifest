@@ -73,6 +73,10 @@ a-powerful-villain-emerges-throne|5653|10||5667|--skip-to-cutscene a_powerful_vi
 # destination's, so the destination-sky extension leaves the 16:9 left band
 # showing the flat backdrop. VBL 3304 is openpete_frame 2731 under this boot.
 no-hard-feelings-sheila-portal|3304|10||3304|--skip-to-cutscene no_hard_feelings
+# the-end-shell-gateway: the end credits, scene 1 (Seashell Shore terrain);
+# the right inner edge of the pink shell gateway flickers at VBL 5912
+# (openpete_frame 5339 after the 573-VBL fast boot). Blessed pre-fix.
+the-end-shell-gateway|5905|2||5905,5907,5909,5911,5912,5913,5915,5917|--skip-to-cutscene the_end
 
 # sunrise-spring-camera-swing holds R2 from VBL 2073 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
