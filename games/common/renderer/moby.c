@@ -3446,6 +3446,8 @@ static int moby_cutscene_owns_draw(CPUState* cpu) {
     return moby_game.cutscene_owns_draw ? moby_game.cutscene_owns_draw(cpu) : 0;
 }
 
+int moby_native_cutscene_owns_draw(CPUState* cpu) { return moby_cutscene_owns_draw(cpu); }
+
 /* Render-time-animated colour cache (the boundary-barrier shimmer). Identity of
  * each emitted walk tri so the canonical frame can snapshot the .s's transient
  * per-vertex colour by FACE (moby pointer + topology vertex-index triple) and the

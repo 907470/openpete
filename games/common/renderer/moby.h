@@ -231,6 +231,14 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * @return The entry count. */
 int moby_native_revealed_mobys(const uint32_t** out);
 
+/** @brief Whether the game's cutscene renderer owns the draw, so it draws its own actor set and no other moby.
+ *
+ * The game's rule (moby_game.cutscene_owns_draw; Spyro 1: g_GameState 8 with
+ * g_DragonCutscene.m_State 1..6). A game without one answers 0.
+ * @param cpu The guest CPU state, read only.
+ * @return Nonzero while the cutscene renderer owns the draw. */
+int moby_native_cutscene_owns_draw(CPUState* cpu);
+
 /** @brief Sub-tick re-extract entry: rebuild this present's moby contribution from the captured cull records and the interpolated camera.
  *
  * Inert while the native scene is off or the canonical present did not draw

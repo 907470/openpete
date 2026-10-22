@@ -277,8 +277,9 @@ static void shadow_synth_offer(CPUState* cpu, const ngte_view* v, const uint32_t
 
 /** @brief Rebuilds the widened-view records from this tick's drawn mobys.
  *
- * Empty in a view no wider than the 4:3 frame (Hor+ factor F at most 1) or
- * on a layout without shadow.frame_radius_off. Otherwise every moby of the
+ * Empty in a view no wider than the 4:3 frame (Hor+ factor F at most 1), on
+ * a layout without shadow.frame_radius_off, or while a cutscene renderer owns
+ * the draw (moby_native_cutscene_owns_draw). Otherwise every moby of the
  * canonical drawn set (cull records, the widened reveal's appended records
  * among them) and of the host reveal's set that the game did not list is
  * offered to shadow_synth_record. Reads PSX RAM only.
@@ -288,6 +289,10 @@ static void shadow_synth_update(CPUState* cpu) {
     if (!game_layout.shadow.frame_radius_off) return;
     ngte_view v; ngte_view_build(cpu, &v);
     if (!(v.F > 1.0f)) return;
+    /* The cutscene renderer draws its own actor set and no other moby, and
+     * the reveal walk returns before rebuilding its set while it does, so
+     * that set still names the mobys revealed before the cutscene. */
+    if (moby_native_cutscene_owns_draw(cpu)) return;
     const uint32_t* set = NULL;
     int n = moby_native_canon_drawn_mobys(&set);
     shadow_synth_offer(cpu, &v, set, n);
