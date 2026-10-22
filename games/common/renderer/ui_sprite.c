@@ -547,16 +547,20 @@ static uint32_t fb_cell_key(const openpete_scene_tri* t) {
  * alpha and the GPU applies them to STP-set texels only. Both halves precede
  * the next primitive's triangles, so the draw order of overlapping
  * primitives holds. Every other quad (opaque, ABR 0, a framebuffer-snapshot
- * window, whose image carries no STP bit) is fed once. A VRAM triangle that
- * samples a draw buffer carries its framebuffer cell key (fb_cell_key).
+ * window, whose image carries no STP bit) is fed once. A triangle whose
+ * primitive samples a draw buffer carries its framebuffer cell key
+ * (fb_cell_key), computed from the primitive before any redirect.
  * @param in The quad's two triangles.
  * @return 1 for a quad fed as an STP pair, else 0. */
 static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
     openpete_scene_tri quad[2] = { in[0], in[1] };
     const int vram = !quad_to_fb_snapshot(quad);
-    uint32_t cell[2] = { 0, 0 };
+    /* Keyed from the primitive's own texels on both paths: a redirected
+     * cell's UVs are texels of the rect while the area's image is pending
+     * and pixels of the image once it is stored, so the first tick drawn
+     * before the store and the next one after it agree only on this key. */
+    const uint32_t cell[2] = { fb_cell_key(&in[0]), fb_cell_key(&in[1]) };
     for (int t = 0; vram && t < 2; t++) {
-        cell[t] = fb_cell_key(&in[t]);
         tex_tri_psx_texel_centre(&quad[t]);
         uvedge_note(&in[t], &quad[t]);
     }

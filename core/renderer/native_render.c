@@ -3087,6 +3087,65 @@ static int scene_holds_reapplied(void) {
     return 0;
 }
 
+/** @brief Grow a screen bounding box (x0, y0, x1, y1) to hold a triangle's three vertices.
+ *
+ * @param b The box, updated in place.
+ * @param q The triangle. */
+static void fbwin_bbox_add(float b[4], const scene_tri_t* q) {
+    for (int k = 0; k < 3; k++) {
+        b[0] = fminf(b[0], q->v[k].sx); b[2] = fmaxf(b[2], q->v[k].sx);
+        b[1] = fminf(b[1], q->v[k].sy); b[3] = fmaxf(b[3], q->v[k].sy);
+    }
+}
+
+/** @brief Print one line per present describing the framebuffer-window copy the scene draws (OPENPETE_FBWIN_CENSUS=1).
+ *
+ * A snapshot entry is a 2D triangle sampling a stored framebuffer image
+ * (OPENPETE_FB_SNAPSHOT_BPP): the window's content. A cell entry is any
+ * other triangle with a framebuffer cell key: a draw-buffer cell drawn
+ * through VRAM, or a border the grid emitter keyed. The retained area's
+ * replayed entries of earlier ticks, in front of the scene's 2D, are
+ * skipped. The line gives the feed key, the scene stamp, the present kind
+ * ("canon", "repeat", "inter"), the overlay phase, the present clock in
+ * milliseconds, the world triangle count, the retained area and its replay
+ * count, the DISPENV origin, the snapshot index and its UV mode (tpage_y:
+ * 1 while the image is pending), and per class the count and screen
+ * bounding box with its width and height in sixteenths of the DISPENV rect.
+ * @param kind The present kind.
+ * @param alpha The overlay's sub-tick phase; 1 for a canonical capture. */
+static void fbwin_census(const char* kind, double alpha) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_FBWIN_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    int n[2] = { 0, 0 }, world = 0, idx = -1, texel_space = -1, at = -1;
+    float b[2][4] = { { 1e9f, 1e9f, -1e9f, -1e9f }, { 1e9f, 1e9f, -1e9f, -1e9f } };
+    for (int t = 0; t < s_scene_n; t++) {
+        const scene_tri_t* q = &s_scene[t];
+        const int is2d = q->category == OPENPETE_SCENE_HUD || q->category == OPENPETE_SCENE_HUD_PANEL ||
+                         q->category == OPENPETE_SCENE_OVERLAY || q->carry;
+        if (is2d && at < 0) at = t;
+        if (at >= 0 && t < at + s_held_replay) continue;   /* the retained area's earlier ticks */
+        const int c = q->bpp == OPENPETE_FB_SNAPSHOT_BPP ? 0 : (q->fb_cell ? 1 : -1);
+        if (c < 0) { world += q->category == OPENPETE_SCENE_WORLD; continue; }
+        if (c == 0) { idx = q->tpage_x; texel_space = q->tpage_y; }
+        n[c]++;
+        fbwin_bbox_add(b[c], q);
+    }
+    const int dw = s_geom_in[2] > 0 ? s_geom_in[2] : 512, dh = s_geom_in[3] > 0 ? s_geom_in[3] : 240;
+    fprintf(stderr, "[fbwin key=%u f=%u %s alpha=%.3f t=%.3f] world=%d held_area=%d held_replay=%d disp=%d,%d snapidx=%d texel_space=%d",
+            openpete_feed_key_now(), s_scene_frame, kind, alpha,
+            (double)openpete_interp_present_now() / 1e6, world, s_held_area, s_held_replay,
+            s_geom_in[0], s_geom_in[1], idx, texel_space);
+    static const char* const name[2] = { "snap", "cell" };
+    for (int c = 0; c < 2; c++) {
+        if (!n[c]) { fprintf(stderr, " %s=0", name[c]); continue; }
+        fprintf(stderr, " %s=%d[%.1f,%.1f,%.1f,%.1f w16=%.2f h16=%.2f]", name[c], n[c],
+                b[c][0], b[c][1], b[c][2], b[c][3],
+                (b[c][2] - b[c][0]) * 16.0f / (float)dw, (b[c][3] - b[c][1]) * 16.0f / (float)dh);
+    }
+    fprintf(stderr, "\n");
+}
+
 void openpete_native_scene_capture_overlay(void) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first - by the canonical present every post-link prim
@@ -3108,6 +3167,7 @@ void openpete_native_scene_capture_overlay(void) {
     if (repeat) {
         overlay_carry_hold();
         openpete_fb_snapshot_note_scene_complete();
+        fbwin_census("repeat", 1.0);
         return;
     }
     drawn_area_presented(s_scene_frame);
@@ -3234,6 +3294,7 @@ void openpete_native_scene_capture_overlay(void) {
      * read it straight back and the freeze never died after the menu closed -> the
      * world stayed hidden on unpause). See s_game_freeze_seen. */
     openpete_fb_snapshot_note_scene_complete();   /* the tick's 2D is in: the scene is complete */
+    fbwin_census("canon", 1.0);
 }
 
 /* --- pairing the 2D carry across two canonical captures --------------------
@@ -4351,6 +4412,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
                     q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy, q->v[0].rgba); } } }
     s_scene_freeze = freeze_lerp(s_overlay_prev_freeze, s_overlay_carry_freeze, oalpha);
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
+    fbwin_census("inter", oalpha);
 }
 
 static unsigned scene_live_stamp(void);   /* defined beside the eager publish */
@@ -21556,6 +21618,43 @@ static void fbsnap_queue_upload(int idx)
     if (copy) hd_pending_add(key, NULL, copy, sw, sh, 0, 0);
 }
 
+/** @brief Print a stored framebuffer-snapshot crop's black bands on stderr, under OPENPETE_FBSNAP_CENSUS.
+ *
+ * Counts the crop's leading rows and trailing columns whose every pixel has
+ * all three channels below 8: an area image composed from a scene that
+ * already draws a shrunken window holds the vacated buffer as such bands
+ * along its top and right edges.
+ * @param what "win" for a window slot, "area" for a draw area.
+ * @param idx Slot or area index.
+ * @param frame Stamp of the scene the copy names.
+ * @param px The crop, RGBA.
+ * @param pw Crop width.
+ * @param ph Crop height. */
+static void fbsnap_band_census(const char *what, int idx, unsigned frame,
+                               const unsigned char *px, int pw, int ph)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_FBSNAP_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on || !px) return;
+    int top = 0, right = 0;
+    for (int y = 0, dark = 1; y < ph && dark; y++) {
+        for (int x = 0; x < pw && dark; x++) {
+            const unsigned char *c = px + ((size_t)y * pw + x) * 4u;
+            dark = c[0] < 8 && c[1] < 8 && c[2] < 8;
+        }
+        top += dark;
+    }
+    for (int x = pw - 1, dark = 1; x >= 0 && dark; x--) {
+        for (int y = 0; y < ph && dark; y++) {
+            const unsigned char *c = px + ((size_t)y * pw + x) * 4u;
+            dark = c[0] < 8 && c[1] < 8 && c[2] < 8;
+        }
+        right += dark;
+    }
+    fprintf(stderr, "[fbsnap] store %s=%d key=%u want=%u size=%dx%d black_top=%d black_right=%d\n",
+            what, idx, openpete_feed_key_now(), frame, pw, ph, top, right);
+}
+
 void openpete_native_render_snapshot_fb_window(void)
 {
     if (!s_nr.enabled) return;
@@ -21564,11 +21663,13 @@ void openpete_native_render_snapshot_fb_window(void)
     while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
         unsigned char *px = fbsnap_capture_crop(frame, idx, sx, sy, w, h, &pw, &ph);
+        fbsnap_band_census("win", idx, frame, px, pw, ph);
         if (px) { openpete_fb_snapshot_store(idx, px, pw, ph); fbsnap_queue_upload(idx); }
     }
     while (openpete_fb_snapshot_take_pending_area(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
         unsigned char *px = fbsnap_capture_crop(frame, -1, sx, sy, w, h, &pw, &ph);
+        fbsnap_band_census("area", idx, frame, px, pw, ph);
         if (px) { openpete_fb_snapshot_store_area(idx, px, pw, ph); fbsnap_queue_upload(OPENPETE_FB_SNAPSHOT_AREA_BASE + idx); }
     }
     { static int s_census = -1;
