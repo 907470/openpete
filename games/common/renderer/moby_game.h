@@ -468,6 +468,25 @@ typedef struct moby_anim_fields {
     int      M[3][3];               /* model->view rotation, 1.0 = 4096 */
 } moby_anim_fields_t;
 
+/** @brief The cull's quarter-world camera deltas for one moby and their view-space centre through a camera matrix.
+ *
+ * The deltas in the cull's own form (Spyro 3 mobydraw.s:79-96): X is
+ * (moby - cam) >> 2, Y and Z are (cam - moby) >> 2, each subtraction
+ * wrapping at 32 bits. The centre is the cull's MVMVA (mobydraw.s:125-130):
+ * IR1 the Y delta, IR2 the Z, IR3 the X, MAC = (M . IR) >> 12, accumulated
+ * at 64 bits. With `ir16` each delta enters as the 16-bit IR register the
+ * cull loads it into; without it at full width, for a centre past the
+ * registers' range. A NULL `M` computes the deltas alone.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param cam The camera position the cull reads at G_CAMERA+0x28..0x30.
+ * @param M The camera matrix at G_CAMERA+0x00, 1.0 = 4096, or NULL.
+ * @param ir16 Nonzero to truncate each delta to the cull's 16-bit IR register.
+ * @param d Receives the X, Y and Z deltas.
+ * @param mac Receives the view-space centre x, y, z; unused when `M` is NULL. */
+void moby_cull_centre(CPUState* cpu, uint32_t moby, const int32_t cam[3], const int M[3][3],
+                      int ir16, int32_t d[3], int64_t mac[3]);
+
 /** @brief Fill the encoding-free fields of an animated cull record for one moby from gamestate.
  *
  * The keyframe pair and blend byte come from the moby's animation state bytes

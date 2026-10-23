@@ -1947,9 +1947,14 @@ static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
     const int64_t t = s23_cull_box_threshold(cpu, moby, drawn_bits);
     if (t <= 0) return MOBY_WIDE_OUTSIDE;
     const uint32_t cam = game_layout.cam.base;
-    const int32_t dx = (int32_t)(cpu->read_word(moby + 0x0Cu) - cpu->read_word(cam + 0x28u)) >> 2;
-    const int32_t dy = (int32_t)(cpu->read_word(cam + 0x2Cu) - cpu->read_word(moby + 0x10u)) >> 2;
-    const int32_t dz = (int32_t)(cpu->read_word(cam + 0x30u) - cpu->read_word(moby + 0x14u)) >> 2;
+    const int32_t cpos[3] = { (int32_t)cpu->read_word(cam + 0x28u), (int32_t)cpu->read_word(cam + 0x2Cu),
+                              (int32_t)cpu->read_word(cam + 0x30u) };
+    int R[3][3];
+    ngte_read_matrix(cpu, cam, R);
+    int32_t d[3];
+    int64_t mac[3];
+    moby_cull_centre(cpu, moby, cpos, (const int (*)[3])R, 1, d, mac);
+    const int32_t dx = d[0], dy = d[1], dz = d[2];
     if (dx <= -t || dx >= t || dy <= -t || dy >= t || dz <= -t || dz >= t)
         return MOBY_WIDE_OUTSIDE;
     const uint32_t sector = cpu->read_byte(moby + 0x52u);
@@ -1963,12 +1968,6 @@ static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
     const uint32_t header = cpu->read_word(model + game_layout.moby.model_anims_off + id * 4u);
     if (header < 0x80000000u) return MOBY_WIDE_OTHER_KIND;
     const int64_t r = (int64_t)cpu->read_byte(header + 7u) << 4;
-    int R[3][3];
-    ngte_read_matrix(cpu, cam, R);
-    const int64_t ir1 = (int16_t)dy, ir2 = (int16_t)dz, ir3 = (int16_t)dx;
-    int64_t mac[3];
-    for (int i = 0; i < 3; i++)
-        mac[i] = ((int64_t)R[i][0] * ir1 + (int64_t)R[i][1] * ir2 + (int64_t)R[i][2] * ir3) >> 12;
     if (mac[2] - t >= 0) return MOBY_WIDE_RANGE;
     const moby_wide_verdict_t first = s23_sphere_arms(mac, r, widen);
     if (first != MOBY_WIDE_ADMIT) return first;
@@ -2203,13 +2202,12 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t ki
     for (int k = 0; k < s_sq->qn; k++)
         if (s_sq->q[k][0] == moby) { *why = MOBY_REVEAL_DUPLICATE; return 0; }
     const uint32_t anim = cpu->read_word(moby + game_layout.moby.anim_state_off);
-    const int32_t cx = (int32_t)cpu->read_word(game_layout.cam.position + 0u),
-                  cy = (int32_t)cpu->read_word(game_layout.cam.position + 4u),
-                  cz = (int32_t)cpu->read_word(game_layout.cam.position + 8u);
-    const int32_t mx = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
-                  my = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
-                  mz = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
-    const int32_t dx = (mx - cx) >> 2, dy = (cy - my) >> 2, dz = (cz - mz) >> 2;
+    const int32_t cpos[3] = { (int32_t)cpu->read_word(game_layout.cam.position + 0u),
+                              (int32_t)cpu->read_word(game_layout.cam.position + 4u),
+                              (int32_t)cpu->read_word(game_layout.cam.position + 8u) };
+    int32_t d[3];
+    moby_cull_centre(cpu, moby, cpos, NULL, 0, d, NULL);
+    const int32_t dx = d[0], dy = d[1], dz = d[2];
     const int i = s_sq->qn;
     s_sq->q[i][0] = moby;
     s_sq->q[i][1] = ((uint32_t)dx << 16) | ((uint32_t)dy & 0xFFFFu);
