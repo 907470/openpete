@@ -36,6 +36,11 @@
 // pairing is used only when the two counts agree; otherwise every fan of the
 // call is left unpaired and the census reports it.
 //
+// The routine's lateral cull is the 4:3 frame plus a fixed margin. In a wider
+// view a record it dropped on that test alone has its fan rebuilt from the
+// record, the shape table and the camera (glow_wide_reveal), and drawn unless
+// the fan has left the view's screen-X window.
+//
 // Spyro 1's own glow renderer is fed by a float re-derivation in
 // games/spyro-1/renderer/particle.c: its records carry a moby-position pointer
 // and its ring is a perspective-scaled radius, a different routine over a
@@ -194,14 +199,82 @@ static float glow_record_depth(double m3, int bias) {
     return openpete_native_scene_viewz(openpete_worldvz_owner_slot(key + GW.owner_offset));
 }
 
+/* The routine's verdict on one pool record, in the order it tests them. */
+typedef enum {
+    GLOW_V_FREE, GLOW_V_BOX, GLOW_V_NEAR, GLOW_V_FAR, GLOW_V_PYR_X, GLOW_V_PYR_Y,
+    GLOW_V_ACCEPT,
+} glow_verdict;
+
+static const char* const k_glow_verdict_name[] = {
+    "free", "box", "near", "far", "pyr_x", "pyr_y", "accept",
+};
+
+/* One pool record as the routine's cull reads it: the packed word, the
+ * position words, the camera-relative offset (X - camX, camY - Y, camZ - Z)
+ * and its rotation by the camera matrix. */
+typedef struct {
+    uint32_t addr;
+    uint32_t packed;
+    int32_t  w[3];
+    double   off[3];
+    double   m1, m2, m3;
+} glow_src;
+
+/** @brief Read one pool record and apply the routine's rejects to it in the routine's order.
+ *
+ * A zero shape byte is a free slot (:1932); the camera-relative offset must
+ * stay inside the +/-GW.box box (:1970-1988); the rotated depth must be at
+ * least GW.near_z and under GW.far_z; the rotated point must stay inside the
+ * view pyramid 4|X| - 3Z < GW.pyr_x and 3|Y| - Z < GW.pyr_y (:1994-2000). The
+ * pyramid is the 4:3 frame widened by a margin of GW.pyr_x / 4 view units
+ * laterally.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's projection view.
+ * @param s The pool slot.
+ * @param r Receives the record; the offset and rotation only past the free test.
+ * @return The routine's verdict. */
+static glow_verdict glow_classify(CPUState* cpu, const ngte_view* v, uint32_t s, glow_src* r) {
+    r->addr = GW.pool + s * GW.stride;
+    r->packed = cpu->read_word(r->addr + GW.packed_off);
+    if ((r->packed & GLOW_SHAPE_MASK) == 0u) return GLOW_V_FREE;
+    for (uint32_t k = 0; k < 3u; k++)
+        r->w[k] = (int32_t)cpu->read_word(r->addr + GW.pos_off + k * 4u);
+    r->off[0] = (double)r->w[0] - v->cam[0];   /* the routine's IR3 */
+    r->off[1] = v->cam[1] - (double)r->w[1];   /* IR1 */
+    r->off[2] = v->cam[2] - (double)r->w[2];   /* IR2 */
+    const double box = (double)GW.box;
+    for (int k = 0; k < 3; k++)
+        if (r->off[k] <= -box || r->off[k] >= box) return GLOW_V_BOX;
+    ngte_mac(v->cam_M, r->off[1], r->off[2], r->off[0], &r->m1, &r->m2, &r->m3);
+    if (r->m3 < (double)GW.near_z) return GLOW_V_NEAR;
+    if (r->m3 >= (double)GW.far_z) return GLOW_V_FAR;
+    if (4.0 * fabs(r->m1) - 3.0 * r->m3 - (double)GW.pyr_x >= 0.0) return GLOW_V_PYR_X;
+    if (3.0 * fabs(r->m2) - r->m3 - (double)GW.pyr_y >= 0.0) return GLOW_V_PYR_Y;
+    return GLOW_V_ACCEPT;
+}
+
+/** @brief Fill the pairing record of one record the cull admitted.
+ *
+ * Stores its depth from glow_record_depth, its address, its position words
+ * and its centre's screen point under the view.
+ * @param v The projection view.
+ * @param r The record from glow_classify.
+ * @param out Receives the pairing record. */
+static void glow_rec_fill(const ngte_view* v, const glow_src* r, glow_rec* out) {
+    const int bias = (int)(int8_t)(uint8_t)((r->packed >> 24) & 0xFFu);
+    out->depth = glow_record_depth(r->m3, bias);
+    out->addr = r->addr;
+    for (int k = 0; k < 3; k++) out->w[k] = r->w[k];
+    ngte_proj o;
+    ngte_project_offset(v, r->off, &o);
+    out->psx = o.sx;
+    out->psy = o.sy;
+}
+
 /** @brief Re-walk the glow pool in slot order and collect every record the routine would have drawn.
  *
- * Mirrors the routine's rejects: a zero shape byte (:1932), a camera-relative
- * offset outside the +/-GW.box box (:1970-1988), and a view Z below GW.near_z
- * or at least GW.far_z or a point outside the view pyramid (:1994-2000). Each
- * accepted record stores its depth from glow_record_depth, its address, its
- * position words and its screen point under the tick's camera. Entries past
- * `cap` are counted but not stored.
+ * A record is collected when glow_classify accepts it. Entries past `cap`
+ * are counted but not stored.
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view.
  * @param out Receives up to `cap` accepted records in pool order.
@@ -209,44 +282,10 @@ static float glow_record_depth(double m3, int bias) {
  * @return The number of accepted records, which may exceed `cap`. */
 static int glow_predict(CPUState* cpu, const ngte_view* v, glow_rec* out, int cap) {
     int n = 0;
-    const double cx = v->cam[0], cy = v->cam[1], cz = v->cam[2];
-
-    const double box = (double)GW.box;
     for (uint32_t s = 0; s < GW.slots; s++) {
-        const uint32_t rec = GW.pool + s * GW.stride;
-        const uint32_t packed = cpu->read_word(rec + GW.packed_off);
-        if ((packed & GLOW_SHAPE_MASK) == 0u) continue;       /* :1932 free slot */
-        const int bias = (int)(int8_t)(uint8_t)((packed >> 24) & 0xFFu);
-
-        const double px = (double)(int32_t)cpu->read_word(rec + GW.pos_off + 0u);
-        const double py = (double)(int32_t)cpu->read_word(rec + GW.pos_off + 4u);
-        const double pz = (double)(int32_t)cpu->read_word(rec + GW.pos_off + 8u);
-        const double vx = px - cx;            /* the routine's IR3 */
-        const double vy = cy - py;            /* IR1 */
-        const double vz = cz - pz;            /* IR2 */
-        /* :1970-1988 drops the record when it leaves the camera-relative box. */
-        if (vx <= -box || vx >= box || vy <= -box || vy >= box ||
-            vz <= -box || vz >= box) continue;
-
-        double m1, m2, m3;
-        ngte_mac(v->cam_M, vy, vz, vx, &m1, &m2, &m3);
-        /* :1994-2000 the screen-extent and depth window the routine culls on. */
-        if (m3 < (double)GW.near_z) continue;
-        if (m3 >= (double)GW.far_z) continue;
-        if (4.0 * fabs(m1) - 3.0 * m3 - (double)GW.pyr_x >= 0.0) continue;
-        if (3.0 * fabs(m2) - m3 - (double)GW.pyr_y >= 0.0) continue;
-
-        if (n < cap) {
-            out[n].depth = glow_record_depth(m3, bias);
-            out[n].addr = rec;
-            out[n].w[0] = (int32_t)px; out[n].w[1] = (int32_t)py;
-            out[n].w[2] = (int32_t)pz;
-            const double off[3] = { vx, vy, vz };
-            ngte_proj o;
-            ngte_project_offset(v, off, &o);
-            out[n].psx = o.sx;
-            out[n].psy = o.sy;
-        }
+        glow_src r;
+        if (glow_classify(cpu, v, s, &r) != GLOW_V_ACCEPT) continue;
+        if (n < cap) glow_rec_fill(v, &r, &out[n]);
         n++;
     }
     return n;
@@ -301,6 +340,254 @@ static void glow_mark_sparx(CPUState* cpu) {
         s_item[i].sparx = rec != 0u && s_item[i].paired && s_item[i].src.addr == rec;
 }
 
+/* ---- the widened view's fans ---------------------------------------------
+ *
+ * The routine's lateral pyramid test is the 4:3 frame plus a fixed margin, so
+ * in a wider view (Hor+ factor F above 1) it drops a record whose fan still
+ * lies inside the revealed side band; the routine then emits no primitive for
+ * it. Such a record keeps the routine's own depth window and vertical test,
+ * and its fan is rebuilt here from the record and the camera alone, the way
+ * the routine builds it:
+ *   * the shape entry is shape_table + (shape byte - 1) * 64: sixteen
+ *     halfwords each packing a signed rim direction (X in the low byte, Y in
+ *     the high byte), then up to sixteen vertex-index halfwords (rim A in bits
+ *     8-11, rim B in bits 0-3) ended by a zero (Spyro 3 mobyfunc.s:2013-2018,
+ *     :2122-2143).
+ *   * the angle is ((camera yaw >> 4) + phase) & 0xFF, where the phase is
+ *     packed byte 2 as the routine leaves it (it decrements the byte before
+ *     any cull, :1981-1982); the sine table gives s at the angle and c a
+ *     quarter turn on (+0x80 bytes), and with c' = size * c / 64 and
+ *     s' = size * s / 64 the rim direction (x, y) moves the centre by
+ *     ((-1.5 c' x + 1.5 s' y) / 4096, (s' x + c' y) / 4096) in view X and Y
+ *     at the centre's own view Z (:2062-2106).
+ *   * each triangle is (centre, rim A, rim B), the centre in the record's
+ *     colour word and both rims black, additive (:2110-2143).
+ * The fan is admitted unless every vertex lies left of the view's screen-X
+ * bound xlo or every vertex at or right of xhi: it is culled only when it has
+ * left the view. A record the routine accepted is never rebuilt; its fan is
+ * the routine's own. */
+
+#define GLOW_RIM_N  16
+#define GLOW_TRI_N  16
+
+/* One rebuilt fan in screen space, under the view it was built for. */
+typedef struct {
+    int      n;                         /* triangles */
+    float    x[GLOW_TRI_N][3], y[GLOW_TRI_N][3];
+    uint32_t rgb;                       /* the centre colour, low 24 bits */
+    float    xmin, xmax;
+} glow_fan;
+
+static int s_wide_admit;   /* fans the widened view rebuilt and fed this call */
+static int s_wide_cull;    /* fans the widened view rebuilt and culled this call */
+
+/** @brief Rebuild the fan the routine draws for one record, projected under the view.
+ *
+ * Reads the shape entry, the camera yaw and the sine table as the routine
+ * does (see the section comment) and projects every rim point through
+ * ngte_screen_gte with no SXY bound, so the fan keeps its true X in a widened
+ * view. The routine's RTPS also multiplies a stale VZ0 by a rotation element
+ * that is 0 or -1; that term is dropped (at most 8 view units).
+ * @param cpu The guest CPU state, read only.
+ * @param v The projection view.
+ * @param r The record from glow_classify, past its depth window.
+ * @param f Receives the fan; f->n = 0 when the layout names no shape table or
+ *        sine table. */
+static void glow_fan_build(CPUState* cpu, const ngte_view* v, const glow_src* r, glow_fan* f) {
+    f->n = 0;
+    f->xmin = 1e30f; f->xmax = -1e30f;
+    const uint32_t tbl = game_layout.sin_table;
+    if (!GW.shape_table || !tbl) return;
+    const uint32_t entry = GW.shape_table + ((r->packed & GLOW_SHAPE_MASK) - 1u) * 64u;
+    const int yaw = (int16_t)cpu->read_half(game_layout.cam.base + GW.cam_yaw_off) >> 4;
+    const uint32_t ang = (uint32_t)(yaw + (int)((r->packed >> 16) & 0xFFu)) & 0xFFu;
+    const double size = (double)((r->packed >> 8) & 0xFFu);
+    const double c = size * (double)(int16_t)cpu->read_half(tbl + 0x80u + ang * 2u) / 64.0;
+    const double sn = size * (double)(int16_t)cpu->read_half(tbl + ang * 2u) / 64.0;
+    double rx[GLOW_RIM_N], ry[GLOW_RIM_N];
+    for (uint32_t j = 0; j < GLOW_RIM_N; j++) {
+        const uint16_t h = cpu->read_half(entry + j * 2u);
+        const double x = (double)(int8_t)(h & 0xFFu), y = (double)(int8_t)(h >> 8);
+        ngte_proj o;
+        ngte_screen_gte(r->m1 + (-1.5 * c * x + 1.5 * sn * y) / 4096.0,
+                        r->m2 + (sn * x + c * y) / 4096.0, r->m3,
+                        v->ofx, v->ofy, v, 0, &o);
+        rx[j] = o.sx; ry[j] = o.sy;
+    }
+    ngte_proj ctr;
+    ngte_screen_gte(r->m1, r->m2, r->m3, v->ofx, v->ofy, v, 0, &ctr);
+    f->rgb = cpu->read_word(r->addr + 0x0Cu) & 0xFFFFFFu;
+    for (uint32_t k = 0; k < GLOW_TRI_N; k++) {
+        const uint16_t h = cpu->read_half(entry + 0x20u + k * 2u);
+        if (h == 0u) break;
+        const uint32_t a = (h >> 8) & 0xFu, b = h & 0xFu;
+        const double xs[3] = { ctr.sx, rx[a], rx[b] }, ys[3] = { ctr.sy, ry[a], ry[b] };
+        for (int i = 0; i < 3; i++) {
+            f->x[f->n][i] = (float)xs[i];
+            f->y[f->n][i] = (float)ys[i];
+            if (f->x[f->n][i] < f->xmin) f->xmin = f->x[f->n][i];
+            if (f->x[f->n][i] > f->xmax) f->xmax = f->x[f->n][i];
+        }
+        f->n++;
+    }
+}
+
+/** @brief Append a rebuilt fan to s_item as paired additive triangles owned by its record.
+ *
+ * Stops at GLOW_MAX_PRIMS items.
+ * @param v The projection view.
+ * @param r The record the fan was built from.
+ * @param f The fan. */
+static void glow_fan_append(const ngte_view* v, const glow_src* r, const glow_fan* f) {
+    glow_rec rec;
+    glow_rec_fill(v, r, &rec);
+    const int blend = ngte_abr_blend(1, NGTE_ABR_QUARTER_AS_ADD);   /* 0xE1000620: ABR 0b01 */
+    for (int t = 0; t < f->n && s_item_n < GLOW_MAX_PRIMS; t++) {
+        glow_item* it = &s_item[s_item_n++];
+        memset(it, 0, sizeof *it);
+        it->p.code = GLOW_TRI;
+        it->p.nv = 3;
+        it->p.gouraud = 1;
+        it->p.stp = 1;
+        for (int i = 0; i < 3; i++) { it->p.x[i] = f->x[t][i]; it->p.y[i] = f->y[t][i]; }
+        it->p.rgb[0] = f->rgb;
+        it->depth = rec.depth;
+        it->paired = 1;
+        it->blend = blend;
+        it->src = rec;
+    }
+}
+
+/** @brief Whether the per-record cull log is on for this VBL (OPENPETE_GLOW_CULL_LOG=LO-HI).
+ *
+ * The range is in openpete_frame units, as every census range is.
+ * @return 1 when on, else 0. */
+static int glow_cull_log_on(void) {
+    static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
+    return env_frame_range_active(&s_range, "OPENPETE_GLOW_CULL_LOG", openpete_frame);
+}
+
+/** @brief The largest vertex distance between a rebuilt fan and the routine's own fan for the same record.
+ *
+ * The routine's fan is the triangles after the `group`-th draw-mode packet of
+ * s_item, compared triangle by triangle in order; the calibration of
+ * glow_fan_build against the primitives the routine emitted.
+ * @param f The rebuilt fan.
+ * @param group The record's draw-mode packet ordinal in s_item.
+ * @param ntri Receives the routine's triangle count for the record.
+ * @return The largest per-axis vertex distance in screen pixels, or -1 when
+ *         the group is absent. */
+static double glow_fan_cal(const glow_fan* f, int group, int* ntri) {
+    int g = -1, t = 0;
+    double worst = -1.0;
+    *ntri = 0;
+    for (int i = 0; i < s_item_n; i++) {
+        const ngte_prim* p = &s_item[i].p;
+        if (p->code == GLOW_DRMODE) { g++; continue; }
+        if (g != group || p->nv != 3) continue;
+        (*ntri)++;
+        if (worst < 0.0) worst = 0.0;
+        if (t >= f->n) { worst = 1e9; continue; }
+        for (int k = 0; k < 3; k++) {
+            const double dx = fabs((double)p->x[k] - (double)f->x[t][k]);
+            const double dy = fabs((double)p->y[k] - (double)f->y[t][k]);
+            if (dx > worst) worst = dx;
+            if (dy > worst) worst = dy;
+        }
+        t++;
+    }
+    return worst;
+}
+
+/** @brief Whether the routine skips a live record before its cull in its front-entry-only state.
+ *
+ * True when the layout names the branch, the game state word equals
+ * GW.solo_state, the flag word is non-zero and the record's bias byte is not
+ * GW.front_bias.
+ * @param cpu The guest CPU state, read only.
+ * @param packed The record's packed word.
+ * @return 1 when the routine draws nothing for the record, else 0. */
+static int glow_solo_skips(CPUState* cpu, uint32_t packed) {
+    if (!GW.solo_flag) return 0;
+    if (cpu->read_word(GW.solo_state_addr) != GW.solo_state) return 0;
+    if (cpu->read_word(GW.solo_flag) == 0u) return 0;
+    return (int)(int8_t)(uint8_t)((packed >> 24) & 0xFFu) != GW.front_bias;
+}
+
+/** @brief Print one record's line of the cull log.
+ *
+ * The line holds the routine's verdict, the verdict this view draws the
+ * record under, its centre's screen point, its rebuilt fan's screen-X extent
+ * and the view's screen-X window. For a record the routine accepted, when the
+ * fans paired, it also holds the rebuilt and the routine's triangle counts and
+ * their largest vertex distance (glow_fan_cal).
+ * @param v The tick's projection view.
+ * @param slot The pool slot.
+ * @param g The routine's verdict.
+ * @param view The verdict this view draws the record under.
+ * @param r The record.
+ * @param f The rebuilt fan; n = 0 when none was built.
+ * @param accepted The record's ordinal among the routine's accepted records. */
+static void glow_cull_log_line(const ngte_view* v, uint32_t slot, glow_verdict g, const char* view,
+                               const glow_src* r, const glow_fan* f, int accepted) {
+    ngte_proj o;
+    ngte_project_offset(v, r->off, &o);
+    int ntri = 0;
+    const double cal = (g == GLOW_V_ACCEPT && s_accepted == s_groups)
+                           ? glow_fan_cal(f, accepted, &ntri) : -1.0;
+    fprintf(stderr, "[glow-cull f=%u] slot=%u routine=%s view=%s F=%.4f sx=%.1f sy=%.1f m3=%.0f"
+                    " fan_x=[%.1f,%.1f] window=[%.1f,%.1f] cal_tris=%d/%d cal_maxerr=%.2f\n",
+            openpete_frame, slot, k_glow_verdict_name[g], view, (double)v->F, o.sx, o.sy, r->m3,
+            (double)f->xmin, (double)f->xmax, (double)v->xlo, (double)v->xhi, f->n, ntri, cal);
+}
+
+/** @brief Draw a record the routine's lateral test dropped when its rebuilt fan is still inside the view's screen-X window.
+ *
+ * The fan is culled when every vertex lies left of xlo or every vertex at or
+ * right of xhi, else appended (glow_fan_append); s_wide_cull or s_wide_admit
+ * counts the outcome. A fan with no triangles is neither.
+ * @param v The tick's projection view.
+ * @param r The record.
+ * @param f Its rebuilt fan.
+ * @return The verdict name the cull log prints. */
+static const char* glow_wide_admit(const ngte_view* v, const glow_src* r, const glow_fan* f) {
+    if (f->n <= 0) return "reject";
+    if (f->xmax < v->xlo || f->xmin >= v->xhi) { s_wide_cull++; return "wide_cull"; }
+    glow_fan_append(v, r, f);
+    s_wide_admit++;
+    return "wide_admit";
+}
+
+/** @brief Rebuild and feed-queue the fans the routine's lateral test dropped but the widened view shows.
+ *
+ * Runs only when the view is wider than 4:3 (F above 1) or the cull log is
+ * on. Every record the routine rejected on its lateral pyramid test alone,
+ * and did not skip in its front-entry-only state (glow_solo_skips), is
+ * rebuilt (glow_fan_build) and offered to glow_wide_admit; at F of at most 1
+ * nothing is appended. With OPENPETE_GLOW_CULL_LOG in range, each live record
+ * past the routine's box test prints a log line (glow_cull_log_line), and a
+ * record the routine accepted is also rebuilt so the line can compare it with
+ * the routine's own fan.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's projection view. */
+static void glow_wide_reveal(CPUState* cpu, const ngte_view* v) {
+    s_wide_admit = 0; s_wide_cull = 0;
+    const int wide = v->F > 1.0f, log = glow_cull_log_on();
+    if (!wide && !log) return;
+    int accepted = -1;
+    for (uint32_t s = 0; s < GW.slots; s++) {
+        glow_src r;
+        const glow_verdict g = glow_classify(cpu, v, s, &r);
+        if (g == GLOW_V_ACCEPT) accepted++;
+        if (g == GLOW_V_FREE || glow_solo_skips(cpu, r.packed)) continue;
+        const char* view = g == GLOW_V_ACCEPT ? "accept" : "reject";
+        glow_fan f = { .n = 0, .xmin = 0.0f, .xmax = 0.0f };
+        if (g == GLOW_V_PYR_X || (log && g == GLOW_V_ACCEPT)) glow_fan_build(cpu, v, &r, &f);
+        if (wide && g == GLOW_V_PYR_X) view = glow_wide_admit(v, &r, &f);
+        if (log && g >= GLOW_V_NEAR) glow_cull_log_line(v, s, g, view, &r, &f, accepted);
+    }
+}
+
 /** @brief Whether this feeder emits the glow fans, latched on first use.
  *
  * OPENPETE_GLOW with a value starting with '0' suppresses this feed alone.
@@ -352,10 +639,11 @@ static void glow_feed_native(void) {
 /** @brief Print the per-call glow census when the VBL lies in the OPENPETE_GLOW_CENSUS range.
  *
  * OPENPETE_GLOW_CENSUS=LO-HI (or a single VBL): per call in that range, the
- * primitives the routine appended by GPU code, the triangles among them, the
- * fans the draw-mode packets delimit, the records the pool walk predicted,
- * the native triangles this feeder emitted, and how many triangles were left
- * unpaired. A capture whose fed count is zero measured nothing.
+ * primitives the routine appended by GPU code, the triangles among them and
+ * the widened view's rebuilt ones, the fans the draw-mode packets delimit,
+ * the records the pool walk predicted, the fans the widened view rebuilt and
+ * fed or culled, the native triangles this feeder emitted, and how many
+ * triangles were left unpaired. A capture whose fed count is zero measured nothing.
  * @param start First polybuf address of the routine's output.
  * @param end One past the last.
  * @param fed_before The fed triangle total before this call. */
@@ -374,8 +662,8 @@ static void glow_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     memset(seen, 0, sizeof seen);
     for (int i = 0; i < s_item_n; i++) seen[s_item[i].p.code]++;
     for (int c = 0; c < 256; c++) if (seen[c]) fprintf(stderr, " %02X:%u", c, seen[c]);
-    fprintf(stderr, " tris=%d fans=%d accepted=%d fed_tris=%u unpaired=%d\n",
-            tris, s_groups, s_accepted, s_fed_tris - fed_before, unpaired);
+    fprintf(stderr, " tris=%d fans=%d accepted=%d wide_admit=%d wide_cull=%d fed_tris=%u unpaired=%d\n",
+            tris, s_groups, s_accepted, s_wide_admit, s_wide_cull, s_fed_tris - fed_before, unpaired);
 }
 
 /* ---- hook ---------------------------------------------------------------- */
@@ -385,15 +673,18 @@ static const hook_bracket_desc k_bracket = {
     .path = RP_GLOW, .prof_tag = "glow.srend", .st = &s_hb,
 };
 
-/** @brief Dispatch hook on the glow routine: run it once, then capture, pair and feed its prims.
+/** @brief Dispatch hook on the glow routine: run it once, then capture, pair, widen and feed its fans.
  *
  * Runs through the shared bracket. Refuses (returns 0, the ordinary dispatch runs) a call whose return
  * address differs from GW.ra_guard when the layout names one. A taken call
  * empties the captured set, retiring the previous epoch's set first when it
  * is the epoch's first call (cut_held_sets_capture). When the routine
  * appended anything, its primitives are captured and paired under the tick's
- * view, and fed natively when the scene is live and RP_GLOW is selected. The
- * census runs on every taken call.
+ * view. In a view wider than 4:3, or with the cull log on, the fans the
+ * routine's lateral test dropped are rebuilt (glow_wide_reveal) whether or
+ * not it appended anything. The set is fed natively when it holds anything,
+ * the scene is live and RP_GLOW is selected. The census runs on every taken
+ * call.
  * @param cpu The guest CPU state.
  * @param addr The hooked entry address.
  * @return 0 when the call is refused or the bracket declines, else 1 (the
@@ -407,16 +698,23 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
         return 0;
 
     cut_held_sets_capture(&s_sets);
-    s_item_n = 0; s_groups = 0; s_accepted = 0;
+    s_item_n = 0; s_groups = 0; s_accepted = 0; s_wide_admit = 0; s_wide_cull = 0;
     const uint32_t fed_before = s_fed_tris;
-    if (endp > startp) {
-        glow_capture_prims(cpu, startp, endp);
+    /* A view wider than 4:3 can show a fan the routine emitted nothing for,
+     * so it walks the pool even after an empty call. */
+    if (endp > startp || openpete_native_widescreen_factor() > 1.0f || glow_cull_log_on()) {
         ngte_view view;
         ngte_view_build(cpu, &view);
-        glow_pair_depths(cpu, &view);
-        glow_mark_sparx(cpu);
-        render_material_level_push(cpu);
-        if (feed && render_path_enabled(RP_GLOW)) glow_feed_native();
+        if (endp > startp) {
+            glow_capture_prims(cpu, startp, endp);
+            glow_pair_depths(cpu, &view);
+        }
+        glow_wide_reveal(cpu, &view);
+        if (s_item_n > 0) {
+            glow_mark_sparx(cpu);
+            render_material_level_push(cpu);
+            if (feed && render_path_enabled(RP_GLOW)) glow_feed_native();
+        }
     }
     glow_census(startp, endp, fed_before);
     return hook_bracket_end(&k_bracket);

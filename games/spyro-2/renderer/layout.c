@@ -609,6 +609,8 @@ const game_layout_t spyro2_game_layout = {
          * shape, size, a random phase and the bias 4), so the value is layout
          * data. */
         .owner_offset = 4,
+        .shape_table  = 0x8006430Cu,     /* mobyfunc.s:2010-2014 */
+        .cam_yaw_off  = 0x48u,           /* mobyfunc.s:1963, >> 4 at :1967 */
     },
     .glint = {
         .hook       = F_GLINT_DRAW,

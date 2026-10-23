@@ -576,6 +576,11 @@ const game_layout_t spyro3_game_layout = {
          * shape, size, a random phase and the bias 4), so the value is layout
          * data. */
         .owner_offset = 4,
+        .shape_table  = 0x80066864u,     /* asm/mobyfunc.s:2013-2018 */
+        .cam_yaw_off  = 0x48u,           /* asm/mobyfunc.s:1949, >> 4 at :1953 */
+        /* asm/mobyfunc.s:1964-1980: game state 4 with D_80070104 set draws
+         * only the front-entry records. */
+        .solo_state_addr = 0x8006E344u, .solo_state = 4u, .solo_flag = 0x80070104u,
     },
     .glint = {
         .hook       = F_GLINT_DRAW,

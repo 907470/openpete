@@ -995,7 +995,18 @@ typedef struct game_layout {
      * authored depth offset of the moby a glow sits on, in ordering-table
      * slots: the record names no owner, so the producer cannot read it, and
      * the fan's native depth needs it to sort against that moby's faces as
-     * the table does. */
+     * the table does.
+     *
+     * `shape_table` is the routine's table of 64-byte shape entries the
+     * shape byte indexes from 1 (sixteen packed direction pairs, then up to
+     * sixteen vertex-index halfwords ended by a zero), and `cam_yaw_off` the
+     * offset in the camera of the s16 yaw whose top 12 bits, shifted right 4,
+     * the routine adds to the record's phase to index the sine table; 0 on a
+     * game whose routine is not located. On a game whose routine reads
+     * `solo_flag` (non-zero) while the word at `solo_state_addr` equals
+     * `solo_state`, it draws only the records whose bias is `front_bias` and
+     * leaves the phase unchanged; `solo_flag` = 0 on a game without that
+     * branch. */
     struct {
         uint32_t hook;
         uint32_t ra_guard;
@@ -1009,6 +1020,9 @@ typedef struct game_layout {
         int32_t  pyr_x, pyr_y;
         int      front_bias;
         int      owner_offset;
+        uint32_t shape_table;
+        uint32_t cam_yaw_off;
+        uint32_t solo_state_addr, solo_state, solo_flag;
     } glow;
 
     /* The gem glint: one screen-facing four-point star, or a plain cross
