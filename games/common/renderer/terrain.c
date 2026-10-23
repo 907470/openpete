@@ -467,6 +467,7 @@ typedef struct {
     uint8_t nearband;                              /* .s near-band classified: no og key */
     uint8_t fill;                                  /* LP hole-fill backing -> WORLD_FILL */
     uint8_t fptag;                                 /* fill-tag inspector: 1 = listed FILL, 2 = preview candidate */
+    uint8_t lpkey;                                 /* borrowed HP face keyed with the LP base (tface_ot_slots) */
     int16_t sec, face;                             /* source identity (fardbg attribution) */
     uint8_t env;                                   /* env-anim tile member (provenance tag) */
     float otkey;                                   /* parent face's .s OT key (full-world mean
@@ -1022,7 +1023,7 @@ typedef struct {
     /* ambient per-face emit state (consumed by push_tri) */
     int emit_noHP, emit_guard, emit_fill, emit_fptag, emit_sec, emit_face, emit_env;
     int emit_bank;                      /* the pass draws borrowed HP: auxiliary VRAM bank */
-    float emit_otkey; uint16_t emit_otslots; uint8_t emit_nearband;
+    float emit_otkey; uint16_t emit_otslots; uint8_t emit_nearband; uint8_t emit_lpkey;
     uint8_t emit_keycells; uint32_t emit_kc[8];   /* the face's drain key table */
     uint8_t emit_fold; float emit_kn[12];         /* its folded quadrants and fold-space corners */
     /* census (summed into the s_dbg_* / s_tex_* globals after the walk) */
@@ -1121,6 +1122,7 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
     t->env = (uint8_t)W->emit_env;
     t->otkey = W->emit_otkey;
     t->otslots = W->emit_otslots;
+    t->lpkey = W->emit_lpkey;
     t->nearband = W->emit_nearband;
     if (W->emit_keycells) memcpy(t->kc, W->emit_kc, sizeof t->kc);
     else memset(t->kc, 0, sizeof t->kc);
@@ -10972,6 +10974,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * face's offset, like otkey. */
             W->emit_nearband = 0;
             W->emit_otslots = tface_ot_slots(F, passLP);
+            W->emit_lpkey = (uint8_t)(!passLP && F->lpkey);
             /* A face in the .s's FOREGROUND band (corner-depth sum < 0x2000) is
              * marked emit_nearband, and its OT-slot offset is dropped unless
              * the layout keys near/HQ faces through the ordinary insert
@@ -13755,6 +13758,86 @@ static int tn_rim_feed(CPUState* cpu, const ttri* t) {
     return 0;
 }
 
+/** @brief Writes the terrain triangle dump (OPENPETE_TERRAIN_TRIDUMP) at the requested feed keys.
+ *
+ * OPENPETE_TERRAIN_TRIDUMP=<key>[+<key>...][,path] dumps every walked
+ * terrain triangle with its face identity, depth and key inputs, at most 64
+ * keys. For each listed key k the dump is rewritten by the first feed of
+ * every feed key (openpete_feed_key_now, the counter --screenshot-on-frame
+ * reads) in k-7..k, so the file left holds the newest tick at or before k:
+ * the tick a --screenshot-on-frame k capture composes. A later feed of the
+ * same key (a second environment pass of one tick under another camera)
+ * does not rewrite it. `{n}` in the path is replaced by the listed key, so
+ * one run writes one file per key; without it every key rewrites the one
+ * path (default /tmp/terrain-tridump.txt). A header line carries the projection (H, OFX,
+ * OFY, the Hor+ screen-X range) and the layout's key terms, which a
+ * per-pixel census needs to place each triangle in camera space. Only the
+ * walk's triangles are written: a sector the retained cache owns skips the
+ * walk and appears in no dump. */
+static void tn_tridump(void) {
+    static int s_td = -2, s_td_n = 0;
+    static unsigned s_td_f[64], s_td_last[64];
+    static char s_td_path[512];
+    if (s_td == -2) {
+        const char* e = getenv("OPENPETE_TERRAIN_TRIDUMP");
+        s_td = -1;
+        if (e && *e) {
+            const char* c = strchr(e, ',');
+            const char* s = e;
+            while (s_td_n < 64 && *s && *s != ',') {
+                s_td_last[s_td_n] = ~0u;
+                s_td_f[s_td_n++] = (unsigned)strtoul(s, (char**)&s, 10);
+                if (*s == '+') s++; else break;
+            }
+            snprintf(s_td_path, sizeof s_td_path, "%s",
+                     (c && c[1]) ? c + 1 : "/tmp/terrain-tridump.txt");
+            s_td = s_td_n > 0;
+        }
+    }
+    if (s_td != 1) return;
+    const unsigned key = openpete_feed_key_now();
+    for (int i = 0; i < s_td_n; i++) {
+        if (key > s_td_f[i] || key + 8u <= s_td_f[i] || key == s_td_last[i])
+            continue;
+        s_td_last[i] = key;
+        char path[600];
+        const char* br = strstr(s_td_path, "{n}");
+        if (br) snprintf(path, sizeof path, "%.*s%u%s", (int)(br - s_td_path), s_td_path,
+                         s_td_f[i], br + 3);
+        else snprintf(path, sizeof path, "%s", s_td_path);
+        FILE* fp = fopen(path, "w");
+        if (!fp) continue;
+        fprintf(fp, "# frame=%u key=%u n=%d\n", openpete_frame, key, s_tri_n);
+        fprintf(fp, "# view H=%.6f ofx=%.6f ofy=%.6f xlo=%.3f xhi=%.3f "
+                    "nearband_ot_keys=%d lp_base_slots=%d\n",
+                s_H, s_ofx, s_ofy, (double)s_view.xlo, (double)s_view.xhi,
+                (int)game_layout.terrain.nearband_ot_keys,
+                (int)game_layout.terrain.lp_base_slots);
+        fprintf(fp, "# sec,face,tier,fill,blend,textured,slots,"
+                    "x0,y0,vz0,x1,y1,vz1,x2,y2,vz2,otkey,nearband,keygrid,"
+                    "fx0,fy0,fx1,fy1,fx2,fy2,kc0..kc7,lpkey"
+                    "  (vz/otkey true world units)\n");
+        for (int i = 0; i < s_tri_n; i++) {
+            const ttri* t = &s_tri[i];
+            fprintf(fp, "%d,%d,%d,%d,%d,%d,%d,"
+                        "%.2f,%.2f,%.1f,%.2f,%.2f,%.1f,%.2f,%.2f,%.1f,"
+                        "%.1f,%d,%u,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+                        "%u,%u,%u,%u,%u,%u,%u,%u,%d\n",
+                    t->sec, t->face, t->tier, t->fill, t->blend, t->textured,
+                    (int)t->otslots,
+                    (double)t->sx[0], (double)t->sy[0], (double)t->vz[0]*16.0,
+                    (double)t->sx[1], (double)t->sy[1], (double)t->vz[1]*16.0,
+                    (double)t->sx[2], (double)t->sy[2], (double)t->vz[2]*16.0,
+                    (double)t->otkey, (int)t->nearband, (t->kc[0] >> 14) & 3u,
+                    (double)t->fx[0], (double)t->fy[0], (double)t->fx[1],
+                    (double)t->fy[1], (double)t->fx[2], (double)t->fy[2],
+                    t->kc[0], t->kc[1], t->kc[2], t->kc[3], t->kc[4], t->kc[5],
+                    t->kc[6], t->kc[7], (int)t->lpkey);
+        }
+        fclose(fp);
+    }
+}
+
 /** @brief Feeds this build's terrain triangles to the native scene.
  *
  * Latches the debug toggles, fetches up to 6 portal opening planes for this
@@ -14043,49 +14126,7 @@ static void terrain_feed_native(CPUState* cpu) {
                     (double)t->vz[0]*16.0, (double)t->vz[1]*16.0, (double)t->vz[2]*16.0);
         }
       } }
-    /* OPENPETE_TERRAIN_TRIDUMP=<frame>[,path] - one-shot full-feed dump of
-     * every terrain tri with its FACE IDENTITY and depth inputs, on the first
-     * feed whose VBL is >= <frame>. The identity-granular sibling of the
-     * scene dump: sec/face/tier is what per-pixel winner attribution (og OT
-     * raster vs native raster) needs and the scene dump cannot carry. */
-    { static int s_td = -2; static unsigned s_td_f = 0; static char s_td_path[512];
-      if (s_td == -2) { const char* e = getenv("OPENPETE_TERRAIN_TRIDUMP");
-          s_td = -1;
-          if (e && *e) {
-              const char* c = strchr(e, ',');
-              s_td = 1; s_td_f = (unsigned)atoi(e);
-              snprintf(s_td_path, sizeof s_td_path, "%s",
-                       (c && c[1]) ? c + 1 : "/tmp/terrain-tridump.txt");
-          } }
-      if (s_td == 1 && openpete_frame >= s_td_f) {
-        s_td = -1;
-        FILE* fp = fopen(s_td_path, "w");
-        if (fp) {
-            fprintf(fp, "# frame=%u n=%d\n", openpete_frame, s_tri_n);
-            fprintf(fp, "# sec,face,tier,fill,blend,textured,slots,"
-                        "x0,y0,vz0,x1,y1,vz1,x2,y2,vz2,otkey,nearband,keygrid,"
-                        "fx0,fy0,fx1,fy1,fx2,fy2,kc0..kc7"
-                        "  (vz/otkey true world units)\n");
-            for (int i = 0; i < s_tri_n; i++) {
-                const ttri* t = &s_tri[i];
-                fprintf(fp, "%d,%d,%d,%d,%d,%d,%d,"
-                            "%.2f,%.2f,%.1f,%.2f,%.2f,%.1f,%.2f,%.2f,%.1f,"
-                            "%.1f,%d,%u,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
-                            "%u,%u,%u,%u,%u,%u,%u,%u\n",
-                        t->sec, t->face, t->tier, t->fill, t->blend, t->textured,
-                        (int)t->otslots,
-                        (double)t->sx[0], (double)t->sy[0], (double)t->vz[0]*16.0,
-                        (double)t->sx[1], (double)t->sy[1], (double)t->vz[1]*16.0,
-                        (double)t->sx[2], (double)t->sy[2], (double)t->vz[2]*16.0,
-                        (double)t->otkey, (int)t->nearband, (t->kc[0] >> 14) & 3u,
-                        (double)t->fx[0], (double)t->fy[0], (double)t->fx[1],
-                        (double)t->fy[1], (double)t->fx[2], (double)t->fy[2],
-                        t->kc[0], t->kc[1], t->kc[2], t->kc[3], t->kc[4], t->kc[5],
-                        t->kc[6], t->kc[7]);
-            }
-            fclose(fp);
-        }
-      } }
+    tn_tridump();
     /* Fill-tag inspector tint: the listed FILL faces green, the preview's
      * untagged candidates magenta, the face under the crosshair yellow. LP is
      * untextured gouraud, so a flat colour replaces the whole surface and the
