@@ -290,3 +290,10 @@ agent_9s_lab-letterbox|1605|2||1607,1617|--skip-to-level agent_9s_lab
 # the record and the native fan was absent from VBL ~2765. The movie is the
 # first 2800 VBLs of a Cross-every-20-VBLs movie. Blessed pre-fix.
 spooky-swamp-mole-glow-edge|2800|2||2800|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FREECAM_POSE=68908,122952,5424,624,17,9
+# dino-mines-dino-reveal: Dino Mines sub-area 3 under a freecam path (engaged
+# at VBL 2600, one pose per tick). At VBL 2915 a dinosaur beyond the stock draw
+# distance passes the game's cull box, which rounds the camera-relative delta
+# as (cam - pos) >> 2 on Y and Z; the extended-LOD reveal's mirror rounded
+# -((pos - cam) >> 2) and dropped it for one tick. The movie is the first 2930
+# VBLs of a Cross-every-20-VBLs movie. Blessed pre-fix.
+dino-mines-dino-reveal|2920|2||2909,2915|OPENPETE_FREECAM_AT_VBL=2600 --freecam-path @games/spyro-3/corpus/paths/dino-mines-dino-reveal.path
