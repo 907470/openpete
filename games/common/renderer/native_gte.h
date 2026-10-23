@@ -202,6 +202,17 @@ typedef struct {
     int sat;              /* SZ3 <= 0 or H >= 2*SZ3 (divide capped) */
 } ngte_proj;
 
+/** @brief The GTE-faithful perspective quotient for a view-space Z: H_eff / SZ3, or the divide cap scaled by the view's s.
+ *
+ * SZ3 is `m3` saturated to 0..0xFFFF. When SZ3 <= 0 or H_canon >= 2 * SZ3 the
+ * GTE caps the divide at 0x1FFFF; the cap is NGTE_DIV_CAP * s, so the quotient
+ * scales with --fov on both sides of the regime boundary. ngte_screen_gte
+ * multiplies IR1 and IR2 by it.
+ * @param v The view; supplies H_eff, H_canon and s.
+ * @param m3 MAC3, the view-space Z.
+ * @return The quotient, in pixels per view-space unit. */
+double ngte_gte_quot(const ngte_view* v, double m3);
+
 /** @brief The GTE-faithful divide half alone, for callers that already have view-space MACs.
  *
  * IR1/IR2 are the MACs saturated to int16 and SZ3 is MAC3 saturated to

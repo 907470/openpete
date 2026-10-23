@@ -119,6 +119,12 @@ double ngte_project_raw(const int M[3][3], const double TR[3],
     return mac3;
 }
 
+double ngte_gte_quot(const ngte_view* v, double m3) {
+    const double sz3 = m3 < 0.0 ? 0.0 : (m3 > 65535.0 ? 65535.0 : m3);
+    if (sz3 <= 0.0 || v->H_canon >= 2.0 * sz3) return NGTE_DIV_CAP * v->s;
+    return v->H_eff / sz3;
+}
+
 void ngte_screen_gte(double m1, double m2, double m3,
                      double ofx, double ofy, const ngte_view* v,
                      int sxy_clamp, ngte_proj* o) {
@@ -135,7 +141,7 @@ void ngte_screen_gte(double m1, double m2, double m3,
      * at the edge of the scaled view instead of inside it. */
     double sz3 = m3 < 0.0 ? 0.0 : (m3 > 65535.0 ? 65535.0 : m3);
     int sat = (sz3 <= 0.0 || v->H_canon >= 2.0 * sz3);
-    double q = sat ? NGTE_DIV_CAP * v->s : (H / sz3);
+    double q = ngte_gte_quot(v, m3);
     NGTE_LIMIT(NGTE_SITE_GTE_SAT, sat, sz3 <= 0.0 || H >= 2.0 * sz3);
     double sx = ofx + ir1 * q;
     double sy = ofy + ir2 * q;
