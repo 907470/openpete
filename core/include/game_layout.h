@@ -535,12 +535,6 @@ typedef struct game_layout {
          * own, and own LP faces at a nearer key, so a scene whose stand-ins
          * adjoin such faces opens holes in the borrowed surface. */
         int      standin_lp_key;
-        /* 1 + the level id whose terrain key contest keeps the override
-         * unbounded (no bound by the key owner's distance from the
-         * fragment's plane, psx_key_contest.glsl op_key_override_holds);
-         * 0 = the bound applies on every level. The level's authored
-         * layering depends on the unbounded contest. */
-        int      key_bound_exempt_level1;
     } terrain;
 
     /* The moby drop-shadow draw. Both games run the same walk: a list of

@@ -217,7 +217,6 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_TRI4      4096
 #define GF_TRI2      8192
 #define GF_LPNEAROUT 16384
-#define GF_KEYBOUND  32768
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -1983,7 +1982,7 @@ void main()
             koff = float(double(ok) + 128.0lf * slots + 0.5lf);
             /* Opaque faces only, as the walk feeds them (terrain.c
              * tn_key_attr): a blended face keeps the unbounded override. */
-            if ((gf & GF_KEYBOUND) != 0 && ((mat0 >> 21) & 3u) == 0u)
+            if (((mat0 >> 21) & 3u) == 0u)
                 kcls = op_key_class(!lp && (ff & FF_LPKEY) == 0u, float(slots));
         }
     }

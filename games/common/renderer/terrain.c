@@ -11747,23 +11747,13 @@ static uint32_t tc_ot_terms(void) {
          | (keyed << 16);
 }
 
-/* Whether this walk's level bounds the terrain override (tn_key_bound_level). */
-static int s_key_bound = 1;
-
-/** @brief Returns whether a level bounds the terrain key override: every level but game_layout.terrain.key_bound_exempt_level1 - 1.
- * @param level The level id.
- * @return 1 when the bound applies, else 0. */
-static int tn_key_bound_level(int level) {
-    return game_layout.terrain.key_bound_exempt_level1 != level + 1;
-}
-
 /** @brief Builds the retained path's global flag word (OPTC_GF_*) for this present.
  *
  * Each bit is one walk rule the vertex stage mirrors: the near/HQ subdivide,
  * CLUT fog, the HP and LP back-face culls, the LOD handoff, gap fill,
  * --no-lod, the always-HQ pin, the layout's nearest-corner ladder, near-band
  * OT keys, the 4x4 cells, the tier-4 and tier-2 triangle splits, OT key
- * resolution and the terrain override bound (tn_key_bound_level).
+ * resolution.
  * @param nearhq 1 when the near/HQ subdivide is on and an HQ table exists.
  * @param lod_handoff 1 when the LP LOD handoff is on.
  * @return The flag word. */
@@ -11784,8 +11774,7 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | (game_layout.terrain.hq_tri4_cells         ? OPTC_GF_TRI4    : 0u)
          | (game_layout.terrain.hq_tri2_tiles         ? OPTC_GF_TRI2    : 0u)
          | (game_layout.terrain.lp_near_sz            ? OPTC_GF_LPNEAROUT : 0u)
-         | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u)
-         | (s_key_bound       ? OPTC_GF_KEYBOUND : 0u);
+         | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
 /** @brief Computes the exact screen interval a sector's bounding sphere projects to under this walk's camera.
@@ -12221,7 +12210,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * the fold below would pin the old level's mean over its whole LP tier
      * indefinitely. */
     { int lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
-      s_key_bound = tn_key_bound_level(lvl);
       static int s_lpg_lvl = -1;
       if (lvl != s_lpg_lvl) {
           tgpu_level_edge(s_lpg_lvl, lvl);
@@ -13862,7 +13850,7 @@ static int tn_rim_feed(CPUState* cpu, const ttri* t) {
  * @param st Its scene triangle, koff and blend already set.
  * @return The packed inputs: class << 15 | q. */
 static uint32_t tn_key_attr(const ttri* t, const openpete_scene_tri* st) {
-    if (!(st->koff > 0.0f) || st->blend || !s_key_bound) return 0u;
+    if (!(st->koff > 0.0f) || st->blend) return 0u;
     double P[3][3];
     for (int k = 0; k < 3; k++) {
         const double z = (double)t->vz[k] * 16.0;
