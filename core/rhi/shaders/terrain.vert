@@ -3,6 +3,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_unorm8.glsl"
 #include "psx_viewz.glsl"
+#include "psx_key_contest.glsl"
 
 /* Terrain sector-mesh vertex stage - the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
@@ -216,6 +217,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_TRI4      4096
 #define GF_TRI2      8192
 #define GF_LPNEAROUT 16384
+#define GF_KEYBOUND  32768
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -288,6 +290,10 @@ layout(location = 12) flat out vec4 vKn1;   /*   TR.yz BL.xy                    
 layout(location = 13) flat out vec4 vKn2;   /*   BL.z BR.xyz                        */
 layout(location = 14) flat out uint vRim;  /* 1 + accepting plane of an inner rim discarded per
                                             * fragment (terrain.frag); 0 = not rim */
+/* The face's terrain class byte (psx_key_contest.glsl op_key_class): the
+ * key pass writes it beside the key, the scene stages bound the override
+ * with it. OP_KEY_CLASS_NONE on an unkeyed face. */
+layout(location = 15) flat out float vKcls;
 layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
                                              * | ladder-face 1<<16 | fogbias 1<<17  */
 
@@ -866,7 +872,7 @@ uint attr_word(uint slot, bool lp, bool hqv, bool is4, bool drain)
 void kill_vert() {
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);   /* degenerate: no raster */
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec2(0u);
-    vKoff = 0.0; vQ = 1.0;
+    vKoff = 0.0; vKcls = OP_KEY_CLASS_NONE; vQ = 1.0;
     vKfl = vec2(0.0); vKq = 1.0; vKc0 = uvec4(0u); vKc1 = uvec4(0u);
     vKd = vec3(0.0); vKn0 = vec4(0.0); vKn1 = vec4(0.0); vKn2 = vec4(0.0);
     vRim = 0u;
@@ -1908,6 +1914,7 @@ void main()
 
     /* ---- og OT key (feed koff mirror; ambient per face / per HQ sub-quad) ---- */
     float koff = 0.0;
+    float kcls = OP_KEY_CLASS_NONE;
     dtab ktab;
     ktab.t0 = uvec4(0u); ktab.t1 = uvec4(0u); ktab.kmin = 0.0; ktab.n = 0;
     if ((gf & GF_KEYON) != 0 && !fillPass) {
@@ -1974,9 +1981,14 @@ void main()
                               : double(((ff & FF_LPKEY) != 0u ? ot_lp_base() : 0u)
                                        + ot_hp_mul() * ob);
             koff = float(double(ok) + 128.0lf * slots + 0.5lf);
+            /* Opaque faces only, as the walk feeds them (terrain.c
+             * tn_key_attr): a blended face keeps the unbounded override. */
+            if ((gf & GF_KEYBOUND) != 0 && ((mat0 >> 21) & 3u) == 0u)
+                kcls = op_key_class(!lp && (ff & FF_LPKEY) == 0u, float(slots));
         }
     }
     vKoff = koff;
+    vKcls = kcls;
     /* The table rides only a positively keyed textured face: the key pass
      * rasters nothing else, op_drain_koff_pf moves nothing else, and the
      * walked scene locates the sub-cell through the texture coordinate
@@ -2015,7 +2027,9 @@ void main()
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
         vUV = uv / wq;
         vQ  = 1.0 / wq;
-        vColor = vec4(1.0);
+        /* x: the owner's true 1/view-Z, screen-linear under the flat key W
+         * (terrain_key_cache.frag writes the owner's view-Z beside the key). */
+        vColor = vec4(1.0 / max(fvz, 1.0), 0.0, 0.0, 1.0);
         /* p interpolates as the UV does (psx_key_contest.glsl). */
         vKfl = mfl / wq;
         vKd  = kd / wq;

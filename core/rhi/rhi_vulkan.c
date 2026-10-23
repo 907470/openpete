@@ -447,6 +447,17 @@ struct lto_state {
     uint64_t          t0_ns;    /* wall clock at the first queue pass */
 };
 
+/* A frame slot's list of per-bind sampler sets of one layout (the pair or
+ * the trio): each bind in a frame takes the next set, or rebinds a set this
+ * frame already wrote with the same views. */
+typedef struct {
+    VkDescriptorSet *sets;                /* grown by doubling             */
+    VkImageView     (*views)[3];          /* each taken set's views        */
+    uint32_t        cap;                  /* entries sets/views hold       */
+    uint32_t        alloc;                /* sets allocated                */
+    uint32_t        used;                 /* sets taken this frame         */
+} rhi_view_sets;
+
 struct rhi_device {
     struct SDL_Window *window;
 
@@ -745,14 +756,13 @@ struct rhi_device {
     struct rhi_stage_chunk *up_ring[RHI_FRAMES_IN_FLIGHT];
     uint64_t        up_serial[RHI_FRAMES_IN_FLIGHT];
     struct rhi_texture *init_head;   /* textures awaiting their initial transition */
-    VkDescriptorSet *pair_sets[RHI_FRAMES_IN_FLIGHT];      /* grown by doubling */
-    uint32_t        pair_cap[RHI_FRAMES_IN_FLIGHT];   /* entries pair_sets/pair_views hold */
-    uint32_t        pair_alloc[RHI_FRAMES_IN_FLIGHT]; /* sets allocated per slot */
-    uint32_t        pair_used[RHI_FRAMES_IN_FLIGHT];  /* sets taken this frame   */
-    VkImageView     (*pair_views[RHI_FRAMES_IN_FLIGHT])[2]; /* each taken
-                                                 * set's two views: a bind of
-                                                 * the same pair this frame
-                                                 * rebinds it                */
+    /* Three-sampler set layout (bindings 0-2): the terrain key image's set
+     * in the key-resolve and material layouts (key depth, drain records, key
+     * owner attributes). Its sets are written per bind like the pair's. */
+    VkDescriptorSetLayout trio_set_layout;
+    /* The per-bind set lists of the pair (index 0) and trio (index 1)
+     * layouts, one per frame slot. */
+    rhi_view_sets   vsets[2][RHI_FRAMES_IN_FLIGHT];
 
     bool        gpu_timers;                 /* env set AND queue has timestamps */
     float       gpu_ts_period;              /* ns per timestamp tick */
@@ -2604,7 +2614,8 @@ static bool desc_alloc(rhi_device *dev, VkDescriptorSetLayout layout,
  * GPU filtering applies. linear_sampler is the same with LINEAR filtering,
  * for high-res replacement art. Layouts: vram_set_layout (one
  * combined-image-sampler at binding 0, shared by every VRAM-sampling
- * pipeline), pair_set_layout (two at bindings 0 and 1), ubo_set_layout (two
+ * pipeline), pair_set_layout (two at bindings 0 and 1), trio_set_layout
+ * (three at bindings 0 to 2), ubo_set_layout (two
  * dynamic UBOs, vertex and fragment visible, and a fragment-visible storage
  * buffer at binding 2) and ubo1_set_layout (one dynamic UBO). Records ubo_align (minUniformBufferOffsetAlignment, 256 when
  * the device reports 0) and max_desc_sets. The pool holds 4096
@@ -2655,6 +2666,16 @@ static bool create_descriptor_infra(rhi_device *dev)
     };
     if (vkCreateDescriptorSetLayout(dev->device, &pli, NULL, &dev->pair_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (pair) failed\n"); return false;
+    }
+    VkDescriptorSetLayoutBinding tb[3] = { b, b, b };
+    tb[1].binding = 1;
+    tb[2].binding = 2;
+    VkDescriptorSetLayoutCreateInfo tli = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 3, .pBindings = tb,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &tli, NULL, &dev->trio_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout (trio) failed\n"); return false;
     }
     /* The contract set (set 3): binding 0 = engine block, binding 1 = mod
      * block, both dynamic UBOs visible to vertex and fragment; binding 2 =
@@ -3873,8 +3894,10 @@ static void desc_pools_free(rhi_device *dev)
         vkDestroyDescriptorPool(dev->device, dev->desc_pools[i], NULL);
     dev->desc_pool_n = 0;
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
-        free(dev->pair_sets[i]); dev->pair_sets[i] = NULL;
-        free(dev->pair_views[i]); dev->pair_views[i] = NULL;
+        for (int k = 0; k < 2; k++) {
+            free(dev->vsets[k][i].sets);  dev->vsets[k][i].sets = NULL;
+            free(dev->vsets[k][i].views); dev->vsets[k][i].views = NULL;
+        }
     }
 }
 
@@ -3936,6 +3959,7 @@ void rhi_destroy(rhi_device *dev)
     /* A device that failed before vkCreateDevice has no device-level
      * dispatch to call through, so even a null handle is not destroyed. */
     if (dev->pair_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(dev->device, dev->trio_set_layout, NULL);   /* VK_NULL_HANDLE is a no-op */
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 
@@ -4372,7 +4396,8 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     census_frame();
     retired_reclaim(dev, false);
     pcache_autosave(dev);
-    dev->pair_used[dev->frame] = 0;   /* the slot's pair sets have retired */
+    dev->vsets[0][dev->frame].used = 0;   /* the slot's pair and trio sets have retired */
+    dev->vsets[1][dev->frame].used = 0;
     dev->cur_layout = VK_NULL_HANDLE; /* a layout bound last frame may be retired */
     dev->frame_active = true;
     dev->draw_calls = 0;
@@ -6975,13 +7000,15 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * @return max(@p a, @p b). */
 static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
-/** @brief Replace the single-sampler sets of a kind's layout that hold an image pair with the two-sampler pair layout.
+/** @brief Replace the single-sampler sets of a kind's layout that hold several images with the pair or trio layout.
  *
  * The key-resolve scene layouts (uses_vram3 outside the terrain, postfx and
- * mod kinds) pair the terrain key image with the drain records at set 2
- * and, once uses_vram4 declares the moby key sets, the actor key image's
- * depth with its owner colour at set 1. A material layout pairs the terrain
- * keys at set 2 and the actor key with its owner at set 5.
+ * mod kinds) hold the terrain key set at set 2 (trio: key depth, drain
+ * records, key owner attributes) and, once uses_vram4 declares the moby key
+ * sets, the actor key image's depth with its owner colour at set 1 (pair).
+ * A material layout holds the terrain key set at set 2 and the actor key
+ * with its owner at set 5. A terrain layout pairs the terrain key depth
+ * with its owner attributes at set 1.
  * @param dev Device holding the set layouts.
  * @param desc Pipeline description.
  * @param out The pipeline's eight set layouts, rewritten in place. */
@@ -6989,12 +7016,17 @@ static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *des
                              VkDescriptorSetLayout out[8])
 {
     if (desc->material_pipeline) {
-        out[2] = out[5] = dev->pair_set_layout;
+        out[2] = dev->trio_set_layout;
+        out[5] = dev->pair_set_layout;
         return;
     }
-    if (!desc->uses_vram3 || desc->terrain_pipeline || desc->postfx || desc->mod_pipeline)
+    if (desc->terrain_pipeline) {
+        out[1] = dev->pair_set_layout;
         return;
-    out[2] = dev->pair_set_layout;
+    }
+    if (!desc->uses_vram3 || desc->postfx || desc->mod_pipeline)
+        return;
+    out[2] = dev->trio_set_layout;
     if (desc->uses_vram4) out[1] = dev->pair_set_layout;
 }
 
@@ -10693,75 +10725,94 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex)
                             dev->cur_layout, 1, 1, &tex->set, 0, NULL);
 }
 
-/** @brief Append one allocated pair set to a frame slot's list, growing the list's arrays by doubling.
+/** @brief Append one allocated set to a frame slot's list of the pair (kind 0) or trio (kind 1) layout, growing the list's arrays by doubling.
  *
  * @param dev Device.
+ * @param kind 0 for the pair layout, 1 for the trio layout.
  * @param f Frame slot.
  * @return false when the arrays cannot grow or the set cannot be allocated. */
-static bool pair_list_grow(rhi_device *dev, uint32_t f)
+static bool view_sets_grow(rhi_device *dev, int kind, uint32_t f)
 {
-    if (dev->pair_alloc[f] == dev->pair_cap[f]) {
-        const uint32_t cap = dev->pair_cap[f] ? dev->pair_cap[f] * 2 : 32;
-        VkDescriptorSet *sets = realloc(dev->pair_sets[f], cap * sizeof(*sets));
+    rhi_view_sets *L = &dev->vsets[kind][f];
+    if (L->alloc == L->cap) {
+        const uint32_t cap = L->cap ? L->cap * 2 : 32;
+        VkDescriptorSet *sets = realloc(L->sets, cap * sizeof(*sets));
         if (!sets) return false;
-        dev->pair_sets[f] = sets;
-        VkImageView (*views)[2] = realloc(dev->pair_views[f], cap * sizeof(*views));
+        L->sets = sets;
+        VkImageView (*views)[3] = realloc(L->views, cap * sizeof(*views));
         if (!views) return false;
-        dev->pair_views[f] = views;
-        dev->pair_cap[f] = cap;
+        L->views = views;
+        L->cap = cap;
     }
-    if (!desc_alloc(dev, dev->pair_set_layout, &dev->pair_sets[f][dev->pair_alloc[f]], NULL))
+    if (!desc_alloc(dev, kind ? dev->trio_set_layout : dev->pair_set_layout,
+                    &L->sets[L->alloc], NULL))
         return false;
-    dev->pair_alloc[f]++;
+    L->alloc++;
     return true;
 }
 
-/** @brief Bind a two-sampler pair set holding views v0 (binding 0) and v1 (binding 1) at `set`.
+/** @brief Bind a sampler set holding views v[0..n-1] at bindings 0..n-1 at `set`, n 2 (the pair layout) or 3 (the trio layout).
  *
- * The frame slot reuses its set already written with the same pair of views,
- * else writes the next set of the slot's list, allocating one when the list
- * is exhausted (pair_list_grow); the list has no fixed length. A bind whose
- * allocation fails is dropped with a log. Both views are
- * sampled through vram_sampler in SHADER_READ_ONLY_OPTIMAL layout.
+ * The frame slot reuses its set already written with the same views, else
+ * writes the next set of the slot's list for that layout, allocating one
+ * when the list is exhausted (view_sets_grow); the list has no fixed
+ * length. A bind whose allocation fails is dropped with a log. Every view
+ * is sampled through vram_sampler in SHADER_READ_ONLY_OPTIMAL layout.
+ * @param dev Device whose current frame records the bind.
+ * @param v The views.
+ * @param n View count, 2 or 3.
+ * @param set Descriptor set index in the bound pipeline's layout. */
+static void bind_view_set(rhi_device *dev, const VkImageView *v, uint32_t n, uint32_t set)
+{
+    const uint32_t f = dev->frame;
+    const int kind = n == 3 ? 1 : 0;
+    rhi_view_sets *L = &dev->vsets[kind][f];
+    for (uint32_t i = 0; i < L->used; i++) {
+        if (L->views[i][0] == v[0] && L->views[i][1] == v[1] && (n < 3 || L->views[i][2] == v[2])) {
+            vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    dev->cur_layout, set, 1, &L->sets[i], 0, NULL);
+            return;
+        }
+    }
+    if (L->used == L->alloc && !view_sets_grow(dev, kind, f)) {
+        RHI_LOG("sampler set: allocation failed; the bind is dropped\n");
+        return;
+    }
+    const uint32_t slot = L->used++;
+    VkDescriptorSet ds = L->sets[slot];
+    VkDescriptorImageInfo ii[3];
+    VkWriteDescriptorSet w[3];
+    for (uint32_t k = 0; k < n; k++) {
+        L->views[slot][k] = v[k];
+        ii[k] = (VkDescriptorImageInfo){ .sampler = dev->vram_sampler, .imageView = v[k],
+                                         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        w[k] = (VkWriteDescriptorSet){
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = k,
+            .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &ii[k] };
+    }
+    vkUpdateDescriptorSets(dev->device, n, w, 0, NULL);
+    vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &ds, 0, NULL);
+}
+
+/** @brief Bind a two-sampler pair set holding views v0 (binding 0) and v1 (binding 1) at `set` (bind_view_set).
  * @param dev Device whose current frame records the bind.
  * @param v0 View for binding 0.
  * @param v1 View for binding 1.
  * @param set Descriptor set index in the bound pipeline's layout. */
 static void bind_view_pair(rhi_device *dev, VkImageView v0, VkImageView v1, uint32_t set)
 {
-    uint32_t f = dev->frame;
-    for (uint32_t i = 0; i < dev->pair_used[f]; i++) {
-        if (dev->pair_views[f][i][0] == v0 && dev->pair_views[f][i][1] == v1) {
-            vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    dev->cur_layout, set, 1, &dev->pair_sets[f][i], 0, NULL);
-            return;
-        }
-    }
-    if (dev->pair_used[f] == dev->pair_alloc[f] && !pair_list_grow(dev, f)) {
-        RHI_LOG("pair set: allocation failed; the bind is dropped\n");
-        return;
-    }
-    const uint32_t slot = dev->pair_used[f]++;
-    VkDescriptorSet ds = dev->pair_sets[f][slot];
-    dev->pair_views[f][slot][0] = v0;
-    dev->pair_views[f][slot][1] = v1;
-    VkDescriptorImageInfo ii[2] = {
-        { .sampler = dev->vram_sampler, .imageView = v0,
-          .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-        { .sampler = dev->vram_sampler, .imageView = v1,
-          .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-    };
-    VkWriteDescriptorSet w[2] = {
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0,
-          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-          .pImageInfo = &ii[0] },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1,
-          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-          .pImageInfo = &ii[1] },
-    };
-    vkUpdateDescriptorSets(dev->device, 2, w, 0, NULL);
-    vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            dev->cur_layout, set, 1, &ds, 0, NULL);
+    const VkImageView v[2] = { v0, v1 };
+    bind_view_set(dev, v, 2, set);
+}
+
+void rhi_bind_terrain_key_set(rhi_device *dev, rhi_texture *key_rt, rhi_texture *drain,
+                              uint32_t set)
+{
+    if (!dev->frame_active || !key_rt || !drain || !key_rt->rt_depth_sample_view) return;
+    const VkImageView v[3] = { key_rt->rt_depth_sample_view, drain->view, key_rt->view };
+    bind_view_set(dev, v, 3, set);
 }
 
 void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *depth_rt,

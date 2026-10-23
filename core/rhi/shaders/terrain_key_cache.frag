@@ -14,11 +14,14 @@
  * fragment (psx_key_contest.glsl; a folded quadrant's skipped slot through
  * op_drain_fold_delta) as its depth, as psx_key_cutout.frag and
  * terrain_key.frag do on the walk; every other face writes the rasterised
- * depth back unchanged. */
+ * depth back unchanged. The colour attachment takes the face's true view-Z
+ * at the fragment and its class byte (op_key_attr_store), which the scene
+ * stages bound the terrain override with. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
 layout(location = 0)      in vec2  vUV;    /* u/wq (recover via vQ)          */
+layout(location = 1)      in vec4  vColor; /* x: the owner's true 1/view-Z   */
 layout(location = 2) flat in uvec2 vMat;
 layout(location = 3) flat in float vKoff;  /* the face's key + 0.5           */
 layout(location = 4)      in float vQ;     /* 1/wq                           */
@@ -30,6 +33,7 @@ layout(location = 10)     in vec3  vKd;    /* fold position D x vKq           */
 layout(location = 11) flat in vec4 vKn0;   /* fold corners TL.xyz TR.x        */
 layout(location = 12) flat in vec4 vKn1;   /*   TR.yz BL.xy                   */
 layout(location = 13) flat in vec4 vKn2;   /*   BL.z BR.xyz                   */
+layout(location = 15) flat in float vKcls; /* the face's terrain class byte   */
 
 layout(location = 0) out vec4 outColor;
 
@@ -72,5 +76,6 @@ void main()
         if (d >= OP_DRAIN_SKIP) discard;       /* a sub-cell the drain skips */
         gl_FragDepth = op_key_store(max(vKoff - 0.5, 1.0) + d);
     }
-    outColor = vec4(1.0);                      /* colour attachment unused */
+    /* The owner's true view-Z and class beside the key (op_key_attr_store). */
+    outColor = op_key_attr_store(1.0 / max(vColor.x, 1e-9), vKcls);
 }

@@ -15,6 +15,9 @@ layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image 
 /* Owner identities of the actor key image; see psx_scene_key.frag. */
 layout(set = 1, binding = 1) uniform sampler2D u_actorown;
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
+/* The terrain key owner's true view-Z and class (op_key_attr_store), the
+ * terrain key image's colour, at the set's binding 2. */
+layout(set = 2, binding = 2) uniform sampler2D u_hpattr;
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
 /* Moby og-RANK image - same-moby painter select; see psx_scene_key.frag. */
 layout(set = 4, binding = 0) uniform sampler2D u_mobyrank;
@@ -81,12 +84,13 @@ void main()
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
+                texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
                 op_akey_contest(op_akey_select(
                     texelFetch(u_actorkey,  ivec2(gl_FragCoord.xy), 0).r,
                     texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
                     op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
-                own, vKoff,
+                own, vKoff, op_key_fattr_walk(vRank.x),
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
                 op_rank_is_prop(vRank.x),
                 MOBY_TRUESCOPE, SLOT_CONTEST))

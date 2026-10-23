@@ -19,6 +19,9 @@ layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key imag
 /* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
  * terrain key image's set at binding 1. */
 layout(set = 2, binding = 1) uniform usampler2D u_drain;
+/* The terrain key owner's true view-Z and class (op_key_attr_store), the
+ * terrain key image's colour, at the set's binding 2. */
+layout(set = 2, binding = 2) uniform sampler2D u_hpattr;
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
 /* Moby og-RANK image - same-moby painter select; see psx_scene_key.frag. */
 layout(set = 4, binding = 0) uniform sampler2D u_mobyrank;
@@ -91,43 +94,21 @@ void main()
      * skip the positive-koff contest - see psx_scene_key.frag. */
     float koff = op_drain_koff(vKoff, vRank.y, vUVq / vQ, u_drain);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
-    if (!ranked && abs(koff) > 0.25) {   /* contest rules in psx_scene_key.frag */
-        float hk = texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r;
-        float ak = op_akey_select(texelFetch(u_actorkey,  ivec2(gl_FragCoord.xy), 0).r,
-                                  texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
-                                  op_akey_owner(vRank));
-        float mk = texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r;
-        float tkey = hk < 0.999999 ? 4096.0 * hk / max(1.0 - hk, 1e-9) : 1e30;
-        float akey = ak < 0.999999 ? 4096.0 * ak / max(1.0 - ak, 1e-9) : 1e30;
-        float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
-        float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
-        bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
-        if (koff > 0.0) {
-            /* Terrain against terrain only, psx_key_contest.glsl's rule:
-             * by bucket on one ordering table (a terrain face keeping a
-             * tie), strict by half a slot otherwise; an actor face is
-             * decided against terrain by true depth. */
-            if (!actor && (SLOT_CONTEST
-                    ? floor(tkey / 128.0) < floor((koff - 0.5) / 128.0)
-                    : tkey < (koff - 0.5) - 64.0))
-                discard;
-            if ((actor || !MOBY_TRUESCOPE) &&
-                akey < (koff - 0.5) - 64.0 &&
-                (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
-            /* Prop EMBED rule on the OT band (terrain fragments only, the
-             * near-band rule's twin): a curated embedded prop within 1024
-             * world behind this terrain's TRUE surface wins the pixel.
-             * Under the true-depth scope this is what carries the
-             * dofs-0 pedestal discs at mid/far range - og floated them on
-             * the ground's own authored push, which the scope no longer
-             * mirrors. */
-            if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
-        } else {   /* near-band: per-pixel own key; +1024 embed rule vs props */
-            if (tkey < own - 64.0 ||
-                (!MOBY_TRUESCOPE && akey < own - 64.0) ||
-                mkey < own + 1024.0) discard;
-        }
-    }
+    if (!ranked && abs(koff) > 0.25 &&
+        op_key_loses(
+            op_key_from_stored(texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r),
+            texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
+            op_akey_contest(op_akey_select(
+                texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
+                texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
+                op_akey_owner(vRank))),
+            op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
+            op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED), koff,
+            op_key_fattr_walk(vRank.x),
+            vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
+            op_rank_is_prop(vRank.x),
+            MOBY_TRUESCOPE, SLOT_CONTEST))
+        discard;
     vec2 vUV = vUVq / vQ;
     vec4 vColor = vColorq / vQ;
     vec2 t = vec2((vUV.x - pc.u0) / pc.uw, (vUV.y - pc.v0) / pc.vh);

@@ -154,6 +154,7 @@ void main()
     /* Sector debug tints take precedence over the material: they show what
      * the engine believes, not what a mod paints. */
     ter_texel_grad_init();
+    ter_key_plane_init();
     vec4 c;
     if (ter_debug_shade(c)) { op_out_color = c; return; }
     /* The portal plane-cover rule and the painter verdict, as the stock
@@ -183,6 +184,10 @@ layout(set = 2, binding = 0) uniform sampler2D op_key_terrain;
 /* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
  * terrain key image's set at binding 1. */
 layout(set = 2, binding = 1) uniform usampler2D op_drain_records;
+/* The terrain key owner's true view-Z and class (op_key_attr_store), the
+ * terrain key image's colour attachment: the contest bounds the terrain
+ * override by the owner's distance from the fragment's plane. */
+layout(set = 2, binding = 2) uniform sampler2D op_key_terrain_attr;
 layout(set = 4, binding = 0) uniform sampler2D op_key_moby;
 layout(set = 5, binding = 0) uniform sampler2D op_key_actor;
 /* The moby identity owning each op_key_actor texel (op_akey_id). */
@@ -337,12 +342,13 @@ void main()
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r),
+                texelFetch(op_key_terrain_attr, ivec2(gl_FragCoord.xy), 0),
                 op_akey_contest(op_akey_select(
                     texelFetch(op_key_actor,       ivec2(gl_FragCoord.xy), 0).r,
                     texelFetch(op_key_actor_owner, ivec2(gl_FragCoord.xy), 0),
                     op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
-                own, koff,
+                own, koff, op_key_fattr_walk(vRank.x),
                 vRank.x < -0.5,     /* unranked moby faces carry rank -1 */
                 op_rank_is_prop(vRank.x),
                 OP_MOBY_TRUESCOPE, OP_SLOT_CONTEST))

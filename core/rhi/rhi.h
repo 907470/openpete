@@ -925,10 +925,12 @@ typedef struct rhi_pipeline_desc {
     bool           uses_vram;   /* layout includes a sampler at set 0          */
     bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
                                  * set 0 = native render, set 1 = reference)   */
-    bool           uses_vram3;  /* set 2: the terrain og-key image at binding 0
-                                 * and the drain sub-cell key records at
-                                 * binding 1 (the pair layout, bound with
-                                 * rhi_bind_depth_tex_pair). Implies sets 0..2
+    bool           uses_vram3;  /* set 2: the terrain og-key image at binding 0,
+                                 * the drain sub-cell key records at binding
+                                 * 1 and the key image's owner attributes
+                                 * (its colour) at binding 2 (the trio
+                                 * layout, bound with
+                                 * rhi_bind_terrain_key_set). Implies sets 0..2
                                  * exist in the layout; sets a shader never
                                  * statically accesses need no binding at
                                  * draw.                                       */
@@ -1007,7 +1009,11 @@ typedef struct rhi_pipeline_desc {
                                  * that. Implies mod_pipeline's vertex input. */
     bool           terrain_pipeline; /* terrain sector-mesh layout: vertex
                                  * input = rhi_terrain_vertex (locations 0..8),
-                                 * sets = {0: VRAM sampler, 1/2: og key images,
+                                 * sets = {0: VRAM sampler, 1: the terrain
+                                 * key depth and its owner attributes (the
+                                 * pair layout, rhi_bind_depth_tex_pair with
+                                 * the key target twice), 2: the prop key
+                                 * image,
                                  * 3: the material contract's UBO pair,
                                  * 4: HD-replacement atlas sampler,
                                  * 5: TerrainGlobals, 6: TerrainSectors - both
@@ -2558,8 +2564,9 @@ void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
 void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
 /** @brief Bind the sampled depth of `depth_rt` (binding 0) and `tex` (binding 1) as a two-sampler pair set at `set`.
  *
- * This is the pair layout of the terrain key image's set in the key-resolve
- * and material layouts (key image, drain sub-cell key records). The frame
+ * This is the pair layout of the actor key image's set (key depth, owner
+ * colour) and of the terrain layout's key set (key depth, owner
+ * attributes). The frame
  * slot reuses a pair set already written with the same two views, else
  * writes the next set of the slot's list. Both images must be in shader-read
  * layout for the draw. Does nothing outside a frame, when either texture is
@@ -2570,6 +2577,21 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
  * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_depth_tex_pair(rhi_device *dev, rhi_texture *depth_rt, rhi_texture *tex,
                              uint32_t set);
+/** @brief Bind the terrain key set at `set`: the sampled depth of `key_rt` (binding 0), `drain` (binding 1) and `key_rt`'s colour image (binding 2).
+ *
+ * This is the trio layout of the terrain key image's set in the key-resolve
+ * and material layouts (key image, drain sub-cell key records, key owner
+ * attributes). The frame slot reuses a trio set already written with the
+ * same three views, else writes the next set of the slot's list. Every
+ * image must be in shader-read layout for the draw. Does nothing outside a
+ * frame, when either texture is NULL, or when `key_rt` has no depth sample
+ * view.
+ * @param dev Device whose current frame records the bind.
+ * @param key_rt The terrain key render target (depth-sampled).
+ * @param drain The drain sub-cell key records texture.
+ * @param set Descriptor set index in the bound pipeline's layout. */
+void rhi_bind_terrain_key_set(rhi_device *dev, rhi_texture *key_rt, rhi_texture *drain,
+                              uint32_t set);
 /** @brief Bind `tex` (binding 0) and the sampled depth of `depth_rt` (binding 1) as a pair set at `set` of a set1_vram_depth pipeline.
  *
  * Both images must be in shader-read layout for the draw.

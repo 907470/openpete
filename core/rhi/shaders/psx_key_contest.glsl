@@ -547,6 +547,110 @@ bool op_rank_is_prop(float rank)
     return abs(rank + 1.25) < 0.125;
 }
 
+/* ---- the terrain override bound ---------------------------------------
+ *
+ * A terrain fragment F that the terrain key K at its pixel sorts in front of
+ * (the slot compare of op_key_loses) is discarded only when K's owner lies
+ * near F's surface, or when K is the HP mesh over an LP face: the ordering
+ * table's order between two surfaces that do not touch is not reproduced.
+ * The owner's distance from F's plane along the pixel's ray is
+ *     perp = |z_K - z_F| * |n_F . (x/z, y/z, 1)| = |z_K - z_F| * D_F / z_F,
+ * z_K the owner's true view-Z at the pixel, z_F the fragment's, D_F the
+ * distance from the eye to F's plane (n_F . P for any camera-space point P
+ * of the plane, n_F unit). The verdict by the two faces' classes:
+ *   K HP, F LP (an HP stand-in carrying the LP base slot term counts as LP):
+ *     the override holds at any distance (the LP/HP partition, whose HP mesh
+ *     lies at K wherever an LP face inverts against it);
+ *   K's authored slots fewer than F's (a face biased in front of its
+ *     neighbour): the override holds while perp < OP_KEY_BIAS_REACH (authored
+ *     layering of touching surfaces, at most 68 world on the corpus);
+ *   equal or more slots: the override holds while perp < OP_KEY_TIE_REACH
+ *     (coplanar overlaps, under 0.5 world on the corpus).
+ *
+ * The terrain key pass writes the owner's attributes into the key image's
+ * colour attachment beside the key (op_key_attr_store): r, g, b the owner's
+ * true view-Z as 24 bits of z/(z+4096), a the owner's class byte
+ * (op_key_class). The class byte 255, the colour every other key pass
+ * writes and the clear value's alpha, means no attributes: the override
+ * holds unbounded, the contest's rule before the bound existed. A face's
+ * class byte is 128 for HP (0 for LP or a stand-in) plus its authored slot
+ * count / 4 (every slot term is a multiple of 4; at most 78). */
+#define OP_KEY_BIAS_REACH 128.0
+#define OP_KEY_TIE_REACH  8.0
+#define OP_KEY_CLASS_NONE 255.0
+
+/* The class byte of a terrain face: hp = it keys as HP (a stand-in carrying
+ * the LP base term does not), slots = its authored slot term
+ * (tface_ot_slots). */
+float op_key_class(bool hp, float slots)
+{
+    return (hp ? 128.0 : 0.0) + min(floor(slots * 0.25 + 0.5), 127.0);
+}
+
+/* The key image colour a terrain key-pass fragment writes: the owner's true
+ * view-Z z and class byte cls. Exact in an 8-bit UNORM target. */
+vec4 op_key_attr_store(float z, float cls)
+{
+    float e = floor(clamp(z / (z + 4096.0), 0.0, 1.0) * 16777215.0 + 0.5);
+    float hi = floor(e / 65536.0);
+    float mid = floor((e - hi * 65536.0) / 256.0);
+    float lo = e - hi * 65536.0 - mid * 256.0;
+    return vec4(lo, mid, hi, cls) / 255.0;
+}
+
+/* The owner's true view-Z of a key image colour texel. */
+float op_key_attr_z(vec4 c)
+{
+    vec4 b = floor(c * 255.0 + 0.5);
+    float e = (b.r + b.g * 256.0 + b.b * 65536.0) / 16777215.0;
+    return 4096.0 * e / max(1.0 - e, 1e-7);
+}
+
+/* The owner's class byte of a key image colour texel (OP_KEY_CLASS_NONE: no
+ * attributes). */
+float op_key_attr_class(vec4 c)
+{
+    return floor(c.a * 255.0 + 0.5);
+}
+
+/* A terrain fragment's own override inputs: x its class byte
+ * (OP_KEY_CLASS_NONE = none), y D_F, the distance from the eye to its plane.
+ * The walk carries both in the rank channel of a terrain vertex
+ * (openpete_scene_tri.kattr), a value in [0.25, 0.5) that every rank
+ * reader takes as unranked: 0.25 + (class * 32768 + q) * 2^-25, D_F =
+ * (q / 64)^2. Any other rank value carries none. */
+vec2 op_key_fattr_walk(float rank)
+{
+    if (rank < 0.2499 || rank >= 0.5) return vec2(OP_KEY_CLASS_NONE, 0.0);
+    float code = floor((rank - 0.25) * 33554432.0 + 0.5);
+    float cls = floor(code / 32768.0);
+    float q = code - cls * 32768.0;
+    return vec2(cls, (q / 64.0) * (q / 64.0));
+}
+
+/* The class byte a walk key-pass vertex's rank channel carries (the same
+ * encoding as op_key_fattr_walk), or OP_KEY_CLASS_NONE. */
+float op_key_class_walk(float rank)
+{
+    return op_key_fattr_walk(rank).x;
+}
+
+/* Whether the terrain override holds: K's attribute texel tattr against the
+ * fragment's view-Z own and its inputs fattr (op_key_fattr_walk). */
+bool op_key_override_holds(vec4 tattr, float own, vec2 fattr)
+{
+    float ck = op_key_attr_class(tattr);
+    float cf = fattr.x;
+    if (ck >= OP_KEY_CLASS_NONE - 0.5 || cf >= OP_KEY_CLASS_NONE - 0.5) return true;
+    bool hpK = ck >= 127.5, hpF = cf >= 127.5;
+    if (hpK && !hpF) return true;
+    float sK = ck - (hpK ? 128.0 : 0.0);
+    float sF = cf - (hpF ? 128.0 : 0.0);
+    float zF = max(own, 1.0);
+    float perp = abs(op_key_attr_z(tattr) - zF) * fattr.y / zF;
+    return perp < (sK < sF - 0.5 ? OP_KEY_BIAS_REACH : OP_KEY_TIE_REACH);
+}
+
 /* The key contest. koff is the face's key channel: positive = its absolute
  * OT key + 0.5 (OT-band terrain and moby faces); negative = near-band
  * terrain, contest-only, where the fragment's own view-Z is the limit.
@@ -569,9 +673,15 @@ bool op_rank_is_prop(float rank)
  * Prop embed: a curated embedded prop (pedestal discs, statue bases; a
  * class list in the moby feeder) within 1024 world behind this surface
  * wins the pixel. This carries dofs-0 pedestals at mid range, where the
- * original floated them on the ground's own push. */
-bool op_key_loses(float tkey, float akey, float mkey, float own,
-                  float koff, bool actor, bool prop, bool truescope,
+ * original floated them on the ground's own push.
+ *
+ * Terrain against terrain is bounded (op_key_override_holds): tattr is the
+ * terrain key image's colour texel at the pixel (the key owner's view-Z
+ * and class), fattr the fragment's own class byte and plane distance; a
+ * caller with neither passes vec4(1.0) or vec2(OP_KEY_CLASS_NONE, 0.0) and
+ * the override holds unbounded. */
+bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
+                  float koff, vec2 fattr, bool actor, bool prop, bool truescope,
                   bool slot_contest)
 {
     if (koff > 0.0) {
@@ -591,7 +701,8 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
          * fragment keeps a tie (it must never lose to its own key). */
         if (!actor && (slot_contest
                 ? op_key_bucket(tkey) < floor((koff - 0.5) / OP_KEY_SLOT)
-                : tkey < band))
+                : tkey < band) &&
+            op_key_override_holds(tattr, own, fattr))
             return true;
         if ((actor || !truescope) && akey < band &&
             (!truescope || akey < own - 64.0)) return true;

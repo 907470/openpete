@@ -41,6 +41,12 @@ layout(location = 5) flat out float vKv;      /* the flat key view-Z */
 /* The face's colour channel, flat: an actor face's moby identity in r, g, b
  * (op_akey_id), written beside its key into the key image's colour. */
 layout(location = 6) flat out vec4 vIdent;
+/* The owner's true 1/view-Z, screen-linear (exact for a plane under the
+ * flat key W), and its terrain class byte (op_key_class_walk of the rank
+ * channel; OP_KEY_CLASS_NONE off the terrain class): a terrain key's
+ * fragment writes both beside the key (op_key_attr_store). */
+layout(location = 7) noperspective out float vIz;
+layout(location = 8) flat out float vCls;
 
 /* PSX-affine UV (--texture-mapping affine, spec-constant 1) - must track the
  * SCENE stages' selection: the cutout fragment's texel lookups have to land on
@@ -64,4 +70,6 @@ void main()
     vDrain = inRank.y;
     vKv = kv;
     vIdent = inColor;
+    vIz = 1.0 / max(inW, 1.0);
+    vCls = op_key_class_walk(inRank.x);
 }
