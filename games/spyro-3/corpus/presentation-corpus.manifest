@@ -297,3 +297,20 @@ spooky-swamp-mole-glow-edge|2800|2||2800|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_F
 # -((pos - cam) >> 2) and dropped it for one tick. The movie is the first 2930
 # VBLs of a Cross-every-20-VBLs movie. Blessed pre-fix.
 dino-mines-dino-reveal|2920|2||2909,2915|OPENPETE_FREECAM_AT_VBL=2600 --freecam-path @games/spyro-3/corpus/paths/dino-mines-dino-reveal.path
+# seashell-shore-rhynoc-barrel-key: Seashell Shore under a fixed freecam pose
+# (engaged at VBL 2600), the barrel-lifting Rhynocs (class 0x101) and their
+# barrels (class 0x166, a moby of its own). The barrel's m_DepthOffset keys it
+# about 500 world in front of its true depth, so a barrel 64-400 world behind a
+# Rhynoc's hand and head painted over them. The movie is the first 2929 VBLs of
+# a Cross-every-20-VBLs movie. Blessed pre-fix.
+seashell-shore-rhynoc-barrel-key|2929|2||2929|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FREECAM_POSE=111992,56040,23420,569,-1,-14
+# haunted-tomb-coffin-pillar: Haunted Tomb coffins (class 0x1db) beside the
+# pillars, fixed freecam pose engaged at VBL 2600. Each coffin stands 1,100 or
+# more world in front of the pillar base it covers. The movie is the first
+# 2717 VBLs of a Cross-every-20-VBLs movie.
+haunted-tomb-coffin-pillar|2717|2||2717|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FREECAM_POSE=46484,30528,17464,60,6,0
+# bamboo-terrace-stilts-hedge: Bamboo Terrace sub-area 1, fixed freecam pose
+# engaged at VBL 2600. The bamboo stilts under the umbrella Rhynocs' huts are
+# terrain and paint through the hedge-covered crest in front of them. The movie
+# is the first 2829 VBLs of a Cross-every-20-VBLs movie. Blessed pre-fix.
+bamboo-terrace-stilts-hedge|2829|2||2829|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FREECAM_POSE=135376,96500,18404,807,0,-1
