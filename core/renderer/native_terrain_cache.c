@@ -2406,7 +2406,7 @@ static const char *tc_zone_name(int which)
  * @param keys The images; each NULL member is skipped. */
 static void tc_bind_keys(const openpete_tercache_keys *keys)
 {
-    if (keys->hp)    rhi_bind_depth_tex_pair(s_tc.dev, keys->hp, keys->hp, 1);
+    if (keys->hp)    rhi_bind_depth_sampler(s_tc.dev, keys->hp, 1);
     if (keys->prop)  rhi_bind_depth_sampler(s_tc.dev, keys->prop, 2);
     if (keys->actor) rhi_bind_depth_tex_pair(s_tc.dev, keys->actor, keys->actor, 7);
 }

@@ -350,7 +350,6 @@ typedef struct {
     int shell;      /* front-shell record member - see openpete_scene_tri */
     int key_order;  /* draws by key order against terrain - see openpete_scene_tri */
     int ot_slot1;   /* 1 + ordering-table slot, 0 unknown - see openpete_scene_tri */
-    uint32_t kattr; /* terrain override inputs - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -8139,12 +8138,6 @@ static inline float scene_rank_moby(const scene_tri_t *st)
     return actor ? (float)st->mid : (float)st->mordinal;
 }
 
-/** @brief Return the rank channel a scene face's vertices carry: its rank, or on an unranked face with terrain override inputs, their encoding (OPENPETE_SCENE_KATTR). */
-static inline float scene_rank_channel(const scene_tri_t *st)
-{
-    return (st->rank == 0.0f && st->kattr) ? OPENPETE_SCENE_KATTR(st->kattr) : st->rank;
-}
-
 /** @brief Pack scene vertex k of st into o: clip-space position through scene_to_clip, depth, the given UV, colour, key offset, moby paint pair and drain fields.
  *
  * The one vertex layout every scene pass of draw_native_scene and the depth
@@ -8161,7 +8154,7 @@ static inline void pack_scene_vert(rhi_vertex *o, const scene_tri_t *st, int k, 
     o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
     o->u = u; o->v = v;
     o->rgba = st->v[k].rgba; o->koff = st->koff;
-    o->sx = scene_rank_channel(st); o->sy = scene_rank_moby(st);
+    o->sx = st->rank; o->sy = scene_rank_moby(st);
     rv_drain(o, st, k);
 }
 
@@ -9089,10 +9082,7 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
         o->v = tex ? T->v[k].v : 0.0f;
         o->rgba = rgba;
         o->koff = 0.5f;
-        /* The terrain class carries the face's override inputs; the key
-         * stages write its class beside the key (psx_key_cutout.frag). */
-        o->sx = (prop_class == 0 && T->kattr) ? OPENPETE_SCENE_KATTR(T->kattr) : 0.0f;
-        o->sy = 0.0f;
+        o->sx = 0.0f; o->sy = 0.0f;
         rv_drain(o, T, k);
     }
 }
@@ -10472,7 +10462,7 @@ static void bind_scene_pipe(rhi_pipeline* p)
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
     if (nr_is_key_pipe(st)) {
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.actor_key_depth, s_nr.actor_key_depth, 1);
-        rhi_bind_terrain_key_set(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
+        rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
         if (s_nr.moby_rank_rt)
             rhi_bind_texture_set(s_nr.dev, s_nr.moby_rank_rt, 4);
@@ -10546,7 +10536,7 @@ static void bind_player_shadow_decal(void)
  *
  * A material layout puts them above the UBO pair rather than replacing sets
  * 1 and 2, so a material's own uniform block keeps set 3 binding 1: the
- * terrain key set (key depth, drain texture, key owner attributes) at set 2, the moby key
+ * terrain key depth paired with the drain texture at set 2, the moby key
  * depth at set 4, the actor key depth paired with its owner colour at set 5 and, when it exists, the moby
  * rank target at set 6. The engine half of openpete_psx_material.glsl
  * runs the key contest from these before the mod's op_material() sees a
@@ -10555,7 +10545,7 @@ static void bind_player_shadow_decal(void)
 static void bind_material_keys(void)
 {
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
-    rhi_bind_terrain_key_set(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
+    rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
     rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 4);
     rhi_bind_depth_tex_pair(s_nr.dev, s_nr.actor_key_depth, s_nr.actor_key_depth, 5);
     if (s_nr.moby_rank_rt)

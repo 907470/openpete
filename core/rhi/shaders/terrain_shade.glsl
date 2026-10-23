@@ -23,9 +23,6 @@
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 layout(set = 1, binding = 0) uniform sampler2D u_hpkey;   /* terrain key image */
-/* The terrain key owner's true view-Z and class (op_key_attr_store), the
- * key image's colour attachment. */
-layout(set = 1, binding = 1) uniform sampler2D u_hpattr;
 layout(set = 2, binding = 0) uniform sampler2D u_mobykey; /* prop true-depth image */
 layout(set = 4, binding = 0) uniform sampler2D u_hdatlas; /* HD-fold atlas (NEAREST) */
 
@@ -44,7 +41,6 @@ layout(location = 10)     in vec3  vKd;    /* fold position D x vKq */
 layout(location = 11) flat in vec4 vKn0;   /* fold corners (psx_key_contest.glsl) */
 layout(location = 12) flat in vec4 vKn1;
 layout(location = 13) flat in vec4 vKn2;
-layout(location = 15) flat in float vKcls; /* the face's terrain class byte */
 
 /* Prefix mirror of the vertex stage's TerrainGlobals block. Only the fields
  * this stage reads are named, but every field before them is declared so
@@ -85,7 +81,7 @@ layout(push_constant) uniform TerrainPC {
     int  snap;
     int  cover;          /* 1: discard what a portal preview covers        */
     int  pad0, pad1, pad2;
-    vec4 fc;             /* gl_FragCoord -> PSX screen: x = fc.x * fx + fc.y, y = fc.z * fy + fc.w (the portal discards and ter_key_plane_init) */
+    vec4 fc;             /* gl_FragCoord -> PSX screen: x = fc.x * fx + fc.y, y = fc.z * fy + fc.w */
 } ter_pc;
 
 /* Bits 0-7: 1 + the plane index on a face the vertex stage accepted as a
@@ -193,27 +189,6 @@ bool ter_attr(out vec4 c)
     return true;
 }
 
-/* The distance from the eye to this fragment's triangle plane (the terrain
- * override's D_F, psx_key_contest.glsl op_key_override_holds), set by
- * ter_key_plane_init at the top of main(), before any discard. */
-float ter_key_plane;
-
-/* Set ter_key_plane from the screen derivatives of the fragment's
- * camera-space position: the PSX screen point (ter_pc.fc) placed at its
- * view-Z, x = (sx - ofx) z / H, y = (sy - ofy) z / H. The cross product of
- * the two derivatives is the plane's normal n, and D_F = |n . P| / |n|.
- * A screen derivative needs every lane of the 2x2 quad live. */
-void ter_key_plane_init()
-{
-    const float z = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
-    const vec2 s = vec2(ter_pc.fc.x * gl_FragCoord.x + ter_pc.fc.y,
-                        ter_pc.fc.z * gl_FragCoord.y + ter_pc.fc.w);
-    const vec3 P = vec3((s - vec2(g.dof_xy)) * (z / float(g.dH.x)), z);
-    const vec3 n = cross(dFdx(P), dFdy(P));
-    const float nl = length(n);
-    ter_key_plane = nl > 0.0 ? abs(dot(n, P)) / nl : 0.0;
-}
-
 /* The key contest (psx_key_contest.glsl), terrain subset: never ranked,
  * never an actor or a prop, true-scope on, so the actor-key arm receives the
  * never-wins sentinel. A face with a drain sub-cell table contests at the
@@ -227,11 +202,10 @@ bool ter_key_loses()
     if (op_drain_discards(koff)) return true;
     return op_key_loses(
         op_key_from_stored(texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r),
-        texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
         OP_KEY_NONE,
         op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
         op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
-        koff, vec2(vKcls, ter_key_plane),
+        koff,
         false, false, true, SLOT_CONTEST);
 }
 

@@ -257,10 +257,6 @@ const game_layout_t spyro1_game_layout = {
                                    * (r_environment.s:792-793) */
         .lp_bias_slots   = 8,
         .hp_bias_slots   = 4,
-        .key_bound_exempt_level1 = 14 + 1,   /* Toasty: its lowered walls, the
-                                              * fold bleeds and the 127-over-65
-                                              * wall contest are drawn by the
-                                              * unbounded override */
         .nearband_ot_keys = 1,    /* the near/HQ drain (func_800276A0) inserts
                                    * every sub-quad into g_WorldOT at
                                    * (ΣSZ >> 7) + ((word3 & 0x38) >> 1):

@@ -1144,18 +1144,7 @@ typedef struct {
                   * into (moby faces: the world bucket the draw splices the
                   * face into), 0 = unknown. The compose compares it with
                   * the fade's slot (openpete_native_scene_set_fade_slot).  */
-    uint32_t kattr;/* terrain override inputs of a keyed opaque terrain
-                  * face (psx_key_contest.glsl op_key_override_holds), 0 =
-                  * none: bits 15-22 the face's class byte (128 for HP, plus
-                  * the authored slot term / 4), bits 0-14 q with the
-                  * distance from the eye to the triangle's plane = (q/64)^2
-                  * world. An unranked face (rank 0) carries it in the rank
-                  * channel as 0.25 + kattr * 2^-25 (OPENPETE_SCENE_KATTR). */
 } openpete_scene_tri;
-
-/* The rank-channel value of a terrain face's kattr: in [0.25, 0.5), which
- * every rank reader takes as unranked and not an actor. */
-#define OPENPETE_SCENE_KATTR(k) (0.25f + (float)(k) * (1.0f / 33554432.0f))
 
 /* Rank sentinels for faces that are not ranked but must still be told
  * apart by the key contest (openpete_scene_tri::rank): -1 = an opaque
