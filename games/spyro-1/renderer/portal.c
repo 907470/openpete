@@ -529,6 +529,12 @@ static int          s_dome_prev_valid = 0, s_dome_curr_valid = 0;
  * (derive_dome_matrix) takes besides the camera. */
 static double       s_spin_prev[2], s_spin_curr[2];
 static int          s_spin_prev_valid = 0, s_spin_curr_valid = 0;
+/* g_Camera's rotation angles (+0x4C roll, +0x4E pitch, +0x50 heading) after
+ * each canonical RenderPortals, prev and curr. The sub-tick camera bracket
+ * lerps the camera matrices and position but stages the euler angles of tick
+ * N unchanged, so a derived dome on a sub-tick present takes its camera
+ * angles from this pair. Valid together with the spin pair. */
+static double       s_camang_prev[3], s_camang_curr[3];
 
 /** @brief Projects a world point in float as func_80017B48 projects the portal outline.
  *
@@ -2403,6 +2409,7 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
 }
 
 static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M[3][3]);
+static void derive_dome_matrix_cam(const double cam[3], double yaw, double pitch, int M[3][3]);
 /** @brief Native derivation of the shared portal-dome rotation matrix of RenderPortals.
  *
  * The func_80050BD0 prologue computes it once per tick on its STACK, unreadable
@@ -2429,16 +2436,30 @@ static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
  * @param pitch portal spin pitch, game angle units (4096/circle)
  * @param M     receives the matrix, Q12 */
 static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M[3][3]) {
+    const double cam[3] = {
+        (double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) & 0xFFFFu),   /* +0x4C roll    */
+        (double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) >> 16),       /* +0x4E pitch   */
+        (double)(int16_t)(cpu->read_word(G_CAMERA + 0x50u) & 0xFFFFu),   /* +0x50 heading */
+    };
+    derive_dome_matrix_cam(cam, yaw, pitch, M);
+}
+
+/** @brief derive_dome_matrix with g_Camera's rotation angles given instead of read.
+ *
+ * @param cam   g_Camera roll (+0x4C), pitch (+0x4E) and heading (+0x50), game
+ *              angle units (4096/circle)
+ * @param yaw   portal spin yaw, game angle units
+ * @param pitch portal spin pitch, game angle units
+ * @param M     receives the matrix, Q12 */
+static void derive_dome_matrix_cam(const double cam[3], double yaw, double pitch, int M[3][3]) {
     double TAU = 6.283185307179586;
     /* Game angle units: 4096/circle (the game's Cos/Sin table domain). The
      * pitch matrix carries the camera convention's Y-ASPECT bake: its middle
      * ROW is scaled 2560/4096 = 5/8 (the same non-orthonormal structure as
      * g_Camera's matrix). */
-    double a1 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) >> 16)
-               - pitch) * TAU / 4096.0;                                             /* +0x4E − pitch */
-    double a2 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x50u) & 0xFFFFu)
-               + yaw) * TAU / 4096.0;                                               /* +0x50 + yaw   */
-    double a0 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) & 0xFFFFu)) * TAU / 4096.0; /* +0x4C roll */
+    double a1 = (cam[1] - pitch) * TAU / 4096.0;   /* +0x4E − pitch */
+    double a2 = (cam[2] + yaw) * TAU / 4096.0;     /* +0x50 + yaw   */
+    double a0 = cam[0] * TAU / 4096.0;             /* +0x4C roll    */
     double c1 = cos(a1), s1 = sin(a1), c2 = cos(a2), s2 = sin(a2), c0 = cos(a0), s0 = sin(a0);
     double A = 2560.0 / 4096.0;   /* the Y-row aspect bake */
     double X[3][3] = {{1,0,0},{0,A*c1,-A*s1},{0,s1,c1}};
@@ -2915,8 +2936,9 @@ int openpete_portal_capture_follows(CPUState* cpu) {
  * draw, whose leaves feed and capture the on-4:3 portals. With the native
  * scene on it reveals the culled portals, stamps the capture with the
  * canonical-render epoch and marks RP_PORTAL drawn. After the draw it rolls
- * the portal spin angles to prev and records the live D_PORTAL_YAW and
- * D_PORTAL_PITCH as curr, then releases a terrain feed that waited for this
+ * the portal spin angles and g_Camera's rotation angles to prev and records
+ * the live D_PORTAL_YAW, D_PORTAL_PITCH and g_Camera +0x4C..+0x51 as curr,
+ * then releases a terrain feed that waited for this
  * capture.
  * @param cpu guest CPU state
  * @param a   the hooked address (unused)
@@ -2957,6 +2979,10 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     s_spin_prev_valid = s_spin_curr_valid;
     s_spin_curr[0] = (double)(int32_t)cpu->read_word(D_PORTAL_YAW);
     s_spin_curr[1] = (double)(int32_t)cpu->read_word(D_PORTAL_PITCH);
+    memcpy(s_camang_prev, s_camang_curr, sizeof s_camang_prev);
+    s_camang_curr[0] = (double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) & 0xFFFFu);
+    s_camang_curr[1] = (double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) >> 16);
+    s_camang_curr[2] = (double)(int16_t)(cpu->read_word(G_CAMERA + 0x50u) & 0xFFFFu);
     s_spin_curr_valid = 1;
     terrain_native_flush_deferred();          /* a world draw that ran first this tick */
     s_rp_in = 0;
@@ -2981,19 +3007,30 @@ static void portal_gte_load_rot(CPUState* cpu, const int M[3][3]) {
 
 /** @brief The derived dome matrix of a sub-tick present.
  *
- * derive_dome_matrix under the staged camera, with the spin angles lerped
- * between the last two canonical ticks (the yaw along the shorter arc of its
- * 4096-unit circle); the current tick's angles when `interp_on` is 0 or no pair
- * exists. At alpha 1 it is the matrix the canonical feed derived. */
+ * derive_dome_matrix with g_Camera's rotation angles and the portal spin
+ * angles each lerped between the last two canonical ticks (along the shorter
+ * arc of the 4096-unit circle). The camera bracket stages tick N's euler
+ * angles beside the lerped camera matrices, so reading them from the staged
+ * camera would hold the dome at tick N's rotation while the scene moves. The
+ * current tick's angles, read live, when `interp_on` is 0 or no pair exists.
+ * At alpha 1 it is the matrix the canonical feed derived. */
 static void portal_replay_derived_matrix(CPUState* cpu, double alpha, int interp_on, int M[3][3]) {
     double yaw = s_spin_curr[0], pitch = s_spin_curr[1];
-    if (interp_on && s_spin_prev_valid) {
-        double dy = s_spin_curr[0] - s_spin_prev[0];
-        if (dy > 2048.0) dy -= 4096.0; else if (dy < -2048.0) dy += 4096.0;
-        yaw   = s_spin_curr[0] - dy * (1.0 - alpha);
-        pitch = s_spin_prev[1] + (s_spin_curr[1] - s_spin_prev[1]) * alpha;
+    if (!(interp_on && s_spin_prev_valid)) {
+        derive_dome_matrix_at(cpu, yaw, pitch, M);
+        return;
     }
-    derive_dome_matrix_at(cpu, yaw, pitch, M);
+    double dy = s_spin_curr[0] - s_spin_prev[0];
+    if (dy > 2048.0) dy -= 4096.0; else if (dy < -2048.0) dy += 4096.0;
+    yaw   = s_spin_curr[0] - dy * (1.0 - alpha);
+    pitch = s_spin_prev[1] + (s_spin_curr[1] - s_spin_prev[1]) * alpha;
+    double cam[3];
+    for (int k = 0; k < 3; k++) {
+        double d = s_camang_curr[k] - s_camang_prev[k];
+        if (d > 2048.0) d -= 4096.0; else if (d < -2048.0) d += 4096.0;
+        cam[k] = s_camang_curr[k] - d * (1.0 - alpha);
+    }
+    derive_dome_matrix_cam(cam, yaw, pitch, M);
 }
 
 /** @brief A capture's base clip rect under the present's view (s_view), by the capture's rect rule.
