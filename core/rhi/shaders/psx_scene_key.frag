@@ -30,6 +30,9 @@ layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key imag
 /* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
  * terrain key image's set at binding 1. */
 layout(set = 2, binding = 1) uniform usampler2D u_drain;
+/* The terrain key owner's true view-Z and class (op_key_attr_store), the
+ * terrain key image's colour, at the set's binding 2. */
+layout(set = 2, binding = 2) uniform sampler2D u_hpattr;
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
 /* Moby og-RANK image (RGBA8): r+g*256 = the winning face's OT walk rank at
  * this pixel (max rank wins the raster), b = that face's present-local moby
@@ -144,12 +147,13 @@ void main()
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
+                texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
                 op_akey_contest(op_akey_select(
                     texelFetch(u_actorkey,  ivec2(gl_FragCoord.xy), 0).r,
                     texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
                     op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
-                own, koff,
+                own, koff, op_key_fattr_walk(vRank.x),
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
                 op_rank_is_prop(vRank.x),
                 MOBY_TRUESCOPE, SLOT_CONTEST))

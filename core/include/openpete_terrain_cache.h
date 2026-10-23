@@ -145,6 +145,10 @@ enum {
 #define OPTC_GF_NOLOD      32u
 #define OPTC_GF_CULLLP     64u    /* LP per-half NCLIP cull (s_cull bit 1)    */
 #define OPTC_GF_KEYON      128u   /* og OT-key emit/contest active this walk  */
+#define OPTC_GF_KEYBOUND   32768u /* the terrain override is bounded this walk
+                                   * (game_layout.terrain
+                                   * key_bound_exempt_level1 names another
+                                   * level): faces carry their class byte   */
 #define OPTC_GF_HQPIN      256u   /* extended LOD pins the HQ subdivide on every
                                    * eligible HP quad at every distance: the
                                    * walk's face_is_near extended branch; with

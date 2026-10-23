@@ -11747,13 +11747,23 @@ static uint32_t tc_ot_terms(void) {
          | (keyed << 16);
 }
 
+/* Whether this walk's level bounds the terrain override (tn_key_bound_level). */
+static int s_key_bound = 1;
+
+/** @brief Returns whether a level bounds the terrain key override: every level but game_layout.terrain.key_bound_exempt_level1 - 1.
+ * @param level The level id.
+ * @return 1 when the bound applies, else 0. */
+static int tn_key_bound_level(int level) {
+    return game_layout.terrain.key_bound_exempt_level1 != level + 1;
+}
+
 /** @brief Builds the retained path's global flag word (OPTC_GF_*) for this present.
  *
  * Each bit is one walk rule the vertex stage mirrors: the near/HQ subdivide,
  * CLUT fog, the HP and LP back-face culls, the LOD handoff, gap fill,
  * --no-lod, the always-HQ pin, the layout's nearest-corner ladder, near-band
- * OT keys, the 4x4 cells, the tier-4 and tier-2 triangle splits, and OT key
- * resolution.
+ * OT keys, the 4x4 cells, the tier-4 and tier-2 triangle splits, OT key
+ * resolution and the terrain override bound (tn_key_bound_level).
  * @param nearhq 1 when the near/HQ subdivide is on and an HQ table exists.
  * @param lod_handoff 1 when the LP LOD handoff is on.
  * @return The flag word. */
@@ -11774,7 +11784,8 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | (game_layout.terrain.hq_tri4_cells         ? OPTC_GF_TRI4    : 0u)
          | (game_layout.terrain.hq_tri2_tiles         ? OPTC_GF_TRI2    : 0u)
          | (game_layout.terrain.lp_near_sz            ? OPTC_GF_LPNEAROUT : 0u)
-         | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
+         | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u)
+         | (s_key_bound       ? OPTC_GF_KEYBOUND : 0u);
 }
 
 /** @brief Computes the exact screen interval a sector's bounding sphere projects to under this walk's camera.
@@ -12210,6 +12221,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * the fold below would pin the old level's mean over its whole LP tier
      * indefinitely. */
     { int lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
+      s_key_bound = tn_key_bound_level(lvl);
       static int s_lpg_lvl = -1;
       if (lvl != s_lpg_lvl) {
           tgpu_level_edge(s_lpg_lvl, lvl);
@@ -13837,6 +13849,41 @@ static int tn_rim_feed(CPUState* cpu, const ttri* t) {
     return 0;
 }
 
+/** @brief Returns a walked triangle's terrain override inputs (openpete_scene_tri.kattr), 0 for a face that does not key (koff <= 0) or is blended.
+ *
+ * The class byte is 128 for an HP face that keys as HP (a stand-in carrying
+ * lpkey keys with the LP base and counts as LP) plus the authored slot term
+ * / 4. The plane distance D is |n . P| for the triangle's unit normal n and
+ * corner P in camera space, each corner placed at ((sx - ofx) z / H,
+ * (sy - ofy) z / H, z) from its screen position and true view-Z z, and
+ * stored as q = round(sqrt(D) * 64), at most 32767. A degenerate triangle
+ * stores D 0, which keeps the override only for coplanar pairs.
+ * @param t The triangle.
+ * @param st Its scene triangle, koff and blend already set.
+ * @return The packed inputs: class << 15 | q. */
+static uint32_t tn_key_attr(const ttri* t, const openpete_scene_tri* st) {
+    if (!(st->koff > 0.0f) || st->blend || !s_key_bound) return 0u;
+    double P[3][3];
+    for (int k = 0; k < 3; k++) {
+        const double z = (double)t->vz[k] * 16.0;
+        P[k][0] = ((double)t->sx[k] - s_ofx) * z / s_H;
+        P[k][1] = ((double)t->sy[k] - s_ofy) * z / s_H;
+        P[k][2] = z;
+    }
+    const double a[3] = { P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2] };
+    const double b[3] = { P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2] };
+    const double n[3] = { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                          a[0] * b[1] - a[1] * b[0] };
+    const double nl = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    const double d = nl > 0.0 ? fabs(n[0] * P[0][0] + n[1] * P[0][1] + n[2] * P[0][2]) / nl : 0.0;
+    double q = floor(sqrt(d) * 64.0 + 0.5);
+    if (q > 32767.0) q = 32767.0;
+    const uint32_t hp = (!t->tier && !t->lpkey) ? 128u : 0u;
+    uint32_t sl = ((uint32_t)t->otslots + 2u) / 4u;
+    if (sl > 127u) sl = 127u;
+    return ((hp + sl) << 15) | (uint32_t)q;
+}
+
 /** @brief Writes the terrain triangle dump (OPENPETE_TERRAIN_TRIDUMP) at the requested feed keys.
  *
  * OPENPETE_TERRAIN_TRIDUMP=<key>[+<key>...][,path] dumps every walked
@@ -14397,6 +14444,7 @@ static void terrain_feed_native(CPUState* cpu) {
             else
                 tri.koff = (float)-(mean + 0.5);    /* contest-only, never emitted */
         }
+        tri.kattr = tn_key_attr(t, &tri);
         openpete_native_scene_set_tag(tn_material_tag(cpu, t, tex, tex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);
         if (tn_rim_feed(cpu, t)) continue;

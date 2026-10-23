@@ -18,8 +18,9 @@
  * per-vertex depth for the prop image); this stage only cuts transparent
  * texels out of the raster. outColor is the face's flat colour channel,
  * which carries an actor face's moby identity into the actor key image's
- * colour attachment (psx_key_contest.glsl op_akey_id); the terrain and prop
- * images never read their colour. Texel decode mirrors psx_scene_key.frag;
+ * colour attachment (psx_key_contest.glsl op_akey_id); a terrain face
+ * (vCls a class byte) writes its true view-Z and class there instead
+ * (op_key_attr_store), and the prop image's colour is never read. Texel decode mirrors psx_scene_key.frag;
  * UVs interpolate against the position's own W (flat key => screen-affine,
  * the PSX rasteriser's own sampling; true-depth prop faces get perspective
  * UV, matching the scene draw). A triangle with a drain record writes the key
@@ -43,6 +44,8 @@ layout(location = 5) flat in float vKv;    /* flat key view-Z */
 layout(set = 1, binding = 0) uniform usampler2D u_drain;
 
 layout(location = 6) flat in vec4 vIdent; /* moby identity (op_akey_id) */
+layout(location = 7) noperspective in float vIz; /* owner's true 1/view-Z */
+layout(location = 8) flat in float vCls;          /* owner's terrain class byte */
 
 layout(location = 0) out vec4 outColor;
 
@@ -64,5 +67,6 @@ void main()
     if (d >= OP_DRAIN_SKIP) d = op_drain_fold_rec(u_drain, vDrain, uv, t0, t1, 0.0);
     if (d >= OP_DRAIN_SKIP) discard;           /* a sub-cell the drain skips */
     gl_FragDepth = d >= 0.0 ? op_key_store(vKv + d) : gl_FragCoord.z;
-    outColor = vIdent;
+    outColor = vCls < OP_KEY_CLASS_NONE - 0.5 ? op_key_attr_store(1.0 / max(vIz, 1e-9), vCls)
+                                              : vIdent;
 }
