@@ -1443,7 +1443,7 @@ void main()
      * w3 & 0x40 clear takes tier 4; the HQ pin sends every other one not
      * fully behind the camera to tier 2. */
     bool trinear = !quad && !lp && !fillPass && (gf & GF_NEARHQ) != 0
-                && (straddle ? front3d : front) && (ff & FF_HQELIG) != 0u;
+                && (straddle ? front3d : (front || front2)) && (ff & FF_HQELIG) != 0u;
     bool trifront = max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + 2.0lf * max(m2.z, 0.0lf) > 0.0lf;
     bool t4tri = trinear && (gf & GF_TRI4) != 0 && (ff & FF_CELLOK) != 0u
               && (pin ? ((ff & FF_W3_40) == 0u && trifront)
