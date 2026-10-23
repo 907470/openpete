@@ -19,3 +19,7 @@ cliff_town | pos=(108752, 84992, 255090) yaw=0 pitch=992
 # Terrain vs moby: 4 px depth-encoding ties; (490,244) terrain alpha vs moby additive
 # blend order differs walk vs cache, under --lod extended.
 crystal_flight | pos=(130240, 115736, 218978) yaw=0 pitch=992
+# Near/HQ gate mirror: sector 15 HP face 19, a double-sided triangle the
+# projected NCLIP rejects, takes the walk's near split and the cache's flat
+# GT3 (5762 px at original LOD).
+magic_crafters | pos=(94193, 80953, 26327) yaw=2994 pitch=77 | original

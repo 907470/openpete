@@ -27,3 +27,6 @@ attract-demo | 3973 | inter | original
 glimmer-pogo-dialogue | 1476 | canon | original
 autumn-plains-skelos-badlands-portal-entry | 1423 | canon | original
 autumn-plains-skelos-badlands-portal-entry | 1423 | inter | original
+# Sector 10 HP face 48 over coplanar LP faces 32/30: the walk shows HP, the
+# cache shows the LP colour on 9 px at original LOD (open).
+crushs_dungeon | pos=(3080, 30039, 31217) yaw=29 pitch=548 | original
