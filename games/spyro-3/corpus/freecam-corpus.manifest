@@ -121,3 +121,7 @@ sunny_villa:2 | pos=(169418, 57750, 40535) yaw=1402 pitch=574
 # haunted_tomb: the archway's side face shows through the wall in front of it
 # (terrain key override across about 1000 world); og shows it too. Blessed pre-fix.
 haunted_tomb | pos=(93215, 91480, 22144) yaw=1493 pitch=49
+# fireworks_factory powerup gate: the gate's distant star particles step at the
+# tick cadence; the guest's integer corners carry a placement error of up to a
+# pixel that changes every tick, larger than the stars' motion.
+fireworks_factory:1 | pos=(27271, 51213, 20983) yaw=-1026 pitch=7
