@@ -839,6 +839,30 @@ double ot_lp_slots(uint ob) {
     return double(ot_lp_base() + ((uint(g.fog.w) >> 8) & 0xFu) * ob);
 }
 
+/* The face-attribution identity of debug tint mode 7, 22 bits: the decode
+ * slot (bits 0-8), LP tier (9), variant (10-11: 0 flat, 1 HQ 2x2 quadrant,
+ * 2 4x4 cell), drain sub-cell keys (12), near-variant chunk (13), and an
+ * 8-bit FNV-1a fold of the twelve parent-corner coordinates (14-21). The
+ * fold is the one OPENPETE_TERRAIN_GPU_FACEDUMP writes per baked face
+ * (terrain.c tgpu_corner_hash8), so a decoder names the face by slot, tier
+ * and fold. */
+uint attr_word(uint slot, bool lp, bool hqv, bool is4, bool drain)
+{
+    const int cc[12] = int[12](inC0.x, inC0.y, inC0.z, inC0.w, inC1.x, inC1.y,
+                               inC1.z, inC1.w, inC2.x, inC2.y, inC2.z, inC2.w);
+    uint h = 2166136261u;
+    for (int i = 0; i < 12; i++) h = (h ^ (uint(cc[i]) & 0xFFFFu)) * 16777619u;
+    h = (h ^ (h >> 8) ^ (h >> 16) ^ (h >> 24)) & 0xFFu;
+    uint var = is4 ? 2u : (hqv ? 1u : 0u);
+#ifdef TERRAIN_NEAR
+    const uint nearv = 1u;
+#else
+    const uint nearv = 0u;
+#endif
+    return (slot & 0x1FFu) | (lp ? 1u << 9 : 0u) | (var << 10) |
+           (drain ? 1u << 12 : 0u) | (nearv << 13) | (h << 14);
+}
+
 void kill_vert() {
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);   /* degenerate: no raster */
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec2(0u);
@@ -1663,7 +1687,9 @@ void main()
      * and the CLUT row carries the offset here. */
     if (!lp && (ff & FF_BORROWED) != 0u)
         vMat = uvec2((mat0 & 0x00FFFFFFu) | 0x80000000u, vMat.y + (512u << 16));
-    if ((gf & (1 << 29)) != 0) {               /* debug tint: ladder verdict */
+    /* Debug tints 0-6 repurpose vMat.y; mode 7 keeps it stock, since its
+     * fragment runs the stock texel fetch and cut-out. */
+    if ((gf & (1 << 29)) != 0 && ((gf >> 26) & 7) != 7) {   /* ladder verdict */
         vMat.y |= (dbg_half << 30) | (dbg_delta << 25);
         if (((uint(gf) >> 26) & 7u) == 6u)     /* mode 6: exact t0k readout */
             vMat.y = dbg_t0k <= -99999
@@ -1969,6 +1995,11 @@ void main()
     }
     else                           { vKc0 = uvec4(0u); vKc1 = uvec4(0u); }
     vec3 kd = vec3(sscr, 1.0) * float(mo.z);
+
+    /* Debug tint mode 7 (face attribution): bits 8-29 of vRim carry this
+     * face's identity word (attr_word) for terrain_shade.glsl's ter_attr. */
+    if ((gf & (1 << 29)) != 0 && ((gf >> 26) & 7) == 7)
+        vRim = (vRim & 0xFFu) | (attr_word(slot, lp, hqv, is4, koff > 0.25 && ktab.n > 0) << 8);
 
     /* ---- KEY pass: rasterise the flat og key as depth (terrain_key.vert
      * mirror) ----

@@ -163,6 +163,7 @@ void main()
     c = op_material(op_pack_shade());
     if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
     op_out_color = c;
+    if (ter_attr(c)) op_out_color = c;   /* debug tint mode 7 */
 }
 
 #else

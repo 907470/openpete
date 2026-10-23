@@ -84,9 +84,10 @@ layout(push_constant) uniform TerrainPC {
     vec4 fc;             /* gl_FragCoord -> PSX screen: x = fc.x * fx + fc.y, y = fc.z * fy + fc.w */
 } ter_pc;
 
-/* 1 + the plane index on a face the vertex stage accepted as a portal's
- * inner rim under a plane that discards its rim per fragment
- * (rim_classified); 0 on every other face. */
+/* Bits 0-7: 1 + the plane index on a face the vertex stage accepted as a
+ * portal's inner rim under a plane that discards its rim per fragment
+ * (rim_classified); 0 on every other face. Bits 8-29: the face identity
+ * word under debug tint mode 7 (terrain.vert attr_word), else 0. */
 layout(location = 14) flat in uint vRim;
 
 #define OP_COVER_SRC g
@@ -98,12 +99,13 @@ layout(location = 14) flat in uint vRim;
  * opening at any depth (OP_PORTAL_RIM_MARGIN), where its preview paints. */
 bool ter_portal_discards()
 {
-    if (!((ter_pc.cover != 0 && g.cov_cnt.y != 0) || vRim != 0u)) return false;
+    const uint rim = vRim & 0xFFu;   /* bits 8-29: tint mode 7's identity */
+    if (!((ter_pc.cover != 0 && g.cov_cnt.y != 0) || rim != 0u)) return false;
     const vec2 p = vec2(ter_pc.fc.x * gl_FragCoord.x + ter_pc.fc.y,
                         ter_pc.fc.z * gl_FragCoord.y + ter_pc.fc.w);
-    const float m = vRim != 0u ? OP_PORTAL_RIM_MARGIN : float(g.cov_margin.x);
+    const float m = rim != 0u ? OP_PORTAL_RIM_MARGIN : float(g.cov_margin.x);
     return op_portal_covered(p, op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED), m,
-                             int(vRim) - 1);
+                             int(rim) - 1);
 }
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
  * 128-world ordering-table slot indices for terrain against terrain, an
@@ -130,13 +132,21 @@ vec4 ter_decode555(uint p)
                 1.0 - 0.5 * float((p >> 15) & 1u));
 }
 
-/* Debug sector tints (globals gflags bit 29). Returns true when a mode
- * answered: the caller writes `c` and stops. */
+/* Debug tints (globals gflags bit 29, mode in bits 26-28): 0 and 1 the
+ * CLUT-ladder verdict, 2, 4 and 5 the raw vertex colour (4 and 5 substitute
+ * the baked near or far colour in the vertex stage), 3 a UV visualiser, 6
+ * the exact ladder t0k readout. These modes replace the colour before the
+ * portal and key-contest discards, so every rasterised fragment that passes
+ * the depth test paints. Mode 7 (face attribution) is not answered here:
+ * the fragment runs the stock discards and ter_attr replaces the colour of
+ * a fragment that survives them. Returns true when a mode answered: the
+ * caller writes `c` and stops. */
 bool ter_debug_shade(out vec4 c)
 {
     c = vec4(0.0);
     if ((g.fog.y & (1 << 29)) == 0) return false;
     int mode = (g.fog.y >> 26) & 7;
+    if (mode == 7) return false;
     if (mode == 6) {                        /* exact ladder t0k readout */
         if ((vMat.y & (1u << 16)) == 0u) {  /* ladder never ran here */
             c = vec4(0.0, 0.0, 1.0, 1.0);
@@ -160,6 +170,22 @@ bool ter_debug_shade(out vec4 c)
         c = vec4(float(half_), float(dlt) / 15.0,
                  (vMat.x & (1u << 23)) != 0u ? 0.0 : 1.0, 1.0);
     }
+    return true;
+}
+
+/* Debug tint mode 7: the colour of a fragment that survived the stock
+ * discards, encoding the 24-bit word R | G << 8 | B << 16 = the face
+ * identity (terrain.vert attr_word, bits 0-21) | the draw pass << 22
+ * (pass_sel: 0 WORLD, 1 FILL; 3 for a material pass). Exact in an 8-bit
+ * target; a blended arena's draw mixes it with the destination. Returns
+ * false outside mode 7. */
+bool ter_attr(out vec4 c)
+{
+    c = vec4(0.0);
+    if ((g.fog.y & (1 << 29)) == 0 || ((g.fog.y >> 26) & 7) != 7) return false;
+    uint pass = ter_pc.mat_pass > 0 ? 3u : uint(ter_pc.pass_sel) & 3u;
+    uint w = ((vRim >> 8) & 0x3FFFFFu) | (pass << 22);
+    c = vec4(float(w & 255u), float((w >> 8) & 255u), float((w >> 16) & 255u), 255.0) / 255.0;
     return true;
 }
 

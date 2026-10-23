@@ -9592,6 +9592,81 @@ static uint32_t tgpu_envm_sec(const tscache_t* SC, int sec_index) {
     return (uint32_t)sec_index;
 }
 
+/** @brief Returns the 8-bit fold of a face's four x4 fixed-point corners that debug tint mode 7 draws.
+ *
+ * FNV-1a over the twelve coordinates as 16-bit words in i0..i3 order, the
+ * order of rhi_terrain_vertex c0x..c3z, folded to 8 bits; terrain.vert
+ * attr_word computes the same value from the vertex's corner attributes.
+ * @param c The four corners.
+ * @return The fold, 0..255. */
+static unsigned tgpu_corner_hash8(const tgpu_p4 c[4]) {
+    uint32_t h = 2166136261u;
+    for (int q = 0; q < 4; q++) {
+        const int16_t v[3] = { c[q].x, c[q].y, c[q].z };
+        for (int a = 0; a < 3; a++) h = (h ^ (uint16_t)v[a]) * 16777619u;
+    }
+    return (h ^ (h >> 8) ^ (h >> 16) ^ (h >> 24)) & 0xFFu;
+}
+
+/** @brief Appends one line per face of a face list to the OPENPETE_TERRAIN_GPU_FACEDUMP file.
+ *
+ * OPENPETE_TERRAIN_GPU_FACEDUMP=<path> (diagnostic, unregistered) records
+ * every face a sector bake visits: `bake frame slot gen sec tier borrowed
+ * face hash8`, tier 0 HP and 1 LP, face the index in its list (the walk's
+ * TRIDUMP face column for the same list), hash8 the corner fold
+ * (tgpu_corner_hash8). A decoder of a GPU_TINT=7 capture takes the newest
+ * bake of a slot at or before the capture's frame. The file is truncated at
+ * the first call. A face with an out-of-bank index is skipped as the bake
+ * skips it. Writes no guest RAM.
+ * @param slot The decode slot.
+ * @param sec The level sector index, or -1.
+ * @param lp 1 for an LP list.
+ * @param bor 1 for a borrowed list.
+ * @param V The list's vertex bank.
+ * @param nV The bank's vertex count.
+ * @param F The faces.
+ * @param nF The face count. */
+static void tgpu_facedump(int slot, int sec, int lp, int bor, const tsvert_t* V, int nV,
+                          const tsface_t* F, int nF) {
+    static FILE* fp;
+    static int on = -1;
+    static unsigned bake;
+    if (on < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_GPU_FACEDUMP");
+        fp = (e && *e) ? fopen(e, "w") : NULL;
+        on = fp != NULL;
+    }
+    if (!on || !V || !F) return;
+    bake++;
+    for (int f = 0; f < nF; f++) {
+        const tsface_t* X = &F[f];
+        if (X->i0 >= nV || X->i1 >= nV || X->i2 >= nV || X->i3 >= nV) continue;
+        const tgpu_p4 c[4] = { tgpu_p4_of(&V[X->i0]), tgpu_p4_of(&V[X->i1]),
+                               tgpu_p4_of(&V[X->i2]), tgpu_p4_of(&V[X->i3]) };
+        fprintf(fp, "%u %u %d %u %d %d %d %d %u\n", bake, openpete_frame, slot,
+                (unsigned)(s_tgpu[slot].gen & 7u), sec, lp, bor, f, tgpu_corner_hash8(c));
+    }
+    fflush(fp);
+}
+
+/** @brief Appends every face list of one baked sector to the OPENPETE_TERRAIN_GPU_FACEDUMP file.
+ *
+ * Lists the sector's own LP and HP faces, then its borrowed LP and HP
+ * faces, in the order tgpu_build_sector bakes them. Runs once the bake has
+ * filled its buffers and before the upload; the lists are the sector's own
+ * and do not change between bakes, so a failed upload leaves the dump
+ * naming the faces the slot's next bake uploads.
+ * @param slot The decode slot.
+ * @param sec The level sector index, or -1.
+ * @param SC The sector's cached face lists. */
+static void tgpu_facedump_sector(int slot, int sec, const tscache_t* SC) {
+    tgpu_facedump(slot, sec, 1, 0, SC->lpV, SC->nLpV, SC->lpF, SC->nLpF);
+    tgpu_facedump(slot, sec, 0, 0, SC->hpV, SC->nHpV, SC->hpF, SC->nHpF);
+    if (!SC->imp) return;
+    tgpu_facedump(slot, sec, 1, 1, SC->imp->lpV, SC->imp->nLpV, SC->imp->lpF, SC->imp->nLpF);
+    tgpu_facedump(slot, sec, 0, 1, SC->imp->V, SC->imp->nV, SC->imp->F, SC->imp->nF);
+}
+
 /** @brief Builds and uploads all of one sector's chunks.
  *
  * Bakes the LP tier (the sector's own faces, then its borrowed LP faces)
@@ -9701,6 +9776,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     }
 
     /* ---- upload ---- */
+    tgpu_facedump_sector(slot, sec_index, SC);
     ok = tgpu_upload_chunks(&s_tgpu[slot], buf) == 0;
 done:
     s_hq_bank = 0;
@@ -12324,8 +12400,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         tcg.cull_ref_s2  = cullRefS2;
         tcg.ot_terms     = tc_ot_terms();
         tcg.gflags = tc_global_flags(s_nearhq && hqTable, lod_handoff);
-        {   /* OPENPETE_TERRAIN_GPU_TINT=1: retained draws tint by sector id
-             * (temp bring-up attribution; unregistered). */
+        {   /* OPENPETE_TERRAIN_GPU_TINT=<mode>: retained draws replace their
+             * colour with a debug readout, mode = value & 7 (terrain_shade.glsl
+             * ter_debug_shade: ladder verdict, raw colour, UV, t0k; mode 7 the
+             * per-pixel face attribution word, ter_attr). Diagnostic;
+             * unregistered. */
             const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
             if (e && *e && *e != '0')
                 tcg.gflags |= (1u << 29) | ((uint32_t)(atoi(e) & 7) << 26);
