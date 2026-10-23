@@ -82,11 +82,12 @@ extern unsigned openpete_frame;
  *
  * `PART_ROT_CLASS` is the class whose corner extents are a rotation of a fixed
  * pair of view-space offsets around the record's own view position, all four
- * corners sharing that position's Z (partsdraw.s:497-504 reads the angle,
- * :545-566 builds the four offsets from the sine pair and :571-580 projects
- * them with VZ 0 against the record's translation). A shared Z makes the
- * perspective divide common to the four corners, so rotating their screen
- * offsets about the projected record point is that construction exactly. The
+ * corners sharing that position's Z (partsdraw.s:495-504 reads the angle,
+ * :527-538 builds the four offsets from the sine pair and :567-593 projects
+ * them with VZ 0 against the record's translation). The feed draws this
+ * class's quads from corners part_rot_corners builds in float, at capture and
+ * again at each sub-tick present's shown point, angle and size; the
+ * screen-space rotation below serves only a primitive that is not a quad. The
  * other class that reads an angle (partsdraw.s:225-228) rotates in world space
  * and projects each corner on its own Z, which a screen-space rotation is not,
  * so it rebases by translation alone. */
@@ -97,6 +98,9 @@ typedef struct {
     ngte_prim p;
     float     depth;
     double    vz;         /* the record point's view-Z under the tick's camera */
+    double    m1, m2;     /* the record point's view X and Y under the tick's camera */
+    float     ex[4], ey[4]; /* PART_ROT_CLASS: the corners built in float (part_rot_corners) */
+    int       exact;      /* 1 = ex/ey hold the corners the feed draws */
     double    psx, psy;   /* the record's own projected point, or the sentinel */
     double    psx2, psy2; /* the second record point of a two-point class */
     int       cls;        /* the record's class, or -1 when unpaired */
@@ -119,6 +123,8 @@ typedef struct {
     uint8_t active;       /* 1 = translate the corners and take `depth` */
     uint8_t rot;          /* 1 = rotate the corner offsets as well */
     uint8_t dsz;          /* 1 = the pair's two size bytes differ */
+    uint8_t corners;      /* 1 = cx/cy are the corners, rebuilt at the shown state */
+    float cx[4], cy[4];
 } part_rebase;
 
 static part_item   s_item_buf[2][PART_MAX_PRIMS];
@@ -167,6 +173,7 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].rec = 0u;
     s_item[s_item_n].w0 = s_item[s_item_n].w1 = s_item[s_item_n].w2 = 0u;
     s_item[s_item_n].owner = 0;
+    s_item[s_item_n].exact = 0;
     memset(&s_reb[s_item_n], 0, sizeof s_reb[0]);
     s_reb[s_item_n].scl = 1.0;
     s_item_n++;
@@ -239,6 +246,44 @@ static void part_project(const ngte_view* v, const double p[3], ngte_proj* o) {
     const double cx = v->cam[0] / 4.0, cy = v->cam[1] / 4.0, cz = v->cam[2] / 4.0;
     ngte_project_gte(v->cam_M, NULL, cy - p[1], cz - p[2], p[0] - cx,
                      v->ofx, v->ofy, v, 0, o);
+}
+
+/** @brief Builds a PART_ROT_CLASS billboard's four corners in float, as the routine builds them in integers.
+ *
+ * The routine moves the record point's view-space MACs, shifted left by 2,
+ * into the GTE translation (partsdraw.s:529-534), sets the rotation to
+ * diag(0x1000, 0xA00, 0x1000) (:567-571), and projects four corners with VZ 0
+ * (RTPT at :574 and RTPS at :593): (-a2, -a3), (a3, -a2), (-a3, a2), (a2, a3),
+ * where a2 and a3 are the size byte times the sine-table entry at angle + 32
+ * and at angle + 96, shifted right by 10 (:495-504, :527, :537-538). The GTE
+ * truncates each corner's MACs and screen position to integers, so a distant
+ * billboard whose extent spans a few pixels jumps by up to a pixel on every
+ * tick independent of its motion. Here every term stays fractional: the MACs
+ * of `pt`, the table entry interpolated at a fractional angle
+ * (ngte_sincos_f), the product without the shift's truncation, and the
+ * projection without the screen rounding. The corner order is the
+ * primitive's vertex order (:594-596 store the RTPT's SXY0..2, :612 the RTPS's).
+ * @param cpu Reads the sine table.
+ * @param v The view the corners project under.
+ * @param pt The record point's projection under `v` (m1..m3 its view MACs).
+ * @param size The size byte, fractional on a sub-tick present.
+ * @param ang The angle byte, fractional on a sub-tick present.
+ * @param x Receives the four screen X.
+ * @param y Receives the four screen Y. */
+static void part_rot_corners(CPUState* cpu, const ngte_view* v, const ngte_proj* pt,
+                             double size, double ang, float x[4], float y[4]) {
+    double s, c;
+    ngte_sincos_f(cpu, ang + 32.0, &s, &c);
+    const double a2 = size * s / 1024.0, a3 = size * c / 1024.0;
+    const double ox[4] = { -a2, a3, -a3, a2 };
+    const double oy[4] = { -a3, -a2, a2, a3 };
+    for (int k = 0; k < 4; k++) {
+        ngte_proj o;
+        ngte_screen_gte(4.0 * pt->m1 + ox[k], 4.0 * pt->m2 + oy[k] * (2560.0 / 4096.0),
+                        4.0 * pt->m3, v->ofx, v->ofy, v, 0, &o);
+        x[k] = (float)o.sx;
+        y[k] = (float)o.sy;
+    }
 }
 
 /* Records the last pairing walk found stamped with no primitive appended. */
@@ -329,6 +374,13 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
         it->psx = o.sx;
         it->psy = o.sy;
         it->vz  = o.m3;
+        it->m1  = o.m1;
+        it->m2  = o.m2;
+        if (cls == PART_ROT_CLASS && it->p.nv == 4) {
+            part_rot_corners(cpu, v, &o, (double)((it->w1 >> 16) & 0xFFu),
+                             (double)((it->w1 >> 24) & 0xFFu), it->ex, it->ey);
+            it->exact = 1;
+        }
         it->depth =
             openpete_native_scene_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
         if (cls == PART_TWO_POINT_CLASS) {
@@ -581,6 +633,18 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
                 openpete_frame, it->rec, it->cls, verdict, off[0], off[1], off[2],
                 it->psx, it->psy, o.sx, o.sy, (double)r->dx, (double)r->dy,
                 (double)r->dx2, (double)r->dy2);
+    if (it->exact) {
+        /* The float-built corners rebuild at the shown point, angle and size;
+         * at the end of the tick's interval those are the tick's own inputs
+         * and the corners equal the captured ones. */
+        const double tick_ang = (double)((it->w1 >> 24) & 0xFFu);
+        const double tick_size = (double)((it->w1 >> 16) & 0xFFu);
+        part_rot_corners(cpu, v, &o, tick_size + size_delta, paired ? show_ang : tick_ang,
+                         r->cx, r->cy);
+        r->corners = 1;
+        r->dsz = (size_delta != 0.0) ? 1u : 0u;
+        return;
+    }
     if (paired && it->cls == PART_ROT_CLASS) {
         const double tick_ang = (double)((it->w1 >> 24) & 0xFFu);
         r->rot = part_corner_rot(cpu, tick_ang, show_ang, &r->rc, &r->rs)
@@ -617,24 +681,27 @@ static void part_rebase_report(void) {
     fprintf(stderr, "\n");
 }
 
+/** @brief Latches OPENPETE_PART_REBASE_DBG into s_reb_dbg on the first call; nonzero registers the per-class verdict report at exit. */
+static void part_dbg_latch(void) {
+    static int dbg = -1;
+    if (dbg >= 0) return;
+    const char* e = getenv("OPENPETE_PART_REBASE_DBG");
+    dbg = (e && *e && *e != '0');
+    s_reb_dbg = e ? atoi(e) : 0;
+    if (dbg) atexit(part_rebase_report);
+}
+
 /** @brief Rebases the captured set onto the pose this present shows.
  *
  * The staged camera resolves through the sub-tick view, so building a view
  * here reads the interpolated transform the rest of the pass draws under.
- * OPENPETE_PART_REBASE_DBG is latched on the first call: nonzero registers the
- * per-class verdict report at exit, and 2 or more prints the view and one line
- * per rebased primitive.
+ * At OPENPETE_PART_REBASE_DBG 2 or more (part_dbg_latch) it prints the view
+ * and one line per rebased primitive.
  * @param cpu Reads the staged camera and the sin/cos table.
  * @param alpha The present's phase between the two ticks. */
 static void part_rebase_all(CPUState* cpu, double alpha) {
     if (s_item_n <= 0) return;
-    static int dbg = -1;
-    if (dbg < 0) {
-        const char* e = getenv("OPENPETE_PART_REBASE_DBG");
-        dbg = (e && *e && *e != '0');
-        s_reb_dbg = e ? atoi(e) : 0;
-        if (dbg) atexit(part_rebase_report);
-    }
+    part_dbg_latch();
     ngte_view v;
     ngte_view_build(cpu, &v);
     if (s_reb_dbg >= 2) part_view_dbg("staged", &v);
@@ -700,6 +767,70 @@ static void part_feed_line(const part_item* it, const part_rebase* r,
     s_fed_tris += (uint32_t)ngte_feed_flat_line(ax, ay, bx, by, rgb0, rgb1, depth, stp ? 1 : 0);
 }
 
+/* The phase of the present the next feed draws: the rebase's alpha, or -1
+ * for the tick's own capture. */
+static double s_feed_alpha = -1.0;
+
+/** @brief At OPENPETE_PART_REBASE_DBG 3 or more, prints one line per fed quad of a paired record: its drawn centroid and the point the record shows.
+ *
+ * The shown point is the record point's projection under the present's
+ * camera (the tick's own projection on a canonical feed); the drawn centroid
+ * minus it is the quad's placement error, whose change between consecutive
+ * presents is the motion the record does not make. The line also carries the
+ * centroid of the guest's integer primitive and the record point's projection
+ * under the tick's camera, whose difference calibrates the float corners
+ * against the routine's own.
+ * @param it The captured primitive.
+ * @param r Its rebase.
+ * @param x The four corner X the feed draws.
+ * @param y The four corner Y the feed draws. */
+static void part_track_dbg(const part_item* it, const part_rebase* r,
+                           const float x[4], const float y[4]) {
+    if (s_reb_dbg < 3 || !it->rec) return;
+    const double gx = (x[0] + x[1] + x[2] + x[3]) / 4.0, gy = (y[0] + y[1] + y[2] + y[3]) / 4.0;
+    const double ax = it->psx + (r->active ? r->dx : 0.0f);
+    const double ay = it->psy + (r->active ? r->dy : 0.0f);
+    const ngte_prim* p = &it->p;
+    const int last = p->nv - 1;
+    const double px = (p->x[0] + p->x[1] + p->x[2] + p->x[last]) / 4.0;
+    const double py = (p->y[0] + p->y[1] + p->y[2] + p->y[last]) / 4.0;
+    fprintf(stderr, "[part-track f=%u a=%.3f rec=%08X c=%d drawn=(%.3f,%.3f) shown=(%.3f,%.3f) "
+                    "guest=(%.3f,%.3f) tick=(%.3f,%.3f)]\n",
+            openpete_frame, s_feed_alpha, it->rec, it->cls, gx, gy, ax, ay, px, py,
+            it->psx, it->psy);
+}
+
+/** @brief The four corners the feed draws a captured polygon at.
+ *
+ * In order of precedence: the corners the rebase rebuilt at the shown state,
+ * the float corners built at capture, or the primitive's own corners carried
+ * through the rebase. A triangle fills the unread corner 3 with its last
+ * corner.
+ * @param it The captured primitive, a polygon.
+ * @param r Its rebase.
+ * @param x Receives the four corner X.
+ * @param y Receives the four corner Y. */
+static void part_quad_corners(const part_item* it, const part_rebase* r, float x[4], float y[4]) {
+    if (r->active && r->corners) {
+        memcpy(x, r->cx, 4 * sizeof x[0]);
+        memcpy(y, r->cy, 4 * sizeof y[0]);
+        return;
+    }
+    if (it->exact) {
+        memcpy(x, it->ex, 4 * sizeof x[0]);
+        memcpy(y, it->ey, 4 * sizeof y[0]);
+        return;
+    }
+    const ngte_prim* p = &it->p;
+    const int last = p->nv - 1;
+    const int idx[4] = { 0, 1, 2, last };
+    for (int j = 0; j < 4; j++) {
+        x[j] = p->x[idx[j]];
+        y[j] = p->y[idx[j]];
+        part_rebase_xy(it, r, 0, &x[j], &y[j]);
+    }
+}
+
 /** @brief Feeds every captured primitive to the native scene: polygons as quads, lines as thin quads.
  *
  * Does nothing when the feed is suppressed or the captured set is empty.
@@ -732,9 +863,9 @@ static void part_feed_native(void) {
             const int blend = ngte_prim_tpage_blend(p, &tp);
             /* A triangle fills the unread corner 3 with its last corner. */
             const int last = p->nv - 1;
-            float x[4] = { p->x[0], p->x[1], p->x[2], p->x[last] };
-            float y[4] = { p->y[0], p->y[1], p->y[2], p->y[last] };
-            for (int j = 0; j < 4; j++) part_rebase_xy(it, r, 0, &x[j], &y[j]);
+            float x[4], y[4];
+            part_quad_corners(it, r, x, y);
+            part_track_dbg(it, r, x, y);
             const float u[4] = { (float)p->u[0], (float)p->u[1], (float)p->u[2], (float)p->u[last] };
             const float vt[4] = { (float)p->v[0], (float)p->v[1], (float)p->v[2], (float)p->v[last] };
             const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[last] };
@@ -918,6 +1049,7 @@ int particles_replay_prev(int on) {
 void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready_held(RP_PARTICLES, s_item_held)) return;
     if (bracketed) part_rebase_all(cpu, alpha);
+    s_feed_alpha = bracketed ? alpha : -1.0;
     part_extent_census(alpha);
     render_material_level_push(cpu);
     part_feed_native();
@@ -952,10 +1084,12 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
         const uint32_t fed_before = s_fed_tris;
         ngte_view view;
         ngte_view_build(cpu, &view);
+        part_dbg_latch();
         if (s_reb_dbg >= 2) part_view_dbg("tick", &view);
         part_pair_depths(cpu, &view);
         part_extent_census(-1.0);
         render_material_level_push(cpu);
+        s_feed_alpha = -1.0;
         if (feed && render_path_enabled(RP_PARTICLES)) part_feed_native();
         part_census(startp, endp, fed_before);
     }
