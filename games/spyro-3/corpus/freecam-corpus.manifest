@@ -125,3 +125,10 @@ haunted_tomb | pos=(93215, 91480, 22144) yaw=1493 pitch=49
 # tick cadence; the guest's integer corners carry a placement error of up to a
 # pixel that changes every tick, larger than the stars' motion.
 fireworks_factory:1 | pos=(27271, 51213, 20983) yaw=-1026 pitch=7
+# --lod extended: LP faces whose corners lie on the HP mesh draw beside it as
+# flat untextured stand-ins: a wedge above a mountain ridge (sector 60 LP
+# faces 2-4), a sliver on the tunnel rim (sector 29 LP face 3); the
+# fireworks_factory:1 row above shows the same class (sector 45 LP face 0,
+# sector 42 LP face 6, sector 30 LP faces 37-38). Blessed pre-fix.
+cloud_spires | pos=(78088, 77172, 11404) yaw=684 pitch=0 roll=2
+lost_fleet:1 | pos=(21472, 54568, 36864) yaw=123 pitch=179 roll=-1
