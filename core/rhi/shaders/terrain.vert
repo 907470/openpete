@@ -256,8 +256,9 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define FF_LPUNCOVX   (1u << 16)   /* LP: off the HP mesh and the borrowed HP
                                     * faces (bit 16 is FF_W3_80 on HP faces) */
 #define FF_HQELIG     (1u << 17)
-#define FF_LPUNCOV    (1u << 17)   /* LP: off the sector's HP mesh (bit 17 is
-                                    * FF_HQELIG on HP faces) */
+#define FF_LPRIDE     (1u << 17)   /* LP: uncovX and no stand-in for the scene's
+                                    * HP surface, drawn by the uncov-only ride
+                                    * (bit 17 is FF_HQELIG on HP faces) */
 #define FF_FLOOR      (1u << 18)
 #define FF_PINCELLS   (1u << 19)   /* HP: the pin sends this face to the cells */
 #define FF_CELLOK     (1u << 20)   /* HP: the face may take the 4x4 cells */
@@ -1255,7 +1256,7 @@ void main()
         if (!lp && (sf & SF_DRAWHP) == 0u) { kill_vert(); return; }
     }
     /* The LP faces the HP leaves uncovered: the borrowed HP faces count as
-     * cover (FF_LPUNCOVX equals FF_LPUNCOV on a sector without them). */
+     * cover. */
     uint ffUncov = FF_LPUNCOVX;
 
     /* ---- face corners -> camera space (fp64, exact walk mirror) ---- */
@@ -1343,7 +1344,7 @@ void main()
     bool gapfill_face = (gf & GF_GAPFILL) != 0 && (ff & FF_GAPFILL) != 0u;
     if (lp && !fillPass) {
         if ((sf & SF_LPGAPONLY) != 0u && (ff & FF_GAPFILL) == 0u) { kill_vert(); return; }
-        if ((sf & SF_LPUNCOV) != 0u && (ff & ffUncov) == 0u) { kill_vert(); return; }
+        if ((sf & SF_LPUNCOV) != 0u && (ff & FF_LPRIDE) == 0u) { kill_vert(); return; }
         double z3g = quad ? m3c.z : m2.z;
         double slotv = (m0.z + m1.z + m2.z + z3g) / 32.0lf;
         if ((gf & GF_NOLOD) == 0) {

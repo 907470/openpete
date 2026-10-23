@@ -728,8 +728,8 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * near_tier2<<15 | near_excl<<16 (the defer
                                  * classifier's two face-word bits, both 0 on a
                                  * game that classifies on depth alone) |
-                                 * hq_eligible<<17 (HP) / uncov<<17 (LP: off
-                                 * the sector's HP mesh) |
+                                 * hq_eligible<<17 (HP) / ride<<17 (LP: drawn
+                                 * by the extended-LOD uncov-only ride) |
                                  * floor<<18 (LP up-facing) |
                                  * admit(5)<<19 (LP authored admission) |
                                  * pincells<<19 (HP: the always-HQ pin sends

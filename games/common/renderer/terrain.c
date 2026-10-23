@@ -3129,7 +3129,10 @@ typedef struct {
                                                     * (tsc_tag_uncovered; distance-binning games only) */
     uint8_t  uncovX;                               /* LP only: uncov against the HP mesh plus the sector's
                                                     * borrowed HP faces (tscache_t.imp); == uncov when the
-                                                    * sector borrows none. Extended LOD reads this one. */
+                                                    * sector borrows none. The LP near outcode reads it. */
+    uint8_t  ride;                                 /* LP only: uncovX and not a stand-in for the scene's HP
+                                                    * mesh (tsc_lp_standin); the faces the extended-LOD
+                                                    * uncov-only ride-along draws */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
     uint8_t  lpkey;                                /* borrowed HP only: admitted solely over the sector's
@@ -3207,6 +3210,7 @@ typedef struct {
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
     int nUncov;                              /* LP faces tagged uncov (tsc_tag_uncovered) */
     int nUncovX;                             /* LP faces tagged uncovX */
+    int nRide;                               /* LP faces tagged ride, borrowed LP faces included */
     struct tsimp* imp;                       /* HP faces borrowed from the source level, or NULL */
     uint8_t virt;                            /* a source sector imported whole (tsv_is_virtual) */
     int lpNearSz;                            /* LP near-outcode SZ3 bound, 0 without the rule */
@@ -3876,10 +3880,13 @@ static void tsc_retag_fill(CPUState* cpu, tscache_t* C,
 
 /* LP-to-HP coverage tolerance in decoded vertex units: an LP sample point
  * farther than this from every HP triangle of its sector is off the HP mesh.
- * An LP face that approximates its HP surface deviates from it by tens of
+ * Most LP faces that approximate their HP surface deviate from it by tens of
  * units; LP-only geometry over a partial HP mesh (Spyro 2's spires over a
  * ground strip) stands hundreds of units off it. At 32, coarse LP faces
- * start to draw in front of the HP surface they approximate. */
+ * start to draw in front of the HP surface they approximate. An LP face that
+ * spans HP vertices across HP detail (a ridge, a valley) deviates by up to
+ * about 170 units between its corners; tsc_lp_standin tests its corners
+ * alone. */
 #define TSC_LPCOV_TOL 64.0
 
 /** @brief Returns the squared distance from a point to a segment.
@@ -4047,14 +4054,47 @@ typedef struct tsimp {
 } tsimp_t;
 
 static void tsimp_meshes(const tscache_t* C, tsmesh_t M[2], int* nm);
+static int scene_hp_near(const double p[3], double tol2);
+
+/** @brief Tests whether an uncovX LP face is a stand-in for the scene's HP surface.
+ *
+ * A stand-in's every corner lies within TSC_LPCOV_TOL of an HP triangle: of
+ * the sector's own and borrowed meshes, or, in world space, of any scene
+ * sector the scene HP set holds (scene_hp_refresh). Such a face spans HP
+ * vertices and simplifies the HP surface between them, deviating from it
+ * by up to a few hundred units across the HP detail it skips (a ridge, a
+ * valley); geometry the HP mesh lacks (Spyro 2's spires over a ground
+ * strip) has a corner off every HP triangle. A sector with no HP faces of
+ * its own has no stand-ins: the guest draws its LP mesh wherever it draws
+ * the sector.
+ * @param C The sector.
+ * @param V The face's vertex bank, in the sector's frame.
+ * @param F The face; its indices lie inside V.
+ * @param M The sector's own and borrowed HP meshes (tsimp_meshes).
+ * @param nm Their count.
+ * @return 1 for a stand-in, else 0. */
+static int tsc_lp_standin(const tscache_t* C, const tsvert_t* V, const tsface_t* F,
+                          const tsmesh_t* M, int nm) {
+    if (!C->hpF || C->nHpF <= 0) return 0;
+    const double tol2 = TSC_LPCOV_TOL * TSC_LPCOV_TOL;
+    double q[4][3];
+    tsc_face_corners(V, F, q);
+    for (int c = 0; c < (F->quad ? 4 : 3); c++) {
+        if (tsc_hp_d2(M, nm, q[c], tol2) <= tol2) continue;
+        const double w[3] = { q[c][0] + C->originX, q[c][1] + C->originY, q[c][2] + C->originZ };
+        if (!scene_hp_near(w, tol2)) return 0;
+    }
+    return 1;
+}
 
 /** @brief Tags a sector's borrowed LP faces (C->imp) the way tsc_tag_uncovered tags its own.
  *
  * A borrowed LP face is uncov when a sample point lies farther than
  * TSC_LPCOV_TOL from the sector's own HP mesh (every face when it has
  * none), and uncovX when one lies that far from the own and borrowed HP
- * meshes; nUncovX counts the uncovX faces, so the uncov-only ride-along
- * reaches a sector whose only uncovered LP faces are borrowed.
+ * meshes; ride marks an uncovX face that is no stand-in (tsc_lp_standin).
+ * nUncovX and nRide count them, so the uncov-only ride-along reaches a
+ * sector whose only uncovered LP faces are borrowed.
  * @param C The cached sector.
  * @param M The HP meshes tsimp_meshes listed.
  * @param nm Their count.
@@ -4067,7 +4107,9 @@ static void tsc_tag_uncovered_borrowed(tscache_t* C, const tsmesh_t* M, int nm, 
         F->uncovX = (nm > 1 && F->uncov)
                   ? (uint8_t)(tsc_lp_face_gap(I->lpV, F, M, nm, TSC_LPCOV_TOL) > TSC_LPCOV_TOL)
                   : F->uncov;
+        F->ride = (uint8_t)(F->uncovX && !tsc_lp_standin(C, I->lpV, F, M, nm));
         C->nUncovX += F->uncovX;
+        C->nRide += F->ride;
     }
 }
 
@@ -4081,14 +4123,15 @@ static void tsc_tag_uncovered_borrowed(tscache_t* C, const tsmesh_t* M, int nm, 
  * HP triangle of the same sector, and uncovX when one lies that far from
  * the HP triangles and the sector's borrowed HP faces (C->imp); without
  * borrowed faces uncovX equals uncov. Every LP face of a sector with no HP
- * faces is uncov. A face with an out-of-bank index stays untagged. nUncov
- * and nUncovX count the tagged faces. A poly-anim sector is re-tagged whenever
+ * faces is uncov. An uncovX face that is no stand-in for the scene's HP
+ * surface (tsc_lp_standin) is tagged ride. A face with an out-of-bank index
+ * stays untagged. nUncov, nUncovX and nRide count the tagged faces. A poly-anim sector is re-tagged whenever
  * tsc_vert_anim_refresh decodes moved vertices.
- * @param C The cached sector; its LP faces, nUncov and nUncovX are updated. */
+ * @param C The cached sector; its LP faces, nUncov, nUncovX and nRide are updated. */
 static void tsc_tag_uncovered(tscache_t* C) {
-    C->nUncov = C->nUncovX = 0;
+    C->nUncov = C->nUncovX = C->nRide = 0;
     if (!C->lpF || !C->lpV) return;
-    for (int f = 0; f < C->nLpF; f++) C->lpF[f].uncov = C->lpF[f].uncovX = 0;
+    for (int f = 0; f < C->nLpF; f++) C->lpF[f].uncov = C->lpF[f].uncovX = C->lpF[f].ride = 0;
     if (!game_layout.terrain.hp_far) return;
     const int ownHP = C->hpF && C->hpV && C->nHpF > 0;
     tsmesh_t M[2];
@@ -4102,8 +4145,10 @@ static void tsc_tag_uncovered(tscache_t* C) {
         F->uncovX = (nm > 1 && F->uncov)
                   ? (uint8_t)(tsc_lp_face_gap(C->lpV, F, M, nm, TSC_LPCOV_TOL) > TSC_LPCOV_TOL)
                   : F->uncov;
+        F->ride = (uint8_t)(F->uncovX && !tsc_lp_standin(C, C->lpV, F, M, nm));
         C->nUncov += F->uncov;
         C->nUncovX += F->uncovX;
+        C->nRide += F->ride;
     }
     tsc_tag_uncovered_borrowed(C, M, nm, ownHP);
 }
@@ -5513,14 +5558,119 @@ static int tsimp_candidate(const tscache_t* C, const tscache_t* K, const uint8_t
     return nearMiss;
 }
 
-/* World-space keys (hps_face_key) of every HP face of the scene's
- * sectors, rebuilt when the sector table's address list changes: a source
- * face may duplicate a face another scene sector already draws. */
+/* The scene's HP faces, rebuilt when the sector table's address list
+ * changes: their world-space keys (hps_face_key), since a source face may
+ * duplicate a face another scene sector already draws, and their world-space
+ * triangles binned on a grid, the HP surface an LP face stands in for
+ * (tsc_lp_standin). */
+#define SCENE_HPT_CELL 256       /* grid cell edge, decoded vertex units */
+typedef struct { uint64_t cell; uint32_t tri; } scene_hpt_bin;
 static struct {
     uint64_t sig;                /* hash of the sector table's address list */
     uint64_t* keys;              /* open addressing, 0 = empty */
     uint32_t mask;               /* slot count - 1 */
+    int32_t (*tri)[9];           /* world-space triangles, three corners each */
+    uint32_t nTri, capTri;
+    scene_hpt_bin* bin;          /* (cell, triangle) pairs sorted by cell */
+    uint32_t nBin, capBin;
 } s_scene_hp;
+
+/** @brief Packs a grid cell's coordinates into one ordered key.
+ * @param cx The cell X.
+ * @param cy The cell Y.
+ * @param cz The cell Z.
+ * @return The key. */
+static uint64_t scene_hpt_cell(int cx, int cy, int cz) {
+    return ((uint64_t)(uint32_t)(cx & 0x1FFFFF) << 42) | ((uint64_t)(uint32_t)(cy & 0x1FFFFF) << 21)
+         | (uint64_t)(uint32_t)(cz & 0x1FFFFF);
+}
+
+/** @brief Returns the grid cell coordinate holding a world coordinate.
+ * @param v The coordinate.
+ * @return floor(v / SCENE_HPT_CELL). */
+static int scene_hpt_coord(double v) { return (int)floor(v / SCENE_HPT_CELL); }
+
+/** @brief Orders grid bins by cell, then by triangle.
+ * @param a The first bin.
+ * @param b The second bin.
+ * @return Negative, zero or positive as a sorts before, with or after b. */
+static int scene_hpt_cmp(const void* a, const void* b) {
+    const scene_hpt_bin* x = (const scene_hpt_bin*)a;
+    const scene_hpt_bin* y = (const scene_hpt_bin*)b;
+    if (x->cell != y->cell) return x->cell < y->cell ? -1 : 1;
+    return (x->tri > y->tri) - (x->tri < y->tri);
+}
+
+/** @brief Appends a (cell, triangle) pair to the scene grid.
+ * @param cell The cell key (scene_hpt_cell).
+ * @param tri The triangle index.
+ * @return 0, or -1 when memory runs out. */
+static int scene_hpt_bin_put(uint64_t cell, uint32_t tri) {
+    if (s_scene_hp.nBin == s_scene_hp.capBin) {
+        const uint32_t cap = s_scene_hp.capBin ? 2u * s_scene_hp.capBin : 16384u;
+        void* b = realloc(s_scene_hp.bin, sizeof(*s_scene_hp.bin) * cap);
+        if (!b) return -1;
+        s_scene_hp.bin = (scene_hpt_bin*)b; s_scene_hp.capBin = cap;
+    }
+    s_scene_hp.bin[s_scene_hp.nBin++] = (scene_hpt_bin){ cell, tri };
+    return 0;
+}
+
+/** @brief Appends one world-space HP triangle to the scene set and bins it in every cell within TSC_LPCOV_TOL of its bounds.
+ *
+ * A point within TSC_LPCOV_TOL of the triangle lies in one of those cells,
+ * so scene_hp_near finds the triangle from the point's own cell.
+ * @param w The three corners, x y z each.
+ * @return 0, or -1 when memory runs out. */
+static int scene_hpt_add(const int32_t w[9]) {
+    if (s_scene_hp.nTri == s_scene_hp.capTri) {
+        const uint32_t cap = s_scene_hp.capTri ? 2u * s_scene_hp.capTri : 4096u;
+        void* t = realloc(s_scene_hp.tri, sizeof(*s_scene_hp.tri) * cap);
+        if (!t) return -1;
+        s_scene_hp.tri = (int32_t (*)[9])t; s_scene_hp.capTri = cap;
+    }
+    const uint32_t ti = s_scene_hp.nTri++;
+    memcpy(s_scene_hp.tri[ti], w, sizeof(int32_t) * 9);
+    int lo[3], hi[3];
+    for (int k = 0; k < 3; k++) {
+        int mn = w[k], mx = w[k];
+        for (int c = 1; c < 3; c++) {
+            mn = w[3 * c + k] < mn ? w[3 * c + k] : mn;
+            mx = w[3 * c + k] > mx ? w[3 * c + k] : mx;
+        }
+        lo[k] = scene_hpt_coord(mn - TSC_LPCOV_TOL);
+        hi[k] = scene_hpt_coord(mx + TSC_LPCOV_TOL);
+    }
+    int rc = 0;
+    for (int x = lo[0]; x <= hi[0]; x++)
+        for (int y = lo[1]; y <= hi[1]; y++)
+            for (int z = lo[2]; z <= hi[2] && rc == 0; z++)
+                rc = scene_hpt_bin_put(scene_hpt_cell(x, y, z), ti);
+    return rc;
+}
+
+/** @brief Tests whether a world-space point lies within a distance of the scene's HP triangles.
+ *
+ * Scans the triangles binned in the point's grid cell (scene_hpt_add);
+ * an empty or unbuilt set holds no triangle.
+ * @param p The point, world space.
+ * @param tol2 The squared distance; at most TSC_LPCOV_TOL squared.
+ * @return 1 when some triangle lies within it, else 0. */
+static int scene_hp_near(const double p[3], double tol2) {
+    if (!s_scene_hp.bin || s_scene_hp.nBin == 0u) return 0;
+    const uint64_t key = scene_hpt_cell(scene_hpt_coord(p[0]), scene_hpt_coord(p[1]), scene_hpt_coord(p[2]));
+    uint32_t lo = 0, hi = s_scene_hp.nBin;
+    while (lo < hi) {
+        const uint32_t mid = lo + (hi - lo) / 2u;
+        if (s_scene_hp.bin[mid].cell < key) lo = mid + 1u; else hi = mid;
+    }
+    for (uint32_t i = lo; i < s_scene_hp.nBin && s_scene_hp.bin[i].cell == key; i++) {
+        const int32_t* w = s_scene_hp.tri[s_scene_hp.bin[i].tri];
+        const double v[3][3] = { { w[0], w[1], w[2] }, { w[3], w[4], w[5] }, { w[6], w[7], w[8] } };
+        if (tsc_tri_d2(p, v) <= tol2) return 1;
+    }
+    return 0;
+}
 
 /** @brief Inserts a key into the scene HP key set.
  * @param key The face key; never 0. */
@@ -5542,12 +5692,41 @@ static int scene_hp_has(uint64_t key) {
     }
 }
 
-/** @brief Rebuilds the scene HP key set when the scene's sector table changed.
+/** @brief Adds a decoded scene sector's HP faces to the scene key set and, when asked, to the triangle grid.
+ *
+ * The grid takes the triangles the walk emits for each face: (i0, i1, i2),
+ * and (i1, i2, i3) for a quad, in world space.
+ * @param T The decoded sector.
+ * @param grid Nonzero to add its triangles to the grid.
+ * @return 0, or -1 when the grid ran out of memory. */
+static int scene_hp_add_sector(const tscache_t* T, int grid) {
+    int rc = 0;
+    for (int f = 0; T->hpV && T->hpF && f < T->nHpF; f++) {
+        const tsface_t* H = &T->hpF[f];
+        if (!hps_face_ok(H, T->nHpV)) continue;
+        scene_hp_put(hps_face_key(T->hpV, H, T->originX, T->originY, T->originZ));
+        const int ci[4] = { H->i0, H->i1, H->i2, H->i3 };
+        for (int t = 0; grid && rc == 0 && t < (H->quad ? 2 : 1); t++) {
+            int32_t w[9];
+            for (int c = 0; c < 3; c++) {
+                const tsvert_t* v = &T->hpV[ci[t + c]];
+                w[3 * c] = T->originX + v->x; w[3 * c + 1] = T->originY + v->y; w[3 * c + 2] = T->originZ + v->z;
+            }
+            rc = scene_hpt_add(w);
+        }
+    }
+    return rc;
+}
+
+/** @brief Rebuilds the scene HP key set and triangle grid when the scene's sector table changed.
  *
  * Each sector's geometry decodes through tsc_decode_body from guest RAM
  * (reads only; no texture tables), its HP faces' world keys go into the
  * set, and the decode is freed. The set holds at least twice as many
- * slots as faces.
+ * slots as faces. The grid takes the triangles the walk emits for each HP
+ * face ((i0, i1, i2), and (i1, i2, i3) for a quad) of every sector a
+ * poly-anim descriptor does not name: a poly-anim sector's HP bank holds
+ * whatever pose the tick of the rebuild left in RAM.
  * @param cpu The guest CPU state.
  * @param sectorPtr The scene sector table's guest address.
  * @param sectorCnt The scene sector count. */
@@ -5560,6 +5739,8 @@ static void scene_hp_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
     free(s_scene_hp.keys);
     s_scene_hp.keys = NULL;
     s_scene_hp.sig = sig;
+    s_scene_hp.nTri = s_scene_hp.nBin = 0;
+    int gridOk = 1;
     uint32_t slots = 1024u;
     while (slots < 2u * 256u * sectorCnt) slots <<= 1;
     s_scene_hp.keys = (uint64_t*)calloc(slots, sizeof(uint64_t));
@@ -5574,11 +5755,13 @@ static void scene_hp_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
         tscache_t T;
         memset(&T, 0, sizeof(T));
         tsc_decode_body(&src, sa, rd(cpu, sa), g, &T, 0u, 0u, 0, 0);
-        for (int f = 0; T.hpV && T.hpF && f < T.nHpF; f++)
-            if (hps_face_ok(&T.hpF[f], T.nHpV))
-                scene_hp_put(hps_face_key(T.hpV, &T.hpF[f], T.originX, T.originY, T.originZ));
+        if (scene_hp_add_sector(&T, !tsc_sector_polyanim(cpu, sa, sectorPtr, sectorCnt)) != 0)
+            gridOk = 0;
         free(T.lpV); free(T.lpF); free(T.hpV); free(T.hpF);
     }
+    if (!gridOk) s_scene_hp.nBin = 0;
+    if (s_scene_hp.nBin)
+        qsort(s_scene_hp.bin, s_scene_hp.nBin, sizeof(*s_scene_hp.bin), scene_hpt_cmp);
 }
 
 /** @brief Tests whether a candidate HP face duplicates a surface the sector's own HP mesh draws.
@@ -5804,7 +5987,7 @@ static int tsimp_attach(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetai
         tsface_t* F = &I->F[I->nF];
         *F = *H;
         tsimp_retexture(cpu, F, hiDetail);
-        F->uncov = F->uncovX = 0;
+        F->uncov = F->uncovX = F->ride = 0;
         F->lpkey = (uint8_t)(cand == 2 && game_layout.terrain.standin_lp_key);
         I->nLpKey += F->lpkey;
         I->nF++;
@@ -6058,6 +6241,86 @@ static void tsc_scene_tags(CPUState* cpu, tscache_t* C, uint32_t sectorPtr, uint
     tsc_tag_gapfill(cpu, C, sectorPtr, sectorCnt);
 }
 
+/** @brief Picks the decode-cache slot a missed sector takes in its probe window.
+ *
+ * An empty slot is taken first, else the least recently used slot the GPU
+ * cache does not own this present. A slot the GPU cache validated as owned
+ * this present is never evicted while another candidate exists: the
+ * re-resolve would free the owner's chunks and republish the slot after its
+ * face walk was already skipped, so the owner would vanish for a present.
+ * Only when every candidate is owned (TSC_WINDOW+ owned sectors hashing into
+ * one window) does plain LRU resume, and the loser then rides tgpu_ensure's
+ * contest claim back to the CPU walk. OPTC_SLOT_DEAD's 9-bit id is the
+ * dead-stamp face_flags sentinel (chunks baked with it are culled as dead),
+ * so the cache never holds a sector there.
+ * @param h The sector's home slot.
+ * @return The slot to (re)fill. */
+static tscache_t* tsc_victim(uint32_t h) {
+    tscache_t* hot = NULL;
+    tscache_t* C = NULL;
+    for (uint32_t k = 0; k < TSC_WINDOW; k++) {
+        const uint32_t idx = (h + k) & (TSC_SLOTS - 1);
+        if (idx == OPTC_SLOT_DEAD) continue;
+        tscache_t* W = &s_tsc[idx];
+        if (!W->s) return W;
+        if (tgpu_slot_hot(idx)) {
+            if (!hot || W->lastUse < hot->lastUse) hot = W;
+            continue;
+        }
+        if (!C || W->lastUse < C->lastUse) C = W;
+    }
+    return C ? C : hot;
+}
+
+/** @brief Writes the bounding box of a decoded sector's vertices, both tiers, for the near-claim refinement.
+ * @param C The entry; vMin and vMax are written. */
+static void tsc_vert_aabb(tscache_t* C) {
+    int16_t mn[3] = { 32767, 32767, 32767 }, mx[3] = { -32768, -32768, -32768 };
+    for (int t2 = 0; t2 < 2; t2++) {
+        const tsvert_t* vv = t2 ? C->hpV : C->lpV;
+        const int nvv = t2 ? C->nHpV : C->nLpV;
+        for (int k = 0; vv && k < nvv; k++) {
+            const int16_t p[3] = { vv[k].x, vv[k].y, vv[k].z };
+            for (int a = 0; a < 3; a++) {
+                if (p[a] < mn[a]) mn[a] = p[a];
+                if (p[a] > mx[a]) mx[a] = p[a];
+            }
+        }
+    }
+    C->vMinX = mn[0]; C->vMinY = mn[1]; C->vMinZ = mn[2];
+    C->vMaxX = mx[0]; C->vMaxY = mx[1]; C->vMaxZ = mx[2];
+}
+
+/** @brief Derives a freshly decoded sector's animation and coverage state: poly-anim membership, env-anim colours, uncovered-LP tags and borrowed HP faces.
+ *
+ * A poly-anim sector's fill tags are cleared (stale-bank guard, see
+ * tsc_sector_polyanim). On a distance-binning game the scene HP set is
+ * refreshed before the coverage tags read it (tsc_lp_standin). A sector
+ * that borrows faces from the HP source level (tsimp_attach) is tagged
+ * again against the borrowed meshes.
+ * @param cpu The guest CPU state.
+ * @param C The entry, decoded and scene-tagged.
+ * @param texTblMode The walk's texture-table mode.
+ * @param hiDetail The hi-detail flag the faces were decoded with.
+ * @param sectorPtr The sector table's address.
+ * @param sectorCnt The sector count. */
+static void tsc_derive(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetail,
+                       uint32_t sectorPtr, uint32_t sectorCnt) {
+    C->polyanim = tsc_sector_polyanim(cpu, C->s, sectorPtr, sectorCnt);
+    if (C->polyanim && C->lpF) {
+        for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
+        C->nGapfill = 0;
+    }
+    tsc_envm_apply(cpu, C, -1, sectorPtr, sectorCnt);
+    if (game_layout.terrain.hp_far) scene_hp_refresh(cpu, sectorPtr, sectorCnt);
+    tsc_tag_uncovered(C);
+    if (tsimp_attach(cpu, C, texTblMode, hiDetail, sectorPtr, sectorCnt)) {
+        tsc_tag_uncovered(C);
+        if (s_imp_census)
+            fprintf(stderr, "[hpimport] sector@%08X uncov=%d uncovX=%d\n", C->s, C->nUncov, C->nUncovX);
+    }
+}
+
 /** @brief Returns sector s's decoded cache entry, decoding it on a miss or a changed signature.
  *
  * The entry holds both tiers' vertices and faces, the colour-array bases and
@@ -6115,31 +6378,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     }
     {
         s_tsc_miss++;
-        tscache_t* hot = NULL;                       /* fallback: LRU among GPU-owned */
-        C = reuse;
-        for (uint32_t k = 0; !reuse && k < TSC_WINDOW; k++) {  /* empty slot first, else LRU */
-            uint32_t idx = (h + k) & (TSC_SLOTS - 1);
-            /* OPTC_SLOT_DEAD's 9-bit id is the dead-stamp face_flags
-             * sentinel (chunks baked with it are culled as dead), so the
-             * decode cache never holds a sector there. */
-            if (idx == OPTC_SLOT_DEAD) continue;
-            tscache_t* W = &s_tsc[idx];
-            if (!W->s) { C = W; break; }
-            /* Never evict a slot the GPU cache validated as owned THIS
-             * present: the re-resolve would free the owner's chunks and
-             * republish the slot after its face walk was already skipped,
-             * so the owner vanishes for a present. The incoming sector takes
-             * another slot; only when every candidate is owned (TSC_WINDOW+
-             * owned sectors hashing into one window) does plain LRU resume,
-             * and the loser then rides tgpu_ensure's contest claim back to
-             * the CPU walk. */
-            if (tgpu_slot_hot(idx)) {
-                if (!hot || W->lastUse < hot->lastUse) hot = W;
-                continue;
-            }
-            if (!C || W->lastUse < C->lastUse) C = W;
-        }
-        if (!C) C = hot;
+        C = reuse ? reuse : tsc_victim(h);
         free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
         free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
         tsimp_free(C->imp);
@@ -6155,36 +6394,8 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         C->lpg_state = 0;              /* re-decoded sector: re-derive the LP grade */
         C->fillGen = openpete_fillpick_generation();
         tsc_scene_tags(cpu, C, sectorPtr, sectorCnt);
-        {   /* Vertex AABB (both tiers) for the near-claim refinement. */
-            int16_t mnx = 32767, mny = 32767, mnz = 32767;
-            int16_t mxx = -32768, mxy = -32768, mxz = -32768;
-            for (int t2 = 0; t2 < 2; t2++) {
-                const tsvert_t* vv = t2 ? C->hpV : C->lpV;
-                int nvv = t2 ? C->nHpV : C->nLpV;
-                for (int k = 0; vv && k < nvv; k++) {
-                    if (vv[k].x < mnx) mnx = vv[k].x;
-                    if (vv[k].x > mxx) mxx = vv[k].x;
-                    if (vv[k].y < mny) mny = vv[k].y;
-                    if (vv[k].y > mxy) mxy = vv[k].y;
-                    if (vv[k].z < mnz) mnz = vv[k].z;
-                    if (vv[k].z > mxz) mxz = vv[k].z;
-                }
-            }
-            C->vMinX = mnx; C->vMinY = mny; C->vMinZ = mnz;
-            C->vMaxX = mxx; C->vMaxY = mxy; C->vMaxZ = mxz;
-        }
-        C->polyanim = tsc_sector_polyanim(cpu, s, sectorPtr, sectorCnt);
-        if (C->polyanim && C->lpF) {   /* stale-bank guard: see tsc_sector_polyanim */
-            for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
-            C->nGapfill = 0;
-        }
-        tsc_envm_apply(cpu, C, -1, sectorPtr, sectorCnt);
-        tsc_tag_uncovered(C);
-        if (tsimp_attach(cpu, C, texTblMode, hiDetail, sectorPtr, sectorCnt)) {
-            tsc_tag_uncovered(C);
-            if (s_imp_census)
-                fprintf(stderr, "[hpimport] sector@%08X uncov=%d uncovX=%d\n", C->s, C->nUncov, C->nUncovX);
-        }
+        tsc_vert_aabb(C);
+        tsc_derive(cpu, C, texTblMode, hiDetail, sectorPtr, sectorCnt);
     }
     return C;
 }
@@ -9514,7 +9725,7 @@ typedef struct {
 
 /** @brief Bakes one LP face into the LP arena (or its blend arena).
  *
- * The face's corners, flags (tier LP, fill tag, uncov and uncovX,
+ * The face's corners, flags (tier LP, fill tag, ride and uncovX,
  * double-sided, quad, floor, admission, OT bias) and colours go into one or
  * two triangles, the quad split on the i1-i2 diagonal as the walk's LP emit
  * does. A face with an out-of-bank index is skipped, mirroring the walk.
@@ -9538,7 +9749,7 @@ static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
     T.c[2] = tgpu_p4_of(&L->V[F->i2]); T.c[3] = tgpu_p4_of(&L->V[F->i3]);
     T.face_flags = base_ff | (1u << 9)                       /* tier LP */
                  | (F->gapfill ? (1u << 11) : 0u)
-                 | ((uint32_t)F->uncov << 17)                /* LP uncovered */
+                 | ((uint32_t)F->ride << 17)                 /* LP drawn by the uncov-only ride */
                  | ((uint32_t)F->uncovX << 16)               /* ... counting borrowed HP */
                  | (F->dside   ? (1u << 12) : 0u)            /* LP w0&0x80 */
                  | (F->quad    ? (1u << 14) : 0u)
@@ -10202,8 +10413,8 @@ enum { TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY };
  * bins by distance keeps its list verdict, except under extended LOD
  * (openpete_no_lod), where the HP list holds every sector and the LP list
  * none: a drawn-HP sector the draw's own binning lists LP (binLP) and with
- * LP faces off its HP mesh and its borrowed HP faces (nUncovX) draws those
- * faces (uncov-only), the
+ * LP faces off its HP mesh and its borrowed HP faces that stand in for no
+ * scene HP surface (ride, nRide) draws those faces (uncov-only), the
  * geometry the guest draws only from the LP list. The binning gate keeps
  * the guest's near bound and, on a poly-anim sector, draws the LP bank only
  * while the guest re-packs it. A sector with no HP of its own, whose HP is
@@ -10217,7 +10428,7 @@ enum { TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY };
  * @return One of TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY. */
 static int sector_lp_ride(const tscache_t* SC, const tn_wcfg* G, int drawHP, int binLP) {
     if (game_layout.terrain.hp_far)
-        return (openpete_no_lod && drawHP && (binLP || SC->nHpF == 0) && SC->nUncovX > 0)
+        return (openpete_no_lod && drawHP && (binLP || SC->nHpF == 0) && SC->nRide > 0)
                ? TN_RIDE_UNCOVONLY : TN_RIDE_NONE;
     if (G->lod_handoff && !G->tier_faithful && drawHP) return TN_RIDE_FARONLY;
     if (s_gapfill_en && SC->nGapfill > 0) return TN_RIDE_GAPONLY;
@@ -10315,14 +10526,15 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
 /** @brief Returns 1 when an LP face draws in the world pass under its sector's ride-along verdict.
  *
  * A gap-only sector draws its fill-tagged faces and an uncov-only sector
- * its faces off the HP mesh and the borrowed HP faces (uncovX; uncov-only
- * is an extended-LOD verdict); every other sector draws every LP face.
+ * its faces off the HP mesh and the borrowed HP faces that stand in for no
+ * scene HP surface (ride; uncov-only is an extended-LOD verdict); every
+ * other sector draws every LP face.
  * @param SV The sector's verdicts.
  * @param F The LP face.
  * @return 1 when the face draws, else 0. */
 static int tn_lp_face_rides(const tn_secverd* SV, const tsface_t* F) {
     if (SV->lpGapOnly) return F->gapfill != 0;
-    if (SV->lpUncovOnly) return F->uncovX != 0;
+    if (SV->lpUncovOnly) return F->ride != 0;
     return 1;
 }
 
