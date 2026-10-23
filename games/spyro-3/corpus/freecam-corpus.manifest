@@ -118,3 +118,6 @@ fireworks_factory | pos=(-18130, 83228, 13192) yaw=-78 pitch=119
 # skateboard pads (patch-animated colour) flicker at the tick cadence on
 # sub-tick presents under extended LOD
 sunny_villa:2 | pos=(169418, 57750, 40535) yaw=1402 pitch=574
+# haunted_tomb: the archway's side face shows through the wall in front of it
+# (terrain key override across about 1000 world); og shows it too. Blessed pre-fix.
+haunted_tomb | pos=(93215, 91480, 22144) yaw=1493 pitch=49
