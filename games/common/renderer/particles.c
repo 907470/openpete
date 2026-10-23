@@ -439,37 +439,260 @@ static int part_build(CPUState* cpu, const ngte_view* v, const part_item* it,
 /* Records the last pairing walk found stamped with no primitive appended. */
 static int s_stamp_skipped;
 
-/** @brief Whether a stamped record failed its class's test between the stamp and the append, so the routine appended nothing for it.
+/* The GTE rotation and translation the routine projects the next record point
+ * under. The routine loads the camera rotation with a zero translation at
+ * entry (Spyro 2 partsdraw.s:35-42). A class-2 record that passes its window
+ * moves its point's MACs << 2 into the translation (:531-536), saves the
+ * rotation (:562-566) and sets diag(0x1000, 0xA00, 0x1000) (:567-573); the
+ * append path restores the saved rotation and zeroes the translation
+ * (:613-620), but the key skip at :582 branches back to the walk before that
+ * restore, so the records after it project under the diagonal rotation and
+ * the skipped record's translation. The next class-2 append or fixed-layer
+ * record (:147-151, :196-203) zeroes the translation and restores the
+ * rotation it saved, which after such a skip is the diagonal, so the camera
+ * rotation does not return until the routine's next call. Spyro 3 clamps the
+ * class-2 key and never skips, so its state stays the camera's. */
+typedef struct {
+    int R[3][3];
+    int tr[3];
+} part_gte;
+
+static const int k_part_rot_diag[3][3] = {
+    { 0x1000, 0, 0 }, { 0, 0xA00, 0 }, { 0, 0, 0x1000 },
+};
+
+/** @brief Report whether the pairing walk models the GTE state a class-2 key skip carries.
  *
- * Reproduces the routine's test from game_layout.particles.stamp_skip: the
- * record point goes through RTPS as the routine loads it (VZ0 = record X minus
- * camera X; VXY0 = camera Y minus the record's Y plus camera Z minus the
- * record's Z shifted left by 16, one 32-bit add, so a negative low half
- * borrows one from VY0 (partsdraw.s:381-385, :714-720); the camera position
- * shifted right by 2, zero translation), and the ordering key (SZ3 >> 5) -
- * size is compared against the class's key_min.
- * @param cpu Reads the record's position words and size byte.
- * @param v The tick's view; supplies the camera matrix and RAM position.
- * @param rec The stamped record's guest address.
- * @param cls The record's class, below fixed_layer_class.
- * @return 1 when the routine stamped the record and appended nothing. */
-static int part_stamp_skipped(CPUState* cpu, const ngte_view* v, uint32_t rec, int cls) {
-    const struct game_part_stamp_skip* t = &game_layout.particles.stamp_skip[cls];
-    if (!t->on) return 0;
+ * OPENPETE_PART_GTE_CARRY=0 pairs under the camera state for every record,
+ * ignoring the carry: the A/B side of the pairing audit.
+ * @return 1 unless OPENPETE_PART_GTE_CARRY is 0. */
+static int part_gte_carry_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_PART_GTE_CARRY"); on = !(e && *e == '0'); }
+    return on;
+}
+
+/* Run totals: class-2 key skips the walk modelled, stamped records it
+ * predicted under a state other than the camera's, and the subset of those
+ * under the diagonal rotation with a zero translation (past a later class-2
+ * append or fixed-layer record). */
+static unsigned long s_gte_skips, s_gte_carried, s_gte_rot_only;
+/* Carried records whose skip verdict under the camera state differs: the
+ * records a camera-state pairing walk misaligns on. */
+static unsigned long s_gte_flips;
+
+/** @brief Whether `g` differs from the camera state the routine loads at entry.
+ *
+ * @param g The modelled state.
+ * @param v The tick's view; supplies the camera matrix.
+ * @return 1 when the rotation or the translation is not the camera's. */
+static int part_gte_carried(const part_gte* g, const ngte_view* v) {
+    return memcmp(g->R, v->cam_M, sizeof g->R) != 0 || g->tr[0] || g->tr[1] || g->tr[2];
+}
+
+/** @brief RTPS of one pool point under `g`, loaded as the routine loads it.
+ *
+ * VZ0 is X minus the camera X; VXY0 is the camera Y minus Y plus the camera Z
+ * minus Z shifted left by 16, one 32-bit add, so a negative low half borrows
+ * one from VY0 (Spyro 2 partsdraw.s:482-491, :709-722); the camera position is
+ * shifted right by 2 (:45-50).
+ * @param g The modelled GTE state.
+ * @param v The tick's view; supplies the camera RAM position, offsets and H.
+ * @param x The point's X, quarter world units.
+ * @param y The point's Y.
+ * @param z The point's Z.
+ * @param o Receives the GTE's output. */
+static void part_gte_rtps(const part_gte* g, const ngte_view* v, int32_t x, int32_t y,
+                          int32_t z, ngte_rtps_out* o) {
     const int32_t cx = (int32_t)v->cam_ram[0] >> 2;
     const int32_t cy = (int32_t)v->cam_ram[1] >> 2;
     const int32_t cz = (int32_t)v->cam_ram[2] >> 2;
-    const uint32_t w0 = cpu->read_word(rec + game_layout.particles.pos_off);
-    const uint32_t w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
-    const int32_t x = (int32_t)(w0 & 0xFFFFu), y = (int32_t)(w0 >> 16);
-    const int32_t z = (int32_t)(w1 & 0xFFFFu);
-    static const int tr0[3] = { 0, 0, 0 };
     const uint32_t vxy = (uint32_t)(cy - y) + ((uint32_t)(cz - z) << 16);
-    ngte_rtps_out o;
-    ngte_rtps_int(v->cam_M, tr0, (int16_t)(vxy & 0xFFFFu), (int16_t)(vxy >> 16), (int16_t)(x - cx),
-                  v->ofx, v->ofy, (int)v->H_canon, &o);
+    ngte_rtps_int(g->R, g->tr, (int16_t)(vxy & 0xFFFFu), (int16_t)(vxy >> 16),
+                  (int16_t)(x - cx), v->ofx, v->ofy, (int)v->H_canon, o);
+}
+
+/** @brief Whether a stamped record failed its class's test between the stamp and the append, so the routine appended nothing for it.
+ *
+ * Reproduces the routine's test from game_layout.particles.stamp_skip: the
+ * ordering key (SZ3 >> 5) - size, from the record point's RTPS under the GTE
+ * state the routine holds at that record (part_gte_rtps), is compared against
+ * the class's key_min.
+ * @param cpu Reads the record's size byte.
+ * @param rec The stamped record's guest address.
+ * @param cls The record's class, below fixed_layer_class.
+ * @param o The record point's RTPS under the routine's state.
+ * @return 1 when the routine stamped the record and appended nothing. */
+static int part_stamp_skipped(CPUState* cpu, uint32_t rec, int cls, const ngte_rtps_out* o) {
+    const struct game_part_stamp_skip* t = &game_layout.particles.stamp_skip[cls];
+    if (!t->on) return 0;
     const int size = t->size_off ? (int)cpu->read_byte(rec + t->size_off) : 0;
-    return (o.sz3 >> 5) - size < t->key_min;
+    return (o->sz3 >> 5) - size < t->key_min;
+}
+
+/** @brief Advances the modelled GTE state past a stamped record of class cls.
+ *
+ * A PART_ROT_CLASS record that skipped leaves diag(0x1000, 0xA00, 0x1000) and
+ * its point's MACs << 2; one that appended, and a fixed-layer record, zero the
+ * translation and keep the rotation. Every other class leaves the state.
+ * @param g The modelled state.
+ * @param cls The record's class.
+ * @param skipped Whether the record failed its key test.
+ * @param o The record point's RTPS under `g`. */
+static void part_gte_step(part_gte* g, int cls, int skipped, const ngte_rtps_out* o) {
+    if ((uint32_t)cls >= game_layout.particles.fixed_layer_class) {
+        g->tr[0] = g->tr[1] = g->tr[2] = 0;
+        return;
+    }
+    if (cls != PART_ROT_CLASS) return;
+    if (!skipped) { g->tr[0] = g->tr[1] = g->tr[2] = 0; return; }
+    if (!part_gte_carry_on()) return;
+    memcpy(g->R, k_part_rot_diag, sizeof g->R);
+    for (int k = 0; k < 3; k++) g->tr[k] = (int)((uint32_t)o->mac[k] << 2);
+    s_gte_skips++;
+}
+
+static int part_vdbg_on(void);
+static int s_vdbg;
+
+/* OPENPETE_PART_VERTEX_DBG: the pairing audit, per class. `n` paired
+ * primitives were re-run through the routine's integer path under the
+ * modelled GTE state; `id` of them carry a colour word other than their
+ * record's, `pos` a vertex other than the re-run's; `car` were predicted
+ * under a carried state. id + pos of zero with car above zero proves the
+ * pairing followed the guest across a carry. */
+static unsigned long s_aud[4][16];   /* 0 n, 1 id, 2 pos, 3 car */
+
+/** @brief The packed screen word of a captured primitive's vertex k: a POLY_FT4's corner, or a line's endpoint.
+ *
+ * @param p The captured primitive.
+ * @param k The vertex index.
+ * @return The XY word as the routine stored it. */
+static uint32_t part_raw_xy(const ngte_prim* p, int k) {
+    if (p->nv) return p->raw[2u + 2u * (uint32_t)k];
+    const uint32_t words = (p->code & 0x10u) ? 3u : 2u;
+    return p->raw[2u + (uint32_t)k * (words - 1u)];
+}
+
+/** @brief The SXY word of an RTPS output, as mfc2 of SXY2 reads it.
+ *
+ * @param o The RTPS output.
+ * @return SX in the low half, SY in the high half. */
+static uint32_t part_sxy(const ngte_rtps_out* o) {
+    return (uint32_t)(uint16_t)o->sx | ((uint32_t)(uint16_t)o->sy << 16);
+}
+
+/** @brief Re-runs a paired record's vertices through the routine's integer path under the modelled GTE state.
+ *
+ * Spyro 2 partsdraw.s: class 0 stores SXY and SXY + 1 (:746-748); class 1
+ * the two points' SXY (:683-684); class 2 projects (-a2, -a3), (a3, -a2),
+ * (-a3, a2), (a2, a3) with VZ 0 under diag(0x1000, 0xA00, 0x1000) and its
+ * point's MACs << 2 (:531-596), a2 and a3 the size times the table entries at
+ * angle + 32 and + 96 shifted right by 10; class 3 places the corners at
+ * SXY + (w >> 1, h >> 1) minus w and h, each the IR0 = (0x100 * quotient)
+ * >> 12 times the byte, shifted right by 12 (:416-448); class 4 projects the
+ * point displaced by the size times the table entries at the angle and
+ * angle + 64, shifted right by 11 (:225-318). All packed adds are 32-bit.
+ * @param cpu Reads the sine table.
+ * @param v The tick's view.
+ * @param g The state the record point projected under.
+ * @param it The paired item, position words filled.
+ * @param o The record point's RTPS under `g`.
+ * @param xy Receives the packed vertex words.
+ * @return The vertex count, 0 for a class the re-run does not cover. */
+static int part_int_verts(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                          const part_item* it, const ngte_rtps_out* o, uint32_t xy[4]) {
+    const uint32_t sxy = part_sxy(o);
+    const uint32_t size = (it->w1 >> 16) & 0xFFu, top = it->w1 >> 24;
+    const uint32_t tbl = game_layout.sin_table;
+    switch (it->cls) {
+    case PART_DOT_CLASS:
+        xy[0] = sxy; xy[1] = sxy + 1u;
+        return 2;
+    case PART_TWO_POINT_CLASS: {
+        ngte_rtps_out o2;
+        part_gte_rtps(g, v, (int32_t)(it->w1 >> 16), (int32_t)(it->w2 & 0xFFFFu),
+                      (int32_t)(it->w2 >> 16), &o2);
+        xy[0] = sxy; xy[1] = part_sxy(&o2);
+        return 2;
+    }
+    case PART_ROT_CLASS: {
+        const uint32_t ia = ((it->w1 >> 23) + 0x40u) & 0x1FEu;
+        const int s1 = (int16_t)cpu->read_half(tbl + ia), s2 = (int16_t)cpu->read_half(tbl + ia + 0x80u);
+        const int a2 = ((int)size * s1) >> 10, a3 = ((int)size * s2) >> 10;
+        const int ox[4] = { -a2, a3, -a3, a2 }, oy[4] = { -a3, -a2, a2, a3 };
+        int tr[3];
+        for (int k = 0; k < 3; k++) tr[k] = (int)((uint32_t)o->mac[k] << 2);
+        for (int k = 0; k < 4; k++) {
+            ngte_rtps_out c;
+            ngte_rtps_int(k_part_rot_diag, tr, (int16_t)ox[k], (int16_t)oy[k], 0,
+                          v->ofx, v->ofy, (int)v->H_canon, &c);
+            xy[k] = part_sxy(&c);
+        }
+        return 4;
+    }
+    case PART_RECT_CLASS: {
+        const uint32_t ir0 = ((uint32_t)o->q * 0x100u) >> 12;
+        const uint32_t w = (ir0 * size) >> 12, h = (ir0 * top) >> 12;
+        const uint32_t c = sxy + (w >> 1) + ((h >> 1) << 16);
+        xy[3] = c; xy[2] = c - w; xy[1] = c - (h << 16); xy[0] = xy[1] - w;
+        return 4;
+    }
+    case PART_SPIN_CLASS: {
+        const int32_t cx = (int32_t)v->cam_ram[0] >> 2;
+        const int32_t cy = (int32_t)v->cam_ram[1] >> 2;
+        const int32_t cz = (int32_t)v->cam_ram[2] >> 2;
+        const uint32_t ia = (it->w1 >> 23) & 0x1FEu;
+        const int sn = (int16_t)cpu->read_half(tbl + ia), cs = (int16_t)cpu->read_half(tbl + ia + 0x80u);
+        const int a1 = ((int)size * sn) >> 11, a0 = ((int)size * cs) >> 11;
+        const int32_t vz = (int32_t)(it->w0 & 0xFFFFu) - cx;
+        const int32_t vx = cy - (int32_t)(it->w0 >> 16);
+        const uint32_t vy = (uint32_t)(cz - (int32_t)(it->w1 & 0xFFFFu)) << 16;
+        const int dxy[4] = { -a1, a0, -a0, a1 }, dz[4] = { a0, a1, -a1, -a0 };
+        for (int k = 0; k < 4; k++) {
+            const uint32_t p = (uint32_t)(vx + dxy[k]) + vy;
+            ngte_rtps_out c;
+            ngte_rtps_int(g->R, g->tr, (int16_t)(p & 0xFFFFu), (int16_t)(p >> 16),
+                          (int16_t)(vz + dz[k]), v->ofx, v->ofy, (int)v->H_canon, &c);
+            xy[k] = part_sxy(&c);
+        }
+        return 4;
+    }
+    default:
+        return 0;
+    }
+}
+
+/** @brief Adds a paired primitive to the pairing audit: its colour word against its record's, and its vertices against the integer re-run under the modelled state.
+ *
+ * The colour word the routine copies is the record's +0x10 for class 1
+ * (Spyro 2 partsdraw.s:668, :685) and +0xC for the other classes (:164, :272,
+ * :435, :579, :726). At OPENPETE_PART_VERTEX_DBG 2 or more a mismatch prints
+ * one line.
+ * @param cpu Reads the record and the sine table.
+ * @param v The tick's view.
+ * @param g The state the record point projected under.
+ * @param it The paired item.
+ * @param o The record point's RTPS under `g`. */
+static void part_pair_audit(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                            const part_item* it, const ngte_rtps_out* o) {
+    if (!part_vdbg_on()) return;
+    const int c = it->cls & 0xF;
+    const int car = part_gte_carried(g, v);
+    const uint32_t col = cpu->read_word(it->rec + (it->cls == PART_TWO_POINT_CLASS ? 0x10u : 0x0Cu));
+    const int id = it->p.raw[1] != col;
+    uint32_t xy[4];
+    const int nv = part_int_verts(cpu, v, g, it, o, xy);
+    int pos = 0;
+    for (int k = 0; k < nv; k++) pos |= part_raw_xy(&it->p, k) != xy[k];
+    s_aud[0][c]++;
+    s_aud[1][c] += (unsigned long)id;
+    s_aud[2][c] += (unsigned long)pos;
+    s_aud[3][c] += (unsigned long)car;
+    if (s_vdbg >= 2 && (id || pos))
+        fprintf(stderr, "[part-audit f=%u rec=%08X c=%d car=%d id=%d pos=%d g0=%08X e0=%08X]\n",
+                openpete_frame, it->rec, it->cls, car, id, pos, part_raw_xy(&it->p, 0),
+                nv ? xy[0] : 0u);
 }
 
 /** @brief Pairs each captured primitive with the record that appended it and stores the record's view-Z as a scene depth.
@@ -477,7 +700,9 @@ static int part_stamp_skipped(CPUState* cpu, const ngte_view* v, uint32_t rec, i
  * The routine appends in pool order and at most one primitive per record, so
  * walking the pool and the captured list together aligns them. A record
  * emitted a primitive when its stamp byte is set and it passes its class's
- * test between the stamp and the append (part_stamp_skipped), or when its
+ * test between the stamp and the append (part_stamp_skipped, on the record
+ * point's RTPS under the GTE state the routine carries to that record,
+ * part_gte), or when its
  * class links at the fixed front bucket, where the routine stamps nothing and
  * always appends; the latter take the front depth and keep no record. A paired record keeps its
  * position words, its projected point (and a two-point class's second point)
@@ -497,6 +722,9 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
 
     int i = 0;
     s_stamp_skipped = 0;
+    part_gte g;
+    memcpy(g.R, v->cam_M, sizeof g.R);
+    g.tr[0] = g.tr[1] = g.tr[2] = 0;
     for (uint32_t rec = base; i < s_item_n; rec += stride) {
         const int sel = (int)(int16_t)(uint16_t)cpu->read_half(rec + game_layout.particles.sel_off);
         if (sel < 0) {
@@ -505,21 +733,47 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
         }
         const int cls = (sel >> PART_CLASS_SHIFT) & PART_CLASS_MASK;
         if ((uint32_t)cls >= game_layout.particles.fixed_layer_class) {
+            part_gte_step(&g, cls, 0, NULL);
             s_item[i].cls = cls;
             s_item[i].owner = player_hide_particle_owner(cpu, rec);
             s_item[i++].depth = front;
             continue;
         }
         if (cpu->read_byte(rec + game_layout.particles.drawn_off) == 0) continue;
-        if (part_stamp_skipped(cpu, v, rec, cls)) { s_stamp_skipped++; continue; }
 
         part_item* it = &s_item[i];
-        it->cls = cls;
-        it->rec = rec;
-        it->owner = player_hide_particle_owner(cpu, rec);
         it->w0 = cpu->read_word(rec + game_layout.particles.pos_off);
         it->w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
         it->w2 = cpu->read_word(rec + game_layout.particles.pos_off + 8u);
+        ngte_rtps_out go;
+        part_gte_rtps(&g, v, (int32_t)(it->w0 & 0xFFFFu), (int32_t)(it->w0 >> 16),
+                      (int32_t)(it->w1 & 0xFFFFu), &go);
+        s_gte_carried += (unsigned long)part_gte_carried(&g, v);
+        s_gte_rot_only += (unsigned long)(part_gte_carried(&g, v) && !g.tr[0] && !g.tr[1] && !g.tr[2]);
+        const int skip = part_stamp_skipped(cpu, rec, cls, &go);
+        if (s_vdbg > 0 && part_gte_carried(&g, v)) {
+            part_gte cam;
+            memcpy(cam.R, v->cam_M, sizeof cam.R);
+            cam.tr[0] = cam.tr[1] = cam.tr[2] = 0;
+            ngte_rtps_out co;
+            part_gte_rtps(&cam, v, (int32_t)(it->w0 & 0xFFFFu), (int32_t)(it->w0 >> 16),
+                          (int32_t)(it->w1 & 0xFFFFu), &co);
+            const int cskip = part_stamp_skipped(cpu, rec, cls, &co);
+            s_gte_flips += (unsigned long)(cskip != skip);
+            if (s_vdbg >= 2)
+                fprintf(stderr, "[part-carry f=%u rec=%08X c=%d skip=%d cam_skip=%d sz3=%d cam_sz3=%d]\n",
+                        openpete_frame, rec, cls, skip, cskip, go.sz3, co.sz3);
+        }
+        if (skip) {
+            s_stamp_skipped++;
+            part_gte_step(&g, cls, 1, &go);
+            continue;
+        }
+        it->cls = cls;
+        it->rec = rec;
+        it->owner = player_hide_particle_owner(cpu, rec);
+        part_pair_audit(cpu, v, &g, it, &go);
+        part_gte_step(&g, cls, 0, &go);
         part_state st;
         part_state_tick(it, &st);
         it->nb = (uint8_t)part_build(cpu, v, it, &st, it->bx, it->by);
@@ -765,7 +1019,7 @@ static double s_feed_alpha = -1.0;
  * of one record between consecutive captured sets, the step a vertex makes
  * at the tick boundary that its record's motion does not; `miss` counts the
  * paired primitives part_build built nothing for. A count of zero measured
- * nothing. */
+ * nothing. The pairing audit (part_pair_audit) prints beside it. */
 typedef struct { unsigned long n; double sum, max; } part_err_acc;
 typedef struct { unsigned long n, in; double sum[2], lo[2], hi[2]; } part_cal_acc;
 static part_cal_acc s_vcal[16];
@@ -790,6 +1044,13 @@ static void part_vertex_report(void) {
                     e[j]->n ? e[j]->sum / (double)e[j]->n : 0.0, e[j]->max);
         fprintf(stderr, " miss=%lu\n", s_vmiss[c]);
     }
+    fprintf(stderr, "[part-audit] carry=%d skips=%lu carried=%lu rot_only=%lu flips=%lu",
+            part_gte_carry_on(), s_gte_skips, s_gte_carried, s_gte_rot_only, s_gte_flips);
+    for (int c = 0; c < 16; c++)
+        if (s_aud[0][c])
+            fprintf(stderr, " c%d:n=%lu id=%lu pos=%lu car=%lu", c, s_aud[0][c], s_aud[1][c],
+                    s_aud[2][c], s_aud[3][c]);
+    fprintf(stderr, "\n");
 }
 
 /** @brief Whether OPENPETE_PART_VERTEX_DBG is set; latched on the first call, which registers part_vertex_report at exit.
@@ -798,7 +1059,7 @@ static void part_vertex_report(void) {
 static int part_vdbg_on(void) {
     if (s_vdbg < 0) {
         const char* e = getenv("OPENPETE_PART_VERTEX_DBG");
-        s_vdbg = (e && *e && *e != '0');
+        s_vdbg = (e && *e && *e != '0') ? (atoi(e) > 1 ? atoi(e) : 1) : 0;
         if (s_vdbg) atexit(part_vertex_report);
     }
     return s_vdbg;

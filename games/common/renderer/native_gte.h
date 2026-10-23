@@ -249,9 +249,11 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
                       double ofx, double ofy, const ngte_view* v,
                       int sxy_clamp, ngte_proj* o);
 
-/** One RTPS vertex as the GTE leaves it: SZ3 and SXY2. */
+/** One RTPS vertex as the GTE leaves it: MAC1-3, SZ3, the divide's quotient and SXY2. */
 typedef struct {
+    int32_t mac[3];       /**< MAC1-3 after the sf=1 shift, unsaturated */
     int32_t sz3;          /**< MAC3 saturated to 0..0xFFFF */
+    int32_t q;            /**< the UNR quotient H / SZ3, capped at 0x1FFFF */
     int16_t sx, sy;       /**< SX2, SY2, saturated to -0x400..0x3FF */
 } ngte_rtps_out;
 
@@ -268,7 +270,7 @@ typedef struct {
  * @param ofx OFX in pixels
  * @param ofy OFY in pixels
  * @param H   the GTE's H
- * @param out SZ3 and SXY2 */
+ * @param out MAC1-3, SZ3, the quotient and SXY2 */
 void ngte_rtps_int(const int M[3][3], const int tr[3], int vx, int vy, int vz,
                    double ofx, double ofy, int H, ngte_rtps_out* out);
 

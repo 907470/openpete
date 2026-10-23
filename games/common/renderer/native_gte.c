@@ -214,8 +214,10 @@ void ngte_rtps_int(const int M[3][3], const int tr[3], int vx, int vy, int vz,
     int64_t mac[3];
     for (int k = 0; k < 3; k++)
         mac[k] = (((int64_t)tr[k] << 12) + M[k][0] * V[0] + M[k][1] * V[1] + M[k][2] * V[2]) >> 12;
+    for (int k = 0; k < 3; k++) out->mac[k] = (int32_t)mac[k];
     out->sz3 = (int32_t)ngte_sat64(mac[2], 0, 0xFFFF);
     const int64_t q = ngte_unr_divide(H, out->sz3);
+    out->q = (int32_t)q;
     const int64_t x = (ngte_sat64(mac[0], -0x8000, 0x7FFF) * q + llround(ofx * 65536.0)) >> 16;
     const int64_t y = (ngte_sat64(mac[1], -0x8000, 0x7FFF) * q + llround(ofy * 65536.0)) >> 16;
     out->sx = (int16_t)ngte_sat64(x, -0x400, 0x3FF);
