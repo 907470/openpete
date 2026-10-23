@@ -283,3 +283,10 @@ sunny-villa-level-entry|4300|200||4370,4430
 # Cutscene letterbox bars growing 2 PSX rows per tick (VBL 1605-1627): the
 # intermediate leg must show them between the two ticks. Blessed pre-fix.
 agent_9s_lab-letterbox|1605|2||1607,1617|--skip-to-level agent_9s_lab
+# spooky-swamp-mole-glow-edge: Spooky Swamp sub-area 2 under a fixed freecam
+# pose (engaged at VBL 2600). At VBL 2800 the left mole's lamp glow centre is
+# at x -32 of the 512-wide frame, inside the 16:9 left band; the glow routine's
+# lateral cull (the 4:3 frame plus a fixed margin, mobyfunc.s 8002EE58) drops
+# the record and the native fan was absent from VBL ~2765. The movie is the
+# first 2800 VBLs of a Cross-every-20-VBLs movie. Blessed pre-fix.
+spooky-swamp-mole-glow-edge|2800|2||2800|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FREECAM_POSE=68908,122952,5424,624,17,9
