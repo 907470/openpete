@@ -283,6 +283,24 @@ static uint32_t rd32(uint32_t addr) {
     return v;
 }
 
+/** @brief Capture the per-object pair of every moby a live glow record anchors to.
+ *
+ * The ring centre reads the owner's m_Position through the record's +0x08
+ * pointer, and the sub-tick bracket lerps that position only for a moby it
+ * holds a pair for. An owner outside the array g_LevelMobys points at (a mod
+ * that publishes its own copy of the array through the present) gets its
+ * pair here; one already captured by the array walk re-captures
+ * byte-identical, which is a no-op. */
+static void capture_glow_owner_mobys(void) {
+    uint32_t owners[16];
+    const int on = particle_glow_owner_mobys(owners);
+    for (int k = 0; k < on; ++k) {
+        const void* host = openpete_psx_to_host_span(owners[k], openpete_interp_objs_blob_bytes());
+        if (host) openpete_interp_objs_capture(game_interp_moby_key(owners[k]), host,
+                                               openpete_interp_objs_blob_bytes());
+    }
+}
+
 /** @brief The captured state outside g_LevelMobys.
  *
  * It covers the HUD-icon and particle pools, the sparkle, glow and dragon-star
@@ -360,6 +378,7 @@ static void spyro_interp_extra_pools(void) {
         if (cnt <= 0) continue;                 /* inactive slot */
         openpete_interp_objs_capture(ga, host, 0x24u);
     }
+    capture_glow_owner_mobys();
 
     /* SHADED render list (G_SCRATCH+0x2400 - flat Moby*[256] the .s shaded
      * renderer walks): capture EVERY listed moby. Mostly a dedup-overwrite of

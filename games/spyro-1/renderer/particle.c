@@ -2206,6 +2206,29 @@ static cut_held_sets_t s_star_held  = { star_rec_swap,   &s_star_pc.n,  "star", 
  * is read). */
 typedef int (*pool_live_fn)(const uint8_t* rec);
 
+int particle_glow_owner_mobys(uint32_t out[16]) {
+    int n = 0;
+    for (uint32_t i = 0; i < 16u; ++i) {
+        const uint8_t* g = (const uint8_t*)openpete_psx_to_host_span(D_GLOWS + i * 0x24u, 0x24u);
+        if (!g) break;
+        int32_t cnt; uint32_t mpp;
+        memcpy(&cnt, g + 0x00, 4);
+        memcpy(&mpp, g + 0x08, 4);
+        if (cnt <= 0 || mpp < 0x80000000u + 0x0Cu) continue;
+        const uint32_t m = mpp - 0x0Cu;                      /* Moby.m_Position is +0x0C */
+        const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(m, 0x58u);
+        if (!mh || mh[0x48] >= 0x80u) continue;              /* unmapped or dead (m_State) */
+        uint16_t cls; memcpy(&cls, mh + 0x36, 2);            /* m_Class */
+        const uint8_t* row = (const uint8_t*)openpete_psx_to_host_span(G_MODELS + 4u * cls, 4u);
+        uint32_t model = 0; if (row) memcpy(&model, row, 4);
+        if (cls >= 512u || model == 0u) continue;            /* not a moby with a model row */
+        int dup = 0;
+        for (int k = 0; k < n; ++k) if (out[k] == m) dup = 1;
+        if (!dup) out[n++] = m;
+    }
+    return n;
+}
+
 /** @brief Whether a glow record is live: its ring count (+0x00) is positive.
  *
  * @param rec The record.

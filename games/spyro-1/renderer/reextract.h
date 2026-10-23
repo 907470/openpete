@@ -100,6 +100,15 @@ void player_reextract(struct CPUState* cpu);
  * @param cpu The guest CPU state.
  * @param hold Nonzero on a held camera cut. */
 void particle_reextract(struct CPUState* cpu, int hold);
+/** @brief Collect the owner mobys of the live glow records into out.
+ *
+ * A live record (D_80078800[16], stride 0x24) has a positive ring count at
+ * +0x00 and a MobyPos pointer at +0x08 into its owner's m_Position (+0x0C).
+ * The owner is kept when its record is mapped, alive (m_State below 0x80)
+ * and of a class with a model row. Duplicates are dropped.
+ * @param out Receives up to 16 owner moby addresses.
+ * @return The number written. */
+int particle_glow_owner_mobys(uint32_t out[16]);
 /** @brief Sub-tick re-extract that replays the tracer snapshot against the current camera.
  *
  * Does nothing unless the tracer path was drawn on the canonical tick, so a

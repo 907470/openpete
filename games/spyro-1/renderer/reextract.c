@@ -1536,6 +1536,34 @@ static int camera_cut(const openpete_interp_snapshot_t* prev2,
     return why != NULL;
 }
 
+/* The bracket's second walk: the mobys the canonical render drew from outside
+ * the moby array, then the owners of the live glow records, without repeats.
+ * A repeat would be saved after its first lerp and restored over the original. */
+#define EXTRA_DRAWN_MAX 1024
+static uint32_t s_extra_set[EXTRA_DRAWN_MAX + 16];
+
+/** @brief Fill s_extra_set with the canonical drawn set followed by the glow owners not already in it.
+ *
+ * A glow ring's centre reads its owner's m_Position through the record's
+ * MobyPos pointer, so an owner the array walk does not reach (the array
+ * g_LevelMobys points at holds a copy of it) would draw the ring at the
+ * tick's position under a sub-tick camera and body.
+ * @return The number of entries. */
+static int moby_glow_extra_set(void) {
+    const uint32_t* drawn = NULL;
+    int n = moby_native_canon_drawn_mobys(&drawn);
+    if (n > EXTRA_DRAWN_MAX) n = EXTRA_DRAWN_MAX;
+    if (n > 0) memcpy(s_extra_set, drawn, (size_t)n * sizeof *drawn);
+    uint32_t owners[16];
+    const int on = particle_glow_owner_mobys(owners);
+    for (int k = 0; k < on; ++k) {
+        int dup = 0;
+        for (int i = 0; i < n && !dup; ++i) dup = s_extra_set[i] == owners[k];
+        if (!dup) s_extra_set[n++] = owners[k];
+    }
+    return n;
+}
+
 /** @brief Sub-tick bracket for the dragon-rescue star record D_DRAGONSTAR.
  *
  * The record is 0x2C bytes: +0x00 gate, +0x04 world position, +0x10 the draw's
@@ -2270,8 +2298,8 @@ static void game_reextract_body(void* cpu_v) {
          * g_LevelMobys (the balloonist's relocated balloon - see
          * moby_native_canon_drawn_mobys). Entries inside the array's extent were
          * already handled by phase 0 and are skipped. */
-        const uint32_t* drawn = NULL;
-        int drawn_n = moby_native_canon_drawn_mobys(&drawn), drawn_i = 0;
+        int drawn_n = moby_glow_extra_set(), drawn_i = 0;
+        const uint32_t* drawn = s_extra_set;
         uint32_t arr_end = arr;    /* one past the last slot phase 0 walked */
         {
             uint32_t m = arr; int guard = 0;
