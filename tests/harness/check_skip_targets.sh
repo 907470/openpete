@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # check_skip_targets.sh - the skip-target row harness.
 #
-# Runs every row of games/<slug>/corpus/skip-targets.manifest headless. Each row is
+# Runs every row of games/<slug>/corpus/skip-targets.manifest headless (a
+# mode:windowed row windowed, below). Each row is
 # a target of --skip-to-cutscene (or --skip-to-area); the skip module prints
 # one release line, "[skip-to-level] level playable - presents resume at
 # vbl=N" followed by the engagement values it reads back from RAM at the
@@ -30,6 +31,19 @@
 #             log:A>>B      a line containing A precedes the first line
 #                           containing B, and B occurs
 #             !log:TEXT     no log line contains TEXT
+#           The token mode:windowed runs the row windowed instead (below).
+#
+# Windowed rows (mode:windowed): the run opens a window on a virtual X
+# display (xvfb-run -a, SDL_VIDEODRIVER=x11, WAYLAND_DISPLAY unset) with the
+# native renderer, --input-lock --vibration 0 and
+# OPENPETE_CARRY_EPOCH_PROBE=1, so the skip's present hold engages, which a
+# headless run never does. Beyond the release-line test the row passes only
+# when the log has no OVERLAY_CARRY_MAX line (the 2D carry set overflowed at
+# the first present after the hold), has a "held presents=" line (the hold
+# held at least one present), and the first "[carry" probe line with a
+# mismatch field after the release line reads mismatch=0. A missing
+# "held presents=" line or probe line after the release is VACUOUS: the hold
+# or the probe never engaged. A missing xvfb-run fails the row.
 #
 #   tests/harness/check_skip_targets.sh [--game SLUG] [--build-dir=DIR] [--filter=NAME]
 #
@@ -75,15 +89,48 @@ if (( ${#NAMES[@]} == 0 )); then
     echo "check_skip_targets: FAIL (no rows in $MANIFEST${FILTER:+ matching $FILTER})"; exit 1
 fi
 
-# run TAG ARGS FRAMES [ENV...]: one headless session, log and exit code
-# under $OUT.
+# windowed EXPECT: status 0 when the row's expect field holds mode:windowed.
+windowed() { [[ " $1 " == *' mode:windowed '* ]]; }
+
+# run TAG ARGS FRAMES EXPECT [ENV...]: one session, headless or (mode:windowed)
+# on a virtual X display; log and exit code under $OUT.
 run() {
-    local tag="$1" args="$2" frames="$3"; shift 3
+    local tag="$1" args="$2" frames="$3" expect="$4"; shift 4
     local -a argv; read -ra argv <<<"$args"
-    env "$@" timeout -k 10 900 "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
-        "${PG_RUN_ARGS[@]}" --no-card --mute 1 "${argv[@]}" \
-        --frame-limit "$frames" >"$OUT/$tag.log" 2>&1
+    if windowed "$expect"; then
+        if ! command -v xvfb-run >/dev/null; then
+            echo "xvfb-run not found" >"$OUT/$tag.log"; echo 127 >"$OUT/$tag.rc"; return
+        fi
+        env -u WAYLAND_DISPLAY SDL_VIDEODRIVER=x11 OPENPETE_CARRY_EPOCH_PROBE=1 "$@" \
+            timeout -k 10 900 xvfb-run -a -s "-screen 0 1280x720x24" \
+            "$PG_BIN" --no-config --disc "$PG_DISC" "${PG_RUN_ARGS[@]}" \
+            --no-card --mute 1 --input-lock --vibration 0 --renderer vk \
+            --lod original --osd off --version-osd off --perf-stats off \
+            --window 1280x720 "${argv[@]}" \
+            --frame-limit "$frames" >"$OUT/$tag.log" 2>&1
+    else
+        env "$@" timeout -k 10 900 "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
+            "${PG_RUN_ARGS[@]}" --no-card --mute 1 "${argv[@]}" \
+            --frame-limit "$frames" >"$OUT/$tag.log" 2>&1
+    fi
     echo $? >"$OUT/$tag.rc"
+}
+
+# windowed_verdict LOG: prints "PASS <held line> | <probe line>" when LOG
+# meets the windowed-row criteria (header), else "FAIL <reason>" or
+# "VACUOUS <reason>".
+windowed_verdict() {
+    local log="$1" rl held carry
+    if grep -q 'OVERLAY_CARRY_MAX' "$log"; then
+        echo "FAIL OVERLAY_CARRY_MAX line: $(grep -m1 'OVERLAY_CARRY_MAX' "$log")"; return
+    fi
+    held="$(grep -m1 'held presents=' "$log")"
+    [[ -n "$held" ]] || { echo "VACUOUS no 'held presents=' line (no present was held)"; return; }
+    rl="$(grep -n -m1 '\[skip-to-level\] level playable' "$log" | cut -d: -f1)"
+    carry="$(tail -n +"$((rl + 1))" "$log" | grep -m1 '\[carry f=.* mismatch=')"
+    [[ -n "$carry" ]] || { echo "VACUOUS no [carry probe line after the release line"; return; }
+    [[ "$carry" == *' mismatch=0 '* ]] || { echo "FAIL first [carry line after release: $carry"; return; }
+    echo "PASS $held | $carry"
 }
 
 # log_token LOG TOKEN: status 0 when LOG meets the log token (see the
@@ -114,12 +161,18 @@ classify() {
     [[ -n "$line" ]] || { echo "FAIL no release line (exit $rc)"; return; }
     for tok in $expect; do
         case "$tok" in
+            mode:windowed) ;;
             '!log:'*|log:*)
                 log_token "$log" "$tok" || { echo "FAIL log token '$tok' unmet: $line"; return; };;
             *)
                 [[ " $line " == *" $tok "* ]] || { echo "FAIL token '$tok' absent: $line"; return; };;
         esac
     done
+    if windowed "$expect"; then
+        local wv; wv="$(windowed_verdict "$log")"
+        [[ "$wv" == PASS* ]] || { echo "$wv"; return; }
+        line="$line | ${wv#PASS }"
+    fi
     [[ "$rc" == 0 ]] || { echo "FAIL exit $rc: $line"; return; }
     echo "PASS $line"
 }
@@ -127,11 +180,11 @@ classify() {
 # Rows and the negative control, JOBS at a time.
 running=0
 for i in "${!NAMES[@]}"; do
-    run "${NAMES[$i]}" "${ARGS[$i]}" "${FRAMES[$i]}" &
+    run "${NAMES[$i]}" "${ARGS[$i]}" "${FRAMES[$i]}" "${EXPECT[$i]}" &
     running=$((running + 1))
     if (( running >= JOBS )); then wait -n; running=$((running - 1)); fi
 done
-run "negative-${NAMES[0]}" "${ARGS[0]}" "${FRAMES[0]}" OPENPETE_SKIP_FAILSAFE_VBL=1 &
+run "negative-${NAMES[0]}" "${ARGS[0]}" "${FRAMES[0]}" "${EXPECT[0]}" OPENPETE_SKIP_FAILSAFE_VBL=1 &
 wait
 
 status=0

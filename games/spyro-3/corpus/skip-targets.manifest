@@ -90,3 +90,12 @@ no_hard_feelings               | --skip-to-cutscene no_hard_feelings            
 byrd_james_byrd                | --skip-to-cutscene byrd_james_byrd                                                                                        | 1973   | cutscene=byrd_james_byrd n=12 level=78
 a_duplicitous_larcenous_ursine | --skip-to-cutscene a_duplicitous_larcenous_ursine                                                                         | 1973   | cutscene=a_duplicitous_larcenous_ursine n=13 level=79
 the_dancing_bear               | --skip-to-cutscene the_dancing_bear                                                                                       | 1973   | cutscene=the_dancing_bear n=14 level=80
+
+# Windowed --skip-to-level row (mode:windowed, forms in
+# tests/harness/check_skip_targets.sh). The skip holds presents back while
+# the level loads; the first present after the release must not carry the
+# load and demo screens' 2D over the level: no OVERLAY_CARRY_MAX line, a
+# "held presents=" line, and the first probe line after the release reads
+# mismatch=0.
+# name                         | args                         | frames | expect
+s3-haunted-tomb-first-present  | --skip-to-level haunted_tomb | 2200   | mode:windowed
