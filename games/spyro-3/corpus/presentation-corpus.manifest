@@ -314,3 +314,10 @@ haunted-tomb-coffin-pillar|2717|2||2717|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FR
 # terrain and paint through the hedge-covered crest in front of them. The movie
 # is the first 2829 VBLs of a Cross-every-20-VBLs movie. Blessed pre-fix.
 bamboo-terrace-stilts-hedge|2829|2||2829|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FREECAM_POSE=135376,96500,18404,807,0,-1
+# sunrise-spring-surface-swim@glintstill: the camera held still from VBL 1845
+# (scripted freecam engage at the follow camera's pose) with gem glints in
+# view, near stars and far crosses (100-240 px painted at 1851-1861). The
+# routine's truncations put each star corner 0-1.3 px off its exact position
+# by an amount that changes every tick, so a spinning star's shape changes at
+# each tick by more than its spin while the camera is still. Blessed pre-fix.
+sunrise-spring-surface-swim@glintstill|1855|2||1855,1857|OPENPETE_FREECAM=1 OPENPETE_FREECAM_AT_VBL=1845
