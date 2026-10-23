@@ -683,8 +683,10 @@ static const hook_bracket_desc k_bracket = {
  * view. In a view wider than 4:3, or with the cull log on, the fans the
  * routine's lateral test dropped are rebuilt (glow_wide_reveal) whether or
  * not it appended anything. The set is fed natively when it holds anything,
- * the scene is live and RP_GLOW is selected. The census runs on every taken
- * call.
+ * the scene is live and RP_GLOW is selected; a non-empty set from a call that
+ * appended nothing marks RP_GLOW drawn (render_path_mark_drawn), since only
+ * a polybuf interval or the mark makes the sub-tick re-extract feed the set.
+ * The census runs on every taken call.
  * @param cpu The guest CPU state.
  * @param addr The hooked entry address.
  * @return 0 when the call is refused or the bracket declines, else 1 (the
@@ -714,6 +716,9 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
             glow_mark_sparx(cpu);
             render_material_level_push(cpu);
             if (feed && render_path_enabled(RP_GLOW)) glow_feed_native();
+            /* A set of rebuilt fans alone records no polybuf interval; the
+             * mark keeps the sub-tick re-extract feeding it. */
+            if (endp <= startp) render_path_mark_drawn(RP_GLOW);
         }
     }
     glow_census(startp, endp, fed_before);
