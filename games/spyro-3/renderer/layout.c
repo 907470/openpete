@@ -601,6 +601,9 @@ const game_layout_t spyro3_game_layout = {
         .pyr_x      = 0x100,             /* asm/mobyfunc.s:2309 */
         .pyr_y      = 0xC0,              /* asm/mobyfunc.s:2319 */
         .near_vz    = 0x2000,            /* asm/mobyfunc.s:2347, the branch depth */
+        .outline    = D_GLINT_OUTLINE,      /* asm/mobyfunc.s:2360, 2457 */
+        .quads      = D_GLINT_QUADS,        /* asm/mobyfunc.s:2375 */
+        .colours    = D_GLINT_COLOURS,      /* asm/mobyfunc.s:2328 */
     },
     .zap = {
         .hook       = F_GLINT2_DRAW,

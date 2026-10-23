@@ -625,6 +625,9 @@ const game_layout_t spyro2_game_layout = {
         .pyr_x      = 0x100,             /* mobyfunc.s:2306 */
         .pyr_y      = 0xC0,              /* mobyfunc.s:2316 */
         .near_vz    = 0x2000,            /* mobyfunc.s:2344, the branch depth */
+        .outline    = D_GLINT_OUTLINE,      /* mobyfunc.s:2356, 2454 */
+        .quads      = D_GLINT_QUADS,        /* mobyfunc.s:2372 */
+        .colours    = D_GLINT_COLOURS,      /* mobyfunc.s:2325 */
     },
     .zap = {
         .hook       = F_GLINT2_DRAW,

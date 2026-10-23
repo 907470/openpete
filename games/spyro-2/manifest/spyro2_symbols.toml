@@ -311,6 +311,21 @@ addr = 0x80067D00
 note = "the gem-glint pool the renderer walks, 16 records of 0x10 bytes ending at +0x100 (mobyfunc.s:2205-2207): +0x00 world X, +0x04 Y, +0x08 Z, +0x0C packed {remaining lifetime, size, spin phase, colour-table row}; the renderer subtracts the tick's elapsed count from the lifetime byte and stores it back, so a zero byte is a free or expired slot (mobyfunc.s:2230-2238). The colour table is D_8006460C, rows of three words {pale centre, spike tip, near-black waist}, every word carrying 0x3A in its top byte"
 
 [[symbol]]
+name = "D_GLINT_OUTLINE"
+addr = 0x80064598
+note = "the gem-glint outline (asm/data/game.data.s:8175): seventeen packed int16 (x, y) star points, the centre then sixteen rim points (four spikes at radius 0x200, three shoulder points between each pair), followed at +0x44 by the far cross's four arm ends at radius 0x100; the renderer RTPSes them under its size-and-spin basis"
+
+[[symbol]]
+name = "D_GLINT_QUADS"
+addr = 0x800645EC
+note = "the gem-glint star's eight quads (asm/data/game.data.s:8201): one word per POLY_G4, four byte indices into D_GLINT_OUTLINE, vertex 0 in the top byte; vertex 2 is the shared centre (index 0)"
+
+[[symbol]]
+name = "D_GLINT_COLOURS"
+addr = 0x8006460C
+note = "the gem-glint colour table (asm/data/game.data.s:8214): rows of three words {pale centre, spike tip, near-black waist}, every word carrying 0x3A in its top byte, indexed by the record's packed byte 3"
+
+[[symbol]]
 name = "F_GLINT2_DRAW"
 addr = 0x8004B194
 kind = "function"

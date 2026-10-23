@@ -1042,7 +1042,14 @@ typedef struct game_layout {
      * and a packed word at `packed_off` holding the remaining lifetime in
      * byte 0. The routine halves the camera-relative offset before rotating,
      * so `box`, `near_z`, `far_z`, `near_vz` and the pyramid bounds `pyr_x`
-     * and `pyr_y` are all in half-world units. */
+     * and `pyr_y` are all in half-world units.
+     *
+     * The routine's constant tables: `outline` holds seventeen packed int16
+     * (x, y) star points followed by the cross's four, `quads` eight words
+     * of four byte indices into those points (one word per quad, first
+     * corner in the top byte), and `colours` rows of three colour words
+     * {pale centre, spike tip, near-black waist} indexed by packed byte 3.
+     * 0 = not located. */
     struct {
         uint32_t hook;
         uint32_t pool;
@@ -1054,6 +1061,9 @@ typedef struct game_layout {
         int32_t  near_z, far_z;
         int32_t  pyr_x, pyr_y;
         int32_t  near_vz;
+        uint32_t outline;
+        uint32_t quads;
+        uint32_t colours;
     } glint;
 
     /* Zoe's zap: one ragged textured ribbon per live record of a third pool,
