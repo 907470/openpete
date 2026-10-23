@@ -195,3 +195,6 @@ docs-look@lodext|1800|100||1900|--skip-to-level artisans --freecam-pose 84992,45
 # Cutscene letterbox bars growing 4 PSX rows per tick (VBL 1697-1709): the
 # intermediate leg must show them between the two ticks. Blessed pre-fix.
 artisans-letterbox|1697|2||1699,1705|--skip-to-level artisans --player-pose pos=(84992,52224,9486)yaw=2048
+# @subtickdome: sub-tick presents of a derived portal dome (extended-LOD forced
+# dome, 16:9 strip reveal), which held tick N's camera rotation.
+portal-cyclorama-cull@subtickdome        | 1640  | 100  |        | 1648,1660,1664 |
