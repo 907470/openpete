@@ -4540,6 +4540,32 @@ static void run_canonical_capture(void)
     if (pt_was) openpete_present_thread_set_active(1);
 }
 
+/** @brief Hold back the canonical present owed during the skip-to-level present fast-forward, and owe the latest one again when it ends.
+ *
+ * While the fast-forward is up the canonical present block does not run.
+ * Each owed present (openpete_present_pending) is consumed here instead,
+ * and the native scene's 2D accumulation is bounded to it
+ * (openpete_native_scene_hold_2d) as its capture would have bounded it;
+ * without that the accumulation spans the whole hold and the first present
+ * after it draws the hold's 2D (the load screen's text and pictures) over
+ * the level. On the first iteration after the fast-forward ends, a present
+ * held back during it is owed again, so the latest held scene is presented
+ * at once, as it was while the flag stayed raised through the hold. Runs
+ * before the canonical present block on every iteration. */
+static void held_present_gate(void)
+{
+    static int s_owed;
+    if (openpete_skip_present_until_level) {
+        if (!openpete_present_pending) return;
+        openpete_present_pending = 0;
+        s_owed = 1;
+        if (openpete_native_scene_enabled()) openpete_native_scene_hold_2d();
+        return;
+    }
+    if (s_owed) openpete_present_pending = 1;
+    s_owed = 0;
+}
+
 /* Scripted pause for windowed harnesses, OPENPETE_PAUSE_AT_VBL=N[,M[,K]]:
  * pause at VBL N through the dev overlay's pause request (the pause key's
  * path), then, after every M paused idle iterations (each one repaints the
@@ -6416,6 +6442,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * frozen-while-stuck semantics. 0 until the first canonical present
          * (spine stays off until there is something real to interpolate). */
         static op_time_t s_last_canon_present_ns = 0;
+        held_present_gate();
         if (openpete_present_pending && !openpete_skip_present_until_level) {
             /* Canonical draw-tick counter: the Nth increment is the same sim
              * moment in every run (tick-deterministic sim), unlike

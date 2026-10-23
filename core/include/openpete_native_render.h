@@ -2641,6 +2641,18 @@ void     openpete_phase_set_count(int which, int n);
  * the previous set equal to it, and the retained area's held list is left
  * as it was. */
 void openpete_native_scene_capture_overlay(void);
+/** @brief Bound the 2D accumulation to the latest canonical present the host holds back.
+ *
+ * Call once per owed canonical present that is not presented (the
+ * skip-to-level present fast-forward), where its capture would have run.
+ * Runs the pre-capture hook, so the 2D feeder releases its pending batch
+ * as a capture would, then discards the tris accumulated before the
+ * previous held present, keeping the 2D of the latest one, and clears the
+ * overflow count. The carry and its previous set are left as they are. The
+ * first capture after the hold presents the latest held scene and commits
+ * that scene's 2D and anything fed after it, as a capture that had run at
+ * every owed present would. */
+void openpete_native_scene_hold_2d(void);
 /** @brief Report whether the canonical present in flight repeats the previous one: no game render since the last capture.
  *
  * The game's render made no begin_frame (it opened and fed no scene) and

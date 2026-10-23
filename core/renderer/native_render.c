@@ -3081,6 +3081,38 @@ int openpete_native_scene_canon_repeat(void) {
     return s_canon_repeat;
 }
 
+/* Held-present state: the accumulation length at the latest owed present the
+ * host held back (entries before it belong to earlier held presents), and the
+ * census of held presents and the 2D tris discarded since the last capture,
+ * which reports them under OPENPETE_CARRY_EPOCH_PROBE. */
+static int      s_held_2d_mark;
+static unsigned s_held_2d_presents, s_held_2d_tris;
+
+void openpete_native_scene_hold_2d(void) {
+    if (s_overlay_precapture) s_overlay_precapture();
+    const int old = s_held_2d_mark < s_overlay_accum_n ? s_held_2d_mark : s_overlay_accum_n;
+    const int keep = s_overlay_accum_n - old;
+    memmove(s_overlay_accum, s_overlay_accum + old, (size_t)keep * sizeof s_overlay_accum[0]);
+    memmove(s_overlay_accum_epoch, s_overlay_accum_epoch + old,
+            (size_t)keep * sizeof s_overlay_accum_epoch[0]);
+    s_overlay_accum_n = keep;
+    s_held_2d_mark = keep;
+    s_held_2d_presents++;
+    s_held_2d_tris += (unsigned)(old + s_overlay_accum_dropped);
+    s_overlay_accum_dropped = 0;
+}
+
+/** @brief Log and reset the held-present census at a canonical capture.
+ *
+ * @param on Nonzero to log the census line when any owed present was held since the last capture. */
+static void held_2d_report(int on) {
+    if (on && s_held_2d_presents)
+        fprintf(stderr, "[carry f=%u] held presents=%u dropped_2d=%u\n",
+                s_scene_frame, s_held_2d_presents, s_held_2d_tris);
+    s_held_2d_presents = 0;
+    s_held_2d_tris = 0;
+}
+
 void openpete_native_scene_open_empty(void) {
     if (s_canon_repeat != 1) return;
     extern unsigned openpete_frame;
@@ -3246,6 +3278,7 @@ void openpete_native_scene_capture_overlay(void) {
            (size_t)s_overlay_accum_n * sizeof(s_overlay_accum_epoch[0]));
     s_overlay_carry_n = s_overlay_accum_n;
     s_overlay_accum_n = 0;
+    s_held_2d_mark = 0;
     /* The two 2D emitters reach the accumulation at different points of the
      * frame, so feed order is not the game's emission order; restore it. */
     seq_sort_carry(s_overlay_carry, s_overlay_carry_epoch, s_overlay_carry_n);
@@ -3280,6 +3313,7 @@ void openpete_native_scene_capture_overlay(void) {
         { static int pz = -1;
           if (pz < 0) { const char* e = getenv("OPENPETE_CARRY_EPOCH_PROBE");
                         pz = (e && *e && *e != '0'); }
+          held_2d_report(pz);
           if (pz) {
             int elig = 0;
             for (int t = 0; t < s_scene_n; t++) {
