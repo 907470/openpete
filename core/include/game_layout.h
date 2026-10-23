@@ -836,9 +836,18 @@ typedef struct game_layout {
         /* The game.state values (bit n = state n, game_layout.game_state)
          * whose regime draws an overlay's own models: the class halfword
          * indexes the model table, which a cutscene or the title screen
-         * fills with its own set, so key_order_cls names the door effect
-         * only outside these states. 0: every state. */
+         * fills with its own set, so key_order_cls and true_depth_cls name
+         * their models only outside these states. 0: every state. */
         uint32_t key_order_off_states;
+
+        /* True-depth classes: the first `true_depth_n` entries name classes
+         * whose faces contest by their true depth, without the authored
+         * m_DepthOffset and the world bucket it shifts, against terrain and
+         * other mobys (moby_class_true_depth in
+         * games/common/renderer/moby.c): a class whose bias sorts it in
+         * front of nearer surfaces. */
+        uint16_t true_depth_cls[8];
+        int      true_depth_n;
 
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it

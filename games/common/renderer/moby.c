@@ -7359,7 +7359,7 @@ static int moby_face_rank(int i) {
     return (openpete_mobyrank_on() && isect_eligible(i) && s_wtri_contest[i]) ? s_nrank[i] : 0;
 }
 
-static double moby_tri_contest_key(int i);
+static double moby_tri_contest_key(int i, int true_depth);
 
 /** @brief Log the walk triangles whose centroid falls in a PSX-screen box over a VBL range (OPENPETE_MOBY_TRIDBG).
  *
@@ -7391,7 +7391,7 @@ static void moby_tri_debug(void) {
             fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%d,%d,%06X", k,
                     w->v[k].sx, w->v[k].sy, w->v[k].vz, w->v[k].tvz,
                     w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
-        fprintf(stderr, " ck=%.1f", moby_tri_contest_key(i));
+        fprintf(stderr, " ck=%.1f", moby_tri_contest_key(i, 0));
         fputc('\n', stderr);
     }
 }
@@ -7442,19 +7442,42 @@ static int moby_class_is_prop(uint16_t cls) {
     return 0;
 }
 
-/** @brief Report whether the model table holds the models key_order_cls names.
+/** @brief Report whether the model table holds the game's own models, the ones the layout's class lists name.
  *
  * The class halfword indexes the game's model table, which a cutscene or the
  * title screen refills with its own models. Reads game.state
  * (game_layout.game_state) and answers 0 while it is one of
  * game_layout.moby.key_order_off_states. Reads guest RAM only.
  * @param cpu Guest CPU state.
- * @return 1 when the key-order class is the game's door effect this tick. */
-static int moby_key_order_table_live(CPUState* cpu) {
-    if (game_layout.moby.key_order_cls == 0u) return 0;
+ * @return 1 when the class lists apply this tick. */
+static int moby_model_table_is_game(CPUState* cpu) {
     if (game_layout.moby.key_order_off_states == 0u || game_layout.game_state == 0u) return 1;
     const uint32_t st = cpu->read_word(game_layout.game_state);
     return !(st < 32u && (game_layout.moby.key_order_off_states >> st) & 1u);
+}
+
+/** @brief Report whether the model table holds the models key_order_cls names.
+ * @param cpu Guest CPU state.
+ * @return 1 when the key-order class is the game's door effect this tick. */
+static int moby_key_order_table_live(CPUState* cpu) {
+    return game_layout.moby.key_order_cls != 0u && moby_model_table_is_game(cpu);
+}
+
+/** @brief Report whether a moby class contests by its true depth, without the authored ordering-table bias.
+ *
+ * The class is one of game_layout.moby.true_depth_cls, counted only while
+ * the model table is the game's own (moby_model_table_is_game). Such a
+ * class's faces key by moby_tri_true_key with no m_DepthOffset term instead
+ * of the world bucket, so against another moby's face and against terrain
+ * the key sorts the face at the distance it is drawn at.
+ * @param cls The moby's m_Class.
+ * @param live moby_model_table_is_game for this walk.
+ * @return 1 for a listed class, 0 otherwise. */
+static int moby_class_true_depth(uint16_t cls, int live) {
+    if (!live) return 0;
+    for (int k = 0; k < game_layout.moby.true_depth_n; k++)
+        if (game_layout.moby.true_depth_cls[k] == cls) return 1;
+    return 0;
 }
 
 /** @brief Report whether a moby class draws by the game's key order against terrain.
@@ -7575,31 +7598,35 @@ static uint32_t moby_scene_identity(uint32_t moby)
  * The mean of the three vertices' key depths (ntri_vert.kvz: the written
  * depth at the true distance, a sized record's size correction and a GPF
  * record's depth restore applied, before the tie pull and the near-floor
- * lift) less the authored m_DepthOffset (OPENPETE_OT_SLOT_WORLD per unit),
- * floored at 1 since the game floors its slot at 0. The projection W (tvz)
+ * lift) less the authored m_DepthOffset (OPENPETE_OT_SLOT_WORLD per unit)
+ * when bias is set, floored at 1 since the game floors its slot at 0. The projection W (tvz)
  * is not used: for a sized or GPF record it is the scaled projection's
  * depth, not the distance the face is drawn at.
  * @param i The walk triangle's index.
+ * @param bias Nonzero to subtract the authored m_DepthOffset.
  * @return The key. */
-static double moby_tri_true_key(int i) {
+static double moby_tri_true_key(int i, int bias) {
     const double mean = ((double)s_wtri[i].v[0].kvz + (double)s_wtri[i].v[1].kvz
                        + (double)s_wtri[i].v[2].kvz) / 3.0;
-    const double key = mean - OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i];
+    const double key = mean - (bias ? OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i] : 0.0);
     return key < 1.0 ? 1.0 : key;
 }
 
 /** @brief The ordering-table key a walk triangle contests the terrain with, in world units.
  *
- * Where moby_world_key_on holds and the triangle carries a world bucket
- * (s_wtri_wbk), the middle of that bucket: every triangle of a face shares
- * it, as the draw links each face once. Otherwise the true-depth key
- * (moby_tri_true_key).
+ * A face of a true-depth class (moby_class_true_depth) keys by its true
+ * depth with no authored bias. Otherwise, where moby_world_key_on holds and
+ * the triangle carries a world bucket (s_wtri_wbk), the middle of that
+ * bucket: every triangle of a face shares it, as the draw links each face
+ * once. Otherwise the biased true-depth key (moby_tri_true_key).
  * @param i The walk triangle's index.
+ * @param true_depth Nonzero when the face's class is a true-depth class.
  * @return The key. */
-static double moby_tri_contest_key(int i) {
+static double moby_tri_contest_key(int i, int true_depth) {
+    if (true_depth) return moby_tri_true_key(i, 0);
     if (s_wtri_wbk[i] >= 0 && moby_world_key_on())
         return OPENPETE_OT_SLOT_WORLD * (double)s_wtri_wbk[i] + 0.5 * OPENPETE_OT_SLOT_WORLD;
-    return moby_tri_true_key(i);
+    return moby_tri_true_key(i, 1);
 }
 
 /** @brief Return a face's ordering-table slot plus one, or 0 for a face with no world bucket.
@@ -7627,10 +7654,11 @@ static int moby_face_ot_slot1(int wbk) {
  * interned per feed cycle) and whether a reveal added it. While
  * player_hide_active holds, an actor-layer triangle of the companion's class
  * is not appended. Writes host scene state only.
- * @param cpu Guest CPU state, read for moby_key_order_table_live. */
+ * @param cpu Guest CPU state, read for moby_key_order_table_live and moby_model_table_is_game. */
 static void push_scene_moby_tris(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     const int ko_live = moby_key_order_table_live(cpu);
+    const int td_live = moby_model_table_is_game(cpu);
     static int s_logged = 0;
     if (!s_logged && s_gout.n > 0) {
         s_logged = 1;
@@ -7700,7 +7728,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
           if (moby_face_key_on() && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
               !s_wtri_mangle[i] &&
               s_wtri_moby[i] && openpete_native_key_resolve_on()) {
-              t.koff = (float)(moby_tri_contest_key(i) + 0.5);
+              t.koff = (float)(moby_tri_contest_key(i, moby_class_true_depth(s_wtri_cls[i], td_live)) + 0.5);
               /* Embedded-PROP classes: rendered whole from every angle. */
               t.prop = moby_class_is_prop(s_wtri_cls[i]);
               t.key_order = moby_class_draws_by_key(s_wtri_cls[i], ko_live);

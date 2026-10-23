@@ -468,6 +468,12 @@ const game_layout_t spyro3_game_layout = {
          * the same model table filled with their own models, where index 3
          * is Spyro, not the door effect. */
         .key_order_off_states = (1u << 6) | (1u << 11),
+        /* Seashell Shore's barrel-lifting Rhynoc (0x101) and its barrel, a
+         * moby of its own (0x166): the barrel's m_DepthOffset keys it about
+         * 500 world in front of its true depth, in front of the Rhynoc's
+         * head where the head is nearer. */
+        .true_depth_cls = { 0x101u, 0x166u },
+        .true_depth_n   = 2,
 
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,
