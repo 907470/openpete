@@ -309,6 +309,12 @@ seashell-shore-rhynoc-barrel-key|2929|2||2929|OPENPETE_FREECAM_AT_VBL=2600 OPENP
 # more world in front of the pillar base it covers. The movie is the first
 # 2717 VBLs of a Cross-every-20-VBLs movie.
 haunted-tomb-coffin-pillar|2717|2||2717|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_FREECAM_POSE=46484,30528,17464,60,6,0
+# haunted-tomb-sunk-sphere: Haunted Tomb from --skip-to-level, fixed freecam
+# pose engaged at VBL 1800, no movie. The class 0x22A sphere (m_DepthOffset 4)
+# rests with about a third of its footprint behind the ground in true depth;
+# the game inserts it four slots nearer and paints it whole over the ground,
+# native cut its lower part along the true intersection. Blessed pre-fix.
+haunted-tomb-sunk-sphere|1900|2||1900|--skip-to-level haunted_tomb OPENPETE_FREECAM_AT_VBL=1800 OPENPETE_FREECAM_POSE=86565,48496,14900,580,-2,0
 # bamboo-terrace-stilts-hedge: Bamboo Terrace sub-area 1, fixed freecam pose
 # engaged at VBL 2600. The bamboo stilts under the umbrella Rhynocs' huts are
 # terrain and paint through the hedge-covered crest in front of them. The movie
