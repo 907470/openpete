@@ -41,4 +41,23 @@ void particles_reextract(CPUState* cpu, int bracketed, double alpha);
  * @return 1 while a held set is shown, else 0. */
 int particles_replay_prev(int on);
 
+/** @brief The pool slot index of the particle record at `rec`.
+ *
+ * Indexes from the pool base the slot allocator hook last read.
+ * @param rec The record's guest address.
+ * @return The slot index, or -1 when no allocation has been seen, the address
+ *         is not a record boundary of that pool, or the index lies beyond the
+ *         slots tracked. */
+int particles_slot(uint32_t rec);
+
+/** @brief The serial of the allocation that last handed out the slot of the particle record at `rec`.
+ *
+ * The slot allocator hook gives every allocation the next serial of one
+ * global count, so a slot holds a different serial after every allocation
+ * and two slots never hold the same nonzero serial. A record whose serial is
+ * unchanged between two captures is one continuing particle.
+ * @param rec The record's guest address.
+ * @return The serial, or 0 when no allocation of the slot has been seen. */
+uint32_t particles_slot_serial(uint32_t rec);
+
 #endif /* OPENPETE_RENDERER_PARTICLES_H */

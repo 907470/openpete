@@ -7,7 +7,8 @@
 // update and many level actors both spawn types 0x2E and 0x29, and Sparx and
 // another actor both spawn 0x42. The owner is therefore taken where the game
 // itself decides it, at the spawn's call site: every spawn allocates its slot
-// through one allocator (game_layout.owner.part_alloc), and the slot is
+// through one allocator (game_layout.owner.part_alloc), whose hook in the
+// particle feeder hands the slot to player_hide_note_alloc, and the slot is
 // tagged with the owner of the guest call subtree that is running then.
 // player_hide_note_entry keeps that owner from the function entries the
 // dispatch preamble reports: the player's update call, or the companion's
@@ -25,7 +26,7 @@
 #include "renderer/env_knob.h"
 #include "game_layout.h"
 #include "openpete_native_render.h"   /* openpete_native_get_hide_player */
-#include "openpete_recomp_module.h"   /* the allocator's own body */
+#include "renderer/particles.h"       /* particles_slot: the pool slot index */
 #include "psx_runtime_internal.h"
 
 #include <stdio.h>
@@ -45,12 +46,10 @@ extern unsigned openpete_frame;
 #define PH_SLOTS_MAX 1024u
 
 static uint8_t  s_owner[PH_SLOTS_MAX];
-static uint32_t s_pool_base;
 static uint8_t  s_ctx;        /* owner of the running call subtree */
 static uint32_t s_ctx_sp;     /* the guest sp its call was entered at */
 static uint32_t s_ctx_lo;     /* its entry address */
 static uint32_t s_ctx_hi;     /* the address of its frame allocation */
-static int      s_alloc_in;   /* the allocator hook's re-entrancy latch */
 static uint32_t s_tagged[3];  /* allocations tagged per owner, for the census */
 static uint32_t s_entered[3]; /* owner calls entered, for the census */
 
@@ -130,12 +129,8 @@ void player_hide_note_entry(CPUState* cpu, uint32_t addr) {
  * @param rec The record's guest address.
  * @return The slot index, or -1. */
 static int ph_slot(uint32_t rec) {
-    const uint32_t stride = game_layout.particles.rec_stride;
-    if (!s_pool_base || !stride || rec < s_pool_base) return -1;
-    const uint32_t off = rec - s_pool_base;
-    if (off % stride) return -1;
-    const uint32_t idx = off / stride;
-    return idx < PH_SLOTS_MAX ? (int)idx : -1;
+    const int idx = particles_slot(rec);
+    return idx < (int)PH_SLOTS_MAX ? idx : -1;
 }
 
 /* Drawn records per owner and type byte, for the census. */
@@ -148,30 +143,11 @@ int player_hide_particle_owner(CPUState* cpu, uint32_t rec) {
     return owner;
 }
 
-/** @brief The particle allocator hook: runs the guest allocator once, then tags the slot it returned with the running owner.
- *
- * Declines (the ordinary dispatch runs the allocator) while ownership is not
- * tracked and on the re-entry the module dispatch below makes. A change of
- * pool base clears every tag.
- * @param cpu The guest CPU state.
- * @param addr The allocator's entry address.
- * @return 1 when the allocator ran here, else 0. */
-static int on_part_alloc(CPUState* cpu, uint32_t addr) {
-    if (s_alloc_in || !player_hide_tracking()) return 0;
-    s_alloc_in = 1;
-    openpete_recomp_module_get()->dispatch(cpu, addr);
-    s_alloc_in = 0;
-    const uint32_t base = cpu->read_word(game_layout.particles.array_ptr);
-    if (base != s_pool_base) {
-        memset(s_owner, 0, sizeof s_owner);
-        s_pool_base = ph_in_ram(base) ? base : 0u;
-    }
-    const int i = ph_slot(cpu->v0);
-    if (i >= 0) {
-        s_owner[i] = s_ctx;
-        s_tagged[s_ctx]++;
-    }
-    return 1;
+void player_hide_note_alloc(int slot, int pool_moved) {
+    if (pool_moved) memset(s_owner, 0, sizeof s_owner);
+    if (!player_hide_tracking() || slot < 0 || slot >= (int)PH_SLOTS_MAX) return;
+    s_owner[slot] = s_ctx;
+    s_tagged[s_ctx]++;
 }
 
 int player_hide_is_sparx_class(uint32_t cls) {
@@ -288,19 +264,6 @@ void player_hide_count_data(int cat, int skipped, const void* data, size_t len) 
 
 /* ---- module --------------------------------------------------------------- */
 
-static feature_dispatch_entry_t player_hide_dispatch[] = {
-    { 0u, on_part_alloc, 0u },
-    { 0u, NULL, 0u },
-};
-
-/** @brief Bind the dispatch table's hook address to the layout's particle allocator.
- *
- * @param opts Unused. */
-static void player_hide_apply_options(const openpete_options_t* opts) {
-    (void)opts;
-    player_hide_dispatch[0].addr = OW.part_alloc;
-}
-
 /** @brief Print the pending census line and the per-owner type report at shutdown. */
 static void player_hide_shutdown(void) {
     ph_census_flush();
@@ -309,7 +272,5 @@ static void player_hide_shutdown(void) {
 
 const feature_module_t player_hide_module = {
     .name           = "player_hide",
-    .apply_options  = player_hide_apply_options,
-    .dispatch_table = player_hide_dispatch,
     .shutdown       = player_hide_shutdown,
 };

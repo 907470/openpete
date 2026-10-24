@@ -63,6 +63,17 @@ int player_hide_tracking(void);
  * @param addr The entered function's guest vaddr. */
 void player_hide_note_entry(CPUState* cpu, uint32_t addr);
 
+/** @brief Tag the pool slot the particle allocator just handed out with the owner of the running call subtree.
+ *
+ * Called by the particle feeder's allocator hook after every allocation. Tags
+ * only while player_hide_tracking holds; records allocated while it does not
+ * carry no tag.
+ * @param slot The slot index (particles_slot), or -1 for a slot outside the
+ *        tracked pool.
+ * @param pool_moved Nonzero when the pool base changed since the previous
+ *        allocation, which clears every tag first. */
+void player_hide_note_alloc(int slot, int pool_moved);
+
 /** @brief Whether the particle record at `rec` was spawned by the player's or the companion's update.
  *
  * Under the census, also counts the record's type byte (+0x00) per owner

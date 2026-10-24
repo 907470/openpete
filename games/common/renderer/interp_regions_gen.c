@@ -12,6 +12,7 @@
 #include "renderer/cut_guard.h"     /* cut_jump_census_capture */
 #include "renderer/credits_key.h"   /* game_credits_track, game_credits_letter_key */
 #include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
+#include "renderer/particles.h"    /* particles_slot_serial */
 #include "renderer/orchestrator.h" /* the canonical-render epoch the moby stash carries */
 
 #include <stdio.h>
@@ -404,8 +405,13 @@ void game_interp_capture_particle_pool(void) {
     const uint32_t base = rd32(game_layout.particles.array_ptr);
     if (base < 0x80000000u) return;
     const uint32_t stride = game_layout.particles.rec_stride;
-    const uint32_t len = openpete_interp_objs_blob_bytes() < stride
-                             ? openpete_interp_objs_blob_bytes() : stride;
+    /* The record, then the slot's allocation serial (particles_slot_serial)
+     * when the blob has room for both: the pairing reads a changed serial as
+     * the slot having taken a new record. */
+    uint8_t buf[256];
+    const uint32_t blob = openpete_interp_objs_blob_bytes();
+    const int with_serial = stride + 4u <= blob && stride + 4u <= sizeof buf;
+    const uint32_t len = with_serial ? stride + 4u : (blob < stride ? blob : stride);
     /* The pool is walked inside the room the moby walk leaves free above its
      * own bound, so a full array can never crowd it out. */
     for (uint32_t i = 0, rec = base; i < 512u; ++i, rec += stride) {
@@ -417,7 +423,14 @@ void game_interp_capture_particle_pool(void) {
             if ((sel >> 8) == -1) break;              /* end of the pool */
             continue;                                 /* inactive slot */
         }
-        openpete_interp_objs_capture(rec, host, len);
+        if (!with_serial) {
+            openpete_interp_objs_capture(rec, host, len);
+            continue;
+        }
+        const uint32_t serial = particles_slot_serial(rec);
+        memcpy(buf, host, stride);
+        memcpy(buf + stride, &serial, 4);
+        openpete_interp_objs_capture(rec, buf, len);
     }
 }
 
@@ -593,7 +606,8 @@ void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
     /* One whole record per object, so every consumer reads its fields at their
      * natural offsets, and the store's default capacity. The blob is the
      * longest record a walk captures whole: the Moby, or the tracer ribbon
-     * record, whose point ring runs to its end. */
+     * record, whose point ring runs to its end. The particle record and the
+     * allocation serial appended to it fit under either on every game. */
     const uint32_t blob = game_layout.tracers.stride > game_layout.moby.array_stride
                               ? game_layout.tracers.stride : game_layout.moby.array_stride;
     game_interp_rows_obj_capture(capture_objs_common, blob, OPENPETE_INTERP_OBJ_SLOTS);

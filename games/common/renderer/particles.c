@@ -31,7 +31,9 @@
 //
 // Determinism: never writes PSX RAM. The guest draw runs exactly once through
 // the shared bracket and keeps its own verdicts, including the stamp bytes and
-// the polybuf cursor; this feeder only reads them afterwards.
+// the polybuf cursor; this feeder only reads them afterwards. The pool's slot
+// allocator (game_layout.owner.part_alloc) runs exactly once through the same
+// kind of hook, which reads the slot it returned.
 //
 // Gated by OPENPETE_PARTICLE_CENSUS (census) or a native renderer mode
 // (--renderer vk; scene feed); inert fall-through otherwise.
@@ -49,6 +51,7 @@
 #include "renderer/cut_guard.h"     /* cut_held_set_pick, cut_census_held_set */
 #include "renderer/moby.h"          /* moby_native_canon_ref_ns */
 #include "renderer/player_hide.h"   /* --hide-player: the player's records */
+#include "openpete_recomp_module.h"   /* the allocator's own body */
 
 extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 #include "game_layout.h"
@@ -68,14 +71,22 @@ extern unsigned openpete_frame;
 #define PART_CLASS_MASK  0xF
 #define PART_POOL_END    (-1)   /* selector >> 8 at the end-of-pool sentinel */
 
-/* The record's age byte. The pool update steps it every tick while a record
- * lives, upward as an age (Spyro 1 and 2) or downward as the life remaining
- * (Spyro 3, two per tick; the layout's `age_down`), and resets it when a slot
- * takes a new record; the draw routine never reads it, which is why it is not
- * among the layout descriptor's draw-side offsets. It is the only field that
- * separates a continuing particle from a slot reuse that kept the selector's
- * class and type, so the sub-tick pairing rests on it. */
-#define PART_AGE_OFF 0x02u
+/* Pool slots the allocation serials cover; the Spyro 2 and 3 pools are 0x2000
+ * bytes of 0x20-byte records, 256 slots. */
+#define PART_SLOTS_MAX 1024u
+
+/* Per pool slot, the serial of the allocation that last handed it out (0 for
+ * none seen since the pool base was last read). The serial is global, so two
+ * allocations never share one. The record carries nothing that names the
+ * allocation it came from: the allocator writes only the class byte (+0x01),
+ * which a slot reused by a spawn of the same class keeps, and every other byte
+ * is the spawner's and the type's update's to write, the byte at +0x02 counted
+ * up by some types, down by others and used as a bit field by others. The
+ * serial is the allocation itself, observed where the game makes it. */
+static uint32_t s_slot_serial[PART_SLOTS_MAX];
+static uint32_t s_slot_base;      /* the pool base the serials index from */
+static uint32_t s_alloc_serial;   /* the last serial handed out */
+static int      s_alloc_in;       /* the allocator hook's re-entrancy latch */
 
 #define PART_MAX_PRIMS 2048
 
@@ -858,10 +869,12 @@ enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2 };
  * dead particle's position to the live one's. Three tests separate the reuse
  * from a continuing particle and return PART_PAIR_REUSE, in order of what they
  * catch: the selector halfword changing catches a reuse of a different class
- * or type; the age byte moving against the game's direction (`age_down`)
- * catches a reuse that kept both, the pool update having reset it for the new
- * record; the speed ceiling PART_REUSE_CEILING
- * catches the rest, at a distance no particle covers in a tick.
+ * or type; the allocation serial the capture appends after the record
+ * (particles_slot_serial) changing catches a reuse that kept both, the
+ * allocator having handed the slot out between the two captures; the speed
+ * ceiling PART_REUSE_CEILING catches a pair with no serial (a blob too short
+ * to carry it) and a pool rewritten outside the allocator, at a distance no
+ * particle covers in a tick.
  * @param it The paired captured primitive.
  * @param alpha The present's phase between the two ticks.
  * @param st Receives the state shown; the tick's own unless the verdict is
@@ -879,10 +892,10 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     memcpy(&psel, o->prev + game_layout.particles.sel_off, 2);
     memcpy(&csel, o->curr + game_layout.particles.sel_off, 2);
     if (psel != csel) return PART_PAIR_REUSE;         /* the slot took a new record */
-    {   /* the age byte moving against its direction: the slot was reset */
-        const uint8_t pa = o->prev[PART_AGE_OFF], ca = o->curr[PART_AGE_OFF];
-        if (game_layout.particles.age_down ? ca > pa : ca < pa) return PART_PAIR_REUSE;
-    }
+    const uint32_t ser = game_layout.particles.rec_stride;
+    if ((uint32_t)o->blob_len >= ser + 4u &&
+        memcmp(o->prev + ser, o->curr + ser, 4) != 0)
+        return PART_PAIR_REUSE;                       /* allocated between the captures */
     uint16_t ph[3], ch[3];   /* X, Y, Z: the first word's halves, the second's low half */
     memcpy(ph, o->prev + pos, 6);
     memcpy(ch, o->curr + pos, 6);
@@ -1470,6 +1483,55 @@ void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
     part_feed_native();
 }
 
+/* ---- slot allocations ------------------------------------------------------ */
+
+int particles_slot(uint32_t rec) {
+    const uint32_t stride = game_layout.particles.rec_stride;
+    if (!s_slot_base || !stride || rec < s_slot_base) return -1;
+    const uint32_t off = rec - s_slot_base;
+    if (off % stride) return -1;
+    const uint32_t idx = off / stride;
+    return idx < PART_SLOTS_MAX ? (int)idx : -1;
+}
+
+uint32_t particles_slot_serial(uint32_t rec) {
+    const int i = particles_slot(rec);
+    return i < 0 ? 0u : s_slot_serial[i];
+}
+
+/** @brief The particle allocator hook: runs the guest allocator once, then stamps the slot it returned with a new allocation serial.
+ *
+ * The allocator (S2 asm/updatemobys.s func_80041C50, S3 func_80056434)
+ * returns the slot in v0 on both of its paths: the slot at the pool cursor,
+ * or, with the pool full, a random slot whose class byte has bit 4 clear.
+ * Every spawn takes its slot through it. Declines only on the re-entry the
+ * module dispatch below makes. A change of pool base clears every serial and
+ * every owner tag. The slot is also handed to player_hide_note_alloc, which
+ * tags its owner.
+ * @param cpu The guest CPU state.
+ * @param addr The allocator's entry address.
+ * @return 1 when the allocator ran here, else 0. */
+static int on_part_alloc(CPUState* cpu, uint32_t addr) {
+    if (s_alloc_in) return 0;
+    s_alloc_in = 1;
+    openpete_recomp_module_get()->dispatch(cpu, addr);
+    s_alloc_in = 0;
+    const uint32_t base = cpu->read_word(game_layout.particles.array_ptr);
+    int moved = 0;
+    if (base != s_slot_base) {
+        memset(s_slot_serial, 0, sizeof s_slot_serial);
+        s_slot_base = (base >= 0x80000000u && base < 0x80800000u) ? base : 0u;
+        moved = 1;
+    }
+    const int i = particles_slot(cpu->v0);
+    if (i >= 0) {
+        if (++s_alloc_serial == 0u) s_alloc_serial = 1u;   /* 0 means none seen */
+        s_slot_serial[i] = s_alloc_serial;
+    }
+    player_hide_note_alloc(i, moved);
+    return 1;
+}
+
 /* ---- hook ----------------------------------------------------------------- */
 static hook_bracket_state s_hb;
 static const hook_bracket_desc k_bracket = {
@@ -1519,16 +1581,23 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
 /* The hook address is the layout's particle draw site, bound at boot: a static
  * initializer cannot read another translation unit's const. */
 static feature_dispatch_entry_t particles_dispatch[] = {
-    { 0u, on_particles_draw, 0u },
+    { 0u, NULL, 0u },
+    { 0u, NULL, 0u },
     { 0u, NULL, 0u },
 };
 
-/** @brief Binds the dispatch table's hook address to the layout's particle draw site.
+/** @brief Binds the dispatch table's hook addresses to the layout's particle draw site and slot allocator.
  *
+ * The table ends at the first zero address, so only the sites the layout
+ * names are entered, in order.
  * @param opts Unused. */
 static void particles_apply_options(const openpete_options_t* opts) {
     (void)opts;
-    particles_dispatch[0].addr = game_layout.particles.hook;
+    int n = 0;
+    if (game_layout.particles.hook)
+        particles_dispatch[n++] = (feature_dispatch_entry_t){ game_layout.particles.hook, on_particles_draw, 0u };
+    if (game_layout.owner.part_alloc && game_layout.particles.array_ptr)
+        particles_dispatch[n++] = (feature_dispatch_entry_t){ game_layout.owner.part_alloc, on_part_alloc, 0u };
 }
 
 const feature_module_t particles_module = {

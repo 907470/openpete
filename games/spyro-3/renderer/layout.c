@@ -366,9 +366,6 @@ const game_layout_t spyro3_game_layout = {
         .pos_off    = 0x04u,              /* partsdraw.s:709-712 and :219-226 read 0x4
                                            * (X low, Y high) and 0x8 (Z low) and subtract
                                            * the camera position shifted right by 2 */
-        .age_down   = 1u,                 /* the pool update counts byte 2 down by two
-                                           * each tick while a record lives: the life
-                                           * remaining, not an age */
         .drawn_off  = 0x03u,              /* partsdraw.s:223 sb zero at record start,
                                            * :358/:415/:528/:693/:745 sb 1 once the record
                                            * passes its screen and depth window */
