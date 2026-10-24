@@ -139,3 +139,7 @@ fireworks_factory:1@keyzbias | pos=(27271, 51213, 20983) yaw=-1026 pitch=7 | | O
 # sector 42 LP face 6, sector 30 LP faces 37-38). Blessed pre-fix.
 cloud_spires | pos=(78088, 77172, 11404) yaw=684 pitch=0 roll=2
 lost_fleet:1 | pos=(21472, 54568, 36864) yaw=123 pitch=179 roll=-1
+# glint records the routine's box cull drops: under extended LOD four far
+# gems' glints sit past the routine's +/-0x7800 box and drew nothing while
+# the gems themselves draw. Blessed pre-fix.
+sunrise_spring | pos=(102255, 56733, 62972) yaw=-1891 pitch=400
