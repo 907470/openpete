@@ -41,6 +41,8 @@
 #include "openpete_fiber.h"   /* openpete_frame */
 #include "psx_runtime_internal.h"
 #include "game_layout.h"
+#include "freecam_game.h"            /* freecam_present_pose: a fractional flight path's curve */
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,7 +107,10 @@ static int      s_recs_staged;
  * shorts, the position at +0x28 as three words and the sky matrix's first
  * short. The canonical line reads live guest memory; the re-extract lines read
  * live memory, the staged lerp and the ring's two endpoints, so a camera the
- * two passes disagree on is a printed number. Diagnostic only.
+ * two passes disagree on is a printed number. Each re-extract also prints a
+ * [campose] line: the staged world matrix, the unrounded position the pass
+ * draws with, and whether a fractional flight path's pose replaced the lerp.
+ * Diagnostic only.
  * @return 1 when the variable is set, else 0. */
 static int cam_dbg_on(void) {
     static int v = -1;
@@ -128,6 +133,64 @@ static void cam_dbg_line(const char* tag, const uint8_t* c) {
     fprintf(stderr, "[cam-dbg f=%u %s] pos=(%d,%d,%d) view=[%d %d %d %d %d %d %d %d %d] sky0=%d\n",
             openpete_frame, tag, p[0], p[1], p[2],
             m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], sk[0]);
+}
+
+/* A row of a snapshot matrix farther than this, in Q12 units, from the row
+ * the stamped angles compose refuses the pose override: the matrix was not
+ * built from the stamp in the form freecam_view_rotation assumes. */
+#define CAM_POSE_TOL_Q12 8.0
+
+/** @brief Install a fractional flight path's pose for this present into the staged camera.
+ *
+ * Asks the free camera for the path curve's pose at the bracket's alpha
+ * (freecam_present_pose). The game builds the sky matrix (+0x00) and the
+ * world matrix (+0x14) as a per-row scale times the pose's rotation (Spyro 3
+ * stdutil.s func_8004F6C4: the world matrix's row 1 times 0x140 >> 9), so
+ * each row's scale is read from the earlier snapshot as its length rounded
+ * to Q12, checked against the rotation of the angles stamped for that
+ * snapshot, and applied to the curve pose's rotation. Writes both matrices
+ * and the rounded position into the staged copy and the unrounded position
+ * into @p fpos. Nothing is written when the free camera supplies no pose or
+ * any row fails the check.
+ * @param cam The staged camera block.
+ * @param prev The earlier snapshot of the bracket.
+ * @param curr The later snapshot of the bracket.
+ * @param pcam The earlier snapshot's camera block.
+ * @param ccam The later snapshot's camera block.
+ * @param alpha The bracket's blend factor.
+ * @param fpos Receives the unrounded camera position.
+ * @return 1 when the pose was installed, else 0. */
+static int cam_install_path_pose(uint8_t* cam, const openpete_interp_snapshot_t* prev,
+                                 const openpete_interp_snapshot_t* curr, const uint8_t* pcam,
+                                 const uint8_t* ccam, double alpha, double fpos[3]) {
+    double pose[6];
+    int32_t pang[3];
+    if (!freecam_present_pose(prev->tick, (const int32_t*)(pcam + CAM_OFF_POS), curr->tick,
+                              (const int32_t*)(ccam + CAM_OFF_POS), alpha, pose, pang))
+        return 0;
+    double R[3][3], Rp[3][3];
+    freecam_view_rotation(pose[3], pose[4], pose[5], R);
+    freecam_view_rotation((double)pang[0], (double)pang[1], (double)pang[2], Rp);
+    static const uint32_t offs[2] = { CAM_OFF_SKY, CAM_OFF_VIEW };
+    int16_t out[2][9];
+    for (int m = 0; m < 2; m++) {
+        const int16_t* M = (const int16_t*)(pcam + offs[m]);
+        for (int r = 0; r < 3; r++) {
+            const double row[3] = { M[3 * r], M[3 * r + 1], M[3 * r + 2] };
+            const double sc = round(sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]));
+            for (int c = 0; c < 3; c++) {
+                if (fabs(row[c] - sc * Rp[r][c]) > CAM_POSE_TOL_Q12) return 0;
+                out[m][3 * r + c] = (int16_t)lround(sc * R[r][c]);
+            }
+        }
+    }
+    for (int m = 0; m < 2; m++) memcpy(cam + offs[m], out[m], sizeof out[m]);
+    int32_t* pos = (int32_t*)(cam + CAM_OFF_POS);
+    for (int i = 0; i < 3; i++) {
+        fpos[i] = pose[i];
+        pos[i] = (int32_t)lround(pose[i]);
+    }
+    return 1;
 }
 
 /** @brief Returns the shared cut guard's descriptor of this game's camera fields, resolving the ring row on first call.
@@ -415,6 +478,85 @@ static uint32_t rx_scene_tris(void) {
         rx_line[sizeof rx_line - 1] = '\0'; \
         fprintf(stderr, "%s\n", rx_line); }
 
+/* The camera a present draws with: the shared bracket's verdict and whether
+ * a fractional flight path's pose replaced its lerp. */
+typedef struct {
+    cam_bracket_t br;
+    int           path_pose;
+} rx_camera_t;
+
+/** @brief Stage the camera a sub-tick present draws with.
+ *
+ * Runs the shared camera bracket (cam_bracket_run) into the staged camera
+ * block, installs its unrounded position for openpete_native_interp_pos,
+ * and, outside a cut or a held cut, lets a fractional flight path replace
+ * the lerp with its curve (cam_install_path_pose). An unpaired present, or
+ * one with no staged block or snapshot, stages nothing.
+ * @param cam The staged camera block, or NULL.
+ * @param paired Non-zero when the ring returned a snapshot pair.
+ * @param prev2 The snapshot before prev, or NULL.
+ * @param prev The earlier snapshot.
+ * @param curr The later snapshot.
+ * @return The bracket verdict and the path-pose flag; all zero when nothing was staged. */
+static rx_camera_t rx_stage_camera(uint8_t* cam, int paired,
+                                   const openpete_interp_snapshot_t* prev2,
+                                   const openpete_interp_snapshot_t* prev,
+                                   const openpete_interp_snapshot_t* curr) {
+    rx_camera_t rc;
+    memset(&rc, 0, sizeof rc);
+    if (!paired || !cam || !prev || !curr) return rc;
+    cam_bracket_run(cam, prev2, prev, curr, cut_desc(), CAM_OFF_VIEW, &rc.br);
+    if (!rc.br.bracketed) return rc;
+    for (int i = 0; i < 3; i++) s_fpos[i] = rc.br.fpos[i];
+    s_fpos_active = 1;
+    const int r = cut_desc()->cam_region;
+    if (rc.br.cut || rc.br.hold || r < 0) return rc;
+    rc.path_pose = cam_install_path_pose(cam, prev, curr, prev->data + prev->region_offsets[r],
+                                         curr->data + curr->region_offsets[r], rc.br.alpha, s_fpos);
+    return rc;
+}
+
+/** @brief Print the OPENPETE_CAM_DBG lines of one sub-tick present.
+ *
+ * The present's bracket verdict; a [campose] line with the staged world
+ * matrix, the unrounded position the pass draws with, whether a fractional
+ * flight path's pose replaced the lerp, and the vertical and horizontal FOV;
+ * then the camera of live memory, the staged copy and the ring's two
+ * endpoints (cam_dbg_line).
+ * @param cam The staged camera block, or NULL.
+ * @param rc The staged camera's verdict.
+ * @param paired Non-zero when the ring returned a snapshot pair.
+ * @param prev The earlier snapshot, or NULL.
+ * @param curr The later snapshot, or NULL. */
+static void cam_dbg_present(const uint8_t* cam, const rx_camera_t* rc, int paired,
+                            const openpete_interp_snapshot_t* prev,
+                            const openpete_interp_snapshot_t* curr) {
+    fprintf(stderr, "[cam-dbg f=%u RX] paired=%d bracketed=%d alpha=%.4f\n",
+            openpete_frame, paired, rc->br.bracketed, rc->br.alpha);
+    if (cam) {
+        const int16_t* m = (const int16_t*)(cam + CAM_OFF_VIEW);
+        const int32_t* p = (const int32_t*)(cam + CAM_OFF_POS);
+        double fp[3] = { p[0], p[1], p[2] };
+        if (s_fpos_active) memcpy(fp, s_fpos, sizeof fp);
+        double vfov = 0.0, hfov = 0.0;
+        openpete_native_fov_angles(&vfov, &hfov);
+        fprintf(stderr, "[campose] vbl=%u key=%u alpha=%.4f cut=%d path=%d "
+                        "M=[%d %d %d %d %d %d %d %d %d] pos=(%.4f, %.4f, %.4f) "
+                        "vfov=%.3f hfov=%.3f\n",
+                openpete_frame, openpete_feed_key_now(), rc->br.alpha, rc->br.cut, rc->path_pose,
+                m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], fp[0], fp[1], fp[2],
+                vfov, hfov);
+    }
+    cam_dbg_line("RX-live", (const uint8_t*)openpete_psx_to_host_span(game_layout.cam.base, CAM_OFF_POS + 12u));
+    cam_dbg_line("RX-staged", cam);
+    if (!paired || !prev || !curr) return;
+    static int cdbg_region = -2;
+    if (cdbg_region == -2) cdbg_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
+    if (cdbg_region < 0) return;
+    cam_dbg_line("RX-prev", prev->data + prev->region_offsets[cdbg_region]);
+    cam_dbg_line("RX-curr", curr->data + curr->region_offsets[cdbg_region]);
+}
+
 /** @brief Composes one sub-tick present: brackets the camera between the tick pair, then runs every feeder's re-extract in draw order.
  *
  * @param cpu_v The guest CPUState, as the void pointer game_reextract_view_install's callback takes. */
@@ -431,46 +573,21 @@ static void game_reextract_body(void* cpu_v) {
 
     const uint32_t cam_len = game_layout.cam.xform_end - game_layout.cam.base;
     uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(game_layout.cam.base, cam_len);
-    int bracketed = 0;
-    int cam_cut = 0;
-    int hold = 0;
-    double alpha = 0.0;
-    /* The tick side of the bracket, kept for the moby replay: the cull composed
-     * every animated record against this camera, so the replay needs it to turn
-     * those records onto the interpolated one. */
-    const uint8_t* tickcam = NULL;
     /* One cut rule: a pair that is not one motion still shows tick N-1 while
      * its interval is open, so the bracket runs with alpha pinned to 0 (the
      * lerp at 0 is prev byte for byte) and the cut lands on the alpha-1
      * present, where every other channel reaches its canonical N value. The
      * shared guard owns the predicate, the hold verdict and the census. */
-    if (paired && cam && prev && curr) {
-        cam_bracket_t br;
-        cam_bracket_run(cam, prev2, prev, curr, cut_desc(), CAM_OFF_VIEW, &br);
-        cam_cut    = br.cut;
-        bracketed  = br.bracketed;
-        alpha      = br.alpha;
-        tickcam    = br.tickcam;
-        hold       = br.hold;
-        if (br.bracketed) {
-            for (int i = 0; i < 3; i++) s_fpos[i] = br.fpos[i];
-            s_fpos_active = 1;
-        }
-    }
-    if (cam_dbg_on()) {
-        fprintf(stderr, "[cam-dbg f=%u RX] paired=%d bracketed=%d alpha=%.4f\n",
-                openpete_frame, paired, bracketed, alpha);
-        cam_dbg_line("RX-live", (const uint8_t*)openpete_psx_to_host_span(game_layout.cam.base, CAM_OFF_POS + 12u));
-        cam_dbg_line("RX-staged", cam);
-        if (paired && prev && curr) {
-            static int cdbg_region = -2;
-            if (cdbg_region == -2) cdbg_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
-            if (cdbg_region >= 0) {
-                cam_dbg_line("RX-prev", prev->data + prev->region_offsets[cdbg_region]);
-                cam_dbg_line("RX-curr", curr->data + curr->region_offsets[cdbg_region]);
-            }
-        }
-    }
+    const rx_camera_t rc = rx_stage_camera(cam, paired, prev2, prev, curr);
+    const int bracketed = rc.br.bracketed;
+    const int cam_cut   = rc.br.cut;
+    const int hold      = rc.br.hold;
+    const double alpha  = rc.br.alpha;
+    /* The tick side of the bracket, kept for the moby replay: the cull composed
+     * every animated record against this camera, so the replay needs it to turn
+     * those records onto the interpolated one. */
+    const uint8_t* tickcam = rc.br.tickcam;
+    if (cam_dbg_on()) cam_dbg_present(cam, &rc, paired, prev, curr);
     if (cam)
         cut_census_camera((const int32_t*)(cam + CAM_OFF_POS),
                           (const int16_t*)(cam + CAM_OFF_SKY), alpha, cam_cut);

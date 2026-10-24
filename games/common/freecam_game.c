@@ -389,6 +389,13 @@ static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
  * Spec: "[ticks=N;] WP(;WP)+" where WP is "x,y,z[,yaw,pitch[,roll]]" or a
  * name the game's resolver knows ("topdown", "sweepN"); either may also
  * carry the pose's "roll=N" key. A newline separates segments as ';' does.
+ * A numeric value may carry a decimal fraction. The game's camera bytes take
+ * the pose rounded to whole units on every tick; with any fraction present,
+ * each present instead shows the Catmull-Rom curve through the waypoints as
+ * written at its instant (freecam_present_pose), so the view moves below
+ * the game's angle and position quanta. A "cut" segment ends the curve at
+ * the waypoint before it. An all-integer path keeps the lerp between the
+ * ticks' integer poses.
  * "@FILE" reads the spec from FILE, which carries a path of any length past
  * a command line's limit. Names resolve against the live
  * level once it is up, so a path can dive from above the level into a flight
@@ -399,25 +406,65 @@ static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
 #define FREECAM_PATH_FILE_MAX (64u << 20)
 #define FREECAM_PATH_LOG_MAX 16
 
-/** @brief Parse pose text into its positional integers, its roll and, without three integers, a name.
+/** @brief Extract up to max signed decimal numbers from text as doubles, skipping every non-numeric run.
+ *
+ * freecam_parse_ints' grammar, and its values on integer text, with an
+ * optional fraction: a number starts at a digit, or at a sign directly
+ * before a digit, and a '.' and digits after its integer part are its
+ * fraction. No exponent or radix prefix is read.
+ * @param s The text.
+ * @param out Receives the numbers.
+ * @param max Capacity of @p out.
+ * @return The count parsed. */
+static int freecam_parse_reals(const char* s, double* out, int max) {
+    int n = 0;
+    while (*s && n < max) {
+        int is_num = (*s >= '0' && *s <= '9') ||
+                     ((*s == '-' || *s == '+') && s[1] >= '0' && s[1] <= '9');
+        if (!is_num) { s++; continue; }
+        const int neg = (*s == '-');
+        char* end;
+        double v = (double)strtol(s, &end, 10);
+        if (end[0] == '.' && end[1] >= '0' && end[1] <= '9') {
+            double frac = 0.0, scale = 0.1;
+            for (end++; *end >= '0' && *end <= '9'; end++, scale *= 0.1)
+                frac += (double)(*end - '0') * scale;
+            v = neg ? v - frac : v + frac;
+        }
+        out[n++] = v;
+        s = end;
+    }
+    return n;
+}
+
+/** @brief Parse pose text into its positional numbers, its roll and, without three numbers, a name.
  *
  * The grammar a pose and a path waypoint share. The optional "roll=N" key is
- * taken out first (freecam_take_roll); up to @p max integers are then read
- * positionally (freecam_parse_ints). With fewer than three, @p name receives
+ * taken out first (freecam_take_roll); up to @p max numbers are then read
+ * positionally: as integers (freecam_parse_ints) when @p real is NULL, else
+ * as doubles into @p real (freecam_parse_reals) with @p v receiving each
+ * rounded to the nearest integer. With fewer than three, @p name receives
  * the text with leading spaces skipped, truncated to FREECAM_NAME_MAX - 1
  * characters and trailing spaces trimmed (empty for blank text); otherwise
  * it is the empty string.
  * @param text The pose text.
  * @param v Receives the integers.
- * @param max Capacity of @p v.
+ * @param real Receives the numbers as read, or NULL to read integers only.
+ * @param max Capacity of @p v and @p real.
  * @param roll Receives the key's roll, 0 when absent.
  * @param name Receives the name.
- * @return The count of integers read. */
-static int freecam_parse_pose_text(const char* text, int32_t* v, int max, int32_t* roll,
-                                   char name[FREECAM_NAME_MAX]) {
+ * @return The count of numbers read. */
+static int freecam_parse_pose_text(const char* text, int32_t* v, double* real, int max,
+                                   int32_t* roll, char name[FREECAM_NAME_MAX]) {
     char rest[256];
     if (freecam_take_roll(text, rest, sizeof rest, roll)) text = rest;
-    const int n = freecam_parse_ints(text, v, max);
+    int n;
+    if (real) {
+        n = freecam_parse_reals(text, real, max);
+        for (int i = 0; i < n; i++) v[i] = (int32_t)lround(real[i]);
+    } else {
+        n = freecam_parse_ints(text, v, max);
+    }
     name[0] = '\0';
     if (n >= 3) return n;
     while (*text == ' ') text++;
@@ -429,9 +476,24 @@ static int freecam_parse_pose_text(const char* text, int32_t* v, int max, int32_
 
 /* One path waypoint: a numeric pose, or a name resolved from the live level. */
 typedef struct {
-    int32_t v[6];                      /* x, y, z, yaw, pitch, roll */
+    int32_t v[6];                      /* x, y, z, yaw, pitch, roll; the stamped (rounded) pose */
+    double  f[6];                      /* the same as written, fractions kept */
+    int     cut_after;                 /* a "cut" segment follows: no curve through it */
     char    named[FREECAM_NAME_MAX];   /* "" = numeric */
 } freecam_waypoint;
+
+/* One committed path stamp, kept for the presentation pose: the VBL it ran
+ * on, the path parameter (waypoint index plus the fraction of the segment)
+ * and the stamped position, which identifies the stamp in a camera
+ * snapshot. */
+typedef struct {
+    uint32_t vbl;
+    double   u;
+    int32_t  pos[3];
+    int32_t  ang[3];    /* yaw, pitch, roll as stamped */
+} freecam_path_stamp;
+
+#define FREECAM_STAMP_RING 64
 
 static struct {
     freecam_waypoint* wp;   /* heap, cap entries, n used */
@@ -442,6 +504,10 @@ static struct {
     int     seg;
     int     resolved;   /* named waypoints filled in from the live level */
     int     active;
+    int     frac;       /* some numeric waypoint carries a fraction: presents
+                         * evaluate the path curve (freecam_present_pose) */
+    freecam_path_stamp ring[FREECAM_STAMP_RING];
+    unsigned ring_n;    /* stamps written; the newest is ring[(ring_n - 1) % RING] */
 } s_path;
 
 /** @brief Read a whole spec file into a NUL-terminated heap buffer.
@@ -479,9 +545,10 @@ static char* freecam_path_read_file(const char* file) {
 /** @brief Append one waypoint to s_path, growing the array by doubling.
  *
  * @param v The six pose integers.
+ * @param f The six pose numbers as written.
  * @param named The name, "" for a numeric waypoint.
  * @return 1 on success, 0 when the allocation failed. */
-static int freecam_path_push(const int32_t v[6], const char* named) {
+static int freecam_path_push(const int32_t v[6], const double f[6], const char* named) {
     if (s_path.n == s_path.cap) {
         const int cap = s_path.cap ? s_path.cap * 2 : 16;
         freecam_waypoint* wp = realloc(s_path.wp, (size_t)cap * sizeof *wp);
@@ -491,17 +558,22 @@ static int freecam_path_push(const int32_t v[6], const char* named) {
     }
     freecam_waypoint* w = &s_path.wp[s_path.n++];
     memcpy(w->v, v, sizeof w->v);
+    memcpy(w->f, f, sizeof w->f);
+    w->cut_after = 0;
     memcpy(w->named, named, sizeof w->named);
     return 1;
 }
 
 /** @brief Parse one ';'- or newline-delimited segment of a path spec into s_path.
  *
- * A segment containing "ticks=" sets the ticks per segment when positive.
- * Any other segment parses as pose text (freecam_parse_pose_text): three or
- * more integers make a numeric waypoint, missing yaw and pitch reading 0 and
- * the roll the sixth integer, else the "roll=N" key's value, else 0; a
- * non-blank name makes a named waypoint with the key's roll, resolved later.
+ * A segment containing "ticks=" sets the ticks per segment when positive. A
+ * segment "cut" marks the previous waypoint's segment as a cut, which the
+ * presentation curve does not pass through. Any other segment parses as pose
+ * text (freecam_parse_pose_text) with fractions kept: three or more numbers
+ * make a numeric waypoint, missing yaw and pitch reading 0 and the roll the
+ * sixth number, else the "roll=N" key's value, else 0; a number with a
+ * fraction marks the path fractional; a non-blank name makes a named
+ * waypoint with the key's roll, resolved later.
  * The segment is truncated to 127 characters.
  * @param p The segment's first character.
  * @param len The segment's length.
@@ -521,17 +593,24 @@ static int freecam_path_parse_segment(const char* p, size_t len) {
         if (v > 0) s_path.ticks = v;
         return 1;
     }
+    if (strcmp(seg, "cut") == 0) {
+        if (s_path.n > 0) s_path.wp[s_path.n - 1].cut_after = 1;
+        return 1;
+    }
     int32_t v[6] = {0, 0, 0, 0, 0, 0}, roll;
+    double f[6] = {0, 0, 0, 0, 0, 0};
     char named[FREECAM_NAME_MAX];
-    const int nv = freecam_parse_pose_text(seg, v, 6, &roll, named);
-    if (nv < 6) v[5] = roll;
+    const int nv = freecam_parse_pose_text(seg, v, f, 6, &roll, named);
+    if (nv < 6) { v[5] = roll; f[5] = (double)roll; }
+    for (int i = 0; i < 6; i++)
+        if (f[i] != (double)v[i]) s_path.frac = 1;
     if (named[0] && !D->resolve_named_pose) {
         OPL_WARN_F("freecam", "--freecam-path: named waypoint '%s' but "
                    "this game has no named poses", named);
         return 0;
     }
     if (nv < 3 && !named[0]) return 1;
-    if (!freecam_path_push(v, named)) {
+    if (!freecam_path_push(v, f, named)) {
         OPL_WARN_F("freecam", "--freecam-path: out of memory at waypoint %d", s_path.n);
         return 0;
     }
@@ -576,8 +655,8 @@ static int freecam_path_parse(const char* spec) {
         return 0;
     }
     s_path.active = 1;
-    OPL_INFO_F("freecam", "flight path armed: %d waypoint(s), %d tick(s) per segment",
-               s_path.n, s_path.ticks);
+    OPL_INFO_F("freecam", "flight path armed: %d waypoint(s), %d tick(s) per segment%s",
+               s_path.n, s_path.ticks, s_path.frac ? ", fractional (presents follow the curve)" : "");
     return 1;
 }
 
@@ -594,6 +673,7 @@ static int freecam_path_resolve(CPUState* cpu) {
         if (!s_path.wp[i].named[0]) continue;
         if (!resolve_named(cpu, s_path.wp[i].named, v)) return 0;  /* not live yet */
         memcpy(s_path.wp[i].v, v, sizeof v);   /* roll, v[5], is the spec's */
+        for (int k = 0; k < 5; k++) s_path.wp[i].f[k] = (double)v[k];
     }
     for (int i = 0; i < s_path.n && i < FREECAM_PATH_LOG_MAX; i++) {
         const int32_t* w = s_path.wp[i].v;
@@ -647,10 +727,110 @@ static void freecam_path_step(CPUState* cpu, int committed) {
     s_pose.pitch = freecam_lerp_angle(a[4], b[4], num, den);
     s_pose.roll  = freecam_lerp_angle(a[5], b[5], num, den);
 
+    if (committed && s_path.frac) {
+        freecam_path_stamp* st = &s_path.ring[s_path.ring_n++ % FREECAM_STAMP_RING];
+        st->vbl = openpete_frame;
+        st->u = (double)s_path.seg + (double)num / (double)den;
+        st->pos[0] = s_pose.x; st->pos[1] = s_pose.y; st->pos[2] = s_pose.z;
+        st->ang[0] = angle_wrap(s_pose.yaw);
+        st->ang[1] = angle_wrap(s_pose.pitch);
+        st->ang[2] = angle_wrap(s_pose.roll);
+    }
     if (committed && ++s_path.t >= s_path.ticks) {
         s_path.t = 0;
         s_path.seg = (s_path.seg + 1) % s_path.n;
     }
+}
+
+/** @brief Find the committed path stamp a camera snapshot holds.
+ *
+ * The snapshot is captured after the tick's stamp, on the stamp's VBL or a
+ * later one. Searches the stamps at or before @p tick, newest first, for the
+ * first whose stamped position equals the snapshot's, looking at most four
+ * deep.
+ * @param tick The snapshot's VBL (openpete_interp_snapshot_t.tick).
+ * @param pos The snapshot's camera position.
+ * @return The stamp, or NULL when none matches. */
+static const freecam_path_stamp* freecam_stamp_find(uint32_t tick, const int32_t pos[3]) {
+    const unsigned n = s_path.ring_n < FREECAM_STAMP_RING ? s_path.ring_n : FREECAM_STAMP_RING;
+    int looked = 0;
+    for (unsigned k = 0; k < n && looked < 4; k++) {
+        const freecam_path_stamp* st = &s_path.ring[(s_path.ring_n - 1u - k) % FREECAM_STAMP_RING];
+        if (st->vbl > tick) continue;
+        looked++;
+        if (st->pos[0] == pos[0] && st->pos[1] == pos[1] && st->pos[2] == pos[2]) return st;
+    }
+    return NULL;
+}
+
+/** @brief Evaluate the path curve at path parameter u.
+ *
+ * u is a waypoint index plus the fraction of its segment, taken modulo the
+ * waypoint count as the path loops. Within segment i -> i+1 the curve is
+ * the uniform Catmull-Rom spline through waypoints i-1, i, i+1 and i+2 (C1,
+ * passing through every waypoint), angles unwrapped about waypoint i along
+ * the shorter arc. A neighbour across a cut is replaced by the linear
+ * extension of the segment, and a segment that is itself a cut is linear.
+ * @param u The path parameter.
+ * @param out Receives x, y, z, yaw, pitch, roll; angles in [-0x800, 0x800]. */
+static void freecam_path_curve(double u, double out[6]) {
+    const int n = s_path.n;
+    const double fl = floor(u);
+    const double t = u - fl;
+    const int i = (int)(((long long)fl % n + n) % n);
+    const int j = (i + 1) % n;
+    const freecam_waypoint* w = s_path.wp;
+    const int lin = w[i].cut_after;
+    const int has0 = !w[(i + n - 1) % n].cut_after;
+    const int has3 = !w[j].cut_after;
+    const double* f0 = w[(i + n - 1) % n].f;
+    const double* f1 = w[i].f;
+    const double* f2 = w[j].f;
+    const double* f3 = w[(j + 1) % n].f;
+    for (int c = 0; c < 6; c++) {
+        double a0, a1 = f1[c], a2, a3;
+        if (c < 3) {
+            a0 = f0[c]; a2 = f2[c]; a3 = f3[c];
+        } else {
+            a2 = a1 + remainder(f2[c] - f1[c], ANGLE_FULL);
+            a0 = a1 - remainder(f1[c] - f0[c], ANGLE_FULL);
+            a3 = a2 + remainder(f3[c] - f2[c], ANGLE_FULL);
+        }
+        double v;
+        if (lin) {
+            v = a1 + (a2 - a1) * t;
+        } else {
+            if (!has0) a0 = 2.0 * a1 - a2;
+            if (!has3) a3 = 2.0 * a2 - a1;
+            v = 0.5 * (2.0 * a1 + (a2 - a0) * t + (2.0 * a0 - 5.0 * a1 + 4.0 * a2 - a3) * t * t +
+                       (3.0 * a1 - a0 - 3.0 * a2 + a3) * t * t * t);
+        }
+        out[c] = (c < 3) ? v : remainder(v, ANGLE_FULL);
+    }
+}
+
+int freecam_present_pose(uint32_t prev_tick, const int32_t prev_pos[3],
+                         uint32_t curr_tick, const int32_t curr_pos[3],
+                         double alpha, double pose[6], int32_t prev_ang[3]) {
+    if (!s_path.active || !s_path.frac || !s_path.resolved || !openpete_freecam_active()) return 0;
+    const freecam_path_stamp* sp = freecam_stamp_find(prev_tick, prev_pos);
+    const freecam_path_stamp* sc = freecam_stamp_find(curr_tick, curr_pos);
+    if (!sp || !sc) return 0;
+    double du = sc->u - sp->u;
+    if (du < 0.0) du += (double)s_path.n;          /* the loop back to waypoint 0 */
+    if (du <= 0.0 || du > 2.0) return 0;
+    freecam_path_curve(sp->u + alpha * du, pose);
+    memcpy(prev_ang, sp->ang, sizeof sp->ang);
+    return 1;
+}
+
+void freecam_view_rotation(double yaw, double pitch, double roll, double R[3][3]) {
+    double X[3][3], Y[3][3], Z[3][3], XY[3][3];
+    rot_game(0, pitch, X);
+    rot_game(1, yaw, Y);
+    rot_game(2, roll, Z);
+    mat3_mul(X, Y, XY);
+    mat3_mul(Z, XY, R);
 }
 
 /** @brief Set the host pose from an OPENPETE_FREECAM_POSE string.
@@ -665,7 +845,7 @@ static void freecam_path_step(CPUState* cpu, int committed) {
 static void freecam_apply_pose(CPUState* cpu, const char* s) {
     int32_t v[5] = {0, 0, 0, 0, 0}, roll;
     char name[FREECAM_NAME_MAX];
-    int n = freecam_parse_pose_text(s, v, 5, &roll, name);
+    int n = freecam_parse_pose_text(s, v, NULL, 5, &roll, name);
     if (n < 3) {
         if (!name[0] || !resolve_named(cpu, name, v)) {
             OPL_WARN_F("freecam",

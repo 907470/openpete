@@ -539,7 +539,10 @@ static const openpete_help_only_t k_help_only[] = {
       "\"x,y,z[,yaw,pitch[,roll]]\", or \"@FILE\" to read the spec\n"
       "from FILE (';' or newline between segments, any count).\n"
       "Interpolates over N ticks per segment (default 120), angles\n"
-      "along the shorter arc. Exercises the costs only movement reaches\n"
+      "along the shorter arc. Fractional values make presents follow\n"
+      "a Catmull-Rom curve through the waypoints (\"cut\" segment:\n"
+      "none through it); the game's camera takes the rounded pose.\n"
+      "Exercises the costs only movement reaches\n"
       "(sector-cache churn, LOD crossings) that a static pose cannot.\n"
       "CLI twin of OPENPETE_FREECAM_PATH; supersedes --freecam-pose." },
     { "--gameplay-hash-log",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,

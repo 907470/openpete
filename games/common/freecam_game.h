@@ -118,6 +118,38 @@ extern freecam_game_desc freecam_desc;
  * @return 1 when the recompiled body must return at once, else 0. */
 int freecam_should_freeze(CPUState* cpu, uint32_t addr);
 
+/** @brief The pose a present shows on a fractional flight path, from the snapshot pair it brackets.
+ *
+ * A path with a fraction in any numeric waypoint stamps each tick's pose
+ * rounded to the game's integers and records the stamp's path parameter. A
+ * present between the snapshots of two such stamps shows the path curve
+ * (Catmull-Rom through the waypoints as written, linear across a "cut") at
+ * the parameter the bracket's alpha reaches between them. Each snapshot is
+ * matched to its stamp by VBL and stamped position. Writes no guest memory.
+ * @param prev_tick The earlier snapshot's VBL.
+ * @param prev_pos The earlier snapshot's camera position.
+ * @param curr_tick The later snapshot's VBL.
+ * @param curr_pos The later snapshot's camera position.
+ * @param alpha The bracket's blend factor, 0 at the earlier snapshot.
+ * @param pose Receives x, y, z, yaw, pitch, roll in stored units, unrounded.
+ * @param prev_ang Receives the yaw, pitch and roll stamped for the earlier
+ *        snapshot, the angles its matrices were built from.
+ * @return 1 when @p pose is set; 0 with no fractional path engaged, a
+ *         snapshot no stamp matches, or a pair more than two waypoints apart. */
+int freecam_present_pose(uint32_t prev_tick, const int32_t prev_pos[3],
+                         uint32_t curr_tick, const int32_t curr_pos[3],
+                         double alpha, double pose[6], int32_t prev_ang[3]);
+
+/** @brief The unit rotation Rz(roll)·Rx(pitch)·Ry(yaw) of a pose, in the game's matrix forms.
+ *
+ * The view the free camera's stamp composes under every known builder
+ * order; angles in stored units, 4096 per turn, fractions allowed.
+ * @param yaw The yaw.
+ * @param pitch The pitch.
+ * @param roll The roll about the view axis.
+ * @param R Receives the matrix, unit scale. */
+void freecam_view_rotation(double yaw, double pitch, double roll, double R[3][3]);
+
 /** @brief Engage the free camera once from OPENPETE_FREECAM, OPENPETE_FREECAM_POSE or OPENPETE_FREECAM_PATH.
  *
  * Called once per tick from the game's on_frame_pre; acts at most once per
