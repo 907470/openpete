@@ -59,6 +59,7 @@ set(OPENPETE_GAME_COMMON_SOURCES
     renderer/moby_rank.c
     renderer/moby_rank_cal.c
     renderer/player.c
+    renderer/water_plane.c
     renderer/player_ranges.c
     renderer/ui_sprite.c
     # The SPRT text feeder: registered only by a game whose ui_game names a

@@ -707,6 +707,9 @@ typedef struct game_layout {
         uint32_t colour_off;        /* per-moby colour word; 0 where none */
         uint32_t size_off;          /* per-moby screen-scale byte; 0 where none */
         uint32_t drawn_off;         /* the drawn verdict the cull writes back */
+        uint32_t rot_off;           /* the model-to-world rotation (3x3 Q12, the
+                                     * GTE's five-word form) the water-plane
+                                     * split reads; 0 where the game has none */
         /* The cutscene path sampler's actor count variable: while an overlay
          * whose name starts with one of the space-separated prefixes in
          * cutpath_overlays runs, the first [cutpath_count] array records

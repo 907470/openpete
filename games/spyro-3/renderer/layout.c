@@ -381,6 +381,8 @@ const game_layout_t spyro3_game_layout = {
         .colour_off   = 0x54u,          /* mobydraw.s:217,229 copied into the record at +0x3C */
         .size_off     = 0x4Fu,          /* mobydraw.s:453-467 high byte of the +0x4E halfword */
         .drawn_off    = 0x4Du,          /* mobydraw.s:73 cleared, :224 written 1 or 2 */
+        .rot_off      = 0x20u,          /* mobydraw.s:2655-2659 the five rotation words
+                                         * the water-plane split loads */
         /* Every cutscene overlay's sampler and the title overlay's
          * (func_cutscene_62_80077C70, func_title_8007A1C0) walk the first
          * D_8006EDFC records of the array and, where two consecutive track

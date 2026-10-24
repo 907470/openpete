@@ -434,6 +434,8 @@ const game_layout_t spyro2_game_layout = {
         .colour_off   = 0x54u,             /* mobydraw.s:219, copied into the record at +0x3C */
         .size_off     = 0x4Fu,             /* mobydraw.s:455 high byte of the +0x4E halfword */
         .drawn_off    = 0x4Du,             /* mobydraw.s:75 cleared, written 1 or 2 later */
+        .rot_off      = 0x20u,             /* mobydraw.s:2634-2638 the five
+                                            * rotation words the water-plane split loads */
 
         .model_table     = G_MOBYMODELS,
         .model_anims_off = 0x3Cu,          /* mobydraw.s:113-120 model + 0x3C + id*4 */

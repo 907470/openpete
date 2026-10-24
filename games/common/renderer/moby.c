@@ -35,6 +35,7 @@
 #include "renderer/orchestrator.h"  /* the canonical-render epoch + producer-camera brackets */
 #include "renderer/moby.h"          /* this feeder's exported entries */
 #include "renderer/moby_game.h"     /* per-game decoders, classifications and addresses */
+#include "renderer/water_plane.h"   /* the water-plane split shared with the player walk */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "openpete_psx.h"
 #include "openpete_vstream.h"       /* frame-word field -> stream address (handles) */
@@ -1033,6 +1034,7 @@ typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  float kvz;            /* key depth: vz before the tie pull and the near-floor lift */
                  moby_otk_vert_t iv;   /* the draw's integer RTPS output (paint key) */
                  moby_otk_rec_t otk;   /* the record's paint key; first vertex only */
+                 float mv[3];          /* the model-space vertex projected (water-plane distance) */
                } proj_xy;  /* vz=view-Z; rec=source record (diag);
                  kvz = the written depth at the true distance (size correction
                  and GPF depth restore applied) before the one-slot tie pull and
@@ -1677,6 +1679,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
         out[i].ey = (float)((M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0);
         out[i].ez = (float)((M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0);
+        out[i].mv[0] = (float)vx; out[i].mv[1] = (float)vy; out[i].mv[2] = (float)vz;
     }
     /* Near-floor: if the pulls pushed this record past the near plane, lift
      * the WHOLE record uniformly so its nearest vertex sits on the floor -
@@ -3667,6 +3670,15 @@ static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui
                          s_wtri_otk, s_wtri_isxy, s_wtri_single, s_wtri_wbk, 0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
+/* The water-plane split of the face being emitted (moby_wplane_face): set
+ * for a face whose corners lie on both sides of its record's plane, so
+ * emit_wtri cuts each triangle it is handed; NULL otherwise. */
+static _Thread_local const moby_wplane_t* t_emit_wp;
+static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, proj_xy* c,
+                             uint32_t ca, uint32_t cb, uint32_t cc,
+                             int ua, int va, int ub, int vb, int uc, int vc,
+                             int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend);
+
 /** @brief Append one float triangle to the current emit target, unless the near-plane cull drops it.
  *
  * The target is the thread's t_out: the global s_gout arrays for a serial walk
@@ -3701,6 +3713,14 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
                       uint32_t ca, uint32_t cb, uint32_t cc,
                       int ua,int va,int ub,int vb,int uc,int vc,
                       int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
+    if (t_emit_wp) {
+        const moby_wplane_t* wp = t_emit_wp;
+        t_emit_wp = NULL;
+        emit_wtri_wplane(wp, a, b, c, ca, cb, cc, ua, va, ub, vb, uc, vc,
+                         tex, tpx, tpy, clx, cly, bpp, blend);
+        t_emit_wp = wp;
+        return;
+    }
     mn_out* O = t_out;
     if (O->n >= O->cap) return;
     /* NEAR-PLANE CULL: drop any triangle with a vertex at/behind the camera
@@ -3760,6 +3780,144 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     t->tmix = s_emit_tmix;
     s_emit_tmix = 0;
     t_diag->emitted++;
+}
+
+/** @brief A projected vertex's signed distance to its record's water plane.
+ *
+ * plane - (row . V) / 4096 * unit over the model-space vertex the decode
+ * projected, the float form of the draw's MVMVA, shift and subtract.
+ * @param wp The record's split.
+ * @param p The vertex.
+ * @return The distance; 0 or above is the positive side. */
+static double moby_wplane_dist(const moby_wplane_t* wp, const proj_xy* p) {
+    return wp->plane - (wp->row[0] * p->mv[0] + wp->row[1] * p->mv[1]
+                        + wp->row[2] * p->mv[2]) / 4096.0 * wp->unit;
+}
+
+/** @brief The record's water-plane split, from the game's water_plane hook.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param mat The record's material word.
+ * @param moby The Moby the record was built from.
+ * @param header The record's AnimationHeader.
+ * @param wp Receives the split.
+ * @return `wp` when the record's draw splits, else NULL. */
+static const moby_wplane_t* moby_record_wplane(CPUState* cpu, uint32_t mat, uint32_t moby,
+                                               uint32_t header, moby_wplane_t* wp) {
+    if (!moby_game.water_plane || !moby_game.water_plane(cpu, mat, moby, header, wp)) return NULL;
+    return wp;
+}
+
+/** @brief Classifies one face against its record's water plane and applies the wholly negative policy.
+ *
+ * The draw classifies the corners it emits: all four of a quad, the three of
+ * a single triangle (v0 or v3 with v1 and v2, by the emit tree's verdict). A
+ * face wholly on the positive side is left alone; one wholly on the negative
+ * side is dropped under drop_below (both emit flags cleared), else its four
+ * colours are depth-cued by wplane_shade; a face with corners on both sides
+ * is cut per triangle at emit (emit_wtri_wplane, through t_emit_wp).
+ * @param wp The record's split, or NULL for a record the draw does not split.
+ * @param emit_a The emit tree's first-triangle verdict, cleared on a drop.
+ * @param emit_b Its second-triangle verdict, cleared on a drop.
+ * @param p0 Corner 0.
+ * @param p1 Corner 1.
+ * @param p2 Corner 2.
+ * @param p3 Corner 3, or NULL.
+ * @param c0 Corner 0's colour, cued in place for a wholly negative face.
+ * @param c1 Corner 1's colour.
+ * @param c2 Corner 2's colour.
+ * @param c3 Corner 3's colour.
+ * @return `wp` for a face that straddles the plane, else NULL. */
+static const moby_wplane_t* moby_wplane_face(const moby_wplane_t* wp, int* emit_a, int* emit_b,
+                                             const proj_xy* p0, const proj_xy* p1,
+                                             const proj_xy* p2, const proj_xy* p3,
+                                             uint32_t* c0, uint32_t* c1, uint32_t* c2,
+                                             uint32_t* c3) {
+    if (!wp || !(*emit_a || *emit_b)) return NULL;
+    const proj_xy* v[4] = { *emit_a ? p0 : p3, p1, p2, p3 };
+    const int n = (*emit_a && *emit_b) ? 4 : 3;
+    int neg = 0;
+    for (int k = 0; k < n; k++) neg += moby_wplane_dist(wp, v[k]) < 0.0;
+    if (neg == 0) return NULL;
+    if (neg < n) return wp;
+    if (wp->drop_below) { *emit_a = *emit_b = 0; return NULL; }
+    uint32_t* c[4] = { c0, c1, c2, c3 };
+    for (int k = 0; k < 4; k++) *c[k] = wplane_shade(wp->fc, wp->ir0, *c[k]);
+    return NULL;
+}
+
+/** @brief Emits one triangle of a straddling face as its two parts at the water plane.
+ *
+ * wplane_cut splits the triangle; each part is fanned into triangles that
+ * keep the face's material, paint key, face key and texel fog row. A cut
+ * point takes its edge's first corner's projection record with the screen
+ * position at the perspective-correct crossing and depth, perspective W, key
+ * depth and rotated offset at the model-space crossing. The negative part is
+ * depth-cued, or dropped under drop_below.
+ * @param wp The record's split.
+ * @param a The first corner.
+ * @param b The second corner.
+ * @param c The third corner.
+ * @param ca The first corner's colour.
+ * @param cb The second corner's colour.
+ * @param cc The third corner's colour.
+ * @param ua The first corner's U.
+ * @param va The first corner's V.
+ * @param ub The second corner's U.
+ * @param vb The second corner's V.
+ * @param uc The third corner's U.
+ * @param vc The third corner's V.
+ * @param tex Nonzero for a textured triangle.
+ * @param tpx The texture page X origin.
+ * @param tpy The texture page Y origin.
+ * @param clx The CLUT X origin.
+ * @param cly The CLUT Y origin.
+ * @param bpp The texel depth in bits.
+ * @param blend The blend code. */
+static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, proj_xy* c,
+                             uint32_t ca, uint32_t cb, uint32_t cc,
+                             int ua, int va, int ub, int vb, int uc, int vc,
+                             int tex, int tpx, int tpy, int clx, int cly, int bpp, int blend) {
+    enum { AT_VZ, AT_TVZ, AT_KVZ, AT_EX, AT_EY, AT_EZ, AT_U, AT_V, AT_N };
+    proj_xy* const src[3] = { a, b, c };
+    const uint32_t col[3] = { ca, cb, cc };
+    const int uu[3] = { ua, ub, uc }, vv[3] = { va, vb, vc };
+    wplane_vert_t in[3], pos[4], neg[4];
+    for (int k = 0; k < 3; k++) {
+        const proj_xy* p = src[k];
+        in[k].sx = p->sx; in[k].sy = p->sy; in[k].w = p->tvz;
+        in[k].at[AT_VZ] = p->vz; in[k].at[AT_TVZ] = p->tvz; in[k].at[AT_KVZ] = p->kvz;
+        in[k].at[AT_EX] = p->ex; in[k].at[AT_EY] = p->ey; in[k].at[AT_EZ] = p->ez;
+        in[k].at[AT_U] = uu[k]; in[k].at[AT_V] = vv[k];
+        in[k].pd = moby_wplane_dist(wp, p); in[k].rgb = col[k]; in[k].idx = k;
+    }
+    int np, nn;
+    wplane_cut(in, AT_N, pos, &np, neg, &nn);
+    if (wp->drop_below) nn = 0;
+    for (int k = 0; k < nn; k++) neg[k].rgb = wplane_shade(wp->fc, wp->ir0, neg[k].rgb);
+    const int32_t otk = s_emit_otk;
+    const uint8_t tmix = s_emit_tmix;
+    for (int part = 0; part < 2; part++) {
+        const wplane_vert_t* P = part ? neg : pos;
+        const int m = part ? nn : np;
+        proj_xy q[4];
+        for (int k = 0; k < m; k++) {
+            q[k] = *src[P[k].idx];
+            q[k].sx = (float)P[k].sx; q[k].sy = (float)P[k].sy;
+            q[k].vz = (float)P[k].at[AT_VZ]; q[k].tvz = (float)P[k].at[AT_TVZ];
+            q[k].kvz = (float)P[k].at[AT_KVZ];
+            q[k].ex = (float)P[k].at[AT_EX]; q[k].ey = (float)P[k].at[AT_EY];
+            q[k].ez = (float)P[k].at[AT_EZ];
+        }
+        for (int k = 2; k < m; k++) {
+            s_emit_otk = otk; s_emit_tmix = tmix;
+            emit_wtri(&q[0], &q[k-1], &q[k], P[0].rgb, P[k-1].rgb, P[k].rgb,
+                      (int)P[0].at[AT_U], (int)P[0].at[AT_V], (int)P[k-1].at[AT_U],
+                      (int)P[k-1].at[AT_V], (int)P[k].at[AT_U], (int)P[k].at[AT_V],
+                      tex, tpx, tpy, clx, cly, bpp, blend);
+        }
+    }
+    s_emit_otk = -1; s_emit_tmix = 0;
 }
 
 /* ---- second model kind: the shared half of moby_game.simple_pass ---------
@@ -5068,6 +5226,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         else                     t_diag->desync++;
         const int rec_tri0 = t_out->n;   /* this record's first emitted triangle */
         int ltop = -1;                   /* highest local bucket array entry the draw fills */
+        moby_wplane_t wp;
+        const moby_wplane_t* wpr = moby_record_wplane(cpu, R->mscol, R->moby, R->header, &wp);
         for (int fi = 0; fi < FC->nfaces; fi++) {
             const wface_t* F = &FC->f[fi];
             int fresh = F->fresh, textured = F->textured;
@@ -5322,7 +5482,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             t_diag->bit4_faces += (F->hl == 2u);
             special_census_face(F, R->mscol, s_cur_moby_key, p0, p1, p2);
             int special_tex = 0;
-            if (moby_game.special_face && F->hl) {
+            /* A split record draws in place of the special material. */
+            t_emit_wp = moby_wplane_face(wpr, &emit_a, &emit_b, p0, p1, p2, p3,
+                                         &c0, &c1, &c2, &c3);
+            if (moby_game.special_face && F->hl && !wpr) {
                 uint32_t cc[4] = { c0, c1, c2, c3 };
                 int tex2 = textured;
                 moby_face_tex_t stex; memset(&stex, 0, sizeof stex);
@@ -5409,6 +5572,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 }
             }
         }
+        t_emit_wp = NULL;
         moby_record_world_buckets(cpu, R, &s_proj[base].otk, ltop, rec_tri0);
         moby_coincident_pull(t_out, rec_tri0);
     }

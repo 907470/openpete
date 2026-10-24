@@ -32,6 +32,7 @@
 #include "openpete_recomp_module.h"    /* the game's own static draw */
 #include "renderer/interp_regions_gen.h"  /* game_interp_moby_stash_begin/_put */
 #include "openpete_psx.h"               /* openpete_psx_to_host_span */
+#include "openpete_fiber.h"             /* openpete_frame, openpete_feed_key_now */
 #include "spyro_overlay_table.h"       /* the resident overlay, for the cutscene sampler rule */
 #include "renderer/orchestrator.h"     /* the canonical-render epoch */
 #include "renderer/cut_guard.h"        /* cut_census_on */
@@ -477,6 +478,71 @@ static int s23_material_tint(uint32_t mat, int fc[3], int* ir0) {
     fc[1] = (int)((mat >>  4) & 0xFF0u);   /* srl 4,  andi 0xFF0 -> ctc2 GFC */
     fc[2] = (int)((mat >> 12) & 0xFF0u);   /* srl 12, andi 0xFF0 -> ctc2 BFC */
     *ir0  = (int)((mat >> 16) & 0xF00u);   /* srl 16, andi 0xF00 -> mtc2 IR0 */
+    return 1;
+}
+
+/** @brief Whether OPENPETE_MOBY_VERIFY_NOPLANE, the moby water-plane split's negative control, is set.
+ *
+ * Latched on the first call. When set, s23_water_plane answers no split for
+ * every record, so a record the draw splits takes the ordinary walk and the
+ * class colour verify of a split moby collapses.
+ * @return 1 when set, else 0. */
+static int s23_water_plane_disabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY_NOPLANE"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief The water_plane hook: the regular draw's split of a moby at a world plane.
+ *
+ * A material word with bit 31 set and mode (bits 28-30) 0 sends the regular
+ * draw to its split loop instead of the mode-0 setup (S3 mobydraw.s:2061
+ * bltz to .L80032AB8; S2 mobydraw.s:2065 to .L80045E34; the two loops are the
+ * same instruction for instruction). The setup (S3 mobydraw.s:2647-2722,
+ * S2 mobydraw.s:2626-2701) takes the low 24 bits of the word, sign-extended,
+ * as an offset: the plane is the moby's position Z (Moby+0x14) less the
+ * offset's magnitude, and each vertex's distance word is the plane less the
+ * second row of the moby's rotation (Moby+0x20) applied to the model vertex
+ * (MVMVA sf = 1, no translation) and shifted left by the cull record's
+ * byte 0x1B less byte 0x1A, which the cull writes as the AnimationHeader's
+ * scale byte (+0x02) (S3 mobydraw.s:485-500). An offset of 0 or above drops
+ * a wholly negative face; a negative offset depth-cues it at IR0 0x800
+ * toward the environment's far colour (G_ENVIRONMENT+0x34..0x3C), the four
+ * corners by one DPCS each (S3 mobydraw.s:3124-3163). A face with corners on
+ * both sides is cut at the plane by INTPL and each part takes its side's
+ * policy (S3 mobydraw.s:3164 on). The split loop applies no per-face special
+ * material. OPENPETE_MOBY_VERIFY_NOPLANE answers 0 for every record.
+ * @param cpu Reads the moby, the header and the far colour.
+ * @param mat The record's material word.
+ * @param moby The Moby the record was built from.
+ * @param header The record's AnimationHeader.
+ * @param wp Receives the split.
+ * @return 1 when the word selects the split, else 0. */
+static int s23_water_plane(CPUState* cpu, uint32_t mat, uint32_t moby, uint32_t header,
+                           moby_wplane_t* wp) {
+    if (!(mat & 0x80000000u) || ((mat >> 28) & 7u) != 0u) return 0;
+    if (moby < 0x80000000u || header < 0x80000000u || !game_layout.moby.rot_off) return 0;
+    if (s23_water_plane_disabled()) return 0;
+    const int32_t off = ((int32_t)(mat << 8)) >> 8;
+    const int32_t z = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
+    int R[3][3];
+    ngte_read_matrix(cpu, moby + game_layout.moby.rot_off, R);
+    wp->plane = (double)z - (double)(off < 0 ? -off : off);
+    for (int i = 0; i < 3; i++) wp->row[i] = (double)R[1][i];
+    const int shift = (int)(cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFFu);
+    wp->unit = ldexp(1.0, shift > 30 ? 30 : shift);
+    for (int i = 0; i < 3; i++)
+        wp->fc[i] = (int32_t)cpu->read_word(game_layout.fog.far_colour + (uint32_t)i * 4u);
+    wp->ir0 = 0x800;
+    wp->drop_below = off >= 0;
+    /* OPENPETE_MOBY_WPLANE_CENSUS=1: one line per split record per walk pass,
+     * the census of the mobys a corpus tile draws split. */
+    static int s_cen = -1;
+    if (s_cen < 0) { const char* e = getenv("OPENPETE_MOBY_WPLANE_CENSUS"); s_cen = (e && *e && *e != '0'); }
+    if (s_cen)
+        fprintf(stderr, "[moby-wplane vbl=%u key=%u] moby=%08X cls=%03X mat=%08X plane=%.0f drop=%d\n",
+                openpete_frame, openpete_feed_key_now(), moby, cpu->read_half(moby + game_layout.moby.class_off) & 0xFFFu,
+                mat, wp->plane, wp->drop_below);
     return 1;
 }
 
@@ -2373,6 +2439,7 @@ const moby_game_t moby_game_spyro23 = {
     .cull_view_admits   = s23_cull_view_admits,
     .special_face      = s23_special_face,
     .material_tint     = s23_material_tint,
+    .water_plane       = s23_water_plane,
     .otkey_record      = s23_otkey_record,
     .otkey_splice      = s23_otkey_splice,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so

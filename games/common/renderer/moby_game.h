@@ -116,6 +116,20 @@ typedef struct moby_face_tex {
     uint8_t u[4], v[4], uv_set;
 } moby_face_tex_t;
 
+/* The water-plane split one record's draw runs (water_plane.h). Each model
+ * vertex V's signed distance is plane - (row . V) / 4096 * unit: `row` is a
+ * row of the moby's model-to-world rotation (Q12) and `unit` the model unit in
+ * the plane's units. The negative side is depth-cued toward `fc` (the three
+ * GTE far-colour control words) at `ir0`, or dropped when `drop_below`. */
+typedef struct moby_wplane {
+    double  plane;
+    double  row[3];
+    double  unit;
+    int32_t fc[3];
+    int32_t ir0;
+    int     drop_below;
+} moby_wplane_t;
+
 /* What a face-stream decode reports about the stream as a whole: the total
  * records it walked, how many it skipped without emitting, and whether the
  * cursor ended on the bytecount (0), on the generous end bound (1), or
@@ -274,6 +288,15 @@ typedef struct moby_game {
                          uint32_t moby, uint32_t rec, const struct moby_wface* F,
                          uint32_t c[4], const float ev[4][3], int* textured,
                          moby_face_tex_t* tex);
+
+    /* ---- water-plane split --------------------------------------------
+     * Fills `wp` and returns 1 when the record's material word selects the
+     * draw's water-plane split, which replaces the per-face special material
+     * for the whole record; returns 0 otherwise. `moby` is the Moby the
+     * record was built from and `header` its AnimationHeader. NULL where the
+     * game's draw has no split. */
+    int  (*water_plane)(CPUState* cpu, uint32_t material, uint32_t moby,
+                        uint32_t header, moby_wplane_t* wp);
 
     /* ---- whole-table material tint ------------------------------------
      * A material word that recolours the record's whole colour table after

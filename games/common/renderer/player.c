@@ -46,6 +46,7 @@
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"     /* cut_census_held_set */
 #include "renderer/player_hide.h"
+#include "renderer/water_plane.h"
 
 extern unsigned openpete_frame;
 extern op_time_t g_openpete_tick_stamp;      /* per-VBL stamp (PLL) */
@@ -263,25 +264,11 @@ static double plane_dist(int part, double VX, double VY, double VZ) {
 
 /** @brief The water plane's negative-half colour for one packed 0x00BBGGRR vertex colour.
  *
- * The draw runs one DPCS per vertex colour with the far colour in
- * RFC/GFC/BFC, cueing the channel toward it by IR0. The chain is reproduced
- * integer for integer because both of its shifts truncate, and a rounded blend
- * lands a unit above the hardware on about half the channels:
- *   IR  = SAR12((FC << 12) - (c << 16))   = FC - (c << 4)
- *   MAC = SAR12(IR * IR0 + (c << 16))
- *   out = MAC >> 4                        (the RGB2 pack), clamped to a byte
+ * The shared DPCS chain (wplane_shade) at the plane's far colour and IR0.
  * @param rgb The vertex colour.
  * @return The cued colour. */
 static uint32_t plane_shade(uint32_t rgb) {
-    uint32_t out = 0;
-    for (int i = 0; i < 3; i++) {
-        int32_t c  = (int32_t)((rgb >> (8*i)) & 0xFFu);
-        int32_t ir = s_plane.fc[i] - (c << 4);
-        int32_t v  = ((ir * s_plane.ir0 + (c << 16)) >> 12) >> 4;
-        if (v < 0) v = 0; else if (v > 255) v = 255;
-        out |= (uint32_t)v << (8*i);
-    }
-    return out;
+    return wplane_shade(s_plane.fc, s_plane.ir0, rgb);
 }
 
 /** @brief Cues one packed 0x00BBGGRR colour toward a tint's far colour, the draw's DPCS pass over the model colour table.
@@ -608,8 +595,11 @@ static double player_depth_sum(const uint16_t idx[4], const int order[2][3], int
 typedef struct { int tex, tpx, tpy, clx, cly, bpp, blend; } swmat;
 
 /* One vertex on the way to the scene: a projected stream vertex, or a point
- * the plane cut produced, which has no stream index of its own. */
-typedef struct { double sx, sy, vz, u, v, pd; uint32_t rgb; int idx; } pclv;
+ * the plane cut produced, which has no stream index of its own. The shared
+ * cut's attribute slots carry view depth and the texture coordinates, and the
+ * zero perspective divisor keeps the guest draw's screen-linear cut. */
+typedef wplane_vert_t pclv;
+enum { PCLV_VZ, PCLV_U, PCLV_V, PCLV_NAT };
 
 /** @brief Appends one triangle to the walk's triangle store.
  *
@@ -622,8 +612,8 @@ static void emit_raw(const pclv v[3], const swmat* m, int submerged) {
     if (s_swtri_n >= MAX_SWTRI) return;
     swtri* t = &s_swtri[s_swtri_n++];
     for (int k = 0; k < 3; k++)
-        t->v[k] = (swv){ (float)v[k].sx, (float)v[k].sy, (float)v[k].vz,
-                         (int)v[k].u, (int)v[k].v, v[k].rgb, v[k].idx };
+        t->v[k] = (swv){ (float)v[k].sx, (float)v[k].sy, (float)v[k].at[PCLV_VZ],
+                         (int)v[k].at[PCLV_U], (int)v[k].at[PCLV_V], v[k].rgb, v[k].idx };
     t->textured=m->tex; t->tpage_x=m->tpx; t->tpage_y=m->tpy;
     t->clut_x=m->clx; t->clut_y=m->cly; t->bpp=m->bpp; t->blend=m->blend;
     t->submerged = submerged;
@@ -646,32 +636,7 @@ static void emit_raw(const pclv v[3], const swmat* m, int submerged) {
 static void plane_emit(const pclv in[3], const swmat* m) {
     if (!s_plane.active) { emit_raw(in, m, 0); return; }
     pclv pos[4], neg[4]; int np = 0, nn = 0;
-    for (int k = 0; k < 3; k++) {
-        const pclv* A = &in[k];
-        const pclv* B = &in[(k + 1) % 3];
-        int a_up = A->pd >= 0.0, b_up = B->pd >= 0.0;
-        if (a_up) { if (np < 4) pos[np++] = *A; } else { if (nn < 4) neg[nn++] = *A; }
-        if (a_up == b_up) continue;
-        double den = A->pd - B->pd;
-        double t = den != 0.0 ? A->pd / den : 0.0;
-        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-        pclv M;
-        M.sx = A->sx + t*(B->sx - A->sx);
-        M.sy = A->sy + t*(B->sy - A->sy);
-        M.vz = A->vz + t*(B->vz - A->vz);
-        M.u  = A->u  + t*(B->u  - A->u);
-        M.v  = A->v  + t*(B->v  - A->v);
-        M.pd = 0.0; M.idx = A->idx; M.rgb = 0;
-        for (int c = 0; c < 3; c++) {
-            double ca = (double)((A->rgb >> (8*c)) & 0xFFu);
-            double cb = (double)((B->rgb >> (8*c)) & 0xFFu);
-            int cv = (int)(ca + t*(cb - ca) + 0.5);
-            if (cv < 0) cv = 0; else if (cv > 255) cv = 255;
-            M.rgb |= (uint32_t)cv << (8*c);
-        }
-        if (np < 4) pos[np++] = M;
-        if (nn < 4) neg[nn++] = M;
-    }
+    wplane_cut(in, PCLV_NAT, pos, &np, neg, &nn);
     for (int k = 2; k < np; k++) {
         pclv f[3] = { pos[0], pos[k-1], pos[k] };
         emit_raw(f, m, 0);
@@ -719,8 +684,9 @@ static void emit_swtri(int i0,int i1,int i2, uint32_t c0,uint32_t c1,uint32_t c2
     pclv t[3];
     for (int k = 0; k < 3; k++) {
         int i = ii[k];
-        t[k].sx = s_sproj[i].sx; t[k].sy = s_sproj[i].sy; t[k].vz = s_sproj[i].vz;
-        t[k].u = uu[k]; t[k].v = vv[k]; t[k].rgb = cc[k];
+        t[k].sx = s_sproj[i].sx; t[k].sy = s_sproj[i].sy; t[k].w = 0.0;
+        t[k].at[PCLV_VZ] = s_sproj[i].vz; t[k].at[PCLV_U] = uu[k]; t[k].at[PCLV_V] = vv[k];
+        t[k].rgb = cc[k];
         t[k].pd = s_sproj[i].pd; t[k].idx = i;
     }
     const swmat m = { tex, tpx, tpy, clx, cly, bpp, blend };
