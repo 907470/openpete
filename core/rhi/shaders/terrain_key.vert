@@ -56,12 +56,15 @@ layout(location = 8) flat out float vCls;
  * perspective UV is recovered manually via the classic (u/w, 1/w) pair in
  * vUV/vQ (w = the TRUE per-vertex view-Z in inW). */
 layout(constant_id = 1) const bool AFFINE_UV = false;
+/* Fault injection (OPENPETE_KEY_Z_ULP_BIAS): ulps added to every view-Z key
+ * vertex's window depth (op_key_z_fault); 0 in every normal run. */
+layout(constant_id = 6) const int KEY_Z_ULP_BIAS = 0;
 
 void main()
 {
     float vz = op_scene_vz(inPos.z);
     float kv = vz + max(abs(inKoff) - 0.5, 0.0);   /* og key view-Z */
-    gl_Position = op_key_clip(inPos.xy, inPos.z, kv);   /* z_ndc = kv/(kv+4096), or the band value */
+    gl_Position = op_key_clip(inPos.xy, inPos.z, kv, KEY_Z_ULP_BIAS);   /* z_ndc = kv/(kv+4096), or the band value */
     float wq = AFFINE_UV ? 1.0 : max(inW, 1.0);
     vColor = inColor;
     vUV = inUV / wq;

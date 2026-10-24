@@ -7290,25 +7290,50 @@ static void census_add_base(const rhi_device *dev, const rhi_pipeline *p)
 /* One stage's specialization info: an entry and a packed value for each
  * constant the stage declares, and nothing for the rest. */
 typedef struct {
-    VkSpecializationMapEntry e[6];
-    VkBool32                 d[6];
+    VkSpecializationMapEntry e[7];
+    VkBool32                 d[7];
     VkSpecializationInfo     info;
 } stage_spec;
 
+/** @brief Return OPENPETE_KEY_Z_ULP_BIAS, the key stages' fault-injection constant 6.
+ *
+ * The signed count of ulps the key passes add to a key vertex's window depth
+ * (psx_key_contest.glsl op_key_z_fault), modelling a rasteriser that stores a
+ * key image value off the exact encoding. Unset, empty or unparsable reads 0,
+ * which leaves every key stage's code unchanged. Read once per process: the
+ * value is the same for every variant, so the variant keys do not carry it.
+ * @return The bias, clamped to [-1024, 1024]. */
+static int32_t key_z_ulp_bias(void)
+{
+    static _Atomic int32_t s_bias = INT32_MIN;   /* any compile thread reads it */
+    int32_t v = s_bias;
+    if (v == INT32_MIN) {
+        const char *e = getenv("OPENPETE_KEY_Z_ULP_BIAS");
+        long b = (e && *e) ? strtol(e, NULL, 10) : 0;
+        v = (int32_t)(b < -1024 ? -1024 : b > 1024 ? 1024 : b);
+        int32_t unset = INT32_MIN;
+        if (atomic_compare_exchange_strong(&s_bias, &unset, v) && v)
+            RHI_LOG("fault injection: OPENPETE_KEY_Z_ULP_BIAS=%d ulps on the key passes' depth\n", (int)v);
+    }
+    return v;
+}
+
 /** @brief Fill a stage's specialization info with only the constants it declares.
  *
+ * Ids 0-5 take the variant's values; id 6 (KEY_Z_ULP_BIAS) takes
+ * key_z_ulp_bias().
  * @param s Storage.
  * @param ids The stage's declared constant ids (bit i = constant_id i).
- * @param c The six constant values.
+ * @param c The six variant constant values.
  * @return The info, or NULL when the stage declares none. */
 static const VkSpecializationInfo *stage_spec_fill(stage_spec *s, uint32_t ids, const uint32_t c[6])
 {
     uint32_t n = 0;
-    for (uint32_t i = 0; i < 6; i++) {
+    for (uint32_t i = 0; i < 7; i++) {
         if (!((ids >> i) & 1u)) continue;
         s->e[n] = (VkSpecializationMapEntry){ .constantID = i, .offset = n * (uint32_t)sizeof(VkBool32),
                                               .size = sizeof(VkBool32) };
-        s->d[n] = c[i];
+        s->d[n] = i < 6 ? c[i] : (uint32_t)key_z_ulp_bias();
         n++;
     }
     s->info = (VkSpecializationInfo){ .mapEntryCount = n, .pMapEntries = s->e,
@@ -7474,7 +7499,7 @@ static void pipe_depth_stencil_fill(const rhi_device *dev, const rhi_pipeline_de
  * creation. Each stage receives only the specialization constants it
  * declares, with the values the variant view gives: 0 DEPTH_REVERSED (per
  * depth class), 1 AFFINE_UV, 2 NOTEX, 3 MOBY_TRUESCOPE, 4 SLOT_CONTEST,
- * 5 STP_SELECT. The fragment stage gets the same values as the vertex
+ * 5 STP_SELECT, and 6 KEY_Z_ULP_BIAS from the process (key_z_ulp_bias). The fragment stage gets the same values as the vertex
  * stage: the terrain key-resolve fragments invert gl_FragCoord.z back to
  * view-Z, and the inversion follows the encoding the vertex stage selected.
  * The caller sets stages[0].module and stages[1].module.
