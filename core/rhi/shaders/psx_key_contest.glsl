@@ -66,6 +66,19 @@ bool op_key_slot_nearer(float tkey, float slot)
     return tkey < op_key_from_stored(op_key_store(slot * OP_KEY_SLOT));
 }
 
+/* Whether a decoded key tkey lies at or nearer than the band edge band
+ * (a face's key less half an ordering-table slot), the terrain-against-
+ * terrain test where the scene is not submitted through one ordering table.
+ * The edge goes through the key images' encode and decode, so a key exactly
+ * half a slot nearer than the face decodes to exactly the edge and counts as
+ * nearer on any GPU. Such a pair shares a bucket when the nearer key lies in
+ * the bucket's first half, where the table's insertion order decides and
+ * this test does not model it. OP_KEY_NONE is never nearer. */
+bool op_key_band_nearer(float tkey, float band)
+{
+    return tkey <= op_key_from_stored(op_key_store(band));
+}
+
 /* ---- drain sub-cell keys ---------------------------------------------
  *
  * The game's near drain inserts a near-band terrain face into the ordering
@@ -695,7 +708,7 @@ bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
                   bool slot_contest)
 {
     if (koff > 0.0) {
-        float band = (koff - 0.5) - 64.0;      /* strict, by half an OT slot */
+        float band = (koff - 0.5) - 64.0;      /* half an OT slot nearer */
         /* Terrain against terrain only. An actor face (an embedded prop
          * included: its rank reads as an actor's) is not compared against
          * the terrain key: the table paints a terrain face over a nearer
@@ -711,7 +724,7 @@ bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
          * fragment keeps a tie (it must never lose to its own key). */
         if (!actor && (slot_contest
                 ? op_key_slot_nearer(tkey, floor((koff - 0.5) / OP_KEY_SLOT))
-                : tkey < band) &&
+                : op_key_band_nearer(tkey, band)) &&
             op_key_override_holds(tattr, own, fattr))
             return true;
         if ((actor || !truescope) && akey < band &&
