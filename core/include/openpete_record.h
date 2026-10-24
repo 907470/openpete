@@ -82,15 +82,18 @@ int  openpete_record_finished(void);
  * encoder at this size (floored to even) and row order. An image whose
  * size differs from the locked size is dropped and counted, with one
  * warning. Under variable-rate capture a full ring drops the image; under
- * constant-rate capture the call waits for a free slot and the image's
- * ordinal replaces @p pts_us. No effect when recording is disabled or
+ * constant-rate capture the call waits for a free slot and the image is
+ * written at the ordinal @p pts_us names (capture periods since the first
+ * image), an owed ordinal skipped before it being filled with the previous
+ * image and counted. No effect when recording is disabled or
  * failed, or when @p rgba is NULL or a dimension is not positive.
  * @param rgba Pixels, 4 bytes each, rows packed at @p w.
  * @param w Width in pixels.
  * @param h Height in pixels.
  * @param top_down 1 when row 0 is the top row (the Vulkan offscreen), 0
  *        when bottom-up.
- * @param pts_us Wall-clock capture time in microseconds. */
+ * @param pts_us Capture time in microseconds on the op_now clock (the
+ *        virtual clock under constant-rate capture). */
 void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
                                   int top_down, uint64_t pts_us);
 

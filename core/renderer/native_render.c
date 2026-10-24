@@ -7376,6 +7376,12 @@ uint64_t openpete_native_render_fence_sheds(void)
     return s_nr.dev ? rhi_fence_sheds(s_nr.dev) : 0;
 }
 
+void openpete_native_render_arm_capture(const openpete_options_t *opts)
+{
+    const bool capture = opts && opts->record_path && opts->record_cfr > 0.0;
+    if (s_nr.dev && capture) rhi_set_capture_mode(s_nr.dev, true);
+}
+
 const char* openpete_native_render_gpu_name(void)
 {
     return s_nr.dev ? rhi_device_name(s_nr.dev) : "unknown";
@@ -18285,6 +18291,11 @@ static void pc_note(void)
         openpete_glitch_mark_note_present(&g);
     }
     if (pc_trace_on()) pc_trace_print(kind, outcome, ntri, tc_drawn);
+}
+
+unsigned openpete_native_render_begin_refused(void)
+{
+    return s_pc.begin_refused;
 }
 
 void openpete_native_present_census_report(void)

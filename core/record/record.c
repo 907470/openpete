@@ -162,6 +162,11 @@ static struct {
      * frame's game time. */
     int          cfr_mult;
     uint64_t     cfr_next;      /* next CFR ordinal to hand out */
+    int          cfr_started;   /* cfr_first_tag holds the first image's tag */
+    uint64_t     cfr_first_tag; /* capture timestamp of ordinal 0, microseconds */
+    int          cfr_prev_idx;  /* ring slot of the last image queued */
+    uint64_t     cfr_filled;    /* ordinals filled by repeating the previous image */
+    uint64_t     cfr_dup;       /* images dropped for an ordinal already queued */
 
     /* --record-frames: stop after this many encoded frames (0 = unlimited). */
     uint64_t     max_frames;
@@ -661,41 +666,45 @@ int openpete_record_init(const openpete_options_t* opts) {
     return 0;
 }
 
-/** @brief Copy one RGBA image into the encoder slot ring and wake the encoder thread.
+/** @brief Claim the ring slot for the next image.
  *
- * Under variable-rate capture a full ring drops and counts the image, so
- * the game is never stalled; under constant-rate capture the call waits
- * for a slot, since a missing image would shift the game time of every
- * later one, and the next ordinal replaces @p pts_us. Filling the
- * --record-frames budget sets finished; later images are ignored.
- * @param rgba Image of native_w x native_h in the locked row order.
- * @param pts_us Capture timestamp in microseconds. */
-static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
+ * Under constant-rate capture the call waits for a free slot, since a
+ * missing image would shift the game time of every later one; under
+ * variable-rate capture a full ring drops and counts the image, so the game
+ * is never stalled. Refuses once the --record-frames budget is filled.
+ * @return The slot index to fill, or -1 when the image is not taken. */
+static int rec_slot_claim(void) {
     SDL_LockMutex(g_rec.mutex);
     if (g_rec.finished) {
         SDL_UnlockMutex(g_rec.mutex);
-        return;
+        return -1;
     }
     if (g_rec.cfr_mult > 0) {
         while (g_rec.count >= REC_RING_SLOTS && !g_rec.stop)
             SDL_WaitCondition(g_rec.cond, g_rec.mutex);
-        pts_us = g_rec.cfr_next++;
     } else if (g_rec.count >= REC_RING_SLOTS) {
         SDL_UnlockMutex(g_rec.mutex);
         if (g_rec.dropped == 0)
             OPL_WARN_F("record", "ring full; dropping frame(s) "
                                  "(encoder can't keep up)");
         g_rec.dropped++;
-        return;
+        return -1;
     }
     const int idx = g_rec.write_idx;
     SDL_UnlockMutex(g_rec.mutex);
+    return idx;
+}
 
-    memcpy(g_rec.slots[idx], rgba,
-           (size_t)g_rec.native_w * (size_t)g_rec.native_h * 4u);
-
+/** @brief Hand a filled ring slot to the encoder thread under its timestamp.
+ *
+ * Filling the --record-frames budget sets finished; later images are
+ * ignored.
+ * @param idx Slot returned by rec_slot_claim, already filled.
+ * @param pts Capture timestamp in microseconds, or the constant-rate
+ *        ordinal. */
+static void rec_slot_commit(int idx, uint64_t pts) {
     SDL_LockMutex(g_rec.mutex);
-    g_rec.pts_us[idx] = pts_us;
+    g_rec.pts_us[idx] = pts;
     g_rec.write_idx   = (idx + 1) % REC_RING_SLOTS;
     g_rec.count++;
     g_rec.captured++;
@@ -703,6 +712,76 @@ static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
         g_rec.finished = 1;
     SDL_BroadcastCondition(g_rec.cond);
     SDL_UnlockMutex(g_rec.mutex);
+}
+
+/** @brief Return the constant-rate ordinal of a capture timestamp: whole capture periods since the first image, rounded to nearest.
+ *
+ * One period is 1 / (OP_TICK_HZ * cfr_mult) s, computed in integers from
+ * the exact NTSC rational (37609 / 1125000 s per tick), so a present on the
+ * capture grid maps to its own ordinal however long the run.
+ * @param tag Capture timestamp in microseconds, not before cfr_first_tag.
+ * @return The ordinal. */
+static uint64_t rec_cfr_ordinal(uint64_t tag) {
+    const uint64_t num = (uint64_t)(OP_VBL_HZ_NUM / OP_TICK_VBLS) * (uint64_t)g_rec.cfr_mult;
+    const uint64_t den = (uint64_t)OP_VBL_HZ_DEN * 1000000ull;
+    return ((tag - g_rec.cfr_first_tag) * num + den / 2) / den;
+}
+
+/** @brief Queue one image under constant-rate capture at the ordinal its timestamp names.
+ *
+ * The first image is ordinal 0. A later image whose ordinal is past the
+ * next one expected means presents the pacer owed never reached the
+ * encoder: each missing ordinal is filled by repeating the previous image
+ * and counted in cfr_filled, so the clip keeps game time and the loss is
+ * reported at finalize. An image whose ordinal was already queued is
+ * dropped and counted in cfr_dup.
+ * @param rgba Image of native_w x native_h in the locked row order.
+ * @param tag Capture timestamp in microseconds. */
+static void rec_publish_cfr(const uint8_t* rgba, uint64_t tag) {
+    const size_t bytes = (size_t)g_rec.native_w * (size_t)g_rec.native_h * 4u;
+    if (!g_rec.cfr_started) {
+        g_rec.cfr_started   = 1;
+        g_rec.cfr_first_tag = tag;
+    }
+    const uint64_t ord = tag < g_rec.cfr_first_tag ? 0 : rec_cfr_ordinal(tag);
+    if (ord < g_rec.cfr_next) {
+        g_rec.cfr_dup++;
+        return;
+    }
+    /* Only this thread writes slots, and the encoder only reads them, so
+     * the previous image stays intact in its slot while it is copied. */
+    while (g_rec.cfr_next < ord) {
+        const int idx = rec_slot_claim();
+        if (idx < 0) return;
+        memcpy(g_rec.slots[idx], g_rec.slots[g_rec.cfr_prev_idx], bytes);
+        rec_slot_commit(idx, g_rec.cfr_next++);
+        g_rec.cfr_prev_idx = idx;
+        g_rec.cfr_filled++;
+    }
+    const int idx = rec_slot_claim();
+    if (idx < 0) return;
+    memcpy(g_rec.slots[idx], rgba, bytes);
+    rec_slot_commit(idx, g_rec.cfr_next++);
+    g_rec.cfr_prev_idx = idx;
+}
+
+/** @brief Copy one RGBA image into the encoder slot ring and wake the encoder thread.
+ *
+ * Constant-rate capture goes through rec_publish_cfr, which replaces
+ * @p pts_us with the ordinal it names. Variable-rate capture keeps
+ * @p pts_us and drops the image when the ring is full.
+ * @param rgba Image of native_w x native_h in the locked row order.
+ * @param pts_us Capture timestamp in microseconds. */
+static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
+    if (g_rec.cfr_mult > 0) {
+        rec_publish_cfr(rgba, pts_us);
+        return;
+    }
+    const int idx = rec_slot_claim();
+    if (idx < 0) return;
+    memcpy(g_rec.slots[idx], rgba,
+           (size_t)g_rec.native_w * (size_t)g_rec.native_h * 4u);
+    rec_slot_commit(idx, pts_us);
 }
 
 /** @brief Map the oldest in-flight PBO read and publish it with its submit-time timestamp.
@@ -920,6 +999,13 @@ void openpete_record_shutdown(void) {
                    (unsigned long long)g_rec.captured,
                    (unsigned long long)g_rec.dropped,
                    g_rec.audio_enabled ? "yes" : "no");
+        if (g_rec.cfr_filled || g_rec.cfr_dup)
+            OPL_WARN_F("record",
+                       "cfr: %llu owed present(s) never reached the encoder and "
+                       "were filled by repeating the previous frame; %llu "
+                       "frame(s) dropped for an ordinal already written",
+                       (unsigned long long)g_rec.cfr_filled,
+                       (unsigned long long)g_rec.cfr_dup);
     } else if (!g_rec.failed) {
         OPL_WARN_F("record", "no frames captured (present FBO never ready?); "
                              "no file written");

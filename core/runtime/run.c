@@ -3426,6 +3426,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_native_precreate_window(opts, win_w, win_h);
     rhi_set_clock(op_now);   /* boot facts on the pace log's clock */
     (void)openpete_native_render_init(opts, win_w, win_h);
+    openpete_native_render_arm_capture(opts);   /* --record-cfr: presents never shed */
     /* Bring-up failed in a windowed run: PsyCross's own GL window is the only
      * display left, so map the window that was created hidden above. Without
      * this the run would present to nothing and look like a hang. */
@@ -7479,10 +7480,13 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         OPL_INFO_F("pace",
                    "swapchain: %u image(s) granted; acquire refused %llu "
                    "present(s) (%llu budget expiry, the rest suppressed by "
-                   "the back-off it opened)",
+                   "the back-off it opened); fence refused %llu present(s); "
+                   "%u present(s) never began",
                    openpete_native_render_swapchain_images(),
                    (unsigned long long)acq_sheds,
-                   (unsigned long long)acq_to);
+                   (unsigned long long)acq_to,
+                   (unsigned long long)openpete_native_render_fence_sheds(),
+                   openpete_native_render_begin_refused());
     }
     openpete_pace_log_close();
 

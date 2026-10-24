@@ -232,11 +232,29 @@ bool openpete_native_scene_enabled(void);
 
 /** @brief Return the number of presents dropped because the swapchain slot's previous submission had not retired.
  *
- * Forwards rhi_fence_sheds. Windowed only: the present is dropped rather
- * than blocking the presenting thread on the display's cadence. Monotonic;
+ * Forwards rhi_fence_sheds. Windowed only, and never in capture mode: the
+ * present is dropped rather than blocking the presenting thread on the
+ * display's cadence. Monotonic;
  * the pacing log diffs it.
  * @return The cumulative count, or 0 before the device exists. */
 uint64_t openpete_native_render_fence_sheds(void);
+
+/** @brief Put the device in capture mode when the options request a constant-rate recording.
+ *
+ * Applies rhi_set_capture_mode when --record and --record-cfr are both
+ * set: every present then begins and queues its readback, with the
+ * swapchain present best effort, so the capture holds one image per
+ * present the pacer owes however slow the GPU is. Called once after
+ * bring-up; other runs keep the shedding present path. No effect before
+ * the device exists.
+ * @param opts Parsed options, or NULL (no effect). */
+void openpete_native_render_arm_capture(const openpete_options_t *opts);
+
+/** @brief Return the number of presents render_frame_common skipped because the frame could not begin.
+ *
+ * The same count the present census reports as "never began". Monotonic.
+ * @return The cumulative count. */
+unsigned openpete_native_render_begin_refused(void);
 
 /** @brief Print the scene signature census lines for the composed scene to stderr.
  *

@@ -673,6 +673,14 @@ struct rhi_device {
      * the display for the length of the window. */
     bool     resize_discrete;
     bool     frame_active;  /* between begin_frame and end_frame */
+    /* The current frame holds an acquired swapchain image: the blit targets
+     * it and end_frame presents it. Clear for headless and staged frames and
+     * for a capture-mode frame the swapchain could not take. */
+    bool     frame_acquired;
+    /* Offline capture (rhi_set_capture_mode): the slot and image fences are
+     * waited without bound, the acquire does not wait, and a frame the
+     * swapchain cannot take renders and submits without a present. */
+    bool     capture_mode;
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
     VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
                             * or the bound render target) - for rhi_clear_depth */
@@ -1899,6 +1907,12 @@ static bool create_swapchain(rhi_device *dev)
     VkExtent2D extent = choose_extent(dev, &caps);
     if (extent.width == 0 || extent.height == 0) return false; /* minimized */
     SDL_GetWindowSizeInPixels(dev->window, &dev->sc_win_w, &dev->sc_win_h);
+    /* The resize-settle check in ensure_swapchain compares against
+     * last_seen_w/h: seeding them with the creation size makes a rebuild at
+     * an unchanged size (an image-fence timeout, OUT_OF_DATE without a
+     * resize) skip the settle, while a size change still reads as moving. */
+    dev->last_seen_w = dev->sc_win_w;
+    dev->last_seen_h = dev->sc_win_h;
 
     uint32_t fn = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, NULL);
@@ -4081,6 +4095,11 @@ void rhi_set_present_blocking(rhi_device *dev, bool on)
     if (dev) dev->present_blocking = on;
 }
 
+void rhi_set_capture_mode(rhi_device *dev, bool on)
+{
+    if (dev) dev->capture_mode = on;
+}
+
 bool rhi_needs_recreate(const rhi_device *dev)
 {
     return dev && dev->needs_recreate;
@@ -4089,11 +4108,12 @@ bool rhi_needs_recreate(const rhi_device *dev)
 /** @brief Acquire a swapchain image signalling `sem`, then wait for the submission that last used that image.
  *
  * The acquire waits up to dev->acquire_budget_ns (RHI_ACQUIRE_TIMEOUT_NS when
- * 0). A timeout counts in acquire_timeouts and acquire_sheds and, unless
+ * 0), and not at all in capture mode. A timeout counts in acquire_timeouts and acquire_sheds and, unless
  * present_blocking is set, opens the acquire back-off window. OUT_OF_DATE
  * sets needs_recreate; DEVICE_LOST signals device loss. After a successful
  * acquire, the fence of the submission still using the image is waited with
- * a bound (unbounded headless); a timed-out wait sets needs_recreate, since
+ * a bound (unbounded headless and in capture mode, where it is GPU work and
+ * not the display); a timed-out wait sets needs_recreate, since
  * the acquire semaphore is already consumed and only a rebuild resets it. On
  * success the image's owner becomes `*owner_fence`.
  * @param dev Device whose swapchain is acquired from; image_index is written.
@@ -4104,10 +4124,12 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
 {
     {
         Uint64 acq_t0 = SDL_GetTicksNS();
-        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain,
-                                             dev->acquire_budget_ns
-                                                 ? dev->acquire_budget_ns
-                                                 : RHI_ACQUIRE_TIMEOUT_NS,
+        /* Capture mode never waits on the display: an image not free now
+         * leaves the frame unpresented. */
+        const Uint64 budget = dev->capture_mode ? 0
+                            : dev->acquire_budget_ns ? dev->acquire_budget_ns
+                            : RHI_ACQUIRE_TIMEOUT_NS;
+        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain, budget,
                                              sem,
                                              VK_NULL_HANDLE, &dev->image_index);
         rhi_note_stall_phase("acquire", RHI_BLOCK_ACQUIRE, acq_t0);
@@ -4143,7 +4165,7 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
             Uint64 iif_t0 = SDL_GetTicksNS();
             VkResult iw = fence_result(
                 vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
-                                VK_TRUE, dev->headless ? UINT64_MAX
+                                VK_TRUE, (dev->headless || dev->capture_mode) ? UINT64_MAX
                                        : dev->present_blocking ? RHI_BLOCKING_FENCE_TIMEOUT_NS
                                        : RHI_IMAGE_FENCE_TIMEOUT_NS),
                 "image fence wait");
@@ -4287,13 +4309,99 @@ static void retired_reclaim(rhi_device *dev, bool all)
     }
 }
 
+/** @brief Retire the frame slot's previous submission: wait on its fence, wait with a bound, or poll it, by the device's mode.
+ *
+ * Do not block on the slot's previous submission on the inline path; poll
+ * it. Under FIFO this fence retires at the display's consumption rate, so
+ * waiting on it is waiting for a vblank. Whichever thread presents is then
+ * paced by the monitor, and when that thread also runs the sim the sim
+ * clock follows the display. Skipping is safe: this runs before
+ * vkAcquireNextImageKHR, so nothing has been consumed and no semaphore is
+ * left pending. The queue self-paces to the display rate either way; the
+ * difference is whether the excess is absorbed by shedding a present or by
+ * stalling the caller.
+ *
+ * Headless and capture mode wait without bound: there is no display to
+ * pace them, the readback depends on the slot having retired, and a shed
+ * would lose a frame the capture owes. A dedicated present thread
+ * (present_blocking) waits up to RHI_BLOCKING_FENCE_TIMEOUT_NS. A busy poll
+ * or an expired bounded wait counts in fence_sheds. VK_ERROR_DEVICE_LOST
+ * refuses in every mode.
+ * @param dev Device whose current slot fence is checked.
+ * @return true when the slot's fence has signalled. */
+static bool slot_fence_retired(rhi_device *dev)
+{
+    Uint64 t0 = SDL_GetTicksNS();
+    if (dev->headless || dev->capture_mode) {
+        if (fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
+                                         VK_TRUE, UINT64_MAX), "fence wait") != VK_SUCCESS)
+            return false;
+    } else if (dev->present_blocking) {
+        /* A dedicated present thread is paced by the display by design:
+         * waiting here costs the sim nothing. Bounded so a dead compositor
+         * still returns control, and the bound is honoured: proceeding past
+         * a timed-out wait resets a fence and re-records a command buffer the
+         * GPU is still executing, which is a device loss a few submits
+         * later. */
+        VkResult fw = fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
+                                                   VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS),
+                                   "fence wait");
+        if (fw != VK_SUCCESS) {
+            dev->fence_sheds++;
+            rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
+            return false;
+        }
+    } else if (fence_result(vkGetFenceStatus(dev->device, dev->in_flight[dev->frame]),
+                            "fence poll") != VK_SUCCESS) {
+        dev->fence_sheds++;
+        rhi_note_stall_phase("fence-poll", RHI_BLOCK_FENCE, t0);
+        return false;
+    }
+    rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
+    return true;
+}
+
+/** @brief Acquire the frame's swapchain image unless the acquire back-off is open, and decide whether the frame may begin.
+ *
+ * Headless acquires nothing. Inside the back-off window opened by a failed
+ * acquire (inline presenter only) the present is skipped without blocking
+ * and counted in acquire_sheds, so a compositor that is not handing out
+ * images cannot pace the sim. Outside capture mode a refused acquire or an
+ * open back-off refuses the frame; in capture mode the frame still begins,
+ * unacquired, and renders into off_image for the readback.
+ * @param dev Device beginning a frame; frame_acquired is written.
+ * @param acquire Whether this frame takes a swapchain image.
+ * @return true when the frame may begin. */
+static bool frame_image_step(rhi_device *dev, bool acquire)
+{
+    dev->frame_acquired = false;
+    if (dev->headless) return true;
+    if (!dev->present_blocking && dev->acquire_backoff_until_ns) {
+        if (SDL_GetTicksNS() < dev->acquire_backoff_until_ns) {
+            dev->acquire_sheds++;
+            return dev->capture_mode;
+        }
+        dev->acquire_backoff_until_ns = 0;
+    }
+    if (!acquire) return true;
+    /* Bounded, not UINT64_MAX. Under FIFO this normally returns within a
+     * vblank, but Windows stops handing out images for the whole of a live
+     * resize (the modal loop inside DefWindowProc). An unbounded wait here
+     * parks whichever thread presents, and that thread may also run the sim.
+     * Timing out lets the caller skip the present and keep ticking. */
+    dev->frame_acquired = acquire_image(dev, dev->img_avail[dev->frame],
+                                        &dev->in_flight[dev->frame]) != 0;
+    return dev->frame_acquired || (dev->capture_mode && !s_device_lost);
+}
+
 /** @brief Begin recording a frame: retire the slot's previous submission, optionally acquire a swapchain image, reset and begin the command buffer.
  *
- * Headless waits the slot fence without bound; the present thread waits it
- * up to RHI_BLOCKING_FENCE_TIMEOUT_NS; the inline presenter polls it and
- * sheds the present when it has not retired. A fence result of
- * VK_ERROR_DEVICE_LOST reaches the device-lost handler, and after a loss
- * every call refuses.
+ * The slot fence is retired by slot_fence_retired (waited headless and in
+ * capture mode, bounded under a blocking presenter, polled inline). After a
+ * device loss every call refuses. In capture mode a swapchain that cannot
+ * be used yet (a pending rebuild, a resize settling, the rebuild back-off)
+ * or a refused acquire does not refuse the frame: it begins without an
+ * image, and rhi_end_frame submits it without a present.
  * @param dev Device to begin the frame on.
  * @param acquire Whether to acquire a swapchain image (windowed only).
  * @return true when a command buffer is recording. */
@@ -4301,81 +4409,15 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
 {
     seam_check("begin_frame");
     if (s_device_lost) return false;
-    if (!ensure_swapchain(dev)) return false;
-
-    {
-        /* Do not block on the slot's previous submission on the inline path;
-         * poll it.
-         *
-         * Under FIFO this fence retires at the display's consumption rate, so
-         * waiting on it is waiting for a vblank. Whichever thread presents is
-         * then paced by the monitor, and when that thread also runs the sim the
-         * sim clock follows the display.
-         *
-         * Skipping is safe here: this sits before vkAcquireNextImageKHR, so
-         * nothing has been consumed and no semaphore is left pending. Every
-         * caller tolerates a false return.
-         *
-         * Headless keeps the blocking wait: there is no display to pace it,
-         * and its readback path depends on the slot having retired.
-         *
-         * The queue self-paces to the display rate either way; the difference
-         * is whether the excess is absorbed by shedding a present or by
-         * stalling the caller. */
-        Uint64 t0 = SDL_GetTicksNS();
-        if (dev->headless) {
-            if (fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
-                                             VK_TRUE, UINT64_MAX), "fence wait") != VK_SUCCESS)
-                return false;
-        } else if (dev->present_blocking) {
-            /* A dedicated present thread is paced by the display by design:
-             * waiting here costs the sim nothing. Bounded so a dead
-             * compositor still returns control, and the bound is honoured:
-             * proceeding past a timed-out wait resets a fence and re-records
-             * a command buffer the GPU is still executing, which is a device
-             * loss a few submits later. */
-            VkResult fw = fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
-                                                       VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS),
-                                       "fence wait");
-            if (fw != VK_SUCCESS) {
-                dev->fence_sheds++;
-                rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
-                return false;
-            }
-        } else if (fence_result(vkGetFenceStatus(dev->device, dev->in_flight[dev->frame]),
-                                "fence poll") != VK_SUCCESS) {
-            dev->fence_sheds++;
-            rhi_note_stall_phase("fence-poll", RHI_BLOCK_FENCE, t0);
-            return false;
-        }
-        rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
-    }
+    const bool sc_ok = ensure_swapchain(dev);
+    if (!sc_ok && !dev->capture_mode) return false;
+    if (!slot_fence_retired(dev)) return false;
 
     /* This slot's previous submission has fully retired - its timestamp
      * queries are ready for a block-free harvest. */
     if (dev->gpu_timers) gpu_timers_harvest(dev);
 
-    /* Backing off after a failed acquire: skip the present without blocking,
-     * so a compositor that is not handing out images cannot pace the sim. */
-    if (!dev->headless && !dev->present_blocking && dev->acquire_backoff_until_ns) {
-        if (SDL_GetTicksNS() < dev->acquire_backoff_until_ns) {
-            dev->acquire_sheds++;
-            return false;
-        }
-        dev->acquire_backoff_until_ns = 0;
-    }
-
-    /* Headless: no swapchain image to acquire - the command buffer records
-     * directly into the offscreen / render-target images. */
-    if (!dev->headless) {
-        /* Bounded, not UINT64_MAX. Under FIFO this normally returns within a
-         * vblank, but Windows stops handing out images for the whole of a live
-         * resize (the modal loop inside DefWindowProc). An unbounded wait here
-         * parks whichever thread presents, and that thread may also run the
-         * sim. Timing out lets the caller skip the present and keep ticking. */
-        if (acquire &&
-            !acquire_image(dev, dev->img_avail[dev->frame], &dev->in_flight[dev->frame])) return false;
-    }
+    if (!frame_image_step(dev, acquire && sc_ok)) return false;
     vkResetFences(dev->device, 1, &dev->in_flight[dev->frame]);
 
     VkCommandBuffer cb = dev->cmd[dev->frame];
@@ -4554,7 +4596,9 @@ static void image_barrier(VkCommandBuffer cb, VkImage img,
 
 void rhi_blit_to_swapchain(rhi_device *dev)
 {
-    if (!dev->frame_active || dev->headless) return;   /* no swapchain when headless */
+    /* No image to blit onto: headless, staged, or a capture-mode frame the
+     * swapchain could not take. */
+    if (!dev->frame_active || !dev->frame_acquired) return;
     VkCommandBuffer cb = dev->cmd[dev->frame];
     VkImage sc = dev->sc_images[dev->image_index];
 
@@ -4609,6 +4653,27 @@ void rhi_snapshot_offscreen_to_rt(rhi_device *dev, rhi_texture *dst,
     dst->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
+/** @brief Submit the current frame's ended command buffer with no swapchain semaphores and no present, then advance the frame slot.
+ *
+ * The in_flight fence still gates begin_frame's reuse of the slot and the
+ * readback ring's retrieval, and rhi_read_render_target's vkDeviceWaitIdle
+ * guarantees completion before a blocking readback.
+ * @param dev Device whose current frame is submitted.
+ * @param cb The frame's command buffer, already ended.
+ * @param what Label for a failed submit. */
+static void submit_frame_unpresented(rhi_device *dev, VkCommandBuffer cb, const char *what)
+{
+    VkSubmitInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cb,
+    };
+    queue_submit(dev, &si, dev->in_flight[dev->frame], what);
+    dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
+    dev->frame_active = false;
+    boot_frame_submitted();
+}
+
 void rhi_end_frame(rhi_device *dev)
 {
     seam_check("end_frame");
@@ -4617,20 +4682,11 @@ void rhi_end_frame(rhi_device *dev)
     record_pending_inits(dev);
     vkEndCommandBuffer(cb);
 
-    /* Headless: submit the recorded work with no swapchain semaphores and no
-     * present. The in_flight fence still gates begin_frame's reuse of this slot,
-     * and rhi_read_render_target's vkDeviceWaitIdle guarantees completion before
-     * readback. */
-    if (dev->headless) {
-        VkSubmitInfo si = {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cb,
-        };
-        queue_submit(dev, &si, dev->in_flight[dev->frame], "headless frame");
-        dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
-        dev->frame_active = false;
-        boot_frame_submitted();
+    /* No acquired image (headless, or a capture-mode frame the swapchain
+     * could not take): no acquire semaphore to wait on and nothing to
+     * present. */
+    if (!dev->frame_acquired) {
+        submit_frame_unpresented(dev, cb, dev->headless ? "headless frame" : "unpresented frame");
         return;
     }
 

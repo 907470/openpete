@@ -174,7 +174,8 @@ bool rhi_frame_active(const rhi_device *dev);
  * the acquire back-off window, when the swapchain cannot be rebuilt yet (a
  * pending recreation, a live resize, a minimized window) and when the acquire
  * is refused. The caller skips rendering on false; recreation is handled
- * inside the device.
+ * inside the device. In capture mode (rhi_set_capture_mode) the fence is
+ * waited and the frame begins without an image in each of those cases.
  * @param dev Device to begin the frame on.
  * @return true when a command buffer is recording. */
 bool rhi_begin_frame(rhi_device *dev);
@@ -211,6 +212,20 @@ uint64_t rhi_frame_serial(rhi_device *dev);
  * @param dev Device, or NULL (ignored).
  * @param on true to block, false to poll and shed. */
 void rhi_set_present_blocking(rhi_device *dev, bool on);
+/** @brief Select offline capture mode, in which every frame begin succeeds short of a device loss and the swapchain present is best effort.
+ *
+ * On, rhi_begin_frame waits the slot fence and the image fence without
+ * bound, the acquire does not wait for an image, and a frame whose
+ * swapchain is not usable (rebuild pending, resize settling, back-off
+ * window, acquire refused) still begins without an image:
+ * rhi_blit_to_swapchain then does nothing and rhi_end_frame submits without
+ * a present, so a readback queued on the frame is still taken. For a
+ * capture timed by the frames it renders rather than by the wall clock;
+ * the display never paces it. Ignored on a headless device, which already
+ * waits.
+ * @param dev Device, or NULL (ignored).
+ * @param on true for capture mode. */
+void rhi_set_capture_mode(rhi_device *dev, bool on);
 /** @brief Return the refresh rate of the display the current swapchain was built for.
  *
  * Read from SDL_GetCurrentDisplayMode for the window's display at each
@@ -270,8 +285,9 @@ void rhi_begin_offscreen_load(rhi_device *dev);
  *
  * The swapchain image is transitioned UNDEFINED to TRANSFER_DST before the
  * blit and to PRESENT_SRC after it; off_image is read in the TRANSFER_SRC
- * layout its render pass leaves. Does nothing outside an active frame or on
- * a headless device.
+ * layout its render pass leaves. Does nothing outside an active frame or
+ * when the frame acquired no image (headless, staged, or a capture-mode
+ * frame the swapchain could not take).
  * @param dev Device whose current frame records the blit. */
 void rhi_blit_to_swapchain(rhi_device *dev);
 
@@ -280,8 +296,9 @@ void rhi_blit_to_swapchain(rhi_device *dev);
  * The submit waits on the frame's acquire semaphore and signals the image's
  * render-done semaphore, which the present waits on; the slot's in_flight
  * fence gates the next reuse of the slot. OUT_OF_DATE and SUBOPTIMAL set
- * needs_recreate; DEVICE_LOST invokes the device-lost handler. Headless
- * submits with no semaphores and no present. Does nothing outside an active
+ * needs_recreate; DEVICE_LOST invokes the device-lost handler. A frame that
+ * acquired no image (headless, or capture mode) submits with no semaphores
+ * and no present. Does nothing outside an active
  * frame. The calling thread is verified against the display owner.
  * @param dev Device whose current frame is ended. */
 void rhi_end_frame(rhi_device *dev);
@@ -514,9 +531,10 @@ void rhi_take_block_times(int64_t *out, int n);
  *
  * Counts a begin_frame whose slot fence had not signalled (a poll that found
  * it busy, or a blocking presenter's bounded wait that expired) and a staged
- * present whose ring slot fence wait expired. Windowed only: rather than
- * block the presenting thread on the display's cadence, which under the host
- * thread split is also the sim thread, the frame is dropped. Monotonic; the
+ * present whose ring slot fence wait expired. Windowed only, and never in
+ * capture mode: rather than block the presenting thread on the display's
+ * cadence, which under the host thread split is also the sim thread, the
+ * frame is dropped. Monotonic; the
  * caller diffs it.
  * @param dev Device, or NULL.
  * @return The running count; 0 for NULL. */
