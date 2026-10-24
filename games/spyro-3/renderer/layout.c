@@ -132,6 +132,14 @@ const game_layout_t spyro3_game_layout = {
         .poly_sec_u8 = 1,
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = 0x80072330u,    /* D_8006FCF4 + 0x263C */
+        /* Registry pairs 2 and 4. func_80020E74 advances each descriptor's
+         * keyframe and stamps its list index into sector+0x18 / +0x1A
+         * (80021188, 80021328); func_80022378 packs the posted pose and
+         * stores 0xFF there only for a tier it lists (8002265C LP, 80022938
+         * HP). */
+        .kf_lp_poly = 0x8006E350u + 0x10u,
+        .kf_hp_poly = 0x8006E350u + 0x20u,
+        .kf_hide    = 1,             /* 800226A0 (LP, ori 0x2000), 8002297C (HP, ori 0x4000) */
         .sub = {
             { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR, ENV_ANIM_MODEL_COLOUR },
             { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT,   ENV_ANIM_MODEL_WAVE1 },
@@ -240,8 +248,25 @@ const game_layout_t spyro3_game_layout = {
         .hq_tri2_nodes = 0x80065D58u,               /* the tier-2 triangle pass's (environment.s 80025294) */
         .abe_in_tpage = 1,
         .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1 */
-        .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 draw bins
-                                                     * with the constants below, not with this */
+        .lod_dist_default = 0x7C00u,                /* no header field. The feeder derives its fog
+                                                     * reference as this value >> 2 = 0x1F00, the
+                                                     * constant the HP walk loads before every
+                                                     * depth-cue blend (environment.s 80023444: addi
+                                                     * $t5, $zero, 0x1F00 on the quad walk; 80023928:
+                                                     * addi $a0, $zero, 0x1F00 on the triangle walk;
+                                                     * IR0 = 0x1F00 - SZ3), the HP face drop's sum
+                                                     * bound as this value (80023350: addi -0x7C00;
+                                                     * the walk drops a face whose four corner SZ3s
+                                                     * sum to 0x8800 or more, or to 0x7C00 or more
+                                                     * with every corner at 0x1F00 or more,
+                                                     * 800233E0-80023408), and the in-LOD bound as
+                                                     * this value >> 4 = 0x7C0 = hp_far. The draw
+                                                     * bins with the constants below. */
+        .ladder_nearest_corner = 1,                 /* the HP walk blends each corner with IR0 =
+                                                     * 0x1F00 - SZ3, clamps it to [0, 0xFFF], keeps
+                                                     * the largest, and takes the CLUT row 15 -
+                                                     * (IR0 >> 8), row 0 selecting the +8 tile half
+                                                     * (environment.s 800235E4-800236EC) */
         /* environment.s 800225A0-80022640, sector loop .L80022460-.L8002264C. */
         .no_lp_flag    = 0x2000u,                   /* 800225A0: andi 0x2000 skips the LP block */
         .no_hp_flag    = 0x4000u,                   /* 80022604: andi 0x4000 emits no HP entry */
