@@ -9,7 +9,9 @@
  * transform [cam.base, cam.xform_end): the sky matrix at +0x00, the world
  * matrix at +0x14 and the position at +0x28 (Spyro 2's span also holds the
  * Draw-time position copy at +0x30), all rewritten once per tick before the
- * draws read them. Every address and length is the game's layout descriptor's.
+ * draws read them, and on a game whose glow routine is located the row runs on
+ * to the camera yaw halfword that routine reads (glow.cam_yaw_off). Every
+ * address and length is the game's layout descriptor's.
  *
  * The per-object capture is the shared moby-array walk
  * (game_interp_capture_moby_array) plus the particle, gem-glint, glow, zap and
@@ -52,7 +54,11 @@ void spyro23_interp_register(void) {
          * pair it is compared against. */
         { "g_GameState", game_layout.game_state, 4u, 1 },
     };
+    /* The camera row runs on to the yaw halfword the glow routine reads, so a
+     * sub-tick present can blend the yaw that turns every ring. */
+    uint32_t cam_len = game_layout.cam.xform_end - game_layout.cam.base;
+    if (game_layout.glow.cam_yaw_off && game_layout.glow.cam_yaw_off + 2u > cam_len)
+        cam_len = game_layout.glow.cam_yaw_off + 2u;
     game_interp_register_common(rows, (unsigned)(sizeof(rows) / sizeof(rows[0])),
-                                game_layout.cam.xform_end - game_layout.cam.base,
-                                game_interp_capture_feeder_pools);
+                                cam_len, game_interp_capture_feeder_pools);
 }
