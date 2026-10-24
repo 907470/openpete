@@ -182,4 +182,5 @@ void main()
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     rgb = clut_fog_mix(rgb, col, ti.x, ti.y);
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(rgb, c.a);
+    if (op_key_tier_hit >= 0.0) outColor = op_key_tier_mark(op_key_tier_hit);
 }

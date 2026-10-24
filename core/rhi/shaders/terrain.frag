@@ -22,5 +22,6 @@ void main()
     c = ter_stock_shade();
     if (c.a == 0.0) discard;              /* PSX transparent-texel sentinel */
     outColor = ko == 2 ? vec4(0.0, 1.0, 1.0, 1.0) : c;
+    if (op_key_tier_hit >= 0.0) outColor = op_key_tier_mark(op_key_tier_hit);
     if (ter_attr(c)) outColor = c;        /* debug tint mode 7 */
 }

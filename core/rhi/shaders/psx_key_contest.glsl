@@ -674,6 +674,103 @@ bool op_key_override_holds(vec4 tattr, float own, vec2 fattr)
     return perp < (sK < sF - 0.5 ? OP_KEY_BIAS_REACH : OP_KEY_TIE_REACH);
 }
 
+/* ---- in-bucket tier order -----------------------------------------------
+ *
+ * Within one ordering-table bucket the PS1 paints prims in insertion order.
+ * Every terrain bucket insert appends at the bucket's tail: it reads the
+ * tail word, stores the new prim there, and links the old tail's tag to the
+ * new prim, or stores it as the head of an empty bucket (Spyro 2
+ * environment.s 80028FA8-80028FD8; Spyro 3 80024BD0-80024BF8 on the HP
+ * passes and 80027768-8002779C on the LP pass). Every HP prim of a frame is
+ * inserted before the first LP prim: the world draw runs its HP passes in
+ * sequence, each entered when the one before exhausts its list, and enters
+ * the LP pass only after the last of them, returning from its end (Spyro 2
+ * HP 80024584, 80025434, 80025CC0, 80026C74, 80027AC8, 80028504, LP
+ * 80028B14, end 80029118; Spyro 3 HP 80022D48, 80023BF8, 800244AC,
+ * 80025438, 8002628C, 80026CC8, LP 800272D8, end 800278DC). In a bucket
+ * holding both tiers the LP face paints over the HP face. Spyro 1 does not
+ * submit the scene through one table and takes none of this (slot_contest
+ * off).
+ *
+ * The terrain key image keeps the least key at a pixel, so an HP fragment
+ * would never see a later-painting LP face of its bucket whose key is
+ * larger. On one ordering table every terrain key pass therefore stores a
+ * key moved inside its own bucket (op_key_tier_key): an LP key into the
+ * bucket's first half, an HP key into its second half, each scaled by one
+ * half so the order within a tier is kept. No key leaves its bucket; the
+ * contest reads the stored key back through op_key_tier_unkey (the owner's
+ * class byte names the half) where it compares a key value rather than a
+ * bucket, and sees the key within twice the encoding's step; only the owner of a pixel whose
+ * least bucket holds both tiers changes. An HP fragment whose key
+ * owner is an LP face of the same bucket lying within OP_KEY_TIER_REACH world
+ * of it along the ray (a coplanar overlap) loses the pixel
+ * (op_key_tier_gap); farther apart, true depth decides as before.
+ *
+ * Specialisation constant 7 (`OP_KEY_TIER_ORDER`, OPENPETE_KEY_TIER_ORDER
+ * for the process): 1 the order above (the default), 0 neither the stored
+ * key move nor the rule (an in-binary A/B leg), 2 the order with a fragment
+ * the rule would discard kept and marked (op_key_tier_hit,
+ * op_key_tier_mark: a census of the rule's pixels). */
+layout(constant_id = 7) const int OP_KEY_TIER_ORDER = 1;
+#define OP_KEY_TIER_REACH 8.0
+
+/* The depth gap of the last fragment op_key_loses kept under
+ * OP_KEY_TIER_ORDER 2 where the tier rule would have discarded it; -1 none. */
+float op_key_tier_hit = -1.0;
+
+/* The key view-Z a terrain key pass stores for a face of key view-Z kv and
+ * class byte cls (op_key_class; OP_KEY_CLASS_NONE: not a terrain key, stored
+ * unchanged). On one ordering table (slot_contest) the key's offset into its
+ * bucket is halved, and an HP key's is then raised by half a bucket, so
+ * every LP key of a bucket stores below every HP key of it and the order
+ * within a tier is kept. Halving doubles the encoding's step in world units
+ * (0.02 to 0.04 at a key of 33792). */
+float op_key_tier_key(float kv, float cls, bool slot_contest)
+{
+    if (!slot_contest || OP_KEY_TIER_ORDER == 0 || cls >= OP_KEY_CLASS_NONE - 0.5) return kv;
+    float base = floor(kv / OP_KEY_SLOT) * OP_KEY_SLOT;
+    return base + (cls >= 127.5 ? 0.5 * OP_KEY_SLOT : 0.0) + 0.5 * (kv - base);
+}
+
+/* The key view-Z of a stored key tkey (op_key_from_stored of a key image
+ * texel) whose owner's attribute texel is tattr: op_key_tier_key undone by
+ * the owner's class byte, on one ordering table (slot_contest). A key with no
+ * class (OP_KEY_CLASS_NONE) was stored unchanged and is returned unchanged,
+ * as is OP_KEY_NONE. */
+float op_key_tier_unkey(float tkey, vec4 tattr, bool slot_contest)
+{
+    float ck = op_key_attr_class(tattr);
+    if (!slot_contest || OP_KEY_TIER_ORDER == 0 || ck >= OP_KEY_CLASS_NONE - 0.5 ||
+        tkey >= OP_KEY_NONE * 0.5) return tkey;
+    float base = floor(tkey / OP_KEY_SLOT) * OP_KEY_SLOT;
+    float f = tkey - base - (ck >= 127.5 ? 0.5 * OP_KEY_SLOT : 0.0);
+    return base + 2.0 * max(f, 0.0);
+}
+
+/* The in-bucket tier rule for a terrain fragment on one ordering table: its
+ * key channel koff (absolute key + 0.5), its view-Z own and override inputs
+ * fattr (op_key_fattr_walk), against the key tkey and attribute texel tattr
+ * at its pixel. Returns |z_K - own| when the fragment is HP, the key owner
+ * is LP, both keys lie in one bucket and the gap is under OP_KEY_TIER_REACH
+ * (the fragment loses: the LP face is inserted later); else -1. */
+float op_key_tier_gap(float tkey, vec4 tattr, float own, float koff, vec2 fattr)
+{
+    if (OP_KEY_TIER_ORDER == 0) return -1.0;
+    float ck = op_key_attr_class(tattr);
+    if (ck >= 127.5 || fattr.x < 127.5 || fattr.x >= OP_KEY_CLASS_NONE - 0.5) return -1.0;
+    float slot = floor((koff - 0.5) / OP_KEY_SLOT);
+    if (op_key_slot_nearer(tkey, slot) || !op_key_slot_nearer(tkey, slot + 1.0)) return -1.0;
+    float gap = abs(op_key_attr_z(tattr) - own);
+    return gap < OP_KEY_TIER_REACH ? gap : -1.0;
+}
+
+/* The census colour of a fragment op_key_tier_hit marks: yellow, blue =
+ * the gap in 1/32 world. */
+vec4 op_key_tier_mark(float gap)
+{
+    return vec4(1.0, 1.0, min(floor(gap * 32.0), 255.0) / 255.0, 1.0);
+}
+
 /* The key contest. koff is the face's key channel: positive = its absolute
  * OT key + 0.5 (OT-band terrain and moby faces); negative = near-band
  * terrain, contest-only, where the fragment's own view-Z is the limit.
@@ -703,13 +800,21 @@ bool op_key_override_holds(vec4 tattr, float own, vec2 fattr)
  * terrain key image's colour texel at the pixel (the key owner's view-Z
  * and class), fattr the fragment's own class byte and plane distance; a
  * caller with neither passes vec4(1.0) or vec2(OP_KEY_CLASS_NONE, 0.0) and
- * the override holds unbounded. */
+ * the override holds unbounded. On one ordering table an HP fragment also
+ * loses to a coplanar LP face of its bucket (op_key_tier_gap). */
 bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
                   float koff, vec2 fattr, bool actor, bool prop, bool truescope,
                   bool slot_contest)
 {
     if (koff > 0.0) {
         float band = (koff - 0.5) - 64.0;      /* half an OT slot nearer */
+        if (!actor && slot_contest) {
+            float gap = op_key_tier_gap(tkey, tattr, own, koff, fattr);
+            if (gap >= 0.0) {
+                if (OP_KEY_TIER_ORDER != 2) return true;
+                op_key_tier_hit = gap;
+            }
+        }
         /* Terrain against terrain only. An actor face (an embedded prop
          * included: its rank reads as an actor's) is not compared against
          * the terrain key: the table paints a terrain face over a nearer
@@ -732,8 +837,11 @@ bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
             (!truescope || akey < own - 64.0)) return true;
         return truescope && !actor && mkey < own + 1024.0;
     }
-    /* Near band: per-pixel own key, same strict rule, same embed rule. */
-    return tkey < own - 64.0 ||
+    /* Near band: per-pixel own key, same strict rule, same embed rule. The
+     * stored key is read back to its key view-Z (op_key_tier_unkey); the
+     * bucket compares above take it as stored, the encoding their slot
+     * boundaries go through. */
+    return op_key_tier_unkey(tkey, tattr, slot_contest) < own - 64.0 ||
            (!truescope && akey < own - 64.0) ||
            mkey < own + 1024.0;
 }

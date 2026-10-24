@@ -14,8 +14,8 @@
  * fragment (psx_key_contest.glsl; a folded quadrant's skipped slot through
  * op_drain_fold_delta) as its depth, as psx_key_cutout.frag and
  * terrain_key.frag do on the walk; every other face writes
- * op_key_store of its flat key, the exact encoding the contest compares
- * against, not the rasterised depth, which lands a few ulps off it by GPU. The colour attachment takes the face's true view-Z
+ * op_key_store of its flat key (moved in its bucket's tier order,
+ * op_key_tier_key), the exact encoding the contest compares against, not the rasterised depth, which lands a few ulps off it by GPU. The colour attachment takes the face's true view-Z
  * at the fragment and its class byte (op_key_attr_store), which the scene
  * stages bound the terrain override with. */
 
@@ -37,6 +37,11 @@ layout(location = 13) flat in vec4 vKn2;   /*   BL.z BR.xyz                   */
 layout(location = 15) flat in float vKcls; /* the face's terrain class byte   */
 
 layout(location = 0) out vec4 outColor;
+
+/* Fragment spec-constant 4 (`SLOT_CONTEST`): the scene is submitted through
+ * one ordering table; a terrain key is stored in its bucket's tier order
+ * (op_key_tier_key). Set per game from game_layout.terrain.slot_ot_contest. */
+layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
 
@@ -68,14 +73,15 @@ void main()
         if (p == 0u) discard;                  /* PSX transparent sentinel */
     }
     if (op_drain_grid(vKc0) == OP_DRAIN_NONE) {
-        gl_FragDepth = op_key_store(max(vKoff - 0.5, 1.0));
+        gl_FragDepth = op_key_store(op_key_tier_key(max(vKoff - 0.5, 1.0), vKcls, SLOT_CONTEST));
     } else {
         float d = op_drain_delta(vKfl / vKq, vKc0, vKc1, 0.0);
         if (d >= OP_DRAIN_SKIP && op_drain_folded(vKc0))
             d = op_drain_fold_delta(vKd / vKq, vKn0.xyz, vec3(vKn0.w, vKn1.xy),
                                     vec3(vKn1.zw, vKn2.x), vKn2.yzw, vKc0, vKc1, 0.0);
         if (d >= OP_DRAIN_SKIP) discard;       /* a sub-cell the drain skips */
-        gl_FragDepth = op_key_store(max(vKoff - 0.5, 1.0) + d);
+        gl_FragDepth = op_key_store(op_key_tier_key(max(vKoff - 0.5, 1.0) + d, vKcls,
+                                                    SLOT_CONTEST));
     }
     /* The owner's true view-Z and class beside the key (op_key_attr_store). */
     outColor = op_key_attr_store(1.0 / max(vColor.x, 1e-9), vKcls);

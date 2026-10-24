@@ -7369,8 +7369,8 @@ static void census_add_base(const rhi_device *dev, const rhi_pipeline *p)
 /* One stage's specialization info: an entry and a packed value for each
  * constant the stage declares, and nothing for the rest. */
 typedef struct {
-    VkSpecializationMapEntry e[7];
-    VkBool32                 d[7];
+    VkSpecializationMapEntry e[8];
+    VkBool32                 d[8];
     VkSpecializationInfo     info;
 } stage_spec;
 
@@ -7397,10 +7397,33 @@ static int32_t key_z_ulp_bias(void)
     return v;
 }
 
+/** @brief Return OPENPETE_KEY_TIER_ORDER, the key contest's in-bucket tier order constant 7.
+ *
+ * psx_key_contest.glsl OP_KEY_TIER_ORDER: 1 the order (the default), 0 off
+ * (the pre-order contest, an in-binary A/B leg), 2 the order with the
+ * fragments its rule discards painted instead (a census). Unset, empty or
+ * any other value reads 1. Read once per process: the value is the same for
+ * every variant, so the variant keys do not carry it.
+ * @return 0, 1 or 2. */
+static int32_t key_tier_order(void)
+{
+    static _Atomic int32_t s_order = -1;   /* any compile thread reads it */
+    int32_t v = s_order;
+    if (v < 0) {
+        const char *e = getenv("OPENPETE_KEY_TIER_ORDER");
+        v = (e && (*e == '0' || *e == '2') && e[1] == '\0') ? *e - '0' : 1;
+        int32_t unset = -1;
+        if (atomic_compare_exchange_strong(&s_order, &unset, v) && v != 1)
+            RHI_LOG("OPENPETE_KEY_TIER_ORDER=%d: in-bucket tier order %s\n", (int)v,
+                    v == 0 ? "off" : "census (rule pixels painted)");
+    }
+    return v;
+}
+
 /** @brief Fill a stage's specialization info with only the constants it declares.
  *
  * Ids 0-5 take the variant's values; id 6 (KEY_Z_ULP_BIAS) takes
- * key_z_ulp_bias().
+ * key_z_ulp_bias() and id 7 (OP_KEY_TIER_ORDER) key_tier_order().
  * @param s Storage.
  * @param ids The stage's declared constant ids (bit i = constant_id i).
  * @param c The six variant constant values.
@@ -7408,11 +7431,11 @@ static int32_t key_z_ulp_bias(void)
 static const VkSpecializationInfo *stage_spec_fill(stage_spec *s, uint32_t ids, const uint32_t c[6])
 {
     uint32_t n = 0;
-    for (uint32_t i = 0; i < 7; i++) {
+    for (uint32_t i = 0; i < 8; i++) {
         if (!((ids >> i) & 1u)) continue;
         s->e[n] = (VkSpecializationMapEntry){ .constantID = i, .offset = n * (uint32_t)sizeof(VkBool32),
                                               .size = sizeof(VkBool32) };
-        s->d[n] = i < 6 ? c[i] : (uint32_t)key_z_ulp_bias();
+        s->d[n] = i < 6 ? c[i] : i == 6 ? (uint32_t)key_z_ulp_bias() : (uint32_t)key_tier_order();
         n++;
     }
     s->info = (VkSpecializationInfo){ .mapEntryCount = n, .pMapEntries = s->e,
@@ -7578,7 +7601,8 @@ static void pipe_depth_stencil_fill(const rhi_device *dev, const rhi_pipeline_de
  * creation. Each stage receives only the specialization constants it
  * declares, with the values the variant view gives: 0 DEPTH_REVERSED (per
  * depth class), 1 AFFINE_UV, 2 NOTEX, 3 MOBY_TRUESCOPE, 4 SLOT_CONTEST,
- * 5 STP_SELECT, and 6 KEY_Z_ULP_BIAS from the process (key_z_ulp_bias). The fragment stage gets the same values as the vertex
+ * 5 STP_SELECT, and 6 KEY_Z_ULP_BIAS and 7 OP_KEY_TIER_ORDER from the process
+ * (key_z_ulp_bias, key_tier_order). The fragment stage gets the same values as the vertex
  * stage: the terrain key-resolve fragments invert gl_FragCoord.z back to
  * view-Z, and the inversion follows the encoding the vertex stage selected.
  * The caller sets stages[0].module and stages[1].module.

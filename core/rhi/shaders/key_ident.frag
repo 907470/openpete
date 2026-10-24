@@ -3,7 +3,8 @@
 #include "psx_key_contest.glsl"
 
 /* UNTEXTURED key-pass fragment stage. A flat key (vKeyFlat) is stored as
- * op_key_store(vKv), the exact encoding of the face's key, not the
+ * op_key_store(vKv), the exact encoding of the face's key (a terrain key
+ * moved in its bucket's tier order, op_key_tier_key), not the
  * rasterised depth, which lands a few ulps off it by GPU; the prop class and
  * the player band keep the rasterised depth (terrain_key.vert). outColor is
  * the face's flat colour channel, which carries an actor face's moby identity into the
@@ -19,9 +20,15 @@ layout(location = 9) flat in float vKeyFlat;      /* 1: store op_key_store(vKv) 
 
 layout(location = 0) out vec4 outColor;
 
+/* Fragment spec-constant 4 (`SLOT_CONTEST`): the scene is submitted through
+ * one ordering table; a terrain key is stored in its bucket's tier order
+ * (op_key_tier_key). Set per game from game_layout.terrain.slot_ot_contest. */
+layout(constant_id = 4) const bool SLOT_CONTEST = false;
+
 void main()
 {
-    gl_FragDepth = vKeyFlat > 0.5 ? op_key_store(vKv) : gl_FragCoord.z;
+    gl_FragDepth = vKeyFlat > 0.5 ? op_key_store(op_key_tier_key(vKv, vCls, SLOT_CONTEST))
+                                  : gl_FragCoord.z;
     outColor = vCls < OP_KEY_CLASS_NONE - 0.5 ? op_key_attr_store(1.0 / max(vIz, 1e-9), vCls)
                                               : vIdent;
 }
