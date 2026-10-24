@@ -34,49 +34,54 @@ float op_vz_from_depth(float z, bool reversed)
                     : 1.0 / max(1.0 - z, 1e-9);
 }
 
-/* A key image's stored value -> key view-Z. Key images are written with
- * z = kv/(kv+4096) regardless of the scene's depth mode; 1.0 means nothing
- * was rasterised at the pixel. */
+/* The key images' encoding: stored = kv * 2^-26, the key view-Z scaled by a
+ * power of two. The scale only moves the exponent, so a key from 1 to
+ * OP_VZ_FAR (4.1e7, under 2^26) stores exactly, decodes exactly, and keeps
+ * its order: two keys store in the order of their values, and a key in a
+ * bucket decodes to a value in that bucket, on any GPU, whatever arithmetic
+ * produced the key. A rational map such as kv/(kv+4096) has neither
+ * property in float: its divide rounds, so a key a few ulps above a bucket
+ * boundary can store one ulp below the boundary's own encoding and read
+ * back in the bucket before it (31232 + 3 * 2^-9 against 31232). The key
+ * values reach the stored range [2^-26, 0.61]; 1.0 is the clear, nothing
+ * rasterised at the pixel. */
+#define OP_KEY_STORE_SCALE 1.4901161193847656e-8   /* 2^-26 */
+#define OP_KEY_LOAD_SCALE  67108864.0              /* 2^26 */
+
+/* A key image's stored value -> key view-Z (op_key_store's inverse, exact);
+ * the clear reads OP_KEY_NONE. */
 float op_key_from_stored(float stored)
 {
-    return stored < 0.999999 ? 4096.0 * stored / max(1.0 - stored, 1e-9)
-                             : OP_KEY_NONE;
+    return stored < 0.999999 ? stored * OP_KEY_LOAD_SCALE : OP_KEY_NONE;
 }
 
-/* The key pass's stored value for key view-Z kv (the key images' encoding,
- * op_key_from_stored's inverse). Every key stage writes a flat key through
- * this function as its fragment depth, so the stored value is this
- * function's result for the key, bit for bit, on any GPU. */
+/* The key pass's stored value for key view-Z kv. Every key stage writes its
+ * fragment depth through this function, a flat key from the key and the
+ * prop class from its true view-Z at the fragment. */
 float op_key_store(float kv)
 {
-    return kv / (kv + 4096.0);
+    return kv * OP_KEY_STORE_SCALE;
 }
 
 /* Whether a decoded key tkey (op_key_from_stored of a key image texel) lies
- * in an ordering-table bucket nearer than slot: whether its stored value lies
- * below the stored encoding of the slot's boundary, slot * OP_KEY_SLOT. The
- * boundary goes through the same encode and decode as the texel, so a key on
- * the boundary decodes to exactly the boundary value and sits in the slot,
- * never in the one before it. A decoded key one ulp of the encoding off
- * moves by (kv+4096)^2/4096 * 2^-24 world (0.02 at 33792), so a slack on the
- * decoded side cannot tell a boundary key from a nearer one; only an exact
- * store can. OP_KEY_NONE is never nearer. */
+ * in an ordering-table bucket nearer than slot: below the slot's boundary,
+ * slot * OP_KEY_SLOT. The decoded key is the stored key exactly, so a key on
+ * the boundary or above it sits in the slot. OP_KEY_NONE is never nearer. */
 bool op_key_slot_nearer(float tkey, float slot)
 {
-    return tkey < op_key_from_stored(op_key_store(slot * OP_KEY_SLOT));
+    return tkey < slot * OP_KEY_SLOT;
 }
 
 /* Whether a decoded key tkey lies at or nearer than the band edge band
  * (a face's key less half an ordering-table slot), the terrain-against-
  * terrain test where the scene is not submitted through one ordering table.
- * The edge goes through the key images' encode and decode, so a key exactly
- * half a slot nearer than the face decodes to exactly the edge and counts as
- * nearer on any GPU. Such a pair shares a bucket when the nearer key lies in
- * the bucket's first half, where the table's insertion order decides and
+ * A key exactly half a slot nearer than the face decodes to exactly the edge
+ * and counts as nearer. Such a pair shares a bucket when the nearer key lies
+ * in the bucket's first half, where the table's insertion order decides and
  * this test does not model it. OP_KEY_NONE is never nearer. */
 bool op_key_band_nearer(float tkey, float band)
 {
-    return tkey <= op_key_from_stored(op_key_store(band));
+    return tkey <= band;
 }
 
 /* ---- drain sub-cell keys ---------------------------------------------
@@ -405,24 +410,25 @@ float op_drain_koff(float koff, float tag, vec2 uv, usampler2D rec)
  * The key rides the ACTOR key image in a reserved value band instead of a
  * sixth image: its slot index is encoded linearly from OP_PKEY_BASE in
  * steps of OP_PKEY_STEP. The band sits below every reachable real key -
- * a key is floored at one world unit, which stores at 2.4e-4, five times
+ * a key is floored at one world unit, which stores at 2^-26, four times
  * the band's top - so the depth test that composes the image resolves a
  * pixel both classes cover to the PLAYER, and every reader that is not
  * the aura contest filters the band out through op_akey_contest() rather
  * than decoding it as an impossibly near key. The key feed carries a band
- * vertex's stored value itself as its z, and the key stage writes it
- * unchanged (op_key_clip): a band value is never clamped or encoded as a
- * view-Z, which would store the one-world-unit floor's 2.4e-4 and read
- * back as a real key 1. The player's faces raster
- * only where an aura could read them (the key pass clips them to the aura
- * footprint), so the actor key they displace is one no other contest
- * reaches.
+ * vertex's stored value itself as its z, and the key stage writes that
+ * value as its fragment depth unchanged (terrain_key.vert, the band form):
+ * a band value is never clamped or encoded as a view-Z, which would store
+ * the one-world-unit floor's 2^-26 and read back as a real key 1. The
+ * player's faces raster only where an aura could read them (the key pass
+ * clips them to the aura footprint), so the actor key they displace is one
+ * no other contest reaches.
  *
- * OP_PKEY_STEP is four orders of magnitude above a 32-bit float's ulp at
- * the band, so the rasteriser's plane interpolation of a flat value, a few
- * ulps off, rounds back to the slot the writer encoded. */
-#define OP_PKEY_BASE 0.000001
-#define OP_PKEY_STEP 0.00000001
+ * OP_PKEY_BASE (2^-36) and OP_PKEY_STEP (2^-40) are powers of two, so every
+ * band value (16 + slot) * 2^-40 is exact in float and its slot decodes
+ * exactly; the C mirror (native_render.c NR_PKEY_*) computes the same
+ * values. */
+#define OP_PKEY_BASE 1.4551915228366852e-11   /* 2^-36 */
+#define OP_PKEY_STEP 9.094947017729282e-13    /* 2^-40 */
 #define OP_PKEY_MAX_SLOT 4095.0
 
 bool op_pkey_is(float stored)
@@ -438,9 +444,10 @@ float op_pkey_slot(float stored)
 
 /* Fault injection: window depth z moved by bias units in the last place
  * (negative = nearer), the error a rasteriser's divide and plane
- * interpolation can leave in a key image's stored value
- * (OPENPETE_KEY_Z_ULP_BIAS, the key stages' KEY_Z_ULP_BIAS specialization
- * constant). bias 0 returns z unchanged. */
+ * interpolation can leave in a window depth (OPENPETE_KEY_Z_ULP_BIAS, the
+ * key stages' KEY_Z_ULP_BIAS specialization constant). Every key stage
+ * writes its stored value as fragment depth, so the moved window depth
+ * reaches no key image. bias 0 returns z unchanged. */
 float op_key_z_fault(float z, int bias)
 {
     return bias == 0 ? z : uintBitsToFloat(uint(int(floatBitsToUint(z)) + bias));
@@ -448,18 +455,35 @@ float op_key_z_fault(float z, int bias)
 
 /* The key pass's clip position for a key-feed vertex at clip-space screen
  * cxy. z is the feed's z: a value inside the player band is the stored band
- * value, written as z_ndc = z at w = 1 so it reaches the image bit-exact;
- * any other z is a view-Z, and the vertex stores its key view-Z kv as
- * kv/(kv+4096) with w = kv, a (z, w) pair the hardware clipper
- * interpolates without disturbing the window depth. A true view-Z inside
- * the band's range (0, 4.2e-5] lies at the eye and would clamp to the near
- * guard anyway. A non-zero bias moves a view-Z vertex's window depth by that
- * many ulps (op_key_z_fault); a band value is never moved. */
+ * value, placed at z_ndc = z with w = 1; any other z is a view-Z, placed at
+ * z_ndc = op_key_store(kv) with w = kv, a (z, w) pair the hardware clipper
+ * interpolates without disturbing the window depth. Both lie inside the
+ * clip volume's depth range, so no key face is depth-clipped; the fragment
+ * stages write the stored value themselves (terrain_key.vert). A true
+ * view-Z inside the band's range (0, 3.8e-9] lies at the eye. A non-zero
+ * bias moves a view-Z vertex's window depth by that many ulps
+ * (op_key_z_fault); a band value is never moved. */
 vec4 op_key_clip(vec2 cxy, float z, float kv, int bias)
 {
     if (op_pkey_is(z)) return vec4(cxy, z, 1.0);
-    if (bias != 0) return vec4(cxy * kv, op_key_z_fault(op_key_store(kv), bias) * kv, kv);
-    return vec4(cxy * kv, kv * kv / (kv + 4096.0), kv);
+    return vec4(cxy * kv, op_key_z_fault(op_key_store(kv), bias) * kv, kv);
+}
+
+/* The forms of a key-feed face's stored value (terrain_key.vert vKeyForm). */
+#define OP_KEY_FORM_FLAT 1.0   /* a flat key: op_key_store of the face's key */
+#define OP_KEY_FORM_BAND 0.0   /* the player band: the band value itself */
+#define OP_KEY_FORM_TRUE -1.0  /* the prop class: op_key_store of true view-Z */
+
+/* The fragment depth a walk key stage writes for form form: a flat key
+ * stores op_key_store(kv) (kv the key, a drain sub-cell's or the tier-moved
+ * one), the band stores kv (the band value), and the prop class stores
+ * op_key_store of the fragment's true view-Z, 1/iz with iz the owner's
+ * screen-linear true 1/view-Z. */
+float op_key_stored_depth(float form, float kv, float iz)
+{
+    if (form > 0.5) return op_key_store(kv);
+    if (form > -0.5) return kv;
+    return op_key_store(1.0 / max(iz, 1e-9));
 }
 
 /* The actor key image as every contest but the aura's sees it: a player
@@ -700,7 +724,7 @@ bool op_key_override_holds(vec4 tattr, float own, vec2 fattr)
  * half so the order within a tier is kept. No key leaves its bucket; the
  * contest reads the stored key back through op_key_tier_unkey (the owner's
  * class byte names the half) where it compares a key value rather than a
- * bucket, and sees the key within twice the encoding's step; only the owner of a pixel whose
+ * bucket, and sees the key within twice its float step; only the owner of a pixel whose
  * least bucket holds both tiers changes. An HP fragment whose key
  * owner is an LP face of the same bucket lying within OP_KEY_TIER_REACH world
  * of it along the ray (a coplanar overlap) loses the pixel
@@ -723,8 +747,8 @@ float op_key_tier_hit = -1.0;
  * unchanged). On one ordering table (slot_contest) the key's offset into its
  * bucket is halved, and an HP key's is then raised by half a bucket, so
  * every LP key of a bucket stores below every HP key of it and the order
- * within a tier is kept. Halving doubles the encoding's step in world units
- * (0.02 to 0.04 at a key of 33792). */
+ * within a tier is kept. Halving doubles the key's float step in world units
+ * (0.004 to 0.008 at a key of 33792). */
 float op_key_tier_key(float kv, float cls, bool slot_contest)
 {
     if (!slot_contest || OP_KEY_TIER_ORDER == 0 || cls >= OP_KEY_CLASS_NONE - 0.5) return kv;
@@ -839,8 +863,8 @@ bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
     }
     /* Near band: per-pixel own key, same strict rule, same embed rule. The
      * stored key is read back to its key view-Z (op_key_tier_unkey); the
-     * bucket compares above take it as stored, the encoding their slot
-     * boundaries go through. */
+     * bucket compares above take it as stored, since the tier move keeps
+     * every key in its bucket. */
     return op_key_tier_unkey(tkey, tattr, slot_contest) < own - 64.0 ||
            (!truescope && akey < own - 64.0) ||
            mkey < own + 1024.0;

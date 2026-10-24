@@ -2016,18 +2016,17 @@ void main()
     if ((gf & (1 << 29)) != 0 && ((gf >> 26) & 7) == 7)
         vRim = (vRim & 0xFFu) | (attr_word(slot, lp, hqv, is4, koff > 0.25 && ktab.n > 0) << 8);
 
-    /* ---- KEY pass: rasterise the flat og key as depth (terrain_key.vert
-     * mirror) ----
+    /* ---- KEY pass: the flat og key's face (terrain_key.vert mirror) ----
      * terrain_key.vert receives the key K as view-Z from the CPU feed; the
-     * cache holds K itself. */
+     * cache holds K itself. terrain_key_cache.frag stores the key as its
+     * fragment depth; the window depth here only places the face for the
+     * clipper (op_key_clip). */
     if (keyPass) {
         if (koff <= 0.25) { kill_vert(); return; }   /* keyed faces only */
         float K  = koff - 0.5;
         float kv = max(K, 1.0);
         vec2 cxy = clip_of(sscr);
-        gl_Position = KEY_Z_ULP_BIAS != 0
-            ? vec4(cxy * kv, op_key_z_fault(op_key_store(kv), KEY_Z_ULP_BIAS) * kv, kv)
-            : vec4(cxy * kv, kv * kv / (kv + OP_VZ_SCALE), kv);
+        gl_Position = op_key_clip(cxy, kv, kv, KEY_Z_ULP_BIAS);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
         vUV = uv / wq;

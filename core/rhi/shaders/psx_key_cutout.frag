@@ -14,9 +14,11 @@
  * stamp a near key over its whole quad and key-discard everything behind the
  * holes, leaving nothing to draw there but the backdrop.
  *
- * Depth comes from terrain_key.vert (flat og key for the key image, true
- * per-vertex depth for the prop image); this stage only cuts transparent
- * texels out of the raster. outColor is the face's flat colour channel,
+ * The stored value is written as the fragment depth in the face's form
+ * (terrain_key.vert vKeyForm, op_key_stored_depth): the flat og key for the
+ * key images, the true view-Z at the fragment for the prop image, the band
+ * value for the player band; this stage also cuts transparent texels out of
+ * the raster. outColor is the face's flat colour channel,
  * which carries an actor face's moby identity into the actor key image's
  * colour attachment (psx_key_contest.glsl op_akey_id); a terrain face
  * (vCls a class byte) writes its true view-Z and class there instead
@@ -26,10 +28,8 @@
  * UV, matching the scene draw). A triangle with a drain record writes the key
  * of the drain sub-cell under the fragment (psx_key_contest.glsl; a folded
  * quadrant's skipped slot through op_drain_fold_rec) as its depth; every
- * other flat key (vKeyFlat) writes op_key_store(vKv), the exact encoding of
- * its key; a terrain key is first moved in its bucket's tier order
- * (op_key_tier_key), and the prop class and player band write the rasterised depth
- * back unchanged. */
+ * flat key, a drain sub-cell's included, is first moved in its bucket's
+ * tier order (op_key_tier_key) and stored through op_key_store. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
@@ -42,14 +42,14 @@ layout(push_constant) uniform PsxMaterial {
 layout(location = 1) in vec2 vUV;   /* u/w - see terrain_key.vert */
 layout(location = 3) in float vQ;   /* 1/w */
 layout(location = 4) flat in float vDrain; /* drain record tag */
-layout(location = 5) flat in float vKv;    /* flat key view-Z */
+layout(location = 5) flat in float vKv;    /* flat key view-Z, or the band value */
 /* Drain sub-cell key records (psx_key_contest.glsl op_drain_record). */
 layout(set = 1, binding = 0) uniform usampler2D u_drain;
 
 layout(location = 6) flat in vec4 vIdent; /* moby identity (op_akey_id) */
 layout(location = 7) noperspective in float vIz; /* owner's true 1/view-Z */
 layout(location = 8) flat in float vCls;          /* owner's terrain class byte */
-layout(location = 9) flat in float vKeyFlat;      /* 1: store op_key_store(vKv) */
+layout(location = 9) flat in float vKeyForm;      /* OP_KEY_FORM_* */
 
 layout(location = 0) out vec4 outColor;
 
@@ -75,9 +75,9 @@ void main()
     float d = op_drain_record(u_drain, vDrain, uv, t0, t1, p) ? op_drain_delta(p, t0, t1, 0.0) : -1.0;
     if (d >= OP_DRAIN_SKIP) d = op_drain_fold_rec(u_drain, vDrain, uv, t0, t1, 0.0);
     if (d >= OP_DRAIN_SKIP) discard;           /* a sub-cell the drain skips */
-    gl_FragDepth = d >= 0.0          ? op_key_store(op_key_tier_key(vKv + d, vCls, SLOT_CONTEST))
-                 : vKeyFlat > 0.5    ? op_key_store(op_key_tier_key(vKv, vCls, SLOT_CONTEST))
-                                     : gl_FragCoord.z;
+    float form = d >= 0.0 ? OP_KEY_FORM_FLAT : vKeyForm;
+    float kv = form > 0.5 ? op_key_tier_key(vKv + max(d, 0.0), vCls, SLOT_CONTEST) : vKv;
+    gl_FragDepth = op_key_stored_depth(form, kv, vIz);
     outColor = vCls < OP_KEY_CLASS_NONE - 0.5 ? op_key_attr_store(1.0 / max(vIz, 1e-9), vCls)
                                               : vIdent;
 }

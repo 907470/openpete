@@ -12,10 +12,11 @@
  * the near-tile / CLUT-ladder select), not a push constant. A face with a
  * drain sub-cell table writes the key of the sub-cell containing the
  * fragment (psx_key_contest.glsl; a folded quadrant's skipped slot through
- * op_drain_fold_delta) as its depth, as psx_key_cutout.frag and
- * terrain_key.frag do on the walk; every other face writes
+ * op_drain_fold_delta) as its depth, as psx_key_cutout.frag does on the
+ * walk; every other face writes
  * op_key_store of its flat key (moved in its bucket's tier order,
- * op_key_tier_key), the exact encoding the contest compares against, not the rasterised depth, which lands a few ulps off it by GPU. The colour attachment takes the face's true view-Z
+ * op_key_tier_key), which stores the key exactly, not the rasterised
+ * depth. The colour attachment takes the face's true view-Z
  * at the fragment and its class byte (op_key_attr_store), which the scene
  * stages bound the terrain override with. */
 

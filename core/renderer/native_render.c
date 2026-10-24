@@ -9210,9 +9210,10 @@ static int key_batch_admits(const scene_tri_t* t, int prop_class,
 /* The player band's C mirror (psx_key_contest.glsl, op_pkey_is): slot s
  * stores as OP_PKEY_BASE + s*OP_PKEY_STEP, below every reachable real key,
  * so the band wins the image's depth test and every contest but the aura's
- * filters it back out. */
-#define NR_PKEY_BASE 0.000001f
-#define NR_PKEY_STEP 0.00000001f
+ * filters it back out. Both are powers of two (2^-36, 2^-40), so every band
+ * value is exact in float and the shader decodes its slot exactly. */
+#define NR_PKEY_BASE 0x1p-36f
+#define NR_PKEY_STEP 0x1p-40f
 #define NR_PKEY_MAX_SLOT 4095.0f
 
 /** @brief Map a player ordering slot plus one to its depth in the player key band.
@@ -9282,8 +9283,8 @@ static uint32_t key_order_owner_alpha(const scene_tri_t* T, int prop_class)
  * Each vertex carries the clip position, the true view-Z in w, the UV when
  * textured (else 0), a colour, koff and the drain record fields from
  * rv_drain. koff is 0.5 for a flat key, which the key stages store from the
- * key itself (op_key_store), and -0.5 for the prop class, whose per-vertex
- * depth keeps the rasterised value; both add no key offset. The colour is
+ * key itself (op_key_store), and -0.5 for the prop class, which they store
+ * from the true view-Z at the fragment; both add no key offset. The colour is
  * opaque black, except an ACTOR face's in the actor class while
  * actor_own_key_on, whose r, g, b carry its moby identity (bits 0-7, 8-15,
  * 16-23 of openpete_scene_tri.mid) for the key image's owner colour. The
