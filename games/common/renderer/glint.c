@@ -93,6 +93,7 @@
 #include "openpete_native_render.h"
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "game_layout.h"
+#include "no_lod.h"                 /* openpete_no_lod: extended LOD draws every record as a star */
 
 #include <math.h>
 #include <stdint.h>
@@ -135,6 +136,7 @@ typedef struct {
     int       blend;
     int       sub;        /* the quad (0-7) or line (0-1) of its record it is */
     int       exact;      /* 1 = ex/ey/ec hold the corners built in float (glint_corners) */
+    int       hidden;     /* 1 = a captured cross line whose record the feed draws as a star instead */
     float     ex[4], ey[4];
     uint32_t  ec[4];      /* the corner colours, low 24 bits */
     double    bre, bim;   /* the outline basis at capture (glint_corners) */
@@ -171,6 +173,7 @@ static int          s_stars;      /* draw-mode packets the call appended */
 static int          s_crosses;    /* line pairs the call appended */
 static int          s_pred_near;  /* near records the pool walk predicted */
 static int          s_pred_far;   /* far records the pool walk predicted */
+static int          s_hq_far;     /* far records the feed drew as stars this call (glint_star_far) */
 static uint32_t     s_code_hist[256];
 static uint32_t     s_tag_hist[256];
 static uint32_t     s_fed_star_tris;
@@ -199,6 +202,7 @@ static int glint_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].blend = 0;
     s_item[s_item_n].sub = 0;
     s_item[s_item_n].exact = 0;
+    s_item[s_item_n].hidden = 0;
     memset(&s_item[s_item_n].src, 0, sizeof s_item[0].src);
     memset(&s_reb[s_item_n], 0, sizeof s_reb[0]);
     s_item_n++;
@@ -642,8 +646,11 @@ typedef struct {
  * the pale word (:2390-2393); a line takes the pale word (:2480-2482).
  * @param cpu Reads the outline, quad, colour and sine tables.
  * @param v The view the corners project under.
- * @param r The record; supplies the branch, size byte and colour row.
+ * @param r The record; supplies the branch the size scale follows, the size
+ *        byte and the colour row.
  * @param ps The state to build at.
+ * @param star 1 builds a quad of the near branch's star, 0 a line of the far
+ *        branch's cross, whichever branch the routine took for the record.
  * @param sub The quad (0-7) or line (0-1) of the record.
  * @param x Receives the screen X of each corner.
  * @param y Receives the screen Y of each corner.
@@ -654,7 +661,7 @@ typedef struct {
  * @return The corner count, 4 for a quad and 2 for a line, or 0 when the
  *         layout locates no outline, quad or colour table. */
 static int glint_corners(CPUState* cpu, const ngte_view* v, const glint_rec* r,
-                         const glint_pose* ps, int sub, float x[4], float y[4],
+                         const glint_pose* ps, int star, int sub, float x[4], float y[4],
                          uint32_t rgb[4], ngte_proj* ctr, double basis[2]) {
     if (!GT.outline || !GT.quads || !GT.colours) return 0;
     const double vo[3] = { (ps->pos[0] - v->cam[0]) / 2.0, (v->cam[1] - ps->pos[1]) / 2.0,
@@ -663,6 +670,9 @@ static int glint_corners(CPUState* cpu, const ngte_view* v, const glint_rec* r,
     double sn, cs;
     ngte_sincos_f(cpu, ps->ang, &sn, &cs);
     double k = glint_size_ramp(ps->life) * (double)r->size / 16384.0;
+    /* The view-Z scale follows the record's branch, not the drawn kind: a far
+     * record built as a star keeps the screen extent of the cross the routine
+     * drew for it, equal to the near star's at the switch depth. */
     if (r->near_mode && ps->hold_vz > 0.0 && ctr->m3 > 0.0) k *= ctr->m3 / ps->hold_vz;
     if (!r->near_mode) k *= ctr->m3 / 8192.0;
     const double c = k * cs, sv = k * sn;
@@ -672,7 +682,7 @@ static int glint_corners(CPUState* cpu, const ngte_view* v, const glint_rec* r,
     const uint32_t row = GT.colours + (uint32_t)r->row * 12u;
     uint32_t pt[4];
     int n;
-    if (r->near_mode) {
+    if (star) {
         const uint32_t w = cpu->read_word(GT.quads + (uint32_t)(sub & 7) * 4u);
         for (int j = 0; j < 4; j++) pt[j] = (w >> (24 - 8 * j)) & 0xFFu;
         const uint32_t pale = cpu->read_word(row), tip = cpu->read_word(row + 4u),
@@ -716,7 +726,8 @@ static void glint_build_exact(CPUState* cpu, const ngte_view* v) {
         for (int k = 0; k < 3; k++) ps.pos[k] = (double)(int32_t)it->src.w[k];
         ngte_proj ctr;
         double b[2];
-        if (glint_corners(cpu, v, &it->src, &ps, it->sub, it->ex, it->ey, it->ec, &ctr, b) == 0)
+        if (glint_corners(cpu, v, &it->src, &ps, it->p.code == GLINT_QUAD, it->sub, it->ex, it->ey,
+                          it->ec, &ctr, b) == 0)
             continue;
         it->exact = 1;
         it->bre = b[0]; it->bim = b[1];
@@ -724,71 +735,96 @@ static void glint_build_exact(CPUState* cpu, const ngte_view* v) {
     }
 }
 
-/* ---- the widened view's stars --------------------------------------------
+/* ---- synthetic stars ------------------------------------------------------
  *
- * The routine's lateral test 4|X| - 3Z < 0x100 is the 4:3 frame plus a fixed
- * margin, so in a wider view (Hor+ factor F above 1) it drops a record whose
- * star still lies inside the revealed side band and emits no primitive for
- * it. Such a record keeps every other verdict of the routine (the lifetime,
- * the box, the depth window and the vertical test) and its branch, and its
- * corners come from glint_corners exactly as a drawn record's do, so it is
- * appended as eight synthetic quads or two synthetic lines carrying the
- * record. The star is admitted unless every corner lies left of the view's
- * screen-X bound xlo or every corner at or right of xhi. A near star takes
- * the routine's draw-mode word 0xE1000620 (:2383), whose rate bits are 0b01. */
+ * Two kinds of record draw primitives the routine did not emit, built by
+ * glint_corners exactly as a captured primitive's corners are and appended
+ * after the capture as items carrying the record.
+ *
+ * The widened view's stars: the routine's lateral test 4|X| - 3Z < 0x100 is
+ * the 4:3 frame plus a fixed margin, so in a wider view (Hor+ factor F above
+ * 1) it drops a record whose star still lies inside the revealed side band and
+ * emits no primitive for it. Such a record keeps every other verdict of the
+ * routine (the lifetime, the box, the depth window and the vertical test) and
+ * is admitted unless every corner lies left of the view's screen-X bound xlo
+ * or every corner at or right of xhi.
+ *
+ * Extended LOD's stars: the far branch draws a record at half-world depth
+ * GT.near_vz and beyond as a two-line cross, a cheaper picture of the same
+ * star. Under extended LOD every record, the widened view's included, is
+ * drawn as the near branch's eight quads: its outline, its quad table, its
+ * colour words and its additive draw mode, at its own view Z and at the
+ * size ramp both branches share (glint_size_ramp). A far record's star keeps
+ * the far branch's view-Z scale of the arms (glint_corners), so it spans the
+ * screen extent of the cross it replaces: without it the star's extent falls
+ * as 1/Z past the switch depth and is under a pixel at the far cull. A captured far record's two lines stay in the
+ * capture, marked hidden, so the pairing, calibration and census still read
+ * the branch the routine took. A synthetic star takes the routine's
+ * draw-mode word 0xE1000620 (:2383), whose rate bits are 0b01. */
 
 #define GLINT_DRMODE_ABR 1   /* (0xE1000620 >> 5) & 3 */
 
 static int s_wide_admit;     /* records the widened view appended this call */
 static int s_wide_cull;      /* records the widened view rebuilt and culled this call */
 
-/** @brief Build one lateral-rejected record's primitives as synthetic items and append them when the view shows any corner.
+/** @brief Whether the feed draws a record as the near branch's star: its branch is near, or extended LOD is on.
+ * @param r The record.
+ * @return 1 for the star, 0 for the cross. */
+static int glint_draws_star(const glint_rec* r) {
+    return r->near_mode || openpete_no_lod;
+}
+
+/** @brief Build one record's primitives as synthetic items past the end of s_item without appending them.
  *
  * Each item carries the record, its quad or line index, the corners and
  * colours glint_corners builds at the tick's state, the record's depth and
- * the branch's blend; nothing is appended when s_item has no room for the
- * whole record.
+ * the drawn kind's blend.
  * @param cpu Reads the routine's tables.
  * @param v The tick's projection view.
- * @param r The record. */
-static void glint_wide_append(CPUState* cpu, const ngte_view* v, const glint_rec* r) {
-    const int n = r->near_mode ? GLINT_QUADS_PER_STAR : GLINT_LINES_PER_CROSS;
-    if (s_item_n + n > GLINT_MAX_PRIMS) return;
+ * @param r The record.
+ * @param star 1 builds the star's eight quads, 0 the cross's two lines.
+ * @param xr Receives the smallest and largest corner X.
+ * @return The item count, or 0 when s_item has no room for the whole record
+ *         or glint_corners builds nothing. */
+static int glint_synth_build(CPUState* cpu, const ngte_view* v, const glint_rec* r, int star,
+                             float xr[2]) {
+    const int n = star ? GLINT_QUADS_PER_STAR : GLINT_LINES_PER_CROSS;
+    if (s_item_n + n > GLINT_MAX_PRIMS) return 0;
     glint_pose ps = { { 0.0, 0.0, 0.0 }, glint_angle(r), (double)r->life, 0.0 };
     for (int k = 0; k < 3; k++) ps.pos[k] = (double)(int32_t)r->w[k];
-    float xmin = 1e30f, xmax = -1e30f;
+    xr[0] = 1e30f; xr[1] = -1e30f;
     for (int q = 0; q < n; q++) {
         glint_item* it = &s_item[s_item_n + q];
         memset(it, 0, sizeof *it);
         memset(&s_reb[s_item_n + q], 0, sizeof s_reb[0]);
         ngte_proj ctr;
         double b[2];
-        const int nc = glint_corners(cpu, v, r, &ps, q, it->ex, it->ey, it->ec, &ctr, b);
-        if (nc == 0) return;
+        const int nc = glint_corners(cpu, v, r, &ps, star, q, it->ex, it->ey, it->ec, &ctr, b);
+        if (nc == 0) return 0;
         for (int k = 0; k < nc; k++) {
-            if (it->ex[k] < xmin) xmin = it->ex[k];
-            if (it->ex[k] > xmax) xmax = it->ex[k];
+            if (it->ex[k] < xr[0]) xr[0] = it->ex[k];
+            if (it->ex[k] > xr[1]) xr[1] = it->ex[k];
         }
-        it->p.code = r->near_mode ? GLINT_QUAD : GLINT_LINE;
-        it->p.nv = r->near_mode ? 4 : 0;
+        it->p.code = star ? GLINT_QUAD : GLINT_LINE;
+        it->p.nv = star ? 4 : 0;
         it->depth = r->depth;
         it->paired = 1;
-        it->blend = r->near_mode ? ngte_abr_blend(GLINT_DRMODE_ABR, NGTE_ABR_QUARTER_AS_ADD) : 0;
+        it->blend = star ? ngte_abr_blend(GLINT_DRMODE_ABR, NGTE_ABR_QUARTER_AS_ADD) : 0;
         it->sub = q;
         it->exact = 1;
         it->bre = b[0]; it->bim = b[1];
         it->csx = ctr.sx; it->csy = ctr.sy;
         it->src = *r;
     }
-    if (xmax < v->xlo || xmin >= v->xhi) { s_wide_cull++; return; }
-    s_item_n += n;
-    s_wide_admit++;
+    return n;
 }
 
 /** @brief Append the stars the routine's lateral test dropped but a view wider than 4:3 shows.
  *
  * Runs only when the view's Hor+ factor F is above 1; every record
- * glint_accept rejects on the lateral test alone goes to glint_wide_append.
+ * glint_accept rejects on the lateral test alone is built by glint_synth_build
+ * in the kind glint_draws_star picks and appended unless the view shows none
+ * of its corners.
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view. */
 static void glint_wide_reveal(CPUState* cpu, const ngte_view* v) {
@@ -796,8 +832,38 @@ static void glint_wide_reveal(CPUState* cpu, const ngte_view* v) {
     if (!(v->F > 1.0f)) return;
     for (uint32_t s = 0; s < GT.slots; s++) {
         glint_rec r;
-        if (glint_accept(cpu, v, GT.pool + s * GT.stride, &r) == GLINT_LATERAL)
-            glint_wide_append(cpu, v, &r);
+        if (glint_accept(cpu, v, GT.pool + s * GT.stride, &r) != GLINT_LATERAL) continue;
+        float xr[2];
+        const int n = glint_synth_build(cpu, v, &r, glint_draws_star(&r), xr);
+        if (n == 0) continue;
+        if (xr[1] < v->xlo || xr[0] >= v->xhi) { s_wide_cull++; continue; }
+        s_item_n += n;
+        s_wide_admit++;
+    }
+}
+
+/** @brief Under extended LOD, append a star for every captured far record and hide its two lines.
+ *
+ * Walks the captured primitives for the first line of each paired cross, builds
+ * the record's star with glint_synth_build and appends it, then marks every
+ * captured line of that record hidden. A record s_item has no room for keeps
+ * its cross. Counts the records in s_hq_far.
+ * @param cpu Reads the routine's tables.
+ * @param v The tick's projection view. */
+static void glint_star_far(CPUState* cpu, const ngte_view* v) {
+    s_hq_far = 0;
+    if (!openpete_no_lod) return;
+    for (int i = 0; i < s_cap_n; i++) {
+        const glint_item* it = &s_item[i];
+        if (it->p.code != GLINT_LINE || !it->src.addr || it->sub != 0 || it->hidden) continue;
+        const glint_rec r = it->src;
+        float xr[2];
+        const int n = glint_synth_build(cpu, v, &r, 1, xr);
+        if (n == 0) continue;
+        s_item_n += n;
+        for (int j = 0; j < s_cap_n; j++)
+            if (s_item[j].p.code == GLINT_LINE && s_item[j].src.addr == r.addr) s_item[j].hidden = 1;
+        s_hq_far++;
     }
 }
 
@@ -843,8 +909,8 @@ static void glint_rebase_report(void) {
 
 /** @brief Compute the rebase of one captured primitive onto the pose this present shows.
  *
- * Resets the item's rebase to the identity. A primitive with no owning record
- * stays inactive. Otherwise the record's position, spin phase and lifetime at
+ * Resets the item's rebase to the identity. A primitive with no owning record,
+ * or a hidden one, stays inactive. Otherwise the record's position, spin phase and lifetime at
  * this present come from glint_record_pair (the tick's own values when the
  * pair snaps) and the record point is re-projected under the staged view: the
  * rebase takes the scene depth of that point and its screen displacement from
@@ -863,7 +929,7 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     glint_item* it = &s_item[i];
     glint_rebase* r = &s_reb[i];
     memset(r, 0, sizeof *r);
-    if (!it->src.addr) return;                   /* an unpaired primitive */
+    if (!it->src.addr || it->hidden) return;     /* unpaired, or not drawn */
     double off[3], show_ang = 0.0, show_life = 0.0;
     const int paired = glint_record_pair(&it->src, alpha, off, &show_ang, &show_life);
     if (!glint_spin_enabled()) show_ang = glint_angle(&it->src);
@@ -885,7 +951,8 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     uint32_t rgb[4];
     ngte_proj ctr;
     double b[2];
-    r->corners = glint_corners(cpu, v, &it->src, &ps, it->sub, r->cx, r->cy, rgb, &ctr, b) > 0;
+    r->corners = glint_corners(cpu, v, &it->src, &ps, it->p.code == GLINT_QUAD, it->sub, r->cx,
+                               r->cy, rgb, &ctr, b) > 0;
     r->bre = b[0]; r->bim = b[1];
     r->csx = ctr.sx; r->csy = ctr.sy;
     s_reb_stat[2] += r->corners;
@@ -976,8 +1043,8 @@ static int glint_fed_corners(const glint_item* it, const glint_rebase* rb, float
 
 /** @brief Push every captured primitive to the native scene at the corners glint_fed_corners gives.
  *
- * Does nothing when OPENPETE_GLINT selects 0 or nothing was captured. Each
- * star quad (code GLINT_QUAD) goes through ngte_feed_flat_quad; with mode 2 or
+ * Does nothing when OPENPETE_GLINT selects 0 or nothing was captured, and
+ * skips a hidden primitive (glint_star_far). Each star quad (code GLINT_QUAD) goes through ngte_feed_flat_quad; with mode 2 or
  * more each cross line goes through ngte_feed_flat_line, which widens it to
  * the one pixel the GPU rasterizes a line at. The depth is the rebase's when
  * active, else the depth the pairing gave. Counts the triangles fed in
@@ -991,6 +1058,7 @@ static void glint_feed_native(void) {
     for (int i = 0; i < s_item_n; i++) {
         const glint_item* it = &s_item[i];
         const glint_rebase* rb = &s_reb[i];
+        if (it->hidden) continue;
         const float depth = rb->active ? rb->depth : it->depth;
         const int quad = it->p.code == GLINT_QUAD && it->p.nv == 4;
         if (!quad && !(it->p.code == GLINT_LINE && mode >= 2)) continue;
@@ -1101,7 +1169,7 @@ static void glint_trace(const char* leg, double alpha) {
     glint_ext_acc acc[GLINT_MAX_PRIMS];
     int nrec = 0;
     for (int i = 0; i < s_item_n; i++) {
-        if (!s_item[i].src.addr) continue;
+        if (!s_item[i].src.addr || s_item[i].hidden) continue;
         int r = 0;
         while (r < nrec && acc[r].addr != s_item[i].src.addr) r++;
         if (r == nrec) {
@@ -1216,25 +1284,65 @@ static void glint_pivot_residual(double* mean, double* worst, int* n) {
     *mean = *n ? sum / (double)*n : 0.0;
 }
 
+/** @brief Print the live pool records the routine's box or far-depth cull drops, which no branch draws.
+ *
+ * One `[glint-cull]` line with the live record count (lifetime byte nonzero)
+ * and how many of them leave the +/-GT.box box or stand at half-world view Z
+ * GT.far_z or beyond, each on the floored offset the routine tests
+ * (glint_accept), then one line per such record with its address, its view Z
+ * and its world distance from the camera.
+ * @param cpu The guest CPU state, read only. */
+static void glint_cull_census(CPUState* cpu) {
+    ngte_view v;
+    ngte_view_build(cpu, &v);
+    int live = 0, box_n = 0, far_n = 0;
+    char detail[16][96];
+    int nd = 0;
+    for (uint32_t s = 0; s < GT.slots; s++) {
+        const uint32_t rec = GT.pool + s * GT.stride;
+        if ((cpu->read_word(rec + GT.packed_off) & 0xFFu) == 0u) continue;
+        live++;
+        double p[3], vo[3];
+        for (int k = 0; k < 3; k++) p[k] = (double)(int32_t)cpu->read_word(rec + GT.pos_off + (uint32_t)k * 4u);
+        glint_view_offset(&v, p, 1, vo);
+        int out_box = 0;
+        for (int k = 0; k < 3; k++) if (vo[k] >= (double)GT.box || vo[k] <= -(double)GT.box) out_box = 1;
+        ngte_proj o;
+        glint_project(&v, vo, &o);
+        const int out_far = !out_box && o.m3 >= (double)GT.far_z;
+        if (!out_box && !out_far) continue;
+        box_n += out_box; far_n += out_far;
+        if (nd < 16)
+            snprintf(detail[nd++], sizeof detail[0], "rec=%08X %s vz=%.0f dist=%.0f", rec,
+                     out_box ? "box" : "far", o.m3, 2.0 * sqrt(vo[0] * vo[0] + vo[1] * vo[1] + vo[2] * vo[2]));
+    }
+    fprintf(stderr, "[glint-cull f=%u] live=%d box=%d far=%d\n", openpete_frame, live, box_n, far_n);
+    for (int i = 0; i < nd; i++) fprintf(stderr, "[glint-cull f=%u] %s\n", openpete_frame, detail[i]);
+}
+
 /** @brief Print the per-call glint census when the VBL lies in the OPENPETE_GLINT_CENSUS range.
  *
  * OPENPETE_GLINT_CENSUS=LO-HI (or a single VBL): per call in that range, the
  * primitives the routine appended by GPU code, the stars its draw-mode packets
  * delimit and the crosses its line pairs delimit, the stars passing the
  * topology check, the near and far records the pool walk predicted, the
- * records the widened view appended and culled (glint_wide_reveal), the
+ * records the widened view appended and culled (glint_wide_reveal), the far
+ * records drawn as stars under extended LOD (glint_star_far), the
  * native triangles this feeder emitted from each class, how many primitives
  * were left unpaired, and the pairing's pivot residual; then one line per star
- * centre and per cross first endpoint with its paired depth. A capture whose
- * fed count is zero measured nothing.
+ * centre and per cross first endpoint with its paired depth. The live records
+ * the routine culls on its box or far depth print first (glint_cull_census).
+ * A capture whose fed count is zero measured nothing.
+ * @param cpu The guest CPU state, read only.
  * @param start First polybuf address of the routine's output.
  * @param end One past the last.
  * @param star_before The fed star triangle total before this call.
  * @param cross_before The fed cross triangle total before this call. */
-static void glint_census(uint32_t start, uint32_t end,
+static void glint_census(CPUState* cpu, uint32_t start, uint32_t end,
                          uint32_t star_before, uint32_t cross_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_GLINT_CENSUS", openpete_frame)) return;
+    glint_cull_census(cpu);
     int unpaired = 0;
     for (int i = 0; i < s_cap_n; i++)
         if (s_item[i].p.code != GLINT_DRMODE && !s_item[i].paired) unpaired++;
@@ -1249,10 +1357,10 @@ static void glint_census(uint32_t start, uint32_t end,
     double pmean, pworst; int pn;
     glint_pivot_residual(&pmean, &pworst, &pn);
     fprintf(stderr, " stars=%d centre_ok=%d rim_max=%d crosses=%d pred_near=%d pred_far=%d"
-                    " wide_admit=%d wide_cull=%d fed_star_tris=%u fed_cross_tris=%u unpaired=%d"
+                    " wide_admit=%d wide_cull=%d hq_far=%d fed_star_tris=%u fed_cross_tris=%u unpaired=%d"
                     " pivot:n=%d mean=%.2f worst=%.2f\n",
             s_stars, stars_ok, rim_max, s_crosses, s_pred_near, s_pred_far,
-            s_wide_admit, s_wide_cull,
+            s_wide_admit, s_wide_cull, s_hq_far,
             s_fed_star_tris - star_before, s_fed_cross_tris - cross_before, unpaired,
             pn, pmean, pworst);
     /* Each star's centre corner and each cross's first endpoint, with the scene
@@ -1288,7 +1396,7 @@ static void glint_census(uint32_t start, uint32_t end,
  *     the previous present's offsets carried by the change of the outline
  *     basis (spin and extent); the largest residual per present, presents
  *     that open a tick and sub-tick presents apart, skipping a record whose
- *     branch changed (a cross and a star share no outline). A shape that
+ *     drawn kind changed (a cross and a star share no outline). A shape that
  *     changes only by its spin and extent reads 0. */
 
 typedef struct { unsigned long n; double sum, mn, mx; } glint_acc1;
@@ -1314,7 +1422,7 @@ static glint_acc1 s_vtx_shape[2];    /* shape residual per present, canonical an
 /* One record's corner offsets from its record point as one present drew them. */
 typedef struct {
     uint32_t addr;
-    int      near_mode;
+    int      near_mode;  /* 1 = the present drew the record as a star, 0 as a cross */
     double   bre, bim;
     float    ox[GLINT_SHAPE_CORNERS], oy[GLINT_SHAPE_CORNERS];
     uint32_t have;
@@ -1419,7 +1527,7 @@ static void glint_vtx_item(const glint_item* it, const glint_rebase* rb, int leg
     const float* mx = m ? m->cx : it->ex;
     const float* my = m ? m->cy : it->ey;
     const double cx = m ? m->csx : it->csx, cy = m ? m->csy : it->csy;
-    e->near_mode = it->src.near_mode;
+    e->near_mode = it->p.code == GLINT_QUAD;
     e->bre = m ? m->bre : it->bre;
     e->bim = m ? m->bim : it->bim;
     float fx[4], fy[4];
@@ -1437,7 +1545,7 @@ static void glint_vtx_item(const glint_item* it, const glint_rebase* rb, int leg
 /** @brief The largest distance of a record's corner offsets from the previous present's offsets carried by the change of the outline basis.
  * @param c The record's entry this present.
  * @param p Its entry the previous present.
- * @return The residual in pixels, or -1 when the branch changed or the
+ * @return The residual in pixels, or -1 when the drawn kind changed or the
  *         previous basis is zero. */
 static double glint_shape_residual(const glint_shape* c, const glint_shape* p) {
     const double den = p->bre * p->bre + p->bim * p->bim;
@@ -1464,7 +1572,7 @@ static void glint_vtx_present(int leg) {
     static glint_shape cur[GLINT_MAX_PRIMS];
     int ncur = 0;
     for (int i = 0; i < s_item_n; i++) {
-        glint_shape* e = s_item[i].exact ? glint_shape_find(cur, &ncur, s_item[i].src.addr, 1) : NULL;
+        glint_shape* e = s_item[i].exact && !s_item[i].hidden ? glint_shape_find(cur, &ncur, s_item[i].src.addr, 1) : NULL;
         if (e) glint_vtx_item(&s_item[i], &s_reb[i], leg, e);
     }
     for (int r = 0; r < ncur; r++) {
@@ -1494,7 +1602,8 @@ static const hook_bracket_desc k_bracket = {
  * A taken call empties the captured set, retiring the previous epoch's set
  * first when it is the epoch's first call (cut_held_sets_capture).
  * When the routine appended anything, its primitives are captured, paired
- * and built in float under the tick's view (glint_build_exact); in a view
+ * and built in float under the tick's view (glint_build_exact), and under
+ * extended LOD each far record's star is appended (glint_star_far); in a view
  * wider than 4:3 the stars its lateral test dropped are appended
  * (glint_wide_reveal). The set is fed natively with the canonical trace when
  * the scene is live and RP_SPARKLE is selected; a non-empty set from a call
@@ -1512,6 +1621,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
 
     cut_held_sets_capture(&s_sets);
     s_item_n = 0; s_cap_n = 0; s_stars = 0; s_crosses = 0; s_pred_near = 0; s_pred_far = 0;
+    s_hq_far = 0;
     s_wide_admit = 0; s_wide_cull = 0;
     const uint32_t star_before = s_fed_star_tris, cross_before = s_fed_cross_tris;
     /* A view wider than 4:3 can show a star the routine emitted nothing for. */
@@ -1524,6 +1634,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
             glint_pair_depths(cpu, &view);
             glint_build_exact(cpu, &view);
             glint_vtx_cal();
+            glint_star_far(cpu, &view);
         }
         glint_wide_reveal(cpu, &view);
         if (s_item_n > 0) {
@@ -1539,7 +1650,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
             if (endp <= startp) render_path_mark_drawn(RP_SPARKLE);
         }
     }
-    glint_census(startp, endp, star_before, cross_before);
+    glint_census(cpu, startp, endp, star_before, cross_before);
     return hook_bracket_end(&k_bracket);
 }
 
