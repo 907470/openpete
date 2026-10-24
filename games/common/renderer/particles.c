@@ -68,11 +68,13 @@ extern unsigned openpete_frame;
 #define PART_CLASS_MASK  0xF
 #define PART_POOL_END    (-1)   /* selector >> 8 at the end-of-pool sentinel */
 
-/* The record's age byte. The pool update advances it while a record lives and
- * resets it when a slot takes a new record; the draw routine never reads it,
- * which is why it is not among the layout descriptor's draw-side offsets. It is
- * the only field that separates a continuing particle from a slot reuse that
- * kept the selector's class and type, so the sub-tick pairing rests on it. */
+/* The record's age byte. The pool update steps it every tick while a record
+ * lives, upward as an age (Spyro 1 and 2) or downward as the life remaining
+ * (Spyro 3, two per tick; the layout's `age_down`), and resets it when a slot
+ * takes a new record; the draw routine never reads it, which is why it is not
+ * among the layout descriptor's draw-side offsets. It is the only field that
+ * separates a continuing particle from a slot reuse that kept the selector's
+ * class and type, so the sub-tick pairing rests on it. */
 #define PART_AGE_OFF 0x02u
 
 #define PART_MAX_PRIMS 2048
@@ -856,8 +858,9 @@ enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2 };
  * dead particle's position to the live one's. Three tests separate the reuse
  * from a continuing particle and return PART_PAIR_REUSE, in order of what they
  * catch: the selector halfword changing catches a reuse of a different class
- * or type; the age byte falling catches a reuse that kept both, the pool update
- * having reset it for the new record; the speed ceiling PART_REUSE_CEILING
+ * or type; the age byte moving against the game's direction (`age_down`)
+ * catches a reuse that kept both, the pool update having reset it for the new
+ * record; the speed ceiling PART_REUSE_CEILING
  * catches the rest, at a distance no particle covers in a tick.
  * @param it The paired captured primitive.
  * @param alpha The present's phase between the two ticks.
@@ -876,7 +879,10 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     memcpy(&psel, o->prev + game_layout.particles.sel_off, 2);
     memcpy(&csel, o->curr + game_layout.particles.sel_off, 2);
     if (psel != csel) return PART_PAIR_REUSE;         /* the slot took a new record */
-    if (o->curr[PART_AGE_OFF] < o->prev[PART_AGE_OFF]) return PART_PAIR_REUSE;
+    {   /* the age byte moving against its direction: the slot was reset */
+        const uint8_t pa = o->prev[PART_AGE_OFF], ca = o->curr[PART_AGE_OFF];
+        if (game_layout.particles.age_down ? ca > pa : ca < pa) return PART_PAIR_REUSE;
+    }
     uint16_t ph[3], ch[3];   /* X, Y, Z: the first word's halves, the second's low half */
     memcpy(ph, o->prev + pos, 6);
     memcpy(ch, o->curr + pos, 6);

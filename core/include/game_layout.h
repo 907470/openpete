@@ -645,7 +645,11 @@ typedef struct game_layout {
      * the second. `drawn_off` is the byte the routine clears when it starts a
      * record and sets once the record passes its screen and depth window; a
      * record whose class appends right there emitted exactly when the byte is
-     * set. `fixed_layer_class` is the class index at and above which the
+     * set. `age_down` is 1 on a game whose pool update counts the byte at
+     * record offset 2 down while a record lives (a remaining-life count) and
+     * 0 where it counts it up (an age); the sub-tick pairing reads the byte
+     * moving against that direction as a slot that took a new record.
+     * `fixed_layer_class` is the class index at and above which the
      * routine links its primitive at a fixed front ordering-table entry
      * instead of at the record's own depth, and whose records pack their
      * position differently; those primitives draw over the world.
@@ -662,6 +666,7 @@ typedef struct game_layout {
         uint32_t sel_off;
         uint32_t pos_off;
         uint32_t drawn_off;
+        uint32_t age_down;
         uint32_t fixed_layer_class;
         struct game_part_stamp_skip {
             uint8_t on;
