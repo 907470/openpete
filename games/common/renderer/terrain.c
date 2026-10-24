@@ -54,6 +54,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
 #include "renderer/terrain.h"        /* this feeder's exports */
+#include "renderer/moby_snap.h"      /* moby_snap_terrain_fed: the sunk-pickup contact */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
 #include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
 #include "openpete.h"                /* openpete_runahead_get */
@@ -468,6 +469,7 @@ typedef struct {
     uint8_t fill;                                  /* LP hole-fill backing -> WORLD_FILL */
     uint8_t fptag;                                 /* fill-tag inspector: 1 = listed FILL, 2 = preview candidate */
     uint8_t lpkey;                                 /* borrowed HP face keyed with the LP base (tface_ot_slots) */
+    uint8_t dside;                                 /* the face is double-sided (tsface_t.dside) */
     int16_t sec, face;                             /* source identity (fardbg attribution) */
     uint8_t env;                                   /* env-anim tile member (provenance tag) */
     float otkey;                                   /* parent face's .s OT key (full-world mean
@@ -997,6 +999,127 @@ static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDet
     m->texid = texByte & 0x7F;                           /* texture-selector key */
 }
 
+/** @brief The smaller of two finite floats, inline (fminf is a library call on this target).
+ * @param a First value.
+ * @param b Second value.
+ * @return The smaller. */
+static inline float tn_minf(float a, float b) { return b < a ? b : a; }
+
+/** @brief The larger of two finite floats, inline (fmaxf is a library call on this target).
+ * @param a First value.
+ * @param b Second value.
+ * @return The larger. */
+static inline float tn_maxf(float a, float b) { return b > a ? b : a; }
+
+/* ---- sunk-pickup snap search grid ---------------------------------------
+ * The pulled mobys' search boxes (terrain_snap_box) binned on a 32 x 32 grid
+ * over their union rectangle: each cell holds the bit set of the boxes whose
+ * rectangle meets it. A triangle or face looks up the boxes of the cells its
+ * rectangle covers, then tests each of them exactly. */
+#define TN_SNAP_CELLS 32
+typedef struct tn_snapgrid {
+    const terrain_snap_box* b; int nb;
+    float x0, y0, x1, y1, icw, ich;             /* union rectangle and inverse cell size */
+    uint64_t m[TN_SNAP_CELLS][TN_SNAP_CELLS][2];
+} tn_snapgrid;
+
+/* One emitted face's bounds in a walk run: screen x0, y0, x1, y1 and
+ * full-world view-Z z0, z1 over its triangles; its sector's visible index;
+ * its first triangle relative to the sector's run, and its count. */
+typedef struct { float b[6]; int vi, off, n; } tn_facerec;
+
+
+/** @brief Return the grid cell range [lo, hi] a coordinate interval covers, clamped to the grid.
+ * @param a Interval start.
+ * @param b Interval end.
+ * @param o The grid origin on this axis.
+ * @param ic The inverse cell size on this axis.
+ * @param lo Receives the first cell.
+ * @param hi Receives the last cell. */
+static void tn_snap_cells(float a, float b, float o, float ic, int* lo, int* hi) {
+    const float fl = (a - o) * ic, fh = (b - o) * ic;
+    const int l = fl < 0.0f ? -1 : (int)fl, h = fh < 0.0f ? -1 : (int)fh;
+    *lo = l < 0 ? 0 : l > TN_SNAP_CELLS - 1 ? TN_SNAP_CELLS - 1 : l;
+    *hi = h < 0 ? 0 : h > TN_SNAP_CELLS - 1 ? TN_SNAP_CELLS - 1 : h;
+}
+
+/** @brief Bin the search boxes on the grid over their union rectangle.
+ * @param g Receives the grid.
+ * @param b The boxes.
+ * @param nb Box count, at most 128. */
+static void tn_snapgrid_build(tn_snapgrid* g, const terrain_snap_box* b, int nb) {
+    memset(g->m, 0, sizeof g->m);
+    g->b = b; g->nb = nb > 128 ? 128 : nb;
+    g->x0 = g->y0 = 1e30f; g->x1 = g->y1 = -1e30f;
+    for (int k = 0; k < g->nb; k++) {
+        g->x0 = tn_minf(g->x0, b[k].x0); g->y0 = tn_minf(g->y0, b[k].y0);
+        g->x1 = tn_maxf(g->x1, b[k].x1); g->y1 = tn_maxf(g->y1, b[k].y1);
+    }
+    g->icw = 1.0f / tn_maxf((g->x1 - g->x0) / TN_SNAP_CELLS, 1e-3f);
+    g->ich = 1.0f / tn_maxf((g->y1 - g->y0) / TN_SNAP_CELLS, 1e-3f);
+    for (int k = 0; k < g->nb; k++) {
+        int cx0, cx1, cy0, cy1;
+        tn_snap_cells(b[k].x0, b[k].x1, g->x0, g->icw, &cx0, &cx1);
+        tn_snap_cells(b[k].y0, b[k].y1, g->y0, g->ich, &cy0, &cy1);
+        for (int y = cy0; y <= cy1; y++)
+            for (int x = cx0; x <= cx1; x++) g->m[y][x][k >> 6] |= 1ull << (k & 63);
+    }
+}
+
+/** @brief Find the search boxes a screen rectangle and view-Z range meet.
+ * @param g The grid.
+ * @param x0 Rectangle left.
+ * @param y0 Rectangle top.
+ * @param x1 Rectangle right.
+ * @param y1 Rectangle bottom.
+ * @param z0 Nearest view-Z.
+ * @param z1 Farthest view-Z.
+ * @param out Receives the met boxes' bits; may be NULL.
+ * @return 1 when a box is met, else 0. */
+static int tn_snapgrid_hit(const tn_snapgrid* g, float x0, float y0, float x1, float y1,
+                           float z0, float z1, uint64_t out[2]) {
+    if (out) out[0] = out[1] = 0;
+    if (g->nb <= 0 || x1 < g->x0 || x0 > g->x1 || y1 < g->y0 || y0 > g->y1) return 0;
+    int cx0, cx1, cy0, cy1;
+    tn_snap_cells(x0, x1, g->x0, g->icw, &cx0, &cx1);
+    tn_snap_cells(y0, y1, g->y0, g->ich, &cy0, &cy1);
+    uint64_t m[2] = { 0, 0 };
+    for (int y = cy0; y <= cy1; y++)
+        for (int x = cx0; x <= cx1; x++) { m[0] |= g->m[y][x][0]; m[1] |= g->m[y][x][1]; }
+    int any = 0;
+    for (int w = 0; w < 2; w++)
+        for (uint64_t r = m[w]; r; r &= r - 1) {
+            const terrain_snap_box* B = &g->b[w * 64 + __builtin_ctzll(r)];
+            if (x1 < B->x0 || x0 > B->x1 || y1 < B->y0 || y0 > B->y1 || z1 < B->z0 || z0 > B->z1)
+                continue;
+            if (!out) return 1;
+            any = 1;
+            out[w] |= r & (~r + 1);
+        }
+    return any;
+}
+
+/** @brief Find the search boxes of a set that a screen rectangle and view-Z range meet, testing each box of the set exactly.
+ * @param g The grid (its boxes).
+ * @param set The boxes to test, as bits.
+ * @param r The rectangle and range: x0, y0, x1, y1, z0, z1.
+ * @param out Receives the met boxes' bits; may be NULL.
+ * @return 1 when a box is met, else 0. */
+static int tn_snapset_hit(const tn_snapgrid* g, const uint64_t set[2], const float r[6], uint64_t out[2]) {
+    if (out) out[0] = out[1] = 0;
+    int any = 0;
+    for (int w = 0; w < 2; w++)
+        for (uint64_t m = set[w]; m; m &= m - 1) {
+            const terrain_snap_box* B = &g->b[w * 64 + __builtin_ctzll(m)];
+            if (r[2] < B->x0 || r[0] > B->x1 || r[3] < B->y0 || r[1] > B->y1 || r[5] < B->z0 || r[4] > B->z1)
+                continue;
+            if (!out) return 1;
+            any = 1;
+            out[w] |= m & (~m + 1);
+        }
+    return any;
+}
+
 /* Native colour-verts (per emitted tri corner) for the colour A/B. An
  * instrument, not the draw: the compare runs over the first TN_CV_MAX
  * corners, and the triangles past them still draw. */
@@ -1046,6 +1169,18 @@ typedef struct {
     int near_q_agree, near_c_only;
     int walk_sectors;
     int serial;   /* 1 = single-thread walk: also fills the s_tv/s_cv A/B arrays */
+    uint8_t emit_dside;                  /* the face being emitted is double-sided */
+    /* Non-NULL on the snap capture's private run: the face walk skips every
+     * face whose corners meet no search box (tn_snap_face_hit). */
+    const tn_snapgrid* snapmask;
+    /* Per-face bounds of this run (tn_facerec), the index the snap capture
+     * scans instead of the triangles; face_t0 = the open face's first
+     * triangle; face_F and face_sv = the open face and its sector's
+     * projected vertices (NULL before the sector's first face). */
+    mod_fvec* faces;
+    int face_t0;
+    const struct tsface* face_F;
+    const lvert* face_sv;
 } tn_wctx;
 
 /* (tn_wcfg - the per-walk shared-input struct - is defined further down,
@@ -1123,6 +1258,7 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
     t->otkey = W->emit_otkey;
     t->otslots = W->emit_otslots;
     t->lpkey = W->emit_lpkey;
+    t->dside = W->emit_dside;
     t->nearband = W->emit_nearband;
     if (W->emit_keycells) memcpy(t->kc, W->emit_kc, sizeof t->kc);
     else memset(t->kc, 0, sizeof t->kc);
@@ -3119,7 +3255,7 @@ static int face_tri4_routed(double zA, double zB, double zC, uint32_t w3, uint32
  * host pointers once per sector pass. Display-only; the output is
  * byte-identical to parsing the words inline. */
 typedef struct { int16_t x, y, z; } tsvert_t;      /* unpacked local vertex */
-typedef struct {
+typedef struct tsface {
     uint8_t  i0, i1, i2, i3, quad, flip;
     uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
@@ -10585,7 +10721,39 @@ static const char* tn_lp_face_near_drop(const tn_secverd* SV, const tsface_t* F,
  * out - see the dispatch break-even derivation at the workpool call site. */
 #define TN_FANOUT_MIN_FACES 400
 static tn_wctx s_wctx[TN_MAX_WORKERS];
+/* The face-bounds vectors (tn_facerec) of the workers' runs, and at
+ * TN_MAX_WORKERS the snap capture's private run's. */
+static mod_fvec s_wfaces[TN_MAX_WORKERS + 1];
+
+/** @brief Return run w's face-bounds vector, emptied for a new run.
+ * @param w The worker, or TN_MAX_WORKERS for the snap capture's run.
+ * @return The vector. */
+static mod_fvec* tn_face_vec(int w) {
+    mod_fvec* v = &s_wfaces[w];
+    if (!v->elem_size) mod_fvec_init(v, sizeof(tn_facerec), 1024, "terrain.walk.faces", 1024);
+    v->count = 0;
+    return v;
+}
 static mod_fvec s_wbuf[TN_MAX_WORKERS];  /* parallel-mode output runs (lazy) */
+
+/* Per visible sector of the last walk: its face records' run in its
+ * worker's record vector and the union of their bounds, valid while gen
+ * equals s_secrec_gen (stepped per terrain build). One worker walks a
+ * sector, so each entry has one writer. */
+typedef struct { const mod_fvec* v; int r0, n; unsigned gen; float ub[6]; } tn_secrec;
+static tn_secrec s_secrec[1024];
+static unsigned s_secrec_gen = 1;
+
+/** @brief Open a sector's face-record run on the walk's record vector (the main walk only; the capture's private run keeps none).
+ * @param W The walk context.
+ * @param vi The sector's visible index. */
+static void tn_face_sector_open(const tn_wctx* W, int vi) {
+    if (!W->faces || W->snapmask || vi < 0 || vi >= 1024) return;
+    tn_secrec* e = &s_secrec[vi];
+    e->v = W->faces; e->r0 = (int)W->faces->count; e->n = 0; e->gen = s_secrec_gen;
+    e->ub[0] = e->ub[1] = e->ub[4] = 1e30f;
+    e->ub[2] = e->ub[3] = e->ub[5] = -1e30f;
+}
 static const tscache_t* s_pre_SC[1024];
 static uint32_t s_pre_sec[1024];
 static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
@@ -10948,6 +11116,154 @@ static void tn_envm_faces_print(const int n[7]) {
             openpete_frame, n[0], n[1], n[2], n[3], n[4], n[5], n[6]);
 }
 
+static void tn_snap_bounds(const ttri* T, float b[6]);
+
+/** @brief Bound a face's triangles by its corners: the corners' screen rectangle widened by one pixel and their view-Z range.
+ *
+ * Every triangle the walk emits for an unclipped face lies in its corners'
+ * hull: the direct split uses the corners, the near/HQ subdivide and the
+ * 4x4 cells interpolate them, and a point inside a hull in front of the eye
+ * projects inside the projected corners' hull. The integer vertex snap
+ * floors a coordinate by less than a pixel. A face with a corner nearer
+ * than the near plane is clipped, and the clip's new vertices are not
+ * interpolated corners, so such a face is not bounded here.
+ * @param F The face, or NULL.
+ * @param sv Its sector's projected vertices.
+ * @param b Receives the bounds (x0, y0, x1, y1, z0, z1; full-world view-Z).
+ * @return 1 when bounded, 0 when the caller bounds the triangles instead. */
+static int tn_face_corner_bounds(const tsface_t* F, const lvert* sv, float b[6]) {
+    if (!F) return 0;
+    const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
+    const int nc = F->quad ? 4 : 3;
+    for (int k = 0; k < nc; k++) {
+        const lvert* v = &sv[ci[k]];
+        if (!(v->m3 >= s_nearz)) return 0;
+        const float z = (float)(v->m3 * 16.0);
+        b[0] = tn_minf(b[0], v->sx); b[2] = tn_maxf(b[2], v->sx);
+        b[1] = tn_minf(b[1], v->sy); b[3] = tn_maxf(b[3], v->sy);
+        b[4] = tn_minf(b[4], z);     b[5] = tn_maxf(b[5], z);
+    }
+    b[0] -= 1.0f; b[1] -= 1.0f; b[2] += 1.0f; b[3] += 1.0f;
+    b[4] *= 1.0f - 1e-6f; b[5] *= 1.0f + 1e-6f;
+    return 1;
+}
+
+/* OPENPETE_TERRAIN_SNAP_RECCHECK=1: count the faces whose triangles leave
+ * their corner bounds (an instrument; tn_face_bounds_check). */
+static int s_reccheck = -1;
+static long s_reccheck_faces, s_reccheck_out;
+
+/** @brief Count one corner-bounded face, and it again when one of its triangles leaves the bounds (an instrument).
+ * @param W The walk context.
+ * @param t0 The face's first triangle.
+ * @param b Its corner bounds. */
+static void tn_face_bounds_check(const tn_wctx* W, int t0, const float b[6]) {
+    float tb[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
+    for (int j = t0; j < W->tri_n; j++) tn_snap_bounds(&W->tri[j], tb);
+    const int out = tb[0] < b[0] || tb[1] < b[1] || tb[2] > b[2] || tb[3] > b[3] || tb[4] < b[4] || tb[5] > b[5];
+    __atomic_add_fetch(&s_reccheck_faces, 1, __ATOMIC_RELAXED);
+    if (out) __atomic_add_fetch(&s_reccheck_out, 1, __ATOMIC_RELAXED);
+}
+
+/** @brief Close the open face of a walk run into its bounds record and open the next at the run's end.
+ *
+ * Called at the top of every face of the face loop and after the loop, so
+ * every triangle a face emitted, by whatever path, is in its record. A face
+ * that emitted nothing leaves no record.
+ * @param W The walk context; does nothing without a face vector.
+ * @param vi The sector's visible index.
+ * @param sec0 The sector's first triangle in the run. */
+static void tn_face_note(tn_wctx* W, int vi, int sec0) {
+    const int t0 = W->face_t0;
+    W->face_t0 = W->tri_n;
+    if (!W->faces || W->tri_n <= t0 || mod_fvec_reserve_noted(W->faces, W->faces->count + 1) != 0)
+        return;
+    tn_facerec* r = (tn_facerec*)W->faces->data + W->faces->count++;
+    float b[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
+    if (!tn_face_corner_bounds(W->face_F, W->face_sv, b))
+        for (int j = t0; j < W->tri_n; j++) tn_snap_bounds(&W->tri[j], b);
+    else if (s_reccheck > 0)
+        tn_face_bounds_check(W, t0, b);
+    memcpy(r->b, b, sizeof b);
+    if (!W->snapmask && vi >= 0 && vi < 1024 && s_secrec[vi].gen == s_secrec_gen) {
+        tn_secrec* e = &s_secrec[vi];
+        e->n++;
+        e->ub[0] = tn_minf(e->ub[0], b[0]); e->ub[1] = tn_minf(e->ub[1], b[1]); e->ub[2] = tn_maxf(e->ub[2], b[2]);
+        e->ub[3] = tn_maxf(e->ub[3], b[3]); e->ub[4] = tn_minf(e->ub[4], b[4]); e->ub[5] = tn_maxf(e->ub[5], b[5]);
+    }
+    r->vi = vi; r->off = t0 - sec0; r->n = W->tri_n - t0;
+}
+
+/** @brief Whether a face's corners meet a snap search box, for the capture run's face mask.
+ *
+ * The rectangle of the corners' projections, widened by one pixel, and
+ * their view-Z range. A corner at or behind the eye has no meaningful
+ * projection, so such a face is kept.
+ * @param g The search grid.
+ * @param sv The sector's projected vertices.
+ * @param F The face.
+ * @return 1 when the face may reach a box, else 0. */
+static int tn_snap_face_hit(const tn_snapgrid* g, const lvert* sv, const tsface_t* F) {
+    const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
+    const int nc = F->quad ? 4 : 3;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f, z0 = 1e30f, z1 = -1e30f;
+    for (int k = 0; k < nc; k++) {
+        const lvert* v = &sv[ci[k]];
+        if (!(v->m3 > 0.0)) return 1;
+        x0 = tn_minf(x0, v->sx); x1 = tn_maxf(x1, v->sx);
+        y0 = tn_minf(y0, v->sy); y1 = tn_maxf(y1, v->sy);
+        z0 = tn_minf(z0, (float)(v->m3 * 16.0)); z1 = tn_maxf(z1, (float)(v->m3 * 16.0));
+    }
+    return tn_snapgrid_hit(g, x0 - 1.0f, y0 - 1.0f, x1 + 1.0f, y1 + 1.0f, z0, z1, NULL);
+}
+
+/** @brief Print the sector-bin verdict against the game's own HP list under OPENPETE_TERRAIN_BINCHECK=<frame>.
+ *
+ * The HP list is decoded from the render arena after this tick's
+ * func_800258F0 ran: arena+0x1C00, `ptr|bits` entries, NULL-terminated; it
+ * survives the call, while the LP list (+0x2000) is clobbered by the HP
+ * walk's subdivide lists, so LP membership is attested by the face-set join
+ * instead. The compare is scoped by the pre-pass's surviving
+ * frustum-visible byte map (arena+0x44D4, D_800771C8-D_8006FCF4, 0xFF =
+ * passed): native deliberately draws sectors the .s frustum-culls (GPU
+ * clips). Expected: native drawHP equals HP-list membership for every
+ * frustum-visible sector. Runs on the two presents from that frame, not
+ * under --no-lod.
+ * @param cpu The guest CPU state, read only.
+ * @param s The sector record's guest address.
+ * @param i The sector index.
+ * @param drawHP The native HP verdict.
+ * @param flags The sector flags.
+ * @param cbin The bounding-centre binning view-Z.
+ * @param radius The sector radius. */
+static void tn_bincheck(CPUState* cpu, uint32_t s, uint32_t i, int drawHP, int flags,
+                        double cbin, int radius) {
+    static int s_binchk = -2;
+    ENV_INT_LATCH(s_binchk, "OPENPETE_TERRAIN_BINCHECK", 0);
+    if (!s_binchk || openpete_frame < (unsigned)s_binchk ||
+        openpete_frame >= (unsigned)s_binchk + 2u || openpete_no_lod) return;
+    extern uint32_t psx_runtime_g_sony_image_base;
+    uint32_t B = psx_runtime_g_sony_image_base;
+    static uint32_t hp_list[192]; static int hp_n = -1;
+    static unsigned hp_frame;
+    if (hp_frame != openpete_frame || hp_n < 0) {
+        hp_frame = openpete_frame; hp_n = 0;
+        for (int k = 0; k < 192; k++) {
+            uint32_t e2 = rd(cpu, B + 0x1C00u + (uint32_t)k * 4);
+            if (!e2) break;
+            hp_list[hp_n++] = e2 & ~3u;
+        }
+        fprintf(stderr, "[bincheck-hdr] frame=%u hpList=%d\n", openpete_frame, hp_n);
+    }
+    int inHP = 0;
+    for (int k = 0; k < hp_n; k++) if (hp_list[k] == s) { inHP = 1; break; }
+    int vis = tvis_visible(cpu, i);
+    fprintf(stderr, "[bincheck] s=%u nativeHP=%d listHP=%d vis=%d flags=%04X "
+            "cbin=%.1f rad=%d%s\n",
+            (unsigned)i, drawHP, inHP, vis, flags, cbin, radius,
+            (vis && drawHP != inHP) ? " MISMATCH" : "");
+}
+
 /** @brief Walks one visible sector's faces into W's triangle run.
  *
  * Reads the sector's precomputed verdicts (drawHP, drawLP, the fill and
@@ -11004,45 +11320,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                             "drawHP=%d drawLP=%d nLpF=%d nHpF=%d\n",
                     (int)i, flags, cbin, SC->radius, lodThr, fogRefBase,
                     drawHP, drawLP, nLpF, nHpF);
-        /* OPENPETE_TERRAIN_BINCHECK=<frame> - gate: compare the native
-         * sector-bin verdict against the .s's OWN HP list, decoded from the
-         * render arena after this tick's func_800258F0 ran. The HP list
-         * (arena+0x1C00, `ptr|bits` entries, NULL-terminated) SURVIVES the
-         * call; the LP list (+0x2000) is clobbered by the HP walk's subdivide
-         * lists, so LP membership is attested by the face-set join instead.
-         * arena+0x44D4 (D_800771C8-D_8006FCF4) is the pre-pass's surviving
-         * frustum-visible byte map (0xFF = passed), scoping the compare:
-         * native deliberately draws sectors the .s frustum-culls (GPU clips).
-         * Expected: native drawHP == HP-list membership for every
-         * frustum-visible sector. */
-        {
-            static int s_binchk = -2;
-            ENV_INT_LATCH(s_binchk, "OPENPETE_TERRAIN_BINCHECK", 0);
-            if (s_binchk && openpete_frame >= (unsigned)s_binchk
-                && openpete_frame < (unsigned)s_binchk + 2u && !openpete_no_lod) {
-                extern uint32_t psx_runtime_g_sony_image_base;
-                uint32_t B = psx_runtime_g_sony_image_base;
-                static uint32_t hp_list[192]; static int hp_n = -1;
-                static unsigned hp_frame;
-                if (hp_frame != openpete_frame || hp_n < 0) {
-                    hp_frame = openpete_frame; hp_n = 0;
-                    for (int k = 0; k < 192; k++) {
-                        uint32_t e2 = rd(cpu, B + 0x1C00u + (uint32_t)k * 4);
-                        if (!e2) break;
-                        hp_list[hp_n++] = e2 & ~3u;
-                    }
-                    fprintf(stderr, "[bincheck-hdr] frame=%u hpList=%d\n",
-                            openpete_frame, hp_n);
-                }
-                int inHP = 0;
-                for (int k = 0; k < hp_n; k++) if (hp_list[k] == s) { inHP = 1; break; }
-                int vis = tvis_visible(cpu, i);
-                fprintf(stderr, "[bincheck] s=%u nativeHP=%d listHP=%d vis=%d flags=%04X "
-                        "cbin=%.1f rad=%d%s\n",
-                        (unsigned)i, drawHP, inHP, vis, flags, cbin, SC->radius,
-                        (vis && drawHP != inHP) ? " MISMATCH" : "");
-            }
-        }
+        /* OPENPETE_TERRAIN_BINCHECK=<frame>: the bin verdict against the
+         * game's own HP list (tn_bincheck). */
+        tn_bincheck(cpu, s, i, drawHP, flags, cbin, SC->radius);
         /* .s HP-list membership (lodThr > cbin − radius): the .s evaluates the
          * CLUT-fog ladder only inside this envelope; beyond it the .s draws
          * LP, so ladder rows past it are unauthored for many tiles (the row
@@ -11160,6 +11440,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
 
         /* per-sector accounting for OPENPETE_TERRAIN_SECTORDUMP (spans both passes) */
         int sd_triBefore = W->tri_n;
+        W->face_t0 = W->tri_n;
+        W->face_F = NULL;
+        tn_face_sector_open(W, vi);
         double sd_m3min = 1e18, sd_m3max = -1e18;
         float sd_bx0 = 1e18f, sd_by0 = 1e18f, sd_bx1 = -1e18f, sd_by1 = -1e18f;
         int sd_vfront = 0, sd_nv = 0, sd_nf = 0;
@@ -11224,10 +11507,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         }
 
         for (int f = 0; f < nf; f++) {
+            tn_face_note(W, vi, sd_triBefore);   /* close the previous face's bounds */
             /* Face decode from the sector cache (indices, flags, colour offsets
              * and texmat are all static; see tsc_decode_faces). Per-present
              * work starts at the projection use. */
             const tsface_t* F = &cfaces[f];
+            W->face_F = F; W->face_sv = sv;
             int i0 = F->i0, i1 = F->i1, i2 = F->i2, i3 = F->i3;
             int flip = F->flip;
             int fogRef = fogRefBase + (F->fogbias ? 0x2000 : 0);
@@ -11240,6 +11525,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             int quad = F->quad;
             W->dbg_faces++;
             W->emit_sec = (int)i; W->emit_face = f;   /* fardbg attribution identity */
+            W->emit_dside = F->dside;
+            if (W->snapmask && !tn_snap_face_hit(W->snapmask, sv, F)) continue;
             /* Inspector tint class: a listed FILL tag vs a face preview forced
              * through (the untagged candidates). HP faces carry neither. */
             W->emit_fptag = (passLP && F->gapfill) ? (F->fillcand ? 2 : 1) : 0;
@@ -11896,6 +12183,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                                  tn_cv(&sv[i0], t0), tn_cv(&sv[i1], t1), tn_cv(&sv[i2], t2));
             }
         }
+        tn_face_note(W, vi, sd_triBefore);   /* close the pass's last face */
       }  /* pass (LP / HP) */
         {   /* OPENPETE_TERRAIN_BINDBG: calibrate the binning-centre projection
              * against the sector's ACTUAL projected vertex-Z range (one frame). */
@@ -11925,6 +12213,19 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     drawHP, drawLP);
 }
 
+/* Each visible sector's run of the merged walk stream s_tri: first
+ * triangle and count (0 for a sector the walk did not emit). */
+static int s_vrun0[1024], s_vrun_n[1024];
+
+/** @brief Walk one sector on the serial path straight into s_tri, recording its run.
+ * @param G The walk's shared inputs.
+ * @param vi The sector's index in the visible list. */
+static void tn_walk_serial(tn_wcfg* G, int vi) {
+    s_vrun0[vi] = s_wctx[0].tri_n;
+    walk_sector(&s_wctx[0], G, vi);
+    s_vrun_n[vi] = s_wctx[0].tri_n - s_vrun0[vi];
+}
+
 /** @brief Workpool job: walks one prepass sector into a worker's triangle stream and records the run.
  *
  * Sets s_pre_rec[item] to the worker, the worker's tri_n before the walk and
@@ -11943,6 +12244,223 @@ static void walk_sector_job(int item, int worker, void* arg) {
     s_pre_rec[item].start  = W->tri_n;
     walk_sector(W, G, item);
     s_pre_rec[item].count  = W->tri_n - s_pre_rec[item].start;
+}
+
+/* ---- contact candidates for the sunk-pickup snap -------------------------
+ * The last build's walk inputs (its G, whose arrays are file statics that
+ * live until the next build) and the scene epoch its feed went into. */
+static tn_wcfg  s_snap_G;
+static int      s_snap_src;            /* s_snap_G and s_tri hold the last build */
+static unsigned s_snap_epoch = ~0u;    /* the scene the last build fed */
+static int      s_snap_nw;             /* workers the last build used */
+static tn_wctx  s_snap_W;              /* the capture's private run (serial 0) */
+static mod_fvec s_snap_wv;             /* its triangles (ttri) */
+static mod_fvec s_snap_out;            /* the capture's result (terrain_snap_tri) */
+static tn_snapgrid s_snap_grid;
+
+/** @brief Keep a finished build's walk inputs as the snap capture's source.
+ * @param G The build's walk inputs.
+ * @param nw The workers it used (their face records index the run). */
+static void tn_snap_latch(const tn_wcfg* G, int nw) {
+    s_snap_G = *G;
+    s_snap_nw = nw;
+    s_snap_src = 1;
+    if (s_reccheck < 0) { const char* e = getenv("OPENPETE_TERRAIN_SNAP_RECCHECK"); s_reccheck = e && *e == '1'; }
+    if (s_reccheck > 0)
+        fprintf(stderr, "[snap-reccheck] frame=%d faces=%ld out=%ld\n", openpete_frame, s_reccheck_faces, s_reccheck_out);
+}
+
+/** @brief Note the scene a build's feed went into, then let the moby snap resolve the mobys waiting on it.
+ * @param cpu The guest CPU state. */
+static void tn_snap_fed(CPUState* cpu) {
+    s_snap_epoch = openpete_native_scene_epoch();
+    moby_snap_terrain_fed(cpu);
+}
+
+int terrain_snap_ready(void) {
+    return s_snap_src && s_snap_epoch == openpete_native_scene_epoch();
+}
+
+void terrain_snap_view(float* H, float* ofx, float* ofy) {
+    *H = (float)s_H; *ofx = (float)s_ofx; *ofy = (float)s_ofy;
+}
+
+/** @brief Whether two run triangles come from one face (sector, face index and tier).
+ * @param a First triangle.
+ * @param b Second triangle.
+ * @return 1 when they do. */
+static int tn_same_face(const ttri* a, const ttri* b) {
+    return a->sec == b->sec && a->face == b->face && a->tier == b->tier;
+}
+
+/** @brief Count the consecutive triangles of a run from the face of triangle i.
+ * @param t The run.
+ * @param n Its length.
+ * @param i The face's first triangle.
+ * @return The count. */
+static int tn_face_run(const ttri* t, int n, int i) {
+    int k = i + 1;
+    while (k < n && tn_same_face(&t[k], &t[i])) k++;
+    return k - i;
+}
+
+/** @brief Widen a bounds record (x0, y0, x1, y1, z0, z1, screen pixels and full-world view-Z) by one triangle.
+ * @param T The triangle.
+ * @param b The bounds, updated. */
+static void tn_snap_bounds(const ttri* T, float b[6]) {
+    for (int k = 0; k < 3; k++) {
+        const float z = (float)(T->vz[k] * 16.0);
+        b[0] = tn_minf(b[0], T->sx[k]); b[2] = tn_maxf(b[2], T->sx[k]);
+        b[1] = tn_minf(b[1], T->sy[k]); b[3] = tn_maxf(b[3], T->sy[k]);
+        b[4] = tn_minf(b[4], z);        b[5] = tn_maxf(b[5], z);
+    }
+}
+
+/** @brief Append one face's drawn opaque triangles that meet a search box of a set to the capture's result.
+ * @param t The run.
+ * @param i The face's first triangle.
+ * @param k One past its last.
+ * @param set The boxes its sector may reach, as bits.
+ * @param cen Counts the face (once) and the triangles taken. */
+static void tn_snap_take_face(const ttri* t, int i, int k, const uint64_t set[2], terrain_snap_census* cen) {
+    int taken = 0;
+    for (int j = i; j < k; j++) {
+        const ttri* T = &t[j];
+        if (T->blend || T->fill) continue;
+        float b[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
+        tn_snap_bounds(T, b);
+        uint64_t hit[2];
+        if (!tn_snapset_hit(&s_snap_grid, set, b, hit)) continue;
+        if (mod_fvec_reserve_noted(&s_snap_out, s_snap_out.count + 1) != 0) return;
+        terrain_snap_tri* o = (terrain_snap_tri*)s_snap_out.data + s_snap_out.count++;
+        for (int c = 0; c < 3; c++) { o->sx[c] = T->sx[c]; o->sy[c] = T->sy[c]; o->vz[c] = (float)(T->vz[c] * 16.0); }
+        o->dside = T->dside;
+        o->ftris = (uint8_t)(k - i > 255 ? 255 : k - i);
+        o->hit[0] = hit[0]; o->hit[1] = hit[1];
+        cen->tris++;
+        taken = 1;
+    }
+    cen->faces += taken;
+}
+
+/** @brief Append the drawn opaque triangles of a run that meet a search box to the capture's result.
+ *
+ * A face (consecutive triangles of one sector, face index and tier) is
+ * tested as a whole first, so the grid sees one lookup per face the boxes
+ * miss.
+ * @param t The run's triangles.
+ * @param n Their count.
+ * @param set The boxes the run's sector may reach, as bits.
+ * @param cen Counts the faces and triangles taken. */
+static void tn_snap_take(const ttri* t, int n, const uint64_t set[2], terrain_snap_census* cen) {
+    for (int i = 0; i < n; ) {
+        const int k = i + tn_face_run(t, n, i);
+        float b[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
+        for (int j = i; j < k; j++) tn_snap_bounds(&t[j], b);
+        if (tn_snapset_hit(&s_snap_grid, set, b, NULL))
+            tn_snap_take_face(t, i, k, set, cen);
+        i = k;
+    }
+}
+
+/** @brief Take the triangles of the walked faces whose bounds meet a search box.
+ *
+ * Two levels over the walk's face records: a sector's union bounds
+ * (tn_secrec, kept by the walk) look up the boxes of the grid cells they
+ * cover and test them exactly, giving the sector's box set; only a sector
+ * with boxes reads its records, each testing that set exactly; the
+ * triangles of a face that meets boxes are then tested against those boxes
+ * only.
+ * @param g The search grid.
+ * @param nv The visible sectors, at most 1024.
+ * @param cen Counts the faces and triangles taken. */
+static void tn_snap_take_recs(const tn_snapgrid* g, int nv, terrain_snap_census* cen) {
+    for (int vi = 0; vi < nv; vi++) {
+        const tn_secrec* e = &s_secrec[vi];
+        uint64_t set[2];
+        if (e->gen != s_secrec_gen || !e->n || !s_vrun_n[vi]) continue;
+        if (!tn_snapgrid_hit(g, e->ub[0], e->ub[1], e->ub[2], e->ub[3], e->ub[4], e->ub[5], set)) continue;
+        const tn_facerec* r = (const tn_facerec*)e->v->data + e->r0;
+        for (int k = 0; k < e->n; k++) {
+            const tn_facerec* R = &r[k];
+            uint64_t bits[2];
+            if (R->off + R->n > s_vrun_n[vi] || !tn_snapset_hit(g, set, R->b, bits)) continue;
+            tn_snap_take_face(&s_tri[s_vrun0[vi] + R->off], 0, R->n, bits, cen);
+        }
+    }
+}
+
+static int tsec_screen_interval(double oc1, double oc2, double oc3, double radius,
+                                double iv[4]);
+/** @brief Find the search boxes a visible sector of the last build may reach: its bounding sphere's screen interval and depth range, from the prepass's view-space centre (s_secv).
+ * @param vi The sector's index in the visible list.
+ * @param out Receives the boxes as bits: every box when the sphere reaches the eye or the sector has no centre, none without a decode. */
+static void tn_snap_sector_hit(int vi, uint64_t out[2]) {
+    const uint32_t i = s_snap_G.visidx[vi];
+    const int nb = s_snap_grid.nb;
+    out[0] = out[1] = 0;
+    if (!s_snap_G.SC[vi]) return;
+    double iv[4];
+    const double oc3 = i < 1024u ? s_secv[i][2] : 0.0, rr = i < 1024u ? (double)s_secv[i][3] * s_rim_rowmax : 0.0;
+    if (i >= 1024u || !tsec_screen_interval(s_secv[i][0], s_secv[i][1], oc3, (double)s_secv[i][3], iv)) {
+        out[0] = nb >= 64 ? ~0ull : (1ull << nb) - 1u;
+        out[1] = nb >= 128 ? ~0ull : nb > 64 ? (1ull << (nb - 64)) - 1u : 0u;
+        return;
+    }
+    tn_snapgrid_hit(&s_snap_grid, (float)iv[0], (float)iv[2], (float)iv[1], (float)iv[3],
+                    (float)((oc3 - rr) * 16.0), (float)((oc3 + rr) * 16.0), out);
+}
+
+/** @brief Whether a visible sector of the last build is drawn by the retained cache (own 1 or 3) and its decode slot still holds it.
+ * @param vi The sector's index in the visible list.
+ * @return 1 when it is, else 0. */
+static int tn_snap_owned(int vi) {
+    const tscache_t* SC = s_snap_G.SC[vi];
+    const uint8_t own = s_snap_G.own ? s_snap_G.own[vi] : 0;
+    return SC && (own == 1 || own == 3) && SC->s == s_pre_sec[vi];
+}
+
+/** @brief Walk one cache-owned sector's masked faces into the capture's private run and take its triangles.
+ * @param vi The sector's index in the visible list.
+ * @param set The boxes the sector may reach, as bits.
+ * @param cen The capture's cost counters. */
+static void tn_snap_walk_owned(int vi, const uint64_t set[2], terrain_snap_census* cen) {
+    tn_wctx* W = &s_snap_W;
+    if (!s_snap_wv.elem_size)
+        mod_fvec_init(&s_snap_wv, sizeof(ttri), 1024, "terrain.snap.walk", 1024);
+    W->out = &s_snap_wv;
+    W->tri = (ttri*)s_snap_wv.data; W->tri_cap = (int)s_snap_wv.cap;
+    W->tri_n = 0;
+    W->serial = 0;
+    W->snapmask = &s_snap_grid;
+    W->faces = tn_face_vec(TN_MAX_WORKERS);
+    tn_wcfg G = s_snap_G;
+    G.own = NULL;                 /* walk the faces the cache would draw */
+    walk_sector(W, &G, vi);
+    cen->sectors++;
+    tn_snap_take(W->tri, W->tri_n, set, cen);
+}
+
+int terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
+                         terrain_snap_census* cen) {
+    terrain_snap_census c = { 0, 0, 0 };
+    if (cen) *cen = c;
+    if (!terrain_snap_ready()) return -1;
+    if (!s_snap_out.elem_size)
+        mod_fvec_init(&s_snap_out, sizeof(terrain_snap_tri), 256, "terrain.snap.out", 256);
+    s_snap_out.count = 0;
+    tn_snapgrid_build(&s_snap_grid, b, nb);
+    const int nv = s_snap_G.nvis < 1024 ? s_snap_G.nvis : 1024;
+    tn_snap_take_recs(&s_snap_grid, nv, &c);
+    for (int vi = 0; vi < nv; vi++) {
+        uint64_t set[2];
+        if (s_vrun_n[vi] || !tn_snap_owned(vi)) continue;
+        tn_snap_sector_hit(vi, set);
+        if (set[0] | set[1]) tn_snap_walk_owned(vi, set, &c);
+    }
+    *out = (const terrain_snap_tri*)s_snap_out.data;
+    if (cen) *cen = c;
+    return (int)s_snap_out.count;
 }
 
 /** @brief Packs the layout's ordering-table terms for the retained path's vertex stage.
@@ -12182,6 +12700,8 @@ static int tocc_sector_verdict(uint32_t i, double oc1, double oc2, double oc3,
 
 /** @brief Walks the visible sectors of the current view into the terrain triangle stream and feeds the native scene. */
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
+    s_snap_src = 0;                /* until this build latches its walk inputs */
+    s_secrec_gen++;                /* the sectors' record runs are this build's */
     ngte_view_build(cpu, &s_view);
     /* Publish this walk's camera for the occluder grid: the depth pre-pass of
      * the scene this walk feeds is what the grid reduces, so the grid must be
@@ -12683,6 +13203,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             mod_fvec_init(W->out, sizeof(ttri), TN_TRI_INIT, "terrain.walk.worker", TN_TRI_INIT);
         W->tri = (ttri*)W->out->data; W->tri_cap = (int)W->out->cap;
         W->tri_n = 0;
+        W->faces = tn_face_vec(w);
         W->dbg_faces = W->dbg_oob = W->dbg_nclip = W->dbg_behind = 0;
         W->dbg_spike = W->dbg_clipped = 0;
         W->dbg_satback = W->dbg_satemit = 0;
@@ -12719,6 +13240,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             tt_prev = tnow; tt_prev_i = i; tt_prev_tris = s_wctx[0].tri_n; tt_prev_valid = 1;
         }
         s_pre_SC[vi] = NULL;
+        s_vrun_n[vi] = 0;
         uint32_t s = rd(cpu, sectorPtr + i * 4);
         s_pre_sec[vi] = s;
         if (!s) continue;
@@ -12904,7 +13426,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
         s_pre_SC[vi] = SC;
         if (!s_tgpu_own[vi]) walk_faces += SC->nLpF + SC->nHpF;
-        if (wserial) walk_sector(&s_wctx[0], &G, vi);
+        if (wserial) tn_walk_serial(&G, vi);
     }
     if (!wserial) {
         /* Decode-cache eviction hazard: the prepass resolves EVERY visible
@@ -12984,6 +13506,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             memcpy(&s_tri[s_tri_n],
                    (const ttri*)s_wbuf[s_pre_rec[vi].worker].data + s_pre_rec[vi].start,
                    (size_t)n * sizeof(ttri));
+            s_vrun0[vi] = s_tri_n; s_vrun_n[vi] = n;
             s_tri_n += n;
         }
         if (op_prof_on()) op_prof_end();   /* ter.merge */
@@ -13005,6 +13528,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_walk_sectors += W->walk_sectors;
     }
     tn_envm_faces_print(envm_n);
+    tn_snap_latch(&G, nw_used);
     {   /* OPENPETE_TERRAIN_NEARCEN=1: one line per terrain walk carrying the
          * near/HQ routing counts and the walk's triangle total. Headless runs
          * one walk per tick, so the line is that tick's per-present count. */
@@ -15101,6 +15625,7 @@ static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
     openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
     { OP_PROF_ACCUM_SCOPE("terrain.feed");
       terrain_feed_native(cpu); }                /* push tris to the scene */
+    tn_snap_fed(cpu);                            /* contact source of this scene */
 }
 
 void terrain_native_flush_deferred(void) {
@@ -15265,6 +15790,7 @@ void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
     s_vanim_sub = 1; s_vanim_on = interp_on && s_vanim_en; s_vanim_alpha = alpha;
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);
+    tn_snap_fed(cpu);
     s_vanim_sub = 0; s_vanim_on = 0; s_tanim_en = 0;
 }
 

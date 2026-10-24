@@ -58,6 +58,7 @@ set(OPENPETE_GAME_COMMON_SOURCES
     renderer/moby.c
     renderer/moby_rank.c
     renderer/moby_rank_cal.c
+    renderer/moby_snap.c
     renderer/player.c
     renderer/water_plane.c
     renderer/player_ranges.c

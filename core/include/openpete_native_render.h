@@ -1124,7 +1124,8 @@ typedef struct {
                   * never what depth it writes. Cross-moby ordering stays
                   * true per-pixel z (the ordinal gate).                   */
     int mordinal;/* present-local moby ordinal (1..255) identifying "same
-                  * moby" in the rank image. Present-LOCAL only: a pool
+                  * moby" in the rank image and the snap table, unique over
+                  * every moby emit of the scene. Present-LOCAL only: a pool
                   * ordinal is not an identity across presents.            */
     float pkey;  /* PLAYER ordering key: the avatar draw's own
                   * max(0, (part-origin view-Z >> 7) - sortDepth) slot + 1
@@ -1158,13 +1159,6 @@ typedef struct {
                   * a terrain fragment whose key sorts behind the marked key
                   * yields the pixel (psx_key_contest.glsl
                   * op_key_order_yields). 0 = true depth decides.          */
-    int pull;    /* the authored depth offset (m_DepthOffset, 1-62) of a
-                  * keyed opaque actor face that is neither a key-order nor
-                  * a prop nor a true-depth class face, else 0: the actor
-                  * key pass writes it into the owner colour's alpha, and
-                  * a terrain fragment within that many slots of the face
-                  * yields the pixel (psx_key_contest.glsl
-                  * op_key_pull_yields).                                    */
     int ot_slot1;/* 1 + the ordering-table slot the game links the face
                   * into (moby faces: the world bucket the draw splices the
                   * face into), 0 = unknown. The compose compares it with
@@ -1470,6 +1464,11 @@ void openpete_native_scene_begin_frame(unsigned frame);
  * stamp would push and wipe a scene that a load stall holds on purpose.
  * @return The stamp, or 0xFFFFFFFF before the first begin_frame. */
 unsigned openpete_native_scene_frame(void);
+/** @brief Return the accumulating scene's epoch, bumped by every scene wipe (openpete_native_scene_begin, a new frame's begin_frame).
+ *
+ * Two feeders that read the same epoch fed the same scene.
+ * @return The epoch. */
+unsigned openpete_native_scene_epoch(void);
 /** @brief Return the VBL stamp of the scene the game's own render last opened or fed.
  *
  * A sub-tick re-extract opens a scene per VBL under its own stamp; this stamp
@@ -1687,6 +1686,49 @@ typedef struct {
  * @param blend_cover Nonzero to apply the planes to blended terrain. */
 void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
                                       int n, float margin_world, int blend_cover);
+
+/* ---- sunk-pickup depth snap (psx_moby_snap.glsl) ---------------------- */
+
+/* One contact plane of a pulled moby, in the snap's camera space: the PSX
+ * screen point (sx, sy) at view-Z z unprojected as ((sx - ofx) z / H,
+ * (sy - ofy) z / H, z) with the view of openpete_native_snap_view. */
+typedef struct {
+    float n[3], d;     /* unit normal and offset: the plane is n.p = d          */
+    float sslab;       /* side * slab: the sign names the side holding the moby's
+                        * vertex-extent midpoint, the magnitude the depth past
+                        * the plane a fragment may lie and still snap            */
+    float c[3], r;     /* the disc: the sunk part's projection on the plane     */
+    int   dside;       /* a contact face is double-sided                        */
+} openpete_snap_plane;
+
+/** @brief Whether the sunk-pickup depth snap is on (OPENPETE_MOBY_SNAP, default on; read once and latched).
+ * @return 0 when OPENPETE_MOBY_SNAP starts with '0', else 1. */
+int openpete_native_moby_snap_on(void);
+/** @brief Set the unprojection the current scene's contact planes are expressed in.
+ * @param H The projection distance in PSX screen pixels.
+ * @param ofx The screen X of the optical axis.
+ * @param ofy The screen Y of the optical axis. */
+void openpete_native_snap_view(float H, float ofx, float ofy);
+/** @brief Append one pulled moby's contact planes to the current scene's snap table.
+ *
+ * The ACTOR snap stages find the entry by @p mid (unranked faces) or
+ * @p mordinal (ranked faces). Planes past the pool's cap and entries past the
+ * entry cap are refused and counted (openpete_native_snap_census).
+ * @param mid The moby identity (openpete_scene_tri.mid), nonzero.
+ * @param mordinal The moby's present-local ordinal, 0 when no face is ranked.
+ * @param off_m The world units a fragment's raster view-Z lies nearer than
+ *        the key depth its contact geometry was built at (the tie pull less
+ *        the near-floor lift).
+ * @param pl The planes.
+ * @param n Plane count; 0 adds nothing.
+ * @return 1 when added, 0 when refused at a cap or with nothing to add. */
+int openpete_native_snap_add(uint32_t mid, int mordinal, float off_m,
+                             const openpete_snap_plane *pl, int n);
+/** @brief Read the current scene's snap table counts.
+ * @param ne Receives the entry count.
+ * @param np Receives the plane count.
+ * @param ovf Receives the entries plus planes refused at the caps. */
+void openpete_native_snap_census(int *ne, int *np, unsigned *ovf);
 
 /** @brief Set the sticky portal inner-rim mark stamped on the triangles added after it.
  *

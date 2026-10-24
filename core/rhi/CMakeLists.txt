@@ -32,7 +32,8 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/portal_cover_scene.glsl
                         ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl
                         ${RHI_SHADER_SRC_DIR}/prepass_pack.glsl
-                        ${RHI_SHADER_SRC_DIR}/moby_shell.glsl)
+                        ${RHI_SHADER_SRC_DIR}/moby_shell.glsl
+                        ${RHI_SHADER_SRC_DIR}/psx_moby_snap.glsl)
 # terrain.vert and its four variants are rewritten to SSA form after
 # glslangValidator: every function-local variable whose loads and stores are
 # whole-value is promoted to an SSA value (spirv-opt's local single-block and
@@ -130,6 +131,40 @@ foreach(s IN ITEMS quad_key psx_scene_key hd_tex_cutout)
         COMMENT "glslangValidator ${s}.frag (OP_MOBY_SHELL) -> ${s}_shell.frag.spv"
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_shell.frag.spv)
+endforeach()
+# <stage>_actor_snap.frag / <stage>_shell_snap.frag: the _actor and _shell
+# stages plus the sunk-pickup depth snap (psx_moby_snap.glsl, OP_MOBY_SNAP);
+# their layout adds the snap table's storage buffer at set 7. <stage>_snapb:
+# the blended ACTOR twin, the _cover stage plus the snap's depth export
+# (cover planes at set 5, snap table at set 7).
+foreach(s IN ITEMS quad_key psx_scene_key hd_tex_cutout)
+    foreach(v actor shell)
+        set(defs --define-macro OP_ACTOR_TIE=1 --define-macro OP_MOBY_SNAP=1)
+        if(v STREQUAL "shell")
+            list(APPEND defs --define-macro OP_MOBY_SHELL=1)
+        endif()
+        add_custom_command(
+            OUTPUT ${RHI_SHADER_OUT_DIR}/${s}_${v}_snap.frag.spv
+            COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} ${defs}
+                    ${RHI_SHADER_SRC_DIR}/${s}.frag
+                    -o ${RHI_SHADER_OUT_DIR}/${s}_${v}_snap.frag.spv
+            DEPENDS ${RHI_SHADER_SRC_DIR}/${s}.frag ${RHI_SHADER_INCLUDES}
+            COMMENT "glslangValidator ${s}.frag (${v}, OP_MOBY_SNAP) -> ${s}_${v}_snap.frag.spv"
+            VERBATIM)
+        list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_${v}_snap.frag.spv)
+    endforeach()
+endforeach()
+foreach(s IN ITEMS quad_key psx_scene_key)
+    add_custom_command(
+        OUTPUT ${RHI_SHADER_OUT_DIR}/${s}_snapb.frag.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro OP_MOBY_SNAP=1
+                --define-macro OP_PORTAL_COVER=1
+                ${RHI_SHADER_SRC_DIR}/${s}.frag
+                -o ${RHI_SHADER_OUT_DIR}/${s}_snapb.frag.spv
+        DEPENDS ${RHI_SHADER_SRC_DIR}/${s}.frag ${RHI_SHADER_INCLUDES}
+        COMMENT "glslangValidator ${s}.frag (OP_MOBY_SNAP, OP_PORTAL_COVER) -> ${s}_snapb.frag.spv"
+        VERBATIM)
+    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_snapb.frag.spv)
 endforeach()
 # terrain_anim.vert: terrain.vert recompiled with the poly-anim vertex-lerp
 # path (second vertex binding = previous-tick positions/corners).

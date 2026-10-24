@@ -740,6 +740,7 @@ struct rhi_device {
      * after every offscreen recreate), and the UBO offset alignment. */
     VkDescriptorSetLayout ubo_set_layout;
     VkDescriptorSetLayout ubo1_set_layout;            /* one dynamic binding    */
+    VkDescriptorSetLayout ssbo1_set_layout;           /* one dynamic storage binding */
     /* The 16-byte zero storage buffer every rhi_ubo set shows at binding 2
      * (rhi_ubo_data); created with the first rhi_ubo. */
     struct rhi_buffer *ubo_data_zero;
@@ -747,6 +748,7 @@ struct rhi_device {
     uint32_t        off_gen;                          /* bumped per create_offscreen */
     uint32_t        off_sampled_gen[RHI_FRAMES_IN_FLIGHT];
     VkDeviceSize    ubo_align;                        /* minUniformBufferOffsetAlignment */
+    VkDeviceSize    ssbo_align;                       /* minStorageBufferOffsetAlignment */
     uint32_t        max_desc_sets;                    /* maxBoundDescriptorSets          */
     /* Two-sampler set layout (binding 0 = a colour texture, binding 1 = a
      * sampled depth image) for pipelines with set1_vram_depth. Its sets are
@@ -2567,17 +2569,19 @@ static bool desc_pool_add(rhi_device *dev)
                 "allocation is refused\n", RHI_DESC_POOLS_MAX, RHI_DESC_POOL_SETS);
         return false;
     }
-    VkDescriptorPoolSize ps[3] = {
+    VkDescriptorPoolSize ps[4] = {
         { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4096 },
         /* off_image sampled sets (per frame slot) + rhi_ubo pairs. */
         { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 64 },
         /* binding 2 of every rhi_ubo set and rhi_ubo_data set */
         { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 64 },
+        /* the single binding of every rhi_create_ssbo set */
+        { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .descriptorCount = 16 },
     };
     VkDescriptorPoolCreateInfo pi = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = RHI_DESC_POOL_SETS, .poolSizeCount = 3, .pPoolSizes = ps,
+        .maxSets = RHI_DESC_POOL_SETS, .poolSizeCount = 4, .pPoolSizes = ps,
     };
     VkDescriptorPool pool;
     if (vkCreateDescriptorPool(dev->device, &pi, NULL, &pool) != VK_SUCCESS) {
@@ -2722,11 +2726,27 @@ static bool create_descriptor_infra(rhi_device *dev)
                                     &dev->ubo1_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (ubo1) failed\n"); return false;
     }
+    /* Single dynamic storage-buffer binding, fragment visible: engine
+     * tables too large for a uniform block (rhi_create_ssbo). */
+    VkDescriptorSetLayoutBinding sb = {
+        .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+        .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutCreateInfo s1li = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1, .pBindings = &sb,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &s1li, NULL,
+                                    &dev->ssbo1_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout (ssbo1) failed\n"); return false;
+    }
     {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev->phys, &props);
         dev->ubo_align = props.limits.minUniformBufferOffsetAlignment;
         if (dev->ubo_align == 0) dev->ubo_align = 256;
+        dev->ssbo_align = props.limits.minStorageBufferOffsetAlignment;
+        if (dev->ssbo_align == 0) dev->ssbo_align = 256;
         dev->max_desc_sets = props.limits.maxBoundDescriptorSets;
     }
 
@@ -3970,6 +3990,7 @@ void rhi_destroy(rhi_device *dev)
     if (dev->ubo_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo_set_layout, NULL);
     if (dev->ubo_data_zero) { rhi_destroy_buffer(dev, dev->ubo_data_zero); dev->ubo_data_zero = NULL; }
     if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(dev->device, dev->ssbo1_set_layout, NULL);   /* VK_NULL_HANDLE is a no-op */
     /* A device that failed before vkCreateDevice has no device-level
      * dispatch to call through, so even a null handle is not destroyed. */
     if (dev->pair_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);
@@ -7106,7 +7127,7 @@ static uint32_t kind_set_count(const rhi_pipeline_desc *desc)
 }
 
 /* The descriptor set layouts a per-set flag selects. */
-typedef enum { SET_FLAG_PAIR, SET_FLAG_UBO1 } set_flag_layout;
+typedef enum { SET_FLAG_PAIR, SET_FLAG_UBO1, SET_FLAG_SSBO1 } set_flag_layout;
 
 /* One per-set flag of rhi_pipeline_desc: when the bool at `flag` is set, set
  * `set` takes `layout` and the pipeline layout spans sets 0..set. A flag
@@ -7126,6 +7147,7 @@ static const set_flag_row k_set_flags[] = {
     { offsetof(rhi_pipeline_desc, pair_set56),      6u, SET_FLAG_PAIR },
     { offsetof(rhi_pipeline_desc, uniform_set7),    7u, SET_FLAG_UBO1 },
     { offsetof(rhi_pipeline_desc, pair_set7),       7u, SET_FLAG_PAIR },
+    { offsetof(rhi_pipeline_desc, ssbo_set7),       7u, SET_FLAG_SSBO1 },
 };
 
 /** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..7].
@@ -7153,8 +7175,9 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     for (size_t r = 0; r < sizeof k_set_flags / sizeof k_set_flags[0]; r++) {
         const set_flag_row *row = &k_set_flags[r];
         if (!*(const bool *)((const char *)desc + row->flag)) continue;
-        out[row->set] = row->layout == SET_FLAG_PAIR ? dev->pair_set_layout
-                                                     : dev->ubo1_set_layout;
+        out[row->set] = row->layout == SET_FLAG_PAIR  ? dev->pair_set_layout
+                      : row->layout == SET_FLAG_SSBO1 ? dev->ssbo1_set_layout
+                                                      : dev->ubo1_set_layout;
         n = rhi_max_u32(n, row->set + 1u);
     }
     pair_set_layouts(dev, desc, out);
@@ -10545,6 +10568,37 @@ void rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
                   uint32_t block_b)
 {
     rhi_ubo_bind_data(dev, ubo, block_a, block_b, NULL);
+}
+
+rhi_ubo *rhi_create_ssbo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
+{
+    if (!dev || block_size == 0 || blocks == 0 || !dev->ssbo1_set_layout) return NULL;
+    rhi_ubo *u = calloc(1, sizeof(*u));
+    if (!u) return NULL;
+    const VkDeviceSize al = dev->ssbo_align > dev->ubo_align ? dev->ssbo_align : dev->ubo_align;
+    u->dev = dev;
+    u->blocks = blocks;
+    u->block_size = (uint32_t)((block_size + al - 1) & ~(al - 1));
+    size_t total = (size_t)u->block_size * blocks * RHI_FRAMES_IN_FLIGHT * RHI_UBO_GENS;
+    u->buf = create_host_buffer(dev, total, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                /*prefer_cached=*/false);
+    u->gen = calloc(blocks, 1);
+    u->bound = calloc(blocks, 1);
+    if (!u->buf || !u->gen || !u->bound ||
+        !desc_alloc(dev, dev->ssbo1_set_layout, &u->set1, &u->set1_pool)) {
+        RHI_LOG("rhi_create_ssbo: %zu B buffer or descriptor allocation failed\n", total);
+        if (u->buf) rhi_destroy_buffer(dev, u->buf);
+        free(u->gen); free(u->bound); free(u); return NULL;
+    }
+    memset(u->buf->mapped, 0, total);   /* unwritten blocks read as zeros */
+    VkDescriptorBufferInfo bi = { .buffer = u->buf->buffer, .offset = 0, .range = u->block_size };
+    VkWriteDescriptorSet w1 = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set1,
+        .dstBinding = 0, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &bi,
+    };
+    vkUpdateDescriptorSets(dev->device, 1, &w1, 0, NULL);
+    return u;
 }
 
 void rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set, uint32_t block)

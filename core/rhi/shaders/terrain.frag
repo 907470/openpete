@@ -19,7 +19,6 @@ void main()
     if (ter_key_loses()) discard;
     int ko = ter_key_order();             /* key-order moby in front by key */
     if (ko == 1) discard;
-    if (ter_key_pull_yields()) discard;   /* moby within its authored pull */
     c = ter_stock_shade();
     if (c.a == 0.0) discard;              /* PSX transparent-texel sentinel */
     outColor = ko == 2 ? vec4(0.0, 1.0, 1.0, 1.0) : c;

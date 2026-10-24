@@ -252,22 +252,6 @@ int ter_key_order()
                                texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
                                koff, SLOT_CONTEST);
 }
-
-/* Whether this fragment yields to the actor key at its pixel by the key's
- * authored pull (op_key_pull_yields), against its plane distance
- * ter_key_plane. Opaque faces only (mat0 blend bits 21-22 zero): a blended
- * face occludes nothing, so its yield would only drop its tint over the
- * moby. */
-bool ter_key_pull_yields()
-{
-    if (vKoff <= 0.25 || ((vMat.x >> 21) & 3u) != 0u) return false;
-    float koff = op_drain_koff_pf(vKoff, vKfl / vKq, vKc0, vKc1, vKd / vKq, vKn0.xyz,
-                                  vec3(vKn0.w, vKn1.xy), vec3(vKn1.zw, vKn2.x), vKn2.yzw);
-    return op_key_pull_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
-                              texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
-                              koff, op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
-                              ter_key_plane, SLOT_CONTEST);
-}
 #endif
 
 /* The texel coordinate's screen gradient (op_texel_grad) for ter_stock_shade,

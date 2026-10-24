@@ -992,6 +992,13 @@ typedef struct rhi_pipeline_desc {
                                  * to both stages, above the seven sets of a
                                  * material layout; implies sets 0..7 and a
                                  * device with 8 descriptor sets.            */
+    bool           ssbo_set7;   /* set 7 holds one dynamic storage-buffer
+                                 * binding, fragment visible (a block of
+                                 * rhi_create_ssbo, bound with
+                                 * rhi_ubo_bind_at(.., 7, ..)): the moby
+                                 * snap table of the ACTOR snap stages.
+                                 * Implies sets 0..7 and a device with 8
+                                 * descriptor sets.                          */
     bool           pair_set7;   /* with terrain_pipeline: set 7 holds the
                                  * two-sampler pair layout (bind with
                                  * rhi_bind_depth_tex_pair): the actor key
@@ -2052,6 +2059,18 @@ void     rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data,
  * @param block_b Block at binding 1. */
 void     rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
                       uint32_t block_b);
+/** @brief Create a block set like rhi_create_ubo whose blocks are read-only storage buffers, bound only through rhi_ubo_bind_at.
+ *
+ * For an engine table larger than the uniform range a device guarantees.
+ * Blocks are rounded up to the larger of the storage and uniform offset
+ * alignments; writes follow rhi_ubo_write's frame and generation contract.
+ * The set has no contract-set view, so rhi_ubo_bind is a no-op on it.
+ * @param dev Device.
+ * @param block_size Bytes per block.
+ * @param blocks Blocks per frame slot.
+ * @return The set, or NULL when the buffer or descriptor set cannot be
+ *         allocated (logged). */
+rhi_ubo *rhi_create_ssbo(rhi_device *dev, uint32_t block_size, uint32_t blocks);
 /** @brief Bind one block of a set at descriptor set index `set` through the single-binding layout.
  *
  * Marks the block bound. Does nothing outside an active frame, without a

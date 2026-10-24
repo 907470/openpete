@@ -349,7 +349,6 @@ typedef struct {
     uint32_t mid;   /* moby identity - see openpete_scene_tri */
     int shell;      /* front-shell record member - see openpete_scene_tri */
     int key_order;  /* draws by key order against terrain - see openpete_scene_tri */
-    int pull;       /* authored depth offset against terrain - see openpete_scene_tri */
     int ot_slot1;   /* 1 + ordering-table slot, 0 unknown - see openpete_scene_tri */
     uint32_t kattr; /* terrain override inputs - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
@@ -518,6 +517,9 @@ typedef struct {
     rhi_pipeline *stock;
     rhi_pipeline *cover;
     int rim;                    /* 1: the inner-rim rule, 0: the blended cover rule */
+    rhi_pipeline *snap;         /* the blended ACTOR twin: the cover rule plus the
+                                 * sunk-pickup depth snap (psx_moby_snap.glsl,
+                                 * table at set 7); NULL when not built */
 } nr_cover_twin;
 #define NR_COVER_TWINS 17
 /* An opaque ACTOR pipeline and its twins: actor = the same description with
@@ -565,6 +567,107 @@ static void cover_planes_clear(void) {
     memset(&s_cover_live, 0, sizeof s_cover_live);
     s_cvp_n = 0;
 }
+
+/* ---- the sunk-pickup snap table (psx_moby_snap.glsl) -------------------
+ * Per scene: the contact planes the moby feeder found between each pulled
+ * moby and the drawn opaque terrain it intersects, which the ACTOR snap
+ * stages read at set 7. Entries name the moby by identity (scene_tri_t.mid)
+ * and, for its ranked faces, by its present-local ordinal; each owns a run
+ * of the plane pool. Filled on the extraction thread
+ * (openpete_native_snap_add), carried with the scene like the portal
+ * openings, uploaded per compose target (bind_snap_table). */
+#define NR_SNAP_ENTS   128
+#define NR_SNAP_PLANES 2048
+typedef struct { uint32_t mid, mord; float off; uint32_t span; } nr_snap_ent;  /* span: first | count << 16 */
+typedef struct { float n[3], d, sslab, c[3], r; uint32_t flags, pad[2]; } nr_snap_plane;   /* 48 bytes */
+typedef struct {
+    int      ne, np;                 /* entries and planes held */
+    float    H, ofx, ofy, S;         /* the unprojection; S = the largest slab */
+    uint32_t ovf_ent, ovf_plane;     /* entries and planes refused at the caps */
+    uint32_t ver;                    /* bumped by every add: the upload's change test */
+    nr_snap_ent   ent[NR_SNAP_ENTS];
+    nr_snap_plane pl[NR_SNAP_PLANES];
+} nr_snap_table;
+static nr_snap_table s_snap_live;    /* the accumulating scene's table */
+static uint32_t s_snap_ver_next = 1;
+/** @brief Copy a snap table's held part: the header and the used entries and planes.
+ * @param dst Destination.
+ * @param src Source. */
+static void snap_copy(nr_snap_table *dst, const nr_snap_table *src)
+{
+    if (dst == src) return;
+    memcpy(dst, src, offsetof(nr_snap_table, ent));
+    memcpy(dst->ent, src->ent, (size_t)src->ne * sizeof src->ent[0]);
+    memcpy(dst->pl, src->pl, (size_t)src->np * sizeof src->pl[0]);
+}
+/** @brief Empty the accumulating scene's snap table at a scene wipe, keeping the unprojection. */
+static void snap_table_clear(void)
+{
+    s_snap_live.ne = s_snap_live.np = 0;
+    s_snap_live.S = 0.0f;
+    s_snap_live.ovf_ent = s_snap_live.ovf_plane = 0;
+    s_snap_live.ver = s_snap_ver_next++;
+}
+
+int openpete_native_moby_snap_on(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char *e = getenv("OPENPETE_MOBY_SNAP");
+        s_on = (e && *e) ? (*e != '0') : 1;
+    }
+    return s_on;
+}
+
+void openpete_native_snap_view(float H, float ofx, float ofy)
+{
+    s_snap_live.H = H; s_snap_live.ofx = ofx; s_snap_live.ofy = ofy;
+}
+
+/** @brief Pack one contact plane into the pool's record, with the flags the stage reads.
+ *
+ * Bit 0: a contact face is double-sided. Bit 1: the eye (the camera-space
+ * origin) lies on the side holding the moby's centre, so the stage pulls
+ * the sunk part in front of the plane; otherwise it pushes it behind (only
+ * with bit 0, since a single-sided face seen from behind is culled).
+ * @param o Receives the record.
+ * @param p The plane. */
+static void snap_plane_pack(nr_snap_plane *o, const openpete_snap_plane *p)
+{
+    memcpy(o->n, p->n, sizeof o->n);
+    o->d = p->d; o->sslab = p->sslab;
+    memcpy(o->c, p->c, sizeof o->c);
+    o->r = p->r;
+    const int eye_centre = (-p->d > 0.0f) == (p->sslab > 0.0f);
+    o->flags = (p->dside ? 1u : 0u) | (eye_centre ? 2u : 0u);
+    o->pad[0] = o->pad[1] = 0u;
+}
+
+int openpete_native_snap_add(uint32_t mid, int mordinal, float off_m,
+                             const openpete_snap_plane *pl, int n)
+{
+    nr_snap_table *t = &s_snap_live;
+    if (!pl || n <= 0 || !mid) return 0;
+    if (t->ne >= NR_SNAP_ENTS) { t->ovf_ent++; return 0; }
+    if (t->np + n > NR_SNAP_PLANES || n > 0xFFFF) { t->ovf_plane += (uint32_t)n; return 0; }
+    nr_snap_ent *e = &t->ent[t->ne++];
+    e->mid = mid; e->mord = mordinal > 0 ? (uint32_t)mordinal : 0u; e->off = off_m;
+    e->span = (uint32_t)t->np | ((uint32_t)n << 16);
+    for (int k = 0; k < n; k++) {
+        snap_plane_pack(&t->pl[t->np++], &pl[k]);
+        const float sl = fabsf(pl[k].sslab);
+        if (sl > t->S) t->S = sl;
+    }
+    t->ver = s_snap_ver_next++;
+    return 1;
+}
+
+void openpete_native_snap_census(int *ne, int *np, unsigned *ovf)
+{
+    if (ne) *ne = s_snap_live.ne;
+    if (np) *np = s_snap_live.np;
+    if (ovf) *ovf = s_snap_live.ovf_ent + s_snap_live.ovf_plane;
+}
 /* The blended-world emission order a game-render scene recorded
  * (bw_key_order_record): keys in first-emission order and the terrain feed's
  * rank among them. The compose sorts re-extracted blended blocks by it. */
@@ -594,6 +697,7 @@ typedef struct {
     openpete_shadow_decal_params shadow;
     openpete_shadow_footprint shadow_foot;   /* the player fan the decal re-rasterizes */
     nr_cover_block cover;                    /* the portal planes the blended world tests */
+    nr_snap_table  snap;                     /* the sunk-pickup contact planes */
     openpete_occl_camera occl_cam;           /* camera this scene was projected from */
     bw_order_t bw;                           /* blended-world order recorded at publish */
     int       freeze_retained;               /* freeze-backdrop production mode at publish */
@@ -627,6 +731,7 @@ static uint32_t ps_drawenv_clear(void);
 static const openpete_shadow_decal_params *ps_shadow(void);
 static const openpete_shadow_footprint *ps_shadow_foot(void);
 static const nr_cover_block *ps_cover(void);
+static const nr_snap_table *ps_snap(void);
 static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static const nr_pack_fog *ps_pack_fog(void);
@@ -917,6 +1022,7 @@ static int                s_scene_hist_replay[SCENE_HIST]; /* built by a re-extr
 static int                s_scene_hist_hud_under[SCENE_HIST]; /* flat-HUD-under-player flag, per snapshot */
 static int                s_scene_hist_actor_front[SCENE_HIST]; /* actors-in-front (dragon rescue) flag, per snapshot */
 static nr_cover_block     s_scene_hist_cover[SCENE_HIST]; /* the snapshot's portal openings */
+static nr_snap_table      s_scene_hist_snap[SCENE_HIST];  /* the snapshot's snap table */
 /* The material view of each snapshot, captured at its push, while the
  * interned slot table still holds the closing scene's outcomes. */
 static openpete_mods_material_view_t s_scene_hist_matview[SCENE_HIST];
@@ -1286,7 +1392,7 @@ void openpete_native_scene_begin(void) {
      * names its frame. A later re-extract of the same tick must not
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
     /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
      * builder tags its build with outside an eager scene
      * (openpete_native_scene_build_stamp). The present's retained-terrain
@@ -1439,6 +1545,7 @@ static void scene_hist_push(void) {
         s_scene_hist_hud_under[slot] = sl->hud_under;
         s_scene_hist_actor_front[slot] = sl->actor_front;
         s_scene_hist_cover[slot] = sl->cover;
+        snap_copy(&s_scene_hist_snap[slot], &sl->snap);
         openpete_mods_material_view_capture(&s_scene_hist_matview[slot]);
         s_scene_hist_head = slot;
         if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
@@ -1454,6 +1561,7 @@ static void scene_hist_push(void) {
     s_scene_hist_hud_under[slot] = s_scene_hud_under;
     s_scene_hist_actor_front[slot] = s_scene_actor_front;
     s_scene_hist_cover[slot] = s_cover_live;
+    snap_copy(&s_scene_hist_snap[slot], &s_snap_live);
     openpete_mods_material_view_capture(&s_scene_hist_matview[slot]);
     s_scene_hist_head = slot;
     if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
@@ -1552,7 +1660,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_cur_seq = 0;
         s_cur_prim = 0;
         s_cur_fb_cell = 0;
-        s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
+        s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
         s_scene_fade_prim = 0;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
@@ -1584,6 +1692,7 @@ static uint32_t     s_scene_saved_bg, s_scene_saved_fade, s_scene_saved_freeze;
 static int          s_scene_saved_hud_under, s_scene_saved_actor_front, s_scene_saved_dropped;
 static int          s_scene_saved_ter_after;
 static nr_cover_block s_scene_saved_cover;   /* the scene's portal openings */
+static nr_snap_table  s_scene_saved_snap;    /* the scene's snap table */
 static int          s_scene_saved_cvp_n;
 static openpete_native_cover_plane s_scene_saved_cvp[8];
 static int          s_scene_saved_moved;
@@ -1599,6 +1708,7 @@ int openpete_native_scene_save(void) {
     s_scene_saved_actor_front = s_scene_actor_front;
     s_scene_saved_ter_after = s_cur_ter_after;
     s_scene_saved_cover = s_cover_live; s_scene_saved_cvp_n = s_cvp_n;
+    snap_copy(&s_scene_saved_snap, &s_snap_live);
     memcpy(s_scene_saved_cvp, s_cvp, sizeof s_cvp);
     s_scene_saved_dropped = s_scene_dropped;
     s_scene_saved_moved = s_scene_moved;
@@ -1617,6 +1727,7 @@ void openpete_native_scene_restore(void) {
     s_scene_actor_front = s_scene_saved_actor_front;
     s_cur_ter_after = s_scene_saved_ter_after;
     s_cover_live = s_scene_saved_cover; s_cvp_n = s_scene_saved_cvp_n;
+    snap_copy(&s_snap_live, &s_scene_saved_snap);
     memcpy(s_cvp, s_scene_saved_cvp, sizeof s_cvp);
     s_scene_dropped = s_scene_saved_dropped;
     s_scene_moved = s_scene_saved_moved;   /* the slot still holds the moved scene */
@@ -1624,6 +1735,7 @@ void openpete_native_scene_restore(void) {
 }
 
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
+unsigned openpete_native_scene_epoch(void) { return s_scene_epoch; }
 unsigned openpete_native_scene_game_frame(void) { return s_scene_game_frame; }
 
 /* The game render's own scene of the last tick a re-extract replaced, kept for
@@ -1639,6 +1751,7 @@ static struct {
     uint32_t bg, fade, freeze;
     int      hud_under, actor_front;
     nr_cover_block cover;       /* its portal openings */
+    nr_snap_table  snap;        /* its snap table */
     openpete_mods_material_view_t matview;   /* its interned material slots */
 } s_scene_game;
 
@@ -1659,6 +1772,7 @@ static void scene_game_retain(void) {
     s_scene_game.hud_under = s_scene_hud_under;
     s_scene_game.actor_front = s_scene_actor_front;
     s_scene_game.cover = s_cover_live;
+    snap_copy(&s_scene_game.snap, &s_snap_live);
     /* Before the re-extract's frame reset rewrites the slot table. */
     openpete_mods_material_view_capture(&s_scene_game.matview);
 }
@@ -5366,6 +5480,8 @@ static const char* cover_frag_of(const char* frag, int rim) {
     return NULL;
 }
 
+static int nr_snap_stages(rhi_device* dev);
+static const char* snapb_frag_of(const char* frag);
 /** @brief A stock terrain pipeline, the description it was built from, and which twin it takes (cover_family_create input). */
 typedef struct {
     const rhi_pipeline_desc *desc;
@@ -5395,8 +5511,12 @@ static int cover_family_create(rhi_device* dev, const nr_cover_src* src, int n,
         d.uniform_set5 = true;
         out[k].stock = src[i].stock;
         out[k].rim = src[i].rim;
-        out[k].cover = NULL;
+        out[k].cover = out[k].snap = NULL;
         if (d.frag_spv) nr_eager_pipe(dev, &d, &out[k].cover);
+        rhi_pipeline_desc sn = d;
+        sn.frag_spv = src[i].rim ? NULL : snapb_frag_of(src[i].desc->frag_spv);
+        sn.ssbo_set7 = true;
+        if (sn.frag_spv && nr_snap_stages(dev)) nr_eager_pipe(dev, &sn, &out[k].snap);
         k++;
     }
     return k;
@@ -5409,7 +5529,8 @@ static int cover_family_create(rhi_device* dev, const nr_cover_src* src, int n,
 static void cover_family_destroy(rhi_device* dev, nr_cover_twin* tw, int* n) {
     for (int i = 0; i < *n; i++) {
         if (tw[i].cover) rhi_destroy_pipeline(dev, tw[i].cover);
-        tw[i].stock = tw[i].cover = NULL;
+        if (tw[i].snap) rhi_destroy_pipeline(dev, tw[i].snap);
+        tw[i].stock = tw[i].cover = tw[i].snap = NULL;
     }
     *n = 0;
 }
@@ -5431,32 +5552,74 @@ static int moby_shell_on(void)
 
 /** @brief The _shell variant of an opaque scene fragment stage, by its stock SPIR-V name.
  * @param frag The stock stage's .spv name.
+ * @param snap Nonzero for the variant with the sunk-pickup depth snap.
  * @return The variant's .spv name, or NULL for a stage without one. */
-static const char* shell_frag_of(const char* frag)
+static const char* shell_frag_of(const char* frag, int snap)
+{
+    static const char* const k_map[][3] = {
+        { "quad_key.frag.spv",      "quad_key_shell.frag.spv",      "quad_key_shell_snap.frag.spv" },
+        { "psx_scene_key.frag.spv", "psx_scene_key_shell.frag.spv", "psx_scene_key_shell_snap.frag.spv" },
+        { "hd_tex_cutout.frag.spv", "hd_tex_cutout_shell.frag.spv", "hd_tex_cutout_shell_snap.frag.spv" },
+    };
+    for (size_t i = 0; frag && i < sizeof k_map / sizeof k_map[0]; i++)
+        if (strcmp(frag, k_map[i][0]) == 0) return k_map[i][snap ? 2 : 1];
+    return NULL;
+}
+
+/** @brief The _actor variant of an opaque scene fragment stage, by its stock SPIR-V name.
+ * @param frag The stock stage's .spv name.
+ * @param snap Nonzero for the variant with the sunk-pickup depth snap.
+ * @return The variant's .spv name, or NULL for a stage without one. */
+static const char* actor_frag_of(const char* frag, int snap)
+{
+    static const char* const k_map[][3] = {
+        { "quad_key.frag.spv",      "quad_key_actor.frag.spv",      "quad_key_actor_snap.frag.spv" },
+        { "psx_scene_key.frag.spv", "psx_scene_key_actor.frag.spv", "psx_scene_key_actor_snap.frag.spv" },
+        { "hd_tex_cutout.frag.spv", "hd_tex_cutout_actor.frag.spv", "hd_tex_cutout_actor_snap.frag.spv" },
+    };
+    for (size_t i = 0; frag && i < sizeof k_map / sizeof k_map[0]; i++)
+        if (strcmp(frag, k_map[i][0]) == 0) return k_map[i][snap ? 2 : 1];
+    return NULL;
+}
+
+/** @brief The blended ACTOR snap variant of a blended scene fragment stage, by its stock SPIR-V name.
+ * @param frag The stock stage's .spv name.
+ * @return The variant's .spv name (the _cover stage plus the snap), or NULL
+ *         for a stage without one. */
+static const char* snapb_frag_of(const char* frag)
 {
     static const char* const k_map[][2] = {
-        { "quad_key.frag.spv",      "quad_key_shell.frag.spv" },
-        { "psx_scene_key.frag.spv", "psx_scene_key_shell.frag.spv" },
-        { "hd_tex_cutout.frag.spv", "hd_tex_cutout_shell.frag.spv" },
+        { "quad_key.frag.spv",      "quad_key_snapb.frag.spv" },
+        { "psx_scene_key.frag.spv", "psx_scene_key_snapb.frag.spv" },
     };
     for (size_t i = 0; frag && i < sizeof k_map / sizeof k_map[0]; i++)
         if (strcmp(frag, k_map[i][0]) == 0) return k_map[i][1];
     return NULL;
 }
 
-/** @brief The _actor variant of an opaque scene fragment stage, by its stock SPIR-V name.
- * @param frag The stock stage's .spv name.
- * @return The variant's .spv name, or NULL for a stage without one. */
-static const char* actor_frag_of(const char* frag)
+static rhi_ubo* s_snap_ssbo;   /* the snap table's storage block (bind_snap_table) */
+static int s_snap_stages;      /* the ACTOR twins carry the snap (nr_snap_stages) */
+/** @brief Whether the ACTOR twins are built with the sunk-pickup depth snap, creating its table block on first use.
+ *
+ * Needs OPENPETE_MOBY_SNAP on, a device with 8 descriptor sets (the table
+ * sits at set 7) and the table's storage block; otherwise the twins are
+ * built without it, logged once.
+ * @param dev Device.
+ * @return 1 when the snap stages are built, else 0. */
+static int nr_snap_stages(rhi_device* dev)
 {
-    static const char* const k_map[][2] = {
-        { "quad_key.frag.spv",      "quad_key_actor.frag.spv" },
-        { "psx_scene_key.frag.spv", "psx_scene_key_actor.frag.spv" },
-        { "hd_tex_cutout.frag.spv", "hd_tex_cutout_actor.frag.spv" },
-    };
-    for (size_t i = 0; frag && i < sizeof k_map / sizeof k_map[0]; i++)
-        if (strcmp(frag, k_map[i][0]) == 0) return k_map[i][1];
-    return NULL;
+    s_snap_stages = 0;
+    if (!openpete_native_moby_snap_on()) return 0;
+    if (rhi_device_max_descriptor_sets(dev) < 8) {
+        static int s_logged;
+        if (!s_logged++) OPL_WARN_F("native", "%s", "moby snap: the device binds fewer than 8 "
+                                    "descriptor sets; sunk pickups draw at true depth");
+        return 0;
+    }
+    if (!s_snap_ssbo)
+        s_snap_ssbo = rhi_create_ssbo(dev, (uint32_t)((3 + NR_SNAP_ENTS + 3 * NR_SNAP_PLANES) * 16), 1);
+    s_snap_stages = s_snap_ssbo != NULL;
+    return s_snap_stages;
 }
 
 /** @brief A stock opaque ACTOR pipeline and the description it was built from (shell_family_create input). */
@@ -5483,17 +5646,20 @@ typedef struct {
 static int shell_family_create(rhi_device* dev, const nr_shell_src* src, int n,
                                int shell, nr_shell_twin* out)
 {
+    const int snap = nr_snap_stages(dev);
     int k = 0;
     for (int i = 0; i < n && k < NR_SHELL_TWINS; i++) {
         if (!src[i].stock) continue;
         out[k].stock = src[i].stock;
         out[k].actor = out[k].twin = NULL;
         rhi_pipeline_desc a = *src[i].desc;
-        a.frag_spv = actor_frag_of(src[i].desc->frag_spv);
+        a.frag_spv = actor_frag_of(src[i].desc->frag_spv, snap);
+        a.ssbo_set7 = snap != 0;
         if (a.frag_spv) nr_eager_pipe(dev, &a, &out[k].actor);
         rhi_pipeline_desc d = *src[i].desc;
-        d.frag_spv = shell_frag_of(src[i].desc->frag_spv);
+        d.frag_spv = shell_frag_of(src[i].desc->frag_spv, snap);
         d.pair_set56 = true;
+        d.ssbo_set7 = snap != 0;
         if (shell && d.frag_spv) nr_eager_pipe(dev, &d, &out[k].twin);
         k++;
     }
@@ -8186,15 +8352,16 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
 
 /** @brief Return the moby value a scene face carries in its rank pair's second channel.
  *
- * An unranked opaque actor face (category ACTOR, rank sentinel -1 or -1.25)
- * carries its moby identity (openpete_scene_tri.mid), the owner the key
- * contest compares against the actor key image's owner colour
- * (psx_key_contest.glsl op_akey_owner); every other face carries its
+ * An unranked actor face (category ACTOR, rank 0 or a negative sentinel)
+ * carries its moby identity (openpete_scene_tri.mid): the owner the key
+ * contest compares against the actor key image's owner colour for the
+ * opaque sentinels -1 and -1.25 (psx_key_contest.glsl op_akey_owner), and the
+ * key of the snap table for every unranked actor face, blended ones included
+ * (psx_moby_snap.glsl op_snap_entry). Every other face carries its
  * present-local moby ordinal, the rank select's. */
 static inline float scene_rank_moby(const scene_tri_t *st)
 {
-    const int actor = st->category == OPENPETE_SCENE_ACTOR &&
-                      st->rank < -0.5f && st->rank > -1.5f;
+    const int actor = st->category == OPENPETE_SCENE_ACTOR && st->rank <= 0.0f;
     return actor ? (float)st->mid : (float)st->mordinal;
 }
 
@@ -9097,18 +9264,14 @@ static int key_order_mode(void)
  * The actor key image's colour alpha marks a texel whose nearest key belongs
  * to a face that draws by key order against terrain
  * (openpete_scene_tri.key_order): 0x80 yields, 0x40 yields painted
- * (key_order_mode 2). A face with an authored pull
- * (openpete_scene_tri.pull, 1-62) writes 0xC0 + pull. 0xFF (also the clear
- * value) carries neither (psx_key_contest.glsl op_key_order_mark,
- * op_key_pull).
+ * (key_order_mode 2), 0xFF (also the clear value) is unmarked
+ * (psx_key_contest.glsl op_key_order_mark).
  * @param T Scene triangle.
  * @param prop_class Key batch class; 2 is the actor key image.
  * @return The alpha byte in bits 24-31. */
 static uint32_t key_order_owner_alpha(const scene_tri_t* T, int prop_class)
 {
-    if (prop_class != 2 || T->pkey > 0.25f) return 0xFFu << 24;
-    if (!T->key_order)
-        return (T->pull > 0 && T->pull < 63 ? 0xC0u + (uint32_t)T->pull : 0xFFu) << 24;
+    if (prop_class != 2 || !T->key_order || T->pkey > 0.25f) return 0xFFu << 24;
     const int m = key_order_mode();
     const uint32_t a = m == 1 ? 0x80u : m == 2 ? 0x40u : 0xFFu;
     return a << 24;
@@ -10380,8 +10543,21 @@ static float shadow_decal_bind_keys(void)
 static const nr_cover_twin* nr_cover_entry(const rhi_pipeline* p)
 {
     for (int i = 0; p && i < s_nr.cover_twin_n; i++)
-        if (p == s_nr.cover_twins[i].cover) return &s_nr.cover_twins[i];
+        if (p == s_nr.cover_twins[i].cover || p == s_nr.cover_twins[i].snap)
+            return &s_nr.cover_twins[i];
     return NULL;
+}
+
+static rhi_pipeline* nr_cover_twin_of(rhi_pipeline* stock);
+/** @brief The pipeline a blended ACTOR run draws through in place of a stock pipeline.
+ * @param stock Stock pipeline, or NULL.
+ * @return Its snap twin, else its cover twin (nr_cover_twin_of). */
+static rhi_pipeline* nr_snap_twin_of(rhi_pipeline* stock)
+{
+    for (int i = 0; stock && i < s_nr.cover_twin_n; i++)
+        if (stock == s_nr.cover_twins[i].stock && s_nr.cover_twins[i].snap)
+            return s_nr.cover_twins[i].snap;
+    return nr_cover_twin_of(stock);
 }
 
 /** @brief The pipeline a blended world run draws through in place of a stock pipeline.
@@ -10462,6 +10638,75 @@ static void bind_cover_block(uint32_t set, int rim)
     rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, set, rim ? 1u + (uint32_t)plane : 0u);
 }
 
+/** @brief Order two snap entries by moby identity (qsort).
+ * @param a First entry.
+ * @param b Second entry.
+ * @return Negative, zero or positive. */
+static int snap_ent_cmp(const void* a, const void* b)
+{
+    const uint32_t x = ((const nr_snap_ent*)a)->mid, y = ((const nr_snap_ent*)b)->mid;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/** @brief Pack a snap table into the stage's word layout (psx_moby_snap.glsl) for one compose target.
+ *
+ * The header carries this target's gl_FragCoord -> PSX screen affine, the
+ * table's unprojection and largest slab, and the counts; the entries are
+ * sorted by moby identity for the stage's binary search, each keeping its
+ * plane run.
+ * @param t The composed scene's table.
+ * @param fa This target's fragment affine.
+ * @param w Receives the words; room for the full table.
+ * @return The bytes written. */
+static uint32_t snap_table_pack(const nr_snap_table* t, const scene_fc_affine* fa, uint32_t* w)
+{
+    const float hdr[8] = { fa->fax, fa->fbx, fa->fay, fa->fby, t->H, t->ofx, t->ofy, t->S };
+    memcpy(w, hdr, sizeof hdr);
+    w[8] = (uint32_t)t->ne; w[9] = (uint32_t)t->np; w[10] = w[11] = 0u;
+    nr_snap_ent* e = (nr_snap_ent*)(w + 12);
+    memcpy(e, t->ent, (size_t)t->ne * sizeof *e);
+    qsort(e, (size_t)t->ne, sizeof *e, snap_ent_cmp);
+    memcpy(w + 12 + 4 * t->ne, t->pl, (size_t)t->np * sizeof t->pl[0]);
+    return (uint32_t)((3 + t->ne + 3 * t->np) * 16);
+}
+
+/** @brief Bind the composed scene's snap table at set 7 of a snap stage.
+ *
+ * The block is rewritten on the first bind of each RHI frame and again
+ * whenever the table or this target's fragment affine differs from the last
+ * one written, so a panel pass and a full-extent pass of one present each
+ * read their own affine. */
+static void bind_snap_table(void)
+{
+    static uint64_t s_serial = UINT64_MAX;
+    static uint32_t s_ver;
+    static scene_fc_affine s_fa;
+    static uint32_t s_words[(3 + NR_SNAP_ENTS + 3 * NR_SNAP_PLANES) * 4];
+    if (!s_snap_ssbo) return;
+    const nr_snap_table* t = ps_snap();
+    scene_fc_affine fa;
+    scene_fragcoord_affine(&fa);
+    const uint64_t fs = rhi_frame_serial(s_nr.dev);
+    if (fs != s_serial || t->ver != s_ver || memcmp(&fa, &s_fa, sizeof fa) != 0) {
+        rhi_ubo_write(s_snap_ssbo, 0, s_words, snap_table_pack(t, &fa, s_words));
+        s_serial = fs; s_ver = t->ver; s_fa = fa;
+    }
+    rhi_ubo_bind_at(s_nr.dev, s_snap_ssbo, 7, 0);
+}
+
+/** @brief Whether a pipeline is a snap stage, which reads the snap table at set 7.
+ * @param p Pipeline, or NULL.
+ * @return 1 for a blended ACTOR snap twin, or an opaque ACTOR twin built
+ *         with the snap, else 0. */
+static int nr_is_snap_pipe(const rhi_pipeline* p)
+{
+    for (int i = 0; p && i < s_nr.cover_twin_n; i++)
+        if (p == s_nr.cover_twins[i].snap) return 1;
+    for (int i = 0; p && s_snap_stages && i < s_nr.shell_twin_n; i++)
+        if (p == s_nr.shell_twins[i].twin || p == s_nr.shell_twins[i].actor) return 1;
+    return 0;
+}
+
 /** @brief The stock pipeline of an opaque ACTOR twin (tie-pull or front-shell).
  * @param p Pipeline, or NULL.
  * @return The stock pipeline when @p p is a twin, else @p p. */
@@ -10530,6 +10775,7 @@ static void bind_scene_pipe(rhi_pipeline* p)
     rhi_bind_pipeline(s_nr.dev, p);
     const nr_cover_twin* const tw = nr_cover_entry(p);
     if (tw) bind_cover_block(5, tw->rim);
+    if (nr_is_snap_pipe(p)) bind_snap_table();
     rhi_pipeline* const st = tw ? tw->stock : nr_shell_stock_of(p);
     if (!tw && nr_is_shell_twin(p)) {
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.moby_shell_rt, s_nr.moby_shell_rt, 5);
@@ -14143,9 +14389,11 @@ static int blended_world_tri(const scene_tri_t* s) {
  * @param first_vert First vertex of the run.
  * @param vert_count Vertex count of the run.
  * @param bl Blend class, 1 to 4.
- * @param textured Nonzero for a textured run. */
+ * @param textured Nonzero for a textured run.
+ * @param snap Nonzero for a run of ACTOR faces, which draws through the
+ *        blended snap twin (nr_snap_twin_of) where one was built. */
 static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
-                        int vert_count, int bl, int textured) {
+                        int vert_count, int bl, int textured, int snap) {
     rhi_pipeline* const utp[4] = { s_nr.gouraud_blend_pipe, s_nr.gouraud_add_pipe,
                                    s_nr.gouraud_sub_ztest_pipe, s_nr.gouraud_qadd_pipe };
     rhi_pipeline* const txp[4] = { s_nr.scene_tex_blend_pipe, s_nr.scene_tex_add_pipe,
@@ -14153,7 +14401,8 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
     rhi_pipeline* const hdp[4] = { s_nr.hd_scene_blend_pipe, s_nr.hd_scene_add_pipe,
                                    NULL, NULL };
     const int c = (bl >= 1 && bl <= 4) ? bl - 1 : 0;
-    rhi_pipeline* pipe = nr_cover_twin_of(textured ? txp[c] : utp[c]);
+    rhi_pipeline* pipe = snap ? nr_snap_twin_of(textured ? txp[c] : utp[c])
+                              : nr_cover_twin_of(textured ? txp[c] : utp[c]);
     rhi_pipeline* hd = nr_cover_twin_of(hdp[c]);
     if (!pipe || (textured && !s_nr.vram_tex)) return;
     bind_scene_pipe(pipe);
@@ -14249,6 +14498,15 @@ static void bw_tercache_slots(const scene_tri_t* scene, int base, int ntri, int 
     }
 }
 
+/** @brief Whether a blended-world triangle draws through the blended ACTOR snap twin.
+ * @param t Scene triangle.
+ * @param snap_on Nonzero when the composed scene carries contact planes.
+ * @return 1 for an ACTOR face while @p snap_on, else 0. */
+static int bw_snap_tri(const scene_tri_t* t, int snap_on)
+{
+    return snap_on && t->category == OPENPETE_SCENE_ACTOR;
+}
+
 /** @brief Draw the blended world block in emission order, one draw per run of one class and texturing mode.
  *
  * This replaces one fixed class draw after another. The guest links these
@@ -14269,6 +14527,7 @@ static void bw_tercache_slots(const scene_tri_t* scene, int base, int ntri, int 
 static void draw_blended_world(const scene_tri_t* scene, int tx_start,
                                int first_vert, int vert_count, int tercache_on) {
     const int base = (first_vert - tx_start) / 3, ntri = vert_count / 3;
+    const int snap_on = s_snap_stages && ps_snap()->ne > 0;
     int pos[3] = { ntri, ntri, ntri };
     if (tercache_on) bw_tercache_slots(scene, base, ntri, pos);
     int c = 0, i = 0;
@@ -14276,14 +14535,15 @@ static void draw_blended_world(const scene_tri_t* scene, int tx_start,
         for (; c < 3 && pos[c] == i; c++) bw_draw_tercache(c, tercache_on);
         const int stop = c < 3 ? pos[c] : ntri;
         const scene_tri_t* s0 = &scene[s_txscene[base + i]];
-        const int bl = s0->blend, textured = s0->textured;
+        const int bl = s0->blend, textured = s0->textured, snap = bw_snap_tri(s0, snap_on);
         int run = 1;
         while (i + run < stop) {
             const scene_tri_t* sn = &scene[s_txscene[base + i + run]];
-            if (sn->blend != bl || sn->textured != textured) break;
+            if (sn->blend != bl || sn->textured != textured ||
+                bw_snap_tri(sn, snap_on) != snap) break;
             run++;
         }
-        bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured);
+        bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured, snap);
         i += run;
     }
     for (; c < 3; c++) bw_draw_tercache(c, tercache_on);
@@ -19837,6 +20097,16 @@ static const nr_cover_block *ps_cover(void) {
     const scene_slot_t *ms = scene_moved_slot();
     return ms ? &ms->cover : &s_cover_live;
 }
+/** @brief The composed scene's snap table, selected like ps_cover.
+ * @return The table of the slot, the kept game scene, the history snapshot or the accumulator. */
+static const nr_snap_table *ps_snap(void) {
+    if (s_ps_slot) return &s_ps_slot->snap;
+    if (s_fbsnap_game_sel) return &s_scene_game.snap;
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) return &s_scene_hist_snap[slot];
+    const scene_slot_t *ms = scene_moved_slot();
+    return ms ? &ms->snap : &s_snap_live;
+}
 /** @brief The camera the composed scene was projected from: the slot's snapshot, or the live occlusion camera inline. */
 static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
 /** @brief The blended-world order the composed scene recorded: the slot's copy, or the live record inline. */
@@ -19992,6 +20262,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->stamp = s_eager_stamp ? s_eager_stamp : s_scene_frame;
     slot_capture_inputs(sl);
     sl->cover = s_cover_live;
+    snap_copy(&sl->snap, &s_snap_live);
     slot_note_census(sl);
     sl->scene_id = s_scene_id_next++;
     sl->target_ns = target_ns; sl->alpha = alpha; sl->paired = paired; sl->kind = kind;
@@ -20861,6 +21132,7 @@ static bool freeze_src_retain(float cap_wf) {
     slot_capture_inputs(sl);
     sl->frame = scene_present_frame();
     sl->cover = *cov;
+    snap_copy(&sl->snap, ps_snap());
     sl->scene_id = s_scene_id_next - 1u;
     sl->kind = OP_PACE_CANONICAL; sl->alpha = 0.0; sl->paired = 0; sl->target_ns = 0;
     s_frz.wf = cap_wf;
@@ -21159,6 +21431,7 @@ static void hold_retain_canonical(void)
     slot_capture_inputs(sl);
     sl->hold_area = -1;
     sl->cover = s_cover_live;
+    snap_copy(&sl->snap, &s_snap_live);
     sl->scene_id = s_scene_id_next;
     sl->kind = OP_PACE_CANONICAL; sl->alpha = 0.0; sl->paired = 0; sl->target_ns = 0;
     openpete_tercache_hold_take(k, stamp);

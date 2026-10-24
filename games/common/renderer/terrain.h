@@ -91,6 +91,49 @@ void terrain_native_flush_deferred_late(void);
  *         which case the verdict is in RAM at game_layout.visibility */
 int  terrain_visibility_capture(const uint8_t** out);
 
+/* ---- contact candidates for the sunk-pickup snap (moby_snap.c) ---------- */
+
+/* A pulled moby's search box: its PSX screen rectangle and view-Z range
+ * (full-world units), widened by the caller. */
+typedef struct { float x0, y0, x1, y1, z0, z1; } terrain_snap_box;
+/* One drawn opaque terrain triangle a search box reaches: its corners as
+ * drawn (PSX screen sx, sy and full-world view-Z), whether its face is
+ * double-sided, how many triangles its face drew (2 flat, 8 the 2x2
+ * quadrants, 16 a split triangle, 32 the 4x4 cells), and the boxes whose
+ * rectangle and depth range it meets (bit k of hit[k >> 6]). */
+typedef struct {
+    float    sx[3], sy[3], vz[3];
+    uint8_t  dside, ftris;
+    uint64_t hit[2];
+} terrain_snap_tri;
+/* What one capture cost: candidate faces, the triangles they drew, and the
+ * sectors the retained cache owns that were walked for them. */
+typedef struct { int faces, tris, sectors; } terrain_snap_census;
+
+/** @brief Whether the last terrain build fed the scene now accumulating, so its triangles and walk inputs are the contact source of this present.
+ * @return 1 when they are, else 0. */
+int  terrain_snap_ready(void);
+/** @brief Read the projection the last terrain build drew with.
+ * @param H Receives the projection distance in PSX screen pixels.
+ * @param ofx Receives the optical axis' screen X.
+ * @param ofy Receives the optical axis' screen Y. */
+void terrain_snap_view(float* H, float* ofx, float* ofy);
+/** @brief Collect the drawn opaque terrain triangles that reach a set of search boxes.
+ *
+ * The walk's own run supplies the sectors it walked. A visible sector the
+ * retained cache owns (drawn by the cache's vertex stage, which mirrors the
+ * walk bit-exactly) is walked again by walk_sector into a private run, with
+ * its faces masked to those whose corner rectangle and depth range meet a
+ * box; nothing reaches the scene. Blended and hole-fill triangles are left
+ * out: neither cuts a moby by depth.
+ * @param b The boxes.
+ * @param nb Box count, at most 128.
+ * @param out Receives the triangles, valid until the next call.
+ * @param cen Receives the cost counters; may be NULL.
+ * @return The triangle count, or -1 when terrain_snap_ready does not hold. */
+int  terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
+                          terrain_snap_census* cen);
+
 #ifdef __cplusplus
 }
 #endif

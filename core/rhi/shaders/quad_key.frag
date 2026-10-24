@@ -5,6 +5,10 @@
 /* The _shell variant (opaque ACTOR faces): moby_shell.glsl. */
 #include "moby_shell.glsl"
 #endif
+#ifdef OP_MOBY_SNAP
+/* The _snap variants (ACTOR faces): the sunk-pickup depth snap. */
+#include "psx_moby_snap.glsl"
+#endif
 
 /* Untextured OPAQUE gouraud fragment stage with the terrain KEY-RESOLVE
  * contest - quad.frag plus the LP-vs-HP og-key discard (see
@@ -51,7 +55,7 @@ layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 void main()
 {
-#if defined(OP_MOBY_SHELL) || defined(OP_ACTOR_TIE)
+#if defined(OP_MOBY_SHELL) || defined(OP_ACTOR_TIE) || defined(OP_MOBY_SNAP)
     /* Written before any discard; a discarded fragment writes nothing. */
     float zout = gl_FragCoord.z;
 #ifdef OP_MOBY_SHELL
@@ -61,6 +65,9 @@ void main()
     zout = op_actor_tie_depth(zout, vRank, vKoff,
         op_key_from_stored(texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r),
         SLOT_CONTEST, DEPTH_REVERSED);
+#endif
+#ifdef OP_MOBY_SNAP
+    zout = op_snap_depth(zout, vRank, DEPTH_REVERSED);
 #endif
     gl_FragDepth = zout;
 #endif
@@ -104,13 +111,5 @@ void main()
                               vKoff, SLOT_CONTEST)
         : 0;
     if (ko == 1) discard;
-    /* An opaque terrain fragment (one carrying override inputs) within an
-     * actor key's authored pull of the face yields to it
-     * (op_key_pull_yields). */
-    if (!ranked && op_key_fattr_walk(vRank.x).x < OP_KEY_CLASS_NONE - 0.5 &&
-        op_key_pull_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
-                           texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
-                           vKoff, own, op_key_fattr_walk(vRank.x).y, SLOT_CONTEST))
-        discard;
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vColor / vQ;
 }

@@ -685,14 +685,14 @@ bool op_key_override_holds(vec4 tattr, float own, vec2 fattr)
  * by the fragment's own true view-Z (the default; false restores the full
  * compound painter among moby keys).
  *
- * Under truescope, terrain does not yield to general moby keys here: the
- * authored pulls (-128*dofs) float pickups and decor over whatever the OT
- * sorts them against, and an unbounded window derived from them re-admits
- * punch-through (a chest through a wall lip, a gem through a near wall).
- * Terrain over moby is decided by true depth plus the -127 stored tie pull
- * where the terrain key is not in a nearer slot (op_actor_tie_depth), the
- * prop embed rule, the actor-front pass, and the plane-bounded pull yield
- * (op_key_pull_yields).
+ * Under truescope, terrain never yields to general moby keys: the authored
+ * pulls (-128*dofs) float pickups and decor over whatever the OT sorts them
+ * against, and a per-pixel window derived from them re-admits punch-through
+ * (a chest through a wall lip, a gem through a near wall). Terrain over
+ * moby is decided by true depth plus the -127 stored tie pull where the
+ * terrain key is not in a nearer slot (op_actor_tie_depth), the prop
+ * embed rule, the actor-front pass, and the moby fragment's own snap in
+ * front of terrain it is sunk into (psx_moby_snap.glsl).
  *
  * Prop embed: a curated embedded prop (pedestal discs, statue bases; a
  * class list in the moby feeder) within 1024 world behind this surface
@@ -810,56 +810,6 @@ int op_key_order_yields(float akey_stored, vec4 owner, float tkoff, bool slot_co
     bool front = slot_contest ? op_key_slot_nearer(akey, floor(tk / OP_KEY_SLOT))
                               : akey < tk - 64.0;
     return front ? m : 0;
-}
-
-/* ---- authored pull against terrain ------------------------------------
- *
- * The game inserts every face of a moby at its average-depth slot less the
- * moby's authored depth offset (m_DepthOffset), so a moby set that many
- * slots into the ground paints whole over it. A keyed actor face with an
- * offset (openpete_scene_tri.pull, 1-62) writes 0xC0 + offset into the
- * actor key owner colour's alpha (0xFF, 0x80 and 0x40 carry none). A
- * terrain fragment at such a texel yields the pixel when the key sorts in
- * front of its own (the front test of op_key_order_yields) and the face,
- * placed at its key plus its pull P, lies within P/4 of the fragment's
- * plane: |key + P - own| * D_F / own <= P/4, the terrain override's plane
- * distance (op_key_override_holds), D_F/own uncapped. A face sunk into
- * grazing ground lies a few tens of world from the ground's plane; a gem
- * resting behind a wall's lip or a chest behind a ledge lies more than a
- * quarter of its pull from the plane of the face in front of it, so that
- * face keeps the pixel. The face's depth is its key plus its pull, the mean
- * of its vertices to the key's quantization, not the depth of the moby at
- * the pixel. The
- * near band (koff <= 0.25) never yields, and neither does a blended face:
- * it occludes nothing by depth, so its yield would only drop its tint over
- * the moby. Callers pass opaque fragments alone. */
-
-/* The authored pull, in world units, of an actor key owner texel (0 none). */
-float op_key_pull(vec4 owner)
-{
-    float a = floor(owner.a * 255.0 + 0.5);
-    return (a > 192.5 && a < 254.5) ? (a - 192.0) * OP_KEY_SLOT : 0.0;
-}
-
-/* Whether a terrain fragment yields to the actor key at its pixel by the
- * key's authored pull. akey_stored = the raw actor key texel, owner = its
- * owner colour, tkoff = the fragment's key channel, own = its true view-Z,
- * plane = D_F, the distance from the eye to its plane (<= 0 unknown: the
- * view-Z distance stands in for it). */
-bool op_key_pull_yields(float akey_stored, vec4 owner, float tkoff, float own,
-                        float plane, bool slot_contest)
-{
-    if (tkoff <= 0.25 || op_pkey_is(akey_stored)) return false;
-    float pull = op_key_pull(owner);
-    if (pull <= 0.0) return false;
-    float akey = op_key_from_stored(akey_stored);
-    float tk = tkoff - 0.5;
-    bool front = slot_contest ? op_key_slot_nearer(akey, floor(tk / OP_KEY_SLOT))
-                              : akey < tk - 64.0;
-    if (!front) return false;
-    float zF = max(own, 1.0);
-    float d = plane > 0.0 ? plane : zF;
-    return abs(akey + pull - zF) * d / zF <= 0.25 * pull;
 }
 
 #endif /* OPENPETE_PSX_KEY_CONTEST_GLSL */

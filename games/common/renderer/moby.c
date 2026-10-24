@@ -34,6 +34,7 @@
 #include "feature_registry.h"
 #include "renderer/orchestrator.h"  /* the canonical-render epoch + producer-camera brackets */
 #include "renderer/moby.h"          /* this feeder's exported entries */
+#include "renderer/moby_snap.h"     /* the sunk-pickup contact planes */
 #include "renderer/moby_game.h"     /* per-game decoders, classifications and addresses */
 #include "renderer/water_plane.h"   /* the water-plane split shared with the player walk */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
@@ -3571,11 +3572,6 @@ int moby_tie_pull_on(void) {
 int moby_face_key_on(void) {
     static int s_on = -1;
     return moby_otbias_latch(&s_on, "OPENPETE_MOBY_FACE_KEY");
-}
-
-int moby_pull_yield_on(void) {
-    static int s_on = -1;
-    return moby_otbias_latch(&s_on, "OPENPETE_MOBY_PULL_YIELD");
 }
 
 int moby_player_sort_pull_on(void) {
@@ -7676,8 +7672,31 @@ static float moby_actor_rank_marker(int prop) {
 }
 
 /* The ranked mobys of one scene emit in first-ranked order: a ranked face's
- * ordinal (openpete_scene_tri.mordinal) is its moby's position here plus 1. */
-typedef struct { uint32_t moby[256]; int n; } moby_rank_ordinals_t;
+ * ordinal (openpete_scene_tri.mordinal) is base plus its moby's position here
+ * plus 1. base is the ordinals the scene's earlier emits used, so a moby of
+ * one emit never shares an ordinal with a moby of another emit of the same
+ * scene: the rank image and the snap table tell mobys apart by ordinal, and
+ * a scene takes several emits when the game draws its mobys more than once
+ * per VBL (cutscenes) and for the overlay pass. */
+typedef struct { uint32_t moby[256]; int n; int base; } moby_rank_ordinals_t;
+
+static unsigned s_rord_epoch;  /* scene epoch of s_rord_used */
+static int s_rord_used;        /* ordinals the scene's emits have used */
+
+/** @brief Start one emit's ordinal table at the ordinals its scene's earlier emits used.
+ * @param o The table to start. */
+static void moby_rank_ordinals_begin(moby_rank_ordinals_t* o) {
+    const unsigned ep = openpete_native_scene_epoch();
+    if (ep != s_rord_epoch) { s_rord_epoch = ep; s_rord_used = 0; }
+    o->n = 0;
+    o->base = s_rord_used;
+}
+
+/** @brief Charge one finished emit's ordinals to its scene.
+ * @param o The emit's table. */
+static void moby_rank_ordinals_end(const moby_rank_ordinals_t* o) {
+    s_rord_used += o->n;
+}
 
 /** @brief The index of `moby` among the emit's ranked mobys, appending it when new.
  *
@@ -7781,25 +7800,6 @@ static double moby_tri_true_key(int i, int bias) {
     return key < 1.0 ? 1.0 : key;
 }
 
-/** @brief The authored depth offset a keyed walk triangle carries against terrain, or 0.
- *
- * The game inserts the face m_DepthOffset slots nearer than its average
- * depth, so terrain it sits within that many slots of paints under it. A
- * true-depth class keys without the offset, a prop has its own embed rule
- * and a key-order face its own yield, so none of them carries one. The
- * value is clamped to 62, the largest the actor key owner alpha holds
- * (psx_key_contest.glsl op_key_pull).
- * @param i The walk triangle's index.
- * @param true_depth Nonzero when the face's class is a true-depth class.
- * @param prop Nonzero for a curated embedded prop face.
- * @param key_order Nonzero for a face of the key-order class.
- * @return The offset in ordering-table slots, 0 to 62. */
-static int moby_face_pull(int i, int true_depth, int prop, int key_order) {
-    const int d = s_wtri_dofs[i];
-    if (true_depth || prop || key_order || d <= 0 || !moby_pull_yield_on()) return 0;
-    return d > 62 ? 62 : d;
-}
-
 /** @brief The ordering-table key a walk triangle contests the terrain with, in world units.
  *
  * A face of a true-depth class (moby_class_true_depth) keys by its true
@@ -7825,6 +7825,85 @@ static double moby_tri_contest_key(int i, int true_depth) {
  * @return The slot plus one, or 0. */
 static int moby_face_ot_slot1(int wbk) {
     return wbk >= 0 ? moby_otk_world_key(wbk) + 1 : 0;
+}
+
+/** @brief Whether a walk triangle takes part in the sunk-pickup contact test.
+ *
+ * An ACTOR face (not HUD, not a cutscene front actor) of a moby with an
+ * authored depth offset, whose screen footprint is the true projection (not
+ * mangled) and whose key depths lie in front of the eye.
+ * @param i The walk triangle's index.
+ * @return 1 when eligible, else 0. */
+static int moby_snap_face(int i) {
+    if (s_wtri_ui[i] || s_wtri_front[i] || s_wtri_dofs[i] <= 0 || s_wtri_mangle[i] ||
+        !s_wtri_moby[i]) return 0;
+    for (int k = 0; k < 3; k++) if (!(s_wtri[i].v[k].kvz > 1.0f)) return 0;
+    return 1;
+}
+
+/** @brief The ordinal a ranked moby carries in this walk, 0 when the walk ranked none of its faces.
+ * @param rord The walk's ranked-moby ordinals.
+ * @param mob The moby pointer.
+ * @return The ordinal its ranked faces carry, or 0. */
+static int moby_snap_ordinal(const moby_rank_ordinals_t* rord, uint32_t mob) {
+    for (int o = 0; o < rord->n; o++)
+        if (rord->moby[o] == mob) return rord->base + o + 1 < 256 ? rord->base + o + 1 : 0;
+    return 0;
+}
+
+/** @brief Copy one moby's eligible walk triangles, [i0, i1), into a growable buffer at (sx, sy, kvz).
+ * @param i0 The moby's first walk triangle.
+ * @param i1 One past its last.
+ * @param buf The buffer, grown as needed.
+ * @param cap Its capacity in triangles, updated.
+ * @param first Receives the first eligible triangle's index.
+ * @return The triangles copied; 0 also on an allocation failure. */
+static int moby_snap_gather(int i0, int i1, float (**buf)[3][3], int* cap, int* first) {
+    int n = 0;
+    for (int j = i0; j < i1; j++) {
+        if (!moby_snap_face(j)) continue;
+        if (n >= *cap) {
+            const int nc = *cap ? *cap * 2 : 1024;
+            void* q = realloc(*buf, (size_t)nc * sizeof **buf);
+            if (!q) return 0;
+            *buf = q; *cap = nc;
+        }
+        for (int k = 0; k < 3; k++) {
+            (*buf)[n][k][0] = s_wtri[j].v[k].sx;
+            (*buf)[n][k][1] = s_wtri[j].v[k].sy;
+            (*buf)[n][k][2] = s_wtri[j].v[k].kvz;
+        }
+        if (!n) *first = j;
+        n++;
+    }
+    return n;
+}
+
+/** @brief Queue the walk's pulled mobys for the sunk-pickup contact test (moby_snap_queue).
+ *
+ * The walk emits a moby's triangles contiguously. Each queued moby carries
+ * its eligible triangles at (sx, sy, kvz), the depth its fragments are
+ * rebuilt at; its offset off_m = kvz - vz (the one-slot tie pull less the
+ * record's near-floor lift, uniform per record); and its ordinal when the
+ * walk ranked any of its faces.
+ * @param rord The walk's ranked-moby ordinals. */
+static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
+    static float (*s_buf)[3][3]; static int s_cap;
+    if (!openpete_native_moby_snap_on()) return;
+    uint32_t ids[256];
+    for (int o = 0; o < rord->n; o++) ids[o] = moby_scene_identity(rord->moby[o]);
+    moby_snap_note_ranked(ids, rord->n, rord->base);
+    for (int i = 0; i < s_gout.n; ) {
+        const uint32_t mob = s_wtri_moby[i];
+        int j = i;
+        while (j < s_gout.n && s_wtri_moby[j] == mob) j++;
+        int f = i;
+        const int n = moby_snap_gather(i, j, &s_buf, &s_cap, &f);
+        if (n)
+            moby_snap_queue(moby_scene_identity(mob), moby_snap_ordinal(rord, mob), s_wtri_dofs[f],
+                            s_wtri[f].v[0].kvz - s_wtri[f].v[0].vz, (const float (*)[3][3])s_buf, n);
+        i = j;
+    }
 }
 
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
@@ -7860,7 +7939,8 @@ static void push_scene_moby_tris(CPUState* cpu) {
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
     moby_rank_prepare();
     moby_tri_debug();
-    moby_rank_ordinals_t rord = { .n = 0 };  /* this walk's ranked-moby ordinals */
+    moby_rank_ordinals_t rord;  /* this walk's ranked-moby ordinals */
+    moby_rank_ordinals_begin(&rord);
     moby_matslot_memo_t mat = { 0u, 0u, 0 };  /* the material-slot resolve below */
     moby_shell_run_t shell_run = { 0, 0 };
     for (int i = 0; i < s_gout.n; i++) {
@@ -7895,16 +7975,16 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * never stored depth. Where the scene sorts by one ordering table
          * (S2/S3) the face's key is the world bucket the draw splices it
          * into (moby_tri_contest_key). The face's ABSOLUTE key rasters into the
-         * actor key image, its authored offset into the owner colour's
-         * alpha (moby_face_pull). A terrain fragment yields the pixel to
-         * that key where the key sorts in front of the terrain face's own
-         * and the face, at its key plus its pull, lies within a quarter of
-         * its pull of the terrain fragment's plane (op_key_pull_yields): a
-         * moby the game sets into the ground paints whole. A wall or ledge
-         * farther than that in front of it keeps occluding by true depth, and
-         * among mobys the contest scopes a yield by the covering face's own
-         * true view-Z (MOBY_TRUESCOPE). The moby face contests nearer keys
-         * except those its own moby owns (op_akey_select).
+         * actor key image, where the contest scopes a yield among mobys by
+         * the covering face's own TRUE view-Z (MOBY_TRUESCOPE,
+         * psx_scene_key.frag). Terrain does not yield to the key: the part
+         * of a pulled moby sunk into the terrain it intersects is drawn in
+         * front of that terrain by the snap (moby_snap_collect,
+         * psx_moby_snap.glsl), while og's pull+push compound - which paints
+         * a chest through the wall lip genuinely in front of it - is not
+         * mirrored: a wall in front keeps occluding by TRUE depth. The moby
+         * face contests nearer keys except those its own moby owns
+         * (op_akey_select).
          * Blend/FRONT/HUD classes
          * stay unkeyed - and so do MANGLED faces (near-plane fixup /
          * coordinate saturation): their screen footprint is not the true
@@ -7917,12 +7997,10 @@ static void push_scene_moby_tris(CPUState* cpu) {
           if (moby_face_key_on() && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
               !s_wtri_mangle[i] &&
               s_wtri_moby[i] && openpete_native_key_resolve_on()) {
-              const int td = moby_class_true_depth(s_wtri_cls[i], td_live);
-              t.koff = (float)(moby_tri_contest_key(i, td) + 0.5);
+              t.koff = (float)(moby_tri_contest_key(i, moby_class_true_depth(s_wtri_cls[i], td_live)) + 0.5);
               /* Embedded-PROP classes: rendered whole from every angle. */
               t.prop = moby_class_is_prop(s_wtri_cls[i]);
               t.key_order = moby_class_draws_by_key(s_wtri_cls[i], ko_live);
-              t.pull = moby_face_pull(i, td, t.prop, t.key_order);
           } }
         /* Rank: the face's paint position while it intersects another face
          * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate
@@ -7932,7 +8010,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
         int rank = moby_face_rank(i);
         if (rank > 0) {
             const int oi = moby_rank_ordinal(&rord, s_wtri_moby[i]);
-            if (oi < 255) { t.rank = (float)rank; t.mordinal = oi + 1; }
+            if (rord.base + oi < 255) { t.rank = (float)rank; t.mordinal = rord.base + oi + 1; }
         } else if (cat == OPENPETE_SCENE_ACTOR && t.blend == 0) {
             /* Actor-fragment marker (still "unranked" to every rank
              * consumer): the key contest's prop-embed rule fires on
@@ -7963,6 +8041,9 @@ static void push_scene_moby_tris(CPUState* cpu) {
     }
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
     openpete_native_scene_set_host_added(0);
+    moby_rank_ordinals_end(&rord);
+    moby_snap_collect(&rord);
+    moby_snap_moby_fed();
 }
 
 /** @brief Open the scene of the current VBL counter and append the walk's moby triangles to it (push_scene_moby_tris).
