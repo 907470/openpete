@@ -1354,6 +1354,20 @@ static const knob_desc_t g_builtin[] = {
           "game window's, --window). A resize or maximize in the launcher\n"
           "carries to the game" },
 
+    { "render_paths", "Render paths", "Display", "--render-paths", NULL,
+      "Draw only the named render paths (cyclorama,spyro,moby,terrain,"
+      "shadow,flame,particles,tracer,transition,portal,glow,sparkle,"
+      "moby_shadow,ui); none draws no path. Empty clears the selection. "
+      "Changes only the picture.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .default_note = "every path",
+      .help_arg = "LIST", .help_order = 100,
+      .help_text = "draw ONLY these paths, e.g.\n"
+          "cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
+          "tracer,transition,portal,moby_shadow,ui (default: every path).\n"
+          "Lets a path be compared in isolation; the picture only" },
+
     /* -------- Pacing -------- */
     { "render_fps", "Render FPS", "Pacing", "--render-fps", NULL,
       "Target present rate (0 = legacy match-sim pacer). Above ~30 arms "
@@ -2042,20 +2056,6 @@ static const knob_desc_t g_builtin[] = {
       .def_str = "aac",
       .help_arg = "NAME", .help_order = 70,
       .help_text = "libavcodec audio encoder (default {def})" },
-
-    { "render_paths", "Render paths", "Display", "--render-paths", NULL,
-      "Draw only the named render paths (cyclorama,spyro,moby,terrain,"
-      "shadow,flame,particles,tracer,transition,portal,glow,sparkle,"
-      "moby_shadow,ui); none draws no path. Empty clears the selection. "
-      "Changes only the picture.",
-      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .default_note = "every path",
-      .help_arg = "LIST", .help_order = 100,
-      .help_text = "draw ONLY these paths, e.g.\n"
-          "cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
-          "tracer,transition,portal,moby_shadow,ui (default: every path).\n"
-          "Lets a path be compared in isolation; the picture only" },
 };
 
 #ifndef OPENPETE_HIDE_DEBUG_FLAGS
