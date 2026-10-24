@@ -1882,6 +1882,22 @@ void openpete_native_scene_mark_terrain_feed(void);
 #define OPENPETE_TAG_PORTAL_BLENDED  2u
 #define OPENPETE_TAG_PORTAL(kind, slot)   OPENPETE_TAG_PATH(9u, (kind), (slot))
 
+/* Kinds counted per tag family (openpete_tag_kind). */
+#define OPENPETE_TAG_KINDS 8u
+/** @brief The kind a tag counts under within its family, for the families whose kinds belong to different render paths.
+ *
+ * The particle family (5) takes its feeder-local kind (identity bits 15:8)
+ * and the shadow family (7) its caster kind (identity bits 15:0); every
+ * other family counts under kind 0. A kind past the last counted one folds
+ * into it.
+ * @param tag An OPENPETE_TAG_* value.
+ * @return The kind, below OPENPETE_TAG_KINDS. */
+static inline uint32_t openpete_tag_kind(uint32_t tag) {
+    const uint32_t f = tag >> 28;
+    const uint32_t k = f == 5u ? (tag >> 8) & 0xFFu : f == 7u ? tag & 0xFFFFu : 0u;
+    return k < OPENPETE_TAG_KINDS ? k : OPENPETE_TAG_KINDS - 1u;
+}
+
 /** @brief Set the provenance tag stamped on every triangle added afterwards.
  *
  * The tag is sticky until the next call; 0 clears it. The top four bits
@@ -1894,6 +1910,13 @@ void openpete_native_scene_set_tag(uint32_t tag);
  * the scene.
  * @param out Receives 16 counts. */
 void openpete_native_scene_tag_family_counts(uint32_t out[16]);
+/** @brief Copy the accepted-triangle count per tag family and kind of the scene being accumulated.
+ *
+ * The family is tag bits 31:28; the kind is openpete_tag_kind. The counts
+ * reset with the scene and sum per family to
+ * openpete_native_scene_tag_family_counts.
+ * @param out Receives 16 rows of OPENPETE_TAG_KINDS counts. */
+void openpete_native_scene_tag_kind_counts(uint32_t out[16][OPENPETE_TAG_KINDS]);
 /** @brief Arm or disarm the provenance tag as a batch-split key.
  *
  * The mod material-selector registry arms it when a selector registers;

@@ -218,34 +218,51 @@ bool render_path_canon_drawn(render_path_t p) {
  * game fiber's render + DrawOTag, before the sub-tick re-extract: latch the
  * canon-drawn mask, then clear the intervals for the next frame. */
 /* Feed audit: every native tri carries a provenance tag whose family (bits
- * 31:28) names the render path that emitted it. A path that fed geometry this
- * canonical frame but recorded no polybuf interval and no mark_drawn reads as
- * not canon-drawn, so the sub-tick spine drops it on every intermediate
- * present: geometry on the canonical present, gone between ticks. Detected
- * here, at the commit, instead of by watching the screen at a high present
- * rate. Untagged tris (family 0) and families without a path are not
- * auditable. Reported per path on first occurrence and in the exit census;
+ * 31:28) and kind within the family (openpete_tag_kind) name the render path
+ * that emitted it. A path that fed geometry this canonical frame but recorded
+ * no polybuf interval and no mark_drawn reads as not canon-drawn, so the
+ * sub-tick spine drops it on every intermediate present: geometry on the
+ * canonical present, gone between ticks. Detected here, at the commit,
+ * instead of by watching the screen at a high present rate. Untagged tris
+ * (family 0) and families without a path are not auditable. Reported per
+ * path on first occurrence and in the exit census;
  * OPENPETE_RENDER_PATH_FEED_ASSERT=1 aborts on the first one. */
-/* A family maps to the SET of paths that may have emitted it: the particle
- * family (5) is fed by three independent .s renderers, each with its own path,
- * so it reads as drawn when any of them drew. The first path in the set names
- * the family in reports. */
-#define RPM(p) (1u << (unsigned)(p))
-static const uint32_t k_tag_family_paths[16] = {
-    0, RPM(RP_MOBY), RPM(RP_TERRAIN), RPM(RP_SPYRO), RPM(RP_FLAME),
-    RPM(RP_PARTICLES) | RPM(RP_GLOW) | RPM(RP_SPARKLE), RPM(RP_CYCLORAMA),
-    RPM(RP_SHADOW) | RPM(RP_MOBY_SHADOW), RPM(RP_TRACER), RPM(RP_PORTAL), 0, 0, 0, 0, 0, 0
+/* The path that emits each tag family's tris, -1 for none. The particle and
+ * shadow families hold kinds of more than one path (tag_kind_path). */
+static const int k_tag_family_path[16] = {
+    -1, RP_MOBY, RP_TERRAIN, RP_SPYRO, RP_FLAME, RP_PARTICLES, RP_CYCLORAMA,
+    RP_SHADOW, RP_TRACER, RP_PORTAL, -1, -1, -1, -1, -1, -1
 };
-/** @brief The lowest-numbered path in a family's path set.
+/** @brief The render path that emits the tris of one tag family and kind.
  *
- * @param m The path set, one bit per render_path_t.
- * @return The path index, or -1 when the set is empty. */
-static int family_first_path(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if (m & RPM(p)) return p; return -1; }
-/** @brief Whether any path of a family's path set is canon-drawn.
+ * The particle family's glow rings are RP_GLOW's and its sparkle flares and
+ * lines RP_SPARKLE's (each its own .s renderer); the shadow family's moby
+ * casters are RP_MOBY_SHADOW's. Every other kind is its family's path.
+ * @param f The tag family, tag bits 31:28.
+ * @param k The kind, openpete_tag_kind.
+ * @return The path index, or -1 when the family has no path. */
+static int tag_kind_path(int f, int k) {
+    if (f == 5 && k == (int)OPENPETE_TAG_PART_GLOW) return RP_GLOW;
+    if (f == 5 && (k == (int)OPENPETE_TAG_PART_FLARE || k == (int)OPENPETE_TAG_PART_SPARK)) return RP_SPARKLE;
+    if (f == 7 && k == (int)OPENPETE_TAG_SHADOW_MOBY) return RP_MOBY_SHADOW;
+    return k_tag_family_path[f];
+}
+/** @brief Sums the scene's tagged tris per render path.
  *
- * @param m The path set, one bit per render_path_t.
- * @return true when render_path_canon_drawn holds for a member. */
-static bool family_canon_drawn(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if ((m & RPM(p)) && render_path_canon_drawn((render_path_t)p)) return true; return false; }
+ * Reads openpete_native_scene_tag_kind_counts and adds each family kind's
+ * count to its path (tag_kind_path); untagged tris and families without a
+ * path are left out.
+ * @param out Receives RP_COUNT counts. */
+static void scene_path_tris(uint32_t out[RP_COUNT]) {
+    uint32_t n[16][OPENPETE_TAG_KINDS];
+    openpete_native_scene_tag_kind_counts(n);
+    memset(out, 0, RP_COUNT * sizeof out[0]);
+    for (int f = 1; f < 16; f++)
+        for (int k = 0; k < (int)OPENPETE_TAG_KINDS; k++) {
+            const int p = tag_kind_path(f, k);
+            if (p >= 0) out[p] += n[f][k];
+        }
+}
 static uint32_t s_feed_audit_frames[RP_COUNT];   /* frames with unmarked feed, per path */
 static uint32_t s_feed_audit_tris[RP_COUNT];     /* tris fed on those frames, per path */
 static uint32_t s_feed_audit_fed_frames[RP_COUNT]; /* frames the path fed at all (engagement) */
@@ -254,26 +271,30 @@ static int      s_feed_audit_registered = 0;
 /** @brief Prints the exit summary of the feed audit to stderr.
  *
  * One line: the path-frames that fed at all, the path-frames that fed with no
- * polybuf interval and no mark, and each path with a nonzero unmarked count
- * with its triangle total. Registered with atexit by the first audited scene. */
+ * polybuf interval and no mark, then each path that fed with its fed frames
+ * and, when nonzero, its unmarked frames and their triangle total.
+ * Registered with atexit by the first audited scene. */
 static void render_paths_feed_audit_census(void) {
     uint32_t fed = 0, bad = 0;
     for (int p = 0; p < RP_COUNT; p++) { fed += s_feed_audit_fed_frames[p]; bad += s_feed_audit_frames[p]; }
     fprintf(stderr, "render-paths: feed audit: fed_path_frames=%u unmarked_path_frames=%u",
             fed, bad);
-    for (int p = 0; p < RP_COUNT; p++)
+    for (int p = 0; p < RP_COUNT; p++) {
+        if (!s_feed_audit_fed_frames[p]) continue;
+        fprintf(stderr, " %s=%u", k_names[p], s_feed_audit_fed_frames[p]);
         if (s_feed_audit_frames[p])
-            fprintf(stderr, " %s=%u(%u tris)", k_names[p], s_feed_audit_frames[p], s_feed_audit_tris[p]);
+            fprintf(stderr, "/unmarked=%u(%u tris)", s_feed_audit_frames[p], s_feed_audit_tris[p]);
+    }
     fprintf(stderr, "\n");
 }
 
-/** @brief Audits the canonical scene's tagged triangle families against the canon-drawn mask.
+/** @brief Audits the canonical scene's tagged triangles per render path against the canon-drawn mask.
  *
- * Runs once per built scene. For each tag family with triangles and a path
- * set, counts the path as fed, and when no path of the set is canon-drawn
- * counts an unmarked frame and its triangles, printing a DEFECT line on the
- * path's first occurrence. With OPENPETE_RENDER_PATH_FEED_ASSERT set it
- * prints every occurrence and aborts on the first. */
+ * Runs once per built scene. For each path with tagged triangles
+ * (scene_path_tris), counts the path as fed, and when the path is not
+ * canon-drawn counts an unmarked frame and its triangles, printing a DEFECT
+ * line on the path's first occurrence. With OPENPETE_RENDER_PATH_FEED_ASSERT
+ * set it prints every occurrence and aborts on the first. */
 static void render_paths_feed_audit(void) {
     /* One audit per canonical scene. The commit runs on every canonical
      * present; when the game stops rendering (a level-exit freeze, a
@@ -287,43 +308,42 @@ static void render_paths_feed_audit(void) {
     if (!s_feed_audit_registered) { s_feed_audit_registered = 1; atexit(render_paths_feed_audit_census); }
     static int s_assert = -1;
     ENV_FLAG_LATCH(s_assert, "OPENPETE_RENDER_PATH_FEED_ASSERT");
-    uint32_t n[16];
-    openpete_native_scene_tag_family_counts(n);
-    for (int f = 1; f < 16; f++) {
-        const int p = family_first_path(k_tag_family_paths[f]);
-        if (p < 0 || n[f] == 0) continue;
+    uint32_t n[RP_COUNT];
+    scene_path_tris(n);
+    for (int p = 0; p < RP_COUNT; p++) {
+        if (n[p] == 0) continue;
         s_feed_audit_fed_frames[p]++;
-        if (family_canon_drawn(k_tag_family_paths[f])) continue;
+        if (render_path_canon_drawn((render_path_t)p)) continue;
         if (s_feed_audit_frames[p]++ == 0 || s_assert)
             fprintf(stderr, "[render-paths] DEFECT f=%u path=%s fed %u native tris with no polybuf "
                     "interval and no render_path_mark_drawn; sub-tick presents drop it\n",
-                    openpete_frame, k_names[p], n[f]);
-        s_feed_audit_tris[p] += n[f];
+                    openpete_frame, k_names[p], n[p]);
+        s_feed_audit_tris[p] += n[p];
         if (s_assert) abort();
     }
 }
 
-/** @brief Prints the canon-drawn paths and the native scene's per-family triangle counts under OPENPETE_RP_CENSUS.
+/** @brief Prints the canon-drawn paths and the native scene's per-path triangle counts under OPENPETE_RP_CENSUS.
  *
  * OPENPETE_RP_CENSUS=LO-HI, or a single value, selects an openpete_frame
  * range, read on the first call. The per-canonical-present commit calls this
  * after latching the canon-drawn mask, so each line separates a producer that
- * fed the canonical scene from one that did not; a family is named by the
- * first path of its set, or "untagged". */
+ * fed the canonical scene from one that did not; the tris are attributed to
+ * paths as the feed audit attributes them (scene_path_tris), and untagged
+ * tris are counted apart. */
 static void render_paths_census(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_RP_CENSUS", openpete_frame)) return;
-    uint32_t n[16];
-    openpete_native_scene_tag_family_counts(n);
+    uint32_t fam[16], n[RP_COUNT];
+    openpete_native_scene_tag_family_counts(fam);
+    scene_path_tris(n);
     fprintf(stderr, "[rp-census f=%u CANON] drawn:", openpete_frame);
     for (int i = 0; i < RP_COUNT; i++)
         if (s_canon_mask & (1u << (unsigned)i)) fprintf(stderr, " %s", k_names[i]);
     fprintf(stderr, " | tris:");
-    for (int f = 1; f < 16; f++) {
-        if (!n[f]) continue;
-        const int p = family_first_path(k_tag_family_paths[f]);
-        fprintf(stderr, " %s=%u", p >= 0 ? k_names[p] : "untagged", n[f]);
-    }
+    for (int p = 0; p < RP_COUNT; p++)
+        if (n[p]) fprintf(stderr, " %s=%u", k_names[p], n[p]);
+    if (fam[0]) fprintf(stderr, " untagged=%u", fam[0]);
     fprintf(stderr, " scene=%u\n", openpete_native_scene_frame());
 }
 

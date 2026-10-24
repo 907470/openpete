@@ -1497,8 +1497,10 @@ static const hook_bracket_desc k_bracket = {
  * and built in float under the tick's view (glint_build_exact); in a view
  * wider than 4:3 the stars its lateral test dropped are appended
  * (glint_wide_reveal). The set is fed natively with the canonical trace when
- * the scene is live and RP_SPARKLE is selected. The census runs on every
- * taken call.
+ * the scene is live and RP_SPARKLE is selected; a non-empty set from a call
+ * that appended nothing marks RP_SPARKLE drawn (render_path_mark_drawn),
+ * since only a polybuf interval or the mark makes the sub-tick re-extract
+ * feed the set. The census runs on every taken call.
  * @param cpu The guest CPU state.
  * @param addr The hooked entry address.
  * @return 0 when the bracket declines and the ordinary dispatch must run the
@@ -1524,11 +1526,17 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
             glint_vtx_cal();
         }
         glint_wide_reveal(cpu, &view);
-        if (s_item_n > 0 && feed && render_path_enabled(RP_SPARKLE)) {
-            render_material_level_push(cpu);
-            glint_feed_native();
-            glint_trace("canon", 1.0);
-            glint_vtx_present(0);
+        if (s_item_n > 0) {
+            if (feed && render_path_enabled(RP_SPARKLE)) {
+                render_material_level_push(cpu);
+                glint_feed_native();
+                glint_trace("canon", 1.0);
+                glint_vtx_present(0);
+            }
+            /* A set of stars the routine emitted nothing for records no
+             * polybuf interval; the mark keeps the sub-tick re-extract
+             * feeding it. */
+            if (endp <= startp) render_path_mark_drawn(RP_SPARKLE);
         }
     }
     glint_census(startp, endp, star_before, cross_before);

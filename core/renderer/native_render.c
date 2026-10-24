@@ -683,11 +683,23 @@ static uint32_t s_cur_seq;
 static uint32_t s_cur_prim;       /* sticky, stamped by add_tri (see scene_tri_t::prim) */
 static int s_cur_stp_sel;         /* sticky, stamped by add_tri (see scene_tri_t::stp_sel) */
 static uint32_t s_cur_fb_cell;    /* sticky, stamped by add_tri (see scene_tri_t::fb_cell) */
-/* Accepted tris per provenance-tag family (tag bits 31:28) in the scene
- * being accumulated. Reset with the scene. Read at the canonical commit by
- * the render-path feed audit: a family that fed geometry belongs to a path
- * that must be canon-drawn, or the sub-tick spine drops it. */
-static uint32_t s_scene_fam_n[16];
+/* Accepted tris per provenance-tag family (tag bits 31:28) and kind within
+ * the family (openpete_tag_kind) in the scene being accumulated. Reset with
+ * the scene. Read at the canonical commit by the render-path feed audit: a
+ * family kind that fed geometry belongs to a path that must be canon-drawn,
+ * or the sub-tick spine drops it. */
+static uint32_t s_scene_kind_n[16][OPENPETE_TAG_KINDS];
+
+/** @brief Add one triangle of a tag to the per-family, per-kind count, or remove one.
+ *
+ * A removal at a zero count leaves it at zero.
+ * @param tag The triangle's provenance tag.
+ * @param add 1 to count the triangle, 0 to uncount it. */
+static void scene_kind_count(uint32_t tag, int add) {
+    uint32_t* n = &s_scene_kind_n[tag >> 28][openpete_tag_kind(tag)];
+    if (add) (*n)++;
+    else if (*n) (*n)--;
+}
 /* The terrain fog ladder is exactly 16 rows (delta 0..15); anything outside
  * that is not a ladder row and must never reach the CLUT arithmetic, which
  * would index VRAM out of bounds. */
@@ -742,7 +754,13 @@ static void scene_stamp_key_cells(scene_tri_t* t)
 static int s_cur_ter_after;
 void openpete_native_scene_mark_terrain_feed(void) { s_cur_ter_after = 1; }
 void openpete_native_scene_tag_family_counts(uint32_t out[16]) {
-    memcpy(out, s_scene_fam_n, sizeof s_scene_fam_n);
+    for (int f = 0; f < 16; f++) {
+        out[f] = 0;
+        for (unsigned k = 0; k < OPENPETE_TAG_KINDS; k++) out[f] += s_scene_kind_n[f][k];
+    }
+}
+void openpete_native_scene_tag_kind_counts(uint32_t out[16][OPENPETE_TAG_KINDS]) {
+    memcpy(out, s_scene_kind_n, sizeof s_scene_kind_n);
 }
 void openpete_native_scene_set_fog_delta(int delta) {
     /* Row in bits 7:0 as documented; feeders may add the TP_FOG_DELTA_CONT /
@@ -1267,7 +1285,7 @@ void openpete_native_scene_begin(void) {
      * names its frame. A later re-extract of the same tick must not
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
     /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
      * builder tags its build with outside an eager scene
      * (openpete_native_scene_build_stamp). The present's retained-terrain
@@ -1533,7 +1551,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_cur_seq = 0;
         s_cur_prim = 0;
         s_cur_fb_cell = 0;
-        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
+        s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
         s_scene_fade_prim = 0;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
@@ -1560,7 +1578,7 @@ void openpete_native_scene_mark_replay(void) { s_scene_replay = 1; }
  * a failed save returns nonzero and leaves nothing to restore. */
 static mod_fvec     s_scene_saved;          /* scene_tri_t */
 static int          s_scene_saved_n = -1;   /* -1 = nothing saved */
-static uint32_t     s_scene_saved_fam[16];
+static uint32_t     s_scene_saved_kind[16][OPENPETE_TAG_KINDS];
 static uint32_t     s_scene_saved_bg, s_scene_saved_fade, s_scene_saved_freeze;
 static int          s_scene_saved_hud_under, s_scene_saved_actor_front, s_scene_saved_dropped;
 static int          s_scene_saved_ter_after;
@@ -1573,7 +1591,7 @@ int openpete_native_scene_save(void) {
     if (scene_run_fit(&s_scene_saved, "scene.saved", s_scene_n) < s_scene_n) return 1;
     if (s_scene_n > 0) memcpy(s_scene_saved.data, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
     s_scene_saved_n = s_scene_n;
-    memcpy(s_scene_saved_fam, s_scene_fam_n, sizeof s_scene_fam_n);
+    memcpy(s_scene_saved_kind, s_scene_kind_n, sizeof s_scene_kind_n);
     s_scene_saved_bg = s_scene_bg; s_scene_saved_fade = s_scene_fade;
     s_scene_saved_freeze = s_scene_freeze;
     s_scene_saved_hud_under = s_scene_hud_under;
@@ -1591,7 +1609,7 @@ void openpete_native_scene_restore(void) {
     if (s_scene_saved_n > 0 && scene_room(s_scene_saved_n))
         memcpy(s_scene, s_scene_saved.data, (size_t)s_scene_saved_n * sizeof(scene_tri_t));
     s_scene_n = s_scene_saved_n;
-    memcpy(s_scene_fam_n, s_scene_saved_fam, sizeof s_scene_fam_n);
+    memcpy(s_scene_kind_n, s_scene_saved_kind, sizeof s_scene_kind_n);
     s_scene_bg = s_scene_saved_bg; s_scene_fade = s_scene_saved_fade;
     s_scene_freeze = s_scene_saved_freeze;
     s_scene_hud_under = s_scene_saved_hud_under;
@@ -1798,7 +1816,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
         s_scene[s_scene_n].tag = s_cur_tag;      /* sticky provenance (set_tag) */
-        s_scene_fam_n[s_cur_tag >> 28]++;
+        scene_kind_count(s_cur_tag, 1);
         s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
         s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
         s_scene[s_scene_n].over_fade = 0;                /* set at the 2D rank */
@@ -2301,7 +2319,7 @@ static int defer_census(void) {
 static void scene_append_stored(const scene_tri_t *t) {
     if (!(s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1))) { s_scene_dropped++; return; }
     s_scene[s_scene_n] = *t;
-    s_scene_fam_n[t->tag >> 28]++;
+    scene_kind_count(t->tag, 1);
     if ((t->category == OPENPETE_SCENE_OVERLAY || t->category == OPENPETE_SCENE_HUD_PANEL ||
          t->carry == 1) && t->carry != 2) {
         if (s_overlay_accum_n < OVERLAY_CARRY_MAX) {
@@ -2339,7 +2357,7 @@ static int scene_defer_live(int (*later)(uint32_t prim)) {
         const scene_tri_t q = s_scene[t];
         const int held = q.prim && later(q.prim) && defer_hold(&q);
         if (!held) { s_scene[w++] = q; continue; }
-        if (s_scene_fam_n[q.tag >> 28]) s_scene_fam_n[q.tag >> 28]--;
+        scene_kind_count(q.tag, 0);
         moved++;
     }
     s_scene_n = w;
@@ -2582,7 +2600,7 @@ void openpete_native_scene_commit_fade(void) {
          * it too, and drop the degenerate geometry (reset Spyro + bg) so only the
          * held freeze shows, exactly as on a settled freeze frame. */
         s_scene_freeze = new_freeze;
-        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_cur_ter_after = 0;
+        s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_cur_ter_after = 0;
     }
     if (load_census_on() && s_cover_live.cnt[0] > 0 && !ter_fed) {
         int blend = 0;
