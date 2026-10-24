@@ -109,6 +109,15 @@ void main()
             op_rank_is_prop(vRank.x),
             MOBY_TRUESCOPE, SLOT_CONTEST))
         discard;
+    /* An opaque terrain fragment (one carrying override inputs) within an
+     * actor key's authored pull of the face yields to it
+     * (op_key_pull_yields). */
+    if (!ranked && op_key_fattr_walk(vRank.x).x < OP_KEY_CLASS_NONE - 0.5 &&
+        op_key_pull_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
+                           texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
+                           koff, op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
+                           op_key_fattr_walk(vRank.x).y, SLOT_CONTEST))
+        discard;
     vec2 vUV = vUVq / vQ;
     vec4 vColor = vColorq / vQ;
     vec2 t = vec2((vUV.x - pc.u0) / pc.uw, (vUV.y - pc.v0) / pc.vh);

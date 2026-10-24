@@ -3573,6 +3573,11 @@ int moby_face_key_on(void) {
     return moby_otbias_latch(&s_on, "OPENPETE_MOBY_FACE_KEY");
 }
 
+int moby_pull_yield_on(void) {
+    static int s_on = -1;
+    return moby_otbias_latch(&s_on, "OPENPETE_MOBY_PULL_YIELD");
+}
+
 int moby_player_sort_pull_on(void) {
     static int s_on = -1;
     return moby_otbias_latch(&s_on, "OPENPETE_PLAYER_SORT_PULL");
@@ -7776,6 +7781,25 @@ static double moby_tri_true_key(int i, int bias) {
     return key < 1.0 ? 1.0 : key;
 }
 
+/** @brief The authored depth offset a keyed walk triangle carries against terrain, or 0.
+ *
+ * The game inserts the face m_DepthOffset slots nearer than its average
+ * depth, so terrain it sits within that many slots of paints under it. A
+ * true-depth class keys without the offset, a prop has its own embed rule
+ * and a key-order face its own yield, so none of them carries one. The
+ * value is clamped to 62, the largest the actor key owner alpha holds
+ * (psx_key_contest.glsl op_key_pull).
+ * @param i The walk triangle's index.
+ * @param true_depth Nonzero when the face's class is a true-depth class.
+ * @param prop Nonzero for a curated embedded prop face.
+ * @param key_order Nonzero for a face of the key-order class.
+ * @return The offset in ordering-table slots, 0 to 62. */
+static int moby_face_pull(int i, int true_depth, int prop, int key_order) {
+    const int d = s_wtri_dofs[i];
+    if (true_depth || prop || key_order || d <= 0 || !moby_pull_yield_on()) return 0;
+    return d > 62 ? 62 : d;
+}
+
 /** @brief The ordering-table key a walk triangle contests the terrain with, in world units.
  *
  * A face of a true-depth class (moby_class_true_depth) keys by its true
@@ -7871,14 +7895,15 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * never stored depth. Where the scene sorts by one ordering table
          * (S2/S3) the face's key is the world bucket the draw splices it
          * into (moby_tri_contest_key). The face's ABSOLUTE key rasters into the
-         * MOBY key image (set 1, split from the terrain keys), where the
-         * contest scopes the yield by the covering face's own TRUE view-Z
-         * (MOBY_TRUESCOPE, psx_scene_key.frag): keyed terrain within the
-         * moby's own authored pull yields per-pixel (a pedestal disc set
-         * into sloped ground paints complete), while og's pull+push
-         * compound - which paints a chest through the wall lip genuinely
-         * in front of it - is not mirrored: a wall in front keeps
-         * occluding by TRUE depth. The moby face contests nearer keys
+         * actor key image, its authored offset into the owner colour's
+         * alpha (moby_face_pull). A terrain fragment yields the pixel to
+         * that key where the key sorts in front of the terrain face's own
+         * and the face, at its key plus its pull, lies within a quarter of
+         * its pull of the terrain fragment's plane (op_key_pull_yields): a
+         * moby the game sets into the ground paints whole. A wall or ledge
+         * farther than that in front of it keeps occluding by true depth, and
+         * among mobys the contest scopes a yield by the covering face's own
+         * true view-Z (MOBY_TRUESCOPE). The moby face contests nearer keys
          * except those its own moby owns (op_akey_select).
          * Blend/FRONT/HUD classes
          * stay unkeyed - and so do MANGLED faces (near-plane fixup /
@@ -7892,10 +7917,12 @@ static void push_scene_moby_tris(CPUState* cpu) {
           if (moby_face_key_on() && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
               !s_wtri_mangle[i] &&
               s_wtri_moby[i] && openpete_native_key_resolve_on()) {
-              t.koff = (float)(moby_tri_contest_key(i, moby_class_true_depth(s_wtri_cls[i], td_live)) + 0.5);
+              const int td = moby_class_true_depth(s_wtri_cls[i], td_live);
+              t.koff = (float)(moby_tri_contest_key(i, td) + 0.5);
               /* Embedded-PROP classes: rendered whole from every angle. */
               t.prop = moby_class_is_prop(s_wtri_cls[i]);
               t.key_order = moby_class_draws_by_key(s_wtri_cls[i], ko_live);
+              t.pull = moby_face_pull(i, td, t.prop, t.key_order);
           } }
         /* Rank: the face's paint position while it intersects another face
          * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate

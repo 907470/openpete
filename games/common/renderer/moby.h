@@ -427,6 +427,12 @@ int    moby_tie_pull_on(void);
  * starting with '0'; both are read once and latched.
  * @return 1 when the face key channel applies, else 0. */
 int    moby_face_key_on(void);
+/** @brief Whether keyed actor faces carry their authored depth offset into the actor key image for the terrain pull yield.
+ *
+ * On unless OPENPETE_MOBY_OTBIAS or OPENPETE_MOBY_PULL_YIELD is set to a
+ * value starting with '0'; both are read once and latched.
+ * @return 1 when the pull yield applies, else 0. */
+int    moby_pull_yield_on(void);
 /** @brief Whether the player walk applies its sortDepth pulls: the front-sentinel whole-model near pull, the tie pull, and the mirrored copy's negative bias.
  *
  * On unless OPENPETE_MOBY_OTBIAS or OPENPETE_PLAYER_SORT_PULL is set to a

@@ -349,6 +349,7 @@ typedef struct {
     uint32_t mid;   /* moby identity - see openpete_scene_tri */
     int shell;      /* front-shell record member - see openpete_scene_tri */
     int key_order;  /* draws by key order against terrain - see openpete_scene_tri */
+    int pull;       /* authored depth offset against terrain - see openpete_scene_tri */
     int ot_slot1;   /* 1 + ordering-table slot, 0 unknown - see openpete_scene_tri */
     uint32_t kattr; /* terrain override inputs - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
@@ -9090,14 +9091,18 @@ static int key_order_mode(void)
  * The actor key image's colour alpha marks a texel whose nearest key belongs
  * to a face that draws by key order against terrain
  * (openpete_scene_tri.key_order): 0x80 yields, 0x40 yields painted
- * (key_order_mode 2), 0xFF (also the clear value) is unmarked
- * (psx_key_contest.glsl op_key_order_mark).
+ * (key_order_mode 2). A face with an authored pull
+ * (openpete_scene_tri.pull, 1-62) writes 0xC0 + pull. 0xFF (also the clear
+ * value) carries neither (psx_key_contest.glsl op_key_order_mark,
+ * op_key_pull).
  * @param T Scene triangle.
  * @param prop_class Key batch class; 2 is the actor key image.
  * @return The alpha byte in bits 24-31. */
 static uint32_t key_order_owner_alpha(const scene_tri_t* T, int prop_class)
 {
-    if (prop_class != 2 || !T->key_order || T->pkey > 0.25f) return 0xFFu << 24;
+    if (prop_class != 2 || T->pkey > 0.25f) return 0xFFu << 24;
+    if (!T->key_order)
+        return (T->pull > 0 && T->pull < 63 ? 0xC0u + (uint32_t)T->pull : 0xFFu) << 24;
     const int m = key_order_mode();
     const uint32_t a = m == 1 ? 0x80u : m == 2 ? 0x40u : 0xFFu;
     return a << 24;

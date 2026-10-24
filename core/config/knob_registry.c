@@ -2490,6 +2490,10 @@ static const knob_desc_t g_builtin_debug[] = {
         "Moby walk: write each opaque actor face's ordering key (mean "
         "perspective W less 128 x the authored depth offset) into the actor "
         "key image for the key contest (0 = off)."),
+    ENVROW_LATCHED("MOBY_PULL_YIELD", "Debug", "1",
+        "Moby walk: carry each keyed actor face's authored depth offset into "
+        "the actor key image, so terrain the face sits within that many "
+        "ordering-table slots of yields the pixel to it (0 = off)."),
     ENVROW_LATCHED("PLAYER_SORT_PULL", "Debug", "1",
         "Spyro walk: apply the sortDepth pulls - the front sentinel's "
         "whole-model near pull, otherwise the 127-unit tie pull and the "

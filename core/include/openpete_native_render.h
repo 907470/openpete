@@ -1140,6 +1140,13 @@ typedef struct {
                   * a terrain fragment whose key sorts behind the marked key
                   * yields the pixel (psx_key_contest.glsl
                   * op_key_order_yields). 0 = true depth decides.          */
+    int pull;    /* the authored depth offset (m_DepthOffset, 1-62) of a
+                  * keyed opaque actor face that is neither a key-order nor
+                  * a prop nor a true-depth class face, else 0: the actor
+                  * key pass writes it into the owner colour's alpha, and
+                  * a terrain fragment within that many slots of the face
+                  * yields the pixel (psx_key_contest.glsl
+                  * op_key_pull_yields).                                    */
     int ot_slot1;/* 1 + the ordering-table slot the game links the face
                   * into (moby faces: the world bucket the draw splices the
                   * face into), 0 = unknown. The compose compares it with

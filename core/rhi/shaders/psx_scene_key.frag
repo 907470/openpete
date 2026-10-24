@@ -167,6 +167,14 @@ void main()
                               koff, SLOT_CONTEST)
         : 0;
     if (ko == 1) discard;
+    /* An opaque terrain fragment (one carrying override inputs) within an
+     * actor key's authored pull of the face yields to it
+     * (op_key_pull_yields). */
+    if (!ranked && op_key_fattr_walk(vRank.x).x < OP_KEY_CLASS_NONE - 0.5 &&
+        op_key_pull_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
+                           texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
+                           koff, own, op_key_fattr_walk(vRank.x).y, SLOT_CONTEST))
+        discard;
     vec4 col = vColor / vQ;
     ivec2 ti = op_texel(uv, tg);
     vec4 c = op_decode555(sample_word(ti.x, ti.y));
