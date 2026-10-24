@@ -26,7 +26,9 @@
  * UV, matching the scene draw). A triangle with a drain record writes the key
  * of the drain sub-cell under the fragment (psx_key_contest.glsl; a folded
  * quadrant's skipped slot through op_drain_fold_rec) as its depth; every
- * other face writes the rasterised depth back unchanged. */
+ * other flat key (vKeyFlat) writes op_key_store(vKv), the exact encoding of
+ * its key, and the prop class and player band write the rasterised depth
+ * back unchanged. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
@@ -46,6 +48,7 @@ layout(set = 1, binding = 0) uniform usampler2D u_drain;
 layout(location = 6) flat in vec4 vIdent; /* moby identity (op_akey_id) */
 layout(location = 7) noperspective in float vIz; /* owner's true 1/view-Z */
 layout(location = 8) flat in float vCls;          /* owner's terrain class byte */
+layout(location = 9) flat in float vKeyFlat;      /* 1: store op_key_store(vKv) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -66,7 +69,9 @@ void main()
     float d = op_drain_record(u_drain, vDrain, uv, t0, t1, p) ? op_drain_delta(p, t0, t1, 0.0) : -1.0;
     if (d >= OP_DRAIN_SKIP) d = op_drain_fold_rec(u_drain, vDrain, uv, t0, t1, 0.0);
     if (d >= OP_DRAIN_SKIP) discard;           /* a sub-cell the drain skips */
-    gl_FragDepth = d >= 0.0 ? op_key_store(vKv + d) : gl_FragCoord.z;
+    gl_FragDepth = d >= 0.0          ? op_key_store(vKv + d)
+                 : vKeyFlat > 0.5    ? op_key_store(vKv)
+                                     : gl_FragCoord.z;
     outColor = vCls < OP_KEY_CLASS_NONE - 0.5 ? op_key_attr_store(1.0 / max(vIz, 1e-9), vCls)
                                               : vIdent;
 }

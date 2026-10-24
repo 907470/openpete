@@ -9088,13 +9088,16 @@ static uint32_t key_order_owner_alpha(const scene_tri_t* T, int prop_class)
 /** @brief Write one keyed scene face's three vertices for a key batch.
  *
  * Each vertex carries the clip position, the true view-Z in w, the UV when
- * textured (else 0), a colour, koff 0.5 and the drain record fields from
- * rv_drain. The colour is opaque black, except an ACTOR face's in the actor
- * class while actor_own_key_on, whose r, g, b carry its moby identity (bits
- * 0-7, 8-15, 16-23 of openpete_scene_tri.mid) for the key image's owner
- * colour. The depth is the per-vertex view-Z for the prop
- * class; otherwise it is one flat value per face, the player band depth
- * when the face has a player key (pkey above 0.25), else koff - 0.5.
+ * textured (else 0), a colour, koff and the drain record fields from
+ * rv_drain. koff is 0.5 for a flat key, which the key stages store from the
+ * key itself (op_key_store), and -0.5 for the prop class, whose per-vertex
+ * depth keeps the rasterised value; both add no key offset. The colour is
+ * opaque black, except an ACTOR face's in the actor class while
+ * actor_own_key_on, whose r, g, b carry its moby identity (bits 0-7, 8-15,
+ * 16-23 of openpete_scene_tri.mid) for the key image's owner colour. The
+ * depth is the per-vertex view-Z for the prop class; otherwise it is one flat
+ * value per face, the player band depth when the face has a player key (pkey
+ * above 0.25), else the scene face's koff - 0.5.
  * @param T Scene triangle.
  * @param prop_class Batch class, 0 to 2; 1 selects true per-vertex depth.
  * @param tex Non-zero to carry the UVs.
@@ -9122,7 +9125,7 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
         o->u = tex ? T->v[k].u : 0.0f;
         o->v = tex ? T->v[k].v : 0.0f;
         o->rgba = rgba;
-        o->koff = 0.5f;
+        o->koff = prop_class == 1 ? -0.5f : 0.5f;
         /* The terrain class carries the face's override inputs; the key
          * stages write its class beside the key (psx_key_cutout.frag). */
         o->sx = (prop_class == 0 && T->kattr) ? OPENPETE_SCENE_KATTR(T->kattr) : 0.0f;

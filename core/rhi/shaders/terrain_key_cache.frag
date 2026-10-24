@@ -13,8 +13,9 @@
  * drain sub-cell table writes the key of the sub-cell containing the
  * fragment (psx_key_contest.glsl; a folded quadrant's skipped slot through
  * op_drain_fold_delta) as its depth, as psx_key_cutout.frag and
- * terrain_key.frag do on the walk; every other face writes the rasterised
- * depth back unchanged. The colour attachment takes the face's true view-Z
+ * terrain_key.frag do on the walk; every other face writes
+ * op_key_store of its flat key, the exact encoding the contest compares
+ * against, not the rasterised depth, which lands a few ulps off it by GPU. The colour attachment takes the face's true view-Z
  * at the fragment and its class byte (op_key_attr_store), which the scene
  * stages bound the terrain override with. */
 
@@ -67,7 +68,7 @@ void main()
         if (p == 0u) discard;                  /* PSX transparent sentinel */
     }
     if (op_drain_grid(vKc0) == OP_DRAIN_NONE) {
-        gl_FragDepth = gl_FragCoord.z;
+        gl_FragDepth = op_key_store(max(vKoff - 0.5, 1.0));
     } else {
         float d = op_drain_delta(vKfl / vKq, vKc0, vKc1, 0.0);
         if (d >= OP_DRAIN_SKIP && op_drain_folded(vKc0))

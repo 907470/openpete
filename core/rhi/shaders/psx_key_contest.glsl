@@ -43,22 +43,27 @@ float op_key_from_stored(float stored)
                              : OP_KEY_NONE;
 }
 
-/* The bucket a stored terrain key falls in. The key rasters hold
- * z = kv/(kv+4096) in a 32-bit float depth image, and the rasteriser's
- * perspective divide and plane interpolation land that value within a few
- * ulps of the encoding the writer computed (one ulp low measured on NVIDIA
- * against a shader-side encode of the same key). Decoding a value one ulp
- * low moves the key by (kv+4096)^2/4096 * 2^-24 world (0.02 at 33792),
- * which crosses a bucket boundary whenever the true key sits on one; a
- * terrain fragment then loses the pixel to its own key and the pixel
- * shows whatever lies behind. The stored key is floored into its bucket
- * with two ulps of that resolution added, so a value inside the encoding's
- * error below a boundary reads as the boundary's bucket. OP_KEY_NONE
- * overflows to +inf and stays a bucket nothing sits below. */
-float op_key_bucket(float tkey)
+/* The key pass's stored value for key view-Z kv (the key images' encoding,
+ * op_key_from_stored's inverse). Every key stage writes a flat key through
+ * this function as its fragment depth, so the stored value is this
+ * function's result for the key, bit for bit, on any GPU. */
+float op_key_store(float kv)
 {
-    float res = (tkey + 4096.0) * (tkey + 4096.0) * (2.0 / 16777216.0 / 4096.0);
-    return floor((tkey + res) / OP_KEY_SLOT);
+    return kv / (kv + 4096.0);
+}
+
+/* Whether a decoded key tkey (op_key_from_stored of a key image texel) lies
+ * in an ordering-table bucket nearer than slot: whether its stored value lies
+ * below the stored encoding of the slot's boundary, slot * OP_KEY_SLOT. The
+ * boundary goes through the same encode and decode as the texel, so a key on
+ * the boundary decodes to exactly the boundary value and sits in the slot,
+ * never in the one before it. A decoded key one ulp of the encoding off
+ * moves by (kv+4096)^2/4096 * 2^-24 world (0.02 at 33792), so a slack on the
+ * decoded side cannot tell a boundary key from a nearer one; only an exact
+ * store can. OP_KEY_NONE is never nearer. */
+bool op_key_slot_nearer(float tkey, float slot)
+{
+    return tkey < op_key_from_stored(op_key_store(slot * OP_KEY_SLOT));
 }
 
 /* ---- drain sub-cell keys ---------------------------------------------
@@ -375,13 +380,6 @@ float op_drain_koff(float koff, float tag, vec2 uv, usampler2D rec)
     return d >= OP_DRAIN_SKIP ? OP_DRAIN_DISCARD : koff + d;
 }
 
-/* The key pass's stored value for key view-Z kv (the key images' encoding,
- * op_key_from_stored's inverse). */
-float op_key_store(float kv)
-{
-    return kv / (kv + 4096.0);
-}
-
 /* ---- the player band of the actor key image ----------------------------
  *
  * The avatar's draw keys every part at max(0, (part-origin view-Z >> 7) -
@@ -408,8 +406,8 @@ float op_key_store(float kv)
  * reaches.
  *
  * OP_PKEY_STEP is four orders of magnitude above a 32-bit float's ulp at
- * the band, so the rasteriser's plane interpolation of a flat value
- * (see op_key_bucket) rounds back to the slot the writer encoded. */
+ * the band, so the rasteriser's plane interpolation of a flat value, a few
+ * ulps off, rounds back to the slot the writer encoded. */
 #define OP_PKEY_BASE 0.000001
 #define OP_PKEY_STEP 0.00000001
 #define OP_PKEY_MAX_SLOT 4095.0
@@ -517,7 +515,7 @@ bool op_aura_loses(float akey_stored, float own_key)
 {
     float own_slot = floor(own_key / OP_KEY_SLOT);
     if (op_pkey_is(akey_stored)) return op_pkey_slot(akey_stored) <= own_slot;
-    return op_key_bucket(op_key_from_stored(akey_stored)) <= own_slot;
+    return op_key_slot_nearer(op_key_from_stored(akey_stored), own_slot + 1.0);
 }
 
 /* A shadow decal against the terrain painted after it. Every game's shadow
@@ -529,7 +527,7 @@ bool op_aura_loses(float akey_stored, float own_key)
 bool op_decal_covered(float tkey, float own_koff)
 {
     return own_koff > 0.25 &&
-           op_key_bucket(tkey) <= floor((own_koff - 0.5) / OP_KEY_SLOT);
+           op_key_slot_nearer(tkey, floor((own_koff - 0.5) / OP_KEY_SLOT) + 1.0);
 }
 
 /* Same-moby painter select, scoped to near ties. The original renderer
@@ -712,7 +710,7 @@ bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
          * smaller than a bucket is no difference at all, and a terrain
          * fragment keeps a tie (it must never lose to its own key). */
         if (!actor && (slot_contest
-                ? op_key_bucket(tkey) < floor((koff - 0.5) / OP_KEY_SLOT)
+                ? op_key_slot_nearer(tkey, floor((koff - 0.5) / OP_KEY_SLOT))
                 : tkey < band) &&
             op_key_override_holds(tattr, own, fattr))
             return true;
@@ -756,7 +754,7 @@ float op_actor_tie_depth(float zwin, vec2 rank, float koff, float tkey,
 {
     bool moby = rank.x > 0.5 || (rank.x < -0.5 && rank.x > -1.5);
     if (!moby || koff <= 0.25) return zwin;
-    bool nearer = slot_contest ? op_key_bucket(tkey) < floor((koff - 0.5) / OP_KEY_SLOT)
+    bool nearer = slot_contest ? op_key_slot_nearer(tkey, floor((koff - 0.5) / OP_KEY_SLOT))
                                : tkey < (koff - 0.5) - 64.0;
     if (!nearer) return zwin;
     float vz = op_vz_from_depth(zwin, reversed) + OP_ACTOR_TIE_PULL;
@@ -795,7 +793,7 @@ int op_key_order_yields(float akey_stored, vec4 owner, float tkoff, bool slot_co
     if (m == 0 || op_pkey_is(akey_stored)) return 0;
     float akey = op_key_from_stored(akey_stored);
     float tk = tkoff - 0.5;
-    bool front = slot_contest ? op_key_bucket(akey) < floor(tk / OP_KEY_SLOT)
+    bool front = slot_contest ? op_key_slot_nearer(akey, floor(tk / OP_KEY_SLOT))
                               : akey < tk - 64.0;
     return front ? m : 0;
 }
