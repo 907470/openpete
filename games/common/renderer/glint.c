@@ -111,7 +111,8 @@ extern unsigned openpete_frame;
 #define GLINT_LINE      0x40u   /* LINE_F2 opaque, two per accepted far record */
 #define GLINT_QUADS_PER_STAR 8
 #define GLINT_LINES_PER_CROSS 2
-#define GLINT_LATERAL   2       /* glint_accept: rejected on the lateral test alone */
+#define GLINT_LATERAL   2       /* glint_accept: rejected on the lateral test */
+#define GLINT_RANGE     4       /* glint_accept: rejected on the box or the far depth */
 
 /* One pool record the walk accepted: what the pairing hands its primitives
  * and what the sub-tick rebase re-projects it from. `addr` is the record's
@@ -267,19 +268,23 @@ static void glint_project(const ngte_view* v, const double vo[3], ngte_proj* o) 
  * camera-relative offset leaves the +/-GT.box box (:2266-2276), whose
  * half-world view Z is below GT.near_z or at least GT.far_z (:2294-2296), or
  * that leaves the view pyramid 4|X| - 3Z < GT.pyr_x, 3|Y| - Z < GT.pyr_y
- * (:2310, :2320), each test on the floored offset the routine tests. An
- * accepted record takes the near branch when its view Z is below GT.near_vz;
- * its projected point, view Z and scene depth (that view Z scaled back to
- * world units) come from the unfloored offset.
+ * (:2310, :2320), each test on the floored offset the routine tests. The box
+ * and far-depth rejects and the lateral reject are reported as flags rather
+ * than verdicts, with every other test still applied, so the extended-LOD and
+ * widened-view reveals can draw such a record. An accepted record takes the
+ * near branch when its view Z is below GT.near_vz; its projected point, view
+ * Z and scene depth (that view Z scaled back to world units) come from the
+ * unfloored offset.
  * @param cpu The guest CPU state, read only.
  * @param v The projection view.
  * @param rec Guest address of the record.
  * @param out Receives the record's branch, depth, address, position words,
- *        lifetime, size, spin and colour bytes, projected point and view Z on
- *        acceptance and on a lateral-only rejection; untouched otherwise.
- * @return 1 when the routine would draw the record, GLINT_LATERAL when it
- *         rejects the record on the lateral test 4|X| - 3Z < GT.pyr_x alone,
- *         else 0. */
+ *        lifetime, size, spin and colour bytes, projected point and view Z
+ *        whenever the return is nonzero; untouched otherwise.
+ * @return 1 when the routine would draw the record; else GLINT_RANGE when it
+ *         rejects the record on the box or the far depth, or-ed with
+ *         GLINT_LATERAL when it fails the lateral test 4|X| - 3Z < GT.pyr_x,
+ *         when those are its only rejects; else 0. */
 static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
                         glint_rec* out) {
     const uint32_t packed = cpu->read_word(rec + GT.packed_off);
@@ -293,12 +298,14 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     }
     glint_view_offset(v, p, 1, vo);
     const double box = (double)GT.box;
+    int range = 0;
     for (int k = 0; k < 3; k++)
-        if (vo[k] >= box || vo[k] <= -box) return 0;             /* :2266-2276 */
+        if (vo[k] >= box || vo[k] <= -box) range = 1;            /* :2266-2276 */
 
     ngte_proj o;
     glint_project(v, vo, &o);
-    if (o.m3 < (double)GT.near_z || o.m3 >= (double)GT.far_z) return 0;  /* :2294-2296 */
+    if (o.m3 < (double)GT.near_z) return 0;                         /* :2294 */
+    if (o.m3 >= (double)GT.far_z) range = 1;                        /* :2296 */
     const int lateral = 4.0 * fabs(o.m1) - 3.0 * o.m3 - (double)GT.pyr_x >= 0.0;  /* :2310 */
     if (3.0 * fabs(o.m2) - o.m3 - (double)GT.pyr_y >= 0.0) return 0;         /* :2320 */
 
@@ -318,7 +325,8 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     out->psx = o.sx;
     out->psy = o.sy;
     out->pvz = o.m3;
-    return lateral ? GLINT_LATERAL : 1;
+    const int flags = (range ? GLINT_RANGE : 0) | (lateral ? GLINT_LATERAL : 0);
+    return flags ? flags : 1;
 }
 
 /** @brief Re-walk the glint pool in slot order and collect every record the routine would have drawn.
@@ -737,7 +745,7 @@ static void glint_build_exact(CPUState* cpu, const ngte_view* v) {
 
 /* ---- synthetic stars ------------------------------------------------------
  *
- * Two kinds of record draw primitives the routine did not emit, built by
+ * Three kinds of record draw primitives the routine did not emit, built by
  * glint_corners exactly as a captured primitive's corners are and appended
  * after the capture as items carrying the record.
  *
@@ -759,13 +767,30 @@ static void glint_build_exact(CPUState* cpu, const ngte_view* v) {
  * screen extent of the cross it replaces: without it the star's extent falls
  * as 1/Z past the switch depth and is under a pixel at the far cull. A captured far record's two lines stay in the
  * capture, marked hidden, so the pairing, calibration and census still read
- * the branch the routine took. A synthetic star takes the routine's
- * draw-mode word 0xE1000620 (:2383), whose rate bits are 0b01. */
+ * the branch the routine took.
+ *
+ * Extended LOD's distant stars: the routine drops a live record whose halved
+ * offset leaves the +/-0x7800 box or whose half-world view Z reaches 0x7800,
+ * bounds of the GTE's 16-bit input range rather than of the star. Extended
+ * LOD draws a moby at any distance in front of the camera plane
+ * (moby_reveal_extended), and the record names no moby to test against: the
+ * spawner keeps the record's slot in its own moby (a byte the routine never
+ * reads) and drops that link for a gem past its spawn distance. Such a record
+ * therefore keeps every other verdict of the routine (the lifetime, the near
+ * depth, the vertical test and the lateral test, or the widened view's corner
+ * test in its place) and draws as a far record's star. Its lifetime byte is
+ * the routine's own: the routine decrements it before the box test
+ * (:2236-2240), so a dropped record ages exactly as a drawn one.
+ *
+ * A synthetic star takes the routine's draw-mode word 0xE1000620 (:2383),
+ * whose rate bits are 0b01. */
 
 #define GLINT_DRMODE_ABR 1   /* (0xE1000620 >> 5) & 3 */
 
 static int s_wide_admit;     /* records the widened view appended this call */
 static int s_wide_cull;      /* records the widened view rebuilt and culled this call */
+static int s_range_admit;    /* box- or far-culled records extended LOD appended this call */
+static int s_range_cull;     /* box- or far-culled records the lateral or corner test culled */
 
 /** @brief Whether the feed draws a record as the near branch's star: its branch is near, or extended LOD is on.
  * @param r The record.
@@ -819,26 +844,37 @@ static int glint_synth_build(CPUState* cpu, const ngte_view* v, const glint_rec*
     return n;
 }
 
-/** @brief Append the stars the routine's lateral test dropped but a view wider than 4:3 shows.
+/** @brief Append the stars the routine dropped but a view wider than 4:3 or extended LOD shows.
  *
- * Runs only when the view's Hor+ factor F is above 1; every record
- * glint_accept rejects on the lateral test alone is built by glint_synth_build
- * in the kind glint_draws_star picks and appended unless the view shows none
- * of its corners.
+ * A record glint_accept flags GLINT_LATERAL is a candidate when the view's
+ * Hor+ factor F is above 1, and one it flags GLINT_RANGE when extended LOD is
+ * on; a record carrying both flags needs both. A candidate is built by
+ * glint_synth_build in the kind glint_draws_star picks. One flagged
+ * GLINT_LATERAL is appended unless the view shows none of its corners; one
+ * flagged GLINT_RANGE alone is appended, the routine's lateral test having
+ * passed it. Tallies s_wide_admit and s_wide_cull for the lateral-only
+ * candidates and s_range_admit and s_range_cull for the range candidates.
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view. */
-static void glint_wide_reveal(CPUState* cpu, const ngte_view* v) {
-    s_wide_admit = 0; s_wide_cull = 0;
-    if (!(v->F > 1.0f)) return;
+static void glint_reveal(CPUState* cpu, const ngte_view* v) {
+    s_wide_admit = 0; s_wide_cull = 0; s_range_admit = 0; s_range_cull = 0;
+    const int wide = v->F > 1.0f;
     for (uint32_t s = 0; s < GT.slots; s++) {
         glint_rec r;
-        if (glint_accept(cpu, v, GT.pool + s * GT.stride, &r) != GLINT_LATERAL) continue;
+        const int a = glint_accept(cpu, v, GT.pool + s * GT.stride, &r);
+        if (a == 0 || a == 1) continue;
+        const int range = (a & GLINT_RANGE) != 0, lateral = (a & GLINT_LATERAL) != 0;
+        if (range && !openpete_no_lod) continue;
+        if (lateral && !wide) { s_range_cull += range; continue; }
         float xr[2];
         const int n = glint_synth_build(cpu, v, &r, glint_draws_star(&r), xr);
         if (n == 0) continue;
-        if (xr[1] < v->xlo || xr[0] >= v->xhi) { s_wide_cull++; continue; }
+        if (lateral && (xr[1] < v->xlo || xr[0] >= v->xhi)) {
+            if (range) s_range_cull++; else s_wide_cull++;
+            continue;
+        }
         s_item_n += n;
-        s_wide_admit++;
+        if (range) s_range_admit++; else s_wide_admit++;
     }
 }
 
@@ -1326,7 +1362,8 @@ static void glint_cull_census(CPUState* cpu) {
  * primitives the routine appended by GPU code, the stars its draw-mode packets
  * delimit and the crosses its line pairs delimit, the stars passing the
  * topology check, the near and far records the pool walk predicted, the
- * records the widened view appended and culled (glint_wide_reveal), the far
+ * records the widened view appended and culled and the box- or far-culled
+ * records extended LOD appended and culled (glint_reveal), the far
  * records drawn as stars under extended LOD (glint_star_far), the
  * native triangles this feeder emitted from each class, how many primitives
  * were left unpaired, and the pairing's pivot residual; then one line per star
@@ -1357,10 +1394,10 @@ static void glint_census(CPUState* cpu, uint32_t start, uint32_t end,
     double pmean, pworst; int pn;
     glint_pivot_residual(&pmean, &pworst, &pn);
     fprintf(stderr, " stars=%d centre_ok=%d rim_max=%d crosses=%d pred_near=%d pred_far=%d"
-                    " wide_admit=%d wide_cull=%d hq_far=%d fed_star_tris=%u fed_cross_tris=%u unpaired=%d"
+                    " wide_admit=%d wide_cull=%d range_admit=%d range_cull=%d hq_far=%d fed_star_tris=%u fed_cross_tris=%u unpaired=%d"
                     " pivot:n=%d mean=%.2f worst=%.2f\n",
             s_stars, stars_ok, rim_max, s_crosses, s_pred_near, s_pred_far,
-            s_wide_admit, s_wide_cull, s_hq_far,
+            s_wide_admit, s_wide_cull, s_range_admit, s_range_cull, s_hq_far,
             s_fed_star_tris - star_before, s_fed_cross_tris - cross_before, unpaired,
             pn, pmean, pworst);
     /* Each star's centre corner and each cross's first endpoint, with the scene
@@ -1605,7 +1642,8 @@ static const hook_bracket_desc k_bracket = {
  * and built in float under the tick's view (glint_build_exact), and under
  * extended LOD each far record's star is appended (glint_star_far); in a view
  * wider than 4:3 the stars its lateral test dropped are appended
- * (glint_wide_reveal). The set is fed natively with the canonical trace when
+ * (glint_reveal), and under extended LOD so are the records its box and far
+ * culls dropped. The set is fed natively with the canonical trace when
  * the scene is live and RP_SPARKLE is selected; a non-empty set from a call
  * that appended nothing marks RP_SPARKLE drawn (render_path_mark_drawn),
  * since only a polybuf interval or the mark makes the sub-tick re-extract
@@ -1622,10 +1660,11 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
     cut_held_sets_capture(&s_sets);
     s_item_n = 0; s_cap_n = 0; s_stars = 0; s_crosses = 0; s_pred_near = 0; s_pred_far = 0;
     s_hq_far = 0;
-    s_wide_admit = 0; s_wide_cull = 0;
+    s_wide_admit = 0; s_wide_cull = 0; s_range_admit = 0; s_range_cull = 0;
     const uint32_t star_before = s_fed_star_tris, cross_before = s_fed_cross_tris;
-    /* A view wider than 4:3 can show a star the routine emitted nothing for. */
-    if (endp > startp || openpete_native_widescreen_factor() > 1.0f) {
+    /* A view wider than 4:3 or extended LOD can show a star the routine
+     * emitted nothing for. */
+    if (endp > startp || openpete_native_widescreen_factor() > 1.0f || openpete_no_lod) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         if (endp > startp) {
@@ -1636,7 +1675,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
             glint_vtx_cal();
             glint_star_far(cpu, &view);
         }
-        glint_wide_reveal(cpu, &view);
+        glint_reveal(cpu, &view);
         if (s_item_n > 0) {
             if (feed && render_path_enabled(RP_SPARKLE)) {
                 render_material_level_push(cpu);
