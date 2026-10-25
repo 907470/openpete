@@ -104,6 +104,13 @@ the-end-haunted-tomb-archway|20565|2||20567,20569,20570,20571|--skip-to-cutscene
 # previous tick's portal openings while this tick's portal pass captured a
 # different set; a sliver shows through the arch edge. Blessed pre-fix.
 sunrise-spring-camera-swing|2073|100||2091,2092,2093,2113,2133,2329,2333,2573
+# sunrise-spring-camera-swing@glintdepth: the same movie under a fixed freecam
+# pose engaged at VBL 2100, a gem's near star close to the camera. The star
+# took its pool record's view-Z, which lies inside the gem, so the gem's own
+# front faces hid part of it (2111) and the ground beneath cut its lower
+# spikes (2271). The row above pins 2113, where a crest nearer than the gem
+# still hides the star. Blessed pre-fix.
+sunrise-spring-camera-swing@glintdepth|2271|600||2111,2271|OPENPETE_FREECAM_AT_VBL=2100 OPENPETE_FREECAM_POSE=33676,23337,16122,0,224
 
 # 2073 pins the opening dialogue, complete and static from 2067: a large
 # semi-transparent text box whose corners are semi-transparent textured quads.

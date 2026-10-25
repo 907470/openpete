@@ -143,3 +143,6 @@ lost_fleet:1 | pos=(21472, 54568, 36864) yaw=123 pitch=179 roll=-1
 # gems' glints sit past the routine's +/-0x7800 box and drew nothing while
 # the gems themselves draw. Blessed pre-fix.
 sunrise_spring | pos=(102255, 56733, 62972) yaw=-1891 pitch=400
+# a gem's near star hidden in part by the gem's own front faces (the star took
+# its pool record's view-Z, inside the gem); the player placed beside the gem
+midnight_mountain@glintdepth | pos=(108418, 95872, 10261) yaw=-1196 pitch=205 | 2567 | --player-pose 108574,96454,9900,0

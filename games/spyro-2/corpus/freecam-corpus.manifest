@@ -148,3 +148,7 @@ crushs_dungeon | pos=(3080, 30039, 31217) yaw=29 pitch=548
 # window (x in (0, 512)), so the band showed none of them. The player pose
 # places Spyro where the emitter spawns them. Blessed pre-fix.
 glimmer | pos=(94737, 111480, 10196) yaw=-1053 pitch=-72 | | --player-pose pos=(94780,109001,9575)
+# a life orb's (class 0x71) star hidden over half its area by the orb's own
+# faces (the star took its pool record's view-Z, the orb's origin); the player
+# placed beside the orb. Blessed pre-fix.
+summer_forest@glintdepth | pos=(51616, 47022, 44485) yaw=0 pitch=224 | 1467 | --player-pose 52316,48800,44300,1024
