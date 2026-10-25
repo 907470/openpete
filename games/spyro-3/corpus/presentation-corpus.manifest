@@ -304,6 +304,16 @@ spooky-swamp-mole-glow-edge|2800|2||2800|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_F
 # -((pos - cam) >> 2) and dropped it for one tick. The movie is the first 2930
 # VBLs of a Cross-every-20-VBLs movie. Blessed pre-fix.
 dino-mines-dino-reveal|2920|2||2909,2915|OPENPETE_FREECAM_AT_VBL=2600 --freecam-path @games/spyro-3/corpus/paths/dino-mines-dino-reveal.path
+# sheilas-alp-glint-flash: Sheila's Alp under a freecam path (engaged at VBL
+# 2064, one pose per tick) with every moby updating (OPENPETE_D1=1), so far gems
+# spawn glints. OPENPETE_VIDEO_ZOE_NEAR=1 (the checkpoint fairy held near, a
+# gameplay change) brings the far gems into the cross path; without it VBL 2377
+# draws no stray cross. At 2377 five far gem crosses drew raw for one present,
+# through walls, on both LOD legs: the near/far verdict, taken on fractional
+# MACs, disagreed with the routine's on its floored integer MACs. 2379 is the
+# next tick, which draws no stray cross. The movie is the first 2400 VBLs of a
+# Cross-every-20-VBLs movie. Blessed pre-fix.
+sheilas-alp-glint-flash|2377|600||2377,2379|OPENPETE_D1=1 OPENPETE_VIDEO_ZOE_NEAR=1 OPENPETE_FREECAM_AT_VBL=2064 --freecam-path @games/spyro-3/corpus/paths/sheilas-alp-glint-flash.path
 # seashell-shore-rhynoc-barrel-key: Seashell Shore under a fixed freecam pose
 # (engaged at VBL 2600), the barrel-lifting Rhynocs (class 0x101) and their
 # barrels (class 0x166, a moby of its own). The barrel's m_DepthOffset keys it
