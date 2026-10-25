@@ -681,6 +681,9 @@ struct rhi_device {
      * waited without bound, the acquire does not wait, and a frame the
      * swapchain cannot take renders and submits without a present. */
     bool     capture_mode;
+    /* A zero surface extent has been logged since the last swapchain
+     * creation (surface_extent); cleared by create_swapchain. */
+    bool     sc_zero_logged;
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
     VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
                             * or the bound render target) - for rhi_clear_depth */
@@ -1897,6 +1900,31 @@ static bool swapchain_fetch_images(rhi_device *dev)
     return true;
 }
 
+/** @brief Query the surface capabilities and the extent a swapchain would take, refusing a zero extent.
+ *
+ * A minimized window reports a zero extent, and no swapchain can be created
+ * at one. The first refusal after a swapchain creation is logged with the
+ * extent the device keeps rendering at; later refusals are silent until
+ * create_swapchain succeeds and clears sc_zero_logged.
+ * @param dev Windowed device.
+ * @param caps Receives the surface capabilities.
+ * @param extent Receives the chosen extent.
+ * @return false when the extent is zero. */
+static bool surface_extent(rhi_device *dev, VkSurfaceCapabilitiesKHR *caps, VkExtent2D *extent)
+{
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev->phys, dev->surface, caps);
+    *extent = choose_extent(dev, caps);
+    if (extent->width != 0 && extent->height != 0) return true;
+    if (!dev->sc_zero_logged)
+        RHI_LOG("swapchain: surface extent %ux%u (window minimized): rebuild deferred, "
+                "%s at %ux%u\n", extent->width, extent->height,
+                dev->capture_mode ? "capture frames render without a present"
+                                  : "presents skipped",
+                dev->sc_extent.width, dev->sc_extent.height);
+    dev->sc_zero_logged = true;
+    return false;
+}
+
 /** @brief Create the swapchain for the window's current size, format and present mode.
  *
  * @param dev Windowed device.
@@ -1904,10 +1932,8 @@ static bool swapchain_fetch_images(rhi_device *dev)
 static bool create_swapchain(rhi_device *dev)
 {
     VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev->phys, dev->surface, &caps);
-
-    VkExtent2D extent = choose_extent(dev, &caps);
-    if (extent.width == 0 || extent.height == 0) return false; /* minimized */
+    VkExtent2D extent;
+    if (!surface_extent(dev, &caps, &extent)) return false;
     SDL_GetWindowSizeInPixels(dev->window, &dev->sc_win_w, &dev->sc_win_h);
     /* The resize-settle check in ensure_swapchain compares against
      * last_seen_w/h: seeding them with the creation size makes a rebuild at
@@ -1953,6 +1979,7 @@ static bool create_swapchain(rhi_device *dev)
 
     dev->sc_format = pick.format;
     dev->sc_extent = extent;
+    dev->sc_zero_logged = false;
     if (!swapchain_fetch_images(dev)) return false;
 
     for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
@@ -3049,12 +3076,22 @@ static void pxt_skip(rhi_device *dev, const char *why)
  * clears the staged-present acquire flag, destroys the swapchain-sized
  * resources, and creates the swapchain, offscreen targets, stage images and
  * render-done semaphores. dev->needs_recreate is cleared only on success.
+ * A zero surface extent (a minimized window) refuses before anything is
+ * waited or destroyed: the swapchain and every object sized to it stay at
+ * the last extent, so a capture-mode frame keeps rendering into off_image
+ * and reading back at that extent without a present while the window is
+ * minimized.
  * @param dev Windowed device.
- * @return false when the swapchain (a minimized window gives a zero extent),
+ * @return false when the surface extent is zero, or when the swapchain,
  *         offscreen targets or stage images cannot be created; the caller
  *         retries because needs_recreate stays set. */
 static bool recreate(rhi_device *dev)
 {
+    {
+        VkSurfaceCapabilitiesKHR caps;
+        VkExtent2D extent;
+        if (!surface_extent(dev, &caps, &extent)) return false;
+    }
     const VkExtent2D pxt_old = dev->sc_extent;
     const uint64_t pxt_t0 = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
     vkDeviceWaitIdle(dev->device);
@@ -4422,7 +4459,8 @@ static bool frame_image_step(rhi_device *dev, bool acquire)
  * device loss every call refuses. In capture mode a swapchain that cannot
  * be used yet (a pending rebuild, a resize settling, the rebuild back-off)
  * or a refused acquire does not refuse the frame: it begins without an
- * image, and rhi_end_frame submits it without a present.
+ * image, and rhi_end_frame submits it without a present, unless a failed
+ * rebuild left the offscreen framebuffer destroyed, which refuses the frame.
  * @param dev Device to begin the frame on.
  * @param acquire Whether to acquire a swapchain image (windowed only).
  * @return true when a command buffer is recording. */
@@ -4431,7 +4469,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     seam_check("begin_frame");
     if (s_device_lost) return false;
     const bool sc_ok = ensure_swapchain(dev);
-    if (!sc_ok && !dev->capture_mode) return false;
+    if (!sc_ok && !(dev->capture_mode && dev->off_fb)) return false;
     if (!slot_fence_retired(dev)) return false;
 
     /* This slot's previous submission has fully retired - its timestamp
