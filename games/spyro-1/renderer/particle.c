@@ -805,15 +805,10 @@ static void particle_build(CPUState* cpu) {
             if (screen_rect_cull(c.sx, c.sy)) continue;
             int lod = (int)((B >> 16) & 0xFF);
             if (((sz3 >> 5) - lod - 2) <= 0) continue;  /* depth-cue LOD cull (s3=2) */
-            /* The .s emits this as a LINE_F from (SX,SY) to (SX+1,SY) - a
-             * 2px-wide x 1px-tall horizontal footprint (PSX plots both line
-             * endpoints). A 1px-wide quad renders as a tall sliver because PSX
-             * pixels are tall (512x224 framebuffer shown at 4:3 ~ 0.583:1 px);
-             * matching the 2px line width makes it ~square like the .s. */
-            q.sx[0]=(float)c.sx;       q.sy[0]=(float)c.sy;        /* 2x1 line footprint */
-            q.sx[1]=(float)(c.sx+2.0); q.sy[1]=(float)c.sy;
-            q.sx[2]=(float)c.sx;       q.sy[2]=(float)(c.sy+1.0);
-            q.sx[3]=(float)(c.sx+2.0); q.sy[3]=(float)(c.sy+1.0);
+            /* The .s emits this as a LINE_F from (SX,SY) to (SX+1,SY): the GPU
+             * plots both endpoints, a 2x1 pixel footprint. */
+            ngte_line_quad((float)c.sx, (float)c.sy, (float)(c.sx + 1.0), (float)c.sy,
+                           0.0f, q.sx, q.sy);
             for (int k = 0; k < 4; k++) q.sz[k] = (float)c.m3;
             q.cz = (float)c.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
             uint32_t cmd = cpu->read_word(pp + 0x0C);    /* flat colour, no texture */
@@ -1033,7 +1028,7 @@ static void particle_compare(CPUState* cpu) {
              * correct position, which a position NN alone misses. Compare the
              * native quad's covered-pixel extent to the .s line's: line covers
              * pixels v0..v1 inclusive = |Δ|+1; the native quad covers sx[1]-sx[0]
-             * (built as +2 to match the 2px line). */
+             * (ngte_line_quad's 2 px for the SX..SX+1 line). */
             int v0x=(int16_t)(s_prim[bp].raw[2]&0xFFFF), v1x=(int16_t)(s_prim[bp].raw[3]&0xFFFF);
             int v0y=(int16_t)(s_prim[bp].raw[2]>>16),    v1y=(int16_t)(s_prim[bp].raw[3]>>16);
             int line_w=(v1x>v0x?v1x-v0x:v0x-v1x)+1, line_h=(v1y>v0y?v1y-v0y:v0y-v1y)+1;
@@ -1111,10 +1106,43 @@ static int part_sel_layer(int sel) {
         ? k_layer[sel] : OPENPETE_SCENE_WORLD;
 }
 
+/** @brief Feeds a screen-space line between two GTE float endpoints as the two triangles of ngte_line_quad's quad.
+ *
+ * The quad covers the pixels the GPU draws for the line (centre offset 0).
+ * Untextured, at one depth, gouraud along the line: corners 0 and 2 take
+ * rgb0, 1 and 3 rgb1.
+ * @param ax Endpoint a's screen X, PSX pixels.
+ * @param ay Endpoint a's screen Y.
+ * @param bx Endpoint b's screen X.
+ * @param by Endpoint b's screen Y.
+ * @param rgb0 Endpoint a's colour, low 24 bits.
+ * @param rgb1 Endpoint b's colour, low 24 bits.
+ * @param depth The scene depth.
+ * @param blend The native blend code, 0 for opaque.
+ * @param layer The OPENPETE_SCENE_* layer. */
+static void part_feed_line_quad(float ax, float ay, float bx, float by, uint32_t rgb0,
+                                uint32_t rgb1, float depth, int blend, int layer) {
+    static const int split[2][3] = { {0,1,2}, {1,3,2} };
+    float cx[4], cy[4];
+    ngte_line_quad(ax, ay, bx, by, 0.0f, cx, cy);
+    const uint32_t cc[4] = { rgb0, rgb1, rgb0, rgb1 };
+    for (int s = 0; s < 2; s++) {
+        openpete_scene_tri st = {0};
+        for (int k = 0; k < 3; k++) {
+            const int j = split[s][k];
+            st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth; st.v[k].pvz = depth;
+            st.v[k].rgba = (cc[j] & 0xFFFFFFu) | 0xFF000000u;
+        }
+        st.blend = blend;
+        openpete_native_scene_add_tri(&st, layer, 0);
+    }
+}
+
 /** @brief Builds the g_Particles pool walk and feeds its quads and lines into the native scene.
  *
- * Lines (sel 1 world streaks, sel 4 HUD egg bursts) become two-triangle
- * ribbons 1 px wide, gouraud along the line, untextured. Quads (sel 0
+ * Lines (sel 1 world streaks, sel 4 HUD egg bursts) become the quad
+ * ngte_line_quad builds over the pixels the GPU draws, gouraud along the
+ * line, untextured. Quads (sel 0
  * tiles, sel 2, 3 and 5 billboards) become two triangles with the decoded
  * material and blend. Each primitive takes one depth, its centre or first
  * endpoint view-Z, because particles are small billboards, and the layer
@@ -1130,32 +1158,14 @@ static void particle_feed_native(CPUState* cpu) {
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);   /* append after world + actors */
     int split[2][3] = { {0,1,2}, {1,3,2} };              /* FT4 -> 2 tris */
-    /* sel-1 gouraud streak lines -> thin (1px-perp) gouraud quads */
+    /* sel-1 and sel-4 gouraud lines */
     for (int i = 0; i < s_pline_n; i++) {
-        pline* l = &s_pline[i];
+        const pline* l = &s_pline[i];
         openpete_native_scene_set_tag(
             OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_LINE, l->sel, 0));
-        float dx = l->bx - l->ax, dy = l->by - l->ay;
-        float len = sqrtf(dx*dx + dy*dy);
-        float px = 0.5f, py = 0.0f;
-        if (len > 1e-3f) { px = -dy/len*0.5f; py = dx/len*0.5f; }
-        float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
-        float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
-        uint32_t cc[4] = { l->rgb0, l->rgb0, l->rgb1, l->rgb1 };  /* gouraud along the line */
-        float depth = openpete_native_scene_viewz(openpete_worldvz_full(l->cz));
-        for (int s = 0; s < 2; s++) {
-            openpete_scene_tri st = {0};
-            for (int k = 0; k < 3; k++) {
-                int j = split[s][k];
-                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth; st.v[k].pvz = depth;
-                st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-                st.v[k].rgba = (cc[j] & 0xFFFFFFu) | 0xFF000000u;
-            }
-            st.textured = 0;
-            st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
-            st.blend = l->blend;
-            openpete_native_scene_add_tri(&st, part_sel_layer(l->sel), 0);
-        }
+        part_feed_line_quad(l->ax, l->ay, l->bx, l->by, l->rgb0, l->rgb1,
+                            openpete_native_scene_viewz(openpete_worldvz_full(l->cz)),
+                            l->blend, part_sel_layer(l->sel));
     }
     openpete_native_scene_set_tag(0);
     if (s_fq_n <= 0) return;
@@ -1717,7 +1727,7 @@ static void sparkle_build(CPUState* cpu) {
  * additive fan from a core to the alternating tip and waist outline points:
  * the core is the S3 glint colour word 0 or, for a plain star, m_Color
  * doubled and clamped, and the rim is the hue's word 1 and word 2 or
- * m_Color. Each cross line becomes a 1 px opaque two-triangle ribbon in
+ * m_Color. Each cross line becomes ngte_line_quad's opaque quad in
  * m_Color. Depth is the view-Z pulled forward by SPARKLE_OT_PULL.
  * Display-only: the .s already ran and wrote every verdict byte.
  * @param cpu The guest CPU state. */
@@ -1772,32 +1782,14 @@ static void sparkle_feed_native(CPUState* cpu) {
     }
     openpete_native_scene_set_tag(0);
     if (s_sline_n <= 0) return;
-    int split[2][3] = { {0,1,2}, {1,3,2} };
     openpete_native_scene_set_tag(
         OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_SPARK, 0, 0));
     for (int i = 0; i < s_sline_n; i++) {
-        sline* l = &s_sline[i];
-        float dx = l->bx - l->ax, dy = l->by - l->ay;
-        float len = sqrtf(dx*dx + dy*dy);
-        float px = 0.5f, py = 0.0f;                  /* perpendicular ·0.5 (1px wide) */
-        if (len > 1e-3f) { px = -dy/len*0.5f; py = dx/len*0.5f; }
-        float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
-        float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
-        float depth = openpete_native_scene_viewz(
+        const sline* l = &s_sline[i];
+        const float depth = openpete_native_scene_viewz(
             openpete_worldvz_pull(openpete_worldvz_full(l->cz), SPARKLE_OT_PULL));
-        for (int s = 0; s < 2; s++) {
-            openpete_scene_tri st = {0};
-            for (int k = 0; k < 3; k++) {
-                int j = split[s][k];
-                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth; st.v[k].pvz = depth;
-                st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-                st.v[k].rgba = (l->rgb & 0xFFFFFFu) | 0xFF000000u;
-            }
-            st.textured = 0;
-            st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
-            st.blend = 0;                            /* LINE_F 0x40 = opaque */
-            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-        }
+        part_feed_line_quad(l->ax, l->ay, l->bx, l->by, l->rgb, l->rgb, depth,
+                            0, OPENPETE_SCENE_WORLD);   /* LINE_F 0x40 = opaque */
     }
     openpete_native_scene_set_tag(0);
 }

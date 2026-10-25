@@ -618,12 +618,36 @@ int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
                         const ngte_tpage* tp, int blend, int nv);
 
-/** @brief Feeds a screen-space line at one depth as a one-pixel-wide untextured quad across its own perpendicular.
+/** @brief Builds the quad that covers the pixels the PSX GPU draws for a line.
  *
- * A line has no area, so the quad extends half a pixel to each side, the
- * width the GPU rasterizes it at; a line shorter than 1e-3 pixels widens
- * along X. Corners 0 and 1 straddle endpoint a, 2 and 3 endpoint b, fed
- * through ngte_feed_flat_quad as two triangles.
+ * The GPU steps k = max(|dx|, |dy|) times along the major axis and draws
+ * k + 1 pixels, both endpoints included, each at the minor coordinate rounded
+ * from the exact line. The quad is the parallelogram through the two endpoint
+ * pixel centres, extended half a pixel past each end along the major axis
+ * and half a pixel to each side along the minor axis; at 1x a pixel centre
+ * falls inside it exactly when the GPU draws that pixel, except for centres
+ * on its edge, where the minor coordinate rounds a tie. A zero-length line is
+ * the endpoint's pixel; |dx| == |dy| is X-major. Corners 0 and 1 are the
+ * start and end on the minus-minor side, 2 and 3 on the plus side, the order
+ * ngte_feed_flat_quad splits as (0,1,2) and (1,3,2).
+ * @param ax Endpoint a's screen X, PSX pixels.
+ * @param ay Endpoint a's screen Y.
+ * @param bx Endpoint b's screen X.
+ * @param by Endpoint b's screen Y.
+ * @param centre Added to each coordinate to reach the endpoint pixel centre:
+ *        0.5 for the guest's integer pixel coordinates, 0 for a GTE float
+ *        projection, whose truncation to the guest's integer leaves the
+ *        float inside the endpoint's pixel.
+ * @param qx Receives the four corners' X.
+ * @param qy Receives the four corners' Y. */
+void ngte_line_quad(float ax, float ay, float bx, float by, float centre,
+                    float qx[4], float qy[4]);
+
+/** @brief Feeds a screen-space line between two GTE float endpoints at one depth as the untextured quad ngte_line_quad builds.
+ *
+ * The quad covers the pixels the GPU draws for the line (centre offset 0).
+ * Corners 0 and 2 take endpoint a's colour, 1 and 3 endpoint b's, fed through
+ * ngte_feed_flat_quad as two triangles.
  * @param ax Endpoint a's screen X, PSX pixels.
  * @param ay Endpoint a's screen Y.
  * @param bx Endpoint b's screen X.

@@ -1599,9 +1599,11 @@ static void part_vertex_jitter(void) {
  * @param r Its rebase.
  * @param n The vertex count: 4 for a polygon, 2 for a line.
  * @param x Receives the screen X.
- * @param y Receives the screen Y. */
-static void part_drawn_vertices(const part_item* it, const part_rebase* r, int n,
-                                float x[4], float y[4]) {
+ * @param y Receives the screen Y.
+ * @return 1 when the vertices are a build's GTE float projections, 0 when
+ *         they are the primitive's integer pixel coordinates. */
+static int part_drawn_vertices(const part_item* it, const part_rebase* r, int n,
+                               float x[4], float y[4]) {
     const float* bx = (r->active && r->nb == n) ? r->bx : (it->nb == n ? it->bx : NULL);
     const float* by = (r->active && r->nb == n) ? r->by : it->by;
     for (int k = 0; k < n; k++) {
@@ -1611,14 +1613,16 @@ static void part_drawn_vertices(const part_item* it, const part_rebase* r, int n
         x[k] = (float)rx;
         y[k] = (float)ry;
     }
+    return bx != NULL;
 }
 
-/** @brief Feeds a LINE_F2 or LINE_G2 primitive as a one-pixel-wide quad across its own perpendicular.
+/** @brief Feeds a LINE_F2 or LINE_G2 primitive as the quad covering the pixels the GPU draws for it.
  *
- * A line has no area, so the quad extends half a pixel to each side, the width
- * the GPU rasterizes it at; a line shorter than 1e-3 pixels widens along X.
- * The endpoints are part_drawn_vertices'. A gouraud line colours each
- * endpoint from its own word; the semi-transparency bit selects blend code 1.
+ * The endpoints are part_drawn_vertices'; the quad is ngte_line_quad's, with
+ * centre offset 0 for a build's float endpoints and 0.5 for the primitive's
+ * integer ones. A class-0 dot (SXY to SXY + 1) covers two pixels. A gouraud
+ * line colours each endpoint from its own word; the semi-transparency bit
+ * selects blend code 1.
  * @param it The captured primitive.
  * @param r Its rebase.
  * @param depth The scene depth to feed at.
@@ -1630,10 +1634,13 @@ static void part_feed_line(const part_item* it, const part_rebase* r,
     const int stp = (int)((w1 >> 24) & 0x02u);
     const uint32_t rgb0 = w1 & 0xFFFFFFu;
     const uint32_t rgb1 = gouraud ? (p->raw[3] & 0xFFFFFFu) : rgb0;
-    float x[4], y[4];
-    part_drawn_vertices(it, r, 2, x, y);
+    float x[4], y[4], qx[4], qy[4];
+    const int built = part_drawn_vertices(it, r, 2, x, y);
     part_vertex_place((int)(it - s_item), x, y, 2);
-    s_fed_tris += (uint32_t)ngte_feed_flat_line(x[0], y[0], x[1], y[1], rgb0, rgb1, depth, stp ? 1 : 0);
+    ngte_line_quad(x[0], y[0], x[1], y[1], built ? 0.0f : 0.5f, qx, qy);
+    static const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const uint32_t cc[4] = { rgb0, rgb1, rgb0, rgb1 };
+    s_fed_tris += (uint32_t)ngte_feed_flat_quad(qx, qy, zu, zu, cc, depth, NULL, stp ? 1 : 0, 4);
 }
 
 /** @brief At OPENPETE_PART_REBASE_DBG 3 or more, prints one line per fed quad of a paired record: its drawn centroid and the point the record shows.

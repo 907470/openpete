@@ -415,16 +415,26 @@ int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
     return fed;
 }
 
+void ngte_line_quad(float ax, float ay, float bx, float by, float centre,
+                    float qx[4], float qy[4]) {
+    const float x0 = ax + centre, y0 = ay + centre;
+    const float x1 = bx + centre, y1 = by + centre;
+    const float dx = x1 - x0, dy = y1 - y0;
+    const int xmajor = fabsf(dx) >= fabsf(dy);
+    const float major = fmaxf(fabsf(xmajor ? dx : dy), 1.0f);
+    const float ex = 0.5f * (xmajor ? (dx < 0.0f ? -1.0f : 1.0f) : dx / major);   /* half-pixel end extension */
+    const float ey = 0.5f * (xmajor ? dy / major : (dy < 0.0f ? -1.0f : 1.0f));
+    const float sx = xmajor ? 0.0f : 0.5f, sy = xmajor ? 0.5f : 0.0f;         /* half-pixel side offset */
+    qx[0] = x0 - ex - sx; qx[1] = x1 + ex - sx; qx[2] = x0 - ex + sx; qx[3] = x1 + ex + sx;
+    qy[0] = y0 - ey - sy; qy[1] = y1 + ey - sy; qy[2] = y0 - ey + sy; qy[3] = y1 + ey + sy;
+}
+
 int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
                         uint32_t rgb_b, float depth, int blend) {
-    const float dx = bx - ax, dy = by - ay;
-    const float len = sqrtf(dx * dx + dy * dy);
-    float ox = 0.5f, oy = 0.0f;
-    if (len > 1e-3f) { ox = -dy / len * 0.5f; oy = dx / len * 0.5f; }
-    const float qx[4] = { ax - ox, ax + ox, bx - ox, bx + ox };
-    const float qy[4] = { ay - oy, ay + oy, by - oy, by + oy };
+    float qx[4], qy[4];
+    ngte_line_quad(ax, ay, bx, by, 0.0f, qx, qy);
     const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    const uint32_t cc[4] = { rgb_a, rgb_a, rgb_b, rgb_b };
+    const uint32_t cc[4] = { rgb_a, rgb_b, rgb_a, rgb_b };
     return ngte_feed_flat_quad(qx, qy, zu, zu, cc, depth, NULL, blend, 4);
 }
 

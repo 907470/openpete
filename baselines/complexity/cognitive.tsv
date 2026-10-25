@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 90fe39386776866176aa8ec4e7f9038f571f23cc
+# head: 536aa53085240df0b9b22810206f3cb177b4a773
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -184,10 +184,9 @@ games/spyro-1/renderer/particle.c	glow_compare	40	0
 games/spyro-1/renderer/particle.c	on_particle_renderer	47	0	
 games/spyro-1/renderer/particle.c	particle_build	216	0	
 games/spyro-1/renderer/particle.c	particle_compare	153	0	
-games/spyro-1/renderer/particle.c	particle_feed_native	28	0	
 games/spyro-1/renderer/particle.c	sparkle_build	82	0	
 games/spyro-1/renderer/particle.c	sparkle_compare	40	0	
-games/spyro-1/renderer/particle.c	sparkle_feed_native	44	0	
+games/spyro-1/renderer/particle.c	sparkle_feed_native	37	0	
 games/spyro-1/renderer/portal.c	dump_leaf	31	0	
 games/spyro-1/renderer/portal.c	dump_portal_table	29	0	
 games/spyro-1/renderer/portal.c	emit_portal_aperture	41	0	

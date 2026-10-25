@@ -56,6 +56,24 @@ endif()
 set_target_properties(view_rect_test PROPERTIES C_STANDARD 99)
 add_test(NAME view_rect_test COMMAND view_rect_test)
 
+# line_quad_test - ngte_line_quad's quad, rasterized at 1x by pixel centres,
+# draws the pixels the PSX GPU draws for the line, ties excepted, over
+# every line within 64 px of a start pixel; the perpendicular 1 px quad is the
+# negative control. Compiles native_gte.c with link stubs for the renderer
+# entry points it references.
+add_executable(line_quad_test
+    line_quad_test.c
+    ${CMAKE_SOURCE_DIR}/games/common/renderer/native_gte.c)
+target_include_directories(line_quad_test PRIVATE
+    $<TARGET_PROPERTY:openpete_game_common,INCLUDE_DIRECTORIES>)
+target_compile_definitions(line_quad_test PRIVATE
+    $<TARGET_PROPERTY:openpete_game_common,COMPILE_DEFINITIONS>)
+if(NOT WIN32)
+    target_link_libraries(line_quad_test PRIVATE m)
+endif()
+set_target_properties(line_quad_test PROPERTIES C_STANDARD 99)
+add_test(NAME line_quad_test COMMAND line_quad_test)
+
 # openpete_time_test - verifies the high-resolution monotonic clock +
 # hybrid sleep+spin waiter.
 # Compiles openpete_time.c directly to stay SDL-free. The Win32 path

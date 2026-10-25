@@ -802,32 +802,19 @@ static float psx_y(uint32_t xy) { return (float)(int16_t)(xy >> 16); }
 
 /** @brief Feeds one screen-space line into a native 2D layer as a gouraud quad.
  *
- * The scene is triangles only. The GPU draws a line one pixel per step of
- * its major axis from the first endpoint's pixel through the second's, both
- * included. The quad covers that footprint: the line between the two
- * endpoint pixels' centres, extended half a pixel past each end along the
- * major axis and half a pixel to each side along the minor axis, so a
- * horizontal or vertical line covers exactly its pixels. Each end takes its
- * endpoint's colour.
+ * The scene is triangles only. The quad is ngte_line_quad's on the integer
+ * endpoints (centre offset 0.5), which covers the pixels the GPU draws for
+ * the line. Each end takes its endpoint's colour.
  * @param xy0 The first endpoint's packed XY (x low, y high, signed).
  * @param xy1 The second endpoint's packed XY.
  * @param rgba0 The first endpoint's colour and alpha.
  * @param rgba1 The second endpoint's colour and alpha.
  * @param lay The layer and blend class. */
 static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t rgba1, ui_untex_t lay) {
-    const float x0 = psx_x(xy0) + 0.5f, y0 = psx_y(xy0) + 0.5f;
-    const float x1 = psx_x(xy1) + 0.5f, y1 = psx_y(xy1) + 0.5f;
-    const float dx = x1 - x0, dy = y1 - y0;
-    const int xmajor = fabsf(dx) >= fabsf(dy);
-    const float major = fmaxf(fabsf(xmajor ? dx : dy), 1.0f);
-    const float ex = 0.5f * (xmajor ? (dx < 0.0f ? -1.0f : 1.0f) : dx / major);   /* half-pixel end extension */
-    const float ey = 0.5f * (xmajor ? dy / major : (dy < 0.0f ? -1.0f : 1.0f));
-    const float sx = xmajor ? 0.0f : 0.5f, sy = xmajor ? 0.5f : 0.0f;         /* half-pixel side offset */
+    float cx[4], cy[4];
+    ngte_line_quad(psx_x(xy0), psx_y(xy0), psx_x(xy1), psx_y(xy1), 0.5f, cx, cy);
 
     scene_begin_for_feed();
-    /* corners: TL,TR,BL,BR = start-side, end-side, start+side, end+side. */
-    const float cx[4] = { x0 - ex - sx, x1 + ex - sx, x0 - ex + sx, x1 + ex + sx };
-    const float cy[4] = { y0 - ey - sy, y1 + ey - sy, y0 - ey + sy, y1 + ey + sy };
     const uint32_t cc[4] = { rgba0, rgba1, rgba0, rgba1 };
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };
     for (int t=0;t<2;t++) {
