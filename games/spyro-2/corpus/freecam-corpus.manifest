@@ -143,3 +143,8 @@ crushs_dungeon | pos=(-1501, 29835, 47171) yaw=17 pitch=563
 # Crush's Dungeon lava ring split half near (animated) and half far
 # (frozen at extended LOD). Blessed pre-fix.
 crushs_dungeon | pos=(3080, 30039, 31217) yaw=29 pitch=548
+# A whirlwind of particle-pool records (classes 1 and 3) in the left 16:9
+# band: the particle routine stamps and appends a record only inside the 4:3
+# window (x in (0, 512)), so the band showed none of them. The player pose
+# places Spyro where the emitter spawns them. Blessed pre-fix.
+glimmer | pos=(94737, 111480, 10196) yaw=-1053 pitch=-72 | | --player-pose pos=(94780,109001,9575)
