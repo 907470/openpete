@@ -4034,24 +4034,32 @@ static void state_op_push(state_op_kind kind, unsigned slot, const char* path) {
     s_state_ops[s_state_op_n++] = (state_op_t){kind, slot, path, 0, 0u};
 }
 
+/* A request's outcome, as state_op_run and state_ops_drain report it: the
+ * first three are openpete_state_save / openpete_state_load's return values. */
+enum {
+    STATE_OP_FAILED = -1,   /* save or load failed or refused; running state untouched */
+    STATE_OP_DONE = 0,      /* saved, or loaded */
+    STATE_OP_SITE = 1,      /* a load found another park site than its state's */
+    STATE_OP_SITE_REFUSED = 2, /* that load waited STATE_LOAD_SITE_WAIT final yields */
+};
+
 /** @brief Run one queued savestate request; a load that succeeds re-anchors the host frame counter.
  *
  * The re-anchor makes the one-shot triggers (screenshot-on-frame,
  * ram-dump-on-frame, frame-limit) reason about time from the load as on a
  * fresh run.
  * @param op The request.
- * @return 1 when a load found the fiber parked at another site than its
- *         state's (nothing restored), else 0. */
+ * @return STATE_OP_DONE, STATE_OP_FAILED, or STATE_OP_SITE when a load found
+ *         the fiber parked at another site than its state's (nothing
+ *         restored). */
 static int state_op_run(const state_op_t* op) {
     unsigned lf = openpete_frame;
-    int rc = -1;
+    int rc = STATE_OP_FAILED;
     switch (op->kind) {
     case STATE_OP_SAVE_SLOT:
-        (void)openpete_state_save(op->slot, &g_game.cpu, openpete_frame);
-        return 0;
+        return openpete_state_save(op->slot, &g_game.cpu, openpete_frame);
     case STATE_OP_SAVE_FILE:
-        (void)openpete_state_save_file(op->path, &g_game.cpu, openpete_frame);
-        return 0;
+        return openpete_state_save_file(op->path, &g_game.cpu, openpete_frame);
     case STATE_OP_LOAD_SLOT:
         rc = openpete_state_load(op->slot, &g_game.cpu, &lf);
         break;
@@ -4059,8 +4067,8 @@ static int state_op_run(const state_op_t* op) {
         rc = openpete_state_load_file(op->path, &g_game.cpu, &lf);
         break;
     }
-    if (rc == 0) openpete_frame = lf;
-    return rc == 1;
+    if (rc == STATE_OP_DONE) openpete_frame = lf;
+    return rc;
 }
 
 /** @brief Keep a load that found another park site, or refuse it once it has waited STATE_LOAD_SITE_WAIT final yields.
@@ -4078,11 +4086,49 @@ static int state_op_site_wait(state_op_t* op) {
     return 0;
 }
 
+/* The OSD coalescing key every slot toast shares: a save, a load and a slot
+ * switch in quick succession repaint one toast instead of stacking three. */
+#define STATE_SLOT_OSD_KEY "state.slot"
+
+/** @brief Post the OSD toast for a finished slot save or slot load.
+ *
+ * File requests (the scheduled --state-save-on-frame / --state-load-on-frame
+ * one-shots) post nothing: no player pressed a key for them. A failed slot
+ * load whose slot file does not exist is reported as an empty slot; every
+ * other failure (a state from another game, build or modset, an unreadable
+ * file, a park site that did not recur) as a refused load, whose reason is
+ * in the log.
+ * @param op The finished request.
+ * @param rc STATE_OP_DONE, STATE_OP_FAILED or STATE_OP_SITE_REFUSED. */
+static void state_op_toast(const state_op_t* op, int rc) {
+    const char* fmt = NULL;
+    if (op->kind == STATE_OP_SAVE_SLOT)
+        fmt = rc == STATE_OP_DONE ? "STATE SAVED: SLOT %u" : "SAVE FAILED: SLOT %u";
+    else if (op->kind != STATE_OP_LOAD_SLOT)
+        return;
+    else if (rc == STATE_OP_DONE)
+        fmt = "STATE LOADED: SLOT %u";
+    else
+        fmt = rc == STATE_OP_SITE_REFUSED || openpete_state_slot_present(op->slot)
+                  ? "LOAD REFUSED: SLOT %u" : "LOAD: SLOT %u EMPTY";
+    openpete_osd_notify("host", STATE_SLOT_OSD_KEY, 0, fmt, op->slot);
+}
+
+/** @brief Log and toast the hotkey slot after a slot switch, with whether a state is saved in it.
+ * @param slot The new active slot. */
+static void state_slot_announce(unsigned slot) {
+    const int present = openpete_state_slot_present(slot);
+    OPL_INFO_F("savestate", "active slot -> %u%s", slot, present ? " (occupied)" : " (empty)");
+    openpete_osd_notify("host", STATE_SLOT_OSD_KEY, 0, "STATE SLOT: %u %s", slot,
+                        present ? "OCCUPIED" : "EMPTY");
+}
+
 /** @brief Run every queued savestate request at a final yield, or keep the queue and count the wait.
  *
  * Requests run in arrival order. A load whose state was saved at another
  * park site stops the drain there: it and every later request stay queued
- * for the next final yield (state_op_site_wait).
+ * for the next final yield (state_op_site_wait). A slot request toasts when
+ * it finishes or is refused, never while it waits (state_op_toast).
  * @return 1 at a final yield (the queue ran and the periodic state work may run), else 0. */
 static int state_ops_drain(void) {
     if (!openpete_yield_final) {
@@ -4099,7 +4145,12 @@ static int state_ops_drain(void) {
     int done = 0;
     while (done < s_state_op_n) {
         state_op_t* op = &s_state_ops[done];
-        if (state_op_run(op) && state_op_site_wait(op)) break;
+        int rc = state_op_run(op);
+        if (rc == STATE_OP_SITE) {
+            if (state_op_site_wait(op)) break;
+            rc = STATE_OP_SITE_REFUSED;
+        }
+        state_op_toast(op, rc);
         done++;
     }
     memmove(s_state_ops, s_state_ops + done, (size_t)(s_state_op_n - done) * sizeof s_state_ops[0]);
@@ -5598,10 +5649,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             state_ops_collect(opts, active_slot);
             if (openpete_key_pressed(OPK_STATE_CYCLE)) {
                 active_slot = (active_slot + 1u) % OPENPETE_STATE_NUM_SLOTS;
-                OPL_INFO_F("savestate", "active slot -> %u%s",
-                           active_slot,
-                           openpete_state_slot_present(active_slot)
-                               ? " (occupied)" : " (empty)");
+                state_slot_announce(active_slot);
             }
             /* Process handoff: resume on the first pass of a
              * --resume-handoff process; checkpoint+exec when armed

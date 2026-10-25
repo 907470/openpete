@@ -10,6 +10,7 @@
 #include "openpete_osd.h"
 #include "openpete_overlay_anchor.h"
 #include "openpete_fiber.h"   /* openpete_speculative / openpete_replaying */
+#include "openpete_log.h"
 
 #include <SDL3/SDL_mutex.h>
 
@@ -191,11 +192,16 @@ void openpete_osd_notify(const char *source, const char *key,
         t->ttl_ms  = timeout_ms;
         t->repaint = 1;   /* the present thread rewinds the hold - it owns the clock */
         SDL_UnlockMutex(osd_mx());
+        OPL_DEBUG_F("osd", "repaint key=%s: %s", key, text);
         return;
     }
 
     bucket_t *b = bucket_for((source && *source) ? source : "host");
-    if (b->tokens < 1.0f) { SDL_UnlockMutex(osd_mx()); return; }
+    if (b->tokens < 1.0f) {
+        SDL_UnlockMutex(osd_mx());
+        OPL_DEBUG_F("osd", "drop (rate limit) key=%s: %s", (key && *key) ? key : "-", text);
+        return;
+    }
     b->tokens -= 1.0f;
     b->last_seq = s_next_seq;
 
@@ -209,6 +215,7 @@ void openpete_osd_notify(const char *source, const char *key,
     snprintf(t->key, sizeof t->key, "%s", (key && *key) ? key : "");
     memcpy(t->text, text, sizeof text);
     SDL_UnlockMutex(osd_mx());
+    OPL_DEBUG_F("osd", "post key=%s: %s", (key && *key) ? key : "-", text);
 }
 
 /* ---- both readers share one order --------------------------------------- */

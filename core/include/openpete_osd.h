@@ -94,7 +94,8 @@ uint32_t openpete_osd_default_timeout_ms(void);
  * dropped when the bucket is empty. A repaint is never charged. Safe from any
  * thread. A no-op while the OSD is off, when @p fmt is NULL, and while the
  * executing tick is speculative (runahead) or replayed (rewind), since those
- * ticks are rolled back or re-executed.
+ * ticks are rolled back or re-executed. Each post, repaint and rate-limit
+ * drop is logged at debug level under the "osd" subsystem.
  * @param source The rate-limit bucket: "host" for the engine, the mod id for
  *        a mod; NULL or empty reads as "host".
  * @param key The coalescing key; NULL or empty always stacks a new toast.

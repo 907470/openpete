@@ -63,8 +63,13 @@ files saved before the per-game folders existed stay in `states/`; the
 first run of a game on this version copies the ones it made into its own
 folder ([Files from earlier versions](../help/file-locations.md#files-from-earlier-versions)).
 Saving overwrites the slot.
-The log records each save, load and slot change; there is no on-screen
-message.
+Each save, load and slot change raises an [on-screen notification](../graphics/display.md#on-screen-notifications)
+naming the slot and the result: **STATE SAVED**, **SAVE FAILED**,
+**STATE LOADED**, **LOAD REFUSED** (the reasons are below; the log names
+the one that applied), **LOAD: SLOT 2 EMPTY**, or, after the slot key,
+**STATE SLOT: 3 EMPTY** or **STATE SLOT: 3 OCCUPIED**. One notification
+carries all three keys, so pressing them in quick succession updates it in
+place. The log records the same events.
 
 The savestate keys do nothing while the settings menu is open.
 
@@ -74,7 +79,11 @@ A load is refused, and the running game left untouched, when:
 - the state was made by a build whose compiled game differs from this one,
   which includes most upgrades;
 - the state was made under a different set of game-changing mods (the log
-  says **MODSET MISMATCH**; enable the same mods and versions).
+  says **MODSET MISMATCH**; enable the same mods and versions);
+- the game does not return to the wait point where the state was saved
+  within 1800 of its waits (at least 30 seconds), for example because a
+  pause menu or a level transition is running; the load waits that long,
+  and its notification appears when it is refused.
 
 !!! warning
     A savestate restores the whole machine, memory card data excepted: a
