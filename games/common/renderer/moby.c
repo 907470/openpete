@@ -2702,6 +2702,11 @@ static int reveal_prev_has(uint32_t m) {
 }
 
 /* The last host-reveal set; documented at the declaration in moby.h. */
+/* Documented at the declaration in moby.h. */
+int moby_native_simple_mobys(uint32_t* out, int max) {
+    return moby_game.simple_mobys ? moby_game.simple_mobys(out, max) : 0;
+}
+
 int moby_native_revealed_mobys(const uint32_t** out) {
     *out = s_rev_prev;
     return (openpete_frame - s_canon_drawn_frame <= 2u) ? s_rev_prev_n : 0;

@@ -971,6 +971,19 @@ static int s23_simple_prev_mobys(uint32_t epoch, uint32_t* out, int max) {
     return k;
 }
 
+/** @brief The mobys of the second-kind queue copy of the current canonical epoch (moby_game.simple_mobys).
+ *
+ * @param out Receives up to @p max moby addresses.
+ * @param max Capacity of @p out.
+ * @return The count written; 0 when the current copy dates from another
+ *         epoch. */
+static int s23_simple_mobys(uint32_t* out, int max) {
+    if (!out || s_sq->epoch != spyro_native_canon_epoch_stamp()) return 0;
+    int k = 0;
+    for (int i = 0; i < s_sq->qn && k < max; i++) out[k++] = s_sq->q[i][0];
+    return k;
+}
+
 /* Per-frame engagement counts: a pass that walked nothing proves nothing, so
  * the verify harness prints what this one actually read. */
 static long s_simple_recs, s_simple_verts, s_simple_faces, s_simple_tris;
@@ -2430,6 +2443,7 @@ const moby_game_t moby_game_spyro23 = {
     .simple_pass       = s23_simple_pass,
     .simple_replay     = s23_simple_replay,
     .simple_prev_mobys = s23_simple_prev_mobys,
+    .simple_mobys      = s23_simple_mobys,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so the
      * shared field reveal stays off (host_reveal below); these two let the
      * shared candidate walk offer the mobys the cull's distance box rejected

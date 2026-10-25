@@ -1058,7 +1058,11 @@ typedef struct game_layout {
      * of four byte indices into those points (one word per quad, first
      * corner in the top byte), and `colours` rows of three colour words
      * {pale centre, spike tip, near-black waist} indexed by packed byte 3.
-     * 0 = not located. */
+     * 0 = not located.
+     *
+     * `sparkle` is the table of `sparkle_n` int32 (x, y, z) model-space
+     * points the gem handlers place a near record at: the gem's rotation
+     * times one point, plus its origin. 0 = not located. */
     struct {
         uint32_t hook;
         uint32_t pool;
@@ -1073,6 +1077,8 @@ typedef struct game_layout {
         uint32_t outline;
         uint32_t quads;
         uint32_t colours;
+        uint32_t sparkle;
+        uint32_t sparkle_n;
     } glint;
 
     /* Zoe's zap: one ragged textured ribbon per live record of a third pool,

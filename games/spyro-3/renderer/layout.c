@@ -633,6 +633,12 @@ const game_layout_t spyro3_game_layout = {
         .outline    = D_GLINT_OUTLINE,      /* asm/mobyfunc.s:2360, 2457 */
         .quads      = D_GLINT_QUADS,        /* asm/mobyfunc.s:2375 */
         .colours    = D_GLINT_COLOURS,      /* asm/mobyfunc.s:2328 */
+        /* D_80066A48 + 0x30, indexed by the gem's kind byte +0x49 times two
+         * plus one random bit (overlays/level_28/moby/func_level_28_80074A0C.s:90-93,
+         * :152-158); the kind is D_80066964[value], 0 to 4 (:238-245), so
+         * ten points. */
+        .sparkle    = 0x80066A78u,
+        .sparkle_n  = 10u,
     },
     .zap = {
         .hook       = F_GLINT2_DRAW,

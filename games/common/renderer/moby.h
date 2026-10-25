@@ -231,6 +231,15 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * @return The entry count. */
 int moby_native_revealed_mobys(const uint32_t** out);
 
+/** @brief The mobys the second model kind's queue of the current canonical epoch holds, reveal records included.
+ *
+ * Empty on a game without a second kind, and before this epoch's queue is
+ * captured.
+ * @param out Receives up to @p max moby addresses.
+ * @param max Capacity of @p out.
+ * @return The count written. */
+int moby_native_simple_mobys(uint32_t* out, int max);
+
 /** @brief Whether the game's cutscene renderer owns the draw, so it draws its own actor set and no other moby.
  *
  * The game's rule (moby_game.cutscene_owns_draw; Spyro 1: g_GameState 8 with

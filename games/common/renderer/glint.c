@@ -55,7 +55,8 @@
 // the routine's own outline, quad and colour tables (glint_corners), and the
 // polybuf corners serve only to calibrate that rebuild. The primitives carry
 // no depth either - the PSX orders them by ordering-table bucket - so each
-// star's view-Z comes from projecting its own pool record, paired to the star
+// star's view-Z comes from its own pool record and the moby that owns it
+// (glint_star_vz), paired to the star
 // through the routine's own bookkeeping: a near record emits exactly one draw-mode packet and a far record
 // emits exactly two lines, both in pool order, and the record walk here mirrors
 // the routine's own rejects to say which records were accepted in which mode.
@@ -77,6 +78,19 @@
 // bracket, the polybuf walk, the primitive decode and the projection helpers -
 // is already shared and is reused here unchanged.
 //
+// A record sits inside the gem or orb that placed it: a gem handler puts its
+// near record at the gem's origin plus the gem's rotation times one point of
+// the game's sparkle table, its far record at the origin plus 0x80 Z, and an
+// orb copies its origin into the record. At the record's own depth the star
+// is cut by its owner's front faces. Each record therefore takes an owner -
+// the nearest moby the canonical pass drew whose origin lies within the
+// sparkle table's reach of the record - and the star's depth is the nearer of
+// the record's view-Z and the view-Z of the owner's origin less the owner's
+// model radius, the largest distance of any vertex the native draw emits for
+// it. The owner's faces then never hide its star, while a surface nearer than
+// the owner's bounding sphere still does. A record with no owner keeps its
+// own depth.
+//
 // Determinism: never writes PSX RAM. The guest draw runs exactly once through
 // the shared bracket and keeps its own verdicts, including the lifetime byte it
 // decrements in each record; this feeder only reads them afterwards.
@@ -94,6 +108,8 @@
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "game_layout.h"
 #include "no_lod.h"                 /* openpete_no_lod: extended LOD draws every record as a star */
+#include "renderer/moby.h"          /* the drawn moby sets a record's owner is searched in */
+#include "renderer/moby_game.h"     /* moby_game.model_is_animated: the owner's model kind */
 
 #include <math.h>
 #include <stdint.h>
@@ -128,6 +144,9 @@ typedef struct {
     uint8_t  row;        /* its colour-table row */
     double   psx, psy;   /* its own projected screen point, from the unfloored offset */
     double   pvz;        /* that point's half-world view-Z */
+    double   own[3];     /* world vector from the record to its owner's origin */
+    float    own_rad;    /* the owner's model radius in world units; 0 = no owner */
+    float    pull;       /* world units the owner's sphere front pulled the depth nearer */
 } glint_rec;
 
 typedef struct {
@@ -286,6 +305,219 @@ static void glint_mac_int(const ngte_view* v, const double vo[3], int64_t mac[3]
     }
 }
 
+/* ---- owner ----------------------------------------------------------------
+ *
+ * The candidates are the mobys the canonical pass drew this tick: the
+ * animated kind's cull records (moby_native_canon_drawn_mobys), the host
+ * reveal's admissions (moby_native_revealed_mobys) and the second kind's
+ * queue (moby_native_simple_mobys), all three filled by the moby draw the
+ * world draw runs before the glint routine (Spyro 2 drawutil/func_8004C534.s:17-21
+ * from draw/func_800155A0.s:16, the glint routine at :32; Spyro 3
+ * drawutil/func_8001EC5C.s:15-19 from draw/func_8001E460.s:14, the glint
+ * routine at :30). */
+
+#define GLINT_OWN_MAX   512    /* candidates kept per call */
+#define GLINT_RAD_CACHE 64     /* second-kind headers whose radius is kept */
+#define GLINT_RAD_VERTS 256    /* the most vertices one second-kind list holds */
+
+typedef struct {
+    uint32_t moby;
+    double   pos[3];   /* its world origin */
+    float    rad;      /* its model radius, world units */
+} glint_owner;
+
+static glint_owner s_own[GLINT_OWN_MAX];
+static int         s_own_n;
+static double      s_own_reach;   /* the farthest a record sits from its owner's origin */
+
+/* One second-kind header's radius, keyed by the header address and the words
+ * a different model at the same address would change: the vertex counts, the
+ * bounding bytes and the first and last vertex. */
+typedef struct {
+    uint32_t hdr, h0, h1, v0, vn;
+    float    rad;
+} glint_rad_ent;
+
+static glint_rad_ent s_rad[GLINT_RAD_CACHE];
+static unsigned      s_rad_next;
+
+/** @brief The farthest a glint record sits from the origin of the moby that placed it, in world units.
+ *
+ * A gem handler places its near record at the gem's origin plus the gem's
+ * rotation times one point of the sparkle table (Spyro 3
+ * overlays/level_28/moby/func_level_28_80074A0C.s:152-168, Spyro 2
+ * overlays/level_50/moby_update/func_level_50_800705C8.s:433-444), its far
+ * record at the origin plus 0x80 Z (func_level_28_80074A0C.s:97-111), and an
+ * orb at its origin. The rotation is a Q12 matrix of unit length, so the
+ * reach is the longest table point plus 2 for the rotation's truncation to
+ * integers on each axis. A layout that locates no table gives the far
+ * record's 0x80.
+ * @param cpu Reads the sparkle table.
+ * @return The reach. */
+static double glint_sparkle_reach(CPUState* cpu) {
+    double far2 = 128.0 * 128.0;
+    for (uint32_t i = 0; GT.sparkle && i < GT.sparkle_n; i++) {
+        double d2 = 0.0;
+        for (uint32_t k = 0; k < 3u; k++) {
+            const double c = (double)(int32_t)cpu->read_word(GT.sparkle + i * 12u + k * 4u);
+            d2 += c * c;
+        }
+        if (d2 > far2) far2 = d2;
+    }
+    return sqrt(far2) + 2.0;
+}
+
+/** @brief The largest distance of a second-kind model's vertices from its origin, in world units.
+ *
+ * The draw reads the vertex words at header + 0x10, a high-poly count in
+ * byte 1 of the header's first word and a low-poly count in byte 2 over the
+ * same list, and unpacks each word into X in bits 11-21, Y in bits 0-11 and Z
+ * in bits 21-31 in half-world units (moby_game_spyro23.c, s23_simple_pass).
+ * The result is cached per header (GLINT_RAD_CACHE entries, replaced in
+ * turn).
+ * @param cpu Reads the header and its vertices.
+ * @param hdr The geometry header, KSEG0.
+ * @return The radius, 0 for a model with no vertex. */
+static float glint_simple_radius(CPUState* cpu, uint32_t hdr) {
+    const uint32_t h0 = cpu->read_word(hdr), h1 = cpu->read_word(hdr + 4u);
+    uint32_t n = (h0 >> 8) & 0xFFu;
+    if (((h0 >> 16) & 0xFFu) > n) n = (h0 >> 16) & 0xFFu;
+    if (n > GLINT_RAD_VERTS) n = GLINT_RAD_VERTS;
+    if (n == 0u) return 0.0f;
+    const uint32_t v0 = cpu->read_word(hdr + 0x10u), vn = cpu->read_word(hdr + 0x10u + (n - 1u) * 4u);
+    for (int i = 0; i < GLINT_RAD_CACHE; i++) {
+        const glint_rad_ent* e = &s_rad[i];
+        if (e->hdr == hdr && e->h0 == h0 && e->h1 == h1 && e->v0 == v0 && e->vn == vn) return e->rad;
+    }
+    double far2 = 0.0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t w = cpu->read_word(hdr + 0x10u + i * 4u);
+        const double x = (double)((int32_t)(w << 10) >> 21), y = (double)((int32_t)(w << 20) >> 20),
+                     z = (double)((int32_t)w >> 21);
+        const double d2 = x * x + y * y + z * z;
+        if (d2 > far2) far2 = d2;
+    }
+    glint_rad_ent* e = &s_rad[s_rad_next++ % GLINT_RAD_CACHE];
+    *e = (glint_rad_ent){ hdr, h0, h1, v0, vn, (float)(2.0 * sqrt(far2)) };
+    return e->rad;
+}
+
+/** @brief A moby's model radius, the largest distance from its origin of a vertex the native draw emits for it, in world units.
+ *
+ * The second kind takes glint_simple_radius of the geometry header at
+ * slot + 0x14, the slot being the model plus four times the animation byte
+ * (Spyro 3 mobydraw.s:109-117, queued at :628). The animated kind takes the
+ * animation header's radius byte (byte 7) times 64: the cull's sphere
+ * radius, the byte times 16 in quarter-world units.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @return The radius, or 0 when the moby has no readable model. */
+static float glint_model_radius(CPUState* cpu, uint32_t m) {
+    const uint32_t cls = cpu->read_half(m + game_layout.moby.class_off);
+    const uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
+    const uint32_t anim = cpu->read_byte(m + game_layout.moby.anim_state_off);
+    if (model == 0u || (model & 0x7FFFFFFFu) >= 0x00800000u) return 0.0f;
+    if (moby_game.model_is_animated(cpu, model)) {
+        const uint32_t hdr = cpu->read_word(model + game_layout.moby.model_anims_off + anim * 4u);
+        if (hdr < 0x80000000u || hdr >= 0x80800000u) return 0.0f;
+        return (float)((uint32_t)cpu->read_byte(hdr + game_layout.moby.anim_radius) << 6);
+    }
+    const uint32_t hdr = cpu->read_word(model + anim * 4u + 0x14u);
+    if (hdr < 0x80000000u || hdr >= 0x80800000u) return 0.0f;
+    return glint_simple_radius(cpu, hdr);
+}
+
+/** @brief Add each moby of one drawn set that has a model radius to the owner candidates.
+ * @param cpu The guest CPU state, read only.
+ * @param set The mobys.
+ * @param n The set's length. */
+static void glint_owner_add(CPUState* cpu, const uint32_t* set, int n) {
+    for (int i = 0; i < n && s_own_n < GLINT_OWN_MAX; i++) {
+        const uint32_t m = set[i];
+        if (m < 0x80000000u || m >= 0x80800000u) continue;
+        const float rad = glint_model_radius(cpu, m);
+        if (rad <= 0.0f) continue;
+        glint_owner* o = &s_own[s_own_n++];
+        o->moby = m;
+        o->rad = rad;
+        for (uint32_t k = 0; k < 3u; k++)
+            o->pos[k] = (double)(int32_t)cpu->read_word(m + game_layout.moby.pos_off + k * 4u);
+    }
+}
+
+/** @brief Whether records take owners, latched on first use.
+ *
+ * OPENPETE_GLINT_OWN=0 names no owner, so every star keeps its record's
+ * depth: the old-depth leg of the owner A/B. Any other value or none enables
+ * the owners.
+ * @return 1 when enabled, else 0. */
+static int glint_own_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_GLINT_OWN"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/** @brief Collect this tick's owner candidates and the sparkle reach.
+ *
+ * Collects none when glint_own_enabled says no.
+ * @param cpu The guest CPU state, read only. */
+static void glint_owner_scan(CPUState* cpu) {
+    static uint32_t simple[GLINT_OWN_MAX];
+    s_own_n = 0;
+    s_own_reach = glint_sparkle_reach(cpu);
+    if (!glint_own_enabled()) return;
+    const uint32_t* set;
+    int n = moby_native_canon_drawn_mobys(&set);
+    glint_owner_add(cpu, set, n);
+    n = moby_native_revealed_mobys(&set);
+    glint_owner_add(cpu, set, n);
+    n = moby_native_simple_mobys(simple, GLINT_OWN_MAX);
+    glint_owner_add(cpu, simple, n);
+}
+
+/** @brief Name a record's owner: the nearest candidate whose origin lies within the sparkle reach of the record.
+ *
+ * Fills the record's owner vector and radius; a record with no candidate in
+ * reach gets radius 0.
+ * @param p The record's world position.
+ * @param out The record. */
+static void glint_owner_pick(const double p[3], glint_rec* out) {
+    double best = s_own_reach * s_own_reach;
+    int pick = -1;
+    for (int i = 0; i < s_own_n; i++) {
+        const double dx = s_own[i].pos[0] - p[0], dy = s_own[i].pos[1] - p[1],
+                     dz = s_own[i].pos[2] - p[2];
+        const double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 <= best) { best = d2; pick = i; }
+    }
+    out->own_rad = pick >= 0 ? s_own[pick].rad : 0.0f;
+    for (int k = 0; k < 3; k++) out->own[k] = pick >= 0 ? s_own[pick].pos[k] - p[k] : 0.0;
+}
+
+/** @brief The half-world view-Z a star is drawn at: its record's, or its owner's sphere front where that is nearer.
+ *
+ * The owner's origin is the record's position plus the record's owner
+ * vector, projected under the same view; the sphere front is its view-Z less
+ * half the owner's radius (the view-Z is half-world). A front behind the
+ * near guard of 1 half-world unit is held there, so the pull never puts a
+ * star behind the camera plane. A record with no owner keeps its own view-Z.
+ * @param v The view.
+ * @param pos The record's world position this present shows.
+ * @param rec_vz The half-world view-Z of that position.
+ * @param r The record; its owner vector and radius are read.
+ * @return The view-Z, never farther than rec_vz. */
+static double glint_star_vz(const ngte_view* v, const double pos[3], double rec_vz,
+                            const glint_rec* r) {
+    if (r->own_rad <= 0.0f) return rec_vz;
+    const double op[3] = { pos[0] + r->own[0], pos[1] + r->own[1], pos[2] + r->own[2] };
+    double vo[3];
+    ngte_proj o;
+    glint_view_offset(v, op, 0, vo);
+    glint_project(v, vo, &o);
+    const double front = fmax(o.m3 - (double)r->own_rad / 2.0, 1.0);
+    return front < rec_vz ? front : rec_vz;
+}
+
 /** @brief Mirror the glint routine's rejects for one pool record and, on acceptance, fill in what the pairing and the sub-tick rebase read from it.
  *
  * Rejects a record whose lifetime byte is 0 (:2236-2240), whose halved
@@ -297,15 +529,15 @@ static void glint_mac_int(const ngte_view* v, const double vo[3], int64_t mac[3]
  * and far-depth rejects and the lateral reject are reported as flags rather
  * than verdicts, with every other test still applied, so the extended-LOD and
  * widened-view reveals can draw such a record. An accepted record takes the
- * near branch when its view Z is below GT.near_vz; its projected point, view
- * Z and scene depth (that view Z scaled back to world units) come from the
- * unfloored offset.
+ * near branch when its view Z is below GT.near_vz; its projected point and
+ * view Z come from the unfloored offset, its owner from glint_owner_pick, and
+ * its scene depth from glint_star_vz scaled back to world units.
  * @param cpu The guest CPU state, read only.
  * @param v The projection view.
  * @param rec Guest address of the record.
  * @param out Receives the record's branch, depth, address, position words,
- *        lifetime, size, spin and colour bytes, projected point and view Z
- *        whenever the return is nonzero; untouched otherwise.
+ *        lifetime, size, spin and colour bytes, projected point, view Z,
+ *        owner and pull whenever the return is nonzero; untouched otherwise.
  * @return 1 when the routine would draw the record; else GLINT_RANGE when it
  *         rejects the record on the box or the far depth, or-ed with
  *         GLINT_LATERAL when it fails the lateral test 4|X| - 3Z < GT.pyr_x,
@@ -340,8 +572,11 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     ngte_proj o;
     glint_view_offset(v, p, 0, vo);
     glint_project(v, vo, &o);
+    glint_owner_pick(p, out);
+    const double svz = glint_star_vz(v, p, o.m3, out);
+    out->pull = (float)(2.0 * (o.m3 - svz));
     out->depth = openpete_native_scene_viewz(
-        openpete_worldvz_scaled((float)o.m3, 2.0f));
+        openpete_worldvz_scaled((float)svz, 2.0f));
     out->addr = rec;
     for (int k = 0; k < 3; k++) out->w[k] = w[k];
     out->life = (uint8_t)(packed & 0xFFu);
@@ -975,7 +1210,8 @@ static void glint_rebase_report(void) {
  * or a hidden one, stays inactive. Otherwise the record's position, spin phase and lifetime at
  * this present come from glint_record_pair (the tick's own values when the
  * pair snaps) and the record point is re-projected under the staged view: the
- * rebase takes the scene depth of that point and its screen displacement from
+ * rebase takes the scene depth glint_star_vz gives at that point (the record
+ * plus its owner vector locating the owner) and its screen displacement from
  * the tick's projection, and glint_corners rebuilds the primitive's corners
  * at the shown state. At the end of the tick's interval the shown state is
  * the tick's and the corners equal the ones glint_build_exact built.
@@ -1007,7 +1243,7 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     r->dx = (float)(o.sx - it->src.psx);
     r->dy = (float)(o.sy - it->src.psy);
     r->depth = openpete_native_scene_viewz(
-        openpete_worldvz_scaled((float)o.m3, 2.0f));
+        openpete_worldvz_scaled((float)glint_star_vz(v, ps.pos, o.m3, &it->src), 2.0f));
     r->active = 1;
     if (!it->exact) return;
     uint32_t rgb[4];
@@ -1353,8 +1589,9 @@ static void glint_pivot_residual(double* mean, double* worst, int* n) {
  * GT.far_z or beyond, each on the floored offset the routine tests
  * (glint_accept), then one line per such record with its address, its view Z
  * and its world distance from the camera.
- * @param cpu The guest CPU state, read only. */
-static void glint_cull_census(CPUState* cpu) {
+ * @param cpu The guest CPU state, read only.
+ * @param key The VBL key the lines are labelled with. */
+static void glint_cull_census(CPUState* cpu, unsigned key) {
     ngte_view v;
     ngte_view_build(cpu, &v);
     int live = 0, box_n = 0, far_n = 0;
@@ -1378,13 +1615,57 @@ static void glint_cull_census(CPUState* cpu) {
             snprintf(detail[nd++], sizeof detail[0], "rec=%08X %s vz=%.0f dist=%.0f", rec,
                      out_box ? "box" : "far", o.m3, 2.0 * sqrt(vo[0] * vo[0] + vo[1] * vo[1] + vo[2] * vo[2]));
     }
-    fprintf(stderr, "[glint-cull f=%u] live=%d box=%d far=%d\n", openpete_frame, live, box_n, far_n);
-    for (int i = 0; i < nd; i++) fprintf(stderr, "[glint-cull f=%u] %s\n", openpete_frame, detail[i]);
+    fprintf(stderr, "[glint-cull vbl=%u] live=%d box=%d far=%d\n", key, live, box_n, far_n);
+    for (int i = 0; i < nd; i++) fprintf(stderr, "[glint-cull vbl=%u] %s\n", key, detail[i]);
+}
+
+/* The owner census's run totals: records owned, owned and pulled nearer,
+ * unowned, and the largest pull in world units. */
+static unsigned long s_own_tot[3];
+static double        s_own_tot_max;
+
+/** @brief Print the owner census's run totals to stderr; registered with atexit by glint_own_census. */
+static void glint_own_report(void) {
+    fprintf(stderr, "[glint-own total] owned=%lu pulled=%lu unowned=%lu max_pull=%.1f\n",
+            s_own_tot[0], s_own_tot[1], s_own_tot[2], s_own_tot_max);
+}
+
+/** @brief Print one `[glint-own]` line over the records this call fed, and add them to the run totals.
+ *
+ * Each record the set draws counts once: owned (a candidate lay within the
+ * sparkle reach), of those pulled (its owner's sphere front was nearer than
+ * the record and set the depth), or unowned; max_pull is the largest pull in
+ * world units. A run whose pulled count is zero exercised no pull.
+ * @param key The VBL key the line is labelled with. */
+static void glint_own_census(unsigned key) {
+    static int armed = 0;
+    if (!armed) { armed = 1; atexit(glint_own_report); }
+    uint32_t seen[GLINT_MAX_PRIMS];
+    int nseen = 0, owned = 0, pulled = 0, unowned = 0;
+    double max_pull = 0.0;
+    for (int i = 0; i < s_item_n; i++) {
+        const glint_rec* r = &s_item[i].src;
+        if (!r->addr || s_item[i].hidden) continue;
+        int dup = 0;
+        for (int k = 0; k < nseen && !dup; k++) dup = seen[k] == r->addr;
+        if (dup) continue;
+        seen[nseen++] = r->addr;
+        if (r->own_rad <= 0.0f) { unowned++; continue; }
+        owned++;
+        if (r->pull > 0.0f) { pulled++; max_pull = fmax(max_pull, (double)r->pull); }
+    }
+    s_own_tot[0] += (unsigned long)owned;
+    s_own_tot[1] += (unsigned long)pulled;
+    s_own_tot[2] += (unsigned long)unowned;
+    s_own_tot_max = fmax(s_own_tot_max, max_pull);
+    fprintf(stderr, "[glint-own vbl=%u] owned=%d pulled=%d unowned=%d max_pull=%.1f candidates=%d reach=%.1f\n",
+            key, owned, pulled, unowned, max_pull, s_own_n, s_own_reach);
 }
 
 /** @brief Print the per-call glint census when the VBL lies in the OPENPETE_GLINT_CENSUS range.
  *
- * OPENPETE_GLINT_CENSUS=LO-HI (or a single VBL): per call in that range, the
+ * OPENPETE_GLINT_CENSUS=LO-HI (or a single VBL), on the VBL key
+ * openpete_feed_key_now() that --screenshot-on-frame takes: per call in that range, the
  * primitives the routine appended by GPU code, the stars its draw-mode packets
  * delimit and the crosses its line pairs delimit, the stars passing the
  * topology check, the near and far records the pool walk predicted, the
@@ -1394,7 +1675,8 @@ static void glint_cull_census(CPUState* cpu) {
  * native triangles this feeder emitted from each class, how many primitives
  * were left unpaired, and the pairing's pivot residual; then one line per star
  * centre and per cross first endpoint with its paired depth. The live records
- * the routine culls on its box or far depth print first (glint_cull_census).
+ * the routine culls on its box or far depth print first (glint_cull_census),
+ * then the owner census (glint_own_census).
  * A capture whose fed count is zero measured nothing.
  * @param cpu The guest CPU state, read only.
  * @param start First polybuf address of the routine's output.
@@ -1404,13 +1686,15 @@ static void glint_cull_census(CPUState* cpu) {
 static void glint_census(CPUState* cpu, uint32_t start, uint32_t end,
                          uint32_t star_before, uint32_t cross_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
-    if (!env_frame_range_active(&s_range, "OPENPETE_GLINT_CENSUS", openpete_frame)) return;
-    glint_cull_census(cpu);
+    const unsigned key = openpete_feed_key_now();
+    if (!env_frame_range_active(&s_range, "OPENPETE_GLINT_CENSUS", key)) return;
+    glint_cull_census(cpu, key);
+    glint_own_census(key);
     int unpaired = 0;
     for (int i = 0; i < s_cap_n; i++)
         if (s_item[i].p.code != GLINT_DRMODE && !s_item[i].paired) unpaired++;
-    fprintf(stderr, "[glint-census f=%u] polybuf [%08X,%08X) %u bytes prims=%d codes:",
-            openpete_frame, start, end, end - start, s_cap_n);
+    fprintf(stderr, "[glint-census vbl=%u] polybuf [%08X,%08X) %u bytes prims=%d codes:",
+            key, start, end, end - start, s_cap_n);
     uint32_t seen[256];
     memset(seen, 0, sizeof seen);
     for (int i = 0; i < s_cap_n; i++) seen[s_item[i].p.code]++;
@@ -1432,12 +1716,12 @@ static void glint_census(CPUState* cpu, uint32_t start, uint32_t end,
     for (int i = 0; i < s_cap_n; i++) {
         if (s_item[i].p.code == GLINT_QUAD &&
             (i == 0 || s_item[i - 1].p.code != GLINT_QUAD)) {
-            fprintf(stderr, "[glint-star f=%u] centre=(%.0f,%.0f) depth=%.6f blend=%d\n",
-                    openpete_frame, s_item[i].p.x[2], s_item[i].p.y[2],
+            fprintf(stderr, "[glint-star vbl=%u] centre=(%.0f,%.0f) depth=%.6f blend=%d\n",
+                    key, s_item[i].p.x[2], s_item[i].p.y[2],
                     s_item[i].depth, s_item[i].blend);
         } else if (s_item[i].p.code == GLINT_LINE) {
             if (line_i % GLINT_LINES_PER_CROSS == 0)
-                fprintf(stderr, "[glint-cross f=%u] a=(%d,%d) depth=%.6f\n", openpete_frame,
+                fprintf(stderr, "[glint-cross vbl=%u] a=(%d,%d) depth=%.6f\n", key,
                         (int)(int16_t)(s_item[i].p.raw[2] & 0xFFFFu),
                         (int)(int16_t)(s_item[i].p.raw[2] >> 16), s_item[i].depth);
             line_i++;
@@ -1693,6 +1977,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
     if (endp > startp || openpete_native_widescreen_factor() > 1.0f || openpete_no_lod) {
         ngte_view view;
         ngte_view_build(cpu, &view);
+        glint_owner_scan(cpu);
         if (endp > startp) {
             glint_capture_prims(cpu, startp, endp);
             s_cap_n = s_item_n;

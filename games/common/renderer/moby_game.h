@@ -270,6 +270,11 @@ typedef struct moby_game {
      * and the cut guard checks each of these can show that tick. NULL where
      * the game keeps no previous copy. */
     int  (*simple_prev_mobys)(uint32_t epoch, uint32_t* out, int max);
+    /* The mobys of the second kind's queue copy taken in the current
+     * canonical epoch, reveal records included, written to out (at most
+     * max); 0 when this epoch captured no queue. NULL where the game has no
+     * second kind. */
+    int  (*simple_mobys)(uint32_t* out, int max);
 
     /* ---- per-face special material -----------------------------------
      * A face the stream marks with a special-material flag (moby_wface_t.hl)

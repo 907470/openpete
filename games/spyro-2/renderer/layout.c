@@ -635,6 +635,11 @@ const game_layout_t spyro2_game_layout = {
         .outline    = D_GLINT_OUTLINE,      /* mobyfunc.s:2356, 2454 */
         .quads      = D_GLINT_QUADS,        /* mobyfunc.s:2372 */
         .colours    = D_GLINT_COLOURS,      /* mobyfunc.s:2325 */
+        /* D_80064520, indexed by the gem's kind byte +0x49 times two plus one
+         * random bit (overlays/level_50/moby_update/func_level_50_800705C8.s:366-371,
+         * :433-434): five kinds, ten points. */
+        .sparkle    = 0x80064520u,
+        .sparkle_n  = 10u,
     },
     .zap = {
         .hook       = F_GLINT2_DRAW,
