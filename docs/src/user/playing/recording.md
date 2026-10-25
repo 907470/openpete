@@ -69,6 +69,10 @@ screenshots folder ([File locations](../help/file-locations.md)).
 The image is the native renderer's output: widescreen, mods and the in-game
 overlays it draws are in it. The dev overlay panel is not.
 
+The log line for the shot ends in `key=N`; `--screenshot-on-frame N` in a
+later run of the same start captures that tick
+([Ids that contain "frame"](../help/glossary.md#ids-that-contain-frame)).
+
 A capture taken with `--screenshot-on-frame` in a `--headless` run is drawn
 again from the game state, not read back from a window, and leaves out the
 settings menu, the notifications, the stats readout and the version line.

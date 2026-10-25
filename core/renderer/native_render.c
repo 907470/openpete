@@ -22276,7 +22276,8 @@ static int shot_write_offscreen_ext(const char *path, const char *what,
     if (rc == 0) {
         if (out_w) *out_w = w;
         if (out_h) *out_h = h;
-        OPL_INFO_F("native", "%s screenshot %dx%d -> %s", what, w, h, path);
+        OPL_INFO_F("native", "%s screenshot %dx%d -> %s key=%u", what, w, h, path,
+                   openpete_feed_key_now());
     }
     return rc;
 }

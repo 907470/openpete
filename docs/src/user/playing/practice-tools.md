@@ -24,6 +24,12 @@ it: some menus and loading screens tick twice as fast as play, and a slow
 moment can hold a tick for longer. Holding ++f8++ for longer than 0.3 seconds
 keeps stepping, one tick at a time.
 
+Each pause, resume and finished step writes a log line ending in `key=N`,
+for example `frame-step: stepped to openpete_frame=2031 canon_tick=1032
+vbls=2 key=2604`. N is the number `--screenshot-on-frame` and the other
+[frame-named flags](../help/glossary.md#ids-that-contain-frame) take for
+that tick.
+
 ## Fast-forward
 
 Holding {{ key("key:host.turbo") }} <!-- id: key:host.turbo home --> runs the game as fast as the

@@ -109,10 +109,10 @@ static void release_tick(const level_skip_game_t* g, CPUState* cpu,
                            : s_phase == SKIP_PICKED && g->playable(cpu);
     if (playable) {
         fprintf(stderr, "[skip-to-level] level playable - presents resume "
-                        "at vbl=%u%s\n", log_vbl(), eng);
+                        "at vbl=%u key=%u%s\n", log_vbl(), openpete_feed_key_now(), eng);
     } else if (frame_counter > s_ffwd_deadline) {
         fprintf(stderr, "[skip-to-level] fail-safe release (no playable edge) "
-                        "at vbl=%u\n", log_vbl());
+                        "at vbl=%u key=%u\n", log_vbl(), openpete_feed_key_now());
     } else {
         return;
     }

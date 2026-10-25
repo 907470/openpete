@@ -283,8 +283,9 @@ void spyro3_area_on_tick(CPUState* cpu, uint32_t frame_counter) {
             cpu->read_word(S3_AREA) == (uint32_t)s_area) {
             s_phase = AREA_RELEASED;
             fprintf(stderr, "[skip-to-area] released: level=%d area=%u at "
-                            "frame=%u\n", s_level,
-                    (unsigned)cpu->read_word(S3_AREA), (unsigned)frame_counter);
+                            "frame=%u key=%u\n", s_level,
+                    (unsigned)cpu->read_word(S3_AREA), (unsigned)frame_counter,
+                    openpete_feed_key_now());
         }
     }
 }

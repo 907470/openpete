@@ -457,7 +457,8 @@ static void watch_return(CPUState* cpu) {
         return;
     s_returning = 0;
     OPL_INFO_F("skip-to-cutscene", "%s: returned to Dragon Shores at "
-               "frame=%u", s_row ? s_row->name : "?", openpete_frame);
+               "frame=%u key=%u", s_row ? s_row->name : "?", openpete_frame,
+               openpete_feed_key_now());
 }
 
 static void (*const k_hooks[])(CPUState*, const cutscene_t*) = {

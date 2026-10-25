@@ -178,6 +178,14 @@ every VBL (`openpete_vbl`), the boot's included, so the same moment of a
 Spyro 2 or 3 run carries a number 573 higher than the yield count earlier
 versions used.
 
+The log lines that report a position end in `key=N`, the value these ids
+count at that moment: pausing and resuming, each tick step (`stepped to`),
+a {{ key("key:host.screenshot") }} <!-- id: key:host.screenshot --> screenshot, the `--skip-to-level` release
+line, and the cutscene and area skip lines. Passing that N to
+`--screenshot-on-frame` captures the same tick. The `openpete_frame=` and
+`frame=` values on those lines count the yields on every game, and equal
+`key=` only on Spyro 1.
+
 `--bk2-frame-offset` and `--wireframe` are listed in `--help`. `--record-frames` exists only in
 builds with video recording, which no release package includes. The others
 are developer flags, which a release package's `--help` does not list.

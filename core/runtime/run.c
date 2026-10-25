@@ -4703,8 +4703,9 @@ static void host_pause_step(bool *paused, bool *step_one)
 {
     if (s_step_done_log) {
         s_step_done_log = 0;
-        OPL_INFO_F("frame-step", "stepped to openpete_frame=%u canon_tick=%u vbls=%u",
-                   openpete_frame, openpete_canon_tick, s_step_vbls);
+        OPL_INFO_F("frame-step", "stepped to openpete_frame=%u canon_tick=%u vbls=%u key=%u",
+                   openpete_frame, openpete_canon_tick, s_step_vbls,
+                   openpete_feed_key_now());
         s_step_vbls = 0;
     }
     pause_at_vbl_drive(*paused, *step_one);
@@ -4727,8 +4728,9 @@ static void host_pause_step(bool *paused, bool *step_one)
          * it published would keep being re-issued; silence the motors for the
          * same reason the audio mutes. */
         openpete_rumble_set_paused(*paused ? 1 : 0);
-        OPL_INFO_F("frame-step", "%s at openpete_frame=%u canon_tick=%u",
-                   *paused ? "paused" : "resumed", openpete_frame, openpete_canon_tick);
+        OPL_INFO_F("frame-step", "%s at openpete_frame=%u canon_tick=%u key=%u",
+                   *paused ? "paused" : "resumed", openpete_frame, openpete_canon_tick,
+                   openpete_feed_key_now());
     }
     if (!*paused) { *step_one = false; s_step_vbls = 0; }
     else if (step_k && !*step_one) {

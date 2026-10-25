@@ -323,9 +323,9 @@ static void log_playing(CPUState* cpu, uint32_t frame_counter) {
     if (n == s_last_n) return;
     s_last_n = n;
     OPL_INFO_F("skip-to-cutscene", "%s: cutscene n=%u (level %u) plays at "
-               "frame=%u", s_row->name, (unsigned)n,
+               "frame=%u key=%u", s_row->name, (unsigned)n,
                (unsigned)cpu->read_word(S3_CURRENT_LEVEL),
-               (unsigned)frame_counter);
+               (unsigned)frame_counter, openpete_feed_key_now());
 }
 
 void spyro3_cutscene_on_tick(CPUState* cpu, uint32_t frame_counter) {
