@@ -635,6 +635,21 @@ static int sz_and_lod_cull(double mac3, int texsub_hi) {
     return 0;
 }
 
+/** @brief Returns the paint depth of a sel-4 egg-tally line: its ordering-table bucket in SZ3 units.
+ *
+ * The .s links the line into bucket max(0, (SZ3 >> 5) - lod), lod the high
+ * byte of the record's +0x14 word (80057A28-80057A40). The depth is
+ * (bucket + 1) << 5, so the flat HUD layer, which paints back to front by
+ * depth and keeps submission order on a tie, draws the lines in the game's
+ * bucket order.
+ * @param sz3 EP0's SZ3.
+ * @param col1 The record's +0x14 word.
+ * @return The depth, in SZ3 units. */
+static float sel4_bucket_depth(int sz3, uint32_t col1) {
+    const int bucket = (sz3 >> 5) - (int)(col1 >> 24);
+    return (float)(((bucket > 0 ? bucket : 0) + 1) << 5);
+}
+
 /** @brief Rebuilds s_fq and s_pline from the g_Particles pool the .s walked.
  *
  * Walks up to 320 records of s_part_pool, 0x20 bytes each, stopping at a
@@ -887,13 +902,13 @@ static void particle_build(CPUState* cpu) {
             uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
             if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
             if (screen_rect_cull(e0.sx, e0.sy)) continue;
-            /* (sz3>>5)-(col1>>24) is a LOD-LEVEL index (clamped to 0 when negative,
-             * block_80057A30 falls through - NOT a cull); it selects a colour-table
-             * entry, not visibility. The line endpoints are already fixed. */
+            /* (sz3>>5)-(col1>>24) is the line's ordering-table bucket (clamped to 0
+             * when negative at 80057A30, then linked at 80057A40 - NOT a cull); it
+             * places the line in the paint order, not in or out of view. */
             pline* l = &s_pline[s_pline_n++];
             l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
             l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
-            l->cz = (float)e0.m3;
+            l->cz = sel4_bucket_depth(sz3, col1);
             l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;
             l->sel = 4;
             if (streak_dbg()) streak_log("line4", pp, e0.sx, e0.sy, e1.sx, e1.sy);
@@ -1068,17 +1083,19 @@ static void particle_compare(CPUState* cpu) {
 /* ---- native feed ------------------------------------------------------- */
 /** @brief Returns the native scene layer a g_Particles sel feeds its primitives into.
  *
- * sel 5, the key-collected FT4 burst (block_80057750), holds view-space
- * positions around a g_Hud icon, so its depth is HUD-space Z, which is not
- * comparable with world depth; the .s sorts it into a near particle bucket,
- * (Z>>7)-lod, that paints over the world. It takes the flat HUD layer
- * (OPENPETE_SCENE_HUD: depth-test off, drawn after the world and, outside
- * the level-transition flyby, the player, and under the HUD3D icons). sel 4, the egg-tally LINE_G burst (block_80057954),
- * is HUD-space too but keeps WORLD: its lines interleave with the egg counter
- * moby, which the moby feed draws as ACTOR at its projected view-Z, and
- * true Z keeps that icon over the lines behind it, where the flat HUD layer
- * would paint every line over it. Every other sel is world geometry and
- * takes WORLD at its true view-Z, as does a sel outside the table.
+ * sel 5, the key-collected FT4 burst (block_80057750), and sel 4, the
+ * egg-tally LINE_G burst (block_80057954), hold view-space positions around
+ * a HUD element, so their depth is HUD-space Z, which is not comparable with
+ * world depth; the .s links them into a near g_WorldOT particle bucket
+ * ((Z>>7)-lod for sel 5, (SZ3>>5)-lod for sel 4) that paints over the world.
+ * Both take the flat HUD layer (OPENPETE_SCENE_HUD: depth-test off, drawn
+ * after the world and, outside the level-transition flyby, the player, and
+ * under the HUD3D icons). The egg counter the sel-4 lines surround is a 2D
+ * sprite (func_8001919C) linked into g_HudOT, which the game draws after
+ * g_WorldOT, so it covers the lines; the HUD layer draws its untextured
+ * particle triangles before its 2D content to keep that order. Every other
+ * sel is world geometry and takes WORLD at its true view-Z, as does a sel
+ * outside the table.
  * @param sel The record's sel, header bits 15:8.
  * @return An OPENPETE_SCENE_* layer. */
 static int part_sel_layer(int sel) {
@@ -1087,7 +1104,7 @@ static int part_sel_layer(int sel) {
         OPENPETE_SCENE_WORLD,   /* 1: motion-streak LINE_G */
         OPENPETE_SCENE_WORLD,   /* 2: affine billboard */
         OPENPETE_SCENE_WORLD,   /* 3: depth-cued screen rect */
-        OPENPETE_SCENE_WORLD,   /* 4: egg-tally LINE_G burst */
+        OPENPETE_SCENE_HUD,     /* 4: egg-tally LINE_G burst */
         OPENPETE_SCENE_HUD,     /* 5: key-collected FT4 burst */
     };
     return (sel >= 0 && sel < (int)(sizeof k_layer / sizeof k_layer[0]))

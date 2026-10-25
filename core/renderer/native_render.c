@@ -11948,6 +11948,13 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
 #define UT_BUCKET_OVER_OVERLAY 18
 #define UT_BUCKET_OVER_PANEL   19
 #define UT_BUCKET_OVER_HUD     20
+/* The untextured HUD particle triangles (hud_tri_under_2d), drawn first in the
+ * flat HUD layer's pass 0, under its 2D content. */
+#define UT_BUCKET_HUD_UNDER    21
+/* Scene index of each triangle of the UT_BUCKET_HUD_UNDER range, in packed
+ * order; the bucket holds at most HUD_UNDER_MAX triangles. */
+#define HUD_UNDER_MAX 4096
+static int s_hud_under_idx[HUD_UNDER_MAX];
 /* The textured over-fade HUD triangles' bucket of the textured block. */
 #define TX_BUCKET_OVER_HUD     8
 static struct { int gi; uint32_t tag; int first, count; } s_utmat[UT_MAT_SPANS];
@@ -13710,6 +13717,21 @@ static int tri_in_fade_pass(const scene_tri_t* t, int over)
     return (s_cz_lift && t->over_fade) == (over != 0);
 }
 
+/** @brief Report whether an untextured flat-HUD triangle draws under the layer's 2D content.
+ *
+ * A particle triangle (tag family 5) in the HUD layer is a HUD-space burst
+ * the game links into its world ordering table, which it draws before the
+ * HUD ordering table that holds the 2D sprites and panels, so the burst
+ * sits under them. Only pass 0 holds such triangles; one linked after the
+ * fade quad keeps the over-fade pass.
+ * @param t The triangle.
+ * @return 1 for an untextured, pass-0 HUD particle triangle, else 0. */
+static int hud_tri_under_2d(const scene_tri_t* t)
+{
+    return !t->textured && t->category == OPENPETE_SCENE_HUD && (t->tag >> 28) == 5u &&
+           tri_in_fade_pass(t, 0);
+}
+
 /** @brief Report whether the HUD-panel order census is on, reading OPENPETE_HUD_ORDER_CENSUS once.
  *
  * @return 1 when on, else 0. */
@@ -13823,6 +13845,34 @@ static void draw_hud_panels_and_tex(const scene_tri_t* scene, int scene_n,
     hud_tex_draw_to(&c, hud_tex_run_end(&c, NULL));
 }
 
+/** @brief Draw the HUD particle bucket (hud_tri_under_2d) depth-off, each run of one blend class through its untextured HUD pipe.
+ *
+ * s_hud_under_idx names the scene triangle of each packed triangle. A blend
+ * class outside the pipe family draws opaque.
+ * @param scene Scene triangles.
+ * @param first First vertex of the bucket.
+ * @param count Vertex count of the bucket; 0 draws nothing. */
+static void draw_hud_under_2d(const scene_tri_t* scene, int first, int count)
+{
+    if (count <= 0) return;
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    int run_first = first, run_n = 0, run_b = -1, i = 0;
+    for (int v = first; v < first + count; v += 3, i++) {
+        const int t = s_hud_under_idx[i];
+        const int b = (scene[t].blend > 0 && scene[t].blend < NR_BLEND_CLASSES) ? scene[t].blend : 0;
+        if (b != run_b && run_n > 0 && s_nr.gouraud_hud_pipes[run_b]) {
+            bind_scene_pipe(s_nr.gouraud_hud_pipes[run_b]);
+            rhi_draw(s_nr.dev, (uint32_t)run_n, (uint32_t)run_first);
+        }
+        if (b != run_b) { run_b = b; run_first = v; run_n = 0; }
+        run_n += 3;
+    }
+    if (run_n > 0 && s_nr.gouraud_hud_pipes[run_b]) {
+        bind_scene_pipe(s_nr.gouraud_hud_pipes[run_b]);
+        rhi_draw(s_nr.dev, (uint32_t)run_n, (uint32_t)run_first);
+    }
+}
+
 /** @brief Whether --hide-hud skips a HUD layer draw, counting the layer and its triangles when it does.
  *
  * @param tris The triangles the layer would draw.
@@ -13860,8 +13910,10 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                                 int hud_tex_first, int hud_tex_count, int over)
 {
     if (hud_layer_hidden((ut_count[over ? UT_BUCKET_OVER_PANEL : 8] +
-                          ut_count[over ? UT_BUCKET_OVER_HUD : 6] + hud_tex_count) / 3))
+                          ut_count[over ? UT_BUCKET_OVER_HUD : 6] + hud_tex_count +
+                          (over ? 0 : ut_count[UT_BUCKET_HUD_UNDER])) / 3))
         return;
+    if (!over) draw_hud_under_2d(scene, ut_first[UT_BUCKET_HUD_UNDER], ut_count[UT_BUCKET_HUD_UNDER]);
     draw_hud_panels_and_tex(scene, scene_n, ut_first, ut_count,
                             hud_tex_cursor_open(scene, tx_start, hud_tex_first, hud_tex_count), over);
     const int hb = over ? UT_BUCKET_OVER_HUD : 6;
@@ -15220,7 +15272,7 @@ enum { UTC_OVERLAY, UTC_HUD_PANEL, UTC_HUD3D, UTC_PORTAL_GUARD, UTC_WORLD_FILL,
 static const int k_utc_bucket[UTC_N] = { 7, 8, 9, 10, 12, 14, 16, 17,
                                           UT_BUCKET_OVER_OVERLAY, UT_BUCKET_OVER_PANEL };
 /* Untextured bucket slots of draw_native_scene (ut_first / ut_count). */
-#define UT_BUCKETS 21
+#define UT_BUCKETS 22
 
 /** @brief The single-category untextured bucket a scene triangle packs into, or -1.
  *
@@ -15517,6 +15569,35 @@ static int pack_over_fade_hud(const scene_tri_t* scene, int scene_n, rhi_vertex*
         if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD) continue;
         if (!tri_in_fade_pass(&scene[t], 1)) continue;
         pack_scene_tri(&buf[n], &scene[t]);
+        n += 3;
+    }
+    return n;
+}
+
+/** @brief Pack the HUD particle triangles (hud_tri_under_2d) back to front from vertex n and record each one's scene index in s_hud_under_idx.
+ *
+ * The order is bucket 6's stable painter key (hud_paint_cmp): the game
+ * links these triangles into its world ordering table by depth bucket, each
+ * bucket in submission order. Uses the s_cz_hud scratch before bucket 6
+ * does. Stops at HUD_UNDER_MAX triangles or where the vertex buffer is full.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param buf The compose vertex buffer.
+ * @param n The first free vertex.
+ * @return The first free vertex after the packed triangles. */
+static int pack_hud_under_2d(const scene_tri_t* scene, int scene_n, rhi_vertex* buf, int n)
+{
+    hud_paint_t *ho = (hud_paint_t *)s_cz_hud.data;
+    int hn = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (!hud_tri_under_2d(&scene[t])) continue;
+        ho[hn].z = hud_paint_depth(&scene[t]);
+        ho[hn].t = t; hn++;
+    }
+    qsort(ho, (size_t)hn, sizeof ho[0], hud_paint_cmp);
+    for (int i = 0; i < hn && i < HUD_UNDER_MAX && n + 3 <= s_cz_verts; i++) {
+        pack_scene_tri(&buf[n], &scene[ho[i].t]);
+        s_hud_under_idx[i] = ho[i].t;
         n += 3;
     }
     return n;
@@ -15828,13 +15909,16 @@ static bool draw_native_scene(bool full_extent)
      * self-occludes correctly at every phase. Stability (z ties break on
      * submission index) keeps every constant-z run - the 2D-UI carries at z=0,
      * flat per-glyph quads - in submission order, i.e. exactly the old draw. */
+    ut_first[UT_BUCKET_HUD_UNDER] = n;
+    n = pack_hud_under_2d(scene, scene_n, buf, n);
+    ut_count[UT_BUCKET_HUD_UNDER] = n - ut_first[UT_BUCKET_HUD_UNDER];
     ut_first[6] = n;
     {
         hud_paint_t *ho = (hud_paint_t *)s_cz_hud.data;
         int hn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD ||
-                !tri_in_fade_pass(&scene[t], 0)) continue;
+                !tri_in_fade_pass(&scene[t], 0) || hud_tri_under_2d(&scene[t])) continue;
             ho[hn].z = hud_paint_depth(&scene[t]);
             ho[hn].t = t; hn++;
         }
