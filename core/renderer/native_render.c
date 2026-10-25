@@ -1826,6 +1826,14 @@ static int s_cur_presnap = 0;
 static int s_raster_mult = 0;
 static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dither (engine SCENE pass) */
 static int s_hide_player = 0;  /* --hide-player: the feeders drop the player's draws */
+static int s_hide_hud = 0;     /* --hide-hud: the compose skips the HUD layers */
+static uint32_t s_hide_hud_layers;  /* HUD layer draws skipped under --hide-hud */
+static uint32_t s_hide_hud_tris;    /* triangles those layers held */
+/* --hide-classes: the moby classes the moby and shadow feeds drop, parsed
+ * once at init. */
+#define NR_HIDE_CLASSES_MAX 32
+static uint32_t s_hide_cls[NR_HIDE_CLASSES_MAX];
+static int s_hide_cls_n;
 /* --terrain-visibility: the terrain feeder's candidate-set policy
  * (openpete_terrain_visibility_t), seeded at init and moved by the setter. */
 static int s_terrain_vis = OPENPETE_TERRAIN_VIS_FRUSTUM;
@@ -7121,6 +7129,27 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     return 0;
 }
 
+/** @brief Parse the --hide-classes list into s_hide_cls.
+ *
+ * Reads comma-separated class ids (strtoul base 0) until the first token
+ * that is not a number or NR_HIDE_CLASSES_MAX ids are held, and logs the
+ * count held.
+ * @param list The list, or NULL for none. */
+static void hide_classes_parse(const char* list)
+{
+    s_hide_cls_n = 0;
+    const char* e = list;
+    while (e && *e && s_hide_cls_n < NR_HIDE_CLASSES_MAX) {
+        char* end = NULL;
+        const unsigned long v = strtoul(e, &end, 0);
+        if (end == e) break;
+        s_hide_cls[s_hide_cls_n++] = (uint32_t)v;
+        e = (*end == ',') ? end + 1 : end;
+    }
+    if (s_hide_cls_n)
+        OPL_INFO_F("native", "hide classes: %d listed (%s)", s_hide_cls_n, list);
+}
+
 /** @brief Return whether OPENPETE_HEADLESS_NATIVE asks for the surfaceless native bring-up under --headless without a capture consumer.
  *
  * Read once at bring-up; any value other than empty or "0" arms it.
@@ -7251,6 +7280,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
                  : (s_vertex_snap ? 1 : 0);
     s_dither = opts->dither ? 1 : 0;   /* PS1 15-bit colour + hardware dither */
     s_hide_player = opts->hide_player != 0;
+    s_hide_hud = opts->hide_hud > 0;
+    hide_classes_parse(opts->hide_classes);
     /* --terrain-visibility: the terrain feeder's candidate set (frustum =
      * every sector inside the displayed frame, hidden or not). */
     s_terrain_vis = (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_GAME)
@@ -13792,6 +13823,18 @@ static void draw_hud_panels_and_tex(const scene_tri_t* scene, int scene_n,
     hud_tex_draw_to(&c, hud_tex_run_end(&c, NULL));
 }
 
+/** @brief Whether --hide-hud skips a HUD layer draw, counting the layer and its triangles when it does.
+ *
+ * @param tris The triangles the layer would draw.
+ * @return 1 when the layer is skipped, else 0. */
+static int hud_layer_hidden(int tris)
+{
+    if (!s_hide_hud) return 0;
+    s_hide_hud_layers++;
+    s_hide_hud_tris += (uint32_t)(tris > 0 ? tris : 0);
+    return 1;
+}
+
 /** @brief Draw the flat 2D HUD layer: panels, textured backdrops and glyphs.
  *
  * The layer draws depth-off. The panel boxes and the textured HUD range draw
@@ -13816,6 +13859,9 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                                 const int* ut_first, const int* ut_count, int tx_start,
                                 int hud_tex_first, int hud_tex_count, int over)
 {
+    if (hud_layer_hidden((ut_count[over ? UT_BUCKET_OVER_PANEL : 8] +
+                          ut_count[over ? UT_BUCKET_OVER_HUD : 6] + hud_tex_count) / 3))
+        return;
     draw_hud_panels_and_tex(scene, scene_n, ut_first, ut_count,
                             hud_tex_cursor_open(scene, tx_start, hud_tex_first, hud_tex_count), over);
     const int hb = over ? UT_BUCKET_OVER_HUD : 6;
@@ -15448,6 +15494,7 @@ static void draw_hud3d_pass(const scene_tri_t* scene, int scene_n, int tx_start,
                             const int* txg_count, int lift, int after_fade)
 {
     if ((lift != 0) != (after_fade != 0)) return;
+    if (hud_layer_hidden((ut_count[9] + txg_count[12]) / 3)) return;
     hud3d_tex_census(scene, scene_n,
                      draw_hud3d_layer(scene, tx_start, ut_first[9], ut_count[9],
                                       txg_first[12], txg_count[12]));
@@ -16845,6 +16892,19 @@ void openpete_native_set_hide_player(int on) {
 }
 
 int openpete_native_get_hide_player(void) { return s_hide_player; }
+
+void openpete_native_set_hide_hud(int on) {
+    s_hide_hud = on ? 1 : 0;
+    OPL_INFO_F("native", "hide HUD -> %s", s_hide_hud ? "on" : "off");
+}
+
+int openpete_native_get_hide_hud(void) { return s_hide_hud; }
+
+int openpete_native_hide_class(uint32_t cls) {
+    for (int k = 0; k < s_hide_cls_n; k++)
+        if (s_hide_cls[k] == cls) return 1;
+    return 0;
+}
 
 /* Read by the terrain feeder at the top of every sector walk. */
 void openpete_native_set_terrain_visibility(int mode) {
@@ -20041,6 +20101,9 @@ static void record_cycle(uint64_t pts_us)
     unsigned char *buf = recbuf_ensure((size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u);
     if (!buf) return;
     int w = 0, h = 0; uint64_t tag = 0;
+    /* OPENPETE_REC_LOG: the present's tag and the feed key (VBL) it shows. */
+    if (getenv("OPENPETE_REC_LOG"))
+        fprintf(stderr, "[recq] pts=%llu vbl=%u\n", (unsigned long long)pts_us, openpete_feed_key_now());
     if (rhi_cycle_readback(s_nr.dev, pts_us, buf, s_reccap, &w, &h, &tag) && w > 0 && h > 0)
         openpete_record_submit_frame(buf, w, h, /*top_down=*/1, tag);
 }
@@ -22293,6 +22356,15 @@ static int shot_write_offscreen(const char *path, const char *what)
     return shot_write_offscreen_ext(path, what, NULL, NULL);
 }
 
+/** @brief Print the --hide-hud engagement line on stderr: HUD layer draws skipped and the triangles they held.
+ *
+ * Prints only when the flag was on at some point of the run. */
+static void hide_hud_report(void)
+{
+    if (s_hide_hud || s_hide_hud_layers)
+        fprintf(stderr, "hide-hud: layers_skipped=%u tris_skipped=%u\n", s_hide_hud_layers, s_hide_hud_tris);
+}
+
 /** @brief Write the native `-vk` capture for one screenshot base path, or hand the composed image to the caller.
  *
  * In a windowed run that is not an intermediate capture, `-vk` is first
@@ -22541,6 +22613,7 @@ void openpete_native_render_record_flush(void)
 void openpete_native_render_shutdown(void)
 {
     scene_box_summary();
+    hide_hud_report();
     /* Kept freeze-backdrop sources: a flip is a settle drawn after the
      * present services, which the settle's exactness excludes. */
     if (s_retained_only_draws || s_area_fade_presents)

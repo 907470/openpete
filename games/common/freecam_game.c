@@ -736,6 +736,11 @@ static void freecam_path_step(CPUState* cpu, int committed) {
         st->ang[1] = angle_wrap(s_pose.pitch);
         st->ang[2] = angle_wrap(s_pose.roll);
     }
+    /* OPENPETE_FCPATH_LOG: the committed path key and pose of each tick. */
+    if (committed && getenv("OPENPETE_FCPATH_LOG"))
+        fprintf(stderr, "[fcpath] vbl=%lu seg=%d t=%d pose=(%d,%d,%d) yaw=%d pitch=%d roll=%d\n",
+                (unsigned long)openpete_feed_key_now(), s_path.seg, s_path.t, s_pose.x, s_pose.y, s_pose.z,
+                s_pose.yaw, s_pose.pitch, s_pose.roll);
     if (committed && ++s_path.t >= s_path.ticks) {
         s_path.t = 0;
         s_path.seg = (s_path.seg + 1) % s_path.n;

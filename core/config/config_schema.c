@@ -118,6 +118,8 @@ static const cfg_knob_t g_schema[] = {
     /* -------- Debug -------- */
     { "render_paths",     "--render-paths",     NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "psycross_native_raster", "--psycross-native-raster", NULL,        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "hide_hud",         "--hide-hud",         "OPENPETE_HIDE_HUD",     CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "hide_classes",     "--hide-classes",     "OPENPETE_HIDE_CLASSES", CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "log_level",        "--log-level",        "OPENPETE_LOG",          CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "log_format",       "--log-format",       NULL,                    CFG_ENUM,   v_logfmt,   NULL,       NULL,       0 },
     { "devui_open",       "--devui-open",       "OPENPETE_DEVUI_OPEN",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },

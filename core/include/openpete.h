@@ -266,6 +266,20 @@ typedef struct openpete_options {
      * native renderer only. Default 0. */
     int hide_player;
 
+    /* Hide the HUD (`--hide-hud 0|1`, env OPENPETE_HIDE_HUD; the flag wins).
+     * 1 = the native compose skips the flat 2D HUD layer and the HUD3D
+     * layer; the overlay quads, the fade and the game state are unchanged.
+     * Display-only; native renderer only. Default 0; -1 = unset between
+     * openpete_options_init and the end of the parse. */
+    int hide_hud;
+
+    /* Moby classes not drawn (`--hide-classes LIST`, env
+     * OPENPETE_HIDE_CLASSES; the flag wins): a comma list of class ids
+     * (strtoul base 0, at most 32). The native moby feed drops every face of
+     * a listed class and the shadow feed its drop shadow. Display-only;
+     * native renderer only. NULL = none. */
+    const char* hide_classes;
+
     /* Untextured view (`--notex 0|1`, env OPENPETE_NOTEX; the flag wins).
      * 1 = textured scene fragments output the raw gouraud vertex colour;
      * cutout silhouettes keep their texture alpha. Display-only; native

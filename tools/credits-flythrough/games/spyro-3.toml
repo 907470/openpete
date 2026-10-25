@@ -42,9 +42,9 @@ use_bk2 = true
 
 [render.env]
 OPENPETE_D1 = "1"                         # every moby passes the update gate
-OPENPETE_VIDEO_HIDE_CLASSES = "0x39,0x63" # Sheila and Agent 9, with shadows
+OPENPETE_HIDE_CLASSES = "0x39,0x63"       # Sheila and Agent 9, with shadows
 OPENPETE_VIDEO_ZOE_NEAR = "1"
-OPENPETE_VIDEO_NOHUD = "1"
+OPENPETE_HIDE_HUD = "1"
 
 [post]
 fade_ticks = 16       # credits fade: v = 16 - k for k < 16, k - (N - 16) past N - 16

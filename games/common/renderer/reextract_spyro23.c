@@ -587,6 +587,10 @@ static void game_reextract_body(void* cpu_v) {
      * every animated record against this camera, so the replay needs it to turn
      * those records onto the interpolated one. */
     const uint8_t* tickcam = rc.br.tickcam;
+    /* OPENPETE_ALPHA_LOG: the bracket verdict of each present. */
+    if (getenv("OPENPETE_ALPHA_LOG"))
+        fprintf(stderr, "[alpha] vbl=%u key=%u paired=%d qa=%.4f alpha=%.4f bracketed=%d cut=%d hold=%d\n",
+                openpete_frame, openpete_feed_key_now(), paired, qa, alpha, bracketed, cam_cut, hold);
     if (cam_dbg_on()) cam_dbg_present(cam, &rc, paired, prev, curr);
     if (cam)
         cut_census_camera((const int32_t*)(cam + CAM_OFF_POS),

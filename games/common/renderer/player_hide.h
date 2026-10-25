@@ -8,6 +8,10 @@
 // records of the shared particle pool; the queries below tell those apart
 // from the rest of their pool by the rules game_layout.owner states.
 //
+// The same module drops the moby classes `--hide-classes` lists
+// (openpete_native_hide_class): every face of a listed class and its drop
+// shadow.
+//
 // Every query and the attribution leave PSX RAM unchanged; the particle
 // allocator hook runs the guest allocator exactly once through the module
 // dispatch and reads its return value.
@@ -37,6 +41,8 @@ enum {
     PH_CAT_OTHER_PART,     /* every other particle primitive */
     PH_CAT_OTHER_MOBY,     /* every other moby triangle outside the HUD layers */
     PH_CAT_OTHER_GLOW,     /* every other glow-ring triangle */
+    PH_CAT_CLASS,          /* moby triangles of a --hide-classes class */
+    PH_CAT_CLASS_SHADOW,   /* drop-shadow triangles of a --hide-classes class */
     PH_CAT_N
 };
 
@@ -90,16 +96,38 @@ int player_hide_particle_owner(CPUState* cpu, uint32_t rec);
  * @return 1 when it is, else 0 (also for a game without a companion class). */
 int player_hide_is_sparx_class(uint32_t cls);
 
-/** @brief Whether the moby feed drops one face: an actor-layer face of the companion's class while the player is hidden.
+/** @brief Whether the moby feed drops one face: any face of a class --hide-classes lists, or an actor-layer face of the companion's class while the player is hidden.
  *
- * Counts every actor-layer face for the census, as PH_CAT_SPARX or
- * PH_CAT_OTHER_MOBY; a HUD-layer face is neither counted nor dropped.
+ * A listed class's face is dropped on every layer and counted as
+ * PH_CAT_CLASS (player_hide_class_face). Otherwise every actor-layer face
+ * is counted for the census, as PH_CAT_SPARX or PH_CAT_OTHER_MOBY; a
+ * HUD-layer face is neither counted nor dropped.
  * @param actor Nonzero for a face of the actor layers, 0 for a HUD layer.
  * @param cls The face's moby class.
  * @param tri The face as submitted, hashed by the census.
  * @param len Its size in bytes.
  * @return 1 when the face is dropped, else 0. */
 int player_hide_moby_face(int actor, uint32_t cls, const void* tri, size_t len);
+
+/** @brief Whether the moby feed drops one face of a class --hide-classes lists.
+ *
+ * Counts every dropped face as PH_CAT_CLASS for the census and for the
+ * shutdown engagement line.
+ * @param cls The face's moby class.
+ * @param tri The face as submitted, hashed by the census.
+ * @param len Its size in bytes.
+ * @return 1 when the class is listed and the face is dropped, else 0. */
+int player_hide_class_face(uint32_t cls, const void* tri, size_t len);
+
+/** @brief Whether the shadow feed drops the drop shadow of the moby at `moby`: --hide-classes lists its class.
+ *
+ * Reads the class halfword only while the list is nonempty. Counts the
+ * dropped fan's 4 triangles as PH_CAT_CLASS_SHADOW for the census and the
+ * shutdown engagement line.
+ * @param cpu Reads the class halfword.
+ * @param moby The moby's guest address.
+ * @return 1 when dropped, else 0. */
+int player_hide_class_shadow(CPUState* cpu, uint32_t moby);
 
 /** @brief Whether the moby at `moby` is the companion, by its class halfword.
  *

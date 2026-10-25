@@ -31,7 +31,7 @@ use_bk2 = false       # no entry speech blocks the freecam
 [render.env]
 OPENPETE_D1 = "1"             # every moby passes the update gate, gems spin
 OPENPETE_VIDEO_NOSPARX = "1"  # class 0x78 off the update list: no Sparx sparkles or glow
-OPENPETE_VIDEO_NOHUD = "1"
+OPENPETE_HIDE_HUD = "1"
 
 [post]
 fade_ticks = 16
@@ -53,7 +53,7 @@ level = "glimmer"
 [[scene]]
 level = "idol_springs"
 # doors A (keyframe id 0) and B (id 4) opened; padlocks (class 421) hidden
-env = { OPENPETE_VIDEO_OPEN_PANIM = "0,4", OPENPETE_VIDEO_HIDE_CLASSES = "421" }
+env = { OPENPETE_VIDEO_OPEN_PANIM = "0,4", OPENPETE_HIDE_CLASSES = "421" }
 
 [[scene]]
 level = "colossus"
@@ -77,7 +77,7 @@ level = "shady_oasis"
 # the credits terrain is Shady Oasis translated: level = credits + 5120 camera units in x
 offset = [5120, 0, 0]
 # the barred gate (classes 500, 525) hidden
-env = { OPENPETE_VIDEO_HIDE_CLASSES = "500,525" }
+env = { OPENPETE_HIDE_CLASSES = "500,525" }
 
 [[scene]]
 level = "cloud_temples"

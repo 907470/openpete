@@ -559,6 +559,26 @@ void openpete_native_set_hide_player(int on);
  * @return 1 when hidden, else 0. */
 int  openpete_native_get_hide_player(void);
 
+/** @brief Turn hiding the HUD on or off.
+ *
+ * On, the compose skips the flat 2D HUD layer and the HUD3D layer, both
+ * passes of each; the overlay quads and the fade still draw. Read per
+ * present. Renderer state only.
+ * @param on Non-zero for on. */
+void openpete_native_set_hide_hud(int on);
+/** @brief Return whether the HUD layers are hidden.
+ *
+ * @return 1 when hidden, else 0. */
+int  openpete_native_get_hide_hud(void);
+
+/** @brief Whether --hide-classes lists moby class `cls`.
+ *
+ * The list is parsed once at renderer init; the moby feed drops every face
+ * of a listed class and the shadow feed its drop shadow.
+ * @param cls A moby class halfword.
+ * @return 1 when listed, else 0. */
+int  openpete_native_hide_class(uint32_t cls);
+
 /** @brief Queue the texture and colour interpolation mode: perspective-correct or PSX affine.
  *
  * The mode is a vertex specialization constant baked into every scene

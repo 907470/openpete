@@ -412,6 +412,20 @@ static int hide_player_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief 1 when the compose skips the HUD layers, else 0.
+ *
+ * The renderer seeds the flag from the options at its init. */
+static double hide_hud_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_get_hide_hud();
+}
+/** @brief Set whether the compose skips the HUD layers from `v` (nonzero is on). */
+static int hide_hud_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_hide_hud(v != 0.0);
+    return 0;
+}
+
 static const char *const k_lod_names[] = { "original", "extended" };
 static const char *const k_tervis_names[] = { "game", "frustum" };
 /** @brief 1 when terrain visibility uses the view frustum, 0 when it follows the game's own verdict. */
@@ -677,6 +691,7 @@ static const struct { const char *id; size_t off; } k_optstr_fields[] = {
     { "record_audio_encoder", offsetof(openpete_options_t, record_audio_encoder) },
     { "bk2",                  offsetof(openpete_options_t, bk2_path) },
     { "bk2_record",           offsetof(openpete_options_t, bk2_record_path) },
+    { "hide_classes",         offsetof(openpete_options_t, hide_classes) },
 };
 
 /** @brief The parsed options string behind row `k`, or NULL when it is unset, the options are unbound, or the row has no k_optstr_fields entry. */
@@ -2084,6 +2099,30 @@ static const knob_desc_t g_builtin_debug[] = {
           "display grid (one texel per PSX pixel, authentic aliasing) instead\n"
           "of a square-pixel 4:3 grid sized from the window. The window blit\n"
           "scales it up. Default {def}. Reference renderer only." },
+
+    { "hide_hud", "Hide HUD", "Debug", "--hide-hud", "OPENPETE_HIDE_HUD",
+      "Draw the scene without the HUD: the flat 2D HUD layer (panels, "
+      "counters, text) and the HUD3D layer (the spinning HUD models) are "
+      "not drawn. Letterbox bars, the fade and the game state are "
+      "unchanged. Native renderer only.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      hide_hud_get, hide_hud_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "0",
+      .help_arg = "0|1", .help_order = 112,
+      .help_text = "1 = draw the scene without the HUD: the flat 2D HUD layer and\n"
+          "the HUD3D models; letterbox bars and the fade stay.\n"
+          "Default: env OPENPETE_HIDE_HUD, else {def}. Native renderer only." },
+
+    { "hide_classes", "Hide moby classes", "Debug", "--hide-classes", "OPENPETE_HIDE_CLASSES",
+      "Comma list of moby class ids (decimal, or hex with 0x) whose models "
+      "and drop shadows are not drawn; at most 32. The game plays on as "
+      "before. Native renderer only.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .help_arg = "LIST", .help_order = 114,
+      .help_text = "comma list of moby class ids (0x prefix for hex, at most 32)\n"
+          "whose models and drop shadows are not drawn.\n"
+          "Default: env OPENPETE_HIDE_CLASSES, else none. Native renderer only." },
 
     ENVROW_LATCHED("RUN_RECOMP", "Debug", "",
         "Guest address (hex) the game fiber dispatches instead of the EXE "

@@ -25,7 +25,7 @@
 
 #include "renderer/env_knob.h"
 #include "game_layout.h"
-#include "openpete_native_render.h"   /* openpete_native_get_hide_player */
+#include "openpete_native_render.h"   /* openpete_native_get_hide_player, openpete_native_hide_class */
 #include "renderer/particles.h"       /* particles_slot: the pool slot index */
 #include "psx_runtime_internal.h"
 
@@ -154,12 +154,33 @@ int player_hide_is_sparx_class(uint32_t cls) {
     return OW.sparx_class != 0u && cls == OW.sparx_class;
 }
 
+/* Faces and shadow triangles --hide-classes dropped over the run, for the
+ * shutdown engagement line. */
+static uint32_t s_class_faces;
+static uint32_t s_class_shadow_tris;
+
+int player_hide_class_face(uint32_t cls, const void* tri, size_t len) {
+    if (!openpete_native_hide_class(cls)) return 0;
+    player_hide_count_data(PH_CAT_CLASS, 1, tri, len);
+    s_class_faces++;
+    return 1;
+}
+
 int player_hide_moby_face(int actor, uint32_t cls, const void* tri, size_t len) {
+    if (player_hide_class_face(cls, tri, len)) return 1;
     if (!actor) return 0;
     const int sparx = player_hide_is_sparx_class(cls);
     const int skip = sparx && player_hide_active();
     player_hide_count_data(sparx ? PH_CAT_SPARX : PH_CAT_OTHER_MOBY, skip, tri, len);
     return skip;
+}
+
+int player_hide_class_shadow(CPUState* cpu, uint32_t moby) {
+    if (!ph_in_ram(moby)) return 0;
+    if (!openpete_native_hide_class(cpu->read_half(moby + game_layout.moby.class_off))) return 0;
+    player_hide_count(PH_CAT_CLASS_SHADOW, 4, 1);
+    s_class_shadow_tris += 4u;
+    return 1;
 }
 
 int player_hide_is_sparx_moby(CPUState* cpu, uint32_t moby) {
@@ -191,6 +212,7 @@ uint32_t player_hide_sparx_glow(CPUState* cpu) {
 static const char* const k_cat_name[PH_CAT_N] = {
     "player", "flame", "player_shadow", "sparx", "sparx_shadow", "sparx_glow",
     "player_part", "sparx_part", "other_part", "other_moby", "other_glow",
+    "class", "class_shadow",
 };
 
 static uint32_t s_cnt[PH_CAT_N][2];
@@ -264,10 +286,15 @@ void player_hide_count_data(int cat, int skipped, const void* data, size_t len) 
 
 /* ---- module --------------------------------------------------------------- */
 
-/** @brief Print the pending census line and the per-owner type report at shutdown. */
+/** @brief Print the pending census line, the per-owner type report and the --hide-classes engagement line at shutdown.
+ *
+ * The engagement line prints whenever a face or shadow was dropped. */
 static void player_hide_shutdown(void) {
     ph_census_flush();
     ph_type_report();
+    if (s_class_faces || s_class_shadow_tris)
+        fprintf(stderr, "hide-classes: faces_skipped=%u shadow_tris_skipped=%u\n",
+                s_class_faces, s_class_shadow_tris);
 }
 
 const feature_module_t player_hide_module = {

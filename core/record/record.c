@@ -758,6 +758,12 @@ static void rec_publish_cfr(const uint8_t* rgba, uint64_t tag) {
         g_rec.cfr_prev_idx = idx;
         g_rec.cfr_filled++;
     }
+    /* OPENPETE_REC_LOG: one line per published image, its encoder frame
+     * ordinal before the publish and its present tag, which [recq] maps to a
+     * VBL. */
+    if (getenv("OPENPETE_REC_LOG"))
+        fprintf(stderr, "[recpub] n=%llu pts=%llu\n", (unsigned long long)g_rec.captured,
+                (unsigned long long)tag);
     const int idx = rec_slot_claim();
     if (idx < 0) return;
     memcpy(g_rec.slots[idx], rgba, bytes);

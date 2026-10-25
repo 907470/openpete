@@ -950,6 +950,10 @@ void openpete_options_init(openpete_options_t* opts) {
      * OPENPETE_WIREFRAME, else 0. */
     opts->notex     = -1;
     opts->wireframe = -1;
+    /* -1 = unset: resolve_env_spellings applies OPENPETE_HIDE_HUD, else 0;
+     * NULL = unset: it applies OPENPETE_HIDE_CLASSES, else none. */
+    opts->hide_hud     = -1;
+    opts->hide_classes = NULL;
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
     /* Retained-terrain GPU cache and the resident disc image, both default
@@ -1248,6 +1252,13 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->hide_player = (atoi(v) != 0);
         i++;
+    } else if (strcmp(a, "--hide-hud") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->hide_hud = (atoi(v) != 0);
+        i++;
+    } else if (strcmp(a, "--hide-classes") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->hide_classes = v; i++;
     } else if (strcmp(a, "--notex") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->notex = (atoi(v) != 0);
@@ -2085,7 +2096,8 @@ static int env_value(const char* name, const char** out) {
  *
  * Runs after the flag walk, so a typed flag has claimed its field already,
  * and after the config resolver has applied the openpete.toml [env] tables.
- * OPENPETE_NOTEX and OPENPETE_WIREFRAME are on unless they start with '0'; OPENPETE_TERRAIN_CACHE
+ * OPENPETE_NOTEX, OPENPETE_WIREFRAME and OPENPETE_HIDE_HUD are on unless
+ * they start with '0'; OPENPETE_HIDE_CLASSES is taken as written; OPENPETE_TERRAIN_CACHE
  * and OPENPETE_DISC_CACHE take atoi's verdict (default 1); OPENPETE_SCAN_GUARD
  * is off when it starts with '0' (default 1);
  * OPENPETE_TERRAIN_VISIBILITY=game selects the game's verdict (default
@@ -2099,6 +2111,10 @@ static void resolve_env_spellings(openpete_options_t* opts) {
         opts->notex = env_value("OPENPETE_NOTEX", &e) && *e != '0';
     if (opts->wireframe < 0)
         opts->wireframe = env_value("OPENPETE_WIREFRAME", &e) && *e != '0';
+    if (opts->hide_hud < 0)
+        opts->hide_hud = env_value("OPENPETE_HIDE_HUD", &e) && *e != '0';
+    if (!opts->hide_classes && env_value("OPENPETE_HIDE_CLASSES", &e))
+        opts->hide_classes = strdup(e);   /* outlives a later setenv or [env] release */
     if (opts->terrain_cache < 0)
         opts->terrain_cache = env_value("OPENPETE_TERRAIN_CACHE", &e) ? (atoi(e) != 0) : 1;
     if (opts->disc_cache < 0)
@@ -2128,6 +2144,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->load_delay < 0)            out->load_delay = (int)game_get_load_delay_default();
     if (out->notex < 0)                 out->notex = 0;
     if (out->wireframe < 0)             out->wireframe = 0;
+    if (out->hide_hud < 0)              out->hide_hud = 0;
     if (out->terrain_cache < 0)         out->terrain_cache = 1;
     if (out->disc_cache < 0)            out->disc_cache = 1;
     if (out->scan_guard < 0)            out->scan_guard = 1;

@@ -1029,6 +1029,8 @@ static void shadow_moby_build(CPUState* cpu, shadow_wide_census* cs, int game_on
             player_hide_count(PH_CAT_SPARX_SHADOW, 4, hide_player);
             if (hide_player) continue;
         }
+        /* --hide-classes: a listed class casts no drop shadow. */
+        if (!game_only && player_hide_class_shadow(cpu, s_list[li].moby)) continue;
         shadow_fan_emit(&w, &f);
     }
 }

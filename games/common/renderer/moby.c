@@ -8024,9 +8024,10 @@ static void push_scene_moby_tris(CPUState* cpu) {
         /* Per-instance material slot, resolved from the moby's identity
          * at emit time (moby_matslot_memo). */
         const uint16_t matslot = moby_matslot_memo(&mat, s_wtri_cls[i], s_wtri_moby[i]);
-        /* --hide-player drops the companion's actor faces here, after every
-         * per-moby memo above has advanced, so every other moby's
-         * triangles are submitted as without the flag. */
+        /* --hide-player drops the companion's actor faces and --hide-classes
+         * every face of a listed class here, after every per-moby memo above
+         * has advanced, so every other moby's triangles are submitted as
+         * without the flags. */
         if (player_hide_moby_face(cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT,
                                   s_wtri_cls[i], &t, sizeof t))
             continue;

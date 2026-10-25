@@ -94,24 +94,22 @@ On main: `--freecam-path @FILE` with fractional waypoints and `cut`
 entries, `--record-cfr` capture mode, `--record-crf`, `--record-pixfmt`,
 `--hide-player`, `--skip-to-area`, `--input-lock`, `--bk2`,
 `OPENPETE_FREECAM_AT_VBL`, `OPENPETE_CUT_CENSUS` (the `shown=camera`
-line), `OPENPETE_GLINT`.
+line), `OPENPETE_GLINT`, `OPENPETE_HIDE_HUD` (`--hide-hud`: no HUD),
+`OPENPETE_HIDE_CLASSES` (`--hide-classes`: moby classes and their shadows
+not drawn), and the log lines `qc` reads: `OPENPETE_FCPATH_LOG` (`[fcpath]`
+path key per tick), `OPENPETE_ALPHA_LOG` (`[alpha]` per present),
+`OPENPETE_REC_LOG` (`[recq]`/`[recpub]` encoder present-to-frame map).
 
 Not on main; they exist only in the uncommitted video spikes, so a render
-from main records a clip without them and `qc` fails for lack of the log
-lines:
+from main records a clip without them:
 
 | Knob | Game | Effect |
 |---|---|---|
 | `OPENPETE_D1` | 2, 3 | every moby passes the update-list gate each tick (Spyro 2 gems spin) |
-| `OPENPETE_VIDEO_HIDE_CLASSES` | 2, 3 | moby classes (and their shadows) not drawn |
 | `OPENPETE_VIDEO_ZOE_NEAR` | 3 | Zoe's distance reads take the near branch |
-| `OPENPETE_VIDEO_NOHUD` | 2, 3 | no HUD |
 | `OPENPETE_VIDEO_NOSPARX` | 2 | class 0x78 off the update list (no Sparx sparkles or glow) |
 | `OPENPETE_VIDEO_OPEN_PANIM` | 2, 3 | keyframe-animated sectors (doors) by id run open |
 | `OPENPETE_VIDEO_HOME_PANIM` | 2 | animated sectors held at keyframe 0 |
-| `OPENPETE_FCPATH_LOG` | 2, 3 | `[fcpath]` path key per tick |
-| `OPENPETE_ALPHA_LOG` | 2, 3 | `[alpha]` per present |
-| `OPENPETE_REC_LOG` | 2, 3 | `[recq]`/`[recpub]` encoder present-to-frame map |
 
 The thumbnail's title matte is the game's 3D letter font rendered by the
 thumbnail spike's `OPENPETE_VIDEO_TITLE*` knobs over a black and a white
