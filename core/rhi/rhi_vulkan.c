@@ -561,10 +561,15 @@ struct rhi_device {
     SDL_Condition *gpl_cv;
     struct gpl_lib *gpl_head;
     VkExtent2D     sc_extent;
+    /* Extent of the offscreen color and depth targets and the stage images:
+     * off_pin while it is non-zero, else sc_extent (off_extent_sync). The
+     * present blits fit it into sc_extent when the two differ. */
+    VkExtent2D     off_extent;
+    VkExtent2D     off_pin;       /* rhi_pin_offscreen_extent; 0x0 follows the swapchain */
     uint32_t       sc_count;
     VkImage        sc_images[RHI_MAX_SC_IMAGES];
 
-    /* Offscreen color target (== swapchain extent). SSAA supersampling lives in
+    /* Offscreen color target (off_extent). SSAA supersampling lives in
      * the renderer as a separate render target that resolves into this. */
     VkRenderPass   off_rp;
     VkRenderPass   off_load_rp;   /* off_rp but color LOADs (SCENE postfx re-begin) */
@@ -685,7 +690,7 @@ struct rhi_device {
      * creation (surface_extent); cleared by create_swapchain. */
     bool     sc_zero_logged;
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
-    VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
+    VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen off_extent
                             * or the bound render target) - for rhi_clear_depth */
 
     float clear[4];
@@ -1900,6 +1905,17 @@ static bool swapchain_fetch_images(rhi_device *dev)
     return true;
 }
 
+/** @brief Set off_extent to the pinned extent when one is held, else to the swapchain extent.
+ *
+ * Runs wherever sc_extent or off_pin is assigned, so the offscreen targets
+ * built after it (create_offscreen, create_stages) take the extent the
+ * renderer composes at.
+ * @param dev Device whose off_extent is written. */
+static void off_extent_sync(rhi_device *dev)
+{
+    dev->off_extent = (dev->off_pin.width && dev->off_pin.height) ? dev->off_pin : dev->sc_extent;
+}
+
 /** @brief Query the surface capabilities and the extent a swapchain would take, refusing a zero extent.
  *
  * A minimized window reports a zero extent, and no swapchain can be created
@@ -1920,7 +1936,7 @@ static bool surface_extent(rhi_device *dev, VkSurfaceCapabilitiesKHR *caps, VkEx
                 "%s at %ux%u\n", extent->width, extent->height,
                 dev->capture_mode ? "capture frames render without a present"
                                   : "presents skipped",
-                dev->sc_extent.width, dev->sc_extent.height);
+                dev->off_extent.width, dev->off_extent.height);
     dev->sc_zero_logged = true;
     return false;
 }
@@ -1979,6 +1995,7 @@ static bool create_swapchain(rhi_device *dev)
 
     dev->sc_format = pick.format;
     dev->sc_extent = extent;
+    off_extent_sync(dev);
     dev->sc_zero_logged = false;
     if (!swapchain_fetch_images(dev)) return false;
 
@@ -2263,14 +2280,15 @@ static bool create_rt_ds_render_pass(rhi_device *dev)
  * @return false when any step fails. */
 static bool create_offscreen(rhi_device *dev)
 {
-    /* The offscreen target matches the swapchain extent. The 3D scene composites
-     * here and rhi_blit_to_swapchain presents it 1:1. SSAA renders the scene into
+    /* The offscreen target has off_extent. The 3D scene composites here and
+     * rhi_blit_to_swapchain presents it, 1:1 when off_extent is the swapchain
+     * extent. SSAA renders the scene into
      * a larger render target (renderer-owned) and resolves it into this. */
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = RHI_RT_FORMAT,
-        .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
+        .extent = { dev->off_extent.width, dev->off_extent.height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -2324,7 +2342,7 @@ static bool create_offscreen(rhi_device *dev)
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = dev->depth_format,
-        .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
+        .extent = { dev->off_extent.width, dev->off_extent.height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -2374,8 +2392,8 @@ static bool create_offscreen(rhi_device *dev)
         .renderPass = dev->off_rp,
         .attachmentCount = 2,
         .pAttachments = fb_atts,
-        .width = dev->sc_extent.width,
-        .height = dev->sc_extent.height,
+        .width = dev->off_extent.width,
+        .height = dev->off_extent.height,
         .layers = 1,
     };
     if (vkCreateFramebuffer(dev->device, &fci, NULL, &dev->off_fb) != VK_SUCCESS) {
@@ -2879,7 +2897,7 @@ static bool create_stages(rhi_device *dev)
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .imageType = VK_IMAGE_TYPE_2D,
             .format = RHI_RT_FORMAT,
-            .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
+            .extent = { dev->off_extent.width, dev->off_extent.height, 1 },
             .mipLevels = 1, .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -3035,7 +3053,7 @@ static void pxt_present(rhi_device *dev, const char *src, VkResult pr, VkImage i
     if (game && !s_pxt_game0_ns) s_pxt_game0_ns = now;
     if (game && img != VK_NULL_HANDLE && s_pxt_content < 2 && pxt_ms(now) < 30000.0) {
         nb = pxt_nonblack(dev, img);
-        const long total = (long)dev->sc_extent.width * (long)dev->sc_extent.height;
+        const long total = (long)dev->off_extent.width * (long)dev->off_extent.height;
         const int level = nb >= total / 100 && nb > 0 ? 2 : nb > 0 ? 1 : 0;
         if (level > s_pxt_content) {
             for (int l = s_pxt_content + 1; l <= level; l++)
@@ -3896,6 +3914,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
          * present. */
         dev->sc_format = VK_FORMAT_UNDEFINED;
         dev->sc_extent = (VkExtent2D){ hl_w ? hl_w : 1u, hl_h ? hl_h : 1u };
+        off_extent_sync(dev);
         dev->sc_count  = 0;
         for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
             dev->images_in_flight[i] = VK_NULL_HANDLE;
@@ -4548,13 +4567,13 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = dev->off_rp,
         .framebuffer = dev->off_fb,
-        .renderArea = { .offset = {0, 0}, .extent = dev->sc_extent },
+        .renderArea = { .offset = {0, 0}, .extent = dev->off_extent },
         .clearValueCount = 2,
         .pClearValues = cv,
     };
     record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
-    dev->cur_extent = dev->sc_extent;   /* render area of this (offscreen) pass */
+    dev->cur_extent = dev->off_extent;   /* render area of this (offscreen) pass */
     dev->cur_depth_clear = cv[1].depthStencil.depth;
 
     /* Y-flipped viewport (Vulkan clip-space Y is down) so NDC/UV match the
@@ -4562,12 +4581,12 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
      * resize needs no pipeline rebuild. */
     VkViewport vp = {
         .x = 0.0f,
-        .y = (float)dev->sc_extent.height,
-        .width = (float)dev->sc_extent.width,
-        .height = -(float)dev->sc_extent.height,
+        .y = (float)dev->off_extent.height,
+        .width = (float)dev->off_extent.width,
+        .height = -(float)dev->off_extent.height,
         .minDepth = 0.0f, .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .offset = {0, 0}, .extent = dev->sc_extent };
+    VkRect2D scissor = { .offset = {0, 0}, .extent = dev->off_extent };
     vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
     /* Belt-only: a defined value if a depth_bias pipeline is somehow bound
@@ -4595,20 +4614,20 @@ void rhi_begin_offscreen_load(rhi_device *dev)
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = dev->off_load_rp,
         .framebuffer = dev->off_fb,
-        .renderArea = { .offset = {0, 0}, .extent = dev->sc_extent },
+        .renderArea = { .offset = {0, 0}, .extent = dev->off_extent },
         .clearValueCount = 2,
         .pClearValues = cv,
     };
     record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
-    dev->cur_extent = dev->sc_extent;
+    dev->cur_extent = dev->off_extent;
     dev->cur_depth_clear = cv[1].depthStencil.depth;
     VkViewport vp = {
-        .x = 0.0f, .y = (float)dev->sc_extent.height,
-        .width = (float)dev->sc_extent.width, .height = -(float)dev->sc_extent.height,
+        .x = 0.0f, .y = (float)dev->off_extent.height,
+        .width = (float)dev->off_extent.width, .height = -(float)dev->off_extent.height,
         .minDepth = 0.0f, .maxDepth = 1.0f,
     };
-    VkRect2D scissor = { .offset = {0, 0}, .extent = dev->sc_extent };
+    VkRect2D scissor = { .offset = {0, 0}, .extent = dev->off_extent };
     vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
 }
@@ -4653,6 +4672,57 @@ static void image_barrier(VkCommandBuffer cb, VkImage img,
     vkCmdPipelineBarrier(cb, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &b);
 }
 
+/** @brief Record the blit of an off_extent image onto a swapchain image in TRANSFER_DST layout, fitted to the swapchain extent.
+ *
+ * At equal extents the blit is 1:1 with @p same_filter. Otherwise the
+ * swapchain image is cleared to black and the source is scaled with a
+ * linear filter into the largest centered rect of its own aspect ratio, so
+ * a pinned offscreen extent shows letterboxed or pillarboxed in a window of
+ * another size.
+ * @param dev Device whose off_extent and sc_extent are read.
+ * @param cb Command buffer in the recording state.
+ * @param src Image of off_extent in TRANSFER_SRC_OPTIMAL.
+ * @param sc Swapchain image in TRANSFER_DST_OPTIMAL.
+ * @param same_filter Filter of the 1:1 blit. */
+static void present_blit(rhi_device *dev, VkCommandBuffer cb, VkImage src, VkImage sc,
+                         VkFilter same_filter)
+{
+    const VkExtent2D o = dev->off_extent, d = dev->sc_extent;
+    VkImageBlit region = {
+        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .srcOffsets = { {0,0,0}, {(int32_t)o.width, (int32_t)o.height, 1} },
+        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .dstOffsets = { {0,0,0}, {(int32_t)d.width, (int32_t)d.height, 1} },
+    };
+    if (o.width == d.width && o.height == d.height) {
+        vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, same_filter);
+        return;
+    }
+    /* Fit: the axis with the smaller scale fills the swapchain, the other
+     * is centered. Products in 64 bits: 4K extents overflow 32. */
+    int32_t fw = (int32_t)d.width, fh = (int32_t)d.height;
+    if ((uint64_t)d.width * o.height > (uint64_t)d.height * o.width)
+        fw = (int32_t)(((uint64_t)d.height * o.width + o.height / 2) / o.height);
+    else
+        fh = (int32_t)(((uint64_t)d.width * o.height + o.width / 2) / o.width);
+    if (fw < 1) fw = 1;
+    if (fh < 1) fh = 1;
+    const int32_t x0 = ((int32_t)d.width - fw) / 2, y0 = ((int32_t)d.height - fh) / 2;
+    region.dstOffsets[0] = (VkOffset3D){ x0, y0, 0 };
+    region.dstOffsets[1] = (VkOffset3D){ x0 + fw, y0 + fh, 1 };
+    const VkClearColorValue black = { .float32 = { 0.0f, 0.0f, 0.0f, 1.0f } };
+    const VkImageSubresourceRange all = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                          .levelCount = 1, .layerCount = 1 };
+    vkCmdClearColorImage(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    image_barrier(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+}
+
 void rhi_blit_to_swapchain(rhi_device *dev)
 {
     /* No image to blit onto: headless, staged, or a capture-mode frame the
@@ -4670,14 +4740,7 @@ void rhi_blit_to_swapchain(rhi_device *dev)
                   0, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-    VkImageBlit region = {
-        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .srcOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
-        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .dstOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
-    };
-    vkCmdBlitImage(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+    present_blit(dev, cb, dev->off_image, sc, VK_FILTER_LINEAR);
 
     /* Swapchain image: transfer dst -> present. */
     image_barrier(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -4841,9 +4904,9 @@ void rhi_end_frame_to_stage(rhi_device *dev, int stage)
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkImageBlit region = {
         .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .srcOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
+        .srcOffsets = { {0,0,0}, {(int32_t)dev->off_extent.width, (int32_t)dev->off_extent.height, 1} },
         .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .dstOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
+        .dstOffsets = { {0,0,0}, {(int32_t)dev->off_extent.width, (int32_t)dev->off_extent.height, 1} },
     };
     vkCmdBlitImage(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    st, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
@@ -4918,14 +4981,7 @@ bool rhi_present_stage_submit(rhi_device *dev, int stage)
     image_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   0, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkImageBlit region = {
-        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .srcOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
-        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .dstOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
-    };
-    vkCmdBlitImage(cb, dev->stage_image[stage], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
+    present_blit(dev, cb, dev->stage_image[stage], sc, VK_FILTER_NEAREST);
     image_barrier(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_ACCESS_TRANSFER_WRITE_BIT, 0,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -5903,6 +5959,31 @@ void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h)
     if (h) *h = dev ? (int)dev->sc_extent.height : 0;
 }
 
+void rhi_offscreen_extent(const rhi_device *dev, int *w, int *h)
+{
+    if (w) *w = dev ? (int)dev->off_extent.width  : 0;
+    if (h) *h = dev ? (int)dev->off_extent.height : 0;
+}
+
+void rhi_pin_offscreen_extent(rhi_device *dev, int w, int h)
+{
+    if (!dev || dev->headless) return;
+    dev->off_pin = (w > 0 && h > 0) ? (VkExtent2D){ (uint32_t)w, (uint32_t)h }
+                                    : (VkExtent2D){ 0, 0 };
+    const VkExtent2D was = dev->off_extent;
+    off_extent_sync(dev);
+    RHI_LOG("offscreen extent %s at %ux%u (swapchain %ux%u)\n",
+            dev->off_pin.width ? "pinned" : "follows the swapchain",
+            dev->off_extent.width, dev->off_extent.height,
+            dev->sc_extent.width, dev->sc_extent.height);
+    if (was.width == dev->off_extent.width && was.height == dev->off_extent.height) return;
+    /* The targets still have the old extent; the next frame begin rebuilds
+     * them through recreate, without the drag settle (the window did not move). */
+    dev->off_extent = was;
+    dev->needs_recreate = true;
+    dev->resize_discrete = true;
+}
+
 void rhi_pass_extent(const rhi_device *dev, int *w, int *h)
 {
     if (w) *w = dev ? (int)dev->cur_extent.width  : 0;
@@ -6387,7 +6468,7 @@ static size_t rt_readback_bytes(int w, int h)
  * @return The count, or -1 when staging cannot be allocated. */
 static long pxt_nonblack(rhi_device *dev, VkImage img)
 {
-    const int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
+    const int w = (int)dev->off_extent.width, h = (int)dev->off_extent.height;
     const size_t need = rt_readback_bytes(w, h);
     vkDeviceWaitIdle(dev->device);
     if (!dev->readback_buf || dev->readback_buf->size < need) {
@@ -6416,7 +6497,7 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
 {
     /* off_image is swapchain-sized and (for SSAA) already holds the resolved 1×
      * result, so the screenshot matches the present. */
-    int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
+    int w = (int)dev->off_extent.width, h = (int)dev->off_extent.height;
     if (out_w) *out_w = w;
     if (out_h) *out_h = h;
     size_t need = rt_readback_bytes(w, h);
@@ -6486,7 +6567,7 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
      * (render-pass final layout, already read by the blit); another transfer
      * read needs no barrier. The off_rp WAR dependency keeps the next frame from
      * overwriting off_image before this copy runs. */
-    int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
+    int w = (int)dev->off_extent.width, h = (int)dev->off_extent.height;
     if (w > 0 && h > 0) {
         size_t need = rt_readback_bytes(w, h);
         rhi_buffer **slot_staging = &dev->readback_ring[fi].staging;
@@ -10788,8 +10869,8 @@ void rhi_blit_rt_to_offscreen(rhi_device *dev, rhi_texture *src)
         .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
         .srcOffsets = { {0, 0, 0}, {(int32_t)src->width, (int32_t)src->height, 1} },
         .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .dstOffsets = { {0, 0, 0}, {(int32_t)dev->sc_extent.width,
-                                    (int32_t)dev->sc_extent.height, 1} },
+        .dstOffsets = { {0, 0, 0}, {(int32_t)dev->off_extent.width,
+                                    (int32_t)dev->off_extent.height, 1} },
     };
     vkCmdBlitImage(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -11064,10 +11145,10 @@ void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h)
      * integer multiple of the swapchain), scale the rect by that factor so the
      * panel scissor still confines the N×-resolution scene. (No-op when the
      * current pass matches the swapchain extent, i.e. the 1× offscreen.) */
-    if (dev->sc_extent.width &&
-        dev->cur_extent.width  > dev->sc_extent.width &&
-        dev->cur_extent.width  % dev->sc_extent.width == 0) {
-        int eff = (int)(dev->cur_extent.width / dev->sc_extent.width);
+    if (dev->off_extent.width &&
+        dev->cur_extent.width  > dev->off_extent.width &&
+        dev->cur_extent.width  % dev->off_extent.width == 0) {
+        int eff = (int)(dev->cur_extent.width / dev->off_extent.width);
         x *= eff; y *= eff; w *= eff; h *= eff;
     }
     if (x < 0) { w += x; x = 0; }

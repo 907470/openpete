@@ -2415,13 +2415,36 @@ bool rhi_cycle_rt_readback(rhi_device *dev, rhi_texture *rt,
  * @param w Width in pixels.
  * @param h Height in pixels. */
 void rhi_set_viewport(rhi_device *dev, int w, int h);
-/** @brief Write the current swapchain extent, the resolution the offscreen pass renders at.
+/** @brief Write the current swapchain extent, the window's pixel size at the last swapchain build.
  *
- * Used to size a shared depth pre-pass to cover the largest scene target.
+ * Equals rhi_offscreen_extent unless rhi_pin_offscreen_extent holds a
+ * different extent.
  * @param dev Device, or NULL (writes 0).
  * @param w Receives the width; may be NULL.
  * @param h Receives the height; may be NULL. */
 void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h);
+/** @brief Write the extent of the offscreen target, the resolution the offscreen pass renders and reads back at.
+ *
+ * The pinned extent while rhi_pin_offscreen_extent holds one, else the
+ * swapchain extent. Used to size a shared depth pre-pass and the postfx
+ * passes over the composed image.
+ * @param dev Device, or NULL (writes 0).
+ * @param w Receives the width; may be NULL.
+ * @param h Receives the height; may be NULL. */
+void rhi_offscreen_extent(const rhi_device *dev, int *w, int *h);
+/** @brief Hold the offscreen target and the stage images at a fixed extent across swapchain rebuilds, or release them to follow the swapchain.
+ *
+ * While pinned, a window resize, minimize or restore rebuilds only the
+ * swapchain at the window's size; the offscreen target keeps @p w x @p h,
+ * every readback (rhi_cycle_readback, rhi_read_offscreen) returns that
+ * extent, and the present blit scales it into the largest centered rect of
+ * its aspect ratio with black bars. A change of the effective extent
+ * rebuilds the targets at the next frame begin. Ignored on a headless
+ * device, whose extent is fixed at creation.
+ * @param dev Windowed device, or NULL (ignored).
+ * @param w Pinned width; w or h <= 0 releases the pin.
+ * @param h Pinned height. */
+void rhi_pin_offscreen_extent(rhi_device *dev, int w, int h);
 /** @brief Write the render area of the current pass, recorded at every pass begin.
  *
  * The offscreen pass records the swapchain extent, a render-target pass the

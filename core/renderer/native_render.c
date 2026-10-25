@@ -5097,6 +5097,9 @@ static struct {
      * toggle that changes no size at all cannot leave the next genuine drag
      * unsettled. */
     Uint64        resize_immediate_at_ns;
+    /* A --record capture holds the composed extent (win_w x win_h) and the
+     * RHI offscreen extent fixed while it runs (record_extent_pin). */
+    bool          rec_pinned;
 
     /* Reference panel: PsyCross's read-back frame (RGBA8). */
     rhi_pipeline *blit_pipe;
@@ -18504,7 +18507,7 @@ static void scene_postfx_split(void)
 {
     if (!native_postfx_point_active(1 /* OP_POSTFX_SCENE */)) return;
     int w = 0, h = 0;
-    rhi_swapchain_extent(s_nr.dev, &w, &h);
+    rhi_offscreen_extent(s_nr.dev, &w, &h);
     rhi_end_offscreen(s_nr.dev);                 /* scene -> off_image (TRANSFER_SRC) */
     native_postfx_run(1 /* SCENE */, NULL, w, h);/* chain over off_image, blit back */
     rhi_begin_offscreen_load(s_nr.dev);          /* resume for HUD, scene preserved */
@@ -19151,8 +19154,8 @@ typedef struct {   /* C mirror of op_engine_ubo - std140, offsets load-bearing *
  * pass image, mirroring scene_to_clip, and its display width, display
  * height, visible rows and widescreen factor.
  * @param eng Block to fill; zeroed first.
- * @param w Pass width in pixels; 0 uses the swapchain width.
- * @param h Pass height in pixels; 0 uses the swapchain height. */
+ * @param w Pass width in pixels; 0 uses the offscreen width.
+ * @param h Pass height in pixels; 0 uses the offscreen height. */
 static void fill_engine_block(pfx_engine_ubo_t* eng, int w, int h)
 {
     memset(eng, 0, sizeof *eng);
@@ -19163,7 +19166,7 @@ static void fill_engine_block(pfx_engine_ubo_t* eng, int w, int h)
     else openpete_mods_present_ctx(&eng->tick, &eng->alpha, &canonical);
     eng->canonical = (uint32_t)canonical;
     int ww = 0, wh = 0;
-    rhi_swapchain_extent(s_nr.dev, &ww, &wh);
+    rhi_offscreen_extent(s_nr.dev, &ww, &wh);
     eng->res[0] = (float)(w > 0 ? w : ww);  eng->res[1] = (float)(h > 0 ? h : wh);
     eng->win[0] = (float)ww;                eng->win[1] = (float)wh;
     eng->aspect = eng->res[1] > 0 ? eng->res[0] / eng->res[1] : 1.0f;
@@ -20743,6 +20746,26 @@ int openpete_native_present_stage_release(void)
 int      openpete_native_stage_count(void) { return s_nr.dev ? rhi_stage_count() : 0; }
 uint32_t openpete_native_stage_gen(void)   { return s_nr.dev ? rhi_stage_gen(s_nr.dev) : 0; }
 
+/** @brief Hold the composed extent at win_w x win_h while a --record capture runs, and release it when the capture ends.
+ *
+ * The encoder takes the extent of its first image for the whole stream. A
+ * pinned extent keeps win_w and win_h (render_frame_common adopts no
+ * window size while pinned) and the RHI offscreen target at the size the
+ * capture started at; a window resize, minimize or restore then rebuilds
+ * only the swapchain, and the present blit fits the image into the window.
+ * After the capture ends the window's size is adopted through the usual
+ * settle. Headless devices have a fixed extent and are not pinned. */
+static void record_extent_pin(void)
+{
+    const bool want = !s_nr.headless && openpete_record_active() &&
+                      s_nr.win_w > 0 && s_nr.win_h > 0;
+    if (want == s_nr.rec_pinned) return;
+    s_nr.rec_pinned = want;
+    rhi_pin_offscreen_extent(s_nr.dev, want ? s_nr.win_w : 0, want ? s_nr.win_h : 0);
+    OPL_INFO_F("record", "composed extent %s at %dx%d", want ? "pinned" : "released",
+               s_nr.win_w, s_nr.win_h);
+}
+
 /** @brief Record one present: apply the composed scene's geometry, take the glyph lists, adopt a settled window size, and run the passes and compose.
  *
  * @param record_pts_us Capture instant for --record.
@@ -20752,10 +20775,12 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     s_last_frame_presented = 0;
     ps_apply_geometry();
     glyph_lists_latch();
+    record_extent_pin();
     /* Detect window-size changes WITHOUT polling SDL events (the host loop
      * owns the event queue, and stealing events would starve PsyCross input). */
     int pw = 0, ph = 0;
-    if (SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
+    if (!s_nr.rec_pinned &&
+        SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
         (pw != s_nr.win_w || ph != s_nr.win_h)) {
         /* Wait for the size to SETTLE before adopting it. A live resize walks
          * the width one pixel at a time, and adopting each step rebuilds the
@@ -20928,7 +20953,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     {
         pfx_drain_retired();
         int pw = 0, ph = 0;
-        rhi_swapchain_extent(s_nr.dev, &pw, &ph);
+        rhi_offscreen_extent(s_nr.dev, &pw, &ph);
         (void)native_postfx_run(0 /* COMPOSITE */, NULL, pw, ph);
         /* Dev overlay over the FILTERED composite: compose_variant skips
          * it whenever this chain is active (same predicate), so screen
