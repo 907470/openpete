@@ -4,6 +4,8 @@
 
 extern const feature_module_t render_paths_module;
 extern const feature_module_t moby_update_all_module;
+extern const feature_module_t kf_anim_ctl_module;
+extern const feature_module_t zoe_near_module;
 extern const feature_module_t spyro3_levelwarp_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
@@ -37,6 +39,13 @@ static const feature_module_t* const k_modules[] = {
      * names with a build that lists every live moby (gameplay-divergent,
      * default off; unbound while off). */
     &moby_update_all_module,
+    /* OPENPETE_VIDEO_OPEN_PANIM / HOME_PANIM: keyframe animations started
+     * or held by id at the walker's entry (gameplay-divergent, default
+     * off; unbound while off). */
+    &kf_anim_ctl_module,
+    /* OPENPETE_VIDEO_ZOE_NEAR: the checkpoint fairy's distance reads
+     * answered near (gameplay-divergent, default off; unbound while off). */
+    &zoe_near_module,
     /* The shared terrain feeder: hooks the world draw and the visibility
      * function from game_layout; inert unless the native scene is enabled. */
     &terrain_module,

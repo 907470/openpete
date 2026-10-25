@@ -754,6 +754,10 @@ const game_layout_t spyro2_game_layout = {
         .pod_off = 0x43u, .dist_off = 0x4Au, .listed_off = 0x4Bu,
         .overlay_update = 0x800670F0u,
     },
+    /* func_800225F8 (asm/environment.s) walks the seven pairs at
+     * D_800681D4; func_8002365C sets a descriptor's flags by id and
+     * func_80023710 its keyframe over the same pairs. */
+    .kf_anim = { .walker = 0x800225F8u, .registry = D_ENV_ANIM_REGISTRY, .pairs = 7u },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

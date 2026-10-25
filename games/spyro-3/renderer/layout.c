@@ -769,6 +769,17 @@ const game_layout_t spyro3_game_layout = {
         .pod_lists = 0x8006C730u, .list = 0x8006E788u,
         .pod_off = 0x43u, .dist_off = 0x4Au, .listed_off = 0x4Bu,
     },
+    /* func_80020E74 (asm/environment.s), called first under UPDATE_ENV by
+     * func_80055294 (src/update.c), walks the seven pairs at D_8006E350;
+     * func_80021ED8 is the game's set-flags-by-id over the same pairs. */
+    .kf_anim = { .walker = 0x80020E74u, .registry = 0x8006E350u, .pairs = 7u },
+    /* Zoe, class 0x110: the update the table holds for her is 0xB74 bytes
+     * in every level (level_16: func_level_16_80077DD0, 0x80077DD0-
+     * 0x80078944) and reads her distance to the player through
+     * func_8004F334 (asm/stdutil.s, max + 3/8 min of |dx|, |dy|). 0x1800
+     * is under her 0x2400 show threshold, at or over the 0x1000 idle
+     * threshold and over the 0x800 checkpoint-touch threshold. */
+    .zoe = { .dist_fn = 0x8004F334u, .cls = 0x110u, .update_len = 0xB74u, .near_dist = 0x1800u },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

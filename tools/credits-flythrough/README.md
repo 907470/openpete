@@ -100,20 +100,20 @@ not drawn), and the log lines `qc` reads: `OPENPETE_FCPATH_LOG` (`[fcpath]`
 path key per tick), `OPENPETE_ALPHA_LOG` (`[alpha]` per present),
 `OPENPETE_REC_LOG` (`[recq]`/`[recpub]` encoder present-to-frame map).
 
-Not on main; they exist only in the uncommitted video spikes, so a render
-from main records a clip without them:
+Gameplay knobs, latched at boot and off by default; each changes gameplay
+state, so a clip recorded with them is not a replay of the unmodified game:
 
 | Knob | Game | Effect |
 |---|---|---|
-| `OPENPETE_D1` | 2, 3 | every moby passes the update-list gate each tick (Spyro 2 gems spin) |
+| `OPENPETE_D1` | 2, 3 | every moby passes the update-list gate each tick (gems spin at any range) |
 | `OPENPETE_VIDEO_ZOE_NEAR` | 3 | Zoe's distance reads take the near branch |
-| `OPENPETE_VIDEO_NOSPARX` | 2 | class 0x78 off the update list (no Sparx sparkles or glow) |
-| `OPENPETE_VIDEO_OPEN_PANIM` | 2, 3 | keyframe-animated sectors (doors) by id run open |
-| `OPENPETE_VIDEO_HOME_PANIM` | 2 | animated sectors held at keyframe 0 |
+| `OPENPETE_VIDEO_NOSPARX` | 2 | with `OPENPETE_D1`, class 0x78 off the update list (no Sparx sparkles or glow) |
+| `OPENPETE_VIDEO_OPEN_PANIM` | 2, 3 | keyframe-animated sectors (doors) by id run open once from keyframe 0 |
+| `OPENPETE_VIDEO_HOME_PANIM` | 2, 3 | keyframe-animated sectors by id sent to keyframe 0 and held there |
 
 The thumbnail's title matte is the game's 3D letter font rendered by the
 thumbnail spike's `OPENPETE_VIDEO_TITLE*` knobs over a black and a white
-background (`OPENPETE_VIDEO_TITLE_BG`), also not on main. The mark is
+background (`OPENPETE_VIDEO_TITLE_BG`), which are not on main. The mark is
 `tools/gen_dist_icon.py`'s; the game logo is an upscale of the title-screen
 logo texture, supplied as a file.
 

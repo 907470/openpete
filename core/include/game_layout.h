@@ -1311,6 +1311,35 @@ typedef struct game_layout {
         uint32_t listed_off;
         uint32_t overlay_update;
     } update_list;
+
+    /* The keyframe animation registry, which games/common/features/
+     * kf_anim_ctl.c starts and holds by animation id under
+     * OPENPETE_VIDEO_OPEN_PANIM and OPENPETE_VIDEO_HOME_PANIM. `walker` is
+     * the entry of the function that advances every descriptor once per
+     * tick (0 = not modelled); `registry` holds `pairs` {count, pointer to
+     * a descriptor-pointer array} pairs, the lists the walker and the
+     * game's start-by-id function walk. A descriptor holds the animation
+     * id in byte 0, the run flags in byte 1 (bit 1 stopped, bit 0
+     * reverse), the current keyframe in byte 2 and the ticks left on it in
+     * byte 3; the keyframe table follows (layout in kf_anim_ctl.c). */
+    struct {
+        uint32_t walker;
+        uint32_t registry;
+        uint32_t pairs;
+    } kf_anim;
+
+    /* The checkpoint fairy's distance reads, which games/common/features/
+     * zoe_near.c answers with `near_dist` under OPENPETE_VIDEO_ZOE_NEAR.
+     * `dist_fn` is the planar distance function her update calls (0 = not
+     * modelled); a call counts as hers when its return address lies in the
+     * `update_len` bytes of the update the per-class table at
+     * game_layout.owner.moby_update holds for class `cls`. */
+    struct {
+        uint32_t dist_fn;
+        uint32_t cls;
+        uint32_t update_len;
+        uint32_t near_dist;
+    } zoe;
 } game_layout_t;
 
 #define GAME_FONT_NONE            0

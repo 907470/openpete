@@ -2166,6 +2166,21 @@ static const knob_desc_t g_builtin_debug[] = {
         "1 = with OPENPETE_D1, the companion's class stays off the moby "
         "update list, so Sparx and his sparkles and glow are absent. Without "
         "OPENPETE_D1 it changes nothing and a warning says so."),
+    ENVROW_LATCHED("VIDEO_OPEN_PANIM", "Debug", "",
+        "Comma list of keyframe animation ids (Spyro 2 and 3): each "
+        "animated sector (door) with that id that rests at keyframe 0 is "
+        "started once, as the level opens it, and rests at its next stop. "
+        "Changes gameplay state; for the credits fly-through video."),
+    ENVROW_LATCHED("VIDEO_HOME_PANIM", "Debug", "",
+        "Comma list of keyframe animation ids (Spyro 2 and 3): each "
+        "animated sector with that id is sent back to keyframe 0 and held "
+        "there when the level restarts it. Changes gameplay state; for the "
+        "credits fly-through video."),
+    ENVROW_LATCHED("VIDEO_ZOE_NEAR", "Debug", "0",
+        "1 = the checkpoint fairy reads her distance to the player as near "
+        "at any range (Spyro 3), so she is shown idle everywhere and never "
+        "triggers the checkpoint. Changes gameplay state; for the credits "
+        "fly-through video."),
     ENVROW_LATCHED("CRASH_TEST", "Debug", "",
         "Fault injection for the crash handler: segv (a null store) or "
         "overflow (unbounded recursion) on the game fiber before the game's "

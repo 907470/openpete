@@ -72,7 +72,11 @@ set(OPENPETE_GAME_COMMON_SOURCES
     renderer/cut_guard.c
     # OPENPETE_D1: every moby updated, reached only through a game's
     # feature list.
-    features/moby_update_all.c)
+    features/moby_update_all.c
+    # OPENPETE_VIDEO_OPEN_PANIM / HOME_PANIM and OPENPETE_VIDEO_ZOE_NEAR,
+    # reached only through a game's feature list.
+    features/kf_anim_ctl.c
+    features/zoe_near.c)
 
 add_library(openpete_game_common OBJECT ${OPENPETE_GAME_COMMON_SOURCES})
 openpete_game_common_settings(openpete_game_common)
