@@ -262,6 +262,12 @@ const game_layout_t spyro3_game_layout = {
                                                      * 800233E0-80023408), and the in-LOD bound as
                                                      * this value >> 4 = 0x7C0 = hp_far. The draw
                                                      * bins with the constants below. */
+        .hp_drop_sum_far    = 0x8800,               /* the HP walk drops a face whose corner SZ3s
+                                                     * sum to 0x8800 or more (800233E4: addi -0xC00
+                                                     * on sum - 0x7C00; triangle walk 800238D4) */
+        .hp_drop_corner_min = 0x1F00,               /* and, for a sum in [0x7C00, 0x8800), only
+                                                     * with every corner SZ3 at 0x1F00 or more
+                                                     * (800233EC-80023408; 800238DC-800238F0) */
         .ladder_nearest_corner = 1,                 /* the HP walk blends each corner with IR0 =
                                                      * 0x1F00 - SZ3, clamps it to [0, 0xFFF], keeps
                                                      * the largest, and takes the CLUT row 15 -

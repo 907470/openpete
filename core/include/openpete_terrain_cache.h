@@ -204,6 +204,8 @@ typedef struct {
                            * near-variant vertex stage clips against it        */
     int32_t fog_ref_base; /* ENV_LODDIST >> 2                                  */
     int32_t cull_ref_s2;  /* ENV_CULLDIST >> 7 (.s LP far-cull threshold)      */
+    int32_t hp_drop_sum_far;    /* game_layout.terrain.hp_drop_sum_far        */
+    int32_t hp_drop_corner_min; /* game_layout.terrain.hp_drop_corner_min     */
     uint32_t gflags;      /* OPTC_GF_*                                         */
     uint32_t ot_terms;    /* the LP insert's ordering-table terms, packed:
                            * bits 0-7 lp_base_slots, 8-11 lp_bias_slots,

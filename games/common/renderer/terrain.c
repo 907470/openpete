@@ -8704,7 +8704,7 @@ static int tgpu_env_block(void) {
         "CALDBG", "NEARQ", "VERIFY", "CULLDBG", "NEARDBG", "BINDBG",
         "LPKEEP", "LPKEEPDBG", "FILL_DILATE", "FILL_FOGSLACK", "FILL_UP",
         "FILL_THINPX", "GAPFILL_EXCL", "FOGSCALE", "HQSCALE", "NEARZ",
-        "HIDETAIL", "TEXTBL", "PORTAL_CONFORM_DBG",
+        "HIDETAIL", "TEXTBL", "PORTAL_CONFORM_DBG", "HPDROP_CENSUS",
         /* A/B levers whose non-default value changes walk math the shader
          * mirrors only at the shipped default: */
         "LP_FARCULL", "LP_ADMIT", "HP_DROP", "LOD_FAITHFUL",
@@ -11264,6 +11264,121 @@ static void tn_bincheck(CPUState* cpu, uint32_t s, uint32_t i, int drawHP, int f
             (vis && drawHP != inHP) ? " MISMATCH" : "");
 }
 
+/** @brief Tests the HP walk's far-face drop on a face's corner view depths.
+ *
+ * sum = (z0 + z1 + z2 + z3) * fogscale, the four corner SZ3s (a triangle
+ * passes its shared corner twice). Under 4 * fogRefBase (the LOD distance)
+ * the face is kept. A game whose layout sets terrain.hp_drop_sum_far keeps
+ * a face whose sum is below that bound while any corner SZ3 is below
+ * terrain.hp_drop_corner_min (Spyro 3 environment.s 800233E0-80023408,
+ * triangle walk 800238D0-800238F0; Spyro 2 environment.s 80024C1C-80024C44,
+ * 8002510C-8002512C); otherwise the face is dropped (Spyro 1
+ * r_environment.s:1385-1387, the sum alone).
+ * @param z The corner view depths (m3, SZ3 / fogscale).
+ * @param fogscale The SZ3-per-m3 scale (s_fogscale).
+ * @param fogRefBase The walk's fog reference (LOD distance >> 2).
+ * @return 1 when the walk drops the face, else 0. */
+static int tn_hp_face_drop(const double z[4], double fogscale, int fogRefBase) {
+    double hpsum = (z[0] + z[1] + z[2] + z[3]) * fogscale;
+    if (hpsum < 4.0 * (double)fogRefBase) return 0;
+    const int sum_far = game_layout.terrain.hp_drop_sum_far;
+    if (!sum_far || hpsum >= (double)sum_far) return 1;
+    const double cmin = (double)game_layout.terrain.hp_drop_corner_min;
+    for (int k = 0; k < 4; k++)
+        if (z[k] * fogscale < cmin) return 0;
+    return 1;
+}
+
+/* HP drop census (OPENPETE_TERRAIN_HPDROP_CENSUS=<frame>): every HP face
+ * reaching the drop test on the last walk at or before that frame is
+ * classified against the Spyro 2 / Spyro 3 asm rule written out with its
+ * immediates (0x7C00, 0x8800, 0x1F00), on the double corner SZ3s and on the
+ * per-corner truncated integers; on Spyro 1 the truth column does not
+ * apply. Counters: [0] faces, [1] native drops, [2] asm drops,
+ * [3] native/asm disagreements, [4] faces in the keep arm (sum in
+ * [0x7C00, 0x8800), min corner < 0x1F00), [5] keep-arm faces native drops,
+ * [6] integer-asm disagreements, [7] the walk's frame. */
+static int s_hpc_frame = -2;
+static int s_hpc_done;
+static unsigned long s_hpc[8];
+
+/** @brief Returns the HP drop census frame, latched from OPENPETE_TERRAIN_HPDROP_CENSUS.
+ * @return The frame, or -1 when the census is off. */
+static int tn_hpc_frame(void) {
+    if (s_hpc_frame == -2) {
+        const char* e = getenv("OPENPETE_TERRAIN_HPDROP_CENSUS");
+        s_hpc_frame = (e && *e) ? atoi(e) : -1;
+    }
+    return s_hpc_frame;
+}
+
+/** @brief Records one HP face's drop verdict in the census.
+ * @param z The corner view depths (m3).
+ * @param fogscale The SZ3-per-m3 scale.
+ * @param native_drop The walk's verdict. */
+static void tn_hpc_note(const double z[4], double fogscale, int native_drop) {
+    double sz[4], sum = 0.0, mn = 1e30;
+    int isum = 0, imn = 0x7FFFFFFF;
+    for (int k = 0; k < 4; k++) {
+        sz[k] = z[k] * fogscale; sum += sz[k]; if (sz[k] < mn) mn = sz[k];
+        int iz = (int)sz[k]; isum += iz; if (iz < imn) imn = iz;
+    }
+    int asm_drop = sum >= 34816.0 || (sum >= 31744.0 && mn >= 7936.0);
+    int int_drop = isum >= 0x8800 || (isum >= 0x7C00 && imn >= 0x1F00);
+    int arm = sum >= 31744.0 && sum < 34816.0 && mn < 7936.0;
+    __atomic_fetch_add(&s_hpc[0], 1ul, __ATOMIC_RELAXED);
+    if (native_drop) __atomic_fetch_add(&s_hpc[1], 1ul, __ATOMIC_RELAXED);
+    if (asm_drop) __atomic_fetch_add(&s_hpc[2], 1ul, __ATOMIC_RELAXED);
+    if (asm_drop != native_drop) __atomic_fetch_add(&s_hpc[3], 1ul, __ATOMIC_RELAXED);
+    if (arm) __atomic_fetch_add(&s_hpc[4], 1ul, __ATOMIC_RELAXED);
+    if (arm && native_drop) __atomic_fetch_add(&s_hpc[5], 1ul, __ATOMIC_RELAXED);
+    if (int_drop != native_drop) __atomic_fetch_add(&s_hpc[6], 1ul, __ATOMIC_RELAXED);
+}
+
+/** @brief Tests the HP walk's far-face drop for one HP face, recording it in the census.
+ *
+ * The HP counterpart of tn_lp_face_world_drop. The .s HP LOD drop
+ * (r_environment.s:1385-1387, tri 1759-1760) sums the four corner SZ3s
+ * (a triangle counts its shared corner twice) against m_LodDistance, with
+ * the keep arm of tn_hp_face_drop where the layout sets it. No per-vertex
+ * band, no per-face modifier: the w3&1 flag pushes FOG saturation out by
+ * 0x2000 but not the drop, so its faces retire at the same distance while
+ * still partly unfogged. SZ3 = viewZ/4 = m3 * s_fogscale at stock, so the
+ * sum compare rides the --fog-scale curve like the fog it stays hidden
+ * inside (bit-exact vs the .s at stock fog). OPENPETE_TERRAIN_HP_DROP=0
+ * (G->hp_drop 0) restores the legacy all-corners-fully-fogged
+ * approximation, which keeps straddling faces the .s drops and honours the
+ * fog-push flag the .s drop ignores (A/B); the census sees only the .s
+ * rule. terrain.vert mirrors the .s rule for retained sectors.
+ * @param G The walk's shared inputs (hp_drop, fogRefBase).
+ * @param cz The corners' view depths (m3) in i0..i3 order.
+ * @param quad Nonzero for a quad; a triangle takes cz[2] for corner 3.
+ * @param all_beyond Nonzero when every corner is past the fog line (the legacy test).
+ * @return 1 when the walk drops the face, else 0. */
+static int tn_hp_face_world_drop(const tn_wcfg* G, const double cz[4], int quad, int all_beyond) {
+    if (!G->hp_drop) return all_beyond;
+    const double hz[4] = { cz[0], cz[1], cz[2], quad ? cz[3] : cz[2] };
+    int drop = tn_hp_face_drop(hz, s_fogscale, G->fogRefBase);
+    if (s_hpc_frame >= 0 && (int)openpete_frame <= s_hpc_frame)
+        tn_hpc_note(hz, s_fogscale, drop);
+    return drop;
+}
+
+/** @brief Prints the HP drop census once the census frame has passed. */
+static void tn_hpc_flush(void) {
+    int f = tn_hpc_frame();
+    if (f < 0 || s_hpc_done) return;
+    if ((int)openpete_frame <= f) {
+        memset(s_hpc, 0, sizeof s_hpc);
+        s_hpc[7] = openpete_frame;
+        return;
+    }
+    s_hpc_done = 1;
+    fprintf(stderr, "[hpdrop-census] frame=%d walk_frame=%lu faces=%lu native_drop=%lu asm_drop=%lu "
+            "disagree=%lu keep_arm=%lu keep_arm_native_drop=%lu int_disagree=%lu\n",
+            f, s_hpc[7], s_hpc[0], s_hpc[1], s_hpc[2], s_hpc[3], s_hpc[4], s_hpc[5], s_hpc[6]);
+}
+
 /** @brief Walks one visible sector's faces into W's triangle run.
  *
  * Reads the sector's precomputed verdicts (drawHP, drawLP, the fill and
@@ -11834,38 +11949,17 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * behaviour (A/B). A game with the LP near outcode
              * (terrain.lp_near_sz) takes that rule instead
              * (tn_lp_face_near_drop). */
+            const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
             if (passLP && !passFill) {
-                const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
                 const char* why = tn_lp_face_world_drop(G, SV, F, cz, quad);
                 if (why) { FARDBG_DROP(why); continue; }
             }
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
-                const int ci[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc; q2++)
-                    if (fogRef - (int)(sv[ci[q2]].m3 * s_fogscale) <= 0) beyond++;
-                if (!passLP) {
-                    /* .s HP LOD drop, exact (r_environment.s:1385-1387; tri
-                     * 1759-1760): the walk sums the four corner SZ3s (tri
-                     * records store i2==i3, so the shared corner counts twice)
-                     * and drops the face iff sum >= m_LodDistance - one strict
-                     * compare. No per-vertex band, no per-face modifier: the
-                     * w3&1 flag pushes FOG saturation out by 0x2000 but not
-                     * the drop, so its faces retire at the same distance while
-                     * still partly unfogged. SZ3 = viewZ/4 = m3·(s_fogscale at
-                     * stock), so the sum compare rides the --fog-scale curve
-                     * exactly like the fog it must stay hidden inside
-                     * (bit-exact vs the .s at stock fog).
-                     * OPENPETE_TERRAIN_HP_DROP=0 restores the legacy
-                     * all-corners-fully-fogged approximation, which kept
-                     * straddling faces the .s mean-drops and honoured the
-                     * fog-push flag the .s drop ignores (A/B). */
-                    if (G->hp_drop) {
-                        double hpz3 = quad ? sv[i3].m3 : sv[i2].m3;
-                        double hpsum = (sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + hpz3)
-                                       * s_fogscale;
-                        if (hpsum >= 4.0 * (double)fogRefBase) { FARDBG_DROP("hpdrop"); continue; }
-                    } else if (beyond == nc) { FARDBG_DROP("hpdrop"); continue; }
+                    if (fogRef - (int)(cz[q2] * s_fogscale) <= 0) beyond++;
+                if (!passLP && tn_hp_face_world_drop(G, cz, quad, beyond == nc)) {
+                    FARDBG_DROP("hpdrop"); continue;
                 }
                 if (passLP && !passFill && lpFarOnly && beyond == 0
                     && !G->lp_admit) {
@@ -12922,6 +13016,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * lerp32 grid. Falls back to the (floored) RAM at the 30 Hz lockstep. */
     double camx = s_view.cam[0] / 16.0, camy = s_view.cam[1] / 16.0, camz = s_view.cam[2] / 16.0;
     int fogRefBase = (int32_t)tenv_lod_dist(cpu) >> 2;
+    tn_hpc_flush();
     /* Publish this walk's fog-ladder ramp for the CONTINUOUS pack-fog model
      * (HD-replaced draws only; see texture_pack_fog_ladder_set): the .s row
      * select is Δ = (key − fogRef + 4096) >> 8 with key ≈ face-mean
@@ -13128,6 +13223,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
         tcg.fog_ref_base = fogRefBase;
         tcg.cull_ref_s2  = cullRefS2;
+        tcg.hp_drop_sum_far    = game_layout.terrain.hp_drop_sum_far;
+        tcg.hp_drop_corner_min = game_layout.terrain.hp_drop_corner_min;
         tcg.ot_terms     = tc_ot_terms();
         tcg.gflags = tc_global_flags(s_nearhq && hqTable, lod_handoff);
         {   /* OPENPETE_TERRAIN_GPU_TINT=<mode>: retained draws replace their

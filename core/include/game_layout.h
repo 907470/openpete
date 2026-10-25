@@ -443,6 +443,15 @@ typedef struct game_layout {
         /* The LP/HP LOD distance when the environment header has no field for
          * it (env.lod_dist == 0): Spyro 3's draw bins with constants. */
         uint32_t lod_dist_default;
+        /* The HP walk's far-face drop. With sum the face's four corner SZ3s
+         * (a triangle counts its shared corner twice): 0 = the walk drops
+         * the face at sum >= the LOD distance. Otherwise it drops the face
+         * at sum >= hp_drop_sum_far, or at sum >= the LOD distance with
+         * every corner SZ3 >= hp_drop_corner_min, and keeps a face in
+         * [LOD distance, hp_drop_sum_far) with a corner nearer than
+         * hp_drop_corner_min. */
+        int      hp_drop_sum_far;
+        int      hp_drop_corner_min;
         /* The HP walk's CLUT-fog ladder row and near-tile select. 0 = the
          * row is (key - fogRef + 4096) >> 8 with key the four-corner SZ sum
          * >> 7 << 5, and the near tile half is taken at key - fogRef + 4096

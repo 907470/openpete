@@ -176,7 +176,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
      * rim-candidate sectors claim to the CPU walk instead). Plane pi's
      * outline lives at rim_pv[pi*16 .. pi*16+vn-1]. */
     ivec4 rim_cnt;
-    ivec4 rim_pad;
+    ivec4 hp_drop;  /* x: HP drop sum bound, y: corner bound (x = 0: the
+                     * sum against 4 * fogRefBase alone)                  */
     dvec4 rim_oxyH;      /* rim ofx, ofy, H, pad                          */
     dvec4 rim_knobs;     /* eps, near, reach, cos(angle)                  */
     dvec4 rim_abc[6];    /* screen inv-vz plane fit a,b,c; w = valid      */
@@ -1391,12 +1392,23 @@ void main()
          * LP_ADMIT=0, which forces the CPU walk - never mirrored here.) */
     }
 
-    /* ---- LOD handoff: .s HP drop (sum of corner SZ3 >= m_LodDistance) ----
+    /* ---- LOD handoff: .s HP drop (tn_hp_face_drop mirror) ----
+     * Dropped at sum of corner SZ3 >= m_LodDistance; with hp_drop.x set, a
+     * face below that sum bound with any corner SZ3 < hp_drop.y is kept.
      * Runs BEFORE the near classify, exactly like the walk. */
     if (!lp && (gf & GF_HANDOFF) != 0) {
         double hpz3 = quad ? m3c.z : m2.z;
         precise double hpsum = (m0.z + m1.z + m2.z + hpz3) * fogscale;
-        if (hpsum >= 4.0lf * double(g.fog.x)) { kill_vert(); return; }
+        if (hpsum >= 4.0lf * double(g.fog.x)) {
+            bool hpdrop = g.hp_drop.x == 0 || hpsum >= double(g.hp_drop.x);
+            if (!hpdrop) {
+                precise double c0 = m0.z * fogscale, c1 = m1.z * fogscale;
+                precise double c2 = m2.z * fogscale, c3 = hpz3 * fogscale;
+                double cmin = double(g.hp_drop.y);
+                hpdrop = c0 >= cmin && c1 >= cmin && c2 >= cmin && c3 >= cmin;
+            }
+            if (hpdrop) { kill_vert(); return; }
+        }
     }
 
     /* ---- FILL pass per-face gates (fully-fogged LP only, strict x4) ---- */

@@ -258,6 +258,13 @@ const game_layout_t spyro2_game_layout = {
                                                      * distance at which the same walk stops listing
                                                      * HP sectors. The draw bins with the constants
                                                      * below. */
+        .hp_drop_sum_far    = 0x8800,               /* the HP walk drops a face whose corner SZ3s
+                                                     * sum to 0x8800 or more (environment.s:2663,
+                                                     * triangle walk 3011: addi -0xC00 on
+                                                     * sum - 0x7C00, the bound at 2622, 2970) */
+        .hp_drop_corner_min = 0x1F00,               /* and, for a sum in [0x7C00, 0x8800), only
+                                                     * with every corner SZ3 at 0x1F00 or more
+                                                     * (environment.s:2665-2672; 3013-3018) */
         .ladder_nearest_corner = 1,                 /* the HP walk blends each corner with IR0 =
                                                      * 0x1F00 - SZ3 (environment.s:2693-2698), 0 at
                                                      * IR0 <= 0 (2811) and 0xFFF at IR0 >= 0x1000
