@@ -26,6 +26,7 @@
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
 #include "features/level_skip.h"
+#include "features/moby_update_all.h"
 #include "renderer/text_moby.h"
 #include "spyro-2/gen/spyro2_sfx_names.h" /* generated: the 256 SoundTable slot names */
 
@@ -55,7 +56,8 @@ static const game_frame_pre_t k_frame_pre = {
  * which while engaged and gameplay is live drives the camera in place of
  * the camera follow (0x8001D87C) and suppresses it and the player update
  * (0x8002A07C), the write census's entry note, and the mod override
- * chains. An address none of them claims goes to the registered feature
+ * chains. An address none of them claims gets the OPENPETE_D1 gem mark
+ * (moby_update_all_note_entry), then goes to the registered feature
  * modules (feature_list.c), which is how the shared presentation feeders
  * reach their hook addresses.
  * @param cpu The guest CPU state.
@@ -63,6 +65,7 @@ static const game_frame_pre_t k_frame_pre = {
  * @return 1 when the recompiled body must return at once, else 0. */
 static int spyro2_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (game_dispatch_preamble(cpu, addr, NULL)) return 1;
+    moby_update_all_note_entry(cpu, addr);
     return feature_registry_dispatch(cpu, addr);
 }
 

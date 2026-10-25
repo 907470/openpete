@@ -64,6 +64,7 @@
 #include "features/skip_to_area.h"
 #include "features/state_log.h"
 #include "features/antipiracy_scan.h"
+#include "features/moby_update_all.h"
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
 #include "features/levelwarp_ui.h"
@@ -231,7 +232,8 @@ static void spyro3_entry_verdicts(CPUState* cpu, uint32_t addr) {
  * the mod override chains. Then the stub guard (code_patch_guard.h), which
  * ends a call of func_8005663C or func_800512E4 whose entry words in guest
  * RAM are `jr ra; nop`; it follows the mod chains, so a mod's base() into a
- * stubbed function reaches the stub. Then the feature modules' dispatch tables. Called from
+ * stubbed function reaches the stub. Then the OPENPETE_D1 gem mark
+ * (moby_update_all_note_entry), then the feature modules' dispatch tables. Called from
  * psx_override_dispatch, which the generated bodies call before their own code.
  *
  * @param cpu The guest CPU state.
@@ -240,6 +242,7 @@ static void spyro3_entry_verdicts(CPUState* cpu, uint32_t addr) {
 static int spyro3_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (game_dispatch_preamble(cpu, addr, spyro3_entry_verdicts)) return 1;
     if (spyro3_code_patch_guard(cpu, addr)) return 1;
+    moby_update_all_note_entry(cpu, addr);
     return feature_registry_dispatch(cpu, addr);
 }
 

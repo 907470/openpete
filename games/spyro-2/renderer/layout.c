@@ -740,6 +740,20 @@ const game_layout_t spyro2_game_layout = {
          * (asm/updatemobys.s func_80041C50). */
         .part_alloc    = 0x80041C50u,
     },
+    /* The update-list builder func_80040E94 (asm/updatemobys.s): pod flags
+     * D_800682B8 (0x20 bytes, cleared as words), the moby array through
+     * D_80066F14, pod member lists through D_800670E0, the list at
+     * D_800683F0 + 0x200; pod byte 0x43, update distance 0x4A, listed 0x4B.
+     * func_8001B050 calls the overlay's moby update through D_800670F0
+     * under flag 0x2 (asm/nonmatchings/update/func_8001B050.s); level_10's
+     * gem update skips the spin at 0x80070A08 when +0x4D is clear and the
+     * distance is 0x1801 or more. */
+    .update_list = {
+        .builder = 0x80040E94u, .pod_flags = 0x800682B8u, .pod_count = 0x20u,
+        .pod_lists = 0x800670E0u, .list = 0x800685F0u,
+        .pod_off = 0x43u, .dist_off = 0x4Au, .listed_off = 0x4Bu,
+        .overlay_update = 0x800670F0u,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

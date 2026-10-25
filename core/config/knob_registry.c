@@ -2157,6 +2157,15 @@ static const knob_desc_t g_builtin_debug[] = {
         "`native-feed: captures= fed= tris=` counts the feed. "
         "tests/harness/check_psx_oracle.sh and check_determinism_matrix.sh "
         "set it."),
+    ENVROW_LATCHED("D1", "Debug", "0",
+        "1 = every live moby of the level updates every tick at any distance "
+        "(Spyro 2 and 3): the moby update-list builder is replaced by a "
+        "build without its distance test, and an undrawn gem spins at any "
+        "range. Changes gameplay state; for the credits fly-through video."),
+    ENVROW_LATCHED("VIDEO_NOSPARX", "Debug", "0",
+        "1 = with OPENPETE_D1, the companion's class stays off the moby "
+        "update list, so Sparx and his sparkles and glow are absent. Without "
+        "OPENPETE_D1 it changes nothing and a warning says so."),
     ENVROW_LATCHED("CRASH_TEST", "Debug", "",
         "Fault injection for the crash handler: segv (a null store) or "
         "overflow (unbounded recursion) on the game fiber before the game's "

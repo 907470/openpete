@@ -69,7 +69,10 @@ set(OPENPETE_GAME_COMMON_SOURCES
     renderer/interp_regions_gen.c
     renderer/credits_key.c
     renderer/reextract_view.c
-    renderer/cut_guard.c)
+    renderer/cut_guard.c
+    # OPENPETE_D1: every moby updated, reached only through a game's
+    # feature list.
+    features/moby_update_all.c)
 
 add_library(openpete_game_common OBJECT ${OPENPETE_GAME_COMMON_SOURCES})
 openpete_game_common_settings(openpete_game_common)

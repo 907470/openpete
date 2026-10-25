@@ -757,6 +757,18 @@ const game_layout_t spyro3_game_layout = {
          * through it (func_level_17_80075384, 0x80075560-0x80075584). */
         .sparx_glow_off = 0x10u,
     },
+    /* The update-list builder func_80055680 (asm/updatemobys.s): pod flags
+     * D_8006E450 (0x20 bytes, cleared as words), the moby array through
+     * D_8006C550, pod member lists through D_8006C730, the list at
+     * D_8006E588 + 0x200; pod byte 0x43, update distance 0x4A, listed 0x4B.
+     * The gem update is entry 1 of the per-class table (owner.moby_update);
+     * it skips the spin when +0x4D is clear and the distance is 0x1801 or
+     * more (level_16 0x80074CFC). */
+    .update_list = {
+        .builder = 0x80055680u, .pod_flags = 0x8006E450u, .pod_count = 0x20u,
+        .pod_lists = 0x8006C730u, .list = 0x8006E788u,
+        .pod_off = 0x43u, .dist_off = 0x4Au, .listed_off = 0x4Bu,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

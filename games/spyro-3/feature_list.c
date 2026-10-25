@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 extern const feature_module_t render_paths_module;
+extern const feature_module_t moby_update_all_module;
 extern const feature_module_t spyro3_levelwarp_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
@@ -32,6 +33,10 @@ static const feature_module_t* const k_modules[] = {
     &transition_call_module,
     /* --render-paths: the path-isolation selection (apply_options only). */
     &render_paths_module,
+    /* OPENPETE_D1: replaces the moby update-list builder game_layout
+     * names with a build that lists every live moby (gameplay-divergent,
+     * default off; unbound while off). */
+    &moby_update_all_module,
     /* The shared terrain feeder: hooks the world draw and the visibility
      * function from game_layout; inert unless the native scene is enabled. */
     &terrain_module,

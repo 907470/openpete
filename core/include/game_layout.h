@@ -1279,6 +1279,38 @@ typedef struct game_layout {
         uint32_t part_alloc;
         uint32_t sparx_glow_off;
     } owner;
+
+    /* The moby update-list builder, which games/common/features/
+     * moby_update_all.c replaces under OPENPETE_D1 with a build that skips
+     * its distance test. `builder` is its entry (0 = the game has none
+     * modelled). The builder clears the `pod_count` flag bytes at
+     * `pod_flags`, walks the moby array (game_layout.moby), and for each
+     * live moby writes its listed byte at `listed_off`: a drawn moby
+     * (game_layout.moby.drawn_off) is listed, an undrawn one with update
+     * distance byte `dist_off` 0 is not, any other passes a box and a
+     * radius test against the camera. A listed moby whose pod byte at
+     * `pod_off` is negative is appended to the list at `list`; one with a
+     * pod sets that pod's flag instead. A second pass appends every member
+     * of each flagged pod from the int16 index list the word at `pod_lists`
+     * points to per pod (bit 15 marks the last; a dormant member is
+     * written but not kept), and a zero word ends the list.
+     *
+     * The gem update skips its spin when the gem is undrawn and 0x1801 or
+     * more away. `overlay_update` is the word holding the resident level
+     * overlay's moby update entry, for a game that updates every moby
+     * through one overlay entry rather than the per-class table at
+     * game_layout.owner.moby_update (0 = none). */
+    struct {
+        uint32_t builder;
+        uint32_t pod_flags;
+        uint32_t pod_count;
+        uint32_t pod_lists;
+        uint32_t list;
+        uint32_t pod_off;
+        uint32_t dist_off;
+        uint32_t listed_off;
+        uint32_t overlay_update;
+    } update_list;
 } game_layout_t;
 
 #define GAME_FONT_NONE            0
