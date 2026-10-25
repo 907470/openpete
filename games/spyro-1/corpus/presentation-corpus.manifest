@@ -85,7 +85,9 @@ cyclorama-portal                         | 1700  | 100  |        | 1905,2075
 dark-hollow-shadow                       | 1700  | 100  |        | 2700
 dark-hollow-shadow-2                     | 1700  | 100  |        | 2050,2068
 dream-weavers-crash                      | 1700  | 100  |        | 1657
-egg                                      | 1700  | 100  |        | 3015,3603
+# egg 3587: the egg-tally burst lines (g_Particles sel 4), overlapping in one
+# ordering-table bucket over the world, under the HUD egg sprites.
+egg                                      | 1700  | 100  |        | 3015,3587,3603
 exit-level                               | 1700  | 100  | freeze | 1689,1800
 fairy-kiss                               | 1700
 flame                                    | 1700  | 100  |        | 1655,1667
