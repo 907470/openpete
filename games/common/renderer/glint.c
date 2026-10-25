@@ -262,13 +262,38 @@ static void glint_project(const ngte_view* v, const double vo[3], ngte_proj* o) 
     ngte_project_offset(v, vo, o);
 }
 
+/** @brief Rotate a floored halved record offset by the camera matrix in the routine's integer arithmetic.
+ *
+ * The routine loads the halved offset as IR1 = camY - Y, IR2 = camZ - Z and
+ * IR3 = X - camX and runs MVMVA with sf=1 against the rotation matrix
+ * (:2252-2279), so each MAC is the dot product shifted right 12, an
+ * arithmetic shift that floors. Its depth window, its pyramid tests
+ * 4|MAC1| - 3 MAC3 and 3|MAC2| - MAC3, and its near/far switch all read these
+ * MACs (:2294-2348). A fractional MAC agrees with the floored one on every
+ * test of MAC3 alone against an integer bound, but not on the pyramid tests:
+ * a record within a few units of a pyramid bound takes a different verdict,
+ * the predicted counts then disagree with the captured ones, and the
+ * pairing leaves the whole call unowned.
+ * @param v The projection view; its matrix is read.
+ * @param vo The floored halved offset from glint_view_offset.
+ * @param mac Receives MAC1, MAC2 and MAC3. */
+static void glint_mac_int(const ngte_view* v, const double vo[3], int64_t mac[3]) {
+    const int64_t ir[3] = { (int64_t)vo[1], (int64_t)vo[2], (int64_t)vo[0] };
+    for (int r = 0; r < 3; r++) {
+        const int64_t d = (int64_t)v->cam_M[r][0] * ir[0] + (int64_t)v->cam_M[r][1] * ir[1] +
+                          (int64_t)v->cam_M[r][2] * ir[2];
+        mac[r] = d >= 0 ? d >> 12 : -((-d + 4095) >> 12);   /* floor(d / 4096) */
+    }
+}
+
 /** @brief Mirror the glint routine's rejects for one pool record and, on acceptance, fill in what the pairing and the sub-tick rebase read from it.
  *
  * Rejects a record whose lifetime byte is 0 (:2236-2240), whose halved
  * camera-relative offset leaves the +/-GT.box box (:2266-2276), whose
  * half-world view Z is below GT.near_z or at least GT.far_z (:2294-2296), or
  * that leaves the view pyramid 4|X| - 3Z < GT.pyr_x, 3|Y| - Z < GT.pyr_y
- * (:2310, :2320), each test on the floored offset the routine tests. The box
+ * (:2310, :2320), each test on the integer MACs the routine tests
+ * (glint_mac_int). The box
  * and far-depth rejects and the lateral reject are reported as flags rather
  * than verdicts, with every other test still applied, so the extended-LOD and
  * widened-view reveals can draw such a record. An accepted record takes the
@@ -302,16 +327,17 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     for (int k = 0; k < 3; k++)
         if (vo[k] >= box || vo[k] <= -box) range = 1;            /* :2266-2276 */
 
-    ngte_proj o;
-    glint_project(v, vo, &o);
-    if (o.m3 < (double)GT.near_z) return 0;                         /* :2294 */
-    if (o.m3 >= (double)GT.far_z) range = 1;                        /* :2296 */
-    const int lateral = 4.0 * fabs(o.m1) - 3.0 * o.m3 - (double)GT.pyr_x >= 0.0;  /* :2310 */
-    if (3.0 * fabs(o.m2) - o.m3 - (double)GT.pyr_y >= 0.0) return 0;         /* :2320 */
+    int64_t mac[3];
+    glint_mac_int(v, vo, mac);
+    if (mac[2] < GT.near_z) return 0;                                   /* :2294 */
+    if (mac[2] >= GT.far_z) range = 1;                                  /* :2296 */
+    const int lateral = 4 * llabs(mac[0]) - 3 * mac[2] - GT.pyr_x >= 0;   /* :2310 */
+    if (3 * llabs(mac[1]) - mac[2] - GT.pyr_y >= 0) return 0;             /* :2320 */
 
-    out->near_mode = (o.m3 < (double)GT.near_vz);
-    /* The verdicts above read the routine's floored offset; the placement
-     * reads the unfloored one. */
+    out->near_mode = (mac[2] < GT.near_vz);
+    /* The verdicts above read the routine's integer MACs; the placement
+     * reads the unfloored offset. */
+    ngte_proj o;
     glint_view_offset(v, p, 0, vo);
     glint_project(v, vo, &o);
     out->depth = openpete_native_scene_viewz(
