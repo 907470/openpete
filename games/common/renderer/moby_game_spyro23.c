@@ -1310,12 +1310,14 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
     double ax = m1 < 0 ? -m1 : m1, ay = m2 < 0 ? -m2 : m2;
     /* The lateral arm's 3:4 slope is the draw's 4:3 half-angle
      * (mobydraw.s:3976-3981), so the frame's own horizontal widening scales
-     * it: at 4:3 with the game's FOV the factor is 1.0 and the test is the
-     * draw's, bit for bit. The vertical arm below keeps the game's slope,
-     * since Hor+ leaves the vertical FOV alone. */
+     * it; the vertical arm's 1:3 slope (Spyro 3 mobydraw.s:3993-4002,
+     * 0x80033E58-0x80033E74; Spyro 2 :3997-4006) is the 4:3 frame's half-height, scaled the same
+     * way by the vertical widening. At the game's FOV with 4:3 both factors
+     * are 1.0 and the tests are the draw's, bit for bit; Hor+ alone leaves
+     * the vertical factor at 1.0. */
     if (4.0*(ax - bx3) - 3.0*moby_native_view_widen()*(m3 + bx2) >= 0.0) return 0;
     if (m3 + bx1 <= 0.0) return 0;
-    if ((m3 + bx0) - 3.0*(ay - bx1) <= 0.0) return 0;
+    if (moby_native_view_vwiden()*(m3 + bx0) - 3.0*(ay - bx1) <= 0.0) return 0;
     return 1;
 }
 
@@ -1909,28 +1911,33 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
     return (rad << 8) + (int)((drawn_bits & 3u) << 8);
 }
 
-/** @brief One sphere's near, lateral and vertical arms as the cull runs them, the lateral slope scaled by `widen`.
+/** @brief One sphere's near, lateral and vertical arms as the cull runs them, the lateral slope scaled by `widen` and the vertical by `vwiden`.
  *
  * The thresholds are the radius's sums of shifts (mobydraw.s:128-138,158-163
  * for the first sphere, :385-393,412-415 for the second; S3 the same
  * instructions at :383-411):
  *   near      z + r <= 0 rejects
  *   lateral   4(|x| - a2) - 3(z + a3) >= 0 rejects, the 3 scaled by `widen`
- *   vertical  (z + t1) - 3(|y| - t0) <= 0 rejects
- * The lateral arm's 3:4 slope is the 4:3 half-angle; the vertical arm keeps
- * the game's slope, since Hor+ leaves the vertical field of view alone.
+ *   vertical  (z + t1) - 3(|y| - t0) <= 0 rejects (first sphere: Spyro 2
+ *             mobydraw.s:179-189, 0x80043ADC-0x80043AFC; Spyro 3 :178-188),
+ *             the (z + t1) scaled by `vwiden`
+ * The lateral arm's 3:4 slope is the 4:3 half-angle and the vertical arm's
+ * 1:3 slope the half-height; at a factor of 1.0 the arm is the cull's own
+ * integer test, the products exact in double.
  * @param c The sphere's view-space centre, x y z.
  * @param r The sphere's radius.
  * @param widen The lateral slope factor, 1.0 at 4:3.
+ * @param vwiden The vertical slope factor, 1.0 at the game's FOV.
  * @return MOBY_WIDE_NEAR, MOBY_WIDE_LATERAL or MOBY_WIDE_VERTICAL for the
  *         first arm that rejects, else MOBY_WIDE_ADMIT. */
-static moby_wide_verdict_t s23_sphere_arms(const int64_t c[3], int64_t r, double widen) {
+static moby_wide_verdict_t s23_sphere_arms(const int64_t c[3], int64_t r, double widen,
+                                           double vwiden) {
     const int64_t a2 = (r >> 1) + (r >> 2) + (r >> 5), a3 = (r >> 1) + (r >> 4) + (r >> 5);
     const int64_t t0 = (r >> 1) + (r >> 4),            t1 = (r >> 2) + (r >> 4);
     const int64_t ax = c[0] < 0 ? -c[0] : c[0], ay = c[1] < 0 ? -c[1] : c[1];
     if (c[2] + r <= 0) return MOBY_WIDE_NEAR;
     if (4.0 * (double)(ax - a2) - 3.0 * widen * (double)(c[2] + a3) >= 0.0) return MOBY_WIDE_LATERAL;
-    if ((c[2] + t1) - 3 * (ay - t0) <= 0) return MOBY_WIDE_VERTICAL;
+    if (vwiden * (double)(c[2] + t1) - 3.0 * (double)(ay - t0) <= 0.0) return MOBY_WIDE_VERTICAL;
     return MOBY_WIDE_ADMIT;
 }
 
@@ -1938,18 +1945,19 @@ static moby_wide_verdict_t s23_sphere_arms(const int64_t c[3], int64_t r, double
  *
  * mobydraw.s:194-217 (S2 0x80043B10-0x80043B64): the lateral test
  * 4(|x| + a2) - 3(z - a3) < 0, its 3 scaled by `widen`, then the vertical
- * (z - t1) - 3(|y| + t0) > 0. Verdict 1, a sphere straddling an edge, is the
- * one the cull tests a second sphere for.
+ * (z - t1) - 3(|y| + t0) > 0, its (z - t1) scaled by `vwiden`. Verdict 1, a
+ * sphere straddling an edge, is the one the cull tests a second sphere for.
  * @param c The sphere's view-space centre, x y z.
  * @param r The sphere's radius.
  * @param widen The lateral slope factor, 1.0 at 4:3.
+ * @param vwiden The vertical slope factor, 1.0 at the game's FOV.
  * @return 1 for verdict 2, 0 for verdict 1. */
-static int s23_sphere_inside(const int64_t c[3], int64_t r, double widen) {
+static int s23_sphere_inside(const int64_t c[3], int64_t r, double widen, double vwiden) {
     const int64_t a2 = (r >> 1) + (r >> 2) + (r >> 5), a3 = (r >> 1) + (r >> 4) + (r >> 5);
     const int64_t t0 = (r >> 1) + (r >> 4),            t1 = (r >> 2) + (r >> 4);
     const int64_t ax = c[0] < 0 ? -c[0] : c[0], ay = c[1] < 0 ? -c[1] : c[1];
     if (4.0 * (double)(ax + a2) - 3.0 * widen * (double)(c[2] - a3) >= 0.0) return 0;
-    return (c[2] - t1) - 3 * (ay + t0) > 0;
+    return vwiden * (double)(c[2] - t1) - 3.0 * (double)(ay + t0) > 0.0;
 }
 
 /** @brief The second sphere's view-space centre and radius, from the AnimationHeader +0x08 word.
@@ -1983,7 +1991,7 @@ static int64_t s23_second_sphere(CPUState* cpu, uint32_t moby, const int cam_m[3
     return (int64_t)(word & 0xFFu) << 3;
 }
 
-/** @brief The animated kind's admission as the cull runs it, with the lateral slope scaled by `widen`.
+/** @brief The animated kind's admission as the cull runs it, with the lateral slope scaled by `widen` and the vertical by `vwiden`.
  *
  * mobydraw.s:62-187 and 355-450; Spyro 2 0x80043920-0x80043EE8, Spyro 3 the
  * same instructions, the second sphere at mobydraw.s:353-448. The cull
@@ -1991,7 +1999,8 @@ static int64_t s23_second_sphere(CPUState* cpu, uint32_t moby, const int cam_m[3
  * (mobydraw.s:73,224), and then drops a verdict-1 moby whose AnimationHeader
  * +0x08 word names a second sphere that fails its arms, leaving the byte at 1
  * with no record. Under a view wider than 4:3 the lateral arms are the ones
- * whose answer changes.
+ * whose answer changes, and under one taller (a --fov scale below 1) the
+ * vertical arms.
  *
  * The box is the cull's own (s23_cull_box_threshold) on the quarter-world
  * deltas (moby - cam) >> 2, (cam - moby) >> 2 and (cam - moby) >> 2
@@ -2004,25 +2013,27 @@ static int64_t s23_second_sphere(CPUState* cpu, uint32_t moby, const int cam_m[3
  * deltas through the camera matrix at G_CAMERA+0x00, IR1 the Y delta, IR2 the
  * Z and IR3 the X, each loaded into a 16-bit IR register (mobydraw.s:119-141).
  * The range arm MAC3 - box >= 0 rejects (mobydraw.s:142-143); then the first
- * sphere's arms (s23_sphere_arms) with the widened slope.
+ * sphere's arms (s23_sphere_arms) with the widened slopes.
  *
  * A moby the 4:3 first sphere admits is revealed only when the cull dropped it
- * by its second sphere's 4:3 lateral arm: under the widened view the second
+ * by its second sphere's 4:3 lateral or vertical arm: under the widened view the second
  * sphere is skipped when the widened first sphere is verdict 2, and otherwise
- * tested with the widened slope (s23_second_sphere). A moby only the widened
+ * tested with the widened slopes (s23_second_sphere). A moby only the widened
  * first sphere admits takes the same second-sphere test at verdict 1. At
- * `widen` 1.0 the widened and canonical arms are one test and nothing is
- * admitted.
+ * `widen` and `vwiden` 1.0 the widened and canonical arms are one test and
+ * nothing is admitted.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param drawn_bits The drawn-verdict byte the box threshold widens by.
  * @param widen The lateral slope factor, 1.0 at 4:3.
+ * @param vwiden The vertical slope factor, 1.0 at the game's FOV.
  * @return The first test that rejects the moby (MOBY_WIDE_SPHERE2 for the
  *         second sphere under the widened view), MOBY_WIDE_CANONICAL when the
  *         game's own arms also admit it, or MOBY_WIDE_ADMIT when only the
  *         widened arms do. */
 static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
-                                                unsigned drawn_bits, double widen) {
+                                                unsigned drawn_bits, double widen,
+                                                double vwiden) {
     const int64_t t = s23_cull_box_threshold(cpu, moby, drawn_bits);
     if (t <= 0) return MOBY_WIDE_OUTSIDE;
     const uint32_t cam = game_layout.cam.base;
@@ -2048,20 +2059,21 @@ static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
     if (header < 0x80000000u) return MOBY_WIDE_OTHER_KIND;
     const int64_t r = (int64_t)cpu->read_byte(header + 7u) << 4;
     if (mac[2] - t >= 0) return MOBY_WIDE_RANGE;
-    const moby_wide_verdict_t first = s23_sphere_arms(mac, r, widen);
+    const moby_wide_verdict_t first = s23_sphere_arms(mac, r, widen, vwiden);
     if (first != MOBY_WIDE_ADMIT) return first;
     const uint32_t word = cpu->read_word(header + 0x08u);
-    const int canon = s23_sphere_arms(mac, r, 1.0) == MOBY_WIDE_ADMIT;
-    if (canon && (!word || s23_sphere_inside(mac, r, 1.0))) return MOBY_WIDE_CANONICAL;
-    if (!word || s23_sphere_inside(mac, r, widen)) return MOBY_WIDE_ADMIT;
+    const int canon = s23_sphere_arms(mac, r, 1.0, 1.0) == MOBY_WIDE_ADMIT;
+    if (canon && (!word || s23_sphere_inside(mac, r, 1.0, 1.0))) return MOBY_WIDE_CANONICAL;
+    if (!word || s23_sphere_inside(mac, r, widen, vwiden)) return MOBY_WIDE_ADMIT;
     int64_t c2[3];
     const int64_t r2 = s23_second_sphere(cpu, moby, R, word, mac, c2);
     if (canon) {
-        const moby_wide_verdict_t v = s23_sphere_arms(c2, r2, 1.0);
+        const moby_wide_verdict_t v = s23_sphere_arms(c2, r2, 1.0, 1.0);
         if (v == MOBY_WIDE_ADMIT) return MOBY_WIDE_CANONICAL;
-        if (v != MOBY_WIDE_LATERAL) return MOBY_WIDE_SPHERE2;
+        if (v != MOBY_WIDE_LATERAL && v != MOBY_WIDE_VERTICAL) return MOBY_WIDE_SPHERE2;
     }
-    return s23_sphere_arms(c2, r2, widen) == MOBY_WIDE_ADMIT ? MOBY_WIDE_ADMIT : MOBY_WIDE_SPHERE2;
+    return s23_sphere_arms(c2, r2, widen, vwiden) == MOBY_WIDE_ADMIT ? MOBY_WIDE_ADMIT
+                                                                     : MOBY_WIDE_SPHERE2;
 }
 
 /** @brief Saturating narrow of a full-width intermediate to the range the cull's register or field holds.

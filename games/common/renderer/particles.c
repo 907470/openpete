@@ -743,47 +743,86 @@ static void part_pair_audit(CPUState* cpu, const ngte_view* v, const part_gte* g
  * [0x100, 0x8000), :304-310). Classes 1 and 4 test their ordering key before
  * the stamp, class 1 (SZ3 >> 5) - byte +0x17 - 2 > 0 (:681, :687-690), class
  * 4 (sum >> 7) - byte +0x11 >= 0 (:271-273, :311-313); classes 0, 2 and 3
- * test it after the stamp (game_layout.particles.stamp_skip). The x bounds
- * are parameters: (0, 512) reproduces the routine, a wider pair asks what a
- * view wider than 4:3 shows. The Spyro 3 routine is the same code. */
+ * test it after the stamp (game_layout.particles.stamp_skip). The window is
+ * a parameter: PART_WIN_GAME reproduces the routine, a wider or taller one
+ * asks what a view larger than the 4:3 frame shows (part_reveal_win). The
+ * Spyro 3 routine is the same code (partsdraw.s:72-74). */
 
-#define PART_WIN_TOP    0xD0000    /* the packed word must exceed it */
-#define PART_WIN_BOTTOM 0xE40000   /* the packed word must stay below it */
-#define PART_WIN_XLO    0          /* SX must exceed it */
-#define PART_WIN_XHI    512        /* SX must stay below it */
-/* x bounds no saturated SX (-0x400..0x3FF) reaches: the window minus its x test. */
+/* A screen window on the packed SXY word and on SX. */
+typedef struct {
+    int32_t top, bottom;   /* the packed word must exceed top and stay below bottom */
+    int     xlo, xhi;      /* SX must exceed xlo and stay below xhi */
+} part_win;
+
+#define PART_WIN_TOP_ROW    13    /* 0xD0000 >> 16 */
+#define PART_WIN_BOTTOM_ROW 228   /* 0xE40000 >> 16 */
+static const part_win PART_WIN_GAME = { PART_WIN_TOP_ROW << 16, PART_WIN_BOTTOM_ROW << 16, 0, 512 };
+/* Bounds no saturated SX or SY (-0x400..0x3FF) reaches. */
 #define PART_WIN_FREE_LO (-0x8000)
 #define PART_WIN_FREE_HI 0x8000
+#define PART_WIN_ROW_CLAMP 0x401
 
 enum { PART_V_STAMP = 1, PART_V_APPEND = 2 };
 
-/** @brief Whether one projected point passes the routine's screen window with SX bounded by (xlo, xhi).
+/** @brief Whether one projected point passes a screen window.
  *
  * @param o The point's GTE output.
- * @param xlo SX must exceed it.
- * @param xhi SX must stay below it.
+ * @param w The window.
  * @return 1 on a pass. */
-static int part_win_point(const ngte_rtps_out* o, int xlo, int xhi) {
-    const int32_t w = (int32_t)part_sxy(o);
-    return w > PART_WIN_TOP && w < PART_WIN_BOTTOM && o->sx > xlo && o->sx < xhi;
+static int part_win_point(const ngte_rtps_out* o, const part_win* w) {
+    const int32_t p = (int32_t)part_sxy(o);
+    return p > w->top && p < w->bottom && o->sx > w->xlo && o->sx < w->xhi;
 }
 
-/** @brief Whether a PART_SPIN_CLASS record's corners pass the routine's window: each bound by at least one corner.
+/** @brief Whether a PART_SPIN_CLASS record's corners pass a screen window: each bound by at least one corner.
  *
  * @param c The four corners' GTE output.
- * @param xlo SX must exceed it for some corner.
- * @param xhi SX must stay below it for some corner.
+ * @param w The window.
  * @return 1 on a pass. */
-static int part_win_corners(const ngte_rtps_out c[4], int xlo, int xhi) {
+static int part_win_corners(const ngte_rtps_out c[4], const part_win* w) {
     int top = 0, bottom = 0, left = 0, right = 0;
     for (int k = 0; k < 4; k++) {
-        const int32_t w = (int32_t)part_sxy(&c[k]);
-        top |= w > PART_WIN_TOP;
-        bottom |= w < PART_WIN_BOTTOM;
-        left |= c[k].sx > xlo;
-        right |= c[k].sx < xhi;
+        const int32_t p = (int32_t)part_sxy(&c[k]);
+        top |= p > w->top;
+        bottom |= p < w->bottom;
+        left |= c[k].sx > w->xlo;
+        right |= c[k].sx < w->xhi;
     }
     return top && bottom && left && right;
+}
+
+/** @brief One window row scaled about the GTE's OFY by 1 / s, rounded outward and clamped past the saturated SY range.
+ *
+ * @param row The routine's row bound.
+ * @param v The view; supplies ofy and s.
+ * @param up 1 rounds toward smaller rows (a top bound), 0 toward larger.
+ * @return The scaled row. */
+static int part_win_row(int row, const ngte_view* v, int up) {
+    const double y = v->ofy + ((double)row - v->ofy) / v->s;
+    double r = up ? floor(y) : ceil(y);
+    if (r < -PART_WIN_ROW_CLAMP) r = -PART_WIN_ROW_CLAMP;
+    if (r > PART_WIN_ROW_CLAMP) r = PART_WIN_ROW_CLAMP;
+    return (int)r;
+}
+
+/** @brief The window a widened view's reveal tests records on: the routine's window with no x test and its rows scaled to the view's height.
+ *
+ * The routine's rows (13, 228) bound the 4:3 frame's band at the GTE's H; the
+ * view projects at H · s, so in the routine's coordinates its band is the
+ * routine's scaled about OFY by 1 / s. At s >= 1 the rows are the routine's
+ * own packed-word bounds unchanged. The x test is dropped: part_in_view tests
+ * the built primitive against the view's screen-X bounds.
+ * @param v The view; supplies ofy and s.
+ * @return The window. */
+static part_win part_reveal_win(const ngte_view* v) {
+    part_win w = PART_WIN_GAME;
+    w.xlo = PART_WIN_FREE_LO;
+    w.xhi = PART_WIN_FREE_HI;
+    if (v->s < 1.0) {
+        w.top = (int32_t)((uint32_t)part_win_row(PART_WIN_TOP_ROW, v, 1) << 16);
+        w.bottom = (int32_t)((uint32_t)part_win_row(PART_WIN_BOTTOM_ROW, v, 0) << 16);
+    }
+    return w;
 }
 
 /** @brief The routine's verdict on a PART_SPIN_CLASS record: its depth sum, its key and its corner window.
@@ -792,43 +831,42 @@ static int part_win_corners(const ngte_rtps_out c[4], int xlo, int xhi) {
  * @param v The tick's view.
  * @param g The GTE state the routine holds at the record.
  * @param rec The record's guest address.
- * @param xlo The window's left SX bound.
- * @param xhi The window's right SX bound.
+ * @param w The screen window.
  * @return PART_V_STAMP | PART_V_APPEND on a pass, else 0. */
 static int part_verdict_spin(CPUState* cpu, const ngte_view* v, const part_gte* g,
-                             uint32_t rec, int xlo, int xhi) {
+                             uint32_t rec, const part_win* w) {
     const uint32_t pos = game_layout.particles.pos_off;
     ngte_rtps_out c[4];
     part_spin_rtps(cpu, v, g, cpu->read_word(rec + pos), cpu->read_word(rec + pos + 4u), c);
     const int32_t sum = c[0].sz3 + c[1].sz3 + c[2].sz3 + c[3].sz3;
     if (sum < 0x100 || sum >= 0x8000) return 0;
     if ((sum >> 7) - (int32_t)cpu->read_byte(rec + 0x11u) < 0) return 0;
-    return part_win_corners(c, xlo, xhi) ? (PART_V_STAMP | PART_V_APPEND) : 0;
+    return part_win_corners(c, w) ? (PART_V_STAMP | PART_V_APPEND) : 0;
 }
 
-/** @brief The routine's verdict on a record of a class below fixed_layer_class, with SX bounded by (xlo, xhi).
+/** @brief The routine's verdict on a record of a class below fixed_layer_class, on a given screen window.
  *
  * Reproduces the class's depth test, screen window and key tests (see the
  * section comment) on the integer RTPS of the record point under `g`, the GTE
- * state the routine holds at the record (part_gte). At (0, 512) PART_V_STAMP
- * is the stamp the routine writes and PART_V_APPEND whether it appends.
+ * state the routine holds at the record (part_gte). On PART_WIN_GAME
+ * PART_V_STAMP is the stamp the routine writes and PART_V_APPEND whether it
+ * appends.
  * @param cpu Reads the record and the sine table.
  * @param v The tick's view.
  * @param g The GTE state the routine holds at the record.
  * @param rec The record's guest address.
  * @param cls The record's class.
- * @param xlo The window's left SX bound.
- * @param xhi The window's right SX bound.
+ * @param win The screen window.
  * @return PART_V_STAMP and PART_V_APPEND bits; 0 when the record fails before the stamp. */
 static int part_record_verdict(CPUState* cpu, const ngte_view* v, const part_gte* g,
-                               uint32_t rec, int cls, int xlo, int xhi) {
-    if (cls == PART_SPIN_CLASS) return part_verdict_spin(cpu, v, g, rec, xlo, xhi);
+                               uint32_t rec, int cls, const part_win* win) {
+    if (cls == PART_SPIN_CLASS) return part_verdict_spin(cpu, v, g, rec, win);
     const uint32_t pos = game_layout.particles.pos_off;
     const uint32_t w0 = cpu->read_word(rec + pos), w1 = cpu->read_word(rec + pos + 4u);
     ngte_rtps_out o;
     part_gte_rtps(g, v, (int32_t)(w0 & 0xFFFFu), (int32_t)(w0 >> 16), (int32_t)(w1 & 0xFFFFu), &o);
     const int32_t zmin = (cls == PART_ROT_CLASS || cls == PART_RECT_CLASS) ? 0x40 : 1;
-    if (o.sz3 < zmin || o.sz3 >= 0x2000 || !part_win_point(&o, xlo, xhi)) return 0;
+    if (o.sz3 < zmin || o.sz3 >= 0x2000 || !part_win_point(&o, win)) return 0;
     if (cls == PART_TWO_POINT_CLASS)
         return (o.sz3 >> 5) - (int32_t)cpu->read_byte(rec + 0x17u) - 2 > 0
                    ? (PART_V_STAMP | PART_V_APPEND) : 0;
@@ -838,9 +876,11 @@ static int part_record_verdict(CPUState* cpu, const ngte_view* v, const part_gte
 /* ---- the widened view's particles -------------------------------------------
  *
  * The routine's window is the 4:3 frame, so in a view wider than 4:3 (a Hor+
- * factor above 1 or a --fov scale below 1, ngte_view.extended) a record whose primitive lies in a revealed side band is
- * neither stamped nor appended. Such a record, one the routine's verdict
- * passes once its x test is dropped and fails at (0, 512), is a candidate: it
+ * factor above 1 or a --fov scale below 1, ngte_view.extended) a record whose
+ * primitive lies in a revealed side band, or under a --fov scale below 1 in a
+ * revealed band above or below, is neither stamped nor appended. Such a
+ * record, one the routine's verdict passes on part_reveal_win and fails on
+ * PART_WIN_GAME, is a candidate: it
  * becomes a synthetic item built from the record and the type table as the
  * routine builds its primitive, appended after the captured items and fed and
  * rebased as a captured one. It is admitted unless every built vertex lies
@@ -974,8 +1014,8 @@ static int part_in_view(const part_item* it, const ngte_view* v) {
 
 /** @brief Appends the synthetic item of an unstamped record a widened view shows.
  *
- * A candidate is a record the verdict fails at (0, 512) and passes, appending,
- * with the x test dropped. It is built by part_synth_item into the slot past
+ * A candidate is a record the verdict fails on PART_WIN_GAME and passes,
+ * appending, on part_reveal_win. It is built by part_synth_item into the slot past
  * the captured items and the earlier synthetic ones, and kept when
  * part_in_view admits it. Tallies s_wide.
  * @param cpu Reads the record and the tables.
@@ -985,9 +1025,9 @@ static int part_in_view(const part_item* it, const ngte_view* v) {
  * @param cls The record's class, below fixed_layer_class. */
 static void part_reveal_record(CPUState* cpu, const ngte_view* v, const part_gte* g,
                                uint32_t rec, int cls) {
-    if (part_record_verdict(cpu, v, g, rec, cls, PART_WIN_XLO, PART_WIN_XHI)) return;
-    if (!(part_record_verdict(cpu, v, g, rec, cls, PART_WIN_FREE_LO, PART_WIN_FREE_HI) & PART_V_APPEND))
-        return;
+    if (part_record_verdict(cpu, v, g, rec, cls, &PART_WIN_GAME)) return;
+    const part_win wide = part_reveal_win(v);
+    if (!(part_record_verdict(cpu, v, g, rec, cls, &wide) & PART_V_APPEND)) return;
     s_wide.cand++;
     const int slot = s_item_n + s_syn_n;
     if (slot >= PART_MAX_PRIMS) return;
@@ -1155,7 +1195,7 @@ static int part_pair_record(CPUState* cpu, const ngte_view* v, part_gte* g,
  * @param stamped The guest's stamp byte, nonzero when set. */
 static void part_wide_census_record(CPUState* cpu, const ngte_view* v, const part_gte* g,
                                     uint32_t rec, int cls, int stamped) {
-    const int vd = part_record_verdict(cpu, v, g, rec, cls, PART_WIN_XLO, PART_WIN_XHI);
+    const int vd = part_record_verdict(cpu, v, g, rec, cls, &PART_WIN_GAME);
     s_wide.recs++;
     if (((vd & PART_V_STAMP) != 0) != (stamped != 0)) {
         s_wide.mism++;

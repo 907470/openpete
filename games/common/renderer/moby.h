@@ -125,10 +125,20 @@ int moby_native_tick_camera_pos(int32_t out[3]);
  *
  * A decode that repeats one of the draw's lateral cone tests scales that
  * test's slope by this, since the draw's slope is the 4:3 half-angle and the
- * frame on screen is wider. The vertical arm takes no factor: Hor+ keeps the
- * vertical FOV. Valid from the pass view's build at the pass entry.
+ * frame on screen is wider. The vertical arms take moby_native_view_vwiden.
+ * Valid from the pass view's build at the pass entry.
  * @return The widening factor. */
 double moby_native_view_widen(void);
+
+/** @brief The vertical widening of the pass view against the game's own 4:3 frame.
+ *
+ * The value is the view's 1 / s: Hor+ keeps the frame's half-height, and a
+ * --fov scale s multiplies the projection H by s, so the half-height in the
+ * game's screen coordinates is the band over s. Exactly 1.0 at the game's
+ * FOV, so a vertical cone test scaled by it is the draw's own there. Valid
+ * from the pass view's build at the pass entry.
+ * @return The widening factor. */
+double moby_native_view_vwiden(void);
 
 /* ---- the present's own-motion terms, shared by both model kinds ---------
  * A cull record encodes the pose the moby held at the tick; the present shows

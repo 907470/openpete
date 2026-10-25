@@ -338,14 +338,16 @@ typedef struct moby_game {
     int  (*reveal_record)(CPUState* cpu, uint32_t moby, moby_reveal_kind_t kind,
                           moby_reveal_reason_t* why);
     /* The canonical cull's admission of one animated moby, re-evaluated under a
-     * view `widen` times wider than 4:3: the distance box with `drawn_bits` as
-     * the verdict byte the cull read, the sector byte, the model kind, then
-     * the range, near, lateral and vertical arms and any second sphere the
-     * cull tests, the lateral slopes scaled by `widen`. ADMIT only when a
-     * widened lateral arm passes where the 4:3 one fails. Reads gamestate
-     * only. NULL: the walk re-admits nothing inside the box. */
+     * view `widen` times wider and `vwiden` times taller than 4:3: the
+     * distance box with `drawn_bits` as the verdict byte the cull read, the
+     * sector byte, the model kind, then the range, near, lateral and vertical
+     * arms and any second sphere the cull tests, the lateral slopes scaled by
+     * `widen` and the vertical ones by `vwiden`. ADMIT only when a widened arm
+     * passes where the 4:3 one fails. Reads gamestate only. NULL: the walk
+     * re-admits nothing inside the box. */
     moby_wide_verdict_t (*cull_view_admits)(CPUState* cpu, uint32_t moby,
-                                            unsigned drawn_bits, double widen);
+                                            unsigned drawn_bits, double widen,
+                                            double vwiden);
 
     /* ---- paint order inside one moby ----------------------------------
      * The key arithmetic of each walk is a row of moby_rank.h's table; the

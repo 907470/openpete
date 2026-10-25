@@ -621,6 +621,38 @@ static int cull_corners_vertical(const int32_t p[4]) {
     return (ybound | (p[1] - ybound) | (p[2] - ybound) | (p[3] - ybound)) >= 0;
 }
 
+/** @brief The game's vertical test with its rows scaled to a --fov scale below 1.
+ *
+ * The rows bound the 4:3 frame's band at the GTE's H; the view projects at
+ * H · s, so in the points' coordinates its band is the game's scaled about
+ * OFY by 1 / s. Each arm keeps the game's form on SY: cull_corners_vertical's
+ * every corner above row 0 or corners 1..3 all at or below row 0xE4 (Spyro 2
+ * mobyfunc.s:1110-1122, 0x80049D34-0x80049D64; Spyro 3 mobyfunc.s:1108-1120,
+ * 0x8002E108-0x8002E138), cull_anchor_vertical's anchor above row 0 or at or
+ * below row 0xF0 (r_shadows.s 8005A32C-8005A338). At s >= 1 it is the game's
+ * own test.
+ * @param v The projection view; supplies ofy and s.
+ * @param anchor The anchor's packed SXY word.
+ * @param c The four corners' packed SXY words.
+ * @return 1 to reject the shadow, else 0. */
+static int shadow_vertical_reject(const ngte_view* v, int32_t anchor, const int32_t c[4]) {
+    const int spyro3 = game_layout.shadow.cull_layout == SHADOW_CULL_SPYRO3;
+    if (v->s >= 1.0) return spyro3 ? cull_corners_vertical(c) : cull_anchor_vertical(anchor);
+    const double top = v->ofy - v->ofy / v->s;
+    const double bot = v->ofy + ((spyro3 ? 0xE4 : 0xF0) - v->ofy) / v->s;
+    if (!spyro3) {
+        const double y = (double)(anchor >> 16);
+        return y < top || y >= bot;
+    }
+    int above = 1, below = 1;
+    for (int k = 0; k < 4; k++) {
+        const double y = (double)(c[k] >> 16);
+        above &= y < top;
+        if (k) below &= y >= bot;
+    }
+    return above || below;
+}
+
 /** @brief The footprint's lateral test on the screen-X window [xlo, xhi]: rejects when all four corners lie left of xlo or all at or right of xhi.
  *
  * @param c The four corners' packed SXY words.
@@ -645,8 +677,8 @@ typedef struct { int listed, game_admit, wide_admit, synth; } shadow_wide_census
  * The points are the integer evaluation's packed SXY words, projected at the
  * GTE's H. In a view no wider than the game's 4:3 frame (ngte_view.extended 0)
  * the result is the game's own test, cull_corners or cull_anchor. In a wider
- * view each game keeps its own vertical test (cull_corners_vertical,
- * cull_anchor_vertical) and every layout takes the lateral test by the
+ * view each game takes its own vertical test with its rows scaled by the
+ * view's height (shadow_vertical_reject) and every layout takes the lateral test by the
  * footprint on the widened window, [xlo, xhi] scaled about its centre by 1 / s
  * into the points' H (lateral_footprint over the four corners): a shadow whose
  * anchor has left the window while part of its diamond is still inside is
@@ -665,7 +697,7 @@ static int shadow_screen_reject(const ngte_view* v, int32_t anchor, const int32_
     const int game = spyro3 ? cull_corners(c) : cull_anchor(anchor);
     if (cs && !game) cs->game_admit++;
     if (game_only || !v->extended) return game;
-    const int vert = spyro3 ? cull_corners_vertical(c) : cull_anchor_vertical(anchor);
+    const int vert = shadow_vertical_reject(v, anchor, c);
     float xlo = v->xlo, xhi = v->xhi;
     if (v->s != 1.0) {   /* the points are at H_canon: the window's half-width is 256 F / s */
         const float cx = 0.5f * (xlo + xhi), hw = 0.5f * (xhi - xlo) / (float)v->s;

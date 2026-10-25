@@ -3242,14 +3242,14 @@ static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
 
 /** @brief The widened-view clause of the reveal for one live moby.
  *
- * The cull tests an animated moby against a 4:3 cone, so under a wider
- * presentation view a moby inside its distance box that a lateral arm alone
- * rejected is in the frame but has no record. A candidate is a moby the cull
+ * The cull tests an animated moby against a 4:3 cone, so under a wider or
+ * taller presentation view a moby inside its distance box that a lateral or
+ * vertical arm rejected is in the frame but has no record. A candidate is a moby the cull
  * left without a record: drawn-verdict byte 0 (the first sphere failed), or 1
  * with no record in the host copy of the queue taken at the cull hook (the
  * second sphere failed after the byte was written). It is offered to the
  * game's record builder when moby_game.cull_view_admits, the cull's admission
- * re-evaluated with the lateral slope scaled to the view, admits it and the
+ * re-evaluated with the lateral and vertical slopes scaled to the view, admits it and the
  * occlusion cull does not reject it. The drawn byte is read, never written.
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address.
@@ -3264,7 +3264,7 @@ static int moby_reveal_widened(CPUState* cpu, uint32_t m, uint32_t head, double 
     const unsigned drawn = cpu->read_byte(m + game_layout.moby.drawn_off);
     if (drawn > 1u || (drawn == 1u && moby_rec_holds_moby(cpu, m))) return 0;
     const moby_wide_verdict_t v = moby_game.cull_view_admits(
-        cpu, m, moby_precull_drawn(cpu, m, head), widen);
+        cpu, m, moby_precull_drawn(cpu, m, head), widen, moby_native_view_vwiden());
     verdicts[v]++;
     const int trace = moby_trace_target() && m == moby_trace_target();
     if (trace)
@@ -3331,7 +3331,7 @@ static void moby_reveal_extended(CPUState* cpu, uint32_t m, uint32_t head,
         if (kind == MOBY_REVEAL_ANIMATED && !moby_rec_holds_moby(cpu, m)) {
             c->canon_absent++;
             if (moby_game.cull_view_admits) {
-                const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0);
+                const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0);
                 if (g == MOBY_WIDE_OUTSIDE || g == MOBY_WIDE_RANGE) c->canon_boxed++;
             }
         }
@@ -9076,6 +9076,10 @@ int moby_native_tick_camera_pos(int32_t out[3]) {
 
 double moby_native_view_widen(void) {
     return (double)s_view.F / s_view.s;
+}
+
+double moby_native_view_vwiden(void) {
+    return 1.0 / s_view.s;
 }
 
 /** @brief Inverse of an integer 3x3 matrix by cofactors, in double.
