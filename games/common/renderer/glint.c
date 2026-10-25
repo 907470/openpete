@@ -1011,8 +1011,8 @@ static void glint_build_exact(CPUState* cpu, const ngte_view* v) {
  * after the capture as items carrying the record.
  *
  * The widened view's stars: the routine's lateral test 4|X| - 3Z < 0x100 is
- * the 4:3 frame plus a fixed margin, so in a wider view (Hor+ factor F above
- * 1) it drops a record whose star still lies inside the revealed side band and
+ * the 4:3 frame plus a fixed margin, so in a wider view (a Hor+ factor above
+ * 1 or a --fov scale below 1, ngte_view.extended) it drops a record whose star still lies inside the revealed side band and
  * emits no primitive for it. Such a record keeps every other verdict of the
  * routine (the lifetime, the box, the depth window and the vertical test) and
  * is admitted unless every corner lies left of the view's screen-X bound xlo
@@ -1107,8 +1107,8 @@ static int glint_synth_build(CPUState* cpu, const ngte_view* v, const glint_rec*
 
 /** @brief Append the stars the routine dropped but a view wider than 4:3 or extended LOD shows.
  *
- * A record glint_accept flags GLINT_LATERAL is a candidate when the view's
- * Hor+ factor F is above 1, and one it flags GLINT_RANGE when extended LOD is
+ * A record glint_accept flags GLINT_LATERAL is a candidate when the view is
+ * wider than 4:3 (ngte_view.extended), and one it flags GLINT_RANGE when extended LOD is
  * on; a record carrying both flags needs both. A candidate is built by
  * glint_synth_build in the kind glint_draws_star picks. One flagged
  * GLINT_LATERAL is appended unless the view shows none of its corners; one
@@ -1119,7 +1119,7 @@ static int glint_synth_build(CPUState* cpu, const ngte_view* v, const glint_rec*
  * @param v The tick's projection view. */
 static void glint_reveal(CPUState* cpu, const ngte_view* v) {
     s_wide_admit = 0; s_wide_cull = 0; s_range_admit = 0; s_range_cull = 0;
-    const int wide = v->F > 1.0f;
+    const int wide = v->extended;
     for (uint32_t s = 0; s < GT.slots; s++) {
         glint_rec r;
         const int a = glint_accept(cpu, v, GT.pool + s * GT.stride, &r);

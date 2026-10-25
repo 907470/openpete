@@ -837,8 +837,8 @@ static int part_record_verdict(CPUState* cpu, const ngte_view* v, const part_gte
 
 /* ---- the widened view's particles -------------------------------------------
  *
- * The routine's window is the 4:3 frame, so in a view wider than 4:3 (Hor+
- * factor F above 1) a record whose primitive lies in a revealed side band is
+ * The routine's window is the 4:3 frame, so in a view wider than 4:3 (a Hor+
+ * factor above 1 or a --fov scale below 1, ngte_view.extended) a record whose primitive lies in a revealed side band is
  * neither stamped nor appended. Such a record, one the routine's verdict
  * passes once its x test is dropped and fails at (0, 512), is a candidate: it
  * becomes a synthetic item built from the record and the type table as the
@@ -2005,8 +2005,8 @@ static int part_polybuf_exhausted(CPUState* cpu, uint32_t endp) {
 /** @brief Captures the routine's primitives, pairs them, appends the widened view's records, and feeds the set.
  *
  * Captures the polybuf interval (an empty one resets the set), builds the
- * tick's view and walks the pool (part_pair_depths); in a view whose Hor+
- * factor is above 1 the walk appends the records the side bands show, unless
+ * tick's view and walks the pool (part_pair_depths); in a view wider than
+ * 4:3 (ngte_view.extended) the walk appends the records the side bands show, unless
  * the routine stopped at the polybuf's end. The census lines print, and the
  * native scene is fed when it is live and RP_PARTICLES is enabled. A set the
  * routine appended nothing for marks RP_PARTICLES drawn (render_path_mark_drawn),
@@ -2027,7 +2027,7 @@ static void part_draw_capture(CPUState* cpu, uint32_t startp, uint32_t endp, int
     const int census = part_wide_census_on();
     memset(&s_wide, 0, sizeof s_wide);
     s_wide.exh = (unsigned long)exhausted;
-    part_pair_depths(cpu, &view, view.F > 1.0f && !exhausted, census && !exhausted);
+    part_pair_depths(cpu, &view, view.extended && !exhausted, census && !exhausted);
     if (census) part_wide_census_print(s_item_n);
     if (part_vdbg_on())
         for (int i = 0; i < s_item_n; i++) part_vertex_calib(&s_item[i]);
@@ -2057,7 +2057,7 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
-    if (endp > startp || openpete_native_widescreen_factor() > 1.0f)
+    if (endp > startp || ngte_view_extended(cpu))
         part_draw_capture(cpu, startp, endp, feed);
     return hook_bracket_end(&k_bracket);
 }

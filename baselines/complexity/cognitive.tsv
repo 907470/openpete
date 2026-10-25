@@ -148,7 +148,7 @@ games/common/renderer/terrain.c	fp_hit_tri	31	0
 games/common/renderer/terrain.c	portal_rim_classify	53	0	
 games/common/renderer/terrain.c	td_scan_verts	26	0	
 games/common/renderer/terrain.c	terrain_animdbg	44	0	
-games/common/renderer/terrain.c	terrain_build	548	0	
+games/common/renderer/terrain.c	terrain_build	547	0	
 games/common/renderer/terrain.c	terrain_compare	313	0	
 games/common/renderer/terrain.c	terrain_feed_native	372	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	

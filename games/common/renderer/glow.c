@@ -750,7 +750,7 @@ static void glow_vtx_cal_tick(const glow_capture_ctx* c) {
  * @param v The tick's projection view. */
 static void glow_capture_set(CPUState* cpu, const ngte_view* v) {
     static glow_capture_ctx c;
-    c.wide = v->F > 1.0f;
+    c.wide = v->extended;
     c.log = glow_cull_log_on();
     c.vtx = glow_vtx_on();
     c.yaw = glow_cam_yaw(cpu);
@@ -1169,7 +1169,7 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
         glow_capture_guest(cpu, startp, endp);
     /* A view wider than 4:3 can show a fan the routine emitted nothing for,
      * so it walks the pool even after an empty call. */
-    if (endp > startp || openpete_native_widescreen_factor() > 1.0f || log) {
+    if (endp > startp || ngte_view_extended(cpu) || log) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         glow_capture_set(cpu, &view);

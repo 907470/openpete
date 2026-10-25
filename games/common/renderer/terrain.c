@@ -12994,16 +12994,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
     /* Sector bounding-sphere frustum inputs, at the half-widths of the
-     * displayed frame: 1.0 is the 4:3 frame the draw itself tests, wider under
-     * Hor+ or a --fov above the stock angle. Built for every game whose layout
+     * displayed frame, F / s and 1 / s: 1.0 is the 4:3 frame the draw itself
+     * tests, wider under Hor+ or a --fov above the stock angle, narrower under
+     * a --fov below it. Built for every game whose layout
      * names the sector-header sphere (radius_mask); the frustum candidate set
      * and the draw's own sphere cull read the same widths. */
     tvis_sphere sph, *sphp = NULL;
-    double cull_wx = 1.0, cull_wy = 1.0;
-    if (s_view.extended) {
-        cull_wx = (double)s_view.F / s_view.s;   /* Hor+ widens X only; --fov both */
-        cull_wy = 1.0 / s_view.s;
-    }
+    const double cull_wx = (double)s_view.F / s_view.s;   /* Hor+ widens X only; --fov both */
+    const double cull_wy = 1.0 / s_view.s;
     if (game_layout.terrain.radius_mask) {
         sph.sectorPtr = sectorPtr;
         memcpy(sph.M, Mbin, sizeof(sph.M));

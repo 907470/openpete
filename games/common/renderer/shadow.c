@@ -278,7 +278,7 @@ static void shadow_synth_offer(CPUState* cpu, const ngte_view* v, const uint32_t
 
 /** @brief Rebuilds the widened-view records from this tick's drawn mobys.
  *
- * Empty in a view no wider than the 4:3 frame (Hor+ factor F at most 1), on
+ * Empty in a view no wider than the 4:3 frame (ngte_view.extended 0), on
  * a layout without shadow.frame_radius_off, or while a cutscene renderer owns
  * the draw (moby_native_cutscene_owns_draw). Otherwise every moby of the
  * canonical drawn set (cull records, the widened reveal's appended records
@@ -289,7 +289,7 @@ static void shadow_synth_update(CPUState* cpu) {
     s_synth_n = 0;
     if (!game_layout.shadow.frame_radius_off) return;
     ngte_view v; ngte_view_build(cpu, &v);
-    if (!(v.F > 1.0f)) return;
+    if (!v.extended) return;
     /* The cutscene renderer draws its own actor set and no other moby, and
      * the reveal walk returns before rebuilding its set while it does, so
      * that set still names the mobys revealed before the cutscene. */
@@ -642,16 +642,17 @@ typedef struct { int listed, game_admit, wide_admit, synth; } shadow_wide_census
 
 /** @brief The screen-extent rejection of one moby shadow under the view's screen-X window.
  *
- * The points are the integer evaluation's packed SXY words. In a view no
- * wider than the game's 4:3 frame (Hor+ factor F at most 1) the result is the
- * game's own test, cull_corners or cull_anchor. In a wider view each game
- * keeps its own vertical test (cull_corners_vertical, cull_anchor_vertical)
- * and every layout takes the lateral test by the footprint on the widened
- * window [xlo, xhi] (lateral_footprint over the four corners): a shadow whose
+ * The points are the integer evaluation's packed SXY words, projected at the
+ * GTE's H. In a view no wider than the game's 4:3 frame (ngte_view.extended 0)
+ * the result is the game's own test, cull_corners or cull_anchor. In a wider
+ * view each game keeps its own vertical test (cull_corners_vertical,
+ * cull_anchor_vertical) and every layout takes the lateral test by the
+ * footprint on the widened window, [xlo, xhi] scaled about its centre by 1 / s
+ * into the points' H (lateral_footprint over the four corners): a shadow whose
  * anchor has left the window while part of its diamond is still inside is
  * drawn. Spyro 1's corners are the fan's own RTPT and RTPS results
  * (r_shadows.s), evaluated before the screen test.
- * @param v The projection view; supplies F, xlo and xhi.
+ * @param v The projection view; supplies extended, s, xlo and xhi.
  * @param anchor The anchor's packed SXY word.
  * @param c The four corners' packed SXY words.
  * @param cs Tallies the game's verdict and the widened admissions; NULL off
@@ -663,9 +664,14 @@ static int shadow_screen_reject(const ngte_view* v, int32_t anchor, const int32_
     const int spyro3 = game_layout.shadow.cull_layout == SHADOW_CULL_SPYRO3;
     const int game = spyro3 ? cull_corners(c) : cull_anchor(anchor);
     if (cs && !game) cs->game_admit++;
-    if (game_only || !(v->F > 1.0f)) return game;
+    if (game_only || !v->extended) return game;
     const int vert = spyro3 ? cull_corners_vertical(c) : cull_anchor_vertical(anchor);
-    const int rej = vert || lateral_footprint(c, v->xlo, v->xhi);
+    float xlo = v->xlo, xhi = v->xhi;
+    if (v->s != 1.0) {   /* the points are at H_canon: the window's half-width is 256 F / s */
+        const float cx = 0.5f * (xlo + xhi), hw = 0.5f * (xhi - xlo) / (float)v->s;
+        xlo = cx - hw; xhi = cx + hw;
+    }
+    const int rej = vert || lateral_footprint(c, xlo, xhi);
     if (cs && game && !rej) cs->wide_admit++;
     return rej;
 }
@@ -1584,12 +1590,13 @@ static int shadow_wide_census_from(void) {
  * The verdict is VACUOUS in a widened view whose walk admitted no shadow the
  * game's test rejected and built no widened-view record, ENGAGED otherwise,
  * and 4:3 in a view no wider than the game's frame.
+ * @param cpu The guest CPU state, read only.
  * @param cs The walk's tallies. */
-static void shadow_wide_census_print(const shadow_wide_census* cs) {
+static void shadow_wide_census_print(CPUState* cpu, const shadow_wide_census* cs) {
     float xlo = 0.0f, xhi = 0.0f;
     const float F = openpete_native_widescreen_factor();
     openpete_native_widescreen_x_bounds(&xlo, &xhi);
-    const char* verdict = !(F > 1.0f) ? "4:3"
+    const char* verdict = !ngte_view_extended(cpu) ? "4:3"
                         : (cs->wide_admit + cs->synth > 0 ? "ENGAGED" : "VACUOUS");
     fprintf(stderr, "[shadow-wide vbl=%u] F=%.4f window=[%.1f,%.1f] listed=%d game_admit=%d "
                     "wide_admit=%d synth=%d verdict=%s\n",
@@ -1641,7 +1648,7 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
         if (s_mosh_n > 0 && endp <= startp) render_path_mark_drawn(RP_MOBY_SHADOW);
     }
     const int from = shadow_wide_census_from();
-    if (from >= 0 && openpete_frame >= (unsigned)from) shadow_wide_census_print(&cs);
+    if (from >= 0 && openpete_frame >= (unsigned)from) shadow_wide_census_print(cpu, &cs);
     const int cal = shadow_admit_cal_from();
     if (cal >= 0 && openpete_frame >= (unsigned)cal && feed) shadow_admit_cal(cpu, endp > startp);
 

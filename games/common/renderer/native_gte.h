@@ -44,7 +44,7 @@
  * --fov scale (1.0 exactly at the default, so H_eff == H_canon
  * bit-for-bit). F / xlo / xhi are the Hor+ factor and its screen-X range;
  * extended is 1 when the view shows more than the canonical 4:3 frame
- * (F > 1 or s < 1) and the feeders must admit what the game's verdicts
+ * in either axis (F / s > 1 or s < 1) and the feeders must admit what the game's verdicts
  * dropped. */
 typedef struct {
     int    cam_M[3][3];   /* g_Camera projection matrix (+0x00), Q12 */
@@ -70,6 +70,15 @@ typedef struct {
  * @param cpu The guest CPU state, read only.
  * @param v Receives the view. */
 void ngte_view_build(CPUState* cpu, ngte_view* v);
+
+/** @brief Whether the view shows more than the canonical 4:3 frame in either axis: F / s above 1 or s below 1.
+ *
+ * The one predicate behind ngte_view.extended and every feeder's widened-view
+ * reveal. Reads the display policy and the GTE's H (control register 26);
+ * writes no guest memory and no renderer state.
+ * @param cpu The guest CPU state, read only.
+ * @return 1 when the view is wider than 4:3 in either axis, else 0. */
+int ngte_view_extended(CPUState* cpu);
 
 struct openpete_occl_camera;
 /** @brief Converts a view's camera into the form the occlusion grid compares.

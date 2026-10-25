@@ -71,6 +71,25 @@ void ngte_occl_camera(const ngte_view* v, struct openpete_occl_camera* c) {
     c->valid = 1;
 }
 
+/** @brief Whether a view with Hor+ factor F and --fov scale s is wider than the canonical 4:3 frame.
+ *
+ * Feeders project with H_canon · s, so in canonical screen coordinates the
+ * view's half-width is 256 · F / s and its half-height band / s: the view is
+ * wider in X when F / s > 1 and in Y when s < 1. At s == 1 the X test is
+ * F > 1.0001, the tolerance absorbing float noise in F.
+ * @param F The Hor+ factor.
+ * @param s The --fov scale.
+ * @return 1 when either half-extent exceeds the 4:3 frame's. */
+static int ngte_extended_of(float F, double s) {
+    return (double)F > s * 1.0001 || s < 1.0;
+}
+
+int ngte_view_extended(CPUState* cpu) {
+    const double H_canon = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    return ngte_extended_of(openpete_native_widescreen_factor(),
+                            openpete_native_fov_h_scale(H_canon, NGTE_Y_ROW));
+}
+
 void ngte_view_build(CPUState* cpu, ngte_view* v) {
     ngte_census_arm();
     const uint32_t cam_base = game_layout.cam.base;
@@ -88,7 +107,7 @@ void ngte_view_build(CPUState* cpu, ngte_view* v) {
     v->H_eff   = v->H_canon * v->s;
     v->F       = openpete_native_widescreen_factor();
     openpete_native_widescreen_x_bounds(&v->xlo, &v->xhi);
-    v->extended = (v->F > 1.0001f || v->s < 1.0);
+    v->extended = ngte_extended_of(v->F, v->s);
 }
 
 void ngte_view_canon(const ngte_view* v, ngte_view* c) {
