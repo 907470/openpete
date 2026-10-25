@@ -24,7 +24,8 @@ defaults, fade and music fit.
 | splice | `credits.py --game G splice --paths ... --render ... --clip I=DIR --master IN.mp4 --frames A-B --out OUT.mp4` | IN with frames A..B re-encoded from scene I's re-render in DIR |
 | preview | `credits.py preview --master OUT.mp4 --out OUT-540p.mp4` | 960x540 30 fps two-pass preview |
 | publish | `credits.py --game G publish` (post's arguments) | post, then `OUT-540p.mp4` beside the master |
-| thumbnail | `thumbnail.py --clip WORK/render/TAG/s8/clip.mkv --index 1369 --title-black K.png --title-white W.png --mark MARK.png --logo LOGO.png --out-dir DIR --tag TAG` | layouts A and B at 3840x2160 and 1280x720 |
+| thumbnail title | `thumbnail.py title --out-dir WORK/title [--jobs N]` | `title-black.png`, `title-white.png` (the title over black and over white), `title.log` |
+| thumbnail | `thumbnail.py compose --clip WORK/render/TAG/s8/clip.mkv --index 1369 --title-black WORK/title/title-black.png --title-white WORK/title/title-white.png --mark MARK.png --logo LOGO.png --out-dir DIR --tag TAG` | layouts A and B at 3840x2160 and 1280x720 |
 
 Every stage is run from any directory; `WORK` is any directory the user
 chooses. The disc defaults to the game's `games/<game>/oracle.conf` DISC
@@ -111,11 +112,18 @@ state, so a clip recorded with them is not a replay of the unmodified game:
 | `OPENPETE_VIDEO_OPEN_PANIM` | 2, 3 | keyframe-animated sectors (doors) by id run open once from keyframe 0 |
 | `OPENPETE_VIDEO_HOME_PANIM` | 2, 3 | keyframe-animated sectors by id sent to keyframe 0 and held there |
 
-The thumbnail's title matte is the game's 3D letter font rendered by the
-thumbnail spike's `OPENPETE_VIDEO_TITLE*` knobs over a black and a white
-background (`OPENPETE_VIDEO_TITLE_BG`), which are not on main. The mark is
-`tools/gen_dist_icon.py`'s; the game logo is an upscale of the title-screen
-logo texture, supplied as a file.
+The thumbnail's title matte is the game's 3D letter font drawn by the
+`OPENPETE_VIDEO_TITLE*` knobs, which are not on main: they are
+`patches/title-matte.patch`, pinned to 14340c09d (its `Pin:` line).
+`thumbnail.py title` creates the throwaway worktree `worktrees/credits-title`
+at the pin with `scripts/worktree.sh`, links the untracked build inputs to
+the main checkout's, applies the patch, builds `openpete-spyro3`
+(linux-release, about the time of a full engine build), renders a plain boot
+at VBL 400 under Xvfb with the table's `[thumbnail]` knobs over
+`OPENPETE_VIDEO_TITLE_BG=000000` and `FFFFFF`, and removes the worktree
+(`--keep-worktree` keeps it). The renders are the disc's font and are never
+committed. The mark is `tools/gen_dist_icon.py`'s; the game logo is an
+upscale of the title-screen logo texture, supplied as a file.
 
 The Spyro 3 table sets `OPENPETE_GLINT=1` (near glint stars only) on
 scenes 0, 6, 9 and 10, where a far glint cross flashes for one tick under

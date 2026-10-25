@@ -1,0 +1,278 @@
+title-matte.patch: the OPENPETE_VIDEO_TITLE* knobs that draw the thumbnail
+title in the game's 3D letter font into the supersampled scene target.
+
+Pin: applies to openpete 14340c09d (git apply). thumbnail.py's `title`
+step creates a throwaway worktree at that revision, applies this patch,
+builds the engine, renders the title over black and over white, and
+removes the worktree. Not for main.
+
+Knobs:
+  OPENPETE_VIDEO_TITLE        lines separated by '|'
+  OPENPETE_VIDEO_TITLE_CAPS   cap height per line, overlay units (window
+                              height = 1), comma list, last repeats (0.12)
+  OPENPETE_VIDEO_TITLE_LEAD   centre-to-centre step, times the larger cap (1.25)
+  OPENPETE_VIDEO_TITLE_Y      block centre, overlay units (0.5)
+  OPENPETE_VIDEO_TITLE_SPACE  word gap, times the line's cap (0.45)
+  OPENPETE_VIDEO_TITLE_TINT   RRGGBB (the menu title's gold)
+  OPENPETE_VIDEO_TITLE_LIGHT  fixed = the font's fixed light, else the
+                              rotating specular light
+  OPENPETE_VIDEO_TITLE_PHASE  frozen specular phase (unset: live)
+  OPENPETE_VIDEO_TITLE_WOB    frozen per-glyph yaw ripple phase (unset: upright)
+  OPENPETE_VIDEO_TITLE_BG     RRGGBB: the scene is not drawn; the target is
+                              cleared to this colour under the title
+
+diff --git a/core/include/openpete_native_render.h b/core/include/openpete_native_render.h
+index eec6a4925..34de2f761 100644
+--- a/core/include/openpete_native_render.h
++++ b/core/include/openpete_native_render.h
+@@ -733,6 +733,11 @@ int  openpete_native_perf_anchor(void);
+  * @param verts Triangle list, 3 vertices per triangle.
+  * @param nverts Vertex count; 0 clears. */
+ void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts);
++/** @brief Publishes the video title's glyph vertices (x relative to the window centre), drawn into the supersampled scene target.
++ *
++ * @param verts The vertices, or NULL to clear.
++ * @param nverts The vertex count. */
++void openpete_native_set_title_glyphs(const openpete_hud_vert *verts, int nverts);
+ 
+ /** @brief Return the window aspect (width over height) for overlay-space layout.
+  *
+diff --git a/core/renderer/native_render.c b/core/renderer/native_render.c
+index 9b1806a..8f26394 100644
+--- a/core/renderer/native_render.c
++++ b/core/renderer/native_render.c
+@@ -289,6 +289,7 @@ typedef struct {
+ #define OCCL_GH 48
+ #define OVL_MAX_VERTS 16384  /* overlay (3D text-moby glyph) vertex cap (see draw_perf_overlay);
+                              * sized for the 4-line detailed readout, not a 1-line counter */
++#define TITLE_MAX_VERTS 65536   /* video title glyph verts (see draw_title_glyphs) */
+ #define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
+ #define VER_MAX_VERTS 16384  /* build-version line glyph verts (see draw_version_overlay) */
+ #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
+@@ -5129,6 +5130,7 @@ static struct {
+     int           ver_ss_w, ver_ss_h;
+     rhi_buffer   *ver_quad_vb;
+     rhi_buffer   *mod_ovl_vb;         /* mod draw-service overlay (rects + text glyphs, NDC), rebuilt per present */
++    rhi_buffer   *title_vb;           /* video title glyphs (NDC), drawn into the supersampled scene target */
+     rhi_buffer   *menu_vb;            /* in-game settings menu panel/border/selection quads (NDC) */
+     rhi_buffer   *menu_glyph_vb;      /* in-game settings menu 3D glyph text (NDC, depth-tested) */
+ 
+@@ -7251,6 +7253,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
+     s_nr.fs_quad_vb   = fs_quad_vb;
+     s_nr.overlay_vb   = overlay_vb;
+     s_nr.mod_ovl_vb   = mod_ovl_vb;
++    s_nr.title_vb     = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * TITLE_MAX_VERTS);
+     /* Optional menu overlay buffer (init has already passed the fatal guard -
+      * a NULL here just disables the menu draw, it doesn't fail the renderer). */
+     s_nr.menu_vb      = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MENU_MAX_VERTS);
+@@ -16812,6 +16815,67 @@ void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts)
+     s_mod_overlay_n = nverts;
+ }
+ 
++/* Video title: centred 3D glyph lines built by text_moby_native_video_title.
++ * x is relative to the window centre, y and the units are the overlay space's
++ * (window height = 1). Drawn into the scene target before the SSAA resolve so
++ * the glyph edges are supersampled with the scene. */
++static openpete_hud_vert s_title_stage[TITLE_MAX_VERTS];
++static openpete_hud_vert s_title_verts[TITLE_MAX_VERTS];
++static volatile int      s_title_stage_n = 0;
++static int               s_title_n = 0;
++void openpete_native_set_title_glyphs(const openpete_hud_vert *verts, int nverts) {
++    if (nverts < 0 || !verts) nverts = 0;
++    if (nverts > TITLE_MAX_VERTS) nverts = TITLE_MAX_VERTS;
++    if (nverts > 0) memcpy(s_title_stage, verts, (size_t)nverts * sizeof(verts[0]));
++    s_title_stage_n = nverts;
++}
++
++/** @brief Returns the solid background colour that replaces the scene under OPENPETE_VIDEO_TITLE_BG, or -1.
++ *
++ * The value is 0xRRGGBB in hex; unset or empty gives -1 (the scene draws).
++ * @return The colour, or -1. */
++static long title_bg_colour(void) {
++    static long s_bg = -2;
++    if (s_bg == -2) {
++        const char *e = getenv("OPENPETE_VIDEO_TITLE_BG");
++        s_bg = (e && *e) ? (long)(strtoul(e, NULL, 16) & 0xFFFFFFu) : -1;
++    }
++    return s_bg;
++}
++
++/** @brief Draws the video title glyphs into the open render pass, centred on the window.
++ *
++ * Copies the staged list, maps overlay space to NDC with the window aspect,
++ * clears depth so the glyphs z-sort among their own faces only, and draws them
++ * through the gouraud pipe. */
++static void draw_title_glyphs(void) {
++    const int sn = s_title_stage_n;
++    if (sn >= 3) { memcpy(s_title_verts, s_title_stage, (size_t)sn * sizeof(s_title_verts[0])); }
++    s_title_n = sn;
++    if (s_title_n < 3 || !s_nr.gouraud_pipe || !s_nr.title_vb) return;
++    if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
++    static rhi_vertex buf[TITLE_MAX_VERTS];
++    const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
++    int n = 0;
++    for (int i = 0; i < s_title_n; i++) {
++        const openpete_hud_vert *v = &s_title_verts[i];
++        buf[n].x = v->x * ax;
++        buf[n].y = 1.0f - v->y * 2.0f;
++        buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
++        buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = v->z;
++        buf[n].sx = 0.0f; buf[n].sy = 0.0f;
++        n++;
++    }
++    n -= n % 3;
++    if (n <= 0) return;
++    rhi_update_buffer(s_nr.title_vb, buf, (size_t)n * sizeof(rhi_vertex));
++    rhi_reset_scissor(s_nr.dev);
++    rhi_clear_depth(s_nr.dev);
++    bind_scene_pipe(s_nr.gouraud_pipe);
++    rhi_bind_vertex_buffer(s_nr.dev, s_nr.title_vb);
++    rhi_draw(s_nr.dev, (uint32_t)n, 0);
++}
++
+ /* ---- the build-version line ---------------------------------------------
+  * Small text in a corner naming the build (core/include/openpete_build_id.h),
+  * built from the same 3D glyph models as the stats readout and pushed once -
+@@ -18486,9 +18550,14 @@ static void compose_variant(void)
+         { int kw, kh; rhi_texture_extent(s_nr.ss_rtt, &kw, &kh);
+           native_terrain_key_pass(0, kw, kh); }
+         rhi_gpu_zone_begin(s_nr.dev, "sc.rtbegin");
+-        rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
++        const long tbg = title_bg_colour();
++        rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt,
++                                tbg >= 0 ? (float)((tbg >> 16) & 0xFF) / 255.0f : 0.0f,
++                                tbg >= 0 ? (float)((tbg >> 8) & 0xFF) / 255.0f : 0.0f,
++                                tbg >= 0 ? (float)(tbg & 0xFF) / 255.0f : 0.0f, 1.0f);
+         rhi_gpu_zone_end(s_nr.dev);
+-        bool drew = draw_scene_with_matview(false);   /* scene at ss_factor× (scissor auto-scaled) */
++        bool drew = tbg >= 0 ? true : draw_scene_with_matview(false);   /* scene at ss_factor× (scissor auto-scaled) */
++        draw_title_glyphs();
+         s_pc_cur = drew ? PC_SCENE : PC_VRAM;
+         rhi_end_render_target(s_nr.dev, s_nr.ss_rtt);
+         rhi_gpu_zone_end(s_nr.dev);
+@@ -18547,6 +18616,7 @@ static void compose_variant(void)
+         rhi_gpu_zone_end(s_nr.dev);
+         s_pc_cur = scene_drew ? PC_SCENE : PC_VRAM;
+         if (!scene_drew) draw_vram_fallback(s_nr.panels_vb);
++        draw_title_glyphs();
+     }
+ 
+     /* SCENE point then mod HUD - vk variant, live + record composes. */
+@@ -22362,6 +22432,7 @@ void openpete_native_render_shutdown(void)
+     if (s_nr.ver_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.ver_quad_vb);
+     if (s_nr.ver_ss) rhi_destroy_texture(s_nr.dev, s_nr.ver_ss);
+     rhi_destroy_buffer(s_nr.dev, s_nr.mod_ovl_vb);
++    if (s_nr.title_vb) rhi_destroy_buffer(s_nr.dev, s_nr.title_vb);
+     rhi_destroy_buffer(s_nr.dev, s_nr.menu_vb);
+     rhi_destroy_buffer(s_nr.dev, s_nr.menu_glyph_vb);
+     rhi_destroy_buffer(s_nr.dev, s_nr.osd_glyph_vb);
+diff --git a/games/common/renderer/text_moby.c b/games/common/renderer/text_moby.c
+index f65971e1a..28f6720bb 100644
+--- a/games/common/renderer/text_moby.c
++++ b/games/common/renderer/text_moby.c
+@@ -905,8 +905,11 @@ void text_moby_native_shimmer_tick(void) {
+ 
+ unsigned text_moby_native_shimmer_phase(void) { return s_shimmer_phase; }
+ 
++static void text_moby_native_video_title(CPUState* cpu);
++
+ void text_moby_native_layers_tick(CPUState* cpu) {
+     text_moby_native_shimmer_tick();
++    text_moby_native_video_title(cpu);
+     text_moby_native_perf_overlay(cpu);
+     text_moby_native_menu(cpu);
+     text_moby_native_osd(cpu);
+@@ -1368,3 +1371,93 @@ void text_moby_native_osd(CPUState* cpu) {
+     if ((text_moby_native_shimmer_phase() & 63u) == 0u) glyph_hash_census("osd", s_osd_buf, cx.n);
+     glyph_census(2, cx.n, cx.glyph_n);
+ }
++
++/* ---- video title -------------------------------------------------------
++ * OPENPETE_VIDEO_TITLE="LINE|LINE|..." draws the lines centred on the window
++ * with the credits font, each line its own cap height
++ * (OPENPETE_VIDEO_TITLE_CAPS="0.14,0.10,0.07", overlay units, last value
++ * repeats), stacked with OPENPETE_VIDEO_TITLE_LEAD times the larger cap
++ * between centres, the block centred at OPENPETE_VIDEO_TITLE_Y (0.5).
++ * Light: the rotating SpecularUpdate light at OPENPETE_VIDEO_TITLE_PHASE
++ * (frozen; unset = the live shimmer), or the font's fixed light when
++ * OPENPETE_VIDEO_TITLE_LIGHT=fixed. Tint OPENPETE_VIDEO_TITLE_TINT (RRGGBB,
++ * default the menu title's gold), and OPENPETE_VIDEO_TITLE_WOB a frozen
++ * per-glyph yaw ripple phase (unset = upright). */
++#define TITLE_BUF_MAX 65536
++static openpete_hud_vert s_title_buf[TITLE_BUF_MAX];
++
++/** @brief Builds and publishes the OPENPETE_VIDEO_TITLE lines each tick.
++ *
++ * @param cpu The guest CPU (font cache source). */
++static void text_moby_native_video_title(CPUState* cpu) {
++    const char* txt = getenv("OPENPETE_VIDEO_TITLE");
++    if (!txt || !*txt || !openpete_native_scene_enabled()) return;
++    text_moby_native_cache(cpu);
++    if (!text_moby_native_ready()) return;
++    char lines[8][96]; int nl = 0;
++    for (const char* p = txt; *p && nl < 8; ) {
++        const char* e = strchr(p, '|'); size_t L = e ? (size_t)(e - p) : strlen(p);
++        if (L > 95) L = 95;
++        memcpy(lines[nl], p, L); lines[nl][L] = 0; nl++;
++        if (!e) break;
++        p = e + 1;
++    }
++    float caps[8]; int nc = 0;
++    const char* cs = getenv("OPENPETE_VIDEO_TITLE_CAPS");
++    for (const char* p = cs ? cs : "0.12"; *p && nc < 8; ) {
++        char* end; float v = strtof(p, &end);
++        if (end == p) break;
++        caps[nc++] = v;
++        p = (*end == ',') ? end + 1 : end;
++    }
++    if (nc == 0) caps[nc++] = 0.12f;
++    const char* le = getenv("OPENPETE_VIDEO_TITLE_LEAD");
++    const float lead = le ? strtof(le, NULL) : 1.25f;
++    const char* ye = getenv("OPENPETE_VIDEO_TITLE_Y");
++    const float yc = ye ? strtof(ye, NULL) : 0.5f;
++    const char* te = getenv("OPENPETE_VIDEO_TITLE_TINT");
++    const unsigned tint = te ? (unsigned)strtoul(te, NULL, 16) : MENU_TITLE_TINT;
++    const char* we = getenv("OPENPETE_VIDEO_TITLE_WOB");
++    const int wob = (we && *we) ? atoi(we) : -1;
++    const char* ph = getenv("OPENPETE_VIDEO_TITLE_PHASE");
++    const char* lt = getenv("OPENPETE_VIDEO_TITLE_LIGHT");
++
++    float cap[8], y[8], total = 0.0f;
++    for (int i = 0; i < nl; i++) cap[i] = caps[i < nc ? i : nc - 1];
++    /* centre-to-centre step between line i-1 and i: lead times the larger cap */
++    y[0] = 0.0f;
++    for (int i = 1; i < nl; i++) {
++        const float m = cap[i] > cap[i - 1] ? cap[i] : cap[i - 1];
++        y[i] = y[i - 1] + lead * m;
++    }
++    total = y[nl - 1];
++    emit_ctx_t cx;
++    emit_ctx_init(&cx, s_title_buf, TITLE_BUF_MAX);
++    if (!(lt && strcmp(lt, "fixed") == 0))
++        install_specular_light(&cx, ph ? (unsigned)atoi(ph) : text_moby_native_shimmer_phase());
++    const char* se = getenv("OPENPETE_VIDEO_TITLE_SPACE");
++    const float space = se ? strtof(se, NULL) : 0.45f;   /* word gap, times the line's cap */
++    for (int i = 0; i < nl; i++) {
++        /* Words are laid out here, not by emit_string, whose space advance is a
++         * fixed overlay width sized for small text. */
++        char words[16][96]; int nw = 0; float ww[16], wsum = 0.0f;
++        for (char* tok = strtok(lines[i], " "); tok && nw < 16; tok = strtok(NULL, " ")) {
++            snprintf(words[nw], sizeof words[nw], "%s", tok);
++            ww[nw] = measure_string(words[nw], cap[i]) - TXT_GAP;
++            wsum += ww[nw]; nw++;
++        }
++        const float lw = wsum + (nw > 1 ? (float)(nw - 1) * space * cap[i] : 0.0f);
++        float x = -0.5f * lw;
++        const float top = yc - 0.5f * total + y[i] - 0.5f * cap[i];
++        for (int w = 0; w < nw; w++) {
++            emit_string(&cx, words[w], x, top, cap[i], tint, wob);
++            x += ww[w] + space * cap[i];
++        }
++    }
++    openpete_native_set_title_glyphs(s_title_buf, cx.n);
++    static int s_logged = 0;
++    if (!s_logged) {
++        s_logged = 1;
++        fprintf(stderr, "[video-title] lines=%d verts=%d dropped=%d\n", nl, cx.n, cx.dropped);
++    }
++}
