@@ -373,6 +373,8 @@ const game_layout_t spyro3_game_layout = {
                                            * falls through for 5 and up; the fallthrough
                                            * links at D_OT_BASE - 8 (:202) instead of a
                                            * depth bucket */
+        .type_table = D_PARTS_TYPES,      /* partsdraw.s:68-69 loads it into $s1, indexed
+                                           * and read as in the other game's routine */
         .stamp_skip = {
             /* class 0: :745 stamps, :744 has shifted SZ3 right by 5, :751-752
              * subtracts 2 and skips a key <= 0; the size byte is subtracted

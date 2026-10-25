@@ -386,6 +386,11 @@ const game_layout_t spyro2_game_layout = {
                                            * through for 5 and up; the fallthrough links at the
                                            * fixed front entry, polybuf scratch - 8
                                            * (partsdraw.s:204-206), instead of a depth bucket */
+        .type_table = D_PARTS_TYPES,      /* partsdraw.s:70-71 loads it into $s1; :95-98,
+                                           * :241-245, :389-393 and :492-496 index it by the
+                                           * selector's low byte; :163-170, :271-278,
+                                           * :424-429 and :583-587 add the frame byte times 8
+                                           * and read the words at +4 and +8 */
         .stamp_skip = {
             /* class 0: :745 stamps, :744 has shifted SZ3 right by 5, :751-753
              * subtracts the size byte (+0xA, :710/:723-724) and 2 and skips a

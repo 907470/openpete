@@ -650,6 +650,11 @@ typedef struct game_layout {
      * instead of at the record's own depth, and whose records pack their
      * position differently; those primitives draw over the world.
      *
+     * `type_table` is the table of per-type frame-list pointers the routine
+     * indexes by the selector's low byte; a billboard's texture words are the
+     * two words at +4 and +8 of entry frame * 8 of its type's list, the frame
+     * the low byte of the halfword at +0x10.
+     *
      * `stamp_skip[c]` is class c's test between the stamp and the append:
      * with `on` set, the routine forms the ordering key (SZ3 >> 5) - size,
      * where SZ3 is the record point's projected depth and size the byte at
@@ -663,6 +668,7 @@ typedef struct game_layout {
         uint32_t pos_off;
         uint32_t drawn_off;
         uint32_t fixed_layer_class;
+        uint32_t type_table;
         struct game_part_stamp_skip {
             uint8_t on;
             uint8_t size_off;

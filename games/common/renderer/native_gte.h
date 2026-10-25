@@ -550,6 +550,18 @@ typedef struct {
                               * the ones the sink stored */
 } ngte_walk_policy;
 
+/** @brief Decodes one primitive packet from its words, as the polybuf walk decodes each packet it stores.
+ *
+ * The code is word 1's high byte and the tag length word 0's. A polygon (code
+ * 0x20-0x3F) is decoded into vertex count, positions, 24-bit colours, UVs,
+ * CLUT, tpage and flags; any other code carries only its code, tag length and
+ * raw words. Words past `words` read zero.
+ * @param w The packet's words, tag first; at least two.
+ * @param words How many of `w` the packet holds, capped at NGTE_PRIM_RAW_MAX.
+ * @param raw_max The raw words the consumer reads (stored in nraw, capped by `words`).
+ * @param t Receives the decoded primitive. */
+void ngte_prim_decode(const uint32_t* w, int words, int raw_max, ngte_prim* t);
+
 /** @brief Walks the polybuf interval [start, end) primitive by primitive, decoding each for a sink.
  *
  * Each step advances (tag length + 1) * 4 bytes. The walk ends at `end`, after

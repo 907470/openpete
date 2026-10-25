@@ -595,6 +595,41 @@ static uint32_t part_sxy(const ngte_rtps_out* o) {
     return (uint32_t)(uint16_t)o->sx | ((uint32_t)(uint16_t)o->sy << 16);
 }
 
+/** @brief RTPS of a PART_SPIN_CLASS record's four corners under `g`, as the routine projects them.
+ *
+ * The size byte times the sine-table entries at the angle byte and at angle +
+ * 64, shifted right by 11, displace the first GTE component (camera Y - Y) by
+ * -a1, a0, -a0, a1 and the third (X - camera X) by a0, a1, -a1, -a0 (Spyro 2
+ * partsdraw.s:227-251 form a1 and a0, :252-270 the corners); the first two
+ * components are one packed 32-bit add (:235-237, :253-254). RTPT projects
+ * corners 0-2 and RTPS corner 3 (:269, :287).
+ * @param cpu Reads the sine table.
+ * @param v The tick's view; supplies the camera RAM position, offsets and H.
+ * @param g The modelled GTE state.
+ * @param w0 The record's first position word.
+ * @param w1 The record's second position word (Z low, size and angle bytes high).
+ * @param c Receives the four corners' GTE output. */
+static void part_spin_rtps(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                           uint32_t w0, uint32_t w1, ngte_rtps_out c[4]) {
+    const uint32_t tbl = game_layout.sin_table;
+    const int32_t cx = (int32_t)v->cam_ram[0] >> 2;
+    const int32_t cy = (int32_t)v->cam_ram[1] >> 2;
+    const int32_t cz = (int32_t)v->cam_ram[2] >> 2;
+    const uint32_t size = (w1 >> 16) & 0xFFu;
+    const uint32_t ia = (w1 >> 23) & 0x1FEu;
+    const int sn = (int16_t)cpu->read_half(tbl + ia), cs = (int16_t)cpu->read_half(tbl + ia + 0x80u);
+    const int a1 = ((int)size * sn) >> 11, a0 = ((int)size * cs) >> 11;
+    const int32_t vz = (int32_t)(w0 & 0xFFFFu) - cx;
+    const int32_t vx = cy - (int32_t)(w0 >> 16);
+    const uint32_t vy = (uint32_t)(cz - (int32_t)(w1 & 0xFFFFu)) << 16;
+    const int dxy[4] = { -a1, a0, -a0, a1 }, dz[4] = { a0, a1, -a1, -a0 };
+    for (int k = 0; k < 4; k++) {
+        const uint32_t p = (uint32_t)(vx + dxy[k]) + vy;
+        ngte_rtps_int(g->R, g->tr, (int16_t)(p & 0xFFFFu), (int16_t)(p >> 16),
+                      (int16_t)(vz + dz[k]), v->ofx, v->ofy, (int)v->H_canon, &c[k]);
+    }
+}
+
 /** @brief Re-runs a paired record's vertices through the routine's integer path under the modelled GTE state.
  *
  * Spyro 2 partsdraw.s: class 0 stores SXY and SXY + 1 (:746-748); class 1
@@ -652,23 +687,9 @@ static int part_int_verts(CPUState* cpu, const ngte_view* v, const part_gte* g,
         return 4;
     }
     case PART_SPIN_CLASS: {
-        const int32_t cx = (int32_t)v->cam_ram[0] >> 2;
-        const int32_t cy = (int32_t)v->cam_ram[1] >> 2;
-        const int32_t cz = (int32_t)v->cam_ram[2] >> 2;
-        const uint32_t ia = (it->w1 >> 23) & 0x1FEu;
-        const int sn = (int16_t)cpu->read_half(tbl + ia), cs = (int16_t)cpu->read_half(tbl + ia + 0x80u);
-        const int a1 = ((int)size * sn) >> 11, a0 = ((int)size * cs) >> 11;
-        const int32_t vz = (int32_t)(it->w0 & 0xFFFFu) - cx;
-        const int32_t vx = cy - (int32_t)(it->w0 >> 16);
-        const uint32_t vy = (uint32_t)(cz - (int32_t)(it->w1 & 0xFFFFu)) << 16;
-        const int dxy[4] = { -a1, a0, -a0, a1 }, dz[4] = { a0, a1, -a1, -a0 };
-        for (int k = 0; k < 4; k++) {
-            const uint32_t p = (uint32_t)(vx + dxy[k]) + vy;
-            ngte_rtps_out c;
-            ngte_rtps_int(g->R, g->tr, (int16_t)(p & 0xFFFFu), (int16_t)(p >> 16),
-                          (int16_t)(vz + dz[k]), v->ofx, v->ofy, (int)v->H_canon, &c);
-            xy[k] = part_sxy(&c);
-        }
+        ngte_rtps_out c[4];
+        part_spin_rtps(cpu, v, g, it->w0, it->w1, c);
+        for (int k = 0; k < 4; k++) xy[k] = part_sxy(&c[k]);
         return 4;
     }
     default:
@@ -708,110 +729,494 @@ static void part_pair_audit(CPUState* cpu, const ngte_view* v, const part_gte* g
                 nv ? xy[0] : 0u);
 }
 
-/** @brief Pairs each captured primitive with the record that appended it and stores the record's view-Z as a scene depth.
+/* ---- the routine's per-record verdict ---------------------------------------
+ *
+ * The routine tests a record's projection against a screen window on the
+ * packed SXY word (SY << 16 | SX & 0xFFFF), whose bounds it loads at entry
+ * (Spyro 2 partsdraw.s:74-76): the word must exceed 0xD0000 and stay below
+ * 0xE40000, and SX << 16 must be positive and below 0x2000000, so SX lies in
+ * (0, 512). Classes 0-3 test the record point (class 1 its first point,
+ * :669-680; class 0 :733-743; class 2 :509-521; class 3 :403-415); class 4
+ * passes when any corner passes each bound (:319-357). In front of the
+ * window each class tests SZ3 (classes 0 and 1: nonzero, classes 2 and 3: at
+ * least 0x40, all below 0x2000; class 4: the four corners' SZ summed in
+ * [0x100, 0x8000), :304-310). Classes 1 and 4 test their ordering key before
+ * the stamp, class 1 (SZ3 >> 5) - byte +0x17 - 2 > 0 (:681, :687-690), class
+ * 4 (sum >> 7) - byte +0x11 >= 0 (:271-273, :311-313); classes 0, 2 and 3
+ * test it after the stamp (game_layout.particles.stamp_skip). The x bounds
+ * are parameters: (0, 512) reproduces the routine, a wider pair asks what a
+ * view wider than 4:3 shows. The Spyro 3 routine is the same code. */
+
+#define PART_WIN_TOP    0xD0000    /* the packed word must exceed it */
+#define PART_WIN_BOTTOM 0xE40000   /* the packed word must stay below it */
+#define PART_WIN_XLO    0          /* SX must exceed it */
+#define PART_WIN_XHI    512        /* SX must stay below it */
+/* x bounds no saturated SX (-0x400..0x3FF) reaches: the window minus its x test. */
+#define PART_WIN_FREE_LO (-0x8000)
+#define PART_WIN_FREE_HI 0x8000
+
+enum { PART_V_STAMP = 1, PART_V_APPEND = 2 };
+
+/** @brief Whether one projected point passes the routine's screen window with SX bounded by (xlo, xhi).
+ *
+ * @param o The point's GTE output.
+ * @param xlo SX must exceed it.
+ * @param xhi SX must stay below it.
+ * @return 1 on a pass. */
+static int part_win_point(const ngte_rtps_out* o, int xlo, int xhi) {
+    const int32_t w = (int32_t)part_sxy(o);
+    return w > PART_WIN_TOP && w < PART_WIN_BOTTOM && o->sx > xlo && o->sx < xhi;
+}
+
+/** @brief Whether a PART_SPIN_CLASS record's corners pass the routine's window: each bound by at least one corner.
+ *
+ * @param c The four corners' GTE output.
+ * @param xlo SX must exceed it for some corner.
+ * @param xhi SX must stay below it for some corner.
+ * @return 1 on a pass. */
+static int part_win_corners(const ngte_rtps_out c[4], int xlo, int xhi) {
+    int top = 0, bottom = 0, left = 0, right = 0;
+    for (int k = 0; k < 4; k++) {
+        const int32_t w = (int32_t)part_sxy(&c[k]);
+        top |= w > PART_WIN_TOP;
+        bottom |= w < PART_WIN_BOTTOM;
+        left |= c[k].sx > xlo;
+        right |= c[k].sx < xhi;
+    }
+    return top && bottom && left && right;
+}
+
+/** @brief The routine's verdict on a PART_SPIN_CLASS record: its depth sum, its key and its corner window.
+ *
+ * @param cpu Reads the record and the sine table.
+ * @param v The tick's view.
+ * @param g The GTE state the routine holds at the record.
+ * @param rec The record's guest address.
+ * @param xlo The window's left SX bound.
+ * @param xhi The window's right SX bound.
+ * @return PART_V_STAMP | PART_V_APPEND on a pass, else 0. */
+static int part_verdict_spin(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                             uint32_t rec, int xlo, int xhi) {
+    const uint32_t pos = game_layout.particles.pos_off;
+    ngte_rtps_out c[4];
+    part_spin_rtps(cpu, v, g, cpu->read_word(rec + pos), cpu->read_word(rec + pos + 4u), c);
+    const int32_t sum = c[0].sz3 + c[1].sz3 + c[2].sz3 + c[3].sz3;
+    if (sum < 0x100 || sum >= 0x8000) return 0;
+    if ((sum >> 7) - (int32_t)cpu->read_byte(rec + 0x11u) < 0) return 0;
+    return part_win_corners(c, xlo, xhi) ? (PART_V_STAMP | PART_V_APPEND) : 0;
+}
+
+/** @brief The routine's verdict on a record of a class below fixed_layer_class, with SX bounded by (xlo, xhi).
+ *
+ * Reproduces the class's depth test, screen window and key tests (see the
+ * section comment) on the integer RTPS of the record point under `g`, the GTE
+ * state the routine holds at the record (part_gte). At (0, 512) PART_V_STAMP
+ * is the stamp the routine writes and PART_V_APPEND whether it appends.
+ * @param cpu Reads the record and the sine table.
+ * @param v The tick's view.
+ * @param g The GTE state the routine holds at the record.
+ * @param rec The record's guest address.
+ * @param cls The record's class.
+ * @param xlo The window's left SX bound.
+ * @param xhi The window's right SX bound.
+ * @return PART_V_STAMP and PART_V_APPEND bits; 0 when the record fails before the stamp. */
+static int part_record_verdict(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                               uint32_t rec, int cls, int xlo, int xhi) {
+    if (cls == PART_SPIN_CLASS) return part_verdict_spin(cpu, v, g, rec, xlo, xhi);
+    const uint32_t pos = game_layout.particles.pos_off;
+    const uint32_t w0 = cpu->read_word(rec + pos), w1 = cpu->read_word(rec + pos + 4u);
+    ngte_rtps_out o;
+    part_gte_rtps(g, v, (int32_t)(w0 & 0xFFFFu), (int32_t)(w0 >> 16), (int32_t)(w1 & 0xFFFFu), &o);
+    const int32_t zmin = (cls == PART_ROT_CLASS || cls == PART_RECT_CLASS) ? 0x40 : 1;
+    if (o.sz3 < zmin || o.sz3 >= 0x2000 || !part_win_point(&o, xlo, xhi)) return 0;
+    if (cls == PART_TWO_POINT_CLASS)
+        return (o.sz3 >> 5) - (int32_t)cpu->read_byte(rec + 0x17u) - 2 > 0
+                   ? (PART_V_STAMP | PART_V_APPEND) : 0;
+    return part_stamp_skipped(cpu, rec, cls, &o) ? PART_V_STAMP : (PART_V_STAMP | PART_V_APPEND);
+}
+
+/* ---- the widened view's particles -------------------------------------------
+ *
+ * The routine's window is the 4:3 frame, so in a view wider than 4:3 (Hor+
+ * factor F above 1) a record whose primitive lies in a revealed side band is
+ * neither stamped nor appended. Such a record, one the routine's verdict
+ * passes once its x test is dropped and fails at (0, 512), is a candidate: it
+ * becomes a synthetic item built from the record and the type table as the
+ * routine builds its primitive, appended after the captured items and fed and
+ * rebased as a captured one. It is admitted unless every built vertex lies
+ * left of the view's screen-X bound xlo or every one at or right of xhi. */
+
+/* OPENPETE_PART_WIDE_CENSUS=LO-HI: per walk inside the VBL range, `cand`
+ * candidates, `admit` appended, `cull` built and outside the view, `mism`
+ * records whose verdict at (0, 512) disagrees with the guest's stamp, `recs`
+ * records the verdict covered, `syn` paired primitives rebuilt by
+ * part_synth_item (per class in the total) and `syn_bad` the rebuilds whose
+ * words differ from the captured primitive's; totals print at exit. A walk after the
+ * routine stopped at the polybuf's end counts no mismatch (the records it
+ * never reached keep the previous call's stamp) and reveals nothing. */
+typedef struct { unsigned long cand, admit, cull, mism, recs, exh, syn, syn_bad, syn_c[8]; } part_wide_tally;
+static part_wide_tally s_wide, s_wide_total;
+static int s_wide_census_walk;   /* the current walk runs the census */
+static int s_syn_n;   /* synthetic items appended past s_item_n by the current walk */
+
+/** @brief Fills a paired or synthetic item's built vertices, projected points, view-Z and depth from its record words.
+ *
+ * @param cpu Reads the sine table.
+ * @param v The tick's view.
+ * @param it The item; cls and the position words set. */
+static void part_item_fill(CPUState* cpu, const ngte_view* v, part_item* it) {
+    part_state st;
+    part_state_tick(it, &st);
+    it->nb = (uint8_t)part_build(cpu, v, it, &st, it->bx, it->by);
+    double p[3];
+    ngte_proj o;
+    part_rec_point(it, 0, NULL, p);
+    part_project(v, p, &o);
+    it->psx = o.sx;
+    it->psy = o.sy;
+    it->vz  = o.m3;
+    it->depth = openpete_native_scene_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
+    if (it->cls != PART_TWO_POINT_CLASS) return;
+    ngte_proj o2;
+    part_rec_point(it, 1, NULL, p);
+    part_project(v, p, &o2);
+    it->psx2 = o2.sx;
+    it->psy2 = o2.sy;
+}
+
+/** @brief Writes the words of the POLY_FT4 a billboard class appends, its corners given.
+ *
+ * Word 1 is the record's colour word (+0xC). e4 and e8 are the words at +4 and
+ * +8 of the type's frame entry; the routine stores e4 as UV0 and CLUT, e8 as
+ * UV3 and the page with e4's V, and (e4 & 0xFF) | (e8 & 0xFF00) as UV2 (Spyro
+ * 2 partsdraw.s:449-459, :600-611).
+ * @param col The record's colour word.
+ * @param e4 The frame entry's word at +4.
+ * @param e8 The frame entry's word at +8.
+ * @param xy The four packed corner words.
+ * @param w Receives the ten words. */
+static void part_ft4_words(uint32_t col, uint32_t e4, uint32_t e8, const uint32_t xy[4],
+                           uint32_t w[10]) {
+    w[0] = 0x09000000u;
+    w[1] = col;
+    w[2] = xy[0]; w[3] = e4;
+    w[4] = xy[1]; w[5] = (e8 & ~0xFF00u) | (e4 & 0xFF00u);
+    w[6] = xy[2]; w[7] = (e4 & 0xFFu) | (e8 & 0xFF00u);
+    w[8] = xy[3]; w[9] = e8;
+}
+
+/** @brief Builds the primitive the routine would append for a record as a synthetic item.
+ *
+ * The vertices come from part_int_verts under `g`; a line class takes its
+ * colour words from the record (class 0: +0xC, a LINE_F2 of four words,
+ * partsdraw.s:726-750; class 1: +0x10 and +0x14, a LINE_G2 of five,
+ * :668-692); a billboard class takes its texture words from the type table
+ * entry frame * 8 of its type's list (part_ft4_words). The item then carries
+ * the record as a paired one does (part_item_fill).
+ * @param cpu Reads the record, the type table and the sine table.
+ * @param v The tick's view.
+ * @param g The GTE state the routine holds at the record.
+ * @param rec The record's guest address.
+ * @param cls The record's class, below fixed_layer_class.
+ * @param it Receives the item.
+ * @return 1 when built, 0 when the type has no frame list. */
+static int part_synth_item(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                           uint32_t rec, int cls, part_item* it) {
+    const uint32_t pos = game_layout.particles.pos_off;
+    memset(it, 0, sizeof *it);
+    it->cls = cls;
+    it->rec = rec;
+    it->w0 = cpu->read_word(rec + pos);
+    it->w1 = cpu->read_word(rec + pos + 4u);
+    it->w2 = cpu->read_word(rec + pos + 8u);
+    ngte_rtps_out o;
+    part_gte_rtps(g, v, (int32_t)(it->w0 & 0xFFFFu), (int32_t)(it->w0 >> 16),
+                  (int32_t)(it->w1 & 0xFFFFu), &o);
+    uint32_t xy[4], w[10];
+    const int nv = part_int_verts(cpu, v, g, it, &o, xy);
+    int words = 10;
+    if (cls == PART_DOT_CLASS) {
+        w[0] = 0x03000000u; w[1] = cpu->read_word(rec + 0x0Cu); w[2] = xy[0]; w[3] = xy[1];
+        words = 4;
+    } else if (cls == PART_TWO_POINT_CLASS) {
+        w[0] = 0x04000000u; w[1] = cpu->read_word(rec + 0x10u); w[2] = xy[0];
+        w[3] = cpu->read_word(rec + 0x14u); w[4] = xy[1];
+        words = 5;
+    } else {
+        const uint32_t sel = cpu->read_half(rec + game_layout.particles.sel_off);
+        const uint32_t list = game_layout.particles.type_table
+            ? cpu->read_word(game_layout.particles.type_table + (sel & 0xFFu) * 4u) : 0u;
+        if (list < 0x80000000u || list >= 0x80800000u || nv != 4) return 0;
+        const uint32_t e = list + (uint32_t)cpu->read_byte(rec + 0x10u) * 8u;
+        part_ft4_words(cpu->read_word(rec + 0x0Cu), cpu->read_word(e + 4u),
+                       cpu->read_word(e + 8u), xy, w);
+    }
+    ngte_prim_decode(w, words, 10, &it->p);
+    it->owner = player_hide_particle_owner(cpu, rec);
+    part_item_fill(cpu, v, it);
+    return 1;
+}
+
+/** @brief Whether some built vertex of a synthetic item lies inside the view's screen-X bounds.
+ *
+ * @param it The item; bx and nb filled.
+ * @param v The view; supplies xlo and xhi.
+ * @return 1 unless every vertex lies left of xlo or every one at or right of xhi. */
+static int part_in_view(const part_item* it, const ngte_view* v) {
+    if (it->nb == 0) return 0;
+    float lo = it->bx[0], hi = it->bx[0];
+    for (int k = 1; k < it->nb; k++) {
+        if (it->bx[k] < lo) lo = it->bx[k];
+        if (it->bx[k] > hi) hi = it->bx[k];
+    }
+    return !(hi < v->xlo || lo >= v->xhi);
+}
+
+/** @brief Appends the synthetic item of an unstamped record a widened view shows.
+ *
+ * A candidate is a record the verdict fails at (0, 512) and passes, appending,
+ * with the x test dropped. It is built by part_synth_item into the slot past
+ * the captured items and the earlier synthetic ones, and kept when
+ * part_in_view admits it. Tallies s_wide.
+ * @param cpu Reads the record and the tables.
+ * @param v The tick's view.
+ * @param g The GTE state the routine holds at the record.
+ * @param rec The record's guest address.
+ * @param cls The record's class, below fixed_layer_class. */
+static void part_reveal_record(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                               uint32_t rec, int cls) {
+    if (part_record_verdict(cpu, v, g, rec, cls, PART_WIN_XLO, PART_WIN_XHI)) return;
+    if (!(part_record_verdict(cpu, v, g, rec, cls, PART_WIN_FREE_LO, PART_WIN_FREE_HI) & PART_V_APPEND))
+        return;
+    s_wide.cand++;
+    const int slot = s_item_n + s_syn_n;
+    if (slot >= PART_MAX_PRIMS) return;
+    memset(&s_reb[slot], 0, sizeof s_reb[0]);
+    if (!part_synth_item(cpu, v, g, rec, cls, &s_item[slot]) || !part_in_view(&s_item[slot], v)) {
+        s_wide.cull++;
+        return;
+    }
+    s_syn_n++;
+    s_wide.admit++;
+}
+
+/* ---- the pool walk ---------------------------------------------------------- */
+
+/* The routine's walk: the next record and the GTE state the routine holds
+ * when it reaches it. */
+typedef struct {
+    uint32_t rec;
+    uint32_t stride;
+    int      left;     /* records the walk may still visit */
+    part_gte g;
+} part_walk;
+
+/** @brief Starts a walk at the pool base under the camera rotation and a zero translation (partsdraw.s:30-42).
+ *
+ * @param cpu Reads the pool pointer.
+ * @param v The tick's view; supplies the camera matrix.
+ * @param w Receives the walk.
+ * @return 0 when the pool pointer is outside RAM. */
+static int part_walk_begin(CPUState* cpu, const ngte_view* v, part_walk* w) {
+    w->rec = cpu->read_word(game_layout.particles.array_ptr);
+    if (w->rec < 0x80000000u || w->rec >= 0x80800000u) return 0;
+    w->stride = game_layout.particles.rec_stride;
+    w->left = (int)PART_SLOTS_MAX;
+    memcpy(w->g.R, v->cam_M, sizeof w->g.R);
+    w->g.tr[0] = w->g.tr[1] = w->g.tr[2] = 0;
+    return 1;
+}
+
+/** @brief Steps the walk to the next active record, skipping inactive slots, as the routine dispatches.
+ *
+ * @param cpu Reads the selectors.
+ * @param w The walk.
+ * @param rec Receives the record's guest address.
+ * @param cls Receives its class.
+ * @return 0 at the pool's end sentinel or after PART_SLOTS_MAX records. */
+static int part_walk_next(CPUState* cpu, part_walk* w, uint32_t* rec, int* cls) {
+    while (w->left-- > 0) {
+        const uint32_t r = w->rec;
+        w->rec += w->stride;
+        const int sel = (int)(int16_t)(uint16_t)cpu->read_half(r + game_layout.particles.sel_off);
+        if (sel < 0) {
+            if ((sel >> PART_CLASS_SHIFT) == PART_POOL_END) return 0;
+            continue;                                    /* inactive slot */
+        }
+        *rec = r;
+        *cls = (sel >> PART_CLASS_SHIFT) & PART_CLASS_MASK;
+        return 1;
+    }
+    return 0;
+}
+
+/** @brief At OPENPETE_PART_VERTEX_DBG, counts a carried record whose skip verdict under the camera state differs; at 2 or more prints it.
+ *
+ * @param cpu Reads the record.
+ * @param v The tick's view.
+ * @param g The modelled state.
+ * @param it The item holding the record's position words.
+ * @param rec The record's guest address.
+ * @param cls The record's class.
+ * @param skip The skip verdict under `g`.
+ * @param go The record point's RTPS under `g`. */
+static void part_carry_dbg(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                           const part_item* it, uint32_t rec, int cls, int skip,
+                           const ngte_rtps_out* go) {
+    if (s_vdbg <= 0 || !part_gte_carried(g, v)) return;
+    part_gte cam;
+    memcpy(cam.R, v->cam_M, sizeof cam.R);
+    cam.tr[0] = cam.tr[1] = cam.tr[2] = 0;
+    ngte_rtps_out co;
+    part_gte_rtps(&cam, v, (int32_t)(it->w0 & 0xFFFFu), (int32_t)(it->w0 >> 16),
+                  (int32_t)(it->w1 & 0xFFFFu), &co);
+    const int cskip = part_stamp_skipped(cpu, rec, cls, &co);
+    s_gte_flips += (unsigned long)(cskip != skip);
+    if (s_vdbg >= 2)
+        fprintf(stderr, "[part-carry f=%u rec=%08X c=%d skip=%d cam_skip=%d sz3=%d cam_sz3=%d]\n",
+                openpete_frame, rec, cls, skip, cskip, go->sz3, co.sz3);
+}
+
+/** @brief Census check of part_synth_item: rebuilds a paired record's primitive and compares its words with the captured ones.
+ *
+ * Every word after the tag is compared, and the tag's length byte; the tag's
+ * link is the ordering table's. Tallies s_wide.syn and s_wide.syn_bad and
+ * prints a line per difference.
+ * @param cpu Reads the record and the tables.
+ * @param v The tick's view.
+ * @param g The GTE state the routine held at the record.
+ * @param it The paired item. */
+static void part_synth_check(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                             const part_item* it) {
+    part_item syn;
+    s_wide.syn++;
+    s_wide.syn_c[it->cls & 7]++;
+    int bad = !part_synth_item(cpu, v, g, it->rec, it->cls, &syn) || syn.p.taglen != it->p.taglen;
+    for (int k = 1; !bad && k <= (int)it->p.taglen && k < NGTE_PRIM_RAW_MAX; k++)
+        bad = syn.p.raw[k] != it->p.raw[k];
+    if (!bad) return;
+    s_wide.syn_bad++;
+    fprintf(stderr, "[part-wide-syn f=%u rec=%08X c=%d w1=%08X/%08X w2=%08X/%08X w3=%08X/%08X]\n",
+            openpete_frame, it->rec, it->cls, syn.p.raw[1], it->p.raw[1], syn.p.raw[2],
+            it->p.raw[2], syn.p.raw[3], it->p.raw[3]);
+}
+
+/** @brief Pairs a stamped record with the captured primitive `it` and advances the modelled GTE state past it.
+ *
+ * The record emitted a primitive unless it fails its class's test between the
+ * stamp and the append (part_stamp_skipped, on the record point's RTPS under
+ * `g`). A paired item keeps the record's position words, class, owner, built
+ * vertices, projected points and view-Z (part_item_fill). A stamped record
+ * past the last captured primitive (`it` NULL) advances the state only.
+ * @param cpu Reads the record.
+ * @param v The tick's view.
+ * @param g The modelled state, advanced past the record.
+ * @param rec The record's guest address.
+ * @param cls The record's class, below fixed_layer_class.
+ * @param it The next captured item, or NULL.
+ * @return 1 when `it` was paired. */
+static int part_pair_record(CPUState* cpu, const ngte_view* v, part_gte* g,
+                            uint32_t rec, int cls, part_item* it) {
+    part_item tmp;
+    part_item* t = it ? it : &tmp;
+    t->w0 = cpu->read_word(rec + game_layout.particles.pos_off);
+    t->w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
+    t->w2 = cpu->read_word(rec + game_layout.particles.pos_off + 8u);
+    ngte_rtps_out go;
+    part_gte_rtps(g, v, (int32_t)(t->w0 & 0xFFFFu), (int32_t)(t->w0 >> 16),
+                  (int32_t)(t->w1 & 0xFFFFu), &go);
+    const int carried = part_gte_carried(g, v);
+    s_gte_carried += (unsigned long)carried;
+    s_gte_rot_only += (unsigned long)(carried && !g->tr[0] && !g->tr[1] && !g->tr[2]);
+    const int skip = part_stamp_skipped(cpu, rec, cls, &go);
+    part_carry_dbg(cpu, v, g, t, rec, cls, skip, &go);
+    if (skip) s_stamp_skipped++;
+    if (skip || !it) {
+        part_gte_step(g, cls, skip, &go);
+        return 0;
+    }
+    it->cls = cls;
+    it->rec = rec;
+    it->owner = player_hide_particle_owner(cpu, rec);
+    part_pair_audit(cpu, v, g, it, &go);
+    if (s_wide_census_walk) part_synth_check(cpu, v, g, it);
+    part_gte_step(g, cls, 0, &go);
+    part_item_fill(cpu, v, it);
+    return 1;
+}
+
+/** @brief Adds one record to the widened-view census: its verdict at (0, 512) against the guest's stamp.
+ *
+ * @param cpu Reads the record.
+ * @param v The tick's view.
+ * @param g The GTE state the routine holds at the record.
+ * @param rec The record's guest address.
+ * @param cls The record's class.
+ * @param stamped The guest's stamp byte, nonzero when set. */
+static void part_wide_census_record(CPUState* cpu, const ngte_view* v, const part_gte* g,
+                                    uint32_t rec, int cls, int stamped) {
+    const int vd = part_record_verdict(cpu, v, g, rec, cls, PART_WIN_XLO, PART_WIN_XHI);
+    s_wide.recs++;
+    if (((vd & PART_V_STAMP) != 0) != (stamped != 0)) {
+        s_wide.mism++;
+        fprintf(stderr, "[part-wide-mism f=%u rec=%08X c=%d stamp=%d verdict=%d]\n",
+                openpete_frame, rec, cls, stamped, vd);
+    }
+}
+
+/** @brief Walks the pool as the routine does: pairs each captured primitive with the record that appended it, and in a widened view appends the records its side bands show.
  *
  * The routine appends in pool order and at most one primitive per record, so
- * walking the pool and the captured list together aligns them. A record
- * emitted a primitive when its stamp byte is set and it passes its class's
- * test between the stamp and the append (part_stamp_skipped, on the record
- * point's RTPS under the GTE state the routine carries to that record,
- * part_gte), or when its
- * class links at the fixed front bucket, where the routine stamps nothing and
- * always appends; the latter take the front depth and keep no record. A paired record keeps its
- * position words, its projected point (and a two-point class's second point)
- * and its view-Z. Every primitive matched to a record, fixed-bucket ones
- * included, takes that record's player_hide_particle_owner. The walk ends at the pool's end sentinel or the last
- * captured primitive, and does nothing when the pool pointer is outside RAM.
+ * walking the pool and the captured list together aligns them. A stamped
+ * record goes to part_pair_record; a record of class fixed_layer_class and
+ * up links at the fixed front bucket, where the routine stamps nothing and
+ * always appends, so it takes the front depth and keeps no record, only its
+ * owner. Without `reveal` or `census` the walk ends at the last captured
+ * primitive, as the pairing needs nothing past it; with either it runs to the
+ * pool's end: an unstamped record goes to part_reveal_record under `reveal`,
+ * and every record below fixed_layer_class to part_wide_census_record under
+ * `census`. Synthetic items are appended past the captured ones and counted
+ * into s_item_n at the end. Does nothing when the pool pointer is outside RAM.
  * @param cpu Reads the pool.
- * @param v The tick's view. */
-static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
-    const uint32_t base = cpu->read_word(game_layout.particles.array_ptr);
-    if (base < 0x80000000u || base >= 0x80800000u) return;
-    const uint32_t stride = game_layout.particles.rec_stride;
+ * @param v The tick's view.
+ * @param reveal Nonzero appends the widened view's records.
+ * @param census Nonzero runs the census. */
+static void part_pair_depths(CPUState* cpu, const ngte_view* v, int reveal, int census) {
+    s_stamp_skipped = 0;
+    s_syn_n = 0;
+    part_walk w;
+    if (!part_walk_begin(cpu, v, &w)) return;
     /* The fixed front bucket is nearer than bucket 0, which the near guard in
      * openpete_native_scene_viewz already maps to the smallest depth the
      * pipeline carries. */
     const float front = openpete_native_scene_viewz(openpete_worldvz_full(1.0f));
-
+    const int full = reveal || census;
+    s_wide_census_walk = census;
     int i = 0;
-    s_stamp_skipped = 0;
-    part_gte g;
-    memcpy(g.R, v->cam_M, sizeof g.R);
-    g.tr[0] = g.tr[1] = g.tr[2] = 0;
-    for (uint32_t rec = base; i < s_item_n; rec += stride) {
-        const int sel = (int)(int16_t)(uint16_t)cpu->read_half(rec + game_layout.particles.sel_off);
-        if (sel < 0) {
-            if ((sel >> PART_CLASS_SHIFT) == PART_POOL_END) break;
-            continue;                                    /* inactive slot */
-        }
-        const int cls = (sel >> PART_CLASS_SHIFT) & PART_CLASS_MASK;
+    uint32_t rec;
+    int cls;
+    while ((i < s_item_n || full) && part_walk_next(cpu, &w, &rec, &cls)) {
         if ((uint32_t)cls >= game_layout.particles.fixed_layer_class) {
-            part_gte_step(&g, cls, 0, NULL);
+            part_gte_step(&w.g, cls, 0, NULL);
+            if (i >= s_item_n) continue;
             s_item[i].cls = cls;
             s_item[i].owner = player_hide_particle_owner(cpu, rec);
             s_item[i++].depth = front;
             continue;
         }
-        if (cpu->read_byte(rec + game_layout.particles.drawn_off) == 0) continue;
-
-        part_item* it = &s_item[i];
-        it->w0 = cpu->read_word(rec + game_layout.particles.pos_off);
-        it->w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
-        it->w2 = cpu->read_word(rec + game_layout.particles.pos_off + 8u);
-        ngte_rtps_out go;
-        part_gte_rtps(&g, v, (int32_t)(it->w0 & 0xFFFFu), (int32_t)(it->w0 >> 16),
-                      (int32_t)(it->w1 & 0xFFFFu), &go);
-        s_gte_carried += (unsigned long)part_gte_carried(&g, v);
-        s_gte_rot_only += (unsigned long)(part_gte_carried(&g, v) && !g.tr[0] && !g.tr[1] && !g.tr[2]);
-        const int skip = part_stamp_skipped(cpu, rec, cls, &go);
-        if (s_vdbg > 0 && part_gte_carried(&g, v)) {
-            part_gte cam;
-            memcpy(cam.R, v->cam_M, sizeof cam.R);
-            cam.tr[0] = cam.tr[1] = cam.tr[2] = 0;
-            ngte_rtps_out co;
-            part_gte_rtps(&cam, v, (int32_t)(it->w0 & 0xFFFFu), (int32_t)(it->w0 >> 16),
-                          (int32_t)(it->w1 & 0xFFFFu), &co);
-            const int cskip = part_stamp_skipped(cpu, rec, cls, &co);
-            s_gte_flips += (unsigned long)(cskip != skip);
-            if (s_vdbg >= 2)
-                fprintf(stderr, "[part-carry f=%u rec=%08X c=%d skip=%d cam_skip=%d sz3=%d cam_sz3=%d]\n",
-                        openpete_frame, rec, cls, skip, cskip, go.sz3, co.sz3);
-        }
-        if (skip) {
-            s_stamp_skipped++;
-            part_gte_step(&g, cls, 1, &go);
+        const int stamped = cpu->read_byte(rec + game_layout.particles.drawn_off) != 0;
+        if (census) part_wide_census_record(cpu, v, &w.g, rec, cls, stamped);
+        if (!stamped) {
+            if (reveal) part_reveal_record(cpu, v, &w.g, rec, cls);
             continue;
         }
-        it->cls = cls;
-        it->rec = rec;
-        it->owner = player_hide_particle_owner(cpu, rec);
-        part_pair_audit(cpu, v, &g, it, &go);
-        part_gte_step(&g, cls, 0, &go);
-        part_state st;
-        part_state_tick(it, &st);
-        it->nb = (uint8_t)part_build(cpu, v, it, &st, it->bx, it->by);
-        double p[3];
-        ngte_proj o;
-        part_rec_point(it, 0, NULL, p);
-        part_project(v, p, &o);
-        it->psx = o.sx;
-        it->psy = o.sy;
-        it->vz  = o.m3;
-        it->depth =
-            openpete_native_scene_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
-        if (cls == PART_TWO_POINT_CLASS) {
-            ngte_proj o2;
-            part_rec_point(it, 1, NULL, p);
-            part_project(v, p, &o2);
-            it->psx2 = o2.sx;
-            it->psy2 = o2.sy;
-        }
-        i++;
+        i += part_pair_record(cpu, v, &w.g, rec, cls, i < s_item_n ? &s_item[i] : NULL);
     }
     /* A polybuf that filled mid-pool ends the routine early, so fewer
-     * primitives than stamped records is normal; the loop above simply stops
-     * at the last captured primitive. Any primitive the loop could not reach
-     * keeps the depth 1.0 (the near guard) that part_prim_sink gave it. */
+     * primitives than stamped records is normal. Any primitive the walk could
+     * not reach keeps the depth 1.0 (the near guard) that part_prim_sink gave
+     * it. */
+    s_item_n += s_syn_n;
 }
 
 /** @brief Whether the native particle feed runs; OPENPETE_PARTICLES starting with '0' suppresses it alone.
@@ -1539,14 +1944,104 @@ static const hook_bracket_desc k_bracket = {
     .st = &s_hb,
 };
 
+/** @brief Prints the widened-view census totals to stderr; registered at exit by part_wide_census_on. */
+static void part_wide_total_report(void) {
+    const part_wide_tally* t = &s_wide_total;
+    fprintf(stderr, "[part-wide total] cand=%lu admit=%lu cull=%lu mism=%lu recs=%lu exh=%lu "
+                    "syn=%lu syn_bad=%lu syn_c=%lu/%lu/%lu/%lu/%lu\n",
+            t->cand, t->admit, t->cull, t->mism, t->recs, t->exh, t->syn, t->syn_bad,
+            t->syn_c[0], t->syn_c[1], t->syn_c[2], t->syn_c[3], t->syn_c[4]);
+}
+
+/** @brief Whether the widened-view census covers this VBL; registers the total line at exit on the first covered one.
+ * @return 1 inside the range OPENPETE_PART_WIDE_CENSUS names. */
+static int part_wide_census_on(void) {
+    static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
+    static int registered;
+    if (!env_frame_range_active(&s_range, "OPENPETE_PART_WIDE_CENSUS", openpete_frame)) return 0;
+    if (!registered) { registered = 1; atexit(part_wide_total_report); }
+    return 1;
+}
+
+/** @brief Adds the walk's widened-view tally to the run totals and prints its line.
+ *
+ * @param fed The native feed's emission: the items the set holds after the walk. */
+static void part_wide_census_print(int fed) {
+    s_wide_total.cand += s_wide.cand;
+    s_wide_total.admit += s_wide.admit;
+    s_wide_total.cull += s_wide.cull;
+    s_wide_total.mism += s_wide.mism;
+    s_wide_total.recs += s_wide.recs;
+    s_wide_total.exh += s_wide.exh;
+    s_wide_total.syn += s_wide.syn;
+    s_wide_total.syn_bad += s_wide.syn_bad;
+    for (int c = 0; c < 8; c++) s_wide_total.syn_c[c] += s_wide.syn_c[c];
+    fprintf(stderr, "[part-wide f=%u] cand=%lu admit=%lu cull=%lu mism=%lu recs=%lu exh=%lu items=%d\n",
+            openpete_frame, s_wide.cand, s_wide.admit, s_wide.cull, s_wide.mism, s_wide.recs,
+            s_wide.exh, fed);
+}
+
+/** @brief Whether the routine may have stopped before the pool's end because the polybuf filled.
+ *
+ * The routine ends its walk once the cursor comes within 0x400 bytes of the
+ * polybuf's end (Spyro 2 partsdraw.s:54-56, :67, :93-94), so the records it
+ * never reached keep the previous call's stamp.
+ * @param cpu Reads the polybuf's end word.
+ * @param endp The cursor the routine left.
+ * @return 1 when the cursor reached that limit. */
+static int part_polybuf_exhausted(CPUState* cpu, uint32_t endp) {
+    if (!game_layout.polybuf.end) return 0;
+    const uint32_t limit = cpu->read_word(game_layout.polybuf.end) - 0x400u;
+    return (int32_t)(limit - endp) <= 0;
+}
+
+/** @brief Captures the routine's primitives, pairs them, appends the widened view's records, and feeds the set.
+ *
+ * Captures the polybuf interval (an empty one resets the set), builds the
+ * tick's view and walks the pool (part_pair_depths); in a view whose Hor+
+ * factor is above 1 the walk appends the records the side bands show, unless
+ * the routine stopped at the polybuf's end. The census lines print, and the
+ * native scene is fed when it is live and RP_PARTICLES is enabled. A set the
+ * routine appended nothing for marks RP_PARTICLES drawn (render_path_mark_drawn),
+ * since only a polybuf interval or the mark makes the sub-tick re-extract feed
+ * the set.
+ * @param cpu Reads guest memory, writes none.
+ * @param startp The interval's start.
+ * @param endp The interval's end.
+ * @param feed Nonzero when the bracket feeds the native scene. */
+static void part_draw_capture(CPUState* cpu, uint32_t startp, uint32_t endp, int feed) {
+    part_capture_prims(cpu, startp, endp);
+    const uint32_t fed_before = s_fed_tris;
+    ngte_view view;
+    ngte_view_build(cpu, &view);
+    part_dbg_latch();
+    if (s_reb_dbg >= 2) part_view_dbg("tick", &view);
+    const int exhausted = part_polybuf_exhausted(cpu, endp);
+    const int census = part_wide_census_on();
+    memset(&s_wide, 0, sizeof s_wide);
+    s_wide.exh = (unsigned long)exhausted;
+    part_pair_depths(cpu, &view, view.F > 1.0f && !exhausted, census && !exhausted);
+    if (census) part_wide_census_print(s_item_n);
+    if (part_vdbg_on())
+        for (int i = 0; i < s_item_n; i++) part_vertex_calib(&s_item[i]);
+    part_extent_census(-1.0);
+    render_material_level_push(cpu);
+    s_feed_alpha = -1.0;
+    if (feed && render_path_enabled(RP_PARTICLES)) {
+        part_feed_native();
+        part_vertex_jitter();
+    }
+    if (endp <= startp && s_item_n > 0) render_path_mark_drawn(RP_PARTICLES);
+    part_census(startp, endp, fed_before);
+}
+
 /** @brief The particle draw hook: runs the guest draw once, then captures and feeds its primitives.
  *
  * Through hook_bracket_run the guest routine runs unchanged and reports the
- * polybuf interval it appended. When the interval is not empty the primitives
- * are captured, the tick's view is built, each primitive is paired with the
- * pool record that appended it (part_pair_depths), the census lines print, and
- * the native scene is fed when it is live and RP_PARTICLES is enabled. Guest
- * memory is read after the draw, never written.
+ * polybuf interval it appended. When the interval is not empty, or the view
+ * is wider than 4:3 and can show a record the routine appended nothing for,
+ * part_draw_capture captures, pairs and feeds the set. Guest memory is read
+ * after the draw, never written.
  * @param cpu The guest CPU state.
  * @param addr The hooked entry address.
  * @return 0 when the bracket declines and the ordinary dispatch must run the
@@ -1555,26 +2050,8 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
-
-    if (endp > startp) {
-        part_capture_prims(cpu, startp, endp);
-        const uint32_t fed_before = s_fed_tris;
-        ngte_view view;
-        ngte_view_build(cpu, &view);
-        part_dbg_latch();
-        if (s_reb_dbg >= 2) part_view_dbg("tick", &view);
-        part_pair_depths(cpu, &view);
-        if (part_vdbg_on())
-            for (int i = 0; i < s_item_n; i++) part_vertex_calib(&s_item[i]);
-        part_extent_census(-1.0);
-        render_material_level_push(cpu);
-        s_feed_alpha = -1.0;
-        if (feed && render_path_enabled(RP_PARTICLES)) {
-            part_feed_native();
-            part_vertex_jitter();
-        }
-        part_census(startp, endp, fed_before);
-    }
+    if (endp > startp || openpete_native_widescreen_factor() > 1.0f)
+        part_draw_capture(cpu, startp, endp, feed);
     return hook_bracket_end(&k_bracket);
 }
 

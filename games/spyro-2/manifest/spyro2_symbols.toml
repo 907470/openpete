@@ -176,6 +176,11 @@ addr = 0x80066F18
 note = "the word holding the base of the particle pool the renderer walks (partsdraw.s:57-59), 0x20 bytes per record: +0x00 the signed selector halfword (bits 8-11 the class, arithmetic shift by 8 equal to -1 ends the pool, otherwise negative = inactive slot), +0x03 the drawn stamp (partsdraw.s:225 cleared, :360 set), +0x04 X in the low half and Y in the high half, +0x08 Z in the low half (partsdraw.s:91-92), all in quarter world units"
 
 [[symbol]]
+name = "D_PARTS_TYPES"
+addr = 0x80069E30
+note = "the particle renderer's type table (partsdraw.s:70-71): one word per particle type, indexed by the selector's low byte, pointing at the type's frame list of 8-byte entries whose words at +4 and +8 are a billboard's UV0/CLUT and UV3/tpage words (partsdraw.s:163-170)"
+
+[[symbol]]
 name = "F_UI_OT_INSERT"
 addr = 0x8001B390
 kind = "function"
