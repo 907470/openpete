@@ -84,6 +84,7 @@ cmd_inputs() {
         done
     done
     echo "third_party/psxrecomp/build"
+    [[ -d "$ROOT/third_party/ffmpeg-mingw" ]] && echo "third_party/ffmpeg-mingw"
     if [[ $with_ds -eq 1 ]]; then
         echo "third_party/duckstation/build-regtest"
         echo "third_party/duckstation/dep/prebuilt"
