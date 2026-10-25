@@ -1343,7 +1343,8 @@ static int glint_fed_corners(const glint_item* it, const glint_rebase* rb, float
  *
  * Does nothing when OPENPETE_GLINT selects 0 or nothing was captured, and
  * skips a hidden primitive (glint_star_far). Each star quad (code GLINT_QUAD) goes through ngte_feed_flat_quad; with mode 2 or
- * more each cross line goes through ngte_feed_flat_line, which widens it to
+ * more each cross line goes through ngte_feed_flat_line (centre 0.5 on the
+ * captured integer corners, 0 on built ones), which widens it to
  * the one pixel the GPU rasterizes a line at. The depth is the rebase's when
  * active, else the depth the pairing gave. Counts the triangles fed in
  * s_fed_star_tris and s_fed_cross_tris and tags them as flare and spark
@@ -1372,7 +1373,8 @@ static void glint_feed_native(void) {
         } else {
             openpete_native_scene_set_tag(
                 OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_SPARK, 0, 0));
-            (void)ngte_feed_flat_line(x[0], y[0], x[1], y[1], c[0], c[1], depth, it->blend);
+            (void)ngte_feed_flat_line(x[0], y[0], x[1], y[1], c[0], c[1],
+                                      it->exact ? 0.0f : 0.5f, depth, it->blend);
             s_fed_cross_tris += 2;
         }
     }

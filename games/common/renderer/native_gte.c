@@ -449,9 +449,9 @@ void ngte_line_quad(float ax, float ay, float bx, float by, float centre,
 }
 
 int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
-                        uint32_t rgb_b, float depth, int blend) {
+                        uint32_t rgb_b, float centre, float depth, int blend) {
     float qx[4], qy[4];
-    ngte_line_quad(ax, ay, bx, by, 0.0f, qx, qy);
+    ngte_line_quad(ax, ay, bx, by, centre, qx, qy);
     const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     const uint32_t cc[4] = { rgb_a, rgb_b, rgb_a, rgb_b };
     return ngte_feed_flat_quad(qx, qy, zu, zu, cc, depth, NULL, blend, 4);

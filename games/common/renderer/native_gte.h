@@ -654,8 +654,8 @@ void ngte_line_quad(float ax, float ay, float bx, float by, float centre,
 
 /** @brief Feeds a screen-space line between two GTE float endpoints at one depth as the untextured quad ngte_line_quad builds.
  *
- * The quad covers the pixels the GPU draws for the line (centre offset 0).
- * Corners 0 and 2 take endpoint a's colour, 1 and 3 endpoint b's, fed through
+ * The quad covers the pixels the GPU draws for the line at the centre
+ * offset ngte_line_quad takes. Corners 0 and 2 take endpoint a's colour, 1 and 3 endpoint b's, fed through
  * ngte_feed_flat_quad as two triangles.
  * @param ax Endpoint a's screen X, PSX pixels.
  * @param ay Endpoint a's screen Y.
@@ -663,11 +663,12 @@ void ngte_line_quad(float ax, float ay, float bx, float by, float centre,
  * @param by Endpoint b's screen Y.
  * @param rgb_a Endpoint a's colour word.
  * @param rgb_b Endpoint b's colour word.
+ * @param centre 0 for float endpoints, 0.5 for the guest's integer pixel corners.
  * @param depth The scene depth.
  * @param blend The native blend code, 0 for opaque.
  * @return The number of triangles fed. */
 int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
-                        uint32_t rgb_b, float depth, int blend);
+                        uint32_t rgb_b, float centre, float depth, int blend);
 
 /* ---- near-plane clip corner --------------------------------------------- */
 /*
