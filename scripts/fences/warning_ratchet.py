@@ -74,7 +74,9 @@ reported); DIRTY-DEP (an unstaged or untracked path in an altered entry's
 dependencies) and DIRTY-HEADER (a staged path with unstaged hunks): hook
 refuses; VACUOUS (no linux database where the mode does not configure
 one, a staged in-scope source in no entry set and not exempt, zero entries
-measured): refuses; STALE-DB (a CMake file newer than the database, or an
+measured, and for `check` no measured entry clean against HEAD; zero rows
+decided alone is not vacuous, since a clean entry with no row is decided):
+refuses; STALE-DB (a CMake file newer than the database, or an
 error-kind diagnostic with no option): refuses, never baselined; ERROR (an
 error-set diagnostic): refuses; MISSING-INPUT (a header a build rule
 generates, or the mod SDK, is absent from the build directory): on
@@ -797,11 +799,38 @@ def out_of_config(c, rel):
     return False
 
 
-def engagement(c, rows, decided):
-    lib.report_engagement(FENCE, [(c.name, [
-        ("entries", len(c.entries)), ("compiled", c.compiled), ("cache hits", c.hits),
-        ("diagnostics read", c.ndiag), ("rows", rows), ("rows decided", decided),
-        ("-M pass %.1f s, measure %.1f s" % (c.t_dep, c.t_measure), "")])])
+def engagement(c, rows, decided, entries_decided=None):
+    counts = [("entries", len(c.entries)), ("compiled", c.compiled), ("cache hits", c.hits)]
+    if entries_decided is not None:
+        counts.append(("entries decided", entries_decided))
+    counts += [("diagnostics read", c.ndiag), ("rows", rows), ("rows decided", decided),
+               ("-M pass %.1f s, measure %.1f s" % (c.t_dep, c.t_measure), "")]
+    lib.report_engagement(FENCE, [(c.name, counts)])
+
+
+def clean_measured(c, dirty_ids):
+    """-> the number of measured entries that read no dirty path."""
+    return sum(1 for e in c.entries if e.id in c.results and e.id not in dirty_ids)
+
+
+def check_vacuous(c, dirty_ids):
+    """-> the VACUOUS refusal of `check`, or None when it engaged.
+
+    `check` decides an entry, not a row: a measured entry that reads no
+    dirty path is held to HEAD's baseline, and any row it adds or raises
+    refuses, so a clean entry with no diagnostic is a decision. Rows of
+    entries that read a dirty path are the hook's to decide at commit. The
+    check is vacuous when nothing was measured or every measured entry
+    reads a dirty path; zero decided rows alone is not vacuous, since the
+    baseline's rows may all lie in edited files."""
+    measured = c.compiled + c.hits
+    if not measured:
+        return "VACUOUS: zero entries measured in %s" % c.name
+    if not clean_measured(c, dirty_ids):
+        return ("VACUOUS: every one of the %d measured %s entries reads a dirty path, so "
+                "none is decided against HEAD; commit or stash the edits, or let the "
+                "pre-commit hook decide them" % (measured, c.name))
+    return None
 
 
 def finish_rows(c, root):
@@ -1255,7 +1284,7 @@ def mode_check(root, argv):
     bins["DIRTY"] = sorted(p for p in dirty if in_scope(p))
     say("warning-ratchet: check %s: %d of %d entries clean against HEAD" % (
         dbname, len(c.entries) - len(dirty_ids), len(c.entries)))
-    engagement(c, len(after), n_dec)
+    engagement(c, len(after), n_dec, clean_measured(c, dirty_ids))
     lib.print_bins({k: v for k, v in bins.items() if k != "RISE"},
                    quiet=("DIRTY", "SHRINKABLE") if verdict == "PASS" else ("DIRTY",))
     if bins["SHRINKABLE"]:
@@ -1280,9 +1309,9 @@ def mode_check(root, argv):
             "it, or `warning_ratchet.py tighten --database %s --accept <key> \"<reason>\"` "
             "and commit the baseline." % dbname)
         rc = 1
-    if not c.compiled + c.hits or not n_dec:
-        raise Refusal("VACUOUS: %d entries measured, %d rows decided"
-                      % (c.compiled + c.hits, n_dec))
+    vacuous = check_vacuous(c, dirty_ids)
+    if vacuous:
+        raise Refusal(vacuous)
     if rc == 0:
         save_commands(c)
         prune_cache(c.cache_dir)

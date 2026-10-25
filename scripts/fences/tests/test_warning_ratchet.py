@@ -8,7 +8,8 @@ first in-scope inlined-from frame, the TU fallback), message
 normalisation and the pragma escape. DecideTest drives the pure decision:
 a rise an altered entry produces refuses, one only unaltered entries
 produce is INHERITED, only rows the mode may lower shrink, an accepted rise
-carries its reason. CompileTest compiles a scratch TU with the host GCC and
+carries its reason. CheckVacuousTest holds `check`'s engagement to its
+clean measured entries, not its decided rows. CompileTest compiles a scratch TU with the host GCC and
 reads one front-end and one middle-end row from it; skipped without gcc.
 
 OnDemandInputTest drives ratchet_lib's on-demand configure and build of
@@ -159,6 +160,38 @@ class DecideTest(unittest.TestCase):
         v, rows, bins = self.run_decide({}, {self.K2: 1}, {self.K2: {"e"}}, None,
                                         accept={wr.key_text(self.K2): "why"})
         self.assertEqual((v, rows[self.K2]), ("PASS", (1, "why")))
+
+
+class CheckVacuousTest(unittest.TestCase):
+    """check's engagement: every baseline row in an edited file decides
+    no row, but the clean entries were measured and decided (LAW 8)."""
+
+    def corpus(self, ids, measured):
+        c = wr.Corpus()
+        c.name = "linux-release"
+        c.entries = [type("E", (), {"id": i})() for i in ids]
+        c.results = {i: {"fe": [], "me": []} for i in measured}
+        c.compiled, c.hits = len(measured), 0
+        return c
+
+    def test_rows_only_in_edited_files_is_not_vacuous(self):
+        # moby.c dirty: its entry is excluded, the others decide clean
+        c = self.corpus(["moby", "a", "b"], ["moby", "a", "b"])
+        self.assertIsNone(wr.check_vacuous(c, {"moby"}))
+        self.assertEqual(wr.clean_measured(c, {"moby"}), 2)
+
+    def test_every_entry_dirty_is_vacuous(self):
+        c = self.corpus(["moby", "a"], ["moby", "a"])
+        self.assertIn("every one of the 2 measured", wr.check_vacuous(c, {"moby", "a"}))
+
+    def test_nothing_measured_is_vacuous(self):
+        c = self.corpus(["a"], [])
+        self.assertIn("zero entries measured", wr.check_vacuous(c, set()))
+        # the clean entries measured must hold results, not merely exist
+        c = self.corpus(["a", "b"], ["a"])
+        c.compiled = 1
+        self.assertIsNone(wr.check_vacuous(c, set()))
+        self.assertIn("VACUOUS", wr.check_vacuous(c, {"a"}))
 
 
 class CompileTest(unittest.TestCase):
