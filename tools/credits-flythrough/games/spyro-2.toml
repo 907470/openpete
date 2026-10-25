@@ -1,0 +1,83 @@
+# Spyro 2 (SCUS-94425) end-credits fly-through: the 10 credits camera paths
+# flown through the live levels. Read by config.py; every stage takes it by
+# --game spyro-2.
+
+game = "spyro-2"
+
+[paths]
+# WAD.WAD entries 187..196 hold the 10 scene paths, in the Spyro 3 layout.
+first_entry = 187
+scenes = 10
+wad_header = 0x800
+# The last key is repeated once (the switch-tick hold) unless the path already
+# ends on a repeated key (scene 9).
+hold_last_key = true
+
+[smooth]
+q_pos = 4.0
+q_ang = 1.0
+tol_pos = 1.0
+tol_ang = 0.15
+order = 3
+
+[render]
+engage_vbl = 2600
+lead_out_vbls = 60
+window = "3840x2160"
+ssaa = 4
+lod = "extended"
+use_bk2 = false       # no entry speech blocks the freecam
+
+[render.env]
+OPENPETE_D1 = "1"             # every moby passes the update gate, gems spin
+OPENPETE_VIDEO_NOSPARX = "1"  # class 0x78 off the update list: no Sparx sparkles or glow
+OPENPETE_VIDEO_NOHUD = "1"
+
+[post]
+fade_ticks = 16
+fade_grey = 16
+music_fade_out = 4.0  # the 343.5 s music cut at the video end with a 4 s fade-out
+crf = 14
+
+[music]
+end_sample = 9171036
+start_sample = 4939129
+crossfade = 0.03
+
+[[scene]]
+level = "summer_forest"
+
+[[scene]]
+level = "glimmer"
+
+[[scene]]
+level = "idol_springs"
+# doors A (keyframe id 0) and B (id 4) opened; padlocks (class 421) hidden
+env = { OPENPETE_VIDEO_OPEN_PANIM = "0,4", OPENPETE_VIDEO_HIDE_CLASSES = "421" }
+
+[[scene]]
+level = "colossus"
+
+[[scene]]
+level = "aquaria_towers"
+
+[[scene]]
+level = "sunny_beach"
+# the tunnel door (id 5) held at its open keyframe 0, as the credits copy
+env = { OPENPETE_VIDEO_HOME_PANIM = "5" }
+
+[[scene]]
+level = "skelos_badlands"
+
+[[scene]]
+level = "scorch"
+
+[[scene]]
+level = "shady_oasis"
+# the credits terrain is Shady Oasis translated: level = credits + 5120 camera units in x
+offset = [5120, 0, 0]
+# the barred gate (classes 500, 525) hidden
+env = { OPENPETE_VIDEO_HIDE_CLASSES = "500,525" }
+
+[[scene]]
+level = "cloud_temples"

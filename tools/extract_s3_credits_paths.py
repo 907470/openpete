@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""extract_s3_credits_paths.py - convert the Spyro 3 (SCUS-94467) end-credits
-camera paths into --freecam-path specs, read from the user's own disc image.
+"""extract_s3_credits_paths.py - convert the Spyro 3 (SCUS-94467) or Spyro 2
+(SCUS-94425, --game spyro-2) end-credits camera paths into --freecam-path
+specs, read from the user's own disc image.
 
     tools/extract_s3_credits_paths.py \
         --disc games/spyro-3/spyro-3/build/SCUS-94467.cue \
         --out-dir /tmp/s3-credits-paths
 
 writes scene_00.path .. scene_11.path, one spec per file, for
-`--freecam-path "$(cat scene_00.path)"`.
+`--freecam-path "$(cat scene_00.path)"`. Spyro 2 stores its 10 scene paths
+in the same layout at WAD.WAD entries 187..196.
 
 Format facts (spyro-3 decomp, disc-verified):
   - The credits overlay (func_credits_80074BA0) plays 12 scenes; scene k is
@@ -43,9 +45,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from extract_s3_player import Disc, iso_find  # noqa: E402
 
-CREDITS_FIRST_ENTRY = 183
-CREDITS_SCENES = 12
-WAD_HEADER_SIZE = 0x620
+# Per game: first credits WAD entry, scene count, WAD header bytes read.
+LAYOUTS = {
+    "spyro-3": (183, 12, 0x620),
+    "spyro-2": (187, 10, 0x800),
+}
+CREDITS_FIRST_ENTRY, CREDITS_SCENES, WAD_HEADER_SIZE = LAYOUTS["spyro-3"]
 PATH_SUBFILE = 0x18
 KEY_BASE = 0x10
 KEY_SIZE = 12
@@ -72,9 +77,12 @@ def wrap12(a: int) -> int:
     return ((a + 0x800) & 0xFFF) - 0x800
 
 
-def scene_keys(disc: Disc, wad_lba: int, hdr: bytes, scene: int):
-    """Return scene's keys as (x, y, z, roll, pitch, yaw) in g_Camera units."""
-    entry = CREDITS_FIRST_ENTRY + scene
+def scene_keys(disc: Disc, wad_lba: int, hdr: bytes, scene: int,
+               first_entry: int = CREDITS_FIRST_ENTRY, signed: bool = False):
+    """Return scene's keys as (x, y, z, roll, pitch, yaw) in g_Camera units.
+
+    The game loads x, y, z with lhu; signed reads them as s16 instead."""
+    entry = first_entry + scene
     off, size = struct.unpack_from("<ii", hdr, entry * 8)
     if size <= 0:
         raise SystemExit(f"scene {scene}: WAD entry {entry} is empty")
@@ -88,7 +96,8 @@ def scene_keys(disc: Disc, wad_lba: int, hdr: bytes, scene: int):
         raise SystemExit(f"scene {scene}: {n} keys do not fit the {length:#x}-byte block")
     keys = []
     for j in range(n):
-        x, y, z, roll, pitch, yaw = struct.unpack_from("<6H", blk, KEY_BASE + j * KEY_SIZE)
+        x, y, z, roll, pitch, yaw = struct.unpack_from("<3h3H" if signed else "<6H", blk,
+                                                        KEY_BASE + j * KEY_SIZE)
         keys.append((x << 2, y << 2, z << 2, wrap12(roll), wrap12(pitch), wrap12(yaw)))
     return keys
 
@@ -108,6 +117,7 @@ def path_spec(keys, step: int, roll: bool) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--game", choices=sorted(LAYOUTS), default="spyro-3")
     ap.add_argument("--disc", required=True, type=Path,
                     help=".cue or .bin/.iso (raw or cooked)")
     ap.add_argument("--out-dir", required=True, type=Path)
@@ -116,20 +126,21 @@ def main():
     ap.add_argument("--no-roll", action="store_true",
                     help="write x,y,z,yaw,pitch waypoints, dropping the roll")
     ap.add_argument("--scene", type=int, action="append",
-                    help="scene index 0-11 (repeatable; default all)")
+                    help="scene index (repeatable; default all)")
     args = ap.parse_args()
     if args.step < 1:
         raise SystemExit("--step must be at least 1")
+    first_entry, scenes, header = LAYOUTS[args.game]
 
     disc = Disc(resolve_bin(args.disc))
     wad_lba, _ = iso_find(disc, "WAD.WAD")
-    hdr = disc.read_span(wad_lba, 0, WAD_HEADER_SIZE)
+    hdr = disc.read_span(wad_lba, 0, header)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    for scene in args.scene or range(CREDITS_SCENES):
-        if not 0 <= scene < CREDITS_SCENES:
-            raise SystemExit(f"scene {scene} out of range 0-{CREDITS_SCENES - 1}")
-        keys = scene_keys(disc, wad_lba, hdr, scene)
+    for scene in args.scene or range(scenes):
+        if not 0 <= scene < scenes:
+            raise SystemExit(f"scene {scene} out of range 0-{scenes - 1}")
+        keys = scene_keys(disc, wad_lba, hdr, scene, first_entry)
         spec = path_spec(keys, args.step, not args.no_roll)
         out = args.out_dir / f"scene_{scene:02d}.path"
         out.unlink(missing_ok=True)

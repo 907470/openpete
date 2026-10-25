@@ -1,0 +1,109 @@
+# Spyro 3 (SCUS-94467) end-credits fly-through: the 12 credits camera paths
+# flown through the live levels. Read by config.py; every stage takes it by
+# --game spyro-3.
+
+game = "spyro-3"
+
+[paths]
+# WAD.WAD entries 183..194 hold the 12 scene paths (extract_s3_credits_paths.py).
+first_entry = 183
+scenes = 12
+wad_header = 0x620
+# No hold key appended: every S3 path ends on its own last key.
+hold_last_key = false
+
+[smooth]
+# campath.py smooth: the smoothest curve inside each key's quantization cell
+# (+-(q/2 + tol)): position lattice 4 units, angle quantum 1 unit.
+q_pos = 4.0
+q_ang = 1.0
+tol_pos = 1.0
+tol_ang = 0.15
+order = 3
+
+[bk2]
+# Cross held 2 VBLs every 20 VBLs from VBL 1700 advances the entry speech of
+# every level whose dialog blocks the freecam.
+frames = 7000
+load_delay = 66
+feed_key = "vbl"
+button = "Cross"
+first = 1700
+every = 20
+hold = 2
+
+[render]
+engage_vbl = 2600     # OPENPETE_FREECAM_AT_VBL
+lead_out_vbls = 40    # frame limit = engage + 2 * keys + lead_out
+window = "3840x2160"
+ssaa = 4
+lod = "extended"
+use_bk2 = true
+
+[render.env]
+OPENPETE_D1 = "1"                         # every moby passes the update gate
+OPENPETE_VIDEO_HIDE_CLASSES = "0x39,0x63" # Sheila and Agent 9, with shadows
+OPENPETE_VIDEO_ZOE_NEAR = "1"
+OPENPETE_VIDEO_NOHUD = "1"
+
+[post]
+fade_ticks = 16       # credits fade: v = 16 - k for k < 16, k - (N - 16) past N - 16
+fade_grey = 16        # out = max(0, in - fade_grey * v) per RGB channel
+music_fade_out = 0.0  # seconds; 0 maps the music unfaded and cut at the video end
+crf = 14
+
+[music]
+# One-section repeat of "49 - Spyro End Titles" (247.571 s): samples
+# [0, end_sample) then [start_sample, end), 30 ms triangular crossfade = 343.503 s.
+end_sample = 9171036
+start_sample = 4939129
+crossfade = 0.03
+
+# One table row per scene, in credits order. level is a --skip-to-level name,
+# or level:area for --skip-to-area.
+[[scene]]
+level = "sheilas_alp"
+engage_vbl = 2064     # the first live VBL after Billy's box (2088), goats still walking
+env = { OPENPETE_GLINT = "1" }
+
+[[scene]]
+level = "seashell_shore"
+env = { OPENPETE_VIDEO_OPEN_PANIM = "2,3" }
+
+[[scene]]
+level = "icy_peak"
+env = { OPENPETE_VIDEO_OPEN_PANIM = "0x0B" }
+
+[[scene]]
+level = "spooky_swamp:2"
+
+[[scene]]
+level = "lost_fleet:1"
+
+[[scene]]
+level = "fireworks_factory:1"
+
+[[scene]]
+level = "desert_ruins"
+frame_limit = 4600    # the freecam engages after the entry speech, near VBL 2757
+env = { OPENPETE_GLINT = "1" }
+
+[[scene]]
+level = "dino_mines:3"
+
+[[scene]]
+level = "charmed_ridge:2"
+# keys 1-16 store x as u16 65496.. (the game reads them with lhu: far outside
+# the level, inside the fade-in); read as s16 they continue the path
+signed_positions = true
+
+[[scene]]
+level = "haunted_tomb"
+env = { OPENPETE_GLINT = "1", OPENPETE_VIDEO_OPEN_PANIM = "4,2,5" }
+
+[[scene]]
+level = "cloud_spires"
+env = { OPENPETE_GLINT = "1" }
+
+[[scene]]
+level = "bamboo_terrace:1"
