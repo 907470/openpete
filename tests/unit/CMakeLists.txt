@@ -416,10 +416,12 @@ endif()
 # clock (coalescing, the ttl's first-geometry start, id skew between the two
 # readers, eviction, the rate limit, the stack glide). openpete_osd.c is
 # compiled directly and SDL's mutex API is faked in the test, so the link
-# line stays SDL-free like the rest of the console tests here.
+# line stays SDL-free like the rest of the console tests here. log.c comes
+# along for the toast ring's debug lines.
 add_executable(openpete_osd_test
     openpete_osd_test.c
-    ${CMAKE_SOURCE_DIR}/core/ui/openpete_osd.c)
+    ${CMAKE_SOURCE_DIR}/core/ui/openpete_osd.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
 target_include_directories(openpete_osd_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include)
 target_include_directories(openpete_osd_test SYSTEM PRIVATE
