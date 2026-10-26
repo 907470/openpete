@@ -10222,21 +10222,90 @@ static int shell_census_reset(shell_census_t* C, int w, int h)
     return 1;
 }
 
+/** @brief Whether the composed scene's snap table holds an entry for a moby.
+ *
+ * The snap stage (psx_moby_snap.glsl) rewrites the depth of every fragment of
+ * such a moby after the shell's export, so the snap, not the shell, decides
+ * its pixels against terrain.
+ * @param t The composed scene's snap table.
+ * @param mid The moby identity.
+ * @return 1 when an entry names @p mid, else 0. */
+static int shell_census_snapped(const nr_snap_table* t, uint32_t mid)
+{
+    for (int k = 0; k < t->ne; k++)
+        if (t->ent[k].mid == mid) return 1;
+    return 0;
+}
+
+/** @brief Records the shell census lists by name. */
+#define SHELL_CEN_LISTED 4
+
+/** @brief The first SHELL_CEN_LISTED front-shell records of a scene and their class-B pixels (moby_shell_census). */
+typedef struct {
+    uint32_t mid[SHELL_CEN_LISTED];     /**< Moby identity: the record's RAM word index + 1. */
+    long b[SHELL_CEN_LISTED];           /**< Class-B pixels whose front is the record's. */
+    unsigned char snap[SHELL_CEN_LISTED]; /**< 1 when the snap table holds the record. */
+    int n;                              /**< Listed records, in first-face order. */
+    int snapped;                        /**< Records the snap table holds, listed or not. */
+} shell_census_list_t;
+
 /** @brief Count the front-shell records of a scene: the distinct moby identities its stamped faces carry, at most 256.
+ *
+ * The first SHELL_CEN_LISTED records in face order enter @p L with their
+ * snap-table membership; @p L counts the snapped records among all of them.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
+ * @param snap The composed scene's snap table.
+ * @param L The record list, cleared here.
  * @return The record count. */
-static int shell_census_records(const scene_tri_t* scene, int scene_n)
+static int shell_census_records(const scene_tri_t* scene, int scene_n, const nr_snap_table* snap,
+                                shell_census_list_t* L)
 {
     uint32_t mids[256];
     int nm = 0;
+    L->n = L->snapped = 0;
     for (int t = 0; t < scene_n; t++) {
         if (!scene[t].shell) continue;
         int k = 0;
         while (k < nm && mids[k] != scene[t].mid) k++;
-        if (k == nm && nm < 256) mids[nm++] = scene[t].mid;
+        if (k < nm || nm == 256) continue;
+        mids[nm++] = scene[t].mid;
+        const int in_snap = shell_census_snapped(snap, scene[t].mid);
+        L->snapped += in_snap;
+        if (L->n == SHELL_CEN_LISTED) continue;
+        L->mid[L->n] = scene[t].mid; L->b[L->n] = 0; L->snap[L->n++] = (unsigned char)in_snap;
     }
     return nm;
+}
+
+/** @brief Add one class-B pixel to the listed record whose front covers it.
+ * @param L The record list.
+ * @param snap The composed scene's snap table.
+ * @param mid The covering front's moby identity.
+ * @return 1 when the record is snapped, else 0; an unlisted record reads the snap table. */
+static int shell_census_add_b(shell_census_list_t* L, const nr_snap_table* snap, uint32_t mid)
+{
+    for (int k = 0; k < L->n; k++) {
+        if (L->mid[k] != mid) continue;
+        L->b[k]++;
+        return L->snap[k];
+    }
+    return L->snapped && shell_census_snapped(snap, mid);
+}
+
+/** @brief Format the record list as RAM offset:class-B pixels, with s after a snapped record.
+ * @param L The record list.
+ * @param out Output buffer; holds "-" when the list is empty.
+ * @param cap Buffer size. */
+static void shell_census_format(const shell_census_list_t* L, char* out, size_t cap)
+{
+    size_t o = 0;
+    snprintf(out, cap, "-");
+    for (int k = 0; k < L->n && o < cap; k++) {
+        const int w = snprintf(out + o, cap - o, "%s%06X:%ld%s", k ? "," : "",
+                               (L->mid[k] - 1u) << 2, L->b[k], L->snap[k] ? "s" : "");
+        o += w > 0 ? (size_t)w : 0;
+    }
 }
 
 /** @brief Set the census bounds to the pixels a front covers.
@@ -10264,6 +10333,37 @@ static int shell_census_class(const shell_census_t* C, int p)
     return C->tz[p] < C->bz[p] ? 1 : 2;
 }
 
+/** @brief The pixel counts of one shell census (moby_shell_census). */
+typedef struct {
+    long cls[4];          /**< Pixels per class A-D; B holds unsnapped records only. */
+    long bsnap;           /**< Class-B pixels of snapped records. */
+    long px;              /**< Pixels a front covers. */
+    long slivers;         /**< Pixels two records' fronts cover. */
+    long foreign;         /**< Pixels with a blended intruder before the farthest face. */
+    long foreign_opaque;  /**< Pixels with an opaque intruder before the farthest face. */
+} shell_census_tally_t;
+
+/** @brief Classify every pixel a front covers and add class-B pixels to their records.
+ * @param C The census, rasterised.
+ * @param snap The composed scene's snap table.
+ * @param L The record list; its class-B counts accumulate here.
+ * @param T The counts, cleared here. */
+static void shell_census_tally(const shell_census_t* C, const nr_snap_table* snap,
+                               shell_census_list_t* L, shell_census_tally_t* T)
+{
+    memset(T, 0, sizeof *T);
+    for (int p = 0; p < C->w * C->h; p++) {
+        if (!C->fid[p]) continue;
+        T->px++;
+        T->slivers += C->multi[p];
+        T->foreign += C->iz[p] < C->bz[p];
+        T->foreign_opaque += C->oz[p] < C->bz[p];
+        const int c = shell_census_class(C, p);
+        if (c == 1 && shell_census_add_b(L, snap, C->fid[p])) T->bsnap++;
+        else T->cls[c]++;
+    }
+}
+
 /** @brief Print the front-shell census of one scene target (OPENPETE_MOBY_SHELL_CENSUS).
  *
  * One line per shell pass: the front-shell records, their blended faces, the
@@ -10271,8 +10371,13 @@ static int shell_census_class(const shell_census_t* C, int p)
  * opaque WORLD faces of the scene: A the terrain is nearer than the front, B
  * it lies between the front and the farthest opaque face of the same moby
  * (the pixels the shell changes), C it lies beyond that face or is absent,
- * D no opaque face of the moby lies under the front; slivers counts shell
- * pixels two records' fronts cover, foreign and foreign_opaque those where a
+ * D no opaque face of the moby lies under the front. B counts only the
+ * records with no entry in the composed scene's snap table; Bsnap counts the
+ * class-B pixels of records the snap also holds (it writes their depth after
+ * the shell), snapped those records, and recs lists the first
+ * SHELL_CEN_LISTED records as RAM offset (the record's address within the
+ * 2 MiB of PSX RAM):class-B pixels, s marking a snapped one. slivers counts
+ * shell pixels two records' fronts cover, foreign and foreign_opaque those where a
  * blended or opaque intruder candidate of another moby (shell_intruder_face)
  * lies between the front and that farthest face. Terrain is the CPU-fed WORLD faces; the
  * retained terrain cache is not rasterised (the census reads 0 terrain where
@@ -10290,7 +10395,9 @@ static void moby_shell_census(const scene_tri_t* scene, int scene_n, int full_ex
     if (!shell_census_reset(&C, vw, vh)) return;
     int prev_fe = s_render_full_extent;
     s_render_full_extent = full_extent ? 1 : 0;
-    const int nm = shell_census_records(scene, scene_n);
+    const nr_snap_table* snap = ps_snap();
+    shell_census_list_t L;
+    const int nm = shell_census_records(scene, scene_n, snap, &L);
     for (int t = 0; t < scene_n; t++)
         if (scene[t].shell && scene[t].blend) shell_census_tri(&C, &scene[t], SHELL_CEN_FRONT);
     shell_census_bounds(&C);
@@ -10304,20 +10411,17 @@ static void moby_shell_census(const scene_tri_t* scene, int scene_n, int full_ex
             shell_census_tri(&C, &scene[t], SHELL_CEN_TERRAIN);
     }
     s_render_full_extent = prev_fe;
-    long cls[4] = { 0, 0, 0, 0 }, px = 0, slivers = 0, foreign = 0, foreign_op = 0;
-    for (int p = 0; p < vw * vh; p++) {
-        if (!C.fid[p]) continue;
-        px++;
-        slivers += C.multi[p];
-        foreign += C.iz[p] < C.bz[p];
-        foreign_op += C.oz[p] < C.bz[p];
-        cls[shell_census_class(&C, p)]++;
-    }
+    shell_census_tally_t T;
+    shell_census_tally(&C, snap, &L, &T);
+    char recs[128];
+    shell_census_format(&L, recs, sizeof recs);
     extern unsigned openpete_frame;
-    fprintf(stderr, "[moby-shell f=%u %dx%d fe=%d] records=%d fronts=%d shell_px=%ld "
-                    "A=%ld B=%ld C=%ld D=%ld slivers=%ld foreign=%ld foreign_opaque=%ld live=%d\n",
-            openpete_frame, vw, vh, full_extent ? 1 : 0, nm, fronts, px,
-            cls[0], cls[1], cls[2], cls[3], slivers, foreign, foreign_op, s_shell_live);
+    fprintf(stderr, "[moby-shell f=%u %dx%d fe=%d] records=%d snapped=%d fronts=%d shell_px=%ld "
+                    "A=%ld B=%ld Bsnap=%ld C=%ld D=%ld recs=%s slivers=%ld foreign=%ld "
+                    "foreign_opaque=%ld live=%d\n",
+            openpete_frame, vw, vh, full_extent ? 1 : 0, nm, L.snapped, fronts, T.px,
+            T.cls[0], T.cls[1], T.bsnap, T.cls[2], T.cls[3], recs, T.slivers, T.foreign,
+            T.foreign_opaque, s_shell_live);
 }
 
 /** @brief Pack the front-shell and intruder batches and draw them into moby_shell_rt and moby_shell_intr_rt.
