@@ -7127,25 +7127,31 @@ static const VkVertexInputAttributeDescription k_terrain_near_attrs[13] = {
 #undef TERRAIN_VERTEX_ATTRS
 /* terrain_cells: one INSTANCE-rate binding of cell records (rhi_terrain_cell;
  * see rhi.h), no per-vertex binding - the vertex stage derives every cell
- * vertex from its record and gl_VertexIndex. Locations 0-2 carry the corners
- * in rhi_terrain_vertex's c0x..c3z packing, 3 the face flags + record info,
- * 4 the near colours, 5-12 the eight cell tiles; the anim records append the
- * previous corners at 13-15. */
+ * vertex from its record and gl_VertexIndex. Locations 0-1 carry the twelve
+ * int16 corners (c0x..c3z, two to a word) then the face flags and record
+ * info as raw words, unpacked by cells_fetch; 2 the far colours, 3 the HQ
+ * ladder-fade words, 4 the near colours, 5-12 the eight cell tiles; the anim
+ * records append the previous corners, packed the same way, at 13-14. The
+ * corners are read as words so the anim layout fits 15 locations. */
 #define CELL_TILE_ATTR(i) \
     { .location = 5 + (i), .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, \
       .offset = offsetof(rhi_terrain_cell, tile) + (i) * sizeof(rhi_terrain_cell_tile) }
-static const VkVertexInputAttributeDescription k_terrain_cell_attrs[16] = {
-    { .location = 0, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell, c0x) },
-    { .location = 1, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell, c1y) },
-    { .location = 2, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell, c2z) },
-    { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_UINT,       .offset = offsetof(rhi_terrain_cell, face_flags) },
+static const VkVertexInputAttributeDescription k_terrain_cell_attrs[15] = {
+    { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_cell, c0x) },
+    { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_cell, c2z) },
+    { .location = 2, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_cell, far_rgb) },
+    { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_UINT,       .offset = offsetof(rhi_terrain_cell, fog_a) },
     { .location = 4, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_cell, near_rgb) },
     CELL_TILE_ATTR(0), CELL_TILE_ATTR(1), CELL_TILE_ATTR(2), CELL_TILE_ATTR(3),
     CELL_TILE_ATTR(4), CELL_TILE_ATTR(5), CELL_TILE_ATTR(6), CELL_TILE_ATTR(7),
-    { .location = 13, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell_anim, p0x) },
-    { .location = 14, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell_anim, p1y) },
-    { .location = 15, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell_anim, p2z) },
+    { .location = 13, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_cell_anim, p0x) },
+    { .location = 14, .binding = 0, .format = VK_FORMAT_R32G32_UINT,       .offset = offsetof(rhi_terrain_cell_anim, p2z) },
 };
+_Static_assert(offsetof(rhi_terrain_cell, c2z) == 16 &&
+               offsetof(rhi_terrain_cell, face_flags) == 24 &&
+               offsetof(rhi_terrain_cell, info) == 28 &&
+               offsetof(rhi_terrain_cell_anim, p2z) == offsetof(rhi_terrain_cell_anim, p0x) + 16,
+               "cell record corner words: terrain.vert cells_fetch unpacks this layout");
 #undef CELL_TILE_ATTR
 static const VkVertexInputBindingDescription k_terrain_cell_bind = {
     .binding = 0, .stride = sizeof(rhi_terrain_cell), .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE,
@@ -7158,7 +7164,7 @@ static const VkVertexInputBindingDescription k_terrain_cell_anim_bind = {
  *
  * The layout is the plain sector mesh (one per-vertex binding, 9
  * attributes), a cell-record flavour (one per-instance binding, 13
- * attributes, 16 with anim), or the anim or near twin pair (two bindings,
+ * attributes, 15 with anim), or the anim or near twin pair (two bindings,
  * 14 or 13 attributes), selected by terrain_cells, then terrain_anim, then
  * terrain_near. `vi` arrives holding the one-binding default, whose binding
  * the plain mesh replaces.
@@ -7178,7 +7184,7 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
     if (desc->terrain_cells) {
         vi->pVertexBindingDescriptions = desc->terrain_anim ? &k_terrain_cell_anim_bind
                                                             : &k_terrain_cell_bind;
-        vi->vertexAttributeDescriptionCount = desc->terrain_anim ? 16 : 13;
+        vi->vertexAttributeDescriptionCount = desc->terrain_anim ? 15 : 13;
         vi->pVertexAttributeDescriptions = k_terrain_cell_attrs;
     } else if (desc->terrain_anim) {
         vi->vertexBindingDescriptionCount = 2;

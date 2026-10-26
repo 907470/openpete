@@ -78,10 +78,13 @@ layout(location = 12) in uvec2 inCtxBCol;
  * the same names the chunk variants read from their vertex inputs, so main()
  * runs unchanged on them. Compiled with TERRAIN_NEAR (near-variant sectors,
  * 6 vertices per cell triangle) or TERRAIN_ANIM (poly-anim sectors, 3). */
-layout(location = 0)  in ivec4 inC0;
-layout(location = 1)  in ivec4 inC1;
-layout(location = 2)  in ivec4 inC2;
-layout(location = 3)  in uvec2 inCellFace;  /* face_flags, record info    */
+/* Locations 0-1: the twelve int16 corners two to a word (c0x | c0y << 16,
+ * ...), then face_flags and the record info; cells_fetch unpacks them into
+ * inC0..inC2 and inCellFace. */
+layout(location = 0)  in uvec4 inCellCA;    /* c0x..c2y                   */
+layout(location = 1)  in uvec4 inCellCB;    /* c2z..c3z, face_flags, info */
+layout(location = 2)  in uvec4 inCellFar;   /* raw far colours i0..i3     */
+layout(location = 3)  in uvec2 inCellFog;   /* HQ ladder-fade words a, b  */
 layout(location = 4)  in uvec4 inCellNear;  /* raw near colours i0..i3    */
 layout(location = 5)  in uvec4 inCellT0;    /* tile: uv TL,TR | uv BL,BR | mat0 | mat1 */
 layout(location = 6)  in uvec4 inCellT1;
@@ -92,10 +95,13 @@ layout(location = 10) in uvec4 inCellT5;
 layout(location = 11) in uvec4 inCellT6;
 layout(location = 12) in uvec4 inCellT7;
 #ifdef TERRAIN_ANIM
-layout(location = 13) in ivec4 inPrevC0;    /* previous-tick corners      */
-layout(location = 14) in ivec4 inPrevC1;
-layout(location = 15) in ivec4 inPrevC2;
+layout(location = 13) in uvec4 inCellPA;    /* previous-tick corners,     */
+layout(location = 14) in uvec2 inCellPB;    /* packed as inCellCA/CB      */
+ivec4 inPrevC0, inPrevC1, inPrevC2;
 #endif
+ivec4 inC0, inC1, inC2;
+uvec2 inCellFace;
+uvec2 cellHqFog;
 ivec4 inPos;
 uvec4 inUV;
 vec4  inColFar;
@@ -218,6 +224,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_TRI4      4096
 #define GF_TRI2      8192
 #define GF_LPNEAROUT 16384
+#define GF_HQFOG     32768
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -281,7 +288,8 @@ layout(constant_id = 6) const int KEY_Z_ULP_BIAS = 0;
 
 layout(location = 0)      out vec2  vUV;    /* pre-multiplied by q (scene contract) */
 layout(location = 1)      out vec4  vColor; /* pre-multiplied by q                  */
-layout(location = 2) flat out uvec2 vMat;   /* x: mat0, y: clx | cly<<16 (post-ladder) */
+layout(location = 2) flat out uvec4 vMat;   /* x: mat0, y: clx | cly<<16 (post-ladder),
+                                             * zw: HQ ladder-fade words (psx_hq_fog.glsl) */
 layout(location = 3) flat out float vKoff;  /* og OT key (feed koff mirror)         */
 layout(location = 4)      out float vQ;     /* q (frag divides UV/colour by it)     */
 layout(location = 6)      out vec2  vKfl;   /* drain face-local coordinate x vKq   */
@@ -875,7 +883,7 @@ uint attr_word(uint slot, bool lp, bool hqv, bool is4, bool drain)
 
 void kill_vert() {
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);   /* degenerate: no raster */
-    vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec2(0u);
+    vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec4(0u);
     vKoff = 0.0; vKcls = OP_KEY_CLASS_NONE; vQ = 1.0;
     vKfl = vec2(0.0); vKq = 1.0; vKc0 = uvec4(0u); vKc1 = uvec4(0u);
     vKd = vec3(0.0); vKn0 = vec4(0.0); vKn1 = vec4(0.0); vKn2 = vec4(0.0);
@@ -1057,6 +1065,25 @@ vec2 scr_of(cvx v) { return v.ov ? v.os : snap_of(proj_of(v.m)); }
 #endif
 
 #ifdef TERRAIN_CELLS
+/* The two sign-extended int16 halves of a packed corner word, low first. */
+ivec2 cell_s16x2(uint w) {
+    return ivec2(bitfieldExtract(int(w), 0, 16), bitfieldExtract(int(w), 16, 16));
+}
+/* Unpack the record's corner words into inC0..inC2 (rhi_terrain_vertex's
+ * c0x..c3z order, four to a vector), the face flags and info, and the fade
+ * words. */
+void cell_unpack() {
+    inC0 = ivec4(cell_s16x2(inCellCA.x), cell_s16x2(inCellCA.y));
+    inC1 = ivec4(cell_s16x2(inCellCA.z), cell_s16x2(inCellCA.w));
+    inC2 = ivec4(cell_s16x2(inCellCB.x), cell_s16x2(inCellCB.y));
+    inCellFace = inCellCB.zw;
+    cellHqFog = inCellFog;
+#ifdef TERRAIN_ANIM
+    inPrevC0 = ivec4(cell_s16x2(inCellPA.x), cell_s16x2(inCellPA.y));
+    inPrevC1 = ivec4(cell_s16x2(inCellPA.z), cell_s16x2(inCellPA.w));
+    inPrevC2 = ivec4(cell_s16x2(inCellPB.x), cell_s16x2(inCellPB.y));
+#endif
+}
 /* tgpu_rgb_mid mirror: the walk's per-channel (a + b) >> 1 on packed RGB. */
 uint cell_rgb_mid(uint a, uint b) {
     return (((a & 0xFFu) + (b & 0xFFu)) >> 1)
@@ -1071,11 +1098,11 @@ uint cell_rgb_pt(uint a, uint b, int k) {
     uint m = cell_rgb_mid(a, b);
     return k == 2 ? m : cell_rgb_mid(k == 1 ? a : b, m);
 }
-/* Node (r, c) colour of the 5x5 grid from the four raw near colours
+/* Node (r, c) colour of the 5x5 grid from four raw corner colours
  * (i0 = TL, i1 = TR, i2 = BR, i3 = BL): rows first, then along the row. */
-uint cell_node_rgb(int r, int c) {
-    uint L = cell_rgb_pt(inCellNear.x, inCellNear.w, r);
-    uint R = cell_rgb_pt(inCellNear.y, inCellNear.z, r);
+uint cell_node_rgb(int r, int c, uvec4 q) {
+    uint L = cell_rgb_pt(q.x, q.w, r);
+    uint R = cell_rgb_pt(q.y, q.z, r);
     return cell_rgb_pt(L, R, c);
 }
 /* nt4_rgb_mid mirror: the triangle drain's colour average, both words
@@ -1083,10 +1110,11 @@ uint cell_node_rgb(int r, int c) {
 uint nt4_rgb_mid(uint a, uint b) {
     return ((a & 0xFEFEFFu) + (b & 0xFEFEFFu)) >> 1;
 }
-/* Node n's colour of a tier-4 triangle record: A = near_rgb[0], B = [1],
- * C = [3] (word 1 byte 0), nodes in nt4_node's parent order. */
-uint nt4_node_rgb(int n) {
-    uint A = inCellNear.x, B = inCellNear.y, C = inCellNear.w;
+/* Node n's colour of a tier-4 triangle record from corner colours q (near
+ * or far): A = q.x, B = q.y, C = q.w (word 1 byte 0), nodes in nt4_node's
+ * parent order. */
+uint nt4_node_rgb(int n, uvec4 q) {
+    uint A = q.x, B = q.y, C = q.w;
     if (n == 0) return A;
     if (n == 4) return B;
     if (n == 14) return C;
@@ -1137,8 +1165,8 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
              | (spare ? 0x8000u : 0u);
     inPos = ivec4(inC0.xyz, int(f16));
     inUV = uvec4(cell_uv(t, k), 0u, 0u);
-    inColFar = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k]));
-    inColNear = inColFar;
+    inColFar = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellFar));
+    inColNear = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellNear));
     inMat = uvec4(t.z, t.w, 0u, 0xC0000000u | (uint(sub) << 4) | cell);
     inFaceFlags = inCellFace.x;
 #ifdef TERRAIN_ANIM
@@ -1146,17 +1174,18 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
 #endif
 #ifdef TERRAIN_NEAR
     int ra = (k + 1) % 3, rb = (k + 2) % 3;
-    uint ca = 0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra]);
-    uint cb = 0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb]);
     inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
-    inCtxACol = uvec2(ca, ca);
+    inCtxACol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellFar),
+                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellNear));
     inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
-    inCtxBCol = uvec2(cb, cb);
+    inCtxBCol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellFar),
+                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellNear));
 #endif
     return true;
 }
 
 bool cells_fetch() {
+    cell_unpack();
     uint info = inCellFace.y;
 #ifdef TERRAIN_NEAR
     int tri = gl_VertexIndex / 6;
@@ -1183,9 +1212,8 @@ bool cells_fetch() {
              | (spare ? 0x8000u : 0u);
     inPos = ivec4(inC0.xyz, int(f16));
     inUV = uvec4(cell_uv(t, role), 0u, 0u);
-    uint rgb = cell_node_rgb(cr + (role >> 1), cq + (role & 1));
-    inColFar = cell_unorm(rgb);
-    inColNear = inColFar;
+    inColFar = cell_unorm(cell_node_rgb(cr + (role >> 1), cq + (role & 1), inCellFar));
+    inColNear = cell_unorm(cell_node_rgb(cr + (role >> 1), cq + (role & 1), inCellNear));
     inMat = uvec4(t.z, t.w, 0u, 0x80000000u | uint(cell));
     inFaceFlags = inCellFace.x;
 #ifdef TERRAIN_ANIM
@@ -1193,12 +1221,12 @@ bool cells_fetch() {
 #endif
 #ifdef TERRAIN_NEAR
     int ra = tri2 + (k + 1) % 3, rb = tri2 + (k + 2) % 3;
-    uint ca = 0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1));
-    uint cb = 0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1));
     inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
-    inCtxACol = uvec2(ca, ca);
+    inCtxACol = uvec2(0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1), inCellFar),
+                      0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1), inCellNear));
     inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
-    inCtxBCol = uvec2(cb, cb);
+    inCtxBCol = uvec2(0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1), inCellFar),
+                      0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1), inCellNear));
 #endif
     return true;
 }
@@ -1497,6 +1525,18 @@ void main()
               && ((gf & GF_HQPIN) != 0 ? trifront
                                        : near_canonical(m0.z, m1.z, m2.z, m2.z,
                                                         ff & FF_W3_40, ff & FF_W3_80));
+    /* The game's depth cue on an HQ vertex the pin routes past the game's
+     * own near band (terrain.c tn_hqfog_face): DPCS-fogged node colours and
+     * the ladder fade of the HQ texel. A face the game defers to its near
+     * drain keeps the raw near colours. hqw: the fade words, baked in the
+     * 2x2 vertex's near-half material slots or in the cell record. */
+    bool pinFog = hqv && (gf & GF_HQPIN) != 0 && (gf & GF_HQFOG) != 0
+               && !near_canonical(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80);
+#ifdef TERRAIN_CELLS
+    uvec2 hqw = cellHqFog;
+#else
+    uvec2 hqw = inMat.zw;
+#endif
     /* Drain sub-cell keys (FF_KEYCELLS, terrain.c terrain_near_emit_face,
      * terrain_near_emit_tri, tn_flat_tri_emit): where the drain inserts a
      * near-band face as finer sub-cells than the variant drawn here (the 2x2
@@ -1702,12 +1742,13 @@ void main()
              : hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
         uv.y += uvdv;
     }
-    vMat = uvec2(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16));
+    vMat = uvec4(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16),
+                 pinFog ? hqw : uvec2(0u));
     /* A borrowed face samples the auxiliary VRAM bank, 512 rows below the
      * PSX VRAM: bit 31 tells the fragment stage to offset the page row,
      * and the CLUT row carries the offset here. */
     if (!lp && (ff & FF_BORROWED) != 0u)
-        vMat = uvec2((mat0 & 0x00FFFFFFu) | 0x80000000u, vMat.y + (512u << 16));
+        vMat.xy = uvec2((mat0 & 0x00FFFFFFu) | 0x80000000u, vMat.y + (512u << 16));
     /* Debug tints 0-6 repurpose vMat.y; mode 7 keeps it stock, since its
      * fragment runs the stock texel fetch and cut-out. */
     if ((gf & (1 << 29)) != 0 && ((gf >> 26) & 7) != 7) {   /* ladder verdict */
@@ -1819,14 +1860,15 @@ void main()
                                    : vec2(inCtxBUV.x, inCtxBUV.y);
         if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
 
-        bool doFog   = !lp && !hqv;
+        bool doFog   = (!lp && !hqv) || pinFog;
         bool doGrade = lp && (sf & SF_LPGRADE) != 0u;
         int  dbgmode = (gf >> 26) & 7;
         bool dbgraw  = (gf & (1 << 29)) != 0 && (dbgmode == 4 || dbgmode == 5);
         cvx cin[3];
         for (int k = 0; k < 3; k++) {
-            vec3 c = terrain_col(tp[k].z, cf[k], cn[k], doFog, fogRef, fogscale,
-                                 doGrade, s.sec[slot].gp, s.sec[slot].gq);
+            /* an HQ vertex bakes its true far colour; unfogged it draws near */
+            vec3 c = terrain_col(tp[k].z, (hqv && !pinFog) ? cn[k] : cf[k], cn[k], doFog,
+                                 fogRef, fogscale, doGrade, s.sec[slot].gp, s.sec[slot].gq);
             if (dbgraw) c = (dbgmode == 4) ? cn[k] : cf[k];
             cin[k].m  = tp[k];
             cin[k].c  = ivec3(round(c * 255.0));
@@ -2063,8 +2105,8 @@ void main()
     vec3 cfar8  = op_unorm8(inColFar.rgb);
     vec3 cnear8 = op_unorm8(inColNear.rgb);
 #endif
-    vec4 col = vec4(terrain_col(mo.z, cfar8, cnear8,
-                                !lp && !hqv, fogRef, fogscale,
+    vec4 col = vec4(terrain_col(mo.z, (hqv && !pinFog) ? cnear8 : cfar8, cnear8,
+                                (!lp && !hqv) || pinFog, fogRef, fogscale,
                                 lp && (sf & SF_LPGRADE) != 0u,
                                 s.sec[slot].gp, s.sec[slot].gq), 1.0);
     {   /* debug tint modes 4/5: show the baked near / far colour raw */

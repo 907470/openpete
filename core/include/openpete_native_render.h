@@ -1681,6 +1681,18 @@ void openpete_native_scene_undefer_2d(void);
  * @param delta Ladder row with optional flags; 0 is the unfogged base row. */
 void openpete_native_scene_set_fog_delta(int delta);
 
+/** @brief Set the HQ ladder-fade words stamped on subsequently added triangles.
+ *
+ * A terrain face the HQ pin draws past the game's near band carries the
+ * affine of its far CLUT's deepest ladder row (core/rhi/shaders/psx_hq_fog.glsl
+ * documents the packing); the textured scene stages fade each texel by it at
+ * the fragment's ladder position. Triangles with different words never share
+ * a draw run. Ambient like openpete_native_scene_set_fog_delta: reset to
+ * (0, 0) when leaving the emit loop.
+ * @param a Word a; bit 31 clear disables the fade.
+ * @param b Word b. */
+void openpete_native_scene_set_hq_fog(uint32_t a, uint32_t b);
+
 /* ── Portal cover invariant (plane-cover rule) ────────────────────────
  * The portal feeder's opening planes, republished per feed in core terms so
  * the OPENPETE_PORTAL_COVER_CHECK sweep can verify the plane-cover rule

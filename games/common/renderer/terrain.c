@@ -484,6 +484,8 @@ typedef struct {
                                                     * zero otherwise (psx_key_contest.glsl) */
     float kn[12];                                  /* the face's fold-space corners (tn_fold_corner),
                                                     * set when a quadrant of it folds */
+    uint32_t hqfog[2];                             /* HQ ladder-fade words (tn_hqfog_words);
+                                                    * 0 = stock texels */
 } ttri;
 /* The walk's triangle stream (before the scene feed), sized by the walk: a
  * dense extended-LOD vista routes every eligible face through the 4x4 cell
@@ -500,6 +502,10 @@ static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this w
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
 static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
+static int s_hqfog_cen[3];         /* tn_wctx hqfog_cen sums */
+static int s_hqfog_en = -1;        /* OPENPETE_TERRAIN_HQFOG: depth cue on HQ-pinned far faces (default on) */
+static int s_hqfog_census_on;      /* OPENPETE_TERRAIN_HQFOG_CENSUS: tn_hqfog_census per pinned face */
+static unsigned s_hqfog_gen;       /* texture_pack_generation at walk entry (tn_hqfog_words cache key) */
 static int s_drain_skip[3];        /* tn_wctx drain_skip sums: [0] skipKeyed, [1] skipMasked, [2] foldedQuads */
 static int s_drain_skip_legacy;    /* OPENPETE_TERRAIN_DRAIN_SKIP=0: pack a skipped slot as delta 0 (A/B leg) */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
@@ -910,6 +916,7 @@ typedef struct { uint32_t rgb; float u, v; } lcorner;
 typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw, fog_delta;
                  int texid; /* Tiledef/record id (word2 & 0x7F), -1 = untextured */
                  int bank; } tmat;
+static void tn_hqfog_words(const tmat* fm, int fogbias, uint32_t w[2]);
 
 /** @brief Decodes one 8-byte Tiledef entry into a material and the tile's four spatial corner UVs.
  *
@@ -1149,6 +1156,14 @@ typedef struct {
     float emit_otkey; uint16_t emit_otslots; uint8_t emit_nearband; uint8_t emit_lpkey;
     uint8_t emit_keycells; uint32_t emit_kc[8];   /* the face's drain key table */
     uint8_t emit_fold; float emit_kn[12];         /* its folded quadrants and fold-space corners */
+    /* the face takes the game's depth cue on the near path (tn_hqfog_face):
+     * clip_push_tri fogs each node at emit_fogref, push_tri stamps the
+     * ladder-fade words */
+    uint8_t emit_hqfog_on; int emit_fogref; uint32_t emit_hqfog[2];
+    /* OPENPETE_TERRAIN_HQFOG_CENSUS: corners of HQ-pinned far faces found
+     * among the emitted vertices, those in the fog band, those whose colour
+     * differs from terrain_fog_blend */
+    int hqfog_cen[3];
     /* census (summed into the s_dbg_* / s_tex_* globals after the walk) */
     int dbg_faces, dbg_oob, dbg_nclip, dbg_behind, dbg_spike, dbg_clipped;
     int dbg_satback, dbg_satemit;         /* tface_facing's verdict flips vs the projected NCLIP */
@@ -1263,6 +1278,8 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
     if (W->emit_keycells) memcpy(t->kc, W->emit_kc, sizeof t->kc);
     else memset(t->kc, 0, sizeof t->kc);
     if (W->emit_keycells && W->emit_fold) memcpy(t->kn, W->emit_kn, sizeof t->kn);
+    t->hqfog[0] = m->textured ? W->emit_hqfog[0] : 0u;
+    t->hqfog[1] = m->textured ? W->emit_hqfog[1] : 0u;
     if (m->textured) W->tex_tris++;
 }
 
@@ -1284,6 +1301,20 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
  * wedge's full extent on a WSLg screenshot. */
 #define CLIP_PROJ_LIMIT 2048.0f
 
+/** @brief Fogs a near-path triangle's three nodes when its face takes the game's depth cue.
+ *
+ * Under emit_hqfog_on (tn_hqfog_face) each node's colour becomes
+ * terrain_fog_blend of its near (rgb) and far (rgbf) colours at its own
+ * depth and the face's fog reference; otherwise the nodes are left as they
+ * are.
+ * @param W The walk context.
+ * @param v The three nodes, rewritten in place. */
+static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
+    if (!W->emit_hqfog_on) return;
+    for (int k = 0; k < 3; k++)
+        v[k].rgb = terrain_fog_blend(v[k].rgb, v[k].rgbf, v[k].m3, W->emit_fogref);
+}
+
 /** @brief Near-plane clips a camera-space triangle and pushes the result.
  *
  * Sutherland-Hodgman against the plane m3 >= zc: 0 vertices behind gives 1
@@ -1293,7 +1324,10 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
  * centre, the whole face is re-clipped at a doubled zc, at most 16 times
  * (crossing projections shrink about 1/zc, and a face that ends fully behind
  * the raised plane lay entirely inside the invisible band). A face that never
- * crosses is pushed on round 0. A clipped push counts dbg_clipped.
+ * crosses is pushed on round 0. A clipped push counts dbg_clipped. Under
+ * emit_hqfog_on each vertex first takes terrain_fog_blend of its near (rgb)
+ * and far (rgbf) colours at its own depth, so a cut interpolates fogged
+ * colours as the retained cache's vertex stage does.
  * @param W The walk context receiving the triangles.
  * @param a The first vertex.
  * @param b The second vertex.
@@ -1301,6 +1335,7 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
  * @param m The face's material. */
 static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
     ngte_cvert in[3] = { a, b, c };
+    tn_hqfog_nodes(W, in);
     double zc = s_nearz;
     for (int round = 0; ; round++) {
         ngte_cvert out[4]; int nout = 0; int clipped = 0;
@@ -1357,10 +1392,19 @@ static ngte_cvert tn_cv(const lvert* p, lcorner k) {
     return c;
 }
 
+/** @brief Per-channel (a + b) >> 1 of two 0x00BBGGRR colours, the near pass's grid colour build.
+ * @param a The first colour.
+ * @param b The second colour.
+ * @return The averaged colour. */
+static uint32_t tn_rgb_mid(uint32_t a, uint32_t b) {
+    int ar=a&0xFF, ag=(a>>8)&0xFF, ab=(a>>16)&0xFF;
+    int br=b&0xFF, bg=(b>>8)&0xFF, bb=(b>>16)&0xFF;
+    return (uint32_t)((ar+br)>>1) | ((uint32_t)((ag+bg)>>1)<<8) | ((uint32_t)((ab+bb)>>1)<<16);
+}
 /** @brief Camera-space midpoint of two cverts.
  *
- * Position and the fx/fy terms are averaged, each colour channel is
- * (a + b) >> 1, and UV, the screen position and the outcode flag are zeroed
+ * Position and the fx/fy terms are averaged, each channel of the near (rgb)
+ * and far (rgbf) colours is (a + b) >> 1 (tn_rgb_mid), and UV, the screen position and the outcode flag are zeroed
  * for the caller to fill. Mirrors the near pass's `(a+b)>>1` grid build.
  * @param a The first vertex.
  * @param b The second vertex.
@@ -1371,9 +1415,8 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
     r.m1 = (a.m1 + b.m1) * 0.5; r.m2 = (a.m2 + b.m2) * 0.5; r.m3 = (a.m3 + b.m3) * 0.5;
     r.u = 0; r.v = 0;
     r.fx = (a.fx + b.fx) * 0.5f; r.fy = (a.fy + b.fy) * 0.5f;
-    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
-    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
-    r.rgb = (uint32_t)((ar+br)>>1) | ((uint32_t)((ag+bg)>>1)<<8) | ((uint32_t)((ab+bb)>>1)<<16);
+    r.rgb  = tn_rgb_mid(a.rgb, b.rgb);
+    r.rgbf = tn_rgb_mid(a.rgbf, b.rgbf);
     return r;
 }
 
@@ -2889,8 +2932,8 @@ static uint32_t nt4_rgb_mid(uint32_t a, uint32_t b) {
 /** @brief Builds a split triangle's 15 nodes from its three corners.
  *
  * Nodes 0, 4 and 14 are A, B and C; the other twelve follow k_nt4_build, each
- * the cv_mid of its two parents with its colour averaged as the drain does
- * (nt4_rgb_mid).
+ * the cv_mid of its two parents with its near and far colours averaged as
+ * the drain does (nt4_rgb_mid).
  * @param N Receives the 15 nodes.
  * @param A The first corner.
  * @param B The second corner.
@@ -2902,6 +2945,7 @@ static void nt4_grid(ngte_cvert N[15], ngte_cvert A, ngte_cvert B, ngte_cvert C)
         const uint8_t* b = k_nt4_build[i];
         N[b[0]] = cv_mid(N[b[1]], N[b[2]]);
         N[b[0]].rgb = nt4_rgb_mid(N[b[1]].rgb, N[b[2]].rgb);
+        N[b[0]].rgbf = nt4_rgb_mid(N[b[1]].rgbf, N[b[2]].rgbf);
     }
 }
 
@@ -3217,9 +3261,11 @@ static void trisplit_sum(const tn_wctx* W) {
         s_trisplit_scull[k] += W->trisplit_scull[k];
         s_trisplit_matdiff[k] += W->trisplit_matdiff[k];
         s_cells4_faces[k] += W->cells4_faces[k];
+        s_hqfog_cen[k] += W->hqfog_cen[k];
         s_drain_skip[k] += W->drain_skip[k];
     }
     s_drain_skip[2] += W->drain_skip[2];
+    s_hqfog_cen[2] += W->hqfog_cen[2];
 }
 
 /** @brief Reports whether a triangle face takes the tier-4 triangle pass.
@@ -8871,6 +8917,8 @@ typedef struct {
     uint32_t face_flags;
     uint32_t matf0, matf1, matn0, matn1;
     uint16_t flags16;
+    uint32_t farC[4];     /* HP: raw far colours, i0..i3 (cell records) */
+    uint32_t hqfog[2];    /* HP: the HQ ladder-fade words (tn_hqfog_words) */
 } tgpu_face_t;
 typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint32_t prgb_far, prgb_near;   /* anim arenas: previous-tick colours */
@@ -9082,9 +9130,12 @@ static void tgpu_hq_quadrant(CPUState* cpu, uint32_t hqBase, int abe, int q,
 
 /** @brief Bakes the HQ 2x2 subdivide variant of a near quad, mirroring terrain_near_emit.
  *
- * Corners TL=i0, TR=i1, BL=i3, BR=i2 take the raw near colours; midpoint
- * positions are exact ((a+b)>>1 on even x4 sums) and midpoint colours use
- * the walk's (a+b)>>1. Sub-quad q uses the HQ tile at hq_sub0 + q*8 with
+ * Corners TL=i0, TR=i1, BL=i3, BR=i2 take the raw near and far colours;
+ * midpoint positions are exact ((a+b)>>1 on even x4 sums) and midpoint
+ * colours, near and far, use the walk's (a+b)>>1. The far colours and the
+ * near-half material slots, which carry the face's ladder-fade words, are
+ * read only where the vertex stage fogs a face the HQ pin draws past the
+ * game's near band. Sub-quad q uses the HQ tile at hq_sub0 + q*8 with
  * the D_8006D058 UV-orientation adjust (tgpu_hq_quadrant) and is
  * triangulated (TL,TR,BL) + (TR,BL,BR). Camera-space node values are
  * rebuilt in the vertex stage from the parent corners and the role bits.
@@ -9106,37 +9157,38 @@ static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
                          const uint32_t nearC[4], const tsface_t* F,
                          uint32_t hqBase, int hp_bucket, int hdfold, int* fail) {
     tgpu_corner_t TL = k[0], TR = k[1], BL = k[3], BR = k[2];
-    TL.rgb_far = TL.rgb_near = nearC[0];
-    TR.rgb_far = TR.rgb_near = nearC[1];
-    BL.rgb_far = BL.rgb_near = nearC[3];
-    BR.rgb_far = BR.rgb_near = nearC[2];
-    TL.prgb_far = TL.prgb_near = k[0].prgb_near;
-    TR.prgb_far = TR.prgb_near = k[1].prgb_near;
-    BL.prgb_far = BL.prgb_near = k[3].prgb_near;
-    BR.prgb_far = BR.prgb_near = k[2].prgb_near;
+    TL.rgb_near = nearC[0]; TR.rgb_near = nearC[1];
+    BL.rgb_near = nearC[3]; BR.rgb_near = nearC[2];
     tgpu_corner_t mT, mB, mL, mR, Cc;
     memset(&mT, 0, sizeof(mT)); memset(&mB, 0, sizeof(mB));
     memset(&mL, 0, sizeof(mL)); memset(&mR, 0, sizeof(mR));
     memset(&Cc, 0, sizeof(Cc));
-    mT.p = tgpu_p4_mid(TL.p, TR.p); mT.rgb_far = tgpu_rgb_mid(TL.rgb_far, TR.rgb_far);
-    mB.p = tgpu_p4_mid(BL.p, BR.p); mB.rgb_far = tgpu_rgb_mid(BL.rgb_far, BR.rgb_far);
-    mL.p = tgpu_p4_mid(TL.p, BL.p); mL.rgb_far = tgpu_rgb_mid(TL.rgb_far, BL.rgb_far);
-    mR.p = tgpu_p4_mid(TR.p, BR.p); mR.rgb_far = tgpu_rgb_mid(TR.rgb_far, BR.rgb_far);
-    Cc.p = tgpu_p4_mid(mT.p, mB.p); Cc.rgb_far = tgpu_rgb_mid(mT.rgb_far, mB.rgb_far);
+    mT.p = tgpu_p4_mid(TL.p, TR.p); mT.rgb_near = tgpu_rgb_mid(TL.rgb_near, TR.rgb_near);
+    mB.p = tgpu_p4_mid(BL.p, BR.p); mB.rgb_near = tgpu_rgb_mid(BL.rgb_near, BR.rgb_near);
+    mL.p = tgpu_p4_mid(TL.p, BL.p); mL.rgb_near = tgpu_rgb_mid(TL.rgb_near, BL.rgb_near);
+    mR.p = tgpu_p4_mid(TR.p, BR.p); mR.rgb_near = tgpu_rgb_mid(TR.rgb_near, BR.rgb_near);
+    Cc.p = tgpu_p4_mid(mT.p, mB.p); Cc.rgb_near = tgpu_rgb_mid(mT.rgb_near, mB.rgb_near);
+    mT.rgb_far = tgpu_rgb_mid(TL.rgb_far, TR.rgb_far);
+    mB.rgb_far = tgpu_rgb_mid(BL.rgb_far, BR.rgb_far);
+    mL.rgb_far = tgpu_rgb_mid(TL.rgb_far, BL.rgb_far);
+    mR.rgb_far = tgpu_rgb_mid(TR.rgb_far, BR.rgb_far);
+    Cc.rgb_far = tgpu_rgb_mid(mT.rgb_far, mB.rgb_far);
     /* prev twin midpoints (HQ node positions derive from the lerped
      * PARENT corners in-shader; these per-vertex values are unread
      * for hqv verts but kept coherent). */
     mT.pp = tgpu_p4_mid(TL.pp, TR.pp); mB.pp = tgpu_p4_mid(BL.pp, BR.pp);
     mL.pp = tgpu_p4_mid(TL.pp, BL.pp); mR.pp = tgpu_p4_mid(TR.pp, BR.pp);
     Cc.pp = tgpu_p4_mid(mT.pp, mB.pp);
-    mT.rgb_near = mT.rgb_far; mB.rgb_near = mB.rgb_far;
-    mL.rgb_near = mL.rgb_far; mR.rgb_near = mR.rgb_far;
-    Cc.rgb_near = Cc.rgb_far;
-    mT.prgb_far = mT.prgb_near = tgpu_rgb_mid(TL.prgb_far, TR.prgb_far);
-    mB.prgb_far = mB.prgb_near = tgpu_rgb_mid(BL.prgb_far, BR.prgb_far);
-    mL.prgb_far = mL.prgb_near = tgpu_rgb_mid(TL.prgb_far, BL.prgb_far);
-    mR.prgb_far = mR.prgb_near = tgpu_rgb_mid(TR.prgb_far, BR.prgb_far);
-    Cc.prgb_far = Cc.prgb_near = tgpu_rgb_mid(mT.prgb_far, mB.prgb_far);
+    mT.prgb_near = tgpu_rgb_mid(TL.prgb_near, TR.prgb_near);
+    mB.prgb_near = tgpu_rgb_mid(BL.prgb_near, BR.prgb_near);
+    mL.prgb_near = tgpu_rgb_mid(TL.prgb_near, BL.prgb_near);
+    mR.prgb_near = tgpu_rgb_mid(TR.prgb_near, BR.prgb_near);
+    Cc.prgb_near = tgpu_rgb_mid(mT.prgb_near, mB.prgb_near);
+    mT.prgb_far = tgpu_rgb_mid(TL.prgb_far, TR.prgb_far);
+    mB.prgb_far = tgpu_rgb_mid(BL.prgb_far, BR.prgb_far);
+    mL.prgb_far = tgpu_rgb_mid(TL.prgb_far, BL.prgb_far);
+    mR.prgb_far = tgpu_rgb_mid(TR.prgb_far, BR.prgb_far);
+    Cc.prgb_far = tgpu_rgb_mid(mT.prgb_far, mB.prgb_far);
     tgpu_corner_t sq[4][4] = {
         { TL, mT, mL, Cc },   /* SQ0 [TL,TR,BL,BR] order */
         { mT, TR, Cc, mR },
@@ -9156,7 +9208,9 @@ static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
          * the same bucket (the pack overwrites the whole word). */
         H.matf0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
         H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
-        H.matn0 = 0; H.matn1 = 0;   /* near cells never re-select */
+        /* near cells never re-select: the near-half slots carry the
+         * face's ladder-fade words (terrain.vert hqw) */
+        H.matn0 = T->hqfog[0]; H.matn1 = T->hqfog[1];
         tgpu_corner_t c0 = sq[q][0], c1 = sq[q][1], c2 = sq[q][2], c3 = sq[q][3];
         c0.uf = (uint8_t)u[0]; c0.vf = (uint8_t)v[0]; c0.role = 0;
         c1.uf = (uint8_t)u[1]; c1.vf = (uint8_t)v[1]; c1.role = 1;
@@ -9214,10 +9268,10 @@ static int tgpu_cell_tile(CPUState* cpu, uint32_t e, int abe, int hp_bucket,
     return 0;
 }
 
-/** @brief Fills a cell record's face context: parent corners, previous-tick corners, face flags and raw near colours.
+/** @brief Fills a cell record's face context: parent corners, previous-tick corners, face flags, raw near and far colours and the HQ ladder-fade words.
  * @param R The record; zeroed first.
  * @param T The face template, the source of the current and previous-tick
- *        corners and the face flags.
+ *        corners, the face flags, the far colours and the fade words.
  * @param nearC The raw near corner colours. */
 static void tgpu_cell_rec_init(rhi_terrain_cell_anim* R, const tgpu_face_t* T,
                                const uint32_t nearC[4]) {
@@ -9230,7 +9284,11 @@ static void tgpu_cell_rec_init(rhi_terrain_cell_anim* R, const tgpu_face_t* T,
     R->p1x = T->pc[1].x; R->p1y = T->pc[1].y; R->p1z = T->pc[1].z;
     R->p2x = T->pc[2].x; R->p2y = T->pc[2].y; R->p2z = T->pc[2].z;
     R->p3x = T->pc[3].x; R->p3y = T->pc[3].y; R->p3z = T->pc[3].z;
-    for (int q = 0; q < 4; q++) R->cur.near_rgb[q] = nearC[q] & 0xFFFFFFu;
+    for (int q = 0; q < 4; q++) {
+        R->cur.near_rgb[q] = nearC[q] & 0xFFFFFFu;
+        R->cur.far_rgb[q] = T->farC[q] & 0xFFFFFFu;
+    }
+    R->cur.fog_a = T->hqfog[0]; R->cur.fog_b = T->hqfog[1];
     R->cur.face_flags = T->face_flags;
 }
 
@@ -9831,6 +9889,8 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
     }
     tgpu_model_cols(S->CA, 1, co, nearC);
     tgpu_model_cols(S->CA, 2, co, farC);
+    memcpy(T.farC, farC, sizeof T.farC);
+    tn_hqfog_words(&F->mat, F->fogbias, T.hqfog);
     tgpu_prev_cols(S->CA, 1, co[0], co[1], co[2], co[3], nearC, pnearC);
     tgpu_prev_cols(S->CA, 2, co[0], co[1], co[2], co[3], farC, pfarC);
     tgpu_corner_t k[4];
@@ -10825,37 +10885,209 @@ static int tn_queue_near(int quad, uint32_t rec) {
     return game_layout.terrain.hq_tri4_cells != 0 && is_deferred4(rec);
 }
 
+/** @brief Returns whether a near-path HP face takes the game's depth cue.
+ *
+ * The face is one the HQ pin routes to the near subdivide outside the
+ * game's own near band (hq_pin_active and not face_is_near_canonical): the
+ * game draws it whole from its far half, so its nodes take the DPCS fog and
+ * its HQ texels the ladder fade. A face the game itself defers to the near
+ * drain keeps the raw near colours. OPENPETE_TERRAIN_HQFOG=0 disables the
+ * cue (A/B); the retained cache reads the same verdict through
+ * OPTC_GF_HQFOG.
+ * @param sv The sector's projected vertices.
+ * @param F The face; a triangle's i3 equals i2.
+ * @return 1 when the face takes the cue, else 0. */
+static int tn_hqfog_face(const lvert* sv, const tsface_t* F) {
+    return hq_pin_active() &&
+           !face_is_near_canonical(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, sv[F->i3].m3, F->w3);
+}
+
+/* One cached deepest-row fit (tn_hqfog_words): the far material's CLUT
+ * identity and the registry generation it was read at. */
+typedef struct { uint32_t key; unsigned gen; uint32_t w[2]; } tn_hqfog_ent;
+static _Thread_local tn_hqfog_ent s_hqfog_tab[64];
+
+/** @brief Quantises one affine term to the fade word's signed 10-bit field, units 1/256.
+ * @param v The term.
+ * @return The field, clamped to -512..511 and masked to 10 bits. */
+static uint32_t tn_hqfog_q10(double v) {
+    long q = lround(v * 256.0);
+    if (q < -512) q = -512; else if (q > 511) q = 511;
+    return (uint32_t)q & 0x3FFu;
+}
+
+/** @brief Fits a far CLUT's ladder row 0 onto its deepest row 15, per channel.
+ *
+ * Least squares of out = a * in + b over the 5-bit channels of the entries
+ * that are not the 0x0000 sentinel in row 0, b in 0..1 units; a row with no
+ * spread gives a = 1 and the mean offset (tp_fog_affine's fit, native_render.c).
+ * @param vr The VRAM image.
+ * @param clx The CLUT's x.
+ * @param cly The CLUT's base row.
+ * @param n The entry count, 16 or 256.
+ * @param a Receives the slopes.
+ * @param b Receives the offsets.
+ * @return 1 when the fit had entries, else 0. */
+static int tn_hqfog_fit(const uint16_t* vr, int clx, int cly, int n, double a[3], double b[3]) {
+    const uint16_t* src = vr + (size_t)cly * OPENPETE_VRAM_W + clx;
+    const uint16_t* dst = vr + (size_t)((cly + 15) & 0x1FF) * OPENPETE_VRAM_W + clx;
+    int any = 0;
+    for (int c = 0; c < 3; c++) {
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        int cnt = 0;
+        for (int e = 0; e < n; e++) {
+            if (src[e] == 0) continue;
+            double x = (double)((src[e] >> (5 * c)) & 0x1F), y = (double)((dst[e] >> (5 * c)) & 0x1F);
+            sx += x; sy += y; sxx += x * x; sxy += x * y; cnt++;
+        }
+        a[c] = 1.0; b[c] = 0.0;
+        if (cnt == 0) continue;
+        any = 1;
+        double den = cnt * sxx - sx * sx;
+        if (den > 1e-6) {
+            a[c] = (cnt * sxy - sx * sy) / den;
+            b[c] = (sy - a[c] * sx) / cnt / 31.0;
+        } else {
+            b[c] = (sy - sx) / cnt / 31.0;
+        }
+    }
+    return any;
+}
+
+/** @brief Packs a face's HQ ladder-fade words from its far material (psx_hq_fog.glsl).
+ *
+ * The fade is tn_hqfog_fit of the far half's base CLUT row onto row 15,
+ * quantised by tn_hqfog_q10: word 0 the slopes, bit 30 the face's
+ * +0x2000 fog-reference bias, bit 31 enable; word 1 the offsets. An
+ * untextured or 16 bpp far half, a CLUT outside VRAM or one with no entries
+ * gives (0, 0), no fade. Fits are cached per thread by CLUT identity and
+ * the texture-pack registry generation at walk entry, which every VRAM
+ * write steps, so the walk and the retained cache bake read the same words.
+ * @param fm The face's far material (tsface_t.mat, base row).
+ * @param fogbias 1 when the face's fog reference carries the +0x2000 bias.
+ * @param w Receives the two words. */
+static void tn_hqfog_words(const tmat* fm, int fogbias, uint32_t w[2]) {
+    w[0] = w[1] = 0u;
+    if (!fm->textured || (fm->bpp != 4 && fm->bpp != 8)) return;
+    const int n = fm->bpp == 8 ? 256 : 16;
+    if (fm->clx < 0 || fm->clx + n > OPENPETE_VRAM_W || fm->cly < 0 || fm->cly > 511) return;
+    const uint32_t key = 1u | ((uint32_t)fm->clx << 1) | ((uint32_t)fm->cly << 11) | ((uint32_t)(n == 256) << 20);
+    tn_hqfog_ent* e = &s_hqfog_tab[(key * 2654435761u) >> 26];
+    if (e->key != key || e->gen != s_hqfog_gen) {
+        const uint16_t* vr = openpete_vram_read();
+        double a[3], b[3];
+        e->key = key; e->gen = s_hqfog_gen; e->w[0] = e->w[1] = 0u;
+        if (vr && tn_hqfog_fit(vr, fm->clx, fm->cly, n, a, b)) {
+            e->w[0] = 0x80000000u | tn_hqfog_q10(a[0]) | (tn_hqfog_q10(a[1]) << 10) | (tn_hqfog_q10(a[2]) << 20);
+            e->w[1] = tn_hqfog_q10(b[0]) | (tn_hqfog_q10(b[1]) << 10) | (tn_hqfog_q10(b[2]) << 20);
+        }
+    }
+    w[0] = e->w[0] | (e->w[0] && fogbias ? 0x40000000u : 0u);
+    w[1] = e->w[1];
+}
+
+/** @brief Counts one HQ-pinned far face's corners for OPENPETE_TERRAIN_HQFOG_CENSUS.
+ *
+ * Each corner is looked up among the vertices the face emitted (triangles
+ * t0 onward) by its exact view depth; a corner a near-plane cut removed is
+ * not found, and a corner whose depth another corner shares is skipped,
+ * since the subdivide nodes between the two carry that depth too. A found corner counts in hqfog_cen[0], in [1] when it lies in
+ * the fog band (0 < fogRef - SZ < 4096), and in [2] when its emitted colour
+ * differs from terrain_fog_blend of its near and far colours.
+ * @param W The walk context.
+ * @param V The face's corner nodes, near colour in rgb and far in rgbf.
+ * @param nc The corner count, 3 or 4.
+ * @param t0 The face's first emitted triangle.
+ * @param fogRef The face's fog reference. */
+static void tn_hqfog_census(tn_wctx* W, const ngte_cvert* V, int nc, int t0, int fogRef) {
+    for (int q = 0; q < nc; q++) {
+        int shared = 0;   /* a depth another corner shares names subdivide nodes too */
+        for (int o = 0; o < nc; o++) shared |= (o != q && V[o].m3 == V[q].m3);
+        if (shared) continue;
+        int hit = -1;
+        for (int t = t0; t < W->tri_n && hit < 0; t++)
+            for (int k = 0; k < 3; k++)
+                if (W->tri[t].vz[k] == V[q].m3) { hit = (int)W->tri[t].rgb[k]; break; }
+        if (hit < 0) continue;
+        W->hqfog_cen[0]++;
+        const int ir0 = fogRef - (int)(V[q].m3 * s_fogscale);
+        if (ir0 > 0 && ir0 < 4096) W->hqfog_cen[1]++;
+        if ((uint32_t)hit != terrain_fog_blend(V[q].rgb, V[q].rgbf, V[q].m3, fogRef)) W->hqfog_cen[2]++;
+    }
+}
+
+/** @brief Latches the HQ depth-cue switches once and keys this walk's fade-word cache.
+ *
+ * Reads OPENPETE_TERRAIN_HQFOG (default on) and OPENPETE_TERRAIN_HQFOG_CENSUS
+ * on the first walk, and takes the texture-pack registry generation, which
+ * every VRAM write steps, as the key tn_hqfog_words caches fits under. */
+static void tn_hqfog_begin(void) {
+    if (s_hqfog_en < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_HQFOG");
+        s_hqfog_en = !(e && *e == '0');
+        e = getenv("OPENPETE_TERRAIN_HQFOG_CENSUS");
+        s_hqfog_census_on = e && *e && *e != '0';
+    }
+    s_hqfog_gen = texture_pack_generation();
+}
+
+/** @brief Prints the walk's HQ depth-cue census line under OPENPETE_TERRAIN_HQFOG_CENSUS.
+ *
+ * One line per walk: the pinned corners found, those in the fog band and
+ * those whose colour differs from terrain_fog_blend (tn_hqfog_census). */
+static void tn_hqfog_census_print(void) {
+    if (!s_hqfog_census_on) return;
+    fprintf(stderr, "[hqfog-census] frame=%u corners=%d inBand=%d mismatch=%d\n",
+            openpete_feed_key_now(), s_hqfog_cen[0], s_hqfog_cen[1], s_hqfog_cen[2]);
+}
+
 /** @brief Emits one routed HP face on the near path.
  *
- * Reads the raw near colours of its corners (no DPCS fog on near cells),
- * through host pointers when host_col is set, then emits the quad's 2x2 or
- * 4x4 subdivide or the triangle's tier-4 or tier-2 split. Corners are in the
- * drain's grid order: TL = i0, TR = i1, BL = i3, BR = i2; a triangle's C is
- * i2 = i3 with the colour of word 1 byte 0 (c3). Counts near_q_agree or
- * near_c_only by the face's presence in the game's queue, and the dbg_spike
- * counters.
+ * Reads the raw near and far colours of its corners, through host pointers
+ * when host_col is set, then emits the quad's 2x2 or 4x4 subdivide or the
+ * triangle's tier-4 or tier-2 split. A face the game defers to its own near
+ * drain keeps the raw near colours, as the drain draws them. A face the HQ
+ * pin routes past that band (tn_hqfog_face) takes the game's depth cue:
+ * every node, the corners and the subdivide's interpolated nodes alike, is
+ * DPCS-fogged at its own depth (clip_push_tri), and its HQ texels carry the
+ * far half's ladder-fade words (tn_hqfog_words). Corners are in the drain's
+ * grid order: TL = i0, TR = i1, BL = i3, BR = i2; a triangle's C is i2 = i3
+ * with the colour of word 1 byte 0 (c3). Counts near_q_agree or near_c_only
+ * by the face's presence in the game's queue, the dbg_spike counters, and
+ * under OPENPETE_TERRAIN_HQFOG_CENSUS the pinned face's corners
+ * (tn_hqfog_census).
  * @param W The walk context.
  * @param cpu The guest CPU state.
  * @param sv The sector's projected vertices.
  * @param F The face.
- * @param host_col 1 to read colours through h_near.
+ * @param host_col 1 to read colours through h_near and h_far.
  * @param h_near The near colour bank as a host pointer.
  * @param nearBase The near colour bank's guest address.
+ * @param h_far The far colour bank as a host pointer.
+ * @param farBase The far colour bank's guest address.
+ * @param fogRef The face's fog reference.
  * @param hqTable The HQ record table's guest address.
  * @param rec The face record's guest address, the key of the game's near queues.
  * @param straddle 1 when a corner is at or behind the eye. */
 static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsface_t* F,
                          int host_col, const uint8_t* h_near, uint32_t nearBase,
+                         const uint8_t* h_far, uint32_t farBase, int fogRef,
                          uint32_t hqTable, uint32_t rec, int straddle) {
     if (is_deferred(rec)) W->near_q_agree++; else W->near_c_only++;
     const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
-    uint32_t r[4];
-    for (int q = 0; q < 4; q++)
-        r[q] = (host_col ? t_le32(h_near + co[q]) : rd(cpu, nearBase + (uint32_t)co[q])) & 0xFFFFFFu;
-    ngte_cvert TL = { .m1 = sv[F->i0].m1, .m2 = sv[F->i0].m2, .m3 = sv[F->i0].m3, .rgb = r[0] };
-    ngte_cvert TR = { .m1 = sv[F->i1].m1, .m2 = sv[F->i1].m2, .m3 = sv[F->i1].m3, .rgb = r[1] };
-    ngte_cvert BL = { .m1 = sv[F->i3].m1, .m2 = sv[F->i3].m2, .m3 = sv[F->i3].m3, .rgb = r[3] };
-    ngte_cvert BR = { .m1 = sv[F->i2].m1, .m2 = sv[F->i2].m2, .m3 = sv[F->i2].m3, .rgb = r[2] };
+    uint32_t r[4], rf[4];
+    for (int q = 0; q < 4; q++) {
+        r[q]  = (host_col ? t_le32(h_near + co[q]) : rd(cpu, nearBase + (uint32_t)co[q])) & 0xFFFFFFu;
+        rf[q] = (host_col ? t_le32(h_far + co[q])  : rd(cpu, farBase + (uint32_t)co[q]))  & 0xFFFFFFu;
+    }
+    ngte_cvert TL = { .m1 = sv[F->i0].m1, .m2 = sv[F->i0].m2, .m3 = sv[F->i0].m3, .rgb = r[0], .rgbf = rf[0] };
+    ngte_cvert TR = { .m1 = sv[F->i1].m1, .m2 = sv[F->i1].m2, .m3 = sv[F->i1].m3, .rgb = r[1], .rgbf = rf[1] };
+    ngte_cvert BL = { .m1 = sv[F->i3].m1, .m2 = sv[F->i3].m2, .m3 = sv[F->i3].m3, .rgb = r[3], .rgbf = rf[3] };
+    ngte_cvert BR = { .m1 = sv[F->i2].m1, .m2 = sv[F->i2].m2, .m3 = sv[F->i2].m3, .rgb = r[2], .rgbf = rf[2] };
+    const int pinned = tn_hqfog_face(sv, F);
+    W->emit_hqfog_on = (uint8_t)(pinned && s_hqfog_en);
+    W->emit_fogref = fogRef;
+    if (W->emit_hqfog_on) tn_hqfog_words(&F->mat, F->fogbias, W->emit_hqfog);
     int spikeTri0 = W->tri_n;
     const tn_nearface nf = {
         .hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
@@ -10869,6 +11101,12 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
                                        !face_tri4_routed(TL.m3, TR.m3, BL.m3, F->w3, rec, F->hq_idx));
     W->dbg_spike_tris += W->tri_n - spikeTri0;
     W->dbg_spike++;   /* near/HQ cells subdivided */
+    W->emit_hqfog_on = 0; W->emit_hqfog[0] = W->emit_hqfog[1] = 0u;
+    if (pinned && s_hqfog_census_on) {
+        /* a triangle's C is BL, coloured from word 1 byte 0 */
+        const ngte_cvert V[4] = { TL, TR, F->quad ? BR : BL, BL };
+        tn_hqfog_census(W, V, F->quad ? 4 : 3, spikeTri0, fogRef);
+    }
 }
 
 /** @brief Resolves a pass's colour arrays as host pointers.
@@ -12132,8 +12370,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
                 near = (faceStride == 16 && s_nearhq && hqTable && tn_queue_near(quad, faces + (uint32_t)f*16u));
             if (near) {
-                tn_near_face(W, cpu, sv, F, host_col, h_near, nearBase, hqTable,
-                             faces + (uint32_t)f * 16u, straddle);
+                tn_near_face(W, cpu, sv, F, host_col, h_near, nearBase, h_far, farBase,
+                             fogRef, hqTable, faces + (uint32_t)f * 16u, straddle);
                 FARDBG_DROP("nearhq");  /* emitted subdivided - the face-set
                                          * join can't corner-match the parent */
                 continue;
@@ -12599,6 +12837,7 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | (game_layout.terrain.hq_tri4_cells         ? OPTC_GF_TRI4    : 0u)
          | (game_layout.terrain.hq_tri2_tiles         ? OPTC_GF_TRI2    : 0u)
          | (game_layout.terrain.lp_near_sz            ? OPTC_GF_LPNEAROUT : 0u)
+         | (s_hqfog_en                                ? OPTC_GF_HQFOG   : 0u)
          | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
@@ -12958,6 +13197,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_dbg_spike_tris = 0;
     trisplit_reset(s_trisplit_faces, s_trisplit_subs, s_trisplit_scull, s_trisplit_matdiff);
     memset(s_cells4_faces, 0, sizeof(s_cells4_faces));
+    memset(s_hqfog_cen, 0, sizeof(s_hqfog_cen));
     memset(s_drain_skip, 0, sizeof(s_drain_skip));
     s_drain_skip_legacy = tn_drain_skip_legacy();
     s_near_q_agree = s_near_c_only = 0;
@@ -13035,6 +13275,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         const char* e = getenv("OPENPETE_TERRAIN_CLUTFOG");
         s_clutfog = (e && *e) ? (*e != '0') : 1;
     }
+    tn_hqfog_begin();
     /* .s LP/HP fog-saturation handoff - HP faces are dropped once FULLY beyond
      * fog saturation (ir0 <= 0 at every corner) and LP substitutes (far-only).
      * DEFAULT ON: beyond saturation the .s
@@ -13433,6 +13674,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->dbg_spike_tris = 0;
         trisplit_reset(W->trisplit_faces, W->trisplit_subs, W->trisplit_scull, W->trisplit_matdiff);
         memset(W->cells4_faces, 0, sizeof(W->cells4_faces));
+        memset(W->hqfog_cen, 0, sizeof(W->hqfog_cen));
+        W->emit_hqfog_on = 0; W->emit_hqfog[0] = W->emit_hqfog[1] = 0u;
         memset(W->drain_skip, 0, sizeof(W->drain_skip));
         W->tex_faces = W->tex_tris = 0;
         memset(W->envm_n, 0, sizeof W->envm_n);
@@ -13753,6 +13996,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_walk_sectors += W->walk_sectors;
     }
     tn_envm_faces_print(envm_n);
+    tn_hqfog_census_print();
     tn_snap_latch(&G, nw_used);
     {   /* OPENPETE_TERRAIN_NEARCEN=1: one line per terrain walk carrying the
          * near/HQ routing counts and the walk's triangle total. Headless runs
@@ -15396,6 +15640,7 @@ static void terrain_feed_native(CPUState* cpu) {
         tri.kattr = tn_key_attr(t, &tri);
         openpete_native_scene_set_tag(tn_material_tag(cpu, t, tex, tex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);
+        openpete_native_scene_set_hq_fog(t->hqfog[0], t->hqfog[1]);
         if (tn_rim_feed(cpu, t)) continue;
         /* OPENPETE_PORTAL_RIM_SHOW=1: paint classified faces one colour per
          * failure COMBINATION, so the picture says which TERM is responsible
@@ -15449,7 +15694,9 @@ static void terrain_feed_native(CPUState* cpu) {
         }
         openpete_native_scene_set_key_cells(NULL, NULL);
         openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
+        openpete_native_scene_set_hq_fog(0u, 0u);
     }
+    openpete_native_scene_set_hq_fog(0u, 0u);   /* a skipped last triangle set it */
     openpete_native_scene_set_presnap(0);   /* never leak past this feeder */
     openpete_native_scene_set_portal_rim(0);
     rim_cross_close();

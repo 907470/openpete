@@ -20,6 +20,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
 #include "psx_texel.glsl"
+#include "psx_hq_fog.glsl"
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 layout(set = 1, binding = 0) uniform sampler2D u_hpkey;   /* terrain key image */
@@ -31,8 +32,9 @@ layout(set = 4, binding = 0) uniform sampler2D u_hdatlas; /* HD-fold atlas (NEAR
 
 layout(location = 0)      in vec2  vUV;    /* x vQ (divide by vQ)            */
 layout(location = 1)      in vec4  vColor; /* x vQ (divide by vQ)            */
-layout(location = 2) flat in uvec2 vMat;   /* x: tpx|tpy<<10|bppc<<19|textured<<23,
-                                            * y: clx | cly<<16 */
+layout(location = 2) flat in uvec4 vMat;   /* x: tpx|tpy<<10|bppc<<19|textured<<23,
+                                            * y: clx | cly<<16, zw: HQ ladder-fade
+                                            * words (psx_hq_fog.glsl) */
 layout(location = 3) flat in float vKoff;  /* OT key (0 = out of contest) */
 layout(location = 4)      in float vQ;
 layout(location = 5) flat in uint  vHd;    /* HD-fold entry id | flags */
@@ -342,6 +344,9 @@ vec4 ter_stock_shade()
     vec4 c = ter_decode555(p);
     if (c.a == 0.0) return vec4(0.0);
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
+    else c.rgb = op_hq_fog(c.rgb, vMat.z, vMat.w,
+                           op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
+                           g.hd_lad.x, g.hd_lad.y);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     return vec4(clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0), c.a);
 }

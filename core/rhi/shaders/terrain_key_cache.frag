@@ -24,7 +24,7 @@ layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
 layout(location = 0)      in vec2  vUV;    /* u/wq (recover via vQ)          */
 layout(location = 1)      in vec4  vColor; /* x: the owner's true 1/view-Z   */
-layout(location = 2) flat in uvec2 vMat;
+layout(location = 2) flat in uvec4 vMat;
 layout(location = 3) flat in float vKoff;  /* the face's key + 0.5           */
 layout(location = 4)      in float vQ;     /* 1/wq                           */
 layout(location = 6)      in vec2  vKfl;   /* face-local coordinate x vKq    */

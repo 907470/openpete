@@ -177,6 +177,10 @@ enum {
 #define OPTC_GF_LPNEAROUT  16384u /* game_layout.terrain.lp_near_sz != 0: the LP
                                    * near outcode (the sector flags' bound)
                                    * replaces the authored LP admission       */
+#define OPTC_GF_HQFOG      32768u /* the HQ pin's far faces take the game's
+                                   * depth cue: DPCS-fogged node colours and
+                                   * the ladder fade of their HQ texels
+                                   * (terrain.c tn_hqfog_face)                 */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

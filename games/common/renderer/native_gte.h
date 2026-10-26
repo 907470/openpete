@@ -689,10 +689,14 @@ int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
  * fx/fy: a terrain producer's face-local coordinate of the corner (the
  * near drain's grid in quarter-edge units, psx_key_contest.glsl), carried
  * through a cut as the UVs are. Zero where no producer sets it.
+ *
+ * rgbf: a terrain producer's far (depth-cue target) colour beside the near
+ * colour in rgb, for a node it fogs before the cut. A cut does not carry it.
  */
 typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
                  float osx, osy; uint8_t oflag;
-                 float fx, fy; } ngte_cvert;
+                 float fx, fy;
+                 uint32_t rgbf; } ngte_cvert;
 
 /** @brief The point where the edge a->b crosses the plane m3 == zc.
  *

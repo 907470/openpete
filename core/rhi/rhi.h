@@ -846,7 +846,12 @@ typedef struct rhi_terrain_cell {
     uint32_t near_rgb[4];       /* raw near colours of corners i0..i3 (a
                                  * triangle's C colour, word 1 byte 0, in [3]) */
     rhi_terrain_cell_tile tile[8];
-} rhi_terrain_cell;             /* 176 bytes */
+    uint32_t far_rgb[4];        /* raw far (depth-cue target) colours, near_rgb's
+                                 * order: the nodes of a face the HQ pin draws
+                                 * past the game's near band fog toward them */
+    uint32_t fog_a, fog_b;      /* the face's HQ ladder-fade words
+                                 * (psx_hq_fog.glsl, terrain.c tn_hqfog_words) */
+} rhi_terrain_cell;             /* 200 bytes */
 
 /* Poly-anim sectors' records: the same plus the previous-tick corners the
  * terrain_anim stage lerps from (rhi_terrain_prev's c0x..c3z). */
@@ -856,7 +861,7 @@ typedef struct rhi_terrain_cell_anim {
     int16_t  p1x, p1y, p1z;
     int16_t  p2x, p2y, p2z;
     int16_t  p3x, p3y, p3z;
-} rhi_terrain_cell_anim;        /* 200 bytes */
+} rhi_terrain_cell_anim;        /* 224 bytes */
 
 /* Vertices per cell record instance: 8 cells x 2 triangles, each baked as
  * the near variant's primary + spare fan triangle (6) or as the anim

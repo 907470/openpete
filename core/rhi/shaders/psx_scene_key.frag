@@ -10,6 +10,7 @@
 #include "psx_moby_snap.glsl"
 #endif
 #include "psx_clut.glsl"
+#include "psx_hq_fog.glsl"
 #include "psx_texel.glsl"
 
 /* Textured OPAQUE scene fragment stage with the terrain KEY-RESOLVE contest.
@@ -56,6 +57,10 @@ layout(push_constant) uniform PsxMaterial {
     int tpage_x, tpage_y;
     int clut_x,  clut_y;
     int bpp;
+    /* The HQ ladder fade (psx_hq_fog.glsl): the run's fade words and the
+     * published ramp. Word a's bit 31 clear leaves every texel stock. */
+    uint hqfog_a, hqfog_b;
+    float lad_ts, lad_tb;
 } pc;
 
 layout(location = 0) in vec2 vUV;
@@ -181,6 +186,7 @@ void main()
     vec4 c = op_decode555(sample_word(ti.x, ti.y));
     if (c.a == 0.0) discard;
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
+    else c.rgb = op_hq_fog(c.rgb, pc.hqfog_a, pc.hqfog_b, own, pc.lad_ts, pc.lad_tb);
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     rgb = clut_fog_mix(rgb, col, ti.x, ti.y);
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(rgb, c.a);

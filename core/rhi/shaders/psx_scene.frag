@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_clut.glsl"
 #include "psx_texel.glsl"
+#include "psx_key_contest.glsl"
+#include "psx_hq_fog.glsl"
 
 /* Textured native-scene fragment stage.
  *
@@ -21,6 +23,10 @@ layout(push_constant) uniform PsxMaterial {
     int tpage_x, tpage_y;   /* texture page origin (VRAM 16-bit-pixel units) */
     int clut_x,  clut_y;    /* CLUT origin (VRAM pixel units; paletted only) */
     int bpp;                /* 4, 8, or 16 */
+    /* The HQ ladder fade (psx_hq_fog.glsl): the run's fade words and the
+     * published ramp. Word a's bit 31 clear leaves every texel stock. */
+    uint hqfog_a, hqfog_b;
+    float lad_ts, lad_tb;
 } pc;
 
 layout(location = 0) in vec2 vUV;     /* texel coords x ratio (divide by vQ) */
@@ -41,11 +47,12 @@ layout(constant_id = 2) const bool NOTEX = false;
  * (2), since those blend equations read no alpha to tell the two apart. */
 layout(constant_id = 5) const int STP_SELECT = 0;
 
-#ifdef OP_PORTAL_COVER
-/* The _cover variant (blended terrain): portal_cover_scene.glsl, with the
- * scene's gl_FragCoord.z convention (see psx_scene_key.frag). */
-#include "portal_cover_scene.glsl"
+/* The scene's gl_FragCoord.z convention (see psx_scene_key.frag): the
+ * portal cover test and the HQ fade's view-Z read it. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
+#ifdef OP_PORTAL_COVER
+/* The _cover variant (blended terrain): portal_cover_scene.glsl. */
+#include "portal_cover_scene.glsl"
 #endif
 
 uint sample_word(int u, int v)
@@ -79,6 +86,9 @@ void main()
     if (STP_SELECT == 1 && (word & 0x8000u) != 0u) discard;
     if (STP_SELECT == 2 && (word & 0x8000u) == 0u) discard;
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
+    else c.rgb = op_hq_fog(c.rgb, pc.hqfog_a, pc.hqfog_b,
+                           op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
+                           pc.lad_ts, pc.lad_tb);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     rgb = clut_fog_mix(rgb, col, ti.x, ti.y);

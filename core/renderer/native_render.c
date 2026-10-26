@@ -94,12 +94,17 @@ extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h)
 #define NR_DEFAULT_W 1280
 #define NR_DEFAULT_H 720
 
-/* Per-draw PSX material - must match the push_constant block in
- * shaders/psx_sample.frag (five tightly-packed 32-bit ints). */
+/* Per-draw PSX material - the push_constant block of the scene stages
+ * (psx_scene.frag, psx_scene_key.frag): five tightly-packed 32-bit ints, then
+ * the HQ ladder-fade words and the published ramp (psx_hq_fog.glsl). Stages
+ * that declare only the five ints (psx_sample.frag and the cutouts) read the
+ * prefix. */
 typedef struct {
     int32_t tpage_x, tpage_y;
     int32_t clut_x, clut_y;
     int32_t bpp;
+    uint32_t hqfog_a, hqfog_b;
+    float lad_ts, lad_tb;
 } psx_material;
 
 /* A scene triangle's blend class (openpete_scene_tri.blend) as the RHI blend
@@ -359,6 +364,8 @@ typedef struct {
                      * the material key ONLY when tag_split_on() (else inert) */
     int fog_delta;  /* sticky set_fog_delta value - the CLUT-ladder row this
                      * tri's palette was shifted to (0 = unfogged base row) */
+    uint32_t hqfog_a, hqfog_b; /* sticky set_hq_fog words (psx_hq_fog.glsl);
+                                * a run never spans two values */
     uint32_t prim;  /* PSX address of the primitive this tri was decoded from
                      * (sticky set_prim value; 0 for everything that is not 2D).
                      * The ordering-table walk ranks a tri by finding this
@@ -806,6 +813,7 @@ static void scene_kind_count(uint32_t tag, int add) {
  * would index VRAM out of bounds. */
 #define TP_FOG_DELTA_MAX 15
 static int s_cur_fog_delta;       /* sticky, stamped by add_tri */
+static uint32_t s_cur_hqfog[2];   /* sticky set_hq_fog words, stamped by add_tri */
 static int      s_tag_tint = -1;  /* OPENPETE_TAG_TINT: tint colours by tag */
 static int      s_tag_split_env = -1;   /* OPENPETE_TAG_SPLIT: force key join */
 static int      s_tag_split_ext = 0;    /* armed by registered selectors */
@@ -872,6 +880,9 @@ void openpete_native_scene_set_fog_delta(int delta) {
                       ? (delta & (TP_FOG_DELTA_RUNG | TP_FOG_DELTA_CONT |
                                   TP_FOG_DELTA_FOGBIAS))
                       : 0;
+}
+void openpete_native_scene_set_hq_fog(uint32_t a, uint32_t b) {
+    s_cur_hqfog[0] = a; s_cur_hqfog[1] = b;
 }
 /* Armed by the mod material-selector registry; see tag_split_on. */
 void openpete_native_set_tag_split(int on) { s_tag_split_ext = on ? 1 : 0; }
@@ -1181,6 +1192,7 @@ static int s_scene_actor_front = 0;
 /** @brief Hash a triangle's discrete material fields into one nonzero key.
  *
  * Folds tag, texture page, CLUT, bit depth, blend, prop, group, fog row,
+ * HQ fade words,
  * category and the textured flag with a multiplier of 31. Position, UV and
  * colour are excluded. 0 is remapped to 1 because scene_discrete_sig uses 0 as
  * its empty-slot marker.
@@ -1198,6 +1210,8 @@ static uint64_t scene_tri_key(const scene_tri_t *t)
     k = k * 31 + (uint64_t)(uint32_t)t->prop;
     k = k * 31 + (uint64_t)(uint32_t)t->group;
     k = k * 31 + (uint64_t)(uint32_t)t->fog_delta;
+    k = k * 31 + (uint64_t)t->hqfog_a;
+    k = k * 31 + (uint64_t)t->hqfog_b;
     k = k * 31 + (uint64_t)(uint32_t)t->category;
     k = k * 31 + (uint64_t)(uint32_t)t->textured;
     return k ? k : 1;      /* 0 marks an empty slot */
@@ -1936,6 +1950,8 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].tag = s_cur_tag;      /* sticky provenance (set_tag) */
         scene_kind_count(s_cur_tag, 1);
         s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
+        s_scene[s_scene_n].hqfog_a = s_cur_hqfog[0];     /* sticky (set_hq_fog) */
+        s_scene[s_scene_n].hqfog_b = s_cur_hqfog[1];
         s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
         s_scene[s_scene_n].over_fade = 0;                /* set at the 2D rank */
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
@@ -9780,7 +9796,7 @@ static void prepass_draw_world_runs(void)
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
     rhi_bind_pipeline(s_nr.dev, s_nr.prepass_tex_pipe);
     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-    const psx_material flat = { 0, 0, 0, 0, -1 };
+    const psx_material flat = { .bpp = -1 };
     if (s_pp_untex > 0) {
         rhi_push_constants(s_nr.dev, &flat, sizeof flat);
         rhi_draw(s_nr.dev, (uint32_t)s_pp_untex, 0);
@@ -11496,8 +11512,8 @@ static int hud_paint_cmp(const void* pa, const void* pb) {
 static const scene_tri_t* s_txsort_scene;   /* qsort context (set per call) */
 /** @brief Order two scene triangle indices by material for qsort.
  *
- * Compares tpage_y, tpage_x, clut_y, clut_x and bpp in that priority, then the
- * provenance tag while tag_split_on holds. The tag term must match the run
+ * Compares tpage_y, tpage_x, clut_y, clut_x, bpp and the HQ fade words in
+ * that priority, then the provenance tag while tag_split_on holds. The tag term must match the run
  * break in draw_tex_runs. Ties compare equal. Reads the scene through
  * s_txsort_scene.
  * @param pa Pointer to an int scene index.
@@ -11511,6 +11527,8 @@ static int tex_mat_cmp(const void* pa, const void* pb) {
     if (a->clut_y  != b->clut_y ) return a->clut_y  < b->clut_y  ? -1 : 1;
     if (a->clut_x  != b->clut_x ) return a->clut_x  < b->clut_x  ? -1 : 1;
     if (a->bpp     != b->bpp    ) return a->bpp     < b->bpp     ? -1 : 1;
+    if (a->hqfog_a != b->hqfog_a) return a->hqfog_a < b->hqfog_a ? -1 : 1;
+    if (a->hqfog_b != b->hqfog_b) return a->hqfog_b < b->hqfog_b ? -1 : 1;
     /* Provenance tag joins the key ONLY when a split consumer is armed
      * (registered selector / OPENPETE_TAG_SPLIT) - MUST stay in lockstep
      * with the coalesce run-break in draw_tex_runs, or batches that this
@@ -11531,7 +11549,7 @@ static int tex_mat_cmp(const void* pa, const void* pb) {
  * grouping and cross-material order match tex_mat_cmp exactly. Falls back to
  * qsort if the bucket table overflows (pathological material count). */
 #define TXMAT_BUCKETS 1024   /* power of two; distinct materials per scene ~dozens */
-typedef struct { uint64_t key; uint32_t tag; int count, offset, used; } txmat_bucket_t;
+typedef struct { uint64_t key, hq; uint32_t tag; int count, offset, used; } txmat_bucket_t;
 static txmat_bucket_t s_txmat_b[TXMAT_BUCKETS];
 #define s_txmat_of  ((uint16_t *)s_cz_txof.data)    /* tri -> bucket slot */
 #define s_txmat_out ((int *)s_cz_txout.data)        /* scatter target */
@@ -11546,6 +11564,7 @@ static int txmat_bucket_cmp(const void* pa, const void* pb) {
     const txmat_bucket_t* a = &s_txmat_b[*(const uint16_t*)pa];
     const txmat_bucket_t* b = &s_txmat_b[*(const uint16_t*)pb];
     if (a->key != b->key) return a->key < b->key ? -1 : 1;
+    if (a->hq  != b->hq)  return a->hq  < b->hq  ? -1 : 1;
     if (a->tag != b->tag) return a->tag < b->tag ? -1 : 1;
     return 0;
 }
@@ -11553,7 +11572,7 @@ static int txmat_bucket_cmp(const void* pa, const void* pb) {
 /** @brief Reorder scene indices so triangles of one material are contiguous, in material-key order.
  *
  * Interns each triangle's material (packed tpage_y, tpage_x, clut_y, clut_x,
- * bpp, plus the tag while tag_split_on holds) into a 1024-bucket open-
+ * bpp, then the HQ fade words, plus the tag while tag_split_on holds) into a 1024-bucket open-
  * addressing table, sorts the distinct materials by key, then scatters the
  * indices, stable within a material. The packed key gives the same grouping and
  * order as tex_mat_cmp for fields within VRAM extents. When the table reaches
@@ -11579,12 +11598,13 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
                        ((uint64_t)(uint32_t)t->clut_x  << 11) |
                         (uint64_t)(uint32_t)t->bpp;
         uint32_t tag = with_tag ? t->tag : 0;
-        uint64_t h = (key ^ ((uint64_t)tag * 0x9E3779B97F4A7C15ull)) *
+        const uint64_t hq = ((uint64_t)t->hqfog_a << 32) | t->hqfog_b;
+        uint64_t h = (key ^ ((uint64_t)tag * 0x9E3779B97F4A7C15ull) ^ hq) *
                      0x9E3779B97F4A7C15ull >> 48;
         int s = (int)(h & (TXMAT_BUCKETS - 1));
         for (;;) {
             txmat_bucket_t* b = &s_txmat_b[s];
-            if (b->used && b->key == key && b->tag == tag) break;
+            if (b->used && b->key == key && b->hq == hq && b->tag == tag) break;
             if (!b->used) {
                 if (m >= TXMAT_BUCKETS - 1) {   /* table full: comparison sort */
                     for (int j = 0; j < m; j++) s_txmat_b[slots[j]].used = 0;
@@ -11592,7 +11612,7 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
                     qsort(idx, (size_t)n, sizeof(int), tex_mat_cmp);
                     return;
                 }
-                b->used = 1; b->key = key; b->tag = tag; b->count = 0;
+                b->used = 1; b->key = key; b->hq = hq; b->tag = tag; b->count = 0;
                 slots[m++] = (uint16_t)s;
                 break;
             }
@@ -13158,8 +13178,8 @@ static const scene_tri_t* tex_run_tri(const tex_run* r, int t) {
 
 /** @brief Return whether triangle s1 continues the textured draw run that s0 heads.
  *
- * It does when it has the same material (texture page, CLUT and bit
- * depth); the same provenance tag while the tag split is armed, in
+ * It does when it has the same material (texture page, CLUT, bit depth
+ * and HQ fade words); the same provenance tag while the tag split is armed, in
  * lockstep with tex_mat_cmp's tag term, since coalescing across tags would
  * undo the split the sort made; and, with @p split_blend, the same blend
  * class and texel STP selection, so a run never straddles two blend
@@ -13172,8 +13192,26 @@ static const scene_tri_t* tex_run_tri(const tex_run* r, int t) {
 static int tex_run_continues(const scene_tri_t* s0, const scene_tri_t* s1, int split_blend) {
     if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
         s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) return 0;
+    if (s1->hqfog_a != s0->hqfog_a || s1->hqfog_b != s0->hqfog_b) return 0;
     if (tag_split_on() && s1->tag != s0->tag) return 0;
     return !split_blend || (s1->blend == s0->blend && s1->stp_sel == s0->stp_sel);
+}
+
+/** @brief Return the material a textured run headed by s pushes.
+ *
+ * The page, CLUT and bit depth, plus the head's HQ ladder-fade words and,
+ * when word a enables the fade, the composed scene's published ramp
+ * (ps_pack_fog); a run carries one value of each (tex_run_continues).
+ * @param s Run head.
+ * @return The material. */
+static psx_material tex_run_material(const scene_tri_t* s) {
+    psx_material m = { s->tpage_x, s->tpage_y, s->clut_x, s->clut_y, s->bpp,
+                       s->hqfog_a, s->hqfog_b, 0.0f, 0.0f };
+    if (s->hqfog_a & 0x80000000u) {
+        const nr_pack_fog* pf = ps_pack_fog();
+        if (pf->lad_on) { m.lad_ts = pf->lad[0]; m.lad_tb = pf->lad[1]; }
+    }
+    return m;
 }
 
 /** @brief Return the pipeline a textured run headed by s draws through.
@@ -13520,7 +13558,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                tex_run_continues(s0, &scene[s_txscene[base + i + run]], split_blend))
             run++;
         const tex_run r = { scene, base + i, run, (uint32_t)(first_vert + i * 3),
-                            { s0->tpage_x, s0->tpage_y, s0->clut_x, s0->clut_y, s0->bpp } };
+                            tex_run_material(s0) };
         rhi_pipeline* const pipe = tex_run_pipe(pipes, npipes, s0);
         if (pipe != self) {
             bind_scene_pipe(pipe);
@@ -18808,7 +18846,7 @@ static void draw_vram_fallback(rhi_buffer *vb)
         tx = s_nr.disp_x;
         ty = s_nr.disp_y + dy;
     }
-    const psx_material nd_mat = { tx, ty, 0, 0, 16 };
+    const psx_material nd_mat = { .tpage_x = tx, .tpage_y = ty, .bpp = 16 };
     bind_scene_pipe(s_nr.vram_pipe);
     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
     rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));

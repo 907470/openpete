@@ -25,6 +25,7 @@ set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert
 # one more thing to keep in sync with the #include lines.
 set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_texel.glsl
+                        ${RHI_SHADER_SRC_DIR}/psx_hq_fog.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_key_contest.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_unorm8.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_viewz.glsl
