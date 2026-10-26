@@ -2903,6 +2903,64 @@ static int append_revealed_regular(CPUState* cpu) {
     s_us_reveal += (long)(openpete_phase_now_us() - t0);
     return n;
 }
+/** @brief Decode one host-built moby record under the pass's camera and append it to the scene records.
+ *
+ * The record's LOD verdict is the cull's ZSF4 formula (@8001F404) with the
+ * --no-lod adjustment (moby_reveal_zsf4), since no live record stands behind
+ * a host-built one. On a sub-tick
+ * present the shape lerps from the previous tick's pose
+ * (moby_record_prev_pose). The record carries no live record address, takes
+ * the specular face treatment when the moby is shiny, and enters the fade
+ * snapshot.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param f The moby's record fields under the pass's camera.
+ * @param ver_check Nonzero when the occlusion verifier audits this record.
+ * @param zsf4_out Receives the record's ZSF4 verdict, also when the decode yields none.
+ * @return The projected vertex count appended, 0 when the decode yields none. */
+static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver_check, int* zsf4_out) {
+    const int off = s_proj_n;
+    /* ZSF4 mirrored from the cull's formula (@8001F404) - there is no live
+     * record behind a revealed moby to read the verdict from. Validated by
+     * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records.
+     * Computed BEFORE the decode: the tier-adjusted vertex-count read
+     * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
+    int rmd   = (int)(cpu->read_byte(m + moby_game.renderer_off) & moby_game.renderer_mask);
+    const int rzsf4 = moby_reveal_zsf4(rmd, f->TR_raw[2]);
+    *zsf4_out = rzsf4;
+    /* The sub-tick shape lerp, hold and colour crossfade of the queue
+     * pass; a canonical present (interp off) reads no previous pose. */
+    moby_prev_decode pd;
+    moby_record_prev_pose(cpu, m, f, &pd);
+    if (s_walk_in_rex && pd.verdict >= 0 && pd.verdict < 3) s_reveal_verdict[pd.verdict]++;
+    int got;
+    { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+      pose_hold_begin(m, f->header, f->header_b, f->frameA, f->frameB, f->w0);
+      got = moby_decode_project(cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0, pd.dprev, pd.dalpha, -1.0, moby_record_depth_k(cpu, m), f->TR_raw, f->TR_frac, f->M,
+                                rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+      pose_hold_end(got);
+      if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
+    if (got <= 0) return 0;
+    if (ver_check) occl_verify_end(m, s_proj + off, got);
+    else occl_cache_update(cpu, m, s_proj + off, got, f->TR_frac, f->header);
+    for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
+    s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f->header, f->header_b,
+        moby_tier_faceblock(cpu, f->header, rzsf4), f->w0,
+        f->metal, f->mscol, m, rzsf4,
+        atan2f((float)f->TR_raw[2], (float)f->TR_raw[0]), f->frameA,
+        pd.prev.frame_a, pd.prev.header, (float)pd.alpha };
+    s_recs[s_nrecs].model_held = pd.model_held;
+    memcpy(s_recs[s_nrecs].M, f->M, sizeof s_recs[s_nrecs].M);
+    s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f->mscol);
+    /* Sole feeder: the walk applies the SPEC face treatment for this moby,
+     * but only for a moby the specular pass itself renders - everything
+     * else keeps its baked per-vertex colours. */
+    s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
+    fade_snap_put(cpu, m, rzsf4, f->header);
+    s_proj_n += got; s_nrecs++;
+    return got;
+}
+
 /** @brief The reveal walk: host-built records for the live mobys the canonical cull did not queue.
  *
  * Those are the mobys at the widescreen edges and in the --no-lod range; each
@@ -3117,44 +3175,10 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         s_occl_seen++;
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        /* ZSF4 mirrored from the cull's formula (@8001F404) - there is no live
-         * record behind a revealed moby to read the verdict from. Validated by
-         * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records.
-         * Computed BEFORE the decode: the tier-adjusted vertex-count read
-         * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
-        int rmd   = (int)(cpu->read_byte(m + moby_game.renderer_off) & moby_game.renderer_mask);
-        int rzsf4 = moby_reveal_zsf4(rmd, f.TR_raw[2]);
-        /* The sub-tick shape lerp, hold and colour crossfade of the queue
-         * pass; a canonical present (interp off) reads no previous pose. */
-        moby_prev_decode pd;
-        moby_record_prev_pose(cpu, m, &f, &pd);
-        if (s_walk_in_rex && pd.verdict >= 0 && pd.verdict < 3) s_reveal_verdict[pd.verdict]++;
-        int got;
-        { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
-          pose_hold_begin(m, f.header, f.header_b, f.frameA, f.frameB, f.w0);
-          got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0, pd.dprev, pd.dalpha, -1.0, moby_record_depth_k(cpu, m), f.TR_raw, f.TR_frac, f.M,
-                                    rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
-          pose_hold_end(got);
-          if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
+        int rzsf4 = 0;
+        int got = reveal_emit_record(cpu, m, &f, ver_check, &rzsf4);
         if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += game_layout.moby.array_stride; continue; }
-        TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
-        if (ver_check) occl_verify_end(m, s_proj + off, got);
-        else occl_cache_update(cpu, m, s_proj + off, got, f.TR_frac, f.header);
-        for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
-        s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header, f.header_b,
-            moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
-            f.metal, f.mscol, m, rzsf4,
-            atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
-            pd.prev.frame_a, pd.prev.header, (float)pd.alpha };
-        s_recs[s_nrecs].model_held = pd.model_held;
-        memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
-        s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
-        /* Sole feeder: the walk applies the SPEC face treatment for this moby,
-         * but only for a moby the specular pass itself renders - everything
-         * else keeps its baked per-vertex colours. */
-        s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
-        TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
-        fade_snap_put(cpu, m, rzsf4, f.header);
+        TRC("REVEALED got=%d zsf4=%d spec_solo=%d", got, rzsf4, (int)s_recs[s_nrecs - 1].spec_solo);
         if (revealed < MAX_RECORDS) revlist[revealed] = pub;
         /* census diag: projected screen centroid + vert count of this reveal */
         if (revealed < MAX_RECORDS) {
@@ -3164,7 +3188,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             revsy[revealed] = got ? cym / (float)got : -1.f;
             revnv[revealed] = got;
         }
-        s_proj_n += got; s_nrecs++; revealed++;
+        revealed++;
         NGTE_CENSUS_HIT(reveal_admitted);
         m += game_layout.moby.array_stride;
     }
@@ -3584,6 +3608,26 @@ static int qmiss_is_held(uint32_t m) {
     return 0;
 }
 
+/* The trailing edge of the sub-tick queue. A sub-tick present draws the
+ * newest tick's regular queue under a camera between the previous tick's and
+ * the newest one's, so a moby the previous tick's cull queued and the newest
+ * tick's 4:3 cone rejected has no record there although the present's camera
+ * may still see it. s_trail_prevq is the regular queue's moby set at the
+ * previous canonical pass; s_trail_cand is the subset the newest queue
+ * dropped while the cull mirror at the newest tick's camera rejects it (a
+ * camera or motion verdict, not a candidate-list change). */
+static uint32_t s_trail_prevq[MAX_RECORDS]; static int s_trail_prevq_n;
+static uint32_t s_trail_epoch;
+static uint32_t s_trail_cand[MAX_RECORDS];  static int s_trail_cand_n;
+
+/** @brief Whether moby m is a trailing-edge candidate of the newest tick.
+ * @param m The Moby address.
+ * @return 1 when m is in s_trail_cand, else 0. */
+static int trail_cand_has(uint32_t m) {
+    for (int k = 0; k < s_trail_cand_n; k++) if (s_trail_cand[k] == m) return 1;
+    return 0;
+}
+
 /** @brief The game's cull admission of one candidate under the guest view's camera.
  *
  * qmiss_s1_cull_admits, or cull_view_admits at 4:3 where MOBY_WIDE_CANONICAL
@@ -3620,7 +3664,7 @@ static void moby_qmiss_census(CPUState* cpu, int sub) {
     if (!qmiss_census_on()) return;
     if (moby_game.cull_view_admits) qmiss_live_candidates(cpu);
     if (s_qcand_n < 0) return;                     /* no candidate snapshot */
-    long untested = 0, miss = 0, held_n = 0, held_admit = 0;
+    long untested = 0, miss = 0, trail = 0, held_n = 0, held_admit = 0;
     char ids[192]; int idn = 0; ids[0] = 0;
     for (int i = 0; i < s_qcand_n; i++) {
         const uint32_t m = s_qcand[i];
@@ -3629,16 +3673,106 @@ static void moby_qmiss_census(CPUState* cpu, int sub) {
         untested += a < 0;
         if (a <= 0) continue;
         miss++;
+        trail += trail_cand_has(m);
         if (idn < (int)sizeof ids - 10)
             idn += snprintf(ids + idn, sizeof ids - (size_t)idn, "%s%08X", idn ? "," : "", m);
     }
     const uint32_t cam = game_layout.cam.base;
     fprintf(stderr, "[moby-qmiss key=%u leg=%s widen=%.3f] candidates=%d queued=%d held=%ld "
-            "held_admit=%ld untested=%ld miss_cone=%ld cam=(%d,%d,%d) mobys=[%s]\n",
+            "held_admit=%ld untested=%ld miss_cone=%ld miss_trail=%ld cam=(%d,%d,%d) mobys=[%s]\n",
             openpete_feed_key_now(), sub ? "sub" : "canon", moby_native_view_widen(),
-            s_qcand_n, s_reg_moby_n, held_n, held_admit, untested, miss,
+            s_qcand_n, s_reg_moby_n, held_n, held_admit, untested, miss, trail,
             (int)cpu->read_word(cam + 0x28u), (int)cpu->read_word(cam + 0x2Cu),
             (int)cpu->read_word(cam + 0x30u), ids);
+}
+
+/** @brief Latch the trailing-edge candidates on a canonical regular pass.
+ *
+ * Runs after s_reg_moby holds the canonical queue set, while the guest view
+ * holds the camera the cull ran under, once per canonical epoch: a runahead
+ * epoch runs the pass more than once, and its sub-tick presents replay the
+ * queue of the first run, so later runs of the same epoch are skipped. The
+ * previous queue is the previous epoch's first-run queue. A moby of the previous queue that the new queue lacks becomes a
+ * candidate when qmiss_s1_cull_admits, run with the
+ * drawn byte the previous queue left set (bit 0, the cull's 0x200 box
+ * hysteresis), rejects it at this camera; one the mirror admits left the
+ * queue for a reason the mirror does not model and is never re-admitted.
+ * Only the Spyro 1 cull is mirrored (a game with host_reveal and no
+ * cull_view_admits); elsewhere the set stays empty. Prints one
+ * [moby-trail] line under OPENPETE_MOBY_QMISS_CENSUS.
+ * @param cpu The guest CPU state, read only. */
+static void moby_trail_latch(CPUState* cpu) {
+    if (!moby_game.host_reveal || moby_game.cull_view_admits) return;
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    if (epoch == s_trail_epoch) return;           /* a speculated pass of the same epoch */
+    s_trail_epoch = epoch;
+    s_trail_cand_n = 0;
+    long kept = 0;
+    for (int i = 0; i < s_trail_prevq_n; i++) {
+        const uint32_t m = s_trail_prevq[i];
+        int held = 0;
+        for (int k = 0; k < s_reg_moby_n && !held; k++) held = s_reg_moby[k] == m;
+        if (held) continue;
+        if (qmiss_s1_cull_admits(cpu, m, 1u) == 0) s_trail_cand[s_trail_cand_n++] = m;
+        else kept++;
+    }
+    memcpy(s_trail_prevq, s_reg_moby, (size_t)s_reg_moby_n * sizeof s_reg_moby[0]);
+    s_trail_prevq_n = s_reg_moby_n;
+    if (qmiss_census_on())
+        fprintf(stderr, "[moby-trail key=%u leg=canon epoch=%u] queued=%d cand=%d other=%ld\n",
+                openpete_feed_key_now(), epoch, s_reg_moby_n, s_trail_cand_n, kept);
+}
+
+/** @brief Return 0 when OPENPETE_MOBY_TRAIL is set to 0, else 1, read once.
+ *
+ * An in-binary A/B switch for the trailing-edge records of the sub-tick pass.
+ * @return 1 when the trailing-edge records are on. */
+static int trail_enabled(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_TRAIL"); on = !(e && *e == '0'); }
+    return on;
+}
+
+/** @brief Append host-built records for the trailing-edge candidates the game's cull admits under a sub-tick present's camera.
+ *
+ * Runs on the sub-tick regular pass at the canonical view (no widened view,
+ * no --no-lod; those run the reveal walk instead), after the queue records.
+ * A candidate (moby_trail_latch) the pass already holds, a dead moby, and a
+ * run-once moby are skipped; the rest are re-tested with
+ * qmiss_s1_cull_admits under the guest view, which holds the present's
+ * camera, and the drawn byte the previous queue left set. An admitted moby
+ * passes the occlusion cull as a queue record does and is decoded through
+ * reveal_emit_record. At the newest tick's camera the mirror rejects every
+ * candidate, so the identity present and the canonical present add nothing.
+ * @param cpu The guest CPU state, read only.
+ * @return The records appended. */
+static int append_trailing_regular(CPUState* cpu) {
+    if (!s_trail_cand_n || s_view.extended || openpete_no_lod || !trail_enabled()) return 0;
+    if (moby_cutscene_owns_draw(cpu)) return 0;
+    int added = 0, admit = 0;
+    for (int i = 0; i < s_trail_cand_n; i++) {
+        const uint32_t m = s_trail_cand[i];
+        if (qmiss_is_held(m) || cpu->read_byte(m + game_layout.moby.state_off) >= 0x80u) continue;
+        if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + game_layout.moby.class_off))) continue;
+        if (qmiss_s1_cull_admits(cpu, m, 1u) <= 0) continue;
+        admit++;
+        int ver_check = 0;
+        if (occl_record_culled(cpu, m)) {
+            ver_check = occl_verify_begin(m);
+            if (!ver_check) { s_occl_seen++; s_occl_culled++; continue; }
+        }
+        s_occl_seen++;
+        moby_fields f;
+        if (!build_moby_record_fields(cpu, m, &f)) continue;
+        moby_fields_pose_from_snapshot(cpu, m, &f);
+        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
+        int zsf4;
+        added += reveal_emit_record(cpu, m, &f, ver_check, &zsf4) > 0;
+    }
+    if (qmiss_census_on())
+        fprintf(stderr, "[moby-trail key=%u leg=sub] cand=%d admit=%d added=%d\n",
+                openpete_feed_key_now(), s_trail_cand_n, admit, added);
+    return added;
 }
 
 /* ---- native scene triangle (fed to panel 0) ------------------------------
@@ -8891,6 +9025,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         for (int r = 0; r < nrec && s_reg_moby_n < MAX_RECORDS; r++)
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
         moby_qmiss_census(cpu, 0);
+        moby_trail_latch(cpu);
     }
     if (feed) {
         if (!is_spec) {
@@ -12819,8 +12954,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * Same builder, re-projected through the
          * interpolated g_Camera; dedups vs s_recs (the queue set - an
          * occl-culled off-4:3 queue moby may re-enter here, which is merely
-         * redundant draw work, never a wrong pixel). Inert at 4:3. */
+         * redundant draw work, never a wrong pixel). Inert at 4:3, where the
+         * trailing-edge records cover the mobys the newest tick's cone
+         * dropped and the present's camera still sees. */
         append_revealed_regular(cpu);
+        append_trailing_regular(cpu);
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
     push_scene_moby(cpu);
