@@ -5279,6 +5279,28 @@ static uint8_t rec_single_bucket(const rec_meta* R) {
     return (uint8_t)moby_otk_row_single_bucket((moby_otk_row_t)s_proj[R->proj_off].otk.row);
 }
 
+
+/** @brief Print one `[moby-class]` line for a drawn moby under OPENPETE_MOBY_CLASSDBG=1, an instrument.
+ *
+ * Class, address and world position, at most 128 lines per VBL; names the
+ * producer when a scene object needs a class-keyed treatment (a mod
+ * material selector, a snap-table moby). Read once and cached.
+ * @param cpu The guest CPU state, read only.
+ * @param mob The moby's address, or 0 (nothing printed).
+ * @param cls Its class. */
+static void moby_classdbg_line(CPUState* cpu, uint32_t mob, uint16_t cls) {
+    static int clsdbg = -1;
+    if (clsdbg < 0) { const char* e = getenv("OPENPETE_MOBY_CLASSDBG"); clsdbg = (e && *e && *e != '0'); }
+    if (!clsdbg || !mob) return;
+    static unsigned last_f = 0xFFFFFFFFu; static int printed;
+    if (openpete_frame != last_f) { last_f = openpete_frame; printed = 0; }
+    if (printed >= 128) return;
+    printed++;
+    fprintf(stderr, "[moby-class vbl=%u] cls=%u moby=%08x pos=(%d, %d, %d)\n", openpete_frame, cls, mob,
+            (int)cpu->read_word(mob + game_layout.moby.pos_off + 0u), (int)cpu->read_word(mob + game_layout.moby.pos_off + 4u),
+            (int)cpu->read_word(mob + game_layout.moby.pos_off + 8u));
+}
+
 /** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
  *
  * Per record: the specular pass skips a moby the regular pass already fed
@@ -5315,24 +5337,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
          * m_WasDrawn @8001F4CC, the moby still auto-includes into the next
          * tick's update list, and its one-shot job still runs on schedule. */
         if (mob && moby_run_once_hidden(cpu, mob, s_cur_moby_cls)) continue;
-        /* OPENPETE_MOBY_CLASSDBG=1: one line per drawn moby (class + vaddr +
-         * world position) - names the producer when a scene object needs a
-         * class-keyed treatment (e.g. a mod material selector). */
-        {
-            static int clsdbg = -1;
-            if (clsdbg < 0) { const char* e = getenv("OPENPETE_MOBY_CLASSDBG"); clsdbg = (e && *e && *e != '0'); }
-            if (clsdbg && mob) {
-                static unsigned last_f = 0xFFFFFFFFu; static int printed;
-                if (openpete_frame != last_f) { last_f = openpete_frame; printed = 0; }
-                if (printed < 128) {
-                    printed++;
-                    fprintf(stderr, "[moby-class vbl=%u] cls=%u moby=%08x pos=(%d, %d, %d)\n",
-                            openpete_frame, s_cur_moby_cls, mob,
-                            (int)cpu->read_word(mob + game_layout.moby.pos_off + 0u), (int)cpu->read_word(mob + game_layout.moby.pos_off + 4u),
-                            (int)cpu->read_word(mob + game_layout.moby.pos_off + 8u));
-                }
-            }
-        }
+        moby_classdbg_line(cpu, mob, s_cur_moby_cls);
         s_cur_env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = moby_hud_tag(mob);
@@ -10885,6 +10890,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* face identity (shaded tris carry no topology key) */
         s_cur_single = (uint8_t)moby_otk_row_single_bucket(moby_game.shaded_otkey_row);
         s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + game_layout.moby.class_off) : 0;
+        moby_classdbg_line(cpu, R->moby, s_cur_moby_cls);
         s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + game_layout.moby.angle_off + 3u) : 0; /* og OT bias (rot>>24) */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)

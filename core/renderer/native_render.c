@@ -14931,6 +14931,28 @@ static void blend_order_dump(const scene_tri_t* sc, int n) {
             bw_draw_ranges(sc, n, 1), bw_draw_ranges(sc, n, 0));
 }
 
+/** @brief Print one scene triangle as an `[sd]` line, the scene dump's record.
+ *
+ * Category, blend, textured flag, portal group, key, rank, player key, tag,
+ * moby identity, ordinal and ordering-table slot, then each vertex's screen
+ * position, stored view-Z, perspective view-Z and colour.
+ * @param fp Destination stream.
+ * @param ti The triangle's index in the scene.
+ * @param T The triangle. */
+static void scene_tri_dump_line(FILE* fp, int ti, const scene_tri_t* T)
+{
+    fprintf(fp, "[sd] #%d cat=%d blend=%d tex=%d grp=%d ko=%.1f "
+                "rk=%.1f pk=%.1f tag=%08X mid=%u mo=%d ot=%d", ti,
+            T->category, T->blend, T->textured, T->group,
+            (double)T->koff, (double)T->rank, (double)T->pkey, T->tag,
+            T->mid, T->mordinal, T->ot_slot1);
+    for (int k = 0; k < 3; k++)
+        fprintf(fp, " (%.2f,%.2f,z%.6f,w%.1f,%08X)",
+                (double)T->v[k].sx, (double)T->v[k].sy,
+                (double)T->v[k].z, (double)T->v[k].pvz, T->v[k].rgba);
+    fprintf(fp, "\n");
+}
+
 /** @brief Run the per-present scene instruments over the composed scene.
  *
  * Every instrument is off unless its environment variable is set.
@@ -14970,8 +14992,9 @@ static void scene_probes(scene_tri_t* sc, int n)
                     sc[ti].v[k].rgba = tv;
             } } }
     /* OPENPETE_SCENEDUMP=<frame> - dump EVERY completed scene triangle of the
-     * first present labelled >= that frame: category/blend/tex/group + all
-     * three vertices (sx, sy, z, pvz, rgba). The probe below answers "who
+     * first present labelled >= that frame: category/blend/tex/group, the
+     * moby identity, ordinal and ordering-table slot + all three vertices
+     * (sx, sy, z, pvz, rgba). The probe below answers "who
      * covers this point"; the dump answers "what is in the scene at all" with
      * no coverage math to be wrong. */
     { static int sd = -2; static unsigned sdf = 0;
@@ -14980,18 +15003,7 @@ static void scene_probes(scene_tri_t* sc, int n)
       if (sd == 1 && s_scene_key >= sdf) {
         sd = -1;
         fprintf(stderr, "[scenedump f=%u] n=%d\n", s_scene_key, n);
-        for (int ti = 0; ti < n; ti++) {
-            const scene_tri_t* T = &sc[ti];
-            fprintf(stderr, "[sd] #%d cat=%d blend=%d tex=%d grp=%d ko=%.1f "
-                            "rk=%.1f pk=%.1f tag=%08X", ti,
-                    T->category, T->blend, T->textured, T->group,
-                    (double)T->koff, (double)T->rank, (double)T->pkey, T->tag);
-            for (int k = 0; k < 3; k++)
-                fprintf(stderr, " (%.2f,%.2f,z%.6f,w%.1f,%08X)",
-                        (double)T->v[k].sx, (double)T->v[k].sy,
-                        (double)T->v[k].z, (double)T->v[k].pvz, T->v[k].rgba);
-            fprintf(stderr, "\n");
-        }
+        for (int ti = 0; ti < n; ti++) scene_tri_dump_line(stderr, ti, &sc[ti]);
       } }
     blend_order_dump(sc, n);
     bw_fam_census(sc, n);
@@ -21059,16 +21071,99 @@ static void path_with_suffix(const char *base, const char *suffix,
     else     snprintf(out, cap, "%s%s", base, suffix);
 }
 
+/** @brief Write the terrain key image's colour attachment (owner true view-Z, class byte) to <stem>.rgba.
+ *
+ * Four bytes per texel, rows top-down, alpha kept (rhi_read_render_target_raw).
+ * Nothing is written when the read fails or its extent differs from w by h.
+ * @param stem Path without extension.
+ * @param w Width of the depth readback.
+ * @param h Height of the depth readback. */
+static void terrain_key_dump_attr(const char *stem, int w, int h)
+{
+    const size_t bytes = (size_t)w * (size_t)h * 4u;
+    unsigned char *attr = (unsigned char *)malloc(bytes);
+    int aw = 0, ah = 0;
+    if (attr && rhi_read_render_target_raw(s_nr.dev, s_nr.terrain_key_depth, attr, bytes, &aw, &ah) &&
+        aw == w && ah == h) {
+        char path[1110];
+        snprintf(path, sizeof(path), "%s.rgba", stem);
+        FILE *fp = fopen(path, "wb");
+        if (fp) { fwrite(attr, 1, bytes, fp); fclose(fp); }
+    }
+    free(attr);
+}
+
+/** @brief Write the present's scene triangles as `[sd]` lines to <stem>-scene.txt.
+ * @param stem Path without extension.
+ * @return The scene's triangle count. */
+static int terrain_key_dump_scene(const char *stem)
+{
+    int scene_n = 0; uint32_t bg_, fade_, freeze_; int hud_;
+    const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
+    char path[1110];
+    snprintf(path, sizeof(path), "%s-scene.txt", stem);
+    FILE *fp = scene ? fopen(path, "w") : NULL;
+    if (!fp) return scene_n;
+    for (int ti = 0; ti < scene_n; ti++) scene_tri_dump_line(fp, ti, &scene[ti]);
+    fclose(fp);
+    return scene_n;
+}
+
+/** @brief Write the composed scene's snap table to <stem>-snap.txt.
+ *
+ * A header with the unprojection, the largest slab, the counts and the
+ * scene's camera matrix (ps_occl_cam), then one line per contact plane
+ * with its moby's identity, ordinal and offset.
+ * @param stem Path without extension. */
+static void terrain_key_dump_snap(const char *stem)
+{
+    const nr_snap_table* st = ps_snap();
+    const openpete_occl_camera* cam = ps_occl_cam();
+    char path[1110];
+    snprintf(path, sizeof(path), "%s-snap.txt", stem);
+    FILE *fp = fopen(path, "w");
+    if (!fp) return;
+    fprintf(fp, "H=%.4f ofx=%.4f ofy=%.4f S=%.4f ne=%d np=%d cam_valid=%d "
+                "M=%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f\n",
+            (double)st->H, (double)st->ofx, (double)st->ofy, (double)st->S, st->ne, st->np,
+            cam->valid, (double)cam->M[0], (double)cam->M[1], (double)cam->M[2],
+            (double)cam->M[3], (double)cam->M[4], (double)cam->M[5], (double)cam->M[6],
+            (double)cam->M[7], (double)cam->M[8]);
+    for (int e = 0; e < st->ne; e++) {
+        const nr_snap_ent* E = &st->ent[e];
+        const int p0 = (int)(E->span & 0xFFFFu), pn = (int)(E->span >> 16);
+        for (int k = p0; k < p0 + pn && k < st->np; k++) {
+            const nr_snap_plane* P = &st->pl[k];
+            fprintf(fp, "mid=%u mord=%u off=%.3f n=%.7f,%.7f,%.7f d=%.4f sslab=%.4f "
+                        "c=%.3f,%.3f,%.3f r=%.3f flags=%u\n",
+                    E->mid, E->mord, (double)E->off, (double)P->n[0], (double)P->n[1],
+                    (double)P->n[2], (double)P->d, (double)P->sslab, (double)P->c[0],
+                    (double)P->c[1], (double)P->c[2], (double)P->r, P->flags);
+        }
+    }
+    fclose(fp);
+}
+
 /** @brief Write the terrain key image the capture's key pass left beside a screenshot, under OPENPETE_TERRAIN_KEY_READBACK.
  *
- * Two files are written next to @p base with -key inserted before the
- * extension, which is replaced. The .f32 file holds the depth value per
- * texel, rows top-down; a key's view-Z is 4096 z / (1 - z) and 1.0 means no
- * terrain key. The .txt file holds the image and viewport extents, the
- * pass's screen-to-clip mapping recorded by terrain_key_pass_record, and
- * openpete_frame, so a PSX screen point maps to its texel. No-op for an
- * in-memory capture, with the readback off, without the image, or before
- * any key pass ran.
+ * Five files are written next to @p base with -key inserted before the
+ * extension, which is replaced. The .f32 file holds the stored depth value
+ * per texel, rows top-down: a key's view-Z is the value times 2^26
+ * (op_key_from_stored) and 1.0 means no terrain key. The .rgba file holds
+ * the key image's colour attachment, 4 bytes per texel in the same order:
+ * r, g, b the key owner's true view-Z z as e = r + 256 g + 65536 b with
+ * e / (2^24 - 1) = z / (z + 4096) (op_key_attr_store), a the owner's class
+ * byte (op_key_class; 255 = no attributes). The -scene.txt file holds the
+ * present's scene triangles as `[sd]` lines (scene_tri_dump_line), the
+ * scene the key pass packed. The -snap.txt file holds the composed scene's
+ * snap table (ps_snap) under a header carrying the scene's camera matrix
+ * (ps_occl_cam), then one line per contact plane with its moby's identity,
+ * ordinal and offset. The .txt file holds the image
+ * and viewport extents, the pass's screen-to-clip mapping recorded by
+ * terrain_key_pass_record, openpete_frame and the triangle counts of the
+ * dumped scene and of the scene the key pass packed, so a PSX screen point
+ * maps to its texel. No-op for an in-memory capture, with the readback off,
+ * without the image, or before any key pass ran.
  * @param base Screenshot path the file names derive from.
  * @param in_memory Nonzero for an in-memory capture. */
 static void terrain_key_dump(const char *base, int in_memory)
@@ -21091,17 +21186,20 @@ static void terrain_key_dump(const char *base, int in_memory)
         snprintf(path, sizeof(path), "%s.f32", stem);
         FILE *fp = fopen(path, "wb");
         if (fp) { fwrite(z, sizeof(float), (size_t)w * (size_t)h, fp); fclose(fp); }
+        terrain_key_dump_attr(stem, w, h);
+        const int scene_n = terrain_key_dump_scene(stem);
+        terrain_key_dump_snap(stem);
         snprintf(path, sizeof(path), "%s.txt", stem);
         fp = fopen(path, "w");
         if (fp) {
             const openpete_tercache_clip *c = &s_tk_last.clip;
             fprintf(fp, "w=%d h=%d vw=%d vh=%d x_base=%.9g x_span=%.9g y_base=%.9g "
                         "y_span=%.9g disp_w=%.9g clip_h=%.9g band=%.9g freeze_wf=%.9g "
-                        "full_extent=%d frame=%u\n",
+                        "full_extent=%d frame=%u scene_n=%d key_scene_n=%d\n",
                     w, h, s_tk_last.vw, s_tk_last.vh, (double)c->x_base, (double)c->x_span,
                     (double)c->y_base, (double)c->y_span, (double)c->disp_w,
                     (double)c->clip_h, (double)c->band, (double)c->freeze_wf,
-                    c->full_extent, openpete_frame);
+                    c->full_extent, openpete_frame, scene_n, s_tk_last.scene_n);
             fclose(fp);
         }
     }

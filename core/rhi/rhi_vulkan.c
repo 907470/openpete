@@ -6697,8 +6697,20 @@ bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
     return true;
 }
 
-bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
-                            size_t out_bytes, int *out_w, int *out_h)
+/** @brief Read a render target's colour image into host RGBA8, alpha forced opaque or kept as stored.
+ *
+ * The body of rhi_read_render_target and rhi_read_render_target_raw.
+ * @param dev Device.
+ * @param rt Render target, or NULL.
+ * @param out Destination; must hold width x height x 4 bytes.
+ * @param out_bytes Size of @p out in bytes.
+ * @param out_w Receives the width; may be NULL.
+ * @param out_h Receives the height; may be NULL.
+ * @param keep_alpha Nonzero to copy the stored alpha instead of 0xFF.
+ * @return false on the preconditions rhi_read_render_target names. */
+static bool read_render_target_color(rhi_device *dev, rhi_texture *rt, void *out,
+                                     size_t out_bytes, int *out_w, int *out_h,
+                                     int keep_alpha)
 {
     if (!rt || !rt->is_rt) return false;
     int w = (int)rt->width, h = (int)rt->height;
@@ -6738,8 +6750,25 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
     rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     readback_swizzle(dev, rb->mapped, out, w, h);
+    if (keep_alpha) {
+        const uint8_t *src = (const uint8_t *)rb->mapped;
+        uint8_t *dst = (uint8_t *)out;
+        for (size_t i = 0; i < (size_t)w * (size_t)h; i++) dst[i * 4 + 3] = src[i * 4 + 3];
+    }
     rhi_destroy_buffer(dev, rb);
     return true;
+}
+
+bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
+                            size_t out_bytes, int *out_w, int *out_h)
+{
+    return read_render_target_color(dev, rt, out, out_bytes, out_w, out_h, 0);
+}
+
+bool rhi_read_render_target_raw(rhi_device *dev, rhi_texture *rt, void *out,
+                                size_t out_bytes, int *out_w, int *out_h)
+{
+    return read_render_target_color(dev, rt, out, out_bytes, out_w, out_h, 1);
 }
 
 bool rhi_read_render_target_depth(rhi_device *dev, rhi_texture *rt, float *out,

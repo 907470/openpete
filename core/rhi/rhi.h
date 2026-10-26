@@ -2504,6 +2504,20 @@ void rhi_clear_stencil(rhi_device *dev);
  *         small, the extent is empty, or staging cannot be allocated. */
 bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
                             size_t out_bytes, int *out_w, int *out_h);
+/** @brief Read a render target back into a host RGBA8 buffer with the stored alpha kept.
+ *
+ * rhi_read_render_target with alpha copied from the image instead of forced
+ * to 0xFF, for targets whose alpha channel carries data (the terrain key
+ * image's owner class byte).
+ * @param dev Device.
+ * @param rt Render target, or NULL.
+ * @param out Destination; must hold width x height x 4 bytes.
+ * @param out_bytes Size of @p out in bytes.
+ * @param out_w Receives the target's width; may be NULL.
+ * @param out_h Receives the target's height; may be NULL.
+ * @return false on the preconditions of rhi_read_render_target. */
+bool rhi_read_render_target_raw(rhi_device *dev, rhi_texture *rt, void *out,
+                                size_t out_bytes, int *out_w, int *out_h);
 
 /** @brief Create a depth-sampled render target whose depth image also allows transfer reads, for rhi_read_render_target_depth.
  *
