@@ -1,0 +1,16 @@
+# Sector set of a sub-tick present under the game's visibility verdict
+# (tests/harness/check_feeder_subtick.sh --path terrain-vis).
+#   <source> | <V> |
+#
+# Legs: the intermediate present at V+1, alpha 0, 0.5 and 1, under
+# --terrain-visibility game and under frustum. Pass: 0 px between the legs at
+# every alpha and at least one sector re-tested into the alpha-0 walk's set.
+# A verdict whose frustum term is the tick's drops, at alpha 0, sectors the
+# tick's 4:3 cone rejected and the present's camera sees.
+#
+# camera-rotate-taps (Artisans, camera rotation taps): with the tick's verdict
+# at alpha 0 the game leg drops 164 px at the present at VBL 1817 (a tower top
+# at x 631-639, y 0-18) and 33 px at VBL 1967 (x 628-639, y 46-50); the
+# re-test admits 4 and 1 sectors there.
+camera-rotate-taps.bk2 | 1816 |
+camera-rotate-taps.bk2 | 1966 |

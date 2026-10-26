@@ -8017,6 +8017,45 @@ static int tvis_sphere_in(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
     return !tsec_sphere_cull(c1m, c2m, cbin, thdr_radius(w1), S->wx, S->wy);
 }
 
+/** @brief Tests a sector's header sphere against the 4:3 cone in func_800258F0's integer arithmetic.
+ *
+ * r_environment.s 0x80025968-0x80025B50: the camera position is shifted
+ * right by 4 (floored, here of the walk's camera, which is fractional on a
+ * sub-tick walk); the centre offsets (camY - cY, camZ - cZ, cX - camX) are
+ * written to IR1..IR3, which keep the low 16 bits sign-extended; MVMVA with
+ * sf=1 and lm=0 rotates them by the camera's view matrix, the MAC shifted
+ * right by 12 and saturated to 16 bits. The sector is rejected when
+ * IR3 + r <= 0, when 4(|IR1| - t3) >= 3(IR3 + t4), or when
+ * 32(|IR2| - t5) >= 17(IR3 + t6), the slack terms built by shifts of the
+ * radius r (header word 1 & 0x1FFF) as the draw builds them. On the tick's
+ * own camera this is the verdict's frustum term bit for bit.
+ * @param cpu The guest CPU state.
+ * @param S The sphere-test inputs; the half-width scales are not read.
+ * @param i The sector index.
+ * @return 1 when the sphere passes, 0 when it is rejected or the sector
+ *         pointer is null. */
+static int tvis_cone_game(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
+    uint32_t sp = rd(cpu, S->sectorPtr + i * 4);
+    if (!sp) return 0;
+    uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
+    const int32_t cx = (int32_t)floor(S->camx), cy = (int32_t)floor(S->camy),
+                  cz = (int32_t)floor(S->camz);
+    const int64_t v[3] = { (int16_t)(cy - (int32_t)(w0 & 0xFFFFu)),
+                           (int16_t)(cz - (int32_t)(w1 >> 16)),
+                           (int16_t)((int32_t)(w0 >> 16) - cx) };
+    int32_t ir[3];
+    for (int r = 0; r < 3; r++) {
+        int64_t mac = (S->M[r][0] * v[0] + S->M[r][1] * v[1] + S->M[r][2] * v[2]) >> 12;
+        ir[r] = mac < -32768 ? -32768 : (mac > 32767 ? 32767 : (int32_t)mac);
+    }
+    const int32_t r = thdr_radius(w1), z = ir[2];
+    if (z + r <= 0) return 0;
+    const int32_t t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
+    if (4 * (abs(ir[0]) - t3) - 3 * (z + t4) >= 0) return 0;
+    const int32_t t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
+    return 32 * (abs(ir[1]) - t5) - 17 * (z + t6) < 0;
+}
+
 /** @brief Appends the imported sectors that pass the frustum sphere test to the walk's visible list.
  * @param cpu The guest CPU state.
  * @param S The sphere-test inputs, or NULL to admit every imported sector.
@@ -8033,6 +8072,95 @@ static int tsv_append_vis(CPUState* cpu, const tvis_sphere* S, uint32_t guestCnt
 }
 
 static int s_vis_engage;   /* the BINCHECK window is open on this walk */
+
+/** @brief Fills cand with the occlusion group's candidate sectors, every sector when list is 0.
+ *
+ * The list form is func_800258F0's own (r_environment.s 0x800259D0-0x80025A2C):
+ * a byte list of sector indices ended by 0xFF, read up to 2048 bytes; an
+ * index at or above sectorCnt is skipped. With no list the draw walks every
+ * sector of the table.
+ * @param cpu The guest CPU state.
+ * @param list The group's byte list, or 0 for no list.
+ * @param sectorCnt The sector count, at most 1024.
+ * @param cand Receives the candidate indices (1024 entries).
+ * @return The number of indices written. */
+static int tvis_group_cands(CPUState* cpu, uint32_t list, uint32_t sectorCnt, uint16_t* cand) {
+    int cn = 0;
+    if (!list) {
+        for (uint32_t i = 0; i < sectorCnt && cn < 1024; i++) cand[cn++] = (uint16_t)i;
+        return cn;
+    }
+    for (uint32_t k = 0; k < 2048 && cn < 1024; k++) {
+        uint8_t idx = cpu->read_byte(list + k);
+        if (idx == 0xFF) break;
+        if (idx < sectorCnt) cand[cn++] = idx;
+    }
+    return cn;
+}
+
+/** @brief Merges into a sub-tick walk's verdict set the group sectors whose sphere passes the cone at the present's camera.
+ *
+ * The verdict's frustum term is the 4:3 sphere cone func_800258F0 evaluates
+ * at the tick's camera (r_environment.s 0x80025A68-0x80025B50); a sub-tick
+ * present draws under a camera between two ticks, where a sector the tick's
+ * cone rejected can be in view. The occlusion-group term does not depend on
+ * direction, so each of the group's candidates the verdict left out is
+ * re-tested with tvis_cone_game at the walk's camera and admitted when it
+ * passes. The verdict's own sectors stay admitted, and out is rewritten in
+ * ascending index order, the order the verdict path produces. Reads guest
+ * RAM only.
+ * @param cpu The guest CPU state.
+ * @param S The sphere-test inputs at the present's camera.
+ * @param list The occlusion group's byte list, or 0 for every sector.
+ * @param sectorCnt The sector count, at most 1024.
+ * @param out The verdict's admitted indices, ascending; receives the union.
+ * @param n The count in out.
+ * @param added Receives the number of sectors the re-test admitted.
+ * @return The union's count. */
+static int tvis_subtick_union(CPUState* cpu, const tvis_sphere* S, uint32_t list,
+                              uint32_t sectorCnt, uint16_t* out, int n, int* added) {
+    static uint8_t adm[1024];
+    static uint16_t cand[1024];
+    memset(adm, 0, sizeof(adm));
+    for (int j = 0; j < n; j++) adm[out[j]] = 1;
+    int cn = tvis_group_cands(cpu, list, sectorCnt, cand), add = 0;
+    for (int j = 0; j < cn; j++) {
+        if (adm[cand[j]] || !tvis_cone_game(cpu, S, cand[j])) continue;
+        adm[cand[j]] = 1;
+        add++;
+    }
+    *added = add;
+    if (!add) return n;
+    n = 0;
+    for (uint32_t i = 0; i < sectorCnt; i++)
+        if (adm[i]) out[n++] = (uint16_t)i;
+    return n;
+}
+
+/** @brief Counts the group candidates whose tvis_cone_game verdict differs from the game's on a canonical walk.
+ *
+ * OPENPETE_TERRAIN_VISCAL=1 calibration census: on a canonical walk under the
+ * game's own verdict, every candidate of the occlusion group is tested with
+ * tvis_cone_game at the walk's camera and compared with tvis_visible; one
+ * [tvis-cal] line per walk reports the candidates, the verdict's count and
+ * the disagreements in each direction. Reads guest RAM only.
+ * @param cpu The guest CPU state.
+ * @param S The sphere-test inputs.
+ * @param list The occlusion group's byte list, or 0 for every sector.
+ * @param sectorCnt The sector count, at most 1024. */
+static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, uint32_t sectorCnt) {
+    static uint16_t cand[1024];
+    int cn = tvis_group_cands(cpu, list, sectorCnt, cand), vis = 0, extra = 0, miss = 0;
+    for (int j = 0; j < cn; j++) {
+        int g = tvis_visible(cpu, cand[j]), t = tvis_cone_game(cpu, S, cand[j]);
+        vis += g;
+        extra += t && !g;
+        miss += g && !t;
+    }
+    fprintf(stderr, "[tvis-cal] frame=%u cands=%d verdict=%d cone_only=%d verdict_only=%d\n",
+            openpete_frame, cn, vis, extra, miss);
+}
+
 /** @brief Fills out with the sector indices this walk draws and returns their count.
  *
  * At most min(sectorCnt, 1024) sectors are considered, so out holds 1024
@@ -8043,7 +8171,10 @@ static int s_vis_engage;   /* the BINCHECK window is open on this walk */
  * (env.vis_aspect_independent), the verdict path below; with a wider view
  * otherwise, the occlusion group's 0xFF-terminated byte list (2048 bytes at
  * most), or every sector when the group names no list; else the game's own
- * verdict through tvis_visible. Sets s_vis_engage from
+ * verdict through tvis_visible, which on a sub-tick walk of a game whose
+ * verdict carries the 4:3 cone (env.vis_aspect_independent clear) is united
+ * with the group sectors the cone admits at the present's camera
+ * (tvis_subtick_union). Sets s_vis_engage from
  * OPENPETE_TERRAIN_BINCHECK and prints the admitted count on its window.
  * Reads guest RAM only.
  * @param cpu The guest CPU state.
@@ -8165,25 +8296,27 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
         return n;
     }
 
-    /* native 4:3 - the canonical .s verdict */
+    /* native 4:3 - the canonical .s verdict. A sub-tick walk adds the group
+     * sectors the cone admits at the present's camera (tvis_subtick_union);
+     * a verdict with no aspect term has no cone to re-test. */
     int n = 0;
     for (uint32_t i = 0; i < sectorCnt; i++) {
         if (tvis_visible(cpu, i)) out[n++] = (uint16_t)i;
     }
+    int nverdict = n, retest = 0;
+    const int cone = S && !game_layout.env.vis_aspect_independent;
+    if (cone && s_vanim_sub) n = tvis_subtick_union(cpu, S, list, sectorCnt, out, n, &retest);
+    static int s_viscal = -1;
+    ENV_FLAG_LATCH(s_viscal, "OPENPETE_TERRAIN_VISCAL");
+    if (cone && s_viscal && !s_vanim_sub) tvis_calibrate(cpu, S, list, sectorCnt);
     if (s_vis_engage) {
-        fprintf(stderr, "[terrain-vis] frame=%u mode=game admitted=%d of %u\n",
-                openpete_frame, n, sectorCnt);
+        fprintf(stderr, "[terrain-vis] frame=%u mode=game admitted=%d of %u sub=%d verdict=%d retest=%d\n",
+                openpete_frame, n, sectorCnt, s_vanim_sub, nverdict, retest);
         s_vis_engage = 0;
     }
     if (s_visdbg) {   /* validate the invariant without altering the 4:3 render set */
-        static uint16_t cand[1024]; int cn = 0;
-        if (list) {
-            for (uint32_t k = 0; k < 2048 && cn < 1024; k++) {
-                uint8_t idx = cpu->read_byte(list + k);
-                if (idx == 0xFF) break;
-                if (idx < sectorCnt) cand[cn++] = idx;
-            }
-        } else for (uint32_t i = 0; i < sectorCnt && cn < 1024; i++) cand[cn++] = (uint16_t)i;
+        static uint16_t cand[1024];
+        int cn = tvis_group_cands(cpu, list, sectorCnt, cand);
         terrain_visdbg(cpu, sectorCnt, group, occCnt, cand, cn, n, ws);
     }
     return n;

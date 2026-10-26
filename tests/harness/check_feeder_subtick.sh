@@ -46,6 +46,24 @@
 #                  both read games/<slug>/corpus/terrain-subtick-corpus.manifest
 #   terrain-canim  OPENPETE_TERRAIN_CANIM=1 against =0, the interp statistic
 #                  referenced at alpha 1, games/<slug>/corpus/terrain-canim-subtick-corpus.manifest
+#   terrain-vis    --terrain-visibility game against frustum, the vis statistic,
+#                  games/<slug>/corpus/terrain-vis-subtick-corpus.manifest
+#
+# The vis statistic (STAT=vis) prices the sector set a sub-tick present draws
+# under the game's own visibility verdict. Its legs are the intermediate
+# present at V+1, per alpha, under --terrain-visibility game and under
+# frustum, which admits every sector whose sphere the present's camera sees.
+# The difference of the two is the pixels of sectors one mode draws and the
+# other does not; the game's occlusion groups hide only sectors the depth test
+# would hide anyway, so on a row where frustum mode draws nothing the game
+# hides, the legs must be equal at every alpha. This inverts the interp
+# statistic's rule that alpha 0 must differ. A verdict that keeps the tick's
+# frustum term drops at alpha 0 the sectors the tick's cone rejected and the
+# present's camera sees. Engagement is read from the game leg's own census
+# (OPENPETE_TERRAIN_BINCHECK at V+1): the `retest=` count of the sub-tick
+# walk, the sectors the present-camera re-test admitted beyond the tick's
+# verdict, summed over the alpha-0 leg. Pass: every alpha 0 px, engagement
+# above 0; a row with 0 px everywhere and no re-tested sector is VACUOUS.
 #
 # The interp statistic (STAT=interp) is for a knob that suppresses a channel's
 # sub-tick interpolation rather than its feed. The canonical presents are then
@@ -262,8 +280,8 @@
 #                    worst=<px> verdict=PASS|FAIL
 #
 # Usage: tests/harness/check_feeder_subtick.sh
-#          --path glint|glint-ext|glint-rot|glow|shadow|portal|terrain|cyclorama|particles|flame|
-#                 tracer|moby-mask
+#          --path glint|glint-ext|glint-rot|glow|shadow|portal|terrain|terrain-tanim|
+#                 terrain-canim|terrain-vis|cyclorama|particles|flame|tracer|moby-mask
 #          [--game SLUG] [--build-dir=DIR] [--row '<bk2>|<V>|<keys>']
 # Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
 # names the path), 64 SKIP (binary, disc, bk2, python3 or PIL missing).
@@ -353,6 +371,12 @@ case "$PATHNAME" in
             LEG_ARGS_OFF=(--render-paths terrain)
             STAT=interp; INTERP_REF=1; MASK_CAP=320000
             ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0,0.5;;
+    # The game's visibility verdict against the frustum candidate set, every
+    # path drawn in both legs: what differs is the sector set alone.
+    terrain-vis) LEG_ARGS_ON=(--terrain-visibility game)
+            LEG_ARGS_OFF=(--terrain-visibility frustum)
+            STAT=vis; MASK_CAP=320000
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0,0.5,1;;
     # The cyclorama has no suppress knob; the two legs are a render-path
     # selection with and without it, terrain in both so the horizon the
     # cyclorama is seen against is identical between them. The feed covers the
@@ -443,6 +467,7 @@ run_leg() {
     # The census reports from the interval's opening tick on, so a leg's log
     # holds canon(V-2), canon(V) and the present between them.
     [[ "$STAT" == vertex ]] && PG_CAPTURE_ENV+=(OPENPETE_PORTAL3_DBG_FROM="$prev")
+    [[ "$STAT" == vis ]] && PG_CAPTURE_ENV+=(OPENPETE_TERRAIN_BINCHECK="$mid")
     [[ -n "$alpha" ]] && PG_CAPTURE_ENV+=(OPENPETE_INTERMEDIATE_ALPHA="$alpha")
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$log" "$out" -- \
@@ -492,7 +517,7 @@ while IFS= read -r line; do
     # result.
     rc=0 shots=()
     SUPPRESSED=
-    if [[ "$STAT" == interp ]]; then
+    if [[ "$STAT" == interp || "$STAT" == vis ]]; then
         # The knob this path toggles suppresses the sub-tick interpolation of
         # one channel, not the feed: with it at 0 the canonical presents are
         # identical between the legs and only the intermediate present differs.
@@ -506,6 +531,7 @@ while IFS= read -r line; do
                 run_leg "$d" "$lbl" "$alpha" "$OUT/$d/$mid-vk.png" \
                         --screenshot-intermediate-on-frame "$mid" </dev/null || rc=$?
                 shots+=("$OUT/$d/$mid-vk.png")
+                [[ "$STAT" == vis ]] && shots+=("$OUT/$d.log")
             done
         done
     elif [[ "$STAT" == vertex || "$STAT" == ext || "$STAT" == rot ]]; then
@@ -563,7 +589,80 @@ while IFS= read -r line; do
         fail=1; continue
     fi
 
-    if [[ "$STAT" == interp ]]; then
+    if [[ "$STAT" == vis ]]; then
+    python3 - "$TAG" "$GAME" "$bk2" "$V" "$OUT/$tag" "$mid" "$MASK_CAP" \
+             ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
+import re
+import sys
+from PIL import Image
+
+tag, game, bk2, V, base, mid, mask_cap = sys.argv[1:8]
+alphas = sys.argv[8:]
+V, mid, mask_cap = int(V), int(mid), int(mask_cap)
+
+
+def diffpx(a_path, b_path):
+    """Pixels that differ between the game-verdict and frustum legs."""
+    ia, ib = Image.open(a_path).convert("RGB"), Image.open(b_path).convert("RGB")
+    if ia.size != ib.size:
+        raise SystemExit("[%s] %s and %s differ in size" % (tag, a_path, b_path))
+    pa, pb = ia.load(), ib.load()
+    w, h = ia.size
+    n, bb = 0, None
+    for y in range(h):
+        for x in range(w):
+            if pa[x, y] != pb[x, y]:
+                n += 1
+                bb = (x, y, x, y) if bb is None else (min(bb[0], x), min(bb[1], y),
+                                                      max(bb[2], x), max(bb[3], y))
+    return n, bb
+
+
+def retest(log_path):
+    """The sub-tick walks' census: sectors the present-camera re-test admitted."""
+    total, walks = 0, 0
+    for line in open(log_path, errors="replace"):
+        if "[terrain-vis]" not in line or "mode=game" not in line:
+            continue
+        kv = dict(re.findall(r"(\w+)=(\d+)", line))
+        if kv.get("sub") != "1":
+            continue
+        walks += 1
+        total += int(kv.get("retest", "0"))
+    return total, walks
+
+
+rows_out, bad = [], []
+total = 0
+engage = None
+for a in alphas:
+    n, bb = diffpx("%s-i%s-on/%d-vk.png" % (base, a, mid),
+                   "%s-i%s-off/%d-vk.png" % (base, a, mid))
+    if n > mask_cap:
+        raise SystemExit("[%s] alpha=%s differs in %d px, above the %d cap" % (tag, a, n, mask_cap))
+    rt, walks = retest("%s-i%s-on.log" % (base, a))
+    if a == "0":
+        engage = rt
+    total += n
+    rows_out.append("alpha=%s px=%d bbox=%s retest=%d subwalks=%d"
+                    % (a, n, "-" if bb is None else bb, rt, walks))
+    if n:
+        bad.append("alpha %s: game and frustum legs differ in %d px" % (a, n))
+head = ("[%s] game=%s bk2=%s V=%d present=%d legs=%d diffpx=%d engage=%s"
+        % (tag, game, bk2, V, mid, len(alphas) * 2, total, "-" if engage is None else engage))
+for r in rows_out:
+    print("[%s]   " % tag + r)
+if not bad and not engage:
+    print(head + " VACUOUS")
+    print("[%s]   the alpha-0 sub-tick walk re-tested no sector into the set: the row "
+          "measures nothing" % tag)
+    sys.exit(1)
+print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
+for b in bad:
+    print("[%s]   " % tag + b)
+sys.exit(1 if bad else 0)
+PYEOF
+    elif [[ "$STAT" == interp ]]; then
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
              "$SUPPRESS" "$MASK_CAP" "$INTERP_REF" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
 import sys
