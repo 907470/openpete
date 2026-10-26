@@ -9113,6 +9113,7 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
+    terrain_heavy_fog_refresh(cpu);                /* the level fog class moby_lift_tier reads */
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
     moby_prop_scene_latch(cpu);
     s_pass_overlay = moby_overlay_pass_now(cpu);
@@ -11150,6 +11151,7 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
     if (!hook_bracket_run(cpu, addr, &k_shaded_bracket, &startp, &endp, &feed, &verify))
         return 0;
     moby_view_shd_build(cpu);
+    terrain_heavy_fog_refresh(cpu);             /* the level fog class moby_lift_tier reads */
 
     if (feed) {                                 /* feed shaded mobys to the scene - fully native */
         s_cur_mat = "SHD";

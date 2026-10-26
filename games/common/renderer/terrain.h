@@ -29,15 +29,19 @@ struct CPUState;
  *        to the current tick */
 void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on);
 
+/** @brief Re-reads the heavy-fog verdict when the loaded level's sector table changes.
+ *
+ * The terrain walk and the moby passes call it before they read the verdict.
+ * @param cpu The guest CPU state, read only. */
+void terrain_heavy_fog_refresh(struct CPUState* cpu);
+
 /** @brief Whether the loaded level is a heavy-fog level: its HP far (depth-cue target) palette is one colour.
  *
- * The terrain walk samples the far colours of the HP faces it reads from the
- * first walk of each level; once 4096 are seen the verdict latches: heavy when
- * at least 90% equal the first one sampled. A level whose far palette is one
- * colour fogs everything toward it (S1 misty_bog and beast_makers, S2
- * mystic_marsh and shady_oasis); every other level's far colours spread
- * (the top colour holds at most 38% of corners on any S1-S3 level).
- * @return 1 for a heavy-fog level, 0 otherwise or before the verdict latches. */
+ * Set by terrain_heavy_fog_refresh from every sector's far colours at the
+ * level's first walk or moby pass: heavy when one colour holds at least
+ * 90% of them (S1 misty_bog and beast_makers, S2 mystic_marsh and
+ * shady_oasis).
+ * @return 1 for a heavy-fog level, 0 otherwise or before the first refresh. */
 int terrain_heavy_fog(void);
 
 /** @brief A freecam pose that frames the whole live level from above.
