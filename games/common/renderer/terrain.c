@@ -502,7 +502,7 @@ static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this w
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
 static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
-static int s_hqfog_cen[3];         /* tn_wctx hqfog_cen sums */
+static int s_hqfog_cen[5];         /* tn_wctx hqfog_cen sums */
 static int s_hqfog_en = -1;        /* OPENPETE_TERRAIN_HQFOG: depth cue on HQ-pinned far faces (default on) */
 static int s_hqfog_census_on;      /* OPENPETE_TERRAIN_HQFOG_CENSUS: tn_hqfog_census per pinned face */
 static unsigned s_hqfog_gen;       /* texture_pack_generation at walk entry (tn_hqfog_words cache key) */
@@ -916,7 +916,7 @@ typedef struct { uint32_t rgb; float u, v; } lcorner;
 typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw, fog_delta;
                  int texid; /* Tiledef/record id (word2 & 0x7F), -1 = untextured */
                  int bank; } tmat;
-static void tn_hqfog_words(const tmat* fm, int fogbias, uint32_t w[2]);
+static int tn_hqfog_words(const tmat* fm, int fogbias, uint32_t w[2]);
 
 /** @brief Decodes one 8-byte Tiledef entry into a material and the tile's four spatial corner UVs.
  *
@@ -1163,7 +1163,7 @@ typedef struct {
     /* OPENPETE_TERRAIN_HQFOG_CENSUS: corners of HQ-pinned far faces found
      * among the emitted vertices, those in the fog band, those whose colour
      * differs from terrain_fog_blend */
-    int hqfog_cen[3];
+    int hqfog_cen[5];
     /* census (summed into the s_dbg_* / s_tex_* globals after the walk) */
     int dbg_faces, dbg_oob, dbg_nclip, dbg_behind, dbg_spike, dbg_clipped;
     int dbg_satback, dbg_satemit;         /* tface_facing's verdict flips vs the projected NCLIP */
@@ -3265,7 +3265,7 @@ static void trisplit_sum(const tn_wctx* W) {
         s_drain_skip[k] += W->drain_skip[k];
     }
     s_drain_skip[2] += W->drain_skip[2];
-    s_hqfog_cen[2] += W->hqfog_cen[2];
+    for (int k = 2; k < 5; k++) s_hqfog_cen[k] += W->hqfog_cen[k];
 }
 
 /** @brief Reports whether a triangle face takes the tier-4 triangle pass.
@@ -10084,7 +10084,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
     tgpu_model_cols(S->CA, 1, co, nearC);
     tgpu_model_cols(S->CA, 2, co, farC);
     memcpy(T.farC, farC, sizeof T.farC);
-    tn_hqfog_words(&F->mat, F->fogbias, T.hqfog);
+    (void)tn_hqfog_words(&F->mat, F->fogbias, T.hqfog);
     tgpu_prev_cols(S->CA, 1, co[0], co[1], co[2], co[3], nearC, pnearC);
     tgpu_prev_cols(S->CA, 2, co[0], co[1], co[2], co[3], farC, pfarC);
     tgpu_corner_t k[4];
@@ -11098,7 +11098,7 @@ static int tn_hqfog_face(const lvert* sv, const tsface_t* F) {
 
 /* One cached deepest-row fit (tn_hqfog_words): the far material's CLUT
  * identity and the registry generation it was read at. */
-typedef struct { uint32_t key; unsigned gen; uint32_t w[2]; } tn_hqfog_ent;
+typedef struct { uint32_t key; unsigned gen; uint32_t w[2]; int st; } tn_hqfog_ent;
 static _Thread_local tn_hqfog_ent s_hqfog_tab[64];
 
 /** @brief Quantises one affine term to the fade word's signed 10-bit field, units 1/256.
@@ -11110,42 +11110,76 @@ static uint32_t tn_hqfog_q10(double v) {
     return (uint32_t)q & 0x3FFu;
 }
 
-/** @brief Fits a far CLUT's ladder row 0 onto its deepest row 15, per channel.
+/* The largest per-entry error, in 5-bit channel steps, at which a CLUT row
+ * still counts as an affine image of the ladder's row 0 (tn_hqfog_fit). A
+ * fogged row is the base row's affine image rounded to 5 bits; rows that are
+ * texels or unrelated palettes miss by several steps. */
+#define TN_HQFOG_LADDER_TOL 2.0
+
+/** @brief Least-squares fits one channel of a CLUT row as an affine image of the base row.
  *
- * Least squares of out = a * in + b over the 5-bit channels of the entries
- * that are not the 0x0000 sentinel in row 0, b in 0..1 units; a row with no
- * spread gives a = 1 and the mean offset (tp_fog_affine's fit, native_render.c).
+ * out = a * in + b over the 5-bit channel of the entries that are not the
+ * 0x0000 sentinel in the base row, b in 5-bit steps; a row with no spread
+ * gives a = 1 and the mean offset (tp_fog_affine's fit, native_render.c).
+ * @param src The base row (ladder row 0).
+ * @param dst The row fitted onto it.
+ * @param n The entry count, 16 or 256.
+ * @param c The channel, 0 red, 1 green, 2 blue.
+ * @param a Receives the slope.
+ * @param b Receives the offset.
+ * @return The largest absolute error of the fit over the counted entries, or
+ *         -1 when the base row has no entries. */
+static double tn_hqfog_affine(const uint16_t* src, const uint16_t* dst, int n, int c, double* a, double* b) {
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    int cnt = 0;
+    for (int e = 0; e < n; e++) {
+        if (src[e] == 0) continue;
+        double x = (double)((src[e] >> (5 * c)) & 0x1F), y = (double)((dst[e] >> (5 * c)) & 0x1F);
+        sx += x; sy += y; sxx += x * x; sxy += x * y; cnt++;
+    }
+    *a = 1.0; *b = 0.0;
+    if (cnt == 0) return -1.0;
+    double den = cnt * sxx - sx * sx;
+    if (den > 1e-6) *a = (cnt * sxy - sx * sy) / den;
+    *b = (sy - *a * sx) / cnt;
+    double err = 0.0;
+    for (int e = 0; e < n; e++) {
+        if (src[e] == 0) continue;
+        double x = (double)((src[e] >> (5 * c)) & 0x1F), y = (double)((dst[e] >> (5 * c)) & 0x1F);
+        double d = fabs(*a * x + *b - y);
+        if (d > err) err = d;
+    }
+    return err;
+}
+
+/** @brief Fits a far CLUT's ladder row 0 onto its deepest row 15, per channel, when the CLUT holds a fog ladder.
+ *
+ * The game fogs a far texel by stepping its CLUT down the 16 rows below the
+ * base (clut halfword + delta << 6). Rows 1 to 15 of an authored ladder are
+ * each, per channel, an affine image of row 0 within TN_HQFOG_LADDER_TOL;
+ * a far half the game never draws in the fog band can name a CLUT whose
+ * rows hold texels or unrelated palettes, and that CLUT gets no fade.
+ * The fade is row 15's fit (tn_hqfog_affine), b in 0..1 units.
  * @param vr The VRAM image.
  * @param clx The CLUT's x.
  * @param cly The CLUT's base row.
  * @param n The entry count, 16 or 256.
  * @param a Receives the slopes.
  * @param b Receives the offsets.
- * @return 1 when the fit had entries, else 0. */
+ * @return 1 when the CLUT holds a ladder with entries, -1 when its rows are
+ *         not a ladder, 0 when its base row has no entries. */
 static int tn_hqfog_fit(const uint16_t* vr, int clx, int cly, int n, double a[3], double b[3]) {
     const uint16_t* src = vr + (size_t)cly * OPENPETE_VRAM_W + clx;
-    const uint16_t* dst = vr + (size_t)((cly + 15) & 0x1FF) * OPENPETE_VRAM_W + clx;
-    int any = 0;
-    for (int c = 0; c < 3; c++) {
-        double sx = 0, sy = 0, sxx = 0, sxy = 0;
-        int cnt = 0;
-        for (int e = 0; e < n; e++) {
-            if (src[e] == 0) continue;
-            double x = (double)((src[e] >> (5 * c)) & 0x1F), y = (double)((dst[e] >> (5 * c)) & 0x1F);
-            sx += x; sy += y; sxx += x * x; sxy += x * y; cnt++;
-        }
-        a[c] = 1.0; b[c] = 0.0;
-        if (cnt == 0) continue;
-        any = 1;
-        double den = cnt * sxx - sx * sx;
-        if (den > 1e-6) {
-            a[c] = (cnt * sxy - sx * sy) / den;
-            b[c] = (sy - a[c] * sx) / cnt / 31.0;
-        } else {
-            b[c] = (sy - sx) / cnt / 31.0;
+    for (int k = 1; k <= 15; k++) {
+        const uint16_t* dst = vr + (size_t)((cly + k) & 0x1FF) * OPENPETE_VRAM_W + clx;
+        for (int c = 0; c < 3; c++) {
+            const double err = tn_hqfog_affine(src, dst, n, c, &a[c], &b[c]);
+            if (err < 0.0) return 0;
+            if (err > TN_HQFOG_LADDER_TOL) return -1;
         }
     }
-    return any;
+    for (int c = 0; c < 3; c++) b[c] /= 31.0;   /* row 15's fit, left by the last pass */
+    return 1;
 }
 
 /** @brief Packs a face's HQ ladder-fade words from its far material (psx_hq_fog.glsl).
@@ -11153,31 +11187,35 @@ static int tn_hqfog_fit(const uint16_t* vr, int clx, int cly, int n, double a[3]
  * The fade is tn_hqfog_fit of the far half's base CLUT row onto row 15,
  * quantised by tn_hqfog_q10: word 0 the slopes, bit 30 the face's
  * +0x2000 fog-reference bias, bit 31 enable; word 1 the offsets. An
- * untextured or 16 bpp far half, a CLUT outside VRAM or one with no entries
- * gives (0, 0), no fade. Fits are cached per thread by CLUT identity and
+ * untextured or 16 bpp far half, a CLUT outside VRAM, one with no entries
+ * or one whose rows are not a ladder gives (0, 0), no fade. Fits are cached per thread by CLUT identity and
  * the texture-pack registry generation at walk entry, which every VRAM
  * write steps, so the walk and the retained cache bake read the same words.
  * @param fm The face's far material (tsface_t.mat, base row).
  * @param fogbias 1 when the face's fog reference carries the +0x2000 bias.
- * @param w Receives the two words. */
-static void tn_hqfog_words(const tmat* fm, int fogbias, uint32_t w[2]) {
+ * @param w Receives the two words.
+ * @return tn_hqfog_fit's verdict on the CLUT (1 fade, -1 not a ladder), or 0
+ *         when the far half has no CLUT to fit. */
+static int tn_hqfog_words(const tmat* fm, int fogbias, uint32_t w[2]) {
     w[0] = w[1] = 0u;
-    if (!fm->textured || (fm->bpp != 4 && fm->bpp != 8)) return;
+    if (!fm->textured || (fm->bpp != 4 && fm->bpp != 8)) return 0;
     const int n = fm->bpp == 8 ? 256 : 16;
-    if (fm->clx < 0 || fm->clx + n > OPENPETE_VRAM_W || fm->cly < 0 || fm->cly > 511) return;
+    if (fm->clx < 0 || fm->clx + n > OPENPETE_VRAM_W || fm->cly < 0 || fm->cly > 511) return 0;
     const uint32_t key = 1u | ((uint32_t)fm->clx << 1) | ((uint32_t)fm->cly << 11) | ((uint32_t)(n == 256) << 20);
     tn_hqfog_ent* e = &s_hqfog_tab[(key * 2654435761u) >> 26];
     if (e->key != key || e->gen != s_hqfog_gen) {
         const uint16_t* vr = openpete_vram_read();
         double a[3], b[3];
         e->key = key; e->gen = s_hqfog_gen; e->w[0] = e->w[1] = 0u;
-        if (vr && tn_hqfog_fit(vr, fm->clx, fm->cly, n, a, b)) {
+        e->st = vr ? tn_hqfog_fit(vr, fm->clx, fm->cly, n, a, b) : 0;
+        if (e->st > 0) {
             e->w[0] = OPENPETE_HQFOG_ENABLE | tn_hqfog_q10(a[0]) | (tn_hqfog_q10(a[1]) << 10) | (tn_hqfog_q10(a[2]) << 20);
             e->w[1] = tn_hqfog_q10(b[0]) | (tn_hqfog_q10(b[1]) << 10) | (tn_hqfog_q10(b[2]) << 20);
         }
     }
     w[0] = e->w[0] | (e->w[0] && fogbias ? 0x40000000u : 0u);
     w[1] = e->w[1];
+    return e->st;
 }
 
 /** @brief Counts one HQ-pinned far face's corners for OPENPETE_TERRAIN_HQFOG_CENSUS.
@@ -11227,12 +11265,14 @@ static void tn_hqfog_begin(void) {
 
 /** @brief Prints the walk's HQ depth-cue census line under OPENPETE_TERRAIN_HQFOG_CENSUS.
  *
- * One line per walk: the pinned corners found, those in the fog band and
- * those whose colour differs from terrain_fog_blend (tn_hqfog_census). */
+ * One line per walk: the pinned corners found, those in the fog band, those
+ * whose colour differs from terrain_fog_blend (tn_hqfog_census), and the
+ * pinned faces whose far CLUT gave a fade and those whose far CLUT is not a
+ * ladder (tn_hqfog_fit). */
 static void tn_hqfog_census_print(void) {
     if (!s_hqfog_census_on) return;
-    fprintf(stderr, "[hqfog-census] frame=%u corners=%d inBand=%d mismatch=%d\n",
-            openpete_feed_key_now(), s_hqfog_cen[0], s_hqfog_cen[1], s_hqfog_cen[2]);
+    fprintf(stderr, "[hqfog-census] frame=%u corners=%d inBand=%d mismatch=%d fadeFaces=%d noLadderFaces=%d\n",
+            openpete_feed_key_now(), s_hqfog_cen[0], s_hqfog_cen[1], s_hqfog_cen[2], s_hqfog_cen[3], s_hqfog_cen[4]);
 }
 
 /** @brief Emits one routed HP face on the near path.
@@ -11281,7 +11321,8 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     const int pinned = tn_hqfog_face(sv, F);
     W->emit_hqfog_on = (uint8_t)(pinned && s_hqfog_en);
     W->emit_fogref = fogRef;
-    if (W->emit_hqfog_on) tn_hqfog_words(&F->mat, F->fogbias, W->emit_hqfog);
+    const int fit = W->emit_hqfog_on ? tn_hqfog_words(&F->mat, F->fogbias, W->emit_hqfog) : 0;
+    if (W->emit_hqfog_on && s_hqfog_census_on) W->hqfog_cen[fit > 0 ? 3 : 4] += (fit != 0);
     int spikeTri0 = W->tri_n;
     const tn_nearface nf = {
         .hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
