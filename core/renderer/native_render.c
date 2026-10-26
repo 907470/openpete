@@ -13207,7 +13207,7 @@ static int tex_run_continues(const scene_tri_t* s0, const scene_tri_t* s1, int s
 static psx_material tex_run_material(const scene_tri_t* s) {
     psx_material m = { s->tpage_x, s->tpage_y, s->clut_x, s->clut_y, s->bpp,
                        s->hqfog_a, s->hqfog_b, 0.0f, 0.0f };
-    if (s->hqfog_a & 0x80000000u) {
+    if (s->hqfog_a & OPENPETE_HQFOG_ENABLE) {
         const nr_pack_fog* pf = ps_pack_fog();
         if (pf->lad_on) { m.lad_ts = pf->lad[0]; m.lad_tb = pf->lad[1]; }
     }

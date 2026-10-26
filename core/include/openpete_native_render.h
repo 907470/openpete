@@ -1692,6 +1692,8 @@ void openpete_native_scene_set_fog_delta(int delta);
  * @param a Word a; bit 31 clear disables the fade.
  * @param b Word b. */
 void openpete_native_scene_set_hq_fog(uint32_t a, uint32_t b);
+/* Word a's enable bit (openpete_native_scene_set_hq_fog, psx_hq_fog.glsl). */
+#define OPENPETE_HQFOG_ENABLE (1u << 31)
 
 /* ── Portal cover invariant (plane-cover rule) ────────────────────────
  * The portal feeder's opening planes, republished per feed in core terms so

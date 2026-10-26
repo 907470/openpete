@@ -11039,7 +11039,7 @@ static void tn_hqfog_words(const tmat* fm, int fogbias, uint32_t w[2]) {
         double a[3], b[3];
         e->key = key; e->gen = s_hqfog_gen; e->w[0] = e->w[1] = 0u;
         if (vr && tn_hqfog_fit(vr, fm->clx, fm->cly, n, a, b)) {
-            e->w[0] = 0x80000000u | tn_hqfog_q10(a[0]) | (tn_hqfog_q10(a[1]) << 10) | (tn_hqfog_q10(a[2]) << 20);
+            e->w[0] = OPENPETE_HQFOG_ENABLE | tn_hqfog_q10(a[0]) | (tn_hqfog_q10(a[1]) << 10) | (tn_hqfog_q10(a[2]) << 20);
             e->w[1] = tn_hqfog_q10(b[0]) | (tn_hqfog_q10(b[1]) << 10) | (tn_hqfog_q10(b[2]) << 20);
         }
     }
