@@ -20,7 +20,14 @@
  * plane: t = -s / S, s the signed distance past the plane in [-slab, 0) and
  * S the largest slab of the present, so a deeper fragment writes a farther
  * depth in [z_c - 2 eps, z_c - eps] (and in [z_c + eps, z_c + 2 eps] on the
- * hide side) for every moby alike. The fragment's point is rebuilt from its
+ * hide side) for every moby alike. An unsunk fragment of the moby (inside the
+ * disc, on the moby's side) whose point lies within 4 eps of the plane along
+ * the ray is compressed onto [z_c - 4 eps, z_c - 2 eps) (on the hide side
+ * (z_c + 2 eps, z_c + 4 eps]): the map is monotone in ray depth across the
+ * plane, so a fragment of the moby nearer than another before the snap stays
+ * nearer after it (min(z_f, g_f) < min(z_b, z_c - 2 eps) when z_f < z_b), and
+ * a facet resting on the plane is not hidden by the moby's own sunk faces.
+ * The fragment's point is rebuilt from its
  * raster depth plus the moby's offset off_m (the tie pull less the
  * near-floor lift), the key depth its contact geometry was built at.
  *
@@ -100,14 +107,27 @@ float op_snap_depth(float zout, vec2 rank, bool reversed)
         uvec4 c = msnap.snp[base + 3u * k + 2u];
         float sd = dot(a.xyz, p) - a.w;
         float s = b.x < 0.0 ? -sd : sd;          /* side * (n.p - D) */
-        if (s >= 0.0 || s < -abs(b.x)) continue;
+        if (s < -abs(b.x)) continue;
         if (length(p - sd * a.xyz - b.yzw) > uintBitsToFloat(c.x)) continue;
         float nr = dot(a.xyz, ray);
         if (abs(nr) < 1e-9) continue;
         float zc = a.w / nr;
         if (zc <= 1.0) continue;
-        float t = -s / S;
         float eps = op_snap_eps(zc, reversed);
+        if (s >= 0.0) {
+            /* Unsunk, within 4 eps of the plane along the ray: compressed
+             * onto the half of that band away from the plane, so it stays
+             * on its side of every snapped fragment of the moby. */
+            if ((c.y & 2u) != 0u) {
+                if (p.z < zc && p.z > zc - 4.0 * eps)
+                    rev = min(rev, zc - 4.0 * eps + 0.5 * (p.z - (zc - 4.0 * eps)));
+            } else if ((c.y & 1u) != 0u) {
+                if (p.z > zc && p.z < zc + 4.0 * eps)
+                    hid = max(hid, zc + 4.0 * eps - 0.5 * (zc + 4.0 * eps - p.z));
+            }
+            continue;
+        }
+        float t = -s / S;
         if ((c.y & 2u) != 0u) rev = min(rev, zc - eps * (2.0 - t));
         else if ((c.y & 1u) != 0u) hid = max(hid, zc + eps * (2.0 - t));
     }
