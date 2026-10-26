@@ -20,9 +20,14 @@ original, --record-cfr 60, --ssaa 4, --frame-limit ending the run 600 VBLs
 --window 3840x2160 (scene render target 15360x8640); Linux at --window
 960x540 (3840x2160), which lavapipe renders in about 0.3 s per present.
 
-The run ends on --frame-limit, not --record-frames: a --record-frames stop
-quits with the last readbacks still in flight (composed exceeds captured by
-the ring depth), while a frame-limit exit drains them into the clip.
+The default leg ends on --frame-limit, so every composed present is owed to
+the clip. The --record-frames N leg ends on the recorder's budget instead:
+the run quits once N images reached the encoder, which is after N + the
+readback ring depth presents composed, so composed exceeds N and the
+presents after the Nth are not owed. Under OPENPETE_REC_LOG the leg logs
+each present's capture tag ([recq], composition order) and each image the
+encoder takes ([recpub]); the published tags must be the first composed
+tags in order, so no present inside the first N is lost.
 
 Instruments, both of the same run:
   * the present census exit line "N composed frame(s) total ...; M frame(s)
@@ -33,7 +38,10 @@ Instruments, both of the same run:
 
 Verdict:
   VACUOUS  the census line is missing or composed is 0: the path did not run.
-  FAIL     never began > 0, the clip is missing, or decoded != composed.
+  FAIL     never began > 0, the clip is missing, or decoded != composed;
+           under --record-frames N: the run did not exit on the budget,
+           decoded != N, captured != N, or the published tags are not the
+           first composed tags (published + filled != N, or a tag differs).
   PASS     otherwise.
 
 Platforms: --platform windows (default) runs the cross-built exe in
@@ -45,6 +53,7 @@ outputs are deleted before it and asserted after it.
 
 Usage: tests/harness/check_record_cfr_complete.py [--platform windows|linux]
            [--exe PATH] [--out DIR] [--frames N] [--window WxH] [--ssaa N]
+           [--record-frames N]
 Exit 0 PASS, 1 FAIL, 2 VACUOUS, 64 SKIP.
 """
 import argparse
@@ -74,6 +83,11 @@ PLAYABLE_VBL = 1604
 CENSUS_RE = re.compile(r"(\d+) composed frame\(s\) total, .*; (\d+) frame\(s\) never began")
 CAPTURED_RE = re.compile(r"finalized .*?: (\d+) frame\(s\) captured, (\d+) dropped")
 FILLED_RE = re.compile(r"cfr: (\d+) owed present\(s\) never reached the encoder")
+RECQ_RE = re.compile(r"^\[recq\] pts=(\d+)", re.M)
+RECPUB_RE = re.compile(r"^\[recpub\] n=\d+ pts=(\d+)", re.M)
+# Backstop after the budget: a --record-frames leg that reaches it did not
+# stop on the budget.
+BUDGET_SLACK_VBLS = 120
 
 
 def windows_exe():
@@ -86,10 +100,13 @@ def windows_exe():
     return None
 
 
-def run_row(platform, exe, out, frames, window, ssaa):
-    """Launch the row once; return (log path, clip path, exit code)."""
+def run_row(platform, exe, out, frames, window, ssaa, budget=0):
+    """Launch the row once; return (log path, clip path, exit code).
+
+    budget > 0 ends the run on --record-frames budget, with --frame-limit
+    BUDGET_SLACK_VBLS later as the backstop, and logs the capture tags."""
     os.makedirs(out, exist_ok=True)
-    base = os.path.join(out, "%s_%s" % (ROW, platform))
+    base = os.path.join(out, "%s_%s%s" % (ROW, platform, "_rf%d" % budget if budget else ""))
     log, clip = base + ".log", base + ".mkv"
     for p in (log, clip):
         if os.path.exists(p):
@@ -109,9 +126,13 @@ def run_row(platform, exe, out, frames, window, ssaa):
         "--mods-dir", host(empty), "--texpack-dir", host(empty),
         "--renderer", "vk", "--window", window, "--ssaa", str(ssaa),
         "--record-cfr", "60", "--record", host(clip),
-        "--frame-limit", str(PLAYABLE_VBL + frames),
+        "--frame-limit", str(PLAYABLE_VBL + (budget + BUDGET_SLACK_VBLS if budget else frames)),
         "--max-runtime-seconds", str(TIMEOUT[platform] - 30)]
-    env = child_env({"OPENPETE_VIBRATION": "0"})
+    knobs = {"OPENPETE_VIBRATION": "0"}
+    if budget:
+        argv += ["--record-frames", str(budget)]
+        knobs["OPENPETE_REC_LOG"] = "1"
+    env = child_env(knobs)
     if platform == "linux":
         sw_render_env(env)
     try:
@@ -136,7 +157,27 @@ def decoded_frames(clip):
     return int(s) if r.returncode == 0 and s.isdigit() else None
 
 
-def analyze(platform, log, clip, rc):
+def budget_reason(text, budget, captured, filled, decoded):
+    """The --record-frames leg's failure reason, or "" when the clip holds exactly the first budget presents."""
+    if "reason=record-frames" not in text:
+        return "run did not stop on --record-frames"
+    if decoded != budget:
+        return "clip decodes %d frame(s), budget %d" % (decoded, budget)
+    if captured != budget:
+        return "recorder captured %d frame(s), budget %d" % (captured, budget)
+    composed_tags = RECQ_RE.findall(text)
+    pub = RECPUB_RE.findall(text)
+    if not composed_tags or not pub:
+        return "no [recq]/[recpub] tag lines (OPENPETE_REC_LOG unread)"
+    if len(pub) + filled != budget:
+        return "%d image(s) published + %d filled != budget %d" % (len(pub), filled, budget)
+    for i, tag in enumerate(pub):
+        if i >= len(composed_tags) or tag != composed_tags[i]:
+            return "published image %d is not composed present %d" % (i, i)
+    return ""
+
+
+def analyze(platform, log, clip, rc, budget=0):
     """Judge one run; print the verdict line and return the exit code."""
     with open(log, errors="replace") as f:
         text = f.read()
@@ -156,13 +197,17 @@ def analyze(platform, log, clip, rc):
         verdict, reason = "FAIL", "%d present(s) never began" % never
     elif decoded is None:
         verdict, reason = "FAIL", "no decodable clip at %s" % clip
+    elif budget:
+        reason = budget_reason(text, budget, captured, filled, decoded)
+        verdict = "FAIL" if reason else "PASS"
     elif decoded != composed:
         verdict, reason = "FAIL", "clip decodes %d frame(s), %d composed" % (decoded, composed)
     else:
         verdict = "PASS"
-    print("[record-cfr-complete] row=%s platform=%s rc=%s composed=%d never_began=%d "
+    print("[record-cfr-complete] row=%s platform=%s rc=%s%s composed=%d never_began=%d "
           "captured=%d cfr_filled=%d decoded=%s verdict=%s%s log=%s"
-          % (ROW, platform, rc, composed, never, captured, filled,
+          % (ROW, platform, rc, " record_frames=%d" % budget if budget else "",
+             composed, never, captured, filled,
              "none" if decoded is None else decoded, verdict,
              (" (" + reason + ")") if reason else "", log))
     return {"PASS": EXIT_PASS, "FAIL": EXIT_FAIL, "VACUOUS": EXIT_VACUOUS}[verdict]
@@ -176,6 +221,8 @@ def main():
     ap.add_argument("--frames", type=int, default=600, help="VBLs (owed presents) after the level is playable")
     ap.add_argument("--window", default=None, help="default 3840x2160 (windows), 960x540 (linux)")
     ap.add_argument("--ssaa", type=int, default=4)
+    ap.add_argument("--record-frames", type=int, default=0,
+                    help="end the run on this --record-frames budget instead of --frame-limit")
     a = ap.parse_args()
     if not shutil.which("ffprobe"):
         print("[record-cfr-complete] SKIP: ffprobe not on PATH")
@@ -200,8 +247,8 @@ def main():
         print("[record-cfr-complete] SKIP: no %s disc" % GAME)
         return EXIT_SKIP
     log, clip, rc = run_row(a.platform, exe, a.out, a.frames,
-                            a.window or WINDOW[a.platform], a.ssaa)
-    return analyze(a.platform, log, clip, rc)
+                            a.window or WINDOW[a.platform], a.ssaa, a.record_frames)
+    return analyze(a.platform, log, clip, rc, a.record_frames)
 
 
 if __name__ == "__main__":
