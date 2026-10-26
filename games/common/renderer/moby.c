@@ -2117,7 +2117,7 @@ static int fade_snap_get(uint32_t moby, int dflt) {
  *
  * The authored term lerped between the two ticks, less the present's own
  * centre Z (tz_present: the build_moby_record_tr value this present projects
- * through, or moby_present_trz on a rec_tr_final game):
+ * through, or moby_present_drawn_trz on a rec_tr_final game):
  *   z = ZSF4 + (1 - alpha)(A_prev - A_curr) + (tz_curr - tz_present).
  * A moby absent from the previous tick holds A_curr. Both correction terms are
  * exactly 0 at alpha 1 (tz_present is the tick's own centre there), and the
@@ -8165,11 +8165,28 @@ static int32_t moby_present_trz(CPUState* cpu, uint32_t moby) {
     return moby_present_trz_at(cpu, moby, NULL);
 }
 
+/** @brief The cull's centre TRZ at this present's camera and at the position the moby's geometry is drawn at.
+ *
+ * A game whose record stores the rescaled translation (rec_tr_final) draws
+ * the record's centre at the position words plus moby_record_world_offset
+ * (moby_record_centre_final), so the TRZ is moby_present_trz_at with that
+ * offset; elsewhere it is moby_present_trz. At a canonical present and at
+ * alpha 1 the offset is zero and the value is the cull's own TRZ.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @return TRZ. */
+static int32_t moby_present_drawn_trz(CPUState* cpu, uint32_t moby) {
+    if (!game_layout.moby.rec_tr_final) return moby_present_trz(cpu, moby);
+    double woff[3];
+    moby_record_world_offset(moby, woff);
+    return moby_present_trz_at(cpu, moby, woff);
+}
+
 /** @brief The world ordering-table bucket the animated cull forms from TRZ before m_DepthOffset: (TRZ << 2) >> 7 in 32 bits.
  *
  * Spyro 2 mobydraw.s 0x80043F78 / 0x80043F98 (sll 2) and 0x80043FB0 (sra 7);
  * Spyro 3 0x80030B98 / 0x80030BB8 and 0x80030BD0.
- * @param trz The centre Z (moby_present_trz).
+ * @param trz The centre Z (moby_present_drawn_trz).
  * @return The bucket. */
 static int moby_trz_bucket(int32_t trz) {
     return (int32_t)((uint32_t)trz << 2) >> 7;
@@ -8180,7 +8197,7 @@ typedef struct { uint32_t moby; int zb; } moby_zb_memo;
 
 /** @brief The world ordering-table bucket of a moby's centre at the camera of the walk now feeding, before m_DepthOffset.
  *
- * moby_trz_bucket of moby_present_trz, saturated to the int16 range of the
+ * moby_trz_bucket of moby_present_drawn_trz, saturated to the int16 range of the
  * carry entry that stores it. Two presents' world buckets for one moby face
  * differ by the difference of this value, while the face's local bucket and
  * m_DepthOffset hold.
@@ -8192,7 +8209,7 @@ static int moby_centre_bucket(CPUState* cpu, uint32_t moby, moby_zb_memo* memo) 
     if (moby < 0x80000000u) return 0;
     if (memo->moby == moby) return memo->zb;
     memo->moby = moby;
-    const int zb = moby_trz_bucket(moby_present_trz(cpu, moby));
+    const int zb = moby_trz_bucket(moby_present_drawn_trz(cpu, moby));
     memo->zb = zb > INT16_MAX ? INT16_MAX : (zb < INT16_MIN ? INT16_MIN : zb);
     return memo->zb;
 }
@@ -13692,7 +13709,7 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
 
 /** @brief The world bucket base the animated cull stores at record +0x18, computed at this present's camera, plus one; 0 at alpha 1.
  *
- * The cull's bucket of its centre (moby_trz_bucket of moby_present_trz) less
+ * The cull's bucket of its centre (moby_trz_bucket of moby_present_drawn_trz) less
  * m_DepthOffset (the angle word's top byte: lw 0x44, sra 24), floored at 0
  * and moved 0x20 buckets on at 0x110 and beyond (moby_otk_world_key)
  * (Spyro 2 mobydraw.s 0x80043FB0-0x8004402C, Spyro 3 0x80030BD0-0x80030C4C).
@@ -13705,8 +13722,39 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
 static int moby_present_wbase(CPUState* cpu, uint32_t moby) {
     if (s_rc_alpha >= 1.0 || moby < 0x80000000u || !moby_game.otkey_splice) return 0;
     const int dofs = (int8_t)cpu->read_byte(moby + game_layout.moby.angle_off + 3u);
-    const int b = moby_trz_bucket(moby_present_trz(cpu, moby)) - dofs;
+    const int b = moby_trz_bucket(moby_present_drawn_trz(cpu, moby)) - dofs;
     return 1 + moby_otk_world_key(b < 0 ? 0 : b);
+}
+
+/** @brief Print a record's stored world bucket base beside the base this present computes, under OPENPETE_MOBY_POSTRACE_CLS.
+ *
+ * One line per record whose class matches OPENPETE_MOBY_POSTRACE_CLS (0xFFFF
+ * every class) on a game with the splice:
+ * `[moby-wbase vbl=<v>] m=<moby> stored=<base|-> wbase=<base|-> woff=<0|1>`.
+ * stored is the base the cull wrote at record +0x18 (otkey_splice), '-' when
+ * it does not read; wbase is moby_present_wbase's base, '-' at alpha 1; woff
+ * is 1 when moby_record_world_offset is nonzero, the moby moving between the
+ * ticks this present spans. At alpha 0 the base equals the stored base of the
+ * tick before, which the check reads off the alpha-1 replay.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The cull record's address.
+ * @param moby The record's moby.
+ * @param wbase_p1 moby_present_wbase's value for the moby. */
+static void moby_wbase_trace(CPUState* cpu, uint32_t rec, uint32_t moby, int wbase_p1) {
+    static long s_cls = -2;
+    if (s_cls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_cls = e ? strtol(e, NULL, 0) : -1; }
+    if (s_cls < 0 || !moby_game.otkey_splice) return;
+    const uint16_t cls = (uint16_t)cpu->read_half(moby + game_layout.moby.class_off);
+    if (s_cls != 0xFFFF && cls != (uint16_t)s_cls) return;
+    int wb = 0, wn = 0;
+    const int ok = moby_game.otkey_splice(cpu, rec, &wb, &wn);
+    double w[3];
+    moby_record_world_offset(moby, w);
+    char sb[16] = "-", pb[16] = "-";
+    if (ok) snprintf(sb, sizeof sb, "%d", wb);
+    if (wbase_p1) snprintf(pb, sizeof pb, "%d", wbase_p1 - 1);
+    fprintf(stderr, "[moby-wbase vbl=%u] m=%08x stored=%s wbase=%s woff=%d\n", openpete_feed_key_now(), moby, sb,
+            pb, (w[0] != 0.0 || w[1] != 0.0 || w[2] != 0.0) ? 1 : 0);
 }
 
 /** @brief The records a sub-tick pass replays: the cull queue at s_rec_base up to its terminator, then on a regular pass of a game without host reveal the admitted trailing-edge records (trail_replay_admit).
@@ -13742,9 +13790,7 @@ static int reextract_record_list(CPUState* cpu, int is_spec, uint32_t* recs, uin
  * @return The centre Z. */
 static double fade_present_tz(CPUState* cpu, uint32_t moby, double trz_frac) {
     if (!game_layout.moby.rec_tr_final) return trz_frac;
-    double woff[3];
-    moby_record_world_offset(moby, woff);
-    return (double)moby_present_trz_at(cpu, moby, woff);
+    return (double)moby_present_drawn_trz(cpu, moby);
 }
 
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
@@ -13934,6 +13980,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             prev->frame_a, prev->header, (float)pd.alpha };
         s_recs[s_nrecs].wbase_p1 = moby_present_wbase(cpu, mobys[i]);
+        moby_wbase_trace(cpu, recs[i], mobys[i], s_recs[s_nrecs].wbase_p1);
         s_recs[s_nrecs].model_held = pd.model_held;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);

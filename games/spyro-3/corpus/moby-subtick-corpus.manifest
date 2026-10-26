@@ -27,3 +27,9 @@ sheilas-alp-sheila-water-invisible.bk2 | 4629-4641 | pairs=43 turn=6 | seam 4632
 # yaw units per tick from the reported pose, engaged at VBL 2463: the egg's
 # world position and angle word are fixed, so every leg is a still leg.
 pose:sunrise_spring:pos=(28471, 32424, 18245) yaw=-1727 pitch=183 | 2473-2533 | pairs=0 spin=4 still=25
+# The attract demo: mobys 8018e278, 8018e328, 8018e380 and 8018fda0 cross
+# world buckets between ticks; a base taken at the newest tick's position
+# words reads 175 of 917 alpha-0 bases 1 to 3 buckets off the stored one. The
+# class leg at 5819 (D 0.014 px against the moby's 0.010) is left out of the
+# seam bound, open.
+attract | 5700-5860 | pairs=726 class=43 wbase=209 | seam 5819 8018e328 class leg above the non-class bound, open

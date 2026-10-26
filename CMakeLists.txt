@@ -1039,9 +1039,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # every animated moby's keyframe pose and screen centroid read per
     # present: the previous pose rebuilt at each leg must equal the pose the
     # record of the tick before carries, and a leg where that record blends
-    # out of a clip must seam no worse than the same moby's other legs. Fails
-    # as vacuous when the row measures fewer bracketed or blending legs than
-    # its floor.
+    # out of a clip must seam no worse than the same moby's other legs. A row
+    # with a wbase= floor also requires every alpha-0 world bucket base to
+    # equal the base the cull stored on the tick before. Fails as vacuous when
+    # the row measures fewer bracketed, blending or moving legs than its floor.
     foreach(_subtick_game spyro-1 spyro-2 spyro-3)
         add_test(NAME moby_subtick_${_subtick_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_subtick.sh

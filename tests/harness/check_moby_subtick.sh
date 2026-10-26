@@ -40,9 +40,19 @@
 # alpha-1 leg of v and of v - 2), so the bin measures the interval rather than
 # the engine's verdict on it.
 #
+# A fourth bin, enabled by the row's wbase= key, is the world bucket base: the
+# base a sub-tick present computes for a record's moby (moby_present_wbase,
+# the cull's (TRZ << 2) >> 7 less m_DepthOffset at the present's camera and
+# at the position the moby is drawn at) must at alpha 0 equal the base the
+# cull stored at record +0x18 on the tick before, read off the alpha-1 replay
+# at v - 2. A base taken at the newest tick's position words while the
+# geometry draws at the interpolated position fails it on every leg whose
+# moby moves across a bucket between the ticks.
+#
 # Input: games/<slug>/corpus/moby-subtick-corpus.manifest, rows
 #   <source> | <lo>-<hi> | <key>=<value> ... [| <exclusion>]...
-# where <source> is a movie under games/<slug>/bk2, `pose:<level>:<pose>`,
+# where <source> is a movie under games/<slug>/bk2, `attract` (the boot with
+# no movie: the title screen and the attract demo), `pose:<level>:<pose>`,
 # which skips to the level and places the freecam (the pose's spaces are kept),
 # or `pose:<level>:<area>:<pose>`, which skips to the integer sub-area.
 # The span is the intermediate-capture VBLs, two apart; the [moby-anim] and
@@ -58,6 +68,9 @@
 #               shows a channel drawn at the current tick through the
 #               interval (see TURN_MIN_PX below)
 #   dmax=<px>   optional: every leg's D at or below this bound
+#   wbase=<n>   floor on the moving legs of the wbase bin (the records whose
+#               moby_record_world_offset is nonzero at alpha 0); the key adds
+#               the bin: every alpha-0 base equals the stored base at v - 2
 #   spin=<n>    pose rows: the freecam engages at VBL lo - 10 instead of at
 #               the level's release and turns n yaw units (4096 = one turn)
 #               per tick from the row's pose (OPENPETE_FREECAM_AT_VBL,
@@ -78,13 +91,15 @@
 # at most 60 intermediate captures:
 #   [moby-anim vbl=<v>] m=<moby> ... prevkf=<0|1> ... fa= fb= fap= fbp= w0= w0p=
 #   [moby-screen vbl=<v>] leg=inter ... m=<moby> ... c=(x,y)
+#   [moby-wbase vbl=<v>] m=<moby> stored=<base|-> wbase=<base|-> woff=<0|1>
 #
 # Pass criterion, per row: 0 tuple mismatches; every class leg's D at or
 # below the largest D the same moby reads on its other legs; every held leg's
 # D zero to HOLD_EPS; with dmax, every leg's D at or below it; with still,
-# every still leg's D at or below STILL_EPS. VACUOUS (exit 1) when the
-# bracketed, the class, the held or the still leg count is below the row's
-# floor.
+# every still leg's D at or below STILL_EPS; with wbase, every alpha-0 base equal
+# to the stored base at v - 2. VACUOUS (exit 1) when the bracketed, the
+# class, the held, the still or the moving wbase leg count is below the
+# row's floor.
 #
 # Verdict line per row:
 #   [moby-subtick] game=<g> bk2=<b> pairs=<n> class=<n> hold=<n>
@@ -186,6 +201,11 @@ while IFS= read -r line; do
             tag="$level-$(printf '%s' "$pose" | md5sum | cut -c1-6)"
             row="$level"
         fi
+    elif [[ "${src// /}" == attract ]]; then
+        src=attract
+        SRC=()
+        tag=attract
+        row=attract
     else
         src="${src// /}"
         movie="$PG_BK2_DIR/$src"
@@ -247,6 +267,7 @@ min_hold = int(opts.get('hold', '0'))
 min_mirror = int(opts.get('mirror', '0'))
 min_turn = int(opts.get('turn', '0'))
 min_still = int(opts.get('still', '0'))
+min_wbase = int(opts['wbase']) if 'wbase' in opts else None
 # A still leg: the moby's world position and angle word are equal on the two
 # canonical ticks bounding the interval. Alpha 0 of v and alpha 1 of v - 2 then
 # present the same pose under the same camera, so D is the float residue of
@@ -294,6 +315,7 @@ ani = re.compile(r'\[moby-anim vbl=(\d+)\] m=(\w+) cls=(\w+) prevkf=(\d) balpha=
                  r'curr\(frm=(\d+) nfrm=(\d+) prog=(\d+) anim=(\d+)(?: nid=(\d+))?\) '
                  r'fa=(\w+) fb=(\w+) fap=(\w+) fbp=(\w+) w0=(\w+) w0p=(\w+) '
                  r'hdr=(\w+) hdrp=\w+ rot=(\w+)')
+wbs = re.compile(r'\[moby-wbase vbl=(\d+)\] m=(\w+) stored=(-?\d+|-) wbase=(-?\d+|-) woff=([01])')
 wld = re.compile(r'\[moby-world vbl=(\d+)\] m=(\w+) rot=(\w+) kf=\S+ wpos=\(([-\d,]+)\)')
 scr = re.compile(r'\[moby-screen vbl=(\d+)\] leg=inter now=\S+ m=(\w+) cls=\w+ n=\d+ '
                  r'c=\(([-\d.]+),([-\d.]+)\)')
@@ -301,6 +323,10 @@ scr = re.compile(r'\[moby-screen vbl=(\d+)\] leg=inter now=\S+ m=(\w+) cls=\w+ n
 def load(path):
     anim, screen = {}, {}
     for line in open(path, errors='replace'):
+        m = wbs.search(line)
+        if m:
+            WBASE.setdefault(path, {}).setdefault((int(m[1]), m[2].lower()), (m[3], m[4], m[5] == '1'))
+            continue
         m = wld.search(line)
         if m:
             WORLD.setdefault(path, {}).setdefault((int(m[1]), m[2].lower()), (m[3].upper(), m[4]))
@@ -315,6 +341,7 @@ def load(path):
     return anim, screen
 
 WORLD = {}
+WBASE = {}
 A0, S0 = load(log0)
 # The alpha-1 leg is the identity leg: every present there shows the pose its
 # own tick drew. The alpha-0 leg does not, because a held leg shows the pose
@@ -444,6 +471,22 @@ for (v, mob), g in sorted(A0.items()):
     if dmax is not None and D > dmax:
         bad.append("vbl=%d m=%s cls=%s D=%.3f above the row bound %.3f" % (v, mob, g[3], D, dmax))
 
+# The wbase bin: the alpha-0 base at v against the base the cull stored on
+# the tick before, the alpha-1 replay's record at v - 2.
+nwb = nwbmove = nwbbad = 0
+if min_wbase is not None:
+    W0, WS1 = WBASE.get(log0, {}), WBASE.get(log1, {})
+    for (v, mob), (_, wb, moving) in sorted(W0.items()):
+        p = WS1.get((v - 2, mob))
+        if wb == '-' or p is None or p[0] == '-' or (v, mob) in skip_leg:
+            continue
+        nwb += 1
+        nwbmove += moving
+        if int(wb) != int(p[0]):
+            nwbbad += 1
+            bad.append("vbl=%d m=%s%s wbase %s at alpha 0, the cull stored %s at vbl %d"
+                       % (v, mob, " moving" if moving else "", wb, p[0], v - 2))
+
 mobys = []
 for (mob, c), rec in sorted(per.items()):
     if not rec['cls']:
@@ -458,17 +501,18 @@ for (mob, c), rec in sorted(per.items()):
             bad.append("vbl=%d m=%s cls=%s classD=%.3f above the moby's non-class max %.3f"
                        % (v, mob, c, d, rec['other']))
 
-head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mirror=%d%s%s mismatches=%d snaps=%d excluded=%d"
+head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mirror=%d%s%s%s mismatches=%d snaps=%d excluded=%d"
         % (game, bk2, pairs, nclass, nhold, nmirror,
            (" turn=%d turnsnaps=%d" % (nturn, nturnsnap)) if logh else "",
            (" still=%d stillmax=%.3f" % (nstill, max([s[3] for s in stills] or [0.0]))) if min_still else "",
+           (" wbase=%d wbasemove=%d wbasebad=%d" % (nwb, nwbmove, nwbbad)) if min_wbase is not None else "",
            sum(' tuple ' in b for b in bad), nsnap, len(notes)))
 for n in notes:
     print("[moby-subtick]   " + n)
 if (pairs < min_pairs or nclass < min_class or nhold < min_hold or nmirror < min_mirror
-        or nturn < min_turn or nstill < min_still):
-    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d mirror>=%d turn>=%d still>=%d"
-          % (min_pairs, min_class, min_hold, min_mirror, min_turn, min_still))
+        or nturn < min_turn or nstill < min_still or nwbmove < (min_wbase or 0)):
+    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d mirror>=%d turn>=%d still>=%d wbase>=%d"
+          % (min_pairs, min_class, min_hold, min_mirror, min_turn, min_still, min_wbase or 0))
     sys.exit(1)
 print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
 for v, mob, c, d in holds:
