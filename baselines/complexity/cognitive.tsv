@@ -111,7 +111,7 @@ games/common/renderer/moby.c	compare_walk_vs_prims	251	0
 games/common/renderer/moby.c	emit_wtri	27	0	
 games/common/renderer/moby.c	hex_dump	35	0	
 games/common/renderer/moby.c	moby_build_validate	51	0	
-games/common/renderer/moby.c	moby_decode_project	78	0	
+games/common/renderer/moby.c	moby_decode_project	75	0	
 games/common/renderer/moby.c	moby_native_pass	49	0	
 games/common/renderer/moby.c	moby_reextract_body	49	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
@@ -125,7 +125,7 @@ games/common/renderer/moby.c	shaded_verify	48	0
 games/common/renderer/moby.c	special_census_face	38	0	
 games/common/renderer/moby.c	specular_env_calibrate	47	0	
 games/common/renderer/moby.c	walk_prologue	38	0	
-games/common/renderer/moby.c	walk_records	392	0	
+games/common/renderer/moby.c	walk_records	363	0	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0	
 games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0	
 games/common/renderer/moby_game_spyro23.c	s23_simple_decode	125	0	

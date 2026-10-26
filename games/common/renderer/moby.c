@@ -69,6 +69,7 @@
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 static int moby_lift_tier(void);
+static int moby_lift_faces(void);
 
 extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 
@@ -1388,6 +1389,27 @@ static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int 
     rt_add(RT_RTPS, rt0, 1);
 }
 
+/** @brief A record's vertex count under its LOD tier: the HP count, the LP count, or 0 where the game skips the record.
+ *
+ * The .s reads [hdr + 8 + (ZSF4 >> 31)] [@8001F9D4..FA04]: the LP count for
+ * ZSF4 < 0, else the HP count. Under --no-lod the HP count stands at every
+ * verdict (moby_lift_faces). A record that keeps the game's verdict
+ * (moby_lift_tier 0) with ZSF4 < 0 still returns 0 when its LP count is 0:
+ * the game draws nothing for a model with no LP mesh beyond the HP band.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @param zsf4 The record's tier verdict.
+ * @param negctl Nonzero to read the other tier's count (OPENPETE_MOBY_VERIFY_NEGCTL).
+ * @return The vertex count, 0 when the record is skipped. */
+static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl) {
+    const int far_kept = zsf4 < 0 && !moby_lift_tier();
+    int lo_tier = far_kept && !moby_lift_faces();
+    if (negctl) lo_tier = !lo_tier;
+    const uint32_t lo = header + game_layout.moby.anim_vcount_lo;
+    if (far_kept && moby_lift_faces() && !(cpu->read_byte(lo) & 0xFF)) return 0;
+    return cpu->read_byte(lo_tier ? lo : header + game_layout.moby.anim_vcount_hi) & 0xFF;
+}
+
 /** @brief Decode one moby record's vertex stream with the game's codec and project every vertex in float.
  *
  * The cull-record path (moby_project_record) and the host-built record path
@@ -1600,10 +1622,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     static int s_negctl = -1;
     if (s_negctl < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY_NEGCTL");
                         s_negctl = (e && *e && *e != '0') ? 1 : 0; }
-    int lo_tier = (zsf4 < 0 && !moby_lift_tier());
-    if (s_negctl) lo_tier = !lo_tier;
-    int count = cpu->read_byte(lo_tier ? header + game_layout.moby.anim_vcount_lo
-                                       : header + game_layout.moby.anim_vcount_hi) & 0xFF;
+    int count = moby_tier_vcount(cpu, header, zsf4, s_negctl);
     if (count > cap) count = cap;
     if (count == 0) return 0;
 
@@ -1708,8 +1727,9 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
  * and raw colours draw where the game would fade or swap to the LP model.
  * A heavy-fog level (terrain_heavy_fog) keeps the game's own verdict
  * instead, so its mobys fade into the fog as its terrain does, at every
- * distance: the LP model and far palette at ZSF4 <= 0, the fog-colour fade
- * below -2048. OPENPETE_MOBY_FOG_TIER=0 lifts on every level (A/B).
+ * distance: the far palette at ZSF4 <= 0, the fog-colour fade below -2048,
+ * drawn on the HP model (moby_lift_faces). OPENPETE_MOBY_FOG_TIER=0 lifts
+ * on every level (A/B).
  * @return 1 when the tier is lifted. */
 static int moby_lift_tier(void) {
     static int s_fog_tier = -1;
@@ -1717,12 +1737,30 @@ static int moby_lift_tier(void) {
     return openpete_no_lod && !(s_fog_tier && terrain_heavy_fog());
 }
 
+/** @brief Whether --no-lod draws every moby record with its HP faces and vertex count.
+ *
+ * Every extended-LOD record draws the HP model. On a heavy-fog level the
+ * verdict stays the game's (moby_lift_tier 0), so the HP model takes the
+ * colours the game gives that verdict (moby_record_fade): the far palette,
+ * which the game indexes by HP colour index in its fog band, at ZSF4 <= 0,
+ * and the fog-colour fade below -2048. OPENPETE_MOBY_FOG_FACES=0 keeps the
+ * game's LP model there (A/B).
+ * @return 1 when the HP faces draw at every verdict. */
+static int moby_lift_faces(void) {
+    static int s_fog_faces = -1;
+    if (s_fog_faces < 0) { const char* e = getenv("OPENPETE_MOBY_FOG_FACES"); s_fog_faces = !(e && *e == '0'); }
+    return openpete_no_lod && (s_fog_faces || moby_lift_tier());
+}
+
 /* OPENPETE_MOBY_FADE_CENSUS: one line per face walk under --no-lod. On a
  * heavy-fog level, the records drawn and those whose drawn verdict differs
- * from the game's own (a lifted tier: the HP model and raw colours where the
- * game fades). On any other level, the records drawn and those whose verdict
+ * from the game's own (a lifted tier: raw colours where the game fades).
+ * On any other level, the records drawn and those whose verdict
  * keeps a distance term (a distance fade). Worker walks count atomically. */
 static int s_mfc_on = -1, s_mfc_n, s_mfc_bad;
+/* Heavy-fog levels: far-verdict records (ZSF4 <= 0) drawn with HP faces,
+ * and their textured faces. */
+static int s_mfc_far, s_mfc_fartex;
 
 /** @brief Whether OPENPETE_MOBY_FADE_CENSUS counts this walk: the variable set and --no-lod on.
  * @return 1 when counting. */
@@ -1748,9 +1786,10 @@ static void moby_fade_census_tier(int drawn, int game) {
 /** @brief Prints and resets the census counts. */
 static void moby_fade_census_print(void) {
     if (!moby_fade_census_on()) return;
-    fprintf(stderr, "[mobyfade-census] frame=%u heavyFog=%d records=%d mismatch=%d\n",
-            openpete_feed_key_now(), terrain_heavy_fog(), s_mfc_n, s_mfc_bad);
-    s_mfc_n = s_mfc_bad = 0;
+    fprintf(stderr, "[mobyfade-census] frame=%u heavyFog=%d records=%d mismatch=%d farHP=%d farTexFaces=%d\n",
+            openpete_feed_key_now(), terrain_heavy_fog(), s_mfc_n, s_mfc_bad,
+            s_mfc_far, s_mfc_fartex);
+    s_mfc_n = s_mfc_bad = s_mfc_far = s_mfc_fartex = 0;
 }
 
 /** @brief The record's ZSF4 LOD and colour-fade tier verdict, after the --no-lod adjustment.
@@ -2158,7 +2197,7 @@ static void canon_drawn_harvest(int nrec) {
  * @return The face-block address, or 0 when header is not an address. */
 static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
     if (header < 0x80000000u) return 0u;
-    uint32_t off = (zsf4 <= 0 && !moby_lift_tier()) ? ANIM_FACES_LP : ANIM_FACES_HP;
+    uint32_t off = (zsf4 <= 0 && !moby_lift_faces()) ? ANIM_FACES_LP : ANIM_FACES_HP;
     return cpu->read_word(header + off);
 }
 
@@ -4516,7 +4555,12 @@ typedef struct { int ir0; double ir0f; int frac; int row; uint8_t tmix;
                  /* The material's whole-table tint, applied after the fade
                   * (moby_game.material_tint): tint 1 recolours every colour
                   * toward the 12-bit tfc at tir0. */
-                 int tint; int tfc[3]; int tir0; } moby_fade_t;
+                 int tint; int tfc[3]; int tir0;
+                 /* HP faces drawn at a far verdict (moby_far_texel): far_hp
+                  * marks the record, far_row is the fogged-CLUT row its
+                  * textured faces sample, untex 1 draws them untextured in
+                  * the vertex colour, skip_hl drops its specular decals. */
+                 int far_hp; int far_row; int untex; int skip_hl; } moby_fade_t;
 
 /** @brief DPCS of one 8-bit channel toward a 12-bit far colour at a fractional IR0.
  *
@@ -4688,6 +4732,35 @@ static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
     if (fd->tint) moby_tint_census(R);
 }
 
+/** @brief Set how a far-verdict record's HP faces draw, when they stand in for the LP model.
+ *
+ * The game never draws a textured face at ZSF4 <= 0: the LP faces there are
+ * untextured gouraud in the far palette (hdr+0x20), faded toward the fog
+ * colour below -2048. A record that keeps the game's verdict with its faces
+ * lifted (moby_lift_faces, moby_lift_tier 0) draws its HP faces at that
+ * verdict with those vertex colours. Its textured faces sample the deepest
+ * row of the 8-row fogged-CLUT ladder, the row the fog band reaches at its
+ * far end (IR0 >> 9 = 7). OPENPETE_MOBY_HPFOG_TEX overrides the row with a
+ * digit 0-7, or 'u' draws the textured faces untextured in the vertex colour
+ * (A/B). On a specular pass record (moby_game.spec_light, material "S" or
+ * spec_solo) the specular decal faces (F->hl), which the LP model lacks and
+ * whose treatment carries no fade, are skipped (skip_hl).
+ * @param R The record.
+ * @param fd The record's fade: far_hp, far_row, untex and skip_hl out. */
+static void moby_far_texel(const rec_meta* R, moby_fade_t* fd) {
+    static int s_mode = -1;   /* -1 unread, 8 untextured, 0..7 the row */
+    if (s_mode < 0) {
+        const char* e = getenv("OPENPETE_MOBY_HPFOG_TEX");
+        s_mode = (e && *e == 'u') ? 8 : ((e && *e >= '0' && *e <= '7') ? *e - '0' : 7);
+    }
+    fd->far_hp = 0; fd->far_row = 0; fd->untex = 0; fd->skip_hl = 0;
+    if (R->zsf4 > 0 || !moby_lift_faces() || moby_lift_tier()) return;
+    fd->far_hp = 1;
+    fd->skip_hl = moby_game.spec_light && (s_cur_mat[0] == 'S' || R->spec_solo);
+    fd->untex = s_mode == 8;
+    fd->far_row = s_mode & 7;
+}
+
 /** @brief The record's per-vertex colour base and colour fade for this present, by its LOD tier.
  *
  * The ladder is documented at moby_tier_faceblock; the tier is always the
@@ -4728,6 +4801,7 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
     *farbase = 0; *fcc = NULL;
     fd->ir0 = 0; fd->ir0f = 0.0; fd->frac = frac; fd->row = 0; fd->tmix = 0;
     moby_fade_tint(R, fd);
+    moby_far_texel(R, fd);
     if (R->zsf4 > 0) {
         if (!frac) {
             fd->ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, farbase);
@@ -4775,6 +4849,7 @@ static void moby_fade_census_nofog(CPUState* cpu, const rec_meta* R) {
  * @param fcc The LP band's constant far colour, or NULL.
  * @return The row offset. */
 static int moby_face_fog_row(const moby_fade_t* fd, const int* fcc) {
+    if (fd->far_row) return fd->far_row;
     return fcc ? 0 : fd->row;
 }
 /** @brief A face's second fogged-CLUT row and weight (moby_fade_t.tmix), 0 under the LP band's constant-colour fade.
@@ -5537,6 +5612,54 @@ static void moby_classdbg_line(CPUState* cpu, uint32_t mob, uint16_t cls) {
             (int)cpu->read_word(mob + game_layout.moby.pos_off + 8u));
 }
 
+/** @brief OPENPETE_MOBY_FADEDBG=frameLo: one record's LOD-fade forensics for 4 frames from frameLo.
+ *
+ * Prints the record's verdict, fade and colour bases, and for a fog-band
+ * record the first 24 near, far and faded colour triplets.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @param r The record's index.
+ * @param cbase The colour table the walk reads.
+ * @param farbase The far palette, 0 for none.
+ * @param fd The record's fade. */
+static void moby_fadedbg_record(CPUState* cpu, const rec_meta* R, int r, uint32_t cbase,
+                                uint32_t farbase, const moby_fade_t* fd) {
+    static int s_fd0 = -2;
+    if (s_fd0 == -2) { const char* e = getenv("OPENPETE_MOBY_FADEDBG"); s_fd0 = (e && *e) ? atoi(e) : -1; }
+    if (s_fd0 >= 0 && (int)openpete_frame >= s_fd0 && (int)openpete_frame < s_fd0 + 4) {
+        uint32_t c0 = cpu->read_word(cbase), c1 = cpu->read_word(cbase + 4);
+        uint32_t f0 = farbase ? cpu->read_word(farbase) : 0, f1 = farbase ? cpu->read_word(farbase + 4) : 0;
+        fprintf(stderr, "[fade vbl=%u] rec=%d moby=%08x cls=%03x zsf4=%d zf=%.3f ir0f=%.3f hdr=%08x cbase=%08x farbase=%08x ir0=%d "
+                "c0=%06X c1=%06X f0=%06X f1=%06X\n",
+                openpete_frame, r, R->moby, R->moby >= 0x80000000u ? (cpu->read_half(R->moby + game_layout.moby.class_off) & 0xFFFu) : 0xFFF,
+                R->zsf4, R->zf_on ? R->zf : (double)R->zsf4, fd->ir0f, R->header, cbase, farbase, fd->ir0, c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, f0 & 0xFFFFFFu, f1 & 0xFFFFFFu);
+        if (fd->ir0 > 0 && farbase) {   /* one fog-band record: full table triplets */
+            int nc = (int)(cpu->read_half(R->header + game_layout.moby.anim_ccount_off) & 0xFFFFu); if (nc > 24) nc = 24;
+            for (int k = 0; k < nc; k++) {
+                uint32_t nw = cpu->read_word(cbase + (uint32_t)k*4u) & 0xFFFFFFu;
+                uint32_t fw2 = cpu->read_word(farbase + (uint32_t)k*4u) & 0xFFFFFFu;
+                uint32_t ov = moby_color_at(cpu, cbase, farbase, NULL, fd, (uint32_t)k*4u);
+                fprintf(stderr, "  [ftab k=%d] near=%06X far=%06X out=%06X\n", k, nw, fw2, ov);
+            }
+        }
+    }
+}
+
+/** @brief Counts a drawn record into the fade census: the level policy, and on a heavy-fog level a far-verdict record drawn with HP faces.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @param FC The record's decoded faces. */
+static void moby_fade_census_rec(CPUState* cpu, const rec_meta* R, const fcache_t* FC) {
+    moby_fade_census_nofog(cpu, R);
+    if (!moby_fade_census_on() || !terrain_heavy_fog() || R->zsf4 > 0 ||
+        R->header < 0x80000000u || R->faceblock != cpu->read_word(R->header + ANIM_FACES_HP)) return;
+    int tex = 0;
+    for (int fi = 0; fi < FC->nfaces; fi++) tex += FC->f[fi].textured != 0;
+    __atomic_add_fetch(&s_mfc_far, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&s_mfc_fartex, tex, __ATOMIC_RELAXED);
+}
+
 /** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
  *
  * Per record: the specular pass skips a moby the regular pass already fed
@@ -5607,30 +5730,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
          * present's ZSF4 (moby_record_fade) */
         uint32_t farbase = 0; int fogfc[3]; const int* fcc = NULL; moby_fade_t fd;
         uint32_t cbase = moby_record_fade(cpu, R, &farbase, fogfc, &fcc, &fd);
-        moby_fade_census_nofog(cpu, R);
+        moby_fade_census_rec(cpu, R, FC);
         const int dpcs_ir0 = fd.ir0;
         if (cbase < 0x80000000u) cbase = COLOR_SCRATCH;   /* fall back to fog scratch */
-        { /* OPENPETE_MOBY_FADEDBG=frameLo: per-record LOD-fade forensics (4 frames). */
-            static int s_fd0 = -2;
-            if (s_fd0 == -2) { const char* e = getenv("OPENPETE_MOBY_FADEDBG"); s_fd0 = (e && *e) ? atoi(e) : -1; }
-            if (s_fd0 >= 0 && (int)openpete_frame >= s_fd0 && (int)openpete_frame < s_fd0 + 4) {
-                uint32_t c0 = cpu->read_word(cbase), c1 = cpu->read_word(cbase + 4);
-                uint32_t f0 = farbase ? cpu->read_word(farbase) : 0, f1 = farbase ? cpu->read_word(farbase + 4) : 0;
-                fprintf(stderr, "[fade vbl=%u] rec=%d moby=%08x cls=%03x zsf4=%d zf=%.3f ir0f=%.3f hdr=%08x cbase=%08x farbase=%08x ir0=%d "
-                        "c0=%06X c1=%06X f0=%06X f1=%06X\n",
-                        openpete_frame, r, R->moby, R->moby >= 0x80000000u ? (cpu->read_half(R->moby + game_layout.moby.class_off) & 0xFFFu) : 0xFFF,
-                        R->zsf4, R->zf_on ? R->zf : (double)R->zsf4, fd.ir0f, R->header, cbase, farbase, dpcs_ir0, c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, f0 & 0xFFFFFFu, f1 & 0xFFFFFFu);
-                if (dpcs_ir0 > 0 && farbase) {   /* one fog-band record: full table triplets */
-                    int nc = (int)(cpu->read_half(R->header + game_layout.moby.anim_ccount_off) & 0xFFFFu); if (nc > 24) nc = 24;
-                    for (int k = 0; k < nc; k++) {
-                        uint32_t nw = cpu->read_word(cbase + (uint32_t)k*4u) & 0xFFFFFFu;
-                        uint32_t fw2 = cpu->read_word(farbase + (uint32_t)k*4u) & 0xFFFFFFu;
-                        uint32_t ov = moby_color_at(cpu, cbase, farbase, NULL, &fd, (uint32_t)k*4u);
-                        fprintf(stderr, "  [ftab k=%d] near=%06X far=%06X out=%06X\n", k, nw, fw2, ov);
-                    }
-                }
-            }
-        }
+        moby_fadedbg_record(cpu, R, r, cbase, farbase, &fd);
         /* Resolve the colour bases to host pointers once per record; the loop
          * then reads colours directly (moby_color_at_host). Fallback = the
          * cpu->read_word path when a base doesn't map (never in practice). */
@@ -5714,6 +5817,9 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             rt_add(RT_KEY, rt0, 1);
             ltop = moby_otk_top_entry(&s_proj[base].otk, ot_bk, ltop);
             if (!emit_a && !emit_b) continue;
+            /* A far-verdict HP record draws no specular decal face
+             * (moby_far_texel): the LP model it stands in for has none. */
+            if (F->hl && fd.skip_hl) continue;
 
             /* per-vertex colour: cbase indexed by the cached w1 fields. DPCS-faded
              * when the moby carries a fade level (effect ring puffs, etc). */
@@ -5806,6 +5912,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             int cly_fog = moby_face_fog_row(&fd, fcc);
             uint8_t tmix = moby_face_fog_mix(&fd, fcc);
             cly += cly_fog;
+            textured &= !fd.untex;
             int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
             /* SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
              * get the special per-face treatment (highlight-enable @80021B64;
