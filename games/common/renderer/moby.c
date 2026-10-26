@@ -7587,7 +7587,9 @@ static void native_rank_build(void) {
  * tier the tick did not draw, no table for the endpoint) has no carried verdict
  * for that face, so the run's contest test and native_rank_moby run on the
  * present's own walk (rank_fresh_pass) and the absent faces take their
- * results; the run's hit faces keep the carried entry.
+ * results, each placed into the carried order between the carried ranks of
+ * its neighbours in the present walk's order (rank_mix_place); the run's hit
+ * faces keep the carried entry.
  * One canonical epoch can hold more than one scene build: a pause screen
  * feeds twice before its present, and runahead feeds the committed tick and
  * then the speculated ticks, whose last build is the one presented. Each
@@ -7827,62 +7829,117 @@ static const rc_ent* rank_ep_count(const rc_tab* t, int i, const rc_ent* e) {
     s_ep_miss_nolat += !el;
     return (rank_ep_mode() == 'f' && s_rc_prev_used) ? el : NULL;
 }
-/** @brief Where an absent face of a re-ranked run would sit in the carried paint order.
+/** @brief The carried rank of the hit face nearest before an absent face of a re-ranked run in the present walk's order.
  *
- * Just after the hit face with a positive carried rank that the present
- * walk's order puts nearest before it, else before every carried face.
+ * Over the run's hit faces with a positive carried rank and a positive fresh
+ * rank, the one whose fresh rank is the largest not above the absent face's;
+ * of several with that fresh rank, the first in walk order.
  * @param i0 The run's first walk triangle.
  * @param i1 One past its last.
  * @param cr The run's carried ranks, indexed from i0.
+ * @param fr The run's fresh ranks, indexed from i0.
  * @param a The absent face's walk triangle index.
- * @return The position on the carried rank scale. */
-static double rank_mix_t1pos(int i0, int i1, const int* cr, int a) {
+ * @param tie Receives 1 when that hit face's fresh rank equals the absent face's (the two triangles of one prim), else 0.
+ * @return The carried rank, or 0 when no such hit face exists. */
+static int rank_mix_slot(int i0, int i1, const int* cr, const int* fr, int a, int* tie) {
     int best = 0, bf = 0;
-    for (int i = i0; i < i1; i++)
-        if (!(s_rf_flag[i] & RF_ABSENT) && cr[i - i0] > 0 && s_nrank[i] > 0 &&
-            s_nrank[i] <= s_nrank[a] && s_nrank[i] > bf) { bf = s_nrank[i]; best = cr[i - i0]; }
-    return best + 0.5;
+    for (int i = i0; i < i1; i++) {
+        const int f = fr[i - i0];
+        if (!(s_rf_flag[i] & RF_ABSENT) && cr[i - i0] > 0 && f > 0 && f <= fr[a - i0] && f > bf) {
+            bf = f;
+            best = cr[i - i0];
+        }
+    }
+    *tie = bf > 0 && bf == fr[a - i0];
+    return best;
+}
+/* A ranked face of a re-ranked run on the merged scale: the carried rank it
+ * follows (a hit face's own), 1 when it sits just after that rank (an absent
+ * face), its fresh rank to order absent faces sharing a slot, and its walk
+ * triangle. */
+typedef struct { int c, after, f, i; } rmix_e;
+/** @brief qsort comparator over rmix_e: carried rank, then after, then fresh rank, all ascending. */
+static int rmix_cmp(const void* a, const void* b) {
+    const rmix_e *x = (const rmix_e*)a, *y = (const rmix_e*)b;
+    if (x->c != y->c) return x->c < y->c ? -1 : 1;
+    if (x->after != y->after) return x->after < y->after ? -1 : 1;
+    return (x->f > y->f) - (x->f < y->f);
+}
+/** @brief Renumber the positive ranks of a re-ranked run onto one scale, the carried order with each absent face inserted.
+ *
+ * Runs after the hit faces got their carried rank back and the absent faces
+ * hold their fresh one. Hit faces keep their carried order. An absent face
+ * goes just after the carried rank of the hit face nearest before it in the
+ * present walk's order (rank_mix_slot), so before the next carried rank, and
+ * before every carried face when none precedes it; absent faces in one slot
+ * keep their fresh order, and an absent face sharing its prim's fresh rank
+ * with that hit face takes the same position. The positions are then
+ * renumbered 1..n, equal positions sharing a rank. The select compares ranks
+ * only between faces of one moby in one walk, so only the order within the
+ * run matters; ranks 0 are untouched.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param cr The run's carried ranks, indexed from i0.
+ * @param fr The run's fresh ranks, indexed from i0. */
+static void rank_mix_place(int i0, int i1, const int* cr, const int* fr) {
+    static rmix_e E[MAX_NTRI];
+    int n = 0;
+    for (int i = i0; i < i1; i++) {
+        if (s_nrank[i] <= 0) continue;
+        if (!(s_rf_flag[i] & RF_ABSENT)) { E[n++] = (rmix_e){ s_nrank[i], 0, 0, i }; continue; }
+        int tie;
+        const int c = rank_mix_slot(i0, i1, cr, fr, i, &tie);
+        E[n++] = (rmix_e){ c, !tie, tie ? 0 : s_nrank[i], i };
+    }
+    qsort(E, (size_t)n, sizeof E[0], rmix_cmp);
+    for (int k = 0, r = 0; k < n; k++) {
+        if (!k || rmix_cmp(&E[k - 1], &E[k])) r++;
+        s_nrank[E[k].i] = r;
+    }
 }
 /** @brief The mixed rank and T-1 position of one face of a re-ranked run.
  * @param i0 The run's first walk triangle.
  * @param i1 One past its last.
  * @param cr The run's carried ranks, indexed from i0.
  * @param cc The run's carried contest flags, indexed from i0.
+ * @param fr The run's fresh ranks, indexed from i0.
  * @param f The face's walk triangle index.
- * @param m Receives the mixed rank: the fresh one on an absent face, the carried one on a hit face, 0 where the face's contest flag is clear.
- * @param t Receives the T-1 position: the carried rank, or rank_mix_t1pos on an absent face.
+ * @param m Receives the mixed rank (s_nrank): on a hit face 0 where its carried contest flag is clear.
+ * @param t Receives the T-1 position: the carried rank, or 0.5 past rank_mix_slot's on an absent face.
  * @return 1 when the face is absent from the carry table, else 0. */
-static int rank_mix_face(int i0, int i1, const int* cr, const uint8_t* cc, int f, int* m, double* t) {
+static int rank_mix_face(int i0, int i1, const int* cr, const uint8_t* cc, const int* fr, int f, int* m,
+                         double* t) {
     const int x = (s_rf_flag[f] & RF_ABSENT) != 0;
-    *m = x ? s_nrank[f] : (cc[f - i0] ? cr[f - i0] : 0);
-    *t = x ? rank_mix_t1pos(i0, i1, cr, f) : cr[f - i0];
+    int tie;
+    *m = (x || cc[f - i0]) ? s_nrank[f] : 0;
+    *t = x ? rank_mix_slot(i0, i1, cr, fr, f, &tie) + 0.5 : cr[f - i0];
     return x;
 }
 /** @brief Check the mixed ranks of a re-ranked run against the present walk's order and the T-1 order.
  *
  * Over the run's intersecting pairs with an absent face (s_ip_a/s_ip_b from
- * ip0 on): the mixed rank is the fresh one on an absent face and the carried
- * one on a hit face, and 0 where that face's contest flag is clear. A pair
- * both of whose fresh ranks are positive counts as unordered when a mixed rank
- * is 0, and against the present when the mixed order differs from the fresh
- * order; such a pair also counts against both when the mixed order differs
- * from the T-1 order, an absent face taking rank_mix_t1pos. Each pair against
- * both prints a [rank-mix] line. Runs while s_nrank and s_wtri_contest hold
- * the fresh values.
+ * ip0 on): the mixed rank is the applied one (rank_mix_place), and 0 on a
+ * hit face whose carried contest flag is clear. A pair both of whose fresh
+ * ranks are positive counts as unordered when a mixed rank is 0, and against
+ * the present when the mixed order differs from the fresh order; such a pair
+ * also counts against both when the mixed order differs from the T-1 order,
+ * an absent face taking rank_mix_face's position. Each pair against both
+ * prints a [rank-mix] line.
  * @param i0 The run's first walk triangle.
  * @param i1 One past its last.
  * @param cr The run's carried ranks, indexed from i0.
  * @param cc The run's carried contest flags, indexed from i0.
+ * @param fr The run's fresh ranks, indexed from i0.
  * @param ip0 The first pair of the run's contest test. */
-static void rank_mix_census(int i0, int i1, const int* cr, const uint8_t* cc, int ip0) {
+static void rank_mix_census(int i0, int i1, const int* cr, const uint8_t* cc, const int* fr, int ip0) {
     for (int p = ip0; p < s_ip_n; p++) {
         const int f[2] = { s_ip_a[p], s_ip_b[p] };
         int m[2], x[2];
         double t[2];
-        for (int k = 0; k < 2; k++) x[k] = rank_mix_face(i0, i1, cr, cc, f[k], &m[k], &t[k]);
+        for (int k = 0; k < 2; k++) x[k] = rank_mix_face(i0, i1, cr, cc, fr, f[k], &m[k], &t[k]);
         if (!x[0] && !x[1]) continue;
         s_ep_mix_pairs++;
-        const int fa = s_nrank[f[0]], fb = s_nrank[f[1]];
+        const int fa = fr[f[0] - i0], fb = fr[f[1] - i0];
         if (fa <= 0 || fb <= 0) continue;
         if (m[0] <= 0 || m[1] <= 0) { s_ep_mix_unord++; continue; }
         const int sm = (m[0] > m[1]) - (m[0] < m[1]), sf = (fa > fb) - (fa < fb);
@@ -7896,21 +7953,24 @@ static void rank_mix_census(int i0, int i1, const int* cr, const uint8_t* cc, in
                 s_wtri_fkey[f[0]], s_wtri_fkey[f[1]], x[0], x[1], m[0], m[1], fa, fb, t[0], t[1]);
     }
 }
-/** @brief Give the absent faces of one moby run the ranks and contest flags of this present's walk.
+/** @brief Give the absent faces of one moby run the ranks and contest flags of this present's walk, placed into the carried order.
  *
  * The canonical feed's two stages on walk triangles i0..i1-1 only: the
  * contest test over the run's eligible faces (isect_moby), then
  * native_rank_moby when a face contests or an instrument is on, else rank 0.
- * The fresh rank and contest flag are kept on the run's absent faces
- * (RF_ABSENT); every hit face keeps its carried entry, so the carried verdict
- * stays wherever it exists. The census checks the mixed order first
- * (rank_mix_census).
+ * The fresh contest flag is kept on the run's absent faces (RF_ABSENT) and
+ * every hit face gets its carried entry back, so the carried verdict stays
+ * wherever it exists. The fresh ranks are positions in the present walk's
+ * face set and the carried ones in the endpoint's, so rank_mix_place maps the
+ * absent faces into the carried order before the select compares them. The
+ * census then checks the applied order (rank_mix_census).
  * @param i0 The run's first walk triangle.
  * @param i1 One past its last. */
 static void rank_fresh_moby(int i0, int i1) {
     static isect_tri T[MAX_NTRI];
     static int idx[MAX_NTRI];
     static int keep_rank[MAX_NTRI];
+    static int fresh_rank[MAX_NTRI];
     static uint8_t keep_cont[MAX_NTRI];
     memcpy(keep_rank, &s_nrank[i0], (size_t)(i1 - i0) * sizeof s_nrank[0]);
     memcpy(keep_cont, &s_wtri_contest[i0], (size_t)(i1 - i0));
@@ -7924,9 +7984,11 @@ static void rank_fresh_moby(int i0, int i1) {
     for (int i = i0; i < i1; i++) cont |= s_wtri_contest[i];
     if (cont || isect_instrumented()) native_rank_moby(i0, i1, native_rank_negctl());
     else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
-    if (rank_ep_mode()) rank_mix_census(i0, i1, keep_rank, keep_cont, ip0);
+    memcpy(fresh_rank, &s_nrank[i0], (size_t)(i1 - i0) * sizeof s_nrank[0]);
     for (int i = i0; i < i1; i++)
         if (!(s_rf_flag[i] & RF_ABSENT)) { s_nrank[i] = keep_rank[i - i0]; s_wtri_contest[i] = keep_cont[i - i0]; }
+    rank_mix_place(i0, i1, keep_rank, fresh_rank);
+    if (rank_ep_mode()) rank_mix_census(i0, i1, keep_rank, keep_cont, fresh_rank, ip0);
 }
 /** @brief Rank from this present's walk the faces of every moby run that the carry table did not walk.
  *
