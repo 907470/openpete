@@ -309,25 +309,36 @@ int disc_image_find(disc_image_t* img, const char* path, disc_image_entry_t* ent
     return -1;
 }
 
-size_t disc_image_read_file(disc_image_t* img, const disc_image_entry_t* entry,
-                            void* buf, size_t max) {
-    size_t want = entry->size < max ? entry->size : max;
+size_t disc_image_read_file_range(disc_image_t* img, const disc_image_entry_t* entry,
+                                  uint32_t offset, void* buf, size_t len) {
+    if (offset >= entry->size) return 0;
+    size_t avail = entry->size - offset;
+    size_t want = avail < len ? avail : len;
     uint8_t* raw = (uint8_t*)malloc((size_t)READ_BATCH * DISC_IMAGE_RAW_SECTOR);
     if (!raw) return 0;
     size_t done = 0;
-    for (uint32_t lba = entry->lba; done < want;) {
-        size_t left = (want - done + DISC_IMAGE_USER_SECTOR - 1u) / DISC_IMAGE_USER_SECTOR;
+    uint32_t skip = offset % DISC_IMAGE_USER_SECTOR;   /* bytes before offset in the first sector */
+    for (uint32_t lba = entry->lba + offset / DISC_IMAGE_USER_SECTOR; done < want;) {
+        size_t left = (skip + want - done + DISC_IMAGE_USER_SECTOR - 1u) / DISC_IMAGE_USER_SECTOR;
         uint32_t n = left < READ_BATCH ? (uint32_t)left : READ_BATCH;
         if (read_raw_run(img, lba, n, raw) != 0) break;
-        for (uint32_t i = 0; i < n; i++) {
-            size_t m = want - done < DISC_IMAGE_USER_SECTOR ? want - done : DISC_IMAGE_USER_SECTOR;
-            memcpy((uint8_t*)buf + done, user_data(raw + (size_t)i * DISC_IMAGE_RAW_SECTOR), m);
+        for (uint32_t i = 0; i < n && done < want; i++) {
+            size_t room = DISC_IMAGE_USER_SECTOR - skip;
+            size_t m = want - done < room ? want - done : room;
+            memcpy((uint8_t*)buf + done,
+                   user_data(raw + (size_t)i * DISC_IMAGE_RAW_SECTOR) + skip, m);
             done += m;
+            skip = 0;
         }
         lba += n;
     }
     free(raw);
     return done;
+}
+
+size_t disc_image_read_file(disc_image_t* img, const disc_image_entry_t* entry,
+                            void* buf, size_t max) {
+    return disc_image_read_file_range(img, entry, 0, buf, max);
 }
 
 void disc_image_set_game(disc_image_t* img) { s_game = img; }

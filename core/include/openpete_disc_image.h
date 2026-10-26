@@ -140,6 +140,20 @@ int disc_image_find(disc_image_t* img, const char* path, disc_image_entry_t* ent
 size_t disc_image_read_file(disc_image_t* img, const disc_image_entry_t* entry,
                             void* buf, size_t max);
 
+/** @brief Read at most @p len bytes of a file starting @p offset bytes into it, from its extent's user data.
+ *
+ * Reads only the sectors the range covers, so a sample inside a large
+ * archive costs its own bytes rather than the whole file.
+ * @param img The handle.
+ * @param entry A file found by disc_image_find.
+ * @param offset First byte, relative to the file's start.
+ * @param buf Receives the bytes.
+ * @param len Capacity of @p buf.
+ * @return Bytes copied: min(entry->size - offset, len) on success, 0 when
+ *         offset lies at or past the end, fewer when a sector read fails. */
+size_t disc_image_read_file_range(disc_image_t* img, const disc_image_entry_t* entry,
+                                  uint32_t offset, void* buf, size_t len);
+
 /** @brief Record the handle of the disc this session booted, for readers that hold no handle of their own.
  *
  * @param img The handle, or NULL. */

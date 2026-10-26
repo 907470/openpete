@@ -60,6 +60,7 @@
 #include "openpete_psx.h"   /* openpete_psx_load_file_from_disc */
 #include "psx_runtime_internal.h"    /* CPUState */
 #include "sfx_pack.h"       /* sfx_pack_arm_oneshot */
+#include "spu_adpcm.h"      /* spu_adpcm_decode */
 #include "spyro_overlay_table.h" /* spyro_get_active_overlay_magic */
 
 #include <SDL3/SDL.h>
@@ -121,49 +122,6 @@ static uint32_t rd32(const uint8_t* p) {
     return v;
 }
 
-/** @brief Decodes SPU-ADPCM lines to mono s16, stopping before the loop-end line.
- *
- * Each 16-byte line carries a shift and filter nibble, a flag byte and 28
- * four-bit samples; a line whose flag bit 0 is set ends the decode before
- * it is decoded, and a filter index above 4 is treated as 0. Samples clamp
- * to the s16 range.
- * @param body The ADPCM lines.
- * @param len The byte length of body; a trailing partial line is ignored.
- * @param out Receives the malloc'd sample buffer, which the caller frees;
- *        untouched when the allocation fails.
- * @return The sample count, or 0 when the allocation fails. */
-static uint32_t adpcm_to_pcm(const uint8_t* body, uint32_t len, int16_t** out) {
-    static const int k_f0[5] = {0, 60, 115, 98, 122};
-    static const int k_f1[5] = {0, 0, -52, -55, -60};
-    uint32_t max_frames = (len / 16u) * 28u;
-    int16_t* pcm = (int16_t*)malloc(max_frames * 2u);
-    if (!pcm) return 0;
-    int s1 = 0, s2 = 0;
-    uint32_t n = 0;
-    for (uint32_t off = 0; off + 16u <= len; off += 16u) {
-        int shift = body[off] & 0xF;
-        int pred  = (body[off] >> 4) & 0xF;
-        if (body[off + 1] & 0x1) break; /* loop end */
-        if (pred > 4) pred = 0;
-        for (int i = 0; i < 14; i++) {
-            uint8_t b = body[off + 2u + (uint32_t)i];
-            for (int hi = 0; hi < 2; hi++) {
-                int nib = hi ? (b >> 4) : (b & 0xF);
-                if (nib >= 8) nib -= 16;
-                int s = ((nib << 12) >> shift) +
-                        ((s1 * k_f0[pred] + s2 * k_f1[pred] + 32) >> 6);
-                if (s > 32767) s = 32767;
-                if (s < -32768) s = -32768;
-                s2 = s1;
-                s1 = s;
-                pcm[n++] = (int16_t)s;
-            }
-        }
-    }
-    *out = pcm;
-    return n;
-}
-
 /** @brief Finds the woah sound entry's ADPCM item in the demo NSF's raw bytes.
  *
  * Walks every uncompressed sound chunk rather than trusting a chunk index,
@@ -210,7 +168,7 @@ static SDL_Thread*   s_loader;
 /** @brief Worker thread: loads the demo NSF, finds the woah entry and decodes it.
  *
  * Reads WOAH_NSF from s_disc_path, locates the sound with find_woah, decodes
- * it with adpcm_to_pcm, stores s_pcm and s_pcm_frames, and sets s_ready to 1
+ * it with spu_adpcm_decode, stores s_pcm and s_pcm_frames, and sets s_ready to 1
  * last so the tick thread sees both. A failed disc read (logged by the
  * loader), a missing entry (warned) or an empty decode (warned) leaves s_ready
  * at 0. The NSF buffer is freed on every path; the PCM buffer is kept for the
@@ -233,7 +191,7 @@ static int SDLCALL woah_load_main(void* unused) {
         return 0;
     }
     int16_t* pcm = NULL;
-    uint32_t frames = adpcm_to_pcm(body, body_len, &pcm);
+    uint32_t frames = spu_adpcm_decode(body, body_len, &pcm);
     free(nsf);
     if (!frames) {
         free(pcm);

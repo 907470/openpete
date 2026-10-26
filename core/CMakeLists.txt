@@ -238,6 +238,7 @@ add_library(openpete_core STATIC
     host/sha256.c
     host/sfx_ident.c
     host/sfx_pack.c
+    host/spu_adpcm.c
     host/texture_pack.c
     host/stb_image_impl.c
     host/wav_loader.c

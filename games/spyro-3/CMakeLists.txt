@@ -33,6 +33,9 @@ openpete_add_game(spyro-3
         features/transition_call.c
         features/skip_to_area.c
         features/cutscene_skip.c
+        # The title's Crash Bash demo combination, played as a sample from
+        # CRASHBSH.DAT.
+        features/bash_demo_egg.c
 
         # The dev-overlay level warp (M) and its shared overlay half.
         features/levelwarp.c

@@ -24,6 +24,9 @@ openpete_add_game(spyro-2
         # --skip-to-cutscene: the Dragon Shores theater's cutscene call.
         features/cutscene_skip.c
 
+        # The title's CTR demo combination, played as a sample from KART.HWL.
+        features/ctr_demo_egg.c
+
         # The dev-overlay level warp (M) and its shared overlay half.
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c

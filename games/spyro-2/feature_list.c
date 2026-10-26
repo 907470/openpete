@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 extern const feature_module_t render_paths_module;
+extern const feature_module_t ctr_demo_egg_module;
 extern const feature_module_t moby_update_all_module;
 extern const feature_module_t kf_anim_ctl_module;
 extern const feature_module_t spyro2_levelwarp_module;
@@ -35,6 +36,9 @@ static const feature_module_t* const k_modules[] = {
     &cutscene_skip_module,
     /* --render-paths: the path-isolation selection (apply_options only). */
     &render_paths_module,
+    /* The title's Crash Team Racing demo combination (L1 + R2 + Square):
+     * its launch calls are skipped and a KART.HWL sample plays instead. */
+    &ctr_demo_egg_module,
     /* OPENPETE_D1: replaces the moby update-list builder game_layout
      * names with a build that lists every live moby (gameplay-divergent,
      * default off; unbound while off). */
