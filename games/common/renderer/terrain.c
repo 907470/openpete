@@ -3496,9 +3496,10 @@ static long s_tocc_culled;   /* sectors occlusion-culled this window (census) */
  * each sub-tick re-extract lets a sector's cull verdict flip between the
  * presents of one tick, so terrain that the tick's canonical walk emits
  * disappears for the rest of the tick and returns at the next one. The
- * canonical walk's verdict is latched here and every re-extract of that tick
- * reuses its depth half (TOCC_DEPTH), so the depth-admitted set is a property
- * of the tick; the frustum half is re-tested on each walk's own rect
+ * canonical walk's verdict is latched here, and a re-extract of that tick
+ * depth-culls only a sector latched TOCC_DEPTH that its own query at its own
+ * camera also finds hidden, so the depth-admitted set at a sub-tick walk
+ * contains the tick's; the frustum half is re-tested on each walk's own rect
  * (tocc_sector_verdict), and a latched TOCC_FRUSTUM only feeds the census. A
  * sector the canonical walk did not reach is not latched and is kept
  * (conservative: the cull is a perf skip and may only ever remove provably
@@ -12790,11 +12791,12 @@ static void tocc_leg_census_roll(int sub)
     s_tlw_key = openpete_feed_key_now();
 }
 
-/* OPENPETE_TOCC_LATCH_CENSUS: the sectors a sub-tick walk culls by the depth
- * verdict its tick's canonical walk latched, each with the rect and nearest
- * view-Z of its own sphere under the sub-tick walk's camera, so the census
- * can ask a grid built at that camera whether the sector is still hidden. */
-typedef struct { uint32_t sec; float x0, y0, x1, y1, vz; } tlc_rec_t;
+/* OPENPETE_TOCC_LATCH_CENSUS: the on-screen sectors of a sub-tick walk whose
+ * tick's canonical walk latched the depth verdict, each with the rect and
+ * nearest view-Z of its own sphere under the sub-tick walk's camera and
+ * whether the walk culled it, so the census can ask a grid built at that
+ * camera whether each culled sector is still hidden. */
+typedef struct { uint32_t sec; float x0, y0, x1, y1, vz; int culled; } tlc_rec_t;
 static tlc_rec_t s_tlc[1024];
 static int s_tlc_n;
 static openpete_occl_camera s_tlc_cam;
@@ -12809,39 +12811,43 @@ static int tocc_latch_census_on(void)
     return on;
 }
 
-/** @brief Query each sector the last sub-tick walk culled by its latched depth verdict against the grid built at that walk's camera, and print the tally.
+/** @brief Query each sector the last sub-tick walk culled under a latched depth verdict against the grid built at that walk's camera, and print the tally.
  *
  * Registered with openpete_native_occl_census_register, which runs it with
- * the grid of the sub-tick scene published. A sector whose own query
- * returns not culled is one the latch hides at a camera where the grid sees
- * it; the query outcome deltas split those into visible cells and refusals
- * (too near, stale, moved, suspended), so a refusal is not read as a
- * reveal. Prints one [tocc-latch] line and empties the list. */
+ * the grid of the sub-tick scene published. latched_depth counts the walk's
+ * on-screen sectors latched TOCC_DEPTH and culled those it culled. A culled
+ * sector whose own query returns not culled is one the walk hides at a
+ * camera where the grid sees it; the query outcome deltas split those into
+ * visible cells and refusals (too near, stale, moved, suspended), so a
+ * refusal is not read as a reveal. Prints one [tocc-latch] line and empties
+ * the list. */
 static void tocc_latch_census_eval(void)
 {
     long q0[OPENPETE_OCCL_Q_COUNT], q1[OPENPETE_OCCL_Q_COUNT];
     openpete_native_occl_qstats(q0);
-    int kept = 0;
+    int kept = 0, culled = 0;
     char ids[256]; int idn = 0; ids[0] = 0;
     for (int k = 0; k < s_tlc_n; k++) {
         const tlc_rec_t *r = &s_tlc[k];
+        if (!r->culled) continue;
+        culled++;
         if (openpete_native_occl_query(r->x0, r->y0, r->x1, r->y1, r->vz, &s_tlc_cam)) continue;
         kept++;
         if (idn < (int)sizeof ids - 8)
             idn += snprintf(ids + idn, sizeof ids - (size_t)idn, "%s%u", idn ? "," : "", r->sec);
     }
     openpete_native_occl_qstats(q1);
-    fprintf(stderr, "[tocc-latch key=%u] latched_depth=%d query_not_culled=%d "
+    fprintf(stderr, "[tocc-latch key=%u] latched_depth=%d culled=%d query_not_culled=%d "
             "(visible=%ld near=%ld moved=%ld stale=%ld susp=%ld nogrid=%ld) "
             "query_culled=%d (depth=%ld offscreen=%ld) sectors=[%s]\n",
-            s_tlc_key, s_tlc_n, kept,
+            s_tlc_key, s_tlc_n, culled, kept,
             q1[OPENPETE_OCCL_Q_VISIBLE] - q0[OPENPETE_OCCL_Q_VISIBLE],
             q1[OPENPETE_OCCL_Q_TOONEAR] - q0[OPENPETE_OCCL_Q_TOONEAR],
             q1[OPENPETE_OCCL_Q_MOVED] - q0[OPENPETE_OCCL_Q_MOVED],
             q1[OPENPETE_OCCL_Q_STALE] - q0[OPENPETE_OCCL_Q_STALE],
             q1[OPENPETE_OCCL_Q_SUSPENDED] - q0[OPENPETE_OCCL_Q_SUSPENDED],
             q1[OPENPETE_OCCL_Q_NOGRID] - q0[OPENPETE_OCCL_Q_NOGRID],
-            s_tlc_n - kept,
+            culled - kept,
             q1[OPENPETE_OCCL_Q_CULLED] - q0[OPENPETE_OCCL_Q_CULLED],
             q1[OPENPETE_OCCL_Q_OFFSCREEN] - q0[OPENPETE_OCCL_Q_OFFSCREEN], ids);
     s_tlc_n = 0;
@@ -12867,8 +12873,13 @@ static void tocc_census_walk_begin(int sub)
  * grid, so it runs whether or not an occluder grid exists, and every walk
  * evaluates it under its own camera. The depth verdict reads the
  * occluder grid, which advances once per present while the canonical walk
- * runs once per tick: a sub-tick re-extract reuses its tick's canonical depth
- * verdict (s_tocc_latch) instead of querying a grid that has moved on. A
+ * runs once per tick. A sub-tick re-extract depth-culls a sector only when its
+ * tick's canonical walk latched TOCC_DEPTH (s_tocc_latch) and the same query
+ * under this walk's camera also returns hidden: the latch keeps every sector
+ * the canonical walk emitted for the whole tick, and the fresh query keeps a
+ * sector that the camera's motion since the tick has uncovered. The query
+ * refuses (keeps) when the grid's camera is outside its bound of this
+ * walk's, so a fast camera depth-culls nothing between ticks. A
  * reused frustum verdict would be wrong in the other direction: the
  * re-extract's interpolated camera lags the tick camera, so a sector the tick
  * camera has panned off is still in the re-extract's frame. A sector not
@@ -12887,19 +12898,22 @@ static int tocc_sector_verdict(uint32_t i, double oc1, double oc2, double oc3,
     /* Nearest view-Z of the view-space sphere, world/16 -> full-world. */
     float vz_near = (float)((oc3 - radius * s_rim_rowmax) * 16.0);
     int own_off = tsec_interval_offscreen(iv);
-    if (!s_vanim_sub) {
-        if (own_off) return TOCC_FRUSTUM;
-        /* 8 px margin around the exact interval, as the depth rect has always had. */
-        return openpete_native_occl_query((float)iv[0] - 8.0f, (float)iv[2] - 8.0f,
-                                          (float)iv[1] + 8.0f, (float)iv[3] + 8.0f,
-                                          vz_near, &s_occl_cam) ? TOCC_DEPTH : TOCC_KEEP;
-    }
-    int lat = (i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick) ? s_tocc_latch[i]
+    /* 8 px margin around the exact interval, as the depth rect has always had. */
+    const float rx0 = (float)iv[0] - 8.0f, ry0 = (float)iv[2] - 8.0f;
+    const float rx1 = (float)iv[1] + 8.0f, ry1 = (float)iv[3] + 8.0f;
+    /* A canonical walk queries every on-screen sector; a sub-tick walk only
+     * those its tick latched TOCC_DEPTH. */
+    int lat = !s_vanim_sub ? TOCC_DEPTH
+            : (i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick) ? s_tocc_latch[i]
                                                                   : TOCC_KEEP;
-    int v = own_off ? TOCC_FRUSTUM : (lat == TOCC_DEPTH ? TOCC_DEPTH : TOCC_KEEP);
-    if (v == TOCC_DEPTH && s_tlc_n < 1024 && tocc_latch_census_on())
-        s_tlc[s_tlc_n++] = (tlc_rec_t){ i, (float)iv[0] - 8.0f, (float)iv[2] - 8.0f,
-                                        (float)iv[1] + 8.0f, (float)iv[3] + 8.0f, vz_near };
+    int v = TOCC_KEEP;
+    if (own_off) v = TOCC_FRUSTUM;
+    else if (lat == TOCC_DEPTH
+             && openpete_native_occl_query(rx0, ry0, rx1, ry1, vz_near, &s_occl_cam))
+        v = TOCC_DEPTH;
+    if (!s_vanim_sub) return v;
+    if (!own_off && lat == TOCC_DEPTH && s_tlc_n < 1024 && tocc_latch_census_on())
+        s_tlc[s_tlc_n++] = (tlc_rec_t){ i, rx0, ry0, rx1, ry1, vz_near, v == TOCC_DEPTH };
     if (lat == TOCC_FRUSTUM && !own_off) {
         if (v) s_tocc_latoff++;
         else   s_tocc_offadm++;
