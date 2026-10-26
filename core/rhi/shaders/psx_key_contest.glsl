@@ -442,17 +442,6 @@ float op_pkey_slot(float stored)
     return floor((stored - OP_PKEY_BASE) / OP_PKEY_STEP + 0.5);
 }
 
-/* Fault injection: window depth z moved by bias units in the last place
- * (negative = nearer), the error a rasteriser's divide and plane
- * interpolation can leave in a window depth (OPENPETE_KEY_Z_ULP_BIAS, the
- * key stages' KEY_Z_ULP_BIAS specialization constant). Every key stage
- * writes its stored value as fragment depth, so the moved window depth
- * reaches no key image. bias 0 returns z unchanged. */
-float op_key_z_fault(float z, int bias)
-{
-    return bias == 0 ? z : uintBitsToFloat(uint(int(floatBitsToUint(z)) + bias));
-}
-
 /* The key pass's clip position for a key-feed vertex at clip-space screen
  * cxy. z is the feed's z: a value inside the player band is the stored band
  * value, placed at z_ndc = z with w = 1; any other z is a view-Z, placed at
@@ -460,13 +449,11 @@ float op_key_z_fault(float z, int bias)
  * interpolates without disturbing the window depth. Both lie inside the
  * clip volume's depth range, so no key face is depth-clipped; the fragment
  * stages write the stored value themselves (terrain_key.vert). A true
- * view-Z inside the band's range (0, 3.8e-9] lies at the eye. A non-zero
- * bias moves a view-Z vertex's window depth by that many ulps
- * (op_key_z_fault); a band value is never moved. */
-vec4 op_key_clip(vec2 cxy, float z, float kv, int bias)
+ * view-Z inside the band's range (0, 3.8e-9] lies at the eye. */
+vec4 op_key_clip(vec2 cxy, float z, float kv)
 {
     if (op_pkey_is(z)) return vec4(cxy, z, 1.0);
-    return vec4(cxy * kv, op_key_z_fault(op_key_store(kv), bias) * kv, kv);
+    return vec4(cxy * kv, op_key_store(kv) * kv, kv);
 }
 
 /* The forms of a key-feed face's stored value (terrain_key.vert vKeyForm). */

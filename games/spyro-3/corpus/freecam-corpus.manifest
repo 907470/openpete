@@ -125,13 +125,6 @@ haunted_tomb | pos=(93215, 91480, 22144) yaw=1493 pitch=49
 # tick cadence; the guest's integer corners carry a placement error of up to a
 # pixel that changes every tick, larger than the stars' motion.
 fireworks_factory:1 | pos=(27271, 51213, 20983) yaw=-1026 pitch=7
-# fireworks_factory:1, the row above with every key-pass window depth stored 4
-# ulps nearer (OPENPETE_KEY_Z_ULP_BIAS=-4, the rounding a real GPU's rasteriser
-# leaves in a flat key): sector 42 face 23's sub-quad keys at 29440 = 230 x 128,
-# a bucket boundary; a stored value below the boundary's encoding reads as
-# bucket 229 and the face loses the slot contest to its own key, a 165-pixel
-# hole to the clear colour at extended LOD (NVIDIA, 2 ulps low). Blessed pre-fix.
-fireworks_factory:1@keyzbias | pos=(27271, 51213, 20983) yaw=-1026 pitch=7 | | OPENPETE_KEY_Z_ULP_BIAS=-4
 # --lod extended: LP faces whose corners lie on the HP mesh draw beside it as
 # flat untextured stand-ins: a wedge above a mountain ridge (sector 60 LP
 # faces 2-4), a sliver on the tunnel rim (sector 29 LP face 3); the

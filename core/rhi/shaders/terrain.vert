@@ -282,9 +282,6 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
  * they write the pre-pass image's 1 - 1/vz beside prepass.vert. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 layout(constant_id = 1) const bool AFFINE_UV = false;
-/* Fault injection (OPENPETE_KEY_Z_ULP_BIAS): ulps added to the key pass's
- * window depth (psx_key_contest.glsl op_key_z_fault); 0 in every normal run. */
-layout(constant_id = 6) const int KEY_Z_ULP_BIAS = 0;
 
 layout(location = 0)      out vec2  vUV;    /* pre-multiplied by q (scene contract) */
 layout(location = 1)      out vec4  vColor; /* pre-multiplied by q                  */
@@ -2080,7 +2077,7 @@ void main()
         float K  = koff - 0.5;
         float kv = max(K, 1.0);
         vec2 cxy = clip_of(sscr);
-        gl_Position = op_key_clip(cxy, kv, kv, KEY_Z_ULP_BIAS);
+        gl_Position = op_key_clip(cxy, kv, kv);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
         vUV = uv / wq;
