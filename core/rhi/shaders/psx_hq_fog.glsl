@@ -17,8 +17,11 @@
  * read identical values):
  *   a: aN.r | aN.g << 10 | aN.b << 20 (signed 10-bit, units 1/256),
  *      bit 30 the face's +0x2000 fog-reference bias, bit 31 enable;
- *   b: bN.r | bN.g << 10 | bN.b << 20 (signed 10-bit, units 1/256), bits
- *      30-31 clear.
+ *   b: bN.r | bN.g << 10 | bN.b << 20 (signed 10-bit, units 1/256), bit 30
+ *      clear; bit 31 (OPENPETE_HQFOG_NEUTRAL) replaces the texel colour by
+ *      the modulation-neutral 128/255, so the stage's texel * colour / 128
+ *      yields the vertex colour while the texel's alpha and STP bit still
+ *      decide coverage and blending. Word a is then ignored.
  * ts and tb are the published ramp t = vz * ts + tb (texture_pack.h
  * texture_pack_fog_ladder_set); a bias shifts tb by 8192 / 3840. */
 
@@ -31,10 +34,12 @@ float op_hq_fog_s10(uint w, int shift)
     return float(bitfieldExtract(int(w), shift, 10)) / 256.0;
 }
 
-/* The faded texel colour (0..1), or `texel` when word a's enable bit is
- * clear. vz is the fragment's full-world view-Z. */
+/* The faded texel colour (0..1): 128/255 when word b's neutral bit is set,
+ * else `texel` when word a's enable bit is clear. vz is the fragment's
+ * full-world view-Z. */
 vec3 op_hq_fog(vec3 texel, uint a, uint b, float vz, float ts, float tb)
 {
+    if ((b & 0x80000000u) != 0u) return vec3(128.0 / 255.0);
     if ((a & 0x80000000u) == 0u) return texel;
     float t = clamp(vz * ts + (tb - ((a & 0x40000000u) != 0u ? 8192.0 / 3840.0 : 0.0)),
                     0.0, 1.0);

@@ -1700,6 +1700,10 @@ void openpete_native_scene_set_fog_delta(int delta);
 void openpete_native_scene_set_hq_fog(uint32_t a, uint32_t b);
 /* Word a's enable bit (openpete_native_scene_set_hq_fog, psx_hq_fog.glsl). */
 #define OPENPETE_HQFOG_ENABLE (1u << 31)
+/* Word b's neutral bit (psx_hq_fog.glsl): the texel's colour is replaced by
+ * the modulation-neutral 128 before the vertex colour modulates it, so the
+ * triangle draws its vertex colour where the texel is not transparent. */
+#define OPENPETE_HQFOG_NEUTRAL (1u << 31)
 
 /* ── Portal cover invariant (plane-cover rule) ────────────────────────
  * The portal feeder's opening planes, republished per feed in core terms so

@@ -3976,6 +3976,7 @@ typedef struct {
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
     int blend;   /* 0 = opaque, 1 = semi-transparent (prim ABE bit) */
     uint8_t tmix;  /* second fogged-CLUT row and weight (moby_texel_fog_mix), 0 = none */
+    uint8_t neutral;  /* 1: the texel gives coverage only, the vertex colour draws (moby_far_texel) */
 } ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
 
@@ -4089,6 +4090,7 @@ static _Thread_local float    s_cur_env_az;     /* current record's TR azimuth (
 static _Thread_local uint32_t s_emit_fkey;      /* packed index triple for the next emit_wtri */
 static _Thread_local uint8_t  s_emit_special;   /* special-material id for the next emit_wtri */
 static _Thread_local uint8_t  s_emit_tmix;      /* texel fog-row mix for the next emit_wtri */
+static _Thread_local uint8_t  s_emit_neutral;   /* ntri_t.neutral of every emit_wtri while set */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
 
 /** @brief The signed doubled area of a screen-space triangle, the GTE NCLIP analog on float coordinates.
@@ -4260,7 +4262,8 @@ static void emit_wtri_wplane(const moby_wplane_t* wp, proj_xy* a, proj_xy* b, pr
  *
  * A kept triangle stores its per-triangle side data from the walk's
  * thread-local state (s_cur_ui, s_cur_front, s_cur_moby_key, s_cur_moby_dofs,
- * s_cur_moby_cls, s_emit_fkey, s_emit_special, s_emit_otk, s_emit_tmix), a
+ * s_cur_moby_cls, s_emit_fkey, s_emit_special, s_emit_otk, s_emit_tmix,
+ * s_emit_neutral), a
  * mangle flag when any vertex is unr or sat, and the integer SXY of each
  * vertex. It then resets s_emit_otk to -1 and s_emit_tmix to 0; a dropped
  * triangle leaves both unchanged.
@@ -4347,6 +4350,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez, c->tvz, c->kvz};
     t->textured=tex;t->tpage_x=tpx;t->tpage_y=tpy;t->clut_x=clx;t->clut_y=cly;t->bpp=bpp;t->blend=blend;
     t->tmix = s_emit_tmix;
+    t->neutral = s_emit_neutral;
     s_emit_tmix = 0;
     t_diag->emitted++;
 }
@@ -4683,8 +4687,9 @@ typedef struct { int ir0; double ir0f; int frac; int row; uint8_t tmix;
                  /* HP faces drawn at a far verdict (moby_far_texel): far_hp
                   * marks the record, far_row is the fogged-CLUT row its
                   * textured faces sample, untex 1 draws them untextured in
-                  * the vertex colour. */
-                 int far_hp; int far_row; int untex; } moby_fade_t;
+                  * the vertex colour, neutral 1 draws them in the vertex
+                  * colour with the texel's coverage (OPENPETE_HQFOG_NEUTRAL). */
+                 int far_hp; int far_row; int untex; int neutral; } moby_fade_t;
 
 /** @brief DPCS of one 8-bit channel toward a 12-bit far colour at a fractional IR0.
  *
@@ -4859,14 +4864,20 @@ static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
 /** @brief Set how a far-verdict record's HP faces draw, when they stand in for the LP model.
  *
  * The game never draws a textured face at ZSF4 <= 0: the LP faces there are
- * untextured gouraud in the far palette (hdr+0x20), faded toward the fog
- * colour below -2048. A record that keeps the game's verdict with its faces
- * lifted (moby_lift_faces, moby_lift_tier 0) draws its HP faces at that
- * verdict with those vertex colours. Its textured faces sample the deepest
- * row of the 8-row fogged-CLUT ladder, the row the fog band reaches at its
- * far end (IR0 >> 9 = 7). OPENPETE_MOBY_HPFOG_TEX overrides the row with a
- * digit 0-7, or 'u' draws the textured faces untextured in the vertex colour
- * (A/B). A specular pass record's decal faces (F->hl: env reflection and
+ * untextured gouraud in the far palette, faded toward the fog colour below
+ * -2048 (S1 @80021670; S2 mobydraw.s 80044CA8 and .L80044D64 load the LP
+ * faces [hdr+0x18] with the far colours [hdr+0x1C]). The far palette holds
+ * one entry per HP colour index (the fog band fades HP colour i toward far
+ * colour i, S2 .L80044D10), and the LP faces index the same table, so an HP
+ * face's far colours are the colours the LP model draws for that surface. A
+ * record that keeps the game's verdict with its faces lifted
+ * (moby_lift_faces, moby_lift_tier 0) draws its HP faces at that verdict
+ * with those vertex colours. Its textured faces draw the vertex colour
+ * itself, as the LP faces do, through the base CLUT row's coverage
+ * (neutral: transparent texels still discard and STP texels still blend),
+ * so a cutout the HP model carries stays open. OPENPETE_MOBY_HPFOG_TEX
+ * selects a fogged-CLUT row 0-7 the texels modulate from instead, or 'u'
+ * draws the textured faces untextured (A/B). A specular pass record's decal faces (F->hl: env reflection and
  * diffuse highlight) draw untextured in their faded vertex colours: the LP
  * models carry no decal face, and the treatments would otherwise draw an
  * unfogged colour (the diffuse highlight's CC at .L80021DB4 modulates
@@ -4874,16 +4885,17 @@ static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
  * @param R The record.
  * @param fd The record's fade: far_hp, far_row and untex out. */
 static void moby_far_texel(const rec_meta* R, moby_fade_t* fd) {
-    static int s_mode = -1;   /* -1 unread, 8 untextured, 0..7 the row */
+    static int s_mode = -1;   /* -1 unread, 9 neutral, 8 untextured, 0..7 the row */
     if (s_mode < 0) {
         const char* e = getenv("OPENPETE_MOBY_HPFOG_TEX");
-        s_mode = (e && *e == 'u') ? 8 : ((e && *e >= '0' && *e <= '7') ? *e - '0' : 7);
+        s_mode = (e && *e == 'u') ? 8 : ((e && *e >= '0' && *e <= '7') ? *e - '0' : 9);
     }
-    fd->far_hp = 0; fd->far_row = 0; fd->untex = 0;
+    fd->far_hp = 0; fd->far_row = 0; fd->untex = 0; fd->neutral = 0;
     if (R->zsf4 > 0 || !moby_lift_faces() || moby_lift_tier()) return;
     fd->far_hp = 1;
     fd->untex = s_mode == 8;
-    fd->far_row = s_mode & 7;
+    fd->neutral = s_mode == 9;
+    fd->far_row = s_mode < 8 ? s_mode : 0;
 }
 
 /** @brief The record's per-vertex colour base and colour fade for this present, by its LOD tier.
@@ -6047,6 +6059,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             uint8_t tmix = moby_face_fog_mix(&fd, fcc);
             cly += cly_fog;
             textured &= !fd.untex;
+            s_emit_neutral = (uint8_t)(fd.neutral & textured);
             int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
             /* SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
              * get the special per-face treatment (highlight-enable @80021B64;
@@ -6247,6 +6260,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 }
             }
+            s_emit_neutral = 0;
         }
         t_emit_wp = NULL;
         moby_record_world_buckets(cpu, R, &s_proj[base].otk, ltop, rec_tri0);
@@ -9257,8 +9271,10 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * game's own to make. Memoized on the moby ptr like the material slot
          * above - the walk emits a moby's faces contiguously. */
         openpete_native_scene_set_host_added(moby_walk_tri_host_added(s_wtri_moby[i]));
+        openpete_native_scene_set_hq_fog(0u, (uint32_t)s_wtri[i].neutral * OPENPETE_HQFOG_NEUTRAL);
         openpete_native_scene_add_tri(&t, cat, 0);
     }
+    openpete_native_scene_set_hq_fog(0u, 0u);
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
     openpete_native_scene_set_host_added(0);
     moby_rank_ordinals_end(&rord);
