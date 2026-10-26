@@ -89,8 +89,9 @@ magic_crafters | pos=(84313, 114337, 27851) yaw=1979 pitch=165
 # the camera: the game skips its NCLIP test, so it draws either way.
 magic_crafters | pos=(94193, 80953, 26327) yaw=2994 pitch=77
 # Slivers of an enemy moby show through a wall; the visible part changes with
-# the enemy's animation, so a given VBL may show none of it.
-magic_crafters | pos=(95995, 82594, 29846) yaw=4048 pitch=26
+# the enemy's animation, so a given VBL may show none of it; 2030 shows 9 px
+# at (434-436, 213-215), absent in og.
+magic_crafters | pos=(95995, 82594, 29846) yaw=4048 pitch=26 | 2030
 peace_keepers | pos=(15962, 121384, 50254) yaw=1420 pitch=228
 peace_keepers | pos=(167657, 116990, 62434) yaw=323 pitch=438
 peace_keepers | pos=(27959, 112379, 55165) yaw=1369 pitch=160
