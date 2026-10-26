@@ -13299,59 +13299,134 @@ static void tocc_census_walk_begin(int sub)
     openpete_native_occl_census_register(tocc_latch_census_eval);
 }
 
-/** @brief Returns the occlusion-cull verdict for a sector's view-space bounding sphere under this walk's camera.
+/* OPENPETE_OCCL_IDENT_CENSUS: a sub-tick walk's sector verdicts compared
+ * against the verdict its tick's canonical walk latched. */
+static long s_tic_cmp, s_tic_dis, s_tic_nolatch;
+static char s_tic_ids[192]; static int s_tic_idn;
+
+/** @brief Whether the canonical-vs-re-extract occlusion verdict census (OPENPETE_OCCL_IDENT_CENSUS) is on, read once.
+ * @return Nonzero when on. */
+static int tic_on(void)
+{
+    static int on = -1;
+    ENV_FLAG_LATCH(on, "OPENPETE_OCCL_IDENT_CENSUS");
+    return on;
+}
+
+/** @brief Print and reset the last sub-tick walk's sector verdict comparison counts (OPENPETE_OCCL_IDENT_CENSUS). */
+static void tic_report(void)
+{
+    if (!tic_on()) return;
+    fprintf(stderr, "[occl-ident terrain vbl=%u tick=%u] compared=%ld disagree=%ld no_latch=%ld sectors=[%s]\n",
+            openpete_frame, s_tocc_tick, s_tic_cmp, s_tic_dis, s_tic_nolatch, s_tic_ids);
+    s_tic_cmp = s_tic_dis = s_tic_nolatch = 0; s_tic_idn = 0; s_tic_ids[0] = 0;
+}
+
+/* One sector's occlusion-cull inputs under this walk's camera: what the
+ * verdict decides from and what the sub-tick censuses record beside it. */
+typedef struct {
+    uint32_t sec;
+    int bounded;     /* the sphere is wholly in front of the camera */
+    int own_off;     /* its exact screen interval misses the displayed frame */
+    int latched;     /* the tick's canonical walk latched a verdict for it */
+    int lat;         /* the depth query's gate: TOCC_DEPTH to query */
+    float rx0, ry0, rx1, ry1, vz_near;   /* depth rect (PSX px) and nearest view-Z */
+} tocc_probe_t;
+
+/** @brief Fills a sector's occlusion-cull inputs from its view-space bounding sphere under this walk's camera.
  *
- * The frustum reject tests the exact screen interval of the view-space
- * sphere (tsec_screen_interval) against the displayed frame; it reads no
- * grid, so it runs whether or not an occluder grid exists, and every walk
- * evaluates it under its own camera. The depth verdict reads the
- * occluder grid, which advances once per present while the canonical walk
- * runs once per tick. A sub-tick re-extract depth-culls a sector only when its
- * tick's canonical walk latched TOCC_DEPTH (s_tocc_latch) and the same query
- * under this walk's camera also returns hidden: the latch keeps every sector
- * the canonical walk emitted for the whole tick, and the fresh query keeps a
- * sector that the camera's motion since the tick has uncovered. The query
- * refuses (keeps) when the grid's camera is outside its bound of this
- * walk's, so a fast camera depth-culls nothing between ticks. A
- * reused frustum verdict would be wrong in the other direction: the
- * re-extract's interpolated camera lags the tick camera, so a sector the tick
- * camera has panned off is still in the re-extract's frame. A sector not
- * wholly in front of the camera has an unbounded projection and is kept.
+ * The screen interval is the exact projection of the sphere
+ * (tsec_screen_interval); a sphere not wholly in front of the camera has an
+ * unbounded projection and leaves bounded 0. The depth rect is the interval
+ * with an 8 px margin. A canonical walk gates the depth query open for every
+ * sector; a sub-tick walk opens it only for a sector its tick's canonical
+ * walk latched TOCC_DEPTH (s_tocc_latch).
+ * @param p Receives the inputs.
  * @param i The sector index.
  * @param oc1 The sphere centre's horizontal view coordinate.
  * @param oc2 The sphere centre's vertical view coordinate.
  * @param oc3 The sphere centre's view depth.
- * @param radius The sphere radius.
- * @return TOCC_KEEP, TOCC_FRUSTUM or TOCC_DEPTH. */
-static int tocc_sector_verdict(uint32_t i, double oc1, double oc2, double oc3,
-                               double radius)
+ * @param radius The sphere radius. */
+static void tocc_sector_probe(tocc_probe_t* p, uint32_t i, double oc1, double oc2,
+                              double oc3, double radius)
 {
     double iv[4];
-    if (!tsec_screen_interval(oc1, oc2, oc3, radius, iv)) return TOCC_KEEP;
+    p->sec = i;
+    p->bounded = tsec_screen_interval(oc1, oc2, oc3, radius, iv);
+    if (!p->bounded) return;
     /* Nearest view-Z of the view-space sphere, world/16 -> full-world. */
-    float vz_near = (float)((oc3 - radius * s_rim_rowmax) * 16.0);
-    int own_off = tsec_interval_offscreen(iv);
-    /* 8 px margin around the exact interval, as the depth rect has always had. */
-    const float rx0 = (float)iv[0] - 8.0f, ry0 = (float)iv[2] - 8.0f;
-    const float rx1 = (float)iv[1] + 8.0f, ry1 = (float)iv[3] + 8.0f;
-    /* A canonical walk queries every on-screen sector; a sub-tick walk only
-     * those its tick latched TOCC_DEPTH. */
-    int lat = !s_vanim_sub ? TOCC_DEPTH
-            : (i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick) ? s_tocc_latch[i]
-                                                                  : TOCC_KEEP;
-    int v = TOCC_KEEP;
-    if (own_off) v = TOCC_FRUSTUM;
-    else if (lat == TOCC_DEPTH
-             && openpete_native_occl_query(rx0, ry0, rx1, ry1, vz_near, &s_occl_cam))
-        v = TOCC_DEPTH;
-    if (!s_vanim_sub) return v;
-    if (!own_off && lat == TOCC_DEPTH && s_tlc_n < 1024 && tocc_latch_census_on())
-        s_tlc[s_tlc_n++] = (tlc_rec_t){ i, rx0, ry0, rx1, ry1, vz_near, v == TOCC_DEPTH };
-    if (lat == TOCC_FRUSTUM && !own_off) {
+    p->vz_near = (float)((oc3 - radius * s_rim_rowmax) * 16.0);
+    p->own_off = tsec_interval_offscreen(iv);
+    p->rx0 = (float)iv[0] - 8.0f; p->ry0 = (float)iv[2] - 8.0f;
+    p->rx1 = (float)iv[1] + 8.0f; p->ry1 = (float)iv[3] + 8.0f;
+    p->latched = i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick;
+    p->lat = !s_vanim_sub ? TOCC_DEPTH : p->latched ? s_tocc_latch[i] : TOCC_KEEP;
+}
+
+/** @brief Returns the occlusion-cull verdict for a probed sector under this walk's camera.
+ *
+ * The frustum reject tests the exact screen interval against the displayed
+ * frame; it reads no grid, so it runs whether or not an occluder grid
+ * exists, and every walk evaluates it under its own camera. The depth
+ * verdict reads the occluder grid, which advances once per present while
+ * the canonical walk runs once per tick. A sub-tick re-extract depth-culls a
+ * sector only when its tick's canonical walk latched TOCC_DEPTH and the same
+ * query under this walk's camera also returns hidden: the latch keeps every
+ * sector the canonical walk emitted for the whole tick, and the fresh query
+ * keeps a sector that the camera's motion since the tick has uncovered. The
+ * query refuses (keeps) when the grid's camera is outside its bound of this
+ * walk's, so a fast camera depth-culls nothing between ticks. A reused
+ * frustum verdict would be wrong in the other direction: the re-extract's
+ * interpolated camera lags the tick camera, so a sector the tick camera has
+ * panned off is still in the re-extract's frame. An unbounded sector is kept.
+ * @param p The sector's inputs (tocc_sector_probe).
+ * @return TOCC_KEEP, TOCC_FRUSTUM or TOCC_DEPTH. */
+static int tocc_sector_verdict(const tocc_probe_t* p)
+{
+    if (!p->bounded) return TOCC_KEEP;
+    if (p->own_off) return TOCC_FRUSTUM;
+    if (p->lat == TOCC_DEPTH &&
+        openpete_native_occl_query(p->rx0, p->ry0, p->rx1, p->ry1, p->vz_near, &s_occl_cam))
+        return TOCC_DEPTH;
+    return TOCC_KEEP;
+}
+
+/** @brief Compares a sub-tick walk's sector verdict against its tick's latched verdict (OPENPETE_OCCL_IDENT_CENSUS).
+ * @param p The sector's inputs.
+ * @param v The verdict the walk took. */
+static void tic_note(const tocc_probe_t* p, int v)
+{
+    if (!tic_on()) return;
+    if (!p->latched) { s_tic_nolatch++; return; }
+    s_tic_cmp++;
+    if (v == p->lat) return;
+    s_tic_dis++;
+    if (s_tic_idn < (int)sizeof s_tic_ids - 12)
+        s_tic_idn += snprintf(s_tic_ids + s_tic_idn, sizeof s_tic_ids - (size_t)s_tic_idn,
+                              "%s%u:%d>%d", s_tic_idn ? "," : "", p->sec, p->lat, v);
+}
+
+/** @brief Records a bounded sector's verdict in the sub-tick walk censuses; a canonical walk records nothing.
+ *
+ * The latch census (OPENPETE_TOCC_LATCH_CENSUS) lists each on-screen sector
+ * latched TOCC_DEPTH with its rect and whether the walk culled it; the
+ * latched-frustum counters split on-screen sectors latched TOCC_FRUSTUM
+ * into those this walk culled and those it admitted; tic_note compares the
+ * verdict against the latch.
+ * @param p The sector's inputs.
+ * @param v The verdict the walk took. */
+static void tocc_subtick_note(const tocc_probe_t* p, int v)
+{
+    if (!s_vanim_sub || !p->bounded) return;
+    tic_note(p, v);
+    if (p->own_off) return;
+    if (p->lat == TOCC_DEPTH && s_tlc_n < 1024 && tocc_latch_census_on())
+        s_tlc[s_tlc_n++] = (tlc_rec_t){ p->sec, p->rx0, p->ry0, p->rx1, p->ry1, p->vz_near,
+                                        v == TOCC_DEPTH };
+    if (p->lat == TOCC_FRUSTUM) {
         if (v) s_tocc_latoff++;
         else   s_tocc_offadm++;
     }
-    return v;
 }
 
 /** @brief Walks the visible sectors of the current view into the terrain triangle stream and feeds the native scene. */
@@ -13954,7 +14029,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             s_secv_stamp[i] = s_vanim_pres;
         }
         if (s_tocc) {
-            int culled = tocc_sector_verdict(i, oc1, oc2, oc3, (double)SC->radius);
+            tocc_probe_t probe;
+            tocc_sector_probe(&probe, i, oc1, oc2, oc3, (double)SC->radius);
+            int culled = tocc_sector_verdict(&probe);
+            tocc_subtick_note(&probe, culled);
             tocc_audit_note(i, culled, oc1, oc2, oc3, (double)SC->radius);
             if (!s_vanim_sub && i < 1024u) {
                 s_tocc_latch[i] = (uint8_t)culled;
@@ -16458,6 +16536,7 @@ void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);
     tn_snap_fed(cpu);
+    tic_report();
     s_vanim_sub = 0; s_vanim_on = 0; s_tanim_en = 0;
 }
 

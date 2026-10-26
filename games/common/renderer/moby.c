@@ -11985,12 +11985,7 @@ typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
                   * and class at the last REAL extraction. Written only there,
                   * so a refresh re-derives from a fixed reference and cannot
                   * drift however long a moby stays hidden. */
-                 float asx, asy, atrz, arad; uint16_t acls;
-                 /* Verdict held for one canonical epoch: the moby it was
-                  * decided for (the slot is direct-mapped, so it need not be
-                  * the moby whose bounds the entry carries), the epoch stamp
-                  * it was decided in, and the verdict itself. */
-                 uint32_t vmoby; uint32_t vepoch; uint8_t vculled; } occl_rect_t;
+                 float asx, asy, atrz, arad; uint16_t acls; } occl_rect_t;
 #define OCCL_HASH_N 1024                       /* power of two; ~500 live mobys max */
 static occl_rect_t s_occl_cache[OCCL_HASH_N];
 static float s_occl_pan_px = 0.0f;             /* px/tick pan allowance (orchestrator) */
@@ -12155,32 +12150,152 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     return culled;
 }
 
-/** @brief The occlusion cull verdict for one record, decided once per canonical epoch and held for every later present of it.
+/* OPENPETE_OCCL_IDENT_CENSUS: every canonical-leg verdict, keyed by the
+ * exact moby address (linear probe, no eviction within an epoch), so a later
+ * re-extract of the same epoch can be compared verdict for verdict. */
+#define OIC_N 4096
+static struct { uint32_t moby, epoch; uint8_t culled; } s_oic[OIC_N];
+static long s_oic_cmp, s_oic_dis, s_oic_nocanon, s_oic_canon_n;
+static unsigned s_oic_canon_epoch;
+static char s_oic_ids[192]; static int s_oic_idn;
+
+/** @brief Whether the canonical-vs-re-extract occlusion verdict census (OPENPETE_OCCL_IDENT_CENSUS) is on, read once.
+ * @return Nonzero when on. */
+static int oic_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_OCCL_IDENT_CENSUS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/** @brief Record a canonical verdict, or compare a re-extract verdict against the canonical one of the same epoch.
+ * @param moby The Moby address.
+ * @param epoch The canonical epoch stamp.
+ * @param leg 1 for the canonical leg, 0 for a re-extract.
+ * @param culled The verdict. */
+static void oic_note(uint32_t moby, unsigned epoch, int leg, int culled) {
+    if (leg && s_oic_canon_epoch != epoch) {
+        memset(s_oic, 0, sizeof s_oic);
+        s_oic_canon_epoch = epoch; s_oic_canon_n = 0;
+    }
+    /* A re-extract replays the in-flight epoch's canonical scene (lag leg) or
+     * the last committed one (game-hook pass). */
+    const int canon_live = s_oic_canon_epoch == epoch || spyro_native_canon_epoch_fresh(s_oic_canon_epoch);
+    if (!leg && !canon_live) { s_oic_nocanon++; return; }
+    unsigned h = occl_slot(moby) * 4u, i = 0;
+    int found = 0;
+    for (unsigned k = 0; k < OIC_N; k++) {
+        i = (h + k) & (OIC_N - 1);
+        if (s_oic[i].moby == moby) { found = 1; break; }
+        if (!s_oic[i].moby) break;
+    }
+    if (leg) {
+        s_oic_canon_n++;
+        s_oic[i].moby = moby; s_oic[i].epoch = epoch; s_oic[i].culled = (uint8_t)(culled != 0);
+        return;
+    }
+    /* A moby the canonical pass never queried was not occlusion-culled there. */
+    const int cv = found ? s_oic[i].culled : 0;
+    s_oic_cmp++;
+    if (!found) s_oic_nocanon++;
+    if (cv != (culled != 0)) {
+        s_oic_dis++;
+        if (s_oic_idn < (int)sizeof s_oic_ids - 14)
+            s_oic_idn += snprintf(s_oic_ids + s_oic_idn, sizeof s_oic_ids - (size_t)s_oic_idn,
+                                  "%s%08X:%d%s", s_oic_idn ? "," : "", moby, culled != 0, found ? "" : "u");
+    }
+}
+
+/** @brief Print and reset the re-extract leg's verdict comparison counts (OPENPETE_OCCL_IDENT_CENSUS). */
+static void oic_report(void) {
+    if (!oic_on() || g_openpete_canon_lag_leg || !s_in_reextract) return;
+    fprintf(stderr, "[occl-ident moby vbl=%u epoch=%u] compared=%ld disagree=%ld unqueried=%ld "
+            "(canon epoch=%u notes=%ld) mobys=[%s]\n",
+            openpete_frame, spyro_native_canon_epoch_stamp(), s_oic_cmp, s_oic_dis, s_oic_nocanon,
+            s_oic_canon_epoch, s_oic_canon_n, s_oic_ids);
+    s_oic_cmp = s_oic_dis = s_oic_nocanon = 0; s_oic_idn = 0; s_oic_ids[0] = 0;
+}
+
+/* Verdicts of one canonical scene, keyed by the exact moby address (linear
+ * probe). An entry is live only while its epoch equals the table's, so
+ * starting a new epoch empties the table without clearing it. One table
+ * holds the game-hook pass's scene, one the lag leg's re-extract (or the
+ * first re-extract of an epoch with neither): the hook pass of the next tick
+ * runs under the in-flight epoch the lag leg's scene still carries. */
+#define OCCL_HOLD_N 2048
+typedef struct {
+    struct { uint32_t moby, epoch; uint8_t culled; } e[OCCL_HOLD_N];
+    uint32_t epoch;
+} occl_hold_t;
+static occl_hold_t s_hold_hook, s_hold_rex;
+
+/** @brief The live slot of a moby in a hold table, or the empty slot where it would go.
+ * @param t The table.
+ * @param moby The Moby address.
+ * @param found Receives 1 when the slot holds this moby's verdict.
+ * @return The slot index, or -1 when the table is full. */
+static int occl_hold_find(const occl_hold_t* t, uint32_t moby, int* found) {
+    const unsigned h = occl_slot(moby) * 2u;
+    *found = 0;
+    for (unsigned k = 0; k < OCCL_HOLD_N; k++) {
+        const unsigned i = (h + k) & (OCCL_HOLD_N - 1);
+        if (t->e[i].epoch != t->epoch) return (int)i;
+        if (t->e[i].moby == moby) { *found = 1; return (int)i; }
+    }
+    return -1;
+}
+
+/** @brief Store a verdict in a hold table, starting the table at @p epoch when it holds another one.
+ * @param t The table.
+ * @param moby The Moby address.
+ * @param epoch The canonical epoch stamp the verdict belongs to.
+ * @param culled The verdict. */
+static void occl_hold_put(occl_hold_t* t, uint32_t moby, uint32_t epoch, int culled) {
+    t->epoch = epoch;
+    int found;
+    const int i = occl_hold_find(t, moby, &found);
+    if (i < 0) return;
+    t->e[i].moby = moby; t->e[i].epoch = epoch; t->e[i].culled = (uint8_t)(culled != 0);
+}
+
+/** @brief The occlusion cull verdict for one record, decided by the canonical scene and held by each re-extract replaying it.
  *
- * Both the rect inflation and the depth margin scale with the cached bounds'
- * age, and a record the first present of the epoch extracts is written back
- * at age 0 by occl_cache_update: without the hold the next present of the
- * same tick queries tighter bounds and culls what the previous present drew,
- * which alternates the record in and out at the present rate. The canonical
- * leg always re-decides; it opens each epoch's span, so the held verdict is
- * the one it reached, and a run with a single present per tick decides every
- * record fresh. Counts each verdict into the per-leg census.
+ * The canonical scene decides every verdict: the lag leg's re-extract where
+ * one runs, else the game-hook pass (a headless run, a present with no lag
+ * leg), which runs outside moby_reextract. A re-extract replays the in-flight
+ * epoch's lag-leg scene or the last committed epoch's hook-pass scene, so it
+ * takes the verdict held for either epoch. The game-hook pass occlusion-tests
+ * only the mobys it reveals and draws every queued record, so a moby with no
+ * held verdict in a hook-pass epoch is kept. Without the hold a re-extract
+ * queries a grid the canonical scene never saw, at bounds whose inflation
+ * depends on their age, and a present at the canonical instant culls what the
+ * canonical present drew. A re-extract with no live canonical table decides
+ * fresh and holds that verdict for the rest of the epoch. Counts each verdict
+ * into the per-leg census.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @return 1 when culled, else 0. */
 static int occl_record_culled(CPUState* cpu, uint32_t moby) {
-    occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
-    unsigned epoch = spyro_native_canon_epoch_stamp();
-    int leg = g_openpete_canon_lag_leg ? 1 : 0;
-    int culled;
-    if (!leg && e->vmoby == moby && e->vepoch == epoch) {
-        culled = (int)e->vculled;
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    const int leg = g_openpete_canon_lag_leg ? 1 : 0;
+    const int canon = leg || !s_in_reextract;
+    int culled, found = 0;
+    if (canon) {
+        culled = occl_record_decide(cpu, moby);
+        occl_hold_put(leg ? &s_hold_rex : &s_hold_hook, moby, epoch, culled);
+    } else if (s_hold_rex.epoch == epoch) {
+        const int i = occl_hold_find(&s_hold_rex, moby, &found);
+        culled = found ? (int)s_hold_rex.e[i].culled : occl_record_decide(cpu, moby);
+        if (!found) occl_hold_put(&s_hold_rex, moby, epoch, culled);
+    } else if (spyro_native_canon_epoch_fresh(s_hold_hook.epoch)) {
+        const int i = occl_hold_find(&s_hold_hook, moby, &found);
+        culled = found ? (int)s_hold_hook.e[i].culled : 0;
     } else {
         culled = occl_record_decide(cpu, moby);
-        e->vmoby = moby; e->vepoch = epoch; e->vculled = (uint8_t)(culled != 0);
+        occl_hold_put(&s_hold_rex, moby, epoch, culled);
     }
     s_occl_leg_seen[leg]++;
     if (culled) s_occl_leg_culled[leg]++;
+    if (oic_on()) oic_note(moby, epoch, canon, culled);
     return culled;
 }
 
@@ -13421,6 +13536,7 @@ static void moby_reextract_body(CPUState* cpu) {
                     nm, reg_walk, spec_walk, sim_walk, shd_fresh ? s_gout.n : 0); }
     }
     occl_leg_census_report();
+    oic_report();
     static int animswdbg = -1;
     if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }
     if (animswdbg) {
