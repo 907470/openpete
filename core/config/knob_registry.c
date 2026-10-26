@@ -1286,7 +1286,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "fog", "Fog", "Display", NULL, NULL,
       "Distance fog on/off (off = the 100x far-scale sentinel). LOD switches "
-      "move this automatically until it is touched.",
+      "restore it to on until it is touched.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fog_get, fog_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "on" },
@@ -1297,11 +1297,11 @@ static const knob_desc_t g_builtin[] = {
       "LOD autopilot.",
       KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.25f, 128.0f,
       fogscale_get, fogscale_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .default_note = "1, or 100 under --lod extended",
+      .default_note = "1",
       .help_arg = "N", .help_order = 270,
       .help_text = "terrain fog-distance multiplier: 1 = authentic PSX curve, N = fog\n"
           "saturates N x farther (100 ~= fog off, the far-detail look).\n"
-          "Default: 1, or 100 under --lod extended. Range [0.25,128]." },
+          "Default: 1. Range [0.25,128]." },
 
     { "renderer", "Renderer", "Display", "--renderer", NULL,
       "Which rasterizer draws the picture: the native Vulkan renderer (vk, "

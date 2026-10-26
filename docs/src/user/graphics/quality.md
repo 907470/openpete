@@ -38,8 +38,6 @@ Settings menu **LOD** (**ORIGINAL** / **EXTENDED**), dev overlay **LOD**,
 <!-- id: key:host.lod_toggle home --> switches between the two. `extended` draws
 many more triangles in wide views; see [Performance](performance.md).
 
-Switching LOD also switches the fog, as below, until the fog is set by hand.
-
 ## Fog
 
 The game fades distant terrain into fog. `--fog-scale N`
@@ -47,10 +45,10 @@ The game fades distant terrain into fog. `--fog-scale N`
 game's own fog, 100 turns it off in practice. Range 0.25 to 128
 <!-- id: knob:fog_scale -->.
 
-The default follows the level of detail: 1 under `original`, 100 under
-`extended` <!-- id: knob:fog_scale -->. Setting a fog scale, by flag or
-with the dev overlay's **Fog** row, fixes it; from then on
-LOD switches leave the fog alone.
+The default is 1 under both `original` and `extended`
+<!-- id: knob:fog_scale -->: `extended` draws the far detail and fades it
+into the same fog. Setting a fog scale, by flag or with the dev overlay's
+**Fog** row, fixes it; from then on LOD switches leave the fog alone.
 
 The dev overlay's **Fog** row <!-- id: knob:fog -->, under Display's
 **Advanced**, holds a checkbox that turns the fog off (a fog scale of 100)

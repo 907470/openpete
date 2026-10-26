@@ -96,8 +96,8 @@ typedef enum {
  * authentic PSX behaviour: distance-based LOD swaps + the stock fog curve.
  * EXTENDED collapses the sector LOD band so every visible sector draws from
  * its high-poly mesh at full quality, out to the cull distance and beyond
- * (the classic "see detail far away" look), and defaults --fog-scale to 100x
- * (fog effectively off, so the extended far detail is actually visible).
+ * (the classic "see detail far away" look), fogged on the same --fog-scale
+ * curve as ORIGINAL.
  * Native renderer only - the feeders derive detail from gamestate, never
  * perturbing gameplay-readable RAM (in PsyCross reference mode EXTENDED warns
  * and is ignored). */
@@ -219,7 +219,7 @@ typedef struct openpete_options {
      * near-tile select, fog-saturation LP handoff): N = 1 is the authentic
      * PSX curve (saturation at the LOD distance), larger N saturates N x
      * farther - the classic "see detail far away" look; ~100 pushes fog off
-     * entirely. 0 = auto: 1 under --lod original, 100 under --lod extended. */
+     * entirely. 0 = auto: 1 under either --lod mode. */
     float fog_scale;
 
     /* Vertex screen-coordinate precision (`--vertex-precision subpixel|integer`).

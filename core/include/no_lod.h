@@ -20,8 +20,8 @@ extern "C" {
 extern int openpete_no_lod;
 
 /* --fog-scale: terrain fog-distance multiplier, resolved at boot in
- * no_lod_apply_options (explicit --fog-scale wins; else 100.0 = effectively
- * off under extended LOD, 1.0 otherwise). 1.0 = the authentic PSX curve; N scales
+ * no_lod_apply_options (explicit --fog-scale wins; else 1.0 under either
+ * LOD mode). 1.0 = the authentic PSX curve; N scales
  * every channel of the fog model together (DPCS vertex curve, CLUT-row
  * palette ladder, near-tile select, fog-saturation LP handoff - see
  * games/common/renderer/terrain.c). Always > 0 after boot. */
@@ -30,8 +30,8 @@ extern float openpete_fog_scale;
 /** @brief Resolve the boot fog scale and draw-distance policy from the options.
  *
  * Called once at boot from core/runtime/run.c. The fog scale is resolved
- * before the renderer check: an explicit --fog-scale wins, else extended
- * LOD takes 100.0 (effectively off) and original LOD 1.0; the explicit
+ * before the renderer check: an explicit --fog-scale wins, else either LOD
+ * mode takes 1.0, the authentic curve; the explicit
  * value is remembered for later live toggles. openpete_no_lod is set to 1
  * only for extended LOD under a native renderer; the PsyCross reference
  * renderer logs a warning and keeps canonical detail.
@@ -45,7 +45,7 @@ int no_lod_apply_options(const openpete_options_t* opts);
  * loop's LOD hotkey. A @p fog_scale above 0 sets the fog multiplier. A
  * value of 0 or below applies the mode default only while fog is on
  * autopilot: an explicit --fog-scale is restored when one was given, else
- * 100.0 for extended and 1.0 for original; after openpete_fog_set or
+ * 1.0 in either mode; after openpete_fog_set or
  * openpete_fog_scale_set the fog scale is left alone. The native feeders
  * read openpete_no_lod and openpete_fog_scale on every walk, so the change
  * applies from the next one. Display policy only, no gameplay effect.

@@ -13014,12 +13014,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_fogdpcs = (e && *e) ? (*e != '0') : 1;
     }
     /* The whole fog model rides ONE user knob, --fog-scale (fog-distance
-     * multiplier k; openpete_fog_scale: explicit --fog-scale wins, else 100
-     * under --no-lod / 1 stock). Internally SZ = s_fogscale·m3 with
+     * multiplier k; openpete_fog_scale: explicit --fog-scale wins, else 1
+     * under either LOD mode). Internally SZ = s_fogscale·m3 with
      * s_fogscale = 4/k: k=1 -> the exact PSX curve (SZ = 4·m3); k=100 ->
-     * saturation ~100x farther, i.e. fog effectively off - extended LOD
-     * already draws the far detail, so the default stops fogging it away.
-     * (k=4 gives s_fogscale 1, the lerp curve's scale.) The exact math, the
+     * saturation ~100x farther, i.e. fog effectively off. (k=4 gives s_fogscale 1, the lerp curve's scale.) The exact math, the
      * palette ladder and the saturation handoff all ride the stretched curve.
      * Re-resolved EVERY walk, not latched at boot: the settings-menu
      * draw-distance toggle (openpete_no_lod_set) flips openpete_fog_scale
