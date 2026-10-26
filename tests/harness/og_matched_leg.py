@@ -20,12 +20,33 @@ offset in matched mode (og_align.fit_shift over the unchanged pixels around
 the change; about 0 when the modes match) and og_align's aligned verdict on
 the float pair, so the two scorings can be compared.
 
+Two further confounders are removed or masked. og maps textures affinely
+(screen-linear), the native default perspective-correctly, so texels inside
+a face move even where the face edges match: every leg (float and matched)
+passes --texture-mapping affine unless --no-affine is given. The game draws
+near-band terrain (the faces its walk defers to the near/HQ queues,
+r_environment.s 0x80026CFC) subdivided before the affine draw and native does
+not, so their texels cannot match under either mapping: each leg runs with
+OPENPETE_TERRAIN_TRIDUMP, the leg's walked terrain triangles with the
+canonical near-band flag (face_is_near_canonical, without the --lod extended
+HQ pin), and the opaque triangles are rasterised with true depth into a
+per-pixel owner map (nearest terrain face, PSX x * W/512, (y - (240 - H/2) /
+2) * 2; on the CPU rasteriser the retained terrain cache is off, so the walk
+holds every terrain face). A changed pixel whose terrain owner in either leg
+is a near-band face (dilated by 1 px) leaves the colour score and is scored
+by owner and edge only: owner = mean |blur(x) - blur(og)| with a 5x5 box
+blur, which averages the texel layout out and keeps the owner's colour;
+edge = mean |grad(x) - grad(og)| of the Sobel gradient magnitude of the
+sigma-1 blurred luminance. The owner map knows terrain only: a moby drawn
+over near-band terrain in both legs is masked with it.
+
 Usage:
   tests/harness/og_matched_leg.py --game G --vbl N [--level L]
       [--pose "pos=(x, y, z) yaw=Y pitch=P"] [--bk2 PATH]
       --a BIN [--b BIN] [--a-env K=V ...] [--b-env K=V ...]
       [--quantize Q] [--lod L] [--out DIR] [--jobs J] [--near PX]
-      [--box x0,x1,y0,y1] [--reuse] [--json]
+      [--box x0,x1,y0,y1] [--no-affine] [--no-nearband-mask] [--reuse]
+      [--json]
 
   --game        spyro-1 | spyro-2 | spyro-3; picks the disc cue.
   --vbl         the VBL captured (--screenshot-on-frame).
@@ -49,6 +70,10 @@ Usage:
   --jobs        concurrent game processes (default 2).
   --near        px radius of the survival test (default 4).
   --box         x0,x1,y0,y1: score only inside this rectangle.
+  --no-affine   render every leg with the native default perspective-correct
+                texture mapping instead of --texture-mapping affine.
+  --no-nearband-mask  score near-band terrain pixels by colour like the rest
+                (no tridump is read; --reuse captures need no tri.txt).
   --reuse       score the PNGs already in --out; launch nothing.
   --json        print the result as JSON.
 
@@ -59,9 +84,13 @@ reported and the run exits 2: rerun once the rebuild is done.
 
 Output: float and matched changed-pixel counts and the survival count; the
 matched-mode residual og offset; matched mean |A-og| and |B-og| over the
-matched changed pixels with per-pixel closer counts; the matched verdict (A
-or B: that side's mean is lower and it is closer on more pixels; "split"
-when the two disagree; "lost" when the change does not survive); the float
+matched changed pixels outside the near-band mask with per-pixel closer
+counts; for the masked pixels the count and the owner and edge means per
+side; a verdict per class (colour: A or B when that side's mean is lower
+and it is closer on more pixels; near band: the side lower on both owner
+and edge; else "split"); the matched verdict, the verdict of the class with
+more scored pixels, "split" when the other class holds at least a third as
+many and disagrees, "lost" when the change does not survive; the float
 og_align aligned verdict; and whether the two verdicts agree.
 Exit 0 = verdict given, 1 = no verdict (lost, split or nothing changed),
 2 = capture failed, 64 = usage.
@@ -121,6 +150,12 @@ def capture(a, binary, envs, mode, d):
     if mode == "matched":
         cmd += ["--vertex-precision", "integer",
                 "--raster-quantize", str(a.quantize)]
+    if not a.no_affine:
+        cmd += ["--texture-mapping", "affine"]
+    envs = list(envs)
+    tri = os.path.join(d, "tri.txt")
+    if not a.no_nearband_mask:
+        envs.append("OPENPETE_TERRAIN_TRIDUMP=%d,%s" % (a.vbl, tri))
     cmd += ["--screenshot-on-frame", str(a.vbl), "--screenshot-output",
             os.path.join(d, "x__{n}.png"), "--frame-limit", str(a.vbl + 10)]
     m0 = os.stat(binary).st_mtime_ns
@@ -132,14 +167,81 @@ def capture(a, binary, envs, mode, d):
     og = os.path.join(d, "x__%d-og.png" % a.vbl)
     if os.stat(binary).st_mtime_ns != m0:
         return vk, og, "binary rebuilt during the run"
-    missing = [p for p in (vk, og) if not os.path.exists(p)]
+    missing = [p for p in (vk, og) + (() if a.no_nearband_mask else (tri,))
+               if not os.path.exists(p)]
     if missing:
         return vk, og, "rc=%d, missing %s" % (rc, " ".join(missing))
     return vk, og, None
 
 
-def score(paths, box=None, near_px=4, pad=64):
-    """Score the four captures; paths maps (leg, mode) to (vk, og)."""
+def nearband_mask(tri, h, w):
+    """Per-pixel near-band terrain owner map of one leg's tridump.
+
+    Rasterises the opaque terrain triangles of tri (an
+    OPENPETE_TERRAIN_TRIDUMP file) at pixel centres with a perspective-correct
+    nearest-depth test and returns the pixels whose nearest face carries the
+    near-band flag. PSX x maps to x * w / 512 (the 4:3 viewport), PSX y to
+    (y - (240 - h / 2) / 2) * 2 (the visible lines centred in 240)."""
+    zt = np.full((h, w), np.inf)
+    nb = np.zeros((h, w), bool)
+    yoff = (240.0 - h / 2.0) / 2.0
+    with open(tri) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            p = line.split(",")
+            if int(p[4]) != 0:
+                continue
+            v = [(float(p[7 + 3 * k]) * w / 512.0,
+                  (float(p[8 + 3 * k]) - yoff) * 2.0, float(p[9 + 3 * k]))
+                 for k in range(3)]
+            if min(q[2] for q in v) <= 0:
+                continue
+            (ax, ay, az), (bx, by, bz), (cx, cy, cz) = v
+            x0 = max(0, int(np.floor(min(ax, bx, cx))))
+            x1 = min(w - 1, int(np.ceil(max(ax, bx, cx))))
+            y0 = max(0, int(np.floor(min(ay, by, cy))))
+            y1 = min(h - 1, int(np.ceil(max(ay, by, cy))))
+            det = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay)
+            if x0 > x1 or y0 > y1 or abs(det) < 1e-9:
+                continue
+            gy, gx = np.mgrid[y0:y1 + 1, x0:x1 + 1]
+            qx, qy = gx + 0.5, gy + 0.5
+            b1 = ((qx - ax) * (cy - ay) - (cx - ax) * (qy - ay)) / det
+            b2 = ((bx - ax) * (qy - ay) - (qx - ax) * (by - ay)) / det
+            b0 = 1.0 - b1 - b2
+            ins = (b0 >= 0) & (b1 >= 0) & (b2 >= 0)
+            z = 1.0 / (b0 / az + b1 / bz + b2 / cz)
+            sub = zt[y0:y1 + 1, x0:x1 + 1]
+            win = ins & (z < sub)
+            sub[win] = z[win]
+            nb[y0:y1 + 1, x0:x1 + 1][win] = int(p[17]) != 0
+    return nb
+
+
+def owner_edge(x, og, sel):
+    """Owner and edge distances of image x from og over the pixels sel.
+
+    Owner is the mean summed-channel |box5(x) - box5(og)|, edge the mean
+    |sobel magnitude| difference of the sigma-1 blurred luminance."""
+    bx = ndimage.uniform_filter(x, size=(5, 5, 1))
+    bo = ndimage.uniform_filter(og, size=(5, 5, 1))
+
+    def grad(im):
+        lum = ndimage.gaussian_filter(im.mean(axis=2), 1.0)
+        return np.hypot(ndimage.sobel(lum, 0), ndimage.sobel(lum, 1))
+    return (float(np.abs(bx - bo).sum(axis=2)[sel].mean()),
+            float(np.abs(grad(x) - grad(og))[sel].mean()))
+
+
+def side(a, b):
+    """"A" when a < b, "B" when b < a, else "tie"."""
+    return "A" if a < b else "B" if b < a else "tie"
+
+
+def score(paths, box=None, near_px=4, pad=64, tris=None):
+    """Score the four captures; paths maps (leg, mode) to (vk, og), tris
+    (optional) maps (leg, "matched") to that leg's tridump path."""
     img = {k: (og_align.load_rgb(v), og_align.load_rgb(o))
            for k, (v, o) in paths.items()}
     h, w = img[("A", "float")][0].shape[:2]
@@ -186,20 +288,46 @@ def score(paths, box=None, near_px=4, pad=64):
                               "corr": fit["corr"]}
     else:
         res["matched_fit"] = None
-    if res["survived"] == 0 or not sc.any():
-        res["matched"] = None
-        res["verdict"] = "lost" if res["float_changed"] else "nothing"
-    else:
-        da = np.abs(a_m - og_m).sum(axis=2)[sc]
-        db = np.abs(b_m - og_m).sum(axis=2)[sc]
+    nb = np.zeros_like(sc)
+    if tris:
+        for t in tris.values():
+            nb |= nearband_mask(t, h, w)
+        nb = ndimage.binary_dilation(nb, iterations=1)
+    col = sc & ~nb
+    res["nearband"] = {"masked": int((sc & nb).sum()),
+                       "frame_px": int(nb.sum())} if tris else None
+    if tris and (sc & nb).any():
+        oa, ea = owner_edge(a_m, og_m, sc & nb)
+        ob, eb = owner_edge(b_m, og_m, sc & nb)
+        res["nearband"].update({"owner_A": oa, "owner_B": ob,
+                                "edge_A": ea, "edge_B": eb})
+    res["matched"] = None
+    votes = []                       # (scored px, verdict) per pixel class
+    if (sc & nb).any():
+        n = res["nearband"]
+        ov = side(n["owner_A"], n["owner_B"])
+        ev = side(n["edge_A"], n["edge_B"])
+        n["verdict"] = ov if ov == ev else "split"
+        votes.append((n["masked"], n["verdict"]))
+    if col.any():
+        da = np.abs(a_m - og_m).sum(axis=2)[col]
+        db = np.abs(b_m - og_m).sum(axis=2)[col]
+        mean_v = side(da.mean(), db.mean())
+        cnt_v = side(-(da < db).sum(), -(db < da).sum())
         res["matched"] = {"A": float(da.mean()), "B": float(db.mean()),
                           "closer_A": int((da < db).sum()),
-                          "closer_B": int((db < da).sum())}
-        mean_v = "A" if da.mean() < db.mean() else "B" \
-            if db.mean() < da.mean() else "tie"
-        cnt_v = "A" if (da < db).sum() > (db < da).sum() else "B" \
-            if (db < da).sum() > (da < db).sum() else "tie"
-        res["verdict"] = mean_v if mean_v == cnt_v else "split"
+                          "closer_B": int((db < da).sum()),
+                          "scored": int(col.sum()),
+                          "verdict": mean_v if mean_v == cnt_v else "split"}
+        votes.append((int(col.sum()), res["matched"]["verdict"]))
+    if res["survived"] == 0 or not sc.any():
+        res["verdict"] = "lost" if res["float_changed"] else "nothing"
+    else:
+        votes.sort(reverse=True)
+        res["verdict"] = votes[0][1]
+        if len(votes) == 2 and votes[1][1] != votes[0][1] and \
+                3 * votes[1][0] >= votes[0][0]:
+            res["verdict"] = "split"
     fv = res["float_aligned"]["verdict"] if res["float_aligned"] else None
     res["agree"] = (fv == res["verdict"]) if fv in ("A", "B") and \
         res["verdict"] in ("A", "B") else None
@@ -221,8 +349,17 @@ def fmt(r):
                                                 f["psx_dy"], f["corr"]))
     m = r["matched"]
     if m:
-        out.append("matched |A-og|=%.1f |B-og|=%.1f closer A %d, B %d" % (
-            m["A"], m["B"], m["closer_A"], m["closer_B"]))
+        out.append("matched colour |A-og|=%.1f |B-og|=%.1f closer A %d, B %d "
+                   "(%d px scored): %s" % (m["A"], m["B"], m["closer_A"],
+                                           m["closer_B"], m["scored"],
+                                           m["verdict"]))
+    n = r.get("nearband")
+    if n:
+        out.append("near-band masked %d changed px (%d px of the tile)%s" % (
+            n["masked"], n["frame_px"], "" if "owner_A" not in n else
+            ": owner A %.1f B %.1f, edge A %.1f B %.1f: %s" % (
+                n["owner_A"], n["owner_B"], n["edge_A"], n["edge_B"],
+                n["verdict"])))
     fa = r["float_aligned"]
     if fa:
         out.append("float aligned |A-og|=%.1f |B-og|=%.1f verdict %s" % (
@@ -255,6 +392,8 @@ def main(argv):
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--near", type=int, default=4)
     ap.add_argument("--box")
+    ap.add_argument("--no-affine", action="store_true")
+    ap.add_argument("--no-nearband-mask", action="store_true")
     ap.add_argument("--reuse", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
@@ -289,7 +428,10 @@ def main(argv):
         print("og_matched_leg: capture failed: " + "; ".join(errs),
               file=sys.stderr)
         return 2
-    r = score(paths, box, a.near)
+    tris = None if a.no_nearband_mask else {
+        (leg, "matched"): os.path.join(out, "%s__matched" % leg, "tri.txt")
+        for leg in ("A", "B")}
+    r = score(paths, box, a.near, tris=tris)
     r["out"] = out
     print(json.dumps(r, indent=1) if a.json else fmt(r) + "\ncaptures: " +
           out)
