@@ -635,6 +635,36 @@ static int s_tier_faithful = -1;    /* OPENPETE_TERRAIN_LOD_FAITHFUL: .s sector 
 static int s_clutfog = -1;          /* OPENPETE_TERRAIN_CLUTFOG: .s per-face CLUT-row fog ladder (default ON) */
 int s_fogdbg = 0;                   /* OPENPETE_TERRAIN_FOGDBG: dump fog samples */
 extern int s_fogdbg;
+/* The heavy-fog verdict (terrain_heavy_fog): the first far colour sampled
+ * this level (bit 24 marks it set), the samples and those equal to it, and
+ * the latched verdict (-1 until 4096 samples). Walk workers update them
+ * atomically; tn_heavyfog_reset clears them at a level edge. */
+static uint32_t s_hf_ref;
+static int s_hf_n, s_hf_match, s_hf_verdict = -1;
+
+/** @brief Feeds one HP far colour to the heavy-fog verdict until it latches.
+ * @param farC The far colour, 0x00BBGGRR. */
+static void tn_heavyfog_sample(uint32_t farC) {
+    if (__atomic_load_n(&s_hf_verdict, __ATOMIC_RELAXED) >= 0) return;
+    uint32_t want = 0u;
+    __atomic_compare_exchange_n(&s_hf_ref, &want, farC | 0x1000000u, 0,
+                                __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    const int m = (__atomic_load_n(&s_hf_ref, __ATOMIC_RELAXED) == (farC | 0x1000000u))
+                ? __atomic_add_fetch(&s_hf_match, 1, __ATOMIC_RELAXED)
+                : __atomic_load_n(&s_hf_match, __ATOMIC_RELAXED);
+    const int n = __atomic_add_fetch(&s_hf_n, 1, __ATOMIC_RELAXED);
+    if (n == 4096) __atomic_store_n(&s_hf_verdict, m * 10 >= n * 9, __ATOMIC_RELAXED);
+}
+
+/** @brief Clears the heavy-fog verdict and its samples for a new level. */
+static void tn_heavyfog_reset(void) {
+    s_hf_ref = 0u; s_hf_n = s_hf_match = 0; s_hf_verdict = -1;
+}
+
+int terrain_heavy_fog(void) {
+    return __atomic_load_n(&s_hf_verdict, __ATOMIC_RELAXED) == 1;
+}
+
 static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int fogRef);
 static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3, int fogRef);
 /** @brief Returns the fogged terrain vertex colour and logs the first samples when OPENPETE_TERRAIN_FOGDBG is set.
@@ -738,6 +768,7 @@ static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
     if (noHP) return rd(cpu, lpBase + (uint32_t)idx) & 0xFFFFFFu;
     uint32_t nearC = rd(cpu, nearBase + (uint32_t)idx) & 0xFFFFFFu;
     uint32_t farC  = rd(cpu, farBase  + (uint32_t)idx) & 0xFFFFFFu;
+    tn_heavyfog_sample(farC);
     return terrain_fog_blend(nearC, farC, m3, fogRef);
 }
 
@@ -7796,6 +7827,7 @@ static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* near
     if (noHP) return t_le32(lp + idx) & 0xFFFFFFu;
     uint32_t nearC = t_le32(nearp + idx) & 0xFFFFFFu;
     uint32_t farC  = t_le32(farp  + idx) & 0xFFFFFFu;
+    tn_heavyfog_sample(farC);
     return terrain_fog_blend(nearC, farC, m3, fogRef);
 }
 
@@ -11079,6 +11111,7 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     for (int q = 0; q < 4; q++) {
         r[q]  = (host_col ? t_le32(h_near + co[q]) : rd(cpu, nearBase + (uint32_t)co[q])) & 0xFFFFFFu;
         rf[q] = (host_col ? t_le32(h_far + co[q])  : rd(cpu, farBase + (uint32_t)co[q]))  & 0xFFFFFFu;
+        tn_heavyfog_sample(rf[q]);
     }
     ngte_cvert TL = { .m1 = sv[F->i0].m1, .m2 = sv[F->i0].m2, .m3 = sv[F->i0].m3, .rgb = r[0], .rgbf = rf[0] };
     ngte_cvert TR = { .m1 = sv[F->i1].m1, .m2 = sv[F->i1].m2, .m3 = sv[F->i1].m3, .rgb = r[1], .rgbf = rf[1] };
@@ -13409,6 +13442,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
       static int s_lpg_lvl = -1;
       if (lvl != s_lpg_lvl) {
           tgpu_level_edge(s_lpg_lvl, lvl);
+          tn_heavyfog_reset();
           s_lpg_lvl = lvl;
           s_lpg_mean_ok = 0;
           s_lpg_acc_n = 0;

@@ -37,6 +37,7 @@
 #include "renderer/moby_snap.h"     /* the sunk-pickup contact planes */
 #include "renderer/moby_game.h"     /* per-game decoders, classifications and addresses */
 #include "renderer/water_plane.h"   /* the water-plane split shared with the player walk */
+#include "renderer/terrain.h"       /* terrain_heavy_fog: the level fog class */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "openpete_psx.h"
 #include "openpete_vstream.h"       /* frame-word field -> stream address (handles) */
@@ -66,6 +67,8 @@
 #include "game_layout.h"          /* game_layout.moby: the engine addresses this walk reads */
 #include "openpete_recomp_module.h"  /* the game's own moby draws, run through the module dispatch */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+
+static int moby_lift_tier(void);
 
 extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 
@@ -1593,7 +1596,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     static int s_negctl = -1;
     if (s_negctl < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY_NEGCTL");
                         s_negctl = (e && *e && *e != '0') ? 1 : 0; }
-    int lo_tier = (zsf4 < 0 && !openpete_no_lod);
+    int lo_tier = (zsf4 < 0 && !moby_lift_tier());
     if (s_negctl) lo_tier = !lo_tier;
     int count = cpu->read_byte(lo_tier ? header + game_layout.moby.anim_vcount_lo
                                        : header + game_layout.moby.anim_vcount_hi) & 0xFF;
@@ -1694,25 +1697,78 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     return count;
 }
 
+/** @brief Whether --no-lod lifts the moby LOD tier on this level.
+ *
+ * Extended LOD draws mobys at full quality at any distance: a record's
+ * verdict loses its distance term (record_zsf4, the reveal), so the HP faces
+ * and raw colours draw where the game would fade or swap to the LP model.
+ * A heavy-fog level (terrain_heavy_fog) keeps the game's own verdict
+ * instead, so its mobys fade into the fog as its terrain does, at every
+ * distance: the LP model and far palette at ZSF4 <= 0, the fog-colour fade
+ * below -2048. OPENPETE_MOBY_FOG_TIER=0 lifts on every level (A/B).
+ * @return 1 when the tier is lifted. */
+static int moby_lift_tier(void) {
+    static int s_fog_tier = -1;
+    if (s_fog_tier < 0) { const char* e = getenv("OPENPETE_MOBY_FOG_TIER"); s_fog_tier = !(e && *e == '0'); }
+    return openpete_no_lod && !(s_fog_tier && terrain_heavy_fog());
+}
+
+/* OPENPETE_MOBY_FADE_CENSUS: one line per face walk under --no-lod. On a
+ * heavy-fog level, the records drawn and those whose drawn verdict differs
+ * from the game's own (a lifted tier: the HP model and raw colours where the
+ * game fades). On any other level, the records drawn and those whose verdict
+ * keeps a distance term (a distance fade). Worker walks count atomically. */
+static int s_mfc_on = -1, s_mfc_n, s_mfc_bad;
+
+/** @brief Whether OPENPETE_MOBY_FADE_CENSUS counts this walk: the variable set and --no-lod on.
+ * @return 1 when counting. */
+static int moby_fade_census_on(void) {
+    if (s_mfc_on < 0) { const char* e = getenv("OPENPETE_MOBY_FADE_CENSUS"); s_mfc_on = e && *e && *e != '0'; }
+    return s_mfc_on && openpete_no_lod;
+}
+
+/** @brief Counts one record for the census: a mismatch when @p bad is nonzero.
+ * @param bad Nonzero when the record is drawn against the level's policy. */
+static void moby_fade_census_add(int bad) {
+    __atomic_add_fetch(&s_mfc_n, 1, __ATOMIC_RELAXED);
+    if (bad) __atomic_add_fetch(&s_mfc_bad, 1, __ATOMIC_RELAXED);
+}
+
+/** @brief Counts a heavy-fog level's drawn record: drawn verdict against the game's.
+ * @param drawn The verdict the record draws at.
+ * @param game The game's own verdict for it. */
+static void moby_fade_census_tier(int drawn, int game) {
+    if (moby_fade_census_on() && terrain_heavy_fog()) moby_fade_census_add(drawn != game);
+}
+
+/** @brief Prints and resets the census counts. */
+static void moby_fade_census_print(void) {
+    if (!moby_fade_census_on()) return;
+    fprintf(stderr, "[mobyfade-census] frame=%u heavyFog=%d records=%d mismatch=%d\n",
+            openpete_feed_key_now(), terrain_heavy_fog(), s_mfc_n, s_mfc_bad);
+    s_mfc_n = s_mfc_bad = 0;
+}
+
 /** @brief The record's ZSF4 LOD and colour-fade tier verdict, after the --no-lod adjustment.
  *
  * The verdict is the record's tier (moby_record_t.tier, the high half of the
  * matrix word the renderer loads into GTE control 30); see
- * moby_tier_faceblock. Under --no-lod the distance term is neutralized
- * host-side on the read, which is idempotent over a verdict a game-side hook
- * already adjusted: the verdict becomes the moby's zero-distance tier
- * (m_Renderer byte << 8) when that tier is near-band ((md << 8) >= 1024). A
- * sub-near tier is an effect-authored fade (ring puffs shrink m_Renderer) and
- * keeps the canonical value.
+ * moby_tier_faceblock. Where --no-lod lifts the tier (moby_lift_tier) the
+ * distance term is neutralized host-side on the read: the verdict becomes
+ * the moby's zero-distance tier (m_Renderer byte << 8), so no moby fades
+ * with distance and an effect-authored fade (ring puffs shrink m_Renderer)
+ * keeps its authored part alone. A heavy-fog level keeps every canonical
+ * value.
  * @param cpu The guest CPU state, read only.
  * @param R The extracted record.
  * @return The tier verdict. */
 static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
     int zsf4 = R->tier;
-    if (openpete_no_lod && moby_game.renderer_off && R->moby >= 0x80000000u) {
+    if (moby_lift_tier() && moby_game.renderer_off && R->moby >= 0x80000000u) {
         int md = (int)(cpu->read_byte(R->moby + moby_game.renderer_off) & moby_game.renderer_mask);
-        if ((md << 8) >= 1024) zsf4 = md << 8;
+        zsf4 = md << 8;
     }
+    moby_fade_census_tier(zsf4, R->tier);
     return zsf4;
 }
 
@@ -1794,12 +1850,7 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  double zf;        /* the present's ZSF4 at full precision,
                                     * read only when zf_on (fade_snap_present_z);
                                     * the tier and face set stay zsf4's */
-                 uint8_t zf_on;
-                 int zfade;        /* the colour-fade ZSF4: the game's own
-                                    * distance verdict, equal to zsf4 except
-                                    * where --no-lod lifted the tier
-                                    * (record_zsf4); moby_record_fade reads it */
-               } rec_meta;
+                 uint8_t zf_on; } rec_meta;
                  /* spec_solo (trailing, set after the positional literal) =
                  * reveal-built record whose moby is in NO .s queue this tick
                  * (beyond canonical range under --lod extended, or off-4:3)
@@ -1875,7 +1926,7 @@ static int moby_heat_scalar(uint32_t ms) {
  * the previous table while the header stays unchanged). A sub-tick present
  * that shows a previous pose from another header checks that header against
  * these: the game may refill a header slot it no longer draws. */
-typedef struct { uint32_t moby; int zsf4; int zfade; uint8_t dist; double tz;
+typedef struct { uint32_t moby; int zsf4; uint8_t dist; double tz;
                  uint32_t hdr, hdr_p; anim_sig_t sig, sig_p; } fade_ent;
 static fade_ent s_fade_snap[MAX_RECORDS], s_fade_prev[MAX_RECORDS];
 static int s_fade_snap_n, s_fade_prev_n;
@@ -1901,18 +1952,18 @@ static fade_ent* fade_snap_find(fade_ent* t, int n, uint32_t moby) {
  *
  * dist stays 0 on a game whose record stores the rescaled translation
  * (rec_tr_final), on one with no host record builder (host_reveal 0) or no
- * renderer byte, and where |zfade + tz - ((m_Renderer & mask) << 8)| >= 4,
+ * renderer byte, and where |ZSF4 + tz - ((m_Renderer & mask) << 8)| >= 4,
  * the verdict then not being the formula of tz (see fade_ent). Otherwise
  * dist is 1 and tz is build_moby_record_tr's Z.
  * @param cpu The guest CPU state, read only.
- * @param e The entry, its moby and zfade already set. */
+ * @param e The entry, its moby and zsf4 already set. */
 static void fade_snap_dist(CPUState* cpu, fade_ent* e) {
     e->dist = 0; e->tz = 0.0;
     if (game_layout.moby.rec_tr_final || !moby_game.host_reveal || !moby_game.renderer_off) return;
     double tr[3];
     build_moby_record_tr(cpu, e->moby, tr);
     int md = (int)(cpu->read_byte(e->moby + moby_game.renderer_off) & moby_game.renderer_mask);
-    if (fabs((double)e->zfade + tr[2] - (double)(md << 8)) >= 4.0) return;
+    if (fabs((double)e->zsf4 + tr[2] - (double)(md << 8)) >= 4.0) return;
     e->dist = 1; e->tz = tr[2];
 }
 /** @brief Record in an entry the drawn AnimationHeader, its signature, and the last different header before it.
@@ -1931,7 +1982,7 @@ static void fade_snap_header(CPUState* cpu, fade_ent* e, uint32_t header) {
     else if (p->hdr == header) { e->hdr_p = p->hdr_p; e->sig_p = p->sig_p; }
     else                       { e->hdr_p = p->hdr;   e->sig_p = p->sig; }
 }
-/** @brief Record a moby's tier and fade ZSF4, centre view Z and drawn header in this tick's fade table.
+/** @brief Record a moby's ZSF4, centre view Z and drawn header in this tick's fade table.
  *
  * Canonical pass only: a call during a sub-tick re-extract returns, since a
  * sub-tick present re-derives what it draws from the tick's entries and never
@@ -1940,10 +1991,9 @@ static void fade_snap_header(CPUState* cpu, fade_ent* e, uint32_t header) {
  * fields.
  * @param cpu The guest CPU state, read only.
  * @param moby The moby's PSX address.
- * @param zsf4 The record's tier ZSF4.
- * @param zfade The record's colour-fade ZSF4 (rec_meta.zfade).
+ * @param zsf4 The record's ZSF4.
  * @param header The AnimationHeader the pass drew the moby with. */
-static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4, int zfade, uint32_t header) {
+static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4, uint32_t header) {
     if (moby < 0x80000000u || s_walk_in_rex) return;
     fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
     if (!e) {
@@ -1952,7 +2002,6 @@ static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4, int zfade, uin
         e->moby = moby;
     }
     e->zsf4 = zsf4;
-    e->zfade = zfade;
     fade_snap_dist(cpu, e);
     if (header >= 0x80000000u) fade_snap_header(cpu, e, header);
     else                       e->hdr = e->hdr_p = 0u;
@@ -1989,16 +2038,6 @@ static int fade_snap_get(uint32_t moby, int dflt) {
     const fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
     return e ? e->zsf4 : dflt;   /* snapshot miss: caller picks the safe tier */
 }
-/** @brief The colour-fade ZSF4 the canonical pass recorded for a moby, or a default when it has no entry.
- *
- * Reads the current tick's table only.
- * @param moby The moby's PSX address.
- * @param dflt The value returned on a miss.
- * @return The recorded fade ZSF4, or `dflt`. */
-static int fade_snap_get_fade(uint32_t moby, int dflt) {
-    const fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
-    return e ? e->zfade : dflt;
-}
 /** @brief The full-precision ZSF4 a sub-tick present draws a moby's colour fade at.
  *
  * The authored term lerped between the two ticks, less the present's own
@@ -2008,10 +2047,10 @@ static int fade_snap_get_fade(uint32_t moby, int dflt) {
  * A moby absent from the previous tick holds A_curr. Both correction terms are
  * exactly 0 at alpha 1 (tz_present is the tick's own centre there), and the
  * result is then not marked fractional, so that present runs the integer GTE
- * mirror. A missing entry, one without dist, or one whose fade ZSF4 differs
- * from `zsf4` also yields `zsf4`.
+ * mirror. A missing entry, one without dist, or one whose ZSF4 differs from
+ * `zsf4` also yields `zsf4`.
  * @param moby The moby's PSX address.
- * @param zsf4 The record's integer colour-fade ZSF4 (rec_meta.zfade).
+ * @param zsf4 The record's integer ZSF4.
  * @param tz_present The present's centre view Z.
  * @param alpha The present's phase, 0 at the previous tick and 1 at this one.
  * @param zf Receives the value; `zsf4` when not fractional.
@@ -2020,9 +2059,9 @@ static int fade_snap_present_z(uint32_t moby, int zsf4, double tz_present, doubl
                                double* zf) {
     *zf = (double)zsf4;
     const fade_ent* c = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
-    if (alpha >= 1.0 || !c || !c->dist || c->zfade != zsf4) return 0;
+    if (alpha >= 1.0 || !c || !c->dist || c->zsf4 != zsf4) return 0;
     const fade_ent* p = fade_snap_find(s_fade_prev, s_fade_prev_n, moby);
-    double dA = (p && p->dist) ? ((double)p->zfade + p->tz) - ((double)c->zfade + c->tz) : 0.0;
+    double dA = (p && p->dist) ? ((double)p->zsf4 + p->tz) - ((double)c->zsf4 + c->tz) : 0.0;
     *zf = (double)zsf4 + (1.0 - alpha) * dA + (c->tz - tz_present);
     return *zf != (double)zsf4;
 }
@@ -2110,7 +2149,7 @@ static void canon_drawn_harvest(int nrec) {
  * @return The face-block address, or 0 when header is not an address. */
 static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
     if (header < 0x80000000u) return 0u;
-    uint32_t off = (zsf4 <= 0 && !openpete_no_lod) ? ANIM_FACES_LP : ANIM_FACES_HP;
+    uint32_t off = (zsf4 <= 0 && !moby_lift_tier()) ? ANIM_FACES_LP : ANIM_FACES_HP;
     return cpu->read_word(header + off);
 }
 
@@ -2460,12 +2499,11 @@ static int project_all_records_inner(CPUState* cpu) {
                 atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
                 R.frame_a, 0u, 0u, 0.f };
             memcpy(s_recs[nrec].M, R.M, sizeof s_recs[nrec].M);
-            s_recs[nrec].zfade = R.tier;
             s_recs[nrec].heat = moby_game.spec_colour_off
                 ? (uint8_t)moby_heat_scalar(
                       cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off))
                 : 0u;
-            fade_snap_put(cpu, s_recs[nrec].moby, zsf4, R.tier, header);
+            fade_snap_put(cpu, s_recs[nrec].moby, zsf4, header);
             if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace vbl=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
                         openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
@@ -2492,7 +2530,7 @@ static int project_all_records_inner(CPUState* cpu) {
                              - (uint32_t)R.TR_raw[2]) & 0xFFFFu);
                     /* --no-lod: the zsf4-store hook neutralized the distance term
                      * for near-band-at-zero-distance records - mirror that */
-                    if (openpete_no_lod && (md << 8) >= 1024) ex = md << 8;
+                    if (moby_lift_tier()) ex = md << 8;
                     if (ex == zsf4) s_tier_mirror_ok++; else s_tier_mirror_bad++;
                 }
             }
@@ -2505,27 +2543,25 @@ static int project_all_records_inner(CPUState* cpu) {
     return nrec;
 }
 
-/** @brief The cull's ZSF4 formula (@8001F404) for a revealed moby: the tier verdict, and the colour-fade verdict beside it.
+/** @brief The cull's ZSF4 formula (@8001F404) for a revealed moby, after the --no-lod adjustment.
  *
- * The game stores (m_Renderer << 8) - TRz in an int16. Under --no-lod the
- * tier of a record that is near-band at zero distance ((md << 8) >= 1024)
- * drops the distance term; every other record, and the fade verdict always,
- * keeps it. The reveal has no distance ceiling, so under --no-lod both
- * saturate to the int16 range instead of wrapping: a wrapped verdict
- * re-enters the 0 < ZSF4 < 1024 fog band every 65536 view units. Without
- * --no-lod the two verdicts are the game's wrapped value.
- * @param md The moby's m_Renderer byte, masked.
+ * The game stores (m_Renderer << 8) - TRz in an int16. Where --no-lod lifts
+ * the tier (moby_lift_tier) the verdict is the zero-distance m_Renderer << 8.
+ * Otherwise under --no-lod it keeps the distance term saturated to the int16
+ * range instead of wrapping: the reveal has no distance ceiling, and a
+ * wrapped verdict would re-enter the 0 < ZSF4 < 1024 fog band every 65536
+ * view units. Without --no-lod it is the game's wrapped value.
+ * @param md The masked m_Renderer byte.
  * @param trz The record translation's Z (TR_raw[2]).
- * @param fade Receives the colour-fade verdict (rec_meta.zfade).
- * @return The tier verdict. */
-static int reveal_zsf4(int md, int trz, int* fade) {
-    if (!openpete_no_lod) {
-        *fade = (int)(int16_t)(uint16_t)((((uint32_t)md << 8) - (uint32_t)trz) & 0xFFFFu);
-        return *fade;
-    }
+ * @return The verdict. */
+static int moby_reveal_zsf4(int md, int trz) {
+    if (!openpete_no_lod)
+        return (int)(int16_t)(uint16_t)((((uint32_t)md << 8) - (uint32_t)trz) & 0xFFFFu);
     const int v = (md << 8) - trz;
-    *fade = v < -32768 ? -32768 : (v > 32767 ? 32767 : v);
-    return (md << 8) >= 1024 ? md << 8 : *fade;
+    const int game = v < -32768 ? -32768 : (v > 32767 ? 32767 : v);
+    const int z = moby_lift_tier() ? md << 8 : game;
+    moby_fade_census_tier(z, game);
+    return z;
 }
 
 /* ---- widescreen live-moby reveal (host-built records) ---------------------
@@ -3087,7 +3123,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * Computed BEFORE the decode: the tier-adjusted vertex-count read
          * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
         int rmd   = (int)(cpu->read_byte(m + moby_game.renderer_off) & moby_game.renderer_mask);
-        int rzfade, rzsf4 = reveal_zsf4(rmd, f.TR_raw[2], &rzfade);
+        int rzsf4 = moby_reveal_zsf4(rmd, f.TR_raw[2]);
         /* The sub-tick shape lerp, hold and colour crossfade of the queue
          * pass; a canonical present (interp off) reads no previous pose. */
         moby_prev_decode pd;
@@ -3111,7 +3147,6 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             pd.prev.frame_a, pd.prev.header, (float)pd.alpha };
         s_recs[s_nrecs].model_held = pd.model_held;
-        s_recs[s_nrecs].zfade = rzfade;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         /* Sole feeder: the walk applies the SPEC face treatment for this moby,
@@ -3119,7 +3154,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * else keeps its baked per-vertex colours. */
         s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
         TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
-        fade_snap_put(cpu, m, rzsf4, rzfade, f.header);
+        fade_snap_put(cpu, m, rzsf4, f.header);
         if (revealed < MAX_RECORDS) revlist[revealed] = pub;
         /* census diag: projected screen centroid + vert count of this reveal */
         if (revealed < MAX_RECORDS) {
@@ -4469,9 +4504,9 @@ static int moby_fog_band_ir0(int zsf4) {
  * @param R The record.
  * @param fd The record's fade: ir0f in, row and tmix out. */
 static void moby_texel_fog_mix(const rec_meta* R, moby_fade_t* fd) {
-    const int ir0c = moby_fog_band_ir0(R->zfade);
+    const int ir0c = moby_fog_band_ir0(R->zsf4);
     const fade_ent* p = fade_snap_find(s_fade_prev, s_fade_prev_n, R->moby);
-    const int ir0p = (p && p->dist) ? moby_fog_band_ir0(p->zfade) : ir0c;
+    const int ir0p = (p && p->dist) ? moby_fog_band_ir0(p->zsf4) : ir0c;
     const int rc = ir0c >> 9, rp = ir0p >> 9;
     fd->row = rc; fd->tmix = 0;
     if (rc == rp) return;
@@ -4498,10 +4533,8 @@ static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
 
 /** @brief The record's per-vertex colour base and colour fade for this present, by its LOD tier.
  *
- * The ladder is documented at moby_tier_faceblock. The band is the record's
- * zfade, the game's own distance verdict: --no-lod lifts the tier (zsf4,
- * record_zsf4) and never the fade, so an extended-LOD moby draws its HP faces
- * with the colours the game fades it to. Near (ZSF4 >= 1024): model colours (hdr+0x18) raw. Fog band
+ * The ladder is documented at moby_tier_faceblock; the tier is always the
+ * tick's zsf4. Near (ZSF4 >= 1024): model colours (hdr+0x18) raw. Fog band
  * (0 < ZSF4 < 1024): model colours DPCS-faded toward the per-vertex far palette,
  * IR0 = (1024 - ZSF4) * 4 (.s @8001FDD0-8001FE54). LP/far band (ZSF4 <= 0): the
  * far palette (hdr+0x20) itself, which the .s walks with the LP faces; under
@@ -4509,7 +4542,7 @@ static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
  * DPCS-faded toward the single cyclorama fog colour once ZSF4 < -2048 while
  * g_SkipLowPolyWorld > 0 (.L8001FEA0..FECC: IR0 = min(-(ZSF4+2048), 2047) << 1).
  *
- * A record carrying a fractional present ZSF4 (zf_on, zf != zfade) takes the
+ * A record carrying a fractional present ZSF4 (zf_on, zf != zsf4) takes the
  * fade term from zf through the same formula of its colour table, in double:
  * the HP table fades toward the far palette by (1024 - zf) * 4 clamped to
  * 0..4092, the band's own range (ZSF4 1..1023; 4096 >> 9 would index a ninth
@@ -4532,15 +4565,15 @@ static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
  *         address. */
 static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* farbase,
                                  int fogfc[3], const int** fcc, moby_fade_t* fd) {
-    const int frac = R->zf_on && R->zf != (double)R->zfade;
-    const double z = frac ? R->zf : (double)R->zfade;
+    const int frac = R->zf_on && R->zf != (double)R->zsf4;
+    const double z = frac ? R->zf : (double)R->zsf4;
     const int hdr_ok = R->header >= 0x80000000u;
     *farbase = 0; *fcc = NULL;
     fd->ir0 = 0; fd->ir0f = 0.0; fd->frac = frac; fd->row = 0; fd->tmix = 0;
     moby_fade_tint(R, fd);
-    if (R->zfade > 0) {
+    if (R->zsf4 > 0) {
         if (!frac) {
-            fd->ir0 = moby_color_fade_ir0(cpu, R->zfade, R->header, farbase);
+            fd->ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, farbase);
             fd->ir0f = (double)fd->ir0;
             fd->row = fd->ir0 >> 9;
         } else if ((*farbase = moby_fog_farbase(cpu, R->header)) != 0u) {
@@ -4552,7 +4585,7 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
         return hdr_ok ? cpu->read_word(R->header + ANIM_COL_HP) : 0u;
     }
     if (moby_game.skip_lowpoly && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0 &&
-        (frac || R->zfade < -2048)) {
+        (frac || R->zsf4 < -2048)) {
         double v = -(z + 2048.0);
         v = v < 0.0 ? 0.0 : (v > 2047.0 ? 2047.0 : v);
         fd->ir0f = 2.0 * v;
@@ -4564,6 +4597,19 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
         *fcc = fogfc;
     }
     return hdr_ok ? cpu->read_word(R->header + ANIM_COL_FAR) : 0u;
+}
+
+/** @brief Counts a drawn record on a level that is not heavy-fog: a mismatch when its verdict keeps a distance term.
+ *
+ * The unfaded verdict is the moby's zero-distance tier (m_Renderer << 8); a
+ * record drawn at any other verdict takes a distance fade.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record. */
+static void moby_fade_census_nofog(CPUState* cpu, const rec_meta* R) {
+    if (!moby_fade_census_on() || terrain_heavy_fog() || !moby_game.renderer_off ||
+        R->moby < 0x80000000u) return;
+    const int md = (int)(cpu->read_byte(R->moby + moby_game.renderer_off) & moby_game.renderer_mask);
+    moby_fade_census_add(R->zsf4 != (md << 8));
 }
 
 /** @brief A face's fogged-CLUT row offset: the fog band's row (moby_fade_t.row), 0 under the LP band's constant-colour fade.
@@ -5400,6 +5446,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
          * present's ZSF4 (moby_record_fade) */
         uint32_t farbase = 0; int fogfc[3]; const int* fcc = NULL; moby_fade_t fd;
         uint32_t cbase = moby_record_fade(cpu, R, &farbase, fogfc, &fcc, &fd);
+        moby_fade_census_nofog(cpu, R);
         const int dpcs_ir0 = fd.ir0;
         if (cbase < 0x80000000u) cbase = COLOR_SCRATCH;   /* fall back to fog scratch */
         { /* OPENPETE_MOBY_FADEDBG=frameLo: per-record LOD-fade forensics (4 frames). */
@@ -6052,9 +6099,9 @@ static int build_walk_tris_inner(CPUState* cpu) {
     memset(s_wdiag, 0, sizeof(s_wdiag));
     int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
     int serial = walk_prologue(cpu, is_spec);
-    if (serial) { s_walk_serial++; walk_records(cpu, is_spec, 0, s_nrecs); return s_gout.n; }
-    s_walk_par++;
-    walk_parallel(cpu, is_spec);
+    if (serial) { s_walk_serial++; walk_records(cpu, is_spec, 0, s_nrecs); }
+    else { s_walk_par++; walk_parallel(cpu, is_spec); }
+    moby_fade_census_print();
     return s_gout.n;
 }
 
@@ -10148,10 +10195,12 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * saturating to 0x7F still hid every gem once the camera cleared
          * ~130 K world units). The m_Distance==0 dormant sentinel never
          * reaches here (skipped above), so dropping the test cannot resurrect
-         * a dormant gem; billboards already bypass it. */
+         * a dormant gem; billboards already bypass it. A heavy-fog level keeps
+         * the band (moby_lift_tier): the game hides these mobys inside its
+         * fog, and drawing them past it would put unfogged gems in the fog. */
         {
             uint8_t r50 = cpu->read_byte(m + moby_game.render_radius_off);
-            if (!(r50 & 0x80) && !openpete_no_lod) {
+            if (!(r50 & 0x80) && !moby_lift_tier()) {
                 int eff = (int)(r50 & 0x7F);
                 int32_t a0 = ((int32_t)eff << 8)
                            + ((cpu->read_byte(m + game_layout.moby.drawn_off) & 1) ? 0x200 : 0);
@@ -12684,7 +12733,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * Read BEFORE the decode: the tier-adjusted vertex-count read
          * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
         int zsf4 = fade_snap_get(mobys[i], 1024);
-        int zfade = fade_snap_get_fade(mobys[i], zsf4);
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
@@ -12746,10 +12794,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_recs[s_nrecs].model_held = pd.model_held;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
-        s_recs[s_nrecs].zfade = zfade;
         /* The colour fade follows this present's centre and the authored term
          * between the two ticks; the tier above stays the tick's. */
-        s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(mobys[i], zfade, f.TR_frac[2],
+        s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(mobys[i], zsf4, f.TR_frac[2],
                                                              s_rc_alpha, &s_recs[s_nrecs].zf);
         s_proj_n += got; s_nrecs++;
     }
