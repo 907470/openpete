@@ -1,0 +1,14 @@
+# Sub-tick interpolation of a moby's painted extent and colour
+# (tests/harness/check_feeder_subtick.sh --path moby-mask).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
+#
+# The two legs are a render-path selection with and without the moby path,
+# terrain in both, so the mask holds the mobys alone.
+#
+# attract: moby class 0x1a2 in the attract demo, a fog-band record whose
+# ZSF4 steps 34 to 90 over the interval (IR0 3960 to 3736) as it moves. A
+# fade held at the newest tick's ZSF4 reads colour a0=5.08 a0.5=2.52 (SNAP);
+# the fade taken at the present's unscaled centre reads a0=0.16 a0.5=0.17
+# (LERPED). The colour step is 5.45 levels, below the default floor of 6, so
+# cstep is 3; alpha 0 is judged, its centroid within 0.07 px of canon(V-2).
+attract | 5780 | blob=249.3,121.8 cstep=3 ctol=1.0 judge=0,0.5,1

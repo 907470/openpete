@@ -1970,12 +1970,15 @@ static int moby_heat_scalar(uint32_t ms) {
  * same centre's view Z at full precision (build_moby_record_tr), when the
  * verdict is that formula of it: A = ZSF4 + tz is then the authored term plus
  * the cull's truncation residue, and a present at any camera and moby position
- * reads its own ZSF4 as A - tz_present. `dist` is 0 where tz is not available
- * or the verdict is not the formula: a game whose record stores the rescaled
- * translation (rec_tr_final), a game with no host record builder to derive
- * tz_present on sub-ticks (host_reveal 0), and a verdict the --no-lod read
- * neutralised or the int16 wrapped (|ZSF4 + tz - (m_Renderer << 8)| >= 4, where
- * the two truncations of the centre MVMVA stay below that).
+ * reads its own ZSF4 as A - tz_present. A game whose record stores the
+ * rescaled translation (rec_tr_final) forms ZSF4 from the cull's integer
+ * unscaled centre TRZ, which moby_present_trz recomputes at any camera, so
+ * there tz is that TRZ and A is exactly m_Renderer << 8. `dist` is 0 where tz
+ * is not available or the verdict is not the formula: a game with neither
+ * form of tz on sub-ticks (no rec_tr_final, host_reveal 0), and a verdict the
+ * --no-lod read neutralised or the int16 wrapped (|ZSF4 + tz - (m_Renderer <<
+ * 8)| >= 4, where the two truncations of the centre MVMVA stay below that; 0
+ * on a rec_tr_final game, whose tz is the cull's own integer).
  *
  * Each entry also keeps the AnimationHeader the pass drew the moby with and
  * that header's content signature at the pass, and the header and signature
@@ -2005,21 +2008,36 @@ static fade_ent* fade_snap_find(fade_ent* t, int n, uint32_t moby) {
     for (int i = 0; i < n; i++) if (t[i].moby == moby) return &t[i];
     return NULL;
 }
-/** @brief Fill an entry's full-precision centre view Z, or mark it unavailable with dist 0.
+static int32_t moby_present_trz(CPUState* cpu, uint32_t moby);
+
+/** @brief Fill an entry's centre view Z, or mark it unavailable with dist 0.
  *
- * dist stays 0 on a game whose record stores the rescaled translation
- * (rec_tr_final), on one with no host record builder (host_reveal 0) or no
- * renderer byte, and where |ZSF4 + tz - ((m_Renderer & mask) << 8)| >= 4,
- * the verdict then not being the formula of tz (see fade_ent). Otherwise
- * dist is 1 and tz is build_moby_record_tr's Z.
+ * A game whose record stores the rescaled translation (rec_tr_final) forms
+ * ZSF4 from the unscaled centre before the rescale: the int16 of
+ * ((m_Renderer & mask) << 8) - TRZ, TRZ the centre MVMVA (Spyro 2
+ * mobydraw.s 0x80043EF4-0x80043F08, stored at 0x80043FBC; Spyro 3
+ * 0x80030B14-0x80030B28, stored at 0x80030BDC). There tz is
+ * moby_present_trz at the canonical camera and dist is 1 only when that
+ * formula reproduces ZSF4 exactly. Elsewhere dist stays 0 with no host
+ * record builder (host_reveal 0) and where |ZSF4 + tz - ((m_Renderer &
+ * mask) << 8)| >= 4, the verdict then not being the formula of tz (see
+ * fade_ent); otherwise tz is build_moby_record_tr's Z. No renderer byte
+ * leaves dist 0 on every game.
  * @param cpu The guest CPU state, read only.
  * @param e The entry, its moby and zsf4 already set. */
 static void fade_snap_dist(CPUState* cpu, fade_ent* e) {
     e->dist = 0; e->tz = 0.0;
-    if (game_layout.moby.rec_tr_final || !moby_game.host_reveal || !moby_game.renderer_off) return;
+    if (!moby_game.renderer_off) return;
+    int md = (int)(cpu->read_byte(e->moby + moby_game.renderer_off) & moby_game.renderer_mask);
+    if (game_layout.moby.rec_tr_final) {
+        const int32_t trz = moby_present_trz(cpu, e->moby);
+        if ((int)(int16_t)(uint16_t)((((uint32_t)md << 8) - (uint32_t)trz) & 0xFFFFu) != e->zsf4) return;
+        e->dist = 1; e->tz = (double)trz;
+        return;
+    }
+    if (!moby_game.host_reveal) return;
     double tr[3];
     build_moby_record_tr(cpu, e->moby, tr);
-    int md = (int)(cpu->read_byte(e->moby + moby_game.renderer_off) & moby_game.renderer_mask);
     if (fabs((double)e->zsf4 + tr[2] - (double)(md << 8)) >= 4.0) return;
     e->dist = 1; e->tz = tr[2];
 }
@@ -2098,8 +2116,8 @@ static int fade_snap_get(uint32_t moby, int dflt) {
 /** @brief The full-precision ZSF4 a sub-tick present draws a moby's colour fade at.
  *
  * The authored term lerped between the two ticks, less the present's own
- * centre Z (tz_present, the build_moby_record_tr value this present projects
- * through):
+ * centre Z (tz_present: the build_moby_record_tr value this present projects
+ * through, or moby_present_trz on a rec_tr_final game):
  *   z = ZSF4 + (1 - alpha)(A_prev - A_curr) + (tz_curr - tz_present).
  * A moby absent from the previous tick holds A_curr. Both correction terms are
  * exactly 0 at alpha 1 (tz_present is the tick's own centre there), and the
@@ -2512,6 +2530,38 @@ static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int
 
 static void moby_animsw_census(CPUState* cpu, uint32_t moby);
 
+/** @brief Count one canonical cull record into the OPENPETE_MOBY_TIER_DBG census: its ZSF4 band, its skips, and whether the cull's ZSF4 formula reproduces it.
+ *
+ * The bands are near (ZSF4 >= 1024), fog (0 < ZSF4 < 1024), far-fade
+ * (below -2048 while g_SkipLowPolyWorld > 0) and far. The mirror check
+ * recomputes ((m_Renderer & mask) << 8) - TRZ in an int16 the way the cull
+ * does (@8001F404) and compares it with the stored verdict. The cull
+ * subtracts the translation Z it holds before its rescale; a record that
+ * stores the rescaled translation (rec_tr_final) no longer carries that
+ * value, so the check recomputes it (moby_present_trz). Where --no-lod lifts
+ * the tier the expected verdict is the zero-distance m_Renderer << 8.
+ * @param cpu The guest CPU state, read only.
+ * @param R The cull record.
+ * @param zsf4 The record's verdict (record_zsf4).
+ * @param got The vertices the record projected. */
+static void moby_tier_census_record(CPUState* cpu, const moby_record_t* R, int zsf4, int got) {
+    const uint32_t w0 = R->w0;
+    if (zsf4 >= 1024) s_tier_near++;
+    else if (zsf4 > 0) s_tier_fog++;
+    else if (zsf4 < -2048 && moby_game.skip_lowpoly &&
+             (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) s_tier_farfade++;
+    else s_tier_far++;
+    if ((w0 & 0xFFu) && got == 0) s_tier_gpfskip++;
+    if (!(w0 & 0xFFu) && got == 0 && zsf4 < 0) s_tier_lpskip++;
+    const uint32_t mob = R->moby;
+    if (mob < 0x80000000u || !moby_game.renderer_off) return;
+    const int md = (int)(cpu->read_byte(mob + moby_game.renderer_off) & moby_game.renderer_mask);
+    const int32_t trz = game_layout.moby.rec_tr_final ? moby_present_trz(cpu, mob) : R->TR_raw[2];
+    int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8) - (uint32_t)trz) & 0xFFFFu);
+    if (moby_lift_tier()) ex = md << 8;
+    if (ex == zsf4) s_tier_mirror_ok++; else s_tier_mirror_bad++;
+}
+
 /** @brief Projects every live cull record's vertices into s_proj for the canonical pass and fills s_recs.
  *
  * The projection is the native float decode, RTPS and TR; s_recs is the record
@@ -2565,32 +2615,7 @@ static int project_all_records_inner(CPUState* cpu) {
                 fprintf(stderr, "[moby-trace vbl=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
                         openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
                         s_cur_mat ? s_cur_mat : "?");
-            if (tier_dbg_on()) {
-                if (zsf4 >= 1024) s_tier_near++;
-                else if (zsf4 > 0) s_tier_fog++;
-                else if (zsf4 < -2048 && moby_game.skip_lowpoly &&
-                         (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) s_tier_farfade++;
-                else s_tier_far++;
-                if ((w0 & 0xFFu) && got == 0) s_tier_gpfskip++;
-                if (!(w0 & 0xFFu) && got == 0 && zsf4 < 0) s_tier_lpskip++;
-                /* mirror check: recompute ZSF4 from gamestate the way the cull
-                 * does (@8001F404) and compare with the stored verdict. The
-                 * cull subtracts the translation Z it holds before its
-                 * rescale; a record that stores the rescaled translation
-                 * (rec_tr_final) no longer carries that value, so the check
-                 * has no input there. */
-                uint32_t mob = R.moby;
-                if (mob >= 0x80000000u && moby_game.renderer_off &&
-                    !game_layout.moby.rec_tr_final) {
-                    int md = (int)(cpu->read_byte(mob + moby_game.renderer_off) & moby_game.renderer_mask);
-                    int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8)
-                             - (uint32_t)R.TR_raw[2]) & 0xFFFFu);
-                    /* --no-lod: the zsf4-store hook neutralized the distance term
-                     * for near-band-at-zero-distance records - mirror that */
-                    if (moby_lift_tier()) ex = md << 8;
-                    if (ex == zsf4) s_tier_mirror_ok++; else s_tier_mirror_bad++;
-                }
-            }
+            if (tier_dbg_on()) moby_tier_census_record(cpu, &R, zsf4, got);
         }
         s_proj_n += got; nrec++;
         if (s_proj_n >= MAX_PROJ) break;
@@ -8087,30 +8112,43 @@ static rc_tab* rank_carry_table_for(uint32_t ep, unsigned scene) {
     rank_carry_empty(t, ep, scene);
     return t;
 }
-/** @brief The view-space centre Z the animated cull stores in GTE TRZ for a moby, at the camera of the walk now feeding.
+/** @brief The view-space centre Z the animated cull stores in GTE TRZ for a moby, at the camera of the walk now feeding, with a world displacement.
  *
  * The cull's centre MVMVA with 16-bit IR deltas (moby_cull_centre_at; Spyro 2
  * mobydraw.s 0x80043A10-0x80043A50, TR loaded at 0x80043B04-0x80043B0C;
  * Spyro 3 0x80030630-0x80030670, 0x80030724-0x8003072C) over the floored
  * camera of s_view and the moby's floored interpolated position
- * (openpete_native_interp_pos), or its position words where none resolves.
- * At a canonical present and at alpha 1 both are the tick's words, so the
- * value is the cull's own TRZ.
+ * (openpete_native_interp_pos), or, where none resolves, its position words
+ * plus `woff`. At a canonical present and at alpha 1 both are the tick's
+ * words when `woff` is zero there, so the value is the cull's own TRZ.
  * @param cpu The guest CPU state, read only.
  * @param moby The moby's PSX address.
+ * @param woff World displacement added to the position words when no
+ *        interpolated position resolves (moby_record_world_offset), or NULL.
  * @return TRZ. */
-static int32_t moby_present_trz(CPUState* cpu, uint32_t moby) {
+static int32_t moby_present_trz_at(CPUState* cpu, uint32_t moby, const double woff[3]) {
     const uint32_t p = moby + game_layout.moby.pos_off;
     uint32_t pos[3] = { cpu->read_word(p + 0u), cpu->read_word(p + 4u), cpu->read_word(p + 8u) };
     double mf[3];
     if (openpete_native_interp_pos(moby, mf))
         for (int i = 0; i < 3; i++) pos[i] = (uint32_t)(int32_t)floor(mf[i]);
+    else if (woff)
+        for (int i = 0; i < 3; i++) pos[i] = (uint32_t)(int32_t)floor((double)(int32_t)pos[i] + woff[i]);
     const int32_t cam[3] = { (int32_t)floor(s_view.cam[0]), (int32_t)floor(s_view.cam[1]),
                              (int32_t)floor(s_view.cam[2]) };
     int32_t d[3];
     int64_t mac[3];
     moby_cull_centre_at(pos, cam, (const int (*)[3])s_view.cam_M, 1, d, mac);
     return (int32_t)mac[2];
+}
+
+/** @brief moby_present_trz_at with no world displacement: the position words where no interpolated position resolves.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @return TRZ. */
+static int32_t moby_present_trz(CPUState* cpu, uint32_t moby) {
+    return moby_present_trz_at(cpu, moby, NULL);
 }
 
 /** @brief The world ordering-table bucket the animated cull forms from TRZ before m_DepthOffset: (TRZ << 2) >> 7 in 32 bits.
@@ -13674,6 +13712,25 @@ static int reextract_record_list(CPUState* cpu, int is_spec, uint32_t* recs, uin
     return nm;
 }
 
+/** @brief The centre view Z a sub-tick present's colour fade reads for a moby (fade_snap_present_z's tz_present).
+ *
+ * A game whose record stores the rescaled translation (rec_tr_final) forms
+ * ZSF4 from the cull's integer unscaled centre, so the present's value is
+ * moby_present_trz_at at this present's camera and at the position the
+ * record's centre is drawn at: the position words plus
+ * moby_record_world_offset (moby_record_centre_final). Elsewhere it is the
+ * present's own full-precision centre Z.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param trz_frac The present's full-precision centre Z (moby_fields.TR_frac[2]).
+ * @return The centre Z. */
+static double fade_present_tz(CPUState* cpu, uint32_t moby, double trz_frac) {
+    if (!game_layout.moby.rec_tr_final) return trz_frac;
+    double woff[3];
+    moby_record_world_offset(moby, woff);
+    return (double)moby_present_trz_at(cpu, moby, woff);
+}
+
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
  *
  * The pass rebuilds each record's fields from gamestate under the present's
@@ -13866,7 +13923,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         /* The colour fade follows this present's centre and the authored term
          * between the two ticks; the tier above stays the tick's. */
-        s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(mobys[i], zsf4, f.TR_frac[2],
+        s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(mobys[i], zsf4,
+                                                             fade_present_tz(cpu, mobys[i], f.TR_frac[2]),
                                                              s_rc_alpha, &s_recs[s_nrecs].zf);
         s_proj_n += got; s_nrecs++;
     }

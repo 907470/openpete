@@ -1224,7 +1224,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             "particles;spyro-1" "particles;spyro-2" "particles;spyro-3"
             "flame;spyro-2" "flame;spyro-3"
             "tracer;spyro-2" "tracer;spyro-3"
-            "moby_mask;spyro-1"
+            "moby_mask;spyro-1" "moby_mask;spyro-2" "moby_mask;spyro-3"
             "glint_ext;spyro-2" "glint_ext;spyro-3"
             "glint_rot;spyro-2" "glint_rot;spyro-3")
         list(GET _subtick_path_game 0 _sp)

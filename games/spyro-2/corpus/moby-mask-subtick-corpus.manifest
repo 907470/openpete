@@ -1,0 +1,16 @@
+# Sub-tick interpolation of a moby's painted extent and colour
+# (tests/harness/check_feeder_subtick.sh --path moby-mask).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
+#
+# The two legs are a render-path selection with and without the moby path,
+# terrain in both, so the mask holds the mobys alone.
+#
+# shady-oasis-flame: the large fog-band moby at the top right on shady_oasis,
+# one of three fog-band records on the present (0 < ZSF4 < 1024), its fade
+# toward the far palette moving with the camera. A fade held at the newest
+# tick's ZSF4 reads colour a0=1.16 a0.5=0.70 (alpha 0 stands 1.16 levels from
+# the previous tick); the fade taken at the present's unscaled centre reads
+# a0=0.00 a0.5=0.17. The colour step is 1.91 levels of the widest channel over
+# a 15k px mask, below the default floor, so cstep is 1 and alpha 0 is judged:
+# the centroid and area at alpha 0 match canon(V-2) exactly on this row.
+shady-oasis-flame.bk2 | 1469 | blob=487.0,98.2 cstep=1 ctol=0.5 judge=0,0.5,1
