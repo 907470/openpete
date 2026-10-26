@@ -19,7 +19,12 @@ directories, and shows them as images. Three views:
              naming a directory of PsyCross captures
              (<row>[__lodext]__canon__<vbl>-og.png), the panel adds the -og
              tile of the row's VBL, or of the VBL before it (the tick an
-             intermediate tile sits after).
+             intermediate tile sits after), and scores the divergent pixels
+             of reference and candidate against it, raw and with og
+             translated by the fit of tests/harness/og_align.py (og's
+             integer GTE vertices sit about half a PSX pixel up-left of
+             native's), with the side the aligned score favours at every
+             near-best shift.
   history    two revisions (a, default HEAD~1; b, default HEAD) resolved with
              golden-at's tiers (store, archive, materialize price): the rows
              whose digest differs with the same panel, and the rows one side
@@ -96,6 +101,11 @@ def _load(name, rel):
 cdiff = _load("presentation_corpus_diff",
               "tests/harness/presentation-corpus-diff.py")
 pb = cdiff.pb
+# The og scorer needs scipy; without it the panel shows the -og tile unscored.
+try:
+    oga = _load("og_align", "tests/harness/og_align.py")
+except ImportError:
+    oga = None
 
 
 # ---- tile metadata ----------------------------------------------------------
@@ -262,6 +272,51 @@ def pixel_diff(ref_src, cand_src, a_dig, b_dig):
             "heat": heat if res[1] else None}
 
 
+def og_score(ref_src, cand_path, og_path, a_dig, b_dig):
+    """Raw and aligned |reference-og| and |candidate-og| over the divergent
+    pixels (tests/harness/og_align.py), cached as JSON by digest pair and
+    the og file's mtime and size. Returns the score dict, or None when the
+    sizes do not admit a comparison."""
+    if oga is None:
+        return None
+    st = os.stat(og_path)
+    path = os.path.join(thumbs_dir(), "og", "%s_%s_%d_%d.json" % (
+        a_dig[:16], b_dig[:16], st.st_mtime_ns, st.st_size))
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        pass
+    if isinstance(ref_src, io.BytesIO):
+        ref_src.seek(0)
+    try:
+        res = oga.score([oga.load_rgb(ref_src), oga.load_rgb(cand_path)],
+                        oga.load_rgb(og_path))
+    except ValueError:
+        return None
+    if res is None:
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(res, f)
+    return res
+
+
+def og_text(o):
+    """One line of an og_score result: the fit and each side's raw and
+    aligned mean |tile-og| over the divergent pixels, and the verdict."""
+    if not o:
+        return ""
+    f = o.get("fit")
+    s = "og ref %.1f cand %.1f raw" % (o["A"]["raw"], o["B"]["raw"])
+    if f:
+        s += "; fit (%+.2f, %+.2f) px: ref %.1f cand %.1f aligned, %s" % (
+            f["dx"], f["dy"], o["A"]["aligned"], o["B"]["aligned"],
+            {"A": "ref closer", "B": "cand closer"}.get(o.get("verdict"),
+                                                         "undecided"))
+    return s
+
+
 def og_tile(ogdir, tile):
     """The -og capture beside a tile: the canon -og tile of its VBL, else of
     the VBL before it. Returns (path, vbl) or (None, None)."""
@@ -304,6 +359,7 @@ def candidate_rows(p, ctx):
         ent = dict(row, **tile_meta(t))
         ent["cand_digest"] = got[0] if got else None
         ent["cand_src"] = ctx.file(path)
+        ogp = None
         if ogdir:
             ogp, ogv = og_tile(ogdir, t)
             if ogp:
@@ -326,6 +382,8 @@ def candidate_rows(p, ctx):
             ent.update(pixel_diff(src, path, row["digest"], got[0]))
             if ent.get("heat"):
                 ent["heat_src"] = ctx.file(ent["heat"])
+            if ogp and ent.get("pixels"):
+                ent["og"] = og_score(src, path, ogp, row["digest"], got[0])
         rows.append(ent)
     if arch is not None:
         arch.close()
@@ -706,8 +764,9 @@ def diff_text(e):
     """Pixel count, max channel delta and bounding box, or the size change
     or the note."""
     if "pixels" in e:
-        return "pixels=%d maxch=%d bbox=%s" % (e["pixels"], e["maxch"],
-                                               e["bbox"])
+        s = "pixels=%d maxch=%d bbox=%s" % (e["pixels"], e["maxch"],
+                                            e["bbox"])
+        return s + ("; " + og_text(e["og"]) if e.get("og") else "")
     if "size" in e:
         return "size=%s" % e["size"]
     return e.get("note", "")
@@ -777,7 +836,8 @@ def render_candidate(p, ctx, static, pdir):
                     figure(e["ref_src"], "reference (%s)" % e["where"]),
                     figure(e["cand_src"], "candidate"),
                     figure(e.get("heat_src"), "heat x8"),
-                    figure(e.get("og_src"), "-og (VBL %s)" % e.get("og_vbl")))
+                    figure(e.get("og_src"), "-og (VBL %s) %s" % (
+                        e.get("og_vbl"), og_text(e.get("og")))))
         trs.append("<tr><td>%s</td><td>%s%s</td>%s<td>%s</td></tr>" % (
             cb, E(e["tile"]), panel, meta_cells(e), E(diff_text(e))))
     body = form + head + "<table><tr><th>promote</th><th>tile</th><th>row" \
