@@ -72,6 +72,9 @@ artisans-distant-water-gaps              | 1700  | 100  |        | 2600,2650
 artisans-distant-water-gaps-2            | 1700  | 100  |        | 2680,2730
 artisans-lp-waterfall                    | 1700  | 100  |        | 1784,1792
 artisans-water-platform-missing-polys    | 1700  | 100  |        | 2160
+# A life orb on the grass loses its lower half and blue ring to the floor at
+# 2950 (og draws it whole); the clip flickers or holds across ticks.
+artisans-life-orb                        | 1700  | 100  |        | 2930,2950,2970
 beast-makers-distant-portal              | 1700  | 100  |        | 2022
 beast-makers-wild-flight-text            | 1700  | 100  |        | 3310
 beast_makers_wall                        | 1700  | 100  |        | 1828
