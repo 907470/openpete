@@ -289,3 +289,7 @@ artisans | pos=(84992, 45582, 9948) yaw=1024 pitch=160 roll=228
 # A Gnorc at the left edge of the 16:9 field: its shadow stops drawing while
 # the shadow is still inside the frame. Blessed pre-fix.
 twilight_harbor | pos=(11615, 42844, 10978) yaw=3745 pitch=54
+# Depth cue toward the far fog colour: original LOD fades the far band,
+# extended LOD loses it on pinned HQ corners and moby fades.
+misty_bog | pos=(75971, 146432, 15000) yaw=3072 pitch=120
+beast_makers | pos=(98304, 96379, 20600) yaw=2048 pitch=120
