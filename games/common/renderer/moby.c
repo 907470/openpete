@@ -3398,6 +3398,187 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
     return c.added + c.wide_added;
 }
 
+/** @brief Print the occlusion cull counts of the pass that just ran under OPENPETE_OCCL_LEG_CENSUS.
+ *
+ * The counts are the records the pass offered to the occlusion test and the
+ * ones it culled, as deltas of the running totals since the previous line.
+ * @param mat The pass's material, "REG" or "SP".
+ * @param sub Nonzero for a sub-tick re-extract pass. */
+static void occl_pass_census(const char* mat, int sub) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_OCCL_LEG_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    static long pc, ps;
+    fprintf(stderr, "[mocc-pass key=%u leg=%s mat=%s] culled=%ld seen=%ld\n",
+            openpete_feed_key_now(), sub ? "sub" : "canon", mat ? mat : "?",
+            s_occl_culled - pc, s_occl_seen - ps);
+    pc = s_occl_culled; ps = s_occl_seen;
+}
+
+/* The Spyro 1 cull's candidate list (moby pointers from the draw scratch
+ * base, zero-terminated) with each candidate's drawn-verdict byte, read at
+ * the cull's entry (on_cull_census): the cull clears the byte before testing
+ * it, and the regular draw clears the scratch. Filled only while
+ * OPENPETE_MOBY_QMISS_CENSUS is on. */
+#define QCAND_MAX 1024
+static uint32_t s_qcand[QCAND_MAX];
+static uint8_t  s_qcand_drawn[QCAND_MAX];
+static int      s_qcand_n = -1;
+
+/** @brief Return whether OPENPETE_MOBY_QMISS_CENSUS is set to a non-zero value, read once.
+ * @return 1 when on, else 0. */
+static int qmiss_census_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_QMISS_CENSUS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/** @brief Snapshot the Spyro 1 cull's candidate list and the drawn bytes it is about to read (census only).
+ *
+ * The list is the zero-terminated moby pointer list at the draw scratch base
+ * (r_moby.s 0x8001F190, D_8006FCF4) that func_8001F158 walks.
+ * @param cpu The guest CPU state, read only. */
+static void qmiss_snapshot_candidates(CPUState* cpu) {
+    extern uint32_t psx_runtime_g_sony_image_base;
+    if (!psx_runtime_g_sony_image_base) return;
+    s_qcand_n = 0;
+    for (uint32_t a = psx_runtime_g_sony_image_base; s_qcand_n < QCAND_MAX; a += 4u) {
+        const uint32_t m = cpu->read_word(a);
+        if (!m) break;
+        s_qcand[s_qcand_n] = m;
+        s_qcand_drawn[s_qcand_n] = cpu->read_byte(m + game_layout.moby.drawn_off);
+        s_qcand_n++;
+    }
+}
+
+/** @brief Whether the Spyro 1 cull admits one candidate under the camera the guest view holds now.
+ *
+ * func_8001F158 (r_moby.s 0x8001F1F8-0x8001F3A0): the box
+ * -t4 < d < t4 on each quarter-world camera delta, t4 = m_RenderRadius << 8
+ * plus 0x200 when the drawn byte it read had bit 0; then MVMVA of the deltas
+ * (IR1 = y, IR2 = z, IR3 = x) through g_Camera's matrix, r = the animation
+ * header's byte 7 << 4, and the rejects MAC3 - t4 >= 0, MAC3 + r <= 0,
+ * 4(|MAC1| - a2) - 3(MAC3 + a3) >= 0 with a2 = r/2 + r/4 + r/32 and
+ * a3 = r/2 + r/16 + r/32, and MAC3 + t1 - 3(|MAC2| - t0) <= 0 with
+ * t1 = r/4 + r/16 and t0 = r - r/32 - r/64, each term truncated as the
+ * shifts truncate.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param drawn The drawn byte the cull read.
+ * @return 1 when admitted, 0 when rejected, -1 when the moby has no model. */
+static int qmiss_s1_cull_admits(CPUState* cpu, uint32_t m, unsigned drawn) {
+    const int32_t t4 = ((int32_t)cpu->read_byte(m + moby_game.render_radius_off) << 8) +
+                       ((drawn & 1u) ? 0x200 : 0);
+    const uint32_t cam = game_layout.cam.base;
+    const int32_t cpos[3] = { (int32_t)cpu->read_word(cam + 0x28u), (int32_t)cpu->read_word(cam + 0x2Cu),
+                              (int32_t)cpu->read_word(cam + 0x30u) };
+    int R[3][3];
+    ngte_read_matrix(cpu, cam, R);
+    int32_t d[3];
+    int64_t mac[3];
+    moby_cull_centre(cpu, m, cpos, (const int (*)[3])R, 1, d, mac);
+    for (int k = 0; k < 3; k++) if (d[k] + t4 <= 0 || d[k] - t4 >= 0) return 0;
+    const uint32_t cls   = cpu->read_half(m + game_layout.moby.class_off);
+    const uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
+    if (model < 0x80000000u) return -1;
+    const uint32_t id     = cpu->read_byte(m + game_layout.moby.anim_state_off);
+    const uint32_t header = cpu->read_word(model + game_layout.moby.model_anims_off + id * 4u);
+    if (header < 0x80000000u) return -1;
+    const int64_t r = (int64_t)cpu->read_byte(header + 7u) << 4;
+    if (mac[2] - t4 >= 0 || mac[2] + r <= 0) return 0;
+    const int64_t a2 = (r >> 1) + (r >> 2) + (r >> 5), a3 = (r >> 1) + (r >> 4) + (r >> 5);
+    const int64_t ax = mac[0] < 0 ? -mac[0] : mac[0];
+    const int64_t lat = ((ax - a2) << 2) - 3 * (mac[2] + a3);
+    if (lat >= 0) return 0;
+    const int64_t t1 = (r >> 2) + (r >> 4), t0 = r - (r >> 5) - (r >> 6);
+    const int64_t ay = mac[1] < 0 ? -mac[1] : mac[1];
+    return (mac[2] + t1) - 3 * (ay - t0) > 0;
+}
+
+/** @brief Fill the census candidates with every live moby and the drawn byte the cull read, for a game with moby_game.cull_view_admits.
+ * @param cpu The guest CPU state, read only. */
+static void qmiss_live_candidates(CPUState* cpu) {
+    const uint32_t stride = game_layout.moby.array_stride;
+    const uint32_t head = moby_array_head(cpu);
+    s_qcand_n = 0;
+    if (head < 0x80000000u || !stride) return;
+    uint32_t m = head;
+    for (int k = 0; k < 4096 && s_qcand_n < QCAND_MAX; k++, m += stride) {
+        const uint8_t stt = cpu->read_byte(m + game_layout.moby.state_off);
+        if (stt == 0xFFu) break;
+        if (stt >= 0x80u) continue;
+        s_qcand[s_qcand_n] = m;
+        s_qcand_drawn[s_qcand_n] = (uint8_t)moby_precull_drawn(cpu, m, head);
+        s_qcand_n++;
+    }
+}
+
+/** @brief Whether a moby is in the pass's queue set or the last specular queue.
+ * @param m The Moby address.
+ * @return 1 when held, else 0. */
+static int qmiss_is_held(uint32_t m) {
+    for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) return 1;
+    for (int k = 0; k < s_specq_n; k++) if (s_specq_moby[k] == m) return 1;
+    return 0;
+}
+
+/** @brief The game's cull admission of one candidate under the guest view's camera.
+ *
+ * qmiss_s1_cull_admits, or cull_view_admits at 4:3 where MOBY_WIDE_CANONICAL
+ * admits and MOBY_WIDE_OTHER_KIND is untested.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param drawn The drawn byte the cull read.
+ * @return 1 when admitted, 0 when rejected, -1 when untested. */
+static int qmiss_admits(CPUState* cpu, uint32_t m, unsigned drawn) {
+    if (!moby_game.cull_view_admits) return qmiss_s1_cull_admits(cpu, m, drawn);
+    const moby_wide_verdict_t v = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0);
+    if (v == MOBY_WIDE_OTHER_KIND) return -1;
+    return v == MOBY_WIDE_CANONICAL;
+}
+
+/** @brief Census of live animated mobys the pass's queue lacks but the game's cull admits under the pass's camera (OPENPETE_MOBY_QMISS_CENSUS).
+ *
+ * Runs after a regular pass has filled s_reg_moby (its queue set, plus the
+ * occlusion-culled records on a sub-tick pass). The candidates are the
+ * Spyro 1 cull's own list as the cull hook saw it (qmiss_snapshot_candidates)
+ * or, with moby_game.cull_view_admits, every live moby. A candidate counts as
+ * a miss when it is absent from s_reg_moby and from the last specular queue
+ * and the game's cull, re-run under the guest view's camera with the drawn
+ * byte it read (qmiss_s1_cull_admits, or cull_view_admits at 4:3 returning
+ * MOBY_WIDE_CANONICAL), admits it; the held candidates the cull admits are
+ * counted beside, the positive half of the calibration. On the canonical pass
+ * the camera is the one the cull ran under, so the count measures the
+ * mirror's error; on a sub-tick pass the guest view holds the present's
+ * camera, and a miss is a moby that camera's cone admits and the tick's
+ * queue does not draw. Prints one [moby-qmiss] line per call.
+ * @param cpu The guest CPU state, read only.
+ * @param sub Nonzero for a sub-tick re-extract pass. */
+static void moby_qmiss_census(CPUState* cpu, int sub) {
+    if (!qmiss_census_on()) return;
+    if (moby_game.cull_view_admits) qmiss_live_candidates(cpu);
+    if (s_qcand_n < 0) return;                     /* no candidate snapshot */
+    long untested = 0, miss = 0, held_n = 0, held_admit = 0;
+    char ids[192]; int idn = 0; ids[0] = 0;
+    for (int i = 0; i < s_qcand_n; i++) {
+        const uint32_t m = s_qcand[i];
+        const int a = qmiss_admits(cpu, m, s_qcand_drawn[i]);
+        if (qmiss_is_held(m)) { held_n++; held_admit += a > 0; continue; }
+        untested += a < 0;
+        if (a <= 0) continue;
+        miss++;
+        if (idn < (int)sizeof ids - 10)
+            idn += snprintf(ids + idn, sizeof ids - (size_t)idn, "%s%08X", idn ? "," : "", m);
+    }
+    const uint32_t cam = game_layout.cam.base;
+    fprintf(stderr, "[moby-qmiss key=%u leg=%s widen=%.3f] candidates=%d queued=%d held=%ld "
+            "held_admit=%ld untested=%ld miss_cone=%ld cam=(%d,%d,%d) mobys=[%s]\n",
+            openpete_feed_key_now(), sub ? "sub" : "canon", moby_native_view_widen(),
+            s_qcand_n, s_reg_moby_n, held_n, held_admit, untested, miss,
+            (int)cpu->read_word(cam + 0x28u), (int)cpu->read_word(cam + 0x2Cu),
+            (int)cpu->read_word(cam + 0x30u), ids);
+}
+
 /* ---- native scene triangle (fed to panel 0) ------------------------------
  * Filled by the independent face-stream walk (below). The walk is
  * jitter-free (exact word0 indices) where a screen-proximity match against
@@ -8628,6 +8809,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         s_reg_moby_n = 0;
         for (int r = 0; r < nrec && s_reg_moby_n < MAX_RECORDS; r++)
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
+        moby_qmiss_census(cpu, 0);
     }
     if (feed) {
         if (!is_spec) {
@@ -8816,6 +8998,22 @@ static int on_cull(CPUState* cpu, uint32_t addr) {
     moby_precull_snapshot(cpu);
     moby_run_draw(cpu, addr);
     moby_rec_snapshot(cpu);
+    s_in = 0;
+    return 1;
+}
+
+/** @brief The census cull hook: snapshot the cull's candidate list, then run the cull once as the fall-through would.
+ *
+ * Registered only for a game whose cull the feeder leaves unhooked
+ * (game_layout.moby.census_cull) while OPENPETE_MOBY_QMISS_CENSUS is set.
+ * Writes no guest memory itself.
+ * @param cpu The guest CPU state.
+ * @param addr The cull routine's guest address.
+ * @return 1 when the hook ran the cull, 0 on re-entry. */
+static int on_cull_census(CPUState* cpu, uint32_t addr) {
+    static int s_in = 0; if (s_in) return 0; s_in = 1;
+    qmiss_snapshot_candidates(cpu);
+    moby_run_draw(cpu, addr);
     s_in = 0;
     return 1;
 }
@@ -12526,6 +12724,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * BOTH queues would slip past the dedup and draw via SPEC anyway. */
         for (int c = 0; c < culled_n && s_reg_moby_n < MAX_RECORDS; c++)
             s_reg_moby[s_reg_moby_n++] = culled_moby[c];
+        moby_qmiss_census(cpu, 1);
         /* Widescreen reveal on SUB-TICKS too: the render set above is the .s
          * cull-record queue, which never contains the off-4:3 mobys the 4:3
          * cone cull skipped - the canonical feed host-builds those via
@@ -12539,6 +12738,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
     push_scene_moby(cpu);
+    occl_pass_census(mat, 1);
     moby_rot_census(mat, rot_bins);
     moby_centre_census(mat);
     s_walk_in_rex = 0;
@@ -12757,7 +12957,7 @@ static void moby_reextract_body(CPUState* cpu) {
  * pass the layout leaves at 0 contributes no entry instead of truncating the
  * ones after it. A game that names no pass registers nothing and never enters
  * this feeder. */
-static feature_dispatch_entry_t moby_dispatch[6];
+static feature_dispatch_entry_t moby_dispatch[7];
 
 /** @brief The feature module's option hook: fill moby_dispatch with the cull and draw hooks the game layout allows.
  *
@@ -12785,6 +12985,8 @@ static void moby_apply_options(const openpete_options_t* opts) {
         /* The second kind reads none of the animated stream decoders, so it
          * registers on its own provider slot. */
         { moby_game.simple_pass ? game_layout.moby.hook_draw_simple : 0u, on_draw_simple },
+        { qmiss_census_on() && !game_layout.moby.hook_cull ? game_layout.moby.census_cull : 0u,
+          on_cull_census },
     };
     int n = 0;
     for (size_t i = 0; i < sizeof passes / sizeof passes[0]; i++)

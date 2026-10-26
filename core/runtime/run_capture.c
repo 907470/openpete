@@ -506,6 +506,7 @@ static void intermediate_shot(const openpete_options_t *opts,
     }
     const int bracketed = intermediate_reextract(ire, cpu, curr_ns, alpha);
     openpete_native_scene_sig_report(0);   /* OPENPETE_SCENE_SIG census of the captured scene */
+    openpete_native_occl_census_present(); /* occluder-grid censuses at this leg's camera */
     s_cap.inter_shots++;
     s_cap.inter_bracketed += bracketed ? 1u : 0u;
     char base[1024];

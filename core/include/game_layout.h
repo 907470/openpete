@@ -875,6 +875,10 @@ typedef struct game_layout {
         uint32_t hook_draw_specular;
         uint32_t hook_draw_shaded;
         uint32_t hook_draw_simple;
+        /* The cull's address where `hook_cull` is 0 because the feeder must not
+         * hook it: hooked only while OPENPETE_MOBY_QMISS_CENSUS is set, to read
+         * the cull's candidate list before the cull consumes it. 0 for none. */
+        uint32_t census_cull;
         /* The word holding the one moby a menu state draws over the finished
          * frame: the game points `array_head` at it, terminates the array
          * after it, and runs the cull and regular draw again into an ordering

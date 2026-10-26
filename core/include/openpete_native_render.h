@@ -2633,13 +2633,30 @@ int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, floa
  * both halves of the occlusion test (the off-screen reject and the depth
  * query) refuse every query. Runs at the host loop's present step, after the
  * walk: one device frame holding the world-opaque depth pre-pass of the scene
- * a live present would compose and the grid reduction with its ring
- * readback. The grid a walk reads is then the one a window presenting once
- * per present step would hold, a deterministic function of the present
- * sequence. Self-no-ops with a window, where the live present builds the
- * grid.
+ * a live present would compose and the grid reduction, then a synchronous
+ * read of the grid. The next tick's walk reads the grid of this tick's
+ * scene, one tick old, where the ring readback a window uses would leave it
+ * RHI_FRAMES_IN_FLIGHT present steps (ticks, headless) old; a deterministic
+ * function of the present sequence. Self-no-ops with a window, where the
+ * live present builds the grid.
  */
 void openpete_native_occl_service_headless(void);
+/** @brief Register a census that queries an occluder grid built at the camera of the scene just extracted.
+ *
+ * openpete_native_occl_census_present calls every registered function, at
+ * most four, once per call; registering one twice keeps one entry.
+ * @param fn The census; it may call openpete_native_occl_query. */
+void openpete_native_occl_census_register(void (*fn)(void));
+/** @brief Build the occlusion grid from the current scene, run the registered censuses against it, then restore the previous grid.
+ *
+ * Headless only, and a no-op with no census registered. One device frame
+ * holds the scene's world-opaque depth pre-pass and the grid reduction; the
+ * grid is read back synchronously and published with the scene's own camera,
+ * so a query under that camera passes the camera bound and answers from the
+ * cell depths. The previously published grid, the present counter and the
+ * cut suspension are restored afterwards, so the walks that follow read the
+ * state they would read without the census. */
+void openpete_native_occl_census_present(void);
 /** @brief Refuse occlusion verdicts for at least the next presents presents; callable from any thread.
  *
  * Raises the suspension to presents when it is lower; the presenting thread

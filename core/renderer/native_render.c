@@ -11068,16 +11068,53 @@ static void occl_atomic_dec_positive(SDL_AtomicInt *a)
     }
 }
 
-/** @brief Reduce this present's depth pre-pass into the grid, retrieve and publish an older grid, and queue this present's metadata.
+/** @brief Decode one read-back grid with the metadata it was rendered under and publish it.
  *
- * Runs on the presenting thread. The retrieved grid is decoded into
- * s_occl_dec with the affine, stamp and camera queued with it, then
- * published whole (occl_grid_publish). */
-static void native_occl_downsample(void)
+ * Runs on the presenting thread. The cells carry the pre-pass encode
+ * d = 1 - 1/viewZ in 24 bits; full scale is the far clear (sky, no occluder)
+ * and decodes to an infinite depth.
+ * @param raw OCCL_GW*OCCL_GH RGBA texels.
+ * @param m The affine, present stamp and camera the grid was rendered under.
+ * @param presents The live present counter, for the diagnostics line. */
+static void occl_decode_publish(const uint8_t *raw, const occl_meta_t *m, unsigned presents)
+{
+    for (int i = 0; i < OCCL_GW * OCCL_GH; i++) {
+        uint32_t q = ((uint32_t)raw[i*4+0] << 16) | ((uint32_t)raw[i*4+1] << 8) | raw[i*4+2];
+        s_occl_dec.vz[i] = (q >= 16777200u) ? 3.4e38f
+                         : 1.0f / (1.0f - (float)q / 16777215.0f);
+    }
+    s_occl_dec.uax = m->uax; s_occl_dec.ubx = m->ubx;
+    s_occl_dec.vay = m->vay; s_occl_dec.vby = m->vby;
+    s_occl_dec.stamp = m->stamp;
+    s_occl_dec.cam = m->cam;
+    s_occl_dec.have = 1;
+    occl_grid_publish();
+    if (occl_camdbg())
+        fprintf(stderr, "[occl-grid] sframe=%u present=%u stamp=%u age=%u valid=%d "
+                "gcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, presents, m->stamp,
+                presents - m->stamp, s_occl_dec.cam.valid,
+                s_occl_dec.cam.pos[0], s_occl_dec.cam.pos[1], s_occl_dec.cam.pos[2]);
+}
+
+/** @brief Fill a grid's metadata with this present's screen affine, stamp and pre-pass camera.
+ * @param mm Receives the metadata.
+ * @param presents This present's counter value. */
+static void occl_meta_now(occl_meta_t *mm, unsigned presents)
+{
+    mm->uax = s_od_uax; mm->ubx = s_od_ubx; mm->vay = s_od_vay; mm->vby = s_od_vby;
+    mm->stamp = presents;
+    mm->cam = *ps_occl_cam();
+}
+
+/** @brief Count this present and reduce its depth pre-pass into the grid render target.
+ *
+ * Runs on the presenting thread inside a device frame.
+ * @return The present's counter value when the grid was rendered, else 0. */
+static unsigned native_occl_reduce(void)
 {
     const unsigned presents = (unsigned)SDL_AddAtomicInt(&s_occl_presents, 1) + 1u;
     occl_atomic_dec_positive(&s_occl_suspend);
-    if (!occl_active() || !s_od_ready || !s_nr.fs_quad_vb) return;
+    if (!occl_active() || !s_od_ready || !s_nr.fs_quad_vb) return 0;
 
     /* Reduce this present's pre-pass into the grid RT (viewport = full RT). */
     struct { int gw, gh, pvw, pvh; } pc =
@@ -11089,6 +11126,18 @@ static void native_occl_downsample(void)
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
     rhi_draw(s_nr.dev, 6, 0);
     rhi_end_render_target(s_nr.dev, s_nr.occl_grid);
+    return presents;
+}
+
+/** @brief Reduce this present's depth pre-pass into the grid, retrieve and publish an older grid, and queue this present's metadata.
+ *
+ * Runs on the presenting thread. The retrieved grid is decoded into
+ * s_occl_dec with the affine, stamp and camera queued with it, then
+ * published whole (occl_decode_publish). */
+static void native_occl_downsample(void)
+{
+    const unsigned presents = native_occl_reduce();
+    if (!presents) return;
 
     /* Queue this present's copy; retrieve + decode the one from a few presents
      * ago. The FIFO pairs each retrieved grid with the affine it was rendered
@@ -11099,32 +11148,13 @@ static void native_occl_downsample(void)
     if (got && gw == OCCL_GW && gh == OCCL_GH && s_occl_fifo_tail != s_occl_fifo_head) {
         const occl_meta_t* m = &s_occl_fifo[s_occl_fifo_tail % OCCL_FIFO_N];
         s_occl_fifo_tail++;
-        for (int i = 0; i < OCCL_GW * OCCL_GH; i++) {
-            uint32_t q = ((uint32_t)raw[i*4+0] << 16) | ((uint32_t)raw[i*4+1] << 8) | raw[i*4+2];
-            /* Decode the pre-pass encode d = 1 - 1/viewZ; q at full scale is
-             * the far-clear (sky / no occluder) sentinel. */
-            s_occl_dec.vz[i] = (q >= 16777200u) ? 3.4e38f
-                             : 1.0f / (1.0f - (float)q / 16777215.0f);
-        }
-        s_occl_dec.uax = m->uax; s_occl_dec.ubx = m->ubx;
-        s_occl_dec.vay = m->vay; s_occl_dec.vby = m->vby;
-        s_occl_dec.stamp = m->stamp;
-        s_occl_dec.cam = m->cam;
-        s_occl_dec.have = 1;
-        occl_grid_publish();
-        if (occl_camdbg())
-            fprintf(stderr, "[occl-grid] sframe=%u present=%u stamp=%u age=%u valid=%d "
-                    "gcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, presents, m->stamp,
-                    presents - m->stamp, s_occl_dec.cam.valid,
-                    s_occl_dec.cam.pos[0], s_occl_dec.cam.pos[1], s_occl_dec.cam.pos[2]);
+        occl_decode_publish(raw, m, presents);
     } else if (got) {
         s_occl_fifo_tail = s_occl_fifo_head;   /* desync (shouldn't happen) - resync empty */
     }
     if (s_occl_fifo_head - s_occl_fifo_tail >= OCCL_FIFO_N) s_occl_fifo_tail++; /* overflow: drop oldest */
     occl_meta_t* mm = &s_occl_fifo[s_occl_fifo_head % OCCL_FIFO_N];
-    mm->uax = s_od_uax; mm->ubx = s_od_ubx; mm->vay = s_od_vay; mm->vby = s_od_vby;
-    mm->stamp = presents;
-    mm->cam = *ps_occl_cam();
+    occl_meta_now(mm, presents);
     if (occl_camdbg())
         fprintf(stderr, "[occl-queue] sframe=%u present=%u slot=%d valid=%d "
                 "qcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, presents, s_ps_slot ? 1 : 0,
@@ -21877,8 +21907,65 @@ void openpete_native_occl_service_headless(void)
     openpete_tercache_frame_select(scene_present_stamp());
     upload_synced_textures();
     native_depth_prepass();
-    native_occl_downsample();
+    occl_meta_t m;
+    const unsigned presents = native_occl_reduce();
+    if (presents) occl_meta_now(&m, presents);
     rhi_end_frame(s_nr.dev);
+    /* Read this present's grid back now rather than through the ring: the
+     * host loop presents once per tick here, so the ring's
+     * RHI_FRAMES_IN_FLIGHT-present lag would hand the next walk a grid
+     * that many ticks old, and any camera moving faster than the query's
+     * camera bound per tick would refuse every query. */
+    static uint8_t raw[OCCL_GW * OCCL_GH * 4];
+    int gw = 0, gh = 0;
+    if (presents && rhi_read_render_target(s_nr.dev, s_nr.occl_grid, raw, sizeof raw, &gw, &gh)
+        && gw == OCCL_GW && gh == OCCL_GH)
+        occl_decode_publish(raw, &m, presents);
+}
+
+#define OCCL_CENSUS_MAX 4
+static void (*s_occl_census_fn[OCCL_CENSUS_MAX])(void);
+static int s_occl_census_n;
+
+void openpete_native_occl_census_register(void (*fn)(void))
+{
+    for (int i = 0; i < s_occl_census_n; i++) if (s_occl_census_fn[i] == fn) return;
+    if (fn && s_occl_census_n < OCCL_CENSUS_MAX) s_occl_census_fn[s_occl_census_n++] = fn;
+}
+
+void openpete_native_occl_census_present(void)
+{
+    if (!s_occl_census_n || !s_nr.enabled || !s_nr.headless || !s_nr.dev) return;
+    /* Everything the walks read from the grid state is restored afterwards,
+     * so a census run draws the tiles a census-free run draws. */
+    const occl_grid_t saved_pub = s_occl_pub, saved_dec = s_occl_dec;
+    const int saved_presents = SDL_GetAtomicInt(&s_occl_presents);
+    const int saved_suspend = SDL_GetAtomicInt(&s_occl_suspend);
+    sync_vram_texture();
+    ensure_opaque_depth();
+    if (!rhi_begin_frame(s_nr.dev)) return;
+    openpete_tercache_frame_select(scene_present_stamp());
+    upload_synced_textures();
+    native_depth_prepass();
+    occl_meta_t m;
+    const unsigned presents = native_occl_reduce();
+    if (presents) occl_meta_now(&m, presents);
+    rhi_end_frame(s_nr.dev);
+    static uint8_t raw[OCCL_GW * OCCL_GH * 4];
+    int gw = 0, gh = 0;
+    if (presents && rhi_read_render_target(s_nr.dev, s_nr.occl_grid, raw, sizeof raw, &gw, &gh)
+        && gw == OCCL_GW && gh == OCCL_GH) {
+        occl_decode_publish(raw, &m, presents);
+        for (int i = 0; i < s_occl_census_n; i++) s_occl_census_fn[i]();
+    }
+    SDL_SetAtomicInt(&s_occl_presents, saved_presents);
+    SDL_SetAtomicInt(&s_occl_suspend, saved_suspend);
+    s_occl_dec = saved_dec;
+    SDL_Mutex *mx = openpete_mutex_once(&s_occl_pub_mx);
+    SDL_LockMutex(mx);
+    s_occl_pub = saved_pub;
+    SDL_UnlockMutex(mx);
+    SDL_AddAtomicInt(&s_occl_pub_seq, 1);
 }
 
 /* Screenshot chrome (--screenshot-overlays). The live present draws the
