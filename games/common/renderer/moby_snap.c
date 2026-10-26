@@ -63,7 +63,7 @@ typedef struct {
     int timed;            /* the phase clocks below run */
     uint64_t near_ns;     /* candidate triangles and the near moby triangles */
     uint64_t test_ns;     /* the exact triangle tests and the plane merge */
-    uint64_t plane_ns;    /* the plane pass: corners, side, component, slab, disc */
+    uint64_t plane_ns;    /* the plane pass: corners, side and slab */
     long cut_mobys;       /* snapped mobys a coplanar drawn triangle still cuts (ms_falsify) */
     long cut_samples;     /* their cut sample points */
     long cut_cls[3];      /* the cut samples by class (ms_falsify): 0 outside the plane's slab
@@ -251,128 +251,29 @@ static int ms_box_overlap(const ms_tri* a, const ms_tri* b) {
 /* ---- planes -------------------------------------------------------------- */
 
 /* A contact plane under construction: its normal and offset (the first
- * contact face's), the moby triangles that intersect its faces, and whether
- * any of them is double-sided. */
-typedef struct { ms_v3 n; double d; int dside; int nh; int* hit; } ms_plane;
+ * contact face's) and whether any of its faces is double-sided. */
+typedef struct { ms_v3 n; double d; int dside; } ms_plane;
 
-/* A far-side vertex key of one moby triangle, for the connectivity sort. */
-typedef struct { float k[3]; int tri; } ms_vkey;
-
-/** @brief Order vertex keys by their exact coordinates (qsort).
- * @param a First key.
- * @param b Second key.
- * @return Negative, zero or positive. */
-static int ms_vkey_cmp(const void* a, const void* b) {
-    const ms_vkey *x = a, *y = b;
-    for (int i = 0; i < 3; i++) {
-        if (x->k[i] < y->k[i]) return -1;
-        if (x->k[i] > y->k[i]) return 1;
-    }
-    return 0;
-}
-
-/** @brief Find a union-find root, halving the path.
- * @param uf The parent array.
- * @param i The element.
- * @return Its root. */
-static int ms_root(int* uf, int i) {
-    while (uf[i] != i) { uf[i] = uf[uf[i]]; i = uf[i]; }
-    return i;
-}
-
-/** @brief Mark the sunk component of a plane: the moby triangles beyond it connected through shared far-side vertices to one that intersects its faces.
- *
- * Triangles share a vertex when the walk emitted the same projected vertex
- * for both (bitwise equal screen point and key depth).
- * @param m Screen corners of the moby's triangles.
- * @param sd The corners' signed distances to the plane, 3 per triangle.
- * @param nt Triangle count.
- * @param pl The plane.
- * @param side The side holding the moby's centre (+1 or -1).
- * @param uf Scratch, nt ints.
- * @param keys Scratch, 3 nt keys.
- * @param seen Receives 1 for each triangle of the component. */
-static void ms_component(const float (*m)[3][3], const double* sd, int nt, const ms_plane* pl,
-                         double side, int* uf, ms_vkey* keys, uint8_t* seen) {
-    int nk = 0;
-    for (int i = 0; i < nt; i++) {
-        uf[i] = i; seen[i] = 0;
-        for (int k = 0; k < 3; k++)
-            if (sd[i * 3 + k] * side < 0.0) {
-                memcpy(keys[nk].k, m[i][k], sizeof keys[nk].k);
-                keys[nk++].tri = i;
-            }
-    }
-    qsort(keys, (size_t)nk, sizeof *keys, ms_vkey_cmp);
-    for (int j = 1; j < nk; j++)
-        if (!ms_vkey_cmp(&keys[j - 1], &keys[j]))
-            uf[ms_root(uf, keys[j].tri)] = ms_root(uf, keys[j - 1].tri);
-    for (int i = 0; i < nt; i++) uf[i] = ms_root(uf, i);
-    for (int h = 0; h < pl->nh; h++) seen[uf[pl->hit[h]]] = 2;   /* bit 1: a hit triangle's root */
-    for (int i = 0; i < nt; i++) seen[i] |= (uint8_t)(seen[uf[i]] >> 1);
-    for (int i = 0; i < nt; i++) seen[i] &= 1;
-}
-
-/** @brief Finish one contact plane into the snap table's form: side, slab and disc.
- *
- * side: the side of the plane holding the midpoint of the moby's vertex
- * extent along its normal. The sunk component's deepest vertex beyond the
- * plane gives the penetration; slab = min(128 dofs, penetration + 1), the
- * game's own pull bound. The disc is the component projected onto the
- * plane: the centre of its bounds and the largest distance from it, plus 1.
- * @param m Screen corners of the moby's triangles.
- * @param T Their camera-space form.
+/** @brief Finish one contact plane into the snap table's form: side (openpete_snap_side) and slab, 128 dofs, the game's own pull.
+ * @param T The moby's triangles in camera space (corners only are read).
  * @param nt Triangle count.
  * @param dofs The moby's authored depth offset.
  * @param pl The plane.
- * @param uf Scratch, nt ints.
- * @param keys Scratch, 3 nt keys.
- * @param seen Scratch, nt bytes.
- * @param sdv Scratch, 3 nt doubles: the corners' signed distances.
+ * @param up World up in camera space (unit), or NULL when unknown.
  * @param o Receives the plane. */
-static void ms_plane_finish(const float (*m)[3][3], const ms_tri* T, int nt, int dofs,
-                            const ms_plane* pl, int* uf, ms_vkey* keys, uint8_t* seen,
-                            double* sdv, openpete_snap_plane* o) {
-    double smin = 1e300, smax = -1e300;
-    for (int i = 0; i < nt; i++)
-        for (int k = 0; k < 3; k++) {
-            const double sd = v3dot(pl->n, T[i].p[k]) - pl->d;
-            sdv[i * 3 + k] = sd;
-            smin = ms_min(smin, sd); smax = ms_max(smax, sd);
-        }
-    const double side = (smin + smax) > 0.0 ? 1.0 : -1.0;
-    ms_component(m, sdv, nt, pl, side, uf, keys, seen);
-    double pen = 0.0;
-    ms_v3 lo = { 1e300, 1e300, 1e300 }, hi = { -1e300, -1e300, -1e300 };
-    for (int i = 0; i < nt; i++) {
-        if (!seen[i]) continue;
-        for (int k = 0; k < 3; k++) {
-            const double sd = sdv[i * 3 + k];
-            pen = ms_max(pen, -sd * side);
-            const ms_v3 q = { T[i].p[k].x - sd * pl->n.x, T[i].p[k].y - sd * pl->n.y,
-                              T[i].p[k].z - sd * pl->n.z };
-            lo.x = ms_min(lo.x, q.x); lo.y = ms_min(lo.y, q.y); lo.z = ms_min(lo.z, q.z);
-            hi.x = ms_max(hi.x, q.x); hi.y = ms_max(hi.y, q.y); hi.z = ms_max(hi.z, q.z);
-        }
+static void ms_plane_finish(const ms_tri* T, int nt, int dofs, const ms_plane* pl,
+                            const double* up, openpete_snap_plane* o) {
+    double mass = 0.0;
+    if (pl->dside) {
+        for (int i = 0; i < nt; i++)
+            for (int k = 0; k < 3; k++) mass += v3dot(pl->n, T[i].p[k]) - pl->d;
+        mass /= 3.0 * (nt > 0 ? nt : 1);
     }
-    const ms_v3 c = { (lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, (lo.z + hi.z) * 0.5 };
-    double r = 0.0;
-    for (int i = 0; i < nt; i++) {
-        if (!seen[i]) continue;
-        for (int k = 0; k < 3; k++) {
-            const double sd = sdv[i * 3 + k];
-            const ms_v3 q = { T[i].p[k].x - sd * pl->n.x, T[i].p[k].y - sd * pl->n.y,
-                              T[i].p[k].z - sd * pl->n.z };
-            r = ms_max(r, v3dot(v3sub(q, c), v3sub(q, c)));
-        }
-    }
-    r = sqrt(r);
-    const double slab = ms_min(128.0 * (double)dofs, pen + 1.0);
+    const double n[3] = { pl->n.x, pl->n.y, pl->n.z };
     o->n[0] = (float)pl->n.x; o->n[1] = (float)pl->n.y; o->n[2] = (float)pl->n.z;
     o->d = (float)pl->d;
-    o->sslab = (float)(side * slab);
-    o->c[0] = (float)c.x; o->c[1] = (float)c.y; o->c[2] = (float)c.z;
-    o->r = (float)(r + 1.0);
+    o->side = (float)openpete_snap_side(n, pl->d, pl->dside, up, mass);
+    o->slab = 128.0f * (float)dofs;
     o->dside = pl->dside;
 }
 
@@ -381,13 +282,8 @@ static void ms_plane_finish(const float (*m)[3][3], const ms_tri* T, int nt, int
  * @param np Their count, updated.
  * @param F The contact face.
  * @param dside Whether it is double-sided.
- * @param hit The moby triangles it intersects.
- * @param nh Their count.
- * @param pool Storage for the planes' hit lists, nt ints per plane.
- * @param nt The moby's triangle count.
  * @return 1 when placed, 0 when the moby's plane cap is full. */
-static int ms_plane_add(ms_plane* P, int* np, const ms_tri* F, int dside, const int* hit, int nh,
-                        int* pool, int nt) {
+static int ms_plane_add(ms_plane* P, int* np, const ms_tri* F, int dside) {
     ms_plane* pl = NULL;
     for (int j = 0; j < *np && !pl; j++) {
         const double c = v3dot(P[j].n, F->n);
@@ -397,23 +293,17 @@ static int ms_plane_add(ms_plane* P, int* np, const ms_tri* F, int dside, const 
     if (!pl) {
         if (*np >= MS_MAX_PLANES) return 0;
         pl = &P[(*np)++];
-        pl->n = F->n; pl->d = F->d; pl->dside = 0; pl->nh = 0;
-        pl->hit = pool + (size_t)(*np - 1) * (size_t)nt;
+        pl->n = F->n; pl->d = F->d; pl->dside = 0;
     }
     pl->dside |= dside;
-    for (int h = 0; h < nh; h++) {
-        int dup = 0;
-        for (int q = 0; q < pl->nh && !dup; q++) dup = pl->hit[q] == hit[h];
-        if (!dup) pl->hit[pl->nh++] = hit[h];
-    }
     return 1;
 }
 
 /** @brief Print a moby's contact planes at the feed keys the OPENPETE_MOBY_SNAP_DUMP knob names, an instrument.
  *
  * One line per plane: the moby's identity, ordinal, pull and offset, the
- * view, and the plane's normal, offset, signed slab, disc and double-sided
- * flag.
+ * view, and the plane's normal, offset, signed slab (side * slab) and
+ * double-sided flag.
  * @param mb The moby.
  * @param pl Its planes.
  * @param np Their count.
@@ -433,10 +323,29 @@ static void ms_dump(const ms_moby* mb, const openpete_snap_plane* pl, int np, co
     for (int k = 0; k < s_nk; k++) on |= s_keys[k] == key;
     for (int k = 0; on && k < np; k++)
         fprintf(stderr, "[moby-snap-plane] key=%u mid=%u mord=%d dofs=%d off=%.3f H=%.4f ofx=%.4f ofy=%.4f "
-                        "n=%.7f,%.7f,%.7f d=%.4f sslab=%.4f c=%.3f,%.3f,%.3f r=%.3f dside=%d\n",
+                        "n=%.7f,%.7f,%.7f d=%.4f sslab=%.4f dside=%d\n",
                 key, mb->mid, mb->mord, mb->dofs, mb->off, view[0], view[1], view[2],
-                pl[k].n[0], pl[k].n[1], pl[k].n[2], pl[k].d, pl[k].sslab,
-                pl[k].c[0], pl[k].c[1], pl[k].c[2], pl[k].r, pl[k].dside);
+                pl[k].n[0], pl[k].n[1], pl[k].n[2], pl[k].d, pl[k].side * pl[k].slab, pl[k].dside);
+}
+
+/* World up in the snap's camera space for the resolve under way, from the
+ * camera the terrain walk published (openpete_native_occl_live_camera):
+ * the game's camera matrix carries world +Z as its input (0, -1, 0), so up
+ * is minus its second column. s_up_p points at it, or is NULL when no
+ * camera is published. */
+static double s_up[3];
+static const double* s_up_p;
+
+/** @brief Set s_up and s_up_p from the camera the terrain walk now feeding the scene published. */
+static void ms_up_sync(void) {
+    openpete_occl_camera c;
+    openpete_native_occl_live_camera(&c);
+    const double u[3] = { -(double)c.M[1], -(double)c.M[4], -(double)c.M[7] };
+    const double l = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    s_up_p = NULL;
+    if (!c.valid || !(l > 1e-6)) return;
+    for (int k = 0; k < 3; k++) s_up[k] = u[k] / l;
+    s_up_p = s_up;
 }
 
 /* Scratch shared by the per-moby contact pass, grown on demand. */
@@ -447,14 +356,10 @@ static int*     s_cj;  static int s_cj_cap;      /* one moby's usable candidates
 static unsigned* s_tcon; static int s_tcon_cap;  /* per captured triangle: the last moby (s_mserial) it touched */
 static unsigned  s_mserial;                      /* the contact pass's moby counter */
 static int*     s_ix;  static int s_ix_cap;
-static int*     s_pool; static int s_pool_cap;
-static ms_vkey* s_keys; static int s_keys_cap;
-static uint8_t* s_seen; static int s_seen_cap;
 static uint8_t* s_made; static int s_made_cap;   /* s_mt[i] is built (ms_make_near) */
 static int*     s_ml;  static int s_ml_cap;      /* the moby triangles near the candidates */
 static int*     s_mstamp; static int s_mstamp_cap; /* per moby triangle: the last query that met it */
 static unsigned s_mquery;                        /* the query counter s_mstamp holds */
-static double*  s_sdv; static int s_sdv_cap;     /* per corner: signed distance to a plane */
 
 /** @brief Grow every scratch array of the contact pass for a moby of nt triangles against nc candidates.
  * @param nt Moby triangles.
@@ -464,13 +369,9 @@ static int ms_scratch(int nt, int nc) {
     return ms_grow((void**)&s_mt, &s_mt_cap, nt, sizeof *s_mt) &&
            ms_grow((void**)&s_cj, &s_cj_cap, nc > 0 ? nc : 1, sizeof *s_cj) &&
            ms_grow((void**)&s_ix, &s_ix_cap, nt * 2, sizeof *s_ix) &&
-           ms_grow((void**)&s_pool, &s_pool_cap, nt * MS_MAX_PLANES, sizeof *s_pool) &&
-           ms_grow((void**)&s_keys, &s_keys_cap, nt * 3, sizeof *s_keys) &&
-           ms_grow((void**)&s_seen, &s_seen_cap, nt, 1) &&
            ms_grow((void**)&s_made, &s_made_cap, nt, 1) &&
            ms_grow((void**)&s_ml, &s_ml_cap, nt, sizeof *s_ml) &&
-           ms_grow((void**)&s_mstamp, &s_mstamp_cap, nt, sizeof *s_mstamp) &&
-           ms_grow((void**)&s_sdv, &s_sdv_cap, nt * 3, sizeof *s_sdv);
+           ms_grow((void**)&s_mstamp, &s_mstamp_cap, nt, sizeof *s_mstamp);
 }
 
 /** @brief Widen a bounds record (x0, y0, x1, y1, z0, z1) by one screen point.
@@ -666,32 +567,21 @@ static int ms_falsify_on(void) {
     return s;
 }
 
-/** @brief The depth the snap stage writes for a moby point at its key depth, or -1 when a hide plane moves it behind (op_snap_depth on the CPU).
+/** @brief The depth the snap stage writes for a moby point at its key depth, or -1 when a plane hides it behind its owner (openpete_snap_rule_vz).
+ *
+ * The terrain key owner at the point's pixel lies at view-Z zt on the
+ * point's ray and the face's bucket is taken as strictly nearer than the
+ * owner's (the CPU holds no key image).
  * @param p The point (camera space).
  * @param out The moby's planes.
  * @param np Their count.
- * @param S The largest slab of the moby's planes.
+ * @param S The largest slab of the present.
+ * @param zt The owner's view-Z on the point's ray.
  * @return The written view-Z, or -1. */
-static double ms_snap_vz(ms_v3 p, const openpete_snap_plane* out, int np, double S) {
-    const ms_v3 ray = { p.x / p.z, p.y / p.z, 1.0 };
-    double rev = 3.0e38, hid = -1.0;
-    for (int k = 0; k < np; k++) {
-        const openpete_snap_plane* P = &out[k];
-        const ms_v3 n = { P->n[0], P->n[1], P->n[2] };
-        const double sd = v3dot(n, p) - P->d, s = P->sslab < 0.0f ? -sd : sd;
-        if (s >= 0.0 || s < -fabs((double)P->sslab)) continue;
-        const ms_v3 q = { p.x - sd * n.x - P->c[0], p.y - sd * n.y - P->c[1], p.z - sd * n.z - P->c[2] };
-        if (v3len(q) > P->r) continue;
-        const double nr = v3dot(n, ray);
-        if (fabs(nr) < 1e-9) continue;
-        const double zc = P->d / nr;
-        if (zc <= 1.0) continue;
-        const double e = ms_max(0.5 + 2e-5 * zc, 4.0 * 6e-8 * zc) * (2.0 + s / ms_max(S, 1.0));
-        if ((-P->d > 0.0f) == (P->sslab > 0.0f)) rev = ms_min(rev, zc - e);
-        else if (P->dside) hid = ms_max(hid, zc + e);
-    }
-    if (hid > p.z) return -1.0;
-    return ms_max(ms_min(p.z, rev), 1.0);
+static double ms_snap_vz(ms_v3 p, const openpete_snap_plane* out, int np, double S, double zt) {
+    const double q[3] = { p.x, p.y, p.z };
+    const double vz = openpete_snap_rule_vz(q, p.z, zt, 1, out, np, S);
+    return vz > p.z ? -1.0 : vz;
 }
 
 /** @brief Whether a screen point lies inside a captured terrain triangle.
@@ -752,30 +642,30 @@ static ms_v3 ms_falsify_sample(const ms_tri* T, int w) {
     return m;
 }
 
-/** @brief Find a coplanar captured triangle that covers a moby point's screen position more than one world unit nearer than the depth written for it.
+/** @brief Find the nearest coplanar captured triangle that covers a moby point's screen position, the stand-in for the terrain key owner at its pixel.
  * @param p The point.
- * @param vz The view-Z the snap stage writes for it.
  * @param tt The captured triangles.
  * @param own The coplanar candidates.
  * @param no Their count.
  * @param view H, ofx, ofy.
  * @param zt Receives its view-Z along the point's ray.
  * @return Its index in @p own, or -1. */
-static int ms_falsify_cut(ms_v3 p, double vz, const terrain_snap_tri* tt, const int* own, int no, const float view[3],
-                          double* zt) {
+static int ms_falsify_owner(ms_v3 p, const terrain_snap_tri* tt, const int* own, int no, const float view[3],
+                            double* zt) {
     const ms_v3 ray = { p.x / p.z, p.y / p.z, 1.0 };
     const double x = ray.x * view[0] + view[1], y = ray.y * view[0] + view[2];
+    int best = -1;
     for (int q = 0; q < no; q++) {
         const ms_tri* T = &s_tt[own[q]];
         const double nr = v3dot(T->n, ray);
         if (fabs(nr) < 1e-9 || !ms_in_tri(&tt[own[q]], x, y)) continue;
         const double zT = T->d / nr;
-        if (zT > 1.0 && zT < vz - 1.0) { *zt = zT; return q; }
+        if (zT > 1.0 && (best < 0 || zT < *zt)) { *zt = zT; best = q; }
     }
-    return -1;
+    return best;
 }
 
-/** @brief Classify one cut sample (ms_census.cut_cls) and print it under the census when it lies inside the slab and disc of the covering triangle's plane.
+/** @brief Classify one cut sample (ms_census.cut_cls) and print it under the census when it lies past the covering triangle's plane from the moby's side, within the slab.
  * @param p The sample.
  * @param vz The depth the snap writes for it.
  * @param zt The covering triangle's view-Z on its ray.
@@ -784,28 +674,28 @@ static int ms_falsify_cut(ms_v3 p, double vz, const terrain_snap_tri* tt, const 
  * @param contact Whether the covering triangle is one of the moby's contact triangles.
  * @param tri The moby triangle and sample (tri * 7 + sample).
  * @param view H, ofx, ofy.
- * @return The class: 0 outside the slab or disc, 1 inside under a contact triangle, 2 inside under a non-contact one. */
+ * @return The class: 0 on the moby's side or past the slab, 1 within it under a contact triangle, 2 within it under a non-contact one. */
 static int ms_falsify_class(ms_v3 p, double vz, double zt, const openpete_snap_plane* P, int k, int contact,
                             int tri, const float view[3]) {
     const ms_v3 n = { P->n[0], P->n[1], P->n[2] };
-    const double sd = v3dot(n, p) - P->d, s = P->sslab < 0.0f ? -sd : sd;
-    const ms_v3 q = { p.x - sd * n.x - P->c[0], p.y - sd * n.y - P->c[1], p.z - sd * n.z - P->c[2] };
-    const double disc = v3len(q), slab = fabs((double)P->sslab);
-    if (s >= 0.0 || s < -slab || disc > P->r) return 0;
+    const double s = P->side * (v3dot(n, p) - P->d), slab = P->slab;
+    if (s >= 0.0 || s < -slab) return 0;
     const int cls = contact ? 1 : 2;
     fprintf(stderr, "[moby-snap-cut] key=%u class=%d tri=%d sample=%d sx=%.2f sy=%.2f p=%.2f,%.2f,%.2f vz=%.2f zt=%.2f "
-                    "plane=%d s=%.3f slab=%.3f disc=%.2f r=%.2f\n",
+                    "plane=%d s=%.3f slab=%.3f\n",
             openpete_feed_key_now(), cls, tri / 7, tri % 7, p.x / p.z * view[0] + view[1], p.y / p.z * view[0] + view[2],
-            p.x, p.y, p.z, vz, zt, k, s, slab, disc, (double)P->r);
+            p.x, p.y, p.z, vz, zt, k, s, slab);
     return cls;
 }
 
 /** @brief Count the sample points of a snapped moby that a drawn terrain triangle lying in one of its own planes still covers in front after the snap (a falsifier census).
  *
  * Samples: each triangle's corners, edge midpoints and centroid at key
- * depth. A sample is cut when a captured triangle coplanar with one of the
- * moby's planes (the merge tolerance) covers its screen point at a view-Z
- * more than one world unit nearer than the depth the snap writes for it.
+ * depth. The nearest captured triangle coplanar with one of the moby's
+ * planes (the merge tolerance) covering a sample's screen point stands in
+ * for the terrain key owner there; the sample is cut when that triangle
+ * lies more than one world unit nearer than the depth the snap writes for
+ * it.
  * @param nt The moby's triangle count (s_mt).
  * @param out Its planes.
  * @param np Their count.
@@ -818,7 +708,7 @@ static int ms_falsify_class(ms_v3 p, double vz, double zt, const openpete_snap_p
 static long ms_falsify(int nt, const openpete_snap_plane* out, int np,
                        const terrain_snap_tri* tt, const int* cj, int nc, const float view[3], long cls[3]) {
     double S = 0.0;
-    for (int k = 0; k < np; k++) S = ms_max(S, fabs((double)out[k].sslab));
+    for (int k = 0; k < np; k++) S = ms_max(S, (double)out[k].slab);
     int own[512], ownk[512];
     const int no = ms_falsify_own(out, np, cj, nc, own, ownk, 512);
     long cut = 0;
@@ -826,10 +716,11 @@ static long ms_falsify(int nt, const openpete_snap_plane* out, int np,
         for (int w = 0; w < 7; w++) {
             const ms_v3 p = ms_falsify_sample(&s_mt[i], w);
             if (!(p.z > 1.0)) continue;
-            const double vz = ms_falsify_on() == 2 ? p.z : ms_snap_vz(p, out, np, S);
             double zt = 0.0;
-            const int q = vz >= 0.0 ? ms_falsify_cut(p, vz, tt, own, no, view, &zt) : -1;
+            const int q = ms_falsify_owner(p, tt, own, no, view, &zt);
             if (q < 0) continue;
+            const double vz = ms_falsify_on() == 2 ? p.z : ms_snap_vz(p, out, np, S, zt);
+            if (vz < 0.0 || !(zt < vz - 1.0)) continue;
             cut++;
             cls[ms_falsify_class(p, vz, zt, &out[ownk[q]], ownk[q], s_tcon[own[q]] == s_mserial, i * 7 + w, view)]++;
         }
@@ -872,14 +763,14 @@ static int ms_moby_contact(const ms_moby* mb, const terrain_snap_tri* tt, const 
         s_tcon[j] = s_mserial;
         cs->contacts++;
         cs->contacts_t4 += tt[j].ftris >= 16;
-        if (!ms_plane_add(P, &np, &s_tt[j], tt[j].dside, s_ix, nh, s_pool, nt)) cs->ovf++;
+        if (!ms_plane_add(P, &np, &s_tt[j], tt[j].dside)) cs->ovf++;
     }
     if (t) { t1 = ms_mono_ns(); cs->test_ns += t1 - t; t = t1; }
     if (!np) return 0;
     ms_make_rest(m, nt, view);
     openpete_snap_plane out[MS_MAX_PLANES];
     for (int k = 0; k < np; k++)
-        ms_plane_finish(m, s_mt, nt, mb->dofs, &P[k], s_ix, s_keys, s_seen, s_sdv, &out[k]);
+        ms_plane_finish(s_mt, nt, mb->dofs, &P[k], s_up_p, &out[k]);
     cs->planes += np;
     if (t) cs->plane_ns += ms_mono_ns() - t;
     if (ms_falsify_on()) {
@@ -1022,6 +913,7 @@ static void ms_resolve(void) {
     terrain_snap_view(&view[0], &view[1], &view[2]);
     if (view[0] > 0.0f) {
         openpete_native_snap_view(view[0], view[1], view[2]);
+        ms_up_sync();
         for (int g = 0; g < s_q_nm; g += 128)
             if (!ms_resolve_chunk(g, s_q_nm - g < 128 ? s_q_nm - g : 128, view, &cs)) break;
     }

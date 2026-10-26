@@ -579,7 +579,7 @@ static void cover_planes_clear(void) {
 #define NR_SNAP_ENTS   128
 #define NR_SNAP_PLANES 2048
 typedef struct { uint32_t mid, mord; float off; uint32_t span; } nr_snap_ent;  /* span: first | count << 16 */
-typedef struct { float n[3], d, sslab, c[3], r; uint32_t flags, pad[2]; } nr_snap_plane;   /* 48 bytes */
+typedef struct { float n[3], d, side, slab; uint32_t flags, pad; } nr_snap_plane;   /* 32 bytes */
 typedef struct {
     int      ne, np;                 /* entries and planes held */
     float    H, ofx, ofy, S;         /* the unprojection; S = the largest slab */
@@ -624,23 +624,19 @@ void openpete_native_snap_view(float H, float ofx, float ofy)
     s_snap_live.H = H; s_snap_live.ofx = ofx; s_snap_live.ofy = ofy;
 }
 
-/** @brief Pack one contact plane into the pool's record, with the flags the stage reads.
+/** @brief Pack one contact plane into the pool's record (psx_moby_snap.glsl): normal, offset, side, slab and flags.
  *
- * Bit 0: a contact face is double-sided. Bit 1: the eye (the camera-space
- * origin) lies on the side holding the moby's centre, so the stage pulls
- * the sunk part in front of the plane; otherwise it pushes it behind (only
- * with bit 0, since a single-sided face seen from behind is culled).
+ * Flag bit 0: a contact face is double-sided.
  * @param o Receives the record.
  * @param p The plane. */
 static void snap_plane_pack(nr_snap_plane *o, const openpete_snap_plane *p)
 {
     memcpy(o->n, p->n, sizeof o->n);
-    o->d = p->d; o->sslab = p->sslab;
-    memcpy(o->c, p->c, sizeof o->c);
-    o->r = p->r;
-    const int eye_centre = (-p->d > 0.0f) == (p->sslab > 0.0f);
-    o->flags = (p->dside ? 1u : 0u) | (eye_centre ? 2u : 0u);
-    o->pad[0] = o->pad[1] = 0u;
+    o->d = p->d;
+    o->side = p->side < 0.0f ? -1.0f : 1.0f;
+    o->slab = p->slab;
+    o->flags = p->dside ? 1u : 0u;
+    o->pad = 0u;
 }
 
 int openpete_native_snap_add(uint32_t mid, int mordinal, float off_m,
@@ -655,8 +651,7 @@ int openpete_native_snap_add(uint32_t mid, int mordinal, float off_m,
     e->span = (uint32_t)t->np | ((uint32_t)n << 16);
     for (int k = 0; k < n; k++) {
         snap_plane_pack(&t->pl[t->np++], &pl[k]);
-        const float sl = fabsf(pl[k].sslab);
-        if (sl > t->S) t->S = sl;
+        if (pl[k].slab > t->S) t->S = pl[k].slab;
     }
     t->ver = s_snap_ver_next++;
     return 1;
@@ -5610,6 +5605,15 @@ static const char* snapb_frag_of(const char* frag)
 
 static rhi_ubo* s_snap_ssbo;   /* the snap table's storage block (bind_snap_table) */
 static int s_snap_stages;      /* the ACTOR twins carry the snap (nr_snap_stages) */
+/** @brief Whether the snap table's storage block exists, creating it on first use on a device with 8 descriptor sets (the table sits at set 7).
+ * @param dev Device.
+ * @return 1 when the block exists, else 0. */
+static int nr_snap_table_block(rhi_device* dev)
+{
+    if (!s_snap_ssbo && rhi_device_max_descriptor_sets(dev) >= 8)
+        s_snap_ssbo = rhi_create_ssbo(dev, (uint32_t)((3 + NR_SNAP_ENTS + 2 * NR_SNAP_PLANES) * 16), 1);
+    return s_snap_ssbo != NULL;
+}
 /** @brief Whether the ACTOR twins are built with the sunk-pickup depth snap, creating its table block on first use.
  *
  * Needs OPENPETE_MOBY_SNAP on, a device with 8 descriptor sets (the table
@@ -5627,9 +5631,7 @@ static int nr_snap_stages(rhi_device* dev)
                                     "descriptor sets; sunk pickups draw at true depth");
         return 0;
     }
-    if (!s_snap_ssbo)
-        s_snap_ssbo = rhi_create_ssbo(dev, (uint32_t)((3 + NR_SNAP_ENTS + 3 * NR_SNAP_PLANES) * 16), 1);
-    s_snap_stages = s_snap_ssbo != NULL;
+    s_snap_stages = nr_snap_table_block(dev);
     return s_snap_stages;
 }
 
@@ -10702,7 +10704,7 @@ static uint32_t snap_table_pack(const nr_snap_table* t, const scene_fc_affine* f
     memcpy(e, t->ent, (size_t)t->ne * sizeof *e);
     qsort(e, (size_t)t->ne, sizeof *e, snap_ent_cmp);
     memcpy(w + 12 + 4 * t->ne, t->pl, (size_t)t->np * sizeof t->pl[0]);
-    return (uint32_t)((3 + t->ne + 3 * t->np) * 16);
+    return (uint32_t)((3 + t->ne + 2 * t->np) * 16);
 }
 
 /** @brief Bind the composed scene's snap table at set 7 of a snap stage.
@@ -10716,7 +10718,7 @@ static void bind_snap_table(void)
     static uint64_t s_serial = UINT64_MAX;
     static uint32_t s_ver;
     static scene_fc_affine s_fa;
-    static uint32_t s_words[(3 + NR_SNAP_ENTS + 3 * NR_SNAP_PLANES) * 4];
+    static uint32_t s_words[(3 + NR_SNAP_ENTS + 2 * NR_SNAP_PLANES) * 4];
     if (!s_snap_ssbo) return;
     const nr_snap_table* t = ps_snap();
     scene_fc_affine fa;
@@ -10998,6 +11000,11 @@ static openpete_occl_camera s_occl_cam_live;
 void openpete_native_occl_set_camera(const openpete_occl_camera *c)
 {
     if (c) s_occl_cam_live = *c; else s_occl_cam_live.valid = 0;
+}
+
+void openpete_native_occl_live_camera(openpete_occl_camera *c)
+{
+    if (c) *c = s_occl_cam_live;
 }
 
 typedef struct { float uax, ubx, vay, vby; unsigned stamp;
@@ -12510,6 +12517,7 @@ static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_ma
         .stencil = q->mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
         .material_pipeline = true,
         .uniform_set7 = q->kind == NR_MAT_PORTAL,
+        .ssbo_set7 = q->kind == NR_MAT_ACTOR,
         .push_const_size = sizeof(psx_material_hd),
     };
     const uint32_t* frag = q->kind == NR_MAT_PORTAL ? mg->frag_portal_spv
@@ -12543,18 +12551,21 @@ static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_ma
     return *slot;
 }
 
-/** @brief Return whether a material draw takes the material's actor profile: an opaque draw whose group pipe is an opaque ACTOR twin, of a material with an actor profile.
+/** @brief Return whether a material draw takes the material's actor profile: an opaque draw whose group pipe is an opaque ACTOR twin, of a material with an actor profile, on a device that holds the snap table.
  *
  * The group pipe is a twin exactly where the stock draw exports the
  * tie-pull depth (nr_shell_twin_of), so the material draw exports it where
- * the stock draw does.
+ * the stock draw does. The profile reads the snap table at set 7
+ * (psx_moby_snap.glsl); with OPENPETE_MOBY_SNAP off the table is empty and
+ * the snap moves nothing.
  * @param mg Resolved mod material.
  * @param group The pipe the group's stock draws use.
  * @param blend_class The group's blend class.
  * @return 1 for the actor profile, else 0. */
 static int nr_material_actor(const openpete_mod_material_gpu_t* mg, rhi_pipeline* group,
                              int blend_class) {
-    return blend_class == 0 && mg->frag_actor_spv && group && nr_shell_stock_of(group) != group;
+    return blend_class == 0 && mg->frag_actor_spv && group && nr_shell_stock_of(group) != group &&
+           nr_snap_table_block(s_nr.dev);
 }
 
 /** @brief Return whether an untextured bucket draws its deferred material spans.
@@ -19355,13 +19366,15 @@ static void nr_dt_chain_write(int entry) {
  *
  * A draw-time chain entry's blocks are written on its first bind
  * (nr_dt_chain_write). The actor profile reads the stock profile's chain
- * block, since its module numbers its cases as the stock module does.
+ * block, since its module numbers its cases as the stock module does, and
+ * the scene's snap table at set 7 (bind_snap_table).
  * @param mg The resolved material or chain.
  * @param portal Nonzero when the draw uses the portal profile.
  * @param actor Nonzero when the draw uses the actor profile. */
 static void nr_material_bind(const openpete_mod_material_gpu_t* mg, int portal, int actor) {
     const openpete_mod_cdata_t* cd = portal ? &mg->frag_portal_cdata
                                    : actor  ? &mg->frag_actor_cdata : &mg->frag_cdata;
+    if (actor) bind_snap_table();
     if (mg->chain < 0) {
         openpete_native_material_bind(s_nr.dev, mg->uniform_slot, cd);
         return;
@@ -21134,11 +21147,9 @@ static void terrain_key_dump_snap(const char *stem)
         const int p0 = (int)(E->span & 0xFFFFu), pn = (int)(E->span >> 16);
         for (int k = p0; k < p0 + pn && k < st->np; k++) {
             const nr_snap_plane* P = &st->pl[k];
-            fprintf(fp, "mid=%u mord=%u off=%.3f n=%.7f,%.7f,%.7f d=%.4f sslab=%.4f "
-                        "c=%.3f,%.3f,%.3f r=%.3f flags=%u\n",
+            fprintf(fp, "mid=%u mord=%u off=%.3f n=%.7f,%.7f,%.7f d=%.4f sslab=%.4f flags=%u\n",
                     E->mid, E->mord, (double)E->off, (double)P->n[0], (double)P->n[1],
-                    (double)P->n[2], (double)P->d, (double)P->sslab, (double)P->c[0],
-                    (double)P->c[1], (double)P->c[2], (double)P->r, P->flags);
+                    (double)P->n[2], (double)P->d, (double)(P->side * P->slab), P->flags);
         }
     }
     fclose(fp);

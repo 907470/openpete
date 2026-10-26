@@ -314,6 +314,7 @@ static const char* const k_iface_files[] = {
     "terrain_shade.glsl",           /* retained-terrain engine half       */
     "portal_cover.glsl",            /* portal plane-cover test            */
     "portal_cover_scene.glsl",      /* the scene half's portal profile    */
+    "psx_moby_snap.glsl",           /* the scene half's actor profile     */
 };
 
 /** @brief Feed every staged shader interface file under the SDK directory to a SHA-256 context.

@@ -67,7 +67,9 @@ void main()
         SLOT_CONTEST, DEPTH_REVERSED);
 #endif
 #ifdef OP_MOBY_SNAP
-    zout = op_snap_depth(zout, vRank, DEPTH_REVERSED);
+    zout = op_snap_depth(zout, vRank, vKoff,
+        op_key_from_stored(texelFetch(u_hpkey, ivec2(gl_FragCoord.xy), 0).r),
+        texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0), DEPTH_REVERSED);
 #endif
     gl_FragDepth = zout;
 #endif

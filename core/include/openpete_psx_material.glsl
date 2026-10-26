@@ -56,11 +56,13 @@
  *
  * The walked scene half is compiled a third time with OP_PROFILE_ACTOR
  * defined, for the opaque moby (ACTOR) group: its main() writes the
- * fragment's depth through op_actor_tie_depth (psx_key_contest.glsl), as
- * the engine's own actor stages do, so a moby face whose stored depth
- * carries the tie pull writes its true depth where the terrain key is in a
- * strictly nearer ordering-table slot. No profile adds anything the mod's
- * source sees or writes. */
+ * fragment's depth through op_actor_tie_depth (psx_key_contest.glsl) and
+ * op_snap_depth (psx_moby_snap.glsl, its table at set 7), as the engine's
+ * own actor stages do, so a moby face whose stored depth carries the tie
+ * pull writes its true depth where the terrain key is in a strictly nearer
+ * ordering-table slot, and a pickup sunk into the terrain it rests on
+ * writes a depth in front of it. No profile adds anything the mod's source
+ * sees or writes. */
 
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
 #define OPENPETE_PSX_MATERIAL_GLSL
@@ -213,6 +215,12 @@ layout(constant_id = 4) const bool OP_SLOT_CONTEST = false;
 #define OP_PORTAL_RUNTIME 1
 #include "portal_cover_scene.glsl"
 #endif
+#ifdef OP_PROFILE_ACTOR
+/* The actor profile: the sunk-pickup snap's contact-plane table rides a
+ * storage block at set 7, above the sets this half reserves
+ * (psx_moby_snap.glsl). */
+#include "psx_moby_snap.glsl"
+#endif
 
 layout(push_constant) uniform op_psx_material {
     int tpage_x, tpage_y;   /* texture page origin (VRAM 16-bit-pixel units) */
@@ -315,11 +323,16 @@ vec4 op_material(vec4 base);
 void main()
 {
 #ifdef OP_PROFILE_ACTOR
-    /* The tie-pull depth export of the opaque actor group, written before
-     * any discard; a discarded fragment writes nothing. */
-    gl_FragDepth = op_actor_tie_depth(gl_FragCoord.z, vRank, vKoff,
-        op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r),
-        OP_SLOT_CONTEST, OP_DEPTH_REVERSED);
+    /* The tie-pull depth export of the opaque actor group and the sunk-pickup
+     * snap, written before any discard; a discarded fragment writes
+     * nothing. */
+    {
+        float tkey = op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r);
+        float zout = op_actor_tie_depth(gl_FragCoord.z, vRank, vKoff, tkey,
+                                        OP_SLOT_CONTEST, OP_DEPTH_REVERSED);
+        gl_FragDepth = op_snap_depth(zout, vRank, vKoff, tkey,
+            texelFetch(op_key_terrain_attr, ivec2(gl_FragCoord.xy), 0), OP_DEPTH_REVERSED);
+    }
 #endif
     /* The painter verdicts, as the stock stages run them: which surface
      * exists at this pixel is the engine's decision. */

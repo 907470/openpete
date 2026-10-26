@@ -44,6 +44,18 @@ target_include_directories(portal_cover_slot_test PRIVATE
 set_target_properties(portal_cover_slot_test PROPERTIES C_STANDARD 99)
 add_test(NAME portal_cover_slot_test COMMAND portal_cover_slot_test)
 
+# moby_snap_rule_test - header-only. The sunk-pickup snap's side term and
+# depth rule on synthetic floors and walls: a double-sided floor keeps the
+# upper side from beneath, so the tip hides and the body is not pulled.
+add_executable(moby_snap_rule_test moby_snap_rule_test.c)
+target_include_directories(moby_snap_rule_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+if(NOT WIN32)
+    target_link_libraries(moby_snap_rule_test PRIVATE m)
+endif()
+set_target_properties(moby_snap_rule_test PROPERTIES C_STANDARD 99)
+add_test(NAME moby_snap_rule_test COMMAND moby_snap_rule_test)
+
 # view_rect_test - header-only. The native view scissor equals the pixel set
 # the view's quads cover over a window-size grid; the separately rounded
 # origin-and-size arithmetic is the negative control.

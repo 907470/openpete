@@ -64,7 +64,8 @@ set(OPENPETE_MOD_SDK_SHADERS
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_texel.glsl
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/terrain_shade.glsl
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/portal_cover.glsl
-    ${CMAKE_SOURCE_DIR}/core/rhi/shaders/portal_cover_scene.glsl)
+    ${CMAKE_SOURCE_DIR}/core/rhi/shaders/portal_cover_scene.glsl
+    ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_moby_snap.glsl)
 set(OPENPETE_MOD_SDK_TEST_DIR ${CMAKE_BINARY_DIR}/mod-sdk-test/sdk)
 
 # The test SDK directory's game-neutral half, defined once for every game.

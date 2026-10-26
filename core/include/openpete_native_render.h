@@ -25,6 +25,7 @@
 
 #include "openpete.h" /* openpete_options_t */
 #include "openpete_thread_roles.h" /* OP_SLOT */
+#include "openpete_moby_snap_rule.h" /* openpete_snap_plane */
 
 #ifdef __cplusplus
 extern "C" {
@@ -1709,17 +1710,10 @@ void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
 
 /* ---- sunk-pickup depth snap (psx_moby_snap.glsl) ---------------------- */
 
-/* One contact plane of a pulled moby, in the snap's camera space: the PSX
- * screen point (sx, sy) at view-Z z unprojected as ((sx - ofx) z / H,
+/* A contact plane of a pulled moby (openpete_snap_plane,
+ * openpete_moby_snap_rule.h) lies in the snap's camera space: the PSX screen
+ * point (sx, sy) at view-Z z unprojected as ((sx - ofx) z / H,
  * (sy - ofy) z / H, z) with the view of openpete_native_snap_view. */
-typedef struct {
-    float n[3], d;     /* unit normal and offset: the plane is n.p = d          */
-    float sslab;       /* side * slab: the sign names the side holding the moby's
-                        * vertex-extent midpoint, the magnitude the depth past
-                        * the plane a fragment may lie and still snap            */
-    float c[3], r;     /* the disc: the sunk part's projection on the plane     */
-    int   dside;       /* a contact face is double-sided                        */
-} openpete_snap_plane;
 
 /** @brief Whether the sunk-pickup depth snap is on (OPENPETE_MOBY_SNAP, default on; read once and latched).
  * @return 0 when OPENPETE_MOBY_SNAP starts with '0', else 1. */
@@ -2612,6 +2606,9 @@ typedef struct openpete_occl_camera {
  * depth pre-pass carries the camera it was rasterized under.
  * @param c Camera to copy; NULL marks the published camera invalid. */
 void openpete_native_occl_set_camera(const openpete_occl_camera *c);
+/** @brief Copy the camera the terrain walk now feeding the scene published (openpete_native_occl_set_camera).
+ * @param c Receives the camera; valid is 0 when none is published. */
+void openpete_native_occl_live_camera(openpete_occl_camera *c);
 /** @brief Return 1 when every grid cell over a screen rect is nearer than vz_near: the geometry is occluded.
  *
  * Called on the extracting thread; it reads that thread's copy of the last
