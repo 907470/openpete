@@ -117,7 +117,7 @@ games/common/renderer/moby.c	moby_reextract_body	49	0
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_records_inner	59	0	
 games/common/renderer/moby.c	project_all_shaded	183	0	
-games/common/renderer/moby.c	reextract_record_pass	112	0	
+games/common/renderer/moby.c	reextract_record_pass	106	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
 games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0	

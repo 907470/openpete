@@ -191,6 +191,11 @@ static uint32_t s_rec_snap_words;   /* 0 = no copy; reads pass through */
 static uint32_t s_rec_snap_queued;
 static int      s_rec_snap_ended;
 static int      s_rec_snap_appended;
+/* Trailing-edge records (moby_trail_compose) held past the terminator: they
+ * occupy the slots after it, so every walk that stops on the terminator (the
+ * canonical walk, moby_rec_holds_moby) never reads them, and only the sub-tick
+ * pass reaches them by index (trail_replay_admit). */
+static int      s_rec_snap_trail_n;
 static void moby_rec_append_reset(void);
 
 /* The mobys whose records this tick's reveal appended. The walk reads the
@@ -217,7 +222,7 @@ static int32_t   s_rec_snap_cam_pos[3];
 static struct {
     uint32_t* snap;
     uint32_t  base, words, queued;
-    int       ended, appended;
+    int       ended, appended, trail_n;
     uint32_t  append_moby[REC_APPEND_MOBYS];
     int       append_n;
     unsigned  epoch;
@@ -292,6 +297,7 @@ static void rec_snap_swap(void) {
     REC_SWAP(s_rec_snap_queued, s_rec_prev.queued);
     REC_SWAP(s_rec_snap_ended, s_rec_prev.ended);
     REC_SWAP(s_rec_snap_appended, s_rec_prev.appended);
+    REC_SWAP(s_rec_snap_trail_n, s_rec_prev.trail_n);
     REC_SWAP(s_rec_append_moby_n, s_rec_prev.append_n);
     REC_SWAP(s_rec_snap_epoch, s_rec_prev.epoch);
     REC_SWAP(s_rec_snap_ref_ns, s_rec_prev.ref_ns);
@@ -330,6 +336,7 @@ static void moby_rec_snapshot(CPUState* cpu) {
         s_rec_snap_cam_ok = 1;
     }
     s_rec_snap_words = 0;
+    s_rec_snap_trail_n = 0;
     const uint32_t stride = game_layout.moby.rec_stride;
     if (!stride || (stride & 3u)) return;
     const uint32_t base = moby_rec_base(cpu);
@@ -363,6 +370,7 @@ static void moby_rec_snapshot(CPUState* cpu) {
 static void moby_rec_append_reset(void) {
     s_rec_append_moby_n = 0;
     s_rec_append_gen++;
+    s_rec_snap_trail_n = 0;
     if (!s_rec_snap_words) return;
     const uint32_t sw = game_layout.moby.rec_stride / 4u;
     s_rec_snap_words = s_rec_snap_queued * sw + (s_rec_snap_ended ? 1u : 0u);
@@ -383,6 +391,7 @@ uint32_t* moby_rec_append(uint32_t* addr) {
     uint32_t* w = &s_rec_snap[n * sw];
     memset(w, 0, stride);
     w[sw] = 0u;                                   /* the terminator moves past it */
+    s_rec_snap_trail_n = 0;                       /* the append overwrote the slots past the terminator */
     s_rec_snap_words = (n + 1u) * sw + 1u;
     s_rec_snap_appended++;
     if (addr) *addr = s_rec_snap_base + n * stride;
@@ -3755,16 +3764,18 @@ static void moby_qmiss_census(CPUState* cpu, int sub) {
  * epoch runs the pass more than once, and its sub-tick presents replay the
  * queue of the first run, so later runs of the same epoch are skipped. The
  * previous queue is the previous epoch's first-run queue. A moby of the previous queue that the new queue lacks becomes a
- * candidate when qmiss_s1_cull_admits, run with the
- * drawn byte the previous queue left set (bit 0, the cull's 0x200 box
- * hysteresis), rejects it at this camera; one the mirror admits left the
- * queue for a reason the mirror does not model and is never re-admitted.
- * Only the Spyro 1 cull is mirrored (a game with host_reveal and no
- * cull_view_admits); elsewhere the set stays empty. Prints one
- * [moby-trail] line under OPENPETE_MOBY_QMISS_CENSUS.
+ * candidate when the game's cull (qmiss_admits: the Spyro 1 mirror, or
+ * cull_view_admits at 4:3), run with the drawn byte the previous queue left
+ * set (bit 0, the cull's box hysteresis), rejects it at this camera; one the
+ * cull admits left the queue for a reason the test does not model and is
+ * never re-admitted. Runs for the Spyro 1 mirror (host_reveal, no
+ * cull_view_admits) and for a game with cull_view_admits and reveal_record;
+ * elsewhere the set stays empty. Prints one [moby-trail] line under
+ * OPENPETE_MOBY_QMISS_CENSUS.
  * @param cpu The guest CPU state, read only. */
 static void moby_trail_latch(CPUState* cpu) {
-    if (!moby_game.host_reveal || moby_game.cull_view_admits) return;
+    const int s1_mirror = moby_game.host_reveal && !moby_game.cull_view_admits;
+    if (!s1_mirror && !(moby_game.cull_view_admits && moby_game.reveal_record)) return;
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     if (epoch == s_trail_epoch) return;           /* a speculated pass of the same epoch */
     s_trail_epoch = epoch;
@@ -3775,7 +3786,7 @@ static void moby_trail_latch(CPUState* cpu) {
         int held = 0;
         for (int k = 0; k < s_reg_moby_n && !held; k++) held = s_reg_moby[k] == m;
         if (held) continue;
-        if (qmiss_s1_cull_admits(cpu, m, 1u) == 0) s_trail_cand[s_trail_cand_n++] = m;
+        if (qmiss_admits(cpu, m, 1u) == 0) s_trail_cand[s_trail_cand_n++] = m;
         else kept++;
     }
     memcpy(s_trail_prevq, s_reg_moby, (size_t)s_reg_moby_n * sizeof s_reg_moby[0]);
@@ -3809,7 +3820,7 @@ static int trail_enabled(void) {
  * @param cpu The guest CPU state, read only.
  * @return The records appended. */
 static int append_trailing_regular(CPUState* cpu) {
-    if (!s_trail_cand_n || s_view.extended || openpete_no_lod || !trail_enabled()) return 0;
+    if (!moby_game.host_reveal || !s_trail_cand_n || s_view.extended || openpete_no_lod || !trail_enabled()) return 0;
     if (moby_cutscene_owns_draw(cpu)) return 0;
     int added = 0, admit = 0;
     for (int i = 0; i < s_trail_cand_n; i++) {
@@ -3835,6 +3846,94 @@ static int append_trailing_regular(CPUState* cpu) {
         fprintf(stderr, "[moby-trail key=%u leg=sub] cand=%d admit=%d added=%d\n",
                 openpete_feed_key_now(), s_trail_cand_n, admit, added);
     return added;
+}
+
+/** @brief Compose the trailing-edge candidates' records into the cull copy, past its terminator, on a canonical regular pass.
+ *
+ * For a game that replays the cull's own records on sub-tick presents
+ * (no host_reveal) and composes records with moby_game.reveal_record. Runs
+ * after moby_trail_latch, under the camera the cull ran under, at the
+ * canonical 4:3 view (no widened view, no --no-lod). A candidate the pass
+ * already queued, a dead moby, a run-once moby, and one the cull's 4:3 test
+ * (cull_view_admits, drawn byte 1) admits at this camera are skipped; the
+ * rest go through reveal_record, which appends each after the queue in the
+ * game's own encoding. The appended block then moves one slot up and the
+ * slot it vacates becomes the terminator, so the queue as the canonical walk
+ * reads it is unchanged and the records sit past it, counted by
+ * s_rec_snap_trail_n, and each record's tier goes into the fade table
+ * (record_zsf4, fade_snap_put). The copy is host memory; nothing here writes
+ * guest memory. Prints one [moby-trail] line under OPENPETE_MOBY_QMISS_CENSUS.
+ * @param cpu The guest CPU state, read only. */
+static void moby_trail_compose(CPUState* cpu) {
+    if (moby_game.host_reveal || !moby_game.reveal_record || !moby_game.cull_view_admits) return;
+    if (!s_trail_cand_n || s_view.extended || openpete_no_lod || !trail_enabled()) return;
+    if (!s_rec_snap_words || !s_rec_snap_ended || s_rec_snap_trail_n) return;
+    const uint32_t sw = game_layout.moby.rec_stride / 4u;
+    const uint32_t first = s_rec_snap_queued + (uint32_t)s_rec_snap_appended;
+    int k = 0, declined = 0;
+    for (int i = 0; i < s_trail_cand_n; i++) {
+        const uint32_t m = s_trail_cand[i];
+        if (qmiss_is_held(m) || cpu->read_byte(m + game_layout.moby.state_off) >= 0x80u) continue;
+        if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + game_layout.moby.class_off))) continue;
+        if (qmiss_admits(cpu, m, 1u) != 0) continue;
+        moby_reveal_reason_t why = MOBY_REVEAL_OK;
+        if (moby_game.reveal_record(cpu, m, MOBY_REVEAL_ANIMATED, &why)) k++;
+        else declined++;
+    }
+    if (k) {
+        memmove(&s_rec_snap[(first + 1u) * sw], &s_rec_snap[first * sw], (size_t)k * sw * 4u);
+        memset(&s_rec_snap[first * sw], 0, sw * 4u);
+        s_rec_snap_appended -= k;
+        s_rec_snap_words = (first + 1u + (uint32_t)k) * sw;
+        s_rec_snap_trail_n = k;
+        /* The tick's tier verdict for each record, as the canonical walk
+         * records a queued one, so the sub-tick decode takes the record's
+         * own LOD face list and fade rather than the miss default. */
+        for (int j = 0; j < k; j++) {
+            moby_record_t R;
+            const uint32_t rec = s_rec_snap_base + (first + 1u + (uint32_t)j) * game_layout.moby.rec_stride;
+            if (moby_game.read_record(cpu, rec, &R)) fade_snap_put(cpu, R.moby, record_zsf4(cpu, &R), R.header);
+        }
+    }
+    if (qmiss_census_on())
+        fprintf(stderr, "[moby-trail key=%u leg=canon-compose] cand=%d composed=%d declined=%d\n",
+                openpete_feed_key_now(), s_trail_cand_n, k, declined);
+}
+
+/** @brief Append to a sub-tick pass's record list the trailing-edge records the game's cull admits under the present's camera.
+ *
+ * Reads the records moby_trail_compose put past the copy's terminator. Each
+ * is kept when its moby is not already listed and cull_view_admits at 4:3,
+ * with drawn byte 1, returns MOBY_WIDE_CANONICAL under the guest view, which
+ * holds the present's camera. At the tick's own camera the cull rejected every
+ * one, so the identity present adds nothing. Off under a widened view,
+ * --no-lod and OPENPETE_MOBY_TRAIL=0, and when the pass reads another base
+ * than the copy's.
+ * @param cpu The guest CPU state, read only.
+ * @param recs The pass's record addresses, appended to.
+ * @param mobys The pass's Moby addresses, parallel to recs.
+ * @param nm The entries already listed.
+ * @return The new entry count. */
+static int trail_replay_admit(CPUState* cpu, uint32_t* recs, uint32_t* mobys, int nm) {
+    if (!s_rec_snap_trail_n || s_view.extended || openpete_no_lod || !trail_enabled()) return nm;
+    if (s_rec_base != s_rec_snap_base || !moby_game.cull_view_admits) return nm;
+    const uint32_t stride = game_layout.moby.rec_stride;
+    const uint32_t first = s_rec_snap_queued + (uint32_t)s_rec_snap_appended + 1u;
+    int admit = 0;
+    for (int j = 0; j < s_rec_snap_trail_n && nm < MAX_RECORDS; j++) {
+        const uint32_t rec = s_rec_snap_base + (first + (uint32_t)j) * stride;
+        moby_record_t R;
+        if (!moby_game.read_record(cpu, rec, &R) || R.moby < 0x80000000u) continue;
+        int dup = 0;
+        for (int i = 0; i < nm && !dup; i++) dup = mobys[i] == R.moby;
+        if (dup) continue;
+        if (moby_game.cull_view_admits(cpu, R.moby, 1u, 1.0, 1.0) != MOBY_WIDE_CANONICAL) continue;
+        recs[nm] = rec; mobys[nm] = R.moby; nm++; admit++;
+    }
+    if (qmiss_census_on())
+        fprintf(stderr, "[moby-trail key=%u leg=sub] recs=%d admit=%d\n",
+                openpete_feed_key_now(), s_rec_snap_trail_n, admit);
+    return nm;
 }
 
 /* ---- native scene triangle (fed to panel 0) ------------------------------
@@ -9342,7 +9441,7 @@ static long s_ovl_rebuilt, s_ovl_kept, s_ovl_orphan, s_ovl_borrowed;
  * overlay record in its place (ovl_copy_borrow / ovl_copy_return). */
 static struct {
     uint32_t words, queued, base;
-    int      ended, appended, append_n;
+    int      ended, appended, append_n, trail_n;
     uint32_t append_moby[REC_APPEND_MOBYS];
     uint32_t snap[REC_SNAP_WORDS];
 } s_ovl_lent;
@@ -9542,6 +9641,7 @@ static void ovl_copy_borrow(const uint32_t* rec, uint32_t base) {
     s_ovl_lent.words = s_rec_snap_words;  s_ovl_lent.queued = s_rec_snap_queued;
     s_ovl_lent.base = s_rec_snap_base;    s_ovl_lent.ended = s_rec_snap_ended;
     s_ovl_lent.appended = s_rec_snap_appended;
+    s_ovl_lent.trail_n = s_rec_snap_trail_n;
     s_ovl_lent.append_n = s_rec_append_moby_n;
     memcpy(s_ovl_lent.append_moby, s_rec_append_moby, sizeof s_rec_append_moby);
     memcpy(s_ovl_lent.snap, s_rec_snap, (size_t)s_rec_snap_words * 4u);
@@ -9550,6 +9650,7 @@ static void ovl_copy_borrow(const uint32_t* rec, uint32_t base) {
     s_rec_snap_words = sw + 1u;  s_rec_snap_queued = 1u;
     s_rec_snap_base = base;
     s_rec_snap_ended = 1;  s_rec_snap_appended = 0;  s_rec_append_moby_n = 0;
+    s_rec_snap_trail_n = 0;
     s_rec_append_gen++;
 }
 
@@ -9558,6 +9659,7 @@ static void ovl_copy_return(void) {
     s_rec_snap_words = s_ovl_lent.words;  s_rec_snap_queued = s_ovl_lent.queued;
     s_rec_snap_base = s_ovl_lent.base;    s_rec_snap_ended = s_ovl_lent.ended;
     s_rec_snap_appended = s_ovl_lent.appended;
+    s_rec_snap_trail_n = s_ovl_lent.trail_n;
     s_rec_append_moby_n = s_ovl_lent.append_n;
     memcpy(s_rec_append_moby, s_ovl_lent.append_moby, sizeof s_rec_append_moby);
     memcpy(s_rec_snap, s_ovl_lent.snap, (size_t)s_ovl_lent.words * 4u);
@@ -9707,6 +9809,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
         moby_qmiss_census(cpu, 0);
         moby_trail_latch(cpu);
+        moby_trail_compose(cpu);
     }
     if (feed) {
         if (!is_spec) {
@@ -13552,6 +13655,25 @@ static int moby_present_wbase(CPUState* cpu, uint32_t moby) {
     return 1 + moby_otk_world_key(b < 0 ? 0 : b);
 }
 
+/** @brief The records a sub-tick pass replays: the cull queue at s_rec_base up to its terminator, then on a regular pass of a game without host reveal the admitted trailing-edge records (trail_replay_admit).
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param is_spec Nonzero for the specular pass.
+ * @param recs Receives the record addresses, MAX_RECORDS entries.
+ * @param mobys Receives each record's Moby address.
+ * @return The entries listed. */
+static int reextract_record_list(CPUState* cpu, int is_spec, uint32_t* recs, uint32_t* mobys) {
+    int nm = 0;
+    for (int r = 0; r < MAX_RECORDS; r++) {
+        uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
+        moby_record_t R;
+        if (!moby_game.read_record(cpu, rec, &R)) break;   /* queue terminator */
+        if (R.moby >= 0x80000000u && nm < MAX_RECORDS) { recs[nm] = rec; mobys[nm] = R.moby; nm++; }
+    }
+    if (!is_spec && !moby_game.host_reveal) nm = trail_replay_admit(cpu, recs, mobys, nm);
+    return nm;
+}
+
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
  *
  * The pass rebuilds each record's fields from gamestate under the present's
@@ -13566,12 +13688,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
     s_rec_base = game_layout.moby.rec_base ? game_layout.moby.rec_base : s_rec_base_canon;
     if (!s_rec_base) { s_walk_in_rex = 0; s_pass_overlay = 0; return 0; }
-    for (int r = 0; r < MAX_RECORDS; r++) {
-        uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
-        moby_record_t R;
-        if (!moby_game.read_record(cpu, rec, &R)) break;   /* queue terminator */
-        if (R.moby >= 0x80000000u && nm < MAX_RECORDS) { recs[nm] = rec; mobys[nm] = R.moby; nm++; }
-    }
+    nm = reextract_record_list(cpu, is_spec, recs, mobys);
     s_cur_mat = mat;
     s_proj_n = 0; s_nrecs = 0;
     static uint32_t culled_moby[MAX_RECORDS]; int culled_n = 0;
