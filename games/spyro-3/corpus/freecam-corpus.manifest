@@ -142,3 +142,5 @@ midnight_mountain@glintdepth | pos=(108418, 95872, 10261) yaw=-1196 pitch=205 | 
 # a gem's additive shell never snapped while its dark core did: the core's sunk
 # part drew in front of the terrain with no shell over it, a black wedge
 midnight_mountain@snapb | pos=(108418, 95872, 10261) yaw=-1196 pitch=205 | 2473 | --vertex-precision integer --raster-quantize 2
+# coffin idle shake: two step faces tie in one paint bucket and switch every few ticks (the mirrored side does not)
+haunted_tomb | pos=(41871, 84782, 20347) yaw=-1837 pitch=71 | 2629
