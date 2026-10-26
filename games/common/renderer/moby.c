@@ -1854,7 +1854,12 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  double zf;        /* the present's ZSF4 at full precision,
                                     * read only when zf_on (fade_snap_present_z);
                                     * the tier and face set stay zsf4's */
-                 uint8_t zf_on; } rec_meta;
+                 uint8_t zf_on;
+                 int wbase_p1;     /* 1 + the world bucket base the cull's
+                                    * formula gives at this present's camera
+                                    * (moby_present_wbase); 0: the cull
+                                    * record's own */
+               } rec_meta;
                  /* spec_solo (trailing, set after the positional literal) =
                  * reveal-built record whose moby is in NO .s queue this tick
                  * (beyond canonical range under --lod extended, or off-4:3)
@@ -3231,18 +3236,32 @@ static int append_revealed_regular_inner(CPUState* cpu) {
  * gameplay reads on the next tick, stays the canonical cull's. */
 static int moby_verify_enabled(void);
 
-void moby_cull_centre(CPUState* cpu, uint32_t moby, const int32_t cam[3], const int M[3][3],
-                      int ir16, int32_t d[3], int64_t mac[3]) {
-    const uint32_t p = moby + game_layout.moby.pos_off;
-    d[0] = (int32_t)(cpu->read_word(p + 0u) - (uint32_t)cam[0]) >> 2;
-    d[1] = (int32_t)((uint32_t)cam[1] - cpu->read_word(p + 4u)) >> 2;
-    d[2] = (int32_t)((uint32_t)cam[2] - cpu->read_word(p + 8u)) >> 2;
+/** @brief The cull's centre MVMVA (moby_cull_centre) for a moby position given as three words instead of read from the moby.
+ *
+ * @param pos The moby's X, Y and Z position words.
+ * @param cam The camera position words.
+ * @param M The camera matrix, 1.0 = 4096, or NULL.
+ * @param ir16 Nonzero to truncate each delta to the cull's 16-bit IR register.
+ * @param d Receives the X, Y and Z deltas.
+ * @param mac Receives the view-space centre x, y, z; unused when `M` is NULL. */
+static void moby_cull_centre_at(const uint32_t pos[3], const int32_t cam[3], const int M[3][3],
+                                int ir16, int32_t d[3], int64_t mac[3]) {
+    d[0] = (int32_t)(pos[0] - (uint32_t)cam[0]) >> 2;
+    d[1] = (int32_t)((uint32_t)cam[1] - pos[1]) >> 2;
+    d[2] = (int32_t)((uint32_t)cam[2] - pos[2]) >> 2;
     if (!M) return;
     const int64_t ir1 = ir16 ? (int16_t)d[1] : d[1],
                   ir2 = ir16 ? (int16_t)d[2] : d[2],
                   ir3 = ir16 ? (int16_t)d[0] : d[0];
     for (int i = 0; i < 3; i++)
         mac[i] = ((int64_t)M[i][0] * ir1 + (int64_t)M[i][1] * ir2 + (int64_t)M[i][2] * ir3) >> 12;
+}
+
+void moby_cull_centre(CPUState* cpu, uint32_t moby, const int32_t cam[3], const int M[3][3],
+                      int ir16, int32_t d[3], int64_t mac[3]) {
+    const uint32_t p = moby + game_layout.moby.pos_off;
+    const uint32_t pos[3] = { cpu->read_word(p + 0u), cpu->read_word(p + 4u), cpu->read_word(p + 8u) };
+    moby_cull_centre_at(pos, cam, M, ir16, d, mac);
 }
 
 int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f) {
@@ -5300,8 +5319,11 @@ static struct { int worker, start, count; } s_pre_rec[MAX_RECORDS];
  * Every triangle of a face takes one value: the face's local bucket array
  * entry (its bucket word's bucket plus the record's array offset) through
  * moby_otk_splice_bucket with the splice the game's otkey_splice reads from
- * the cull record. Triangles of a face with no bucket word, and every
- * triangle of a record with no splice (no hook, no cull record address, no
+ * the cull record. On a sub-tick present the world bucket base is the cull's
+ * own formula at that present's camera (rec_meta.wbase_p1), so the face's
+ * bucket and the terrain keys re-walked at that camera share one view.
+ * Triangles of a face with no bucket word, and every triangle of a record
+ * with no splice (no hook, no cull record address, no
  * paint key, no filled entry), keep -1.
  * @param cpu The guest CPU state, read only.
  * @param R The record.
@@ -5314,6 +5336,7 @@ static void moby_record_world_buckets(CPUState* cpu, const rec_meta* R,
     if (ltop < 0 || ltop >= MOBY_OTK_ARRAY_LIMIT || otk->row == MOBY_OTK_NONE ||
         !moby_game.otkey_splice || !moby_game.otkey_splice(cpu, R->addr, &wbase, &n))
         return;
+    if (R->wbase_p1 > 0) wbase = R->wbase_p1 - 1;
     wbase = moby_otk_depth_bucket(wbase);
     mn_out* O = t_out;
     for (int i = tri0; i < O->n; i++) {
@@ -7600,7 +7623,7 @@ static void native_rank_build(void) {
 #define RC_SIZE (1 << RC_BITS)
 /* An entry belongs to its table only while its generation is the table's, so
  * a new epoch empties a table by giving it a fresh generation. */
-typedef struct { uint32_t moby, fkey; int32_t rank; uint32_t gen : 31, cont : 1; int16_t wbk; } rc_ent;
+typedef struct { uint32_t moby, fkey; int32_t rank; uint32_t gen : 31, cont : 1; int16_t wbk, zb; } rc_ent;
 /* Endpoint census (OPENPETE_RANK_EP): a moby's tier face block at one build,
  * live while gen is the owning table's (or the census's own walk generation). */
 #define RCM_BITS 12
@@ -7737,6 +7760,64 @@ static rc_tab* rank_carry_table_for(uint32_t ep, unsigned scene) {
     rank_carry_empty(t, ep, scene);
     return t;
 }
+/** @brief The view-space centre Z the animated cull stores in GTE TRZ for a moby, at the camera of the walk now feeding.
+ *
+ * The cull's centre MVMVA with 16-bit IR deltas (moby_cull_centre_at; Spyro 2
+ * mobydraw.s 0x80043A10-0x80043A50, TR loaded at 0x80043B04-0x80043B0C;
+ * Spyro 3 0x80030630-0x80030670, 0x80030724-0x8003072C) over the floored
+ * camera of s_view and the moby's floored interpolated position
+ * (openpete_native_interp_pos), or its position words where none resolves.
+ * At a canonical present and at alpha 1 both are the tick's words, so the
+ * value is the cull's own TRZ.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @return TRZ. */
+static int32_t moby_present_trz(CPUState* cpu, uint32_t moby) {
+    const uint32_t p = moby + game_layout.moby.pos_off;
+    uint32_t pos[3] = { cpu->read_word(p + 0u), cpu->read_word(p + 4u), cpu->read_word(p + 8u) };
+    double mf[3];
+    if (openpete_native_interp_pos(moby, mf))
+        for (int i = 0; i < 3; i++) pos[i] = (uint32_t)(int32_t)floor(mf[i]);
+    const int32_t cam[3] = { (int32_t)floor(s_view.cam[0]), (int32_t)floor(s_view.cam[1]),
+                             (int32_t)floor(s_view.cam[2]) };
+    int32_t d[3];
+    int64_t mac[3];
+    moby_cull_centre_at(pos, cam, (const int (*)[3])s_view.cam_M, 1, d, mac);
+    return (int32_t)mac[2];
+}
+
+/** @brief The world ordering-table bucket the animated cull forms from TRZ before m_DepthOffset: (TRZ << 2) >> 7 in 32 bits.
+ *
+ * Spyro 2 mobydraw.s 0x80043F78 / 0x80043F98 (sll 2) and 0x80043FB0 (sra 7);
+ * Spyro 3 0x80030B98 / 0x80030BB8 and 0x80030BD0.
+ * @param trz The centre Z (moby_present_trz).
+ * @return The bucket. */
+static int moby_trz_bucket(int32_t trz) {
+    return (int32_t)((uint32_t)trz << 2) >> 7;
+}
+
+/* The last moby moby_centre_bucket resolved and its bucket. */
+typedef struct { uint32_t moby; int zb; } moby_zb_memo;
+
+/** @brief The world ordering-table bucket of a moby's centre at the camera of the walk now feeding, before m_DepthOffset.
+ *
+ * moby_trz_bucket of moby_present_trz, saturated to the int16 range of the
+ * carry entry that stores it. Two presents' world buckets for one moby face
+ * differ by the difference of this value, while the face's local bucket and
+ * m_DepthOffset hold.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param memo The last moby resolved, updated.
+ * @return The bucket; 0 for a host moby. */
+static int moby_centre_bucket(CPUState* cpu, uint32_t moby, moby_zb_memo* memo) {
+    if (moby < 0x80000000u) return 0;
+    if (memo->moby == moby) return memo->zb;
+    memo->moby = moby;
+    const int zb = moby_trz_bucket(moby_present_trz(cpu, moby));
+    memo->zb = zb > INT16_MAX ? INT16_MAX : (zb < INT16_MIN ? INT16_MIN : zb);
+    return memo->zb;
+}
+
 /** @brief Store this feed's face ranks and world buckets in the carry table of its scene build.
  *
  * Runs for every feed that is not a sub-tick re-extract, runahead's
@@ -7745,13 +7826,17 @@ static rc_tab* rank_carry_table_for(uint32_t ep, unsigned scene) {
  * The table is the one rank_carry_table_for gives the current canonical epoch
  * and native scene build. For each s_gout triangle with a nonzero moby it
  * inserts or replaces the entry keyed by (moby, face key) with the rank and
- * the contest flag (0 and 0 when the rank is not positive) and the world
- * bucket, probing linearly from rc_hash, so the table holds every face the
+ * the contest flag (0 and 0 when the rank is not positive), the world
+ * bucket and, for a face with one, the moby's centre bucket
+ * (moby_centre_bucket), probing linearly from rc_hash, so the table holds
+ * every face the
  * build walked and an absent face is one it did not walk. Once the table
  * holds three quarters of RC_SIZE keys every remaining triangle is skipped,
- * replacements included; a skipped face reads back as absent. */
-static void rank_carry_store(void) {
+ * replacements included; a skipped face reads back as absent.
+ * @param cpu The guest CPU state, read only. */
+static void rank_carry_store(CPUState* cpu) {
     rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp(), openpete_native_scene_frame());
+    moby_zb_memo zm = { 0u, 0 };
     if (rank_ep_mode()) rcm_fill(t->m, t->gen);
     for (int i = 0; i < s_gout.n; i++) {
         if (!s_wtri_moby[i] || t->n >= RC_SIZE - (RC_SIZE >> 2)) continue;
@@ -7761,8 +7846,9 @@ static void rank_carry_store(void) {
             h = (h + 1) & (RC_SIZE - 1);
         if (t->e[h].gen != t->gen) t->n++;
         const int ranked = s_nrank[i] > 0;
+        const int zb = s_wtri_wbk[i] >= 0 ? moby_centre_bucket(cpu, s_wtri_moby[i], &zm) : 0;
         t->e[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], ranked ? s_nrank[i] : 0, t->gen,
-                            ranked ? s_wtri_contest[i] : 0u, s_wtri_wbk[i] };
+                            ranked ? s_wtri_contest[i] : 0u, s_wtri_wbk[i], zb };
     }
 }
 /** @brief Look up a face's carry entry in one table.
@@ -8010,17 +8096,36 @@ static void rank_fresh_pass(int fresh) {
         i0 = i1;
     }
 }
+/** @brief The world bucket a carry entry gives its face at this present's camera.
+ *
+ * The stored bucket moved by the change of the moby's centre bucket
+ * (moby_centre_bucket) from the camera of the feed that stored the entry to
+ * the camera of the walk now feeding, floored at 0, so the face sorts
+ * against terrain keys walked at this present's camera.
+ * @param cpu The guest CPU state, read only.
+ * @param e The entry.
+ * @param moby The face's moby, the entry's.
+ * @param zm The last moby resolved, updated.
+ * @return The bucket, or -1 when the entry holds none. */
+static int16_t rank_carry_present_wbk(CPUState* cpu, const rc_ent* e, uint32_t moby, moby_zb_memo* zm) {
+    if (e->wbk < 0) return -1;
+    const int w = e->wbk + moby_centre_bucket(cpu, moby, zm) - e->zb;
+    return (int16_t)(w < 0 ? 0 : (w > INT16_MAX ? INT16_MAX : w));
+}
 /** @brief Give this present's triangles the ranks, contest flags and world buckets of its carry table.
  *
  * Each s_gout triangle takes the entry of its (moby, face key) from
  * rank_carry_endpoint's table into s_nrank and s_wtri_contest, and 0 for both
  * when there is no table, no moby, or no entry. A triangle the walk left with
- * no world bucket takes the entry's. Counts triangles with a positive rank
- * into s_rc_hit and the others into s_rc_miss, and empties the intersection
- * pair list (s_ip_n). Then every eligible face absent from the table takes
- * the rank and contest flag of this walk (rank_fresh_pass). */
-static void rank_carry_apply(void) {
+ * no world bucket takes the entry's at this present's camera
+ * (rank_carry_present_wbk). Counts triangles with a positive rank into
+ * s_rc_hit and the others into s_rc_miss, and empties the intersection pair
+ * list (s_ip_n). Then every eligible face absent from the table takes the rank
+ * and contest flag of this walk (rank_fresh_pass).
+ * @param cpu The guest CPU state, read only. */
+static void rank_carry_apply(CPUState* cpu) {
     const rc_tab* t = rank_carry_endpoint();
+    moby_zb_memo zm = { 0u, 0 };
     const int census = rank_ep_mode() != 0;
     if (census) {
         s_ep_cur_gen = s_ep_cur_gen + 1 ? s_ep_cur_gen + 1 : 1;
@@ -8033,7 +8138,7 @@ static void rank_carry_apply(void) {
         if (census && s_wtri_moby[i]) e = rank_ep_count(t, i, e);
         s_nrank[i] = e ? e->rank : 0;
         s_wtri_contest[i] = e ? e->cont : 0;
-        if (e && s_wtri_wbk[i] < 0) s_wtri_wbk[i] = e->wbk;
+        if (e && s_wtri_wbk[i] < 0) s_wtri_wbk[i] = rank_carry_present_wbk(cpu, e, s_wtri_moby[i], &zm);
         if (s_nrank[i] > 0) s_rc_hit++; else s_rc_miss++;
     }
     s_ip_n = 0;
@@ -8218,16 +8323,17 @@ static void rank_ep_report(void) {
  * carry does not cover, and computes them otherwise.
  * Inert unless the native rank or the intersection log is on. Also emits the
  * rank-time, rank-carry and select census lines and runs the calibration
- * instrument when each is enabled. */
-static void moby_rank_prepare(void) {
+ * instrument when each is enabled.
+ * @param cpu The guest CPU state, read only. */
+static void moby_rank_prepare(CPUState* cpu) {
     if (!openpete_mobyrank_on() && !isect_log_on()) return;
     int carry = s_in_reextract && rank_carry_on();
     uint64_t t0 = rt_now(), c0 = rt_cpu_ns();
-    if (carry) rank_carry_apply(); else isect_census();
+    if (carry) rank_carry_apply(cpu); else isect_census();
     rank_stage_time(RT_ISECT, t0, c0);
     t0 = rt_now(); c0 = rt_cpu_ns();
     if (!carry) native_rank_build();
-    if (!s_in_reextract) rank_carry_store();
+    if (!s_in_reextract) rank_carry_store(cpu);
     rank_stage_time(RT_RANK, t0, c0);
     rt_report(s_cur_mat, s_gout.n);
     if (isect_log_on()) {
@@ -8666,7 +8772,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
-    moby_rank_prepare();
+    moby_rank_prepare(cpu);
     moby_tri_debug();
     moby_rank_ordinals_t rord;  /* this walk's ranked-moby ordinals */
     moby_rank_ordinals_begin(&rord);
@@ -13180,6 +13286,25 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
     return 1;
 }
 
+/** @brief The world bucket base the animated cull stores at record +0x18, computed at this present's camera, plus one; 0 at alpha 1.
+ *
+ * The cull's bucket of its centre (moby_trz_bucket of moby_present_trz) less
+ * m_DepthOffset (the angle word's top byte: lw 0x44, sra 24), floored at 0
+ * and moved 0x20 buckets on at 0x110 and beyond (moby_otk_world_key)
+ * (Spyro 2 mobydraw.s 0x80043FB0-0x8004402C, Spyro 3 0x80030BD0-0x80030C4C).
+ * A sub-tick present re-walks the terrain keys at its interpolated camera;
+ * the record holds the tick's base, and a face within a bucket of terrain
+ * would flip at the tick rate between presents.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @return 1 + the base, or 0 at alpha 1, for a host moby, or a game without the splice. */
+static int moby_present_wbase(CPUState* cpu, uint32_t moby) {
+    if (s_rc_alpha >= 1.0 || moby < 0x80000000u || !moby_game.otkey_splice) return 0;
+    const int dofs = (int8_t)cpu->read_byte(moby + game_layout.moby.angle_off + 3u);
+    const int b = moby_trz_bucket(moby_present_trz(cpu, moby)) - dofs;
+    return 1 + moby_otk_world_key(b < 0 ? 0 : b);
+}
+
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
  *
  * The pass rebuilds each record's fields from gamestate under the present's
@@ -13371,6 +13496,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             prev->frame_a, prev->header, (float)pd.alpha };
+        s_recs[s_nrecs].wbase_p1 = moby_present_wbase(cpu, mobys[i]);
         s_recs[s_nrecs].model_held = pd.model_held;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
