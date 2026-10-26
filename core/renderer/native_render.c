@@ -356,6 +356,7 @@ typedef struct {
     int key_order;  /* draws by key order against terrain - see openpete_scene_tri */
     int ot_slot1;   /* 1 + ordering-table slot, 0 unknown - see openpete_scene_tri */
     uint32_t kattr; /* terrain override inputs - see openpete_scene_tri */
+    float skey;     /* snap-only key of a blended actor face - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -8423,6 +8424,43 @@ static inline float scene_rank_channel(const scene_tri_t *st)
     return (st->rank == 0.0f && st->kattr) ? OPENPETE_SCENE_KATTR(st->kattr) : st->rank;
 }
 
+/** @brief Return whether the composed scene's blended ACTOR faces draw through the blended snap twin (draw_blended_world).
+ *
+ * The device built the snap stages and the composed scene's snap table holds
+ * an entry.
+ * @return 1 when they do, else 0. */
+static inline int bw_snap_live(void)
+{
+    return s_snap_stages && ps_snap()->ne > 0;
+}
+
+/** @brief Return whether a scene face's textured run draws through a mod material (draw_run_material's resolve).
+ * @param st Scene triangle.
+ * @return 1 when a material resolves for its tag, else 0. */
+static int scene_tri_material(const scene_tri_t *st)
+{
+    openpete_mod_material_gpu_t mg;
+    return st->textured && st->blend != 4 && tag_split_on() && st->tag &&
+           openpete_mods_material_resolve(st->tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0;
+}
+
+/** @brief Return the key channel a scene face's vertices carry: koff, or the snap-only key of a blended ACTOR face the blended snap twin draws.
+ *
+ * The blended snap twin's stage reads a non-aura face's key in the snap
+ * alone and contests nothing with it (psx_moby_snap.glsl
+ * op_snapb_contest_koff). Every other stage a blended ACTOR face can reach
+ * (the cover twin while no snap table entry exists, a mod material's run)
+ * contests a key, so there the face keeps koff, 0.
+ * @param st Scene triangle.
+ * @return The channel value. */
+static inline float scene_key_channel(const scene_tri_t *st)
+{
+    if (st->skey > 0.25f && st->blend != 0 && st->category == OPENPETE_SCENE_ACTOR &&
+        bw_snap_live() && !scene_tri_material(st))
+        return st->skey;
+    return st->koff;
+}
+
 /** @brief Pack scene vertex k of st into o: clip-space position through scene_to_clip, depth, the given UV, colour, key offset, moby paint pair and drain fields.
  *
  * The one vertex layout every scene pass of draw_native_scene and the depth
@@ -8438,7 +8476,7 @@ static inline void pack_scene_vert(rhi_vertex *o, const scene_tri_t *st, int k, 
     scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
     o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
     o->u = u; o->v = v;
-    o->rgba = st->v[k].rgba; o->koff = st->koff;
+    o->rgba = st->v[k].rgba; o->koff = scene_key_channel(st);
     o->sx = scene_rank_channel(st); o->sy = scene_rank_moby(st);
     rv_drain(o, st, k);
 }
@@ -14792,6 +14830,41 @@ static int bw_snap_tri(const scene_tri_t* t, int snap_on)
     return snap_on && t->category == OPENPETE_SCENE_ACTOR;
 }
 
+/** @brief Print the blended ACTOR faces of a blended-world block the snap reaches, on stderr, under OPENPETE_SNAPB_CENSUS=1.
+ *
+ * One line per block draw: the block's blended ACTOR faces, those whose
+ * vertices carry a snap-only key (scene_key_channel), and those of them
+ * whose moby holds a snap table entry, which the blended snap twin can move
+ * (op_snap_entry: the ordinal of a ranked face, else the moby identity).
+ * @param scene Scene triangles.
+ * @param base Offset of the block in s_txscene.
+ * @param ntri Triangle count of the block.
+ * @param snap_on Nonzero when the block's ACTOR faces draw through the snap twin. */
+static void bw_snapb_census(const scene_tri_t* scene, int base, int ntri, int snap_on)
+{
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_SNAPB_CENSUS"); s_on = e && *e == '1'; }
+    if (!s_on) return;
+    const nr_snap_table* tab = ps_snap();
+    int actor = 0, keyed = 0, listed = 0;
+    for (int i = 0; i < ntri; i++) {
+        const scene_tri_t* t = &scene[s_txscene[base + i]];
+        if (t->category != OPENPETE_SCENE_ACTOR || t->blend == 0) continue;
+        actor++;
+        if (!snap_on || t->rank < -1.5f || !(t->skey > 0.25f) ||
+            scene_key_channel(t) != t->skey) continue;
+        keyed++;
+        const int ranked = t->rank > 0.5f;
+        for (int k = 0; k < tab->ne; k++)
+            if (ranked ? (int)tab->ent[k].mord == t->mordinal : tab->ent[k].mid == t->mid) {
+                listed++;
+                break;
+            }
+    }
+    fprintf(stderr, "[snapb] frame=%u snap_on=%d table_ents=%d blended_actor=%d keyed=%d listed=%d\n",
+            s_scene_frame, snap_on, tab->ne, actor, keyed, listed);
+}
+
 /** @brief Draw the blended world block in emission order, one draw per run of one class and texturing mode.
  *
  * This replaces one fixed class draw after another. The guest links these
@@ -14812,7 +14885,8 @@ static int bw_snap_tri(const scene_tri_t* t, int snap_on)
 static void draw_blended_world(const scene_tri_t* scene, int tx_start,
                                int first_vert, int vert_count, int tercache_on) {
     const int base = (first_vert - tx_start) / 3, ntri = vert_count / 3;
-    const int snap_on = s_snap_stages && ps_snap()->ne > 0;
+    const int snap_on = bw_snap_live();
+    bw_snapb_census(scene, base, ntri, snap_on);
     int pos[3] = { ntri, ntri, ntri };
     if (tercache_on) bw_tercache_slots(scene, base, ntri, pos);
     int c = 0, i = 0;

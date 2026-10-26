@@ -8741,6 +8741,31 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
     }
 }
 
+/** @brief Stamp a walk face's ordering-table key: koff on an opaque ACTOR face, skey on a blended one.
+ *
+ * A face is keyed while moby_face_key_on and key resolve are on, when it is
+ * an ACTOR face of a moby whose screen footprint is the true projection (not
+ * mangled). The key is moby_tri_contest_key + 0.5. An opaque face carries it
+ * in koff and takes its class's prop and key-order flags. A blended face
+ * carries it in skey, which the snap alone reads: it stays out of the key
+ * images and the contest, and the snap draws its sunk part in front of the
+ * terrain whose key sorts behind it, as it does the opaque faces under it.
+ * @param i Walk triangle index.
+ * @param cat The face's scene category.
+ * @param td_live moby_model_table_is_game, for moby_class_true_depth.
+ * @param ko_live moby_key_order_table_live, for moby_class_draws_by_key.
+ * @param t The scene triangle, blend set; its key fields are written. */
+static void moby_face_stamp_key(int i, int cat, int td_live, int ko_live, openpete_scene_tri* t) {
+    if (!moby_face_key_on() || cat != OPENPETE_SCENE_ACTOR || s_wtri_mangle[i] ||
+        !s_wtri_moby[i] || !openpete_native_key_resolve_on()) return;
+    const float key = (float)(moby_tri_contest_key(i, moby_class_true_depth(s_wtri_cls[i], td_live)) + 0.5);
+    if (t->blend != 0) { t->skey = key; return; }
+    t->koff = key;
+    /* Embedded-PROP classes: rendered whole from every angle. */
+    t->prop = moby_class_is_prop(s_wtri_cls[i]);
+    t->key_order = moby_class_draws_by_key(s_wtri_cls[i], ko_live);
+}
+
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
  * Does nothing unless the moby render path is selected. Appends to the scene
@@ -8821,22 +8846,15 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * face contests nearer keys except those its own moby owns
          * (op_akey_select).
          * Blend/FRONT/HUD classes
-         * stay unkeyed - and so do MANGLED faces (near-plane fixup /
+         * stay unkeyed (a blended ACTOR face carries its key for the snap
+         * alone, skey) - and so do MANGLED faces (near-plane fixup /
          * coordinate saturation): their screen footprint is not the true
          * projection, so a flat key stamped across one discards terrain
          * far outside the moby's real silhouette (a right-at-the-camera
          * moby flooded a whole wall away). A genuinely-near moby needs no
          * key anyway - it is the viewer-side surface and TRUE depth
          * already wins its own pixels. */
-        {
-          if (moby_face_key_on() && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
-              !s_wtri_mangle[i] &&
-              s_wtri_moby[i] && openpete_native_key_resolve_on()) {
-              t.koff = (float)(moby_tri_contest_key(i, moby_class_true_depth(s_wtri_cls[i], td_live)) + 0.5);
-              /* Embedded-PROP classes: rendered whole from every angle. */
-              t.prop = moby_class_is_prop(s_wtri_cls[i]);
-              t.key_order = moby_class_draws_by_key(s_wtri_cls[i], ko_live);
-          } }
+        moby_face_stamp_key(i, cat, td_live, ko_live, &t);
         /* Rank: the face's paint position while it intersects another face
          * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate
          * saturation) are never ranked, like they are never keyed: their

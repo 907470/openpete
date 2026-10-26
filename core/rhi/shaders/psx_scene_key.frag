@@ -126,6 +126,11 @@ void main()
 #endif
     gl_FragDepth = zout;
 #endif
+#if defined(OP_MOBY_SNAP) && defined(OP_PORTAL_COVER)
+    float ckoff = op_snapb_contest_koff(vKoff, vRank);   /* the blended snap twin */
+#else
+    float ckoff = vKoff;
+#endif
     /* Set 2 = TERRAIN og KEYS (keyed WORLD faces as their ABSOLUTE og key
      * laid flat - og's per-pixel OT occupancy). Set 1 = MOBY og KEYS
      * (keyed opaque ACTOR faces, same encoding). Set 3 = PROP TRUE DEPTH
@@ -150,7 +155,7 @@ void main()
      * rank winner while the select kills everything under it (a hole to the
      * clear). The face still STAMPS its key, so keyed terrain keeps yielding
      * to it. */
-    float koff = op_drain_koff(vKoff, vRank.y, uv, u_drain);
+    float koff = op_drain_koff(ckoff, vRank.y, uv, u_drain);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead -

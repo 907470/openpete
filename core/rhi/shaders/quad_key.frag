@@ -73,6 +73,11 @@ void main()
 #endif
     gl_FragDepth = zout;
 #endif
+#if defined(OP_MOBY_SNAP) && defined(OP_PORTAL_COVER)
+    float ckoff = op_snapb_contest_koff(vKoff, vRank);   /* the blended snap twin */
+#else
+    float ckoff = vKoff;
+#endif
     bool ranked = vRank.x > 0.5;
     float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
 #ifdef OP_PORTAL_COVER
@@ -83,13 +88,13 @@ void main()
         op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;
     /* Ranked faces skip the positive-koff contest - see psx_key_contest.glsl. */
-    if (!ranked && abs(vKoff) > 0.25) {
+    if (!ranked && abs(ckoff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead: it
          * orders against actor and player keys by ordering-table slot and
          * against terrain by its own true depth. */
         if (vRank.x < -1.5) {
             if (op_aura_loses(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
-                              vKoff - 0.5))
+                              ckoff - 0.5))
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
@@ -99,7 +104,7 @@ void main()
                     texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
                     op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
-                own, vKoff, op_key_fattr_walk(vRank.x),
+                own, ckoff, op_key_fattr_walk(vRank.x),
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
                 op_rank_is_prop(vRank.x),
                 MOBY_TRUESCOPE, SLOT_CONTEST))
@@ -110,7 +115,7 @@ void main()
     int ko = (!ranked && vRank.x > -0.5)
         ? op_key_order_yields(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
                               texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
-                              vKoff, SLOT_CONTEST)
+                              ckoff, SLOT_CONTEST)
         : 0;
     if (ko == 1) discard;
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vColor / vQ;

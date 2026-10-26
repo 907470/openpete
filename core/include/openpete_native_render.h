@@ -1191,6 +1191,12 @@ typedef struct {
                   * distance from the eye to the triangle's plane = (q/64)^2
                   * world. An unranked face (rank 0) carries it in the rank
                   * channel as 0.25 + kattr * 2^-25 (OPENPETE_SCENE_KATTR). */
+    float skey;  /* snap-only key of a blended actor face, koff's encoding
+                  * (absolute key + 0.5; 0 = none). The face's vertices
+                  * carry it in the key channel only where the face draws
+                  * through the blended snap twin, whose stage reads it in
+                  * the snap (psx_moby_snap.glsl) and runs no key contest
+                  * with it; koff stays 0, so no key image takes the face. */
 } openpete_scene_tri;
 
 /* The rank-channel value of a terrain face's kattr: in [0.25, 0.5), which

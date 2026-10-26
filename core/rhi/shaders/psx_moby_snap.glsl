@@ -171,4 +171,14 @@ float op_snap_depth(float zout, vec2 rank, float koff, float tkey, vec4 tattr, b
     return reversed ? 1.0 / vz : 1.0 - 1.0 / vz;
 }
 
+/* The key channel the contests of a blended snap-twin fragment read. The
+ * twin draws ACTOR faces alone; a non-aura face's key (openpete_scene_tri
+ * skey) feeds op_snap_depth and nothing else, so the contests read it as
+ * unkeyed (0). The additive glow fan (rank -2) keeps its key, which its aura
+ * contest reads. */
+float op_snapb_contest_koff(float koff, vec2 rank)
+{
+    return rank.x < -1.5 ? koff : 0.0;
+}
+
 #endif
