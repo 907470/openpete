@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 4453b9157559d05d22a12995637bda8f17c227de
+# head: 72d78e23c55dd8baf55331c65bbb662273cbe4a7
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -103,7 +103,7 @@ games/common/renderer/cyclorama.c	cyclorama_reextract	56	0
 games/common/renderer/flame.c	flame_build_strip	59	0	
 games/common/renderer/flame.c	flame_dump	26	0	
 games/common/renderer/flame.c	flame_strip_compare	52	0	
-games/common/renderer/moby.c	append_revealed_regular_inner	117	0	
+games/common/renderer/moby.c	append_revealed_regular_inner	105	0	
 games/common/renderer/moby.c	build_shaded_walk_tris	99	0	
 games/common/renderer/moby.c	capture_gte	49	0	
 games/common/renderer/moby.c	compare_and_report	90	0	

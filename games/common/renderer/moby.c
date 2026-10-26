@@ -1327,13 +1327,17 @@ static void rt_report(const char* mat, int ntri) {
 /* The feed is an intermediate present's (moby_reextract). */
 static int s_in_reextract;
 static int rank_carry_on(void);
+static int rank_fresh_on(void);
+static int rank_ep_mode(void);
 /** @brief Whether this feed computes the paint key.
  *
- * Only while the rank select is on, and not on an intermediate present
- * (moby_reextract) that carries the tick's verdict.
+ * Only while the rank select is on. An intermediate present (moby_reextract)
+ * that carries the tick's verdict computes it too while it re-ranks the
+ * mobys the carry does not cover (rank_fresh_on), since it cannot know
+ * which those are before its walk.
  * @return 1 when the key is wanted, else 0. */
 static int moby_otkey_wanted(void) {
-    return openpete_mobyrank_on() && !(s_in_reextract && rank_carry_on());
+    return openpete_mobyrank_on() && !(s_in_reextract && rank_carry_on() && !rank_fresh_on());
 }
 
 /** @brief An animated record's paint key through the game's record decode.
@@ -7333,9 +7337,11 @@ static void isect_tri_of(int i, isect_tri* t) {
 /** @brief Whether the census feeds an instrument, which reads every intersecting pair and every face's rank.
  *
  * The instruments are the per-moby log and select census
- * (OPENPETE_MOBY_ISECT_LOG) and the rank calibration.
+ * (OPENPETE_MOBY_ISECT_LOG), the rank calibration and the sub-tick endpoint
+ * census (rank_ep_mode), which reads every intersecting pair of a re-ranked
+ * moby.
  * @return Nonzero when one is on. */
-static int isect_instrumented(void) { return isect_log_on() || moby_rank_cal_on(); }
+static int isect_instrumented(void) { return isect_log_on() || moby_rank_cal_on() || rank_ep_mode(); }
 typedef struct { long faces, contested, pairs, coplanar, shared, stacked; } isect_count;
 typedef struct { const isect_tri* T; const int* idx; isect_count* c; int all; } isect_ctx;
 /** @brief Set a contesting pair's flags and record it in the pair list while the list has room.
@@ -7515,6 +7521,13 @@ static int nrank_cmp(const void* a, const void* b) {
     if (x->bk != y->bk) return x->bk > y->bk ? -1 : 1;   /* far buckets paint first */
     return x->i < y->i ? -1 : x->i > y->i;
 }
+/** @brief Whether OPENPETE_MOBY_RANK_NEGCTL=1 reverses the native rank order, latched on first use.
+ * @return 1 when reversed, else 0. */
+static int native_rank_negctl(void) {
+    static int s_neg = -1;
+    if (s_neg < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_NEGCTL"); s_neg = e && *e == '1'; }
+    return s_neg;
+}
 /** @brief Write s_nrank for one moby's walk triangles i0..i1-1 from their ordering-table keys.
  *
  * A triangle with a negative key or the second-triangle flag (MOBY_OTK_Q2)
@@ -7547,13 +7560,11 @@ static void native_rank_moby(int i0, int i1, int neg) {
  * of walk triangles with one moby pointer. OPENPETE_MOBY_RANK_NEGCTL=1
  * reverses the order. */
 static void native_rank_build(void) {
-    static int s_neg = -1;
-    if (s_neg < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_NEGCTL"); s_neg = e && *e == '1'; }
     const int all = isect_instrumented();
     for (int i0 = 0; i0 < s_gout.n; ) {
         int i1 = i0, cont = 0;
         for (; i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]; i1++) cont |= s_wtri_contest[i1];
-        if (all || cont) native_rank_moby(i0, i1, s_neg);
+        if (all || cont) native_rank_moby(i0, i1, native_rank_negctl());
         else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
         i0 = i1;
     }
@@ -7570,9 +7581,13 @@ static void native_rank_build(void) {
  * of the nearer endpoint:
  * T-1's for alpha < 0.5, T's for alpha >= 0.5. The verdict therefore changes
  * once per tick interval, at its midpoint, and never leads the pose by more
- * than half a tick. A face the chosen endpoint did not rank (a mesh the
- * present holds from the previous clip, a face that tick culled, a T-1 table
- * that is not the tick adjacent to T) reads rank 0 and keeps true depth.
+ * than half a tick. A table holds every face its build walked, ranked or
+ * not. A moby run with an eligible face the chosen endpoint did not walk (a
+ * face that tick back-face or clip culled, a moby that tick did not queue, a
+ * tier the tick did not draw, no table for the endpoint) has no carried verdict
+ * for that face, so the run's contest test and native_rank_moby run on the
+ * present's own walk (rank_fresh_pass) and the absent faces take their
+ * results; the run's hit faces keep the carried entry.
  * One canonical epoch can hold more than one scene build: a pause screen
  * feeds twice before its present, and runahead feeds the committed tick and
  * then the speculated ticks, whose last build is the one presented. Each
@@ -7584,8 +7599,14 @@ static void native_rank_build(void) {
 /* An entry belongs to its table only while its generation is the table's, so
  * a new epoch empties a table by giving it a fresh generation. */
 typedef struct { uint32_t moby, fkey; int32_t rank; uint32_t gen : 31, cont : 1; int16_t wbk; } rc_ent;
+/* Endpoint census (OPENPETE_RANK_EP): a moby's tier face block at one build,
+ * live while gen is the owning table's (or the census's own walk generation). */
+#define RCM_BITS 12
+#define RCM_SIZE (1 << RCM_BITS)
+typedef struct { uint32_t moby, fb, gen; } rcm_ent;
 typedef struct {
     rc_ent   e[RC_SIZE];
+    rcm_ent  m[RCM_SIZE];   /* moby -> tier face block of the build (census only) */
     uint32_t gen;     /* generation of this table's live entries */
     uint32_t epoch;   /* canonical epoch the entries were stored under */
     unsigned scene;   /* native scene build (openpete_native_scene_frame) that stored them */
@@ -7607,6 +7628,66 @@ static int rank_carry_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_CARRY"); s = !(e && *e == '0'); }
     return s;
+}
+/** @brief The endpoint census mode (OPENPETE_RANK_EP), read once.
+ *
+ * 0 off; 'c' (census) counts, per sub-tick feed that applies a carry table,
+ * the faces absent from it by cause, the runs rank_fresh_pass re-ranks and
+ * the ordering checks of rank_mix_census; 'o' counts with the fresh rank off
+ * (every absent face keeps true depth); 'f' (fill) is 'o' that also gives a
+ * face absent from the T-1 table the latest table's entry.
+ * @return The mode. */
+static int rank_ep_mode(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_RANK_EP");
+                 s = (e && *e && *e != '0') ? (*e == 'f' || *e == 'o' ? *e : 'c') : 0; }
+    return s;
+}
+/** @brief Whether a sub-tick present re-ranks the moby runs with a face absent from the carry table.
+ *
+ * On unless the endpoint census mode is 'o' or 'f'.
+ * @return 1 when on, else 0. */
+static int rank_fresh_on(void) { const int m = rank_ep_mode(); return m != 'o' && m != 'f'; }
+/* Census counts per feed: faces walked; hits and hits whose tier block
+ * differs; misses by cause (no table, moby not walked at the endpoint, tier
+ * block changed, face not walked); misses the latest table ranks; hits whose
+ * latest rank differs; eligible absent faces, those left to true depth
+ * (fallback), runs re-ranked; and rank_mix_census's intersecting pairs with
+ * an absent face, those the mixed ranks order against the present walk's
+ * order, those also against the T-1 order, and those the mixed ranks leave
+ * unordered where the present walk orders them. */
+static long s_ep_faces, s_ep_hit, s_ep_hit_tier, s_ep_notab, s_ep_queue, s_ep_tier,
+            s_ep_face, s_ep_miss_ranked, s_ep_hit_rdiff, s_ep_miss_nolat;
+static long s_ep_absent, s_ep_fallback, s_ep_fresh;
+static long s_ep_mix_pairs, s_ep_mix_vs_now, s_ep_mix_vs_both, s_ep_mix_unord;
+static rcm_ent  s_ep_cur[RCM_SIZE];  /* this walk's moby -> tier block */
+static uint32_t s_ep_cur_gen;
+/** @brief Record a moby's tier face block in a census map.
+ * @param m The map.
+ * @param gen The map's live generation.
+ * @param moby The moby's PSX address.
+ * @param fb The tier face block. */
+static void rcm_put(rcm_ent* m, uint32_t gen, uint32_t moby, uint32_t fb) {
+    uint32_t h = (moby * 2654435761u) >> (32 - RCM_BITS);
+    for (int k = 0; k < RCM_SIZE && m[h].gen == gen && m[h].moby != moby; k++) h = (h + 1) & (RCM_SIZE - 1);
+    m[h] = (rcm_ent){ moby, fb, gen };
+}
+/** @brief Find a moby in a census map.
+ * @param m The map.
+ * @param gen The map's live generation.
+ * @param moby The moby's PSX address.
+ * @return The entry, or NULL. */
+static const rcm_ent* rcm_get(const rcm_ent* m, uint32_t gen, uint32_t moby) {
+    uint32_t h = (moby * 2654435761u) >> (32 - RCM_BITS);
+    for (int k = 0; k < RCM_SIZE && m[h].gen == gen; k++, h = (h + 1) & (RCM_SIZE - 1))
+        if (m[h].moby == moby) return &m[h];
+    return NULL;
+}
+/** @brief Record this walk's records' tier face blocks in a census map.
+ * @param m The map.
+ * @param gen The map's live generation. */
+static void rcm_fill(rcm_ent* m, uint32_t gen) {
+    for (int r = 0; r < s_nrecs; r++) rcm_put(m, gen, s_recs[r].moby, s_recs[r].faceblock);
 }
 /* An unbracketed present shows the latest tick, so it takes alpha 1. */
 void moby_native_set_verdict_alpha(double alpha, int bracketed) { s_rc_alpha = bracketed ? alpha : 1.0; }
@@ -7660,18 +7741,18 @@ static rc_tab* rank_carry_table_for(uint32_t ep, unsigned scene) {
  * speculated builds included: the ranks come from the host walk of the build
  * the canonical present shows, not from guest scratch a later tick reuses.
  * The table is the one rank_carry_table_for gives the current canonical epoch
- * and native scene build. For each s_gout triangle with a nonzero moby and a
- * positive s_nrank or a world bucket (s_wtri_wbk) it inserts or replaces the
- * entry keyed by (moby, face key) with the rank and the contest flag (0 and
- * 0 when the rank is not positive, which reads back as a miss) and the world
- * bucket, probing linearly from rc_hash. Once the table holds three quarters
- * of RC_SIZE keys every remaining triangle is skipped, replacements
- * included. */
+ * and native scene build. For each s_gout triangle with a nonzero moby it
+ * inserts or replaces the entry keyed by (moby, face key) with the rank and
+ * the contest flag (0 and 0 when the rank is not positive) and the world
+ * bucket, probing linearly from rc_hash, so the table holds every face the
+ * build walked and an absent face is one it did not walk. Once the table
+ * holds three quarters of RC_SIZE keys every remaining triangle is skipped,
+ * replacements included; a skipped face reads back as absent. */
 static void rank_carry_store(void) {
     rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp(), openpete_native_scene_frame());
+    if (rank_ep_mode()) rcm_fill(t->m, t->gen);
     for (int i = 0; i < s_gout.n; i++) {
-        if ((s_nrank[i] <= 0 && s_wtri_wbk[i] < 0) || !s_wtri_moby[i] ||
-            t->n >= RC_SIZE - (RC_SIZE >> 2)) continue;
+        if (!s_wtri_moby[i] || t->n >= RC_SIZE - (RC_SIZE >> 2)) continue;
         uint32_t h = rc_hash(s_wtri_moby[i], s_wtri_fkey[i]);
         while (t->e[h].gen == t->gen &&
                !(t->e[h].moby == s_wtri_moby[i] && t->e[h].fkey == s_wtri_fkey[i]))
@@ -7713,6 +7794,160 @@ static const rc_tab* rank_carry_endpoint(void) {
     s_rc_prev_used = 1;
     return (prev->valid && prev->epoch + 1u == latest->epoch) ? prev : NULL;
 }
+/* Per walk triangle of a sub-tick feed: RF_ABSENT for an eligible face the
+ * carry table did not walk. */
+#define RF_ABSENT  1u
+static uint8_t s_rf_flag[MAX_NTRI];
+/** @brief Count one face of a sub-tick feed into the endpoint census, and return the entry the feed applies.
+ *
+ * A face the table holds is a hit (and a tier-changed hit when its moby's
+ * tier block at the table's build differs from this walk's). An absent face
+ * is classed: no table, moby not walked at the endpoint, tier block changed,
+ * or face not walked. In fill mode a face absent from the T-1 table takes the
+ * latest table's entry.
+ * @param t The endpoint's table, or NULL.
+ * @param i The walk triangle index.
+ * @param e The table's entry, or NULL.
+ * @return The entry to apply. */
+static const rc_ent* rank_ep_count(const rc_tab* t, int i, const rc_ent* e) {
+    const rc_tab* latest = &s_rc_tab[s_rc_cur];
+    const uint32_t m = s_wtri_moby[i];
+    const rc_ent* el = latest->valid ? rank_carry_find(latest, m, s_wtri_fkey[i]) : NULL;
+    const rcm_ent* cm = rcm_get(s_ep_cur, s_ep_cur_gen, m);
+    const rcm_ent* pm = t ? rcm_get(t->m, t->gen, m) : NULL;
+    const int tier = cm && pm && cm->fb != pm->fb;
+    s_ep_faces++;
+    if (e) {
+        s_ep_hit++; s_ep_hit_tier += tier;
+        s_ep_hit_rdiff += (el ? el->rank : 0) != e->rank;
+        return e;
+    }
+    if (!t) s_ep_notab++; else if (!pm) s_ep_queue++; else if (tier) s_ep_tier++; else s_ep_face++;
+    s_ep_miss_ranked += el && el->rank > 0;
+    s_ep_miss_nolat += !el;
+    return (rank_ep_mode() == 'f' && s_rc_prev_used) ? el : NULL;
+}
+/** @brief Where an absent face of a re-ranked run would sit in the carried paint order.
+ *
+ * Just after the hit face with a positive carried rank that the present
+ * walk's order puts nearest before it, else before every carried face.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param cr The run's carried ranks, indexed from i0.
+ * @param a The absent face's walk triangle index.
+ * @return The position on the carried rank scale. */
+static double rank_mix_t1pos(int i0, int i1, const int* cr, int a) {
+    int best = 0, bf = 0;
+    for (int i = i0; i < i1; i++)
+        if (!(s_rf_flag[i] & RF_ABSENT) && cr[i - i0] > 0 && s_nrank[i] > 0 &&
+            s_nrank[i] <= s_nrank[a] && s_nrank[i] > bf) { bf = s_nrank[i]; best = cr[i - i0]; }
+    return best + 0.5;
+}
+/** @brief The mixed rank and T-1 position of one face of a re-ranked run.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param cr The run's carried ranks, indexed from i0.
+ * @param cc The run's carried contest flags, indexed from i0.
+ * @param f The face's walk triangle index.
+ * @param m Receives the mixed rank: the fresh one on an absent face, the carried one on a hit face, 0 where the face's contest flag is clear.
+ * @param t Receives the T-1 position: the carried rank, or rank_mix_t1pos on an absent face.
+ * @return 1 when the face is absent from the carry table, else 0. */
+static int rank_mix_face(int i0, int i1, const int* cr, const uint8_t* cc, int f, int* m, double* t) {
+    const int x = (s_rf_flag[f] & RF_ABSENT) != 0;
+    *m = x ? s_nrank[f] : (cc[f - i0] ? cr[f - i0] : 0);
+    *t = x ? rank_mix_t1pos(i0, i1, cr, f) : cr[f - i0];
+    return x;
+}
+/** @brief Check the mixed ranks of a re-ranked run against the present walk's order and the T-1 order.
+ *
+ * Over the run's intersecting pairs with an absent face (s_ip_a/s_ip_b from
+ * ip0 on): the mixed rank is the fresh one on an absent face and the carried
+ * one on a hit face, and 0 where that face's contest flag is clear. A pair
+ * both of whose fresh ranks are positive counts as unordered when a mixed rank
+ * is 0, and against the present when the mixed order differs from the fresh
+ * order; such a pair also counts against both when the mixed order differs
+ * from the T-1 order, an absent face taking rank_mix_t1pos. Each pair against
+ * both prints a [rank-mix] line. Runs while s_nrank and s_wtri_contest hold
+ * the fresh values.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param cr The run's carried ranks, indexed from i0.
+ * @param cc The run's carried contest flags, indexed from i0.
+ * @param ip0 The first pair of the run's contest test. */
+static void rank_mix_census(int i0, int i1, const int* cr, const uint8_t* cc, int ip0) {
+    for (int p = ip0; p < s_ip_n; p++) {
+        const int f[2] = { s_ip_a[p], s_ip_b[p] };
+        int m[2], x[2];
+        double t[2];
+        for (int k = 0; k < 2; k++) x[k] = rank_mix_face(i0, i1, cr, cc, f[k], &m[k], &t[k]);
+        if (!x[0] && !x[1]) continue;
+        s_ep_mix_pairs++;
+        const int fa = s_nrank[f[0]], fb = s_nrank[f[1]];
+        if (fa <= 0 || fb <= 0) continue;
+        if (m[0] <= 0 || m[1] <= 0) { s_ep_mix_unord++; continue; }
+        const int sm = (m[0] > m[1]) - (m[0] < m[1]), sf = (fa > fb) - (fa < fb);
+        const int st = (t[0] > t[1]) - (t[0] < t[1]);
+        if (sm == sf) continue;
+        s_ep_mix_vs_now++;
+        if (st == sm) continue;
+        s_ep_mix_vs_both++;
+        fprintf(stderr, "[rank-mix] vbl=%u mat=%s m=%08X fkey=%08X,%08X absent=%d,%d mixed=%d,%d "
+                        "fresh=%d,%d t1=%.1f,%.1f\n", openpete_frame, s_cur_mat, s_wtri_moby[f[0]],
+                s_wtri_fkey[f[0]], s_wtri_fkey[f[1]], x[0], x[1], m[0], m[1], fa, fb, t[0], t[1]);
+    }
+}
+/** @brief Give the absent faces of one moby run the ranks and contest flags of this present's walk.
+ *
+ * The canonical feed's two stages on walk triangles i0..i1-1 only: the
+ * contest test over the run's eligible faces (isect_moby), then
+ * native_rank_moby when a face contests or an instrument is on, else rank 0.
+ * The fresh rank and contest flag are kept on the run's absent faces
+ * (RF_ABSENT); every hit face keeps its carried entry, so the carried verdict
+ * stays wherever it exists. The census checks the mixed order first
+ * (rank_mix_census).
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last. */
+static void rank_fresh_moby(int i0, int i1) {
+    static isect_tri T[MAX_NTRI];
+    static int idx[MAX_NTRI];
+    static int keep_rank[MAX_NTRI];
+    static uint8_t keep_cont[MAX_NTRI];
+    memcpy(keep_rank, &s_nrank[i0], (size_t)(i1 - i0) * sizeof s_nrank[0]);
+    memcpy(keep_cont, &s_wtri_contest[i0], (size_t)(i1 - i0));
+    const int ip0 = s_ip_n;
+    int n = 0, cont = 0;
+    memset(&s_wtri_contest[i0], 0, (size_t)(i1 - i0));
+    for (int i = i0; i < i1; i++)
+        if (isect_eligible(i)) { isect_tri_of(i, &T[n]); idx[n++] = i; }
+    isect_count c = {0};
+    isect_moby(T, idx, n, &c);
+    for (int i = i0; i < i1; i++) cont |= s_wtri_contest[i];
+    if (cont || isect_instrumented()) native_rank_moby(i0, i1, native_rank_negctl());
+    else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
+    if (rank_ep_mode()) rank_mix_census(i0, i1, keep_rank, keep_cont, ip0);
+    for (int i = i0; i < i1; i++)
+        if (!(s_rf_flag[i] & RF_ABSENT)) { s_nrank[i] = keep_rank[i - i0]; s_wtri_contest[i] = keep_cont[i - i0]; }
+}
+/** @brief Rank from this present's walk the faces of every moby run that the carry table did not walk.
+ *
+ * A run is a contiguous stretch of walk triangles with one moby pointer, the
+ * unit native_rank_build ranks. A run with an eligible face absent from the
+ * table goes through rank_fresh_moby; a run whose faces all hit keeps the
+ * carried verdict. Counts the census's absent, fallback and re-ranked terms
+ * when the census is on.
+ * @param fresh 1 to rank, 0 to count only. */
+static void rank_fresh_pass(int fresh) {
+    for (int i0 = 0; i0 < s_gout.n; ) {
+        const uint32_t mob = s_wtri_moby[i0];
+        int i1 = i0, na = 0;
+        for (; i1 < s_gout.n && s_wtri_moby[i1] == mob; i1++) na += (s_rf_flag[i1] & RF_ABSENT) != 0;
+        const int redo = fresh && na > 0;
+        if (redo) rank_fresh_moby(i0, i1);
+        s_ep_absent += na; s_ep_fresh += redo;
+        if (!redo) s_ep_fallback += na;
+        i0 = i1;
+    }
+}
 /** @brief Give this present's triangles the ranks, contest flags and world buckets of its carry table.
  *
  * Each s_gout triangle takes the entry of its (moby, face key) from
@@ -7720,18 +7955,27 @@ static const rc_tab* rank_carry_endpoint(void) {
  * when there is no table, no moby, or no entry. A triangle the walk left with
  * no world bucket takes the entry's. Counts triangles with a positive rank
  * into s_rc_hit and the others into s_rc_miss, and empties the intersection
- * pair list (s_ip_n). */
+ * pair list (s_ip_n). Then every eligible face absent from the table takes
+ * the rank and contest flag of this walk (rank_fresh_pass). */
 static void rank_carry_apply(void) {
     const rc_tab* t = rank_carry_endpoint();
+    const int census = rank_ep_mode() != 0;
+    if (census) {
+        s_ep_cur_gen = s_ep_cur_gen + 1 ? s_ep_cur_gen + 1 : 1;
+        rcm_fill(s_ep_cur, s_ep_cur_gen);
+    }
     for (int i = 0; i < s_gout.n; i++) {
         const rc_ent* e = (t && s_wtri_moby[i]) ? rank_carry_find(t, s_wtri_moby[i], s_wtri_fkey[i])
                                                  : NULL;
+        s_rf_flag[i] = (!e && s_wtri_moby[i] && isect_eligible(i)) ? RF_ABSENT : 0u;
+        if (census && s_wtri_moby[i]) e = rank_ep_count(t, i, e);
         s_nrank[i] = e ? e->rank : 0;
         s_wtri_contest[i] = e ? e->cont : 0;
         if (e && s_wtri_wbk[i] < 0) s_wtri_wbk[i] = e->wbk;
         if (s_nrank[i] > 0) s_rc_hit++; else s_rc_miss++;
     }
     s_ip_n = 0;
+    if (rank_fresh_on() || census) rank_fresh_pass(rank_fresh_on());
 }
 
 /* Select census on the PSX pixel grid (pixel centres, either winding),
@@ -7884,11 +8128,32 @@ static void rank_stage_time(int slot, uint64_t t0, uint64_t c0) {
     if (c0) s_rt_cpu_us[slot] += (double)(rt_cpu_ns() - c0) / 1000.0;
 }
 
+/** @brief Print this sub-tick feed's endpoint census as a [rank-ep] line and zero its counts.
+ *
+ * Prints only when the feed walked a moby face. */
+static void rank_ep_report(void) {
+    if (s_ep_faces)
+        fprintf(stderr, "[rank-ep] vbl=%u mat=%s alpha=%.3f endpoint=%s faces=%ld hit=%ld hit_tier=%ld "
+                        "hit_rdiff=%ld notab=%ld queue=%ld tier=%ld face=%ld miss_ranked=%ld "
+                        "miss_nolat=%ld absent=%ld fallback=%ld fresh=%ld mix_pairs=%ld "
+                        "mix_vs_now=%ld mix_vs_both=%ld mix_unord=%ld tabn=%d/%d\n",
+                openpete_frame, s_cur_mat, s_rc_alpha, s_rc_prev_used ? "prev" : "latest", s_ep_faces,
+                s_ep_hit, s_ep_hit_tier, s_ep_hit_rdiff, s_ep_notab, s_ep_queue, s_ep_tier, s_ep_face,
+                s_ep_miss_ranked, s_ep_miss_nolat, s_ep_absent, s_ep_fallback, s_ep_fresh,
+                s_ep_mix_pairs, s_ep_mix_vs_now, s_ep_mix_vs_both, s_ep_mix_unord,
+                s_rc_tab[s_rc_cur ^ 1].n, s_rc_tab[s_rc_cur].n);
+    s_ep_faces = s_ep_hit = s_ep_hit_tier = s_ep_hit_rdiff = s_ep_notab = s_ep_queue = s_ep_tier =
+        s_ep_face = s_ep_miss_ranked = s_ep_miss_nolat = 0;
+    s_ep_absent = s_ep_fallback = s_ep_fresh = 0;
+    s_ep_mix_pairs = s_ep_mix_vs_now = s_ep_mix_vs_both = s_ep_mix_unord = 0;
+}
+
 /** @brief Produce the contest flags and native ranks of this feed.
  *
  * A canonical feed computes them (intersection census, then the rank build)
  * and stores them for the sub-tick carry; an intermediate present reads them
- * back from the carry while the carry is on and computes them otherwise.
+ * back from the carry while the carry is on, re-ranking the moby runs the
+ * carry does not cover, and computes them otherwise.
  * Inert unless the native rank or the intersection log is on. Also emits the
  * rank-time, rank-carry and select census lines and runs the calibration
  * instrument when each is enabled. */
@@ -7911,6 +8176,7 @@ static void moby_rank_prepare(void) {
                     s_rc_tab[s_rc_cur].epoch, s_rc_alpha, s_rc_prev_used ? "prev" : "latest", s_rc_rebuilds);
         isect_select_census();
     }
+    if (carry && rank_ep_mode()) rank_ep_report();
     s_rc_hit = s_rc_miss = 0;
     if (moby_rank_cal_on()) moby_rank_calibrate();
 }
