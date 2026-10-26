@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* ---- gate ---------------------------------------------------------------- */
 
@@ -18,6 +19,18 @@ int openpete_mobyrank_on(void) {
         s_on = (e && *e) ? (*e != '0') : 1;
     }
     return s_on;
+}
+
+int moby_rank_tie_mode(void) {
+    static int s_mode = -1;
+    if (s_mode < 0) {
+        const char* e = getenv("OPENPETE_RANK_TIE");
+        s_mode = !e || !*e || *e == '0'     ? 0
+               : strcmp(e, "order") == 0   ? MOBY_RANK_TIE_ORDER
+               : strcmp(e, "contest") == 0 ? MOBY_RANK_TIE_CONTEST
+                                           : MOBY_RANK_TIE_ORDER | MOBY_RANK_TIE_CONTEST;
+    }
+    return s_mode;
 }
 
 /* ---- paint-key table -------------------------------------------------------
@@ -402,7 +415,9 @@ static int otk_choose_flat(const moby_otk_rec_t* r, const moby_otk_face_t* f, lo
  * The face bias times bias_mul enters before the shift (OTK_BIAS_PRE, dropped
  * when k goes negative) or after it (OTK_BIAS_POST); the bucket is k shifted
  * right by the record's shift, dropped when negative, plus back_post on a back
- * face. MOBY_OTK_QUAD and MOBY_OTK_V3 are set from the prim.
+ * face; the bucket saturates at MOBY_OTK_BUCKET_MAX. The word carries the
+ * bucket and the bits the shift dropped (MOBY_OTK_BUCKET, MOBY_OTK_SUB);
+ * MOBY_OTK_QUAD and MOBY_OTK_V3 are set from the prim.
  * @param s The row.
  * @param r The record's base and shift.
  * @param f The face; supplies the bias and back_adds.
@@ -428,7 +443,12 @@ static int otk_key(const otk_spec_t* s, const moby_otk_rec_t* r, const moby_otk_
     if (mode == OTK_BIAS_POST) b += add;
     if (b < 0) return -1;
     if (back) b += s->back_post;
-    return (int)b | (p->quad ? MOBY_OTK_QUAD : 0) | (p->v3 ? MOBY_OTK_V3 : 0);
+    if (b > MOBY_OTK_BUCKET_MAX) b = MOBY_OTK_BUCKET_MAX;
+    /* The bits the shift drops: the key's position inside its bucket. */
+    int64_t sub = k & (((int64_t)1 << r->shift) - 1);
+    if (r->shift > MOBY_OTK_SUB_BITS) sub >>= r->shift - MOBY_OTK_SUB_BITS;
+    return (int)((b << MOBY_OTK_SUB_BITS) | sub) | (p->quad ? MOBY_OTK_QUAD : 0) |
+           (p->v3 ? MOBY_OTK_V3 : 0);
 }
 
 int moby_otk_face_bucket(const moby_otk_rec_t* r, const moby_otk_face_t* f)
@@ -446,4 +466,64 @@ int moby_otk_face_bucket(const moby_otk_rec_t* r, const moby_otk_face_t* f)
     long n1 = moby_otk_nclip(f->v[0], f->v[1], f->v[2]);
     otk_prim_t p;
     return k_choose[s->choose](r, f, n1, &p) ? otk_key(s, r, f, &p) : -1;
+}
+
+/* ---- paint order -------------------------------------------------------------- */
+
+/** @brief qsort comparator over moby_otk_ord_t: key descending (far first), then index ascending. */
+static int otk_ord_cmp(const void* a, const void* b)
+{
+    const moby_otk_ord_t *x = (const moby_otk_ord_t*)a, *y = (const moby_otk_ord_t*)b;
+    if (x->k != y->k) return x->k > y->k ? -1 : 1;
+    return x->i < y->i ? -1 : x->i > y->i;
+}
+
+/** @brief Count the contested same-bucket pairs a paint order paints against their insertion order.
+ *
+ * @param otk The triangles' bucket words.
+ * @param cont The triangles' contest flags.
+ * @param order The ranked triangles in paint order.
+ * @param m Their count.
+ * @return The number of pairs p < q of one bucket, both contested, where q paints first. */
+static long otk_tie_reorders(const int32_t* otk, const uint8_t* cont, const int* order, int m)
+{
+    long r = 0;
+    for (int a = 0; a < m; a++) {
+        const int q = order[a];
+        if (!cont[q]) continue;
+        for (int b = a + 1; b < m; b++) {
+            const int p = order[b];
+            r += cont[p] && p < q && MOBY_OTK_BUCKET(otk[p]) == MOBY_OTK_BUCKET(otk[q]);
+        }
+    }
+    return r;
+}
+
+int moby_otk_paint_order(const int32_t* otk, const int* under, const uint8_t* cont, int n,
+                         int full, moby_otk_ord_t* scratch, int* order,
+                         moby_otk_tie_count_t* c)
+{
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        const int32_t w = otk[i];
+        if (w < 0 || (w & MOBY_OTK_Q2)) continue;
+        int32_t k = full ? (w & 0x07FFFFFF) : MOBY_OTK_BUCKET(w);
+        const int u = full ? under[i] : -1;
+        /* The base precedes the decal in walk order, so its key is final. A
+         * decal in another bucket keeps its own key: the bucket order already
+         * paints the pair as the game does. */
+        if (u >= 0 && u < i && otk[u] >= 0 && !(otk[u] & MOBY_OTK_Q2) &&
+            MOBY_OTK_BUCKET(otk[u]) == MOBY_OTK_BUCKET(w)) {
+            const int32_t kb = scratch[order[u]].k;
+            if (c && cont[i] && cont[u] && k > kb) c->decal_kept++;
+            if (kb < k) k = kb;
+        }
+        scratch[m].k = k; scratch[m].i = i;
+        order[i] = m;   /* the entry of triangle i while the keys are filled */
+        m++;
+    }
+    qsort(scratch, (size_t)m, sizeof scratch[0], otk_ord_cmp);
+    for (int k = 0; k < m; k++) order[k] = scratch[k].i;
+    if (c && full) c->tie_reorder += otk_tie_reorders(otk, cont, order, m);
+    return m;
 }

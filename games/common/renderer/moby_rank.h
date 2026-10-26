@@ -26,6 +26,23 @@ extern "C" {
  *         order by true depth alone; 1 when it is unset, empty or any other value. */
 int  openpete_mobyrank_on(void);
 
+/* The parts of the full-key paint order OPENPETE_RANK_TIE selects. ORDER: a
+ * moby's prims order by their full key, the bits the bucket shift drops
+ * included, and a decal (a face stacked or coplanar on an earlier face of its
+ * moby) in its base's bucket paints right after the base. CONTEST: a face
+ * contests while its intersection-space box overlaps another face's that
+ * shares no edge with it, and every triangle of a prim contests when one
+ * does. */
+#define MOBY_RANK_TIE_ORDER   1
+#define MOBY_RANK_TIE_CONTEST 2
+
+/** @brief The full-key paint order parts OPENPETE_RANK_TIE selects, latched on first use.
+ *
+ * Unset, empty or 0: none (the bucket order, ties in insertion order, and the
+ * crossing contest). 1: both parts; "order" or "contest": that part alone.
+ * @return A mask of MOBY_RANK_TIE_ORDER and MOBY_RANK_TIE_CONTEST. */
+int  moby_rank_tie_mode(void);
+
 /* ---- the game's paint key, evaluated natively ------------------------------
  * Every moby draw orders one record's faces the same way: it keys each prim
  * into a local bucket array by a weighted sum of its vertices' GTE SZ3 minus a
@@ -134,8 +151,10 @@ typedef struct moby_otk_face {
  * arithmetic turns its vertices' SZ3 into a local bucket.
  * @param r The record's key parameters.
  * @param f The face.
- * @return The local bucket, with MOBY_OTK_QUAD set when the prim is the whole
- *         quad and MOBY_OTK_V3 when it is the triangle (v3,v1,v2); -1 when the
+ * @return The bucket word: the local bucket and the key's position inside it
+ *         (MOBY_OTK_BUCKET, MOBY_OTK_SUB), with MOBY_OTK_QUAD set when the prim
+ *         is the whole quad and MOBY_OTK_V3 when it is the triangle
+ *         (v3,v1,v2); -1 when the
  *         draw culls the face or drops the prim from its table, or the record's
  *         row is MOBY_OTK_NONE. */
 int moby_otk_face_bucket(const moby_otk_rec_t* r, const moby_otk_face_t* f);
@@ -200,12 +219,18 @@ int moby_otk_depth_bucket(int w);
  * on the second triangle of a prim whose first triangle carries the same
  * word, and MOBY_OTK_FOREIGN set on a triangle that is not part of the prim
  * the key chose (the walk's float facing test split the face differently from
- * the draw's integer NCLIP). MOBY_OTK_BUCKET extracts the bucket. */
+ * the draw's integer NCLIP). MOBY_OTK_BUCKET extracts the bucket (bits
+ * 12-26, saturated at MOBY_OTK_BUCKET_MAX) and MOBY_OTK_SUB the key's
+ * position inside it: the low bits the shift drops, in key units, the top
+ * MOBY_OTK_SUB_BITS of them when the shift is wider. */
 #define MOBY_OTK_Q2      0x40000000
 #define MOBY_OTK_QUAD    0x20000000
 #define MOBY_OTK_V3      0x10000000
 #define MOBY_OTK_FOREIGN 0x08000000
-#define MOBY_OTK_BUCKET(w) ((w) & 0x07FFFFFF)
+#define MOBY_OTK_SUB_BITS  12
+#define MOBY_OTK_BUCKET_MAX 0x7FFF
+#define MOBY_OTK_BUCKET(w) (((w) & 0x07FFFFFF) >> MOBY_OTK_SUB_BITS)
+#define MOBY_OTK_SUB(w)    ((w) & ((1 << MOBY_OTK_SUB_BITS) - 1))
 
 /* The triangles the walk emits of a face: (v0,v1,v2), (v3,v1,v2), and the
  * quad's second half (v1,v3,v2). */
@@ -234,6 +259,46 @@ static inline int32_t moby_otk_second(int32_t otk, int first_emitted)
 {
     return (otk >= 0 && first_emitted) ? (otk | MOBY_OTK_Q2) : otk;
 }
+
+/* One prim of a moby in the paint-order sort: its sort key and its index. */
+typedef struct moby_otk_ord {
+    int32_t k;
+    int     i;
+} moby_otk_ord_t;
+
+/* Engagement counts of the full-key order, over contested prims: `tie_reorder`
+ * same-bucket pairs the order paints against their insertion order,
+ * `decal_kept` decals in their base's bucket whose own full key lies deeper
+ * than the base's, which the order still paints right after the base. */
+typedef struct moby_otk_tie_count {
+    long tie_reorder;
+    long decal_kept;
+} moby_otk_tie_count_t;
+
+/** @brief The paint order of one moby's prims, farthest first.
+ *
+ * A triangle with a negative bucket word or MOBY_OTK_Q2 (a prim's second
+ * triangle) is left out. With `full` 0 the prims order by bucket, a tie in
+ * insertion order: the game's own ordering table. With `full` 1 they order by
+ * the full key (MOBY_OTK_BUCKET, then MOBY_OTK_SUB), a tie in insertion
+ * order, and a prim with a base (`under`) in its own bucket takes the nearer
+ * of its own key and its base's, so it paints after the base as the game's
+ * insertion order does; a decal in another bucket keeps its key, so every
+ * decal pair paints in the game's order. Bases resolve in walk order, a
+ * decal's base before the decal.
+ * @param otk The triangles' bucket words.
+ * @param under Per triangle, the index of the earlier prim it lies on as a
+ *        decal, or -1; read only with `full` set.
+ * @param cont Per triangle, its contest flag; read only for the counts.
+ * @param n The triangle count.
+ * @param full 1 for the full-key order, 0 for the bucket order.
+ * @param scratch n entries of sort space.
+ * @param order Receives the ranked triangles' indices in paint order.
+ * @param c Accumulates the engagement counts when not NULL.
+ * @return The number of ranked triangles written to `order`. */
+int moby_otk_paint_order(const int32_t* otk, const int* under, const uint8_t* cont, int n,
+                         int full, moby_otk_ord_t* scratch, int* order,
+                         moby_otk_tie_count_t* c);
 
 #ifdef __cplusplus
 }

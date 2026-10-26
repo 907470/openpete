@@ -35,6 +35,8 @@ typedef struct {
     const int* ip_b;
     int ip_n;
     const char* pass;
+    long tie_reorder;        /* the pass's full-key order counts (moby_otk_tie_count_t) */
+    long decal_kept;
 } moby_rank_cal_in_t;
 
 /** @brief Compares one feed pass's native same-moby paint rank against the game's ordering table for the same pose.

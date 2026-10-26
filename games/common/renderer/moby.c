@@ -7009,6 +7009,10 @@ static void specular_hl_calibrate(CPUState* cpu) {
 #define ISECT_EPS    1e-6
 static uint8_t s_wtri_contest[MAX_NTRI];
 static int     s_nrank[MAX_NTRI];   /* position in the record's paint order, 0 = none */
+/* The earlier prim a walk triangle's prim lies on as a decal (stacked or
+ * coplanar on it), -1 for none; set on prim leaders under MOBY_RANK_TIE_ORDER. */
+static int     s_wtri_under[MAX_NTRI];
+static moby_otk_tie_count_t s_tie_cnt;   /* this feed pass's full-key order counts */
 /* The intersecting pairs of this walk (walk indices), for the calibration. */
 #define ISECT_PAIRS_MAX 65536
 static int s_ip_a[ISECT_PAIRS_MAX], s_ip_b[ISECT_PAIRS_MAX], s_ip_n;
@@ -7389,6 +7393,84 @@ static void isect_log_stack(int ia, int ib, double deg, int hit) {
             (uint32_t)s_wtri_otk[ib], deg, hit, a[0].sx, a[0].sy, a[1].sx, a[1].sy, a[2].sx,
             a[2].sy, b[0].sx, b[0].sy, b[1].sx, b[1].sy, b[2].sx, b[2].sy);
 }
+/* A pair is coplanar (a decal on its base without a shared edge) when its
+ * view-space normals lie within ISECT_COPLANAR_DEG of parallel and every
+ * vertex of the second face lies within ISECT_COPLANAR_DIST view units of
+ * the first face's plane. */
+#define ISECT_COPLANAR_DEG  2.0
+#define ISECT_COPLANAR_DIST 2.0
+/** @brief The first triangle of the prim a walk triangle belongs to.
+ * @param i The walk triangle index.
+ * @return i - 1 when i is a prim's second triangle (MOBY_OTK_Q2), else i. */
+static int isect_leader(int i) {
+    return (i > 0 && s_wtri_otk[i] >= 0 && (s_wtri_otk[i] & MOBY_OTK_Q2)) ? i - 1 : i;
+}
+/** @brief The unit view-space plane of a walk triangle: a vertex and the normal.
+ * @param t The triangle; every vertex in front of the camera.
+ * @param p0 Receives the first vertex in view units.
+ * @param n Receives the unit normal.
+ * @return 1, or 0 when the triangle is degenerate. */
+static int isect_view_plane(const ntri_t* t, double p0[3], double n[3]) {
+    double P[3][3], e[3], f[3];
+    for (int k = 0; k < 3; k++) {
+        isect_view_of(&t->v[k], P[k]);
+        for (int c = 0; c < 3; c++) P[k][c] /= s_view.H_eff;
+    }
+    for (int c = 0; c < 3; c++) { e[c] = P[1][c] - P[0][c]; f[c] = P[2][c] - P[0][c]; p0[c] = P[0][c]; }
+    isect_cross(e, f, n);
+    const double l = sqrt(isect_dot(n, n));
+    if (!(l > 0.0) || !isfinite(l)) return 0;
+    for (int c = 0; c < 3; c++) n[c] /= l;
+    return 1;
+}
+/** @brief Whether two walk triangles are coplanar within ISECT_COPLANAR_DEG and ISECT_COPLANAR_DIST.
+ * @param a The first triangle.
+ * @param b The second triangle.
+ * @return 1 when coplanar; 0 otherwise or when a vertex lies at or behind the camera. */
+static int isect_coplanar(const ntri_t* a, const ntri_t* b) {
+    for (int k = 0; k < 3; k++)
+        if (!(a->v[k].tvz > 0.0f && b->v[k].tvz > 0.0f)) return 0;
+    double pa[3], na[3], pb[3], nb[3];
+    if (!isect_view_plane(a, pa, na) || !isect_view_plane(b, pb, nb)) return 0;
+    if (fabs(isect_dot(na, nb)) < cos(ISECT_COPLANAR_DEG * (M_PI / 180.0))) return 0;
+    for (int k = 0; k < 3; k++) {
+        double q[3];
+        isect_view_of(&b->v[k], q);
+        const double d[3] = { q[0] / s_view.H_eff - pa[0], q[1] / s_view.H_eff - pa[1],
+                              q[2] / s_view.H_eff - pa[2] };
+        if (fabs(isect_dot(d, na)) > ISECT_COPLANAR_DIST) return 0;
+    }
+    return 1;
+}
+/** @brief Record the later of two faces' prims as a decal on the earlier one, keeping the earliest base.
+ * @param ia The first face's walk index.
+ * @param ib The second face's walk index. */
+static void isect_decal(int ia, int ib) {
+    const int la = isect_leader(ia), lb = isect_leader(ib);
+    if (la == lb) return;
+    const int lo = la < lb ? la : lb, hi = la < lb ? lb : la;
+    if (s_wtri_under[hi] < 0 || lo < s_wtri_under[hi]) s_wtri_under[hi] = lo;
+}
+/** @brief The full-key parts of the pair test for a pair that is not stacked.
+ *
+ * A pair sharing two or more vertex positions is adjacent and counted shared.
+ * Under MOBY_RANK_TIE_ORDER a coplanar pair (isect_coplanar) records its
+ * decal (isect_decal); under MOBY_RANK_TIE_CONTEST the pair contests, its
+ * boxes overlapping, and counts as a pair.
+ * @param x The moby's faces, their walk indices and the counts.
+ * @param ia The first face's walk index.
+ * @param ib The second face's walk index.
+ * @param ns The pair's shared vertex count.
+ * @return 1 when the pair is decided, 0 when the crossing test still runs. */
+static int isect_test_tie(const isect_ctx* x, int ia, int ib, int ns) {
+    const int tie = moby_rank_tie_mode();
+    if (ns >= 2) { x->c->shared++; return 1; }
+    if ((tie & MOBY_RANK_TIE_ORDER) && isect_coplanar(&s_wtri[ia], &s_wtri[ib])) isect_decal(ia, ib);
+    if (!(tie & MOBY_RANK_TIE_CONTEST)) return 0;
+    x->c->pairs++;
+    isect_contest(ia, ib);
+    return 1;
+}
 /** @brief Test one pair of a moby's faces whose bounding boxes overlap and flag it when they intersect.
  *
  * Without an instrument, which counts every verdict, a pair is dropped first
@@ -7397,21 +7479,30 @@ static void isect_log_stack(int ia, int ib, double deg, int hit) {
  * and counts as stacked. Without an instrument the remaining pairs are then
  * dropped when either face's side of the other's plane rules the pair out.
  * A pair sharing two or more vertex positions is counted adjacent and
- * skipped. An intersecting pair contests (isect_contest).
+ * skipped. An intersecting pair contests (isect_contest). Under
+ * OPENPETE_RANK_TIE a stacked pair also records its decal, and
+ * isect_test_tie decides the pairs it covers before the crossing test.
  * @param x The moby's faces, their walk indices and the counts.
  * @param a The first face's position in the moby's face list.
  * @param b The second face's position, after `a`. */
 static void isect_test(const isect_ctx* x, int a, int b) {
     const int ia = x->idx[a], ib = x->idx[b];
     const isect_tri *A = &x->T[a], *B = &x->T[b];
-    if (!x->all && s_wtri_contest[ia] && s_wtri_contest[ib]) return;
+    const int tie = moby_rank_tie_mode();
+    if (!x->all && !(tie & MOBY_RANK_TIE_ORDER) && s_wtri_contest[ia] && s_wtri_contest[ib]) return;
     int m[3];
     const int ns = isect_shared(&s_wtri[ia], &s_wtri[ib], m);
     const double deg = ns == 2 && isect_stacked_on() ? isect_stack_deg(&s_wtri[ia], &s_wtri[ib], m)
                                                      : -1.0;
     const int stacked = deg >= 0.0 && deg <= ISECT_STACK_DEG;
     if (deg >= 0.0 && isect_log_on() && openpete_frame != 0) isect_log_stack(ia, ib, deg, stacked);
-    if (stacked) { x->c->stacked++; isect_contest(ia, ib); return; }
+    if (stacked) {
+        x->c->stacked++; isect_contest(ia, ib);
+        if (tie & MOBY_RANK_TIE_ORDER) isect_decal(ia, ib);
+        return;
+    }
+    if (tie && isect_test_tie(x, ia, ib, ns)) return;
+    if (!x->all && s_wtri_contest[ia] && s_wtri_contest[ib]) return;
     if (!x->all && (isect_misses(A, B) || isect_misses(B, A))) return;
     if (ns >= 2) { x->c->shared++; return; }
     int r = isect_pair(A, B);
@@ -7452,6 +7543,20 @@ static void isect_boxes_sorted(const isect_tri* T, int n, isect_box* K) {
     }
     for (int s = 0; s < n; s++) isect_box_of(&T[X[s].k], X[s].k, &K[s]);
 }
+/** @brief Give both triangles of a prim the contest flag when either carries it.
+ *
+ * A prim's second triangle (MOBY_OTK_Q2) directly follows its first; the two
+ * share one rank, so they contest together.
+ * @param idx The moby's eligible faces' walk indices, ascending.
+ * @param n Their count. */
+static void isect_prim_contest(const int* idx, int n) {
+    for (int a = 1; a < n; a++) {
+        const int i = idx[a];
+        if (idx[a - 1] != i - 1 || isect_leader(i) != i - 1) continue;
+        const uint8_t f = s_wtri_contest[i] | s_wtri_contest[i - 1];
+        s_wtri_contest[i] = f; s_wtri_contest[i - 1] = f;
+    }
+}
 /** @brief Test the pairs of one moby's eligible faces whose bounding boxes overlap.
  *
  * Sets the intersecting faces' contest flags and records the pairs. Sort and
@@ -7469,6 +7574,7 @@ static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c
     static isect_box K[MAX_NTRI];
     static int hit[MAX_NTRI];
     isect_boxes_sorted(T, n, K);
+    for (int a = 0; a < n; a++) s_wtri_under[idx[a]] = -1;
     const isect_ctx x = { T, idx, c, isect_instrumented() };
     for (int s = 0; s < n; s++) {
         const isect_box* A = &K[s];
@@ -7484,6 +7590,7 @@ static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c
             isect_test(&x, A->k < b ? A->k : b, A->k < b ? b : A->k);
         }
     }
+    if (moby_rank_tie_mode() & MOBY_RANK_TIE_CONTEST) isect_prim_contest(idx, n);
     for (int a = 0; a < n; a++) c->contested += s_wtri_contest[idx[a]];
     c->faces += n;
 }
@@ -7534,16 +7641,10 @@ static void isect_census(void) {
  * The rank of each triangle is its prim's position in the record's paint
  * order as the draw's own ordering table produces it (moby_otk_face_bucket):
  * local bucket descending, then insertion order, which is the walk's emission
- * order. Both triangles of one prim share its position; triangles the table
- * does not receive rank 0. OPENPETE_MOBY_RANK_NEGCTL=1 reverses the order:
+ * order (moby_otk_paint_order; OPENPETE_RANK_TIE orders by the full key and
+ * paints a decal right after its base). Both triangles of one prim share its
+ * position; triangles the table does not receive rank 0. OPENPETE_MOBY_RANK_NEGCTL=1 reverses the order:
  * the negative control that proves a pixel A/B of the rank measures it. */
-typedef struct { int bk, i; } nrank_e;
-/** @brief qsort comparator over nrank_e: bucket descending, then walk index ascending. */
-static int nrank_cmp(const void* a, const void* b) {
-    const nrank_e *x = (const nrank_e*)a, *y = (const nrank_e*)b;
-    if (x->bk != y->bk) return x->bk > y->bk ? -1 : 1;   /* far buckets paint first */
-    return x->i < y->i ? -1 : x->i > y->i;
-}
 /** @brief Whether OPENPETE_MOBY_RANK_NEGCTL=1 reverses the native rank order, latched on first use.
  * @return 1 when reversed, else 0. */
 static int native_rank_negctl(void) {
@@ -7553,25 +7654,29 @@ static int native_rank_negctl(void) {
 }
 /** @brief Write s_nrank for one moby's walk triangles i0..i1-1 from their ordering-table keys.
  *
- * A triangle with a negative key or the second-triangle flag (MOBY_OTK_Q2)
- * stays out of the sort and starts at rank 0. The rest rank 1..n in paint
- * order, far bucket first, ties in walk order. A second-triangle face of a
- * quad prim then takes the rank of the triangle before it, so both halves of
- * a prim share one; the first triangle of the run is never copied.
+ * moby_otk_paint_order sorts the prims; a triangle with a negative key or the
+ * second-triangle flag (MOBY_OTK_Q2) starts at rank 0. The rest rank 1..n in
+ * paint order. A second-triangle face of a quad prim then takes the rank of
+ * the triangle before it, so both halves of a prim share one; the first
+ * triangle of the run is never copied. An eligible face's decal base
+ * (s_wtri_under) is passed when it lies earlier in the run. Counts the
+ * full-key order into s_tie_cnt while the calibration is on.
  * @param i0 The first walk triangle of the moby.
  * @param i1 One past its last.
  * @param neg Nonzero reverses the rank order. */
 static void native_rank_moby(int i0, int i1, int neg) {
-    static nrank_e E[MAX_NTRI];
-    int n = 0;
-    for (int i = i0; i < i1; i++) {
+    static moby_otk_ord_t E[MAX_NTRI];
+    static int order[MAX_NTRI], under[MAX_NTRI];
+    const int n = i1 - i0;
+    for (int k = 0; k < n; k++) {
+        const int i = i0 + k, u = s_wtri_under[i];
+        under[k] = (isect_eligible(i) && u >= i0 && u < i) ? u - i0 : -1;
         s_nrank[i] = 0;
-        int32_t k = s_wtri_otk[i];
-        if (k < 0 || (k & MOBY_OTK_Q2)) continue;
-        E[n].bk = MOBY_OTK_BUCKET(k); E[n].i = i; n++;
     }
-    qsort(E, (size_t)n, sizeof E[0], nrank_cmp);
-    for (int k = 0; k < n; k++) s_nrank[E[k].i] = neg ? n - k : k + 1;
+    const int m = moby_otk_paint_order(&s_wtri_otk[i0], under, &s_wtri_contest[i0], n,
+                                       (moby_rank_tie_mode() & MOBY_RANK_TIE_ORDER) != 0, E, order,
+                                       moby_rank_cal_on() ? &s_tie_cnt : NULL);
+    for (int k = 0; k < m; k++) s_nrank[i0 + order[k]] = neg ? m - k : k + 1;
     for (int i = i0 + 1; i < i1; i++)
         if (s_wtri_otk[i] >= 0 && (s_wtri_otk[i] & MOBY_OTK_Q2)) s_nrank[i] = s_nrank[i - 1];
 }
@@ -8279,8 +8384,9 @@ static void moby_rank_calibrate(void) {
     for (int i = 0; i < s_gout.n; i++) elig[i] = (uint8_t)isect_eligible(i);
     moby_rank_cal_in_t in = { s_gout.n, s_wtri_moby, (const int16_t (*)[6])s_wtri_isxy, s_nrank,
                               s_wtri_contest, elig, s_wtri_otk, s_wtri_fkey, s_ip_a, s_ip_b,
-                              s_ip_n, s_cur_mat };
+                              s_ip_n, s_cur_mat, s_tie_cnt.tie_reorder, s_tie_cnt.decal_kept };
     moby_rank_cal_run(&in);
+    s_tie_cnt = (moby_otk_tie_count_t){ 0, 0 };
 }
 
 /** @brief Charge one rank stage's cycles and thread CPU time to slot.

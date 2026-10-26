@@ -384,7 +384,8 @@ void moby_rank_cal_run(const moby_rank_cal_in_t* in)
         i0 = i1;
     }
     fprintf(stderr, "[rank-cal] vbl=%u pass=%s ot_prims=%d ranked=%ld exact=%ld ambiguous=%ld "
-                    "| ipairs cmp=%ld agree=%ld | contested cmp=%ld agree=%ld | all cmp=%ld agree=%ld\n",
+                    "| ipairs cmp=%ld agree=%ld | contested cmp=%ld agree=%ld | all cmp=%ld agree=%ld "
+                    "| tie_reorder=%ld decal_kept=%ld\n",
             openpete_frame, in->pass, tn, id.ranked, id.exact, id.ambig, ip.cmp, ip.agree,
-            cont.cmp, cont.agree, all.cmp, all.agree);
+            cont.cmp, cont.agree, all.cmp, all.agree, in->tie_reorder, in->decal_kept);
 }
