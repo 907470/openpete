@@ -79,6 +79,9 @@ void openpete_mods_guard_leave(void) { s_guard_depth--; }
 unsigned openpete_mods_toggle_epoch(void) { return 0; }
 /** @brief Stub: record the batcher tag-split arm state. */
 void openpete_native_set_tag_split(int on) { s_split = on; }
+static const char* s_game = "spyro-1";
+/** @brief Stub: the running game's id, set per case. */
+const char* game_get_id(void) { return s_game; }
 
 /* ------------------------------------------------------------------ */
 /* Harness. */
@@ -95,6 +98,7 @@ static void begin(const char* name) {
     s_mod_n = 0;
     s_guard_depth = s_guard_max = 0;
     openpete_mods_in_present = 0;
+    s_game = "spyro-1";
     printf("case %s\n", name);
 }
 /** @brief Print one recorded outcome line of the current case. */
@@ -566,6 +570,50 @@ static void case_hp_tier_moby(void) {
     CHECK(resolve(moby_tag(5, 0), SCENE) == -1, "draw-time");
     (void)mb;
     OUTCOME("extraction: no candidate (STOCK); draw-time resolve of an unstamped tag: stock");
+}
+
+/** @brief A particle selector with a nonzero `sel` matches its draw on Spyro 1 and no draw on Spyro 2 or 3, where `sel` is reserved.
+ *
+ * The draws carry the ident the feeders write: the particle class on
+ * Spyro 1, the GPU primitive code on Spyro 2 and 3 (0x2C a textured quad,
+ * 0x40 a line). A channel -1 selector naming the same ident is excluded on
+ * the particle channel alike; an ident -1 particle selector still matches.
+ * @param game The stubbed game id. */
+static void case_part_sel_reserved(const char* game) {
+    begin("part_sel_reserved");
+    s_game = game;
+    const int s1 = strcmp(game, "spyro-1") == 0;
+    const stub_mod_t* a = mod("part", 0, 13);
+    openpete_mod_material_selector_t q = sel_ch(OP_CHAN_PARTICLE);
+    q.ident = OP_PART_IDENT(OP_PART_QUAD, 0x2C);
+    const int mq = reg(a, q, SCENE, NULL);
+    openpete_mod_material_selector_t l = sel_ch(OP_CHAN_PARTICLE);
+    l.ident = OP_PART_IDENT(OP_PART_LINE, 0x40);
+    const int ml = reg(a, l, SCENE, NULL);
+    const int rq = resolve(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, 0x2C, 0), SCENE);
+    const int rl = resolve(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_LINE, 0x40, 0), SCENE);
+    OUTCOME("%s: quad sel 0x2C -> %d, line sel 0x40 -> %d", game, rq, rl);
+    CHECK(mq >= 0 && ml >= 0, "%s: registration accepted (%d, %d)", game, mq, ml);
+    CHECK(rq == (s1 ? mq : -1), "%s: quad sel 0x2C resolves %d", game, rq);
+    CHECK(rl == (s1 ? ml : -1), "%s: line sel 0x40 resolves %d", game, rl);
+
+    begin("part_sel_reserved_any_channel");
+    s_game = game;
+    a = mod("part", 0, 13);
+    openpete_mod_material_selector_t any = openpete_mod_material_sel_any();
+    any.ident = OP_PART_IDENT(OP_PART_QUAD, 0x2C);
+    const int ma = reg(a, any, SCENE, NULL);
+    const int ra = resolve(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, 0x2C, 0), SCENE);
+    OUTCOME("%s: channel -1 ident 0x2C on a particle quad -> %d", game, ra);
+    CHECK(ra == (s1 ? ma : -1), "%s: channel -1 sel 0x2C resolves %d", game, ra);
+
+    begin("part_sel_reserved_every_ident");
+    s_game = game;
+    a = mod("part", 0, 13);
+    const int me = reg(a, sel_ch(OP_CHAN_PARTICLE), SCENE, NULL);
+    const int re = resolve(OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, 0x2C, 0), SCENE);
+    OUTCOME("%s: ident -1 on a particle quad -> %d", game, re);
+    CHECK(re == me && me >= 0, "%s: ident -1 resolves %d", game, re);
 }
 
 /** @brief Spyro64's OP_SEL_TEXTURED moby selector matches at extraction and at draw time. */
@@ -2191,6 +2239,9 @@ int main(void) {
     case_f4();
     case_hp_tier_moby();
     case_textured_moby();
+    case_part_sel_reserved("spyro-1");
+    case_part_sel_reserved("spyro-2");
+    case_part_sel_reserved("spyro-3");
     case_f3a();
     case_d3a();
     case_f3b_view_level();

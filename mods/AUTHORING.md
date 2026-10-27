@@ -385,7 +385,7 @@ Selector keys (manifest row or `openpete_mod_material_selector_t`; omitted
 | Key | Values |
 |---|---|
 | `channel` | `any moby terrain player flame particle sky shadow tracer portal` / `OP_CHAN_*` (1..9) |
-| `ident` | flame: 0 ribbon, 1 caps; particle: `OP_PART_IDENT(kind, sel)` = `(kind<<8)\|sel`, kinds QUAD 0 (sel = particle class; Spyro 2/3: GPU primitive code), LINE 1 (same), GLOW 2, FLARE 3, SPARK 4 (sel 0), STAR 5 (Spyro 1 only); shadow caster kind; portal `OP_PORTAL_FLAT 0 / DOME 1 / BLENDED 2` (Spyro 2/3: FLAT background quad, DOME picture, no BLENDED; use -1: the portal pops through every kind on approach); player `OP_PLAYER_AVATAR 0 / MIRROR 1 / SUBMERGED 2` (1 and 2 Spyro 2/3 only); tracer `OP_TRACER_RIBBON 0 / MESH 1 / ZAP 2` (Spyro 1: RIBBON only); sky emits 0 |
+| `ident` | flame: 0 ribbon, 1 caps; particle: `OP_PART_IDENT(kind, sel)` = `(kind<<8)\|sel`, kinds QUAD 0 (sel = particle class; Spyro 2/3: sel reserved, nonzero matches no draw, reach their quads and lines by ident -1), LINE 1 (same), GLOW 2, FLARE 3, SPARK 4 (sel 0), STAR 5 (Spyro 1 only); shadow caster kind; portal `OP_PORTAL_FLAT 0 / DOME 1 / BLENDED 2` (Spyro 2/3: FLAT background quad, DOME picture, no BLENDED; use -1: the portal pops through every kind on approach); player `OP_PLAYER_AVATAR 0 / MIRROR 1 / SUBMERGED 2` (1 and 2 Spyro 2/3 only); tracer `OP_TRACER_RIBBON 0 / MESH 1 / ZAP 2` (Spyro 1: RIBBON only); sky emits 0 |
 | `class` / `moby_class` | moby class |
 | `texture` | terrain texture record 0..127, per level: pair with `level` |
 | `level` | `g_LevelId` |

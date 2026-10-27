@@ -311,10 +311,15 @@ enum {
  * that carries a class is claimed one class per row. Glow rings and
  * sparkles are separate game renderers that share this channel; a
  * glow-only or sparkle-only material keys on the kind with `sel` 0.
+ *
+ * On Spyro 2 and 3 `sel` is reserved: a selector whose ident carries a
+ * nonzero `sel` matches no draw, and the engine logs one warning per such
+ * material at registration. A `sel` 0 key matches none of their quads
+ * or lines either; ident -1 on this channel reaches them.
  */
 enum {
-    OP_PART_QUAD  = 0,  /**< Billboard quads; `sel` = particle class on Spyro 1, the GPU primitive code on Spyro 2 and 3. */
-    OP_PART_LINE  = 1,  /**< Streak lines; `sel` = particle class on Spyro 1, the GPU primitive code on Spyro 2 and 3. */
+    OP_PART_QUAD  = 0,  /**< Billboard quads; `sel` = particle class on Spyro 1, reserved on Spyro 2 and 3. */
+    OP_PART_LINE  = 1,  /**< Streak lines; `sel` = particle class on Spyro 1, reserved on Spyro 2 and 3. */
     OP_PART_GLOW  = 2,  /**< Additive glow rings around collectables. */
     OP_PART_FLARE = 3,  /**< Sparkle flares (the twinkle quads). */
     OP_PART_SPARK = 4,  /**< Sparkle lines. */

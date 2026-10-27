@@ -28,6 +28,7 @@
 #include "openpete_log.h"
 #include "mod_vec.h"
 #include "openpete_native_render.h"   /* set_tag_split arming (material selectors) */
+#include "game_extras.h"              /* game_get_id: the particle sel reservation */
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -41,6 +42,11 @@ static int s_mat_count;
 static mod_fixed s_mat_census;
 static int s_mat_sel_dirty;      /* any material carries a parked selector */
 static int s_mat_has_instance;   /* cached: any live selector has a callback */
+/* Set while the running game is not Spyro 1: Spyro 2 and 3 tag the GPU
+ * primitive code, not a particle class, in the `sel` byte of a particle
+ * ident, so the byte is reserved there and a nonzero one names no draw.
+ * Refreshed at each registration, so it holds whenever a material exists. */
+static int s_part_sel_reserved;
 
 /* Advanced by every compose-side change a draw-time outcome depends on: a
  * view install, a hold change, a member set publish, a pending module. */
@@ -551,6 +557,23 @@ void mod_mat_set_link_of_frag(int frag, unsigned link_mask, unsigned identity_ma
     }
 }
 
+/** @brief Refresh the particle `sel` reservation from the running game and warn once for a selector that names a reserved `sel`.
+ *
+ * Spyro 1 tags each particle quad and line with the game's particle
+ * class; Spyro 2 and 3 tag the GPU primitive code there, so their `sel`
+ * is reserved and a nonzero one matches no draw (part_sel_void). The warning names the material's
+ * owner and ident, one line per registration on the particle channel.
+ * @param id The registering mod.
+ * @param sel The selector. */
+static void part_sel_note(const char* id, const openpete_mod_material_selector_t* sel) {
+    s_part_sel_reserved = strcmp(game_get_id(), "spyro-1") != 0;
+    if (s_part_sel_reserved && sel->channel == OP_CHAN_PARTICLE && sel->ident != -1 &&
+        (sel->ident & 0xFF) != 0)
+        OPL_WARN_F("mods", "%s: material: particle ident %#x carries sel %d, reserved on "
+                   "%s and matches no draw", id, (unsigned)sel->ident,
+                   sel->ident & 0xFF, game_get_id());
+}
+
 int mod_mat_append(const char* id, const openpete_mod_material_selector_t* sel,
                    int vert_shader, int frag_shader, int contract,
                    openpete_mod_material_fn per_instance, int load_index,
@@ -561,6 +584,7 @@ int mod_mat_append(const char* id, const openpete_mod_material_selector_t* sel,
                     MOD_MATERIAL_MAX);
         return -1;
     }
+    part_sel_note(id, sel);
     mod_material_t* m = &s_mats[s_mat_count];
     memset(m, 0, sizeof *m);
     m->owner = id;
@@ -2044,6 +2068,19 @@ static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
     return 1;
 }
 
+/** @brief Test whether a selector names a reserved particle `sel` against a particle draw.
+ *
+ * On a game without particle classes (s_part_sel_reserved) the low byte
+ * of a particle ident is reserved: a selector ident with a nonzero low
+ * byte matches no particle draw, whatever the feeder writes there.
+ * @param m The material.
+ * @param k The decoded tag key.
+ * @return 1 when the reservation excludes the draw, else 0. */
+static int part_sel_void(const mod_material_t* m, const material_key_t* k) {
+    return s_part_sel_reserved && k->chan == OP_CHAN_PARTICLE &&
+           m->sel.ident != -1 && (m->sel.ident & 0xFF) != 0;
+}
+
 /** @brief Test whether a material's selector accepts a decoded tag key.
  *
  * Each selector field narrows only when set: channel, level (inert while
@@ -2062,6 +2099,7 @@ static int material_selector_matches(const mod_material_t* m,
      * has its own keys below. */
     if (m->sel.ident != -1 && k->path != 1 && m->sel.ident != k->ident)
         return 0;
+    if (part_sel_void(m, k)) return 0;
     if (k->path == 0 && m->sel.moby_class != -1 &&
         m->sel.moby_class != k->cls)
         return 0;

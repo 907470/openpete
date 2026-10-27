@@ -208,6 +208,10 @@ int openpete_mods_load_index_of(openpete_mod_t *self) { (void)self; return 0; }
  * @param self Unused.
  * @return 13. */
 int openpete_mods_api_pin_of(openpete_mod_t *self) { (void)self; return 13; }
+/** @brief Return the running game's id.
+ *
+ * @return "spyro-1". */
+const char *game_get_id(void) { return "spyro-1"; }
 /** @brief Return the toggle epoch.
  *
  * @return 0. */
