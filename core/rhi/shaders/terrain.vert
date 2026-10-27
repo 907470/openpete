@@ -84,7 +84,7 @@ layout(location = 12) in uvec2 inCtxBCol;
 layout(location = 0)  in uvec4 inCellCA;    /* c0x..c2y                   */
 layout(location = 1)  in uvec4 inCellCB;    /* c2z..c3z, face_flags, info */
 layout(location = 2)  in uvec4 inCellFar;   /* raw far colours i0..i3     */
-layout(location = 3)  in uvec2 inCellFog;   /* HQ ladder-fade words a, b  */
+layout(location = 3)  in uvec2 inCellFog;   /* zero: the fade words are built in this stage */
 layout(location = 4)  in uvec4 inCellNear;  /* raw near colours i0..i3    */
 layout(location = 5)  in uvec4 inCellT0;    /* tile: uv TL,TR | uv BL,BR | mat0 | mat1 */
 layout(location = 6)  in uvec4 inCellT1;
@@ -183,7 +183,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
      * outline lives at rim_pv[pi*16 .. pi*16+vn-1]. */
     ivec4 rim_cnt;
     ivec4 hp_drop;  /* x: HP drop sum bound, y: corner bound (x = 0: the
-                     * sum against 4 * fogRefBase alone)                  */
+                     * sum against 4 * fogRefBase alone); z: the heavy-fog
+                     * colour 0x00BBGGRR (GF_HPFOG)                       */
     dvec4 rim_oxyH;      /* rim ofx, ofy, H, pad                          */
     dvec4 rim_knobs;     /* eps, near, reach, cos(angle)                  */
     dvec4 rim_abc[6];    /* screen inv-vz plane fit a,b,c; w = valid      */
@@ -225,6 +226,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_TRI2      8192
 #define GF_LPNEAROUT 16384
 #define GF_HQFOG     32768
+#define GF_HPRAW     65536
+#define GF_HPFOG     131072
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -1522,18 +1525,18 @@ void main()
               && ((gf & GF_HQPIN) != 0 ? trifront
                                        : near_canonical(m0.z, m1.z, m2.z, m2.z,
                                                         ff & FF_W3_40, ff & FF_W3_80));
-    /* The game's depth cue on an HQ vertex the pin routes past the game's
-     * own near band (terrain.c tn_hqfog_face): DPCS-fogged node colours and
-     * the ladder fade of the HQ texel. A face the game defers to its near
-     * drain keeps the raw near colours. hqw: the fade words, baked in the
-     * 2x2 vertex's near-half material slots or in the cell record. */
-    bool pinFog = hqv && (gf & GF_HQPIN) != 0 && (gf & GF_HQFOG) != 0
-               && !near_canonical(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80);
-#ifdef TERRAIN_CELLS
-    uvec2 hqw = cellHqFog;
-#else
-    uvec2 hqw = inMat.zw;
-#endif
+    /* Extended LOD (GF_HPRAW, terrain.c s_hp_raw): an HP face draws its
+     * near colours and base CLUT row at every distance. On a heavy-fog level
+     * (GF_HPFOG, s_hp_fog) its colours DPCS-fade toward the fog colour
+     * hp_drop.z and its texels fade to modulation-neutral grey on the ladder
+     * ramp: hqw, the words terrain.c tn_atmo_words packs (aN = 0, bN = 0.5,
+     * bit 30 the face's fog-reference bias). */
+    bool hpRaw = !lp && (gf & GF_HPRAW) != 0;
+    bool hpFog = hpRaw && (gf & GF_HPFOG) != 0;
+    uvec2 hqw = uvec2(0x80000000u | (((ff & FF_FOGBIAS) != 0u) ? 0x40000000u : 0u),
+                      128u | (128u << 10) | (128u << 20));
+    vec3 fogc = vec3(float(g.hp_drop.z & 0xFF), float((g.hp_drop.z >> 8) & 0xFF),
+                     float((g.hp_drop.z >> 16) & 0xFF)) / 255.0;
     /* Drain sub-cell keys (FF_KEYCELLS, terrain.c terrain_near_emit_face,
      * terrain_near_emit_tri, tn_flat_tri_emit): where the drain inserts a
      * near-band face as finer sub-cells than the variant drawn here (the 2x2
@@ -1680,7 +1683,7 @@ void main()
     uint dbg_half = 0u, dbg_delta = 0u;
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     bool ladderFace = false;
-    if (!lp && !hqv && (gf & GF_CLUTFOG) != 0 && (sf & SF_SECINLOD) != 0u
+    if (!lp && !hqv && (gf & GF_CLUTFOG) != 0 && (gf & GF_HPRAW) == 0 && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
         ladderFace = true;
         /* per-corner int casts, then sum - the walk's exact quantisation */
@@ -1740,7 +1743,7 @@ void main()
         uv.y += uvdv;
     }
     vMat = uvec4(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16),
-                 pinFog ? hqw : uvec2(0u));
+                 (hpFog && (mat0 & (1u << 23)) != 0u) ? hqw : uvec2(0u));
     /* A borrowed face samples the auxiliary VRAM bank, 512 rows below the
      * PSX VRAM: bit 31 tells the fragment stage to offset the page row,
      * and the CLUT row carries the offset here. */
@@ -1857,14 +1860,14 @@ void main()
                                    : vec2(inCtxBUV.x, inCtxBUV.y);
         if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
 
-        bool doFog   = (!lp && !hqv) || pinFog;
+        bool doFog   = hpRaw ? hpFog : (!lp && !hqv);
         bool doGrade = lp && (sf & SF_LPGRADE) != 0u;
         int  dbgmode = (gf >> 26) & 7;
         bool dbgraw  = (gf & (1 << 29)) != 0 && (dbgmode == 4 || dbgmode == 5);
         cvx cin[3];
         for (int k = 0; k < 3; k++) {
             /* an HQ vertex bakes its true far colour; unfogged it draws near */
-            vec3 c = terrain_col(tp[k].z, (hqv && !pinFog) ? cn[k] : cf[k], cn[k], doFog,
+            vec3 c = terrain_col(tp[k].z, hpRaw ? (hpFog ? fogc : cn[k]) : (hqv ? cn[k] : cf[k]), cn[k], doFog,
                                  fogRef, fogscale, doGrade, s.sec[slot].gp, s.sec[slot].gq);
             if (dbgraw) c = (dbgmode == 4) ? cn[k] : cf[k];
             cin[k].m  = tp[k];
@@ -2102,8 +2105,8 @@ void main()
     vec3 cfar8  = op_unorm8(inColFar.rgb);
     vec3 cnear8 = op_unorm8(inColNear.rgb);
 #endif
-    vec4 col = vec4(terrain_col(mo.z, (hqv && !pinFog) ? cnear8 : cfar8, cnear8,
-                                (!lp && !hqv) || pinFog, fogRef, fogscale,
+    vec4 col = vec4(terrain_col(mo.z, hpRaw ? (hpFog ? fogc : cnear8) : (hqv ? cnear8 : cfar8), cnear8,
+                                hpRaw ? hpFog : (!lp && !hqv), fogRef, fogscale,
                                 lp && (sf & SF_LPGRADE) != 0u,
                                 s.sec[slot].gp, s.sec[slot].gq), 1.0);
     {   /* debug tint modes 4/5: show the baked near / far colour raw */

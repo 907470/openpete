@@ -44,6 +44,24 @@ void terrain_heavy_fog_refresh(struct CPUState* cpu);
  * @return 1 for a heavy-fog level, 0 otherwise or before the first refresh. */
 int terrain_heavy_fog(void);
 
+/** @brief The heavy-fog level's fog colour: the far colour the heavy-fog vote elected, 0x00BBGGRR.
+ *
+ * Valid while terrain_heavy_fog() is 1; 0 before the first refresh.
+ * @return The colour. */
+uint32_t terrain_heavy_fog_colour(void);
+
+/** @brief Blends a colour toward a far colour on the terrain's vertex depth-cue curve.
+ *
+ * The HP walk's per-corner fog (terrain_fog_blend): IR0 = fogRef - SZ with SZ
+ * = m3 * the walk's fog scale (4 / --fog-scale) and fogRef the last walk's
+ * reference (LOD distance >> 2), the GTE DPCS blend near at IR0 >= 4096, far
+ * at IR0 <= 0. Returns nearC unchanged before the first terrain walk.
+ * @param nearC The colour at zero fog, 0x00BBGGRR.
+ * @param farC The fog target, 0x00BBGGRR.
+ * @param m3 The view-Z in world/16.
+ * @return The blended colour, 0x00BBGGRR. */
+uint32_t terrain_fog_cue(uint32_t nearC, uint32_t farC, double m3);
+
 /** @brief A freecam pose that frames the whole live level from above.
  *
  * The first pass takes the vertex bounds of every sector over both LOD banks.
