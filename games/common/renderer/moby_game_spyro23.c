@@ -1484,7 +1484,7 @@ static int s23_abr_in_force(const int32_t* bucket, int i) {
 static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
                          const int itr[3], const int R[3][3], int wkey, int single) {
     static moby_otk_vert_t kv[S23_SIMPLE_VERTS];
-    static int32_t bucket[S23_SIMPLE_FACES];
+    static int32_t bucket[S23_SIMPLE_FACES], entry[S23_SIMPLE_FACES];
     ngte_view view;
     ngte_view_build(cpu, &view);
     moby_otk_rec_t ork[2];
@@ -1498,6 +1498,7 @@ static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
         const s23_abr_face* F = &s_abr_face[j];
         const int32_t b = s23_simple_face_otk(ork, kv, F->idx, F->tri, F->f0, F->f1);
         bucket[j] = b < 0 ? -1 : MOBY_OTK_BUCKET(b);
+        entry[j] = moby_otk_array_entry(&ork[0], b);
         ltop = moby_otk_top_entry(&ork[0], b, ltop);
     }
     if (s_abr_semi_n > 0) {
@@ -1510,10 +1511,8 @@ static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
     }
     for (int t = 0; t < s_held_n; t++) {
         const s23_held_tri* T = &s_held[t];
-        const int32_t b = bucket[T->face];
-        moby_simple_world_bucket(b < 0 ? -1 : single ? wkey
-                                 : moby_otk_splice_bucket(wkey, 2, ltop,
-                                                          moby_otk_array_entry(&ork[0], b)));
+        const int32_t l = entry[T->face];
+        moby_simple_world_bucket(l < 0 ? -1 : single ? wkey : moby_otk_splice_bucket(wkey, 2, ltop, l));
         moby_simple_tri(T->p, T->rgb, T->u, T->v, T->textured, T->tpx, T->tpy,
                         T->clx, T->cly, T->bpp, T->blend, T->fkey, T->otk, T->iv);
     }
