@@ -293,3 +293,7 @@ twilight_harbor | pos=(11615, 42844, 10978) yaw=3745 pitch=54
 # extended LOD loses it on pinned HQ corners and moby fades.
 misty_bog | pos=(75971, 146432, 15000) yaw=3072 pitch=120
 beast_makers | pos=(98304, 96379, 20600) yaw=2048 pitch=120
+# Extended LOD on a heavy-fog level: far mobys draw the LP model where the HP
+# model is owed, the fanning chests' fans take no fog, and far gems vanish
+# where original LOD fades them toward the fog colour.
+misty_bog | pos=(77755, 113361, 35610) yaw=402 pitch=445
