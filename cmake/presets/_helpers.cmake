@@ -19,6 +19,11 @@
 # later would lose to that stale default forever (the very footgun
 # these files exist to kill). The -D override is the one remaining
 # sticky surface: drop it with `cmake -U VAR <build-dir>` when done.
+# The HELPSTRING is CMake's only on the configure that took the -D: a
+# set(CACHE) declaration later in the project rewrites it, so the macro
+# records the override in an internal _OPENPETE_CLI_<VAR> entry that holds
+# the overriding value, and keeps deferring on every later reconfigure while
+# the cache still holds that value (`cmake -U VAR` or a new -D ends it).
 # Requires CMP0077/CMP0126 NEW (top-level cmake_minimum_required 3.22):
 # option()/set(CACHE) consumers see the normal variable and leave it
 # alone.
@@ -28,6 +33,11 @@ macro(openpete_preset_default _var _val)
         get_property(_op_helpstring CACHE ${_var} PROPERTY HELPSTRING)
         if(_op_helpstring STREQUAL
            "No help, variable specified on the command line.")
+            set(_op_cli_override TRUE)
+            set(_OPENPETE_CLI_${_var} "$CACHE{${_var}}" CACHE INTERNAL
+                "value of a -D override of ${_var}")
+        elseif(DEFINED CACHE{_OPENPETE_CLI_${_var}}
+               AND "$CACHE{_OPENPETE_CLI_${_var}}" STREQUAL "$CACHE{${_var}}")
             set(_op_cli_override TRUE)
         endif()
     endif()
