@@ -17,5 +17,5 @@
 | tick context, present context | Where a call runs. Guest RAM writes, `api->call`, `guest_alloc` and registration are legal in tick context and refused in present context, which covers present hooks and UI section bodies. |
 | override, `base()` | A mod's function that replaces a game function, and the call that runs the next override in the chain and then the original. Where `base()` sits in the body makes the override a pre-hook, a post-hook or a replacement. |
 | mutative | A mod that writes guest RAM, declared as `sim_mutative` in the manifest. Each save is tagged with the mutative set that wrote it. |
-| save record | A mod's own data for one game save, kept by the engine in `<card>.modsave` beside the card and delivered back when that save is loaded (`api->save_register`, api 13, Spyro 1). See [Save records](save-records.md). |
+| save record | A mod's own data for one game save, kept by the engine in `<card>.modsave` beside the card and delivered back when that save is loaded (`api->save_register`, api 13). See [Save records](save-records.md). |
 | savestate, rewind, runahead | Timeline features: capture and restore a moment, step backwards, speculatively run ticks ahead. Each needs the mod to declare how its own state behaves (`state`, `runahead`), and each is refused for an undeclared mod. |
