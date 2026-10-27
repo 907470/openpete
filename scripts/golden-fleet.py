@@ -211,7 +211,9 @@ row's divergent count of N x legs. The repeat count is recorded in
 run-args.json, so `resume` repeats the same N.
 --expect FILE: `<unit> <substring> <reason>` lines (unit = job name); a
 unit not in the run or a substring matching no blessed tile and no manifest
-row refuses the run (2). Streamed moves are tagged EXPECTED or UNEXPECTED;
+row refuses the run (2). A tile of a row whose launch field sets extended
+LOD (`--lod extended`, `--no-lod`) also matches as its `__lodext__`-tagged
+name, since both of that row's LOD legs run extended. Streamed moves are tagged EXPECTED or UNEXPECTED;
 each expectation ends moved, EXPECTED-NOT-MOVED or NOT-REACHED; the counts
 change no exit code.
 Exit (and done marker rc): the worst unit in the order 1 > 64 > 0.
@@ -3860,7 +3862,7 @@ class Coordinator:
         copy = os.path.join(self.local_run_dir, "expect.txt")
         if not os.path.exists(copy):
             shutil.copyfile(self.a.expect, copy)
-        self.expect = parse_expect(copy)
+        self.expect = bind_launch_lod(self.tree, parse_expect(copy))
         errs = expect_refusals(self.tree, self.pb, self.units, self.expect)
         if errs:
             raise FleetError("expected-moves file refused: " + "; ".join(errs), 2)
@@ -3966,7 +3968,8 @@ class Resumer(Coordinator):
         """Read the run's expected-moves file, keeping the expectations of the resumed unit."""
         copy = os.path.join(self.local_run_dir, "expect.txt")
         if os.path.exists(copy):
-            self.expect = [e for e in parse_expect(copy) if e.unit == self.a.unit]
+            self.expect = [e for e in bind_launch_lod(self.tree, parse_expect(copy))
+                           if e.unit == self.a.unit]
 
     def write_resume_ship(self):
         """Write the ship directory: this script's supervisor, the run's fields file and binary hashes."""
@@ -4526,16 +4529,64 @@ def stream_absent(lines, dest):
     return out
 
 
+LAUNCH_LOD_EXT = re.compile(r"(?:^|\s)(?:--lod(?:\s+|=)extended|--no-lod)(?=\s|$)")
+
+
 class Expectation:
     """One line of an expected-moves file: a unit (job name), a tile substring and a reason."""
 
     def __init__(self, unit, sub, reason, lineno):
-        """Bind the line's fields."""
+        """Bind the line's fields; ext_rows (bind_launch_lod) starts empty."""
         self.unit, self.sub, self.reason, self.lineno = unit, sub, reason, lineno
+        self.ext_rows = frozenset()
+
+    def hit(self, tile):
+        """True when the substring occurs in the tile name or in its launch-LOD name (launch_lod_name)."""
+        return self.sub in tile or self.sub in launch_lod_name(tile, self.ext_rows)
 
     def matches(self, unit, tile):
-        """True when the expectation names the unit and its substring occurs in the tile name."""
-        return unit == self.unit and self.sub in tile
+        """True when the expectation names the unit and hit() holds for the tile."""
+        return unit == self.unit and self.hit(tile)
+
+
+def launch_lod_name(tile, ext_rows):
+    """Return the tile name with the `lodext__` tag its capture LOD implies, or the name unchanged.
+
+    presentation-corpus.sh tags a tile `<key>__lodext__<leg>__<n>` only on the
+    leg it runs at `--lod extended`; a row whose launch field sets extended LOD
+    itself (ext_rows) runs its untagged `original` leg at extended LOD too, the
+    row's arguments going last on the command line. The tile key is the row
+    name or a repeat copy `<row>~r<k>`.
+    """
+    key, sep, rest = tile.partition("__")
+    if not sep or rest.startswith("lodext__") or re.sub(r"~r\d+$", "", key) not in ext_rows:
+        return tile
+    return f"{key}__lodext__{rest}"
+
+
+def launch_ext_rows(tree, game, tier):
+    """The bk2 rows of a unit's presentation manifest whose launch field selects extended LOD."""
+    if tier == "dragons":
+        return frozenset()
+    try:
+        text = open(os.path.join(tree, "games", game, "corpus", "presentation-corpus.manifest"),
+                    encoding="utf-8").read()
+    except OSError:
+        return frozenset()
+    out = set()
+    for line in text.splitlines():
+        f = line.split("|")
+        if len(f) > 5 and not f[0].lstrip().startswith("#") and LAUNCH_LOD_EXT.search(f[5]):
+            out.add(f[0].strip())
+    return frozenset(out)
+
+
+def bind_launch_lod(tree, exps):
+    """Give each expectation its unit's extended-launch rows (launch_ext_rows); return exps."""
+    for e in exps:
+        game, _, tier = e.unit.rpartition("-")
+        e.ext_rows = launch_ext_rows(tree, game, tier)
+    return exps
 
 
 def parse_expect(path):
@@ -4584,7 +4635,7 @@ def check_expect(exps, unit_names, universe):
                         f"({', '.join(sorted(unit_names))})")
             continue
         tiles, rows = universe[e.unit]
-        nt = sum(1 for t in tiles if e.sub in t)
+        nt = sum(1 for t in tiles if e.hit(t))
         nr = sum(1 for r in rows if e.sub in r)
         print(f"[fleet] expect: {e.unit} '{e.sub}': {nt} tile(s), {nr} manifest row(s) match")
         if not nt and not nr:
@@ -4618,7 +4669,7 @@ def expect_status(e, reached, lines, blessed):
     unit with no accepted attempt (stopped, SKIP).
     """
     streamed = {r["tile"]: r["verb"] for r in lines if r["verb"] in TILE_VERBS}
-    match = {t for t in blessed if e.sub in t} | {t for t in streamed if e.sub in t}
+    match = {t for t in blessed if e.hit(t)} | {t for t in streamed if e.hit(t)}
     if not reached:
         return "NOT-REACHED", match
     if any(streamed.get(t) in MOVED_VERBS for t in match):
@@ -4979,6 +5030,7 @@ def cmd_run(a):
     exps = parse_expect(a.expect) if a.expect else []
     if exps:
         tree = script_repo()
+        bind_launch_lod(tree, exps)
         errs = expect_refusals(tree, load_pb(tree), units, exps)
         if errs:
             raise FleetError("expected-moves file refused: " + "; ".join(errs), 2)

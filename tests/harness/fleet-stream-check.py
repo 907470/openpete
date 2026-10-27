@@ -787,6 +787,17 @@ def case_expect(tmp):
     c6, _ = gf.expect_counts([e_poked, e_quiet], {UNIT: (True, resumed, blessed)})
     c7, _ = gf.expect_counts([e_poked, e_quiet], {UNIT: (True, lines, blessed)})
     check("expect-resumed", c6 == c7, f"resumed {fmt(c6)} == uninterrupted {fmt(c7)}")
+    mpath = os.path.join(tmp, "games", "spyro-1", "corpus", "presentation-corpus.manifest")
+    os.makedirs(os.path.dirname(mpath), exist_ok=True)
+    with open(mpath, "w") as f:
+        f.write("# x|1|1||1|--lod extended\nrowx|1800|100||1900|--freecam-pose 1,2,3,4,5\n"
+                "rowx@ext|1800|100||1900|--freecam-pose 1,2,3,4,5 --lod extended docs:a/b\n")
+    e_lod = gf.bind_launch_lod(tmp, [gf.Expectation("spyro-1-presentation", "__lodext__", "lod", 1)])[0]
+    got = {t: e_lod.matches("spyro-1-presentation", t) for t in (
+        "rowx@ext__canon__1800-vk.png", "rowx@ext~r02__inter__1850-vk.png", "rowx@ext__lodext__canon__1800-vk.png",
+        "rowx__canon__1800-vk.png", "rowx__lodext__canon__1800-vk.png")}
+    check("expect-launch-lod", sorted(e_lod.ext_rows) == ["rowx@ext"]
+          and list(got.values()) == [True, True, True, False, True], f"ext rows {sorted(e_lod.ext_rows)}; {got}")
 
     co = FakeCo(tmp, "expect-log")
     co.expect = [e_poked]
