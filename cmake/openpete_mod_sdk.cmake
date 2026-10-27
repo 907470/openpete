@@ -62,6 +62,7 @@ set(OPENPETE_MOD_SDK_SHADERS
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_key_contest.glsl
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_clut.glsl
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_texel.glsl
+    ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_hq_fog.glsl
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/terrain_shade.glsl
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/portal_cover.glsl
     ${CMAKE_SOURCE_DIR}/core/rhi/shaders/portal_cover_scene.glsl
