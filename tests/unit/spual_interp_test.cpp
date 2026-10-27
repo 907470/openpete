@@ -27,6 +27,8 @@ int PsyX_SPUFeed_Open(void) { return 0; }
 /** @brief PsyCross stub. */
 void PsyX_SPUFeed_Close(void) {}
 /** @brief PsyCross stub. */
+void PsyX_SPUFeed_Prepare(void) {}
+/** @brief PsyCross stub. */
 void PsyX_SPUFeed_Push(const short* frames, int n) { (void)frames; (void)n; }
 /** @brief PsyCross stub. */
 void PsyX_SPUFeed_Pump(void) {}
