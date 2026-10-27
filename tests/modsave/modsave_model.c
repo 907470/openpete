@@ -383,6 +383,17 @@ static void complete(msm_state_t* s, int slot, int outcome, fxbuf_t* fx) {
     msm_entry_t e = s->blk.entry[slot];
     memset(&s->blk.entry[slot], 0, sizeof e);
     if (!e.used || outcome == 1) return;
+    if (e.orphan) {
+        /* The BIOS finishes a write the loaded blob carried no entry for:
+         * the card takes it, the engine logs an outside edit. */
+        if (!e.norec) {
+            s->card[slot][e.idx] = outcome == 2 ? (uint8_t)MSM_C_T : e.content;
+            flush_card(s, slot);
+        }
+        if (s->armed) fx_log(s, fx, "completion-no-entry");
+        return;
+    }
+    if (e.norec) return;
     s->card[slot][e.idx] = outcome == 2 ? (uint8_t)MSM_C_T : e.content;
     flush_card(s, slot);
     if (outcome == 2 && e.captured && e.lin.root) fx_log(s, fx, "completion-checksum-failed");
@@ -400,6 +411,14 @@ static void complete(msm_state_t* s, int slot, int outcome, fxbuf_t* fx) {
     op.snap.content = e.content; op.snap.tag = e.tag; op.snap.lin = e.lin;
     memcpy(op.snap.rec, e.rec, sizeof op.snap.rec);
     host_op(s, &op, fx);
+}
+
+/** @brief Issue of a write covering no record: an entry with no record, whose completion changes nothing and is not an outside edit. */
+static void issue_norec(msm_state_t* s, int slot) {
+    msm_entry_t* e = &s->blk.entry[slot];
+    memset(e, 0, sizeof *e);
+    e->used = 1; e->norec = 1; e->captured = s->armed;
+    e->slot = (uint8_t)slot; e->gen = s->blk.gen;
 }
 
 /** @brief An issue while unarmed: an uncaptured entry that only writes the card at completion. */
@@ -491,6 +510,8 @@ static void tick_action(msm_state_t* s, const msm_event_t* ev, fxbuf_t* fx) {
     case MSM_EV_COMPLETE:    complete(s, ev->a, ev->b, fx); break;
     case MSM_EV_FILE_CREATE: ev_file_create(s, ev->a, fx); break;
     case MSM_EV_FORMAT:      ev_format(s, ev->a, fx); break;
+    case MSM_EV_ISSUE_NOREC: issue_norec(s, ev->a); break;
+    case MSM_EV_ABORT:       break; /* the stamp read mismatched: no write, no state change */
     case MSM_EV_PLAY:        s->blk.arena[ev->a] = ev->b; break;
     default: break;
     }
@@ -557,6 +578,15 @@ static void ev_ss_load_old(msm_state_t* s) {
     block_boot(&b);
     b.gen = gen;
     memcpy(b.arena, s->ss.arena, sizeof b.arena);
+    /* Guest RAM comes back with the BIOS write the state had in flight;
+     * its entry does not. */
+    for (int k = 0; k < MSM_MAX_SLOTS; k++) {
+        const msm_entry_t* o = &s->ss.entry[k];
+        if (!o->used) continue;
+        msm_entry_t* e = &b.entry[k];
+        e->used = 1; e->orphan = 1; e->norec = o->norec;
+        e->slot = o->slot; e->idx = o->idx; e->content = o->content; e->gen = gen;
+    }
     s->blk = b;
     s->have_rw = 0;
 }
@@ -645,8 +675,9 @@ static int tick_enabled(const msm_state_t* s, const msm_event_t* ev) {
         return s->mounted[ev->a] && !s->blk.entry[ev->a].used;
     case MSM_EV_ISSUE:       return s->mounted[ev->a] && !s->blk.entry[ev->a].used; /* one write in flight per port */
     case MSM_EV_COMPLETE:    return s->blk.entry[ev->a].used;
-    case MSM_EV_FILE_CREATE: case MSM_EV_FORMAT:
+    case MSM_EV_FILE_CREATE: case MSM_EV_FORMAT: case MSM_EV_ISSUE_NOREC:
         return s->mounted[ev->a] && !s->blk.entry[ev->a].used;
+    case MSM_EV_ABORT:       return s->mounted[ev->a] && !s->blk.entry[ev->a].used && s->card[ev->a][ev->b] != MSM_C_E;
     case MSM_EV_PLAY:        return mod_active(s, ev->a) && s->blk.arena[ev->a] != ev->b;
     default:                 return 1;
     }
@@ -693,7 +724,7 @@ int msm_apply(msm_state_t* s, const msm_event_t* ev, char* out, size_t cap) {
 const char* msm_event_name(int kind) {
     static const char* const names[MSM_EV_COUNT] = {
         "T", "LOAD", "LOAD_STALE", "RESET", "WRITE", "WRITE_FAIL", "ISSUE", "COMPLETE",
-        "FILE_CREATE", "FORMAT", "PLAY", "TOGGLE", "ENTER", "SCHEMA", "RESTART", "MOUNT",
+        "FILE_CREATE", "FORMAT", "ISSUE_NOREC", "ABORT", "PLAY", "TOGGLE", "ENTER", "SCHEMA", "RESTART", "MOUNT",
         "MOUNT_ADOPT", "SS_TAKE", "SS_LOAD", "SS_LOAD_OLD", "RA_BEGIN", "RA_ROLLBACK",
         "RA_ADOPT", "RA_ADOPT_FAIL", "RA_PARTIAL", "RW_MARK", "REWIND", "EDIT",
         "SC_CORRUPT", "SC_FAULT", "HANDOFF", "MODSET",
@@ -779,6 +810,7 @@ static void cn_entry(canon_t* c, const msm_entry_t* e, uint32_t gen) {
     cn_u8(c, e->used);
     if (!e->used) return;
     cn_u8(c, e->captured); cn_u8(c, e->fresh); cn_u8(c, e->idx); cn_u8(c, e->content); cn_u8(c, e->tag);
+    cn_u8(c, e->norec); cn_u8(c, e->orphan);
     cn_u8(c, e->en);
     cn_u8(c, e->gen == gen);
     cn_lin(c, e->lin);

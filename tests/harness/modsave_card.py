@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spyro 1 memory-card reader for tests/harness/check_modsave.sh.
+"""Memory-card reader for tests/harness/check_modsave.sh (Spyro 1; Spyro 2 and 3 through game-records and field-offset).
 
 The card holds one file, BASCUS-94228SPYRO, whose directory frame names
 its first block; the file is a 0x200-byte header (title, clut, icon)
@@ -27,6 +27,10 @@ assertion, 2 on an unreadable card):
   snapshots FILE                the snapshot count (exit 1 when 0)
   make-modsave CARD OUT TAG     write a sidecar for CARD: one snapshot per
                                 non-empty record, no mod records, tagged TAG
+  game-records GAME CARD        Spyro 2 or 3: index, empty, checksum and
+                                record hash per record (GAME spyro-2|spyro-3)
+  field-offset GAME CARD I OFS  Spyro 2 or 3: the card-image offset of
+                                record I byte OFS, in hex
 
 Sidecar format (core/mods/mod_save.c): "OPMODSV1", u32 version, u32 index
 count, per index u32 n then n snapshots (hash[32], lineage[16], str tag,
@@ -149,6 +153,46 @@ def cmd_edit(path, out, i, ofs):
     return 0
 
 
+# Spyro 2 and 3: file name, first record, record size, checksum word,
+# empty-predicate byte (games/spyro-{2,3}/mods/mod_save_desc.c).
+GAMES = {
+    "spyro-2": (b"BASCUS-94425SP2RR", 0x200, 0x600, 0x5A8, 0x11),
+    "spyro-3": (b"BASCUS-94467SPY3_1", 0x280, 0x900, 0x8FC, 0x08),
+}
+
+
+def game_file(game, path):
+    """The card bytes and the offset of GAME's save file, or exit 2."""
+    name = GAMES[game][0]
+    with open(path, "rb") as f:
+        card = f.read()
+    for b in range(1, 16):
+        d = card[0x80 * b:0x80 * b + 0x80]
+        if d[0] == 0x51 and d[10:10 + len(name)] == name:
+            return card, BLOCK * b
+    print(f"{path}: no {name.decode()} file")
+    sys.exit(2)
+
+
+def cmd_game_records(game, path):
+    _, rec0, size, cks, empty = GAMES[game]
+    card, off = game_file(game, path)
+    for i in range(3):
+        a = off + rec0 + i * size
+        r = card[a:a + size]
+        ok = sum(r[:cks]) & 0xFFFFFFFF == int.from_bytes(r[cks:cks + 4], "little")
+        print(f"record {i} empty {int(r[empty] == 0)} checksum {'ok' if ok else 'bad'} "
+              f"hash {hashlib.sha256(r).hexdigest()[:8]}")
+    return 0
+
+
+def cmd_field_offset(game, path, i, ofs):
+    _, rec0, size, _, _ = GAMES[game]
+    _, off = game_file(game, path)
+    print(f"{off + rec0 + int(i) * size + int(ofs, 0):#x}")
+    return 0
+
+
 def fnv(b):
     h = 2166136261
     for x in b:
@@ -253,6 +297,10 @@ def main(argv):
         return cmd_modsave(*args)
     if cmd == "make-modsave" and len(args) == 3:
         return cmd_make_modsave(*args)
+    if cmd == "game-records" and len(args) == 2 and args[0] in GAMES:
+        return cmd_game_records(*args)
+    if cmd == "field-offset" and len(args) == 4 and args[0] in GAMES:
+        return cmd_field_offset(*args)
     if cmd == "snapshots" and len(args) == 1:
         return cmd_snapshots(*args)
     print(__doc__)

@@ -1,0 +1,47 @@
+# modsave-fixture-s23 - save-record test fixture for Spyro 2 and 3.
+#
+# Keeps one save-derived arena word, the count of the game's Update calls
+# made while gameplay is live, and stores it through the save-record api.
+# Changes no guest byte, so the save and load recordings replay under it.
+# Driven by tests/harness/check_modsave.sh (--game spyro-2 / spyro-3); the
+# harness copies it under a second id for the two-mod legs.
+
+[mod]
+id      = "modsave-fixture-s23"
+name    = "Save Record Fixture (Spyro 2 and 3)"
+version = "0.1.0"
+game    = ["spyro-2", "spyro-3"]
+api     = 13
+state    = "none"      # every save-derived value lives in the arena
+runahead = "host-fx"   # log lines only
+sim_mutative = false
+
+[[config]]
+key = "tag"
+type = "string"
+default = "modsave-fixture-s23"
+label = "Log tag"
+help = "Prefix of every log line (the harness gives a copy its own)"
+
+[[config]]
+key = "mode"
+type = "string"
+default = "auto"
+label = "Save path"
+help = "auto (save_register), baseline (no save_register; the card it leaves is the reference)"
+
+[[config]]
+key = "schema"
+type = "int"
+default = 1
+min = 1
+max = 9
+label = "Record schema"
+help = "Schema passed to save_register"
+
+[[config]]
+key = "write_fails"
+type = "bool"
+default = false
+label = "write returns -1"
+help = "The write callback refuses every save"

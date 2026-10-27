@@ -57,6 +57,8 @@ class Entry(NamedTuple):
     recs: Optional[tuple]
     tag: int
     en: tuple = ()           # mods enabled at issue: they take the held identity
+    norec: bool = False      # covers no record (S3 summary, S2 header): completion is inert
+    orphan: bool = False     # in flight in guest RAM with no entry in the loaded block
 
 
 class Block(NamedTuple):
@@ -71,7 +73,7 @@ class Block(NamedTuple):
 
 UNKNOWN, CLEARED, CORRUPT = "unknown", "cleared", "CORRUPT"
 TICKS = frozenset(("T", "LOAD", "LOAD_STALE", "RESET", "WRITE", "WRITE_FAIL", "ISSUE",
-                   "COMPLETE", "FILE_CREATE", "FORMAT", "PLAY"))
+                   "COMPLETE", "FILE_CREATE", "FORMAT", "ISSUE_NOREC", "ABORT", "PLAY"))
 SPEC_HOST = frozenset(("RA_ROLLBACK", "RA_ADOPT", "RA_ADOPT_FAIL", "RA_PARTIAL"))
 
 READINGS = {
@@ -515,6 +517,17 @@ def ev_complete(s, fx, ev):
     slot, outcome = ev[1], ev[2]
     e = s.blk.entries[slot]
     s.blk = s.blk._replace(entries=tset(s.blk.entries, slot, None))
+    if outcome == "fail":
+        return
+    if e.orphan:
+        # No entry: the BIOS still finishes the write; the engine logs an outside edit.
+        if not e.norec:
+            _card_write(s, slot, {e.idx: "T" if outcome == "torn" else e.content})
+        if s.armed:
+            _log(s, fx, "completion-no-entry")
+        return
+    if e.norec:
+        return
     if outcome == "ok":
         _card_write(s, slot, {e.idx: e.content})
         _complete_ok(s, fx, e)
@@ -522,6 +535,16 @@ def ev_complete(s, fx, ev):
         _card_write(s, slot, {e.idx: "T"})
         if e.captured and nonempty(e.content):
             _log(s, fx, "completion-checksum-failed")
+
+
+def ev_issue_norec(s, fx, ev):
+    deliver(s, fx)
+    e = Entry(s.armed, ev[1], 0, "E", s.blk.gen, None, False, None, 0, norec=True)
+    s.blk = s.blk._replace(entries=tset(s.blk.entries, ev[1], e))
+
+
+def ev_abort(s, fx, ev):
+    deliver(s, fx)  # the stamp read mismatched: the game issues no write
 
 
 def ev_file_create(s, fx, ev):
@@ -637,7 +660,12 @@ def ev_ss_load(s, fx, ev):
 
 
 def ev_ss_load_old(s, fx, ev):
+    old = s.ss.entries
     s.blk = _boot_block(s, gen=s.blk.gen, arena=s.ss.arena)
+    inflight = tuple(None if e is None else
+                     Entry(False, e.slot, e.idx, e.content, s.blk.gen, None, False, None, 0,
+                           norec=e.norec, orphan=True) for e in old)
+    s.blk = s.blk._replace(entries=inflight)
     if not own("R15"):
         s.rw = None
 
@@ -715,7 +743,8 @@ def ev_modset(s, fx, ev):
 HANDLERS = {
     "T": ev_T, "LOAD": ev_load, "LOAD_STALE": ev_load, "RESET": ev_reset, "WRITE": ev_write,
     "WRITE_FAIL": ev_write, "ISSUE": ev_issue, "COMPLETE": ev_complete,
-    "FILE_CREATE": ev_file_create, "FORMAT": ev_format, "PLAY": ev_play, "TOGGLE": ev_toggle,
+    "FILE_CREATE": ev_file_create, "FORMAT": ev_format, "PLAY": ev_play,
+    "ISSUE_NOREC": ev_issue_norec, "ABORT": ev_abort, "TOGGLE": ev_toggle,
     "ENTER": ev_enter, "SCHEMA": ev_schema, "RESTART": ev_restart, "MOUNT": ev_mount,
     "MOUNT_ADOPT": ev_mount, "SS_TAKE": ev_ss_take, "SS_LOAD": ev_ss_load,
     "SS_LOAD_OLD": ev_ss_load_old, "RA_BEGIN": ev_ra_begin, "RA_ROLLBACK": ev_ra_rollback,
@@ -734,8 +763,10 @@ def enabled(s, ev):
         return False
     if k in ("LOAD", "LOAD_STALE"):
         return s.mounted[ev[1]] and nonempty(s.s_card[ev[1]][ev[2]])
-    if k == "ISSUE":
+    if k in ("ISSUE", "ISSUE_NOREC"):
         return s.mounted[ev[1]] and s.blk.entries[ev[1]] is None
+    if k == "ABORT":
+        return s.mounted[ev[1]] and s.blk.entries[ev[1]] is None and s.s_card[ev[1]][ev[2]] != "E"
     if k in ("WRITE", "WRITE_FAIL", "FILE_CREATE", "FORMAT"):
         return s.mounted[ev[1]]
     if k == "SC_CORRUPT":
@@ -837,7 +868,7 @@ def _canon(s, L):
         held = tuple(None if h is None else (L(h[0]), h[1] == b.gen) for h in b.held)
         ents = tuple(None if e is None else
                      (e.captured, e.slot, e.idx, e.content, e.gen == b.gen, L(e.lin), e.fresh,
-                      e.recs, e.tag, e.en) for e in b.entries)
+                      e.recs, e.tag, e.en, e.norec, e.orphan) for e in b.entries)
         return (key, b.legacy, held, b.pload, ents, b.arena)
 
     def op(o):

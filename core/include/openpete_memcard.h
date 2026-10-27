@@ -244,6 +244,12 @@ const char* openpete_memcard_modset_tag(int slot);
  * @return 0, or -1 when the slot is not loaded or holds no such file. */
 int openpete_memcard_file_view(int slot, const char* name, const uint8_t** out, size_t* len);
 
+/** @brief Return the byte offset of a named file in a loaded slot's card image.
+ * @param slot Card slot, 0 or 1.
+ * @param name The file name.
+ * @return The offset of the file's first block, or -1 when the slot is not loaded or holds no such file. */
+int openpete_memcard_file_offset(int slot, const char* name);
+
 /** @brief Report whether a speculative tick wrote a card that is not yet rolled back or adopted.
  * @return 1 when a slot is marked, else 0. */
 int openpete_memcard_spec_pending(void);

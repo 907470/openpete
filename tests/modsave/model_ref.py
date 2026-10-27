@@ -105,6 +105,8 @@ class Entry:
     captured: bool = True            # False: issued while unarmed, card write only
     fresh: bool = False              # the lineage was minted at this issue
     en: Tuple[int, ...] = ()         # mods enabled at issue (V45)
+    norec: bool = False              # the write covers no record: its completion has no effect
+    orphan: bool = False             # the BIOS write of a blob that predates the entries
 
 
 @dataclass(frozen=True)
@@ -466,6 +468,15 @@ def complete(s, slot, outcome):
     s.blk = replace(b, entries=tset(b.entries, slot, None))
     if outcome == "fail":
         return
+    if e.orphan:
+        if not e.norec:
+            s.s_card = tset(s.s_card, slot, tset(s.s_card[slot], e.idx, "T" if outcome == "torn" else e.content))
+            flush_card(s, slot)
+        if s.armed:
+            log(s, "completion-no-entry")
+        return
+    if e.norec:
+        return
     if outcome == "torn":
         s.s_card = tset(s.s_card, slot, tset(s.s_card[slot], e.idx, "T"))
         flush_card(s, slot)
@@ -567,6 +578,21 @@ def r_issue(s, slot, idx, content, fails=()):
 def g_issue(s, slot, idx, content, fails=()):
     """One write in flight per port: no issue while the slot's entry is pending (V45)."""
     return s.mounted[slot] and s.blk.entries[slot] is None
+
+
+def r_issue_norec(s, slot):
+    deliver(s)
+    b = s.blk
+    s.blk = replace(b, entries=tset(b.entries, slot,
+                    Entry(slot, 0, b.gen, "E", None, (), (), s.armed, norec=True)))
+
+
+def g_abort(s, slot, idx):
+    return s.mounted[slot] and s.blk.entries[slot] is None and s.s_card[slot][idx] != "E"
+
+
+def r_abort(s, slot, idx):
+    deliver(s)
 
 
 def g_complete(s, slot, outcome):
@@ -712,9 +738,14 @@ def r_ss_load(s):
 
 def r_ss_load_old(s):
     b = s.ss
-    s.blk = Block(key=None, gen=s.blk.gen, legacy=False,
+    gen = s.blk.gen
+    # Guest RAM comes back with the BIOS write the state had in flight; its entry does not.
+    orphans = tuple(None if e is None else
+                    Entry(e.slot, e.idx, gen, e.content, None, (), (), False, norec=e.norec, orphan=True)
+                    for e in b.entries)
+    s.blk = Block(key=None, gen=gen, legacy=False,
                   held=(None,) * s.cfg.n_mods, pload=None,
-                  entries=(None,) * s.cfg.n_slots, arena=b.arena)
+                  entries=orphans, arena=b.arena)
     s.rw = None
 
 
@@ -832,6 +863,8 @@ RULES = {
     "COMPLETE":    (TICK, g_complete, r_complete),
     "FILE_CREATE": (TICK, g_mounted, r_file_create),
     "FORMAT":      (TICK, g_mounted, r_format),
+    "ISSUE_NOREC": (TICK, g_mounted, r_issue_norec),
+    "ABORT":       (TICK, g_abort, r_abort),
     "PLAY":        (TICK, g_play, r_play),
     "TOGGLE":      (HOST, g_toggle, r_toggle),
     "ENTER":       (HOST, g_enter, r_enter),
@@ -952,7 +985,7 @@ def canon(s):
         pl = None if b.pload is None else (tuple(sorted(b.pload[0])),) + b.pload[1:]
         ents = tuple(None if e is None else
                      (e.slot, e.idx, e.gen == b.gen, e.content, L(e.lin), e.recs, e.tag,
-                      e.captured, e.fresh, e.en)
+                      e.captured, e.fresh, e.en, e.norec, e.orphan)
                      for e in b.entries)
         return (key, b.legacy, held, pl, ents, b.arena)
 

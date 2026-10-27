@@ -19,6 +19,8 @@ openpete_add_game(spyro-2
         skip_to_level.c
         # The moby ops of the mod content registry.
         mods/mod_moby_ops.c
+        # The game save descriptor of the per-mod save records.
+        mods/mod_save_desc.c
         features/freecam.c
 
         # --skip-to-cutscene: the Dragon Shores theater's cutscene call.

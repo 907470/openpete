@@ -34,7 +34,7 @@ Every write the game makes goes to the file at once. The files are standard
 A mod that changes the game can change what a save means, and a mod can
 keep its own data for each save.
 
-On Spyro the Dragon, OpenPete keeps both in a file beside the card,
+OpenPete keeps both in a file beside the card,
 `card1.mcr.modsave` for `card1.mcr`. For each save on the card it records
 the mods the save was made under, counting only mods that change game
 state, and each mod's own data for that save. The card itself is never
@@ -58,11 +58,11 @@ notification; the config file spelling is `save_mismatch_toast = true`
 {{ flag("flag:--adopt-saves") }} <!-- id: flag:--adopt-saves --> records the mods running now as the
 mods of every save on the card, at the card's first use in the session.
 
-On Spyro 2 and Spyro 3 the record is per card, in `card1.mcr.modset`,
-written at the card's first save under mods. Each start compares it with
-the mods running now and writes a warning to the log on a mismatch; the
-record stays as it was, so the warning repeats.
-`--adopt-saves` rewrites it to the mods running now.
+On Spyro 2 and Spyro 3 a save takes a moment to write; a save
+interrupted before it finishes (a savestate loaded during the write, or a
+failed card) keeps no mod data, and the mods keep the data of the save
+before it. A `card1.mcr.modset` file from an earlier version is no longer
+read or written; delete it or leave it.
 
 ## Savestates
 

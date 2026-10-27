@@ -26,6 +26,7 @@
 #include "openpete_modsave.h"
 
 extern int openpete_speculative; /* openpete_fiber.h - runahead lookahead */
+extern unsigned openpete_frame;  /* openpete_fiber.h - the VBL frame counter */
 
 #include <errno.h>
 #include <stddef.h>
@@ -959,12 +960,37 @@ unsigned openpete_memcard_commit_epoch(void)
     return s_commit_epoch;
 }
 
+/** @brief Fault injection: OPENPETE_MEMCARD_FAULT_EDIT=<frame>:<slot>:<offset> inverts one byte of a slot's card image at the first sector read on or after that VBL frame, once.
+ *
+ * Stands for the card being changed by another program while the game
+ * runs: the in-memory image and its last persisted copy both change, the
+ * file on disk does not.
+ * @param slot The slot being read. */
+static void mc_fault_edit(int slot)
+{
+    static int s_state = -1;  /* -1 unread, 0 off or done, 1 armed */
+    static unsigned s_frame;
+    static int s_slot;
+    static long s_ofs;
+    if (s_state < 0) {
+        const char* e = getenv("OPENPETE_MEMCARD_FAULT_EDIT");
+        s_state = e && sscanf(e, "%u:%d:%li", &s_frame, &s_slot, &s_ofs) == 3 &&
+                  s_ofs >= 0 && s_ofs < MC_CARD_SIZE ? 1 : 0;
+    }
+    if (s_state != 1 || slot != s_slot || openpete_frame < s_frame) return;
+    s_state = 0;
+    s_card[slot][s_ofs] ^= 0xFFu;
+    s_disk[slot][s_ofs] ^= 0xFFu;
+    OPL_WARN_F("memcard", "fault injected: card %d byte 0x%lX inverted at frame %u", slot, s_ofs, openpete_frame);
+}
+
 int openpete_memcard_read_frame(int chan, int frame, void* dst_host)
 {
     int slot = mc_chan_slot(chan);
     if (!s_present[slot] || !dst_host) return -1;
     if (frame < 0 || frame >= MC_CARD_SIZE / MC_SECTOR_SIZE) return -1;
     mc_ensure_loaded(slot);
+    mc_fault_edit(slot);
     memcpy(dst_host, s_card[slot] + (size_t)frame * MC_SECTOR_SIZE,
            MC_SECTOR_SIZE);
     return 0;
@@ -1007,6 +1033,13 @@ int openpete_memcard_file_view(int slot, const char* name, const uint8_t** out, 
     *out = &s_card[slot][blk * MC_BLOCK_SIZE];
     *len = (size_t)(MC_CARD_SIZE - blk * MC_BLOCK_SIZE);
     return 0;
+}
+
+int openpete_memcard_file_offset(int slot, const char* name)
+{
+    if ((slot != 0 && slot != 1) || !s_loaded[slot] || !name) return -1;
+    const int blk = mc_find_file(slot, name);
+    return blk < 0 ? -1 : blk * MC_BLOCK_SIZE;
 }
 
 void openpete_memcard_spec_rollback(void)

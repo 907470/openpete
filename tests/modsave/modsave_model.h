@@ -53,9 +53,11 @@ enum {
     MSM_EV_WRITE,        /* a slot, b index, c content, d mask of mods whose write returns -1 */
     MSM_EV_WRITE_FAIL,   /* a, b, c - the write's card flush fails */
     MSM_EV_ISSUE,        /* a, b, c, d - asynchronous write issued; none while the slot's entry is pending */
-    MSM_EV_COMPLETE,     /* a slot, b outcome (0 ok, 1 fail, 2 torn) */
+    MSM_EV_COMPLETE,     /* a slot, b outcome (0 ok, 1 fail, 2 torn); with no entry for the write, an outside edit */
     MSM_EV_FILE_CREATE,  /* a slot - one write of empty records over every index */
     MSM_EV_FORMAT,       /* a slot */
+    MSM_EV_ISSUE_NOREC,  /* a slot - asynchronous write covering no record (S3 summary, S2 header) */
+    MSM_EV_ABORT,        /* a slot, b index - the pre-save stamp read mismatches; no write follows */
     MSM_EV_PLAY,         /* a mod, b arena value */
     MSM_EV_TOGGLE,       /* a mod */
     MSM_EV_ENTER,        /* a mod - deferred first entry */
@@ -104,6 +106,8 @@ typedef struct { uint8_t state; msm_snaps_t idx[MSM_MAX_IDX]; } msm_table_t;
 
 typedef struct {
     uint8_t   used, captured, fresh, slot, idx, content, tag;
+    uint8_t   norec;               /* the write covers no record: its completion has no effect */
+    uint8_t   orphan;              /* the BIOS write of a blob that predates the entries: no entry */
     uint8_t   en;                  /* mods enabled at issue: they take the held identity at completion */
     uint32_t  gen;
     msm_lin_t lin;                 /* root 0 for an empty-record entry */

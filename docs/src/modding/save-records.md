@@ -6,9 +6,9 @@ count) needs it back when the player loads the save it belongs to. From api
 `<card>.modsave`, and hands it back at each load. The card image is never
 modified.
 
-Save records are served on Spyro the Dragon. On Spyro 2 and Spyro 3,
-`save_register` returns -1 until their save descriptors land; branch on its
-return value.
+Save records are served on Spyro the Dragon, Spyro 2 and Spyro 3.
+`save_register` returns -1 on a game without them; branch on its return
+value.
 
 ## Registering
 
@@ -62,9 +62,26 @@ a record written by a higher schema is never overwritten by a lower one.
 - Both callbacks may read guest RAM and write the arena. `api->call` is not
   available in either.
 
-On Spyro 1 the load runs inside the game's update, so the `read` arrives on
-the update after the load; overrides that run later in the load's own
-update see the state from before it.
+On every game the `read` arrives at the update after the load; overrides
+that run later in the load's own update see the state from before it.
+
+On Spyro 2 and Spyro 3 a card write takes several ticks: `write` runs when
+the game starts the write, and the record is stored when the write
+finishes and the save passes the game's own checksum. A save that never
+finishes (the card fails, or a savestate loaded mid-write leaves a damaged
+save) stores nothing, and the mod keeps the record of the save before it.
+A mod turned on or off while a write is in progress counts as it stood when
+the write started. Spyro 2's pause-menu save runs while the level is live,
+so its `write` can also run on a runahead tick; the record is kept only for
+the tick the game keeps.
+
+Where each game reads and writes:
+
+| Game | Saves | Load | New playthrough (`OP_MOD_SAVE_ABSENT`) |
+| --- | --- | --- | --- |
+| Spyro the Dragon | fairy | title Load | New Game, the attract demo, the end of the intro |
+| Spyro 2 | pause menu Save Game, the story autosaves | title Load | New Game, title Load (before the save's own `read`), each attract demo |
+| Spyro 3 | New Game, Options > Save Game, the autosave at a level transition | title Load | every return to the title menu |
 
 ## Statuses
 
@@ -75,7 +92,7 @@ update see the state from before it.
 | `OP_MOD_SAVE_GAP` | the record | The record is intact, but the game saved at least once since while this mod was off or not installed. |
 | `OP_MOD_SAVE_STALE` | the playthrough's newest record | The save was changed outside OpenPete (played on a PlayStation or another emulator, edited), or its record was lost. |
 | `OP_MOD_SAVE_NEWER` | none | The record was written by a higher schema. The engine keeps it and does not call `write` for this playthrough. |
-| `OP_MOD_SAVE_LEGACY_PAD` | the save's 112 spare bytes (`SaveFile+0x590`), schema 0 | No record, and the loaded save's spare bytes are non-zero: data a pad-writing mod stored. |
+| `OP_MOD_SAVE_LEGACY_PAD` | the save's 112 spare bytes (`SaveFile+0x590`), schema 0 | Spyro 1 only. No record, and the loaded save's spare bytes are non-zero: data a pad-writing mod stored. |
 
 Handle a status value the header does not list as `OP_MOD_SAVE_ABSENT`.
 

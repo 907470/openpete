@@ -1,0 +1,11 @@
+# Synthetic movie (scripts/make_bk2.py, VBL-keyed, load delay 0): Cross held
+# 6 of every 90 VBLs from VBL 300 to 1205 loads File 1 from the title (the
+# card s2-create-save with --skip-to-cutscene summer_forest_story leaves)
+# into Summer Forest; Start at VBL 2000, Down at 2060, 2090 and 2120, Cross
+# at 2150 open Options; Down at 2340, 2370 and 2400 and Right at 2440 move
+# Horizontal to 1 (0x80067060, which sets 0x80067140); Down at 2480 and
+# 2510, Cross at 2560 pick Done; Up at 2660 and Cross at 2700 pick Save
+# Game; Cross at 2860 answers Yes to "Save to same file?": the game writes
+# the 0x80-byte header at 0 (screen offsets) and then record 0. The slot 1
+# card is given by the caller (--card1).
+--no-card2

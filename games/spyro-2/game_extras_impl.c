@@ -12,6 +12,7 @@
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "game_mod_desc.h"
+#include "openpete_modsave.h"
 #include "openpete_launcher.h"
 #include "psyq/psyq_thunk_state.h"
 #include "openpete_fiber.h"
@@ -148,6 +149,8 @@ static const psyq_game_hooks_t k_psyq = {
 GAME_MOD_TABLES_DECLARE(spyro2);
 const openpete_moby_ops_t* spyro2_moby_ops(void);
 
+extern const openpete_save_desc_t spyro2_save_desc; /* mods/mod_save_desc.c */
+
 /** @brief Return Spyro 2's mod-layer descriptor: its generated SDK symbol table and overlay entry arrays, and its moby ops.
  *
  * Built on the first call into static storage. Overlay-window overrides
@@ -166,6 +169,7 @@ static const game_mod_desc_t* spyro2_mod_desc(void) {
         s_desc.moby_ops     = spyro2_moby_ops();
         s_desc.channel_mask = OPENPETE_MODS_CHANNELS_ALL;
         s_desc.text_emit    = text_moby_native_mod_emit;
+        s_desc.save_desc    = &spyro2_save_desc;
         s_built = 1;
     }
     return &s_desc;

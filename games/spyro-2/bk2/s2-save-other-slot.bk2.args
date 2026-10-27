@@ -1,0 +1,10 @@
+# Synthetic movie (scripts/make_bk2.py, VBL-keyed, load delay 0): Cross held
+# 6 of every 90 VBLs from VBL 300 to 1205 loads File 1 from the title (the
+# card s2-create-save with --skip-to-cutscene summer_forest_story leaves:
+# record 0 autosaved, records 1 and 2 empty) into Summer Forest; Start at
+# VBL 2000, Down at 2060 and 2090, Cross at 2140 pick Save Game; Right and
+# Cross at 2300 and 2340 answer No to "Save to same file?"; Down at 2480 and
+# Cross at 2520 pick File 2; Left and Cross at 2580 and 2620 answer Yes to
+# "Overwrite?": the game writes record 1 (0x600 at 0x800). The slot 1 card
+# is given by the caller (--card1).
+--no-card2

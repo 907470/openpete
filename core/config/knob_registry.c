@@ -1809,15 +1809,14 @@ static const knob_desc_t g_builtin[] = {
           "the log line is written either way" },
 
     { "adopt_saves", "Adopt saves", "Paths", "--adopt-saves", NULL,
-      "Re-tag the memory-card saves to the running modset at the card's first "
-      "use: each save on Spyro 1, the card on Spyro 2 and 3.",
+      "Re-tag every save on the memory card to the running modset at the "
+      "card's first use.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       adopt_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
       .cli_only = 1,
       .help_arg = NULL, .help_order = 460,
-      .help_text = "re-tag memory-card saves to the running modset at the card's first use\n"
-          "(each save on Spyro 1, the card on Spyro 2 and 3)" },
+      .help_text = "re-tag every memory-card save to the running modset at the card's first use" },
 
     /* -------- Gameplay entry -------- */
     { "skip_to_level", "Skip to level", "Gameplay", "--skip-to-level", NULL,

@@ -20,6 +20,8 @@ openpete_add_game(spyro-3
         skip_to_level.c
         # The moby ops of the mod content registry.
         mods/mod_moby_ops.c
+        # The game save descriptor of the per-mod save records.
+        mods/mod_save_desc.c
 
         # The watch and mod guard over the anti-piracy scans' code ranges.
         scan_watch.c

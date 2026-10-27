@@ -132,10 +132,34 @@ void openpete_modsave_card_mounted(int slot, const char* image_path, int adopt);
 void openpete_modsave_card_write(int slot, const char* name, const uint8_t* file,
                                  size_t file_len, int ofs, int bytes, int flushed);
 
-/** @brief A frame write reached the slot outside the file-level entry; logged once as an outside edit.
+/** @brief A frame write reached the slot; logged once as an outside edit when it lands in the save file's records with no write of the port pending.
  * @param slot Card slot.
  * @param frame Frame number. */
 void openpete_modsave_card_frame_write(int slot, int frame);
+
+/* ── BIOS file layer (core/psx/psx_bios.c), a descriptor with async_write ── */
+
+/** @brief The issue of a bu file write: one pending entry for the port holding, per covered record, its index and, when non-empty, the lineage, the carried records and each enabled mod's write.
+ *
+ * Runs when the BIOS accepts the write (one write in flight per port). A
+ * write covering no record leaves an entry with no record, so its
+ * completion is not an outside edit. The entry travels with the key's
+ * block through savestates, rewind and runahead.
+ * @param port Card port, 0 or 1.
+ * @param name The file name from the card directory.
+ * @param src The bytes written, host view of the guest buffer.
+ * @param ofs Write offset in the file.
+ * @param bytes Write length. */
+void openpete_modsave_bu_write_issue(int port, const char* name, const uint8_t* src, int ofs, int bytes);
+
+/** @brief The end of a bu file write: on success each covered non-empty record must pass the checksum verdict in the card image, then its snapshot is stored and, when the generation is unchanged since issue, the key set; a failure or a failed verdict keeps nothing.
+ *
+ * A successful completion with no entry (a savestate taken before the
+ * issue) is logged as an outside edit.
+ * @param port Card port, 0 or 1.
+ * @param name The file name, or NULL when unknown.
+ * @param ok 1 for the operation-7 completion, 0 for a failure. */
+void openpete_modsave_bu_write_done(int port, const char* name, int ok);
 
 /** @brief The slot's card was formatted: drop every sidecar entry of the card.
  *
@@ -157,9 +181,11 @@ void openpete_modsave_spec_commit(int flushed);
 
 /** @brief Return the byte size of the key's block trailer appended to the game-extra section.
  *
- * Fixed per process once openpete_modsave_on_mods_init sized the per-mod
- * rows; the in-memory snapshots are allocated after that.
- * @return The trailer's size: the block, one row per parsed mod, length and magic. */
+ * The block part is fixed per process once openpete_modsave_on_mods_init
+ * sized the per-mod rows. On a game whose writes complete asynchronously
+ * the pending write entries follow it (bytes, length, magic), so the size
+ * grows while a write is in flight; snapshot buffers grow with it.
+ * @return The trailer's size: the block, one row per parsed mod, length and magic, then any pending entries. */
 uint32_t openpete_modsave_block_size(void);
 
 /** @brief Write the key's block trailer: the block, its length, and the magic.

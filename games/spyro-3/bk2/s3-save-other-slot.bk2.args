@@ -1,0 +1,10 @@
+# Synthetic movie (scripts/make_bk2.py, VBL-keyed): Cross held 6 of every
+# 90 VBLs from VBL 1763 to 2308 loads slot 1 from the title on the 117% card
+# (games/spyro-3/bk2/s3-load-gameover.bk2.mcr; records 1 and 2 empty) into
+# its level; Start at VBL 3500, Down at 3560 and 3590, Cross at 3640 open
+# Options, Cross at 3720 and 3900 pick Save Game; Right and Cross at 4250 and
+# 4290 answer No to "save to the same game?"; Right and Cross at 4600 and
+# 4640 pick the third slot, Cross at 4800 accepts the icon: the game writes
+# the summary (0x80 at 0x200) and record 2 (0x900 at 0x1480). The slot 1
+# card is given by the caller (--card1).
+--no-card2

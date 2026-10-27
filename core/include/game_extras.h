@@ -125,7 +125,9 @@ void game_on_state_loaded(CPUState* cpu);
  * on, the active-overlay id, and the level-warp state machine. Core
  * appends the per-mod save-record block as a trailer (block, length,
  * magic) and strips it before the game's loader sees the payload. The
- * size is fixed per process once mods init ran; core writes and reads
+ * size is fixed per process once mods init ran, except that on a game
+ * whose card writes complete asynchronously the trailer also carries the
+ * pending card writes and grows while one is in flight; core writes and reads
  * the payload as an opaque section through game_state_extra_save and
  * game_state_extra_load. The file loader calls game_state_extra_load after
  * game_on_state_loaded, the in-memory loader before it.

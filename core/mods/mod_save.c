@@ -38,6 +38,7 @@
 #endif
 
 extern int openpete_speculative; /* openpete_fiber.h - runahead lookahead */
+extern unsigned openpete_frame;  /* openpete_fiber.h - the VBL frame counter */
 
 #define MS_CAP        4
 #define MS_SLOTS      2
@@ -88,6 +89,14 @@ static ms_block_t s_blk;
 static ms_row_t*  s_rows;
 static uint32_t   s_n_rows;
 static int        s_frozen;
+
+/* Pending asynchronous writes (a descriptor with async_write): one entry
+ * per write call in flight, serialized back to back. The bytes travel as a
+ * second trailer after the key's block, grown on demand, so savestates,
+ * rewind and runahead restore them with the block. */
+#define MS_PEND_MAGIC 0x31504D4Du  /* "MPP1" */
+static uint8_t* s_pend;
+static uint32_t s_pend_len, s_pend_cap;
 
 /* ── registrations ───────────────────────────────────────────────────── */
 
@@ -601,21 +610,37 @@ void openpete_modsave_card_mounted(int slot, const char* image_path, int adopt) 
 
 /* ── block ───────────────────────────────────────────────────────────── */
 
-/** @brief Key unknown, held identities empty, pending load none; generation and epoch kept. */
+/** @brief Key unknown, held identities empty, pending load and pending write entries none; generation and epoch kept. */
 static void block_unknown(void) {
     s_blk.key = KEY_UNKNOWN;
     s_blk.pload = 0;
     s_blk.legacy_len = 0;
+    s_pend_len = 0;
     for (uint32_t i = 0; i < s_n_rows; i++) s_rows[i].held = HELD_NONE;
 }
 
+/** @brief 1 when the running game's writes complete asynchronously, so the trailer carries the pending entries. */
+static int async_game(void) {
+    const openpete_save_desc_t* d = desc();
+    return d && d->async_write;
+}
+
 uint32_t openpete_modsave_block_size(void) {
-    return (uint32_t)(sizeof s_blk + s_n_rows * sizeof(ms_row_t) + 8u);
+    const uint32_t pend = async_game() ? s_pend_len + 8u : 0u;
+    return (uint32_t)(sizeof s_blk + s_n_rows * sizeof(ms_row_t) + 8u) + pend;
 }
 
 void openpete_modsave_block_save(void* dst) {
     uint8_t* p = (uint8_t*)dst;
     const uint32_t len = (uint32_t)(sizeof s_blk + s_n_rows * sizeof(ms_row_t));
+    if (async_game()) {
+        /* The pending entries follow the key's trailer: bytes, length, magic. */
+        uint8_t* q = p + len + 8u;
+        const uint32_t magic = MS_PEND_MAGIC;
+        if (s_pend_len) memcpy(q, s_pend, s_pend_len);
+        memcpy(q + s_pend_len, &s_pend_len, 4);
+        memcpy(q + s_pend_len + 4u, &magic, 4);
+    }
     s_blk.version = MS_BLOCK_VER;
     s_blk.n_rows = s_n_rows;
     memcpy(p, &s_blk, sizeof s_blk);
@@ -641,8 +666,31 @@ static void rows_restore(const ms_row_t* rows, uint32_t n) {
     }
 }
 
+/** @brief Strip the pending-entry trailer from a section's tail into s_pend; with none, the entries are dropped.
+ * @param p The section.
+ * @param size Its length.
+ * @return The length before the pending trailer. */
+static uint32_t pend_load(const uint8_t* p, uint32_t size) {
+    uint32_t len = 0, magic = 0;
+    s_pend_len = 0;
+    if (size < 8u) return size;
+    memcpy(&len, p + size - 8, 4);
+    memcpy(&magic, p + size - 4, 4);
+    if (magic != MS_PEND_MAGIC || len > size - 8u) return size;
+    if (len > s_pend_cap) {
+        uint8_t* g = (uint8_t*)realloc(s_pend, len);
+        if (!g) return size - 8u - len;
+        s_pend = g;
+        s_pend_cap = len;
+    }
+    if (len) memcpy(s_pend, p + size - 8u - len, len);
+    s_pend_len = len;
+    return size - 8u - len;
+}
+
 uint32_t openpete_modsave_block_load(const void* src, uint32_t size) {
     const uint8_t* p = (const uint8_t*)src;
+    size = pend_load(p, size);
     uint32_t len = 0, magic = 0;
     if (size >= 8u) { memcpy(&len, p + size - 8, 4); memcpy(&magic, p + size - 4, 4); }
     if (size < 8u || magic != MS_BLOCK_MAGIC || len > size - 8u || len < sizeof s_blk) {
@@ -999,9 +1047,263 @@ void openpete_modsave_card_write(int slot, const char* name, const uint8_t* file
     }
 }
 
+/* ── asynchronous writes: issue, completion, failure ─────────────────── */
+
+/** @brief Find the pending entry of a port.
+ * @param port Card port.
+ * @param at Receives the entry's offset in s_pend.
+ * @return The entry's length, 0 when the port has none. */
+static uint32_t pend_find(int port, uint32_t* at) {
+    for (uint32_t o = 0; o + 8u <= s_pend_len;) {
+        uint32_t len, p;
+        memcpy(&len, s_pend + o, 4);
+        memcpy(&p, s_pend + o + 4, 4);
+        if (len < 8u || o + len > s_pend_len) return 0;
+        if ((int)p == port) { *at = o; return len; }
+        o += len;
+    }
+    return 0;
+}
+
+/** @brief Remove the bytes [at, at + len) from s_pend. */
+static void pend_cut(uint32_t at, uint32_t len) {
+    memmove(s_pend + at, s_pend + at + len, s_pend_len - at - len);
+    s_pend_len -= len;
+}
+
+/** @brief Append a built entry to s_pend, growing it on demand; an allocation failure drops the entry, logged. */
+static void pend_append(const ms_buf_t* b) {
+    if (b->bad) return;
+    if (s_pend_len + b->len > s_pend_cap) {
+        uint32_t c = s_pend_cap ? s_pend_cap : 4096u;
+        while (c < s_pend_len + b->len) c *= 2u;
+        uint8_t* g = (uint8_t*)realloc(s_pend, c);
+        if (!g) { OPL_ERROR_F("modsave", "no memory for a pending save write; its records are dropped"); return; }
+        s_pend = g;
+        s_pend_cap = c;
+    }
+    memcpy(s_pend + s_pend_len, b->p, b->len);
+    s_pend_len += (uint32_t)b->len;
+}
+
+/** @brief The record bytes a write leaves: the card image's record with the written span overlaid.
+ *
+ * @param out Receives record_size bytes.
+ * @param file The file in the card image, or NULL when it is not on the card yet.
+ * @param file_len Bytes from @p file to the end of the image.
+ * @param lo The record's offset in the file.
+ * @param src The written bytes, starting at file offset @p ofs.
+ * @return 0, or -1 when a byte the write does not cover is unknown. */
+static int record_after(uint8_t* out, const uint8_t* file, size_t file_len, size_t lo,
+                        const uint8_t* src, size_t ofs, size_t bytes) {
+    const size_t n = desc()->record_size;
+    const size_t a = ofs > lo ? ofs : lo, e = ofs + bytes < lo + n ? ofs + bytes : lo + n;
+    if (a > lo || e < lo + n) {
+        if (!file || lo + n > file_len) return -1;
+        memcpy(out, file + lo, n);
+    }
+    memcpy(out + (a - lo), src + (a - ofs), e - a);
+    return 0;
+}
+
+/** @brief Serialize one covered record into an issuing entry: its index, the empty flag and, when non-empty, the snapshot the completion stores (lineage, carried and written records; hash filled at completion). */
+static void issue_record(ms_buf_t* b, int slot, uint32_t index, const uint8_t* rec) {
+    const int empty = desc()->is_empty(rec);
+    buf_u32(b, index);
+    buf_u32(b, (uint32_t)empty);
+    if (empty) return;
+    uint8_t lin[16], zero[32] = { 0 };
+    const ms_snap_t* src = NULL;
+    if (s_blk.key == KEY_SET) {
+        memcpy(lin, s_blk.lineage, 16);
+        src = carry_source();
+    } else {
+        if (s_blk.key == KEY_UNKNOWN && committed())
+            OPL_INFO_F("modsave", "card %d save %u written with the key unknown; new playthrough", slot, index);
+        lineage_fresh(lin);
+    }
+    ms_snap_t* sn = snap_new(zero, lin, openpete_mods_modset_tag());
+    if (!sn) { b->bad = 1; return; }
+    build_records(sn, src, index);
+    put_snap(b, sn);
+    snap_free(sn);
+}
+
+void openpete_modsave_bu_write_issue(int port, const char* name, const uint8_t* src, int ofs, int bytes) {
+    const openpete_save_desc_t* d = desc();
+    if (!openpete_modsave_armed || !d || !d->async_write || port < 0 || port >= MS_SLOTS || !name ||
+        !is_save_file(d, name) || !src || ofs < 0 || bytes <= 0)
+        return;
+    uint32_t at = 0;
+    const uint32_t stale = pend_find(port, &at);
+    if (stale) pend_cut(at, stale);
+    const uint8_t* file = NULL;
+    size_t file_len = 0;
+    if (openpete_memcard_file_view(port, d->file_names[0], &file, &file_len) != 0) file = NULL;
+    ms_buf_t b = { 0 };
+    uint32_t n_cov = 0;
+    buf_u32(&b, 0u); /* entry length, patched below */
+    buf_u32(&b, (uint32_t)port);
+    buf_u32(&b, s_blk.gen);
+    buf_u32(&b, (uint32_t)ofs);
+    buf_u32(&b, (uint32_t)bytes);
+    uint32_t n_on = 0;
+    for (int i = 0; i < s_n_regs; i++) n_on += reg_active(&s_regs[i]) ? 1u : 0u;
+    buf_u32(&b, n_on);
+    for (int i = 0; i < s_n_regs; i++) if (reg_active(&s_regs[i])) buf_str(&b, s_regs[i].id);
+    const size_t cov_at = b.len;
+    buf_u32(&b, 0u); /* covered record count, patched below */
+    uint8_t* rec = (uint8_t*)malloc(d->record_size);
+    for (uint32_t i = 0; rec && i < n_idx(); i++) {
+        const size_t lo = d->record_base + (size_t)i * d->record_size, hi = lo + d->record_size;
+        if ((size_t)ofs >= hi || (size_t)ofs + (size_t)bytes <= lo) continue;
+        if (record_after(rec, file, file_len, lo, src, (size_t)ofs, (size_t)bytes) != 0) continue;
+        issue_record(&b, port, i, rec);
+        n_cov++;
+    }
+    free(rec);
+    if (!b.bad) {
+        const uint32_t len = (uint32_t)b.len;
+        memcpy(b.p, &len, 4);
+        memcpy(b.p + cov_at, &n_cov, 4);
+        pend_append(&b);
+    }
+    free(b.p);
+    if (committed())
+        OPL_INFO_F("modsave", "card %d: save write issued at frame %u, 0x%X bytes at 0x%X, %u record%s covered",
+                   port, openpete_frame, (unsigned)bytes, (unsigned)ofs, n_cov, n_cov == 1 ? "" : "s");
+}
+
+typedef struct { uint32_t index, empty; ms_snap_t* sn; } ms_cov_t;
+
+/** @brief Parse a removed entry's covered records; returns their count, -1 on a malformed entry (every parsed snapshot freed). */
+static int pend_parse(ms_rd_t* r, ms_cov_t* cov, uint32_t cap, char ids[][MS_ID_LEN], uint32_t* n_on, uint32_t* gen) {
+    (void)rd_u32(r); (void)rd_u32(r);  /* length, port */
+    *gen = rd_u32(r);
+    (void)rd_u32(r); (void)rd_u32(r);  /* offset, bytes */
+    *n_on = rd_u32(r);
+    for (uint32_t i = 0; i < *n_on && !r->bad; i++) {
+        char* s = rd_str(r, MS_ID_LEN - 1);
+        if (s && i < MS_MAX_REGS) snprintf(ids[i], MS_ID_LEN, "%s", s);
+        free(s);
+    }
+    if (*n_on > MS_MAX_REGS) *n_on = MS_MAX_REGS;
+    const uint32_t n = rd_u32(r);
+    uint32_t k = 0;
+    for (; k < n && k < cap && !r->bad; k++) {
+        cov[k].index = rd_u32(r);
+        cov[k].empty = rd_u32(r);
+        cov[k].sn = cov[k].empty ? NULL : get_snap(r);
+        if (!cov[k].empty && !cov[k].sn) r->bad = 1;
+    }
+    if (!r->bad && k == n) return (int)k;
+    for (uint32_t j = 0; j < k; j++) snap_free(cov[j].sn);
+    return -1;
+}
+
+/** @brief 1 when every covered non-empty record passes the checksum verdict in the card image. */
+static int covered_intact(const uint8_t* file, size_t file_len, const ms_cov_t* cov, int n) {
+    const openpete_save_desc_t* d = desc();
+    for (int k = 0; k < n; k++) {
+        const size_t lo = d->record_base + (size_t)cov[k].index * d->record_size;
+        if (cov[k].empty) continue;
+        if (!file || cov[k].index >= n_idx() || lo + d->record_size > file_len || !d->checksum_ok(file + lo)) return 0;
+    }
+    return 1;
+}
+
+/** @brief Store a completed write's snapshots and drops; with the generation unchanged since issue, set the key to its last non-empty record and the held identities of the mods enabled at issue. */
+static void complete_records(int port, const uint8_t* file, ms_cov_t* cov, int n,
+                             char ids[][MS_ID_LEN], uint32_t n_on, uint32_t gen) {
+    const openpete_save_desc_t* d = desc();
+    int last = -1;
+    for (int k = 0; k < n; k++) {
+        if (cov[k].empty) { host_op(Q_DROP, port, (int)cov[k].index, NULL); continue; }
+        const uint8_t* rec = file + d->record_base + (size_t)cov[k].index * d->record_size;
+        sha(rec + d->hash_ofs, d->hash_len, cov[k].sn->hash);
+        if (committed()) {
+            char a[9], b[9];
+            OPL_INFO_F("modsave", "card %d save %u: snapshot %s lineage %s, %u record%s", port, cov[k].index,
+                       hex8(cov[k].sn->hash, a), hex8(cov[k].sn->lineage, b), cov[k].sn->n_rec,
+                       cov[k].sn->n_rec == 1 ? "" : "s");
+        }
+        last = k;
+    }
+    if (last >= 0 && gen == s_blk.gen) {
+        const uint8_t* rec = file + d->record_base + (size_t)cov[last].index * d->record_size;
+        s_blk.key = KEY_SET;
+        s_blk.key_slot = (uint8_t)port;
+        s_blk.key_idx = (uint8_t)cov[last].index;
+        memcpy(s_blk.lineage, cov[last].sn->lineage, 16);
+        memcpy(s_blk.hash, cov[last].sn->hash, 32);
+        s_blk.legacy_len = d->legacy_len;
+        if (d->legacy_len) memcpy(s_blk.legacy, rec + d->legacy_ofs, d->legacy_len);
+        for (uint32_t i = 0; i < n_on; i++) {
+            ms_row_t* w = row_of(ids[i]);
+            if (w) row_hold(w);
+        }
+    } else if (last >= 0 && committed()) {
+        OPL_INFO_F("modsave", "card %d: a load or new playthrough came between the write's issue and "
+                   "completion; the key stays on it", port);
+    }
+    for (int k = 0; k < n; k++)
+        if (!cov[k].empty) host_op(Q_SNAP, port, (int)cov[k].index, cov[k].sn);
+}
+
+void openpete_modsave_bu_write_done(int port, const char* name, int ok) {
+    const openpete_save_desc_t* d = desc();
+    if (!openpete_modsave_armed || !d || !d->async_write || port < 0 || port >= MS_SLOTS) return;
+    uint32_t at = 0;
+    const uint32_t len = pend_find(port, &at);
+    if (!len) {
+        if (ok && name && is_save_file(d, name) && committed())
+            OPL_WARN_F("modsave", "card %d: a save write completed with no pending entry (a savestate "
+                       "taken before its issue); a save it changed reads STALE at its next load", port);
+        return;
+    }
+    uint8_t* e = (uint8_t*)malloc(len);
+    if (!e) { pend_cut(at, len); return; }
+    memcpy(e, s_pend + at, len);
+    pend_cut(at, len);
+    ms_rd_t r = { e, len, 0, 0 };
+    ms_cov_t cov[MS_MAX_IDX];
+    static char ids[MS_MAX_REGS][MS_ID_LEN];
+    uint32_t n_on = 0, gen = 0;
+    const int n = pend_parse(&r, cov, MS_MAX_IDX, ids, &n_on, &gen);
+    free(e);
+    if (n < 0) { OPL_ERROR_F("modsave", "card %d: malformed pending save write dropped", port); return; }
+    const uint8_t* file = NULL;
+    size_t file_len = 0;
+    if (openpete_memcard_file_view(port, d->file_names[0], &file, &file_len) != 0) file = NULL;
+    const char* why = !ok ? "the write failed" : !covered_intact(file, file_len, cov, n)
+                    ? "a written record fails the game's checksum in the card image" : NULL;
+    if (why) {
+        if (committed()) OPL_WARN_F("modsave", "card %d: save write completion: %s; no save record kept", port, why);
+        for (int k = 0; k < n; k++) snap_free(cov[k].sn);
+        return;
+    }
+    if (committed())
+        OPL_INFO_F("modsave", "card %d: save write completed at frame %u, %d record%s covered", port,
+                   openpete_frame, n, n == 1 ? "" : "s");
+    if (n) complete_records(port, file, cov, n, ids, n_on, gen);
+}
+
+/** @brief 1 when a frame of the slot's card image lies inside the descriptor file's records. */
+static int frame_in_records(int slot, int frame) {
+    const openpete_save_desc_t* d = desc();
+    if (!d) return 0;
+    const int base = openpete_memcard_file_offset(slot, d->file_names[0]);
+    if (base < 0) return 0;
+    const long lo = (long)base + (long)d->record_base, hi = lo + (long)d->record_size * (long)n_idx();
+    const long f = (long)frame * 128L;
+    return f + 128L > lo && f < hi;
+}
+
 void openpete_modsave_card_frame_write(int slot, int frame) {
     static int s_warned[MS_SLOTS];
+    uint32_t at = 0;
     if (!openpete_modsave_armed || slot < 0 || slot >= MS_SLOTS || s_warned[slot] || !committed()) return;
+    if (pend_find(slot, &at) || !frame_in_records(slot, frame)) return;
     s_warned[slot] = 1;
     OPL_WARN_F("modsave", "card %d: frame %d written outside the file-level entry; a save it "
                "changed reads STALE at its next load", slot, frame);

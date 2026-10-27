@@ -34,6 +34,7 @@
 #include "openpete_guest_regs.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
+#include "openpete_modsave.h"
 #include "openpete_psx.h"
 #include "openpete_recomp_module.h"
 #include "openpete_psxtrace.h"
@@ -1190,12 +1191,35 @@ static int bios_b0_card(CPUState* cpu, uint32_t fn) {
 #define BU_OP_WRITE   3u
 #define BU_OP_WRITE_INFO 7u     /* a write's trailing card info */
 
+/** @brief Return the name of the file a bu file control block names, from the port's directory cache.
+ *
+ * @param port The port.
+ * @param f The file control block.
+ * @return The name (20 bytes at entry + 0xA), or NULL when the block's index is out of range. */
+static const char* bu_fcb_name(uint32_t port, uint32_t f) {
+    const uint32_t idx = kw(f + FCB_LBA);
+    if (idx >= 15u) return NULL;
+    return (const char*)openpete_psx_get_ram() + K_BU_DIR + port * K_BU_DIR_PORT + idx * BU_DIR_ENTRY + 0xAu;
+}
+
+/** @brief Report a bu write's end to the per-mod save records: the file the port's write names, and whether it completed.
+ *
+ * @param port The port.
+ * @param ok 1 for the trailing card info's completion, 0 for a failure. */
+static void bu_write_capture_end(uint32_t port, int ok) {
+    const uint32_t f = kw(K_BU_FILE + 4u * port);
+    openpete_modsave_bu_write_done((int)port, f ? bu_fcb_name(port, f) : NULL, ok);
+}
+
 /** @brief Finish a port's bu operation and signal the bu class (buFinishAndTrigger, ROM 0xBFC0BFF0).
  *
  * @param cpu Guest CPU the event handlers run on.
  * @param port The port.
  * @param spec The bu spec. */
 static void bu_finish(CPUState* cpu, uint32_t port, uint32_t spec) {
+    const uint32_t op = kw(K_BU_OP + 4u * port);
+    if (op == BU_OP_WRITE_INFO && spec == EV_SPEC_IOE) bu_write_capture_end(port, 1);
+    else if ((op == BU_OP_WRITE || op == 6u || op == BU_OP_WRITE_INFO) && spec != EV_SPEC_IOE) bu_write_capture_end(port, 0);
     kw_set(K_BU_OP + 4u * port, 0u);
     kw_set(K_BU_STAGE + 4u * port, 0u);
     kw_set(K_BU_INDEX + 4u * port, 0u);
@@ -1956,6 +1980,20 @@ static int32_t bu_transfer_sync(CPUState* cpu, uint32_t f, uint32_t buf, int32_t
     return n == moved * (int32_t)MC_FRAME_BYTES ? n : -(int32_t)kw(K_BU_OP_ERROR + 4u * port);
 }
 
+/** @brief Report an accepted bu write of whole sectors to the per-mod save records: the file, the bytes and the span.
+ *
+ * @param port The port.
+ * @param f The file control block.
+ * @param buf Guest address of the data.
+ * @param off The write's offset in the file.
+ * @param count Sectors written; 0 covers nothing and reports nothing. */
+static void bu_write_capture_issue(uint32_t port, uint32_t f, uint32_t buf, uint32_t off, int32_t count) {
+    if (count <= 0) return;
+    const uint32_t bytes = (uint32_t)count * MC_FRAME_BYTES;
+    const uint8_t* src = (const uint8_t*)guest_ptr(buf, bytes);
+    openpete_modsave_bu_write_issue((int)port, bu_fcb_name(port, f), src, (int)off, (int)bytes);
+}
+
 /** @brief The bu device's write (ROM dev_bu_write, 0xBFC0A080).
  *
  * The block's errno starts as EBUSY; a port whose bu operation is in flight
@@ -1980,7 +2018,12 @@ static int32_t bu_write(CPUState* cpu, uint32_t f, uint32_t buf, uint32_t n) {
     const uint32_t off = kw(f + FCB_OFFSET);
     if ((off & 0x7Fu) || off >= kw(f + FCB_LENGTH)) { kw_set(f + FCB_ERRNO, PSX_EINVAL); return -1; }
     const int32_t count = (int32_t)n / 128;
-    if (!(kw(f + FCB_FLAGS) & PSXF_ASYNC)) return bu_transfer_sync(cpu, f, buf, (int32_t)n, 1);
+    if (!(kw(f + FCB_FLAGS) & PSXF_ASYNC)) {
+        bu_write_capture_issue(port, f, buf, off, count);
+        const int32_t r = bu_transfer_sync(cpu, f, buf, (int32_t)n, 1);
+        if (count > 0) openpete_modsave_bu_write_done((int)port, bu_fcb_name(port, f), r == (int32_t)n);
+        return r;
+    }
     kw_set(K_BU_OP + 4u * port, BU_OP_WRITE);
     kw_set(K_BU_SECTOR + 4u * port, off >> 7);
     kw_set(K_BU_REMAIN + 4u * port, (uint32_t)count);
@@ -2000,6 +2043,7 @@ static int32_t bu_write(CPUState* cpu, uint32_t f, uint32_t buf, uint32_t n) {
     kw_set(f + FCB_ERRNO, PSX_EBUSY);
     if (mc_queue(dev, MC_HANDLER_WRITE, (uint32_t)sector, buf) != 1u) return -1;
     kw_set(f + FCB_ERRNO, 0u);
+    bu_write_capture_issue(port, f, buf, off, count);
     return 0;
 }
 

@@ -29,6 +29,8 @@ typedef struct { msm_event_t ev; const char* fx; } step_t;
 #define SS_TAKE_   { MSM_EV_SS_TAKE, 0, 0, 0, 0 }
 #define SS_LOAD_   { MSM_EV_SS_LOAD, 0, 0, 0, 0 }
 #define SS_OLD_    { MSM_EV_SS_LOAD_OLD, 0, 0, 0, 0 }
+#define NOREC_     { MSM_EV_ISSUE_NOREC, 0, 0, 0, 0 }
+#define ABORT(i)   { MSM_EV_ABORT, 0, i, 0, 0 }
 #define END_       { MSM_EV_COUNT, 0, 0, 0, 0 }
 #define X MSM_C_X
 #define Y MSM_C_Y
@@ -179,6 +181,33 @@ static const case_t k_cases[] = {
         { T_, "R0:ABSENT:0:-;R1:ABSENT:0:-" },
         { WRITE(0, X), "W0;W1;S0.0:put" },
         { WRITE(0, Y), "W0;W1;S0.0:put;S0.0:evict" },
+        { END_, NULL } } },
+    { "a write covering no record: no write call, no snapshot, the key kept", {
+        { RESET_, "" },
+        { T_, "R0:ABSENT:0:-;R1:ABSENT:0:-" },
+        { NOREC_, "" },
+        { DONE_, "" },
+        { T_, "" },
+        { WRITE(0, X), "W0;W1;S0.0:put" },
+        { END_, NULL } } },
+    { "a completion with no entry (older blob mid-write): outside edit, nothing stored", {
+        { RESET_, "" },
+        { T_, "R0:ABSENT:0:-;R1:ABSENT:0:-" },
+        { ISSUE(0, X), "W0;W1" },
+        { SS_TAKE_, "" },
+        { DONE_, "S0.0:put" },
+        { SS_OLD_, "" },
+        { DONE_, "L:completion-no-entry" },
+        { T_, "" },
+        { LOAD(0), "" },
+        { T_, "R0:OK:1:0;R1:OK:1:0" },
+        { END_, NULL } } },
+    { "the card-changed abort: no write, no state change", {
+        { WRITE(0, X), "L:write-key-unknown;W0;W1;S0.0:put" },
+        { ABORT(0), "" },
+        { T_, "" },
+        { LOAD(0), "" },
+        { T_, "R0:OK:1:0;R1:OK:1:0" },
         { END_, NULL } } },
 };
 

@@ -90,8 +90,8 @@ where each sits in `enabled.txt`. A cycle or a missing dependency is
 logged and disables the dependent.
 
 **`sim_mutative`.** Whether the mod writes guest RAM. The engine records
-the mutative mods loaded at each save (Spyro 1: per save, in the card's
-`.modsave` file; Spyro 2 and 3: per card, in its `.modset` file) and logs
+the mutative mods loaded at each save (per save, in the card's
+`.modsave` file) and logs
 a line when a save is loaded under a different set; progress is never
 blocked, and `--adopt-saves` re-tags. Per-save data a mod keeps belongs
 in [save records](save-records.md), not in the save's spare bytes. A mod with no `src/` and no

@@ -1216,8 +1216,9 @@ struct openpete_state_mem {
      * cdq holds host pointers -> in-memory snapshots only, never disk. */
     uint8_t*   cdq;        /* PsyX_CD_QueueStateSize() */
     uint32_t   cdq_bytes;
-    uint8_t*   gx;         /* game_state_extra_size() (may be 0) */
+    uint8_t*   gx;         /* game_state_extra_size() at the save (may be 0) */
     uint32_t   gx_bytes;
+    uint32_t   gx_cap;     /* grow-only: the save-record trailer grows while a card write is pending */
     /* VRAM: a speculative tick that crosses into a transition uploads
      * fade/loading graphics (LoadImage) into VRAM, and the committed
      * entry then reads VRAM back into gameplay RAM (the framebuffer-
@@ -1244,6 +1245,7 @@ openpete_state_mem_t* openpete_state_mem_new(void) {
     m->spu_bytes  = PsyX_SPUAL_StateSize();
     m->cdq_bytes  = (uint32_t)PsyX_CD_QueueStateSize();
     m->gx_bytes   = game_state_extra_size();
+    m->gx_cap     = m->gx_bytes;
     m->vram_bytes = PsyX_VRAM_GetSize();
     m->ram  = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
     m->spu  = (uint8_t*)malloc(m->spu_bytes);
@@ -1284,6 +1286,13 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     state_cd_capture(&m->cd);
     openpete_psx_bios_card_flags_get(m->card_flag);
     PsyX_CD_QueueSnapshot(m->cdq);
+    m->gx_bytes = game_state_extra_size();
+    if (m->gx_bytes > m->gx_cap) {
+        uint8_t* grown = (uint8_t*)realloc(m->gx, m->gx_bytes);
+        if (!grown) return -1;
+        m->gx = grown;
+        m->gx_cap = m->gx_bytes;
+    }
     if (m->gx_bytes) game_state_extra_save(m->gx);
     if (PsyX_VRAM_Snapshot(m->vram, m->vram_bytes) != 0) return -1;
     if (!m->arena_external) {

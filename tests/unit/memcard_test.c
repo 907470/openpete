@@ -43,6 +43,7 @@
 
 /* Link-time stand-ins for the runtime the card module reads. */
 int openpete_speculative = 0;
+unsigned openpete_frame = 0;
 const char* openpete_mods_modset_tag(void) { return ""; }
 /* No game descriptor: the card-level .modset path runs, and the save-record
  * hooks the card module calls do nothing. */

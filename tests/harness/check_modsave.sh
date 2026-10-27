@@ -32,7 +32,19 @@
 # fails (no read line, no sidecar). Rows no headless run can reach are
 # reported CARVE-OUT with the reason.
 #
-# Usage: tests/harness/check_modsave.sh [--section record|repair|driver|api|more|calibrate|all]
+# Spyro 2 and 3 (--game spyro-2|spyro-3) run their own section, s23:
+# the game's save, load and autosave recordings under the save-record
+# fixture mods/modsave-fixture-s23 (a second copy under another id for
+# the two-mod rows), each card asserted byte-identical to the no-mod run of
+# the same inputs, the asynchronous write rows of the save-record rules
+# (issue and completion on different ticks, a write covering no record,
+# file creation over three empty records, a savestate between issue and
+# completion, a completion with no pending entry, a torn completion, the
+# card-changed abort, the live pause save under runahead) and the
+# delivered statuses and payloads.
+#
+# Usage: tests/harness/check_modsave.sh [--game spyro-1|spyro-2|spyro-3]
+#        [--section record|repair|driver|api|more|calibrate|all]
 #        (more: the api legs past the first save and load chain; needs the
 #        a_s_ab leg of an earlier run in MODSAVE_WORK)
 #        (repo root or anywhere; default all except calibrate)
@@ -49,20 +61,28 @@ cd "$(dirname "$0")/../.."
 REPO="$PWD"
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
-pg_resolve spyro-1
 
 SECTION="default"
+GAME=spyro-1
+want_game=0
 for a in "$@"; do
+    if [ "$want_game" = 1 ]; then GAME="$a"; want_game=0; continue; fi
     case "$a" in
+        --game) want_game=1 ;;
+        --game=*) GAME="${a#--game=}" ;;
         --section=*) SECTION="${a#--section=}" ;;
         --calibrate) SECTION="calibrate" ;;
         --section) ;;
-        record|repair|driver|api|more|calibrate|all) SECTION="$a" ;;
+        record|repair|driver|api|more|calibrate|all|s23) SECTION="$a" ;;
         *) echo "check_modsave: unknown argument $a" >&2; exit 64 ;;
     esac
 done
-case "$SECTION" in default|record|repair|driver|api|more|calibrate|all) ;;
+case "$GAME" in spyro-1|spyro-2|spyro-3) ;;
+    *) echo "check_modsave: unknown game $GAME" >&2; exit 64 ;; esac
+case "$SECTION" in default|record|repair|driver|api|more|calibrate|all|s23) ;;
     *) echo "check_modsave: unknown section $SECTION" >&2; exit 64 ;; esac
+[ "$GAME" != spyro-1 ] && SECTION=s23
+pg_resolve "$GAME"
 on() { [ "$SECTION" = "$1" ] || { [ "$SECTION" = default ] && [ "$1" != calibrate ]; } ||
        { [ "$SECTION" = all ]; }; }
 
@@ -72,7 +92,7 @@ SDK_HDR="$(dirname "$PG_BIN")/sdk/openpete_mod_api.h"
 HAVE_API=0
 grep -q '#define OPENPETE_MOD_SAVE_API' "$SDK_HDR" && HAVE_API=1
 
-BK2_DIR="$REPO/games/spyro-1/bk2"
+BK2_DIR="$REPO/games/$GAME/bk2"
 CARD_PY="$REPO/tests/harness/modsave_card.py"
 SAVE_FRAMES=3700
 LOAD_FRAMES=4300
@@ -603,8 +623,307 @@ section_calibrate() {
     fi
 }
 
+# ── s23: Spyro 2 and 3, the asynchronous BIOS file-layer writes ───────────
+# Instrument: the fixture's write and read lines, the engine's "save write
+# issued at frame N, <bytes> at <ofs>, <n> records covered" and "save write
+# completed at frame N" lines, the sidecar dump and the card bytes. Every
+# card is compared with the no-mod run of the same inputs. Without the
+# game's save descriptor save_register returns -1 (the fixture logs
+# "register rc -1"), so every save-record check below fails.
+F=modsave-fixture-s23
+F2=modsave-fixture-s23b
+RUN_ARGS_CARD=()
+for a in "${PG_RUN_ARGS[@]}"; do [ "$a" = --no-card ] || RUN_ARGS_CARD+=("$a"); done
+
+# leg23 <tag> <bk2 name|-> <card in|-> <frames> <mods...>
+# As leg, for the Spyro 2 and 3 fixture: $F from mods/, $F2 a copy under a
+# second id; CFG_F and CFG_F2 append to their config.toml. A card of "-"
+# provisions a blank card. The watchdog allows 30 s for the CdInit stall
+# a loaded machine can show at boot.
+leg23() {
+    local tag="$1" bk="$2" card="$3" frames="$4"; shift 4
+    local d="$WORK/$tag"
+    rm -rf "${d:?}"; mkdir -p "$d/mods/$F" "$d/mods/$F2"
+    : > "$d/mods/enabled.txt"
+    cp -r "$REPO/mods/$F/mod.toml" "$REPO/mods/$F/src" "$d/mods/$F/"
+    cp -r "$REPO/mods/$F/src" "$d/mods/$F2/"
+    sed "s/^id *= *\"$F\"/id      = \"$F2\"/" "$REPO/mods/$F/mod.toml" > "$d/mods/$F2/mod.toml"
+    printf 'tag = "%s"\n%s\n' "$F" "${CFG_F:-}" > "$d/mods/$F/config.toml"
+    printf 'tag = "%s"\n%s\n' "$F2" "${CFG_F2:-}" > "$d/mods/$F2/config.toml"
+    local m
+    for m in "$@"; do echo "$m" >> "$d/mods/enabled.txt"; done
+    [ "$card" != "-" ] && cp "$card" "$d/card1.mcr"
+    local sc="${SIDECAR:-$card.modsave}"
+    [ "$card" != "-" ] && [ "$sc" != "-" ] && [ -f "$sc" ] && cp "$sc" "$d/card1.mcr.modsave"
+    # MODSET=<tag> plants a card-level .modset beside the card.
+    [ -n "${MODSET:-}" ] && printf '%s\n' "$MODSET" > "$d/card1.mcr.modset"
+    local -a PG_CAPTURE_ENV=(OPENPETE_HANG_STALL_SECONDS=30)
+    [ -n "${EXTRA_ENV:-}" ] && PG_CAPTURE_ENV+=($EXTRA_ENV)
+    local -a bkarg=(--bk2 "$BK2_DIR/$bk.bk2" --bk2-stop-on-end)
+    [ "$bk" = "-" ] && bkarg=()
+    local -a extra=()
+    [ -n "${EXTRA_ARGS:-}" ] && extra=($EXTRA_ARGS)
+    local PG_CAPTURE_TIMEOUT=300
+    local outs=""
+    [ "$card" = "-" ] && outs="$d/card1.mcr"
+    # The game's boot flags without --no-card, which would unmount --card1.
+    local -a PG_RUN_ARGS=("${RUN_ARGS_CARD[@]}")
+    pg_capture "$d/log.txt" "$outs" -- --mute 1 --mods-dir "$d/mods" \
+        "${bkarg[@]}" --card1 "$d/card1.mcr" --no-card2 --no-log-file \
+        --frame-limit "$frames" "${extra[@]}"
+    echo $? > "$d/rc"
+    [ -f "$d/card1.mcr" ] || echo "check_modsave: leg $tag left no card" >&2
+}
+issued()    { grep -c 'save write issued' "$WORK/$1/log.txt"; }
+completed() { grep -c 'save write completed' "$WORK/$1/log.txt"; }
+issue_frames(){ grep -o 'save write issued at frame [0-9]*' "$WORK/$1/log.txt" | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//'; }
+done_frames(){ grep -o 'save write completed at frame [0-9]*' "$WORK/$1/log.txt" | awk '{print $NF}' | tr '\n' ' ' | sed 's/ $//'; }
+card_same() { python3 "$CARD_PY" same "$WORK/$1/card1.mcr" "$WORK/$2/card1.mcr"; }
+grecords()  { python3 "$CARD_PY" game-records "$GAME" "$WORK/$1/card1.mcr"; }
+nonempty_idx(){ grecords "$1" | awk '$4 == 0 {print $2}' | tr '\n' ' ' | sed 's/ $//'; }
+last_read() { grep -o "$2: read status [A-Z_]*" "$WORK/$1/log.txt" | tail -1 | awk '{print $NF}'; }
+no_line()   { if has "$1" "$2"; then echo "logged '$2'"; return 1; fi; echo "no '$2' line"; }
+reg_ok()    { logged "$1" "$F: mode auto game $GAME register rc 0"; }
+# snap_sig <tag>: the sidecar's index, position, record hash and payloads, lineage left out
+snap_sig()  { snapdump "$1" | awk '{$7=$8=""; print}'; }
+# lineages <tag> <index>: the lineage of each snapshot at the index, newest first
+lineages()  { snapdump "$1" | awk -v i="$2" '$2 == i {print $8}' | tr '\n' ' ' | sed 's/ $//'; }
+# split_ok <tag> <k>: the k-th (1-based) write's completion frame is after its issue frame
+split_ok() {
+    local i c
+    i="$(issue_frames "$1" | cut -d' ' -f"$2")"; c="$(done_frames "$1" | cut -d' ' -f"$2")"
+    [ -n "$i" ] && [ -n "$c" ] && [ "$c" -gt "$i" ] && echo "issue frame $i, completion frame $c" ||
+        { echo "issue frame '$i', completion frame '$c'"; return 1; }
+}
+
+section_s2() {
+    local t AUTO="--skip-to-cutscene summer_forest_story"
+    say "S2 New Game, then the story-step autosave: file creation over three empty records, a record write"
+    EXTRA_ARGS="$AUTO" leg23 s2c0 s2-create-save - 3600
+    EXTRA_ARGS="$AUTO" leg23 s2c1 s2-create-save - 3600 "$F"
+    EXTRA_ARGS="$AUTO" leg23 s2c2 s2-create-save - 3600 "$F" "$F2"
+    check "s2c0 engaged: the autosave left record 0 the only non-empty record" eq "$(nonempty_idx s2c0)" 0
+    check "s2c1 save_register accepted" reg_ok s2c1
+    for t in s2c1 s2c2; do check "$t card byte-identical to the no-mod card" card_same s2c0 "$t"; done
+    check "s2c1 file creation: one write call covering the three records" logged s2c1 "0x1400 bytes at 0x0, 3 records covered"
+    check "s2c1 autosave: one write call covering record 0" logged s2c1 "0x600 bytes at 0x200, 1 record covered"
+    check "s2c1 two issues, two completions" eq "$(issued s2c1)/$(completed s2c1)" 2/2
+    check "s2c1 autosave issue and completion on different ticks" split_ok s2c1 2
+    check "s2c1 New Game delivers ABSENT, nothing else" reads_eq s2c1 "$F" "ABSENT"
+    check "s2c1 snapshots 1/0/0 (the empty records dropped)" eq "$(snaps_at s2c1 0)/$(snaps_at s2c1 1)/$(snaps_at s2c1 2)" 1/0/0
+    check "s2c1 record at save 0 holds the fixture's write" eqnz "$(newest_rec s2c1 0 "$F" | cut -d: -f4)" "$(last_write s2c1 "$F")"
+    check "s2c1 the key was cleared by New Game, not unknown" no_line s2c1 "written with the key unknown"
+    check "s2c1 no outside edit" no_line s2c1 "outside the file-level entry"
+    check "s2c2 both fixtures' records in the snapshot" \
+        bash -c "python3 '$CARD_PY' modsave '$WORK/s2c2/card1.mcr.modsave' | grep '^index 0 snap 0 ' | grep -q '$F:' && python3 '$CARD_PY' modsave '$WORK/s2c2/card1.mcr.modsave' | grep '^index 0 snap 0 ' | grep -q '$F2:' && echo 'both records'"
+
+    say "S2 title load of the autosaved card"
+    leg23 s2l0 s2-load-save "$WORK/s2c0/card1.mcr" 3000
+    leg23 s2l1 s2-load-save "$WORK/s2c1/card1.mcr" 3000 "$F"
+    check "s2l1 card byte-identical to the no-mod run" card_same s2l0 s2l1
+    check "s2l1 card unchanged by a load" card_same s2c1 s2l1
+    check "s2l1 load bound to save 0" logged s2l1 "load bound to card 0 save 0 of 1 candidate"
+    check "s2l1 last read OK" eq "$(last_read s2l1 "$F")" OK
+    check "s2l1 reads the payload it wrote" eqnz "$(last_read_data s2l1 "$F")" "$(last_write s2c1 "$F")"
+
+    say "S2 New Game alone: the file created over three empty records, no record saved"
+    leg23 s2n0 s2-create-save - 1500
+    leg23 s2n1 s2-create-save - 1500 "$F"
+    check "s2n1 card byte-identical to the no-mod card" card_same s2n0 s2n1
+    check "s2n1 no snapshot (three empty records dropped)" eq "$(snaps_at s2n1 0)/$(snaps_at s2n1 1)/$(snaps_at s2n1 2)" 0/0/0
+
+    say "S2 load File 1, then the pause save to File 2: the loaded playthrough's lineage carried"
+    leg23 s2x0 s2-save-other-slot "$WORK/s2c0/card1.mcr" 3400
+    leg23 s2x1 s2-save-other-slot "$WORK/s2c1/card1.mcr" 3400 "$F"
+    check "s2x0 engaged: record 1 written" eq "$(nonempty_idx s2x0)" "0 1"
+    check "s2x1 card byte-identical to the no-mod run" card_same s2x0 s2x1
+    check "s2x1 the write covers record 1 alone" logged s2x1 "0x600 bytes at 0x800, 1 record covered"
+    check "s2x1 the load read OK, the save nothing" reads_eq s2x1 "$F" "OK"
+    check "s2x1 save 1's snapshot carries save 0's lineage" \
+        bash -c "a=\$(python3 '$CARD_PY' modsave '$WORK/s2x1/card1.mcr.modsave' | awk '\$2==0 && \$4==0 {print \$8}'); b=\$(python3 '$CARD_PY' modsave '$WORK/s2x1/card1.mcr.modsave' | awk '\$2==1 && \$4==0 {print \$8}'); [ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ] && echo \"lineage \$a\" || { echo \"lineages '\$a' '\$b'\"; exit 1; }"
+    check "s2x1 save 1 holds the fixture's write" eqnz "$(newest_rec s2x1 1 "$F" | cut -d: -f4)" "$(last_write s2x1 "$F")"
+
+    say "S2 Horizontal changed in Options, then a pause save: the 0x80-byte header write covers no record"
+    leg23 s2h0 s2-header-save "$WORK/s2c0/card1.mcr" 3600
+    leg23 s2h1 s2-header-save "$WORK/s2c1/card1.mcr" 3600 "$F"
+    check "s2h1 card byte-identical to the no-mod run" card_same s2h0 s2h1
+    check "s2h1 the header write: one entry covering no record" logged s2h1 "0x80 bytes at 0x0, 0 records covered"
+    check "s2h1 two issues, two completions (header, record)" eq "$(issued s2h1)/$(completed s2h1)" 2/2
+    check "s2h1 no outside edit, no orphan completion" bash -c "! grep -qE 'outside the file-level entry|no pending entry' '$WORK/s2h1/log.txt' && echo 'none'"
+    check "s2h1 two snapshots at save 0, one lineage" bash -c "set -- $(lineages s2h1 0); [ \$# = 2 ] && [ \"\$1\" = \"\$2\" ] && echo \"\$1 x2\""
+
+    say "S2 in-level pause save (gameplay-live): three saves to File 1 of the New Game card"
+    leg23 s2p0 s2-pause-save "$WORK/s2n0/card1.mcr" 4000
+    leg23 s2p1 s2-pause-save "$WORK/s2n1/card1.mcr" 4000 "$F"
+    check "s2p0 engaged: the pause save wrote record 0" eq "$(nonempty_idx s2p0)" 0
+    check "s2p1 card byte-identical to the no-mod run" card_same s2p0 s2p1
+    check "s2p1 three issues, three completions" eq "$(issued s2p1)/$(completed s2p1)" 3/3
+    check "s2p1 each write covers record 0" eq "$(grep -c '0x600 bytes at 0x200, 1 record covered' "$WORK/s2p1/log.txt")" 3
+    check "s2p1 first save: issue and completion on different ticks" split_ok s2p1 1
+    # --skip-to-level enters through an attract-demo start, whose reset
+    # clears the key: the first save mints a lineage from a cleared key.
+    check "s2p1 the demo-start reset delivered ABSENT, the saves nothing" reads_eq s2p1 "$F" "ABSENT"
+    check "s2p1 three snapshots at save 0" eq "$(snaps_at s2p1 0)" 3
+    check "s2p1 newest record holds the last write" eqnz "$(newest_rec s2p1 0 "$F" | cut -d: -f4)" "$(last_write s2p1 "$F")"
+    check "s2p1 the three pause saves share one lineage (the first mints it)" \
+        bash -c "set -- $(lineages s2p1 0); [ \$# = 3 ] && [ \"\$1\" = \"\$2\" ] && [ \"\$2\" = \"\$3\" ] && echo \"\$1 x3\""
+
+    say "S2 pause save under runahead: issue and completion on speculative ticks"
+    EXTRA_ARGS="--runahead 1" leg23 s2ra s2-pause-save "$WORK/s2n1/card1.mcr" 4000 "$F"
+    check "s2ra engaged: a suppressed speculative flush" logged s2ra "flush during speculative tick suppressed"
+    check "s2ra card byte-identical to the no-mod run" card_same s2p0 s2ra
+    # The fixture's count (Update calls while live) is not a guest value:
+    # under runahead adoption it may differ, so the payloads are compared
+    # with each run's own writes, the record hashes across runs.
+    check "s2ra snapshots: the same record hashes as the --runahead 0 run" \
+        bash -c "diff <(python3 '$CARD_PY' modsave '$WORK/s2p1/card1.mcr.modsave' | awk '{print \$2, \$4, \$6}') <(python3 '$CARD_PY' modsave '$WORK/s2ra/card1.mcr.modsave' | awk '{print \$2, \$4, \$6}') && echo 'same record hashes'"
+    check "s2ra newest record holds the committed write" eqnz "$(newest_rec s2ra 0 "$F" | cut -d: -f4)" "$(last_write s2ra "$F")"
+    check "s2ra one lineage across the three saves" bash -c "set -- $(lineages s2ra 0); [ \$# = 3 ] && [ \"\$1\" = \"\$3\" ] && [ \"\$1\" = \"\$2\" ] && echo \"\$1 x3\""
+
+    local i1 c1
+    i1="$(issue_frames s2p1 | cut -d' ' -f1)"; c1="$(done_frames s2p1 | cut -d' ' -f1)"
+    if [ -z "$i1" ] || [ -z "$c1" ]; then
+        fail "s2 savestate legs: no issue/completion frames from s2p1"
+        return
+    fi
+    # --state-*-on-frame count VBLs; the capture lines count openpete
+    # frames. The bk2 replay line names both at its first input.
+    local off
+    off="$(grep -o 'openpete_frame=[0-9]* bk2_frame=[0-9]*' "$WORK/s2p1/log.txt" | head -1 | awk -F'[= ]' '{print $4 - $2}')"
+    [ -n "$off" ] || off=0
+    local mid=$(( (i1 + c1) / 2 + off )) after=$(( c1 + 30 + off ))
+    say "S2 savestate taken between issue ($i1) and completion ($c1), loaded after the completion"
+    EXTRA_ARGS="--state-save-on-frame $mid --state-save-output $WORK/s2mid.state --state-load-on-frame $after --state-load-input $WORK/s2mid.state" \
+        leg23 s2ss s2-pause-save "$WORK/s2n1/card1.mcr" 4000 "$F"
+    check "s2ss state loaded" logged s2ss "savestate: loaded"
+    check "s2ss the restored entry completes again (one more completion than issues)" \
+        eq "$(completed s2ss)" "$(( $(issued s2ss) + 1 ))"
+    check "s2ss no outside edit, no orphan completion" no_line s2ss "no pending entry"
+    check "s2ss the re-run completion replaced its equal snapshot (snapshot count as s2p1)" eq "$(snaps_at s2ss 0)" "$(snaps_at s2p1 0)"
+    EXTRA_ENV="OPENPETE_MODSAVE_FAULT_NO_TRAILER=1" \
+    EXTRA_ARGS="--state-save-on-frame $mid --state-save-output $WORK/s2old.state --state-load-on-frame $after --state-load-input $WORK/s2old.state" \
+        leg23 s2orph s2-pause-save "$WORK/s2n1/card1.mcr" 4000 "$F"
+    check "s2orph state loaded" logged s2orph "savestate: loaded"
+    check "s2orph a completion with no pending entry is logged as an outside edit" logged s2orph "completed with no pending entry"
+    check "s2orph the orphan completion stores nothing (snapshot count as s2p1)" eq "$(snaps_at s2orph 0)" "$(snaps_at s2p1 0)"
+
+    say "S2 torn completion: the mid-write state loaded over another card (the autosaved one, record 0 non-empty)"
+    EXTRA_ARGS="--state-save-on-frame $mid --state-save-output $WORK/s2tear.state" \
+        leg23 s2tA s2-pause-save "$WORK/s2n1/card1.mcr" $(( mid + 5 )) "$F"
+    check "s2tA state written" test -f "$WORK/s2tear.state"
+    # A state loads only while a port holds the image path it held: the
+    # autosaved card is copied over s2tA's card path, which s2tB mounts.
+    cp "$WORK/s2c0/card1.mcr" "$WORK/s2tA/card1.mcr"
+    rm -f "${WORK:?}/s2tA/card1.mcr.modsave"
+    EXTRA_ARGS="--state-load-on-frame 200 --state-load-input $WORK/s2tear.state --card1 $WORK/s2tA/card1.mcr" \
+        leg23 s2tB s2-pause-save "$WORK/s2c0/card1.mcr" $(( c1 + off + 300 )) "$F"
+    check "s2tB state loaded" logged s2tB "savestate: loaded"
+    check "s2tB the completion's checksum verdict fails; nothing kept" logged s2tB "fails the game's checksum in the card image; no save record kept"
+}
+
+section_s3() {
+    local t
+    say "S3 New Game, then the New Game save: file creation, the summary (no record), the record"
+    leg23 s3c0 s3-create-save - 6000
+    leg23 s3c1 s3-create-save - 6000 "$F"
+    check "s3c0 engaged: one non-empty record" bash -c "[ -n \"$(nonempty_idx s3c0)\" ] && echo 'record $(nonempty_idx s3c0)'"
+    check "s3c1 save_register accepted" reg_ok s3c1
+    check "s3c1 card byte-identical to the no-mod card" card_same s3c0 s3c1
+    check "s3c1 file creation: one write call covering the three records" logged s3c1 "0x1D80 bytes at 0x0, 3 records covered"
+    check "s3c1 summary write covers no record" logged s3c1 "0x80 bytes at 0x200, 0 records covered"
+    check "s3c1 record write covers one record" logged s3c1 "0x900 bytes at 0x$(printf '%X' $(( 0x280 + 0x900 * $(nonempty_idx s3c0) ))), 1 record covered"
+    check "s3c1 three issues, three completions" eq "$(issued s3c1)/$(completed s3c1)" 3/3
+    check "s3c1 record write: issue and completion on different ticks" split_ok s3c1 3
+    check "s3c1 no outside edit" no_line s3c1 "outside the file-level entry"
+    check "s3c1 title menu entry delivers ABSENT" bash -c "r=\$(grep -o '$F: read status [A-Z_]*' '$WORK/s3c1/log.txt' | awk '{print \$4}' | sort -u | tr '\n' ' '); [ \"\$r\" = 'ABSENT ' ] && echo 'ABSENT only' || { echo \"reads [\$r]\"; exit 1; }"
+    local ix; ix="$(nonempty_idx s3c0)"
+    check "s3c1 one snapshot, at the saved index" eq "$(snaps_at s3c1 "$ix")" 1
+    check "s3c1 record holds the fixture's write" eqnz "$(newest_rec s3c1 "$ix" "$F" | cut -d: -f4)" "$(last_write s3c1 "$F")"
+    check "s3c1 the key was cleared at the title, not unknown" no_line s3c1 "written with the key unknown"
+
+    say "S3 title load of the New Game save"
+    leg23 s3l0 s3-load-save "$WORK/s3c0/card1.mcr" 4000
+    leg23 s3l1 s3-load-save "$WORK/s3c1/card1.mcr" 4000 "$F"
+    check "s3l1 card byte-identical to the no-mod run" card_same s3l0 s3l1
+    check "s3l1 card unchanged by a load" card_same s3c1 s3l1
+    check "s3l1 load bound to the saved index" logged s3l1 "load bound to card 0 save $ix of 1 candidate"
+    check "s3l1 last read OK" eq "$(last_read s3l1 "$F")" OK
+    check "s3l1 reads the payload it wrote" eqnz "$(last_read_data s3l1 "$F")" "$(last_write s3c1 "$F")"
+
+    say "S3 options save on a blank card under --skip-to-level, then the Exit Level autosave"
+    # The level is entered past the title, so the saved record has
+    # visitedLevels[0] = 0: empty by the game's predicate, which the title
+    # refuses to load. Every record write is a drop, not a snapshot.
+    leg23 s3o0 s3-options-save-exit - 30000
+    leg23 s3o1 s3-options-save-exit - 30000 "$F"
+    check "s3o1 card byte-identical to the no-mod card" card_same s3o0 s3o1
+    check "s3o1 five issues (create, summary, record; summary, record), five completions" eq "$(issued s3o1)/$(completed s3o1)" 5/5
+    check "s3o0 record 0 written and empty by the game's predicate" \
+        bash -c "python3 '$CARD_PY' game-records '$GAME' '$WORK/s3o0/card1.mcr' | grep -q '^record 0 empty 1 checksum ok' && echo 'record 0 empty, checksum ok'"
+    check "s3o1 no snapshot: an empty record's write drops the index" eq "$(snaps_at s3o1 0)/$(snaps_at s3o1 1)/$(snaps_at s3o1 2)" 0/0/0
+    check "s3o1 no fixture write for an empty record" bash -c "! grep -q '$F: write index' '$WORK/s3o1/log.txt' && echo 'no write call'"
+
+    say "S3 card-changed abort: record 0's saveId changed between the options save and the autosave's stamp read"
+    local fo fr ic3 is4
+    fo="$(python3 "$CARD_PY" field-offset "$GAME" "$WORK/s3o0/card1.mcr" 0 0)"
+    ic3="$(done_frames s3o1 | cut -d' ' -f3)"; is4="$(issue_frames s3o1 | cut -d' ' -f4)"
+    if [ -z "$ic3" ] || [ -z "$is4" ] || [ -z "$fo" ]; then fail "s3 abort legs: no frames or offset from s3o1"; else
+    fr=$(( (ic3 + is4) / 2 ))
+    EXTRA_ENV="OPENPETE_MEMCARD_FAULT_EDIT=$fr:0:$fo" leg23 s3ab0 s3-options-save-exit - 30000
+    EXTRA_ENV="OPENPETE_MEMCARD_FAULT_EDIT=$fr:0:$fo" leg23 s3ab1 s3-options-save-exit - 30000 "$F"
+    check "s3ab1 fault engaged" logged s3ab1 "fault injected: card 0 byte"
+    check "s3ab1 card byte-identical to the no-mod run with the same edit" card_same s3ab0 s3ab1
+    check "s3ab1 the autosave aborted: no write after the stamp read (3 issues, 3 completions)" eq "$(issued s3ab1)/$(completed s3ab1)" 3/3
+    check "s3ab1 no outside edit" no_line s3ab1 "outside the file-level entry"
+    check "s3ab1 no orphan completion" no_line s3ab1 "no pending entry"
+    fi
+
+    say "S3 load slot 1 of the 117% card, then the options save to slot 3: the load's lineage carried"
+    leg23 s3x0 s3-save-other-slot "$BK2_DIR/s3-load-gameover.bk2.mcr" 6000
+    SIDECAR=- leg23 s3x1 s3-save-other-slot "$BK2_DIR/s3-load-gameover.bk2.mcr" 6000 "$F"
+    check "s3x0 engaged: record 2 written" eq "$(nonempty_idx s3x0)" "0 2"
+    check "s3x1 card byte-identical to the no-mod run" card_same s3x0 s3x1
+    check "s3x1 summary (no record) then record 2" eq "$(grep -c '0x80 bytes at 0x200, 0 records covered' "$WORK/s3x1/log.txt")/$(grep -c '0x900 bytes at 0x1480, 1 record covered' "$WORK/s3x1/log.txt")" 1/1
+    check "s3x1 save 2's snapshot carries the lineage the load bound" \
+        bash -c "a=\$(grep -o 'load bound to card 0 save 0 of 1 candidate (hash [0-9a-f]*, lineage [0-9a-f]*' '$WORK/s3x1/log.txt' | awk '{print \$NF}'); b=\$(python3 '$CARD_PY' modsave '$WORK/s3x1/card1.mcr.modsave' | awk '\$2==2 && \$4==0 {print \$8}'); [ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ] && echo \"lineage \$a\" || { echo \"lineages '\$a' '\$b'\"; exit 1; }"
+    check "s3x1 save 2 holds the fixture's write" eqnz "$(newest_rec s3x1 2 "$F" | cut -d: -f4)" "$(last_write s3x1 "$F")"
+
+    say "S3 load of the 117% card, game over, then the portal autosave"
+    leg23 s3g0 s3-load-gameover "$BK2_DIR/s3-load-gameover.bk2.mcr" 6000
+    SIDECAR=- leg23 s3g1 s3-load-gameover "$BK2_DIR/s3-load-gameover.bk2.mcr" 6000 "$F"
+    check "s3g1 card byte-identical to the no-mod run" card_same s3g0 s3g1
+    check "s3g1 the load binds a fresh lineage (no snapshot yet)" logged s3g1 "fresh)"
+    check "s3g1 the loaded save reads ABSENT (no record of the fixture)" eq "$(last_read s3g1 "$F")" ABSENT
+    check "s3g1 the autosave: summary and record, two completions" eq "$(issued s3g1)/$(completed s3g1)" 2/2
+    check "s3g1 one snapshot at save 0 holding the fixture's write" \
+        eq "$(snaps_at s3g1 0)/$(newest_rec s3g1 0 "$F" | cut -d: -f4)" "1/$(last_write s3g1 "$F")"
+    check "s3g1 the autosave carries the load's lineage, not unknown" no_line s3g1 "written with the key unknown"
+}
+
+section_s23_modset() {
+    say "card-level .modset retired: neither checked nor rewritten on a game with save records"
+    local src="$WORK/s2c0/card1.mcr" bk=s2-load-save fr=3000
+    [ "$GAME" = spyro-3 ] && { src="$WORK/s3c0/card1.mcr"; bk=s3-load-save; fr=4000; }
+    MODSET="other-mod@9.9" SIDECAR=- leg23 "${GAME}ms" "$bk" "$src" "$fr" "$F"
+    check "${GAME}ms the planted .modset is untouched" eq "$(cat "$WORK/${GAME}ms/card1.mcr.modset")" "other-mod@9.9"
+    check "${GAME}ms no card-level modset warning" \
+        bash -c "! grep -qE 'modset MISMATCH|holds VANILLA|written under a modset|tagged with modset' '$WORK/${GAME}ms/log.txt' && echo 'no .modset line'"
+    check "${GAME}ms engaged: the card was read (load bound)" logged "${GAME}ms" "load bound to card 0"
+}
+
+section_s23_carve() {
+    carve "a New Game or load between a write's issue and completion: the game blocks input for the whole write, so only a mod's call can do it; the state model covers the generation guard"
+}
+
 [ "$HAVE_API" = 1 ] && say "save-record api present in $SDK_HDR" ||
     say "no save-record api in $SDK_HDR: pre-fix record; api legs SKIP"
+if [ "$SECTION" = s23 ]; then
+    [ "$GAME" = spyro-1 ] && { echo "check_modsave: section s23 needs --game spyro-2 or spyro-3" >&2; exit 64; }
+    [ "$GAME" = spyro-2 ] && section_s2
+    [ "$GAME" = spyro-3 ] && section_s3
+    section_s23_modset
+    section_s23_carve
+fi
 on record && section_record
 on repair && section_repair
 on driver && section_driver
@@ -614,7 +933,7 @@ on api && section_api_carve
 on calibrate && section_calibrate
 
 echo
-echo "[modsave] engagement: no-mod save leg $N_SAVE stock updates, load leg $N_LOAD"
+[ "$GAME" = spyro-1 ] && echo "[modsave] engagement: no-mod save leg $N_SAVE stock updates, load leg $N_LOAD"
 echo "[modsave] totals: $n_pass PASS, $n_fail FAIL, $n_skip SKIP, $n_carve CARVE-OUT"
 if [ "$n_fail" -ne 0 ]; then echo "[modsave] verdict: FAIL"; exit 1; fi
 if [ "$n_pass" -eq 0 ]; then echo "[modsave] verdict: VACUOUS (no leg ran)"; exit 1; fi

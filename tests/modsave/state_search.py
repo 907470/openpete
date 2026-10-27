@@ -231,7 +231,8 @@ def suites():
         "async": (c1i, (0, 1), m0,
                   CORE + ev_loads([0], [0]) + [("ISSUE", 0, 0, c, ()) for c in "XE"]
                   + [("COMPLETE", 0, o) for o in ("ok", "fail", "torn")]
-                  + [("PLAY", 0, 1), ("TOGGLE", 1), ("SS_TAKE",), ("SS_LOAD",),
+                  + [("ISSUE_NOREC", 0), ("ABORT", 0, 0)]
+                  + [("PLAY", 0, 1), ("TOGGLE", 1), ("SS_TAKE",), ("SS_LOAD",), ("SS_LOAD_OLD",),
                      ("RESTART", (0, 1), (0, 1)), ("MOUNT", 0)], 6, 9),
         # Process lifecycle: mods init with 0, 1, 2 mods, deferred entry, hot
         # reload, mount with and without a .modsave, seeding, --adopt-saves,
@@ -259,7 +260,7 @@ EXPECT = {
     "ports": ("L:multimatch-lowest", "L:mismatch"),
     "timeline": ("OK", "ABSENT", "L:write-key-unknown"),
     "runahead": ("snap", "L:adoption-flush-failed", "STALE"),
-    "async": ("drop", "OK", "ABSENT"),
+    "async": ("drop", "OK", "ABSENT", "L:completion-no-entry"),
     "process": ("seed", "format", "adopt", "L:sidecar-unparseable", "L:sidecar-write-failed",
                 "L:flush-failed", "STALE"),
 }
@@ -369,7 +370,7 @@ def _truth_writes(t, ev, before, after, fx):
         return
     slot = ev[1]
     e = before.blk.entries[slot] if ev[0] == "COMPLETE" else None
-    if ev[0] == "COMPLETE" and (e is None or ev[2] != "ok" or not e.captured):
+    if ev[0] == "COMPLETE" and (e is None or ev[2] != "ok" or not e.captured or e.norec):
         return
     idx = ev[2] if ev[0] == "WRITE" else e.idx
     content = ev[3] if ev[0] == "WRITE" else e.content
@@ -454,7 +455,7 @@ def _fresh(after, ev, t):
 # least once, counted by edge_marks().
 ENGAGE = {
     "legacy": ("edit-before-first-access",),
-    "async": ("toggle-while-pending", "torn-completion"),
+    "async": ("toggle-while-pending", "torn-completion", "norec-completion", "abort"),
 }
 
 
@@ -471,6 +472,11 @@ def edge_marks(ev, before):
         marks.append("toggle-while-pending")
     if ev[0] == "COMPLETE" and ev[2] == "torn" and before.blk.entries[ev[1]] is not None:
         marks.append("torn-completion")
+    e = before.blk.entries[ev[1]] if ev[0] == "COMPLETE" else None
+    if e is not None and e.norec and not e.orphan and ev[2] == "ok":
+        marks.append("norec-completion")
+    if ev[0] == "ABORT":
+        marks.append("abort")
     return marks
 
 
