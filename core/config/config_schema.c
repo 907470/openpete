@@ -88,6 +88,7 @@ static const cfg_knob_t g_schema[] = {
     { "no_card1",         "--no-card1",         NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
     { "no_card2",         "--no-card2",         NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
     { "card_unformatted", "--card-unformatted", NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
+    { "save_mismatch_toast", "--save-mismatch-toast", NULL,              CFG_BOOL,   NULL,       NULL,       NULL,       0 },
 
     /* -------- Gameplay entry -------- */
     { "skip_to_level",    "--skip-to-level",    NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },

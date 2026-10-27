@@ -74,6 +74,7 @@ openpete_add_game(spyro-1
         mods/mod_moby_ops.c
         mods/mod_level_ops.c
         mods/mod_game_desc.c
+        mods/mod_save_desc.c
 
         # First-run distribution: the WAD extraction (the disc library and
         # the launcher are core/launcher/; the module build is

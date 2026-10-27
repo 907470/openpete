@@ -53,9 +53,6 @@ static void fx_side(fxbuf_t* fx, char lead, int slot, int idx, const char* op) {
 
 /* ── small helpers ──────────────────────────────────────────────────────── */
 
-/** @brief The next pending lineage (the first 128 bits of the SHA-256 of the consumed one). */
-static msm_lin_t lin_next(msm_lin_t l) { l.n++; return l; }
-
 /** @brief Lineage equality. */
 static int lin_eq(msm_lin_t a, msm_lin_t b) { return a.root == b.root && a.n == b.n; }
 
@@ -82,16 +79,16 @@ static int mod_registered(const msm_state_t* s, int m) {
 static uint8_t session_tag(const msm_state_t* s) { return (uint8_t)(s->loaded & s->entered); }
 
 /** @brief A block at process boot or after a block reset. */
-static void block_boot(msm_state_t* s, msm_block_t* b) {
+static void block_boot(msm_block_t* b) {
     memset(b, 0, sizeof *b);
     b->key = MSM_KEY_UNKNOWN;
-    b->pend = lin_entropy(s);
 }
 
-/** @brief The current identity; returns 0 when the key is unknown. */
+/** @brief The current identity: (the key's lineage, generation) when set, (cleared = root 0, generation) when cleared; returns 0 when the key is unknown. */
 static int identity(const msm_block_t* b, msm_lin_t* lin, uint32_t* gen) {
+    static const msm_lin_t k_cleared = { 0, 0 };
     if (b->key == MSM_KEY_UNKNOWN) return 0;
-    *lin = b->key == MSM_KEY_SET ? b->key_lin : b->pend;
+    *lin = b->key == MSM_KEY_SET ? b->key_lin : k_cleared;
     *gen = b->gen;
     return 1;
 }
@@ -103,7 +100,7 @@ void msm_init(msm_state_t* s, const msm_config_t* cfg, uint8_t loaded_mask) {
     s->enabled = 0xFF;
     for (int m = 0; m < MSM_MAX_MODS; m++) s->schema[m] = 1;
     s->armed = loaded_mask != 0;
-    block_boot(s, &s->blk);
+    block_boot(&s->blk);
 }
 
 size_t msm_state_size(void) { return sizeof(msm_state_t); }
@@ -244,25 +241,32 @@ static uint8_t mod_reacts(int m, const read_t* r) {
     return 0;
 }
 
-/** @brief Pick the resolved candidate of a pending load: the only one, or the game's choice among several; -1 to drop. */
-static int load_pick(const msm_block_t* b) {
+/** @brief Pick the resolved candidate of a pending load: the only one; among several the game's choice when it names one, else the lowest (slot, index) (V51); -1 for none. */
+static int load_pick(const msm_block_t* b, int* lowest) {
     const uint8_t c = b->pload_cands;
-    if (c && !(c & (c - 1))) {
-        int bit = 0;
-        while (!(c >> bit & 1)) bit++;
-        return bit;
+    *lowest = 0;
+    if (!c) return -1;
+    int low = 0;
+    while (!(c >> low & 1)) low++;
+    if (!(c & (c - 1))) return low;
+    if (b->pload_chosen != 0xFF) {
+        const int bit = (b->pload_chosen >> 4) * MSM_MAX_IDX + (b->pload_chosen & 15);
+        if (c >> bit & 1) return bit;
     }
-    if (b->pload_chosen == 0xFF) return -1;
-    const int bit = (b->pload_chosen >> 4) * MSM_MAX_IDX + (b->pload_chosen & 15);
-    return c >> bit & 1 ? bit : -1;
+    *lowest = 1;
+    return low;
 }
+
+static void ev_reset(msm_state_t* s);
 
 /** @brief Resolve the pending load at the delivery arm: the key names the save, the lineage of the matching snapshot, else the index's newest, else fresh. */
 static void resolve_load(msm_state_t* s, fxbuf_t* fx) {
     msm_block_t* b = &s->blk;
-    const int bit = load_pick(b);
+    int lowest;
+    const int bit = load_pick(b, &lowest);
     b->pload = 0;
-    if (bit < 0) { fx_log(s, fx, "multimatch-dropped"); return; }
+    if (bit < 0) { ev_reset(s); fx_log(s, fx, "load-no-candidate"); return; }
+    if (lowest) fx_log(s, fx, "multimatch-lowest");
     const int slot = bit / MSM_MAX_IDX, idx = bit % MSM_MAX_IDX;
     const msm_snaps_t v = view(s, slot, idx);
     int match = -1;
@@ -270,7 +274,7 @@ static void resolve_load(msm_state_t* s, fxbuf_t* fx) {
     msm_lin_t lin;
     if (match >= 0) lin = v.s[match].lin;
     else if (v.n) lin = v.s[0].lin;
-    else { lin = b->pend; b->pend = lin_next(b->pend); }
+    else lin = lin_entropy(s);
     const int tk = match >= 0 ? match : (v.n ? 0 : -1);
     if (tk >= 0 && v.s[tk].tag != session_tag(s)) fx_log(s, fx, "mismatch");
     b->key = MSM_KEY_SET;
@@ -331,10 +335,10 @@ static msm_rec_t entry_rec(msm_state_t* s, int m, const msm_rec_t* prev, uint8_t
     return w;
 }
 
-/** @brief Write issue: decide the lineage (the key's when it names this save, else the pending lineage, consumed at completion: Q1), the carry source and refusals, call each write.
+/** @brief Write issue: decide the lineage (the key's when set, at any index, V48; else a fresh one from entropy), the carry source at the key's own (slot, index) and the refusals, call each write; the enabled set at issue is recorded.
  *
- * At most one entry is pending per card slot: an issue before the pending
- * entry's completion replaces that entry, which then never reaches the card.
+ * One entry per write call: the BIOS refuses a second write in flight on a
+ * port, so no issue happens while the slot's entry is pending (V45).
  */
 static void issue(msm_state_t* s, int slot, int idx, uint8_t content, uint8_t fails, fxbuf_t* fx) {
     msm_block_t* b = &s->blk;
@@ -343,17 +347,18 @@ static void issue(msm_state_t* s, int slot, int idx, uint8_t content, uint8_t fa
     e->used = 1; e->captured = 1;
     e->slot = (uint8_t)slot; e->idx = (uint8_t)idx; e->content = content; e->gen = b->gen;
     if (content == MSM_C_E) return;
-    const int same = b->key == MSM_KEY_SET && b->key_slot == slot && b->key_idx == idx;
     msm_snap_t src;
     int have = 0;
-    if (same) {
+    if (b->key == MSM_KEY_SET) {
         e->lin = b->key_lin;
         have = carry_source(s, fx, &src);
     } else {
         if (b->key == MSM_KEY_UNKNOWN) fx_log(s, fx, "write-key-unknown");
-        e->lin = b->pend;   /* consumed at completion (Q1) */
+        e->lin = lin_entropy(s);
         e->fresh = 1;
     }
+    e->en = 0;
+    for (int m = 0; m < s->cfg.n_mods; m++) if (mod_active(s, m)) e->en |= (uint8_t)(1u << m);
     for (int m = 0; m < s->cfg.n_mods; m++)
         e->rec[m] = entry_rec(s, m, have ? &src.rec[m] : NULL, fails, fx);
     e->tag = session_tag(s);
@@ -366,10 +371,9 @@ static void complete_key(msm_state_t* s, const msm_entry_t* e) {
     b->key = MSM_KEY_SET;
     b->key_slot = e->slot; b->key_idx = e->idx; b->key_content = e->content; b->key_lin = e->lin;
     b->legacy = (uint8_t)pad_nonzero(e->content);
-    if (e->fresh) b->pend = lin_next(e->lin);
     if (msm_seed_fault == 2) return;
     for (int m = 0; m < s->cfg.n_mods; m++) {
-        if (!mod_active(s, m)) continue;
+        if (!(e->en >> m & 1)) continue;
         b->held[m] = 1; b->held_lin[m] = e->lin; b->held_gen[m] = b->gen;
     }
 }
@@ -381,6 +385,7 @@ static void complete(msm_state_t* s, int slot, int outcome, fxbuf_t* fx) {
     if (!e.used || outcome == 1) return;
     s->card[slot][e.idx] = outcome == 2 ? (uint8_t)MSM_C_T : e.content;
     flush_card(s, slot);
+    if (outcome == 2 && e.captured && e.lin.root) fx_log(s, fx, "completion-checksum-failed");
     if (outcome == 2 || !e.captured) return;
     msm_qop_t op;
     memset(&op, 0, sizeof op);
@@ -397,7 +402,7 @@ static void complete(msm_state_t* s, int slot, int outcome, fxbuf_t* fx) {
     host_op(s, &op, fx);
 }
 
-/** @brief An issue while unarmed: an uncaptured entry, replacing any pending one, that only writes the card at completion. */
+/** @brief An issue while unarmed: an uncaptured entry that only writes the card at completion. */
 static void issue_plain(msm_state_t* s, int slot, int idx, uint8_t content) {
     msm_entry_t* e = &s->blk.entry[slot];
     memset(e, 0, sizeof *e);
@@ -468,6 +473,7 @@ static void ev_reset(msm_state_t* s) {
     if (msm_seed_fault != 3) s->blk.key = MSM_KEY_CLEARED;
     s->blk.gen++;
     s->blk.legacy = 0;
+    s->blk.pload = 0;
 }
 
 /** @brief Dispatch a tick event's game action (after the delivery arm). */
@@ -501,7 +507,7 @@ static void ev_restart(msm_state_t* s, uint8_t loaded, uint8_t entered) {
     s->loaded = loaded;
     s->entered = (uint8_t)(entered & loaded);
     s->enabled = 0xFF;
-    block_boot(s, &s->blk);
+    block_boot(&s->blk);
     s->armed = loaded != 0;
     memset(s->mounted, 0, sizeof s->mounted);
     memset(s->card, MSM_C_E, sizeof s->card);
@@ -541,31 +547,14 @@ static void ev_mount_adopt(msm_state_t* s, int slot, fxbuf_t* fx) {
     sidecar_write(s, slot, fx);
 }
 
-/** @brief 1 when a sidecar holds a snapshot at @p idx with record content @p c. */
-static int table_holds(const msm_table_t* t, int idx, uint8_t c) {
-    if (t->state != MSM_SC_PRESENT) return 0;
-    for (int k = 0; k < t->idx[idx].n; k++) if (t->idx[idx].s[k].content == c) return 1;
-    return 0;
-}
+/** @brief Port rebind after a savestate load, from the state's card section: the key names the port that holds the card the state held at its slot; the model's cards never change ports, so the key's slot stands. */
+static void rebind(msm_state_t* s) { (void)s; }
 
-/** @brief Port-rebind lookup after a savestate load: the key's slot becomes the port whose sidecar holds its hash at its index, else the key becomes unknown (Q5). */
-static void rebind(msm_state_t* s, fxbuf_t* fx) {
-    msm_block_t* b = &s->blk;
-    if (!s->armed || b->key != MSM_KEY_SET) return;
-    for (int k = 0; k < s->cfg.n_slots; k++) {
-        const int c = (b->key_slot + k) % s->cfg.n_slots;
-        const msm_table_t* t = s->mounted[c] ? &s->sc_mem[c] : &s->sc_disk[c];
-        if (table_holds(t, b->key_idx, b->key_content)) { b->key_slot = (uint8_t)c; return; }
-    }
-    b->key = MSM_KEY_UNKNOWN;
-    fx_log(s, fx, "rebind-unknown");
-}
-
-/** @brief Savestate load of a blob older than the block: key unknown, held empty, pending lineage re-minted, generation kept, arena from the state. */
+/** @brief Savestate load of a blob older than the block: key unknown, held empty, pending entries dropped, generation kept, arena from the state. */
 static void ev_ss_load_old(msm_state_t* s) {
     const uint32_t gen = s->blk.gen;
     msm_block_t b;
-    block_boot(s, &b);
+    block_boot(&b);
     b.gen = gen;
     memcpy(b.arena, s->ss.arena, sizeof b.arena);
     s->blk = b;
@@ -610,7 +599,7 @@ static void ev_ra_adopt_fail(msm_state_t* s, fxbuf_t* fx) {
 static void timeline_event(msm_state_t* s, const msm_event_t* ev, fxbuf_t* fx) {
     switch (ev->kind) {
     case MSM_EV_SS_TAKE:     s->ss = s->blk; s->have_ss = 1; break;
-    case MSM_EV_SS_LOAD:     s->blk = s->ss; s->have_rw = 0; rebind(s, fx); break;
+    case MSM_EV_SS_LOAD:     s->blk = s->ss; s->have_rw = 0; rebind(s); break;
     case MSM_EV_SS_LOAD_OLD: ev_ss_load_old(s); break;
     case MSM_EV_RA_BEGIN:    s->spec = s->blk; s->have_spec = 1; break;
     case MSM_EV_RA_ROLLBACK: s->blk = s->spec; s->have_spec = 0; restore_dirty(s); break;
@@ -622,7 +611,7 @@ static void timeline_event(msm_state_t* s, const msm_event_t* ev, fxbuf_t* fx) {
     case MSM_EV_HANDOFF:
         s->ss = s->blk; s->have_ss = 1;
         ev_restart(s, ev->a, ev->b);
-        s->blk = s->ss; s->have_rw = 0; rebind(s, fx);
+        s->blk = s->ss; s->have_rw = 0; rebind(s);
         break;
     default: break;
     }
@@ -654,7 +643,7 @@ static int tick_enabled(const msm_state_t* s, const msm_event_t* ev) {
         return s->mounted[ev->a] && s->card[ev->a][ev->b] != MSM_C_E;
     case MSM_EV_WRITE: case MSM_EV_WRITE_FAIL:
         return s->mounted[ev->a] && !s->blk.entry[ev->a].used;
-    case MSM_EV_ISSUE:       return s->mounted[ev->a]; /* replaces a pending entry */
+    case MSM_EV_ISSUE:       return s->mounted[ev->a] && !s->blk.entry[ev->a].used; /* one write in flight per port */
     case MSM_EV_COMPLETE:    return s->blk.entry[ev->a].used;
     case MSM_EV_FILE_CREATE: case MSM_EV_FORMAT:
         return s->mounted[ev->a] && !s->blk.entry[ev->a].used;
@@ -754,7 +743,6 @@ static void cn_lin(canon_t* c, msm_lin_t l) {
 /** @brief Visit every lineage a block holds. */
 static void cn_see_block(canon_t* c, const msm_block_t* b) {
     if (b->key == MSM_KEY_SET) cn_see(c, b->key_lin);
-    cn_see(c, b->pend);
     for (int m = 0; m < MSM_MAX_MODS; m++) if (b->held[m]) cn_see(c, b->held_lin[m]);
     for (int k = 0; k < MSM_MAX_SLOTS; k++) if (b->entry[k].used) cn_see(c, b->entry[k].lin);
 }
@@ -791,6 +779,7 @@ static void cn_entry(canon_t* c, const msm_entry_t* e, uint32_t gen) {
     cn_u8(c, e->used);
     if (!e->used) return;
     cn_u8(c, e->captured); cn_u8(c, e->fresh); cn_u8(c, e->idx); cn_u8(c, e->content); cn_u8(c, e->tag);
+    cn_u8(c, e->en);
     cn_u8(c, e->gen == gen);
     cn_lin(c, e->lin);
     for (int m = 0; m < MSM_MAX_MODS; m++) {
@@ -805,7 +794,6 @@ static void cn_block(canon_t* c, const msm_block_t* b) {
     if (b->key == MSM_KEY_SET) {
         cn_u8(c, b->key_slot); cn_u8(c, b->key_idx); cn_u8(c, b->key_content); cn_lin(c, b->key_lin);
     }
-    cn_lin(c, b->pend);
     cn_u8(c, b->legacy);
     for (int m = 0; m < MSM_MAX_MODS; m++) {
         cn_u8(c, b->held[m]);

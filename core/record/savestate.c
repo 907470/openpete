@@ -101,6 +101,7 @@
 #include "openpete_psx.h"
 #include "openpete_recomp_module.h"  /* codegen_stamp / rom_sha256 identity */
 #include "game_extras.h"
+#include "openpete_modsave.h"
 #include "sha256.h"
 
 #include "PsyX/PsyX_public.h"
@@ -1150,7 +1151,13 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * The impl validates its own version/size and ignores foreign blobs. */
     if (hdr.game_extra_bytes)
         game_state_extra_load(extra_buf, hdr.game_extra_bytes);
+    else
+        openpete_modsave_block_absent();
     free(extra_buf);
+    {
+        const char* held[2] = { card.held[0] ? card.path[0] : "", card.held[1] ? card.path[1] : "" };
+        openpete_modsave_rebind(held);
+    }
 
     /* Arena apply (verdict passed pre-commit): restore the arena bytes
      * and re-anchor both cursors before anything downstream - a mod's
@@ -1293,6 +1300,23 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     return 0;
 }
 
+/** @brief Fault injection: OPENPETE_STATE_FAULT_SPU_RESTORE=card fails the SPU step of the first in-memory restore made while a speculative card write is pending, once.
+ *
+ * Exercises the partial restore (CPU, RAM and scratchpad replaced, the
+ * rest not) that a real SPU restore failure leaves.
+ * @return 1 on the faulted restore, else 0. */
+static int state_fault_spu_restore(void) {
+    static int s_armed = -1;
+    if (s_armed < 0) {
+        const char* e = getenv("OPENPETE_STATE_FAULT_SPU_RESTORE");
+        s_armed = e && !strcmp(e, "card") ? 1 : 0;
+    }
+    if (!s_armed || !openpete_memcard_spec_pending()) return 0;
+    s_armed = 0;
+    OPL_WARN_F("savestate", "fault injected: SPU restore failed after CPU, RAM and scratchpad");
+    return 1;
+}
+
 int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                             unsigned* out_frame, int quiet) {
     if (!m || !m->valid) return -1;
@@ -1301,8 +1325,9 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     memcpy(cpu,                        m->cpu_buf,     CPU_REG_BYTES);
     memcpy(openpete_psx_get_ram(),     m->ram,         OPENPETE_PSX_RAM_SIZE);
     memcpy(openpete_psx_get_scratch(), m->scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
-    if (PsyX_SPUAL_RestoreStateEx(m->spu, m->spu_bytes, quiet ? 1 : 0) != 0)
-        return -1;
+    if (PsyX_SPUAL_RestoreStateEx(m->spu, m->spu_bytes, quiet ? 1 : 0) != 0 ||
+        state_fault_spu_restore())
+        return -2;
     state_cd_apply(&m->cd);
     openpete_psx_bios_card_flags_set(m->card_flag);
     PsyX_CD_QueueRestore(m->cdq);

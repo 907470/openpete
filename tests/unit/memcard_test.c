@@ -33,6 +33,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "openpete_mods.h"
+#include "openpete_modsave.h"
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -42,6 +44,26 @@
 /* Link-time stand-ins for the runtime the card module reads. */
 int openpete_speculative = 0;
 const char* openpete_mods_modset_tag(void) { return ""; }
+/* No game descriptor: the card-level .modset path runs, and the save-record
+ * hooks the card module calls do nothing. */
+static const game_mod_desc_t s_no_desc;
+/** @brief Stand-in: a game with no mod-layer surfaces. */
+const game_mod_desc_t* openpete_mods_game_desc(void) { return &s_no_desc; }
+/** @brief Stand-in: no save records. */
+void openpete_modsave_card_mounted(int slot, const char* image_path, int adopt) { (void)slot; (void)image_path; (void)adopt; }
+/** @brief Stand-in: no save records. */
+void openpete_modsave_card_write(int slot, const char* name, const uint8_t* file, size_t file_len,
+                                 int ofs, int bytes, int flushed) {
+    (void)slot; (void)name; (void)file; (void)file_len; (void)ofs; (void)bytes; (void)flushed;
+}
+/** @brief Stand-in: no save records. */
+void openpete_modsave_card_frame_write(int slot, int frame) { (void)slot; (void)frame; }
+/** @brief Stand-in: no save records. */
+void openpete_modsave_card_format(int slot) { (void)slot; }
+/** @brief Stand-in: no save records. */
+void openpete_modsave_spec_discard(void) {}
+/** @brief Stand-in: no save records. */
+void openpete_modsave_spec_commit(int flushed) { (void)flushed; }
 
 #define CARD_SIZE 131072
 static char s_root[512];

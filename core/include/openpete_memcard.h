@@ -53,13 +53,15 @@ void openpete_memcard_set_presence(int slot, int present);
  * @param on Nonzero selects the unformatted image. */
 void openpete_memcard_set_unformatted(int on);
 
-/** @brief Retag each card's modset sidecar to the running modset when the card is opened (--adopt-saves).
+/** @brief Retag a card's saves to the running modset when the card is first accessed (--adopt-saves).
  *
- * The sidecar `<image>.modset` records the modset tag a card's progress
- * belongs to. With adoption on, a mismatch at open rewrites the sidecar
- * and logs instead of warning. With it off, a mismatch warns and never
- * blocks, and the tag is kept so the warning repeats; an untagged card is
- * still tagged on its first write under active mods.
+ * On a game with a save descriptor (openpete_modsave.h) each save carries
+ * its own tag in `<image>.modsave`; adoption gives the newest snapshot of
+ * every non-empty save the running modset tag. On a game without one the
+ * card-level sidecar `<image>.modset` records the tag: with adoption on, a
+ * mismatch at open rewrites it and logs instead of warning; with it off, a
+ * mismatch warns and never blocks, and an untagged card is tagged on its
+ * first write under active mods.
  * @param on Nonzero enables adoption. */
 void openpete_memcard_set_adopt(int on);
 
@@ -220,6 +222,37 @@ int  openpete_memcard_held_path(int slot, char* out, size_t cap);
  * committed write, since rewind restores no card.
  * @return The count. */
 unsigned openpete_memcard_commit_epoch(void);
+
+/** @brief Enable the OSD toast at a load whose save was written under another modset (--save-mismatch-toast); the log line is unconditional.
+ * @param on Nonzero enables the toast. */
+void openpete_memcard_set_mismatch_toast(int on);
+
+/** @brief Report whether the save-mismatch toast is enabled.
+ * @return 1 when on. */
+int openpete_memcard_mismatch_toast(void);
+
+/** @brief Return the slot's card-level `.modset` tag ("" when absent), which seeds a card's first `.modsave`.
+ * @param slot Card slot, 0 or 1.
+ * @return The tag; storage lives until the next call for the slot. */
+const char* openpete_memcard_modset_tag(int slot);
+
+/** @brief Point at a named file in a loaded slot's card image without loading the card.
+ * @param slot Card slot, 0 or 1.
+ * @param name The file name.
+ * @param out Receives the file's first byte.
+ * @param len Receives the bytes from it to the end of the image.
+ * @return 0, or -1 when the slot is not loaded or holds no such file. */
+int openpete_memcard_file_view(int slot, const char* name, const uint8_t** out, size_t* len);
+
+/** @brief Report whether a speculative tick wrote a card that is not yet rolled back or adopted.
+ * @return 1 when a slot is marked, else 0. */
+int openpete_memcard_spec_pending(void);
+
+/** @brief Runahead rolled back its led ticks: restore each slot a speculative flush marked from its persisted image and discard the speculative save-record queue. */
+void openpete_memcard_spec_rollback(void);
+
+/** @brief Runahead adopted its led ticks: flush each marked slot and commit the speculative save-record queue, dropped when a flush fails. */
+void openpete_memcard_spec_adopt(void);
 struct CPUState;
 /** @brief Run one vblank interrupt of the BIOS card driver.
  *

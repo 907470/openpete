@@ -36,6 +36,9 @@ int    openpete_fillpick_preview(void)         { return 0; }
 void   openpete_fillpick_set_preview(int on)   { (void)on; }
 int    openpete_get_mute(void)                 { return 0; }
 void   openpete_set_mute(int on)               { (void)on; }
+static int s_mismatch_toast;
+void   openpete_memcard_set_mismatch_toast(int on) { s_mismatch_toast = on ? 1 : 0; }
+int    openpete_memcard_mismatch_toast(void)   { return s_mismatch_toast; }
 static int s_mouse_enabled = 1;
 int    openpete_host_mouse_enabled(void)       { return s_mouse_enabled; }
 void   openpete_host_mouse_set_enabled(int on) { s_mouse_enabled = on ? 1 : 0; }

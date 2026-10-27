@@ -97,7 +97,8 @@ const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target, const openpete
  * @param cpu Guest CPU state whose register prefix is overwritten.
  * @param out_frame Receives the keyframe's frame; may be NULL.
  * @return openpete_state_mem_load's result (0 restored, 1 park site
- *         mismatch, -1 refused); -1 for a keyframe not in the ring. */
+ *         mismatch, -1 refused, -2 partial restore); -1 for a keyframe not
+ *         in the ring. */
 int  openpete_rewind_restore(const openpete_rewind_kf_t* kf, CPUState* cpu, unsigned* out_frame);
 
 /** @brief Report whether a --rewind-hold may start at this VBL under OPENPETE_REWIND_HOLD_PHASE.

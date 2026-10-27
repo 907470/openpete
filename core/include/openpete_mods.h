@@ -896,6 +896,11 @@ void openpete_mods_chain_remove_owner(const char* owner_id);
  * @param owner_id the mod id; NULL does nothing.
  * @param on nonzero to enable, 0 to disable. */
 void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on);
+/** @brief Report whether a mod owns a link, enabled or not, on the override chain at an address.
+ * @param addr The overridden function's vaddr.
+ * @param owner_id The mod id; NULL returns 0.
+ * @return 1 when it owns one, else 0. */
+int  openpete_mods_chain_has_owner(uint32_t addr, const char* owner_id);
 /** @brief Remove every present hook an owner registered, compacting the table.
  *
  * @param owner_id the mod id; NULL does nothing. */
@@ -1390,6 +1395,10 @@ typedef struct {
      * (openpete_mods_guest_guard_t), installed before any mod's entry
      * runs; NULL for none. */
     const openpete_mods_guest_guard_t* guest_guard;
+    /* The game save descriptor of the per-mod save records
+     * (openpete_modsave.h); NULL for a game with none, where save_register
+     * returns -1. */
+    const struct openpete_save_desc*   save_desc;
 } game_mod_desc_t;
 
 /* Every render channel, OP_CHAN_MOBY through OP_CHAN_PORTAL, as a

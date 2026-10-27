@@ -219,6 +219,76 @@ typedef void (*openpete_mod_toggle_fn)(CPUState* cpu, int on);
  */
 typedef void (*openpete_mod_shutdown_fn)(void);
 
+/** @brief The api version that added openpete_mod_api::save_register; guard its use with `#ifdef`. */
+#define OPENPETE_MOD_SAVE_API 13u
+
+/**
+ * @brief The game save a save-record callback concerns.
+ * @since api 13
+ */
+typedef struct {
+    uint32_t struct_size; /**< sizeof at the engine's compile time. */
+    uint32_t save_index;  /**< Index of the save in the game's card file. */
+} openpete_mod_save_id_t;
+
+/**
+ * @brief What a save carries for a mod (openpete_mod_save_read_t::status).
+ *
+ * A mod handles a value it does not know as #OP_MOD_SAVE_ABSENT.
+ * @since api 13
+ */
+typedef enum {
+    OP_MOD_SAVE_OK = 0,     /**< Record present, schema <= the mod's, intact. */
+    OP_MOD_SAVE_ABSENT,     /**< The save carries no record from this mod; a fresh playthrough when no data. */
+    OP_MOD_SAVE_GAP,        /**< Record intact; the game saved at least once since while this mod was not loaded or was toggled off. */
+    OP_MOD_SAVE_STALE,      /**< The save index has records from this playthrough, but the save on the card matches none of them (changed outside openpete); data is the playthrough's newest. */
+    OP_MOD_SAVE_NEWER,      /**< The record was written by a newer schema; no data. The engine keeps it and does not call the mod's write for that playthrough. */
+    OP_MOD_SAVE_LEGACY_PAD, /**< No record; data is the game's spare span of the loaded save (Spyro 1: the 112 pad bytes at SaveFile+0x590), schema 0. Import it only when it carries the mod's own magic; anything else is another mod's payload, not damage. */
+} openpete_mod_save_status_t;
+
+/**
+ * @brief One save-record delivery (openpete_mod_save_read_fn).
+ * @since api 13
+ */
+typedef struct {
+    uint32_t struct_size;  /**< sizeof at the engine's compile time; fields past a mod's own sizeof are not read by it. */
+    uint32_t save_index;   /**< Index of the save in the game's card file; 0 with no save (ABSENT after a new playthrough). */
+    openpete_mod_save_status_t status;
+    uint32_t schema;       /**< Schema of the delivered record; 0 with no data. */
+    const void* data;      /**< The record, valid for the call only; NULL with no data. */
+    uint32_t size;         /**< Bytes at data. */
+} openpete_mod_save_read_t;
+
+/**
+ * @brief Save-record write callback: serialize the mod's save-derived state.
+ *
+ * Called on the sim thread in tick context when the game writes a
+ * non-empty save, once per save. Set @p data to the mod's own buffer and
+ * @p size to its length (any size); the buffer stays valid until the
+ * engine next calls into the mod, and the engine copies it on return.
+ * Guest RAM is readable and the arena writable; api->call is not.
+ * @return 0 to store the record, -1 to keep the mod's previous record of
+ *         this playthrough (none under a new playthrough).
+ * @since api 13
+ */
+typedef int (*openpete_mod_save_write_fn)(openpete_mod_t* self,
+        const openpete_mod_save_id_t* id, const void** data, uint32_t* size);
+
+/**
+ * @brief Save-record read callback: replace all save-derived state from @p r.
+ *
+ * Called on the sim thread in tick context, at the first entry of the
+ * game's update function, when the save or playthrough the mod last saw
+ * differs from the game's current one (a load, a new playthrough, a mod
+ * enabled after either). Never called on a savestate load, rewind,
+ * runahead rollback, process handoff or hot reload, which restore the
+ * arena with the rest of the timeline. Guest RAM and the arena may be
+ * written; api->call is not available.
+ * @since api 13
+ */
+typedef void (*openpete_mod_save_read_fn)(openpete_mod_t* self,
+        const openpete_mod_save_read_t* r);
+
 /** @brief Log levels for openpete_mod_api::log. */
 enum {
     OP_MOD_LOG_DEBUG = 1,
@@ -593,7 +663,8 @@ typedef struct openpete_mod_api {
      *
      * The arena is a bump allocator with no free: allocate at entry and
      * reuse. Tick context only: call it, and write through @p host_view,
-     * only from entry, tick hooks and toggle hooks.
+     * only from entry, tick hooks, toggle hooks and the save-record
+     * callbacks.
      *
      * The flags pick one of two pools by intent. Without
      * #OP_GALLOC_NO_DMA the block comes from the DMA-reachable pool
@@ -1470,6 +1541,34 @@ typedef struct openpete_mod_api {
      */
     int (*register_shutdown_hook)(openpete_mod_t* self,
                                   openpete_mod_shutdown_fn fn);
+    /** @} */
+
+    /** @name Save records
+     * @{ */
+    /**
+     * @brief Store per-save data beside each game save, in place of the save's spare bytes.
+     *
+     * The engine keeps one record per mod per save in `<card>.modsave`
+     * beside the card image, which it never modifies. At each non-empty
+     * save the game writes, @p write serializes the mod's state; the
+     * record of a mod that is not loaded or is toggled off is carried
+     * forward unchanged. When the game loads a save or starts a new
+     * playthrough, @p read delivers that save's record with its status
+     * (openpete_mod_save_status_t). Keep save-derived state in the arena:
+     * savestates, rewind, runahead and hot reload restore it and deliver
+     * no read. A mod's state at entry is the fresh-playthrough state.
+     * Call at entry, once; a second call replaces the first.
+     * @param schema The record format version, 1 or more; a record of a
+     *        higher schema reads #OP_MOD_SAVE_NEWER and is never overwritten.
+     * @param write Serializer, non-NULL.
+     * @param read Deliverer, non-NULL.
+     * @return 0, -1 for a NULL callback, a schema of 0, or a game with no
+     *         save descriptor (Spyro 1 has one).
+     * @since api 13
+     */
+    int (*save_register)(openpete_mod_t* self, uint32_t schema,
+                         openpete_mod_save_write_fn write,
+                         openpete_mod_save_read_fn read);
     /** @} */
 } openpete_mod_api_t;
 

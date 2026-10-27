@@ -11,7 +11,9 @@ blk.pload, blk.entries, blk.arena, s_card, sc_mem, sc_disk, armed, cfg).
 Representation: every value is immutable (tuples and NamedTuples); a state
 is an object of such fields, copied field by field before an event is
 applied, so apply() never mutates its input. A lineage is (root, n): a new
-root at boot and at a block reset, n advanced by the pending-lineage hash.
+root minted from entropy wherever a fresh lineage is consumed (a write
+from a cleared or unknown key, a load of an index with no snapshot,
+seeding), n always 0.
 A record content is one of E (empty), X, Y, P (legacy span holding mod 0's
 magic), T (torn, checksum fails); the content stands for its hash.
 
@@ -54,11 +56,11 @@ class Entry(NamedTuple):
     fresh: bool
     recs: Optional[tuple]
     tag: int
+    en: tuple = ()           # mods enabled at issue: they take the held identity
 
 
 class Block(NamedTuple):
     key: object              # "unknown" | "cleared" | (slot, idx, lin, content)
-    pend: tuple
     gen: int
     legacy: bool             # legacy copy non-zero
     held: tuple              # per mod id: (lin, gen) or None
@@ -73,16 +75,16 @@ TICKS = frozenset(("T", "LOAD", "LOAD_STALE", "RESET", "WRITE", "WRITE_FAIL", "I
 SPEC_HOST = frozenset(("RA_ROLLBACK", "RA_ADOPT", "RA_ADOPT_FAIL", "RA_PARTIAL"))
 
 READINGS = {
-    "R1": "fresh lineage of a write: own, the pending lineage is consumed at issue; aligned, "
-          "the issue takes its value and the completion consumes it when the generation is "
-          "unchanged",
+    "R1": "fresh lineage of a write: minted from entropy at issue and held in the entry "
+          "(round 15: no pending-lineage chain)",
     "R2": "a savestate load leaves the card image as it is",
     "R3": "a committed card write clears the rewind keyframe, so a rewind never spans a "
           "committed save and replay dedupe is not reachable",
     "R4": "arena after a read: OK, GAP and STALE take the payload; ABSENT and NEWER the fresh "
           "value 0; LEGACY_PAD imports value 2 for mod 0 (content P carries its magic), 0 for "
           "any other mod",
-    "R5": "a write from a set key to another index takes a fresh lineage",
+    "R5": "a write from a set key carries the key's lineage at any index; the carry source is "
+          "looked up at the key's own (slot, index) (V48)",
     "R6": "an empty-record write leaves the key as it is and drops the index's snapshots",
     "R7": "seeding runs at the first captured write or format of a card with no .modsave and "
           "snapshots every non-empty index the write does not cover",
@@ -93,21 +95,21 @@ READINGS = {
     "R10": "handoff: own, the arena of a mod entered in both processes is carried, others "
            "start fresh; aligned, every mod id's arena row is carried; the savestate slot then "
            "holds the handed-off state",
-    "R11": "port-rebind lookup: the key's record hash at the key's index in each port's sidecar "
-           "(in memory when mounted, else on disk), the key's port first",
+    "R11": "port rebind from the state's card section: the key names the port holding the card "
+           "the state held at its slot; the model's cards never change ports, so it stands",
     "R12": "outside edit: the card image is read at the card's first access (MOUNT), not at "
            "process start, so an edit before it is seen",
-    "R13": "issue with an entry pending on the slot: the new entry replaces it",
+    "R13": "one write in flight per port (V45): no issue while the slot's entry is pending",
     "R14": "deferred first entry: own, the mod's arena is reset to the fresh value; aligned, it "
            "keeps the arena the block holds",
     "R15": "savestate load: own, the rewind keyframe stays; aligned, it is cleared",
-    "R16": "seeded lineages: own, taken from the pending lineage; aligned, a new root each",
+    "R16": "seeded lineages: a new root each",
     "R17": "--adopt-saves: one adopt op per card, only when a newest snapshot's tag changes",
 }
 
 
 # Readings on which this model takes modsave_model.c's choice (READINGS).
-_ALIGNABLE = frozenset(("R1", "R9", "R10", "R14", "R15", "R16"))
+_ALIGNABLE = frozenset(("R9", "R10", "R14", "R15"))
 _OWN = os.environ.get("MODSAVE_INDEP_OWN", "")
 ALIGNED = frozenset() if _OWN == "1" else _ALIGNABLE - frozenset(_OWN.split(","))
 
@@ -145,9 +147,8 @@ class State:
 
 
 def _boot_block(s, gen=0, arena=None):
-    s.next_root += 1
     n = s.cfg.n_mods
-    return Block(UNKNOWN, (s.next_root, 0), gen, False, (None,) * n, None,
+    return Block(UNKNOWN, gen, False, (None,) * n, None,
                  (None,) * s.cfg.n_slots, arena if arena is not None else (0,) * n)
 
 
@@ -186,14 +187,13 @@ def current_identity(b):
     if isinstance(b.key, tuple):
         return (b.key[2], b.gen)
     if b.key == CLEARED:
-        return (b.pend, b.gen)
+        return (CLEARED, b.gen)
     return None
 
 
 def _take_fresh(s):
-    lin = s.blk.pend
-    s.blk = s.blk._replace(pend=(lin[0], lin[1] + 1))
-    return lin
+    s.next_root += 1
+    return (s.next_root, 0)
 
 
 def _log(s, fx, kind):
@@ -305,10 +305,7 @@ def _emit(s, fx, ops):
 
 
 def _seed_lineage(s):
-    if own("R16"):
-        return _take_fresh(s)
-    s.next_root += 1
-    return (s.next_root, 0)
+    return _take_fresh(s)
 
 
 def _seed_ops(s, slot, written):
@@ -370,14 +367,17 @@ def _arena_after(m, status, payload):
 
 def _resolve(s, fx):
     cands, legacy, content, chosen = s.blk.pload
+    if not cands:
+        s.blk = s.blk._replace(key=CLEARED, gen=s.blk.gen + 1, legacy=False, pload=None)
+        _log(s, fx, "load-no-candidate")
+        return
     if len(cands) == 1:
         slot, idx = next(iter(cands))
     elif chosen in cands:
         slot, idx = chosen
     else:
-        s.blk = s.blk._replace(pload=None)
-        _log(s, fx, "multimatch-dropped")
-        return
+        slot, idx = sorted(cands)[0]
+        _log(s, fx, "multimatch-lowest")
     snaps = view_snaps(s, slot, idx)
     match = [sn for sn in snaps if sn.content == content]
     if match:
@@ -420,15 +420,15 @@ def _issue(s, fx, slot, idx, content, fails):
         return Entry(True, slot, idx, content, b.gen, None, False, None, 0)
     key = b.key
     src = None
-    if isinstance(key, tuple) and key[0] == slot and key[1] == idx:
+    if isinstance(key, tuple):
         lin, fresh = key[2], False
-        src, match = find_source(s, slot, idx, key[3], key[2])
+        src, match = find_source(s, key[0], key[1], key[3], key[2])
         if src is not None and not match:
             _log(s, fx, "carry-from-newest")
     else:
         if key == UNKNOWN:
             _log(s, fx, "write-key-unknown")
-        lin, fresh = (_take_fresh(s) if own("R1") else b.pend), True
+        lin, fresh = _take_fresh(s), True
     recs = []
     for m in range(s.cfg.n_mods):
         prev = src.recs[m] if src is not None else None
@@ -444,14 +444,13 @@ def _issue(s, fx, slot, idx, content, fails):
                 recs.append(Rec(s.schema[m], 0, s.blk.arena[m]))
         else:
             recs.append(prev._replace(gap=1) if prev is not None else None)
-    return Entry(True, slot, idx, content, s.blk.gen, lin, fresh, tuple(recs), session_tag(s))
+    en = tuple(m for m in range(s.cfg.n_mods) if active(s, m))
+    return Entry(True, slot, idx, content, s.blk.gen, lin, fresh, tuple(recs), session_tag(s), en)
 
 
 def _complete_ok(s, fx, e):
     if not e.captured:
         return
-    if nonempty(e.content) and e.gen == s.blk.gen and e.fresh and not own("R1"):
-        _take_fresh(s)
     ops = _seed_ops(s, e.slot, (e.idx,))
     if not nonempty(e.content):
         ops.append(("drop", e.slot, e.idx))
@@ -461,7 +460,7 @@ def _complete_ok(s, fx, e):
         if e.gen == s.blk.gen:
             s.blk = s.blk._replace(key=(e.slot, e.idx, e.lin, h), legacy=legacy_of(h))
             cur = current_identity(s.blk)
-            held = tuple(cur if active(s, m) else s.blk.held[m] for m in range(s.cfg.n_mods))
+            held = tuple(cur if m in e.en else s.blk.held[m] for m in range(s.cfg.n_mods))
             s.blk = s.blk._replace(held=held)
     _emit(s, fx, ops)
 
@@ -489,7 +488,7 @@ def ev_load(s, fx, ev):
 def ev_reset(s, fx, ev):
     deliver(s, fx)
     if s.armed:
-        s.blk = s.blk._replace(key=CLEARED, gen=s.blk.gen + 1, legacy=False)
+        s.blk = s.blk._replace(key=CLEARED, gen=s.blk.gen + 1, legacy=False, pload=None)
 
 
 def ev_write(s, fx, ev):
@@ -521,6 +520,8 @@ def ev_complete(s, fx, ev):
         _complete_ok(s, fx, e)
     elif outcome == "torn":
         _card_write(s, slot, {e.idx: "T"})
+        if e.captured and nonempty(e.content):
+            _log(s, fx, "completion-checksum-failed")
 
 
 def ev_file_create(s, fx, ev):
@@ -562,22 +563,9 @@ def ev_schema(s, fx, ev):
 
 
 def _rebind(s, fx):
-    k = s.blk.key
-    if not isinstance(k, tuple):
-        return
-    slot, idx, lin, h = k
-
-    def holds(p):
-        t = s.sc_mem[p] if s.mounted[p] else s.sc_disk[p]
-        return t not in (None, CORRUPT) and any(sn.content == h for sn in t[idx])
-    if holds(slot):
-        return
-    for p in range(s.cfg.n_slots):
-        if holds(p):
-            s.blk = s.blk._replace(key=(p, idx, lin, h))
-            return
-    s.blk = s.blk._replace(key=UNKNOWN)
-    _log(s, fx, "rebind-unknown")
+    """Port rebind from the state's card section (R11): the model's cards
+    never change ports, so the key's slot stands."""
+    return
 
 
 def _new_process(s, loaded, entered):
@@ -746,7 +734,9 @@ def enabled(s, ev):
         return False
     if k in ("LOAD", "LOAD_STALE"):
         return s.mounted[ev[1]] and nonempty(s.s_card[ev[1]][ev[2]])
-    if k in ("WRITE", "WRITE_FAIL", "ISSUE", "FILE_CREATE", "FORMAT"):
+    if k == "ISSUE":
+        return s.mounted[ev[1]] and s.blk.entries[ev[1]] is None
+    if k in ("WRITE", "WRITE_FAIL", "FILE_CREATE", "FORMAT"):
         return s.mounted[ev[1]]
     if k == "SC_CORRUPT":
         return s.sc_disk[ev[1]] not in (None, CORRUPT)
@@ -795,14 +785,15 @@ def canon(s):
     roots = {}
 
     def first(lin):
-        if lin is not None:
+        if lin is not None and lin != CLEARED:
             roots.setdefault(lin[0], len(roots))
         return None
     _canon(s, first)
     low = {}
     for lin in _lins(s):
         low[lin[0]] = min(low.get(lin[0], lin[1]), lin[1])
-    return _canon(s, lambda lin: None if lin is None else (roots[lin[0]], lin[1] - low[lin[0]]))
+    return _canon(s, lambda lin: lin if lin in (None, CLEARED) else
+                  (roots[lin[0]], lin[1] - low[lin[0]]))
 
 
 def _lins(s):
@@ -816,8 +807,7 @@ def _lins(s):
             continue
         if isinstance(b.key, tuple):
             out.append(b.key[2])
-        out.append(b.pend)
-        out += [h[0] for h in b.held if h is not None]
+        out += [h[0] for h in b.held if h is not None and h[0] != CLEARED]
         out += [e.lin for e in b.entries if e is not None and e.lin is not None]
     for t in s.sc_mem + s.sc_disk:
         if t not in (None, CORRUPT):
@@ -847,8 +837,8 @@ def _canon(s, L):
         held = tuple(None if h is None else (L(h[0]), h[1] == b.gen) for h in b.held)
         ents = tuple(None if e is None else
                      (e.captured, e.slot, e.idx, e.content, e.gen == b.gen, L(e.lin), e.fresh,
-                      e.recs, e.tag) for e in b.entries)
-        return (key, L(b.pend), b.legacy, held, b.pload, ents, b.arena)
+                      e.recs, e.tag, e.en) for e in b.entries)
+        return (key, b.legacy, held, b.pload, ents, b.arena)
 
     def op(o):
         if o[0] in ("snap", "seed"):

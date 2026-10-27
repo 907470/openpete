@@ -31,21 +31,38 @@ Every write the game makes goes to the file at once. The files are standard
 
 ### Mods and memory cards
 
-A mod that changes the game can change what a save means. OpenPete records
-which mods a card's progress was made under in a file beside the card
-(`card1.mcr.modset`), counting only mods that change game state. The record
-is written at the card's first save under mods.
+A mod that changes the game can change what a save means, and a mod can
+keep its own data for each save.
 
-Each start compares that record with the mods running now. On a mismatch
-OpenPete writes a warning to the log and lets the game load and save as
-usual; the record stays as it was, so the warning repeats. The cases:
+On Spyro the Dragon, OpenPete keeps both in a file beside the card,
+`card1.mcr.modsave` for `card1.mcr`. For each save on the card it records
+the mods the save was made under, counting only mods that change game
+state, and each mod's own data for that save. The card itself is never
+changed, so it stays readable by a PlayStation or another emulator. The
+file is written at the first save under mods; a session that only loads
+writes nothing.
 
-- A card with progress from an unmodded game, loaded with mods running.
-- A card made under mods, loaded with no mods running.
-- A card made under a different set or version of mods.
+- A backup or copy of the card needs its `.modsave` file beside it, or the
+  mods lose their data for every save on it.
+- A save changed outside OpenPete (played on a PlayStation or another
+  emulator, or edited) is reported to its mods as changed when it is next
+  loaded here, and they start from their last data for that playthrough.
+- A mod that was turned off or not installed when the game saved keeps its
+  data: the save carries it forward until the mod is back.
 
-{{ flag("flag:--adopt-saves") }} <!-- id: flag:--adopt-saves --> rewrites the record to the
-mods running now and ends the warnings.
+When a loaded save was made under a different set or version of mods,
+OpenPete writes a line to the log and the game loads as usual.
+{{ flag("flag:--save-mismatch-toast") }} <!-- id: flag:--save-mismatch-toast --> `on` also shows an on-screen
+notification; the config file spelling is `save_mismatch_toast = true`
+<!-- id: knob:save_mismatch_toast --> (default `{{ default("knob:save_mismatch_toast") }}`<!-- id: knob:save_mismatch_toast -->).
+{{ flag("flag:--adopt-saves") }} <!-- id: flag:--adopt-saves --> records the mods running now as the
+mods of every save on the card, at the card's first use in the session.
+
+On Spyro 2 and Spyro 3 the record is per card, in `card1.mcr.modset`,
+written at the card's first save under mods. Each start compares it with
+the mods running now and writes a warning to the log on a mismatch; the
+record stays as it was, so the warning repeats.
+`--adopt-saves` rewrites it to the mods running now.
 
 ## Savestates
 

@@ -153,6 +153,7 @@ nav:
       - Getting started: modding/getting-started.md
       - Manifest: modding/manifest.md
       - Code mods: modding/code.md
+      - Save records: modding/save-records.md
       - ImGui: modding/imgui.md
       - Assets:
           - Textures: modding/textures.md

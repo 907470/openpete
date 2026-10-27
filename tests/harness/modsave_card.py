@@ -19,6 +19,19 @@ assertion, 2 on an unreadable card):
                                 an all-zero pad)
   flip CARD OUT I OFS           copy CARD to OUT with record I byte OFS
                                 inverted (the checksum is left stale)
+  edit CARD OUT I OFS           as flip, then the checksum fixed (an edit
+                                made outside openpete)
+  modsave FILE                  the sidecar's snapshots, one line each:
+                                index, position, record hash, lineage, tag,
+                                and per record id:schema:gap:size:fnv1a32
+  snapshots FILE                the snapshot count (exit 1 when 0)
+  make-modsave CARD OUT TAG     write a sidecar for CARD: one snapshot per
+                                non-empty record, no mod records, tagged TAG
+
+Sidecar format (core/mods/mod_save.c): "OPMODSV1", u32 version, u32 index
+count, per index u32 n then n snapshots (hash[32], lineage[16], str tag,
+u32 n_rec, per record str id, u32 schema, u32 gap, u32 size, bytes), then
+the SHA-256 of everything before it. A str is u32 length + bytes.
 """
 import hashlib
 import sys
@@ -124,6 +137,99 @@ def cmd_flip(path, out, i, ofs):
     return 0
 
 
+def cmd_edit(path, out, i, ofs):
+    card, off = load(path)
+    a = off + REC0 + int(i) * REC
+    b = bytearray(card)
+    b[a + int(ofs, 0)] ^= 0xFF
+    b[a + CKS:a + CKS + 4] = (sum(b[a:a + CKS]) & 0xFFFFFFFF).to_bytes(4, "little")
+    with open(out, "wb") as f:
+        f.write(b)
+    print(f"edited record {i} +{int(ofs, 0):#x}, checksum fixed")
+    return 0
+
+
+def fnv(b):
+    h = 2166136261
+    for x in b:
+        h = ((h ^ x) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def parse_modsave(path):
+    with open(path, "rb") as f:
+        d = f.read()
+    if d[:8] != b"OPMODSV1" or hashlib.sha256(d[:-32]).digest() != d[-32:]:
+        raise ValueError("bad magic or checksum")
+    at = [8]
+
+    def u32():
+        v = int.from_bytes(d[at[0]:at[0] + 4], "little")
+        at[0] += 4
+        return v
+
+    def raw(n):
+        v = d[at[0]:at[0] + n]
+        at[0] += n
+        return v
+    u32()
+    out = []
+    for i in range(u32()):
+        for k in range(u32()):
+            h, lin = raw(32), raw(16)
+            tag = raw(u32()).decode()
+            recs = []
+            for _ in range(u32()):
+                rid = raw(u32()).decode()
+                schema, gap, size = u32(), u32(), u32()
+                recs.append((rid, schema, gap, size, fnv(raw(size))))
+            out.append((i, k, h.hex()[:8], lin.hex()[:8], tag, recs))
+    return out
+
+
+def cmd_modsave(path):
+    try:
+        snaps = parse_modsave(path)
+    except (OSError, ValueError) as e:
+        print(f"{path}: {e}")
+        return 2
+    for i, k, h, lin, tag, recs in snaps:
+        rs = " ".join(f"{r[0]}:{r[1]}:{r[2]}:{r[3]}:{r[4]:08x}" for r in recs)
+        print(f"index {i} snap {k} hash {h} lineage {lin} tag \"{tag}\" recs {rs or '-'}")
+    return 0
+
+
+def cmd_snapshots(path):
+    try:
+        n = len(parse_modsave(path))
+    except (OSError, ValueError) as e:
+        print(f"{path}: {e}")
+        return 1
+    print(f"snapshots {n}")
+    return 0 if n else 1
+
+
+def cmd_make_modsave(path, out, tag):
+    import os
+    card, off = load(path)
+
+    def u32(v):
+        return v.to_bytes(4, "little")
+    body = b"OPMODSV1" + u32(1) + u32(16)
+    for i in range(16):
+        r = record(card, off, i) if i < 3 else b""
+        if not r or r[0x40] == 0:
+            body += u32(0)
+            continue
+        t = tag.encode()
+        body += u32(1) + hashlib.sha256(r).digest() + os.urandom(16) + u32(len(t)) + t + u32(0)
+    body += hashlib.sha256(body).digest()
+    with open(out, "wb") as f:
+        f.write(body)
+    print(f"wrote {out}")
+    return 0
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -141,6 +247,14 @@ def main(argv):
         return cmd_pad_magic(*args)
     if cmd == "flip" and len(args) == 4:
         return cmd_flip(*args)
+    if cmd == "edit" and len(args) == 4:
+        return cmd_edit(*args)
+    if cmd == "modsave" and len(args) == 1:
+        return cmd_modsave(*args)
+    if cmd == "make-modsave" and len(args) == 3:
+        return cmd_make_modsave(*args)
+    if cmd == "snapshots" and len(args) == 1:
+        return cmd_snapshots(*args)
     print(__doc__)
     return 64
 

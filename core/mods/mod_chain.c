@@ -498,6 +498,19 @@ void openpete_mods_chain_remove_owner(const char* owner_id) {
     }
 }
 
+int openpete_mods_chain_has_owner(uint32_t addr, const char* owner_id) {
+    if (!owner_id) return 0;
+    for (int i = 0; i < chain_count(); i++) {
+        mod_chain_t* c = chain_at(i);
+        if (c->addr != addr) continue;
+        for (int j = 0; j < link_count(c); j++) {
+            const mod_link_t* l = link_at(c, j);
+            if (l->owner_id && strcmp(l->owner_id, owner_id) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
 /* Live toggle: flip every link owned by owner_id. Chain STRUCTURE is
  * untouched (order, base() nesting) - a re-enabled mod is exactly where
  * it was. Call only at a tick boundary (the loader's apply point). */

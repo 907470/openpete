@@ -39,38 +39,27 @@ from typing import Optional, Tuple
 STATUSES = ("OK", "ABSENT", "GAP", "STALE", "NEWER", "LEGACY_PAD")
 
 OPEN_QUESTIONS = {
-    "Q1": "Fresh lineage at write issue: the normative table consumes the "
-          "pending lineage at issue; the Write section consumes it at "
-          "completion only when the generation is unchanged. Consuming at "
-          "issue changes a cleared key's identity between an asynchronous "
-          "issue and its completion, so the next tick delivers a read (a write "
-          "must issue none). Model: the issue takes the pending lineage's "
-          "value; the completion replaces the pending lineage when the "
-          "generation is unchanged.",
-    "Q2": "A new-playthrough reset between a load's binding and its delivery "
-          "arm: the table does not say whether the pending load survives. "
-          "Model: it survives and resolves at the next delivery arm.",
-    "Q3": "A single-candidate load whose game selection names another save "
-          "(mod-driven SaveLoad with a stale selection): the table resolves "
-          "one candidate unconditionally; the Read section treats a stale "
-          "selection as no match. Model: one candidate resolves.",
-    "Q4": "Seeding: lineage source (pending lineage or OS entropy) and whether "
-          "the record being written is seeded. Model: fresh entropy roots, "
-          "every non-empty index except the one being written; at a format the "
-          "seed reads the already formatted image, so it creates an empty "
-          ".modsave.",
-    "Q5": "Port-rebind lookup: 'holds the hash' read as a snapshot at the "
-          "key's save index with the key's record hash; the key's own slot "
-          "wins when both sidecars hold it.",
+    "Q1": "Closed (V45): a fresh lineage is minted from entropy where it is "
+          "consumed and held in the block or the write's entry; a cleared "
+          "key's identity is (cleared, generation), so an issue changes no "
+          "identity.",
+    "Q2": "Closed (V47): a new-playthrough reset drops a pending load.",
+    "Q3": "Closed (V47): one candidate resolves to itself; among several, the "
+          "game's selection when it names one, else the lowest (slot, index), "
+          "logged (V51); no candidate is a new-playthrough reset.",
+    "Q4": "Closed: seeding takes a fresh entropy root per non-empty index "
+          "except the one being written; at a format the seed reads the "
+          "already formatted image, so it creates an empty .modsave.",
+    "Q5": "Closed: the port rebind reads the state's card section; the "
+          "model's cards never change ports, so the key's slot stands.",
     "Q6": "Mismatch log: emitted only when the resolved source snapshot's tag "
           "differs from the session tag; no log when there is no snapshot.",
     "Q7": "Failed adoption flush: the dirty marks are cleared and s_card keeps "
           "the led writes that never reached disk.",
     "Q8": "A failed card flush on a committed tick leaves the record in s_card "
           "(openpete_memcard_write copies before flushing) and queues nothing.",
-    "Q9": "Multi-record write (file create): one write issue covering every "
-          "index, each judged empty; the plan allows one pending entry per "
-          "card slot, so the model treats file create as synchronous.",
+    "Q9": "Closed (V45): the write call is the unit, one entry per port; file "
+          "create is one write of empty records, modelled synchronously.",
     "Q10": "Rewind: under the 2026-10-11 rule a committed card write clears the "
            "rewind ring and keyframes carry no card, so a rewind never crosses "
            "a committed save and replay dedupe is unreachable; the model's "
@@ -114,13 +103,13 @@ class Entry:
     recs: Tuple[Optional[Rec], ...]
     tag: Tuple[int, ...]
     captured: bool = True            # False: issued while unarmed, card write only
-    fresh: bool = False              # the lineage is the pending one (Q1)
+    fresh: bool = False              # the lineage was minted at this issue
+    en: Tuple[int, ...] = ()         # mods enabled at issue (V45)
 
 
 @dataclass(frozen=True)
 class Block:
     key: object                # None | 'C' | (slot, idx, lin, content)
-    pend: Tuple[int, int]
     gen: int
     legacy: bool               # the legacy copy is non-zero
     held: Tuple[object, ...]   # per mod: None | (lin, gen)
@@ -161,11 +150,6 @@ class State:
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def H(lin):
-    """The next pending lineage: first 128 bits of SHA-256 of the consumed one."""
-    return (lin[0], lin[1] + 1)
-
-
 def tset(t, i, v):
     return t[:i] + (v,) + t[i + 1:]
 
@@ -181,7 +165,7 @@ def new_root(s):
 
 
 def boot_block(s, cfg):
-    return Block(key=None, pend=new_root(s), gen=0, legacy=False,
+    return Block(key=None, gen=0, legacy=False,
                  held=(None,) * cfg.n_mods, pload=None,
                  entries=(None,) * cfg.n_slots, arena=(0,) * cfg.n_mods)
 
@@ -235,7 +219,7 @@ def current_identity(b):
     if b.key is None:
         return None
     if b.key == "C":
-        return (b.pend, b.gen)
+        return (None, b.gen)
     return (b.key[2], b.gen)
 
 
@@ -377,28 +361,30 @@ def mod_reacts(m, status, data):
 def resolve_load(s):
     b = s.blk
     cands, legacy, content, chosen = b.pload
+    if not cands:
+        s.blk = replace(b, key="C", gen=b.gen + 1, legacy=False, pload=None)
+        log(s, "load-no-candidate")
+        return
     if len(cands) == 1:
         pick = next(iter(cands))
     elif chosen in cands:
         pick = chosen
     else:
-        s.blk = replace(b, pload=None)
-        log(s, "multimatch-dropped")
-        return
+        pick = min(cands)
+        log(s, "multimatch-lowest")
     slot, idx = pick
     snaps = view(s, slot)[idx]
     match = next((x for x in snaps if x.content == content), None)
-    pend = b.pend
     if match is not None:
         lin = match.lin
     elif snaps:
         lin = snaps[0].lin
     else:
-        lin, pend = pend, H(pend)
+        lin = new_root(s)
     src_tag = match.tag if match is not None else (snaps[0].tag if snaps else None)
     if src_tag is not None and src_tag != session_tag(s):
         log(s, "mismatch")
-    s.blk = replace(b, key=(slot, idx, lin, content), pend=pend, gen=b.gen + 1,
+    s.blk = replace(b, key=(slot, idx, lin, content), gen=b.gen + 1,
                     legacy=legacy, pload=None)
 
 
@@ -444,15 +430,14 @@ def issue(s, slot, idx, content, fails):
         s.blk = replace(b, entries=tset(b.entries, slot,
                         Entry(slot, idx, b.gen, "E", None, (), ())))
         return
-    same = isinstance(b.key, tuple) and b.key[0] == slot and b.key[1] == idx
-    pend = b.pend
-    if same:
+    fresh = not isinstance(b.key, tuple)
+    if not fresh:
         lin = b.key[2]
-        src = carry_source(s, b, slot, idx)
+        src = carry_source(s, b, b.key[0], b.key[1])
     else:
         if b.key is None:
             log(s, "write-key-unknown")
-        lin, src = pend, None
+        lin, src = new_root(s), None
     recs = []
     for m in range(s.cfg.n_mods):
         prev = src.recs[m] if src is not None else None
@@ -467,7 +452,8 @@ def issue(s, slot, idx, content, fails):
                 recs.append(prev)
             else:
                 recs.append(Rec(s.mods[m].schema, False, b.arena[m]))
-    e = Entry(slot, idx, b.gen, content, lin, tuple(recs), session_tag(s), True, not same)
+    en = tuple(m for m in range(s.cfg.n_mods) if active(s, m))
+    e = Entry(slot, idx, b.gen, content, lin, tuple(recs), session_tag(s), True, fresh, en)
     s.blk = replace(b, entries=tset(b.entries, slot, e))
 
 
@@ -483,6 +469,8 @@ def complete(s, slot, outcome):
     if outcome == "torn":
         s.s_card = tset(s.s_card, slot, tset(s.s_card[slot], e.idx, "T"))
         flush_card(s, slot)
+        if e.captured and e.lin is not None:
+            log(s, "completion-checksum-failed")
         return
     s.s_card = tset(s.s_card, slot, tset(s.s_card[slot], e.idx, e.content))
     flush_card(s, slot)
@@ -494,9 +482,8 @@ def complete(s, slot, outcome):
     b = s.blk
     if b.gen == e.gen:
         cur = (e.lin, b.gen)
-        held = tuple(cur if active(s, m) else b.held[m] for m in range(s.cfg.n_mods))
-        pend = H(e.lin) if e.fresh else b.pend
-        s.blk = replace(b, key=(slot, e.idx, e.lin, e.content), pend=pend,
+        held = tuple(cur if m in e.en else b.held[m] for m in range(s.cfg.n_mods))
+        s.blk = replace(b, key=(slot, e.idx, e.lin, e.content),
                         legacy=pad_nonzero(e.content), held=held)
     host_op(s, ("snap", slot, e.idx, Snap(e.content, e.lin, e.tag, e.recs)))
 
@@ -540,7 +527,7 @@ def r_reset(s):
     deliver(s)
     if s.armed:
         b = s.blk
-        s.blk = replace(b, key="C", gen=b.gen + 1, legacy=False)
+        s.blk = replace(b, key="C", gen=b.gen + 1, legacy=False, pload=None)
 
 
 def g_write(s, slot, idx, content, fails=()):
@@ -578,8 +565,8 @@ def r_issue(s, slot, idx, content, fails=()):
 
 
 def g_issue(s, slot, idx, content, fails=()):
-    """An issue replaces the slot's pending entry (one entry per card slot)."""
-    return s.mounted[slot]
+    """One write in flight per port: no issue while the slot's entry is pending (V45)."""
+    return s.mounted[slot] and s.blk.entries[slot] is None
 
 
 def g_complete(s, slot, outcome):
@@ -712,20 +699,9 @@ def g_ss_load(s):
 
 
 def rebind(s):
-    b = s.blk
-    if not s.armed or not isinstance(b.key, tuple):
-        return
-    slot, idx, lin, content = b.key
-    order = [slot] + [c for c in range(s.cfg.n_slots) if c != slot]
-    for c in order:
-        t = s.sc_mem[c] if s.mounted[c] else s.sc_disk[c]
-        if t in (None, "CORRUPT"):
-            continue
-        if any(x.content == content for x in t[idx]):
-            s.blk = replace(b, key=(c, idx, lin, content))
-            return
-    s.blk = replace(b, key=None)
-    log(s, "rebind-unknown")
+    """Port rebind from the state's card section: the model's cards never
+    change ports, so the key's slot stands."""
+    return
 
 
 def r_ss_load(s):
@@ -736,7 +712,7 @@ def r_ss_load(s):
 
 def r_ss_load_old(s):
     b = s.ss
-    s.blk = Block(key=None, pend=new_root(s), gen=s.blk.gen, legacy=False,
+    s.blk = Block(key=None, gen=s.blk.gen, legacy=False,
                   held=(None,) * s.cfg.n_mods, pload=None,
                   entries=(None,) * s.cfg.n_slots, arena=b.arena)
     s.rw = None
@@ -918,9 +894,8 @@ def _walk_lins(s, visit):
             return
         if isinstance(b.key, tuple):
             visit(b.key[2])
-        visit(b.pend)
         for h in b.held:
-            if h is not None:
+            if h is not None and h[0] is not None:
                 visit(h[0])
         for e in b.entries:
             if e is not None and e.lin is not None:
@@ -977,9 +952,9 @@ def canon(s):
         pl = None if b.pload is None else (tuple(sorted(b.pload[0])),) + b.pload[1:]
         ents = tuple(None if e is None else
                      (e.slot, e.idx, e.gen == b.gen, e.content, L(e.lin), e.recs, e.tag,
-                      e.captured, e.fresh)
+                      e.captured, e.fresh, e.en)
                      for e in b.entries)
-        return (key, L(b.pend), b.legacy, held, pl, ents, b.arena)
+        return (key, b.legacy, held, pl, ents, b.arena)
 
     q = tuple((op[0], op[1]) if op[0] == "format" else
               (op[0], op[1], op[2]) + ((snap(op[3]),) if len(op) > 3 else ())

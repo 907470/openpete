@@ -34,8 +34,9 @@
  *   mode <name> api <n>
  *   save_create gs <g> pad <hash>        legacy path, after the encode
  *   save_load gs <g> rc <v0> pad <state> value <v>
- *   read status <S> schema <n> size <n> data <hash>   api path
- *   write value <v> data <hash>                       api path
+ *   read status <S> index <i> schema <n> size <n> data <hash> value <v> gs <g>
+ *                                                    api path
+ *   write index <i> value <v> data <hash>             api path
  *   reset value 0                                    New Game, legacy path
  */
 #ifndef MODSAVE_FIXTURE_CORE_H
@@ -196,29 +197,31 @@ static const char* fx_status_name(openpete_mod_save_status_t s) {
 /** @brief Save-record write callback: serializes `value` with this fixture's pad codec. */
 static int fx_write(openpete_mod_t* self, const openpete_mod_save_id_t* id,
                     const void** data, uint32_t* size) {
-    (void)self; (void)id;
-    if (fx_api->config_bool(fx_self, "write_fails", 0)) return -1;
+    (void)self;
+    if (fx_api->config_bool(fx_self, "write_fails", 0)) {
+        fx_api->log(fx_self, OP_MOD_LOG_INFO, "%s: write index %u refused", FX_ID, id->save_index);
+        return -1;
+    }
     fx_encode(fx_st->payload, fx_st->value);
     *data = fx_st->payload;
     *size = FX_PAD_BYTES;
-    fx_api->log(fx_self, OP_MOD_LOG_INFO, "%s: write value %u data %08x", FX_ID,
-                fx_st->value, fx_hash(fx_st->payload, FX_PAD_BYTES));
+    fx_api->log(fx_self, OP_MOD_LOG_INFO, "%s: write index %u value %u data %08x", FX_ID,
+                id->save_index, fx_st->value, fx_hash(fx_st->payload, FX_PAD_BYTES));
     return 0;
 }
 
 /** @brief Save-record read callback: replaces the save-derived state from the record. */
-static void fx_read(openpete_mod_t* self, const openpete_mod_save_id_t* id,
-                    openpete_mod_save_status_t status, uint32_t schema,
-                    const void* data, uint32_t size) {
-    (void)self; (void)id;
-    const uint8_t* d = (const uint8_t*)data;
+static void fx_read(openpete_mod_t* self, const openpete_mod_save_read_t* r) {
+    (void)self;
+    const uint8_t* d = (const uint8_t*)r->data;
     uint32_t v = 0;
     fx_st->damaged = 0;
-    if (d && size == FX_PAD_BYTES && fx_decode_ok(d, &v)) fx_st->value = v;
+    if (d && r->size == FX_PAD_BYTES && fx_decode_ok(d, &v)) fx_st->value = v;
     else fx_st->value = 0; /* ABSENT, NEWER, foreign or zero LEGACY_PAD */
-    fx_api->log(fx_self, OP_MOD_LOG_INFO, "%s: read status %s schema %u size %u data %08x value %u",
-                FX_ID, fx_status_name(status), schema, size,
-                d ? fx_hash(d, size) : 0u, fx_st->value);
+    fx_api->log(fx_self, OP_MOD_LOG_INFO,
+                "%s: read status %s index %u schema %u size %u data %08x value %u gs %u",
+                FX_ID, fx_status_name(r->status), r->save_index, r->schema, r->size,
+                d ? fx_hash(d, r->size) : 0u, fx_st->value, fx_gamestate());
 }
 #endif
 

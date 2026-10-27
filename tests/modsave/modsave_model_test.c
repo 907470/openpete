@@ -149,12 +149,17 @@ static const case_t k_cases[] = {
         { LOAD(0), "" },
         { T_, "R0:STALE:1:0;R1:STALE:1:0" },
         { END_, NULL } } },
-    { "second issue before completion replaces the pending entry", {
-        { ISSUE(0, X), "L:write-key-unknown;W0;W1" },
+    { "write from a set key to another index keeps its lineage; the set enabled at issue holds", {
+        { RESET_, "" },
+        { T_, "R0:ABSENT:0:-;R1:ABSENT:0:-" },
+        { WRITE(0, X), "W0;W1;S0.0:put" },
         { PLAY(0, 1), "" },
-        { ISSUE(0, Y), "L:write-key-unknown;W0;W1" },
-        { DONE_, "S0.0:put" },
-        { LOAD(0), "" },
+        { ISSUE(1, Y), "W0;W1" },
+        { TOGGLE(1), "" },
+        { DONE_, "S0.1:put" },
+        { TOGGLE(1), "" },
+        { T_, "" },
+        { LOAD(1), "" },
         { T_, "R0:OK:1:1;R1:OK:1:0" },
         { END_, NULL } } },
     { "a record with a legacy pad and no snapshot: LEGACY_PAD", {

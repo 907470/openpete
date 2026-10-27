@@ -23,6 +23,7 @@
 #include "openpete_log.h"
 #include "openpete_paths.h"
 #include "openpete_mods.h" /* openpete_mods_modset_tag - save safety */
+#include "openpete_modsave.h"
 
 extern int openpete_speculative; /* openpete_fiber.h - runahead lookahead */
 
@@ -98,6 +99,17 @@ static unsigned s_commit_epoch   = 0;          /* writes the card file took */
 static int  s_adopt = 0;                       /* --adopt-saves */
 static char s_ms_tag[2][1024];                 /* sidecar tag at open */
 static int  s_ms_write_warned[2];
+static int  s_mismatch_toast = 0;              /* --save-mismatch-toast */
+
+/* Runahead: a flush on a speculative tick writes nothing and marks the
+ * slot; the rollback restores s_card from s_disk, the adoption flushes. A
+ * card provisioned on a speculative tick keeps its mark across the
+ * rollback, so the file is written once the tick is committed. */
+static int  s_spec_dirty[2];
+static int  s_spec_provisioned[2];
+
+/** @brief Nonzero when the game has a save descriptor: per-save tags in the `.modsave` replace the card-level `.modset`. */
+static int mc_per_save_tags(void) { return openpete_mods_game_desc()->save_desc != NULL; }
 
 /* Async-sync latch surfaced by MemCardSync. */
 static int     s_mc_cmds   = -1;
@@ -262,7 +274,7 @@ static int s_ms_checked[2];
  * holds the file's tag afterwards.
  * @param slot Card slot, 0 or 1. */
 static void mc_modset_check_open(int slot) {
-    if (s_ms_checked[slot]) return; /* once per session per slot */
+    if (s_ms_checked[slot] || mc_per_save_tags()) return; /* once per session per slot */
     s_ms_checked[slot] = 1;
     const char* cur = openpete_mods_modset_tag();
     mc_modset_read_sidecar(slot);
@@ -298,6 +310,7 @@ static void mc_modset_check_open(int slot) {
  * active, leaves the tag unchanged and warns once per slot, so the
  * mismatch keeps being reported until --adopt-saves retags the card. */
 static void mc_modset_on_write(int slot) {
+    if (mc_per_save_tags()) return;
     const char* cur = openpete_mods_modset_tag();
     const char* tag = s_ms_tag[slot];
     if (strcmp(tag, cur) == 0) return;
@@ -354,16 +367,18 @@ static void mc_mark_write_failed(int slot)
  * Runahead lookahead: the mutation belongs to a timeline that is about to
  * be rolled back, and persisting it would leak a phantom save to disk. The
  * real tick re-runs the same guest code and writes for real. s_card[]
- * itself is host state; a speculative mutation the real tick does not
- * repeat lingers in the in-memory card until the next real write. Card
- * writes happen at save points, which are not gameplay-live, and runahead
- * is gated on liveness.
+ * itself is host state: the slot is marked, and the runahead rollback
+ * restores its image from the last persisted one
+ * (openpete_memcard_spec_rollback) while an adoption flushes it
+ * (openpete_memcard_spec_adopt). A game may write its card on
+ * gameplay-live ticks (Spyro 2's pause save), which runahead speculates.
  * @param slot Card slot, 0 or 1, named in the warning.
  * @return 1 when the write is suppressed. */
 static int mc_speculative_suppressed(int slot)
 {
     if (!openpete_speculative) return 0;
     OPL_WARN_F("memcard", "flush during speculative tick suppressed (slot %d)", slot);
+    s_spec_dirty[slot] = 1;
     return 1;
 }
 
@@ -377,8 +392,9 @@ static int mc_speculative_suppressed(int slot)
  * @return 0 when the image is on disk (or nothing was due), -1 when the write failed. */
 static int mc_flush(int slot)
 {
-    if (!s_loaded[slot] || mc_speculative_suppressed(slot)) return 0;
+    if (!s_loaded[slot]) return 0;
     int failed = mc_write_refused(slot);
+    if (!failed && mc_speculative_suppressed(slot)) return 0;
     if (!failed && op_atomic_write_file(s_path[slot], s_card[slot], MC_CARD_SIZE) != 0) {
         mc_mark_write_failed(slot);
         failed = 1;
@@ -406,12 +422,13 @@ static int mc_flush(int slot)
  * @return 0 when the frame is on disk (or nothing was due), -1 when the write failed. */
 static int mc_flush_frame(int slot, int frame)
 {
-    if (!s_loaded[slot] || mc_speculative_suppressed(slot)) return 0;
+    if (!s_loaded[slot]) return 0;
     const size_t at = (size_t)frame * MC_SECTOR_SIZE;
     if (mc_write_refused(slot)) {
         memcpy(s_card[slot] + at, s_disk[slot] + at, MC_SECTOR_SIZE);
         return -1;
     }
+    if (mc_speculative_suppressed(slot)) return 0;
     if (op_file_write_at(s_path[slot], (long)at, s_card[slot] + at, MC_SECTOR_SIZE) != 0)
         return mc_flush(slot);
     memcpy(s_disk[slot] + at, s_card[slot] + at, MC_SECTOR_SIZE);
@@ -555,6 +572,7 @@ static void mc_ensure_loaded(int slot)
         s_loaded[slot] = 1;
         OPL_INFO_F("memcard", "loaded card %d from %s", slot, s_path[slot]);
         mc_modset_check_open(slot);
+        openpete_modsave_card_mounted(slot, s_path[slot], s_adopt);
         return;
     }
 
@@ -566,8 +584,10 @@ static void mc_ensure_loaded(int slot)
         s_mem_only[slot] = 1;
         return;
     }
+    openpete_modsave_card_mounted(slot, s_path[slot], s_adopt);
     /* First run for this slot: materialize on disk. The flush birth-tags
      * the fresh card under the active modset. */
+    if (openpete_speculative) s_spec_provisioned[slot] = 1;
     if (mc_flush(slot) == 0)
         OPL_INFO_F("memcard", "provisioned %s card %d at %s",
                    s_unformatted ? "unformatted" : "formatted", slot, s_path[slot]);
@@ -717,6 +737,7 @@ int openpete_memcard_startup_check(void)
             rc = -1;
             continue;
         }
+        if (mc_per_save_tags()) continue;
         FILE* f = fopen(s_path[slot], "rb");
         if (!f) continue;
         fclose(f);
@@ -833,6 +854,9 @@ int openpete_memcard_write(int chan, const char* name, const void* src_host,
     }
     memcpy(&s_card[slot][blk * MC_BLOCK_SIZE + ofs], src_host, (size_t)bytes);
     int rslt = mc_flush(slot) == 0 ? MC_ERR_NONE : MC_ERR_CARD_INVALID;
+    openpete_modsave_card_write(slot, name, &s_card[slot][blk * MC_BLOCK_SIZE],
+                                (size_t)(MC_CARD_SIZE - blk * MC_BLOCK_SIZE), ofs, bytes,
+                                rslt == MC_ERR_NONE);
     mc_latch(MC_FUNC_WRITE, rslt);
     return rslt;
 }
@@ -887,7 +911,9 @@ int openpete_memcard_format(int chan)
     if (!s_present[slot]) return MC_ERR_CARD_NOT_EXIST;
     mc_ensure_loaded(slot);
     mc_format_image(s_card[slot]);
-    return mc_flush(slot) == 0 ? MC_ERR_NONE : MC_ERR_CARD_INVALID;
+    if (mc_flush(slot) != 0) return MC_ERR_CARD_INVALID;
+    openpete_modsave_card_format(slot);
+    return MC_ERR_NONE;
 }
 
 int openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt)
@@ -952,5 +978,67 @@ int openpete_memcard_write_frame(int chan, int frame, const void* src_host)
     mc_ensure_loaded(slot);
     memcpy(s_card[slot] + (size_t)frame * MC_SECTOR_SIZE, src_host,
            MC_SECTOR_SIZE);
+    openpete_modsave_card_frame_write(slot, frame);
     return mc_flush_frame(slot, frame);
+}
+
+void openpete_memcard_set_mismatch_toast(int on)
+{
+    s_mismatch_toast = on ? 1 : 0;
+}
+
+int openpete_memcard_mismatch_toast(void)
+{
+    return s_mismatch_toast;
+}
+
+const char* openpete_memcard_modset_tag(int slot)
+{
+    if (slot != 0 && slot != 1) return "";
+    mc_modset_read_sidecar(slot);
+    return s_ms_tag[slot];
+}
+
+int openpete_memcard_file_view(int slot, const char* name, const uint8_t** out, size_t* len)
+{
+    if ((slot != 0 && slot != 1) || !s_loaded[slot] || !name || !out || !len) return -1;
+    const int blk = mc_find_file(slot, name);
+    if (blk < 0) return -1;
+    *out = &s_card[slot][blk * MC_BLOCK_SIZE];
+    *len = (size_t)(MC_CARD_SIZE - blk * MC_BLOCK_SIZE);
+    return 0;
+}
+
+void openpete_memcard_spec_rollback(void)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        if (s_spec_dirty[slot]) memcpy(s_card[slot], s_disk[slot], MC_CARD_SIZE);
+        s_spec_dirty[slot] = 0;
+        if (s_spec_provisioned[slot] && mc_flush(slot) == 0) s_spec_provisioned[slot] = 0;
+    }
+    openpete_modsave_spec_discard();
+}
+
+void openpete_memcard_spec_adopt(void)
+{
+    int ok = 1;
+    /* OPENPETE_MEMCARD_FAULT_ADOPT_FLUSH=1 fails every adoption flush. */
+    const char* fault = getenv("OPENPETE_MEMCARD_FAULT_ADOPT_FLUSH");
+    for (int slot = 0; slot < 2; slot++) {
+        if (s_spec_dirty[slot] && fault && *fault == '1') {
+            memcpy(s_card[slot], s_disk[slot], MC_CARD_SIZE);
+            ok = 0;
+        } else if (s_spec_dirty[slot] || s_spec_provisioned[slot]) ok &= mc_flush(slot) == 0;
+        s_spec_dirty[slot] = 0;
+        s_spec_provisioned[slot] = 0;
+    }
+    if (!ok)
+        OPL_ERROR_F("memcard", "adopting the speculative ticks' card writes failed; "
+                    "the card on disk keeps its previous contents");
+    openpete_modsave_spec_commit(ok);
+}
+
+int openpete_memcard_spec_pending(void)
+{
+    return s_spec_dirty[0] || s_spec_dirty[1];
 }

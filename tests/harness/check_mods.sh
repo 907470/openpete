@@ -1008,56 +1008,73 @@ else
     bad "injected animation did not carry handles, or the run aborted"
 fi
 
-# ── 14. per-modset save safety: tag + warn + adopt (memcard sidecar) ────
-# The modset tag ("id@ver+...", non-mutative mods excluded) is checked at
-# engine startup against the card's sidecar. Five flows, ~300 frames each:
-# fresh-vanilla silence, vanilla-card+mods warn, mismatch warn, explicit
-# adopt (sidecar rewritten), tagged-card+vanilla warn. The last uses an
-# observer to prove a mod that writes no guest RAM doesn't taint the tag.
-say "save safety: modset tag / warn / adopt on the memcard sidecar"
+# ── 14. per-save modset tags: the .modsave sidecar replaces .modset ────
+# Spyro 1 has a game save descriptor, so each save's snapshot in
+# <card>.modsave carries the modset tag ("id@ver+...", non-mutative mods
+# excluded) and the card-level <card>.modset is neither read nor written.
+# A session that never saves writes no sidecar. --adopt-saves gives the
+# newest snapshot of every non-empty save the running tag at the first
+# card access (the load recording's title menu); its log line names the
+# tag, which the derivation checks read. The adopt runs use the load recording's card (one save, record 0)
+# and a sidecar tagged "other-mod@9.9" (modsave_card.py make-modsave).
+say "save safety: per-save modset tags in the .modsave sidecar"
 CARDS="$WORK/cards"; mkdir -p "$CARDS"
+CARD_PY="$PWD/tests/harness/modsave_card.py"
+SAVE_CARD="$PWD/games/spyro-1/bk2/load-title.bk2.mcr"
 fixture "$WORK/ss-gems" double-gems
 fixture "$WORK/ss-observer" hello-anchor
 mc_run() { # mc_run [extra flags...] -> stdout+stderr
     local log; log="$(mktemp "$WORK/mc.XXXXXX.log")"
     local -a PG_CAPTURE_ENV=(OPENPETE_CARD_DIR="$CARDS")
     local PG_CAPTURE_TIMEOUT=120
-    pg_capture "$log" "" -- --frame-limit 300 "$@"
+    pg_capture "$log" "" -- --frame-limit "${MC_FRAMES:-300}" "$@"
     cat "$log"
 }
+# The title reads the card only once the menu opens: the load recording
+# reaches that read by VBL 900. Its .args name the committed card, so the
+# scratch card is passed after the splice.
+mc_card_run() { MC_FRAMES=900 mc_run --bk2 "$PWD/games/spyro-1/bk2/load-title.bk2" --card1 "$CARDS/card1.mcr" "$@"; }
+mc_adopt_card() { # fresh card with one save and a sidecar tagged other-mod@9.9
+    rm -f "${CARDS:?}/card1.mcr" "${CARDS:?}/card1.mcr.modset" "${CARDS:?}/card1.mcr.modsave"
+    cp "$SAVE_CARD" "$CARDS/card1.mcr"
+    python3 "$CARD_PY" make-modsave "$CARDS/card1.mcr" "$CARDS/card1.mcr.modsave" "other-mod@9.9" >/dev/null
+}
 out="$(mc_run)"
-if [ ! -e "$CARDS/card1.mcr.modset" ] && \
+if [ ! -e "$CARDS/card1.mcr.modset" ] && [ ! -e "$CARDS/card1.mcr.modsave" ] && \
    ! printf '%s\n' "$out" | grep -q "memcard.*modset"; then
     ok "vanilla + fresh dir: silent, no sidecar"
 else
     bad "vanilla fresh-dir run warned or created a sidecar"
 fi
-dd if=/dev/zero of="$CARDS/card1.mcr" bs=1024 count=128 2>/dev/null
-out="$(mc_run --mods-dir "$WORK/ss-gems")"
-if printf '%s\n' "$out" | grep -q "holds VANILLA progress but mods are active"; then
-    ok "vanilla card + divergent mod: warned"
-else
-    bad "vanilla-card warning missing"
-fi
+cp "$SAVE_CARD" "$CARDS/card1.mcr"
 echo "other-mod@9.9" > "$CARDS/card1.mcr.modset"
-out="$(mc_run --mods-dir "$WORK/ss-gems")"
-if printf '%s\n' "$out" | grep -q "modset MISMATCH"; then
-    ok "mismatched tag: warned (tag preserved)"
+out="$(mc_card_run --mods-dir "$WORK/ss-gems")"
+if ! printf '%s\n' "$out" | grep -q "modset MISMATCH\|holds VANILLA\|written under a modset" && \
+   [ "$(cat "$CARDS/card1.mcr.modset")" = "other-mod@9.9" ] && \
+   printf '%s\n' "$out" | grep -q "loaded card 0"; then
+    ok "card-level .modset neither checked nor rewritten (card accessed)"
 else
-    bad "mismatch warning missing"
+    bad "the card-level .modset path still runs on a game with save records, or the card was never accessed"
 fi
-out="$(mc_run --mods-dir "$WORK/ss-gems" --adopt-saves)"
-if printf '%s\n' "$out" | grep -q "modset tag adopted" && \
-   grep -q "^double-gems@" "$CARDS/card1.mcr.modset"; then
-    ok "--adopt-saves: adopted + sidecar rewritten"
+if [ ! -e "$CARDS/card1.mcr.modsave" ]; then
+    ok "a session that never saves writes no .modsave"
+else
+    bad "a .modsave was written without a save"
+fi
+mc_adopt_card
+out="$(mc_card_run --mods-dir "$WORK/ss-gems" --adopt-saves)"
+if printf '%s\n' "$out" | grep -q 'saves adopted under modset "double-gems@' && \
+   python3 "$CARD_PY" modsave "$CARDS/card1.mcr.modsave" | grep -q 'tag "double-gems@'; then
+    ok "--adopt-saves: the save's snapshot re-tagged + sidecar rewritten"
 else
     bad "adopt flow failed (log or sidecar content)"
 fi
-out="$(mc_run --mods-dir "$WORK/ss-observer")"
-if printf '%s\n' "$out" | grep -q "but no mods are active"; then
-    ok "tagged card + observer-only modset: warned (non-mutative excluded from tag)"
+mc_adopt_card
+out="$(mc_card_run --mods-dir "$WORK/ss-observer" --adopt-saves)"
+if printf '%s\n' "$out" | grep -q 'saves adopted under modset "vanilla"'; then
+    ok "observer-only modset adopts as vanilla (non-mutative excluded from tag)"
 else
-    bad "tagged-card/vanilla warning missing (non-mutative exclusion broken?)"
+    bad "observer-only adopt did not tag vanilla (non-mutative exclusion broken?)"
 fi
 
 # Whether a mod joins the tag is DERIVED when the manifest is silent: a
@@ -1070,21 +1087,21 @@ printf '[mod]\nid = "level-only"\nversion = "0.0.1"\ngame = "spyro-1"\napi = %s\
     "$API_VER" > "$WORK/ss-level/level-only/mod.toml"
 echo level-only > "$WORK/ss-level/enabled.txt"
 fixture "$WORK/ss-assets" music-swap
-rm -f "$CARDS/card1.mcr.modset"
-dd if=/dev/zero of="$CARDS/card1.mcr" bs=1024 count=128 2>/dev/null
-mc_run --mods-dir "$WORK/ss-level" --adopt-saves >/dev/null 2>&1
-if grep -q "^level-only@" "$CARDS/card1.mcr.modset" 2>/dev/null; then
+mc_adopt_card
+out="$(mc_card_run --mods-dir "$WORK/ss-level" --adopt-saves)"
+if printf '%s\n' "$out" | grep -q 'saves adopted under modset "level-only@'; then
     ok "custom-level mod joins the tag (derived mutative without code)"
 else
     bad "level mod absent from the tag - the [[level]] derivation broke"
 fi
-rm -f "$CARDS/card1.mcr.modset"
-mc_run --mods-dir "$WORK/ss-assets" --adopt-saves >/dev/null 2>&1
-if [ ! -e "$CARDS/card1.mcr.modset" ]; then
+mc_adopt_card
+out="$(mc_card_run --mods-dir "$WORK/ss-assets" --adopt-saves)"
+if printf '%s\n' "$out" | grep -q 'saves adopted under modset "vanilla"'; then
     ok "asset-only mod stays out of the tag (derived non-mutative)"
 else
-    bad "asset-only mod tagged the card: $(cat "$CARDS/card1.mcr.modset")"
+    bad "asset-only mod joined the tag"
 fi
+rm -f "${CARDS:?}/card1.mcr" "${CARDS:?}/card1.mcr.modset" "${CARDS:?}/card1.mcr.modsave"
 
 # ── 15. zip mods: folder or zip, identical (build + load) ───────────────
 # hello-anchor zipped, dropped as <id>.zip, loads end-to-end (unpack ->

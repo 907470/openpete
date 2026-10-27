@@ -8,6 +8,12 @@
  *               SaveLoad(scratch)
  *   badload:<i> as load, with record byte 0x40 flipped after the read, so
  *               the stock checksum verdict fails
+ *   newgame:<i> func_8001277C, the game's progress clear (a new
+ *               playthrough); <i> is unused
+ *   newkeep:<i> as newgame, then g_VisitedFlags[0] := 1, so a later
+ *               SaveCreate record is non-empty
+ *   leave:<i>   no count: save index i on the first update whose stock
+ *               base moves g_Gamestate off 0 (gameplay to another state)
  * Each call goes through api->call, so every mod's override chain on the
  * callee runs. MemCardWriteFile's fifth argument is passed at sp+0x10 of a
  * 0x20-byte frame the driver pushes below the current stack pointer.
@@ -24,13 +30,14 @@
 #define DRV_REC_BYTES   0x600u
 #define DRV_NAME        "BASCUS-94228SPYRO"
 
-enum { DRV_SAVE, DRV_LOAD, DRV_BADLOAD };
+enum { DRV_SAVE, DRV_LOAD, DRV_BADLOAD, DRV_NEWGAME, DRV_NEWKEEP, DRV_LEAVE };
 
 typedef struct { int op; uint32_t index; uint32_t at; } drv_action_t;
 
 /** @brief Arena block: the call counter, the file name and the scratch record. */
 typedef struct {
     uint32_t count;
+    uint32_t left;           /* the leave action has run */
     char     name[32];
     uint8_t  rec[DRV_REC_BYTES];
 } drv_state_t;
@@ -60,7 +67,12 @@ static uint32_t drv_card_io(CPUState* cpu, uint32_t fn, uint32_t index) {
 /** @brief Run one action; returns the v0 of its last guest call. */
 static uint32_t drv_run(CPUState* cpu, const drv_action_t* a) {
     const uint32_t rec = g_st_va + (uint32_t)offsetof(drv_state_t, rec);
-    if (a->op == DRV_SAVE) {
+    if (a->op == DRV_NEWGAME || a->op == DRV_NEWKEEP) {
+        g_api->call(cpu, OP_FNADDR_func_8001277C);
+        if (a->op == DRV_NEWKEEP) op_write_u8(g_api, OP_GADDR_g_VisitedFlags, 1u);
+        return 0;
+    }
+    if (a->op == DRV_SAVE || a->op == DRV_LEAVE) {
         cpu->a0 = rec;
         g_api->call(cpu, OP_FNADDR_SaveCreate);
         return drv_card_io(cpu, OP_FNADDR_MemCardWriteFile, a->index);
@@ -75,11 +87,14 @@ static uint32_t drv_run(CPUState* cpu, const drv_action_t* a) {
 
 /** @brief GamestateUpdate override: runs the base, then any action due at this count. */
 static void on_update(CPUState* cpu) {
-    static const char* names[] = { "save", "load", "badload" };
+    static const char* names[] = { "save", "load", "badload", "newgame", "newkeep", "leave" };
+    const uint32_t gs0 = op_read_u32(g_api, OP_GADDR_g_Gamestate);
     g_api->base(cpu);
     const uint32_t n = ++g_st->count;
+    const int left = gs0 == 0u && op_read_u32(g_api, OP_GADDR_g_Gamestate) != 0u;
     for (int i = 0; i < g_nact; i++) {
-        if (g_act[i].at != n) continue;
+        if (g_act[i].op == DRV_LEAVE ? (!left || g_st->left) : g_act[i].at != n) continue;
+        if (g_act[i].op == DRV_LEAVE) g_st->left = 1;
         const uint32_t saved_ra = cpu->ra, saved_v0 = cpu->v0;
         const uint32_t rc = drv_run(cpu, &g_act[i]);
         cpu->ra = saved_ra;
@@ -100,6 +115,9 @@ static int drv_parse(const char* s) {
         if (!strcmp(op, "save")) g_act[n].op = DRV_SAVE;
         else if (!strcmp(op, "load")) g_act[n].op = DRV_LOAD;
         else if (!strcmp(op, "badload")) g_act[n].op = DRV_BADLOAD;
+        else if (!strcmp(op, "newgame")) g_act[n].op = DRV_NEWGAME;
+        else if (!strcmp(op, "newkeep")) g_act[n].op = DRV_NEWKEEP;
+        else if (!strcmp(op, "leave")) g_act[n].op = DRV_LEAVE;
         else return -1;
         g_act[n].index = idx;
         g_act[n].at = at;

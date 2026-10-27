@@ -1128,6 +1128,18 @@ static int ra_snapshot_rollback(const openpete_state_mem_t* snap, CPUState* cpu,
             (uint64_t)(s_ra_save_ns + (op_now() - t0)) / 1000u);
     return rc;
 }
+/** @brief Settle the card writes of a speculation after its rollback attempt.
+ *
+ * A rollback that restored the state (0), or restored part of it before
+ * failing (-2), discards the led ticks' card writes and save records; one
+ * refused before restoring anything (-1, or 1 off the park site) leaves the
+ * led state in place, so its card writes are adopted.
+ * @param rc openpete_state_mem_load's result. */
+static void ra_card_settle(int rc) {
+    if (rc == 0 || rc == -2) openpete_memcard_spec_rollback();
+    else openpete_memcard_spec_adopt();
+}
+
 /** @brief Drop every pending runahead prediction, counting each one dropped. */
 static void ra_pc_invalidate_all(void) {
     for (int i = 0; i < RA_PC_PENDING; i++)
@@ -3649,6 +3661,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_memcard_set_presence(1, opts->card_b_present);
     openpete_memcard_set_unformatted(opts->card_unformatted);
     openpete_memcard_set_adopt(opts->adopt_saves);
+    openpete_memcard_set_mismatch_toast(opts->save_mismatch_toast);
     if (openpete_memcard_startup_check() != 0) return OPENPETE_EXIT_SETUP_ERROR;
     openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
                           opts->handoff_argv);
@@ -4202,11 +4215,13 @@ static int ra_speculate_to_final(openpete_park_site_t site, int cap, int* left) 
     return 1;
 }
 
-/** @brief Log the end of a speculation that left gameplay or was adopted, and count it.
+/** @brief Log the end of a speculation that left gameplay or was adopted, count it, and commit an adopted one's card writes.
  * @param left Nonzero when the speculation left gameplay.
  * @param adopted Nonzero when it became the timeline (its park site did not
- *        recur within the bound); zero when it was rolled back. */
+ *        recur within the bound): its card writes and save records are
+ *        committed; zero when it was rolled back. */
 static void ra_end_log(int left, int adopted) {
+    if (adopted) openpete_memcard_spec_adopt();
     if (left) s_ra_left[adopted ? 1 : 0]++;
     if (!adopted)
         OPL_INFO_F("runahead", "speculation left gameplay; rolled back at the snapshot's "
@@ -6263,8 +6278,10 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                      * roll back now, so the capture below takes the
                      * committed state as on a tick without speculation. */
                     unsigned ra_lf = openpete_frame;
-                    if (openpete_state_mem_load(ra_snap, &g_game.cpu, &ra_lf, 1) == 0)
+                    const int ra_rc = openpete_state_mem_load(ra_snap, &g_game.cpu, &ra_lf, 1);
+                    if (ra_rc == 0)
                         openpete_frame = ra_lf;
+                    ra_card_settle(ra_rc);
                 }
                 ra_skip_capture = (ra_want && !ra_speculated && !ra_left) || ra_adopted;
                 if (ra_left || ra_adopted) {
@@ -6372,8 +6389,9 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                  * the committed tick before anything else observes RAM. */
                 if (ra_speculated) {
                     unsigned ra_lf = openpete_frame;
-                    if (ra_snapshot_rollback(ra_snap, &g_game.cpu,
-                                             &ra_lf) == 0) {
+                    const int ra_rc = ra_snapshot_rollback(ra_snap, &g_game.cpu, &ra_lf);
+                    ra_card_settle(ra_rc);
+                    if (ra_rc == 0) {
                         openpete_frame = ra_lf;
                         /* Committed-timeline regions (g_Camera): replace
                          * their led bytes in the ring's newest slot with

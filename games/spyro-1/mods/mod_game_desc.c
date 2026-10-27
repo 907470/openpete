@@ -5,16 +5,19 @@
 // of mods pinned below the api adding override_ovl, the moby and level ops
 // (mod_moby_ops.c, mod_level_ops.c), the gold text-moby rasterizer, the sfx alias canonicaliser
 // (psyq_hooks.cpp), the PSX render functions the native renderer does
-// not rasterize, every render channel as a material channel, and the
-// vertex-stream handles its frame words carry.
+// not rasterize, every render channel as a material channel, the
+// vertex-stream handles its frame words carry, and the game save
+// descriptor of the per-mod save records (mod_save_desc.c).
 
 #include "game_mod_desc.h"
+#include "openpete_modsave.h"
 #include "renderer/text_moby.h" /* text_moby_native_mod_emit */
 
 const openpete_moby_ops_t*  spyro1_moby_ops(void);
 const openpete_level_ops_t* spyro1_level_ops(void);
 const char* spyro1_sfx_canon(const char* name);
 GAME_MOD_TABLES_DECLARE(spyro1);
+extern const openpete_save_desc_t spyro1_save_desc;
 
 /* Original PSX render and GPU-submission functions whose rasterized output
  * the native renderer replaces. */
@@ -43,6 +46,7 @@ const game_mod_desc_t* spyro1_mod_desc(void) {
         s_desc.legacy_window_links = 1;
         s_desc.channel_mask   = OPENPETE_MODS_CHANNELS_ALL;
         s_desc.vstream_handles = 1;
+        s_desc.save_desc      = &spyro1_save_desc;
         s_built = 1;
     }
     return &s_desc;

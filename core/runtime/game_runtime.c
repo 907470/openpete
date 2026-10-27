@@ -4,6 +4,7 @@
 #include "openpete_game_runtime.h"
 
 #include "game_extras.h"
+#include "openpete_modsave.h"
 #include "game_layout.h"
 #include "openpete_fiber.h"
 #include "openpete_psx.h"
@@ -72,14 +73,20 @@ void game_on_state_loaded(CPUState* cpu) {
     if (s_rt->on_state_loaded) s_rt->on_state_loaded(cpu);
 }
 
-uint32_t game_state_extra_size(void) {
+/** @brief The game's own payload size, without the save-record trailer. */
+static uint32_t game_extra_own_size(void) {
     return s_rt->state_extra_size ? s_rt->state_extra_size() : 0u;
+}
+uint32_t game_state_extra_size(void) {
+    return game_extra_own_size() + openpete_modsave_block_size();
 }
 void game_state_extra_save(void* dst) {
     if (s_rt->state_extra_save) s_rt->state_extra_save(dst);
+    openpete_modsave_block_save((uint8_t*)dst + game_extra_own_size());
 }
 void game_state_extra_load(const void* src, uint32_t size) {
-    if (s_rt->state_extra_load) s_rt->state_extra_load(src, size);
+    const uint32_t own = openpete_modsave_block_load(src, size);
+    if (s_rt->state_extra_load) s_rt->state_extra_load(src, own);
 }
 
 int game_is_gameplay_live(CPUState* cpu) {

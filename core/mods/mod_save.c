@@ -1,0 +1,1085 @@
+/* mod_save.c - per-mod save records. See openpete_modsave.h.
+ *
+ * State split:
+ *   the key's block (s_blk, s_rows): the live key (unknown, cleared or set
+ *     to a card slot, save index, lineage and record hash), the generation,
+ *     the legacy copy, the pending load, the delivery epoch and the
+ *     binding dedupe, and per parsed mod id the held identity. It travels
+ *     as a trailer of the savestate game-extra section, so savestates,
+ *     rewind, runahead and handoff restore it with the arena;
+ *   host state: the registrations, the per-card sidecar tables and the
+ *     speculative queue. Host effects of a speculative tick are queued and
+ *     committed when runahead adopts the led ticks, discarded on rollback.
+ *
+ * A snapshot is one save's records: the record hash, the lineage, the
+ * session modset tag and per mod (id, schema, gap, bytes). Each save index
+ * holds up to MS_CAP snapshots, newest first.
+ */
+#if defined(_WIN32) && !defined(_CRT_RAND_S)
+#define _CRT_RAND_S
+#endif
+#include "openpete_modsave.h"
+
+#include "openpete_atomic_file.h"
+#include "openpete_log.h"
+#include "openpete_memcard.h"
+#include "openpete_mods.h"
+#include "openpete_osd.h"
+#include "openpete_psx.h"
+#include "../host/sha256.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+extern int openpete_speculative; /* openpete_fiber.h - runahead lookahead */
+
+#define MS_CAP        4
+#define MS_SLOTS      2
+#define MS_MAX_IDX    16
+#define MS_ID_LEN     64
+#define MS_MAX_REGS   64
+#define MS_QUEUE_MAX  64
+#define MS_BLOCK_MAGIC 0x314B534Du  /* "MSK1" */
+#define MS_BLOCK_VER   1u
+static const char k_file_magic[8] = { 'O', 'P', 'M', 'O', 'D', 'S', 'V', '1' };
+#define MS_FILE_VER    1u
+
+int openpete_modsave_armed = 0;
+
+static const char* const k_status[] = { "OK", "ABSENT", "GAP", "STALE", "NEWER", "LEGACY_PAD" };
+
+/* ── the key's block ─────────────────────────────────────────────────── */
+
+enum { KEY_UNKNOWN = 0, KEY_CLEARED, KEY_SET };
+enum { HELD_NONE = 0, HELD_LINEAGE, HELD_CLEARED };
+
+typedef struct {
+    uint32_t version;
+    uint8_t  key, key_slot, key_idx, pload;
+    uint8_t  lineage[16];
+    uint8_t  hash[32];
+    uint32_t gen;
+    uint32_t epoch;          /* delivery-function first entries */
+    uint32_t legacy_len;
+    uint8_t  legacy[OPENPETE_MODSAVE_LEGACY_MAX];
+    uint32_t pload_cands;    /* bit slot * record_count + index */
+    uint8_t  pload_hash[32];
+    uint32_t pload_legacy_len;
+    uint8_t  pload_legacy[OPENPETE_MODSAVE_LEGACY_MAX];
+    uint32_t dedupe_epoch;   /* epoch + 1 of the last binding acted on, 0 none */
+    uint8_t  dedupe_hash[32];
+    uint32_t n_rows;
+} ms_block_t;
+
+typedef struct {
+    char     id[MS_ID_LEN];
+    uint32_t held;           /* HELD_* */
+    uint8_t  lineage[16];
+    uint32_t gen;
+} ms_row_t;
+
+static ms_block_t s_blk;
+static ms_row_t*  s_rows;
+static uint32_t   s_n_rows;
+static int        s_frozen;
+
+/* ── registrations ───────────────────────────────────────────────────── */
+
+typedef struct {
+    char                       id[MS_ID_LEN];
+    openpete_mod_t*            self;
+    uint32_t                   schema;
+    openpete_mod_save_write_fn write;
+    openpete_mod_save_read_fn  read;
+} ms_reg_t;
+
+static ms_reg_t s_regs[MS_MAX_REGS];
+static int      s_n_regs;
+
+/* ── snapshots, sidecars and the speculative queue ───────────────────── */
+
+typedef struct {
+    char     id[MS_ID_LEN];
+    uint32_t schema, gap, size;
+    uint8_t* data;
+} ms_rec_t;
+
+typedef struct {
+    uint8_t   hash[32];
+    uint8_t   lineage[16];
+    char*     tag;
+    uint32_t  n_rec;
+    ms_rec_t* rec;
+} ms_snap_t;
+
+typedef struct { uint32_t n; ms_snap_t* s[MS_CAP]; } ms_list_t;
+
+enum { SC_NONE = 0, SC_PRESENT };
+typedef struct {
+    int       state;
+    char      path[1300];
+    ms_list_t idx[MS_MAX_IDX];
+} ms_table_t;
+
+static ms_table_t s_sc[MS_SLOTS];
+
+enum { Q_SNAP = 1, Q_DROP, Q_FORMAT };
+typedef struct { int kind, slot, idx; ms_snap_t* snap; } ms_qop_t;
+static ms_qop_t s_queue[MS_QUEUE_MAX];
+static int      s_nq;
+
+/** @brief The running game's save descriptor, NULL when it has none. */
+static const openpete_save_desc_t* desc(void) {
+    return openpete_mods_game_desc()->save_desc;
+}
+
+/* ── small helpers ───────────────────────────────────────────────────── */
+
+/** @brief Fill @p out with 16 bytes of OS entropy (a fresh lineage). */
+static void lineage_fresh(uint8_t out[16]) {
+    int ok = 0;
+#ifdef _WIN32
+    for (int i = 0; i < 4; i++) {
+        unsigned int v = 0;
+        if (rand_s(&v) != 0) break;
+        memcpy(out + 4 * i, &v, 4);
+        ok = i == 3;
+    }
+#else
+    const int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        ok = read(fd, out, 16) == 16;
+        close(fd);
+    }
+#endif
+    if (!ok) {
+        /* No entropy source: a process-unique counter keeps lineages distinct within the process. */
+        static uint64_t s_ctr = 0;
+        const uint64_t a = ++s_ctr, b = (uint64_t)(uintptr_t)&s_ctr ^ 0x9E3779B97F4A7C15ull;
+        memcpy(out, &a, 8);
+        memcpy(out + 8, &b, 8);
+        OPL_WARN_F("modsave", "no OS entropy for a fresh lineage; using a process counter");
+    }
+}
+
+/** @brief SHA-256 of @p n bytes. */
+static void sha(const uint8_t* p, size_t n, uint8_t out[32]) {
+    openpete_sha256_ctx c;
+    openpete_sha256_init(&c);
+    openpete_sha256_update(&c, p, n);
+    openpete_sha256_final(&c, out);
+}
+
+/** @brief First 8 hex digits of a 32-byte hash or 16-byte lineage, for log lines. */
+static const char* hex8(const uint8_t* p, char buf[9]) {
+    snprintf(buf, 9, "%02x%02x%02x%02x", p[0], p[1], p[2], p[3]);
+    return buf;
+}
+
+/** @brief 1 when every byte of the span is zero. */
+static int all_zero(const uint8_t* p, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) if (p[i]) return 0;
+    return 1;
+}
+
+/** @brief 1 when the tick is a committed one, where host-effect log lines are emitted. */
+static int committed(void) { return !openpete_speculative; }
+
+/** @brief Free a snapshot and its records; NULL is ignored. */
+static void snap_free(ms_snap_t* s) {
+    if (!s) return;
+    for (uint32_t i = 0; i < s->n_rec; i++) free(s->rec[i].data);
+    free(s->rec);
+    free(s->tag);
+    free(s);
+}
+
+/** @brief The record of mod @p id in a snapshot, or NULL. */
+static const ms_rec_t* snap_rec(const ms_snap_t* s, const char* id) {
+    for (uint32_t i = 0; s && i < s->n_rec; i++)
+        if (!strcmp(s->rec[i].id, id)) return &s->rec[i];
+    return NULL;
+}
+
+/** @brief Append a copy of a record to a snapshot. */
+static void snap_add(ms_snap_t* s, const char* id, uint32_t schema, uint32_t gap,
+                     const void* data, uint32_t size) {
+    ms_rec_t* r = (ms_rec_t*)realloc(s->rec, (s->n_rec + 1u) * sizeof *r);
+    if (!r) return;
+    s->rec = r;
+    r = &s->rec[s->n_rec];
+    memset(r, 0, sizeof *r);
+    snprintf(r->id, sizeof r->id, "%s", id);
+    r->schema = schema; r->gap = gap; r->size = size;
+    r->data = size ? (uint8_t*)malloc(size) : NULL;
+    if (size && !r->data) return;
+    if (size) memcpy(r->data, data, size);
+    s->n_rec++;
+}
+
+/** @brief A new empty snapshot with the given hash, lineage and tag. */
+static ms_snap_t* snap_new(const uint8_t hash[32], const uint8_t lin[16], const char* tag) {
+    ms_snap_t* s = (ms_snap_t*)calloc(1, sizeof *s);
+    if (!s) return NULL;
+    memcpy(s->hash, hash, 32);
+    memcpy(s->lineage, lin, 16);
+    s->tag = strdup(tag ? tag : "");
+    return s;
+}
+
+/** @brief The registration of a mod id, or NULL. */
+static ms_reg_t* reg_of(const char* id) {
+    for (int i = 0; i < s_n_regs; i++) if (!strcmp(s_regs[i].id, id)) return &s_regs[i];
+    return NULL;
+}
+
+/** @brief The block row of a mod id, or NULL. */
+static ms_row_t* row_of(const char* id) {
+    for (uint32_t i = 0; i < s_n_rows; i++) if (!strcmp(s_rows[i].id, id)) return &s_rows[i];
+    return NULL;
+}
+
+/** @brief 1 when a registered mod is enabled (receives callbacks). */
+static int reg_active(const ms_reg_t* r) { return openpete_mods_is_enabled(r->id); }
+
+/** @brief Record count of the descriptor, clamped to the sidecar table. */
+static uint32_t n_idx(void) {
+    const openpete_save_desc_t* d = desc();
+    return d ? (d->record_count < MS_MAX_IDX ? d->record_count : MS_MAX_IDX) : 0u;
+}
+
+/* ── tables, view and host ops ───────────────────────────────────────── */
+
+/** @brief Insert a snapshot pointer at the front of a list; an equal (hash, lineage) entry is removed first, an entry past the cap evicted; returns the evicted or replaced snapshot. */
+static ms_snap_t* list_put(ms_list_t* l, ms_snap_t* sn) {
+    ms_snap_t* out = NULL;
+    uint32_t k = 0;
+    for (; k < l->n; k++)
+        if (!memcmp(l->s[k]->hash, sn->hash, 32) && !memcmp(l->s[k]->lineage, sn->lineage, 16)) break;
+    if (k < l->n) {
+        out = l->s[k];
+        memmove(&l->s[1], &l->s[0], k * sizeof l->s[0]);
+    } else {
+        if (l->n == MS_CAP) out = l->s[MS_CAP - 1];
+        const uint32_t keep = l->n < MS_CAP ? l->n : MS_CAP - 1u;
+        memmove(&l->s[1], &l->s[0], keep * sizeof l->s[0]);
+        l->n = keep + 1u;
+    }
+    l->s[0] = sn;
+    return out;
+}
+
+/** @brief The snapshots a lookup sees at (slot, idx): the sidecar with the speculative queue applied, newest first. */
+static ms_list_t view(int slot, int idx) {
+    ms_list_t v;
+    memset(&v, 0, sizeof v);
+    if (slot < 0 || slot >= MS_SLOTS || idx < 0 || idx >= MS_MAX_IDX) return v;
+    if (s_sc[slot].state == SC_PRESENT) v = s_sc[slot].idx[idx];
+    for (int q = 0; q < s_nq; q++) {
+        const ms_qop_t* op = &s_queue[q];
+        if (op->slot != slot) continue;
+        if (op->kind == Q_FORMAT || (op->kind == Q_DROP && op->idx == idx)) v.n = 0;
+        else if (op->kind == Q_SNAP && op->idx == idx) (void)list_put(&v, op->snap);
+    }
+    return v;
+}
+
+static void sidecar_write(int slot);
+
+/** @brief The first `.modsave` of a card: one snapshot per non-empty record except @p skip, fresh lineage, no records, the card's `.modset` tag. */
+static void seed_card(int slot, int skip) {
+    const openpete_save_desc_t* d = desc();
+    ms_table_t* t = &s_sc[slot];
+    t->state = SC_PRESENT;
+    const uint8_t* file = NULL;
+    size_t len = 0;
+    if (!d || openpete_memcard_file_view(slot, d->file_names[0], &file, &len) != 0) return;
+    const char* tag = openpete_memcard_modset_tag(slot);
+    for (uint32_t i = 0; i < n_idx(); i++) {
+        const size_t at = d->record_base + (size_t)i * d->record_size;
+        if ((int)i == skip || at + d->record_size > len) continue;
+        const uint8_t* rec = file + at;
+        if (d->is_empty(rec) || !d->checksum_ok(rec)) continue;
+        uint8_t h[32], lin[16];
+        sha(rec + d->hash_ofs, d->hash_len, h);
+        lineage_fresh(lin);
+        ms_snap_t* sn = snap_new(h, lin, tag);
+        if (sn) { t->idx[i].s[0] = sn; t->idx[i].n = 1; }
+        OPL_INFO_F("modsave", "card %d: seeded save %u (tag \"%s\")", slot, i, tag);
+    }
+}
+
+/** @brief Commit one host op to the sidecar: seed the card's first `.modsave`, apply the op, write the file.
+ *
+ * Takes ownership of the op's snapshot; a snapshot it replaces or evicts
+ * is freed.
+ * @param op The op. */
+static void commit_op(const ms_qop_t* op) {
+    ms_table_t* t = &s_sc[op->slot];
+    if (t->state != SC_PRESENT) seed_card(op->slot, op->kind == Q_FORMAT ? -1 : op->idx);
+    if (op->kind == Q_FORMAT) {
+        for (int i = 0; i < MS_MAX_IDX; i++) {
+            for (uint32_t k = 0; k < t->idx[i].n; k++) snap_free(t->idx[i].s[k]);
+            t->idx[i].n = 0;
+        }
+    } else if (op->kind == Q_DROP) {
+        ms_list_t* l = &t->idx[op->idx];
+        for (uint32_t k = 0; k < l->n; k++) snap_free(l->s[k]);
+        l->n = 0;
+    } else {
+        ms_snap_t* gone = list_put(&t->idx[op->idx], op->snap);
+        if (gone && gone != op->snap) {
+            char a[9];
+            if (memcmp(gone->hash, op->snap->hash, 32) || memcmp(gone->lineage, op->snap->lineage, 16))
+                OPL_INFO_F("modsave", "card %d save %d: oldest snapshot %s evicted", op->slot, op->idx,
+                           hex8(gone->hash, a));
+            snap_free(gone);
+        }
+    }
+    sidecar_write(op->slot);
+}
+
+/** @brief A host op: committed now, or queued on a speculative tick. */
+static void host_op(int kind, int slot, int idx, ms_snap_t* sn) {
+    ms_qop_t op = { kind, slot, idx, sn };
+    if (!openpete_speculative) { commit_op(&op); return; }
+    if (s_nq == MS_QUEUE_MAX) {
+        OPL_WARN_F("modsave", "speculative queue full; save record dropped");
+        snap_free(sn);
+        return;
+    }
+    s_queue[s_nq++] = op;
+}
+
+void openpete_modsave_spec_discard(void) {
+    if (s_nq) OPL_INFO_F("modsave", "rolled back speculative ticks: %d save-record op%s discarded", s_nq, s_nq == 1 ? "" : "s");
+    for (int q = 0; q < s_nq; q++) snap_free(s_queue[q].snap);
+    s_nq = 0;
+}
+
+void openpete_modsave_spec_commit(int flushed) {
+    const int n = s_nq;
+    s_nq = 0;
+    if (!flushed && n) {
+        OPL_WARN_F("modsave", "adoption card flush failed; %d queued save-record op%s dropped",
+                   n, n == 1 ? "" : "s");
+        for (int q = 0; q < n; q++) snap_free(s_queue[q].snap);
+        return;
+    }
+    if (n) OPL_INFO_F("modsave", "adopted speculative ticks: %d save-record op%s committed", n, n == 1 ? "" : "s");
+    for (int q = 0; q < n; q++) commit_op(&s_queue[q]);
+}
+
+/* ── sidecar file ────────────────────────────────────────────────────── */
+
+typedef struct { uint8_t* p; size_t len, cap; int bad; } ms_buf_t;
+
+/** @brief Append bytes to a growing buffer; an allocation failure marks it bad. */
+static void buf_put(ms_buf_t* b, const void* p, size_t n) {
+    if (b->bad) return;
+    if (b->len + n > b->cap) {
+        size_t c = b->cap ? b->cap * 2 : 4096;
+        while (c < b->len + n) c *= 2;
+        uint8_t* q = (uint8_t*)realloc(b->p, c);
+        if (!q) { b->bad = 1; return; }
+        b->p = q; b->cap = c;
+    }
+    memcpy(b->p + b->len, p, n);
+    b->len += n;
+}
+/** @brief Append a little-endian u32. */
+static void buf_u32(ms_buf_t* b, uint32_t v) {
+    const uint8_t x[4] = { (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24) };
+    buf_put(b, x, 4);
+}
+/** @brief Append a length-prefixed string. */
+static void buf_str(ms_buf_t* b, const char* s) {
+    const uint32_t n = (uint32_t)strlen(s);
+    buf_u32(b, n);
+    buf_put(b, s, n);
+}
+
+/** @brief Serialize one snapshot. */
+static void put_snap(ms_buf_t* b, const ms_snap_t* s) {
+    buf_put(b, s->hash, 32);
+    buf_put(b, s->lineage, 16);
+    buf_str(b, s->tag ? s->tag : "");
+    buf_u32(b, s->n_rec);
+    for (uint32_t r = 0; r < s->n_rec; r++) {
+        buf_str(b, s->rec[r].id);
+        buf_u32(b, s->rec[r].schema);
+        buf_u32(b, s->rec[r].gap);
+        buf_u32(b, s->rec[r].size);
+        buf_put(b, s->rec[r].data, s->rec[r].size);
+    }
+}
+
+/** @brief Write the slot's sidecar atomically: magic, version, per index its snapshots, then the SHA-256 of the rest.
+ *
+ * A failure is logged and the snapshots stay in memory; every write
+ * rewrites the whole file, so the next one retries.
+ * @param slot Card slot. */
+static void sidecar_write(int slot) {
+    ms_table_t* t = &s_sc[slot];
+    if (!t->path[0]) return;
+    ms_buf_t b = { 0 };
+    buf_put(&b, k_file_magic, 8);
+    buf_u32(&b, MS_FILE_VER);
+    buf_u32(&b, MS_MAX_IDX);
+    for (int i = 0; i < MS_MAX_IDX; i++) {
+        buf_u32(&b, t->idx[i].n);
+        for (uint32_t k = 0; k < t->idx[i].n; k++) put_snap(&b, t->idx[i].s[k]);
+    }
+    uint8_t h[32];
+    if (!b.bad) { sha(b.p, b.len, h); buf_put(&b, h, 32); }
+    const char* fault = getenv("OPENPETE_MODSAVE_FAULT_WRITE");
+    int rc = b.bad ? -1 : (fault && *fault == '1') ? -1 : op_atomic_write_file(t->path, b.p, b.len);
+    free(b.p);
+    if (rc != 0)
+        OPL_ERROR_F("modsave", "card %d: writing %s failed; the save records stay in memory "
+                    "and are written at the next save", slot, t->path);
+    else
+        OPL_INFO_F("modsave", "card %d: wrote %s", slot, t->path);
+}
+
+typedef struct { const uint8_t* p; size_t len, at; int bad; } ms_rd_t;
+
+/** @brief Read bytes; a read past the end marks the reader bad and yields zeros. */
+static void rd_get(ms_rd_t* r, void* out, size_t n) {
+    if (r->bad || r->at + n > r->len) { r->bad = 1; memset(out, 0, n); return; }
+    memcpy(out, r->p + r->at, n);
+    r->at += n;
+}
+/** @brief Read a little-endian u32. */
+static uint32_t rd_u32(ms_rd_t* r) {
+    uint8_t x[4];
+    rd_get(r, x, 4);
+    return (uint32_t)x[0] | (uint32_t)x[1] << 8 | (uint32_t)x[2] << 16 | (uint32_t)x[3] << 24;
+}
+/** @brief Read a length-prefixed string into a fresh allocation, at most @p max bytes. */
+static char* rd_str(ms_rd_t* r, uint32_t max) {
+    const uint32_t n = rd_u32(r);
+    if (r->bad || n > max || r->at + n > r->len) { r->bad = 1; return NULL; }
+    char* s = (char*)malloc(n + 1u);
+    if (!s) { r->bad = 1; return NULL; }
+    memcpy(s, r->p + r->at, n);
+    s[n] = '\0';
+    r->at += n;
+    return s;
+}
+
+/** @brief Parse one snapshot, or NULL on a malformed one. */
+static ms_snap_t* get_snap(ms_rd_t* r) {
+    uint8_t h[32], lin[16];
+    rd_get(r, h, 32);
+    rd_get(r, lin, 16);
+    char* tag = rd_str(r, 4096);
+    ms_snap_t* s = r->bad ? NULL : snap_new(h, lin, tag);
+    free(tag);
+    const uint32_t n = s ? rd_u32(r) : 0u;
+    for (uint32_t i = 0; s && !r->bad && i < n; i++) {
+        char* id = rd_str(r, MS_ID_LEN - 1);
+        const uint32_t schema = rd_u32(r), gap = rd_u32(r), size = rd_u32(r);
+        if (!id || r->bad || r->at + size > r->len) { free(id); r->bad = 1; break; }
+        snap_add(s, id, schema, gap, r->p + r->at, size);
+        r->at += size;
+        free(id);
+    }
+    if (r->bad) { snap_free(s); return NULL; }
+    return s;
+}
+
+/** @brief Parse a whole sidecar file into @p t; 0 on success. */
+static int sidecar_parse(ms_table_t* t, const uint8_t* p, size_t len) {
+    uint8_t h[32];
+    if (len < 8 + 8 + 32 || memcmp(p, k_file_magic, 8)) return -1;
+    sha(p, len - 32, h);
+    if (memcmp(h, p + len - 32, 32)) return -1;
+    ms_rd_t r = { p, len - 32, 8, 0 };
+    if (rd_u32(&r) != MS_FILE_VER) return -1;
+    const uint32_t n = rd_u32(&r);
+    for (uint32_t i = 0; i < n && !r.bad; i++) {
+        const uint32_t k = rd_u32(&r);
+        for (uint32_t j = 0; j < k && !r.bad; j++) {
+            ms_snap_t* s = get_snap(&r);
+            if (!s) break;
+            if (i < MS_MAX_IDX && t->idx[i].n < MS_CAP) t->idx[i].s[t->idx[i].n++] = s;
+            else snap_free(s);
+        }
+    }
+    return r.bad ? -1 : 0;
+}
+
+/** @brief Read a whole file into memory; NULL when absent or unreadable. */
+static uint8_t* slurp(const char* path, size_t* len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    uint8_t* p = NULL;
+    long n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    if (n >= 0 && fseek(f, 0, SEEK_SET) == 0 && (p = (uint8_t*)malloc((size_t)n + 1u)) != NULL &&
+        fread(p, 1, (size_t)n, f) != (size_t)n) {
+        free(p);
+        p = NULL;
+    }
+    fclose(f);
+    *len = p ? (size_t)n : 0u;
+    return p;
+}
+
+/** @brief Rename an unparseable sidecar to the first free "<path>.bad-<n>". */
+static void sidecar_set_aside(const char* path) {
+    char aside[1400];
+    for (int n = 1; n < 1000; n++) {
+        snprintf(aside, sizeof aside, "%s.bad-%d", path, n);
+        FILE* probe = fopen(aside, "rb");
+        if (probe) { fclose(probe); continue; }
+        if (rename(path, aside) == 0)
+            OPL_WARN_F("modsave", "%s is unparseable; moved to %s and treated as absent", path, aside);
+        return;
+    }
+}
+
+/** @brief Drop every snapshot of a table. */
+static void table_clear(ms_table_t* t) {
+    for (int i = 0; i < MS_MAX_IDX; i++) {
+        for (uint32_t k = 0; k < t->idx[i].n; k++) snap_free(t->idx[i].s[k]);
+        t->idx[i].n = 0;
+    }
+    t->state = SC_NONE;
+}
+
+/** @brief --adopt-saves: the newest snapshot of every non-empty save on the card takes the running modset tag; the sidecar is rewritten when one changed. */
+static void adopt_card(int slot) {
+    const openpete_save_desc_t* d = desc();
+    ms_table_t* t = &s_sc[slot];
+    const uint8_t* file = NULL;
+    size_t len = 0;
+    if (t->state != SC_PRESENT || openpete_memcard_file_view(slot, d->file_names[0], &file, &len) != 0)
+        return;
+    const char* cur = openpete_mods_modset_tag();
+    int changed = 0;
+    for (uint32_t i = 0; i < n_idx(); i++) {
+        const size_t lo = d->record_base + (size_t)i * d->record_size;
+        if (!t->idx[i].n || lo + d->record_size > len || d->is_empty(file + lo)) continue;
+        ms_snap_t* sn = t->idx[i].s[0];
+        if (sn->tag && !strcmp(sn->tag, cur)) continue;
+        free(sn->tag);
+        sn->tag = strdup(cur);
+        changed = 1;
+    }
+    if (!changed) return;
+    OPL_INFO_F("modsave", "card %d: saves adopted under modset \"%s\"", slot, cur[0] ? cur : "vanilla");
+    sidecar_write(slot);
+}
+
+void openpete_modsave_card_mounted(int slot, const char* image_path, int adopt) {
+    if (slot < 0 || slot >= MS_SLOTS || !desc()) return;
+    ms_table_t* t = &s_sc[slot];
+    table_clear(t);
+    snprintf(t->path, sizeof t->path, "%s.modsave", image_path);
+    size_t len = 0;
+    uint8_t* p = slurp(t->path, &len);
+    if (!p) return;
+    if (sidecar_parse(t, p, len) != 0) {
+        table_clear(t);
+        sidecar_set_aside(t->path);
+    } else {
+        t->state = SC_PRESENT;
+        if (!openpete_modsave_armed)
+            OPL_INFO_F("modsave", "card %d: %s present; save records armed", slot, t->path);
+        openpete_modsave_armed = 1;
+        if (adopt) adopt_card(slot);
+    }
+    free(p);
+}
+
+/* ── block ───────────────────────────────────────────────────────────── */
+
+/** @brief Key unknown, held identities empty, pending load none; generation and epoch kept. */
+static void block_unknown(void) {
+    s_blk.key = KEY_UNKNOWN;
+    s_blk.pload = 0;
+    s_blk.legacy_len = 0;
+    for (uint32_t i = 0; i < s_n_rows; i++) s_rows[i].held = HELD_NONE;
+}
+
+uint32_t openpete_modsave_block_size(void) {
+    return (uint32_t)(sizeof s_blk + s_n_rows * sizeof(ms_row_t) + 8u);
+}
+
+void openpete_modsave_block_save(void* dst) {
+    uint8_t* p = (uint8_t*)dst;
+    const uint32_t len = (uint32_t)(sizeof s_blk + s_n_rows * sizeof(ms_row_t));
+    s_blk.version = MS_BLOCK_VER;
+    s_blk.n_rows = s_n_rows;
+    memcpy(p, &s_blk, sizeof s_blk);
+    if (s_n_rows) memcpy(p + sizeof s_blk, s_rows, s_n_rows * sizeof(ms_row_t));
+    /* OPENPETE_MODSAVE_FAULT_NO_TRAILER=1 writes no magic, so a load reads
+     * the section as a blob that predates the block. */
+    const char* nt = getenv("OPENPETE_MODSAVE_FAULT_NO_TRAILER");
+    const uint32_t magic = nt && *nt == '1' ? 0u : MS_BLOCK_MAGIC;
+    memcpy(p + len, &len, 4);
+    memcpy(p + len + 4, &magic, 4);
+}
+
+/** @brief Restore held identities by mod id from a block's rows; ids absent from the state hold none. */
+static void rows_restore(const ms_row_t* rows, uint32_t n) {
+    for (uint32_t i = 0; i < s_n_rows; i++) {
+        s_rows[i].held = HELD_NONE;
+        for (uint32_t k = 0; k < n; k++) {
+            if (strncmp(rows[k].id, s_rows[i].id, MS_ID_LEN)) continue;
+            s_rows[i].held = rows[k].held;
+            memcpy(s_rows[i].lineage, rows[k].lineage, 16);
+            s_rows[i].gen = rows[k].gen;
+        }
+    }
+}
+
+uint32_t openpete_modsave_block_load(const void* src, uint32_t size) {
+    const uint8_t* p = (const uint8_t*)src;
+    uint32_t len = 0, magic = 0;
+    if (size >= 8u) { memcpy(&len, p + size - 8, 4); memcpy(&magic, p + size - 4, 4); }
+    if (size < 8u || magic != MS_BLOCK_MAGIC || len > size - 8u || len < sizeof s_blk) {
+        block_unknown();
+        return size;
+    }
+    const uint8_t* b = p + size - 8u - len;
+    ms_block_t in;
+    memcpy(&in, b, sizeof in);
+    if (in.version != MS_BLOCK_VER || len != sizeof in + in.n_rows * sizeof(ms_row_t)) {
+        block_unknown();
+        return size - 8u - len;
+    }
+    const uint32_t keep_rows = s_blk.n_rows;
+    s_blk = in;
+    s_blk.n_rows = keep_rows;
+    rows_restore((const ms_row_t*)(const void*)(b + sizeof in), in.n_rows);
+    return size - 8u - len;
+}
+
+void openpete_modsave_block_absent(void) { block_unknown(); }
+
+void openpete_modsave_rebind(const char* const state_paths[2]) {
+    if (s_blk.key != KEY_SET || s_blk.key_slot >= MS_SLOTS) return;
+    const char* want = state_paths[s_blk.key_slot];
+    if (!want || !want[0]) return;
+    for (int q = 0; q < MS_SLOTS; q++) {
+        char have[1300];
+        if (!openpete_memcard_held_path(q, have, sizeof have) || strcmp(have, want)) continue;
+        if (q != s_blk.key_slot)
+            OPL_INFO_F("modsave", "savestate key rebound from card slot %d to %d", s_blk.key_slot, q);
+        s_blk.key_slot = (uint8_t)q;
+        return;
+    }
+}
+
+/* ── status and delivery ─────────────────────────────────────────────── */
+
+/** @brief The status source: 2 = the snapshot matching the key's (hash, lineage), 1 = the lineage's newest at the key's index, 0 = none. */
+static int status_source(const ms_snap_t** out) {
+    if (s_blk.key != KEY_SET) return 0;
+    const ms_list_t v = view(s_blk.key_slot, s_blk.key_idx);
+    for (uint32_t k = 0; k < v.n; k++)
+        if (!memcmp(v.s[k]->hash, s_blk.hash, 32) && !memcmp(v.s[k]->lineage, s_blk.lineage, 16)) {
+            *out = v.s[k];
+            return 2;
+        }
+    for (uint32_t k = 0; k < v.n; k++)
+        if (!memcmp(v.s[k]->lineage, s_blk.lineage, 16)) { *out = v.s[k]; return 1; }
+    return 0;
+}
+
+/** @brief Fill @p r with mod @p g's status, by the precedence LEGACY_PAD, ABSENT, NEWER, STALE, GAP, OK. */
+static void status_for(const ms_reg_t* g, openpete_mod_save_read_t* r) {
+    const ms_snap_t* src = NULL;
+    const int kind = status_source(&src);
+    const ms_rec_t* rec = kind ? snap_rec(src, g->id) : NULL;
+    memset(r, 0, sizeof *r);
+    r->struct_size = (uint32_t)sizeof *r;
+    r->save_index = s_blk.key == KEY_SET ? s_blk.key_idx : 0u;
+    r->status = OP_MOD_SAVE_ABSENT;
+    if (!rec) {
+        if (s_blk.legacy_len && !all_zero(s_blk.legacy, s_blk.legacy_len)) {
+            r->status = OP_MOD_SAVE_LEGACY_PAD;
+            r->data = s_blk.legacy;
+            r->size = s_blk.legacy_len;
+        }
+        return;
+    }
+    r->schema = rec->schema;
+    if (rec->schema > g->schema) { r->status = OP_MOD_SAVE_NEWER; return; }
+    r->data = rec->data;
+    r->size = rec->size;
+    r->status = kind == 1 ? OP_MOD_SAVE_STALE : rec->gap ? OP_MOD_SAVE_GAP : OP_MOD_SAVE_OK;
+}
+
+/** @brief The current identity: 0 unknown, else HELD_LINEAGE or HELD_CLEARED with the generation. */
+static uint32_t identity(void) {
+    return s_blk.key == KEY_SET ? HELD_LINEAGE : s_blk.key == KEY_CLEARED ? HELD_CLEARED : 0u;
+}
+
+/** @brief 1 when a row holds the current identity. */
+static int row_holds_current(const ms_row_t* w) {
+    const uint32_t id = identity();
+    if (w->held != id || w->gen != s_blk.gen) return 0;
+    return id != HELD_LINEAGE || !memcmp(w->lineage, s_blk.lineage, 16);
+}
+
+/** @brief Set a row's held identity to the current one. */
+static void row_hold(ms_row_t* w) {
+    w->held = identity();
+    w->gen = s_blk.gen;
+    if (w->held == HELD_LINEAGE) memcpy(w->lineage, s_blk.lineage, 16);
+    else memset(w->lineage, 0, 16);
+}
+
+/** @brief Deliver a read to every enabled registered mod, in load order, whose held identity differs from the current one. */
+static void deliver(void) {
+    if (identity() == 0u) return;
+    for (int i = 0; i < openpete_mods_count(); i++) {
+        const char* id = openpete_mods_id(i);
+        ms_reg_t* g = id ? reg_of(id) : NULL;
+        ms_row_t* w = id ? row_of(id) : NULL;
+        if (!g || !w || !reg_active(g) || row_holds_current(w)) continue;
+        openpete_mod_save_read_t r;
+        status_for(g, &r);
+        row_hold(w);
+        if (committed())
+            OPL_INFO_F("modsave", "%s: read %s save %u", g->id, k_status[r.status], r.save_index);
+        openpete_mods_guard_enter(g->id);
+        g->read(g->self, &r);
+        openpete_mods_guard_leave();
+    }
+}
+
+/** @brief Pick the resolved candidate of a pending load.
+ *
+ * The only candidate; among several, the game's choice when it names one
+ * of them, else the lowest (card slot, save index), logged.
+ * @param cands Candidate bits, slot * record_count + index.
+ * @param chosen_bit The game's chosen save as a bit index, -1 for none.
+ * @return The picked bit index, or -1 when there is no candidate. */
+static int pick_candidate(uint32_t cands, int chosen_bit) {
+    if (!cands) return -1;
+    if (!(cands & (cands - 1u))) {
+        int b = 0;
+        while (!(cands >> b & 1u)) b++;
+        return b;
+    }
+    if (chosen_bit >= 0 && (cands >> chosen_bit & 1u)) return chosen_bit;
+    int low = 0;
+    while (!(cands >> low & 1u)) low++;
+    if (committed())
+        OPL_WARN_F("modsave", "load matches several saves (mask 0x%x) and the game's selection "
+                   "names none of them; taking the lowest (card slot, save index)", cands);
+    return low;
+}
+
+/** @brief A new-playthrough reset: key cleared, generation advanced, legacy copy emptied, pending load dropped. */
+static void reset_key(void) {
+    s_blk.key = KEY_CLEARED;
+    s_blk.gen++;
+    s_blk.legacy_len = 0;
+    s_blk.pload = 0;
+}
+
+/** @brief The mismatch check at a resolved load: the snapshot's modset tag against the session's, a log line and, with the knob on, a toast. */
+static void mismatch_check(const ms_snap_t* sn, int slot, int idx) {
+    const char* cur = openpete_mods_modset_tag();
+    if (!sn || !strcmp(sn->tag ? sn->tag : "", cur) || !committed()) return;
+    OPL_WARN_F("modsave", "card %d save %d was written under modset \"%s\"; running \"%s\"",
+               slot, idx, sn->tag && sn->tag[0] ? sn->tag : "vanilla", cur[0] ? cur : "vanilla");
+    if (openpete_memcard_mismatch_toast())
+        openpete_osd_notify("host", "modsave-mismatch", 0,
+                            "SAVE WRITTEN WITH OTHER MODS");
+}
+
+/** @brief Resolve the pending load at the delivery arm: the key names the picked save with the matching snapshot's lineage, else the index's newest, else a fresh one. */
+static void resolve_load(struct CPUState* cpu) {
+    const openpete_save_desc_t* d = desc();
+    int cs = -1, ci = -1, chosen = -1;
+    if (d->chosen && d->chosen(cpu, &cs, &ci) && cs >= 0 && cs < MS_SLOTS && ci >= 0 &&
+        (uint32_t)ci < n_idx())
+        chosen = cs * (int)n_idx() + ci;
+    const int bit = pick_candidate(s_blk.pload_cands, chosen);
+    int cand_count = 0;
+    for (uint32_t c = s_blk.pload_cands; c; c &= c - 1u) cand_count++;
+    if (bit < 0) {
+        reset_key();
+        if (committed()) OPL_INFO_F("modsave", "loaded save matches no card record; new playthrough");
+        return;
+    }
+    const int slot = bit / (int)n_idx(), idx = bit % (int)n_idx();
+    const ms_list_t v = view(slot, idx);
+    const ms_snap_t* m = NULL;
+    for (uint32_t k = 0; k < v.n && !m; k++) if (!memcmp(v.s[k]->hash, s_blk.pload_hash, 32)) m = v.s[k];
+    const ms_snap_t* src = m ? m : v.n ? v.s[0] : NULL;
+    if (src) memcpy(s_blk.lineage, src->lineage, 16);
+    else lineage_fresh(s_blk.lineage);
+    s_blk.key = KEY_SET;
+    s_blk.key_slot = (uint8_t)slot;
+    s_blk.key_idx = (uint8_t)idx;
+    memcpy(s_blk.hash, s_blk.pload_hash, 32);
+    s_blk.gen++;
+    s_blk.legacy_len = s_blk.pload_legacy_len;
+    memcpy(s_blk.legacy, s_blk.pload_legacy, sizeof s_blk.legacy);
+    s_blk.pload = 0;
+    if (committed()) {
+        char a[9], b[9];
+        OPL_INFO_F("modsave", "load bound to card %d save %d of %d candidate%s (hash %s, lineage %s, %s)",
+                   slot, idx, cand_count, cand_count == 1 ? "" : "s", hex8(s_blk.hash, a),
+                   hex8(s_blk.lineage, b), m ? "matched" : src ? "newest of the index" : "fresh");
+    }
+    mismatch_check(src, slot, idx);
+}
+
+/** @brief The delivery arm: count the entry, resolve a pending load, deliver. */
+static void on_delivery(struct CPUState* cpu) {
+    s_blk.epoch++;
+    if (s_blk.pload) resolve_load(cpu);
+    deliver();
+}
+
+/** @brief The load binding's first entry: on a passing checksum verdict, record the candidate set (every loaded card's equal record) and the legacy copy. */
+static void on_load_binding(struct CPUState* cpu) {
+    const openpete_save_desc_t* d = desc();
+    const uint32_t va = d->load_record ? d->load_record(cpu) : 0u;
+    const uint8_t* rec = va ? (const uint8_t*)openpete_psx_to_host_ptr(va) : NULL;
+    if (!rec || !d->checksum_ok(rec)) return;
+    uint8_t h[32];
+    sha(rec + d->hash_ofs, d->hash_len, h);
+    if (s_blk.dedupe_epoch == s_blk.epoch + 1u && !memcmp(s_blk.dedupe_hash, h, 32)) return;
+    s_blk.dedupe_epoch = s_blk.epoch + 1u;
+    memcpy(s_blk.dedupe_hash, h, 32);
+    uint32_t cands = 0;
+    for (int slot = 0; slot < MS_SLOTS; slot++) {
+        const uint8_t* file = NULL;
+        size_t len = 0;
+        if (openpete_memcard_file_view(slot, d->file_names[0], &file, &len) != 0) continue;
+        for (uint32_t i = 0; i < n_idx(); i++) {
+            const size_t at = d->record_base + (size_t)i * d->record_size;
+            if (at + d->record_size <= len && !memcmp(file + at, rec, d->record_size))
+                cands |= 1u << (slot * (int)n_idx() + (int)i);
+        }
+    }
+    s_blk.pload = 1;
+    s_blk.pload_cands = cands;
+    memcpy(s_blk.pload_hash, h, 32);
+    s_blk.pload_legacy_len = d->legacy_len;
+    memset(s_blk.pload_legacy, 0, sizeof s_blk.pload_legacy);
+    if (d->legacy_len) memcpy(s_blk.pload_legacy, rec + d->legacy_ofs, d->legacy_len);
+}
+
+/** @brief 1 when @p addr (in overlay @p ovl, 0 = executable) is the entered function. */
+static int at(const openpete_save_desc_t* d, uint32_t addr, uint32_t fn, uint32_t ovl) {
+    if (!fn || addr != fn) return 0;
+    return !d->resident_overlay || !ovl || d->resident_overlay() == ovl;
+}
+
+void openpete_modsave_dispatch(struct CPUState* cpu, uint32_t addr) {
+    const openpete_save_desc_t* d = desc();
+    if (!d || openpete_mods_bypass_pending(addr)) return;
+    if (at(d, addr, d->delivery_fn, d->delivery_ovl)) { on_delivery(cpu); return; }
+    if (at(d, addr, d->load_fn, d->load_ovl)) { on_load_binding(cpu); return; }
+    for (size_t i = 0; i < d->reset_count; i++)
+        if (at(d, addr, d->reset_fns[i], d->reset_ovls ? d->reset_ovls[i] : 0u)) { reset_key(); return; }
+}
+
+/* ── write capture ───────────────────────────────────────────────────── */
+
+/** @brief Carry-forward source: the snapshot at the key's own (slot, index) whose (hash, lineage) equal the key's, else the lineage's newest there (logged); NULL for none. */
+static const ms_snap_t* carry_source(void) {
+    const ms_snap_t* src = NULL;
+    const int kind = status_source(&src);
+    if (kind == 1 && committed())
+        OPL_INFO_F("modsave", "carry-forward from the playthrough's newest snapshot (no exact match)");
+    return kind ? src : NULL;
+}
+
+/** @brief Add one registered mod's record to a new snapshot: a NEWER refusal keeps the stored record; a -1 write keeps the previous one; toggled off carries it with gap. */
+static void add_reg_record(ms_snap_t* sn, ms_reg_t* g, const ms_rec_t* prev, uint32_t index) {
+    if (!reg_active(g)) {
+        if (prev) snap_add(sn, prev->id, prev->schema, 1u, prev->data, prev->size);
+        return;
+    }
+    if (prev && prev->schema > g->schema) {
+        if (committed())
+            OPL_WARN_F("modsave", "%s: save %u holds its schema %u record; schema %u refused to overwrite it",
+                       g->id, index, prev->schema, g->schema);
+        snap_add(sn, prev->id, prev->schema, prev->gap, prev->data, prev->size);
+        return;
+    }
+    const openpete_mod_save_id_t sid = { (uint32_t)sizeof sid, index };
+    const void* data = NULL;
+    uint32_t size = 0;
+    openpete_mods_guard_enter(g->id);
+    const int rc = g->write(g->self, &sid, &data, &size);
+    openpete_mods_guard_leave();
+    if (rc == 0 && (data || !size)) snap_add(sn, g->id, g->schema, 0u, data, size);
+    else if (prev) snap_add(sn, prev->id, prev->schema, prev->gap, prev->data, prev->size);
+}
+
+/** @brief Build the snapshot's records: each registered mod's, then every carried record of a mod not registered in this process (gap set). */
+static void build_records(ms_snap_t* sn, const ms_snap_t* src, uint32_t index) {
+    for (int i = 0; i < openpete_mods_count(); i++) {
+        ms_reg_t* g = reg_of(openpete_mods_id(i));
+        if (g) add_reg_record(sn, g, snap_rec(src, g->id), index);
+    }
+    for (uint32_t k = 0; src && k < src->n_rec; k++)
+        if (!reg_of(src->rec[k].id))
+            snap_add(sn, src->rec[k].id, src->rec[k].schema, 1u, src->rec[k].data, src->rec[k].size);
+}
+
+/** @brief Capture one covered non-empty record after its write. */
+static void capture_record(int slot, uint32_t index, const uint8_t* rec, int flushed) {
+    const openpete_save_desc_t* d = desc();
+    uint8_t lin[16];
+    const ms_snap_t* src = NULL;
+    if (s_blk.key == KEY_SET) {
+        memcpy(lin, s_blk.lineage, 16);
+        src = carry_source();
+    } else {
+        if (s_blk.key == KEY_UNKNOWN && committed())
+            OPL_INFO_F("modsave", "card %d save %u written with the key unknown; new playthrough", slot, index);
+        lineage_fresh(lin);
+    }
+    uint8_t h[32];
+    sha(rec + d->hash_ofs, d->hash_len, h);
+    ms_snap_t* sn = snap_new(h, lin, openpete_mods_modset_tag());
+    if (!sn) return;
+    build_records(sn, src, index);
+    if (!flushed) { snap_free(sn); return; }
+    s_blk.key = KEY_SET;
+    s_blk.key_slot = (uint8_t)slot;
+    s_blk.key_idx = (uint8_t)index;
+    memcpy(s_blk.lineage, lin, 16);
+    memcpy(s_blk.hash, h, 32);
+    s_blk.legacy_len = d->legacy_len;
+    if (d->legacy_len) memcpy(s_blk.legacy, rec + d->legacy_ofs, d->legacy_len);
+    for (int i = 0; i < s_n_regs; i++) {
+        ms_row_t* w = row_of(s_regs[i].id);
+        if (w && reg_active(&s_regs[i])) row_hold(w);
+    }
+    if (committed()) {
+        char a[9], b[9];
+        OPL_INFO_F("modsave", "card %d save %u: snapshot %s lineage %s, %u record%s", slot, index,
+                   hex8(h, a), hex8(lin, b), sn->n_rec, sn->n_rec == 1 ? "" : "s");
+    }
+    host_op(Q_SNAP, slot, (int)index, sn);
+}
+
+/** @brief 1 when @p name is one of the descriptor's save file names. */
+static int is_save_file(const openpete_save_desc_t* d, const char* name) {
+    for (const char* const* n = d->file_names; n && *n; n++)
+        if (!strncmp(*n, name, 20)) return 1;
+    return 0;
+}
+
+void openpete_modsave_card_write(int slot, const char* name, const uint8_t* file,
+                                 size_t file_len, int ofs, int bytes, int flushed) {
+    const openpete_save_desc_t* d = desc();
+    if (!openpete_modsave_armed || !d || d->async_write || slot < 0 || slot >= MS_SLOTS ||
+        !name || !is_save_file(d, name))
+        return;
+    for (uint32_t i = 0; i < n_idx(); i++) {
+        const size_t lo = d->record_base + (size_t)i * d->record_size, hi = lo + d->record_size;
+        if (hi > file_len || (size_t)ofs >= hi || (size_t)ofs + (size_t)bytes <= lo) continue;
+        const uint8_t* rec = file + lo;
+        if (d->is_empty(rec)) {
+            if (flushed) host_op(Q_DROP, slot, (int)i, NULL);
+            continue;
+        }
+        capture_record(slot, i, rec, flushed);
+    }
+}
+
+void openpete_modsave_card_frame_write(int slot, int frame) {
+    static int s_warned[MS_SLOTS];
+    if (!openpete_modsave_armed || slot < 0 || slot >= MS_SLOTS || s_warned[slot] || !committed()) return;
+    s_warned[slot] = 1;
+    OPL_WARN_F("modsave", "card %d: frame %d written outside the file-level entry; a save it "
+               "changed reads STALE at its next load", slot, frame);
+}
+
+void openpete_modsave_card_format(int slot) {
+    if (!openpete_modsave_armed || !desc() || slot < 0 || slot >= MS_SLOTS) return;
+    host_op(Q_FORMAT, slot, 0, NULL);
+}
+
+/* ── registration and init ───────────────────────────────────────────── */
+
+int openpete_modsave_register(openpete_mod_t* self, uint32_t schema,
+                              openpete_mod_save_write_fn write, openpete_mod_save_read_fn read) {
+    const char* id = openpete_mods_id_of(self);
+    if (!id || !write || !read || schema == 0u) return -1;
+    if (!desc()) {
+        OPL_WARN_F("modsave", "%s: save_register refused; this game has no save descriptor", id);
+        return -1;
+    }
+    ms_reg_t* g = reg_of(id);
+    if (!g) {
+        if (s_n_regs == MS_MAX_REGS) return -1;
+        g = &s_regs[s_n_regs++];
+        snprintf(g->id, sizeof g->id, "%s", id);
+    }
+    g->self = self; g->schema = schema; g->write = write; g->read = read;
+    OPL_INFO_F("modsave", "%s: save records registered (schema %u)", id, schema);
+    return 0;
+}
+
+void openpete_modsave_remove_owner(const char* mod_id) {
+    for (int i = 0; i < s_n_regs; i++) {
+        if (strcmp(s_regs[i].id, mod_id)) continue;
+        memmove(&s_regs[i], &s_regs[i + 1], (size_t)(s_n_regs - i - 1) * sizeof s_regs[0]);
+        s_n_regs--;
+        return;
+    }
+}
+
+/** @brief Warn once per function when two or more mods override a save function without save_register. */
+static void dup_override_check(void) {
+    const openpete_save_desc_t* d = desc();
+    if (!d) return;
+    static uint32_t s_warned[8];
+    uint32_t fns[8];
+    size_t nf = 0;
+    if (d->load_fn) fns[nf++] = d->load_fn;
+    if (d->save_create_fn) fns[nf++] = d->save_create_fn;
+    for (size_t f = 0; f < nf; f++) {
+        const char* ids[2] = { NULL, NULL };
+        int n = 0;
+        for (int i = 0; i < openpete_mods_count(); i++) {
+            const char* id = openpete_mods_id(i);
+            if (!id || reg_of(id) || !openpete_mods_chain_has_owner(fns[f], id)) continue;
+            if (n < 2) ids[n] = id;
+            n++;
+        }
+        if (n < 2 || s_warned[f] == fns[f]) continue;
+        s_warned[f] = fns[f];
+        OPL_WARN_F("modsave", "%d mods override the save function at 0x%08X without save "
+                   "records (%s, %s%s); they collide only if more than one stores data in the "
+                   "save's spare bytes", n, fns[f], ids[0], ids[1], n > 2 ? ", ..." : "");
+    }
+}
+
+void openpete_modsave_on_entered(void) { dup_override_check(); }
+
+void openpete_modsave_on_mods_init(void) {
+    if (!s_frozen) {
+        s_frozen = 1;
+        s_n_rows = (uint32_t)openpete_mods_count();
+        s_rows = s_n_rows ? (ms_row_t*)calloc(s_n_rows, sizeof *s_rows) : NULL;
+        if (!s_rows) s_n_rows = 0;
+        for (uint32_t i = 0; i < s_n_rows; i++)
+            snprintf(s_rows[i].id, sizeof s_rows[i].id, "%s", openpete_mods_id((int)i));
+        s_blk.n_rows = s_n_rows;
+    }
+    if (openpete_mods_count() > 0 && desc()) openpete_modsave_armed = 1;
+    dup_override_check();
+}

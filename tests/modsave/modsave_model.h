@@ -5,10 +5,11 @@
  * parameters. The domain is finite (MSM_MAX_* below; the run picks n <= max
  * through msm_config_t) and every value is abstract: a record content is
  * one of MSM_C_*, a mod's arena state one of 0..2, a lineage a (root,
- * counter) pair whose counter the pending-lineage hash advances.
+ * counter) pair; every fresh lineage is a new root (OS entropy minted at
+ * consumption), so the counter stays 0.
  *
  * The rules are the normative "Block and events" table of the save-record
- * design: the key's block (key, pending lineage, generation, legacy copy,
+ * design: the key's block (key, generation, legacy copy,
  * held identity per mod, pending load, pending write entries, and each
  * mod's arena value) rolls back with savestates, rewind and runahead; the
  * sidecar tables, the card images, the speculative queue and the arming
@@ -51,7 +52,7 @@ enum {
     MSM_EV_RESET,        /* new-playthrough reset */
     MSM_EV_WRITE,        /* a slot, b index, c content, d mask of mods whose write returns -1 */
     MSM_EV_WRITE_FAIL,   /* a, b, c - the write's card flush fails */
-    MSM_EV_ISSUE,        /* a, b, c, d - asynchronous write issued; replaces the slot's pending entry */
+    MSM_EV_ISSUE,        /* a, b, c, d - asynchronous write issued; none while the slot's entry is pending */
     MSM_EV_COMPLETE,     /* a slot, b outcome (0 ok, 1 fail, 2 torn) */
     MSM_EV_FILE_CREATE,  /* a slot - one write of empty records over every index */
     MSM_EV_FORMAT,       /* a slot */
@@ -103,6 +104,7 @@ typedef struct { uint8_t state; msm_snaps_t idx[MSM_MAX_IDX]; } msm_table_t;
 
 typedef struct {
     uint8_t   used, captured, fresh, slot, idx, content, tag;
+    uint8_t   en;                  /* mods enabled at issue: they take the held identity at completion */
     uint32_t  gen;
     msm_lin_t lin;                 /* root 0 for an empty-record entry */
     msm_rec_t rec[MSM_MAX_MODS];
@@ -111,7 +113,6 @@ typedef struct {
 typedef struct {
     uint8_t   key, key_slot, key_idx, key_content;
     msm_lin_t key_lin;
-    msm_lin_t pend;
     uint32_t  gen;
     uint8_t   legacy;
     uint8_t   held[MSM_MAX_MODS];  /* 1 when held_lin/held_gen are valid */

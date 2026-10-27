@@ -89,10 +89,12 @@ order, so a library's entry point runs before its clients' regardless of
 where each sits in `enabled.txt`. A cycle or a missing dependency is
 logged and disables the dependent.
 
-**`sim_mutative`.** Whether the mod writes guest RAM. The engine tags a
-memory card with the mutative mods loaded at its first write and warns
-the player before playing that card under a different set; progress is
-never blocked, and `--adopt-saves` re-tags. A mod with no `src/` and no
+**`sim_mutative`.** Whether the mod writes guest RAM. The engine records
+the mutative mods loaded at each save (Spyro 1: per save, in the card's
+`.modsave` file; Spyro 2 and 3: per card, in its `.modset` file) and logs
+a line when a save is loaded under a different set; progress is never
+blocked, and `--adopt-saves` re-tags. Per-save data a mod keeps belongs
+in [save records](save-records.md), not in the save's spare bytes. A mod with no `src/` and no
 `[[level]]` is derived non-mutative. A mod with `src/` is assumed mutative
 unless it sets `sim_mutative = false`. Asset overlays, shaders, `draw_text`,
 `ui_status`, and `notify` never write guest RAM. The obsolete key

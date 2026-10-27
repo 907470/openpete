@@ -40,6 +40,7 @@
 // warmed cache.
 
 #include "openpete_mods.h"
+#include "openpete_modsave.h"
 #include "mod_vec.h"
 #include "openpete_osd.h"
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
@@ -607,6 +608,7 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     mod->ui_always = 0;
     mod->toggle_fn = NULL;
     mod->shutdown_fn = NULL;
+    openpete_modsave_remove_owner(mod->id);
 }
 
 /** @brief Resolve a mod object's UI section descriptor into its ui_body and ui_always fields.
@@ -3218,7 +3220,8 @@ static int api_material_set_selector(openpete_mod_t* self, int material,
     X(int, material_set_params, openpete_mods_material_set_params, -1, (openpete_mod_t* self, int material, const void* block, uint32_t len), (self, material, block, len)) \
     X(int, material_set_selector, api_material_set_selector, -1, (openpete_mod_t* self, int material, const openpete_mod_material_selector_t* sel), (self, material, sel)) \
     X(int, moby_classes, api_moby_classes, -1, (openpete_mod_t* self, uint16_t* out, int cap), (self, out, cap)) \
-    X(int, register_shutdown_hook, api_register_shutdown_hook, -1, (openpete_mod_t* self, openpete_mod_shutdown_fn fn), (self, fn))
+    X(int, register_shutdown_hook, api_register_shutdown_hook, -1, (openpete_mod_t* self, openpete_mod_shutdown_fn fn), (self, fn)) \
+    X(int, save_register, openpete_modsave_register, -1, (openpete_mod_t* self, uint32_t schema, openpete_mod_save_write_fn write, openpete_mod_save_read_fn read), (self, schema, write, read))
 
 /* One gate_<member> per MOD_API_GATED_ENTRIES row. */
 #define MOD_API_GATED(ret, name, impl, refused, params, args)             \
@@ -4877,6 +4880,7 @@ static int mod_run_entry(struct openpete_mod* mod) {
     }
     mod_resolve_ui_section(mod, mod->dl);
     mod->entered = 1;
+    if (s_mods_init_ran) openpete_modsave_on_entered();
     return 0;
 }
 
@@ -6320,7 +6324,11 @@ int openpete_mods_init(const openpete_options_t* opts) {
     mod_fvec refs;
     mod_fvec_init(&refs, sizeof(mod_ref_t), 64, NULL, 0);
     int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, &refs);
-    if (n_refs <= 0) { mod_fvec_free(&refs); return 0; }
+    if (n_refs <= 0) {
+        mod_fvec_free(&refs);
+        openpete_modsave_on_mods_init();
+        return 0;
+    }
 
     char sdk_dir[MOD_PATH_MAX];
     mods_sdk_dir(sdk_dir, sizeof sdk_dir);
@@ -6526,6 +6534,9 @@ int openpete_mods_init(const openpete_options_t* opts) {
     mod_fvec_free(&tc.topo);
     mod_fvec_free(&pending);
     mod_fvec_free(&refs);
+    /* After every boot entry: arms the save records, sizes the key's block
+     * by the parsed mod table and runs the duplicate save-override check. */
+    openpete_modsave_on_mods_init();
     return loaded;
 }
 

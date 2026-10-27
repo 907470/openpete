@@ -147,7 +147,7 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
  * snapshot's park site. Otherwise
  * restores the register prefix, RAM, scratchpad, SPU state, CD cursors
  * and queue, the game-extra blob, VRAM (by row delta), the mod arena and
- * the VBL counter, in that order. A failed SPU restore returns -1 after
+ * the VBL counter, in that order. A failed SPU restore returns -2 after
  * the registers, RAM and scratchpad were already replaced. With @p quiet
  * clear it then runs the game's post-load resync and broadcasts the guest
  * discontinuity.
@@ -158,7 +158,8 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
  *        discontinuity broadcast, and the SPU's ring-out tails keep
  *        playing.
  * @return 0 on success; 1 when the fiber is not parked at the snapshot's
- *         site; -1 on refusal or a failed SPU restore. */
+ *         site; -1 on refusal, restoring nothing; -2 on a failed SPU
+ *         restore (a partial restore). */
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);
 

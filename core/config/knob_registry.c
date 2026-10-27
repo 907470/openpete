@@ -13,6 +13,7 @@
 
 #include "openpete_knobs.h"
 #include "openpete_osd.h"
+#include "openpete_memcard.h"
 #include "openpete_workpool.h"
 #include "openpete_terrain_cache.h"
 #include "openpete_disc_cache.h"
@@ -739,6 +740,14 @@ static double nocard1_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_
 static double nocard2_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_b_present) ? 1.0 : 0.0; }
 /** @brief 1 when --card-unformatted was given, else 0. */
 static double cardunf_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->card_unformatted : 0.0; }
+/** @brief 1 when the save-mismatch toast is on, else 0; the backing flag is seeded from the options at boot. */
+static double mismatch_toast_get(const knob_desc_t *k) { (void)k; return openpete_memcard_mismatch_toast() ? 1.0 : 0.0; }
+/** @brief Turn the save-mismatch toast on or off from `v` (nonzero enables). */
+static int mismatch_toast_set(knob_desc_t *k, double v) {
+    openpete_memcard_set_mismatch_toast(v != 0.0);
+    k->stored_num = (v != 0.0);
+    return 0;
+}
 /** @brief 1 when --adopt-saves was given, else 0. */
 static double adopt_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->adopt_saves : 0.0; }
 /** @brief The parsed --bk2-frame-offset value. */
@@ -1789,16 +1798,26 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = NULL, .help_order = 450,
       .help_text = "provision a blank unformatted card so the in-game format screen runs" },
 
+    { "save_mismatch_toast", "Save mismatch toast", "Paths", "--save-mismatch-toast", NULL,
+      "An on-screen notification when a loaded save was written under a "
+      "different set of mods. The log line is written either way.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      mismatch_toast_get, mismatch_toast_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "off",
+      .help_arg = "on|off", .help_order = 455,
+      .help_text = "toast when a loaded save was written under different mods (default {def});\n"
+          "the log line is written either way" },
+
     { "adopt_saves", "Adopt saves", "Paths", "--adopt-saves", NULL,
-      "Re-tag the memory-card saves to the running modset; a save written "
-      "under another modset warns on load until adopted.",
+      "Re-tag the memory-card saves to the running modset at the card's first "
+      "use: each save on Spyro 1, the card on Spyro 2 and 3.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       adopt_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
       .cli_only = 1,
       .help_arg = NULL, .help_order = 460,
-      .help_text = "re-tag memory-card saves to the RUNNING modset (save safety: a card played\n"
-          "under a different modset warns on load until explicitly adopted)" },
+      .help_text = "re-tag memory-card saves to the running modset at the card's first use\n"
+          "(each save on Spyro 1, the card on Spyro 2 and 3)" },
 
     /* -------- Gameplay entry -------- */
     { "skip_to_level", "Skip to level", "Gameplay", "--skip-to-level", NULL,

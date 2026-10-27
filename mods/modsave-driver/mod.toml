@@ -23,7 +23,7 @@ key = "actions"
 type = "string"
 default = ""
 label = "Actions"
-help = "Comma-separated op:index@count, op one of save, load, badload; count is this mod's stock GamestateUpdate count, e.g. save:1@600,load:1@900"
+help = "Comma-separated op:index@count, op one of save, load, badload, newgame, newkeep, leave (count unused: the update that leaves g_Gamestate 0); count is this mod's GamestateUpdate count, e.g. save:1@600,load:1@900"
 
 [[config]]
 key = "port"

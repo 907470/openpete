@@ -122,9 +122,10 @@ void game_on_state_loaded(CPUState* cpu);
  * The payload is per-game host state that travels with every snapshot but
  * is not guest RAM: the shared thunk layer's latch pack, and on Spyro 1
  * also the WAD-overlay disc cursor the guest's next mod-asset read depends
- * on, the active-overlay id, and the level-warp state machine. The size
- * is fixed per game build and may be 0 (0 for a descriptor without the
- * hook); core writes and reads
+ * on, the active-overlay id, and the level-warp state machine. Core
+ * appends the per-mod save-record block as a trailer (block, length,
+ * magic) and strips it before the game's loader sees the payload. The
+ * size is fixed per process once mods init ran; core writes and reads
  * the payload as an opaque section through game_state_extra_save and
  * game_state_extra_load. The file loader calls game_state_extra_load after
  * game_on_state_loaded, the in-memory loader before it.

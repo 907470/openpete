@@ -18,7 +18,9 @@ and on the reference state, invariants written apart from both models:
   I2  after a tick, every active mod's held identity equals the current
       identity (a read fires whenever they differ, and a write leaves
       none pending), except after a reset or a load binding, whose new
-      identity the next tick's delivery arm serves;
+      identity the next tick's delivery arm serves, and after a write
+      completion, where only the mods enabled at its issue take the new
+      identity;
   I3  at most one read per mod per tick;
   I4  the card image changes only by the game's own writes, a restore of
       led writes, a process restart (the image is unread until first
@@ -254,7 +256,7 @@ EXPECT = {
     "carry": ("GAP", "NEWER", "L:refuse-newer"),
     "eviction": ("evict", "OK", "ABSENT"),
     "legacy": ("LEGACY_PAD", "STALE", "L:carry-from-newest"),
-    "ports": ("L:multimatch-dropped", "L:rebind-unknown", "L:mismatch"),
+    "ports": ("L:multimatch-lowest", "L:mismatch"),
     "timeline": ("OK", "ABSENT", "L:write-key-unknown"),
     "runahead": ("snap", "L:adoption-flush-failed", "STALE"),
     "async": ("drop", "OK", "ABSENT"),
@@ -283,11 +285,13 @@ class Truth:
         return t
 
 
-def _held_ok(s):
+def _held_ok(s, mods=None):
+    """Every active mod (or every mod in @p mods) holds the current identity."""
     cur = M.current_identity(s.blk)
     if cur is None or not s.armed:
         return True
-    return all(s.blk.held[m] == cur for m in range(s.cfg.n_mods) if M.active(s, m))
+    want = mods if mods is not None else [m for m in range(s.cfg.n_mods) if M.active(s, m)]
+    return all(s.blk.held[m] == cur for m in want)
 
 
 def _card_change_ok(ev, before, after):
@@ -390,8 +394,13 @@ def check_edge(ev, before, after, fx, t_before, t_after):
     reads = [x for x in fx if x.startswith("R")]
     if reads and not M.is_tick(ev):
         bad.append(f"I1 read on host event: {reads}")
-    if M.is_tick(ev) and ev[0] not in ("RESET", "LOAD", "LOAD_STALE") and not _held_ok(after):
+    if M.is_tick(ev) and ev[0] not in ("RESET", "LOAD", "LOAD_STALE", "COMPLETE") and not _held_ok(after):
         bad.append("I2 held identity differs from current after a tick")
+    if ev[0] == "COMPLETE" and ev[2] == "ok":
+        e = before.blk.entries[ev[1]]
+        if e is not None and e.captured and e.lin is not None and e.gen == after.blk.gen \
+                and not _held_ok(after, e.en):
+            bad.append("I2 a mod enabled at issue does not hold the completed write's identity")
     mods = Counter(x[1] for x in reads)
     if any(n > 1 for n in mods.values()):
         bad.append(f"I3 two reads for one mod in a tick: {reads}")
@@ -445,19 +454,23 @@ def _fresh(after, ev, t):
 # least once, counted by edge_marks().
 ENGAGE = {
     "legacy": ("edit-before-first-access",),
-    "async": ("issue-replaces-pending",),
+    "async": ("toggle-while-pending", "torn-completion"),
 }
 
 
 def edge_marks(ev, before):
     """The ENGAGE marks one edge earns: an outside edit of a card file the
     process has not read yet (its first access must see it), an issue
-    replacing a pending entry."""
+    a mod toggled while a write entry is pending (the enabled set at issue
+    governs its completion), a completion whose record fails the checksum
+    verdict."""
     marks = []
     if ev[0] == "EDIT" and not before.mounted[ev[1]]:
         marks.append("edit-before-first-access")
-    if ev[0] == "ISSUE" and before.blk.entries[ev[1]] is not None:
-        marks.append("issue-replaces-pending")
+    if ev[0] == "TOGGLE" and any(e is not None for e in before.blk.entries):
+        marks.append("toggle-while-pending")
+    if ev[0] == "COMPLETE" and ev[2] == "torn" and before.blk.entries[ev[1]] is not None:
+        marks.append("torn-completion")
     return marks
 
 

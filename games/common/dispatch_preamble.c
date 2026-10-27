@@ -4,6 +4,7 @@
 #include "dispatch_preamble.h"
 #include "freecam_game.h"
 #include "openpete_mods.h"
+#include "openpete_modsave.h"
 #include "psyq/psyq_game_hooks.h"
 #include "renderer/player_hide.h"
 #include "spyro_overlay_table.h"
@@ -22,6 +23,10 @@ int game_dispatch_preamble(CPUState* cpu, uint32_t addr,
     if (verdict) verdict(cpu, addr);
     if (write_census_active() && !openpete_mods_bypass_pending(addr))
         write_census_note_entry(addr);
+    /* Per-mod save records: the new-playthrough reset, load-binding and
+     * delivery observers, above the mods arm so they act at a function's
+     * first entry before any override. One flag test while unarmed. */
+    if (openpete_modsave_armed) openpete_modsave_dispatch(cpu, addr);
     /* One global-flag branch when no mods are loaded. Not trace-scoped:
      * this arm runs on every translated-function entry. */
     if (openpete_mods_active && openpete_mods_dispatch(cpu, addr)) return 1;

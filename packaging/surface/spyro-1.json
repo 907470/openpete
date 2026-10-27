@@ -1,5 +1,5 @@
 {
- "source_sha": "8770c57c32fd70c37044635acd245af22d782da7",
+ "source_sha": "04df35923208a9a220c747f84ee5467ec41b9c31",
  "format": 1,
  "game": "spyro-1",
  "entries": [
@@ -555,6 +555,32 @@
    "default_note": null
   },
   {
+   "id": "knob:hide_player",
+   "flag": "--hide-player",
+   "env": null,
+   "config_key": "hide_player",
+   "schema_type": "bool",
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Display",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--hide-player",
+   "flag": "--hide-player",
+   "takes_arg": "required",
+   "knob": "hide_player",
+   "build_cond": null,
+   "def": "0",
+   "default_note": null
+  },
+  {
    "id": "knob:texture_mapping",
    "flag": "--texture-mapping",
    "env": null,
@@ -649,7 +675,7 @@
    "build_cond": null,
    "cli_only": false,
    "def": null,
-   "default_note": "1, or 100 under --lod extended",
+   "default_note": "1",
    "game": "core"
   },
   {
@@ -659,7 +685,7 @@
    "knob": "fog_scale",
    "build_cond": null,
    "def": null,
-   "default_note": "1, or 100 under --lod extended"
+   "default_note": "1"
   },
   {
    "id": "knob:renderer",
@@ -793,6 +819,32 @@
    "build_cond": null,
    "def": null,
    "default_note": "the game window's size and state (--window)"
+  },
+  {
+   "id": "knob:render_paths",
+   "flag": "--render-paths",
+   "env": null,
+   "config_key": "render_paths",
+   "schema_type": "string",
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Display",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "every path",
+   "game": "core"
+  },
+  {
+   "id": "flag:--render-paths",
+   "flag": "--render-paths",
+   "takes_arg": "required",
+   "knob": "render_paths",
+   "build_cond": null,
+   "def": null,
+   "default_note": "every path"
   },
   {
    "id": "knob:render_fps",
@@ -1721,6 +1773,32 @@
    "default_note": null
   },
   {
+   "id": "knob:save_mismatch_toast",
+   "flag": "--save-mismatch-toast",
+   "env": null,
+   "config_key": "save_mismatch_toast",
+   "schema_type": "bool",
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Paths",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "off",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--save-mismatch-toast",
+   "flag": "--save-mismatch-toast",
+   "takes_arg": "required",
+   "knob": "save_mismatch_toast",
+   "build_cond": null,
+   "def": "off",
+   "default_note": null
+  },
+  {
    "id": "knob:adopt_saves",
    "flag": "--adopt-saves",
    "env": null,
@@ -2325,32 +2403,6 @@
    "default_note": null
   },
   {
-   "id": "knob:render_paths",
-   "flag": "--render-paths",
-   "env": null,
-   "config_key": "render_paths",
-   "schema_type": "string",
-   "vocab": [],
-   "aliases": [],
-   "type": "string",
-   "section": "Display",
-   "block": "release",
-   "build_cond": null,
-   "cli_only": false,
-   "def": null,
-   "default_note": "every path",
-   "game": "core"
-  },
-  {
-   "id": "flag:--render-paths",
-   "flag": "--render-paths",
-   "takes_arg": "required",
-   "knob": "render_paths",
-   "build_cond": null,
-   "def": null,
-   "default_note": "every path"
-  },
-  {
    "id": "knob:log_level",
    "flag": "--log-level",
    "env": "OPENPETE_LOG",
@@ -2400,6 +2452,58 @@
    "knob": "psycross_native_raster",
    "build_cond": null,
    "def": "0",
+   "default_note": null
+  },
+  {
+   "id": "knob:hide_hud",
+   "flag": "--hide-hud",
+   "env": "OPENPETE_HIDE_HUD",
+   "config_key": "hide_hud",
+   "schema_type": "bool",
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--hide-hud",
+   "flag": "--hide-hud",
+   "takes_arg": "required",
+   "knob": "hide_hud",
+   "build_cond": null,
+   "def": "0",
+   "default_note": null
+  },
+  {
+   "id": "knob:hide_classes",
+   "flag": "--hide-classes",
+   "env": "OPENPETE_HIDE_CLASSES",
+   "config_key": "hide_classes",
+   "schema_type": "string",
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--hide-classes",
+   "flag": "--hide-classes",
+   "takes_arg": "required",
+   "knob": "hide_classes",
+   "build_cond": null,
+   "def": null,
    "default_note": null
   },
   {
@@ -2486,6 +2590,91 @@
    "id": "knob:HEADLESS_NATIVE",
    "flag": null,
    "env": "OPENPETE_HEADLESS_NATIVE",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:D1",
+   "flag": null,
+   "env": "OPENPETE_D1",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:VIDEO_NOSPARX",
+   "flag": null,
+   "env": "OPENPETE_VIDEO_NOSPARX",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:VIDEO_OPEN_PANIM",
+   "flag": null,
+   "env": "OPENPETE_VIDEO_OPEN_PANIM",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:VIDEO_HOME_PANIM",
+   "flag": null,
+   "env": "OPENPETE_VIDEO_HOME_PANIM",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:VIDEO_ZOE_NEAR",
+   "flag": null,
+   "env": "OPENPETE_VIDEO_ZOE_NEAR",
    "config_key": null,
    "schema_type": null,
    "vocab": [],
@@ -4527,6 +4716,23 @@
    "id": "knob:MOBY_FACE_KEY",
    "flag": null,
    "env": "OPENPETE_MOBY_FACE_KEY",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:MOBY_SNAP",
+   "flag": null,
+   "env": "OPENPETE_MOBY_SNAP",
    "config_key": null,
    "schema_type": null,
    "vocab": [],
@@ -8128,8 +8334,8 @@
  ],
  "selfcheck": {
   "flag": {
-   "checked": 44,
-   "unchecked": 34,
+   "checked": 47,
+   "unchecked": 35,
    "failed": 0
   },
   "switch": {
@@ -8144,7 +8350,7 @@
   },
   "env": {
    "checked": 0,
-   "unchecked": 195,
+   "unchecked": 201,
    "failed": 0
   },
   "failures": []

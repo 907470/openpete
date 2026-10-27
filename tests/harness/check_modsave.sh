@@ -28,11 +28,13 @@
 # decode (exit 2 from the hang watchdog), fixture B locks. With the api the
 # same pair forced onto the pad path is the legacy-collision row: A no
 # longer carries the freeze path, so the leg must lock without a freeze. The
-# api legs need the engine's save records; without the api each is reported
-# SKIP with the engine piece it waits on, and with the api a leg this
-# script does not yet implement is reported FAIL (not built), never PASS.
+# api legs need the engine's save records: without them every api leg
+# fails (no read line, no sidecar). Rows no headless run can reach are
+# reported CARVE-OUT with the reason.
 #
-# Usage: tests/harness/check_modsave.sh [--section record|repair|driver|api|calibrate|all]
+# Usage: tests/harness/check_modsave.sh [--section record|repair|driver|api|more|calibrate|all]
+#        (more: the api legs past the first save and load chain; needs the
+#        a_s_ab leg of an earlier run in MODSAVE_WORK)
 #        (repo root or anywhere; default all except calibrate)
 #   --calibrate   seeded faults: each must make its check fail (LAW §13)
 # Env:   OPENPETE_BIN / OPENPETE_DISC as for every pg_capture harness;
@@ -55,11 +57,11 @@ for a in "$@"; do
         --section=*) SECTION="${a#--section=}" ;;
         --calibrate) SECTION="calibrate" ;;
         --section) ;;
-        record|repair|driver|api|calibrate|all) SECTION="$a" ;;
+        record|repair|driver|api|more|calibrate|all) SECTION="$a" ;;
         *) echo "check_modsave: unknown argument $a" >&2; exit 64 ;;
     esac
 done
-case "$SECTION" in default|record|repair|driver|api|calibrate|all) ;;
+case "$SECTION" in default|record|repair|driver|api|more|calibrate|all) ;;
     *) echo "check_modsave: unknown section $SECTION" >&2; exit 64 ;; esac
 on() { [ "$SECTION" = "$1" ] || { [ "$SECTION" = default ] && [ "$1" != calibrate ]; } ||
        { [ "$SECTION" = all ]; }; }
@@ -82,11 +84,12 @@ else
     trap 'rm -rf "${WORK:?}"' EXIT
 fi
 
-n_pass=0; n_fail=0; n_skip=0
+n_pass=0; n_fail=0; n_skip=0; n_carve=0
 say()  { printf '\n[modsave] %s\n' "$*"; }
 pass() { printf '[modsave]   PASS: %s\n' "$*"; n_pass=$((n_pass + 1)); }
 fail() { printf '[modsave]   FAIL: %s\n' "$*"; n_fail=$((n_fail + 1)); }
 skip() { printf '[modsave]   SKIP: %s\n' "$*"; n_skip=$((n_skip + 1)); }
+carve(){ printf '[modsave]   CARVE-OUT: %s\n' "$*"; n_carve=$((n_carve + 1)); }
 check() { # check <description> <command...>: PASS when the command exits 0
     local d="$1"; shift
     if "$@" >"$WORK/check.out" 2>&1; then pass "$d: $(tail -1 "$WORK/check.out")"
@@ -113,16 +116,44 @@ leg() {
     [ -n "${CFG_DRV:-}" ] && printf '%s\n' "$CFG_DRV" > "$d/mods/modsave-driver/config.toml"
     for m in "$@"; do echo "$m" >> "$d/mods/enabled.txt"; done
     [ "$card" != "-" ] && cp "$card" "$d/card1.mcr"
+    # The save records travel with the card: a chained leg starts from the
+    # sidecar the leg that wrote its card left (SIDECAR=- starts without).
+    local sc="${SIDECAR:-$card.modsave}"
+    [ "$card" != "-" ] && [ "$sc" != "-" ] && [ -f "$sc" ] && cp "$sc" "$d/card1.mcr.modsave"
     local -a PG_CAPTURE_ENV=(OPENPETE_HANG_STALL_SECONDS=10)
+    [ -n "${EXTRA_ENV:-}" ] && PG_CAPTURE_ENV+=($EXTRA_ENV)
+    local -a bkarg=(--bk2 "$BK2_DIR/$bk.bk2")
+    [ "$bk" = "-" ] && bkarg=()
+    local -a extra=()
+    [ -n "${EXTRA_ARGS:-}" ] && extra=($EXTRA_ARGS)
     local PG_CAPTURE_TIMEOUT=300
     # pg_capture deletes the outputs it is given before the run, so the card
     # is named an output only when the leg starts without one.
     local outs=""
     [ "$card" = "-" ] && outs="$d/card1.mcr"
+    # CARD2=<image> mounts a copy in slot 2; CARD_ARGS replaces both card
+    # flags (a leg that names another leg's card files).
+    local -a cards=(--card1 "$d/card1.mcr" --no-card2)
+    if [ -n "${CARD2:-}" ]; then
+        cp "$CARD2" "$d/card2.mcr"
+        cards=(--card1 "$d/card1.mcr" --card2 "$d/card2.mcr")
+    fi
+    [ -n "${CARD_ARGS:-}" ] && cards=($CARD_ARGS)
+    # DURING_WAIT/DURING_CMD: once the log holds DURING_WAIT, run DURING_CMD
+    # while the game runs (an edit the hot reload watches).
+    local during=""
+    if [ -n "${DURING_WAIT:-}" ]; then
+        ( for _ in $(seq 1 600); do
+              grep -q -- "$DURING_WAIT" "$d/log.txt" 2>/dev/null && { eval "$DURING_CMD"; break; }
+              sleep 0.5
+          done ) &
+        during=$!
+    fi
     pg_capture "$d/log.txt" "$outs" -- --mute 1 --mods-dir "$d/mods" \
-        --bk2 "$BK2_DIR/$bk.bk2" --card1 "$d/card1.mcr" --no-card2 --no-log-file \
-        --frame-limit "$frames"
+        "${bkarg[@]}" "${cards[@]}" --no-log-file \
+        --frame-limit "$frames" "${extra[@]}"
     echo $? > "$d/rc"
+    [ -n "$during" ] && wait "$during"
     [ -f "$d/card1.mcr" ] || echo "check_modsave: leg $tag left no card" >&2
 }
 rc_of()    { cat "$WORK/$1/rc" 2>/dev/null || echo none; }
@@ -134,6 +165,7 @@ count_of() { # last stock count the probe logged, 0 when none
 has()      { grep -q -- "$2" "$WORK/$1/log.txt"; }
 froze()    { [ "$(rc_of "$1")" = 2 ] && has "$1" 'watchdog: hang detected'; }
 eq()       { [ "$1" = "$2" ] && echo "$1 == $2" || { echo "$1 != $2"; return 1; }; }
+eqnz()     { [ -n "$1" ] || { echo "empty value (no instrument line)"; return 1; }; eq "$1" "$2"; }
 lt()       { [ "$1" -lt "$2" ] && echo "$1 < $2" || { echo "$1 >= $2"; return 1; }; }
 not_froze(){ if froze "$1"; then echo "froze (exit 2, watchdog)"; return 1; fi; echo "exit $(rc_of "$1"), no hang"; }
 yes_froze(){ if froze "$1"; then echo "exit 2, watchdog hang"; return 0; fi; echo "exit $(rc_of "$1"), no hang"; return 1; }
@@ -258,48 +290,299 @@ section_driver() {
 }
 
 # ── api: legs that need the save-record engine ────────────────────────────
-API_LEGS=(
-    "api pair: A only / B only / both in each order / A then B (statuses and payload hashes)"
-    "api pair: mod removed then re-added (GAP)"
-    "api pair: downgrade (NEWER)"
-    "api pair: card swapped for an older copy (older snapshot's records)"
-    "api pair: record edited outside openpete with its checksum fixed (STALE)"
-    "api pair: New Game over a used slot (fresh lineage, no carried records)"
-    "api pair: New Game, save, B toggled off, save again (B reads GAP)"
-    "api pair: older card restored, save with a mod disabled (carried payload equals the older snapshot's)"
-    "api: every api leg's card byte-identical to the baseline-mode card, snapshots written > 0"
-    "legacy: two legacy-forced fixtures raise the duplicate-override warning"
-    "legacy: one legacy and one api fixture, save then load (legacy reads its own pad)"
-    "legacy: LEGACY_PAD import (own magic, foreign magic, zero)"
-    "runahead: a save inside a runahead window (suppressed-flush line, one snapshot, card equals --runahead 0)"
-    "runahead: read-back in the write tick and the tick before"
-    "runahead: adoption of a save on the tick g_Gamestate leaves 0 (one snapshot, save on disk)"
-    "rewind across a fixture-driven save (one snapshot)"
-    "savestate file loaded in a new process (no read, arena from the state)"
-    "delivery: load 1, New Game (ABSENT); load 1, disable, load 2, enable (reads 2); New Game disabled then enable (ABSENT)"
-    "delivery: Quit Game and reload the same save (read again); New Game twice (ABSENT twice)"
-    "delivery: New Game, save, disable, save, enable (no read); hot reload mid-save (no read)"
-    "delivery: savestate from save 1 loaded on save 2 (no read); intro's second clear (second ABSENT)"
-    "delivery: a load inside an adopted runahead window (read on the next tick); load 1 then a driven write to index 2 (no read)"
-    "delivery: a savestate blob older than the key's block (key unknown, no read)"
-    "hooks: attract-demo clear (ABSENT); one card image in both ports (multi-match from g_FairyCutscene)"
-    "hooks: driven SaveLoad of a checksum-failed record (no read, key unchanged)"
-    "hooks: file create over a card whose .modsave outlived its file (snapshots dropped)"
-    "hooks: handoff (key, held identities and arena carried, no read); savestate with --card1/--card2 swapped (rebind)"
-    "faults: failed adoption flush; partial rollback restore; sidecar write failure; unparseable sidecar"
-    "hooks: snapshot eviction across two lineages; write returning -1; mod upgrade; deferred first entry"
-    "hooks: savestate with no game-extra section; LEGACY_PAD with a zero pad"
-)
+# Instrument: the fixtures' "read status <S> index <i> ... data <fnv>" and
+# "write index <i> ... data <fnv>" lines, the sidecar dump
+# (modsave_card.py modsave), and the card bytes. Without the engine the
+# fixtures in auto mode take the pad path, so every leg below fails: no read
+# line, no sidecar.
+reads()    { grep -o "$2: read status [A-Z_]* index [0-9]*" "$WORK/$1/log.txt" | awk '{print $4}' | tr '\n' ' ' | sed 's/ $//'; }
+reads_eq() { local got; got="$(reads "$1" "$2")"; [ "$got" = "$3" ] && echo "$2 reads [$got]" || { echo "$2 reads [$got], want [$3]"; return 1; }; }
+last_write(){ grep -o "$2: write index [0-9]* value [0-9]* data [0-9a-f]*" "$WORK/$1/log.txt" | tail -1 | awk '{print $NF}'; }
+last_read_data(){ grep -o "$2: read status [A-Z_]* index [0-9]* schema [0-9]* size [0-9]* data [0-9a-f]*" "$WORK/$1/log.txt" | tail -1 | awk '{print $NF}'; }
+snapdump() { python3 "$CARD_PY" modsave "$WORK/$1/card1.mcr.modsave"; }
+snaps_at() { snapdump "$1" 2>/dev/null | grep -c "^index $2 "; }
+newest_rec(){ # newest_rec <tag> <index> <mod>: schema:gap:size:fnv of that mod's record, or none
+    snapdump "$1" 2>/dev/null | grep "^index $2 snap 0 " | grep -o "$3:[0-9]*:[0-9]*:[0-9]*:[0-9a-f]*" | cut -d: -f2- || true; }
+has_sidecar(){ [ -f "$WORK/$1/card1.mcr.modsave" ] && python3 "$CARD_PY" snapshots "$WORK/$1/card1.mcr.modsave"; }
+same_base(){ python3 "$CARD_PY" same "$WORK/s_base/card1.mcr" "$WORK/$1/card1.mcr"; }
+
+need_base() {
+    [ -f "$WORK/s_base/card1.mcr" ] && return 0
+    CFG_A='mode = "baseline"' CFG_B='mode = "baseline"' leg s_base fairy-save - "$SAVE_FRAMES" "$P" "$A" "$B"
+}
+
 section_api() {
-    say "api legs (save-record engine)"
-    local l
-    for l in "${API_LEGS[@]}"; do
-        if [ "$HAVE_API" = 0 ]; then
-            skip "$l [needs the save-record api: save_register, the .modsave sidecar and the key's block]"
-        else
-            fail "$l [the engine has the save-record api; this leg is not built yet]"
-        fi
+    need_reference
+    need_base
+    local t
+    say "api save legs: fairy-save.bk2 with the fixtures on the save-record api"
+    leg a_s_ab fairy-save - "$SAVE_FRAMES" "$P" "$A" "$B"
+    leg a_s_a fairy-save - "$SAVE_FRAMES" "$P" "$A"
+    for t in a_s_ab a_s_a; do
+        check "$t card byte-identical to the baseline-mode card (the card is never modified)" same_base "$t"
+        check "$t sidecar written, snapshots > 0" has_sidecar "$t"
+        check "$t replays the recording (probe count)" eq "$(count_of $t)" "$N_SAVE"
     done
+    # Each func_8001277C clear on the way to New Game (the title's card
+    # paths, its file create, New Game) delivers one ABSENT; the save
+    # delivers nothing.
+    check "a_s_ab A: ABSENT per new-playthrough clear, no other read" reads_eq a_s_ab "$A" "ABSENT ABSENT ABSENT"
+    check "a_s_ab B: ABSENT per new-playthrough clear, no other read" reads_eq a_s_ab "$B" "ABSENT ABSENT ABSENT"
+    check "a_s_ab A record at save 0 holds A's write" eqnz "$(newest_rec a_s_ab 0 "$A" | cut -d: -f4)" "$(last_write a_s_ab "$A")"
+    check "a_s_ab B record at save 0 holds B's write" eqnz "$(newest_rec a_s_ab 0 "$B" | cut -d: -f4)" "$(last_write a_s_ab "$B")"
+    check "a_s_ab one snapshot at save 0, none at 1 and 2 (empty records)" \
+        eq "$(snaps_at a_s_ab 0)/$(snaps_at a_s_ab 1)/$(snaps_at a_s_ab 2)" "1/0/0"
+
+    say "api load legs, chained on the api save legs' cards and sidecars"
+    leg a_l_ab load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B"
+    check "a_l_ab A reads OK" reads_eq a_l_ab "$A" "OK"
+    check "a_l_ab B reads OK" reads_eq a_l_ab "$B" "OK"
+    check "a_l_ab A reads the payload it wrote" eqnz "$(last_read_data a_l_ab "$A")" "$(last_write a_s_ab "$A")"
+    check "a_l_ab B reads the payload it wrote" eqnz "$(last_read_data a_l_ab "$B")" "$(last_write a_s_ab "$B")"
+    check "a_l_ab replays the recording (probe count)" eq "$(count_of a_l_ab)" "$N_LOAD"
+    check "a_l_ab card unchanged by a load" python3 "$CARD_PY" same "$WORK/a_s_ab/card1.mcr" "$WORK/a_l_ab/card1.mcr"
+    leg a_l_a_b load-title "$WORK/a_s_a/card1.mcr" "$LOAD_FRAMES" "$P" "$B"
+    check "a_l_a_b (A then B): B reads ABSENT" reads_eq a_l_a_b "$B" "ABSENT"
+    leg a_l_ba load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$B" "$A"
+    check "a_l_ba (other load order): A OK, B OK" bash -c "[ \"\$(grep -c '$A: read status OK' '$WORK/a_l_ba/log.txt')\" = 1 ] && [ \"\$(grep -c '$B: read status OK' '$WORK/a_l_ba/log.txt')\" = 1 ] && echo 'one OK each'"
+
+    say "GAP: A's record carried while A is not loaded, read back as GAP"
+    CFG_DRV='actions = "save:0@1600"' leg a_gap1 load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$B" "$DRV"
+    check "a_gap1 driver save reached the card" logged a_gap1 "$DRV: save 0 at 1600 rc 0"
+    check "a_gap1 A's record carried with gap set (same bytes)" \
+        eqnz "$(newest_rec a_gap1 0 "$A" | cut -d: -f2,4)" "1:$(last_write a_s_ab "$A")"
+    check "a_gap1 two snapshots at save 0 (one lineage)" eq "$(snaps_at a_gap1 0)" 2
+    leg a_gap2 load-title "$WORK/a_gap1/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B"
+    check "a_gap2 A reads GAP with its last payload" reads_eq a_gap2 "$A" "GAP"
+    check "a_gap2 A's GAP payload is its own write" eqnz "$(last_read_data a_gap2 "$A")" "$(last_write a_s_ab "$A")"
+    check "a_gap2 B reads OK" reads_eq a_gap2 "$B" "OK"
+
+    say "card swapped for an older copy: the older snapshot's records"
+    SIDECAR="$WORK/a_gap1/card1.mcr.modsave" leg a_old load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B"
+    check "a_old A reads OK (the older snapshot, no gap)" reads_eq a_old "$A" "OK"
+    check "a_old B reads the older snapshot's payload" eqnz "$(last_read_data a_old "$B")" "$(last_write a_s_ab "$B")"
+    SIDECAR="$WORK/a_gap1/card1.mcr.modsave" CFG_DRV='actions = "save:0@1600"' \
+        leg a_old_save load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_old_save B's carried payload equals the older snapshot's" \
+        eqnz "$(newest_rec a_old_save 0 "$B" | cut -d: -f4)" "$(last_write a_s_ab "$B")"
+
+    say "NEWER: a schema-2 record read and kept by a schema-1 mod"
+    CFG_A='schema = 2' CFG_DRV='actions = "save:0@1600"' leg a_up load-title "$WORK/a_s_a/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_up record schema 2" eqnz "$(newest_rec a_up 0 "$A" | cut -d: -f1)" 2
+    CFG_DRV='actions = "save:0@1600"' leg a_down load-title "$WORK/a_up/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_down A reads NEWER" reads_eq a_down "$A" "NEWER"
+    check "a_down refusal logged" logged a_down "schema 1 refused to overwrite"
+    check "a_down stored record keeps schema 2" eqnz "$(newest_rec a_down 0 "$A" | cut -d: -f1)" 2
+
+    say "STALE: the record edited outside openpete with its checksum fixed"
+    python3 "$CARD_PY" edit "$WORK/a_s_ab/card1.mcr" "$WORK/stale.mcr" 0 0x58B >/dev/null
+    SIDECAR="$WORK/a_s_ab/card1.mcr.modsave" leg a_stale load-title "$WORK/stale.mcr" "$LOAD_FRAMES" "$P" "$A" "$B"
+    check "a_stale A reads STALE" reads_eq a_stale "$A" "STALE"
+    check "a_stale B reads STALE with its newest payload" eqnz "$(last_read_data a_stale "$B")" "$(last_write a_s_ab "$B")"
+
+    say "legacy: pad fixtures beside the api"
+    [ -f "$WORK/s_a/card1.mcr" ] || CFG_A="$LEGACY_A" leg s_a fairy-save - "$SAVE_FRAMES" "$P" "$A"
+    CFG_A="$LEGACY_A" CFG_B="$LEGACY_B" leg a_dup fairy-save - "$SAVE_FRAMES" "$P" "$A" "$B"
+    check "a_dup duplicate-override warning" logged a_dup "override the save function at 0x80059594 without save records"
+    CFG_A="$LEGACY_A" leg a_mix_s fairy-save - "$SAVE_FRAMES" "$P" "$A" "$B"
+    CFG_A="$LEGACY_A" leg a_mix_l load-title "$WORK/a_mix_s/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B"
+    check "a_mix_l legacy A reads its own pad" logged a_mix_l "$A: save_load gs 13 rc 1 pad own"
+    check "a_mix_l api B reads OK" reads_eq a_mix_l "$B" "OK"
+    SIDECAR=- leg a_lp_own load-title "$WORK/s_a/card1.mcr" "$LOAD_FRAMES" "$P" "$A"
+    check "a_lp_own A reads LEGACY_PAD (its PRND pad)" reads_eq a_lp_own "$A" "LEGACY_PAD"
+    check "a_lp_own A imports a non-zero value" bash -c "grep -q '$A: read status LEGACY_PAD.* value [1-9]' '$WORK/a_lp_own/log.txt' && echo imported"
+    SIDECAR=- leg a_lp_foreign load-title "$WORK/s_a/card1.mcr" "$LOAD_FRAMES" "$P" "$B"
+    check "a_lp_foreign B reads LEGACY_PAD (A's pad), value 0" bash -c "grep -q '$B: read status LEGACY_PAD.* value 0 ' '$WORK/a_lp_foreign/log.txt' && echo 'foreign, value 0'"
+    check "a_lp_foreign B reports no damage" bash -c "! grep -q 'damaged' '$WORK/a_lp_foreign/log.txt' && echo 'no damaged line'"
+    SIDECAR=- leg a_lp_zero load-title "$WORK/s0/card1.mcr" "$LOAD_FRAMES" "$P" "$A"
+    check "a_lp_zero A reads ABSENT (zero pad)" reads_eq a_lp_zero "$A" "ABSENT"
+
+    say "delivery: driven reloads, a checksum-failed load, write to another index"
+    # The write comes before the checksum-failed load: SaveLoad copies the
+    # flipped m_LevelsVisited[0] before its verdict fails, after which a
+    # SaveCreate record is empty.
+    CFG_DRV='actions = "load:0@1600,load:0@1700,save:1@1750,badload:0@1800"' \
+        leg a_deliv load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_deliv A: title load OK, each driven reload OK, no read at the failed load or the write" \
+        reads_eq a_deliv "$A" "OK OK OK"
+    check "a_deliv badload: stock verdict fails" logged a_deliv "$DRV: badload 0 at 1800 rc 0"
+    check "a_deliv write to save 1 snapshotted under the loaded playthrough's lineage" \
+        bash -c "python3 '$CARD_PY' modsave '$WORK/a_deliv/card1.mcr.modsave' | awk '/^index 0 snap 0/{a=\$8}/^index 1 snap 0/{b=\$8}END{if(a==b&&a!=\"\"){print \"lineage \" a; exit 0} print \"lineages \" a \" \" b; exit 1}'"
+
+    say "savestate file loaded in a new process: no read, arena from the state"
+    EXTRA_ARGS="--state-save-on-frame 1500 --state-save-output $WORK/ss.state" \
+        leg a_ss1 load-title "$WORK/a_s_ab/card1.mcr" 1600 "$P" "$A"
+    check "a_ss1 state written" test -f "$WORK/ss.state"
+    EXTRA_ARGS="--state-load-on-frame 200 --state-load-input $WORK/ss.state" \
+        leg a_ss2 - "$WORK/a_s_ab/card1.mcr" 600 "$P" "$A"
+    check "a_ss2 state loaded" logged a_ss2 "load"
+    check "a_ss2 no read after the state load" reads_eq a_ss2 "$A" ""
+
+    say "runahead: a driven save inside a runahead window"
+    CFG_DRV='actions = "save:1@1600"' leg a_ra0 load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    CFG_DRV='actions = "save:1@1600"' EXTRA_ARGS="--runahead 1" \
+        leg a_ra1 load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_ra1 engaged: a suppressed speculative flush" logged a_ra1 "flush during speculative tick suppressed"
+    check "a_ra1 exactly one snapshot at save 1" eq "$(snaps_at a_ra1 1)" 1
+    check "a_ra1 card equals the --runahead 0 card" python3 "$CARD_PY" same "$WORK/a_ra0/card1.mcr" "$WORK/a_ra1/card1.mcr"
+
+    say "toggles: a mod toggled off at a save, a mod entered after a load, a refused write"
+    CFG_DRV='actions = "save:0@1600"' EXTRA_ENV="OPENPETE_MODS_TOGGLE=900:$B:0" \
+        leg a_tog1 load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B" "$DRV"
+    # OPENPETE_MODS_TOGGLE counts canonical ticks: tick 900 falls after the
+    # title load and before the driven save.
+    check "a_tog1 B reads OK at the load, nothing after its toggle off" reads_eq a_tog1 "$B" "OK"
+    check "a_tog1 B's record carried with gap set" \
+        eqnz "$(newest_rec a_tog1 0 "$B" | cut -d: -f2,4)" "1:$(last_write a_s_ab "$B")"
+    leg a_tog2 load-title "$WORK/a_tog1/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B"
+    check "a_tog2 B reads GAP" reads_eq a_tog2 "$B" "GAP"
+    EXTRA_ENV="OPENPETE_MODS_TOGGLE=900:$A:0,2000:$A:1" \
+        leg a_reen load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B"
+    check "a_reen A reads OK at the load and nothing at its re-enable (same identity held)" \
+        reads_eq a_reen "$A" "OK"
+    check "a_reen B reads OK once" reads_eq a_reen "$B" "OK"
+    CFG_A='write_fails = true' CFG_DRV='actions = "save:0@1600"' \
+        leg a_wfail load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$B" "$DRV"
+    check "a_wfail A's write refused" logged a_wfail "$A: write index 0 refused"
+    check "a_wfail A's previous record kept (no gap)" \
+        eqnz "$(newest_rec a_wfail 0 "$A" | cut -d: -f2,4)" "0:$(last_write a_s_ab "$A")"
+
+    say "faults: sidecar write failure, unparseable sidecar"
+    CFG_DRV='actions = "save:0@1600"' EXTRA_ENV="OPENPETE_MODSAVE_FAULT_WRITE=1" \
+        leg a_scfail load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_scfail write failure logged" logged a_scfail "failed; the save records stay in memory"
+    head -c 100 "$WORK/a_s_ab/card1.mcr.modsave" > "$WORK/corrupt.modsave"
+    SIDECAR="$WORK/corrupt.modsave" leg a_corrupt load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A"
+    check "a_corrupt unparseable sidecar set aside" bash -c "grep -q 'is unparseable; moved to' '$WORK/a_corrupt/log.txt' && test -f '$WORK/a_corrupt/card1.mcr.modsave.bad-1' && echo 'moved aside'"
+    check "a_corrupt A reads ABSENT (no records, zero pad)" reads_eq a_corrupt "$A" "ABSENT"
+    for t in a_l_ab a_gap2 a_old a_stale a_deliv; do
+        check "$t replays the recording (probe count)" eq "$(count_of $t)" "$N_LOAD"
+    done
+    # Under --runahead 1 the probe's last line can come from the led tick.
+    check "a_ra1 replays the recording (probe count, one led tick allowed)" \
+        bash -c "c=$(count_of a_ra1); [ \$c -ge $N_LOAD ] && [ \$c -le \$(( $N_LOAD + 1 )) ] && echo \"\$c in [$N_LOAD, $N_LOAD+1]\""
+}
+
+section_api_more() {
+    need_reference
+    local t
+    say "New Game over a used slot: a fresh lineage carries no record"
+    CFG_DRV='actions = "newkeep:0@1600,save:0@1650"' leg a_ngused load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_ngused A: OK at the load, ABSENT at the new playthrough" reads_eq a_ngused "$A" "OK ABSENT"
+    check "a_ngused newest snapshot carries no B record (no carry under a fresh lineage)" \
+        bash -c "[ -z \"\$(python3 '$CARD_PY' modsave '$WORK/a_ngused/card1.mcr.modsave' | grep '^index 0 snap 0 ' | grep -o '$B:')\" ] && echo 'no B record'"
+    check "a_ngused new lineage at save 0" \
+        bash -c "python3 '$CARD_PY' modsave '$WORK/a_ngused/card1.mcr.modsave' | awk '/^index 0 snap 0/{a=\$8}/^index 0 snap 1/{b=\$8}END{if(a!=\"\"&&b!=\"\"&&a!=b){print a\" != \"b;exit 0}print a\" \"b;exit 1}'"
+
+    say "New Game twice with no save: two ABSENTs"
+    CFG_DRV='actions = "newgame:0@1600,newgame:0@1700"' leg a_ng2 load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_ng2 A: OK, ABSENT, ABSENT" reads_eq a_ng2 "$A" "OK ABSENT ABSENT"
+
+    say "attract demo: the demo-level clear delivers ABSENT at the title"
+    leg a_demo - - 4000 "$P" "$A"
+    check "a_demo A reads ABSENT only, at least once" \
+        bash -c "r=\$(grep -o '$A: read status [A-Z_]*' '$WORK/a_demo/log.txt' | awk '{print \$4}' | sort -u | tr '\n' ' '); [ \"\$r\" = 'ABSENT ' ] && echo \"reads \$(grep -c '$A: read status' '$WORK/a_demo/log.txt') ABSENT\" || { echo \"reads [\$r]\"; exit 1; }"
+
+    say "runahead adoption: a save on the update that leaves g_Gamestate 0"
+    CFG_DRV='actions = "leave:1@0"' leg a_adopt0 fairy-save - "$SAVE_FRAMES" "$P" "$A" "$DRV"
+    CFG_DRV='actions = "leave:1@0"' EXTRA_ARGS="--runahead 1" leg a_adopt1 fairy-save - "$SAVE_FRAMES" "$P" "$A" "$DRV"
+    check "a_adopt1 the leave save ran" logged a_adopt1 "$DRV: leave 1"
+    check "a_adopt1 engaged: the save's queue adopted" logged a_adopt1 "adopted speculative ticks"
+    check "a_adopt1 one snapshot at save 1" eq "$(snaps_at a_adopt1 1)" 1
+    check "a_adopt1 card equals the --runahead 0 card" python3 "$CARD_PY" same "$WORK/a_adopt0/card1.mcr" "$WORK/a_adopt1/card1.mcr"
+    CFG_DRV='actions = "leave:1@0"' EXTRA_ARGS="--runahead 1" EXTRA_ENV="OPENPETE_MEMCARD_FAULT_ADOPT_FLUSH=1" \
+        leg a_adoptfail fairy-save - "$SAVE_FRAMES" "$P" "$A" "$DRV"
+    check "a_adoptfail failed adoption flush drops the queue (logged)" logged a_adoptfail "adoption card flush failed"
+    check "a_adoptfail no snapshot at save 1" eq "$(snaps_at a_adoptfail 1)" 0
+
+    say "runahead rollback that fails after a partial restore: the queue is discarded"
+    CFG_DRV='actions = "save:1@1600"' EXTRA_ARGS="--runahead 1" EXTRA_ENV="OPENPETE_STATE_FAULT_SPU_RESTORE=card" \
+        leg a_partial load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_partial fault engaged" logged a_partial "fault injected: SPU restore failed"
+    check "a_partial speculative queue discarded" logged a_partial "rolled back speculative ticks"
+    # The partial restore leaves the arena (the driver's counter) at its led
+    # value, so the committed pass does not repeat the save: the led save
+    # must leave neither a card record nor a snapshot.
+    check "a_partial no snapshot at save 1" eq "$(snaps_at a_partial 1)" 0
+    check "a_partial the led save never reached the card file" \
+        bash -c "python3 '$CARD_PY' records '$WORK/a_partial/card1.mcr' | grep -q '^record 1 empty 1' && echo 'record 1 empty'"
+
+    say "rewind after a driven save: the save cleared the ring, one snapshot"
+    CFG_DRV='actions = "save:1@1600"' EXTRA_ARGS="--rewind 600 --rewind-hold 3600:60" \
+        leg a_rewind load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_rewind engaged: the hold rewound" bash -c "grep -iE 'rewind.*(restor|jump|back to)' '$WORK/a_rewind/log.txt' | head -1 | grep . "
+    check "a_rewind one snapshot at save 1" eq "$(snaps_at a_rewind 1)" 1
+    check "a_rewind no read after the load" reads_eq a_rewind "$A" "OK"
+
+    say "hot reload of a registered mod: no read, arena kept"
+    CFG_A='schema = 1' CFG_DRV='actions = "save:0@2000"' EXTRA_ENV="OPENPETE_MOD_HOT_RELOAD=1" \
+        DURING_WAIT="read status OK" DURING_CMD="sleep 2; echo '# edit' >> '$WORK/a_hot/mods/$A/config.toml'" \
+        leg a_hot load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_hot reload engaged" bash -c "grep -iE '$A.*reload|reload.*$A' '$WORK/a_hot/log.txt' | grep -iv armed | head -1 | grep ."
+    check "a_hot A reads only at the load" reads_eq a_hot "$A" "OK"
+    check "a_hot A's state survived the reload (write value above its load value 99)" \
+        bash -c "v=\$(grep -o '$A: write index 0 value [0-9]*' '$WORK/a_hot/log.txt' | tail -1 | awk '{print \$NF}'); [ -n \"\$v\" ] && [ \"\$v\" -gt 99 ] && echo \"value \$v\""
+
+    say "savestate from save 0 loaded while on save 1: no read"
+    CFG_DRV='actions = "save:1@1600,load:1@1700"' \
+        EXTRA_ARGS="--state-save-on-frame 2400 --state-save-output $WORK/ss01.state --state-load-on-frame 3800 --state-load-input $WORK/ss01.state" \
+        leg a_ss01 load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_ss01 driven load of save 1 read" bash -c "grep -q '$A: read status OK index 1' '$WORK/a_ss01/log.txt' && echo 'read save 1'"
+    # The state predates the driven ops, which the restored driver counter
+    # runs again; the state load itself delivers nothing.
+    check "a_ss01 no read between the state load and the next driven op" \
+        bash -c "awk '/savestate: loaded/{on=1;next} on&&/modsave-driver: /{exit} on&&/$A: read status/{n++} END{print n+0\" reads\"; exit (n>0)}' '$WORK/a_ss01/log.txt'"
+
+    say "savestate blob with no save-record trailer: key unknown, no read"
+    CFG_DRV='actions = "save:1@2300"' EXTRA_ENV="OPENPETE_MODSAVE_FAULT_NO_TRAILER=1" \
+        EXTRA_ARGS="--state-save-on-frame 3000 --state-save-output $WORK/old.state --state-load-on-frame 3100 --state-load-input $WORK/old.state" \
+        leg a_oldblob load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_oldblob no read after the load of the old blob" reads_eq a_oldblob "$A" "OK"
+    CFG_DRV='actions = "save:1@2150"' EXTRA_ENV="OPENPETE_MODSAVE_FAULT_NO_TRAILER=1" \
+        EXTRA_ARGS="--state-save-on-frame 3000 --state-save-output $WORK/old2.state --state-load-on-frame 3100 --state-load-input $WORK/old2.state" \
+        leg a_oldblob2 load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_oldblob2 a save after the old blob finds the key unknown" logged a_oldblob2 "written with the key unknown"
+
+    say "one card image in both ports: the game's selection resolves the match"
+    CARD2="$WORK/a_s_ab/card1.mcr" leg a_two load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A"
+    check "a_two load bound to card 0 save 0 of 2 candidates" logged a_two "load bound to card 0 save 0 of 2 candidates"
+    check "a_two A reads OK" reads_eq a_two "$A" "OK"
+
+    say "handoff: key, held identities and arena carried, no read"
+    EXTRA_ENV="OPENPETE_HANDOFF_AT=2600" leg a_handoff load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A"
+    check "a_handoff engaged" bash -c "grep -iE 'handoff' '$WORK/a_handoff/log.txt' | grep -iE 'exec|resum' | head -1 | grep ."
+    # The resumed process boots and replays the recording up to the
+    # checkpoint (its title load reads again); the resume itself delivers
+    # nothing.
+    check "a_handoff no read after the session resumed" \
+        bash -c "awk '/handoff: session resumed/{on=1;next} on&&/$A: read status/{n++} END{print n+0\" reads after resume\"; exit (n>0)}' '$WORK/a_handoff/log.txt'"
+    check "a_handoff resumed" logged a_handoff "handoff: session resumed"
+
+    say "savestate loaded with the cards swapped: the key follows its card"
+    python3 "$CARD_PY" edit "$WORK/a_s_ab/card1.mcr" "$WORK/other.mcr" 0 0x58A >/dev/null
+    CARD2="$WORK/other.mcr" EXTRA_ARGS="--state-save-on-frame 2600 --state-save-output $WORK/sw.state" \
+        leg a_sw1 load-title "$WORK/a_s_ab/card1.mcr" 2700 "$P" "$A"
+    # A file load waits for the state's park site, a gameplay yield, so it
+    # is scheduled after the title load of the swapped run.
+    CARD_ARGS="--card1 $WORK/a_sw1/card2.mcr --card2 $WORK/a_sw1/card1.mcr" \
+        EXTRA_ARGS="--state-load-on-frame 2000 --state-load-input $WORK/sw.state" \
+        leg a_sw2 load-title - 2300 "$P" "$A"
+    check "a_sw2 state loaded" logged a_sw2 "savestate: loaded"
+    check "a_sw2 key rebound to the other port" logged a_sw2 "savestate key rebound from card slot 0 to 1"
+    check "a_sw2 no read after the state load" \
+        bash -c "awk '/savestate: loaded/{on=1;next} on&&/$A: read status/{n++} END{print n+0\" reads\"; exit (n>0)}' '$WORK/a_sw2/log.txt'"
+
+    say "snapshot eviction: five saves at one index"
+    CFG_DRV='actions = "save:0@1500,save:0@1700,save:0@1900,save:0@2100,save:0@2300"' \
+        leg a_evict load-title "$WORK/a_s_ab/card1.mcr" "$LOAD_FRAMES" "$P" "$A" "$DRV"
+    check "a_evict the oldest snapshot evicted (logged)" logged a_evict "evicted"
+    check "a_evict four snapshots at save 0" eq "$(snaps_at a_evict 0)" 4
+}
+
+# Rows no headless run can reach, each with its reason.
+section_api_carve() {
+    carve "deferred first entry: headless runs keep the exact enabled set (the load-all path that defers a mod's entry is interactive only)"
+    carve "savestate with no game-extra section: core appends the save-record trailer to every section, so every state written now has one; an older trailer-less blob is the a_oldblob row"
 }
 
 # ── calibrate: each seeded fault must trip the check that guards it ───────
@@ -326,11 +609,13 @@ on record && section_record
 on repair && section_repair
 on driver && section_driver
 on api && section_api
+{ on api || [ "$SECTION" = more ]; } && section_api_more
+on api && section_api_carve
 on calibrate && section_calibrate
 
 echo
 echo "[modsave] engagement: no-mod save leg $N_SAVE stock updates, load leg $N_LOAD"
-echo "[modsave] totals: $n_pass PASS, $n_fail FAIL, $n_skip SKIP"
+echo "[modsave] totals: $n_pass PASS, $n_fail FAIL, $n_skip SKIP, $n_carve CARVE-OUT"
 if [ "$n_fail" -ne 0 ]; then echo "[modsave] verdict: FAIL"; exit 1; fi
 if [ "$n_pass" -eq 0 ]; then echo "[modsave] verdict: VACUOUS (no leg ran)"; exit 1; fi
 [ "$n_skip" -ne 0 ] && echo "[modsave] verdict: PASS for the legs run; $n_skip legs SKIP awaiting the save-record engine" ||

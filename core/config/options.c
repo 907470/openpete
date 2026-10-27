@@ -939,6 +939,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->card_b_present      = 1;
     opts->card_unformatted    = 0;     /* pre-formatted empty card by default */
     opts->adopt_saves         = 0;     /* modset-mismatch saves warn until adopted */
+    opts->save_mismatch_toast = 0;     /* the mismatch log line only */
     opts->resume_handoff      = NULL;  /* process-handoff resume file */
     opts->handoff_argc        = 0;     /* original argv (exec rebuild) */
     opts->handoff_argv        = NULL;
@@ -1712,6 +1713,14 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         opts->card_unformatted = 1;
     } else if (strcmp(a, "--adopt-saves") == 0) {
         opts->adopt_saves = 1;
+    } else if (strcmp(a, "--save-mismatch-toast") == 0) {
+        const char *v = (i + 1 < argc) ? argv[++i] : "";
+        if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->save_mismatch_toast = 1;
+        else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->save_mismatch_toast = 0;
+        else {
+            fprintf(stderr, "openpete: --save-mismatch-toast expects on|off, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
     } else if (strcmp(a, "--resume-handoff") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->resume_handoff = v; i++;
