@@ -144,3 +144,6 @@ midnight_mountain@glintdepth | pos=(108418, 95872, 10261) yaw=-1196 pitch=205 | 
 midnight_mountain@snapb | pos=(108418, 95872, 10261) yaw=-1196 pitch=205 | 2473 | --vertex-precision integer --raster-quantize 2
 # coffin idle shake: two step faces tie in one paint bucket and switch every few ticks (the mirrored side does not)
 haunted_tomb | pos=(41871, 84782, 20347) yaw=-1837 pitch=71 | 2629
+# extended LOD: wide areas of near and mid terrain draw the LP mesh, with
+# patches of HP terrain further out, after the HQ texel fade changes
+haunted_tomb | pos=(20082, 2094, 55737) yaw=561 pitch=398 | 2629
