@@ -36,10 +36,23 @@ Usage:
       [--max-runtime-seconds N]
   tests/harness/bench-corpus.py --compare-only CURRENT.json --baseline BASE.json
 
+A run resumes: each finished movie writes <stem>.done.json beside its
+summary, carrying the run's fingerprint (exe size and mtime, source commit,
+the timing flags and every OPENPETE_* knob in the environment). Rerunning the
+same command with the same --run-id reuses every movie whose record matches
+and replays the rest, so a stop or a crash costs at most the movie in
+progress; a record with another fingerprint is refused unless --fresh, which
+discards the run directory's movies. SIGINT or SIGTERM stops the movie in
+progress (its exe is terminated) and exits 130; a file named STOP in the run
+directory stops the run after the movie in progress. Output lives under a
+persistent directory (default ${XDG_DATA_HOME:-~/.local/share}/openpete/bench);
+an --out-dir under /tmp is refused, since /tmp does not survive a restart.
+
 Exit: 0 clean, 1 regression vs baseline, 2 VACUOUS (a movie engaged no
 tick), 64 skip (missing exe/disc/corpus) or a refused compare (platform tag,
 mode, game or arm differ), 65 refused precondition (bench_guard, missing arm
-file).
+file, an --out-dir under /tmp, a fingerprint mismatch without --fresh),
+130 stopped (signal or STOP file; rerun the command to resume).
 """
 import argparse
 import glob
@@ -51,6 +64,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parents[2] / "scripts" / "lib"
 from hostenv import child_env, scratch_cards  # noqa: E402
 import re
 import shlex
+import signal
 import subprocess
 import sys
 
@@ -74,6 +88,25 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 EXIT_VACUOUS = 2
 EXIT_SKIP = 64
 EXIT_REFUSED = 65
+EXIT_STOPPED = 130
+DEFAULT_OUT = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+                           "openpete", "bench")
+# Knobs that differ per process without changing what a run measures: the
+# scratch card directory scratch_cards() makes for each process.
+RUN_LOCAL_KNOBS = {"OPENPETE_CARD_DIR"}
+# The movie in progress, so a stop signal can end its exe before exiting.
+_CHILD = None
+
+
+class Stopped(Exception):
+    """A stop signal arrived; the run directory keeps every finished movie."""
+
+
+def _on_stop(signum, _frame):
+    """Terminate the movie in progress and unwind to main's stop exit."""
+    if _CHILD is not None and _CHILD.poll() is None:
+        _CHILD.terminate()
+    raise Stopped(signal.Signals(signum).name)
 # 2: game, arm and commit recorded. 3: every run launched with --no-config.
 ROLLUP_SCHEMA = 3
 
@@ -123,8 +156,16 @@ def run_movie(exe, game, movie_path, opp_path, args, log_path):
     # Capture via PIPE, not a file FD: redirecting a Windows .exe's stdout to a
     # real file descriptor makes its --profile-out fopen collide with the
     # redirected fd, leaking late stderr into the .opp trace. PIPE avoids it.
-    p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out = p.stdout or b""
+    global _CHILD
+    _CHILD = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        out = _CHILD.communicate()[0] or b""
+    except BaseException:
+        if _CHILD.poll() is None:
+            _CHILD.kill()
+            _CHILD.wait()
+        raise
+    p, _CHILD = _CHILD, None
     with open(log_path, "wb") as lf:
         lf.write(("# %s\n" % shlex.join(cmd)).encode())
         lf.write(out)
@@ -149,6 +190,45 @@ def summarize(opp_path, json_path, txt_path, label, skip_ticks):
             return json.load(f)
     except Exception:
         return None
+
+
+def run_fingerprint(exe, identity, args):
+    """What makes a finished movie of this run reusable by a resumed one."""
+    st = os.stat(exe)
+    return {"exe": exe, "exe_size": st.st_size, "exe_mtime_ns": st.st_mtime_ns,
+            "commit": (identity or {}).get("commit"), "game": args.game,
+            "functional": args.functional, "frame_limit": args.frame_limit,
+            "render_fps": args.render_fps, "max_runtime_seconds": args.max_runtime_seconds,
+            "skip_ticks": args.skip_ticks, "gpu_timers": args.gpu_timers,
+            "knobs": {k: v for k, v in sorted(os.environ.items())
+                      if k.startswith("OPENPETE_") and k not in RUN_LOCAL_KNOBS}}
+
+
+def load_done(path, fp):
+    """The finished-movie record at `path`: (record, None) when it matches `fp`,
+    (None, reason) when it exists and does not, (None, None) when absent."""
+    if not os.path.exists(path):
+        return None, None
+    try:
+        with open(path) as f:
+            rec = json.load(f)
+    except (OSError, ValueError) as e:
+        return None, "unreadable (%s)" % e
+    if rec.get("fingerprint") != fp:
+        diff = sorted(k for k in set(fp) | set(rec.get("fingerprint") or {})
+                      if fp.get(k) != (rec.get("fingerprint") or {}).get(k))
+        return None, "fingerprint differs in %s" % ", ".join(diff)
+    return rec, None
+
+
+def write_atomic(path, obj):
+    """Write `obj` as JSON so a crash leaves the old file or the new, never half."""
+    tmp = path + ".part"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def platform_tag(identity, device):
@@ -311,7 +391,10 @@ def main():
     ap.add_argument("--frame-limit", type=int, default=20000)
     ap.add_argument("--render-fps", type=int, default=120)
     ap.add_argument("--max-runtime-seconds", type=int, default=600)
-    ap.add_argument("--out-dir", default=os.path.join(ROOT, "out/bench"))
+    ap.add_argument("--out-dir", default=DEFAULT_OUT,
+                    help="persistent results root (default %(default)s); /tmp is refused")
+    ap.add_argument("--fresh", action="store_true",
+                    help="discard the run directory's finished movies instead of resuming")
     ap.add_argument("--skip-ticks", type=int, default=60)
     ap.add_argument("--gpu-timers", action="store_true")
     ap.add_argument("--baseline", default=None)
@@ -359,38 +442,83 @@ def main():
         print("[bench] no movies matched", file=sys.stderr)
         return EXIT_SKIP
 
-    out = os.path.join(args.out_dir, args.run_id)
+    out_root = os.path.realpath(os.path.abspath(args.out_dir))
+    if out_root == "/tmp" or out_root.startswith("/tmp/"):
+        print("[bench] REFUSED: --out-dir %s is under /tmp, which a restart empties; "
+              "use a persistent directory (default %s)" % (out_root, DEFAULT_OUT),
+              file=sys.stderr)
+        return EXIT_REFUSED
+    out = os.path.join(out_root, args.run_id)
     os.makedirs(out, exist_ok=True)
     # A stale rollup from an earlier run must never be read as this one's.
     for stale in ("rollup.json", "rollup.txt"):
         if os.path.exists(os.path.join(out, stale)):
             os.remove(os.path.join(out, stale))
+    stop_file = os.path.join(out, "STOP")
+    if os.path.exists(stop_file):
+        os.remove(stop_file)
 
-    per_movie = []
-    platform = None
+    fp = run_fingerprint(exe, identity, args)
+    plan = []
     for mp in movies:
         stem = os.path.basename(mp)[:-4]
-        opp = os.path.join(out, stem + ".opp")
-        log = os.path.join(out, stem + ".log")
-        for stale in (opp, log, os.path.join(out, stem + ".json"),
-                      os.path.join(out, stem + ".txt")):
-            if os.path.exists(stale):
-                os.remove(stale)
-        print("[bench] %s ..." % stem, file=sys.stderr, flush=True)
-        run = run_movie(exe, game, mp, opp, args, log)
-        if platform is None:
-            platform = platform_tag(identity, run["device"])
-        summ = None
-        if os.path.exists(opp):
-            summ = summarize(opp, os.path.join(out, stem + ".json"),
-                             os.path.join(out, stem + ".txt"), stem, args.skip_ticks)
-        if not args.keep_traces and os.path.exists(opp):
-            os.remove(opp)
-        per_movie.append({"movie": stem, "run": run, "summary": summ,
-                          "args_sidecar": os.path.exists(mp + ".args")})
-        print("[bench]   exit=%s presents=%s ticks=%d" %
-              (run["exit_reason"], (summ or {}).get("presents_total", "?"),
-               engaged_ticks(summ)), file=sys.stderr)
+        done = os.path.join(out, stem + ".done.json")
+        rec, why = load_done(done, fp)
+        if why and not args.fresh:
+            print("[bench] REFUSED: %s: %s; rerun with the run's original command, "
+                  "another --run-id, or --fresh" % (done, why), file=sys.stderr)
+            return EXIT_REFUSED
+        if args.fresh and os.path.exists(done):
+            os.remove(done)
+            rec = None
+        plan.append((mp, stem, done, rec))
+    reused = sum(1 for p in plan if p[3])
+    if reused:
+        print("[bench] resuming %s: %d of %d movies finished" % (out, reused, len(plan)),
+              file=sys.stderr)
+
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
+    per_movie = []
+    platform = None
+    try:
+        for mp, stem, done, rec in plan:
+            if rec:
+                run, summ = rec["run"], None
+                try:
+                    with open(os.path.join(out, stem + ".json")) as f:
+                        summ = json.load(f)
+                except (OSError, ValueError):
+                    pass
+            else:
+                if os.path.exists(stop_file):
+                    raise Stopped("STOP file")
+                opp = os.path.join(out, stem + ".opp")
+                log = os.path.join(out, stem + ".log")
+                for stale in (opp, log, os.path.join(out, stem + ".json"),
+                              os.path.join(out, stem + ".txt")):
+                    if os.path.exists(stale):
+                        os.remove(stale)
+                print("[bench] %s ..." % stem, file=sys.stderr, flush=True)
+                run = run_movie(exe, game, mp, opp, args, log)
+                summ = None
+                if os.path.exists(opp):
+                    summ = summarize(opp, os.path.join(out, stem + ".json"),
+                                     os.path.join(out, stem + ".txt"), stem, args.skip_ticks)
+                if not args.keep_traces and os.path.exists(opp):
+                    os.remove(opp)
+                write_atomic(done, {"movie": stem, "fingerprint": fp, "run": run})
+                print("[bench]   exit=%s presents=%s ticks=%d" %
+                      (run["exit_reason"], (summ or {}).get("presents_total", "?"),
+                       engaged_ticks(summ)), file=sys.stderr)
+            if platform is None:
+                platform = platform_tag(identity, run["device"])
+            per_movie.append({"movie": stem, "run": run, "summary": summ,
+                              "args_sidecar": os.path.exists(mp + ".args")})
+    except Stopped as e:
+        print("[bench] STOPPED (%s): %d of %d movies finished in %s; rerun the same "
+              "command to resume" % (e, len(per_movie), len(plan), out), file=sys.stderr)
+        return EXIT_STOPPED
 
     meta = {"game": args.game, "mode": "functional" if args.functional else "timed",
             "run_args": game["run_args"], "build": identity}
