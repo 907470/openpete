@@ -34,12 +34,13 @@
 //     would move a value the next draw reads: the shared bracket runs the guest
 //     draw exactly once.
 //
-// The geometry is the guest's own int16 output, read back out of the polybuf,
-// not a second projection: the primitives are the routine's only product and
-// re-deriving the ribbon's width law and DPCS fade would be a second copy of
-// them. What the primitives do not carry is depth - the PSX orders them by
-// ordering-table bucket - so each one's view-Z is recovered from the producer's
-// own record:
+// Every corner is built in float from the producer's own record, the camera
+// and the routine's width law, at capture and again at each sub-tick present;
+// the routine's primitives supply the pairing, the texture words and the
+// colours, never a position (an integer re-run of each routine, the
+// OPENPETE_TRACER_VTX probe, reproduces their corners). Depth is not carried
+// by the primitives either - the PSX orders them by ordering-table bucket - so
+// each one's view-Z is recovered from the producer's own record:
 //
 //   * the mesh leg replays the routine's own emit test out of the scratchpad
 //     vertex table the routine just wrote, which still holds this call's
@@ -50,12 +51,12 @@
 //     the near-depth test) to predict how many segments each record emitted.
 //     The prediction is accepted only when the total equals the number of
 //     primitives captured; otherwise every primitive of the call is left
-//     unpaired and the census reports it.
+//     unpaired, keeps its captured corners, and the census reports it.
 //
 // Spyro 1's tracer.c is not made a client of this: its beam is re-derived in
-// float from tracer-point gamestate with its own ribbon-width and colour laws
-// and its primitives are only its A/B oracle, while these routines' primitives
-// are the geometry. What the two share - the hook bracket, the polybuf walk,
+// float from tracer-point gamestate with its own ribbon-width and colour laws,
+// and these routines' records, width law and scratchpad tables differ from it.
+// What the two share - the hook bracket, the polybuf walk,
 // the primitive decode and the projection helpers - is already shared and is
 // reused here unchanged.
 //
@@ -105,18 +106,16 @@ extern unsigned openpete_frame;
 #define TR_MAX_LISTS     8      /* mesh vertex lists one tick may draw */
 
 /* Where one corner of a primitive came from: the point the routine projected
- * to place it, as the sub-tick rebase needs it back. `key` names the point's
- * previous state in the keyed store - the ribbon record, or the mesh vertex's
- * own address - and is 0 on a corner with no source. `age` is the ribbon
- * point's place counted back from the record's head. `w` is the point in full
- * world units as the tick drew it and (sx, sy) its screen position under the
- * tick's camera, projected by the same arithmetic the rebase projects the
- * shown point with. */
+ * to place it. `key` names the point's previous state in the keyed store - the
+ * ribbon record, or the mesh vertex's own address - and is 0 on a corner with
+ * no source. `age` is the ribbon point's place counted back from the record's
+ * head. `w` is the point in full world units as the tick drew it, and (sx, sy)
+ * and m3 its screen position and view-Z under the tick's camera. */
 typedef struct {
     uint32_t key;
     int      age;
     int32_t  w[3];
-    double   sx, sy;
+    double   sx, sy, m3;
     int      ok;       /* the point stood in front of the near floor */
 } tr_corner;
 
@@ -129,7 +128,13 @@ typedef struct {
     int       src;             /* TR_SRC_*: which producer's point each corner holds */
     uint32_t  ident;           /* OPENPETE_TAG_TRACER_RIBBON or _MESH: the producer */
     tr_corner c[4];
-    float     dx[4], dy[4];    /* the sub-tick screen displacement of each corner */
+    tr_corner head;            /* ribbon: the record's head point, age 0 */
+    int       wb;              /* ribbon: the record's signed width byte */
+    int       count;           /* ribbon: the ring's point count */
+    int       shift;           /* mesh: the descriptor's right shift */
+    int       built;           /* bx, by hold the float build */
+    float     bx[4], by[4];    /* the corners built in float under the tick's view */
+    float     px[4], py[4];    /* the corners built for the sub-tick present */
 } tr_item;
 
 static tr_item  s_item[TR_MAX_PRIMS];
@@ -167,11 +172,12 @@ static uint32_t s_fed_tris;
 static int      s_last_predicted;   /* segments the record walk predicted */
 static int      s_live;             /* records holding a live pointer */
 static int      s_boxed;            /* of those, records the box test dropped */
+static int32_t  s_cam_half[3];      /* the camera position >> 1 the ribbon routine read */
 
 /** @brief Stores one decoded primitive as an unpaired item in the call's item set.
  *
- * The item starts at depth 1 with no source and zeroed corners and
- * displacements.
+ * The item starts at depth 1 with no source, no float build and zeroed
+ * corners.
  * @param ctx Unused.
  * @param s The primitive.
  * @return 1 when stored, 0 when the set holds TR_MAX_PRIMS items. */
@@ -182,9 +188,9 @@ static int tr_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].paired = 0;
     s_item[s_item_n].src = TR_SRC_NONE;
+    s_item[s_item_n].built = 0;
     memset(s_item[s_item_n].c, 0, sizeof s_item[s_item_n].c);
-    memset(s_item[s_item_n].dx, 0, sizeof s_item[s_item_n].dx);
-    memset(s_item[s_item_n].dy, 0, sizeof s_item[s_item_n].dy);
+    memset(&s_item[s_item_n].head, 0, sizeof s_item[s_item_n].head);
     s_item_n++;
     return 1;
 }
@@ -210,7 +216,7 @@ static void tr_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 
 /* ---- corner sources --------------------------------------------------------
  *
- * The rebase needs, per corner, the point the routine placed it at. Both
+ * The float build needs, per corner, the point the routine placed it at. Both
  * routines load the camera-relative offset (x - cx, cy - y, cz - z) as
  * (VZ0, VX0, VY0) (ribbon :2974-2999, mesh :3223-3237); a uniform scale of that
  * vector, the ribbon's halving or the mesh's right shift, leaves the
@@ -234,7 +240,7 @@ static void tr_project_world(const ngte_view* v, const double p[3], ngte_proj* o
     ngte_project_offset(v, vo, o);
 }
 
-/** @brief Fills a corner's source record and its screen position under the tick's view.
+/** @brief Fills a corner's source record and its screen position and view-Z under the tick's view.
  *
  * Sets ok when the point's view-Z is at or past TR_NEAR_M3.
  * @param c The corner, written.
@@ -253,6 +259,7 @@ static void tr_corner_set(tr_corner* c, const ngte_view* v, uint32_t key, int ag
     tr_project_world(v, p, &o);
     c->sx = o.sx;
     c->sy = o.sy;
+    c->m3 = o.m3;
     c->ok = o.m3 >= TR_NEAR_M3;
 }
 
@@ -262,8 +269,10 @@ typedef struct { int32_t oc; int32_t sz3; double m3; tr_corner c; } rib_pt;
 
 /* One predicted segment: its depth and the two points it joins, the head-side
  * one first. The routine writes corners 0 and 2 about the head-side point and
- * corners 1 and 3 about the next one (:3125-3141). */
-typedef struct { float depth; tr_corner a, b; } rib_seg;
+ * corners 1 and 3 about the next one (:3125-3141). `head`, `wb` and `count`
+ * are the record's head point, signed width byte and ring point count, which
+ * set every point's half-width. */
+typedef struct { float depth; tr_corner a, b, head; int wb, count; } rib_seg;
 
 /** @brief Computes the ribbon routine's outcode word for a screen position (mobyfunc.s:2488-2508).
  *
@@ -336,7 +345,7 @@ static int rib_ring_point(const uint8_t* rec, uint32_t len, int age, int32_t hw[
  * The rejects are any point outside the camera-relative box (:2408-2437,
  * counted in s_boxed), every point off one common screen edge (:2496) and
  * the head's SZ3 at or past TR.far_sz (:2540). Each point's outcode, SZ3,
- * MAC3 and rebase corner (keyed by the record, aged by its place from the
+ * MAC3 and source corner (keyed by the record, aged by its place from the
  * head) are written to pt.
  * @param cpu Unused.
  * @param v The tick's view.
@@ -381,7 +390,7 @@ static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
  * rib_project_record; a consecutive pair is dropped when its two outcodes
  * share an edge bit (:2652) or its ordering-table key is negative (:2692).
  * Each kept segment carries its view-Z from the pair's mean MAC3 and its
- * two rebase corners, head side first.
+ * two source corners, head side first.
  * @param cpu The guest CPU state.
  * @param v The tick's view.
  * @param out Receives the segments.
@@ -392,17 +401,17 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap)
     s_live = 0; s_boxed = 0;
     /* The camera position the routine reads, shifted right one like its own
      * `srl` so the box test compares the same values. */
-    const int32_t cam[3] = {
-        (int32_t)(cpu->read_word(game_layout.cam.position + 0u) >> 1),
-        (int32_t)(cpu->read_word(game_layout.cam.position + 4u) >> 1),
-        (int32_t)(cpu->read_word(game_layout.cam.position + 8u) >> 1),
-    };
+    const int32_t* cam = s_cam_half;
+    for (int k = 0; k < 3; k++)
+        s_cam_half[k] = (int32_t)(cpu->read_word(game_layout.cam.position + 4u * (uint32_t)k) >> 1);
     static rib_pt pt[RIB_POINT_MAX];
     for (uint32_t s = 0; s < TR.slots; s++) {
         const uint32_t rec = TR.ring + s * TR.stride;
         if (cpu->read_word(rec + RIB_LIVE) == 0) continue;
         s_live++;
         const int count = rib_project_record(cpu, v, rec, cam, pt);
+        /* :3079-3080 the width is the signed byte 2 of the packed word. */
+        const int wb = (int)(int8_t)(uint8_t)(cpu->read_word(rec + TR.packed_off) >> 16);
         for (int k = 0; k + 1 < count; k++) {
             if ((pt[k].oc & pt[k + 1].oc & 0xF) > 0) continue;        /* :2652 */
             const int32_t key = ((pt[k].sz3 + pt[k + 1].sz3) >> 7) - 2;
@@ -415,6 +424,9 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap)
                     openpete_worldvz_scaled((float)mz, 2.0f));
                 out[n].a = pt[k].c;
                 out[n].b = pt[k + 1].c;
+                out[n].head = pt[0].c;
+                out[n].wb = wb;
+                out[n].count = count;
             }
             n++;
         }
@@ -427,7 +439,8 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap)
  * Runs rib_predict and records its count in s_last_predicted. When the count
  * equals the captured primitive count, each item takes its segment's depth,
  * marks itself paired and takes the ribbon source with its corners 0 and 2
- * from the head-side point and 1 and 3 from the next. On a mismatch every
+ * from the head-side point and 1 and 3 from the next, and the record's head
+ * point, width byte and point count. On a mismatch every
  * item stays unpaired at the near-guard depth.
  * @param cpu The guest CPU state.
  * @param v The tick's view. */
@@ -443,6 +456,9 @@ static void rib_pair_depths(CPUState* cpu, const ngte_view* v) {
         it->src = TR_SRC_RIBBON;
         it->c[0] = it->c[2] = pred[i].a;
         it->c[1] = it->c[3] = pred[i].b;
+        it->head = pred[i].head;
+        it->wb = pred[i].wb;
+        it->count = pred[i].count;
     }
 }
 
@@ -480,7 +496,7 @@ int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) {
     return n;
 }
 
-/** @brief Sets a mesh item's four rebase corners from the vertices its index entry names.
+/** @brief Sets a mesh item's four source corners from the vertices its index entry names.
  *
  * Corner k is the entry's index byte k (:3358-3378 store them at +0x08,
  * +0x14, +0x20, +0x2C); the vertex is the 12-byte world XYZ triple at that
@@ -489,10 +505,12 @@ int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) {
  * @param v The tick's view.
  * @param it The item.
  * @param vlist The vertex list's guest address.
- * @param off The four scratchpad offsets (index * 8) of the entry. */
+ * @param off The four scratchpad offsets (index * 8) of the entry.
+ * @param shift The descriptor's right shift, kept for the probe's integer re-run. */
 static void msh_set_corners(CPUState* cpu, const ngte_view* v, tr_item* it,
-                            uint32_t vlist, const uint32_t off[4]) {
+                            uint32_t vlist, const uint32_t off[4], int shift) {
     it->src = TR_SRC_MESH;
+    it->shift = shift;
     for (int k = 0; k < 4; k++) {
         const uint32_t va = vlist + (off[k] >> 3) * 12u;
         const int32_t w[3] = {
@@ -553,7 +571,7 @@ static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
         s_item[i].depth = openpete_native_scene_viewz(
             openpete_worldvz_scaled((float)zsum * 0.25f, mul));
         s_item[i].paired = 1;
-        if (have_verts) msh_set_corners(cpu, v, &s_item[i], vlist, off);
+        if (have_verts) msh_set_corners(cpu, v, &s_item[i], vlist, off, shift);
         i++;
     }
 }
@@ -572,16 +590,17 @@ static int tr_feed_enabled(void) {
     return v;
 }
 
-/* Whether the held set carries a sub-tick displacement. Clear on every
+/* Whether the held set carries a sub-tick build (px, py). Clear on every
  * canonical feed and at the end of the tick's interval, where the replay emits
- * the captured corners verbatim. */
+ * the capture's build verbatim. */
 static int s_reb_active;
 
 /** @brief Feeds one item to the native scene as world triangles.
  *
  * A quad is split into (0,1,2) and (1,3,2); a triangle feeds (0,1,2) alone.
- * Every vertex takes the item's single depth. While the rebase is
- * active each corner is moved by its screen displacement. Only 3 and 4
+ * Every vertex takes the item's single depth. A built item's corners are its
+ * float build, the sub-tick one while the rebase is active and the capture's
+ * otherwise; an unbuilt item feeds the routine's corners. Only 3 and 4
  * vertex primitives are fed. Counts the triangles fed.
  * @param it The item. */
 static void tr_add_prim(const tr_item* it) {
@@ -591,12 +610,13 @@ static void tr_add_prim(const tr_item* it) {
     const int blend = ngte_prim_tpage_blend(p, &tp);
     const int last = p->nv - 1;           /* a triangle fills the unread corner 3 */
     const int idx[4] = { 0, 1, 2, last };
+    const float* bx = it->built ? (s_reb_active ? it->px : it->bx) : p->x;
+    const float* by = it->built ? (s_reb_active ? it->py : it->by) : p->y;
     float x[4], y[4], u[4], v[4];
     uint32_t rgb[4];
     for (int k = 0; k < 4; k++) {
         const int j = idx[k];
-        x[k] = p->x[j]; y[k] = p->y[j];
-        if (s_reb_active) { x[k] += it->dx[j]; y[k] += it->dy[j]; }
+        x[k] = bx[j]; y[k] = by[j];
         u[k] = (float)p->u[j]; v[k] = (float)p->v[j];
         rgb[k] = p->rgb[j];
     }
@@ -628,15 +648,28 @@ static void tr_set_ident(uint32_t ident) {
     for (int i = 0; i < s_item_n; i++) s_item[i].ident = ident;
 }
 
-/** @brief Appends the call's items to the tick's held set for the sub-tick replay.
+static void tr_build_call(CPUState* cpu, const ngte_view* v);
+static void tr_vtx_tick_close(void);
+static unsigned s_epoch;        /* canonical epochs captured */
+
+/** @brief Builds the call's items in float and appends them to the tick's held set for the sub-tick replay.
  *
  * The first call of a canonical epoch retires the previous epoch's set
- * (cut_held_sets_capture) and empties the held one, since several calls
- * contribute to one canonical present; items past TR_MAX_TICK are dropped.
- * Clears the rebase so a canonical feed emits the captured corners.
+ * (cut_held_sets_capture), empties the held one, since several calls
+ * contribute to one canonical present, and opens a new epoch for the vertex
+ * probe. The items are then built under the tick's view (tr_build_call);
+ * items past TR_MAX_TICK are dropped. Clears the rebuild so a canonical feed
+ * emits the capture's build.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
  * @return The index of the call's first item in the held set. */
-static int tr_hold(void) {
-    if (cut_held_sets_capture(&s_sets)) s_tick_n = 0;
+static int tr_hold(CPUState* cpu, const ngte_view* v) {
+    if (cut_held_sets_capture(&s_sets)) {
+        s_tick_n = 0;
+        s_epoch++;
+        tr_vtx_tick_close();
+    }
+    tr_build_call(cpu, v);
     const int first = s_tick_n;
     for (int i = 0; i < s_item_n && s_tick_n < TR_MAX_TICK; i++) s_tick[s_tick_n++] = s_item[i];
     s_reb_active = 0;
@@ -715,7 +748,7 @@ static int on_ribbon(CPUState* cpu, uint32_t addr) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         rib_pair_depths(cpu, &view);
-        const int first = tr_hold();
+        const int first = tr_hold(cpu, &view);
         render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_TRACER))
             tr_feed_native(&s_tick[first], s_tick_n - first);
@@ -746,7 +779,7 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         msh_pair_depths(cpu, &view, s_msh_desc);
-        const int first = tr_hold();
+        const int first = tr_hold(cpu, &view);
         render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_TRACER))
             tr_feed_native(&s_tick[first], s_tick_n - first);
@@ -755,28 +788,24 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_msh);
 }
 
-/* ---- sub-tick rebase ------------------------------------------------------
+/* ---- float build ------------------------------------------------------------
  *
- * The primitives are the guest's own int16 output, built under the tick's
- * camera from the tick's records, so a present that re-feeds them draws every
- * ribbon where the tick drew it: neither the camera's motion nor the records'
- * own reaches it. The rebase moves each corner by the screen displacement of
- * the point the routine placed it about: that point as the present shows it,
- * projected under the staged camera, against the point as the tick drew it,
- * projected under the tick's camera by the same function. The shown point is
+ * Each corner is built from the point the routine placed it about, projected
+ * in float under the view being drawn, the ribbon's corners then offset by the
+ * routine's width law. At capture the view is the tick's and the point the
+ * tick's. On a sub-tick present the view is the staged camera's and the point
  * the lerp of the previous tick's point and the tick's, paired by the record's
  * slot and the point's place counted back from the ring's head, so at alpha 0
  * the ribbon lies along the previous tick's ring and the head sweeps to the
  * tick's head over the interval; a ring that grew this tick holds its new tail
  * on the previous tail. A mesh corner pairs its own vertex by address. A point
  * with no usable previous state holds the tick's world position, and the
- * camera's motion alone rebases it. At the end of the tick's interval the
- * replay emits the captured corners verbatim.
+ * camera's motion alone moves it. At the end of the tick's interval the replay
+ * emits the capture's build verbatim.
  *
- * Out of scope, each its own channel of the same record: the ribbon's width,
- * which the routine tapers in screen units from the record's width byte, its
- * DPCS fade by the head's depth, and the primitives' depth, which the replay
- * keeps from the canonical pairing. */
+ * Out of scope, each its own channel of the same record: the ribbon's DPCS
+ * fade by the head's depth and along the ring, and the primitives' depth,
+ * which the replay keeps from the canonical pairing. */
 
 /* A point's speed ceiling, in full world units per tick. The store is keyed by
  * slot address, so a slot a new record respawns into inside one tick pairs
@@ -790,7 +819,6 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
 
 static unsigned long s_reb_stat[3][2]; /* corners per TR_SRC_*: 0 lerped, 1 held */
 static double        s_reb_worldmax;  /* the largest per-tick world step paired */
-static double        s_reb_screenmax; /* the largest screen displacement applied */
 
 /** @brief Looks up a keyed-store record that holds a usable previous and current state.
  *
@@ -812,14 +840,14 @@ static const openpete_interp_obj_t* tr_pair(uint32_t key, uint32_t need) {
  *
  * A mesh corner reads its vertex's previous triple; a ribbon corner decodes
  * the point of the same age from the record's previous image.
- * @param it The item holding the corner.
+ * @param src The corner's producer, TR_SRC_MESH or TR_SRC_RIBBON.
  * @param c The corner.
  * @param w Receives the previous point.
  * @return 1 when found; 0 for a record or vertex with no previous state, a
  *         pair spanning more than TR_PAIR_STALE_NS, a ribbon slot whose
  *         live pointer changed, or a ring that does not decode. */
-static int tr_prev_point(const tr_item* it, const tr_corner* c, int32_t w[3]) {
-    if (it->src == TR_SRC_MESH) {
+static int tr_prev_point(int src, const tr_corner* c, int32_t w[3]) {
+    if (src == TR_SRC_MESH) {
         const openpete_interp_obj_t* o = tr_pair(c->key, 12u);
         if (!o) return 0;
         memcpy(w, o->prev, 12);
@@ -833,52 +861,472 @@ static int tr_prev_point(const tr_item* it, const tr_corner* c, int32_t w[3]) {
     return 1;
 }
 
-/** @brief Computes one corner's sub-tick screen displacement.
+/** @brief Projects the point a corner was placed about as a present shows it.
  *
- * The shown point is the tick's point moved toward its previous point by
- * (1 - alpha); a previous point farther than TR_REUSE_CEILING is not used
- * and the point stays at the tick's. The displacement is the screen
- * position of the shown point under the view minus the corner's screen
- * position under the tick's camera. It is zero for a corner with no key or
- * whose tick point was behind the near floor, and for a shown point behind
- * the near floor. Updates the rebase statistics.
- * @param it The item, its dx and dy written.
- * @param k The corner index, 0..3.
- * @param v The present's view.
- * @param alpha The present's position in the tick interval. */
-static void tr_rebase_corner(tr_item* it, int k, const ngte_view* v, double alpha) {
-    const tr_corner* c = &it->c[k];
-    it->dx[k] = 0.0f;
-    it->dy[k] = 0.0f;
-    if (!c->key || !c->ok) return;
+ * Below alpha 1 the point is the tick's point moved toward its previous point
+ * by (1 - alpha); a previous point farther than TR_REUSE_CEILING is not used
+ * and the point stays at the tick's. Counts the lerped and held points per
+ * producer below alpha 1.
+ * @param src The corner's producer.
+ * @param c The corner.
+ * @param v The view to project under.
+ * @param alpha The present's position in the tick interval; 1 or above shows the tick's point.
+ * @param o Receives the projection.
+ * @return 1 when the corner has a source, its tick point stood in front of
+ *         the near floor and the shown point does too. */
+static int tr_shown(int src, const tr_corner* c, const ngte_view* v, double alpha, ngte_proj* o) {
+    if (!c->key || !c->ok) return 0;
     double p[3] = { (double)c->w[0], (double)c->w[1], (double)c->w[2] };
-    int32_t pw[3];
-    int lerped = 0;
-    if (tr_prev_point(it, c, pw)) {
-        double d[3], sq = 0.0;
-        for (int j = 0; j < 3; j++) { d[j] = (double)pw[j] - p[j]; sq += d[j] * d[j]; }
-        if (sq <= TR_REUSE_CEILING * TR_REUSE_CEILING) {
-            for (int j = 0; j < 3; j++) p[j] += d[j] * (1.0 - alpha);
-            if (sqrt(sq) > s_reb_worldmax) s_reb_worldmax = sqrt(sq);
-            lerped = 1;
+    if (alpha < 1.0) {
+        int32_t pw[3];
+        int lerped = 0;
+        if (tr_prev_point(src, c, pw)) {
+            double d[3], sq = 0.0;
+            for (int j = 0; j < 3; j++) { d[j] = (double)pw[j] - p[j]; sq += d[j] * d[j]; }
+            if (sq <= TR_REUSE_CEILING * TR_REUSE_CEILING) {
+                for (int j = 0; j < 3; j++) p[j] += d[j] * (1.0 - alpha);
+                s_reb_worldmax = fmax(s_reb_worldmax, sqrt(sq));
+                lerped = 1;
+            }
         }
+        s_reb_stat[src][lerped ? 0 : 1]++;
     }
-    s_reb_stat[it->src][lerped ? 0 : 1]++;
-    ngte_proj o;
-    tr_project_world(v, p, &o);
-    /* A shown point behind the near floor has no screen position to move to;
-     * the corner holds the tick's. */
-    if (o.m3 < TR_NEAR_M3) return;
-    it->dx[k] = (float)(o.sx - c->sx);
-    it->dy[k] = (float)(o.sy - c->sy);
-    const double m = fmax(fabs((double)it->dx[k]), fabs((double)it->dy[k]));
-    if (m > s_reb_screenmax) s_reb_screenmax = m;
+    tr_project_world(v, p, o);
+    return o->m3 >= TR_NEAR_M3;
 }
 
-/** @brief Reports whether the sub-tick rebase is enabled; OPENPETE_TRACERS_INTERP=0 disables it.
+/** @brief The ribbon's half-width at its head in screen pixels, from the head's view-Z.
  *
- * Disabled, the replay stays at the tick's screen positions, the
- * engagement leg of the sub-tick harness. Latched on the first call.
+ * The routine divides the record's signed width byte, shifted left 11, by the
+ * head's SZ3 floored at 0x80, and turns a zero quotient into +1 or -1 by the
+ * byte's sign (Spyro 3 mobyfunc.s:3078-3092). Its SZ3 is the view-Z of the
+ * halved camera-relative vector (:2984-2999), half the full-unit m3. The
+ * width scales with the view's --fov factor, as the projection does.
+ * @param wb The signed width byte.
+ * @param m3 The head's view-Z in full world units.
+ * @param s The view's --fov scale.
+ * @return The signed half-width; its sign picks the axis. */
+static double rib_head_width(int wb, double m3, double s) {
+    const double sz = fmax(m3 * 0.5, 128.0);
+    double a = (double)wb * 2048.0 / sz;
+    if (fabs(a) < 1.0) a = (wb >= 0) ? 1.0 : -1.0;
+    return a * s;
+}
+
+/** @brief Places one ribbon corner about its point's screen position.
+ *
+ * The point's half-width tapers linearly from the head's to zero at the tail:
+ * the routine adds 0x1000 / (count - 1) to a blend per point and subtracts
+ * that fraction of the head's width (:3045-3049, :3128-3132). A non-negative
+ * width offsets along screen Y and a negative one along screen X, the packed
+ * word's high or low half (:3120-3122, :3132-3136); corners 0 and 1 sit at
+ * the point minus the offset, 2 and 3 plus it (:3124-3127, :3138-3141).
+ * @param sx The point's screen X.
+ * @param sy The point's screen Y.
+ * @param a The head's signed half-width (rib_head_width).
+ * @param age The point's place counted back from the head.
+ * @param count The ring's point count, at least 2.
+ * @param k The corner index, 0..3.
+ * @param x Receives the corner's screen X.
+ * @param y Receives the corner's screen Y. */
+static void rib_corner_xy(double sx, double sy, double a, int age, int count, int k,
+                          float* x, float* y) {
+    const double w = a * (1.0 - (double)age / (double)(count - 1));
+    const double o = (k < 2) ? -w : w;
+    *x = (float)(w >= 0.0 ? sx : sx + o);
+    *y = (float)(w >= 0.0 ? sy + o : sy);
+}
+
+/** @brief Builds an item's four corners in float under a view at a sub-tick phase.
+ *
+ * A mesh corner is its vertex's projection; a ribbon corner is its point's
+ * projection offset by rib_corner_xy at the half-width of the head shown at
+ * the same phase (the tick's head view-Z when the shown head stands behind
+ * the near floor). A corner whose point has no screen position takes the
+ * fallback's corner.
+ * @param it The item.
+ * @param v The view.
+ * @param alpha The present's position in the tick interval; 1 builds the tick.
+ * @param fbx The fallback corners' X, or NULL to fail instead.
+ * @param fby The fallback corners' Y.
+ * @param x Receives the corners' screen X.
+ * @param y Receives the corners' screen Y.
+ * @return 1 when built, 0 for an item with no source or a corner with no
+ *         screen position and no fallback. */
+static int tr_item_build(const tr_item* it, const ngte_view* v, double alpha,
+                         const float* fbx, const float* fby, float x[4], float y[4]) {
+    if (it->src == TR_SRC_NONE) return 0;
+    double a = 0.0;
+    if (it->src == TR_SRC_RIBBON) {
+        ngte_proj h;
+        const double m3 = tr_shown(it->src, &it->head, v, alpha, &h) ? h.m3 : it->head.m3;
+        a = rib_head_width(it->wb, m3, v->s);
+    }
+    for (int k = 0; k < 4; k++) {
+        ngte_proj o;
+        if (!tr_shown(it->src, &it->c[k], v, alpha, &o)) {
+            if (!fbx) return 0;
+            x[k] = fbx[k]; y[k] = fby[k];
+        } else if (it->src == TR_SRC_MESH) {
+            x[k] = (float)o.sx; y[k] = (float)o.sy;
+        } else {
+            rib_corner_xy(o.sx, o.sy, a, it->c[k].age, it->count, k, &x[k], &y[k]);
+        }
+    }
+    return 1;
+}
+
+/* ---- the vertex probe (OPENPETE_TRACER_VTX) ------------------------------
+ *
+ * Printed at exit:
+ *   * emu: each built corner of the routine's own primitive against an
+ *     integer re-run of the routine's arithmetic on the same record, the
+ *     calibration of the construction the float build follows.
+ *   * cal: each corner of the routine's primitive minus the capture's float
+ *     build, per axis; with each tick's mean and the count of ticks whose mean
+ *     differs from the previous tick's.
+ *   * place: per sub-tick present, the corner the feed placed before the float
+ *     build (the routine's corner moved by its point's screen displacement)
+ *     against the corner built at the state the present shows; on a canonical
+ *     present the routine's corner against the capture's build.
+ *   * jump: each corner at the alpha-0 present of tick N + 1 minus the same
+ *     corner at the alpha-1 present of tick N, which show the same instant, for
+ *     the fed and the pre-build forms; and ident, the alpha-1 present minus the
+ *     canonical present of the same tick, fed form.
+ *   * turning: sub-tick presents whose camera matrix differs from the tick's. */
+
+typedef struct { unsigned long n; double sum, mn, mx; } tr_acc;
+
+/** @brief Adds one sample to a running count, sum, minimum and maximum.
+ * @param a The accumulator.
+ * @param d The sample. */
+static void tr_acc_add(tr_acc* a, double d) {
+    if (a->n == 0 || d < a->mn) a->mn = d;
+    if (a->n == 0 || d > a->mx) a->mx = d;
+    a->sum += d;
+    a->n++;
+}
+
+enum { TV_FED, TV_OLD, TV_N };
+
+typedef struct {
+    tr_acc        cal[2], tick[2], place[3], jump[TV_N], ident;
+    tr_acc        mesh[2], centre[2], width;   /* cal split: mesh, ribbon point, ribbon half-width */
+    unsigned long emu_n, emu_hit, ticks_cmp, ticks_chg, presents, turning, built, unbuilt;
+    double        tsum[2];      /* the open tick's cal sums */
+    unsigned long tn;
+    double        last_mean[2];
+    int           have_last;
+    int           cam_M[3][3];  /* the tick's camera matrix */
+} tr_vtx_t;
+static tr_vtx_t s_vtx;
+
+/* One corner's history, keyed by its point and side: the fed and pre-build
+ * forms at the last canonical and alpha-1 presents, with their epochs. */
+#define TR_VKEYS 8192
+typedef struct {
+    uint64_t key;
+    unsigned canon_epoch, a1_epoch;
+    float    canon[2], a1[TV_N][2];
+} tr_vkey;
+static tr_vkey s_vkey[TR_VKEYS];
+
+/** @brief OPENPETE_TRACER_VTX, latched on first use: 0 off, 1 the exit summary.
+ * @return The level. */
+static int tr_vtx_level(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TRACER_VTX"); v = (e && *e) ? atoi(e) : 0; }
+    return v;
+}
+
+/** @brief Prints the mean, minimum and maximum of one accumulator on a stderr line.
+ * @param name The line's label.
+ * @param a The accumulator. */
+static void tr_acc_print(const char* name, const tr_acc* a) {
+    fprintf(stderr, "[tracer-vtx %s] n=%lu mean=%.6f min=%.6f max=%.6f\n", name, a->n,
+            a->n ? a->sum / (double)a->n : 0.0, a->mn, a->mx);
+}
+
+/** @brief Prints the probe's summary to stderr; registered with atexit. */
+static void tr_vtx_report(void) {
+    const tr_vtx_t* t = &s_vtx;
+    fprintf(stderr, "[tracer-vtx emu] corners=%lu match=%lu built_items=%lu unbuilt_items=%lu\n",
+            t->emu_n, t->emu_hit, t->built, t->unbuilt);
+    tr_acc_print("cal x", &t->cal[0]);
+    tr_acc_print("cal y", &t->cal[1]);
+    tr_acc_print("tick_mean x", &t->tick[0]);
+    tr_acc_print("tick_mean y", &t->tick[1]);
+    fprintf(stderr, "[tracer-vtx tick change] compared=%lu changed=%lu\n", t->ticks_cmp, t->ticks_chg);
+    tr_acc_print("cal mesh x", &t->mesh[0]);
+    tr_acc_print("cal mesh y", &t->mesh[1]);
+    tr_acc_print("cal ribbon point x", &t->centre[0]);
+    tr_acc_print("cal ribbon point y", &t->centre[1]);
+    tr_acc_print("cal ribbon half-width", &t->width);
+    tr_acc_print("place canon", &t->place[0]);
+    tr_acc_print("place inter", &t->place[1]);
+    tr_acc_print("place inter turning", &t->place[2]);
+    tr_acc_print("jump fed", &t->jump[TV_FED]);
+    tr_acc_print("jump old", &t->jump[TV_OLD]);
+    tr_acc_print("ident fed", &t->ident);
+    fprintf(stderr, "[tracer-vtx turning] presents=%lu turning=%lu\n", t->presents, t->turning);
+}
+
+/** @brief Latches the probe and registers its summary on first use.
+ * @return The level, 0 when the probe is off. */
+static int tr_vtx_on(void) {
+    static int armed = 0;
+    const int lv = tr_vtx_level();
+    if (lv > 0 && !armed) { armed = 1; atexit(tr_vtx_report); }
+    return lv;
+}
+
+/** @brief Finds or claims the history slot of one corner key, overwriting a colliding key.
+ * @param key The corner key.
+ * @return The slot. */
+static tr_vkey* tr_vkey_get(uint64_t key) {
+    tr_vkey* e = &s_vkey[(key * 0x9E3779B97F4A7C15ull) >> 51];
+    if (e->key != key) { memset(e, 0, sizeof *e); e->key = key; }
+    return e;
+}
+
+/** @brief The history key of an item's corner: the point's record and age, or its vertex, and the corner's side.
+ * @param it The item.
+ * @param k The corner index.
+ * @return The key. */
+static uint64_t tr_corner_key(const tr_item* it, int k) {
+    const tr_corner* c = &it->c[k];
+    return ((uint64_t)c->key << 16) | ((uint64_t)it->src << 13) |
+           ((uint64_t)(c->age & 0xFF) << 1) | (uint64_t)(k >= 2);
+}
+
+/** @brief Re-runs the ribbon routine's integer projection of one point.
+ *
+ * The halves, shifted left one, minus the camera >> 1 load as VZ0 and a packed
+ * VXY0 whose low half borrows from the high (:2984-2999); RTPS under the
+ * camera matrix with a zero translation; the packed SXY2 shifted left five and
+ * back (:3019, :3113-3114).
+ * @param v The tick's view.
+ * @param w The point in full world units.
+ * @param sz3 Receives SZ3.
+ * @return The packed screen word the corners are offset from. */
+static int32_t rib_emu_point(const ngte_view* v, const int32_t w[3], int32_t* sz3) {
+    const int32_t t0 = w[0] / 2 - s_cam_half[0];
+    const int32_t t1 = s_cam_half[1] - w[1] / 2;
+    const int32_t t2 = s_cam_half[2] - w[2] / 2;
+    const uint32_t xy = (uint32_t)t1 + ((uint32_t)t2 << 16);
+    static const int k_tr0[3] = { 0, 0, 0 };
+    ngte_rtps_out o;
+    ngte_rtps_int(v->cam_M, k_tr0, (int16_t)(xy & 0xFFFFu), (int16_t)(xy >> 16), (int16_t)t0,
+                  v->ofx, v->ofy, (int)v->H_canon, &o);
+    *sz3 = o.sz3;
+    const uint32_t sxy = ((uint32_t)(uint16_t)o.sx) | ((uint32_t)(uint16_t)o.sy << 16);
+    return (int32_t)(sxy << 5) >> 5;
+}
+
+/** @brief Re-runs the ribbon routine's integer corners of one item.
+ *
+ * The head's half-width is the width byte << 11 over the head's SZ3 floored
+ * at 0x80, a zero quotient made +1 or -1 (:3078-3092); a point's is that less
+ * the product with its blend, age * (0x1000 / (count - 1)), shifted right 12,
+ * placed in the packed word's high half while non-negative and sign-extended
+ * into the low half otherwise (:3120-3136).
+ * @param v The tick's view.
+ * @param it The item.
+ * @param ex Receives the corners' X.
+ * @param ey Receives the corners' Y. */
+static void rib_emu_corners(const ngte_view* v, const tr_item* it, int ex[4], int ey[4]) {
+    int32_t sz;
+    rib_emu_point(v, it->head.w, &sz);
+    const int32_t num = (int32_t)((uint32_t)it->wb << 11);
+    int32_t a2 = num / (sz < 0x80 ? 0x80 : sz);
+    if (a2 == 0) a2 = (num >= 0) ? 1 : -1;
+    const int32_t step = 0x1000 / (it->count - 1);
+    for (int k = 0; k < 4; k++) {
+        const int32_t xy = rib_emu_point(v, it->c[k].w, &sz);
+        const uint32_t prod = (uint32_t)(a2 * it->c[k].age * step);
+        int32_t at = (int32_t)(((uint32_t)a2 - (prod >> 12)) << 16);
+        if (at < 0) at >>= 16;
+        const uint32_t word = (k < 2) ? (uint32_t)xy - (uint32_t)at : (uint32_t)xy + (uint32_t)at;
+        ex[k] = (int16_t)(word & 0xFFFFu);
+        ey[k] = (int16_t)(word >> 16);
+    }
+}
+
+/** @brief Re-runs the mesh routine's integer corners of one item.
+ *
+ * Each vertex's camera-relative offset is shifted right by the descriptor's
+ * shift, packed masked into VXY0 with the X offset as VZ0, and RTPSed under
+ * the camera matrix with a zero translation; the corner is SXY2
+ * (:3227-3241).
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param it The item.
+ * @param ex Receives the corners' X.
+ * @param ey Receives the corners' Y. */
+static void msh_emu_corners(CPUState* cpu, const ngte_view* v, const tr_item* it, int ex[4], int ey[4]) {
+    int32_t cam[3];
+    for (int k = 0; k < 3; k++) cam[k] = (int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)k);
+    const int sh = it->shift & 31;
+    static const int k_tr0[3] = { 0, 0, 0 };
+    for (int k = 0; k < 4; k++) {
+        const int32_t* w = it->c[k].w;
+        const int32_t a3 = (w[0] - cam[0]) >> sh;
+        const int32_t t0 = (cam[1] - w[1]) >> sh;
+        const int32_t t1 = (cam[2] - w[2]) >> sh;
+        ngte_rtps_out o;
+        ngte_rtps_int(v->cam_M, k_tr0, (int16_t)t0, (int16_t)t1, (int16_t)a3,
+                      v->ofx, v->ofy, (int)v->H_canon, &o);
+        ex[k] = o.sx;
+        ey[k] = o.sy;
+    }
+}
+
+/** @brief Closes the open tick of the probe's calibration: its mean per axis and whether it changed from the previous tick's. */
+static void tr_vtx_tick_close(void) {
+    tr_vtx_t* t = &s_vtx;
+    if (t->tn == 0) return;
+    const double m[2] = { t->tsum[0] / (double)t->tn, t->tsum[1] / (double)t->tn };
+    for (int a = 0; a < 2; a++) tr_acc_add(&t->tick[a], m[a]);
+    if (t->have_last) {
+        t->ticks_cmp++;
+        if (fabs(m[0] - t->last_mean[0]) > 1e-4 || fabs(m[1] - t->last_mean[1]) > 1e-4) t->ticks_chg++;
+    }
+    t->last_mean[0] = m[0]; t->last_mean[1] = m[1];
+    t->have_last = 1;
+    t->tsum[0] = t->tsum[1] = 0.0;
+    t->tn = 0;
+}
+
+/** @brief Splits one built item's calibration error by its source: the mesh vertex, or the ribbon point and half-width.
+ *
+ * A ribbon segment's corners 0 and 2 straddle one point by its half-width
+ * along one screen axis, so their mean is the point and half their
+ * difference, summed over both axes, the half-width.
+ * @param it The item. */
+static void tr_vtx_split(const tr_item* it) {
+    tr_vtx_t* t = &s_vtx;
+    const float* px = it->p.x;
+    const float* py = it->p.y;
+    if (it->src == TR_SRC_MESH) {
+        for (int k = 0; k < 4; k++) {
+            tr_acc_add(&t->mesh[0], (double)px[k] - it->bx[k]);
+            tr_acc_add(&t->mesh[1], (double)py[k] - it->by[k]);
+        }
+        return;
+    }
+    for (int k = 0; k < 2; k++) {
+        tr_acc_add(&t->centre[0], 0.5 * (((double)px[k] + px[k + 2]) - ((double)it->bx[k] + it->bx[k + 2])));
+        tr_acc_add(&t->centre[1], 0.5 * (((double)py[k] + py[k + 2]) - ((double)it->by[k] + it->by[k + 2])));
+        const double g = ((double)px[k + 2] - px[k]) + ((double)py[k + 2] - py[k]);
+        const double b = ((double)it->bx[k + 2] - it->bx[k]) + ((double)it->by[k + 2] - it->by[k]);
+        tr_acc_add(&t->width, 0.5 * (g - b));
+    }
+}
+
+/** @brief Calibrates one call's items at capture and records their canonical corners.
+ *
+ * Every built corner adds its routine-minus-build error to cal and the open
+ * tick, the integer re-run's agreement with the routine's corner to emu,
+ * the routine-minus-build distance to the canonical place statistic, and the
+ * build to the corner's canonical history.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param set The call's items.
+ * @param n The item count. */
+static void tr_vtx_capture(CPUState* cpu, const ngte_view* v, const tr_item* set, int n) {
+    if (!tr_vtx_on()) return;
+    tr_vtx_t* t = &s_vtx;
+    memcpy(t->cam_M, v->cam_M, sizeof t->cam_M);
+    for (int i = 0; i < n; i++) {
+        const tr_item* it = &set[i];
+        if (!it->built) { t->unbuilt++; continue; }
+        t->built++;
+        if (it->p.nv == 4) tr_vtx_split(it);
+        int ex[4], ey[4];
+        if (it->src == TR_SRC_RIBBON) rib_emu_corners(v, it, ex, ey);
+        else msh_emu_corners(cpu, v, it, ex, ey);
+        for (int k = 0; k < it->p.nv && k < 4; k++) {
+            t->emu_n++;
+            if ((float)ex[k] == it->p.x[k] && (float)ey[k] == it->p.y[k]) t->emu_hit++;
+            const double dx = (double)it->p.x[k] - it->bx[k], dy = (double)it->p.y[k] - it->by[k];
+            tr_acc_add(&t->cal[0], dx);
+            tr_acc_add(&t->cal[1], dy);
+            t->tsum[0] += dx; t->tsum[1] += dy; t->tn++;
+            tr_acc_add(&t->place[0], hypot(dx, dy));
+            tr_vkey* e = tr_vkey_get(tr_corner_key(it, k));
+            e->canon_epoch = s_epoch;
+            e->canon[0] = it->bx[k]; e->canon[1] = it->by[k];
+        }
+    }
+}
+
+/** @brief Adds one corner of one sub-tick present to the place, jump and identity statistics.
+ *
+ * The pre-build form is the routine's corner moved by its point's screen
+ * displacement from the tick's projection to the shown one (held where the
+ * shown point has no screen position).
+ * @param it The item.
+ * @param k The corner index.
+ * @param v The present's view.
+ * @param alpha The present's position in the tick interval.
+ * @param turning Nonzero when the present's camera matrix differs from the tick's. */
+static void tr_vtx_corner(const tr_item* it, int k, const ngte_view* v, double alpha, int turning) {
+    tr_vtx_t* t = &s_vtx;
+    const float* fx = s_reb_active ? it->px : it->bx;
+    const float* fy = s_reb_active ? it->py : it->by;
+    float f[TV_N][2] = { { fx[k], fy[k] }, { it->p.x[k], it->p.y[k] } };
+    ngte_proj o;
+    if (alpha < 1.0 && tr_shown(it->src, &it->c[k], v, alpha, &o)) {
+        f[TV_OLD][0] += (float)(o.sx - it->c[k].sx);
+        f[TV_OLD][1] += (float)(o.sy - it->c[k].sy);
+    }
+    const double d = hypot((double)f[TV_OLD][0] - f[TV_FED][0], (double)f[TV_OLD][1] - f[TV_FED][1]);
+    tr_acc_add(&t->place[1], d);
+    if (turning) tr_acc_add(&t->place[2], d);
+    tr_vkey* e = tr_vkey_get(tr_corner_key(it, k));
+    if (alpha <= 0.0 && e->a1_epoch != 0 && e->a1_epoch + 1u == s_epoch)
+        for (int m = 0; m < TV_N; m++)
+            tr_acc_add(&t->jump[m], hypot((double)f[m][0] - e->a1[m][0], (double)f[m][1] - e->a1[m][1]));
+    if (alpha >= 1.0 && e->canon_epoch == s_epoch)
+        tr_acc_add(&t->ident, hypot((double)f[TV_FED][0] - e->canon[0], (double)f[TV_FED][1] - e->canon[1]));
+    if (alpha >= 1.0) { e->a1_epoch = s_epoch; memcpy(e->a1, f, sizeof e->a1); }
+}
+
+/** @brief Adds one sub-tick present's built corners to the probe (tr_vtx_corner) and counts a turning camera.
+ * @param v The present's view.
+ * @param alpha The present's position in the tick interval. */
+static void tr_vtx_present(const ngte_view* v, double alpha) {
+    if (!tr_vtx_on()) return;
+    tr_vtx_t* t = &s_vtx;
+    t->presents++;
+    const int turning = memcmp(t->cam_M, v->cam_M, sizeof t->cam_M) != 0;
+    t->turning += (unsigned long)turning;
+    for (int i = 0; i < s_tick_n; i++) {
+        if (!s_tick[i].built) continue;
+        for (int k = 0; k < s_tick[i].p.nv && k < 4; k++) tr_vtx_corner(&s_tick[i], k, v, alpha, turning);
+    }
+}
+
+/** @brief Builds the call's items in float under the tick's view and calibrates them.
+ *
+ * An item that does not build (no source, or a point with no screen
+ * position) feeds the routine's corners.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view. */
+static void tr_build_call(CPUState* cpu, const ngte_view* v) {
+    for (int i = 0; i < s_item_n; i++) {
+        tr_item* it = &s_item[i];
+        it->built = tr_item_build(it, v, 1.0, NULL, NULL, it->bx, it->by);
+    }
+    tr_vtx_capture(cpu, v, s_item, s_item_n);
+}
+
+/* ---- sub-tick rebuild ----------------------------------------------------- */
+
+/** @brief Reports whether the sub-tick rebuild is enabled; OPENPETE_TRACERS_INTERP=0 disables it.
+ *
+ * Disabled, the replay stays at the tick's build, the engagement leg of the
+ * sub-tick harness. Latched on the first call.
  * @return 0 when OPENPETE_TRACERS_INTERP starts with '0', else 1. */
 static int tr_interp_enabled(void) {
     static int v = -1;
@@ -886,30 +1334,30 @@ static int tr_interp_enabled(void) {
     return v;
 }
 
-/** @brief Prints the rebase's run totals to stderr, registered with atexit under OPENPETE_TRACER_REBASE_DBG.
+/** @brief Prints the rebuild's run totals to stderr, registered with atexit under OPENPETE_TRACER_REBASE_DBG.
  *
- * The line carries the lerped and held corner counts per producer and the
- * largest world step paired and screen displacement applied. A run whose
- * lerped count is zero rebased nothing against a previous point. */
+ * The line carries the lerped and held point counts per producer and the
+ * largest world step paired. A run whose lerped count is zero rebuilt
+ * nothing against a previous point. */
 static void tr_rebase_report(void) {
     fprintf(stderr, "[tracer-rebase] ribbon lerped=%lu held=%lu mesh lerped=%lu held=%lu "
-            "worldmax=%.3f screenmax=%.3f\n",
+            "worldmax=%.3f\n",
             s_reb_stat[TR_SRC_RIBBON][0], s_reb_stat[TR_SRC_RIBBON][1],
-            s_reb_stat[TR_SRC_MESH][0], s_reb_stat[TR_SRC_MESH][1],
-            s_reb_worldmax, s_reb_screenmax);
+            s_reb_stat[TR_SRC_MESH][0], s_reb_stat[TR_SRC_MESH][1], s_reb_worldmax);
 }
 
-/** @brief Computes every held corner's sub-tick screen displacement for the pose this present shows.
+/** @brief Builds every held item's corners for the pose this present shows.
  *
  * The staged camera resolves through the sub-tick view, so the view built
- * here is the interpolated transform the rest of the pass draws under. At
- * alpha 1 or above, with an empty set or with the rebase disabled, the
- * rebase stays off and the replay emits the captured corners. The first
- * call past those conditions latches OPENPETE_TRACER_REBASE_DBG and
- * registers tr_rebase_report.
- * @param cpu The guest CPU state.
+ * here is the interpolated transform the rest of the pass draws under. A
+ * corner with no screen position at this phase keeps the capture's build. At
+ * alpha 1 or above, with an empty set or with the rebuild disabled, the
+ * rebuild stays off and the replay emits the capture's build. The first call
+ * past those conditions latches OPENPETE_TRACER_REBASE_DBG and registers
+ * tr_rebase_report.
+ * @param v The present's view.
  * @param alpha The present's position in the tick interval, 0..1. */
-static void tr_rebase_all(CPUState* cpu, double alpha) {
+static void tr_rebase_all(const ngte_view* v, double alpha) {
     s_reb_active = 0;
     if (alpha >= 1.0 || s_tick_n <= 0 || !tr_interp_enabled()) return;
     static int dbg = -1;
@@ -918,10 +1366,10 @@ static void tr_rebase_all(CPUState* cpu, double alpha) {
         dbg = (e && *e && *e != '0');
         if (dbg) atexit(tr_rebase_report);
     }
-    ngte_view v;
-    ngte_view_build(cpu, &v);
-    for (int i = 0; i < s_tick_n; i++)
-        for (int k = 0; k < 4; k++) tr_rebase_corner(&s_tick[i], k, &v, alpha);
+    for (int i = 0; i < s_tick_n; i++) {
+        tr_item* it = &s_tick[i];
+        if (it->built) tr_item_build(it, v, alpha, it->bx, it->by, it->px, it->py);
+    }
     s_reb_active = 1;
 }
 
@@ -930,8 +1378,12 @@ void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
     const int pick = cut_held_sets_enter(&s_sets, hold);
     if (hook_reextract_ready_held(RP_TRACER, pick)) {
         /* On a held cut the staged camera is tick N-1's, the camera the shown
-         * set was drawn under: alpha 1 emits its captured corners. */
-        tr_rebase_all(cpu, (bracketed && pick < 0) ? alpha : 1.0);
+         * set was built under: alpha 1 emits the capture's build. */
+        const double a = (bracketed && pick < 0) ? alpha : 1.0;
+        ngte_view v;
+        ngte_view_build(cpu, &v);
+        tr_rebase_all(&v, a);
+        if (pick < 0) tr_vtx_present(&v, a);
         render_material_level_push(cpu);
         tr_feed_native(s_tick, s_tick_n);
         s_reb_active = 0;
