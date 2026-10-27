@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 98ee5cafb2f206ba198f43f4938d1be4cf5b2786
+# head: 64687652453cc8bacd5a2b8dd57c9e50c663c4eb
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -115,7 +115,7 @@ games/common/renderer/moby.c	moby_decode_project	75	0
 games/common/renderer/moby.c	moby_native_pass	49	0	
 games/common/renderer/moby.c	moby_reextract_body	49	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
-games/common/renderer/moby.c	project_all_shaded	183	0	
+games/common/renderer/moby.c	project_all_shaded	167	0	
 games/common/renderer/moby.c	reextract_record_pass	106	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
@@ -124,7 +124,7 @@ games/common/renderer/moby.c	shaded_verify	48	0
 games/common/renderer/moby.c	special_census_face	38	0	
 games/common/renderer/moby.c	specular_env_calibrate	47	0	
 games/common/renderer/moby.c	walk_prologue	38	0	
-games/common/renderer/moby.c	walk_records	360	0	
+games/common/renderer/moby.c	walk_records	359	0	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0	
 games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0	
 games/common/renderer/moby_game_spyro23.c	s23_simple_decode	125	0	
