@@ -222,6 +222,37 @@ int openpete_mod_link_build(openpete_mod_link_ctx_t* ctx,
                             void* user, const char* log_path, int* case_of,
                             openpete_mod_link_module_t* out);
 
+/** @brief Generate a combined module's text and case ids, the first half of openpete_mod_link_build; no glslang compile runs.
+ *
+ * @param ctx The link context.
+ * @param members The members, as openpete_mod_link_build takes them.
+ * @param n Their count, at least 1.
+ * @param contract OPENPETE_MOD_LINK_CONTRACT_*.
+ * @param profile The profile; OPENPETE_MOD_LINK_ACTOR on the scene contract only.
+ * @param case_of Receives each input member's case id; may be NULL.
+ * @param out Receives the text and the case count; free with openpete_mod_link_module_free.
+ * @return 0, or -1 when the inputs are bad or the text cannot be generated (out->log says which). */
+int openpete_mod_link_build_text(openpete_mod_link_ctx_t* ctx,
+                                 const openpete_mod_link_member_t* const* members, int n,
+                                 int contract, int profile, int* case_of,
+                                 openpete_mod_link_module_t* out);
+
+/** @brief Compile a module whose text openpete_mod_link_build_text generated, the second half of openpete_mod_link_build: the compile, the discard refusal and the constant-table move.
+ *
+ * Reads no member, so it may run on another thread than the text's
+ * generation while the members change, given a non-NULL @p compile.
+ * @param ctx The link context; read only when @p compile is NULL.
+ * @param contract The contract the text was generated for.
+ * @param profile The profile the text was generated for.
+ * @param compile The compile, or NULL for an uncached glslang compile through @p ctx.
+ * @param user Passed to @p compile.
+ * @param log_path The file a glslang failure is written to.
+ * @param out The module holding the text; receives the SPIR-V and the tables.
+ * @return 0, or -1 when the compile fails or the module is refused (out->log says which). */
+int openpete_mod_link_build_compile(openpete_mod_link_ctx_t* ctx, int contract, int profile,
+                                    openpete_mod_link_compile_fn compile, void* user,
+                                    const char* log_path, openpete_mod_link_module_t* out);
+
 /** @brief Return whether a fragment module is refused for a mod's api pin: pinned at 13 or later and op_material reaching a discard.
  *
  * @param api_pin The owner's manifest api pin.

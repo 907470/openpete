@@ -590,7 +590,10 @@ int mod_mat_append(const char* id, const openpete_mod_material_selector_t* sel,
 int mod_mat_enable(int material, int on) {
     if (material < 0 || material >= s_mat_count || !s_mats[material].live)
         return -1;
-    if (s_mats[material].user_enabled != (on ? 1 : 0)) mod_mat_overlap_bump();
+    /* An enable to the state already set changes no outcome: no table
+     * generation, overlap input or terrain epoch moves, so no sector re-bakes. */
+    if (s_mats[material].user_enabled == (on ? 1 : 0)) return 0;
+    mod_mat_overlap_bump();
     s_mats[material].user_enabled = on ? 1 : 0;
     if (terrain_sel_relevant(&s_mats[material])) s_mat_ter_epoch++;
     mod_mat_rearm_split();

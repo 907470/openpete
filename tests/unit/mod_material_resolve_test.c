@@ -1020,7 +1020,8 @@ static void case_tick_memo(void) {
     uint32_t len = 0;
     const void* blk = openpete_mods_material_slot_uniforms(r7, &len);
     CHECK(blk && len == 16 && memcmp(blk, v.slots[s7].bytes, 16) == 0, "replayed block");
-    mod_mat_enable(ma, 1);                   /* a table change voids the memo */
+    mod_mat_enable(ma, 0);                   /* an enable flip and back: a table change voids the memo */
+    mod_mat_enable(ma, 1);
     openpete_mods_material_frame_reset(0);
     openpete_mods_material_moby_slot(NULL, 7, 0x80030000u);
     CHECK(s_calls == 4, "after a table change calls %d", s_calls);
@@ -1702,6 +1703,24 @@ static void case_ter_epoch_skip(void) {
     OUTCOME("an exclusive-only retune at either store site keeps the epoch; a key change bumps it");
 }
 
+/** @brief An enable to the state already set leaves the terrain epoch and the table generation; a flip moves both. */
+static void case_ter_epoch_enable(void) {
+    begin("Terrain epoch: no-op enable");
+    stub_mod_t* a = mod("fx-a", 0, 13);
+    const int m = reg(a, sel_ter(), SCENE, NULL);
+    CHECK(mod_mat_enable(m, 1) == 0, "armed");
+    const unsigned e0 = openpete_mods_material_terrain_epoch(), g0 = mod_mat_table_gen();
+    CHECK(mod_mat_enable(m, 1) == 0 && openpete_mods_material_terrain_epoch() == e0 &&
+          mod_mat_table_gen() == g0, "same state: no bump");
+    CHECK(mod_mat_enable(m, 0) == 0 && openpete_mods_material_terrain_epoch() == e0 + 1 &&
+          mod_mat_table_gen() != g0, "off: bump");
+    const unsigned e1 = openpete_mods_material_terrain_epoch(), g1 = mod_mat_table_gen();
+    CHECK(mod_mat_enable(m, 0) == 0 && openpete_mods_material_terrain_epoch() == e1 &&
+          mod_mat_table_gen() == g1, "off again: no bump");
+    CHECK(mod_mat_enable(m, 1) == 0 && openpete_mods_material_terrain_epoch() == e1 + 1, "on: bump");
+    OUTCOME("a no-op enable keeps the terrain epoch and the table generation; an enable flip bumps both");
+}
+
 /* ------------------------------------------------------------------ */
 /* Draw-time chains. */
 
@@ -2206,6 +2225,7 @@ int main(void) {
     case_ter_chain_fallback();
     case_ter_chain_table_full();
     case_ter_epoch_skip();
+    case_ter_epoch_enable();
     case_dt_chain();
     case_dt_held();
     case_dt_pending();

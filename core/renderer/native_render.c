@@ -19610,18 +19610,52 @@ void openpete_native_material_chain_bind(struct rhi_device *dev, int entry,
     rhi_ubo_bind_data(dev, s_chain_ubo, 0, (uint32_t)blk, nr_material_cdata(cd, s_chain_ubo));
 }
 
+/** @brief Compile-pool task: decide a claimed link job's pending composition members (openpete_mods_material_chain_links_resolve). */
+static void nr_chain_links_task(void* tag) {
+    (void)tag;
+    openpete_mods_material_chain_links_resolve();
+}
+
+/** @brief Compile-pool task: compile a claimed combined module set (openpete_mods_material_chain_compile). */
+static void nr_chain_compile_task(void* tag) {
+    openpete_mods_material_chain_compile((int)(intptr_t)tag);
+}
+
+/** @brief Return whether a combined module set is compiled, starting its compile when nobody has.
+ *
+ * With @p now the compile runs here, or, when a pool task holds it, this
+ * waits for the pool; otherwise the claim queues it on the compile pool
+ * and returns, so no glslang runs on this thread.
+ * @param m The module set.
+ * @param now Nonzero to finish the compile before returning.
+ * @return 1 when compiled, 0 when not yet or failed. */
+static int nr_chain_compiled(int m, int now) {
+    if (openpete_mods_material_chain_compile_state(m) != 0)
+        return openpete_mods_material_chain_compile_state(m) == 1;
+    if (openpete_mods_material_chain_compile_claim(m)) {
+        if (now) openpete_mods_material_chain_compile(m);
+        else rhi_compile_pool_submit_task(s_nr.dev, nr_chain_compile_task, (void*)(intptr_t)m);
+    } else if (now) {
+        rhi_compile_pool_wait(s_nr.dev, NULL, NULL);
+    }
+    return openpete_mods_material_chain_compile_state(m) == 1;
+}
+
 /** @brief Install the newest built combined module set once every pipeline its draw sites request with the stock vertex stage exists: publish its member set to the walks.
  *
  * The requests: a scene module's (nr_scene_reqs) and a decal module's
  * decal profile. Compose only. In a synchronous context the pipelines
  * build here; in the live present of a windowed run they queue as late
  * compiles and the set installs at the first compose after the last
- * returns, so no draw of the new set reaches a pending pipeline. Until
+ * returns, so no draw of the new set reaches a pending pipeline. The
+ * set's glslang compile runs first, here in a synchronous context and on
+ * the compile pool in the live present (nr_chain_compiled). Until
  * then the previously installed set, or none, stays: the walks treat the
- * new members as absent. A set with a failed pipeline never installs. */
+ * new members as absent. A set with a failed compile or pipeline never
+ * installs. */
 static void nr_chain_install(void) {
     const int m = openpete_mods_material_chain_pending();
-    if (m < 0) return;
+    if (m < 0 || !nr_chain_compiled(m, late_sync())) return;
     openpete_mod_material_gpu_t mg, dg;
     if (openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return;
     nr_mat_req q[NR_SCENE_REQS_MAX];
@@ -20134,13 +20168,14 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
  * set has a scene module, the decal profile when it has a decal module,
  * then the OPENPETE_MATERIAL_TER_PIPES retained-terrain slots while the
  * terrain cache is ready and the set has a terrain module. A chain whose lowest
- * member has a vertex stage builds its variant at first use.
+ * member has a vertex stage builds its variant at first use. The set's
+ * glslang compile runs first, on this thread, before play.
  * @param pump Event pump run after each slot, or NULL.
  * @return The slots visited. */
 static unsigned nr_precompile_chains(void (*pump)(void*)) {
     const int m = openpete_mods_material_chain_pending();
     openpete_mod_material_gpu_t mg;
-    if (m < 0 || openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return 0;
+    if (m < 0 || !nr_chain_compiled(m, 1) || openpete_mods_material_chain_gpu(m, 0, &mg) != 0) return 0;
     nr_mat_req q[NR_SCENE_REQS_MAX];
     const int nq = mg.frag_words ? nr_scene_reqs(&mg, q) : 0;
     unsigned n = 0;
@@ -20211,10 +20246,14 @@ static void late_queue_entered(void) {
  * once. */
 static void late_present_begin(void) {
     s_late_async = !s_nr.sync_run && !openpete_interp_deterministic();
+    openpete_mods_material_chain_async_set(s_late_async);
     if (!s_late_async) return;
     rhi_compile_pool_drain(s_nr.dev);
     late_install(false);
     late_queue_entered();
+    /* After the entered mods' slots: the pool takes the task behind them. */
+    if (openpete_mods_material_chain_links_claim())
+        rhi_compile_pool_submit_task(s_nr.dev, nr_chain_links_task, NULL);
 }
 
 /** @brief Run the pipeline precompile when nr_precompile_wanted asks for it.

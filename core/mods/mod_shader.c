@@ -348,6 +348,25 @@ static void interface_hash(char out_hex[65]) {
     openpete_sha256_hex(digest, out_hex);
 }
 
+/** @brief Start a build key: the mod API version, the glslang version and the staged interface files.
+ *
+ * @param hc The hash context to initialise and feed. */
+static void key_init_compiler(openpete_sha256_ctx* hc) {
+    openpete_sha256_init(hc);
+    const unsigned api_ver = OPENPETE_MOD_API_VERSION;
+    openpete_sha256_update(hc, &api_ver, sizeof api_ver);
+    char glslang_ver[64];
+#ifndef OPENPETE_NO_GLSLANG
+    snprintf(glslang_ver, sizeof glslang_ver, "glslang %d.%d.%d",
+             GLSLANG_VERSION_MAJOR, GLSLANG_VERSION_MINOR,
+             GLSLANG_VERSION_PATCH);
+#else
+    snprintf(glslang_ver, sizeof glslang_ver, "glslang none");
+#endif
+    key_update_str(hc, glslang_ver);
+    key_update_interface(hc);
+}
+
 /** @brief Compute a shader source's build key.
  *
  * SHA-256 over the mod API version, the glslang version, the staged
@@ -362,19 +381,7 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
     snprintf(src_path, sizeof src_path, "%s/%s", mod_dir, rel_path);
 
     openpete_sha256_ctx hc;
-    openpete_sha256_init(&hc);
-    const unsigned api_ver = OPENPETE_MOD_API_VERSION;
-    openpete_sha256_update(&hc, &api_ver, sizeof api_ver);
-    char glslang_ver[64];
-#ifndef OPENPETE_NO_GLSLANG
-    snprintf(glslang_ver, sizeof glslang_ver, "glslang %d.%d.%d",
-             GLSLANG_VERSION_MAJOR, GLSLANG_VERSION_MINOR,
-             GLSLANG_VERSION_PATCH);
-#else
-    snprintf(glslang_ver, sizeof glslang_ver, "glslang none");
-#endif
-    key_update_str(&hc, glslang_ver);
-    key_update_interface(&hc);
+    key_init_compiler(&hc);
     if (key_update_file(&hc, src_path) != 0) return -1;
     /* Siblings: the mod's whole shader dir keys every shader in it, so
      * a mod-local include edit invalidates its includers. */
@@ -400,6 +407,40 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
 /* ------------------------------------------------------------------ */
 /* compile                                                             */
 
+/** @brief Load one profile's cached SPIR-V when its `.hash` stamp equals a build key.
+ *
+ * The cache files are `<build_dir>/<flat><suffix>.spv` and its `.hash`
+ * stamp; the SPIR-V must be a nonempty whole number of words.
+ * @param build_dir The cache directory.
+ * @param flat The flattened name of the cache files.
+ * @param suffix The profile's cache-file suffix.
+ * @param key The build key.
+ * @param out_words Receives the malloc'd words on a hit.
+ * @return The word count, 0 on a miss. */
+static size_t cache_load(const char* build_dir, const char* flat, const char* suffix,
+                         const char* key, uint32_t** out_words) {
+    char spv_path[MOD_SHADER_PATH_MAX * 3], stamp_path[MOD_SHADER_PATH_MAX * 3];
+    snprintf(spv_path, sizeof spv_path, "%s/%s%s.spv", build_dir, flat, suffix);
+    snprintf(stamp_path, sizeof stamp_path, "%s/%s%s.hash", build_dir, flat, suffix);
+    char stamped[65] = "";
+    FILE* f = fopen(stamp_path, "rb");
+    if (f) {
+        size_t got = fread(stamped, 1, 64, f);
+        stamped[got] = '\0';
+        if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
+        fclose(f);
+    }
+    if (strcmp(stamped, key) != 0) return 0;
+    size_t len = 0;
+    char* cached = openpete_mod_glsl_read_file(spv_path, &len);
+    if (cached && len >= 4 && (len & 3u) == 0) {
+        *out_words = (uint32_t*)cached;
+        return len / 4;
+    }
+    free(cached);
+    return 0;
+}
+
 
 /** @brief Produce one profile of one shader source, from the cache when its build key matches, else by compiling it.
  *
@@ -423,24 +464,8 @@ static size_t compile_profile(const char* src, int stage,
     char spv_path[MOD_SHADER_PATH_MAX * 3], stamp_path[MOD_SHADER_PATH_MAX * 3];
     snprintf(spv_path, sizeof spv_path, "%s/%s%s.spv", build_dir, flat, suffix);
     snprintf(stamp_path, sizeof stamp_path, "%s/%s%s.hash", build_dir, flat, suffix);
-
-    char stamped[65] = "";
-    FILE* f = fopen(stamp_path, "rb");
-    if (f) {
-        size_t got = fread(stamped, 1, 64, f);
-        stamped[got] = '\0';
-        if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
-        fclose(f);
-    }
-    if (strcmp(stamped, key) == 0) {
-        size_t len = 0;
-        char* cached = openpete_mod_glsl_read_file(spv_path, &len);
-        if (cached && len >= 4 && (len & 3u) == 0) {
-            *out_words = (uint32_t*)cached;
-            return len / 4;
-        }
-        free(cached);
-    }
+    const size_t hit = cache_load(build_dir, flat, suffix, key, out_words);
+    if (hit) return hit;
     size_t n = openpete_mod_glsl_compile(src, stage, ctx, preamble, log_path,
                                          out_words);
     if (n == 0) {
@@ -668,17 +693,18 @@ static int shader_material_members(int pin, int has_src, const char* id, const c
     return 0;
 }
 
-/** @brief Decide the pending composition members of one shader: preprocess, source checks and the one-member compile through its compile cache.
+/** @brief Decide the pending composition members of one shader through a link context: preprocess, source checks and the one-member compile through its compile cache.
  *
  * Reads the source again from `<mod>/<path>` and recomputes its build key;
  * a source that no longer reads, or whose key cannot be computed, leaves
- * the members pending. Logs each decided profile's verdict.
- * @param sh The shader.
+ * the members pending. Logs each decided profile's verdict. Reads only
+ * the shader's owner, path, directory and members, so it runs on a copy.
+ * @param ctx The link context, used by one thread at a time.
+ * @param sh The shader, or a copy of it.
  * @return The number of profiles decided. */
-static int shader_link_decide(mod_shader_t* sh) {
+static int shader_link_decide_ctx(openpete_mod_link_ctx_t* ctx, mod_shader_t* sh) {
     static const char* const k_suffix[OPENPETE_MOD_LINK_PROFILES] = { ".link", ".terrain.link",
                                                                       ".portal.link" };
-    openpete_mod_link_ctx_t* ctx = link_ctx();
     char src_path[MOD_SHADER_PATH_MAX * 3], key[65], build_dir[MOD_SHADER_PATH_MAX * 3];
     char flat[MOD_SHADER_PATH_MAX];
     char log_path[sizeof build_dir + sizeof flat + sizeof ".link.log"];
@@ -700,6 +726,14 @@ static int shader_link_decide(mod_shader_t* sh) {
     free(src);
     if (decided) shader_link_log(sh->owner, sh->path, sh);
     return decided;
+}
+
+/** @brief Decide the pending composition members of one shader through the registry's link context (shader_link_decide_ctx).
+ *
+ * @param sh The shader.
+ * @return The number of profiles decided. */
+static int shader_link_decide(mod_shader_t* sh) {
+    return shader_link_decide_ctx(link_ctx(), sh);
 }
 
 /** @brief Load an author-shipped prebuilt module: `<path>.spv` beside a missing source, accepted only with a `<path>.spv.ihash` sidecar equal to the current interface hash.
@@ -1617,7 +1651,18 @@ typedef struct {
      * vertex stage x colour slot), as a material's pipeline_ter. */
     void*    pipeline_ter[OPENPETE_MATERIAL_TER_PIPES];
     unsigned generation;                 /* slot generation of every pipeline slot */
+    /* The member lists the sync asked for (chain_find_built matches on
+     * them), and what the compile needs off the sync's thread. */
+    int      req_n, req_nd, req_nt;      /* set.shader[0..req_n): req_n - req_nd scene, req_nd decal */
+    char     build_dir[MOD_SHADER_PATH_MAX * 2 + 16];  /* cache and log directory */
+    char     sdk_dir[MOD_SHADER_PATH_MAX * 2];
+    atomic_int state;                    /* CHAIN_* */
 } chain_module_t;
+
+/* A combined module set's compile state. The texts and the member set are
+ * written at the sync; only a READY set's modules are read by the compose,
+ * and only a READY set installs. */
+enum { CHAIN_TEXT = 0, CHAIN_CLAIMED, CHAIN_READY, CHAIN_FAILED };
 
 static chain_module_t* s_chain_mods[CHAIN_MODULES];
 static int      s_chain_mod_n;
@@ -1625,6 +1670,11 @@ static int      s_chain_installed = -1;   /* published module, or -1 */
 static unsigned s_chain_seen_gen;         /* material table generation last synced */
 static int      s_chain_seen;
 static unsigned s_chain_set_gen;
+static SDL_ThreadID s_chain_sync_tid;     /* the thread of the last sync, for the compile's log line */
+static int      s_chain_want = -1;        /* the module the newest sync asked for, or -1 */
+static unsigned s_chain_reused;           /* syncs served by a module already built */
+static atomic_uint s_chain_glslang;       /* combined-module glslang compiles */
+static atomic_uint s_chain_cache_hits;    /* combined modules served by the .build cache */
 
 /** @brief Return whether a shader has a composition member still pending its source checks. */
 static int shader_link_pending(const mod_shader_t* sh) {
@@ -1656,51 +1706,165 @@ static int chain_members(int contract, unsigned bit, int* out, int cap) {
     return n;
 }
 
-/** @brief Build one profile's combined module of a member list; logs and returns -1 on failure.
+/** @brief Return a chain profile's module name, as the log lines and cache files spell it. */
+static const char* chain_profile_name(int profile) {
+    static const char* const k_name[OPENPETE_MATERIAL_CHAIN_PROFILES] = { "stock", "portal", "terrain", "decal" };
+    return profile >= 0 && profile < OPENPETE_MATERIAL_CHAIN_PROFILES ? k_name[profile] : "actor";
+}
+
+/** @brief Generate one profile's combined module text of a member list; logs and returns -1 on failure.
  *
  * @param members Shader handles.
  * @param n Their count.
  * @param contract OPENPETE_MATERIAL_CONTRACT_*: the decal contract has the stock profile only.
  * @param profile OPENPETE_MOD_LINK_STOCK, _TERRAIN, _PORTAL or _ACTOR (the stock members).
  * @param case_of Receives each member's case id.
- * @param out Receives the module. */
-static int chain_build_profile(const int* members, int n, int contract, int profile, int* case_of,
-                               openpete_mod_link_module_t* out) {
+ * @param out Receives the module text. */
+static int chain_text_profile(const int* members, int n, int contract, int profile, int* case_of,
+                              openpete_mod_link_module_t* out) {
     const openpete_mod_link_member_t* mm[OPENPETE_MATERIAL_CHAIN_SET_MAX];
     const int mp = profile == OPENPETE_MOD_LINK_ACTOR ? OPENPETE_MOD_LINK_STOCK : profile;
     for (int k = 0; k < n; k++) mm[k] = &shader_at(members[k])->link[mp];
-    char log_path[MOD_SHADER_PATH_MAX * 3];
-    static const char* const k_name[OPENPETE_MOD_LINK_ACTOR + 1] = { "stock", "terrain", "portal", "actor" };
-    const char* name = contract == OPENPETE_MATERIAL_CONTRACT_DECAL ? "decal" : k_name[profile];
-    snprintf(log_path, sizeof log_path, "%s/.build/shaders/chain-%s.log", shader_at(members[0])->mod_dir, name);
-    if (openpete_mod_link_build(link_ctx(), mm, n, contract, profile, NULL, NULL,
-                                log_path, case_of, out) == 0)
-        return 0;
-    OPL_ERROR_F("mods", "material composition: the %s combined module of %d member(s) failed (%s) - "
-                "the installed module stays, and the new members draw alone",
-                name, n, out->log);
+    if (openpete_mod_link_build_text(link_ctx(), mm, n, contract, profile, case_of, out) == 0) return 0;
+    OPL_ERROR_F("mods", "material composition: the combined module text of %d member(s) failed (%s) - "
+                "the installed module stays, and the new members draw alone", n, out->log);
     openpete_mod_link_module_free(out);
     return -1;
 }
 
-/** @brief Build the actor module of a scene member list: the stock members under the actor preamble, kept only when its case ids equal the stock module's.
+/** @brief Generate the actor module text of a scene member list: the stock members under the actor preamble, kept only when its case ids equal the stock module's.
  *
- * A failed or mismatched build leaves @p out empty; the opaque ACTOR group
+ * A failed or mismatched text leaves @p out empty; the opaque ACTOR group
  * then draws the stock module.
  * @param members The stock module's member shaders.
  * @param n Their count.
  * @param stock_cases The stock module's case id per member.
- * @param out Receives the module. */
-static void chain_build_actor(const int* members, int n, const int* stock_cases,
-                              openpete_mod_link_module_t* out) {
+ * @param out Receives the module text. */
+static void chain_text_actor(const int* members, int n, const int* stock_cases,
+                             openpete_mod_link_module_t* out) {
     int ca[OPENPETE_MATERIAL_CHAIN_SET_MAX];
-    if (chain_build_profile(members, n, OPENPETE_MATERIAL_CONTRACT_SCENE, OPENPETE_MOD_LINK_ACTOR, ca,
-                            out) != 0)
+    if (chain_text_profile(members, n, OPENPETE_MATERIAL_CONTRACT_SCENE, OPENPETE_MOD_LINK_ACTOR, ca, out) != 0)
         return;
     if (memcmp(ca, stock_cases, (size_t)n * sizeof *ca) == 0) return;
     OPL_ERROR_F("mods", "material composition: the actor combined module numbers its cases unlike the "
                 "stock module - dropped, opaque mobys draw the stock module");
     openpete_mod_link_module_free(out);
+}
+
+/* What one combined-module compile reads: the module set's cache directory
+ * and SDK, and the profile's name for the cache files. */
+typedef struct {
+    const chain_module_t* cm;
+    const char* name;
+} chain_cache_t;
+
+/** @brief Compile a combined module text through the mod shader compile cache (an openpete_mod_link_compile_fn), counting glslang runs and cache hits.
+ *
+ * The cache files are `chain-<profile>-<key prefix>.spv` and `.hash` in
+ * the module set's build directory; the key is SHA-256 over the mod API
+ * and glslang versions, the staged interface files, the preamble and the
+ * text, so each distinct text has its own file pair.
+ * @param user The chain_cache_t.
+ * @param text The module text.
+ * @param preamble The profile preamble, or NULL.
+ * @param log_path The failure log path.
+ * @param out Receives the words.
+ * @return The word count, 0 on failure. */
+static size_t chain_compile_cached(void* user, const char* text, const char* preamble,
+                                   const char* log_path, uint32_t** out) {
+    const chain_cache_t* c = (const chain_cache_t*)user;
+    openpete_sha256_ctx hc;
+    key_init_compiler(&hc);
+    if (preamble) openpete_sha256_update(&hc, preamble, strlen(preamble));
+    openpete_sha256_update(&hc, "", 1);
+    key_update_str(&hc, text);
+    uint8_t digest[32];
+    char key[65], flat[64];
+    openpete_sha256_final(&hc, digest);
+    openpete_sha256_hex(digest, key);
+    snprintf(flat, sizeof flat, "chain-%s-%.16s", c->name, key);
+    const size_t hit = cache_load(c->cm->build_dir, flat, "", key, out);
+    if (hit) {
+        atomic_fetch_add(&s_chain_cache_hits, 1u);
+        return hit;
+    }
+    atomic_fetch_add(&s_chain_glslang, 1u);
+    openpete_mod_glsl_include_t inc;
+    char src_path[sizeof c->cm->build_dir + 8];
+    snprintf(src_path, sizeof src_path, "%s/x", c->cm->build_dir);
+    openpete_mod_glsl_include_init(&inc, src_path, c->cm->sdk_dir);
+    return compile_profile(text, MOD_SHADER_STAGE_FRAG, &inc, key, c->cm->build_dir, flat, "", preamble,
+                           log_path, "material composition", flat, out);
+}
+
+/** @brief Compile one module of a set from its text; logs and frees the module on failure.
+ *
+ * @param cm The module set.
+ * @param m The module, holding its text; an empty one compiles nothing.
+ * @param profile Its chain profile (chain_profile_name), or -1 for the actor module.
+ * @return 0, or -1 when the module had text and failed. */
+static int chain_compile_module(chain_module_t* cm, openpete_mod_link_module_t* m, int profile) {
+    if (!m->text) return 0;
+    const int decal = profile == OPENPETE_MATERIAL_CHAIN_DECAL;
+    const int lp = profile < 0 ? OPENPETE_MOD_LINK_ACTOR
+                 : profile == 1 ? OPENPETE_MOD_LINK_PORTAL
+                 : profile == OPENPETE_MATERIAL_CHAIN_TERRAIN ? OPENPETE_MOD_LINK_TERRAIN : OPENPETE_MOD_LINK_STOCK;
+    const chain_cache_t c = { cm, chain_profile_name(profile) };
+    char log_path[sizeof cm->build_dir + 32];
+    snprintf(log_path, sizeof log_path, "%s/chain-%s.log", cm->build_dir, c.name);
+    if (openpete_mod_link_build_compile(NULL, decal ? OPENPETE_MATERIAL_CONTRACT_DECAL : OPENPETE_MATERIAL_CONTRACT_SCENE,
+                                        lp, chain_compile_cached, (void*)&c, log_path, m) == 0)
+        return 0;
+    OPL_ERROR_F("mods", "material composition: the %s combined module of set %d failed (%s) - "
+                "the installed module stays, and the new members draw alone", c.name, cm->set.module, m->log);
+    openpete_mod_link_module_free(m);
+    return -1;
+}
+
+/** @brief Drop one profile from a set whose module failed: its members take no case in that profile. */
+static void chain_drop_profile(chain_module_t* cm, int profile) {
+    for (int k = 0; k < cm->set.n; k++) cm->set.case_id[profile][k] = -1;
+}
+
+int openpete_mods_material_chain_compile_claim(int module) {
+    if (module < 0 || module >= s_chain_mod_n) return 0;
+    int want = CHAIN_TEXT;
+    return atomic_compare_exchange_strong(&s_chain_mods[module]->state, &want, CHAIN_CLAIMED);
+}
+
+int openpete_mods_material_chain_compile_state(int module) {
+    if (module < 0 || module >= s_chain_mod_n) return -1;
+    const int st = atomic_load(&s_chain_mods[module]->state);
+    return st == CHAIN_READY ? 1 : st == CHAIN_FAILED ? -1 : 0;
+}
+
+void openpete_mods_material_chain_compile(int module) {
+    if (module < 0 || module >= s_chain_mod_n) return;
+    chain_module_t* cm = s_chain_mods[module];
+    const unsigned g0 = atomic_load(&s_chain_glslang), h0 = atomic_load(&s_chain_cache_hits);
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: compile duration for the log */
+    const int scene = cm->req_n > cm->req_nd;
+    if (scene && chain_compile_module(cm, &cm->mod[0], 0) != 0) {
+        atomic_store(&cm->state, CHAIN_FAILED);
+        return;
+    }
+    if (chain_compile_module(cm, &cm->mod[1], 1) != 0) chain_drop_profile(cm, 1);
+    if (chain_compile_module(cm, &cm->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN], OPENPETE_MATERIAL_CHAIN_TERRAIN) != 0)
+        chain_drop_profile(cm, OPENPETE_MATERIAL_CHAIN_TERRAIN);
+    if (chain_compile_module(cm, &cm->mod[OPENPETE_MATERIAL_CHAIN_DECAL], OPENPETE_MATERIAL_CHAIN_DECAL) != 0) {
+        if (!scene) { atomic_store(&cm->state, CHAIN_FAILED); return; }
+        cm->set.n = cm->ns;   /* the decal members leave the set */
+        cm->nd = 0;
+    }
+    (void)chain_compile_module(cm, &cm->actor, -1);
+    const double ms = (double)(SDL_GetTicksNS() - t0) / 1e6;  /* clock-guard: wall: compile duration for the log */
+    OPL_INFO_F("mods", "material composition: combined module %d compiled in %.3f ms on %s: %u glslang "
+               "compile(s), %u cache hit(s); stock %zu words, portal %zu, terrain %zu, decal %zu, actor %zu",
+               module, ms, SDL_GetCurrentThreadID() == s_chain_sync_tid ? "the sync's thread" : "another thread",
+               atomic_load(&s_chain_glslang) - g0, atomic_load(&s_chain_cache_hits) - h0, cm->mod[0].words,
+               cm->mod[1].words, cm->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN].words,
+               cm->mod[OPENPETE_MATERIAL_CHAIN_DECAL].words, cm->actor.words);
+    atomic_store_explicit(&cm->state, CHAIN_READY, memory_order_release);
 }
 
 /** @brief Return whether a composable material of a contract is live: a fragment stage, not terminal; with @p terrain set, also on channel -1 or OP_CHAN_TERRAIN with a linkable terrain profile.
@@ -1736,20 +1900,35 @@ static void chain_map_cases(openpete_mods_material_chain_set_t* set, int profile
     }
 }
 
-/** @brief Test whether the newest built module set has a member list and profile coverage equal to a candidate's, so building would repeat it.
+/** @brief Find a module set built this session, its compile not failed, whose requested member lists and terrain coverage equal a candidate's.
  *
  * @param stock The candidate's scene members.
  * @param ns Their count.
  * @param decal Its decal members.
  * @param nd Their count.
- * @param nt Its terrain-profile member count (0 for no terrain module). */
-static int chain_same_as_last(const int* stock, int ns, const int* decal, int nd, int nt) {
-    if (!s_chain_mod_n) return 0;
-    const chain_module_t* last = s_chain_mods[s_chain_mod_n - 1];
-    return last->ns == ns && last->nd == nd &&
-           memcmp(last->set.shader, stock, (size_t)ns * sizeof *stock) == 0 &&
-           memcmp(last->set.shader + ns, decal, (size_t)nd * sizeof *decal) == 0 &&
-           (last->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN].words != 0) == (nt != 0);
+ * @param nt Its terrain-profile member count (0 for no terrain module).
+ * @return The module id, or -1. */
+static int chain_find_built(const int* stock, int ns, const int* decal, int nd, int nt) {
+    for (int i = s_chain_mod_n - 1; i >= 0; i--) {
+        const chain_module_t* cm = s_chain_mods[i];
+        if (atomic_load(&cm->state) == CHAIN_FAILED || cm->req_n != ns + nd || cm->req_nd != nd ||
+            (cm->req_nt != 0) != (nt != 0))
+            continue;
+        if (memcmp(cm->set.shader, stock, (size_t)ns * sizeof *stock) == 0 &&
+            memcmp(cm->set.shader + ns, decal, (size_t)nd * sizeof *decal) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/** @brief Ask for a module set already built: the compose installs it when it is not the installed one. */
+static void chain_want(int module) {
+    if (module == s_chain_want) return;
+    s_chain_want = module;
+    s_chain_reused++;
+    mod_mat_chain_pending_set(module != s_chain_installed);
+    OPL_INFO_F("mods", "material composition: member set served by combined module %d, already built "
+               "(%u reuse(s))", module, s_chain_reused);
 }
 
 /** @brief Decide the composition verdict of every live material's fragment shader still pending its source checks (openpete_mods_shader_link_resolve). */
@@ -1759,6 +1938,141 @@ static void chain_resolve_pending_links(void) {
         if (m->live && m->frag >= 0 && shader_link_pending(shader_at(m->frag)))
             (void)openpete_mods_shader_link_resolve(m->frag);
     }
+}
+
+/* The pending composition members a sync hands to the compile pool while
+ * the live present compiles asynchronously: a copy of each shader whose
+ * members are pending, decided on a worker and applied by a later sync. */
+typedef struct {
+    int          handle;
+    unsigned     pending;            /* the profiles pending at the post: only these move back */
+    mod_shader_t snap;               /* the copy the worker decides */
+    char         owner[64];
+} link_job_ent_t;
+enum { LINKS_IDLE = 0, LINKS_POSTED, LINKS_CLAIMED, LINKS_DONE };
+static struct {
+    atomic_int      state;           /* LINKS_* */
+    link_job_ent_t* ent;
+    int             n;
+} s_links;
+static atomic_int s_chain_async;     /* the live present compiles off its thread */
+static openpete_mod_link_ctx_t* s_link_ctx_pool;   /* the pool task's own context */
+
+void openpete_mods_material_chain_async_set(int on) { atomic_store(&s_chain_async, on ? 1 : 0); }
+
+/** @brief Mark a shader's pending members linkable on its materials while a link job decides them, so the walks treat them as absent from the installed set, as a member whose module is pending, rather than as unlinkable.
+ *
+ * @param handle The fragment shader handle.
+ * @param sh The shader. */
+static void chain_links_mark_absent(int handle, const mod_shader_t* sh) {
+    unsigned link = 0, ident = 0;
+    for (int p = 0; p < sh->link_n; p++) {
+        if (sh->link[p].verdict == OPENPETE_MOD_LINK_OK || sh->link[p].verdict == OPENPETE_MOD_LINK_PENDING)
+            link |= 1u << p;
+        if (sh->link[p].identity) ident |= 1u << p;
+    }
+    mod_mat_set_link_of_frag(handle, link, ident);
+}
+
+/** @brief Copy every live material's fragment shader with a pending member into a link job and post it for the compose to queue.
+ *
+ * @return The shaders posted; 0 posts nothing. */
+static int chain_links_post(void) {
+    int n = 0;
+    link_job_ent_t* ent = NULL;
+    for (int i = 0; i < mod_mat_count(); i++) {
+        const mod_material_t* m = mod_mat_at(i);
+        if (!m->live || m->frag < 0 || !shader_link_pending(shader_at(m->frag))) continue;
+        int dup = 0;
+        for (int k = 0; k < n; k++) dup |= ent[k].handle == m->frag;
+        if (dup) continue;
+        link_job_ent_t* grown = realloc(ent, (size_t)(n + 1) * sizeof *ent);
+        if (!grown) break;
+        ent = grown;
+        link_job_ent_t* e = &ent[n++];
+        const mod_shader_t* sh = shader_at(m->frag);
+        e->handle = m->frag;
+        e->snap = *sh;
+        e->pending = 0;
+        for (int p = 0; p < sh->link_n; p++)
+            if (sh->link[p].verdict == OPENPETE_MOD_LINK_PENDING) e->pending |= 1u << p;
+        snprintf(e->owner, sizeof e->owner, "%s", sh->owner);
+        e->snap.owner = e->owner;
+        chain_links_mark_absent(m->frag, sh);
+    }
+    if (!n) { free(ent); return 0; }
+    s_links.ent = ent;
+    s_links.n = n;
+    atomic_store_explicit(&s_links.state, LINKS_POSTED, memory_order_release);
+    mod_mat_rearm_split();   /* the masks moved: the tick's kept outcomes are void */
+    mod_mat_chain_pending_set(1);   /* a set is pending its build, as a set pending its pipelines */
+    return n;
+}
+
+/** @brief Move a finished link job's decided members into their shaders and onto their materials, then retire the job.
+ *
+ * Under the registry write lock. A member decided on the copy replaces
+ * the shader's member only while that one is still pending and the shader
+ * live; otherwise the decided copy is freed. */
+static void chain_links_apply(void) {
+    for (int i = 0; i < s_links.n; i++) {
+        link_job_ent_t* e = &s_links.ent[i];
+        mod_shader_t* sh = shader_at(e->handle);
+        for (int p = 0; p < e->snap.link_n; p++) {
+            if (!(e->pending & (1u << p))) continue;
+            if (sh->live && sh->link[p].verdict == OPENPETE_MOD_LINK_PENDING) {
+                openpete_mod_link_member_free(&sh->link[p]);
+                sh->link[p] = e->snap.link[p];
+            } else {
+                openpete_mod_link_member_free(&e->snap.link[p]);
+            }
+        }
+        if (sh->live) shader_link_to_materials(e->handle, sh);
+    }
+    free(s_links.ent);
+    s_links.ent = NULL;
+    s_links.n = 0;
+    atomic_store(&s_links.state, LINKS_IDLE);
+    mod_mat_rearm_split();
+    mod_mat_chain_pending_set(s_chain_want >= 0 && s_chain_want != s_chain_installed);
+}
+
+int openpete_mods_material_chain_links_claim(void) {
+    int want = LINKS_POSTED;
+    return atomic_compare_exchange_strong(&s_links.state, &want, LINKS_CLAIMED);
+}
+
+void openpete_mods_material_chain_links_resolve(void) {
+    if (atomic_load_explicit(&s_links.state, memory_order_acquire) != LINKS_CLAIMED) return;
+    if (!s_link_ctx_pool) s_link_ctx_pool = openpete_mod_link_ctx_new(openpete_mods_sdk_dir());
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: resolve duration for the log */
+    for (int i = 0; i < s_links.n; i++) (void)shader_link_decide_ctx(s_link_ctx_pool, &s_links.ent[i].snap);
+    OPL_INFO_F("mods", "material composition: %d pending member shader(s) decided in %.3f ms off the sync's thread",
+               s_links.n, (double)(SDL_GetTicksNS() - t0) / 1e6);  /* clock-guard: wall: resolve duration for the log */
+    atomic_store_explicit(&s_links.state, LINKS_DONE, memory_order_release);
+}
+
+/** @brief Bring every live material's pending composition member to a verdict before a set is built: at once while compiles run on the caller's thread, else through a link job.
+ *
+ * A finished job is applied first. A posted job a synchronous context
+ * finds unclaimed is withdrawn and the members decided here.
+ * @return 1 when no member is pending (the sync builds), 0 while a job is
+ *         posted or running (the installed set stays). */
+static int chain_links_settle(void) {
+    int st = atomic_load_explicit(&s_links.state, memory_order_acquire);
+    if (st == LINKS_DONE) { chain_links_apply(); st = LINKS_IDLE; }
+    const int async = atomic_load(&s_chain_async);
+    int want = LINKS_POSTED;
+    if (st == LINKS_POSTED && !async && atomic_compare_exchange_strong(&s_links.state, &want, LINKS_IDLE)) {
+        free(s_links.ent);   /* the copies own nothing: a pending member has no text */
+        s_links.ent = NULL;
+        s_links.n = 0;
+        mod_mat_chain_pending_set(s_chain_want >= 0 && s_chain_want != s_chain_installed);
+        st = LINKS_IDLE;
+    }
+    if (st != LINKS_IDLE) return 0;
+    if (!async) { chain_resolve_pending_links(); return 1; }
+    return chain_links_post() == 0;
 }
 
 /** @brief Body of openpete_mods_material_chain_sync, run under the registry write lock.
@@ -1774,7 +2088,7 @@ static void chain_sync_locked(void) {
     const int scene = chain_composable_live(OPENPETE_MATERIAL_CONTRACT_SCENE, 0);
     const int decal = chain_composable_live(OPENPETE_MATERIAL_CONTRACT_DECAL, 0);
     if (!scene && !decal) return;
-    chain_resolve_pending_links();
+    if (!chain_links_settle()) return;
     const int S = OPENPETE_MATERIAL_CONTRACT_SCENE, cap = OPENPETE_MATERIAL_CHAIN_SET_MAX;
     int stock[OPENPETE_MATERIAL_CHAIN_SET_MAX], portal[OPENPETE_MATERIAL_CHAIN_SET_MAX];
     int ter[OPENPETE_MATERIAL_CHAIN_SET_MAX], dec[OPENPETE_MATERIAL_CHAIN_SET_MAX];
@@ -1783,7 +2097,8 @@ static void chain_sync_locked(void) {
     int nt = ns && chain_composable_live(S, 1) ? chain_members(S, 1u << OPENPETE_MOD_LINK_TERRAIN, ter, cap) : 0;
     int nd = decal ? chain_members(OPENPETE_MATERIAL_CONTRACT_DECAL, 1u << OPENPETE_MOD_LINK_STOCK, dec, cap - ns) : 0;
     if (ns == 0 && nd == 0) return;
-    if (chain_same_as_last(stock, ns, dec, nd, nt)) return;
+    const int built = chain_find_built(stock, ns, dec, nd, nt);
+    if (built >= 0) { chain_want(built); return; }
     if (s_chain_mod_n == CHAIN_MODULES) {
         OPL_ERROR_F("mods", "material composition: %d combined modules built this session - no more; "
                     "the installed module stays", CHAIN_MODULES);
@@ -1793,17 +2108,18 @@ static void chain_sync_locked(void) {
     if (!cm) return;
     int cs[OPENPETE_MATERIAL_CHAIN_SET_MAX], cp[OPENPETE_MATERIAL_CHAIN_SET_MAX], ct[OPENPETE_MATERIAL_CHAIN_SET_MAX];
     int cd[OPENPETE_MATERIAL_CHAIN_SET_MAX];
-    if (ns && chain_build_profile(stock, ns, S, OPENPETE_MOD_LINK_STOCK, cs, &cm->mod[0]) != 0) { free(cm); return; }
-    if (np && chain_build_profile(portal, np, S, OPENPETE_MOD_LINK_PORTAL, cp, &cm->mod[1]) != 0) np = 0;
-    if (nt && chain_build_profile(ter, nt, S, OPENPETE_MOD_LINK_TERRAIN, ct,
-                                  &cm->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN]) != 0)
+    const int req_nt = nt;
+    if (ns && chain_text_profile(stock, ns, S, OPENPETE_MOD_LINK_STOCK, cs, &cm->mod[0]) != 0) { free(cm); return; }
+    if (np && chain_text_profile(portal, np, S, OPENPETE_MOD_LINK_PORTAL, cp, &cm->mod[1]) != 0) np = 0;
+    if (nt && chain_text_profile(ter, nt, S, OPENPETE_MOD_LINK_TERRAIN, ct,
+                                 &cm->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN]) != 0)
         nt = 0;
-    if (nd && chain_build_profile(dec, nd, OPENPETE_MATERIAL_CONTRACT_DECAL, OPENPETE_MOD_LINK_STOCK, cd,
-                                  &cm->mod[OPENPETE_MATERIAL_CHAIN_DECAL]) != 0) {
+    if (nd && chain_text_profile(dec, nd, OPENPETE_MATERIAL_CONTRACT_DECAL, OPENPETE_MOD_LINK_STOCK, cd,
+                                 &cm->mod[OPENPETE_MATERIAL_CHAIN_DECAL]) != 0) {
         if (!ns) { free(cm); return; }
         nd = 0;
     }
-    if (ns) chain_build_actor(stock, ns, cs, &cm->actor);
+    if (ns) chain_text_actor(stock, ns, cs, &cm->actor);
     cm->set.generation = ++s_chain_set_gen;
     cm->set.module = s_chain_mod_n;
     cm->set.n = ns + nd;
@@ -1815,25 +2131,40 @@ static void chain_sync_locked(void) {
     chain_map_cases(&cm->set, 1, portal, np, cp);
     chain_map_cases(&cm->set, OPENPETE_MATERIAL_CHAIN_TERRAIN, ter, nt, ct);
     chain_map_cases(&cm->set, OPENPETE_MATERIAL_CHAIN_DECAL, dec, nd, cd);
+    cm->req_n = ns + nd;
+    cm->req_nd = nd;
+    cm->req_nt = req_nt;
+    snprintf(cm->build_dir, sizeof cm->build_dir, "%s/.build/shaders", shader_at(ns ? stock[0] : dec[0])->mod_dir);
+    snprintf(cm->sdk_dir, sizeof cm->sdk_dir, "%s", openpete_mods_sdk_dir());
+    atomic_init(&cm->state, CHAIN_TEXT);
     cm->vvar_shader[0] = -1;
     cm->vvar_n = 1;
     cm->generation = slot_generation_next();
     s_chain_mods[s_chain_mod_n++] = cm;
+    s_chain_want = cm->set.module;
     mod_mat_chain_pending_set(1);
-    OPL_INFO_F("mods", "material composition: combined module %d built: %d scene member shader(s), %d case(s) "
-               "(%zu words), portal profile %d member(s), terrain profile %d member(s), decal %d member(s), "
-               "actor module %zu words", cm->set.module, ns, cm->mod[0].cases, cm->mod[0].words, np, nt, nd,
-               cm->actor.words);
+    OPL_INFO_F("mods", "material composition: combined module %d built: %d scene member shader(s), %d case(s), "
+               "portal profile %d member(s), terrain profile %d member(s), decal %d member(s), actor module %s; "
+               "its compile is queued", cm->set.module, ns, cm->mod[0].cases, np, nt, nd,
+               cm->actor.text ? "yes" : "no");
 }
 
 void openpete_mods_material_chain_sync(void) {
     const unsigned gen = mod_mat_table_gen();
-    if (s_chain_seen && gen == s_chain_seen_gen) return;
+    if (s_chain_seen && gen == s_chain_seen_gen &&
+        atomic_load_explicit(&s_links.state, memory_order_acquire) != LINKS_DONE)
+        return;
     REG_WR();
     s_chain_seen = 1;
     s_chain_seen_gen = mod_mat_table_gen();
+    s_chain_sync_tid = SDL_GetCurrentThreadID();
+    const unsigned n0 = atomic_load(&s_chain_glslang);
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: sync duration for the log */
     chain_sync_locked();
+    const Uint64 dt = SDL_GetTicksNS() - t0;  /* clock-guard: wall: sync duration for the log */
     REG_WR_END();
+    OPL_INFO_F("mods", "material composition: member-set sync %.3f ms on the calling thread, %u glslang "
+               "compile(s)", (double)dt / 1e6, atomic_load(&s_chain_glslang) - n0);
 }
 
 /** @brief Fill a draw's GPU description from one combined module pair and vertex variant. */
@@ -1875,7 +2206,9 @@ static void chain_fill_gpu(chain_module_t* cm, int vvar, openpete_mod_material_g
 }
 
 int openpete_mods_material_chain_gpu(int module, int vvar, openpete_mod_material_gpu_t* out) {
-    if (!out || module < 0 || module >= s_chain_mod_n) return -1;
+    if (!out || module < 0 || module >= s_chain_mod_n ||
+        openpete_mods_material_chain_compile_state(module) != 1)
+        return -1;
     chain_module_t* cm = s_chain_mods[module];
     if (vvar < 0 || vvar >= cm->vvar_n) return -1;
     chain_fill_gpu(cm, vvar, out);
@@ -1906,7 +2239,9 @@ static void chain_fill_gpu_decal(chain_module_t* cm, int vvar, openpete_mod_mate
 }
 
 int openpete_mods_material_chain_decal_gpu(int module, int vvar, openpete_mod_material_gpu_t* out) {
-    if (!out || module < 0 || module >= s_chain_mod_n) return -1;
+    if (!out || module < 0 || module >= s_chain_mod_n ||
+        openpete_mods_material_chain_compile_state(module) != 1)
+        return -1;
     chain_module_t* cm = s_chain_mods[module];
     if (vvar < 0 || vvar >= cm->vvar_n || !cm->mod[OPENPETE_MATERIAL_CHAIN_DECAL].words) return -1;
     chain_fill_gpu_decal(cm, vvar, out);
@@ -1914,7 +2249,8 @@ int openpete_mods_material_chain_decal_gpu(int module, int vvar, openpete_mod_ma
 }
 
 int openpete_mods_material_chain_terrain_gpu(int module, int pipe_idx, openpete_mod_material_terrain_t* out) {
-    if (!out || module < 0 || module >= s_chain_mod_n || pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES)
+    if (!out || module < 0 || module >= s_chain_mod_n || pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES ||
+        openpete_mods_material_chain_compile_state(module) != 1)
         return -1;
     chain_module_t* cm = s_chain_mods[module];
     const openpete_mod_link_module_t* tm = &cm->mod[OPENPETE_MATERIAL_CHAIN_TERRAIN];
@@ -1937,14 +2273,14 @@ int openpete_mods_material_chain_terrain_gpu(int module, int pipe_idx, openpete_
 }
 
 int openpete_mods_material_chain_pending(void) {
-    return s_chain_mod_n > 0 && s_chain_installed != s_chain_mod_n - 1 ? s_chain_mod_n - 1 : -1;
+    return s_chain_want >= 0 && s_chain_installed != s_chain_want ? s_chain_want : -1;
 }
 
 void openpete_mods_material_chain_install(int module) {
     if (module < 0 || module >= s_chain_mod_n) return;
     s_chain_installed = module;
     openpete_mods_material_chain_set_publish(&s_chain_mods[module]->set);
-    mod_mat_chain_pending_set(module != s_chain_mod_n - 1);
+    mod_mat_chain_pending_set(module != s_chain_want);
     OPL_INFO_F("mods", "material composition: combined module %d installed (member set generation %u)",
                module, s_chain_mods[module]->set.generation);
 }

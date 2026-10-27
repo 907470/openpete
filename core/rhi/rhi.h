@@ -1797,7 +1797,12 @@ typedef struct {
     unsigned max_queued;     /* deepest queue                                    */
     unsigned same_key_waits; /* jobs that waited for another worker's run of the same create info */
     double   run_ms;         /* summed run time over the workers                 */
+    unsigned tasks_submitted, tasks_run; /* host tasks (rhi_compile_pool_submit_task)  */
+    double   tasks_ms;       /* their summed run time                            */
 } rhi_compile_pool_stats;
+
+/* A host task the pool runs on a worker (rhi_compile_pool_submit_task). */
+typedef void (*rhi_pool_task_fn)(void *tag);
 
 /** @brief Queue a compile job on the device's compile pool, starting the pool on first use.
  *
@@ -1817,6 +1822,19 @@ typedef struct {
  * @return 0, or -1 for a NULL device or job. */
 int           rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flags,
                                       rhi_pool_install_fn fn, void *tag);
+
+/** @brief Queue a host task on the device's compile pool, behind the jobs already queued, starting the pool on first use.
+ *
+ * Display owner only. A worker runs @p run with @p tag and stages
+ * nothing: the task publishes its own result. A wait for the pool
+ * (rhi_compile_pool_wait) waits for it. Without a worker (no pool, a pool
+ * of none) the task runs before return; a task the pool's stop drops never
+ * runs.
+ * @param dev Device.
+ * @param run The task.
+ * @param tag Passed to @p run.
+ * @return 0, or -1 for a NULL device or task. */
+int           rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *tag);
 
 /** @brief Call the install callback of every staged result.
  *

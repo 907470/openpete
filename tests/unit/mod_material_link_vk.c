@@ -122,6 +122,7 @@ static int descs_for(int contract, int profile, rhi_pipeline_desc* d) {
     if (profile == 2) { d[0] = k_scene; d[0].uniform_set7 = true; return 1; }
     if (profile == 3) {             /* the actor profile: opaque and its MARK twin */
         d[0] = d[1] = k_scene;
+        d[0].ssbo_set7 = d[1].ssbo_set7 = true;  /* the moby snap table */
         d[1].stencil = RHI_STENCIL_MARK;
         return 2;
     }

@@ -1022,11 +1022,10 @@ static int build_inputs_ok(const openpete_mod_link_member_t* const* members, int
     return 1;
 }
 
-int openpete_mod_link_build(openpete_mod_link_ctx_t* ctx,
-                            const openpete_mod_link_member_t* const* members, int n,
-                            int contract, int profile, openpete_mod_link_compile_fn compile,
-                            void* user, const char* log_path, int* case_of,
-                            openpete_mod_link_module_t* out) {
+int openpete_mod_link_build_text(openpete_mod_link_ctx_t* ctx,
+                                 const openpete_mod_link_member_t* const* members, int n,
+                                 int contract, int profile, int* case_of,
+                                 openpete_mod_link_module_t* out) {
     memset(out, 0, sizeof *out);
     const strset_t* header = build_inputs_ok(members, n, contract, profile)
         ? header_names(ctx, contract, member_profile(profile)) : NULL;
@@ -1041,6 +1040,12 @@ int openpete_mod_link_build(openpete_mod_link_ctx_t* ctx,
     if (out->cases < 0 || !out->text) { snprintf(out->log, sizeof out->log, "text generation failed"); return -1; }
     for (int i = 0; i < n; i++)
         if (case_of) case_of[ord[i].input] = sorted_case[i];
+    return 0;
+}
+
+int openpete_mod_link_build_compile(openpete_mod_link_ctx_t* ctx, int contract, int profile,
+                                    openpete_mod_link_compile_fn compile, void* user,
+                                    const char* log_path, openpete_mod_link_module_t* out) {
     out->words = module_compile(ctx, out->text, openpete_mod_link_profile_preamble(contract, profile),
                                 compile, user, log_path, &out->spv);
     if (out->words == 0) { out->spv = NULL; log_head(log_path, out->log, sizeof out->log); return -1; }
@@ -1051,6 +1056,15 @@ int openpete_mod_link_build(openpete_mod_link_ctx_t* ctx,
     }
     module_move_tables(out);
     return 0;
+}
+
+int openpete_mod_link_build(openpete_mod_link_ctx_t* ctx,
+                            const openpete_mod_link_member_t* const* members, int n,
+                            int contract, int profile, openpete_mod_link_compile_fn compile,
+                            void* user, const char* log_path, int* case_of,
+                            openpete_mod_link_module_t* out) {
+    if (openpete_mod_link_build_text(ctx, members, n, contract, profile, case_of, out) != 0) return -1;
+    return openpete_mod_link_build_compile(ctx, contract, profile, compile, user, log_path, out);
 }
 
 void openpete_mod_link_module_free(openpete_mod_link_module_t* m) {

@@ -200,6 +200,8 @@ int mod_mat_outranks(int a, int b);
 
 /** @brief Turn one material on or off; the caller holds the registry write lock.
  *
+ * A call that leaves the enable state unchanged changes nothing: the table
+ * generation, the overlap inputs and the terrain epoch stay.
  * @param material Material handle.
  * @param on Nonzero to enable.
  * @return 0, or -1 for an unknown or swept material. */

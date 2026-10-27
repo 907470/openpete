@@ -8884,11 +8884,13 @@ void rhi_env_write_guard(int begin)
 
 static uint64_t job_variant_key(const rhi_device *dev, const rhi_compile_job *job);
 
-/* One submitted job and what its run returned, or one graphics pipeline
- * library part to build (gpl non-NULL, job NULL). */
+/* One submitted job and what its run returned, one graphics pipeline
+ * library part to build (gpl non-NULL, job NULL), or one host task (task
+ * non-NULL, job NULL; rhi_compile_pool_submit_task). */
 typedef struct pool_item {
     struct pool_item   *next;
     rhi_compile_job    *job;
+    rhi_pool_task_fn    task;      /* a host task, run with tag */
     gpl_src            *gpl;       /* a library part's source, owned */
     int                 gpl_part;
     uint64_t            gpl_key;
@@ -9020,6 +9022,13 @@ static void pool_run_item(rhi_device *dev, pool_item *it)
     t_pipe_phase = it->phase;
     t_in_rebuild = it->rebuild;
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: worker run time for the pool report */
+    if (it->task) {
+        it->task(it->tag);
+        it->run_ns = SDL_GetTicksNS() - t0;  /* clock-guard: wall: worker run time for the pool report */
+        t_pipe_phase = RHI_PIPE_PHASE_AUTO;
+        t_in_rebuild = false;
+        return;
+    }
     if (it->gpl) {
         it->rc = gpl_acquire(dev, it->gpl_part, it->gpl_key, it->gpl) ? 0 : -1;
         it->run_ns = SDL_GetTicksNS() - t0;  /* clock-guard: wall: worker run time for the pool report */
@@ -9051,6 +9060,13 @@ static void pool_run_item(rhi_device *dev, pool_item *it)
  * @param it The item, run. */
 static void pool_finish_locked(struct compile_pool *pl, pool_item *it)
 {
+    if (it->task) {
+        pl->st.tasks_run++;
+        pl->st.tasks_ms += (double)it->run_ns / 1e6;
+        free(it);
+        SDL_BroadcastCondition(pl->done);
+        return;
+    }
     if (it->gpl) {
         pl->libs_run++;
         pl->libs_ns += it->run_ns;
@@ -9270,6 +9286,29 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
     return 0;
 }
 
+int rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *tag)
+{
+    if (!dev || !run) return -1;
+    seam_check("compile_pool_submit");
+    struct compile_pool *pl = pool_get(dev);
+    pool_item *it = pl ? calloc(1, sizeof *it) : NULL;
+    if (!it || pl->n == 0) {     /* no pool, or a pool of none: run now */
+        free(it);
+        run(tag);
+        return 0;
+    }
+    *it = (pool_item){ .task = run, .tag = tag, .phase = t_pipe_phase };
+    SDL_LockMutex(pl->mx);
+    if (pl->q_tail) pl->q_tail->next = it; else pl->q_head = it;
+    pl->q_tail = it;
+    pl->queued++;
+    pl->st.tasks_submitted++;
+    if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
+    SDL_SignalCondition(pl->work);
+    SDL_UnlockMutex(pl->mx);
+    return 0;
+}
+
 unsigned rhi_compile_pool_drain(rhi_device *dev)
 {
     struct compile_pool *pl = dev ? dev->cpool : NULL;
@@ -9340,7 +9379,8 @@ static unsigned pool_cancel_list(rhi_device *dev, pool_item *it)
     unsigned n = 0;
     for (; it; n++) {
         pool_item *next = it->next;
-        if (it->fn) it->fn(dev, it->job, RHI_POOL_CANCELLED, it->tag);
+        if (it->task) { /* a host task never run: its owner sees it unfinished */ }
+        else if (it->fn) it->fn(dev, it->job, RHI_POOL_CANCELLED, it->tag);
         else rhi_compile_job_discard(dev, it->job);
         free(it);
         it = next;

@@ -1905,7 +1905,7 @@ int  openpete_mods_material_chain_count(void);
  *
  * @return The count. */
 int  openpete_mods_material_terrain_chain_count(void);
-/** @brief Build the combined module set of the current member set when it changed; the sim thread calls it at the tick boundary and the precompile before it runs.
+/** @brief Generate the combined module texts of the current member set when it changed; the sim thread calls it at the tick boundary and the precompile before it runs.
  *
  * Takes the registry write lock, and returns at once while the material
  * table has not changed since the last call. The member set: the
@@ -1914,15 +1914,53 @@ int  openpete_mods_material_terrain_chain_count(void);
  * (pinned at api 13 or later, not OP_SEL_EXCLUSIVE) is live, and those of
  * live decal-contract materials, built while a composable decal material
  * is live; the first composable material also decides every pending
- * member (openpete_mods_shader_link_resolve). A set equal to the newest
- * built one builds nothing. The new set is not installed: the compose
- * installs it (openpete_mods_material_chain_install) once its pipelines
- * exist. */
+ * member (openpete_mods_shader_link_resolve). A set equal to one built
+ * earlier in this run asks for that one and builds nothing. A new set gets its
+ * texts and case ids here and no glslang compile: the compose claims its
+ * compile (openpete_mods_material_chain_compile_claim) and runs it
+ * (openpete_mods_material_chain_compile), and installs the set
+ * (openpete_mods_material_chain_install) once it compiled and its
+ * pipelines exist. */
 void openpete_mods_material_chain_sync(void);
-/** @brief Return the newest combined module pair that is built and not installed, or -1.
+/** @brief Return the combined module set the newest sync asked for when it is not the installed one, or -1.
  *
  * @return The module id. */
 int  openpete_mods_material_chain_pending(void);
+/** @brief Claim a module set's compile: true for the one caller that is to run or queue openpete_mods_material_chain_compile.
+ *
+ * Any thread.
+ * @param module The module id.
+ * @return 1 when claimed, 0 when already claimed, compiled or unknown. */
+int  openpete_mods_material_chain_compile_claim(int module);
+/** @brief Compile a claimed module set's texts through the mod shader compile cache, then mark it compiled.
+ *
+ * Any thread, once per claim: it reads only the set's texts and writes only
+ * the set, which no reader reads before it is marked compiled. A failed
+ * stock module (or decal module of a set without one) fails the set; a
+ * failed portal, terrain, decal or actor module leaves that profile out.
+ * @param module The module id. */
+void openpete_mods_material_chain_compile(int module);
+/** @brief Say whether the compose runs the composition compiles off its thread; the sync then hands pending members to a link job instead of deciding them itself.
+ *
+ * Display owner, at each live present; set false by default, so the boot
+ * sets and every synchronous run decide members at the sync.
+ * @param on Nonzero for a live present of a non-synchronous run. */
+void openpete_mods_material_chain_async_set(int on);
+/** @brief Claim a posted link job: true for the one caller that is to queue openpete_mods_material_chain_links_resolve.
+ *
+ * @return 1 when claimed, 0 when no job is posted. */
+int  openpete_mods_material_chain_links_claim(void);
+/** @brief Decide a claimed link job's pending members on copies of their shaders; the next sync applies them.
+ *
+ * Any thread, once per claim: it reads only the job's copies and the
+ * shaders' files, through its own link context. */
+void openpete_mods_material_chain_links_resolve(void);
+/** @brief Return a module set's compile state.
+ *
+ * Any thread.
+ * @param module The module id.
+ * @return 1 compiled, 0 not yet, -1 failed or unknown. */
+int  openpete_mods_material_chain_compile_state(int module);
 /** @brief Install a built combined module pair: publish its member set to the extraction walk.
  *
  * @param module The module id. */
