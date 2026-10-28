@@ -492,6 +492,9 @@ typedef struct {
     int      derived_dome;  /* the dome drew with derive_dome_matrix (the --no-lod
                              * forced dome, a revealed portal's dome), not the
                              * matrix a dome leaf left in the GTE                 */
+    int      far_fog;       /* fog_rgb / fog_t are RenderPortals' far-leaf term
+                             * (portal_far_fog_t), re-evaluated for `portal`
+                             * under each present's camera                       */
 } portal_cap_t;
 /* The rule a replay rebuilds a capture's base clip rect by, under the camera
  * of the present being built. */
@@ -609,15 +612,20 @@ static int32_t portal_game_magnitude(CPUState* cpu, const int32_t v[3]) {
     return (int32_t)(((uint32_t)t << a0) >> 12);
 }
 
-/** @brief The right shift RenderPortals applies to a portal's camera-relative points before RTPS.
+/** @brief RenderPortals' distance from the camera at `cam` to portal `p`'s first outline point.
  *
- * The shift is max(0, log2(|m_Points[0] - camera|) - 13), the distance taken
- * through VecMagnitude, pre-shifted when the L1 norm reaches 2^15
- * (0x80050F1C-0x80050FC8). */
-static int portal_game_shift(CPUState* cpu, const ngte_view* v, uint32_t p) {
+ * VecSub(m_Points[0] (p+0x20), g_Camera+0x28), then VecMagnitude, the vector
+ * first shifted right by log2(L1)/2 (func_80016D08) and the magnitude shifted
+ * back when the L1 norm reaches 2^15 (0x80050F1C-0x80050FA8). The result is
+ * the d that sets the RTPS shift and the far-leaf fog term.
+ * @param cpu The guest CPU state.
+ * @param cam The camera position in world units, truncated to int32.
+ * @param p The Portal pointer.
+ * @return The integer distance. */
+static int32_t portal_game_distance(CPUState* cpu, const double cam[3], uint32_t p) {
     int32_t d[3];
     for (int k = 0; k < 3; k++)
-        d[k] = (int32_t)cpu->read_word(p + 0x20u + 4u * (uint32_t)k) - (int32_t)v->cam_ram[k];
+        d[k] = (int32_t)cpu->read_word(p + 0x20u + 4u * (uint32_t)k) - (int32_t)cam[k];
     uint32_t l1 = 0;
     for (int k = 0; k < 3; k++) l1 += (uint32_t)(d[k] < 0 ? -d[k] : d[k]);
     const int bits = portal_game_log2((int32_t)l1);
@@ -629,7 +637,15 @@ static int portal_game_shift(CPUState* cpu, const ngte_view* v, uint32_t p) {
     } else {
         mag = portal_game_magnitude(cpu, d);
     }
-    const int sh = portal_game_log2(mag) - 13;
+    return mag;
+}
+
+/** @brief The right shift RenderPortals applies to a portal's camera-relative points before RTPS.
+ *
+ * The shift is max(0, log2(d) - 13), d the portal_game_distance of the view's
+ * integer camera (0x80050FAC-0x80050FC4). */
+static int portal_game_shift(CPUState* cpu, const ngte_view* v, uint32_t p) {
+    const int sh = portal_game_log2(portal_game_distance(cpu, v->cam_ram, p)) - 13;
     return sh < 0 ? 0 : sh;
 }
 
@@ -716,6 +732,23 @@ static double portal_outline_maxvz(CPUState* cpu, const ngte_view* v, uint32_t p
     return maxvz;
 }
 
+/** @brief The portal whose skybox a leaf's a0 names: m_Skybox (p+0x00) equal to a0 or to a0 - 0x10.
+ *
+ * The dome leaves pass m_Skybox, the close flat leaf m_Skybox + 0x10. At
+ * most six portals of g_Portals are searched.
+ * @param cpu The guest CPU state.
+ * @param a0 The leaf's a0.
+ * @return The Portal* guest address, 0 when no skybox matches. */
+static uint32_t portal_by_skybox_link(CPUState* cpu, uint32_t a0) {
+    uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
+        uint32_t sb = cpu->read_word(p + 0x00);
+        if (sb && (sb == a0 || sb == a0 - 0x10)) return p;
+    }
+    return 0;
+}
+
 /** @brief Finds the portal a leaf call draws for.
  *
  * The close and dome leaves pass the owning portal's skybox directly
@@ -734,15 +767,12 @@ static double portal_outline_maxvz(CPUState* cpu, const ngte_view* v, uint32_t p
  * @param cy The clip rect's centre Y.
  * @return The Portal* guest address, 0 when none matches. */
 static uint32_t owning_portal_ptr(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy) {
+    const uint32_t linked = portal_by_skybox_link(cpu, a0);   /* skybox-pointer match */
+    if (linked) return linked;
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
     /* The clip-rect centre is a screen coordinate the game produced at its own
      * H, so the centroid is matched against it through the canonical view. */
     ngte_view vc; ngte_view_canon(v, &vc);
-    for (uint32_t i = 0; i < n; i++) {                  /* skybox-pointer match */
-        uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
-        uint32_t sb = cpu->read_word(p + 0x00);
-        if (sb && (sb == a0 || sb == a0 - 0x10)) return p;
-    }
     double best_d = 1e30; uint32_t best_p = 0;          /* screen-centre match */
     for (uint32_t i = 0; i < n; i++) {
         uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
@@ -2487,6 +2517,85 @@ static int nolod_portal_dome_on(void) {
     return openpete_no_lod && v;
 }
 
+/* How a native preview takes RenderPortals' far-leaf fog term. ORIGINAL is
+ * the game's integer term at the integer camera; PER_PIXEL the same curve in
+ * float at the present camera; OFF no term. */
+typedef enum {
+    PORTAL_FOG_ORIGINAL,
+    PORTAL_FOG_PER_PIXEL,
+    PORTAL_FOG_OFF,
+} portal_fog_mode_t;
+
+/** @brief The fog mode the forced dome and its backstop take the far-leaf term in.
+ *
+ * The forced dome draws only under extended LOD, whose fog mode resolves to
+ * per-pixel.
+ * @return PORTAL_FOG_PER_PIXEL. */
+static portal_fog_mode_t portal_forced_dome_fog_mode(void) {
+    return PORTAL_FOG_PER_PIXEL;
+}
+
+/** @brief RenderPortals' far-leaf fog IR0 for portal `p`, the game's integer term at the view's integer camera.
+ *
+ * With d the portal_game_distance, d above 0x4000 gives
+ * clamp((0x8000 - d) >> 2, 0, 0x1000), the IR0 of ColorLerp([g_Cyclorama+0x10],
+ * flat, IR0) (0x80050FDC-0x80051028); d at or below 0x4000 gives 0x1000, the
+ * flat unfaded.
+ * @param cpu The guest CPU state.
+ * @param v The view; supplies cam_ram.
+ * @param p The Portal pointer.
+ * @return IR0 in 0..0x1000; 0 is the fog colour. */
+static int portal_far_fog_ir0_game(CPUState* cpu, const ngte_view* v, uint32_t p) {
+    const int32_t d = portal_game_distance(cpu, v->cam_ram, p);
+    if (d <= 0x4000) return 0x1000;
+    const int32_t s2 = (0x8000 - d) >> 2;
+    return s2 < 0 ? 0 : (s2 > 0x1000 ? 0x1000 : s2);
+}
+
+/** @brief The far-leaf fog IR0 for portal `p` in float, at the view's present camera.
+ *
+ * The curve of portal_far_fog_ir0_game with d the float distance from
+ * v->cam (sub-tick interpolated when available) to m_Points[0] (p+0x20).
+ * @param cpu The guest CPU state.
+ * @param v The view; supplies cam.
+ * @param p The Portal pointer.
+ * @return IR0 in 0..4096; 0 is the fog colour. */
+static double portal_far_fog_ir0_float(CPUState* cpu, const ngte_view* v, uint32_t p) {
+    double sq = 0.0;
+    for (int k = 0; k < 3; k++) {
+        const double e = (double)(int32_t)cpu->read_word(p + 0x20u + 4u * (uint32_t)k) - v->cam[k];
+        sq += e * e;
+    }
+    const double d = sqrt(sq);
+    if (d <= 16384.0) return 4096.0;
+    const double s2 = (32768.0 - d) * 0.25;
+    return s2 < 0.0 ? 0.0 : (s2 > 4096.0 ? 4096.0 : s2);
+}
+
+/** @brief The blend fraction toward [g_Cyclorama+0x10] that RenderPortals' far-leaf term gives portal `p`.
+ *
+ * The term applies only while g_SkipLowPolyWorld is nonzero
+ * (0x80050FC8-0x80050FD4); ColorLerp(fog, flat, IR0) moves the flat toward
+ * the fog by (4096 - IR0) / 4096, which blend_to_fog applies to every
+ * colour of a preview. The white pulse the game mixes into the flat first
+ * is not part of the term.
+ * @param cpu The guest CPU state.
+ * @param v The view the IR0 is evaluated under.
+ * @param p The Portal pointer.
+ * @param mode Which form of the term to evaluate.
+ * @param fog_rgb Receives [g_Cyclorama+0x10] as 0x00BBGGRR, 0 when the term is off.
+ * @return The blend fraction in [0, 1]; 0 when the term does not apply. */
+static double portal_far_fog_t(CPUState* cpu, const ngte_view* v, uint32_t p,
+                               portal_fog_mode_t mode, uint32_t* fog_rgb) {
+    *fog_rgb = 0;
+    if (mode == PORTAL_FOG_OFF || !p || cpu->read_word(G_SKIP_LOWPOLY_WORLD) == 0) return 0.0;
+    const double ir0 = (mode == PORTAL_FOG_ORIGINAL) ? (double)portal_far_fog_ir0_game(cpu, v, p)
+                                                     : portal_far_fog_ir0_float(cpu, v, p);
+    if (ir0 >= 4096.0) return 0.0;
+    *fog_rgb = cpu->read_word(G_CYCLORAMA + 0x10u) & 0xFFFFFFu;
+    return (4096.0 - ir0) / 4096.0;
+}
+
 /* ---- dispatch hooks ------------------------------------------------- */
 /** @brief Reports whether the portal dump is enabled and openpete_frame has reached OPENPETE_PORTAL_FRAME.
  *
@@ -2551,8 +2660,9 @@ static uint32_t s_fed_portal[8]; static int s_fed_n = 0;
  * kind `kind` (PORTAL_FLAT, _DOME, _BLENDED) natively, records the fed portal
  * for the widescreen reveal, and captures the leaf's decision, clip rect and
  * rect rule for the sub-tick replay. Under --no-lod a far flat leaf (not a
- * close backstop) also feeds the geometric dome of its portal's skybox, and a
- * blended leaf is fed without fog.
+ * close backstop) also feeds the geometric dome of its portal's skybox, the
+ * dome and its backstop taking the far flat's fog term (portal_far_fog_t),
+ * and a blended leaf is fed without fog.
  * @param cpu   guest CPU state
  * @param which the leaf's label in the portal dump
  * @param real  the leaf's recompiled function
@@ -2631,15 +2741,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * m_Skybox+0x10 of some portal; far/medium flats carry a stack/global
          * colour ptr (which can land inside the loose is_skybox_a0 RANGE -
          * the PSX stack lives at 0x801FFxxx - so match the portal list). */
-        int a0_is_close_backstop = 0;
-        {
-            uint32_t np2 = cpu->read_word(G_PORTALCOUNT); if (np2 > 6) np2 = 6;
-            for (uint32_t i2 = 0; i2 < np2; i2++) {
-                uint32_t p2 = cpu->read_word(G_PORTALS + i2 * 4); if (!p2) continue;
-                uint32_t sb2 = cpu->read_word(p2 + 0x00);
-                if (sb2 && (sb2 == a0 || sb2 + 0x10 == a0)) { a0_is_close_backstop = 1; break; }
-            }
-        }
+        const uint32_t skybox_owner = portal_by_skybox_link(cpu, a0);
+        const int a0_is_close_backstop = (skybox_owner != 0);
         int nolod_force = (nolod_portal_dome_on() && kind == PORTAL_FLAT && !a0_is_close_backstop);
         if (nolod_force) {
             int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
@@ -2651,6 +2754,9 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 forced_sb = sb;   /* provisional; cleared if the dome feed fails below */
                 uint32_t cb = portal_flat_raw_rgb(cpu, sb + 0x10, 0);
                 if (cb) flat_rgb_override = cb;
+                /* The dome and backstop stand in for the far flat, so they
+                 * take its fog term toward [g_Cyclorama+0x10]. */
+                fog_t = portal_far_fog_t(cpu, &s_view, fp, portal_forced_dome_fog_mode(), &fog);
             }
         }
         /* The portal preview is a far BACKGROUND seen through the arch window: it
@@ -2664,7 +2770,9 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         if (forced_sb) {
             uint32_t sb = forced_sb; forced_sb = 0;
             { static int fd=-1; if(fd<0){const char*e=getenv("OPENPETE_NOLOD_DOME_DBG");fd=(e&&*e&&*e!='0');}
-              if (fd) fprintf(stderr, "[nolod-dome f=%u] a0=%08X fp=%08X sb=%08X\n", openpete_frame, a0, forced_fp, sb); }
+              if (fd) fprintf(stderr, "[nolod-dome f=%u] a0=%08X fp=%08X sb=%08X d=%d far_fog=%06X t=%.4f\n",
+                              openpete_frame, a0, forced_fp, sb,
+                              (int)portal_game_distance(cpu, s_view.cam_ram, forced_fp), fog, fog_t); }
             {
                 derive_dome_matrix(cpu, forced_M);
                 uint32_t save_gte[5];
@@ -2674,7 +2782,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 cpu->gte_ctrl[2] = (uint32_t)(uint16_t)forced_M[1][1] | ((uint32_t)(uint16_t)forced_M[1][2] << 16);
                 cpu->gte_ctrl[3] = (uint32_t)(uint16_t)forced_M[2][0] | ((uint32_t)(uint16_t)forced_M[2][1] << 16);
                 cpu->gte_ctrl[4] = (uint32_t)(uint16_t)forced_M[2][2];
-                int fret = feed_portal_dome(cpu, sb, 0, /*canonical=*/1, 0, 0.0);
+                int fret = feed_portal_dome(cpu, sb, 0, /*canonical=*/1, fog, fog_t);
                 { static int fd=-1; if(fd<0){const char*e=getenv("OPENPETE_NOLOD_DOME_DBG");fd=(e&&*e&&*e!='0');}
                   if (fd) fprintf(stderr, "[nolod-dome f=%u] ret=%d\n", openpete_frame, fret); }
                 if (fret) { forced_dome = 1; forced_sb = sb; }
@@ -2704,15 +2812,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                  * presents show it; the canonical rect is never stale.
                  * Match the portal by its skybox, exactly as the close-backstop
                  * test above does. */
-                uint32_t owner = fp;
-                if (!owner) {
-                    uint32_t np3 = cpu->read_word(G_PORTALCOUNT); if (np3 > 6) np3 = 6;
-                    for (uint32_t i3 = 0; i3 < np3; i3++) {
-                        uint32_t p3 = cpu->read_word(G_PORTALS + i3 * 4); if (!p3) continue;
-                        uint32_t sb3 = cpu->read_word(p3 + 0x00);
-                        if (sb3 && (sb3 == a0 || sb3 + 0x10 == a0)) { owner = p3; break; }
-                    }
-                }
+                const uint32_t owner = fp ? fp : skybox_owner;
                 c->portal        = owner;
                 c->flat_a0       = a0;
                 /* raw, pre-fog; the forced --no-lod dome overrides the far fog
@@ -2726,6 +2826,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->ot_b          = cpu->read_word(D_PORTAL_DEPTH);
                 c->fog_rgb       = fog;
                 c->fog_t         = fog_t;
+                c->far_fog       = (forced_fp != 0);
                 c->clip[0] = ry0; c->clip[1] = ry1; c->clip[2] = rx0; c->clip[3] = rx1;
                 c->rect_rule     = portal_rect_rule_for(cpu, owner, kind, c->clip);
                 /* Snapshot the shared dome matrix (same for every dome leaf this
@@ -2769,7 +2870,8 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
  * stock LOD) is not deep inside the 4:3 frame, draws the flat outline fill
  * through feed_portal_quad, plus the gradient dome when the outline's mean
  * view-Z is below the .s's dome range 16384, fading toward the flat colour over
- * [12288, 16384), or always under the --no-lod dome. Each reveal is captured
+ * [12288, 16384), or always under the --no-lod dome, which takes the far
+ * flat's fog term (portal_far_fog_t) instead. Each reveal is captured
  * for the sub-tick replay. Returns at once on a canonical 4:3 view without
  * --no-lod. The GTE rotation registers are saved and restored. D_CLIPRECT is
  * staged in the sub-tick view when one is open, else written and restored to
@@ -2844,6 +2946,10 @@ static void feed_revealed_portals(CPUState* cpu) {
             rev_fog_t = (rev_mean - 12288.0) / 4096.0;
             if (rev_fog_t > 1.0) rev_fog_t = 1.0;
         }
+        /* The forced dome of a culled portal takes the far flat's fog term,
+         * as the leaf-fed forced dome does. */
+        if (rev_nolod)
+            rev_fog_t = portal_far_fog_t(cpu, &s_view, p, portal_forced_dome_fog_mode(), &rev_fog);
         /* The base clip rect (RenderPortals set none for a culled portal) is
          * the projected-outline bbox, published through the sub-tick view when
          * one is open (the feeders read it back through cpu->read_word), else
@@ -2901,6 +3007,7 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->ot_b          = 0;      /* revealed off-4:3: no live leaf -> outline mirror */
             c->fog_rgb       = rev_fog;
             c->fog_t         = rev_fog_t;
+            c->far_fog       = rev_nolod;
             c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
             c->clip[2] = (int)floorf(oxlo); c->clip[3] = (int)ceilf(oxhi);
         }
@@ -3060,6 +3167,28 @@ static void portal_replay_rect(CPUState* cpu, const portal_cap_t* c, int rc[4]) 
     rc[2] = (int)floorf(lx0); rc[3] = (int)ceilf(lx1);
 }
 
+/** @brief The fog a capture's replay applies under the present's view (s_view).
+ *
+ * A capture holding RenderPortals' far-leaf term re-evaluates it for its
+ * portal under the present's camera; any other capture keeps its captured
+ * fog. OPENPETE_REPLAY_DBG prints each re-evaluation.
+ * @param cpu The guest CPU state.
+ * @param c The capture.
+ * @param fog_rgb Receives the fog colour, 0x00BBGGRR.
+ * @return The blend fraction toward *fog_rgb. */
+static double portal_cap_fog(CPUState* cpu, const portal_cap_t* c, uint32_t* fog_rgb) {
+    *fog_rgb = c->fog_rgb;
+    if (!c->far_fog) return c->fog_t;
+    const double t = portal_far_fog_t(cpu, &s_view, c->portal, portal_forced_dome_fog_mode(), fog_rgb);
+    static int dbg = -1;
+    if (dbg < 0) { const char* e = getenv("OPENPETE_REPLAY_DBG"); dbg = (e && *e && *e != '0'); }
+    if (dbg)
+        fprintf(stderr, "[replay-far-fog f=%u] portal=%08X cam=(%.1f,%.1f,%.1f) interp=%d t=%.4f cap_t=%.4f fog=%06X\n",
+                openpete_frame, c->portal, s_view.cam[0], s_view.cam[1], s_view.cam[2], s_view.cam_interp,
+                t, c->fog_t, *fog_rgb);
+    return t;
+}
+
 /* ---- sub-tick re-extract; documented in reextract.h ---- */
 void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (s_pcap_n == 0) return;
@@ -3151,9 +3280,9 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
          * has a point behind the camera. */
         int rc[4] = { c->clip[0], c->clip[1], c->clip[2], c->clip[3] };
         { static int rd=-1; if(rd<0){const char*e=getenv("OPENPETE_REPLAY_DBG");rd=(e&&*e&&*e!='0');}
-          if (rd) fprintf(stderr, "[replay f=%u] cap portal=%08X flat_a0=%08X skybox=%08X is_dome=%d capturedrect=(%d,%d)-(%d,%d)\n",
+          if (rd) fprintf(stderr, "[replay f=%u] cap portal=%08X flat_a0=%08X skybox=%08X is_dome=%d capturedrect=(%d,%d)-(%d,%d) far_fog=%d cap_t=%.4f\n",
                           openpete_frame, c->portal, c->flat_a0, c->skybox, c->is_dome,
-                          c->clip[2], c->clip[0], c->clip[3], c->clip[1]); }
+                          c->clip[2], c->clip[0], c->clip[3], c->clip[1], c->far_fog, c->fog_t); }
         portal_replay_rect(cpu, c, rc);
         s_portal_kind = c->kind;
         {
@@ -3204,11 +3333,13 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
          * PORTAL_CYCLORAMA so the sub-tick previews stay depth-write-off too (never
          * occlude Spyro flying/walking through). PORTAL_CYCLORAMA is passed to add_tri
          * inside feed_portal_quad/_dome. */
+        uint32_t fog_rgb = 0;
+        const double fog_t = portal_cap_fog(cpu, c, &fog_rgb);
         feed_portal_quad(cpu, c->flat_a0, 0 /* rgb_override set */, c->portal, c->flat_rgb, c->ot_b,
-                         c->fog_rgb, c->fog_t);
+                         fog_rgb, fog_t);
         if (c->is_dome)
             feed_portal_dome(cpu, c->skybox, c->ot_b, /*canonical=*/0,
-                             c->fog_rgb, c->fog_t);
+                             fog_rgb, fog_t);
     }
 
     if (!clip_st)

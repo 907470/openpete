@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 04df35923208a9a220c747f84ee5467ec41b9c31
+# head: 3a0b69f4dca14f7a69686442e1acb0c6e931187f
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -190,8 +190,8 @@ games/spyro-1/renderer/portal.c	dump_portal_table	29	0
 games/spyro-1/renderer/portal.c	emit_portal_aperture	41	0	
 games/spyro-1/renderer/portal.c	feed_portal_dome	134	0	
 games/spyro-1/renderer/portal.c	feed_portal_quad	77	0	
-games/spyro-1/renderer/portal.c	feed_revealed_portals	76	0	
-games/spyro-1/renderer/portal.c	leaf_hook	136	0	
+games/spyro-1/renderer/portal.c	feed_revealed_portals	78	0	
+games/spyro-1/renderer/portal.c	leaf_hook	104	0	
 games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	74	0	
 games/spyro-1/renderer/portal.c	portal_reextract	83	0	
 games/spyro-1/renderer/reextract.c	cl_fit_pose	26	0	
