@@ -293,10 +293,9 @@ twilight_harbor | pos=(11615, 42844, 10978) yaw=3745 pitch=54
 # extended LOD loses it on pinned HQ corners and moby fades.
 misty_bog | pos=(75971, 146432, 15000) yaw=3072 pitch=120
 beast_makers | pos=(98304, 96379, 20600) yaw=2048 pitch=120
-# A distant portal on a heavy-fog level: extended LOD draws the destination
-# preview at full brightness inside a fogged arch, where -og and original LOD
-# show the arch filled with the fogged grey.
-beast_makers | pos=(99960, 132100, 19000) yaw=3474 pitch=-14
+# Distant portals on a heavy-fog level: extended LOD draws the destination
+# previews at full brightness, where -og and original LOD fog the portals out.
+beast_makers | pos=(178888, 198598, 29311) yaw=2520 pitch=118
 # Extended LOD on a heavy-fog level: far mobys draw the LP model where the HP
 # model is owed, the fanning chests' fans take no fog, and far gems vanish
 # where original LOD fades them toward the fog colour.
