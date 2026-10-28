@@ -765,6 +765,9 @@ const game_layout_t spyro3_game_layout = {
          * at the pool cursor D_8006C614, or a random slot without the
          * class byte's bit 4 when the 0x2000-byte pool is full. */
         .part_alloc    = 0x80056434u,
+        /* Its free routine: class byte -2 at a0+1, or the end sentinel -1
+         * (asm/updatemobys.s func_80056504). */
+        .part_free     = 0x80056504u,
         /* Sparx's update keeps its glow record at tag+0x10: it stores the
          * func_8002EC50 result there and clears the record's shape byte
          * through it (func_level_17_80075384, 0x80075560-0x80075584). */

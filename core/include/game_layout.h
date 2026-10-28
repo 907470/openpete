@@ -1297,7 +1297,9 @@ typedef struct game_layout {
      * `sparx_class` runs on a moby of that class is the companion's. The
      * word at `moby_update` holds that overlay's per-class update table,
      * indexed by the class halfword at game_layout.moby.class_off.
-     * `part_alloc` 0 leaves every particle unattributed.
+     * `part_alloc` 0 leaves every particle unattributed. `part_free` is
+     * the pool's slot free routine, which clears the slot's allocation
+     * serial (renderer/particles.c; 0 = not hooked).
      *
      * `sparx_glow_off` is the offset, in the moby tag the companion's moby
      * points at through its word at +0x00, of the pointer to the glow-pool
@@ -1307,6 +1309,7 @@ typedef struct game_layout {
         uint32_t player_update;
         uint32_t moby_update;
         uint32_t part_alloc;
+        uint32_t part_free;
         uint32_t sparx_glow_off;
     } owner;
 

@@ -752,6 +752,9 @@ const game_layout_t spyro2_game_layout = {
          * handwritten routine as Spyro 3's func_80056434
          * (asm/updatemobys.s func_80041C50). */
         .part_alloc    = 0x80041C50u,
+        /* Its free routine: class byte -2 at a0+1, or the end sentinel -1
+         * (asm/updatemobys.s func_80041D20). */
+        .part_free     = 0x80041D20u,
     },
     /* The update-list builder func_80040E94 (asm/updatemobys.s): pod flags
      * D_800682B8 (0x20 bytes, cleared as words), the moby array through

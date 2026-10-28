@@ -76,17 +76,19 @@ extern unsigned openpete_frame;
 #define PART_SLOTS_MAX 1024u
 
 /* Per pool slot, the serial of the allocation that last handed it out (0 for
- * none seen since the pool base was last read). The serial is global, so two
- * allocations never share one. The record carries nothing that names the
- * allocation it came from: the allocator writes only the class byte (+0x01),
- * which a slot reused by a spawn of the same class keeps, and every other byte
- * is the spawner's and the type's update's to write, the byte at +0x02 counted
- * up by some types, down by others and used as a bit field by others. The
- * serial is the allocation itself, observed where the game makes it. */
+ * none seen since the pool base was last read, or freed since). The serial is
+ * global, so two allocations never share one. The record carries nothing that
+ * names the allocation it came from: the allocator writes only the class byte
+ * (+0x01), which a slot reused by a spawn of the same class keeps, and every
+ * other byte is the spawner's and the type's update's to write, the byte at
+ * +0x02 counted up by some types, down by others and used as a bit field by
+ * others. The serial is the allocation itself, observed where the game makes
+ * it. */
 static uint32_t s_slot_serial[PART_SLOTS_MAX];
 static uint32_t s_slot_base;      /* the pool base the serials index from */
 static uint32_t s_alloc_serial;   /* the last serial handed out */
 static int      s_alloc_in;       /* the allocator hook's re-entrancy latch */
+static unsigned long s_free_hits; /* free-hook calls that cleared a slot's serial */
 
 #define PART_MAX_PRIMS 2048
 
@@ -1286,16 +1288,18 @@ static int part_feed_enabled(void) {
 /* A particle's speed ceiling, in the pool's quarter world units per tick. The
  * table is keyed by slot address, so a slot a new record respawns into inside
  * one tick pairs across two different particles and would lerp as a streak
- * between them. The selector test below catches a reuse that changed class;
- * this catches the rest, at a distance no particle covers in a tick. */
+ * between them. The selector and allocation-serial tests below catch a reuse
+ * the allocator made; this catches one in a pair without a serial, at a
+ * distance few particles cover in a tick. */
 #define PART_REUSE_CEILING 300.0
 
 /* A pair spanning more than this is a discontinuity rather than motion. */
 #define PART_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
 
 /* The verdict of the pairing: the primitive is lerped only on PART_PAIR_LERP,
- * and holds its current pose otherwise. */
-enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2 };
+ * and holds its current pose otherwise. PART_PAIR_CEIL is a PART_PAIR_REUSE
+ * decided by PART_REUSE_CEILING alone, kept apart for the census. */
+enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2, PART_PAIR_CEIL = 3 };
 
 /** @brief The state the record shows on this present: its displacement from the captured words and its two state bytes, interpolated between the pair.
  *
@@ -1317,14 +1321,18 @@ enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2 };
  * or type; the allocation serial the capture appends after the record
  * (particles_slot_serial) changing catches a reuse that kept both, the
  * allocator having handed the slot out between the two captures; the speed
- * ceiling PART_REUSE_CEILING catches a pair with no serial (a blob too short
- * to carry it) and a pool rewritten outside the allocator, at a distance no
- * particle covers in a tick.
+ * ceiling PART_REUSE_CEILING applies only to a pair whose serial is zero (a
+ * blob too short to carry it, a slot not allocated since the pool base was
+ * read, or one the free hook cleared and a write outside the allocator then
+ * filled). An equal nonzero serial is one allocation, so its record moved
+ * however far it moved, and lerps (the Spyro 3 Dino Mines bubbles, type 0x3E,
+ * move 0x15E per tick along their path).
  * @param it The paired captured primitive.
  * @param alpha The present's phase between the two ticks.
  * @param st Receives the state shown; the tick's own unless the verdict is
  *        PART_PAIR_LERP.
- * @return PART_PAIR_LERP, PART_PAIR_NONE or PART_PAIR_REUSE. */
+ * @return PART_PAIR_LERP, PART_PAIR_NONE, PART_PAIR_REUSE, or PART_PAIR_CEIL
+ *         for a reuse the speed ceiling alone decided. */
 static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     part_state_tick(it, st);
     const uint32_t pos = game_layout.particles.pos_off;
@@ -1338,9 +1346,12 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     memcpy(&csel, o->curr + game_layout.particles.sel_off, 2);
     if (psel != csel) return PART_PAIR_REUSE;         /* the slot took a new record */
     const uint32_t ser = game_layout.particles.rec_stride;
-    if ((uint32_t)o->blob_len >= ser + 4u &&
-        memcmp(o->prev + ser, o->curr + ser, 4) != 0)
-        return PART_PAIR_REUSE;                       /* allocated between the captures */
+    uint32_t pser = 0u, cser = 0u;
+    if ((uint32_t)o->blob_len >= ser + 4u) {
+        memcpy(&pser, o->prev + ser, 4);
+        memcpy(&cser, o->curr + ser, 4);
+        if (pser != cser) return PART_PAIR_REUSE;     /* allocated between the captures */
+    }
     uint16_t ph[3], ch[3];   /* X, Y, Z: the first word's halves, the second's low half */
     memcpy(ph, o->prev + pos, 6);
     memcpy(ch, o->curr + pos, 6);
@@ -1350,8 +1361,11 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     const double from_prev = (s_item_ref_prev && o->curr_ns > s_item_ref_cut) ? 1.0 : 0.0;
     double d[3];
     for (int k = 0; k < 3; k++) d[k] = (double)ph[k] - (double)ch[k];
-    if (d[0]*d[0] + d[1]*d[1] + d[2]*d[2] > PART_REUSE_CEILING * PART_REUSE_CEILING)
-        return PART_PAIR_REUSE;
+    /* An equal nonzero serial on both sides is one allocation: the record
+     * continued, however far it moved. */
+    if (cser == 0u &&
+        d[0]*d[0] + d[1]*d[1] + d[2]*d[2] > PART_REUSE_CEILING * PART_REUSE_CEILING)
+        return PART_PAIR_CEIL;
     const double rest = 1.0 - alpha;
     for (int k = 0; k < 3; k++) st->off[k] = d[k] * (rest - from_prev);
     /* Bytes 2 and 3 of the second word: the size (partsdraw.s:495-496 takes
@@ -1374,8 +1388,9 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
  * zero rebased nothing and measured nothing. `reuse` is the subset of the
  * snapped whose slot was found holding a different record than the pair's
  * previous blob, which is what a rising reuse count against a steady lerp count
- * separates from a pool that is simply churning. */
-static unsigned long s_reb_stat[3][16];   /* 0 lerped, 1 snapped, 2 reused */
+ * separates from a pool that is simply churning; `ceil` is the subset of the
+ * reused that PART_REUSE_CEILING alone decided. */
+static unsigned long s_reb_stat[4][16];   /* 0 lerped, 1 snapped, 2 reused, 3 ceiling */
 static int s_reb_dbg;   /* 2 = one line per rebased primitive */
 
 /** @brief Fills s_reb[i] with the rebase of captured primitive i onto the pose this present shows.
@@ -1399,7 +1414,8 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
     part_state st;
     const int verdict = part_record_pair(it, alpha, &st);
     s_reb_stat[verdict == PART_PAIR_LERP ? 0 : 1][it->cls & 0xF]++;
-    if (verdict == PART_PAIR_REUSE) s_reb_stat[2][it->cls & 0xF]++;
+    if (verdict == PART_PAIR_REUSE || verdict == PART_PAIR_CEIL) s_reb_stat[2][it->cls & 0xF]++;
+    if (verdict == PART_PAIR_CEIL) s_reb_stat[3][it->cls & 0xF]++;
     double p[3];
     ngte_proj o;
     part_rec_point(it, 0, st.off, p);
@@ -1430,15 +1446,15 @@ static void part_view_dbg(const char* tag, const ngte_view* v) {
             v->cam_M[0][0], v->cam_M[0][1], v->cam_M[0][2]);
 }
 
-/** @brief Prints the per-class rebase verdict counts to stderr; registered to run at exit.
+/** @brief Prints the free hook's count and the per-class rebase verdict counts to stderr; registered to run at exit.
  *
  * A class with no lerped and no snapped primitive is omitted. */
 static void part_rebase_report(void) {
-    fprintf(stderr, "[part-rebase]");
+    fprintf(stderr, "[part-rebase] free=%lu", s_free_hits);
     for (int c = 0; c < 16; c++)
         if (s_reb_stat[0][c] || s_reb_stat[1][c])
-            fprintf(stderr, " c%d:lerp=%lu snap=%lu reuse=%lu", c,
-                    s_reb_stat[0][c], s_reb_stat[1][c], s_reb_stat[2][c]);
+            fprintf(stderr, " c%d:lerp=%lu snap=%lu reuse=%lu ceil=%lu", c,
+                    s_reb_stat[0][c], s_reb_stat[1][c], s_reb_stat[2][c], s_reb_stat[3][c]);
     fprintf(stderr, "\n");
 }
 
@@ -1984,6 +2000,23 @@ static int on_part_alloc(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief The particle free hook: clears the allocation serial of the slot in a0, then declines so the guest routine frees it.
+ *
+ * The free routine (S2 asm/updatemobys.s func_80041D20, S3 func_80056504)
+ * marks the record at a0 free: class byte -2, or the pool's end sentinel -1
+ * when every slot after it is free. A record later written into the slot
+ * outside the allocator then pairs with serial 0 against the old record's
+ * nonzero serial, which part_record_pair reads as a reuse.
+ * @param cpu The guest CPU state; a0 is the record.
+ * @param addr The free routine's entry address.
+ * @return 0: the guest routine runs. */
+static int on_part_free(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    const int i = particles_slot(cpu->a0);
+    if (i >= 0) { s_slot_serial[i] = 0u; s_free_hits++; }
+    return 0;
+}
+
 /* ---- hook ----------------------------------------------------------------- */
 static hook_bracket_state s_hb;
 static const hook_bracket_desc k_bracket = {
@@ -2108,9 +2141,10 @@ static feature_dispatch_entry_t particles_dispatch[] = {
     { 0u, NULL, 0u },
     { 0u, NULL, 0u },
     { 0u, NULL, 0u },
+    { 0u, NULL, 0u },
 };
 
-/** @brief Binds the dispatch table's hook addresses to the layout's particle draw site and slot allocator.
+/** @brief Binds the dispatch table's hook addresses to the layout's particle draw site, slot allocator and slot free routine.
  *
  * The table ends at the first zero address, so only the sites the layout
  * names are entered, in order.
@@ -2122,6 +2156,8 @@ static void particles_apply_options(const openpete_options_t* opts) {
         particles_dispatch[n++] = (feature_dispatch_entry_t){ game_layout.particles.hook, on_particles_draw, 0u };
     if (game_layout.owner.part_alloc && game_layout.particles.array_ptr)
         particles_dispatch[n++] = (feature_dispatch_entry_t){ game_layout.owner.part_alloc, on_part_alloc, 0u };
+    if (game_layout.owner.part_free && game_layout.owner.part_alloc && game_layout.particles.array_ptr)
+        particles_dispatch[n++] = (feature_dispatch_entry_t){ game_layout.owner.part_free, on_part_free, 0u };
 }
 
 const feature_module_t particles_module = {
