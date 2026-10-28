@@ -244,6 +244,7 @@ const game_layout_t spyro1_game_layout = {
         .lp_near       = 0,
         .hp_far_tight  = 0,
         .tight_flags   = 0u,
+        .second_pass_flag = 0u,  /* no second semi-transparent walk */
         .sector_cull   = TERRAIN_SECTOR_CULL_NONE,
         .near_band       = 0x2000,
         .near_corner     = 0x140,

@@ -183,8 +183,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
      * outline lives at rim_pv[pi*16 .. pi*16+vn-1]. */
     ivec4 rim_cnt;
     ivec4 hp_drop;  /* x: HP drop sum bound, y: corner bound (x = 0: the
-                     * sum against 4 * fogRefBase alone); z: the heavy-fog
-                     * colour 0x00BBGGRR (GF_HPFOG)                       */
+                     * sum against 4 * fogRefBase alone)                  */
     dvec4 rim_oxyH;      /* rim ofx, ofy, H, pad                          */
     dvec4 rim_knobs;     /* eps, near, reach, cos(angle)                  */
     dvec4 rim_abc[6];    /* screen inv-vz plane fit a,b,c; w = valid      */
@@ -277,6 +276,9 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
                                     * key-only records (OPTC_ARENA_KN / KA) */
 #define FF_LPKEY      (1u << 22)   /* HP: a borrowed face standing in for an
                                     * uncov LP face; keys with the LP base term */
+#define FF_WATER      (1u << 23)   /* HP: a semi-transparent face of a sector
+                                    * the game draws in its second walk
+                                    * (terrain.c tn_face_water) */
 /* admit (LP): bits 19-23; otbias: bits 24-28 */
 
 /* Depth convention + PSX-affine interpolation - the scene stages' spec
@@ -831,6 +833,33 @@ bool near_canonical(double z0, double z1, double z2, double z3, uint w3_40, uint
     return w3_40 == 0u;
 }
 
+/* tn_sz3 mirror: a corner's GTE SZ3 on a scale, truncated and saturated to
+ * [0, 0xFFFF]. */
+int sz3_of(double m, double scale)
+{
+    if (m <= 0.0lf) return 0;
+    double v = m * scale;
+    return v >= 65535.0lf ? 0xFFFF : int(v);
+}
+
+/* tn_sz3_sum mirror: a face's corner-SZ3 sum (a triangle passes its shared
+ * corner twice as z3). */
+int sz3_sum(double z0, double z1, double z2, double z3, double scale)
+{
+    return sz3_of(z0, scale) + sz3_of(z1, scale) + sz3_of(z2, scale) + sz3_of(z3, scale);
+}
+
+/* tn_water_rgb mirror: the game's second-walk corner colour, the sector
+ * colour DPCS-faded toward black (FC 0) with IR0 = clamp(2 * (SZ3 - 0x1000),
+ * 0, 0xFFF) at SZ3 = mz * fogscale. */
+vec3 water_col(vec3 c, double mz, double fogscale)
+{
+    int ir0 = clamp(2 * (sz3_of(mz, fogscale) - 0x1000), 0, 0xFFF);
+    ivec3 c8 = ivec3(round(c * 255.0));
+    return vec3(float(dpcs_ch(c8.r, 0, ir0)), float(dpcs_ch(c8.g, 0, ir0)),
+                float(dpcs_ch(c8.b, 0, ir0))) / 255.0;
+}
+
 /* face_near_tier4 mirror: a canonical near face with near_flag_tier2 clear
  * and a corner SZ3 under near_corner (0x140). */
 bool nc4_tier4(double z0, double z1, double z2, double z3, uint w3_40, uint w3_80) {
@@ -1110,27 +1139,34 @@ uint cell_node_rgb(int r, int c, uvec4 q) {
 uint nt4_rgb_mid(uint a, uint b) {
     return ((a & 0xFEFEFFu) + (b & 0xFEFEFFu)) >> 1;
 }
-/* Node n's colour of a tier-4 triangle record from corner colours q (near
- * or far): A = q.x, B = q.y, C = q.w (word 1 byte 0), nodes in nt4_node's
- * parent order. */
-uint nt4_node_rgb(int n, uvec4 q) {
+/* The midpoint of two node colours: the drain's packed average
+ * (nt4_rgb_mid) for the near words it draws, else the per-channel floor
+ * mean (cell_rgb_mid), as terrain.c nt4_grid builds its nodes. */
+uint nt4_mid(uint a, uint b, bool drain) {
+    return drain ? nt4_rgb_mid(a, b) : cell_rgb_mid(a, b);
+}
+/* Node n's colour of a tier-4 triangle record from corner colours q: A =
+ * q.x, B = q.y, C = q.w (word 1 byte 0), nodes in nt4_node's parent order;
+ * drain selects the drain's average (near words) over the floor mean (far
+ * words). */
+uint nt4_node_rgb(int n, uvec4 q, bool drain) {
     uint A = q.x, B = q.y, C = q.w;
     if (n == 0) return A;
     if (n == 4) return B;
     if (n == 14) return C;
-    uint m2 = nt4_rgb_mid(A, B), m9 = nt4_rgb_mid(A, C), m11 = nt4_rgb_mid(B, C);
+    uint m2 = nt4_mid(A, B, drain), m9 = nt4_mid(A, C, drain), m11 = nt4_mid(B, C, drain);
     if (n == 2) return m2;
     if (n == 9) return m9;
     if (n == 11) return m11;
-    if (n == 1)  return nt4_rgb_mid(A, m2);
-    if (n == 3)  return nt4_rgb_mid(B, m2);
-    if (n == 5)  return nt4_rgb_mid(A, m9);
-    if (n == 12) return nt4_rgb_mid(C, m9);
-    if (n == 8)  return nt4_rgb_mid(B, m11);
-    if (n == 13) return nt4_rgb_mid(C, m11);
-    if (n == 6)  return nt4_rgb_mid(A, m11);
-    if (n == 7)  return nt4_rgb_mid(B, m9);
-    return nt4_rgb_mid(C, m2);                  /* node 10 */
+    if (n == 1)  return nt4_mid(A, m2, drain);
+    if (n == 3)  return nt4_mid(B, m2, drain);
+    if (n == 5)  return nt4_mid(A, m9, drain);
+    if (n == 12) return nt4_mid(C, m9, drain);
+    if (n == 8)  return nt4_mid(B, m11, drain);
+    if (n == 13) return nt4_mid(C, m11, drain);
+    if (n == 6)  return nt4_mid(A, m11, drain);
+    if (n == 7)  return nt4_mid(B, m9, drain);
+    return nt4_mid(C, m2, drain);                  /* node 10 */
 }
 vec4 cell_unorm(uint rgb) {
     return vec4(float(rgb & 0xFFu), float((rgb >> 8) & 0xFFu),
@@ -1165,8 +1201,8 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
              | (spare ? 0x8000u : 0u);
     inPos = ivec4(inC0.xyz, int(f16));
     inUV = uvec4(cell_uv(t, k), 0u, 0u);
-    inColFar = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellFar));
-    inColNear = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellNear));
+    inColFar = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellFar, false));
+    inColNear = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellNear, true));
     inMat = uvec4(t.z, t.w, 0u, 0xC0000000u | (uint(sub) << 4) | cell);
     inFaceFlags = inCellFace.x;
 #ifdef TERRAIN_ANIM
@@ -1175,11 +1211,11 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
 #ifdef TERRAIN_NEAR
     int ra = (k + 1) % 3, rb = (k + 2) % 3;
     inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
-    inCtxACol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellFar),
-                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellNear));
+    inCtxACol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellFar, false),
+                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellNear, true));
     inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
-    inCtxBCol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellFar),
-                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellNear));
+    inCtxBCol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellFar, false),
+                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellNear, true));
 #endif
     return true;
 }
@@ -1420,6 +1456,16 @@ void main()
          * LP_ADMIT=0, which forces the CPU walk - never mirrored here.) */
     }
 
+    /* ---- second walk (terrain.c tn_face_water, tn_water_far,
+     * tn_water_drop): a FF_WATER face past the near split (corner-SZ3 sum
+     * at 4 * m3 of 0x2000 or more) takes that walk's model, and is dropped
+     * at a sum at fogscale of 0x6000 or more. Runs before the LOD handoff
+     * drop, as in the walk. ---- */
+    double wz3 = quad ? m3c.z : m2.z;
+    bool waterFar = !lp && !fillPass && (ff & FF_WATER) != 0u
+                 && sz3_sum(m0.z, m1.z, m2.z, wz3, 4.0lf) >= 0x2000;
+    if (waterFar && sz3_sum(m0.z, m1.z, m2.z, wz3, fogscale) >= 0x6000) { kill_vert(); return; }
+
     /* ---- LOD handoff: .s HP drop (tn_hp_face_drop mirror) ----
      * Dropped at sum of corner SZ3 >= m_LodDistance; with hp_drop.x set, a
      * face below that sum bound with any corner SZ3 < hp_drop.y is kept.
@@ -1482,8 +1528,8 @@ void main()
         front3d = ((ff & FF_DSIDE) != 0u) || f1 || f2;
     }
     bool near = false;
-    if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (straddle ? front3d : (front || front2))
-        && (ff & FF_HQELIG) != 0u) {
+    if (!lp && !fillPass && !waterFar && (gf & GF_NEARHQ) != 0 && quad
+        && (straddle ? front3d : (front || front2)) && (ff & FF_HQELIG) != 0u) {
         if ((gf & GF_HQPIN) != 0) {
             /* --no-lod: HQ pinned ON for every eligible face at every
              * distance; only the behind-camera guard and the w3&0x80
@@ -1515,7 +1561,7 @@ void main()
      * to the cells: every triangle not fully behind the camera with
      * w3 & 0x40 clear takes tier 4; the HQ pin sends every other one not
      * fully behind the camera to tier 2. */
-    bool trinear = !quad && !lp && !fillPass && (gf & GF_NEARHQ) != 0
+    bool trinear = !quad && !lp && !fillPass && !waterFar && (gf & GF_NEARHQ) != 0
                 && (straddle ? front3d : (front || front2)) && (ff & FF_HQELIG) != 0u;
     bool trifront = max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + 2.0lf * max(m2.z, 0.0lf) > 0.0lf;
     bool t4tri = trinear && (gf & GF_TRI4) != 0 && (ff & FF_CELLOK) != 0u
@@ -1527,16 +1573,15 @@ void main()
                                                         ff & FF_W3_40, ff & FF_W3_80));
     /* Extended LOD (GF_HPRAW, terrain.c s_hp_raw): an HP face draws its
      * near colours and base CLUT row at every distance. On a heavy-fog level
-     * (GF_HPFOG, s_hp_fog) its colours DPCS-fade toward the fog colour
-     * hp_drop.z and its texels fade to modulation-neutral grey on the ladder
-     * ramp: hqw, the words terrain.c tn_atmo_words packs (aN = 0, bN = 0.5,
-     * bit 30 the face's fog-reference bias). */
+     * (GF_HPFOG, s_hp_fog) its colours DPCS-fade toward each corner's own far
+     * colour, the game's depth-cue target, and its texels fade to
+     * modulation-neutral grey on the ladder ramp: hqw, the words terrain.c
+     * tn_atmo_words packs (aN = 0, bN = 0.5, bit 30 the face's fog-reference
+     * bias). */
     bool hpRaw = !lp && (gf & GF_HPRAW) != 0;
     bool hpFog = hpRaw && (gf & GF_HPFOG) != 0;
     uvec2 hqw = uvec2(0x80000000u | (((ff & FF_FOGBIAS) != 0u) ? 0x40000000u : 0u),
                       128u | (128u << 10) | (128u << 20));
-    vec3 fogc = vec3(float(g.hp_drop.z & 0xFF), float((g.hp_drop.z >> 8) & 0xFF),
-                     float((g.hp_drop.z >> 16) & 0xFF)) / 255.0;
     /* Drain sub-cell keys (FF_KEYCELLS, terrain.c terrain_near_emit_face,
      * terrain_near_emit_tri, tn_flat_tri_emit): where the drain inserts a
      * near-band face as finer sub-cells than the variant drawn here (the 2x2
@@ -1590,7 +1635,7 @@ void main()
         bool whole = !near_canonical(m0.z, m1.z, m2.z, zq, ff & FF_W3_40, ff & FF_W3_80)
                   && (m0.z > 0.0lf || m1.z > 0.0lf || m2.z > 0.0lf || zq > 0.0lf);
         bool facing = straddle ? (lp || front3d || whole) : (front || front2);
-        if (cullable && !facing) { kill_vert(); return; }
+        if (cullable && !facing && !waterFar) { kill_vert(); return; }
     }
 
     /* ---- portal drops: rebuild THIS vertex's emitted tri and run the
@@ -1683,7 +1728,7 @@ void main()
     uint dbg_half = 0u, dbg_delta = 0u;
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     bool ladderFace = false;
-    if (!lp && !hqv && (gf & GF_CLUTFOG) != 0 && (gf & GF_HPRAW) == 0 && (sf & SF_SECINLOD) != 0u
+    if (!lp && !hqv && !waterFar && (gf & GF_CLUTFOG) != 0 && (gf & GF_HPRAW) == 0 && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
         ladderFace = true;
         /* per-corner int casts, then sum - the walk's exact quantisation */
@@ -1743,7 +1788,7 @@ void main()
         uv.y += uvdv;
     }
     vMat = uvec4(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16),
-                 (hpFog && (mat0 & (1u << 23)) != 0u) ? hqw : uvec2(0u));
+                 (hpFog && !waterFar && (mat0 & (1u << 23)) != 0u) ? hqw : uvec2(0u));
     /* A borrowed face samples the auxiliary VRAM bank, 512 rows below the
      * PSX VRAM: bit 31 tells the fragment stage to offset the page row,
      * and the CLUT row carries the offset here. */
@@ -1867,7 +1912,8 @@ void main()
         cvx cin[3];
         for (int k = 0; k < 3; k++) {
             /* an HQ vertex bakes its true far colour; unfogged it draws near */
-            vec3 c = terrain_col(tp[k].z, hpRaw ? (hpFog ? fogc : cn[k]) : (hqv ? cn[k] : cf[k]), cn[k], doFog,
+            vec3 c = waterFar ? water_col(cn[k], tp[k].z, fogscale)
+                   : terrain_col(tp[k].z, hpRaw ? (hpFog ? cf[k] : cn[k]) : (hqv ? cn[k] : cf[k]), cn[k], doFog,
                                  fogRef, fogscale, doGrade, s.sec[slot].gp, s.sec[slot].gq);
             if (dbgraw) c = (dbgmode == 4) ? cn[k] : cf[k];
             cin[k].m  = tp[k];
@@ -2105,10 +2151,11 @@ void main()
     vec3 cfar8  = op_unorm8(inColFar.rgb);
     vec3 cnear8 = op_unorm8(inColNear.rgb);
 #endif
-    vec4 col = vec4(terrain_col(mo.z, hpRaw ? (hpFog ? fogc : cnear8) : (hqv ? cnear8 : cfar8), cnear8,
-                                hpRaw ? hpFog : (!lp && !hqv), fogRef, fogscale,
-                                lp && (sf & SF_LPGRADE) != 0u,
-                                s.sec[slot].gp, s.sec[slot].gq), 1.0);
+    vec4 col = vec4(waterFar ? water_col(cnear8, mo.z, fogscale)
+                    : terrain_col(mo.z, hpRaw ? (hpFog ? cfar8 : cnear8) : (hqv ? cnear8 : cfar8), cnear8,
+                                  hpRaw ? hpFog : (!lp && !hqv), fogRef, fogscale,
+                                  lp && (sf & SF_LPGRADE) != 0u,
+                                  s.sec[slot].gp, s.sec[slot].gq), 1.0);
     {   /* debug tint modes 4/5: show the baked near / far colour raw */
         int dbgmode = (gf >> 26) & 7;
         if ((gf & (1 << 29)) != 0 && dbgmode == 4) col = vec4(op_unorm8(inColNear.rgb), 1.0);

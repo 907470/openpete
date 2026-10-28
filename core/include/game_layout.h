@@ -476,6 +476,17 @@ typedef struct game_layout {
         int      lp_near_shift;
         int      hp_far, lp_near, hp_far_tight;
         uint32_t tight_flags;
+        /* The header flag of a sector the draw lists for its second,
+         * semi-transparent walk instead of the HP walk (with `no_hp_flag`
+         * clear and inside hp_far_tight). That walk splits each face at the
+         * near band: a face whose corner-SZ sum is under `near_band` goes to
+         * the near queues as an HP face does; any other face is dropped at a
+         * sum of 0x6000 or more, else drawn as a semi-transparent GT4 from the
+         * tile's far half at base CLUT row, coloured by the sector's one
+         * colour DPCS-faded toward black (FC 0) with per-corner IR0 =
+         * clamp(2 * (SZ - 0x1000), 0, 0xFFF), with no NCLIP. 0 on a game
+         * without that walk. */
+        uint32_t second_pass_flag;
         int      sector_cull;
         /* The LP walk's per-vertex near outcode. A sector the binning lists
          * with view-Z minus radius at or below `lp_near_band` carries the

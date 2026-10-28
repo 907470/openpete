@@ -502,16 +502,18 @@ static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this w
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
 static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
-#define TN_HQFOG_CEN_N 9           /* tn_wctx hqfog_cen fields (tn_hqfog_census_print) */
+#define TN_HQFOG_CEN_N 10          /* tn_wctx hqfog_cen fields (tn_hqfog_census_print) */
 static int s_hqfog_cen[TN_HQFOG_CEN_N];   /* tn_wctx hqfog_cen sums */
 /* Extended LOD (tn_hp_raw_latch): an HP face draws its base CLUT row and its
  * near colours at every distance, never the far palette or a deeper ladder
  * row, which are the game's blend toward the LP tier. On a heavy-fog level
- * (s_hp_fog) its corner colours and texels instead fade toward the level's
- * fog colour s_hp_fog_rgb on the vertex depth-cue curve (terrain_fog_blend,
- * psx_hq_fog.glsl with tn_atmo_words). Latched once per walk, read by the
- * walk's workers and published to the cache as OPTC_GF_HPRAW, OPTC_GF_HPFOG
- * and the fog colour. */
+ * (s_hp_fog) its corner colours instead fade toward each corner's own far
+ * colour, the game's DPCS target, on the vertex depth-cue curve
+ * (terrain_fog_blend), and its texels to modulation-neutral grey
+ * (psx_hq_fog.glsl with tn_atmo_words). Latched once per walk, read by the
+ * walk's workers and published to the cache as OPTC_GF_HPRAW and
+ * OPTC_GF_HPFOG; s_hp_fog_rgb, the level's median far colour, feeds the
+ * census line only. */
 static int s_hp_raw, s_hp_fog;
 static uint32_t s_hp_fog_rgb;   /* 0x00BBGGRR */
 static int s_hqfog_en = -1;        /* OPENPETE_TERRAIN_HQFOG: depth cue on HQ-pinned far faces (default on) */
@@ -730,7 +732,8 @@ static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3
  * An LP face (noHP) returns the raw LP word at lpBase + idx, never fogged, as
  * the game's LP walk draws it. An HP face reads the near word at nearBase +
  * idx and the far word at farBase + idx, masks both to 24 bits and returns
- * their terrain_fog_blend. idx is the face word 1 byte offset, already
+ * their terrain_fog_blend, or the near word alone under extended LOD
+ * (s_hp_raw) off a heavy-fog level. idx is the face word 1 byte offset, already
  * multiplied by 4.
  * @param cpu The guest CPU state.
  * @param noHP 1 for an LP face.
@@ -747,7 +750,7 @@ static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
                               int idx, double m3, int fogRef) {
     if (noHP) return rd(cpu, lpBase + (uint32_t)idx) & 0xFFFFFFu;
     uint32_t nearC = rd(cpu, nearBase + (uint32_t)idx) & 0xFFFFFFu;
-    if (s_hp_raw) return s_hp_fog ? terrain_fog_blend(nearC, s_hp_fog_rgb, m3, fogRef) : nearC;
+    if (s_hp_raw && !s_hp_fog) return nearC;
     uint32_t farC  = rd(cpu, farBase  + (uint32_t)idx) & 0xFFFFFFu;
     return terrain_fog_blend(nearC, farC, m3, fogRef);
 }
@@ -1313,18 +1316,18 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
  * wedge's full extent on a WSLg screenshot. */
 #define CLIP_PROJ_LIMIT 2048.0f
 
-/** @brief Fogs a near-path triangle's three nodes toward the heavy-fog colour when its face takes the fog.
+/** @brief Fogs a near-path triangle's three nodes toward their far colours when its face takes the heavy fog.
  *
  * Under emit_hqfog_on (s_hp_fog) each node's colour becomes
- * terrain_fog_blend of its near colour (rgb) and s_hp_fog_rgb at its own
- * depth and the face's fog reference; otherwise the nodes are left as they
- * are.
+ * terrain_fog_blend of its near colour (rgb) and its far colour (rgbf, the
+ * game's DPCS target) at its own depth and the face's fog reference;
+ * otherwise the nodes are left as they are.
  * @param W The walk context.
  * @param v The three nodes, rewritten in place. */
 static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
     if (!W->emit_hqfog_on) return;
     for (int k = 0; k < 3; k++)
-        v[k].rgb = terrain_fog_blend(v[k].rgb, s_hp_fog_rgb, v[k].m3, W->emit_fogref);
+        v[k].rgb = terrain_fog_blend(v[k].rgb, v[k].rgbf, v[k].m3, W->emit_fogref);
 }
 
 /** @brief Near-plane clips a camera-space triangle and pushes the result.
@@ -2944,8 +2947,10 @@ static uint32_t nt4_rgb_mid(uint32_t a, uint32_t b) {
 /** @brief Builds a split triangle's 15 nodes from its three corners.
  *
  * Nodes 0, 4 and 14 are A, B and C; the other twelve follow k_nt4_build, each
- * the cv_mid of its two parents with its near and far colours averaged as
- * the drain does (nt4_rgb_mid).
+ * the cv_mid of its two parents with its near colour averaged as the drain
+ * does (nt4_rgb_mid). The far colour keeps cv_mid's per-channel floor mean:
+ * the drain draws near colours only, and the far colour is the heavy-fog
+ * target (tn_hqfog_nodes), which equal corner far colours leave unchanged.
  * @param N Receives the 15 nodes.
  * @param A The first corner.
  * @param B The second corner.
@@ -2957,7 +2962,6 @@ static void nt4_grid(ngte_cvert N[15], ngte_cvert A, ngte_cvert B, ngte_cvert C)
         const uint8_t* b = k_nt4_build[i];
         N[b[0]] = cv_mid(N[b[1]], N[b[2]]);
         N[b[0]].rgb = nt4_rgb_mid(N[b[1]].rgb, N[b[2]].rgb);
-        N[b[0]].rgbf = nt4_rgb_mid(N[b[1]].rgbf, N[b[2]].rgbf);
     }
 }
 
@@ -6520,44 +6524,78 @@ static void tsc_derive(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetail
  * first sector's address. -1 until the first refresh. */
 static int s_hf_verdict = -1;
 static uint32_t s_hf_sig[4];
-/* The elected far colour of the last scan (0x00BBGGRR) and the fog reference
+/* The median far colour of the last scan (0x00BBGGRR) and the fog reference
  * of the last walk (fogRefBase), read by terrain_heavy_fog_colour and
  * terrain_fog_cue; 0 before the first scan or walk. */
 static uint32_t s_hf_colour;
 static int s_fog_ref_last;
 
-/* The majority vote over a level's far colours (terrain_heavy_fog_refresh):
- * pass 0 elects a candidate (Boyer-Moore), pass 1 counts it. */
-typedef struct { uint32_t top; int cand, n, topn; } tn_hf_vote;
+/* The heavy-fog class bounds (terrain_heavy_fog_refresh): a far colour is
+ * clustered when no channel lies more than TN_HF_SPREAD from the level's
+ * per-channel median, and the level is heavy when at least
+ * TN_HF_CLUSTER_PCT percent of its far colours are clustered. Over the 101
+ * levels of the three games the members score 100 (four levels whose far
+ * palette is one colour) and 88.8 (Spyro 3 harbor_speedway); the highest
+ * non-member scores 65.7. */
+#define TN_HF_SPREAD 24
+#define TN_HF_CLUSTER_PCT 75
 
-/** @brief Feeds one guest sector's HP far colours to the heavy-fog vote.
+/* A level's far colours, per-channel histograms then the clustered count
+ * (terrain_heavy_fog_refresh). */
+typedef struct { uint32_t hist[3][256]; uint32_t med; int n, near; } tn_hf_scan;
+
+/** @brief Feeds one guest sector's HP far colours to the heavy-fog scan.
  *
  * The header layout is tsc_decode_body's: header word 5 holds the HP vertex
  * count (bits 0-7), colour count (8-15) and vertex offset (24-31); the near
- * colours follow the HP vertices and the far colours the near ones.
+ * colours follow the HP vertices and the far colours the near ones. Pass 0
+ * adds each colour to the channel histograms; pass 1 counts the colours
+ * within TN_HF_SPREAD of the median on every channel.
  * @param cpu The guest CPU state, read only.
  * @param sec The sector's guest address.
- * @param pass 0 to elect the candidate, 1 to count it.
- * @param V The vote. */
-static void tn_hf_vote_sector(CPUState* cpu, uint32_t sec, int pass, tn_hf_vote* V) {
+ * @param pass 0 to build the histograms, 1 to count the clustered colours.
+ * @param S The scan. */
+static void tn_hf_scan_sector(CPUState* cpu, uint32_t sec, int pass, tn_hf_scan* S) {
     const uint32_t g4 = rd(cpu, sec + 0x14);
     const uint32_t nHpV = g4 & 0xFFu, nHpC = (g4 >> 8) & 0xFFu, off = (g4 >> 24) & 0xFFu;
     const uint32_t far = sec + 0x1Cu + (off + nHpV + nHpC) * 4u;
     for (uint32_t c = 0; c < nHpC; c++) {
         const uint32_t w = rd(cpu, far + c * 4u) & 0xFFFFFFu;
-        if (pass) { V->n++; V->topn += (w == V->top); continue; }
-        if (V->cand == 0) { V->top = w; V->cand = 1; }
-        else V->cand += (w == V->top) ? 1 : -1;
+        int within = 1;
+        for (int k = 0; k < 3; k++) {
+            const int v = (int)((w >> (8 * k)) & 0xFFu);
+            if (!pass) { S->hist[k][v]++; continue; }
+            const int d = v - (int)((S->med >> (8 * k)) & 0xFFu);
+            within &= d <= TN_HF_SPREAD && d >= -TN_HF_SPREAD;
+        }
+        if (!pass) S->n++;
+        else S->near += within;
     }
 }
 
+/** @brief Returns the lower median of each channel's histogram, packed 0x00BBGGRR.
+ * @param S The scan, histograms and count filled.
+ * @return The median colour. */
+static uint32_t tn_hf_median(const tn_hf_scan* S) {
+    uint32_t med = 0u;
+    for (int k = 0; k < 3; k++) {
+        uint32_t acc = 0u;
+        int v = 0;
+        while (v < 255 && (acc += S->hist[k][v]) * 2u < (uint32_t)S->n) v++;
+        med |= (uint32_t)v << (8 * k);
+    }
+    return med;
+}
+
 /* Scans every guest sector's HP far colour array when the level's sector
- * table changes and sets the verdict: heavy when one colour holds at least
- * 90% of all far colours. It reads guest RAM only and runs before any walk
- * of the level draws, so the verdict depends on neither the view nor worker
- * order. A scan that finds no far colours (a table mid-load) leaves the
- * verdict unset, read as not heavy, and the next refresh scans again. One
- * info line per scan names the counts and the verdict. */
+ * table changes and sets the verdict: heavy when the far palette clusters,
+ * at least TN_HF_CLUSTER_PCT percent of the far colours within TN_HF_SPREAD
+ * of the per-channel median on every channel. The colour published is that
+ * median. It reads guest RAM only and runs before any walk of the level
+ * draws, so the verdict depends on neither the view nor worker order. A scan
+ * that finds no far colours (a table mid-load) leaves the verdict unset,
+ * read as not heavy, and the next refresh scans again. One info line per
+ * scan names the counts and the verdict. */
 void terrain_heavy_fog_refresh(CPUState* cpu) {
     const uint32_t ptr = tenv_rd(cpu, game_layout.env.sector_ptr);
     const uint32_t cnt = tenv_rd(cpu, game_layout.env.sector_count);
@@ -6566,16 +6604,19 @@ void terrain_heavy_fog_refresh(CPUState* cpu) {
                               live ? rd(cpu, ptr) : 0u };
     if (s_hf_verdict >= 0 && !memcmp(sig, s_hf_sig, sizeof sig)) return;
     memcpy(s_hf_sig, sig, sizeof sig);
-    tn_hf_vote V = { 0u, 0, 0, 0 };
-    for (int pass = 0; pass < 2; pass++)
+    tn_hf_scan S;
+    memset(&S, 0, sizeof S);
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass) S.med = tn_hf_median(&S);
         for (uint32_t i = 0; live && i < cnt && i < 4096u; i++) {
             const uint32_t sec = rd(cpu, ptr + i * 4u);
-            if (sec >= 0x80000000u) tn_hf_vote_sector(cpu, sec, pass, &V);
+            if (sec >= 0x80000000u) tn_hf_scan_sector(cpu, sec, pass, &S);
         }
-    s_hf_verdict = V.n == 0 ? -1 : (V.topn * 10 >= V.n * 9) ? 1 : 0;
-    s_hf_colour = V.top;
-    OPL_INFO_F("terrain", "heavy fog: level %d, %u sectors, %d far colours, %d equal %06X -> %s",
-               (int)sig[0], cnt, V.n, V.topn, V.top, s_hf_verdict == 1 ? "heavy" : "not heavy");
+    }
+    s_hf_verdict = S.n == 0 ? -1 : (S.near * 100 >= S.n * TN_HF_CLUSTER_PCT) ? 1 : 0;
+    s_hf_colour = S.med;
+    OPL_INFO_F("terrain", "heavy fog: level %d, %u sectors, %d far colours, %d within %d of median %06X -> %s",
+               (int)sig[0], cnt, S.n, S.near, TN_HF_SPREAD, S.med, s_hf_verdict == 1 ? "heavy" : "not heavy");
 }
 
 int terrain_heavy_fog(void) {
@@ -7868,7 +7909,8 @@ static inline uint32_t t_le32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); 
 /** @brief Returns a terrain vertex colour read through host pointers, fogged like terrain_color.
  *
  * An LP (noHP) colour is returned raw; an HP colour is the terrain_fog_blend
- * of its near and far colours. The fog debug print stays on the guest-read
+ * of its near and far colours, or the near colour alone under extended LOD
+ * (s_hp_raw) off a heavy-fog level. The fog debug print stays on the guest-read
  * variant terrain_color only.
  * @param noHP 1 to read the LP colour unfogged.
  * @param lp The LP colour bank.
@@ -7882,7 +7924,7 @@ static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* near
                                 const uint8_t* farp, int idx, double m3, int fogRef) {
     if (noHP) return t_le32(lp + idx) & 0xFFFFFFu;
     uint32_t nearC = t_le32(nearp + idx) & 0xFFFFFFu;
-    if (s_hp_raw) return s_hp_fog ? terrain_fog_blend(nearC, s_hp_fog_rgb, m3, fogRef) : nearC;
+    if (s_hp_raw && !s_hp_fog) return nearC;
     uint32_t farC  = t_le32(farp  + idx) & 0xFFFFFFu;
     return terrain_fog_blend(nearC, farC, m3, fogRef);
 }
@@ -9962,6 +10004,163 @@ typedef struct {
     int sec_index;           /* level sector index (env-anim membership), -1 for an import (tgpu_envm_sec) */
 } tgpu_hpctx;
 
+/* The second semi-transparent walk's constants (terrain.second_pass_flag;
+ * Spyro 2 environment.s 80025878-800259A4, Spyro 3 8002403C-80024168): a
+ * face whose corner-SZ3 sum is TN_WATER_DROP_SUM or more is dropped, and a
+ * corner's depth cue IR0 = 2 * (SZ3 - TN_WATER_FADE_SZ), clamped to
+ * [0, 0xFFF]. */
+#define TN_WATER_DROP_SUM 0x6000
+#define TN_WATER_FADE_SZ  0x1000
+
+/** @brief Returns one corner's GTE SZ3 on a scale: m3 * scale truncated and saturated to [0, 0xFFFF] as the register is.
+ * @param m3 The corner's view-Z in world/16.
+ * @param scale The SZ3-per-m3 scale.
+ * @return The SZ3. */
+static int tn_sz3(double m3, double scale) {
+    if (m3 <= 0.0) return 0;
+    const double v = m3 * scale;
+    return v >= 65535.0 ? 0xFFFF : (int)v;
+}
+
+/** @brief Returns 1 when the draw lists a sector for its second, semi-transparent walk instead of the HP walk.
+ *
+ * The sector's header carries terrain.second_pass_flag and not
+ * terrain.no_hp_flag (Spyro 2 environment.s 80023E2C-80023E58: andi 0x5000,
+ * 0x4000 emits no entry, else the +0x2200 list). Such a sector carries one
+ * colour, which every face corner indexes.
+ * @param SC The sector's cache entry.
+ * @return 1 for such a sector, else 0. */
+static int tn_sector_water(const tscache_t* SC) {
+    const uint32_t wf = game_layout.terrain.second_pass_flag;
+    return wf && (SC->flags & (int)wf) && !(SC->flags & (int)game_layout.terrain.no_hp_flag);
+}
+
+/** @brief Returns 1 when an HP face of the sector's own tier takes the second walk's model at the far split.
+ *
+ * The face belongs to a second-walk sector (tn_sector_water) and its far
+ * tile is semi-transparent (tpage ABE). The game draws every far face of
+ * that walk semi-transparent (prim code 0x3E); a face whose tile is opaque
+ * keeps the HP walk's model, since its draw class is fixed at the bake.
+ * @param SC The sector's cache entry, or NULL for faces borrowed from the HP
+ *        source level, which never take the model.
+ * @param F The face.
+ * @return 1 when the face takes the model, else 0. */
+static int tn_face_water(const tscache_t* SC, const tsface_t* F) {
+    return SC && tn_sector_water(SC) && F->mat.textured && F->mat.blend != 0;
+}
+
+/** @brief Returns a face's corner-SZ3 sum on a scale, a triangle counting its shared corner twice as the walk does.
+ * @param cz The corners' view-Z (m3) in i0..i3 order.
+ * @param quad Nonzero for a quad.
+ * @param scale The SZ3-per-m3 scale.
+ * @return The sum. */
+static int tn_sz3_sum(const double cz[4], int quad, double scale) {
+    return tn_sz3(cz[0], scale) + tn_sz3(cz[1], scale) + tn_sz3(cz[2], scale)
+         + tn_sz3(quad ? cz[3] : cz[2], scale);
+}
+
+/** @brief Returns 1 when a second-walk face is past the walk's near split, where the walk draws it itself.
+ *
+ * The walk sends a face whose corner-SZ3 sum is under terrain.near_band to
+ * the near queues the HP walk fills (environment.s 80025878-800258FC),
+ * which draw it as an HP near face; SZ3 is 4 * m3, the near classifier's
+ * scale, independent of --fog-scale.
+ * @param cz The corners' view-Z (m3) in i0..i3 order.
+ * @param quad Nonzero for a quad.
+ * @return 1 for a far face, else 0. */
+static int tn_water_far(const double cz[4], int quad) {
+    return tn_sz3_sum(cz, quad, tface_hqscale()) >= game_layout.terrain.near_band;
+}
+
+/** @brief Returns 1 when the second walk drops a far face: its corner-SZ3 sum is TN_WATER_DROP_SUM or more.
+ *
+ * SZ3 = m3 * s_fogscale, so the drop rides the --fog-scale curve with the
+ * fade it hides in, as tn_hp_face_drop does.
+ * @param cz The corners' view-Z (m3) in i0..i3 order.
+ * @param quad Nonzero for a quad.
+ * @return 1 when the face is dropped, else 0. */
+static int tn_water_drop(const double cz[4], int quad) {
+    return tn_sz3_sum(cz, quad, s_fogscale) >= TN_WATER_DROP_SUM;
+}
+
+/** @brief Returns the second walk's per-vertex depth cue of one corner: IR0 = clamp(2 * (SZ3 - 0x1000), 0, 0xFFF).
+ *
+ * The game clamps a doubled value with bits 12-13 set to 0xFFF and leaves a
+ * larger one, which DPCS saturates to black as 0xFFF does. SZ3 = m3 *
+ * s_fogscale.
+ * @param m3 The corner's view-Z in world/16.
+ * @return The IR0, 0..0xFFF. */
+static int tn_water_ir0(double m3) {
+    const int d = 2 * (tn_sz3(m3, s_fogscale) - TN_WATER_FADE_SZ);
+    return d < 0 ? 0 : (d > 0xFFF ? 0xFFF : d);
+}
+
+/** @brief Returns a second-walk corner's colour on the game's per-vertex curve: the sector colour DPCS-faded toward black.
+ *
+ * The walk zeroes FC (environment.s 800257B0-800257B8) and runs DPCS on the
+ * sector's colour with each corner's IR0 (tn_water_ir0), so the colour is
+ * ngte_dpcs_ch(c, 0, ir0) per channel.
+ * @param c The sector colour, 0x00BBGGRR.
+ * @param m3 The corner's view-Z in world/16.
+ * @return The colour, 0x00BBGGRR. */
+static uint32_t tn_water_rgb(uint32_t c, double m3) {
+    const int ir0 = tn_water_ir0(m3);
+    uint32_t out = 0u;
+    for (int k = 0; k < 3; k++)
+        out |= (uint32_t)ngte_dpcs_ch((int)((c >> (8 * k)) & 0xFFu), 0, ir0) << (8 * k);
+    return out;
+}
+
+/** @brief Fills a second-walk far face's corner colours: the sector colour each corner indexes, faded on the per-vertex curve (tn_water_rgb).
+ * @param cpu The guest CPU state, read when h_near is NULL.
+ * @param h_near The HP near colour bank as a host pointer, or NULL.
+ * @param nearBase The HP near colour bank's guest address.
+ * @param sv The sector's projected vertices.
+ * @param F The face.
+ * @param rc Receives the colours in i0..i3 order, 0x00BBGGRR. */
+static void tn_water_face_rgb(CPUState* cpu, const uint8_t* h_near, uint32_t nearBase,
+                              const lvert* sv, const tsface_t* F, uint32_t rc[4]) {
+    const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
+    const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
+    for (int q = 0; q < 4; q++) {
+        const uint32_t c = (h_near ? t_le32(h_near + co[q]) : rd(cpu, nearBase + (uint32_t)co[q])) & 0xFFFFFFu;
+        rc[q] = tn_water_rgb(c, sv[vi[q]].vz);
+    }
+}
+
+/* A walk pass's colour sources (tn_flat_face_rgb): host banks when the pass
+ * resolved them all (host_col), else the guest arrays. */
+typedef struct {
+    CPUState* cpu;
+    const uint8_t *h_lp, *h_near, *h_far;   /* host banks, all NULL to read guest RAM */
+    uint32_t lpColBase, nearBase, farBase;  /* the guest arrays */
+    int passLP;                             /* the pass draws LP faces */
+} tn_colsrc;
+
+/** @brief Resolves a flat-path face's corner colours: the pass's own colour model, or the second walk's on a far face of a second-walk sector.
+ *
+ * Each corner reads its colour word at its face word 1 offset: an LP corner
+ * raw, an HP corner through terrain_color_h (host banks) or terrain_color
+ * (guest arrays) at the corner's view-Z, a second-walk far face through
+ * tn_water_face_rgb. A triangle's fourth colour is 0.
+ * @param S The pass's colour sources.
+ * @param sv The sector's projected vertices.
+ * @param F The face.
+ * @param fogRef The face's fog reference.
+ * @param waterFar 1 for a second-walk far face (tn_face_water, tn_water_far).
+ * @param rc Receives the colours in i0..i3 order, 0x00BBGGRR. */
+static void tn_flat_face_rgb(const tn_colsrc* S, const lvert* sv, const tsface_t* F, int fogRef,
+                             int waterFar, uint32_t rc[4]) {
+    if (waterFar) tn_water_face_rgb(S->cpu, S->h_near, S->nearBase, sv, F, rc);
+    const int co[4] = { F->c0, F->c1, F->c2, F->c3 };
+    const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
+    for (int q = 0; q < 4 && !waterFar; q++)
+        rc[q] = S->h_lp || S->h_near
+              ? terrain_color_h(S->passLP, S->h_lp, S->h_near, S->h_far, co[q], sv[vi[q]].vz, fogRef)
+              : terrain_color(S->cpu, S->passLP, S->lpColBase, S->nearBase, S->farBase, co[q], sv[vi[q]].vz, fogRef);
+    if (!F->quad) rc[3] = 0u;
+}
+
 /* One set of HP faces in a sector's frame: its own tier or its borrowed faces. */
 typedef struct {
     const tsvert_t* V;       /* vertex bank */
@@ -9972,6 +10171,7 @@ typedef struct {
     uint32_t nearBase, farBase;
     const canim_t* CA;       /* colour-anim slot, or NULL */
     uint32_t ff;             /* extra face_flags bits */
+    const tscache_t* own;    /* the sector whose own HP faces these are (tn_face_water), or NULL */
 } tgpu_hpset;
 
 /** @brief Emits an HP face's flat-variant triangles with their texel UVs and HD-fold entries.
@@ -10082,6 +10282,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
                  | ((uint32_t)tface_cells_ok(F->hq_idx) << 20)   /* may take the cells */
                  | ((uint32_t)key_cells << 21)   /* keys per drain sub-cell */
                  | ((uint32_t)F->lpkey << 22)    /* keys with the LP base term */
+                 | ((uint32_t)tn_face_water(S->own, F) << 23)   /* second-walk face */
                  | (((uint32_t)F->otbias & 0x1Fu) << 24);
     /* Material bucket: the face's resolution class, keyed as the walk
      * keys it: Tiledef id, the face's own texturedness, env-rewrite
@@ -10382,14 +10583,14 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
      * level (host colours, no previous-tick state: FF_BORROWED) ---- */
     tgpu_hpctx X = { cpu, buf, ab, with_var, anim && !vsnap, hdfold, canim_only, base_ff, hqTable,
                      (int)own_sec };
-    tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u };
+    tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u, SC };
     tgpu_own_bank(SC, &X, &own);
     for (int f = 0; SC->hpV && SC->hpF && f < SC->nHpF; f++)
         if (tgpu_bake_hp_face(&X, &own, &SC->hpF[f], &fail) != 0) goto done;
     s_hq_bank = 0;
     if (SC->imp) {
         const tsimp_t* I = SC->imp;
-        const tgpu_hpset bor = { I->V, NULL, I->nV, I->nearCol, I->farCol, 0u, 0u, NULL, 1u << 11 };
+        const tgpu_hpset bor = { I->V, NULL, I->nV, I->nearCol, I->farCol, 0u, 0u, NULL, 1u << 11, NULL };
         /* The source table through the host window; no HD fold (pack files
          * name the scene's VRAM, not the auxiliary bank). */
         tgpu_hpctx XB = X;
@@ -11104,13 +11305,14 @@ static int tn_queue_near(int quad, uint32_t rec) {
     return game_layout.terrain.hq_tri4_cells != 0 && is_deferred4(rec);
 }
 
-/** @brief Returns the colour an extended-LOD HP corner draws: its near colour, faded toward the heavy-fog colour under s_hp_fog.
+/** @brief Returns the colour an extended-LOD HP corner draws: its near colour, faded toward its far colour under s_hp_fog.
  * @param nearC The corner's near colour, 0x00BBGGRR.
+ * @param farC The corner's far colour, 0x00BBGGRR.
  * @param m3 The corner's view-Z in world/16.
  * @param fogRef The face's fog reference.
  * @return The colour, 0x00BBGGRR. */
-static uint32_t tn_hp_corner_rgb(uint32_t nearC, double m3, int fogRef) {
-    return s_hp_fog ? terrain_fog_blend(nearC, s_hp_fog_rgb, m3, fogRef) : nearC;
+static uint32_t tn_hp_corner_rgb(uint32_t nearC, uint32_t farC, double m3, int fogRef) {
+    return s_hp_fog ? terrain_fog_blend(nearC, farC, m3, fogRef) : nearC;
 }
 
 /** @brief Packs the heavy-fog texel fade words (psx_hq_fog.glsl): the texel fades to modulation-neutral grey on the ladder ramp.
@@ -11147,8 +11349,9 @@ static int tn_emitted_rgb(const tn_wctx* W, int t0, double m3) {
  * not found, and a corner whose depth another corner shares is skipped,
  * since the subdivide nodes between the two carry that depth too. A found corner counts in hqfog_cen[0], in [1] when it lies in
  * the fog band (0 < fogRef - SZ < 4096), in [2] when its emitted colour
- * differs from the expected one (tn_hp_corner_rgb), and in [5] when its
- * emitted colour differs from its near colour.
+ * differs from the expected one (tn_hp_corner_rgb), in [5] when its
+ * emitted colour differs from its near colour, and in [9] when it does so
+ * in the fog band.
  * @param W The walk context.
  * @param V The face's corner nodes, near colour in rgb and far in rgbf.
  * @param nc The corner count, 3 or 4.
@@ -11163,9 +11366,11 @@ static void tn_hqfog_census(tn_wctx* W, const ngte_cvert* V, int nc, int t0, int
         if (hit < 0) continue;
         W->hqfog_cen[0]++;
         const int ir0 = fogRef - (int)(V[q].m3 * s_fogscale);
-        if (ir0 > 0 && ir0 < 4096) W->hqfog_cen[1]++;
-        if ((uint32_t)hit != tn_hp_corner_rgb(V[q].rgb, V[q].m3, fogRef)) W->hqfog_cen[2]++;
-        if ((uint32_t)hit != V[q].rgb) W->hqfog_cen[5]++;
+        const int band = ir0 > 0 && ir0 < 4096;
+        W->hqfog_cen[1] += band;
+        if ((uint32_t)hit != tn_hp_corner_rgb(V[q].rgb, V[q].rgbf, V[q].m3, fogRef)) W->hqfog_cen[2]++;
+        W->hqfog_cen[5] += (uint32_t)hit != V[q].rgb;
+        W->hqfog_cen[9] += band && (uint32_t)hit != V[q].rgb;
     }
 }
 
@@ -11185,17 +11390,20 @@ static void tn_hqfog_begin(void) {
 /** @brief Prints the walk's extended-LOD terrain fog census line under OPENPETE_TERRAIN_HQFOG_CENSUS.
  *
  * One line per walk: the latches, the near-path corners found, those in the
- * fog band, those whose colour differs from tn_hp_corner_rgb (LP-ward) and
- * those drawn off their near colour (tn_hqfog_census), the near faces drawn
+ * fog band, those whose colour differs from tn_hp_corner_rgb (LP-ward),
+ * those drawn off their near colour and those of them in the fog band
+ * (tn_hqfog_census), the near faces drawn
  * with the heavy-fog words, the flat HP faces drawn fogged and those drawn
  * LP-ward, the LP faces of a sector whose HP list draws, and the LP ride
  * faces of such a sector (tn_lpward_census). */
 static void tn_hqfog_census_print(void) {
     if (!s_hqfog_census_on) return;
     fprintf(stderr, "[hqfog-census] frame=%u hpRaw=%d hpFog=%d fog=%06X corners=%d inBand=%d lpwardCorners=%d "
-            "foggedCorners=%d fogFaces=%d flatFogFaces=%d flatLpwardFaces=%d lpOverHpFaces=%d lpRideFaces=%d\n",
+            "foggedCorners=%d inBandFogged=%d fogFaces=%d flatFogFaces=%d flatLpwardFaces=%d lpOverHpFaces=%d "
+            "lpRideFaces=%d\n",
             openpete_feed_key_now(), s_hp_raw, s_hp_fog, s_hp_fog_rgb, s_hqfog_cen[0], s_hqfog_cen[1], s_hqfog_cen[2],
-            s_hqfog_cen[5], s_hqfog_cen[3], s_hqfog_cen[4], s_hqfog_cen[6], s_hqfog_cen[7], s_hqfog_cen[8]);
+            s_hqfog_cen[5], s_hqfog_cen[9], s_hqfog_cen[3], s_hqfog_cen[4], s_hqfog_cen[6], s_hqfog_cen[7],
+            s_hqfog_cen[8]);
 }
 
 /** @brief Latches s_hp_raw, s_hp_fog and s_hp_fog_rgb for this walk.
@@ -11211,7 +11419,8 @@ static void tn_hp_raw_latch(void) {
 
 /** @brief Sets the fade words for the face about to be emitted: the heavy-fog words on an HP face under s_hp_fog, else none.
  * @param W The walk context.
- * @param passLP 1 when the face is an LP face.
+ * @param passLP 1 when the face takes no heavy-fog words: an LP face or a
+ *        second-walk far face (tn_face_water).
  * @param fogbias 1 when the face's fog reference carries the +0x2000 bias. */
 static void tn_hp_fog_words(tn_wctx* W, int passLP, int fogbias) {
     if (s_hp_fog && !passLP) tn_atmo_words(fogbias, W->emit_hqfog);
@@ -11225,6 +11434,8 @@ typedef struct {
     CPUState* cpu;          /* guest reads of the near colours when host_col is clear */
     const uint8_t* h_near;  /* the HP near colour bank as a host pointer */
     uint32_t nearBase;      /* the HP near colour bank's guest address */
+    const uint8_t* h_far;   /* the HP far colour bank as a host pointer */
+    uint32_t farBase;       /* the HP far colour bank's guest address */
     int passLP, passFill;   /* the pass draws LP faces / is the stencil-gated fill */
     int host_col;           /* the near colours read through h_near */
     int quad;               /* 4 corners, else 3 */
@@ -11257,7 +11468,9 @@ static void tn_lpward_census(tn_wctx* W, const tn_lpward_face* F) {
     for (int q = 0; q < (F->quad ? 4 : 3); q++) {
         const uint32_t nearC = F->host_col ? t_le32(F->h_near + F->co[q]) & 0xFFFFFFu
                                            : rd(F->cpu, F->nearBase + (uint32_t)F->co[q]) & 0xFFFFFFu;
-        lpward |= F->rc[q] != tn_hp_corner_rgb(nearC, F->cz[q], F->fogRef);
+        const uint32_t farC = F->host_col ? t_le32(F->h_far + F->co[q]) & 0xFFFFFFu
+                                          : rd(F->cpu, F->farBase + (uint32_t)F->co[q]) & 0xFFFFFFu;
+        lpward |= F->rc[q] != tn_hp_corner_rgb(nearC, farC, F->cz[q], F->fogRef);
         fogged |= F->rc[q] != nearC;
     }
     W->hqfog_cen[6] += lpward;
@@ -12052,6 +12265,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         const uint8_t *h_lp = P.h_lp, *h_near = P.h_near, *h_far = P.h_far;
         const int faceStride = passLP ? 8 : 16;
         int host_col = passLP ? (h_lp != NULL) : (h_near != NULL && h_far != NULL);
+        const tn_colsrc CS = { cpu, host_col ? h_lp : NULL, host_col ? h_near : NULL, host_col ? h_far : NULL,
+                               lpColBase, nearBase, farBase, passLP };
         W->emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
         /* Borrowed HP and imported sectors: auxiliary bank, source table,
          * and the source table's cell verdicts. */
@@ -12186,9 +12401,14 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * Animated tiles are plain in-place entry rewrites (func_8002A6FC),
              * kept live by tsc_refresh_anim; a ladder applied to a stale entry
              * lands on the wrong palettes. */
+            /* A far face of a second-walk sector draws on that walk's model
+             * (tn_face_water): no ladder, no near path, no NCLIP, its own
+             * drop and colours. */
+            const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
+            const int waterFar = pass == 1 && tn_face_water(SC, F) && tn_water_far(cz, quad);
             tmat matSel;
             int dbg_half = 0, dbg_delta = 0;   /* fardbg: chosen tiledef half + ladder row */
-            if (!passLP && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured && !s_hp_raw) {
+            if (!passLP && !waterFar && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured && !s_hp_raw) {
                 /* SZ = s_fogscale·m3 - the whole ladder ramp rides the
                  * --fog-scale curve (s_fogscale = 4/k; exact .s at k=1).
                  * ALWAYS four corners: .s HP tris are quads with i2==i3 and
@@ -12409,11 +12629,11 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * behaviour (A/B). A game with the LP near outcode
              * (terrain.lp_near_sz) takes that rule instead
              * (tn_lp_face_near_drop). */
-            const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
             if (passLP && !passFill) {
                 const char* why = tn_lp_face_world_drop(G, SV, F, cz, quad);
                 if (why) { FARDBG_DROP(why); continue; }
             }
+            if (waterFar && tn_water_drop(cz, quad)) { FARDBG_DROP("water"); continue; }
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
                 for (int q2 = 0; q2 < nc; q2++)
@@ -12566,7 +12786,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                                           faceStride == 16, straddle, F->w3, front, front2,
                                           &near_front, &cfront);
             W->dbg_satback += satv & 1; W->dbg_satemit += satv >> 1;
-            int near = (faceStride == 16 && s_nearhq && hqTable && near_front &&
+            int near = (faceStride == 16 && !waterFar && s_nearhq && hqTable && near_front &&
                         tn_face_near(sv, F, faces + (uint32_t)f * 16u));
             {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
                  * (a corner behind the camera) by route - near/HQ vs LQ fall-through. */
@@ -12589,7 +12809,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 }
             }
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
-                near = (faceStride == 16 && s_nearhq && hqTable && tn_queue_near(quad, faces + (uint32_t)f*16u));
+                near = (faceStride == 16 && !waterFar && s_nearhq && hqTable && tn_queue_near(quad, faces + (uint32_t)f*16u));
             if (near) {
                 tn_near_face(W, cpu, sv, F, host_col, h_near, nearBase, h_far, farBase,
                              fogRef, hqTable, faces + (uint32_t)f * 16u, straddle);
@@ -12647,28 +12867,20 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     }
                 }
             }
-            if (cullable && !cfront) { W->dbg_nclip++; FARDBG_DROP("nclip"); continue; }
+            if (cullable && !cfront && !waterFar) { W->dbg_nclip++; FARDBG_DROP("nclip"); continue; }
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. */
-            uint32_t rc0, rc1, rc2, rc3;
-            if (host_col) {
-                rc0 = terrain_color_h(passLP, h_lp, h_near, h_far, c0, sv[i0].vz, fogRef);
-                rc1 = terrain_color_h(passLP, h_lp, h_near, h_far, c1, sv[i1].vz, fogRef);
-                rc2 = terrain_color_h(passLP, h_lp, h_near, h_far, c2, sv[i2].vz, fogRef);
-                rc3 = quad ? terrain_color_h(passLP, h_lp, h_near, h_far, c3, sv[i3].vz, fogRef) : 0;
-            } else {
-                rc0 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c0, sv[i0].vz, fogRef);
-                rc1 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c1, sv[i1].vz, fogRef);
-                rc2 = terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c2, sv[i2].vz, fogRef);
-                rc3 = quad ? terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
-            }
+            uint32_t rcv[4];
+            tn_flat_face_rgb(&CS, sv, F, fogRef, waterFar, rcv);
+            uint32_t rc0 = rcv[0], rc1 = rcv[1], rc2 = rcv[2], rc3 = rcv[3];
             {
-                const tn_lpward_face lf = { SV, mat, cpu, h_near, nearBase, passLP, passFill, host_col, quad,
+                const tn_lpward_face lf = { SV, mat, cpu, h_near, nearBase, h_far, farBase,
+                                            passLP, passFill, host_col, quad,
                                             fogRef, { rc0, rc1, rc2, rc3 }, { c0, c1, c2, c3 },
                                             { sv[i0].vz, sv[i1].vz, sv[i2].vz, sv[i3].vz } };
                 tn_lpward_census(W, &lf);
-                tn_hp_fog_words(W, passLP, F->fogbias);
+                tn_hp_fog_words(W, passLP || waterFar, F->fogbias);
             }
             /* Authored-data corrections (unpainted vertex colours) - see
              * k_lp_artfix. Applies to LP world faces and their fill twins;
@@ -13902,7 +14114,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         tcg.cull_ref_s2  = cullRefS2;
         tcg.hp_drop_sum_far    = game_layout.terrain.hp_drop_sum_far;
         tcg.hp_drop_corner_min = game_layout.terrain.hp_drop_corner_min;
-        tcg.fog_rgb            = (int32_t)s_hp_fog_rgb;
         tcg.ot_terms     = tc_ot_terms();
         tcg.gflags = tc_global_flags(s_nearhq && hqTable, lod_handoff);
         {   /* OPENPETE_TERRAIN_GPU_TINT=<mode>: retained draws replace their

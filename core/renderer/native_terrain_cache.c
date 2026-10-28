@@ -138,7 +138,7 @@ typedef struct {
      * C natural layout == std140 (dvec4 base alignment 32, dvec2 array
      * stride 16 == double[2]). rim_cnt.x = plane count (0 = test off). */
     int32_t rim_cnt[4];
-    int32_t hp_drop[4];    /* HP far-face drop: sum bound, corner bound (0 = sum alone); z: the heavy-fog colour */
+    int32_t hp_drop[4];    /* HP far-face drop: sum bound, corner bound (0 = sum alone) */
     double  rim_oxyH[4];   /* rim ofx, ofy, H, pad                       */
     double  rim_knobs[4];  /* eps, near, reach, cos(angle)               */
     double  rim_abc[6][4]; /* screen inv-vz plane fit a,b,c; w = valid   */
@@ -1762,7 +1762,6 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->fog[3] = (int32_t)g->ot_terms;
     gu->hp_drop[0] = g->hp_drop_sum_far;
     gu->hp_drop[1] = g->hp_drop_corner_min;
-    gu->hp_drop[2] = g->fog_rgb;
     memcpy(gu->sdv, g->scroll_dv, sizeof(gu->sdv));
     memcpy(gu->sdvc, g->scroll_dvc, sizeof(gu->sdvc));
     gu->rim_cnt[0]  = g->rim_n;

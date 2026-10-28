@@ -283,6 +283,7 @@ const game_layout_t spyro3_game_layout = {
         .lp_near       = 0x760,                     /* 800225B4: addi -0x760, blez skips LP */
         .hp_far_tight  = 0x600,                     /* 800225F8/800225FC: addi -0x100 then -0x500 */
         .tight_flags   = 0x5000u,                   /* 800225F0: andi 0x5000 */
+        .second_pass_flag = 0x1000u,                /* 800225F0-80022610 lists it at +0x2200; 80023C00-80024480 draws it */
         /* The LP near outcode, the Spyro 2 rule. */
         .lp_near_band    = 0x760,                   /* 800225C0-800225D0: vz - r - 0x760 <= 0
                                                      * sets entry bit 1 */

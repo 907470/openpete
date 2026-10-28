@@ -187,8 +187,9 @@ enum {
                                    * palette or a deeper ladder row           */
 #define OPTC_GF_HPFOG      131072u /* with OPTC_GF_HPRAW, a heavy-fog level
                                    * (terrain.c s_hp_fog): HP corner colours
-                                   * and texels fade toward fog_rgb on the
-                                   * vertex depth-cue curve                   */
+                                   * fade toward their own far colours on the
+                                   * vertex depth-cue curve, texels toward
+                                   * modulation-neutral grey                  */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u
@@ -218,7 +219,6 @@ typedef struct {
     int32_t cull_ref_s2;  /* ENV_CULLDIST >> 7 (.s LP far-cull threshold)      */
     int32_t hp_drop_sum_far;    /* game_layout.terrain.hp_drop_sum_far        */
     int32_t hp_drop_corner_min; /* game_layout.terrain.hp_drop_corner_min     */
-    int32_t fog_rgb;            /* the heavy-fog colour, 0x00BBGGRR (OPTC_GF_HPFOG) */
     uint32_t gflags;      /* OPTC_GF_*                                         */
     uint32_t ot_terms;    /* the LP insert's ordering-table terms, packed:
                            * bits 0-7 lp_base_slots, 8-11 lp_bias_slots,
