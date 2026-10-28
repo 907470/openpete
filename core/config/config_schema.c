@@ -12,6 +12,7 @@ static const char *const v_vprec[]    = { "subpixel", "integer", NULL };
 static const char *const v_texmap[]   = { "perspective", "affine", NULL };
 static const char *const v_lod[]      = { "original", "extended", NULL };
 static const char *const v_tervis[]   = { "game", "frustum", NULL };
+static const char *const v_fog[]      = { "original", "per-pixel", "off", NULL };
 static const char *const v_renderer[] = { "psycross", "vk", NULL };
 static const char *const v_logfmt[]   = { "plain", "json", NULL };
 
@@ -45,6 +46,7 @@ static const cfg_knob_t g_schema[] = {
     { "hide_player",      "--hide-player",      NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "texture_mapping",  "--texture-mapping",  NULL,                    CFG_ENUM,   v_texmap,   NULL,       NULL,       0 },
     { "lod",              "--lod",              NULL,                    CFG_ENUM,   v_lod,      "--no-lod", "extended", 0 },
+    { "fog",              "--fog",              NULL,                    CFG_ENUM,   v_fog,      NULL,       NULL,       0 },
     { "fog_scale",        "--fog-scale",        NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "renderer",         "--renderer",         NULL,                    CFG_ENUM,   v_renderer, NULL,       NULL,       0 },
     { "window",           "--window",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },

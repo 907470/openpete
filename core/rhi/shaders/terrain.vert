@@ -227,6 +227,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_HQFOG     32768
 #define GF_HPRAW     65536
 #define GF_HPFOG     131072
+#define GF_FOGOFF    262144
+#define GF_FOGPP     524288
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -851,13 +853,46 @@ int sz3_sum(double z0, double z1, double z2, double z3, double scale)
 
 /* tn_water_rgb mirror: the game's second-walk corner colour, the sector
  * colour DPCS-faded toward black (FC 0) with IR0 = clamp(2 * (SZ3 - 0x1000),
- * 0, 0xFFF) at SZ3 = mz * fogscale. */
-vec3 water_col(vec3 c, double mz, double fogscale)
+ * 0, 0xFFF) at SZ3 = mz * fogscale; unfaded under fog mode off. */
+vec3 water_col(vec3 c, double mz, double fogscale, bool fogOff)
 {
+    if (fogOff) return c;   /* fog mode off: no depth cue */
     int ir0 = clamp(2 * (sz3_of(mz, fogscale) - 0x1000), 0, 0xFFF);
     ivec3 c8 = ivec3(round(c * 255.0));
     return vec3(float(dpcs_ch(c8.r, 0, ir0)), float(dpcs_ch(c8.g, 0, ir0)),
                 float(dpcs_ch(c8.b, 0, ir0))) / 255.0;
+}
+
+/* tn_ladder_t0k mirror: a face's ladder select key, t0k <= 0 the near tile
+ * half, else t0k >> 8 the CLUT row. Per-corner int casts, then sum (the
+ * walk's exact quantisation); ladnear is the nearest-corner rule (Spyro 2/3):
+ * row = 15 - (max clamped IR0 >> 8), t0k = 256 * row. */
+int ladder_t0k(double z0, double z1, double z2, double z3, int fogRef,
+               double fogscale, bool ladnear)
+{
+    if (ladnear) {
+        int irmax = 0;
+        irmax = max(irmax, clamp(fogRef - int(z0 * fogscale), 0, 0xFFF));
+        irmax = max(irmax, clamp(fogRef - int(z1 * fogscale), 0, 0xFFF));
+        irmax = max(irmax, clamp(fogRef - int(z2 * fogscale), 0, 0xFFF));
+        irmax = max(irmax, clamp(fogRef - int(z3 * fogscale), 0, 0xFFF));
+        return (15 - (irmax >> 8)) << 8;
+    }
+    int szsum = int(z0 * fogscale) + int(z1 * fogscale)
+              + int(z2 * fogscale) + int(z3 * fogscale);
+    return ((szsum >> 7) << 5) - fogRef + 4096;
+}
+
+/* tn_flat_atmo_words mirror: the heavy-fog texel fade stepped at the face's
+ * ladder row, pre-weighted (word b bit 30): aN = 1 - row/15, bN = 0.5 row/15
+ * per channel in 1/256 units, integer-rounded as the walk rounds them. */
+uvec2 flat_atmo_words(int t0k)
+{
+    int row = t0k <= 0 ? 0 : min(t0k >> 8, 15);
+    uint aN = uint((256 * (15 - row) + 7) / 15);
+    uint bN = uint((128 * row + 7) / 15);
+    return uvec2(0x80000000u | aN | (aN << 10) | (aN << 20),
+                 0x40000000u | bN | (bN << 10) | (bN << 20));
 }
 
 /* face_near_tier4 mirror: a canonical near face with near_flag_tier2 clear
@@ -1580,8 +1615,15 @@ void main()
      * bias). */
     bool hpRaw = !lp && (gf & GF_HPRAW) != 0;
     bool hpFog = hpRaw && (gf & GF_HPFOG) != 0;
-    uvec2 hqw = uvec2(0x80000000u | (((ff & FF_FOGBIAS) != 0u) ? 0x40000000u : 0u),
-                      128u | (128u << 10) | (128u << 20));
+    bool fogOff = (gf & GF_FOGOFF) != 0;
+    bool fogPP  = (gf & GF_FOGPP) != 0;
+    /* The heavy-fog words: the per-pixel ramp under the per-pixel form, the
+     * per-face ladder step (flat_atmo_words) under the original form. */
+    uvec2 hqw = fogPP
+        ? uvec2(0x80000000u | (((ff & FF_FOGBIAS) != 0u) ? 0x40000000u : 0u),
+                128u | (128u << 10) | (128u << 20))
+        : flat_atmo_words(hpFog ? ladder_t0k(m0.z, m1.z, m2.z, m3c.z, fogRef, fogscale,
+                                             (gf & GF_LADNEAR) != 0) : 0);
     /* Drain sub-cell keys (FF_KEYCELLS, terrain.c terrain_near_emit_face,
      * terrain_near_emit_tri, tn_flat_tri_emit): where the drain inserts a
      * near-band face as finer sub-cells than the variant drawn here (the 2x2
@@ -1728,24 +1770,11 @@ void main()
     uint dbg_half = 0u, dbg_delta = 0u;
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     bool ladderFace = false;
+    bool ladPP = false;   /* per-pixel ladder words on this face */
     if (!lp && !hqv && !waterFar && (gf & GF_CLUTFOG) != 0 && (gf & GF_HPRAW) == 0 && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
         ladderFace = true;
-        /* per-corner int casts, then sum - the walk's exact quantisation */
-        int szsum = int(m0.z * fogscale) + int(m1.z * fogscale)
-                  + int(m2.z * fogscale) + int(m3c.z * fogscale);
-        int key = (szsum >> 7) << 5;
-        int t0k = key - fogRef + 4096;
-        if ((gf & GF_LADNEAR) != 0) {
-            /* nearest-corner rule (the walk's ladder_nearest_corner branch):
-             * row = 15 - (max clamped IR0 >> 8), t0k = 256 * row */
-            int irmax = 0;
-            irmax = max(irmax, clamp(fogRef - int(m0.z * fogscale), 0, 0xFFF));
-            irmax = max(irmax, clamp(fogRef - int(m1.z * fogscale), 0, 0xFFF));
-            irmax = max(irmax, clamp(fogRef - int(m2.z * fogscale), 0, 0xFFF));
-            irmax = max(irmax, clamp(fogRef - int(m3c.z * fogscale), 0, 0xFFF));
-            t0k = (15 - (irmax >> 8)) << 8;
-        }
+        int t0k = ladder_t0k(m0.z, m1.z, m2.z, m3c.z, fogRef, fogscale, (gf & GF_LADNEAR) != 0);
         dbg_t0k = t0k;
         if (t0k <= 0) {
             if ((inMat.z & (1u << 23)) != 0u) {   /* near half textured */
@@ -1755,7 +1784,10 @@ void main()
                 dbg_half = 1u;
             }
         } else {
-            int delta = min(t0k >> 8, 15);
+            /* Per-pixel fog draws the base row and picks the row per pixel
+             * (ladPP); fog off draws the base row. */
+            int delta = (fogOff || fogPP) ? 0 : min(t0k >> 8, 15);
+            ladPP = fogPP;
             dbg_delta = uint(delta);
             if (delta > 0) clut = (clut + uint(delta << 6)) & 0xFFFFu;
         }
@@ -1768,7 +1800,7 @@ void main()
     if (g.hd_lad.w != 0.0 && (mat0 & (1u << 23)) != 0u) {
         uint hid = (dbg_half == 1u ? (inMat.w >> 16) : (inMat.y >> 16)) & 0xFFFFu;
         if (hid != 0u)
-            vHd = hid | (ladderFace ? 0x10000u : 0u)
+            vHd = hid | ((ladderFace && !fogOff) ? 0x10000u : 0u)
                       | (((ff >> 10) & 1u) << 17);
     }
     /* env UV-scroll: per-tile fractional V offset for THIS build. Flat
@@ -1788,7 +1820,9 @@ void main()
         uv.y += uvdv;
     }
     vMat = uvec4(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16),
-                 (hpFog && !waterFar && (mat0 & (1u << 23)) != 0u) ? hqw : uvec2(0u));
+                 (hpFog && !waterFar && (mat0 & (1u << 23)) != 0u) ? hqw
+                 : ladPP ? uvec2(((ff & FF_FOGBIAS) != 0u) ? 0x40000000u : 0u, 0x40000000u)
+                 : uvec2(0u));
     /* A borrowed face samples the auxiliary VRAM bank, 512 rows below the
      * PSX VRAM: bit 31 tells the fragment stage to offset the page row,
      * and the CLUT row carries the offset here. */
@@ -1905,15 +1939,15 @@ void main()
                                    : vec2(inCtxBUV.x, inCtxBUV.y);
         if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
 
-        bool doFog   = hpRaw ? hpFog : (!lp && !hqv);
+        bool doFog   = hpRaw ? hpFog : (!lp && !hqv && !fogOff);
         bool doGrade = lp && (sf & SF_LPGRADE) != 0u;
         int  dbgmode = (gf >> 26) & 7;
         bool dbgraw  = (gf & (1 << 29)) != 0 && (dbgmode == 4 || dbgmode == 5);
         cvx cin[3];
         for (int k = 0; k < 3; k++) {
             /* an HQ vertex bakes its true far colour; unfogged it draws near */
-            vec3 c = waterFar ? water_col(cn[k], tp[k].z, fogscale)
-                   : terrain_col(tp[k].z, hpRaw ? (hpFog ? cf[k] : cn[k]) : (hqv ? cn[k] : cf[k]), cn[k], doFog,
+            vec3 c = waterFar ? water_col(cn[k], tp[k].z, fogscale, fogOff)
+                   : terrain_col(tp[k].z, hpRaw ? (hpFog ? cf[k] : cn[k]) : ((hqv || (fogOff && !lp)) ? cn[k] : cf[k]), cn[k], doFog,
                                  fogRef, fogscale, doGrade, s.sec[slot].gp, s.sec[slot].gq);
             if (dbgraw) c = (dbgmode == 4) ? cn[k] : cf[k];
             cin[k].m  = tp[k];
@@ -2151,9 +2185,9 @@ void main()
     vec3 cfar8  = op_unorm8(inColFar.rgb);
     vec3 cnear8 = op_unorm8(inColNear.rgb);
 #endif
-    vec4 col = vec4(waterFar ? water_col(cnear8, mo.z, fogscale)
-                    : terrain_col(mo.z, hpRaw ? (hpFog ? cfar8 : cnear8) : (hqv ? cnear8 : cfar8), cnear8,
-                                  hpRaw ? hpFog : (!lp && !hqv), fogRef, fogscale,
+    vec4 col = vec4(waterFar ? water_col(cnear8, mo.z, fogscale, fogOff)
+                    : terrain_col(mo.z, hpRaw ? (hpFog ? cfar8 : cnear8) : ((hqv || (fogOff && !lp)) ? cnear8 : cfar8), cnear8,
+                                  hpRaw ? hpFog : (!lp && !hqv && !fogOff), fogRef, fogscale,
                                   lp && (sf & SF_LPGRADE) != 0u,
                                   s.sec[slot].gp, s.sec[slot].gq), 1.0);
     {   /* debug tint modes 4/5: show the baked near / far colour raw */

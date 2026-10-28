@@ -2,13 +2,13 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 3a0b69f4dca14f7a69686442e1acb0c6e931187f
+# head: ed22a84c476d94ee6adac7757f7805aee0815a5f
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
-core/config/knob_registry.c	knob_registry_init	134	0	
-core/config/options.c	parse_one_flag	660	1	
+core/config/knob_registry.c	knob_registry_init	131	0	
+core/config/options.c	parse_one_flag	665	1	
 core/config/options.c	tokenize_sidecar_args	43	0	
 core/diag/ident_audit.c	openpete_ident_audit_present	32	0	
 core/diag/psxtrace_schedule.c	openpete_sched_anchor_window	29	0	
@@ -164,7 +164,7 @@ games/common/renderer/terrain.c	tsc_get	48	0
 games/common/renderer/terrain.c	tsc_lp_grade	31	0	
 games/common/renderer/terrain.c	tsc_vert_anim_refresh	155	0	
 games/common/renderer/terrain.c	tsimp_attach	26	0	
-games/common/renderer/terrain.c	walk_sector	623	0	
+games/common/renderer/terrain.c	walk_sector	615	0	
 games/common/renderer/text_moby.c	emit_glyph	26	0	
 games/common/renderer/text_moby.c	text_moby_native_cache	40	0	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	43	0	

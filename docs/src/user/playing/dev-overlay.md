@@ -61,8 +61,8 @@ it.
 
 | Section | Rows |
 | --- | --- |
-| Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
-| Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths |
+| Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD, Fog |
+| Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog scale, Render mode, Terrain GPU cache, Terrain visibility, Render paths |
 | Gameplay | Freecam, Tick scale, Pause sim, Runahead, Rewind, Level warp, Area warp (Spyro 3) |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
 | Audio (collapsed) | Mute, SFX volume, Music volume |
@@ -82,7 +82,7 @@ same pattern holds
 elsewhere: a row's further controls show only while its first control is
 on, as Render FPS's target (while **Interpolation** is on), Field of view's
 slider (while **Original** is off), Performance
-stats' position, Notifications' position and timeout, Fog's scale, and the
+stats' position, Notifications' position and timeout, and the
 **SFX volume** and **Music volume** sliders beside their **Override**
 checkbox.
 

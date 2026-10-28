@@ -155,3 +155,10 @@ summer_forest@glintdepth | pos=(51616, 47022, 44485) yaw=0 pitch=224 | 1467 | --
 # Water under extended LOD on a fog level: the water surface draws near-white
 # with a dark lattice and no per-pixel fog, where original LOD fogs it.
 mystic_marsh | pos=(83131, 19147, 32066) yaw=1043 pitch=506
+# The row under each pinned --fog form at both LODs: @fogorig gives
+# extended LOD with original fog (original LOD repeats the plain row),
+# @fogpp original LOD with per-pixel fog (extended repeats the plain
+# row), @fogoff both LODs without fog.
+mystic_marsh@fogorig | pos=(83131, 19147, 32066) yaw=1043 pitch=506 | | --fog original
+mystic_marsh@fogpp | pos=(83131, 19147, 32066) yaw=1043 pitch=506 | | --fog per-pixel
+mystic_marsh@fogoff | pos=(83131, 19147, 32066) yaw=1043 pitch=506 | | --fog off

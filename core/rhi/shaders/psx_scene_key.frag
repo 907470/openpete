@@ -188,8 +188,20 @@ void main()
     if (ko == 1) discard;
     vec4 col = vColor / vQ;
     ivec2 ti = op_texel(uv, tg);
-    vec4 c = op_decode555(sample_word(ti.x, ti.y));
+    /* Per-pixel CLUT ladder (psx_hq_fog.glsl), as psx_scene.frag. */
+    bool lad = !NOTEX && pc.bpp != 16 && op_hq_ladder_on(pc.hqfog_a, pc.hqfog_b);
+    float lpos = lad ? op_hq_ladder_pos(pc.hqfog_a, own, pc.lad_ts, pc.lad_tb) : 0.0;
+    int lrow = int(floor(lpos));
+    vec4 c = op_decode555(lad ? op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                                              ivec2(pc.clut_x, (pc.clut_y + lrow) & 511),
+                                              pc.bpp, ti.x, ti.y)
+                              : sample_word(ti.x, ti.y));
     if (c.a == 0.0) discard;
+    if (lad && lpos > float(lrow)) {
+        uint w1 = op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                                ivec2(pc.clut_x, (pc.clut_y + lrow + 1) & 511), pc.bpp, ti.x, ti.y);
+        if (w1 != 0u) c.rgb = mix(c.rgb, op_decode555(w1).rgb, lpos - float(lrow));
+    }
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
     else c.rgb = op_hq_fog(c.rgb, pc.hqfog_a, pc.hqfog_b, own, pc.lad_ts, pc.lad_tb);
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);

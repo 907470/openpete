@@ -32,7 +32,8 @@ extern float openpete_fog_scale;
  * Called once at boot from core/runtime/run.c. The fog scale is resolved
  * before the renderer check: an explicit --fog-scale wins, else either LOD
  * mode takes 1.0, the authentic curve; the explicit
- * value is remembered for later live toggles. openpete_no_lod is set to 1
+ * value is remembered for later live toggles. The fog form takes --fog's
+ * pin, or follows the LOD mode when it is unset. openpete_no_lod is set to 1
  * only for extended LOD under a native renderer; the PsyCross reference
  * renderer logs a warning and keeps canonical detail.
  * @param opts Parsed options; NULL leaves the fog scale and clears the flag.
@@ -43,31 +44,36 @@ int no_lod_apply_options(const openpete_options_t* opts);
  *
  * Called by the settings menu's LOD row, the knob registry and the run
  * loop's LOD hotkey. A @p fog_scale above 0 sets the fog multiplier. A
- * value of 0 or below applies the mode default only while fog is on
+ * value of 0 or below applies the mode default only while the scale is on
  * autopilot: an explicit --fog-scale is restored when one was given, else
- * 1.0 in either mode; after openpete_fog_set or
- * openpete_fog_scale_set the fog scale is left alone. The native feeders
+ * 1.0 in either mode; after openpete_fog_scale_set the fog scale is left
+ * alone. An unpinned fog form (openpete_fog_mode) follows the new mode. The native feeders
  * read openpete_no_lod and openpete_fog_scale on every walk, so the change
  * applies from the next one. Display policy only, no gameplay effect.
  * @param on Nonzero for extended (full detail), 0 for original.
  * @param fog_scale Fog multiplier, or 0 or below for the mode default. */
 void openpete_no_lod_set(int on, float fog_scale);
 
-/** @brief Report whether fog is in effect.
+/** @brief The distance-fog form in effect: the pinned mode, else the one the LOD mode gives.
  *
- * The settings menu's FOG row and the knob registry read their state from
- * it.
- * @return 1 while the fog scale is below the 100.0 off sentinel, else 0. */
-int openpete_fog_enabled(void);
+ * Unpinned (OPENPETE_FOG_AUTO, the default) it follows openpete_no_lod on
+ * every call: OPENPETE_FOG_ORIGINAL under original LOD, PER_PIXEL under
+ * extended. The terrain walk latches it once per walk; the moby emit and the
+ * portal previews read it as they draw. Display policy only.
+ * @return OPENPETE_FOG_ORIGINAL, OPENPETE_FOG_PER_PIXEL or OPENPETE_FOG_OFF. */
+int openpete_fog_mode(void);
 
-/** @brief Turn fog on or off from the settings menu's FOG row or the knob registry.
+/** @brief The pinned distance-fog form, or OPENPETE_FOG_AUTO while it follows the LOD mode.
+ * @return The pinned openpete_fog_mode_t value, or OPENPETE_FOG_AUTO. */
+int openpete_fog_mode_pinned(void);
+
+/** @brief Pin the distance-fog form, or return it to following the LOD mode.
  *
- * On restores the explicit --fog-scale when one was given below the 100.0
- * off sentinel, else the authentic PSX curve (1.0); off sets 100.0
- * (effectively no fog). Takes fog off autopilot, so later LOD toggles leave
- * the fog scale alone.
- * @param on Nonzero for fog on. */
-void openpete_fog_set(int on);
+ * Called by the knob registry's fog row and the settings menu. A pinned mode
+ * survives later LOD switches; OPENPETE_FOG_AUTO unpins it. A value outside
+ * the enum is ignored.
+ * @param mode An openpete_fog_mode_t value, OPENPETE_FOG_AUTO included. */
+void openpete_fog_mode_set(int mode);
 
 /** @brief Set the fog-distance multiplier directly.
  *

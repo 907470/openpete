@@ -190,6 +190,15 @@ enum {
                                    * fade toward their own far colours on the
                                    * vertex depth-cue curve, texels toward
                                    * modulation-neutral grey                  */
+#define OPTC_GF_FOGOFF     262144u /* fog mode off (terrain.c s_fog_mode): no
+                                    * vertex fade, no ladder row, no water
+                                    * fade                                     */
+#define OPTC_GF_FOGPP      524288u /* per-pixel fog mode: laddered faces draw
+                                    * the base row and pick the row per pixel;
+                                    * heavy-fog texels fade on the ramp. With
+                                    * neither bit the original form: the row
+                                    * per face, the heavy-fog fade stepped per
+                                    * face                                     */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

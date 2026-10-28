@@ -967,9 +967,21 @@ void openpete_options_init(openpete_options_t* opts) {
      * run.c; resolve_env_spellings applies OPENPETE_LOAD_DELAY. */
     opts->load_delay    = -1;
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
+    opts->fog_mode            = OPENPETE_FOG_AUTO;      /* follows --lod until --fog picks one */
     /* Unset until resolve_env_spellings applies OPENPETE_TERRAIN_VISIBILITY,
      * else frustum. */
     opts->terrain_visibility = OPENPETE_TERRAIN_VIS_UNSET;
+}
+
+/** @brief Parse a --fog value: original, per-pixel or off.
+ * @param v The value text.
+ * @param out Receives the mode; untouched on failure.
+ * @return 0 on success, -1 for any other text. */
+static int fog_mode_parse(const char *v, openpete_fog_mode_t *out) {
+    static const char *const names[] = { "original", "per-pixel", "off" };
+    for (int m = 0; m < 3; m++)
+        if (strcmp(v, names[m]) == 0) { *out = (openpete_fog_mode_t)m; return 0; }
+    return -1;
 }
 
 /* Facts the flag chain learns that are not options: the post-parse phases
@@ -1291,6 +1303,13 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
             opts->lod = OPENPETE_LOD_EXTENDED;
         } else {
             fprintf(stderr, "openpete: --lod expects original|extended, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--fog") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (fog_mode_parse(v, &opts->fog_mode) != 0) {
+            fprintf(stderr, "openpete: --fog expects original|per-pixel|off, got: %s\n", v);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         i++;

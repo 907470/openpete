@@ -40,19 +40,34 @@ many more triangles in wide views; see [Performance](performance.md).
 
 ## Fog
 
-The game fades distant terrain into fog. `--fog-scale N`
-<!-- id: knob:fog_scale --> moves the fog N times farther away: 1 is the
-game's own fog, 100 turns it off in practice. Range 0.25 to 128
-<!-- id: knob:fog_scale -->.
+The game fades distant terrain and objects into fog. `--fog`
+<!-- id: knob:fog --> picks how the fade is drawn:
 
-The default is 1 under both `original` and `extended`
-<!-- id: knob:fog_scale -->: `extended` draws the far detail and fades it
-into the same fog. Setting a fog scale, by flag or with the dev overlay's
-**Fog** row, fixes it; from then on LOD switches leave the fog alone.
+| Value | Effect |
+| --- | --- |
+| `original` | The game's own fade: each corner of a surface fades with distance, and each textured surface takes one of the game's sixteen fogged palette steps |
+| `per-pixel` | The same fog curve, with the palette step picked at every pixel, so textures fade smoothly instead of in steps |
+| `off` | No distance fog |
 
-The dev overlay's **Fog** row <!-- id: knob:fog -->, under Display's
-**Advanced**, holds a checkbox that turns the fog off (a fog scale of 100)
-and on, and the fog scale beside it; the fog starts on <!-- id: knob:fog -->.
+Unset, the fog follows the level of detail <!-- id: knob:fog -->: `original`
+under `original` LOD and `per-pixel` under `extended`, and it changes when the
+LOD changes. Choosing a value, by flag, in `openpete.toml` or with the dev
+overlay's **Fog** row under Display, fixes it; later LOD switches leave it
+alone. The row's first entry, **follow LOD**, names the value it currently
+gives and returns the fog to following the LOD. In `openpete.toml`, older
+`on` and `off` values are read as follow-LOD and `off`.
+
+Under `extended` LOD the game's fade on most levels is a blend toward the
+simpler distant geometry, which `extended` does not draw, so there `original`
+and `per-pixel` fade only the levels whose distance is filled with fog, and
+`off` removes that fade too.
+
+`--fog-scale N` <!-- id: knob:fog_scale --> moves the fog N times farther
+away: 1 is the game's own fog, 100 turns it off in practice. Range 0.25 to
+128 <!-- id: knob:fog_scale -->. The default is 1 under both `original` and
+`extended` <!-- id: knob:fog_scale -->. Setting a fog scale, by flag or with
+the dev overlay's **Fog scale** row under Display's **Advanced**, fixes it;
+from then on LOD switches leave it alone.
 
 ## Terrain visibility
 

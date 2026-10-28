@@ -434,6 +434,48 @@ static const cfg_renamed_t *renamed_for(const char *key) {
     return NULL;
 }
 
+/* Keys whose knob changed from a bool to an enum after files could hold the
+ * bool: a true spelling is the enum's unset state and contributes nothing,
+ * a false one maps to `off`. `fog` was the on/off distance-fog row; on meant
+ * fog following the LOD mode, which is the unset fog mode. */
+typedef struct {
+    const char *key;
+    const char *off;   /* the enum value a false spelling maps to */
+} cfg_legacy_bool_t;
+
+static const cfg_legacy_bool_t g_legacy_bool[] = {
+    { "fog", "off" },
+};
+
+/** @brief Translate a former bool key's old spelling into its enum knob's vocabulary.
+ *
+ * For a g_legacy_bool key whose value is a TOML boolean or one of 1, 0, on,
+ * off, true, false: a false value is rewritten to the row's `off` and
+ * `*is_bool` cleared; a true value asks the caller to record nothing. Any
+ * other key or value is left as it is.
+ * @param key The bare key.
+ * @param val The value as text, rewritten in place.
+ * @param cap Size of `val`.
+ * @param is_bool In: 1 when the value was a TOML boolean; cleared on a rewrite.
+ * @param bool_val The TOML boolean's value.
+ * @return 1 when the key contributes nothing (the unset state), else 0. */
+static int legacy_bool_value(const char *key, char *val, size_t cap,
+                             int *is_bool, int bool_val) {
+    for (size_t i = 0; i < sizeof g_legacy_bool / sizeof g_legacy_bool[0]; i++) {
+        if (strcmp(g_legacy_bool[i].key, key)) continue;
+        int truth = -1;
+        if (*is_bool) truth = bool_val;
+        else if (!strcmp(val, "1") || !strcmp(val, "on") || !strcmp(val, "true")) truth = 1;
+        else if (!strcmp(val, "0") || !strcmp(val, "off") || !strcmp(val, "false")) truth = 0;
+        if (truth < 0) return 0;
+        if (truth) return 1;
+        snprintf(val, cap, "%s", g_legacy_bool[i].off);
+        *is_bool = 0;
+        return 0;
+    }
+    return 0;
+}
+
 /** @brief Truthiness of a renamed bool key's value.
  *
  * A TOML bool gives its own value; a string value is true when it is "1",
@@ -447,7 +489,9 @@ static int renamed_truth(const char *val, int is_bool, int bool_val) {
  *
  * A sub-table is skipped (its caller harvests it). A renamed key is mapped
  * to its new name with a warning, and its value to the new knob's
- * vocabulary when the rename carries one. An unknown key (named with a
+ * vocabulary when the rename carries one. A former bool key's old value is
+ * translated by legacy_bool_value, its true spelling recording nothing.
+ * An unknown key (named with a
  * did_you_mean hint) is ignored with a warning at boot and is an error
  * under --config-report. A non-scalar value and a value of a TOML type the
  * config does not accept are errors printed with `where`; a non-boolean
@@ -500,6 +544,7 @@ static int harvest_base_row(const toml_table_t *tab, const char *key, int tier,
                  renamed_truth(val, is_bool, bool_val) ? ren->on : ren->off);
         is_bool = 0;
     }
+    if (legacy_bool_value(key, val, sizeof val, &is_bool, bool_val)) return 0;
     if (!base_value_typed(k, val, is_bool, where, key))
         return value_refused(where, key, val);
 

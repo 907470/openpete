@@ -106,6 +106,20 @@ typedef enum {
     OPENPETE_LOD_EXTENDED,      /* full detail at any distance (was --no-lod) */
 } openpete_lod_mode_t;
 
+/* Distance-fog form (`--fog original|per-pixel|off`). ORIGINAL is the game's
+ * depth cue: the per-vertex DPCS fade and the per-face CLUT-row ladder.
+ * PER_PIXEL keeps the vertex fade and evaluates the ladder at each pixel's
+ * depth on the game's curve. OFF draws no depth cue. AUTO (the unset
+ * sentinel) follows --lod on every read: ORIGINAL under original LOD,
+ * PER_PIXEL under extended. Native renderer only; it selects host-side
+ * colours and never writes gameplay-readable RAM. */
+typedef enum {
+    OPENPETE_FOG_AUTO = -1,
+    OPENPETE_FOG_ORIGINAL = 0,
+    OPENPETE_FOG_PER_PIXEL,
+    OPENPETE_FOG_OFF,
+} openpete_fog_mode_t;
+
 /* Terrain candidate-set policy (`--terrain-visibility game|frustum`). GAME is
  * the faithful path: the sector set the game's own visibility pass and
  * occlusion groups produce, which hides everything outside the room the camera
@@ -221,6 +235,10 @@ typedef struct openpete_options {
      * farther - the classic "see detail far away" look; ~100 pushes fog off
      * entirely. 0 = auto: 1 under either --lod mode. */
     float fog_scale;
+
+    /* --fog original|per-pixel|off (openpete_fog_mode_t above). Default
+     * OPENPETE_FOG_AUTO: the mode follows --lod until a value is chosen. */
+    openpete_fog_mode_t fog_mode;
 
     /* Vertex screen-coordinate precision (`--vertex-precision subpixel|integer`).
      * SUBPIXEL (default) keeps the native renderer's smooth sub-pixel projection;

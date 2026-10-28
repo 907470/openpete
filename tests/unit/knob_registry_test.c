@@ -10,11 +10,13 @@
 
 #include "openpete.h"
 #include "openpete_knobs.h"
+#include "openpete_config.h"
 #include "../../core/config/config_schema.h"
 
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---- stubs for the live-value channels knob_registry.c writes through ---- */
@@ -22,9 +24,9 @@
 int   openpete_no_lod    = 0;
 float openpete_fog_scale = 1.0f;
 
-int    openpete_fog_enabled(void)              { return 1; }
+int    openpete_fog_mode_pinned(void)          { return -1; }
+void   openpete_fog_mode_set(int mode)         { (void)mode; }
 void   openpete_fog_scale_set(float v)         { (void)v; }
-void   openpete_fog_set(int on)                { (void)on; }
 void   openpete_no_lod_set(int on)             { (void)on; }
 int    openpete_freecam_active(void)           { return 0; }
 void   openpete_freecam_toggle(void)           { }
@@ -233,6 +235,66 @@ static int device_marks_agree(void) {
     if (dn == 0 || marked == 0) rc |= fail("device-creation set is empty");
     printf("knob_registry_test: device marks: %d row spellings, %zu schema spellings\n",
            marked, dn);
+    return rc;
+}
+
+/** @brief The value the resolver splices for `flag` from a config file holding `body`, or NULL when it splices none.
+ * @param path The config file to write.
+ * @param body The file's text.
+ * @param flag The flag to look for.
+ * @param rc Receives openpete_config_apply's return.
+ * @return The spliced value, or NULL. */
+static const char *config_flag_value(const char *path, const char *body,
+                                     const char *flag, int *rc) {
+    FILE *f = fopen(path, "wb");
+    if (!f) { *rc = -1; return NULL; }
+    fputs(body, f);
+    fclose(f);
+    openpete_config_reset();
+    openpete_config_set_game_id("spyro-1");
+    static char *argv[3];
+    argv[0] = (char *)"openpete";
+    argv[1] = (char *)"--config";
+    argv[2] = (char *)path;
+    int oc = 0;
+    char **ov = NULL;
+    *rc = openpete_config_apply(3, argv, 3, &oc, &ov);
+    if (*rc != 1) return NULL;
+    for (int i = 0; i + 1 < oc; i++)
+        if (!strcmp(ov[i], flag)) return ov[i + 1];
+    return NULL;
+}
+
+/** @brief The former bool `fog` row's saved values read as the fog mode's: a true spelling as unset, a false one as off.
+ * @return 0 on success, 1 on a failure. */
+static int legacy_fog_values_read(void) {
+    const char *tmp = getenv("TMPDIR");
+    char path[512];
+    snprintf(path, sizeof path, "%s/openpete-knob-fog-test.toml", (tmp && *tmp) ? tmp : "/tmp");
+    static const struct { const char *body; const char *want; } cases[] = {
+        { "fog = \"on\"\n",              NULL },
+        { "fog = true\n",                NULL },
+        { "fog = \"1\"\n",               NULL },
+        { "[saved]\nfog = \"on\"\n",      NULL },
+        { "fog = \"off\"\n",             "off" },
+        { "fog = false\n",               "off" },
+        { "fog = \"0\"\n",               "off" },
+        { "[saved]\nfog = \"off\"\n",     "off" },
+        { "fog = \"per-pixel\"\n",       "per-pixel" },
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int arc = 0;
+        const char *got = config_flag_value(path, cases[i].body, "--fog", &arc);
+        const int ok = arc >= 0 && (cases[i].want ? (got && !strcmp(got, cases[i].want)) : !got);
+        if (!ok) {
+            rc |= fail("a legacy fog value read wrong");
+            fprintf(stderr, "       %s -> %s (rc %d), want %s\n", cases[i].body,
+                    got ? got : "(unset)", arc, cases[i].want ? cases[i].want : "(unset)");
+        }
+    }
+    remove(path);
+    openpete_config_reset();
     return rc;
 }
 
@@ -468,6 +530,7 @@ int main(void) {
 
     rc |= float_rows_refuse_non_finite();
     rc |= device_marks_agree();
+    rc |= legacy_fog_values_read();
 
     printf(rc ? "knob_registry_test: FAILED\n" : "knob_registry_test: ok\n");
     return rc;

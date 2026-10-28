@@ -150,3 +150,10 @@ haunted_tomb | pos=(20082, 2094, 55737) yaw=561 pitch=398 | 2629
 # Extended LOD on harbor_speedway: far buildings, lighthouse and mobys draw with
 # no fog where original LOD fogs them (the far palette is clustered, not one colour).
 harbor_speedway | pos=(55529, 136037, 11623) yaw=-753 pitch=-41
+# The row under each pinned --fog form at both LODs: @fogorig gives
+# extended LOD with original fog (original LOD repeats the plain row),
+# @fogpp original LOD with per-pixel fog (extended repeats the plain
+# row), @fogoff both LODs without fog.
+harbor_speedway@fogorig | pos=(55529, 136037, 11623) yaw=-753 pitch=-41 | | --fog original
+harbor_speedway@fogpp | pos=(55529, 136037, 11623) yaw=-753 pitch=-41 | | --fog per-pixel
+harbor_speedway@fogoff | pos=(55529, 136037, 11623) yaw=-753 pitch=-41 | | --fog off

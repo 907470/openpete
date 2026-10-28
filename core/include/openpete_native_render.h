@@ -1704,6 +1704,12 @@ void openpete_native_scene_set_hq_fog(uint32_t a, uint32_t b);
  * the modulation-neutral 128 before the vertex colour modulates it, so the
  * triangle draws its vertex colour where the texel is not transparent. */
 #define OPENPETE_HQFOG_NEUTRAL (1u << 31)
+/* Word b bit 30 (psx_hq_fog.glsl). With word a's enable bit set the affine
+ * is pre-weighted, t = 1: the face draws texel * aN + bN at every pixel (the
+ * per-face ladder step). With it clear the stage picks the CLUT row at each
+ * pixel's depth on the published ramp (the per-pixel ladder), word a bit 30
+ * carrying the fog-reference bias. */
+#define OPENPETE_HQFOG_B30 (1u << 30)
 
 /* ── Portal cover invariant (plane-cover rule) ────────────────────────
  * The portal feeder's opening planes, republished per feed in core terms so

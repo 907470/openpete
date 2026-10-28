@@ -453,10 +453,31 @@ static int lod_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/** @brief 1 when fog is enabled, else 0. */
-static double fog_get(const knob_desc_t *k) { (void)k; return openpete_fog_enabled() ? 1.0 : 0.0; }
-/** @brief Enable or disable fog from `v` (nonzero is on). */
-static int fog_set(knob_desc_t *k, double v) { (void)k; openpete_fog_set(v != 0.0); return 0; }
+/* The fog row's entries: index 0 follows the LOD mode and reads the mode
+ * it resolves to (fog_get rewrites it), 1..3 pin openpete_fog_mode_t 0..2.
+ * The config vocabulary is k_fog_cfg_names; index 0 has none, since an
+ * unset key is what follows the LOD mode. */
+static char s_fog_auto_label[40] = "follow LOD (original)";
+static const char *const k_fog_names[] = { s_fog_auto_label, "original", "per-pixel", "off" };
+static const char *const k_fog_cfg_names[] = { NULL, "original", "per-pixel", "off" };
+/** @brief The fog row's entry: 0 while the fog form follows the LOD mode, else the pinned mode + 1.
+ *
+ * Rewrites entry 0's label with the mode the LOD mode resolves to. */
+static double fog_get(const knob_desc_t *k) {
+    (void)k;
+    static const char *const names[] = { "original", "per-pixel", "off" };
+    snprintf(s_fog_auto_label, sizeof s_fog_auto_label, "follow LOD (%s)",
+             names[openpete_no_lod ? OPENPETE_FOG_PER_PIXEL : OPENPETE_FOG_ORIGINAL]);
+    return (double)(openpete_fog_mode_pinned() + 1);
+}
+/** @brief Pin the fog form to entry `v` - 1, or return it to following the LOD mode for entry 0. */
+static int fog_set(knob_desc_t *k, double v) {
+    (void)k;
+    const int i = (int)v;
+    if (i < 0 || i > 3) return -1;
+    openpete_fog_mode_set(i - 1);
+    return 0;
+}
 
 /** @brief The fog-distance multiplier, read from openpete_fog_scale. */
 static double fogscale_get(const knob_desc_t *k) { (void)k; return openpete_fog_scale; }
@@ -1293,12 +1314,20 @@ static const knob_desc_t g_builtin[] = {
           "distance and beyond). Native renderer only. (--no-lod = extended.)",
       .key_action = "lod_toggle" },
 
-    { "fog", "Fog", "Display", NULL, NULL,
-      "Distance fog on/off (off = the 100x far-scale sentinel). LOD switches "
-      "restore it to on until it is touched.",
-      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+    { "fog", "Fog", "Display", "--fog", NULL,
+      "How distance fog is drawn: original = the game's per-corner fade and "
+      "per-face palette steps; per-pixel = the same curve evaluated at every "
+      "pixel; off = no distance fog. Follow LOD picks original under original "
+      "LOD and per-pixel under extended, and keeps following LOD switches; "
+      "any other entry stays as chosen.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_fog_names), 0, 0,
       fog_get, fog_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .def_str = "on" },
+      .default_note = "follows --lod: original under original, per-pixel under extended",
+      .help_arg = "MODE", .help_order = 245,
+      .help_text = "distance fog: original (the game's per-corner fade and per-face\n"
+          "palette steps) | per-pixel (the same curve at every pixel) | off.\n"
+          "Default: follows --lod (original under original, per-pixel under\n"
+          "extended). Native renderer only." },
 
     { "fog_scale", "Fog scale", "Display", "--fog-scale", NULL,
       "Fog-distance multiplier (1 = authentic curve, 100 = effectively off). "
@@ -2890,7 +2919,7 @@ void knob_registry_init(const struct openpete_options *opts) {
         } else if (!strcmp(k->id, "terrain_visibility")) {
             k->stored_num = (opts->terrain_visibility != OPENPETE_TERRAIN_VIS_GAME);
         } else if (!strcmp(k->id, "fog")) {
-            k->stored_num = openpete_fog_enabled() ? 1 : 0;
+            k->stored_num = opts->fog_mode + 1;
         } else if (!strcmp(k->id, "fog_scale")) {
             k->stored_num = openpete_fog_scale;
         } else if (!strcmp(k->id, "render_fps")) {
@@ -3005,6 +3034,13 @@ int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap) {
         snprintf(buf, cap, "%d", k_ssaa_vals[idx]);
         return 0;
     }
+    /* The fog row's first entry follows the LOD mode: no key is its value. */
+    if (!strcmp(k->id, "fog")) {
+        int idx = (int)(k->get_num ? k->get_num(k) : k->stored_num);
+        if (idx <= 0 || idx > 3) return 1;
+        snprintf(buf, cap, "%s", k_fog_cfg_names[idx]);
+        return 0;
+    }
 
     knob_value_str(k, buf, cap);
     /* get_str placeholders ("(default)", "(none)", "(unset - 1)") describe
@@ -3055,7 +3091,13 @@ int knob_registry_settle_ids(const char *const *ids, int n) {
         for (size_t j = 0; j < count && !k; j++)
             if (ids[i] && !strcmp(ks[j].id, ids[i])) k = &ks[j];
         char now[KNOB_STR_MAX];
-        if (!k || knob_config_value_str(k, now, sizeof now) != 0) continue;
+        const int vs = k ? knob_config_value_str(k, now, sizeof now) : -1;
+        if (vs == 1) {   /* the row is unset: its saved key goes */
+            (void)openpete_config_unsave_knob(k->id);
+            rows++;
+            continue;
+        }
+        if (vs != 0) continue;
 
         /* A launch-tier pin does not stop the save: the value is recorded
          * and takes effect on a launch without the pin. */

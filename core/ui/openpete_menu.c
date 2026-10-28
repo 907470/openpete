@@ -18,7 +18,7 @@
 #include "openpete_osd.h"           /* announce every change the player makes */
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
-#include "no_lod.h"         /* openpete_no_lod_set */
+#include "no_lod.h"         /* openpete_no_lod_set, openpete_fog_mode_set */
 #include "openpete_host_input.h"     /* the published mouse snapshot */
 #include "openpete_host_mouse.h"     /* totals, ownership, probe */
 #include "openpete_devui.h"          /* ADVANCED opens the overlay */
@@ -36,9 +36,8 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
        ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
-        * compiled - the case labels below, the mod enumeration, s_fog_idx,
-        * openpete_fog_set/enabled and the LOD->fog autopilot coupling in
-        * no_lod.c (LOD switches still move the fog scale). Move a row back
+        * compiled - the case labels below, the mod enumeration, s_fog_idx
+        * and openpete_fog_mode_set/pinned. Move a row back
         * before ROW_COUNT (and restore its ROW_LABEL entry) to re-show it. */
        ROW_MODSEL, ROW_MODEN, ROW_FOG };
 
@@ -54,8 +53,7 @@ static const char* const ROW_LABEL[ROW_COUNT] = {
  * naming what the row changes, written in the glyph set notify_row
  * documents, and whether a change is saved to openpete.toml. FREECAM is a
  * session toggle: saving it would start the next launch with Spyro frozen
- * under the free camera. FOG has no config key, and the LOD row rewrites it
- * from openpete_fog_enabled, so it follows LOD, which is saved. The key is
+ * under the free camera. The key is
  * NAMED, not indexed, because the hotkeys that front the same settings (L,
  * F, Alt+Enter) raise their toasts from run.c and native_render.c and must
  * land on the SAME toast - a player who flips LOD with the key and then with
@@ -82,7 +80,7 @@ ROW_SURFACE[ROW_FOG + 1] = {
     [ROW_COUNT]   = { NULL,              NULL,               NULL,                                      0 },
     [ROW_MODSEL]  = { "menu.modsel",     NULL,               "CHOOSE A MOD",                            0 },
     [ROW_MODEN]   = { "menu.moden",      NULL,               "TURN THE MOD ON OR OFF",                  0 },
-    [ROW_FOG]     = { "menu.fog",        "fog",              "DISTANCE FOG",                            0 },
+    [ROW_FOG]     = { "menu.fog",        "fog",              "DISTANCE FOG",                            1 },
 };
 
 int openpete_menu_surface_row(int i, openpete_menu_surface_t* out) {
@@ -179,7 +177,7 @@ static int s_pixel_idx  = 0;   /* OFF - re-synced from the live quantize on open
 static int s_texmap_idx = 0;   /* CORRECT (perspective) - re-synced from the live mode on open */
 static int s_dither_idx = 0;   /* OFF - re-synced from the live flag on open */
 static int s_lod_idx    = 0;   /* ORIGINAL */
-static int s_fog_idx    = 1;   /* ON - re-seeded from the resolved scale at init */
+static int s_fog_idx    = 0;   /* follows LOD - re-seeded from the fog pin at init */
 static int s_freecam_idx = 0;  /* OFF - re-synced from the live state on open */
 static unsigned s_tick  = 0;   /* wobble/shimmer phase (draw step) */
 
@@ -264,6 +262,16 @@ static void build_fps_list(int refresh) {
  * loader enumeration - zero mods shows NONE and the rows no-op. */
 static int s_modsel_idx = 0;
 
+/** @brief The FOG row's value: the mode the LOD gives, prefixed LOD, while it follows the LOD, else the pinned mode.
+ * @param idx The row index: 0 follows the LOD, 1..3 pin original, per-pixel, off.
+ * @return The value text, in the menu glyph set. */
+static const char* fog_value_str(int idx) {
+    static const char* const pinned[] = { "ORIGINAL", "PER PIXEL", "OFF" };
+    if (idx <= 0)
+        return openpete_fog_mode() == OPENPETE_FOG_PER_PIXEL ? "LOD PER PIXEL" : "LOD ORIGINAL";
+    return pinned[(idx > 3 ? 3 : idx) - 1];
+}
+
 /** @brief Spell a row's current value for the glyph builder, the OSD, and the log.
  *
  * DISPLAY and MOD ENABLED read live state; FOV shows DEFAULT or both angles
@@ -304,7 +312,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_TEXMAP:   return s_texmap_idx ? "AFFINE" : "CORRECT";
     case ROW_DITHER:   return s_dither_idx ? "15-BIT" : "OFF";
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
-    case ROW_FOG:      return on_off(s_fog_idx);
+    case ROW_FOG:      return fog_value_str(s_fog_idx);
     case ROW_FREECAM:  return on_off(s_freecam_idx);
     case ROW_DOCS:     return "";   /* centered: the label IS the row */
     case ROW_ADVANCED: return "";   /* centered: the label IS the row */
@@ -353,7 +361,7 @@ static void log_state(const char* what) {
 /** @brief Push a row's selected value to its live setter, or perform the row's action.
  *
  * FREECAM toggles the free camera only when the row disagrees with the live
- * state. LOD also re-reads the fog state the LOD setter resolved. EXIT
+ * state. EXIT
  * requests a cooperative shutdown once armed twice. DOCUMENTATION opens the
  * documentation in the system browser and toasts whether one opened.
  * ADVANCED closes the menu and opens the dev overlay scrolled to its top,
@@ -380,12 +388,8 @@ static void apply_row(int row) {
     case ROW_DITHER:   openpete_native_set_dither(s_dither_idx);               break;
     case ROW_LOD:
         openpete_no_lod_set(s_lod_idx, -1.0f);
-        /* Fog follows the LOD mode unless the user owns it (explicit
-         * --fog-scale / a manual FOG toggle - no_lod.c decides); mirror
-         * whatever the setter resolved so the FOG row never shows stale. */
-        s_fog_idx = openpete_fog_enabled();
         break;
-    case ROW_FOG:      openpete_fog_set(s_fog_idx);                           break;
+    case ROW_FOG:      openpete_fog_mode_set(s_fog_idx - 1);                  break;
     case ROW_FREECAM:
         /* The freecam API is a toggle (shared with the F key), not a setter:
          * flip only when the row disagrees with the live state. The toggle
@@ -489,9 +493,9 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     /* LOD (draw distance / detail policy). */
     s_lod_idx = (opts->lod == OPENPETE_LOD_EXTENDED) ? 1 : 0;
 
-    /* FOG: read the scale no_lod_apply_options already resolved (it runs
-     * before this init) - reflects --fog-scale and the LOD-mode default. */
-    s_fog_idx = openpete_fog_enabled();
+    /* FOG: the pin no_lod_apply_options already took from --fog (it runs
+     * before this init); 0 follows LOD. */
+    s_fog_idx = openpete_fog_mode_pinned() + 1;
 
     s_cursor = 0;
 }
@@ -680,11 +684,11 @@ int openpete_menu_toggle(void) {
         /* Re-sync the rows a hotkey can change while the menu is closed, so the
          * menu never shows a stale value: SHOW FPS (--perf-stats / the M
          * overlay's Performance stats row), LOD (the "L" toggle flips openpete_no_lod directly), FOG
-         * (the L toggle moves it while fog is on autopilot), and FREECAM
+         * (the overlay's Fog row pins it), and FREECAM
          * (the "F" key / left-stick click). */
         s_showfps_idx = openpete_native_fps_overlay_enabled();
         s_lod_idx     = openpete_no_lod ? 1 : 0;
-        s_fog_idx     = openpete_fog_enabled();
+        s_fog_idx     = openpete_fog_mode_pinned() + 1;
         s_freecam_idx = openpete_freecam_active() ? 1 : 0;
         s_wobble_idx  = wobble_idx_from_live();   /* M-overlay knob moves the snap */
         s_pixel_idx   = pixel_idx_from_live();    /* M-overlay knob moves the quantize */
@@ -834,7 +838,7 @@ void openpete_menu_adjust(int dx) {
     case ROW_TEXMAP:   s_texmap_idx = wrap_idx(s_texmap_idx + step, 2);           break;
     case ROW_DITHER:   s_dither_idx = wrap_idx(s_dither_idx + step, 2);           break;
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
-    case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 2);           break;
+    case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 4);           break;
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;
     case ROW_MODSEL:
         if (openpete_mods_count() > 0)

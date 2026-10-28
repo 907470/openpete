@@ -43,8 +43,9 @@
 #include "openpete_vstream.h"       /* frame-word field -> stream address (handles) */
 #include "openpete_subtick_view.h"            /* openpete_subtick_host_span (SPEC scratch bracket) */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
-#include "no_lod.h"                /* openpete_no_lod */
+#include "no_lod.h"                /* openpete_no_lod, openpete_fog_mode */
 #include "openpete_native_render.h"
+#include "texture_pack.h"           /* texture_pack_fog_ladder_get: the terrain's ladder ramp */
 #include "openpete_log.h"           /* OPL_ERROR_F - ABR/blend FIXME runtime alarms */
 #include "openpete_interp.h"        /* op_now() - sub-tick clock for rotation interp */
 #include "renderer/moby_rank.h"              /* same-moby paint rank (native key) */
@@ -4836,7 +4837,9 @@ static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
  * g_SkipLowPolyWorld (moby_game.skip_lowpoly) > 0. Every other record runs
  * the integer path above unchanged. Every band then takes the material's
  * whole-table tint when moby_game.material_tint selects one for the
- * record's material word; fd carries it to the colour fetch.
+ * record's material word; fd carries it to the colour fetch. Fog mode off
+ * (openpete_fog_mode) drops both fades and the fogged-CLUT row; the band's
+ * colour table is kept.
  * @param cpu The guest CPU state, read only.
  * @param R The record.
  * @param farbase Receives the far palette the HP colours fade toward, 0 for
@@ -4856,8 +4859,11 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
     *farbase = 0; *fcc = NULL;
     fd->ir0 = 0; fd->ir0f = 0.0; fd->frac = frac; fd->row = 0; fd->tmix = 0;
     moby_fade_tint(R, fd);
+    const int fog_off = openpete_fog_mode() == OPENPETE_FOG_OFF;
     if (R->zsf4 > 0) {
-        if (!frac) {
+        if (fog_off) {
+            /* no depth cue: the model colours raw */
+        } else if (!frac) {
             fd->ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, farbase);
             fd->ir0f = (double)fd->ir0;
             fd->row = fd->ir0 >> 9;
@@ -4869,7 +4875,7 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
         }
         return hdr_ok ? cpu->read_word(R->header + ANIM_COL_HP) : 0u;
     }
-    if (moby_game.skip_lowpoly && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0 &&
+    if (!fog_off && moby_game.skip_lowpoly && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0 &&
         (frac || R->zsf4 < -2048)) {
         double v = -(z + 2048.0);
         v = v < 0.0 ? 0.0 : (v > 2047.0 ? 2047.0 : v);
@@ -9058,10 +9064,10 @@ static void moby_face_stamp_key(int i, int cat, int td_live, int ko_live, openpe
  * aN = 0, so the texel goes from itself to neutral along the ladder ramp. */
 #define MOBY_HFOG_WORD_B (0x80u | (0x80u << 10) | (0x80u << 20))
 
-/** @brief The fog colour world moby triangles fade toward: the heavy-fog level's colour under extended LOD, else -1.
+/** @brief The fog colour world moby triangles fade toward: the heavy-fog level's colour under extended LOD with fog on, else -1.
  * @return The colour, 0x00BBGGRR, or -1 for no fade. */
 static int64_t moby_heavy_fog_target(void) {
-    if (!openpete_no_lod || !terrain_heavy_fog()) return -1;
+    if (!openpete_no_lod || !terrain_heavy_fog() || openpete_fog_mode() == OPENPETE_FOG_OFF) return -1;
     return (int64_t)terrain_heavy_fog_colour();
 }
 
@@ -9075,7 +9081,11 @@ static int64_t moby_heavy_fog_target(void) {
  * contribution vanishes in the fog. A textured opaque or averaging face's
  * texel goes toward the modulation-neutral 128 on the terrain's texel ladder
  * ramp (psx_hq_fog.glsl), so where the vertex colour reaches the fog colour
- * the face draws it. Every other triangle clears the fade words.
+ * the face draws it: per pixel under the per-pixel fog form, stepped per
+ * triangle at the ladder row of its mean view-Z under the original form
+ * (terrain_fog_step_words; row floor(15 t), the row the terrain ladder
+ * takes at that depth in each game). Every other triangle clears the fade
+ * words.
  * @param t The scene triangle, vertex colours and blend set; colours rewritten.
  * @param w The walk triangle it was built from (its unshifted view-Z).
  * @param cat The triangle's scene category.
@@ -9091,6 +9101,18 @@ static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, int cat, 
             terrain_fog_cue(c & 0xFFFFFFu, target, (double)w->v[k].tvz / 16.0);
     }
     const int tex_fade = t->textured && !vanish;
+    if (tex_fade && openpete_fog_mode() == OPENPETE_FOG_ORIGINAL) {
+        float ts = 0.0f, tb = 0.0f;
+        int row = 0;
+        if (texture_pack_fog_ladder_get(&ts, &tb)) {
+            const double vz = ((double)w->v[0].tvz + w->v[1].tvz + w->v[2].tvz) / 3.0;
+            row = (int)floor(15.0 * (vz * ts + tb));
+        }
+        uint32_t fw[2];
+        terrain_fog_step_words(row, fw);
+        openpete_native_scene_set_hq_fog(fw[0], fw[1]);
+        return;
+    }
     openpete_native_scene_set_hq_fog(tex_fade ? OPENPETE_HQFOG_ENABLE : 0u,
                                      tex_fade ? MOBY_HFOG_WORD_B : 0u);
 }

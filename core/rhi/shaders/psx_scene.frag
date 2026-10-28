@@ -80,15 +80,26 @@ void main()
 #endif
     vec4 col = vColor / vQ;
     ivec2 ti = op_texel(uv, tg);
-    uint word = sample_word(ti.x, ti.y);
+    float vz = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
+    /* Per-pixel CLUT ladder: the row at this fragment's depth, lerped
+     * toward the next one (psx_hq_fog.glsl). */
+    bool lad = !NOTEX && pc.bpp != 16 && op_hq_ladder_on(pc.hqfog_a, pc.hqfog_b);
+    float lpos = lad ? op_hq_ladder_pos(pc.hqfog_a, vz, pc.lad_ts, pc.lad_tb) : 0.0;
+    int lrow = int(floor(lpos));
+    uint word = lad ? op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                                    ivec2(pc.clut_x, (pc.clut_y + lrow) & 511), pc.bpp, ti.x, ti.y)
+                    : sample_word(ti.x, ti.y);
     vec4 c = op_decode555(word);
     if (c.a == 0.0) discard;
     if (STP_SELECT == 1 && (word & 0x8000u) != 0u) discard;
     if (STP_SELECT == 2 && (word & 0x8000u) == 0u) discard;
+    if (lad && lpos > float(lrow)) {
+        uint w1 = op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                                ivec2(pc.clut_x, (pc.clut_y + lrow + 1) & 511), pc.bpp, ti.x, ti.y);
+        if (w1 != 0u) c.rgb = mix(c.rgb, op_decode555(w1).rgb, lpos - float(lrow));
+    }
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
-    else c.rgb = op_hq_fog(c.rgb, pc.hqfog_a, pc.hqfog_b,
-                           op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
-                           pc.lad_ts, pc.lad_tb);
+    else c.rgb = op_hq_fog(c.rgb, pc.hqfog_a, pc.hqfog_b, vz, pc.lad_ts, pc.lad_tb);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     rgb = clut_fog_mix(rgb, col, ti.x, ti.y);

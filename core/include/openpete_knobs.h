@@ -241,14 +241,16 @@ void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
 /** @brief Write a row's current value in the vocabulary openpete.toml stores, the CLI's.
  *
  * The string is knob_value_str's except for the SSAA row, which displays
- * "4x" where the flag takes "4". A value starting with '(' is a get_str
- * placeholder ("(default)", "(none)") and is refused, so it is never saved
- * as a literal.
+ * "4x" where the flag takes "4", and the fog row, whose follow-LOD entry has
+ * no value. A value starting with '(' is a get_str placeholder
+ * ("(default)", "(none)") and is refused, so it is never saved as a literal.
  * @param k Row.
  * @param buf Output buffer.
  * @param cap Size of `buf`.
- * @return 0 when the value can be persisted; -1 for a NULL or action row,
- *         a row with no config schema entry, or a placeholder. */
+ * @return 0 when the value can be persisted; 1 when the row is unset (the
+ *         fog row following the LOD mode), so a saved key is removed; -1 for
+ *         a NULL or action row, a row with no config schema entry, or a
+ *         placeholder. */
 int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
 
 /** @brief Settle the named rows in openpete.toml's [saved] zone and write the file once.
@@ -256,8 +258,9 @@ int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
  * Each row's live value, in the CLI's vocabulary (knob_config_value_str),
  * is compared with the value the global tier gives it
  * (openpete_config_knob_value_below_saved), or its def_str when no global
- * layer sets it: an equal value removes the row's [saved] entry, so the
- * knob follows the file and the default again; any other value, or a
+ * layer sets it: an equal value, or an unset row, removes the row's
+ * [saved] entry, so the knob follows the file and the default again; any
+ * other value, or a
  * comparison that cannot be made, writes the entry. A row pinned by a
  * launch tier (a typed flag or an exported variable) is saved like any
  * other; the pin keeps winning while it is present. Unknown ids, action

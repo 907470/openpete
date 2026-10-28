@@ -2526,13 +2526,14 @@ typedef enum {
     PORTAL_FOG_OFF,
 } portal_fog_mode_t;
 
-/** @brief The fog mode the forced dome and its backstop take the far-leaf term in.
- *
- * The forced dome draws only under extended LOD, whose fog mode resolves to
- * per-pixel.
- * @return PORTAL_FOG_PER_PIXEL. */
+/** @brief The fog mode the forced dome and its backstop take the far-leaf term in: the distance-fog form (openpete_fog_mode).
+ * @return PORTAL_FOG_ORIGINAL, PORTAL_FOG_PER_PIXEL or PORTAL_FOG_OFF. */
 static portal_fog_mode_t portal_forced_dome_fog_mode(void) {
-    return PORTAL_FOG_PER_PIXEL;
+    switch (openpete_fog_mode()) {
+    case OPENPETE_FOG_ORIGINAL: return PORTAL_FOG_ORIGINAL;
+    case OPENPETE_FOG_OFF:      return PORTAL_FOG_OFF;
+    default:                    return PORTAL_FOG_PER_PIXEL;
+    }
 }
 
 /** @brief RenderPortals' far-leaf fog IR0 for portal `p`, the game's integer term at the view's integer camera.

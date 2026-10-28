@@ -329,24 +329,35 @@ vec4 ter_stock_shade()
     vec2 uvq = vUV / vQ;
     ivec2 ti = op_texel(uvq, ter_texel_grad);
     int u = ti.x, v = ti.y;
+    float vz = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
+    /* Per-pixel CLUT ladder (psx_hq_fog.glsl): the row at this fragment's
+     * depth, lerped toward the next one, inside the CLUT's VRAM bank (a
+     * borrowed face's rows sit 512 below). */
+    bool lad = !NOTEX && bppc != 2u && op_hq_ladder_on(vMat.z, vMat.w);
+    float lpos = lad ? op_hq_ladder_pos(vMat.z, vz, g.hd_lad.x, g.hd_lad.y) : 0.0;
+    int lrow = int(floor(lpos));
     uint p;
+    int idx = 0;
     if (bppc == 2u) {          /* 16bpp direct */
         p = ter_vram_at(tpx + u, tpy + v);
-    } else if (bppc == 1u) {   /* 8bpp CLUT */
-        uint word = ter_vram_at(tpx + (u >> 1), tpy + v);
-        uint idx  = (word >> (8 * (u & 1))) & 0xFFu;
-        p = ter_vram_at(clx + int(idx), cly);
-    } else {                   /* 4bpp CLUT */
-        uint word = ter_vram_at(tpx + (u >> 2), tpy + v);
-        uint nib  = (word >> (4 * (u & 3))) & 0xFu;
-        p = ter_vram_at(clx + int(nib), cly);
+    } else {
+        if (bppc == 1u) {      /* 8bpp CLUT */
+            uint word = ter_vram_at(tpx + (u >> 1), tpy + v);
+            idx = int((word >> (8 * (u & 1))) & 0xFFu);
+        } else {               /* 4bpp CLUT */
+            uint word = ter_vram_at(tpx + (u >> 2), tpy + v);
+            idx = int((word >> (4 * (u & 3))) & 0xFu);
+        }
+        p = ter_vram_at(clx + idx, lad ? ((cly & 512) | ((cly + lrow) & 511)) : cly);
     }
     vec4 c = ter_decode555(p);
     if (c.a == 0.0) return vec4(0.0);
+    if (lad && lpos > float(lrow)) {
+        uint p1 = ter_vram_at(clx + idx, (cly & 512) | ((cly + lrow + 1) & 511));
+        if (p1 != 0u) c.rgb = mix(c.rgb, ter_decode555(p1).rgb, lpos - float(lrow));
+    }
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
-    else c.rgb = op_hq_fog(c.rgb, vMat.z, vMat.w,
-                           op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
-                           g.hd_lad.x, g.hd_lad.y);
+    else c.rgb = op_hq_fog(c.rgb, vMat.z, vMat.w, vz, g.hd_lad.x, g.hd_lad.y);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     return vec4(clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0), c.a);
 }

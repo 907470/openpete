@@ -63,6 +63,17 @@ uint32_t terrain_heavy_fog_colour(void);
  * @return The blended colour, 0x00BBGGRR. */
 uint32_t terrain_fog_cue(uint32_t nearC, uint32_t farC, double m3);
 
+/** @brief Packs the heavy-fog texel fade stepped at one ladder row, the original fog form's per-face step.
+ *
+ * The game steps its CLUT ladder per face; the step is t = row / 15,
+ * pre-weighted into the affine aN = 1 - t, bN = 0.5 t on every channel
+ * (word b bit 30, psx_hq_fog.glsl), rounded to the field's 1/256 units in
+ * integers, so the stage draws texel * aN + bN at every pixel. terrain.vert
+ * flat_atmo_words builds the same words.
+ * @param row The ladder row, clamped to 0..15.
+ * @param w Receives words a and b. */
+void terrain_fog_step_words(int row, uint32_t w[2]);
+
 /** @brief A freecam pose that frames the whole live level from above.
  *
  * The first pass takes the vertex bounds of every sector over both LOD banks.
