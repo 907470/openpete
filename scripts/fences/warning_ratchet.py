@@ -79,7 +79,8 @@ decided alone is not vacuous, since a clean entry with no row is decided):
 refuses; STALE-DB (a CMake file newer than the database, or an
 error-kind diagnostic with no option): refuses, never baselined; ERROR (an
 error-set diagnostic): refuses; MISSING-INPUT (a header a build rule
-generates, or the mod SDK, is absent from the build directory): on
+generates, or the mod SDK, is absent from the build directory, or a
+staged SDK root file differs from its tracked source): on
 linux-release the hook, tighten and baseline build openpete_generated_headers
 plus the SDK staging targets under nice -n 10, re-run the -M pass and
 refuse only when the build fails or an input is still absent (the build's
@@ -337,6 +338,8 @@ def mod_entries(root, db_path, dbname, cc, config, errset):
                 games_used.add(g)
                 pending.append((rel, g))
     sdk, targets = sdk_root(os.path.dirname(os.path.abspath(db_path)), games_used)
+    if games_used:
+        missing += stale_sdk_files(root, sdk)
     for rel, g in pending:
         out.append(_mod_entry(root, dbname, rel, g, sdk, cc, errset))
     for g in sorted(games_used):
@@ -344,6 +347,34 @@ def mod_entries(root, db_path, dbname, cc, config, errset):
         if not os.path.isdir(os.path.join(sdk, "games", g)):
             missing.append(os.path.join(sdk, "games", g))
     return out, games_of, missing, targets
+
+
+def stale_sdk_files(root, sdk):
+    """-> the staged copies under sdk of the tracked SDK root files
+    (cmake/openpete_mod_sdk.cmake OPENPETE_MOD_SDK_ROOT_FILES, the
+    ${CMAKE_SOURCE_DIR} members) that are absent or differ from their
+    source. The staging targets copy them only when built, so a build
+    directory not rebuilt since a header change compiles the mods against
+    the old header; such a copy counts as a missing input."""
+    try:
+        text = open(os.path.join(root, "cmake", "openpete_mod_sdk.cmake"), encoding="utf-8").read()
+    except OSError:
+        return []
+    m = re.search(r"set\(OPENPETE_MOD_SDK_ROOT_FILES(.*?)\)", text, re.S)
+    out = []
+    for rel in re.findall(r"\$\{CMAKE_SOURCE_DIR\}/(\S+)", m.group(1) if m else ""):
+        staged = os.path.join(sdk, os.path.basename(rel))
+        if not os.path.isfile(staged):
+            out.append(staged)
+            continue
+        try:
+            with open(os.path.join(root, rel), "rb") as a, open(staged, "rb") as b:
+                if a.read() == b.read():
+                    continue
+        except OSError:
+            pass
+        out.append(staged + " (stale against " + rel + ")")
+    return out
 
 
 def _mod_entry(root, dbname, rel, game, sdk, cc, errset):

@@ -33,6 +33,13 @@ static fx_state_t*               fx_st;
 static char                      fx_tag[64];
 static uint32_t                  fx_schema;
 
+/** @brief Update override: runs the game's update, then counts it when gameplay is live. */
+static void fx_on_update(CPUState* cpu) {
+    fx_api->base(cpu);
+    if (fx_api->gameplay_live(fx_self, cpu)) fx_st->value++;
+}
+
+#if FX_HAVE_SAVE_API
 /** @brief FNV-1a 32 of a byte span, the payload hash the harness compares. */
 static uint32_t fx_hash(const uint8_t* p, uint32_t n) {
     uint32_t h = 2166136261u;
@@ -50,13 +57,6 @@ static uint32_t fx_get32(const uint8_t* p) {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-/** @brief Update override: runs the game's update, then counts it when gameplay is live. */
-static void fx_on_update(CPUState* cpu) {
-    fx_api->base(cpu);
-    if (fx_api->gameplay_live(fx_self, cpu)) fx_st->value++;
-}
-
-#if FX_HAVE_SAVE_API
 /** @brief Status name for the log line. */
 static const char* fx_status_name(openpete_mod_save_status_t s) {
     static const char* const k[] = { "OK", "ABSENT", "GAP", "STALE", "NEWER", "LEGACY_PAD" };
