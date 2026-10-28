@@ -286,6 +286,8 @@ peace_keepers | pos=(54726, 86672, 55294) yaw=2670 pitch=209
 # A rolled view (roll 228, about 20 degrees): the freecam stores the roll the
 # game's camera builder needs for a true view roll, so the horizon tilts.
 artisans | pos=(84992, 45582, 9948) yaw=1024 pitch=160 roll=228
+# Portals at --fov 115 stop drawing toward the screen edges.
+artisans@fov115 | pos=(99585, 51840, 8250) yaw=-2733 pitch=62 | | --fov 115
 # A Gnorc at the left edge of the 16:9 field: its shadow stops drawing while
 # the shadow is still inside the frame. Blessed pre-fix.
 twilight_harbor | pos=(11615, 42844, 10978) yaw=3745 pitch=54
