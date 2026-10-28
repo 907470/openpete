@@ -132,6 +132,57 @@ static ngte_view s_view;
 
 typedef struct { float x, y, r, g, b; } pgv;   /* gouraud screen vertex (clipping) */
 typedef struct { float x, y; double vz; } ppt; /* projected portal-outline point  */
+/* The view Z an outline is clipped at before projecting: project_world's
+ * screen divide clamps at 1, so every projected point lies beyond it. */
+#define PORTAL_NEAR_VZ 1.0
+/* Capacity of a projected outline: one plane cut adds at most one vertex per
+ * two crossings, so the 16-point outline clips to at most 24. */
+#define PORTAL_POLY_MAX 32
+/* The 4:3 frame's bottom edge, RenderPortals' clip-rect y clamp (0xF0). */
+#define PORTAL_SCREEN_H 240
+
+/* OPENPETE_PORTAL_CLIP_CENSUS: how the flat and dome feeders projected their
+ * portal's outline, per pass (0 = canonical leaf and reveal feeds, 1 =
+ * sub-tick replay): every point in front of the near plane, cut by it, or no
+ * outline in an extended view, where the feeder fills the clip rect
+ * instead. Printed at exit with the canonical RenderPortals count. */
+#define PORTAL_CLIP_FRONT    0
+#define PORTAL_CLIP_CLIPPED  1
+#define PORTAL_CLIP_FALLBACK 2
+static unsigned s_clip_tally[2][3];
+static unsigned s_clip_last[3];    /* canonical tallies of the last RenderPortals run */
+static unsigned s_clip_cur[3];     /* canonical tallies of the RenderPortals run in progress */
+static unsigned s_clip_presents;   /* canonical RenderPortals runs with the native feed */
+static int      s_clip_replay;     /* 1 while portal_reextract replays the capture */
+
+/** @brief Prints the OPENPETE_PORTAL_CLIP_CENSUS tallies to stderr. */
+static void portal_clip_census_print(void) {
+    for (int k = 0; k < 2; k++)
+        fprintf(stderr, "portal: clip census %s: front=%u near-clipped=%u ext-rect-fallback=%u "
+                "(canonical presents=%u)\n", k ? "replay" : "canonical",
+                s_clip_tally[k][PORTAL_CLIP_FRONT], s_clip_tally[k][PORTAL_CLIP_CLIPPED],
+                s_clip_tally[k][PORTAL_CLIP_FALLBACK], s_clip_presents);
+    fprintf(stderr, "portal: clip census last canonical present: front=%u near-clipped=%u "
+            "ext-rect-fallback=%u\n", s_clip_last[PORTAL_CLIP_FRONT],
+            s_clip_last[PORTAL_CLIP_CLIPPED], s_clip_last[PORTAL_CLIP_FALLBACK]);
+}
+
+/** @brief Counts one feeder outline verdict for OPENPETE_PORTAL_CLIP_CENSUS.
+ *
+ * Inert unless the variable is set and not "0"; the first call reads it and
+ * registers the exit print.
+ * @param verdict PORTAL_CLIP_FRONT, PORTAL_CLIP_CLIPPED or PORTAL_CLIP_FALLBACK. */
+static void portal_clip_note(int verdict) {
+    static int on = -1;
+    if (on < 0) {
+        const char* e = getenv("OPENPETE_PORTAL_CLIP_CENSUS");
+        on = (e && *e && *e != '0');
+        if (on) atexit(portal_clip_census_print);
+    }
+    if (!on) return;
+    s_clip_tally[s_clip_replay ? 1 : 0][verdict]++;
+    if (!s_clip_replay) s_clip_cur[verdict]++;
+}
 /* Owning portal of a leaf: skybox-pointer match (dome/close), else screen-centre
  * match (far/medium flat). Returns the Portal* or 0. */
 static uint32_t owning_portal_ptr(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy);
@@ -808,6 +859,95 @@ static double portal_viewz(CPUState* cpu, const ngte_view* v, uint32_t a0, doubl
     return p ? portal_outline_maxvz(cpu, v, p, 1) : -1.0;   /* render depth */
 }
 
+/** @brief Rotates a world point into the portal outline's view space, as project_world does.
+ *
+ * @param v The view supplying the camera position and rotation.
+ * @param w The world point.
+ * @param out Receives MAC1, MAC2 and MAC3 (view Z). */
+static void portal_view_point(const ngte_view* v, const double w[3], double out[3]) {
+    ngte_mac(v->cam_M, -(w[1] - v->cam_ram[1]), -(w[2] - v->cam_ram[2]), (w[0] - v->cam_ram[0]),
+             &out[0], &out[1], &out[2]);
+}
+
+/** @brief Projects one view-space point to screen with project_world's divide.
+ *
+ * @param v The view supplying OFX, OFY and H.
+ * @param q The view-space point (MAC1, MAC2, MAC3).
+ * @return The screen point and its view Z. */
+static ppt portal_view_project(const ngte_view* v, const double q[3]) {
+    const double z = (q[2] > 1.0) ? q[2] : 1.0;
+    ppt o;
+    o.x = (float)(v->ofx + q[0] * v->H_eff / z);
+    o.y = (float)(v->ofy + q[1] * v->H_eff / z);
+    o.vz = q[2];
+    return o;
+}
+
+/** @brief Clips a view-space polygon at the near plane PORTAL_NEAR_VZ and projects it.
+ *
+ * Sutherland-Hodgman against view Z > PORTAL_NEAR_VZ: a crossing point is
+ * interpolated linearly in view space and placed on the plane. A polygon
+ * wholly in front projects vertex for vertex, so its points equal
+ * project_world's. The cut edge lies on the near plane, where the
+ * projection is H times the view-space offset, off screen for any polygon
+ * whose part nearer than the plane is under a world unit across.
+ * @param v The view.
+ * @param q The view-space polygon.
+ * @param n Its vertex count.
+ * @param out Receives the projected polygon.
+ * @param maxn The capacity of out.
+ * @param clipped Receives 1 when a vertex lay at or behind the plane, else 0; may be NULL.
+ * @return The projected vertex count; 0 when fewer than 3 remain or maxn would be exceeded. */
+static int portal_clip_near(const ngte_view* v, const double (*q)[3], int n,
+                            ppt* out, int maxn, int* clipped) {
+    int m = 0, cut = 0;
+    for (int i = 0; i < n; i++) {
+        const double* a = q[i];
+        const double* b = q[(i + 1) % n];
+        const int ain = a[2] > PORTAL_NEAR_VZ, bin = b[2] > PORTAL_NEAR_VZ;
+        if (ain) {
+            if (m >= maxn) return 0;
+            out[m++] = portal_view_project(v, a);
+        } else {
+            cut = 1;
+        }
+        if (ain != bin) {
+            const double t = (PORTAL_NEAR_VZ - a[2]) / (b[2] - a[2]);
+            const double c[3] = { a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), PORTAL_NEAR_VZ };
+            if (m >= maxn) return 0;
+            out[m++] = portal_view_project(v, c);
+        }
+    }
+    if (clipped) *clipped = cut;
+    return m >= 3 ? m : 0;
+}
+
+/** @brief Projects a portal's outline (m_Points), clipped at the near plane, to screen with per-point view Z.
+ *
+ * The one projection of the outline every preview consumer uses: the flat
+ * fill, the dome, the stencil aperture, the widescreen reveal and the
+ * sub-tick replay rect. An outline with points behind the camera keeps its
+ * part in front (portal_clip_near), so a close opening at a wide view still
+ * has its polygon and plane; only an outline wholly behind the camera has
+ * none.
+ * @param cpu The guest CPU state.
+ * @param v The view to project under.
+ * @param p The Portal* guest address.
+ * @param nudge 1 for the corrected outline (rendering), 0 for the authored one.
+ * @param poly Receives the projected points.
+ * @param maxn The capacity of poly.
+ * @param clipped Receives 1 when the near plane cut the outline, else 0; may be NULL.
+ * @return The point count, at least 3; 0 when the outline is unusable, wholly behind the near plane, or exceeds maxn. */
+static int portal_outline_clipped(CPUState* cpu, const ngte_view* v, uint32_t p, int nudge,
+                                  ppt* poly, int maxn, int* clipped) {
+    double W[16][3], q[16][3];
+    if (clipped) *clipped = 0;
+    const int npts = portal_outline_world(cpu, p, W, nudge);
+    if (!npts) return 0;
+    for (int k = 0; k < npts; k++) portal_view_point(v, W[k], q[k]);
+    return portal_clip_near(v, (const double (*)[3])q, npts, poly, maxn, clipped);
+}
+
 /** @brief Projects a portal's authored outline, before any per-portal correction, to screen with per-point view Z.
  *
  * A corrected outline reaches past the authored one into the arch; that
@@ -820,25 +960,17 @@ static double portal_viewz(CPUState* cpu, const ngte_view* v, uint32_t a0, doubl
  * @param maxn The capacity of poly.
  * @return The point count, 0 when the outline is unusable, exceeds maxn, or has a point with view Z at most 1. */
 static int portal_outline_screen_raw(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn) {
-    double W[16][3];
-    const int npts = portal_outline_world(cpu, p, W, 0);
-    if (!npts || npts > maxn) return 0;
-    for (int k = 0; k < npts; k++) {
-        double sx, sy;
-        const double vz = project_world(cpu, v, W[k][0], W[k][1], W[k][2], &sx, &sy);
-        if (vz <= 1.0) return 0;
-        poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
-    }
-    return npts;
+    int cut = 0;
+    const int n = portal_outline_clipped(cpu, v, p, 0, poly, maxn, &cut);
+    return cut ? 0 : n;
 }
 
-/** @brief Projects a portal's corrected outline (m_Points) to screen with per-point view Z.
+/** @brief Projects a portal's corrected outline (m_Points) to screen with per-point view Z, all points in front.
  *
  * Reads the outline through portal_outline_world with the per-portal
- * correction applied. A portal whose points are all in front of the camera
- * is a tilted planar window: its sky is depth-interpolated across this
- * polygon instead of drawn flat, so the stone frame occludes it correctly
- * at an angle.
+ * correction applied. The terrain plane provider and the dump take this
+ * form; the preview feeders take the near-clipped one
+ * (portal_outline_clipped).
  * @param cpu The guest CPU state.
  * @param v The view to project under.
  * @param p The Portal* guest address.
@@ -848,16 +980,62 @@ static int portal_outline_screen_raw(CPUState* cpu, const ngte_view* v, uint32_t
  *         0 when the outline is unusable, exceeds maxn, or has a point at or
  *         behind that. */
 static int portal_outline_screen(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn) {
-    double W[16][3];
-    const int npts = portal_outline_world(cpu, p, W, 1);
-    if (!npts || npts > maxn) return 0;
-    for (int k = 0; k < npts; k++) {
-        double sx, sy;
-        const double vz = project_world(cpu, v, W[k][0], W[k][1], W[k][2], &sx, &sy);
-        if (vz <= 1.0) return 0;              /* a point behind the camera */
-        poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
+    int cut = 0;
+    const int n = portal_outline_clipped(cpu, v, p, 1, poly, maxn, &cut);
+    return cut ? 0 : n;
+}
+
+/** @brief The clip rect of a projected outline: its bounding box, outward to whole pixels.
+ *
+ * The layout is the OUTLINE capture's: min y, max y, min x, max x. A rect
+ * stored in a D_CLIPRECT word (the reveal's and the replay's base rect)
+ * holds int16: a near-clipped outline, or one whose box leaves that range,
+ * reaches far off screen, so its stored box is clamped to the view, x to the
+ * Hor+ bounds and y to [0, PORTAL_SCREEN_H]. The dome's face clip takes the
+ * box unclamped (saturated at +-1e9): a gouraud face cut at the screen edge
+ * gets screen-linear colours along the cut, which the perspective-correct
+ * raster then spreads across the visible part of the face.
+ * @param v The view supplying the screen-X bounds.
+ * @param poly The projected outline.
+ * @param pn The point count, at least 1.
+ * @param clipped 1 when the near plane cut the outline.
+ * @param stored 1 for a rect stored in a D_CLIPRECT word, 0 for the dome's face clip.
+ * @param r Receives the rect. */
+static void portal_outline_rect(const ngte_view* v, const ppt* poly, int pn, int clipped, int stored,
+                                int r[4]) {
+    float xlo = poly[0].x, xhi = poly[0].x, ylo = poly[0].y, yhi = poly[0].y;
+    for (int k = 1; k < pn; k++) {
+        xlo = fminf(xlo, poly[k].x); xhi = fmaxf(xhi, poly[k].x);
+        ylo = fminf(ylo, poly[k].y); yhi = fmaxf(yhi, poly[k].y);
     }
-    return npts;
+    const float lim = stored ? 32767.0f : 1e9f;
+    const int to_view = stored && (clipped || xlo < -lim || xhi > lim || ylo < -lim || yhi > lim);
+    const float bx0 = to_view ? floorf(v->xlo) : -lim, bx1 = to_view ? ceilf(v->xhi) : lim;
+    const float by0 = to_view ? 0.0f : -lim, by1 = to_view ? (float)PORTAL_SCREEN_H : lim;
+    r[0] = (int)floorf(fminf(fmaxf(ylo, by0), by1)); r[1] = (int)ceilf(fminf(fmaxf(yhi, by0), by1));
+    r[2] = (int)floorf(fminf(fmaxf(xlo, bx0), bx1)); r[3] = (int)ceilf(fminf(fmaxf(xhi, bx0), bx1));
+}
+
+/** @brief Maps RenderPortals' clip rect onto an extended view for a feeder with no outline in front of the camera.
+ *
+ * Counts the fallback for OPENPETE_PORTAL_CLIP_CENSUS in an extended view.
+ * The game projects the rect at the GTE's H and clamps it to the 4:3 frame
+ * [0, 512] x [0, PORTAL_SCREEN_H]. In an extended view an edge at that clamp
+ * moves to the view's bound, and an edge inside it is rescaled about OFX,
+ * OFY by the --fov scale to the H the feeders project with. A canonical
+ * view keeps the rect.
+ * @param v The view.
+ * @param x0 The rect's minimum X, updated.
+ * @param y0 The rect's minimum Y, updated.
+ * @param x1 The rect's maximum X, updated.
+ * @param y1 The rect's maximum Y, updated. */
+static void portal_fallback_rect(const ngte_view* v, int* x0, int* y0, int* x1, int* y1) {
+    if (!v->extended) return;
+    portal_clip_note(PORTAL_CLIP_FALLBACK);
+    *x0 = (*x0 <= 0)   ? (int)floorf(v->xlo) : (int)floor(v->ofx + (*x0 - v->ofx) * v->s);
+    *x1 = (*x1 >= 512) ? (int)ceilf(v->xhi)  : (int)ceil (v->ofx + (*x1 - v->ofx) * v->s);
+    *y0 = (*y0 <= 0) ? 0 : (int)floor(v->ofy + (*y0 - v->ofy) * v->s);
+    *y1 = (*y1 >= PORTAL_SCREEN_H) ? PORTAL_SCREEN_H : (int)ceil(v->ofy + (*y1 - v->ofy) * v->s);
 }
 
 /** @brief Fits 1/vz = a*x + b*y + c through three points of a planar projected outline.
@@ -1136,16 +1314,28 @@ static float sky_min2(float plane_z, float cz, int cmode) {
     if (cmode == 1) return cz;
     return plane_z;
 }
-/** @brief Sets s_ot_vz to 128 times the sky's OT bucket mirrored from the projected outline.
+/** @brief Sets s_ot_vz to 128 times the sky's OT bucket mirrored from a portal's corrected outline.
  *
  * B = (mean outline view Z) >> 7, plus 64 when B >= 256, clamped to
- * [1, 2047], as RenderPortals buckets the sky.
- * @param poly The projected outline, world-scale view Z.
- * @param pn The point count, at least 1. */
-static void set_ot_sky_vz(const ppt* poly, int pn) {
+ * [1, 2047], as RenderPortals buckets the sky. Each point's view Z is
+ * floored at 0, as the GTE saturates SZ3, so a point behind the camera
+ * counts as the game counts it; an outline wholly in front gives the mean
+ * of its projected points. Leaves s_ot_vz unchanged when the outline is
+ * unusable.
+ * @param cpu The guest CPU state.
+ * @param v The view to project under.
+ * @param p The Portal* guest address. */
+static void set_ot_sky_vz(CPUState* cpu, const ngte_view* v, uint32_t p) {
+    double W[16][3];
+    const int npts = portal_outline_world(cpu, p, W, 1);
+    if (!npts) return;
     double sum = 0.0;
-    for (int i = 0; i < pn; i++) sum += poly[i].vz;
-    long B = (long)(sum / (double)pn) >> 7;
+    for (int k = 0; k < npts; k++) {
+        double q[3];
+        portal_view_point(v, W[k], q);
+        sum += (q[2] > 0.0) ? q[2] : 0.0;
+    }
+    long B = (long)(sum / (double)npts) >> 7;
     if (B >= 256) B += 64;
     if (B > 2047) B = 2047;
     if (B < 1) B = 1;
@@ -1230,7 +1420,7 @@ static int s_portal_kind = OPENPETE_TAG_PORTAL_FLAT;
  * Cleared per feed, so a portal with no usable outline falls back to core's
  * "a sky run without a matching mask uses its own footprint" behaviour. */
 static int s_aperture_ok = 0;
-static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
+static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn, int clipped,
                                  int use_plane, double pa, double pb, double pc);
 static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, float* ey);
 static double portal_aperture_margin_world(void);
@@ -1431,9 +1621,11 @@ static int portal_repr_skip(int is_dome) {
  *
  * Resolves the fill colour and its portal, projects the opening outline, marks
  * the stencil aperture and emits the outline fan at per-vertex opening depth,
- * stamping the portal-guard recency with the canonical-render epoch. When the
- * outline has fewer than 3 points it fills the clip rect instead, at the
- * opening plane's depth, or nearest when the camera has crossed the plane.
+ * stamping the portal-guard recency with the canonical-render epoch. The
+ * outline is clipped at the near plane (portal_outline_clipped); when no part
+ * of it lies in front of the camera it fills the clip rect instead, mapped
+ * onto an extended view (portal_fallback_rect), at the opening plane's depth,
+ * or nearest when the camera has crossed the plane.
  * Skipped under OPENPETE_PORTAL_REPR=dome.
  * @param cpu          guest CPU state
  * @param a0           the leaf's a0: a pointer to the fill colour, or the skybox
@@ -1496,8 +1688,9 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * sort could then put the dome FIRST (its farthest face can sort deeper
      * than the backstop), letting the flat backstop paint over the dome. */
     s_portal_group = (int)(p ? cpu->read_word(p + 0x00) : a0);
-    ppt poly[16];
-    int pn = p ? portal_outline_screen(cpu, &s_view, p, poly, 16) : 0;
+    ppt poly[PORTAL_POLY_MAX];
+    int clipped = 0;
+    int pn = p ? portal_outline_clipped(cpu, &s_view, p, 1, poly, PORTAL_POLY_MAX, &clipped) : 0;
     /* The sky's OT bucket: canonical leaves read the LIVE D_PORTAL_DEPTH the
      * .s just computed for THIS portal (correct even when the outline is
      * unavailable - a point behind the camera at close/steep range); the
@@ -1511,7 +1704,8 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
     else
         s_ot_vz = 0.0;
     if (pn >= 3) {
-        if (s_ot_vz <= 0.0) set_ot_sky_vz(poly, pn);
+        portal_clip_note(PORTAL_CLIP_FRONT + (clipped != 0));
+        if (s_ot_vz <= 0.0) set_ot_sky_vz(cpu, &s_view, p);
         set_sky_ot_push();
         /* Mirror check (canonical only; a0 live means the .s just computed
          * D_PORTAL_DEPTH for THIS portal): our bucket must equal the .s's. */
@@ -1539,17 +1733,17 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
         s_sky_fed = 1; s_sky_fed_epoch = spyro_native_canon_epoch_stamp();
         float cz = 0.0f;
         const int cmode = sky_const_depth(&cz);
-        emit_portal_aperture(cpu, p, poly, pn, 0, 0.0, 0.0, 0.0);
+        emit_portal_aperture(cpu, p, poly, pn, clipped, 0, 0.0, 0.0, 0.0);
         /* Interior fill = the EXACT outline fan (per-vertex view-Z, the .s
          * flat leaf's own construction); erosion (debug) offsets it to
          * match the eroded mask. The dilation band's colours come from the
          * behind-depth ring below, matching the mask ring's extent. */
         const double fmargin = portal_margin_for(cpu, p);
-        double fpx[16], ferode[16];
+        double fpx[PORTAL_POLY_MAX], ferode[PORTAL_POLY_MAX];
         margin_px_per_vertex(cpu, &s_view, poly, pn, fmargin, fpx);
         const double fsign = (s_aperture_ok && fmargin < 0.0) ? -1.0 : 0.0;   /* inward */
         for (int i = 0; i < pn; i++) ferode[i] = fsign * fpx[i];
-        float fx[16], fy[16];
+        float fx[PORTAL_POLY_MAX], fy[PORTAL_POLY_MAX];
         outline_offset(poly, pn, ferode, fx, fy);
         double qa = 0.0, qb = 0.0, qc = 0.0;
         const int fan_plane = s_aperture_ok && fit_invz(poly, pn, &qa, &qb, &qc);
@@ -1573,8 +1767,9 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
         return 1;
     }
 
-    /* Fallback (an outline point behind the camera / no match): the axis-aligned
-     * clip rect. vz<=1 means the plane centre is AT/BEHIND the camera - Spyro
+    /* Fallback (the whole outline behind the camera / no match): the
+     * axis-aligned clip rect, mapped onto an extended view
+     * (portal_fallback_rect). vz<=1 means the plane centre is AT/BEHIND the camera - Spyro
      * is entering and the camera has crossed the portal: the preview must
      * cover the level being left (the PSX sky bucket was nearest-OT at that
      * point), so go NEAR, not far (a far depth would let current-level
@@ -1591,6 +1786,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
     double vz = portal_viewz(cpu, &s_view, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     int crossed = (vz <= 1.0);
     if (crossed) vz = 2.0;     /* crossed -> nearest */
+    portal_fallback_rect(&s_view, &x0, &y0, &x1, &y1);
     set_sky_ot_push();
     if (crossed) s_sky_push_vz = 0.0;   /* mid-entry cover must win everything */
     float depth = portal_cyclorama_depth(vz);
@@ -1678,7 +1874,7 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
  * its coverage and emit_split_by_outline gives every face plane depth.
  * register_skyout still records the projected outline in s_skyout, which no
  * code reads. */
-static pgv   s_skyout[16];        /* outline polygon (screen space), CCW-oriented */
+static pgv   s_skyout[PORTAL_POLY_MAX]; /* outline polygon (screen space), CCW-oriented */
 static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
 
 /** @brief Register the projected outline for the two-region split, oriented CCW by the centroid side.
@@ -1898,8 +2094,8 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                                uint32_t rgba, int channel) {
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
-    float rx[16], ry[16];
-    double outward[16] = { 0 };
+    float rx[PORTAL_POLY_MAX], ry[PORTAL_POLY_MAX];
+    double outward[PORTAL_POLY_MAX] = { 0 };
     for (int i = 0; i < pn; i++) outward[i] = -dpx[i];
     outline_offset(poly, pn, outward, rx, ry);
     for (int i = 0; i < pn; i++) {
@@ -1939,27 +2135,90 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
     openpete_native_scene_set_tag(0);
 }
 
+/** @brief Reports whether a portal's correction moves its opening, so the aperture splits at the authored outline.
+ *
+ * With both outlines in front of the camera, corrected when a projected
+ * point moves by more than 0.01 px. A near-clipped outline's points do not
+ * pair with the other's, so then the world points are compared.
+ * @param raw The authored outline, near-clipped.
+ * @param rn Its point count.
+ * @param rclip 1 when the near plane cut raw.
+ * @param poly The corrected outline, near-clipped.
+ * @param pn Its point count.
+ * @param clipped 1 when the near plane cut poly.
+ * @param Wr The authored world outline.
+ * @param Wn The corrected world outline.
+ * @param wn The world point count.
+ * @return 1 when corrected, else 0. */
+static int portal_outline_corrected(const ppt* raw, int rn, int rclip, const ppt* poly, int pn, int clipped,
+                                    const double (*Wr)[3], const double (*Wn)[3], int wn) {
+    if (!clipped && !rclip) {
+        if (rn != pn) return 0;
+        for (int i = 0; i < pn; i++)
+            if (fabsf(raw[i].x - poly[i].x) > 0.01f || fabsf(raw[i].y - poly[i].y) > 0.01f) return 1;
+        return 0;
+    }
+    return memcmp(Wr, Wn, sizeof(double) * 3u * (size_t)wn) != 0;
+}
+
+/** @brief Marks the correction band, authored edge to corrected edge, behind the opening plane.
+ *
+ * Each edge's band is one world quad clipped at the near plane
+ * (portal_clip_near) and fanned; wholly in front it projects to the four
+ * outline points, two halves. Every vertex sits at its own view Z plus
+ * s_sky_push_vz + portal_band_back_vz(), so stone in the band wins and the
+ * terrain visible through a true gap loses.
+ * @param Wr The authored world outline.
+ * @param Wn The corrected world outline.
+ * @param wn The world point count. */
+static void emit_correction_band(const double (*Wr)[3], const double (*Wn)[3], int wn) {
+    for (int i = 0; i < wn; i++) {
+        const int j = (i + 1) % wn;
+        const double* wq[4] = { Wr[i], Wr[j], Wn[j], Wn[i] };
+        double vq[4][3];
+        for (int k = 0; k < 4; k++) portal_view_point(&s_view, wq[k], vq[k]);
+        ppt q[8];
+        const int qn = portal_clip_near(&s_view, (const double (*)[3])vq, 4, q, 8, NULL);
+        for (int f = 1; f + 1 < qn; f++) {
+            const int ks[3] = { 0, f, f + 1 };
+            openpete_scene_tri t;
+            memset(&t, 0, sizeof t);
+            for (int k = 0; k < 3; k++) {
+                const ppt* v = &q[ks[k]];
+                t.v[k].sx = v->x; t.v[k].sy = v->y;
+                t.v[k].z = openpete_native_scene_viewz(
+                               openpete_worldvz_full((float)(v->vz + s_sky_push_vz + portal_band_back_vz())));
+                t.v[k].rgba = 0xFF000000u;
+            }
+            portal_add_tri(&t, OPENPETE_SCENE_PORTAL_MASK);
+        }
+    }
+}
+
 /** @brief Marks the portal's stencil aperture from its opening polygon and sets s_aperture_ok when it does.
  *
- * The interior fan is the authored outline (portal_outline_screen_raw on a
- * corrected portal, else poly) at the opening plane's depth, eroded inward
- * by |margin| when portal_margin_for is negative. A positive margin adds an
- * outward ring around poly behind the plane (emit_aperture_ring); a
- * corrected portal adds the band between the authored outline and poly
- * behind the plane. Marks nothing when the aperture is disabled, pn lies
- * outside 3..16, or RP_PORTAL is filtered out.
+ * The interior fan is the authored outline (portal_outline_clipped with no
+ * correction, on a corrected portal, else poly) at the opening plane's
+ * depth, eroded inward by |margin| when portal_margin_for is negative. A
+ * positive margin adds an outward ring around poly behind the plane
+ * (emit_aperture_ring); a corrected portal adds the band between the
+ * authored outline and poly behind the plane, each edge's band quad clipped
+ * at the near plane as its own world quad. Marks nothing when the aperture
+ * is disabled, pn lies outside 3..PORTAL_POLY_MAX, or RP_PORTAL is filtered
+ * out.
  * @param cpu The guest CPU state.
  * @param portal The Portal* guest address, or 0 when there is none.
- * @param poly The projected (corrected) outline.
+ * @param poly The projected (corrected) outline, near-clipped.
  * @param pn The point count.
+ * @param clipped 1 when the near plane cut poly.
  * @param use_plane Nonzero when pa, pb, pc hold the opening plane; else it is fitted from poly.
  * @param pa The plane's inverse-depth x coefficient.
  * @param pb The plane's inverse-depth y coefficient.
  * @param pc The plane's inverse-depth constant. */
-static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
+static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn, int clipped,
                                  int use_plane, double pa, double pb, double pc) {
     s_aperture_ok = 0;
-    if (!portal_aperture_enabled() || pn < 3 || pn > 16) return;
+    if (!portal_aperture_enabled() || pn < 3 || pn > PORTAL_POLY_MAX) return;
     if (!portal_scene_emit_enabled()) return;
     /* Split the aperture at the AUTHORED opening.
      *
@@ -1974,28 +2233,28 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
      * The interior must NOT be widened to the corrected outline: stencil
      * marking is a union, so a widened interior marks the band at plane depth
      * and the behind-depth strip underneath it becomes dead geometry. */
-    ppt raw[16];
-    int rn = portal ? portal_outline_screen_raw(cpu, &s_view, portal, raw, 16) : 0;
-    int corrected = (rn == pn);
-    if (corrected) {
-        int moved = 0;
-        for (int i = 0; i < pn && !moved; i++)
-            if (fabsf(raw[i].x - poly[i].x) > 0.01f || fabsf(raw[i].y - poly[i].y) > 0.01f) moved = 1;
-        corrected = moved;
-    }
+    ppt raw[PORTAL_POLY_MAX];
+    int rclip = 0;
+    const int rn = portal ? portal_outline_clipped(cpu, &s_view, portal, 0, raw, PORTAL_POLY_MAX, &rclip) : 0;
+    double Wr[16][3], Wn[16][3];
+    const int wn = (rn >= 3) ? portal_outline_world(cpu, portal, Wr, 0) : 0;
+    const int corrected = wn && portal_outline_world(cpu, portal, Wn, 1) == wn &&
+        portal_outline_corrected(raw, rn, rclip, poly, pn, clipped,
+                                 (const double (*)[3])Wr, (const double (*)[3])Wn, wn);
     const ppt* interior = corrected ? raw : poly;   /* uncorrected = bit-identical */
+    const int in_n = corrected ? rn : pn;
     const double margin = portal_margin_for(cpu, portal);
-    double mpx[16], merode[16];
-    margin_px_per_vertex(cpu, &s_view, interior, pn, margin, mpx);
+    double mpx[PORTAL_POLY_MAX], merode[PORTAL_POLY_MAX];
+    margin_px_per_vertex(cpu, &s_view, interior, in_n, margin, mpx);
     const double msign = (margin < 0.0) ? -1.0 : 0.0;                         /* inward */
-    for (int i = 0; i < pn; i++) merode[i] = msign * mpx[i];
-    float ex[16], ey[16];
-    outline_offset(interior, pn, merode, ex, ey);
+    for (int i = 0; i < in_n; i++) merode[i] = msign * mpx[i];
+    float ex[PORTAL_POLY_MAX], ey[PORTAL_POLY_MAX];
+    outline_offset(interior, in_n, merode, ex, ey);
     /* The outline is planar, so fit the plane here when the caller had none. */
     if (!use_plane) use_plane = fit_invz(poly, pn, &pa, &pb, &pc);
     float cz = 0.0f;
     const int cmode = sky_const_depth(&cz);
-    for (int i = 1; i + 1 < pn; i++) {                      /* fan-triangulate */
+    for (int i = 1; i + 1 < in_n; i++) {                    /* fan-triangulate */
         openpete_scene_tri t;
         memset(&t, 0, sizeof t);
         t.textured = 0; t.blend = 0;
@@ -2016,30 +2275,11 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
      * the margin silently stopped working on exactly the arches whose openings
      * had to be moved, which is where it was needed most. */
     if (margin > 0.0)
-    {   double rpx[16];
+    {   double rpx[PORTAL_POLY_MAX];
         margin_px_per_vertex(cpu, &s_view, poly, pn, margin, rpx);
         emit_aperture_ring(poly, pn, rpx, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
     }
-    if (corrected) {
-        for (int i = 0; i < pn; i++) {
-            const int j = (i + 1) % pn;
-            const ppt* q[4] = { &raw[i], &raw[j], &poly[j], &poly[i] };
-            for (int half = 0; half < 2; half++) {
-                const int ks[3] = { 0, half ? 2 : 1, half ? 3 : 2 };
-                openpete_scene_tri t;
-                memset(&t, 0, sizeof t);
-                t.textured = 0; t.blend = 0;
-                for (int k = 0; k < 3; k++) {
-                    const ppt* v = q[ks[k]];
-                    float z = openpete_native_scene_viewz(
-                                  openpete_worldvz_full((float)(v->vz + s_sky_push_vz + portal_band_back_vz())));
-                    t.v[k].sx = v->x; t.v[k].sy = v->y;
-                    t.v[k].z = z; t.v[k].rgba = 0xFF000000u;
-                }
-                portal_add_tri(&t, OPENPETE_SCENE_PORTAL_MASK);
-            }
-        }
-    }
+    if (corrected) emit_correction_band((const double (*)[3])Wr, (const double (*)[3])Wn, wn);
     s_aperture_ok = 1;
 }
 
@@ -2170,8 +2410,10 @@ typedef struct { pgv a, b, c; double key; } dome_face;
  * control registers 0 to 4, which the leaf left loaded. Settles the OT depth
  * s_ot_vz and the sky push, then takes the opening's depth from the owning
  * portal's outline plane fit or its analytic plane, or a constant depth
- * when neither exists. The clip rect is widened to the outline's bounding
- * box, the aperture is emitted, and up to 1024 sectors are walked (the
+ * when neither exists. The clip rect is widened to the near-clipped
+ * outline's bounding box (portal_outline_rect), or, with no outline in front
+ * of the camera, mapped onto an extended view (portal_fallback_rect); the
+ * aperture is emitted, and up to 1024 sectors are walked (the
  * sector cull is skipped in an extended view). A face with a vertex at or
  * behind the near plane is dropped; colours are blended toward fog_rgb by
  * fog_t. Faces are emitted in walk order, clipped to the rect. Reads
@@ -2215,14 +2457,23 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
 
     /* Tilted-plane window: outline polygon + its perspective-correct inv-vz depth
      * field, so each dome pixel takes the portal-plane depth (the stone frame
-     * occludes it into the arch shape even at a sharp angle, f2945). Falls back to
-     * the rect clip + constant depth when an outline point is behind the camera. */
+     * occludes it into the arch shape even at a sharp angle, f2945). The outline
+     * is clipped at the near plane; the rect clip + constant depth remain only
+     * when the whole outline is behind the camera. */
     uint32_t p = owning_portal_ptr(cpu, &s_view, skybox, cx, cy);
-    ppt poly[16]; int pn = p ? portal_outline_screen(cpu, &s_view, p, poly, 16) : 0;
+    ppt poly[PORTAL_POLY_MAX];
+    int clipped = 0;
+    int pn = p ? portal_outline_clipped(cpu, &s_view, p, 1, poly, PORTAL_POLY_MAX, &clipped) : 0;
     /* A revealed (culled) portal has no live/captured bucket - the outline
      * mirror (validated == live) supplies it so the push agrees with the
      * flat fan the reveal already emitted. */
-    if (s_ot_vz <= 0.0 && pn >= 3) set_ot_sky_vz(poly, pn);
+    if (s_ot_vz <= 0.0 && pn >= 3) set_ot_sky_vz(cpu, &s_view, p);
+    if (pn >= 3) {
+        portal_clip_note(PORTAL_CLIP_FRONT + (clipped != 0));
+    } else {
+        /* No outline in front of the camera: the rect alone bounds the dome. */
+        portal_fallback_rect(&s_view, &x0, &y0, &x1, &y1);
+    }
     set_sky_ot_push();
     if (crossed) s_sky_push_vz = 0.0;   /* mid-entry cover must win everything */
     float depth = portal_cyclorama_depth(vz);   /* rect-fallback depth */
@@ -2255,23 +2506,18 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
      * the arch - no coverage gaps; UNION so a non-clamped 4:3 rect is unchanged ->
      * no 4:3 regression, and at 4:3 any spill past 512 is GPU-scissored anyway). */
     if (pn >= 3) {
-        float oxlo=poly[0].x, oxhi=poly[0].x, oylo=poly[0].y, oyhi=poly[0].y;
-        for (int i = 1; i < pn; i++) {
-            if (poly[i].x < oxlo) oxlo = poly[i].x;
-            if (poly[i].x > oxhi) oxhi = poly[i].x;
-            if (poly[i].y < oylo) oylo = poly[i].y;
-            if (poly[i].y > oyhi) oyhi = poly[i].y;
-        }
+        int orc[4];
+        portal_outline_rect(&s_view, poly, pn, clipped, 0, orc);
         /* This rect is NOT widened by the aperture margin. Tried, and it made
          * no difference on any of the 29 portals - the mask reaches past the
          * outline but the colours filling that band are not bounded by this
          * rect, so tightening or loosening it changes nothing. Don't re-add. */
-        if ((int)floorf(oxlo) < x0) x0 = (int)floorf(oxlo);
-        if ((int)ceilf (oxhi) > x1) x1 = (int)ceilf (oxhi);
-        if ((int)floorf(oylo) < y0) y0 = (int)floorf(oylo);
-        if ((int)ceilf (oyhi) > y1) y1 = (int)ceilf (oyhi);
+        if (orc[2] < x0) x0 = orc[2];
+        if (orc[3] > x1) x1 = orc[3];
+        if (orc[0] < y0) y0 = orc[0];
+        if (orc[1] > y1) y1 = orc[1];
     }
-    emit_portal_aperture(cpu, p, poly, pn, use_plane, pa, pb, pc);
+    emit_portal_aperture(cpu, p, poly, pn, clipped, use_plane, pa, pb, pc);
 
     uint32_t cnt = cpu->read_word(skybox + 0x00), arr = cpu->read_word(skybox + 0x04);
     if (cnt > 1024) cnt = 1024;
@@ -2866,8 +3112,9 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
  * distance-culls far ones, so a widened view shows an arch in the side margin
  * with no preview, and --no-lod terrain shows a far arch with an empty opening.
  * After the real RenderPortals has fed its portals through the leaves, this
- * walks g_Portals and, for each portal no leaf fed whose outline is fully in
- * front of the camera, whose outline bbox reaches the widened view, and (at
+ * walks g_Portals and, for each portal no leaf fed whose outline has a part
+ * in front of the camera (portal_outline_clipped), whose outline bbox
+ * reaches the widened view, and (at
  * stock LOD) is not deep inside the 4:3 frame, draws the flat outline fill
  * through feed_portal_quad, plus the gradient dome when the outline's mean
  * view-Z is below the .s's dome range 16384, fading toward the flat colour over
@@ -2899,9 +3146,10 @@ static void feed_revealed_portals(CPUState* cpu) {
         if (fed) continue;
         uint32_t skybox = cpu->read_word(p + 0x00);
         if (skybox < 0x80010000u || skybox >= 0x80200000u) continue;
-        ppt poly[16];
-        int pn = portal_outline_screen(cpu, &s_view, p, poly, 16); /* >=3 iff every outline pt is in front */
-        if (pn < 3) continue;
+        ppt poly[PORTAL_POLY_MAX];
+        int clipped = 0;
+        int pn = portal_outline_clipped(cpu, &s_view, p, 1, poly, PORTAL_POLY_MAX, &clipped);
+        if (pn < 3) continue;                            /* wholly behind the camera */
         float oxlo = poly[0].x, oxhi = poly[0].x, oylo = poly[0].y, oyhi = poly[0].y;
         for (int k = 1; k < pn; k++) {
             if (poly[k].x < oxlo) oxlo = poly[k].x;
@@ -2960,11 +3208,13 @@ static void feed_revealed_portals(CPUState* cpu) {
          * sub-tick replay runs on this capture, so both paths emit one
          * primitive set. */
         uint32_t save_clip[4] = {0};
+        int rev_rc[4];
+        portal_outline_rect(&s_view, poly, pn, clipped, 1, rev_rc);
         const uint32_t rev_clip[4] = {
-            (uint32_t)(int32_t)floorf(oylo) << 16,
-            (uint32_t)(int32_t)ceilf (oyhi) << 16,
-            (uint32_t)(int32_t)floorf(oxlo) << 16,
-            (uint32_t)(int32_t)ceilf (oxhi) << 16,
+            (uint32_t)rev_rc[0] << 16,
+            (uint32_t)rev_rc[1] << 16,
+            (uint32_t)rev_rc[2] << 16,
+            (uint32_t)rev_rc[3] << 16,
         };
         uint8_t* rev_clip_st =
             (uint8_t*)openpete_subtick_view_stage(D_CLIPRECT, sizeof rev_clip);
@@ -3009,8 +3259,7 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->fog_rgb       = rev_fog;
             c->fog_t         = rev_fog_t;
             c->far_fog       = rev_nolod;
-            c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
-            c->clip[2] = (int)floorf(oxlo); c->clip[3] = (int)ceilf(oxhi);
+            memcpy(c->clip, rev_rc, sizeof c->clip);
         }
     }
     static int s_logged = 0;
@@ -3079,7 +3328,10 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
      * emission, real native content), so "RenderPortals ran + fed" is the
      * signal, not "emitted prims". Latched into the canon-drawn mask once per
      * canonical present by the shared render_paths commit. */
-    if (feed) { s_pcap_valid = 1; s_pcap_frame = openpete_frame;
+    if (feed) { s_clip_presents++;
+                memcpy(s_clip_last, s_clip_cur, sizeof s_clip_last);
+                memset(s_clip_cur, 0, sizeof s_clip_cur);
+                s_pcap_valid = 1; s_pcap_frame = openpete_frame;
                 s_pcap_epoch = spyro_native_canon_epoch_stamp();
                 render_path_mark_drawn(RP_PORTAL); }
     s_rp_frame = openpete_frame;
@@ -3154,18 +3406,11 @@ static void portal_replay_rect(CPUState* cpu, const portal_cap_t* c, int rc[4]) 
         return;
     }
     if (c->rect_rule != PORTAL_RECT_OUTLINE) return;
-    ppt rp[16];
-    const int rn = portal_outline_screen(cpu, &s_view, c->portal, rp, 16);
+    ppt rp[PORTAL_POLY_MAX];
+    int clipped = 0;
+    const int rn = portal_outline_clipped(cpu, &s_view, c->portal, 1, rp, PORTAL_POLY_MAX, &clipped);
     if (rn < 3) return;
-    float lx0 = rp[0].x, lx1 = rp[0].x, ly0 = rp[0].y, ly1 = rp[0].y;
-    for (int k = 1; k < rn; k++) {
-        if (rp[k].x < lx0) lx0 = rp[k].x;
-        if (rp[k].x > lx1) lx1 = rp[k].x;
-        if (rp[k].y < ly0) ly0 = rp[k].y;
-        if (rp[k].y > ly1) ly1 = rp[k].y;
-    }
-    rc[0] = (int)floorf(ly0); rc[1] = (int)ceilf(ly1);
-    rc[2] = (int)floorf(lx0); rc[3] = (int)ceilf(lx1);
+    portal_outline_rect(&s_view, rp, rn, clipped, 1, rc);
 }
 
 /** @brief The fog a capture's replay applies under the present's view (s_view).
@@ -3265,6 +3510,7 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
         for (int i = 0; i < 4; i++) save_clip[i] = cpu->read_word(D_CLIPRECT + i * 4);
     for (int i = 0; i < 5; i++) save_gte[i]  = cpu->gte_ctrl[i];
 
+    s_clip_replay = 1;
     for (int n = 0; n < s_pcap_n; n++) {
         const portal_cap_t* c = &s_pcap[n];
         /* Base clip rect for the replay: rebuilt under THIS present's camera
@@ -3278,7 +3524,7 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
          * captured camera reproduces the game's rect exactly; a revealed
          * portal takes the float outline bbox its canonical feed used. The
          * captured rect is the fallback when no rule applies or the outline
-         * has a point behind the camera. */
+         * lies wholly behind the camera. */
         int rc[4] = { c->clip[0], c->clip[1], c->clip[2], c->clip[3] };
         { static int rd=-1; if(rd<0){const char*e=getenv("OPENPETE_REPLAY_DBG");rd=(e&&*e&&*e!='0');}
           if (rd) fprintf(stderr, "[replay f=%u] cap portal=%08X flat_a0=%08X skybox=%08X is_dome=%d capturedrect=(%d,%d)-(%d,%d) far_fog=%d cap_t=%.4f\n",
@@ -3343,6 +3589,7 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
                              fog_rgb, fog_t);
     }
 
+    s_clip_replay = 0;
     if (!clip_st)
         for (int i = 0; i < 4; i++) cpu->write_word(D_CLIPRECT + i * 4, save_clip[i]);
     for (int i = 0; i < 5; i++) cpu->gte_ctrl[i] = save_gte[i];
