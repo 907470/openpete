@@ -51,9 +51,15 @@
 #   --out DIR        write <DIR>/<id>/.build/<game>/<id>.dll instead of
 #                    building in place under the mods root. Sources are not
 #                    copied.
-#   --sdk DIR        staged SDK root. Default: the windows-mingw-launcher
-#                    build's sdk/, else the windows-mingw build's (beside the
-#                    one executable), else a static tree's games/<game>/sdk/.
+#   --sdk DIR        staged SDK root. Default: the first current staged SDK
+#                    of build/windows-mingw-launcher/sdk,
+#                    build/windows-mingw/sdk and
+#                    build/windows-mingw/games/<game>/sdk, searched in this
+#                    checkout and then, from a linked worktree, in the main
+#                    checkout. A staged SDK is current when its
+#                    openpete_mod_api.h is byte-identical to this checkout's
+#                    core/include/openpete_mod_api.h; with none current the
+#                    script refuses, naming each candidate's API version.
 #   --game ID        the game to build for: its per-game SDK directory
 #                    <sdk>/games/ID/ and object directory .build/ID/.
 #                    Default spyro-1.
@@ -99,14 +105,50 @@ die() { echo "crossbuild-mods: $1" >&2; exit "${2:-1}"; }
 MODS_DIR=$(cd -- "$MODS_DIR" && pwd)
 
 # --- SDK ------------------------------------------------------------------
+# A staged SDK is a copy of core/include/openpete_mod_api.h taken when its
+# preset last built; a preset built before an API entry was added stages a
+# header without it, and a mod calling the entry fails to compile. The
+# default is therefore the first candidate whose header matches the source
+# header byte for byte, not the first that exists.
+API_SRC="$REPO/core/include/openpete_mod_api.h"
+api_version() {  # api_version <header> -> OPENPETE_MOD_API_VERSION, or "?"
+    sed -n 's/^#define OPENPETE_MOD_API_VERSION \([0-9][0-9]*\)u\{0,1\}.*/\1/p' \
+        "$1" 2>/dev/null | head -n1 | grep . || echo "?"
+}
 if [[ -z "$SDK_DIR" ]]; then
-    for c in "$REPO/build/windows-mingw-launcher/sdk" \
-             "$REPO/build/windows-mingw/sdk" \
-             "$REPO/build/windows-mingw/games/$GAME/sdk"; do
-        [[ -f "$c/openpete_mod_abi.c" ]] && { SDK_DIR="$c"; break; }
+    [[ -f "$API_SRC" ]] || die "missing $API_SRC" 64
+    roots=("$REPO")
+    # From a linked worktree the build trees usually live in the main
+    # checkout, the parent of the shared git directory.
+    common=$(git -C "$REPO" rev-parse --path-format=absolute \
+                 --git-common-dir 2>/dev/null || true)
+    if [[ -n "$common" && "$(dirname -- "$common")" != "$REPO" ]]; then
+        roots+=("$(dirname -- "$common")")
+    fi
+    stale=()
+    for root in "${roots[@]}"; do
+        for c in "$root/build/windows-mingw-launcher/sdk" \
+                 "$root/build/windows-mingw/sdk" \
+                 "$root/build/windows-mingw/games/$GAME/sdk"; do
+            [[ -f "$c/openpete_mod_abi.c" ]] || continue
+            if cmp -s -- "$c/openpete_mod_api.h" "$API_SRC"; then
+                SDK_DIR="$c"; break 2
+            fi
+            stale+=("$c (api $(api_version "$c/openpete_mod_api.h"), staged $(date -r "$c/openpete_mod_api.h" '+%F %T' 2>/dev/null || echo '?'))")
+        done
     done
+    for c in "${stale[@]}"; do
+        echo "crossbuild-mods: skip     $c: openpete_mod_api.h differs from core/include" >&2
+    done
+    if [[ -z "$SDK_DIR" ]]; then
+        [[ ${#stale[@]} -gt 0 ]] \
+            || die "no staged Windows SDK found under build/windows-mingw*/sdk or build/windows-mingw/games/$GAME/sdk; build a windows-mingw preset or pass --sdk DIR" 64
+        die "no staged Windows SDK is current against $API_SRC (api $(api_version "$API_SRC")); rebuild a windows-mingw preset or pass --sdk DIR" 64
+    fi
+    SDK_WHY="openpete_mod_api.h identical to core/include (api $(api_version "$API_SRC"))"
+else
+    SDK_WHY="--sdk"
 fi
-[[ -n "$SDK_DIR" ]] || die "no staged Windows SDK found under build/windows-mingw*/sdk or build/windows-mingw/games/$GAME/sdk; build a windows-mingw preset or pass --sdk DIR" 64
 [[ -f "$SDK_DIR/openpete_mod_abi.c" ]] \
     || die "$SDK_DIR has no openpete_mod_abi.c - not a staged SDK" 64
 [[ -f "$SDK_DIR/games/$GAME/openpete_game.h" ]] \
@@ -131,7 +173,7 @@ fi
 [[ -n "$CC" ]] || die "no cross compiler: no Linux-hosted llvm-mingw tree under $SPYRO/toolchains and no x86_64-w64-mingw32-gcc on PATH (pass --toolchain DIR)" 64
 
 echo "crossbuild-mods: cc       $CC"
-echo "crossbuild-mods: sdk      $SDK_DIR (games/$GAME)"
+echo "crossbuild-mods: sdk      $SDK_DIR (games/$GAME): $SDK_WHY"
 echo "crossbuild-mods: mods-dir $MODS_DIR"
 [[ -n "$OUT_DIR" ]] && echo "crossbuild-mods: out      $OUT_DIR"
 

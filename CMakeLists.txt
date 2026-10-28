@@ -1953,6 +1953,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The Spyro 2 save movie on a full card (15 foreign one-block saves,
+    # tests/harness/make_full_card.py) along 520 records under the clock row
+    # (games/spyro-2/oracle-card-full-save-clock.conf, its own capture): every
+    # record, the card image each side left, the foreign saves kept, no save
+    # created, and the same block-0 sectors written on each side.
+    add_test(NAME card_full_save_reference_clock
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=full-save-ref-clock)
+    set_tests_properties(card_full_save_reference_clock PROPERTIES
+        LABELS "slow;card;oracle"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 2400
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # The Spyro 3 save along games/spyro-3/bk2/s3-create-save.bk2 against the
     # fork's capture of the same movie (games/spyro-3/oracle-card-save.conf):
     # every record, the card image each side left, and the 59 sectors of the
