@@ -143,6 +143,14 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
  * data; at SubState 4/5 the player already pressed Start or the timeout
  * already fired.
  *
+ * The menus Press Start opens (TSM_Menu, the card screens, and TSM_Loading,
+ * the save-file picker) have no way back to SubState 3, so there the skip
+ * makes the picker's own commit instead (overlays/titlescreen.c:1027-1044):
+ * m_Mode TSM_Loading with m_State 5 fades out, calls MemCardStop and enters
+ * TSM_Demo at TSS_Setup with the m_DemoType it was given. It does so from a
+ * state waiting on the pad (m_SubTick >= 8), outside the TSM_Menu sub-states
+ * that read, format or write a card (0, 1, 7, 11).
+ *
  * Addresses (spyro-1/manifest/globals.toml):
  *   g_Gamestate         = 0x800757D8  (GS_TitleScreen = 13,
  *                                      GS_Playing = 0)
@@ -160,8 +168,35 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
 #define S1_DEMO_INDEX  0x800757B8u
 #define S1_TSM         0x80078D78u
 
+#define S1_TSM_INIT    0u
+#define S1_TSM_MENU    1u
+#define S1_TSM_LOADING 2u
+#define S1_TSM_DEMO    3u
+#define S1_TSD_DEMOLEVEL 2u
+/* TSM_Menu sub-states with a card read, format or write in flight. */
+#define S1_MENU_CARD_SUBSTATES ((1u << 0) | (1u << 1) | (1u << 7) | (1u << 11))
+
 /* The g_DemoLevelIds entry the induction overwrote, put back on the pick. */
 static uint32_t s_demo_slot, s_demo_slot_level;
+
+/** @brief Reports whether a Press Start menu waits on the pad outside a card access, so its commit can be made.
+ *
+ * TSM_Menu (m_SubState at +0x10, other than the card sub-states) and
+ * TSM_Loading's pickers (m_State 1-4 at +0x04), each with m_SubTick
+ * (+0x0C) at 8 or more, the threshold their pad tests use.
+ * @param cpu The guest CPU state.
+ * @param mode m_Mode.
+ * @return 1 in such a state, else 0. */
+static int s1_menu_waits(CPUState* cpu, uint32_t mode) {
+    if (cpu->read_word(S1_TSM + 0x0Cu) < 8u) return 0;
+    if (mode == S1_TSM_MENU) {
+        const uint32_t sub = cpu->read_word(S1_TSM + 0x10u);
+        return sub < 32u && !((S1_MENU_CARD_SUBSTATES >> sub) & 1u);
+    }
+    if (mode != S1_TSM_LOADING) return 0;
+    const uint32_t st = cpu->read_word(S1_TSM + 0x04u);
+    return st >= 1u && st <= 4u;
+}
 
 /** @brief Induces the title's demo-timeout transition toward the target at the Press-Start wait.
  *
@@ -172,12 +207,17 @@ static uint32_t s_demo_slot, s_demo_slot_level;
  * @param cpu The guest CPU state.
  * @param target The level id.
  * @param log_vbl The VBL the log lines print.
- * @return 1 when induced, 0 while not at TSM_Init sub-state 3 on the title
- *         screen, -1 when refused. */
+ * From a Press Start menu waiting on the pad (s1_menu_waits) it makes the
+ * picker's commit instead: m_Mode TSM_Loading, m_State 5, m_DemoType
+ * TSD_DemoLevel and m_SubTick 0.
+ * @return 1 when induced, 0 while neither at TSM_Init sub-state 3 nor in a
+ *         waiting menu on the title screen, -1 when refused. */
 static int s1_skip_induce(CPUState* cpu, int target, uint32_t log_vbl) {
-    if (cpu->read_word(S1_GAMESTATE) != 13u ||
-        cpu->read_word(S1_TSM + 0x00u) != 0u /* TSM_Init */ ||
-        cpu->read_word(S1_TSM + 0x10u) != 3u)
+    if (cpu->read_word(S1_GAMESTATE) != 13u) return 0;
+    const uint32_t mode = cpu->read_word(S1_TSM + 0x00u);
+    const int from_menu = s1_menu_waits(cpu, mode);
+    if (!from_menu &&
+        (mode != S1_TSM_INIT || cpu->read_word(S1_TSM + 0x10u) != 3u))
         return 0;
     int ti = (target / 10 - 1) * 6 + target % 10;
     if (ti < 0 || ti > 35 ||
@@ -192,12 +232,18 @@ static int s1_skip_induce(CPUState* cpu, int target, uint32_t log_vbl) {
     s_demo_slot       = demo_idx;
     s_demo_slot_level = cpu->read_word(S1_DEMO_LEVELS + demo_idx * 4u);
     cpu->write_word(S1_DEMO_LEVELS + demo_idx * 4u, (uint32_t)target);
-    cpu->write_word(S1_TSM + 0x00u, 3u); /* m_Mode = TSM_Demo */
-    cpu->write_word(S1_TSM + 0x04u, 0u); /* m_State = TSS_Setup */
-    cpu->write_word(S1_TSM + 0x1Cu, 2u); /* m_DemoType = TSD_DemoLevel */
+    if (from_menu) {
+        cpu->write_word(S1_TSM + 0x00u, S1_TSM_LOADING);
+        cpu->write_word(S1_TSM + 0x04u, 5u); /* m_State: fade to TSM_Demo */
+        cpu->write_word(S1_TSM + 0x0Cu, 0u); /* m_SubTick */
+    } else {
+        cpu->write_word(S1_TSM + 0x00u, S1_TSM_DEMO);
+        cpu->write_word(S1_TSM + 0x04u, 0u); /* m_State = TSS_Setup */
+    }
+    cpu->write_word(S1_TSM + 0x1Cu, S1_TSD_DEMOLEVEL);
     fprintf(stderr,
-            "[skip-to-level] induced demo-transition: "
-            "level=%d (slot=%u) at vbl=%u\n",
+            "[skip-to-level] induced %s: level=%d (slot=%u) at vbl=%u\n",
+            from_menu ? "menu commit" : "demo-transition",
             target, (unsigned)demo_idx, (unsigned)log_vbl);
     return 1;
 }
@@ -227,16 +273,18 @@ static int s1_skip_hold(CPUState* cpu) {
     return 1;
 }
 
-/** @brief Tests whether TSS_Setup has taken the target: m_State past TSS_Setup.
+/** @brief Tests whether TSS_Setup has taken the target: m_Mode TSM_Demo with m_State past TSS_Setup.
  *
  * TSS_Setup reads g_DemoLevelIds[g_DemoIndex] (gamestates/update.c:640) and
- * sets m_State to TSS_Loading in the same call.
+ * sets m_State to TSS_Loading in the same call. The mode test keeps a menu
+ * commit's fade (TSM_Loading, m_State 5) from reading as the pick.
  * @param cpu The guest CPU state.
  * @param target Unused.
- * @return 1 once m_State is not TSS_Setup, else 0. */
+ * @return 1 once m_Mode is TSM_Demo and m_State is not TSS_Setup, else 0. */
 static int s1_skip_picked(CPUState* cpu, int target) {
     (void)target;
-    return cpu->read_word(S1_TSM + 0x04u) != 0u;
+    return cpu->read_word(S1_TSM + 0x00u) == S1_TSM_DEMO &&
+           cpu->read_word(S1_TSM + 0x04u) != 0u;
 }
 
 /** @brief Puts back the g_DemoLevelIds entry the induction overwrote.

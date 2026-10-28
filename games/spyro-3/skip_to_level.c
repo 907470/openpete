@@ -56,10 +56,18 @@
 #define S3_IS_DEMO_MODE     0x8006C658u
 #define S3_GAME_STATE       0x8006E344u
 #define S3_LOAD_STAGE       0x8006C518u
+#define S3_DEMO_ENDED       0x8006C7E4u   /* func_80050F18's demo-end flag */
 
 #define S3_GS_CUTSCENE       6u
 #define S3_SUBSTATE_IDLE     1u
 #define S3_SUBSTATE_TIMEOUT  21u
+#define S3_SUBSTATE_MENU_LO  2u
+#define S3_SUBSTATE_MENU_HI  20u
+/* Menu sub-states whose handlers drive the memory card (they call
+ * func_title_8007CD68, func_title_800793C8 or func_title_8007928C): 6, 10,
+ * 11, 16, 18. */
+#define S3_CARD_SUBSTATES    ((1u << 6) | (1u << 10) | (1u << 11) | \
+                              (1u << 16) | (1u << 18))
 #define S3_GS_GAMEPLAY       0u
 #define S3_GS_LOADING_IMG    5u
 #define S3_GS_TITLE          11u
@@ -125,11 +133,25 @@ int spyro3_skip_gameplay_live(CPUState* cpu) {
 static uint32_t s_demo_slot;
 static uint8_t  s_demo_slot_level, s_demo_slot_area;
 
+/** @brief Reports whether the title's sub-state is an induction window.
+ *
+ * The press-start idle sub-state 1 at phase 1 (its first frames still fade
+ * the menu in at phase 0, and the timeout fires from phase 1), or a menu
+ * sub-state Press Start opens, 2 through 20, other than the five that drive
+ * the memory card.
+ * @param cpu The guest CPU state.
+ * @return 1 in a window, else 0. */
+static int induce_window(CPUState* cpu) {
+    const uint32_t sub = cpu->read_byte(S3_TITLE_SUBSTATE);
+    if (sub == S3_SUBSTATE_IDLE) return cpu->read_byte(S3_TITLE_PHASE) == 1u;
+    return sub >= S3_SUBSTATE_MENU_LO && sub <= S3_SUBSTATE_MENU_HI &&
+           !((S3_CARD_SUBSTATES >> sub) & 1u);
+}
+
 /** @brief Induces the title's idle timeout toward the target, without its isDemoMode = 1 store.
  *
- * Waits for the title (game.state 11) in the press-start idle sub-state at
- * phase 1: the idle sub-state's first frames still fade the menu in (phase
- * 0), and the timeout fires from phase 1. Writes the target into the demo
+ * Waits for the title (game.state 11) in an induction window
+ * (induce_window). Writes the target into the demo
  * level list at g_DemoIndex with sub-area 0, then the timeout's own store
  * plus the update tail's change handling: sub-state 21 into g_TitleSubState
  * and g_TitlePrevState, and the five phase bytes zeroed.
@@ -138,9 +160,7 @@ static uint8_t  s_demo_slot_level, s_demo_slot_area;
  * @param log_vbl The VBL the log line prints.
  * @return 1 when induced, 0 while the window is not open. */
 static int skip_induce(CPUState* cpu, int target, uint32_t log_vbl) {
-    if (cpu->read_word(S3_GAME_STATE) != S3_GS_TITLE ||
-        cpu->read_byte(S3_TITLE_SUBSTATE) != S3_SUBSTATE_IDLE ||
-        cpu->read_byte(S3_TITLE_PHASE) != 1u)
+    if (cpu->read_word(S3_GAME_STATE) != S3_GS_TITLE || !induce_window(cpu))
         return 0;
     uint32_t idx = cpu->read_word(S3_DEMO_INDEX);
     s_demo_slot       = idx;
@@ -218,6 +238,8 @@ const level_skip_game_t spyro3_level_skip = {
     .rearm_word      = S3_GAME_STATE,
     .rearm_value     = S3_GS_CUTSCENE,
 };
+
+void spyro3_skip_end_demo(CPUState* cpu) { cpu->write_word(S3_DEMO_ENDED, 1u); }
 
 void spyro3_skip_set(int number) { level_skip_set(&spyro3_level_skip, number); }
 

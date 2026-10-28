@@ -6,7 +6,9 @@
 // playable so the controller drives Spyro instead of the recorded demo input.
 //
 // The title overlay's state machine (titlescreen_and_loading, SCUS-94425):
+//   g_TitleMode      0x80067E04  0 = title, 1 and 2 = the Press Start menus
 //   g_TitleSubState  0x80067E0C  2 = press-start idle, 6 = demo-timeout fade
+//                                (mode 0); the menus reuse the word
 //   g_TitleTimer     0x80067E00  +1 per VBL, zeroed on each sub-state change
 //   g_DemoLevelList  0x800647A4  bytes, 0xFF-terminated: 22 13 41 62 31 52
 //   g_DemoIndex      0x80066D40  post-incremented by the picker, wraps at 0xFF
@@ -32,6 +34,7 @@
 
 #include <stdio.h>
 
+#define S2_TITLE_MODE      0x80067E04u
 #define S2_TITLE_SUBSTATE  0x80067E0Cu
 #define S2_TITLE_TIMER     0x80067E00u
 #define S2_DEMO_LEVEL_LIST 0x800647A4u
@@ -101,14 +104,17 @@ static uint8_t  s_demo_slot_level;
 
 /** @brief Induces the title's demo-timeout transition toward the target at the press-start idle sub-state.
  *
- * Writes the target into the demo level list at g_DemoIndex, sub-state 6 and
- * the title timer 0.
+ * Waits for mode 0 (0x80067E04; 1 and 2 are the menus Press Start opens,
+ * whose sub-states reuse the same word) and sub-state 2. Writes the target
+ * into the demo level list at g_DemoIndex, sub-state 6 and the title
+ * timer 0.
  * @param cpu The guest CPU state.
  * @param target The level number.
  * @param log_vbl The VBL the log line prints.
- * @return 1 when induced, 0 while the sub-state is not idle. */
+ * @return 1 when induced, 0 while the title is not at the press-start idle. */
 static int skip_induce(CPUState* cpu, int target, uint32_t log_vbl) {
-    if (cpu->read_word(S2_TITLE_SUBSTATE) != S2_SUBSTATE_IDLE) return 0;
+    if (cpu->read_word(S2_TITLE_MODE) != 0u ||
+        cpu->read_word(S2_TITLE_SUBSTATE) != S2_SUBSTATE_IDLE) return 0;
     uint32_t idx = cpu->read_word(S2_DEMO_INDEX);
     s_demo_slot       = idx;
     s_demo_slot_level = cpu->read_byte(S2_DEMO_LEVEL_LIST + idx);

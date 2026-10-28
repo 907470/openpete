@@ -14,7 +14,8 @@
  * transition toward a target and, where the transition is retargeted on the
  * way, the leaving phase. The title-screen route hands the target to the
  * --skip-to-level machinery (game_set_skip_to_level, or the game's
- * title_start), so this module owns it. */
+ * title_start), so this module owns it; the attract-demo route makes the
+ * game's demo-end stores (demo_end) and then hands off the same way. */
 
 #include "features/level_table.h"
 #include "openpete_knobs.h" /* knob_desc_t */
@@ -28,7 +29,8 @@ struct openpete_surface_sink;
 enum {
     LEVELWARP_ROUTE_NONE = 0,  /* no warp is possible from this guest state */
     LEVELWARP_ROUTE_LEVEL,     /* in a level: the game's own transition */
-    LEVELWARP_ROUTE_TITLE      /* at the title: the --skip-to-level machinery */
+    LEVELWARP_ROUTE_TITLE,     /* at the title or its menu: the --skip-to-level machinery */
+    LEVELWARP_ROUTE_DEMO       /* in the attract demo: its own end, then the title route */
 };
 
 /* Warp phases. The values are a savestate format (Spyro 1 saves the phase):
@@ -65,6 +67,11 @@ typedef struct levelwarp_game {
     /* Optional: a reason the selected target cannot be warped to from the
      * current state, shown as the button's status; NULL when it can. */
     const char* (*target_refused)(CPUState* cpu, int target);
+    /* Optional attract-demo route: makes the stores the game's own demo end
+     * makes, so the demo returns to the title, where the title route takes
+     * the target. The route opens while live() holds and demo_word reads
+     * nonzero; NULL leaves no route from the demo. */
+    void (*demo_end)(CPUState* cpu);
     /* Status text with no route; NULL reads "not in a level". */
     const char* none_status;
 
@@ -123,8 +130,9 @@ void levelwarp_surface(struct openpete_surface_sink* sink,
  * current. A speculative tick does nothing. A due scripted request queues
  * first, so it lands where a click lands. The dropdown follows the current
  * target until the user picks one. A queued request drains once no warp is
- * in flight: the title route through game_set_skip_to_level, the in-level
- * route through the game's start hook. An in-flight warp then advances:
+ * in flight: the title route through game_set_skip_to_level, the demo route
+ * through demo_end and then the title route, the in-level route through the
+ * game's start hook. An in-flight warp then advances:
  * LEVELWARP_LEAVING through the leaving hook, LEVELWARP_LOADING to arrival,
  * which logs whether the target was reached, naming openpete_vbl. The call
  * count restarts on entering LEVELWARP_LOADING; a phase that runs past 20000

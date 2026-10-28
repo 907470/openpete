@@ -253,6 +253,7 @@ static const levelwarp_game_t k_area_game = {
     .live             = spyro3_skip_gameplay_live,
     .current          = area_current,
     .title_start      = area_title_start,
+    .demo_end         = spyro3_skip_end_demo,
     .target_refused   = area_refused,
     .start            = area_start,
     .on_arrival       = area_arrival,

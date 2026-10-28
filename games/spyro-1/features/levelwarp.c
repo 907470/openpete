@@ -36,8 +36,13 @@
 //
 // 2. AT THE TITLE SCREEN - hand off to the existing --skip-to-level
 //    machinery (game_set_skip_to_level), which induces the demo-timeout
-//    transition at the next Press-Start window. That path resets progress
-//    and lives, exactly as a fresh --skip-to-level boot does.
+//    transition at the next Press-Start window, or from the menus Press
+//    Start opens makes the save-file picker's own commit. That path resets
+//    progress and lives, exactly as a fresh --skip-to-level boot does.
+//
+// 3. IN THE ATTRACT DEMO - start the demo's own end (g_DemoFadeTimer 1, the
+//    store a pad press makes); the demo fades back to the title screen,
+//    where route 2 takes the target.
 //
 // The overlay runs OUTSIDE the sim, so a click only queues a request; every
 // guest write happens in the per-tick hook below. Intentional, opt-in
@@ -75,6 +80,7 @@
 #define ADDR_G_HASLEVELTRANSITION 0x800756D0u
 #define ADDR_D_8007568C          0x8007568Cu /* exit-sequence tick counter */
 #define ADDR_D_800758B8          0x800758B8u /* exit-sequence step counter */
+#define ADDR_G_DEMOFADETIMER     0x80075884u /* nonzero once the demo is ending */
 
 #define ADDR_G_SPYRO             0x80078A58u
 #define SPYRO_M_STATE            0x078u
@@ -269,6 +275,16 @@ static int warp_leaving(levelwarp_t* w, CPUState* cpu) {
     return LEVELWARP_LEAVING;
 }
 
+/** @brief Ends the attract demo the way a pad press ends it: g_DemoFadeTimer 1.
+ *
+ * func_800334D4 (gamestates/update.c) sets g_DemoFadeTimer to 1 when the
+ * recording runs out or a button is pressed, then fades for 16 ticks and
+ * loads the title screen back in.
+ * @param cpu The guest CPU state. */
+static void warp_end_demo(CPUState* cpu) {
+    cpu->write_word(ADDR_G_DEMOFADETIMER, 1u);
+}
+
 /* The title route opens at GS_TitleScreen. The loading phase ends when the
  * game hands back to gameplay, however long the CD load and fly-in take. */
 static const levelwarp_game_t k_warp_game = {
@@ -281,6 +297,7 @@ static const levelwarp_game_t k_warp_game = {
     .title_value            = GS_TITLESCREEN,
     .demo_word              = ADDR_G_DEMOMODE,
     .live                   = warp_live,
+    .demo_end               = warp_end_demo,
     .current_word           = ADDR_G_LEVELID,
     .start                  = warp_arm,
     .leaving                = warp_leaving,

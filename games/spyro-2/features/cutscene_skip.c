@@ -86,7 +86,7 @@
 #include "named_target.h"
 #include "openpete_fiber.h" /* openpete_speculative, openpete_frame */
 #include "openpete_log.h"
-#include "openpete_psxtrace.h" /* openpete_psxtrace_gate_host_enter: a host-initiated guest call */
+#include "features/guest_call.h"  /* game_guest_call: a host-initiated guest call */
 #include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
 
 #include <stdint.h>
@@ -132,7 +132,6 @@
 #define LOADER_RESIDENT 0xFFFFFFFFu
 #define THEATER_LEVEL   65u
 
-void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
 
 typedef enum { ROUTE_THEATER, ROUTE_INTRO, ROUTE_OUTRO, ROUTE_EXIT } route_t;
 
@@ -301,22 +300,6 @@ static void refuse(const char* name, const char* why) {
     s_watching = 0;
 }
 
-/** @brief Calls a guest function with one argument from the draw function's entry hook.
- *
- * The draw function takes no arguments and this is its call boundary, so
- * only ra is preserved across the nested call.
- * @param cpu The guest CPU state.
- * @param addr The guest function's address.
- * @param a0 The argument. */
-static void guest_call(CPUState* cpu, uint32_t addr, uint32_t a0) {
-    uint32_t ra = cpu->ra;
-    cpu->a0 = a0;
-    openpete_psxtrace_gate_host_enter();
-    call_by_address(cpu, addr);
-    openpete_psxtrace_gate_host_leave();
-    cpu->ra = ra;
-}
-
 /** @brief Makes the Dragon Shores theater's func_80019230(k) call and its four stores for a story row.
  *
  * Stores g_NextLevelNum = the row's pseudo-level, loader word 0, byte
@@ -329,7 +312,7 @@ static void theater_hook(CPUState* cpu, const cutscene_t* r) {
         refuse(r->name, "remap byte 0x8006B08D or 0x8006B099 set");
         return;
     }
-    guest_call(cpu, ADDR_CUTSCENE_START, (uint32_t)r->id);
+    game_guest_call(cpu, ADDR_CUTSCENE_START, 1, (uint32_t)r->id, 0u, 0u);
     cpu->write_word(ADDR_NEXT_LEVEL_NUM, r->level);
     cpu->write_word(ADDR_LOADER_STATE, 0u);
     cpu->write_byte(ADDR_RETURN_TO_65, 1u);
@@ -375,7 +358,7 @@ static void intro_hook(CPUState* cpu, const cutscene_t* r) {
         refuse(r->name, "no portal record leads to the level");
         return;
     }
-    guest_call(cpu, ADDR_LEAVE_LEVEL, (uint32_t)rec);
+    game_guest_call(cpu, ADDR_LEAVE_LEVEL, 1, (uint32_t)rec, 0u, 0u);
     OPL_INFO_F("skip-to-cutscene", "%s: func_80019928(%d) from level %u at "
                "frame=%u (D_800681C8 %u, D_8006715C %u)", r->name, rec,
                (unsigned)r->source, openpete_frame,
@@ -401,7 +384,7 @@ static void complete_and_leave(CPUState* cpu, const cutscene_t* r) {
             cpu->write_word(ADDR_COMPLETE_COUNT,
                             cpu->read_word(ADDR_COMPLETE_COUNT) + 1u);
     }
-    guest_call(cpu, ADDR_LEAVE_LEVEL, 0u);
+    game_guest_call(cpu, ADDR_LEAVE_LEVEL, 1, 0u, 0u, 0u);
     OPL_INFO_F("skip-to-cutscene", "%s: completion stores, func_80019928(0) "
                "at frame=%u (D_800681C8 %u, D_8006715C %u, 0x80067108 %u, "
                "idx>=22 mask test %u)", r->name, openpete_frame,

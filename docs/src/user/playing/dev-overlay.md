@@ -192,11 +192,20 @@ are in until you pick one; the **Warp** button <!-- id: knob:warp_go -->
 starts the warp.
 
 In a level, the warp runs the game's own exit-level sequence and then loads
-the chosen level; progress is kept. From the title screen it starts a new
-session in the chosen level, with progress and lives reset as with
-`--skip-to-level`; the button's tooltip reads **from title (resets
-progress)**. Warping while the free camera is on turns the free camera off
-first. The button is disabled when no route exists (**not in a level**).
+the chosen level; progress is kept. From the title screen, or from the
+menus that open after Press Start, it starts a new session in the chosen
+level, with progress and lives reset as with `--skip-to-level`; the
+button's tooltip reads **from title or menu (resets progress)**. From a
+menu the warp leaves it the way the game does: Spyro the Dragon fades out
+as when a save file is picked, Spyro 2: Ripto's Rage! backs out as
+++triangle++ does, and Spyro: Year of the Dragon starts the level from the
+menu screen. A menu screen that is reading or writing the memory card
+holds the warp until the screen waits for input again. During the attract
+demo the warp ends the demo, as a button press does, and then starts the
+new session from the title screen; the tooltip reads **ends the demo
+(resets progress)**. Warping while the free camera is on turns the free
+camera off first. The button is disabled when no route exists (**not in a
+level**).
 
 ### Area warp
 

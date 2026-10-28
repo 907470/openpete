@@ -98,9 +98,8 @@ static int go_fire(knob_desc_t* k, double v) {
 /** @brief Write the status text shown beside the Warp button.
  *
  * Reads queued while a click waits; "loading..." while a warp is in
- * flight; else a
- * note for the title route, the refusal reason or an empty string for the
- * level route, or the game's no-route text.
+ * flight; else a note for the title and demo routes, the refusal reason or
+ * an empty string for the level route, or the game's no-route text.
  * @param k The row.
  * @param buf Receives the text.
  * @param cap Size of @p buf in bytes. */
@@ -110,7 +109,8 @@ static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
     const char* s;
     if (w->pending)                             s = "queued";
     else if (w->phase != LEVELWARP_IDLE)        s = "loading...";
-    else if (w->route == LEVELWARP_ROUTE_TITLE) s = "from title (resets progress)";
+    else if (w->route == LEVELWARP_ROUTE_TITLE) s = "from title or menu (resets progress)";
+    else if (w->route == LEVELWARP_ROUTE_DEMO)  s = "ends the demo (resets progress)";
     else if (w->route == LEVELWARP_ROUTE_LEVEL) s = w->refused ? w->refused : "";
     else s = g->none_status ? g->none_status : "not in a level";
     snprintf(buf, cap, "%s", s);
@@ -127,10 +127,10 @@ const knob_desc_t levelwarp_level_rows[2] = {
       .default_note = "the level the player is in" },
     { .id = "warp_go", .label = "Warp to level", .section = "Gameplay",
       .help = "Load the selected level through the game's own level "
-              "transition. From the title screen, and on the games whose "
-              "transition goes by way of it, that is a fresh session in the "
-              "chosen level and progress and lives reset, as with "
-              "--skip-to-level.",
+              "transition. From the title screen, its menu or the attract "
+              "demo, and on the games whose transition goes by way of the "
+              "title, that is a fresh session in the chosen level and "
+              "progress and lives reset, as with --skip-to-level.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Warp" },
 };
 
@@ -248,7 +248,8 @@ static uint32_t current_of(const levelwarp_game_t* g, CPUState* cpu) {
 /** @brief Pick the route the live guest state allows.
  *
  * The title route when title_word reads title_value; the in-level route when
- * live() holds and demo_word reads 0; else none. The free camera does not
+ * live() holds and demo_word reads 0; the demo route when live() holds,
+ * demo_word reads nonzero and the game supplies demo_end; else none. The free camera does not
  * block the in-level route: drain disengages it before the warp starts.
  * @param g The game.
  * @param cpu The guest CPU state.
@@ -256,9 +257,22 @@ static uint32_t current_of(const levelwarp_game_t* g, CPUState* cpu) {
 static int route_of(const levelwarp_game_t* g, CPUState* cpu) {
     if (g->title_word && cpu->read_word(g->title_word) == g->title_value)
         return LEVELWARP_ROUTE_TITLE;
-    if (g->live(cpu) && (!g->demo_word || cpu->read_word(g->demo_word) == 0u))
+    if (!g->live(cpu)) return LEVELWARP_ROUTE_NONE;
+    if (!g->demo_word || cpu->read_word(g->demo_word) == 0u)
         return LEVELWARP_ROUTE_LEVEL;
-    return LEVELWARP_ROUTE_NONE;
+    return g->demo_end ? LEVELWARP_ROUTE_DEMO : LEVELWARP_ROUTE_NONE;
+}
+
+/** @brief Hand a target to the --skip-to-level machinery, the title and demo routes' common half.
+ *
+ * The machinery induces the title's demo-timeout transition at its next
+ * window, which also makes the progress and lives reset a fresh session
+ * needs.
+ * @param g The game.
+ * @param target The target number. */
+static void title_route(const levelwarp_game_t* g, int target) {
+    if (g->title_start) g->title_start(target);
+    else                game_set_skip_to_level(target);
 }
 
 /** @brief Start a queued request through the route it drained under.
@@ -269,12 +283,14 @@ static int route_of(const levelwarp_game_t* g, CPUState* cpu) {
 static void drain(levelwarp_t* w, CPUState* cpu, int target) {
     const levelwarp_game_t* g = w->game;
     if (w->route == LEVELWARP_ROUTE_TITLE) {
-        /* The --skip-to-level machinery owns this one: it induces the
-         * demo-timeout transition at the next Press-Start window, which also
-         * gets the progress and lives reset a fresh session needs. */
-        if (g->title_start) g->title_start(target);
-        else                game_set_skip_to_level(target);
+        title_route(g, target);
         OPL_INFO_F(g->log_tag, "queued title-screen boot into %s %d", g->unit, target);
+    } else if (w->route == LEVELWARP_ROUTE_DEMO) {
+        /* The demo's own end returns the game to the title, where the
+         * armed title route takes the target. */
+        g->demo_end(cpu);
+        title_route(g, target);
+        OPL_INFO_F(g->log_tag, "ending the attract demo for %s %d", g->unit, target);
     } else if (w->route == LEVELWARP_ROUTE_LEVEL && !w->refused) {
         /* The free camera freezes the player update and replaces the camera
          * follow, both of which the game's exit sequence runs through.

@@ -21,10 +21,15 @@
 //    the target may not have. The loading overlay's state machine then runs
 //    the load.
 //
-// 2. At the title screen: hand off to the existing --skip-to-level
-//    machinery (game_set_skip_to_level), which induces the demo-timeout
-//    transition at the next Press-Start window. That path resets progress,
-//    exactly as a fresh --skip-to-level boot does.
+// 2. At the title screen or in the menus Press Start opens: hand off to
+//    the existing --skip-to-level machinery (game_set_skip_to_level), which
+//    induces the demo-timeout transition at the next press-start or menu
+//    window. That path resets progress, exactly as a fresh --skip-to-level
+//    boot does.
+//
+// 3. In the attract demo: store the demo's own end flag
+//    (spyro3_skip_end_demo); the demo returns to the title, where route 2
+//    takes the target.
 //
 // The overlay runs outside the sim, so a click only queues a request; every
 // guest write happens in the drain. Intentional, opt-in gameplay divergence
@@ -130,6 +135,7 @@ static const levelwarp_game_t k_warp_game = {
     .demo_word        = S3_IS_DEMO_MODE,
     .live             = spyro3_skip_gameplay_live,
     .current_word     = S3_CURRENT_LEVEL,
+    .demo_end         = spyro3_skip_end_demo,
     .start            = warp_start,
 };
 

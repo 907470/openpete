@@ -18,12 +18,11 @@
 #include "feature_registry.h"
 #include "openpete_fiber.h"          /* openpete_speculative */
 #include "openpete_log.h"
-#include "openpete_psxtrace.h" /* openpete_psxtrace_gate_host_enter: a host-initiated guest call */
+#include "features/guest_call.h"  /* game_guest_call: a host-initiated guest call */
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
 
 #define ADDR_DRAW 0x8001E638u
 
-void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
 
 static s3_transition_request_t s_req;
 static int                     s_pending = 0;
@@ -58,25 +57,6 @@ static void store(CPUState* cpu, const s3_transition_store_t* s) {
     }
 }
 
-/** @brief Calls a guest function with two arguments from the Draw entry hook.
- *
- * Sets a0 and a1, runs the function through call_by_address and restores ra.
- * Draw takes no arguments and this is its entry, so ra is the only register
- * live across the nested call.
- * @param cpu The guest CPU state.
- * @param fn The guest function's address.
- * @param a0 The first argument.
- * @param a1 The second argument. */
-static void call_guest(CPUState* cpu, uint32_t fn, uint32_t a0, uint32_t a1) {
-    uint32_t ra = cpu->ra;
-    cpu->a0 = a0;
-    cpu->a1 = a1;
-    openpete_psxtrace_gate_host_enter();
-    call_by_address(cpu, fn);
-    openpete_psxtrace_gate_host_leave();
-    cpu->ra = ra;
-}
-
 /** @brief Drains the pending transition request at the entry of Draw func_8001E638.
  *
  * Does nothing when no request waits, when its entry is not
@@ -105,9 +85,9 @@ static int on_draw(CPUState* cpu, uint32_t addr) {
         if (r.dropped) r.dropped(cpu);
         return 0;
     }
-    for (i = 0; i < r.n_pre_calls; i++) call_guest(cpu, r.pre_calls[i], 0u, 0u);
+    for (i = 0; i < r.n_pre_calls; i++) game_guest_call(cpu, r.pre_calls[i], 2, 0u, 0u, 0u);
     for (i = 0; i < r.n_stores; i++) store(cpu, &r.stores[i]);
-    call_guest(cpu, r.fn, r.a0, r.a1);
+    game_guest_call(cpu, r.fn, 2, r.a0, r.a1, 0u);
     OPL_INFO_F(r.tag, "called 0x%08X(0x%X, 0x%X) at frame=%u", (unsigned)r.fn,
                (unsigned)r.a0, (unsigned)r.a1, (unsigned)openpete_frame);
     if (r.called) r.called(cpu);

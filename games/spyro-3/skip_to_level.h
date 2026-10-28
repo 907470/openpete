@@ -80,4 +80,12 @@ int spyro3_skip_level_picked(void);
  * @return 1 when both hold, else 0. */
 int spyro3_skip_gameplay_live(CPUState* cpu);
 
+/** @brief Makes the attract demo's own end store: the demo-end flag 0x8006C7E4 = 1.
+ *
+ * func_80050F18 sets the flag once the recording's fade-out completes and,
+ * while it is set and isDemoMode is 1, calls WarpToLevel(5, 0)
+ * (func_800584BC), which returns the game to the title.
+ * @param cpu The guest CPU state. */
+void spyro3_skip_end_demo(CPUState* cpu);
+
 #endif
