@@ -152,3 +152,6 @@ glimmer | pos=(94737, 111480, 10196) yaw=-1053 pitch=-72 | | --player-pose pos=(
 # faces (the star took its pool record's view-Z, the orb's origin); the player
 # placed beside the orb. Blessed pre-fix.
 summer_forest@glintdepth | pos=(51616, 47022, 44485) yaw=0 pitch=224 | 1467 | --player-pose 52316,48800,44300,1024
+# Water under extended LOD on a fog level: the water surface draws near-white
+# with a dark lattice and no per-pixel fog, where original LOD fogs it.
+mystic_marsh | pos=(83131, 19147, 32066) yaw=1043 pitch=506
