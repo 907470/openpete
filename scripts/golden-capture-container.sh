@@ -265,13 +265,17 @@ verify_binaries() {
 
 # OPENPETE_CAPTURE_TARGETS (space-separated) builds those targets instead of
 # ALL: a tree without .git fails the ratchet targets ALL carries, and a
-# capture needs only the game binaries.
+# capture needs only the game binaries. OPENPETE_CAPTURE_BUILD_JOBS=N caps the
+# build at N jobs; unset, it runs one job per core.
 build_engine() {
-    local targets=()
+    local targets=() jobs="${OPENPETE_CAPTURE_BUILD_JOBS:-}"
+    [[ -z "$jobs" || "$jobs" =~ ^[1-9][0-9]*$ ]] \
+        || { echo "[capture-container] OPENPETE_CAPTURE_BUILD_JOBS must be a positive integer: $jobs" >&2; return 2; }
     [[ -n "${OPENPETE_CAPTURE_TARGETS:-}" ]] && read -ra targets <<<"$OPENPETE_CAPTURE_TARGETS"
     run_in bash -euo pipefail -c '
+        jobs=$1; shift
         cmake --preset linux-release-container
-        cmake --build build/linux-release-container -j ${1:+--target "$@"}' _ "${targets[@]}"
+        cmake --build build/linux-release-container -j $jobs ${1:+--target "$@"}' _ "$jobs" "${targets[@]}"
 }
 
 case "$sub" in
