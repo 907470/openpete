@@ -147,3 +147,6 @@ haunted_tomb | pos=(41871, 84782, 20347) yaw=-1837 pitch=71 | 2629
 # extended LOD: wide areas of near and mid terrain draw the LP mesh, with
 # patches of HP terrain further out, after the HQ texel fade changes
 haunted_tomb | pos=(20082, 2094, 55737) yaw=561 pitch=398 | 2629
+# Extended LOD on harbor_speedway: far buildings, lighthouse and mobys draw with
+# no fog where original LOD fogs them (the far palette is clustered, not one colour).
+harbor_speedway | pos=(55529, 136037, 11623) yaw=-753 pitch=-41
