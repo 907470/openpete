@@ -163,8 +163,10 @@ mystic_marsh@fogorig | pos=(83131, 19147, 32066) yaw=1043 pitch=506 | | --fog or
 mystic_marsh@fogpp | pos=(83131, 19147, 32066) yaw=1043 pitch=506 | | --fog per-pixel
 mystic_marsh@fogoff | pos=(83131, 19147, 32066) yaw=1043 pitch=506 | | --fog off
 # A moby whose idle animation does not interpolate correctly between ticks:
-# the intermediate leg carries the defect.
-mystic_marsh | pos=(73309, 40590, 5758) yaw=-1074 pitch=244
+# the pufferfish's clip switch at VBL 2475 changes the vertex count and the
+# header scale, and the held pose draws at twice its size there. Start 2425
+# puts the intermediate leg on 2475.
+mystic_marsh | pos=(73309, 40590, 5758) yaw=-1074 pitch=244 | 2425
 # Water with animated textures under extended LOD: the per-pixel fog and
 # the second-walk water draw do not reach it.
 mystic_marsh | pos=(81530, 30903, 15232) yaw=-160 pitch=145
