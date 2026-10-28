@@ -192,8 +192,8 @@ In a level, the warp runs the game's own exit-level sequence and then loads
 the chosen level; progress is kept. From the title screen it starts a new
 session in the chosen level, with progress and lives reset as with
 `--skip-to-level`; the button's tooltip reads **from title (resets
-progress)**. The button is disabled while the free camera is on (**freecam
-active**) or when no route exists (**not in a level**).
+progress)**. Warping while the free camera is on turns the free camera off
+first. The button is disabled when no route exists (**not in a level**).
 
 ### Area warp
 
@@ -207,8 +207,9 @@ as the level warp does, then enters the area the way its portal does. From
 another sub-area of the same level it passes through the main area, as the
 level's portals do. From the title screen it starts a new session in the
 chosen sub-area, as `--skip-to-area` does, with progress and lives reset.
-The button is disabled in the chosen area (**already here**), while the free
-camera is on, and outside gameplay (during a speech, a load or a menu). The
+Warping while the free camera is on turns the free camera off first. The
+button is disabled in the chosen area (**already here**) and outside gameplay
+(during a speech, a load or a menu). The
 main area of a level is reached with the level warp.
 
 ## Mods

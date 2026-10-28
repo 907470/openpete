@@ -100,7 +100,7 @@ static int go_fire(knob_desc_t* k, double v) {
  * Reads queued while a click waits; "loading..." while a warp is in
  * flight; else a
  * note for the title route, the refusal reason or an empty string for the
- * level route, freecam active, or the game's no-route text.
+ * level route, or the game's no-route text.
  * @param k The row.
  * @param buf Receives the text.
  * @param cap Size of @p buf in bytes. */
@@ -112,7 +112,6 @@ static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
     else if (w->phase != LEVELWARP_IDLE)        s = "loading...";
     else if (w->route == LEVELWARP_ROUTE_TITLE) s = "from title (resets progress)";
     else if (w->route == LEVELWARP_ROUTE_LEVEL) s = w->refused ? w->refused : "";
-    else if (openpete_freecam_active())         s = "freecam active";
     else s = g->none_status ? g->none_status : "not in a level";
     snprintf(buf, cap, "%s", s);
 }
@@ -249,16 +248,15 @@ static uint32_t current_of(const levelwarp_game_t* g, CPUState* cpu) {
 /** @brief Pick the route the live guest state allows.
  *
  * The title route when title_word reads title_value; the in-level route when
- * live() holds, demo_word reads 0 and the free camera is off, since the
- * camera is detached from the player under it; else none.
+ * live() holds and demo_word reads 0; else none. The free camera does not
+ * block the in-level route: drain disengages it before the warp starts.
  * @param g The game.
  * @param cpu The guest CPU state.
  * @return A LEVELWARP_ROUTE_* value. */
 static int route_of(const levelwarp_game_t* g, CPUState* cpu) {
     if (g->title_word && cpu->read_word(g->title_word) == g->title_value)
         return LEVELWARP_ROUTE_TITLE;
-    if (g->live(cpu) && (!g->demo_word || cpu->read_word(g->demo_word) == 0u) &&
-        !openpete_freecam_active())
+    if (g->live(cpu) && (!g->demo_word || cpu->read_word(g->demo_word) == 0u))
         return LEVELWARP_ROUTE_LEVEL;
     return LEVELWARP_ROUTE_NONE;
 }
@@ -278,6 +276,15 @@ static void drain(levelwarp_t* w, CPUState* cpu, int target) {
         else                game_set_skip_to_level(target);
         OPL_INFO_F(g->log_tag, "queued title-screen boot into %s %d", g->unit, target);
     } else if (w->route == LEVELWARP_ROUTE_LEVEL && !w->refused) {
+        /* The free camera freezes the player update and replaces the camera
+         * follow, both of which the game's exit sequence runs through.
+         * Disengaging on the game tick, before the start hook, leaves this
+         * tick's player update and follow to run unfrozen, as the teleport's
+         * disengage does. */
+        if (openpete_freecam_active()) {
+            openpete_freecam_toggle();
+            OPL_INFO_F(g->log_tag, "%s", "free camera disengaged for the warp");
+        }
         w->target = (uint32_t)target;
         const int ph = g->start(w, cpu, target);
         if (ph == LEVELWARP_IDLE) { levelwarp_reset(w); return; }
