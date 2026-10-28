@@ -34,6 +34,9 @@ panel to give it focus. Mouse use alone leaves the game playable.
 These actions are rebindable in `[keys.host]`; see
 [Key bindings](../customizing/key-bindings.md).
 
+On the keyboard, the Left and Right arrow keys step a slider such as **Tick
+scale** down and up while it is selected.
+
 ## Reading the panel
 
 | Part | Meaning |

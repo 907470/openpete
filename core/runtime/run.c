@@ -4035,6 +4035,35 @@ static int ra_note_owed(int owe, int owed) {
     return owe;
 }
 
+/* The active quick-save slot, shared by the slot keys and the dev overlay's
+ * Savestate row. A set from another thread raises the announce flag; the host
+ * loop announces, since the OSD queue is fed from it. */
+static SDL_AtomicInt s_state_slot;
+static SDL_AtomicInt s_state_slot_announce;
+/* Save/load requests from the dev overlay, bits consumed by state_ops_collect. */
+enum { STATE_REQ_SAVE = 1, STATE_REQ_LOAD = 2 };
+static SDL_AtomicInt s_state_slot_req;
+/* 1 when the active slot's file exists: set on each slot change and after a
+ * save to that slot, read by the dev overlay's Load button. */
+static SDL_AtomicInt s_state_slot_full;
+
+unsigned openpete_state_active_slot(void) { return (unsigned)SDL_GetAtomicInt(&s_state_slot); }
+
+int openpete_state_active_slot_full(void) { return SDL_GetAtomicInt(&s_state_slot_full); }
+
+void openpete_state_set_active_slot(unsigned slot) {
+    if (slot >= OPENPETE_STATE_NUM_SLOTS) return;
+    SDL_SetAtomicInt(&s_state_slot, (int)slot);
+    SDL_SetAtomicInt(&s_state_slot_announce, 1);
+}
+
+void openpete_state_request(int load) {
+    const int bit = load ? STATE_REQ_LOAD : STATE_REQ_SAVE;
+    int cur;
+    do cur = SDL_GetAtomicInt(&s_state_slot_req);
+    while (!SDL_CompareAndSwapAtomicInt(&s_state_slot_req, cur, cur | bit));
+}
+
 /** @brief Queue one savestate request for the next final yield.
  * @param kind The operation.
  * @param slot The slot of a slot operation.
@@ -4070,7 +4099,10 @@ static int state_op_run(const state_op_t* op) {
     int rc = STATE_OP_FAILED;
     switch (op->kind) {
     case STATE_OP_SAVE_SLOT:
-        return openpete_state_save(op->slot, &g_game.cpu, openpete_frame);
+        rc = openpete_state_save(op->slot, &g_game.cpu, openpete_frame);
+        if (rc == 0 && op->slot == openpete_state_active_slot())
+            SDL_SetAtomicInt(&s_state_slot_full, 1);
+        return rc;
     case STATE_OP_SAVE_FILE:
         return openpete_state_save_file(op->path, &g_game.cpu, openpete_frame);
     case STATE_OP_LOAD_SLOT:
@@ -4125,30 +4157,6 @@ static void state_op_toast(const state_op_t* op, int rc) {
         fmt = rc == STATE_OP_SITE_REFUSED || openpete_state_slot_present(op->slot)
                   ? "LOAD REFUSED: SLOT %u" : "LOAD: SLOT %u EMPTY";
     openpete_osd_notify("host", STATE_SLOT_OSD_KEY, 0, fmt, op->slot);
-}
-
-/* The active quick-save slot, shared by the slot keys and the dev overlay's
- * Savestate row. A set from another thread raises the announce flag; the host
- * loop announces, since the OSD queue is fed from it. */
-static SDL_AtomicInt s_state_slot;
-static SDL_AtomicInt s_state_slot_announce;
-/* Save/load requests from the dev overlay, bits consumed by state_ops_collect. */
-enum { STATE_REQ_SAVE = 1, STATE_REQ_LOAD = 2 };
-static SDL_AtomicInt s_state_slot_req;
-
-unsigned openpete_state_active_slot(void) { return (unsigned)SDL_GetAtomicInt(&s_state_slot); }
-
-void openpete_state_set_active_slot(unsigned slot) {
-    if (slot >= OPENPETE_STATE_NUM_SLOTS) return;
-    SDL_SetAtomicInt(&s_state_slot, (int)slot);
-    SDL_SetAtomicInt(&s_state_slot_announce, 1);
-}
-
-void openpete_state_request(int load) {
-    const int bit = load ? STATE_REQ_LOAD : STATE_REQ_SAVE;
-    int cur;
-    do cur = SDL_GetAtomicInt(&s_state_slot_req);
-    while (!SDL_CompareAndSwapAtomicInt(&s_state_slot_req, cur, cur | bit));
 }
 
 /** @brief Log and toast the hotkey slot after a slot switch, with whether a state is saved in it.
@@ -4291,8 +4299,14 @@ static void state_ops_collect(const openpete_options_t* opts) {
     }
     if (openpete_key_pressed(OPK_STATE_CYCLE))
         openpete_state_set_active_slot((slot + 1u) % OPENPETE_STATE_NUM_SLOTS);
-    if (SDL_SetAtomicInt(&s_state_slot_announce, 0))
+    static bool announced_once = false;
+    if (SDL_SetAtomicInt(&s_state_slot_announce, 0)) {
         state_slot_announce(openpete_state_active_slot());
+    } else if (announced_once) {
+        return;
+    }
+    announced_once = true;
+    SDL_SetAtomicInt(&s_state_slot_full, openpete_state_slot_present(openpete_state_active_slot()));
 }
 
 static unsigned s_stress_it = 0, s_stress_ops = 0;  /* iterations in the current phase; operations done */
@@ -7157,7 +7171,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                 }
             }
         }
-
 
         /* PCSX-Redux trace advance fires from the dispatch hook (per
          * game-function entry, not per host-fiber iteration), so all the

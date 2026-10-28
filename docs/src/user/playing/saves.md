@@ -83,7 +83,8 @@ Saving overwrites the slot.
 The [dev overlay](dev-overlay.md)'s **Savestate** row does the same from the
 panel: its list <!-- id: knob:state_slot --> picks the active slot (the one
 the slot key moves), and its **Save** <!-- id: knob:state_save --> and
-**Load** <!-- id: knob:state_load --> buttons save to and load from it.
+**Load** <!-- id: knob:state_load --> buttons save to and load from it;
+**Load** is disabled while the slot is empty.
 Each save, load and slot change raises an [on-screen notification](../graphics/display.md#on-screen-notifications)
 naming the slot and the result: **STATE SAVED**, **SAVE FAILED**,
 **STATE LOADED**, **LOAD REFUSED** (the reasons are below; the log names

@@ -994,6 +994,8 @@ static int state_slot_set(knob_desc_t *k, double v) {
 }
 /** @brief Queue a save to the active slot, as the quick-save key does. */
 static int state_save_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_state_request(0); return 0; }
+/** @brief 1 when the active slot holds a state, so Load is enabled, else 0. */
+static double state_load_ready(const knob_desc_t *k) { (void)k; return openpete_state_active_slot_full() ? 1.0 : 0.0; }
 /** @brief Queue a load from the active slot, as the quick-load key does. */
 static int state_load_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_state_request(1); return 0; }
 
@@ -1958,9 +1960,9 @@ static const knob_desc_t g_builtin[] = {
       .key_action = "savestate_save" },
 
     { "state_load", "Load state", "Gameplay", NULL, NULL,
-      "Load the game from the selected slot.",
+      "Load the game from the selected slot; disabled while the slot is empty.",
       KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
-      NULL, state_load_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      state_load_ready, state_load_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .action_label = "Load",
       .key_action = "savestate_load" },
 

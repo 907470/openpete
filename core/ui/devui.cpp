@@ -923,6 +923,67 @@ static void same_line_inner(void)
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
 }
 
+/** @brief Report the Left/Right step a focused slider takes this frame, claiming those keys from navigation.
+ *
+ * While the last item has navigation focus and is not being dragged, it owns
+ * the keyboard's Left/Right arrows, so keyboard navigation does not move off
+ * it; ownership set in one frame takes effect at the next frame's start,
+ * before navigation reads the keys. Each press, and each key repeat, is one
+ * step. The d-pad keeps the pad navigation's own slider handling.
+ * @return -1 for a step down, 1 for a step up, else 0. */
+static int slider_arrow_dir(void)
+{
+    if (!ImGui::IsItemFocused() || ImGui::IsItemActive()) return 0;
+    static const ImGuiKey keys[2] = { ImGuiKey_LeftArrow, ImGuiKey_RightArrow };
+    const ImGuiID id = ImGui::GetItemID();
+    int dir = 0;
+    for (int i = 0; i < 2; i++) {
+        ImGui::SetKeyOwner(keys[i], id);
+        if (ImGui::IsKeyPressed(keys[i], ImGuiInputFlags_Repeat, id)) dir += i == 0 ? -1 : 1;
+    }
+    return dir;
+}
+
+/** @brief Draw a float slider whose Left/Right step is a power of ten near a twentieth of its range.
+ *
+ * @param label The imgui label.
+ * @param v The value, written on a drag or a step.
+ * @param mn The range's low end.
+ * @param mx The range's high end.
+ * @param fmt The value's display format.
+ * @return true when the value changed. */
+static bool slider_float_stepped(const char *label, float *v, float mn, float mx, const char *fmt)
+{
+    bool changed = ImGui::SliderFloat(label, v, mn, mx, fmt);
+    const int dir = slider_arrow_dir();
+    if (dir && mx > mn) {
+        const float step = powf(10.0f, floorf(log10f((mx - mn) / 20.0f)));
+        const float n = roundf(*v / step) + (float)dir;
+        *v = fminf(fmaxf(n * step, mn), mx);
+        changed = true;
+    }
+    return changed;
+}
+
+/** @brief Draw an int slider whose Left/Right step is 1.
+ *
+ * @param label The imgui label.
+ * @param v The value, written on a drag or a step.
+ * @param mn The range's low end.
+ * @param mx The range's high end.
+ * @return true when the value changed. */
+static bool slider_int_stepped(const char *label, int *v, int mn, int mx)
+{
+    bool changed = ImGui::SliderInt(label, v, mn, mx);
+    const int dir = slider_arrow_dir();
+    if (dir) {
+        const int n = *v + dir;
+        *v = n < mn ? mn : (n > mx ? mx : n);
+        changed = true;
+    }
+    return changed;
+}
+
 /** @brief Draw a float knob as a slider over its registered range, applied on every change.
  *
  * A drag widget that commits only on release reads as dead while it is
@@ -951,7 +1012,7 @@ static void knob_row_float(knob_desc_t *k)
         ImGui::SetNextItemWidth(-FLT_MIN);
     }
     float v = (float)live;
-    if (ImGui::SliderFloat("##v", &v, k->num_min, k->num_max, "%.2f") &&
+    if (slider_float_stepped("##v", &v, k->num_min, k->num_max, "%.2f") &&
         k->set_num) {
         if (k->set_num(k, v) == 0)
             OPL_INFO_F("devui", "%s = %.3f", k->id, v);
@@ -1273,13 +1334,13 @@ static int mui_checkbox(const char *label, int *v)
 /** @brief Draw an int slider over [mn, mx] and report 1 when the value changed; a NULL v draws nothing. */
 static int mui_slider_int(const char *label, int *v, int mn, int mx)
 {
-    return (v && ImGui::SliderInt(label, v, mn, mx)) ? 1 : 0;
+    return (v && slider_int_stepped(label, v, mn, mx)) ? 1 : 0;
 }
 
 /** @brief Draw a float slider over [mn, mx] and report 1 when the value changed; a NULL v draws nothing. */
 static int mui_slider_float(const char *label, float *v, float mn, float mx)
 {
-    return (v && ImGui::SliderFloat(label, v, mn, mx)) ? 1 : 0;
+    return (v && slider_float_stepped(label, v, mn, mx, "%.3f")) ? 1 : 0;
 }
 
 /** @brief Draw a combo box over the item strings and report 1 when the selection changed.
@@ -1510,8 +1571,8 @@ static void draw_mod_config_rows(int mod_index,
         case 'i': {
             int iv = (int)st->v[r].i;
             if (row.min < row.max) {
-                if (ImGui::SliderInt(row.label, &iv, (int)row.min,
-                                     (int)row.max))
+                if (slider_int_stepped(row.label, &iv, (int)row.min,
+                                       (int)row.max))
                     st->v[r].i = iv;
             } else if (ImGui::InputInt(row.label, &iv)) {
                 st->v[r].i = iv;
@@ -1522,8 +1583,8 @@ static void draw_mod_config_rows(int mod_index,
         case 'd': {
             float f = (float)st->v[r].d;
             if (row.min < row.max) {
-                if (ImGui::SliderFloat(row.label, &f, (float)row.min,
-                                       (float)row.max))
+                if (slider_float_stepped(row.label, &f, (float)row.min,
+                                         (float)row.max, "%.3f"))
                     st->v[r].d = f;
             } else if (ImGui::InputFloat(row.label, &f)) {
                 st->v[r].d = f;
@@ -2442,7 +2503,7 @@ static void override_widget(knob_desc_t *k)
         same_line_inner();
         ImGui::SetNextItemWidth(-FLT_MIN);
         int v = live >= 0 ? live : *last;
-        if (ImGui::SliderInt("##v", &v, 0, (int)k->num_max) && !disabled &&
+        if (slider_int_stepped("##v", &v, 0, (int)k->num_max) && !disabled &&
             k->set_num(k, v) == 0)
             OPL_INFO_F("devui", "%s = %d", k->id, v);
         row_tooltip(k);

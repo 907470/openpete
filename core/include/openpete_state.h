@@ -223,6 +223,12 @@ int openpete_state_slot_present(unsigned slot);
  * @return The slot, below OPENPETE_STATE_NUM_SLOTS. */
 unsigned openpete_state_active_slot(void);
 
+/** @brief Report whether the active slot holds a state file, as the host loop last checked.
+ *
+ * Checked on each slot change and set after a save to the active slot.
+ * @return 1 when the slot's file exists, else 0. */
+int openpete_state_active_slot_full(void);
+
 /** @brief Make a slot the active one and announce it on the host loop's next iteration.
  *
  * Callable from any thread; an out-of-range slot is ignored.

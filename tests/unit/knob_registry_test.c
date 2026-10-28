@@ -33,6 +33,7 @@ void   openpete_freecam_toggle(void)           { }
 unsigned openpete_state_active_slot(void)        { return 0u; }
 void   openpete_state_set_active_slot(unsigned s) { (void)s; }
 void   openpete_state_request(int load)        { (void)load; }
+int    openpete_state_active_slot_full(void)  { return 0; }
 int    openpete_camlock_active(void)           { return 0; }
 void   openpete_camlock_toggle(void)           { }
 int    openpete_fillpick_active(void)          { return 0; }
