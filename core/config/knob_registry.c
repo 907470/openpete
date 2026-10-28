@@ -29,6 +29,7 @@
 #include "openpete_host_mouse.h"
 #include "openpete_record.h"
 #include "openpete_rewind.h"
+#include "openpete_state.h"
 #include "no_lod.h"
 
 #include <math.h>
@@ -977,6 +978,25 @@ static int freecam_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+static const char *const k_state_slot_names[OPENPETE_STATE_NUM_SLOTS] = {
+    "Slot 0", "Slot 1", "Slot 2", "Slot 3", "Slot 4",
+    "Slot 5", "Slot 6", "Slot 7", "Slot 8", "Slot 9",
+};
+
+/** @brief The active savestate slot's index. */
+static double state_slot_get(const knob_desc_t *k) { (void)k; return (double)openpete_state_active_slot(); }
+/** @brief Make slot `v` the active one, as the slot-cycle key does. */
+static int state_slot_set(knob_desc_t *k, double v) {
+    (void)k;
+    if (v < 0.0 || v >= (double)OPENPETE_STATE_NUM_SLOTS) return -1;
+    openpete_state_set_active_slot((unsigned)v);
+    return 0;
+}
+/** @brief Queue a save to the active slot, as the quick-save key does. */
+static int state_save_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_state_request(0); return 0; }
+/** @brief Queue a load from the active slot, as the quick-load key does. */
+static int state_load_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_state_request(1); return 0; }
+
 /** @brief 1 when the fill-tag picker is active, else 0. */
 static double fillpick_get(const knob_desc_t *k) { (void)k; return openpete_fillpick_active() ? 1.0 : 0.0; }
 /** @brief Activate or deactivate the fill-tag picker from `v` (nonzero activates). */
@@ -1921,6 +1941,28 @@ static const knob_desc_t g_builtin[] = {
       freecam_get, freecam_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off",
       .key_action = "freecam" },
+
+    { "state_slot", "Savestate", "Gameplay", NULL, NULL,
+      "The slot the Save and Load buttons and the quick-save, quick-load "
+      "and slot-cycle keys use.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_state_slot_names), 0, 0,
+      state_slot_get, state_slot_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "Slot 0",
+      .key_action = "savestate_cycle" },
+
+    { "state_save", "Save state", "Gameplay", NULL, NULL,
+      "Save the game to the selected slot.",
+      KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
+      NULL, state_save_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .action_label = "Save",
+      .key_action = "savestate_save" },
+
+    { "state_load", "Load state", "Gameplay", NULL, NULL,
+      "Load the game from the selected slot.",
+      KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
+      NULL, state_load_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .action_label = "Load",
+      .key_action = "savestate_load" },
 
     /* Both pose flags set their env spelling from the parser, so the env
      * getter shows either spelling. One-shot at boot. */

@@ -4127,6 +4127,30 @@ static void state_op_toast(const state_op_t* op, int rc) {
     openpete_osd_notify("host", STATE_SLOT_OSD_KEY, 0, fmt, op->slot);
 }
 
+/* The active quick-save slot, shared by the slot keys and the dev overlay's
+ * Savestate row. A set from another thread raises the announce flag; the host
+ * loop announces, since the OSD queue is fed from it. */
+static SDL_AtomicInt s_state_slot;
+static SDL_AtomicInt s_state_slot_announce;
+/* Save/load requests from the dev overlay, bits consumed by state_ops_collect. */
+enum { STATE_REQ_SAVE = 1, STATE_REQ_LOAD = 2 };
+static SDL_AtomicInt s_state_slot_req;
+
+unsigned openpete_state_active_slot(void) { return (unsigned)SDL_GetAtomicInt(&s_state_slot); }
+
+void openpete_state_set_active_slot(unsigned slot) {
+    if (slot >= OPENPETE_STATE_NUM_SLOTS) return;
+    SDL_SetAtomicInt(&s_state_slot, (int)slot);
+    SDL_SetAtomicInt(&s_state_slot_announce, 1);
+}
+
+void openpete_state_request(int load) {
+    const int bit = load ? STATE_REQ_LOAD : STATE_REQ_SAVE;
+    int cur;
+    do cur = SDL_GetAtomicInt(&s_state_slot_req);
+    while (!SDL_CompareAndSwapAtomicInt(&s_state_slot_req, cur, cur | bit));
+}
+
 /** @brief Log and toast the hotkey slot after a slot switch, with whether a state is saved in it.
  * @param slot The new active slot. */
 static void state_slot_announce(unsigned slot) {
@@ -4237,16 +4261,22 @@ static void ra_end_log(int left, int adopted) {
                    "its bound; adopted the led timeline through f=%u", openpete_frame);
 }
 
-/** @brief Queue the savestate requests raised this iteration: the hotkeys and the scheduled one-shots.
+/** @brief Queue the savestate requests raised this iteration, then apply the slot-cycle key and announce a slot change.
  *
- * The scheduled save is queued before the scheduled load, so a save and a load
- * armed for the same tick capture and then restore (a same-tick roundtrip).
- * @param opts Run options (the --state-*-on-frame one-shots).
- * @param slot The active hotkey slot. */
-static void state_ops_collect(const openpete_options_t* opts, unsigned slot) {
+ * Requests are the hotkeys, the dev overlay's Save and Load, and the
+ * scheduled one-shots; the slot ones use the active slot as it stood before
+ * this iteration's cycle. The scheduled save is queued before the scheduled
+ * load, so a save and a load armed for the same tick capture and then
+ * restore (a same-tick roundtrip).
+ * @param opts Run options (the --state-*-on-frame one-shots). */
+static void state_ops_collect(const openpete_options_t* opts) {
     static bool sched_saved = false, sched_loaded = false;
-    if (openpete_key_pressed(OPK_STATE_SAVE)) state_op_push(STATE_OP_SAVE_SLOT, slot, NULL);
-    if (openpete_key_pressed(OPK_STATE_LOAD)) state_op_push(STATE_OP_LOAD_SLOT, slot, NULL);
+    const unsigned slot = openpete_state_active_slot();
+    const int req = SDL_SetAtomicInt(&s_state_slot_req, 0);
+    if (openpete_key_pressed(OPK_STATE_SAVE) || (req & STATE_REQ_SAVE))
+        state_op_push(STATE_OP_SAVE_SLOT, slot, NULL);
+    if (openpete_key_pressed(OPK_STATE_LOAD) || (req & STATE_REQ_LOAD))
+        state_op_push(STATE_OP_LOAD_SLOT, slot, NULL);
     const int key = (int)openpete_feed_key_now();
     if (!sched_saved && opts->state_save_on_frame >= 0 && key >= opts->state_save_on_frame) {
         sched_saved = true;
@@ -4259,6 +4289,10 @@ static void state_ops_collect(const openpete_options_t* opts, unsigned slot) {
         else
             state_op_push(STATE_OP_LOAD_FILE, 0, opts->state_load_input);
     }
+    if (openpete_key_pressed(OPK_STATE_CYCLE))
+        openpete_state_set_active_slot((slot + 1u) % OPENPETE_STATE_NUM_SLOTS);
+    if (SDL_SetAtomicInt(&s_state_slot_announce, 0))
+        state_slot_announce(openpete_state_active_slot());
 }
 
 static unsigned s_stress_it = 0, s_stress_ops = 0;  /* iterations in the current phase; operations done */
@@ -5278,8 +5312,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
      * F2/F4 they started as, because F4 collides with PsyCross's own
      * debug binding - it cycles g_activeKeyboardControllers, which
      * silently kicks the keyboard off pad 1 and looks exactly like a
-     * save-state regression. */
-    unsigned active_slot = 0;
+     * save-state regression. The active slot they use is
+     * openpete_state_active_slot(), shared with the dev overlay. */
 
     /* Frame-step state. Pause toggles; frame-step advances exactly one
      * game tick, running VBLs until the game draws (hold to repeat). While paused the host
@@ -5661,11 +5695,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * after it, and a press made while the menu was up is swallowed
          * rather than replayed into the game. */
         if (!openpete_menu_is_open()) {
-            state_ops_collect(opts, active_slot);
-            if (openpete_key_pressed(OPK_STATE_CYCLE)) {
-                active_slot = (active_slot + 1u) % OPENPETE_STATE_NUM_SLOTS;
-                state_slot_announce(active_slot);
-            }
+            state_ops_collect(opts);
             /* Process handoff: resume on the first pass of a
              * --resume-handoff process; checkpoint+exec when armed
              * (OPENPETE_HANDOFF_AT / openpete_handoff_request). */

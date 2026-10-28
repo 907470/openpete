@@ -218,6 +218,24 @@ int openpete_state_resolve_dir(char* out, unsigned long out_size);
  * @return 1 when the file exists, else 0. */
 int openpete_state_slot_present(unsigned slot);
 
+/** @brief Report the active slot the quick-save and quick-load keys use.
+ *
+ * @return The slot, below OPENPETE_STATE_NUM_SLOTS. */
+unsigned openpete_state_active_slot(void);
+
+/** @brief Make a slot the active one and announce it on the host loop's next iteration.
+ *
+ * Callable from any thread; an out-of-range slot is ignored.
+ * @param slot Slot number, below OPENPETE_STATE_NUM_SLOTS. */
+void openpete_state_set_active_slot(unsigned slot);
+
+/** @brief Queue a save to, or a load from, the active slot, as the quick-save and quick-load keys do.
+ *
+ * Callable from any thread; the host loop queues the request on its next
+ * iteration outside the settings menu.
+ * @param load Nonzero for a load, zero for a save. */
+void openpete_state_request(int load);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2020,7 +2020,7 @@ enum lay_kind {
     LAY_DEPTH,     /* ids[0] int: on/off box, 1..3 buttons while on */
     LAY_OVERRIDE,  /* ids[0] int, -1 = leave alone: Override box, slider while on */
     LAY_TOKENS,    /* ids[0] comma-list string: a toggle per vocabulary token */
-    LAY_WARP,      /* ids[0] level combo, ids[1] its action button */
+    LAY_PICK,      /* ids[0] enum combo, ids[1..2] its action buttons */
     LAY_REST,      /* every unplaced row of registry section `label` */
     LAY_SUB,       /* opens a subsection titled `label`, closed by default */
     LAY_SUB_END
@@ -2090,13 +2090,14 @@ static const lay_row k_lay_display[] = {
 
 static const lay_row k_lay_gameplay[] = {
     { LAY_ROW,    nullptr, { "freecam" } },
+    { LAY_PICK,   "Savestate", { "state_slot", "state_save", "state_load" } },
     { LAY_ROW,    nullptr, { "tick_scale" } },
     { LAY_INLINE, nullptr, { "pause", "frame_step" } },
     { LAY_DEPTH,  nullptr, { "runahead" } },
     { LAY_ONOFF,  "Rewind", { "rewind" }, nullptr, nullptr, 0, "", 30 },
     { LAY_REST,   "Gameplay" },
-    { LAY_WARP,   "Level warp", { "warp_level", "warp_go" } },
-    { LAY_WARP,   "Area warp", { "warp_area", "warp_area_go" } },
+    { LAY_PICK,   "Level warp", { "warp_level", "warp_go" } },
+    { LAY_PICK,   "Area warp", { "warp_area", "warp_area_go" } },
     { LAY_SUB,    "Cheats" },
     { LAY_REST,   "Cheats" },
     { LAY_SUB_END, nullptr },
@@ -2150,7 +2151,7 @@ static const lay_section k_layout[] = {
  * --help, --config-report, the config file and saving still carry them. */
 static const char *const k_lay_hidden[] = {
     "background", "version_osd", "mouse", "input_lock", "camlock", "bk2_stop_on_end", "cheats",
-    "launcher_fullscreen", "launcher_window",
+    "launcher_fullscreen", "launcher_window", "hide_player",
 };
 
 /** @brief Report whether a knob id is named by a layout row or hidden from the panel.
@@ -2235,7 +2236,7 @@ static int lay_knobs(const lay_ctx &c, const lay_row &r, knob_desc_t *out[3])
 /** @brief Report whether a layout row draws anything under the filter.
  *
  * A LAY_REST entry shows when any of its rows does; a knob row when its knobs
- * exist (both for LAY_DRAWMODE and LAY_WARP) and its caption or one of its
+ * exist (both for LAY_DRAWMODE and LAY_PICK) and its caption or one of its
  * knobs matches. */
 static bool lay_row_shows(const lay_ctx &c, const lay_row &r)
 {
@@ -2247,7 +2248,7 @@ static bool lay_row_shows(const lay_ctx &c, const lay_row &r)
     }
     knob_desc_t *ks[3];
     const int n = lay_knobs(c, r, ks);
-    const bool pair = (r.kind == LAY_DRAWMODE || r.kind == LAY_WARP);
+    const bool pair = (r.kind == LAY_DRAWMODE || r.kind == LAY_PICK);
     if (n == 0 || (pair && n < 2)) return false;
     if (r.label && c.filter->PassFilter(r.label)) return true;
     for (int i = 0; i < n; i++)
@@ -2527,19 +2528,22 @@ static void tokens_widget(knob_desc_t *k)
     if (m != cur && !disabled) tokens_apply(k, m);
 }
 
-/** @brief Draw a level combo and its action button on one line; the button's status is its tooltip.
+/** @brief Draw an enum combo and its action buttons on one line; each button's status is its tooltip.
  *
  * The combo's list grows to the height of the display before it scrolls.
- * @param lvl The enum knob holding the selected entry.
- * @param go The action knob the button fires. */
-static void warp_widget(knob_desc_t *lvl, knob_desc_t *go)
+ * @param ks ks[0] is the enum knob holding the selected entry; ks[1..n-1]
+ *           are the action knobs the buttons fire, left to right.
+ * @param n Number of knobs in @p ks, 2 or 3. */
+static void pick_widget(knob_desc_t *const *ks, int n)
 {
-    const char *cap = go->action_label ? go->action_label : "Apply";
+    knob_desc_t *lvl = ks[0];
     const ImGuiStyle &st = ImGui::GetStyle();
-    /* The button spans an int field's -/+ pair (two frame-height squares and
-     * their gap), so the combo ends where those fields' text boxes end. */
+    /* Each button spans an int field's -/+ pair (two frame-height squares and
+     * their gap), so with one button the combo ends where those fields' text
+     * boxes end. */
     const float bw = ImGui::GetFrameHeight() * 2.0f + st.ItemInnerSpacing.x;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw - st.ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x -
+                            (float)(n - 1) * (bw + st.ItemInnerSpacing.x));
     const int idx = (int)knob_num(lvl);
     const char *preview =
         (idx >= 0 && idx < lvl->enum_count) ? lvl->enum_values[idx] : "";
@@ -2555,14 +2559,18 @@ static void warp_widget(knob_desc_t *lvl, knob_desc_t *go)
     }
     row_tooltip(lvl);
 
-    same_line_inner();
-    const bool ready = !go->get_num || go->get_num(go) != 0.0;
-    if (!ready) ImGui::BeginDisabled();
-    if (ImGui::Button(cap, ImVec2(bw, 0.0f)) && go->set_num &&
-        go->set_num(go, 1.0) == 0)
-        OPL_INFO_F("devui", "%s fired", go->id);
-    if (!ready) ImGui::EndDisabled();
-    action_tooltip(go);
+    for (int i = 1; i < n; i++) {
+        knob_desc_t *go = ks[i];
+        const char *cap = go->action_label ? go->action_label : "Apply";
+        same_line_inner();
+        const bool ready = !go->get_num || go->get_num(go) != 0.0;
+        if (!ready) ImGui::BeginDisabled();
+        if (ImGui::Button(cap, ImVec2(bw, 0.0f)) && go->set_num &&
+            go->set_num(go, 1.0) == 0)
+            OPL_INFO_F("devui", "%s fired", go->id);
+        if (!ready) ImGui::EndDisabled();
+        action_tooltip(go);
+    }
 }
 
 /** @brief Draw one layout row of knobs as a table row: caption, then its widget. */
@@ -2582,7 +2590,7 @@ static void lay_draw_knob_row(const lay_ctx &c, const lay_row &r)
     case LAY_DEPTH:    depth_widget(ks[0]);            break;
     case LAY_OVERRIDE: override_widget(ks[0]);         break;
     case LAY_TOKENS:   tokens_widget(ks[0]);           break;
-    case LAY_WARP:     warp_widget(ks[0], ks[1]);      break;
+    case LAY_PICK:     pick_widget(ks, n);             break;
     default:                                           break;
     }
 }
