@@ -502,7 +502,7 @@ static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this w
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
 static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
-#define TN_HQFOG_CEN_N 10          /* tn_wctx hqfog_cen fields (tn_hqfog_census_print) */
+#define TN_HQFOG_CEN_N 12          /* tn_wctx hqfog_cen fields (tn_hqfog_census_print) */
 static int s_hqfog_cen[TN_HQFOG_CEN_N];   /* tn_wctx hqfog_cen sums */
 /* OPENPETE_TERRAIN_FOGMODE_CENSUS: faces emitted per fog path, summed from
  * tn_wctx fogcen: [0] no words, [1] heavy-fog step, [2] heavy-fog ramp,
@@ -10065,6 +10065,69 @@ static int tn_face_water(const tscache_t* SC, const tsface_t* F) {
     return SC && tn_sector_water(SC) && F->mat.textured && F->mat.blend != 0;
 }
 
+/** @brief Returns 1 when the game's HP walk draws a face in its far draw, outside the near queues.
+ *
+ * The game's own near split, without the always-HQ pin: a quad, or a
+ * triangle on a game with the tier-2 triangle pass (over A, B, C, C), is
+ * near when face_is_near_canonical defers it; a triangle on a game without
+ * that pass is near only when the drain routes it to the tier-4 cells
+ * (face_drain_tier4); every other face is far.
+ * @param cz The corners' view-Z (m3) in i0..i3 order.
+ * @param quad Nonzero for a quad.
+ * @param w3 The face's word 3.
+ * @return 1 for a far face, else 0. */
+static int tn_game_far(const double cz[4], int quad, uint32_t w3) {
+    if (quad || game_layout.terrain.hq_tri2_tiles)
+        return !face_is_near_canonical(cz[0], cz[1], cz[2], quad ? cz[3] : cz[2], w3);
+    return !(game_layout.terrain.hq_tri4_cells && face_drain_tier4(cz[0], cz[1], cz[2], cz[2], w3));
+}
+
+/** @brief Returns 1 when an extended-LOD heavy-fog HP face draws on the game's HP far model instead of the always-HQ pin.
+ *
+ * Under s_hp_fog, a textured semi-transparent face (blend 1-3, the classes
+ * the scene draws blended) outside a second-walk sector, which the game
+ * draws in its HP far draw (tn_game_far): the far tile at the CLUT ladder
+ * row 15 - (IR0 >> 8), corners DPCS-faded toward each corner's far colour
+ * (Spyro 2 environment.s 80024CDC, 80024EE8-80024F28). The HQ pin's
+ * neutral heavy-fog words fade its texels to the fog colour, which a
+ * blended face adds onto the fogged scene behind it; the ladder fades the
+ * texels instead. The retained cache mirrors the predicate in terrain.vert
+ * (blendFar).
+ * @param pass The walk pass: 1 the sector's own HP faces, 3 the HP faces
+ *        borrowed from the source level, which belong to no second-walk
+ *        sector; every other pass returns 0.
+ * @param SC The sector's cache entry.
+ * @param F The face.
+ * @param cz The corners' view-Z (m3) in i0..i3 order.
+ * @return 1 when the face takes the far model, else 0. */
+static int tn_face_blend_far(int pass, const tscache_t* SC, const tsface_t* F, const double cz[4]) {
+    if (!s_hp_fog || (pass != 1 && pass != 3)) return 0;
+    if (!F->mat.textured || F->mat.blend < 1 || F->mat.blend > 3) return 0;
+    if (pass == 1 && SC && tn_sector_water(SC)) return 0;
+    return tn_game_far(cz, F->quad, F->w3);
+}
+
+/** @brief Returns 1 when an HP face reaches the walk's CLUT ladder select: always off the always-HQ pin, under it only on the game's far model.
+ * @param blendFar 1 for a face on the game's far model (tn_face_blend_far).
+ * @return 1 when the select applies, else 0. */
+static int tn_hp_ladders(int blendFar) {
+    return !s_hp_raw || blendFar;
+}
+
+/** @brief Counts one emitted face of tn_face_blend_far's population into the hqfog census.
+ *
+ * Under OPENPETE_TERRAIN_HQFOG_CENSUS a face drawn with the heavy-fog words
+ * counts in hqfog_cen[10], any other in [11]. A near-path face counts in
+ * [10], since tn_near_face stamps the heavy-fog words under s_hp_fog; a
+ * flat-path face by word a's enable bit.
+ * @param W The walk context; emit_hqfog holds a flat-path face's words.
+ * @param blendFar 1 for a face of the population; 0 counts nothing.
+ * @param nearPath 1 for a face emitted by tn_near_face. */
+static void tn_blend_census(tn_wctx* W, int blendFar, int nearPath) {
+    if (!blendFar || !s_hqfog_census_on) return;
+    W->hqfog_cen[(nearPath || (W->emit_hqfog[0] & OPENPETE_HQFOG_ENABLE)) ? 10 : 11]++;
+}
+
 /** @brief Returns a face's corner-SZ3 sum on a scale, a triangle counting its shared corner twice as the walk does.
  * @param cz The corners' view-Z (m3) in i0..i3 order.
  * @param quad Nonzero for a quad.
@@ -11414,15 +11477,17 @@ static void tn_hqfog_begin(void) {
  * (tn_hqfog_census), the near faces drawn
  * with the heavy-fog words, the flat HP faces drawn fogged and those drawn
  * LP-ward, the LP faces of a sector whose HP list draws, and the LP ride
- * faces of such a sector (tn_lpward_census). */
+ * faces of such a sector (tn_lpward_census), then the emitted faces of
+ * tn_face_blend_far's population drawn with the heavy-fog words
+ * (blendNeutralFaces) and drawn without them (blendLadderFaces). */
 static void tn_hqfog_census_print(void) {
     if (!s_hqfog_census_on) return;
     fprintf(stderr, "[hqfog-census] frame=%u hpRaw=%d hpFog=%d fog=%06X corners=%d inBand=%d lpwardCorners=%d "
             "foggedCorners=%d inBandFogged=%d fogFaces=%d flatFogFaces=%d flatLpwardFaces=%d lpOverHpFaces=%d "
-            "lpRideFaces=%d\n",
+            "lpRideFaces=%d blendNeutralFaces=%d blendLadderFaces=%d\n",
             openpete_feed_key_now(), s_hp_raw, s_hp_fog, s_hp_fog_rgb, s_hqfog_cen[0], s_hqfog_cen[1], s_hqfog_cen[2],
             s_hqfog_cen[5], s_hqfog_cen[9], s_hqfog_cen[3], s_hqfog_cen[4], s_hqfog_cen[6], s_hqfog_cen[7],
-            s_hqfog_cen[8]);
+            s_hqfog_cen[8], s_hqfog_cen[10], s_hqfog_cen[11]);
 }
 
 /** @brief Prints the walk's faces per fog path under OPENPETE_TERRAIN_FOGMODE_CENSUS.
@@ -11507,8 +11572,9 @@ static void tn_flat_atmo_words(int t0k, uint32_t w[2]) {
  * clear, word b bit 30 set, word a bit 30 the fog-reference bias). Every
  * other face takes none.
  * @param W The walk context.
- * @param passLP 1 when the face takes no heavy-fog words: an LP face or a
- *        second-walk far face (tn_face_water).
+ * @param passLP 1 when the face takes no heavy-fog words: an LP face, a
+ *        second-walk far face (tn_face_water) or a face on the game's HP far
+ *        model (tn_face_blend_far).
  * @param fogbias 1 when the face's fog reference carries the +0x2000 bias.
  * @param t0k The face's ladder select key (tn_ladder_t0k), read under the
  *        original form's heavy-fog step.
@@ -12510,10 +12576,16 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * drop and colours. */
             const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
             const int waterFar = pass == 1 && tn_face_water(SC, F) && tn_water_far(cz, quad);
+            /* An extended-LOD heavy-fog blended face the game draws far
+             * leaves the always-HQ pin for the game's far model
+             * (tn_face_blend_far): the flat path, the CLUT ladder, no
+             * heavy-fog words. */
+            const int blendFar = tn_face_blend_far(pass, SC, F, cz);
             tmat matSel;
             int dbg_half = 0, dbg_delta = 0;   /* fardbg: chosen tiledef half + ladder row */
             int faceT0k = 0, ladPP = 0;        /* ladder select key; per-pixel ladder face */
-            if (!passLP && !waterFar && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured && !s_hp_raw) {
+            if (!passLP && !waterFar && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured
+                && tn_hp_ladders(blendFar)) {
                 /* SZ = s_fogscale·m3 - the whole ladder ramp rides the
                  * --fog-scale curve (s_fogscale = 4/k; exact .s at k=1).
                  * ALWAYS four corners: .s HP tris are quads with i2==i3 and
@@ -12878,7 +12950,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                                           faceStride == 16, straddle, F->w3, front, front2,
                                           &near_front, &cfront);
             W->dbg_satback += satv & 1; W->dbg_satemit += satv >> 1;
-            int near = (faceStride == 16 && !waterFar && s_nearhq && hqTable && near_front &&
+            int near = (faceStride == 16 && !waterFar && !blendFar && s_nearhq && hqTable && near_front &&
                         tn_face_near(sv, F, faces + (uint32_t)f * 16u));
             {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
                  * (a corner behind the camera) by route - near/HQ vs LQ fall-through. */
@@ -12901,10 +12973,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 }
             }
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
-                near = (faceStride == 16 && !waterFar && s_nearhq && hqTable && tn_queue_near(quad, faces + (uint32_t)f*16u));
+                near = (faceStride == 16 && !waterFar && !blendFar && s_nearhq && hqTable
+                        && tn_queue_near(quad, faces + (uint32_t)f*16u));
             if (near) {
                 tn_near_face(W, cpu, sv, F, host_col, h_near, nearBase, h_far, farBase,
                              fogRef, hqTable, faces + (uint32_t)f * 16u, straddle);
+                tn_blend_census(W, blendFar, 1);
                 FARDBG_DROP("nearhq");  /* emitted subdivided - the face-set
                                          * join can't corner-match the parent */
                 continue;
@@ -12972,9 +13046,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                                             fogRef, { rc0, rc1, rc2, rc3 }, { c0, c1, c2, c3 },
                                             { sv[i0].vz, sv[i1].vz, sv[i2].vz, sv[i3].vz } };
                 tn_lpward_census(W, &lf);
-                if (s_hp_fog && !passLP && !waterFar && s_fog_mode == OPENPETE_FOG_ORIGINAL)
+                if (s_hp_fog && !passLP && !waterFar && !blendFar && s_fog_mode == OPENPETE_FOG_ORIGINAL)
                     faceT0k = tn_ladder_t0k(cz, fogRef);
-                tn_face_fog_words(W, passLP || waterFar, F->fogbias, faceT0k, ladPP);
+                tn_face_fog_words(W, passLP || waterFar || blendFar, F->fogbias, faceT0k, ladPP);
+                tn_blend_census(W, blendFar, 0);
                 W->fogcen[4] += dbg_delta > 0;
             }
             /* Authored-data corrections (unpainted vertex colours) - see

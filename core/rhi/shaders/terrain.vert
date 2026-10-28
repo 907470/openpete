@@ -1501,6 +1501,20 @@ void main()
                  && sz3_sum(m0.z, m1.z, m2.z, wz3, 4.0lf) >= 0x2000;
     if (waterFar && sz3_sum(m0.z, m1.z, m2.z, wz3, fogscale) >= 0x6000) { kill_vert(); return; }
 
+    /* ---- the game's HP far model under extended LOD on a heavy-fog level
+     * (terrain.c tn_face_blend_far): a textured face of blend 1-3 outside a
+     * second-walk sector (FF_WATER clear; a blended face of such a sector
+     * carries it) that the game's own near split leaves far (tn_game_far:
+     * near_canonical for a quad or under GF_TRI2, the tier-4 drain route
+     * for a triangle otherwise) takes the flat variant, the CLUT ladder and
+     * no heavy-fog words. ---- */
+    uint mblend = (inMat.x >> 21) & 3u;
+    bool gameFar = (quad || (gf & GF_TRI2) != 0)
+        ? !near_canonical(m0.z, m1.z, m2.z, wz3, ff & FF_W3_40, ff & FF_W3_80)
+        : !((gf & GF_TRI4) != 0 && nc4_tier4(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80));
+    bool blendFar = !lp && !fillPass && (gf & GF_HPRAW) != 0 && (gf & GF_HPFOG) != 0
+                 && (ff & FF_WATER) == 0u && (inMat.x & (1u << 23)) != 0u && mblend != 0u && gameFar;
+
     /* ---- LOD handoff: .s HP drop (tn_hp_face_drop mirror) ----
      * Dropped at sum of corner SZ3 >= m_LodDistance; with hp_drop.x set, a
      * face below that sum bound with any corner SZ3 < hp_drop.y is kept.
@@ -1563,7 +1577,7 @@ void main()
         front3d = ((ff & FF_DSIDE) != 0u) || f1 || f2;
     }
     bool near = false;
-    if (!lp && !fillPass && !waterFar && (gf & GF_NEARHQ) != 0 && quad
+    if (!lp && !fillPass && !waterFar && !blendFar && (gf & GF_NEARHQ) != 0 && quad
         && (straddle ? front3d : (front || front2)) && (ff & FF_HQELIG) != 0u) {
         if ((gf & GF_HQPIN) != 0) {
             /* --no-lod: HQ pinned ON for every eligible face at every
@@ -1596,7 +1610,7 @@ void main()
      * to the cells: every triangle not fully behind the camera with
      * w3 & 0x40 clear takes tier 4; the HQ pin sends every other one not
      * fully behind the camera to tier 2. */
-    bool trinear = !quad && !lp && !fillPass && !waterFar && (gf & GF_NEARHQ) != 0
+    bool trinear = !quad && !lp && !fillPass && !waterFar && !blendFar && (gf & GF_NEARHQ) != 0
                 && (straddle ? front3d : (front || front2)) && (ff & FF_HQELIG) != 0u;
     bool trifront = max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + 2.0lf * max(m2.z, 0.0lf) > 0.0lf;
     bool t4tri = trinear && (gf & GF_TRI4) != 0 && (ff & FF_CELLOK) != 0u
@@ -1771,7 +1785,8 @@ void main()
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     bool ladderFace = false;
     bool ladPP = false;   /* per-pixel ladder words on this face */
-    if (!lp && !hqv && !waterFar && (gf & GF_CLUTFOG) != 0 && (gf & GF_HPRAW) == 0 && (sf & SF_SECINLOD) != 0u
+    if (!lp && !hqv && !waterFar && (gf & GF_CLUTFOG) != 0 && ((gf & GF_HPRAW) == 0 || blendFar)
+        && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
         ladderFace = true;
         int t0k = ladder_t0k(m0.z, m1.z, m2.z, m3c.z, fogRef, fogscale, (gf & GF_LADNEAR) != 0);
@@ -1820,7 +1835,7 @@ void main()
         uv.y += uvdv;
     }
     vMat = uvec4(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16),
-                 (hpFog && !waterFar && (mat0 & (1u << 23)) != 0u) ? hqw
+                 (hpFog && !waterFar && !blendFar && (mat0 & (1u << 23)) != 0u) ? hqw
                  : ladPP ? uvec2(((ff & FF_FOGBIAS) != 0u) ? 0x40000000u : 0u, 0x40000000u)
                  : uvec2(0u));
     /* A borrowed face samples the auxiliary VRAM bank, 512 rows below the
