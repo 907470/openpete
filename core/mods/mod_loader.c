@@ -2968,7 +2968,7 @@ const char* openpete_mods_sdk_dir(void) {
 /* api entries whose surface a game's descriptor may leave out; each logs
  * that once per mod. */
 enum { UNSUP_READ_LEVEL_DATA, UNSUP_MOBY_CLASSES, UNSUP_VSTREAM_HANDLE,
-       UNSUP_ENTRIES };
+       UNSUP_ANTIPIRACY_SCAN, UNSUP_ENTRIES };
 
 /** @brief Log once per mod that the running game does not serve an api entry, and return the entry's refusal value.
  *
@@ -3135,6 +3135,24 @@ static int api_moby_classes(openpete_mod_t* self, uint16_t* out, int cap) {
     return openpete_mods_moby_classes(out, cap);
 }
 
+/** @brief Read one of the game's anti-piracy scans through the descriptor's observer.
+ *
+ * @param self The calling mod.
+ * @param key A walk key or a scanner moby's data block.
+ * @param out Receives the state; its struct_size must match.
+ * @return 0 when filled, -1 for a NULL or wrong-size @p out or an unseen
+ *         scanner, OPENPETE_MOD_ERR_UNSUPPORTED on a game with no
+ *         observer. */
+static int api_antipiracy_scan(openpete_mod_t* self, uint32_t key,
+                               openpete_mod_scan_t* out) {
+    const game_mod_desc_t* d = openpete_mods_game_desc();
+    if (!d->antipiracy_scan)
+        return api_unsupported(self, UNSUP_ANTIPIRACY_SCAN, "antipiracy_scan",
+                               "anti-piracy scan observer");
+    if (!out || out->struct_size != (uint32_t)sizeof(openpete_mod_scan_t)) return -1;
+    return d->antipiracy_scan(key, out);
+}
+
 /** @brief Register a fragment material for a mod with a per-instance refine callback.
  *
  * Like api_material_register, with the mod's refine callback attached as the
@@ -3221,7 +3239,8 @@ static int api_material_set_selector(openpete_mod_t* self, int material,
     X(int, material_set_selector, api_material_set_selector, -1, (openpete_mod_t* self, int material, const openpete_mod_material_selector_t* sel), (self, material, sel)) \
     X(int, moby_classes, api_moby_classes, -1, (openpete_mod_t* self, uint16_t* out, int cap), (self, out, cap)) \
     X(int, register_shutdown_hook, api_register_shutdown_hook, -1, (openpete_mod_t* self, openpete_mod_shutdown_fn fn), (self, fn)) \
-    X(int, save_register, openpete_modsave_register, -1, (openpete_mod_t* self, uint32_t schema, openpete_mod_save_write_fn write, openpete_mod_save_read_fn read), (self, schema, write, read))
+    X(int, save_register, openpete_modsave_register, -1, (openpete_mod_t* self, uint32_t schema, openpete_mod_save_write_fn write, openpete_mod_save_read_fn read), (self, schema, write, read)) \
+    X(int, antipiracy_scan, api_antipiracy_scan, -1, (openpete_mod_t* self, uint32_t key, openpete_mod_scan_t* out), (self, key, out))
 
 /* One gate_<member> per MOD_API_GATED_ENTRIES row. */
 #define MOD_API_GATED(ret, name, impl, refused, params, args)             \

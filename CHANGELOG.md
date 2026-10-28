@@ -69,6 +69,11 @@ openpete.com; the changelog page of the shipped docs makes it relative.
 - Spyro 3: a code mod's change to the program code the game's anti-piracy checks hash is reverted, and the log
   names the mod. `--scan-guard 0` (config key `scan_guard`, variable `OPENPETE_SCAN_GUARD`) lets the change stay;
   the flag has no effect on Spyro 1 and 2.
+- Mod SDK: `antipiracy_scan` reads the state of Spyro 3's anti-piracy checks (the power-on, title and level-load
+  checks, and each level's checking characters and objects) and the game's own pass or fail verdict, read only;
+  `OPENPETE_MOD_ERR_UNSUPPORTED` on Spyro 1 and 2. The example mod `s3-antipiracy-sentinel` (formerly
+  `s3-scan-markers`) colours each checking object by its check's state, lists the other checks in the mods panel,
+  and can show a notification when a check fails.
 - Mod SDK: `OPENPETE_MOD_ERR_UNSUPPORTED` (-2) is returned by `read_level_data` and `moby_classes` on a game that
   does not provide them; every other return value is unchanged.
 - Mod SDK: `draw_text` draws on Spyro 2 and 3, in the game's own font.

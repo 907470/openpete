@@ -1,0 +1,58 @@
+# s3-antipiracy-sentinel: shows Spyro 3's anti-piracy checks as they run.
+#
+# Spyro 3 checks its own program for changes while you play: once at power-on,
+# once as the title screen starts, during every level load, and in 24 levels
+# through one or two characters or objects that compute a checksum of the
+# program a few bytes at a time. This mod colours each checking object, and
+# only the copies of it that actually check: blue before its check starts,
+# yellow while it runs, green when the game's own test passes, red when it
+# fails. The power-on, title and loading checks have no object; the mods panel
+# lists their state. On an unmodified game every check passes.
+#
+# Settings: **Toast on failures** (on by default) shows a notification when a
+# check fails. **Toast every change** shows one each time a check starts,
+# passes or fails.
+#
+# **Force checks to fail** (off by default) makes the checks run by objects
+# fail on purpose, through the game's own test. The game then treats your save
+# as a pirated copy's: in that level an egg you collected can be marked
+# uncollected again, and other progress and level state can be damaged. Turn
+# it on only with a scratch save or no memory card. With it off the mod
+# changes nothing in the game.
+#
+# uses: `api->antipiracy_scan` - each check's state and the game's verdict
+# uses: `api->material_register_refine` - per-object colour from the check's state
+# uses: `api->override_addr` - a once-per-tick hook and a level-load hook that poll the checks
+# uses: `api->notify` - the optional notifications, one per check
+# uses: `api->config_bool` - toast_failures, toast_all, force_fail
+
+[mod]
+id      = "s3-antipiracy-sentinel"
+name    = "S3 Anti-Piracy Sentinel"
+version = "0.2.0"
+game    = "spyro-3"
+api     = 13
+state    = "rebuildable" # last-reported states, re-read from the engine's scan observer
+runahead = "host-fx"     # log lines and notifications on state changes
+sim_mutative = true      # force_fail writes the scan CRC words; off by default
+
+[[config]]
+key = "toast_failures"
+type = "bool"
+default = true
+label = "Toast on failures"
+help = "Shows a notification when an anti-piracy check fails. On an unmodified game a check fails only with Force checks to fail on."
+
+[[config]]
+key = "toast_all"
+type = "bool"
+default = false
+label = "Toast every change"
+help = "Shows a notification each time a check starts, passes or fails, whatever Toast on failures is set to. Each check keeps one notification; a newer one replaces the older."
+
+[[config]]
+key = "force_fail"
+type = "bool"
+default = false
+label = "Force checks to fail"
+help = "Makes the anti-piracy checks run by objects in a level fail, the way they would on a pirated copy. The game then damages the save: an egg you collected in that level can be marked uncollected, and other progress and level state can be damaged. Use a scratch save or no memory card."

@@ -189,6 +189,43 @@ typedef struct openpete_mod_pose {
     uint32_t tick;        /**< The canonical tick the record was sampled at; 0 for a live read from tick context. */
 } openpete_mod_pose_t;
 
+/** @name Anti-piracy scan states (openpete_mod_scan_t::state)
+ * @{ */
+#define OP_SCAN_IDLE    0 /**< Not started: no step seen, or a walk not yet entered. */
+#define OP_SCAN_RUNNING 1 /**< Started and not yet compared. */
+#define OP_SCAN_PASS    2 /**< Compared, and the game's own test passed. */
+#define OP_SCAN_FAIL    3 /**< Compared, and the game's own test failed. */
+/** @} */
+
+/** @name Anti-piracy walk keys (openpete_mod_api::antipiracy_scan)
+ * A key with bit 31 clear names a walk; every other key is a scanner moby's
+ * data block (the word at the moby record's offset 0).
+ * @{ */
+#define OP_SCAN_KEY_BOOT    1u /**< The boot walk: four CRC-16 checks over EXE and title text at power-on. */
+#define OP_SCAN_KEY_TITLE   2u /**< The title walk: two CRC-16 checks over EXE and title text when the title sequence starts. */
+#define OP_SCAN_KEY_LOADING 3u /**< The loading walk: CRC over EXE and loading-screen text during each level load. */
+/** @} */
+
+/**
+ * @brief One anti-piracy scan as read by openpete_mod_api::antipiracy_scan.
+ *
+ * Set `struct_size` to `sizeof(openpete_mod_scan_t)` before the call; the
+ * engine refuses any other size. A scan that restarts (the boss levels'
+ * one-function scans repeat) reads RUNNING again, with @c completed
+ * counting the comparisons made.
+ */
+typedef struct openpete_mod_scan {
+    uint32_t struct_size; /**< sizeof(openpete_mod_scan_t) at the mod's compile time. */
+    int32_t  state;       /**< OP_SCAN_IDLE, OP_SCAN_RUNNING, OP_SCAN_PASS or OP_SCAN_FAIL. */
+    uint32_t func;        /**< The scanning function's guest address. */
+    uint32_t cursor;      /**< The scan position at the last observation, a guest address. */
+    uint32_t end;         /**< The position at which the scan compares. */
+    uint32_t crc;         /**< The value the last comparison tested; 0 before one. */
+    uint32_t crc_addr;    /**< Guest address of the running CRC word; 0 for a walk that keeps it in registers. */
+    uint32_t steps;       /**< Advances observed (scanner calls that moved the cursor; checks made for the boot and title walks). */
+    uint32_t completed;   /**< Comparisons made. */
+} openpete_mod_scan_t;
+
 /** @brief Context handed to a present hook (openpete_mod_api::register_present_hook). */
 typedef struct openpete_present_ctx {
     uint32_t tick;   /**< Sim tick counter. */
@@ -544,8 +581,9 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
 /**
  * @brief Return value of an api entry whose surface the running game does not serve.
  *
- * `read_level_data` and `moby_classes` read a game-specific layer (level
- * data, the moby class census) that a game may leave out; on such a game
+ * `read_level_data`, `moby_classes` and `antipiracy_scan` read a
+ * game-specific layer (level data, the moby class census, Spyro 3's
+ * anti-piracy scans) that a game may leave out; on such a game
  * they return this code and log one line per mod naming the game, the
  * first time the mod calls each of them. Every other failure keeps its
  * documented value (-1 throughout the api), so `rc < 0` still tests for
@@ -1569,6 +1607,34 @@ typedef struct openpete_mod_api {
     int (*save_register)(openpete_mod_t* self, uint32_t schema,
                          openpete_mod_save_write_fn write,
                          openpete_mod_save_read_fn read);
+    /** @} */
+
+    /** @name Anti-piracy scans
+     * @{ */
+    /**
+     * @brief Read the state of one of Spyro 3's anti-piracy scans, as the engine's observer of them sees it.
+     *
+     * Spyro 3 hashes its own code with CRC checks: a boot walk, a title
+     * walk, a walk during each level load, and per-level scanner mobys
+     * that hash a few dozen bytes per update. The engine observes each
+     * one without changing it and applies the game's own pass test at
+     * the game's own comparison; this entry reports that verdict. Read
+     * only. A scanner moby's key is its data block (the word at the
+     * moby record's offset 0); the walks take the OP_SCAN_KEY_* keys. A
+     * scanner's state is kept until the level's overlay is replaced.
+     * Legal from tick context (overrides, refine callbacks).
+     * @param key OP_SCAN_KEY_BOOT, OP_SCAN_KEY_TITLE, OP_SCAN_KEY_LOADING,
+     *        or a scanner moby's data block.
+     * @param out Receives the state; its `struct_size` must equal
+     *        `sizeof(openpete_mod_scan_t)`.
+     * @return 0 when @p out was filled; -1 for a NULL @p out, a wrong
+     *         `struct_size`, or a data block whose scanner has not run
+     *         this level (no step observed); #OPENPETE_MOD_ERR_UNSUPPORTED
+     *         on Spyro 1 and 2.
+     * @since api 13
+     */
+    int (*antipiracy_scan)(openpete_mod_t* self, uint32_t key,
+                           openpete_mod_scan_t* out);
     /** @} */
 } openpete_mod_api_t;
 

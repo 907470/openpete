@@ -12,3 +12,4 @@ teapot-dragons
 imgui-panel
 pose-report
 game-arms
+s3-antipiracy-sentinel

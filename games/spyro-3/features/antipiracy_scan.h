@@ -1,5 +1,6 @@
 #pragma once
-/* antipiracy_scan.h - the level overlays' anti-piracy scan observer.
+/* antipiracy_scan.h - Spyro 3's anti-piracy scan observer: the level
+ * overlays' scanner mobys and the boot, title and loading walks.
  *
  * 24 of Spyro 3's 37 level overlays carry a scanner moby whose update walks
  * a CRC-16 over EXE .text and then over the overlay's own .text, a few
@@ -10,17 +11,25 @@
  * entry of the call that compares), logs one line per completed scan with
  * the game's own pass test, and counts the scans. It stores nothing to
  * guest RAM: its store hook passes every store down the chain unchanged.
+ * Each scan's and walk's state is published to mods through
+ * spyro3_antipiracy_scan_query (the mod api's antipiracy_scan).
  *
  * Called from game_extras_impl.c (the entry verdict hook). */
 
 #include <stdint.h>
 
 typedef struct CPUState CPUState;
+struct openpete_mod_scan;
 
-/** @brief Observe a level overlay's anti-piracy scanner when one is entered.
+/** @brief Observe a level overlay's anti-piracy scanner, and the boot, title and loading walks, at a function entry.
  *
  * First removes the end-store hook once the call it was installed for has
- * returned (the stack pointer is back at that call's entry value). Returns
+ * returned (the stack pointer is back at that call's entry value). Then the
+ * walks: crc16's entry from one of func_8002AB38's check loops (the boot
+ * walk), func_title_80074DEC's entry and the first entry after its loops
+ * (the title walk), func_8002CA50's entry (the loading walk); each walk
+ * check logs `<walk> walk check <n>: PASS|FAIL` and a failure goes through
+ * spyro3_antipiracy_report_fail with the walk's name as source. Returns
  * at once below the lowest scanner address. Otherwise the resident overlay
  * (spyro_get_active_overlay_magic) selects its scanner rows; an entry at a
  * row's address reads the scanner moby's data block (the word at a0) and
@@ -69,6 +78,31 @@ void spyro3_antipiracy_report_fail(const char* source, const char* detail);
  * @param writer Who stored: a mod name, `host poke`, `savestate load`, or
  *        the recompiled store's PC. */
 void spyro3_antipiracy_report_watch_hit(uint32_t addr, uint32_t size, const char* writer);
+
+/** @brief Record the loading walk's verdict, taken by the loader-state hook at the game's compare (loader state 8).
+ *
+ * Logs a `loading walk check` line, reports a failure through
+ * spyro3_antipiracy_report_fail with source `loading`, and publishes the
+ * verdict to antipiracy_scan.
+ * @param passed 1 when the cursor reached loading_text_end with a CRC of 0.
+ * @param cursor The cursor word the compare read.
+ * @param crc The CRC word the compare read. */
+void spyro3_antipiracy_loading_verdict(int passed, uint32_t cursor, uint32_t crc);
+
+/** @brief Fill a mod's view of one scan: a walk (OP_SCAN_KEY_*) or a scanner moby's data block.
+ *
+ * The descriptor hook behind the mod api's antipiracy_scan. Walks report
+ * IDLE until first entered; the boot walk is observed at crc16's entry
+ * from each of func_8002AB38's four check loops, the title walk's two
+ * checks are computed at func_title_80074DEC's entry and published once
+ * its loops have run, the loading walk runs while the loader is in states
+ * 2..7 with its cursor set. A scanner moby reports the slot this observer
+ * keeps for its data block.
+ * @param key The walk key or data block.
+ * @param out Receives the state (struct_size already checked).
+ * @return 0 when filled, -1 for a data block no scanner of the resident
+ *         level has run with. */
+int spyro3_antipiracy_scan_query(uint32_t key, struct openpete_mod_scan* out);
 
 /** @brief Return the run's anti-piracy counts.
  *

@@ -210,6 +210,7 @@ static void checksum_verdict(CPUState* cpu) {
             OPL_INFO_F("cd", "checksum walk passed (vbl=%d)",
                        SDL_GetAtomicInt(&openpete_vbl));
         spyro3_scan_watch_verdict(passed);
+        spyro3_antipiracy_loading_verdict(passed, cursor, crc);
     }
     s_last_state = state;
 }
@@ -322,7 +323,8 @@ extern const openpete_save_desc_t spyro3_save_desc; /* mods/mod_save_desc.c */
  * text-moby rasterizer. Level ops, the sfx canonicaliser and the
  * render-function list stay NULL, so the loader treats those surfaces as
  * unsupported on this game; the arena keeps the core default base. The guest-byte guard is
- * scan_watch.h's spyro3_scan_guard.
+ * scan_watch.h's spyro3_scan_guard, and antipiracy_scan reads
+ * features/antipiracy_scan.h's observer.
  * @return The descriptor, never NULL. */
 static const game_mod_desc_t* spyro3_mod_desc(void) {
     static game_mod_desc_t s_desc;
@@ -334,6 +336,7 @@ static const game_mod_desc_t* spyro3_mod_desc(void) {
         s_desc.text_emit    = text_moby_native_mod_emit;
         s_desc.save_desc    = &spyro3_save_desc;
         s_desc.guest_guard  = &spyro3_scan_guard;
+        s_desc.antipiracy_scan = spyro3_antipiracy_scan_query;
         s_built = 1;
     }
     return &s_desc;

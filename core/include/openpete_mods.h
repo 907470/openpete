@@ -1399,6 +1399,11 @@ typedef struct {
      * (openpete_modsave.h); NULL for a game with none, where save_register
      * returns -1. */
     const struct openpete_save_desc*   save_desc;
+    /* The anti-piracy scan observer behind antipiracy_scan: fills @p out
+     * for a walk key or a scanner moby's data block, returning 0, or -1
+     * for an unseen scanner; NULL for a game with none, where the entry
+     * returns OPENPETE_MOD_ERR_UNSUPPORTED. */
+    int (*antipiracy_scan)(uint32_t key, openpete_mod_scan_t* out);
 } game_mod_desc_t;
 
 /* Every render channel, OP_CHAN_MOBY through OP_CHAN_PORTAL, as a
