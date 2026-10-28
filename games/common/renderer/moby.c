@@ -12289,7 +12289,8 @@ static moby_clip_t moby_clip_switch_kind(CPUState* cpu,
  * stretch) and intact (fade_header_intact of the previous header against the
  * previous canonical table). A facing reversal of MOBY_MIRROR_HOLD_DEFAULT or
  * more, whatever OPENPETE_MOBY_MIRROR_HOLD is set to, logs a mirror line,
- * counted apart by whether the keyframe pair changed with the turn. Every 400
+ * counted apart by whether the keyframe pair changed with the turn. sc is the
+ * two headers' scale bytes (model units). Every 400
  * VBLs a stage line prints the engagement tally.
  * @param cpu The guest CPU state, read only.
  * @param moby The record's moby; an address below KSEG0 is ignored. */
@@ -12351,11 +12352,13 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
      * previous canonical pass drew it with (1 same, 0 changed, -1 no entry). */
     int intact = fade_header_intact(cpu, s_fade_prev, s_fade_prev_n, moby, pp.header);
     fprintf(stderr, "[moby-animsw-census vbl=%u] m=%08x cls=%03x kind=%s anim=%u->%u "
-                    "hdr=%08x->%08x n=%d->%d span=%.2f intact=%d\n",
+                    "hdr=%08x->%08x n=%d->%d sc=%u->%u span=%.2f intact=%d\n",
             openpete_frame, moby, (unsigned)ccls, kind[k],
             (unsigned)o->prev[game_layout.moby.anim_state_off],
             (unsigned)o->curr[game_layout.moby.anim_state_off],
             pp.header, pc.header, np, nc,
+            (unsigned)cpu->read_byte(pp.header + game_layout.moby.anim_scale_off),
+            (unsigned)cpu->read_byte(pc.header + game_layout.moby.anim_scale_off),
             (double)(o->curr_ns - o->prev_ns) / (double)g_openpete_tick_period_ns, intact);
 }
 
@@ -13454,6 +13457,41 @@ static void moby_fields_set_pose(moby_fields* f, const moby_pose_t* p) {
     f->w0       = (f->w0 & ~0xFF00u) | ((p->blend & 0xFFu) << 8);
 }
 
+/* Held records whose translation moby_fields_hold_retranslate carried into the
+ * held header's model unit, counted since start; printed in the
+ * OPENPETE_MOBY_ANIMSW_DBG line. */
+static long s_hold_rescaled = 0;
+
+/** @brief Carry a held record's stored translation from the current header's model unit into the held header's, on a game whose record stores the final translation.
+ *
+ * The stored translation is T(s) = (centre << 2) >> s for the header's scale
+ * byte s, so the held header's byte p takes T(p) = T(s) * 2^(s - p). TR_frac
+ * is multiplied by that factor exactly. TR_raw is the cull's stored integer
+ * where record_rebase_to_present left the record (same camera, moby at rest)
+ * and TR_frac rounded otherwise. When p > s it takes the arithmetic shift
+ * right by p - s, which on the stored integer is the game's own
+ * ((centre << 2) >> s) >> (p - s) = (centre << 2) >> p. When p < s a shift
+ * left would clear the low s - p bits the game keeps, so TR_raw is the
+ * rescaled TR_frac rounded. On a game whose
+ * record stores the unscaled translation the decode applies the held
+ * header's byte itself, and the record is left as it is.
+ * @param cpu The guest CPU state, read only.
+ * @param f The record fields, already carrying the held header.
+ * @param header_curr The header the record's translation was stored under. */
+static void moby_fields_hold_retranslate(CPUState* cpu, moby_fields* f, uint32_t header_curr) {
+    if (!game_layout.moby.rec_tr_final || f->header == header_curr ||
+        f->header < 0x80000000u || header_curr < 0x80000000u) return;
+    const int s = (int)(cpu->read_byte(header_curr + game_layout.moby.anim_scale_off) & 0xFFu);
+    const int p = (int)(cpu->read_byte(f->header + game_layout.moby.anim_scale_off) & 0xFFu);
+    if (s == p) return;
+    const double k = ldexp(1.0, s - p);
+    for (int i = 0; i < 3; i++) {
+        f->TR_frac[i] *= k;
+        f->TR_raw[i] = (p > s) ? (f->TR_raw[i] >> (p - s)) : (int)lround(f->TR_frac[i]);
+    }
+    s_hold_rescaled++;
+}
+
 /** @brief On a hold verdict below alpha 1, give a record the previous tick's pose whole.
  *
  * The record's moby switched into a clip with a different vertex count. No
@@ -13464,6 +13502,13 @@ static void moby_fields_set_pose(moby_fields* f, const moby_pose_t* p) {
  * canonical value. Translation and rotation keep interpolating: the keyframe
  * stream is model-space only, and the world position is the moby's own,
  * which the guest steps per tick independently of the clip.
+ *
+ * On a game whose record stores the final translation (rec_tr_final) that
+ * translation is in the current header's model unit: the cull stores
+ * (centre << 2) >> hdr[scale byte] (Spyro 2 mobydraw.s 80043F4C, 80043FCC)
+ * and the decode adds the vertices to it unscaled. moby_fields_hold_retranslate
+ * carries it into the held header's unit, so the held pose draws at the size
+ * and depth the game drew it.
  * @param cpu The guest CPU state, read only.
  * @param moby The moby's PSX address.
  * @param f The record fields, rewritten on a hold.
@@ -13474,7 +13519,9 @@ static void moby_fields_set_pose(moby_fields* f, const moby_pose_t* p) {
 static uint32_t moby_fields_hold_prev(CPUState* cpu, uint32_t moby, moby_fields* f,
                                       const moby_pose_t* prev, int verdict, double alpha) {
     if (verdict != MOBY_PREV_HOLD || alpha >= 1.0) return 0u;
+    const uint32_t header_curr = f->header;
     moby_fields_set_pose(f, prev);
+    moby_fields_hold_retranslate(cpu, f, header_curr);
     uint32_t cls = cpu->read_half(moby + game_layout.moby.class_off);
     return cpu->read_word(game_layout.moby.model_table + cls * 4u);
 }
@@ -14187,17 +14234,19 @@ static void moby_reextract_body(CPUState* cpu) {
         static long last_cross = -1, last_snap = -1;
         static long last_guard = -1;
         long guard = s_hold_shown + s_hold_period + s_prevhdr_sig + s_prevhdr_unk + s_animsw_heldx +
-                     s_animsw_noheld + s_animsw_scale_lerp + s_animsw_scale_hold + s_prev_rescaled;
+                     s_animsw_noheld + s_animsw_scale_lerp + s_animsw_scale_hold + s_prev_rescaled +
+                     s_hold_rescaled;
         if (s_animsw_cross != last_cross || s_animsw_snap != last_snap || guard != last_guard) {
             last_cross = s_animsw_cross; last_snap = s_animsw_snap; last_guard = guard;
             fprintf(stderr, "[moby-animsw vbl=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld "
                             "held(facing-reversal)=%ld hold-shown=%ld hold-period-ended=%ld "
                             "prevhdr-refused(sig)=%ld prevhdr-refused(unknown)=%ld "
                             "held-shown=%ld held-refused=%ld scale-differ(lerp)=%ld "
-                            "scale-differ(hold)=%ld prev-rescaled=%ld\n",
+                            "scale-differ(hold)=%ld prev-rescaled=%ld hold-rescaled=%ld\n",
                     openpete_frame, s_animsw_cross, s_animsw_snap, s_animsw_mirror,
                     s_hold_shown, s_hold_period, s_prevhdr_sig, s_prevhdr_unk, s_animsw_heldx,
-                    s_animsw_noheld, s_animsw_scale_lerp, s_animsw_scale_hold, s_prev_rescaled);
+                    s_animsw_noheld, s_animsw_scale_lerp, s_animsw_scale_hold, s_prev_rescaled,
+                    s_hold_rescaled);
         }
     }
 }
