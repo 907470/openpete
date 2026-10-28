@@ -63,6 +63,8 @@ typedef struct {
                           * (two back from curr) - enables cubic/pred1 interp
                           * with a centered start-tangent, else fall back to
                           * the linear prev->curr lerp. */
+    uint8_t  curr_unshown;  /* 1 iff curr was captured from a record the game did not draw */
+    uint8_t  unshown_spent; /* 1 iff this spawn already replaced an unshown curr */
     uint16_t blob_len;   /* valid bytes in prev/curr/prev2 (<= the registered size) */
     /* The three blobs, each the registered blob size, carved out of the
      * table's own allocation: the entry never owns storage, so its slot owns
@@ -147,6 +149,33 @@ void openpete_interp_objs_begin_tick(void);
  * @param data Blob source; NULL is ignored.
  * @param len Bytes to record, clamped to the registered blob size. */
 void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len);
+
+/** @brief Record object @p key's current blob, with the game's drawn verdict for the record.
+ *
+ * openpete_interp_objs_capture with @p shown 1. With @p shown 0 the entry
+ * remembers that curr holds a state the game did not draw. A changed blob on
+ * an entry that has never rolled (have_prev 0) whose curr is unshown replaces
+ * curr and keeps have_prev 0, once per spawn: a record the game spawns
+ * undrawn and places on a later tick pairs from its placed state, so every
+ * channel snaps on its first drawn tick as on a spawn. A spawn the game draws
+ * on its spawn tick rolls as before.
+ * @param key Object identity; 0 is ignored.
+ * @param data Blob source; NULL is ignored.
+ * @param len Bytes to record, clamped to the registered blob size.
+ * @param shown 1 when the game drew the record on this tick, else 0.
+ * @return 1 when the blob replaced an unshown spawn's curr, else 0. */
+int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t len, int shown);
+
+/** @brief Return the number of unshown-spawn replacements since startup.
+ *
+ * @return Count of captures openpete_interp_objs_capture_shown returned 1 for. */
+uint32_t openpete_interp_objs_unshown_replacements(void);
+
+/** @brief Report whether OPENPETE_INTERP_OBJS_KEYLOG is set to a value other than 0.
+ *
+ * Read once on first call.
+ * @return 1 when the per-key identity log is on, else 0. */
+int openpete_interp_objs_keylog(void);
 
 /** @brief End a capture tick by evicting every object not seen since begin_tick.
  *

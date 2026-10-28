@@ -187,17 +187,44 @@ void openpete_interp_objs_begin_tick(void) {
     s_stat_spawned = 0;
 }
 
+static uint32_t s_unshown_replaced;   /* cumulative unshown-spawn replacements */
+
+int openpete_interp_objs_keylog(void) {
+    static int s_keylog = -1;
+    if (s_keylog < 0) {
+        const char* e = getenv("OPENPETE_INTERP_OBJS_KEYLOG");
+        s_keylog = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return s_keylog;
+}
+
+uint32_t openpete_interp_objs_unshown_replacements(void) { return s_unshown_replaced; }
+
 extern unsigned openpete_frame;
 void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) {
-    if (key == 0 || !data) return;
-    if (!objs_alloc()) return;
+    (void)openpete_interp_objs_capture_shown(key, data, len, 1);
+}
+
+int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t len, int shown) {
+    if (key == 0 || !data) return 0;
+    if (!objs_alloc()) return 0;
     if (len > BLOB) len = BLOB;
 
     int found;
     uint32_t i = probe(key, &found);
-    if (i >= SLOTS) return;   /* table full - drop rather than corrupt a colliding slot */
+    if (i >= SLOTS) return 0;   /* table full - drop rather than corrupt a colliding slot */
 
-    if (found) {
+    int replaced = 0;
+    if (found && !s_tab[i].have_prev && s_tab[i].curr_unshown && !s_tab[i].unshown_spent &&
+        !(s_tab[i].blob_len == (uint16_t)len && memcmp(s_tab[i].curr, data, len) == 0)) {
+        /* Never-rolled entry whose curr the game did not draw (a record spawned
+         * at a parking pose and placed on a later tick): the new state replaces
+         * curr as a fresh spawn, so no channel pairs from the undrawn pose. */
+        s_tab[i].unshown_spent = 1;
+        s_tab[i].curr_ns       = objs_tick_stamp();
+        s_unshown_replaced++;
+        replaced = 1;
+    } else if (found) {
         /* Dedupe at capture (mirrors openpete_interp_capture): if this object's
          * blob is byte-identical to last tick's curr, the game logic didn't
          * advance it (30 Hz logic on a 60 Hz VBL -> every other tick is static),
@@ -211,7 +238,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
             memcmp(s_tab[i].curr, data, len) == 0) {
             s_tab[i].seen         = 1;
             s_tab[i].curr_seen_ns = objs_tick_stamp();
-            return;                       /* unchanged - keep prev/curr + their roll timestamps */
+            return 0;                     /* unchanged - keep prev/curr + their roll timestamps */
         }
         /* Existing object that moved: roll prev -> prev2 (for the pred1 centered
          * tangent), then curr -> prev, write curr, and stamp the roll times so
@@ -236,24 +263,23 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         s_tab[i].prev_ns   = 0;
         s_tab[i].prev_seen_ns = 0;
         s_tab[i].curr_ns   = objs_tick_stamp();
+        s_tab[i].unshown_spent = 0;
         s_stat_spawned++;
         /* OPENPETE_INTERP_OBJS_KEYLOG: one stderr line per spawn, with the
          * key - the identity instrument for keying tests (a re-keyed object
          * shows as a spawn every tick it is re-keyed). */
-        {
-            static int s_keylog = -1;
-            if (s_keylog < 0) {
-                const char* e = getenv("OPENPETE_INTERP_OBJS_KEYLOG");
-                s_keylog = (e && *e && *e != '0') ? 1 : 0;
-            }
-            if (s_keylog)
-                fprintf(stderr, "[interp-objs] f=%u spawn key=%08x\n", openpete_frame, key);
-        }
+        if (openpete_interp_objs_keylog())
+            fprintf(stderr, "[interp-objs] f=%u spawn key=%08x\n", openpete_frame, key);
     }
+    if (replaced && openpete_interp_objs_keylog())
+        fprintf(stderr, "[interp-objs] f=%u unshown-replace key=%08x n=%u\n",
+                openpete_frame, key, s_unshown_replaced);
     memcpy(s_tab[i].curr, data, len);
     s_tab[i].blob_len     = (uint16_t)len;
+    s_tab[i].curr_unshown = shown ? 0 : 1;
     s_tab[i].seen         = 1;
     s_tab[i].curr_seen_ns = s_tab[i].curr_ns;
+    return replaced;
 }
 
 void openpete_interp_objs_end_tick(void) {

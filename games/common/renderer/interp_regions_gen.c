@@ -386,7 +386,17 @@ void game_interp_capture_moby_array(void) {
         if (st < 0x80) {                                         /* 0x80 and above: dormant, skipped */
             const void* src = stash_source(&sw, m, host, blob);
             const uint32_t key = game_credits_letter_key(m);
-            openpete_interp_objs_capture(key, src, blob);
+            /* The record's drawn byte (the game's cull verdict) marks a state
+             * the game did not draw, so a spawn parked undrawn and placed on a
+             * later tick snaps on its first drawn tick. */
+            const int shown = ((const uint8_t*)host)[game_layout.moby.drawn_off] != 0;
+            if (openpete_interp_objs_capture_shown(key, src, blob, shown) &&
+                openpete_interp_objs_keylog()) {
+                uint16_t cls;
+                memcpy(&cls, (const uint8_t*)host + game_layout.moby.class_off, 2);
+                fprintf(stderr, "[interp-objs] f=%u unshown-replace m=%08x cls=%03x\n",
+                        openpete_frame, m, cls);
+            }
             cut_props_capture((const uint8_t*)src);
             if (n_live < sizeof s_live / sizeof s_live[0]) s_live[n_live++] = key;
             if (s_ctc >= 0) captrace_moby(m, (const uint8_t*)host, s_ctc);
