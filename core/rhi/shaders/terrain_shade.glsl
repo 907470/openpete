@@ -16,7 +16,6 @@
 #ifndef OPENPETE_TERRAIN_SHADE_GLSL
 #define OPENPETE_TERRAIN_SHADE_GLSL
 
-#extension GL_ARB_gpu_shader_fp64 : require
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
 #include "psx_texel.glsl"
@@ -54,15 +53,16 @@ layout(location = 15) flat in float vKcls; /* the face's terrain class byte */
  * `fog`, `hd_lad` or the cover planes must be mirrored here. */
 layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  mrow0; vec4 mrow1; vec4 mrow2;
-    dvec2 dcam_xy; dvec2 dcam_zf; dvec2 dof_xy; dvec2 dH;
-    dvec2 dnear; dvec2 dspare;
+    vec4  cam_pad_[2];   /* the camera split (vertex-stage state)          */
+    vec4  ofH;           /* xy: the GTE screen offset, z: H                */
+    vec4  aux_;          /* vertex-stage state                             */
     ivec4 fog;
-    vec4  pad_[302];     /* scroll_dv and the rim frames (vertex-stage state) */
+    vec4  pad_[264];     /* scroll_dv and the float rim frames (vertex-stage state) */
     vec4  hd_lad;        /* HD fold: continuous-fog ramp ts, tb; count; enable */
     vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)    */
     ivec4 cov_cnt;       /* portal cover planes (portal_cover.glsl)       */
-    dvec4 cov_margin;
-    dvec4 cov_abc[6];
+    vec4  cov_margin;
+    vec4  cov_abc[6];
     vec4  cov_bbox[6];
     vec4  cov_poly[96];
 } g;
@@ -210,7 +210,7 @@ void ter_key_plane_init()
     const float z = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
     const vec2 s = vec2(ter_pc.fc.x * gl_FragCoord.x + ter_pc.fc.y,
                         ter_pc.fc.z * gl_FragCoord.y + ter_pc.fc.w);
-    const vec3 P = vec3((s - vec2(g.dof_xy)) * (z / float(g.dH.x)), z);
+    const vec3 P = vec3((s - g.ofH.xy) * (z / g.ofH.z), z);
     const vec3 n = cross(dFdx(P), dFdy(P));
     const float nl = length(n);
     ter_key_plane = nl > 0.0 ? abs(dot(n, P)) / nl : 0.0;

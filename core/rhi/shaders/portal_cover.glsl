@@ -16,9 +16,8 @@
  *   vec4  cov_abc[6]   the plane's screen-space field 1/vz = a x + b y + c; w = outline point count
  *   vec4  cov_bbox[6]  the outline's screen bounding box x0, y0, x1, y1
  *   vec4  cov_poly[96] the outline points (x, y, 0, 0), 16 per plane
- * cov_margin and cov_abc may be dvec4 instead (the retained-terrain block of
- * terrain_shade.glsl, built only on devices with shaderFloat64); every read
- * converts them to float, so the test computes in float either way.
+ * Every read converts through float(...), so a block may also declare
+ * cov_margin and cov_abc as dvec4 and the test still computes in float.
  * Screen coordinates are the scene feed's PSX screen space. */
 
 #ifndef OPENPETE_PORTAL_COVER_GLSL

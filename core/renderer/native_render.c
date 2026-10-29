@@ -6752,7 +6752,8 @@ static int nr_eager_twins(rhi_device *dev, const nr_eager_descs *d, const nr_eag
 
 /** @brief Return whether the terrain cache can draw on this device, the conditions of openpete_native_tercache_usable known before bring-up.
  *
- * shaderFloat64, which the terrain vertex stages declare, and a hardware
+ * shaderFloat64 when the fp64 terrain vertex stages are selected
+ * (openpete_tercache_device_precision_ok), and a hardware
  * device unless OPENPETE_TERRAIN_CACHE_FORCE waives the software-device
  * exclusion. The variable is read through openpete_config_env, so the
  * game-neutral stage's [env] winner counts before the full stage sets it.
@@ -6760,7 +6761,7 @@ static int nr_eager_twins(rhi_device *dev, const nr_eager_descs *d, const nr_eag
  * @return 1 when the cache's pipelines may be created on @p dev. */
 static int nr_tercache_device_ok(const rhi_device *dev)
 {
-    if (!rhi_device_has_float64(dev)) return 0;
+    if (!openpete_tercache_device_precision_ok(dev)) return 0;
     const char *force = openpete_config_env("OPENPETE_TERRAIN_CACHE_FORCE");
     return (force && *force && *force != '0') || !rhi_device_is_software(dev);
 }
@@ -7620,8 +7621,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * kill switch - it skips the ~130 MB device-memory arenas too). Software
      * vk never draws the retained path (the usable() exclusion), so don't
      * spend the arenas there either - except under the FORCE waiver the
-     * llvmpipe parity harness uses. A device without shaderFloat64 never
-     * draws it either (nr_tercache_device_ok). A failed init logs + leaves
+     * llvmpipe parity harness uses. A device without shaderFloat64 draws
+     * it only with the fp32 stages selected (nr_tercache_device_ok). A failed init logs + leaves
      * the CPU walk in place. */
     if (opts->terrain_cache && nr_tercache_device_ok(dev))
         openpete_tercache_init(dev, nr_eager_batch);
@@ -7661,9 +7662,9 @@ int openpete_native_tercache_usable(void)
         && scene_delay_depth() == 0
         && !tag_split_dev()
         && !scene_box_armed()
-        /* fp64 in terrain.vert is what makes the mirror bit-exact vs the
-         * CPU walk's double math - no fp64, no retained path. */
-        && rhi_device_has_float64(s_nr.dev)
+        /* The fp64 vertex stages need shaderFloat64; the fp32 ones run
+         * on any device. */
+        && openpete_tercache_device_precision_ok(s_nr.dev)
         && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 

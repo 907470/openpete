@@ -212,6 +212,57 @@ foreach(v near anim)
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv)
 endforeach()
+# <variant>_fp32.vert: the five terrain vertex stages above built with
+# TERRAIN_FP32 (the position chain and its verdicts in fp32, no Float64
+# capability), through the same SSA passes: the NVIDIA memory-form fault
+# is a property of the stage's form, not of its precision.
+foreach(v plain anim near cells_near cells_anim)
+    set(defs --define-macro TERRAIN_FP32=1)
+    if(v STREQUAL "plain")
+        set(name terrain_fp32)
+    else()
+        set(name terrain_${v}_fp32)
+        if(v MATCHES "^cells_")
+            list(APPEND defs --define-macro TERRAIN_CELLS=1)
+        endif()
+        string(REGEX REPLACE "^cells_" "" base ${v})
+        string(TOUPPER ${base} V)
+        list(APPEND defs --define-macro TERRAIN_${V}=1)
+    endif()
+    add_custom_command(
+        OUTPUT ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} ${defs}
+                ${RHI_SHADER_SRC_DIR}/terrain.vert
+                -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
+        COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
+                ${RHI_SHADER_OUT_DIR}/${name}.vert.spv -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
+        DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
+        COMMENT "glslangValidator terrain.vert (TERRAIN_FP32 ${v}) -> ${name}.vert.spv"
+        VERBATIM)
+    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${name}.vert.spv)
+endforeach()
+# The fp32 build carries no fp64: no module but the five fp64 terrain stages
+# declares the Float64 capability (the primary check, on the compiled
+# output), and no source line of the fp32 build spells an fp64 type,
+# literal or extension (the secondary check, naming the line). The embed
+# depends on both stamps, so a violation fails the build that made it.
+set(RHI_FP64_GUARD ${CMAKE_SOURCE_DIR}/scripts/fences/shader_fp64_guard.py)
+file(GLOB RHI_SHADER_SOURCES CONFIGURE_DEPENDS
+     ${RHI_SHADER_SRC_DIR}/*.vert ${RHI_SHADER_SRC_DIR}/*.frag ${RHI_SHADER_SRC_DIR}/*.glsl)
+add_custom_command(
+    OUTPUT ${RHI_SHADER_OUT_DIR}/fp64_capability.stamp
+    COMMAND python3 ${RHI_FP64_GUARD} capability ${RHI_SHADER_OUT_DIR}/fp64_capability.stamp
+            ${RHI_SHADER_SPV}
+    DEPENDS ${RHI_SHADER_SPV} ${RHI_FP64_GUARD}
+    COMMENT "shader fp64 fence: no Float64 capability in the fp32 build"
+    VERBATIM)
+add_custom_command(
+    OUTPUT ${RHI_SHADER_OUT_DIR}/fp64_source.stamp
+    COMMAND python3 ${RHI_FP64_GUARD} source ${GLSLANG_VALIDATOR} ${RHI_SHADER_SRC_DIR}
+            ${RHI_SHADER_OUT_DIR}/fp64_source.stamp
+    DEPENDS ${RHI_SHADER_SOURCES} ${RHI_FP64_GUARD}
+    COMMENT "shader fp64 fence: no fp64 spelling in the fp32 build's sources"
+    VERBATIM)
 # Embed the compiled .spv into the binary: a build-time `cmake -P` step turns
 # the SPIR-V into a generated C source (byte arrays + a name->blob table),
 # which is compiled into the library. The renderer then loads shaders from
@@ -228,6 +279,7 @@ add_custom_command(
             -DOUT_C=${RHI_EMBED_C}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.cmake
     DEPENDS ${RHI_SHADER_SPV} ${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.cmake
+            ${RHI_SHADER_OUT_DIR}/fp64_capability.stamp ${RHI_SHADER_OUT_DIR}/fp64_source.stamp
     COMMENT "Embedding SPIR-V shaders -> rhi_shaders_embedded.c"
     VERBATIM)
 

@@ -299,6 +299,21 @@ int  openpete_tercache_init(struct rhi_device *dev, void (*batch)(int open));
  * precompile). Display owner only.
  * @param dev Device in description mode; NULL does nothing. */
 void openpete_tercache_describe(struct rhi_device *dev);
+/** @brief Return whether the terrain cache's vertex stages are the TERRAIN_FP32 build.
+ *
+ * OPENPETE_TERRAIN_FP32 set and not "0" selects the fp32 stages (no
+ * Float64 capability); unset, the fp64 stages. Read through
+ * openpete_config_device_value at the first call and latched, so the
+ * launcher's describe, bring-up's init and every material pipeline take
+ * the same build.
+ * @return 1 for the fp32 build, 0 for the fp64 build. */
+int  openpete_tercache_fp32(void);
+/** @brief Return whether a device can run the selected build of the terrain vertex stages.
+ *
+ * The fp32 build needs no device feature; the fp64 build needs shaderFloat64.
+ * @param dev The device.
+ * @return 1 when the selected stages may be created on @p dev. */
+int  openpete_tercache_device_precision_ok(const struct rhi_device *dev);
 /** @brief Destroy the terrain cache's device objects and zero its state, keeping the final stats.
  *
  * The stats are snapshotted first so a census printed after teardown
@@ -573,8 +588,10 @@ void openpete_tercache_frame_slots(char *out, int cap);
  * reference-compare scene delay is selected (the cache draws the live walk,
  * not the scene history ring), neither the tag-split nor the tag-tint
  * instrument nor the OPENPETE_SCENE_BOXDBG box instrument is armed (their
- * semantics live in the CPU batcher), the device has fp64 (terrain.vert
- * needs it to match the CPU walk's double math bit for bit), and the device
+ * semantics live in the CPU batcher), the device can run the selected
+ * terrain vertex stages (openpete_tercache_device_precision_ok: shaderFloat64
+ * for the fp64 stages, which match the CPU walk's double math bit for bit;
+ * nothing for the TERRAIN_FP32 stages), and the device
  * is a hardware GPU (terrain.vert runs slowly on llvmpipe) unless
  * OPENPETE_TERRAIN_CACHE_FORCE=1 waives that.
  *

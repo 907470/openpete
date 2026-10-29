@@ -586,8 +586,9 @@ uint32_t rhi_swapchain_image_count(const rhi_device *dev);
 bool        rhi_device_is_software(const rhi_device *dev);
 /** @brief Return whether shaderFloat64 is enabled on this device.
  *
- * The retained-terrain vertex stage needs fp64 to mirror the CPU walk's
- * double math bit-for-bit; the terrain cache stays off without it.
+ * The fp64 retained-terrain vertex stages need it to mirror the CPU walk's
+ * double math bit-for-bit; without it the terrain cache runs only on the
+ * TERRAIN_FP32 stages.
  * @param dev Device, or NULL.
  * @return true when enabled; false otherwise or for NULL. */
 bool        rhi_device_has_float64(const rhi_device *dev);

@@ -5,7 +5,9 @@
 #include "openpete_terrain_cache.h"
 #include "openpete_mods.h"   /* terrain material buckets + their pipelines */
 #include "openpete_native_render.h"   /* scene ring: is a build stamp still referenced */
+#include "openpete_config.h"          /* OPENPETE_TERRAIN_FP32, a device-creation knob */
 
+#include <math.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -117,28 +119,62 @@ typedef struct {
 
 typedef struct { uint8_t arena, buf; uint32_t first, count, stamp; } tc_defer;
 
-/* std140 globals block (mirrors terrain.vert TerrainGlobals). Camera /
- * projection / fog scalars are DOUBLE - the vertex stage re-runs the CPU
- * walk's double GTE chain bit-for-bit. C natural layout == std140 here
- * (vec4 x3 = 48 B, then six 16 B-aligned dvec2, then ivec4 at 144). */
+/* std140 globals block (mirrors terrain.vert TerrainGlobals). C natural
+ * layout == std140 here: every member before the fp64 tail is a 16-byte
+ * vec4/ivec4 run, and the tail starts 32-byte aligned (f64_pad), so its
+ * dvec2 runs (16-byte alignment, double[2]) and dvec4 runs (32-byte
+ * alignment) land where std140 puts them. The float fields ahead of the
+ * tail are what the TERRAIN_FP32 stage reads; the tail is what the fp64
+ * stage reads (the camera / projection / fog scalars in double, re-running
+ * the CPU walk's double GTE chain bit for bit). */
 typedef struct {
     float mrow0[4];    /* M[0][0..2], pad */
     float mrow1[4];    /* M[1][0..2], pad */
     float mrow2[4];    /* M[2][0..2], pad */
+    int32_t cam_int_x4[4];  /* floor(cam x4) per axis, x4 = world/16 x 4 */
+    float cam_frac_x4[4];   /* cam x4 - cam_int_x4, in [0, 1)            */
+    float ofH[4];      /* ofx, ofy, H, poly-anim alpha */
+    float aux[4];      /* near-plane view-Z, H_canon, env-anim colour alpha, fogscale */
+    int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, ot_terms */
+    float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
+    /* Portal inner-rim cull frames (portal_rim_classify mirror): the float
+     * copies here, the double originals in the tail. rim_cnt.x = plane
+     * count (0 = test off). */
+    int32_t rim_cnt[4];
+    int32_t hp_drop[4];    /* HP far-face drop: sum bound, corner bound (0 = sum alone) */
+    float   frim_oxyH[4];
+    float   frim_knobs[4];
+    float   frim_abc[6][4];
+    float   frim_O[6][4];
+    float   frim_U[6][4];
+    float   frim_W[6][4];
+    float   frim_nrm[6][4];
+    float   frim_bbox[6][4];
+    float   frim_pv[96][4];  /* vec2 array: std140 stride 16 */
+    /* HD texture-replacement fold: the continuous-fog ramp (ts, tb) +
+     * entry count/enable, then the entry table (4 vec4 per entry: page
+     * rect, atlas rect, fogA + filter class, fogB). Snapshotted from
+     * openpete_native_hdfold_table at frame_begin. */
+    float   hd_lad[4];
+    float   hd_entry[OPENPETE_HDFOLD_MAX][16];
+    /* Portal cover planes for the blended passes' fragment discard
+     * (terrain.frag, portal_cover.glsl): active opening planes in screen
+     * space. cov_poly holds one screen point per vec4 slot, 16 slots per
+     * plane. */
+    int32_t cov_cnt[4];    /* x = plane count (0 = test off); y = blended cover on */
+    float   cov_margin[4]; /* x = cover margin M (world units)            */
+    float   cov_abc[6][4]; /* screen inv-vz plane fit a, b, c; w = pn     */
+    float   cov_bbox[6][4];/* outline screen bbox x0, y0, x1, y1          */
+    float   cov_poly[96][4];/* outline points (px, py, 0, 0), 16 per plane */
+    float   sdvc[128][4];  /* per-tile 4x4 near-cell row V offsets (rows 0-3) */
+    /* fp64 tail (the fp64 stage only). */
+    float   f64_pad[4];
     double dcam_xy[2]; /* camx, camy      */
     double dcam_zf[2]; /* camz, fogscale  */
     double dof_xy[2];  /* ofx, ofy        */
     double dH[2];      /* H, poly-anim alpha */
     double dnear[2];   /* x: near-plane view-Z (near-stage clip); y unused */
     double dspare[2];  /* x: H_canon (limit-regime mirrors); y: env-anim colour alpha */
-    int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, ot_terms */
-    float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
-    /* Portal inner-rim cull frames (portal_rim_classify mirror; all fp64).
-     * Offset here is 2208 = 32-aligned, so the dvec4 run below keeps
-     * C natural layout == std140 (dvec4 base alignment 32, dvec2 array
-     * stride 16 == double[2]). rim_cnt.x = plane count (0 = test off). */
-    int32_t rim_cnt[4];
-    int32_t hp_drop[4];    /* HP far-face drop: sum bound, corner bound (0 = sum alone) */
     double  rim_oxyH[4];   /* rim ofx, ofy, H, pad                       */
     double  rim_knobs[4];  /* eps, near, reach, cos(angle)               */
     double  rim_abc[6][4]; /* screen inv-vz plane fit a,b,c; w = valid   */
@@ -148,24 +184,6 @@ typedef struct {
     double  rim_nrm[6][4]; /* unit view normal; w = outline vn           */
     double  rim_bbox[6][4];/* outline UV bbox pulo, puhi, pvlo, pvhi     */
     double  rim_pv[96][2]; /* outlines in (U,W), 16 slots per plane      */
-    /* HD texture-replacement fold: the continuous-fog ramp (ts, tb) +
-     * entry count/enable, then the entry table (4 vec4 per entry: page
-     * rect, atlas rect, fogA + filter class, fogB). Snapshotted from
-     * openpete_native_hdfold_table at frame_begin. */
-    float   hd_lad[4];
-    float   hd_entry[OPENPETE_HDFOLD_MAX][16];
-    /* Portal cover planes for the blended passes' fragment discard
-     * (terrain.frag, portal_cover.glsl): active opening planes in screen
-     * space. hd_entry ends 16- but not 32-aligned,
-     * so the ivec4 first keeps the dvec4 run at std140's 32-byte base
-     * alignment (C natural layout == std140 continues to hold). cov_poly
-     * holds one screen point per vec4 slot, 16 slots per plane. */
-    int32_t cov_cnt[4];    /* x = plane count (0 = test off); y = blended cover on */
-    double  cov_margin[4]; /* x = cover margin M (world units)            */
-    double  cov_abc[6][4]; /* screen inv-vz plane fit a, b, c; w = pn     */
-    float   cov_bbox[6][4];/* outline screen bbox x0, y0, x1, y1          */
-    float   cov_poly[96][4];/* outline points (px, py, 0, 0), 16 per plane */
-    float   sdvc[128][4];  /* per-tile 4x4 near-cell row V offsets (rows 0-3) */
 } tc_globals_ubo;
 
 typedef struct {
@@ -183,14 +201,19 @@ typedef struct {
 _Static_assert(sizeof(tc_globals_ubo) <= 65536 &&
                sizeof(tc_sector_ubo) * OPTC_SLOTS <= 65536,
                "terrain-cache UBO block exceeds the 64 KB UBO-range floor");
-/* The dvec4 runs must land on std140's 32-byte base alignment for C natural
- * layout to keep matching the block the vertex stage reads - otherwise GLSL
- * pads where C does not and EVERY field past the first dvec4 shifts (garbage
- * fog/gflags, all-killed vertices). Any field added above them must therefore
- * be a multiple of 32 bytes wide, not merely 16. */
-_Static_assert(offsetof(tc_globals_ubo, rim_oxyH) % 32 == 0 &&
-               offsetof(tc_globals_ubo, cov_margin) % 32 == 0,
-               "terrain-cache globals: a dvec4 run lost its 32-byte alignment");
+/* The fp64 tail must start on std140's 32-byte dvec4 base alignment for C
+ * natural layout to keep matching the block the fp64 vertex stage reads:
+ * std140 aligns the first dvec2 to 16 only, so terrain.vert declares the
+ * same f64_pad, and a misaligned tail would shift every double field. The
+ * fragment mirror (terrain_shade.glsl) declares the 4 vec4 after mrow2 and
+ * the 264 vec4 between fog and hd_lad as padding. */
+_Static_assert(offsetof(tc_globals_ubo, dcam_xy) % 32 == 0 &&
+               offsetof(tc_globals_ubo, f64_pad) % 16 == 0 &&
+               offsetof(tc_globals_ubo, rim_oxyH) % 32 == 0,
+               "terrain-cache globals: the fp64 tail lost its 32-byte alignment");
+_Static_assert(offsetof(tc_globals_ubo, fog) == 7 * 16 &&
+               offsetof(tc_globals_ubo, hd_lad) - offsetof(tc_globals_ubo, sdv) == 264 * 16,
+               "terrain-cache globals: terrain_shade.glsl's padding no longer matches");
 
 /* One build's complete retained frame state. The feeder STAGES the canonical
  * build's state and it PROMOTES to live one build later - the sub-tick
@@ -689,6 +712,41 @@ static void tc_pipe(rhi_device *dev, const rhi_pipeline_desc *d, rhi_pipeline **
     (void)rhi_create_pipeline_slot(dev, d, NULL, 0, NULL, 0, (void **)out, NULL);
 }
 
+/* The vertex stage of each arena family (OPENPETE_MATERIAL_TER_VARIANTS
+ * order: plain, anim, near, then the anim and near cell records), per
+ * precision build: row 0 the fp64 stage, row 1 the TERRAIN_FP32 stage. */
+enum { TC_V_PLAIN, TC_V_ANIM, TC_V_NEAR, TC_V_CELLS_ANIM, TC_V_CELLS_NEAR };
+static const char *const k_tc_vert[2][OPENPETE_MATERIAL_TER_VARIANTS] = {
+    { "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
+      "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv" },
+    { "terrain_fp32.vert.spv", "terrain_anim_fp32.vert.spv", "terrain_near_fp32.vert.spv",
+      "terrain_cells_anim_fp32.vert.spv", "terrain_cells_near_fp32.vert.spv" },
+};
+
+int openpete_tercache_fp32(void)
+{
+    static int s_fp32 = -1;
+    if (s_fp32 < 0) {
+        const char *e = openpete_config_device_value("OPENPETE_TERRAIN_FP32");
+        s_fp32 = (e && *e && *e != '0');
+    }
+    return s_fp32;
+}
+
+int openpete_tercache_device_precision_ok(const rhi_device *dev)
+{
+    return openpete_tercache_fp32() || rhi_device_has_float64(dev);
+}
+
+/** @brief Return the selected precision build's vertex stage of an arena family.
+ *
+ * @param v The family, a TC_V_* value.
+ * @return The stage's SPIR-V name. */
+static const char *tc_vert(int v)
+{
+    return k_tc_vert[openpete_tercache_fp32()][v];
+}
+
 /** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
  *
  * The slots share terrain.frag and depth test and differ as the world
@@ -747,7 +805,7 @@ static int tc_cell_pipes_ok(rhi_pipeline *const set[TC_CP_N])
 static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
 {
     const rhi_pipeline_desc world_desc = {
-        .vert_spv = "terrain.vert.spv", .frag_spv = "terrain.frag.spv",
+        .vert_spv = tc_vert(TC_V_PLAIN), .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .pair_set7 = true,
         .push_const_size = sizeof(tc_pc),
@@ -782,7 +840,7 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
      * sectors' LP hole-fill backing; a poly-anim sector never publishes
      * SF_FILLLP, so the vertex stage kills its LP in that pass. */
     const rhi_pipeline_desc anim_desc = {
-        .vert_spv = "terrain_anim.vert.spv", .frag_spv = "terrain.frag.spv",
+        .vert_spv = tc_vert(TC_V_ANIM), .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_anim = true, .pair_set7 = true,
         .push_const_size = sizeof(tc_pc),
@@ -811,7 +869,7 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
      * binding-1 member-context twin. Includes FILL - near sectors keep the
      * LP hole-fill backing (unlike poly-anim, which is excluded from it). */
     const rhi_pipeline_desc near_desc = {
-        .vert_spv = "terrain_near.vert.spv", .frag_spv = "terrain.frag.spv",
+        .vert_spv = tc_vert(TC_V_NEAR), .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_near = true, .pair_set7 = true,
         .push_const_size = sizeof(tc_pc),
@@ -838,8 +896,8 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     tc_pipe(dev, &d, &ps->pipe_n_key);
 
     /* Cell-record variants: the same states over the instanced cell stages. */
-    tc_make_cell_pipes(dev, "terrain_cells_near.vert.spv", 0, ps->pipe_cn);
-    tc_make_cell_pipes(dev, "terrain_cells_anim.vert.spv", 1, ps->pipe_ca);
+    tc_make_cell_pipes(dev, tc_vert(TC_V_CELLS_NEAR), 0, ps->pipe_cn);
+    tc_make_cell_pipes(dev, tc_vert(TC_V_CELLS_ANIM), 1, ps->pipe_ca);
 }
 
 void openpete_tercache_describe(rhi_device *dev)
@@ -1700,6 +1758,52 @@ static void tc_dead_stamp(const tc_defer *d)
     }
 }
 
+/** @brief Copy n doubles to floats, each rounded to nearest.
+ *
+ * @param dst Receives the floats.
+ * @param src The doubles.
+ * @param n The count. */
+static void tc_f32_copy(float *dst, const double *src, int n)
+{
+    for (int i = 0; i < n; i++) dst[i] = (float)src[i];
+}
+
+/** @brief Fill the globals block's float fields, the ones the TERRAIN_FP32 vertex stage reads, from the published globals.
+ *
+ * The camera is split per axis in x4 units (the baked corners' scale) into
+ * floor(cam x4) and the fraction cam x4 - floor(cam x4); a fraction that
+ * rounds up to 1.0f moves into the integer part, so the fraction stays in
+ * [0, 1). The scalars and the rim frames are the double fields rounded to
+ * float, each once.
+ * @param gu The block, zeroed by the caller.
+ * @param g The published globals. */
+static void tc_globals_f32(tc_globals_ubo *gu, const openpete_tercache_globals *g)
+{
+    const double cam[3] = { g->camx, g->camy, g->camz };
+    for (int k = 0; k < 3; k++) {
+        const double c4 = cam[k] * 4.0;
+        double fl = floor(c4);
+        float fr = (float)(c4 - fl);
+        if (fr >= 1.0f) { fl += 1.0; fr = 0.0f; }
+        gu->cam_int_x4[k] = (int32_t)fl;
+        gu->cam_frac_x4[k] = fr;
+    }
+    const double ofH[4] = { g->ofx, g->ofy, g->H, g->vanim_alpha };
+    const double aux[4] = { g->nearz, g->H_canon, g->canim_alpha, g->fogscale };
+    tc_f32_copy(gu->ofH, ofH, 4);
+    tc_f32_copy(gu->aux, aux, 4);
+    const double oxyH[4] = { g->rim_ofx, g->rim_ofy, g->rim_H, 0.0 };
+    tc_f32_copy(gu->frim_oxyH, oxyH, 4);
+    tc_f32_copy(gu->frim_knobs, g->rim_knobs, 4);
+    tc_f32_copy(&gu->frim_abc[0][0], &g->rim_abc[0][0], 24);
+    tc_f32_copy(&gu->frim_O[0][0], &g->rim_O[0][0], 24);
+    tc_f32_copy(&gu->frim_U[0][0], &g->rim_U[0][0], 24);
+    tc_f32_copy(&gu->frim_W[0][0], &g->rim_W[0][0], 24);
+    tc_f32_copy(&gu->frim_nrm[0][0], &g->rim_nrm[0][0], 24);
+    tc_f32_copy(&gu->frim_bbox[0][0], &g->rim_bbox[0][0], 24);
+    for (int i = 0; i < 96; i++) tc_f32_copy(gu->frim_pv[i], g->rim_pv[i], 2);
+}
+
 void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                    uint32_t stamp, int immediate)
 {
@@ -1756,6 +1860,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->dnear[0]   = g->nearz;         /* near-plane clip zc (near stage)   */
     gu->dspare[0]  = g->H_canon;       /* canonical H (limit-regime mirrors) */
     gu->dspare[1]  = g->canim_alpha;   /* env-anim colour lerp alpha (anim stage) */
+    tc_globals_f32(gu, g);
     gu->fog[0] = g->fog_ref_base;
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;
@@ -1788,12 +1893,12 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     }
     gu->cov_cnt[0]   = g->cov_n;
     gu->cov_cnt[1]   = g->cov_blend;
-    gu->cov_margin[0] = g->cov_margin;
+    gu->cov_margin[0] = (float)g->cov_margin;
     for (int pi = 0; pi < 6; pi++) {
-        gu->cov_abc[pi][0] = g->cov_abc[pi][0];
-        gu->cov_abc[pi][1] = g->cov_abc[pi][1];
-        gu->cov_abc[pi][2] = g->cov_abc[pi][2];
-        gu->cov_abc[pi][3] = (double)g->cov_pn[pi];
+        gu->cov_abc[pi][0] = (float)g->cov_abc[pi][0];
+        gu->cov_abc[pi][1] = (float)g->cov_abc[pi][1];
+        gu->cov_abc[pi][2] = (float)g->cov_abc[pi][2];
+        gu->cov_abc[pi][3] = (float)g->cov_pn[pi];
         memcpy(gu->cov_bbox[pi], g->cov_bbox[pi], sizeof(gu->cov_bbox[pi]));
         for (int k = 0; k < 16; k++) {
             gu->cov_poly[pi * 16 + k][0] = g->cov_pxy[pi][k][0];
@@ -2167,13 +2272,9 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
     if (*pslot == OPENPETE_POSTFX_PIPE_FAILED) return NULL;
     if (*pslot && *pslot != OPENPETE_POSTFX_PIPE_PENDING) return *pslot;
     if (!s_tc.dev || variant < 0 || variant >= OPENPETE_MATERIAL_TER_VARIANTS) return NULL;
-    static const char *k_vert[OPENPETE_MATERIAL_TER_VARIANTS] = {
-        "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
-        "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv"
-    };
     rhi_pipeline_desc d;
     memset(&d, 0, sizeof(d));
-    d.vert_spv = k_vert[variant];
+    d.vert_spv = tc_vert(variant);
     d.blend = RHI_BLEND_NONE;
     d.depth_test = true;
     d.terrain_pipeline = true;

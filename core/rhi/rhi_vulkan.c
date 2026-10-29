@@ -1794,11 +1794,10 @@ static bool pick_physical_and_device(rhi_device *dev)
     VkPhysicalDeviceFeatures enable = {0};
     enable.depthBiasClamp = supported.depthBiasClamp;
     dev->has_depth_bias_clamp = (supported.depthBiasClamp == VK_TRUE);
-    /* shaderFloat64: the retained-terrain vertex stage mirrors the CPU
-     * walk's double-precision GTE math bit-for-bit (float32 would flip
-     * raster edges at the last-ulp level and break the pixel-identical
-     * gate). Universally present on discrete GPUs and lavapipe; the
-     * terrain cache simply stays disabled without it. */
+    /* shaderFloat64: the fp64 retained-terrain vertex stages mirror the
+     * CPU walk's double-precision GTE math bit-for-bit. Without it the
+     * terrain cache runs only with the TERRAIN_FP32 stages selected
+     * (openpete_tercache_device_precision_ok). */
     enable.shaderFloat64 = supported.shaderFloat64;
     dev->has_shader_float64 = (supported.shaderFloat64 == VK_TRUE);
     /* fillModeNonSolid: VK_POLYGON_MODE_LINE for the wireframe view

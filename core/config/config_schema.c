@@ -220,6 +220,7 @@ static const cfg_device_row_t g_device[] = {
     { "OPENPETE_PIPELINE_LTO",        CFG_DEVICE_FIXED },
     { "OPENPETE_PIPELINE_CACHE_DIR",  CFG_DEVICE_FIXED },
     { "OPENPETE_PIPELINE_CACHE_COLD", CFG_DEVICE_FIXED },
+    { "OPENPETE_TERRAIN_FP32",        CFG_DEVICE_FIXED },
     { "OPENPETE_GPU_TIMERS",          CFG_DEVICE_FIXED },
     { "OPENPETE_RHI_BALLOON",         CFG_DEVICE_FIXED },
     { "--vsync",                      CFG_DEVICE_LIVE  },

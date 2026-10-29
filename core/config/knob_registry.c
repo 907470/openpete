@@ -2486,6 +2486,9 @@ static const knob_desc_t g_builtin_debug[] = {
         "clear of every opening (1 on, 0 off, 2 = classify live + audit the broadphase)."),
     ENVROW_LATCHED("PORTAL_NUDGE", "Debug", "",
         "Per-portal opening correction \"id:dh,dv[,sh[,sv]];...\" in world units."),
+    ENVROW_DEVICE("TERRAIN_FP32", "Debug", "0",
+        "Terrain-cache vertex stages: 1 = the fp32 build (runs without shaderFloat64), "
+        "0 = the fp64 build. Read once at device open."),
     ENVROW_LIVE("TERRAIN_CULL", "Debug", "3",
         "bit0 HP NCLIP cull, bit1 LP cull (default 3 = both; each mirrors its walk's exact rule)."),
     ENVROW_LIVE("TERRAIN_FLAT", "Debug", "0",
