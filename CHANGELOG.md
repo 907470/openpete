@@ -58,9 +58,10 @@ openpete.com; the changelog page of the shipped docs makes it relative.
   to it, then to the highest-priority declarative material matching it, where it used to draw stock. A textured face
   of an imported sector (no texture id of its own) now matches `OP_SEL_TEXTURED` materials in the retained terrain
   cache as it does in the walked terrain, where the cache treated it as untextured.
-- Settings menu: a line above **EXIT GAME** names what the selected row changes, and the **DOCUMENTATION** row
-  opens the documentation in the browser: the copy in `docs/` beside the program, or openpete.com from the
-  AppImage. `--help` ends with the documentation's address.
+- Settings menu: a line above **EXIT GAME** names what the selected row changes. `--help` ends with the
+  documentation's address.
+- Settings menu: a **FOG** row below **LOD** sets `--fog`: **AUTO** (follows the LOD), **ORIGINAL**, **PER-PIXEL**
+  or **OFF**.
 - Mod SDK: a mod can read the discs of other Spyro games in the library. The manifest keys `requires_games` (the
   mod does not load while a listed game has no disc in the library, and the log, the Mods section and the launcher's
   version selector name the game) and `optional_games` (the mod loads; the disc calls for a missing game fail) name

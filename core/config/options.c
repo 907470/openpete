@@ -15,7 +15,7 @@
                            * game_validate_cheats_arg (--cheats names) */
 
 #include "openpete_paths.h" /* where --bk2-record output is allowed to live */
-#include "openpete_docs_open.h" /* OPENPETE_DOCS_URL - the --help footer */
+#include "openpete_docs_url.h" /* OPENPETE_DOCS_URL - the --help footer */
 
 #include <SDL3/SDL.h>     /* SDL_CreateDirectory - --bk2-record output dir */
 
@@ -859,7 +859,7 @@ static void print_help(const char* display_name, const char* argv0,
 #endif
     fputs("\nDocumentation: " OPENPETE_DOCS_URL "\n"
           "  The Windows zip and the Linux tar.xz carry a copy as docs/index.html\n"
-          "  beside the program; the settings menu's DOCUMENTATION row opens it.\n",
+          "  beside the program.\n",
           stderr);
 }
 

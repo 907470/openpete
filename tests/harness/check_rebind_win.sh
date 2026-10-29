@@ -43,8 +43,9 @@ rm -f build/rebind-win/win.log build/rebind-win/win.txt build/rebind-win/win.bk2
     echo "1 pad south 0"
     echo "8000ms menu 1"
     t=9000
-    for _ in $(seq 13); do
-        echo "${t}ms keydown Down"; echo "$((t + 60))ms keyup Down"; t=$((t + 150))
+    # Up from row 0 wraps to EXIT GAME, the last row; ADVANCED is above it.
+    for _ in $(seq 2); do
+        echo "${t}ms keydown Up"; echo "$((t + 60))ms keyup Up"; t=$((t + 150))
     done
     echo "${t}ms keydown Right"; echo "$((t + 60))ms keyup Right"
     cat <<'EOF'

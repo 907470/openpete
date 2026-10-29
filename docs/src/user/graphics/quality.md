@@ -41,7 +41,7 @@ many more triangles in wide views; see [Performance](performance.md).
 ## Fog
 
 The game fades distant terrain and objects into fog. `--fog`
-<!-- id: knob:fog --> picks how the fade is drawn:
+<!-- id: knob:fog home --> picks how the fade is drawn:
 
 | Value | Effect |
 | --- | --- |
@@ -51,10 +51,12 @@ The game fades distant terrain and objects into fog. `--fog`
 
 Unset, the fog follows the level of detail <!-- id: knob:fog -->: `original`
 under `original` LOD and `per-pixel` under `extended`, and it changes when the
-LOD changes. Choosing a value, by flag, in `openpete.toml` or with the dev
+LOD changes. Choosing a value, by flag, in `openpete.toml`, with the
+[settings menu](../playing/settings-menu.md#rows)'s **FOG** row or with the dev
 overlay's **Fog** row under Display, fixes it; later LOD switches leave it
-alone. The row's first entry, **follow LOD**, names the value it currently
-gives and returns the fog to following the LOD. In `openpete.toml`, older
+alone. The menu row's **AUTO** and the overlay row's first entry,
+**follow LOD**, which names the value it currently gives, return the fog to
+following the LOD. In `openpete.toml`, older
 `on` and `off` values are read as follow-LOD and `off`.
 
 Under `extended` LOD the game's fade on most levels is a blend toward the

@@ -10,17 +10,18 @@
 #
 #   leg save     the file starts with a hand-written section and no managed
 #                zone; --lod original is typed. The script opens the menu and
-#                steps FOV, LOD and FREECAM, then leaves the menu open
-#                until the frame limit. Pass: a write with cause=debounce
-#                (engagement: writes > 0), the zone holds fov and lod (the
-#                typed --lod pins lod, and its menu change is saved anyway),
-#                no freecam key, and the bytes above the marker equal the
-#                original file.
-#   leg unsave   the file's zone holds fov = 30; the script steps FOV back
-#                to DEFAULT, the value of the hand-written global fov = 0,
-#                and closes the menu inside the debounce interval. Pass: a
-#                write with cause=menu-close, and the zone no longer holds
-#                fov.
+#                steps FOV, LOD, FOG (AUTO to ORIGINAL) and FREECAM, then
+#                leaves the menu open until the frame limit. Pass: a write
+#                with cause=debounce (engagement: writes > 0), the zone holds
+#                fov, lod (the typed --lod pins lod, and its menu change is
+#                saved anyway) and fog = "original", no freecam key, and the
+#                bytes above the marker equal the original file.
+#   leg unsave   the file's zone holds fov = 30 and fog = "off"; the script
+#                steps FOV back to DEFAULT, the value of the hand-written
+#                global fov = 0, steps FOG from OFF to AUTO, and closes the
+#                menu inside the debounce interval. Pass: a write with
+#                cause=menu-close, and the zone holds neither fov nor fog
+#                (AUTO is the unset fog row).
 #   leg fail     OPENPETE_WRITE_FAIL names the config file. The script steps
 #                FOV. Pass: the debounce write fails, the shutdown write
 #                retries the same dirty knob and fails, and the file is
@@ -109,7 +110,8 @@ fov = 0   # the game'"'"'s own projection
 ssaa = 2
 '
 
-# Leg save: open (row 0), FOV (row 3) +1, LOD (row 11) +1, FREECAM +1.
+# Leg save: open (row 0), FOV (row 3) +1, LOD (row 11) +1, FOG (row 12) +1,
+# FREECAM (row 13) +1.
 rm -f "$OUT/save.toml" "$OUT/save.orig" "$OUT/save.txt"
 printf '%s' "$HAND" >"$OUT/save.toml"
 cp "$OUT/save.toml" "$OUT/save.orig"
@@ -117,14 +119,20 @@ cp "$OUT/save.toml" "$OUT/save.orig"
     keys 1500 Escape
     keys 1540 Down Down Down Right
     keys 1600 Down Down Down Down Down Down Down Down Right
-    keys 1720 Down Right
+    keys 1720 Down Right Down Right
 } >"$OUT/save.txt"
 
-# Leg unsave: the zone holds fov = 30; FOV -1 is DEFAULT (0).
+# Leg unsave: the zone holds fov = 30 and fog = "off"; FOV -1 is DEFAULT (0),
+# FOG (row 12) +1 wraps OFF to AUTO.
 rm -f "$OUT/unsave.toml" "$OUT/unsave.txt"
-{ printf '%s' "$HAND"; printf '%s\n%s\n[saved]\nfov = 30\n' "$MARKER" \
+{ printf '%s' "$HAND"; printf '%s\n%s\n[saved]\nfov = 30\nfog = "off"\n' "$MARKER" \
     '# Anything below this line is REGENERATED on save; edit above it.'; } >"$OUT/unsave.toml"
-{ keys 1500 Escape; keys 1540 Down Down Down Left; keys 1580 Escape; } >"$OUT/unsave.txt"
+{
+    keys 1500 Escape
+    keys 1540 Down Down Down Left
+    keys 1580 Down Down Down Down Down Down Down Down Down Right
+    keys 1670 Escape
+} >"$OUT/unsave.txt"
 
 # Leg fail: every write of the config file fails.
 rm -f "$OUT/fail.toml" "$OUT/fail.orig" "$OUT/fail.txt"
@@ -146,10 +154,12 @@ echo "[autosave] save: writes=$writes_save" \
      "debounce=$(count save 'saved cause=debounce')" \
      "freecam_toggled=$(count save 'set: \[FREECAM\] = ON')" \
      "lod_set=$(count save 'set: \[LOD\] = EXTENDED')" \
+     "fog_set=$(count save 'set: \[FOG\] = ORIGINAL')" \
      "fov_set=$(count save 'set: \[FOV\] = 30V')"
 echo "[autosave] unsave: writes=$(count unsave 'settings: saved cause=')" \
      "menu_close=$(count unsave 'saved cause=menu-close')" \
-     "fov_set=$(count unsave 'set: \[FOV\] = DEFAULT')"
+     "fov_set=$(count unsave 'set: \[FOV\] = DEFAULT')" \
+     "fog_set=$(count unsave 'set: \[FOG\] = AUTO')"
 echo "[autosave] fail: failed=$(count fail 'settings: save FAILED')" \
      "shutdown_retry=$(count fail 'save FAILED cause=shutdown ids=1')" \
      "injected=$(count fail 'injected failure (OPENPETE_WRITE_FAIL)')"
@@ -166,12 +176,15 @@ fail=0
     { echo "[autosave] FAIL: no write at the debounce deadline"; fail=1; }
 [[ "$(count save 'set: \[FREECAM\] = ON')" -ge 1 &&
    "$(count save 'set: \[LOD\] = EXTENDED')" -ge 1 &&
+   "$(count save 'set: \[FOG\] = ORIGINAL')" -ge 1 &&
    "$(count save 'set: \[FOV\] = 30V')" -ge 1 ]] ||
-    { echo "[autosave] FAIL: the script did not step FOV, LOD and FREECAM"; fail=1; }
+    { echo "[autosave] FAIL: the script did not step FOV, LOD, FOG and FREECAM"; fail=1; }
 zone "$OUT/save.toml" | grep -qx 'fov = 30' ||
     { echo "[autosave] FAIL: fov not saved"; fail=1; }
 zone "$OUT/save.toml" | grep -qx 'lod = "extended"' ||
     { echo "[autosave] FAIL: the --lod pinned knob's menu change was not saved"; fail=1; }
+zone "$OUT/save.toml" | grep -qx 'fog = "original"' ||
+    { echo "[autosave] FAIL: the FOG row's pin was not saved"; fail=1; }
 if zone "$OUT/save.toml" | grep -q '^freecam'; then
     echo "[autosave] FAIL: freecam was saved"; fail=1
 fi
@@ -179,10 +192,14 @@ cmp -s <(head_of "$OUT/save.toml") "$OUT/save.orig" ||
     { echo "[autosave] FAIL: the hand-written section above the marker changed"; fail=1; }
 
 [[ "$(count unsave 'set: \[FOV\] = DEFAULT')" -ge 1 &&
+   "$(count unsave 'set: \[FOG\] = AUTO')" -ge 1 &&
    "$(count unsave 'saved cause=menu-close')" -ge 1 ]] ||
-    { echo "[autosave] FAIL: the unsave leg did not step FOV and write on menu close"; fail=1; }
+    { echo "[autosave] FAIL: the unsave leg did not step FOV and FOG and write on menu close"; fail=1; }
 if zone "$OUT/unsave.toml" | grep -q '^fov'; then
     echo "[autosave] FAIL: fov equal to the global value stayed saved"; fail=1
+fi
+if zone "$OUT/unsave.toml" | grep -q '^fog'; then
+    echo "[autosave] FAIL: fog stayed saved after the FOG row returned to AUTO"; fail=1
 fi
 cmp -s <(head_of "$OUT/unsave.toml") "$OUT/save.orig" ||
     { echo "[autosave] FAIL: the unsave leg changed the hand-written section"; fail=1; }

@@ -147,7 +147,6 @@ add_library(openpete_core STATIC
     # openpete_devui.h; native-vk-only, live presents only); the G camlock
     # and F freecam tools.
     ui/openpete_menu.c
-    ui/docs_open.c
     ui/overlay_anchor.c
     ui/openpete_osd.c
     ui/devui.cpp
