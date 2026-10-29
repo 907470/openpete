@@ -1445,6 +1445,36 @@ const char   *rhi_create_error(void);
 void          rhi_set_pipeline_cache_dir(const char *dir, const char *build,
                                          int (*write_file)(const char *path, const void *data, size_t n));
 
+/* Longest line rhi_create_hooks.begin receives, terminator included. */
+#define RHI_CREATE_LINE_MAX 768
+
+/* Callbacks around every driver call that creates a graphics pipeline (a
+ * whole pipeline, a graphics pipeline library part or a link) or a shader
+ * module, run on the creating thread: the display owner, a compile pool
+ * worker or the launcher's ahead walk. */
+typedef struct {
+    /* RHI_CREATE_PIPELINE: a pipeline create begins, before its shader
+     * modules are made. line is one line without a newline: the create's
+     * sequence number, kind, site class, phase and create flags, each
+     * stage's .spv name, SPIR-V size, content hash and specialization
+     * constants, and the fixed-function state. RHI_CREATE_STEP: the call
+     * in progress inside that create changes: a shader module create
+     * (its name, size and hash, then the pipeline's line), or the return
+     * to the pipeline's own line before the driver's pipeline call. */
+    void (*begin)(int what, const char *line);
+    /* After the pipeline create returns, or fails before its call. */
+    void (*end)(void);
+} rhi_create_hooks;
+
+enum { RHI_CREATE_PIPELINE = 0, RHI_CREATE_STEP = 1 };
+
+/** @brief Register the callbacks run around every pipeline and shader module create; NULL clears them.
+ *
+ * Process-global; call before rhi_create, with no create in flight. The
+ * lines are formatted only while callbacks are registered.
+ * @param hooks The callbacks, copied; NULL or a NULL begin clears both. */
+void          rhi_set_create_hooks(const rhi_create_hooks *hooks);
+
 /** @brief Put devices created afterwards in the headless cache-file class: their file name ends in -headless.bin.
  *
  * A headless device is in that class without this call. A synchronous run

@@ -20,6 +20,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6867,6 +6868,70 @@ void rhi_destroy_texture_deferred(rhi_device *dev, rhi_texture *tex)
 /* Pipelines                                                          */
 /* ------------------------------------------------------------------ */
 
+/* rhi_set_create_hooks: read on every creating thread. */
+typedef void (*create_begin_fn)(int what, const char *line);
+typedef void (*create_end_fn)(void);
+static _Atomic(create_begin_fn) s_create_begin;
+static _Atomic(create_end_fn)   s_create_end;
+static atomic_uint s_create_seq;   /* pipeline creates numbered from 1 */
+/* The calling thread's pipeline create in progress (0 none) and its line. */
+static _Thread_local unsigned t_create_seq;
+static _Thread_local char t_create_line[RHI_CREATE_LINE_MAX];
+
+void rhi_set_create_hooks(const rhi_create_hooks *hooks)
+{
+    const bool on = hooks && hooks->begin;
+    atomic_store_explicit(&s_create_end, on ? hooks->end : NULL, memory_order_release);
+    atomic_store_explicit(&s_create_begin, on ? hooks->begin : NULL, memory_order_release);
+}
+
+/** @brief Append printf-formatted text to a create line, truncating at RHI_CREATE_LINE_MAX.
+ *
+ * @param b The line buffer, RHI_CREATE_LINE_MAX bytes.
+ * @param n Its length so far; advanced.
+ * @param fmt Format. */
+static void crumb_put(char *b, size_t *n, const char *fmt, ...)
+{
+    if (*n >= RHI_CREATE_LINE_MAX - 1) return;
+    va_list ap;
+    va_start(ap, fmt);
+    const int w = vsnprintf(b + *n, RHI_CREATE_LINE_MAX - *n, fmt, ap);
+    va_end(ap);
+    if (w > 0) *n = (*n + (size_t)w < RHI_CREATE_LINE_MAX) ? *n + (size_t)w : RHI_CREATE_LINE_MAX - 1;
+}
+
+/** @brief Run the begin hook for a shader module create inside the calling thread's pipeline create: the module's name, size and hash, then the pipeline's line.
+ *
+ * No-op without hooks.
+ * @param name The stage's name.
+ * @param n The module's SPIR-V size in bytes.
+ * @param hash Its content hash (rhi_pc_bytes_hash). */
+static void module_crumb_begin(const char *name, size_t n, uint64_t hash)
+{
+    const create_begin_fn begin = atomic_load_explicit(&s_create_begin, memory_order_acquire);
+    if (!begin) return;
+    char b[RHI_CREATE_LINE_MAX];
+    size_t k = 0;
+    crumb_put(b, &k, "shader-module %s/%zuB/%016" PRIx64 " for %s", name, n, hash,
+              t_create_seq ? t_create_line : "(no pipeline create)");
+    begin(RHI_CREATE_STEP, b);
+}
+
+/** @brief Return the calling thread's breadcrumb to its pipeline create's line after a module create; no-op without hooks or a create in progress. */
+static void module_crumb_end(void)
+{
+    const create_begin_fn begin = atomic_load_explicit(&s_create_begin, memory_order_acquire);
+    if (begin && t_create_seq) begin(RHI_CREATE_STEP, t_create_line);
+}
+
+/** @brief End the calling thread's pipeline create: run the end hook and forget the line. */
+static void pipe_crumb_end(void)
+{
+    const create_end_fn end = atomic_load_explicit(&s_create_end, memory_order_acquire);
+    if (end && t_create_seq) end();
+    t_create_seq = 0;
+}
+
 /** @brief Build a shader module from an in-memory SPIR-V blob.
  *
  * vkCreateShaderModule requires pCode to be 4-byte aligned, which an embedded
@@ -6877,11 +6942,13 @@ void rhi_destroy_texture_deferred(rhi_device *dev, rhi_texture *tex)
  * @param dev Device the module is created on.
  * @param spv SPIR-V bytes.
  * @param n Size of @p spv in bytes; must be a non-zero multiple of 4.
- * @param name Name used in failure logs.
+ * The driver call runs inside a module breadcrumb (module_crumb_begin).
+ * @param name Name used in failure logs and the breadcrumb.
+ * @param hash The blob's content hash (rhi_pc_bytes_hash), for the breadcrumb.
  * @return The module, or VK_NULL_HANDLE on a bad size, allocation failure or
  *         creation failure. */
 static VkShaderModule create_shader_module(rhi_device *dev, const void *spv,
-                                           size_t n, const char *name)
+                                           size_t n, const char *name, uint64_t hash)
 {
     if (n == 0 || (n % 4) != 0) {
         RHI_LOG("bad SPIR-V size %zu: %s\n", n, name); return VK_NULL_HANDLE;
@@ -6895,7 +6962,10 @@ static VkShaderModule create_shader_module(rhi_device *dev, const void *spv,
         .pCode = code,
     };
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev->device, &ci, NULL, &m) != VK_SUCCESS) {
+    module_crumb_begin(name, n, hash);
+    const VkResult r = vkCreateShaderModule(dev->device, &ci, NULL, &m);
+    module_crumb_end();
+    if (r != VK_SUCCESS) {
         RHI_LOG("vkCreateShaderModule failed: %s\n", name); m = VK_NULL_HANDLE;
     }
     free(code);
@@ -7586,9 +7656,11 @@ static bool pipe_stage_modules(rhi_device *dev, const rhi_compile_job *job, VkSh
                                VkShaderModule *fs)
 {
     const rhi_pipeline_desc *d = &job->desc;
-    *vs = job->vb ? create_shader_module(dev, job->vb, job->vbn, d->vert_spv ? d->vert_spv : "(mod vert)")
+    *vs = job->vb ? create_shader_module(dev, job->vb, job->vbn, d->vert_spv ? d->vert_spv : "(mod vert)",
+                                         job->info.vs_hash)
                   : VK_NULL_HANDLE;
-    *fs = job->fb ? create_shader_module(dev, job->fb, job->fbn, d->frag_spv ? d->frag_spv : "(mod frag)")
+    *fs = job->fb ? create_shader_module(dev, job->fb, job->fbn, d->frag_spv ? d->frag_spv : "(mod frag)",
+                                         job->info.fs_hash)
                   : VK_NULL_HANDLE;
     if (*vs && *fs) return true;
     if (*vs) vkDestroyShaderModule(dev->device, *vs, NULL);
@@ -7638,6 +7710,70 @@ typedef struct {
     VkDescriptorSetLayout                  set_layouts[8];
     VkPipelineLayoutCreateInfo             plci;
 } pipe_state;
+
+/* What a pipeline create's breadcrumb line describes (pipe_crumb_begin). */
+typedef struct {
+    rhi_pc_kind              kind;
+    rhi_pipe_site            site;
+    const rhi_pipeline_desc *desc;    /* stage names, blend mode, push-constant size */
+    const pipe_stage_info   *info;    /* stage content hashes, desc hash */
+    size_t                   vbn, fbn; /* SPIR-V bytes of each stage the create compiles; 0 when absent */
+    const pipe_state        *st;
+    VkPipelineCreateFlags    flags;
+} pipe_crumb;
+
+/** @brief Append one stage's name, SPIR-V size, content hash and the specialization constants it is handed to a create line.
+ *
+ * @param b The line.
+ * @param n Its length; advanced.
+ * @param tag "vs" or "fs".
+ * @param name The .spv name, or NULL for SPIR-V words.
+ * @param bytes The stage's size.
+ * @param hash Its content hash.
+ * @param spec Its specialization info (stage_spec_fill). */
+static void crumb_stage(char *b, size_t *n, const char *tag, const char *name, size_t bytes,
+                        uint64_t hash, const stage_spec *spec)
+{
+    crumb_put(b, n, " %s=%s/%zuB/%016" PRIx64, tag, name ? name : "(words)", bytes, hash);
+    for (uint32_t i = 0; i < spec->info.mapEntryCount; i++)
+        crumb_put(b, n, "%s%u:%u", i ? "," : (tag[0] == 'v' ? " vs.spec=" : " fs.spec="),
+                  spec->e[i].constantID, (unsigned)spec->d[i]);
+}
+
+/** @brief Number a pipeline create, format its line into the calling thread's buffer and run the begin hook; no-op without hooks.
+ *
+ * The line names the kind, site class, phase and create flags, each stage
+ * the create compiles, and the fixed-function state as Vulkan enum values:
+ * topology, polygon mode, blend mode and enable, colour write mask, depth
+ * test/write/compare, stencil test, depth bias, sample count, vertex
+ * attribute count, colour and depth attachment formats, descriptor set
+ * count, push-constant size and the desc hash.
+ * @param dev Device.
+ * @param c The create. */
+static void pipe_crumb_begin(const rhi_device *dev, const pipe_crumb *c)
+{
+    const create_begin_fn begin = atomic_load_explicit(&s_create_begin, memory_order_acquire);
+    if (!begin) return;
+    char *b = t_create_line;
+    size_t n = 0;
+    t_create_seq = atomic_fetch_add_explicit(&s_create_seq, 1u, memory_order_relaxed) + 1u;
+    crumb_put(b, &n, "pipe-create #%u kind=%s site=%s phase=%s flags=0x%x", t_create_seq,
+              rhi_pc_kind_name(c->kind), rhi_pc_site_name(c->site),
+              rhi_pc_phase_name(pipe_phase_now()), (unsigned)c->flags);
+    if (c->vbn) crumb_stage(b, &n, "vs", c->desc->vert_spv, c->vbn, c->info->vs_hash, &c->st->vspec);
+    if (c->fbn) crumb_stage(b, &n, "fs", c->desc->frag_spv, c->fbn, c->info->fs_hash, &c->st->fspec);
+    const pipe_state *s = c->st;
+    crumb_put(b, &n, " topo=%d poly=%d blend=%d/%u cwmask=0x%x depth=%u/%u/op%d stencil=%u bias=%u"
+              " samples=%d attrs=%u rp=%d/%d sets=%u push=%u desc=%016" PRIx64,
+              (int)s->ia.topology, (int)s->rs.polygonMode, (int)c->desc->blend,
+              (unsigned)s->cba.blendEnable, (unsigned)s->cba.colorWriteMask,
+              (unsigned)s->dss.depthTestEnable, (unsigned)s->dss.depthWriteEnable,
+              (int)s->dss.depthCompareOp, (unsigned)s->dss.stencilTestEnable,
+              (unsigned)s->rs.depthBiasEnable, (int)s->ms.rasterizationSamples,
+              s->vi.vertexAttributeDescriptionCount, (int)RHI_RT_FORMAT, (int)dev->depth_format,
+              s->plci.setLayoutCount, (unsigned)c->desc->push_const_size, c->info->desc_hash);
+    begin(RHI_CREATE_PIPELINE, b);
+}
 
 /** @brief Fill the blend attachment of a pipeline from its desc's blend mode and colour-write switch.
  *
@@ -7880,7 +8016,9 @@ struct gpl_lib {
 
 /* What building one library part reads: the desc, stage facts and variant
  * view of a pipeline that uses the part, and the bytes of the part's shader
- * stage. The desc's stage names are not read. */
+ * stage. The desc's stage names are read only for the create's breadcrumb;
+ * an owned source points them at its own copies (vname, fname), so a
+ * gpl_src that owns its names is never copied by value. */
 typedef struct {
     rhi_pipeline_desc desc;
     pipe_stage_info   info;
@@ -7889,6 +8027,7 @@ typedef struct {
     const void       *spv;   /* the part's stage bytes; NULL for the output part */
     size_t            n;
     void             *own;   /* an owned copy behind spv, or NULL */
+    char              vname[96], fname[96];   /* an owned source's stage names */
 } gpl_src;
 
 /* XOR'd into the key-manifest key of a pipeline linked from libraries: the
@@ -8034,6 +8173,68 @@ static void gpl_part_keys(const rhi_device *dev, const pipe_state *st, const pip
     key[GPL_OUTPUT] = gpl_mix(h, &st->ms.rasterizationSamples, sizeof st->ms.rasterizationSamples);
 }
 
+/** @brief Make a shader library part's stage: its shader module and the part's pipeline layout; the output part has neither.
+ *
+ * Runs inside the part's breadcrumb, so the module create names the part.
+ * @param dev Device.
+ * @param part GPL_PRERASTER, GPL_FRAGMENT or GPL_OUTPUT.
+ * @param src The source.
+ * @param st The part's create-info parts (pipe_state_fill).
+ * @param out_m Receives the module, VK_NULL_HANDLE for the output part.
+ * @param out_layout Receives the layout, VK_NULL_HANDLE for the output part.
+ * @return false when the module or the layout failed (nothing is left alive). */
+static bool gpl_part_stage(rhi_device *dev, int part, const gpl_src *src, const pipe_state *st,
+                           VkShaderModule *out_m, VkPipelineLayout *out_layout)
+{
+    *out_m = VK_NULL_HANDLE;
+    if (part == GPL_OUTPUT) return true;
+    const bool vert = part == GPL_PRERASTER;
+    const char *name = vert ? src->desc.vert_spv : src->desc.frag_spv;
+    *out_m = create_shader_module(dev, src->spv, src->n,
+                                  name ? name : vert ? "(library vertex stage)" : "(library fragment stage)",
+                                  vert ? src->info.vs_hash : src->info.fs_hash);
+    if (!*out_m) return false;
+    if (vkCreatePipelineLayout(dev->device, &st->plci, NULL, out_layout) == VK_SUCCESS) return true;
+    RHI_LOG("vkCreatePipelineLayout failed (pipeline library)\n");
+    vkDestroyShaderModule(dev->device, *out_m, NULL);
+    *out_m = VK_NULL_HANDLE;
+    return false;
+}
+
+/** @brief Point a library part's create info at the subset of the pipeline's create-info parts its library flags name.
+ *
+ * Pre-rasterization: the vertex stage, vertex input, input assembly,
+ * viewport, rasterization and dynamic state. Fragment: the fragment stage,
+ * depth-stencil and multisample state. Output: colour blend and multisample
+ * state.
+ * @param part GPL_PRERASTER, GPL_FRAGMENT or GPL_OUTPUT.
+ * @param st The parts; the part's stage module is set here.
+ * @param m The part's shader module, or VK_NULL_HANDLE for the output part.
+ * @param gp Receives the pointers and stage count. */
+static void gpl_part_states(int part, pipe_state *st, VkShaderModule m,
+                            VkGraphicsPipelineCreateInfo *gp)
+{
+    if (part == GPL_PRERASTER) {
+        st->stages[0].module = m;
+        gp->stageCount = 1;
+        gp->pStages = &st->stages[0];
+        gp->pVertexInputState = &st->vi;
+        gp->pInputAssemblyState = &st->ia;
+        gp->pViewportState = &st->vp;
+        gp->pRasterizationState = &st->rs;
+        gp->pDynamicState = &st->ds;
+    } else if (part == GPL_FRAGMENT) {
+        st->stages[1].module = m;
+        gp->stageCount = 1;
+        gp->pStages = &st->stages[1];
+        gp->pDepthStencilState = &st->dss;
+        gp->pMultisampleState = &st->ms;
+    } else {
+        gp->pColorBlendState = &st->cb;
+        gp->pMultisampleState = &st->ms;
+    }
+}
+
 /** @brief Create one library part from a source, through the pipeline cache.
  *
  * Any thread. The part takes the subset of the pipeline's create-info parts
@@ -8059,49 +8260,33 @@ static bool gpl_build(rhi_device *dev, int part, const gpl_src *src, VkPipeline 
     *out_layout = VK_NULL_HANDLE;
     pipe_state st;
     if (!pipe_state_fill(dev, &src->desc, &src->info, &src->var, &st)) return false;
-    VkShaderModule m = VK_NULL_HANDLE;
-    if (part != GPL_OUTPUT) {
-        m = create_shader_module(dev, src->spv, src->n, part == GPL_PRERASTER
-                                 ? "(library vertex stage)" : "(library fragment stage)");
-        if (!m) return false;
-        if (vkCreatePipelineLayout(dev->device, &st.plci, NULL, out_layout) != VK_SUCCESS) {
-            RHI_LOG("vkCreatePipelineLayout failed (pipeline library)\n");
-            vkDestroyShaderModule(dev->device, m, NULL);
-            return false;
-        }
+    const VkPipelineCreateFlags lf =
+        VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | (dev->has_lto ? RHI_PIPE_CREATE_RETAIN_LTO : 0u);
+    const bool vert = part == GPL_PRERASTER;
+    const pipe_crumb crumb = { .kind = k_kind[part], .site = src->site, .desc = &src->desc,
+                               .info = &src->info, .vbn = vert ? src->n : 0,
+                               .fbn = part == GPL_FRAGMENT ? src->n : 0, .st = &st, .flags = lf };
+    pipe_crumb_begin(dev, &crumb);
+    VkShaderModule m;
+    if (!gpl_part_stage(dev, part, src, &st, &m, out_layout)) {
+        pipe_crumb_end();
+        return false;
     }
     rhi_gpl_create_info li = { .sType = RHI_ST_GPL_CREATE_INFO, .flags = k_flags[part] };
     VkGraphicsPipelineCreateInfo gp = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = &li,
-        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | (dev->has_lto ? RHI_PIPE_CREATE_RETAIN_LTO : 0u),
+        .flags = lf,
         .layout = *out_layout,
         .renderPass = dev->off_rp,
         .subpass = 0,
     };
-    if (part == GPL_PRERASTER) {
-        st.stages[0].module = m;
-        gp.stageCount = 1;
-        gp.pStages = &st.stages[0];
-        gp.pVertexInputState = &st.vi;
-        gp.pInputAssemblyState = &st.ia;
-        gp.pViewportState = &st.vp;
-        gp.pRasterizationState = &st.rs;
-        gp.pDynamicState = &st.ds;
-    } else if (part == GPL_FRAGMENT) {
-        st.stages[1].module = m;
-        gp.stageCount = 1;
-        gp.pStages = &st.stages[1];
-        gp.pDepthStencilState = &st.dss;
-        gp.pMultisampleState = &st.ms;
-    } else {
-        gp.pColorBlendState = &st.cb;
-        gp.pMultisampleState = &st.ms;
-    }
+    gpl_part_states(part, &st, m, &gp);
     pipe_feedback fb;
     li.pNext = pipe_feedback_chain(dev, &fb, gp.stageCount);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: pipeline create timing for the census */
     const VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, out_lib);
+    pipe_crumb_end();
     pipe_create_record(dev, src->site, k_kind[part], &fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
     if (m) vkDestroyShaderModule(dev->device, m, NULL);
     if (r != VK_SUCCESS) {
@@ -8193,6 +8378,21 @@ static void gpl_destroy_all(rhi_device *dev)
     dev->gpl_mx = NULL;
 }
 
+/** @brief Point a library source's desc stage names at copies the source holds, truncated to its buffers; a NULL name stays NULL.
+ *
+ * @param src The source, at its final address. */
+static void gpl_src_own_names(gpl_src *src)
+{
+    if (src->desc.vert_spv) {
+        snprintf(src->vname, sizeof src->vname, "%s", src->desc.vert_spv);
+        src->desc.vert_spv = src->vname;
+    }
+    if (src->desc.frag_spv) {
+        snprintf(src->fname, sizeof src->fname, "%s", src->desc.frag_spv);
+        src->desc.frag_spv = src->fname;
+    }
+}
+
 /** @brief Describe what building one library part of a job's pipeline reads.
  *
  * The part's stage is the job's vertex stage for pre-rasterization, its
@@ -8201,8 +8401,8 @@ static void gpl_destroy_all(rhi_device *dev)
  * @param var Its variant view.
  * @param part The part.
  * @param own true: the stage bytes are copied into src->own and the desc's
- *            stage names cleared, so the source outlives the job; false:
- *            the source points into the job.
+ *            stage names into src (gpl_src_own_names), so the source
+ *            outlives the job; false: the source points into the job.
  * @param src Receives the source.
  * @return false when the copy could not be allocated (nothing is held). */
 static bool gpl_src_of(const rhi_compile_job *job, const rhi_pc_variant *var, int part, bool own,
@@ -8213,7 +8413,7 @@ static bool gpl_src_of(const rhi_compile_job *job, const rhi_pc_variant *var, in
     if (part == GPL_PRERASTER) { src->spv = job->vb; src->n = job->vbn; }
     if (part == GPL_FRAGMENT)  { src->spv = job->fb; src->n = job->fbn; }
     if (!own) return true;
-    src->desc.vert_spv = src->desc.frag_spv = NULL;
+    gpl_src_own_names(src);
     if (!src->n) return true;
     src->own = malloc(src->n);
     if (!src->own) return false;
@@ -8266,11 +8466,15 @@ static int pipeline_link(rhi_device *dev, const rhi_compile_job *job, const pipe
         .subpass = 0,
     };
     *out = VK_NULL_HANDLE;
+    const rhi_pipe_site site = rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words);
+    const rhi_pc_kind kind = lto ? RHI_PC_KIND_LINK_LTO : RHI_PC_KIND_LINK;
+    const pipe_crumb crumb = { .kind = kind, .site = site, .desc = &job->desc, .info = &job->info,
+                               .vbn = job->vbn, .fbn = job->fbn, .st = st, .flags = gp.flags };
+    pipe_crumb_begin(dev, &crumb);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: pipeline create timing for the census */
     const VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, out);
-    pipe_create_record(dev, rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words),
-                       lto ? RHI_PC_KIND_LINK_LTO : RHI_PC_KIND_LINK, fb,
-                       SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
+    pipe_crumb_end();
+    pipe_create_record(dev, site, kind, fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
     if (r == VK_SUCCESS) return 0;
     if (*out) vkDestroyPipeline(dev->device, *out, NULL);
     *out = VK_NULL_HANDLE;
@@ -8296,8 +8500,16 @@ static VkResult pipeline_create_whole(rhi_device *dev, const rhi_compile_job *jo
                                       VkPipeline *out, pipe_feedback *fb)
 {
     *out = VK_NULL_HANDLE;
+    const rhi_pipe_site site = rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words);
+    const pipe_crumb crumb = { .kind = RHI_PC_KIND_PIPELINE, .site = site, .desc = &job->desc,
+                               .info = &job->info, .vbn = job->vbn, .fbn = job->fbn, .st = st,
+                               .flags = flags };
+    pipe_crumb_begin(dev, &crumb);
     VkShaderModule vs, fs;
-    if (!pipe_stage_modules(dev, job, &vs, &fs)) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!pipe_stage_modules(dev, job, &vs, &fs)) {
+        pipe_crumb_end();
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
     st->stages[0].module = vs;
     st->stages[1].module = fs;
     VkGraphicsPipelineCreateInfo gp = {
@@ -8319,8 +8531,8 @@ static VkResult pipeline_create_whole(rhi_device *dev, const rhi_compile_job *jo
     gp.pNext = pipe_feedback_chain(dev, fb, 2);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: pipeline create timing for the census */
     const VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, out);
-    pipe_create_record(dev, rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words),
-                       RHI_PC_KIND_PIPELINE, fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
+    pipe_crumb_end();
+    pipe_create_record(dev, site, RHI_PC_KIND_PIPELINE, fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
     vkDestroyShaderModule(dev->device, vs, NULL);
     vkDestroyShaderModule(dev->device, fs, NULL);
     return r;

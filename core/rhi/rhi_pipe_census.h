@@ -180,6 +180,24 @@ void rhi_pc_known_add(rhi_pc_phase phase);
 /** @brief Count one rebuild call as a visit of the rebuild class. */
 void rhi_pc_rebuild_visit(void);
 
+/** @brief Return the name the census lines give a phase.
+ *
+ * @param phase The phase.
+ * @return The name; "?" when out of range. */
+const char *rhi_pc_phase_name(rhi_pc_phase phase);
+
+/** @brief Return the name the census lines give a create kind.
+ *
+ * @param kind The kind.
+ * @return The name; "?" when out of range. */
+const char *rhi_pc_kind_name(rhi_pc_kind kind);
+
+/** @brief Return the name the census lines give a site class.
+ *
+ * @param site The site class.
+ * @return The name; "?" when out of range. */
+const char *rhi_pc_site_name(rhi_pipe_site site);
+
 /** @brief Return whether OPENPETE_PIPE_CENSUS is set, read once.
  *
  * @return 0 off, 1 the end-of-run report, 2 the report plus one line per create. */

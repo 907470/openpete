@@ -114,10 +114,25 @@ void openpete_log_pin_stderr_tty(int is_tty);
  * process terminates without the normal shutdown (the halt-at-PC and
  * hang-watchdog exits, the forced exit after a quit grace timeout), where
  * text still in the stderr pipe would be lost with the process. The crash
- * handler does not call it; it writes its report through
+ * handler does not call it; it waits on openpete_log_file_barrier and
+ * writes its report through
  * openpete_log_file_crash_fds. The wait is a fixed sleep, not a drain
  * handshake. Not async-signal-safe. */
 void openpete_log_file_sync(void);
+
+/** @brief Wait until everything the calling thread wrote to stderr before the call is in the real stderr and the log file.
+ *
+ * Returns at once when no file sink is active. Takes a ticket and writes
+ * one NUL byte into the stderr pipe; the pump drops NULs from both sinks
+ * and counts them after writing each chunk, and the call returns once the
+ * count reaches the ticket. Text the caller wrote first precedes that NUL
+ * in the pipe, so it outlives a fault or a kill right after the call.
+ * Waits by yielding the CPU, never by a timed sleep, and never queries the
+ * pipe. Async-signal-safe: the crash handlers call it before their report.
+ * @param timeout_ms Longest wait.
+ * @return 1 when the text is in both sinks (or no sink is active), 0 on a
+ *         timeout or a failed write. */
+int openpete_log_file_barrier(unsigned timeout_ms);
 
 /** @brief Name the descriptors a crash report is written to directly, bypassing the stderr pipe.
  *

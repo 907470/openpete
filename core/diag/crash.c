@@ -4,11 +4,14 @@
 // The report is formatted into a static buffer and written with write()
 // (WriteFile on Windows) straight to the original stderr and the log file,
 // bypassing the stderr pipe the log mirror drains: a process dying from a
-// crash does not wait for the pump thread. On POSIX the handler calls only
-// write, read (the stack-word probe), raise, backtrace and
-// backtrace_symbols_fd (libgcc is loaded at install), plus lock-free reads
-// of the guest symbol table and the mod override frame
-// stack; it runs on a per-thread alternate stack (sigaltstack) so a stack
+// crash does not wait for the pump thread. Before the report the handler
+// waits up to 250 ms for the pump to write what the pipe holds
+// (openpete_log_file_barrier), so the log lines before the fault precede
+// the report. On POSIX the handler calls only write, read (the stack-word
+// probe), clock_gettime, sched_yield,
+// raise, backtrace and backtrace_symbols_fd (libgcc is loaded at install),
+// plus lock-free reads of the guest symbol table, the mod override frame
+// stack and the breadcrumb slots; it runs on a per-thread alternate stack (sigaltstack) so a stack
 // overflow, on a thread or on the game fiber the thread hosts, still gets a
 // report. Recompiled code runs on a libco fiber, so the host RIP from the
 // signal context is the fault site that `addr2line -e <exe> <hex>`
@@ -25,6 +28,12 @@
 #include "openpete_paths.h"
 
 #include <SDL3/SDL_atomic.h>
+
+#if defined(_WIN32)
+#  include <windows.h>
+#else
+#  include <pthread.h>
+#endif
 
 #include <signal.h>
 #include <stdint.h>
@@ -135,6 +144,92 @@ static void rep_guest_state(void) {
     }
 }
 
+/* --- breadcrumbs ------------------------------------------------------------
+ * One slot per thread that has a call in progress (openpete_crash_crumb_set).
+ * The handler reads the slots without a lock: a slot is printed only while
+ * its state is LIVE, the faulting thread's own slot cannot change under the
+ * handler, and another thread's text can be torn only when that thread
+ * rewrites it during the report. */
+
+#define CRUMB_SLOTS 32
+
+enum { CRUMB_FREE = 0, CRUMB_WRITING, CRUMB_LIVE };
+
+typedef struct {
+    SDL_AtomicInt state;   /* CRUMB_*; the SDL atomic store is a full barrier */
+    uint64_t      tid;     /* the owning thread (crumb_tid)                   */
+    char          text[OPENPETE_CRASH_CRUMB_MAX];
+} crumb_slot;
+
+static crumb_slot s_crumbs[CRUMB_SLOTS];
+static _Thread_local int t_crumb = -1;   /* this thread's slot, or -1 */
+
+/** @brief Return the calling thread's id as the crash report prints it: the Win32 thread id, or pthread_self on POSIX. */
+static uint64_t crumb_tid(void) {
+#if defined(_WIN32)
+    return (uint64_t)GetCurrentThreadId();
+#else
+    return (uint64_t)(uintptr_t)pthread_self();
+#endif
+}
+
+void openpete_crash_crumb_set(const char* text) {
+    int i = t_crumb;
+    if (i < 0) {
+        for (i = 0; i < CRUMB_SLOTS; i++)
+            if (SDL_CompareAndSwapAtomicInt(&s_crumbs[i].state, CRUMB_FREE, CRUMB_WRITING)) break;
+        if (i == CRUMB_SLOTS) return;
+        s_crumbs[i].tid = crumb_tid();
+        t_crumb = i;
+    } else {
+        SDL_SetAtomicInt(&s_crumbs[i].state, CRUMB_WRITING);
+    }
+    size_t n = strlen(text);
+    if (n > OPENPETE_CRASH_CRUMB_MAX - 1) n = OPENPETE_CRASH_CRUMB_MAX - 1;
+    memcpy(s_crumbs[i].text, text, n);
+    s_crumbs[i].text[n] = '\0';
+    SDL_SetAtomicInt(&s_crumbs[i].state, CRUMB_LIVE);
+}
+
+void openpete_crash_crumb_clear(void) {
+    if (t_crumb < 0) return;
+    SDL_SetAtomicInt(&s_crumbs[t_crumb].state, CRUMB_FREE);
+    t_crumb = -1;
+}
+
+static void rep_flush(void);
+
+/** @brief Append at most n bytes of s, stopping at a NUL. */
+static void rep_strn(const char* s, size_t n) {
+    for (size_t i = 0; i < n && s[i] && s_rep_len < sizeof s_rep; i++) s_rep[s_rep_len++] = s[i];
+}
+
+/** @brief Append and flush every live breadcrumb: the faulting thread's first, then each other thread's with its id. */
+static void rep_crumbs(void) {
+    const uint64_t self = crumb_tid();
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < CRUMB_SLOTS; i++) {
+            const crumb_slot* c = &s_crumbs[i];
+            if (SDL_GetAtomicInt((SDL_AtomicInt*)&c->state) != CRUMB_LIVE) continue;
+            if ((c->tid == self) != (pass == 0)) continue;
+            if (pass == 0) {
+                rep_str("  in progress on this thread: ");
+            } else {
+                rep_str("  in progress on thread ");
+#if defined(_WIN32)
+                rep_dec((int64_t)c->tid);
+#else
+                rep_hex(c->tid, 1);
+#endif
+                rep_str(": ");
+            }
+            rep_strn(c->text, sizeof c->text);
+            rep_str("\n");
+            rep_flush();
+        }
+    }
+}
+
 #if !defined(_WIN32)
 
 #include <errno.h>
@@ -231,7 +326,8 @@ static const char* sig_name(int sig) {
  * crash's error reference (OP-E-CRASH), the fault address and si_code (named as a game-fiber stack overflow when the
  * address is in the fiber's guard page), the host RIP/RSP/RBP and the
  * mapped words at RSP, the guest registers with their symbols, the mod
- * whose override chain was executing, and last the host backtrace
+ * whose override chain was executing, the breadcrumbs of the calls in
+ * progress (rep_crumbs), and last the host backtrace
  * (backtrace and backtrace_symbols_fd; libgcc is loaded at install), which is skipped on a
  * stack overflow because it walks the exhausted stack. Only
  * async-signal-safe calls and lock-free table reads are made.
@@ -240,6 +336,7 @@ static const char* sig_name(int sig) {
  * @param ucontext Host ucontext_t at the fault; may be NULL. */
 static void on_signal(int sig, siginfo_t* info, void* ucontext) {
     int overflow = info && openpete_fiber_guard_contains((uintptr_t)info->si_addr);
+    (void)openpete_log_file_barrier(250);
     s_rep_len = 0;
     rep_str("\n=== openpete crash: "); rep_str(sig_name(sig)); rep_str(" ===\n");
     rep_str("  "); rep_str(openpete_error_ref(OP_E_CRASH)); rep_str("\n");
@@ -251,6 +348,7 @@ static void on_signal(int sig, siginfo_t* info, void* ucontext) {
     rep_host_context(ucontext);
     rep_guest_state();
     rep_flush();
+    rep_crumbs();
 
 #ifdef OPENPETE_HAS_BACKTRACE
     if (!overflow) {
@@ -408,13 +506,19 @@ static void rep_seh_context(const EXCEPTION_POINTERS* ep) {
 
 /** @brief Unhandled-exception filter: write the report to the log file and stderr, write a minidump, and continue the search so the process terminates.
  *
+ * It first waits up to 250 ms for the log pump to write what the stderr
+ * pipe holds (openpete_log_file_barrier); the
+ * report holds the exception context, the guest state and the breadcrumbs
+ * of the calls in progress (rep_crumbs).
  * @param ep The exception.
  * @return EXCEPTION_CONTINUE_SEARCH. */
 static LONG WINAPI on_seh(EXCEPTION_POINTERS* ep) {
+    (void)openpete_log_file_barrier(250);
     s_rep_len = 0;
     rep_seh_context(ep);
     rep_guest_state();
     rep_flush();
+    rep_crumbs();
 
     if (s_dump_path[0]) {
         dump_job_t job = { ep, GetCurrentThreadId(), FALSE };

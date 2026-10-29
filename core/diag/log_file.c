@@ -24,8 +24,11 @@
 #include "openpete_crash.h"
 #include "openpete_paths.h"
 
+#include <SDL3/SDL_atomic.h>
+
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,8 +53,10 @@
 #  define op_fd_is_open(fd) (_get_osfhandle(fd) > 0)
 #else
 #  include <pthread.h>
+#  include <sched.h>
 #  include <signal.h>
 #  include <sys/file.h>
+#  include <time.h>
 #  include <unistd.h>
 #  define op_pipe(fds)      pipe(fds)
 #  define op_dup(fd)        dup(fd)
@@ -137,35 +142,92 @@ static size_t strip_ansi(const char* in, size_t n, char* out) {
     return w;
 }
 
+/* Barrier wake bytes (openpete_log_file_barrier): each barrier takes a
+ * ticket, then writes one NUL byte into the stderr pipe; the pump drops
+ * NULs from both sinks and, after writing a chunk, adds the NULs it held to
+ * s_wake_done. A barrier's bytes written before its ticket precede in the
+ * pipe every NUL written under a later ticket, so once s_wake_done reaches
+ * the ticket they are in both sinks. The writer side never queries the
+ * pipe: on Windows a query of a synchronous pipe handle waits behind the
+ * pump's blocking read. */
+static SDL_AtomicInt s_wake_ticket;
+static SDL_AtomicInt s_wake_done;
+
+/** @brief Write one chunk read from the pipe, NUL bytes removed, to the real stderr unchanged and, ANSI-stripped and under the size cap, to the log file, then count its NULs into s_wake_done.
+ *
+ * Once LOG_CAP_BYTES have been written to the file a one-line truncation
+ * note is appended and the file receives nothing more, while the real
+ * stderr keeps receiving everything.
+ * @param buf The chunk; compacted in place.
+ * @param n Its byte count, at most 4096. */
+static void pump_chunk(char* buf, size_t n) {
+    char clean[4096];
+    size_t k = 0;
+    int wakes = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (buf[i]) buf[k++] = buf[i];
+        else wakes++;
+    }
+    write_all(s_real_stderr, buf, k);
+    size_t m = (s_log_fd < 0 || s_truncated) ? 0 : strip_ansi(buf, k, clean);
+    if (m && s_written + m > LOG_CAP_BYTES) {
+        static const char note[] = "\n[log truncated: size cap reached]\n";
+        write_all(s_log_fd, note, sizeof note - 1);
+        s_truncated = 1;
+    } else if (m) {
+        write_all(s_log_fd, clean, m);
+        s_written += m;
+    }
+    if (wakes) SDL_AddAtomicInt(&s_wake_done, wakes);
+}
+
 /** @brief Pump thread body: copy the stderr pipe to the real stderr and the log file until EOF.
  *
- * Every read goes to the real stderr unchanged. The copy written to the log
- * file has ANSI escapes stripped and is cut off once LOG_CAP_BYTES have been
- * written: a one-line truncation note is appended and the file receives
- * nothing more, while the real stderr keeps receiving everything. Returns
- * on EOF (every writer closed) or a read error other than EINTR. */
+ * Each read is written by pump_chunk. Returns on EOF (every writer closed)
+ * or a read error other than EINTR. */
 static void pump_loop(void) {
     char buf[4096];
-    char clean[4096];
     for (;;) {
         long n = (long)op_read(s_pipe_r, buf, sizeof buf);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) break;  /* 0 = every writer closed; the process is exiting */
-
-        write_all(s_real_stderr, buf, (size_t)n);
-
-        if (s_log_fd < 0 || s_truncated) continue;
-        size_t m = strip_ansi(buf, (size_t)n, clean);
-        if (m == 0) continue;
-        if (s_written + m > LOG_CAP_BYTES) {
-            static const char note[] = "\n[log truncated: size cap reached]\n";
-            write_all(s_log_fd, note, sizeof note - 1);
-            s_truncated = 1;
-        } else {
-            write_all(s_log_fd, clean, m);
-            s_written += m;
-        }
+        pump_chunk(buf, (size_t)n);
     }
+}
+
+/** @brief Return a monotonic millisecond count, wrapping at 2^32 on Windows (callers subtract); async-signal-safe. */
+static uint64_t barrier_now_ms(void) {
+#if defined(_WIN32)
+    return (uint64_t)GetTickCount();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+#endif
+}
+
+int openpete_log_file_barrier(unsigned timeout_ms) {
+    if (!s_pump_live) return 1;
+    const int ticket = SDL_AddAtomicInt(&s_wake_ticket, 1) + 1;
+    static const char wake = '\0';
+#if defined(_WIN32)
+    /* WriteFile on the handle: the CRT's _write takes the descriptor's lock,
+     * which a thread that faulted inside a stderr write still holds. */
+    DWORD put = 0;
+    if (!WriteFile((HANDLE)_get_osfhandle(2), &wake, 1, &put, NULL) || put != 1) return 0;
+#else
+    if (write(2, &wake, 1) != 1) return 0;
+#endif
+    const uint64_t t0 = barrier_now_ms();  /* clock-guard: wall: bounded wait for the log pump */
+    while (SDL_GetAtomicInt(&s_wake_done) - ticket < 0) {
+        if ((uint32_t)(barrier_now_ms() - t0) >= timeout_ms) return 0;  /* clock-guard: wall: bounded wait for the log pump */
+#if defined(_WIN32)
+        SwitchToThread();
+#else
+        sched_yield();
+#endif
+    }
+    return 1;
 }
 
 /* Thread shim: start the pump, and join it. */

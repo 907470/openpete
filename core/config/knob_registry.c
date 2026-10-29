@@ -2275,7 +2275,9 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LATCHED("CRASH_TEST", "Debug", "",
         "Fault injection for the crash handler: segv (a null store) or "
         "overflow (unbounded recursion) on the game fiber before the game's "
-        "entry runs."),
+        "entry runs; pipe (a null store) inside the first pipeline create, "
+        "after its breadcrumb is set and before the driver call. Read at "
+        "boot; pipe at native renderer device creation."),
     ENVROW_LIVE("WRITE_FAIL", "Debug", "",
         "Fault injection for persisted files: <substring>[:<bytes>] makes "
         "every atomic save (memory card, save state, config, mod config, "
@@ -2710,6 +2712,13 @@ static const knob_desc_t g_builtin_debug[] = {
         "One line per (func,frame) during level transitions."),
 
     /* -------- Debug diagnostics (stderr censuses; flip on, watch, flip off) -------- */
+    ENVROW_LATCHED("PIPE_LOG", "Debug diagnostics", "1",
+        "1 = one log line per graphics pipeline create (whole, library part "
+        "or link), written before the driver call and waited into the log "
+        "file: the stages' .spv names, SPIR-V sizes and hashes, "
+        "specialization constants and fixed-function state. 0 = no line; "
+        "the crash report's breadcrumb of the create in progress is kept. "
+        "Read at native renderer device creation."),
     ENVROW_LATCHED("REEXTRACT_DBG", "Debug diagnostics", "0",
         "Per-present alpha/bracket summary of the re-extract spine."),
     ENVROW_LATCHED("REEXTRACT_FEEDDBG", "Debug diagnostics", "0",

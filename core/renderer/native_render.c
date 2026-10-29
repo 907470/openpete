@@ -39,6 +39,7 @@
 #include "openpete_atomic_file.h"   /* pipeline cache write-back */
 
 #include "openpete_log.h"
+#include "openpete_crash.h"   /* pipeline-create breadcrumbs */
 #include "openpete_time.h"   /* op_now - overlay's own sub-tick alpha (camera-independent) */
 #include "openpete_subtick_view.h" /* engagement report at shutdown */
 #include "openpete_ident_audit.h"  /* headless bring-up gate: the audit is a consumer */
@@ -5719,6 +5720,69 @@ static void shell_family_destroy(rhi_device* dev, nr_shell_twin* tw, int* n)
     *n = 0;
 }
 
+/* OPENPETE_PIPE_LOG (default on) and OPENPETE_CRASH_TEST=pipe, latched by
+ * nr_set_create_hooks on the display owner before any create. */
+static bool s_pipe_log = true;
+static SDL_AtomicInt s_pipe_crash_test;   /* 1 armed; the first create to take it faults */
+static SDL_AtomicInt s_pipe_log_lines;    /* pipeline-create lines logged */
+static SDL_AtomicInt s_pipe_log_late;     /* of those, lines the log pump had not written within 50 ms */
+
+/** @brief RHI create hook, before a pipeline create or a step inside one: make the line the calling thread's crash breadcrumb and, at a pipeline create's start, log it.
+ *
+ * The logged line goes to stderr in one write, then the hook waits up to
+ * 50 ms for the log pump to put it in the log file, so it outlives a fault
+ * or a kill inside the driver call that follows. With
+ * OPENPETE_CRASH_TEST=pipe the first pipeline create faults here, after its
+ * breadcrumb is set.
+ * @param what RHI_CREATE_PIPELINE or RHI_CREATE_STEP.
+ * @param line The line. */
+static void nr_create_begin(int what, const char* line)
+{
+    openpete_crash_crumb_set(line);
+    if (what != RHI_CREATE_PIPELINE) return;
+    if (s_pipe_log) {
+        char buf[RHI_CREATE_LINE_MAX + 16];
+        const int n = snprintf(buf, sizeof buf, "[rhi/vk] %s\n", line);
+        if (n > 0) fwrite(buf, 1, (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1, stderr);
+        SDL_AddAtomicInt(&s_pipe_log_lines, 1);
+        if (!openpete_log_file_barrier(50)) SDL_AddAtomicInt(&s_pipe_log_late, 1);
+    }
+    if (SDL_CompareAndSwapAtomicInt(&s_pipe_crash_test, 1, 0)) {
+        fprintf(stderr, "openpete: OPENPETE_CRASH_TEST=pipe - faulting inside a pipeline create\n");
+        volatile int* volatile p = NULL;
+        *p = 1;
+    }
+}
+
+/** @brief RHI create hook, after a pipeline create: clear the calling thread's breadcrumb. */
+static void nr_create_end(void)
+{
+    openpete_crash_crumb_clear();
+}
+
+/** @brief Log how many pipeline-create lines were written and how many the log pump had not written within the barrier's wait; shutdown, nothing when none were logged. */
+static void nr_pipe_log_report(void)
+{
+    const int n = SDL_GetAtomicInt(&s_pipe_log_lines);
+    if (n) OPL_INFO_F("native", "pipe-log: %d pipeline-create line(s), %d not in the log file within 50 ms",
+                      n, SDL_GetAtomicInt(&s_pipe_log_late));
+}
+
+/** @brief Latch OPENPETE_PIPE_LOG and OPENPETE_CRASH_TEST, and register the pipeline-create hooks with the RHI.
+ *
+ * OPENPETE_PIPE_LOG=0 drops the per-create log line; any other value, or
+ * none, keeps it. The breadcrumbs are kept either way. Display owner,
+ * before rhi_create. */
+static void nr_set_create_hooks(void)
+{
+    const char* e = getenv("OPENPETE_PIPE_LOG");
+    s_pipe_log = !(e && e[0] == '0' && e[1] == '\0');
+    const char* t = getenv("OPENPETE_CRASH_TEST");
+    SDL_SetAtomicInt(&s_pipe_crash_test, t && strcmp(t, "pipe") == 0);
+    const rhi_create_hooks hooks = { .begin = nr_create_begin, .end = nr_create_end };
+    rhi_set_create_hooks(&hooks);
+}
+
 /** @brief Point the RHI's pipeline cache at the per-user state "cache" directory, created on demand.
  *
  * Compiled pipelines then persist per GPU, driver and engine build across
@@ -6742,6 +6806,7 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
     const int created_vsync = nr_device_knobs_install();
     rhi_set_pipeline_cache_sync_class(nr_run_is_synchronous(false, opts));
     nr_set_pipeline_cache_dir();
+    nr_set_create_hooks();
     rhi_set_clock(op_now);   /* boot facts on the pace log's clock */
     rhi_device *dev = rhi_create(win, "openpete-native", created_vsync);
     if (!dev) {
@@ -7272,6 +7337,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
          * at the reference resolution regardless, so w/h only size unused buffers. */
         (void)nr_device_knobs_install();
         nr_set_pipeline_cache_dir();
+        nr_set_create_hooks();
         dev = rhi_create_headless("openpete-native", (uint32_t)w, (uint32_t)h);
         if (!dev) {
             OPL_ERROR_F("native", "rhi_create_headless failed; native capture disabled");
@@ -23236,6 +23302,7 @@ void openpete_native_render_shutdown(void)
     s_chain_ubo = NULL;
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     late_shutdown();
+    nr_pipe_log_report();
     nr_builtin_postfx_free();
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */

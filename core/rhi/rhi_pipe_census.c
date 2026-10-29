@@ -234,6 +234,21 @@ void rhi_pc_add_base(rhi_pipe_site site, const rhi_pc_variant *v, int nv)
     free(local.slot);
 }
 
+const char *rhi_pc_phase_name(rhi_pc_phase phase)
+{
+    return (unsigned)phase < RHI_PC_PHASES ? k_phase_name[phase] : "?";
+}
+
+const char *rhi_pc_kind_name(rhi_pc_kind kind)
+{
+    return (unsigned)kind < RHI_PC_KINDS ? k_kind_name[kind] : "?";
+}
+
+const char *rhi_pc_site_name(rhi_pipe_site site)
+{
+    return (unsigned)site < RHI_PIPE_SITES ? k_site_name[site] : "?";
+}
+
 int rhi_pc_level(void)
 {
     static SDL_AtomicInt lvl = { -1 };   /* read from compile jobs on any thread */

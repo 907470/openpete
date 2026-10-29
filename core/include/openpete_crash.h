@@ -26,6 +26,22 @@ void openpete_crash_thread_attach(void);
  * @param code Process exit code. */
 void openpete_crash_terminate_now(int code);
 
+/* Longest breadcrumb kept, terminator included; longer text is cut. */
+#define OPENPETE_CRASH_CRUMB_MAX 768
+
+/** @brief Record the calling thread's breadcrumb: one line naming the call it is about to make, which the crash report prints if the process faults before the matching clear.
+ *
+ * The text is copied into one of a fixed set of slots (claimed by the
+ * thread on its first set, released by openpete_crash_crumb_clear), so the
+ * crash handler reads plain bytes with no allocation or lock. With every
+ * slot taken by other threads the call records nothing. A later set
+ * replaces the text.
+ * @param text The line, without a newline. */
+void openpete_crash_crumb_set(const char* text);
+
+/** @brief Clear the calling thread's breadcrumb and release its slot; no-op when it has none. */
+void openpete_crash_crumb_clear(void);
+
 /** @brief Register the function a non-signal fatal exit runs before it terminates the process; NULL clears it.
  *
  * One slot; a later registration replaces an earlier one. The function

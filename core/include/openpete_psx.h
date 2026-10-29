@@ -301,7 +301,8 @@ void openpete_psx_install_crash_handler(void);
  *
  * "segv" stores through a null pointer; "overflow" recurses with a 4 KiB
  * frame until the stack runs out. Any other value, or none, returns at
- * once. The game fiber calls it before dispatching the game's entry, so
+ * once ("pipe" faults inside the first pipeline create instead, from the
+ * native renderer's create hook). The game fiber calls it before dispatching the game's entry, so
  * both faults land on the fiber's stack. */
 void openpete_crash_test(void);
 
