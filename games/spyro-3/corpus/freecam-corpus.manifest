@@ -161,3 +161,6 @@ harbor_speedway@fogoff | pos=(55529, 136037, 11623) yaw=-753 pitch=-41 | | --fog
 icy_peak@aspect16x9 | pos=(84928, 34910, 16286) yaw=-1654 pitch=164 | | --aspect 16:9
 # ice reflections show back faces instead of the reflected scene
 icy_peak | pos=(86304, 28154, 16229) yaw=-858 pitch=367
+# extended LOD: the flooded tunnel of Dino Mines area 2 draws without the
+# far fog the game fades it to
+dino_mines:2 | pos=(193476, 57000, 11500) yaw=1023 pitch=-1
