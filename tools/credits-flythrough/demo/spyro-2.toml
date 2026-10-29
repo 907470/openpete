@@ -1,0 +1,19 @@
+# Spyro 2 (SCUS-94425) attract-demo promo: the guest words demo_promo.py
+# watches (OPENPETE_STATE_WATCH) and the values its cut rules compare.
+
+game = "spyro-2"
+# Boot to past the end of the first loop's last demo (level 52 leaves at
+# VBL 21999 headless), so the capture holds the title intro and every demo.
+frame_limit = 22100
+
+[watch]
+resident = "0x80066EEC"   # g_LoaderState: -1 while a level is resident, 2 loading, 0 title
+demo = "0x80067024"       # g_DemoMode: 1 from the title's demo pick until the level exits
+level = "0x80066F90"      # g_NextLevelNum: the level the loader loads
+fade = "0x80066F68"       # the full-screen subtractive fade level (ABR 2): 0 clear, 255+ black
+title_sub = "0x80067E0C"  # g_TitleSubState: 2 = press-start idle (title mode 0)
+
+[cut]
+resident = -1      # value of `resident` while the level runs
+title_idle = 2     # value of `title_sub` once the title logo has landed
+title_hold = 1.0  # the logo has landed at the idle edge; 1 s of the title with "press start"

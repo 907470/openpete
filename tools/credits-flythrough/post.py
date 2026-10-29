@@ -20,7 +20,8 @@ after B is rebuilt from the scene clips with the same filter and encoder and
 joined to stream copies of the master on both sides, each piece given its
 exact duration; the audio is copied.
 
-preview() writes the 960x540 30 fps two-pass H.264 + AAC 96k preview.
+preview() writes the 960x540 30 fps two-pass H.264 + AAC 96k preview; a
+source not 16:9 is fitted inside it and padded with black.
 Every output is written to a .part file and renamed into place only after
 ffmpeg exits 0 and ffprobe reads its duration.
 """
@@ -227,12 +228,13 @@ def splice(cfg, paths_dir, render_dir, overrides, orig, out, A, B):
 
 
 def preview(master, out):
-    """Write the 960x540 30 fps two-pass preview of master."""
+    """Write the 960x540 30 fps two-pass preview of master, its aspect kept (fit, padded with black)."""
     part = part_name(out)
     if os.path.exists(part):
         os.unlink(part)
     tmp = tempfile.mkdtemp(dir=os.path.dirname(os.path.abspath(out)))
-    enc = ["-vf", "scale=960:540,fps=30", "-c:v", "libx264", "-preset", "slow", "-b:v", "530k",
+    fit = "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    enc = ["-vf", f"{fit},fps=30", "-c:v", "libx264", "-preset", "slow", "-b:v", "530k",
            "-maxrate", "620k", "-bufsize", "1240k", "-passlogfile", os.path.join(tmp, "p540")]
     base = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", master]
     ok = (subprocess.call(base + enc + ["-pass", "1", "-an", "-f", "null", os.devnull], cwd=tmp) == 0

@@ -22,7 +22,7 @@ defaults, fade and music fit.
 | QC | `credits.py --game G qc --paths WORK/paths --render WORK/render/TAG` | `sN/qc.json`; exit 1 on a clip short of its window, an alpha outside {0, 0.5}, or a key-1 pose failure |
 | post | `credits.py --game G post --paths ... --render ... --music WORK/music.flac --out OUT.mp4` | the master |
 | splice | `credits.py --game G splice --paths ... --render ... --clip I=DIR --master IN.mp4 --frames A-B --out OUT.mp4` | IN with frames A..B re-encoded from scene I's re-render in DIR |
-| preview | `credits.py preview --master OUT.mp4 --out OUT-540p.mp4` | 960x540 30 fps two-pass preview |
+| preview | `credits.py preview --master OUT.mp4 --out OUT-540p.mp4` | 960x540 30 fps two-pass preview (aspect kept, padded with black) |
 | publish | `credits.py --game G publish` (post's arguments) | post, then `OUT-540p.mp4` beside the master |
 | thumbnail title | `thumbnail.py title --out-dir WORK/title [--jobs N]` | `title-black.png`, `title-white.png` (the title over black and over white), `title.log` |
 | thumbnail | `thumbnail.py compose --clip WORK/render/TAG/s8/clip.mkv --index 1369 --title-black WORK/title/title-black.png --title-white WORK/title/title-white.png --mark MARK.png --logo LOGO.png --out-dir DIR --tag TAG` | layouts A and B at 3840x2160 and 1280x720 |
@@ -128,3 +128,34 @@ upscale of the title-screen logo texture, supplied as a file.
 The Spyro 3 table sets `OPENPETE_GLINT=1` (near glint stars only) on
 scenes 0, 6, 9 and 10, where a far glint cross flashes for one tick under
 `OPENPETE_D1`; the fix of that pairing defect makes it unnecessary.
+
+## Attract-demo promo
+
+`demo_promo.py` cuts one video per game from its attract loop: 10 s of the
+title-screen intro, a fade to black, then every demo level of the loop in
+order with no title screen between them. One boot records the loop
+(`capture`); the cut table is read from guest words the game's table
+`demo/<game>.toml` names, logged by `OPENPETE_STATE_WATCH` (`[state]` lines
+keyed on the VBL the recorder's `[recq]` lines carry):
+
+| Segment | From | To |
+|---|---|---|
+| title | `title_hold` s (the table's `[cut]` value) after the title sub-state first reaches its press-start idle, minus 10 s | `title_hold` s after that edge; the last `title_fade` s fade to black |
+| demo | first VBL with the level resident, the demo flag set and the fade level at 255+ (the game's own fade-in from black) | last VBL before the level stops being resident (the game's own fade-out at black) |
+
+A loop ends at the first repeated (level, area). The audio is the SPU's
+output on the game's clock (`OPENPETE_AUDIO_DUMP`, `audio.raw` and its VBL
+axis `audio.raw.idx`; a `--record-cfr` recording muxes none), cut with the
+video, a 50 ms fade at each join. The output keeps the capture's 59.826 fps.
+
+```
+D=tools/credits-flythrough/demo_promo.py
+python3 $D --game spyro-2 capture --exe EXE --out $W/s2   # --window 3840x2160 --ssaa 4 --lod extended by default
+python3 $D --game spyro-2 cuts --capture $W/s2             # prints the table, writes cuts.json
+python3 $D --game spyro-2 post --capture $W/s2 --out $W/openpete-spyro2-demos.mp4
+python3 $D sheet --video $W/openpete-spyro2-demos.mp4 --out $W/sheet.png --every 5
+python3 tools/credits-flythrough/credits.py preview --master $W/openpete-spyro2-demos.mp4 --out $W/openpete-spyro2-demos-540p.mp4
+```
+
+A Linux prototype is `--exe build/linux-release/openpete --window 960x720
+--ssaa 1` (Xvfb, OpenAL Soft's null backend: nothing plays on the host).

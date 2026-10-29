@@ -1,0 +1,22 @@
+# Spyro 3 (SCUS-94467) attract-demo promo: the guest words demo_promo.py
+# watches (OPENPETE_STATE_WATCH) and the values its cut rules compare.
+
+game = "spyro-3"
+# Boot to past the end of the first loop's last demo (level 35 leaves at
+# VBL 20283 headless, level-load delay 66), so the capture holds the title
+# intro and every demo.
+frame_limit = 20400
+
+[watch]
+resident = "0x8006C518"   # loadStage: -1 while the level overlay is resident
+demo = "0x8006C658"       # isDemoMode: 1 from the title's demo timeout until the level exits
+level = "0x8006C5BC"      # currentLevel
+area = "0x8006C5C8"       # area: the sub-area the demo starts in
+fade = "0x8006C598"       # the full-screen subtractive fade level (F_UI_FADE): 0 clear, 255+ black
+title_sub = "0x8007F12C:b"  # g_TitleSubState: 1 = press-start idle
+state = "0x8006E344"      # game.state: 11 title, 5 loading image, 3 fade-in, 0 gameplay
+
+[cut]
+resident = -1
+title_idle = 1
+title_hold = 3.0  # the logo lands at the idle edge and "PRESS START" shows about 2.5 s later

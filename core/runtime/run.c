@@ -2942,10 +2942,12 @@ static const char* const s_feed_phase_names[] = { "boot", "skip", "unlocked", "p
 /** @brief Set up the SPU render's output sinks before any SPU init: the capture ring, the audio dump, the feed's synthetic device, and the exit summary.
  *
  * --record (with audio) arms the capture ring the recorder drains: every
- * frame the SPU renders, the frames the device plays. OPENPETE_AUDIO_DUMP
- * =PATH arms the same ring, drained into a raw s16 stereo 44.1 kHz file
- * every VSync (psyq_VSync), so a headless run yields the SPU's output as a
- * measurable signal; the recorder owns the ring when both are asked for.
+ * frame the SPU renders, the frames the device plays. A --record-cfr
+ * recording muxes no audio (its frames are timed in ticks) and leaves the
+ * ring unarmed. OPENPETE_AUDIO_DUMP=PATH arms the same ring, drained into a
+ * raw s16 stereo 44.1 kHz file every VBL with a PATH.idx VBL axis, so a
+ * headless run, or a --record-cfr run, yields the SPU's output on the game's
+ * clock; a recorder that muxes audio owns the ring when both are asked for.
  * OPENPETE_AUDIO_FEED_SIM=DRIFT[,SEED[,STALL]] replaces the audio device
  * with the feed's synthetic device, whose clock runs DRIFT (a fraction,
  * e.g. -0.024) off the producer's and which consumes nothing for STALL
@@ -2955,10 +2957,10 @@ static const char* const s_feed_phase_names[] = { "boot", "skip", "unlocked", "p
  * every 250 ms of device time).
  * @param opts The parsed options. */
 static void audio_sinks_setup(const openpete_options_t* opts) {
-    const int record_audio = opts->record_path && !opts->record_no_audio;
+    const int record_audio = opts->record_path && !opts->record_no_audio && opts->record_cfr <= 0.0;
     PsyX_SPUAL_SetCapture(record_audio);
     const char* dump = getenv("OPENPETE_AUDIO_DUMP");
-    if (dump && *dump && opts->record_path) {
+    if (dump && *dump && record_audio) {
         OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP ignored: --record owns the capture ring");
     } else if (dump && *dump) {
         extern int openpete_audio_dump_armed;

@@ -6,6 +6,7 @@
 #include "game_host_desc.h"
 
 #include "freecam_game.h"
+#include "features/state_watch.h"
 #include "write_census.h"
 #include "renderer/text_moby.h"
 
@@ -17,6 +18,7 @@ void game_frame_pre_on_tick(struct CPUState* cpu, uint32_t frame_counter) {
     if (g->skip_on_tick) g->skip_on_tick(cpu, frame_counter);
     if (g->levelwarp_on_tick) g->levelwarp_on_tick(cpu);
     if (g->trail) g->trail(cpu, frame_counter);
+    state_watch_on_tick(cpu, frame_counter);
     /* Scripted player placement (--player-pose) on the first placeable
      * tick, then scripted engage of the debug free camera (OPENPETE_FREECAM=1
      * / OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live;

@@ -78,7 +78,10 @@ set(OPENPETE_GAME_COMMON_SOURCES
     features/kf_anim_ctl.c
     features/zoe_near.c
     # The title demo launchers of Spyro 2 and 3 played as a sample.
-    features/demo_egg.c)
+    features/demo_egg.c
+    # OPENPETE_STATE_WATCH: a stderr line per change of named guest words,
+    # read by the shared pre-tick hook.
+    features/state_watch.c)
 
 add_library(openpete_game_common OBJECT ${OPENPETE_GAME_COMMON_SOURCES})
 openpete_game_common_settings(openpete_game_common)

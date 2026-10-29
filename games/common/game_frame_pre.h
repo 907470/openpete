@@ -33,7 +33,8 @@ typedef struct game_frame_pre {
 
 /** @brief Run the registered game's pre-tick sequence over its host descriptor's frame_pre steps before the game fiber runs a tick.
  *
- * Order: lead, skip_on_tick, levelwarp_on_tick, trail, the scripted player
+ * Order: lead, skip_on_tick, levelwarp_on_tick, trail, the
+ * OPENPETE_STATE_WATCH line (state_watch_on_tick), the scripted player
  * pose, the free-camera engage unless freecam_engage_held reports nonzero,
  * the write census phase entry, then text_moby_native_layers_tick. A NULL
  * frame_pre runs the sequence with every game step skipped.
