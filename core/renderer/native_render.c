@@ -6750,15 +6750,51 @@ static int nr_eager_twins(rhi_device *dev, const nr_eager_descs *d, const nr_eag
     return 1;
 }
 
-/** @brief Describe every pipeline bring-up creates before the mods' slots: the eager pipelines with their twins and the terrain cache's, through their own builders in describe mode.
+/** @brief Return whether the terrain cache can draw on this device, the conditions of openpete_native_tercache_usable known before bring-up.
  *
- * Every optional pipeline is described (the front shell whatever
- * OPENPETE_MOBY_SHELL holds, the terrain cache whatever --terrain-cache
- * holds); a description that never compiles costs a compile and draws
- * nothing. Display owner only.
+ * shaderFloat64, which the terrain vertex stages declare, and a hardware
+ * device unless OPENPETE_TERRAIN_CACHE_FORCE waives the software-device
+ * exclusion. The variable is read through openpete_config_env, so the
+ * game-neutral stage's [env] winner counts before the full stage sets it.
+ * @param dev The device.
+ * @return 1 when the cache's pipelines may be created on @p dev. */
+static int nr_tercache_device_ok(const rhi_device *dev)
+{
+    if (!rhi_device_has_float64(dev)) return 0;
+    const char *force = openpete_config_env("OPENPETE_TERRAIN_CACHE_FORCE");
+    return (force && *force && *force != '0') || !rhi_device_is_software(dev);
+}
+
+/** @brief Return whether the launcher's precompile describes the terrain cache's pipelines.
+ *
+ * The device must pass nr_tercache_device_ok. The setting must be on in
+ * the game-neutral tiers (the command line, the environment, the global
+ * scopes and [saved]), and no [game.*] or [disc.*]
+ * scope of any game may turn it off where those tiers leave it to the
+ * scopes: the game is not picked yet, so the cache is described only when
+ * every game resolves it on. A game whose scope turns the cache on over a
+ * global off is not described; bring-up's openpete_tercache_init then
+ * creates its pipelines.
+ * @param dev The launcher's device.
+ * @param opts The game-neutral options.
+ * @return 1 to describe the terrain cache. */
+static int nr_tercache_describe_wanted(const rhi_device *dev, const openpete_options_t *opts)
+{
+    return opts->terrain_cache != 0 && !openpete_config_scopes_may_disable("terrain_cache")
+        && nr_tercache_device_ok(dev);
+}
+
+/** @brief Describe every pipeline bring-up creates before the mods' slots: the eager pipelines with their twins and, when every game could use it, the terrain cache's, through their own builders in describe mode.
+ *
+ * The front shell is described whatever OPENPETE_MOBY_SHELL holds; a
+ * description that never compiles costs a compile and draws nothing. The
+ * terrain cache is described only when nr_tercache_describe_wanted holds,
+ * since --terrain-cache 0 must keep its pipelines from being created at all.
+ * Display owner only.
  * @param dev Device.
+ * @param opts The game-neutral options.
  * @return The descriptions recorded. */
-static unsigned nr_describe_pipelines(rhi_device *dev)
+static unsigned nr_describe_pipelines(rhi_device *dev, const openpete_options_t *opts)
 {
     nr_eager_descs d;
     nr_eager_descs_init(&d);
@@ -6771,7 +6807,9 @@ static unsigned nr_describe_pipelines(rhi_device *dev)
     rhi_pipeline_describe_begin(dev);
     nr_eager_core(dev, &d, &p, 1);
     (void)nr_eager_twins(dev, &d, &p, 1, &o);
-    openpete_tercache_describe(dev);
+    const int tercache = nr_tercache_describe_wanted(dev, opts);
+    if (tercache) openpete_tercache_describe(dev);
+    OPL_INFO_F("native", "launcher precompile: terrain cache %s", tercache ? "described" : "not described");
     return rhi_pipeline_describe_end(dev);
 }
 
@@ -6879,7 +6917,7 @@ int openpete_native_launcher_precompile_start(const openpete_options_t *opts)
         OPL_INFO_F("native", "%s", "launcher precompile: off for this run");
         return 0;
     }
-    const unsigned described = nr_describe_pipelines(dev);
+    const unsigned described = nr_describe_pipelines(dev, opts);
     rhi_compile_pool_pause(dev, s_ahead.paused != 0);
     /* The game-neutral options carry the flag, the global scopes and [saved];
      * a [game.*] or [disc.*] scope is not known before the pick. */
@@ -7582,13 +7620,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * kill switch - it skips the ~130 MB device-memory arenas too). Software
      * vk never draws the retained path (the usable() exclusion), so don't
      * spend the arenas there either - except under the FORCE waiver the
-     * llvmpipe parity harness uses. A failed init logs + leaves the CPU
-     * walk in place. */
-    if (opts->terrain_cache) {
-        const char* fe = getenv("OPENPETE_TERRAIN_CACHE_FORCE");
-        if ((fe && *fe && *fe != '0') || !rhi_device_is_software(dev))
-            openpete_tercache_init(dev, nr_eager_batch);
-    }
+     * llvmpipe parity harness uses. A device without shaderFloat64 never
+     * draws it either (nr_tercache_device_ok). A failed init logs + leaves
+     * the CPU walk in place. */
+    if (opts->terrain_cache && nr_tercache_device_ok(dev))
+        openpete_tercache_init(dev, nr_eager_batch);
 
     /* Replacement atlas up front when a pack is active. Created lazily it
      * lands on the first frame that folds a replacement, and the driver's

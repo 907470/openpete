@@ -926,6 +926,41 @@ static void case_scoped_device_knobs(void) {
     for (int i = 0; vars[i]; i++) clear_env(vars[i]);
 }
 
+/* openpete_config_scopes_may_disable after the game-neutral stage: a scope
+ * of any game that turns the knob off in any spelling answers 1, a tier
+ * above the scopes decides alone, and a scope that leaves it on answers 0. */
+static void case_scopes_may_disable(void) {
+    static const struct {
+        const char *name, *body, *typed;
+        int want;
+    } rows[] = {
+        { "no scope", "terrain_cache = true\n", NULL, 0 },
+        { "scope leaves it on", "[game.spyro-2]\nterrain_cache = true\n", NULL, 0 },
+        { "other game's bare key off", "[game.spyro-3]\nterrain_cache = false\n", NULL, 1 },
+        { "disc scope [env] 0", "[disc.SCUS-94425.env]\nOPENPETE_TERRAIN_CACHE = \"0\"\n", NULL, 1 },
+        { "game scope [args] 0", "[game.spyro-1.args]\n\"--terrain-cache\" = 0\n", NULL, 1 },
+        { "command line above the scope", "[game.spyro-3]\nterrain_cache = false\n", "1", 0 },
+        { "[saved] above the scope", "[game.spyro-3]\nterrain_cache = false\n"
+                                     "[saved]\nterrain_cache = true\n", NULL, 0 },
+    };
+    clear_env("OPENPETE_TERRAIN_CACHE");
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        g_case = rows[i].name;
+        openpete_config_reset();
+        write_toml(rows[i].body);
+        char *argv[] = { (char *)"openpete", (char *)"--config", g_toml_path,
+                         (char *)"--terrain-cache", (char *)rows[i].typed, NULL };
+        const int argc = rows[i].typed ? 5 : 3;
+        int oc = 0;
+        char **ov = NULL;
+        CHECK(openpete_config_apply_neutral(argc, argv, argc, &oc, &ov) >= 0,
+              "the neutral stage must resolve");
+        CHECK(openpete_config_scopes_may_disable("terrain_cache") == rows[i].want,
+              "expected %d", rows[i].want);
+    }
+    CHECK(!openpete_config_scopes_may_disable("no_such_knob"), "an unknown id answers 0");
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     snprintf(g_toml_path, sizeof g_toml_path, "%s/openpete-config-test.toml",
@@ -960,6 +995,7 @@ int main(void) {
     case_portable_layout();
     case_neutral_stage();
     case_scoped_device_knobs();
+    case_scopes_may_disable();
 
     remove(g_toml_path);
     if (g_fail) {

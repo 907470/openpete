@@ -1815,6 +1815,56 @@ const char *openpete_config_device_value(const char *spelling) {
     return win->value;
 }
 
+/** @brief Return whether one TOML scalar, read as a boolean knob's value, turns it off.
+ *
+ * A TOML false, "off", and any other text atoi reads as 0 are off; a NULL
+ * scalar (the key is absent) is not.
+ * @param raw The scalar, or NULL.
+ * @return 1 when the value is off. */
+static int scalar_turns_off(toml_raw_t raw) {
+    char val[CFG_VALUE_MAX];
+    int is_bool = 0, bool_val = 0;
+    if (!raw || toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0)
+        return 0;
+    if (is_bool) return !bool_val;
+    return !strcmp(val, "off") || (strcmp(val, "on") && atoi(val) == 0);
+}
+
+/** @brief Return whether one [game.<id>] or [disc.<key>] table turns knob @p k off in any of its spellings.
+ *
+ * Reads the bare key, the [env] row of the knob's variable and the [args]
+ * row of its flag.
+ * @param tab The scope table.
+ * @param k The knob.
+ * @return 1 when a spelling sets it off. */
+static int scope_turns_off(const toml_table_t *tab, const cfg_knob_t *k) {
+    const toml_table_t *env = toml_table_in(tab, "env");
+    const toml_table_t *args = toml_table_in(tab, "args");
+    return scalar_turns_off(toml_raw_in(tab, k->id))
+        || (env && k->env && scalar_turns_off(toml_raw_in(env, k->env)))
+        || (args && k->cli && scalar_turns_off(toml_raw_in(args, k->cli)));
+}
+
+int openpete_config_scopes_may_disable(const char *knob_id) {
+    const int ki = knob_id ? cfg_schema_find_id(knob_id) : -1;
+    if (ki < 0 || s_no_config) return 0;
+    for (int i = 0; i < s_contrib_n; i++)
+        if (s_contrib[i].knob == ki && s_contrib[i].rank / 1000 >= TIER_SAVED) return 0;
+    const cfg_knob_t *k = &cfg_schema(NULL)[ki];
+    static const char *const ns[] = { "game", "disc" };
+    for (int f = 0; f < s_file_n; f++) {
+        for (int n = 0; s_doc[f] && n < 2; n++) {
+            const toml_table_t *nstab = toml_table_in(s_doc[f], ns[n]);
+            const char *key;
+            for (int i = 0; nstab && (key = toml_key_in(nstab, i)) != NULL; i++) {
+                const toml_table_t *tab = toml_table_in(nstab, key);
+                if (tab && scope_turns_off(tab, k)) return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 void openpete_config_set_game_id(const char *id) {
     snprintf(s_scope_game, sizeof s_scope_game, "%s", id ? id : "");
 }

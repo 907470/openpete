@@ -106,6 +106,22 @@ const char* openpete_config_env(const char* name);
  * @return The value, or NULL when no such tier sets it. */
 const char* openpete_config_device_value(const char* spelling);
 
+/** @brief Return whether some [game.*] or [disc.*] scope of a loaded file could turn a boolean knob off for a game not yet identified.
+ *
+ * A scope ranks below [saved], the real environment, the bk2 sidecar and
+ * the command line, so a knob any of those tiers sets in the current
+ * resolution is decided without the scopes and the answer is 0. Otherwise
+ * every [game.<id>] and [disc.<key>] table of each loaded file is read,
+ * whatever game it names, for the knob's bare key, its [env] variable and
+ * its [args] flag; a value that is false, "off" or a number atoi reads as 0
+ * (an [args] = false included) answers 1. Valid after either stage; the
+ * game-neutral stage's caller uses it to decide before the pick what every
+ * game could resolve.
+ * @param knob_id Schema knob id.
+ * @return 1 when a scope could turn the knob off, else 0 (also for an
+ *         unknown id or with --no-config). */
+int openpete_config_scopes_may_disable(const char* knob_id);
+
 /** @brief The number of full-stage materializations this process ran (openpete_config_apply calls).
  * @return The count; 1 after a normal boot. */
 int openpete_config_materializations(void);
