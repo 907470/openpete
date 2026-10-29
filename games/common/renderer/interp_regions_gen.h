@@ -83,7 +83,10 @@ int game_interp_row_index(const char* name);
  * record captured is one moby record and no bytes of the next, taken from the
  * draw-time stash when it holds the moby and live RAM otherwise. The walk
  * stops 512 slots short of the table capacity so the pools captured after it
- * always fit. OPENPETE_CAPTRACE_CLS=<class|0xFFFF> prints the tick position of
+ * always fit. Each record is captured as shown when its drawn byte is set or
+ * the native view drew it on the tick (moby_native_canon_drawn_mobys,
+ * moby_native_view_revealed_mobys), for openpete_interp_objs_capture_shown.
+ * OPENPETE_CAPTRACE_CLS=<class|0xFFFF> prints the tick position of
  * every captured moby of that class; OPENPETE_MOBY_STASH_CENSUS prints the
  * stash's served and differing counts per call. Read-only against guest RAM.
  * Call between openpete_interp_objs_begin_tick() and

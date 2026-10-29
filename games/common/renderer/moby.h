@@ -241,6 +241,19 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * @return The entry count. */
 int moby_native_revealed_mobys(const uint32_t** out);
 
+/** @brief The mobys the reveal walk of the last canonical regular pass admitted, under the tick's own camera.
+ *
+ * The moby_native_revealed_mobys set as the canonical pass published it,
+ * latched before any sub-tick present republishes it; empty when that pass's
+ * walk admitted nothing or returned early (a canonical view without
+ * --no-lod, a cutscene that owns the draw, no native scene feed). Together
+ * with moby_native_canon_drawn_mobys it is the set of mobys the native view
+ * drew on the tick. Reports no entries when the pass ran more than two VBLs
+ * ago.
+ * @param out Receives the borrowed array.
+ * @return The entry count. */
+int moby_native_view_revealed_mobys(const uint32_t** out);
+
 /** @brief The mobys the second model kind's queue of the current canonical epoch holds, reveal records included.
  *
  * Empty on a game without a second kind, and before this epoch's queue is

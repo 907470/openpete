@@ -2817,6 +2817,7 @@ static void moby_build_validate(CPUState* cpu) {
  * get m_WasDrawn set, so the .s +0x200 range hysteresis needs a host mirror;
  * membership = revealed on the previous builder call). */
 static uint32_t s_rev_prev[MAX_RECORDS]; static int s_rev_prev_n;
+static unsigned s_rev_pub_gen;   /* bumped by every reveal_publish_hysteresis */
 /** @brief Whether moby m was in the previous builder call's reveal set.
  *
  * @param m The moby's PSX address.
@@ -2858,6 +2859,28 @@ static void reveal_publish_hysteresis(const uint32_t* drawn, int drawn_n,
     for (int k = 0; k < drawn_n && hn < MAX_RECORDS; k++) if (drawn[k]) s_rev_prev[hn++] = drawn[k];
     for (int k = 0; k < occl_n  && hn < MAX_RECORDS; k++) if (occl[k])  s_rev_prev[hn++] = occl[k];
     s_rev_prev_n = hn;
+    s_rev_pub_gen++;
+}
+
+/* The reveal admissions of the last canonical regular pass, latched on the
+ * game fiber so a sub-tick re-extract (which republishes s_rev_prev under the
+ * present's camera) cannot change what the tick's object capture reads. */
+static uint32_t s_view_rev[MAX_RECORDS]; static int s_view_rev_n;
+static unsigned s_view_rev_frame = ~0u;
+
+/** @brief Latch the canonical regular pass's reveal admissions for moby_native_view_revealed_mobys.
+ *
+ * @param published Nonzero when the pass's reveal walk published a set; a
+ *        walk that returned before admitting latches an empty set. */
+static void view_rev_latch(int published) {
+    s_view_rev_frame = openpete_frame;
+    s_view_rev_n = published ? s_rev_prev_n : 0;
+    if (s_view_rev_n) memcpy(s_view_rev, s_rev_prev, (size_t)s_view_rev_n * sizeof s_view_rev[0]);
+}
+
+int moby_native_view_revealed_mobys(const uint32_t** out) {
+    *out = s_view_rev;
+    return (openpete_frame - s_view_rev_frame <= 2u) ? s_view_rev_n : 0;
 }
 
 /** @brief Whether moby m is a run-once instance the walk emits nothing for and the reveal never admits.
@@ -9851,7 +9874,9 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
              * the reveal's own yield. Can only fire when the .s REGULAR render
              * fn actually ran this tick (this is its hook), so a load screen -
              * where only the SHADED/text producer runs - still cannot mark it. */
+            const unsigned pub = s_rev_pub_gen;
             if (append_revealed_regular(cpu) > 0) render_path_mark_drawn(RP_MOBY);
+            view_rev_latch(pub != s_rev_pub_gen);
         }
         { OP_PROF_ACCUM_SCOPE("moby.build");
           build_walk_tris(cpu); }             /* face-stream walk; SPEC dedups vs s_reg_moby; shading baked */

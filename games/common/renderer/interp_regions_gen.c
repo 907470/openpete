@@ -14,6 +14,7 @@
 #include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
 #include "renderer/particles.h"    /* particles_slot_serial */
 #include "renderer/orchestrator.h" /* the canonical-render epoch the moby stash carries */
+#include "renderer/moby.h"         /* the native view's drawn sets */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -352,6 +353,81 @@ static void captrace_moby(uint32_t m, const uint8_t* host, long cls) {
             openpete_frame, m, c2, pos[0], pos[1], pos[2]);
 }
 
+/* The mobys the native view drew on the tick, as an open-addressed set of
+ * guest addresses (0 marks an empty slot; no moby address is 0). */
+#define VIEW_SET_SLOTS 4096u
+static uint32_t s_view_set[VIEW_SET_SLOTS];
+
+/** @brief Add each address of a moby list to the native view set, up to half the set's capacity.
+ *
+ * @param list The moby addresses.
+ * @param n The list's length.
+ * @param fill The set's population, updated. */
+static void view_set_add(const uint32_t* list, int n, uint32_t* fill) {
+    for (int i = 0; list && i < n && *fill < VIEW_SET_SLOTS / 2u; i++) {
+        const uint32_t m = list[i];
+        if (!m) continue;
+        uint32_t h = (m * 2654435761u) >> 20;
+        while (s_view_set[h & (VIEW_SET_SLOTS - 1u)] && s_view_set[h & (VIEW_SET_SLOTS - 1u)] != m) ++h;
+        if (!s_view_set[h & (VIEW_SET_SLOTS - 1u)]) { s_view_set[h & (VIEW_SET_SLOTS - 1u)] = m; ++*fill; }
+    }
+}
+
+/** @brief Rebuild the native view set from the tick's cull-record mobys and the canonical reveal admissions.
+ *
+ * Both lists are written by the canonical render passes of the tick the
+ * capture follows, so the set is the tick's own; a sub-tick present cannot
+ * change it.
+ * @return The set's population. */
+static uint32_t view_set_build(void) {
+    memset(s_view_set, 0, sizeof s_view_set);
+    uint32_t fill = 0;
+    const uint32_t* list = NULL;
+    int n = moby_native_canon_drawn_mobys(&list);
+    view_set_add(list, n, &fill);
+    n = moby_native_view_revealed_mobys(&list);
+    view_set_add(list, n, &fill);
+    return fill;
+}
+
+/** @brief Whether the native view drew moby @p m on the tick (view_set_build).
+ *
+ * @param m The moby's PSX address.
+ * @return 1 when the set holds @p m, else 0. */
+static int view_set_has(uint32_t m) {
+    for (uint32_t h = (m * 2654435761u) >> 20;; ++h) {
+        const uint32_t v = s_view_set[h & (VIEW_SET_SLOTS - 1u)];
+        if (v == m) return 1;
+        if (!v) return 0;
+    }
+}
+
+/** @brief Capture one moby record under @p key with whether it was shown on the tick.
+ *
+ * Shown when the game's cull drew the record (its drawn byte) or the native
+ * view drew it (a cull record or a reveal admission of the tick: the widened
+ * view and extended LOD draw mobys the 4:3 cull leaves undrawn), so a spawn
+ * parked unshown by both and placed into view on a later tick snaps on its
+ * first shown tick. With OPENPETE_INTERP_OBJS_KEYLOG a replacement prints the
+ * moby, its class and whether the native view drew it.
+ * @param m The moby's PSX address.
+ * @param host The live record, for the drawn byte and the class.
+ * @param src The record captured (stashed or live).
+ * @param blob Record bytes captured.
+ * @param key The record's interp key.
+ * @param view Nonzero when the native view set has entries this tick. */
+static void capture_moby_shown(uint32_t m, const uint8_t* host, const void* src, uint32_t blob,
+                               uint32_t key, int view) {
+    const int native = view && view_set_has(m);
+    const int shown  = host[game_layout.moby.drawn_off] != 0 || native;
+    if (!openpete_interp_objs_capture_shown(key, src, blob, shown) || !openpete_interp_objs_keylog())
+        return;
+    uint16_t cls;
+    memcpy(&cls, host + game_layout.moby.class_off, 2);
+    fprintf(stderr, "[interp-objs] f=%u unshown-replace m=%08x cls=%03x native=%d\n",
+            openpete_frame, m, cls, native);
+}
+
 void game_interp_capture_moby_array(void) {
     stash_walk_t sw = { stash_prepare(), 0, 0, 0, stash_census_on() };
 
@@ -377,6 +453,7 @@ void game_interp_capture_moby_array(void) {
      * capture of this tick. */
     static uint32_t s_live[4096];
     uint32_t n_live = 0;
+    const uint32_t view_n = view_set_build();
     uint32_t m = arr;
     for (long guard = 0; guard < bound; ++guard) {
         const void* host = openpete_psx_to_host_span(m, stride);
@@ -386,17 +463,7 @@ void game_interp_capture_moby_array(void) {
         if (st < 0x80) {                                         /* 0x80 and above: dormant, skipped */
             const void* src = stash_source(&sw, m, host, blob);
             const uint32_t key = game_credits_letter_key(m);
-            /* The record's drawn byte (the game's cull verdict) marks a state
-             * the game did not draw, so a spawn parked undrawn and placed on a
-             * later tick snaps on its first drawn tick. */
-            const int shown = ((const uint8_t*)host)[game_layout.moby.drawn_off] != 0;
-            if (openpete_interp_objs_capture_shown(key, src, blob, shown) &&
-                openpete_interp_objs_keylog()) {
-                uint16_t cls;
-                memcpy(&cls, (const uint8_t*)host + game_layout.moby.class_off, 2);
-                fprintf(stderr, "[interp-objs] f=%u unshown-replace m=%08x cls=%03x\n",
-                        openpete_frame, m, cls);
-            }
+            capture_moby_shown(m, (const uint8_t*)host, src, blob, key, view_n != 0);
             cut_props_capture((const uint8_t*)src);
             if (n_live < sizeof s_live / sizeof s_live[0]) s_live[n_live++] = key;
             if (s_ctc >= 0) captrace_moby(m, (const uint8_t*)host, s_ctc);

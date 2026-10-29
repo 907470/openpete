@@ -215,12 +215,13 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
     if (i >= SLOTS) return 0;   /* table full - drop rather than corrupt a colliding slot */
 
     int replaced = 0;
-    if (found && !s_tab[i].have_prev && s_tab[i].curr_unshown && !s_tab[i].unshown_spent &&
+    if (found && shown && !s_tab[i].have_prev && s_tab[i].curr_unshown &&
         !(s_tab[i].blob_len == (uint16_t)len && memcmp(s_tab[i].curr, data, len) == 0)) {
-        /* Never-rolled entry whose curr the game did not draw (a record spawned
-         * at a parking pose and placed on a later tick): the new state replaces
-         * curr as a fresh spawn, so no channel pairs from the undrawn pose. */
-        s_tab[i].unshown_spent = 1;
+        /* Never-rolled entry whose curr was not shown (a record spawned at a
+         * parking pose), changed into a shown state: the new state replaces
+         * curr as a fresh spawn, so no channel pairs from the unshown pose. A
+         * change between two unshown states rolls, so the pair is there when
+         * the record is first shown unchanged. */
         s_tab[i].curr_ns       = objs_tick_stamp();
         s_unshown_replaced++;
         replaced = 1;
@@ -263,7 +264,6 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
         s_tab[i].prev_ns   = 0;
         s_tab[i].prev_seen_ns = 0;
         s_tab[i].curr_ns   = objs_tick_stamp();
-        s_tab[i].unshown_spent = 0;
         s_stat_spawned++;
         /* OPENPETE_INTERP_OBJS_KEYLOG: one stderr line per spawn, with the
          * key - the identity instrument for keying tests (a re-keyed object
