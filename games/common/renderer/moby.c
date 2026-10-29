@@ -3349,6 +3349,7 @@ int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f)
     ngte_euler_sc e;
     ngte_euler_sincos(cpu, cpu->read_word(moby + game_layout.moby.angle_off), &e);
     ngte_compose_euler(PM, &e, f->M);
+    memcpy(f->cam, PM, sizeof f->cam);
     /* The cull's own centre over the quarter-world camera delta, at full
      * width: the deltas pass the 16-bit IR range and an int32 sum wraps once a
      * component passes ~175 K view units - reachable under extended LOD,
@@ -3526,7 +3527,7 @@ static void moby_reveal_extended(CPUState* cpu, uint32_t m, uint32_t head,
 static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_t kind,
                                      double widen) {
     fprintf(stderr, "[moby-reveal vbl=%u] kind=%s live=%ld canon=%ld occluded=%ld added=%d "
-                    "declined{nomodel=%ld otherkind=%ld dup=%ld nopose=%ld full=%ld} "
+                    "declined{nomodel=%ld otherkind=%ld dup=%ld nopose=%ld full=%ld otherform=%ld} "
                     "wide{widen=%.4f added=%d outside=%ld sector=%ld otherkind=%ld range=%ld "
                     "near=%ld lateral=%ld vertical=%ld sphere2=%ld canonical=%ld admit=%ld "
                     "requeued=%ld} canon_absent=%ld canon_boxed=%ld\n",
@@ -3534,7 +3535,7 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
             c->seen, c->canon, c->occl, c->added,
             c->declined[MOBY_REVEAL_NO_MODEL], c->declined[MOBY_REVEAL_OTHER_KIND],
             c->declined[MOBY_REVEAL_DUPLICATE], c->declined[MOBY_REVEAL_NO_POSE],
-            c->declined[MOBY_REVEAL_QUEUE_FULL],
+            c->declined[MOBY_REVEAL_QUEUE_FULL], c->declined[MOBY_REVEAL_OTHER_FORM],
             widen, c->wide_added, c->wide_v[MOBY_WIDE_OUTSIDE],
             c->wide_v[MOBY_WIDE_SECTOR], c->wide_v[MOBY_WIDE_OTHER_KIND],
             c->wide_v[MOBY_WIDE_RANGE], c->wide_v[MOBY_WIDE_NEAR],
@@ -5519,12 +5520,13 @@ static int moby_world_key_on(void) {
  * @param p1 The second vertex.
  * @param p2 The third vertex.
  * @param p3 The fourth vertex, or NULL for a triangle.
+ * @param fsign The record's face sign (moby_record_face_sign); -1 negates both NCLIPs.
  * @return The bucket word, or -1. */
 static int moby_face_otkey(const proj_xy* rec0, const wface_t* F, const proj_xy* p0,
-                           const proj_xy* p1, const proj_xy* p2, const proj_xy* p3) {
+                           const proj_xy* p1, const proj_xy* p2, const proj_xy* p3, int fsign) {
     if (rec0->otk.row == MOBY_OTK_NONE) return -1;
     moby_otk_face_t f = { { &p0->iv, &p1->iv, &p2->iv, (F->fresh && p3) ? &p3->iv : NULL },
-                          F->otbias, INT32_MIN, (int8_t)F->bit0, 0 };
+                          F->otbias, INT32_MIN, (int8_t)F->bit0, 0, (int8_t)(fsign < 0) };
     return moby_otk_face_bucket(&rec0->otk, &f);
 }
 
@@ -5737,6 +5739,44 @@ static void moby_fade_census_rec(CPUState* cpu, const rec_meta* R, uint32_t farb
                 md, R->zsf4, hp, farbase);
 }
 
+/** @brief The sign the draw multiplies into every facing test of a record, from the game's record_face_sign hook.
+ *
+ * +1 where the game has no hook. Under OPENPETE_MOBY_MIRROR_CENSUS (read
+ * once) a record of sign -1 prints one [moby-mirror] line: its Moby, class
+ * and material word.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @return -1 when the record draws mirrored, else +1. */
+static int moby_record_face_sign(CPUState* cpu, const rec_meta* R) {
+    const int sign = moby_game.record_face_sign ? moby_game.record_face_sign(R->mscol) : 1;
+    static int s_cen = -1;
+    if (s_cen < 0) { const char* e = getenv("OPENPETE_MOBY_MIRROR_CENSUS"); s_cen = (e && *e && *e != '0'); }
+    if (s_cen && sign < 0)
+        fprintf(stderr, "[moby-mirror vbl=%u key=%u] moby=%08X cls=%03X mat=%08X host=%d\n",
+                openpete_frame, openpete_feed_key_now(), R->moby,
+                R->moby ? cpu->read_half(R->moby + game_layout.moby.class_off) & 0xFFFu : 0u,
+                R->mscol, R->addr == 0u);
+    return sign;
+}
+
+/** @brief A face's two facing values on the float screen coordinates, times the record's face sign.
+ *
+ * NCLIP1 is (p0, p1, p2) and NCLIP2 is (p3, p1, p2), -1 without a fourth
+ * vertex. The draw of a mirrored record negates both before any test
+ * (moby_record_face_sign).
+ * @param fsign The record's face sign, +1 or -1.
+ * @param p0 The first vertex.
+ * @param p1 The second vertex.
+ * @param p2 The third vertex.
+ * @param p3 The fourth vertex, or NULL.
+ * @param ncl1 Receives NCLIP1.
+ * @param ncl2 Receives NCLIP2. */
+static void face_nclips(int fsign, const proj_xy* p0, const proj_xy* p1, const proj_xy* p2,
+                        const proj_xy* p3, double* ncl1, double* ncl2) {
+    *ncl1 = fsign * tri_nclip(p0->sx, p0->sy, p1->sx, p1->sy, p2->sx, p2->sy);
+    *ncl2 = p3 ? fsign * tri_nclip(p3->sx, p3->sy, p1->sx, p1->sy, p2->sx, p2->sy) : -1.0;
+}
+
 /** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
  *
  * Per record: the specular pass skips a moby the regular pass already fed
@@ -5837,6 +5877,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         int ltop = -1;                   /* highest local bucket array entry the draw fills */
         moby_wplane_t wp;
         const moby_wplane_t* wpr = moby_record_wplane(cpu, R->mscol, R->moby, R->header, &wp);
+        const int fsign = moby_record_face_sign(cpu, R);
         for (int fi = 0; fi < FC->nfaces; fi++) {
             const wface_t* F = &FC->f[fi];
             int fresh = F->fresh, textured = F->textured;
@@ -5865,8 +5906,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * culling genuinely front-facing thin-moby tops (Artisans water platforms,
              * cls 0x12 -> waterfall showed THROUGH the disc). Float is exact there, and the
              * native Z-buffer sorts what survives. (PSX/PsyCross floor here and show gaps.) */
-            double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);
-            double ncl2 = p3 ? tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy) : -1.0;
+            double ncl1, ncl2;
+            face_nclips(fsign, p0, p1, p2, p3, &ncl1, &ncl2);
             int emit_a = 0, emit_b = 0, b_is_v3tri = 0;
             if (fresh) {
                 int bit0 = (int)F->bit0;
@@ -5890,7 +5931,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * and the array's top entry places the whole record in the world
              * ordering table (moby_record_world_buckets). */
             uint64_t rt0 = rt_now();
-            int ot_bk = moby_face_otkey(&s_proj[base], F, p0, p1, p2, p3);
+            int ot_bk = moby_face_otkey(&s_proj[base], F, p0, p1, p2, p3, fsign);
             rt_add(RT_KEY, rt0, 1);
             ltop = moby_otk_top_entry(&s_proj[base].otk, ot_bk, ltop);
             if (!emit_a && !emit_b) continue;
@@ -6558,6 +6599,39 @@ static void class_colour_tally_report(const class_colour_tally_t* t) {
     fprintf(stderr, "\n");
 }
 
+/* One moby's walk-triangle precision under OPENPETE_MOBY_VERIFY_MOBY=<hex
+ * Moby address>: the walk triangles keyed to that moby and how many of them
+ * the one-to-one match paired with a captured prim. moby 0 = off. */
+typedef struct { uint32_t moby; long n, matched; } moby_prec_tally_t;
+/** @brief Start a one-moby precision tally, its Moby read once from OPENPETE_MOBY_VERIFY_MOBY.
+ *
+ * @param t The tally, zeroed; moby 0 when the variable is unset or empty. */
+static void moby_prec_tally_begin(moby_prec_tally_t* t) {
+    static int s_set = 0; static uint32_t s_moby = 0u;
+    if (!s_set) { const char* e = getenv("OPENPETE_MOBY_VERIFY_MOBY");
+                  s_moby = (e && *e) ? (uint32_t)strtoul(e, NULL, 16) : 0u; s_set = 1; }
+    memset(t, 0, sizeof *t);
+    t->moby = s_moby;
+}
+/** @brief Count one walk triangle into the tally when its moby is the tally's.
+ *
+ * @param t The tally.
+ * @param moby The triangle's moby key.
+ * @param matched Nonzero when the match paired the triangle with a prim. */
+static void moby_prec_tally_add(moby_prec_tally_t* t, uint32_t moby, int matched) {
+    if (!t->moby || moby != t->moby) return;
+    t->n++; t->matched += (matched != 0);
+}
+/** @brief Print the one-moby precision line to stderr; nothing when the tally is off.
+ *
+ * @param t The tally. */
+static void moby_prec_tally_report(const moby_prec_tally_t* t) {
+    if (!t->moby) return;
+    fprintf(stderr, "[moby-verify-moby %s vbl=%u m=%08X] walkTris=%ld matched=%ld precision=%.1f%%\n",
+            s_cur_mat, openpete_frame, t->moby, t->n, t->matched,
+            t->n ? 100.0 * (double)t->matched / (double)t->n : 0.0);
+}
+
 /** @brief Match the walked triangles to the captured prims and print the topology and colour A/B to stderr.
  *
  * Builds the prim triangles (build_prim_tris), then assigns walk triangles to
@@ -6649,6 +6723,8 @@ static void compare_walk_vs_prims(void) {
     long spc_n=0, spc_sum=0, spc_max=0;
     class_colour_tally_t vcls;
     class_colour_tally_begin(&vcls);
+    moby_prec_tally_t vmob;
+    moby_prec_tally_begin(&vmob);
     /* On-screen subset (centroid within the disp rect): the off-screen extras
      * the .s clip-rejects are scissored by panel 0 anyway, so the visually-
      * meaningful match is the on-screen one. */
@@ -6704,6 +6780,7 @@ static void compare_walk_vs_prims(void) {
         if (won_this) won++;
         int ap = s_assign[wi];
         if (ap >= 0) { bp = ap; best = tri_match_cost(w, &s_ptri[ap]); }
+        moby_prec_tally_add(&vmob, s_wtri_moby[wi], ap >= 0);
         if (ap >= 0){
             wmatch++; pmatched[bp]=1; wcost_sum += best;
             if (won_this) wmatch_on++;
@@ -6840,6 +6917,7 @@ static void compare_walk_vs_prims(void) {
     fprintf(stderr, "[moby-walk-special vbl=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
             openpete_frame, spc_n, spc_n ? (double)spc_sum/(double)spc_n : 0.0, spc_max);
     class_colour_tally_report(&vcls);
+    moby_prec_tally_report(&vmob);
     #undef ONSCR
 }
 
@@ -11480,7 +11558,7 @@ static int shaded_face_otkey(const moby_otk_rec_t* rec, const proj_xy* base, int
                              int i2, int i3, int vc, uint32_t w0, uint32_t w1) {
     if (rec->row == MOBY_OTK_NONE || (i2 != i3 && i3 >= vc)) return -1;
     moby_otk_face_t f = { { &base[i0].iv, &base[i1].iv, &base[i2].iv,
-                            i2 == i3 ? NULL : &base[i3].iv }, 0, INT32_MIN, 0, 0 };
+                            i2 == i3 ? NULL : &base[i3].iv }, 0, INT32_MIN, 0, 0, 0 };
     moby_game.shaded_otkey_face(w0, w1, &f);
     return moby_otk_face_bucket(rec, &f);
 }

@@ -270,6 +270,20 @@ long moby_otk_nclip(const moby_otk_vert_t* a, const moby_otk_vert_t* b, const mo
 
 /* ---- prim choice and key ------------------------------------------------------ */
 
+/** @brief The NCLIP of (a, b, c) as the face's facing test reads it: negated on a mirrored record.
+ *
+ * @param f The face; supplies the mirror flag.
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @return moby_otk_nclip(a, b, c), negated when `f->mirror` is set. */
+static long otk_face_nclip(const moby_otk_face_t* f, const moby_otk_vert_t* a,
+                           const moby_otk_vert_t* b, const moby_otk_vert_t* c)
+{
+    const long n = moby_otk_nclip(a, b, c);
+    return f->mirror ? -n : n;
+}
+
 typedef struct {
     const moby_otk_vert_t* v[4];
     int quad;
@@ -334,7 +348,7 @@ static int otk_choose_dual(const moby_otk_rec_t* r, const moby_otk_face_t* f, lo
         otk_prim(p, f, 0, 0, 0);
         return 1;
     }
-    long n2 = moby_otk_nclip(f->v[3], f->v[1], f->v[2]);
+    long n2 = otk_face_nclip(f, f->v[3], f->v[1], f->v[2]);
     if (f->wbit) {
         if (n1 > 0) n1 = -n1;
         if (n2 < 0) n2 = -n2;
@@ -373,7 +387,7 @@ static int otk_choose_whole(const moby_otk_rec_t* r, const moby_otk_face_t* f, l
 {
     int back = n1 < 0;
     if (!(r->trz < f->near_limit) && n1 <= 0) {
-        if (!f->v[3] || moby_otk_nclip(f->v[3], f->v[1], f->v[2]) >= 0) return 0;
+        if (!f->v[3] || otk_face_nclip(f, f->v[3], f->v[1], f->v[2]) >= 0) return 0;
         back = 1;
     }
     otk_prim(p, f, f->v[3] != NULL, 0, back);
@@ -398,7 +412,7 @@ static int otk_choose_flat(const moby_otk_rec_t* r, const moby_otk_face_t* f, lo
         if (n1 == 0) return 0;
         otk_prim(p, f, 0, 0, n1 < 0);
     } else {
-        long n2 = moby_otk_nclip(f->v[3], f->v[1], f->v[2]);
+        long n2 = otk_face_nclip(f, f->v[3], f->v[1], f->v[2]);
         if (!otk_dual_front(f, n1, n2, p)) {
             if (n2 == 0) return 0;
             otk_prim(p, f, 1, 0, 1);
@@ -463,7 +477,7 @@ int moby_otk_face_bucket(const moby_otk_rec_t* r, const moby_otk_face_t* f)
         [OTK_CHOOSE_WHOLE] = otk_choose_whole,
         [OTK_CHOOSE_FLAT] = otk_choose_flat,
     };
-    long n1 = moby_otk_nclip(f->v[0], f->v[1], f->v[2]);
+    long n1 = otk_face_nclip(f, f->v[0], f->v[1], f->v[2]);
     otk_prim_t p;
     return k_choose[s->choose](r, f, n1, &p) ? otk_key(s, r, f, &p) : -1;
 }

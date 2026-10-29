@@ -133,15 +133,17 @@ long moby_otk_nclip(const moby_otk_vert_t* a, const moby_otk_vert_t* b,
 /* One face as the draw's NCLIP and key read it: its vertices in face order
  * (v[3] NULL on a triangle), `wbit` the winding flag that lets a face pass
  * the facing test either way round, `bias` the decoded ordering-bias field,
- * `back_adds` 1 when the row's back-face offset applies to this face, and
+ * `back_adds` 1 when the row's back-face offset applies to this face,
  * `near_limit` the TRZ below which the draw keeps a back face (INT32_MIN:
- * never). */
+ * never), and `mirror` 1 when the face's record draws mirrored, which
+ * negates both NCLIPs before any test (moby_game_t.record_face_sign). */
 typedef struct moby_otk_face {
     const moby_otk_vert_t* v[4];
     int32_t bias;
     int32_t near_limit;
     int8_t  wbit;
     int8_t  back_adds;
+    int8_t  mirror;
 } moby_otk_face_t;
 
 /** @brief The bucket word of the prim the draw makes of one face of a record.

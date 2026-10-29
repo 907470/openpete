@@ -172,7 +172,7 @@ typedef enum moby_reveal_reason {
     MOBY_REVEAL_OTHER_KIND,     /* the model is the other kind, drawn by the other pass */
     MOBY_REVEAL_DUPLICATE,      /* the cull already queued a record for this moby */
     MOBY_REVEAL_NO_POSE,        /* the model's animation state names no keyframe */
-    MOBY_REVEAL_OTHER_FORM,     /* the cull composes this moby's record another way */
+    MOBY_REVEAL_OTHER_FORM,     /* the cull composes this moby's record a way the builder does not */
     MOBY_REVEAL_QUEUE_FULL,
     MOBY_REVEAL_REASONS
 } moby_reveal_reason_t;
@@ -293,6 +293,14 @@ typedef struct moby_game {
                          uint32_t moby, uint32_t rec, const struct moby_wface* F,
                          uint32_t c[4], const float ev[4][3], int* textured,
                          moby_face_tex_t* tex);
+
+    /* ---- mirrored record ----------------------------------------------
+     * The sign the draw multiplies into every face test of a record with
+     * this material word: -1 when the word selects a mirrored draw, whose
+     * matrix reverses screen winding, so the draw negates both NCLIPs to
+     * keep the faces that face the camera; +1 otherwise. NULL: every record
+     * keeps the plain test. */
+    int  (*record_face_sign)(uint32_t material);
 
     /* ---- water-plane split --------------------------------------------
      * Fills `wp` and returns 1 when the record's material word selects the
@@ -496,6 +504,7 @@ typedef struct moby_anim_fields {
     uint32_t blend;                 /* the record's keyframe-blend byte, 0 = frame A alone */
     int      centre[3];             /* camera matrix applied to (moby - cam) >> 2 */
     int      M[3][3];               /* model->view rotation, 1.0 = 4096 */
+    int      cam[3][3];             /* the camera matrix M was composed against */
 } moby_anim_fields_t;
 
 /** @brief The cull's quarter-world camera deltas for one moby and their view-space centre through a camera matrix.
@@ -521,8 +530,9 @@ void moby_cull_centre(CPUState* cpu, uint32_t moby, const int32_t cam[3], const 
  *
  * The keyframe pair and blend byte come from the moby's animation state bytes
  * by the cull's rule; the rotation composes the byte-exact euler table lookup
- * with the camera matrix of the view the current pass projects through; the
- * centre is the cull's MVMVA over the quarter-world camera delta, accumulated
+ * with the camera matrix of the view the current pass projects through, which
+ * `cam` keeps for a game whose cull composes another form; the centre is the
+ * cull's MVMVA over the quarter-world camera delta, accumulated
  * at 64 bits and clamped to int32. Reads gamestate only.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.

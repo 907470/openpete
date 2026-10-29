@@ -481,6 +481,36 @@ static int s23_material_tint(uint32_t mat, int fc[3], int* ir0) {
     return 1;
 }
 
+/** @brief Whether OPENPETE_MOBY_MIRROR_OFF, the mirrored-record face sign's negative control, is set.
+ *
+ * Latched on the first call. When set, s23_record_face_sign answers +1 for
+ * every record, so a mirrored record keeps the plain facing test.
+ * @return 1 when set, else 0. */
+static int s23_mirror_disabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_MIRROR_OFF"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/** @brief The record_face_sign hook: -1 for a material mode of 4 or above, whose draw negates every NCLIP.
+ *
+ * The regular draw dispatches a non-zero material word on its mode (bits
+ * 28-30). Modes 0-3 take their own setups; modes 4-7 fall to the default arm,
+ * which sets the mode register to 3 and flips bit 31 of the colour-table
+ * pointer $t9 (S3 mobydraw.s 0x80032144-0x80032150, S2 mobydraw.s
+ * 0x80045524-0x80045530). Every face test then sees $t9 positive and takes
+ * .L80031AD8 (S2 .L80044EB8): NCLIP1 is negated and NCLIP2 runs on
+ * (v3, v2, v1), which is the negated NCLIP(v3, v1, v2). The mirror twin of a
+ * moby carries mode 5, whose cull negates matrix column 1, so its screen
+ * winding is reversed and the negated test keeps its outward faces.
+ * OPENPETE_MOBY_MIRROR_OFF answers +1 for every record.
+ * @param mat The record's material word.
+ * @return -1 for mode 4-7, else +1. */
+static int s23_record_face_sign(uint32_t mat) {
+    if (((mat >> 28) & 7u) < 4u || s23_mirror_disabled()) return 1;
+    return -1;
+}
+
 /** @brief Whether OPENPETE_MOBY_VERIFY_NOPLANE, the moby water-plane split's negative control, is set.
  *
  * Latched on the first call. When set, s23_water_plane answers no split for
@@ -1342,7 +1372,7 @@ static int32_t s23_simple_face_otk(const moby_otk_rec_t ork[2], const moby_otk_v
     moby_otk_face_t f = { { &iv[idx[0]], &iv[idx[1]], &iv[idx[2]], tri ? NULL : &iv[idx[3]] },
                           flat ? 0 : (int32_t)f0 >> 28,
                           flat ? ((f1 & 1u) ? 0x800 : 0) : INT32_MIN,
-                          (int8_t)(!flat && tri && (f1 & 1u)), (int8_t)flat };
+                          (int8_t)(!flat && tri && (f1 & 1u)), (int8_t)flat, 0 };
     return moby_otk_face_bucket(&ork[flat], &f);
 }
 
@@ -2185,6 +2215,69 @@ static uint32_t s23_anim_keyframe_ref(CPUState* cpu, const moby_anim_fields_t* f
     return f->frame_a;
 }
 
+/** @brief One axis's table sine and cosine at a byte angle and a 4-bit fraction, as the cull's second composition reads them.
+ *
+ * The angle is (byte << 4) + fraction; zero skips the axis (S3 mobydraw.s
+ * 0x80030DF0, 0x80030EF0, 0x80030FF0). Otherwise the sine is the
+ * sign-extended halfword at sin_table + 2 * byte and the cosine the one
+ * 0x80 bytes on; a non-zero fraction moves each toward the next entry by
+ * ((next - this) * fraction) >> 4, arithmetic (0x80030E08-0x80030E4C).
+ * @param cpu Reads the game's sin/cos table.
+ * @param byte The angle byte.
+ * @param frac The fraction, 0-15.
+ * @param s Receives the sine; 0 when the axis is skipped.
+ * @param c Receives the cosine; 4096 when the axis is skipped.
+ * @return 0 when the axis is skipped, else 1. */
+static int s23_fine_sincos(CPUState* cpu, uint32_t byte, uint32_t frac, int* s, int* c) {
+    const uint32_t tbl = game_layout.sin_table;
+    *s = 0; *c = 4096;
+    if (!tbl || ((byte << 4) | frac) == 0u) return 0;
+    const uint32_t a = tbl + byte * 2u;
+    const int s0 = (int16_t)cpu->read_half(a),         s1 = (int16_t)cpu->read_half(a + 2u);
+    const int c0 = (int16_t)cpu->read_half(a + 0x80u), c1 = (int16_t)cpu->read_half(a + 0x82u);
+    *s = s0 + (int)((int32_t)((s1 - s0) * (int)frac) >> 4);
+    *c = c0 + (int)((int32_t)((c1 - c0) * (int)frac) >> 4);
+    return 1;
+}
+
+/** @brief Recomposes a revealed record's rotation by the cull's second form when the colour word has bit 30 set, and returns the material word the cull stores.
+ *
+ * Bit 30 of Moby+0x54 sends the cull to .L80030DBC (S3 mobydraw.s 0x800307B4;
+ * S2 0x80043B94 to .L8004419C) in place of the byte-angle composition. The
+ * axis order is the same, camera * Ry * Rx * Rz, each angle byte of Moby+0x44
+ * (byte 2 Y, byte 1 X, byte 0 Z) carrying a 4-bit fraction from the colour
+ * word (bits 16-19, 8-11 and 0-3; s23_fine_sincos). The sine and cosine are
+ * read signed, and VXY0 takes them as whole words: a negative cosine puts -1
+ * in VY0 of the Y step and borrows 1 from the sine above it in the Z step.
+ * With bit 28 set the cull then negates column 1 of the product
+ * (0x800310E4-0x80031120), the mirror the twin of a reflected moby carries;
+ * with it clear the record's material word is stored as 0 (0x80030DC8).
+ * The ordinary form stores the word as it is.
+ * @param cpu Reads the moby and the sin/cos table.
+ * @param moby The Moby address.
+ * @param colour The moby's colour word (Moby+0x54).
+ * @param f The animated fields; `M` is recomposed against `cam` under bit 30.
+ * @return The material word the record carries. */
+static uint32_t s23_reveal_other_form(CPUState* cpu, uint32_t moby, uint32_t colour,
+                                      moby_anim_fields_t* f) {
+    if (!(colour & 0x40000000u)) return colour;
+    const uint32_t ang = cpu->read_word(moby + game_layout.moby.angle_off);
+    int sy, cy, sx, cx, sz, cz;
+    const int ky = s23_fine_sincos(cpu, (ang >> 16) & 0xFFu, (colour >> 16) & 0xFu, &sy, &cy);
+    s23_fine_sincos(cpu, (ang >> 8) & 0xFFu, (colour >> 8) & 0xFu, &sx, &cx);
+    const int kz = s23_fine_sincos(cpu, ang & 0xFFu, colour & 0xFu, &sz, &cz);
+    const int Ry[3][3] = {{cy, 0, -sy}, {-(ky && cy < 0), 4096, 0}, {sy, 0, cy}};
+    const int Rx[3][3] = {{4096, 0, 0}, {0, cx, -sx}, {0, sx, cx}};
+    const int Rz[3][3] = {{cz, -sz, 0}, {sz - (kz && cz < 0), cz, 0}, {0, 0, 4096}};
+    int t1[3][3], t2[3][3];
+    ngte_mat_mul3((const int (*)[3])f->cam, Ry, t1);
+    ngte_mat_mul3((const int (*)[3])t1, Rx, t2);
+    ngte_mat_mul3((const int (*)[3])t2, Rz, f->M);
+    if (!(colour & 0x10000000u)) return 0u;
+    for (int r = 0; r < 3; r++) f->M[r][1] = (int16_t)-f->M[r][1];
+    return colour;
+}
+
 /** @brief Builds the animated kind's cull record for one moby the box rejected and appends it to the host record list.
  *
  * The record is composed the way the cull composes it and appended to the host copy of the cull's own
@@ -2216,13 +2309,10 @@ static uint32_t s23_anim_keyframe_ref(CPUState* cpu, const moby_anim_fields_t* f
  * @param why Receives the reason: MOBY_REVEAL_OK, or why no record was appended.
  * @return 1 when a record was appended, 0 otherwise. */
 static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reason_t* why) {
-    /* A moby whose colour word has bit 30 set takes a second composition path
-     * for its rotation and colour (mobydraw.s:228,633-640), which this builder
-     * does not compose. */
-    const uint32_t colour = cpu->read_word(moby + game_layout.moby.colour_off);
-    if (colour & 0x40000000u) { *why = MOBY_REVEAL_OTHER_FORM; return 0; }
     moby_anim_fields_t f;
     if (!moby_reveal_anim_fields(cpu, moby, &f)) { *why = MOBY_REVEAL_NO_POSE; return 0; }
+    const uint32_t material = s23_reveal_other_form(cpu, moby,
+        cpu->read_word(moby + game_layout.moby.colour_off), &f);
     if (moby_rec_holds_moby(cpu, moby)) { *why = MOBY_REVEAL_DUPLICATE; return 0; }
     uint32_t* w = moby_rec_append(NULL);
     if (!w) { *why = MOBY_REVEAL_QUEUE_FULL; return 0; }
@@ -2242,7 +2332,7 @@ static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reas
     if (f.blend && span_b > span) span = span_b;
     const int key = (int)s23_sat((((int64_t)tr[2] - ((int64_t)0x200 << (int)s23_sat(span, 0, 30))) >> 1),
                                  -32768, 32767);
-    s23_write_anim_record(w, &f, moby, colour, frame_a, patch, tier, key, tr);
+    s23_write_anim_record(w, &f, moby, material, frame_a, patch, tier, key, tr);
     /* The world ordering-table splice at +0x18: the bucket base from the
      * depth before the rescale less the moby's depth offset (the angle
      * word's top byte), floored at 0 and moved 0x20 buckets on at 0x110 and
@@ -2464,6 +2554,7 @@ const moby_game_t moby_game_spyro23 = {
     .cull_view_admits   = s23_cull_view_admits,
     .special_face      = s23_special_face,
     .material_tint     = s23_material_tint,
+    .record_face_sign  = s23_record_face_sign,
     .water_plane       = s23_water_plane,
     .otkey_record      = s23_otkey_record,
     .otkey_splice      = s23_otkey_splice,
