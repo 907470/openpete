@@ -1176,7 +1176,7 @@ typedef struct {
                   * (near-plane fixup or coordinate saturation).           */
     int key_order;/* 1 = a keyed actor face of a class that draws by the
                   * game's key order against terrain (game_layout.moby
-                  * key_order_cls): the actor key pass marks its texels, and
+                  * key_order): the actor key pass marks its texels, and
                   * a terrain fragment whose key sorts behind the marked key
                   * yields the pixel (psx_key_contest.glsl
                   * op_key_order_yields). 0 = true depth decides.          */

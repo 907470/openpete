@@ -42,6 +42,13 @@ static const game_moby_director_t s_moby_director[] = {
     { NULL, "g_Spyro", 0u, 0u, 0x250u },
 };
 
+/* Update (0x80055400) dispatches game.state 6 to UpdateCutscene and 11 to
+ * the title overlay (func_title_8007566C); both draw through the model
+ * table filled with their own models, so a class number names the game's
+ * own model only in the other states. */
+#define S3_TITLE_STATES      (1u << 11)
+#define S3_GAME_MODEL_STATES (~((1u << 6) | S3_TITLE_STATES))
+
 const game_layout_t spyro3_game_layout = {
     .display = {
         /* warp.c func_80059038: SetDefDrawEnv(..., 0, 12, 512, 216) paired with
@@ -498,18 +505,15 @@ const game_layout_t spyro3_game_layout = {
          * door, drawn by func_80031124 from the func_80030478 records. Its
          * key sorts it in front of the door's plate, which lies in front of
          * it in true depth. */
-        .key_order_cls  = 3u,
-        /* Update (0x80055400) dispatches game.state 6 to UpdateCutscene and
-         * 11 to the title overlay (func_title_8007566C); both draw through
-         * the same model table filled with their own models, where index 3
-         * is Spyro, not the door effect. */
-        .key_order_off_states = (1u << 6) | (1u << 11),
+        .key_order = { 3u, S3_GAME_MODEL_STATES },
         /* Seashell Shore's barrel-lifting Rhynoc (0x101) and its barrel, a
          * moby of its own (0x166): the barrel's m_DepthOffset keys it about
          * 500 world in front of its true depth, in front of the Rhynoc's
-         * head where the head is nearer. */
-        .true_depth_cls = { 0x101u, 0x166u },
-        .true_depth_n   = 2,
+         * head where the head is nearer. The title overlay's model table
+         * names Spyro class 3. */
+        .true_depth = { { 0x101u, S3_GAME_MODEL_STATES }, { 0x166u, S3_GAME_MODEL_STATES },
+                        { 0x3u, S3_TITLE_STATES } },
+        .true_depth_n   = 3,
 
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,

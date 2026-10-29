@@ -514,6 +514,11 @@ const game_layout_t spyro2_game_layout = {
         .prop_state_addr  = 0x800681C8u,
         .prop_state_scene = 6u,
 
+        /* The loader word (game_layout.game_state) holds 0 while the title
+         * screen runs, whose model table names Spyro class 0. */
+        .true_depth   = { { 0x0u, 1u << 0 } },
+        .true_depth_n = 1,
+
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,
         .hook_draw_specular = 0u,          /* no specular material: the draw issues no GTE

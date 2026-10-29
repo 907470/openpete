@@ -175,6 +175,16 @@ typedef struct game_moby_regime {
     uint32_t    snaps;
 } game_moby_regime_t;
 
+/* One moby class a layout list names, with the game.state values
+ * (game_layout.game_state; bit n = state n) under which the class number
+ * names that model. The class halfword indexes a model table that a
+ * cutscene or the title screen refills with its own set, so one number is a
+ * different model in each regime. states 0: every state. */
+typedef struct game_moby_cls_state {
+    uint16_t cls;
+    uint32_t states;
+} game_moby_cls_state_t;
+
 typedef struct game_layout {
     /* The game's display environment, in VRAM pixels, as its boot code hands
      * it to SetDefDispEnv/SetDefDrawEnv. `disp_w` by `disp_h` is the region
@@ -859,24 +869,18 @@ typedef struct game_layout {
          * behind in true depth. The native key contest draws this class by
          * the game's ordering-table key against terrain, so it paints over
          * the plate where its key sorts in front, as the ordering table does
-         * (moby_class_draws_by_key in games/common/renderer/moby.c). 0: no
-         * class draws by key. */
-        uint16_t key_order_cls;
-        /* The game.state values (bit n = state n, game_layout.game_state)
-         * whose regime draws an overlay's own models: the class halfword
-         * indexes the model table, which a cutscene or the title screen
-         * fills with its own set, so key_order_cls and true_depth_cls name
-         * their models only outside these states. 0: every state. */
-        uint32_t key_order_off_states;
+         * (moby_class_draws_by_key in games/common/renderer/moby.c), under
+         * its game.state values. cls 0: no class draws by key. */
+        game_moby_cls_state_t key_order;
 
-        /* True-depth classes: the first `true_depth_n` entries name classes
-         * whose faces contest by their true depth, without the authored
-         * m_DepthOffset and the world bucket it shifts, against terrain and
-         * other mobys (moby_class_true_depth in
-         * games/common/renderer/moby.c): a class whose bias sorts it in
-         * front of nearer surfaces. */
-        uint16_t true_depth_cls[8];
-        int      true_depth_n;
+        /* True-depth classes: the first `true_depth_n` entries name classes,
+         * each under its game.state values, whose faces contest by their
+         * true depth, without the authored m_DepthOffset and the world
+         * bucket it shifts, against terrain and other mobys
+         * (moby_class_true_depth in games/common/renderer/moby.c): a class
+         * whose bias sorts it in front of nearer surfaces. */
+        game_moby_cls_state_t true_depth[8];
+        int                   true_depth_n;
 
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it

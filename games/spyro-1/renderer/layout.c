@@ -353,6 +353,13 @@ const game_layout_t spyro1_game_layout = {
         .props  = { { 250u, -1 }, { 332u, -1 } },
         .prop_n = 2,
 
+        /* GS_TitleScreen (13) draws the intro flight and the title through a
+         * model table of its own, where class 1 is Spyro; his
+         * m_DepthOffset of 4 keys him four ordering-table slots in front of
+         * his true depth. */
+        .true_depth   = { { 0x1u, 1u << 13 } },
+        .true_depth_n = 1,
+
         .hook_cull          = 0u,    /* the cull is not hooked: it writes
                                       * m_WasDrawn, so the feeder reads its
                                       * records after the draw instead */

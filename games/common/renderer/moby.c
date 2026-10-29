@@ -8836,56 +8836,59 @@ static int moby_class_is_prop(uint16_t cls) {
     return 0;
 }
 
-/** @brief Report whether the model table holds the game's own models, the ones the layout's class lists name.
+/** @brief Return this walk's game.state as a one-bit mask, the term a class-list entry's states field is tested against.
  *
- * The class halfword indexes the game's model table, which a cutscene or the
- * title screen refills with its own models. Reads game.state
- * (game_layout.game_state) and answers 0 while it is one of
- * game_layout.moby.key_order_off_states. Reads guest RAM only.
+ * The class halfword indexes a model table that a cutscene or the title
+ * screen refills with its own models, so a class-list entry
+ * (game_moby_cls_state_t) names its model only under its game.state values.
+ * Reads game.state (game_layout.game_state) from guest RAM.
  * @param cpu Guest CPU state.
- * @return 1 when the class lists apply this tick. */
-static int moby_model_table_is_game(CPUState* cpu) {
-    if (game_layout.moby.key_order_off_states == 0u || game_layout.game_state == 0u) return 1;
+ * @return 1 << game.state; 0 for a state of 32 or more; every bit when the
+ *         layout names no game.state word. */
+static uint32_t moby_walk_state_bit(CPUState* cpu) {
+    if (game_layout.game_state == 0u) return 0xFFFFFFFFu;
     const uint32_t st = cpu->read_word(game_layout.game_state);
-    return !(st < 32u && (game_layout.moby.key_order_off_states >> st) & 1u);
+    return st < 32u ? 1u << st : 0u;
 }
 
-/** @brief Report whether the model table holds the models key_order_cls names.
- * @param cpu Guest CPU state.
- * @return 1 when the key-order class is the game's door effect this tick. */
-static int moby_key_order_table_live(CPUState* cpu) {
-    return game_layout.moby.key_order_cls != 0u && moby_model_table_is_game(cpu);
+/** @brief Report whether a class-list entry names a moby class under this walk's game.state.
+ * @param e The entry.
+ * @param cls The moby's m_Class.
+ * @param stbit moby_walk_state_bit for this walk.
+ * @return 1 when e names cls and its states hold stbit (states 0: every state). */
+static int moby_cls_state_match(const game_moby_cls_state_t* e, uint16_t cls, uint32_t stbit) {
+    return e->cls == cls && (e->states == 0u || (e->states & stbit) != 0u);
 }
 
 /** @brief Report whether a moby class contests by its true depth, without the authored ordering-table bias.
  *
- * The class is one of game_layout.moby.true_depth_cls, counted only while
- * the model table is the game's own (moby_model_table_is_game). Such a
+ * The class is named by an entry of game_layout.moby.true_depth whose
+ * game.state values hold this walk's state (moby_cls_state_match). Such a
  * class's faces key by moby_tri_true_key with no m_DepthOffset term instead
  * of the world bucket, so against another moby's face and against terrain
  * the key sorts the face at the distance it is drawn at.
  * @param cls The moby's m_Class.
- * @param live moby_model_table_is_game for this walk.
+ * @param stbit moby_walk_state_bit for this walk.
  * @return 1 for a listed class, 0 otherwise. */
-static int moby_class_true_depth(uint16_t cls, int live) {
-    if (!live) return 0;
+static int moby_class_true_depth(uint16_t cls, uint32_t stbit) {
     for (int k = 0; k < game_layout.moby.true_depth_n; k++)
-        if (game_layout.moby.true_depth_cls[k] == cls) return 1;
+        if (moby_cls_state_match(&game_layout.moby.true_depth[k], cls, stbit)) return 1;
     return 0;
 }
 
 /** @brief Report whether a moby class draws by the game's key order against terrain.
  *
- * The class is game_layout.moby.key_order_cls (Spyro 3's sub-area door
- * effect, whose stars and swirl lie behind the door's terrain plate in true
- * depth and sort in front of it by key), counted only while
- * moby_key_order_table_live holds. Its keyed faces mark the actor key
- * image, and a terrain fragment keyed behind the marked key yields the pixel.
+ * The class is game_layout.moby.key_order (Spyro 3's sub-area door effect,
+ * whose stars and swirl lie behind the door's terrain plate in true depth
+ * and sort in front of it by key) under its game.state values. Its keyed
+ * faces mark the actor key image, and a terrain fragment keyed behind the
+ * marked key yields the pixel.
  * @param cls The moby's m_Class.
- * @param live moby_key_order_table_live for this walk.
+ * @param stbit moby_walk_state_bit for this walk.
  * @return 1 for that class, 0 otherwise or when the game names none. */
-static int moby_class_draws_by_key(uint16_t cls, int live) {
-    return live && cls == game_layout.moby.key_order_cls;
+static int moby_class_draws_by_key(uint16_t cls, uint32_t stbit) {
+    return game_layout.moby.key_order.cls != 0u &&
+           moby_cls_state_match(&game_layout.moby.key_order, cls, stbit);
 }
 
 /** @brief Return the rank sentinel an unranked opaque actor face carries into the key contest.
@@ -9046,6 +9049,39 @@ static double moby_tri_contest_key(int i, int true_depth) {
     return moby_tri_true_key(i, 1);
 }
 
+/** @brief OPENPETE_MOBY_TD_CENSUS: count keyed walk faces per class and the true-depth ones, one line per class per walk, an instrument.
+ *
+ * Called per keyed face, and with i < 0 to flush: the flush prints, for each
+ * class keyed since the last flush, its keyed faces, the true-depth ones, the
+ * m_DepthOffset of its first face, and the mean of the key the face would
+ * carry outside the list less its true-depth key (moby_tri_contest_key),
+ * beside the walk's game.state bit and VBL.
+ * At most 32 classes per walk. Read once and cached.
+ * @param i The walk triangle's index, or -1 to flush.
+ * @param td Nonzero when the face keyed by true depth.
+ * @param stbit moby_walk_state_bit for this walk (printed on flush). */
+static void moby_td_census(int i, int td, uint32_t stbit) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_TD_CENSUS"); on = e && *e && *e != '0'; }
+    if (!on) return;
+    static struct { uint16_t cls; int8_t dofs; int n, td; double shift; } row[32];
+    static int rn;
+    if (i >= 0) {
+        int k = 0;
+        while (k < rn && row[k].cls != s_wtri_cls[i]) k++;
+        if (k == rn) { if (rn == 32) return; row[rn].cls = s_wtri_cls[i]; row[rn].dofs = s_wtri_dofs[i];
+                       row[rn].n = row[rn].td = 0; row[rn].shift = 0.0; rn++; }
+        row[k].n++; row[k].td += td != 0;
+        row[k].shift += moby_tri_contest_key(i, 0) - moby_tri_true_key(i, 0);
+        return;
+    }
+    for (int k = 0; k < rn; k++)
+        fprintf(stderr, "[moby-td-census vbl=%u] stbit=%08x cls=0x%x dofs=%d faces=%d td=%d "
+                "keyshift=%.1f\n", openpete_frame, stbit, row[k].cls, row[k].dofs, row[k].n, row[k].td,
+                row[k].shift / (double)row[k].n);
+    rn = 0;
+}
+
 /** @brief Return a face's ordering-table slot plus one, or 0 for a face with no world bucket.
  *
  * The slot is the world bucket back on the table's scale
@@ -9146,18 +9182,19 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
  * terrain whose key sorts behind it, as it does the opaque faces under it.
  * @param i Walk triangle index.
  * @param cat The face's scene category.
- * @param td_live moby_model_table_is_game, for moby_class_true_depth.
- * @param ko_live moby_key_order_table_live, for moby_class_draws_by_key.
+ * @param stbit moby_walk_state_bit, for the class lists.
  * @param t The scene triangle, blend set; its key fields are written. */
-static void moby_face_stamp_key(int i, int cat, int td_live, int ko_live, openpete_scene_tri* t) {
+static void moby_face_stamp_key(int i, int cat, uint32_t stbit, openpete_scene_tri* t) {
     if (!moby_face_key_on() || cat != OPENPETE_SCENE_ACTOR || s_wtri_mangle[i] ||
         !s_wtri_moby[i] || !openpete_native_key_resolve_on()) return;
-    const float key = (float)(moby_tri_contest_key(i, moby_class_true_depth(s_wtri_cls[i], td_live)) + 0.5);
+    const int td = moby_class_true_depth(s_wtri_cls[i], stbit);
+    moby_td_census(i, td, stbit);
+    const float key = (float)(moby_tri_contest_key(i, td) + 0.5);
     if (t->blend != 0) { t->skey = key; return; }
     t->koff = key;
     /* Embedded-PROP classes: rendered whole from every angle. */
     t->prop = moby_class_is_prop(s_wtri_cls[i]);
-    t->key_order = moby_class_draws_by_key(s_wtri_cls[i], ko_live);
+    t->key_order = moby_class_draws_by_key(s_wtri_cls[i], stbit);
 }
 
 /* Word b of the heavy-fog texel fade (psx_hq_fog.glsl): bN = 128/256 on every
@@ -9234,11 +9271,10 @@ static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, int cat, 
  * level under extended LOD its fog fade (moby_tri_heavy_fog). While
  * player_hide_active holds, an actor-layer triangle of the companion's class
  * is not appended. Writes host scene state only.
- * @param cpu Guest CPU state, read for moby_key_order_table_live and moby_model_table_is_game. */
+ * @param cpu Guest CPU state, read for game.state (moby_walk_state_bit). */
 static void push_scene_moby_tris(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
-    const int ko_live = moby_key_order_table_live(cpu);
-    const int td_live = moby_model_table_is_game(cpu);
+    const uint32_t stbit = moby_walk_state_bit(cpu);
     static int s_logged = 0;
     if (!s_logged && s_gout.n > 0) {
         s_logged = 1;
@@ -9308,7 +9344,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * moby flooded a whole wall away). A genuinely-near moby needs no
          * key anyway - it is the viewer-side surface and TRUE depth
          * already wins its own pixels. */
-        moby_face_stamp_key(i, cat, td_live, ko_live, &t);
+        moby_face_stamp_key(i, cat, stbit, &t);
         /* Rank: the face's paint position while it intersects another face
          * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate
          * saturation) are never ranked, like they are never keyed: their
@@ -9348,6 +9384,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
         moby_tri_heavy_fog(&t, &s_wtri[i], cat, fog);
         openpete_native_scene_add_tri(&t, cat, 0);
     }
+    moby_td_census(-1, 0, stbit);
     openpete_native_scene_set_hq_fog(0u, 0u);
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
     openpete_native_scene_set_host_added(0);
