@@ -170,3 +170,6 @@ mystic_marsh | pos=(73309, 40590, 5758) yaw=-1074 pitch=244 | 2425
 # Water with animated textures under extended LOD: the per-pixel fog and
 # the second-walk water draw do not reach it.
 mystic_marsh | pos=(81530, 30903, 15232) yaw=-160 pitch=145
+# An active whirlwind under extended LOD: it should draw at full quality
+# at every distance.
+glimmer | pos=(70764, 121159, 26861) yaw=-310 pitch=319
