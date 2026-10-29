@@ -215,6 +215,10 @@ title-demo-hold-player|7673|100||7703,7704
 # ticks at VBL 16569 (openpete_frame 15996 after the 573-VBL fast boot);
 # the intermediate leg carries the defect.
 title-demo-bubbles|16519|100||16569
+# title-demo-ninja-hold: a class-0x1A2 ninja parked hidden and placed in
+# view at VBL 5001 (openpete_frame ~4428 after the 573-VBL fast boot); the
+# intermediate presents at 5000/5001 draw it at its undrawn parking pose.
+title-demo-ninja-hold|4990|10||5000,5001
 # enchanted-towers-intro-dialogue: after the dialogue the "PRESS TRIANGLE
 # TO TALK" letter mobys appear at VBL ~1904 and rise up through the
 # ground on the intermediate presents; the pins span the first ticks.
