@@ -1180,7 +1180,7 @@ int main(int argc, char **argv)
      * once here, as mod init does on the boot thread, before any thread. */
     openpete_mods_registry_read_lock();
     openpete_mods_registry_read_unlock();
-    s_dev = rhi_create_headless("rhi_compile_stress", 64, 64);
+    s_dev = rhi_create_headless("rhi_compile_stress", 64, 64, NULL);
     if (!s_dev) { fprintf(stderr, "rhi_compile_stress: no Vulkan device - SKIP\n"); return 77; }
     if (!load_frag_words()) { fprintf(stderr, "rhi_compile_stress: no raster_quantize.frag.spv\n"); return 1; }
 

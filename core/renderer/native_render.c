@@ -5824,6 +5824,18 @@ static int nr_device_knobs_install(void)
     return (!strcmp(v, "0") || !strcmp(v, "off") || !strcmp(v, "false")) ? 0 : 1;
 }
 
+/** @brief Return the physical device the game-neutral tiers request: --gpu, else OPENPETE_VK_DEVICE, else NULL.
+ *
+ * Read with openpete_config_device_value, so the launcher's device and a
+ * headless run's take the same value; the two spellings share one winner,
+ * so the higher tier's spelling answers and the flag beats the variable.
+ * @return The value, or NULL for the automatic pick. */
+static const char *nr_device_gpu_choice(void)
+{
+    const char *v = openpete_config_device_value("--gpu");
+    return v ? v : openpete_config_device_value("OPENPETE_VK_DEVICE");
+}
+
 /** @brief Apply a game or disc scope's present mode to the created device through the live path.
  *
  * The present mode is the device-creation knob a game or disc scope still
@@ -6808,7 +6820,7 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
     nr_set_pipeline_cache_dir();
     nr_set_create_hooks();
     rhi_set_clock(op_now);   /* boot facts on the pace log's clock */
-    rhi_device *dev = rhi_create(win, "openpete-native", created_vsync);
+    rhi_device *dev = rhi_create(win, "openpete-native", created_vsync, nr_device_gpu_choice());
     if (!dev) {
         const char *why = rhi_create_error();
         snprintf(s_launch_error, sizeof s_launch_error, "%s",
@@ -7338,7 +7350,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         (void)nr_device_knobs_install();
         nr_set_pipeline_cache_dir();
         nr_set_create_hooks();
-        dev = rhi_create_headless("openpete-native", (uint32_t)w, (uint32_t)h);
+        dev = rhi_create_headless("openpete-native", (uint32_t)w, (uint32_t)h,
+                                  nr_device_gpu_choice());
         if (!dev) {
             OPL_ERROR_F("native", "rhi_create_headless failed; native capture disabled");
             return 1;

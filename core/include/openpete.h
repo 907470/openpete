@@ -598,6 +598,12 @@ typedef struct openpete_options {
      * ignored under --headless / psycross. */
     int vsync;
 
+    /* --gpu INDEX|NAME: the Vulkan physical device the native renderer uses,
+     * an enumeration index or a case-insensitive substring of its device
+     * name. NULL = unset (OPENPETE_VK_DEVICE, else the automatic pick that
+     * prefers a discrete GPU). Read at device creation only. */
+    const char* gpu;
+
     /* --fullscreen 0|1: launch the native window in borderless-desktop
      * fullscreen (same mode Alt+Enter / double-click / the O-menu DISPLAY row
      * toggle live). Default 0 = windowed. Display-only; ignored under

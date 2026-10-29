@@ -121,3 +121,19 @@ hide it.
 shown in the same window. The field of view, supersampling, level of detail,
 terrain visibility, vertex precision and texture mapping settings apply to
 the native renderer only. The renderer is chosen at start.
+
+## Graphics device
+
+On a computer with more than one Vulkan device, such as integrated graphics
+beside a graphics card, OpenPete chooses one automatically: a discrete
+graphics card first, then integrated graphics, then a software renderer
+<!-- id: knob:gpu -->. The log file lists every device with its index at
+start, then the one chosen and why.
+
+`--gpu INDEX|NAME` <!-- id: knob:gpu home --> chooses another: its index in
+that list, or part of its name, in any case (`--gpu 1`, `--gpu radeon`); a
+value of digits only is always an index.
+The variable `OPENPETE_VK_DEVICE` takes the same values; the flag wins over
+it. A value that matches no device, or names one that cannot draw to the
+window, is written to the log, and the automatic choice is used. The device
+is chosen at start, before the launcher opens.

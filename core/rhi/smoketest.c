@@ -180,7 +180,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    rhi_device *dev = rhi_create(win, "openpete-rhi-smoketest", /*vsync=*/-1);
+    rhi_device *dev = rhi_create(win, "openpete-rhi-smoketest", /*vsync=*/-1, NULL);
     if (!dev) {
         fprintf(stderr, "rhi_create failed\n");
         SDL_DestroyWindow(win);

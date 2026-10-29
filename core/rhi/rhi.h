@@ -46,9 +46,18 @@ typedef struct rhi_device rhi_device;
  * @param app_name Application name for VkApplicationInfo; NULL selects
  *                 "openpete".
  * @param vsync Present-mode preference: 1, 0 or -1.
+ * @param gpu The physical device to use: an enumeration index (an all-digit
+ *            value, "0") or a case-insensitive substring of its deviceName
+ *            ("radeon"). Every
+ *            enumerated device is logged, then the choice and why. A value
+ *            that matches no device, or names one without a graphics queue
+ *            that presents to the window, is logged and the automatic pick
+ *            (discrete, integrated, virtual, other, then CPU) decides, as it
+ *            does for NULL or "".
  * @return The device, or NULL on failure (a diagnostic is logged to stderr
  *         and rhi_create_error names the failed step). */
-rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync);
+rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync,
+                       const char *gpu);
 
 /** @brief Change the swapchain present-mode preference (vsync) at runtime.
  *
@@ -121,8 +130,11 @@ int rhi_get_vsync(const rhi_device *dev);
  * @param width Offscreen extent width (the would-be window width); 0 is
  *              raised to 1.
  * @param height Offscreen extent height; 0 is raised to 1.
+ * @param gpu The physical device to use, as rhi_create takes it; a headless
+ *            device needs only a graphics queue.
  * @return The device, or NULL on failure. */
-rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height);
+rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height,
+                                const char *gpu);
 
 /** @brief Return whether the device was created by rhi_create_headless.
  *

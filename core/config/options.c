@@ -1162,6 +1162,9 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         i++;
+    } else if (strcmp(a, "--gpu") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->gpu = v; i++;
     } else if (strcmp(a, "--fullscreen") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         /* Accept 0|1 (preferred) plus on|off, matching --vsync / --mute. */

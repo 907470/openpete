@@ -503,6 +503,8 @@ struct rhi_device {
     char                     device_name[256];
     char                     driver_version[64];
     bool                     device_software; /* picked device is a CPU rasterizer (llvmpipe) */
+    char                     gpu_choice[128]; /* --gpu / OPENPETE_VK_DEVICE: an enumeration
+                                          * index or a deviceName substring; "" = automatic */
     bool                     headless;   /* surfaceless: no swapchain / present */
     int                      vsync_pref; /* --vsync: 1 = FIFO (vsync ON), 0 = vsync
                                           * OFF, -1 = unset (env / default). Read by
@@ -1542,13 +1544,196 @@ static void pipeline_library_locks(rhi_device *dev)
     dev->has_lto = false;
 }
 
+/** @brief Write a device's driver version, decoded the way its vendor packs driverVersion.
+ *
+ * NVIDIA packs 10.8.8.6 bits; every other vendor uses the Vulkan version
+ * macros. A pacing baseline is invalidated by a driver update as surely as
+ * by a different GPU, so the version is recorded decoded, not guessed.
+ * @param props The device's properties.
+ * @param buf Output buffer.
+ * @param cap Its size. */
+static void format_driver_version(const VkPhysicalDeviceProperties *props, char *buf, size_t cap)
+{
+    const uint32_t dv = props->driverVersion;
+    if (props->vendorID == 0x10DE)
+        snprintf(buf, cap, "%u.%u.%u.%u", (dv >> 22) & 0x3FF, (dv >> 14) & 0xFF,
+                 (dv >> 6) & 0xFF, dv & 0x3F);
+    else
+        snprintf(buf, cap, "%u.%u.%u", VK_API_VERSION_MAJOR(dv),
+                 VK_API_VERSION_MINOR(dv), VK_API_VERSION_PATCH(dv));
+}
+
+/** @brief Return the short name of a physical device type, as the device list logs it.
+ *
+ * @param t The type.
+ * @return "discrete", "integrated", "virtual", "cpu" or "other". */
+static const char *device_type_name(VkPhysicalDeviceType t)
+{
+    switch (t) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return "discrete";
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return "integrated";
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return "virtual";
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:            return "cpu";
+        default:                                     return "other";
+    }
+}
+
+/** @brief Rank a physical device type for the automatic pick: discrete 4, integrated 3, virtual 2, other 1, CPU 0.
+ *
+ * Real hardware is preferred over a software rasterizer (llvmpipe reports
+ * as CPU).
+ * @param t The type.
+ * @return The rank; higher wins. */
+static int device_type_score(VkPhysicalDeviceType t)
+{
+    switch (t) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return 4;
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 3;
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return 2;
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:            return 0;
+        default:                                     return 1;
+    }
+}
+
+/** @brief Find a physical device's first queue family with graphics that can present to dev->surface.
+ *
+ * Headless has no surface, so a graphics family alone qualifies.
+ * @param dev Device whose headless flag and surface are read.
+ * @param pd The physical device.
+ * @param has_graphics Set to whether any family has graphics; may be NULL.
+ * @return The family index, or UINT32_MAX when none qualifies. */
+static uint32_t usable_queue_family(const rhi_device *dev, VkPhysicalDevice pd, bool *has_graphics)
+{
+    uint32_t qn = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, NULL);
+    VkQueueFamilyProperties *q = qn ? calloc(qn, sizeof(*q)) : NULL;
+    if (q) vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, q);
+    else qn = 0;
+    uint32_t fam = UINT32_MAX;
+    bool gfx = false;
+    for (uint32_t j = 0; j < qn && fam == UINT32_MAX; j++) {
+        if (!(q[j].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
+        gfx = true;
+        VkBool32 present = VK_FALSE;
+        if (!dev->headless)
+            vkGetPhysicalDeviceSurfaceSupportKHR(pd, j, dev->surface, &present);
+        if (dev->headless || present) fam = j;
+    }
+    free(q);
+    if (has_graphics) *has_graphics = gfx;
+    return fam;
+}
+
+/** @brief Log every enumerated physical device: index, name, type, vendor and device id, decoded driver version.
+ *
+ * @param devs The devices, in enumeration order (the order --gpu indexes).
+ * @param n Their count. */
+static void log_physical_devices(const VkPhysicalDevice *devs, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(devs[i], &props);
+        char drv[64];
+        format_driver_version(&props, drv, sizeof drv);
+        RHI_LOG("gpu %u: %s (%s, vendor 0x%04x device 0x%04x, driver %s)\n", i,
+                props.deviceName, device_type_name(props.deviceType),
+                props.vendorID, props.deviceID, drv);
+    }
+}
+
+/** @brief Return the device a --gpu value names: an all-digit value is an enumeration index, any other the first device whose deviceName contains it, case-insensitively.
+ *
+ * An all-digit value is never matched against names, so "1" cannot select a
+ * device whose name contains a 1.
+ * @param devs The devices, in enumeration order.
+ * @param n Their count.
+ * @param choice The value; non-empty.
+ * @return The index, or -1 when the index is out of range or no name matches. */
+static int match_device_choice(const VkPhysicalDevice *devs, uint32_t n, const char *choice)
+{
+    if (strspn(choice, "0123456789") == strlen(choice)) {
+        const unsigned long idx = strtoul(choice, NULL, 10);
+        return idx < n ? (int)idx : -1;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(devs[i], &props);
+        if (SDL_strcasestr(props.deviceName, choice)) return (int)i;
+    }
+    return -1;
+}
+
+/** @brief Return the device dev->gpu_choice names when it qualifies, else -1 with one log line naming why.
+ *
+ * A device qualifies with a graphics queue family that can present to
+ * dev->surface (headless: graphics alone).
+ * @param dev Device whose gpu_choice, headless flag and surface are read.
+ * @param devs The devices, in enumeration order.
+ * @param n Their count.
+ * @param fam Set to the chosen device's queue family.
+ * @return The index, or -1 when the choice is empty, matches nothing or
+ *         names a device that does not qualify. */
+static int chosen_by_request(const rhi_device *dev, const VkPhysicalDevice *devs, uint32_t n,
+                             uint32_t *fam)
+{
+    if (!dev->gpu_choice[0]) return -1;
+    const int i = match_device_choice(devs, n, dev->gpu_choice);
+    if (i < 0) {
+        RHI_LOG("gpu \"%s\": no enumerated device matches; choosing automatically\n",
+                dev->gpu_choice);
+        return -1;
+    }
+    bool gfx = false;
+    *fam = usable_queue_family(dev, devs[i], &gfx);
+    if (*fam != UINT32_MAX) return i;
+    RHI_LOG("gpu \"%s\": device %d %s; choosing automatically\n", dev->gpu_choice, i,
+            !gfx ? "has no graphics queue" : "cannot present to the window");
+    return -1;
+}
+
+/** @brief Choose the physical device and its graphics queue family: the requested one when it qualifies, else the best-ranked qualifying one.
+ *
+ * Logs the choice and why (requested, or automatic). The automatic pick
+ * ranks qualifying devices by device_type_score; the first of the highest
+ * rank wins.
+ * @param dev Device whose gpu_choice, headless flag and surface are read.
+ * @param devs The devices, in enumeration order.
+ * @param n Their count.
+ * @param fam Set to the chosen device's queue family.
+ * @return The index, or -1 when no device qualifies. */
+static int choose_physical_device(const rhi_device *dev, const VkPhysicalDevice *devs, uint32_t n,
+                                  uint32_t *fam)
+{
+    int best = chosen_by_request(dev, devs, n, fam);
+    const char *why = "matched";
+    if (best < 0) {
+        int best_score = -1;
+        why = "automatic";
+        for (uint32_t i = 0; i < n; i++) {
+            const uint32_t f = usable_queue_family(dev, devs[i], NULL);
+            if (f == UINT32_MAX) continue;
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(devs[i], &props);
+            const int score = device_type_score(props.deviceType);
+            if (score > best_score) { best = (int)i; best_score = score; *fam = f; }
+        }
+    }
+    if (best >= 0) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(devs[best], &props);
+        RHI_LOG("gpu chosen: %d %s (%s%s%s%s)\n", best, props.deviceName, why,
+                dev->gpu_choice[0] ? ", requested \"" : "", dev->gpu_choice,
+                dev->gpu_choice[0] ? "\"" : "");
+    }
+    return best;
+}
+
 /** @brief Choose the physical device and queue family and create the logical device and its graphics queue.
  *
- * A device qualifies with a graphics queue family that can also present to
- * dev->surface (headless: graphics alone). Qualifying devices are ranked
- * discrete, integrated, virtual, other, then CPU (a software rasterizer); the
- * first of the highest rank wins, and its name, decoded driver version and
- * software flag are recorded in dev. The depth format and depth convention
+ * Every enumerated device is logged (log_physical_devices), then the choice
+ * (choose_physical_device): dev->gpu_choice when it names a qualifying
+ * device, else the automatic rank. The chosen device's name, decoded driver
+ * version and software flag are recorded in dev. The depth format and depth convention
  * follow from the chosen device (pick_depth_format, depth_convention_init).
  *
  * Optional device features are enabled only where supported and recorded as
@@ -1561,8 +1746,8 @@ static void pipeline_library_locks(rhi_device *dev)
  * every device, headless included, and logs the pipeline feature report; a
  * headless device enables no other extension. With the graphics pipeline
  * library enabled, its feature is chained and its lock created.
- * @param dev Device whose instance, headless flag and surface are read and
- *            whose phys, gfx_family, device, gfx_queue, depth and feature
+ * @param dev Device whose instance, gpu_choice, headless flag and surface are
+ *            read and whose phys, gfx_family, device, gfx_queue, depth and feature
  *            fields are written.
  * @return false when no physical device is listed, none qualifies, or
  *         vkCreateDevice fails (each logged); true otherwise. */
@@ -1571,71 +1756,22 @@ static bool pick_physical_and_device(rhi_device *dev)
     uint32_t n = 0;
     VkPhysicalDevice *devs = enumerate_physical_devices(dev->instance, &n);
     if (!devs) return false;
-
-    VkPhysicalDevice chosen = VK_NULL_HANDLE;
+    log_physical_devices(devs, n);
     uint32_t chosen_family = UINT32_MAX;
-    int chosen_score = -1;
-
-    for (uint32_t i = 0; i < n; i++) {
-        /* Require a queue family with graphics + present to our surface. */
-        uint32_t qn = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qn, NULL);
-        VkQueueFamilyProperties *q = calloc(qn, sizeof(*q));
-        vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qn, q);
-        uint32_t fam = UINT32_MAX;
-        for (uint32_t j = 0; j < qn; j++) {
-            /* Headless has no surface: a graphics queue is all we need. */
-            VkBool32 present = VK_FALSE;
-            if (!dev->headless)
-                vkGetPhysicalDeviceSurfaceSupportKHR(devs[i], j, dev->surface, &present);
-            if ((q[j].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
-                (dev->headless || present)) {
-                fam = j; break;
-            }
-        }
-        free(q);
-        if (fam == UINT32_MAX) continue;
-
-        VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(devs[i], &props);
-        /* Prefer real hardware over the software rasterizer (llvmpipe
-         * reports as CPU): discrete > integrated > virtual > other > cpu. */
-        int score;
-        switch (props.deviceType) {
-            case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   score = 4; break;
-            case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: score = 3; break;
-            case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    score = 2; break;
-            case VK_PHYSICAL_DEVICE_TYPE_CPU:            score = 0; break;
-            default:                                     score = 1; break;
-        }
-        if (score > chosen_score) {
-            chosen = devs[i];
-            chosen_family = fam;
-            chosen_score = score;
-            snprintf(dev->device_name, sizeof(dev->device_name), "%s", props.deviceName);
-            /* Vendor-encoded driverVersion, decoded the way each vendor packs
-             * it. A pacing baseline is invalidated by a driver update as
-             * surely as by a different GPU, so this is recorded, not guessed. */
-            {
-                const uint32_t dv = props.driverVersion;
-                if (props.vendorID == 0x10DE)          /* NVIDIA: 10.8.8.6 */
-                    snprintf(dev->driver_version, sizeof(dev->driver_version),
-                             "%u.%u.%u.%u", (dv >> 22) & 0x3FF, (dv >> 14) & 0xFF,
-                             (dv >> 6) & 0xFF, dv & 0x3F);
-                else
-                    snprintf(dev->driver_version, sizeof(dev->driver_version),
-                             "%u.%u.%u", VK_API_VERSION_MAJOR(dv),
-                             VK_API_VERSION_MINOR(dv), VK_API_VERSION_PATCH(dv));
-            }
-            dev->device_software = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU);
-        }
-    }
+    const int pick = choose_physical_device(dev, devs, n, &chosen_family);
+    const VkPhysicalDevice chosen = pick >= 0 ? devs[pick] : VK_NULL_HANDLE;
     free(devs);
-
     if (chosen == VK_NULL_HANDLE) {
         RHI_LOG("no device with a graphics%s queue\n",
                 dev->headless ? "" : "+present");
         return false;
+    }
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(chosen, &props);
+        snprintf(dev->device_name, sizeof(dev->device_name), "%s", props.deviceName);
+        format_driver_version(&props, dev->driver_version, sizeof dev->driver_version);
+        dev->device_software = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU);
     }
     dev->phys = chosen;
     dev->gfx_family = chosen_family;
@@ -3867,15 +4003,18 @@ static void create_error_set(const char *why)
  * line, which the golden capture harnesses read as the capture environment's
  * device and Mesa strings.
  * Returns NULL, with the device torn down, on any failure.
+ * @param gpu The physical device to prefer (rhi_create); NULL or "" for the
+ *            automatic pick.
  */
 static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_name,
                                    bool headless, uint32_t hl_w, uint32_t hl_h,
-                                   int vsync)
+                                   int vsync, const char *gpu)
 {
     rhi_device *dev = calloc(1, sizeof(*dev));
     if (!dev) return NULL;
     dev->window     = window;
     dev->headless   = headless;
+    snprintf(dev->gpu_choice, sizeof dev->gpu_choice, "%s", gpu ? gpu : "");
     dev->vsync_pref = vsync;   /* consulted by choose_present_mode (windowed only) */
     {
         const char *pm = rhi_knob("OPENPETE_PRESENT_MODE");
@@ -3958,17 +4097,19 @@ fail:
     return NULL;
 }
 
-rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync)
+rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync,
+                       const char *gpu)
 {
     rhi_display_claim(NULL);   /* boot: the creating thread presents until a handoff */
-    return rhi_create_impl(window, app_name, /*headless=*/false, 0, 0, vsync);
+    return rhi_create_impl(window, app_name, /*headless=*/false, 0, 0, vsync, gpu);
 }
 
-rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height)
+rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height,
+                                const char *gpu)
 {
     rhi_display_claim(NULL);
     /* Surfaceless: no swapchain, so present mode / vsync is irrelevant (-1). */
-    return rhi_create_impl(NULL, app_name, /*headless=*/true, width, height, -1);
+    return rhi_create_impl(NULL, app_name, /*headless=*/true, width, height, -1, gpu);
 }
 
 bool rhi_is_headless(const rhi_device *dev)

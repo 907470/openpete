@@ -2,13 +2,13 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 67d0d674c5db680a7eba0ec3e1612bb8b0c4fad8
+# head: d27b4bb899448ff59c02551a64d17457f8a20a08
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
 core/config/knob_registry.c	knob_registry_init	131	0	
-core/config/options.c	parse_one_flag	665	1	
+core/config/options.c	parse_one_flag	668	1	
 core/config/options.c	tokenize_sidecar_args	43	0	
 core/diag/ident_audit.c	openpete_ident_audit_present	32	0	
 core/diag/psxtrace_schedule.c	openpete_sched_anchor_window	29	0	
@@ -73,8 +73,7 @@ core/renderer/native_render.c	sync_vram_texture_locked	87	0
 core/renderer/native_render.c	tp_pack_fog	26	0	
 core/renderer/openpete_interp.c	openpete_interp_capture	27	0	
 core/rhi/rhi_vulkan.c	create_render_target_impl	33	0	
-core/rhi/rhi_vulkan.c	pick_physical_and_device	38	0	
-core/rhi/rhi_vulkan.c	rhi_create_impl	28	0	
+core/rhi/rhi_vulkan.c	rhi_create_impl	29	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
 core/rhi/rhi_vulkan.c	rhi_destroy	39	0	
 core/rhi/smoketest.c	main	35	0	

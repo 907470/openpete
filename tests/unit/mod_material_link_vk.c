@@ -85,7 +85,7 @@ int link_vk_open(void) {
      * about the module. */
     setenv("OPENPETE_PIPELINE_LIBRARY", "0", 0);
     capture_begin();
-    s_dev = rhi_create_headless("mod_material_link_test", 64, 64);
+    s_dev = rhi_create_headless("mod_material_link_test", 64, 64, NULL);
     char* txt = capture_end();
     const int layer = txt && strstr(txt, "validation layer enabled") != NULL;
     free(txt);

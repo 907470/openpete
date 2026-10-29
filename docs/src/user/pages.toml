@@ -153,6 +153,7 @@
 "knob:freecam" = "playing/settings-menu.md#rows"
 "knob:freecam_pose" = "playing/dev-overlay.md#sections"
 "knob:fullscreen" = "graphics/display.md#fullscreen"
+"knob:gpu" = "graphics/display.md#graphics-device"
 "knob:hide_player" = "playing/recording.md#without-the-player"
 "knob:launcher_fullscreen" = "graphics/display.md#launcher-window"
 "knob:launcher_window" = "graphics/display.md#launcher-window"

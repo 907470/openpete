@@ -715,6 +715,7 @@ static const struct { const char *id; size_t off; } k_optstr_fields[] = {
     { "bk2",                  offsetof(openpete_options_t, bk2_path) },
     { "bk2_record",           offsetof(openpete_options_t, bk2_record_path) },
     { "hide_classes",         offsetof(openpete_options_t, hide_classes) },
+    { "gpu",                  offsetof(openpete_options_t, gpu) },
 };
 
 /** @brief The parsed options string behind row `k`, or NULL when it is unset, the options are unbound, or the row has no k_optstr_fields entry. */
@@ -1103,6 +1104,20 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "0|1", .help_order = 100,
       .help_text = "native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
           "for uncapped fps / low latency; on|off also accepted)." },
+
+    { "gpu", "GPU", "Display", "--gpu", "OPENPETE_VK_DEVICE",
+      "The Vulkan device the native renderer uses: its index in the log's "
+      "gpu list, or part of its name (case-insensitive). A value that "
+      "matches no device, or names one that cannot draw to the window, is "
+      "logged and the automatic choice is used.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .default_note = "unset: chosen automatically, a discrete GPU first, then integrated, virtual, other, then a software rasterizer",
+      .device_creation = 1,
+      .help_arg = "INDEX|NAME", .help_order = 102,
+      .help_text = "Vulkan device to render on: its index in the log's gpu list, or a\n"
+          "case-insensitive part of its name (default: automatic, a discrete GPU\n"
+          "first; env OPENPETE_VK_DEVICE). No match falls back to automatic" },
 
     { "perf_stats", "Performance stats", "Display", "--perf-stats", NULL,
       "Corner overlay (native renderer): off, the FPS counter, or the "

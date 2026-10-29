@@ -118,7 +118,7 @@ The `[game.*]` and `[disc.*]` sections apply once the game is known: from
 the disc, from `--game`, or from the library entry the launch selects. A
 setting read while the window is created takes no value from them: `vsync`
 and `log_format` from one of these sections apply after the window opens,
-while `background`, `log_file`, `no_log_file`, `disc` and the
+while `background`, `gpu`, `log_file`, `no_log_file`, `disc` and the
 `OPENPETE_RHI_DEPTH_D24`, `OPENPETE_VK_VALIDATION` and `OPENPETE_GPU_TIMERS`
 variables are listed by `--config-report` as not applied.
 
