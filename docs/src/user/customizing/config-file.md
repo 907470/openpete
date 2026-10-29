@@ -95,9 +95,12 @@ vertex_precision = "integer"
 ```
 
 A key the program does not recognise, a value of the wrong type, or an
-enum value outside its list stops the launch with a message naming the
-file, the section and the key (with a suggestion for a near miss). The
-message goes to the console and to `openpete.log`.
+enum value outside its list prints a warning naming the file, the section
+and the key (with a suggestion for a near miss), and the game starts with
+that setting at its default. The warning goes to the console and to
+`openpete.log`. The same value typed on the command line, and any refused
+value under {{ flag("flag:--config-report") }}<!-- id: flag:--config-report -->,
+stops the launch instead.
 
 ### Sections
 

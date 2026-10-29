@@ -35,11 +35,12 @@ A `.tar.xz` without a bundled compiler uses the system `cc`. Install one
 (`sudo apt install gcc` or your distribution's equivalent), or name one in
 the variable `OPENPETE_CC` ([OP-E-NO-COMPILER](#op-e-no-compiler)).
 
-### The game stopped starting after an edit to `openpete.toml`
+### A setting in `openpete.toml` has no effect
 
 An unknown key, a value of the wrong type or a value outside a key's list
-stops the launch. The message names the file, the section and the key, and
-suggests the nearest key name for a typo. Correct the line, or launch with
+prints a warning at launch and the setting keeps its default. The warning
+names the file, the section and the key, and suggests the nearest key name
+for a typo. Correct the line, or launch with
 {{ flag("flag:--no-config") }}<!-- id: flag:--no-config --> to confirm the file is the
 cause ([Config file](../customizing/config-file.md)).
 
@@ -141,7 +142,7 @@ column gives the start of the text, or a box's text.
 
 | Id | Message | Cause | Fix |
 | --- | --- | --- | --- |
-| <a id="op-e-config"></a>`OP-E-CONFIG` | A setting in openpete.toml (or an OPENPETE_ environment variable) was not accepted. | An unknown key, a value of the wrong type or a value outside a key's list, in `openpete.toml` or in an environment variable whose name starts with `OPENPETE_`. The line before it names the file, section and key. | Correct the line ([edit to `openpete.toml`](#the-game-stopped-starting-after-an-edit-to-openpetetoml)). |
+| <a id="op-e-config"></a>`OP-E-CONFIG` | A setting in openpete.toml (or an OPENPETE_ environment variable) was not accepted. | An unknown key, a value of the wrong type or a value outside a key's list, in `openpete.toml` or in an environment variable whose name starts with `OPENPETE_`. The line before it names the file, section and key. | Correct the line ([a setting in `openpete.toml` has no effect](#a-setting-in-openpetetoml-has-no-effect)). |
 | <a id="op-e-library"></a>`OP-E-LIBRARY` | The game library could not be read. | The `library` folder could not be read or written, or a disc image could not be copied into it. The line before it names the step: `library dir not writable`, `--ingest copy failed`, or `no .bin found`. | Free disk space, check that the folder is writable ([File locations](file-locations.md)), and keep the `.bin` next to its `.cue`. |
 | <a id="op-e-ingest"></a>`OP-E-INGEST` | The disc image could not be added to the game library. | The image dropped on the first-run screen could not be copied into the [library](glossary.md#library); the causes are those of OP-E-LIBRARY. | As for [OP-E-LIBRARY](#op-e-library), then drop the image again. |
 | <a id="op-e-wrong-disc"></a>`OP-E-WRONG-DISC` | The disc does not match the game chosen to run. | The disc image is another game than the one this program runs, or the game named on the command line differs from the disc's. | Open the right disc image, or start without naming a game. |
