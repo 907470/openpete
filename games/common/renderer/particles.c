@@ -51,6 +51,7 @@
 #include "renderer/cut_guard.h"     /* cut_held_set_pick, cut_census_held_set */
 #include "renderer/moby.h"          /* moby_native_canon_ref_ns */
 #include "renderer/player_hide.h"   /* --hide-player: the player's records */
+#include "no_lod.h"                 /* openpete_no_lod: extended LOD reveals records past the depth bound */
 #include "openpete_recomp_module.h"   /* the allocator's own body */
 
 extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
@@ -741,27 +742,33 @@ static void part_pair_audit(CPUState* cpu, const ngte_view* v, const part_gte* g
  * :669-680; class 0 :733-743; class 2 :509-521; class 3 :403-415); class 4
  * passes when any corner passes each bound (:319-357). In front of the
  * window each class tests SZ3 (classes 0 and 1: nonzero, classes 2 and 3: at
- * least 0x40, all below 0x2000; class 4: the four corners' SZ summed in
- * [0x100, 0x8000), :304-310). Classes 1 and 4 test their ordering key before
- * the stamp, class 1 (SZ3 >> 5) - byte +0x17 - 2 > 0 (:681, :687-690), class
+ * least 0x40, all below the window's zmax, 0x2000 in the routine; class 4:
+ * the four corners' SZ summed in [0x100, 4 · zmax), :304-310). Classes 1
+ * and 4 test their ordering key before the stamp, class 1 (SZ3 >> 5) - byte +0x17 - 2 > 0 (:681, :687-690), class
  * 4 (sum >> 7) - byte +0x11 >= 0 (:271-273, :311-313); classes 0, 2 and 3
  * test it after the stamp (game_layout.particles.stamp_skip). The window is
- * a parameter: PART_WIN_GAME reproduces the routine, a wider or taller one
- * asks what a view larger than the 4:3 frame shows (part_reveal_win). The
+ * a parameter: PART_WIN_GAME reproduces the routine, a wider, taller or
+ * deeper one asks what a view larger than the 4:3 frame, or extended LOD,
+ * shows (part_reveal_win). The
  * Spyro 3 routine is the same code (partsdraw.s:72-74). */
 
-/* A screen window on the packed SXY word and on SX. */
+/* A screen window on the packed SXY word and on SX, and a depth ceiling. */
 typedef struct {
     int32_t top, bottom;   /* the packed word must exceed top and stay below bottom */
     int     xlo, xhi;      /* SX must exceed xlo and stay below xhi */
+    int32_t zmax;          /* SZ3 must stay below zmax; a class-4 corner sum below 4 · zmax */
 } part_win;
 
 #define PART_WIN_TOP_ROW    13    /* 0xD0000 >> 16 */
 #define PART_WIN_BOTTOM_ROW 228   /* 0xE40000 >> 16 */
-static const part_win PART_WIN_GAME = { PART_WIN_TOP_ROW << 16, PART_WIN_BOTTOM_ROW << 16, 0, 512 };
+#define PART_WIN_ZMAX       0x2000
+static const part_win PART_WIN_GAME = { PART_WIN_TOP_ROW << 16, PART_WIN_BOTTOM_ROW << 16, 0, 512,
+                                        PART_WIN_ZMAX };
 /* Bounds no saturated SX or SY (-0x400..0x3FF) reaches. */
 #define PART_WIN_FREE_LO (-0x8000)
 #define PART_WIN_FREE_HI 0x8000
+/* A depth ceiling no saturated SZ3 (0..0xFFFF) reaches, nor four summed. */
+#define PART_WIN_ZFREE 0x10000
 #define PART_WIN_ROW_CLAMP 0x401
 
 enum { PART_V_STAMP = 1, PART_V_APPEND = 2 };
@@ -807,17 +814,24 @@ static int part_win_row(int row, const ngte_view* v, int up) {
     return (int)r;
 }
 
-/** @brief The window a widened view's reveal tests records on: the routine's window with no x test and its rows scaled to the view's height.
+/** @brief The window the reveal tests records on: the routine's window widened for a view wider than 4:3 and deepened under extended LOD.
  *
- * The routine's rows (13, 228) bound the 4:3 frame's band at the GTE's H; the
- * view projects at H · s, so in the routine's coordinates its band is the
- * routine's scaled about OFY by 1 / s. At s >= 1 the rows are the routine's
- * own packed-word bounds unchanged. The x test is dropped: part_in_view tests
- * the built primitive against the view's screen-X bounds.
- * @param v The view; supplies ofy and s.
+ * In a widened view (ngte_view.extended) the x test is dropped, since
+ * part_in_view tests the built primitive against the view's screen-X bounds,
+ * and the rows are scaled to the view's height: the routine's rows (13, 228)
+ * bound the 4:3 frame's band at the GTE's H; the view projects at H · s, so
+ * in the routine's coordinates its band is the routine's scaled about OFY by
+ * 1 / s. At s >= 1 the rows are the routine's own packed-word bounds
+ * unchanged. Under extended LOD (openpete_no_lod) the depth ceiling is lifted
+ * past any SZ3, so a record the routine drops at SZ3 >= 0x2000 (a class-4
+ * sum >= 0x8000) passes on its screen window and key tests alone; a view
+ * that is not widened keeps the routine's screen window.
+ * @param v The view; supplies extended, ofy and s.
  * @return The window. */
 static part_win part_reveal_win(const ngte_view* v) {
     part_win w = PART_WIN_GAME;
+    if (openpete_no_lod) w.zmax = PART_WIN_ZFREE;
+    if (!v->extended) return w;
     w.xlo = PART_WIN_FREE_LO;
     w.xhi = PART_WIN_FREE_HI;
     if (v->s < 1.0) {
@@ -833,7 +847,7 @@ static part_win part_reveal_win(const ngte_view* v) {
  * @param v The tick's view.
  * @param g The GTE state the routine holds at the record.
  * @param rec The record's guest address.
- * @param w The screen window.
+ * @param w The screen window and depth ceiling.
  * @return PART_V_STAMP | PART_V_APPEND on a pass, else 0. */
 static int part_verdict_spin(CPUState* cpu, const ngte_view* v, const part_gte* g,
                              uint32_t rec, const part_win* w) {
@@ -841,7 +855,7 @@ static int part_verdict_spin(CPUState* cpu, const ngte_view* v, const part_gte* 
     ngte_rtps_out c[4];
     part_spin_rtps(cpu, v, g, cpu->read_word(rec + pos), cpu->read_word(rec + pos + 4u), c);
     const int32_t sum = c[0].sz3 + c[1].sz3 + c[2].sz3 + c[3].sz3;
-    if (sum < 0x100 || sum >= 0x8000) return 0;
+    if (sum < 0x100 || sum >= 4 * w->zmax) return 0;
     if ((sum >> 7) - (int32_t)cpu->read_byte(rec + 0x11u) < 0) return 0;
     return part_win_corners(c, w) ? (PART_V_STAMP | PART_V_APPEND) : 0;
 }
@@ -858,7 +872,7 @@ static int part_verdict_spin(CPUState* cpu, const ngte_view* v, const part_gte* 
  * @param g The GTE state the routine holds at the record.
  * @param rec The record's guest address.
  * @param cls The record's class.
- * @param win The screen window.
+ * @param win The screen window and depth ceiling.
  * @return PART_V_STAMP and PART_V_APPEND bits; 0 when the record fails before the stamp. */
 static int part_record_verdict(CPUState* cpu, const ngte_view* v, const part_gte* g,
                                uint32_t rec, int cls, const part_win* win) {
@@ -868,7 +882,7 @@ static int part_record_verdict(CPUState* cpu, const ngte_view* v, const part_gte
     ngte_rtps_out o;
     part_gte_rtps(g, v, (int32_t)(w0 & 0xFFFFu), (int32_t)(w0 >> 16), (int32_t)(w1 & 0xFFFFu), &o);
     const int32_t zmin = (cls == PART_ROT_CLASS || cls == PART_RECT_CLASS) ? 0x40 : 1;
-    if (o.sz3 < zmin || o.sz3 >= 0x2000 || !part_win_point(&o, win)) return 0;
+    if (o.sz3 < zmin || o.sz3 >= win->zmax || !part_win_point(&o, win)) return 0;
     if (cls == PART_TWO_POINT_CLASS)
         return (o.sz3 >> 5) - (int32_t)cpu->read_byte(rec + 0x17u) - 2 > 0
                    ? (PART_V_STAMP | PART_V_APPEND) : 0;
@@ -886,17 +900,23 @@ static int part_record_verdict(CPUState* cpu, const ngte_view* v, const part_gte
  * becomes a synthetic item built from the record and the type table as the
  * routine builds its primitive, appended after the captured items and fed and
  * rebased as a captured one. It is admitted unless every built vertex lies
- * left of the view's screen-X bound xlo or every one at or right of xhi. */
+ * left of the view's screen-X bound xlo or every one at or right of xhi.
+ * Under extended LOD (openpete_no_lod) the same path reveals a record the
+ * routine drops for its depth alone (SZ3 >= 0x2000, a class-4 corner sum
+ * >= 0x8000): the window's depth ceiling is lifted, every class is built as
+ * the routine builds it near, and its colour words pass unchanged, since the
+ * routine applies no depth cue to a particle's colour. */
 
 /* OPENPETE_PART_WIDE_CENSUS=LO-HI: per walk inside the VBL range, `cand`
- * candidates, `admit` appended, `cull` built and outside the view, `mism`
+ * candidates, `admit` appended, `deep` the appended ones the routine's depth
+ * ceiling alone rejects (extended LOD), `cull` built and outside the view, `mism`
  * records whose verdict at (0, 512) disagrees with the guest's stamp, `recs`
  * records the verdict covered, `syn` paired primitives rebuilt by
  * part_synth_item (per class in the total) and `syn_bad` the rebuilds whose
  * words differ from the captured primitive's; totals print at exit. A walk after the
  * routine stopped at the polybuf's end counts no mismatch (the records it
  * never reached keep the previous call's stamp) and reveals nothing. */
-typedef struct { unsigned long cand, admit, cull, mism, recs, exh, syn, syn_bad, syn_c[8]; } part_wide_tally;
+typedef struct { unsigned long cand, admit, deep, cull, mism, recs, exh, syn, syn_bad, syn_c[8]; } part_wide_tally;
 static part_wide_tally s_wide, s_wide_total;
 static int s_wide_census_walk;   /* the current walk runs the census */
 static int s_syn_n;   /* synthetic items appended past s_item_n by the current walk */
@@ -1014,12 +1034,14 @@ static int part_in_view(const part_item* it, const ngte_view* v) {
     return !(hi < v->xlo || lo >= v->xhi);
 }
 
-/** @brief Appends the synthetic item of an unstamped record a widened view shows.
+/** @brief Appends the synthetic item of an unstamped record a widened view or extended LOD shows.
  *
  * A candidate is a record the verdict fails on PART_WIN_GAME and passes,
  * appending, on part_reveal_win. It is built by part_synth_item into the slot past
  * the captured items and the earlier synthetic ones, and kept when
- * part_in_view admits it. Tallies s_wide.
+ * part_in_view admits it. Tallies s_wide; a census walk also counts an
+ * admitted record that fails on the same window at the routine's depth
+ * ceiling (s_wide.deep).
  * @param cpu Reads the record and the tables.
  * @param v The tick's view.
  * @param g The GTE state the routine holds at the record.
@@ -1040,6 +1062,11 @@ static void part_reveal_record(CPUState* cpu, const ngte_view* v, const part_gte
     }
     s_syn_n++;
     s_wide.admit++;
+    if (s_wide_census_walk && wide.zmax != PART_WIN_ZMAX) {
+        part_win shallow = wide;
+        shallow.zmax = PART_WIN_ZMAX;
+        if (!(part_record_verdict(cpu, v, g, rec, cls, &shallow) & PART_V_APPEND)) s_wide.deep++;
+    }
 }
 
 /* ---- the pool walk ---------------------------------------------------------- */
@@ -1206,7 +1233,7 @@ static void part_wide_census_record(CPUState* cpu, const ngte_view* v, const par
     }
 }
 
-/** @brief Walks the pool as the routine does: pairs each captured primitive with the record that appended it, and in a widened view appends the records its side bands show.
+/** @brief Walks the pool as the routine does: pairs each captured primitive with the record that appended it, and appends the records a widened view or extended LOD reveals.
  *
  * The routine appends in pool order and at most one primitive per record, so
  * walking the pool and the captured list together aligns them. A stamped
@@ -1221,7 +1248,7 @@ static void part_wide_census_record(CPUState* cpu, const ngte_view* v, const par
  * into s_item_n at the end. Does nothing when the pool pointer is outside RAM.
  * @param cpu Reads the pool.
  * @param v The tick's view.
- * @param reveal Nonzero appends the widened view's records.
+ * @param reveal Nonzero appends the records part_reveal_record reveals.
  * @param census Nonzero runs the census. */
 static void part_pair_depths(CPUState* cpu, const ngte_view* v, int reveal, int census) {
     s_stamp_skipped = 0;
@@ -2027,9 +2054,9 @@ static const hook_bracket_desc k_bracket = {
 /** @brief Prints the widened-view census totals to stderr; registered at exit by part_wide_census_on. */
 static void part_wide_total_report(void) {
     const part_wide_tally* t = &s_wide_total;
-    fprintf(stderr, "[part-wide total] cand=%lu admit=%lu cull=%lu mism=%lu recs=%lu exh=%lu "
+    fprintf(stderr, "[part-wide total] cand=%lu admit=%lu deep=%lu cull=%lu mism=%lu recs=%lu exh=%lu "
                     "syn=%lu syn_bad=%lu syn_c=%lu/%lu/%lu/%lu/%lu\n",
-            t->cand, t->admit, t->cull, t->mism, t->recs, t->exh, t->syn, t->syn_bad,
+            t->cand, t->admit, t->deep, t->cull, t->mism, t->recs, t->exh, t->syn, t->syn_bad,
             t->syn_c[0], t->syn_c[1], t->syn_c[2], t->syn_c[3], t->syn_c[4]);
 }
 
@@ -2049,6 +2076,7 @@ static int part_wide_census_on(void) {
 static void part_wide_census_print(int fed) {
     s_wide_total.cand += s_wide.cand;
     s_wide_total.admit += s_wide.admit;
+    s_wide_total.deep += s_wide.deep;
     s_wide_total.cull += s_wide.cull;
     s_wide_total.mism += s_wide.mism;
     s_wide_total.recs += s_wide.recs;
@@ -2056,8 +2084,8 @@ static void part_wide_census_print(int fed) {
     s_wide_total.syn += s_wide.syn;
     s_wide_total.syn_bad += s_wide.syn_bad;
     for (int c = 0; c < 8; c++) s_wide_total.syn_c[c] += s_wide.syn_c[c];
-    fprintf(stderr, "[part-wide f=%u] cand=%lu admit=%lu cull=%lu mism=%lu recs=%lu exh=%lu items=%d\n",
-            openpete_frame, s_wide.cand, s_wide.admit, s_wide.cull, s_wide.mism, s_wide.recs,
+    fprintf(stderr, "[part-wide f=%u] cand=%lu admit=%lu deep=%lu cull=%lu mism=%lu recs=%lu exh=%lu items=%d\n",
+            openpete_frame, s_wide.cand, s_wide.admit, s_wide.deep, s_wide.cull, s_wide.mism, s_wide.recs,
             s_wide.exh, fed);
 }
 
@@ -2079,8 +2107,9 @@ static int part_polybuf_exhausted(CPUState* cpu, uint32_t endp) {
  *
  * Captures the polybuf interval (an empty one resets the set), builds the
  * tick's view and walks the pool (part_pair_depths); in a view wider than
- * 4:3 (ngte_view.extended) the walk appends the records the side bands show, unless
- * the routine stopped at the polybuf's end. The census lines print, and the
+ * 4:3 (ngte_view.extended) or under extended LOD (openpete_no_lod) the walk
+ * appends the records part_reveal_record reveals, unless the routine stopped
+ * at the polybuf's end. The census lines print, and the
  * native scene is fed when it is live and RP_PARTICLES is enabled. A set the
  * routine appended nothing for marks RP_PARTICLES drawn (render_path_mark_drawn),
  * since only a polybuf interval or the mark makes the sub-tick re-extract feed
@@ -2100,7 +2129,8 @@ static void part_draw_capture(CPUState* cpu, uint32_t startp, uint32_t endp, int
     const int census = part_wide_census_on();
     memset(&s_wide, 0, sizeof s_wide);
     s_wide.exh = (unsigned long)exhausted;
-    part_pair_depths(cpu, &view, view.extended && !exhausted, census && !exhausted);
+    part_pair_depths(cpu, &view, (view.extended || openpete_no_lod) && !exhausted,
+                     census && !exhausted);
     if (census) part_wide_census_print(s_item_n);
     if (part_vdbg_on())
         for (int i = 0; i < s_item_n; i++) part_vertex_calib(&s_item[i]);
@@ -2119,7 +2149,8 @@ static void part_draw_capture(CPUState* cpu, uint32_t startp, uint32_t endp, int
  *
  * Through hook_bracket_run the guest routine runs unchanged and reports the
  * polybuf interval it appended. When the interval is not empty, or the view
- * is wider than 4:3 and can show a record the routine appended nothing for,
+ * is wider than 4:3 or extended LOD is on and so can show a record the
+ * routine appended nothing for,
  * part_draw_capture captures, pairs and feeds the set. Guest memory is read
  * after the draw, never written.
  * @param cpu The guest CPU state.
@@ -2130,7 +2161,7 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
-    if (endp > startp || ngte_view_extended(cpu))
+    if (endp > startp || ngte_view_extended(cpu) || openpete_no_lod)
         part_draw_capture(cpu, startp, endp, feed);
     return hook_bracket_end(&k_bracket);
 }
