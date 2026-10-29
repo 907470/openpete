@@ -52,8 +52,9 @@ level = "glimmer"
 
 [[scene]]
 level = "idol_springs"
-# doors A (keyframe id 0) and B (id 4) opened; padlocks (class 421) hidden
-env = { OPENPETE_VIDEO_OPEN_PANIM = "0,4", OPENPETE_HIDE_CLASSES = "421" }
+# doors A (keyframe id 0) and B (id 4) opened; padlocks (class 421) hidden; the
+# door block the path flies through (every face of sector 101) removed
+env = { OPENPETE_VIDEO_OPEN_PANIM = "0,4", OPENPETE_HIDE_CLASSES = "421", OPENPETE_VIDEO_HIDE_FACES = "101" }
 
 [[scene]]
 level = "colossus"
@@ -63,14 +64,18 @@ level = "aquaria_towers"
 
 [[scene]]
 level = "sunny_beach"
-# the tunnel door (id 5) held at its open keyframe 0, as the credits copy
-env = { OPENPETE_VIDEO_HOME_PANIM = "5" }
+# the tunnel door (id 5) held at its open keyframe 0, as the credits copy; the
+# grey door in the pool wall (sector 14 HP faces 16-27) removed
+env = { OPENPETE_VIDEO_HOME_PANIM = "5", OPENPETE_VIDEO_HIDE_FACES = "14/h/16-27" }
 
 [[scene]]
 level = "skelos_badlands"
 
 [[scene]]
 level = "scorch"
+# the ring doors (class 50) hidden; the drawbridge (keyframe id 1) run from
+# keyframe 0 (raised) to its stop keyframe 30 (lowered) at load
+env = { OPENPETE_HIDE_CLASSES = "50", OPENPETE_VIDEO_OPEN_PANIM = "1" }
 
 [[scene]]
 level = "shady_oasis"
@@ -81,3 +86,5 @@ env = { OPENPETE_HIDE_CLASSES = "500,525" }
 
 [[scene]]
 level = "cloud_temples"
+# the door block the path flies through (class 30) hidden
+env = { OPENPETE_HIDE_CLASSES = "30" }

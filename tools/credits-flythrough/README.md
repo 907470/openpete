@@ -111,6 +111,7 @@ state, so a clip recorded with them is not a replay of the unmodified game:
 | `OPENPETE_VIDEO_NOSPARX` | 2 | with `OPENPETE_D1`, class 0x78 off the update list (no Sparx sparkles or glow) |
 | `OPENPETE_VIDEO_OPEN_PANIM` | 2, 3 | keyframe-animated sectors (doors) by id run open once from keyframe 0 |
 | `OPENPETE_VIDEO_HOME_PANIM` | 2, 3 | keyframe-animated sectors by id sent to keyframe 0 and held there |
+| `OPENPETE_VIDEO_HIDE_FACES` | 2, 3 | terrain faces made degenerate before each keyframe walk: `SEC` (every face), `SEC/h` or `SEC/l` (every HP or LP face), `SEC/h/F`, `SEC/h/A-B` |
 
 The thumbnail's title matte is the game's 3D letter font drawn by the
 `OPENPETE_VIDEO_TITLE*` knobs, which are not on main: they are
