@@ -35,13 +35,15 @@ void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on);
  * @param cpu The guest CPU state, read only. */
 void terrain_heavy_fog_refresh(struct CPUState* cpu);
 
-/** @brief Whether the loaded level is a heavy-fog level: its HP far (depth-cue target) palette clusters on one colour.
+/** @brief Whether the loaded level is a heavy-fog level: its HP depth cue pulls vertex colours into one far colour.
  *
- * Set by terrain_heavy_fog_refresh from every sector's far colours at the
- * level's first walk or moby pass: heavy when at least 75% of them lie
- * within 24 of the per-channel median on every channel (S1 misty_bog and
+ * Set by terrain_heavy_fog_refresh from every sector's near and far colour
+ * pairs at the level's first walk or moby pass: heavy when in at least 45%
+ * of the pairs the far colour lies within 24 of the per-channel far median
+ * on every channel and the near colour does not (S1 misty_bog and
  * beast_makers, S2 mystic_marsh and shady_oasis, whose far palette is one
- * colour, and S3 harbor_speedway).
+ * colour, S3 harbor_speedway, S1 jacques, and S3 spider_town, bugbot_factory
+ * and dino_mines area 2).
  * @return 1 for a heavy-fog level, 0 otherwise or before the first refresh. */
 int terrain_heavy_fog(void);
 

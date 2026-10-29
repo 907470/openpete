@@ -6546,46 +6546,66 @@ static uint32_t s_hf_sig[4];
 static uint32_t s_hf_colour;
 static int s_fog_ref_last;
 
-/* The heavy-fog class bounds (terrain_heavy_fog_refresh): a far colour is
- * clustered when no channel lies more than TN_HF_SPREAD from the level's
- * per-channel median, and the level is heavy when at least
- * TN_HF_CLUSTER_PCT percent of its far colours are clustered. Over the 101
- * levels of the three games the members score 100 (four levels whose far
- * palette is one colour) and 88.8 (Spyro 3 harbor_speedway); the highest
- * non-member scores 65.7. */
+/* The heavy-fog class bounds (terrain_heavy_fog_refresh): a colour is
+ * clustered when no channel lies more than TN_HF_SPREAD from the per-channel
+ * median of the level's far colours. A colour pair is pulled when its far
+ * colour is clustered and its near colour is not: the depth cue carries the
+ * vertex into the fog colour rather than toward a darker or lighter copy of
+ * itself. The level is heavy when at least TN_HF_PULLED_PCT percent of its
+ * colour pairs are pulled. Over the 101 levels of the three games and the
+ * 38 Spyro 3 sub-areas the members score 79 to 100 (the four levels whose far
+ * palette is one colour, Spyro 3 harbor_speedway) and 50.6 to 59.1 (Spyro 1
+ * jacques, Spyro 3 spider_town, bugbot_factory and dino_mines area 2, whose
+ * far palette mixes the haze colour with other far colours); the highest
+ * non-member scores 41.7 (Spyro 1 terrace_village). The clustered share alone
+ * does not separate them: dino_mines area 2 scores 51.5 on it and the
+ * non-member gnasty_gnorc 65.7, whose clustered far colours mostly have near
+ * colours in the cluster already (20.7 pulled). */
 #define TN_HF_SPREAD 24
-#define TN_HF_CLUSTER_PCT 75
+#define TN_HF_PULLED_PCT 45
 
-/* A level's far colours, per-channel histograms then the clustered count
- * (terrain_heavy_fog_refresh). */
-typedef struct { uint32_t hist[3][256]; uint32_t med; int n, near; } tn_hf_scan;
+/* A level's far colours, per-channel histograms then the clustered and
+ * pulled counts (terrain_heavy_fog_refresh). */
+typedef struct { uint32_t hist[3][256]; uint32_t med; int n, near, pulled; } tn_hf_scan;
 
-/** @brief Feeds one guest sector's HP far colours to the heavy-fog scan.
+/** @brief Whether every channel of a colour lies within TN_HF_SPREAD of the median.
+ * @param w The colour, 0x00BBGGRR.
+ * @param med The per-channel median, 0x00BBGGRR.
+ * @return 1 when the colour is clustered, 0 otherwise. */
+static int tn_hf_within(uint32_t w, uint32_t med) {
+    int within = 1;
+    for (int k = 0; k < 3; k++) {
+        const int d = (int)((w >> (8 * k)) & 0xFFu) - (int)((med >> (8 * k)) & 0xFFu);
+        within &= d <= TN_HF_SPREAD && d >= -TN_HF_SPREAD;
+    }
+    return within;
+}
+
+/** @brief Feeds one guest sector's HP colour pairs to the heavy-fog scan.
  *
  * The header layout is tsc_decode_body's: header word 5 holds the HP vertex
  * count (bits 0-7), colour count (8-15) and vertex offset (24-31); the near
- * colours follow the HP vertices and the far colours the near ones. Pass 0
- * adds each colour to the channel histograms; pass 1 counts the colours
- * within TN_HF_SPREAD of the median on every channel.
+ * colours follow the HP vertices and the far colours the near ones, pair c
+ * at index c of each. Pass 0 adds each far colour to the channel
+ * histograms; pass 1 counts the clustered far colours and the pulled pairs.
  * @param cpu The guest CPU state, read only.
  * @param sec The sector's guest address.
- * @param pass 0 to build the histograms, 1 to count the clustered colours.
+ * @param pass 0 to build the histograms, 1 to count the clustered and pulled colours.
  * @param S The scan. */
 static void tn_hf_scan_sector(CPUState* cpu, uint32_t sec, int pass, tn_hf_scan* S) {
     const uint32_t g4 = rd(cpu, sec + 0x14);
     const uint32_t nHpV = g4 & 0xFFu, nHpC = (g4 >> 8) & 0xFFu, off = (g4 >> 24) & 0xFFu;
-    const uint32_t far = sec + 0x1Cu + (off + nHpV + nHpC) * 4u;
+    const uint32_t nearA = sec + 0x1Cu + (off + nHpV) * 4u, far = nearA + nHpC * 4u;
     for (uint32_t c = 0; c < nHpC; c++) {
         const uint32_t w = rd(cpu, far + c * 4u) & 0xFFFFFFu;
-        int within = 1;
-        for (int k = 0; k < 3; k++) {
-            const int v = (int)((w >> (8 * k)) & 0xFFu);
-            if (!pass) { S->hist[k][v]++; continue; }
-            const int d = v - (int)((S->med >> (8 * k)) & 0xFFu);
-            within &= d <= TN_HF_SPREAD && d >= -TN_HF_SPREAD;
+        if (pass) {
+            const int within = tn_hf_within(w, S->med);
+            S->near += within;
+            S->pulled += within && !tn_hf_within(rd(cpu, nearA + c * 4u) & 0xFFFFFFu, S->med);
+            continue;
         }
-        if (!pass) S->n++;
-        else S->near += within;
+        for (int k = 0; k < 3; k++) S->hist[k][(w >> (8 * k)) & 0xFFu]++;
+        S->n++;
     }
 }
 
@@ -6603,11 +6623,11 @@ static uint32_t tn_hf_median(const tn_hf_scan* S) {
     return med;
 }
 
-/* Scans every guest sector's HP far colour array when the level's sector
- * table changes and sets the verdict: heavy when the far palette clusters,
- * at least TN_HF_CLUSTER_PCT percent of the far colours within TN_HF_SPREAD
- * of the per-channel median on every channel. The colour published is that
- * median. It reads guest RAM only and runs before any walk of the level
+/* Scans every guest sector's HP colour pairs when the level's sector table
+ * changes and sets the verdict: heavy when at least TN_HF_PULLED_PCT percent
+ * of the pairs are pulled, the far colour within TN_HF_SPREAD of the
+ * per-channel far median on every channel and the near colour not. The
+ * colour published is that median. It reads guest RAM only and runs before any walk of the level
  * draws, so the verdict depends on neither the view nor worker order. A scan
  * that finds no far colours (a table mid-load) leaves the verdict unset,
  * read as not heavy, and the next refresh scans again. One info line per
@@ -6629,10 +6649,10 @@ void terrain_heavy_fog_refresh(CPUState* cpu) {
             if (sec >= 0x80000000u) tn_hf_scan_sector(cpu, sec, pass, &S);
         }
     }
-    s_hf_verdict = S.n == 0 ? -1 : (S.near * 100 >= S.n * TN_HF_CLUSTER_PCT) ? 1 : 0;
+    s_hf_verdict = S.n == 0 ? -1 : (S.pulled * 100 >= S.n * TN_HF_PULLED_PCT) ? 1 : 0;
     s_hf_colour = S.med;
-    OPL_INFO_F("terrain", "heavy fog: level %d, %u sectors, %d far colours, %d within %d of median %06X -> %s",
-               (int)sig[0], cnt, S.n, S.near, TN_HF_SPREAD, S.med, s_hf_verdict == 1 ? "heavy" : "not heavy");
+    OPL_INFO_F("terrain", "heavy fog: level %d, %u sectors, %d far colours, %d within %d of median %06X, %d pulled -> %s",
+               (int)sig[0], cnt, S.n, S.near, TN_HF_SPREAD, S.med, S.pulled, s_hf_verdict == 1 ? "heavy" : "not heavy");
 }
 
 int terrain_heavy_fog(void) {
