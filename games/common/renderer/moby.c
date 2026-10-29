@@ -13878,6 +13878,30 @@ static void moby_wbase_trace(CPUState* cpu, uint32_t rec, uint32_t moby, int wba
             pb, (w[0] != 0.0 || w[1] != 0.0 || w[2] != 0.0) ? 1 : 0);
 }
 
+/* Records reextract_record_list dropped on a hold whose previous tick did not show them, since startup. */
+static uint32_t s_hold_unshown_drops;
+
+/** @brief Whether reextract_record_list drops a queued record because the present holds it at a tick that did not show it.
+ *
+ * A held record (moby_jump_held: a jump, or a held camera cut) shows tick N-1
+ * on every channel. When the record was not shown on tick N-1 (prev_unshown:
+ * its drawn byte clear and outside the native view's drawn set), the game
+ * drew nothing for it on that tick, so the present leaves it out. Each drop
+ * is counted, and with OPENPETE_INTERP_OBJS_KEYLOG prints
+ * `[interp-objs] vbl=<v> hold-unshown m=<moby> cls=<class> n=<count>`.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The record's moby.
+ * @return 1 when the record is dropped, else 0. */
+static int rex_hold_unshown_drop(CPUState* cpu, uint32_t moby) {
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
+    if (!o || !o->prev_unshown || !moby_jump_held(moby, o)) return 0;
+    s_hold_unshown_drops++;
+    if (openpete_interp_objs_keylog())
+        fprintf(stderr, "[interp-objs] vbl=%u hold-unshown m=%08x cls=%03x n=%u\n", openpete_feed_key_now(), moby,
+                (unsigned)cpu->read_half(moby + game_layout.moby.class_off), s_hold_unshown_drops);
+    return 1;
+}
+
 /** @brief The records a sub-tick pass replays: the cull queue at s_rec_base up to its terminator, then on a regular pass of a game without host reveal the admitted trailing-edge records (trail_replay_admit).
  *
  * @param cpu The guest CPU state, read only.
@@ -13891,7 +13915,8 @@ static int reextract_record_list(CPUState* cpu, int is_spec, uint32_t* recs, uin
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         moby_record_t R;
         if (!moby_game.read_record(cpu, rec, &R)) break;   /* queue terminator */
-        if (R.moby >= 0x80000000u && nm < MAX_RECORDS) { recs[nm] = rec; mobys[nm] = R.moby; nm++; }
+        if (R.moby < 0x80000000u || nm >= MAX_RECORDS || rex_hold_unshown_drop(cpu, R.moby)) continue;
+        recs[nm] = rec; mobys[nm] = R.moby; nm++;
     }
     if (!is_spec && !moby_game.host_reveal) nm = trail_replay_admit(cpu, recs, mobys, nm);
     return nm;

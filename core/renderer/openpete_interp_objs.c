@@ -252,6 +252,7 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
         }
         memcpy(s_tab[i].prev, s_tab[i].curr, s_tab[i].blob_len);
         s_tab[i].have_prev = 1;
+        s_tab[i].prev_unshown = s_tab[i].curr_unshown;
         s_tab[i].prev_ns   = s_tab[i].curr_ns;
         s_tab[i].prev_seen_ns = s_tab[i].curr_seen_ns;
         s_tab[i].curr_ns   = objs_tick_stamp();
@@ -261,6 +262,7 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
         s_tab[i].key       = key;
         s_tab[i].have_prev = 0;
         s_tab[i].have_prev2 = 0;
+        s_tab[i].prev_unshown = 0;
         s_tab[i].prev_ns   = 0;
         s_tab[i].prev_seen_ns = 0;
         s_tab[i].curr_ns   = objs_tick_stamp();
