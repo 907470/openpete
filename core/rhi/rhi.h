@@ -1015,12 +1015,21 @@ typedef struct rhi_pipeline_desc {
                                  * material layout; implies sets 0..7 and a
                                  * device with 8 descriptor sets.            */
     bool           ssbo_set7;   /* set 7 holds one dynamic storage-buffer
-                                 * binding, fragment visible (a block of
-                                 * rhi_create_ssbo, bound with
+                                 * binding, vertex and fragment visible (a
+                                 * block of rhi_create_ssbo, bound with
                                  * rhi_ubo_bind_at(.., 7, ..)): the moby
                                  * snap table of the ACTOR snap stages.
                                  * Implies sets 0..7 and a device with 8
                                  * descriptor sets.                          */
+    bool           ssbo_set2;   /* set 2 holds the binding of ssbo_set7 (a
+                                 * rhi_storage bound with
+                                 * rhi_storage_bind(.., 2), or a block of
+                                 * rhi_create_ssbo): the terrain layout's
+                                 * unused set 2, or set 2 of a kind whose
+                                 * own layout stops below it. Not for the
+                                 * material and key-resolve (uses_vram3)
+                                 * kinds, whose set 2 is the terrain key
+                                 * trio. Implies sets 0..2.                  */
     bool           pair_set7;   /* with terrain_pipeline: set 7 holds the
                                  * two-sampler pair layout (bind with
                                  * rhi_bind_depth_tex_pair): the actor key
@@ -2198,6 +2207,70 @@ void     rhi_ubo_bind_data(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
  * @param dev Device the data was created on.
  * @param data Data to destroy. */
 void     rhi_ubo_data_destroy(rhi_device *dev, rhi_ubo_data *data);
+
+/* ---- retained read-only storage for the vertex stage ----------------
+ * A rhi_storage is a fixed-size read-only storage buffer whose contents
+ * persist across frames: a frame that binds it without writing reads the
+ * last committed contents, so data produced once per tick is uploaded once
+ * per tick however many presents draw it. It binds through the single
+ * dynamic storage binding of rhi_create_ssbo's layout (ssbo_set2 or
+ * ssbo_set7 in the pipeline description), visible to the vertex and
+ * fragment stages. The buffer holds RHI_STORAGE_VERSIONS copies of the
+ * contents. rhi_storage_map hands out a copy that is not the committed one
+ * and that no begun frame whose fence is unwaited bound (bound in a frame
+ * serial S with S + RHI_FRAMES_IN_FLIGHT > rhi_frame_serial());
+ * rhi_storage_commit publishes it. A write for one present therefore never
+ * touches the bytes a recorded or executing draw of an earlier present, or
+ * an earlier draw of the same frame, reads.
+ *
+ * Shaders declare the block readonly: a vertex-stage storage write needs
+ * vertexPipelineStoresAndAtomics, which the device does not enable. Reading
+ * needs no feature; the binding is core Vulkan 1.0. */
+#define RHI_STORAGE_VERSIONS (RHI_FRAMES_IN_FLIGHT + 2)
+typedef struct rhi_storage rhi_storage;
+/** @brief Create a retained read-only storage buffer of `bytes` bytes, zero-filled, with its descriptor set.
+ *
+ * The buffer prefers DEVICE_LOCAL host-visible memory and falls back to
+ * host-visible memory; each version is `bytes` rounded up to the storage
+ * offset alignment.
+ * @param dev Device.
+ * @param bytes Size of the contents the shaders see; at least 4.
+ * @return The buffer, or NULL when the buffer or the descriptor set cannot
+ *         be allocated (logged). */
+rhi_storage *rhi_storage_create(rhi_device *dev, size_t bytes);
+/** @brief Return a writable copy of the contents for the caller to fill before rhi_storage_commit.
+ *
+ * The copy is not the committed one and no unretired frame bound it, so
+ * nothing the GPU reads changes. Its bytes are those of an older commit:
+ * the caller writes every byte the shaders read. A second call before the
+ * commit returns the same copy. When every other copy is bound by an
+ * unretired frame (more than two commits followed by binds in one frame)
+ * the copy least recently bound is overwritten, counted in
+ * rhi_ring_gen_overflows and logged once.
+ * @param s Buffer; NULL returns NULL.
+ * @return The copy's mapped bytes, rhi_storage_create's `bytes` long. */
+void        *rhi_storage_map(rhi_storage *s);
+/** @brief Publish the copy rhi_storage_map returned, so binds from now on read it.
+ *
+ * Callable inside or outside a frame. Does nothing without a pending map.
+ * @param s Buffer; NULL is ignored. */
+void         rhi_storage_commit(rhi_storage *s);
+/** @brief Bind the committed contents at descriptor set index `set` of the bound pipeline.
+ *
+ * Records the frame serial on the bound copy. Before the first commit the
+ * zero-filled copy binds. Does nothing outside an active frame or without
+ * a bound pipeline.
+ * @param dev Device whose current frame records the bind.
+ * @param s Buffer.
+ * @param set Descriptor set index; the pipeline's layout holds the storage
+ *            binding there (ssbo_set2 or ssbo_set7). */
+void         rhi_storage_bind(rhi_device *dev, rhi_storage *s, uint32_t set);
+/** @brief Free a retained storage buffer's descriptor set and buffer; NULL is ignored.
+ *
+ * The caller guarantees no unretired frame bound it.
+ * @param dev Device the buffer was created on.
+ * @param s Buffer to destroy. */
+void         rhi_storage_destroy(rhi_device *dev, rhi_storage *s);
 
 /* ---- offscreen-as-input (the COMPOSITE postfx point) ----------------
  * rhi_bind_offscreen_tex: bind off_image as the sampler at `set` (inside a

@@ -133,6 +133,9 @@ uint64_t rhi_pc_desc_hash(const rhi_pipeline_desc *d)
     };
     uint64_t h = 0xcbf29ce484222325ull;
     for (size_t i = 0; i < sizeof f / sizeof f[0]; i++) h = pc_mix(h, f[i]);
+    /* Flags added after the list above fold in only when set, so the hash
+     * of every description that leaves them clear is unchanged. */
+    if (d->ssbo_set2) h = pc_mix(h, 0x5353424f32ull);   /* "SSBO2" */
     return h;
 }
 

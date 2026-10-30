@@ -14,9 +14,14 @@
  * R16_UINT VRAM image + sampler descriptor set + fragment push constants,
  * and the PSX texture decode.
  *
- * Run:   rhi_smoketest [--frames N]
+ * Run:   rhi_smoketest [--frames N] [--headless]
  *   --frames N   exit after N presented frames (for non-interactive CI);
  *                otherwise runs until the window is closed or Esc.
+ *   --headless   run the self-checking cases on a surfaceless device and
+ *                exit 0 on pass, 1 on a failed case, 77 without a device:
+ *                the vertex stage reads its positions and colours from a
+ *                retained storage buffer (rhi_storage, set 2), and each
+ *                frame's readback must equal the expected image exactly.
  */
 
 #include "rhi.h"
@@ -145,6 +150,228 @@ static void build_vram(uint16_t *vram)
             put4(vram, 128, 0, u, v, u * 16 / TS);
 }
 
+/* ---- headless case: vertex positions from a retained storage buffer ---- */
+
+#define SC_W 256
+#define SC_H 128
+
+/* One storage record of storage_pull.vert: clip xy in pos, RGBA colour. */
+typedef struct { float pos[4]; float color[4]; } sc_vert;
+
+/* An axis-aligned rectangle in clip space and the pixel span it covers on
+ * the SC_W x SC_H target. The clip edges sit on pixel edges, so coverage is
+ * exact: columns [px0, px1) and rows [py0, py1). */
+typedef struct {
+    float x0, y0, x1, y1;
+    int   px0, py0, px1, py1;
+    uint8_t rgb[3];
+} sc_rect;
+
+static const sc_rect k_sc_red   = { -0.5f, -0.5f, 0.0f,  0.5f,  64, 32, 128, 96, { 255, 0, 0 } };
+static const sc_rect k_sc_green = { 0.25f, -0.5f, 0.75f, 0.5f, 160, 32, 224, 96, { 0, 255, 0 } };
+
+/** @brief Write the six storage records of one rectangle as two triangles.
+ *
+ * @param o Six records.
+ * @param r Rectangle and its colour. */
+static void sc_fill(sc_vert *o, const sc_rect *r)
+{
+    const float xy[6][2] = {
+        { r->x0, r->y0 }, { r->x1, r->y0 }, { r->x1, r->y1 },
+        { r->x0, r->y0 }, { r->x1, r->y1 }, { r->x0, r->y1 },
+    };
+    for (int i = 0; i < 6; i++) {
+        o[i] = (sc_vert){ { xy[i][0], xy[i][1], 0.0f, 1.0f },
+                          { r->rgb[0] / 255.0f, r->rgb[1] / 255.0f, r->rgb[2] / 255.0f, 1.0f } };
+    }
+}
+
+/** @brief Return the colour a pixel must have: the first listed rectangle covering it, else black.
+ *
+ * @param rects Rectangles drawn in the frame.
+ * @param n Their count.
+ * @param x Pixel column.
+ * @param y Pixel row.
+ * @param out Receives R, G, B. */
+static void sc_expect(const sc_rect *const *rects, int n, int x, int y, uint8_t out[3])
+{
+    out[0] = out[1] = out[2] = 0;
+    for (int i = 0; i < n; i++) {
+        const sc_rect *r = rects[i];
+        if (x >= r->px0 && x < r->px1 && y >= r->py0 && y < r->py1) {
+            memcpy(out, r->rgb, 3);
+            return;
+        }
+    }
+}
+
+/** @brief Compare the offscreen readback with the expected image of a set of rectangles.
+ *
+ * The rectangles do not overlap, so the image is independent of draw order
+ * and of the viewport's Y flip (each rectangle is symmetric about y = 0).
+ * @param dev Device after the frame was submitted.
+ * @param name Case name for the report line.
+ * @param rects Rectangles the frame drew.
+ * @param n Their count.
+ * @param drawn Receives the number of non-black pixels read back.
+ * @return true when every pixel matches. */
+static bool sc_check(rhi_device *dev, const char *name, const sc_rect *const *rects, int n,
+                     long *drawn)
+{
+    static uint8_t px[SC_W * SC_H * 4];
+    int w = 0, h = 0;
+    *drawn = 0;
+    if (!rhi_read_offscreen(dev, px, sizeof px, &w, &h) || w != SC_W || h != SC_H) {
+        printf("rhi_smoketest: %s: readback failed (%dx%d)\n", name, w, h);
+        return false;
+    }
+    long bad = 0;
+    for (int y = 0; y < SC_H; y++) {
+        for (int x = 0; x < SC_W; x++) {
+            const uint8_t *p = &px[(y * SC_W + x) * 4];
+            uint8_t want[3];
+            sc_expect(rects, n, x, y, want);
+            *drawn += (p[0] | p[1] | p[2]) != 0;
+            bad += memcmp(p, want, 3) != 0;
+        }
+    }
+    long expect = 0;
+    for (int i = 0; i < n; i++)
+        expect += (long)(rects[i]->px1 - rects[i]->px0) * (rects[i]->py1 - rects[i]->py0);
+    const bool ok = bad == 0 && *drawn == expect && *drawn > 0;
+    printf("rhi_smoketest: %s: %s drawn=%ld expected=%ld mismatched=%ld\n",
+           name, ok ? "PASS" : "FAIL", *drawn, expect, bad);
+    return ok;
+}
+
+/** @brief Map, fill and commit one rectangle into the retained storage buffer.
+ *
+ * @param st Buffer of six records.
+ * @param r Rectangle. */
+static void sc_publish(rhi_storage *st, const sc_rect *r)
+{
+    sc_vert *v = rhi_storage_map(st);
+    if (v) sc_fill(v, r);
+    rhi_storage_commit(st);
+}
+
+/** @brief Record one draw of the six committed records.
+ *
+ * @param dev Device inside a frame and the offscreen pass.
+ * @param pipe The storage_pull pipeline.
+ * @param vb Six-vertex buffer bound for the pipeline's vertex input, which the stage does not read.
+ * @param st Buffer. */
+static void sc_draw(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb, rhi_storage *st)
+{
+    rhi_bind_pipeline(dev, pipe);
+    rhi_bind_vertex_buffer(dev, vb);
+    rhi_storage_bind(dev, st, 2);
+    rhi_draw(dev, 6, 0);
+}
+
+/** @brief Run the four retained-storage frames and check each readback.
+ *
+ * Frame 1 commits the red rectangle and draws it. Frame 2 draws without a
+ * write and must show the same image, so the contents persist across
+ * frames. Frame 3 draws the committed red records, then commits the green
+ * rectangle and draws again: both must show, so the same-frame commit
+ * left the bytes of the recorded red draw intact. Frame 4 draws without a
+ * write and must show green only. Every frame must draw a nonzero pixel
+ * count equal to its rectangles' area.
+ * @param dev Headless device.
+ * @param pipe The storage_pull pipeline.
+ * @param vb Six-vertex buffer for the vertex input.
+ * @param st Buffer of six records.
+ * @param drawn_total Receives the summed non-black pixel count.
+ * @return true when every frame matches. */
+static bool sc_run_frames(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb,
+                          rhi_storage *st, long *drawn_total)
+{
+    static const sc_rect *const red[] = { &k_sc_red };
+    static const sc_rect *const green[] = { &k_sc_green };
+    static const sc_rect *const both[] = { &k_sc_red, &k_sc_green };
+    static const struct {
+        const char *name; int write_before, write_mid;
+        const sc_rect *const *rects; int n;
+    } k_frames[] = {
+        { "storage commit",           1, 0, red,   1 },
+        { "storage persist",          0, 0, red,   1 },
+        { "storage same-frame write", 0, 1, both,  2 },
+        { "storage persist after",    0, 0, green, 1 },
+    };
+    bool ok = true;
+    *drawn_total = 0;
+    for (size_t f = 0; f < sizeof k_frames / sizeof k_frames[0]; f++) {
+        if (k_frames[f].write_before) sc_publish(st, &k_sc_red);
+        if (!rhi_begin_frame(dev)) { printf("rhi_smoketest: begin_frame refused\n"); return false; }
+        rhi_begin_offscreen(dev, 0.0f, 0.0f, 0.0f, 1.0f);
+        sc_draw(dev, pipe, vb, st);
+        if (k_frames[f].write_mid) {
+            sc_publish(st, &k_sc_green);
+            sc_draw(dev, pipe, vb, st);
+        }
+        rhi_end_offscreen(dev);
+        rhi_end_frame(dev);
+        long drawn;
+        ok &= sc_check(dev, k_frames[f].name, k_frames[f].rects, k_frames[f].n, &drawn);
+        *drawn_total += drawn;
+    }
+    return ok;
+}
+
+/** @brief Run the headless self-checking cases.
+ *
+ * @return 0 when every case passes, 1 on a failed case or resource
+ *         failure, 77 when no Vulkan device can be created. */
+static int run_headless(void)
+{
+    rhi_device *dev = rhi_create_headless("openpete-rhi-smoketest", SC_W, SC_H, NULL);
+    if (!dev) { printf("rhi_smoketest: no headless device: SKIP\n"); return 77; }
+    printf("rhi_smoketest: device='%s' (headless)\n", rhi_device_name(dev));
+    const rhi_pipeline_desc desc = {
+        .vert_spv = "storage_pull.vert.spv", .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false, .ssbo_set2 = true,
+    };
+    rhi_pipeline *pipe = rhi_create_pipeline(dev, &desc);
+    rhi_buffer *vb = rhi_create_vertex_buffer(dev, 6 * sizeof(rhi_vertex));
+    rhi_storage *st = rhi_storage_create(dev, 6 * sizeof(sc_vert));
+    int rc = 1;
+    if (pipe && vb && st) {
+        const rhi_vertex zero[6] = { { 0 } };
+        rhi_update_buffer(vb, zero, sizeof zero);
+        const uint64_t over0 = rhi_ring_gen_overflows();
+        long drawn = 0;
+        const bool ok = sc_run_frames(dev, pipe, vb, st, &drawn);
+        const uint64_t over = rhi_ring_gen_overflows() - over0;
+        printf("rhi_smoketest: storage vertex stage: %s engaged_px=%ld overflows=%llu\n",
+               ok && over == 0 ? "PASS" : "FAIL", drawn, (unsigned long long)over);
+        rc = ok && over == 0 ? 0 : 1;
+    } else {
+        printf("rhi_smoketest: storage pipeline/buffer setup failed\n");
+    }
+    rhi_wait_idle(dev);
+    rhi_storage_destroy(dev, st);
+    if (vb) rhi_destroy_buffer(dev, vb);
+    if (pipe) rhi_destroy_pipeline(dev, pipe);
+    rhi_destroy(dev);
+    return rc;
+}
+
+/** @brief Write the cycling clear colour of one iteration: a hue ramp over 768 steps, no libm.
+ *
+ * @param frame Iteration count.
+ * @param rgb Receives red, green, blue in 0..1. */
+static void hue_ramp(unsigned long frame, float rgb[3])
+{
+    unsigned p = (unsigned)(frame % 768u);
+    unsigned q = p & 255u;
+    float up = q / 255.0f, down = (255u - q) / 255.0f;
+    unsigned seg = p >> 8;
+    rgb[0] = seg == 0 ? down : seg == 2 ? up : 0.0f;
+    rgb[1] = seg == 0 ? up : seg == 1 ? down : 0.0f;
+    rgb[2] = seg == 1 ? up : seg == 2 ? down : 0.0f;
+}
+
 /** @brief Run the RHI smoke test: draw PSX-sampled and vertex-coloured quads until quit.
  *
  * Opens a resizable Vulkan window, fills a VRAM mirror with a 16bpp gradient,
@@ -153,17 +380,17 @@ static void build_vram(uint16_t *vram)
  * (16, 8 and 4 bpp) and one vertex-coloured reference quad into an offscreen
  * target cleared to a cycling hue, then blits it to the swapchain. Exits on
  * window close or Escape, or after N presented frames with `--frames N`.
+ * `--headless` runs the self-checking cases of run_headless instead.
  * @param argc Argument count.
  * @param argv Arguments; `--frames N` sets the presented-frame limit.
  * @return 0 on a clean run, 1 when SDL, the device or the GPU resources fail
- *         to initialise. */
+ *         to initialise; under `--headless`, run_headless's status. */
 int main(int argc, char **argv)
 {
     long frame_limit = -1; /* -1 = run until quit */
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
-            frame_limit = strtol(argv[++i], NULL, 10);
-        }
+        if (strcmp(argv[i], "--headless") == 0) return run_headless();
+        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frame_limit = strtol(argv[++i], NULL, 10);
     }
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -260,13 +487,9 @@ int main(int argc, char **argv)
         }
         if (!running) break;
 
-        /* Integer RGB ramp (no libm): cycles through the hue wheel so the
-         * window is visibly live. */
-        unsigned p = (unsigned)(frame % 768u);
-        float r, g, b;
-        if (p < 256u)      { r = (255u - p) / 255.0f;        g = p / 255.0f;             b = 0.0f; }
-        else if (p < 512u) { unsigned q = p - 256u; r = 0.0f; g = (255u - q) / 255.0f;   b = q / 255.0f; }
-        else               { unsigned q = p - 512u; r = q / 255.0f; g = 0.0f;            b = (255u - q) / 255.0f; }
+        /* Cycles through the hue wheel so the window is visibly live. */
+        float rgb[3];
+        hue_ramp(frame, rgb);
         frame++;
 
         if (!rhi_begin_frame(dev)) {
@@ -274,7 +497,7 @@ int main(int argc, char **argv)
             SDL_Delay(8);
             continue;
         }
-        rhi_begin_offscreen(dev, r, g, b, 1.0f);
+        rhi_begin_offscreen(dev, rgb[0], rgb[1], rgb[2], 1.0f);
 
         /* PSX-sampled quads. */
         rhi_bind_pipeline(dev, tex_pipe);

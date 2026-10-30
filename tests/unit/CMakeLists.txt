@@ -582,6 +582,17 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
                          SKIP_RETURN_CODE 77)
 endif()
 
+# rhi_smoketest --headless - the RHI self-checking cases on a surfaceless
+# device (llvmpipe where no GPU is present): a vertex stage reading its
+# positions and colours from a retained storage buffer must reproduce the
+# expected image exactly on four frames that cover commit, persistence and
+# a same-frame rewrite (core/rhi/smoketest.c). Exit 77 without a device.
+if(TARGET rhi_smoketest)
+    add_test(NAME rhi_smoketest_headless COMMAND rhi_smoketest --headless)
+    set_tests_properties(rhi_smoketest_headless PROPERTIES LABELS "vulkan"
+                         SKIP_RETURN_CODE 77 TIMEOUT 120)
+endif()
+
 # rhi_memtype_candidates_test - the memory-type preference order behind the
 # terrain arenas' allocations (core/rhi/rhi_memtype.c). Compiles that one
 # translation unit against the vendored Vulkan headers: the function reads a

@@ -2914,11 +2914,13 @@ static bool create_descriptor_infra(rhi_device *dev)
                                     &dev->ubo1_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (ubo1) failed\n"); return false;
     }
-    /* Single dynamic storage-buffer binding, fragment visible: engine
-     * tables too large for a uniform block (rhi_create_ssbo). */
+    /* Single dynamic storage-buffer binding, vertex and fragment visible:
+     * engine tables too large for a uniform block (rhi_create_ssbo) and
+     * retained vertex-stage data (rhi_storage). */
     VkDescriptorSetLayoutBinding sb = {
         .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-        .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
     };
     VkDescriptorSetLayoutCreateInfo s1li = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -7434,7 +7436,9 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * puts the dynamic-UBO layout at set 7 above a material layout's seven sets
  * (the portal profile of a mod material); pair_set7 puts the two-sampler
  * pair layout at set 7 above the terrain's seven sets (the actor key image
- * and its owner colour of the stock terrain stage).
+ * and its owner colour of the stock terrain stage); ssbo_set7 and ssbo_set2
+ * put the single dynamic storage binding at set 7 or set 2 (the terrain
+ * layout's unused set 2).
  *
  * material: the mod layout PLUS the engine's occlusion inputs, which a
  * material's fragment stage runs before the mod's colour maths. They sit
@@ -7519,6 +7523,7 @@ static const set_flag_row k_set_flags[] = {
     { offsetof(rhi_pipeline_desc, uniform_set7),    7u, SET_FLAG_UBO1 },
     { offsetof(rhi_pipeline_desc, pair_set7),       7u, SET_FLAG_PAIR },
     { offsetof(rhi_pipeline_desc, ssbo_set7),       7u, SET_FLAG_SSBO1 },
+    { offsetof(rhi_pipeline_desc, ssbo_set2),       2u, SET_FLAG_SSBO1 },
 };
 
 /** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..7].
@@ -11174,6 +11179,112 @@ void rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo)
     rhi_destroy_buffer(dev, ubo->buf);
     free(ubo->gen); free(ubo->bound);
     free(ubo);
+}
+
+/* ---- rhi_storage: retained read-only storage, versioned ------------ */
+
+struct rhi_storage {
+    rhi_buffer     *buf;        /* RHI_STORAGE_VERSIONS copies, `stride` apart */
+    size_t          bytes;      /* contents size the shaders see */
+    VkDeviceSize    stride;     /* bytes rounded up to the storage offset alignment */
+    uint32_t        committed;  /* copy binds read */
+    int32_t         mapped;     /* copy handed out by map, -1 when none */
+    uint64_t        bound[RHI_STORAGE_VERSIONS];  /* last frame serial that bound each copy; 0 = never */
+    VkDescriptorSet set;        /* the single dynamic storage binding over buf */
+    VkDescriptorPool set_pool;
+};
+
+rhi_storage *rhi_storage_create(rhi_device *dev, size_t bytes)
+{
+    if (!dev || bytes < 4 || !dev->ssbo1_set_layout) return NULL;
+    rhi_storage *s = calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    const VkDeviceSize al = dev->ssbo_align;
+    s->bytes = bytes;
+    s->stride = ((VkDeviceSize)bytes + al - 1) & ~(al - 1);
+    s->mapped = -1;
+    const size_t total = (size_t)s->stride * RHI_STORAGE_VERSIONS;
+    s->buf = create_device_mapped_buffer(dev, total, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                         "retained storage");
+    if (!s->buf || !desc_alloc(dev, dev->ssbo1_set_layout, &s->set, &s->set_pool)) {
+        RHI_LOG("rhi_storage_create: %zu B buffer or descriptor allocation failed\n", total);
+        if (s->buf) rhi_destroy_buffer(dev, s->buf);
+        free(s);
+        return NULL;
+    }
+    memset(s->buf->mapped, 0, total);
+    VkDescriptorBufferInfo bi = { .buffer = s->buf->buffer, .offset = 0, .range = bytes };
+    VkWriteDescriptorSet w = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->set,
+        .dstBinding = 0, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &bi,
+    };
+    vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
+    return s;
+}
+
+/** @brief Return the copy rhi_storage_map hands out: the least recently bound copy other than the committed one.
+ *
+ * A copy never bound sorts before every bound one. The choice is free when
+ * its serial plus RHI_FRAMES_IN_FLIGHT is at most the current frame serial
+ * (rhi_begin_frame waited that frame's fence); otherwise every other copy is
+ * in use and the caller counts the overwrite.
+ * @param s Buffer.
+ * @param free_out Receives whether the copy is retired.
+ * @return The copy's index. */
+static uint32_t storage_pick(const rhi_storage *s, bool *free_out)
+{
+    uint32_t best = UINT32_MAX;
+    for (uint32_t v = 0; v < RHI_STORAGE_VERSIONS; v++) {
+        if (v == s->committed) continue;
+        if (best == UINT32_MAX || s->bound[v] < s->bound[best]) best = v;
+    }
+    *free_out = s->bound[best] + RHI_FRAMES_IN_FLIGHT <= s_frame_serial || s->bound[best] == 0;
+    return best;
+}
+
+void *rhi_storage_map(rhi_storage *s)
+{
+    if (!s) return NULL;
+    if (s->mapped < 0) {
+        bool retired;
+        const uint32_t v = storage_pick(s, &retired);
+        if (!retired) {
+            s_ring_gen_overflows++;
+            static bool once;
+            if (!once) {
+                once = true;
+                RHI_LOG("rhi_storage: %u copies in use in frame %llu; overwriting a bound copy\n",
+                        RHI_STORAGE_VERSIONS, (unsigned long long)s_frame_serial);
+            }
+        }
+        s->mapped = (int32_t)v;
+    }
+    return (uint8_t *)s->buf->mapped + (size_t)s->stride * (uint32_t)s->mapped;
+}
+
+void rhi_storage_commit(rhi_storage *s)
+{
+    if (!s || s->mapped < 0) return;
+    s->committed = (uint32_t)s->mapped;
+    s->mapped = -1;
+}
+
+void rhi_storage_bind(rhi_device *dev, rhi_storage *s, uint32_t set)
+{
+    if (!dev || !s || !dev->frame_active || !dev->cur_layout) return;
+    s->bound[s->committed] = s_frame_serial;
+    const uint32_t off = (uint32_t)(s->stride * s->committed);
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &s->set, 1, &off);
+}
+
+void rhi_storage_destroy(rhi_device *dev, rhi_storage *s)
+{
+    if (!s) return;
+    if (s->set) vkFreeDescriptorSets(dev->device, s->set_pool, 1, &s->set);
+    rhi_destroy_buffer(dev, s->buf);
+    free(s);
 }
 
 /* ---- offscreen-as-input: the COMPOSITE postfx point ---------------- */

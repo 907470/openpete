@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 86c2cb2ab3874fd5226159b20bdc0c6a86df689d
+# head: f5372daa199b94825af1333a3b5684a7833f4b21
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -76,7 +76,7 @@ core/rhi/rhi_vulkan.c	create_render_target_impl	33	0
 core/rhi/rhi_vulkan.c	rhi_create_impl	29	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
 core/rhi/rhi_vulkan.c	rhi_destroy	39	0	
-core/rhi/smoketest.c	main	35	0	
+core/rhi/smoketest.c	main	33	0	
 core/runtime/feature_registry.c	feature_registry_dispatch	26	0	
 core/runtime/present_thread.c	present_thread_main	113	0	
 core/runtime/run.c	eager_plan	30	0	
