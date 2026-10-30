@@ -170,6 +170,7 @@ mystic_marsh | pos=(73309, 40590, 5758) yaw=-1074 pitch=244 | 2425
 # Water with animated textures under extended LOD: the per-pixel fog and
 # the second-walk water draw do not reach it.
 mystic_marsh | pos=(81530, 30903, 15232) yaw=-160 pitch=145
+mystic_marsh@fogorig | pos=(81530, 30903, 15232) yaw=-160 pitch=145 | | --fog original
 # An active whirlwind (particles only) beyond the game's particle depth
 # bound: extended LOD should draw it at full quality at every distance.
 # Spyro is placed near it, since its update runs only within 16384 units
