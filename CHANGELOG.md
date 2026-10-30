@@ -119,7 +119,11 @@ openpete.com; the changelog page of the shipped docs makes it relative.
   `games/<game>/corpus/<x>.manifest`; the oracle gate `check_psx_oracle.sh` moved with them,
   its flags, exit codes and golden capture unchanged
 
-## v0.4.2 - 2026-09-29 (Current)
+## v0.4.3 - 2026-10-29 (Current)
+
+- Fixed a crash at startup on AMD Radeon RX 9000-series graphics cards (RDNA4)
+
+## v0.4.2 - 2026-09-29
 
 - Spyro 1: Fixed Sparx, gems and other mobys near Spyro drawing behind him when they are in front of him
 

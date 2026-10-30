@@ -41,3 +41,8 @@ ui_abi = 2
 version = "v0.4.2"
 api = 12
 ui_abi = 2
+
+[[release]]
+version = "v0.4.3"
+api = 12
+ui_abi = 2
