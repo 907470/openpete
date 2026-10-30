@@ -127,7 +127,7 @@ layout(location = 12) in uvec2 inCtxBCol;
 layout(location = 0)  in uvec4 inCellCA;    /* c0x..c2y                   */
 layout(location = 1)  in uvec4 inCellCB;    /* c2z..c3z, face_flags, info */
 layout(location = 2)  in uvec4 inCellFar;   /* raw far colours i0..i3     */
-layout(location = 3)  in uvec2 inCellFog;   /* zero: the fade words are built in this stage */
+layout(location = 3)  in uvec2 inCellFog;   /* x: previous-corner record (near stage); y: zero */
 layout(location = 4)  in uvec4 inCellNear;  /* raw near colours i0..i3    */
 layout(location = 5)  in uvec4 inCellT0;    /* tile: uv TL,TR | uv BL,BR | mat0 | mat1 */
 layout(location = 6)  in uvec4 inCellT1;
@@ -469,7 +469,7 @@ precise vec3 cam_rel(ivec3 w) {
     return v;
 }
 #endif
-#ifdef TERRAIN_ANIM
+#if defined(TERRAIN_ANIM) || defined(TERRAIN_NEAR)
 /* cam_rel of the poly-anim lerp prev -> cur at alpha a, taken on the exact
  * camera-relative integer differences before the fractional camera: p +
  * (c - p) * a with c - p an exact float integer, so a vertex that does not
@@ -1510,6 +1510,43 @@ bool cells_fetch() {
 }
 #endif
 
+#ifdef TERRAIN_NEAR
+/* Previous-corner records (openpete_terrain_cache.h OPTC_PREV_REC_*): a
+ * poly-anim sector's near chunks name, per face, the record holding its
+ * previous-tick corners, six words of int16 pairs in inC0..inC2's order.
+ * PREV_REC_NONE (every other near face, and a poly-anim face that did not
+ * move) takes the current corners, the exact value the lerp gives when
+ * prev == cur. */
+#define PREV_REC_NONE 0xFFFFFFFFu
+layout(std430, set = 2, binding = 1) readonly buffer TerrainPrevRecs {
+    uint w[];
+} prevRec;
+/* The two sign-extended int16 halves of a record word, low first. */
+ivec2 prev_s16x2(uint w) {
+    return ivec2(bitfieldExtract(int(w), 0, 16), bitfieldExtract(int(w), 16, 16));
+}
+/* This vertex's face record: a cell record's fog_a word, a near vertex's
+ * px | py << 16. */
+uint near_prev_rec() {
+#ifdef TERRAIN_CELLS
+    return cellHqFog.x;
+#else
+    return (uint(inPos.x) & 0xFFFFu) | ((uint(inPos.y) & 0xFFFFu) << 16);
+#endif
+}
+/* Record r's four previous corners (x4 fixed, sector-local). */
+void near_prev_corners(uint r, out ivec3 p0, out ivec3 p1, out ivec3 p2, out ivec3 p3) {
+    uint b = r * 6u;
+    ivec4 A = ivec4(prev_s16x2(prevRec.w[b]),      prev_s16x2(prevRec.w[b + 1u]));
+    ivec4 B = ivec4(prev_s16x2(prevRec.w[b + 2u]), prev_s16x2(prevRec.w[b + 3u]));
+    ivec4 C = ivec4(prev_s16x2(prevRec.w[b + 4u]), prev_s16x2(prevRec.w[b + 5u]));
+    p0 = A.xyz;
+    p1 = ivec3(A.w, B.x, B.y);
+    p2 = ivec3(B.z, B.w, C.x);
+    p3 = C.yzw;
+}
+#endif
+
 void main()
 {
     vRim = 0u;
@@ -1593,6 +1630,25 @@ void main()
     precise vec3 lc1 = ANIM_LERP3(pc1, cc1);
     precise vec3 lc2 = ANIM_LERP3(pc2, cc2);
     precise vec3 lc3 = ANIM_LERP3(pc3, cc3);
+#elif defined(TERRAIN_NEAR)
+    /* A poly-anim sector's face with a previous-corner record lerps as the
+     * anim stage does; every other face takes cam_rel. */
+    const uint prec = near_prev_rec();
+    precise vec3 lc0, lc1, lc2, lc3;
+    if (prec == PREV_REC_NONE) {
+        lc0 = cam_rel(wo + cc0);
+        lc1 = cam_rel(wo + cc1);
+        lc2 = cam_rel(wo + cc2);
+        lc3 = cam_rel(wo + cc3);
+    } else {
+        ivec3 pc0, pc1, pc2, pc3;
+        near_prev_corners(prec, pc0, pc1, pc2, pc3);
+        float va = G_VA;
+        lc0 = cam_rel_lerp(wo + pc0, wo + cc0, va);
+        lc1 = cam_rel_lerp(wo + pc1, wo + cc1, va);
+        lc2 = cam_rel_lerp(wo + pc2, wo + cc2, va);
+        lc3 = cam_rel_lerp(wo + pc3, wo + cc3, va);
+    }
 #else
     precise vec3 lc0 = cam_rel(wo + cc0);
     precise vec3 lc1 = cam_rel(wo + cc1);
@@ -1633,6 +1689,29 @@ void main()
     pvec3 lc1 = pvec3(pfloat(inC0.w), pfloat(inC1.x), pfloat(inC1.y)) * 0.25;
     pvec3 lc2 = pvec3(pfloat(inC1.z), pfloat(inC1.w), pfloat(inC2.x)) * 0.25;
     pvec3 lc3 = pvec3(inC2.yzw) * 0.25;
+#ifdef TERRAIN_NEAR
+    /* A poly-anim sector's face with a previous-corner record: the anim
+     * stage's tsc_vanim_lerp mirror on the record's corners. */
+    const uint prec = near_prev_rec();
+    if (prec != PREV_REC_NONE) {
+        ivec3 pc0, pc1, pc2, pc3;
+        near_prev_corners(prec, pc0, pc1, pc2, pc3);
+        const ivec3 cc0 = inC0.xyz;
+        const ivec3 cc1 = ivec3(inC0.w, inC1.x, inC1.y);
+        const ivec3 cc2 = ivec3(inC1.z, inC1.w, inC2.x);
+        const ivec3 cc3 = inC2.yzw;
+        pfloat va = G_VA;
+        #define NEAR_LERP3(P, C) \
+            pvec3(pfloat(float(pfloat(P.x) * 0.25 + (pfloat(C.x) * 0.25 - pfloat(P.x) * 0.25) * va)), \
+                  pfloat(float(pfloat(P.y) * 0.25 + (pfloat(C.y) * 0.25 - pfloat(P.y) * 0.25) * va)), \
+                  pfloat(float(pfloat(P.z) * 0.25 + (pfloat(C.z) * 0.25 - pfloat(P.z) * 0.25) * va)))
+        precise pvec3 l0 = NEAR_LERP3(pc0, cc0);
+        precise pvec3 l1 = NEAR_LERP3(pc1, cc1);
+        precise pvec3 l2 = NEAR_LERP3(pc2, cc2);
+        precise pvec3 l3 = NEAR_LERP3(pc3, cc3);
+        lc0 = l0; lc1 = l1; lc2 = l2; lc3 = l3;
+    }
+#endif
 #endif
 #endif
     precise pvec3 m0 = MAC(lc0), m1 = MAC(lc1);

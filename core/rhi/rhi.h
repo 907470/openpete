@@ -729,7 +729,10 @@ typedef struct rhi_texture  rhi_texture;
  * offsets. */
 typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                        * terrain-cache header */
-    int16_t  px, py, pz;        /* position, sector-local, x4 fixed point   */
+    int16_t  px, py, pz;        /* position, sector-local, x4 fixed point;
+                                 * near-variant chunks, whose stage reads the
+                                 * corners alone: px | py << 16 = the face's
+                                 * previous-corner record (OPTC_PREV_REC_*) */
     uint16_t flags16;           /* bit0: HQ-subdivide variant (vs flat/LP);
                                  * bits1-2: HQ sub-quad index (0..3);
                                  * bits3-4: corner slot within the sub-quad
@@ -866,8 +869,9 @@ typedef struct rhi_terrain_cell {
     uint32_t far_rgb[4];        /* raw far (depth-cue target) colours, near_rgb's
                                  * order: the nodes of a face the HQ pin draws
                                  * past the game's near band fog toward them */
-    uint32_t fog_a, fog_b;      /* the face's HQ ladder-fade words
-                                 * (psx_hq_fog.glsl, terrain.c tn_hqfog_words) */
+    uint32_t fog_a, fog_b;      /* fog_a: the face's previous-corner record
+                                 * (OPTC_PREV_REC_*), read by the near cell
+                                 * stage; fog_b: zero                       */
 } rhi_terrain_cell;             /* 200 bytes */
 
 /* Poly-anim sectors' records: the same plus the previous-tick corners the
@@ -1030,6 +1034,15 @@ typedef struct rhi_pipeline_desc {
                                  * material and key-resolve (uses_vram3)
                                  * kinds, whose set 2 is the terrain key
                                  * trio. Implies sets 0..2.                  */
+    bool           tex_ssbo_set2; /* set 2 holds a combined image sampler at
+                                 * binding 0 (fragment visible) and one
+                                 * dynamic storage buffer at binding 1
+                                 * (vertex visible), bound together with
+                                 * rhi_bind_texture_storage: the terrain
+                                 * cache's prop key image beside its
+                                 * vertex-stage record store. A shader that
+                                 * declares binding 0 alone stays
+                                 * compatible. Implies sets 0..2.            */
     bool           pair_set7;   /* with terrain_pipeline: set 7 holds the
                                  * two-sampler pair layout (bind with
                                  * rhi_bind_depth_tex_pair): the actor key
@@ -1141,6 +1154,14 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes);
  * @param bytes Buffer size in bytes.
  * @return The buffer, or NULL when every candidate type fails. */
 rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes);
+/** @brief Create a host-mapped storage buffer for vertex-stage reads, written in place with rhi_update_buffer_range.
+ *
+ * Memory as rhi_create_vertex_buffer_device. The caller keeps the bytes a
+ * recorded or executing draw reads unchanged until that draw retires.
+ * @param dev Device the buffer is created on.
+ * @param bytes Buffer size in bytes.
+ * @return The buffer, or NULL when allocation fails. */
+rhi_buffer *rhi_create_storage_buffer_device(rhi_device *dev, size_t bytes);
 /** @brief Create a per-frame-in-flight ring vertex buffer for content rewritten every present.
  *
  * rhi_create_vertex_buffer_dynamic_gens with one generation. rhi_update_buffer
@@ -2529,6 +2550,28 @@ rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
  * @param rt Depth-sampled render target.
  * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set);
+/** @brief Bind an image and a storage buffer range together at the set a tex_ssbo_set2 pipeline holds them.
+ *
+ * Binding 0 samples @p tex (its depth view for a depth-sampled render
+ * target, else its colour view) with the VRAM sampler; binding 1 is
+ * @p range bytes of @p store starting at @p offset, which must be a
+ * multiple of the device's storage offset alignment. The descriptor set is
+ * made at the first bind of a (store, range) pair on the texture, kept on
+ * the texture and freed with it; a texture holds one such set, so binding a
+ * second pair replaces it once no unretired frame bound the first. Does
+ * nothing outside an active frame or without a bound pipeline.
+ * @param dev Device.
+ * @param tex Image for binding 0.
+ * @param store Storage buffer for binding 1 (rhi_create_storage_buffer_device).
+ * @param range Bytes binding 1 spans.
+ * @param set Descriptor set index (2 for tex_ssbo_set2).
+ * @param offset Dynamic offset of binding 1, in bytes. */
+void rhi_bind_texture_storage(rhi_device *dev, rhi_texture *tex, rhi_buffer *store,
+                              uint32_t range, uint32_t set, uint32_t offset);
+/** @brief Return the device's minimum storage-buffer offset alignment in bytes.
+ * @param dev Device.
+ * @return The alignment, at least 1. */
+uint32_t rhi_storage_offset_align(const rhi_device *dev);
 /** @brief Queue this frame's copy of a small render target's color image and return the one the frame slot queued last.
  *
  * Ring-buffered like rhi_cycle_readback, for the occlusion grid: call once

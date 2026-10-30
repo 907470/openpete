@@ -20,6 +20,9 @@
 #
 # Pass criterion: 0 differing pixels per row, any channel.
 #
+# Both legs run with OPENPETE_TERRAIN_ANIMNEAR=1, so leg b also draws
+# near-reaching poly-anim sectors from the cache (the walk leg ignores it).
+#
 # Engagement: per row, leg b must report retained sectors (secs > 0
 # on a [tgpu-cen] line) and leg a must report none and must report terrain
 # triangles ([nearcen] terrainTris > 0). A row that misses either compared
@@ -27,7 +30,21 @@
 #
 # The rows are the poses the class was measured on, named by their
 # freecam-corpus slug <level>-<first 6 hex of the pose's md5> so the pose text
-# keeps its one authority, games/<game>/corpus/freecam-corpus.manifest.
+# keeps its one authority, games/<game>/corpus/freecam-corpus.manifest. A row
+# written <slug>:inter captures the deterministic sub-tick present at the same
+# VBL (--screenshot-intermediate-on-frame, alpha 0.5) instead of the canonical
+# one, so the moving-terrain lerp is compared between the two feeds. The
+# :inter rows are poses whose poly-anim near faces move visibly at that
+# present: OPENPETE_TERRAIN_VANIM=0 and =1 captures of either feed differ
+# there, so a cache feed that snapped those faces to the current tick would
+# fail the row.
+#
+# Every row reports, beside the pixel count, the count of poly-anim sectors
+# leg b drew from near-variant chunks ([tgpu-cen] animnear=) and of the
+# previous-corner records they carry (animrecs=) at the captured present
+# (the last census line at or before the pinned VBL from the same kind of
+# build, sub=1 for an :inter row), the engagement of the near stage's lerp.
+# An :inter row whose captured present drew no record is VACUOUS.
 #
 # Usage:
 #   tests/harness/check_cache_walk_ab.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
@@ -66,7 +83,9 @@ pg_resolve "$GAME" || exit 64
 
 # Per game, the freecam-corpus rows the cache-vs-walk class was measured on.
 case "$PG_GAME" in
-  spyro-1) ROWS="dream_weavers-9dace6 gnastys_loot-ca95bd";;
+  spyro-1) ROWS="dream_weavers-9dace6 gnastys_loot-ca95bd magic_crafters-fa5245";;
+  spyro-2) ROWS="crushs_dungeon-f167d0 crushs_dungeon-5feea7:inter metro_speedway-464858:inter";;
+  spyro-3) ROWS="molten_crater-43eca3 sunny_villa-b803cb:inter spooky_swamp-be04ca:inter";;
   *) echo "cache-walk-ab: SKIP ($PG_GAME has no measured cache-vs-walk rows)"; exit 64;;
 esac
 
@@ -83,20 +102,21 @@ mkdir -p "$OUT"
 # The pinned post-load VBL the freecam corpus samples at.
 START=1900
 
-run_leg() {  # tag level pose extra-args...
-    local tag="$1" level="$2" pose="$3"; shift 3
+run_leg() {  # tag level pose shotflag extra-args...
+    local tag="$1" level="$2" pose="$3" shotflag="$4"; shift 4
     local log="$OUT/$tag.log" shot="$OUT/$tag.png" shot_vk="$OUT/$tag-vk.png"
     rm -f "$shot"
     PG_CAPTURE_ENV=(OPENPETE_TERRAIN_CACHE_FORCE=1
                     OPENPETE_TERRAIN_GPU_CENSUS=1
-                    OPENPETE_TERRAIN_NEARCEN=1)
+                    OPENPETE_TERRAIN_NEARCEN=1
+                    OPENPETE_TERRAIN_ANIMNEAR=1)
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$log" "$shot_vk" -- \
         --no-card --mute 1 --vibration 0 \
         --renderer vk --lod extended --aspect 4:3 \
         --vertex-precision subpixel \
         --skip-to-level "$level" --freecam-pose "$pose" \
-        --screenshot-native-only --screenshot-on-frame "$START" \
+        --screenshot-native-only "$shotflag" "$START" \
         --screenshot-output "$shot" \
         --frame-limit $((START + 20)) --max-runtime-seconds 840 \
         "$@"
@@ -104,35 +124,43 @@ run_leg() {  # tag level pose extra-args...
 
 # The manifest is read into arrays before any run: a child that inherits the
 # loop's stdin would eat the rows it has not reached yet.
-LEVELS=(); POSES=(); SLUGS=()
+LEVELS=(); POSES=(); SLUGS=(); SHOTS=()
 while IFS='|' read -r level pose rest; do
     level="$(echo "$level" | tr -d ' \t')"
     [[ -z "$level" || "${level:0:1}" == "#" ]] && continue
     pose="$(echo "$pose" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     [[ -z "$pose" ]] && continue
     slug="$level-$(printf '%s' "$pose" | md5sum | cut -c1-6)"
-    [[ " $ROWS " == *" $slug "* ]] || continue
-    LEVELS+=("$level"); POSES+=("$pose"); SLUGS+=("$slug")
+    if [[ " $ROWS " == *" $slug "* ]]; then
+        LEVELS+=("$level"); POSES+=("$pose"); SLUGS+=("$slug"); SHOTS+=(--screenshot-on-frame)
+    fi
+    if [[ " $ROWS " == *" $slug:inter "* ]]; then
+        LEVELS+=("$level"); POSES+=("$pose"); SLUGS+=("$slug-inter")
+        SHOTS+=(--screenshot-intermediate-on-frame)
+    fi
 done < "$MAN"
 
 rows=0; pass=0; fail=0
 for i in "${!SLUGS[@]}"; do
-    level="${LEVELS[$i]}"; pose="${POSES[$i]}"; slug="${SLUGS[$i]}"
+    level="${LEVELS[$i]}"; pose="${POSES[$i]}"; slug="${SLUGS[$i]}"; shot="${SHOTS[$i]}"
     rows=$((rows + 1))
-    if ! run_leg "$slug-a" "$level" "$pose" --terrain-cache 0; then
+    if ! run_leg "$slug-a" "$level" "$pose" "$shot" --terrain-cache 0; then
         echo "[cache-walk-ab] row=$slug verdict=NO-CAPTURE leg=a"; fail=$((fail+1)); continue
     fi
-    if ! run_leg "$slug-b" "$level" "$pose"; then
+    if ! run_leg "$slug-b" "$level" "$pose" "$shot"; then
         echo "[cache-walk-ab] row=$slug verdict=NO-CAPTURE leg=b"; fail=$((fail+1)); continue
     fi
     python3 - "$OUT/$slug-a-vk.png" "$OUT/$slug-b-vk.png" \
-              "$OUT/$slug-a.log" "$OUT/$slug-b.log" "$slug" <<'AB_PY'
+              "$OUT/$slug-a.log" "$OUT/$slug-b.log" "$slug" "$START" <<'AB_PY'
 import re, sys
 from PIL import Image
 
-a_png, b_png, a_log, b_log, row = sys.argv[1:6]
+a_png, b_png, a_log, b_log, row, start = sys.argv[1:7]
+start = int(start)
+inter = row.endswith("-inter")
 cen = re.compile(r"\[tgpu-cen f=\d+\] sub=\d+ secs=(\d+)")
 tri = re.compile(r"\[nearcen\] frame=\d+ nearFaces=\d+ subTris=\d+ terrainTris=(\d+)")
+anl = re.compile(r"\[tgpu-cen f=(\d+)\] sub=(\d+) .* animnear=(\d+) animrecs=(\d+)")
 
 def peak(path, pat):
     v = 0
@@ -144,6 +172,16 @@ def peak(path, pat):
 
 secs_a, secs_b = peak(a_log, cen), peak(b_log, cen)
 tris_a = peak(a_log, tri)
+def at_capture(path):
+    """animnear, animrecs of the census line of the captured present."""
+    v = (0, 0)
+    for line in open(path, errors="replace"):
+        m = anl.search(line)
+        if m and int(m.group(1)) <= start and int(m.group(2)) == int(inter):
+            v = (int(m.group(3)), int(m.group(4)))
+    return v
+
+animnear_b, animrecs_b = at_capture(b_log)
 A = Image.open(a_png).convert("RGB")
 B = Image.open(b_png).convert("RGB")
 if A.size != B.size:
@@ -168,8 +206,13 @@ if secs_b == 0 or secs_a != 0 or tris_a == 0:
     print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d secsB=%d secsA=%d trisA=%d"
           % (row, diff, secs_b, secs_a, tris_a))
     sys.exit(1)
-print("[cache-walk-ab] row=%s verdict=%s px=%d maxChannelDelta=%d secsB=%d trisA=%d%s"
-      % (row, "PASS" if diff == 0 else "FAIL", diff, delta, secs_b, tris_a,
+# An :inter row exists to compare the near stage's lerp; a captured present
+# that drew no previous-corner record compared none of it.
+if inter and animrecs_b == 0:
+    print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d animnearB=0 animrecsB=0" % (row, diff))
+    sys.exit(1)
+print("[cache-walk-ab] row=%s verdict=%s px=%d maxChannelDelta=%d secsB=%d trisA=%d animnearB=%d animrecsB=%d%s"
+      % (row, "PASS" if diff == 0 else "FAIL", diff, delta, secs_b, tris_a, animnear_b, animrecs_b,
          "" if first_px is None else " first=%s" % (first_px,)))
 sys.exit(0 if diff == 0 else 1)
 AB_PY

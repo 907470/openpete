@@ -8781,6 +8781,9 @@ typedef struct {
                                        * selector set that moved makes them
                                        * stale (wrong pass, or a face left in
                                        * the stock pass a material now wants) */
+    uint32_t prevFirst;               /* previous-corner records of the near
+                                       * chunks (openpete_tercache_prev_*)    */
+    int      prevCount;               /* 0 = none */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
 /** @brief Tests whether a decode slot holds a sector the GPU cache validated as owned this present.
@@ -8804,6 +8807,10 @@ static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
 static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
 static int  s_tgpu_canim_walk;   /* env-anim colour sectors drawn from the cache (census) */
 static int  s_tgpu_canim_mv;     /* ... of them, those whose last roll moved a colour */
+static long s_tgcl_near_pa;      /* near claims of poly-anim sectors (census) */
+static long s_tgcl_near_ca;      /* near claims of env-anim colour sectors (census) */
+static int  s_tgpu_an_walk;      /* poly-anim sectors drawn from near chunks (census) */
+static int  s_tgpu_an_recs;      /* ... the previous-corner records they carry (census) */
 
 /* Active portal-sky planes for the per-sector portal claim. Of the feed's
  * portal semantics, only two ever DROP a CPU-fed terrain tri - the inner-rim
@@ -8948,6 +8955,18 @@ static int tgpu_nearvar_on(void) {
                  v = !(e && *e && *e == '0'); }
     return v;
 }
+/** @brief Tests whether near-reaching poly-anim sectors bake near-variant chunks instead of claiming to the CPU walk.
+ *
+ * Their near chunks name each moving face's previous corners in a record
+ * the near vertex stages lerp from. Default 0: such a sector claims unless
+ * OPENPETE_TERRAIN_ANIMNEAR=1; the variable is latched on the first call.
+ * @return 1 when OPENPETE_TERRAIN_ANIMNEAR starts with '1'. */
+static int tgpu_animnear_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_ANIMNEAR");
+                 v = (e && *e == '1'); }
+    return v;
+}
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
 /** @brief Returns a slot's chunks to every arena and clears its baked-sector fields.
@@ -8963,6 +8982,8 @@ static void tgpu_free_slot(tgpu_slot_t* T) {
             openpete_tercache_chunk_free(a, (T->bufbit >> a) & 1, T->first[a], T->count[a]);
         T->count[a] = 0;
     }
+    if (T->prevCount > 0) openpete_tercache_prev_free(T->prevFirst, T->prevCount);
+    T->prevCount = 0;
     T->bufbit = 0;
     T->s = 0;
 }
@@ -9213,6 +9234,9 @@ static uint32_t tgpu_rgb_mid(uint32_t a, uint32_t b) {   /* cv_mid's per-channel
 typedef struct {
     tgpu_p4  c[4];        /* parent-face corners, i0..i3 order */
     tgpu_p4  pc[4];       /* poly-anim: previous-tick corners (else unset) */
+    uint32_t prec;        /* near chunks: the face's previous-corner record,
+                           * bake-local until tgpu_prev_upload rebases it, or
+                           * OPTC_PREV_REC_NONE (tgpu_prev_rec) */
     uint32_t face_flags;
     uint32_t matf0, matf1, matn0, matn1;
     uint16_t flags16;
@@ -9314,6 +9338,10 @@ static int tgpu_emit_tri_near(tgpu_buf* b, const tgpu_face_t* F,
             const tgpu_corner_t* A = &cs[(k + 1) % 3];
             const tgpu_corner_t* B = &cs[(k + 2) % 3];
             tgpu_fill_vert(&v, F, &cs[k], tri2, spare);
+            /* The near stage takes positions from the corners alone, so
+             * px, py carry the face's previous-corner record instead. */
+            v.px = (int16_t)(uint16_t)(F->prec & 0xFFFFu);
+            v.py = (int16_t)(uint16_t)(F->prec >> 16);
             memset(&cx, 0, sizeof(cx));
             cx.a_uf = A->uf; cx.a_vf = A->vf; cx.a_un = A->un; cx.a_vn = A->vn;
             cx.a_far  = 0xFF000000u | (A->rgb_far  & 0xFFFFFFu);
@@ -9586,7 +9614,8 @@ static void tgpu_cell_rec_init(rhi_terrain_cell_anim* R, const tgpu_face_t* T,
         R->cur.near_rgb[q] = nearC[q] & 0xFFFFFFu;
         R->cur.far_rgb[q] = T->farC[q] & 0xFFFFFFu;
     }
-    R->cur.fog_a = 0u; R->cur.fog_b = 0u;
+    R->cur.fog_a = T->prec;   /* the near cell stage's previous-corner record */
+    R->cur.fog_b = 0u;
     R->cur.face_flags = T->face_flags;
 }
 
@@ -10331,6 +10360,131 @@ static int tgpu_bake_hp_flat(const tgpu_hpctx* X, tgpu_face_t* T, tgpu_corner_t 
     return tgpu_emit_face_tri(X->buf, da, X->ab, X->with_var, T, k[0], k[1], k[2], 0) != 0 ? -1 : 0;
 }
 
+/* Previous-corner records of the sector bake in progress: active for a
+ * poly-anim sector baking near-variant chunks with a previous bank, the
+ * words of each moving face's record in bake order (OPTC_PREV_REC_WORDS
+ * per record). The builder bakes one sector at a time. */
+static int       s_prev_bake;
+static int       s_prev_oom;      /* the list failed to grow: the bake fails at upload */
+static uint32_t* s_prev_w;
+static int       s_prev_n, s_prev_cap;
+
+/** @brief Opens the previous-corner record list of one sector bake.
+ *
+ * Records are kept for a poly-anim sector baking near-variant chunks with a
+ * previous bank; a snapped bake (no bank, or a keyframe jump) bakes
+ * prev == cur and keeps none.
+ * @param with_var 1 when the bake emits near-variant chunks.
+ * @param polyanim Nonzero for a poly-anim sector.
+ * @param vsnap 1 when the bake takes the current bank as the previous one. */
+static void tgpu_prev_begin(int with_var, int polyanim, int vsnap) {
+    s_prev_bake = with_var && polyanim && !vsnap;
+    s_prev_oom = 0;
+    s_prev_n = 0;
+}
+
+/** @brief Returns a face's previous-corner record, appending one to the bake's list when its corners moved.
+ *
+ * A face whose previous corners equal its current ones, and every face of a
+ * bake without records, takes OPTC_PREV_REC_NONE: the near stage then uses
+ * the current corners, which is what the lerp yields for them. The index is
+ * local to the bake until tgpu_prev_upload rebases it.
+ * A list that cannot grow sets s_prev_oom, which fails the bake at
+ * tgpu_prev_upload.
+ * @param T The face template with c and pc filled.
+ * @return The record index, or OPTC_PREV_REC_NONE. */
+static uint32_t tgpu_prev_rec(const tgpu_face_t* T) {
+    if (!s_prev_bake || memcmp(T->c, T->pc, sizeof T->c) == 0) return OPTC_PREV_REC_NONE;
+    if (s_prev_n >= s_prev_cap) {
+        const int nc = s_prev_cap ? s_prev_cap * 2 : 256;
+        uint32_t* nw = (uint32_t*)realloc(s_prev_w, sizeof(*nw) * OPTC_PREV_REC_WORDS * (size_t)nc);
+        if (!nw) { s_prev_oom = 1; return OPTC_PREV_REC_NONE; }
+        s_prev_w = nw; s_prev_cap = nc;
+    }
+    uint32_t* w = s_prev_w + (size_t)s_prev_n * OPTC_PREV_REC_WORDS;
+    const tgpu_p4* p = T->pc;
+    w[0] = (uint16_t)p[0].x | (uint32_t)(uint16_t)p[0].y << 16;
+    w[1] = (uint16_t)p[0].z | (uint32_t)(uint16_t)p[1].x << 16;
+    w[2] = (uint16_t)p[1].y | (uint32_t)(uint16_t)p[1].z << 16;
+    w[3] = (uint16_t)p[2].x | (uint32_t)(uint16_t)p[2].y << 16;
+    w[4] = (uint16_t)p[2].z | (uint32_t)(uint16_t)p[3].x << 16;
+    w[5] = (uint16_t)p[3].y | (uint32_t)(uint16_t)p[3].z << 16;
+    return (uint32_t)s_prev_n++;
+}
+
+/** @brief Allocates and writes the bake's previous-corner records and rebases the near chunks onto them.
+ *
+ * Every near-variant vertex's px | py and every near cell record's fog_a
+ * that names a bake-local record gains the allocation's first index. A
+ * bake without records allocates nothing.
+ * @param T The sector's slot; receives the run (prevFirst, prevCount).
+ * @param buf The sector's bake buffers, indexed by arena.
+ * @return 0, or -1 when the record store is full or the list failed to
+ *         grow (the arena-full claim). */
+static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
+    T->prevCount = 0;
+    if (s_prev_oom) return -1;
+    if (s_prev_n == 0) return 0;
+    uint32_t first;
+    if (openpete_tercache_prev_alloc(s_prev_n, &first) != 0) return -1;
+    for (int a = OPTC_ARENA_NEAR_BASE; a < OPTC_ARENA_CELL_NEAR_BASE; a++)
+        for (int i = 0; i < buf[a].n; i++) {
+            rhi_terrain_vertex* v = &buf[a].v[i];
+            const uint32_t r = (uint32_t)(uint16_t)v->px | (uint32_t)(uint16_t)v->py << 16;
+            if (r == OPTC_PREV_REC_NONE) continue;
+            v->px = (int16_t)(uint16_t)((r + first) & 0xFFFFu);
+            v->py = (int16_t)(uint16_t)((r + first) >> 16);
+        }
+    for (int a = OPTC_ARENA_CELL_NEAR_BASE; a < OPTC_ARENA_CELL_ANIM_BASE; a++)
+        for (int i = 0; i < buf[a].n; i++) {
+            rhi_terrain_cell* c = (rhi_terrain_cell*)(buf[a].rec + buf[a].rsz * (size_t)i);
+            if (c->fog_a != OPTC_PREV_REC_NONE) c->fog_a += first;
+        }
+    openpete_tercache_prev_write(first, s_prev_w, s_prev_n);
+    T->prevFirst = first;
+    T->prevCount = s_prev_n;
+    return 0;
+}
+
+/** @brief Uploads a built sector: its previous-corner records, then its chunks, all or nothing.
+ *
+ * A chunk upload that fails gives the records back.
+ * @param T The sector's slot.
+ * @param buf The sector's bake buffers, indexed by arena.
+ * @return 1 when both landed, 0 when the store or an arena is full. */
+static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) {
+    if (tgpu_prev_upload(T, buf) != 0) return 0;
+    if (tgpu_upload_chunks(T, buf) == 0) return 1;
+    if (T->prevCount > 0) openpete_tercache_prev_free(T->prevFirst, T->prevCount);
+    T->prevCount = 0;
+    return 0;
+}
+
+/** @brief Returns whether a sector bake emits near-variant chunks.
+ *
+ * An env-anim colour sector bakes none (its near faces would lerp three
+ * members' colours); a poly-anim sector bakes them into the near arenas,
+ * each moving face's previous corners in a previous-corner record
+ * (tgpu_prev_rec), when OPENPETE_TERRAIN_ANIMNEAR=1 (default 0).
+ * @param want 1 when the caller asks for near-variant chunks.
+ * @param SC The decoded sector.
+ * @return 1 to bake them, else 0. */
+static int tgpu_bake_with_var(int want, const tscache_t* SC) {
+    if (tsc_canim(SC)) return 0;
+    return want && (!SC->polyanim || tgpu_animnear_on());
+}
+
+/** @brief Returns whether a near-reaching sector takes its near-variant chunks instead of the CPU-walk claim.
+ *
+ * Env-anim colour sectors claim; a poly-anim sector takes the chunks
+ * when OPENPETE_TERRAIN_ANIMNEAR=1 (default 0); every sector claims under
+ * OPENPETE_TERRAIN_NEARVAR=0.
+ * @param SC The decoded sector.
+ * @return 1 for the near variant, 0 for the claim. */
+static int tgpu_near_variant_ok(const tscache_t* SC) {
+    return tgpu_nearvar_on() && tgpu_bake_with_var(1, SC);
+}
+
 /** @brief Points an imported sector's own HP bake at the source table and the auxiliary bank.
  *
  * Sets the face bit 11 (the borrowed-face bit the vertex stage reads for the
@@ -10424,6 +10578,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
         k[q].rgb_near = nearC[q]; k[q].rgb_far = farC[q];
         k[q].prgb_near = pnearC[q]; k[q].prgb_far = pfarC[q];
     }
+    T.prec = tgpu_prev_rec(&T);
     if (tgpu_bake_hp_flat(X, &T, k, F, tgpu_arena_of(&F->mat), fail) != 0) return -1;
     if (hq_elig && !X->canim_only &&
         tgpu_bake_near(X->cpu, X->buf, X->ab, X->with_var, pin4, &T, k, nearC,
@@ -10505,6 +10660,7 @@ static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
         k[q].rgb_far = k[q].rgb_near = rc[q];
         k[q].prgb_far = k[q].prgb_near = prc[q];
     }
+    T.prec = tgpu_prev_rec(&T);
     int da = F->mat.blend ? tgpu_arena_of(&F->mat) : (int)OPTC_ARENA_LP;
     /* LP quad: strip diagonal i1-i2 (no i2/i3 swap - see the LP emit) */
     if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) return -1;
@@ -10608,7 +10764,7 @@ static void tgpu_facedump_sector(int slot, int sec, const tscache_t* SC) {
  * @param SC The decoded sector.
  * @param hqTable The HQ record table's guest address, or 0.
  * @param sec_index The level sector index, the authored-correction key.
- * @param with_var 1 to bake near-variant chunks; ignored for an anim sector.
+ * @param with_var 1 to bake near-variant chunks (tgpu_bake_with_var decides).
  * @return 0 on success; 1 when an arena is full or a buffer allocation
  *         fails; 5 when a face cannot be HD-folded (tgpu_hdfold_face). */
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
@@ -10635,10 +10791,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     const int anim = tgpu_sector_anim(SC);
     const int canim_only = CA != NULL && !SC->polyanim;
     const int ab = anim ? (int)OPTC_ARENA_ANIM_BASE : 0;
-    /* Near-variant chunks are never poly-anim: those sectors keep the CPU
-     * claim, so the two twin arena families are mutually exclusive (one
-     * binding-1 twin per chunk - prev record OR member context). */
-    if (anim) with_var = 0;
+    with_var = tgpu_bake_with_var(with_var, SC);
     if (with_var)
         for (int a = OPTC_ARENA_NEAR_BASE; a < OPTC_ARENA_CELL_NEAR_BASE; a++)
             buf[a].nearv = 1;
@@ -10655,6 +10808,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                          (nHp && tsc_vanim_jump(SC->hpVprev, SC->hpV, nHp));
         vsnap = !havePrev || jump;
     }
+    tgpu_prev_begin(with_var, SC->polyanim, vsnap);
 
     /* ---- LP tier: untextured; drawn in WORLD and re-drawn in FILL ---- */
     /* Every LP face keys untextured and LP tier, so its material bucket
@@ -10707,9 +10861,10 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
 
     /* ---- upload ---- */
     tgpu_facedump_sector(slot, sec_index, SC);
-    ok = tgpu_upload_chunks(&s_tgpu[slot], buf) == 0;
+    ok = tgpu_upload_sector(&s_tgpu[slot], buf);
 done:
     s_hq_bank = 0;
+    s_prev_bake = 0;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         free(buf[a].v); free(buf[a].pv); free(buf[a].cx); free(buf[a].rec);
     }
@@ -14354,6 +14509,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * serial retry replaces the aborted walk's numbers instead of summing
      * with them (summed lines inflated census rows exactly 2x). */
     s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0; s_tgpu_canim_walk = 0; s_tgpu_canim_mv = 0;
+    s_tgpu_an_walk = 0; s_tgpu_an_recs = 0;
+    const long near_pa0 = s_tgcl_near_pa, near_ca0 = s_tgcl_near_ca;
     if (s_cen) {
         cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
         cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
@@ -14559,12 +14716,16 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * What survives the refinement takes the NEAR VARIANT: chunks
                  * whose vertex stage re-runs the walk's near-plane clip fan
                  * and its straddle waivers, so the sector still renders from
-                 * the GPU. Poly-anim sectors keep the claim (no anim x near
-                 * twin), as does the lever-off A/B. */
-                if (!SC->polyanim && !tsc_canim(SC) && tgpu_nearvar_on()) {
+                 * the GPU. Under OPENPETE_TERRAIN_ANIMNEAR=1 (default 0) a
+                 * poly-anim sector takes it too, its moving faces' previous
+                 * corners in previous-corner records the near stage lerps
+                 * from. Env-anim colour sectors keep the claim. */
+                if (tgpu_near_variant_ok(SC)) {
                     want_near = 1;
                 } else {
                     claim = 1; s_tgcl_near++;
+                    s_tgcl_near_pa += SC->polyanim != 0;
+                    s_tgcl_near_ca += tsc_canim(SC) != NULL;
                     if (oc3 + nearBound < 16.0)
                         s_tgcl_nearb++;   /* census: fully-behind sub-bucket */
                 }
@@ -14596,6 +14757,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 if (r == 0) {
                     s_tgpu_own[vi] = want_near ? 3 : 1;
                     if (want_near) s_tgpu_nvsecs++;
+                    s_tgpu_an_walk += want_near & (SC->polyanim != 0);
+                    s_tgpu_an_recs += (want_near & (SC->polyanim != 0)) *
+                                      s_tgpu[(int)(SC - s_tsc)].prevCount;
                     s_tgpu_secs++; s_tgpu_secs_walk++;
                     tgpu_canim_census(SC, s_cen);
                 } else {
@@ -14753,7 +14917,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             fprintf(stderr, "[tgpu-cen f=%u] sub=%d secs=%d claims=%d "
                     "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
                     "arena=%ld col=%ld slot=%ld tp=%ld nearb=%ld "
-                    "nodraw=%ld prim=%ld pcov=%ld canim=%d canim_moved=%d\n",
+                    "nodraw=%ld prim=%ld pcov=%ld canim=%d canim_moved=%d "
+                    "near_pa=%ld near_ca=%ld animnear=%d animrecs=%d\n",
                     openpete_feed_key_now(), s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
                     s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
@@ -14762,7 +14927,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_colour - cen0[6], s_tgcl_slot - cen0[7],
                     s_tgcl_texpack - cen0[8],
                     s_tgcl_nearb - cen0[9], s_tgcl_nodraw - cen0[10],
-                    s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12], s_tgpu_canim_walk, s_tgpu_canim_mv);
+                    s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12], s_tgpu_canim_walk, s_tgpu_canim_mv,
+                    s_tgcl_near_pa - near_pa0, s_tgcl_near_ca - near_ca0, s_tgpu_an_walk,
+                    s_tgpu_an_recs);
         tgpu_census();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;

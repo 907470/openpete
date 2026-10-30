@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: f5372daa199b94825af1333a3b5684a7833f4b21
+# head: c9c80532587072fea8030c00b71e5fb9ae3c6755
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -146,13 +146,13 @@ games/common/renderer/terrain.c	fp_hit_tri	31	0
 games/common/renderer/terrain.c	portal_rim_classify	53	0	
 games/common/renderer/terrain.c	td_scan_verts	26	0	
 games/common/renderer/terrain.c	terrain_animdbg	44	0	
-games/common/renderer/terrain.c	terrain_build	547	0	
+games/common/renderer/terrain.c	terrain_build	546	0	
 games/common/renderer/terrain.c	terrain_compare	313	0	
 games/common/renderer/terrain.c	terrain_feed_native	372	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	94	0	
 games/common/renderer/terrain.c	tgpu_bake_hp_face	27	0	
-games/common/renderer/terrain.c	tgpu_build_sector	45	0	
+games/common/renderer/terrain.c	tgpu_build_sector	44	0	
 games/common/renderer/terrain.c	tgpu_ensure	37	0	
 games/common/renderer/terrain.c	tgpu_env_block	30	0	
 games/common/renderer/terrain.c	tgpu_pack_scan_faces	40	0	

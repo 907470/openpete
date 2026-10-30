@@ -839,6 +839,37 @@ void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
  * @param count Element count. */
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count);
 
+/* ---- previous-corner records --------------------------------------------
+ * A poly-anim sector drawn with its near-variant chunks lerps each face's
+ * corners from the previous tick's positions. The near arenas' vertices and
+ * cell records carry the current corners only, so each such face's previous
+ * corners live in one record of a storage buffer the near and near-cell
+ * vertex stages read (binding 1 of set 2, beside the prop key image). A
+ * record is OPTC_PREV_REC_WORDS words: the twelve int16 corners c0x..c3z,
+ * two to a word, low half first. A near vertex names its face's record in
+ * px | py << 16 and a near cell record in fog_a; OPTC_PREV_REC_NONE names
+ * none, and the stage takes the current corners. Records are allocated,
+ * written and freed by the builder alongside the sector's chunks, and a
+ * freed range is reused only after the chunks' defer window, so a record is
+ * unchanged while any state that can draw its chunk lives. */
+#define OPTC_PREV_REC_WORDS 6u
+#define OPTC_PREV_REC_NONE  0xFFFFFFFFu
+/** @brief Allocate a run of previous-corner records.
+ * @param count Record count, at least 1.
+ * @param out_first Receives the first record index.
+ * @return 0, or -1 when the store has no room (the caller claims the sector
+ *         back to the CPU walk, as on a full arena). */
+int  openpete_tercache_prev_alloc(int count, uint32_t *out_first);
+/** @brief Write previous-corner records at an allocated index.
+ * @param first First record index from openpete_tercache_prev_alloc.
+ * @param words count * OPTC_PREV_REC_WORDS words.
+ * @param count Record count. */
+void openpete_tercache_prev_write(uint32_t first, const uint32_t *words, int count);
+/** @brief Release a run of previous-corner records after the chunk defer window.
+ * @param first First record index.
+ * @param count Record count. */
+void openpete_tercache_prev_free(uint32_t first, int count);
+
 /* ---- overflow buffers ---------------------------------------------------
  * An arena holds a primary buffer and, once it has run out, one overflow
  * buffer sized from the level's own measured capacity, or from the refused

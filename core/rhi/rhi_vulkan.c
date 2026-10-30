@@ -752,6 +752,7 @@ struct rhi_device {
     VkDescriptorSetLayout ubo_set_layout;
     VkDescriptorSetLayout ubo1_set_layout;            /* one dynamic binding    */
     VkDescriptorSetLayout ssbo1_set_layout;           /* one dynamic storage binding */
+    VkDescriptorSetLayout texssbo_set_layout;         /* sampler at 0 + dynamic storage at 1 */
     /* The 16-byte zero storage buffer every rhi_ubo set shows at binding 2
      * (rhi_ubo_data); created with the first rhi_ubo. */
     struct rhi_buffer *ubo_data_zero;
@@ -1062,6 +1063,15 @@ struct rhi_texture {
      * as a combined image sampler. NULL on a plain render target. */
     VkImageView     rt_depth_sample_view;
     VkDescriptorSet depth_set;
+    /* rhi_bind_texture_storage: this image at binding 0 beside a storage
+     * range at binding 1 (texssbo_set_layout), made at the first bind of
+     * the (store_buf, store_range) pair; store_serial is the last frame
+     * serial that bound it. */
+    VkDescriptorSet  store_set;
+    VkDescriptorPool store_pool;
+    const rhi_buffer *store_buf;
+    uint32_t         store_range;
+    uint64_t         store_serial;
     bool            census;    /* counted in s_census (create_sampled_image) */
     int64_t         census_dev_bytes;
     bool            depth_readable; /* depth image carries TRANSFER_SRC
@@ -2930,6 +2940,25 @@ static bool create_descriptor_infra(rhi_device *dev)
                                     &dev->ssbo1_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (ssbo1) failed\n"); return false;
     }
+    /* A sampled image at binding 0 (the single-sampler binding a fragment
+     * stage declares) beside a vertex-visible dynamic storage buffer at
+     * binding 1 (rhi_bind_texture_storage). */
+    VkDescriptorSetLayoutBinding tsb[2] = {
+        { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          .descriptorCount = 1,
+          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
+        { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+          .descriptorCount = 1,
+          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
+    };
+    VkDescriptorSetLayoutCreateInfo tsli = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 2, .pBindings = tsb,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &tsli, NULL,
+                                    &dev->texssbo_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout (texssbo) failed\n"); return false;
+    }
     {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev->phys, &props);
@@ -4197,6 +4226,7 @@ void rhi_destroy(rhi_device *dev)
     if (dev->ubo_data_zero) { rhi_destroy_buffer(dev, dev->ubo_data_zero); dev->ubo_data_zero = NULL; }
     if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
     vkDestroyDescriptorSetLayout(dev->device, dev->ssbo1_set_layout, NULL);   /* VK_NULL_HANDLE is a no-op */
+    vkDestroyDescriptorSetLayout(dev->device, dev->texssbo_set_layout, NULL);
     /* A device that failed before vkCreateDevice has no device-level
      * dispatch to call through, so even a null handle is not destroyed. */
     if (dev->pair_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);
@@ -5608,6 +5638,12 @@ rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
                                        "device vertex buffer");
 }
 
+rhi_buffer *rhi_create_storage_buffer_device(rhi_device *dev, size_t bytes)
+{
+    return create_device_mapped_buffer(dev, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                       "device storage buffer");
+}
+
 rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
                                                   uint32_t gens)
 {
@@ -6990,6 +7026,7 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
     }
     if (tex->set)       vkFreeDescriptorSets(dev->device, tex->set_pool, 1, &tex->set);
     if (tex->depth_set) vkFreeDescriptorSets(dev->device, tex->depth_set_pool, 1, &tex->depth_set);
+    if (tex->store_set) vkFreeDescriptorSets(dev->device, tex->store_pool, 1, &tex->store_set);
     if (tex->rt_depth_sample_view) vkDestroyImageView(dev->device, tex->rt_depth_sample_view, NULL);
     if (tex->init_pending)
         for (rhi_texture **pp = &dev->init_head; *pp; pp = &(*pp)->init_next)
@@ -7348,8 +7385,8 @@ static const VkVertexInputAttributeDescription k_terrain_near_attrs[13] = {
  * see rhi.h), no per-vertex binding - the vertex stage derives every cell
  * vertex from its record and gl_VertexIndex. Locations 0-1 carry the twelve
  * int16 corners (c0x..c3z, two to a word) then the face flags and record
- * info as raw words, unpacked by cells_fetch; 2 the far colours, 3 the HQ
- * ladder-fade words, 4 the near colours, 5-12 the eight cell tiles; the anim
+ * info as raw words, unpacked by cells_fetch; 2 the far colours, 3 the
+ * previous-corner record word and a zero word, 4 the near colours, 5-12 the eight cell tiles; the anim
  * records append the previous corners, packed the same way, at 13-14. The
  * corners are read as words so the anim layout fits 15 locations. */
 #define CELL_TILE_ATTR(i) \
@@ -7502,7 +7539,7 @@ static uint32_t kind_set_count(const rhi_pipeline_desc *desc)
 }
 
 /* The descriptor set layouts a per-set flag selects. */
-typedef enum { SET_FLAG_PAIR, SET_FLAG_UBO1, SET_FLAG_SSBO1 } set_flag_layout;
+typedef enum { SET_FLAG_PAIR, SET_FLAG_UBO1, SET_FLAG_SSBO1, SET_FLAG_TEXSSBO } set_flag_layout;
 
 /* One per-set flag of rhi_pipeline_desc: when the bool at `flag` is set, set
  * `set` takes `layout` and the pipeline layout spans sets 0..set. A flag
@@ -7524,6 +7561,7 @@ static const set_flag_row k_set_flags[] = {
     { offsetof(rhi_pipeline_desc, pair_set7),       7u, SET_FLAG_PAIR },
     { offsetof(rhi_pipeline_desc, ssbo_set7),       7u, SET_FLAG_SSBO1 },
     { offsetof(rhi_pipeline_desc, ssbo_set2),       2u, SET_FLAG_SSBO1 },
+    { offsetof(rhi_pipeline_desc, tex_ssbo_set2),   2u, SET_FLAG_TEXSSBO },
 };
 
 /** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..7].
@@ -7553,6 +7591,7 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
         if (!*(const bool *)((const char *)desc + row->flag)) continue;
         out[row->set] = row->layout == SET_FLAG_PAIR  ? dev->pair_set_layout
                       : row->layout == SET_FLAG_SSBO1 ? dev->ssbo1_set_layout
+                      : row->layout == SET_FLAG_TEXSSBO ? dev->texssbo_set_layout
                                                       : dev->ubo1_set_layout;
         n = rhi_max_u32(n, row->set + 1u);
     }
@@ -11365,6 +11404,67 @@ void rhi_offscreen_resume_attachment(rhi_device *dev)
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+}
+
+uint32_t rhi_storage_offset_align(const rhi_device *dev)
+{
+    return dev && dev->ssbo_align ? (uint32_t)dev->ssbo_align : 1u;
+}
+
+/** @brief Make or reuse the texture's image-plus-storage descriptor set for one (store, range) pair.
+ *
+ * A set made for another pair is freed first when no unretired frame bound
+ * it; while one does, the new pair is refused (logged once).
+ * @param dev Device.
+ * @param tex Texture.
+ * @param store Storage buffer.
+ * @param range Bytes binding 1 spans.
+ * @return true when tex->store_set describes the pair. */
+static bool texture_store_set(rhi_device *dev, rhi_texture *tex, const rhi_buffer *store,
+                              uint32_t range)
+{
+    if (tex->store_set && tex->store_buf == store && tex->store_range == range) return true;
+    if (tex->store_set) {
+        if (tex->store_serial + RHI_FRAMES_IN_FLIGHT > s_frame_serial) {
+            static bool once;
+            if (!once) { once = true; RHI_LOG("rhi_bind_texture_storage: a second (store, range) pair on one texture while the first is in flight; refused\n"); }
+            return false;
+        }
+        vkFreeDescriptorSets(dev->device, tex->store_pool, 1, &tex->store_set);
+        tex->store_set = VK_NULL_HANDLE;
+    }
+    if (!desc_alloc(dev, dev->texssbo_set_layout, &tex->store_set, &tex->store_pool)) {
+        RHI_LOG("rhi_bind_texture_storage: descriptor set allocation failed\n");
+        return false;
+    }
+    VkDescriptorImageInfo ii = {
+        .sampler = dev->vram_sampler,
+        .imageView = tex->rt_depth_sample_view ? tex->rt_depth_sample_view : tex->view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkDescriptorBufferInfo bi = { .buffer = store->buffer, .offset = 0, .range = range };
+    VkWriteDescriptorSet w[2] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = tex->store_set,
+          .dstBinding = 0, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = tex->store_set,
+          .dstBinding = 1, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &bi },
+    };
+    vkUpdateDescriptorSets(dev->device, 2, w, 0, NULL);
+    tex->store_buf = store;
+    tex->store_range = range;
+    return true;
+}
+
+void rhi_bind_texture_storage(rhi_device *dev, rhi_texture *tex, rhi_buffer *store,
+                              uint32_t range, uint32_t set, uint32_t offset)
+{
+    if (!dev || !tex || !store || !dev->frame_active || !dev->cur_layout) return;
+    if (!texture_store_set(dev, tex, store, range)) return;
+    tex->store_serial = s_frame_serial;
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &tex->store_set, 1, &offset);
 }
 
 void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set)

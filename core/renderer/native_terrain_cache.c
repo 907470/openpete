@@ -76,6 +76,11 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
 
 #define TC_BUF_MAX 2   /* an arena's primary buffer plus one overflow */
 
+/* Previous-corner record store capacity, in records (OPTC_PREV_REC_WORDS
+ * words each). Poly-anim sectors drawn with near-variant chunks take one
+ * record per face whose previous corners differ from its current ones. */
+#define TC_PREV_CAP 65536u
+
 /* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
  * faces, and the hole-fill backing is LP only. */
 enum { TC_CP_WORLD, TC_CP_MARK, TC_CP_ALPHA, TC_CP_ADD, TC_CP_SUB,
@@ -317,7 +322,14 @@ static struct {
     uint32_t      cell_draws;         /* cell-arena buffer draws (census)     */
     uint64_t      cell_instances;     /* records in those buffers' high-water
                                        * ranges                               */
-    rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas     */
+    rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas and
+                                       * for the set-2 prop key image         */
+    rhi_buffer   *prev_store;         /* previous-corner records (set 2,
+                                       * binding 1), TC_PREV_CAP records      */
+    tc_buf        prev_alloc;         /* its allocator (pair unused)          */
+    tc_defer      prev_defer[TC_DEFER_MAX]; /* released record runs (arena unused) */
+    int           prev_defer_n;
+    uint32_t      prev_fail;          /* refused record allocations (census)  */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
     tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
@@ -796,7 +808,7 @@ static void tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
     const rhi_pipeline_desc base = {
         .vert_spv = vert, .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .terrain_pipeline = true, .terrain_cells = true,
+        .terrain_pipeline = true, .terrain_cells = true, .tex_ssbo_set2 = true,
         .terrain_anim = anim != 0, .terrain_near = anim == 0,
         .pair_set7 = true, .push_const_size = sizeof(tc_pc),
     };
@@ -839,7 +851,7 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
     const rhi_pipeline_desc world_desc = {
         .vert_spv = tc_vert(TC_V_PLAIN), .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
-        .terrain_pipeline = true, .pair_set7 = true,
+        .terrain_pipeline = true, .pair_set7 = true, .tex_ssbo_set2 = true,
         .push_const_size = sizeof(tc_pc),
     };
     rhi_pipeline_desc d;
@@ -875,6 +887,7 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
         .vert_spv = tc_vert(TC_V_ANIM), .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_anim = true, .pair_set7 = true,
+        .tex_ssbo_set2 = true,
         .push_const_size = sizeof(tc_pc),
     };
     d = anim_desc;
@@ -904,6 +917,7 @@ static void tc_make_pipes(rhi_device *dev, tc_pipe_set *ps)
         .vert_spv = tc_vert(TC_V_NEAR), .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .terrain_pipeline = true, .terrain_near = true, .pair_set7 = true,
+        .tex_ssbo_set2 = true,
         .push_const_size = sizeof(tc_pc),
     };
     d = near_desc;
@@ -983,6 +997,15 @@ int openpete_tercache_init(rhi_device *dev, void (*batch)(int open))
      * first build, which may run on the thread that runs the guest. */
     s_tc.ubo = rhi_create_ubo(dev, (uint32_t)TC_UBO_BLOCK, 2);
     if (!s_tc.ubo) return 0;
+    s_tc.prev_store = rhi_create_storage_buffer_device(
+        dev, (size_t)TC_PREV_CAP * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
+    if (!s_tc.prev_store || !s_tc.hd_dummy) {
+        fprintf(stderr, "[ter-gpu] init failed (record store or set-2 stand-in) - "
+                        "terrain cache disabled, CPU path stays\n");
+        openpete_tercache_shutdown(dev);
+        return 0;
+    }
+    s_tc.prev_alloc.cap = TC_PREV_CAP;
     s_tc.ready = 1;
     return 1;
 }
@@ -1044,6 +1067,7 @@ void openpete_tercache_shutdown(rhi_device *dev)
         if (s_tc.ps.pipe_ca[i]) rhi_destroy_pipeline(dev, s_tc.ps.pipe_ca[i]);
     }
     if (s_tc.ubo)             rhi_destroy_ubo(dev, s_tc.ubo);
+    if (s_tc.prev_store)      rhi_destroy_buffer(dev, s_tc.prev_store);
     memset(&s_tc, 0, sizeof(s_tc));
 }
 
@@ -1422,6 +1446,55 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
     } else {
         tc_free_insert(a, first, (uint32_t)count);   /* overflow: reuse now (rare) */
     }
+}
+
+int openpete_tercache_prev_alloc(int count, uint32_t *out_first)
+{
+    if (!s_tc.ready || count <= 0 || !s_tc.prev_store) return -1;
+    if (tc_buf_alloc(&s_tc.prev_alloc, (uint32_t)count, out_first) != 0) {
+        s_tc.prev_fail++;
+        return -1;
+    }
+    return 0;
+}
+
+void openpete_tercache_prev_write(uint32_t first, const uint32_t *words, int count)
+{
+    if (!s_tc.ready || count <= 0 || !s_tc.prev_store) return;
+    const size_t rb = OPTC_PREV_REC_WORDS * sizeof(uint32_t);
+    rhi_update_buffer_range(s_tc.prev_store, words, (size_t)first * rb, (size_t)count * rb);
+}
+
+void openpete_tercache_prev_free(uint32_t first, int count)
+{
+    if (!s_tc.ready || count <= 0) return;
+    tc_buf *a = &s_tc.prev_alloc;
+    a->used -= (uint32_t)count; a->chunks--;
+    if (s_tc.prev_defer_n < TC_DEFER_MAX)
+        s_tc.prev_defer[s_tc.prev_defer_n++] =
+            (tc_defer){ 0u, 0u, first, (uint32_t)count, s_tc.present_ctr };
+    else
+        tc_free_insert(a, first, (uint32_t)count);
+}
+
+/** @brief Return the record runs whose defer window has passed to the record allocator.
+ *
+ * The rule of the chunk releases in frame_begin: older than
+ * TC_DEFER_PRESENTS builds and at or below the read floor, so no state that
+ * can still draw the chunks naming a run is live.
+ * @param have_floor Nonzero when floor_serial is valid.
+ * @param floor_serial The oldest build serial a live state carries. */
+static void tc_prev_release(int have_floor, uint32_t floor_serial)
+{
+    int w = 0;
+    for (int i = 0; i < s_tc.prev_defer_n; i++) {
+        const tc_defer *d = &s_tc.prev_defer[i];
+        const int aged   = s_tc.present_ctr - d->stamp > TC_DEFER_PRESENTS;
+        const int unread = !have_floor || (int32_t)(d->stamp - floor_serial) <= 0;
+        if (aged && unread) tc_free_insert(&s_tc.prev_alloc, d->first, d->count);
+        else s_tc.prev_defer[w++] = *d;
+    }
+    s_tc.prev_defer_n = w;
 }
 
 /* ---- level-edge arena replacement --------------------------------------- */
@@ -1888,6 +1961,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                 stamp, s_tc.present_ctr, floor_serial, have_floor, live, s_tc.defer_n - w, w);
     }
     s_tc.defer_n = w;
+    tc_prev_release(have_floor, floor_serial);
 
     if (!s_tc.ubo) { s_tc.ready = 0; return; }   /* created at init: no device
                                                    * object is made from the
@@ -2384,6 +2458,7 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
     d.terrain_anim = (variant == 1 || variant == 3);
     d.terrain_near = (variant == 2 || variant == 4);
     d.terrain_cells = (variant >= 3);
+    d.tex_ssbo_set2 = true;   /* the stock layout: the cache binds set 2 once per draw */
     d.push_const_size = sizeof(tc_pc);
     switch (slot) {
         case 1: d.stencil = RHI_STENCIL_MARK; break;
@@ -2613,13 +2688,13 @@ static const char *tc_zone_name(int which)
 static void tc_bind_keys(const openpete_tercache_keys *keys)
 {
     if (keys->hp)    rhi_bind_depth_tex_pair(s_tc.dev, keys->hp, keys->hp, 1);
-    if (keys->prop)  rhi_bind_depth_sampler(s_tc.dev, keys->prop, 2);
     if (keys->actor) rhi_bind_depth_tex_pair(s_tc.dev, keys->actor, keys->actor, 7);
 }
 
 /** @brief Bind every input a terrain pass reads besides its pipeline.
  *
- * The VRAM page, the key-contest images, the HD-fold atlas at set 4 (the
+ * The VRAM page, the key-contest images, the prop key image with the
+ * previous-corner record store at set 2, the HD-fold atlas at set 4 (the
  * init-time 1x1 dummy when no fold entry exists: terrain.frag references the
  * set statically and vHd == 0 fragments never sample it), and the two
  * terrain blocks at sets 5/6 - not the contract set 3, whose binding 1 is a
@@ -2630,6 +2705,14 @@ static void tc_bind_draw_inputs(rhi_texture *vram, const openpete_tercache_keys 
 {
     if (vram) rhi_bind_vram(s_tc.dev, vram);
     if (keys) tc_bind_keys(keys);
+    /* Set 2: the prop key image (the 1x1 stand-in when absent; fragments
+     * with vKoff == 0 never sample it) beside the previous-corner records
+     * the near stages read. Every cache pipeline holds this layout, so the
+     * one bind serves every pipeline the pass switches to. */
+    rhi_bind_texture_storage(s_tc.dev, (keys && keys->prop) ? keys->prop : s_tc.hd_dummy,
+                             s_tc.prev_store,
+                             (uint32_t)(TC_PREV_CAP * OPTC_PREV_REC_WORDS * sizeof(uint32_t)),
+                             2, 0);
     rhi_texture *at = openpete_native_hdfold_atlas();
     if (!at) at = s_tc.hd_dummy;
     if (at) rhi_bind_texture_set(s_tc.dev, at, 4);

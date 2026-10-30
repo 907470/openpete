@@ -319,6 +319,92 @@ static bool sc_run_frames(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb,
     return ok;
 }
 
+/** @brief Run the two frames of the combined image-plus-storage set and check each readback.
+ *
+ * One storage buffer holds two regions, the red rectangle's records at
+ * offset 0 and the green one's at @p off. Frame 1 binds the set at offset
+ * 0, draws, binds it at @p off and draws again: both rectangles must show.
+ * Frame 2 binds at @p off alone: green only. The fragment stage multiplies
+ * by the bound image's texel, a white 1x1, so an unbound image fails the
+ * frame.
+ * @param dev Headless device.
+ * @param pipe The tex_ssbo_set2 pipeline.
+ * @param vb Six-vertex buffer for the vertex input.
+ * @param tex The white 1x1 image.
+ * @param store Storage buffer holding both regions.
+ * @param range Bytes one region spans.
+ * @param off Byte offset of the second region.
+ * @param drawn_total Receives the summed non-black pixel count.
+ * @return true when both frames match. */
+static bool sc_run_texstore(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb, rhi_texture *tex,
+                            rhi_buffer *store, uint32_t range, uint32_t off, long *drawn_total)
+{
+    static const sc_rect *const green[] = { &k_sc_green };
+    static const sc_rect *const both[] = { &k_sc_red, &k_sc_green };
+    bool ok = true;
+    *drawn_total = 0;
+    for (int f = 0; f < 2; f++) {
+        if (!rhi_begin_frame(dev)) { printf("rhi_smoketest: begin_frame refused\n"); return false; }
+        rhi_begin_offscreen(dev, 0.0f, 0.0f, 0.0f, 1.0f);
+        rhi_bind_pipeline(dev, pipe);
+        rhi_bind_vertex_buffer(dev, vb);
+        if (f == 0) {
+            rhi_bind_texture_storage(dev, tex, store, range, 2, 0);
+            rhi_draw(dev, 6, 0);
+        }
+        rhi_bind_texture_storage(dev, tex, store, range, 2, off);
+        rhi_draw(dev, 6, 0);
+        rhi_end_offscreen(dev);
+        rhi_end_frame(dev);
+        long drawn;
+        ok &= sc_check(dev, f == 0 ? "image+storage two regions" : "image+storage second region",
+                       f == 0 ? both : green, f == 0 ? 2 : 1, &drawn);
+        *drawn_total += drawn;
+    }
+    return ok;
+}
+
+/** @brief Run the combined image-plus-storage case: pipeline, image and two-region buffer setup, then the frames.
+ *
+ * @param dev Headless device.
+ * @param vb Six-vertex buffer for the vertex input.
+ * @return 0 on PASS, 1 on a failed frame or setup failure. */
+static int run_texstore(rhi_device *dev, rhi_buffer *vb)
+{
+    const rhi_pipeline_desc desc = {
+        .vert_spv = "storage_pull_tex.vert.spv", .frag_spv = "tex_store.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false, .tex_ssbo_set2 = true,
+    };
+    rhi_pipeline *pipe = rhi_create_pipeline(dev, &desc);
+    rhi_texture *tex = rhi_create_rgba8(dev, 1, 1);
+    const uint32_t al = rhi_storage_offset_align(dev);
+    const uint32_t range = (uint32_t)(6 * sizeof(sc_vert));
+    const uint32_t off = (range + al - 1u) / al * al;
+    rhi_buffer *store = rhi_create_storage_buffer_device(dev, (size_t)off + range);
+    int rc = 1;
+    if (pipe && tex && store) {
+        const uint32_t white = 0xFFFFFFFFu;
+        rhi_update_rgba8(dev, tex, &white);
+        sc_vert v[6];
+        sc_fill(v, &k_sc_red);
+        rhi_update_buffer_range(store, v, 0, sizeof v);
+        sc_fill(v, &k_sc_green);
+        rhi_update_buffer_range(store, v, off, sizeof v);
+        long drawn = 0;
+        const bool ok = sc_run_texstore(dev, pipe, vb, tex, store, range, off, &drawn);
+        printf("rhi_smoketest: image+storage set: %s engaged_px=%ld region_offset=%u\n",
+               ok && drawn > 0 ? "PASS" : "FAIL", drawn, off);
+        rc = ok && drawn > 0 ? 0 : 1;
+    } else {
+        printf("rhi_smoketest: image+storage pipeline/texture/buffer setup failed\n");
+    }
+    rhi_wait_idle(dev);
+    if (tex) rhi_destroy_texture(dev, tex);
+    if (store) rhi_destroy_buffer(dev, store);
+    if (pipe) rhi_destroy_pipeline(dev, pipe);
+    return rc;
+}
+
 /** @brief Run the headless self-checking cases.
  *
  * @return 0 when every case passes, 1 on a failed case or resource
@@ -346,6 +432,7 @@ static int run_headless(void)
         printf("rhi_smoketest: storage vertex stage: %s engaged_px=%ld overflows=%llu\n",
                ok && over == 0 ? "PASS" : "FAIL", drawn, (unsigned long long)over);
         rc = ok && over == 0 ? 0 : 1;
+        if (run_texstore(dev, vb) != 0) rc = 1;
     } else {
         printf("rhi_smoketest: storage pipeline/buffer setup failed\n");
     }
