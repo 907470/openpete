@@ -702,35 +702,67 @@ void openpete_tercache_hold_counts(unsigned *takes, unsigned *misses, unsigned *
 /** @brief Create one cache pipeline into its slot: now, or at the end of the caller's open pipeline batch.
  *
  * The create is the one rhi_create_pipeline makes; the slot is NULL until
- * it installs, and stays NULL when it fails.
+ * it installs, and stays NULL when it fails. Under OPENPETE_TERRAIN_FACEID a
+ * colour pipeline (fragment stage terrain.frag) takes terrain_faceid.frag
+ * with blending off; its vertex stage, layout and every other state stay
+ * the shipped pipeline's.
  * @param dev Device.
  * @param d Pipeline description, copied.
  * @param out The slot. */
 static void tc_pipe(rhi_device *dev, const rhi_pipeline_desc *d, rhi_pipeline **out)
 {
+    rhi_pipeline_desc dd = *d;
+    if (openpete_tercache_faceid() && dd.frag_spv && strcmp(dd.frag_spv, "terrain.frag.spv") == 0) {
+        dd.frag_spv = "terrain_faceid.frag.spv";
+        dd.blend = RHI_BLEND_NONE;
+    }
     *out = NULL;
-    (void)rhi_create_pipeline_slot(dev, d, NULL, 0, NULL, 0, (void **)out, NULL);
+    (void)rhi_create_pipeline_slot(dev, &dd, NULL, 0, NULL, 0, (void **)out, NULL);
 }
 
 /* The vertex stage of each arena family (OPENPETE_MATERIAL_TER_VARIANTS
  * order: plain, anim, near, then the anim and near cell records), per
- * precision build: row 0 the fp64 stage, row 1 the TERRAIN_FP32 stage. */
+ * precision build: row 0 the fp64 stage, row 1 the TERRAIN_FP32 stage,
+ * row 2 the TERRAIN_FP32_SECDELTA control stage. */
 enum { TC_V_PLAIN, TC_V_ANIM, TC_V_NEAR, TC_V_CELLS_ANIM, TC_V_CELLS_NEAR };
-static const char *const k_tc_vert[2][OPENPETE_MATERIAL_TER_VARIANTS] = {
+static const char *const k_tc_vert[3][OPENPETE_MATERIAL_TER_VARIANTS] = {
     { "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
       "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv" },
     { "terrain_fp32.vert.spv", "terrain_anim_fp32.vert.spv", "terrain_near_fp32.vert.spv",
       "terrain_cells_anim_fp32.vert.spv", "terrain_cells_near_fp32.vert.spv" },
+    { "terrain_fp32ctl.vert.spv", "terrain_anim_fp32ctl.vert.spv",
+      "terrain_near_fp32ctl.vert.spv", "terrain_cells_anim_fp32ctl.vert.spv",
+      "terrain_cells_near_fp32ctl.vert.spv" },
 };
+
+/** @brief Return the k_tc_vert row OPENPETE_TERRAIN_FP32 selects, latched at the first call.
+ *
+ * Unset or "0": row 0 (fp64). "2": row 2, the fp32 build with the per-sector
+ * rounding control (TERRAIN_FP32_SECDELTA). Any other value: row 1 (fp32).
+ * @return 0, 1 or 2. */
+static int tc_precision_row(void)
+{
+    static int s_row = -1;
+    if (s_row < 0) {
+        const char *e = openpete_config_device_value("OPENPETE_TERRAIN_FP32");
+        s_row = !(e && *e && *e != '0') ? 0 : (strcmp(e, "2") == 0 ? 2 : 1);
+    }
+    return s_row;
+}
 
 int openpete_tercache_fp32(void)
 {
-    static int s_fp32 = -1;
-    if (s_fp32 < 0) {
-        const char *e = openpete_config_device_value("OPENPETE_TERRAIN_FP32");
-        s_fp32 = (e && *e && *e != '0');
+    return tc_precision_row() != 0;
+}
+
+int openpete_tercache_faceid(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char *e = getenv("OPENPETE_TERRAIN_FACEID");
+        s_on = (e && *e && *e != '0');
     }
-    return s_fp32;
+    return s_on;
 }
 
 int openpete_tercache_device_precision_ok(const rhi_device *dev)
@@ -744,7 +776,7 @@ int openpete_tercache_device_precision_ok(const rhi_device *dev)
  * @return The stage's SPIR-V name. */
 static const char *tc_vert(int v)
 {
-    return k_tc_vert[openpete_tercache_fp32()][v];
+    return k_tc_vert[tc_precision_row()][v];
 }
 
 /** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
@@ -1758,6 +1790,26 @@ static void tc_dead_stamp(const tc_defer *d)
     }
 }
 
+/** @brief Return the camera offset OPENPETE_TERRAIN_CAM_JITTER adds to the cache's camera, in world/16 units, latched.
+ *
+ * The cache's vertex stages then see a camera with a fractional part on
+ * every axis (x + j, y + 0.75 j, z + 0.5 j), so a freecam pose, whose
+ * camera is integral, exercises the rounding of the camera-relative
+ * operand. The CPU walk keeps the unshifted camera. Diagnostic for the
+ * hole census, applied to every precision arm alike; unregistered.
+ * @return The offset; 0 when unset. */
+static double tc_cam_jitter(void)
+{
+    static int s_have = 0;
+    static double s_j = 0.0;
+    if (!s_have) {
+        const char *e = getenv("OPENPETE_TERRAIN_CAM_JITTER");
+        s_j = (e && *e) ? atof(e) : 0.0;
+        s_have = 1;
+    }
+    return s_j;
+}
+
 /** @brief Copy n doubles to floats, each rounded to nearest.
  *
  * @param dst Receives the floats.
@@ -1846,6 +1898,13 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
      * draw (inside the frame, current slot only). */
     tc_state *T = tc_begin_state(stamp, immediate);
     tc_globals_ubo *gu = &T->g;
+    static openpete_tercache_globals s_gj;
+    const double jit = tc_cam_jitter();
+    if (jit != 0.0) {
+        s_gj = *g;
+        s_gj.camx += jit; s_gj.camy += jit * 0.75; s_gj.camz += jit * 0.5;
+        g = &s_gj;
+    }
     memset(gu, 0, sizeof(*gu));
     for (int k = 0; k < 3; k++) {
         gu->mrow0[k] = g->mrow[0][k];
@@ -2104,17 +2163,61 @@ static int tc_pair_retired(int arena, const tc_pair *pr)
     return 0;
 }
 
+/** @brief Issue one face-identity arena draw over elements [first, first + n) of the bound buffer.
+ *
+ * Pushes @p pc with the three words terrain_faceid.frag reads in its
+ * padding: the draw word (pass selector, arena, buffer), the element index
+ * of the draw's first primitive and the elements per primitive step. A
+ * vertex-list span is one draw (step 3); a cell-record span is one draw per
+ * record (base record x @p per, step 1), since gl_PrimitiveID restarts with
+ * each instance.
+ * @param pc The draw's push constants.
+ * @param arena Arena index.
+ * @param bi Buffer index within the arena.
+ * @param cells Nonzero for a cell-record arena.
+ * @param per Vertices per cell record.
+ * @param first First element (vertex, or record instance).
+ * @param n Element count. */
+static void tc_faceid_issue(const tc_pc *pc, int arena, int bi, int cells, uint32_t per,
+                            uint32_t first, uint32_t n)
+{
+    tc_pc f = *pc;
+    f.pad_[0] = (int32_t)(((uint32_t)pc->pass_sel << 16) | ((uint32_t)arena << 8) | (uint32_t)bi);
+    if (!cells) {
+        f.pad_[1] = (int32_t)first;
+        f.pad_[2] = 3;
+        rhi_push_constants(s_tc.dev, &f, sizeof(f));
+        rhi_draw(s_tc.dev, n, first);
+        return;
+    }
+    f.pad_[2] = 1;
+    for (uint32_t i = 0; i < n; i++) {
+        f.pad_[1] = (int32_t)((first + i) * per);
+        rhi_push_constants(s_tc.dev, &f, sizeof(f));
+        rhi_draw_instanced(s_tc.dev, per, 1, 0, first + i);
+    }
+}
+
 /** @brief Issue one arena draw over elements [first, first + n) of the bound buffer, tc_dup_draw times.
+ *
+ * Under OPENPETE_TERRAIN_FACEID the draw is tc_faceid_issue's, once.
+ * @param pc The draw's push constants (already pushed for the stock draw).
+ * @param arena Arena index.
+ * @param bi Buffer index within the arena.
  * @param cells Nonzero for a cell-record arena (instanced).
  * @param per Vertices per cell record.
  * @param first First element (vertex, or record instance).
  * @param n Element count. */
-static void tc_issue(int cells, uint32_t per, uint32_t first, uint32_t n)
+static void tc_issue(const tc_pc *pc, int arena, int bi, int cells, uint32_t per,
+                     uint32_t first, uint32_t n)
 {
-    for (int r = 0, rn = tc_dup_draw(); r < rn; r++) {
-        if (cells) rhi_draw_instanced(s_tc.dev, per, n, 0, first);
-        else       rhi_draw(s_tc.dev, n, first);
-    }
+    if (openpete_tercache_faceid())
+        tc_faceid_issue(pc, arena, bi, cells, per, first, n);
+    else
+        for (int r = 0, rn = tc_dup_draw(); r < rn; r++) {
+            if (cells) rhi_draw_instanced(s_tc.dev, per, n, 0, first);
+            else       rhi_draw(s_tc.dev, n, first);
+        }
     s_tc.cen_verts += (uint64_t)n * (cells ? per : 1u);
     s_tc.cen_draws++;
 }
@@ -2168,13 +2271,13 @@ static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
     s_tc.cen_verts_whole += (uint64_t)nverts * (cells ? per : 1u);
     if (!listed) {
         s_tc.cen_nolist++;
-        tc_issue(cells, per, 0, nverts);
+        tc_issue(pc, arena, bi, cells, per, 0, nverts);
     } else {
         for (int i = rl->off[k]; i < rl->off[k + 1]; i++) {
             const uint32_t lo = rl->r[i].first;
             if (lo >= nverts) break;
             const uint32_t hi = lo + rl->r[i].count < nverts ? lo + rl->r[i].count : nverts;
-            tc_issue(cells, per, lo, hi - lo);
+            tc_issue(pc, arena, bi, cells, per, lo, hi - lo);
         }
     }
     if (cells) { s_tc.cell_draws++; s_tc.cell_instances += nverts; }

@@ -2039,7 +2039,8 @@ void openpete_native_set_tag_split(int on);
  * Drawn before the scene so uncovered areas show it instead of black,
  * mirroring the PSX cyclorama's frame clear to m_BackgroundColor. The
  * draw-env clear colour (openpete_native_set_clear_color) takes precedence
- * when set. Reset to 0 at each scene begin.
+ * when set. Reset to 0 at each scene begin; held at 0 under the
+ * face-identity diagnostic (openpete_tercache_faceid).
  * @param rgba Colour, byte order R, G, B, A; 0 for no fill. */
 void openpete_native_scene_set_bg(uint32_t rgba);
 /** @brief Record the game's draw-env clear colour, the background the canonical render auto-clears to.
@@ -2049,7 +2050,8 @@ void openpete_native_scene_set_bg(uint32_t rgba);
  * the primary background source, preferred over
  * openpete_native_scene_set_bg, which is stale in states without a
  * cyclorama. Persists across sub-tick presents, since both producers run on
- * canonical frames only. OPENPETE_LOAD_CENSUS logs each change.
+ * canonical frames only. OPENPETE_LOAD_CENSUS logs each change. Under the
+ * face-identity diagnostic (openpete_tercache_faceid) a set colour is black.
  * @param isbg The PSX DRAWENV auto-clear flag; 0 unsets the colour and
  *             defers to the scene-fed background.
  * @param r Red, 0..255.

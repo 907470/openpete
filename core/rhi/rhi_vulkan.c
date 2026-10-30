@@ -1800,6 +1800,13 @@ static bool pick_physical_and_device(rhi_device *dev)
      * (openpete_tercache_device_precision_ok). */
     enable.shaderFloat64 = supported.shaderFloat64;
     dev->has_shader_float64 = (supported.shaderFloat64 == VK_TRUE);
+    /* geometryShader: only for the terrain face-identity diagnostic
+     * (OPENPETE_TERRAIN_FACEID), whose fragment stage reads gl_PrimitiveID
+     * and so declares the Geometry capability. No other stage needs it. */
+    {
+        const char *fid = getenv("OPENPETE_TERRAIN_FACEID");
+        if (fid && *fid && *fid != '0') enable.geometryShader = supported.geometryShader;
+    }
     /* fillModeNonSolid: VK_POLYGON_MODE_LINE for the wireframe view
      * (rhi_set_wireframe); without it that view falls back to filled. */
     enable.fillModeNonSolid = supported.fillModeNonSolid;

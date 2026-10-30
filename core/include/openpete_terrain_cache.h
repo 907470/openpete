@@ -302,12 +302,21 @@ void openpete_tercache_describe(struct rhi_device *dev);
 /** @brief Return whether the terrain cache's vertex stages are the TERRAIN_FP32 build.
  *
  * OPENPETE_TERRAIN_FP32 set and not "0" selects the fp32 stages (no
- * Float64 capability); unset, the fp64 stages. Read through
- * openpete_config_device_value at the first call and latched, so the
- * launcher's describe, bring-up's init and every material pipeline take
- * the same build.
- * @return 1 for the fp32 build, 0 for the fp64 build. */
+ * Float64 capability); "2" selects them with TERRAIN_FP32_SECDELTA, the
+ * hole census's per-sector rounding control; unset, the fp64 stages. Read
+ * through openpete_config_device_value at the first call and latched, so
+ * the launcher's describe, bring-up's init and every material pipeline
+ * take the same build.
+ * @return 1 for an fp32 build, 0 for the fp64 build. */
 int  openpete_tercache_fp32(void);
+/** @brief Return whether OPENPETE_TERRAIN_FACEID selects the face-identity colour pipelines.
+ *
+ * Set and not "0": every retained colour pipeline paints the identity of
+ * the face covering each pixel (terrain_faceid.frag) in place of its
+ * shading, and the renderer keeps only terrain in the scene. Read with
+ * getenv at the first call and latched. Diagnostic; unregistered.
+ * @return 1 when on, else 0. */
+int  openpete_tercache_faceid(void);
 /** @brief Return whether a device can run the selected build of the terrain vertex stages.
  *
  * The fp32 build needs no device feature; the fp64 build needs shaderFloat64.

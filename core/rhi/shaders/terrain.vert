@@ -443,6 +443,24 @@ pfloat dsel(bool c, pfloat t, pfloat f) { return mix(f, t, c); }
  * magnitude, so the conversion is exact), then cam_frac_x4 applied, then
  * the exact * 0.25 to local units. The operands depend on w and the camera
  * alone, so a world vertex shared by two sectors yields the same float. */
+#ifdef TERRAIN_FP32_SECDELTA
+/* The hole census's positive control: the sector's camera operand (origin
+ * against cam_int_x4, then cam_frac_x4) is rounded to float first and the
+ * sector-local corner added after, so the result is rounded at
+ * ulp(|origin - camera|) and then again at ulp(|v|). A world vertex two
+ * sectors share reaches this from two origins and can round apart.
+ * ctl_wo is the drawing sector's origin in x4 units, set in main before
+ * any cam_rel call. */
+ivec3 ctl_wo;
+precise vec3 cam_rel(ivec3 w) {
+    precise vec3 sd = vec3(float(g.cam_int_x4.y - ctl_wo.y) + g.cam_frac_x4.y,
+                           float(g.cam_int_x4.z - ctl_wo.z) + g.cam_frac_x4.z,
+                           float(ctl_wo.x - g.cam_int_x4.x) - g.cam_frac_x4.x);
+    const ivec3 l = w - ctl_wo;
+    precise vec3 v = (sd + vec3(float(-l.y), float(-l.z), float(l.x))) * 0.25;
+    return v;
+}
+#else
 precise vec3 cam_rel(ivec3 w) {
     precise float vx = float(g.cam_int_x4.y - w.y) + g.cam_frac_x4.y;
     precise float vy = float(g.cam_int_x4.z - w.z) + g.cam_frac_x4.z;
@@ -450,6 +468,7 @@ precise vec3 cam_rel(ivec3 w) {
     precise vec3 v = vec3(vx, vy, vz) * 0.25;
     return v;
 }
+#endif
 #ifdef TERRAIN_ANIM
 /* cam_rel of the poly-anim lerp prev -> cur at alpha a, taken on the exact
  * camera-relative integer differences before the fractional camera: p +
@@ -1559,6 +1578,9 @@ void main()
     /* Sector origins are uint16 world/16 values, exact in the float o.xyz;
      * x4 makes them the corners' scale. */
     ivec3 wo = ivec3(s.sec[slot].o.xyz) * 4;
+#ifdef TERRAIN_FP32_SECDELTA
+    ctl_wo = wo;
+#endif
 #define MAC(l) mac_of(l)
 #ifdef TERRAIN_ANIM
     ivec3 pc0 = inPrevC0.xyz;

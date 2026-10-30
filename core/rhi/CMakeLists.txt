@@ -19,7 +19,7 @@ find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 set(RHI_SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(RHI_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${RHI_SHADER_OUT_DIR})
-set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag moby_shell.frag moby_shell_intr.frag terrain.vert terrain.frag terrain_prepass.frag terrain_prepass_cutout.frag prepass_cutout.frag terrain_key_cache.frag)
+set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag moby_shell.frag moby_shell_intr.frag terrain.vert terrain.frag terrain_prepass.frag terrain_prepass_cutout.frag prepass_cutout.frag terrain_key_cache.frag terrain_faceid.frag)
 # Shared .glsl includes (GL_GOOGLE_include_directive). Every shader DEPENDS
 # on all of them: the set is tiny, and a per-shader dependency scan would be
 # one more thing to keep in sync with the #include lines.
@@ -216,12 +216,24 @@ endforeach()
 # TERRAIN_FP32 (the position chain and its verdicts in fp32, no Float64
 # capability), through the same SSA passes: the NVIDIA memory-form fault
 # is a property of the stage's form, not of its precision.
-foreach(v plain anim near cells_near cells_anim)
+# <variant>_fp32ctl.vert: the same five with TERRAIN_FP32_SECDELTA, the
+# positive control of the hole census (OPENPETE_TERRAIN_FP32=2): the camera
+# operand is rounded per sector, so a vertex shared by two sectors can
+# round apart. Diagnostic only; no shipped configuration selects it.
+foreach(vv plain anim near cells_near cells_anim plain:ctl anim:ctl near:ctl
+           cells_near:ctl cells_anim:ctl)
+    string(REPLACE ":" ";" vp "${vv}")
+    list(GET vp 0 v)
     set(defs --define-macro TERRAIN_FP32=1)
+    set(sfx fp32)
+    if(vv MATCHES ":ctl$")
+        list(APPEND defs --define-macro TERRAIN_FP32_SECDELTA=1)
+        set(sfx fp32ctl)
+    endif()
     if(v STREQUAL "plain")
-        set(name terrain_fp32)
+        set(name terrain_${sfx})
     else()
-        set(name terrain_${v}_fp32)
+        set(name terrain_${v}_${sfx})
         if(v MATCHES "^cells_")
             list(APPEND defs --define-macro TERRAIN_CELLS=1)
         endif()
@@ -237,7 +249,7 @@ foreach(v plain anim near cells_near cells_anim)
         COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
                 ${RHI_SHADER_OUT_DIR}/${name}.vert.spv -o ${RHI_SHADER_OUT_DIR}/${name}.vert.spv
         DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
-        COMMENT "glslangValidator terrain.vert (TERRAIN_FP32 ${v}) -> ${name}.vert.spv"
+        COMMENT "glslangValidator terrain.vert (TERRAIN_FP32 ${vv}) -> ${name}.vert.spv"
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${name}.vert.spv)
 endforeach()

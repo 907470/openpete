@@ -1595,11 +1595,44 @@ static void scene_drop_blend_debug(void) {
     s_scene_n = w;
 }
 
+/** @brief Keep only the terrain feed's triangles, each recoloured with its face identity, under OPENPETE_TERRAIN_FACEID.
+ *
+ * The companion of the retained cache's face-identity pipelines
+ * (openpete_tercache_faceid): every triangle whose provenance tag is not the
+ * terrain feed's (bw_is_terrain's test) is dropped, so mobys, sky, HUD and
+ * effects leave the image. A terrain-feed triangle becomes opaque,
+ * untextured WORLD with all three vertices one colour, the 24-bit identity
+ * 0x400000 | an FNV-1a hash of its scene index (22 bits), bit 23 clear, so a
+ * walked face reads apart from a retained face (bit 23 set) and from the
+ * cleared background. Prints the kept count once per scene. */
+static void scene_faceid_debug(void) {
+    if (!openpete_tercache_faceid()) return;
+    int w = 0;
+    for (int ti = 0; ti < s_scene_n; ti++) {
+        if ((s_scene[ti].tag >> 28) != 2u) continue;
+        scene_tri_t t = s_scene[ti];
+        uint32_t h = 2166136261u;
+        h = (h ^ ((uint32_t)w & 0xFFFFu)) * 16777619u;
+        h = (h ^ ((uint32_t)w >> 16)) * 16777619u;
+        const uint32_t id = 0x400000u | ((h ^ (h >> 22)) & 0x3FFFFFu);
+        const uint32_t rgba = 0xFF000000u | id;   /* 0xAABBGGRR: R = id bits 0-7 */
+        t.textured = 0; t.blend = 0; t.category = OPENPETE_SCENE_WORLD;
+        t.fog_delta = 0; t.hqfog_a = 0; t.hqfog_b = 0;
+        t.portal_rim = 0; t.kfold = 0; t.key_order = 0; t.shell = 0;
+        memset(t.kc, 0, sizeof t.kc);
+        for (int k = 0; k < 3; k++) t.v[k].rgba = rgba;
+        s_scene[w++] = t;
+    }
+    fprintf(stderr, "[faceid] scene=%u tris=%d walked=%d\n", s_scene_frame, s_scene_n, w);
+    s_scene_n = w;
+}
+
 /** @brief Close the completed scene sitting in the accumulator and push it into the frame-history ring.
  *
  * Warns once when the scene store refused triangles, reports a new demand
- * peak under OPENPETE_SCENE_CAPDBG, applies the blend-class drop diagnostic,
- * runs the blend census, then pushes the scene (scene_hist_push). */
+ * peak under OPENPETE_SCENE_CAPDBG, applies the blend-class drop and the
+ * face-identity diagnostics, runs the blend census, then pushes the scene
+ * (scene_hist_push). */
 static void scene_close_completed(void) {
     /* Permanent safety net: if the scene cap is ever exceeded, terrain/
      * mobys silently vanish - warn once so the cap can be raised rather
@@ -1621,6 +1654,7 @@ static void scene_close_completed(void) {
     }
     s_scene_dropped = 0;
     scene_drop_blend_debug();
+    scene_faceid_debug();
     alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
     scene_hist_push();
 }
@@ -2048,7 +2082,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) {
     openpete_native_scene_add_tri_grouped(tri, category, carry, 0);
 }
-void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = rgba; }
+void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = openpete_tercache_faceid() ? 0u : rgba; }
 
 /* Gamestate draw-env clear colour (the framebuffer background the canonical
  * render auto-clears to). Two producers: the PutDrawEnv thunk (fallback,
@@ -2067,6 +2101,7 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
         ? (0xFF000000u | (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8)
                        | ((uint32_t)(b & 0xFF) << 16))
         : 0u;   /* no auto-clear -> defer to the scene-fed bg / ref corner */
+    if (v && openpete_tercache_faceid()) v = 0xFF000000u;   /* face-identity: black clear */
     {
         static int s_census = -1;
         if (s_census < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_census = (e && *e && *e != '0'); }
@@ -14457,7 +14492,8 @@ static rhi_texture *active_frozen_tex(int *out_valid)
  * @param bg Background colour; 0 draws no fill.
  * @param ut_first First vertex of each untextured bucket.
  * @param ut_count Vertex count of each untextured bucket.
- * @param sky_ok Nonzero to draw the sky bucket and its material spans. */
+ * @param sky_ok Nonzero to draw the sky bucket and its material spans; the
+ *        face-identity diagnostic (openpete_tercache_faceid) draws no sky. */
 static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
                                 const int* ut_count, int sky_ok)
 {
@@ -14472,7 +14508,7 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
      * under one condition: a deferred tri is out of the plain span, so a
      * `sky_ok` that suppressed only one of these would draw a hole or draw
      * a sky nothing suppressed. Keep them together (ut_mat_spans_ok). */
-    if (sky_ok && s_nr.gouraud_pipe) {
+    if (sky_ok && s_nr.gouraud_pipe && !openpete_tercache_faceid()) {
         rhi_gpu_zone_begin(s_nr.dev, "sc.sky");
         if (ut_count[UT_BUCKET_SKY] > 0) {
             bind_scene_pipe(s_nr.gouraud_pipe);
