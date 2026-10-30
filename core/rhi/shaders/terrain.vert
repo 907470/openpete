@@ -1088,6 +1088,18 @@ uvec2 flat_atmo_words(int t0k)
                  0x40000000u | bN | (bN << 10) | (bN << 20));
 }
 
+/* tn_clear_words mirror: the texel fades to zero on the ladder ramp, aN = 0
+ * and bN = 0, word a bit 30 the fog-reference bias, under the per-pixel
+ * form (fogPP); pre-weighted by the face's ladder row under the original
+ * form, aN = 1 - row / 15 with word b bit 30 set. */
+uvec2 clear_words(bool fogPP, bool fogbias, int t0k)
+{
+    if (fogPP) return uvec2(0x80000000u | (fogbias ? 0x40000000u : 0u), 0u);
+    int row = t0k <= 0 ? 0 : min(t0k >> 8, 15);
+    uint aN = uint((256 * (15 - row) + 7) / 15);
+    return uvec2(0x80000000u | aN | (aN << 10) | (aN << 20), 0x40000000u);
+}
+
 /* face_near_tier4 mirror: a canonical near face with near_flag_tier2 clear
  * and a corner SZ3 under near_corner (0x140). */
 bool nc4_tier4(pfloat z0, pfloat z1, pfloat z2, pfloat z3, uint w3_40, uint w3_80) {
@@ -1825,8 +1837,10 @@ void main()
      * second-walk sector (FF_WATER clear; a blended face of such a sector
      * carries it) that the game's own near split leaves far (tn_game_far:
      * near_canonical for a quad or under GF_TRI2, the tier-4 drain route
-     * for a triangle otherwise) takes the flat variant, the CLUT ladder and
-     * no heavy-fog words. ---- */
+     * for a triangle otherwise) takes the flat variant and the CLUT ladder;
+     * where the ladder does not run (SF_SECINLOD clear: a sector past the
+     * game's LOD envelope) a (B+F)/2 face takes the heavy-fog words hqw and
+     * an additive or subtractive face the clear words (clear_words). ---- */
     uint mblend = (inMat.x >> 21) & 3u;
     bool gameFar = (quad || (gf & GF_TRI2) != 0)
         ? !near_canonical(m0.z, m1.z, m2.z, wz3, ff & FF_W3_40, ff & FF_W3_80)
@@ -2153,8 +2167,13 @@ void main()
              : hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
         uv.y += uvdv;
     }
+    bool blendOff = blendFar && !ladderFace;
     vMat = uvec4(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16),
-                 (hpFog && !waterFar && !blendFar && (mat0 & (1u << 23)) != 0u) ? hqw
+                 (hpFog && !waterFar && (!blendFar || (blendOff && mblend == 1u))
+                  && (mat0 & (1u << 23)) != 0u) ? hqw
+                 : blendOff ? clear_words(fogPP, (ff & FF_FOGBIAS) != 0u,
+                                          ladder_t0k(m0.z, m1.z, m2.z, m3c.z, fogRef, fogscale,
+                                                     (gf & GF_LADNEAR) != 0))
                  : ladPP ? uvec2(((ff & FF_FOGBIAS) != 0u) ? 0x40000000u : 0u, 0x40000000u)
                  : uvec2(0u));
     /* A borrowed face samples the auxiliary VRAM bank, 512 rows below the

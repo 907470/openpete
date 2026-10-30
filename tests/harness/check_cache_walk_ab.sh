@@ -84,7 +84,7 @@ pg_resolve "$GAME" || exit 64
 # Per game, the freecam-corpus rows the cache-vs-walk class was measured on.
 case "$PG_GAME" in
   spyro-1) ROWS="dream_weavers-9dace6 gnastys_loot-ca95bd magic_crafters-fa5245";;
-  spyro-2) ROWS="crushs_dungeon-f167d0 crushs_dungeon-5feea7:inter metro_speedway-464858:inter";;
+  spyro-2) ROWS="crushs_dungeon-f167d0 crushs_dungeon-5feea7:inter metro_speedway-464858:inter mystic_marsh-6241c8";;
   spyro-3) ROWS="molten_crater-43eca3 sunny_villa-b803cb:inter spooky_swamp-be04ca:inter";;
   *) echo "cache-walk-ab: SKIP ($PG_GAME has no measured cache-vs-walk rows)"; exit 64;;
 esac

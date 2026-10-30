@@ -168,7 +168,10 @@ mystic_marsh@fogoff | pos=(83131, 19147, 32066) yaw=1043 pitch=506 | | --fog off
 # puts the intermediate leg on 2475.
 mystic_marsh | pos=(73309, 40590, 5758) yaw=-1074 pitch=244 | 2425
 # Water with animated textures under extended LOD: the per-pixel fog and
-# the second-walk water draw do not reach it.
+# the second-walk water draw do not reach it. The far waterfall is an
+# additive face on the game's far model in a sector past the game's LOD
+# envelope, where the CLUT ladder does not run; it fades to nothing in full
+# fog. @fogorig is the same pose under the original fog form.
 mystic_marsh | pos=(81530, 30903, 15232) yaw=-160 pitch=145
 mystic_marsh@fogorig | pos=(81530, 30903, 15232) yaw=-160 pitch=145 | | --fog original
 # An active whirlwind (particles only) beyond the game's particle depth
