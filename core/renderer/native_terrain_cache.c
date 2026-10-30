@@ -6,6 +6,7 @@
 #include "openpete_mods.h"   /* terrain material buckets + their pipelines */
 #include "openpete_native_render.h"   /* scene ring: is a build stamp still referenced */
 #include "openpete_config.h"          /* OPENPETE_TERRAIN_FP32, a device-creation knob */
+#include "game_extras.h"              /* game_get_id: the caps table's game key */
 
 #include <math.h>
 #include <stdatomic.h>
@@ -15,12 +16,10 @@
 #include <string.h>
 
 /* Measured per-level arena capacities, generated at configure time from the
- * committed high-water baseline (k_optc_caps_level keyed by the level id the
- * game reports, k_optc_caps_union over every level for an id with no row).
- * The level ids are the ones baselines/terrain-arena was measured against;
- * another game's ids land on the union row or, matching by accident, on a row
- * sized for different content, which costs memory or an overflow buffer and
- * never a claim that outlives one. */
+ * committed high-water baseline: k_optc_caps_level keyed by (game id, level
+ * id), since the three games' level ids overlap; k_optc_caps_game, one union
+ * row per game for a level id of that game with no row; k_optc_caps_union
+ * over every game for a run with no registered game. */
 #include "terrain_arena_caps.gen.h"
 
 /* Last-resort arena capacities (vertices; records on the cell arenas), used
@@ -448,21 +447,28 @@ static const tc_pair *tc_live_pair(int arena, int buf)
     return atomic_load_explicit(&s_tc.arena[arena].buf[buf].pair, memory_order_acquire);
 }
 
-/** @brief Return the measured capacity of one arena for one level.
+/** @brief Return the measured capacity of one arena for one level of the running game.
  *
- * The generated table carries a row per measured level id and a union row
- * over every level; an id with no row, including the -1 init passes before
- * any level has loaded, takes the union row, and an arena with a zero union
- * entry falls back to k_arena_cap.
+ * The generated table is keyed by (game, level id), the game being the
+ * registered game's id (game_get_id). A level id with no row of that game,
+ * including the -1 init passes before any level has loaded, takes the game's
+ * union row; a game with no rows takes the union over every game; an arena
+ * whose entry is zero falls back to k_arena_cap.
  * @param level_id Level id, or -1.
  * @param arena Arena index.
  * @return Capacity in vertices, or in records on a cell arena. */
 static uint32_t tc_level_cap(int level_id, int arena)
 {
+    const char *game = game_get_id();
+    const uint32_t *cap = k_optc_caps_union;
+    for (int i = 0; i < k_optc_caps_game_n; i++)
+        if (strcmp(k_optc_caps_game[i].game, game) == 0)
+            cap = k_optc_caps_game[i].cap;
     for (int i = 0; i < k_optc_caps_level_n; i++)
-        if (k_optc_caps_level[i].level_id == level_id)
-            return k_optc_caps_level[i].cap[arena];
-    return k_optc_caps_union[arena] ? k_optc_caps_union[arena] : k_arena_cap[arena];
+        if (k_optc_caps_level[i].level_id == level_id &&
+            strcmp(k_optc_caps_level[i].game, game) == 0)
+            cap = k_optc_caps_level[i].cap;
+    return cap[arena] ? cap[arena] : k_arena_cap[arena];
 }
 
 /** @brief Return the capacity an arena's primary buffer is allocated at.
@@ -2874,4 +2880,7 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->draws_retired = atomic_load_explicit(&s_tc.draws_retired, memory_order_relaxed);
     out->cell_draws     = s_tc.cell_draws;
     out->cell_instances = s_tc.cell_instances;
+    out->prev_high      = s_tc.prev_alloc.high;
+    out->prev_cap       = s_tc.prev_alloc.cap;
+    out->prev_fail      = s_tc.prev_fail;
 }

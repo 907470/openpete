@@ -1,5 +1,5 @@
-"""game_conf - a game's disc, boot flags, bk2 directory and default exe for
-the Python harnesses.
+"""game_conf - a game's disc, boot flags, bk2 directory, default exe and level
+table for the Python harnesses.
 
 The disc path and the game's own boot flags have one authority, the oracle
 recipe games/<game>/oracle.conf (DISC, RUN_ARGS), which the shell harnesses
@@ -7,6 +7,7 @@ read through scripts/presentation-game.sh. It is a bash file, so it is read
 by sourcing it in bash, never by a second parser.
 """
 import os
+import re
 import subprocess
 
 GAMES = ("spyro-1", "spyro-2", "spyro-3")
@@ -62,3 +63,28 @@ def resolve(root, game, build="build/linux-release"):
         "bk2_dir": os.path.join(root, "games", game, "bk2"),
         "default_exe": tree_exe(os.path.join(root, build), game),
     }
+
+
+# The source file holding each game's warpable level table, `k_levels[]`:
+# rows of {slug, display name, level id} as --skip-to-level reads them.
+LEVEL_TABLE_SRC = {
+    "spyro-1": "games/spyro-1/features/levelwarp.c",
+    "spyro-2": "games/spyro-2/skip_to_level.c",
+    "spyro-3": "games/spyro-3/skip_to_level.c",
+}
+
+_LEVEL_ROW_RE = re.compile(r'\{\s*"([a-z0-9_]+)"\s*,\s*"[^"]*"\s*,\s*(\d+)\s*\}')
+
+
+def level_table(root, game):
+    """`game`'s warpable levels as [(slug, level id)], in its k_levels order.
+
+    The level id is the one the game reports at a load (game_layout.level_id),
+    so a harness keys its rows on the ids the runtime sees."""
+    if game not in GAMES:
+        raise ValueError("unknown game %r (one of %s)" % (game, ", ".join(GAMES)))
+    txt = open(os.path.join(root, LEVEL_TABLE_SRC[game])).read()
+    start = txt.index("k_levels[] = {")
+    end = txt.index("};", start)
+    return [(m.group(1), int(m.group(2)))
+            for m in _LEVEL_ROW_RE.finditer(txt, start, end)]

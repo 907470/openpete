@@ -9018,10 +9018,18 @@ static long s_tgpu_keycell_faces;   /* faces baked with FF_KEYCELLS (session) */
  * for fresh buffers instead, which also resets each arena's high-water mark
  * and drops the free-list fragmentation the outgoing level left. The first
  * latch of a session has no outgoing level and init has just made the
- * buffers, so there it clears the slots and sets the level alone.
+ * buffers, so there it clears the slots and sets the level alone. Under
+ * OPENPETE_TERRAIN_GPU_DBG it prints one [ter-gpu] level-edge line, the
+ * level id the arena caps are looked up by, which the arena baseline
+ * attributes each census line to.
  * @param prev_level The outgoing level id, or -1 on the run's first latch.
  * @param level The incoming level id. */
 static void tgpu_level_edge(int prev_level, int level) {
+    static int dbg = -1;
+    ENV_FLAG_LATCH(dbg, "OPENPETE_TERRAIN_GPU_DBG");
+    if (dbg)
+        fprintf(stderr, "[ter-gpu f=%u] level-edge %d -> %d\n",
+                openpete_feed_key_now(), prev_level, level);
     tgpu_free_all_slots();
     if (prev_level >= 0) openpete_tercache_request_resize(level);
     else openpete_tercache_set_level(level);
@@ -11122,8 +11130,9 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
  * buffers each arena has taken on, the device bytes the live buffers hold,
  * the level-edge replacement's engagement (service calls / requests
  * fulfilled), the retired draws, the rebake count, the instanced
- * cell-record draws with the record instances they covered, and the faces
- * baked to key per drain sub-cell (FF_KEYCELLS). A `high` equal to its
+ * cell-record draws with the record instances they covered, the faces
+ * baked to key per drain sub-cell (FF_KEYCELLS), and the previous-corner
+ * record store's high-water mark, capacity and refused allocations. A `high` equal to its
  * `cap` with no overflow behind it is a clamp, not a demand figure. */
 static void tgpu_arena_census_line(void) {
     openpete_tercache_stats_t st;
@@ -11133,11 +11142,13 @@ static void tgpu_arena_census_line(void) {
     tgpu_fmt_arenas(afail, (int)sizeof afail, st.alloc_fail, NULL);
     tgpu_fmt_arenas(ovf, (int)sizeof ovf, st.overflow_adopted, NULL);
     fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s ovf=%s caps=%.1fMiB svc=%u/%u "
-            "draws-retired=%u rebake=%ld cell-draws=%u/%llu keycell-faces=%ld\n",
+            "draws-retired=%u rebake=%ld cell-draws=%u/%llu keycell-faces=%ld "
+            "prev=%u/%u/%u\n",
             openpete_feed_key_now(), hwm, afail, ovf,
             (double)st.cap_bytes / (1024.0 * 1024.0),
             st.svc_calls, st.svc_fulfilled, st.draws_retired, s_tgpu_rebake,
-            st.cell_draws, (unsigned long long)st.cell_instances, s_tgpu_keycell_faces);
+            st.cell_draws, (unsigned long long)st.cell_instances, s_tgpu_keycell_faces,
+            st.prev_high, st.prev_cap, st.prev_fail);
 }
 
 /** @brief Registers the arena census line to print once more at process exit.

@@ -103,6 +103,20 @@ typedef struct freecam_game_desc {
  * the registered descriptor's table here before any feeder runs. */
 extern freecam_game_desc freecam_desc;
 
+/** @brief Resolve a named free-camera pose against the live level's sector table.
+ *
+ * `topdown` is the whole-level overhead pose (terrain_native_topdown_pose);
+ * `sweepN` is corner N of a low-altitude circuit (terrain_native_sweep_pose,
+ * N parsed by atoi, taken modulo 4). Every game's sector table carries the
+ * fields both read through game_layout, so each game's
+ * freecam_game_desc.resolve_named_pose names this function.
+ * @param cpu The guest CPU state.
+ * @param name The pose name.
+ * @param v Receives {x, y, z, yaw, pitch}.
+ * @return 1 on success, 0 for an unknown name or when no sector table is
+ *     loaded. */
+int freecam_terrain_named_pose(CPUState* cpu, const char* name, int32_t v[5]);
+
 /** @brief Decide at a guest function entry whether the free camera short-circuits it.
  *
  * Called from the game's override_dispatch. While disengaged nothing is frozen.

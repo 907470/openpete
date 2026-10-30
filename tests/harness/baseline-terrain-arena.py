@@ -10,30 +10,49 @@ overflow buffer; the claim lasts until that buffer lands. Sizing the arenas so
 the claim does not happen at all needs a demand figure per arena per level, and
 a cap that binds censors that figure: `high` cannot exceed `cap`, so a row at
 the cap is a clamp, not a demand. Every generating run therefore sets
-OPENPETE_TC_INITIAL_CAP past any content this game holds.
+OPENPETE_TC_INITIAL_CAP past any content this game holds, and
+OPENPETE_TERRAIN_ANIMNEAR=1: that lever bakes poly-anim near sectors into
+the near arenas instead of claiming them back, so the lever-on bake is the
+larger demand and the caps cover both settings.
 
-Four row kinds per level, written as `pose` rows of
-baselines/terrain-arena/<level>.tsv:
+--game picks the game (default spyro-1). Its disc and boot flags come from
+games/<game>/oracle.conf, its levels from its k_levels table, its movies and
+corpus manifests from games/<game>/ (scripts/lib/game_conf.py,
+scripts/lib/corpus_manifest.py), and its rows go to
+baselines/terrain-arena/<game>/.
+
+Five row kinds per level, written as `pose` rows of
+baselines/terrain-arena/<game>/<level>.tsv:
 
   spawn    the level's own spawn camera, original LOD - what a player's first
            frames ask of the arenas.
   topdown  the whole-level-visible freecam pose with extended LOD - the
            static worst case, every sector of the level in the frustum.
-  bk2      the peak over every presentation-golden movie that plays in this
-           level. A traversal exceeds both static poses: a camera that moves
-           carries sectors it has left beside the ones it has reached.
+  bk2      the peak over every presentation-golden row that plays in this
+           level: one replay per distinct movie, and one run per distinct
+           launch of a row with no movie (a cutscene or level skip). A
+           traversal exceeds both static poses: a camera that moves carries
+           sectors it has left beside the ones it has reached.
   demo     the attract demo's peak in this level, for the levels it visits.
+  freecam  the peak over the freecam-corpus poses in this level (sub-area
+           rows included), at each row's canonical VBL with extended LOD: a
+           camera close to the ground routes sectors through the near arenas,
+           which neither static pose does.
 
 A traversal row is cut per level, not per run: the run log's census lines are
 grouped by (level id, buffer generation), so a movie that crosses a level load
-contributes to both levels and a level's own marks never carry the title
-flyby or the outgoing level's geometry.
+contributes to both levels and a level's own marks never carry the outgoing
+level's geometry. The level id is the one the cache looks its caps up by,
+from the walk's `[ter-gpu] level-edge` line: a title flyby or a cutscene is
+attributed to the level id the game reports while it plays, since that id's
+caps are the ones its arenas are allocated at.
 
 Modes:
 
   generate    run the static sweep and write the spawn/topdown rows.
   bk2-corpus  replay the presentation-golden movie corpus and write the bk2
               rows.
+  freecam     run the freecam corpus and write the freecam rows.
   demo        the 40,000-VBL attract demo: the cross-level accumulation
               assertions. The demo rows go to a scratch copy of the committed
               tree, deleted on exit; `demo --write` writes them into
@@ -51,12 +70,19 @@ Every generating mode rewrites only the rows it owns and then recomputes
 union.tsv from the files, so the four row kinds accumulate across modes.
 `check` and `demo` without --write leave the committed files untouched.
 
+--work DIR keeps every run's log in DIR (default: a temporary directory
+deleted on exit) and reuses a log whose run reached its frame limit under the
+same binary, disc and environment, so a sweep stopped part way resumes where
+it stopped. A stamp file in DIR names those inputs; a mismatch empties DIR.
+
 Exit: 0 pass, 1 fail or a missing corpus manifest (check and bk2-corpus; the
 message names the path), 64 skip (binary or disc missing).
 OPENPETE_MANIFEST_DRY_RUN=1 loads and reports the manifest, then exits 0.
 """
 import argparse
 import filecmp
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -70,36 +96,59 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts", "lib"))
 import bench_guard  # noqa: F401  (import-time launcher preconditions)
 import corpus_manifest
+import game_conf
 
 # Unattended launcher: no player uses the pad, and the buzzing shows up in no
 # log, so it would never surface on its own. (scripts/fences/rumble_guard.py)
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
-EXE = os.path.join(ROOT, "build/linux-release/openpete")
-OUT_DIR = os.path.join(ROOT, "baselines/terrain-arena")
-BK2_DIR = os.path.join(ROOT, "games/spyro-1/bk2")
-MANIFEST = corpus_manifest.corpus_manifest(ROOT, "spyro-1", "presentation-corpus.manifest")
+BASE_DIR = os.path.join(ROOT, "baselines/terrain-arena")
 EXIT_SKIP = 64
 
-# games/spyro-1/features/levelwarp.c k_levels - every warpable level, in that
-# table's order, with the level id the game reports at a load.
-LEVELS = [
-    ("artisans", 10), ("stone_hill", 11), ("dark_hollow", 12),
-    ("town_square", 13), ("toasty", 14), ("sunny_flight", 15),
-    ("peace_keepers", 20), ("dry_canyon", 21), ("cliff_town", 22),
-    ("ice_cavern", 23), ("doctor_shemp", 24), ("night_flight", 25),
-    ("magic_crafters", 30), ("alpine_ridge", 31), ("high_caves", 32),
-    ("wizard_peak", 33), ("blowhard", 34), ("crystal_flight", 35),
-    ("beast_makers", 40), ("terrace_village", 41), ("misty_bog", 42),
-    ("tree_tops", 43), ("metalhead", 44), ("wild_flight", 45),
-    ("dream_weavers", 50), ("dark_passage", 51), ("lofty_castle", 52),
-    ("haunted_towers", 53), ("jacques", 54), ("icy_flight", 55),
-    ("gnorc_gnexus", 60), ("gnorc_cove", 61), ("twilight_harbor", 62),
-    ("gnasty_gnorc", 63), ("gnastys_loot", 64),
-]
-LEVEL_BY_ID = {i: n for n, i in LEVELS}
+# Set by set_game from --game: the game's disc, boot flags, executable argv,
+# movie directory, corpus manifests, output directory and level table
+# [(slug, level id)] in its k_levels order.
+GAME = None
+DISC = None
+RUN_ARGS = []
+EXE = None
+EXE_ARGV = []
+OUT_DIR = None
+BK2_DIR = None
+MANIFEST = None
+FREECAM_MANIFEST = None
+LEVELS = []
+LEVEL_BY_ID = {}
+
+# The feed-key value the static poses are read at. Spyro 1 keys on its
+# frame (a yield count); Spyro 2 and 3 key on the VBL, and the same present
+# is 573 fast-boot VBLs later (scripts/presentation-game.sh
+# pg_cap_settings, the freecam start 1900 against 2473).
+SHOT_BY_GAME = {"spyro-1": 1755, "spyro-2": 2328, "spyro-3": 2328}
+# A freecam-corpus row's canonical VBL when the row names none (the same
+# pg_cap_settings default).
+FREECAM_START_BY_GAME = {"spyro-1": 1900, "spyro-2": 2473, "spyro-3": 2473}
+
+
+def set_game(game, build="build/linux-release"):
+    """Point every per-game global at `game`."""
+    global GAME, DISC, RUN_ARGS, EXE, EXE_ARGV, OUT_DIR, BK2_DIR, MANIFEST
+    global FREECAM_MANIFEST, LEVELS, LEVEL_BY_ID, SHOT_VBL, FRAME_LIMIT
+    g = game_conf.resolve(ROOT, game, build)
+    GAME = game
+    DISC = g["disc"]
+    RUN_ARGS = list(g["run_args"])
+    EXE_ARGV = game_conf.tree_argv(os.path.join(ROOT, build), game)
+    EXE = EXE_ARGV[0]
+    BK2_DIR = g["bk2_dir"]
+    OUT_DIR = os.path.join(BASE_DIR, game)
+    MANIFEST = corpus_manifest.corpus_manifest(ROOT, game, "presentation-corpus.manifest")
+    FREECAM_MANIFEST = corpus_manifest.corpus_manifest(ROOT, game, "freecam-corpus.manifest")
+    LEVELS = game_conf.level_table(ROOT, game)
+    LEVEL_BY_ID = {i: n for n, i in LEVELS}
+    SHOT_VBL = SHOT_BY_GAME[game]
+    FRAME_LIMIT = SHOT_VBL + 1
 
 # core/include/openpete_terrain_cache.h, the OPTC_ARENA_* enum order, which is
 # the order the census prints.
@@ -112,7 +161,7 @@ ARENAS = [
 ]
 
 POSES = ("spawn", "topdown")
-ROW_KINDS = ("spawn", "topdown", "bk2", "demo")
+ROW_KINDS = ("spawn", "topdown", "bk2", "demo", "freecam")
 # The arenas the sizing turns on; the rest sit at their floor (16,384
 # vertices, or 256 records on a cell arena).
 REPORT_ARENAS = ("OPAQUE", "A_OPAQUE", "N_OPAQUE", "N_LP", "CN_OPAQUE")
@@ -133,29 +182,33 @@ GEN_CAP = 903258
 # latches the new level id, which lands ~170 VBLs before this limit; the marks
 # are converged there (artisans topdown reads byte-identical at 1,756 and at
 # 3,000 VBLs).
-SHOT_VBL = 1755
-FRAME_LIMIT = 1756
+SHOT_VBL = 1755      # set_game: SHOT_BY_GAME
+FRAME_LIMIT = 1756   # set_game: SHOT_VBL + 1
 DEMO_FRAME_LIMIT = 40000
 DEMO_SHOT_VBL = 39990
-# A movie replay runs to one VBL past its last input. The ceiling bounds the
-# sweep's runtime against a corpus that grows; no committed movie reaches it.
-BK2_FRAME_CEIL = 4200
+# A movie replay runs to ten VBLs past its last input or its last pinned
+# capture, whichever is later. The ceiling bounds the sweep's runtime against a
+# corpus that grows; no committed movie reaches it.
+BK2_FRAME_CEIL = 12000
 # The overflow leg's cap: below every level's smallest real demand, so the
 # primary buffer of the busy arenas fills within the first walks.
 OVERFLOW_CAP = 16384
-OVERFLOW_LEVEL = "metalhead"
+OVERFLOW_LEVEL_BY_GAME = {"spyro-1": "metalhead", "spyro-2": "summer_forest",
+                          "spyro-3": "sunrise_spring"}
 # The screenshot VBL is the static baseline's; the run outlives it, because the
 # level edge that precedes it resets the arenas and the claim-back it causes
 # takes a few tens of VBLs to settle. Asserting that afail has stopped rising
 # needs the run to reach the far side of that transient.
-OVERFLOW_SHOT = 1755
-OVERFLOW_FRAME_LIMIT = 2400
+OVERFLOW_TAIL = 645   # OVERFLOW_FRAME_LIMIT past SHOT_VBL on Spyro 1 (1755 -> 2400)
 
 HWM_RE = re.compile(
     r"\[ter-gpu f=(?:\d+)\] hwm=(\S+) afail=(\S+) ovf=(\S+) caps=(\S+)MiB "
     r"svc=(\d+)/(\d+) draws-retired=(\d+) rebake=(\d+)")
 # core/psx/dispatch: the overlay switch that names each level the run enters.
-LEVEL_LOAD_RE = re.compile(r"active overlay: \S+ -> level_(\d+)")
+# games/common/renderer/terrain.c tgpu_level_edge: the level id the walk
+# latched, which keys the arena caps; prev -1 is the run's first latch (no
+# replacement), every other line one replacement.
+LEVEL_EDGE_RE = re.compile(r"\[ter-gpu f=\d+\] level-edge (-?\d+) -> (-?\d+)")
 POSE_RE = re.compile(r"freecam: topdown pose set to")
 
 
@@ -182,37 +235,118 @@ def keep_log(log, tag):
 
 # ---- launching -------------------------------------------------------------
 
-def child_env(cap):
+def child_env(cap, env=()):
     e = dict(os.environ)
     e["OPENPETE_TERRAIN_CACHE_FORCE"] = "1"   # llvmpipe is a software GPU
     e["OPENPETE_TERRAIN_GPU_DBG"] = "1"       # the hwm=/afail= census line
+    e["OPENPETE_TERRAIN_ANIMNEAR"] = "1"      # the larger bake (module docstring)
     e["OPENPETE_VIBRATION"] = "0"
     if cap:
         e["OPENPETE_TC_INITIAL_CAP"] = str(cap)
     else:
         e.pop("OPENPETE_TC_INITIAL_CAP", None)
+    for kv in env:
+        k, v = kv.split("=", 1)
+        e[k] = v
     return e
 
 
 RUN_FRAME_LIMIT = {}   # log path -> the --frame-limit its run was launched with
+WORK_KEEP = None       # --work: the directory whose logs a resumed sweep reuses
 
 
-def launch(work, tag, cap, shot_vbl, frame_limit, extra):
-    """One headless run. Returns (Popen, log path, shot path)."""
+def run_complete(log, frame_limit):
+    """True when `log` holds its run's exit census line (f >= frame_limit - 1)."""
+    if not os.path.exists(log):
+        return False
+    txt = open(log, "rb").read().decode("utf-8", "replace")
+    frames = FRAME_RE.findall(txt)
+    return bool(frames) and int(frames[-1]) >= frame_limit - 1
+
+
+def work_dir(prefix):
+    """The directory a mode's runs write to: --work when given (kept, and
+    emptied when its stamp names other inputs), else a fresh temporary one."""
+    if WORK_KEEP is None:
+        return tempfile.mkdtemp(prefix=prefix)
+    d = os.path.join(WORK_KEEP, GAME, prefix.rstrip("-"))
+    os.makedirs(d, exist_ok=True)
+    st = os.stat(EXE)
+    stamp = json.dumps({"exe": EXE, "exe_mtime": st.st_mtime_ns, "exe_size": st.st_size,
+                        "disc": DISC, "run_args": RUN_ARGS,
+                        "env": sorted((k, v) for k, v in os.environ.items()
+                                      if k.startswith("OPENPETE_"))}, sort_keys=True)
+    sp = os.path.join(d, ".stamp")
+    if not os.path.exists(sp) or open(sp).read() != stamp:
+        shutil.rmtree(d)
+        os.makedirs(d)
+        with open(sp, "w") as f:
+            f.write(stamp)
+    return d
+
+
+def drop_work(work):
+    """Delete a mode's temporary directory; a --work directory is kept."""
+    if WORK_KEEP is None:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+class _Done:
+    """A run --work already holds: wait() returns its recorded exit status."""
+    def __init__(self, rc):
+        self._log_file = open(os.devnull, "wb")
+        self._rc = rc
+
+    def wait(self):
+        return self._rc
+
+
+EXIT_RE = re.compile(r"openpete-exit: reason=\S+ .*code=(-?\d+)")
+
+
+def recorded_rc(log):
+    """The exit status run_batch recorded beside `log`, else the code of the
+    run's own `openpete-exit:` line (a run whose harness was stopped while
+    it ran), or None."""
+    try:
+        return int(open(log + ".rc").read())
+    except (OSError, ValueError):
+        pass
+    m = EXIT_RE.findall(open(log, "rb").read().decode("utf-8", "replace"))
+    return int(m[-1]) if m else None
+
+
+def launch(work, tag, cap, shot_vbl, frame_limit, extra, env=()):
+    """One headless run. Returns (Popen, log path, shot path).
+
+    `extra` is the run's own arguments; a `{legdir}` in one names a per-run
+    directory under `work`, and a run given --card1 drops the game's --no-card
+    boot flag. Under --work a run whose log already reached its frame limit
+    is not started again."""
     log = os.path.join(work, tag + ".log")
     RUN_FRAME_LIMIT[log] = frame_limit
     shot = os.path.join(work, tag + ".png")
     vkshot = shot.replace(".png", "-vk.png")
-    for f in (log, shot, vkshot):
+    if WORK_KEEP is not None and run_complete(log, frame_limit) \
+            and recorded_rc(log) is not None:
+        return _Done(recorded_rc(log)), log, vkshot
+    for f in (log, log + ".rc", shot, vkshot):
         if os.path.exists(f):
             os.remove(f)
-    cmd = [EXE, "--headless", "--no-config", "--disc-cache", "0",
-           "--vibration", "0", "--renderer", "vk", "--screenshot-native-only",
-           "--screenshot-on-frame", str(shot_vbl), "--screenshot-output", shot,
-           "--frame-limit", str(frame_limit), "--no-card", "--mute", "1",
-           "--disc", DISC] + list(extra)
+    legdir = os.path.join(work, tag + ".leg")
+    shutil.rmtree(legdir, ignore_errors=True)
+    if any("{legdir}" in x for x in extra):
+        os.makedirs(legdir)
+        extra = [x.replace("{legdir}", legdir) for x in extra]
+    run_args = [a for a in RUN_ARGS if not ("--card1" in extra and a == "--no-card")]
+    card = [] if "--card1" in extra or "--no-card" in run_args else ["--no-card"]
+    cmd = EXE_ARGV + ["--headless", "--no-config", "--disc-cache", "0",
+                      "--vibration", "0", "--renderer", "vk", "--screenshot-native-only",
+                      "--screenshot-on-frame", str(shot_vbl), "--screenshot-output", shot,
+                      "--frame-limit", str(frame_limit), "--mute", "1",
+                      "--disc", DISC] + card + run_args + list(extra)
     lf = open(log, "wb")
-    p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=child_env(cap))
+    p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=child_env(cap, env))
     p._log_file = lf
     return p, log, vkshot
 
@@ -227,7 +361,7 @@ def static_args(level, pose):
 
 
 def run_batch(work, jobs):
-    """Run a list of (tag, cap, shot, limit, extra) specs `jobs` at a time.
+    """Run a list of (tag, cap, shot, limit, extra[, env]) specs `jobs` at a time.
 
     Yields (tag, rc, log, shot) in completion-queue order.
     """
@@ -235,13 +369,16 @@ def run_batch(work, jobs):
         running, i = [], 0
         while i < len(specs) or running:
             while len(running) < njobs and i < len(specs):
-                tag, cap, shot, limit, extra = specs[i]
+                tag, cap, shot, limit, extra = specs[i][:5]
+                env = specs[i][5] if len(specs[i]) > 5 else ()
                 i += 1
-                p, log, png = launch(work, tag, cap, shot, limit, extra)
+                p, log, png = launch(work, tag, cap, shot, limit, extra, env)
                 running.append((p, tag, log, png))
             p, tag, log, png = running.pop(0)
             rc = p.wait()
             p._log_file.close()
+            with open(log + ".rc", "w") as f:
+                f.write("%d\n" % rc)
             yield tag, rc, log, png
     return _run
 
@@ -258,9 +395,9 @@ def census_lines(log):
     txt = open(log, "rb").read().decode("utf-8", "replace")
     out, cur = [], -1
     for line in txt.splitlines():
-        m = LEVEL_LOAD_RE.search(line)
+        m = LEVEL_EDGE_RE.search(line)
         if m:
-            cur = int(m.group(1))
+            cur = int(m.group(2))
             continue
         m = HWM_RE.search(line)
         if not m:
@@ -309,8 +446,9 @@ def read_run(log, frame_limit=None):
                                            frame_limit))
     last = dict(lines[-1])
     last["pose_lines"] = len(POSE_RE.findall(txt))
-    last["levels"] = sorted({int(x) for x in LEVEL_LOAD_RE.findall(txt)})
-    last["edges"] = len(LEVEL_LOAD_RE.findall(txt))
+    latches = LEVEL_EDGE_RE.findall(txt)
+    last["levels"] = sorted({int(b) for _a, b in latches})
+    last["edges"] = sum(1 for a, _b in latches if int(a) >= 0)
     last["lines"] = lines
     last["segments"] = census_segments(lines)
     return last
@@ -338,9 +476,9 @@ def census_segments(lines):
 def peaks_by_level(log):
     """level id -> per-arena peak over that level's own census lines.
 
-    Lines before the first level load (the title flyby) carry level -1 and are
-    dropped; a run that crosses a level edge contributes to each level it
-    played, against that level's own buffer generation.
+    Lines before the walk's first latch carry level -1 and are dropped; a run
+    that crosses a level edge contributes to each level it played, against
+    that level's own buffer generation.
     """
     lines, _ = census_lines(log)
     out = {}
@@ -484,7 +622,7 @@ def write_static(out_dir, data):
 
 def cmd_generate(levels, jobs):
     os.makedirs(OUT_DIR, exist_ok=True)
-    work = tempfile.mkdtemp(prefix="terarena-gen-")
+    work = work_dir("terarena-gen-")
     data = sweep(work, GEN_CAP, levels, jobs)
     write_static(OUT_DIR, data)
     missing = [l for l in levels if not os.path.exists(os.path.join(OUT_DIR, l + ".tsv"))]
@@ -495,7 +633,7 @@ def cmd_generate(levels, jobs):
         sys.stderr.write("  REFUSED %s\n" % b)
     print("wrote the spawn/topdown rows of %d levels + union.tsv to %s%s"
           % (len(data), OUT_DIR, " (with %d refusals)" % len(bad) if bad else ""))
-    shutil.rmtree(work, ignore_errors=True)
+    drop_work(work)
     return 1 if bad else 0
 
 
@@ -512,19 +650,57 @@ def manifest_rows():
     return _MANIFEST_ROWS
 
 
-def manifest_bk2s():
-    """Every distinct movie named by a presentation-golden manifest row.
+def manifest_runs():
+    """The runs that cover the presentation-golden rows: [(tag, bk2 path or
+    None, launch args, launch env, last VBL a row of the run pins)].
 
-    A row is `<bk2>[@<variant>] | ...`; a variant changes only the row's launch
-    flags (vertex precision, a cache force), none of which moves a vertex into
-    an arena, so one replay per movie covers the row set. The movie's own
-    .bk2.args sidecar (its level, its LOD mode) is spliced by the binary.
+    A row is `<name>[@<variant>] | start | interval | freeze | pins | launch`.
+    Rows of one movie share one replay, launched with the plain row's launch
+    field (else the first row's): a variant changes vertex precision, a cache
+    force or a capture setting, none of which moves a vertex into an arena.
+    A row with no movie file runs its launch field (a cutscene or a level
+    skip), one run per distinct launch; a row with neither is the title and
+    attract demo, which the demo mode covers. The movie's own .bk2.args
+    sidecar (its level, its LOD mode) is spliced by the binary.
     """
-    names = [row.split("|")[0].strip().split("@")[0] for row in manifest_rows()]
-    out = []
-    for n in sorted(set(names)):
-        if os.path.exists(os.path.join(BK2_DIR, n + ".bk2")):
-            out.append(n)
+    groups = {}
+    for row in manifest_rows():
+        f = [x.strip() for x in row.split("|")]
+        name = f[0]
+        base = name.split("@")[0]
+        pins = [int(x) for x in (f[4].split(",") if len(f) > 4 else []) if x.strip().isdigit()]
+        if len(f) > 1 and f[1].isdigit():
+            pins.append(int(f[1]))
+        args, env = [], []
+        for tok in (f[5].split() if len(f) > 5 else []):
+            if tok.startswith("docs:") or tok.startswith("PRESENTATION_LEG_TIMEOUT="):
+                continue
+            (env if re.match(r"^[A-Z_][A-Z0-9_]*=", tok) else args).append(tok)
+        bk2 = os.path.join(BK2_DIR, base + ".bk2")
+        if os.path.exists(bk2):
+            key = ("bk2", base)
+        elif args:
+            key = ("launch", " ".join(args + env))
+        else:
+            continue
+        g = groups.get(key)
+        if g is None or ("@" in g["name"] and "@" not in name):
+            g = {"name": name, "args": args, "env": env,
+                 "pins": (g["pins"] if g else [])}
+            groups[key] = g
+        g["pins"].extend(pins)
+    out, seen = [], set()
+    for (kind, k), g in sorted(groups.items()):
+        if kind == "bk2":
+            tag, bk2 = k, os.path.join(BK2_DIR, k + ".bk2")
+        else:
+            tag, bk2 = g["name"].split("@")[0], None
+            n = 2
+            while tag in seen:
+                tag = "%s-%d" % (g["name"].split("@")[0], n)
+                n += 1
+        seen.add(tag)
+        out.append((tag, bk2, g["args"], g["env"], max(g["pins"] or [0])))
     return out
 
 
@@ -538,21 +714,24 @@ def bk2_frames(path):
         return 0
 
 
-def cmd_bk2corpus(jobs, out_dir=OUT_DIR, quiet=False):
+def cmd_bk2corpus(jobs, out_dir=None, quiet=False):
     """Replay every corpus movie and write the per-level `bk2` rows."""
-    movies = manifest_bk2s()
+    out_dir = out_dir or OUT_DIR
+    movies = manifest_runs()
     if not movies:
-        die("the corpus manifest named no playable movie")
-    work = tempfile.mkdtemp(prefix="terarena-bk2-")
+        die("the corpus manifest named no playable movie or launch")
+    work = work_dir("terarena-bk2-")
     try:
         specs = []
-        for name in movies:
-            path = os.path.join(BK2_DIR, name + ".bk2")
-            n = bk2_frames(path)
-            if n <= 0:
-                die("%s: no input log" % name)
-            limit = min(n + 10, BK2_FRAME_CEIL)
-            specs.append((name, GEN_CAP, limit - 2, limit, ["--bk2", path]))
+        for tag, path, args, env, last_pin in movies:
+            n = 0
+            if path:
+                n = bk2_frames(path)
+                if n <= 0:
+                    die("%s: no input log" % tag)
+                args = ["--bk2", path] + args
+            limit = min(max(n, last_pin) + 10, BK2_FRAME_CEIL)
+            specs.append((tag, GEN_CAP, limit - 2, limit, args, env))
         peaks, bad = {}, []
         for tag, rc, log, _png in run_batch(work, jobs)(specs, jobs):
             row = read_run(log)
@@ -591,11 +770,81 @@ def cmd_bk2corpus(jobs, out_dir=OUT_DIR, quiet=False):
               % (len(movies), len(peaks), out_dir))
         return 1 if bad else 0
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        drop_work(work)
 
 
-def print_static_vs_traversal(out_dir=OUT_DIR):
+# ---- freecam corpus --------------------------------------------------------
+
+def freecam_runs():
+    """The freecam-corpus rows: [(tag, level field, pose, canonical VBL)].
+
+    A row is `<level>[:<area>] | pos=(x, y, z) yaw=Y pitch=P | [start]`; a
+    row whose level field carries `@` is an aspect or capture variant of the
+    same pose and adds no run. The tag is the level field (`:` written `-`)
+    plus the first six hex digits of the pose's md5, the presentation
+    harness's tile key."""
+    out = []
+    for row in corpus_manifest.load(ROOT, FREECAM_MANIFEST, "pipe"):
+        f = [x.strip() for x in row.split("|")]
+        if len(f) < 2 or not f[1] or "@" in f[0]:
+            continue
+        start = int(f[2]) if len(f) > 2 and f[2].isdigit() else FREECAM_START_BY_GAME[GAME]
+        tag = "%s-%s" % (f[0].replace(":", "-"), hashlib.md5(f[1].encode()).hexdigest()[:6])
+        out.append((tag, f[0], f[1], start))
+    return out
+
+
+def cmd_freecam(jobs, out_dir=None):
+    """Run every freecam-corpus pose and write the per-level `freecam` rows."""
+    out_dir = out_dir or OUT_DIR
+    rows = freecam_runs()
+    if not rows:
+        die("the freecam manifest named no row")
+    work = work_dir("terarena-freecam-")
+    try:
+        specs = []
+        for tag, level, pose, start in rows:
+            skip = "--skip-to-area" if re.fullmatch(r".+:\d+", level) else "--skip-to-level"
+            specs.append((tag, GEN_CAP, start, start + 2,
+                          [skip, level, "--freecam-pose", pose, "--lod", "extended",
+                           "--aspect", "16:9"]))
+        peaks, bad = {}, []
+        for tag, rc, log, _png in run_batch(work, jobs)(specs, jobs):
+            row = read_run(log)
+            if row is None:
+                die("%s: no census line in %s (exit %d)" % (tag, keep_log(log, tag), rc))
+            if rc != 0:
+                bad.append("%s: exit %d" % (tag, rc))
+            for a, name in enumerate(ARENAS):
+                if row["afail"][a]:
+                    bad.append("%s %s: afail=%d at the raised cap" % (tag, name, row["afail"][a]))
+                if row["high"][a] and row["high"][a] == row["cap"][a]:
+                    bad.append("%s %s: high=%d equals cap - censored" % (tag, name, row["high"][a]))
+            for lid, high in peaks_by_level(log).items():
+                cur = peaks.setdefault(lid, {"high": [0] * len(ARENAS), "rows": []})
+                cur["high"] = [max(x, y) for x, y in zip(cur["high"], high)]
+                cur["rows"].append(tag)
+        for lid, cur in sorted(peaks.items()):
+            level = LEVEL_BY_ID.get(lid)
+            if not level:
+                continue
+            merge_level(out_dir, level,
+                        {"freecam": row_dict(cur["high"], [0] * len(ARENAS))},
+                        {"freecam": "rows=%d\t%s" % (len(cur["rows"]),
+                                                     ",".join(sorted(cur["rows"])))})
+        rebuild_union(out_dir)
+        for b in bad:
+            sys.stderr.write("  FREECAM FAIL %s\n" % b)
+        print("freecam corpus: %d rows, rows for %d levels -> %s"
+              % (len(rows), len(peaks), out_dir))
+        return 1 if bad else 0
+    finally:
+        drop_work(work)
+
+
+def print_static_vs_traversal(out_dir=None):
     """Per level, the static maximum against the traversal maximum per arena."""
+    out_dir = out_dir or OUT_DIR
     print("static (spawn/topdown) vs traversal (bk2/demo) peak, vertices")
     print("  %-16s %s" % ("level", " ".join("%-19s" % a for a in REPORT_ARENAS)))
     rows = []
@@ -615,9 +864,10 @@ def print_static_vs_traversal(out_dir=OUT_DIR):
 
 # ---- attract demo ----------------------------------------------------------
 
-def read_union_rows(out_dir=OUT_DIR, kinds=None):
+def read_union_rows(out_dir=None, kinds=None):
     """level -> per-arena maximum `high` over the level's pose rows, every
     row kind or only those named in `kinds`."""
+    out_dir = out_dir or OUT_DIR
     if not os.path.exists(os.path.join(out_dir, "union.tsv")):
         die("no committed union.tsv - run `generate` first")
     per_level = {}
@@ -647,10 +897,12 @@ def scratch_baseline(work):
 def cmd_demo(out_dir=None):
     """The attract-demo row: the accumulation assertions, and the demo rows
     merged into `out_dir` (a scratch copy of the committed tree when None)."""
-    work = tempfile.mkdtemp(prefix="terarena-demo-")
+    work = work_dir("terarena-demo-")
+    base_tmp = None
     try:
         if out_dir is None:
-            out_dir = scratch_baseline(work)
+            base_tmp = tempfile.mkdtemp(prefix="terarena-demo-base-")
+            out_dir = scratch_baseline(base_tmp)
         per_level = read_union_rows(out_dir)
         # A level's own demand measured without a predecessor in the same
         # buffers: its static and movie rows, never the demo row this mode
@@ -671,7 +923,7 @@ def cmd_demo(out_dir=None):
         if rc != 0:
             bad.append("exit %d" % rc)
         if row["edges"] == 0:
-            bad.append("the run log named no level load - every assertion below is vacuous")
+            bad.append("the run log named no level edge - every assertion below is vacuous")
         # One arena replacement per level edge. A shortfall is a level whose
         # geometry was baked into the outgoing buffers.
         if row["svc_fulfilled"] != row["edges"]:
@@ -732,7 +984,9 @@ def cmd_demo(out_dir=None):
         print("terrain-arena demo row: %s" % ("PASS" if not bad else "FAIL"))
         return 1 if bad else 0
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        drop_work(work)
+        if base_tmp:
+            shutil.rmtree(base_tmp, ignore_errors=True)
 
 
 # ---- overflow leg ----------------------------------------------------------
@@ -746,10 +1000,12 @@ def cmd_overflow():
     permanent, and the image prove the overflow draws what one buffer drew.
     """
     work = tempfile.mkdtemp(prefix="terarena-ovf-")
+    level = OVERFLOW_LEVEL_BY_GAME[GAME]
+    limit = SHOT_VBL + OVERFLOW_TAIL
     try:
-        args = static_args(OVERFLOW_LEVEL, "spawn")
-        specs = [("stock", 0, OVERFLOW_SHOT, OVERFLOW_FRAME_LIMIT, args),
-                 ("tiny", OVERFLOW_CAP, OVERFLOW_SHOT, OVERFLOW_FRAME_LIMIT, args)]
+        args = static_args(level, "spawn")
+        specs = [("stock", 0, SHOT_VBL, limit, args),
+                 ("tiny", OVERFLOW_CAP, SHOT_VBL, limit, args)]
         runs = {}
         for tag, rc, log, png in run_batch(work, 2)(specs, 2):
             row = read_run(log)
@@ -781,15 +1037,15 @@ def cmd_overflow():
                        "did not stop the claim-back" % tail)
         if sum(stock["afail"]) != 0:
             bad.append("the generated caps claimed %d sectors back on %s"
-                       % (sum(stock["afail"]), OVERFLOW_LEVEL))
+                       % (sum(stock["afail"]), level))
         if sum(stock["ovf"]) != 0:
             bad.append("the generated caps needed %d overflow buffers on %s"
-                       % (sum(stock["ovf"]), OVERFLOW_LEVEL))
+                       % (sum(stock["ovf"]), level))
         if os.path.exists(tiny_png) and os.path.exists(stock_png):
             if not filecmp.cmp(tiny_png, stock_png, shallow=False):
                 bad.append("the overflow run's image differs from the stock-cap run's")
         print("overflow leg (%s, cap=%d): afail peak=%d exit=%d tail=%s ovf=%s caps=%.1fMiB"
-              % (OVERFLOW_LEVEL, OVERFLOW_CAP, peak_afail, sum(tiny["afail"]), tail,
+              % (level, OVERFLOW_CAP, peak_afail, sum(tiny["afail"]), tail,
                  ",".join(str(x) for x in tiny["ovf"]), tiny["caps_mib"]))
         print("  stock leg: afail=%d ovf=%d caps=%.1fMiB image=%s"
               % (sum(stock["afail"]), sum(stock["ovf"]), stock["caps_mib"],
@@ -831,6 +1087,7 @@ def cmd_check(levels, jobs):
         bad = assert_clean(data, "regen")
         write_static(regen_dir, data)
         rc |= cmd_bk2corpus(jobs, out_dir=regen_dir, quiet=True)
+        rc |= cmd_freecam(jobs, out_dir=regen_dir)
         rc |= cmd_demo(out_dir=regen_dir)
         for level in levels:
             want = os.path.join(OUT_DIR, level + ".tsv")
@@ -869,12 +1126,20 @@ def cmd_check(levels, jobs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=("generate", "check", "demo", "bk2-corpus",
-                                     "overflow", "report"))
+                                     "freecam", "overflow", "report"))
+    ap.add_argument("--game", default="spyro-1", choices=game_conf.GAMES)
+    ap.add_argument("--build-dir", default="build/linux-release",
+                    help="build tree holding the executable, relative to the source root")
     ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--work", default=None,
+                    help="keep run logs here and reuse the complete ones (module docstring)")
     ap.add_argument("--levels", default="")
     ap.add_argument("--write", action="store_true",
-                    help="demo: write the demo rows into baselines/terrain-arena/")
+                    help="demo: write the demo rows into baselines/terrain-arena/<game>/")
     args = ap.parse_args()
+    global WORK_KEEP
+    WORK_KEEP = os.path.abspath(args.work) if args.work else None
+    set_game(args.game, args.build_dir)
     if args.mode == "report":
         print_static_vs_traversal()
         return 0
@@ -882,6 +1147,8 @@ def main():
     # prerequisite check, so a missing manifest fails on every machine.
     if args.mode in ("check", "bk2-corpus"):
         manifest_rows()
+    if args.mode in ("check", "freecam"):
+        corpus_manifest.load(ROOT, FREECAM_MANIFEST, "pipe")
     corpus_manifest.dry_run_exit()
     if not os.path.exists(EXE) or not os.path.exists(DISC):
         sys.stderr.write("baseline-terrain-arena: SKIP (no binary or no disc)\n")
@@ -893,6 +1160,8 @@ def main():
         return cmd_check(levels, args.jobs)
     if args.mode == "bk2-corpus":
         return cmd_bk2corpus(args.jobs)
+    if args.mode == "freecam":
+        return cmd_freecam(args.jobs)
     if args.mode == "overflow":
         return cmd_overflow()
     return cmd_demo(OUT_DIR if args.write else None)

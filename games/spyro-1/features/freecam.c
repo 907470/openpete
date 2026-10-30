@@ -4,13 +4,11 @@
 // hooks.
 
 #include "freecam_game.h"
-#include "spyro-1/renderer/reextract.h"   /* terrain_native_topdown_pose / _sweep_pose */
 #include "openpete_freecam.h"         /* OPENPETE_FREECAM_SPEED_STEPS */
 #include "psx_runtime_internal.h"     /* CPUState + its read/write callbacks */
 
+#include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>   /* atoi (sweepN) */
-#include <string.h>
 
 /* The camera pose (g_Camera m_Position @ +0x28, m_Rotation @ +0x4C: int16
  * roll, pitch, yaw) is read through game_layout.cam (renderer/layout.c);
@@ -125,21 +123,6 @@ static void spyro1_place_camera(CPUState* cpu) {
     func_80034358(cpu);
 }
 
-/** @brief Resolves a named free-camera pose against the live sector table.
- *
- * `topdown` is the whole-level overhead pose; `sweepN` is corner N of a
- * low-altitude circuit (N parsed by atoi, taken modulo 4).
- * @param cpu The guest CPU state.
- * @param name The pose name.
- * @param v Receives {x, y, z, yaw, pitch}.
- * @return 1 on success, 0 for an unknown name or when no sector table is
- *     loaded. */
-static int spyro1_resolve_named_pose(CPUState* cpu, const char* name, int32_t v[5]) {
-    if (strcmp(name, "topdown") == 0) return terrain_native_topdown_pose(cpu, v);
-    if (strncmp(name, "sweep", 5) == 0) return terrain_native_sweep_pose(cpu, atoi(name + 5), v);
-    return 0;
-}
-
 const freecam_game_desc spyro1_freecam_desc = {
     .angle_bits = 16,
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
@@ -169,7 +152,7 @@ const freecam_game_desc spyro1_freecam_desc = {
     .reset_momentum     = spyro1_reset_momentum,
     .player_placeable   = spyro1_player_placeable,
     .place_camera       = spyro1_place_camera,
-    .resolve_named_pose = spyro1_resolve_named_pose,
+    .resolve_named_pose = freecam_terrain_named_pose,
     .move_speed = s_move_speed,
     .turn_speed = s_turn_speed,
 };

@@ -313,15 +313,19 @@ execute_process(
     COMMAND ${CMAKE_COMMAND} -E env python3
             ${CMAKE_SOURCE_DIR}/scripts/gen-terrain-arena-caps.py
             --baselines ${CMAKE_SOURCE_DIR}/baselines/terrain-arena
-            --levelwarp ${CMAKE_SOURCE_DIR}/games/spyro-1/features/levelwarp.c
+            --root ${CMAKE_SOURCE_DIR}
             --out ${OPENPETE_TERRAIN_CAPS_GEN}
     RESULT_VARIABLE _caps_rc)
 if(NOT _caps_rc EQUAL 0)
     message(FATAL_ERROR "gen-terrain-arena-caps.py failed (${_caps_rc})")
 endif()
-file(GLOB OPENPETE_TERRAIN_CAPS_ROWS ${CMAKE_SOURCE_DIR}/baselines/terrain-arena/*.tsv)
+file(GLOB OPENPETE_TERRAIN_CAPS_ROWS ${CMAKE_SOURCE_DIR}/baselines/terrain-arena/*/*.tsv)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/scripts/gen-terrain-arena-caps.py
+    ${CMAKE_SOURCE_DIR}/scripts/lib/game_conf.py
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/levelwarp.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-2/skip_to_level.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-3/skip_to_level.c
     ${OPENPETE_TERRAIN_CAPS_ROWS})
 
 target_include_directories(openpete_core

@@ -36,6 +36,7 @@
 #include "openpete_host_mouse.h" /* probe log */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"        /* CPUState + its read/write callbacks */
+#include "renderer/terrain.h"   /* terrain_native_topdown_pose / _sweep_pose */
 
 #include <math.h>
 #include <stdio.h>
@@ -372,6 +373,12 @@ static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
         return 0;
     }
     return D->resolve_named_pose(cpu, name, v);
+}
+
+int freecam_terrain_named_pose(CPUState* cpu, const char* name, int32_t v[5]) {
+    if (strcmp(name, "topdown") == 0) return terrain_native_topdown_pose(cpu, v);
+    if (strncmp(name, "sweep", 5) == 0) return terrain_native_sweep_pose(cpu, atoi(name + 5), v);
+    return 0;
 }
 
 /* ---- Scripted flight path (OPENPETE_FREECAM_PATH / --freecam-path) --------

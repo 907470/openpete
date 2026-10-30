@@ -930,8 +930,9 @@ int  openpete_tercache_resize_ready(void);
  * the first level latch after boot, where init has just made the buffers
  * and no replacement is owed, and through
  * openpete_tercache_request_resize() at every later latch.
- * @param level_id Level id; an id with no measured row takes the union
- *                 capacities. */
+ * @param level_id Level id of the registered game (game_get_id); the
+ *                 capacities are that game's row for the id, or the game's
+ *                 union row when it has none. */
 void openpete_tercache_set_level(int level_id);
 /** @brief Return the allocation epoch, which steps whenever an arena gains buffer room.
  *
@@ -1031,6 +1032,10 @@ typedef struct {
      * ranges, summed over the session. */
     uint32_t cell_draws;
     uint64_t cell_instances;
+    /* The previous-corner record store: its high-water mark and capacity in
+     * records, and the allocations it refused (each a sector claimed back,
+     * counted with the arena-full claims). */
+    uint32_t prev_high, prev_cap, prev_fail;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *

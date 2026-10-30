@@ -56,7 +56,7 @@ const freecam_game_desc spyro2_freecam_desc = {
     .place_camera       = NULL,   /* placement camera routine not located */
     .draw_all           = NULL,
     .reset_momentum     = NULL,
-    .resolve_named_pose = NULL,
+    .resolve_named_pose = freecam_terrain_named_pose,
     .move_speed = s_move_speed,
     .turn_speed = s_turn_speed,
 };
