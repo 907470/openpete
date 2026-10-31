@@ -51,7 +51,11 @@
 # (--aspect, --fov, --lod, --ssaa) reaches the feed it configures. Nothing is
 # composed. The run must print a `native-feed:` exit row with fed > 0, else
 # the verdict is VACUOUS (exit 3); a forwarded `--renderer psycross` runs no
-# native renderer and is exempt. The sub-tick re-extract and the live
+# native renderer and is exempt. With OPENPETE_TERRAIN_CACHE_FORCE set to a
+# value other than 0 the run must also print a `tercache:` exit row with
+# bakes > 0, else VACUOUS (exit 3): the forced leg never baked a sector into
+# the terrain cache (llvmpipe refuses the cache without FORCE, and
+# `--terrain-cache 0` turns it off). The sub-tick re-extract and the live
 # compose run only under a window: the windowed row covers them.
 # (Flags with values need the `--` separator so the value isn't mistaken
 #  for the trace path.)
@@ -110,7 +114,8 @@
 #       and the run hashed zero GTE instructions or printed no row; or the
 #       clock row delivered no in-work VBLANK or charged no libspu call or
 #       SPU register access; or a vk run printed no `native-feed:` row or fed
-#       no scene
+#       no scene; or a run with OPENPETE_TERRAIN_CACHE_FORCE printed no
+#       `tercache:` row or one with bakes=0
 #   64  prerequisites missing (trace / binary / disc) - ctest treats as SKIP
 #   *   build/runtime error
 set -euo pipefail
@@ -627,6 +632,21 @@ if [[ "$NATIVE_OWED" == 1 ]]; then
     fi
 else
     echo "[psx-oracle] native feed: none owed (--renderer psycross)"
+fi
+
+# Terrain-cache engagement: a leg that forces the cache on (the oracle runs
+# on llvmpipe, where the cache is refused without OPENPETE_TERRAIN_CACHE_FORCE)
+# must have baked sectors into it, else the leg verified the CPU walk alone.
+if [[ "$NATIVE_OWED" == 1 && -n "${OPENPETE_TERRAIN_CACHE_FORCE:-}" &&
+      "${OPENPETE_TERRAIN_CACHE_FORCE}" != 0 ]]; then
+    TC_ROW=$(grep -o 'tercache: bakes=.*' "$LOG" | tail -1 || true)
+    TC_BAKES=$(sed -n 's/^tercache: bakes=\([0-9]*\).*/\1/p' <<<"$TC_ROW")
+    if [[ -z "$TC_ROW" || "${TC_BAKES:-0}" == 0 ]]; then
+        echo "[psx-oracle] terrain cache: ${TC_ROW:-no tercache: exit row} (OPENPETE_TERRAIN_CACHE_FORCE set); VACUOUS" >&2
+        [[ "$rc" == 0 ]] && rc=3
+    else
+        echo "[psx-oracle] $TC_ROW"
+    fi
 fi
 
 # Engaged form: with OPENPETE_IDENT_AUDIT=<VBL> set, the native

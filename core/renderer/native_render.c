@@ -23376,6 +23376,10 @@ void openpete_native_render_shutdown(void)
     rhi_wait_idle(s_nr.dev);
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
     openpete_tercache_shutdown(s_nr.dev);
+    /* The growth census row, printed whether or not the cache came up: a
+     * harness that forced the cache reads bakes=0 as a run that never
+     * exercised it. */
+    openpete_tercache_print_exit_row();
     /* Mod postfx chain objects: ping pool, UBO, cached pipelines
      * (both live registrations and the retirement list). */
     for (int i = 0; i < 2; i++)

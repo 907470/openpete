@@ -152,6 +152,10 @@ toasty-defeat@w1a                        | 3660  | 10   |        | 3665 | OPENPE
 toasty-defeat@w1b                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555
 # Toasty lowered wall 1 z-fighting the grass, drawn by the GPU terrain cache; freecam at VBL 3650.
 toasty-defeat@w1b-tcache                 | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555 OPENPETE_TERRAIN_CACHE_FORCE=1
+# The same pose with every arena primary sized at 32768 elements
+# (OPENPETE_TC_INITIAL_CAP), so the arenas grow mid-level: a coverage row of the
+# arena-growth path, whose image must match @w1b-tcache.
+toasty-defeat@w1b-tcsqueeze              | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768
 # Toasty lowered wall 2 drawn under the grass (disappears); freecam at VBL 3650.
 toasty-defeat@w2a                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=111273,125857,24236,-719,803
 # Toasty lowered wall 2 z-fighting the grass (interpenetrates); freecam at VBL 3650.

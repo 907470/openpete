@@ -1084,6 +1084,41 @@ typedef struct {
      * the arena-full claims), and the releases its deferred list could not
      * hold (returned at once, so a held state may read a reused run). */
     uint32_t prev_high, prev_cap, prev_fail, prev_defer_ovf;
+    /* Growth census (the `tercache:` exit row). `bakes` counts sector
+     * uploads that landed; `window_bakes` those between a level-edge resize
+     * request and its adoption. A claim is a chunk the arenas refused: one
+     * made while a level-edge request is open counts in `edge_claims`, one
+     * made while the arena's growth or consolidation request is open in
+     * `grow_claims`, any other in `claims` of its arena; `retire_claims`
+     * counts, across all three, the claims made while a replacement awaited
+     * its retire drain. `prev_fail` above counts store refusals outside a
+     * store-growth window and `prev_grow_claims` those inside one. */
+    uint32_t bakes, window_bakes;
+    uint32_t claims[OPTC_ARENA_COUNT];
+    uint32_t edge_claims, grow_claims, retire_claims, prev_grow_claims;
+    /* Buffers adopted by growth, consolidation buffers adopted, level-edge
+     * replacements the device refused, store replacements adopted. */
+    uint32_t grow, consolidations, failed_edges, prev_grow;
+    /* Deferred releases that found the arena or store deferred list full
+     * and returned at once. */
+    uint32_t defer_overflow;
+    /* openpete_tercache_hold_counts, copied so the exit row survives shutdown. */
+    uint32_t hold_takes, hold_misses, hold_drops;
+    /* Held draws of a sealed range, allocations made in a sealed buffer
+     * (the invariant is 0), bytes of consolidation sources still waiting on
+     * their floors, buffers allocated on a memory type without
+     * DEVICE_LOCAL, free-list spans dropped for want of list room (the
+     * invariant is 0), canonical ticks a consolidation took to migrate its
+     * sources, and bytes held by slots whose sector left the table. */
+    uint32_t sealed_draws, sealed_allocs;
+    uint64_t pinned_bytes;
+    uint32_t nonlocal_bufs, dropped_spans, migrate_ticks;
+    uint64_t stale_bytes;
+    /* Draw-range census: the most buffers any arena held at once, the
+     * largest range list a committed state carried (against TC_RANGE_MAX),
+     * and the draws of a state with no range list. */
+    uint32_t bufs_max[OPTC_ARENA_COUNT];
+    uint32_t ranges_max, cen_nolist;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *
@@ -1094,5 +1129,22 @@ typedef struct {
  * another thread than the builder can be one update stale.
  * @param out Destination; NULL is ignored. */
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out);
+/** @brief Count one sector upload that landed on the cache.
+ *
+ * Builder thread, after a sector's chunks and records were all allocated
+ * and written. Feeds `bakes` and, while a level-edge resize request awaits
+ * adoption, `window_bakes` of the stats. */
+void openpete_tercache_note_bake(void);
+/** @brief Print the `tercache:` exit row of the growth census to the log.
+ *
+ * Reads openpete_tercache_get_stats, so after shutdown it reports the final
+ * snapshot, and on a run whose cache never came up it reports zeros. One
+ * row: bakes, grow, consolidations, failed_edges, prev_grow, prev_fail,
+ * claims per arena and their sum, edge_claims, grow_claims, retire_claims,
+ * prev_grow_claims, window_bakes, defer_overflow, the hold counters,
+ * sealed_draws, sealed_allocs, svc_fulfilled, draws_retired, pinned_bytes,
+ * nonlocal_bufs, dropped_spans, migrate_ticks, stale_bytes, buffers per
+ * arena, ranges_max and nolist. */
+void openpete_tercache_print_exit_row(void);
 
 #endif /* OPENPETE_TERRAIN_CACHE_H */

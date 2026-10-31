@@ -82,6 +82,9 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
  * OPTC_COLTAB_RING entries, each (1 + 2 * (LP + 2 * HP colours)) words. */
 #define TC_PREV_CAP 65536u
 
+/* Allocation sites the refusal knob (tc_refuse) can target. */
+enum { TC_SITE_EDGE, TC_SITE_GROW, TC_SITE_CONS, TC_SITE_STORE, TC_SITE_N };
+
 /* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
  * faces, and the hole-fill backing is LP only. */
 enum { TC_CP_WORLD, TC_CP_MARK, TC_CP_ALPHA, TC_CP_ADD, TC_CP_SUB,
@@ -335,6 +338,7 @@ static struct {
     int           prev_defer_n;
     uint32_t      prev_fail;          /* refused record allocations (census)  */
     uint32_t      prev_defer_ovf;     /* releases past prev_defer, returned at once (census) */
+    uint32_t      prev_cap;           /* store capacity in units              */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
     tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
@@ -427,6 +431,17 @@ static struct {
     _Atomic uint32_t svc_calls, svc_fulfilled;
     _Atomic uint32_t draws_retired;
     uint32_t         alloc_fail[OPTC_ARENA_COUNT];
+    /* ---- growth census (openpete_tercache_print_exit_row) ---- */
+    int              rz_window;      /* builder: a level-edge request awaits adoption */
+    _Atomic uint32_t rz_failed;      /* device -> builder: refused replacements */
+    uint32_t         rz_failed_seen; /* builder's copy of rz_failed            */
+    uint32_t         bakes, window_bakes;
+    uint32_t         claims[OPTC_ARENA_COUNT];
+    uint32_t         edge_claims, grow_claims, retire_claims, prev_grow_claims;
+    uint32_t         failed_edges, defer_overflow, dropped_spans;
+    _Atomic uint32_t nonlocal_bufs;  /* device thread counts, builder reads    */
+    uint32_t         bufs_max[OPTC_ARENA_COUNT];
+    uint32_t         ranges_max;
 } s_tc;
 
 enum { TC_RZ_IDLE = 0, TC_RZ_READY = 1, TC_RZ_RETIRE = 2 };
@@ -485,8 +500,7 @@ static uint32_t tc_level_cap(int level_id, int arena)
  * replaces 48 or 96 baked vertices, so the sixteenth still binds after the
  * vertex arenas do. A measuring run uses it to size the primaries past any
  * content and read an uncensored high-water mark, or to squeeze them so the
- * overflow path runs. The overflow buffer is sized by tc_level_cap, not by
- * this.
+ * overflow path runs. The overflow buffer is sized by this too.
  * @param level_id Level id, or -1 before any level has loaded.
  * @param arena Arena index.
  * @return Capacity in vertices, or in records on a cell arena. */
@@ -501,6 +515,91 @@ static uint32_t tc_initial_cap(int level_id, int arena)
     if (ov <= 0) return tc_level_cap(level_id, arena);
     if (OPTC_ARENA_IS_CELL(arena)) return ov >= 16 ? (uint32_t)(ov / 16) : 1u;
     return (uint32_t)ov;
+}
+
+/** @brief Return the buffer count an arena may hold, OPENPETE_TC_BUF_MAX clamped to [1, TC_BUF_MAX].
+ *
+ * Read once; unset or empty gives TC_BUF_MAX. A harness lowers it so an
+ * arena runs out of buffers early. Outside the knob registry.
+ * @return The buffer count. */
+static int tc_buf_max(void)
+{
+    static int v;
+    if (!v) {
+        const char *e = getenv("OPENPETE_TC_BUF_MAX");
+        long x = (e && *e) ? strtol(e, NULL, 10) : TC_BUF_MAX;
+        if (x < 1) x = 1;
+        if (x > TC_BUF_MAX) x = TC_BUF_MAX;
+        v = (int)x;
+    }
+    return v;
+}
+
+/** @brief Return the previous-tick store's capacity at init, in units: OPENPETE_TC_PREV_CAP, else TC_PREV_CAP.
+ *
+ * Read once; a value below 1 takes TC_PREV_CAP. A harness shrinks it so
+ * the store runs out. Outside the knob registry.
+ * @return Units. */
+static uint32_t tc_prev_cap_init(void)
+{
+    static uint32_t v;
+    if (!v) {
+        const char *e = getenv("OPENPETE_TC_PREV_CAP");
+        const long x = (e && *e) ? strtol(e, NULL, 10) : 0;
+        v = x >= 1 ? (uint32_t)x : TC_PREV_CAP;
+    }
+    return v;
+}
+
+static long s_refuse_cnt[TC_SITE_N], s_refuse_skip[TC_SITE_N];
+
+/** @brief Parse one item of OPENPETE_TC_REFUSE into the refusal tables.
+ *
+ * The item is `site:count`, optionally followed by `@skip`.
+ * @param p The item's first character; parsing stops at a comma or the end. */
+static void tc_refuse_item(const char *p)
+{
+    static const char *const names[TC_SITE_N] = { "edge", "grow", "cons", "store" };
+    for (int k = 0; k < TC_SITE_N; k++) {
+        const size_t n = strlen(names[k]);
+        if (strncmp(p, names[k], n) != 0 || p[n] != ':') continue;
+        const char *q = p + n + 1;
+        s_refuse_cnt[k] = *q == '*' ? -1 : strtol(q, NULL, 10);
+        const char *at = strpbrk(q, "@,");
+        if (at && *at == '@') s_refuse_skip[k] = strtol(at + 1, NULL, 10);
+    }
+}
+
+/** @brief Decide whether the refusal knob refuses this allocation at an allocation site.
+ *
+ * OPENPETE_TC_REFUSE is a comma list of `site:count[@skip]`, site one of
+ * edge (the level-edge replacement), grow (a growth buffer), cons (a
+ * consolidation buffer) or store (a previous-tick store replacement):
+ * past the first @p skip allocations at the site, the next @p count are
+ * refused, `*` meaning every one. Read once; device-owning thread only,
+ * like every allocation it gates. Outside the knob registry; a harness
+ * selects one site, which OPENPETE_RHI_FAIL_MEMTYPE (every allocation on a
+ * memory type) cannot.
+ * @param site A TC_SITE_* value.
+ * @return 1 to refuse, else 0. */
+static int tc_refuse(int site)
+{
+    static int parsed;
+    static long seen[TC_SITE_N];
+    long *const cnt = s_refuse_cnt, *const skip = s_refuse_skip;
+    if (!parsed) {
+        parsed = 1;
+        const char *p = getenv("OPENPETE_TC_REFUSE");
+        while (p && *p) {
+            tc_refuse_item(p);
+            p = strchr(p, ',');
+            if (p) p++;
+        }
+    }
+    if (site < 0 || site >= TC_SITE_N || cnt[site] == 0) return 0;
+    const long i = seen[site]++;
+    if (i < skip[site]) return 0;
+    return cnt[site] < 0 || i - skip[site] < cnt[site];
 }
 
 /** @brief Return the byte size of one element of an arena's main buffer.
@@ -571,6 +670,8 @@ static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
         pr->pv = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_nearctx));
     const int twin_owed = OPTC_ARENA_IS_ANIM(arena) || OPTC_ARENA_IS_NEAR(arena);
     if (!pr->vb || (twin_owed && !pr->pv)) { tc_pair_free(dev, pr); return NULL; }
+    if (!rhi_buffer_device_local(pr->vb) || (pr->pv && !rhi_buffer_device_local(pr->pv)))
+        atomic_fetch_add_explicit(&s_tc.nonlocal_bufs, 1u, memory_order_relaxed);
     return pr;
 }
 
@@ -991,6 +1092,7 @@ int openpete_tercache_init(rhi_device *dev, void (*batch)(int open))
         s_tc.arena[a].buf[0].cap = pr->cap;
         atomic_store_explicit(&s_tc.arena[a].buf[0].pair, pr, memory_order_relaxed);
         atomic_store_explicit(&s_tc.arena[a].n, 1, memory_order_relaxed);
+        s_tc.bufs_max[a] = 1;
     }
     if (!ok) {
         fprintf(stderr, "[ter-gpu] init failed (pipeline or arena alloc) - "
@@ -1009,15 +1111,16 @@ int openpete_tercache_init(rhi_device *dev, void (*batch)(int open))
      * first build, which may run on the thread that runs the guest. */
     s_tc.ubo = rhi_create_ubo(dev, (uint32_t)TC_UBO_BLOCK, 2);
     if (!s_tc.ubo) return 0;
+    s_tc.prev_cap = tc_prev_cap_init();
     s_tc.prev_store = rhi_create_storage_buffer_device(
-        dev, (size_t)TC_PREV_CAP * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
+        dev, (size_t)s_tc.prev_cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
     if (!s_tc.prev_store || !s_tc.hd_dummy) {
         fprintf(stderr, "[ter-gpu] init failed (record store or set-2 stand-in) - "
                         "terrain cache disabled, CPU path stays\n");
         openpete_tercache_shutdown(dev);
         return 0;
     }
-    s_tc.prev_alloc.cap = TC_PREV_CAP;
+    s_tc.prev_alloc.cap = s_tc.prev_cap;
     s_tc.ready = 1;
     return 1;
 }
@@ -1114,7 +1217,7 @@ static void tc_free_insert(tc_buf *a, uint32_t first, uint32_t count)
         a->free_list[i].count += count;
         return;
     }
-    if (a->free_n >= TC_FREE_MAX) return;   /* span leaked until level reset */
+    if (a->free_n >= TC_FREE_MAX) { s_tc.dropped_spans++; return; }   /* leaked until level reset */
     memmove(&a->free_list[i+1], &a->free_list[i],
             (size_t)(a->free_n - i) * sizeof(tc_span));
     a->free_list[i].first = first;
@@ -1154,8 +1257,9 @@ static int tc_buf_alloc(tc_buf *a, uint32_t n, uint32_t *out_first)
 /** @brief Ask the device-owning thread for an overflow buffer for one arena.
  *
  * Builder thread, from a chunk every buffer of the arena refused. The size
- * asked for is the level's generated capacity, or the refused chunk where
- * that is larger, so one grant covers the rest of the level rather than one
+ * asked for is the primary's size (tc_initial_cap: the level's generated
+ * capacity, or OPENPETE_TC_INITIAL_CAP), or the refused chunk where that is
+ * larger, so one grant covers the rest of the level rather than one
  * sector. Dropped while this arena already has a request outstanding, an
  * overflow installed, or a refusal on record. Records the service call and
  * build counts the adoption log measures against.
@@ -1165,9 +1269,9 @@ static void tc_request_overflow(int arena, uint32_t verts)
 {
     tc_arena *a = &s_tc.arena[arena];
     if (a->ovf_state != TC_OVF_IDLE) return;
-    if (atomic_load_explicit(&a->n, memory_order_relaxed) >= TC_BUF_MAX) return;
-    uint32_t want = tc_level_cap(atomic_load_explicit(&s_tc.level_id,
-                                                      memory_order_relaxed), arena);
+    if (atomic_load_explicit(&a->n, memory_order_relaxed) >= tc_buf_max()) return;
+    uint32_t want = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
+                                                        memory_order_relaxed), arena);
     if (verts > want) want = verts;
     s_tc.ovf_want[arena] = want;
     s_tc.ovf_req_svc[arena] = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed);
@@ -1343,6 +1447,7 @@ static void tc_ranges_build(tc_state *T)
             if (tc_ranges_add_buf(T, a, b) != 0) { T->rl.n = -1; return; }
         }
     T->rl.off[OPTC_ARENA_COUNT * TC_BUF_MAX] = (uint16_t)T->rl.n;
+    if ((uint32_t)T->rl.n > s_tc.ranges_max) s_tc.ranges_max = (uint32_t)T->rl.n;
 }
 
 /** @brief Copy a state, including only the range-list spans in use.
@@ -1387,6 +1492,11 @@ int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first
     }
     s_tc.alloc_fail[arena]++;
     tc_request_overflow(arena, (uint32_t)vert_count);
+    if (s_tc.rz_window) s_tc.edge_claims++;
+    else if (a->ovf_state == TC_OVF_REQ) s_tc.grow_claims++;
+    else s_tc.claims[arena]++;
+    if (atomic_load_explicit(&s_tc.rz_state, memory_order_relaxed) == TC_RZ_RETIRE)
+        s_tc.retire_claims++;
     return -1;   /* full: caller claims the sector back to the CPU walk */
 }
 
@@ -1457,6 +1567,7 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
             (uint8_t)arena, (uint8_t)buf, first, (uint32_t)count, s_tc.present_ctr };
     } else {
         tc_free_insert(a, first, (uint32_t)count);   /* overflow: reuse now (rare) */
+        s_tc.defer_overflow++;
     }
 }
 
@@ -1487,6 +1598,7 @@ void openpete_tercache_prev_free(uint32_t first, int count)
             (tc_defer){ 0u, 0u, first, (uint32_t)count, s_tc.present_ctr };
     else {
         s_tc.prev_defer_ovf++;
+        s_tc.defer_overflow++;
         tc_free_insert(a, first, (uint32_t)count);
     }
 }
@@ -1518,6 +1630,7 @@ void openpete_tercache_request_resize(int level_id)
 {
     if (!s_tc.ready) return;
     openpete_tercache_set_level(level_id);
+    s_tc.rz_window = 1;
     atomic_store_explicit(&s_tc.rz_req, 1, memory_order_release);
 }
 
@@ -1577,6 +1690,7 @@ static void tc_adopt_overflow(void)
         b->cap = pr->cap; b->high = 0; b->free_n = 0; b->used = 0; b->chunks = 0;
         atomic_store_explicit(&b->pair, pr, memory_order_release);
         atomic_store_explicit(&ar->n, n + 1, memory_order_release);
+        if ((uint32_t)(n + 1) > s_tc.bufs_max[a]) s_tc.bufs_max[a] = (uint32_t)(n + 1);
         ar->ovf_state = TC_OVF_LIVE;
         s_tc.overflow_adopted[a]++;
         s_tc.alloc_epoch++;
@@ -1626,6 +1740,20 @@ int openpete_tercache_serial_released(uint32_t serial)
     return !tc_release_floor(&floor_serial) || (int32_t)(serial - floor_serial) <= 0;
 }
 
+/** @brief Close the level-edge window when the device refused the replacement.
+ *
+ * Builder thread, from frame_begin and frame_skip. The device counts each
+ * refused replacement in rz_failed; a count the builder has not seen closes
+ * the open window (the live buffers stay) and counts a failed edge. */
+static void tc_note_failed_edge(void)
+{
+    const uint32_t f = atomic_load_explicit(&s_tc.rz_failed, memory_order_acquire);
+    if (f == s_tc.rz_failed_seen) return;
+    s_tc.failed_edges += f - s_tc.rz_failed_seen;
+    s_tc.rz_failed_seen = f;
+    if (!atomic_load_explicit(&s_tc.rz_req, memory_order_relaxed)) s_tc.rz_window = 0;
+}
+
 /** @brief Adopt a fulfilled level-edge replacement.
  *
  * Builder thread, from frame_begin and frame_skip; no-op unless the
@@ -1670,6 +1798,7 @@ static void tc_adopt_pending(void)
     s_tc.reg_broken = 0;
     s_tc.rz_old_build = s_tc.present_ctr;
     s_tc.rz_old_svc   = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed);
+    s_tc.rz_window = 0;
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_RETIRE, memory_order_release);
 }
 
@@ -1713,7 +1842,9 @@ static void tc_resize_fulfil(void)
         made[a] = ok ? tc_pair_make(s_tc.dev, a, tc_initial_cap(level, a)) : NULL;
         if (!made[a]) ok = 0;
     }
+    if (ok && tc_refuse(TC_SITE_EDGE)) ok = 0;
     if (!ok) {
+        atomic_fetch_add_explicit(&s_tc.rz_failed, 1u, memory_order_release);
         for (int a = 0; a < OPTC_ARENA_COUNT; a++) tc_pair_free(s_tc.dev, made[a]);
         if (!s_tc.rz_alloc_logged) {
             s_tc.rz_alloc_logged = 1;
@@ -1741,7 +1872,7 @@ static void tc_overflow_fulfil(void)
     if (!mask) return;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (!(mask & (1u << a))) continue;
-        tc_pair *pr = tc_pair_make(s_tc.dev, a, s_tc.ovf_want[a]);
+        tc_pair *pr = tc_refuse(TC_SITE_GROW) ? NULL : tc_pair_make(s_tc.dev, a, s_tc.ovf_want[a]);
         if (!pr && !s_tc.ovf_fail_logged[a]) {
             s_tc.ovf_fail_logged[a] = 1;
             fprintf(stderr, "[ter-gpu] arena %d overflow buffer of %u vertices: "
@@ -1961,6 +2092,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     if (!s_tc.ready || !g) return;
     s_tc.present_ctr++;
     atomic_store_explicit(&s_tc.build_ctr, s_tc.present_ctr, memory_order_release);
+    tc_note_failed_edge();
     tc_adopt_pending();
     tc_adopt_overflow();
     s_tc.draws_prev = atomic_exchange_explicit(&s_tc.draws_last, 0u, memory_order_relaxed);
@@ -2079,6 +2211,7 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
      * chain with an all-claimed (empty) state, so the present that renders
      * this build's scene draws no retained content. */
     if (!s_tc.ready) return;
+    tc_note_failed_edge();
     tc_adopt_pending();
     tc_adopt_overflow();
     tc_state *T = tc_begin_state(stamp, immediate);
@@ -2739,7 +2872,7 @@ static void tc_bind_draw_inputs(rhi_texture *vram, const openpete_tercache_keys 
      * one bind serves every pipeline the pass switches to. */
     rhi_bind_texture_storage(s_tc.dev, (keys && keys->prop) ? keys->prop : s_tc.hd_dummy,
                              s_tc.prev_store,
-                             (uint32_t)(TC_PREV_CAP * OPTC_PREV_REC_WORDS * sizeof(uint32_t)),
+                             (uint32_t)(s_tc.prev_cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t)),
                              2, 0);
     rhi_texture *at = openpete_native_hdfold_atlas();
     if (!at) at = s_tc.hd_dummy;
@@ -2906,4 +3039,71 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->prev_cap       = s_tc.prev_alloc.cap;
     out->prev_fail      = s_tc.prev_fail;
     out->prev_defer_ovf = s_tc.prev_defer_ovf;
+    out->bakes          = s_tc.bakes;
+    out->window_bakes   = s_tc.window_bakes;
+    memcpy(out->claims, s_tc.claims, sizeof out->claims);
+    out->edge_claims    = s_tc.edge_claims;
+    out->grow_claims    = s_tc.grow_claims;
+    out->retire_claims  = s_tc.retire_claims;
+    out->prev_grow_claims = s_tc.prev_grow_claims;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) out->grow += s_tc.overflow_adopted[a];
+    out->failed_edges   = s_tc.failed_edges;
+    out->defer_overflow = s_tc.defer_overflow;
+    out->hold_takes     = s_tc.hold_takes;
+    out->hold_misses    = s_tc.hold_misses;
+    out->hold_drops     = s_tc.hold_drops;
+    out->nonlocal_bufs  = atomic_load_explicit(&s_tc.nonlocal_bufs, memory_order_relaxed);
+    out->dropped_spans  = s_tc.dropped_spans;
+    memcpy(out->bufs_max, s_tc.bufs_max, sizeof out->bufs_max);
+    out->ranges_max     = s_tc.ranges_max;
+    out->cen_nolist     = s_tc.cen_nolist;
+}
+
+void openpete_tercache_note_bake(void)
+{
+    s_tc.bakes++;
+    if (s_tc.rz_window) s_tc.window_bakes++;
+}
+
+/** @brief Format one census array as a comma-separated per-arena column.
+ * @param out Receives the NUL-terminated column.
+ * @param cap Capacity of @p out in bytes.
+ * @param v The per-arena values.
+ * @return The values' sum. */
+static uint64_t tc_fmt_col(char *out, size_t cap, const uint32_t *v)
+{
+    size_t at = 0;
+    uint64_t sum = 0;
+    out[0] = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        sum += v[a];
+        const int n = snprintf(out + at, cap - at, "%s%u", a ? "," : "", v[a]);
+        if (n < 0 || (size_t)n >= cap - at) break;
+        at += (size_t)n;
+    }
+    return sum;
+}
+
+void openpete_tercache_print_exit_row(void)
+{
+    openpete_tercache_stats_t st;
+    openpete_tercache_get_stats(&st);
+    char cl[256], bm[128];
+    const uint64_t csum = tc_fmt_col(cl, sizeof cl, st.claims);
+    (void)tc_fmt_col(bm, sizeof bm, st.bufs_max);
+    fprintf(stderr, "tercache: bakes=%u grow=%u consolidations=%u failed_edges=%u prev_grow=%u "
+            "prev_fail=%u claims_sum=%llu claims=%s edge_claims=%u grow_claims=%u "
+            "retire_claims=%u prev_grow_claims=%u window_bakes=%u defer_overflow=%u "
+            "hold_takes=%u hold_misses=%u hold_drops=%u sealed_draws=%u sealed_allocs=%u "
+            "svc_fulfilled=%u draws_retired=%u pinned_bytes=%llu nonlocal_bufs=%u "
+            "dropped_spans=%u migrate_ticks=%u stale_bytes=%llu bufs=%s ranges_max=%u/%d "
+            "nolist=%u\n",
+            st.bakes, st.grow, st.consolidations, st.failed_edges, st.prev_grow, st.prev_fail,
+            (unsigned long long)csum, cl, st.edge_claims, st.grow_claims, st.retire_claims,
+            st.prev_grow_claims, st.window_bakes, st.defer_overflow, st.hold_takes,
+            st.hold_misses, st.hold_drops,
+            st.sealed_draws, st.sealed_allocs, st.svc_fulfilled, st.draws_retired,
+            (unsigned long long)st.pinned_bytes, st.nonlocal_bufs, st.dropped_spans,
+            st.migrate_ticks, (unsigned long long)st.stale_bytes, bm, st.ranges_max,
+            TC_RANGE_MAX, st.cen_nolist);
 }

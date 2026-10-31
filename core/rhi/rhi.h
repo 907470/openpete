@@ -1173,6 +1173,14 @@ rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes);
  * @param bytes Buffer size in bytes.
  * @return The buffer, or NULL when allocation fails. */
 rhi_buffer *rhi_create_storage_buffer_device(rhi_device *dev, size_t bytes);
+/** @brief Report whether a buffer's memory carries DEVICE_LOCAL.
+ *
+ * Meaningful for the buffers rhi_create_vertex_buffer_device and
+ * rhi_create_storage_buffer_device make, which fall back to a host-visible
+ * type without DEVICE_LOCAL when the device-local types refuse.
+ * @param b The buffer; NULL reads 0.
+ * @return 1 when the memory type is DEVICE_LOCAL, else 0. */
+int rhi_buffer_device_local(const rhi_buffer *b);
 /** @brief Create a per-frame-in-flight ring vertex buffer for content rewritten every present.
  *
  * rhi_create_vertex_buffer_dynamic_gens with one generation. rhi_update_buffer

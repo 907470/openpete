@@ -845,6 +845,7 @@ struct rhi_buffer {
     uint32_t       gens, gen_cur;
     uint64_t       gen_serial;   /* frame serial gen_cur/gen_bound belong to */
     bool           gen_bound;    /* current generation referenced by a draw */
+    bool           device_local; /* memory type carries DEVICE_LOCAL (device-mapped buffers) */
     rhi_device    *dev;        /* for frame indexing in rhi_update_buffer */
 };
 
@@ -5635,6 +5636,8 @@ static rhi_buffer *create_device_mapped_buffer(rhi_device *dev, size_t bytes,
         if (r == VK_SUCCESS) {
             RHI_LOG("%s %zu B: type %u flags %x\n", what, bytes,
                     cand[i], (unsigned)mp.memoryTypes[cand[i]].propertyFlags);
+            b->device_local = (mp.memoryTypes[cand[i]].propertyFlags &
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
             break;
         }
         RHI_LOG("%s %zu B: type %u failed (%d)\n", what, bytes,
@@ -5649,6 +5652,11 @@ static rhi_buffer *create_device_mapped_buffer(rhi_device *dev, size_t bytes,
     vkMapMemory(dev->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped);
     b->dev = dev;
     return b;
+}
+
+int rhi_buffer_device_local(const rhi_buffer *b)
+{
+    return b && b->device_local;
 }
 
 rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)

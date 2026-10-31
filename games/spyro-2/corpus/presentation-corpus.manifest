@@ -41,6 +41,12 @@ attract-demo@heldfade|3234|100|freeze|3236
 # intermediate leg holds the previous tick instead of lerping the chord; the
 # canonical leg is unaffected.
 autumn-plains-skelos-badlands-portal-entry|1723|200||1423,1424,1425,1646,1658,1712,1723,1774,1823,1923,2123,2273
+# @tcache / @tcsqueeze: the retained terrain cache forced on (llvmpipe refuses it
+# otherwise) across a level edge; @tcsqueeze also sizes every arena primary at
+# 32768 elements (OPENPETE_TC_INITIAL_CAP) so the arenas grow mid-level. Coverage
+# rows of the arena-growth path: the image must match the unsqueezed run.
+autumn-plains-skelos-badlands-portal-entry@tcache|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1
+autumn-plains-skelos-badlands-portal-entry@tcsqueeze|1723|200||1723,2273|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_INITIAL_CAP=32768
 #
 # colossus-ice-skating: the player on the Colossus rink with the mirrored copy
 # under the ice. 1494, 1694 and 1734 are intermediate legs whose tick pair spans a

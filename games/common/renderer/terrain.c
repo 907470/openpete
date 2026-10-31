@@ -10577,7 +10577,7 @@ static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
  * @return 1 when both landed, 0 when the store or an arena is full. */
 static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) {
     if (tgpu_prev_upload(T, buf) != 0) return 0;
-    if (tgpu_upload_chunks(T, buf) == 0) return 1;
+    if (tgpu_upload_chunks(T, buf) == 0) { openpete_tercache_note_bake(); return 1; }
     if (T->prevCount > 0) openpete_tercache_prev_free(T->prevFirst, T->prevCount);
     T->prevCount = 0;
     return 0;
