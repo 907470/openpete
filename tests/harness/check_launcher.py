@@ -20,6 +20,22 @@ Cases:
             (tests/launcher/layout-reference.json) parses, covers the six
             presets, and carries no field outside the id/kind/rect/font/px/
             cell set (no game-derived field).
+  handoff   The last launcher present before the game's first present is
+            black on every path into the game (OPENPETE_LAUNCHER_TRACE: every
+            present from the launcher window's first through the game's
+            first, each read back and its pixels other than (0,0,0)
+            counted). Paths, each one run of Spyro 1 to --frame-limit 30
+            over a library seeded with one entry whose disc.bin links the
+            repository's disc image: the selector's pick with the launcher
+            window at the game's size and at 1280x800 (a resize at the
+            adoption); after the mod compile (a copy of mods/chain-duo-a in
+            a scratch --mods-dir); after the shader compile's progress screen
+            (OPENPETE_PRECOMPILE_FORCE=1, OPENPETE_PRECOMPILE_PANEL_MS=0);
+            into --fullscreen 1; and a --disc launch without the launcher
+            with the shader compile's progress screen. Each run must log the
+            game's first present, a launcher present that drew (engagement),
+            and a last launcher present with no pixel other than (0,0,0);
+            the mod and shader runs must log their step.
   calibrate Not a ctest case: compares the drop screen with a reference
             manifest of the same screen (--calibration PATH: per preset, a
             "drop" list of id/kind/rect items), printing each element's rect
@@ -32,6 +48,7 @@ Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary or xvfb-run missing).
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +59,8 @@ PRESETS = ["1280x800", "1920x1080", "2560x1080", "1024x768", "2560x1440", "3840x
 REFERENCE_KEYS = {"id", "kind", "rect", "font", "px", "cell"}
 # The virtual display: larger than the largest preset, so no request is cut.
 SCREEN = "4096x2304"
+DISC_BIN = os.path.join(ROOT, "games", "spyro-1", "spyro-1", "build", "SCUS-94228.bin")
+DISC_CUE = os.path.join(ROOT, "games", "spyro-1", "spyro-1", "build", "SCUS-94228.cue")
 DROP_IDS = {"title", "drag.1", "drag.2", "browse.hint", "browse.button", "disc.note", "quit.hint"}
 
 
@@ -62,7 +81,8 @@ def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN):
     """One windowed run under a fresh virtual display; returns (rc, log text)."""
     if not shutil.which("xvfb-run"):
         raise Skip("xvfb-run not found")
-    e = {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY"}
+    # The caller's OPENPETE_* knobs (OPENPETE_BACKGROUND, for one) would change the paths under test.
+    e = {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY" and not k.startswith("OPENPETE_")}
     e.update({"SDL_VIDEODRIVER": "x11", "OPENPETE_MSGBOX_SKIP": "1",
               "XDG_DATA_HOME": os.path.join(d, "data"), "XDG_STATE_HOME": os.path.join(d, "state"),
               "XDG_CONFIG_HOME": os.path.join(d, "config")})
@@ -94,6 +114,102 @@ def drop_manifest(binary, d, preset, extra_env=None):
     env.update(extra_env or {})
     rc, _ = launch(binary, d, "drop-" + preset, ["--launcher-window", preset], env)
     return read_json(base + ".drop.json"), rc
+
+
+def seed_library(d):
+    """A library holding one Spyro 1 entry whose disc.bin links the repository's image (no copy)."""
+    if not os.path.isfile(DISC_BIN):
+        raise Skip(f"{DISC_BIN} missing")
+    e = os.path.join(d, "data", "openpete", "library", "00000000launcher")
+    os.makedirs(e)
+    os.symlink(DISC_BIN, os.path.join(e, "disc.bin"))
+    with open(os.path.join(e, "disc.cue"), "w") as f:
+        f.write('FILE "disc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    with open(os.path.join(e, "meta.toml"), "w") as f:
+        f.write('label = "Spyro the Dragon (launcher test)"\nsource = "SCUS-94228.bin"\n'
+                'sha256 = "%s"\nlast_played = 1\ngame = "spyro-1"\n' % ("0" * 64))
+
+
+def trace_presents(log):
+    """The OPENPETE_LAUNCHER_TRACE lines: (source, window (w, h), nonzero count) in order."""
+    out = []
+    for m in re.finditer(r"lxt present #\d+ (\w+) window (\d+)x(\d+) extent \d+x\d+ nonzero (-?\d+)", log):
+        out.append((m.group(1), (int(m.group(2)), int(m.group(3))), int(m.group(4))))
+    return out
+
+
+def handoff_verdict(log):
+    """Problems with one run's hand-off present sequence, and its engagement count."""
+    ps = trace_presents(log)
+    game = [i for i, p in enumerate(ps) if p[0] == "game"]
+    if not game:
+        return ["no game present traced"], 0
+    before = [p for p in ps[:game[0]] if p[0] == "launcher"]
+    drew = sum(1 for p in before if p[2] > 0)
+    if not before:
+        return ["no launcher present before the game's first"], 0
+    bad = []
+    if before[-1][2] != 0:
+        bad.append(f"last launcher present {before[-1][1]} has {before[-1][2]} pixels other than (0,0,0)")
+    return bad, drew
+
+
+def run_handoff(a, d, tag, args, env=None, need=None):
+    """One hand-off run: its problems, its engagement and its present sequence."""
+    run = os.path.join(d, tag)
+    os.makedirs(run)
+    seed_library(run)
+    e = {"OPENPETE_LAUNCHER_TRACE": "1", "OPENPETE_LAUNCHER_SELECT": "0"}
+    e.update(env or {})
+    rc, log = launch(a.binary, run, "run", args + ["--frame-limit", "30"], e, timeout=300)
+    bad, drew = handoff_verdict(log)
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    if need and not re.search(need, log):
+        bad.append(f"the step did not run (no line matching {need!r})")
+    return bad, drew, trace_presents(log)
+
+
+def copy_mod(d):
+    """A scratch --mods-dir holding a copy of mods/chain-duo-a, enabled."""
+    m = os.path.join(d, "scratch-mods")
+    shutil.copytree(os.path.join(ROOT, "mods", "chain-duo-a"), os.path.join(m, "chain-duo-a"),
+                    ignore=shutil.ignore_patterns(".build"))
+    with open(os.path.join(m, "enabled.txt"), "w") as f:
+        f.write("chain-duo-a\n")
+    return m
+
+
+def case_handoff(a):
+    """The black last launcher present on each path into the game."""
+    d = case_dir(a.out, "handoff")
+    shaders = {"OPENPETE_PRECOMPILE_FORCE": "1", "OPENPETE_PRECOMPILE_PANEL_MS": "0"}
+    shader_line = r"progress screen [1-9]\d* present"
+    # (tag, arguments, environment, the line the step logs, launcher presents that must draw)
+    runs = [
+        ("page-same-size", ["--launcher-window", "640x448"], None, None, 1),
+        ("page-resize", ["--launcher-window", "1280x800"], None, None, 1),
+        ("mods", ["--launcher-window", "1280x800", "--mods-dir", copy_mod(d)], None,
+         r"mods: 1 mod stale - compiling before boot", 2),
+        ("shaders", ["--launcher-window", "1280x800"], shaders, shader_line, 2),
+        ("fullscreen", ["--launcher-window", "1280x800", "--fullscreen", "1"], None, None, 1),
+        ("disc-no-launcher", ["--disc", DISC_CUE, "--game", "spyro-1"], shaders, shader_line, 1),
+    ]
+    if not os.path.isfile(os.path.join(a.build_dir, "sdk", "openpete_mod_api.h")):
+        print(f"[launcher] FAIL: no mod SDK in {a.build_dir}/sdk (the ALL target stages it); "
+              "the mod path cannot run")
+        return 1
+    fails = 0
+    for tag, args, env, need, min_drew in runs:
+        bad, drew, ps = run_handoff(a, d, tag, args, env, need)
+        if not bad and drew < min_drew:
+            bad = [f"VACUOUS: {drew} launcher presents drew, {min_drew} expected"]
+        last = [p for p in ps if p[0] == "launcher"][-1:] or [None]
+        print(f"[launcher] {tag}: {len(ps)} presents traced, {drew} launcher presents drew, "
+              f"last launcher present {last[0]}: {'FAIL ' + '; '.join(bad) if bad else 'PASS'}")
+        fails += bool(bad)
+    print(f"[launcher] handoff: {'FAIL' if fails else 'PASS'} ({len(runs) - fails} of {len(runs)} paths)")
+    return 1 if fails else 0
 
 
 def check_reference_file():
@@ -177,7 +293,7 @@ def case_calibrate(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("case", choices=["manifest", "calibrate"])
+    ap.add_argument("case", choices=["manifest", "handoff", "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--calibration", default=None)
@@ -188,7 +304,8 @@ def main():
         print(f"[launcher] SKIP: {a.binary} missing")
         return 64
     try:
-        return {"manifest": case_manifest, "calibrate": case_calibrate}[a.case](a)
+        return {"manifest": case_manifest, "handoff": case_handoff,
+                "calibrate": case_calibrate}[a.case](a)
     except Skip as e:
         print(f"[launcher] SKIP: {e}")
         return 64

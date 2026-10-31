@@ -3148,7 +3148,7 @@ static _Atomic unsigned s_pxt_mismatch;
 static _Atomic unsigned s_pxt_presents;
 static uint64_t s_pxt_game0_ns;        /* first game present after the arm; presenting thread only */
 static int s_pxt_content;              /* 0 none seen, 1 any non-black pixel seen, 2 >= 1% seen */
-static long pxt_nonblack(rhi_device *dev, VkImage img);
+static long pxt_nonblack(rhi_device *dev, VkImage img, int thresh);
 
 /** @brief Return whether OPENPETE_PRESENT_EXTENT_TRACE is set to a value not starting with 0 (read once). */
 static bool pxt_enabled(void)
@@ -3209,6 +3209,45 @@ void rhi_present_trace_arm(rhi_device *dev, const char *why)
             w, h, dev->sc_extent.width, dev->sc_extent.height);
 }
 
+/* Launcher hand-off trace (OPENPETE_LAUNCHER_TRACE): every present from the
+ * device's first through the game's first, each read back. Presents run on
+ * the display owner, one thread at a time. */
+static int s_lxt_on = -1;
+static bool s_lxt_done;        /* the game's first present was logged */
+static unsigned s_lxt_n;       /* presents logged */
+
+/** @brief Return whether OPENPETE_LAUNCHER_TRACE is set to a value not starting with 0 (read once). */
+static bool lxt_enabled(void)
+{
+    if (s_lxt_on < 0) {
+        const char *e = getenv("OPENPETE_LAUNCHER_TRACE");
+        s_lxt_on = (e && *e && *e != '0');
+    }
+    return s_lxt_on > 0;
+}
+
+/** @brief Log one present of the launcher hand-off trace with its window and swapchain size and its count of pixels that are not (0,0,0), until the game's first present.
+ *
+ * A launcher present (rhi_boot_launcher_frames set) and the game's first
+ * present are read back from the image they presented; a stage-release
+ * present, which draws nothing, is logged without a count (-1). The game's
+ * first present ends the trace.
+ * @param dev Device that presented.
+ * @param src Source label; NULL names it from the launcher-frame flag.
+ * @param img The image whose content was presented (TRANSFER_SRC), or VK_NULL_HANDLE. */
+static void lxt_present(rhi_device *dev, const char *src, VkImage img)
+{
+    if (s_lxt_done || dev->headless || !lxt_enabled()) return;
+    if (!src) src = atomic_load(&s_launcher_frames) ? "launcher" : "game";
+    const long nz = img != VK_NULL_HANDLE ? pxt_nonblack(dev, img, 0) : -1;
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(dev->window, &w, &h);
+    const bool game = !strcmp(src, "game");
+    RHI_LOG("lxt present #%u %s window %dx%d extent %ux%u nonzero %ld%s\n", ++s_lxt_n, src, w, h,
+            dev->sc_extent.width, dev->sc_extent.height, nz, game ? " (the game's first present)" : "");
+    if (game) s_lxt_done = true;
+}
+
 /** @brief Log one present against the window's pixel size inside an armed trace window, with its content until the game's first picture.
  *
  * A game present is read back (the image it presented, waited idle) while
@@ -3222,6 +3261,7 @@ void rhi_present_trace_arm(rhi_device *dev, const char *why)
  * @param img The image whose content was presented (TRANSFER_SRC), or VK_NULL_HANDLE. */
 static void pxt_present(rhi_device *dev, const char *src, VkResult pr, VkImage img)
 {
+    lxt_present(dev, src, img);
     if (s_pxt_on <= 0 || atomic_load(&s_pxt_t0) == 0) return;
     int w = 0, h = 0;
     SDL_GetWindowSizeInPixels(dev->window, &w, &h);
@@ -3239,7 +3279,7 @@ static void pxt_present(rhi_device *dev, const char *src, VkResult pr, VkImage i
     const bool game = !strcmp(src, "game");
     if (game && !s_pxt_game0_ns) s_pxt_game0_ns = now;
     if (game && img != VK_NULL_HANDLE && s_pxt_content < 2 && pxt_ms(now) < 30000.0) {
-        nb = pxt_nonblack(dev, img);
+        nb = pxt_nonblack(dev, img, 8);
         const long total = (long)dev->off_extent.width * (long)dev->off_extent.height;
         const int level = nb >= total / 100 && nb > 0 ? 2 : nb > 0 ? 1 : 0;
         if (level > s_pxt_content) {
@@ -6686,14 +6726,15 @@ static size_t rt_readback_bytes(int w, int h)
     return (size_t)w * (size_t)h * RHI_RT_TEXEL_BYTES;
 }
 
-/** @brief Count the non-black pixels of a swapchain-sized image in TRANSFER_SRC layout, for the present-extent trace.
+/** @brief Count the non-black pixels of a swapchain-sized image in TRANSFER_SRC layout, for the present traces.
  *
  * Waits the device idle and copies the image through the readback staging
- * buffer. A pixel is non-black when any color channel exceeds 8.
+ * buffer. A pixel is non-black when any color channel exceeds @p thresh.
  * @param dev Device owning the image.
  * @param img Image of the swapchain extent, in TRANSFER_SRC_OPTIMAL.
+ * @param thresh The largest channel value that still counts as black.
  * @return The count, or -1 when staging cannot be allocated. */
-static long pxt_nonblack(rhi_device *dev, VkImage img)
+static long pxt_nonblack(rhi_device *dev, VkImage img, int thresh)
 {
     const int w = (int)dev->off_extent.width, h = (int)dev->off_extent.height;
     const size_t need = rt_readback_bytes(w, h);
@@ -6715,7 +6756,7 @@ static long pxt_nonblack(rhi_device *dev, VkImage img)
     const uint8_t *px = (const uint8_t *)rb->mapped;
     long n = 0;
     for (size_t i = 0; i < (size_t)w * (size_t)h; i++)
-        n += (px[i * 4] > 8 || px[i * 4 + 1] > 8 || px[i * 4 + 2] > 8);
+        n += (px[i * 4] > thresh || px[i * 4 + 1] > thresh || px[i * 4 + 2] > thresh);
     return n;
 }
 

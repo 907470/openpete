@@ -5043,6 +5043,13 @@ static struct {
 } s_launch;
 /* Why the last openpete_native_launcher_open failed, for the player. */
 static char s_launch_error[192];
+/* The last frame openpete_native_launcher_present presented, on any device:
+ * whether one was presented, and whether it was the black clear with nothing
+ * drawn. Read by the hand-off (nr_present_black_last). */
+static struct {
+    bool presented;
+    bool black;
+} s_launch_last;
 
 void openpete_native_precreate_window(const openpete_options_t *opts,
                                       int win_w, int win_h)
@@ -7027,6 +7034,8 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
         rhi_end_offscreen(dev);
         rhi_blit_to_swapchain(dev);
         rhi_end_frame(dev);
+        s_launch_last.presented = true;
+        s_launch_last.black = !draw && r == 0.0f && g == 0.0f && b == 0.0f;
     }
     rhi_set_present_blocking(dev, false);
     rhi_boot_launcher_frames(false);
@@ -7140,6 +7149,22 @@ static void nr_present_at_window_size(SDL_Window *win, rhi_device *dev)
                pw, ph, sw, sh);
 }
 
+/** @brief Make the last launcher present before the game's first present a black clear: present one when the last launcher present drew anything.
+ *
+ * The launcher's screens (the selector, the mod compile's and the shader
+ * compile's progress) and the window operations' black frames all present
+ * through openpete_native_launcher_present; bring-up's last display step
+ * calls this, so the image the window holds when the game's first present
+ * replaces it is black on every path into the game. A run that presented no
+ * launcher frame presents nothing here.
+ * @param dev The device presenting to the window. */
+static void nr_present_black_last(rhi_device *dev)
+{
+    if (!dev || !s_launch_last.presented || s_launch_last.black) return;
+    (void)openpete_native_launcher_present(dev, 0.0f, 0.0f, 0.0f, NULL, NULL);
+    OPL_INFO_F("native", "%s", "black frame presented after the last launcher screen");
+}
+
 /** @brief Apply the --fullscreen launch state and the --background placement to the game's window once bring-up has compiled its pipelines.
  *
  * Runs after the pipeline precompile, so the compile stage's progress
@@ -7152,9 +7177,10 @@ static void nr_present_at_window_size(SDL_Window *win, rhi_device *dev)
  * (nr_present_at_window_size), so the window never shows the launcher image
  * pinned at its old size; the renderer's window size is set to
  * the window's pixel size for the first scene. --background wins over
- * --fullscreen and keeps the window windowed and behind the others. Logs the
- * window state for a harness. A headless run has no window and applies
- * nothing.
+ * --fullscreen and keeps the window windowed and behind the others. Ends with
+ * a black present when the last launcher present drew anything
+ * (nr_present_black_last). Logs the window state for a harness. A headless
+ * run has no window and applies nothing.
  * @param win The window, or NULL.
  * @param opts The session options. */
 static void nr_apply_game_window_placement(SDL_Window *win, const openpete_options_t *opts)
@@ -7187,6 +7213,7 @@ static void nr_apply_game_window_placement(SDL_Window *win, const openpete_optio
         s_nr.win_h = s_nr.pending_h = ph;
     }
     openpete_native_publish_fullscreen();
+    nr_present_black_last(s_nr.dev);
     nr_log_window_state(win, "bring-up");
 }
 
