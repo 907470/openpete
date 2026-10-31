@@ -20,7 +20,9 @@ Only `.bin`/`.cue` images are ingested: given a `.cue`, OpenPete uses the
 
 OpenPete copies the image into its library and names the entry by the
 image's SHA-256. After that the original file is not needed again; the log
-says so. Ingesting the same image a second time reuses the existing entry.
+says so. The library holds one disc per game: a disc of a game already in
+the library is refused before anything is copied, with a message naming
+the library's copy, which is left unchanged.
 The library's location is listed under
 [File locations](../help/file-locations.md).
 

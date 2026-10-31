@@ -307,13 +307,37 @@ std::string label_for(const char* sha, const fs::path& bin) {
     return bin.filename().string();
 }
 
+/** @brief Return the library entry that holds a disc of the same game as an image about to be ingested.
+ *
+ * The image's game is read from its SYSTEM.CNF before any copy. The
+ * library's own copy given again counts as well.
+ * @param given The image path from --ingest or a drop.
+ * @param bin The image's .bin, read when the given path names no serial.
+ * @return The entry's directory, or an empty path when the image's game is
+ *         unknown or the library holds no disc of it. */
+fs::path held_entry_of(const char* given, const fs::path& bin) {
+    std::string game = game_of_image(given);
+    if (game.empty()) game = game_of_image(bin);
+    if (game.empty()) return {};
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(library_root(), ec)) {
+        Meta m;
+        if (!e.is_directory() || !read_meta(e.path(), m)) continue;
+        const std::string g = m.game.empty() ? game_of_image(m.dir / "disc.cue") : m.game;
+        if (g == game) return m.dir;
+    }
+    return {};
+}
+
 /** @brief Copy an image into the library and return its entry directory.
  *
  * The copy runs on a launcher task (a window drag must not freeze it) into
  * library/ingest-tmp-<pid>/, which is renamed to
- * library/<first 16 hex digits of the SHA-256>/. An image already in the
- * library keeps its entry and the copy is removed. A new entry gets
- * disc.cue and meta.toml.
+ * library/<first 16 hex digits of the SHA-256>/. An image of a game the
+ * library already holds a disc of is refused before the copy, with a
+ * message naming the library's entry (held_entry_of). An image whose game
+ * cannot be read and whose content is already in the library keeps its
+ * entry and the copy is removed. A new entry gets disc.cue and meta.toml.
  * @param given The image path from --ingest or a drop.
  * @param entry Receives the entry directory.
  * @return true on success; false after logging the failure. */
@@ -321,6 +345,14 @@ bool ingest(const char* given, fs::path& entry) {
     fs::path bin = locate_bin(given);
     if (bin.empty()) {
         std::fprintf(stderr, "openpete: --ingest: no .bin found for %s\n", given);
+        return false;
+    }
+    if (const fs::path held = held_entry_of(given, bin); !held.empty()) {
+        std::fprintf(stderr, "openpete: --ingest: the library already holds a disc of %s (%s); "
+                             "%s was not added and the library copy is unchanged\n",
+                     game_of_image(held / "disc.cue").c_str(), held.string().c_str(), given);
+        OPL_ERROR_F("library", "ingest of %s refused: the library already holds a disc of its game "
+                    "in %s", given, held.string().c_str());
         return false;
     }
     std::error_code ec;

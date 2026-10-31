@@ -13,39 +13,43 @@ Cases:
             STARTUP_BOUND_MS, the bound set from the figure measured on the build before the
             launch-time stamps moved off the launcher thread. --measure prints the figures and
             sets no verdict.
-  t17       The resolved options after a scripted launcher pick (OPENPETE_LAUNCHER_SELECT_GAME) of
+  resolution       The resolved options after a scripted launcher pick (OPENPETE_LAUNCHER_SELECT_GAME) of
             a library entry, per game, against a direct --disc launch of the same entry's disc.cue:
             each run writes its resolution (OPENPETE_CONFIG_REPORT_OUT, the --config-report text and
             the disc path) and any differing option fails: the scope, the directories, each knob's
             value and the disc path (provenance lines are printed, not compared). Windowed, --frame-limit 5, no window
             change, so no window state is carried.
-  t18       The installed globals after the final install (OPENPETE_INSTALL_DUMP: the build record,
+  multi-install       The installed globals after the final install (OPENPETE_INSTALL_DUMP: the build record,
             the eight host tables, each orchestrator slot and the interp registration, the
             registered runtime and its scalars, the glyph set's flags) of a process that installed
             every other linked game first (OPENPETE_INSTALL_OTHERS_FIRST) against a fresh process's
             single install, for each game as target, both under setarch -R so addresses match
             between processes; any differing line or a non-zero install refusal count fails. The
             single-install dumps of two games must differ (the instrument sees the install).
-  t8a-t8f   The launcher's job runner on the module rebuild, on a build with the first-boot
+  job-*     The launcher's job runner on the module rebuild, on a build with the first-boot
             pipeline (recomp/ staged beside the binary; SKIP otherwise). A launch-time job of game
             A is made by moving A's module off its stamped path. Every windowed case runs with
             OPENPETE_PRECOMPILE_AHEAD=1 and asserts a non-zero queued count.
-            t8a: A's rebuild is stopped by a drop of game B's disc at B's copy end, B's module is
+            job-ingest-stop: A's rebuild is stopped by a drop of game B's disc at B's copy end, B's module is
             built, the selector returns, A's rebuild completes after B's build, and the pick of B
             (OPENPETE_LAUNCHER_SELECT_IDLE) starts B; no install is refused.
-            t8b: a pick of A during A's rebuild waits for it and starts A.
-            t8c: a pick of B during A's rebuild stops A, whose stamped module path then holds no
+            job-pick-same: a pick of A during A's rebuild waits for it and starts A.
+            job-pick-other: a pick of B during A's rebuild stops A, whose stamped module path then holds no
             file or a whole module; B starts.
-            t8d: a second process started during a headless --ingest of the first logs the lock
+            lock: a second process started during a headless --ingest of the first logs the lock
             message, queues no ahead compile, writes no pipeline cache and exits 3, and the first
             process's ingest completes with the whole disc copied and its module built.
-            t8e: a build forced to fail (OPENPETE_RECOMP_BUILD_FAIL) writes the entry's
+            failed-marker: a build forced to fail (OPENPETE_RECOMP_BUILD_FAIL) writes the entry's
             failed-build marker and exits 3; the next launch starts no rebuild and exits 3; a launch
             of a copy of the executable (another build id) rebuilds, removes the marker and plays.
-            t8f: headless, a launch naming no disc boots the most recently played entry after the
+            headless-no-disc: headless, a launch naming no disc boots the most recently played entry after the
             inline launch-time check; an empty library, and --game naming a game with no entry,
             exit 3 with the missing-disc diagnostic.
-  t12bind   The pick path's bind-failure rebuild: garbage at A's module path is rebuilt at the bind
+  ingest-held  An image of a game the library already holds is refused before the copy, with a
+            message naming the library's entry, and the library is left as it was: by a headless
+            --ingest (non-zero exit), and by a drop on the selector (the selector returns and a
+            pick of the held entry plays).
+  bind-repair   The pick path's bind-failure rebuild: garbage at A's module path is rebuilt at the bind
             ("rebuilding it from your disc") and the game plays; the same rebuild forced to fail
             writes the failed-build marker, and the next launch exits 3 without a rebuild.
 
@@ -260,10 +264,10 @@ def verdict(name, bad, detail=""):
 FLOW_ENV = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_LAUNCHER_PICK_DELAY_MS": "1500"}
 
 
-def case_t8a(a):
+def case_job_ingest_stop(a):
     """A's rebuild stopped by B's ingest at B's copy end, completed after B's build."""
     need_first_boot(a)
-    d = cl.case_dir(a.out, "t8a")
+    d = cl.case_dir(a.out, "job-ingest-stop")
     mod = seed_built(a, d, "spyro-1", 1)
     os.rename(mod, mod + ".off")
     env = dict(FLOW_ENV, OPENPETE_LAUNCHER_DROP=disc_cue("spyro-2"),
@@ -280,13 +284,13 @@ def case_t8a(a):
         bad.append(f"exit {rc}")
     if not whole_module(mod):
         bad.append(f"A's module {mod} is not whole after its rebuild")
-    return verdict("t8a", bad)
+    return verdict("job-ingest-stop", bad)
 
 
-def case_t8b(a):
+def case_job_pick_same(a):
     """A pick of A during A's rebuild shows its progress and continues to the game."""
     need_first_boot(a)
-    d = cl.case_dir(a.out, "t8b")
+    d = cl.case_dir(a.out, "job-pick-same")
     mod = seed_built(a, d, "spyro-1", 1)
     os.rename(mod, mod + ".off")
     env = dict(FLOW_ENV, OPENPETE_LAUNCHER_SELECT_GAME="spyro-1")
@@ -300,13 +304,13 @@ def case_t8b(a):
         bad.append("the module was built again after the joined rebuild")
     if rc != 0:
         bad.append(f"exit {rc}")
-    return verdict("t8b", bad)
+    return verdict("job-pick-same", bad)
 
 
-def case_t8c(a):
+def case_job_pick_other(a):
     """A pick of B during A's rebuild stops A, which leaves no partial module."""
     need_first_boot(a)
-    d = cl.case_dir(a.out, "t8c")
+    d = cl.case_dir(a.out, "job-pick-other")
     mod = seed_built(a, d, "spyro-1", 1)
     seed_built(a, d, "spyro-2", 2)
     os.rename(mod, mod + ".off")
@@ -322,14 +326,14 @@ def case_t8c(a):
         bad.append(f"A's module path holds a partial file {mod}")
     if rc != 0:
         bad.append(f"exit {rc}")
-    return verdict("t8c", bad, f"A {'stopped between commands' if stopped else 'had finished'}; module "
+    return verdict("job-pick-other", bad, f"A {'stopped between commands' if stopped else 'had finished'}; module "
                                f"{'absent' if not os.path.exists(mod) else 'whole'}")
 
 
-def case_t8d(a):
+def case_lock(a):
     """A second process during an ingest is refused by the library lock."""
     need_first_boot(a)
-    d = cl.case_dir(a.out, "t8d")
+    d = cl.case_dir(a.out, "lock")
     res = {}
 
     def first():
@@ -368,7 +372,7 @@ def case_t8d(a):
         bad.append(f"the first process's copy is not whole: {entries}")
     if not stamped_any(tmp, "spyro-1"):
         bad.append("the first process built no module")
-    return verdict("t8d", bad)
+    return verdict("lock", bad)
 
 
 def stamped_any(lib, game):
@@ -388,10 +392,10 @@ def exe_copy(a, d):
     return os.path.join(x, "openpete")
 
 
-def case_t8e(a):
+def case_failed_marker(a):
     """A forced build failure writes the marker; the same build skips it; another build retries."""
     need_first_boot(a)
-    d = cl.case_dir(a.out, "t8e")
+    d = cl.case_dir(a.out, "failed-marker")
     e = seed_entry(d, "spyro-1", 1)
     marker = os.path.join(e, "build-failed.toml")
     args = ["--game", "spyro-1", "--frame-limit", "1"]
@@ -406,13 +410,13 @@ def case_t8e(a):
     rc3, log3 = headless(a, d, "other-build", args, binary=other)
     if rc3 != 0 or "launch-time module rebuild of spyro-1" not in log3 or os.path.isfile(marker):
         bad.append(f"another build: exit {rc3}, marker {'present' if os.path.isfile(marker) else 'removed'}")
-    return verdict("t8e", bad)
+    return verdict("failed-marker", bad)
 
 
-def case_t8f(a):
+def case_headless_no_disc(a):
     """Headless launches naming no disc."""
     need_first_boot(a)
-    d = cl.case_dir(a.out, "t8f")
+    d = cl.case_dir(a.out, "headless-no-disc")
     seed_built(a, d, "spyro-1", 5)
     seed_built(a, d, "spyro-2", 1)
     rc, log = headless(a, d, "no-disc", ["--frame-limit", "1"])
@@ -432,13 +436,13 @@ def case_t8f(a):
     rc, log = headless(a, g, "game", ["--game", "spyro-3", "--frame-limit", "1"])
     if rc != 3 or diag not in log:
         bad.append(f"--game with no entry: exit {rc}, diagnostic {'present' if diag in log else 'absent'}")
-    return verdict("t8f", bad)
+    return verdict("headless-no-disc", bad)
 
 
-def case_t12bind(a):
+def case_bind_repair(a):
     """A module that fails to bind is rebuilt behind the pick; a failed rebuild leaves the marker."""
     need_first_boot(a)
-    d = cl.case_dir(a.out, "t12bind")
+    d = cl.case_dir(a.out, "bind-repair")
     mod = seed_built(a, d, "spyro-1", 1)
     marker = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(mod))), "build-failed.toml")
     with open(mod, "wb") as f:
@@ -455,7 +459,7 @@ def case_t12bind(a):
     rc, log = headless(a, d, "after", ["--frame-limit", "1"])
     if rc != 3 or "rebuilding it from your disc" in log or "first-boot module build" in log:
         bad.append(f"next launch: exit {rc}, rebuild {'ran' if 'first-boot module build' in log else 'not run'}")
-    return verdict("t12bind", bad)
+    return verdict("bind-repair", bad)
 
 
 def report_lines(path):
@@ -491,9 +495,9 @@ def resolved_options(lines):
     return out
 
 
-def case_t17(a):
+def case_resolution(a):
     """The launcher pick's resolved options against a direct --disc launch of the same entry."""
-    d = cl.case_dir(a.out, "t17")
+    d = cl.case_dir(a.out, "resolution")
     bad, compared = [], 0
     for i, g in enumerate(DISCS):
         e = seed_entry(d, g, i + 1)
@@ -514,11 +518,11 @@ def case_t17(a):
         for k in diff:
             bad.append(f"{g}: {k}: pick {po.get(k)!r} vs disc {qo.get(k)!r}")
         prov = [x for x in set(p) ^ set(q) if "identified by" in x or x.split()[:1] == ["disc"]]
-        print(f"[launcher-flow] t17 {g}: {len(keys)} options, {len(diff)} differ; provenance lines "
+        print(f"[launcher-flow] resolution {g}: {len(keys)} options, {len(diff)} differ; provenance lines "
               f"differing (not options): {sorted(x.strip()[:60] for x in prov)}")
     if compared == 0:
         bad.append("VACUOUS: no line compared")
-    return verdict("t17", bad, f"{compared} lines compared")
+    return verdict("resolution", bad, f"{compared} lines compared")
 
 
 def install_dump(a, d, tag, game, others):
@@ -534,11 +538,11 @@ def install_dump(a, d, tag, game, others):
     return report_lines(out)
 
 
-def case_t18(a):
+def case_multi_install(a):
     """Multi-install against single install, for each game as target."""
     if not shutil.which("setarch"):
         raise cl.Skip("setarch not found")
-    d = cl.case_dir(a.out, "t18")
+    d = cl.case_dir(a.out, "multi-install")
     bad, compared, singles = [], 0, {}
     for g in DISCS:
         one = install_dump(a, d, g + ".single", g, False)
@@ -554,18 +558,59 @@ def case_t18(a):
         bad += [f"{g}: single {str(x)[:90]!r} vs multi {str(y)[:90]!r}" for x, y in diff]
         refused = [l for l in many if l.startswith("install_refusals ") and l != "install_refusals 0"]
         bad += [f"{g}: {l}" for l in refused]
-        print(f"[launcher-flow] t18 {g}: {len(one)} lines, {len(diff)} differ")
+        print(f"[launcher-flow] multi-install {g}: {len(one)} lines, {len(diff)} differ")
     if len(singles) >= 2:
         a1, a2 = list(singles.values())[:2]
         control = sum(1 for x, y in zip(a1, a2) if x != y)
-        print(f"[launcher-flow] t18 control: two games' single installs differ on {control} lines")
+        print(f"[launcher-flow] multi-install control: two games' single installs differ on {control} lines")
         if control == 0:
             bad.append("VACUOUS: two games' single-install dumps are identical")
-    return verdict("t18", bad, f"{compared} lines compared")
+    return verdict("multi-install", bad, f"{compared} lines compared")
 
 
-CASES = {"startup": case_startup, "t17": case_t17, "t18": case_t18, "t8a": case_t8a, "t8b": case_t8b,
-         "t8c": case_t8c, "t8d": case_t8d, "t8e": case_t8e, "t8f": case_t8f, "t12bind": case_t12bind}
+def library_state(d):
+    """The library's entries (any ingest-tmp directory included) and each entry's meta.toml lines but last_played."""
+    lib = os.path.join(d, "data", "openpete", "library")
+    out = {}
+    for e in sorted(os.listdir(lib)):
+        if e.startswith("."):
+            continue   # the lock file the run takes
+        m = os.path.join(lib, e, "meta.toml")
+        # last_played is the pick's stamp of a play, not a change the ingest made.
+        out[e] = [l for l in open(m).read().splitlines() if not l.startswith("last_played")] \
+            if os.path.isfile(m) else None
+    return out
+
+
+def case_ingest_held(a):
+    """An ingest of a game the library already holds is refused, by --ingest and by a drop."""
+    d = cl.case_dir(a.out, "ingest-held")
+    seed_entry(d, "spyro-1", 1)
+    before = library_state(d)
+    bad = []
+    rc, log = headless(a, d, "ingest", ["--ingest", disc_cue("spyro-1"), "--frame-limit", "1"])
+    if rc == 0 or "the library already holds a disc of spyro-1" not in log:
+        bad.append(f"--ingest: exit {rc}, refusal {'logged' if 'already holds' in log else 'absent'}")
+    if library_state(d) != before:
+        bad.append(f"--ingest changed the library: {sorted(library_state(d))}")
+    env = {"OPENPETE_LAUNCHER_DROP": disc_cue("spyro-1"), "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+           "OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1"}
+    rc, log = cl.launch(a.binary, d, "drop", ["--launcher-window", "1280x800", "--frame-limit", "5"], env,
+                        timeout=600)
+    bad += ordered(log, r"scripted drop", r"ingest of .* refused", r"scripted pick: entry \d+ \(spyro-1\)",
+                   r"game picked: spyro-1")
+    if rc != 0:
+        bad.append(f"drop: exit {rc}")
+    if library_state(d) != before:
+        bad.append(f"the drop changed the library: {sorted(library_state(d))}")
+    return verdict("ingest-held", bad)
+
+
+CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
+         "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
+         "job-pick-other": case_job_pick_other, "lock": case_lock, "failed-marker": case_failed_marker,
+         "headless-no-disc": case_headless_no_disc, "bind-repair": case_bind_repair,
+         "ingest-held": case_ingest_held}
 
 
 def main():
