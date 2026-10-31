@@ -13,6 +13,7 @@
 #define OPENPETE_COMMON_RENDERER_ORCHESTRATOR_H
 
 #include <stdint.h>
+#include <stdio.h>
 #include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
@@ -232,11 +233,21 @@ typedef struct game_orchestrator {
 
 /** @brief Bind the running game's orchestrator and interp registration behind the entries above.
  *
- * game_runtime_install calls it once, before any entry runs; each slot the
- * game leaves NULL keeps the inert entry.
+ * game_runtime_install calls it at each install, before any entry runs.
+ * Every slot and the interp registration are first reset to the inert
+ * entries, so a slot the game leaves NULL holds the inert entry whatever an
+ * earlier install bound.
  * @param o The game's orchestrator, or NULL for none.
  * @param interp_register The game's interp registration, or NULL for none. */
 void game_orchestrator_bind(const game_orchestrator_t* o, void (*interp_register)(void));
+
+/** @brief Write each bound orchestrator slot's address and the interp registration's, one `orchestrator.SLOT ADDRESS` line each.
+ *
+ * The install dump (OPENPETE_INSTALL_DUMP, game_build.h) compares these
+ * between a process that installed several games and one that installed
+ * the target alone.
+ * @param out The stream. */
+void game_orchestrator_dump(FILE* out);
 
 #ifdef __cplusplus
 }

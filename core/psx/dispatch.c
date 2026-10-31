@@ -485,6 +485,8 @@ void psx_set_override_dispatch_game(int (*fn)(CPUState* cpu, uint32_t addr)) {
     s_override_game = fn;
 }
 
+int (*psx_override_dispatch_game(void))(CPUState* cpu, uint32_t addr) { return s_override_game; }
+
 /* The oracle's clock replay counts the guest's own entries of each
  * function. Two kinds of gate hit are not the guest's: every hit inside a
  * host-initiated guest call (interrupt handlers, BIOS services, host
@@ -591,10 +593,14 @@ uint64_t openpete_loop_insns_since_anchor(void) { return s_loop_insns_anchor; }
 
 void openpete_loop_anchor_set(uint32_t pc) { s_loop_anchor_pc = pc; }
 
+uint32_t openpete_loop_anchor_pc(void) { return s_loop_anchor_pc; }
+
 /* The game's pad-ring consumer, whose entries openpete_consume counts. */
 static uint32_t s_consume_pc = 0u;
 
 void openpete_consume_pc_set(uint32_t pc) { s_consume_pc = pc; }
+
+uint32_t openpete_consume_pc(void) { return s_consume_pc; }
 
 /** @brief Count a function entry against the per-tick anchors: the loop anchor and the pad-ring consumer.
  *

@@ -1,5 +1,5 @@
-// games/common/game_pick.cpp - the launcher's pick of the game before any
-// game is installed. See game_pick.h.
+// games/common/game_pick.cpp - the launcher's pick of the game before the
+// final install, and each linked game's launcher entry. See game_pick.h.
 
 #include "game_pick.h"
 
@@ -8,8 +8,11 @@
 #include "openpete_launcher.h"
 #include "openpete_log.h"
 #include "openpete_config.h"
+#include "recomp_attach.h"
 
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -24,13 +27,77 @@ const char* linked_game_name(const char* id) {
     return b->runtime->identity->display_name;
 }
 
-/** @brief The launcher's view before a game is installed: no game id (every entry listed), no name, the known discs of every linked game, no module path.
+/** @brief Return the build record a per-game launcher entry carries.
+ *
+ * @param g The entry.
+ * @return The build. */
+const openpete_game_build_t* build_of(const openpete_launcher_game* g) {
+    return static_cast<const openpete_game_build_t*>(g->build);
+}
+
+/** @brief The launcher's module path of a library entry for the entry's game (openpete_game_library_module_path).
+ *
+ * @param g The per-game entry.
+ * @param entry_dir The library entry's directory.
+ * @param out Receives the path.
+ * @param cap Its capacity.
+ * @return 0, or -1 when the game loads no module from the library. */
+int entry_module_path(const openpete_launcher_game* g, const char* entry_dir, char* out, size_t cap) {
+    return openpete_game_library_module_path(build_of(g), entry_dir, out, cap);
+}
+
+/** @brief Install a per-game entry's game for the launcher jobs about to run.
+ *
+ * @param g The per-game entry. */
+void entry_install(const openpete_launcher_game* g) {
+    openpete_game_build_install(build_of(g));
+}
+
+/** @brief Build a per-game entry's module from a disc, announcing the build as the bind does (openpete_recomp_announce_build).
+ *
+ * @param g The per-game entry; its game is installed.
+ * @param disc_path The disc.
+ * @param out_module_path Where the module is written.
+ * @return The build's status: 0, -2 when stopped, -1 on failure. */
+int entry_build(const openpete_launcher_game* g, const char* disc_path, const char* out_module_path) {
+    openpete_recomp_announce_build("is not there");
+    return build_of(g)->build_module(disc_path, out_module_path);
+}
+
+/** @brief Return the per-game launcher entries, one per linked game, in link order.
+ *
+ * @return The entries, built on first call. */
+std::vector<openpete_launcher_game>& game_entries() {
+    static std::vector<openpete_launcher_game> entries;
+    if (!entries.empty()) return entries;
+    entries.resize(openpete_game_build_count);
+    for (size_t i = 0; i < openpete_game_build_count; i++) {
+        const openpete_game_build_t* b = openpete_game_builds[i];
+        openpete_launcher_game& g = entries[i];
+        g.game_id = b->id;
+        const openpete_game_runtime_t* rt = b->runtime;
+        g.display_name = rt && rt->identity ? rt->identity->display_name : nullptr;
+        g.known_discs = rt ? rt->known_discs : nullptr;
+        g.known_disc_count = rt ? rt->known_disc_count : 0;
+        g.module_path = entry_module_path;
+        g.build = b;
+        g.install = entry_install;
+        g.build_module = b->build_module ? entry_build : nullptr;
+    }
+    return entries;
+}
+
+/** @brief The launcher's view before a game is installed: no game id (every entry listed), no name, the known discs of every linked game, no module path, and the per-game entries.
  *
  * @return The descriptor, built on first call. */
 const openpete_launcher_game* neutral_desc() {
     static openpete_launcher_game g;
     static std::vector<openpete_launcher_known_disc> discs;
-    if (discs.empty()) {
+    static std::vector<const openpete_launcher_game*> games;
+    if (games.empty()) {
+        for (auto& e : game_entries()) games.push_back(&e);
+        g.games = games.data();
+        g.game_count = (int)games.size();
         for (size_t i = 0; i < openpete_game_build_count; i++) {
             const openpete_game_runtime_t* rt = openpete_game_builds[i]->runtime;
             for (int k = 0; rt && k < rt->known_disc_count; k++)
@@ -52,7 +119,21 @@ bool env_set(const char* name) {
     return v && *v;
 }
 
-/** @brief Report whether the options ask for a mode the first linked game's entry answers without a launcher.
+/** @brief Return the linked game the command line's --game names, read from argv before any parse.
+ *
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @return The game, or NULL when --game is absent or names no linked game. */
+const openpete_game_build_t* game_flag(int argc, char** argv) {
+    const char* v = nullptr;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--game") && i + 1 < argc) v = argv[i + 1];
+        else if (!strncmp(argv[i], "--game=", 7)) v = argv[i] + 7;
+    }
+    return openpete_game_build_linked(v);
+}
+
+/** @brief Report whether the options ask for a mode a game's entry answers without a launcher.
  *
  * @param o The game-neutral options.
  * @return true for --config-report, --keys-report, --compile-mods,
@@ -64,12 +145,21 @@ bool entry_mode(const openpete_options_t& o) {
 
 }  // namespace
 
+const openpete_launcher_game* openpete_game_launcher_entry(const openpete_game_build_t* b) {
+    for (auto& e : game_entries())
+        if (e.build == b) return &e;
+    return nullptr;
+}
+
 const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit_code) {
     const openpete_game_build_t* first = openpete_game_builds[0];
+    /* The game a mode that runs without the launcher answers for: --game's
+     * when it names a linked game, else the first linked game. */
+    const openpete_game_build_t* named = game_flag(argc, argv);
+    const openpete_game_build_t* mode_game = named ? named : first;
     *exit_code = 0;
-    /* The surface and tooltip dumps run in the entry, for the first game,
-     * before any parse. */
-    if (env_set("OPENPETE_SURFACE_DUMP") || env_set("OPENPETE_TOOLTIP_VOCAB")) return first;
+    /* The surface and tooltip dumps run in the entry before any parse. */
+    if (env_set("OPENPETE_SURFACE_DUMP") || env_set("OPENPETE_TOOLTIP_VOCAB")) return mode_game;
 
     /* The launcher keeps a pointer to the options: static storage. */
     static openpete_options_t neutral;
@@ -86,7 +176,7 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
         return nullptr;
     }
     if (neutral.help) return nullptr;
-    if (entry_mode(neutral)) return first;
+    if (entry_mode(neutral)) return mode_game;
 
     openpete_fatal_set_interactive(!neutral.headless);
     openpete_log_init(neutral.log_format, neutral.log_level_spec
@@ -96,6 +186,14 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
                                                   : openpete_config_env("OPENPETE_LOG_FILE"));
 
     openpete_launcher_begin(neutral_desc(), &neutral, !neutral.headless);
+    if (openpete_launcher_lock() != 0) {
+        OPL_ERROR_F("launcher", "%s", "another OpenPete is preparing a game: the library is "
+                    "locked by another process; nothing was done");
+        std::fprintf(stderr, "openpete: another OpenPete is preparing a game; try again "
+                             "when it has started\n");
+        *exit_code = OPENPETE_EXIT_SETUP_ERROR;
+        return nullptr;
+    }
     int exit_now = 0;
     const int lrc = openpete_launcher_resolve(&neutral, nullptr, 0, &exit_now);
     if (lrc != OPENPETE_EXIT_OK || exit_now) {
@@ -104,8 +202,8 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
         return nullptr;
     }
     const openpete_game_build_t* b = openpete_game_build_linked(openpete_launcher_selected_game());
-    OPL_INFO_F("launcher", "game picked: %s (%s)", b ? b->id : first->id,
-               b ? "the booted entry's game" : "no linked game on the entry: the first linked game");
-    if (!b) b = first;
-    return b;
+    OPL_INFO_F("launcher", "game picked: %s (%s)", b ? b->id : mode_game->id,
+               b ? "the booted entry's game"
+                 : named ? "no entry booted: the --game game" : "no entry booted: the first linked game");
+    return b ? b : mode_game;
 }

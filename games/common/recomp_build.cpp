@@ -30,6 +30,7 @@
 #include "game_build.h"
 #include "recomp_attach.h"
 #include "openpete_log.h"
+#include "openpete_config.h"
 #include "sha256.h"
 
 #include <cstdint>
@@ -40,6 +41,8 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -155,7 +158,14 @@ int win_run_cmd(const std::string& cmd, std::string* capture) {
 }
 #endif
 
+/** @brief Run one compiler or PSXRecomp command, unless the launcher job running the build was asked to stop.
+ *
+ * A stop is read here, between commands: a command already running
+ * finishes, and none starts after the stop.
+ * @param cmd The shell command.
+ * @return true when the command ran and exited 0. */
 bool run(const std::string& cmd) {
+    if (openpete_launcher_job_cancelled()) return false;
 #ifdef _WIN32
     int rc = win_run_cmd(cmd, NULL);
 #else
@@ -377,7 +387,7 @@ bool emit_overlay_table(const fs::path& out, const fs::path& gen, const std::vec
  * @param base The install directory.
  * @return The path, or "" when neither names a file. */
 std::string find_psxrecomp(const fs::path& base) {
-    if (const char* env = getenv("OPENPETE_PSXRECOMP")) return env;
+    if (const char* env = openpete_config_env("OPENPETE_PSXRECOMP")) return env;
     fs::path staged = base / "recomp" / "tools" / PSXRECOMP_NAME;
     if (fs::exists(staged)) return staged.string();
     return "";
@@ -391,12 +401,12 @@ std::string find_cc(const fs::path& base) {
     fs::path bundled = base / "recomp" / "tools" / "llvm-mingw" / "bin" /
                        "x86_64-w64-mingw32-clang.exe";
     if (fs::exists(bundled)) return bundled.string();
-    if (const char* env = getenv("OPENPETE_CC")) return env;
+    if (const char* env = openpete_config_env("OPENPETE_CC")) return env;
     return "";
 #else
     fs::path bundled = base / "recomp" / "tools" / "clang" / "bin" / "clang";
     if (fs::exists(bundled)) return bundled.string();
-    if (const char* env = getenv("OPENPETE_CC")) return env;
+    if (const char* env = openpete_config_env("OPENPETE_CC")) return env;
     return "cc";
 #endif
 }
@@ -450,7 +460,7 @@ std::string cc_identity(const std::string& cc) {
  * fragmentation. Opt in with OPENPETE_MODULE_MARCH=native (or a specific
  * value like x86-64-v3) if a heavier workload or CPU shows a benefit. */
 std::string module_march() {
-    const char* e = getenv("OPENPETE_MODULE_MARCH");
+    const char* e = openpete_config_env("OPENPETE_MODULE_MARCH");
     std::string m = e ? e : "";
     if (m.empty() || m == "none" || m == "off") return "";
     return m;
@@ -496,29 +506,52 @@ std::string cc_target_fingerprint(const std::string& cc) {
  * binary alone would hand an upgrading user the previous version's
  * module - silently, since nothing about it looks stale.
  * @param base The install directory.
+ * @param b The game whose manifest tree the stamp hashes.
  * @return The stamp, or "" when PSXRecomp is not found. */
-std::string compute_codegen_stamp(const fs::path& base) {
-    const std::string psxrecomp = find_psxrecomp(base);
+std::string compute_codegen_stamp(const fs::path& base, const openpete_game_build_t* b) {
+    /* Computed once per game per process: the compiler probes spawn a
+     * process each, and every module path lookup and the build itself read
+     * the stamp. The probes and the PSXRecomp hash are the same for every
+     * game and are taken once; the trees are folded per game, in the order
+     * the stamp has always used (the manifest before the source kit). */
+    static std::mutex m;
+    static std::map<std::string, std::string> stamps;
+    static bool probed = false;
+    static std::string psxrecomp, cc, cc_id, cc_fp;
+    static uint64_t psx_h = 0;
+    std::lock_guard<std::mutex> lock(m);
+    const auto it = stamps.find(b->id);
+    if (it != stamps.end()) return it->second;
+    if (!probed) {
+        probed = true;
+        psxrecomp = find_psxrecomp(base);
+        if (!psxrecomp.empty()) psx_h = fnv1a_file(psxrecomp);
+        cc = find_cc(base);
+        cc_id = cc_identity(cc);
+        cc_fp = cc_target_fingerprint(cc);
+    }
     if (psxrecomp.empty()) return "";
-    uint64_t h = fnv1a_file(psxrecomp);
-    h = fnv1a_tree(base / "recomp" / "manifest" / openpete_game_build()->id, h);
+    uint64_t h = fnv1a_tree(base / "recomp" / "manifest" / b->id, psx_h);
     h = fnv1a_tree(base / "recomp" / "src", h);
-    const std::string cc = find_cc(base);
-    for (char c : cc_identity(cc))          { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
-    for (char c : cc_target_fingerprint(cc)){ h ^= (uint8_t)c; h *= 0x100000001b3ull; }
-    return "fnv1a-" + hex64(h) + "-O2-fno-strict-aliasing";
+    for (char c : cc_id) { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
+    for (char c : cc_fp) { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
+    const std::string stamp = "fnv1a-" + hex64(h) + "-O2-fno-strict-aliasing";
+    stamps[b->id] = stamp;
+    OPL_INFO_F("recomp-build", "codegen stamp of %s: %s", b->id, stamp.c_str());
+    return stamp;
 }
 
 }  // namespace
 
-extern "C" int openpete_recomp_first_boot_module_path(const char* entry_dir, char* out,
+extern "C" int openpete_recomp_first_boot_module_path(const openpete_game_build_t* b,
+                                                      const char* entry_dir, char* out,
                                                       size_t cap) {
-    const std::string stamp = compute_codegen_stamp(exe_dir());
+    const std::string stamp = compute_codegen_stamp(exe_dir(), b);
     if (stamp.empty()) return -1;
 #ifdef _WIN32
-    const std::string name = std::string(openpete_game_build()->module_name) + ".dll";
+    const std::string name = std::string(b->module_name) + ".dll";
 #else
-    const std::string name = std::string(openpete_game_build()->module_name) + ".so";
+    const std::string name = std::string(b->module_name) + ".so";
 #endif
     const fs::path mod = fs::path(entry_dir) / "modules" / stamp / name;
     std::error_code ec;
@@ -527,13 +560,15 @@ extern "C" int openpete_recomp_first_boot_module_path(const char* entry_dir, cha
     return 0;
 }
 
-/* The pipeline: extracts the executables from the disc, runs
- * PSXRecomp over them with the shipped manifests, compiles the emitted C and
- * the source kit with the compiler find_cc locates at -O2
- * -fno-strict-aliasing, and links the module. Its build directory is created
- * beside out_module_path. */
-extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
-                                                const char* out_module_path) {
+namespace {
+
+/** @brief Run the first-boot pipeline: extract the executables from the disc, run PSXRecomp over them with the shipped manifests, compile the emitted C and the source kit with the compiler find_cc locates at -O2 -fno-strict-aliasing, and link the module.
+ *
+ * Its build directory is created beside out_module_path.
+ * @param disc_path The disc image.
+ * @param out_module_path Where the linked module is written.
+ * @return 0 on success, -1 on any failure (reported on stderr). */
+int first_boot_build(const char* disc_path, const char* out_module_path) {
     if (!disc_path) {
         std::fprintf(stderr, "openpete: first-boot module build needs --disc\n");
         return -1;
@@ -584,8 +619,8 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
         return -1;
     }
 
-    OPL_INFO_F("recomp-build", "first-boot module build: %zu overlays, cc=%s",
-               ovls.size(), cc.c_str());
+    OPL_INFO_F("recomp-build", "first-boot module build of %s into %s: %zu overlays, cc=%s",
+               openpete_game_build()->id, out_module_path, ovls.size(), cc.c_str());
     std::error_code ec;
     fs::create_directories(fs::path(out_module_path).parent_path(), ec);
     fs::remove_all(work, ec);
@@ -605,6 +640,12 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
     /* 1. extract ---------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] extracting game code from disc...\n");
     progress("READING GAME CODE FROM YOUR DISC", 0, 0);
+    /* Harness fault: OPENPETE_RECOMP_BUILD_FAIL set fails the build at the
+     * read step, as an unreadable disc would. */
+    if (const char* f = getenv("OPENPETE_RECOMP_BUILD_FAIL"); f && *f && *f != '0') {
+        OPL_ERROR_F("recomp-build", "%s", "build failed at the read step (OPENPETE_RECOMP_BUILD_FAIL)");
+        return -1;
+    }
     if (openpete_game_build()->extract_recomp_inputs(
             disc_path, inputs.string().c_str(), (man / "manifest.toml").string().c_str()) != 0)
         return -1;
@@ -646,7 +687,7 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
     const std::string rom_stamp     = "fnv1a:" + hex64(rom_h);
     /* Same stamp the library used to KEY this module's dir - must match
      * compute_codegen_stamp exactly (psxrecomp + compiler identity). */
-    const std::string codegen_stamp = compute_codegen_stamp(base);
+    const std::string codegen_stamp = compute_codegen_stamp(base, openpete_game_build());
 
     /* 2. recompile -------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] recompiling MIPS -> C (%zu binaries)...\n",
@@ -847,4 +888,14 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
                out_module_path, codegen_stamp.c_str(), rom_stamp.c_str());
     std::fprintf(stderr, "[first-boot] done: %s\n", out_module_path);
     return 0;
+}
+
+}  // namespace
+
+extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
+                                                const char* out_module_path) {
+    const int rc = first_boot_build(disc_path, out_module_path);
+    if (rc == 0 || !openpete_launcher_job_cancelled()) return rc;
+    OPL_INFO_F("recomp-build", "module build stopped between commands: %s", out_module_path);
+    return -2;
 }

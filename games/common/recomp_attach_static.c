@@ -13,10 +13,13 @@ extern const openpete_recomp_module openpete_game_recomp_module; /* module_main.
 
 /* Only a build with a first-boot pipeline loads a module from the disc
  * library; a static build carries the module in the exe. */
-int openpete_game_library_module_path(const char* entry_dir, char* out, size_t cap) {
-    (void)entry_dir; (void)out; (void)cap;
+int openpete_game_library_module_path(const struct openpete_game_build* b, const char* entry_dir,
+                                      char* out, size_t cap) {
+    (void)b; (void)entry_dir; (void)out; (void)cap;
     return -1;
 }
+
+void openpete_recomp_announce_build(const char* why) { (void)why; }
 
 int openpete_game_recomp_attach(const char* module_path_override,
                                 const char* disc_path,

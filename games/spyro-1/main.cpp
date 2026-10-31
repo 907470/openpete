@@ -19,6 +19,7 @@
 #include "recomp_attach.h"
 #include "mods/mod_wad_overlay.h"
 #include "game_build.h"
+#include "game_pick.h"
 #include "game_host_desc.h"
 
 extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
@@ -30,17 +31,11 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
 
 #include <cstdio>
 
-/** @brief The launcher's view of this game: its id, name, known discs (the runtime descriptor's) and library module path.
+/** @brief The launcher's view of this game: its launcher entry (openpete_game_launcher_entry), which names the game explicitly.
  *
- * @return The descriptor, built on first call. */
+ * @return The entry. */
 static const openpete_launcher_game* launcher_game_desc(void) {
-    static openpete_launcher_game g;
-    g.game_id = game_get_id();
-    g.display_name = game_get_display_name();
-    g.known_discs = openpete_game_runtime()->known_discs;
-    g.known_disc_count = openpete_game_runtime()->known_disc_count;
-    g.module_path = openpete_game_library_module_path;
-    return &g;
+    return openpete_game_launcher_entry(openpete_game_build());
 }
 
 /** @brief Tell the player the game cannot start, then hand back the exit code.
@@ -221,6 +216,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
      * join the tiers, and the environment and argv are written once. */
     rc = parse_options(opts, argc, argv, &id);
     if (rc != OPENPETE_EXIT_OK) return rc;
+    openpete_game_report_resolution(opts);
     rc = openpete_options_require_exe_source(opts);
     if (rc != OPENPETE_EXIT_OK)
         return fatal_start(rc, OP_E_NO_DISC, "No game disc image was found.");

@@ -17,6 +17,7 @@
 #ifndef OPENPETE_TEXT_MOBY_NATIVE_H
 #define OPENPETE_TEXT_MOBY_NATIVE_H
 
+#include <stdio.h>
 #include "openpete_native_render.h"  /* openpete_hud_vert */
 
 struct CPUState;
@@ -36,6 +37,11 @@ void text_moby_native_cache(struct CPUState* cpu);
  *
  * @return 1 once text_moby_native_cache has taken the snapshot, else 0. */
 int text_moby_native_ready(void);
+
+/** @brief Write the glyph set's state flags: `glyph.ready`, `glyph.source` and `glyph.digit_adv`, one line each.
+ *
+ * @param out The stream. */
+void text_moby_native_dump(FILE* out);
 
 /** @brief Lays out a string as extruded glyph triangles, lit by the font's fixed light.
  *

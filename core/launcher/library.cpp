@@ -14,6 +14,8 @@
 #include "launcher_internal.h"
 
 #include "openpete_atomic_file.h"
+#include "openpete_build_id.h"
+#include "openpete.h"          /* OPENPETE_EXIT_* */
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "openpete_identify.h" /* openpete_game_for_serial */
@@ -35,9 +37,7 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
-#include <unistd.h>
-#endif
+
 
 namespace fs = std::filesystem;
 
@@ -260,7 +260,7 @@ void entry_module_path(const char* entry_dir, char* out, size_t cap) {
     if (!out || !cap) return;
     out[0] = 0;
     const openpete_launcher_game* g = launcher_game();
-    if (g && g->module_path && g->module_path(entry_dir, out, cap) != 0)
+    if (g && g->module_path && g->module_path(g, entry_dir, out, cap) != 0)
         out[0] = 0;   /* static build: no module in the library */
 }
 
@@ -310,7 +310,7 @@ std::string label_for(const char* sha, const fs::path& bin) {
 /** @brief Copy an image into the library and return its entry directory.
  *
  * The copy runs on a launcher task (a window drag must not freeze it) into
- * library/ingest-tmp-<pid>/ (pid 0 on Windows), which is renamed to
+ * library/ingest-tmp-<pid>/, which is renamed to
  * library/<first 16 hex digits of the SHA-256>/. An image already in the
  * library keeps its entry and the copy is removed. A new entry gets
  * disc.cue and meta.toml.
@@ -325,11 +325,7 @@ bool ingest(const char* given, fs::path& entry) {
     }
     std::error_code ec;
     fs::path root = library_root();
-#ifndef _WIN32
-    const long long pid = (long long)getpid();
-#else
-    const long long pid = 0;
-#endif
+    const long long pid = openpete_process_id();
     fs::path tmp = root / ("ingest-tmp-" + std::to_string(pid));
     fs::create_directories(tmp, ec);
     if (ec) {
@@ -421,20 +417,25 @@ std::string entry_label(const Meta& m) {
 
 /** @brief Pick the entry to boot: the --game entry, else the selector, else the most recently played.
  *
- * A launch whose --game names the launcher's game boots that game's most
- * recently played identified entry without the selector, and with none
- * leaves the pick empty for the caller's drop screen. Any other launch
- * shows the selector, for one entry too. The scripted drop
- * (launcher_scripted_drop) is taken in every case, ahead of any pick.
+ * A launch whose --game names a game (the launcher's game, or any game
+ * while the launcher names none) boots that game's most recently played
+ * identified entry without the selector, and with none leaves the pick
+ * empty for the caller. Any other launch shows the selector, for one entry
+ * too. The scripted drop (launcher_scripted_drop) is taken in every case,
+ * ahead of any pick.
  * @param opts The options; game_selector is the --game value.
  * @param entries The scanned entries; not empty.
  * @param pick Receives the entry, or NULL when --game names a game with no
  *        entry.
+ * @param allow_direct false to show the selector whatever --game names (the
+ *        page after a --game entry could not boot).
  * @return 0, LAUNCHER_SEL_QUIT when the player quit, or
  *         LAUNCHER_SEL_DROPPED when a disc was dropped on the selector. */
-int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*& pick) {
-    const bool direct = opts->game_selector && opts->game_selector[0] && !launcher_neutral();
-    const std::string id = direct ? launcher_game()->game_id : "";
+int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*& pick,
+               bool allow_direct = true) {
+    const bool direct = allow_direct && opts->game_selector && opts->game_selector[0];
+    const std::string id = !direct ? "" : launcher_neutral() ? opts->game_selector
+                                                              : launcher_game()->game_id;
     pick = nullptr;
     for (auto& m : entries)
         if ((!direct || m.game == id) && (!pick || m.last_played > pick->last_played)) pick = &m;
@@ -446,9 +447,10 @@ int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*
     std::vector<std::string> label_store;
     for (auto* m : order)
         label_store.push_back(entry_label(*m));
-    std::vector<const char*> labels;
+    std::vector<const char*> labels, games;
     for (auto& l : label_store) labels.push_back(l.c_str());
-    const int sel = launcher_select(labels.data(), (int)labels.size());
+    for (auto* m : order) games.push_back(m->game.c_str());
+    const int sel = launcher_select(labels.data(), games.data(), (int)labels.size());
     if (sel == LAUNCHER_SEL_QUIT || sel == LAUNCHER_SEL_DROPPED) return sel;
     if (sel == LAUNCHER_SEL_NOSCREEN)
         std::fprintf(stderr, "[library] %zu entr%s, no screen - booting the most recently played '%s'\n",
@@ -484,14 +486,305 @@ void note_missing_games(const openpete_options_t* opts) {
     openpete_launcher_set_note(acc.first.c_str());
 }
 
+/** @brief Return this executable's build id: the configured version joined with the executable's size and modification time.
+ *
+ * A relinked executable gets a new id even when the configured version is
+ * unchanged (a rebuild without a reconfigure).
+ * @return The id. */
+std::string build_id() {
+    static std::string id;
+    if (!id.empty()) return id;
+    char exe_buf[4096];
+    const fs::path exe = openpete_exe_path(exe_buf, sizeof exe_buf) == 0 ? fs::path(exe_buf) : fs::path();
+    std::error_code ec;
+    const uintmax_t size = exe.empty() ? 0 : fs::file_size(exe, ec);
+    const long long mtime = exe.empty() ? 0 : (long long)fs::last_write_time(exe, ec).time_since_epoch().count();
+    id = std::string(openpete_build_version()) + "-" + std::to_string(size) + "-" + std::to_string(mtime);
+    return id;
+}
+
+/** @brief The failed-build marker's path in an entry, beside its meta.toml.
+ *
+ * @param entry_dir The entry's directory.
+ * @return The path. */
+fs::path marker_path(const char* entry_dir) { return fs::path(entry_dir) / "build-failed.toml"; }
+
+/** @brief Return the build id a failed-build marker names.
+ *
+ * @param entry_dir The entry's directory.
+ * @return The id, or "" when the entry holds no marker. */
+std::string marker_build(const char* entry_dir) {
+    std::ifstream f(marker_path(entry_dir));
+    std::string line;
+    while (f && std::getline(f, line))
+        if (line.rfind("build = \"", 0) == 0 && line.size() > 10) return line.substr(9, line.size() - 10);
+    return {};
+}
+
+intptr_t s_lock_handle = 0;
+bool s_lock_held = false;
+/* The launch-time jobs are queued once per process. */
+bool s_jobs_queued = false;
+
+/** @brief Return the neutral descriptor's per-game entry of a game id.
+ *
+ * @param game The game id.
+ * @return The entry, or NULL when the launcher names a game or no linked game has the id. */
+const openpete_launcher_game* game_entry_of(const std::string& game) {
+    const openpete_launcher_game* n = launcher_game();
+    if (!n || n->game_id || game.empty()) return nullptr;
+    for (int i = 0; i < n->game_count; i++)
+        if (n->games[i] && game == n->games[i]->game_id) return n->games[i];
+    return nullptr;
+}
+
+/* A module build the launcher runs for the pick, on a launcher task. */
+struct PickBuild {
+    const openpete_launcher_game* g;
+    const char* disc;
+    const char* out;
+    /** @brief Run the build for openpete_launcher_run_task_exclusive.
+     *
+     * @param p The PickBuild.
+     * @return The build's status. */
+    static int run(void* p) {
+        PickBuild* t = static_cast<PickBuild*>(p);
+        return t->g->build_module(t->g, t->disc, t->out);
+    }
+};
+
+/** @brief Prepare a picked or ingested entry's game: stop other games' jobs, wait for its own, install it, and build its module when the stamped path holds no file.
+ *
+ * The build runs on a launcher task with the pipeline compile paused, its
+ * progress drawn while screens show, inline without them. A failed build
+ * writes the entry's failed-build marker; a completed one clears it.
+ * @param m The entry; its game must be recorded.
+ * @return 0 when the game can start, -1 when its module could not be built. */
+int prepare_entry(const Meta& m) {
+    const openpete_launcher_game* g = game_entry_of(m.game);
+    if (!g) return 0;   /* unidentified or not linked: the entry's identification refuses it */
+    launcher_jobs_stop_other(g->game_id, true);
+    launcher_jobs_finish_game(g->game_id);
+    if (!g->build_module || !g->module_path) return 0;
+    g->install(g);
+    char path[4096];
+    const std::string entry = m.dir.string();
+    if (g->module_path(g, entry.c_str(), path, sizeof path) != 0) return 0;
+    std::error_code ec;
+    if (fs::exists(path, ec)) return 0;
+    const std::string disc = (m.dir / "disc.cue").string();
+    OPL_INFO_F("launcher", "launcher-side module build of %s for entry %s: %s", g->game_id,
+               m.dir.filename().string().c_str(), path);
+    PickBuild pb{g, disc.c_str(), path};
+    launcher_jobs_token(1);
+    const int rc = openpete_launcher_run_task_exclusive(&PickBuild::run, &pb);
+    launcher_jobs_token(-1);
+    if (rc == 0) {
+        library_marker_clear(entry.c_str());
+        return 0;
+    }
+    library_marker_write(entry.c_str(), launcher_last_stage());
+    OPL_ERROR_F("launcher", "the module of %s could not be built (step: %s); see the log file",
+                g->game_id, launcher_last_stage()[0] ? launcher_last_stage() : "start");
+    return -1;
+}
+
+/** @brief Queue the launch-time module check of every library game, once per process: the most recently played entry of each linked game with a first-boot pipeline, skipping an entry whose failed-build marker names this build.
+ *
+ * @param entries The scanned entries. */
+void queue_launch_jobs(const std::vector<Meta>& entries) {
+    if (s_jobs_queued) return;
+    s_jobs_queued = true;
+    const openpete_launcher_game* n = launcher_game();
+    if (!n || n->game_id) return;
+    for (int i = 0; i < n->game_count; i++) {
+        const openpete_launcher_game* g = n->games[i];
+        if (!g || !g->build_module) continue;
+        const Meta* best = nullptr;
+        for (const auto& m : entries)
+            if (m.game == g->game_id && (!best || m.last_played > best->last_played)) best = &m;
+        if (!best) continue;
+        const std::string dir = best->dir.string();
+        if (library_marker_current(dir.c_str())) {
+            OPL_INFO_F("launcher", "launch-time job skipped: entry %s of %s holds a failed-build "
+                       "marker of this build", best->dir.filename().string().c_str(), g->game_id);
+            continue;
+        }
+        launcher_job_add(g, dir.c_str(), (best->dir / "disc.cue").string().c_str());
+    }
+}
+
+/** @brief Ingest a disc dropped on a screen, then build its game's module, and return to the screens.
+ *
+ * A running job of another game is stopped at the copy's end and requeued.
+ * @param path The dropped image. */
+void ingest_drop(const char* path) {
+    fs::path entry;
+    Meta m;
+    if (!ingest(path, entry) || !read_meta(entry, m)) {
+        OPL_ERROR_F("library", "the dropped image %s could not be added to the library", path);
+        return;
+    }
+    record_game(m);
+    launcher_jobs_stop_other(m.game.c_str(), true);
+    (void)prepare_entry(m);
+}
+
+/* pick_pass results besides 0 and the LAUNCHER_LIB_* values. */
+constexpr int kPassAgain = 1;   /* show the library again */
+constexpr int kPassBoot = 2;    /* boot the chosen entry */
+
+/** @brief Admit a picked entry: refuse or retry one whose failed-build marker names this build, then prepare it (prepare_entry).
+ *
+ * Without screens a current marker or a failed build ends the run. With
+ * screens a --game entry with a current marker shows the library, a pick
+ * from the selector retries (the marker is removed), and a failed build
+ * shows the library again.
+ * @param m The entry.
+ * @param screens Whether screens show.
+ * @param direct Whether --game picked it; cleared when the library shows.
+ * @return kPassBoot, kPassAgain or LAUNCHER_LIB_BUILD_FAILED. */
+int admit_pick(const Meta& m, bool screens, bool& direct) {
+    const std::string dir = m.dir.string();
+    if (library_marker_current(dir.c_str())) {
+        OPL_ERROR_F("launcher", "entry %s of %s holds a failed module build of this build (%s); "
+                    "the log file names the failure", m.dir.filename().string().c_str(),
+                    m.game.c_str(), marker_path(dir.c_str()).string().c_str());
+        if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
+        if (direct) { direct = false; return kPassAgain; }   /* --game: the library */
+        library_marker_clear(dir.c_str());                   /* a pick retries */
+    }
+    if (prepare_entry(m) == 0) return kPassBoot;
+    if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
+    direct = false;
+    return kPassAgain;
+}
+
+/** @brief One pass over the library while no game is installed: scan, queue the launch-time jobs once (running them inline without screens), pick an entry and admit it (admit_pick).
+ *
+ * A drop on a screen is ingested (ingest_drop) and the library shows again.
+ * @param opts The options.
+ * @param screens Whether screens show.
+ * @param direct Whether --game picks; cleared when the library shows instead.
+ * @param chosen Receives the entry to boot.
+ * @return kPassBoot, kPassAgain, 0 when no entry boots, or a LAUNCHER_LIB_* value. */
+int pick_pass(openpete_options_t* opts, bool screens, bool& direct, Meta& chosen) {
+    struct ScanTask {
+        fs::path root;
+        std::vector<Meta> entries;
+        /** @brief Scan the library for the launcher's game's entries, stamping the scan's start and end.
+         *
+         * @param p The ScanTask.
+         * @return 0. */
+        static int run(void* p) {
+            ScanTask* t = static_cast<ScanTask*>(p);
+            launcher_stamp(LAUNCHER_EV_SCAN_START);
+            t->entries = scan_entries(t->root);
+            launcher_stamp(LAUNCHER_EV_SCAN_END);
+            return 0;
+        }
+    } scan{library_root(), {}};
+    const int waited = launcher_await_scan(&ScanTask::run, &scan);
+    queue_launch_jobs(scan.entries);
+    if (!screens) launcher_jobs_run_inline();
+    if (waited == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
+    if (waited == LAUNCHER_SEL_DROPPED) { ingest_drop(launcher_dropped_path()); return kPassAgain; }
+    if (scan.entries.empty()) return 0;
+    note_missing_games(opts);
+    Meta* pick = nullptr;
+    const int rc = pick_entry(opts, scan.entries, pick, direct);
+    if (rc == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
+    if (rc == LAUNCHER_SEL_DROPPED || (!pick && screens)) {
+        if (rc == LAUNCHER_SEL_DROPPED) ingest_drop(launcher_dropped_path());
+        direct = false;
+        return kPassAgain;
+    }
+    if (!pick) return 0;   /* --game names a game with no entry: the entry's diagnostic */
+    chosen = *pick;
+    return admit_pick(chosen, screens, direct);
+}
+
+/** @brief Resolve the pick made before any game is installed: the --ingest image, the --game entry or the selector's, each prepared (prepare_entry) before it boots.
+ *
+ * Without screens the launch-time jobs run inline before the pick (pick_pass).
+ * @param opts The options.
+ * @param module_path_out Receives the module path, "" for none.
+ * @param module_path_cap Its capacity.
+ * @return 0 on a boot, a bypass or no entry, else a LAUNCHER_LIB_* value. */
+int resolve_pick(openpete_options_t* opts, char* module_path_out, size_t module_path_cap) {
+    const bool screens = launcher_screens();
+    if (opts->ingest_path) {
+        fs::path entry;
+        Meta m;
+        if (!ingest(opts->ingest_path, entry) || !read_meta(entry, m)) return LAUNCHER_LIB_FAILED;
+        record_game(m);
+        if (prepare_entry(m) == 0) return boot_entry(opts, m, module_path_out, module_path_cap);
+        if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
+        opts->ingest_path = nullptr;   /* the library, with the entry's failed build */
+    }
+    if (opts->disc_path || opts->exe_path) return 0;
+    bool direct = true;
+    for (;;) {
+        Meta chosen;
+        const int rc = pick_pass(opts, screens, direct, chosen);
+        if (rc == kPassAgain) continue;
+        if (rc == kPassBoot) return boot_entry(opts, chosen, module_path_out, module_path_cap);
+        return rc;
+    }
+}
+
 }  // namespace
+
+bool library_marker_current(const char* entry_dir) {
+    return marker_build(entry_dir) == build_id();
+}
+
+void library_marker_write(const char* entry_dir, const char* step) {
+    const std::string text = "build = \"" + build_id() + "\"\nstep = \"" +
+                             std::string(step && *step ? step : "start") + "\"\n";
+    (void)op_atomic_write_file(marker_path(entry_dir).string().c_str(), text.data(), text.size());
+    OPL_INFO_F("library", "failed-build marker written: %s (build %s)",
+               marker_path(entry_dir).string().c_str(), build_id().c_str());
+}
+
+void library_marker_clear(const char* entry_dir) {
+    std::error_code ec;
+    if (fs::remove(marker_path(entry_dir), ec))
+        OPL_INFO_F("library", "failed-build marker removed: %s", marker_path(entry_dir).string().c_str());
+}
+
+void openpete_launcher_mark_build_failed(void) {
+    if (!s_booted) return;
+    library_marker_write(s_entry_dir, launcher_last_stage());
+}
+
+int openpete_launcher_lock(void) {
+    if (s_lock_held) return 0;
+    const fs::path root = library_root();
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    const fs::path lock = root / ".lock";
+    if (openpete_paths_lock(lock.string().c_str(), &s_lock_handle) != 0) return -1;
+    s_lock_held = true;
+    OPL_INFO_F("library", "library lock taken: %s", lock.string().c_str());
+    return 0;
+}
+
+void library_lock_release(void) {
+    if (!s_lock_held) return;
+    openpete_paths_unlock(s_lock_handle);
+    s_lock_held = false;
+    OPL_INFO_F("library", "%s", "library lock released");
+}
+
+void library_ingest_drop(const char* path) { ingest_drop(path); }
 
 int library_resolve(openpete_options_t* opts, char* module_path_out, size_t module_path_cap) {
     if (module_path_out && module_path_cap) module_path_out[0] = 0;
 
     /* An entry booted before the game was installed: the installed game's
      * entry boots it again, with the module path that game names for it. */
-    if (s_booted && !opts->ingest_path && !opts->disc_path && !opts->exe_path) {
+    if (s_booted && !opts->disc_path && !opts->exe_path) {
         opts->disc_path = s_disc_path;
         entry_module_path(s_entry_dir, module_path_out, module_path_cap);
         OPL_INFO_F("library", "booting the picked entry %s (%s)",
@@ -499,6 +792,9 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
                    s_selected_game[0] ? s_selected_game : "unidentified");
         return 0;
     }
+
+    /* Before any game is installed: the pick, which prepares its entry. */
+    if (launcher_neutral()) return resolve_pick(opts, module_path_out, module_path_cap);
 
     /* --ingest PATH (or a drop): copy into the library, then boot that entry. */
     if (opts->ingest_path) {
@@ -517,6 +813,10 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
     struct ScanTask {
         fs::path root;
         std::vector<Meta> entries;
+        /** @brief Scan the library for the launcher's game's entries, stamping the scan's start and end.
+         *
+         * @param p The ScanTask.
+         * @return 0. */
         static int run(void* p) {
             ScanTask* t = static_cast<ScanTask*>(p);
             launcher_stamp(LAUNCHER_EV_SCAN_START);

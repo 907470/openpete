@@ -118,16 +118,17 @@ static void* need(const char* name) {
     return s;
 }
 
-/** @brief Write the default module path, the running game's module name and the platform suffix in the executable's directory, into buf.
+/** @brief Write the default module path, a game's module name and the platform suffix in the executable's directory, into buf.
  *
  * Absolute on every platform, so the existence check, the loader and a
  * first-boot build all name the same file whatever the working directory.
  * Falls back to the bare name only when the executable's directory cannot
  * be read.
+ * @param b The game's build record.
  * @param buf Receives the path.
  * @param n Capacity of buf. */
-static void default_module_path(char* buf, size_t n) {
-    const char* name = openpete_game_build()->module_name;
+static void default_module_path(const openpete_game_build_t* b, char* buf, size_t n) {
+    const char* name = b->module_name;
     char dir[3800]; /* leaves room in a 4096-byte buf for the separator and name */
     if (openpete_exe_dir(dir, sizeof dir) == 0)
         snprintf(buf, n, "%s%c%s%s", dir, MODULE_SEP, name, MODULE_SUFFIX);
@@ -158,18 +159,18 @@ static int file_readable(const char* p) {
  * the path rebuilds the module after an update that changes the generated
  * code. A game without the pipeline, or a data directory that does not
  * resolve, keeps the path beside the executable.
+ * @param b The game's build record.
  * @param buf Receives the path.
  * @param n Capacity of buf. */
-static void disc_module_path(char* buf, size_t n) {
-    default_module_path(buf, n);
-    const openpete_game_build_t* b = openpete_game_build();
+static void disc_module_path(const openpete_game_build_t* b, char* buf, size_t n) {
+    default_module_path(b, buf, n);
     if (file_readable(buf) || !b->build_module || !b->library_module_path) return;
     char dir[3800];
     char game_dir[3900];
     if (openpete_paths_data_dir("modules", dir, sizeof dir, 1) != 0) return;
     openpete_paths_join(game_dir, sizeof game_dir, dir, b->id);
     char stamped[4096];
-    if (b->library_module_path(game_dir, stamped, sizeof stamped) == 0)
+    if (b->library_module_path(b, game_dir, stamped, sizeof stamped) == 0)
         snprintf(buf, n, "%s", stamped);
 }
 
@@ -221,39 +222,48 @@ static int build_task_fn(void* p) {
     return openpete_game_build()->build_module(t->disc, t->out);
 }
 
-/** @brief Rebuild a missing or unusable module from the disc and bind it.
- *
- * @param path The module path to write.
- * @param disc_path The disc.
- * @param why The reason the first bind failed; receives the new reason.
- * @return The descriptor, or NULL. */
-static const openpete_recomp_module* rebuild_module(const char* path,
-                                                    const char* disc_path,
-                                                    const char** why) {
+void openpete_recomp_announce_build(const char* why) {
     /* Either first boot, or an update whose emission inputs changed: both
      * recompile from the disc. The message does not say "first boot",
      * since an update that changes the codegen stamp lands here too. */
-    if (!strcmp(*why, "is not there"))
+    if (!why || !strcmp(why, "is not there"))
         fprintf(stderr, "openpete: building the recomp module from your "
                         "disc - this happens on first boot and after an "
                         "update that changes the generated code\n");
     else
         fprintf(stderr, "openpete: the recomp module %s - rebuilding it "
-                        "from your disc\n", *why);
+                        "from your disc\n", why);
+}
+
+/** @brief Rebuild a missing or unusable module from the disc and bind it.
+ *
+ * @param path The module path to write.
+ * @param disc_path The disc.
+ * @param why The reason the first bind failed; receives the new reason.
+ * A failed rebuild writes the failed-build marker of the library entry the
+ * launcher booted (openpete_launcher_mark_build_failed).
+ * @return The descriptor, or NULL. */
+static const openpete_recomp_module* rebuild_module(const char* path,
+                                                    const char* disc_path,
+                                                    const char** why) {
+    openpete_recomp_announce_build(*why);
     struct build_task bt = { disc_path, path };
     *why = NULL;
     if (openpete_launcher_run_task_exclusive(build_task_fn, &bt) != 0) {
+        /* A library entry's module (the launcher's pick) records the
+         * failure, so the next launch shows it instead of rebuilding. */
+        openpete_launcher_mark_build_failed();
         *why = "could not be rebuilt";
         return NULL;
     }
     return bind_module(path, why);
 }
-int openpete_game_library_module_path(const char* entry_dir, char* out, size_t cap) {
+int openpete_game_library_module_path(const openpete_game_build_t* b, const char* entry_dir,
+                                      char* out, size_t cap) {
     /* Without a first-boot pipeline the module comes from the build tree
      * alone, and no library entry carries one. */
-    const openpete_game_build_t* b = openpete_game_build();
     if (!b || !b->library_module_path) return -1;
-    return b->library_module_path(entry_dir, out, cap);
+    return b->library_module_path(b, entry_dir, out, cap);
 }
 
 int openpete_game_recomp_attach(const char* module_path_override,
@@ -262,7 +272,7 @@ int openpete_game_recomp_attach(const char* module_path_override,
     char pathbuf[4096];
     const char* path = module_path_override;
     if (!path) {
-        disc_module_path(pathbuf, sizeof pathbuf);
+        disc_module_path(openpete_game_build(), pathbuf, sizeof pathbuf);
         path = pathbuf;
     }
 

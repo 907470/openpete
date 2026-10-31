@@ -17,8 +17,11 @@
 #define OPENPETE_GAME_BUILD_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 #include "openpete_game_runtime.h"
+
+struct openpete_options;
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,7 +50,8 @@ typedef struct openpete_game_build {
      * carved from the disc; the window strings are recomp.conf's
      * OVERLAY_RANGE bounds as C literals. */
     int (*build_module)(const char* disc_path, const char* out_module_path);
-    int (*library_module_path)(const char* entry_dir, char* out, size_t cap);
+    int (*library_module_path)(const struct openpete_game_build* b, const char* entry_dir,
+                               char* out, size_t cap);
     int (*extract_recomp_inputs)(const char* cue_path, const char* out_dir,
                                  const char* manifest_path);
     const char* overlay_window_lo;
@@ -64,18 +68,15 @@ typedef struct openpete_game_build {
 extern const openpete_game_build_t* const openpete_game_builds[];
 extern const size_t openpete_game_build_count;
 
-/** @brief Return the linked game the command line names.
+/** @brief Return the linked game whose serial the SYSTEM.CNF of the image named by --disc carries.
  *
- * With one linked game, that game. Otherwise, in order: the game whose
- * serial the SYSTEM.CNF of the image named by --disc or --ingest carries;
- * the --game selector. The executable's name selects no game. A
- * source naming a game this executable does not link is passed over; the
- * selected game's entry then identifies the session and refuses a
- * contradiction.
+ * Only --disc selects here: every other launch (--ingest, a bare image
+ * argument, --game, no disc at all, a one-game build) goes through the
+ * launcher's pick (game_pick.h). An image naming a game this executable
+ * does not link, or one that cannot be read, selects nothing.
  * @param argc The argument count.
  * @param argv The arguments.
- * @return The game, or NULL when several games are linked and no source
- *         names one of them (the launcher then picks, game_pick.h). */
+ * @return The game, or NULL when --disc names none of the linked games. */
 const openpete_game_build_t* openpete_game_build_named(int argc, char** argv);
 
 /** @brief Select the game this process runs: the game the command line names, else the first linked game.
@@ -93,10 +94,36 @@ const openpete_game_build_t* openpete_game_build_linked(const char* id);
 
 /** @brief Make a game the running game: record its build and register its runtime descriptor.
  *
- * Called once, before the game's entry runs and before any game table is
- * read.
+ * The launcher installs each game whose jobs it runs (its module build),
+ * one game at a time, and the process entry makes the final install before
+ * the game's entry runs; every value an install writes is a whole
+ * overwrite, so the result depends on the last install alone. Refused while
+ * a launcher job is in flight (openpete_launcher_jobs_in_flight): the
+ * refusal is logged and counted (openpete_game_build_install_refusals), and
+ * aborts the process in a build without NDEBUG.
  * @param b The game; it must outlive the process. */
 void openpete_game_build_install(const openpete_game_build_t* b);
+
+/** @brief Return how many installs were refused because a launcher job was in flight.
+ *
+ * @return The count since process start. */
+int openpete_game_build_install_refusals(void);
+
+/** @brief Harness: write the resolution a play run starts with (the --config-report text and the disc path) to the file OPENPETE_CONFIG_REPORT_OUT names; nothing when it is unset.
+ *
+ * Each game's entry calls it after its one full parse, so a launch through
+ * the launcher's pick and a direct --disc launch of the same entry can be
+ * diffed.
+ * @param opts The full resolution. */
+void openpete_game_report_resolution(const struct openpete_options* opts);
+
+/** @brief Write every global an install writes, one `name value` line each: the build record, the host tables, the orchestrator slots, the registered runtime and its scalars, and the settings-menu glyph set's state.
+ *
+ * Table contents are written as hex bytes and pointers as addresses, so two
+ * processes of one binary compare line by line when address randomization
+ * is off (setarch -R).
+ * @param out The stream. */
+void openpete_game_install_dump(FILE* out);
 
 /** @brief Return the running game's build.
  *

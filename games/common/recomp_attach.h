@@ -11,6 +11,8 @@
 
 #include <stddef.h>
 
+struct openpete_game_build;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,19 +38,30 @@ int openpete_game_recomp_attach(const char* module_path_override,
                                 const char* disc_path,
                                 int allow_build);
 
-/** @brief Writes a library entry's module path, modules/<codegen stamp>/<tag>-recomp.{so,dll} under the entry, creating its directory.
+/** @brief Writes a game's module path in a library entry, modules/<codegen stamp>/<tag>-recomp.{so,dll} under the entry, creating its directory.
  *
- * Forwards to the running game's first-boot pipeline (game_build.h): the
- * codegen stamp hashes PSXRecomp, the staged manifest and source kit, and
- * the compiler, so a module built by another version is never loaded. A
- * game or build without the pipeline fails, and such a build loads no
- * module from the disc library.
+ * Forwards to the game's first-boot pipeline (game_build.h): the codegen
+ * stamp hashes PSXRecomp, the game's staged manifest, the source kit, and
+ * the compiler, so a module built by another version is never loaded. The
+ * game is passed, never read from the installed build, so the launcher
+ * names any game's module whichever game is installed. A game or build
+ * without the pipeline fails, and such a build loads no module from the
+ * disc library.
+ * @param b The game's build record.
  * @param entry_dir The library entry's directory.
  * @param out Receives the path.
  * @param cap Capacity of out.
- * @return 0 on success, -1 when the running game has no first-boot pipeline
- *         or PSXRecomp is not found. */
-int openpete_game_library_module_path(const char* entry_dir, char* out, size_t cap);
+ * @return 0 on success, -1 when the game has no first-boot pipeline or
+ *         PSXRecomp is not found. */
+int openpete_game_library_module_path(const struct openpete_game_build* b, const char* entry_dir,
+                                      char* out, size_t cap);
+
+/** @brief Tell the player on stderr why the recompiled module is being built: absent ("is not there"), it is built from the disc on first boot and after an update that changes the generated code; any other reason names the failure and the rebuild.
+ *
+ * The one message the bind's rebuild and the launcher's module build both
+ * print; scripts/check_dist_first_boot.sh greps both forms.
+ * @param why The reason the module cannot be used, as the attach words it. */
+void openpete_recomp_announce_build(const char* why);
 
 /** @brief Builds the running game's recomp module from the disc on the player's machine.
  *
@@ -57,18 +70,25 @@ int openpete_game_library_module_path(const char* entry_dir, char* out, size_t c
  * game whose record names it.
  * @param disc_path The disc image (a .cue or .bin).
  * @param out_module_path Where the linked module is written.
- * @return 0 on success, -1 on any failure (reported on stderr). */
+ * @return 0 on success, -2 when the launcher job running it was asked to
+ *         stop (openpete_launcher_job_cancelled; read between compiler
+ *         commands, so no partial module is written), -1 on any other
+ *         failure (reported on stderr). */
 int openpete_recomp_first_boot_build(const char* disc_path,
                                      const char* out_module_path);
 
-/** @brief Writes a library entry's module path for the running game's first-boot pipeline, creating its directory.
+/** @brief Writes a game's library-entry module path for its first-boot pipeline, creating its directory.
  *
- * The pipeline half of openpete_game_library_module_path.
+ * The pipeline half of openpete_game_library_module_path. The codegen
+ * stamp is computed once per game per process; its compiler probes once
+ * per process.
+ * @param b The game's build record.
  * @param entry_dir The library entry's directory.
  * @param out Receives the path.
  * @param cap Capacity of out.
  * @return 0 on success, -1 when PSXRecomp is not found. */
-int openpete_recomp_first_boot_module_path(const char* entry_dir, char* out, size_t cap);
+int openpete_recomp_first_boot_module_path(const struct openpete_game_build* b,
+                                           const char* entry_dir, char* out, size_t cap);
 
 /** @brief Writes a game's first-boot inputs to a directory: PSX.EXE and one <name>.ovl per overlay of the staged converged manifest, each the bytes of the WAD.WAD entry the manifest names.
  *

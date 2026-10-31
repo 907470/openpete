@@ -14,6 +14,8 @@
 
 #include "openpete_game_runtime.h"
 
+#include <stdio.h>
+
 #include "freecam_game.h"
 #include "game_frame_pre.h"
 #include "renderer/moby_game.h"
@@ -50,6 +52,11 @@ typedef struct game_host_desc {
  * The entry point calls it first, before any other code reads a game table.
  * @param rt The game's descriptor; it must outlive the process. */
 void game_runtime_install(const openpete_game_runtime_t* rt);
+
+/** @brief Write the eight host tables game_runtime_install fills, one `host.TABLE HEX` line each.
+ *
+ * @param out The stream. */
+void game_host_tables_dump(FILE* out);
 
 #ifdef __cplusplus
 }

@@ -139,6 +139,11 @@ extern unsigned openpete_consume_write;
  * @param pc The consumer's entry address; 0 counts nothing. */
 void openpete_consume_pc_set(uint32_t pc);
 
+/** @brief Return the pad-ring consumer PC openpete_consume_pc_set installed.
+ *
+ * @return The PC; 0 without one. */
+uint32_t openpete_consume_pc(void);
+
 /* Observer of the (E, j) position, set by the host loop: `write` runs at
  * each pad write of a yield with the (E, j) it took, before j advances;
  * `close` runs at each consumer entry with the closing E and the pad writes

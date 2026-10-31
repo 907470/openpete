@@ -1,12 +1,16 @@
 /* orchestrator.c - the orchestrator entries of renderer/orchestrator.h,
  * forwarded to the running game's game_orchestrator_t.
  *
- * game_orchestrator_bind fills every slot the game leaves NULL with the
- * inert entry of a game with no sub-tick re-extract spine: no bracket is
- * active, each commit does nothing, and every producer reports never-fresh,
- * so each feeder skips its replay and reads canonical RAM. */
+ * game_orchestrator_bind resets every slot to the inert entry of a game with
+ * no sub-tick re-extract spine (no bracket is active, each commit does
+ * nothing, and every producer reports never-fresh, so each feeder skips its
+ * replay and reads canonical RAM), then takes each slot the game fills: the
+ * bound table depends on the last game bound alone, whatever was bound
+ * before it. */
 
 #include "renderer/orchestrator.h"
+
+#include <stdio.h>
 
 /** @brief Report no interpolated position: no bracket is active. */
 static int none_interp_pos(unsigned int key, double out[3]) {
@@ -32,30 +36,35 @@ static void none_capture_camera(void* cpu, int producer) { (void)cpu; (void)prod
 /** @brief Install no producer camera. */
 static int none_prod_camera_enter(int producer) { (void)producer; return 0; }
 
+/* The entries of a game that fills no slot. */
+#define ORCH_NONE { \
+    .reextract_init    = none_void, \
+    .interp_pos        = none_interp_pos, \
+    .epoch_commit      = none_void, \
+    .epoch_supersede   = none_void, \
+    .epoch_stamp       = none_epoch_stamp, \
+    .epoch_fresh       = none_epoch_fresh, \
+    .mobyreg_fresh     = none_fresh, \
+    .shaded_fresh      = none_fresh, \
+    .capture_range     = none_capture_range, \
+    .capture_recs      = none_capture, \
+    .capture_sxy       = none_capture, \
+    .capture_camera    = none_capture_camera, \
+    .prod_camera_enter = none_prod_camera_enter, \
+    .prod_camera_leave = none_void, \
+}
+static const game_orchestrator_t k_orch_none = ORCH_NONE;
 /* The running game's entries, every slot non-NULL after the bind. */
-static game_orchestrator_t s_orch = {
-    .reextract_init    = none_void,
-    .interp_pos        = none_interp_pos,
-    .epoch_commit      = none_void,
-    .epoch_supersede   = none_void,
-    .epoch_stamp       = none_epoch_stamp,
-    .epoch_fresh       = none_epoch_fresh,
-    .mobyreg_fresh     = none_fresh,
-    .shaded_fresh      = none_fresh,
-    .capture_range     = none_capture_range,
-    .capture_recs      = none_capture,
-    .capture_sxy       = none_capture,
-    .capture_camera    = none_capture_camera,
-    .prod_camera_enter = none_prod_camera_enter,
-    .prod_camera_leave = none_void,
-};
+static game_orchestrator_t s_orch = ORCH_NONE;
+#undef ORCH_NONE
 static void (*s_interp_register)(void) = none_void;
 
-/* Take the game's slot when it fills one, else keep the inert entry. */
+/* Take the game's slot when it fills one; the reset left the inert entry. */
 #define BIND(slot) if (o->slot) s_orch.slot = o->slot
 
 void game_orchestrator_bind(const game_orchestrator_t* o, void (*interp_register)(void)) {
-    if (interp_register) s_interp_register = interp_register;
+    s_orch = k_orch_none;
+    s_interp_register = interp_register ? interp_register : none_void;
     if (!o) return;
     BIND(reextract_init);
     BIND(interp_pos);
@@ -92,3 +101,21 @@ int spyro_native_prod_camera_enter(int producer) { return s_orch.prod_camera_ent
 void spyro_native_prod_camera_leave(void) { s_orch.prod_camera_leave(); }
 void game_interp_register(void) { s_interp_register(); }
 void game_reextract_init(void) { s_orch.reextract_init(); }
+
+void game_orchestrator_dump(FILE* out) {
+    static const char* const k_slot[] = {
+        "reextract_init", "interp_pos", "epoch_commit", "epoch_supersede", "epoch_stamp",
+        "epoch_fresh", "mobyreg_fresh", "shaded_fresh", "capture_range", "capture_recs",
+        "capture_sxy", "capture_camera", "prod_camera_enter", "prod_camera_leave"};
+    const void* const v[] = {
+        (const void*)s_orch.reextract_init, (const void*)s_orch.interp_pos,
+        (const void*)s_orch.epoch_commit, (const void*)s_orch.epoch_supersede,
+        (const void*)s_orch.epoch_stamp, (const void*)s_orch.epoch_fresh,
+        (const void*)s_orch.mobyreg_fresh, (const void*)s_orch.shaded_fresh,
+        (const void*)s_orch.capture_range, (const void*)s_orch.capture_recs,
+        (const void*)s_orch.capture_sxy, (const void*)s_orch.capture_camera,
+        (const void*)s_orch.prod_camera_enter, (const void*)s_orch.prod_camera_leave};
+    for (size_t i = 0; i < sizeof k_slot / sizeof k_slot[0]; i++)
+        fprintf(out, "orchestrator.%s %p\n", k_slot[i], v[i]);
+    fprintf(out, "orchestrator.interp_register %p\n", (const void*)s_interp_register);
+}

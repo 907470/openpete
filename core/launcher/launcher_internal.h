@@ -10,6 +10,7 @@
 /* library_resolve results besides 0. */
 #define LAUNCHER_LIB_FAILED (-1)   /* ingest failure or an unreadable entry */
 #define LAUNCHER_LIB_QUIT   (-2)   /* the player quit the version selector */
+#define LAUNCHER_LIB_BUILD_FAILED (-3)   /* without screens: the picked entry's module build failed */
 
 /* launcher_select results besides an index. */
 #define LAUNCHER_SEL_QUIT     (-1)  /* the player quit */
@@ -63,11 +64,91 @@ const openpete_launcher_game* launcher_game(void);
  * launcher_dropped_path. The harness variable OPENPETE_LAUNCHER_DROP acts
  * as a drop after the first frame, and without a screen at once
  * (launcher_scripted_drop); OPENPETE_LAUNCHER_SELECT set to an index below
- * @p count picks that entry after the first frame.
+ * @p count picks that entry after the first frame, and
+ * OPENPETE_LAUNCHER_SELECT_GAME set to a game id picks the first entry of
+ * that game; with OPENPETE_LAUNCHER_SELECT_IDLE set the scripted pick also
+ * waits until no launcher job runs or is queued. Launcher jobs are pumped
+ * between frames (launcher_jobs_pump).
  * @param labels The entry labels, most recently played first.
+ * @param games Each entry's game id ("" when unidentified).
  * @param count Their number, at least one; at most six show.
  * @return The picked index, or a LAUNCHER_SEL_* value. */
-int launcher_select(const char* const* labels, int count);
+int launcher_select(const char* const* labels, const char* const* games, int count);
+
+/** @brief Queue a launch-time module rebuild of a game's library entry, run when no other job runs.
+ *
+ * @param g The game's per-game entry.
+ * @param entry_dir The library entry's directory.
+ * @param disc The entry's disc.cue. */
+void launcher_job_add(const openpete_launcher_game* g, const char* entry_dir, const char* disc);
+
+/** @brief On the launcher's thread: reap a finished job (writing or clearing its entry's failed-build marker) and start the next queued one.
+ *
+ * Starting a job installs its game (openpete_launcher_game.install), counts
+ * it in flight, pauses the launcher's pipeline compile and runs the job on
+ * the openpete-job thread: the stamped module path is computed there and a
+ * missing module built. Without screens nothing starts here
+ * (launcher_jobs_run_inline). */
+void launcher_jobs_pump(void);
+
+/** @brief Run every queued job on the calling thread, in order, each with its game installed: the form without screens. */
+void launcher_jobs_run_inline(void);
+
+/** @brief Stop the running job unless it is of a game, waiting for it to stop between compiler commands.
+ *
+ * @param keep_game The game whose job keeps running, or NULL to stop any.
+ * @param requeue Put a stopped job back at the head of the queue. */
+void launcher_jobs_stop_other(const char* keep_game, bool requeue);
+
+/** @brief Drop a game's queued jobs and wait for its running one, drawing that job's progress while screens show.
+ *
+ * @param game The game id. */
+void launcher_jobs_finish_game(const char* game);
+
+/** @brief Report whether no launcher job runs and none is queued.
+ *
+ * @return true when idle. */
+bool launcher_jobs_idle(void);
+
+/** @brief Count a module build the launcher runs itself (the pick's) as a job in flight, from its start to its end.
+ *
+ * @param delta +1 at the start, -1 at the end. */
+void launcher_jobs_token(int delta);
+
+/** @brief Report whether a library entry holds a failed-build marker naming this executable's build id.
+ *
+ * @param entry_dir The entry's directory.
+ * @return true for a current marker. */
+bool library_marker_current(const char* entry_dir);
+
+/** @brief Write a library entry's failed-build marker: this executable's build id and the step that failed.
+ *
+ * @param entry_dir The entry's directory.
+ * @param step The step's text (the last progress stage reported). */
+void library_marker_write(const char* entry_dir, const char* step);
+
+/** @brief Remove a library entry's failed-build marker, if any.
+ *
+ * @param entry_dir The entry's directory. */
+void library_marker_clear(const char* entry_dir);
+
+/** @brief Report whether launcher screens may show now: a windowed run before the hand-off.
+ *
+ * @return true when they may. */
+bool launcher_screens(void);
+
+/** @brief Ingest a disc dropped on a screen while no game is installed, build its game's module, and return, the screens then showing the library again.
+ *
+ * @param path The dropped image. */
+void library_ingest_drop(const char* path);
+
+/** @brief Release the library lock (openpete_launcher_lock). */
+void library_lock_release(void);
+
+/** @brief The last progress stage reported, for a failed-build marker's step.
+ *
+ * @return The stage text, "" before the first report; never NULL. */
+const char* launcher_last_stage(void);
 
 /** @brief Run the library scan on a worker while the launcher shows its pending screen.
  *

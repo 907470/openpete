@@ -21,6 +21,8 @@
  *     disc.bin, disc.cue     ingested copy (cue synthesized)
  *     meta.toml              label / source / sha256 / last_played / game
  *     modules/...            the game's recompiled module, when it has one
+ *     build-failed.toml      the build id and step of a failed module build
+ *   library/.lock            held by the one launcher process acting on the library
  *
  * One library serves every game; an executable lists the entries recorded
  * for its own game and the unidentified ones.
@@ -42,22 +44,42 @@ typedef struct openpete_launcher_known_disc {
     const char* label;
 } openpete_launcher_known_disc;
 
-/* What the launcher needs from the game that calls it. */
-typedef struct {
+/* What the launcher needs from a game: one entry per linked game, and one
+ * neutral descriptor (no game id) that lists them for the pick made before
+ * any game is installed. */
+typedef struct openpete_launcher_game openpete_launcher_game;
+struct openpete_launcher_game {
     /* Registered game id: the entries it lists. NULL before a game is
      * installed: every entry is listed, and the screens carry no game name. */
     const char* game_id;
     const char* display_name;   /* the screens' subtitle; NULL for none */
     const openpete_launcher_known_disc* known_discs;   /* NULL for none */
     int known_disc_count;
-    /* The recompiled module path of a library entry, written into out;
-     * returns 0, or -1 when the game loads no module from the library (a
-     * static build). NULL for a game with none. */
-    int (*module_path)(const char* entry_dir, char* out, size_t cap);
+    /* The recompiled module path of a library entry for this game, written
+     * into out; returns 0, or -1 when the game loads no module from the
+     * library (a static build). Names the game through g, never through the
+     * installed game. NULL for a game with none. */
+    int (*module_path)(const openpete_launcher_game* g, const char* entry_dir, char* out,
+                       size_t cap);
     /* The display name of a registered game id, prefixed to the selector's
      * label of an entry recorded for it; NULL for no prefix. */
     const char* (*game_name)(const char* game_id);
-} openpete_launcher_game;
+    /* A per-game entry's build record, opaque to the launcher. */
+    const void* build;
+    /* Install this game as the running game before its jobs run, on the
+     * launcher's thread; NULL in the neutral descriptor. */
+    void (*install)(const openpete_launcher_game* g);
+    /* Build this game's module from a disc into a path (the first-boot
+     * pipeline); returns 0, -2 when the job was asked to stop
+     * (openpete_launcher_job_cancelled), -1 on failure. NULL for a game
+     * without the pipeline. Runs with the game installed. */
+    int (*build_module)(const openpete_launcher_game* g, const char* disc_path,
+                        const char* out_module_path);
+    /* The neutral descriptor's per-game entries, one per linked game; NULL
+     * and 0 in a per-game entry. */
+    const openpete_launcher_game* const* games;
+    int game_count;
+};
 
 struct rhi_device;
 
@@ -84,6 +106,17 @@ void openpete_launcher_begin(const openpete_launcher_game* game,
 
 /** @brief Resolve the disc this boot runs through the library, showing the drop screen or the version selector when one is needed.
  *
+ * Before a game is installed (the neutral descriptor, the pick) the
+ * launcher also prepares the picked entry's game: the module of every
+ * library game whose stamped module path holds no file is rebuilt at
+ * launch (in the background while screens show, inline headless, one game
+ * at a time, skipping an entry whose failed-build marker names this build),
+ * a disc dropped on a screen is ingested, its module built, and the
+ * screens return to the selector, and the picked entry's game is installed
+ * and its module built before the pick returns. --ingest and a bare image
+ * argument ingest, build and boot the ingested entry; --game boots that
+ * game's most recently played entry.
+ *
  * --ingest copies the image into the library and boots it; an explicit
  * --disc or --exe-path leaves the library untouched; otherwise the selector
  * picks among several entries, and among any number while the launcher
@@ -104,9 +137,43 @@ void openpete_launcher_begin(const openpete_launcher_game* game,
  * @return OPENPETE_EXIT_OK; 1 after telling the player the library could
  *         not be read or the image could not be added; or
  *         OPENPETE_EXIT_SETUP_ERROR when the drop screen is needed and the
- *         device cannot be created. */
+ *         device cannot be created, or, without screens, when the picked
+ *         entry's module build failed or its failed-build marker names this
+ *         build. */
 int  openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
                                size_t module_cap, int* exit_now);
+
+/** @brief Take the library lock: one launcher process acts on a data root at a time.
+ *
+ * An exclusive, non-blocking lock on library/.lock (flock on POSIX,
+ * LockFileEx on Windows), held from the pick until the hand-off or
+ * openpete_launcher_close. The library scan, every ingest and every module
+ * build of the launcher run under it.
+ * @return 0 when taken (or already held), -1 when another process holds it
+ *         or the file cannot be opened. */
+int  openpete_launcher_lock(void);
+
+/** @brief Report whether the launcher job running on the calling thread was asked to stop.
+ *
+ * A launcher job (a module rebuild) is stopped when the player picks another
+ * game, ingests a disc or quits; the first-boot build reads this between
+ * compiler commands and stops there.
+ * @return 1 when the calling thread runs a job asked to stop, else 0. */
+int  openpete_launcher_job_cancelled(void);
+
+/** @brief Count the launcher jobs in flight: a module build of an installed game, from its start to its end.
+ *
+ * openpete_game_build_install is refused while it is non-zero, so no job's
+ * game changes under it.
+ * @return The count. */
+int  openpete_launcher_jobs_in_flight(void);
+
+/** @brief Record a failed module build in the library entry this boot resolved: a failed-build marker naming this executable's build id.
+ *
+ * Does nothing for a boot that named its disc itself (--disc). The launch-
+ * time rebuild skips an entry whose marker names the running build, and a
+ * pick of the entry refuses it headless. */
+void openpete_launcher_mark_build_failed(void);
 
 /** @brief The game recorded on the library entry this boot resolved.
  *

@@ -64,3 +64,26 @@ void game_runtime_install(const openpete_game_runtime_t* rt) {
     freecam_desc    = h->freecam ? *h->freecam : k_freecam;
     game_orchestrator_bind(h->orchestrator, h->interp_register);
 }
+
+/** @brief Write one table as a `host.NAME HEX` line.
+ *
+ * @param out The stream.
+ * @param name The table's name.
+ * @param p The table.
+ * @param n Its size in bytes. */
+static void dump_table(FILE* out, const char* name, const void* p, size_t n) {
+    fprintf(out, "host.%s ", name);
+    for (size_t i = 0; i < n; i++) fprintf(out, "%02x", ((const unsigned char*)p)[i]);
+    fputc('\n', out);
+}
+
+void game_host_tables_dump(FILE* out) {
+    dump_table(out, "ui_game", &ui_game, sizeof ui_game);
+    dump_table(out, "terrain_game", &terrain_game, sizeof terrain_game);
+    dump_table(out, "moby_game", &moby_game, sizeof moby_game);
+    dump_table(out, "player_game", &player_game, sizeof player_game);
+    dump_table(out, "moby_game_s23", &moby_game_s23, sizeof moby_game_s23);
+    dump_table(out, "player_game_s23", &player_game_s23, sizeof player_game_s23);
+    dump_table(out, "portal_game_s23", &portal_game_s23, sizeof portal_game_s23);
+    dump_table(out, "freecam_desc", &freecam_desc, sizeof freecam_desc);
+}

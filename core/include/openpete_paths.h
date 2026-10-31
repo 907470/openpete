@@ -35,10 +35,38 @@
  */
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** @brief Path of the running executable.
+ *
+ * Read from GetModuleFileNameW (converted to the active code page) on
+ * Windows and /proc/self/exe elsewhere.
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @return 0 on success, -1 when the path cannot be read or does not fit. */
+int openpete_exe_path(char* out, size_t cap);
+
+/** @brief Take an exclusive, non-blocking lock on a file, creating it when absent: flock on POSIX, LockFileEx on Windows.
+ *
+ * The lock lasts until openpete_paths_unlock or the process ends.
+ * @param path The file.
+ * @param handle Receives the lock's handle.
+ * @return 0 when taken, -1 when another process holds it or the file cannot be opened. */
+int openpete_paths_lock(const char* path, intptr_t* handle);
+
+/** @brief Release a lock openpete_paths_lock took.
+ *
+ * @param handle The lock's handle. */
+void openpete_paths_unlock(intptr_t handle);
+
+/** @brief The running process's id.
+ *
+ * @return The id: getpid on POSIX, GetCurrentProcessId on Windows. */
+long long openpete_process_id(void);
 
 /** @brief Directory containing the running executable, with no trailing separator.
  *

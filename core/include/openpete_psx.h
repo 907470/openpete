@@ -429,6 +429,11 @@ void openpete_crit_report(uint32_t* first_clear_ra, int32_t* first_clear_vbl,
  * @param pc The anchor's address; 0 counts nothing. */
 void openpete_loop_anchor_set(uint32_t pc);
 
+/** @brief Return the game's loop-anchor PC openpete_loop_anchor_set installed.
+ *
+ * @return The PC; 0 without an anchor. */
+uint32_t openpete_loop_anchor_pc(void);
+
 /** @brief Return how many times the game's loop anchor has been entered: game ticks begun since boot.
  * @return The entry count; 0 without an anchor. */
 uint32_t openpete_loop_anchor_ticks(void);

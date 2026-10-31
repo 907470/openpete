@@ -18,6 +18,8 @@
   #define OPP_STAT_T struct _stat
   #define OPP_PORTABLE_DEFAULT 1
 #else
+  #include <fcntl.h>
+  #include <sys/file.h>
   #include <unistd.h>
   #define OPP_MKDIR(p) mkdir((p), 0755)
   #define OPP_SEP '/'
@@ -37,7 +39,7 @@ static int s_resolved = -1;
 /* primitives                                                          */
 /* ------------------------------------------------------------------ */
 
-int openpete_exe_dir(char* out, size_t cap) {
+int openpete_exe_path(char* out, size_t cap) {
     char buf[OPP_PATH_MAX];
 #ifdef _WIN32
     /* The wide call is not limited to MAX_PATH; the narrow form of the
@@ -53,6 +55,14 @@ int openpete_exe_dir(char* out, size_t cap) {
     if (n <= 0) return -1;
     buf[n] = '\0';
 #endif
+    if (strlen(buf) >= cap) return -1;
+    snprintf(out, cap, "%s", buf);
+    return 0;
+}
+
+int openpete_exe_dir(char* out, size_t cap) {
+    char buf[OPP_PATH_MAX];
+    if (openpete_exe_path(buf, sizeof buf) != 0) return -1;
     char* slash = strrchr(buf, '/');
 #ifdef _WIN32
     char* back = strrchr(buf, '\\');
@@ -63,6 +73,48 @@ int openpete_exe_dir(char* out, size_t cap) {
     if (strlen(buf) >= cap) return -1;
     snprintf(out, cap, "%s", buf);
     return 0;
+}
+
+int openpete_paths_lock(const char* path, intptr_t* handle) {
+#ifdef _WIN32
+    wchar_t w[OPP_PATH_MAX];
+    if (!MultiByteToWideChar(CP_ACP, 0, path, -1, w, (int)(sizeof w / sizeof w[0]))) return -1;
+    HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) {
+        CloseHandle(h);
+        return -1;
+    }
+    *handle = (intptr_t)h;
+#else
+    const int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        return -1;
+    }
+    *handle = (intptr_t)fd;
+#endif
+    return 0;
+}
+
+void openpete_paths_unlock(intptr_t handle) {
+#ifdef _WIN32
+    CloseHandle((HANDLE)handle);
+#else
+    close((int)handle);
+#endif
+}
+
+long long openpete_process_id(void) {
+#ifdef _WIN32
+    return (long long)GetCurrentProcessId();
+#else
+    return (long long)getpid();
+#endif
 }
 
 void openpete_paths_join(char* out, size_t cap, const char* dir, const char* leaf) {

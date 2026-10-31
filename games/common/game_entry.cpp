@@ -1,8 +1,8 @@
 // games/common/game_entry.cpp - the process entry of every executable.
 //
 // Reconnects stdio on Windows, selects the game among the games the
-// executable links (game_build.h, or the launcher's pick, game_pick.h),
-// installs it, and runs its entry. SDL3's
+// executable links (--disc's, game_build.h, or the launcher's pick,
+// game_pick.h), makes its final install, and runs its entry. SDL3's
 // SDL_main.h re-#defines main -> SDL_main and supplies the platform entry
 // shim; it must be included by the TU defining main().
 
@@ -12,6 +12,7 @@
 #include "game_pick.h"
 
 #include <cstdio>
+#include <cstdlib>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -65,12 +66,35 @@ static void attach_parent_console(void) {
 static void attach_parent_console(void) {}
 #endif
 
+/** @brief Harness: install every other linked game before the target when OPENPETE_INSTALL_OTHERS_FIRST is set, as a launcher that ran other games' jobs has.
+ *
+ * @param target The game the final install makes the running game. */
+static void install_others_first(const openpete_game_build_t* target) {
+    const char* e = std::getenv("OPENPETE_INSTALL_OTHERS_FIRST");
+    if (!e || !*e || *e == '0') return;
+    for (size_t i = 0; i < openpete_game_build_count; i++)
+        if (openpete_game_builds[i] != target) openpete_game_build_install(openpete_game_builds[i]);
+    std::fprintf(stderr, "openpete: installed the %zu other linked games before %s "
+                         "(OPENPETE_INSTALL_OTHERS_FIRST)\n", openpete_game_build_count - 1, target->id);
+}
+
+/** @brief Harness: write every installed global to the file OPENPETE_INSTALL_DUMP names, after the final install. */
+static void install_dump() {
+    const char* path = std::getenv("OPENPETE_INSTALL_DUMP");
+    if (!path || !*path) return;
+    FILE* f = std::fopen(path, "w");
+    if (!f) return;
+    openpete_game_install_dump(f);
+    std::fclose(f);
+}
+
 /** @brief Select and install the game this process runs, then run its entry.
  *
  * stdio is reconnected first, before any output and whichever game runs.
- * The game is the one the command line names, else the launcher's pick
- * over every linked game's library entries (game_pick.h); it is installed
- * once.
+ * The game is the one --disc names, else the launcher's pick over every
+ * linked game's library entries (game_pick.h), which installs each game
+ * whose jobs it runs; the final install here makes the picked game the
+ * running game before its entry.
  * @param argc The argument count.
  * @param argv The arguments.
  * @return The game entry's exit status, or 1 when the executable links no game. */
@@ -86,6 +110,8 @@ int main(int argc, char** argv) {
         b = openpete_game_pick(argc, argv, &rc);
         if (!b) return rc;
     }
+    install_others_first(b);
     openpete_game_build_install(b);
+    install_dump();
     return b->main(argc, argv);
 }

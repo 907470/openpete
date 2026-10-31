@@ -483,6 +483,11 @@ void text_moby_native_cache(CPUState* cpu) {
 
 int text_moby_native_ready(void) { return s_cache_ready; }
 
+void text_moby_native_dump(FILE* out) {
+    fprintf(out, "glyph.ready %d\nglyph.source %d\nglyph.digit_adv %d\n",
+            s_cache_ready, s_cache_source, s_digit_adv);
+}
+
 /* ---- emit (works purely from the cache) --------------------------------- */
 
 /* Emission state, per call rather than per file. Every emitter - the stats

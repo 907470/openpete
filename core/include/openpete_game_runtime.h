@@ -16,6 +16,7 @@
 #define OPENPETE_GAME_RUNTIME_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 #include "feature_registry.h"   /* feature_module_t */
@@ -121,6 +122,11 @@ void openpete_game_runtime_register(const openpete_game_runtime_t* rt);
  *
  * @return The descriptor, or an all-NULL descriptor before registration. */
 const openpete_game_runtime_t* openpete_game_runtime(void);
+
+/** @brief Write what the last registration wrote, one `runtime.NAME VALUE` line each: the descriptor's address, game_layout's bytes in hex, the g_SonyImage base, the feed key, the override dispatch, the loop anchor and the consume PC.
+ *
+ * @param out The stream. */
+void openpete_game_runtime_dump(FILE* out);
 
 #ifdef __cplusplus
 }

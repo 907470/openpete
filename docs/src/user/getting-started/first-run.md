@@ -31,7 +31,17 @@ The copy runs behind a **FIRST-TIME SETUP** screen with a progress bar.
 Next, still under **FIRST-TIME SETUP**, OpenPete recompiles the game's code
 for your machine, with the line **YOUR DISC IS REBUILT FOR THIS PC. THIS
 HAPPENS ONCE.** Measured times: about 26 seconds on a 16-thread desktop, 45 to
-90 seconds on a four-core laptop. The game then starts.
+90 seconds on a four-core laptop. A disc given on the command line or opened
+with the program then starts its game; a disc dragged onto the window or
+chosen by browsing returns to the **CHOOSE A GAME** screen below, with the
+new disc listed.
+
+After an update that changes the generated code, the compile runs again for
+each game in the library: in the background while the **CHOOSE A GAME**
+screen shows, or behind its progress screen when that game is chosen first.
+A compile that fails is not retried by later starts of the same OpenPete
+build; the log file names the step that failed, and choosing the disc on
+the **CHOOSE A GAME** screen retries it.
 
 Later runs open the **CHOOSE A GAME** screen, which lists every disc in the
 library, of every game, most recently played first, each named with its
@@ -39,13 +49,15 @@ game. It shows with a single disc in the library too, so the disc of
 another game can be added: ++up++ / ++down++ or the stick select,
 ++enter++ or ++a++ plays, ++esc++ or ++b++ quits. Dragging a `.bin` or
 `.cue` onto this screen, or pressing ++space++ or the pad's ++x++ button
-to browse for one, adds that disc to the library and starts its game.
+to browse for one, adds that disc to the library, compiles its game's code
+and returns to this screen.
 
 A start without `--game` or `--disc` always opens this screen, whatever
 the library holds. A launch that names its game with `--game` skips it and
 starts that game's most recently played disc; see
-[Installing](install.md#opening-a-disc-image-directly). In a build that runs
-one game only, the screen reads **CHOOSE A VERSION**.
+[Installing](install.md#opening-a-disc-image-directly). One OpenPete at a
+time prepares a game: a second one started while the first is still on
+these screens exits and logs that another OpenPete is preparing a game.
 
 ## Mods compile on start
 

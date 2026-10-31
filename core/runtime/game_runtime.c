@@ -41,6 +41,19 @@ void openpete_game_runtime_register(const openpete_game_runtime_t* rt) {
 
 const openpete_game_runtime_t* openpete_game_runtime(void) { return s_rt; }
 
+void openpete_game_runtime_dump(FILE* out) {
+    fprintf(out, "runtime.descriptor %p\n", (const void*)s_rt);
+    fprintf(out, "runtime.game_layout ");
+    for (size_t i = 0; i < sizeof game_layout; i++)
+        fprintf(out, "%02x", ((const unsigned char*)&game_layout)[i]);
+    fputc('\n', out);
+    fprintf(out, "runtime.sony_image_base 0x%08x\n", (unsigned)psx_runtime_g_sony_image_base);
+    fprintf(out, "runtime.feed_key %d\n", (int)openpete_feed_key());
+    fprintf(out, "runtime.override_dispatch %p\n", (void*)psx_override_dispatch_game());
+    fprintf(out, "runtime.loop_anchor 0x%08x\n", (unsigned)openpete_loop_anchor_pc());
+    fprintf(out, "runtime.consume_pc 0x%08x\n", (unsigned)openpete_consume_pc());
+}
+
 /* Before registration, or for a descriptor without an identity, the
  * identity strings are "". */
 static const openpete_game_identity_t k_no_identity = { "", "", "" };

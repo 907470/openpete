@@ -48,6 +48,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <string>
 
 namespace {
@@ -116,8 +117,35 @@ struct State {
     SDL_ThreadID ui_tid = 0;
     char stage[128] = {};
     int done = 0, total = 0;
+    char last_stage[128] = {};   /* the last stage any report named */
 };
 State s;
+
+/* A launch-time module rebuild of one library entry. */
+struct Job {
+    const openpete_launcher_game* g = nullptr;
+    std::string entry, disc;
+    int rc = 0;
+    bool built = false;   /* the module was missing and a build ran */
+};
+
+/* The job runner: a queue, the running job on its thread, the in-flight
+ * count installs are refused under, and the running job's progress
+ * mailbox (kept apart from a launcher task's). */
+struct Jobs {
+    std::deque<Job> queue;
+    Job cur;
+    SDL_Thread* th = nullptr;
+    SDL_AtomicInt done = {};
+    SDL_AtomicInt cancel = {};
+    std::atomic<int> in_flight{0};
+    char stage[128] = {};
+    int sdone = 0, stotal = 0;
+    bool have = false;
+};
+Jobs s_jobs;
+/* Set on a thread while it runs a job, the job thread or the inline form. */
+thread_local bool t_job = false;
 
 /* Process start for launcher_stamp: this translation unit's static
  * initialization, which runs before main. */
@@ -833,15 +861,29 @@ bool scripted_due() {
     return now - first_ms >= strtoull(e, nullptr, 10);
 }
 
-/** @brief Harness: the index OPENPETE_LAUNCHER_SELECT names, or -1 when unset or out of range.
+/** @brief Harness: the entry OPENPETE_LAUNCHER_SELECT_GAME names (the first of that game), else the index OPENPETE_LAUNCHER_SELECT names, or -1 when unset or out of range.
  *
+ * @param games Each entry's game id.
  * @param count The entry count.
  * @return The scripted pick. */
-int scripted_pick(int count) {
+int scripted_pick(const char* const* games, int count) {
+    if (const char* g = getenv("OPENPETE_LAUNCHER_SELECT_GAME"); g && *g) {
+        for (int i = 0; i < count; i++)
+            if (games && games[i] && !strcmp(games[i], g)) return i;
+        return -1;
+    }
     const char* e = getenv("OPENPETE_LAUNCHER_SELECT");
     if (!e || !*e) return -1;
     const int pick = atoi(e);
     return (pick >= 0 && pick < count) ? pick : -1;
+}
+
+/** @brief Harness: whether the scripted pick waits for idle jobs and they are not idle yet.
+ *
+ * @return true while OPENPETE_LAUNCHER_SELECT_IDLE is set and a launcher job runs or is queued. */
+bool scripted_pick_held() {
+    const char* e = getenv("OPENPETE_LAUNCHER_SELECT_IDLE");
+    return e && *e && *e != '0' && !launcher_jobs_idle();
 }
 
 /** @brief Run the drop screen until a disc image is dropped or chosen, or the player quits.
@@ -855,6 +897,7 @@ const char* wait_for_disc() {
     for (;;) {
         v.browse = false;
         present(v);
+        launcher_jobs_pump();
         if (const char* scripted = launcher_scripted_drop()) return scripted;
         if (v.browse) open_file_dialog();
         if (SDL_GetAtomicInt(&s.dialog_got)) return s.drop_path;
@@ -985,6 +1028,7 @@ int pending_loop() {
     int ask = 0;
     while (!SDL_GetAtomicInt(&s.scan_done)) {
         present(v);
+        launcher_jobs_pump();
         if (SDL_GetAtomicInt(&s.scan_done)) break;
         const Ask a = wait_input();
         if (ask == 0 && a == Ask::Quit) ask = LAUNCHER_SEL_QUIT;
@@ -1044,7 +1088,7 @@ const char* launcher_scripted_drop(void) {
     return s.drop_path;
 }
 
-int launcher_select(const char* const* labels, int count) {
+int launcher_select(const char* const* labels, const char* const* games, int count) {
     const bool screen = s.ui && !s.handed_off && count > 0 && launcher_open(s.opts, 1) == 0;
     if (!screen) return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : LAUNCHER_SEL_NOSCREEN;
     View v;
@@ -1053,12 +1097,17 @@ int launcher_select(const char* const* labels, int count) {
     v.count = count;
     v.games = launcher_neutral();
     v.note = s.note;
-    const int scripted = scripted_pick(count);
+    const int scripted = scripted_pick(games, count);
     for (;;) {
         v.clicked = -1;
         present(v);
+        launcher_jobs_pump();
         if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
-        if (scripted >= 0 && scripted_due()) return scripted;
+        if (scripted >= 0 && scripted_due() && !scripted_pick_held()) {
+            OPL_INFO_F("launcher", "scripted pick: entry %d (%s)", scripted,
+                       games && games[scripted] ? games[scripted] : "");
+            return scripted;
+        }
         if (v.clicked >= 0) return v.clicked;
         if (SDL_GetAtomicInt(&s.dialog_got)) {
             SDL_SetAtomicInt(&s.dialog_got, 0);
@@ -1091,7 +1140,16 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
                               size_t module_cap, int* exit_now) {
     *exit_now = 0;
     int rc = library_resolve(opts, module_path, module_cap);
-    if (rc == LAUNCHER_LIB_QUIT) { *exit_now = 1; return OPENPETE_EXIT_OK; }
+    if (rc == LAUNCHER_LIB_QUIT) {
+        launcher_jobs_stop_other(nullptr, false);
+        *exit_now = 1;
+        return OPENPETE_EXIT_OK;
+    }
+    if (rc == LAUNCHER_LIB_BUILD_FAILED) {
+        openpete_fatal_message(OP_E_MODULE, "OpenPete could not start",
+                               "The game code could not be built from the disc.");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
     if (rc != 0) {
         openpete_fatal_message(OP_E_LIBRARY, "OpenPete could not start",
                                "The game library could not be read.");
@@ -1108,7 +1166,17 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
     } else {
         if (launcher_open(opts, 0) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         dropped = wait_for_disc();
-        if (!dropped) { *exit_now = 1; return OPENPETE_EXIT_OK; }   /* window closed */
+        if (!dropped) {   /* window closed */
+            launcher_jobs_stop_other(nullptr, false);
+            *exit_now = 1;
+            return OPENPETE_EXIT_OK;
+        }
+        if (launcher_neutral()) {
+            /* The pick: the dropped disc is ingested and built, then the
+             * library shows again. */
+            library_ingest_drop(dropped);
+            return openpete_launcher_resolve(opts, module_path, module_cap, exit_now);
+        }
     }
     opts->ingest_path = dropped;
     if (library_resolve(opts, module_path, module_cap) != 0) {
@@ -1120,7 +1188,20 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
 }
 
 void openpete_launcher_progress(const char* stage, int done, int total) {
+    snprintf(s.last_stage, sizeof s.last_stage, "%s", stage ? stage : "");
     if (!s.ui || s.handed_off) return;
+    if (t_job) {
+        /* A launcher job's thread: its own mailbox, drawn only when a pick
+         * waits for the job (launcher_jobs_finish_game). */
+        if (!s.lock) return;
+        SDL_LockMutex(s.lock);
+        snprintf(s_jobs.stage, sizeof s_jobs.stage, "%s", stage);
+        s_jobs.sdone = done;
+        s_jobs.stotal = total;
+        s_jobs.have = true;
+        SDL_UnlockMutex(s.lock);
+        return;
+    }
     if (s.task_active && s.lock && SDL_GetCurrentThreadID() != s.ui_tid) {
         /* Worker context: store only; every SDL video call stays on the
          * launcher's thread, whose runner loop draws the update. */
@@ -1171,6 +1252,9 @@ int openpete_launcher_run_task_exclusive(openpete_launcher_task_fn fn, void* use
 }
 
 int openpete_launcher_handoff(openpete_options_t* opts) {
+    launcher_jobs_stop_other(nullptr, false);
+    s_jobs.queue.clear();
+    library_lock_release();
     carry_window_state(opts);
     close_gamepad();
     s.handed_off = true;
@@ -1200,6 +1284,9 @@ int openpete_launcher_draw_progress(struct rhi_device* dev, const char* name,
 }
 
 void openpete_launcher_close(void) {
+    launcher_jobs_stop_other(nullptr, false);
+    s_jobs.queue.clear();
+    library_lock_release();
     close_gamepad();
     openpete_native_launcher_close();
 }
@@ -1233,3 +1320,194 @@ void openpete_launcher_vk_failure(const char* why, int continues) {
                                                 "OpenPete could not start graphics", text, nullptr);
     OPL_INFO_F("launcher", "message box %s", shown ? "shown and dismissed" : "could not be shown");
 }
+
+namespace {
+
+/** @brief Report whether a file can be opened for reading.
+ *
+ * @param p The path.
+ * @return true when it opens. */
+bool file_readable(const char* p) {
+    FILE* f = fopen(p, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
+
+/** @brief Run one job: compute the game's stamped module path for the entry and build the module when no file is there.
+ *
+ * Runs with the job's game installed, on the job thread or inline.
+ * @param job The job; receives built.
+ * @return 0 when the module is current or built (or the game has no
+ *         pipeline), the build's status otherwise. */
+int job_body(Job& job) {
+    job.built = false;
+    const openpete_launcher_game* g = job.g;
+    char path[4096];
+    if (!g->module_path || !g->build_module ||
+        g->module_path(g, job.entry.c_str(), path, sizeof path) != 0)
+        return 0;
+    if (file_readable(path)) {
+        OPL_INFO_F("launcher", "launch-time check: the module of %s is current (%s)", g->game_id, path);
+        return 0;
+    }
+    OPL_INFO_F("launcher", "launch-time module rebuild of %s for entry %s: %s", g->game_id,
+               job.entry.c_str(), path);
+    job.built = true;
+    return g->build_module(g, job.disc.c_str(), path);
+}
+
+/** @brief Record a finished job's result in its entry: a failed build writes the failed-build marker, a completed build clears one.
+ *
+ * A stopped job (-2) records nothing.
+ * @param job The finished job. */
+void job_record(const Job& job) {
+    if (job.rc == -2) {
+        OPL_INFO_F("launcher", "module rebuild of %s stopped", job.g->game_id);
+    } else if (job.rc != 0) {
+        library_marker_write(job.entry.c_str(), s.last_stage);
+        OPL_ERROR_F("launcher", "module rebuild of %s failed at %s; see the log file %s", job.g->game_id,
+                    s.last_stage[0] ? s.last_stage : "its start", "openpete.log");
+    } else if (job.built) {
+        library_marker_clear(job.entry.c_str());
+        OPL_INFO_F("launcher", "module rebuild of %s done", job.g->game_id);
+    }
+}
+
+/** @brief Job thread entry: run the current job and flag it done.
+ *
+ * @param p Unused.
+ * @return 0. */
+int SDLCALL job_main(void* p) {
+    (void)p;
+    t_job = true;
+    s_jobs.cur.rc = job_body(s_jobs.cur);
+    t_job = false;
+    SDL_SetAtomicInt(&s_jobs.done, 1);
+    return 0;
+}
+
+/** @brief Join the finished job's thread, end its in-flight count and its compile pause, and record its result. */
+void job_reap() {
+    SDL_WaitThread(s_jobs.th, nullptr);
+    s_jobs.th = nullptr;
+    openpete_native_launcher_compile_pause(0);
+    s_jobs.in_flight--;
+    job_record(s_jobs.cur);
+}
+
+/** @brief Wait for the running job to flag done, keeping the window's events drained and, when asked, drawing the job's progress.
+ *
+ * @param draw true to draw the job's last progress report every 16 ms. */
+void job_wait(bool draw) {
+    while (!SDL_GetAtomicInt(&s_jobs.done)) {
+        if (s.ui && openpete_native_launcher_active()) {
+            drain_events();
+            if (draw) {
+                char stage[sizeof s_jobs.stage];
+                int d = 0, t = 0;
+                SDL_LockMutex(s.lock);
+                const bool have = s_jobs.have;
+                snprintf(stage, sizeof stage, "%s", s_jobs.stage);
+                d = s_jobs.sdone;
+                t = s_jobs.stotal;
+                SDL_UnlockMutex(s.lock);
+                View v;
+                v.stage = have ? stage : "PREPARING THE GAME";
+                v.done = d;
+                v.total = t;
+                present(v);
+            }
+        }
+        SDL_Delay(16);
+    }
+}
+
+}  // namespace
+
+void launcher_job_add(const openpete_launcher_game* g, const char* entry_dir, const char* disc) {
+    Job job;
+    job.g = g;
+    job.entry = entry_dir;
+    job.disc = disc;
+    s_jobs.queue.push_back(job);
+    OPL_INFO_F("launcher", "launch-time job queued: module check of %s (entry %s)", g->game_id, entry_dir);
+}
+
+void launcher_jobs_pump(void) {
+    if (s_jobs.th && SDL_GetAtomicInt(&s_jobs.done)) job_reap();
+    if (s_jobs.th || s_jobs.queue.empty() || !s.ui || s.handed_off) return;
+    if (!s.lock) s.lock = SDL_CreateMutex();
+    if (!s.lock) return;
+    s_jobs.cur = s_jobs.queue.front();
+    s_jobs.queue.pop_front();
+    s_jobs.cur.g->install(s_jobs.cur.g);
+    s_jobs.in_flight++;
+    openpete_native_launcher_compile_pause(1);
+    SDL_SetAtomicInt(&s_jobs.done, 0);
+    SDL_SetAtomicInt(&s_jobs.cancel, 0);
+    SDL_LockMutex(s.lock);
+    s_jobs.have = false;
+    SDL_UnlockMutex(s.lock);
+    s_jobs.th = SDL_CreateThread(job_main, "openpete-job", nullptr);
+    if (!s_jobs.th) {
+        /* The thread could not start: run the job here, as without screens. */
+        t_job = true;
+        s_jobs.cur.rc = job_body(s_jobs.cur);
+        t_job = false;
+        openpete_native_launcher_compile_pause(0);
+        s_jobs.in_flight--;
+        job_record(s_jobs.cur);
+        return;
+    }
+    OPL_INFO_F("launcher", "launch-time job started: %s", s_jobs.cur.g->game_id);
+}
+
+void launcher_jobs_run_inline(void) {
+    while (!s_jobs.queue.empty()) {
+        Job job = s_jobs.queue.front();
+        s_jobs.queue.pop_front();
+        job.g->install(job.g);
+        s_jobs.in_flight++;
+        t_job = true;
+        job.rc = job_body(job);
+        t_job = false;
+        s_jobs.in_flight--;
+        job_record(job);
+    }
+}
+
+void launcher_jobs_stop_other(const char* keep_game, bool requeue) {
+    if (!s_jobs.th) return;
+    if (keep_game && !strcmp(s_jobs.cur.g->game_id, keep_game)) return;
+    OPL_INFO_F("launcher", "stopping the module rebuild of %s%s", s_jobs.cur.g->game_id,
+               requeue ? " (requeued)" : "");
+    SDL_SetAtomicInt(&s_jobs.cancel, 1);
+    job_wait(false);
+    job_reap();
+    if (requeue && s_jobs.cur.rc == -2) s_jobs.queue.push_front(s_jobs.cur);
+}
+
+void launcher_jobs_finish_game(const char* game) {
+    for (auto it = s_jobs.queue.begin(); it != s_jobs.queue.end();)
+        it = strcmp(it->g->game_id, game) ? std::next(it) : s_jobs.queue.erase(it);
+    if (!s_jobs.th || strcmp(s_jobs.cur.g->game_id, game)) return;
+    OPL_INFO_F("launcher", "the pick of %s waits for its running module rebuild", game);
+    if (s.ui && !s.handed_off) (void)launcher_open(s.opts, 1);
+    job_wait(true);
+    job_reap();
+}
+
+bool launcher_screens(void) { return s.ui && !s.handed_off; }
+
+bool launcher_jobs_idle(void) { return !s_jobs.th && s_jobs.queue.empty(); }
+
+void launcher_jobs_token(int delta) { s_jobs.in_flight += delta; }
+
+const char* launcher_last_stage(void) { return s.last_stage; }
+
+int openpete_launcher_job_cancelled(void) {
+    return t_job && SDL_GetAtomicInt(&s_jobs.cancel) ? 1 : 0;
+}
+
+int openpete_launcher_jobs_in_flight(void) { return s_jobs.in_flight.load(); }

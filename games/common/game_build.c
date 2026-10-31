@@ -6,7 +6,15 @@
 
 #include "game_host_desc.h"
 #include "openpete_identify.h"
+#include "openpete.h"
+#include "openpete_config.h"
+#include "openpete_launcher.h"
+#include "openpete_log.h"
 #include "openpete_psx.h"
+#include "renderer/orchestrator.h"
+#include "renderer/text_moby.h"
+
+#include <stdlib.h>
 
 #include <string.h>
 
@@ -48,11 +56,7 @@ static const openpete_game_build_t* disc_game(const char* path) {
 
 const openpete_game_build_t* openpete_game_build_named(int argc, char** argv) {
     if (openpete_game_build_count == 0) return NULL;
-    if (openpete_game_build_count == 1) return openpete_game_builds[0];
-    const openpete_game_build_t* b = disc_game(flag_value(argc, argv, "--disc"));
-    if (!b) b = disc_game(flag_value(argc, argv, "--ingest"));
-    if (!b) b = linked(flag_value(argc, argv, "--game"));
-    return b;
+    return disc_game(flag_value(argc, argv, "--disc"));
 }
 
 const openpete_game_build_t* openpete_game_build_select(int argc, char** argv) {
@@ -65,9 +69,41 @@ const openpete_game_build_t* openpete_game_build_linked(const char* id) {
     return linked(id);
 }
 
+static int s_install_refusals;
+
 void openpete_game_build_install(const openpete_game_build_t* b) {
+    if (openpete_launcher_jobs_in_flight() > 0) {
+        s_install_refusals++;
+        OPL_ERROR_F("game", "install of %s refused: a launcher job is in flight (%d refused)",
+                    b ? b->id : "(none)", s_install_refusals);
+#ifndef NDEBUG
+        abort();
+#endif
+        return;
+    }
     s_build = b;
     game_runtime_install(b->runtime);
+}
+
+int openpete_game_build_install_refusals(void) { return s_install_refusals; }
+
+void openpete_game_report_resolution(const openpete_options_t* opts) {
+    const char* path = getenv("OPENPETE_CONFIG_REPORT_OUT");
+    if (!path || !*path) return;
+    FILE* f = fopen(path, "w");
+    if (!f) return;
+    openpete_config_report(f);
+    fprintf(f, "disc_path %s\n", opts->disc_path ? opts->disc_path : "-");
+    fclose(f);
+}
+
+void openpete_game_install_dump(FILE* out) {
+    fprintf(out, "build %p %s\n", (const void*)s_build, s_build ? s_build->id : "-");
+    fprintf(out, "install_refusals %d\n", s_install_refusals);
+    game_host_tables_dump(out);
+    game_orchestrator_dump(out);
+    openpete_game_runtime_dump(out);
+    text_moby_native_dump(out);
 }
 
 const openpete_game_build_t* openpete_game_build(void) { return s_build; }

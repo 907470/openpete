@@ -58,6 +58,11 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr);
  * @param fn Returns nonzero when the recompiled body must not run. */
 void psx_set_override_dispatch_game(int (*fn)(CPUState* cpu, uint32_t addr));
 
+/** @brief Return the registered game's override dispatch.
+ *
+ * @return The function psx_set_override_dispatch_game installed, or NULL. */
+int (*psx_override_dispatch_game(void))(CPUState* cpu, uint32_t addr);
+
 /** @brief Handle a recompiled `syscall` instruction.
  *
  * `a0` = 1 (EnterCriticalSection) masks interrupts and returns in `v0` 1
