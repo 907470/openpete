@@ -1337,6 +1337,109 @@ static void rt_report(const char* mat, int ntri) {
 
 /* The feed is an intermediate present's (moby_reextract). */
 static int s_in_reextract;
+
+/* ---- moby stage timers (--profile-out) -------------------------------------
+ * Nanosecond totals per extraction stage, split by leg: the canonical pass
+ * (leg 0, names "mcan.<stage>") and the sub-tick re-extract (leg 1, names
+ * "mrex.<stage>"). Totals are summed on the producer thread and emitted as one
+ * SPAN per stage per flush, so per-record stages of a few microseconds are not
+ * floored to whole microseconds per call. The engagement counts (calls per
+ * stage, vertices decoded, records projected, walk triangles, faces walked)
+ * are emitted as COUNT records "mcann.<name>" / "mrexn.<name>", cumulative
+ * from the leg's reset, so the last emission bound to a marker is that
+ * marker's total. Active only while a trace is open (op_prof_on). */
+enum { MST_DP = 0, MST_REC, MST_FLD, MST_PREV, MST_REVEAL, MST_TRAIL,
+       MST_WALK, MST_PRO, MST_PUSH, MST_RANK, MST_SNAP, MST_SHD, MST_EMIT, MST_N };
+enum { MSC_VERTS = 0, MSC_RECS, MSC_TRIS, MSC_FACES, MSC_N };
+static const char* const k_mst_name[MST_N] = {
+    "dp", "rec", "fld", "prev", "reveal", "trail",
+    "walk", "prologue", "push", "rank", "snap", "shdwalk", "emit" };
+static const char* const k_msc_name[MSC_N] = { "verts", "recs", "tris", "faces" };
+static uint64_t s_mst_ns[2][MST_N];
+static uint64_t s_mst_calls[2][MST_N];
+static uint64_t s_msc[2][MSC_N];
+
+/** @brief A monotonic nanosecond stamp while a trace is open, else 0.
+ *
+ * 0 doubles as the "not sampling" start value mst_add ignores.
+ * @return The CLOCK_MONOTONIC time in nanoseconds, or 0. */
+static uint64_t mst_now(void) {
+    if (!op_prof_on()) return 0;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t ns = (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+    return ns ? ns : 1;
+}
+
+/** @brief Add the nanoseconds since t0 to a stage of the current leg and count one call.
+ *
+ * Does nothing when t0 is 0. The leg is the re-extract while s_in_reextract
+ * is set, else the canonical pass.
+ * @param st The stage, MST_DP to MST_EMIT.
+ * @param t0 The mst_now value at the stage's start. */
+static void mst_add(int st, uint64_t t0) {
+    if (!t0) return;
+    const int leg = s_in_reextract ? 1 : 0;
+    s_mst_ns[leg][st] += mst_now() - t0;
+    s_mst_calls[leg][st]++;
+}
+
+/** @brief Add n to an engagement counter of the current leg.
+ *
+ * Counted only while a trace is open.
+ * @param c The counter, MSC_VERTS to MSC_FACES.
+ * @param n The amount. */
+static void msc_add(int c, long n) {
+    if (!op_prof_on() || n <= 0) return;
+    s_msc[s_in_reextract ? 1 : 0][c] += (uint64_t)n;
+}
+
+/** @brief Zero a leg's engagement counters, at the start of the leg's work for one marker.
+ * @param leg 0 for the canonical pass, 1 for the re-extract. */
+static void msc_reset(int leg) {
+    memset(s_msc[leg], 0, sizeof s_msc[leg]);
+    memset(s_mst_calls[leg], 0, sizeof s_mst_calls[leg]);
+}
+
+/* Interned names: stage spans, stage call counts, engagement counts. */
+static int s_mst_sid[2][MST_N], s_mst_cid[2][MST_N], s_msc_kid[2][MSC_N];
+
+/** @brief Intern the stage span names (mcan.<stage>, mrex.<stage>) and count names (mcann.*, mrexn.*) once. */
+static void mst_intern(void) {
+    static int init;
+    if (init) return;
+    char nb[48];
+    for (int l = 0; l < 2; l++) {
+        for (int s = 0; s < MST_N; s++) {
+            snprintf(nb, sizeof nb, "%s.%s", l ? "mrex" : "mcan", k_mst_name[s]);
+            s_mst_sid[l][s] = op_prof_intern(nb);
+            snprintf(nb, sizeof nb, "%s.%s", l ? "mrexn" : "mcann", k_mst_name[s]);
+            s_mst_cid[l][s] = op_prof_intern(nb);
+        }
+        for (int c = 0; c < MSC_N; c++) {
+            snprintf(nb, sizeof nb, "%s.%s", l ? "mrexn" : "mcann", k_msc_name[c]);
+            s_msc_kid[l][c] = op_prof_intern(nb);
+        }
+    }
+    init = 1;
+}
+
+/** @brief Emit a leg's stage totals as spans and its counters as counts, then zero the stage totals.
+ *
+ * A stage with no call since the last flush emits nothing. The call counts
+ * and engagement counters are emitted cumulative since msc_reset and are not
+ * zeroed here. No-op while no trace is open.
+ * @param leg 0 for the canonical pass, 1 for the re-extract. */
+static void mst_flush(int leg) {
+    if (!op_prof_on()) return;
+    mst_intern();
+    int (*sid)[MST_N] = s_mst_sid, (*cid)[MST_N] = s_mst_cid, (*kid)[MSC_N] = s_msc_kid;
+    for (int s = 0; s < MST_N; s++) {
+        if (s_mst_ns[leg][s]) op_prof_add_span(sid[leg][s], (s_mst_ns[leg][s] + 500u) / 1000u);
+        s_mst_ns[leg][s] = 0;
+        if (s_mst_calls[leg][s]) op_prof_count(cid[leg][s], s_mst_calls[leg][s]);
+    }
+    for (int c = 0; c < MSC_N; c++) op_prof_count(kid[leg][c], s_msc[leg][c]);
+}
 static int rank_carry_on(void);
 static int rank_fresh_on(void);
 static int rank_ep_mode(void);
@@ -1486,7 +1589,7 @@ static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl
  * @param out Receives one projection per vertex.
  * @param cap Capacity of out; the vertex count is clamped to it.
  * @return The vertex count written, 0 when header or keyframe A is not live, the GPF far skip drops the record, or the tier's count is 0. */
-static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
+static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t headerB,
                                uint32_t frameA,
                                uint32_t frameB, uint32_t w0,
                                const moby_pose_t* prev, double blend_alpha, double gpf_frac,
@@ -1727,6 +1830,46 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     }
     out[0].otk = otr;
     return count;
+}
+
+/** @brief Decode one moby record's vertex stream and project every vertex (moby_decode_project_body), timed as a stage.
+ *
+ * While a trace is open the call's time adds to the MST_DP stage, and a
+ * record that yields vertices adds its vertex count to MSC_VERTS and one to
+ * MSC_RECS. Parameters and return as moby_decode_project_body.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @param headerB Keyframe B's header.
+ * @param frameA Keyframe A's reference.
+ * @param frameB Keyframe B's reference.
+ * @param w0 The record flags word.
+ * @param prev The previous pose, or NULL.
+ * @param blend_alpha The lerp phase from prev to the current pose.
+ * @param gpf_frac The sub-tick-lerped GPF scale, or negative.
+ * @param depth_k The projected view-Z to written depth factor.
+ * @param TR_raw The stored translation.
+ * @param TR_frac The full-precision centre, or NULL.
+ * @param M The model-to-view rotation.
+ * @param zsf4 The record's tier.
+ * @param v The view.
+ * @param out Receives one projection per vertex.
+ * @param cap Capacity of out.
+ * @return The vertex count written. */
+static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
+                               uint32_t frameA,
+                               uint32_t frameB, uint32_t w0,
+                               const moby_pose_t* prev, double blend_alpha, double gpf_frac,
+                               double depth_k, const int TR_raw[3],
+                               const double TR_frac[3],
+                               const int M[3][3], int zsf4, const ngte_view* v,
+                               proj_xy* out, int cap) {
+    const uint64_t t0 = mst_now();
+    const int n = moby_decode_project_body(cpu, header, headerB, frameA, frameB, w0, prev,
+                                           blend_alpha, gpf_frac, depth_k, TR_raw, TR_frac,
+                                           M, zsf4, v, out, cap);
+    mst_add(MST_DP, t0);
+    if (n > 0) { msc_add(MSC_VERTS, n); msc_add(MSC_RECS, 1); }
+    return n;
 }
 
 /** @brief Whether --no-lod lifts the moby LOD tier.
@@ -2968,10 +3111,12 @@ static long s_reveal_verdict[3];
  * @param cpu The guest CPU state.
  * @return The number of records the reveal walk admitted. */
 static int append_revealed_regular(CPUState* cpu) {
-    if (!tier_dbg_on()) return append_revealed_regular_inner(cpu);
+    const uint64_t t_rv = mst_now();
+    if (!tier_dbg_on()) { int nr = append_revealed_regular_inner(cpu); mst_add(MST_REVEAL, t_rv); return nr; }
     uint64_t t0 = openpete_phase_now_us();
     int n = append_revealed_regular_inner(cpu);
     s_us_reveal += (long)(openpete_phase_now_us() - t0);
+    mst_add(MST_REVEAL, t_rv);
     return n;
 }
 /** @brief Decode one host-built moby record under the pass's camera and append it to the scene records.
@@ -3002,7 +3147,9 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
     /* The sub-tick shape lerp, hold and colour crossfade of the queue
      * pass; a canonical present (interp off) reads no previous pose. */
     moby_prev_decode pd;
-    moby_record_prev_pose(cpu, m, f, &pd);
+    { const uint64_t t_pv = mst_now();
+      moby_record_prev_pose(cpu, m, f, &pd);
+      mst_add(MST_PREV, t_pv); }
     if (s_walk_in_rex && pd.verdict >= 0 && pd.verdict < 3) s_reveal_verdict[pd.verdict]++;
     int got;
     { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
@@ -3123,7 +3270,9 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         moby_fields f;
         int bok;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          const uint64_t t_fl = mst_now();
           bok = build_moby_record_fields(cpu, m, &f);
+          mst_add(MST_FLD, t_fl);
           if (t0) s_us_rvfields += (long)(openpete_phase_now_us() - t0); }
         if (rdbg) {
             double dsx = 9999.0;
@@ -5442,9 +5591,15 @@ static int build_walk_tris_inner(CPUState* cpu);
  * @param cpu The guest CPU state.
  * @return The triangle count, s_gout.n. */
 static int build_walk_tris(CPUState* cpu) {
-    if (!tier_dbg_on()) return build_walk_tris_inner(cpu);
+    const uint64_t t_wk = mst_now();
+    if (!tier_dbg_on()) {
+        int nt = build_walk_tris_inner(cpu);
+        mst_add(MST_WALK, t_wk); msc_add(MSC_TRIS, nt);
+        return nt;
+    }
     uint64_t t0 = openpete_phase_now_us();
     int n = build_walk_tris_inner(cpu);
+    mst_add(MST_WALK, t_wk); msc_add(MSC_TRIS, n);
     long dt = (long)(openpete_phase_now_us() - t0);
     if (s_walk_in_rex) s_us_walk_rex += dt; else s_us_walk += dt;
     return n;
@@ -6321,6 +6476,7 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
                      s_ser = (e && *e && *e != '0'); }
     if (s_ser) return 1;
     if (tier_dbg_on()) { s_walk_faces += faces; s_walk_runs++; }
+    msc_add(MSC_FACES, faces);
     /* Below a work bound the dispatch costs more than it saves. The pool's
      * floor is a semaphore wake plus a join that waits for every helper it
      * signalled - including one that finds no work left - so a run costs on the
@@ -6480,7 +6636,9 @@ static int build_walk_tris_inner(CPUState* cpu) {
     s_gout.n = 0;
     memset(s_wdiag, 0, sizeof(s_wdiag));
     int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
+    const uint64_t t_pro = mst_now();
     int serial = walk_prologue(cpu, is_spec);
+    mst_add(MST_PRO, t_pro);
     if (serial) { s_walk_serial++; walk_records(cpu, is_spec, 0, s_nrecs); }
     else { s_walk_par++; walk_parallel(cpu, is_spec); }
     moby_fade_census_print();
@@ -9286,13 +9444,16 @@ static void push_scene_moby_tris(CPUState* cpu) {
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
-    moby_rank_prepare(cpu);
+    { const uint64_t t_rk = mst_now();
+      moby_rank_prepare(cpu);
+      mst_add(MST_RANK, t_rk); }
     moby_tri_debug();
     moby_rank_ordinals_t rord;  /* this walk's ranked-moby ordinals */
     moby_rank_ordinals_begin(&rord);
     moby_matslot_memo_t mat = { 0u, 0u, 0 };  /* the material-slot resolve below */
     moby_shell_run_t shell_run = { 0, 0 };
     const int64_t fog = moby_heavy_fog_target();
+    const uint64_t t_em = mst_now();
     for (int i = 0; i < s_gout.n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
@@ -9384,12 +9545,15 @@ static void push_scene_moby_tris(CPUState* cpu) {
         moby_tri_heavy_fog(&t, &s_wtri[i], cat, fog);
         openpete_native_scene_add_tri(&t, cat, 0);
     }
+    mst_add(MST_EMIT, t_em);
     moby_td_census(-1, 0, stbit);
     openpete_native_scene_set_hq_fog(0u, 0u);
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
     openpete_native_scene_set_host_added(0);
     moby_rank_ordinals_end(&rord);
-    moby_snap_collect(&rord);
+    { const uint64_t t_sn = mst_now();
+      moby_snap_collect(&rord);
+      mst_add(MST_SNAP, t_sn); }
     moby_snap_moby_fed();
 }
 
@@ -9402,7 +9566,9 @@ static void push_scene_moby(CPUState* cpu) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);
+    const uint64_t t_ps = mst_now();
     push_scene_moby_tris(cpu);
+    mst_add(MST_PUSH, t_ps);
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts -- */
@@ -9854,7 +10020,9 @@ void moby_native_overlay_commit(void) {
     /* The held scene is still the open one; the next Draw's 2D is in it, so
      * the triangles go in front of that 2D, where the pass would have fed them. */
     openpete_native_scene_front_begin();
-    push_scene_moby_tris(cpu);
+    { const uint64_t t_ps = mst_now();
+      push_scene_moby_tris(cpu);
+      mst_add(MST_PUSH, t_ps); }
     openpete_native_scene_front_end();
     s_pass_overlay = 0;
     if (borrow) {
@@ -10199,6 +10367,7 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
+    msc_reset(0);
     terrain_heavy_fog_refresh(cpu);                /* the level fog class moby_lift_tier reads */
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
     moby_prop_scene_latch(cpu);
@@ -10218,6 +10387,7 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
         moby_reveal_candidates(cpu, MOBY_REVEAL_ANIMATED);
     }
     moby_native_pass(cpu, game_layout.moby.hook_draw_regular, "REG");
+    mst_flush(0);
     moby_reveal_dbg(cpu);                          /* widescreen-reveal sizing (env-gated) */
     s_pass_overlay = 0;
     s_in = 0;
@@ -10237,6 +10407,7 @@ static int on_draw_specular(CPUState* cpu, uint32_t addr) {
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     moby_native_pass(cpu, game_layout.moby.hook_draw_specular, "SPEC");  /* same geometry, same record queue */
+    mst_flush(0);
     s_in = 0;
     return 1;
 }
@@ -12256,7 +12427,9 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
 
     if (feed) {                                 /* feed shaded mobys to the scene - fully native */
         s_cur_mat = "SHD";
+        const uint64_t t_sw = mst_now();
         int shd_n = build_shaded_walk_tris(cpu); /* native topology (#2a) + native lighting (#2b) */
+        mst_add(MST_SHD, t_sw); msc_add(MSC_TRIS, shd_n);
         /* Twin of the REG reveal mark: past the canonical band the .s shaded
          * walk emits nothing (its own 3-axis cull, which extended LOD drops on
          * the native mirror), so the interval above is empty and the gems/props
@@ -12292,6 +12465,7 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
             s_sreports++;
         }
     }
+    mst_flush(0);
     return hook_bracket_end(&k_shaded_bracket);
 }
 
@@ -13994,6 +14168,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     s_cur_mat = mat;
     s_proj_n = 0; s_nrecs = 0;
     static uint32_t culled_moby[MAX_RECORDS]; int culled_n = 0;
+    const uint64_t t_rec = mst_now();
     for (int i = 0; i < nm; i++) {
         /* Occlusion cull: skip the whole record (decode + project + walk +
          * draws) when the moby is provably hidden behind nearer WORLD depth.
@@ -14039,7 +14214,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         } else {
         { int bok;
           uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          const uint64_t t_fl = mst_now();
           bok = build_moby_record_fields(cpu, mobys[i], &f);
+          mst_add(MST_FLD, t_fl);
           if (t0) s_us_fields += (long)(openpete_phase_now_us() - t0);
           if (!bok) continue; }   /* shaded -> handled separately */
         moby_fields_pose_from_snapshot(cpu, mobys[i], &f);
@@ -14075,7 +14252,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * pose, prev zeroed for the trace and the record) on spawn or a
          * topology-changing clip switch. */
         moby_prev_decode pd;
-        moby_record_prev_pose(cpu, mobys[i], &f, &pd);
+        { const uint64_t t_pv = mst_now();
+          moby_record_prev_pose(cpu, mobys[i], &f, &pd);
+          mst_add(MST_PREV, t_pv); }
         const moby_pose_t* prev = &pd.prev;
         /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
          * traces the anim channel here. This block sits in the sub-tick
@@ -14174,6 +14353,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                                                              s_rc_alpha, &s_recs[s_nrecs].zf);
         s_proj_n += got; s_nrecs++;
     }
+    mst_add(MST_REC, t_rec);
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
         s_reg_moby_n = 0;
         for (int r = 0; r < s_nrecs && s_reg_moby_n < MAX_RECORDS; r++)
@@ -14195,7 +14375,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * trailing-edge records cover the mobys the newest tick's cone
          * dropped and the present's camera still sees. */
         append_revealed_regular(cpu);
-        append_trailing_regular(cpu);
+        { const uint64_t t_tr = mst_now();
+          append_trailing_regular(cpu);
+          mst_add(MST_TRAIL, t_tr); }
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
     push_scene_moby(cpu);
@@ -14240,7 +14422,11 @@ static int moby_census_on(void) {
 static void moby_reextract_body(CPUState* cpu);
 void moby_reextract(CPUState* cpu) {
     s_in_reextract = 1;
+    moby_snap_present(1, s_rc_alpha);
+    msc_reset(1);
     moby_reextract_body(cpu);
+    mst_flush(1);
+    moby_snap_present(0, 1.0);
     s_in_reextract = 0;
 }
 /** @brief Replay each canonical moby pass still fresh under this present's cameras, then push the scene.
@@ -14337,7 +14523,9 @@ static void moby_reextract_body(CPUState* cpu) {
         s_cur_mat = "SHD";
         spyro_native_prod_camera_enter(SPYRO_PROD_SHADED);
         moby_view_shd_build(cpu);
-        build_shaded_walk_tris(cpu);
+        { const uint64_t t_sw = mst_now();
+          const int shd_n = build_shaded_walk_tris(cpu);
+          mst_add(MST_SHD, t_sw); msc_add(MSC_TRIS, shd_n); }
         spyro_native_prod_camera_leave();
         push_scene_moby(cpu);
     }

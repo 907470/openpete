@@ -165,6 +165,17 @@ int  terrain_snap_ready(void);
  * @param ofx Receives the optical axis' screen X.
  * @param ofy Receives the optical axis' screen Y. */
 void terrain_snap_view(float* H, float* ofx, float* ofy);
+/** @brief Read the camera the last terrain build walked with, as the affine map from world to the snap's camera space.
+ *
+ * A world point w (full-world units: 16 times the walk's sector origin plus
+ * vertex) lands at camera point c = L (w - P), 16 (m1, m2, m3) of the walk's
+ * vertex transform: the full-world view-Z space terrain_snap_tri carries and
+ * terrain_snap_view unprojects screen points into.
+ * @param L Receives the linear part (the camera matrix over 4096, with the
+ *        walk's axis order and signs).
+ * @param P Receives the camera position, full-world units.
+ * @return 1 when a build is latched, else 0 (L and P untouched). */
+int  terrain_snap_camera(double L[3][3], double P[3]);
 /** @brief Collect the drawn opaque terrain triangles that reach a set of search boxes.
  *
  * The walk's own run supplies the sectors it walked. A visible sector the

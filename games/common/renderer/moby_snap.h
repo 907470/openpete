@@ -34,6 +34,15 @@ void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
  * @param n Their count.
  * @param base The ordinals the scene's earlier passes used. */
 void moby_snap_note_ranked(const uint32_t* mids, int n, int base);
+/** @brief Mark the resolves that follow as a sub-tick re-extract's at a phase, or as canonical.
+ *
+ * A canonical resolve stores its planes for the snap carry; a re-extract's
+ * resolve carries the planes of the endpoint the phase selects
+ * (OPENPETE_MOBY_SNAP_CARRY) and runs the carry verify
+ * (OPENPETE_MOBY_SNAP_CARRY_VERIFY).
+ * @param rex Nonzero for a sub-tick re-extract.
+ * @param alpha The present's phase, 0 at tick T-1 and 1 at tick T; read when rex is nonzero. */
+void moby_snap_present(int rex, double alpha);
 /** @brief Resolve the queued mobys when the terrain of this scene has been built (after a moby pass). */
 void moby_snap_moby_fed(void);
 /** @brief Resolve the queued mobys after the terrain build that fed this scene.

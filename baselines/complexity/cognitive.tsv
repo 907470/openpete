@@ -110,7 +110,7 @@ games/common/renderer/moby.c	compare_walk_vs_prims	251	0
 games/common/renderer/moby.c	emit_wtri	27	0	
 games/common/renderer/moby.c	hex_dump	35	0	
 games/common/renderer/moby.c	moby_build_validate	51	0	
-games/common/renderer/moby.c	moby_decode_project	75	0	
+games/common/renderer/moby.c	moby_decode_project_body	75	0	
 games/common/renderer/moby.c	moby_native_pass	49	0	
 games/common/renderer/moby.c	moby_reextract_body	49	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	

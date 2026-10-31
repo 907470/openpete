@@ -4,6 +4,8 @@
  * (sy - ofy) z / H, z), the space the snap stage rebuilds a fragment in. */
 #include "renderer/moby_snap.h"
 #include "renderer/terrain.h"
+#include "renderer/orchestrator.h"   /* canonical epoch: the carry's tables */
+#include "openpete_profile.h"        /* mcan.resolve / mrex.resolve */
 #include "openpete_native_render.h"
 #include "openpete_fiber.h"          /* openpete_feed_key_now: census line label */
 
@@ -38,8 +40,10 @@ static inline double ms_min(double a, double b) { return b < a ? b : a; }
 static inline double ms_max(double a, double b) { return b > a ? b : a; }
 
 /* One queued moby: its identity, ordinal, pull, run of s_q_tri and the
- * bounds of that run (screen x0, y0, x1, y1, view-Z z0, z1). */
-typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; } ms_moby;
+ * bounds of that run (screen x0, y0, x1, y1, view-Z z0, z1); its index in
+ * the queue as collected (qi) and whether its planes go to the scene's
+ * table (add; 0 for a moby the carry already placed). */
+typedef struct { uint32_t mid; int mord, dofs; float off; int t0, nt; float b[6]; int qi; int add; } ms_moby;
 
 static ms_moby*   s_q_mob;  static int s_q_nm, s_q_capm;
 static float    (*s_q_tri)[3][3]; static int s_q_nt, s_q_capt;
@@ -70,6 +74,8 @@ typedef struct {
                            * or disc, 1 inside both under one of the plane's contact
                            * triangles, 2 inside both under a coplanar non-contact triangle */
     long cut_b_mobys;     /* mobys with a class-1 cut */
+    long carried;         /* mobys whose planes the carry placed (ms_carry_begin) */
+    long fresh;           /* mobys of a carried present resolved by the contact pass */
 } ms_census;
 
 /** @brief The monotonic clock in nanoseconds, for the census's phase split.
@@ -727,19 +733,23 @@ static long ms_falsify(int nt, const openpete_snap_plane* out, int np,
     return cut;
 }
 
-/** @brief Find one queued moby's contact planes against the captured terrain and add them to the scene's snap table.
+static void ms_result(const ms_moby* mb, const openpete_snap_plane* out, int np);
+
+/** @brief Find one queued moby's contact planes against the captured terrain.
  * @param mb The moby.
  * @param tt The captured terrain triangles.
  * @param cand The indices into @p tt of those its search box reaches.
  * @param ncand Their count.
  * @param view H, ofx, ofy.
  * @param cs The census, updated.
- * @return The planes added. */
-static int ms_moby_contact(const ms_moby* mb, const terrain_snap_tri* tt, const int* cand,
-                           int ncand, const float view[3], ms_census* cs) {
+ * @param out Receives the planes, MS_MAX_PLANES at most.
+ * @return The plane count, or -1 on a scratch allocation failure. */
+static int ms_moby_planes(const ms_moby* mb, const terrain_snap_tri* tt, const int* cand,
+                          int ncand, const float view[3], ms_census* cs, openpete_snap_plane* out) {
     const float (*m)[3][3] = (const float (*)[3][3])&s_q_tri[mb->t0];
     const int nt = mb->nt;
-    if (!ncand || !ms_scratch(nt, ncand)) return 0;
+    if (!ncand) return 0;
+    if (!ms_scratch(nt, ncand)) return -1;
     s_mserial++;
     uint64_t t = cs->timed ? ms_mono_ns() : 0, t1;
     float u[6] = { 1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f };
@@ -768,7 +778,6 @@ static int ms_moby_contact(const ms_moby* mb, const terrain_snap_tri* tt, const 
     if (t) { t1 = ms_mono_ns(); cs->test_ns += t1 - t; t = t1; }
     if (!np) return 0;
     ms_make_rest(m, nt, view);
-    openpete_snap_plane out[MS_MAX_PLANES];
     for (int k = 0; k < np; k++)
         ms_plane_finish(s_mt, nt, mb->dofs, &P[k], s_up_p, &out[k]);
     cs->planes += np;
@@ -781,9 +790,40 @@ static int ms_moby_contact(const ms_moby* mb, const terrain_snap_tri* tt, const 
         cs->cut_b_mobys += cs->cut_cls[1] > b0;
     }
     ms_dump(mb, out, np, view);
+    return np;
+}
+
+/** @brief Add a moby's planes to the scene's snap table and note its ordinal for the collision census.
+ * @param mb The moby.
+ * @param out Its planes.
+ * @param np Their count, > 0.
+ * @param cs The census; counts refused planes as overflow.
+ * @return np when added, 0 when the table refused them. */
+static int ms_add(const ms_moby* mb, const openpete_snap_plane* out, int np, ms_census* cs) {
     if (!openpete_native_snap_add(mb->mid, mb->mord, mb->off, out, np)) { cs->ovf += np; return 0; }
     if (mb->mord > 0 && s_sn_n < 256) { s_sn[s_sn_n].mid = mb->mid; s_sn[s_sn_n++].ord = mb->mord; }
     return np;
+}
+
+/** @brief Find one queued moby's contact planes against the captured terrain, hand them to the carry and add them to the scene's snap table.
+ *
+ * A moby the carry already placed (add 0) is resolved for the verify
+ * instrument only and adds nothing.
+ * @param mb The moby.
+ * @param tt The captured terrain triangles.
+ * @param cand The indices into @p tt of those its search box reaches.
+ * @param ncand Their count.
+ * @param view H, ofx, ofy.
+ * @param cs The census, updated.
+ * @return The planes added. */
+static int ms_moby_contact(const ms_moby* mb, const terrain_snap_tri* tt, const int* cand,
+                           int ncand, const float view[3], ms_census* cs) {
+    openpete_snap_plane out[MS_MAX_PLANES];
+    const int np = ms_moby_planes(mb, tt, cand, ncand, view, cs, out);
+    if (np < 0) return 0;
+    ms_result(mb, out, np);
+    if (!np || !mb->add) return 0;
+    return ms_add(mb, out, np, cs);
 }
 
 /** @brief The search box of one queued moby: its screen rectangle widened by one pixel and its key depth range.
@@ -821,11 +861,12 @@ static void ms_census_print(const ms_census* cs, uint64_t ns) {
     openpete_native_snap_census(&ne, &np, &ovf);
     fprintf(stderr, "[moby-snap] key=%u pulled=%ld cand_faces=%ld cand_tris=%ld owned_sectors=%ld "
                     "tritri=%ld contact_tris=%ld contact_t4=%ld overlaps=%ld snap_zmin=%.0f ord_collide=%ld planes=%ld table_ents=%d table_planes=%d "
-                    "overflow=%ld+%u cut_mobys=%ld cut_samples=%ld cut_a=%ld cut_b=%ld cut_c=%ld cut_b_mobys=%ld cpu_us=%.1f capture_us=%.1f near_us=%.1f test_us=%.1f plane_us=%.1f mean_cpu_us=%.1f n=%ld\n",
+                    "overflow=%ld+%u cut_mobys=%ld cut_samples=%ld cut_a=%ld cut_b=%ld cut_c=%ld cut_b_mobys=%ld cpu_us=%.1f capture_us=%.1f near_us=%.1f test_us=%.1f plane_us=%.1f mean_cpu_us=%.1f n=%ld "
+                    "carried=%ld carry_fresh=%ld\n",
             openpete_feed_key_now(), cs->pulled, cs->faces, cs->tris, cs->sectors, cs->tests,
             cs->contacts, cs->contacts_t4, cs->overlaps, (double)cs->zmin, ms_ord_collisions(), cs->planes, ne, np, cs->ovf, ovf, cs->cut_mobys, cs->cut_samples, cs->cut_cls[0], cs->cut_cls[1], cs->cut_cls[2], cs->cut_b_mobys, (double)ns / 1000.0,
             (double)cs->cap_ns / 1000.0, (double)cs->near_ns / 1000.0, (double)cs->test_ns / 1000.0,
-            (double)cs->plane_ns / 1000.0, s_sum_us / (double)s_n, s_n);
+            (double)cs->plane_ns / 1000.0, s_sum_us / (double)s_n, s_n, cs->carried, cs->fresh);
 }
 
 /** @brief Bucket the captured triangles by the search boxes they reach (a counting sort over the hit sets).
@@ -869,6 +910,647 @@ static long ms_overlaps(const terrain_snap_box* box, const uint8_t* snapped, int
     return n;
 }
 
+/* ---- the snap carry ------------------------------------------------------
+ * A canonical resolve (one outside a sub-tick re-extract, moby_snap_present)
+ * stores each queued moby's contact planes in world space, keyed by moby
+ * identity, in the table of its canonical epoch and native scene build; the
+ * tables of the two newest epochs are kept (T-1 and T). While the carry is
+ * on (OPENPETE_MOBY_SNAP_CARRY=1), a sub-tick re-extract maps the planes of
+ * the endpoint the moby rank carry selects into its own camera instead of
+ * capturing and testing the terrain again, and resolves only the mobys the
+ * endpoint did not resolve. The terrain walk's camera space is
+ * c = L (w - P) (terrain_snap_camera), so a camera plane n.c = d is the
+ * world plane (L^T n).w = d + (L^T n).P, and a world plane m.w = e is
+ * (L'^-T m).c' = e - m.P' in a camera c' = L' (w - P'), scaled to a unit
+ * normal. Both maps keep the plane function's value at every world point
+ * up to a positive factor, so the side the moby stands on, the slab and the
+ * double-sided flag carry unchanged, except that a single-sided plane takes
+ * the eye's side in the present camera (openpete_snap_side), which a camera
+ * crossing the plane within the tick changes. A present whose camera
+ * equals the endpoint's bit for bit takes the planes as they were
+ * resolved. */
+
+/* One stored plane in world space, and the camera-space plane it came from. */
+typedef struct { double n[3], d; } mc_wplane;
+/* One stored moby: identity, first plane, plane count (0: resolved, no
+ * contact), and, while the verify runs, the world box of its corners at
+ * true depth (wb, valid when wb_ok). */
+typedef struct { uint32_t mid; int p0, np; float wb[6]; int wb_ok; } mc_ent;
+#define MC_HBITS 10
+#define MC_HSIZE (1 << MC_HBITS)
+typedef struct {
+    uint32_t  epoch;           /* canonical epoch (spyro_native_canon_epoch_stamp) */
+    unsigned  scene;           /* native scene build (openpete_native_scene_frame) */
+    int       valid;
+    double    L[3][3], P[3];   /* the camera of the first store */
+    int       cam_mixed;       /* a later store of the table ran under another camera */
+    mc_ent*   e;   int ne, cap_e;
+    mc_wplane* w;  int npl, cap_p;
+    openpete_snap_plane* c; int cap_c;   /* parallel to w: the plane as resolved */
+    unsigned  hgen;            /* generation the slots below hold */
+    unsigned  hg[MC_HSIZE];
+    int       hi[MC_HSIZE];
+    long      dup, full;       /* repeated identities; mobys refused at 3/4 of MC_HSIZE */
+} mc_tab;
+static mc_tab   s_mc[2];
+static int      s_mc_cur;      /* the latest epoch's table */
+static unsigned s_mc_gen;
+static long     s_mc_rebuilds; /* tables emptied by a second scene build within one epoch */
+
+/* The leg of the resolve under way (moby_snap_present) and, for the present
+ * that resolves, the per-present counts the profiler emits. */
+static int      s_rex;
+static double   s_rex_alpha = 1.0;
+static long     s_pc_carried, s_pc_fresh;
+
+/* The resolve under way: the table a canonical resolve stores into, and the
+ * walk camera it stores under. */
+static mc_tab*  s_store;
+static double   s_rs_L[3][3], s_rs_P[3];
+static const mc_tab* s_rs_ep;   /* a sub-tick resolve's endpoint, for its verify */
+static double   s_rs_Li[3][3];  /* the inverse of s_rs_L, while the verify runs */
+static float    s_rs_view[3];   /* H, ofx, ofy of the resolve under way */
+static int      s_rs_wb;        /* s_rs_Li holds: moby world boxes are computed */
+
+/** @brief The world box of a queued moby's triangle corners at true depth (key depth less off), under the resolve's camera.
+ * @param mb The moby.
+ * @param wb Receives x0, y0, z0, x1, y1, z1. */
+static void ms_moby_wbox(const ms_moby* mb, float wb[6]) {
+    const float H = s_rs_view[0], ofx = s_rs_view[1], ofy = s_rs_view[2];
+    for (int i = 0; i < 3; i++) { wb[i] = 1e30f; wb[i + 3] = -1e30f; }
+    for (int t = 0; t < mb->nt; t++)
+        for (int k = 0; k < 3; k++) {
+            const float* v = s_q_tri[mb->t0 + t][k];
+            const double z = (double)v[2] - mb->off;
+            const double c[3] = { ((double)v[0] - ofx) * z / H, ((double)v[1] - ofy) * z / H, z };
+            for (int i = 0; i < 3; i++) {
+                const float w = (float)(s_rs_Li[i][0] * c[0] + s_rs_Li[i][1] * c[1] + s_rs_Li[i][2] * c[2] + s_rs_P[i]);
+                wb[i] = ms_minf(wb[i], w); wb[i + 3] = ms_maxf(wb[i + 3], w);
+            }
+        }
+}
+
+/** @brief Whether the snap carry is on (OPENPETE_MOBY_SNAP_CARRY=1), read once.
+ * @return 1 when on, else 0. */
+static int mc_carry_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY"); s = e && *e == '1'; }
+    return s;
+}
+
+/** @brief The carry verify instrument's mode (OPENPETE_MOBY_SNAP_CARRY_VERIFY), read once.
+ *
+ * 0 off; 1 compares the carry against a fresh resolve on every sub-tick
+ * resolve; 2 is 1 with the carry mapped under the endpoint's own camera (the
+ * identity transform, the negative control); 3 is 1 with the map applied
+ * even where the cameras are equal (calibrates the map on a static camera).
+ * @return The mode. */
+static int mc_verify_mode(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SNAP_CARRY_VERIFY");
+                 s = e && *e >= '1' && *e <= '3' ? *e - '0' : 0; }
+    return s;
+}
+
+void moby_snap_present(int rex, double alpha) {
+    s_rex = rex;
+    s_rex_alpha = rex ? alpha : 1.0;
+    if (rex) s_pc_carried = s_pc_fresh = 0;
+}
+
+/** @brief Hash a moby identity to a table slot.
+ * @param mid The identity.
+ * @return The slot. */
+static unsigned mc_hash(uint32_t mid) { return (mid * 2654435761u) >> (32 - MC_HBITS); }
+
+/** @brief Find a moby in a table.
+ * @param t The table.
+ * @param mid The identity.
+ * @return Its entry index, or -1. */
+static int mc_find(const mc_tab* t, uint32_t mid) {
+    for (unsigned h = mc_hash(mid); t->hg[h] == t->hgen; h = (h + 1) & (MC_HSIZE - 1))
+        if (t->e[t->hi[h]].mid == mid) return t->hi[h];
+    return -1;
+}
+
+/** @brief Empty a table for a store under canonical epoch ep from scene build scene.
+ *
+ * Hands out a fresh slot generation; a wrap clears both tables' slots first.
+ * @param t The table.
+ * @param ep The canonical epoch.
+ * @param scene The native scene build. */
+static void mc_empty(mc_tab* t, uint32_t ep, unsigned scene) {
+    if (!++s_mc_gen) {
+        for (int k = 0; k < 2; k++) memset(s_mc[k].hg, 0, sizeof s_mc[k].hg);
+        s_mc_gen = 1;
+    }
+    t->hgen = s_mc_gen; t->ne = t->npl = 0; t->epoch = ep; t->scene = scene; t->valid = 1;
+    t->cam_mixed = -1;
+    t->dup = t->full = 0;
+}
+
+/** @brief The table a canonical resolve under epoch ep from scene build scene stores into.
+ *
+ * The rank carry's rule (rank_carry_table_for): the latest table while it
+ * holds ep and was stored by the same build, so the passes of one build
+ * accumulate; a later build under the same epoch empties it in place; the
+ * first store of a new epoch turns the latest table into T-1 and empties the
+ * other for the new tick.
+ * @param ep The canonical epoch.
+ * @param scene The native scene build.
+ * @return The table. */
+static mc_tab* mc_table_for(uint32_t ep, unsigned scene) {
+    mc_tab* t = &s_mc[s_mc_cur];
+    if (t->valid && ep == t->epoch) {
+        if (scene != t->scene) { mc_empty(t, ep, scene); s_mc_rebuilds++; }
+        return t;
+    }
+    s_mc_cur ^= 1;
+    t = &s_mc[s_mc_cur];
+    mc_empty(t, ep, scene);
+    return t;
+}
+
+/** @brief Note the camera a store into a table runs under: the first store's is kept, a different later one marks the table mixed.
+ * @param t The table.
+ * @param L The walk camera's linear part.
+ * @param P Its position. */
+static void mc_cam_note(mc_tab* t, const double L[3][3], const double P[3]) {
+    if (t->cam_mixed < 0) {
+        memcpy(t->L, L, sizeof t->L); memcpy(t->P, P, sizeof t->P);
+        t->cam_mixed = 0;
+    } else if (memcmp(t->L, L, sizeof t->L) || memcmp(t->P, P, sizeof t->P)) {
+        t->cam_mixed = 1;
+    }
+}
+
+/** @brief Store one resolved moby's planes, mapped to world space under the resolve's camera, in the table.
+ *
+ * A moby stored twice in one table keeps the later planes (counted as dup).
+ * While the verify runs the entry also keeps the moby's world box.
+ * @param t The table.
+ * @param mb The moby.
+ * @param out Its camera-space planes.
+ * @param np Their count, 0 for a moby resolved with no contact. */
+static void mc_store(mc_tab* t, const ms_moby* mb, const openpete_snap_plane* out, int np) {
+    const uint32_t mid = mb->mid;
+    if (t->ne >= MC_HSIZE - (MC_HSIZE >> 2)) { t->full++; return; }
+    if (!ms_grow((void**)&t->e, &t->cap_e, t->ne + 1, sizeof *t->e) ||
+        !ms_grow((void**)&t->w, &t->cap_p, t->npl + np + 1, sizeof *t->w) ||
+        !ms_grow((void**)&t->c, &t->cap_c, t->npl + np + 1, sizeof *t->c)) return;
+    unsigned h = mc_hash(mid);
+    while (t->hg[h] == t->hgen && t->e[t->hi[h]].mid != mid) h = (h + 1) & (MC_HSIZE - 1);
+    t->dup += t->hg[h] == t->hgen;
+    t->hg[h] = t->hgen; t->hi[h] = t->ne;
+    mc_ent* e = &t->e[t->ne++];
+    e->mid = mid; e->p0 = t->npl; e->np = np;
+    e->wb_ok = s_rs_wb;
+    if (s_rs_wb) ms_moby_wbox(mb, e->wb);
+    for (int k = 0; k < np; k++) {
+        mc_wplane* w = &t->w[t->npl];
+        double dw = out[k].d;
+        for (int i = 0; i < 3; i++) {
+            w->n[i] = s_rs_L[0][i] * out[k].n[0] + s_rs_L[1][i] * out[k].n[1] + s_rs_L[2][i] * out[k].n[2];
+            dw += w->n[i] * s_rs_P[i];
+        }
+        w->d = dw;
+        t->c[t->npl++] = out[k];
+    }
+}
+
+/** @brief The table whose planes this present's re-extract carries, or NULL when that endpoint has none.
+ *
+ * The rank carry's endpoint (rank_carry_endpoint): alpha at or above 0.5
+ * takes the latest table, below it the T-1 table; the latest counts only
+ * while its epoch is the last canonical present's, T-1 only while its epoch
+ * directly precedes the latest's.
+ * @return The table, or NULL. */
+static const mc_tab* mc_endpoint(void) {
+    const mc_tab* latest = &s_mc[s_mc_cur];
+    const mc_tab* prev = &s_mc[s_mc_cur ^ 1];
+    if (!latest->valid || !spyro_native_canon_epoch_fresh(latest->epoch)) return NULL;
+    if (s_rex_alpha >= 0.5) return latest;
+    return (prev->valid && prev->epoch + 1u == latest->epoch) ? prev : NULL;
+}
+
+/** @brief Write the inverse transpose of a 3x3 matrix.
+ * @param L The matrix.
+ * @param Q Receives L^-T.
+ * @return 0 when L is singular, else 1. */
+static int mc_inv_t(const double L[3][3], double Q[3][3]) {
+    double C[3][3];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) {
+            const int r1 = (r + 1) % 3, r2 = (r + 2) % 3, c1 = (c + 1) % 3, c2 = (c + 2) % 3;
+            C[r][c] = L[r1][c1] * L[r2][c2] - L[r1][c2] * L[r2][c1];
+        }
+    const double det = L[0][0] * C[0][0] + L[0][1] * C[0][1] + L[0][2] * C[0][2];
+    if (!(fabs(det) > 1e-30)) return 0;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) Q[r][c] = C[r][c] / det;
+    return 1;
+}
+
+/** @brief Map one stored world plane into a camera, with a unit normal.
+ * @param w The world plane.
+ * @param src The plane as resolved (side, slab, double-sided flag).
+ * @param Q The camera's L^-T.
+ * @param P The camera's position.
+ * @param o Receives the camera-space plane.
+ * @return 0 when the mapped normal is degenerate, else 1. */
+static int mc_map_plane(const mc_wplane* w, const openpete_snap_plane* src, const double Q[3][3],
+                        const double P[3], openpete_snap_plane* o) {
+    double n[3], d = w->d;
+    for (int i = 0; i < 3; i++) {
+        n[i] = Q[i][0] * w->n[0] + Q[i][1] * w->n[1] + Q[i][2] * w->n[2];
+        d -= w->n[i] * P[i];
+    }
+    const double l = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (!(l > 0.0)) return 0;
+    *o = *src;
+    for (int i = 0; i < 3; i++) o->n[i] = (float)(n[i] / l);
+    o->d = (float)(d / l);
+    if (!src->dside) {   /* openpete_snap_side: a single-sided plane's side is the eye's */
+        const double nn[3] = { o->n[0], o->n[1], o->n[2] };
+        o->side = (float)openpete_snap_side(nn, o->d, 0, NULL, 0.0);
+    }
+    return 1;
+}
+
+/* The carry's planes for the present's queue, per queued moby (qi): the
+ * count (-1 when the endpoint did not resolve the moby) and first plane in
+ * s_vc_pl. */
+static int* s_vc_np; static int* s_vc_p0; static int s_vc_cap, s_vc_cap0;
+static openpete_snap_plane* s_vc_pl; static int s_vc_plcap, s_vc_n;
+
+/** @brief Map the endpoint's planes of every queued moby into the present camera (s_vc_np, s_vc_p0, s_vc_pl).
+ *
+ * The planes are taken as resolved when the camera equals the endpoint's
+ * and the verify mode is not 3; verify mode 2 maps under the endpoint's own
+ * camera (the identity).
+ * @param ep The endpoint, or NULL (every moby absent).
+ * @param L The present walk camera's linear part.
+ * @param P Its position.
+ * @return 0 on an allocation failure, else 1. */
+static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
+    if (!ms_grow((void**)&s_vc_np, &s_vc_cap, s_q_nm, sizeof *s_vc_np) ||
+        !ms_grow((void**)&s_vc_p0, &s_vc_cap0, s_q_nm, sizeof *s_vc_p0)) return 0;
+    s_vc_n = 0;
+    const int vm = mc_verify_mode();
+    const double (*Lm)[3] = vm == 2 && ep ? ep->L : L;
+    const double* Pm = vm == 2 && ep ? ep->P : P;
+    const int same = ep && !ep->cam_mixed && vm != 3 &&
+                     !memcmp(ep->L, Lm, sizeof ep->L) && !memcmp(ep->P, Pm, 3 * sizeof *Pm);
+    double Q[3][3];
+    const int inv = ep && mc_inv_t(Lm, Q);
+    for (int k = 0; k < s_q_nm; k++) {
+        const int x = inv || same ? mc_find(ep, s_q_mob[k].mid) : -1;
+        s_vc_np[k] = -1;
+        if (x < 0) continue;
+        const mc_ent* e = &ep->e[x];
+        if (!ms_grow((void**)&s_vc_pl, &s_vc_plcap, s_vc_n + e->np + 1, sizeof *s_vc_pl)) return 0;
+        s_vc_p0[k] = s_vc_n;
+        int ok = 1;
+        for (int j = 0; j < e->np && ok; j++) {
+            if (same) s_vc_pl[s_vc_n + j] = ep->c[e->p0 + j];
+            else ok = mc_map_plane(&ep->w[e->p0 + j], &ep->c[e->p0 + j], Q, Pm, &s_vc_pl[s_vc_n + j]);
+        }
+        if (!ok) continue;
+        s_vc_np[k] = e->np;
+        s_vc_n += e->np;
+    }
+    return 1;
+}
+
+/* ---- carry verify (OPENPETE_MOBY_SNAP_CARRY_VERIFY) ----------------------
+ * Every sub-tick resolve also runs the fresh contact pass over the whole
+ * queue and compares, per queued moby, the carried planes against the fresh
+ * ones. Planes match when their normals agree to within twice the merge
+ * cosine deficit and their offsets to within twice the merge distance (each
+ * plane is its group's first contact face, within the merge tolerance of
+ * every member), up to the normal's orientation. Classes: a moby the
+ * endpoint did not resolve (absent, resolved fresh under the carry); one
+ * the fresh pass did not resolve (unresolved); carry-only and fresh-only
+ * mobys (planes on one side only) and planes (unmatched); matched planes
+ * whose side, slab or double-sided flag differ; table refusals (overflow).
+ * A mismatching moby whose world box (corners at true depth) moved by more
+ * than MC_MOVED world units from the endpoint's is counted as moved (a
+ * moby moving or animating across faces within the tick); one whose every
+ * unmatched plane its corners straddle by less than MC_GRAZE world units (a
+ * grazing contact, which the exact triangle test decides differently under
+ * another camera's float projection) as grazing; the rest as static.
+ * Engagement: resolves and presents compared, presents at alpha != 0,
+ * mobys and planes compared, and the present-to-endpoint camera delta. */
+#define MC_MOVED 0.5
+#define MC_GRAZE 2.0
+static int* s_vf_np; static int* s_vf_p0; static int s_vf_cap, s_vf_cap0;
+static openpete_snap_plane* s_vf_pl; static int s_vf_plcap, s_vf_n;
+static uint32_t* s_vq_mid; static int s_vq_cap, s_vq_n;
+static float (*s_vq_wb)[6]; static int s_vq_wbcap;   /* per queue index: the present's world box */
+static int s_vf_on;
+typedef struct {
+    long resolves, presents, presents_anz, mobys, planes, absent, unresolved;
+    long carry_only_m, fresh_only_m, carry_only_p, fresh_only_p, side, slab, dside;
+    long mism_mobys, mism_cls[3], ovf, cam_moved;   /* mism_cls: moved, grazing, static */
+    double dp_sum, dp_max, dl_max;
+    unsigned last_epoch;
+} mc_vstat;
+static mc_vstat s_vs = { .last_epoch = ~0u };
+
+/** @brief Record one moby's fresh planes for the verify comparison.
+ * @param qi The moby's queue index.
+ * @param out Its planes.
+ * @param np Their count. */
+static void mc_vf_put(int qi, const openpete_snap_plane* out, int np) {
+    if (qi < 0 || qi >= s_vq_n ||
+        !ms_grow((void**)&s_vf_pl, &s_vf_plcap, s_vf_n + np + 1, sizeof *s_vf_pl)) return;
+    s_vf_np[qi] = np; s_vf_p0[qi] = s_vf_n;
+    memcpy(&s_vf_pl[s_vf_n], out, (size_t)np * sizeof *out);
+    s_vf_n += np;
+}
+
+/** @brief Hand a resolved moby's planes to the carry: a canonical resolve stores them, a verified sub-tick resolve records them for the comparison.
+ * @param mb The moby.
+ * @param out Its planes.
+ * @param np Their count, 0 for no contact. */
+static void ms_result(const ms_moby* mb, const openpete_snap_plane* out, int np) {
+    if (s_store) mc_store(s_store, mb, out, np);
+    if (s_vf_on) mc_vf_put(mb->qi, out, np);
+}
+
+/** @brief Start the verify comparison of this resolve: every moby unresolved, the queue's identities kept by queue index.
+ * @return 0 on an allocation failure, else 1. */
+static int mc_vf_begin(void) {
+    if (!ms_grow((void**)&s_vf_np, &s_vf_cap, s_q_nm, sizeof *s_vf_np) ||
+        !ms_grow((void**)&s_vf_p0, &s_vf_cap0, s_q_nm, sizeof *s_vf_p0) ||
+        !ms_grow((void**)&s_vq_mid, &s_vq_cap, s_q_nm, sizeof *s_vq_mid) ||
+        !ms_grow((void**)&s_vq_wb, &s_vq_wbcap, s_q_nm, sizeof *s_vq_wb)) return 0;
+    s_vq_n = s_q_nm; s_vf_n = 0;
+    for (int k = 0; k < s_q_nm; k++) {
+        s_vf_np[k] = -1; s_vq_mid[k] = s_q_mob[k].mid;
+        if (s_rs_wb) ms_moby_wbox(&s_q_mob[k], s_vq_wb[k]);
+    }
+    return 1;
+}
+
+/** @brief Print the verify census, cumulative over the run. */
+static void mc_vf_print(void) {
+    const mc_vstat* v = &s_vs;
+    fprintf(stderr, "[snap-carry-verify] mode=%d carry=%d resolves=%ld presents=%ld presents_anz=%ld mobys=%ld "
+                    "planes=%ld mismatch_mobys=%ld mismatch_moved=%ld mismatch_grazing=%ld mismatch_static=%ld carry_only_mobys=%ld fresh_only_mobys=%ld carry_only_planes=%ld "
+                    "fresh_only_planes=%ld side_flips=%ld slab_diff=%ld dside_diff=%ld absent=%ld unresolved=%ld "
+                    "overflow=%ld cam_moved=%ld cam_dp_mean=%.3f cam_dp_max=%.3f cam_dl_max=%.6f dup=%ld full=%ld "
+                    "rebuilds=%ld\n",
+            mc_verify_mode(), mc_carry_on(), v->resolves, v->presents, v->presents_anz, v->mobys, v->planes,
+            v->mism_mobys, v->mism_cls[0], v->mism_cls[1], v->mism_cls[2], v->carry_only_m, v->fresh_only_m, v->carry_only_p, v->fresh_only_p, v->side,
+            v->slab, v->dside, v->absent, v->unresolved, v->ovf, v->cam_moved,
+            v->resolves ? v->dp_sum / (double)v->resolves : 0.0, v->dp_max, v->dl_max,
+            s_mc[0].dup + s_mc[1].dup, s_mc[0].full + s_mc[1].full, s_mc_rebuilds);
+}
+
+/** @brief Find the fresh plane that matches a carried one under the verify tolerance.
+ * @param c The carried plane.
+ * @param f The fresh planes.
+ * @param nf Their count.
+ * @param used Per fresh plane, 1 once matched; updated.
+ * @param sg Receives +1 or -1, the fresh normal's orientation against the carried one.
+ * @return The fresh plane's index, or -1. */
+static int mc_vf_match(const openpete_snap_plane* c, const openpete_snap_plane* f, int nf, uint8_t* used, double* sg) {
+    for (int j = 0; j < nf; j++) {
+        if (used[j]) continue;
+        const double cs = (double)c->n[0] * f[j].n[0] + (double)c->n[1] * f[j].n[1] + (double)c->n[2] * f[j].n[2];
+        const double s = cs < 0.0 ? -1.0 : 1.0;
+        if (fabs(cs) > 1.0 - 2.0 * MS_MERGE_DN && fabs((double)c->d - s * f[j].d) < 2.0 * MS_MERGE_DD) {
+            used[j] = 1; *sg = s;
+            return j;
+        }
+    }
+    return -1;
+}
+
+/** @brief How far a queued moby's world box moved from the endpoint's, the largest of the six bound deltas.
+ * @param qi The moby's queue index.
+ * @return The delta in world units, or -1 when either box is missing. */
+static double mc_vf_moved(int qi) {
+    const int x = s_rs_wb && s_rs_ep ? mc_find(s_rs_ep, s_vq_mid[qi]) : -1;
+    if (x < 0 || !s_rs_ep->e[x].wb_ok) return -1.0;
+    double d = 0.0;
+    for (int i = 0; i < 6; i++) d = ms_max(d, fabs((double)s_rs_ep->e[x].wb[i] - s_vq_wb[qi][i]));
+    return d;
+}
+
+/** @brief Print one mismatching moby's carried and fresh planes, the first 64 of the run.
+ * @param qi The moby's queue index.
+ * @param why The class.
+ * @param moved Its world box delta (mc_vf_moved). */
+static void mc_vf_detail(int qi, const char* why, double moved) {
+    static int s_n;
+    if (s_n >= 64) return;
+    s_n++;
+    fprintf(stderr, "[snap-carry-mismatch] key=%u alpha=%.3f mid=%u class=%s carry_np=%d fresh_np=%d moved=%.2f\n",
+            openpete_feed_key_now(), s_rex_alpha, s_vq_mid[qi], why, s_vc_np[qi], s_vf_np[qi], moved);
+    for (int j = 0; j < s_vc_np[qi]; j++) {
+        const openpete_snap_plane* p = &s_vc_pl[s_vc_p0[qi] + j];
+        fprintf(stderr, "  carry n=%.6f,%.6f,%.6f d=%.3f side=%.0f slab=%.0f dside=%d\n",
+                p->n[0], p->n[1], p->n[2], p->d, p->side, p->slab, p->dside);
+    }
+    for (int j = 0; j < s_vf_np[qi]; j++) {
+        const openpete_snap_plane* p = &s_vf_pl[s_vf_p0[qi] + j];
+        fprintf(stderr, "  fresh n=%.6f,%.6f,%.6f d=%.3f side=%.0f slab=%.0f dside=%d\n",
+                p->n[0], p->n[1], p->n[2], p->d, p->side, p->slab, p->dside);
+    }
+}
+
+/** @brief How deep a queued moby's triangle corners (key depth, present camera) straddle a plane: the smaller of the deepest corner on each side.
+ *
+ * Negative when every corner lies on one side: minus the nearest corner's
+ * distance.
+ * @param mb The moby.
+ * @param pl The plane.
+ * @return The straddle depth, world units. */
+static double mc_straddle(const ms_moby* mb, const openpete_snap_plane* pl) {
+    const double H = s_rs_view[0], ofx = s_rs_view[1], ofy = s_rs_view[2];
+    double hi = -1e30, lo = 1e30;
+    for (int t = 0; t < mb->nt; t++)
+        for (int k = 0; k < 3; k++) {
+            const float* v = s_q_tri[mb->t0 + t][k];
+            const double z = v[2];
+            const double sd = pl->n[0] * ((v[0] - ofx) * z / H) + pl->n[1] * ((v[1] - ofy) * z / H) +
+                              pl->n[2] * z - pl->d;
+            hi = ms_max(hi, sd); lo = ms_min(lo, sd);
+        }
+    return hi > 0.0 && lo < 0.0 ? ms_min(hi, -lo) : -ms_min(fabs(hi), fabs(lo));
+}
+
+/** @brief Compare one moby's carried planes against its fresh ones, counting the plane classes.
+ * @param qi The moby's queue index.
+ * @param graze Cleared when an unmatched plane is not a grazing contact (mc_straddle within MC_GRAZE).
+ * @return The count of mismatching planes and plane attributes. */
+static long mc_vf_planes(int qi, int* graze) {
+    const int nc = s_vc_np[qi], nf = s_vf_np[qi];
+    const ms_moby* mb = &s_q_mob[qi];
+    uint8_t used[MS_MAX_PLANES] = { 0 };
+    const openpete_snap_plane* f = &s_vf_pl[s_vf_p0[qi]];
+    long bad = 0;
+    for (int j = 0; j < nc; j++) {
+        const openpete_snap_plane* c = &s_vc_pl[s_vc_p0[qi] + j];
+        double sg = 1.0;
+        const int m = mc_vf_match(c, f, nf, used, &sg);
+        s_vs.planes++;
+        if (m < 0) {
+            s_vs.carry_only_p++; bad++;
+            *graze &= fabs(mc_straddle(mb, c)) < MC_GRAZE;
+            continue;
+        }
+        const int side = (c->side < 0.0f) != (sg * f[m].side < 0.0);
+        s_vs.side += side; s_vs.slab += c->slab != f[m].slab; s_vs.dside += c->dside != f[m].dside;
+        bad += side + (c->slab != f[m].slab) + (c->dside != f[m].dside);
+        *graze &= !(side || c->slab != f[m].slab || c->dside != f[m].dside);
+    }
+    for (int j = 0; j < nf; j++) {
+        if (used[j]) continue;
+        s_vs.fresh_only_p++; bad++;
+        *graze &= fabs(mc_straddle(mb, &f[j])) < MC_GRAZE;
+    }
+    return bad;
+}
+
+/** @brief Whether every one of a moby's planes is a grazing contact (mc_straddle within MC_GRAZE).
+ * @param qi The moby's queue index.
+ * @param pl The planes.
+ * @param n Their count.
+ * @return 1 when every plane grazes, else 0. */
+static int mc_vf_graze_all(int qi, const openpete_snap_plane* pl, int n) {
+    for (int j = 0; j < n; j++)
+        if (!(fabs(mc_straddle(&s_q_mob[qi], &pl[j])) < MC_GRAZE)) return 0;
+    return 1;
+}
+
+/** @brief Compare one moby's carried planes against its fresh ones and count the classes.
+ *
+ * A mismatching moby is counted as moved (mc_vf_moved over MC_MOVED), else
+ * as grazing when every unmatched plane is a grazing contact, else as
+ * static.
+ * @param qi The moby's queue index.
+ * @return 1 when any class other than absent or unresolved holds, else 0. */
+static int mc_vf_moby(int qi) {
+    const int nc = s_vc_np[qi], nf = s_vf_np[qi];
+    if (nc < 0) { s_vs.absent++; return 0; }
+    if (nf < 0) { s_vs.unresolved++; return 0; }
+    s_vs.mobys++;
+    if (!nc && !nf) return 0;
+    int graze = 1;
+    const char* why = "planes";
+    if (nc && !nf) { s_vs.carry_only_m++; why = "carry_only_moby"; }
+    if (nf && !nc) { s_vs.fresh_only_m++; why = "fresh_only_moby"; }
+    const long bad = nc && nf ? mc_vf_planes(qi, &graze) : 0;
+    if (nc && nf && !bad) return 0;
+    if (!(nc && nf))
+        graze = nc ? mc_vf_graze_all(qi, &s_vc_pl[s_vc_p0[qi]], nc) : mc_vf_graze_all(qi, &s_vf_pl[s_vf_p0[qi]], nf);
+    const double mv = mc_vf_moved(qi);
+    const int cls = mv > MC_MOVED ? 0 : graze ? 1 : 2;
+    s_vs.mism_cls[cls]++;
+    if (cls == 2 || mc_verify_mode() != 1) mc_vf_detail(qi, why, mv);
+    return 1;
+}
+
+/** @brief Compare the carry against the fresh pass for every queued moby of this resolve and count the engagement.
+ * @param ep The endpoint, or NULL.
+ * @param L The present walk camera's linear part.
+ * @param P Its position. */
+static void mc_vf_compare(const mc_tab* ep, const double L[3][3], const double P[3]) {
+    mc_vstat* v = &s_vs;
+    v->resolves++;
+    const unsigned ep_scene = openpete_native_scene_epoch();
+    if (ep_scene != v->last_epoch) { v->last_epoch = ep_scene; v->presents++; v->presents_anz += s_rex_alpha != 0.0; }
+    if (ep) {
+        double dp = 0.0, dl = 0.0;
+        for (int i = 0; i < 3; i++) {
+            dp += (P[i] - ep->P[i]) * (P[i] - ep->P[i]);
+            for (int j = 0; j < 3; j++) dl = ms_max(dl, fabs(L[i][j] - ep->L[i][j]));
+        }
+        dp = sqrt(dp);
+        v->cam_moved += dp > 0.0 || dl > 0.0;
+        v->dp_sum += dp; v->dp_max = ms_max(v->dp_max, dp); v->dl_max = ms_max(v->dl_max, dl);
+    }
+    for (int k = 0; k < s_vq_n; k++) v->mism_mobys += mc_vf_moby(k);
+    static int s_atexit;
+    if (!s_atexit) { s_atexit = 1; atexit(mc_vf_print); }
+    if (v->resolves % 512 == 0) mc_vf_print();
+}
+
+/** @brief Move the queued mobys still to be added (add 1) to the front of the queue, keeping their order.
+ * @return Their count. */
+static int ms_compact(void) {
+    int n = 0;
+    for (int k = 0; k < s_q_nm; k++) {
+        if (!s_q_mob[k].add) continue;
+        if (n != k) { const ms_moby t = s_q_mob[n]; s_q_mob[n] = s_q_mob[k]; s_q_mob[k] = t; }
+        n++;
+    }
+    return n;
+}
+
+/** @brief Add the carried planes of every queued moby the endpoint resolved, in queue order, and mark those mobys added.
+ * @param cs The census: carried and fresh mobys, overflow. */
+static void ms_carry_add(ms_census* cs) {
+    for (int k = 0; k < s_q_nm; k++) {
+        ms_moby* mb = &s_q_mob[k];
+        if (s_vc_np[k] < 0) { cs->fresh++; continue; }
+        mb->add = 0;
+        cs->carried++;
+        if (s_vc_np[k] > 0) ms_add(mb, &s_vc_pl[s_vc_p0[k]], s_vc_np[k], cs);
+    }
+}
+
+
+/** @brief Set up the carry for the resolve under way and return how many queued mobys the contact pass resolves.
+ *
+ * A canonical resolve (carry or verify on) stores into its epoch's table
+ * and resolves the whole queue. A sub-tick resolve maps the endpoint's
+ * planes (mc_map); with the carry on it adds them and resolves only the
+ * mobys the endpoint did not, moved to the front of the queue, unless the
+ * verify runs, which resolves the whole queue and adds only those.
+ * @param cs The census.
+ * @return The count of queued mobys, from the front, the contact pass resolves. */
+static int ms_carry_begin(ms_census* cs) {
+    s_store = NULL; s_vf_on = 0; s_rs_ep = NULL; s_rs_wb = 0;
+    for (int k = 0; k < s_q_nm; k++) { s_q_mob[k].qi = k; s_q_mob[k].add = 1; }
+    const int carry = mc_carry_on(), vm = mc_verify_mode();
+    if (!carry && !vm) return s_q_nm;
+    if (!terrain_snap_camera(s_rs_L, s_rs_P)) return s_q_nm;
+    double Q[3][3];
+    if (vm && mc_inv_t(s_rs_L, Q)) {
+        for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) s_rs_Li[r][c] = Q[c][r];
+        s_rs_wb = 1;
+    }
+    if (!s_rex) {
+        s_store = mc_table_for(spyro_native_canon_epoch_stamp(), openpete_native_scene_frame());
+        mc_cam_note(s_store, s_rs_L, s_rs_P);
+        return s_q_nm;
+    }
+    s_rs_ep = mc_endpoint();
+    if (!mc_map(s_rs_ep, s_rs_L, s_rs_P)) return s_q_nm;
+    s_vf_on = vm && mc_vf_begin();
+    if (!carry) return s_q_nm;
+    ms_carry_add(cs);
+    s_pc_carried += cs->carried; s_pc_fresh += cs->fresh;
+    return s_vf_on ? s_q_nm : ms_compact();
+}
+
+/** @brief Finish the carry of the resolve under way: the verify comparison, and the per-present counts for the profiler.
+ * @param cs The resolve's census; its overflow counts into the verify's. */
+static void ms_carry_end(const ms_census* cs) {
+    if (s_vf_on) { s_vs.ovf += cs->ovf; mc_vf_compare(s_rs_ep, s_rs_L, s_rs_P); }
+    s_store = NULL; s_vf_on = 0;
+    if (s_rex && mc_carry_on() && op_prof_on()) {
+        static int id_c = -1, id_f = -1;
+        if (id_c < 0) { id_c = op_prof_intern("mrexn.snap_carried"); id_f = op_prof_intern("mrexn.snap_fresh"); }
+        op_prof_count(id_c, (uint64_t)s_pc_carried);
+        op_prof_count(id_f, (uint64_t)s_pc_fresh);
+    }
+}
+
 /** @brief Resolve one chunk of at most 128 queued mobys: capture the terrain their boxes reach, find each one's contact planes, add them to the table.
  * @param g The chunk's first queued moby.
  * @param nb Its moby count.
@@ -902,7 +1584,8 @@ static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
 /** @brief Resolve the queue when it and the last terrain build belong to the scene now accumulating.
  *
  * Mobys go to the capture in groups of up to 128 (one bit each in the hit
- * sets); the queue empties afterwards. */
+ * sets); the queue empties afterwards. The carry (ms_carry_begin) may place
+ * some mobys' planes first and leave the capture the rest. */
 static void ms_resolve(void) {
     if (!s_q_nm || s_q_epoch != openpete_native_scene_epoch() || !terrain_snap_ready()) return;
     const uint64_t t0 = ms_census_on() ? ms_cpu_ns() : 0;
@@ -914,17 +1597,26 @@ static void ms_resolve(void) {
     if (view[0] > 0.0f) {
         openpete_native_snap_view(view[0], view[1], view[2]);
         ms_up_sync();
-        for (int g = 0; g < s_q_nm; g += 128)
-            if (!ms_resolve_chunk(g, s_q_nm - g < 128 ? s_q_nm - g : 128, view, &cs)) break;
+        memcpy(s_rs_view, view, sizeof s_rs_view);
+        const int nrun = ms_carry_begin(&cs);
+        for (int g = 0; g < nrun; g += 128)
+            if (!ms_resolve_chunk(g, nrun - g < 128 ? nrun - g : 128, view, &cs)) break;
+        ms_carry_end(&cs);
     }
     cs.pulled = s_q_nm;
     s_q_nm = s_q_nt = 0;
     if (t0) ms_census_print(&cs, ms_cpu_ns() - t0);
 }
 
-void moby_snap_moby_fed(void) { ms_resolve(); }
+/** @brief Run ms_resolve inside the profiler scope of its leg: mrex.resolve in a sub-tick re-extract, else mcan.resolve. */
+static void ms_resolve_scoped(void) {
+    if (s_rex) { OP_PROF_ACCUM_SCOPE("mrex.resolve"); ms_resolve(); }
+    else       { OP_PROF_ACCUM_SCOPE("mcan.resolve"); ms_resolve(); }
+}
+
+void moby_snap_moby_fed(void) { ms_resolve_scoped(); }
 
 void moby_snap_terrain_fed(struct CPUState* cpu) {
     (void)cpu;
-    ms_resolve();
+    ms_resolve_scoped();
 }

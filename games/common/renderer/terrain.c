@@ -13489,6 +13489,19 @@ void terrain_snap_view(float* H, float* ofx, float* ofy) {
     *H = (float)s_H; *ofx = (float)s_ofx; *ofy = (float)s_ofy;
 }
 
+int terrain_snap_camera(double L[3][3], double P[3]) {
+    if (!s_snap_src) return 0;
+    /* walk_sector: ngte_mac(M, camy - wy, camz - wz, wx - camx) / 4096 in
+     * world/16 units; the capture scales view-Z by 16 to full world. */
+    for (int r = 0; r < 3; r++) {
+        L[r][0] =  s_snap_G.M[r][2] / 4096.0;
+        L[r][1] = -s_snap_G.M[r][0] / 4096.0;
+        L[r][2] = -s_snap_G.M[r][1] / 4096.0;
+    }
+    P[0] = s_snap_G.camx * 16.0; P[1] = s_snap_G.camy * 16.0; P[2] = s_snap_G.camz * 16.0;
+    return 1;
+}
+
 /** @brief Whether two run triangles come from one face (sector, face index and tier).
  * @param a First triangle.
  * @param b Second triangle.
