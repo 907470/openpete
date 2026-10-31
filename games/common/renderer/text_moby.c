@@ -46,6 +46,7 @@
 #include "game_layout.h"
 #include "renderer/text_moby.h"
 #include "renderer/wad_subfile.h"   /* the WAD read of GAME_FONT_WAD_MODEL */
+#include "openpete_fnv1a64.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -127,12 +128,25 @@ typedef struct {
 #define NGLYPH       (SLOT_SYNTH_HYPHEN + 1)
 _Static_assert(sizeof FONT.punct / sizeof FONT.punct[0] == 8, "slot table sized for 8 punctuation pairs");
 
-static glyph_cache_t s_glyph[NGLYPH];
-static int s_cache_ready = 0;
-/* Common advance for '0'-'9' (model units) - see cache_finish. */
-static int s_digit_adv = 0;
-/* Where the snapshot came from: 0 none, 1 guest RAM, 2 the disc image. */
-static int s_cache_source = 0;
+/* The GAME_FONT_WAD_MODEL model is read whole into a host buffer of this
+ * many bytes (the credits font of Spyro 2 and Spyro 3 is 0x5000). */
+#define WAD_MODEL_MAX 0x10000u
+
+/* One glyph set: everything a fill writes. The producer's own set is s_set;
+ * an ingest job fills a set it allocates (text_glyph_set_read_disc). */
+struct text_glyph_set {
+    glyph_cache_t glyph[NGLYPH];
+    int ready;
+    /* Common advance for '0'-'9' (model units) - see cache_finish. */
+    int digit_adv;
+    /* Where the snapshot came from: 0 none, 1 guest RAM, 2 the disc image. */
+    int source;
+    /* GAME_FONT_WAD_MODEL: one read attempt per set, and the model read. */
+    int wad_tried;
+    uint8_t model[WAD_MODEL_MAX];
+};
+
+static text_glyph_set s_set;
 
 /** @brief Reports whether a glyph cache slot holds a digit '0'-'9'.
  *
@@ -186,14 +200,14 @@ static int slot_glyph_index(int slot) {
  * @param slot The cache slot; any int is accepted.
  * @return The width, or -1 when the slot is out of range or not cached. */
 static float glyph_natural_w(int slot) {
-    if (slot < 0 || slot >= NGLYPH || !s_glyph[slot].valid) return -1.0f;
-    return (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin);
+    if (slot < 0 || slot >= NGLYPH || !s_set.glyph[slot].valid) return -1.0f;
+    return (float)(s_set.glyph[slot].vxmax - s_set.glyph[slot].vxmin);
 }
 
 /** @brief Computes a glyph's advance and the inset of its glyph inside that advance, in overlay units.
  *
  * A non-digit is proportional: the advance is the glyph width and the inset
- * 0. A digit takes the shared tabular advance (s_digit_adv) and is centred
+ * 0. A digit takes the shared tabular advance (s_set.digit_adv) and is centred
  * in it. emit_string and measure_string both go through here, so the two
  * agree on a string's width. The trailing inter-glyph gap is not included.
  * @param slot The cache slot, or -1.
@@ -203,8 +217,8 @@ static float glyph_natural_w(int slot) {
 static void glyph_metrics(int slot, float scale, float* adv, float* inset) {
     const float w = glyph_natural_w(slot);
     if (w < 0.0f) { *adv = -1.0f; *inset = 0.0f; return; }
-    if (is_digit_slot(slot) && s_digit_adv > 0) {
-        *adv   = (float)s_digit_adv * scale;
+    if (is_digit_slot(slot) && s_set.digit_adv > 0) {
+        *adv   = (float)s_set.digit_adv * scale;
         *inset = 0.5f * (*adv - w * scale);   /* centred in its column */
     } else {
         *adv   = w * scale;
@@ -226,6 +240,72 @@ static void glyph_set_xrange(glyph_cache_t* g) {
     g->vxmin = vxmin; g->vxmax = vxmax;
 }
 
+/* Where a GAME_FONT_CLASS_PER_GLYPH font's models are read from: guest RAM
+ * through `cpu` when `buf` is NULL (the class's model through
+ * FONT.model_table, its pointers absolute), else a host copy of the font
+ * file the game loads them from (a data-size word, then 64 (offset, class)
+ * pairs ended by a zero offset, each offset relative to the file and each
+ * model pointer relative to its model); a host read outside the copy reads
+ * 0. */
+typedef struct {
+    CPUState*      cpu;
+    const uint8_t* buf;
+    uint32_t       len;
+} glyph_src;
+
+/** @brief Reads one byte of a glyph source.
+ * @param s The source.
+ * @param a The address (guest) or offset (host).
+ * @return The byte, 0 outside a host source. */
+static uint32_t gs_rd8(const glyph_src* s, uint32_t a) {
+    if (!s->buf) return s->cpu->read_byte(a) & 0xFFu;
+    return a < s->len ? s->buf[a] : 0u;
+}
+
+/** @brief Reads one little-endian word of a glyph source.
+ * @param s The source.
+ * @param a The address (guest) or offset (host).
+ * @return The word, 0 when it does not fit a host source. */
+static uint32_t gs_rd32(const glyph_src* s, uint32_t a) {
+    if (!s->buf) return s->cpu->read_word(a);
+    if (a > s->len || s->len - a < 4u) return 0u;
+    const uint8_t* b = s->buf + a;
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+/** @brief Finds a class's model in a glyph source.
+ *
+ * Guest RAM: FONT.model_table[cls], with the KSEG0 bit forced. Host: the
+ * offset the font file's (offset, class) pairs give the class.
+ * @param s The source.
+ * @param cls The moby class.
+ * @return The model's address or offset, 0 when the class has none. */
+static uint32_t gs_model(const glyph_src* s, int cls) {
+    if (!s->buf) {
+        const uint32_t m = s->cpu->read_word(FONT.model_table + (uint32_t)cls * 4u);
+        return m == 0u ? 0u : (m | 0x80000000u);
+    }
+    for (uint32_t i = 0; i < 64u; i++) {
+        const uint32_t off = gs_rd32(s, 4u + 8u * i);
+        if (off == 0u) break;
+        if ((int32_t)gs_rd32(s, 8u + 8u * i) == cls) return off;
+    }
+    return 0u;
+}
+
+/** @brief Resolves a model's pointer field in a glyph source.
+ *
+ * Guest RAM holds the absolute address (the KSEG0 bit forced); the host
+ * copy holds it relative to the model.
+ * @param s The source.
+ * @param model The model's address or offset.
+ * @param field The field's offset in the model header.
+ * @return The pointed-to address or offset. */
+static uint32_t gs_ptr(const glyph_src* s, uint32_t model, uint32_t field) {
+    const uint32_t v = gs_rd32(s, model + field);
+    return s->buf ? model + v : (v | 0x80000000u);
+}
+
 /** @brief Decodes the simple model of one moby class into a glyph cache entry, for GAME_FONT_CLASS_PER_GLYPH.
  *
  * Each vertex is 3 bytes: Z, X and Y are its bytes 0, 1 and 2, sign-extended
@@ -235,23 +315,22 @@ static void glyph_set_xrange(glyph_cache_t* g) {
  * stays invalid when the class has no model, the model's word 0 is not
  * negative (not a simple model, or its data not yet loaded), or its vertex or
  * face count is out of range.
- * @param cpu The guest CPU state.
+ * @param src Where the models are read.
  * @param g The cache entry.
  * @param cls The moby class. */
-static void cache_one_class(CPUState* cpu, glyph_cache_t* g, int cls) {
+static void cache_one_class(const glyph_src* src, glyph_cache_t* g, int cls) {
     g->valid = 0;
-    uint32_t model = cpu->read_word(FONT.model_table + (uint32_t)cls * 4u);
+    const uint32_t model = gs_model(src, cls);
     if (model == 0u) return;
-    if (model < 0x80000000u) model |= 0x80000000u;
-    if ((int32_t)cpu->read_word(model) >= 0) return;     /* not a simple model / data not in */
-    int vcount = cpu->read_byte(model + 0x0u) & 0xFF;
-    int fcount = cpu->read_byte(model + 0x1u) & 0xFF;
+    if ((int32_t)gs_rd32(src, model) >= 0) return;     /* not a simple model / data not in */
+    int vcount = (int)gs_rd8(src, model + 0x0u);
+    int fcount = (int)gs_rd8(src, model + 0x1u);
     if (vcount <= 0 || vcount > TXT_MAX_GLYPH_V || fcount > TXT_MAX_GLYPH_F) return;
-    uint32_t vbase = cpu->read_word(model + 0x4u); if (vbase < 0x80000000u) vbase |= 0x80000000u;
-    uint32_t faces = cpu->read_word(model + 0xCu); if (faces < 0x80000000u) faces |= 0x80000000u;
+    const uint32_t vbase = gs_ptr(src, model, 0x4u);
+    const uint32_t faces = gs_ptr(src, model, 0xCu);
     for (int i = 0; i < vcount; i++) {
         uint32_t p = vbase + (uint32_t)i * 3u;
-        uint32_t w = cpu->read_byte(p) | (cpu->read_byte(p + 1) << 8) | (cpu->read_byte(p + 2) << 16);
+        uint32_t w = gs_rd8(src, p) | (gs_rd8(src, p + 1) << 8) | (gs_rd8(src, p + 2) << 16);
         int VZ = ((int32_t)(w << 24)) >> 23;
         int VX = ((int32_t)(w << 16)) >> 23;
         int VY = ((int32_t)(w <<  8)) >> 23;
@@ -259,7 +338,7 @@ static void cache_one_class(CPUState* cpu, glyph_cache_t* g, int cls) {
     }
     for (int f = 0; f < fcount; f++) {
         uint32_t fp = faces + (uint32_t)f * 8u;
-        uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
+        uint32_t w0 = gs_rd32(src, fp), w1 = gs_rd32(src, fp + 4u);
         g->fi[f][0] = (uint8_t)(((w0 >> 21) & 0x1FCu) >> 2);
         g->fi[f][1] = (uint8_t)(((w0 >> 14) & 0x1FCu) >> 2);
         g->fi[f][2] = (uint8_t)(((w0 >>  7) & 0x1FCu) >> 2);
@@ -273,10 +352,7 @@ static void cache_one_class(CPUState* cpu, glyph_cache_t* g, int cls) {
     g->valid = 1;
 }
 
-/* ---- GAME_FONT_WAD_MODEL: the model read from the disc image -------------
- * The model is read whole into a host buffer of this many bytes (the credits
- * font of Spyro 2 and Spyro 3 is 0x5000). */
-#define WAD_MODEL_MAX 0x10000u
+/* ---- GAME_FONT_WAD_MODEL: the model read from the disc image ------------- */
 
 /** @brief Loads a little-endian 32-bit word at a byte offset of a host buffer.
  *
@@ -365,13 +441,14 @@ static uint32_t wad_model_read(uint8_t* buf, uint32_t cap) {
  * axis normals, so it takes the same lighting and extrusion as a real
  * glyph. Digit '0' is the reference because the snapshot is never
  * taken without it. The slot stays invalid when digit '0' is not cached or
- * has no height or depth. */
-static void synth_hyphen(void) {
-    glyph_cache_t* g = &s_glyph[SLOT_SYNTH_HYPHEN];
+ * has no height or depth.
+ * @param G The glyph set. */
+static void synth_hyphen(text_glyph_set* G) {
+    glyph_cache_t* g = &G->glyph[SLOT_SYNTH_HYPHEN];
     g->valid = 0;
     /* Everything is measured off the digit '0': it is the one glyph the
      * snapshot is not taken without, so the bar exists wherever text does. */
-    const glyph_cache_t* zero = &s_glyph[SLOT_DIGIT];
+    const glyph_cache_t* zero = &G->glyph[SLOT_DIGIT];
     if (!zero->valid || zero->vcount <= 0) return;
     int zmin = 1 << 30, zmax = -(1 << 30);
     /* Model y grows DOWNWARD (emit_glyph flips it with TXT_YSIGN), so the
@@ -412,80 +489,151 @@ static void synth_hyphen(void) {
     g->valid = 1;
 }
 
-/** @brief Completes the glyph snapshot: sets the tabular digit advance and marks the cache ready.
+/** @brief Completes a glyph set: sets the tabular digit advance and marks the set ready.
  *
  * The glyph models are proportional ('1' is narrower than '4'), so a number
  * redrawn with different digits would change width and text laid out from
  * its measured width would reflow. Every digit takes the widest valid
- * digit's advance (s_digit_adv) and is centred in it (glyph_metrics), so a
+ * digit's advance (digit_adv) and is centred in it (glyph_metrics), so a
  * number's width depends only on its digit count. measure_string and
  * emit_string both read it, so every consumer (the FPS counter, the menu's
  * values, the OSD, a mod's HUD) gets aligned columns. Once ready, neither
- * guest RAM nor the disc is read again.
+ * guest RAM nor the disc is read again for the set.
+ * @param G The glyph set.
  * @param source The snapshot's source: 1 guest RAM, 2 the disc image. */
-static void cache_finish(int source) {
-    s_digit_adv = 0;
+static void cache_finish(text_glyph_set* G, int source) {
+    G->digit_adv = 0;
     for (int d = 0; d < 10; d++) {
-        const glyph_cache_t* g = &s_glyph[SLOT_DIGIT + d];
-        if (g->valid && (g->vxmax - g->vxmin) > s_digit_adv)
-            s_digit_adv = g->vxmax - g->vxmin;
+        const glyph_cache_t* g = &G->glyph[SLOT_DIGIT + d];
+        if (g->valid && (g->vxmax - g->vxmin) > G->digit_adv)
+            G->digit_adv = g->vxmax - g->vxmin;
     }
-    s_cache_source = source;
-    s_cache_ready = 1;                                    /* snapshot taken; never re-read RAM */
+    G->source = source;
+    G->ready = 1;                                    /* snapshot taken; never re-read */
+}
+
+/** @brief Fills a glyph set from a GAME_FONT_CLASS_PER_GLYPH source once digit '0' is a loaded simple model.
+ *
+ * The whole font asset loads together, so digit '0' with real geometry means
+ * the rest are in too. Decodes every slot the font fills, synthesizes the
+ * hyphen and completes the set.
+ * @param G The glyph set.
+ * @param src Where the models are read.
+ * @param source The source flag cache_finish records.
+ * @return 1 when the set was filled, 0 when digit '0' is not loaded. */
+static int glyph_set_fill_classes(text_glyph_set* G, const glyph_src* src, int source) {
+    const uint32_t m0 = gs_model(src, FONT.digit_base);
+    if (m0 == 0u) return 0;
+    if ((int32_t)gs_rd32(src, m0) >= 0) return 0;        /* pointer set but data not yet in */
+    if (gs_rd8(src, m0) == 0u) return 0;                 /* vcount 0 -> not ready */
+    for (int s = 0; s < SLOT_SYNTH_HYPHEN; s++) {
+        const int idx = slot_glyph_index(s);
+        if (idx >= 0) cache_one_class(src, &G->glyph[s], idx);
+    }
+    synth_hyphen(G);
+    cache_finish(G, source);
+    return 1;
+}
+
+/** @brief Fills a glyph set from a GAME_FONT_WAD_MODEL model held in the set's model buffer.
+ *
+ * Kept only when every digit and letter decodes; otherwise every slot is
+ * cleared and the set stays not ready. Applies the punctuation offsets,
+ * synthesizes the hyphen and completes the set with the disc source.
+ * @param G The glyph set; its model buffer holds the model.
+ * @param len The model's byte count.
+ * @return 1 when the set was filled, else 0. */
+static int glyph_set_fill_wad(text_glyph_set* G, uint32_t len) {
+    if (len == 0u) return 0;
+    for (int s = 0; s < SLOT_SYNTH_HYPHEN; s++) {
+        const int idx = slot_glyph_index(s);
+        if (idx >= 0) wad_decode_block(G->model, len, &G->glyph[s], idx);
+    }
+    for (int s = 0; s < SLOT_PUNCT; s++) {
+        if (G->glyph[s].valid) continue;
+        for (int t = 0; t < NGLYPH; t++) G->glyph[t].valid = 0;
+        OPL_WARN_F("font", "glyph model from WAD entry %d sub-file %d lacks glyph %d",
+                   FONT.wad_entry, FONT.wad_subfile, slot_glyph_index(s));
+        return 0;
+    }
+    for (int p = 0; p < N_PUNCT && FONT.punct[p].ch; p++) {
+        glyph_cache_t* g = &G->glyph[SLOT_PUNCT + p];
+        for (int i = 0; g->valid && i < g->vcount; i++)
+            g->vy[i] = (int16_t)(g->vy[i] + FONT.punct[p].dy);
+    }
+    synth_hyphen(G);
+    cache_finish(G, 2);
+    return 1;
 }
 
 void text_moby_native_cache(CPUState* cpu) {
-    if (s_cache_ready) return;
+    if (s_set.ready) return;
     if (FONT.form == GAME_FONT_CLASS_PER_GLYPH) {
-        /* Gate on digit '0' being a loaded simple model with real geometry - the
-         * whole font asset loads together, so this means the rest are in too. */
-        uint32_t m0 = cpu->read_word(FONT.model_table + (uint32_t)FONT.digit_base * 4u);
-        if (m0 == 0u) return;
-        if (m0 < 0x80000000u) m0 |= 0x80000000u;
-        if ((int32_t)cpu->read_word(m0) >= 0) return;        /* pointer set but data not yet in */
-        if ((cpu->read_byte(m0) & 0xFF) == 0) return;        /* vcount 0 -> not ready */
-        for (int s = 0; s < SLOT_SYNTH_HYPHEN; s++) {
-            const int idx = slot_glyph_index(s);
-            if (idx >= 0) cache_one_class(cpu, &s_glyph[s], idx);
-        }
-        synth_hyphen();
-        cache_finish(1);
+        const glyph_src src = { cpu, NULL, 0u };
+        (void)glyph_set_fill_classes(&s_set, &src, 1);
     } else if (FONT.form == GAME_FONT_WAD_MODEL) {
         /* One attempt per session: the disc does not change under it. */
-        static int s_tried = 0;
-        if (s_tried) return;
-        s_tried = 1;
-        static uint8_t model[WAD_MODEL_MAX];
-        const uint32_t len = wad_model_read(model, sizeof model);
-        if (len == 0u) return;
-        for (int s = 0; s < SLOT_SYNTH_HYPHEN; s++) {
-            const int idx = slot_glyph_index(s);
-            if (idx >= 0) wad_decode_block(model, len, &s_glyph[s], idx);
-        }
-        for (int s = 0; s < SLOT_PUNCT; s++) {
-            if (s_glyph[s].valid) continue;
-            for (int t = 0; t < NGLYPH; t++) s_glyph[t].valid = 0;
-            OPL_WARN_F("font", "glyph model from WAD entry %d sub-file %d lacks glyph %d",
-                       FONT.wad_entry, FONT.wad_subfile, slot_glyph_index(s));
-            return;
-        }
-        for (int p = 0; p < N_PUNCT && FONT.punct[p].ch; p++) {
-            glyph_cache_t* g = &s_glyph[SLOT_PUNCT + p];
-            for (int i = 0; g->valid && i < g->vcount; i++)
-                g->vy[i] = (int16_t)(g->vy[i] + FONT.punct[p].dy);
-        }
-        synth_hyphen();
-        cache_finish(2);
-        OPL_INFO_F("font", "glyphs read from the disc: WAD entry %d sub-file %d, %u bytes",
-                   FONT.wad_entry, FONT.wad_subfile, (unsigned)len);
+        if (s_set.wad_tried) return;
+        s_set.wad_tried = 1;
+        const uint32_t len = wad_model_read(s_set.model, sizeof s_set.model);
+        if (glyph_set_fill_wad(&s_set, len))
+            OPL_INFO_F("font", "glyphs read from the disc: WAD entry %d sub-file %d, %u bytes",
+                       FONT.wad_entry, FONT.wad_subfile, (unsigned)len);
     }
 }
 
-int text_moby_native_ready(void) { return s_cache_ready; }
+text_glyph_set* text_glyph_set_new(void) {
+    return (text_glyph_set*)calloc(1, sizeof(text_glyph_set));
+}
+
+void text_glyph_set_free(text_glyph_set* G) { free(G); }
+
+int text_glyph_set_read_disc(text_glyph_set* G, disc_image_t* img, uint64_t* hash) {
+    *hash = 0;
+    if (G->ready || G->wad_tried) return G->ready ? 0 : -1;
+    G->wad_tried = 1;
+    uint32_t len = 0;
+    if (FONT.form == GAME_FONT_CLASS_PER_GLYPH) {
+        uint8_t* file = wad_disc_entry_load(img, FONT.wad_entry, 0u, 0u, &len, "font");
+        if (!file) return -1;
+        *hash = openpete_fnv1a64_update(openpete_fnv1a64_init(), file, len);
+        const glyph_src src = { NULL, file, len };
+        const int ok = glyph_set_fill_classes(G, &src, 2);
+        free(file);
+        return ok ? 0 : -1;
+    }
+    if (FONT.form != GAME_FONT_WAD_MODEL) return -1;
+    uint8_t* model = wad_disc_subfile_load(img, FONT.wad_entry, FONT.wad_subfile, &len, "font");
+    if (!model) return -1;
+    if (len > sizeof G->model) { free(model); return -1; }
+    memcpy(G->model, model, len);
+    free(model);
+    *hash = openpete_fnv1a64_update(openpete_fnv1a64_init(), G->model, len);
+    return glyph_set_fill_wad(G, len) ? 0 : -1;
+}
+
+int text_glyph_set_ready(const text_glyph_set* G) { return G->ready; }
+
+void text_glyph_set_write(const text_glyph_set* G, FILE* out) {
+    fprintf(out, "ready %d\nsource %d\ndigit_adv %d\n", G->ready, G->source, G->digit_adv);
+    for (int s = 0; s < NGLYPH; s++) {
+        const glyph_cache_t* g = &G->glyph[s];
+        if (!g->valid) continue;
+        fprintf(out, "slot %d index %d v", s, slot_glyph_index(s));
+        for (int i = 0; i < g->vcount; i++) fprintf(out, " %d,%d,%d", g->vx[i], g->vy[i], g->vz[i]);
+        fprintf(out, " f");
+        for (int f = 0; f < g->fcount; f++)
+            fprintf(out, " %d,%d,%d,%d:%d,%d,%d", g->fi[f][0], g->fi[f][1], g->fi[f][2], g->fi[f][3],
+                    g->fn[f][0], g->fn[f][1], g->fn[f][2]);
+        fprintf(out, "\n");
+    }
+}
+
+int text_moby_native_ready(void) { return s_set.ready; }
 
 void text_moby_native_dump(FILE* out) {
     fprintf(out, "glyph.ready %d\nglyph.source %d\nglyph.digit_adv %d\n",
-            s_cache_ready, s_cache_source, s_digit_adv);
+            s_set.ready, s_set.source, s_set.digit_adv);
 }
 
 /* ---- emit (works purely from the cache) --------------------------------- */
@@ -585,8 +733,8 @@ static void push_tri(emit_ctx_t* cx, int a, int b, int c, uint32_t rgba) {
 static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y,
                         float scale, float dy_model, float yaw,
                         int baseR, int baseG, int baseB) {
-    if (slot < 0 || slot >= NGLYPH || !s_glyph[slot].valid) return -1.0f;
-    const glyph_cache_t* g = &s_glyph[slot];
+    if (slot < 0 || slot >= NGLYPH || !s_set.glyph[slot].valid) return -1.0f;
+    const glyph_cache_t* g = &s_set.glyph[slot];
     int vcount = g->vcount, fcount = g->fcount, vxmin = g->vxmin, vxmax = g->vxmax;
     if (vcount > TXT_MAX_GLYPH_V) vcount = TXT_MAX_GLYPH_V;
     /* Selected-row wobble: yaw about the glyph's own vertical axis (its mid-X), so
@@ -650,7 +798,7 @@ static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y
 static int emit_string(emit_ctx_t* cx, const char* str,
                        float origin_x, float origin_y, float cap_h,
                        unsigned base_rgb, int wob_phase) {
-    if (!s_cache_ready || !cx->out || cx->cap <= 0 || !str) return 0;
+    if (!s_set.ready || !cx->out || cx->cap <= 0 || !str) return 0;
     const int n_before = cx->n;
     const int baseR = (int)((base_rgb >> 16) & 0xFFu);
     const int baseG = (int)((base_rgb >>  8) & 0xFFu);
@@ -734,7 +882,7 @@ static void glyph_census(int consumer, int nverts, int glyph_verts) {
     static const char* const name[4] = { "perf", "menu", "osd", "version" };
     static const char* const src[3]  = { "none", "ram", "disc" };
     fprintf(stderr, "[text-glyph vbl=%u] consumer=%s verts=%d glyph_verts=%d source=%s\n",
-            openpete_feed_key_now(), name[consumer], nverts, glyph_verts, src[s_cache_source]);
+            openpete_feed_key_now(), name[consumer], nverts, glyph_verts, src[s_set.source]);
 }
 
 /* ---- performance-stats overlay (the first consumer) --------------------- */
@@ -1087,7 +1235,7 @@ static int emit_lit_border(const emit_ctx_t* ecx,
  * @param cap_h The cap height, in overlay units.
  * @return The width; 0 when the cache is not ready or str is NULL. */
 static float measure_string(const char* str, float cap_h) {
-    if (!s_cache_ready || !str) return 0.0f;
+    if (!s_set.ready || !str) return 0.0f;
     const float scale = cap_h / FONT.model_h;
     float cursor = 0.0f;
     for (int i = 0; str[i]; i++) {
@@ -1095,8 +1243,8 @@ static float measure_string(const char* str, float cap_h) {
         if (c == ' ') { cursor += TXT_SPACE; continue; }
         if (c == ':' && glyph_slot(':') < 0) {
             int slot = glyph_slot('.');
-            if (slot < 0 || !s_glyph[slot].valid) { cursor += TXT_SPACE; continue; }
-            cursor += (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin)
+            if (slot < 0 || !s_set.glyph[slot].valid) { cursor += TXT_SPACE; continue; }
+            cursor += (float)(s_set.glyph[slot].vxmax - s_set.glyph[slot].vxmin)
                       * scale * FONT.colon_scale + TXT_GAP;
             continue;
         }

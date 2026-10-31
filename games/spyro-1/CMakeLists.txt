@@ -49,6 +49,8 @@ openpete_add_game(spyro-1
         # The 3D glyph text producer, shared with Spyro 3.
         ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         ${CMAKE_SOURCE_DIR}/games/common/renderer/wad_subfile.c
+        # The launcher's asset extraction job: domes, glyph models and logo from a disc.
+        ${CMAKE_SOURCE_DIR}/games/common/launcher_assets.c
         renderer/text_moby_id.c
         renderer/transition.c
 

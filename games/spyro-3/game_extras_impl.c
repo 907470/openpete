@@ -49,6 +49,8 @@
 
 #include "game_extras.h"
 #include "game_host_desc.h"
+#include "launcher_assets.h"
+#include "renderer/portal_sky_s23.h"   /* portal_sky_s23_walk */
 #include "game_mod_desc.h"
 #include "openpete_modsave.h"
 #include "openpete_launcher.h"
@@ -342,6 +344,65 @@ static const game_mod_desc_t* spyro3_mod_desc(void) {
     return &s_desc;
 }
 
+/* The known disc's asset input hashes (FNV-1a 64): each level's sky
+ * payload in level-table order, the glyph font bytes, and the logo's
+ * texel rows followed by its palette. */
+static const uint64_t k_sky_hashes[] = {
+    0xd47a19e8d58186d1u, /* sunrise_spring */
+    0xfb26a1ac7881e29cu, /* sunny_villa */
+    0xf2d2273b8ec8b10du, /* cloud_spires */
+    0x4f28d639bd749a0du, /* molten_crater */
+    0xe692379e3b8f4ed7u, /* seashell_shore */
+    0xde68f4390d7d5285u, /* mushroom_speedway */
+    0xb83bace8c03c1334u, /* sheilas_alp */
+    0x5060c76174833db5u, /* buzzs_dungeon */
+    0x3612935481e6e12du, /* crawdad_farm */
+    0xb83bace8c03c1334u, /* midday_gardens */
+    0x1b0ed86291c58eaeu, /* icy_peak */
+    0xe4e5e5e0786fba51u, /* enchanted_towers */
+    0x967cc3f18625e431u, /* spooky_swamp */
+    0x542d6b7d13ddaacbu, /* bamboo_terrace */
+    0xa43e1239aabf1894u, /* country_speedway */
+    0x234395e4924ee3a8u, /* sgt_byrds_base */
+    0xf56b8a3048d55db8u, /* spikes_arena */
+    0x491db8fafafcef47u, /* spider_town */
+    0xc6136b63cca86bcau, /* evening_lake */
+    0x38caf415c5758dbfu, /* frozen_altars */
+    0xee3ed563c23d529du, /* lost_fleet */
+    0xfb74761fbd61c741u, /* fireworks_factory */
+    0xe6a039c4f80690a9u, /* charmed_ridge */
+    0x0d357a2190fb29e0u, /* honey_speedway */
+    0xb83bace8c03c1334u, /* bentleys_outpost */
+    0x6e9384df0847797cu, /* scorchs_pit */
+    0x0e392aee88338496u, /* starfish_reef */
+    0x6c28e18c9fdc6fb4u, /* midnight_mountain */
+    0x8474dde97092b518u, /* crystal_islands */
+    0x6a239dffdbefc011u, /* desert_ruins */
+    0xc30a0b7bb8fe622fu, /* haunted_tomb */
+    0x4f28d639bd749a0du, /* dino_mines */
+    0xa140130e785fb625u, /* harbor_speedway */
+    0xd7ec4ab05935a503u, /* agent_9s_lab */
+    0x4f9a7aea1f588d5eu, /* sorceresss_lair */
+    0x0a98dc63942a1d58u, /* bugbot_factory */
+    0xea354c089daf1274u, /* super_bonus_round */
+};
+static const game_asset_hashes_t k_asset_hashes[] = {
+    {"a313c9b1306a08e950edddc152280a443796e68052c8e0454b5d76d69354d157",
+     k_sky_hashes, (int)(sizeof k_sky_hashes / sizeof k_sky_hashes[0]),
+     0xdb2c49dc319eae24u, 0x1845d26c0b477895u},
+};
+static const game_assets_desc_t k_assets = {
+    .levels         = &spyro3_levels,
+    .sky_form       = GAME_SKY_SLOT_CHAIN,
+    .sky_walk       = portal_sky_s23_walk,
+    /* WAD entry 6 sub-file 0: VRAM (512,0)-(1023,511); palette at
+     * (512,0), texels from (512,1), drawn by a POLY_FT4 uv (0,1)-(190,75),
+     * whose right and bottom edges are exclusive. */
+    .logo           = { 6, 0, 1024u, 0u, 190u, 74u },
+    .discs          = k_asset_hashes,
+    .disc_count     = (int)(sizeof k_asset_hashes / sizeof k_asset_hashes[0]),
+};
+
 static const game_host_desc_t k_host = {
     .ui              = &spyro3_ui_game,
     .terrain         = &spyro3_terrain_game,
@@ -354,6 +415,7 @@ static const game_host_desc_t k_host = {
     .orchestrator    = &spyro23_orchestrator,
     .interp_register = spyro23_interp_register,
     .frame_pre       = &k_frame_pre,
+    .assets          = &k_assets,
 };
 
 /* The disc image the User docs pin, labelled by name in the library. */

@@ -17,10 +17,56 @@
 #ifndef OPENPETE_TEXT_MOBY_NATIVE_H
 #define OPENPETE_TEXT_MOBY_NATIVE_H
 
+#include <stdint.h>
 #include <stdio.h>
 #include "openpete_native_render.h"  /* openpete_hud_vert */
+#include "openpete_disc_image.h"     /* disc_image_t */
 
 struct CPUState;
+
+/* One glyph set: the per-slot glyph geometry, the synthesized hyphen, the
+ * punctuation offsets, the tabular digit advance, the source and ready
+ * flags, and the WAD model buffer with its attempt latch. The producer
+ * draws from its own set, which text_moby_native_cache fills; an ingest job
+ * fills one it allocates and never touches the producer's. */
+typedef struct text_glyph_set text_glyph_set;
+
+/** @brief Allocates an empty glyph set.
+ *
+ * @return The set, freed with text_glyph_set_free, or NULL. */
+text_glyph_set* text_glyph_set_new(void);
+
+/** @brief Frees a glyph set; NULL is a no-op.
+ *
+ * @param G The set. */
+void text_glyph_set_free(text_glyph_set* G);
+
+/** @brief Fills a glyph set from an explicit disc, in the installed game's font form.
+ *
+ * GAME_FONT_CLASS_PER_GLYPH reads WAD entry game_layout.font.wad_entry
+ * whole, the font file the game loads its glyph classes from, and decodes
+ * each class through the same decode as the RAM snapshot over that host
+ * copy; GAME_FONT_WAD_MODEL reads the model sub-file into the set's model
+ * buffer and decodes it as the producer does. One attempt per set. Writes
+ * the set only.
+ * @param G The set.
+ * @param img The disc, opened by the caller on its path.
+ * @param hash Receives the FNV-1a 64 of the bytes read (the font file or the
+ *        model), 0 when nothing was read.
+ * @return 0 when the set is ready, -1 when the read or the decode failed. */
+int text_glyph_set_read_disc(text_glyph_set* G, disc_image_t* img, uint64_t* hash);
+
+/** @brief Reports whether a glyph set is ready.
+ *
+ * @param G The set.
+ * @return 1 when filled, else 0. */
+int text_glyph_set_ready(const text_glyph_set* G);
+
+/** @brief Writes a glyph set as text: the flags, then one line per valid slot with its glyph index, vertices (x,y,z) and faces (four indices:normal).
+ *
+ * @param G The set.
+ * @param out The stream. */
+void text_glyph_set_write(const text_glyph_set* G, FILE* out);
 
 /** @brief Snapshots the glyph-model geometry into the glyph cache the first time it is available.
  *

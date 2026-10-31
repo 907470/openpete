@@ -440,6 +440,7 @@ const game_layout_t spyro1_game_layout = {
     .font = {
         .form        = GAME_FONT_CLASS_PER_GLYPH,
         .model_table = G_MODELS,
+        .wad_entry   = 8,          /* PETE.WAD, loaded by func_8005B7D8 */
         .digit_base  = 260,
         .letter_base = 426,
         .punct       = { {'%', 272, 0}, {'/', 277, 0}, {'?', 278, 0}, {'+', 317, 0},

@@ -10,9 +10,13 @@
 
 #include "game_build.h"
 #include "game_pick.h"
+#include "launcher_assets.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -66,14 +70,59 @@ static void attach_parent_console(void) {
 static void attach_parent_console(void) {}
 #endif
 
+/** @brief Harness: the disc and content hash OPENPETE_ASSET_DISCS names for a game.
+ *
+ * The variable holds `game=sha256=path` items separated by ';'.
+ * @param id The game id.
+ * @param sha Receives the content hash.
+ * @param path Receives the disc path.
+ * @return true when the variable names the game. */
+static bool asset_disc_of(const char* id, std::string& sha, std::string& path) {
+    const char* e = std::getenv("OPENPETE_ASSET_DISCS");
+    if (!e) return false;
+    const std::string all(e);
+    size_t at = 0;
+    while (at <= all.size()) {
+        const size_t end = std::min(all.find(';', at), all.size());
+        const std::string item = all.substr(at, end - at);
+        const size_t a = item.find('='), b = a == std::string::npos ? a : item.find('=', a + 1);
+        if (b != std::string::npos && item.compare(0, a, id) == 0 && a == std::strlen(id)) {
+            sha = item.substr(a + 1, b - a - 1);
+            path = item.substr(b + 1);
+            return true;
+        }
+        at = end + 1;
+    }
+    return false;
+}
+
 /** @brief Harness: install every other linked game before the target when OPENPETE_INSTALL_OTHERS_FIRST is set, as a launcher that ran other games' jobs has.
  *
+ * With the value `extract` each other game's asset extraction job also runs
+ * after its install, inline in the `ingest` role, on the disc
+ * OPENPETE_ASSET_DISCS names for it (a game it names no disc for fails the
+ * run's log line and runs no job); OPENPETE_ASSET_DUMP names a directory the
+ * results are written to.
  * @param target The game the final install makes the running game. */
 static void install_others_first(const openpete_game_build_t* target) {
     const char* e = std::getenv("OPENPETE_INSTALL_OTHERS_FIRST");
     if (!e || !*e || *e == '0') return;
-    for (size_t i = 0; i < openpete_game_build_count; i++)
-        if (openpete_game_builds[i] != target) openpete_game_build_install(openpete_game_builds[i]);
+    const bool extract = std::strcmp(e, "extract") == 0;
+    const char* dump = std::getenv("OPENPETE_ASSET_DUMP");
+    for (size_t i = 0; i < openpete_game_build_count; i++) {
+        const openpete_game_build_t* b = openpete_game_builds[i];
+        if (b == target) continue;
+        openpete_game_build_install(b);
+        if (!extract) continue;
+        std::string sha, path;
+        if (!asset_disc_of(b->id, sha, path)) {
+            std::fprintf(stderr, "openpete: OPENPETE_ASSET_DISCS names no disc of %s\n", b->id);
+            continue;
+        }
+        const int rc = game_assets_run_inline(b, path.c_str(), sha.c_str(), dump && *dump ? dump : nullptr);
+        std::fprintf(stderr, "openpete: asset extraction of %s: %s\n", b->id,
+                     rc == 0 ? "ok" : rc == -2 ? "stopped" : "failed");
+    }
     std::fprintf(stderr, "openpete: installed the %zu other linked games before %s "
                          "(OPENPETE_INSTALL_OTHERS_FIRST)\n", openpete_game_build_count - 1, target->id);
 }

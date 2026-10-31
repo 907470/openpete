@@ -45,6 +45,10 @@ typedef struct game_host_desc {
     const game_orchestrator_t*      orchestrator;  /* NULL: no sub-tick spine */
     void (*interp_register)(void);                 /* NULL: no interp regions */
     const game_frame_pre_t*         frame_pre;     /* game_frame_pre_on_tick's steps; NULL: none */
+    /* Where the launcher's asset extraction finds the game's domes, glyph
+     * models and logo (launcher_assets.h); read through the build record,
+     * never copied into a global. NULL: the game has none. */
+    const struct game_assets_desc*  assets;
 } game_host_desc_t;
 
 /** @brief Register a game's runtime descriptor with core and bind its host tables into the shared globals.

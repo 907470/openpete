@@ -1180,7 +1180,11 @@ typedef struct game_layout {
      * count, +0x04 a stream of 3-byte packed vertices and +0x0C a stream of
      * 8-byte faces (four 7-bit vertex indices in word 0 bits 23/16/9/2, the
      * face normal in word 1's three high bytes as z, x, y). Model +Z faces
-     * the reader.
+     * the reader. `wad_entry` is the WAD.WAD entry of the font file the
+     * game loads those classes from (a data-size word, then 64 (offset,
+     * class) pairs ended by a zero offset, each offset relative to the
+     * entry, each model pointer relative to its model), which an ingest
+     * job reads instead of guest RAM.
      *
      * Form GAME_FONT_WAD_MODEL: every glyph is one geometry block of a
      * model the producer reads from the disc at first use, never from guest

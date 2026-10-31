@@ -26,6 +26,11 @@ Cases:
             single install, for each game as target, both under setarch -R so addresses match
             between processes; any differing line or a non-zero install refusal count fails. The
             single-install dumps of two games must differ (the instrument sees the install).
+  multi-install-extract  The multi-install check with each other game's asset extraction job (domes, glyph
+            models, logo) run inline in the `ingest` role after its install, on the repository's
+            image of that game (OPENPETE_INSTALL_OTHERS_FIRST=extract, OPENPETE_ASSET_DISCS): every
+            job completes with domes, a ready glyph set and a logo, and the dump equals the single
+            install's; Spyro 3's image given as Spyro 2's disc fails Spyro 2's job.
   job-*     The launcher's job runner on the module rebuild, on a build with the first-boot
             pipeline (recomp/ staged beside the binary; SKIP otherwise). A launch-time job of game
             A is made by moving A's module off its stamped path. Every windowed case runs with
@@ -59,6 +64,7 @@ Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or a disc image missin
 import argparse
 import fcntl
 import glob
+import hashlib
 import os
 import re
 import shutil
@@ -525,17 +531,47 @@ def case_resolution(a):
     return verdict("resolution", bad, f"{compared} lines compared")
 
 
-def install_dump(a, d, tag, game, others):
-    """One process's install dump for a target game."""
+def install_dump(a, d, tag, game, others, extra=None):
+    """One process's install dump for a target game; with `extra`, also its log text."""
     out = os.path.join(d, tag + ".dump")
+    log = os.path.join(d, tag + ".log")
+    for f in (out, log):
+        if os.path.exists(f):
+            os.remove(f)
     env = {k: v for k, v in os.environ.items() if not k.startswith("OPENPETE_")}
     env.update({"OPENPETE_INSTALL_DUMP": out, "XDG_DATA_HOME": os.path.join(d, "data"),
                 "XDG_STATE_HOME": os.path.join(d, "state"), "XDG_CONFIG_HOME": os.path.join(d, "config")})
     if others:
         env["OPENPETE_INSTALL_OTHERS_FIRST"] = "1"
-    subprocess.run(["setarch", os.uname().machine, "-R", a.binary, "--no-config", "--config-report",
-                    "--game", game], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
-    return report_lines(out)
+    env.update(extra or {})
+    with open(log, "w") as f:
+        subprocess.run(["setarch", os.uname().machine, "-R", a.binary, "--no-config", "--config-report",
+                        "--game", game], env=env, stdout=subprocess.DEVNULL, stderr=f, timeout=300)
+    if extra is None:
+        return report_lines(out)
+    with open(log, errors="replace") as f:
+        return report_lines(out), f.read()
+
+
+def disc_sha256(a, game):
+    """The content hash of a game's repository image, cached beside the case outputs by the image's mtime."""
+    b = disc_bin(game)
+    if not os.path.isfile(b):
+        raise cl.Skip(f"{b} missing")
+    os.makedirs(a.out, exist_ok=True)
+    key = os.path.join(a.out, f"sha256-{game}.txt")
+    stamp = str(os.stat(b).st_mtime_ns)
+    if os.path.isfile(key):
+        got = open(key).read().split()
+        if len(got) == 2 and got[0] == stamp:
+            return got[1]
+    h = hashlib.sha256()
+    with open(b, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 22), b""):
+            h.update(chunk)
+    with open(key, "w") as f:
+        f.write(stamp + " " + h.hexdigest() + "\n")
+    return h.hexdigest()
 
 
 def case_multi_install(a):
@@ -566,6 +602,51 @@ def case_multi_install(a):
         if control == 0:
             bad.append("VACUOUS: two games' single-install dumps are identical")
     return verdict("multi-install", bad, f"{compared} lines compared")
+
+
+def case_multi_install_extract(a):
+    """The multi-install check with each other game's asset extraction job run after its install, and an unknown disc refused."""
+    if not shutil.which("setarch"):
+        raise cl.Skip("setarch not found")
+    d = cl.case_dir(a.out, "multi-install-extract")
+    shas = {g: disc_sha256(a, g) for g in DISCS}
+    discs = ";".join(f"{g}={shas[g]}={disc_cue(g)}" for g in DISCS)
+    bad, compared = [], 0
+    for g in DISCS:
+        one = install_dump(a, d, g + ".single", g, False)
+        many, log = install_dump(a, d, g + ".extract", g, True,
+                                 {"OPENPETE_INSTALL_OTHERS_FIRST": "extract", "OPENPETE_ASSET_DISCS": discs})
+        if not one or not many:
+            bad.append(f"{g}: dump missing")
+            continue
+        for o in DISCS:
+            if o == g:
+                continue
+            m = re.search(r"asset extraction of %s: (\d+) domes \((\d+) vertices, (\d+) triangles\), "
+                          r"glyphs (\w+), logo (\d+)x(\d+)" % re.escape(o), log)
+            if "asset extraction of %s: ok" % o not in log or not m or int(m.group(1)) == 0 \
+                    or m.group(4) != "ready" or int(m.group(5)) == 0:
+                bad.append(f"{g}: extraction of {o} did not complete ({m.group(0) if m else 'no result line'})")
+            else:
+                print(f"[launcher-flow] multi-install-extract {g}: {m.group(0)}")
+        diff = [(x, y) for x, y in zip(one, many) if x != y]
+        if len(one) != len(many):
+            diff.append((len(one), len(many)))
+        compared += len(one)
+        bad += [f"{g}: single {str(x)[:90]!r} vs extract {str(y)[:90]!r}" for x, y in diff]
+        bad += [f"{g}: {l}" for l in many if l.startswith("install_refusals ") and l != "install_refusals 0"]
+        print(f"[launcher-flow] multi-install-extract {g}: {len(one)} lines, {len(diff)} differ")
+    # A disc whose asset inputs are not the known disc's fails the job: Spyro 3's image as Spyro 2's.
+    wrong = discs.replace(f"spyro-2={shas['spyro-2']}={disc_cue('spyro-2')}",
+                          f"spyro-2={shas['spyro-3']}={disc_cue('spyro-3')}")
+    _, log = install_dump(a, d, "wrong-disc", "spyro-1", True,
+                          {"OPENPETE_INSTALL_OTHERS_FIRST": "extract", "OPENPETE_ASSET_DISCS": wrong})
+    m = re.search(r"asset extraction of spyro-2 from .* failed: (.*)", log)
+    if "asset extraction of spyro-2: failed" not in log or not m:
+        bad.append("Spyro 3's image as Spyro 2's disc did not fail Spyro 2's job")
+    else:
+        print(f"[launcher-flow] multi-install-extract: Spyro 3's image as Spyro 2's disc fails: {m.group(1)}")
+    return verdict("multi-install-extract", bad, f"{compared} lines compared")
 
 
 def library_state(d):
@@ -607,6 +688,7 @@ def case_ingest_held(a):
 
 
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
+         "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
          "job-pick-other": case_job_pick_other, "lock": case_lock, "failed-marker": case_failed_marker,
          "headless-no-disc": case_headless_no_disc, "bind-repair": case_bind_repair,

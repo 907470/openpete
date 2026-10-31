@@ -25,6 +25,19 @@ typedef struct portal_sky_tri {
     uint32_t rgb[3];
 } portal_sky_tri;
 
+/** @brief Finds the sky block's payload in a level's data sub-file by the loader's block walk.
+ *
+ * Steps over portal_game_s23.level_wad_hops size-prefixed blocks, then over
+ * the block whose size word sits at +0x0C, and takes the next block's
+ * payload: three colour bytes and a pad, the sector count, and one offset
+ * per sector relative to the payload. Every size is checked against the
+ * sub-file. Reads the installed portal_game_s23 and the buffer only.
+ * @param b The sub-file (sub-file 1 of the level's WAD entry).
+ * @param n Its length.
+ * @param len Receives the payload's length.
+ * @return The payload's offset, or 0 when the chain leaves the sub-file. */
+uint32_t portal_sky_s23_walk(const uint8_t* b, uint32_t n, uint32_t* len);
+
 /** @brief The destination sky of one portal record, projected under the camera its picture was authored with.
  *
  * The destination is the level number at the record's +0x42; its sky block is

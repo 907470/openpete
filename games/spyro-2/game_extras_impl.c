@@ -11,6 +11,8 @@
 
 #include "game_extras.h"
 #include "game_host_desc.h"
+#include "launcher_assets.h"
+#include "renderer/portal_sky_s23.h"   /* portal_sky_s23_walk */
 #include "game_mod_desc.h"
 #include "openpete_modsave.h"
 #include "openpete_launcher.h"
@@ -175,6 +177,56 @@ static const game_mod_desc_t* spyro2_mod_desc(void) {
     return &s_desc;
 }
 
+/* The known disc's asset input hashes (FNV-1a 64): each level's sky
+ * payload in level-table order, the glyph font bytes, and the logo's
+ * texel rows followed by its palette. */
+static const uint64_t k_sky_hashes[] = {
+    0x975649137a167798u, /* summer_forest */
+    0x2240b3412e7a4138u, /* glimmer */
+    0xb142439202182194u, /* idol_springs */
+    0x51f926ca47ff8661u, /* colossus */
+    0x491db8fafafcef47u, /* hurricos */
+    0x86446ca1f48a7751u, /* aquaria_towers */
+    0x57095ee4ae87224au, /* sunny_beach */
+    0x1b6b14eee5b80550u, /* ocean_speedway */
+    0x031290db065e2b7au, /* crushs_dungeon */
+    0x3612935481e6e12du, /* autumn_plains */
+    0x344d171043b88457u, /* skelos_badlands */
+    0xd3e349b91e05d631u, /* crystal_glacier */
+    0x740e6ce4c6d0fc2du, /* breeze_harbor */
+    0x948c372c95c9a351u, /* zephyr */
+    0xebf6acd9e60bdd7bu, /* metro_speedway */
+    0x5dc3fd50145a1d63u, /* scorch */
+    0xb5c092a6c8068b13u, /* shady_oasis */
+    0x4f28d639bd749a0du, /* magma_cone */
+    0xbe564f9572a78347u, /* fracture_hills */
+    0xc439096e8626530au, /* icy_speedway */
+    0xc00ec2c3d97266adu, /* gulps_overlook */
+    0xee3ed563c23d529du, /* winter_tundra */
+    0x1434b38d8ee9a690u, /* mystic_marsh */
+    0x81a7eb16bd00f0f8u, /* cloud_temples */
+    0x9c5ff6d7c6585fdeu, /* canyon_speedway */
+    0x948c372c95c9a351u, /* robotica_farms */
+    0x08f1a849a6820e59u, /* metropolis */
+    0xbe5676ff368d5fe7u, /* dragon_shores */
+    0xee3ed563c23d529du, /* riptos_arena */
+};
+static const game_asset_hashes_t k_asset_hashes[] = {
+    {"b3fd9fdb24b115fee4583dbe3c36ab788fd8679fb4592dbec8736392dec64551",
+     k_sky_hashes, (int)(sizeof k_sky_hashes / sizeof k_sky_hashes[0]),
+     0x041727bb43eeda96u, 0xa98faa35bd859ac0u},
+};
+static const game_assets_desc_t k_assets = {
+    .levels         = &spyro2_levels,
+    .sky_form       = GAME_SKY_SLOT_CHAIN,
+    .sky_walk       = portal_sky_s23_walk,
+    /* WAD entry 95 sub-file 0: VRAM (512,0)-(1023,511); texels at
+     * (512,256), palette at (512,511), drawn by a SPRT 256x96. */
+    .logo           = { 95, 0, 262144u, 523264u, 256u, 96u },
+    .discs          = k_asset_hashes,
+    .disc_count     = (int)(sizeof k_asset_hashes / sizeof k_asset_hashes[0]),
+};
+
 static const game_host_desc_t k_host = {
     .ui              = &spyro2_ui_game,
     .terrain         = &spyro2_terrain_game,
@@ -187,6 +239,7 @@ static const game_host_desc_t k_host = {
     .orchestrator    = &spyro23_orchestrator,
     .interp_register = spyro23_interp_register,
     .frame_pre       = &k_frame_pre,
+    .assets          = &k_assets,
 };
 
 /* The disc image the User docs pin, labelled by name in the library. */

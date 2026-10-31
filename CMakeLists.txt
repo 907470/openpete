@@ -1671,7 +1671,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         # start-up time, the pick's resolved options, the multi-install dump,
         # and the job runner's cases, which need the first-boot pipeline and
         # exit 64 on a build without it (any but the *-launcher presets).
-        foreach(_launcher_case startup resolution multi-install job-ingest-stop job-pick-same
+        foreach(_launcher_case startup resolution multi-install multi-install-extract job-ingest-stop job-pick-same
                                 job-pick-other lock failed-marker headless-no-disc bind-repair
                                 ingest-held)
             add_test(NAME launcher_flow_${_launcher_case}

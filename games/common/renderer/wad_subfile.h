@@ -11,6 +11,8 @@
 
 #include <stdint.h>
 
+#include "openpete_disc_image.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,6 +39,33 @@ uint32_t wad_subfile_read(int e, int k, int tag, uint8_t* buf, uint32_t cap, con
  * @param who The log subsystem naming the caller.
  * @return The buffer, which the caller frees, or NULL on failure. */
 uint8_t* wad_subfile_load(int e, int k, int tag, uint32_t* size, const char* who);
+
+/** @brief Reads sub-file @p k of WAD entry @p e from an explicit disc handle into a buffer it allocates.
+ *
+ * The reads go through @p img, which the caller opened on a disc path of
+ * its choice, never through the booted disc; every offset and size is
+ * checked as for wad_subfile_read.
+ * @param img The open disc handle.
+ * @param e The WAD entry index.
+ * @param k The sub-file index inside the entry.
+ * @param size Receives the byte count; 0 on failure.
+ * @param who The log subsystem naming the caller.
+ * @return The buffer, which the caller frees, or NULL with the reason logged. */
+uint8_t* wad_disc_subfile_load(disc_image_t* img, int e, int k, uint32_t* size, const char* who);
+
+/** @brief Reads bytes [off, off + len) of WAD entry @p e from an explicit disc handle into a buffer it allocates.
+ *
+ * A @p len of 0 reads from @p off to the entry's end, so (0, 0) reads the
+ * whole entry. A range reaching past the entry reads nothing.
+ * @param img The open disc handle.
+ * @param e The WAD entry index.
+ * @param off The first byte, relative to the entry.
+ * @param len The byte count, or 0 for the rest of the entry.
+ * @param size Receives the byte count; 0 on failure.
+ * @param who The log subsystem naming the caller.
+ * @return The buffer, which the caller frees, or NULL with the reason logged. */
+uint8_t* wad_disc_entry_load(disc_image_t* img, int e, uint32_t off, uint32_t len, uint32_t* size,
+                             const char* who);
 
 #ifdef __cplusplus
 }

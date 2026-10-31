@@ -109,16 +109,7 @@ static uint32_t psk_w(const uint8_t* b, uint32_t n, uint32_t o) {
     return (uint32_t)b[o] | ((uint32_t)b[o + 1] << 8) | ((uint32_t)b[o + 2] << 16) | ((uint32_t)b[o + 3] << 24);
 }
 
-/** @brief Finds the sky block's payload in a level's data sub-file by the loader's block walk.
- *
- * Steps over level_wad_hops size-prefixed blocks, then over the block whose
- * size word sits at +0x0C, and takes the next block's payload. Every size is
- * checked against the sub-file.
- * @param b The sub-file.
- * @param n Its length.
- * @param len Receives the payload's length.
- * @return The payload's offset, or 0 when the chain leaves the sub-file. */
-static uint32_t psk_walk(const uint8_t* b, uint32_t n, uint32_t* len) {
+uint32_t portal_sky_s23_walk(const uint8_t* b, uint32_t n, uint32_t* len) {
     uint32_t p = 0;
     for (int i = 0; i < portal_game_s23.level_wad_hops; i++) {
         const uint32_t sz = psk_w(b, n, p);
@@ -152,7 +143,7 @@ static const psk_level* psk_level_sky(CPUState* cpu, int level) OP_REQUIRES_SHAR
     const int e = portal_game_s23.level_wad_base + 2 * slot;
     uint32_t n = 0, len = 0;
     uint8_t* sub = wad_subfile_load(e, 1, OPENPETE_DISC_TAG_TERRAIN, &n, "portal");
-    const uint32_t at = sub ? psk_walk(sub, n, &len) : 0u;
+    const uint32_t at = sub ? portal_sky_s23_walk(sub, n, &len) : 0u;
     if (at) {
         L->buf = (uint8_t*)malloc(len);
         if (L->buf) { memcpy(L->buf, sub + at, len); L->len = len; L->state = 1; }

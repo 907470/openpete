@@ -70,6 +70,8 @@ openpete_add_game(spyro-3
         # readout, drawn with the credits font read from the disc.
         ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         ${CMAKE_SOURCE_DIR}/games/common/renderer/wad_subfile.c
+        # The launcher's asset extraction job: domes, glyph models and logo from a disc.
+        ${CMAKE_SOURCE_DIR}/games/common/launcher_assets.c
         renderer/portal_game.c
         renderer/terrain_probe.c
     FIRST_BOOT_SOURCES

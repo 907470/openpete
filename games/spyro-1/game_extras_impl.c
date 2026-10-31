@@ -11,6 +11,7 @@
 
 #include "game_extras.h"
 #include "game_host_desc.h"
+#include "launcher_assets.h"
 #include "game_mod_desc.h"
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
@@ -767,6 +768,63 @@ void spyro1_interp_register(void);                             /* renderer/inter
 /* Spyro 1's mod-layer descriptor (mods/mod_game_desc.c). */
 const game_mod_desc_t* spyro1_mod_desc(void);
 
+/* The known disc's asset input hashes (FNV-1a 64): each level's sky
+ * payload in level-table order, the glyph font bytes, and the logo's
+ * texel rows followed by its palette. */
+static const uint64_t k_sky_hashes[] = {
+    0xb2b5ab8f13426fa9u, /* artisans */
+    0x37e641ecb2e863f2u, /* stone_hill */
+    0x89da4f536a31e38bu, /* dark_hollow */
+    0x54a00a06f8be399cu, /* town_square */
+    0x7a73389736fa774bu, /* toasty */
+    0x5aa500756af46e1au, /* sunny_flight */
+    0xc9fc4c9e476131f3u, /* peace_keepers */
+    0xc07e7e17ebb47d7fu, /* dry_canyon */
+    0x249659ee15a6ccd0u, /* cliff_town */
+    0xb9621a307b42eaacu, /* ice_cavern */
+    0xa9cd3a4c923333beu, /* doctor_shemp */
+    0x8b07073b84d969cbu, /* night_flight */
+    0x2bf54973bbbc2d68u, /* magic_crafters */
+    0x23f890f6fa3dc304u, /* alpine_ridge */
+    0xaca98d8a27b6d342u, /* high_caves */
+    0xa4323fe0c11a9afdu, /* wizard_peak */
+    0x809abc9e25c2c994u, /* blowhard */
+    0xdeb3c8aae27f1814u, /* crystal_flight */
+    0x8ab9ec328dff66feu, /* beast_makers */
+    0xa7ffb63fc84439d9u, /* terrace_village */
+    0xaa34117d87616adbu, /* misty_bog */
+    0x80369f819e0bd4feu, /* tree_tops */
+    0xee9992dfca02781cu, /* metalhead */
+    0x5f6f614f554297b9u, /* wild_flight */
+    0x9d909ba36eb59372u, /* dream_weavers */
+    0x255f0c8b6a27ca80u, /* dark_passage */
+    0xb8b7796cb38eb3bdu, /* lofty_castle */
+    0xa407e52f803c446fu, /* haunted_towers */
+    0x136d3258d7c8f847u, /* jacques */
+    0x33a49f434c1db5a3u, /* icy_flight */
+    0x33319b7dadc7e4f2u, /* gnorc_gnexus */
+    0x85ee94dbcdad6456u, /* gnorc_cove */
+    0x6430ac207564e506u, /* twilight_harbor */
+    0x47ecc5289d99b9b6u, /* gnasty_gnorc */
+    0xc5c2ab90a4b720a1u, /* gnastys_loot */
+};
+static const game_asset_hashes_t k_asset_hashes[] = {
+    {"fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37",
+     k_sky_hashes, (int)(sizeof k_sky_hashes / sizeof k_sky_hashes[0]),
+     0xf1e49eb6425f8dafu, 0x88f553ee53598b65u},
+};
+static const game_assets_desc_t k_assets = {
+    .levels         = &spyro1_levels,
+    .sky_form       = GAME_SKY_LEVEL_HEADER,
+    .sky_wad_base   = 10,      /* Artisans: each level holds two entries */
+    .sky_components = 5,       /* texture, environment, occlusion, special surface, collision */
+    /* WAD entry 1: a raw 512x256-halfword VRAM image of (512,256); the
+     * palette is its row 255, the drawn region 255x128 at its origin. */
+    .logo           = { 1, -1, 0u, 261120u, 255u, 128u },
+    .discs          = k_asset_hashes,
+    .disc_count     = (int)(sizeof k_asset_hashes / sizeof k_asset_hashes[0]),
+};
+
 static const game_host_desc_t k_host = {
     .ui              = &spyro1_ui_game,
     .terrain         = &spyro1_terrain_game,
@@ -775,6 +833,7 @@ static const game_host_desc_t k_host = {
     .freecam         = &spyro1_freecam_desc,
     .orchestrator    = &spyro1_orchestrator,
     .interp_register = spyro1_interp_register,
+    .assets          = &k_assets,
 };
 
 /* The README-pinned retail NTSC-U disc, labelled by name in the library. */
