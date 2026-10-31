@@ -388,8 +388,19 @@ void close_gamepad() {
     if (s.pad) { SDL_CloseGamepad(s.pad); s.pad = nullptr; }
 }
 
-/** @brief Return the launcher window's first size and state: --launcher-window, else the game window's (--window, maximized included); --launcher-fullscreen.
+/* The launcher window's size when neither --launcher-window nor an explicit
+ * game window size is set: the Steam Deck's panel, in window coordinates. */
+constexpr int kLauncherDefaultW = 1280;
+constexpr int kLauncherDefaultH = 800;
+
+/** @brief Return the launcher window's first size and state: --launcher-window, else an explicit game window size (--window or its config key), else 1280x800; maximized as either asks; --launcher-fullscreen.
  *
+ * The options before the hand-off are the game-neutral tiers, so a
+ * [game.<id>] window value does not reach the launcher, and the game
+ * layout's default window size does not apply to it. A window first opened
+ * at the hand-off (no screen showed before it) is the game's window and
+ * takes the game window's size (openpete_game_window_size), the 640x448
+ * layout space when no game is installed.
  * @param opts The options.
  * @param w Receives the width; the size a maximized or fullscreen window returns to.
  * @param h Receives the height.
@@ -399,10 +410,15 @@ void launcher_window_request(const openpete_options_t* opts, int* w, int* h, int
     if (opts->launcher_window_maximized == 0) {
         *w = opts->launcher_window_w;
         *h = opts->launcher_window_h;
-    } else {
+    } else if (s.handed_off) {
         openpete_game_window_size(opts, w, h);
-        /* No game installed yet: no game window size, so the layout space's. */
         if (*w <= 0 || *h <= 0) { *w = (int)kLayoutW; *h = (int)kLayoutH; }
+    } else if (opts->window_w > 0 && opts->window_h > 0) {
+        *w = opts->window_w;
+        *h = opts->window_h;
+    } else {
+        *w = kLauncherDefaultW;
+        *h = kLauncherDefaultH;
     }
     if (opts->launcher_window_maximized > 0 ||
         (opts->launcher_window_maximized < 0 && opts->window_maximized > 0))
@@ -501,9 +517,8 @@ void open_failed(const std::string& why, int continues) {
 
 /** @brief Open the launcher's window, device and imgui context unless they exist, telling the player once when the device cannot be created.
  *
- * The window takes the game window's size, or the 640x448 layout space
- * before a game is installed; before the hand-off that size is fitted to the
- * display (launcher_window_fit). A device created for a screen, before the
+ * The window takes launcher_window_request's size; before the hand-off that
+ * size is fitted to the display (launcher_window_fit). A device created for a screen, before the
  * hand-off, starts the pipeline precompile on it
  * (openpete_native_launcher_precompile_start); one created at the hand-off
  * leaves the compile to bring-up.

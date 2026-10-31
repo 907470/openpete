@@ -522,7 +522,7 @@ static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
         snprintf(buf, cap, "(default)");
 }
 
-/** @brief Format the launcher window's first size: WxH, "maximized", or "(the game window's)" when unset.
+/** @brief Format the launcher window's first size: WxH, "maximized", or "(1280x800, or --window's size)" when unset.
  *
  * @param k The row; unused.
  * @param buf Receives the text.
@@ -534,7 +534,7 @@ static void launcher_window_get_str(const knob_desc_t *k, char *buf, size_t cap)
     else if (g_opts && g_opts->launcher_window_maximized == 0)
         snprintf(buf, cap, "%dx%d", g_opts->launcher_window_w, g_opts->launcher_window_h);
     else
-        snprintf(buf, cap, "(the game window's)");
+        snprintf(buf, cap, "(1280x800, or --window's size)");
 }
 
 /** @brief Return 1 when the launcher opens fullscreen (--launcher-fullscreen 1), else 0.
@@ -1434,15 +1434,16 @@ static const knob_desc_t g_builtin[] = {
     { "launcher_window", "Launcher window size", "Display", "--launcher-window",
       "OPENPETE_LAUNCHER_WINDOW",
       "The launcher window's first size, WxH or maximized. Unset, the "
-      "launcher opens at the game window's size. A resize or maximize "
-      "made in the launcher carries to the game; this setting alone does not.",
+      "launcher opens at --window's size when one is set, else 1280x800, "
+      "fitted to the display. A resize or maximize made in the launcher "
+      "carries to the game; this setting alone does not.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, launcher_window_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .default_note = "the game window's size and state (--window)",
+      .default_note = "1280x800, or --window's size and state when set",
       .help_arg = "WxH|maximized", .help_order = 62,
-      .help_text = "the launcher window's first size, or maximized (default: the\n"
-          "game window's, --window). A resize or maximize in the launcher\n"
-          "carries to the game" },
+      .help_text = "the launcher window's first size, or maximized (default:\n"
+          "--window's when set, else 1280x800). A resize or maximize in the\n"
+          "launcher carries to the game" },
 
     { "render_paths", "Render paths", "Display", "--render-paths", NULL,
       "Draw only the named render paths (cyclorama,spyro,moby,terrain,"

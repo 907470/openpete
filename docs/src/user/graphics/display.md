@@ -29,8 +29,13 @@ Fullscreen is borderless, at the desktop's resolution.
 
 ## Launcher window
 
-The launcher opens windowed at the game window's size, maximized when that
-is maximized. Its window resizes and maximizes like the game's, and
+The launcher opens windowed at 1280x800, or at the size `--window` sets when
+one is set (maximized when that is maximized); a size set for one game in
+`[game.<id>]` does not apply to it. A size that does not fit the display's
+usable area opens maximized when it fits the whole display, and otherwise
+at 90% of the usable area. When the game starts, the window changes to the
+game's own size, or goes straight to fullscreen when the game starts
+fullscreen. Its window resizes and maximizes like the game's, and
 ++alt+enter++ or a double-click outside its buttons and entries toggles
 fullscreen.
 
@@ -43,7 +48,7 @@ settings again.
 | | |
 | --- | --- |
 | Start the launcher fullscreen | `--launcher-fullscreen 1` <!-- id: knob:launcher_fullscreen home -->; default windowed <!-- id: knob:launcher_fullscreen --> |
-| Launcher size | `--launcher-window WxH` or `--launcher-window maximized` <!-- id: knob:launcher_window home -->; default the game window's size <!-- id: knob:launcher_window --> |
+| Launcher size | `--launcher-window WxH` or `--launcher-window maximized` <!-- id: knob:launcher_window home -->; default 1280x800, or the `--window` size <!-- id: knob:launcher_window --> |
 
 Neither setting changes the game's window unless the window is changed in
 the launcher.

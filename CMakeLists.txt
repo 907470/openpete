@@ -1644,11 +1644,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endif()
 
     # The launcher's checks (tests/harness/check_launcher.py), one test per
-    # case: each runs the binary windowed under its own xvfb-run display with
-    # a scratch data root of its own, so the cases run in parallel; exits 64
-    # without xvfb-run or the binary.
+    # case: each runs the binary windowed under its own xvfb-run display, with
+    # the minimal window manager below and a scratch data root of its own, so
+    # the cases run in parallel; exits 64 without xvfb-run, the binary or the
+    # window manager.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(X11 QUIET)
+        if(X11_FOUND)
+            add_executable(openpete_xvfb_wm tests/harness/xvfb_wm.c)
+            target_link_libraries(openpete_xvfb_wm PRIVATE X11::X11)
+        endif()
+    endif()
     if(Python3_Interpreter_FOUND)
-        foreach(_launcher_case manifest handoff window-fit)
+        foreach(_launcher_case manifest handoff window-fit window-default)
             add_test(NAME launcher_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher.py

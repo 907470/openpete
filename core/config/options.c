@@ -913,7 +913,7 @@ void openpete_options_init(openpete_options_t* opts) {
                                         * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
     opts->fullscreen          = 0;     /* windowed by default; --fullscreen 1 = borderless-desktop launch */
     opts->launcher_fullscreen = -1;    /* -1 = unset; the launcher opens windowed */
-    opts->launcher_window_maximized = -1;  /* -1 = unset; the launcher takes the game window's size */
+    opts->launcher_window_maximized = -1;  /* -1 = unset; the launcher takes --window's size, else 1280x800 */
     opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;

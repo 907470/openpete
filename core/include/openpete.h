@@ -190,8 +190,9 @@ typedef struct openpete_options {
     /* The launcher window's first state. --launcher-fullscreen 0|1
      * (OPENPETE_LAUNCHER_FULLSCREEN): -1 = unset, the launcher opens
      * windowed. --launcher-window WxH|maximized (OPENPETE_LAUNCHER_WINDOW):
-     * launcher_window_maximized -1 = unset, the launcher takes the game
-     * window's size and state; 0 = launcher_window_w x launcher_window_h;
+     * launcher_window_maximized -1 = unset, the launcher takes --window's
+     * size and state when set, else 1280x800; 0 = launcher_window_w x
+     * launcher_window_h;
      * 1 = maximized. A fullscreen toggle, resize or maximize made in the
      * launcher replaces fullscreen, window_w/h and window_maximized of the
      * game it boots (openpete_launcher_handoff). */

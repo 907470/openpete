@@ -69,10 +69,12 @@ typedef int (*openpete_launcher_task_fn)(void* userdata);
  * calls it first with a descriptor naming no game, before any game is
  * installed, to pick the disc; the installed game's entry then calls it
  * again with its own descriptor, and the window and device opened so far
- * stay. The window opens at the game window's size
- * (openpete_game_window_size), the 640x448 layout space before a game is
- * installed, from the options it is opened with: the game-neutral ones for
- * a screen before identification, the full resolution at the hand-off.
+ * stay. The window opens at --launcher-window's size, else at an explicit
+ * game window size (--window), else at 1280x800, fitted to the display,
+ * from the options it is opened with: the game-neutral ones for a screen
+ * before identification. A window first opened at the hand-off takes the
+ * game window's size (openpete_game_window_size) from the full
+ * resolution.
  * @param game The calling game; must outlive the launcher.
  * @param neutral The game-neutral options; must outlive the launcher.
  * @param ui Non-zero when screens may show (a windowed run); 0 for a headless

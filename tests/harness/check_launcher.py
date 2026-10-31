@@ -4,7 +4,9 @@ label `launcher`.
 
 Every case runs the linux-release binary windowed under its own virtual X
 display (xvfb-run -a, SDL_VIDEODRIVER=x11, WAYLAND_DISPLAY unset) on
-lavapipe, with a scratch data root of its own (XDG_DATA_HOME,
+lavapipe, with the minimal window manager tests/harness/xvfb_wm.c
+(openpete_xvfb_wm, built beside the binary) running on it so fullscreen and
+maximize requests take effect, and a scratch data root of its own (XDG_DATA_HOME,
 XDG_STATE_HOME and XDG_CONFIG_HOME under the case's output directory), so
 cases never share a library. Every launch passes --no-config --no-card
 --vibration 0 --input-lock --mute 1. Each case deletes its output directory
@@ -35,7 +37,12 @@ Cases:
             with the shader compile's progress screen. Each run must log the
             game's first present, a launcher present that drew (engagement),
             and a last launcher present with no pixel other than (0,0,0);
-            the mod and shader runs must log their step.
+            the mod and shader runs must log their step. The --fullscreen 1
+            run's game first presents at the screen's size, no launcher
+            present is at the game's windowed size 640x448, and the window
+            manager kept 640x448 as the geometry fullscreen returns to. A
+            launcher-less --disc --fullscreen 1 launch keeps the present
+            sequence recorded before the straight-to-fullscreen hand-off.
   window-fit
             The launcher window's fit to its display, each a 1280x800
             request (--launcher-window) on an empty library: on a display
@@ -49,7 +56,18 @@ Cases:
             created at (and its maximized state) are asserted, and so is the
             drop screen's manifest window size, the framebuffer the screens
             draw at. The display bounds come from
-            OPENPETE_LAUNCHER_DISPLAY_STUB except in the unstubbed run.
+            OPENPETE_LAUNCHER_DISPLAY_STUB, and in the unstubbed rows from
+            the virtual display and the window manager's work area: a
+            1280x800 screen with a 44 px panel opens maximized and presents
+            at 1280x756, a 1366x768 screen with a 40 px panel is clamped.
+  window-default
+            The launcher window's first size on an empty library: 1280x800
+            with no configuration; --launcher-window's size over everything;
+            --window's size (an explicit game window size) without
+            --launcher-window, and the same size from the window key of a
+            --config file; --window maximized opens it maximized at 1280x800;
+            a window value under [game.spyro-1] does not apply (1280x800). The size and maximized state the
+            launcher device was created at are asserted.
   calibrate Not a ctest case: compares the drop screen with a reference
             manifest of the same screen (--calibration PATH: per preset, a
             "drop" list of id/kind/rect items), printing each element's rect
@@ -91,18 +109,28 @@ def case_dir(out, name):
     return d
 
 
-def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN):
-    """One windowed run under a fresh virtual display; returns (rc, log text)."""
+def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN, panel=0):
+    """One windowed run under a fresh virtual display and the window manager; returns (rc, log text).
+
+    The window manager reserves a bottom panel of `panel` pixels in the work area. The run starts once
+    the manager has advertised itself (its ready file), so the window maps under it."""
     if not shutil.which("xvfb-run"):
         raise Skip("xvfb-run not found")
+    wm = os.path.join(os.path.dirname(binary), "openpete_xvfb_wm")
+    if not os.access(wm, os.X_OK):
+        raise Skip(f"{wm} missing")
     # The caller's OPENPETE_* knobs (OPENPETE_BACKGROUND, for one) would change the paths under test.
     e = {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY" and not k.startswith("OPENPETE_")}
     e.update({"SDL_VIDEODRIVER": "x11", "OPENPETE_MSGBOX_SKIP": "1",
               "XDG_DATA_HOME": os.path.join(d, "data"), "XDG_STATE_HOME": os.path.join(d, "state"),
               "XDG_CONFIG_HOME": os.path.join(d, "config")})
     e.update(env or {})
-    cmd = ["xvfb-run", "-a", "-s", f"-screen 0 {screen}x24", binary, "--no-config", "--no-card",
-           "--vibration", "0", "--input-lock", "--mute", "1"] + args
+    ready = os.path.join(d, tag + ".wm-ready")
+    config = [] if "--config" in args else ["--no-config"]
+    cmd = ["xvfb-run", "-a", "-s", f"-screen 0 {screen}x24", "sh", "-c",
+           '"$0" --panel "$1" --ready "$2" & until [ -e "$2" ]; do sleep 0.05; done; shift 2; exec "$@"',
+           wm, str(panel), ready, binary] + config + ["--no-card", "--vibration", "0", "--input-lock",
+                                                       "--mute", "1"] + args
     log = os.path.join(d, tag + ".log")
     with open(log, "w") as f:
         try:
@@ -184,6 +212,44 @@ def run_handoff(a, d, tag, args, env=None, need=None):
     return bad, drew, trace_presents(log)
 
 
+GAME_SIZE = (640, 448)   # Spyro 1's default game window
+SCREEN_SIZE = tuple(map(int, SCREEN.split("x")))
+
+
+def fullscreen_verdict(ps, log_path):
+    """Problems with a launch into a fullscreen game: the game's first present is at the screen's size,
+    no present before it is at the game's windowed size, and the window manager kept the game's size as
+    the geometry fullscreen returns to."""
+    bad = []
+    game = [p for p in ps if p[0] == "game"]
+    if not game or game[0][1] != SCREEN_SIZE:
+        bad.append(f"the game's first present is {game[0][1] if game else None}, not fullscreen {SCREEN_SIZE}")
+    at_game = [p for p in ps if p[0] == "launcher" and p[1] == GAME_SIZE]
+    if at_game:
+        bad.append(f"{len(at_game)} launcher presents at the game's windowed size {GAME_SIZE}")
+    with open(log_path, errors="replace") as f:
+        saved = re.findall(r"xvfb_wm: window \w+ fullscreen, returns to (\d+)x(\d+)", f.read())
+    if [tuple(map(int, s)) for s in saved[:1]] != [GAME_SIZE]:
+        bad.append(f"fullscreen returns to {saved[:1]}, not the game's size {GAME_SIZE}")
+    return bad
+
+
+# The present sequence of a launcher-less `--disc --fullscreen 1` launch, recorded on the build before
+# the launcher's straight-to-fullscreen hand-off (two runs, identical): the black frame at the game's
+# windowed size, the black frame at the fullscreen size, the game. The hand-off change keeps it.
+DISC_FULLSCREEN = [("launcher", GAME_SIZE, False), ("launcher", SCREEN_SIZE, False), ("game", SCREEN_SIZE, True)]
+
+
+def disc_fullscreen_sequence(a, d):
+    """The launcher-less --disc --fullscreen 1 launch's present sequence: (source, size, drew) per present."""
+    run = os.path.join(d, "disc-fullscreen")
+    os.makedirs(run)
+    rc, log = launch(a.binary, run, "run", ["--disc", DISC_CUE, "--game", "spyro-1", "--fullscreen", "1",
+                                            "--frame-limit", "30"], {"OPENPETE_LAUNCHER_TRACE": "1"},
+                     timeout=300)
+    return rc, [(s, wh, n > 0) for s, wh, n in trace_presents(log)]
+
+
 def copy_mod(d):
     """A scratch --mods-dir holding a copy of mods/chain-duo-a, enabled."""
     m = os.path.join(d, "scratch-mods")
@@ -218,33 +284,45 @@ def case_handoff(a):
         bad, drew, ps = run_handoff(a, d, tag, args, env, need)
         if not bad and drew < min_drew:
             bad = [f"VACUOUS: {drew} launcher presents drew, {min_drew} expected"]
+        if tag == "fullscreen":
+            bad += fullscreen_verdict(ps, os.path.join(d, tag, "run.log"))
         last = [p for p in ps if p[0] == "launcher"][-1:] or [None]
         print(f"[launcher] {tag}: {len(ps)} presents traced, {drew} launcher presents drew, "
               f"last launcher present {last[0]}: {'FAIL ' + '; '.join(bad) if bad else 'PASS'}")
         fails += bool(bad)
-    print(f"[launcher] handoff: {'FAIL' if fails else 'PASS'} ({len(runs) - fails} of {len(runs)} paths)")
+    rc, seq = disc_fullscreen_sequence(a, d)
+    ok = rc == 0 and seq == DISC_FULLSCREEN
+    print(f"[launcher] disc-fullscreen: sequence {seq}: {'PASS' if ok else f'FAIL (rc {rc}), expected {DISC_FULLSCREEN}'}")
+    fails += not ok
+    total = len(runs) + 1
+    print(f"[launcher] handoff: {'FAIL' if fails else 'PASS'} ({total - fails} of {total} paths)")
     return 1 if fails else 0
 
 
 def case_window_fit(a):
     """The launcher window's fit rule against stubbed display bounds."""
     d = case_dir(a.out, "window-fit")
-    # (tag, stub, extra env, expected decision, expected size, maximized)
+    # (tag, stub or (screen, panel) of the real display, extra env, expected decision, expected size,
+    # maximized, the size the drop screen draws at when maximized)
     rows = [
-        ("fits", "1920x1080,1920x1040", {}, "as requested", (1280, 800), False),
-        ("fits-unstubbed", None, {}, "as requested", (1280, 800), False),
-        ("panel", "1280x800,1280x756", {}, "maximized", (1280, 800), True),
-        ("small", "1366x768,1366x728", {}, "clamped to 90% of the usable bounds", (1048, 655), False),
+        ("fits", "1920x1080,1920x1040", {}, "as requested", (1280, 800), False, None),
+        ("fits-unstubbed", (SCREEN, 0), {}, "as requested", (1280, 800), False, None),
+        ("panel", "1280x800,1280x756", {}, "maximized", (1280, 800), True, None),
+        ("panel-unstubbed", ("1280x800", 44), {}, "maximized", (1280, 800), True, [1280, 756]),
+        ("small", "1366x768,1366x728", {}, "clamped to 90% of the usable bounds", (1048, 655), False, None),
+        ("small-unstubbed", ("1366x768", 40), {}, "clamped to 90% of the usable bounds", (1048, 655), False,
+         None),
         ("gamescope", "1920x1080,1920x1040", {"GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0"},
-         "at the gamescope output size", (1920, 1080), False),
+         "at the gamescope output size", (1920, 1080), False, None),
     ]
     bad = []
-    for tag, stub, env, how, size, maxed in rows:
-        e = dict(env, OPENPETE_LAUNCHER_INPUT="1500:quit",
+    for tag, where, env, how, size, maxed, drawn in rows:
+        e = dict(env, OPENPETE_LAUNCHER_INPUT="1500:quit", OPENPETE_LAUNCHER_TRACE="1",
                  OPENPETE_LAUNCHER_MANIFEST=os.path.join(d, "m-" + tag))
-        if stub:
-            e["OPENPETE_LAUNCHER_DISPLAY_STUB"] = stub
-        rc, log = launch(a.binary, d, tag, ["--launcher-window", "1280x800"], e)
+        screen, panel = (SCREEN, 0) if isinstance(where, str) else where
+        if isinstance(where, str):
+            e["OPENPETE_LAUNCHER_DISPLAY_STUB"] = where
+        rc, log = launch(a.binary, d, tag, ["--launcher-window", "1280x800"], e, screen=screen, panel=panel)
         fit = re.search(r"window fit: request 1280x800, display (\d+x\d+), usable (\d+x\d+): opens (.+) \((\d+)x(\d+)\)", log)
         dev = re.search(r"launcher device \S+ created on window \S+ \((\d+)x(\d+)(, maximized)?", log)
         m = read_json(os.path.join(d, "m-" + tag + ".drop.json"))
@@ -258,10 +336,44 @@ def case_window_fit(a):
                 bad.append(f"{tag}: opened {got}, expected {(how, size, size, maxed)}")
             if m is None or (not maxed and tuple(m["window"]) != size):
                 bad.append(f"{tag}: drop screen drawn at {m and m['window']}, expected {size}")
+            sizes = {p[1] for p in trace_presents(log) if p[0] == "launcher"}
+            if drawn and tuple(drawn) not in sizes:
+                bad.append(f"{tag}: no launcher present at the maximized size {drawn} (presented at {sizes})")
         print(f"[launcher] {tag}: display {fit and fit.group(1)} usable {fit and fit.group(2)}: {got}")
     print(f"[launcher] window-fit: {'FAIL' if bad else 'PASS'} ({len(rows) - len(bad)} of {len(rows)} rows)")
     for b in bad:
         print("[launcher] FAIL", b)
+    return 1 if bad else 0
+
+
+def case_window_default(a):
+    """The launcher window's default size and its fallback order."""
+    d = case_dir(a.out, "window-default")
+    scoped, keyed = os.path.join(d, "scoped.toml"), os.path.join(d, "keyed.toml")
+    with open(scoped, "w") as f:
+        f.write('[game.spyro-1]\nwindow = "1600x900"\n')
+    with open(keyed, "w") as f:
+        f.write('window = "1600x900"\n')
+    rows = [
+        ("default", [], (1280, 800), False),
+        ("launcher-window", ["--launcher-window", "1024x640"], (1024, 640), False),
+        ("window", ["--window", "1600x900"], (1600, 900), False),
+        ("both", ["--launcher-window", "1024x640", "--window", "1600x900"], (1024, 640), False),
+        ("window-maximized", ["--window", "maximized"], (1280, 800), True),
+        ("config-key", ["--config", keyed], (1600, 900), False),
+        ("game-scope", ["--config", scoped], (1280, 800), False),
+    ]
+    bad = []
+    for tag, args, size, maxed in rows:
+        rc, log = launch(a.binary, d, tag, args, {"OPENPETE_LAUNCHER_INPUT": "1500:quit"})
+        dev = re.search(r"launcher device \S+ created on window \S+ \((\d+)x(\d+)(, maximized)?", log)
+        got = ((int(dev.group(1)), int(dev.group(2))), bool(dev.group(3))) if dev else None
+        if got != (size, maxed):
+            bad.append(f"{tag}: opened {got}, expected {(size, maxed)} (rc {rc}, log {d}/{tag}.log)")
+        print(f"[launcher] {tag}: {' '.join(args) or '(no setting)'}: opened {got}")
+    for b in bad:
+        print("[launcher] FAIL", b)
+    print(f"[launcher] window-default: {'FAIL' if bad else 'PASS'} ({len(rows) - len(bad)} of {len(rows)} rows)")
     return 1 if bad else 0
 
 
@@ -346,7 +458,7 @@ def case_calibrate(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("case", choices=["manifest", "handoff", "window-fit", "calibrate"])
+    ap.add_argument("case", choices=["manifest", "handoff", "window-fit", "window-default", "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--calibration", default=None)
@@ -358,7 +470,7 @@ def main():
         return 64
     try:
         return {"manifest": case_manifest, "handoff": case_handoff, "window-fit": case_window_fit,
-                "calibrate": case_calibrate}[a.case](a)
+                "window-default": case_window_default, "calibrate": case_calibrate}[a.case](a)
     except Skip as e:
         print(f"[launcher] SKIP: {e}")
         return 64

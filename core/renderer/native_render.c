@@ -7224,8 +7224,12 @@ static void nr_apply_game_window_placement(SDL_Window *win, const openpete_optio
  * then applies only from the windowed state the launcher left). Any other
  * change shows black at the old size first and presents at the new size
  * after it (nr_present_black_shown, nr_present_at_window_size), so the
- * compositor never holds the launcher image at a mismatched size. A window
- * already in the requested state is left alone.
+ * compositor never holds the launcher image at a mismatched size; a windowed
+ * window the game opens fullscreen switches to fullscreen right after that
+ * black frame, with the game's size (or maximized) set as the state
+ * fullscreen returns to, so no frame presents at the game's windowed size. A
+ * window already in the requested state is left alone, and the
+ * --fullscreen switch is then nr_apply_game_window_placement's.
  * @param win The window.
  * @param dev Its device.
  * @param opts The session options: fullscreen, background, window_maximized.
@@ -7247,6 +7251,22 @@ static void nr_adopt_window_state(SDL_Window *win, rhi_device *dev,
     if (!fs && max == want_max && (want_max || (cur_w == w && cur_h == h))) return;
     rhi_present_trace_arm(dev, "adopt resize");
     nr_present_black_shown(dev);
+    if (!fs && opts->fullscreen && opts->background <= 0) {
+        /* A game opening fullscreen goes from the launcher's size straight to
+         * fullscreen: the windowed state fullscreen returns to (the game's
+         * size, or maximized) is set first, with no present at it (the black
+         * frame above holds), then the switch. A size set while fullscreen
+         * is dropped on X11, so the order is the windowed state first. */
+        if (want_max) SDL_MaximizeWindow(win);
+        else SDL_SetWindowSize(win, w, h);
+        (void)SDL_SyncWindow(win);
+        SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
+        SDL_SetWindowFullscreen(win, true);
+        nr_present_at_window_size(win, dev);
+        OPL_INFO_F("native", "adopted window: fullscreen at once, %s set as its windowed state",
+                   want_max ? "maximized" : "the game's size");
+        return;
+    }
     if (fs) {
         /* Leaving fullscreen returns to the state before it, which may be
          * maximized: the state below is read after the window settles. */
