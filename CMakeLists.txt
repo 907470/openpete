@@ -526,6 +526,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Vulkan device creation failing before vkCreateDevice: a missing ICD
+    # under --headless capture, and the offscreen video driver's missing
+    # VK_EXT_headless_surface when windowed. Each run tears the partial
+    # device down without a fault and continues on its fallback (rc 0).
+    # About 10 s. Exit 64 = no binary or disc.
+    add_test(NAME vk_create_failure
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_vk_create_failure.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(vk_create_failure PROPERTIES
+        LABELS "startup"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Spyro 2/3 cutscene speech ring: per row, run to the speech voice's
     # key-off; every ring refill lands behind the guest voice head (0
     # overwrite, 0 stale samples), the OpenAL offset takes no slip step,

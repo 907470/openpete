@@ -4072,12 +4072,15 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     if (!create_instance(dev, app_name)) goto fail;
     volkLoadInstance(dev->instance);   /* load instance- + device-level fns */
 
-    step = "The window's Vulkan surface could not be created.";
-    if (!headless) {
-        if (!SDL_Vulkan_CreateSurface(window, dev->instance, NULL, &dev->surface)) {
-            RHI_LOG("SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
-            goto fail;
-        }
+    /* SDL's reason names the missing capability, such as the offscreen video
+     * driver's VK_EXT_headless_surface. */
+    char surface_why[sizeof s_create_error];
+    if (!headless && !SDL_Vulkan_CreateSurface(window, dev->instance, NULL, &dev->surface)) {
+        RHI_LOG("SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
+        snprintf(surface_why, sizeof surface_why,
+                 "The window's Vulkan surface could not be created: %s", SDL_GetError());
+        step = surface_why;
+        goto fail;
     }
     step = "No Vulkan graphics device that can draw to the window was found.";
     if (!pick_physical_and_device(dev)) goto fail;
@@ -4188,17 +4191,19 @@ static void lto_destroy_ready(rhi_device *dev);
 
 static void described_free(rhi_device *dev);
 
-void rhi_destroy(rhi_device *dev)
+/** @brief Wait the logical device idle, destroy every object created from it, then the device itself.
+ *
+ * Every call here goes through device-level dispatch, which the loader
+ * resolves by dereferencing the VkDevice handle, so a null device handle
+ * faults even for a VK_NULL_HANDLE object; rhi_destroy calls this only when
+ * vkCreateDevice succeeded.
+ * @param dev Device whose dev->device is a live VkDevice; dev->device is
+ *            VK_NULL_HANDLE on return. */
+static void device_objects_destroy(rhi_device *dev)
 {
-    if (ring_gen_dbg())
-        fprintf(stderr, "[rhi/vk] ring generations: bumps=%llu overflows=%llu vb_gen_writes=%llu vb_gen_binds=%llu\n",
-                (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
-                (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
-    if (!dev) return;
-    rhi_compile_pool_stop(dev);   /* no thread may use the cache or the device past here */
-    described_free(dev);
-    rhi_pc_report();
-    if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); retired_reclaim(dev, true); }
+    vkDeviceWaitIdle(dev->device);
+    rhi_balloon_free(dev);
+    retired_reclaim(dev, true);
     lto_destroy_ready(dev);
     gpl_destroy_all(dev);
 
@@ -4227,8 +4232,6 @@ void rhi_destroy(rhi_device *dev)
     if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
     vkDestroyDescriptorSetLayout(dev->device, dev->ssbo1_set_layout, NULL);   /* VK_NULL_HANDLE is a no-op */
     vkDestroyDescriptorSetLayout(dev->device, dev->texssbo_set_layout, NULL);
-    /* A device that failed before vkCreateDevice has no device-level
-     * dispatch to call through, so even a null handle is not destroyed. */
     if (dev->pair_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);
     vkDestroyDescriptorSetLayout(dev->device, dev->trio_set_layout, NULL);   /* VK_NULL_HANDLE is a no-op */
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
@@ -4245,7 +4248,23 @@ void rhi_destroy(rhi_device *dev)
     }
     pipeline_cache_close(dev);
     if (dev->pool)   vkDestroyCommandPool(dev->device, dev->pool, NULL);
-    if (dev->device) vkDestroyDevice(dev->device, NULL);
+    vkDestroyDevice(dev->device, NULL);
+    dev->device = VK_NULL_HANDLE;
+}
+
+void rhi_destroy(rhi_device *dev)
+{
+    if (ring_gen_dbg())
+        fprintf(stderr, "[rhi/vk] ring generations: bumps=%llu overflows=%llu vb_gen_writes=%llu vb_gen_binds=%llu\n",
+                (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
+                (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
+    if (!dev) return;
+    rhi_compile_pool_stop(dev);   /* no thread may use the cache or the device past here */
+    described_free(dev);
+    rhi_pc_report();
+    /* A creation that failed before vkCreateDevice (no surface, no
+     * qualifying physical device) has no device-level object to destroy. */
+    if (dev->device) device_objects_destroy(dev);
     if (dev->surface) vkDestroySurfaceKHR(dev->instance, dev->surface, NULL);
     if (dev->debug) {
         PFN_vkDestroyDebugUtilsMessengerEXT rm =
