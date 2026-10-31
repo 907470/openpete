@@ -57,6 +57,29 @@ Cases:
   bind-repair   The pick path's bind-failure rebuild: garbage at A's module path is rebuilt at the bind
             ("rebuilding it from your disc") and the game plays; the same rebuild forced to fail
             writes the failed-build marker, and the next launch exits 3 without a rebuild.
+  cache     The launcher asset cache (state/openpete/cache/<game>/: domes.bin, glyphs.txt, logo.rgba,
+            manifest.toml) over a three-game library, headless with no display: the cold launch
+            writes every game's cache through the launch-time rerun (each output decoded back:
+            domes, glyphs, logo); a warm launch writes no file and logs no rerun; a deleted output,
+            an older and a newer manifest format and a changed disc hash in meta.toml each rerun
+            that game alone; an extraction forced to fail (OPENPETE_ASSET_FAIL) logs the failure
+            and writes the failed marker, keeping the previous outputs, and the same build skips
+            it; a copy of the executable (another build id) reruns every game once, clearing the
+            marker, and its second launch reruns none. After every step each manifest lists
+            outputs of its sizes and no temporary is left.
+  cache-ingest  A headless --ingest writes the game's cache before the entry boots (the
+            assets-ready line, before the module build's end on a build with the first-boot
+            pipeline) and logs no launch-time rerun.
+  multi-install-launch  The multi-install check through the launcher's launch-time path: a
+            headless --game pick over a library of the three games with no cache, whose
+            launch-time jobs install and extract every game, dumps the installed globals equal to
+            a fresh single install's, for each game as target.
+  job-ingest-stop-assets  T8 (a) on the asset extraction (windowed): A's launch-time asset job
+            (held by OPENPETE_ASSET_JOB_DELAY_MS) is stopped by a drop of B's disc at B's copy
+            end, B's asset job runs at the ingest, A's job is requeued and completes after it.
+  job-pick-other-assets  T8 (c) on the asset extraction (windowed): a pick of B during A's held
+            launch-time asset job stops A, which leaves no cache file, and B's cache is written
+            at the pick.
 
 Usage: tests/harness/check_launcher_flow.py CASE [--build-dir DIR] [--out DIR] [--measure]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or a disc image missing).
@@ -282,7 +305,7 @@ def case_job_ingest_stop(a):
                         timeout=900)
     bad = common_flow(log) + ordered(
         log, r"launch-time job started: spyro-1", r"scripted drop", r"\[library\] added",
-        r"stopping the module rebuild of spyro-1 \(requeued\)", r"module build stopped between commands",
+        r"stopping the launch-time job of spyro-1 \(requeued\)", r"module build stopped between commands",
         r"launcher-side module build of spyro-2", r"first-boot module build of spyro-2",
         r"launch-time job started: spyro-1", r"module rebuild of spyro-1 done",
         r"scripted pick: entry \d+ \(spyro-2\)", r"game picked: spyro-2")
@@ -304,7 +327,7 @@ def case_job_pick_same(a):
                         timeout=900)
     bad = common_flow(log) + ordered(
         log, r"launch-time job started: spyro-1", r"scripted pick: entry \d+ \(spyro-1\)",
-        r"the pick of spyro-1 waits for its running module rebuild", r"module rebuild of spyro-1 done",
+        r"the pick of spyro-1 waits for its running launch-time job", r"module rebuild of spyro-1 done",
         r"game picked: spyro-1", r"shared recomp module attached")
     if "first-boot module build of spyro-1" in log.split("module rebuild of spyro-1 done", 1)[-1]:
         bad.append("the module was built again after the joined rebuild")
@@ -325,7 +348,7 @@ def case_job_pick_other(a):
                         timeout=900)
     bad = common_flow(log) + ordered(
         log, r"launch-time job started: spyro-1", r"scripted pick: entry \d+ \(spyro-2\)",
-        r"stopping the module rebuild of spyro-1", r"game picked: spyro-2")
+        r"stopping the launch-time job of spyro-1", r"game picked: spyro-2")
     stopped = "module build stopped between commands" in log
     partial = os.path.exists(mod) and not whole_module(mod)
     if partial:
@@ -355,7 +378,9 @@ def case_lock(a):
     rc2, log2 = cl.launch(a.binary, d, "second", ["--launcher-window", "1280x800"],
                           {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_LAUNCHER_INPUT": "3000:quit"})
     cache = os.path.join(d, "state", "openpete", "cache")
-    cache_files = [f for f in glob.glob(os.path.join(cache, "**"), recursive=True) if os.path.isfile(f)]
+    # The pipeline cache lies in the leaf itself; the per-game directories hold the first process's
+    # launcher asset cache, which its ingest writes.
+    cache_files = [f for f in glob.glob(os.path.join(cache, "*")) if os.path.isfile(f)]
     t.join()
     rc1, log1 = res["first"]
     bad = []
@@ -687,12 +712,352 @@ def case_ingest_held(a):
     return verdict("ingest-held", bad)
 
 
+# ---- the launcher asset cache (cache-*, multi-install-launch, job-*-assets) ----
+
+CACHE_FILES = ("domes.bin", "glyphs.txt", "logo.rgba", "manifest.toml")
+
+
+def nox(a, d, tag, args, env=None, timeout=600, binary=None):
+    """One headless run with no display, the case's data root and no inherited OPENPETE_* knob; returns (rc, log)."""
+    e = {k: v for k, v in os.environ.items() if not k.startswith("OPENPETE_")}
+    e.update({"XDG_DATA_HOME": os.path.join(d, "data"), "XDG_STATE_HOME": os.path.join(d, "state"),
+              "XDG_CONFIG_HOME": os.path.join(d, "config"), "OPENPETE_MSGBOX_SKIP": "1"})
+    e.update(env or {})
+    log = os.path.join(d, tag + ".log")
+    if os.path.exists(log):
+        os.remove(log)
+    cmd = [binary or a.binary, "--no-config", "--no-card", "--vibration", "0", "--mute", "1", "--headless"] + args
+    with open(log, "w") as f:
+        try:
+            rc = subprocess.run(cmd, env=e, stdout=f, stderr=subprocess.STDOUT, timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            rc = -9
+    with open(log, errors="replace") as f:
+        return rc, f.read()
+
+
+def cache_dir(d, game):
+    """A game's launcher asset cache directory under the case's state root."""
+    return os.path.join(d, "state", "openpete", "cache", game)
+
+
+def manifest(d, game):
+    """A game's cache manifest as (keys, files), or None when it does not exist."""
+    p = os.path.join(cache_dir(d, game), "manifest.toml")
+    if not os.path.isfile(p):
+        return None
+    keys, files, in_files = {}, {}, False
+    for l in open(p).read().splitlines():
+        if l == "[files]":
+            in_files = True
+        elif in_files and " = " in l:
+            k, v = l.split(" = ", 1)
+            files[k.strip('"')] = int(v)
+        elif " = " in l:
+            k, v = l.split(" = ", 1)
+            keys[k] = v.strip('"')
+    return keys, files
+
+
+def cache_snapshot(d):
+    """Every file under the cache leaf's game directories: path -> (inode, mtime_ns, size)."""
+    out = {}
+    for g in DISCS:
+        for f in glob.glob(os.path.join(cache_dir(d, g), "*")):
+            st = os.stat(f)
+            out[f] = (st.st_ino, st.st_mtime_ns, st.st_size)
+    return out
+
+
+def written(before, after):
+    """The cache files a run created or replaced."""
+    return sorted(f for f, v in after.items() if before.get(f) != v)
+
+
+def cache_problems(d, game):
+    """Problems with a game's cache: a missing output, a size differing from the manifest, a temporary left."""
+    bad = []
+    m = manifest(d, game)
+    if m is None:
+        return [f"{game}: no manifest"]
+    keys, files = m
+    for f in CACHE_FILES[:-1]:
+        p = os.path.join(cache_dir(d, game), f)
+        if not os.path.isfile(p) or files.get(f) != os.path.getsize(p):
+            bad.append(f"{game}: {f} {'missing' if not os.path.isfile(p) else 'size differs from the manifest'}")
+    tmp = [f for f in os.listdir(cache_dir(d, game)) if ".tmp" in f]
+    if tmp:
+        bad.append(f"{game}: temporaries left {tmp}")
+    return bad
+
+
+def domes_count(d, game):
+    """The dome count and total vertex count domes.bin holds."""
+    b = open(os.path.join(cache_dir(d, game), "domes.bin"), "rb").read()
+    if b[:8] != b"OPDOMES1":
+        return 0, 0
+    n = int.from_bytes(b[8:12], "little")
+    at, nv_sum = 12, 0
+    for _ in range(n):
+        ln = b[at]
+        at += 1 + ln
+        nv, nt = int.from_bytes(b[at:at + 4], "little"), int.from_bytes(b[at + 4:at + 8], "little")
+        at += 12 + 3 + nv * 9 + nt * 6
+        nv_sum += nv
+    return (n, nv_sum) if at == len(b) else (0, 0)
+
+
+def logo_size(d, game):
+    """The logo's width and height logo.rgba holds, (0, 0) when malformed."""
+    b = open(os.path.join(cache_dir(d, game), "logo.rgba"), "rb").read()
+    w, h = int.from_bytes(b[8:12], "little"), int.from_bytes(b[12:16], "little")
+    return (w, h) if b[:8] == b"OPLOGO01" and len(b) == 16 + w * h * 4 else (0, 0)
+
+
+def reruns(log):
+    """The launch-time rerun lines of a log: (game, trigger)."""
+    return re.findall(r"launch-time rerun: asset extraction of (\S+) \((.*)\)", log)
+
+
+def seed_library(d):
+    """A library of one entry per game (the repository's images); return {game: entry dir}."""
+    return {g: seed_entry(d, g, i + 1) for i, g in enumerate(DISCS)}
+
+
+def rewrite(path, fn):
+    """Replace a file's text with fn(text)."""
+    with open(path) as f:
+        text = f.read()
+    with open(path, "w") as f:
+        f.write(fn(text))
+
+
+def run_step(a, d, tag, bad, env=None, binary=None, args=None):
+    """One headless pick of Spyro 1 over the case's library; returns (log, files written, reruns)."""
+    before = cache_snapshot(d)
+    rc, log = nox(a, d, tag, args or ["--game", "spyro-1", "--frame-limit", "1"], env, binary=binary)
+    w, r = written(before, cache_snapshot(d)), reruns(log)
+    if rc != 0:
+        bad.append(f"{tag}: exit {rc}")
+    for g in DISCS:
+        bad += [f"{tag}: {x}" for x in cache_problems(d, g) if manifest(d, g) is not None]
+    print(f"[launcher-flow] cache {tag}: exit {rc}, {len(w)} cache files written, {len(r)} reruns {r}")
+    return log, w, r
+
+
+def expect_reruns(bad, tag, r, want):
+    """Check a step's reruns against {game: trigger substring}."""
+    got = {g: t for g, t in r}
+    if len(r) != len(want) or any(g not in got or s not in got[g] for g, s in want.items()):
+        bad.append(f"{tag}: reruns {r}, expected {want}")
+
+
+def cache_cold(a, d, bad):
+    """The cold launch: every library game's cache written, each output decoded back."""
+    log, w, r = run_step(a, d, "cold", bad)
+    expect_reruns(bad, "cold", r, {g: "no cache manifest" for g in DISCS})
+    for g in DISCS:
+        n, nv = domes_count(d, g)
+        lw, lh = logo_size(d, g)
+        glyph = os.path.getsize(os.path.join(cache_dir(d, g), "glyphs.txt"))
+        print(f"[launcher-flow] cache {g}: {n} domes ({nv} vertices), glyphs.txt {glyph} bytes, logo {lw}x{lh}")
+        if n == 0 or nv == 0 or glyph == 0 or lw == 0:
+            bad.append(f"cold: {g}: outputs empty or malformed ({n} domes, logo {lw}x{lh})")
+        if f"launcher assets of {g} ready (launch-time)" not in log:
+            bad.append(f"cold: {g}: no assets-ready line")
+    if len(w) != 4 * len(DISCS):
+        bad.append(f"cold: {len(w)} cache files written, expected {4 * len(DISCS)}")
+
+
+def cache_rewrites(a, d, entries, bad):
+    """A deleted output, an older and a newer format and a changed disc hash each rerun that game alone."""
+    os.remove(os.path.join(cache_dir(d, "spyro-1"), "glyphs.txt"))
+    _, w, r = run_step(a, d, "deleted", bad)
+    expect_reruns(bad, "deleted", r, {"spyro-1": "glyphs.txt missing"})
+    for g, fmt, why in (("spyro-2", "0", "manifest format 0, this build writes"),
+                        ("spyro-3", "99", "newer than this build's")):
+        p = os.path.join(cache_dir(d, g), "manifest.toml")
+        rewrite(p, lambda t: re.sub(r"^format = \d+", "format = " + fmt, t, flags=re.M))
+        _, w, r = run_step(a, d, "format-" + fmt, bad)
+        expect_reruns(bad, "format-" + fmt, r, {g: why})
+        if manifest(d, g)[0].get("format") != "1":
+            bad.append(f"format-{fmt}: {g}'s manifest not rewritten in format 1")
+    meta = os.path.join(entries["spyro-1"], "meta.toml")
+    rewrite(meta, lambda t: t.replace('sha256 = "' + "0" * 64, 'sha256 = "' + "1" * 64))
+    _, w, r = run_step(a, d, "hash", bad)
+    expect_reruns(bad, "hash", r, {"spyro-1": "hash changed"})
+    if manifest(d, "spyro-1")[0].get("disc_sha256") != "1" * 64:
+        bad.append("hash: spyro-1's manifest does not name the new hash")
+
+
+def cache_failed(a, d, bad):
+    """A forced extraction failure writes the failed marker; this build skips it; another build reruns."""
+    # A rerun is due (outputs of another build) so the forced failure is reached with the outputs recorded.
+    p = os.path.join(cache_dir(d, "spyro-2"), "manifest.toml")
+    rewrite(p, lambda t: re.sub(r'^build = ".*"$', 'build = "an older build"', t, flags=re.M))
+    before = {f: os.path.getsize(os.path.join(cache_dir(d, "spyro-2"), f)) for f in CACHE_FILES[:-1]}
+    log, w, r = run_step(a, d, "fail", bad, {"OPENPETE_ASSET_FAIL": "spyro-2"})
+    m = manifest(d, "spyro-2")
+    fails = re.findall(r"asset extraction of spyro-2 failed: (.*?);", log)
+    if not fails or not m or not m[0].get("failed_build"):
+        bad.append(f"fail: log lines {len(fails)}, marker {'present' if m and m[0].get('failed_build') else 'absent'}")
+    else:
+        print(f"[launcher-flow] cache fail: 1 failure line ({fails[0]}), marker build {m[0]['failed_build']}")
+    if any(os.path.getsize(os.path.join(cache_dir(d, "spyro-2"), f)) != n for f, n in before.items()):
+        bad.append("fail: the failure changed spyro-2's previous outputs")
+    log, w, r = run_step(a, d, "fail-same-build", bad)
+    if r or w or "asset extraction of spyro-2 skipped" not in log:
+        bad.append(f"fail-same-build: reruns {r}, {len(w)} files written, skip "
+                   f"{'logged' if 'asset extraction of spyro-2 skipped' in log else 'absent'}")
+
+
+def case_cache(a):
+    """The launcher asset cache over a three-game library, headless: cold, warm, each rewrite trigger, the failed marker, another build id."""
+    d = cl.case_dir(a.out, "cache")
+    entries = seed_library(d)
+    bad = []
+    cache_cold(a, d, bad)
+    log, w, r = run_step(a, d, "warm", bad)
+    current = len(set(re.findall(r"asset cache of (\S+) is current", log)))
+    if w or r or current != len(DISCS):
+        bad.append(f"warm: {len(w)} files written, {len(r)} reruns, {current} games current")
+    cache_rewrites(a, d, entries, bad)
+    cache_failed(a, d, bad)
+    other = exe_copy(a, d)
+    _, w, r = run_step(a, d, "other-build", bad, binary=other)
+    expect_reruns(bad, "other-build", r, {"spyro-1": "outputs written by build", "spyro-3": "outputs written by build",
+                                          "spyro-2": "a failed marker of build"})
+    m = manifest(d, "spyro-2")
+    if not m or m[0].get("failed_build"):
+        bad.append("other-build: spyro-2's failed marker not cleared")
+    _, w, r = run_step(a, d, "other-build-warm", bad, binary=other)
+    if w or r:
+        bad.append(f"other-build-warm: {len(w)} files written, {len(r)} reruns")
+    return verdict("cache", bad)
+
+
+def case_cache_ingest(a):
+    """An ingest writes the game's cache before it boots; the assets-ready line precedes the module build's end."""
+    d = cl.case_dir(a.out, "cache-ingest")
+    rc, log = nox(a, d, "ingest", ["--ingest", disc_cue("spyro-1"), "--frame-limit", "1"], timeout=900)
+    bad = cache_problems(d, "spyro-1")
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    bad += ordered(log, r"\[library\] added", r"asset extraction of spyro-1 at ingest \(no cache manifest\)",
+                   r"asset cache of spyro-1 written", r"launcher assets of spyro-1 ready \(ingest\)",
+                   r"booting library entry")
+    if reruns(log):
+        bad.append(f"an ingest logged launch-time reruns {reruns(log)}")
+    detail = "no first-boot pipeline: the build-end order is not exercised"
+    if "first-boot module build" in log:
+        bad += ordered(log, r"launcher assets of spyro-1 ready \(ingest\)", r"recomp-build: module built: ")
+        detail = "assets ready before the module build's end"
+    n, _ = domes_count(d, "spyro-1") if not bad else (0, 0)
+    return verdict("cache-ingest", bad, f"{n} domes; {detail}")
+
+
+def case_multi_install_launch(a):
+    """T18 through the launch-time path: the dump after a pick whose launch-time jobs installed and extracted every library game, against a fresh single install."""
+    if not shutil.which("setarch"):
+        raise cl.Skip("setarch not found")
+    bad, compared, launches = [], 0, {}
+    for g in DISCS:
+        d = cl.case_dir(a.out, "multi-install-launch-" + g)
+        seed_library(d)
+        one = install_dump(a, d, g + ".single", g, False)
+        out = os.path.join(d, g + ".launch.dump")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("OPENPETE_")}
+        env.update({"OPENPETE_INSTALL_DUMP": out, "XDG_DATA_HOME": os.path.join(d, "data"),
+                    "XDG_STATE_HOME": os.path.join(d, "state"), "XDG_CONFIG_HOME": os.path.join(d, "config")})
+        logp = os.path.join(d, g + ".launch.log")
+        with open(logp, "w") as f:
+            subprocess.run(["setarch", os.uname().machine, "-R", a.binary, "--no-config", "--no-card", "--mute", "1",
+                            "--vibration", "0", "--headless", "--game", g, "--frame-limit", "1"],
+                           env=env, stdout=subprocess.DEVNULL, stderr=f, timeout=600)
+        log = open(logp, errors="replace").read()
+        many = report_lines(out)
+        r = dict(reruns(log))
+        others = [o for o in DISCS if o != g]
+        if any(o not in r for o in others):
+            bad.append(f"{g}: launch-time reruns {sorted(r)}, expected {others}")
+        if not one or not many:
+            bad.append(f"{g}: dump missing")
+            continue
+        diff = [(x, y) for x, y in zip(one, many) if x != y]
+        if len(one) != len(many):
+            diff.append((len(one), len(many)))
+        compared += len(one)
+        bad += [f"{g}: single {str(x)[:90]!r} vs launch {str(y)[:90]!r}" for x, y in diff]
+        bad += [f"{g}: {l}" for l in many if l.startswith("install_refusals ") and l != "install_refusals 0"]
+        launches[g] = many
+        print(f"[launcher-flow] multi-install-launch {g}: {len(r)} launch-time reruns, {len(one)} lines, "
+              f"{len(diff)} differ")
+    if len(launches) >= 2:
+        a1, a2 = list(launches.values())[:2]
+        control = sum(1 for x, y in zip(a1, a2) if x != y)
+        print(f"[launcher-flow] multi-install-launch control: two targets' launch dumps differ on {control} lines")
+        if control == 0:
+            bad.append("VACUOUS: two targets' launch dumps are identical")
+    if compared == 0:
+        bad.append("VACUOUS: no line compared")
+    return verdict("multi-install-launch", bad, f"{compared} lines compared")
+
+
+SLOW_ASSETS = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_ASSET_JOB_DELAY_MS": "20000"}
+
+
+def case_job_ingest_stop_assets(a):
+    """T8 (a) on the extraction rerun: A's launch-time asset job stopped at B's copy end, then completed after B's jobs (windowed)."""
+    d = cl.case_dir(a.out, "job-ingest-stop-assets")
+    seed_entry(d, "spyro-1", 1)
+    env = dict(SLOW_ASSETS, OPENPETE_LAUNCHER_PICK_DELAY_MS="1500", OPENPETE_LAUNCHER_DROP=disc_cue("spyro-2"),
+               OPENPETE_LAUNCHER_SELECT_GAME="spyro-2", OPENPETE_LAUNCHER_SELECT_IDLE="1")
+    rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env,
+                        timeout=900)
+    bad = common_flow(log) + ordered(
+        log, r"launch-time job started: spyro-1", r"launch-time rerun: asset extraction of spyro-1",
+        r"scripted drop", r"\[library\] added", r"stopping the launch-time job of spyro-1 \(requeued\)",
+        r"asset extraction of spyro-1 stopped", r"asset extraction of spyro-2 at ingest",
+        r"launcher assets of spyro-2 ready \(ingest\)", r"launch-time job started: spyro-1",
+        r"launcher assets of spyro-1 ready \(launch-time\)", r"scripted pick: entry \d+ \(spyro-2\)",
+        r"game picked: spyro-2")
+    bad += cache_problems(d, "spyro-1") + cache_problems(d, "spyro-2")
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    return verdict("job-ingest-stop-assets", bad)
+
+
+def case_job_pick_other_assets(a):
+    """T8 (c) on the extraction rerun: a pick of B during A's launch-time asset job stops A, which leaves no partial cache file (windowed)."""
+    d = cl.case_dir(a.out, "job-pick-other-assets")
+    seed_entry(d, "spyro-1", 1)
+    seed_entry(d, "spyro-2", 2)
+    env = dict(SLOW_ASSETS, OPENPETE_LAUNCHER_PICK_DELAY_MS="1500", OPENPETE_LAUNCHER_SELECT_GAME="spyro-2")
+    rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env,
+                        timeout=900)
+    bad = common_flow(log) + ordered(
+        log, r"launch-time job started: spyro-1", r"scripted pick: entry \d+ \(spyro-2\)",
+        r"stopping the launch-time job of spyro-1", r"asset extraction of spyro-1 stopped; the cache is unchanged",
+        r"launcher assets of spyro-2 ready \(pick\)", r"game picked: spyro-2")
+    a_dir = cache_dir(d, "spyro-1")
+    left = os.listdir(a_dir) if os.path.isdir(a_dir) else []
+    if left:
+        bad.append(f"A's cache holds files after its stopped job: {left}")
+    bad += cache_problems(d, "spyro-2")
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    return verdict("job-pick-other-assets", bad)
+
+
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
          "job-pick-other": case_job_pick_other, "lock": case_lock, "failed-marker": case_failed_marker,
          "headless-no-disc": case_headless_no_disc, "bind-repair": case_bind_repair,
-         "ingest-held": case_ingest_held}
+         "ingest-held": case_ingest_held, "cache": case_cache, "cache-ingest": case_cache_ingest,
+         "multi-install-launch": case_multi_install_launch,
+         "job-ingest-stop-assets": case_job_ingest_stop_assets,
+         "job-pick-other-assets": case_job_pick_other_assets}
 
 
 def main():

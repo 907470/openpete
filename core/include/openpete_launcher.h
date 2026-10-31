@@ -33,6 +33,7 @@
 #include <stddef.h>
 
 #include "openpete.h" /* openpete_options_t */
+#include "openpete_thread_roles.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -75,6 +76,16 @@ struct openpete_launcher_game {
      * without the pipeline. Runs with the game installed. */
     int (*build_module)(const openpete_launcher_game* g, const char* disc_path,
                         const char* out_module_path);
+    /* Bring this game's launcher asset cache up to date for a library disc
+     * (its path and the content hash its meta.toml records), rerunning the
+     * asset extraction when the cache is not current; context names what
+     * started it ("launch-time", "ingest", "pick"). Returns 0 when the
+     * cache is current or rewritten, 1 when a failed marker of this build
+     * skips it, -1 on a failure (the marker written), -2 when the job was
+     * asked to stop. Runs in the `ingest` role with the game installed.
+     * NULL for a game without launcher assets. */
+    int (*update_assets)(const openpete_launcher_game* g, const char* disc_path, const char* disc_sha256,
+                  const char* context) OP_SLOT(ingest);
     /* The neutral descriptor's per-game entries, one per linked game; NULL
      * and 0 in a per-game entry. */
     const openpete_launcher_game* const* games;
@@ -160,6 +171,14 @@ int  openpete_launcher_lock(void);
  * compiler commands and stops there.
  * @return 1 when the calling thread runs a job asked to stop, else 0. */
 int  openpete_launcher_job_cancelled(void);
+
+/** @brief Return this executable's build id: the configured version joined with the executable's size and modification time.
+ *
+ * Failed-build markers and the launcher asset cache record it, so a
+ * relinked executable never matches an older record, even when the
+ * configured version is unchanged (a rebuild without a reconfigure).
+ * @return The id, valid for the process's life. */
+const char* openpete_launcher_build_id(void);
 
 /** @brief Count the launcher jobs in flight: a module build of an installed game, from its start to its end.
  *

@@ -9,11 +9,25 @@
 #include "openpete_log.h"
 #include "openpete_config.h"
 #include "recomp_attach.h"
+#include "launcher_cache.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+
+/** @brief Bring a per-game entry's launcher asset cache up to date for a library disc (launcher_cache_update).
+ *
+ * @param g The per-game entry; its game is installed.
+ * @param disc_path The library entry's disc.
+ * @param disc_sha256 The disc's recorded content hash.
+ * @param context What started the job.
+ * @return launcher_cache_update's status. */
+static int entry_assets(const openpete_launcher_game* g, const char* disc_path, const char* disc_sha256,
+                        const char* context) OP_REQUIRES(ingest) {
+    return launcher_cache_update(static_cast<const openpete_game_build_t*>(g->build), disc_path, disc_sha256,
+                                 context);
+}
 
 namespace {
 
@@ -83,6 +97,7 @@ std::vector<openpete_launcher_game>& game_entries() {
         g.build = b;
         g.install = entry_install;
         g.build_module = b->build_module ? entry_build : nullptr;
+        if (launcher_cache_game_has_assets(b)) g.update_assets = entry_assets;
     }
     return entries;
 }

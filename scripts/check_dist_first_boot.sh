@@ -257,6 +257,11 @@ module=$(ls "$DATA"/library/*/modules/*/spyro1-recomp.so 2>/dev/null | head -1)
                         tail -20 "$WORK/first-boot.log" >&2; exit 2; }
 grep -q "first-boot module build" "$WORK/first-boot.log" \
     || { echo "[dist-gate] FAIL: first boot did not build a module" >&2; exit 2; }
+# The ingest writes the game's launcher asset cache (domes, glyph models,
+# logo and its manifest) beside the build; the warm boot's no-rerun check
+# below is vacuous without it.
+grep -q "asset cache of spyro-1 written" "$WORK/first-boot.log" \
+    || { echo "[dist-gate] FAIL: first boot wrote no launcher asset cache" >&2; exit 2; }
 # The module must not have acquired a shared-library dependency it cannot
 # resolve: it is linked -nostdlib and binds everything else against the
 # already-loaded exe at dlopen.
@@ -288,6 +293,14 @@ if [[ $APPIMAGE -eq 1 ]]; then
                   "key is not independent of the mount path" >&2; exit 2; }
     [[ "$(stat -c %Y "$module")" == "$module_stamp_before" ]] \
         || { echo "[dist-gate] FAIL: warm boot rewrote the cached module" >&2; exit 2; }
+    # The asset cache records the build id (version, executable size and
+    # modification time); a key that took the mount path would rerun the
+    # extraction at every launch.
+    ! grep -q "launch-time rerun" "$WORK/warm-boot.log" \
+        || { echo "[dist-gate] FAIL: warm boot reran the asset extraction:" \
+                  "$(grep -m1 "launch-time rerun" "$WORK/warm-boot.log")" >&2; exit 2; }
+    grep -q "asset cache of spyro-1 is current" "$WORK/warm-boot.log" \
+        || { echo "[dist-gate] FAIL: warm boot did not check the asset cache" >&2; exit 2; }
 
     echo "[dist-gate] nothing was written inside the payload..."
     ( cd "$appdir" && find . -type f -exec sha256sum {} + | sort -k2 ) \

@@ -121,12 +121,18 @@ struct State {
 };
 State s;
 
-/* A launch-time module rebuild of one library entry. */
+/* A launch-time job of one library entry: its module check (and rebuild)
+ * on the job thread, its asset cache check (and extraction) on the ingest
+ * thread, both under the one install of its game. */
 struct Job {
     const openpete_launcher_game* g = nullptr;
-    std::string entry, disc;
+    std::string entry, disc, sha;
     int rc = 0;
+    int arc = 0;          /* the asset part's status (openpete_launcher_game.update_assets) */
+    bool module = true;   /* the job checks the module (no current failed-build marker) */
+    bool assets = false;  /* the asset part started */
     bool built = false;   /* the module was missing and a build ran */
+    bool running = false; /* started and not yet reaped */
 };
 
 /* The job runner: a queue, the running job on its thread, the in-flight
@@ -146,6 +152,26 @@ struct Jobs {
 Jobs s_jobs;
 /* Set on a thread while it runs a job, the job thread or the inline form. */
 thread_local bool t_job = false;
+
+/* The asset job (openpete_launcher_game.update_assets) of one game on the ingest
+ * thread, which binds the `ingest` role: started by a launch-time job, an
+ * ingest or a pick, with that game installed, and reaped on the launcher's
+ * thread. busy runs from the start to the reap. */
+struct Ingest {
+    const openpete_launcher_game* g = nullptr;
+    std::string disc, sha, context;
+    SDL_AtomicInt* cancel = nullptr;   /* the stop flag the job reads */
+    SDL_AtomicInt own_cancel = {};     /* the flag of a job outside the launch-time queue */
+    SDL_Thread* th = nullptr;
+    SDL_AtomicInt done = {};
+    bool busy = false;
+    int rc = 0;
+};
+Ingest s_ing;
+/* The stop flag openpete_launcher_job_cancelled reads on the calling thread. */
+thread_local SDL_AtomicInt* t_cancel = nullptr;
+
+void ingest_poll();
 
 /* Process start for launcher_stamp: this translation unit's static
  * initialization, which runs before main. */
@@ -995,6 +1021,7 @@ void task_wait_loop() {
             drain_events();
             (void)draw_mailbox();
         }
+        ingest_poll();
         if (done) break;
         SDL_Delay(16);
     }
@@ -1334,17 +1361,17 @@ bool file_readable(const char* p) {
     return true;
 }
 
-/** @brief Run one job: compute the game's stamped module path for the entry and build the module when no file is there.
+/** @brief Run one job's module part: compute the game's stamped module path for the entry and build the module when no file is there.
  *
  * Runs with the job's game installed, on the job thread or inline.
  * @param job The job; receives built.
  * @return 0 when the module is current or built (or the game has no
- *         pipeline), the build's status otherwise. */
+ *         pipeline, or the job checks no module), the build's status otherwise. */
 int job_body(Job& job) {
     job.built = false;
     const openpete_launcher_game* g = job.g;
     char path[4096];
-    if (!g->module_path || !g->build_module ||
+    if (!job.module || !g->module_path || !g->build_module ||
         g->module_path(g, job.entry.c_str(), path, sizeof path) != 0)
         return 0;
     if (file_readable(path)) {
@@ -1374,33 +1401,105 @@ void job_record(const Job& job) {
     }
 }
 
-/** @brief Job thread entry: run the current job and flag it done.
+/** @brief Job thread entry: run the current job's module part and flag it done.
  *
  * @param p Unused.
  * @return 0. */
 int SDLCALL job_main(void* p) {
     (void)p;
     t_job = true;
+    t_cancel = &s_jobs.cancel;
     s_jobs.cur.rc = job_body(s_jobs.cur);
+    t_cancel = nullptr;
     t_job = false;
     SDL_SetAtomicInt(&s_jobs.done, 1);
     return 0;
 }
 
-/** @brief Join the finished job's thread, end its in-flight count and its compile pause, and record its result. */
-void job_reap() {
-    SDL_WaitThread(s_jobs.th, nullptr);
-    s_jobs.th = nullptr;
-    openpete_native_launcher_compile_pause(0);
-    s_jobs.in_flight--;
-    job_record(s_jobs.cur);
+}  // namespace
+
+/** @brief Run the current asset job (openpete_launcher_game.update_assets) in the `ingest` role.
+ *
+ * @return The job's status. */
+static int ingest_body() OP_REQUIRES(ingest) {
+    return s_ing.g->update_assets(s_ing.g, s_ing.disc.c_str(), s_ing.sha.c_str(), s_ing.context.c_str());
 }
 
-/** @brief Wait for the running job to flag done, keeping the window's events drained and, when asked, drawing the job's progress.
+namespace {
+
+/** @brief Ingest thread entry: bind `ingest`, run the asset job with its stop flag and flag it done.
+ *
+ * The form without screens calls it directly inside an enter of the role
+ * (ingest_run_inline).
+ * @param p Unused.
+ * @return 0. */
+int SDLCALL ingest_main(void* p) {
+    (void)p;
+    OP_ROLE_BIND(ingest);
+    SDL_AtomicInt* const prior = t_cancel;
+    t_cancel = s_ing.cancel;
+    s_ing.rc = ingest_body();
+    t_cancel = prior;
+    SDL_SetAtomicInt(&s_ing.done, 1);
+    return 0;
+}
+
+/** @brief Run the asset job on the calling thread inside the `ingest` role: the form without screens, and the fallback when the ingest thread cannot start. */
+void ingest_run_inline() {
+    unsigned prior = 0;
+    OP_ROLE_ENTER(ingest, prior);
+    (void)ingest_main(nullptr);
+    op_role_leave(prior);
+}
+
+/** @brief Start a game's asset job: on the ingest thread while screens show, inline otherwise.
+ *
+ * The game must be installed and no asset job busy; a game without
+ * launcher assets starts nothing.
+ * @param g The game's per-game entry.
+ * @param disc The library entry's disc.cue.
+ * @param sha The entry's recorded content hash.
+ * @param context What starts it: "launch-time", "ingest" or "pick".
+ * @param cancel The stop flag the job reads, or NULL for its own (never set
+ *        by any stop). */
+void ingest_start(const openpete_launcher_game* g, const std::string& disc, const std::string& sha,
+                  const char* context, SDL_AtomicInt* cancel) {
+    if (!g->update_assets || s_ing.busy) return;
+    s_ing.g = g;
+    s_ing.disc = disc;
+    s_ing.sha = sha;
+    s_ing.context = context;
+    s_ing.cancel = cancel ? cancel : &s_ing.own_cancel;
+    SDL_SetAtomicInt(&s_ing.own_cancel, 0);
+    SDL_SetAtomicInt(&s_ing.done, 0);
+    s_ing.rc = 0;
+    s_ing.busy = true;
+    s_ing.th = launcher_screens() ? SDL_CreateThread(ingest_main, "openpete-ingest", nullptr) : nullptr;
+    if (!s_ing.th) ingest_run_inline();
+}
+
+/** @brief On the launcher's thread: reap a finished asset job and log its outcome, the moment its assets are ready.
+ *
+ * Polled by the job runner, the task wait loop and launcher_assets_wait;
+ * a no-op while no asset job is busy or the busy one has not ended. */
+void ingest_poll() {
+    if (!s_ing.busy || !SDL_GetAtomicInt(&s_ing.done)) return;
+    if (s_ing.th) SDL_WaitThread(s_ing.th, nullptr);
+    s_ing.th = nullptr;
+    s_ing.busy = false;
+    const int rc = s_ing.rc;
+    const char* what = rc == 0 ? "ready" : rc == 1 ? "kept (a failed marker of this build)"
+                     : rc == -2 ? "not updated (stopped)" : "failed";
+    OPL_INFO_F("launcher", "launcher assets of %s %s (%s)", s_ing.g->game_id, what, s_ing.context.c_str());
+}
+
+bool job_finished();
+
+/** @brief Wait for the running job's two parts to flag done, keeping the window's events drained and, when asked, drawing the job's progress.
  *
  * @param draw true to draw the job's last progress report every 16 ms. */
 void job_wait(bool draw) {
-    while (!SDL_GetAtomicInt(&s_jobs.done)) {
+    while (!job_finished()) {
         if (s.ui && openpete_native_launcher_active()) {
             drain_events();
             if (draw) {
@@ -1423,44 +1522,90 @@ void job_wait(bool draw) {
     }
 }
 
-}  // namespace
-
-void launcher_job_add(const openpete_launcher_game* g, const char* entry_dir, const char* disc) {
-    Job job;
-    job.g = g;
-    job.entry = entry_dir;
-    job.disc = disc;
-    s_jobs.queue.push_back(job);
-    OPL_INFO_F("launcher", "launch-time job queued: module check of %s (entry %s)", g->game_id, entry_dir);
+/** @brief Report whether the running job's module part and asset part have both ended, reaping a finished asset part.
+ *
+ * @return true when both have ended. */
+bool job_finished() {
+    ingest_poll();
+    return !s_ing.busy && (!s_jobs.th || SDL_GetAtomicInt(&s_jobs.done));
 }
 
-void launcher_jobs_pump(void) {
-    if (s_jobs.th && SDL_GetAtomicInt(&s_jobs.done)) job_reap();
-    if (s_jobs.th || s_jobs.queue.empty() || !s.ui || s.handed_off) return;
-    if (!s.lock) s.lock = SDL_CreateMutex();
-    if (!s.lock) return;
+/** @brief Join the finished job's threads, end its in-flight count and its compile pause, and record its result. */
+void job_reap() {
+    if (s_jobs.th) SDL_WaitThread(s_jobs.th, nullptr);
+    s_jobs.th = nullptr;
+    if (s_jobs.cur.assets) s_jobs.cur.arc = s_ing.rc;
+    openpete_native_launcher_compile_pause(0);
+    s_jobs.in_flight--;
+    s_jobs.cur.running = false;
+    job_record(s_jobs.cur);
+}
+
+/** @brief Start the queued job at the head: install its game, count it in flight, pause the pipeline compile, and start its asset part on the ingest thread and its module part on the job thread. */
+void job_start() {
     s_jobs.cur = s_jobs.queue.front();
     s_jobs.queue.pop_front();
-    s_jobs.cur.g->install(s_jobs.cur.g);
+    Job& j = s_jobs.cur;
+    j.g->install(j.g);
     s_jobs.in_flight++;
+    j.running = true;
+    j.rc = j.arc = 0;
+    j.assets = j.g->update_assets != nullptr;
     openpete_native_launcher_compile_pause(1);
     SDL_SetAtomicInt(&s_jobs.done, 0);
     SDL_SetAtomicInt(&s_jobs.cancel, 0);
     SDL_LockMutex(s.lock);
     s_jobs.have = false;
     SDL_UnlockMutex(s.lock);
-    s_jobs.th = SDL_CreateThread(job_main, "openpete-job", nullptr);
-    if (!s_jobs.th) {
-        /* The thread could not start: run the job here, as without screens. */
-        t_job = true;
-        s_jobs.cur.rc = job_body(s_jobs.cur);
-        t_job = false;
-        openpete_native_launcher_compile_pause(0);
-        s_jobs.in_flight--;
-        job_record(s_jobs.cur);
-        return;
+    if (j.assets) ingest_start(j.g, j.disc, j.sha, "launch-time", &s_jobs.cancel);
+    if (j.module && j.g->build_module && j.g->module_path) {
+        s_jobs.th = SDL_CreateThread(job_main, "openpete-job", nullptr);
+        if (!s_jobs.th) {
+            /* The thread could not start: run the module part here, as without screens. */
+            t_job = true;
+            t_cancel = &s_jobs.cancel;
+            j.rc = job_body(j);
+            t_cancel = nullptr;
+            t_job = false;
+        }
     }
-    OPL_INFO_F("launcher", "launch-time job started: %s", s_jobs.cur.g->game_id);
+    OPL_INFO_F("launcher", "launch-time job started: %s", j.g->game_id);
+}
+
+}  // namespace
+
+void launcher_assets_start(const openpete_launcher_game* g, const char* disc, const char* sha, const char* context) {
+    ingest_start(g, disc ? disc : "", sha ? sha : "", context, nullptr);
+}
+
+void launcher_assets_wait(void) {
+    while (s_ing.busy) {
+        ingest_poll();
+        if (!s_ing.busy) break;
+        if (s.ui && openpete_native_launcher_active()) drain_events();
+        SDL_Delay(5);
+    }
+}
+
+void launcher_job_add(const openpete_launcher_game* g, const char* entry_dir, const char* disc, const char* sha,
+                      bool module) {
+    Job job;
+    job.g = g;
+    job.entry = entry_dir;
+    job.disc = disc;
+    job.sha = sha ? sha : "";
+    job.module = module;
+    s_jobs.queue.push_back(job);
+    OPL_INFO_F("launcher", "launch-time job queued: %s%s of %s (entry %s)", module ? "module check" : "",
+               g->update_assets ? (module ? " and asset cache check" : "asset cache check") : "", g->game_id, entry_dir);
+}
+
+void launcher_jobs_pump(void) {
+    if (s_jobs.cur.running && job_finished()) job_reap();
+    if (s_jobs.cur.running || s_jobs.queue.empty() || !s.ui || s.handed_off) return;
+    if (!s.lock) s.lock = SDL_CreateMutex();
+    if (!s.lock) return;
+    job_start();
 }
 
 void launcher_jobs_run_inline(void) {
@@ -1469,8 +1614,15 @@ void launcher_jobs_run_inline(void) {
         s_jobs.queue.pop_front();
         job.g->install(job.g);
         s_jobs.in_flight++;
+        SDL_SetAtomicInt(&s_jobs.cancel, 0);
+        if (job.g->update_assets) {
+            ingest_start(job.g, job.disc, job.sha, "launch-time", &s_jobs.cancel);
+            launcher_assets_wait();
+        }
         t_job = true;
+        t_cancel = &s_jobs.cancel;
         job.rc = job_body(job);
+        t_cancel = nullptr;
         t_job = false;
         s_jobs.in_flight--;
         job_record(job);
@@ -1478,21 +1630,21 @@ void launcher_jobs_run_inline(void) {
 }
 
 void launcher_jobs_stop_other(const char* keep_game, bool requeue) {
-    if (!s_jobs.th) return;
+    if (!s_jobs.cur.running) return;
     if (keep_game && !strcmp(s_jobs.cur.g->game_id, keep_game)) return;
-    OPL_INFO_F("launcher", "stopping the module rebuild of %s%s", s_jobs.cur.g->game_id,
+    OPL_INFO_F("launcher", "stopping the launch-time job of %s%s", s_jobs.cur.g->game_id,
                requeue ? " (requeued)" : "");
     SDL_SetAtomicInt(&s_jobs.cancel, 1);
     job_wait(false);
     job_reap();
-    if (requeue && s_jobs.cur.rc == -2) s_jobs.queue.push_front(s_jobs.cur);
+    if (requeue && (s_jobs.cur.rc == -2 || s_jobs.cur.arc == -2)) s_jobs.queue.push_front(s_jobs.cur);
 }
 
 void launcher_jobs_finish_game(const char* game) {
     for (auto it = s_jobs.queue.begin(); it != s_jobs.queue.end();)
         it = strcmp(it->g->game_id, game) ? std::next(it) : s_jobs.queue.erase(it);
-    if (!s_jobs.th || strcmp(s_jobs.cur.g->game_id, game)) return;
-    OPL_INFO_F("launcher", "the pick of %s waits for its running module rebuild", game);
+    if (!s_jobs.cur.running || strcmp(s_jobs.cur.g->game_id, game)) return;
+    OPL_INFO_F("launcher", "the pick of %s waits for its running launch-time job", game);
     if (s.ui && !s.handed_off) (void)launcher_open(s.opts, 1);
     job_wait(true);
     job_reap();
@@ -1500,14 +1652,14 @@ void launcher_jobs_finish_game(const char* game) {
 
 bool launcher_screens(void) { return s.ui && !s.handed_off; }
 
-bool launcher_jobs_idle(void) { return !s_jobs.th && s_jobs.queue.empty(); }
+bool launcher_jobs_idle(void) { return !s_jobs.cur.running && s_jobs.queue.empty(); }
 
 void launcher_jobs_token(int delta) { s_jobs.in_flight += delta; }
 
 const char* launcher_last_stage(void) { return s.last_stage; }
 
 int openpete_launcher_job_cancelled(void) {
-    return t_job && SDL_GetAtomicInt(&s_jobs.cancel) ? 1 : 0;
+    return t_cancel && SDL_GetAtomicInt(t_cancel) ? 1 : 0;
 }
 
 int openpete_launcher_jobs_in_flight(void) { return s_jobs.in_flight.load(); }

@@ -75,29 +75,49 @@ const openpete_launcher_game* launcher_game(void);
  * @return The picked index, or a LAUNCHER_SEL_* value. */
 int launcher_select(const char* const* labels, const char* const* games, int count);
 
-/** @brief Queue a launch-time module rebuild of a game's library entry, run when no other job runs.
+/** @brief Queue a launch-time job of a game's library entry, run when no other job runs: its module check (and rebuild) and its asset cache check (and extraction).
  *
  * @param g The game's per-game entry.
  * @param entry_dir The library entry's directory.
- * @param disc The entry's disc.cue. */
-void launcher_job_add(const openpete_launcher_game* g, const char* entry_dir, const char* disc);
+ * @param disc The entry's disc.cue.
+ * @param sha The entry's content hash, as its meta.toml records it.
+ * @param module false to skip the module check (the entry holds a failed-build marker of this build). */
+void launcher_job_add(const openpete_launcher_game* g, const char* entry_dir, const char* disc, const char* sha,
+                      bool module);
+
+/** @brief Start a game's asset job (openpete_launcher_game.update_assets) for a library entry: on the ingest thread while screens show, inline without them.
+ *
+ * The game must be installed and counted in flight by the caller; nothing
+ * starts while another asset job is busy or for a game without assets. The
+ * outcome is logged when the launcher's thread reaps it (the moment its
+ * assets are ready), from the job runner, a task's wait or
+ * launcher_assets_wait.
+ * @param g The game's per-game entry.
+ * @param disc The entry's disc.cue.
+ * @param sha The entry's content hash.
+ * @param context What starts it: "ingest" or "pick". */
+void launcher_assets_start(const openpete_launcher_game* g, const char* disc, const char* sha, const char* context);
+
+/** @brief Wait for the busy asset job to end and reap it, keeping the window's events drained. */
+void launcher_assets_wait(void);
 
 /** @brief On the launcher's thread: reap a finished job (writing or clearing its entry's failed-build marker) and start the next queued one.
  *
  * Starting a job installs its game (openpete_launcher_game.install), counts
- * it in flight, pauses the launcher's pipeline compile and runs the job on
- * the openpete-job thread: the stamped module path is computed there and a
- * missing module built. Without screens nothing starts here
- * (launcher_jobs_run_inline). */
+ * it in flight, pauses the launcher's pipeline compile, runs its asset part
+ * on the openpete-ingest thread and its module part on the openpete-job
+ * thread: the stamped module path is computed there and a missing module
+ * built. The job ends when both parts have. Without screens nothing starts
+ * here (launcher_jobs_run_inline). */
 void launcher_jobs_pump(void);
 
-/** @brief Run every queued job on the calling thread, in order, each with its game installed: the form without screens. */
+/** @brief Run every queued job on the calling thread, in order, each with its game installed, its asset part inside the `ingest` role before its module part: the form without screens. */
 void launcher_jobs_run_inline(void);
 
-/** @brief Stop the running job unless it is of a game, waiting for it to stop between compiler commands.
+/** @brief Stop the running job unless it is of a game, waiting for its module part to stop between compiler commands and its asset part between levels.
  *
  * @param keep_game The game whose job keeps running, or NULL to stop any.
- * @param requeue Put a stopped job back at the head of the queue. */
+ * @param requeue Put a job whose module or asset part stopped back at the head of the queue. */
 void launcher_jobs_stop_other(const char* keep_game, bool requeue);
 
 /** @brief Drop a game's queued jobs and wait for its running one, drawing that job's progress while screens show.
