@@ -1648,7 +1648,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # a scratch data root of its own, so the cases run in parallel; exits 64
     # without xvfb-run or the binary.
     if(Python3_Interpreter_FOUND)
-        foreach(_launcher_case manifest handoff)
+        foreach(_launcher_case manifest handoff window-fit)
             add_test(NAME launcher_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher.py

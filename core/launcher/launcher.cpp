@@ -410,6 +410,65 @@ void launcher_window_request(const openpete_options_t* opts, int* w, int* h, int
     if (opts->launcher_fullscreen > 0) *open |= OPENPETE_WINDOW_OPEN_FULLSCREEN;
 }
 
+/* A display's full and usable bounds, in window coordinates. */
+struct DisplayBounds { int full_w, full_h, use_w, use_h; };
+
+/** @brief Read the bounds of the display the launcher window opens on: the primary display's full bounds and its usable bounds (without panels).
+ *
+ * The harness variable OPENPETE_LAUNCHER_DISPLAY_STUB=<W>x<H>,<W>x<H> gives
+ * the full and the usable bounds instead, so the fit rule runs against a
+ * display the test machine does not have.
+ * @param b Receives the bounds.
+ * @return true when the bounds were read or stubbed. */
+bool display_bounds(DisplayBounds* b) {
+    if (const char* e = getenv("OPENPETE_LAUNCHER_DISPLAY_STUB"); e && *e)
+        return sscanf(e, "%dx%d,%dx%d", &b->full_w, &b->full_h, &b->use_w, &b->use_h) == 4;
+    const SDL_DisplayID d = SDL_GetPrimaryDisplay();
+    SDL_Rect full, use;
+    if (!d || !SDL_GetDisplayBounds(d, &full) || !SDL_GetDisplayUsableBounds(d, &use)) return false;
+    *b = {full.w, full.h, use.w, use.h};
+    return true;
+}
+
+/** @brief Fit the launcher window's requested windowed size to the display: as requested when it fits the usable bounds, maximized when it fits only the full bounds, else clamped to 90% of the usable bounds at the request's aspect; under gamescope the output size.
+ *
+ * Sizes are window coordinates, so a request opens at the same apparent
+ * size on a scaled display as on an unscaled one. A request already
+ * maximized or fullscreen, or a display whose bounds cannot be read, is
+ * left as it is. Gamescope sets GAMESCOPE_WAYLAND_DISPLAY for every child it
+ * launches; its output is the display's full bounds. The decision is
+ * logged.
+ * @param w The requested width; receives the width the window opens at.
+ * @param h The requested height; receives the height.
+ * @param open The OPENPETE_WINDOW_OPEN_* bits; gains MAXIMIZED when the
+ *             request fits only the full bounds. */
+void launcher_window_fit(int* w, int* h, int* open) {
+    DisplayBounds b;
+    if ((*open & (OPENPETE_WINDOW_OPEN_MAXIMIZED | OPENPETE_WINDOW_OPEN_FULLSCREEN)) ||
+        !display_bounds(&b) || b.use_w <= 0 || b.use_h <= 0)
+        return;
+    const int rw = *w, rh = *h;
+    const char* how = "as requested";
+    if (const char* gs = getenv("GAMESCOPE_WAYLAND_DISPLAY"); gs && *gs) {
+        *w = b.full_w;
+        *h = b.full_h;
+        how = "at the gamescope output size";
+    } else if (rw > b.use_w || rh > b.use_h) {
+        if (rw <= b.full_w && rh <= b.full_h) {
+            *open |= OPENPETE_WINDOW_OPEN_MAXIMIZED;
+            how = "maximized";
+        } else {
+            const float kw = 0.9f * (float)b.use_w / (float)rw, kh = 0.9f * (float)b.use_h / (float)rh;
+            const float k = kw < kh ? kw : kh;
+            *w = (int)std::lround((float)rw * k);
+            *h = (int)std::lround((float)rh * k);
+            how = "clamped to 90% of the usable bounds";
+        }
+    }
+    OPL_INFO_F("launcher", "window fit: request %dx%d, display %dx%d, usable %dx%d: opens %s (%dx%d)",
+               rw, rh, b.full_w, b.full_h, b.use_w, b.use_h, how, *w, *h);
+}
+
 /** @brief Take the state the launcher window was asked to open in as the untouched state.
  *
  * The request, not the window's flags: a window manager applies a maximize
@@ -443,7 +502,8 @@ void open_failed(const std::string& why, int continues) {
 /** @brief Open the launcher's window, device and imgui context unless they exist, telling the player once when the device cannot be created.
  *
  * The window takes the game window's size, or the 640x448 layout space
- * before a game is installed. A device created for a screen, before the
+ * before a game is installed; before the hand-off that size is fitted to the
+ * display (launcher_window_fit). A device created for a screen, before the
  * hand-off, starts the pipeline precompile on it
  * (openpete_native_launcher_precompile_start); one created at the hand-off
  * leaves the compile to bring-up.
@@ -470,6 +530,7 @@ int launcher_open(const openpete_options_t* opts, int continues) {
     }
     int w, h, open = 0;
     launcher_window_request(opts, &w, &h, &open);
+    if (!s.handed_off) launcher_window_fit(&w, &h, &open);
     if (openpete_native_launcher_open(opts, w, h, open, "OpenPete") != 0) {
         open_failed(openpete_native_launcher_error(), continues);
         return -1;

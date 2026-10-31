@@ -36,6 +36,20 @@ Cases:
             game's first present, a launcher present that drew (engagement),
             and a last launcher present with no pixel other than (0,0,0);
             the mod and shader runs must log their step.
+  window-fit
+            The launcher window's fit to its display, each a 1280x800
+            request (--launcher-window) on an empty library: on a display
+            whose usable bounds hold it (stubbed 1920x1080, usable
+            1920x1040; and the virtual display itself, unstubbed) it opens
+            as requested; on a 1280x800 display with a 44 px panel it opens
+            maximized at the requested size; on a 1366x768 display (usable
+            1366x728) it is clamped to 90% of the usable bounds at 16:10,
+            1048x655; with GAMESCOPE_WAYLAND_DISPLAY set it opens at the
+            output size (stubbed 1920x1080). Each run's fit line and the size the device was
+            created at (and its maximized state) are asserted, and so is the
+            drop screen's manifest window size, the framebuffer the screens
+            draw at. The display bounds come from
+            OPENPETE_LAUNCHER_DISPLAY_STUB except in the unstubbed run.
   calibrate Not a ctest case: compares the drop screen with a reference
             manifest of the same screen (--calibration PATH: per preset, a
             "drop" list of id/kind/rect items), printing each element's rect
@@ -212,6 +226,45 @@ def case_handoff(a):
     return 1 if fails else 0
 
 
+def case_window_fit(a):
+    """The launcher window's fit rule against stubbed display bounds."""
+    d = case_dir(a.out, "window-fit")
+    # (tag, stub, extra env, expected decision, expected size, maximized)
+    rows = [
+        ("fits", "1920x1080,1920x1040", {}, "as requested", (1280, 800), False),
+        ("fits-unstubbed", None, {}, "as requested", (1280, 800), False),
+        ("panel", "1280x800,1280x756", {}, "maximized", (1280, 800), True),
+        ("small", "1366x768,1366x728", {}, "clamped to 90% of the usable bounds", (1048, 655), False),
+        ("gamescope", "1920x1080,1920x1040", {"GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0"},
+         "at the gamescope output size", (1920, 1080), False),
+    ]
+    bad = []
+    for tag, stub, env, how, size, maxed in rows:
+        e = dict(env, OPENPETE_LAUNCHER_INPUT="1500:quit",
+                 OPENPETE_LAUNCHER_MANIFEST=os.path.join(d, "m-" + tag))
+        if stub:
+            e["OPENPETE_LAUNCHER_DISPLAY_STUB"] = stub
+        rc, log = launch(a.binary, d, tag, ["--launcher-window", "1280x800"], e)
+        fit = re.search(r"window fit: request 1280x800, display (\d+x\d+), usable (\d+x\d+): opens (.+) \((\d+)x(\d+)\)", log)
+        dev = re.search(r"launcher device \S+ created on window \S+ \((\d+)x(\d+)(, maximized)?", log)
+        m = read_json(os.path.join(d, "m-" + tag + ".drop.json"))
+        got = None
+        if not fit or not dev:
+            bad.append(f"{tag}: no fit line or device line (rc {rc}, log {d}/{tag}.log)")
+        else:
+            got = (fit.group(3), (int(fit.group(4)), int(fit.group(5))), (int(dev.group(1)), int(dev.group(2))),
+                   bool(dev.group(3)))
+            if got != (how, size, size, maxed):
+                bad.append(f"{tag}: opened {got}, expected {(how, size, size, maxed)}")
+            if m is None or (not maxed and tuple(m["window"]) != size):
+                bad.append(f"{tag}: drop screen drawn at {m and m['window']}, expected {size}")
+        print(f"[launcher] {tag}: display {fit and fit.group(1)} usable {fit and fit.group(2)}: {got}")
+    print(f"[launcher] window-fit: {'FAIL' if bad else 'PASS'} ({len(rows) - len(bad)} of {len(rows)} rows)")
+    for b in bad:
+        print("[launcher] FAIL", b)
+    return 1 if bad else 0
+
+
 def check_reference_file():
     """Problems with the reference layout manifest, as strings."""
     m = read_json(REFERENCE)
@@ -293,7 +346,7 @@ def case_calibrate(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("case", choices=["manifest", "handoff", "calibrate"])
+    ap.add_argument("case", choices=["manifest", "handoff", "window-fit", "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--calibration", default=None)
@@ -304,7 +357,7 @@ def main():
         print(f"[launcher] SKIP: {a.binary} missing")
         return 64
     try:
-        return {"manifest": case_manifest, "handoff": case_handoff,
+        return {"manifest": case_manifest, "handoff": case_handoff, "window-fit": case_window_fit,
                 "calibrate": case_calibrate}[a.case](a)
     except Skip as e:
         print(f"[launcher] SKIP: {e}")
