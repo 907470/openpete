@@ -53,6 +53,25 @@ int terrain_heavy_fog(void);
  * @return The colour. */
 uint32_t terrain_heavy_fog_colour(void);
 
+/** @brief Whether the heavy-fog level's far palette is one colour: at least 75% of its far colours within 24 of the median.
+ *
+ * Read off the same scan as terrain_heavy_fog. On such a level a surface past
+ * full fog draws the median colour within that spread whatever it is, so a
+ * fully fogged moby is indistinguishable from what lies behind it (S1
+ * misty_bog and beast_makers, S2 mystic_marsh and shady_oasis, S3
+ * harbor_speedway); the mixed-haze heavy-fog levels score below.
+ * @return 1 for a one-colour heavy-fog level, 0 otherwise. */
+int terrain_heavy_fog_one_colour(void);
+
+/** @brief Whether terrain_fog_cue is saturated at a view depth: IR0 = fogRef - (int)(m3 * fog scale) <= 0.
+ *
+ * fogRef is the last walk's reference, as terrain_fog_cue reads it.
+ * Saturated means terrain_fog_cue returns the far colour. Never saturated
+ * before the first walk or under fog mode off.
+ * @param m3 The view-Z in world/16.
+ * @return 1 when saturated. */
+int terrain_fog_saturated(double m3);
+
 /** @brief Blends a colour toward a far colour on the terrain's vertex depth-cue curve.
  *
  * The HP walk's per-corner fog (terrain_fog_blend): IR0 = fogRef - SZ with SZ

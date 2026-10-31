@@ -1502,19 +1502,29 @@ static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int 
     rt_add(RT_RTPS, rt0, 1);
 }
 
+/* The tier verdict a record takes under --no-lod when the fog-saturation cull
+ * draws it with its LP model (moby_fog_sat_verdict). Under --no-lod no other
+ * verdict is negative (record_zsf4, moby_reveal_zsf4), so the value names the
+ * swap alone; without --no-lod it is an ordinary LP-tier verdict. */
+#define MOBY_FOGSAT_LP_TIER (-1)
+/* The fog-saturation verdicts of moby_fog_sat_verdict. */
+enum { MOBY_FS_KEEP = 0, MOBY_FS_SKIP = 1, MOBY_FS_LP = 2 };
+static int moby_fog_sat_verdict(CPUState* cpu, uint32_t header, const proj_xy* p, int n);
+
 /** @brief A record's vertex count under its LOD tier: the HP count or the LP count, 0 where the game skips the record.
  *
  * The .s reads [hdr + 8 + (ZSF4 >> 31)] [@8001F9D4..FA04]: the LP count for
  * ZSF4 < 0, else the HP count; a model with no LP mesh has LP count 0 and
  * draws nothing beyond the HP band. Under --no-lod the HP count stands at
- * every verdict (moby_lift_tier).
+ * every verdict (moby_lift_tier) except MOBY_FOGSAT_LP_TIER, which reads the
+ * LP count.
  * @param cpu The guest CPU state, read only.
  * @param header The AnimationHeader.
  * @param zsf4 The record's tier verdict.
  * @param negctl Nonzero to read the other tier's count (OPENPETE_MOBY_VERIFY_NEGCTL).
  * @return The vertex count, 0 when the record is skipped. */
 static int moby_tier_vcount(CPUState* cpu, uint32_t header, int zsf4, int negctl) {
-    int lo_tier = zsf4 < 0 && !moby_lift_tier();
+    int lo_tier = zsf4 < 0 && (!moby_lift_tier() || zsf4 == MOBY_FOGSAT_LP_TIER);
     if (negctl) lo_tier = !lo_tier;
     const int n = cpu->read_byte(header + (lo_tier ? game_layout.moby.anim_vcount_lo
                                                    : game_layout.moby.anim_vcount_hi)) & 0xFF;
@@ -1850,23 +1860,34 @@ static int moby_decode_project_body(CPUState* cpu, uint32_t header, uint32_t hea
  * @param TR_raw The stored translation.
  * @param TR_frac The full-precision centre, or NULL.
  * @param M The model-to-view rotation.
- * @param zsf4 The record's tier.
+ * @param zsf4 The record's tier; receives the tier the vertices were decoded
+ *        at, MOBY_FOGSAT_LP_TIER where the fog-saturation cull swapped in the
+ *        LP model (moby_fog_sat_verdict).
  * @param v The view.
  * @param out Receives one projection per vertex.
  * @param cap Capacity of out.
- * @return The vertex count written. */
+ * @return The vertex count written, 0 where the fog-saturation cull skips
+ *         the record. */
 static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
                                uint32_t frameA,
                                uint32_t frameB, uint32_t w0,
                                const moby_pose_t* prev, double blend_alpha, double gpf_frac,
                                double depth_k, const int TR_raw[3],
                                const double TR_frac[3],
-                               const int M[3][3], int zsf4, const ngte_view* v,
+                               const int M[3][3], int* zsf4, const ngte_view* v,
                                proj_xy* out, int cap) {
     const uint64_t t0 = mst_now();
-    const int n = moby_decode_project_body(cpu, header, headerB, frameA, frameB, w0, prev,
-                                           blend_alpha, gpf_frac, depth_k, TR_raw, TR_frac,
-                                           M, zsf4, v, out, cap);
+    int n = moby_decode_project_body(cpu, header, headerB, frameA, frameB, w0, prev,
+                                     blend_alpha, gpf_frac, depth_k, TR_raw, TR_frac,
+                                     M, *zsf4, v, out, cap);
+    const int fs = moby_fog_sat_verdict(cpu, header, out, n);
+    if (fs == MOBY_FS_SKIP) n = 0;
+    if (fs == MOBY_FS_LP) {
+        *zsf4 = MOBY_FOGSAT_LP_TIER;
+        n = moby_decode_project_body(cpu, header, headerB, frameA, frameB, w0, prev,
+                                     blend_alpha, gpf_frac, depth_k, TR_raw, TR_frac,
+                                     M, *zsf4, v, out, cap);
+    }
     mst_add(MST_DP, t0);
     if (n > 0) { msc_add(MSC_VERTS, n); msc_add(MSC_RECS, 1); }
     return n;
@@ -1966,11 +1987,12 @@ static double moby_record_depth_k(CPUState* cpu, uint32_t moby);
  * @param cpu The guest CPU state, read only.
  * @param R The extracted record.
  * @param zsf4 The record's tier verdict after the --no-lod adjustment
- *        (record_zsf4), which selects the tier's vertex count.
+ *        (record_zsf4), which selects the tier's vertex count; receives the
+ *        tier drawn (moby_decode_project).
  * @param out Receives the projected vertices.
  * @param cap The capacity of out.
  * @return The number of vertices written. */
-static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
+static int moby_project_record(CPUState* cpu, const moby_record_t* R, int* zsf4,
                                proj_xy* out, int cap) {
     const ngte_view* v = moby_record_view(R->moby);
     double tr[3];
@@ -2328,14 +2350,16 @@ static void canon_drawn_harvest(int nrec) {
  * tier. That includes the records whose ZSF4 stays <= 0 under --no-lod, the
  * effect-authored fades (m_Renderer & 0x3F < 4, which record_zsf4 does not
  * lift). Colours stay tier-faithful in both modes; the game keeps the far
- * palette under --no-lod too.
+ * palette under --no-lod too. MOBY_FOGSAT_LP_TIER takes the LP faces under
+ * --no-lod as well.
  * @param cpu The guest CPU state, read only.
  * @param header The AnimationHeader.
  * @param zsf4 The record's tier verdict.
  * @return The face-block address, or 0 when header is not an address. */
 static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
     if (header < 0x80000000u) return 0u;
-    uint32_t off = (zsf4 <= 0 && !moby_lift_tier()) ? ANIM_FACES_LP : ANIM_FACES_HP;
+    uint32_t off = (zsf4 <= 0 && (!moby_lift_tier() || zsf4 == MOBY_FOGSAT_LP_TIER))
+                 ? ANIM_FACES_LP : ANIM_FACES_HP;
     return cpu->read_word(header + off);
 }
 
@@ -2673,6 +2697,103 @@ static void moby_tier_census_record(CPUState* cpu, const moby_record_t* R, int z
     if (ex == zsf4) s_tier_mirror_ok++; else s_tier_mirror_bad++;
 }
 
+/* ---- fog-saturation cull (OPENPETE_FOG_SAT_CULL) --------------------------
+ * Under extended LOD on a heavy-fog level every world-moby vertex fades to the
+ * fog colour on the terrain's depth curve (moby_tri_heavy_fog), so a record
+ * whose nearest projected vertex lies past full fog draws a flat fog-coloured
+ * silhouette. On a one-colour level (terrain_heavy_fog_one_colour) whatever
+ * lies behind it draws the same colour and the record is skipped; on a
+ * mixed-haze level it draws its LP model, the silhouette the game itself
+ * draws at that range. OPENPETE_FOG_SAT_CENSUS prints the counts every 120
+ * passes. */
+static int64_t moby_heavy_fog_target(void);
+static int  s_fsc_on = -1;
+static long s_fsc_pass, s_fsc_rec, s_fsc_sat, s_fsc_skip, s_fsc_lp, s_fsc_nolp;
+static long s_fsc_fskip, s_fsc_fhp, s_fsc_flp;
+static moby_wface_t s_fsc_tmp[8192];   /* census face decode scratch */
+
+/** @brief Whether OPENPETE_FOG_SAT_CULL is set (not "0"): the world-moby fog-saturation cull; latched.
+ * @return 1 when on. */
+static int moby_fog_sat_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_FOG_SAT_CULL"); on = (e && *e && *e != '0') ? 1 : 0; }
+    return on;
+}
+
+/** @brief Whether OPENPETE_FOG_SAT_CENSUS is set (not "0"); latched.
+ * @return 1 when counting. */
+static int moby_fog_sat_census_on(void) {
+    if (s_fsc_on < 0) { const char* e = getenv("OPENPETE_FOG_SAT_CENSUS"); s_fsc_on = (e && *e && *e != '0') ? 1 : 0; }
+    return s_fsc_on;
+}
+
+/** @brief The face count of a faceblock, decoded into the census scratch.
+ * @param cpu The guest CPU state, read only.
+ * @param fb The faceblock's PSX address.
+ * @return The emittable faces, 0 when the block does not decode. */
+static long moby_fog_sat_faces(CPUState* cpu, uint32_t fb) {
+    if (fb < 0x80000000u) return 0;
+    const uint32_t bc = cpu->read_word(fb);
+    if (bc == 0 || bc > 0x10000u) return 0;
+    moby_face_stats_t st = { 0, 0, 0, 2 };
+    const int n = moby_game.decode_faces(cpu, fb, bc, s_fsc_tmp, 8192, &st);
+    return n > 0 ? n : 0;
+}
+
+/** @brief Counts one fog-saturation verdict into the census.
+ * @param cpu The guest CPU state, read only.
+ * @param header The record's AnimationHeader.
+ * @param v The verdict (MOBY_FS_*); MOBY_FS_KEEP with sat set is a saturated record without an LP mesh.
+ * @param sat 1 when the record lay past full fog. */
+static void moby_fog_sat_count(CPUState* cpu, uint32_t header, int v, int sat) {
+    if (!moby_fog_sat_census_on()) return;
+    s_fsc_rec++;
+    if (!sat) return;
+    s_fsc_sat++;
+    const long hp = moby_fog_sat_faces(cpu, moby_tier_faceblock(cpu, header, 1024));
+    if (v == MOBY_FS_SKIP) { s_fsc_skip++; s_fsc_fskip += hp; }
+    else if (v == MOBY_FS_LP) {
+        s_fsc_lp++; s_fsc_fhp += hp;
+        s_fsc_flp += moby_fog_sat_faces(cpu, moby_tier_faceblock(cpu, header, MOBY_FOGSAT_LP_TIER));
+    } else s_fsc_nolp++;
+}
+
+/** @brief Closes one projection pass of the census, printing every 120th. */
+static void moby_fog_sat_census_pass(void) {
+    if (!moby_fog_sat_census_on() || ++s_fsc_pass % 120 != 0) return;
+    fprintf(stderr, "[fogsat-moby] passes=%ld records=%ld saturated=%ld skipped=%ld lpSwapped=%ld noLpKept=%ld "
+                    "facesSkipped=%ld lpHpFaces=%ld lpFaces=%ld\n",
+            s_fsc_pass, s_fsc_rec, s_fsc_sat, s_fsc_skip, s_fsc_lp, s_fsc_nolp,
+            s_fsc_fskip, s_fsc_fhp, s_fsc_flp);
+}
+
+/** @brief The fog-saturation verdict of a projected world-moby record: keep, skip or draw its LP model.
+ *
+ * Applies under OPENPETE_FOG_SAT_CULL while world mobys fade toward the
+ * heavy-fog colour (moby_heavy_fog_target). Saturated means every projected
+ * vertex's unshifted view-Z (tvz) is past full fog on the terrain's curve
+ * with fogRef unbiased, the depth at which moby_tri_heavy_fog reaches the fog
+ * colour; a vertex at or behind the eye never is. A saturated record is
+ * skipped on a one-colour level and drawn with its LP model elsewhere, unless
+ * the model has no LP mesh (LP vertex count 0), which keeps the HP model.
+ * @param cpu The guest CPU state, read only.
+ * @param header The record's AnimationHeader.
+ * @param p The record's projected vertices.
+ * @param n Their count.
+ * @return MOBY_FS_KEEP, MOBY_FS_SKIP or MOBY_FS_LP. */
+static int moby_fog_sat_verdict(CPUState* cpu, uint32_t header, const proj_xy* p, int n) {
+    if (n <= 0 || !moby_fog_sat_on() || moby_heavy_fog_target() < 0) return MOBY_FS_KEEP;
+    int sat = 1;
+    for (int j = 0; j < n && sat; j++) sat = p[j].tvz > 0.0f && terrain_fog_saturated((double)p[j].tvz / 16.0);
+    int v = MOBY_FS_KEEP;
+    if (sat && terrain_heavy_fog_one_colour()) v = MOBY_FS_SKIP;
+    else if (sat && header >= 0x80000000u
+             && (cpu->read_byte(header + game_layout.moby.anim_vcount_lo) & 0xFFu) != 0u
+             && moby_tier_faceblock(cpu, header, MOBY_FOGSAT_LP_TIER) >= 0x80000000u) v = MOBY_FS_LP;
+    moby_fog_sat_count(cpu, header, v, sat);
+    return v;
+}
+
 /** @brief Projects every live cull record's vertices into s_proj for the canonical pass and fills s_recs.
  *
  * The projection is the native float decode, RTPS and TR; s_recs is the record
@@ -2698,14 +2819,18 @@ static int project_all_records_inner(CPUState* cpu) {
         moby_animsw_census(cpu, R.moby);
         moby_canon_row_scale(cpu, rec, &R);
         pose_hold_begin(R.moby, R.header, R.header_b, R.frame_a, R.frame_b, R.w0);
-        int got = moby_project_record(cpu, &R, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        /* dzsf4: the tier drawn, which the fog-saturation cull may swap; the
+         * fade snapshot keeps the tick's, and each sub-tick present takes
+         * its own verdict. */
+        int dzsf4 = zsf4;
+        int got = moby_project_record(cpu, &R, &dzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         pose_hold_end(got);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
             uint32_t header = R.header;
             s_recs[nrec] = (rec_meta){ rec, off, got, header, R.header_b,
                 /* face stream per the record's tier (HP or LP, --no-lod-aware) */
-                moby_tier_faceblock(cpu, header, zsf4), w0,
+                moby_tier_faceblock(cpu, header, dzsf4), w0,
                 /* env metal flag = high byte of the record's material word (the
                  * cull pass copies it; read @8002176C srl 24, bnez .L800226F8) */
                 (int)((R.material >> 24) & 0xFFu),
@@ -2713,7 +2838,7 @@ static int project_all_records_inner(CPUState* cpu) {
                  * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
                 R.material,
                 R.moby,
-                zsf4,
+                dzsf4,
                 atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
                 R.frame_a, 0u, 0u, 0.f };
             memcpy(s_recs[nrec].M, R.M, sizeof s_recs[nrec].M);
@@ -2733,6 +2858,7 @@ static int project_all_records_inner(CPUState* cpu) {
     }
     s_nrecs = nrec;
     moby_centre_census("canon");
+    moby_fog_sat_census_pass();
     return nrec;
 }
 
@@ -3152,10 +3278,11 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
       mst_add(MST_PREV, t_pv); }
     if (s_walk_in_rex && pd.verdict >= 0 && pd.verdict < 3) s_reveal_verdict[pd.verdict]++;
     int got;
+    int dzsf4 = rzsf4;   /* the tier drawn (moby_decode_project); the fade snapshot keeps rzsf4 */
     { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
       pose_hold_begin(m, f->header, f->header_b, f->frameA, f->frameB, f->w0);
       got = moby_decode_project(cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0, pd.dprev, pd.dalpha, -1.0, moby_record_depth_k(cpu, m), f->TR_raw, f->TR_frac, f->M,
-                                rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+                                &dzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
       pose_hold_end(got);
       if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
     if (got <= 0) return 0;
@@ -3163,8 +3290,8 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
     else occl_cache_update(cpu, m, s_proj + off, got, f->TR_frac, f->header);
     for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
     s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f->header, f->header_b,
-        moby_tier_faceblock(cpu, f->header, rzsf4), f->w0,
-        f->metal, f->mscol, m, rzsf4,
+        moby_tier_faceblock(cpu, f->header, dzsf4), f->w0,
+        f->metal, f->mscol, m, dzsf4,
         atan2f((float)f->TR_raw[2], (float)f->TR_raw[0]), f->frameA,
         pd.prev.frame_a, pd.prev.header, (float)pd.alpha };
     s_recs[s_nrecs].model_held = pd.model_held;
@@ -14287,7 +14414,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
                                     pd.dprev, pd.dalpha, gpf_frac, moby_record_depth_k(cpu, mobys[i]),
-                                    f.TR_raw, f.TR_frac, f.M, zsf4, moby_record_view(mobys[i]),
+                                    f.TR_raw, f.TR_frac, f.M, &zsf4, moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) continue;

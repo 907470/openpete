@@ -6545,6 +6545,8 @@ static uint32_t s_hf_sig[4];
  * terrain_fog_cue; 0 before the first scan or walk. */
 static uint32_t s_hf_colour;
 static int s_fog_ref_last;
+/* The one-colour verdict of the last scan (terrain_heavy_fog_one_colour). */
+static int s_hf_one;
 
 /* The heavy-fog class bounds (terrain_heavy_fog_refresh): a colour is
  * clustered when no channel lies more than TN_HF_SPREAD from the per-channel
@@ -6563,6 +6565,12 @@ static int s_fog_ref_last;
  * colours in the cluster already (20.7 pulled). */
 #define TN_HF_SPREAD 24
 #define TN_HF_PULLED_PCT 45
+/* A heavy-fog level is one-colour when at least TN_HF_ONE_PCT percent of its
+ * far colours are clustered (terrain_heavy_fog_one_colour): scored on the
+ * same scan, the members whose far palette is one colour score 88.8 to 100,
+ * the mixed-haze members at most 51.5 (dino_mines area 2) and every
+ * non-member at most 65.7 (gnasty_gnorc). */
+#define TN_HF_ONE_PCT 75
 
 /* A level's far colours, per-channel histograms then the clustered and
  * pulled counts (terrain_heavy_fog_refresh). */
@@ -6651,8 +6659,10 @@ void terrain_heavy_fog_refresh(CPUState* cpu) {
     }
     s_hf_verdict = S.n == 0 ? -1 : (S.pulled * 100 >= S.n * TN_HF_PULLED_PCT) ? 1 : 0;
     s_hf_colour = S.med;
-    OPL_INFO_F("terrain", "heavy fog: level %d, %u sectors, %d far colours, %d within %d of median %06X, %d pulled -> %s",
-               (int)sig[0], cnt, S.n, S.near, TN_HF_SPREAD, S.med, S.pulled, s_hf_verdict == 1 ? "heavy" : "not heavy");
+    s_hf_one = s_hf_verdict == 1 && S.near * 100 >= S.n * TN_HF_ONE_PCT;
+    OPL_INFO_F("terrain", "heavy fog: level %d, %u sectors, %d far colours, %d within %d of median %06X, %d pulled -> %s%s",
+               (int)sig[0], cnt, S.n, S.near, TN_HF_SPREAD, S.med, S.pulled, s_hf_verdict == 1 ? "heavy" : "not heavy",
+               s_hf_one ? ", one colour" : "");
 }
 
 int terrain_heavy_fog(void) {
@@ -6661,6 +6671,15 @@ int terrain_heavy_fog(void) {
 
 uint32_t terrain_heavy_fog_colour(void) {
     return s_hf_colour;
+}
+
+int terrain_heavy_fog_one_colour(void) {
+    return s_hf_verdict == 1 && s_hf_one;
+}
+
+int terrain_fog_saturated(double m3) {
+    if (s_fog_ref_last <= 0 || s_fogscale < 0.0 || s_fog_mode == OPENPETE_FOG_OFF) return 0;
+    return s_fog_ref_last - (int)(m3 * s_fogscale) <= 0;
 }
 
 uint32_t terrain_fog_cue(uint32_t nearC, uint32_t farC, double m3) {
