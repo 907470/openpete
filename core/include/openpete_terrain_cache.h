@@ -948,8 +948,11 @@ void openpete_tercache_prev_free(uint32_t first, int count);
  * off (8 builds doubling to 1024) and its sources return to service.
  *
  * The device answers no request while a level-edge replacement is
- * requested, awaiting adoption or retiring; the replacement collapses every
- * arena back to one fresh primary sized for the incoming level.
+ * requested or awaiting adoption; the replacement collapses every arena
+ * back to one fresh primary sized for the incoming level. While the
+ * outgoing buffers retire, requests are answered: the adoption moved them
+ * to the retire list and dropped every outstanding request, so a growth
+ * answer lands in the incoming level's arenas.
  *
  * When an arena has neither a growth nor a consolidation buffer coming (a
  * refused allocation, no empty slot, or a consolidation still migrating),
@@ -1156,9 +1159,13 @@ typedef struct {
     uint32_t ranges_max, cen_nolist;
     /* Set-2 binds refused (openpete_tercache_take_bind_refusal); 0 expected. */
     uint32_t store_bind_refusals;
-    /* Exhaustion warning lines: one per level in which an arena had
-     * neither a growth nor a consolidation buffer coming. */
-    uint32_t exhaust_warnings;
+    /* Growth and store buffers the device answered while a level-edge
+     * replacement retired; answers, installs, chunk writes, store writes
+     * and store retirements that named a pair or store that replacement
+     * retired (the invariant is 0); and exhaustion warning lines, one per
+     * level in which an arena had neither a growth nor a consolidation
+     * buffer coming. */
+    uint32_t retire_answers, retire_old_touches, exhaust_warnings;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *
@@ -1211,7 +1218,8 @@ void openpete_tercache_note_bake(void);
  * prev_grow_claims, window_bakes, defer_overflow, the hold counters,
  * sealed_draws, sealed_allocs, svc_fulfilled, draws_retired, pinned_bytes,
  * nonlocal_bufs, dropped_spans, migrate_ticks, stale_bytes, buffers per
- * arena, ranges_max, nolist, store_bind_refusals and exhaust_warnings. */
+ * arena, ranges_max, nolist, store_bind_refusals, retire_answers,
+ * retire_old_touches and exhaust_warnings. */
 void openpete_tercache_print_exit_row(void);
 
 /* ---- one-image preview: a host-loaded level drawn once ------------------
