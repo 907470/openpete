@@ -75,9 +75,11 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
 
 #define TC_BUF_MAX 2   /* an arena's primary buffer plus one overflow */
 
-/* Previous-corner record store capacity, in records (OPTC_PREV_REC_WORDS
- * words each). Poly-anim sectors drawn with near-variant chunks take one
- * record per face whose previous corners differ from its current ones. */
+/* Previous-tick store capacity, in units (OPTC_PREV_REC_WORDS words each).
+ * Poly-anim sectors drawn with near-variant chunks take one unit per face
+ * whose previous corners differ from its current ones; env-anim colour
+ * sectors under OPENPETE_TERRAIN_CANIMNEAR=1 take a colour-table ring of
+ * OPTC_COLTAB_RING entries, each (1 + 2 * (LP + 2 * HP colours)) words. */
 #define TC_PREV_CAP 65536u
 
 /* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
@@ -193,7 +195,9 @@ typedef struct {
 typedef struct {
     float o[4];             /* xyz origin, w flag bits                      */
     float gp[4], gq[4];     /* pack LP grade affine v' = p*v + q*255 (rgb);
-                             * valid only with OPTC_SF_LPGRADE set in o.w   */
+                             * valid only with OPTC_SF_LPGRADE set in o.w;
+                             * gp[3]: the bits of the colour table's first
+                             * unit (OPTC_PREV_REC_NONE for none)            */
 } tc_sector_ubo;
 
 /* Both blocks ride one rhi_ubo with a uniform block size (the larger of the
@@ -323,12 +327,14 @@ static struct {
                                        * ranges                               */
     rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas and
                                        * for the set-2 prop key image         */
-    rhi_buffer   *prev_store;         /* previous-corner records (set 2,
-                                       * binding 1), TC_PREV_CAP records      */
+    rhi_buffer   *prev_store;         /* previous-tick store (set 2, binding 1):
+                                       * corner records and colour tables,
+                                       * TC_PREV_CAP units                    */
     tc_buf        prev_alloc;         /* its allocator (pair unused)          */
     tc_defer      prev_defer[TC_DEFER_MAX]; /* released record runs (arena unused) */
     int           prev_defer_n;
     uint32_t      prev_fail;          /* refused record allocations (census)  */
+    uint32_t      prev_defer_ovf;     /* releases past prev_defer, returned at once (census) */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
     tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
@@ -1479,8 +1485,10 @@ void openpete_tercache_prev_free(uint32_t first, int count)
     if (s_tc.prev_defer_n < TC_DEFER_MAX)
         s_tc.prev_defer[s_tc.prev_defer_n++] =
             (tc_defer){ 0u, 0u, first, (uint32_t)count, s_tc.present_ctr };
-    else
+    else {
+        s_tc.prev_defer_ovf++;
         tc_free_insert(a, first, (uint32_t)count);
+    }
 }
 
 /** @brief Return the record runs whose defer window has passed to the record allocator.
@@ -1604,6 +1612,18 @@ static int tc_release_floor(uint32_t *floor_serial)
         if (!have || (int32_t)(R->build_serial - *floor_serial) < 0) { *floor_serial = R->build_serial; have = 1; }
     }
     return have;
+}
+
+uint32_t openpete_tercache_build_serial(void)
+{
+    return s_tc.present_ctr;
+}
+
+int openpete_tercache_serial_released(uint32_t serial)
+{
+    uint32_t floor_serial = 0;
+    if (s_tc.present_ctr - serial <= TC_DEFER_PRESENTS) return 0;
+    return !tc_release_floor(&floor_serial) || (int32_t)(serial - floor_serial) <= 0;
 }
 
 /** @brief Adopt a fulfilled level-edge replacement.
@@ -2148,7 +2168,7 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
 }
 
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
-                                  uint32_t sflags, const float *grade6)
+                                  uint32_t sflags, const float *grade6, uint32_t coltab)
 {
     if (!s_tc.build_target || slot < 0 || slot >= OPTC_SLOTS || slot == (int)OPTC_SLOT_DEAD)
         return;
@@ -2163,8 +2183,10 @@ void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
             s_tc.build_target[slot].gp[c] = grade6[c];
             s_tc.build_target[slot].gq[c] = grade6[3 + c];
         }
-        s_tc.build_target[slot].gp[3] = s_tc.build_target[slot].gq[3] = 0.0f;
+        s_tc.build_target[slot].gq[3] = 0.0f;
     }
+    w.u = coltab;   /* the colour table's first unit, read as the bits of gp.w */
+    s_tc.build_target[slot].gp[3] = w.f;
 }
 
 void openpete_tercache_frame_commit(void)
@@ -2883,4 +2905,5 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->prev_high      = s_tc.prev_alloc.high;
     out->prev_cap       = s_tc.prev_alloc.cap;
     out->prev_fail      = s_tc.prev_fail;
+    out->prev_defer_ovf = s_tc.prev_defer_ovf;
 }

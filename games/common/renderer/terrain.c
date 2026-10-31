@@ -6952,8 +6952,11 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
  * dspare.y). Both round each channel to nearest on the RGB888 grid the
  * terrain colour path carries, so walk and cache agree bit for bit, and
  * alpha 1 selects the current words exactly. A sector whose faces can take
- * a near subdivide claims to the walk (tgpu_canim_band): the cell and
- * split-triangle records carry the current near colours alone.
+ * a near subdivide (tgpu_canim_band) claims to the walk, or, under
+ * OPENPETE_TERRAIN_CANIMNEAR=1, draws its near-variant chunks; under that
+ * lever the sector's chunks read their colours from a per-sector colour
+ * table of the slot's prev and cur words (tgpu_coltab_refresh), which a roll
+ * rewrites without a rebake.
  * OPENPETE_TERRAIN_CANIM: 1 (default) lerps at the spine's alpha; 0 holds the
  * previous tick's words at every alpha, the leg the sub-tick harness
  * differences the default against. */
@@ -8759,6 +8762,22 @@ typedef struct {
     uint8_t  bakeCanim;               /* baked as an env-anim colour sector
                                        * (anim arenas, previous colours)      */
     uint32_t canimRoll;               /* its colour slot's rollPres at build */
+    uint8_t  tabMiss;                 /* ... with a face left on baked
+                                       * colours (s_coltab_miss): re-bakes
+                                       * on every roll                       */
+    uint8_t  bakeTab;                 /* baked against a colour table
+                                       * (tgpu_coltab_mode): a roll rewrites
+                                       * the table, not the chunks           */
+    uint32_t tabFirst;                /* the colour-table ring's store units:
+                                       * OPTC_COLTAB_RING entries of tabEnt  */
+    int      tabUnits;                /* 0 = none */
+    int      tabEnt;                  /* units per entry */
+    uint32_t tabSec;                  /* the sector the ring was written for */
+    int      tabCur;                  /* the entry the sector state names */
+    uint8_t  tabUsed;                 /* entries written since allocation    */
+    uint32_t tabStamp[OPTC_COLTAB_RING]; /* per entry: the build serial at which
+                                       * the ring moved past it              */
+    uint32_t tabRoll;                 /* its colour slot's rollPres when written */
     uint32_t animRoll;                /* poly-anim: SC->vrollPres at build - a
                                        * new canonical roll re-bakes (prev,cur)
                                        * even when the content hash is stable
@@ -8811,6 +8830,9 @@ static long s_tgcl_near_pa;      /* near claims of poly-anim sectors (census) */
 static long s_tgcl_near_ca;      /* near claims of env-anim colour sectors (census) */
 static int  s_tgpu_an_walk;      /* poly-anim sectors drawn from near chunks (census) */
 static int  s_tgpu_an_recs;      /* ... the previous-corner records they carry (census) */
+static int  s_tgpu_ca_walk;      /* env-anim colour sectors drawn from near chunks (census) */
+static int  s_tgpu_ca_tab;       /* env-anim colour sectors drawn with a colour table (census) */
+static int  s_tgpu_ca_units;     /* ... their tables' store units (census) */
 
 /* Active portal-sky planes for the per-sector portal claim. Of the feed's
  * portal semantics, only two ever DROP a CPU-fed terrain tri - the inner-rim
@@ -8890,10 +8912,10 @@ static uint32_t tgpu_pin_key(void) {
 
 /** @brief Tests whether a face of an env-anim colour sector may be near this present.
  *
- * An env-anim colour sector draws from the cache only while no face of it
- * can take a near subdivide: the 2x2 carries previous colours, but the cell
- * and split-triangle records carry the current near colours alone and have
- * no vertex input left for more. A face is near only while its four corner
+ * An env-anim colour sector's plain chunks carry no HQ variants
+ * (s_tgpu_near_only), so it draws them only while no face of it can take a
+ * near subdivide; otherwise it takes the near path (its near-variant chunks,
+ * or the claim). A face is near only while its four corner
  * SZ3 (hqscale * m3) sum below near_band (face_is_near_canonical), so a
  * sector whose every vertex sits at or beyond near_band / (4 * hqscale)
  * view-Z has none; under the always-HQ pin every face is near. The sphere
@@ -8967,14 +8989,38 @@ static int tgpu_animnear_on(void) {
                  v = (e && *e == '1'); }
     return v;
 }
+/** @brief Tests whether near-reaching env-anim colour sectors bake near-variant chunks instead of claiming to the CPU walk.
+ *
+ * Such a sector bakes against a colour table (tgpu_coltab_mode): its faces
+ * name their corners' colour indices, a roll rewrites the table
+ * (tgpu_coltab_refresh) without rebaking the chunks, and the near, cell and
+ * anim vertex stages lerp the table's words at the colour alpha before
+ * deriving the node colours. Default 0: such a sector claims unless
+ * OPENPETE_TERRAIN_CANIMNEAR=1; the variable is latched on the first call.
+ * @return 1 when OPENPETE_TERRAIN_CANIMNEAR starts with '1'. */
+static int tgpu_canimnear_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_CANIMNEAR");
+                 v = (e && *e == '1'); }
+    return v;
+}
+/** @brief Tests whether a sector bakes against a colour table: an env-anim colour sector under OPENPETE_TERRAIN_CANIMNEAR=1.
+ * @param SC The decoded sector.
+ * @return 1 for a colour-table bake, else 0. */
+static int tgpu_coltab_mode(const tscache_t* SC) {
+    return tgpu_canimnear_on() && tsc_canim(SC) != NULL;
+}
+
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
 /** @brief Returns a slot's chunks to every arena and clears its baked-sector fields.
  *
  * For each arena with a nonzero chunk count, frees the chunk range (buffer
  * bit (bufbit >> arena) & 1, first[arena], count[arena]) through
- * openpete_tercache_chunk_free, then zeroes the counts, bufbit and the
- * slot's sector s. The other slot fields are left as they are.
+ * openpete_tercache_chunk_free, then the previous-corner records, and zeroes
+ * the counts, bufbit and the slot's sector s. The other slot fields are
+ * left as they are; the colour-table ring outlives a re-bake of the same
+ * sector (tgpu_coltab_refresh).
  * @param T The slot. */
 static void tgpu_free_slot(tgpu_slot_t* T) {
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
@@ -8988,7 +9034,16 @@ static void tgpu_free_slot(tgpu_slot_t* T) {
     T->s = 0;
 }
 
-/** @brief Gives every decode slot's chunks back to the arenas.
+static int s_tgpu_tabwait;   /* colour-table rolls refused for want of a released entry (census) */
+
+/** @brief Releases a slot's colour-table ring through the store's defer window.
+ * @param T The slot. */
+static void tgpu_coltab_free(tgpu_slot_t* T) {
+    if (T->tabUnits > 0) openpete_tercache_prev_free(T->tabFirst, T->tabUnits);
+    T->tabUnits = 0;
+}
+
+/** @brief Gives every decode slot's chunks and colour-table ring back to the arenas and the store.
  *
  * A slot otherwise holds its chunks until another sector takes the slot, so
  * nothing else releases the outgoing level's geometry at a level load.
@@ -8999,6 +9054,7 @@ static long tgpu_free_all_slots(void) {
     for (int i = 0; i < TSC_SLOTS; i++) {
         if (s_tgpu[i].s) live++;
         tgpu_free_slot(&s_tgpu[i]);
+        tgpu_coltab_free(&s_tgpu[i]);
     }
     return live;
 }
@@ -9245,14 +9301,21 @@ typedef struct {
     uint32_t prec;        /* near chunks: the face's previous-corner record,
                            * bake-local until tgpu_prev_upload rebases it, or
                            * OPTC_PREV_REC_NONE (tgpu_prev_rec) */
+    uint8_t  rf;          /* OPTC_FACE_F_*: a previous-corner record, colours
+                           * from the sector's colour table */
+    uint8_t  ci[4];       /* colour indices of corners i0..i3 into the table
+                           * (OPTC_FACE_F_COLTAB) */
     uint32_t face_flags;
     uint32_t matf0, matf1, matn0, matn1;
     uint16_t flags16;
     uint32_t farC[4];     /* HP: raw far colours, i0..i3 (cell records) */
+    uint32_t nearC[4];    /* HP: raw near colours, i0..i3 */
+    uint32_t pnearC[4], pfarC[4];   /* HP: their previous-tick words (tgpu_prev_cols) */
 } tgpu_face_t;
 typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint32_t prgb_far, prgb_near;   /* anim arenas: previous-tick colours */
-                 uint8_t uf, vf, un, vn, role; } tgpu_corner_t;
+                 uint8_t uf, vf, un, vn, role;
+                 uint8_t ci;      /* colour-table index (OPTC_FACE_F_COLTAB faces) */ } tgpu_corner_t;
 
 /** @brief Fills one retained-cache vertex from a face template and one corner.
  *
@@ -9289,7 +9352,8 @@ static void tgpu_fill_vert(rhi_terrain_vertex* v, const tgpu_face_t* F,
  *
  * Each vertex is built by tgpu_fill_vert with the spare bit clear. In an
  * animated buffer (b->anim) the vertex's previous-tick record is filled from
- * the corner's pp and prgb words and the face's pc corners.
+ * the corner's pp and prgb words and the face's pc corners, and a corner of
+ * a colour-table face names its table index in pad.
  * @param b The destination buffer.
  * @param F The face template.
  * @param a The first corner.
@@ -9312,6 +9376,10 @@ static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
             pr.c3x = F->pc[3].x; pr.c3y = F->pc[3].y; pr.c3z = F->pc[3].z;
             pr.rgb_far  = 0xFF000000u | (cs[k].prgb_far  & 0xFFFFFFu);
             pr.rgb_near = 0xFF000000u | (cs[k].prgb_near & 0xFFFFFFu);
+            /* A colour-table face's corner vertex takes its colours from the
+             * table; an HQ node (a midpoint) keeps the baked words. */
+            if ((F->rf & OPTC_FACE_F_COLTAB) && !(F->flags16 & 1u))
+                pr.pad = (int16_t)(OPTC_PREV_PAD_COLTAB | cs[k].ci);
         }
         rhi_terrain_vertex v;
         tgpu_fill_vert(&v, F, &cs[k], tri2, 0);
@@ -9347,9 +9415,15 @@ static int tgpu_emit_tri_near(tgpu_buf* b, const tgpu_face_t* F,
             const tgpu_corner_t* B = &cs[(k + 2) % 3];
             tgpu_fill_vert(&v, F, &cs[k], tri2, spare);
             /* The near stage takes positions from the corners alone, so
-             * px, py carry the face's previous-corner record instead. */
+             * px, py carry the face's previous-corner record and pz its
+             * flags (OPTC_FACE_F_*) instead; a colour-table face's colours
+             * come from its corners' table indices, carried in rgba_far. */
             v.px = (int16_t)(uint16_t)(F->prec & 0xFFFFu);
             v.py = (int16_t)(uint16_t)(F->prec >> 16);
+            v.pz = (int16_t)F->rf;
+            if (F->rf & OPTC_FACE_F_COLTAB)
+                v.rgba_far = (uint32_t)F->ci[0] | (uint32_t)F->ci[1] << 8
+                           | (uint32_t)F->ci[2] << 16 | (uint32_t)F->ci[3] << 24;
             memset(&cx, 0, sizeof(cx));
             cx.a_uf = A->uf; cx.a_vf = A->vf; cx.a_un = A->un; cx.a_vn = A->vn;
             cx.a_far  = 0xFF000000u | (A->rgb_far  & 0xFFFFFFu);
@@ -9363,10 +9437,16 @@ static int tgpu_emit_tri_near(tgpu_buf* b, const tgpu_face_t* F,
     return 0;
 }
 
+/* Set while an env-anim colour sector bakes a face's HQ variants
+ * (tgpu_bake_hp_face): they go to its near-variant chunks alone, as its
+ * plain chunks draw only while no face of it can be near. */
+static int s_tgpu_near_only;
+
 /** @brief Emits one triangle into a sector's chunk buffers, with its near-variant twin while the sector carries one.
  *
- * The plain triangle goes to buf[arena + ab]; with with_var set, the twin
- * goes to buf[arena + OPTC_ARENA_NEAR_BASE] through tgpu_emit_tri_near.
+ * The plain triangle goes to buf[arena + ab] unless s_tgpu_near_only is
+ * set; with with_var set, the twin goes to buf[arena + OPTC_ARENA_NEAR_BASE]
+ * through tgpu_emit_tri_near.
  * @param buf The sector's bake buffers, indexed by arena.
  * @param arena The draw-class arena (tgpu_arena_of, or OPTC_ARENA_LP).
  * @param ab OPTC_ARENA_ANIM_BASE for an anim sector, else 0.
@@ -9380,7 +9460,7 @@ static int tgpu_emit_tri_near(tgpu_buf* b, const tgpu_face_t* F,
 static int tgpu_emit_face_tri(tgpu_buf* buf, int arena, int ab, int with_var,
                               const tgpu_face_t* F, tgpu_corner_t a,
                               tgpu_corner_t c1, tgpu_corner_t c2, int tri2) {
-    if (tgpu_emit_tri(&buf[arena + ab], F, a, c1, c2, tri2) != 0) return -1;
+    if (!s_tgpu_near_only && tgpu_emit_tri(&buf[arena + ab], F, a, c1, c2, tri2) != 0) return -1;
     if (with_var && tgpu_emit_tri_near(&buf[arena + (int)OPTC_ARENA_NEAR_BASE],
                                        F, a, c1, c2, tri2) != 0) return -1;
     return 0;
@@ -9623,7 +9703,10 @@ static void tgpu_cell_rec_init(rhi_terrain_cell_anim* R, const tgpu_face_t* T,
         R->cur.far_rgb[q] = T->farC[q] & 0xFFFFFFu;
     }
     R->cur.fog_a = T->prec;   /* the near cell stage's previous-corner record */
-    R->cur.fog_b = 0u;
+    R->cur.fog_b = T->rf;     /* the face's flags (OPTC_FACE_F_*) */
+    if (T->rf & OPTC_FACE_F_COLTAB)   /* the four colour-table indices */
+        R->cur.near_rgb[0] = (uint32_t)T->ci[0] | (uint32_t)T->ci[1] << 8
+                           | (uint32_t)T->ci[2] << 16 | (uint32_t)T->ci[3] << 24;
     R->cur.face_flags = T->face_flags;
 }
 
@@ -9667,8 +9750,9 @@ static int tgpu_push_cell_halves(tgpu_buf* buf, int base, rhi_terrain_cell_anim*
  * The CA family serves the plain chunk set of a poly-anim sector (ab) or,
  * for a face routed to the cells (pin4: tface_cells_pin), of any sector (a
  * non-anim sector's previous corners equal its current ones, so the anim
- * stage's prev->cur lerp returns them exactly). The CN family serves a
- * near-variant sector's near set (with_var).
+ * stage's prev->cur lerp returns them exactly), except while
+ * s_tgpu_near_only is set. The CN family serves a near-variant sector's near
+ * set (with_var).
  * @param buf The sector's bake buffers, indexed by arena.
  * @param ab Nonzero for an anim sector.
  * @param with_var 1 when the sector carries near-variant chunks.
@@ -9684,7 +9768,7 @@ static int tgpu_push_cell_families(tgpu_buf* buf, int ab, int with_var, int pin4
                                    rhi_terrain_cell_anim* R,
                                    const rhi_terrain_cell_tile tiles[16], const uint8_t cls[16],
                                    const uint8_t blended[16], uint32_t hq_idx, uint32_t kind) {
-    if ((ab || pin4) &&
+    if ((ab || pin4) && !s_tgpu_near_only &&
         tgpu_push_cell_halves(buf, (int)OPTC_ARENA_CELL_ANIM_BASE, R, tiles, cls, blended,
                               hq_idx, kind) != 0)
         return -1;
@@ -9946,15 +10030,16 @@ static int tgpu_bake_near(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, in
  * cells refused), and a triangle drawn whole. near_flag_tier2 faces never
  * take tier 4, near_flag_excl faces are never near, a face whose ABE bit is
  * set keys no sub-cell (the walk's !abe gate), and an env-anim colour
- * sector bakes no near content. A game that does not locate both
- * hq_tri4_nodes and hq_tri2_nodes keys no face.
+ * sector without near-variant chunks bakes no near content. A game that
+ * does not locate both hq_tri4_nodes and hq_tri2_nodes keys no face.
  * @param F The face.
  * @param hq_elig The face's tgpu_hq_elig verdict.
  * @param pin4 1 for a face routed to the cells at every distance.
- * @param canim_only 1 for an env-anim colour sector that is not poly-anim.
+ * @param canim_only 1 for an env-anim colour sector that is not poly-anim
+ *        and bakes no near-variant chunks.
  * @return 1 when the face keys per sub-cell, else 0. */
 static int tgpu_key_cells(const tsface_t* F, int hq_elig, int pin4, int canim_only) {
-    /* An env-anim colour sector bakes no near content. */
+    /* An env-anim colour sector without near-variant chunks bakes no near content. */
     if (canim_only || F->abe || tface_near_excl(F->w3)) return 0;
     if (!game_layout.terrain.hq_tri4_nodes || !game_layout.terrain.hq_tri2_nodes) return 0;
     if (F->quad) {
@@ -10071,7 +10156,8 @@ typedef struct {
     int with_var;            /* bake near-variant chunks */
     int prev;                /* bake previous-tick corners from the set's prev bank */
     int hdfold;              /* fold each face onto its HD replacement */
-    int canim_only;          /* an env-anim colour sector: no near variants */
+    int canim_only;          /* an env-anim colour sector that is not poly-anim:
+                              * HQ variants only in its near-variant chunks */
     uint32_t base_ff;        /* face_flags slot and generation bits */
     uint32_t hqTable;
     int sec_index;           /* level sector index (env-anim membership), -1 for an import (tgpu_envm_sec) */
@@ -10406,9 +10492,10 @@ static void tgpu_prev_begin(int with_var, int polyanim, int vsnap) {
  * local to the bake until tgpu_prev_upload rebases it.
  * A list that cannot grow sets s_prev_oom, which fails the bake at
  * tgpu_prev_upload.
- * @param T The face template with c and pc filled.
+ * @param T The face template with c and pc filled; OPTC_FACE_F_PREV is set
+ *        in its rf when a record is appended.
  * @return The record index, or OPTC_PREV_REC_NONE. */
-static uint32_t tgpu_prev_rec(const tgpu_face_t* T) {
+static uint32_t tgpu_prev_rec(tgpu_face_t* T) {
     if (!s_prev_bake || memcmp(T->c, T->pc, sizeof T->c) == 0) return OPTC_PREV_REC_NONE;
     if (s_prev_n >= s_prev_cap) {
         const int nc = s_prev_cap ? s_prev_cap * 2 : 256;
@@ -10424,6 +10511,7 @@ static uint32_t tgpu_prev_rec(const tgpu_face_t* T) {
     w[3] = (uint16_t)p[2].x | (uint32_t)(uint16_t)p[2].y << 16;
     w[4] = (uint16_t)p[2].z | (uint32_t)(uint16_t)p[3].x << 16;
     w[5] = (uint16_t)p[3].y | (uint32_t)(uint16_t)p[3].z << 16;
+    T->rf |= OPTC_FACE_F_PREV;
     return (uint32_t)s_prev_n++;
 }
 
@@ -10477,22 +10565,25 @@ static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) {
 
 /** @brief Returns whether a sector bake emits near-variant chunks.
  *
- * An env-anim colour sector bakes none (its near faces would lerp three
- * members' colours); a poly-anim sector bakes them into the near arenas,
- * each moving face's previous corners in a previous-corner record
- * (tgpu_prev_rec), when OPENPETE_TERRAIN_ANIMNEAR=1 (default 0).
+ * A poly-anim sector bakes them into the near arenas, each moving face's
+ * previous corners in a previous-corner record (tgpu_prev_rec), when
+ * OPENPETE_TERRAIN_ANIMNEAR=1 (default 0); an env-anim colour sector bakes
+ * them, its faces naming their corners' colours in the sector's colour
+ * table (tgpu_coltab_refresh), when OPENPETE_TERRAIN_CANIMNEAR=1 (default
+ * 0). A sector that is both needs both.
  * @param want 1 when the caller asks for near-variant chunks.
  * @param SC The decoded sector.
  * @return 1 to bake them, else 0. */
 static int tgpu_bake_with_var(int want, const tscache_t* SC) {
-    if (tsc_canim(SC)) return 0;
+    if (tsc_canim(SC) && !tgpu_canimnear_on()) return 0;
     return want && (!SC->polyanim || tgpu_animnear_on());
 }
 
 /** @brief Returns whether a near-reaching sector takes its near-variant chunks instead of the CPU-walk claim.
  *
- * Env-anim colour sectors claim; a poly-anim sector takes the chunks
- * when OPENPETE_TERRAIN_ANIMNEAR=1 (default 0); every sector claims under
+ * An env-anim colour sector takes the chunks when
+ * OPENPETE_TERRAIN_CANIMNEAR=1 (default 0), a poly-anim sector when
+ * OPENPETE_TERRAIN_ANIMNEAR=1 (default 0); every sector claims under
  * OPENPETE_TERRAIN_NEARVAR=0.
  * @param SC The decoded sector.
  * @return 1 for the near variant, 0 for the claim. */
@@ -10516,16 +10607,68 @@ static void tgpu_own_bank(const tscache_t* SC, tgpu_hpctx* X, tgpu_hpset* own) {
     own->ff = 1u << 11;
 }
 
+/* Set while a sector bakes against a colour table (tgpu_coltab_mode). */
+static int s_coltab_bake;
+/* Set when a face of that bake reads a rolled colour past the table: the
+ * slot then re-bakes on every roll (tgpu_slot_t.tabMiss). */
+static int s_coltab_miss;
+
+/** @brief Gives a face its corners' colour-table indices when the bake uses a table and the indices its corners draw are inside the array.
+ *
+ * A quad needs all four inside. A triangle's corners are slots 0-2; its
+ * slot 3 (the C colour of its split records, face word 1 byte 0) may index
+ * past the array, and then takes OPTC_COLTAB_BAKED, which keeps the
+ * record's baked word for that slot. A face with a corner index past the
+ * array keeps its baked colours and sets s_coltab_miss.
+ * @param T The face template; receives ci and OPTC_FACE_F_COLTAB in rf.
+ * @param co The four colour indices, byte offsets into the array.
+ * @param n The array's colour count.
+ * @param tri 1 for a triangle. */
+static void tgpu_face_coltab(tgpu_face_t* T, const uint16_t co[4], uint32_t n, int tri) {
+    if (!s_coltab_bake) return;
+    int miss = !tri && co[3] / 4u >= n;
+    for (int q = 0; q < 3; q++) miss |= co[q] / 4u >= n;
+    s_coltab_miss |= miss;
+    if (miss) return;
+    for (int q = 0; q < 4; q++)
+        T->ci[q] = co[q] / 4u < n ? (uint8_t)(co[q] / 4u) : (uint8_t)OPTC_COLTAB_BAKED;
+    T->rf |= OPTC_FACE_F_COLTAB;
+}
+
+/** @brief Reads an HP face's raw near and far corner colours and their previous-tick words into its template.
+ *
+ * The current colours come from the set's host banks or its guest arrays,
+ * replaced by a model slot's words (tgpu_model_cols); the previous ones from
+ * the set's colour-anim slot (tgpu_prev_cols), equal to the current ones
+ * without a slot. A face of a set with a slot takes its colour-table
+ * indices (tgpu_face_coltab).
+ * @param cpu The guest CPU state.
+ * @param S The face set.
+ * @param F The face.
+ * @param T Receives nearC, farC, pnearC and pfarC, and ci and rf. */
+static void tgpu_hp_face_cols(CPUState* cpu, const tgpu_hpset* S, const tsface_t* F, tgpu_face_t* T) {
+    const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
+    for (int q = 0; q < 4; q++) {
+        T->nearC[q] = (S->nearCol ? t_le32(S->nearCol + co[q]) : rd(cpu, S->nearBase + co[q])) & 0xFFFFFFu;
+        T->farC[q]  = (S->farCol  ? t_le32(S->farCol  + co[q]) : rd(cpu, S->farBase  + co[q])) & 0xFFFFFFu;
+    }
+    tgpu_model_cols(S->CA, 1, co, T->nearC);
+    tgpu_model_cols(S->CA, 2, co, T->farC);
+    tgpu_prev_cols(S->CA, 1, co[0], co[1], co[2], co[3], T->nearC, T->pnearC);
+    tgpu_prev_cols(S->CA, 2, co[0], co[1], co[2], co[3], T->farC, T->pfarC);
+    if (S->CA) tgpu_face_coltab(T, co, S->CA->nHp / 2u, !F->quad);
+}
+
 /** @brief Bakes one HP face: its flat variant and, when HQ-eligible, its near variants.
  *
  * The face record carries the face's flags (the set's extra bits among
  * them), its material bucket, both tile halves' materials and its scroll
  * tile id; each corner carries its position, previous-tick position and
  * near and far colours, read from the set's host banks or its guest arrays.
- * An env-anim colour sector bakes no near variant: it is drawn from the
- * cache only while none of its faces can be near (tgpu_canim_band), so the
- * 2x2, the cells and the split-triangle records would occupy the anim
- * arenas and never draw.
+ * An env-anim colour sector draws its plain chunks only while none of its
+ * faces can be near (tgpu_canim_band), so its 2x2, cells and split-triangle
+ * records go to its near-variant chunks alone (s_tgpu_near_only), and none
+ * are baked without them.
  * @param X The bake context.
  * @param S The face set.
  * @param F The face; a face with an index outside the set's bank is skipped.
@@ -10535,7 +10678,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
     if (F->i0 >= S->nV || F->i1 >= S->nV || F->i2 >= S->nV || F->i3 >= S->nV) return 0;
     int hq_elig = tgpu_hq_elig(F, X->hqTable);
     const int pin4 = hq_elig && tface_cells_pin(F->hq_idx);
-    const int key_cells = tgpu_key_cells(F, hq_elig, pin4, X->canim_only);
+    const int key_cells = tgpu_key_cells(F, hq_elig, pin4, X->canim_only && !X->with_var);
     s_tgpu_keycell_faces += key_cells;
     tgpu_face_t T;
     memset(&T, 0, sizeof(T));
@@ -10573,33 +10716,28 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
      * tile isn't scrolling). */
     if (F->tb != -1)
         T.flags16 = (uint16_t)((((uint32_t)F->tb & 0x7Fu) << 5) | 0x1000u);
-    uint32_t nearC[4], farC[4], pnearC[4], pfarC[4];
-    const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
-    for (int q = 0; q < 4; q++) {
-        nearC[q] = (S->nearCol ? t_le32(S->nearCol + co[q]) : rd(X->cpu, S->nearBase + co[q])) & 0xFFFFFFu;
-        farC[q]  = (S->farCol  ? t_le32(S->farCol  + co[q]) : rd(X->cpu, S->farBase  + co[q])) & 0xFFFFFFu;
-    }
-    tgpu_model_cols(S->CA, 1, co, nearC);
-    tgpu_model_cols(S->CA, 2, co, farC);
-    memcpy(T.farC, farC, sizeof T.farC);
-    tgpu_prev_cols(S->CA, 1, co[0], co[1], co[2], co[3], nearC, pnearC);
-    tgpu_prev_cols(S->CA, 2, co[0], co[1], co[2], co[3], farC, pfarC);
+    tgpu_hp_face_cols(X->cpu, S, F, &T);
     tgpu_corner_t k[4];
     memset(k, 0, sizeof(k));
     for (int q = 0; q < 4; q++) {
         k[q].p = tgpu_p4_of(&S->V[vi[q]]);
         k[q].pp = (X->prev && S->Vprev) ? tgpu_p4_of(&S->Vprev[vi[q]]) : k[q].p;
         T.pc[q] = k[q].pp;
-        k[q].rgb_near = nearC[q]; k[q].rgb_far = farC[q];
-        k[q].prgb_near = pnearC[q]; k[q].prgb_far = pfarC[q];
+        k[q].rgb_near = T.nearC[q]; k[q].rgb_far = T.farC[q];
+        k[q].prgb_near = T.pnearC[q]; k[q].prgb_far = T.pfarC[q];
+        k[q].ci = T.ci[q];
     }
     T.prec = tgpu_prev_rec(&T);
     if (tgpu_bake_hp_flat(X, &T, k, F, tgpu_arena_of(&F->mat), fail) != 0) return -1;
-    if (hq_elig && !X->canim_only &&
-        tgpu_bake_near(X->cpu, X->buf, X->ab, X->with_var, pin4, &T, k, nearC,
-                       F, X->hqTable, hp_bucket, X->hdfold, fail) != 0)
-        return -1;
-    return 0;
+    if (!hq_elig || (X->canim_only && !X->with_var)) return 0;
+    /* An env-anim colour sector draws its plain chunks only while none of
+     * its faces can be near (tgpu_canim_band), so its HQ variants go to the
+     * near-variant chunks alone. */
+    s_tgpu_near_only = X->canim_only;
+    const int r = tgpu_bake_near(X->cpu, X->buf, X->ab, X->with_var, pin4, &T, k, T.nearC,
+                                 F, X->hqTable, hp_bucket, X->hdfold, fail);
+    s_tgpu_near_only = 0;
+    return r != 0 ? -1 : 0;
 }
 
 /* The per-sector state an LP face bake reads (tgpu_bake_lp_face). */
@@ -10665,6 +10803,9 @@ static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
                         * walk applies these per emit; bake them (static per level). */
     if (L->sec_index >= 0 && lp_artfix_lookup(cpu, L->sec_index, f, &fixrgb))
         rc[0] = rc[1] = rc[2] = rc[3] = prc[0] = prc[1] = prc[2] = prc[3] = fixrgb;
+    else if (L->CA)   /* a corrected face keeps its baked colour */
+        tgpu_face_coltab(&T, (const uint16_t[4]){ (uint16_t)F->c0, (uint16_t)F->c1, (uint16_t)F->c2,
+                                                  (uint16_t)(F->quad ? F->c3 : F->c2) }, L->CA->nLp, 0);
     tgpu_corner_t k[4];
     memset(k, 0, sizeof(k));
     const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
@@ -10674,6 +10815,7 @@ static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
         T.pc[q] = k[q].pp;
         k[q].rgb_far = k[q].rgb_near = rc[q];
         k[q].prgb_far = k[q].prgb_near = prc[q];
+        k[q].ci = T.ci[q];
     }
     T.prec = tgpu_prev_rec(&T);
     int da = F->mat.blend ? tgpu_arena_of(&F->mat) : (int)OPTC_ARENA_LP;
@@ -10824,6 +10966,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         vsnap = !havePrev || jump;
     }
     tgpu_prev_begin(with_var, SC->polyanim, vsnap);
+    s_coltab_bake = tgpu_coltab_mode(SC);
+    s_coltab_miss = 0;
 
     /* ---- LP tier: untextured; drawn in WORLD and re-drawn in FILL ---- */
     /* Every LP face keys untextured and LP tier, so its material bucket
@@ -10878,8 +11022,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     tgpu_facedump_sector(slot, sec_index, SC);
     ok = tgpu_upload_sector(&s_tgpu[slot], buf);
 done:
+    /* A face left on baked colours makes the slot re-bake on every roll. */
+    s_tgpu[slot].tabMiss = (uint8_t)s_coltab_miss;
     s_hq_bank = 0;
     s_prev_bake = 0;
+    s_coltab_bake = 0;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         free(buf[a].v); free(buf[a].pv); free(buf[a].cx); free(buf[a].rec);
     }
@@ -10932,6 +11079,80 @@ static int tgpu_pack_scan(const tscache_t* SC) {
     return !SC->virt && SC->hpF && tgpu_pack_scan_faces(SC->hpF, SC->nHpF);
 }
 
+/** @brief Allocates a slot's colour-table ring at the entry size its colour slot needs, once per residency.
+ *
+ * A ring that exists for the sector at that size is kept, across re-bakes;
+ * one of another sector or size (the colour arrays moved) is replaced.
+ * @param T The slot.
+ * @param sec The sector's guest address.
+ * @param ent The units one entry takes.
+ * @return 0, or -1 when the store has no room. */
+static int tgpu_coltab_ring(tgpu_slot_t* T, uint32_t sec, int ent) {
+    if (T->tabUnits > 0 && T->tabEnt == ent && T->tabSec == sec) return 0;
+    tgpu_coltab_free(T);
+    uint32_t first;
+    if (openpete_tercache_prev_alloc(ent * (int)OPTC_COLTAB_RING, &first) != 0) return -1;
+    T->tabFirst = first;
+    T->tabUnits = ent * (int)OPTC_COLTAB_RING;
+    T->tabEnt = ent;
+    T->tabSec = sec;
+    T->tabCur = (int)OPTC_COLTAB_RING - 1;
+    T->tabUsed = 0;
+    T->tabRoll = 0;
+    return 0;
+}
+
+/** @brief Writes a colour-table slot's colour slot's latest roll into the next entry of its ring.
+ *
+ * The entry (openpete_terrain_cache.h, colour tables) holds the colour
+ * slot's current words and its previous words (the current ones before its
+ * first roll): a header word, then the LP, HP near and HP far arrays, then
+ * the same three previous. The ring is allocated once per residency
+ * (tgpu_coltab_ring) and a roll writes the entry after the one the sector
+ * state names, so a roll allocates nothing and an entry a state still drawn
+ * names is never rewritten: an entry is rewritten only once the build at
+ * which the ring moved past it is released
+ * (openpete_tercache_serial_released). A slot whose entry already holds
+ * this roll keeps it; a slot baked without a table, or whose sector left the
+ * colour lists, frees its ring.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @return 0, or -1 when the store has no room for the ring or the next
+ *         entry is still read (the arena-full claim). */
+static int tgpu_coltab_refresh(tgpu_slot_t* T, const tscache_t* SC) {
+    static uint32_t* w;
+    static int wcap;
+    const canim_t* CA = T->bakeTab ? tsc_canim(SC) : NULL;
+    if (!CA) { tgpu_coltab_free(T); return 0; }
+    const uint32_t n = CA->nLp + CA->nHp;
+    const int ent = (int)((1u + 2u * n + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
+    if (tgpu_coltab_ring(T, SC->s, ent) != 0) return -1;
+    if ((T->tabUsed >> T->tabCur & 1u) && T->tabRoll == CA->rollPres) return 0;
+    const int nx = (T->tabCur + 1) % (int)OPTC_COLTAB_RING;
+    if ((T->tabUsed >> nx & 1u) && !openpete_tercache_serial_released(T->tabStamp[nx])) {
+        s_tgpu_tabwait++;
+        return -1;
+    }
+    if (ent * (int)OPTC_PREV_REC_WORDS > wcap) {
+        uint32_t* nw = (uint32_t*)realloc(w, sizeof(*w) * OPTC_PREV_REC_WORDS * (size_t)ent);
+        if (!nw) return -1;
+        w = nw; wcap = ent * (int)OPTC_PREV_REC_WORDS;
+    }
+    memset(w, 0, sizeof(*w) * OPTC_PREV_REC_WORDS * (size_t)ent);
+    w[0] = CA->nLp | (CA->nHp / 2u) << 16;
+    const uint32_t* prev = CA->havePrev ? CA->prev : CA->cur;
+    for (uint32_t k = 0; k < n; k++) {
+        w[1u + k] = CA->cur[k] & 0xFFFFFFu;
+        w[1u + n + k] = prev[k] & 0xFFFFFFu;
+    }
+    openpete_tercache_prev_write(T->tabFirst + (uint32_t)(nx * ent), w, ent);
+    T->tabStamp[T->tabCur] = openpete_tercache_build_serial();
+    T->tabCur = nx;
+    T->tabUsed |= (uint8_t)(1u << nx);
+    T->tabRoll = CA->rollPres;
+    return 0;
+}
+
 /** @brief Counts a GPU-owned sector on the colour lists, and whether its last roll moved a colour.
  *
  * The OPENPETE_TERRAIN_GPU_CENSUS counters s_tgpu_canim_walk and
@@ -10945,29 +11166,59 @@ static void tgpu_canim_census(const tscache_t* SC, int on) {
     s_tgpu_canim_mv += (CA != NULL && canim_maxd(CA) > 0);
 }
 
-/** @brief Records a slot's colour-list membership and colour roll at bake, the values tgpu_canim_stale compares.
+/** @brief Tests whether a slot's chunks read every rolled colour from its colour table, so a roll needs no re-bake.
+ * @param T The slot.
+ * @return 1 for a colour-table bake with no face left on baked colours. */
+static int tgpu_roll_free(const tgpu_slot_t* T) {
+    return T->bakeTab && !T->tabMiss;
+}
+
+/** @brief Records a slot's colour-list membership, colour roll and colour-table mode at bake, the values tgpu_canim_stale compares.
  *
  * An env-anim colour sector's bake is stale when the sector joined or left
- * the colour lists since, or its colour slot rolled a new (prev, cur) pair.
+ * the colour lists since, or, baked without a colour table, its colour slot
+ * rolled a new (prev, cur) pair.
  * @param T The slot.
  * @param SC The decoded sector. */
 static void tgpu_canim_latch(tgpu_slot_t* T, const tscache_t* SC) {
     const canim_t* CA = tsc_canim(SC);
     T->bakeCanim = (uint8_t)(CA != NULL);
     T->canimRoll = CA ? CA->rollPres : 0u;
+    T->bakeTab = (uint8_t)tgpu_coltab_mode(SC);
 }
 /** @brief Tests whether a slot's baked colour-anim state differs from the sector's current state.
  *
  * The bake is stale when the sector's membership in the colour lists
- * (tsc_canim non-NULL) differs from bakeCanim, or when its colour roll
- * (rollPres) differs from the canimRoll that tgpu_canim_latch stored.
+ * (tsc_canim non-NULL) differs from bakeCanim, or, for a bake that is not
+ * roll-free (tgpu_roll_free), when its colour roll (rollPres) differs from
+ * the canimRoll that tgpu_canim_latch stored; a roll-free bake reads every
+ * rolled colour from the table tgpu_coltab_refresh rewrites.
  * @param T The slot.
  * @param SC The decoded sector.
  * @return 1 when the bake is stale, else 0. */
 static int tgpu_canim_stale(const tgpu_slot_t* T, const tscache_t* SC) {
     const canim_t* CA = tsc_canim(SC);
     if ((CA != NULL) != (T->bakeCanim != 0)) return 1;
-    return CA && T->canimRoll != CA->rollPres;
+    return CA && !tgpu_roll_free(T) && T->canimRoll != CA->rollPres;
+}
+
+/** @brief Completes a slot's validation: refreshes its colour table and stamps ownFrame when the GPU may draw it.
+ * @param T The slot, built or validated this present.
+ * @param SC The decoded sector.
+ * @return 0 when the GPU may draw the sector, the slot's unbuildable code,
+ *         or 1 when the store has no room for its colour table. */
+static int tgpu_ensure_finish(tgpu_slot_t* T, const tscache_t* SC) {
+    if (T->unbuildable != 0) return T->unbuildable;
+    if (tgpu_coltab_refresh(T, SC) != 0) return 1;
+    T->ownFrame = openpete_frame;
+    return 0;
+}
+
+/** @brief Returns the colour-table entry a slot's sector state names this present.
+ * @param T The slot.
+ * @return The entry's first unit, or OPTC_PREV_REC_NONE without a ring. */
+static uint32_t tgpu_slot_coltab(const tgpu_slot_t* T) {
+    return T->tabUnits > 0 ? T->tabFirst + (uint32_t)(T->tabCur * T->tabEnt) : OPTC_PREV_REC_NONE;
 }
 
 /** @brief Validates or rebuilds a sector's chunks and decides whether the GPU may draw it this present.
@@ -10985,7 +11236,8 @@ static int tgpu_canim_stale(const tgpu_slot_t* T, const tscache_t* SC) {
  *         that sends it back to the CPU walk: 1 an invalid slot or an
  *         arena-full build, 3 an unmapped colour range, 4 a slot another
  *         sector already owns this present, 5 a texture-pack claim or an
- *         HD-fold unbakeable face. */
+ *         HD-fold unbakeable face. A full store for the colour table is the
+ *         arena-full claim 1. */
 static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
                        int sec_index, int want_near) {
     int slot = (int)(SC - s_tsc);
@@ -11066,8 +11318,9 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
              /* The env-anim membership the buckets key on moved. */
              || (T->bakeEnvmGen != s_envm_gen)
              || tgpu_claim_retry(T);
-    if (!dirty && T->lastColFrame != openpete_frame) {
-        /* Colour liveness once per VBL (colours can only change per tick). */
+    if (!dirty && !tgpu_roll_free(T) && T->lastColFrame != openpete_frame) {
+        /* Colour liveness once per VBL (colours can only change per tick);
+         * a roll-free bake (tgpu_roll_free) reads them from its table. */
         uint32_t h;
         if (tgpu_col_hash(SC, &h) != 0) return 3;
         T->lastColFrame = openpete_frame;
@@ -11099,8 +11352,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, with_var);
         s_tgpu_rebuilds++;
     }
-    if (T->unbuildable == 0) T->ownFrame = openpete_frame;
-    return T->unbuildable;
+    return tgpu_ensure_finish(T, SC);
 }
 
 /** @brief Formats one per-arena census column in OPTC_ARENA_* order.
@@ -11131,9 +11383,11 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
  * the level-edge replacement's engagement (service calls / requests
  * fulfilled), the retired draws, the rebake count, the instanced
  * cell-record draws with the record instances they covered, the faces
- * baked to key per drain sub-cell (FF_KEYCELLS), and the previous-corner
- * record store's high-water mark, capacity and refused allocations. A `high` equal to its
- * `cap` with no overflow behind it is a clamp, not a demand figure. */
+ * baked to key per drain sub-cell (FF_KEYCELLS), the previous-tick store's
+ * high-water mark, capacity, refused allocations and releases past its
+ * deferred list, and the colour-table rolls refused for want of a released
+ * ring entry. A `high` equal to its `cap` with no overflow behind it is a
+ * clamp, not a demand figure. */
 static void tgpu_arena_census_line(void) {
     openpete_tercache_stats_t st;
     openpete_tercache_get_stats(&st);
@@ -11143,12 +11397,12 @@ static void tgpu_arena_census_line(void) {
     tgpu_fmt_arenas(ovf, (int)sizeof ovf, st.overflow_adopted, NULL);
     fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s ovf=%s caps=%.1fMiB svc=%u/%u "
             "draws-retired=%u rebake=%ld cell-draws=%u/%llu keycell-faces=%ld "
-            "prev=%u/%u/%u\n",
+            "prev=%u/%u/%u/%u tabwait=%d\n",
             openpete_feed_key_now(), hwm, afail, ovf,
             (double)st.cap_bytes / (1024.0 * 1024.0),
             st.svc_calls, st.svc_fulfilled, st.draws_retired, s_tgpu_rebake,
             st.cell_draws, (unsigned long long)st.cell_instances, s_tgpu_keycell_faces,
-            st.prev_high, st.prev_cap, st.prev_fail);
+            st.prev_high, st.prev_cap, st.prev_fail, st.prev_defer_ovf, s_tgpu_tabwait);
 }
 
 /** @brief Registers the arena census line to print once more at process exit.
@@ -12648,7 +12902,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             }
             openpete_tercache_sector_set((int)(SC - s_tsc),
                                          (float)originX, (float)originY,
-                                         (float)originZ, sf, gr);
+                                         (float)originZ, sf, gr,
+                                         tgpu_slot_coltab(&s_tgpu[(int)(SC - s_tsc)]));
             return;
         }
 
@@ -14608,7 +14863,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * serial retry replaces the aborted walk's numbers instead of summing
      * with them (summed lines inflated census rows exactly 2x). */
     s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0; s_tgpu_canim_walk = 0; s_tgpu_canim_mv = 0;
-    s_tgpu_an_walk = 0; s_tgpu_an_recs = 0;
+    s_tgpu_an_walk = 0; s_tgpu_an_recs = 0; s_tgpu_ca_walk = 0; s_tgpu_ca_tab = 0; s_tgpu_ca_units = 0;
     const long near_pa0 = s_tgcl_near_pa, near_ca0 = s_tgcl_near_ca;
     if (s_cen) {
         cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
@@ -14818,7 +15073,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * the GPU. Under OPENPETE_TERRAIN_ANIMNEAR=1 (default 0) a
                  * poly-anim sector takes it too, its moving faces' previous
                  * corners in previous-corner records the near stage lerps
-                 * from. Env-anim colour sectors keep the claim. */
+                 * from; under OPENPETE_TERRAIN_CANIMNEAR=1 (default 0) an
+                 * env-anim colour sector does, its colours read from its
+                 * colour table. */
                 if (tgpu_near_variant_ok(SC)) {
                     want_near = 1;
                 } else {
@@ -14859,6 +15116,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgpu_an_walk += want_near & (SC->polyanim != 0);
                     s_tgpu_an_recs += (want_near & (SC->polyanim != 0)) *
                                       s_tgpu[(int)(SC - s_tsc)].prevCount;
+                    s_tgpu_ca_walk += want_near & (tsc_canim(SC) != NULL);
+                    s_tgpu_ca_tab += s_tgpu[(int)(SC - s_tsc)].tabUnits > 0;
+                    s_tgpu_ca_units += s_tgpu[(int)(SC - s_tsc)].tabUnits;
                     s_tgpu_secs++; s_tgpu_secs_walk++;
                     tgpu_canim_census(SC, s_cen);
                 } else {
@@ -15017,7 +15277,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
                     "arena=%ld col=%ld slot=%ld tp=%ld nearb=%ld "
                     "nodraw=%ld prim=%ld pcov=%ld canim=%d canim_moved=%d "
-                    "near_pa=%ld near_ca=%ld animnear=%d animrecs=%d\n",
+                    "near_pa=%ld near_ca=%ld animnear=%d animrecs=%d "
+                    "canimnear=%d coltab=%d tabunits=%d\n",
                     openpete_feed_key_now(), s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
                     s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
@@ -15028,7 +15289,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_nearb - cen0[9], s_tgcl_nodraw - cen0[10],
                     s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12], s_tgpu_canim_walk, s_tgpu_canim_mv,
                     s_tgcl_near_pa - near_pa0, s_tgcl_near_ca - near_ca0, s_tgpu_an_walk,
-                    s_tgpu_an_recs);
+                    s_tgpu_an_recs, s_tgpu_ca_walk, s_tgpu_ca_tab, s_tgpu_ca_units);
         tgpu_census();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;

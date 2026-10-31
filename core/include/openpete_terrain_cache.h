@@ -462,9 +462,11 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
  * @param grade6 The pack-aware LP colour grade (p.rgb then q.rgb,
  *        lp_grade_apply's affine, from the sector's own fit or the level
  *        mean), or NULL when no pack grade applies; a non-NULL grade is
- *        paired with OPTC_SF_LPGRADE in @p sflags. */
+ *        paired with OPTC_SF_LPGRADE in @p sflags.
+ * @param coltab The first unit of the sector's colour table in the
+ *        previous-tick store, or OPTC_PREV_REC_NONE. */
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
-                                  uint32_t sflags, const float *grade6);
+                                  uint32_t sflags, const float *grade6, uint32_t coltab);
 /** @brief Close the open build: its sector flags are final, so its draw-range list is built from the chunk registry.
  *
  * Promotion to the live state happens at the next frame_begin; the UBO
@@ -839,35 +841,80 @@ void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
  * @param count Element count. */
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count);
 
-/* ---- previous-corner records --------------------------------------------
- * A poly-anim sector drawn with its near-variant chunks lerps each face's
- * corners from the previous tick's positions. The near arenas' vertices and
- * cell records carry the current corners only, so each such face's previous
- * corners live in one record of a storage buffer the near and near-cell
- * vertex stages read (binding 1 of set 2, beside the prop key image). A
- * record is OPTC_PREV_REC_WORDS words: the twelve int16 corners c0x..c3z,
- * two to a word, low half first. A near vertex names its face's record in
- * px | py << 16 and a near cell record in fog_a; OPTC_PREV_REC_NONE names
- * none, and the stage takes the current corners. Records are allocated,
- * written and freed by the builder alongside the sector's chunks, and a
- * freed range is reused only after the chunks' defer window, so a record is
- * unchanged while any state that can draw its chunk lives. */
+/* ---- previous-tick store -------------------------------------------------
+ * A storage buffer the near, near-cell and anim vertex stages read (binding
+ * 1 of set 2, beside the prop key image), allocated in units of
+ * OPTC_PREV_REC_WORDS words, holding two kinds of run:
+ *
+ * Previous-corner records. A poly-anim sector drawn with its near-variant
+ * chunks lerps each face's corners from the previous tick's positions. The
+ * near arenas' vertices and cell records carry the current corners only, so
+ * each such face's previous corners live in one record of one unit: the
+ * twelve int16 corners c0x..c3z, two to a word, low half first. A near
+ * vertex names its face's record in px | py << 16, a near cell record in
+ * fog_a; OPTC_PREV_REC_NONE names none, and the stage takes the current
+ * corners.
+ *
+ * Colour tables. An env-anim colour sector baked under
+ * OPENPETE_TERRAIN_CANIMNEAR=1 reads its rolled colours from one table per
+ * sector, so a colour roll rewrites the table and leaves the chunks as
+ * baked. The table is a header word (LP colour count | HP colour count <<
+ * 16), then the current LP, HP near and HP far colour words (RGB, top byte
+ * 0), then the previous tick's three arrays in the same layout. A sector
+ * holds a ring of OPTC_COLTAB_RING such entries, allocated once per
+ * residency; a roll writes the next entry once no state still drawn names
+ * it (openpete_tercache_serial_released), and the entry's first unit rides
+ * the sector's per-present state (openpete_tercache_sector_set),
+ * OPTC_PREV_REC_NONE for none. The vertex stages lerp previous to current
+ * at the build's colour alpha, as terrain.c canim_lerp does.
+ *
+ * Each face's flags (OPTC_FACE_F_*) ride a near vertex's pz, a cell record's
+ * fog_b and an anim vertex's rhi_terrain_prev.pad. A face with
+ * OPTC_FACE_F_COLTAB takes the colours of its corners' colour indices: a
+ * near vertex carries the four (i0..i3, one byte each, low first) in
+ * rgba_far, a cell record in near_rgb[0], and an anim vertex its own in the
+ * low byte of pad.
+ *
+ * Runs are allocated, written and freed by the builder, and a freed run is
+ * reused only after the chunks' defer window, so a run is unchanged while
+ * any state that can draw a chunk naming it lives. */
 #define OPTC_PREV_REC_WORDS 6u
 #define OPTC_PREV_REC_NONE  0xFFFFFFFFu
-/** @brief Allocate a run of previous-corner records.
- * @param count Record count, at least 1.
- * @param out_first Receives the first record index.
+#define OPTC_FACE_F_PREV    1u   /* a near face names a previous-corner record */
+#define OPTC_FACE_F_COLTAB  2u   /* the face's colours come from the colour table */
+#define OPTC_PREV_PAD_COLTAB 0x4000u   /* rhi_terrain_prev.pad: colour-table index in bits 0-7 */
+#define OPTC_COLTAB_RING    6u         /* colour-table entries per sector: a
+                                        * roll writes the next one, so the
+                                        * TC_DEFER_PRESENTS-build window plus
+                                        * the entry being named fit before reuse */
+#define OPTC_COLTAB_BAKED   0xFFu      /* a slot index naming no table word: a
+                                        * triangle's slot 3 past the array keeps
+                                        * the record's baked word */
+/** @brief Allocate a run of previous-tick store units.
+ * @param count Unit count, at least 1.
+ * @param out_first Receives the first unit index.
  * @return 0, or -1 when the store has no room (the caller claims the sector
  *         back to the CPU walk, as on a full arena). */
 int  openpete_tercache_prev_alloc(int count, uint32_t *out_first);
-/** @brief Write previous-corner records at an allocated index.
- * @param first First record index from openpete_tercache_prev_alloc.
+/** @brief Write previous-tick store units at an allocated index.
+ * @param first First unit index from openpete_tercache_prev_alloc.
  * @param words count * OPTC_PREV_REC_WORDS words.
- * @param count Record count. */
+ * @param count Unit count. */
 void openpete_tercache_prev_write(uint32_t first, const uint32_t *words, int count);
-/** @brief Release a run of previous-corner records after the chunk defer window.
- * @param first First record index.
- * @param count Record count. */
+/** @brief Return the serial of the build being made, the stamp a colour-table ring entry takes when the ring moves past it.
+ * @return The build serial. */
+uint32_t openpete_tercache_build_serial(void);
+/** @brief Test whether no state still drawn can read store data that builds before a serial named.
+ *
+ * The rule of the deferred releases: the serial is older than the defer
+ * window and at or below the oldest build serial a ring or held state
+ * carries (a state built at or after it does not name the data).
+ * @param serial The serial of the first build that no longer names the data.
+ * @return 1 when released, else 0. */
+int openpete_tercache_serial_released(uint32_t serial);
+/** @brief Release a run of previous-tick store units after the chunk defer window.
+ * @param first First unit index.
+ * @param count Unit count. */
 void openpete_tercache_prev_free(uint32_t first, int count);
 
 /* ---- overflow buffers ---------------------------------------------------
@@ -1032,10 +1079,11 @@ typedef struct {
      * ranges, summed over the session. */
     uint32_t cell_draws;
     uint64_t cell_instances;
-    /* The previous-corner record store: its high-water mark and capacity in
-     * records, and the allocations it refused (each a sector claimed back,
-     * counted with the arena-full claims). */
-    uint32_t prev_high, prev_cap, prev_fail;
+    /* The previous-tick store: its high-water mark and capacity in units,
+     * the allocations it refused (each a sector claimed back, counted with
+     * the arena-full claims), and the releases its deferred list could not
+     * hold (returned at once, so a held state may read a reused run). */
+    uint32_t prev_high, prev_cap, prev_fail, prev_defer_ovf;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *

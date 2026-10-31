@@ -20,8 +20,9 @@
 #
 # Pass criterion: 0 differing pixels per row, any channel.
 #
-# Both legs run with OPENPETE_TERRAIN_ANIMNEAR=1, so leg b also draws
-# near-reaching poly-anim sectors from the cache (the walk leg ignores it).
+# Both legs run with OPENPETE_TERRAIN_ANIMNEAR=1 and
+# OPENPETE_TERRAIN_CANIMNEAR=1, so leg b also draws near-reaching poly-anim
+# and env-anim colour sectors from the cache (the walk leg ignores both).
 #
 # Engagement: per row, leg b must report retained sectors (secs > 0
 # on a [tgpu-cen] line) and leg a must report none and must report terrain
@@ -43,8 +44,11 @@
 # leg b drew from near-variant chunks ([tgpu-cen] animnear=) and of the
 # previous-corner records they carry (animrecs=) at the captured present
 # (the last census line at or before the pinned VBL from the same kind of
-# build, sub=1 for an :inter row), the engagement of the near stage's lerp.
-# An :inter row whose captured present drew no record is VACUOUS.
+# build, sub=1 for an :inter row), the engagement of the near stage's lerp,
+# and likewise the env-anim colour sectors drawn from near-variant chunks
+# (canimnear=) and those drawn with a colour table (coltab=). An :inter row
+# whose captured present drew no previous-corner record and no colour table
+# is VACUOUS.
 #
 # Usage:
 #   tests/harness/check_cache_walk_ab.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
@@ -109,7 +113,8 @@ run_leg() {  # tag level pose shotflag extra-args...
     PG_CAPTURE_ENV=(OPENPETE_TERRAIN_CACHE_FORCE=1
                     OPENPETE_TERRAIN_GPU_CENSUS=1
                     OPENPETE_TERRAIN_NEARCEN=1
-                    OPENPETE_TERRAIN_ANIMNEAR=1)
+                    OPENPETE_TERRAIN_ANIMNEAR=1
+                    OPENPETE_TERRAIN_CANIMNEAR=1)
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$log" "$shot_vk" -- \
         --no-card --mute 1 --vibration 0 \
@@ -160,7 +165,8 @@ start = int(start)
 inter = row.endswith("-inter")
 cen = re.compile(r"\[tgpu-cen f=\d+\] sub=\d+ secs=(\d+)")
 tri = re.compile(r"\[nearcen\] frame=\d+ nearFaces=\d+ subTris=\d+ terrainTris=(\d+)")
-anl = re.compile(r"\[tgpu-cen f=(\d+)\] sub=(\d+) .* animnear=(\d+) animrecs=(\d+)")
+anl = re.compile(r"\[tgpu-cen f=(\d+)\] sub=(\d+) .* animnear=(\d+) animrecs=(\d+)"
+                 r" canimnear=(\d+) coltab=(\d+)")
 
 def peak(path, pat):
     v = 0
@@ -173,15 +179,15 @@ def peak(path, pat):
 secs_a, secs_b = peak(a_log, cen), peak(b_log, cen)
 tris_a = peak(a_log, tri)
 def at_capture(path):
-    """animnear, animrecs of the census line of the captured present."""
-    v = (0, 0)
+    """animnear, animrecs, canimnear, coltab of the census line of the captured present."""
+    v = (0, 0, 0, 0)
     for line in open(path, errors="replace"):
         m = anl.search(line)
         if m and int(m.group(1)) <= start and int(m.group(2)) == int(inter):
-            v = (int(m.group(3)), int(m.group(4)))
+            v = tuple(int(m.group(k)) for k in range(3, 7))
     return v
 
-animnear_b, animrecs_b = at_capture(b_log)
+animnear_b, animrecs_b, canimnear_b, coltab_b = at_capture(b_log)
 A = Image.open(a_png).convert("RGB")
 B = Image.open(b_png).convert("RGB")
 if A.size != B.size:
@@ -206,14 +212,15 @@ if secs_b == 0 or secs_a != 0 or tris_a == 0:
     print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d secsB=%d secsA=%d trisA=%d"
           % (row, diff, secs_b, secs_a, tris_a))
     sys.exit(1)
-# An :inter row exists to compare the near stage's lerp; a captured present
-# that drew no previous-corner record compared none of it.
-if inter and animrecs_b == 0:
-    print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d animnearB=0 animrecsB=0" % (row, diff))
+# An :inter row exists to compare the near stage's lerps; a captured present
+# that drew no previous-corner record and no colour table compared none of them.
+if inter and animrecs_b == 0 and coltab_b == 0:
+    print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d animrecsB=0 coltabB=0" % (row, diff))
     sys.exit(1)
-print("[cache-walk-ab] row=%s verdict=%s px=%d maxChannelDelta=%d secsB=%d trisA=%d animnearB=%d animrecsB=%d%s"
+print("[cache-walk-ab] row=%s verdict=%s px=%d maxChannelDelta=%d secsB=%d trisA=%d animnearB=%d "
+      "animrecsB=%d canimnearB=%d coltabB=%d%s"
       % (row, "PASS" if diff == 0 else "FAIL", diff, delta, secs_b, tris_a, animnear_b, animrecs_b,
-         "" if first_px is None else " first=%s" % (first_px,)))
+         canimnear_b, coltab_b, "" if first_px is None else " first=%s" % (first_px,)))
 sys.exit(0 if diff == 0 else 1)
 AB_PY
     if [[ $? -eq 0 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi

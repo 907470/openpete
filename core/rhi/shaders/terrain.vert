@@ -145,6 +145,8 @@ ivec4 inPrevC0, inPrevC1, inPrevC2;
 ivec4 inC0, inC1, inC2;
 uvec2 inCellFace;
 uvec2 cellHqFog;
+uvec4 cellNear, cellFar;   /* the record's raw near and far colours; a
+                            * colour-table face's from the sector's table */
 ivec4 inPos;
 uvec4 inUV;
 vec4  inColFar;
@@ -343,7 +345,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
-    vec4 gp, gq;   /* pack LP grade affine v' = p*v8 + q*255 (rgb; SF_LPGRADE) */
+    vec4 gp, gq;   /* pack LP grade affine v' = p*v8 + q*255 (rgb; SF_LPGRADE);
+                    * gp.w: uintBitsToFloat(the colour table's first unit) */
 };
 layout(std140, set = 6, binding = 0) uniform TerrainSectors {
     TerrainSector sec[512];
@@ -1299,13 +1302,6 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
  * back to the floor of its own projection, as push_tri does. */
 struct cvx { pvec3 m; ivec3 c; vec2 uv; vec2 os; bool ov; vec2 fl; };
 
-/* Unpack a baked R8G8B8A8 colour word the way the vertex-input UNORM
- * conversion unpacks the same bytes at locations 2/3. */
-vec3 unrgb(uint u) {
-    return vec3(float(u & 0xFFu), float((u >> 8) & 0xFFu),
-                float((u >> 16) & 0xFFu)) / 255.0;
-}
-
 /* The cut of edge a-b at the plane m3 = zc (cv_lerp mirror). The clip
  * takes a cut only when the endpoints straddle zc, so exactly one is
  * behind it (m3 < zc). The fp32 build orders the operands behind endpoint
@@ -1347,31 +1343,159 @@ vec2 scr_of(cvx v) { return v.ov ? v.os : snap_of(proj_of(v.m)); }
 #define CLIP_PROJ_LIMIT 2048.0
 #endif
 
+#if defined(TERRAIN_CELLS) || defined(TERRAIN_NEAR)
+/* tgpu_rgb_mid mirror: the walk's per-channel (a + b) >> 1 on packed RGB. */
+uint cell_rgb_mid(uint a, uint b) {
+    return (((a & 0xFFu) + (b & 0xFFu)) >> 1)
+         | ((((a >> 8) & 0xFFu) + ((b >> 8) & 0xFFu)) >> 1) << 8
+         | ((((a >> 16) & 0xFFu) + ((b >> 16) & 0xFFu)) >> 1) << 16;
+}
+#endif
+
+#if defined(TERRAIN_NEAR) || defined(TERRAIN_ANIM)
+/* The previous-tick store (openpete_terrain_cache.h OPTC_PREV_REC_*,
+ * OPTC_FACE_F_*), in units of six words: previous-corner records of
+ * poly-anim near faces, and per-sector colour tables of env-anim colour
+ * sectors. A face's flags ride a near vertex's pz, a cell record's fog_b
+ * and an anim vertex's prev pad. PREV_REC_NONE names no run. */
+#define PREV_REC_NONE  0xFFFFFFFFu
+#define FACE_F_PREV    1u
+#define FACE_F_COLTAB  2u
+#define PAD_COLTAB     0x4000u
+#define COLTAB_BAKED   0xFFu
+/* Unpack a baked R8G8B8A8 colour word the way the vertex-input UNORM
+ * conversion unpacks the same bytes at locations 2/3. */
+vec3 unrgb(uint u) {
+    return vec3(float(u & 0xFFu), float((u >> 8) & 0xFFu),
+                float((u >> 16) & 0xFFu)) / 255.0;
+}
+layout(std430, set = 2, binding = 1) readonly buffer TerrainPrevRecs {
+    uint w[];
+} prevRec;
+/* Env-anim colour lerp on a packed word (terrain.c canim_lerp mirror, the
+ * anim stage's canim_col on integers): each channel at the build's colour
+ * alpha of the interval prev -> cur, rounded to nearest. Alpha 1 selects
+ * cur. */
+uint coltab_lerp(uint prev, uint cur)
+{
+    pfloat a = G_CA;
+    if (a == 1.0) return cur;
+    ivec3 c = ivec3(int(cur & 0xFFu), int((cur >> 8) & 0xFFu), int((cur >> 16) & 0xFFu));
+    ivec3 p = ivec3(int(prev & 0xFFu), int((prev >> 8) & 0xFFu), int((prev >> 16) & 0xFFu));
+    precise pvec3 v = pvec3(p) + pvec3(c - p) * a + 0.5;
+    ivec3 o = ivec3(v);
+    return uint(o.x) | (uint(o.y) << 8) | (uint(o.z) << 16);
+}
+/* Colour idx of array arr (0 LP, 1 HP near, 2 HP far) from the colour-table
+ * entry sector slot's state names (gp.w), at the colour alpha: the header
+ * word (LP count | HP count << 16), then the current LP, near and far
+ * arrays, then the previous three - the word the walk reads from the
+ * sector's lerped colour copy. */
+uint coltab_col(uint slot, int arr, uint idx)
+{
+    uint b = floatBitsToUint(s.sec[slot].gp.w) * 6u;
+    uint h = prevRec.w[b];
+    uint nLp = h & 0xFFFFu, nHp = h >> 16;
+    uint off = arr == 0 ? 0u : (arr == 1 ? nLp : nLp + nHp);
+    uint at = b + 1u + off + idx;
+    return coltab_lerp(prevRec.w[at + nLp + 2u * nHp], prevRec.w[at]);
+}
+#endif
+
+#ifdef TERRAIN_NEAR
+/* The two sign-extended int16 halves of a record word, low first. */
+ivec2 prev_s16x2(uint w) {
+    return ivec2(bitfieldExtract(int(w), 0, 16), bitfieldExtract(int(w), 16, 16));
+}
+/* This vertex's face record: a cell record's fog_a word, a near vertex's
+ * px | py << 16. */
+uint near_prev_rec() {
+#ifdef TERRAIN_CELLS
+    return cellHqFog.x;
+#else
+    return (uint(inPos.x) & 0xFFFFu) | ((uint(inPos.y) & 0xFFFFu) << 16);
+#endif
+}
+/* This vertex's face flags (FACE_F_*): a cell record's fog_b, a near
+ * vertex's pz. */
+uint near_face_flags() {
+#ifdef TERRAIN_CELLS
+    return cellHqFog.y;
+#else
+    return uint(inPos.z) & 0xFFFFu;
+#endif
+}
+/* Record r's four previous corners (x4 fixed, sector-local). */
+void near_prev_corners(uint r, out ivec3 p0, out ivec3 p1, out ivec3 p2, out ivec3 p3) {
+    uint b = r * 6u;
+    ivec4 A = ivec4(prev_s16x2(prevRec.w[b]),      prev_s16x2(prevRec.w[b + 1u]));
+    ivec4 B = ivec4(prev_s16x2(prevRec.w[b + 2u]), prev_s16x2(prevRec.w[b + 3u]));
+    ivec4 C = ivec4(prev_s16x2(prevRec.w[b + 4u]), prev_s16x2(prevRec.w[b + 5u]));
+    p0 = A.xyz;
+    p1 = ivec3(A.w, B.x, B.y);
+    p2 = ivec3(B.z, B.w, C.x);
+    p3 = C.yzw;
+}
+#ifndef TERRAIN_CELLS
+/* Node n of a face's 2x2 subdivide (NODEMAP numbering) coloured from its
+ * four corner colours q (i0 = TL, i1 = TR, i2 = BR, i3 = BL) in the bake's
+ * and the walk's midpoint order (tgpu_bake_hq2, terrain_near_emit): the
+ * centre is the mean of the top and bottom midpoints. */
+uint hq2_node_rgb(int n, uvec4 q) {
+    if (n < 4) return q[n];
+    uint mT = cell_rgb_mid(q.x, q.y), mB = cell_rgb_mid(q.w, q.z);
+    if (n == 4) return mT;
+    if (n == 5) return mB;
+    if (n == 6) return cell_rgb_mid(q.x, q.w);
+    if (n == 7) return cell_rgb_mid(q.y, q.z);
+    return cell_rgb_mid(mT, mB);
+}
+/* Emitted-triangle member k's node (NODEMAP numbering): a 2x2 sub-quad's
+ * NODEMAP entry, else the parent corner the bake emitted there - a
+ * triangle (i0, i1, i2), an LP quad (i0, i1, i2) + (i1, i2, i3), an HP quad
+ * (i0, i1, i3) + (i1, i3, i2). */
+int near_member_node(int k, bool hqv, bool quad, bool lp, bool tri2n, int subq) {
+    int base = tri2n ? 1 : 0;
+    if (hqv) return NODEMAP[subq][base + k];
+    if (!quad || lp) return base * int(quad) + k;
+    const int HPQ[2][3] = int[2][3](int[3](0, 1, 3), int[3](1, 3, 2));
+    return HPQ[base][k];
+}
+#endif
+#endif
+
 #ifdef TERRAIN_CELLS
 /* The two sign-extended int16 halves of a packed corner word, low first. */
 ivec2 cell_s16x2(uint w) {
     return ivec2(bitfieldExtract(int(w), 0, 16), bitfieldExtract(int(w), 16, 16));
 }
 /* Unpack the record's corner words into inC0..inC2 (rhi_terrain_vertex's
- * c0x..c3z order, four to a vector), the face flags and info, and the fade
- * words. */
+ * c0x..c3z order, four to a vector), the face flags and info, the record
+ * words, and the raw colours into cellNear and cellFar: from the sector's
+ * colour table at the colour alpha for a colour-table face. */
 void cell_unpack() {
     inC0 = ivec4(cell_s16x2(inCellCA.x), cell_s16x2(inCellCA.y));
     inC1 = ivec4(cell_s16x2(inCellCA.z), cell_s16x2(inCellCA.w));
     inC2 = ivec4(cell_s16x2(inCellCB.x), cell_s16x2(inCellCB.y));
     inCellFace = inCellCB.zw;
     cellHqFog = inCellFog;
+    cellNear = inCellNear;
+    cellFar = inCellFar;
+    if ((cellHqFog.y & FACE_F_COLTAB) != 0u) {
+        /* A colour-table face: near_rgb[0] holds its four corners' indices. */
+        uint sl = inCellCB.z & FF_SLOT_MASK;
+        for (int q = 0; q < 4; q++) {
+            uint idx = (inCellNear.x >> uint(8 * q)) & 0xFFu;
+            if (idx == COLTAB_BAKED) continue;   /* slot 3 keeps its baked words */
+            cellNear[q] = coltab_col(sl, 1, idx);
+            cellFar[q]  = coltab_col(sl, 2, idx);
+        }
+    }
 #ifdef TERRAIN_ANIM
     inPrevC0 = ivec4(cell_s16x2(inCellPA.x), cell_s16x2(inCellPA.y));
     inPrevC1 = ivec4(cell_s16x2(inCellPA.z), cell_s16x2(inCellPA.w));
     inPrevC2 = ivec4(cell_s16x2(inCellPB.x), cell_s16x2(inCellPB.y));
 #endif
-}
-/* tgpu_rgb_mid mirror: the walk's per-channel (a + b) >> 1 on packed RGB. */
-uint cell_rgb_mid(uint a, uint b) {
-    return (((a & 0xFFu) + (b & 0xFFu)) >> 1)
-         | ((((a >> 8) & 0xFFu) + ((b >> 8) & 0xFFu)) >> 1) << 8
-         | ((((a >> 16) & 0xFFu) + ((b >> 16) & 0xFFu)) >> 1) << 16;
 }
 /* tgpu_rgb_pt mirror: node k (0..4) of the 5-node edge a..b in the drain's
  * halving order (midpoint first, then the quarter points off it). */
@@ -1455,8 +1579,8 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
              | (spare ? 0x8000u : 0u);
     inPos = ivec4(inC0.xyz, int(f16));
     inUV = uvec4(cell_uv(t, k), 0u, 0u);
-    inColFar = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellFar, false));
-    inColNear = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], inCellNear, true));
+    inColFar = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], cellFar, false));
+    inColNear = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k], cellNear, true));
     inMat = uvec4(t.z, t.w, 0u, 0xC0000000u | (uint(sub) << 4) | cell);
     inFaceFlags = inCellFace.x;
 #ifdef TERRAIN_ANIM
@@ -1465,11 +1589,11 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
 #ifdef TERRAIN_NEAR
     int ra = (k + 1) % 3, rb = (k + 2) % 3;
     inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
-    inCtxACol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellFar, false),
-                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], inCellNear, true));
+    inCtxACol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], cellFar, false),
+                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra], cellNear, true));
     inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
-    inCtxBCol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellFar, false),
-                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], inCellNear, true));
+    inCtxBCol = uvec2(0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], cellFar, false),
+                      0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb], cellNear, true));
 #endif
     return true;
 }
@@ -1502,8 +1626,8 @@ bool cells_fetch() {
              | (spare ? 0x8000u : 0u);
     inPos = ivec4(inC0.xyz, int(f16));
     inUV = uvec4(cell_uv(t, role), 0u, 0u);
-    inColFar = cell_unorm(cell_node_rgb(cr + (role >> 1), cq + (role & 1), inCellFar));
-    inColNear = cell_unorm(cell_node_rgb(cr + (role >> 1), cq + (role & 1), inCellNear));
+    inColFar = cell_unorm(cell_node_rgb(cr + (role >> 1), cq + (role & 1), cellFar));
+    inColNear = cell_unorm(cell_node_rgb(cr + (role >> 1), cq + (role & 1), cellNear));
     inMat = uvec4(t.z, t.w, 0u, 0x80000000u | uint(cell));
     inFaceFlags = inCellFace.x;
 #ifdef TERRAIN_ANIM
@@ -1512,50 +1636,13 @@ bool cells_fetch() {
 #ifdef TERRAIN_NEAR
     int ra = tri2 + (k + 1) % 3, rb = tri2 + (k + 2) % 3;
     inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
-    inCtxACol = uvec2(0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1), inCellFar),
-                      0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1), inCellNear));
+    inCtxACol = uvec2(0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1), cellFar),
+                      0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1), cellNear));
     inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
-    inCtxBCol = uvec2(0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1), inCellFar),
-                      0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1), inCellNear));
+    inCtxBCol = uvec2(0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1), cellFar),
+                      0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1), cellNear));
 #endif
     return true;
-}
-#endif
-
-#ifdef TERRAIN_NEAR
-/* Previous-corner records (openpete_terrain_cache.h OPTC_PREV_REC_*): a
- * poly-anim sector's near chunks name, per face, the record holding its
- * previous-tick corners, six words of int16 pairs in inC0..inC2's order.
- * PREV_REC_NONE (every other near face, and a poly-anim face that did not
- * move) takes the current corners, the exact value the lerp gives when
- * prev == cur. */
-#define PREV_REC_NONE 0xFFFFFFFFu
-layout(std430, set = 2, binding = 1) readonly buffer TerrainPrevRecs {
-    uint w[];
-} prevRec;
-/* The two sign-extended int16 halves of a record word, low first. */
-ivec2 prev_s16x2(uint w) {
-    return ivec2(bitfieldExtract(int(w), 0, 16), bitfieldExtract(int(w), 16, 16));
-}
-/* This vertex's face record: a cell record's fog_a word, a near vertex's
- * px | py << 16. */
-uint near_prev_rec() {
-#ifdef TERRAIN_CELLS
-    return cellHqFog.x;
-#else
-    return (uint(inPos.x) & 0xFFFFu) | ((uint(inPos.y) & 0xFFFFu) << 16);
-#endif
-}
-/* Record r's four previous corners (x4 fixed, sector-local). */
-void near_prev_corners(uint r, out ivec3 p0, out ivec3 p1, out ivec3 p2, out ivec3 p3) {
-    uint b = r * 6u;
-    ivec4 A = ivec4(prev_s16x2(prevRec.w[b]),      prev_s16x2(prevRec.w[b + 1u]));
-    ivec4 B = ivec4(prev_s16x2(prevRec.w[b + 2u]), prev_s16x2(prevRec.w[b + 3u]));
-    ivec4 C = ivec4(prev_s16x2(prevRec.w[b + 4u]), prev_s16x2(prevRec.w[b + 5u]));
-    p0 = A.xyz;
-    p1 = ivec3(A.w, B.x, B.y);
-    p2 = ivec3(B.z, B.w, C.x);
-    p3 = C.yzw;
 }
 #endif
 
@@ -1647,7 +1734,7 @@ void main()
      * anim stage does; every other face takes cam_rel. */
     const uint prec = near_prev_rec();
     precise vec3 lc0, lc1, lc2, lc3;
-    if (prec == PREV_REC_NONE) {
+    if (prec == PREV_REC_NONE || (near_face_flags() & FACE_F_PREV) == 0u) {
         lc0 = cam_rel(wo + cc0);
         lc1 = cam_rel(wo + cc1);
         lc2 = cam_rel(wo + cc2);
@@ -1705,7 +1792,7 @@ void main()
     /* A poly-anim sector's face with a previous-corner record: the anim
      * stage's tsc_vanim_lerp mirror on the record's corners. */
     const uint prec = near_prev_rec();
-    if (prec != PREV_REC_NONE) {
+    if (prec != PREV_REC_NONE && (near_face_flags() & FACE_F_PREV) != 0u) {
         ivec3 pc0, pc1, pc2, pc3;
         near_prev_corners(prec, pc0, pc1, pc2, pc3);
         const ivec3 cc0 = inC0.xyz;
@@ -2286,6 +2373,26 @@ void main()
         uvm[self] = uv;
         cf[ia] = unrgb(inCtxACol.x); cn[ia] = unrgb(inCtxACol.y);
         cf[ib] = unrgb(inCtxBCol.x); cn[ib] = unrgb(inCtxBCol.y);
+#ifndef TERRAIN_CELLS
+        /* A colour-table face: every member's colour from its corners'
+         * colours in the sector's table at the colour alpha, by its node
+         * (cells take theirs in cell_unpack). rgba_far holds the four
+         * corners' table indices. */
+        if ((near_face_flags() & FACE_F_COLTAB) != 0u) {
+            uvec4 ix = uvec4(round(inColFar * 255.0));
+            uvec4 qn, qf;
+            for (int q = 0; q < 4; q++) {
+                /* A triangle's slot 3 no member reads. */
+                qn[q] = ix[q] == COLTAB_BAKED ? 0u : coltab_col(slot, lp ? 0 : 1, ix[q]);
+                qf[q] = ix[q] == COLTAB_BAKED ? 0u : coltab_col(slot, lp ? 0 : 2, ix[q]);
+            }
+            for (int k = 0; k < 3; k++) {
+                int n = near_member_node(k, hqv, quad, lp, tri2n, subq);
+                cn[k] = unrgb(hq2_node_rgb(n, qn));
+                cf[k] = unrgb(hq2_node_rgb(n, qf));
+            }
+        }
+#endif
         uvm[ia] = (dbg_half == 1u) ? vec2(inCtxAUV.z, inCtxAUV.w)
                                    : vec2(inCtxAUV.x, inCtxAUV.y);
         uvm[ib] = (dbg_half == 1u) ? vec2(inCtxBUV.z, inCtxBUV.w)
@@ -2534,8 +2641,16 @@ void main()
     /* ---- colour: GTE-exact DPCS fog (flat HP); baked raw otherwise. The
      * near variant resolved this per member before its clip. ---- */
 #if defined(TERRAIN_ANIM) && !defined(TERRAIN_CELLS)
-    vec3 cfar8  = canim_col(inPrevCol.x, op_unorm8(inColFar.rgb));
-    vec3 cnear8 = canim_col(inPrevCol.y, op_unorm8(inColNear.rgb));
+    vec3 cfar8, cnear8;
+    if ((uint(inPrevPos.w) & PAD_COLTAB) != 0u) {
+        /* A colour-table corner: its colours from the sector's table. */
+        uint idx = uint(inPrevPos.w) & 0xFFu;
+        cfar8  = unrgb(coltab_col(slot, lp ? 0 : 2, idx));
+        cnear8 = unrgb(coltab_col(slot, lp ? 0 : 1, idx));
+    } else {
+        cfar8  = canim_col(inPrevCol.x, op_unorm8(inColFar.rgb));
+        cnear8 = canim_col(inPrevCol.y, op_unorm8(inColNear.rgb));
+    }
 #else
     vec3 cfar8  = op_unorm8(inColFar.rgb);
     vec3 cnear8 = op_unorm8(inColNear.rgb);

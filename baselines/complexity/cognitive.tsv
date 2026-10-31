@@ -151,9 +151,8 @@ games/common/renderer/terrain.c	terrain_compare	313	0
 games/common/renderer/terrain.c	terrain_feed_native	372	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	94	0	
-games/common/renderer/terrain.c	tgpu_bake_hp_face	27	0	
 games/common/renderer/terrain.c	tgpu_build_sector	44	0	
-games/common/renderer/terrain.c	tgpu_ensure	37	0	
+games/common/renderer/terrain.c	tgpu_ensure	36	0	
 games/common/renderer/terrain.c	tgpu_env_block	30	0	
 games/common/renderer/terrain.c	tgpu_pack_scan_faces	40	0	
 games/common/renderer/terrain.c	tn_tridump	29	0	
