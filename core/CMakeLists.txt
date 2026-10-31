@@ -135,6 +135,7 @@ add_library(openpete_core STATIC
     # imgui screens (drop, version selector, progress) it hands the game.
     launcher/library.cpp
     launcher/launcher.cpp
+    launcher/launcher_manifest.cpp
 
     # Debug and in-game UI: the O settings menu; the placement ledger for
     # on-screen chrome (six anchors, a usable-x range that dodges the open

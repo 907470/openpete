@@ -1643,6 +1643,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
+    # The launcher's checks (tests/harness/check_launcher.py), one test per
+    # case: each runs the binary windowed under its own xvfb-run display with
+    # a scratch data root of its own, so the cases run in parallel; exits 64
+    # without xvfb-run or the binary.
+    if(Python3_Interpreter_FOUND)
+        foreach(_launcher_case manifest)
+            add_test(NAME launcher_${_launcher_case}
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher.py
+                             ${_launcher_case} --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(launcher_${_launcher_case} PROPERTIES
+                LABELS "launcher"
+                TIMEOUT 900
+                SKIP_RETURN_CODE 64
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        endforeach()
+    endif()
+
     # No PSX RAM dump in the tree (scripts/fences/no-ram-dump.py). The
     # hook half refuses `git add`/`git commit` of a dump; this half scans
     # `git ls-files` by content (has_ram trace, 2 MB image, PS-X EXE) so a

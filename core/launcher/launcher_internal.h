@@ -111,4 +111,33 @@ const char* launcher_dropped_path(void);
  *         LAUNCHER_LIB_* value. */
 int library_resolve(openpete_options_t* opts, char* module_path, size_t module_cap);
 
+/** @brief Start the element manifest of the frame being drawn: drop the previous frame's elements.
+ *
+ * Called at the start of each launcher frame's draw; the frame's draws then
+ * record their elements with launcher_manifest_item. Safe to call whether or
+ * not OPENPETE_LAUNCHER_MANIFEST is set. */
+void launcher_manifest_begin(void);
+
+/** @brief Record one element of the frame being drawn under the reference layout's id for it.
+ *
+ * @param id The element's id (tests/launcher/layout-reference.json).
+ * @param kind Its kind: text, rect, bar, and the other kinds the reference layout names.
+ * @param x0 Left edge in window pixels.
+ * @param y0 Top edge.
+ * @param x1 Right edge.
+ * @param y1 Bottom edge. */
+void launcher_manifest_item(const char* id, const char* kind, float x0, float y0, float x1, float y1);
+
+/** @brief Write the drawn frame's elements to <base>.<screen>.json when OPENPETE_LAUNCHER_MANIFEST=<base> is set, once per screen tag.
+ *
+ * The file holds the screen tag, the window size in pixels and each element
+ * recorded since launcher_manifest_begin, by id, kind and rect; the write
+ * replaces the file atomically and is logged with the element count.
+ * @param tag The screen's tag index, below 32; a second call with a tag
+ *            already written does nothing.
+ * @param screen The screen's tag name, used in the file name.
+ * @param w The window width in pixels the frame was drawn at.
+ * @param h The window height. */
+void launcher_manifest_write(unsigned tag, const char* screen, float w, float h);
+
 #endif /* OPENPETE_LAUNCHER_INTERNAL_H */

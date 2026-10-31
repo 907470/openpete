@@ -24,9 +24,11 @@
 // resize or maximize the player makes here replaces the booted game's
 // fullscreen and window settings at the hand-off (carry_window_state). The
 // harness variable OPENPETE_LAUNCHER_INPUT=<ms>:<action>[,...] performs each
-// action that long after the first launcher frame: altenter and dblclick
-// post the input events, maximize, restore and resize=WxH call the window
-// operations a window manager answers.
+// action that long after the first launcher frame: altenter, dblclick and
+// quit post the input events, maximize, restore and resize=WxH call the
+// window operations a window manager answers. OPENPETE_LAUNCHER_MANIFEST=<base>
+// writes each screen's first frame's elements, by the reference layout's ids, to
+// <base>.<screen>.json (launcher_manifest.cpp).
 #include "launcher_internal.h"
 
 #include "imgui.h"
@@ -40,6 +42,7 @@
 #include "openpete_time.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -147,17 +150,32 @@ Frame frame_map() {
     return {sc, (d.x - kLayoutW * sc) * 0.5f, (d.y - kLayoutH * sc) * 0.5f};
 }
 
-/** @brief Draw one line of text horizontally centred in the layout.
+/** @brief Record the last imgui item's rect in the element manifest.
  *
+ * @param id The element's id.
+ * @param kind Its kind. */
+void manifest_last_item(const char* id, const char* kind) {
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    launcher_manifest_item(id, kind, a.x, a.y, b.x, b.y);
+}
+
+/** @brief Draw one line of text horizontally centred in the layout and record it in the element manifest.
+ *
+ * The manifest rect is the text's origin as imgui draws it (truncated to
+ * whole pixels) and its size at the pushed font.
  * @param f The frame mapping.
+ * @param id The element's manifest id.
  * @param y The line's top in layout pixels.
  * @param size The text height in layout pixels.
  * @param col The colour.
  * @param text The text. */
-void text_centred(const Frame& f, float y, float size, ImU32 col, const char* text) {
+void text_centred(const Frame& f, const char* id, float y, float size, ImU32 col, const char* text) {
     ImGui::PushFont(nullptr, size * f.scale);
     const ImVec2 sz = ImGui::CalcTextSize(text);
     ImGui::SetCursorPos(ImVec2(f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, f.oy + y * f.scale));
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float x0 = std::trunc(at.x), y0 = std::trunc(at.y);
+    launcher_manifest_item(id, "text", x0, y0, x0 + sz.x, y0 + sz.y);
     ImGui::PushStyleColor(ImGuiCol_Text, col);
     ImGui::TextUnformatted(text);
     ImGui::PopStyleColor();
@@ -200,20 +218,21 @@ const StageLook& stage_look(const char* stage) {
  * @param v The view. */
 void draw_progress(const Frame& f, const View& v) {
     const StageLook& look = stage_look(v.stage);
-    text_centred(f, 160 + kBandY, 14, IM_COL32(220, 210, 240, 255), look.banner);
+    text_centred(f, "banner", 160 + kBandY, 14, IM_COL32(220, 210, 240, 255), look.banner);
     char line[160];
     if (look.counted && v.total > 0) snprintf(line, sizeof line, "%s %d/%d", v.stage, v.done, v.total);
     else if (look.counted && v.done > 0) snprintf(line, sizeof line, "%s %d", v.stage, v.done);
     else snprintf(line, sizeof line, "%s", v.stage);
-    text_centred(f, 196 + kBandY, 14, IM_COL32_WHITE, line);
+    text_centred(f, "step", 196 + kBandY, 14, IM_COL32_WHITE, line);
     float frac = v.total > 0 ? (float)v.done / (float)v.total : 0.0f;
     if (frac > 1.0f) frac = 1.0f;
     ImGui::SetCursorPos(ImVec2(f.ox + 80 * f.scale, f.oy + (240 + kBandY) * f.scale));
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, IM_COL32(240, 138, 30, 255));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(50, 38, 80, 255));
     ImGui::ProgressBar(frac, ImVec2((kLayoutW - 160) * f.scale, 22 * f.scale), "");
+    manifest_last_item("bar", "bar");
     ImGui::PopStyleColor(2);
-    text_centred(f, 292 + kBandY, 8, IM_COL32(150, 130, 190, 255), look.footer);
+    text_centred(f, "footer", 292 + kBandY, 8, IM_COL32(150, 130, 190, 255), look.footer);
 }
 
 /** @brief Draw the drop screen: the request for the disc image, the browse button and the quit hint.
@@ -223,17 +242,18 @@ void draw_progress(const Frame& f, const View& v) {
 void draw_drop(const Frame& f, View& v) {
     const std::string name = upper_name(v);
     const std::string drag = name.empty() ? "DRAG YOUR" : "DRAG YOUR " + name;
-    text_centred(f, 160 + kBandY, 14, IM_COL32_WHITE, drag.c_str());
-    text_centred(f, 186 + kBandY, 14, IM_COL32_WHITE, "DISC IMAGE (.CUE / .BIN) HERE");
-    text_centred(f, 232 + kBandY, 8, IM_COL32(220, 210, 240, 255),
+    text_centred(f, "drag.1", 160 + kBandY, 14, IM_COL32_WHITE, drag.c_str());
+    text_centred(f, "drag.2", 186 + kBandY, 14, IM_COL32_WHITE, "DISC IMAGE (.CUE / .BIN) HERE");
+    text_centred(f, "browse.hint", 232 + kBandY, 8, IM_COL32(220, 210, 240, 255),
                  "OR PRESS SPACE / (A) TO BROWSE");
     ImGui::PushFont(nullptr, 8 * f.scale);
     ImGui::SetCursorPos(ImVec2(f.ox + (kLayoutW * 0.5f - 60) * f.scale, f.oy + (246 + kBandY) * f.scale));
     if (ImGui::Button("BROWSE...", ImVec2(120 * f.scale, 0))) v.browse = true;
+    manifest_last_item("browse.button", "rect");
     ImGui::PopFont();
-    text_centred(f, 276 + kBandY, 8, IM_COL32(150, 130, 190, 255),
+    text_centred(f, "disc.note", 276 + kBandY, 8, IM_COL32(150, 130, 190, 255),
                  "YOUR OWN DISC IS REQUIRED. NOTHING IS DOWNLOADED.");
-    text_centred(f, 300 + kBandY, 8, IM_COL32(110, 95, 150, 255), "ESC / (B) TO QUIT");
+    text_centred(f, "quit.hint", 300 + kBandY, 8, IM_COL32(110, 95, 150, 255), "ESC / (B) TO QUIT");
 }
 
 /** @brief Draw the selector: the heading, up to six entries with the selection marked, the note, the drop and browse hint, and the controls hint.
@@ -243,7 +263,7 @@ void draw_drop(const Frame& f, View& v) {
  * @param f The frame mapping.
  * @param v The view; clicked is set to the entry the mouse picked. */
 void draw_select(const Frame& f, View& v) {
-    text_centred(f, 136 + kBandY, 14, IM_COL32(220, 210, 240, 255),
+    text_centred(f, "heading", 136 + kBandY, 14, IM_COL32(220, 210, 240, 255),
                  v.games ? "CHOOSE A GAME" : "CHOOSE A VERSION");
     ImGui::PushFont(nullptr, 14 * f.scale);
     float y = 168 + kBandY;
@@ -259,10 +279,10 @@ void draw_select(const Frame& f, View& v) {
     }
     ImGui::PopFont();
     if (v.note && *v.note)
-        text_centred(f, 293 + kBandY, 8, IM_COL32(240, 138, 30, 255), v.note);
-    text_centred(f, 304 + kBandY, 8, IM_COL32(150, 130, 190, 255),
+        text_centred(f, "note", 293 + kBandY, 8, IM_COL32(240, 138, 30, 255), v.note);
+    text_centred(f, "drop.hint", 304 + kBandY, 8, IM_COL32(150, 130, 190, 255),
                  "DRAG A DISC IMAGE (.CUE / .BIN) HERE TO ADD IT - SPACE / (X) TO BROWSE");
-    text_centred(f, 320 + kBandY, 8, IM_COL32(110, 95, 150, 255),
+    text_centred(f, "controls.hint", 320 + kBandY, 8, IM_COL32(110, 95, 150, 255),
                  "UP/DOWN OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT");
 }
 
@@ -270,7 +290,7 @@ void draw_select(const Frame& f, View& v) {
  *
  * @param f The frame mapping. */
 void draw_pending(const Frame& f) {
-    text_centred(f, 168 + kBandY, 14, IM_COL32(110, 95, 150, 255), "READING YOUR LIBRARY...");
+    text_centred(f, "reading", 168 + kBandY, 14, IM_COL32(110, 95, 150, 255), "READING YOUR LIBRARY...");
 }
 
 /** @brief Draw one frame of a screen: the title lines, then the screen's content, in one borderless window over the whole display.
@@ -289,10 +309,11 @@ void draw_view(void* ud) {
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
     const Frame f = frame_map();
-    text_centred(f, 36 + kBandY, 28, IM_COL32(240, 138, 30, 255), "OPENPETE");
+    launcher_manifest_begin();
+    text_centred(f, "title", 36 + kBandY, 28, IM_COL32(240, 138, 30, 255), "OPENPETE");
     if (const std::string name = upper_name(v); !name.empty()) {
         const std::string sub = name + " PC PORT";
-        text_centred(f, 72 + kBandY, 14, IM_COL32(150, 130, 190, 255), sub.c_str());
+        text_centred(f, "subtitle", 72 + kBandY, 14, IM_COL32(150, 130, 190, 255), sub.c_str());
     }
     if (v.screen == Screen::Progress) draw_progress(f, v);
     else if (v.screen == Screen::Drop) draw_drop(f, v);
@@ -331,8 +352,11 @@ void maybe_shot(struct rhi_device* dev, int tag) {
 bool present_on(struct rhi_device* dev, View& v, int tag) {
     const bool drawn = openpete_native_launcher_present(dev, kBg[0] / 255.0f, kBg[1] / 255.0f,
                                                         kBg[2] / 255.0f, draw_view, &v) != 0;
-    if (drawn) maybe_shot(dev, tag);
-    return drawn;
+    if (!drawn) return false;
+    maybe_shot(dev, tag);
+    const ImVec2 d = ImGui::GetIO().DisplaySize;
+    launcher_manifest_write((unsigned)tag, kShotTag[tag], d.x, d.y);
+    return true;
 }
 
 void scripted_input_poll();
@@ -541,8 +565,9 @@ bool window_gesture(const SDL_Event& e) {
  *
  * altenter and dblclick post the key and mouse events a player's input
  * produces (the double-click at the bottom centre of the window, below the
- * screens' buttons and entries); maximize, restore and resize=WxH call the
- * window operations. Each action runs once. */
+ * screens' buttons and entries); quit posts the quit event closing the
+ * window does; maximize, restore and resize=WxH call the window
+ * operations. Each action runs once. */
 void scripted_input_poll() {
     static Uint64 first_ms = 0;
     static unsigned done = 0;   /* one bit per action, in list order */
@@ -580,6 +605,9 @@ void scripted_input_poll() {
             e.button.clicks = 2;
             e.button.x = (float)w * 0.5f;
             e.button.y = (float)h - 4.0f;
+            (void)SDL_PushEvent(&e);
+        } else if (a == "quit") {
+            e.type = SDL_EVENT_QUIT;
             (void)SDL_PushEvent(&e);
         } else if (a == "maximize") {
             (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_MAXIMIZE, 0, 0);
