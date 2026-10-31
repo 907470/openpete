@@ -141,6 +141,12 @@ typedef struct {
     uint32_t    backoff, retry_at;    /* refusal backoff in builds; next retry */
     int         cons_live;            /* a consolidation's sources remain     */
     uint32_t    cons_ticks;           /* canonical ticks since its adoption   */
+    uint8_t     cons_why;             /* TC_EXH_* bit of the last consolidation
+                                       * request that could not be posted     */
+    uint8_t     refused;              /* TC_EXH_GROW / CONS of the refusals since
+                                       * the arena last installed a buffer    */
+    uint8_t     exh_sites;            /* TC_EXH_* bits of this level's exhaustions */
+    uint32_t    lvl_claims;           /* claims outside windows this level    */
 } tc_arena;
 
 typedef struct { uint8_t arena, buf; uint32_t first, count, stamp; } tc_defer;
@@ -490,6 +496,7 @@ static struct {
     uint32_t         bufs_max[OPTC_ARENA_COUNT];
     uint32_t         ranges_max;
     uint32_t         consolidations, prev_grow, sealed_draws, sealed_allocs, migrate_ticks;
+    uint32_t         exhaust_warnings; /* exhaustion warning lines printed     */
     uint64_t         pinned_bytes;   /* peak bytes of emptied sources awaiting floors */
     /* builder -> device retire queue (single producer, single consumer) */
     tc_retire_ent    rq[TC_RETIRE_Q];
@@ -506,6 +513,12 @@ enum { TC_RZ_IDLE = 0, TC_RZ_READY = 1, TC_RZ_RETIRE = 2 };
 enum { TC_OVF_IDLE = 0, TC_OVF_REQ = 1, TC_OVF_BACKOFF = 2 };
 /* What an arena's outstanding request asks for. */
 enum { TC_REQ_GROW = 0, TC_REQ_CONS = 1 };
+/* Why an arena ran out of room with nothing in flight (tc_exhaust): a
+ * refused growth buffer, a refused consolidation buffer, a refused
+ * level-edge replacement, a consolidation with no empty slot, or one
+ * blocked by a previous consolidation's sources still migrating. */
+enum { TC_EXH_GROW = 1, TC_EXH_CONS = 2, TC_EXH_EDGE = 4, TC_EXH_SLOTS = 8,
+       TC_EXH_MIGRATING = 16 };
 
 /* The last stats before teardown. shutdown zeroes the module's state, so a
  * census printed at process exit would otherwise read every counter as 0
@@ -1232,9 +1245,12 @@ static int tc_range_draw_on(void)
     return on;
 }
 
+static void tc_exhaust_warn(void);
+
 void openpete_tercache_shutdown(rhi_device *dev)
 {
     if (!dev) return;
+    if (s_tc.ready) tc_exhaust_warn();
     openpete_tercache_get_stats(&s_tc_final);
     s_tc_final_valid = 1;
     if (s_tc.ring_builds)
@@ -1432,7 +1448,8 @@ static void tc_post_request(int arena, int kind, uint32_t want)
  * the refused demand; live excludes sealed buffers. From the request on, no
  * source takes an allocation, and each source retires once its chunks have
  * migrated (tc_source_retire). Refused, as by a backoff, when the arena has
- * no empty slot or a previous consolidation's sources still remain.
+ * no empty slot or a previous consolidation's sources still remain; the
+ * reason is kept in cons_why for the exhaustion warning.
  * @param arena Arena index.
  * @param demand The refused chunk's element count, or 0.
  * @return 1 when the request was posted, else 0. */
@@ -1441,7 +1458,10 @@ static int tc_request_consolidation(int arena, uint32_t demand)
     tc_arena *a = &s_tc.arena[arena];
     int empty;
     (void)tc_arena_slots(arena, &empty);
-    if (empty < 0 || a->cons_live) return 0;
+    if (empty < 0 || a->cons_live) {
+        a->cons_why = empty < 0 ? TC_EXH_SLOTS : TC_EXH_MIGRATING;
+        return 0;
+    }
     const uint64_t prim = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
                                                               memory_order_relaxed), arena);
     uint64_t want = 2u * tc_arena_live(arena);
@@ -1465,6 +1485,56 @@ static void tc_backoff(tc_arena *a)
     a->ovf_state = TC_OVF_BACKOFF;
     a->backoff = a->backoff ? (a->backoff < 1024u ? a->backoff * 2u : 1024u) : 8u;
     a->retry_at = s_tc.present_ctr + a->backoff;
+}
+
+/** @brief Record that an arena has neither a growth nor a consolidation buffer coming and start its refusal backoff.
+ *
+ * Builder thread. Until the backoff's retry, a chunk the arena refuses
+ * stays claimed to the CPU walk and counts in `claims`; the level's
+ * warning line (tc_exhaust_warn) names the arena, @p sites with the
+ * refusals since the arena last installed a buffer, and those claims.
+ * @param arena Arena index.
+ * @param sites TC_EXH_* bits naming the refusals. */
+static void tc_exhaust(int arena, unsigned sites)
+{
+    tc_arena *a = &s_tc.arena[arena];
+    a->exh_sites |= (uint8_t)(sites | a->refused);
+    tc_backoff(a);
+}
+
+/** @brief Print one warning line naming each arena that ran out of room during the level, then clear the level's record.
+ *
+ * Builder thread, at the level edge's resize request and at shutdown, so a
+ * level that exhausted any arena prints exactly one line, naming per
+ * arena the refusals (tc_exhaust) and the claims made outside every
+ * request window during the level; a level with none prints nothing.
+ * Counted in `exhaust_warnings`. */
+static void tc_exhaust_warn(void)
+{
+    static const char *const names[] = { "grow", "cons", "edge", "slots", "migrating" };
+    char line[2048];
+    size_t at = 0;
+    line[0] = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        tc_arena *ar = &s_tc.arena[a];
+        const unsigned sites = ar->exh_sites;
+        char why[64] = "";
+        for (int k = 0; k < 5; k++) {
+            const size_t l = strlen(why);
+            if (sites & (1u << k)) snprintf(why + l, sizeof why - l, "%s%s", l ? "+" : "", names[k]);
+        }
+        if (sites && at < sizeof line) {
+            const int n = snprintf(line + at, sizeof line - at, " arena %d refused %s claims %u;",
+                                   a, why, ar->lvl_claims);
+            if (n > 0) at += (size_t)n;
+        }
+        ar->exh_sites = 0;
+        ar->lvl_claims = 0;
+    }
+    if (!line[0]) return;
+    s_tc.exhaust_warnings++;
+    fprintf(stderr, "[ter-gpu] warning: arena exhaustion at level %d:%s\n",
+            atomic_load_explicit(&s_tc.level_id, memory_order_relaxed), line);
 }
 
 /** @brief Return the slot of an arena's newest buffer that takes allocations: the highest occupied slot that is not a source.
@@ -1503,7 +1573,7 @@ static void tc_request_grow(int arena, uint32_t demand)
     int empty;
     const int k = tc_arena_slots(arena, &empty);
     if (k >= tc_buf_max() || empty < 0) {
-        if (demand && !tc_request_consolidation(arena, demand)) tc_backoff(a);
+        if (demand && !tc_request_consolidation(arena, demand)) tc_exhaust(arena, a->cons_why);
         return;
     }
     uint32_t want = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
@@ -1740,7 +1810,7 @@ int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first
     tc_request_grow(arena, (uint32_t)vert_count);
     if (s_tc.rz_window) s_tc.edge_claims++;
     else if (a->ovf_state == TC_OVF_REQ) s_tc.grow_claims++;
-    else s_tc.claims[arena]++;
+    else { s_tc.claims[arena]++; a->lvl_claims++; }
     if (atomic_load_explicit(&s_tc.rz_state, memory_order_relaxed) == TC_RZ_RETIRE)
         s_tc.retire_claims++;
     return -1;   /* full: caller claims the sector back to the CPU walk */
@@ -2007,6 +2077,7 @@ static void tc_prev_release(int have_floor, uint32_t floor_serial)
 void openpete_tercache_request_resize(int level_id)
 {
     if (!s_tc.ready) return;
+    tc_exhaust_warn();
     openpete_tercache_set_level(level_id);
     s_tc.rz_window = 1;
     s_tc.rz_store_cap = s_tc.prev_cap;
@@ -2159,16 +2230,18 @@ static void tc_source_retire(void)
 static void tc_adopt_refused(int a, int kind)
 {
     tc_arena *ar = &s_tc.arena[a];
-    if (kind == TC_REQ_GROW && tc_request_consolidation(a, s_tc.ovf_want[a])) return;
-    if (kind == TC_REQ_CONS) {
-        int sealed = 0;
-        for (int b = 0; b < TC_BUF_SLOTS; b++) {
-            if (!ar->buf[b].sealed) ar->buf[b].source = 0;
-            sealed |= ar->buf[b].sealed;
-        }
-        ar->cons_live = sealed;
+    ar->refused |= kind == TC_REQ_GROW ? TC_EXH_GROW : TC_EXH_CONS;
+    if (kind == TC_REQ_GROW) {
+        if (!tc_request_consolidation(a, s_tc.ovf_want[a])) tc_exhaust(a, ar->cons_why);
+        return;
     }
-    tc_backoff(ar);
+    int sealed = 0;
+    for (int b = 0; b < TC_BUF_SLOTS; b++) {
+        if (!ar->buf[b].sealed) ar->buf[b].source = 0;
+        sealed |= ar->buf[b].sealed;
+    }
+    ar->cons_live = sealed;
+    tc_exhaust(a, 0u);
 }
 
 /** @brief Install an answered buffer in an arena slot and step the allocation epoch.
@@ -2189,6 +2262,7 @@ static void tc_install_buf(int a, int slot, tc_pair *pr, int kind)
     atomic_store_explicit(&b->pair, pr, memory_order_release);
     tc_arena_recount(a);
     ar->backoff = 0;
+    ar->refused = 0;
     if (kind == TC_REQ_CONS) s_tc.consolidations++;
     else s_tc.overflow_adopted[a]++;
     s_tc.alloc_epoch++;
@@ -2294,7 +2368,7 @@ static void tc_note_failed_edge(void)
             ar->cons_live = 0;
             if (tc_request_consolidation(a, 0u)) continue;
             ar->backoff = 0;
-            tc_backoff(ar);
+            tc_exhaust(a, TC_EXH_EDGE | ar->cons_why);
         }
         for (int b = 0; b < TC_BUF_SLOTS; b++)
             if (ar->buf[b].sealed && !ar->buf[b].source) { ar->buf[b].source = 1; ar->buf[b].zeroed = 0; }
@@ -2340,6 +2414,7 @@ static void tc_adopt_pending(void)
         ar->ovf_state = TC_OVF_IDLE;
         ar->backoff = 0;
         ar->cons_live = 0;
+        ar->refused = 0;
         s_tc.ovf_fail_logged[a] = 0;
         s_tc.rz_new[a] = NULL;
     }
@@ -3685,6 +3760,7 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->ranges_max     = s_tc.ranges_max;
     out->cen_nolist     = s_tc.cen_nolist;
     out->store_bind_refusals = atomic_load_explicit(&s_tc.bind_refusals, memory_order_relaxed);
+    out->exhaust_warnings   = s_tc.exhaust_warnings;
 }
 
 int openpete_tercache_take_bind_refusal(void)
@@ -3755,7 +3831,7 @@ void openpete_tercache_print_exit_row(void)
             "hold_takes=%u hold_misses=%u hold_drops=%u sealed_draws=%u sealed_allocs=%u "
             "svc_fulfilled=%u draws_retired=%u pinned_bytes=%llu nonlocal_bufs=%u "
             "dropped_spans=%u migrate_ticks=%u stale_bytes=%llu bufs=%s ranges_max=%u/%d "
-            "nolist=%u store_bind_refusals=%u\n",
+            "nolist=%u store_bind_refusals=%u exhaust_warnings=%u\n",
             st.bakes, st.grow, st.consolidations, st.failed_edges, st.prev_grow, st.prev_fail,
             (unsigned long long)csum, cl, st.edge_claims, st.grow_claims, st.retire_claims,
             st.prev_grow_claims, st.window_bakes, st.defer_overflow, st.hold_takes,
@@ -3763,5 +3839,5 @@ void openpete_tercache_print_exit_row(void)
             st.sealed_draws, st.sealed_allocs, st.svc_fulfilled, st.draws_retired,
             (unsigned long long)st.pinned_bytes, st.nonlocal_bufs, st.dropped_spans,
             st.migrate_ticks, (unsigned long long)st.stale_bytes, bm, st.ranges_max,
-            TC_RANGE_MAX, st.cen_nolist, st.store_bind_refusals);
+            TC_RANGE_MAX, st.cen_nolist, st.store_bind_refusals, st.exhaust_warnings);
 }

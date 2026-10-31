@@ -949,7 +949,12 @@ void openpete_tercache_prev_free(uint32_t first, int count);
  *
  * The device answers no request while a level-edge replacement is
  * requested, awaiting adoption or retiring; the replacement collapses every
- * arena back to one fresh primary sized for the incoming level. */
+ * arena back to one fresh primary sized for the incoming level.
+ *
+ * When an arena has neither a growth nor a consolidation buffer coming (a
+ * refused allocation, no empty slot, or a consolidation still migrating),
+ * it backs off and its refused chunks stay claimed; one warning line per
+ * level names each such arena, its refusals and its claims. */
 
 /* ---- level-edge arena replacement --------------------------------------- */
 /** @brief Record the incoming level and post a request to replace every arena's buffers with fresh ones.
@@ -1151,6 +1156,9 @@ typedef struct {
     uint32_t ranges_max, cen_nolist;
     /* Set-2 binds refused (openpete_tercache_take_bind_refusal); 0 expected. */
     uint32_t store_bind_refusals;
+    /* Exhaustion warning lines: one per level in which an arena had
+     * neither a growth nor a consolidation buffer coming. */
+    uint32_t exhaust_warnings;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *
@@ -1203,7 +1211,7 @@ void openpete_tercache_note_bake(void);
  * prev_grow_claims, window_bakes, defer_overflow, the hold counters,
  * sealed_draws, sealed_allocs, svc_fulfilled, draws_retired, pinned_bytes,
  * nonlocal_bufs, dropped_spans, migrate_ticks, stale_bytes, buffers per
- * arena, ranges_max and nolist. */
+ * arena, ranges_max, nolist, store_bind_refusals and exhaust_warnings. */
 void openpete_tercache_print_exit_row(void);
 
 #endif /* OPENPETE_TERRAIN_CACHE_H */
