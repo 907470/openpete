@@ -8999,13 +8999,14 @@ static int tgpu_nearvar_on(void) {
 /** @brief Tests whether near-reaching poly-anim sectors bake near-variant chunks instead of claiming to the CPU walk.
  *
  * Their near chunks name each moving face's previous corners in a record
- * the near vertex stages lerp from. Default 0: such a sector claims unless
- * OPENPETE_TERRAIN_ANIMNEAR=1; the variable is latched on the first call.
- * @return 1 when OPENPETE_TERRAIN_ANIMNEAR starts with '1'. */
+ * the near vertex stages lerp from. Default 1: such a sector claims only
+ * under OPENPETE_TERRAIN_ANIMNEAR=0; the variable is latched on the first
+ * call.
+ * @return 0 when OPENPETE_TERRAIN_ANIMNEAR starts with '0', else 1. */
 static int tgpu_animnear_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_ANIMNEAR");
-                 v = (e && *e == '1'); }
+                 v = !(e && *e == '0'); }
     return v;
 }
 /** @brief Tests whether near-reaching env-anim colour sectors bake near-variant chunks instead of claiming to the CPU walk.
@@ -10585,8 +10586,8 @@ static int tgpu_upload_sector(tgpu_slot_t* T, tgpu_buf* buf) {
 /** @brief Returns whether a sector bake emits near-variant chunks.
  *
  * A poly-anim sector bakes them into the near arenas, each moving face's
- * previous corners in a previous-corner record (tgpu_prev_rec), when
- * OPENPETE_TERRAIN_ANIMNEAR=1 (default 0); an env-anim colour sector bakes
+ * previous corners in a previous-corner record (tgpu_prev_rec), unless
+ * OPENPETE_TERRAIN_ANIMNEAR=0 (default 1); an env-anim colour sector bakes
  * them, its faces naming their corners' colours in the sector's colour
  * table (tgpu_coltab_refresh), when OPENPETE_TERRAIN_CANIMNEAR=1 (default
  * 0). A sector that is both needs both.
@@ -10601,8 +10602,8 @@ static int tgpu_bake_with_var(int want, const tscache_t* SC) {
 /** @brief Returns whether a near-reaching sector takes its near-variant chunks instead of the CPU-walk claim.
  *
  * An env-anim colour sector takes the chunks when
- * OPENPETE_TERRAIN_CANIMNEAR=1 (default 0), a poly-anim sector when
- * OPENPETE_TERRAIN_ANIMNEAR=1 (default 0); every sector claims under
+ * OPENPETE_TERRAIN_CANIMNEAR=1 (default 0), a poly-anim sector unless
+ * OPENPETE_TERRAIN_ANIMNEAR=0 (default 1); every sector claims under
  * OPENPETE_TERRAIN_NEARVAR=0.
  * @param SC The decoded sector.
  * @return 1 for the near variant, 0 for the claim. */
@@ -15089,7 +15090,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * What survives the refinement takes the NEAR VARIANT: chunks
                  * whose vertex stage re-runs the walk's near-plane clip fan
                  * and its straddle waivers, so the sector still renders from
-                 * the GPU. Under OPENPETE_TERRAIN_ANIMNEAR=1 (default 0) a
+                 * the GPU. Unless OPENPETE_TERRAIN_ANIMNEAR=0 (default 1) a
                  * poly-anim sector takes it too, its moving faces' previous
                  * corners in previous-corner records the near stage lerps
                  * from; under OPENPETE_TERRAIN_CANIMNEAR=1 (default 0) an
