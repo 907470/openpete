@@ -67,6 +67,10 @@
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
 #define OPENPETE_PSX_MATERIAL_GLSL
 
+/* The terrain source tint diagnostic (psx_src_tint.glsl), applied by the
+ * engine half after op_material(). */
+#include "psx_src_tint.glsl"
+
 #ifdef OP_PROFILE_TERRAIN
 /* ---- engine half: the retained terrain pipelines --------------------- */
 
@@ -165,7 +169,7 @@ void main()
     if (ter_key_loses()) discard;
     c = op_material(op_pack_shade());
     if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
-    op_out_color = c;
+    op_out_color = op_src_tint_cache(c);
     if (ter_attr(c)) op_out_color = c;   /* debug tint mode 7 */
 }
 
@@ -242,6 +246,8 @@ layout(location = 1) in vec4  vColor;  /* modulate 0..1  x vQ */
 layout(location = 2) in float vQ;      /* perspective ratio   */
 layout(location = 3) flat in float vKoff;  /* this face's OT key channel     */
 layout(location = 4) flat in vec2  vRank;  /* own walk rank; moby ordinal or identity */
+/* 1 on a walked terrain face under the engine's terrain source tint. */
+layout(location = 10) flat in float vSrcWalk;
 
 layout(location = 0) out vec4 op_out_color;
 
@@ -369,7 +375,7 @@ void main()
     }
     vec4 c = op_material(op_pack_shade());
     if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
-    op_out_color = c;
+    op_out_color = op_src_tint_scene(c, vSrcWalk);
 }
 
 #endif /* OP_PROFILE_TERRAIN */

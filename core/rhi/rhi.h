@@ -599,6 +599,17 @@ bool        rhi_device_has_float64(const rhi_device *dev);
  * @param dev Device, or NULL.
  * @return The limit; 0 for NULL. */
 uint32_t    rhi_device_max_descriptor_sets(const rhi_device *dev);
+/** @brief Return the terrain source tint's blend in thousandths, 0 when the instrument is off.
+ *
+ * OPENPETE_TERRAIN_SOURCE_TINT=1 arms it: every terrain fragment the
+ * retained terrain cache draws mixes toward green and every one the CPU
+ * walk draws toward red, after the stock shading (psx_src_tint.glsl).
+ * OPENPETE_TERRAIN_SOURCE_TINT_ALPHA=<0..1> sets the blend (default 0.4;
+ * 0 turns the instrument off). The value is specialization constant 6 of
+ * every stage that declares it, and the scene packer marks walked terrain
+ * vertices while it is nonzero. Read once per process.
+ * @return 0 to 1000. */
+int32_t     rhi_terrain_source_tint(void);
 /** @brief Return whether fillModeNonSolid is enabled on this device.
  *
  * With it, pipelines may rasterize with VK_POLYGON_MODE_LINE (the wireframe

@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_unorm8.glsl"
 #include "psx_viewz.glsl"
+#include "psx_src_tint.glsl"
 
 /* Scene textured vertex stage - PERSPECTIVE-CORRECT UV/colour with
  * CLIP-INVARIANT depth.
@@ -55,6 +56,8 @@ layout(location = 1) out vec4 vColor;
 layout(location = 2) out float vQ;
 layout(location = 3) flat out float vKoff;
 layout(location = 4) flat out vec2 vRank;
+/* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
+layout(location = 10) flat out float vSrcWalk;
 
 /* Scene depth convention, chosen at pipeline creation (RHI spec constant 0,
  * from the pipeline's depth class and the device's depth format): true =
@@ -72,7 +75,7 @@ layout(constant_id = 1) const bool AFFINE_UV = false;
 void main()
 {
     float vzo = op_scene_vz(inPos.z);                /* ordering view-Z (depth) */
-    float Wu  = max(inW, 1.0);                        /* UV/colour perspective W */
+    float Wu  = max(op_src_tint_w(inW), 1.0);         /* UV/colour perspective W */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
     gl_Position = op_scene_clip(inPos.xy, vzo, AFFINE_UV, DEPTH_REVERSED);
     vUV = inUV * q;
@@ -80,4 +83,5 @@ void main()
     vQ = q;
     vKoff = inKoff;
     vRank = inRank;
+    vSrcWalk = op_src_tint_walked(inW);
 }

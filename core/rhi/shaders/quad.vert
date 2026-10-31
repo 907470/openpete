@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_viewz.glsl"
+#include "psx_src_tint.glsl"
 #include "psx_unorm8.glsl"
 
 /* Vertex-coloured scene stage - PERSPECTIVE-CORRECT (matches psx_scene.vert).
@@ -35,6 +36,8 @@ layout(location = 5) in float inKoff;
  * rank (>=1; 0 = unranked), y = present-local moby ordinal. */
 layout(location = 3) in vec2 inRank;
 layout(location = 5) flat out vec2 vRank;
+/* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
+layout(location = 10) flat out float vSrcWalk;
 
 /* Scene depth convention (RHI spec constant 0) - see psx_scene.vert. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
@@ -54,7 +57,7 @@ void main()
      * for the failure this prevents). Colour perspective in inW is recovered
      * via the vQ ratio in the fragment stage. */
     float vzo = op_scene_vz(inPos.z);                /* ordering view-Z (depth) */
-    float Wu  = max(inW, 1.0);                        /* colour perspective W   */
+    float Wu  = max(op_src_tint_w(inW), 1.0);         /* colour perspective W   */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
     gl_Position = op_scene_clip(inPos.xy, vzo, AFFINE_UV, DEPTH_REVERSED);
     vColor = op_unorm8(inColor) * q;
@@ -62,4 +65,5 @@ void main()
     vQ = q;
     vKoff = inKoff;
     vRank = inRank;
+    vSrcWalk = op_src_tint_walked(inW);
 }

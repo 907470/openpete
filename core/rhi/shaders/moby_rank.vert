@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_src_tint.glsl"
 
 /* Moby RANK pass vertex stage: rasterise ranked moby faces with depth =
  * their og OT walk RANK (later paint = nearer), into the RGBA8 rank image
@@ -36,9 +38,9 @@ void main()
 {
     float r = clamp(inRank.x, 0.0, 65534.0);
     gl_Position = vec4(inPos.xy, 1.0 - (r + 1.0) / 65536.0, 1.0);
-    float wq = AFFINE_UV ? 1.0 : max(inW, 1.0);
+    float wq = AFFINE_UV ? 1.0 : max(op_src_tint_w(inW), 1.0);
     vRank = inRank;
     vUV = inUV / wq;
     vQ = 1.0 / wq;
-    vVz = max(inW, 1.0);
+    vVz = max(op_src_tint_w(inW), 1.0);
 }

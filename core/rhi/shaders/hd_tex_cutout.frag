@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#include "psx_src_tint.glsl"
 #ifdef OP_MOBY_SHELL
 /* The _shell variant (opaque ACTOR faces): moby_shell.glsl. */
 #include "moby_shell.glsl"
@@ -45,6 +46,8 @@ layout(location = 3) flat in float vKoff; /* terrain og-key offset (see psx_scen
 layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal */
 
 layout(location = 0) out vec4 outColor;
+/* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
+layout(location = 10) flat in float vSrcWalk;
 
 /* gl_FragCoord.z convention - see psx_scene_key.frag. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
@@ -142,5 +145,5 @@ void main()
         c.rgb = clamp(c.rgb * pc.fogA.rgb + pc.fogB.rgb, 0.0, 1.0);
     }
     vec3 rgb = clamp(c.rgb * vColor.rgb * (255.0 / 128.0), 0.0, 1.0);
-    outColor = vec4(rgb, 1.0);
+    outColor = op_src_tint_scene(vec4(rgb, 1.0), vSrcWalk);
 }

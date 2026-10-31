@@ -8616,6 +8616,8 @@ static inline float scene_key_channel(const scene_tri_t *st)
  *
  * The one vertex layout every scene pass of draw_native_scene and the depth
  * pre-pass upload.
+ * Under the terrain source tint (rhi_terrain_source_tint) the sign of w
+ * marks a terrain-tagged face.
  * @param o Destination vertex.
  * @param st Scene triangle.
  * @param k Vertex index, 0 to 2.
@@ -8630,6 +8632,13 @@ static inline void pack_scene_vert(rhi_vertex *o, const scene_tri_t *st, int k, 
     o->rgba = st->v[k].rgba; o->koff = scene_key_channel(st);
     o->sx = scene_rank_channel(st); o->sy = scene_rank_moby(st);
     rv_drain(o, st, k);
+    if (rhi_terrain_source_tint()) {
+        /* The terrain source tint's walked-terrain mark (psx_src_tint.glsl):
+         * a terrain-tagged face carries -max(w, 1), every other face
+         * max(w, 1), so every stage's max(|w|, 1) reads the stock value. */
+        const float w = o->w > 1.0f ? o->w : 1.0f;
+        o->w = (st->tag >> 28) == 2u ? -w : w;
+    }
 }
 
 /** @brief Pack the three vertices of st into o[0..2] with UV 0 (pack_scene_vert). */

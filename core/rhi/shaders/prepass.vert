@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_src_tint.glsl"
 
 /* WORLD-opaque depth PRE-PASS vertex stage (the shadow-decal occluder source).
  *
@@ -39,7 +41,7 @@ void main()
      * units deeper drapes the shadow onto phantom ground). And the (z, W)
      * pair must be matched or the clipper corrupts the depth of partially
      * off-screen triangles (see psx_scene.vert). */
-    float Wt = max(inW, 1.0);
+    float Wt = max(op_src_tint_w(inW), 1.0);
     gl_Position = vec4(inPos.xy * Wt, Wt - 1.0, Wt);  /* z_ndc = 1 - 1/Wt */
     vColor = inColor;
     /* W is the true view-Z, psx_scene.vert's UV perspective W, so plain

@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#include "psx_src_tint.glsl"
 #ifdef OP_MOBY_SHELL
 /* The _shell variant (opaque ACTOR faces): moby_shell.glsl. */
 #include "moby_shell.glsl"
@@ -34,6 +35,8 @@ layout(location = 5) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = mo
                                            * (ranked) or moby identity (unranked actor) */
 
 layout(location = 0) out vec4 outColor;
+/* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
+layout(location = 10) flat in float vSrcWalk;
 
 #ifdef OP_PORTAL_COVER
 /* The _cover variant (blended terrain): portal_cover_scene.glsl. */
@@ -119,4 +122,5 @@ void main()
         : 0;
     if (ko == 1) discard;
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vColor / vQ;
+    outColor = op_src_tint_scene(outColor, vSrcWalk);
 }

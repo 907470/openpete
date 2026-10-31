@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_viewz.glsl"
+#include "psx_src_tint.glsl"
 #include "psx_key_contest.glsl"
 
 /* Terrain KEY pass vertex stage: rasterise opaque keyed terrain with depth =
@@ -69,7 +70,7 @@ void main()
     float vz = op_scene_vz(inPos.z);
     float kv = vz + max(abs(inKoff) - 0.5, 0.0);   /* og key view-Z */
     gl_Position = op_key_clip(inPos.xy, inPos.z, kv);   /* z_ndc = op_key_store(kv), or the band value */
-    float wq = AFFINE_UV ? 1.0 : max(inW, 1.0);
+    float wq = AFFINE_UV ? 1.0 : max(op_src_tint_w(inW), 1.0);
     vColor = inColor;
     vUV = inUV / wq;
     vScreenPSX = inUV;
@@ -78,7 +79,7 @@ void main()
     bool band = op_pkey_is(inPos.z);
     vKv = band ? inPos.z : kv;
     vIdent = inColor;
-    vIz = 1.0 / max(inW, 1.0);
+    vIz = 1.0 / max(op_src_tint_w(inW), 1.0);
     vCls = op_key_class_walk(inRank.x);
     vKeyForm = band ? OP_KEY_FORM_BAND : inKoff > 0.0 ? OP_KEY_FORM_FLAT : OP_KEY_FORM_TRUE;
 }

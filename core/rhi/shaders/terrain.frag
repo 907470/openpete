@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #define OP_TERRAIN_ACTOR_KEY 1
 #include "terrain_shade.glsl"
+#include "psx_src_tint.glsl"
 
 /* Terrain sector-mesh fragment stage. Everything it does lives in
  * terrain_shade.glsl, shared with the material tier's terrain engine half so
@@ -23,5 +24,6 @@ void main()
     if (c.a == 0.0) discard;              /* PSX transparent-texel sentinel */
     outColor = ko == 2 ? vec4(0.0, 1.0, 1.0, 1.0) : c;
     if (op_key_tier_hit >= 0.0) outColor = op_key_tier_mark(op_key_tier_hit);
+    outColor = op_src_tint_cache(outColor);
     if (ter_attr(c)) outColor = c;        /* debug tint mode 7 */
 }

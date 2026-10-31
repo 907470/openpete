@@ -7831,10 +7831,31 @@ static int32_t key_tier_order(void)
     return v;
 }
 
+int32_t rhi_terrain_source_tint(void)
+{
+    static _Atomic int32_t s_tint = -1;    /* any compile thread reads it */
+    int32_t v = s_tint;
+    if (v < 0) {
+        const char *e = getenv("OPENPETE_TERRAIN_SOURCE_TINT");
+        v = 0;
+        if (e && *e && *e != '0') {
+            const char *a = getenv("OPENPETE_TERRAIN_SOURCE_TINT_ALPHA");
+            double al = (a && *a) ? atof(a) : 0.4;
+            al = al < 0.0 ? 0.0 : (al > 1.0 ? 1.0 : al);
+            v = (int32_t)(al * 1000.0 + 0.5);
+        }
+        int32_t unset = -1;
+        if (atomic_compare_exchange_strong(&s_tint, &unset, v) && v != 0)
+            RHI_LOG("OPENPETE_TERRAIN_SOURCE_TINT: retained terrain green, walked terrain "
+                    "red, blend %.3f\n", v / 1000.0);
+    }
+    return v;
+}
+
 /** @brief Fill a stage's specialization info with only the constants it declares.
  *
- * Ids 0-5 take the variant's values and id 7 (OP_KEY_TIER_ORDER)
- * key_tier_order(); no stage declares id 6.
+ * Ids 0-5 take the variant's values, id 6 (OP_SRC_TINT)
+ * rhi_terrain_source_tint() and id 7 (OP_KEY_TIER_ORDER) key_tier_order().
  * @param s Storage.
  * @param ids The stage's declared constant ids (bit i = constant_id i).
  * @param c The six variant constant values.
@@ -7846,7 +7867,8 @@ static const VkSpecializationInfo *stage_spec_fill(stage_spec *s, uint32_t ids, 
         if (!((ids >> i) & 1u)) continue;
         s->e[n] = (VkSpecializationMapEntry){ .constantID = i, .offset = n * (uint32_t)sizeof(VkBool32),
                                               .size = sizeof(VkBool32) };
-        s->d[n] = i < 6 ? c[i] : (uint32_t)key_tier_order();
+        s->d[n] = i < 6 ? c[i] : i == 6 ? (uint32_t)rhi_terrain_source_tint()
+                                        : (uint32_t)key_tier_order();
         n++;
     }
     s->info = (VkSpecializationInfo){ .mapEntryCount = n, .pMapEntries = s->e,

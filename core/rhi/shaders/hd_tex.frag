@@ -1,7 +1,6 @@
 #version 450
-#ifdef OP_PORTAL_COVER
 #extension GL_GOOGLE_include_directive : require
-#endif
+#include "psx_src_tint.glsl"
 
 /* HD texture replacement: samples a host RGBA8 replacement texture instead
  * of the PSX VRAM decode. UVs arrive in PSX texel units (same vertex path as
@@ -26,6 +25,8 @@ layout(location = 1) in vec4 vColorq; /* per-vertex modulate x ratio (divide by 
 layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) */
 
 layout(location = 0) out vec4 outColor;
+/* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
+layout(location = 10) flat in float vSrcWalk;
 
 #ifdef OP_PORTAL_COVER
 /* The _cover variant (blended terrain): portal_cover_scene.glsl, with the
@@ -54,5 +55,5 @@ void main()
      * fields exist so both pipes share one push layout. */
     c.rgb = clamp(c.rgb * pc.fogA.rgb + pc.fogB.rgb, 0.0, 1.0);
     vec3 rgb = clamp(c.rgb * vColor.rgb * (255.0 / 128.0), 0.0, 1.0);
-    outColor = vec4(rgb, c.a);
+    outColor = op_src_tint_scene(vec4(rgb, c.a), vSrcWalk);
 }

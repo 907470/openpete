@@ -4,6 +4,7 @@
 #include "psx_texel.glsl"
 #include "psx_key_contest.glsl"
 #include "psx_hq_fog.glsl"
+#include "psx_src_tint.glsl"
 
 /* Textured native-scene fragment stage.
  *
@@ -34,6 +35,8 @@ layout(location = 1) in vec4 vColor;  /* per-vertex modulate x ratio (divide by 
 layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) */
 
 layout(location = 0) out vec4 outColor;
+/* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
+layout(location = 10) flat in float vSrcWalk;
 
 /* Untextured lighting view (rhi_set_notex): replace the texel colour with the
  * modulation-neutral grey (128/255) so out = the raw gouraud vertex colour -
@@ -103,5 +106,5 @@ void main()
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     rgb = clut_fog_mix(rgb, col, ti.x, ti.y);
-    outColor = vec4(rgb, c.a);
+    outColor = op_src_tint_scene(vec4(rgb, c.a), vSrcWalk);
 }

@@ -17,6 +17,8 @@ layout(std430, set = 2, binding = 0) readonly buffer OpStorageVerts {
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
 layout(location = 3) out float vQ;
+/* quad.frag's walked-terrain mark (psx_src_tint.glsl): never terrain. */
+layout(location = 10) flat out float vSrcWalk;
 
 void main()
 {
@@ -25,4 +27,5 @@ void main()
     vColor = r.color;
     vUV = vec2(0.0);
     vQ = 1.0;
+    vSrcWalk = 0.0;
 }

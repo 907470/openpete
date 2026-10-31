@@ -12,6 +12,7 @@
 #include "psx_clut.glsl"
 #include "psx_hq_fog.glsl"
 #include "psx_texel.glsl"
+#include "psx_src_tint.glsl"
 
 /* Textured OPAQUE scene fragment stage with the terrain KEY-RESOLVE contest.
  *
@@ -72,6 +73,8 @@ layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = mo
                                            * or drain record tag (terrain) */
 
 layout(location = 0) out vec4 outColor;
+/* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
+layout(location = 10) flat in float vSrcWalk;
 
 /* Depth convention of gl_FragCoord.z (the vertex stage's selection, see
  * op_scene_clip): needed to invert the fragment's own window depth back to
@@ -208,4 +211,5 @@ void main()
     rgb = clut_fog_mix(rgb, col, ti.x, ti.y);
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(rgb, c.a);
     if (op_key_tier_hit >= 0.0) outColor = op_key_tier_mark(op_key_tier_hit);
+    outColor = op_src_tint_scene(outColor, vSrcWalk);
 }

@@ -34,7 +34,8 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl
                         ${RHI_SHADER_SRC_DIR}/prepass_pack.glsl
                         ${RHI_SHADER_SRC_DIR}/moby_shell.glsl
-                        ${RHI_SHADER_SRC_DIR}/psx_moby_snap.glsl)
+                        ${RHI_SHADER_SRC_DIR}/psx_moby_snap.glsl
+                        ${RHI_SHADER_SRC_DIR}/psx_src_tint.glsl)
 # terrain.vert and its four variants are rewritten to SSA form after
 # glslangValidator: every function-local variable whose loads and stores are
 # whole-value is promoted to an SSA value (spirv-opt's local single-block and
