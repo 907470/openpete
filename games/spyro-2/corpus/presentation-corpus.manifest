@@ -191,3 +191,8 @@ idol-springs-level-entry|3000|200||3060,3120
 # Cutscene letterbox bars growing 2 PSX rows per tick (VBL 1413-1435): the
 # intermediate leg must show them between the two ticks. Blessed pre-fix.
 riptos_arena-letterbox|1413|2||1415,1425|--skip-to-level riptos_arena
+# settings-menu: the settings menu (OPENPETE_MENU_DEMO opens it at boot)
+# drawn into the capture by --screenshot-overlays, over summer_forest. Its text is
+# the credits font's glyph models, read from WAD.WAD on the disc
+# (text_moby.c, GAME_FONT_WAD_MODEL).
+settings-menu|2073|100||2073|--skip-to-level summer_forest OPENPETE_MENU_DEMO=1 --screenshot-overlays

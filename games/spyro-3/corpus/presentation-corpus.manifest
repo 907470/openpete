@@ -362,3 +362,8 @@ bamboo-terrace-stilts-hedge|2829|2||2829|OPENPETE_FREECAM_AT_VBL=2600 OPENPETE_F
 # by an amount that changes every tick, so a spinning star's shape changes at
 # each tick by more than its spin while the camera is still. Blessed pre-fix.
 sunrise-spring-surface-swim@glintstill|1855|2||1855,1857|OPENPETE_FREECAM=1 OPENPETE_FREECAM_AT_VBL=1845
+# settings-menu: the settings menu (OPENPETE_MENU_DEMO opens it at boot)
+# drawn into the capture by --screenshot-overlays, over sunrise_spring. Its text is
+# the credits font's glyph models, read from WAD.WAD on the disc
+# (text_moby.c, GAME_FONT_WAD_MODEL).
+settings-menu|2073|100||2073|--skip-to-level sunrise_spring OPENPETE_MENU_DEMO=1 --screenshot-overlays
