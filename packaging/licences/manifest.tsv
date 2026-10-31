@@ -30,6 +30,7 @@ stb_image / stb_image_write	all	packaging/licences/stb.txt	stb.txt
 libco	all	packaging/licences/libco.txt	libco.txt
 xxHash	all	packaging/licences/xxhash.txt	xxHash.txt
 Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`)	all	third_party/imgui/LICENSE.txt	imgui.txt
+Fredoka Medium (the launcher's body font, embedded; a static instance of `Fredoka[wdth,wght].ttf`)	all	packaging/licences/fredoka-ofl.txt	Fredoka-OFL.txt
 dear_bindings (generated C API; SDK header `sdk/dcimgui.h`)	all	third_party/dear_bindings/LICENSE.txt	dear_bindings.txt
 glslang 15.4.0	all	third_party/glslang/LICENSE.txt	glslang.txt
 glad 0.1.36 (GL loader, generated, vendored in PsyCross)	all	packaging/licences/glad.txt	glad.txt

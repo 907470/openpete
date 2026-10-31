@@ -140,4 +140,17 @@ void launcher_manifest_item(const char* id, const char* kind, float x0, float y0
  * @param h The window height. */
 void launcher_manifest_write(unsigned tag, const char* screen, float w, float h);
 
+struct ImFont;
+
+/** @brief Return the launcher's body font, Fredoka Medium, adding it to the current imgui context on the first call.
+ *
+ * The font is embedded in the executable. The first call with an imgui
+ * context adds imgui's default font first when the atlas is empty and names
+ * the default font io.FontDefault, so the body font is never the default the
+ * dev overlay and the pixel title draw with; it logs the body font's name
+ * and the default font's. A failed add is logged and not retried.
+ * @return The font, or NULL without an imgui context or when it could not
+ *         be added. */
+ImFont* launcher_body_font(void);
+
 #endif /* OPENPETE_LAUNCHER_INTERNAL_H */

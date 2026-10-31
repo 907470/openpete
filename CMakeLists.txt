@@ -1656,7 +1656,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         endif()
     endif()
     if(Python3_Interpreter_FOUND)
-        foreach(_launcher_case manifest layout handoff window-fit window-default)
+        foreach(_launcher_case manifest layout handoff window-fit window-default font)
             add_test(NAME launcher_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher.py

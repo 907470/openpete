@@ -39,5 +39,11 @@ access to your files and network as the game itself. There is no sandbox.
 Install only mods you trust, as you would any other program. A mod without a
 `src/` folder never runs code.
 
+## Credits
+
+The launcher's text is set in Fredoka, by The Fredoka Project Authors,
+under the SIL Open Font License 1.1 (`licences/Fredoka-OFL.txt`). The
+third-party components and their licences are listed in `NOTICE.md`.
+
 OpenPete is not affiliated with Sony, Insomniac Games, or Activision. Spyro
 the Dragon is a trademark of its respective owners.

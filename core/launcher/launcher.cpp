@@ -151,6 +151,19 @@ Frame frame_map() {
     return {sc, (d.x - kLayoutW * sc) * 0.5f, (d.y - kLayoutH * sc) * 0.5f};
 }
 
+/* Fredoka's capitals are 700/1210 of its line, ProggyClean's 8/13: the body
+ * font is pushed this much larger than a layout size so its capitals stand
+ * as tall as ProggyClean's at that size. */
+constexpr float kBodyScale = (8.0f / 13.0f) / (700.0f / 1210.0f);
+
+/** @brief Push the body font (launcher_body_font) at a size whose capitals match ProggyClean's at @p px, or the current font at @p px when the body font is not loaded.
+ *
+ * @param px The text size in window pixels, as ProggyClean would be drawn. */
+void push_body_font(float px) {
+    if (ImFont* body = launcher_body_font()) ImGui::PushFont(body, px * kBodyScale);
+    else ImGui::PushFont(nullptr, px);
+}
+
 /** @brief Record the last imgui item's rect in the element manifest.
  *
  * @param id The element's id.
@@ -167,11 +180,12 @@ void manifest_last_item(const char* id, const char* kind) {
  * @param f The frame mapping.
  * @param id The element's manifest id.
  * @param y The line's top in layout pixels.
- * @param size The text height in layout pixels.
+ * @param size The text height in layout pixels, as ProggyClean; the body
+ *             font draws at the size whose capitals match (push_body_font).
  * @param col The colour.
  * @param text The text. */
 void text_centred(const Frame& f, const char* id, float y, float size, ImU32 col, const char* text) {
-    ImGui::PushFont(nullptr, size * f.scale);
+    push_body_font(size * f.scale);
     const ImVec2 sz = ImGui::CalcTextSize(text);
     ImGui::SetCursorPos(ImVec2(f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, f.oy + y * f.scale));
     const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -247,7 +261,7 @@ void draw_drop(const Frame& f, View& v) {
     text_centred(f, "drag.2", 186 + kBandY, 14, IM_COL32_WHITE, "DISC IMAGE (.CUE / .BIN) HERE");
     text_centred(f, "browse.hint", 232 + kBandY, 8, IM_COL32(220, 210, 240, 255),
                  "OR PRESS SPACE / (A) TO BROWSE");
-    ImGui::PushFont(nullptr, 8 * f.scale);
+    push_body_font(8 * f.scale);
     ImGui::SetCursorPos(ImVec2(f.ox + (kLayoutW * 0.5f - 60) * f.scale, f.oy + (246 + kBandY) * f.scale));
     if (ImGui::Button("BROWSE...", ImVec2(120 * f.scale, 0))) v.browse = true;
     manifest_last_item("browse.button", "rect");
@@ -266,7 +280,7 @@ void draw_drop(const Frame& f, View& v) {
 void draw_select(const Frame& f, View& v) {
     text_centred(f, "heading", 136 + kBandY, 14, IM_COL32(220, 210, 240, 255),
                  v.games ? "CHOOSE A GAME" : "CHOOSE A VERSION");
-    ImGui::PushFont(nullptr, 14 * f.scale);
+    push_body_font(14 * f.scale);
     float y = 168 + kBandY;
     for (int i = 0; i < v.count && i < 6; i++, y += 22) {
         ImGui::SetCursorPos(ImVec2(f.ox + 120 * f.scale, f.oy + y * f.scale));
@@ -575,6 +589,7 @@ int launcher_open(const openpete_options_t* opts, int continues) {
         return -1;
     }
     window_state_init(opts, w, h, open);
+    (void)launcher_body_font();
     launcher_stamp(LAUNCHER_EV_WINDOW);
     open_first_gamepad();
     if (!s.handed_off) (void)openpete_native_launcher_precompile_start(opts);

@@ -257,6 +257,10 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
     openpete_keymap_action_label(OPK_DEVUI, key, sizeof key);
     OPL_INFO_F("devui", "dev config overlay ready (%s toggles)%s", key,
                s_open ? " - open at boot (--devui-open)" : "");
+    const ImGuiIO &io = ImGui::GetIO();
+    const ImFont *font = io.FontDefault ? io.FontDefault
+                         : io.Fonts->Fonts.Size ? io.Fonts->Fonts[0] : nullptr;
+    OPL_INFO_F("devui", "overlay font: %s", font ? font->GetDebugName() : "imgui's default (none added yet)");
     return 1;
 }
 

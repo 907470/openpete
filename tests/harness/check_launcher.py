@@ -80,6 +80,17 @@ Cases:
             --config file; --window maximized opens it maximized at 1280x800;
             a window value under [game.spyro-1] does not apply (1280x800). The size and maximized state the
             launcher device was created at are asserted.
+  font      The body font: an empty-library launch logs the body font as
+            Fredoka Medium with ProggyClean the default font, and the drop
+            screen's 14-layout-px lines stand at Fredoka's cap-matched size
+            (round(14 x scale x (8/13)/(700/1210)) px tall) while the title
+            keeps its whole-pixel cells; no font file sits beside the
+            executable; after a pick hands the window to the game, the dev
+            overlay logs ProggyClean as its font; the licence staging every
+            package runs (scripts/dist_compliance.py licences --scope all)
+            writes licences/Fredoka-OFL.txt identical to
+            packaging/licences/fredoka-ofl.txt; packaging/README-dist.md.in
+            credits Fredoka.
   calibrate Not a ctest case: compares the drop screen with a reference
             manifest of the same screen (--calibration PATH: per preset, a
             "drop" list of id/kind/rect items), printing each element's rect
@@ -505,6 +516,55 @@ def case_layout(a):
     return 1 if bad else 0
 
 
+BODY_SCALE = (8 / 13) / (700 / 1210)   # Fredoka's capitals matched to ProggyClean's
+
+
+def case_font(a):
+    """The embedded body font, the overlay's default font after the hand-off, and the licence."""
+    d = case_dir(a.out, "font")
+    bad = []
+    m, rc = drop_manifest(a.binary, d, "1280x800")
+    with open(os.path.join(d, "drop-1280x800.log"), errors="replace") as f:
+        log = f.read()
+    if not re.search(r"launcher: body font Fredoka Medium \(embedded, \d+ bytes base85\); default font ProggyClean", log):
+        bad.append("the launcher logged no Fredoka body font beside the ProggyClean default")
+    sc = min(1280 / 640, 800 / 448)
+    want = round(14 * sc * BODY_SCALE)
+    lines = {it["id"]: it["rect"] for it in (m or {}).get("items", [])}
+    for i in ("drag.1", "drag.2"):
+        r = lines.get(i)
+        if r is None or round(r[3] - r[1]) != want:
+            bad.append(f"{i}: height {r and r[3] - r[1]}, expected {want} (Fredoka at the cap-matched size)")
+    fonts = [n for n in os.listdir(a.build_dir) if n.lower().endswith((".ttf", ".otf", ".ttc", ".woff", ".woff2"))]
+    if fonts:
+        bad.append(f"font files beside the executable: {fonts}")
+    run = os.path.join(d, "handoff")
+    os.makedirs(run)
+    seed_library(run)
+    rc, log = launch(a.binary, run, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"],
+                     {"OPENPETE_LAUNCHER_SELECT": "0"}, timeout=300)
+    ov = re.search(r"devui: overlay font: (\S+)", log)
+    if not ov or not ov.group(1).startswith("ProggyClean"):
+        bad.append(f"the dev overlay's font after the hand-off is {ov and ov.group(1)} (rc {rc})")
+    stage = os.path.join(d, "stage")
+    os.makedirs(stage)
+    r = subprocess.run([sys.executable, "scripts/dist_compliance.py", "licences", "--stage", stage, "--scope", "all"],
+                       cwd=ROOT, capture_output=True, text=True)
+    shipped = os.path.join(stage, "licences", "Fredoka-OFL.txt")
+    src = os.path.join(ROOT, "packaging", "licences", "fredoka-ofl.txt")
+    if r.returncode != 0 or not os.path.isfile(shipped) or open(shipped, "rb").read() != open(src, "rb").read():
+        bad.append(f"licence staging: rc {r.returncode}, {shipped} {'present' if os.path.isfile(shipped) else 'missing'}")
+    with open(os.path.join(ROOT, "packaging", "README-dist.md.in")) as f:
+        if "Fredoka" not in f.read():
+            bad.append("packaging/README-dist.md.in does not credit Fredoka")
+    print(f"[launcher] body lines {[(i, lines.get(i)) for i in ('drag.1', 'drag.2')]} expected height {want}; "
+          f"overlay font {ov and ov.group(1)}; licence staged {os.path.isfile(shipped)}")
+    for b in bad:
+        print("[launcher] FAIL", b)
+    print(f"[launcher] font: {'FAIL' if bad else 'PASS'}")
+    return 1 if bad else 0
+
+
 def check_reference_file():
     """Problems with the reference layout manifest, as strings."""
     m = read_json(REFERENCE)
@@ -587,7 +647,7 @@ def case_calibrate(a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("case", choices=["manifest", "layout", "handoff", "window-fit", "window-default",
-                                     "calibrate"])
+                                     "font", "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--calibration", default=None)
@@ -600,7 +660,8 @@ def main():
     try:
         return {"manifest": case_manifest, "layout": case_layout, "handoff": case_handoff,
                 "window-fit": case_window_fit,
-                "window-default": case_window_default, "calibrate": case_calibrate}[a.case](a)
+                "window-default": case_window_default, "font": case_font,
+                "calibrate": case_calibrate}[a.case](a)
     except Skip as e:
         print(f"[launcher] SKIP: {e}")
         return 64

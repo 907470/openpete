@@ -23,6 +23,7 @@ each row to its text, and packaging fails on a row with no text.
 | xxHash                               | BSD-2-Clause                                   | https://github.com/Cyan4973/xxHash                                                          |
 | Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`) | MIT                               | https://github.com/ocornut/imgui                                                            |
 | dear_bindings (generated C API; SDK header `sdk/dcimgui.h`) | MIT                         | https://github.com/dearimgui/dear_bindings                                                  |
+| Fredoka Medium (the launcher's body font, embedded; a static instance of `Fredoka[wdth,wght].ttf`) | SIL Open Font License 1.1 | https://github.com/google/fonts/tree/main/ofl/fredoka |
 | glslang 15.4.0                       | BSD-3-Clause / BSD-2-Clause / MIT / Apache-2.0 / GPL-3.0 with Bison exception (per file; `LICENSE.txt`) | https://github.com/KhronosGroup/glslang |
 | glad 0.1.36 (GL loader, generated, vendored in PsyCross) | MIT                        | https://github.com/Dav1dde/glad                                                             |
 | volk (Vulkan loader)                 | MIT                                            | https://github.com/zeux/volk                                                                |
