@@ -41,6 +41,7 @@
 #include "openpete_native_render.h"
 #include "openpete_time.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -293,9 +294,36 @@ void draw_pending(const Frame& f) {
     text_centred(f, "reading", 168 + kBandY, 14, IM_COL32(110, 95, 150, 255), "READING YOUR LIBRARY...");
 }
 
-/** @brief Draw one frame of a screen: the title lines, then the screen's content, in one borderless window over the whole display.
+/* The pixel title: ProggyClean at kTitleScale times the 28 layout px the
+ * screens were first drawn at, its top kTitleTop layout px below the band's
+ * top. */
+constexpr float kTitleScale = 2.4f;
+constexpr float kTitleTop = 8.0f;
+
+/** @brief Draw the pixel title OPENPETE centred in the layout band in whole-pixel cells, and record it in the element manifest.
  *
- * The game's subtitle line is left out while the launcher names no game.
+ * ProggyClean's outlines are squares of 128 font units, 13 to its pixel
+ * height, so drawn at 13 x c pixels each font pixel covers exactly c x c
+ * window pixels and every edge is sharp. c is the title size (28 x
+ * kTitleScale layout px) over 13, rounded to a whole pixel, at least 1;
+ * the title is 7 c wide per glyph and 13 c tall, centred horizontally, its
+ * origin truncated to whole pixels.
+ * @param f The frame mapping. */
+void draw_title(const Frame& f) {
+    static const char kTitle[] = "OPENPETE";
+    const float p = 28.0f * kTitleScale * f.scale;
+    const float cell = std::max(1.0f, std::round(p / 13.0f));
+    const float w = 7.0f * cell * (float)(sizeof kTitle - 1);
+    const float x = std::trunc(f.ox + (kLayoutW * f.scale - w) * 0.5f);
+    const float y = std::trunc(f.oy + (kTitleTop + kBandY) * f.scale);
+    ImGui::PushFont(nullptr, 13.0f * cell);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(x, y), IM_COL32(240, 138, 30, 255), kTitle);
+    ImGui::PopFont();
+    launcher_manifest_item("title", "text", x, y, x + w, y + 13.0f * cell);
+}
+
+/** @brief Draw one frame of a screen: the pixel title, then the screen's content, in one borderless window over the whole display.
+ *
  * The per-present callback openpete_native_launcher_present runs between
  * imgui's NewFrame and Render.
  * @param ud The View. */
@@ -310,11 +338,7 @@ void draw_view(void* ud) {
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
     const Frame f = frame_map();
     launcher_manifest_begin();
-    text_centred(f, "title", 36 + kBandY, 28, IM_COL32(240, 138, 30, 255), "OPENPETE");
-    if (const std::string name = upper_name(v); !name.empty()) {
-        const std::string sub = name + " PC PORT";
-        text_centred(f, "subtitle", 72 + kBandY, 14, IM_COL32(150, 130, 190, 255), sub.c_str());
-    }
+    draw_title(f);
     if (v.screen == Screen::Progress) draw_progress(f, v);
     else if (v.screen == Screen::Drop) draw_drop(f, v);
     else if (v.screen == Screen::Pending) draw_pending(f);

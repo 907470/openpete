@@ -22,6 +22,18 @@ Cases:
             (tests/launcher/layout-reference.json) parses, covers the six
             presets, and carries no field outside the id/kind/rect/font/px/
             cell set (no game-derived field).
+  layout    The drop screen's elements against the reference layout at each
+            reference preset: for every id in LAYOUT_IDS, the launcher's rect
+            and the reference's on the empty-library page (the reference's
+            first step). A text item's left edge and height match exactly and
+            its width within TEXT_WIDTH_BOUND; any other rect within 1 px.
+            The ids compared are those the launcher draws as the reference
+            does: the pixel title. The drop screen's shot
+            (OPENPETE_LAUNCHER_SHOT) is read too: the title's orange ink lies
+            inside its rect, no pixel in the rect is a blend of the orange
+            and the background, and every horizontal ink run is a multiple
+            of the reference's cell (whole-pixel cells). A --game spyro-1
+            launch's drop screen draws no subtitle.
   handoff   The last launcher present before the game's first present is
             black on every path into the game (OPENPETE_LAUNCHER_TRACE: every
             present from the launcher window's first through the game's
@@ -93,6 +105,15 @@ REFERENCE_KEYS = {"id", "kind", "rect", "font", "px", "cell"}
 SCREEN = "4096x2304"
 DISC_BIN = os.path.join(ROOT, "games", "spyro-1", "spyro-1", "build", "SCUS-94228.bin")
 DISC_CUE = os.path.join(ROOT, "games", "spyro-1", "spyro-1", "build", "SCUS-94228.cue")
+# The ids the launcher draws as the reference layout does, compared by the layout case.
+LAYOUT_IDS = ["title"]
+# A text item's width against the reference's, in pixels. Calibrated on the drop screen's seven strings
+# (ProggyClean at 8, 14 and 28 layout px) at the six presets, drawn by the launcher and by the reference
+# layout's text model with imgui's whole-pixel font sizes: widths differ by at most 1 px (imgui's
+# CalcTextSize at some sizes and strings is one pixel wider or narrower than whole-pixel advances
+# times the length), heights not at all; a centred string's left edge moves with that pixel. Text in
+# whole-pixel cells (the pixel title) matches exactly.
+TEXT_WIDTH_BOUND = 1.0
 DROP_IDS = {"title", "drag.1", "drag.2", "browse.hint", "browse.button", "disc.note", "quit.hint"}
 
 
@@ -152,7 +173,8 @@ def read_json(path):
 def drop_manifest(binary, d, preset, extra_env=None):
     """Launch at a preset with an empty library and return the drop screen's manifest, or None."""
     base = os.path.join(d, "m-" + preset)
-    env = {"OPENPETE_LAUNCHER_MANIFEST": base, "OPENPETE_LAUNCHER_INPUT": "1500:quit"}
+    env = {"OPENPETE_LAUNCHER_MANIFEST": base, "OPENPETE_LAUNCHER_SHOT": base,
+           "OPENPETE_LAUNCHER_INPUT": "1500:quit"}
     env.update(extra_env or {})
     rc, _ = launch(binary, d, "drop-" + preset, ["--launcher-window", preset], env)
     return read_json(base + ".drop.json"), rc
@@ -377,6 +399,112 @@ def case_window_default(a):
     return 1 if bad else 0
 
 
+def compare_items(ours, ref, ids):
+    """Problems of the launcher's items against the reference's for the given ids: text left edge and
+    height exact, width within TEXT_WIDTH_BOUND; any other kind within 1 px on every edge."""
+    bad = []
+    mine = {it["id"]: it for it in ours}
+    theirs = {it["id"]: it for it in ref}
+    for i in ids:
+        a, b = mine.get(i), theirs.get(i)
+        if a is None or b is None:
+            bad.append(f"{i}: {'launcher' if a is None else 'reference'} has no such element")
+            continue
+        if a["kind"] != b["kind"]:
+            bad.append(f"{i}: kind {a['kind']} != {b['kind']}")
+        ra, rb = a["rect"], b["rect"]
+        if b["kind"] == "text":
+            ok = (abs(ra[0] - rb[0]) < 0.005 and abs((ra[3] - ra[1]) - (rb[3] - rb[1])) < 0.005 and
+                  abs(ra[1] - rb[1]) < 0.005 and abs((ra[2] - ra[0]) - (rb[2] - rb[0])) <= TEXT_WIDTH_BOUND)
+        else:
+            ok = all(abs(ra[k] - rb[k]) <= 1.0 for k in range(4))
+        if not ok:
+            bad.append(f"{i}: launcher {ra} reference {rb}")
+    return bad
+
+
+BG = (24, 16, 40)
+TITLE_ORANGE = (240, 138, 30)
+
+
+def title_ink(png, rect):
+    """The pixel title's drawn ink in a launcher shot: (orange pixels, pixels neither orange nor the
+    background inside the rect, ink bounding box, orange pixels outside the rect, horizontal ink run
+    lengths). Whole-pixel cells leave no blended pixel and runs that are multiples of the cell."""
+    from PIL import Image
+    im = Image.open(png).convert("RGB")
+    w, h = im.size
+    px = im.load()
+    x0, y0, x1, y1 = (int(round(v)) for v in rect)
+    ink = blend = outside = 0
+    box = [w, h, -1, -1]
+    runs = set()
+    for y in range(max(0, y0 - 4), min(h, y1 + 4)):
+        run = 0
+        for x in range(max(0, x0 - 4), min(w, x1 + 4)):
+            c = px[x, y]
+            inside = x0 <= x < x1 and y0 <= y < y1
+            if c == TITLE_ORANGE:
+                ink += inside
+                outside += not inside
+                box = [min(box[0], x), min(box[1], y), max(box[2], x + 1), max(box[3], y + 1)]
+                run += 1
+            else:
+                if run:
+                    runs.add(run)
+                run = 0
+                blend += inside and c != BG
+        if run:
+            runs.add(run)
+    return ink, blend, box, outside, runs
+
+
+def case_layout(a):
+    """The drop screen against the reference layout's empty-library page, per preset."""
+    d = case_dir(a.out, "layout")
+    ref = read_json(REFERENCE)
+    if ref is None:
+        print(f"[launcher] FAIL: {REFERENCE} missing")
+        return 1
+    bad, compared = [], 0
+    for p in PRESETS:
+        m, rc = drop_manifest(a.binary, d, p)
+        if m is None:
+            bad.append(f"{p}: no drop.json (rc {rc})")
+            continue
+        step = ref["presets"][p][0]
+        problems = compare_items(m["items"], step["items"], LAYOUT_IDS)
+        title = next((it for it in step["items"] if it["id"] == "title"), None)
+        shot = os.path.join(d, "m-" + p + ".drop.png")
+        if title and os.path.isfile(shot):
+            ink, blend, box, outside, runs = title_ink(shot, title["rect"])
+            cell = title["cell"]
+            print(f"[launcher] {p} title ink: {ink} px, box {box}, {blend} blended, {outside} outside, "
+                  f"runs {sorted(runs)} (cell {cell})")
+            if ink == 0 or blend or outside or any(r % cell for r in runs):
+                problems.append(f"title ink not in whole-pixel cells of {cell}: {ink} px, {blend} blended, "
+                                f"{outside} outside, runs {sorted(runs)}")
+        elif title:
+            problems.append(f"no shot {shot}")
+        compared += len(LAYOUT_IDS) - len(problems)
+        for it in m["items"]:
+            if it["id"] in LAYOUT_IDS:
+                print(f"[launcher] {p} {it['id']}: {it['rect']}")
+        bad += [f"{p} {x}" for x in problems]
+    # A game's own launcher (--game) drew a subtitle line under the title; the redesign has none.
+    base = os.path.join(d, "m-game")
+    rc, _ = launch(a.binary, d, "drop-game", ["--launcher-window", "1280x800", "--game", "spyro-1"],
+                   {"OPENPETE_LAUNCHER_MANIFEST": base, "OPENPETE_LAUNCHER_INPUT": "1500:quit"})
+    m = read_json(base + ".drop.json")
+    if m is None or "subtitle" in {it["id"] for it in m["items"]}:
+        bad.append(f"--game spyro-1 drop screen: {'no manifest (rc %d)' % rc if m is None else 'a subtitle is drawn'}")
+    for b in bad:
+        print("[launcher] FAIL", b)
+    print(f"[launcher] layout: {'FAIL' if bad else 'PASS'} ({compared} of {len(LAYOUT_IDS) * len(PRESETS)} "
+          f"element rects match: {', '.join(LAYOUT_IDS)})")
+    return 1 if bad else 0
+
+
 def check_reference_file():
     """Problems with the reference layout manifest, as strings."""
     m = read_json(REFERENCE)
@@ -458,7 +586,8 @@ def case_calibrate(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("case", choices=["manifest", "handoff", "window-fit", "window-default", "calibrate"])
+    ap.add_argument("case", choices=["manifest", "layout", "handoff", "window-fit", "window-default",
+                                     "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--calibration", default=None)
@@ -469,7 +598,8 @@ def main():
         print(f"[launcher] SKIP: {a.binary} missing")
         return 64
     try:
-        return {"manifest": case_manifest, "handoff": case_handoff, "window-fit": case_window_fit,
+        return {"manifest": case_manifest, "layout": case_layout, "handoff": case_handoff,
+                "window-fit": case_window_fit,
                 "window-default": case_window_default, "calibrate": case_calibrate}[a.case](a)
     except Skip as e:
         print(f"[launcher] SKIP: {e}")
