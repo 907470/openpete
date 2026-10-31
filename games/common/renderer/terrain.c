@@ -56,6 +56,7 @@
 #include "renderer/terrain.h"        /* this feeder's exports */
 #include "renderer/moby_snap.h"      /* moby_snap_terrain_fed: the sunk-pickup contact */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
+#include "openpete_time.h"           /* op_now: the consolidation migration budget */
 #include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
 #include "openpete.h"                /* openpete_runahead_get */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
@@ -8751,9 +8752,8 @@ typedef struct {
                                        * drawn from the cache. */
     uint32_t first[OPTC_ARENA_COUNT];
     int      count[OPTC_ARENA_COUNT];
-    uint32_t bufbit;                  /* bit a = which buffer of arena a holds
-                                       * this slot's chunk (0 primary, 1 the
-                                       * arena's overflow buffer); each buffer
+    uint8_t  bufi[OPTC_ARENA_COUNT];  /* which buffer slot of arena a holds
+                                       * this slot's chunk; each buffer
                                        * numbers its vertices from 0, so the
                                        * index goes with every first[a]       */
     uint32_t ownFrame;                /* VBL this slot last validated as GPU-owned */
@@ -9036,21 +9036,21 @@ static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 /** @brief Returns a slot's chunks to every arena and clears its baked-sector fields.
  *
  * For each arena with a nonzero chunk count, frees the chunk range (buffer
- * bit (bufbit >> arena) & 1, first[arena], count[arena]) through
+ * bufi[arena], first[arena], count[arena]) through
  * openpete_tercache_chunk_free, then the previous-corner records, and zeroes
- * the counts, bufbit and the slot's sector s. The other slot fields are
+ * the counts, the buffer indices and the slot's sector s. The other slot fields are
  * left as they are; the colour-table ring outlives a re-bake of the same
  * sector (tgpu_coltab_refresh).
  * @param T The slot. */
 static void tgpu_free_slot(tgpu_slot_t* T) {
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (T->count[a] > 0)
-            openpete_tercache_chunk_free(a, (T->bufbit >> a) & 1, T->first[a], T->count[a]);
+            openpete_tercache_chunk_free(a, T->bufi[a], T->first[a], T->count[a]);
         T->count[a] = 0;
     }
     if (T->prevCount > 0) openpete_tercache_prev_free(T->prevFirst, T->prevCount);
     T->prevCount = 0;
-    T->bufbit = 0;
+    memset(T->bufi, 0, sizeof T->bufi);
     T->s = 0;
 }
 
@@ -9109,6 +9109,60 @@ static void tgpu_level_edge(int prev_level, int level) {
     tgpu_free_all_slots();
     if (prev_level >= 0) openpete_tercache_request_resize(level);
     else openpete_tercache_set_level(level);
+}
+
+/* Consolidation migration (openpete_tercache_buf_source): a canonical tick
+ * walk re-bakes visible sectors whose chunks sit in a source buffer until
+ * the bake time this tick spent on them passes TGPU_MIGRATE_NS, checked
+ * before each sector, so the cost is per tick whatever the display rate. */
+#define TGPU_MIGRATE_NS 1000000u
+static int s_mig_canon;               /* this build is a canonical tick walk with migration owed */
+static uint32_t s_mig_frame = 0xFFFFFFFFu;   /* openpete_frame of the tick being budgeted */
+static uint64_t s_mig_ns;             /* migration bake time spent in that tick */
+
+/** @brief Tests whether a slot holds a chunk in a consolidation source buffer.
+ * @param T The slot.
+ * @return 1 when any arena's chunk of the slot sits in a source. */
+static int tgpu_slot_on_source(const tgpu_slot_t* T) {
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        if (T->count[a] > 0 && openpete_tercache_buf_source(a, T->bufi[a])) return 1;
+    return 0;
+}
+
+/** @brief Tests whether a slot that is not dirty for any other reason re-bakes to migrate out of a source buffer.
+ * @param T The slot.
+ * @param dirty Nonzero when the slot re-bakes anyway.
+ * @return 1 on a canonical tick walk with migration budget left and a chunk of the slot in a source. */
+static int tgpu_migrate_due(const tgpu_slot_t* T, int dirty) {
+    return !dirty && s_mig_canon && s_mig_ns < TGPU_MIGRATE_NS && tgpu_slot_on_source(T);
+}
+
+/** @brief Opens a build's migration budget: on the first canonical build of a tick, resets it and counts the tick.
+ *
+ * Called once per terrain build before the walk. A sub-tick re-extract
+ * (s_vanim_sub) migrates nothing on purpose; its sectors still move out of a
+ * source whenever they re-bake for any other reason.
+ * @param tgpu_on Nonzero when this build feeds the cache. */
+static void tgpu_migrate_begin(int tgpu_on) {
+    s_mig_canon = tgpu_on && !s_vanim_sub && openpete_tercache_migrating();
+    if (!s_mig_canon || openpete_frame == s_mig_frame) return;
+    s_mig_frame = openpete_frame;
+    s_mig_ns = 0;
+    openpete_tercache_migrate_tick();
+}
+
+/** @brief Frees every slot that holds a chunk in a source buffer and was not drawn this build.
+ *
+ * Canonical tick walks only, after the walk: a sector out of view
+ * re-bakes into a non-source buffer when it is next drawn, and its old
+ * chunks age out through the deferred release, so a source empties without
+ * baking sectors nobody sees. */
+static void tgpu_migrate_idle_slots(void) {
+    if (!s_mig_canon) return;
+    for (int i = 0; i < TSC_SLOTS; i++) {
+        tgpu_slot_t* T = &s_tgpu[i];
+        if (T->s && T->ownFrame != openpete_frame && tgpu_slot_on_source(T)) tgpu_free_slot(T);
+    }
 }
 
 /** @brief Tests whether an arena-full claimed slot should retry its bake.
@@ -10079,13 +10133,12 @@ static int tgpu_key_cells(const tsface_t* F, int hq_elig, int pin4, int canim_on
  * near-variant arenas also upload their parallel previous-tick and context
  * records.
  * @param S The sector's slot; receives each arena's first chunk, count and
- *        buffer bit.
+ *        buffer index.
  * @param buf The sector's bake buffers, indexed by arena.
  * @return 0, or -1 when an arena is full (the arena-full claim). */
 static int tgpu_upload_chunks(tgpu_slot_t* S, const tgpu_buf* buf) {
     uint32_t first[OPTC_ARENA_COUNT] = {0};
     int bufi[OPTC_ARENA_COUNT] = {0};
-    uint32_t bits = 0;
     int a;
     for (a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (buf[a].n == 0) continue;
@@ -10107,9 +10160,8 @@ static int tgpu_upload_chunks(tgpu_slot_t* S, const tgpu_buf* buf) {
         if (buf[a].nearv)
             openpete_tercache_chunk_write_ctx(a, bufi[a], first[a], buf[a].cx, buf[a].n);
         S->first[a] = first[a]; S->count[a] = buf[a].n;
-        bits |= (uint32_t)bufi[a] << a;
+        S->bufi[a] = (uint8_t)bufi[a];
     }
-    S->bufbit = bits;
     return 0;
 }
 
@@ -11241,6 +11293,24 @@ static uint32_t tgpu_slot_coltab(const tgpu_slot_t* T) {
     return T->tabUnits > 0 ? T->tabFirst + (uint32_t)(T->tabCur * T->tabEnt) : OPTC_PREV_REC_NONE;
 }
 
+/** @brief Builds a sector through tgpu_build_sector, charging the bake time to the tick's migration budget when it is a migration bake.
+ * @param cpu The guest CPU state.
+ * @param slot The sector's decode slot index.
+ * @param SC The decoded sector.
+ * @param hqTable The HQ record table's guest address, or 0.
+ * @param sec_index The level sector index.
+ * @param with_var 1 to bake near-variant chunks.
+ * @param mig Nonzero for a bake made only to migrate out of a source buffer.
+ * @return tgpu_build_sector's result. */
+static int tgpu_build_sector_budgeted(CPUState* cpu, int slot, const tscache_t* SC,
+                                      uint32_t hqTable, int sec_index, int with_var, int mig) {
+    if (!mig) return tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, with_var);
+    const op_time_t t0 = op_now();   /* clock-guard: wall (migration budget) */
+    const int r = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, with_var);
+    s_mig_ns += (uint64_t)(op_now() - t0);   /* clock-guard: wall */
+    return r;
+}
+
 /** @brief Validates or rebuilds a sector's chunks and decides whether the GPU may draw it this present.
  *
  * A slot without near-variant chunks rebuilds to add them when want_near
@@ -11338,6 +11408,9 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
              /* The env-anim membership the buckets key on moved. */
              || (T->bakeEnvmGen != s_envm_gen)
              || tgpu_claim_retry(T);
+    /* Migration out of a consolidation source, within the tick's budget. */
+    const int mig = tgpu_migrate_due(T, dirty);
+    dirty |= mig;
     if (!dirty && !tgpu_roll_free(T) && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick);
          * a roll-free bake (tgpu_roll_free) reads them from its table. */
@@ -11369,7 +11442,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);
         T->bakePinKey = pinKey;
-        T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, with_var);
+        T->unbuildable = tgpu_build_sector_budgeted(cpu, slot, SC, hqTable, sec_index, with_var, mig);
         s_tgpu_rebuilds++;
     }
     return tgpu_ensure_finish(T, SC);
@@ -14800,7 +14873,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                && !tgpu_env_block()
                && !s_fp_on
                && texTblMode == 0;
-    s_tgpu_pplane_n = 0; s_tgpu_claim_all = 0; s_tgpu_rim_ok = 0;
+    /* A refused set-2 bind skipped a present's cache draws: this build
+     * claims every sector to the CPU walk, so no retained draw reads the
+     * store until a bind succeeds again. */
+    s_tgpu_pplane_n = 0; s_tgpu_claim_all = openpete_tercache_take_bind_refusal(); s_tgpu_rim_ok = 0;
     if (tgpu_on && terrain_game.portal_sky_recent()) {
         s_tgpu_pplane_n = terrain_game.portal_sky_planes(cpu, &s_view, s_tgpu_pplane, 6);
         /* Recent portal but planes momentarily gone: claim everything (safe). */
@@ -14901,6 +14977,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (tgpu_on) openpete_tercache_frame_begin(&tcg, tc_stamp, s_vanim_sub);
     else if (openpete_tercache_ready() && tb_first)
         openpete_tercache_frame_skip(tc_stamp, s_vanim_sub);
+    tgpu_migrate_begin(tgpu_on);
     int nw_used = wserial ? 1 : nw;
     if (!s_tri_v.elem_size)
         mod_fvec_init(&s_tri_v, sizeof(ttri), TN_TRI_INIT, "terrain.walk", TN_TRI_INIT);
@@ -15291,6 +15368,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         openpete_glitch_mark_note_walk(&gw);
     }
     if (tgpu_on) {
+        tgpu_migrate_idle_slots();
         openpete_tercache_frame_commit();
         if (s_cen)
             fprintf(stderr, "[tgpu-cen f=%u] sub=%d secs=%d claims=%d "

@@ -7,6 +7,7 @@
 #include "openpete_native_render.h"   /* scene ring: is a build stamp still referenced */
 #include "openpete_config.h"          /* OPENPETE_TERRAIN_FP32, a device-creation knob */
 #include "game_extras.h"              /* game_get_id: the caps table's game key */
+#include "openpete_time.h"            /* op_now: the growth event timings */
 
 #include <math.h>
 #include <stdatomic.h>
@@ -66,14 +67,17 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
     [OPTC_ARENA_CA_SUB]    =  1024,
 };
 
-#define TC_FREE_MAX   1024   /* free-list spans per arena */
 #define TC_DEFER_MAX  1024   /* deferred releases across arenas */
 /* Freed ranges stay unreused for this many BUILDS: covers both the RHI
  * frames-in-flight window and the one-build presentation lag (the LIVE
  * state may still generation-reference a chunk the newest build replaced). */
 #define TC_DEFER_PRESENTS 4
 
-#define TC_BUF_MAX 2   /* an arena's primary buffer plus one overflow */
+/* Buffers an arena may hold through growth (OPENPETE_TC_BUF_MAX lowers it),
+ * and the buffer slots: one more, for the consolidation buffer that can be
+ * installed beside N sources. */
+#define TC_BUF_MAX   8
+#define TC_BUF_SLOTS (TC_BUF_MAX + 1)
 
 /* Previous-tick store capacity, in units (OPTC_PREV_REC_WORDS words each).
  * Poly-anim sectors drawn with near-variant chunks take one unit per face
@@ -110,20 +114,33 @@ typedef struct {
  * from 0 and is drawn by its own rhi_draw, so a chunk is addressed by the
  * (buffer, first) pair everywhere. */
 typedef struct {
-    _Atomic(tc_pair *) pair;          /* live buffers; swapped at a level edge */
+    _Atomic(tc_pair *) pair;          /* live buffers; swapped at a level edge,
+                                       * NULL for an empty slot              */
     uint32_t    cap;                  /* builder's mirror of pair->cap         */
-    uint32_t    high;                 /* high-water vertex count (draw range) */
-    tc_span     free_list[TC_FREE_MAX];
-    int         free_n;
+    uint32_t    high;                 /* high-water vertex count (draw range);
+                                       * falls when the span below it frees  */
+    tc_span    *free_list;            /* sorted by first; grows on demand     */
+    int         free_n, free_cap;
     uint32_t    used;                 /* live verts (census) */
     uint32_t    chunks;               /* live chunk count (census) */
+    /* Consolidation source (or a buffer sealed at a failed level edge): it
+     * takes no allocation; a sealed buffer's released ranges also never
+     * return to its free list. The buffer retires once its chunk count is
+     * 0 and its floors pass (tc_source_retire). */
+    uint8_t     source, sealed;
+    uint8_t     zeroed;               /* chunks reached 0 as a source          */
+    uint32_t    zero_build;           /* present_ctr when they did             */
 } tc_buf;
 
 typedef struct {
-    tc_buf      buf[TC_BUF_MAX];
-    _Atomic int n;                    /* buffers in use: 1, or 2 once an
-                                       * overflow buffer is installed         */
+    tc_buf      buf[TC_BUF_SLOTS];
+    _Atomic int n;                    /* highest occupied slot + 1; the draw
+                                       * and the allocator skip a NULL pair   */
     int         ovf_state;            /* builder-owned; TC_OVF_*              */
+    int         ovf_kind;             /* request outstanding: TC_REQ_*        */
+    uint32_t    backoff, retry_at;    /* refusal backoff in builds; next retry */
+    int         cons_live;            /* a consolidation's sources remain     */
+    uint32_t    cons_ticks;           /* canonical ticks since its adoption   */
 } tc_arena;
 
 typedef struct { uint8_t arena, buf; uint32_t first, count, stamp; } tc_defer;
@@ -243,7 +260,7 @@ _Static_assert(offsetof(tc_globals_ubo, fog) == 7 * 16 &&
 #define TC_RANGE_MAX 4096
 typedef struct {
     int      n;
-    uint16_t off[OPTC_ARENA_COUNT * TC_BUF_MAX + 1]; /* first span of (arena, buf) */
+    uint16_t off[OPTC_ARENA_COUNT * TC_BUF_SLOTS + 1]; /* first span of (arena, buf) */
     tc_span  r[TC_RANGE_MAX];
 } tc_ranges;
 
@@ -260,8 +277,8 @@ typedef struct {
      * marks the builder grows for later builds while a present draws this
      * one, and a buffer whose live pair is not the marked one holds none of
      * this build's chunks. */
-    uint32_t       mark_high[OPTC_ARENA_COUNT][TC_BUF_MAX];
-    uint32_t       mark_pair[OPTC_ARENA_COUNT][TC_BUF_MAX];
+    uint32_t       mark_high[OPTC_ARENA_COUNT][TC_BUF_SLOTS];
+    uint32_t       mark_pair[OPTC_ARENA_COUNT][TC_BUF_SLOTS];
     tc_ranges      rl;                /* last: see tc_ranges */
 } tc_state;
 
@@ -319,6 +336,25 @@ typedef struct {
     rhi_pipeline *pipe_cn[TC_CP_N], *pipe_ca[TC_CP_N];
 } tc_pipe_set;
 
+/* The previous-tick store as one published unit: the set-2 bind reads the
+ * buffer and its size through one acquired pointer, so it never pairs a
+ * new buffer with an old size. */
+typedef struct {
+    rhi_buffer *buf;
+    uint32_t    cap;                  /* units                                */
+} tc_store;
+
+/* One device object the builder has unpublished and the device-owning
+ * thread destroys once RHI_FRAMES_IN_FLIGHT service calls have passed: a
+ * retired consolidation source or sealed buffer (pair) or a replaced
+ * previous-tick store (store). */
+typedef struct {
+    tc_pair  *pair;
+    tc_store *store;
+    uint32_t  svc;                    /* service call count at the push       */
+} tc_retire_ent;
+#define TC_RETIRE_Q 1024
+
 static struct {
     rhi_device   *dev;
     int           ready;
@@ -330,15 +366,25 @@ static struct {
                                        * ranges                               */
     rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas and
                                        * for the set-2 prop key image         */
-    rhi_buffer   *prev_store;         /* previous-tick store (set 2, binding 1):
-                                       * corner records and colour tables,
-                                       * TC_PREV_CAP units                    */
+    _Atomic(tc_store *) prev_live;    /* previous-tick store (set 2, binding 1):
+                                       * corner records and colour tables     */
+    uint32_t     *prev_shadow;        /* CPU copy of the store, prev_cap units:
+                                       * the refill source of a replacement  */
     tc_buf        prev_alloc;         /* its allocator (pair unused)          */
     tc_defer      prev_defer[TC_DEFER_MAX]; /* released record runs (arena unused) */
     int           prev_defer_n;
     uint32_t      prev_fail;          /* refused record allocations (census)  */
     uint32_t      prev_defer_ovf;     /* releases past prev_defer, returned at once (census) */
     uint32_t      prev_cap;           /* store capacity in units              */
+    int           prev_state;         /* TC_OVF_* of the store's growth       */
+    uint32_t      prev_backoff, prev_retry_at;
+    _Atomic int   prev_req;           /* builder -> device: grow the store    */
+    _Atomic int   prev_done;          /* device -> builder: answered          */
+    uint32_t      prev_want;          /* units asked for                      */
+    tc_store     *prev_new;           /* answer (NULL = refused)              */
+    tc_store     *rz_store;           /* the edge replacement's fresh store   */
+    tc_store     *rz_old_store;       /* the store an edge adoption retired   */
+    uint32_t      rz_store_cap;       /* units the edge replacement store holds */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
     tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
@@ -367,7 +413,7 @@ static struct {
                                        * set (rung flips, sub-pixel skew) */
     tc_sector_ubo *build_target;      /* where sector_set writes this build   */
     tc_state     *build_state;        /* the state build_target belongs to    */
-    tc_chunk_list reg[OPTC_ARENA_COUNT][TC_BUF_MAX]; /* builder's chunk registry */
+    tc_chunk_list reg[OPTC_ARENA_COUNT][TC_BUF_SLOTS]; /* builder's chunk registry */
     int           reg_broken;         /* a registry insert failed: no range lists */
     /* Submission census: per selected present, the elements the draws
      * submitted and the elements drawing each buffer's whole high-water
@@ -409,9 +455,9 @@ static struct {
     int              rz_alloc_logged;
     tc_pair         *rz_new[OPTC_ARENA_COUNT];
     /* The pairs one replacement retires: the arena's live buffers, plus the
-     * slot at TC_BUF_MAX for an overflow buffer the device answered that no
-     * frame_begin got to install. */
-    tc_pair         *rz_old[OPTC_ARENA_COUNT][TC_BUF_MAX + 1];
+     * slot at TC_BUF_SLOTS for a growth or consolidation buffer the device
+     * answered that no frame_begin got to install. */
+    tc_pair         *rz_old[OPTC_ARENA_COUNT][TC_BUF_SLOTS + 1];
     uint32_t         rz_old_build, rz_old_svc;  /* drain floors, at adoption  */
     /* ---- overflow buffers (see the header's contract) ----
      * Two bitmasks over the arenas carry one request each way. The builder
@@ -422,6 +468,7 @@ static struct {
     _Atomic uint32_t ovf_req;     /* builder -> device: arenas wanting a buffer */
     _Atomic uint32_t ovf_done;    /* device -> builder: requests answered       */
     uint32_t         ovf_want[OPTC_ARENA_COUNT];   /* vertices asked for        */
+    uint64_t         ovf_fulfil_ns[OPTC_ARENA_COUNT]; /* device time of the answer */
     uint32_t         ovf_req_svc[OPTC_ARENA_COUNT];   /* service call at request */
     uint32_t         ovf_req_build[OPTC_ARENA_COUNT]; /* build at request        */
     tc_pair         *ovf_new[OPTC_ARENA_COUNT];    /* answer (NULL = refused)   */
@@ -442,12 +489,23 @@ static struct {
     _Atomic uint32_t nonlocal_bufs;  /* device thread counts, builder reads    */
     uint32_t         bufs_max[OPTC_ARENA_COUNT];
     uint32_t         ranges_max;
+    uint32_t         consolidations, prev_grow, sealed_draws, sealed_allocs, migrate_ticks;
+    uint64_t         pinned_bytes;   /* peak bytes of emptied sources awaiting floors */
+    /* builder -> device retire queue (single producer, single consumer) */
+    tc_retire_ent    rq[TC_RETIRE_Q];
+    _Atomic uint32_t rq_head, rq_tail;
+    _Atomic int      stores_alive;   /* stores made and not yet freed (OPTC_STORES_ALIVE) */
+    _Atomic uint32_t bind_refusals;  /* refused set-2 binds (display thread counts) */
+    uint32_t         bind_refusals_seen;
 } s_tc;
 
 enum { TC_RZ_IDLE = 0, TC_RZ_READY = 1, TC_RZ_RETIRE = 2 };
-/* Builder-side overflow state per arena. REQ and FAILED both stop further
- * requests; FAILED until the next level edge, REQ until the answer lands. */
-enum { TC_OVF_IDLE = 0, TC_OVF_REQ = 1, TC_OVF_LIVE = 2, TC_OVF_FAILED = 3 };
+/* Builder-side request state per arena. REQ: a growth or consolidation
+ * request awaits its answer (the request-to-adoption window). BACKOFF: a
+ * refusal waits retry_at before the next request. */
+enum { TC_OVF_IDLE = 0, TC_OVF_REQ = 1, TC_OVF_BACKOFF = 2 };
+/* What an arena's outstanding request asks for. */
+enum { TC_REQ_GROW = 0, TC_REQ_CONS = 1 };
 
 /* The last stats before teardown. shutdown zeroes the module's state, so a
  * census printed at process exit would otherwise read every counter as 0
@@ -675,11 +733,42 @@ static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
     return pr;
 }
 
+/** @brief Allocate a previous-tick store of a capacity on the device.
+ *
+ * Device-owning thread only.
+ * @param dev Device.
+ * @param cap Capacity in units of OPTC_PREV_REC_WORDS words.
+ * @return The store, or NULL on an allocation failure. */
+static tc_store *tc_store_make(rhi_device *dev, uint32_t cap)
+{
+    tc_store *st = (tc_store *)calloc(1, sizeof(*st));
+    if (!st) return NULL;
+    st->cap = cap;
+    st->buf = rhi_create_storage_buffer_device(dev, (size_t)cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
+    if (!st->buf) { free(st); return NULL; }
+    atomic_fetch_add_explicit(&s_tc.stores_alive, 1, memory_order_relaxed);
+    if (!rhi_buffer_device_local(st->buf))
+        atomic_fetch_add_explicit(&s_tc.nonlocal_bufs, 1u, memory_order_relaxed);
+    return st;
+}
+
+/** @brief Destroy a previous-tick store and free its record.
+ * @param dev Device the store was made on.
+ * @param st The store; NULL is ignored. */
+static void tc_store_free(rhi_device *dev, tc_store *st)
+{
+    if (!st) return;
+    if (st->buf) rhi_destroy_buffer(dev, st->buf);
+    free(st);
+    atomic_fetch_sub_explicit(&s_tc.stores_alive, 1, memory_order_relaxed);
+}
+
 /** @brief Free every buffer pair one arena owns and clear the pointers.
  *
  * The pairs are its live buffers and the ones its two handshakes may still
  * hold: the replacement's fulfilled-but-unadopted pair, its retire list, and
- * an overflow buffer the builder never installed. Teardown
+ * a growth or consolidation buffer the builder never installed. Each
+ * buffer's free list is freed too. Teardown
  * (openpete_tercache_shutdown) is the only caller; while the cache runs,
  * each handshake frees its own pairs at the point that proves no frame reads
  * them (tc_retire_drain for the replacement, tc_pair_make's own cleanup for
@@ -688,12 +777,14 @@ static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
  * @param arena Arena index. */
 static void tc_arena_free_all(rhi_device *dev, int arena)
 {
-    for (int b = 0; b < TC_BUF_MAX; b++) {
+    for (int b = 0; b < TC_BUF_SLOTS; b++) {
         tc_buf *bf = &s_tc.arena[arena].buf[b];
         tc_pair_free(dev, atomic_load_explicit(&bf->pair, memory_order_relaxed));
         atomic_store_explicit(&bf->pair, NULL, memory_order_relaxed);
+        free(bf->free_list);
+        bf->free_list = NULL; bf->free_n = bf->free_cap = 0;
     }
-    for (int b = 0; b <= TC_BUF_MAX; b++) {
+    for (int b = 0; b <= TC_BUF_SLOTS; b++) {
         tc_pair_free(dev, s_tc.rz_old[arena][b]);
         s_tc.rz_old[arena][b] = NULL;
     }
@@ -1112,9 +1203,11 @@ int openpete_tercache_init(rhi_device *dev, void (*batch)(int open))
     s_tc.ubo = rhi_create_ubo(dev, (uint32_t)TC_UBO_BLOCK, 2);
     if (!s_tc.ubo) return 0;
     s_tc.prev_cap = tc_prev_cap_init();
-    s_tc.prev_store = rhi_create_storage_buffer_device(
-        dev, (size_t)s_tc.prev_cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
-    if (!s_tc.prev_store || !s_tc.hd_dummy) {
+    tc_store *st = tc_store_make(dev, s_tc.prev_cap);
+    atomic_store_explicit(&s_tc.prev_live, st, memory_order_release);
+    s_tc.prev_shadow = (uint32_t *)calloc((size_t)s_tc.prev_cap * OPTC_PREV_REC_WORDS,
+                                          sizeof(uint32_t));
+    if (!st || !s_tc.prev_shadow || !s_tc.hd_dummy) {
         fprintf(stderr, "[ter-gpu] init failed (record store or set-2 stand-in) - "
                         "terrain cache disabled, CPU path stays\n");
         openpete_tercache_shutdown(dev);
@@ -1161,7 +1254,7 @@ void openpete_tercache_shutdown(rhi_device *dev)
                     s_tc.cen_nolist, tc_range_draw_on());
     }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++)
-        for (int b = 0; b < TC_BUF_MAX; b++) free(s_tc.reg[a][b].c);
+        for (int b = 0; b < TC_BUF_SLOTS; b++) free(s_tc.reg[a][b].c);
     if (s_tc.hd_dummy) { rhi_destroy_texture(dev, s_tc.hd_dummy); s_tc.hd_dummy = NULL; }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) tc_arena_free_all(dev, a);
     rhi_pipeline **const named[] = {
@@ -1182,7 +1275,17 @@ void openpete_tercache_shutdown(rhi_device *dev)
         if (s_tc.ps.pipe_ca[i]) rhi_destroy_pipeline(dev, s_tc.ps.pipe_ca[i]);
     }
     if (s_tc.ubo)             rhi_destroy_ubo(dev, s_tc.ubo);
-    if (s_tc.prev_store)      rhi_destroy_buffer(dev, s_tc.prev_store);
+    tc_store_free(dev, atomic_load_explicit(&s_tc.prev_live, memory_order_relaxed));
+    tc_store_free(dev, s_tc.prev_new);
+    tc_store_free(dev, s_tc.rz_store);
+    tc_store_free(dev, s_tc.rz_old_store);
+    for (uint32_t i = atomic_load_explicit(&s_tc.rq_tail, memory_order_relaxed);
+         i != atomic_load_explicit(&s_tc.rq_head, memory_order_relaxed); i++) {
+        tc_pair_free(dev, s_tc.rq[i % TC_RETIRE_Q].pair);
+        tc_store_free(dev, s_tc.rq[i % TC_RETIRE_Q].store);
+    }
+    free(s_tc.prev_shadow);
+    free(s_tc.prev_alloc.free_list);
     memset(&s_tc, 0, sizeof(s_tc));
 }
 
@@ -1191,9 +1294,12 @@ void openpete_tercache_shutdown(rhi_device *dev)
 /** @brief Return a vertex range to one buffer's free list.
  *
  * The list stays sorted by first index, and the range coalesces with an
- * adjacent span on either side. A range that neither coalesces nor fits
- * (the list holds TC_FREE_MAX spans) is dropped and stays unusable until
- * the level-edge replacement resets the buffer.
+ * adjacent span on either side. The list grows when a range neither
+ * coalesces nor fits; a growth that cannot allocate drops the range and
+ * counts it in dropped_spans (unusable until the level-edge replacement
+ * resets the buffer). A span that ends at the high-water mark leaves the
+ * list and lowers the mark to its first element, so the allocation front
+ * tracks the live content rather than the visit's peak.
  * @param a Buffer.
  * @param first First element of the range.
  * @param count Element count of the range. */
@@ -1210,19 +1316,38 @@ static void tc_free_insert(tc_buf *a, uint32_t first, uint32_t count)
                     (size_t)(a->free_n - i - 1) * sizeof(tc_span));
             a->free_n--;
         }
-        return;
-    }
-    if (i < a->free_n && first + count == a->free_list[i].first) {
+    } else if (i < a->free_n && first + count == a->free_list[i].first) {
         a->free_list[i].first = first;
         a->free_list[i].count += count;
-        return;
+    } else {
+        if (a->free_n >= a->free_cap) {
+            const int nc = a->free_cap ? a->free_cap * 2 : 64;
+            tc_span *nl = (tc_span *)realloc(a->free_list, (size_t)nc * sizeof(*nl));
+            if (!nl) { s_tc.dropped_spans++; return; }   /* leaked until level reset */
+            a->free_list = nl; a->free_cap = nc;
+        }
+        memmove(&a->free_list[i+1], &a->free_list[i],
+                (size_t)(a->free_n - i) * sizeof(tc_span));
+        a->free_list[i].first = first;
+        a->free_list[i].count = count;
+        a->free_n++;
     }
-    if (a->free_n >= TC_FREE_MAX) { s_tc.dropped_spans++; return; }   /* leaked until level reset */
-    memmove(&a->free_list[i+1], &a->free_list[i],
-            (size_t)(a->free_n - i) * sizeof(tc_span));
-    a->free_list[i].first = first;
-    a->free_list[i].count = count;
-    a->free_n++;
+    if (a->free_n > 0) {
+        const tc_span *top = &a->free_list[a->free_n - 1];
+        if (top->first + top->count == a->high) { a->high = top->first; a->free_n--; }
+    }
+}
+
+/** @brief Return a released chunk range to its buffer's free list, unless the buffer is a source.
+ *
+ * A consolidation source takes no allocation, and a sealed buffer's ranges
+ * may still be drawn by a held state until the buffer retires, so neither
+ * list takes the range.
+ * @param d The release. */
+static void tc_defer_return(const tc_defer *d)
+{
+    tc_buf *rb = &s_tc.arena[d->arena].buf[d->buf];
+    if (!rb->source) tc_free_insert(rb, d->first, d->count);
 }
 
 /** @brief Allocate a range in one buffer: first fit in its free list, else a grow of its high-water mark.
@@ -1254,30 +1379,143 @@ static int tc_buf_alloc(tc_buf *a, uint32_t n, uint32_t *out_first)
     return 0;
 }
 
-/** @brief Ask the device-owning thread for an overflow buffer for one arena.
- *
- * Builder thread, from a chunk every buffer of the arena refused. The size
- * asked for is the primary's size (tc_initial_cap: the level's generated
- * capacity, or OPENPETE_TC_INITIAL_CAP), or the refused chunk where that is
- * larger, so one grant covers the rest of the level rather than one
- * sector. Dropped while this arena already has a request outstanding, an
- * overflow installed, or a refusal on record. Records the service call and
- * build counts the adoption log measures against.
+/** @brief Return an arena's live element count over the buffers that take allocations or still hold content, sealed buffers excluded.
  * @param arena Arena index.
- * @param verts Element count of the refused chunk. */
-static void tc_request_overflow(int arena, uint32_t verts)
+ * @return Elements. */
+static uint64_t tc_arena_live(int arena)
+{
+    const tc_arena *a = &s_tc.arena[arena];
+    uint64_t live = 0;
+    for (int b = 0; b < TC_BUF_SLOTS; b++)
+        if (!a->buf[b].sealed && tc_live_pair(arena, b)) live += a->buf[b].used;
+    return live;
+}
+
+/** @brief Count an arena's occupied buffer slots and find its lowest empty one.
+ * @param arena Arena index.
+ * @param empty Receives the lowest empty slot, or -1 when every slot is taken.
+ * @return Occupied slots that are not consolidation sources. */
+static int tc_arena_slots(int arena, int *empty)
+{
+    const tc_arena *a = &s_tc.arena[arena];
+    int k = 0;
+    *empty = -1;
+    for (int b = 0; b < TC_BUF_SLOTS; b++) {
+        if (!tc_live_pair(arena, b)) { if (*empty < 0) *empty = b; continue; }
+        if (!a->buf[b].source) k++;
+    }
+    return k;
+}
+
+/** @brief Post one growth or consolidation request for an arena to the device-owning thread.
+ *
+ * Builder thread. Records the service call and build counts the adoption
+ * log measures against, and opens the arena's request window (TC_OVF_REQ).
+ * @param arena Arena index.
+ * @param kind TC_REQ_GROW or TC_REQ_CONS.
+ * @param want Elements the buffer is to hold. */
+static void tc_post_request(int arena, int kind, uint32_t want)
 {
     tc_arena *a = &s_tc.arena[arena];
-    if (a->ovf_state != TC_OVF_IDLE) return;
-    if (atomic_load_explicit(&a->n, memory_order_relaxed) >= tc_buf_max()) return;
-    uint32_t want = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
-                                                        memory_order_relaxed), arena);
-    if (verts > want) want = verts;
     s_tc.ovf_want[arena] = want;
     s_tc.ovf_req_svc[arena] = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed);
     s_tc.ovf_req_build[arena] = s_tc.present_ctr;
+    a->ovf_kind = kind;
     a->ovf_state = TC_OVF_REQ;
     atomic_fetch_or_explicit(&s_tc.ovf_req, 1u << arena, memory_order_release);
+}
+
+/** @brief Ask for a consolidation buffer for an arena, making every buffer it holds a source.
+ *
+ * Builder thread. The buffer holds max(primary size, 2 x live), capped at
+ * TC_BUF_MAX (as OPENPETE_TC_BUF_MAX lowers it) x primary size and raised to
+ * the refused demand; live excludes sealed buffers. From the request on, no
+ * source takes an allocation, and each source retires once its chunks have
+ * migrated (tc_source_retire). Refused, as by a backoff, when the arena has
+ * no empty slot or a previous consolidation's sources still remain.
+ * @param arena Arena index.
+ * @param demand The refused chunk's element count, or 0.
+ * @return 1 when the request was posted, else 0. */
+static int tc_request_consolidation(int arena, uint32_t demand)
+{
+    tc_arena *a = &s_tc.arena[arena];
+    int empty;
+    (void)tc_arena_slots(arena, &empty);
+    if (empty < 0 || a->cons_live) return 0;
+    const uint64_t prim = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
+                                                              memory_order_relaxed), arena);
+    uint64_t want = 2u * tc_arena_live(arena);
+    if (want < prim) want = prim;
+    if (want > prim * (uint64_t)tc_buf_max()) want = prim * (uint64_t)tc_buf_max();
+    if (want < demand) want = demand;
+    for (int b = 0; b < TC_BUF_SLOTS; b++)
+        if (tc_live_pair(arena, b)) { a->buf[b].source = 1; a->buf[b].zeroed = 0; }
+    a->cons_live = 1;
+    a->cons_ticks = 0;
+    fprintf(stderr, "[ter-gpu] arena %d consolidation request: %u elements (live %llu)\n",
+            arena, (uint32_t)want, (unsigned long long)tc_arena_live(arena));
+    tc_post_request(arena, TC_REQ_CONS, (uint32_t)want);
+    return 1;
+}
+
+/** @brief Start or lengthen an arena's refusal backoff: 8 builds, doubling to 1024.
+ * @param a The arena. */
+static void tc_backoff(tc_arena *a)
+{
+    a->ovf_state = TC_OVF_BACKOFF;
+    a->backoff = a->backoff ? (a->backoff < 1024u ? a->backoff * 2u : 1024u) : 8u;
+    a->retry_at = s_tc.present_ctr + a->backoff;
+}
+
+/** @brief Return the slot of an arena's newest buffer that takes allocations: the highest occupied slot that is not a source.
+ * @param arena Arena index.
+ * @return The slot, or -1 when no buffer takes allocations. */
+static int tc_newest_buf(int arena)
+{
+    const tc_arena *a = &s_tc.arena[arena];
+    for (int b = atomic_load_explicit(&a->n, memory_order_relaxed) - 1; b >= 0; b--)
+        if (tc_live_pair(arena, b) && !a->buf[b].source && !a->buf[b].sealed) return b;
+    return -1;
+}
+
+/** @brief Ask for one more buffer for an arena: growth below the buffer cap, consolidation at it.
+ *
+ * Builder thread, from a chunk every buffer of the arena refused (@p demand
+ * > 0) or from an allocation that took the newest buffer past 75% of its
+ * capacity (@p demand 0). A growth buffer holds max(demand, primary size),
+ * the primary size being tc_initial_cap (the level's row, or
+ * OPENPETE_TC_INITIAL_CAP); the arena holds at most tc_buf_max() such
+ * buffers. At that cap a refusal asks for a consolidation instead; the
+ * watermark asks for nothing. Dropped while a request is outstanding or a
+ * refusal's backoff runs. Every request is logged with the newest buffer's
+ * high-water mark and live count, the two measures of its fill.
+ * @param arena Arena index.
+ * @param demand Element count of the refused chunk, or 0 for the watermark. */
+static void tc_request_grow(int arena, uint32_t demand)
+{
+    tc_arena *a = &s_tc.arena[arena];
+    if (s_tc.rz_window || a->ovf_state == TC_OVF_REQ) return;   /* the edge replaces every buffer */
+    if (a->ovf_state == TC_OVF_BACKOFF) {
+        if ((int32_t)(s_tc.present_ctr - a->retry_at) < 0) return;
+        a->ovf_state = TC_OVF_IDLE;
+        if (demand && tc_request_consolidation(arena, demand)) return;
+    }
+    int empty;
+    const int k = tc_arena_slots(arena, &empty);
+    if (k >= tc_buf_max() || empty < 0) {
+        if (demand && !tc_request_consolidation(arena, demand)) tc_backoff(a);
+        return;
+    }
+    uint32_t want = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
+                                                        memory_order_relaxed), arena);
+    if (demand > want) want = demand;
+    const int nb = tc_newest_buf(arena);
+    const tc_buf *top = nb >= 0 ? &a->buf[nb] : NULL;
+    fprintf(stderr, "[ter-gpu] arena %d grow request: %s demand=%u want=%u buffers=%d "
+                    "newest high=%u used=%u cap=%u\n",
+            arena, demand ? "refusal" : "watermark", demand, want, k,
+            top ? top->high : 0u, top ? top->used : 0u, top ? top->cap : 0u);
+    tc_post_request(arena, TC_REQ_GROW, want);
 }
 
 /* ---- chunk registry and draw ranges -------------------------------------
@@ -1344,7 +1582,7 @@ static void tc_reg_remove(int arena, int buf, uint32_t first)
 static void tc_reg_clear(void)
 {
     for (int a = 0; a < OPTC_ARENA_COUNT; a++)
-        for (int b = 0; b < TC_BUF_MAX; b++) s_tc.reg[a][b].n = 0;
+        for (int b = 0; b < TC_BUF_SLOTS; b++) s_tc.reg[a][b].n = 0;
 }
 
 /** @brief Build a registry entry from a chunk's face_flags words.
@@ -1442,11 +1680,11 @@ static void tc_ranges_build(tc_state *T)
     T->rl.n = 0;
     if (s_tc.reg_broken) { T->rl.n = -1; return; }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++)
-        for (int b = 0; b < TC_BUF_MAX; b++) {
-            T->rl.off[a * TC_BUF_MAX + b] = (uint16_t)T->rl.n;
+        for (int b = 0; b < TC_BUF_SLOTS; b++) {
+            T->rl.off[a * TC_BUF_SLOTS + b] = (uint16_t)T->rl.n;
             if (tc_ranges_add_buf(T, a, b) != 0) { T->rl.n = -1; return; }
         }
-    T->rl.off[OPTC_ARENA_COUNT * TC_BUF_MAX] = (uint16_t)T->rl.n;
+    T->rl.off[OPTC_ARENA_COUNT * TC_BUF_SLOTS] = (uint16_t)T->rl.n;
     if ((uint32_t)T->rl.n > s_tc.ranges_max) s_tc.ranges_max = (uint32_t)T->rl.n;
 }
 
@@ -1470,7 +1708,7 @@ static void tc_state_mark(tc_state *T)
 {
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         const int n = atomic_load_explicit(&s_tc.arena[a].n, memory_order_relaxed);
-        for (int b = 0; b < TC_BUF_MAX; b++) {
+        for (int b = 0; b < TC_BUF_SLOTS; b++) {
             const tc_pair *pr = b < n ? tc_live_pair(a, b) : NULL;
             T->mark_high[a][b] = pr ? s_tc.arena[a].buf[b].high : 0u;
             T->mark_pair[a][b] = pr ? pr->serial : 0u;
@@ -1485,13 +1723,21 @@ int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first
         return -1;
     tc_arena *a = &s_tc.arena[arena];
     const int n = atomic_load_explicit(&a->n, memory_order_relaxed);
+    const int newest = tc_newest_buf(arena);
     for (int b = 0; b < n; b++) {
+        if (a->buf[b].source || a->buf[b].sealed || !tc_live_pair(arena, b)) continue;
         if (tc_buf_alloc(&a->buf[b], (uint32_t)vert_count, out_first) != 0) continue;
+        if (a->buf[b].sealed) s_tc.sealed_allocs++;   /* unreachable: sealed is a source */
         *out_buf = b;
+        /* Watermark: the newest buffer past 75% of its capacity asks for
+         * the next buffer before a chunk is refused. */
+        const tc_buf *nb = &a->buf[newest];
+        if (b == newest && (uint64_t)nb->high * 4u > (uint64_t)nb->cap * 3u)
+            tc_request_grow(arena, 0u);
         return 0;
     }
     s_tc.alloc_fail[arena]++;
-    tc_request_overflow(arena, (uint32_t)vert_count);
+    tc_request_grow(arena, (uint32_t)vert_count);
     if (s_tc.rz_window) s_tc.edge_claims++;
     else if (a->ovf_state == TC_OVF_REQ) s_tc.grow_claims++;
     else s_tc.claims[arena]++;
@@ -1552,6 +1798,7 @@ void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
 {
     if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT || count <= 0) return;
+    if (buf < 0 || buf >= TC_BUF_SLOTS) return;
     tc_buf *a = &s_tc.arena[arena].buf[buf];
     tc_reg_remove(arena, buf, first);
     /* No in-place dead-stamp: a replaced chunk keeps its bytes untouched (a
@@ -1566,26 +1813,157 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
         s_tc.defer[s_tc.defer_n++] = (tc_defer){
             (uint8_t)arena, (uint8_t)buf, first, (uint32_t)count, s_tc.present_ctr };
     } else {
-        tc_free_insert(a, first, (uint32_t)count);   /* overflow: reuse now (rare) */
+        if (!a->source) tc_free_insert(a, first, (uint32_t)count);   /* overflow: reuse now (rare) */
         s_tc.defer_overflow++;
     }
 }
 
+/** @brief Ask the device-owning thread for a larger previous-tick store.
+ *
+ * Builder thread, from an allocation that took the store past 75% of its
+ * capacity (@p demand 0) or one it refused (@p demand the refused units).
+ * The replacement holds cap + max(demand, the init capacity) units. Dropped
+ * while a request is outstanding, during a level-edge window (the edge
+ * replaces the store) or while a refusal's backoff runs.
+ * @param demand Refused units, or 0 for the watermark. */
+static void tc_store_request(uint32_t demand)
+{
+    if (s_tc.prev_state == TC_OVF_REQ || s_tc.rz_window) return;
+    if (s_tc.prev_state == TC_OVF_BACKOFF &&
+        (int32_t)(s_tc.present_ctr - s_tc.prev_retry_at) < 0) return;
+    const uint32_t step = demand > tc_prev_cap_init() ? demand : tc_prev_cap_init();
+    s_tc.prev_want = s_tc.prev_cap + step;
+    s_tc.prev_state = TC_OVF_REQ;
+    fprintf(stderr, "[ter-gpu] store grow request: %s demand=%u want=%u high=%u used=%u cap=%u\n",
+            demand ? "refusal" : "watermark", demand, s_tc.prev_want, s_tc.prev_alloc.high,
+            s_tc.prev_alloc.used, s_tc.prev_cap);
+    atomic_store_explicit(&s_tc.prev_req, 1, memory_order_release);
+}
+
 int openpete_tercache_prev_alloc(int count, uint32_t *out_first)
 {
-    if (!s_tc.ready || count <= 0 || !s_tc.prev_store) return -1;
+    if (!s_tc.ready || count <= 0 || !s_tc.prev_shadow) return -1;
     if (tc_buf_alloc(&s_tc.prev_alloc, (uint32_t)count, out_first) != 0) {
-        s_tc.prev_fail++;
+        tc_store_request((uint32_t)count);
+        if (s_tc.rz_window) s_tc.edge_claims++;
+        else if (s_tc.prev_state == TC_OVF_REQ) s_tc.prev_grow_claims++;
+        else s_tc.prev_fail++;
         return -1;
     }
+    if ((uint64_t)s_tc.prev_alloc.high * 4u > (uint64_t)s_tc.prev_cap * 3u) tc_store_request(0u);
     return 0;
 }
 
 void openpete_tercache_prev_write(uint32_t first, const uint32_t *words, int count)
 {
-    if (!s_tc.ready || count <= 0 || !s_tc.prev_store) return;
+    if (!s_tc.ready || count <= 0 || !s_tc.prev_shadow) return;
+    const tc_store *st = atomic_load_explicit(&s_tc.prev_live, memory_order_relaxed);
     const size_t rb = OPTC_PREV_REC_WORDS * sizeof(uint32_t);
-    rhi_update_buffer_range(s_tc.prev_store, words, (size_t)first * rb, (size_t)count * rb);
+    /* The shadow takes every write: a replacement store is refilled from it,
+     * never by reading the write-combined mapping back. */
+    memcpy(s_tc.prev_shadow + (size_t)first * OPTC_PREV_REC_WORDS, words, (size_t)count * rb);
+    rhi_update_buffer_range(st->buf, words, (size_t)first * rb, (size_t)count * rb);
+}
+
+/** @brief Push a device object onto the retire queue the device-owning thread drains.
+ *
+ * Builder thread. The caller unpublishes the object no later than the
+ * push, so no build after it draws it; the drain destroys it once
+ * RHI_FRAMES_IN_FLIGHT service calls have passed.
+ * @param pr A pair, or NULL.
+ * @param st A store, or NULL.
+ * @return 1 when queued, 0 when the queue is full (the caller keeps the
+ *         object). */
+static int tc_retire_push(tc_pair *pr, tc_store *st)
+{
+    const uint32_t h = atomic_load_explicit(&s_tc.rq_head, memory_order_relaxed);
+    const uint32_t t = atomic_load_explicit(&s_tc.rq_tail, memory_order_acquire);
+    if (h - t >= TC_RETIRE_Q) return 0;
+    s_tc.rq[h % TC_RETIRE_Q] = (tc_retire_ent){
+        pr, st, atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed) };
+    atomic_store_explicit(&s_tc.rq_head, h + 1u, memory_order_release);
+    return 1;
+}
+
+/** @brief Destroy every queued retiree whose RHI_FRAMES_IN_FLIGHT service calls have passed.
+ *
+ * Device-owning thread, from every service call in any replacement state.
+ * The queue is in push order, so the drain stops at the first entry still
+ * inside its window.
+ * @param svc Service call count including the current call. */
+static void tc_retire_queue_drain(uint32_t svc)
+{
+    uint32_t t = atomic_load_explicit(&s_tc.rq_tail, memory_order_relaxed);
+    const uint32_t h = atomic_load_explicit(&s_tc.rq_head, memory_order_acquire);
+    while (t != h) {
+        const tc_retire_ent *e = &s_tc.rq[t % TC_RETIRE_Q];
+        if (svc - e->svc <= RHI_FRAMES_IN_FLIGHT) break;
+        tc_pair_free(s_tc.dev, e->pair);
+        tc_store_free(s_tc.dev, e->store);
+        t++;
+    }
+    atomic_store_explicit(&s_tc.rq_tail, t, memory_order_release);
+}
+
+/** @brief Install an answered previous-tick store replacement, or start the refusal's backoff.
+ *
+ * Builder thread, from frame_begin and frame_skip, after the last bake into
+ * the old store. The shadow grows to the new capacity, the new store takes
+ * the shadow's units up to the allocator's high-water mark (every record a
+ * live, ring or held chunk names lives below it, deferred and held runs
+ * included), and then publishes with release ordering, so the next
+ * state's bind reads the refilled store. The old store retires through the
+ * queue. The allocation epoch steps, so sectors claimed for want of room
+ * retry. */
+static void tc_store_adopt(void)
+{
+    if (!atomic_exchange_explicit(&s_tc.prev_done, 0, memory_order_acquire)) return;
+    tc_store *st = s_tc.prev_new;
+    s_tc.prev_new = NULL;
+    if (st) {
+        uint32_t *sh = (uint32_t *)realloc(s_tc.prev_shadow,
+                                           (size_t)st->cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
+        if (!sh) { tc_retire_push(NULL, st); st = NULL; }
+        else s_tc.prev_shadow = sh;
+    }
+    if (!st) {
+        s_tc.prev_state = TC_OVF_BACKOFF;
+        s_tc.prev_backoff = s_tc.prev_backoff ? (s_tc.prev_backoff < 1024u ? s_tc.prev_backoff * 2u : 1024u) : 8u;
+        s_tc.prev_retry_at = s_tc.present_ctr + s_tc.prev_backoff;
+        return;
+    }
+    const size_t rb = OPTC_PREV_REC_WORDS * sizeof(uint32_t);
+    const op_time_t t0 = op_now();   /* clock-guard: wall (refill cost) */
+    memset(s_tc.prev_shadow + (size_t)s_tc.prev_cap * OPTC_PREV_REC_WORDS, 0,
+           (size_t)(st->cap - s_tc.prev_cap) * rb);
+    if (s_tc.prev_alloc.high)
+        rhi_update_buffer_range(st->buf, s_tc.prev_shadow, 0, (size_t)s_tc.prev_alloc.high * rb);
+    fprintf(stderr, "[ter-gpu] store of %u units adopted; refill of %u units %.3f ms\n",
+            st->cap, s_tc.prev_alloc.high, (double)(op_now() - t0) / 1e6);
+    tc_store *old = atomic_exchange_explicit(&s_tc.prev_live, st, memory_order_acq_rel);
+    tc_retire_push(NULL, old);
+    s_tc.prev_cap = st->cap;
+    s_tc.prev_alloc.cap = st->cap;
+    s_tc.prev_state = TC_OVF_IDLE;
+    s_tc.prev_backoff = 0;
+    s_tc.prev_grow++;
+    s_tc.alloc_epoch++;
+}
+
+/** @brief Allocate the previous-tick store replacement the builder asked for and publish the answer.
+ *
+ * Device-owning thread; NULL answers a refusal (OPENPETE_TC_REFUSE site
+ * store, or the device). Waits, leaving the request posted, while
+ * OPTC_STORES_ALIVE stores exist. */
+static void tc_store_fulfil(void)
+{
+    if (atomic_load_explicit(&s_tc.stores_alive, memory_order_relaxed) >= OPTC_STORES_ALIVE) return;
+    if (!atomic_exchange_explicit(&s_tc.prev_req, 0, memory_order_acquire)) return;
+    s_tc.prev_new = tc_refuse(TC_SITE_STORE) ? NULL : tc_store_make(s_tc.dev, s_tc.prev_want);
+    if (!s_tc.prev_new)
+        fprintf(stderr, "[ter-gpu] previous-tick store of %u units: allocation refused\n",
+                s_tc.prev_want);
+    atomic_store_explicit(&s_tc.prev_done, 1, memory_order_release);
 }
 
 void openpete_tercache_prev_free(uint32_t first, int count)
@@ -1631,6 +2009,7 @@ void openpete_tercache_request_resize(int level_id)
     if (!s_tc.ready) return;
     openpete_tercache_set_level(level_id);
     s_tc.rz_window = 1;
+    s_tc.rz_store_cap = s_tc.prev_cap;
     atomic_store_explicit(&s_tc.rz_req, 1, memory_order_release);
 }
 
@@ -1647,14 +2026,13 @@ int openpete_tercache_resize_ready(void)
         atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) == TC_RZ_READY;
 }
 
-/** @brief Move answered but uninstalled overflow buffers onto the replacement's retire list.
+/** @brief Move answered but uninstalled growth or consolidation buffers onto the replacement's retire list.
  *
- * Builder thread, from tc_adopt_pending. An overflow buffer the device
- * answered but no frame_begin installed has never been bound by a draw; it
- * still retires through the drain, the only path that destroys a pair. The
- * device answers no overflow request while a replacement is requested or
- * awaiting adoption, so every answer raised before this point is visible
- * here. Outstanding unanswered requests are dropped. */
+ * Builder thread, from tc_adopt_pending. A buffer the device answered but no
+ * frame_begin installed has never been bound by a draw; it still retires
+ * through the drain. The device answers no request while a replacement is
+ * requested or awaiting adoption, so every answer raised before this point
+ * is visible here. Outstanding unanswered requests are dropped. */
 static void tc_collect_overflow_pending(void)
 {
     const uint32_t mask = atomic_exchange_explicit(&s_tc.ovf_done, 0u,
@@ -1662,18 +2040,173 @@ static void tc_collect_overflow_pending(void)
     atomic_store_explicit(&s_tc.ovf_req, 0u, memory_order_relaxed);
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (!(mask & (1u << a))) continue;
-        s_tc.rz_old[a][TC_BUF_MAX] = s_tc.ovf_new[a];
+        s_tc.rz_old[a][TC_BUF_SLOTS] = s_tc.ovf_new[a];
         s_tc.ovf_new[a] = NULL;
     }
 }
 
-/** @brief Install every answered overflow buffer as its arena's next buffer.
+/** @brief Return the device bytes of the buffers of an arena's consolidation that have emptied and await their floors.
+ * @param arena Arena index.
+ * @return Bytes. */
+static uint64_t tc_pinned_bytes(int arena)
+{
+    uint64_t b = 0;
+    for (int i = 0; i < TC_BUF_SLOTS; i++) {
+        const tc_buf *bf = &s_tc.arena[arena].buf[i];
+        if (bf->source && bf->zeroed && tc_live_pair(arena, i)) b += tc_pair_bytes(arena, bf->cap);
+    }
+    return b;
+}
+
+/** @brief Return 1 when a deferred release still names an arena buffer.
+ * @param arena Arena index.
+ * @param buf Buffer index.
+ * @return 1 when named, else 0. */
+static int tc_defer_names(int arena, int buf)
+{
+    for (int i = 0; i < s_tc.defer_n; i++)
+        if (s_tc.defer[i].arena == arena && s_tc.defer[i].buf == buf) return 1;
+    return 0;
+}
+
+static int tc_release_floor(uint32_t *floor_serial);
+
+/** @brief Store an arena's buffer count as its highest occupied slot + 1 and record its occupied-slot peak.
+ * @param a Arena index. */
+static void tc_arena_recount(int a)
+{
+    int top = 0, occ = 0;
+    for (int i = 0; i < TC_BUF_SLOTS; i++) {
+        if (!tc_live_pair(a, i)) continue;
+        top = i + 1;
+        occ++;
+    }
+    atomic_store_explicit(&s_tc.arena[a].n, top, memory_order_release);
+    if ((uint32_t)occ > s_tc.bufs_max[a]) s_tc.bufs_max[a] = (uint32_t)occ;
+}
+
+
+/** @brief Advance one buffer slot's source retirement: note when it empties, retire it once its floors pass.
+ * @param a Arena index.
+ * @param b Buffer slot.
+ * @param have_floor Nonzero when @p floor_serial is valid.
+ * @param floor_serial The release floor (tc_release_floor).
+ * @return 1 while the slot holds a source that has not retired, else 0. */
+static int tc_source_step(int a, int b, int have_floor, uint32_t floor_serial)
+{
+    tc_buf *bf = &s_tc.arena[a].buf[b];
+    tc_pair *pr = atomic_load_explicit(&bf->pair, memory_order_relaxed);
+    if (!pr || !bf->source) return 0;
+    if (!bf->zeroed) {
+        if (bf->chunks != 0 || tc_defer_names(a, b)) return 1;
+        bf->zeroed = 1;
+        bf->zero_build = s_tc.present_ctr;
+    }
+    const int aged = s_tc.present_ctr - bf->zero_build > TC_DEFER_PRESENTS;
+    const int unread = !have_floor || (int32_t)(bf->zero_build - floor_serial) <= 0;
+    if (!aged || !unread || !tc_retire_push(pr, NULL)) return 1;
+    atomic_store_explicit(&bf->pair, NULL, memory_order_release);
+    bf->source = bf->sealed = bf->zeroed = 0;
+    bf->high = bf->used = bf->chunks = bf->cap = 0;
+    bf->free_n = 0;
+    s_tc.reg[a][b].n = 0;
+    return 0;
+}
+
+/** @brief Retire every consolidation source and sealed buffer whose chunks are gone and whose floors have passed.
  *
- * Builder thread, from frame_begin and frame_skip. A refused request (a NULL
- * answer) leaves the arena at one buffer and stops further requests until
- * the next level edge, so the sectors it could not hold stay on the CPU walk
- * instead of re-asking every build. Each adoption steps the allocation epoch
- * and logs the request-to-adoption delay in service calls and builds. */
+ * Builder thread, from frame_begin after the deferred releases. A source
+ * becomes empty when its chunk count is 0 and no deferred range names it;
+ * that build is its zero serial. It retires once the release floor (the
+ * oldest ring or held state) is past the zero serial and more than
+ * TC_DEFER_PRESENTS builds have passed since it (the drain floor that
+ * covers live, staged and the freeze-backdrop source): no state still drawn
+ * can then name a chunk of it. Its pair leaves the slot (draws and
+ * allocations skip a NULL pair, and a chunk's buffer index stays valid) and
+ * goes to the retire queue, which waits RHI_FRAMES_IN_FLIGHT service calls
+ * before destroying it (a full queue defers the retirement to a later
+ * build); the slot is reusable from then on. The arena's
+ * consolidation ends when no source remains. */
+static void tc_source_retire(void)
+{
+    uint32_t floor_serial = 0;
+    const int have_floor = tc_release_floor(&floor_serial);
+    uint64_t pinned = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        tc_arena *ar = &s_tc.arena[a];
+        if (!ar->cons_live) continue;
+        int remain = 0;
+        for (int b = 0; b < TC_BUF_SLOTS; b++)
+            remain |= tc_source_step(a, b, have_floor, floor_serial);
+        pinned += tc_pinned_bytes(a);
+        tc_arena_recount(a);
+        if (!remain) {
+            ar->cons_live = 0;
+            if (ar->cons_ticks > s_tc.migrate_ticks) s_tc.migrate_ticks = ar->cons_ticks;
+        }
+    }
+    if (pinned > s_tc.pinned_bytes) s_tc.pinned_bytes = pinned;
+}
+
+/** @brief Apply the refusal policy to an arena whose growth or consolidation request was refused.
+ *
+ * A refused growth asks for a consolidation at once. A refused
+ * consolidation returns its sources to service (sealed buffers excepted:
+ * they stay sources until they retire) and starts a backoff, as does a
+ * growth whose consolidation cannot be asked for.
+ * @param a Arena index.
+ * @param kind The refused request's TC_REQ_* kind. */
+static void tc_adopt_refused(int a, int kind)
+{
+    tc_arena *ar = &s_tc.arena[a];
+    if (kind == TC_REQ_GROW && tc_request_consolidation(a, s_tc.ovf_want[a])) return;
+    if (kind == TC_REQ_CONS) {
+        int sealed = 0;
+        for (int b = 0; b < TC_BUF_SLOTS; b++) {
+            if (!ar->buf[b].sealed) ar->buf[b].source = 0;
+            sealed |= ar->buf[b].sealed;
+        }
+        ar->cons_live = sealed;
+    }
+    tc_backoff(ar);
+}
+
+/** @brief Install an answered buffer in an arena slot and step the allocation epoch.
+ *
+ * Logs the request-to-adoption delay in service calls and builds and the
+ * device's allocation time.
+ * @param a Arena index.
+ * @param slot The empty slot.
+ * @param pr The answered pair.
+ * @param kind TC_REQ_GROW or TC_REQ_CONS. */
+static void tc_install_buf(int a, int slot, tc_pair *pr, int kind)
+{
+    tc_arena *ar = &s_tc.arena[a];
+    tc_buf *b = &ar->buf[slot];
+    b->cap = pr->cap; b->high = 0; b->free_n = 0; b->used = 0; b->chunks = 0;
+    b->source = b->sealed = b->zeroed = 0;
+    s_tc.reg[a][slot].n = 0;
+    atomic_store_explicit(&b->pair, pr, memory_order_release);
+    tc_arena_recount(a);
+    ar->backoff = 0;
+    if (kind == TC_REQ_CONS) s_tc.consolidations++;
+    else s_tc.overflow_adopted[a]++;
+    s_tc.alloc_epoch++;
+    /* The window the claimed sectors spend on the CPU walk, in the two
+     * clocks that bound it: the device thread's service calls and the
+     * builder's builds. */
+    fprintf(stderr, "[ter-gpu] arena %d %s buffer of %u elements adopted in slot %d "
+                    "%u service calls / %u builds after the request; allocation %.3f ms\n",
+            a, kind == TC_REQ_CONS ? "consolidation" : "growth", pr->cap, slot,
+            atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed) - s_tc.ovf_req_svc[a],
+            s_tc.present_ctr - s_tc.ovf_req_build[a], (double)s_tc.ovf_fulfil_ns[a] / 1e6);
+}
+
+/** @brief Install every answered growth or consolidation buffer in its arena's lowest empty slot, or apply the refusal policy.
+ *
+ * Builder thread, from frame_begin and frame_skip. The request window
+ * closes either way. An answer with no empty slot left retires unused and
+ * counts as a refusal. */
 static void tc_adopt_overflow(void)
 {
     const uint32_t mask = atomic_exchange_explicit(&s_tc.ovf_done, 0u,
@@ -1684,25 +2217,13 @@ static void tc_adopt_overflow(void)
         tc_arena *ar = &s_tc.arena[a];
         tc_pair *pr = s_tc.ovf_new[a];
         s_tc.ovf_new[a] = NULL;
-        if (!pr) { ar->ovf_state = TC_OVF_FAILED; continue; }
-        const int n = atomic_load_explicit(&ar->n, memory_order_relaxed);
-        tc_buf *b = &ar->buf[n];
-        b->cap = pr->cap; b->high = 0; b->free_n = 0; b->used = 0; b->chunks = 0;
-        atomic_store_explicit(&b->pair, pr, memory_order_release);
-        atomic_store_explicit(&ar->n, n + 1, memory_order_release);
-        if ((uint32_t)(n + 1) > s_tc.bufs_max[a]) s_tc.bufs_max[a] = (uint32_t)(n + 1);
-        ar->ovf_state = TC_OVF_LIVE;
-        s_tc.overflow_adopted[a]++;
-        s_tc.alloc_epoch++;
-        /* The window the claimed sectors spend on the CPU walk, in the two
-         * clocks that bound it: the device thread's service calls and the
-         * builder's builds. */
-        fprintf(stderr, "[ter-gpu] arena %d overflow buffer of %u vertices adopted "
-                        "%u service calls / %u builds after the request\n",
-                a, pr->cap,
-                atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed)
-                    - s_tc.ovf_req_svc[a],
-                s_tc.present_ctr - s_tc.ovf_req_build[a]);
+        const int kind = ar->ovf_kind;
+        ar->ovf_state = TC_OVF_IDLE;
+        int empty;
+        (void)tc_arena_slots(a, &empty);
+        if (pr && empty < 0 && tc_retire_push(pr, NULL)) pr = NULL;
+        if (pr && empty >= 0) tc_install_buf(a, empty, pr, kind);
+        else tc_adopt_refused(a, kind);
     }
 }
 
@@ -1740,49 +2261,106 @@ int openpete_tercache_serial_released(uint32_t serial)
     return !tc_release_floor(&floor_serial) || (int32_t)(serial - floor_serial) <= 0;
 }
 
-/** @brief Close the level-edge window when the device refused the replacement.
+/** @brief Seal the outgoing buffers and open a consolidation when the device refused a level-edge replacement.
  *
  * Builder thread, from frame_begin and frame_skip. The device counts each
- * refused replacement in rz_failed; a count the builder has not seen closes
- * the open window (the live buffers stay) and counts a failed edge. */
+ * refused replacement in rz_failed; a count the builder has not seen counts
+ * a failed edge and closes the edge window. Every slot was freed at the
+ * edge, so the outgoing buffers hold only ranges states drawn before the
+ * edge may still read: each is sealed (no allocation, and its released
+ * ranges never return to its free list, so the new level never writes a
+ * range a held state draws) and becomes a consolidation source, and each
+ * arena asks for a consolidation buffer at once, sized for the new level.
+ * The new level bakes into it; its adoption steps the allocation epoch, so
+ * the claims of the window re-bake. No hold drops. The sealed buffers
+ * retire once their floors pass (tc_source_retire). The previous-tick
+ * store stays. */
 static void tc_note_failed_edge(void)
 {
     const uint32_t f = atomic_load_explicit(&s_tc.rz_failed, memory_order_acquire);
     if (f == s_tc.rz_failed_seen) return;
     s_tc.failed_edges += f - s_tc.rz_failed_seen;
     s_tc.rz_failed_seen = f;
-    if (!atomic_load_explicit(&s_tc.rz_req, memory_order_relaxed)) s_tc.rz_window = 0;
+    if (atomic_load_explicit(&s_tc.rz_req, memory_order_relaxed)) return;   /* a newer edge is queued */
+    s_tc.rz_window = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        tc_arena *ar = &s_tc.arena[a];
+        for (int b = 0; b < TC_BUF_SLOTS; b++)
+            if (tc_live_pair(a, b)) ar->buf[b].sealed = 1;
+        /* An answer already in flight lands in an empty slot as the new
+         * level's buffer; otherwise the consolidation asks for one. */
+        if (ar->ovf_state != TC_OVF_REQ) {
+            ar->ovf_state = TC_OVF_IDLE;
+            ar->cons_live = 0;
+            if (tc_request_consolidation(a, 0u)) continue;
+            ar->backoff = 0;
+            tc_backoff(ar);
+        }
+        for (int b = 0; b < TC_BUF_SLOTS; b++)
+            if (ar->buf[b].sealed && !ar->buf[b].source) { ar->buf[b].source = 1; ar->buf[b].zeroed = 0; }
+        ar->cons_live = 1;
+        ar->cons_ticks = 0;
+    }
 }
 
 /** @brief Adopt a fulfilled level-edge replacement.
  *
  * Builder thread, from frame_begin and frame_skip; no-op unless the
- * replacement is in the READY state. Publishes the fresh pairs, resets each
- * arena's allocator, collapses each arena back to one buffer, drops the
- * deferred-release list (its ranges address the outgoing pairs), steps the
- * allocation epoch, records the drain floors, and hands the outgoing pairs
- * to the retire drain. */
+ * replacement is in the READY state. Publishes the fresh pairs and the
+ * fresh previous-tick store, resets each arena's allocator and the store's,
+ * collapses each arena back to one buffer (every growth, consolidation and
+ * sealed buffer goes to the retire list with the outgoing primary), drops
+ * the deferred-release lists (their ranges address the outgoing buffers),
+ * steps the allocation epoch, records the drain floors, and hands the
+ * outgoing pairs and store to the retire drain. */
 static void tc_adopt_pending(void)
 {
     if (atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) != TC_RZ_READY) return;
     tc_collect_overflow_pending();
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         tc_arena *ar = &s_tc.arena[a];
-        for (int b = 0; b < TC_BUF_MAX; b++)
+        for (int b = 0; b < TC_BUF_SLOTS; b++)
             s_tc.rz_old[a][b] = atomic_load_explicit(&ar->buf[b].pair,
                                                      memory_order_relaxed);
         tc_buf *p = &ar->buf[0];
         p->cap = s_tc.rz_new[a]->cap;
-        p->high = 0; p->free_n = 0; p->used = 0; p->chunks = 0;
         atomic_store_explicit(&p->pair, s_tc.rz_new[a], memory_order_release);
-        /* The overflow slot is emptied before the count falls, and the draw
+        /* The other slots are emptied before the count falls, and the draw
          * skips a NULL pair, so a present that read the old count draws
          * nothing extra rather than binding a pair now on the retire list. */
-        atomic_store_explicit(&ar->buf[1].pair, NULL, memory_order_release);
+        for (int b = 1; b < TC_BUF_SLOTS; b++)
+            atomic_store_explicit(&ar->buf[b].pair, NULL, memory_order_release);
         atomic_store_explicit(&ar->n, 1, memory_order_release);
+        for (int b = 0; b < TC_BUF_SLOTS; b++) {
+            tc_buf *bf = &ar->buf[b];
+            bf->high = 0; bf->free_n = 0; bf->used = 0; bf->chunks = 0;
+            bf->source = bf->sealed = bf->zeroed = 0;
+            if (b) bf->cap = 0;
+        }
         ar->ovf_state = TC_OVF_IDLE;
+        ar->backoff = 0;
+        ar->cons_live = 0;
         s_tc.ovf_fail_logged[a] = 0;
         s_tc.rz_new[a] = NULL;
+    }
+    /* The store: records and colour tables were all released at the edge,
+     * so the fresh store starts empty and its deferred runs are dropped. */
+    s_tc.rz_old_store = atomic_exchange_explicit(&s_tc.prev_live, s_tc.rz_store,
+                                                 memory_order_acq_rel);
+    s_tc.rz_store = NULL;
+    s_tc.prev_cap = s_tc.prev_alloc.cap = atomic_load_explicit(&s_tc.prev_live,
+                                                               memory_order_relaxed)->cap;
+    s_tc.prev_alloc.high = s_tc.prev_alloc.used = s_tc.prev_alloc.chunks = 0;
+    s_tc.prev_alloc.free_n = 0;
+    s_tc.prev_defer_n = 0;
+    s_tc.prev_state = TC_OVF_IDLE;
+    s_tc.prev_backoff = 0;
+    {   /* a store growth answered for the outgoing store retires unused */
+        if (atomic_exchange_explicit(&s_tc.prev_done, 0, memory_order_acquire) && s_tc.prev_new) {
+            tc_retire_push(NULL, s_tc.prev_new);
+            s_tc.prev_new = NULL;
+        }
+        atomic_store_explicit(&s_tc.prev_req, 0, memory_order_relaxed);
     }
     s_tc.alloc_epoch++;
     /* Every deferred range addresses the outgoing pair's bytes. The fresh
@@ -1802,7 +2380,7 @@ static void tc_adopt_pending(void)
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_RETIRE, memory_order_release);
 }
 
-/** @brief Destroy the pairs a replacement retired once both drain floors have passed.
+/** @brief Destroy the pairs and the store a replacement retired once both drain floors have passed.
  *
  * Device-owning thread, from openpete_tercache_present_service. The floors
  * count from the adoption: more than TC_DEFER_PRESENTS builds (frame_begin's
@@ -1817,54 +2395,59 @@ static void tc_retire_drain(uint32_t svc)
     if (builds - s_tc.rz_old_build <= TC_DEFER_PRESENTS) return;
     if (svc - s_tc.rz_old_svc <= RHI_FRAMES_IN_FLIGHT) return;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
-        for (int b = 0; b <= TC_BUF_MAX; b++) {
+        for (int b = 0; b <= TC_BUF_SLOTS; b++) {
             tc_pair_free(s_tc.dev, s_tc.rz_old[a][b]);
             s_tc.rz_old[a][b] = NULL;
         }
     }
+    tc_store_free(s_tc.dev, s_tc.rz_old_store);
+    s_tc.rz_old_store = NULL;
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_IDLE, memory_order_release);
 }
 
-/** @brief Allocate one fresh pair per arena for the stored level and mark the replacement READY.
+/** @brief Allocate one fresh pair per arena and a fresh previous-tick store for the stored level and mark the replacement READY.
  *
  * Device-owning thread. Each pair is sized by tc_initial_cap for the level
- * stored by openpete_tercache_set_level. On any failure what was made is
- * freed, the live pairs stay in place and the state stays IDLE, so the cache
- * keeps drawing at the old (accumulating) high-water marks instead of losing
- * the retained path; the consumed request is not retried until the next
- * level edge. The failure is logged once. */
+ * stored by openpete_tercache_set_level; the store keeps the capacity the
+ * builder held at the request. On any failure (the device's, or
+ * OPENPETE_TC_REFUSE site edge) what was made is freed, the live pairs stay
+ * in place, the state stays IDLE and rz_failed counts the refusal, from
+ * which the builder seals the outgoing buffers and consolidates
+ * (tc_note_failed_edge). */
 static void tc_resize_fulfil(void)
 {
     tc_pair *made[OPTC_ARENA_COUNT];
     const int level = atomic_load_explicit(&s_tc.level_id, memory_order_acquire);
-    int ok = 1;
+    int ok = !tc_refuse(TC_SITE_EDGE);
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         made[a] = ok ? tc_pair_make(s_tc.dev, a, tc_initial_cap(level, a)) : NULL;
         if (!made[a]) ok = 0;
     }
-    if (ok && tc_refuse(TC_SITE_EDGE)) ok = 0;
+    tc_store *st = ok ? tc_store_make(s_tc.dev, s_tc.rz_store_cap) : NULL;
+    if (!st) ok = 0;
     if (!ok) {
         atomic_fetch_add_explicit(&s_tc.rz_failed, 1u, memory_order_release);
         for (int a = 0; a < OPTC_ARENA_COUNT; a++) tc_pair_free(s_tc.dev, made[a]);
         if (!s_tc.rz_alloc_logged) {
             s_tc.rz_alloc_logged = 1;
             fprintf(stderr, "[ter-gpu] arena replacement at level %d: allocation failed, "
-                            "the live buffers stay\n", level);
+                            "the live buffers are sealed and consolidate\n", level);
         }
         return;
     }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) s_tc.rz_new[a] = made[a];
+    s_tc.rz_store = st;
     atomic_fetch_add_explicit(&s_tc.svc_fulfilled, 1u, memory_order_relaxed);
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_READY, memory_order_release);
 }
 
-/** @brief Allocate one overflow buffer per requested arena and publish the answers.
+/** @brief Allocate one growth or consolidation buffer per requested arena and publish the answers.
  *
- * Device-owning thread. The answer is published NULL included: a refusal is
- * what stops the builder from asking again. Only reached with no replacement
- * requested or in flight, so an answer the builder has not taken yet cannot
- * outlive the arena it belongs to. A failed allocation is logged once per
- * arena. */
+ * Device-owning thread. The answer is published NULL included: a refusal
+ * (the device's, or OPENPETE_TC_REFUSE site grow or cons) is what starts the
+ * builder's refusal policy. Only reached with no replacement requested or
+ * in flight, so an answer the builder has not taken yet cannot outlive the
+ * arena it belongs to. A failed allocation is logged once per arena. */
 static void tc_overflow_fulfil(void)
 {
     const uint32_t mask = atomic_exchange_explicit(&s_tc.ovf_req, 0u,
@@ -1872,12 +2455,15 @@ static void tc_overflow_fulfil(void)
     if (!mask) return;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (!(mask & (1u << a))) continue;
-        tc_pair *pr = tc_refuse(TC_SITE_GROW) ? NULL : tc_pair_make(s_tc.dev, a, s_tc.ovf_want[a]);
+        const int site = s_tc.arena[a].ovf_kind == TC_REQ_CONS ? TC_SITE_CONS : TC_SITE_GROW;
+        const op_time_t t0 = op_now();   /* clock-guard: wall (allocation cost) */
+        tc_pair *pr = tc_refuse(site) ? NULL : tc_pair_make(s_tc.dev, a, s_tc.ovf_want[a]);
+        s_tc.ovf_fulfil_ns[a] = (uint64_t)(op_now() - t0);   /* clock-guard: wall */
         if (!pr && !s_tc.ovf_fail_logged[a]) {
             s_tc.ovf_fail_logged[a] = 1;
-            fprintf(stderr, "[ter-gpu] arena %d overflow buffer of %u vertices: "
-                            "allocation failed, its sectors stay on the CPU walk\n",
-                    a, s_tc.ovf_want[a]);
+            fprintf(stderr, "[ter-gpu] arena %d %s buffer of %u elements: "
+                            "allocation refused\n",
+                    a, site == TC_SITE_CONS ? "consolidation" : "growth", s_tc.ovf_want[a]);
         }
         s_tc.ovf_new[a] = pr;
         atomic_fetch_or_explicit(&s_tc.ovf_done, 1u << a, memory_order_release);
@@ -1889,16 +2475,23 @@ void openpete_tercache_present_service(void)
     if (!s_tc.ready || !s_tc.dev) return;
     const uint32_t svc = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed) + 1u;
     atomic_store_explicit(&s_tc.svc_calls, svc, memory_order_relaxed);
+    tc_retire_queue_drain(svc);
     const int st = atomic_load_explicit(&s_tc.rz_state, memory_order_acquire);
     if (st == TC_RZ_RETIRE) { tc_retire_drain(svc); return; }
     if (st != TC_RZ_IDLE) return;   /* READY: the builder has not adopted yet */
-    /* A replacement resizes every arena and collapses the overflow buffers
-     * into it, so it takes precedence over an outstanding overflow request. */
+    /* A replacement resizes every arena and collapses every buffer into it,
+     * so it takes precedence over an outstanding growth request. */
+    /* The replacement makes a store: it waits while OPTC_STORES_ALIVE exist,
+     * which the queued retirees' floors resolve within a few calls. */
+    if (atomic_load_explicit(&s_tc.rz_req, memory_order_relaxed) &&
+        atomic_load_explicit(&s_tc.stores_alive, memory_order_relaxed) >= OPTC_STORES_ALIVE)
+        return;
     if (atomic_exchange_explicit(&s_tc.rz_req, 0, memory_order_acquire)) {
         tc_resize_fulfil();
         return;
     }
     tc_overflow_fulfil();
+    tc_store_fulfil();
 }
 
 /* ---- per-present protocol ---------------------------------------------- */
@@ -2010,9 +2603,10 @@ static void tc_dead_stamp(const tc_defer *d)
         s_dead_sz = sz;
     }
     uint32_t left = d->count, at = d->first;
-    /* Non-NULL while the cache is ready: init makes every pair or fails, and
-     * the level-edge adoption swaps one in. */
+    /* NULL only for a slot whose source retired, which waits for every
+     * deferred range naming it first. */
     const tc_pair *dp = tc_live_pair(d->arena, d->buf);
+    if (!dp) return;
     while (left) {
         uint32_t n = left > DEAD_N ? DEAD_N : left;
         rhi_update_buffer_range(dp->vb, s_dead, (size_t)at * sz, (size_t)n * sz);
@@ -2095,6 +2689,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     tc_note_failed_edge();
     tc_adopt_pending();
     tc_adopt_overflow();
+    tc_store_adopt();
     s_tc.draws_prev = atomic_exchange_explicit(&s_tc.draws_last, 0u, memory_order_relaxed);
     /* release deferred ranges older than the in-flight window */
     int w = 0;
@@ -2107,8 +2702,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
             tc_dead_stamp(&s_tc.defer[i]);
             if (tc_dbg()) fprintf(stderr, "[tc] release arena=%d first=%u count=%u freed_at=%u ctr=%u floor=%u\n",
                                   s_tc.defer[i].arena, s_tc.defer[i].first, s_tc.defer[i].count, s_tc.defer[i].stamp, s_tc.present_ctr, floor_serial);
-            tc_free_insert(&s_tc.arena[s_tc.defer[i].arena].buf[s_tc.defer[i].buf],
-                           s_tc.defer[i].first, s_tc.defer[i].count);
+            tc_defer_return(&s_tc.defer[i]);
         } else
             s_tc.defer[w++] = s_tc.defer[i];
     }
@@ -2120,6 +2714,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     }
     s_tc.defer_n = w;
     tc_prev_release(have_floor, floor_serial);
+    tc_source_retire();
 
     if (!s_tc.ubo) { s_tc.ready = 0; return; }   /* created at init: no device
                                                    * object is made from the
@@ -2214,6 +2809,7 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
     tc_note_failed_edge();
     tc_adopt_pending();
     tc_adopt_overflow();
+    tc_store_adopt();
     tc_state *T = tc_begin_state(stamp, immediate);
     memset(&T->g, 0, sizeof(T->g));
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
@@ -2393,9 +2989,24 @@ static int tc_pair_retired(int arena, const tc_pair *pr)
 {
     if (atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) != TC_RZ_RETIRE)
         return 0;
-    for (int b = 0; b <= TC_BUF_MAX; b++)
+    for (int b = 0; b <= TC_BUF_SLOTS; b++)
         if (s_tc.rz_old[arena][b] == pr) return 1;
     return 0;
+}
+
+/** @brief Count a buffer draw against the two invariants the census reports.
+ *
+ * draws_retired counts a draw of a pair on the level-edge retire list (the
+ * invariant is 0); sealed_draws counts a held state's draw of a buffer
+ * sealed at a failed level edge, the case the seal exists for.
+ * @param arena Arena index.
+ * @param b The buffer.
+ * @param pr The pair being drawn. */
+static void tc_draw_census(int arena, const tc_buf *b, const tc_pair *pr)
+{
+    if (tc_pair_retired(arena, pr))
+        atomic_fetch_add_explicit(&s_tc.draws_retired, 1u, memory_order_relaxed);
+    if (b->sealed && s_tc.sel_src == 4) s_tc.sealed_draws++;
 }
 
 /** @brief Issue one face-identity arena draw over elements [first, first + n) of the bound buffer.
@@ -2493,13 +3104,12 @@ static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
                                                         : RHI_TERRAIN_CELL_VERTS_NEAR;
     const tc_ranges *rl = &s_tc.sel.rl;
     const int listed = rl->n >= 0 && tc_range_draw_on();
-    const int k = arena * TC_BUF_MAX + bi;
+    const int k = arena * TC_BUF_SLOTS + bi;
     if (listed && rl->off[k] == rl->off[k + 1]) {
         s_tc.cen_verts_whole += (uint64_t)nverts * (cells ? per : 1u);
         return;                           /* nothing selected in this buffer */
     }
-    if (tc_pair_retired(arena, pr))
-        atomic_fetch_add_explicit(&s_tc.draws_retired, 1u, memory_order_relaxed);
+    tc_draw_census(arena, b, pr);
     rhi_push_constants(s_tc.dev, pc, sizeof(*pc));
     if (pr->pv) rhi_bind_vertex_buffer2(s_tc.dev, pr->vb, pr->pv);
     else        rhi_bind_vertex_buffer(s_tc.dev, pr->vb);
@@ -2529,7 +3139,7 @@ static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
 static uint32_t tc_arena_high(int arena)
 {
     uint32_t h = 0;
-    for (int b = 0; b < TC_BUF_MAX; b++)
+    for (int b = 0; b < TC_BUF_SLOTS; b++)
         h += s_tc.sel.mark_high[arena][b];
     return h;
 }
@@ -2861,8 +3471,10 @@ static void tc_bind_keys(const openpete_tercache_keys *keys)
  * terrain blocks at sets 5/6 - not the contract set 3, whose binding 1 is a
  * mod's own uniform block, and a descriptor set views one buffer per binding.
  * @param vram VRAM texture, or NULL to leave the binding.
- * @param keys Key-contest images, or NULL for a pass that contests nothing. */
-static void tc_bind_draw_inputs(rhi_texture *vram, const openpete_tercache_keys *keys)
+ * @param keys Key-contest images, or NULL for a pass that contests nothing.
+ * @return 0, or -1 when the set-2 bind was refused (counted in
+ *         bind_refusals): the pass must draw nothing. */
+static int tc_bind_draw_inputs(rhi_texture *vram, const openpete_tercache_keys *keys)
 {
     if (vram) rhi_bind_vram(s_tc.dev, vram);
     if (keys) tc_bind_keys(keys);
@@ -2870,15 +3482,20 @@ static void tc_bind_draw_inputs(rhi_texture *vram, const openpete_tercache_keys 
      * with vKoff == 0 never sample it) beside the previous-corner records
      * the near stages read. Every cache pipeline holds this layout, so the
      * one bind serves every pipeline the pass switches to. */
-    rhi_bind_texture_storage(s_tc.dev, (keys && keys->prop) ? keys->prop : s_tc.hd_dummy,
-                             s_tc.prev_store,
-                             (uint32_t)(s_tc.prev_cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t)),
-                             2, 0);
+    const tc_store *st = atomic_load_explicit(&s_tc.prev_live, memory_order_acquire);
+    if (rhi_bind_texture_storage(s_tc.dev, (keys && keys->prop) ? keys->prop : s_tc.hd_dummy,
+                                 st->buf,
+                                 (uint32_t)(st->cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t)),
+                                 2, 0) != 0) {
+        atomic_fetch_add_explicit(&s_tc.bind_refusals, 1u, memory_order_relaxed);
+        return -1;
+    }
     rhi_texture *at = openpete_native_hdfold_atlas();
     if (!at) at = s_tc.hd_dummy;
     if (at) rhi_bind_texture_set(s_tc.dev, at, 4);
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);
+    return 0;
 }
 
 void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
@@ -2901,7 +3518,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
     tc_ubo_flush_frame();
     rhi_gpu_zone_begin(s_tc.dev, tc_zone_name(which));
     rhi_bind_pipeline(s_tc.dev, p);
-    tc_bind_draw_inputs(vram, keys);
+    if (tc_bind_draw_inputs(vram, keys) != 0) {   /* nothing may read a stale set 2 */
+        rhi_gpu_zone_end(s_tc.dev);
+        return;
+    }
     /* Every colour slot runs its stock pass filtered (mat_pass 0, the
      * classes resolved to stock) and then one pass per listed member. The
      * depth and key passes shade nothing, so they draw every face
@@ -3018,6 +3638,7 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         const tc_arena *ar = &s_tc.arena[a];
         for (int b = 0, n = atomic_load_explicit(&ar->n, memory_order_relaxed); b < n; b++) {
+            if (!atomic_load_explicit(&ar->buf[b].pair, memory_order_relaxed)) continue;
             out->chunks     += ar->buf[b].chunks;
             out->verts_used += ar->buf[b].used;
             out->verts_cap  += ar->buf[b].cap;
@@ -3048,6 +3669,12 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->prev_grow_claims = s_tc.prev_grow_claims;
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) out->grow += s_tc.overflow_adopted[a];
     out->failed_edges   = s_tc.failed_edges;
+    out->consolidations = s_tc.consolidations;
+    out->prev_grow      = s_tc.prev_grow;
+    out->sealed_draws   = s_tc.sealed_draws;
+    out->sealed_allocs  = s_tc.sealed_allocs;
+    out->pinned_bytes   = s_tc.pinned_bytes;
+    out->migrate_ticks  = s_tc.migrate_ticks;
     out->defer_overflow = s_tc.defer_overflow;
     out->hold_takes     = s_tc.hold_takes;
     out->hold_misses    = s_tc.hold_misses;
@@ -3057,6 +3684,37 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     memcpy(out->bufs_max, s_tc.bufs_max, sizeof out->bufs_max);
     out->ranges_max     = s_tc.ranges_max;
     out->cen_nolist     = s_tc.cen_nolist;
+    out->store_bind_refusals = atomic_load_explicit(&s_tc.bind_refusals, memory_order_relaxed);
+}
+
+int openpete_tercache_take_bind_refusal(void)
+{
+    const uint32_t r = atomic_load_explicit(&s_tc.bind_refusals, memory_order_relaxed);
+    if (r == s_tc.bind_refusals_seen) return 0;
+    s_tc.bind_refusals_seen = r;
+    return 1;
+}
+
+int openpete_tercache_buf_source(int arena, int buf)
+{
+    if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT || buf < 0 || buf >= TC_BUF_SLOTS)
+        return 0;
+    return s_tc.arena[arena].buf[buf].source;
+}
+
+int openpete_tercache_migrating(void)
+{
+    if (!s_tc.ready) return 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        if (s_tc.arena[a].cons_live) return 1;
+    return 0;
+}
+
+void openpete_tercache_migrate_tick(void)
+{
+    if (!s_tc.ready) return;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        if (s_tc.arena[a].cons_live) s_tc.arena[a].cons_ticks++;
 }
 
 void openpete_tercache_note_bake(void)
@@ -3097,7 +3755,7 @@ void openpete_tercache_print_exit_row(void)
             "hold_takes=%u hold_misses=%u hold_drops=%u sealed_draws=%u sealed_allocs=%u "
             "svc_fulfilled=%u draws_retired=%u pinned_bytes=%llu nonlocal_bufs=%u "
             "dropped_spans=%u migrate_ticks=%u stale_bytes=%llu bufs=%s ranges_max=%u/%d "
-            "nolist=%u\n",
+            "nolist=%u store_bind_refusals=%u\n",
             st.bakes, st.grow, st.consolidations, st.failed_edges, st.prev_grow, st.prev_fail,
             (unsigned long long)csum, cl, st.edge_claims, st.grow_claims, st.retire_claims,
             st.prev_grow_claims, st.window_bakes, st.defer_overflow, st.hold_takes,
@@ -3105,5 +3763,5 @@ void openpete_tercache_print_exit_row(void)
             st.sealed_draws, st.sealed_allocs, st.svc_fulfilled, st.draws_retired,
             (unsigned long long)st.pinned_bytes, st.nonlocal_bufs, st.dropped_spans,
             st.migrate_ticks, (unsigned long long)st.stale_bytes, bm, st.ranges_max,
-            TC_RANGE_MAX, st.cen_nolist);
+            TC_RANGE_MAX, st.cen_nolist, st.store_bind_refusals);
 }

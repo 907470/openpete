@@ -846,6 +846,9 @@ struct rhi_buffer {
     uint64_t       gen_serial;   /* frame serial gen_cur/gen_bound belong to */
     bool           gen_bound;    /* current generation referenced by a draw */
     bool           device_local; /* memory type carries DEVICE_LOCAL (device-mapped buffers) */
+    uint64_t       uid;          /* nonzero, distinct per device-mapped buffer made: a
+                                  * descriptor cached for a buffer keys on it, since a
+                                  * freed buffer's address can be reused by the next */
     rhi_device    *dev;        /* for frame indexing in rhi_update_buffer */
 };
 
@@ -1030,6 +1033,14 @@ struct rhi_compile_job {
     pipe_compiled    out;            /* the result; out.pipeline VK_NULL_HANDLE until a run succeeds */
 };
 
+/* Descriptor sets a texture keeps for rhi_bind_texture_storage pairs. The
+ * terrain cache, the one caller, keeps at most OPTC_STORES_ALIVE stores
+ * alive at once (the live one and its unfreed retirees); the slack covers a
+ * freed store whose set the last RHI_FRAMES_IN_FLIGHT frame serials still
+ * bound, which happens when the device-owning thread's service calls (one
+ * per VBL headless) outpace the frame serials (one per present). */
+#define RHI_TEX_STORE_SETS 8
+
 struct rhi_texture {
     VkImage         image;
     VkDeviceMemory  mem;
@@ -1065,14 +1076,15 @@ struct rhi_texture {
     VkImageView     rt_depth_sample_view;
     VkDescriptorSet depth_set;
     /* rhi_bind_texture_storage: this image at binding 0 beside a storage
-     * range at binding 1 (texssbo_set_layout), made at the first bind of
-     * the (store_buf, store_range) pair; store_serial is the last frame
-     * serial that bound it. */
-    VkDescriptorSet  store_set;
-    VkDescriptorPool store_pool;
-    const rhi_buffer *store_buf;
-    uint32_t         store_range;
-    uint64_t         store_serial;
+     * range at binding 1 (texssbo_set_layout), one set per (store uid,
+     * range) pair, made at the pair's first bind; store_serial is the last
+     * frame serial that bound the set. A replaced store takes another entry,
+     * so the set the in-flight frames bound stays valid until they retire. */
+    VkDescriptorSet  store_set[RHI_TEX_STORE_SETS];
+    VkDescriptorPool store_pool[RHI_TEX_STORE_SETS];
+    uint64_t         store_uid[RHI_TEX_STORE_SETS];
+    uint32_t         store_range[RHI_TEX_STORE_SETS];
+    uint64_t         store_serial[RHI_TEX_STORE_SETS];
     bool            census;    /* counted in s_census (create_sampled_image) */
     int64_t         census_dev_bytes;
     bool            depth_readable; /* depth image carries TRANSFER_SRC
@@ -5606,9 +5618,11 @@ static rhi_buffer *create_device_mapped_buffer(rhi_device *dev, size_t bytes,
                                                VkBufferUsageFlags usage,
                                                const char *what)
 {
+    static uint64_t s_uid;
     rhi_buffer *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
     b->size = (VkDeviceSize)bytes;
+    b->uid = ++s_uid;
     VkBufferCreateInfo bi = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = bytes,
@@ -7053,7 +7067,8 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
     }
     if (tex->set)       vkFreeDescriptorSets(dev->device, tex->set_pool, 1, &tex->set);
     if (tex->depth_set) vkFreeDescriptorSets(dev->device, tex->depth_set_pool, 1, &tex->depth_set);
-    if (tex->store_set) vkFreeDescriptorSets(dev->device, tex->store_pool, 1, &tex->store_set);
+    for (int i = 0; i < RHI_TEX_STORE_SETS; i++)
+        if (tex->store_set[i]) vkFreeDescriptorSets(dev->device, tex->store_pool[i], 1, &tex->store_set[i]);
     if (tex->rt_depth_sample_view) vkDestroyImageView(dev->device, tex->rt_depth_sample_view, NULL);
     if (tex->init_pending)
         for (rhi_texture **pp = &dev->init_head; *pp; pp = &(*pp)->init_next)
@@ -11460,31 +11475,57 @@ uint32_t rhi_storage_offset_align(const rhi_device *dev)
     return dev && dev->ssbo_align ? (uint32_t)dev->ssbo_align : 1u;
 }
 
+/** @brief Pick the texture's descriptor-set entry for a (store, range) pair: its own, else an empty or retired one.
+ * @param tex Texture.
+ * @param uid The store's uid.
+ * @param range Bytes binding 1 spans.
+ * @param made Receives 1 when the entry already describes the pair.
+ * @return The entry index, or -1 when every entry is bound by an unretired frame. */
+static int texture_store_slot(const rhi_texture *tex, uint64_t uid, uint32_t range, int *made)
+{
+    int pick = -1;
+    *made = 0;
+    for (int i = 0; i < RHI_TEX_STORE_SETS; i++) {
+        if (tex->store_set[i] && tex->store_uid[i] == uid && tex->store_range[i] == range) {
+            *made = 1;
+            return i;
+        }
+        const bool free_entry = !tex->store_set[i] ||
+                                tex->store_serial[i] + RHI_FRAMES_IN_FLIGHT <= s_frame_serial;
+        if (free_entry && (pick < 0 || !tex->store_set[i])) pick = i;
+    }
+    return pick;
+}
+
 /** @brief Make or reuse the texture's image-plus-storage descriptor set for one (store, range) pair.
  *
- * A set made for another pair is freed first when no unretired frame bound
- * it; while one does, the new pair is refused (logged once).
+ * Each texture keeps RHI_TEX_STORE_SETS sets keyed by the store's uid and
+ * the range. A pair without a set takes an empty entry, or one no unretired
+ * frame bound (its set is freed first); with every entry in flight the pair
+ * is refused (logged once).
  * @param dev Device.
  * @param tex Texture.
  * @param store Storage buffer.
  * @param range Bytes binding 1 spans.
- * @return true when tex->store_set describes the pair. */
-static bool texture_store_set(rhi_device *dev, rhi_texture *tex, const rhi_buffer *store,
-                              uint32_t range)
+ * @return The entry describing the pair, or -1. */
+static int texture_store_set(rhi_device *dev, rhi_texture *tex, const rhi_buffer *store,
+                             uint32_t range)
 {
-    if (tex->store_set && tex->store_buf == store && tex->store_range == range) return true;
-    if (tex->store_set) {
-        if (tex->store_serial + RHI_FRAMES_IN_FLIGHT > s_frame_serial) {
-            static bool once;
-            if (!once) { once = true; RHI_LOG("rhi_bind_texture_storage: a second (store, range) pair on one texture while the first is in flight; refused\n"); }
-            return false;
-        }
-        vkFreeDescriptorSets(dev->device, tex->store_pool, 1, &tex->store_set);
-        tex->store_set = VK_NULL_HANDLE;
+    int made;
+    const int i = texture_store_slot(tex, store->uid, range, &made);
+    if (made) return i;
+    if (i < 0) {
+        static bool once;
+        if (!once) { once = true; RHI_LOG("rhi_bind_texture_storage: every (store, range) set of the texture is in flight; refused\n"); }
+        return -1;
     }
-    if (!desc_alloc(dev, dev->texssbo_set_layout, &tex->store_set, &tex->store_pool)) {
+    if (tex->store_set[i]) {
+        vkFreeDescriptorSets(dev->device, tex->store_pool[i], 1, &tex->store_set[i]);
+        tex->store_set[i] = VK_NULL_HANDLE;
+    }
+    if (!desc_alloc(dev, dev->texssbo_set_layout, &tex->store_set[i], &tex->store_pool[i])) {
         RHI_LOG("rhi_bind_texture_storage: descriptor set allocation failed\n");
-        return false;
+        return -1;
     }
     VkDescriptorImageInfo ii = {
         .sampler = dev->vram_sampler,
@@ -11493,27 +11534,29 @@ static bool texture_store_set(rhi_device *dev, rhi_texture *tex, const rhi_buffe
     };
     VkDescriptorBufferInfo bi = { .buffer = store->buffer, .offset = 0, .range = range };
     VkWriteDescriptorSet w[2] = {
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = tex->store_set,
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = tex->store_set[i],
           .dstBinding = 0, .descriptorCount = 1,
           .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = tex->store_set,
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = tex->store_set[i],
           .dstBinding = 1, .descriptorCount = 1,
           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &bi },
     };
     vkUpdateDescriptorSets(dev->device, 2, w, 0, NULL);
-    tex->store_buf = store;
-    tex->store_range = range;
-    return true;
+    tex->store_uid[i] = store->uid;
+    tex->store_range[i] = range;
+    return i;
 }
 
-void rhi_bind_texture_storage(rhi_device *dev, rhi_texture *tex, rhi_buffer *store,
-                              uint32_t range, uint32_t set, uint32_t offset)
+int rhi_bind_texture_storage(rhi_device *dev, rhi_texture *tex, rhi_buffer *store,
+                             uint32_t range, uint32_t set, uint32_t offset)
 {
-    if (!dev || !tex || !store || !dev->frame_active || !dev->cur_layout) return;
-    if (!texture_store_set(dev, tex, store, range)) return;
-    tex->store_serial = s_frame_serial;
+    if (!dev || !tex || !store || !dev->frame_active || !dev->cur_layout) return 0;
+    const int i = texture_store_set(dev, tex, store, range);
+    if (i < 0) return -1;
+    tex->store_serial[i] = s_frame_serial;
     vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            dev->cur_layout, set, 1, &tex->store_set, 1, &offset);
+                            dev->cur_layout, set, 1, &tex->store_set[i], 1, &offset);
+    return 0;
 }
 
 void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set)

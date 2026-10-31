@@ -428,11 +428,13 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
  * draws no retained content. */
 /** @brief Open a terrain build: fill the target state's globals and clear its sector flags.
  *
- * Builder thread, once per terrain feed. The call first adopts any
- * fulfilled level-edge replacement and overflow buffers, then releases the
- * deferred chunk ranges that are older than the in-flight window and that
- * no live eager ring state can still read, stamping them dead before they
- * become reusable. The target state (tc_begin_state) is a ring entry for an
+ * Builder thread, once per terrain feed. The call first seals the buffers
+ * of a refused level-edge replacement, adopts any fulfilled replacement,
+ * growth or consolidation buffer and previous-tick store replacement, then
+ * releases the deferred chunk ranges that are older than the in-flight
+ * window and that no live eager ring state can still read, stamping them
+ * dead before they become reusable, and retires the consolidation sources
+ * that have emptied past their floors. The target state (tc_begin_state) is a ring entry for an
  * immediate build of a scene stamp (OPTC_STAMP_SCENE_BIT), the live state
  * for any other immediate build, or the staged state, whose previous build
  * is promoted to live. Its globals are copied from @p g together with the
@@ -770,8 +772,8 @@ void openpete_native_hdfold_reset(void);
  * else growth of its high-water mark. Every later call for the chunk
  * (write, free) repeats the returned buffer index, since each buffer has
  * its own vertex numbering from 0. When every buffer is full the call
- * counts the failure and posts an overflow request for the arena (see the
- * overflow buffers below), so the caller's claim-back to the CPU walk lasts
+ * counts the failure and posts a growth request for the arena (see the
+ * growth buffers below), so the caller's claim-back to the CPU walk lasts
  * only the presents the device thread needs to allocate.
  * @param arena Arena index.
  * @param vert_count Vertices, or records on a cell arena, to allocate.
@@ -879,6 +881,12 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
  * reused only after the chunks' defer window, so a run is unchanged while
  * any state that can draw a chunk naming it lives. */
 #define OPTC_PREV_REC_WORDS 6u
+/* Previous-tick stores alive at once: the live store plus the replaced
+ * ones still waiting on their retire floors. The device-owning thread makes
+ * no store (edge replacement or growth) while this many exist, which bounds
+ * the (store, range) descriptor sets the set-2 bind needs per texture
+ * (RHI_TEX_STORE_SETS). */
+#define OPTC_STORES_ALIVE 3
 #define OPTC_PREV_REC_NONE  0xFFFFFFFFu
 #define OPTC_FACE_F_PREV    1u   /* a near face names a previous-corner record */
 #define OPTC_FACE_F_COLTAB  2u   /* the face's colours come from the colour table */
@@ -917,22 +925,31 @@ int openpete_tercache_serial_released(uint32_t serial);
  * @param count Unit count. */
 void openpete_tercache_prev_free(uint32_t first, int count);
 
-/* ---- overflow buffers ---------------------------------------------------
- * An arena holds a primary buffer and, once it has run out, one overflow
- * buffer sized from the level's own measured capacity, or from the refused
- * chunk where that is larger, so one grant covers the level. The builder
+/* ---- growth and consolidation buffers ------------------------------------
+ * An arena holds up to TC_BUF_MAX buffers (OPENPETE_TC_BUF_MAX lowers it)
+ * in TC_BUF_MAX + 1 slots. A buffer is requested when an allocation takes
+ * the newest buffer past 75% of its capacity, or when every buffer refuses
+ * a chunk; it holds max(refused chunk, the primary's size). The builder
  * posts the request from chunk_alloc, the device-owning thread allocates it
- * in present_service, and the builder installs it at its next frame_begin;
- * from then on chunk_alloc serves from the overflow once the primary is full
- * and the draw issues one rhi_draw per buffer. The vertex stage's only index
- * use is gl_VertexIndex % 3, which restarts at every draw, so a second buffer
- * needs no index translation and nothing is copied.
+ * in present_service, and the builder installs it in the lowest empty slot
+ * at its next frame_begin; the draw issues one rhi_draw per buffer and skips
+ * an empty slot. The vertex stage's only index use is gl_VertexIndex % 3,
+ * which restarts at every draw, so a buffer needs no index translation and
+ * nothing is copied. A chunk claimed between a request and its adoption is
+ * counted in `grow_claims`; any other claim outside a level-edge window is
+ * a defect, counted in `claims`.
  *
- * One overflow per arena is outstanding at a time: a request raised while one
- * is pending or already installed is dropped, and an allocation that fails
- * logs once for that arena and stops the requests until the next level edge,
- * where the replacement collapses both buffers into one fresh primary sized
- * for the incoming level. */
+ * At the buffer cap a refusal, or a refused growth allocation, asks for a
+ * consolidation: one buffer of max(primary, 2 x live), at most the cap
+ * times the primary. From the request on, every other buffer of the arena
+ * is a source (openpete_tercache_buf_source) and takes no allocation; its
+ * chunks migrate as their sectors re-bake, and it retires once empty and
+ * past the release floor, freeing its slot. A refused consolidation backs
+ * off (8 builds doubling to 1024) and its sources return to service.
+ *
+ * The device answers no request while a level-edge replacement is
+ * requested, awaiting adoption or retiring; the replacement collapses every
+ * arena back to one fresh primary sized for the incoming level. */
 
 /* ---- level-edge arena replacement --------------------------------------- */
 /** @brief Record the incoming level and post a request to replace every arena's buffers with fresh ones.
@@ -950,11 +967,19 @@ void openpete_tercache_prev_free(uint32_t first, int count);
  *
  * Three steps on two threads. This call stores the level and the request.
  * The device-owning thread allocates one fresh {vb, pv} pair per arena,
- * sized for the stored level (present_service), since device objects are
- * illegal on the builder's thread. The builder adopts the pairs at its next
- * frame_begin: each arena's bookkeeping resets to high = 0 with an empty
- * free list, and the outgoing pairs go on a retire list that
- * present_service destroys once both drain floors have passed. Adopting
+ * sized for the stored level, and a fresh previous-tick store at the
+ * store's current capacity (present_service), since device objects are
+ * illegal on the builder's thread. The builder adopts them at its next
+ * frame_begin: each arena collapses to one buffer whose bookkeeping resets
+ * to high = 0 with an empty free list, the store's allocator resets, and
+ * the outgoing pairs (every growth and consolidation buffer included) and
+ * store go on a retire list that present_service destroys once both drain
+ * floors have passed. A refused replacement keeps the live buffers and the
+ * store: the builder seals the buffers (no allocation, no free-list
+ * insert, so a held state keeps drawing what they hold) and asks each
+ * arena for a consolidation buffer sized for the new level, into which
+ * the level bakes; the sealed buffers retire once emptied and past the
+ * release floor. Adopting
  * resets every arena's counters, so a caller holding chunk records frees
  * them before the adopting frame_begin; openpete_tercache_resize_ready()
  * reports that moment. A second request before the device-owning thread
@@ -973,7 +998,7 @@ int  openpete_tercache_resize_ready(void);
 /** @brief Store the level the arenas are being filled for.
  *
  * The stored level sizes every buffer the cache allocates afterwards: the
- * level-edge replacement pairs and the overflow buffers. Called directly at
+ * level-edge replacement pairs and the growth buffers. Called directly at
  * the first level latch after boot, where init has just made the buffers
  * and no replacement is owed, and through
  * openpete_tercache_request_resize() at every later latch.
@@ -983,7 +1008,8 @@ int  openpete_tercache_resize_ready(void);
 void openpete_tercache_set_level(int level_id);
 /** @brief Return the allocation epoch, which steps whenever an arena gains buffer room.
  *
- * The epoch steps when a level-edge replacement or an overflow buffer is
+ * The epoch steps when a level-edge replacement, a growth or consolidation
+ * buffer or a previous-tick store replacement is
  * adopted. A sector claimed back because an arena was full records the
  * epoch and is baked again when it moves, which keeps that claim a
  * transient.
@@ -994,12 +1020,15 @@ uint32_t openpete_tercache_alloc_epoch(void);
  * Called once per present windowed (native_render.c's present entry) and
  * once per VBL headless (openpete_native_tercache_service_headless); only
  * one of the two sites is live in a mode. Each call counts one service
- * call, then does one of: destroys the pairs a level-edge replacement
+ * call and destroys the queued retirees (consolidation sources, sealed
+ * buffers, replaced stores) whose RHI_FRAMES_IN_FLIGHT calls have passed,
+ * then does one of: destroys the pairs and store a level-edge replacement
  * retired once their drain floors have passed; nothing while a fulfilled
- * replacement awaits adoption; allocates the replacement pairs for a
- * pending level-edge request; or answers the pending overflow-buffer
- * requests. A replacement request takes precedence over overflow requests.
- * This is the only caller of rhi_destroy_buffer for arena buffers outside
+ * replacement awaits adoption; allocates the replacement pairs and store
+ * for a pending level-edge request; or answers the pending growth,
+ * consolidation and store requests. A replacement request takes precedence
+ * over the others, and none is answered while a replacement retires. This
+ * is the only caller of rhi_destroy_buffer for arena buffers outside
  * shutdown. No-op while the cache is not ready. */
 void openpete_tercache_present_service(void);
 
@@ -1080,8 +1109,8 @@ typedef struct {
     uint32_t cell_draws;
     uint64_t cell_instances;
     /* The previous-tick store: its high-water mark and capacity in units,
-     * the allocations it refused (each a sector claimed back, counted with
-     * the arena-full claims), and the releases its deferred list could not
+     * the allocations it refused outside a level-edge or store-growth
+     * window (each a sector claimed back), and the releases its deferred list could not
      * hold (returned at once, so a held state may read a reused run). */
     uint32_t prev_high, prev_cap, prev_fail, prev_defer_ovf;
     /* Growth census (the `tercache:` exit row). `bakes` counts sector
@@ -1091,8 +1120,9 @@ typedef struct {
      * made while the arena's growth or consolidation request is open in
      * `grow_claims`, any other in `claims` of its arena; `retire_claims`
      * counts, across all three, the claims made while a replacement awaited
-     * its retire drain. `prev_fail` above counts store refusals outside a
-     * store-growth window and `prev_grow_claims` those inside one. */
+     * its retire drain. A store refusal inside a level-edge window counts in
+     * `edge_claims`, inside a store-growth window in `prev_grow_claims`, and
+     * any other in `prev_fail` above. */
     uint32_t bakes, window_bakes;
     uint32_t claims[OPTC_ARENA_COUNT];
     uint32_t edge_claims, grow_claims, retire_claims, prev_grow_claims;
@@ -1119,6 +1149,8 @@ typedef struct {
      * and the draws of a state with no range list. */
     uint32_t bufs_max[OPTC_ARENA_COUNT];
     uint32_t ranges_max, cen_nolist;
+    /* Set-2 binds refused (openpete_tercache_take_bind_refusal); 0 expected. */
+    uint32_t store_bind_refusals;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *
@@ -1129,6 +1161,33 @@ typedef struct {
  * another thread than the builder can be one update stale.
  * @param out Destination; NULL is ignored. */
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out);
+/** @brief Report whether an arena buffer is a consolidation source, which takes no allocation and empties by migration.
+ *
+ * Builder thread. A chunk in a source buffer re-bakes into the arena's
+ * other buffers when its sector next re-bakes; the walk also re-bakes such
+ * sectors on purpose (migration) until the source empties and retires.
+ * @param arena Arena index.
+ * @param buf Buffer index.
+ * @return 1 for a source (or a buffer sealed at a failed level edge), else 0. */
+int openpete_tercache_buf_source(int arena, int buf);
+/** @brief Report whether any arena has a consolidation whose sources have not all retired.
+ * @return 1 while migration is owed, else 0. */
+int openpete_tercache_migrating(void);
+/** @brief Count one canonical tick against every consolidation in progress.
+ *
+ * Builder thread, once per canonical tick walk. A consolidation's count
+ * when its last source retires is its migration duration, reported as the
+ * maximum in `migrate_ticks`. */
+void openpete_tercache_migrate_tick(void);
+/** @brief Report, once, that a present's set-2 bind was refused since the last call.
+ *
+ * Builder thread, once per build. A refused bind (rhi_bind_texture_storage
+ * found every descriptor set of the texture in flight) makes the draw skip
+ * that pass rather than read a store through a stale set; the next build
+ * claims every sector to the CPU walk. Refusals are counted in the stats'
+ * `store_bind_refusals`, whose invariant is 0.
+ * @return 1 when a refusal happened since the last call, else 0. */
+int openpete_tercache_take_bind_refusal(void);
 /** @brief Count one sector upload that landed on the cache.
  *
  * Builder thread, after a sector's chunks and records were all allocated

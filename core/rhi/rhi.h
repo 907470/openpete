@@ -2576,17 +2576,21 @@ void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set);
  * @p range bytes of @p store starting at @p offset, which must be a
  * multiple of the device's storage offset alignment. The descriptor set is
  * made at the first bind of a (store, range) pair on the texture, kept on
- * the texture and freed with it; a texture holds one such set, so binding a
- * second pair replaces it once no unretired frame bound the first. Does
- * nothing outside an active frame or without a bound pipeline.
+ * the texture and freed with it. A texture holds RHI_TEX_STORE_SETS such
+ * sets keyed by the store's identity (a uid per buffer made, never its
+ * address); a new pair takes an empty set or one no unretired frame bound.
+ * With every set in flight the bind is refused and nothing is bound, so
+ * the caller must not draw anything that reads set @p set. Does nothing
+ * outside an active frame or without a bound pipeline.
  * @param dev Device.
  * @param tex Image for binding 0.
  * @param store Storage buffer for binding 1 (rhi_create_storage_buffer_device).
  * @param range Bytes binding 1 spans.
  * @param set Descriptor set index (2 for tex_ssbo_set2).
- * @param offset Dynamic offset of binding 1, in bytes. */
-void rhi_bind_texture_storage(rhi_device *dev, rhi_texture *tex, rhi_buffer *store,
-                              uint32_t range, uint32_t set, uint32_t offset);
+ * @param offset Dynamic offset of binding 1, in bytes.
+ * @return 0 when bound (or nothing to do outside a frame), -1 when refused. */
+int rhi_bind_texture_storage(rhi_device *dev, rhi_texture *tex, rhi_buffer *store,
+                             uint32_t range, uint32_t set, uint32_t offset);
 /** @brief Return the device's minimum storage-buffer offset alignment in bytes.
  * @param dev Device.
  * @return The alignment, at least 1. */

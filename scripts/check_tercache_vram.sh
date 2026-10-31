@@ -58,8 +58,23 @@
 #                  buffers install, and afail stops rising (it counts the
 #                  claims made before each overflow landed, so it is flat at
 #                  the end, not zero).
-# The last two need the arena replacement and the overflow buffers; they
-# report SKIP while the census line carries no svc= field.
+#   grow-exhaust   fill-128 with OPENPETE_TC_INITIAL_CAP=16384 and every
+#                  host-visible type outside the BAR heap refused by
+#                  OPENPETE_RHI_FAIL_MEMTYPE: init fits in the margin, then
+#                  the growth buffers meet the driver's refusal on the BAR
+#                  type and the injected one on the rest, so growth and the
+#                  consolidation it falls back to are refused and back off.
+#                  Reports the `tercache:` row's claims (the exhaustion case,
+#                  which no claim threshold judges); FAILS only on a nonzero
+#                  exit, draws_retired > 0 or no refused growth.
+#   edge-refused   no balloon; OPENPETE_TC_REFUSE=edge:* refuses every
+#                  level-edge replacement: failed_edges > 0,
+#                  consolidations > 0, sealed_allocs = 0, hold_drops = 0,
+#                  claims_sum = 0; sealed_draws (held draws of a sealed
+#                  range) is reported.
+# The margin legs need the arena replacement and the overflow buffers; they
+# report SKIP while the census line carries no svc= field. The last two need
+# the `tercache:` exit row and report SKIP without it.
 #
 # Engagement: every leg prints the MiB its balloon holds and FAILS
 # at 0 - a leg whose balloon allocated nothing refused nothing and measured
@@ -444,6 +459,68 @@ if want overflow-margin; then
         if [[ $# -lt 3 || "$1" != "$2" || "$2" != "$3" ]]; then
             echo "[tercache-vram] leg=overflow-margin FAIL (afail not flat over the last three census lines: [$afail_seq])"; fail=1
         fi
+    fi
+fi
+
+# A field of a leg's `tercache:` exit row, or empty.
+tc_field() {  # log name
+    grep -o 'tercache: bakes=.*' "$1" 2>/dev/null | tail -1 | tr ' ' '\n' | sed -n "s/^$2=//p"
+}
+
+# ---- grow-exhaust: growth refused by the driver and by injection ----------
+if want grow-exhaust; then
+    ran=1
+    if [[ -z "$BAR_HEAP" || -z "$SYS_TYPES" ]]; then
+        echo "[tercache-vram] leg=grow-exhaust SKIP (device has no DEVICE_LOCAL host-visible heap or no other host-visible type)"
+        structural=1
+    else
+        run_leg grow-exhaust "$BAR_HEAP:fill-128" "$FRAME_LIMIT" metalhead \
+            OPENPETE_TC_INITIAL_CAP=16384 "OPENPETE_RHI_FAIL_MEMTYPE=$SYS_TYPES"
+        rc=$?
+        held=$(balloon_mib "$OUT/grow-exhaust.log")
+        [[ "$held" -ge 1 ]] && engaged=$((engaged + 1))
+        L="$OUT/grow-exhaust.log"
+        n_refused=$(n_of 'growth buffer of [0-9]* elements: allocation refused\|consolidation buffer of [0-9]* elements: allocation refused' "$L")
+        echo "[tercache-vram] leg=grow-exhaust rc=$rc balloonMiB=$held refusedLogged=$n_refused" \
+             "bakes=$(tc_field "$L" bakes) grow=$(tc_field "$L" grow)" \
+             "consolidations=$(tc_field "$L" consolidations) claims_sum=$(tc_field "$L" claims_sum)" \
+             "grow_claims=$(tc_field "$L" grow_claims) nonlocal_bufs=$(tc_field "$L" nonlocal_bufs)" \
+             "draws_retired=$(tc_field "$L" draws_retired)"
+        if [[ -z "$(tc_field "$L" bakes)" ]]; then
+            echo "[tercache-vram] leg=grow-exhaust SKIP (no tercache: exit row in this build)"; pending=1
+        else
+            [[ "$rc" -eq 0 ]] || { echo "[tercache-vram] leg=grow-exhaust FAIL (exit $rc)"; fail=1; }
+            if [[ "$held" -lt 1 ]]; then
+                echo "[tercache-vram] leg=grow-exhaust VACUOUS (the balloon held 0 MiB)"; fail=1
+            fi
+            [[ "$n_refused" -ge 1 ]] ||
+                { echo "[tercache-vram] leg=grow-exhaust VACUOUS (no growth was refused)"; fail=1; }
+            [[ "$(tc_field "$L" draws_retired)" == 0 ]] ||
+                { echo "[tercache-vram] leg=grow-exhaust FAIL (a draw bound a retired buffer)"; fail=1; }
+        fi
+    fi
+fi
+
+# ---- edge-refused: every level-edge replacement refused -------------------
+if want edge-refused; then
+    ran=1
+    run_leg edge-refused "" "$FRAME_LIMIT" "$LEVEL" 'OPENPETE_TC_REFUSE=edge:*'
+    rc=$?
+    L="$OUT/edge-refused.log"
+    echo "[tercache-vram] leg=edge-refused rc=$rc $(grep -o 'tercache: bakes=.*' "$L" | tail -1)"
+    if [[ -z "$(tc_field "$L" bakes)" ]]; then
+        echo "[tercache-vram] leg=edge-refused SKIP (no tercache: exit row in this build)"; pending=1
+    else
+        engaged=$((engaged + 1))
+        [[ "$rc" -eq 0 ]] || { echo "[tercache-vram] leg=edge-refused FAIL (exit $rc)"; fail=1; }
+        for e in failed_edges consolidations; do
+            [[ "$(tc_field "$L" $e)" -gt 0 ]] ||
+                { echo "[tercache-vram] leg=edge-refused FAIL ($e = 0)"; fail=1; }
+        done
+        for e in sealed_allocs hold_drops claims_sum draws_retired; do
+            [[ "$(tc_field "$L" $e)" == 0 ]] ||
+                { echo "[tercache-vram] leg=edge-refused FAIL ($e = $(tc_field "$L" $e))"; fail=1; }
+        done
     fi
 fi
 
