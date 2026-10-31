@@ -188,6 +188,7 @@ extern "C" {
     void PsyX_XA_Stats(unsigned long long* sectors, unsigned long long* silence,
                        unsigned long long* late, unsigned long long* refused,
                        unsigned long long* reseeks);
+    void PsyX_XA_EndStats(unsigned long long* image_end_pumps, int* max_read_lba, int* image_sectors);
 }
 
 /* Music WAV override (core/host/) - plays assets/music/track_NN.wav in
@@ -3546,13 +3547,18 @@ static void cd_exit_summary(void) {
     unsigned long long xa_sectors = 0, xa_silence = 0, xa_late = 0, xa_refused = 0, xa_reseeks = 0;
     PsyX_SPUAL_CDInputStats(&cd_frames, &cd_starved);
     PsyX_XA_Stats(&xa_sectors, &xa_silence, &xa_late, &xa_refused, &xa_reseeks);
+    unsigned long long xa_image_end = 0;
+    int xa_max_lba = -1, image_sectors = 0;
+    PsyX_XA_EndStats(&xa_image_end, &xa_max_lba, &image_sectors);
     OPL_INFO_F("music", "summary: stream_starts=%u mode_rt_cleared=%u "
                "reads_rt_clear=%u cd_input_frames=%llu cd_input_starved=%llu "
                "xa_sectors=%llu xa_silence_frames=%llu xa_late_frames=%llu "
-               "xa_refused_frames=%llu xa_reseeks=%llu",
+               "xa_refused_frames=%llu xa_reseeks=%llu xa_image_end_pumps=%llu "
+               "xa_max_read_lba=%d image_sectors=%d",
                s_cnt_stream_starts, s_cnt_mode_rt_cleared,
                s_cnt_reads_rt_clear, cd_frames, cd_starved,
-               xa_sectors, xa_silence, xa_late, xa_refused, xa_reseeks);
+               xa_sectors, xa_silence, xa_late, xa_refused, xa_reseeks,
+               xa_image_end, xa_max_lba, image_sectors);
 }
 
 /** @brief Set the drive's mode byte and mirror it into libcd's state block.

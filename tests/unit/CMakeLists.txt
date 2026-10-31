@@ -779,6 +779,20 @@ target_compile_options(spual_interp_test PRIVATE -Wno-unused-parameter -Wno-mayb
 set_target_properties(spual_interp_test PROPERTIES CXX_STANDARD 20)
 add_test(NAME spual_interp_test COMMAND spual_interp_test)
 
+# xa_image_end_test - the XA decoder's image reads stay inside the disc
+# image while the drive head runs past its last sector, and it reads up to
+# that sector. The TU includes PsyX_XA.cpp with the image reader and the CD
+# input stubbed.
+add_executable(xa_image_end_test xa_image_end_test.cpp)
+target_include_directories(xa_image_end_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src/audio)
+target_link_libraries(xa_image_end_test PRIVATE SDL3::SDL3-static)
+set_target_properties(xa_image_end_test PROPERTIES CXX_STANDARD 20)
+add_test(NAME xa_image_end_test COMMAND xa_image_end_test)
+
 # sfx_name_parse_test - sound pack file names classify as hash, symbolic or
 # ignored, with case-insensitive ".wav" and "-flat". sfx_ident.c compiles
 # with PsyCross's include/psx on the path, as in openpete_core.
