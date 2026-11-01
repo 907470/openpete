@@ -3869,6 +3869,8 @@ struct openpete_tercache_preview_gpu {
         int n[OPTC_PREVIEW_ARENAS];
         rhi_buffer *nvb[OPTC_PREVIEW_ARENAS], *cxb[OPTC_PREVIEW_ARENAS];
         int nn[OPTC_PREVIEW_ARENAS];
+        rhi_buffer *cb[2][OPTC_PREVIEW_CELL_CLASSES];   /* cell records, instance rate */
+        int nc[2][OPTC_PREVIEW_CELL_CLASSES];
     } *b;
     openpete_tercache_clip clip;
     uint32_t w, h;
@@ -3884,36 +3886,51 @@ void openpete_tercache_preview_free(openpete_tercache_preview *p)
             free(p->batch[i].nv[a]);
             free(p->batch[i].cx[a]);
         }
+    for (int i = 0; p->batch && i < p->nbatch; i++)
+        for (int f = 0; f < 2; f++)
+            for (int c = 0; c < OPTC_PREVIEW_CELL_CLASSES; c++) free(p->batch[i].crec[f][c]);
     free(p->batch);
     free(p->vram);
     memset(p, 0, sizeof(*p));
+}
+
+/** @brief Fill the preview's pipeline descriptions: four stages of four draw classes, in openpete_tercache_preview_jobs order.
+ *
+ * The stages are plain, near-variant, anim-layout cells and near cells; the
+ * classes opaque, alpha, additive and subtractive, the blend classes with
+ * depth writes off: the states tc_make_pipes and tc_make_cell_pipes give
+ * them. The vertex stage is the cache's own where the device runs it, and
+ * the fp32 stage on a device without 64-bit floats, where the cache itself
+ * never runs.
+ * @param dev The device.
+ * @param d Receives OPTC_PREVIEW_PIPES descriptions. */
+static void tc_preview_descs(rhi_device *dev, rhi_pipeline_desc d[OPTC_PREVIEW_PIPES])
+{
+    static const struct { int v; bool near, cells, anim; } k_stage[4] = {
+        { TC_V_PLAIN, false, false, false }, { TC_V_NEAR, true, false, false },
+        { TC_V_CELLS_ANIM, false, true, true }, { TC_V_CELLS_NEAR, true, true, false },
+    };
+    static const rhi_blend_mode k_blend[4] = { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD,
+                                               RHI_BLEND_SUBTRACT };
+    const int row = openpete_tercache_device_precision_ok(dev) ? tc_precision_row() : 1;
+    for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
+        const int st = i / 4, c = i % 4;
+        d[i] = (rhi_pipeline_desc){
+            .vert_spv = k_tc_vert[row][k_stage[st].v], .frag_spv = "terrain.frag.spv",
+            .blend = k_blend[c], .depth_write_off = c != 0, .depth_test = true,
+            .terrain_pipeline = true, .terrain_near = k_stage[st].near,
+            .terrain_cells = k_stage[st].cells, .terrain_anim = k_stage[st].anim,
+            .pair_set7 = true, .tex_ssbo_set2 = true, .push_const_size = sizeof(tc_pc),
+        };
+    }
 }
 
 int openpete_tercache_preview_jobs(rhi_device *dev, int slot_contest, void *jobs[OPTC_PREVIEW_PIPES])
 {
     for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) jobs[i] = NULL;
     if (!dev) return -1;
-    /* The cache's own stage where the device runs it; the fp32 stage on a
-     * device without 64-bit floats, where the cache itself never runs. */
-    const int ok64 = openpete_tercache_device_precision_ok(dev);
-    const char *vert = ok64 ? tc_vert(TC_V_PLAIN) : k_tc_vert[1][TC_V_PLAIN];
-    const char *vnear = ok64 ? tc_vert(TC_V_NEAR) : k_tc_vert[1][TC_V_NEAR];
-    const rhi_pipeline_desc world_desc = {
-        .vert_spv = vert, .frag_spv = "terrain.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
-        .terrain_pipeline = true, .pair_set7 = true, .tex_ssbo_set2 = true,
-        .push_const_size = sizeof(tc_pc),
-    };
     rhi_pipeline_desc d[OPTC_PREVIEW_PIPES];
-    for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
-        d[i] = world_desc;
-        if (i >= 4) { d[i].vert_spv = vnear; d[i].terrain_near = true; }
-    }
-    for (int i = 0; i < OPTC_PREVIEW_PIPES; i += 4) {
-        d[i + 1].blend = RHI_BLEND_ALPHA;    d[i + 1].depth_write_off = true;
-        d[i + 2].blend = RHI_BLEND_ADD;      d[i + 2].depth_write_off = true;
-        d[i + 3].blend = RHI_BLEND_SUBTRACT; d[i + 3].depth_write_off = true;
-    }
+    tc_preview_descs(dev, d);
     const rhi_pipe_variant var = rhi_pipe_variant_current();
     const uint32_t epoch = rhi_pipe_variant_epoch();
     for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
@@ -3929,6 +3946,22 @@ int openpete_tercache_preview_jobs(rhi_device *dev, int slot_contest, void *jobs
     return 0;
 }
 
+/** @brief Destroy a batch's block set and buffers; a NULL member is skipped.
+ *
+ * @param dev The device.
+ * @param b The batch. */
+static void tc_preview_batch_free(rhi_device *dev, struct tc_preview_batch_gpu *b)
+{
+    if (b->ubo) rhi_destroy_ubo(dev, b->ubo);
+    rhi_buffer *const *bufs[] = { b->vb, b->nvb, b->cxb };
+    for (size_t k = 0; k < sizeof bufs / sizeof bufs[0]; k++)
+        for (int a = 0; a < OPTC_PREVIEW_ARENAS; a++)
+            if (bufs[k][a]) rhi_destroy_buffer(dev, bufs[k][a]);
+    for (int f = 0; f < 2; f++)
+        for (int c = 0; c < OPTC_PREVIEW_CELL_CLASSES; c++)
+            if (b->cb[f][c]) rhi_destroy_buffer(dev, b->cb[f][c]);
+}
+
 /** @brief Destroy a preview's device objects and free the record; NULL is ignored.
  *
  * The caller has waited for the device, or nothing was recorded.
@@ -3937,14 +3970,7 @@ static void tc_preview_gpu_free(openpete_tercache_preview_gpu *g)
 {
     if (!g) return;
     rhi_device *dev = g->dev;
-    for (int i = 0; g->b && i < g->nbatch; i++) {
-        if (g->b[i].ubo) rhi_destroy_ubo(dev, g->b[i].ubo);
-        for (int a = 0; a < OPTC_PREVIEW_ARENAS; a++) {
-            if (g->b[i].vb[a]) rhi_destroy_buffer(dev, g->b[i].vb[a]);
-            if (g->b[i].nvb[a]) rhi_destroy_buffer(dev, g->b[i].nvb[a]);
-            if (g->b[i].cxb[a]) rhi_destroy_buffer(dev, g->b[i].cxb[a]);
-        }
-    }
+    for (int i = 0; g->b && i < g->nbatch; i++) tc_preview_batch_free(dev, &g->b[i]);
     free(g->b);
     for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) rhi_retire_pipeline(dev, g->pipe[i]);
     if (g->store) rhi_destroy_buffer(dev, g->store);
@@ -3952,6 +3978,28 @@ static void tc_preview_gpu_free(openpete_tercache_preview_gpu *g)
     if (g->vram) rhi_destroy_texture(dev, g->vram);
     if (g->dummy) rhi_destroy_texture(dev, g->dummy);
     free(g);
+}
+
+/** @brief Create and fill one batch's cell-record buffers, one per family and draw class that holds records.
+ *
+ * @param dev The device.
+ * @param src The batch.
+ * @param dst Receives the buffers and counts.
+ * @return 0, or -1 when a buffer could not be made. */
+static int tc_preview_cells_make(rhi_device *dev, const openpete_tercache_preview_batch *src,
+                                 struct tc_preview_batch_gpu *dst)
+{
+    for (int f = 0; f < 2; f++)
+        for (int c = 0; c < OPTC_PREVIEW_CELL_CLASSES; c++) {
+            dst->nc[f][c] = src->nc[f][c];
+            if (src->nc[f][c] <= 0) continue;
+            const size_t rsz = f ? sizeof(rhi_terrain_cell) : sizeof(rhi_terrain_cell_anim);
+            const size_t bytes = (size_t)src->nc[f][c] * rsz;
+            dst->cb[f][c] = rhi_create_vertex_buffer(dev, bytes);
+            if (!dst->cb[f][c]) return -1;
+            rhi_update_buffer(dst->cb[f][c], src->crec[f][c], bytes);
+        }
+    return 0;
 }
 
 /** @brief Create one batch's block set and vertex buffers and fill them: the globals block, the sector block with the batch's origins and flags, and each arena's chunks.
@@ -4000,7 +4048,7 @@ static int tc_preview_batch_make(rhi_device *dev, const tc_globals_ubo *gu,
         rhi_update_buffer(dst->nvb[a], src->nv[a], vb);
         rhi_update_buffer(dst->cxb[a], src->cx[a], cb);
     }
-    return 0;
+    return tc_preview_cells_make(dev, src, dst);
 }
 
 openpete_tercache_preview_gpu *openpete_tercache_preview_prepare(rhi_device *dev,
@@ -4043,6 +4091,48 @@ openpete_tercache_preview_gpu *openpete_tercache_preview_prepare(rhi_device *dev
     return g;
 }
 
+/** @brief Bind a pipeline and one batch's VRAM, storage, blocks and push constants for a preview draw.
+ *
+ * @param g The objects.
+ * @param pipe The pipeline index.
+ * @param i The batch.
+ * @param pc The push constants.
+ * @return 0, or -1 when the storage binding failed. */
+static int tc_preview_bind(openpete_tercache_preview_gpu *g, int pipe, int i, const tc_pc *pc)
+{
+    rhi_bind_pipeline(g->dev, g->pipe[pipe]);
+    rhi_bind_vram(g->dev, g->vram);
+    if (rhi_bind_texture_storage(g->dev, g->dummy, g->store,
+                                 (uint32_t)(OPTC_PREV_REC_WORDS * sizeof(uint32_t)), 2, 0) != 0)
+        return -1;
+    rhi_bind_texture_set(g->dev, g->dummy, 4);
+    rhi_ubo_bind_at(g->dev, g->b[i].ubo, 5, 0);
+    rhi_ubo_bind_at(g->dev, g->b[i].ubo, 6, 1);
+    rhi_push_constants(g->dev, pc, sizeof(*pc));
+    return 0;
+}
+
+/** @brief Draw one cell family's records of one draw class in every batch, instanced: one instance per record, the stage's cell vertices per instance.
+ *
+ * @param g The objects.
+ * @param fam 0 for the anim-layout records (pipelines 8-11), 1 for the near records (12-15).
+ * @param c The draw class, OPTC_ARENA_OPAQUE through OPTC_ARENA_SUB.
+ * @param pc The push constants.
+ * @return The vertices drawn. */
+static uint64_t tc_preview_draw_cells(openpete_tercache_preview_gpu *g, int fam, int c, const tc_pc *pc)
+{
+    const uint32_t per = fam ? RHI_TERRAIN_CELL_VERTS_NEAR : RHI_TERRAIN_CELL_VERTS_ANIM;
+    uint64_t n = 0;
+    for (int i = 0; i < g->nbatch; i++) {
+        const int cnt = g->b[i].nc[fam][c];
+        if (cnt <= 0 || tc_preview_bind(g, 8 + 4 * fam + c, i, pc) != 0) continue;
+        rhi_bind_vertex_buffer(g->dev, g->b[i].cb[fam][c]);
+        rhi_draw_instanced(g->dev, per, (uint32_t)cnt, 0, 0);
+        n += (uint64_t)cnt * per;
+    }
+    return n;
+}
+
 /** @brief Draw one arena of every batch with one pipeline: the plain chunks, or with @p near the near-variant chunks and their member contexts.
  *
  * @param g The objects.
@@ -4057,16 +4147,7 @@ static uint64_t tc_preview_draw_arenas(openpete_tercache_preview_gpu *g, int pip
     uint64_t n = 0;
     for (int i = 0; i < g->nbatch; i++) {
         const int cnt = near ? g->b[i].nn[a] : g->b[i].n[a];
-        if (cnt <= 0) continue;
-        rhi_bind_pipeline(g->dev, g->pipe[pipe]);
-        rhi_bind_vram(g->dev, g->vram);
-        if (rhi_bind_texture_storage(g->dev, g->dummy, g->store,
-                                     (uint32_t)(OPTC_PREV_REC_WORDS * sizeof(uint32_t)), 2, 0) != 0)
-            continue;
-        rhi_bind_texture_set(g->dev, g->dummy, 4);
-        rhi_ubo_bind_at(g->dev, g->b[i].ubo, 5, 0);
-        rhi_ubo_bind_at(g->dev, g->b[i].ubo, 6, 1);
-        rhi_push_constants(g->dev, pc, sizeof(*pc));
+        if (cnt <= 0 || tc_preview_bind(g, pipe, i, pc) != 0) continue;
         if (near) rhi_bind_vertex_buffer2(g->dev, g->b[i].nvb[a], g->b[i].cxb[a]);
         else      rhi_bind_vertex_buffer(g->dev, g->b[i].vb[a]);
         rhi_draw(g->dev, (uint32_t)cnt, 0);
@@ -4088,7 +4169,8 @@ uint64_t openpete_tercache_preview_record(openpete_tercache_preview_gpu *g)
     pc.mat_pass = -1;   /* every face: no material pass */
     rhi_begin_render_target(g->dev, g->rt, g->bg[0], g->bg[1], g->bg[2], 0.0f);
     /* Opaque and LP first, then each blend class; per pass the plain
-     * stage (pipelines 0-3), then the near-variant stage (4-7). */
+     * stage (pipelines 0-3), the near-variant stage (4-7), then the cell
+     * records (8-15), the cache's own order within a class. */
     static const int k_pass[4][2] = { { 0, OPTC_ARENA_OPAQUE }, { 1, OPTC_ARENA_ALPHA },
                                       { 2, OPTC_ARENA_ADD }, { 3, OPTC_ARENA_SUB } };
     uint64_t n = 0;
@@ -4096,9 +4178,12 @@ uint64_t openpete_tercache_preview_record(openpete_tercache_preview_gpu *g)
         n += tc_preview_draw_arenas(g, 4 * near, OPTC_ARENA_OPAQUE, near, &pc);
         n += tc_preview_draw_arenas(g, 4 * near, OPTC_ARENA_LP, near, &pc);
     }
-    for (int k = 1; k < 4; k++)
+    for (int fam = 0; fam < 2; fam++) n += tc_preview_draw_cells(g, fam, OPTC_ARENA_OPAQUE, &pc);
+    for (int k = 1; k < 4; k++) {
         for (int near = 0; near < 2; near++)
             n += tc_preview_draw_arenas(g, k_pass[k][0] + 4 * near, k_pass[k][1], near, &pc);
+        for (int fam = 0; fam < 2; fam++) n += tc_preview_draw_cells(g, fam, k_pass[k][1], &pc);
+    }
     rhi_end_render_target(g->dev, g->rt);
     return n;
 }

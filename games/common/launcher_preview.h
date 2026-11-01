@@ -22,10 +22,13 @@ struct openpete_game_build;
 struct disc_image;
 struct terrain_host_level;
 
-/* The preview's target size: 4:3, the frame the game's 512-wide screen
- * fills on a 4:3 display. */
+/* The preview's target width: the game's 512-wide screen on a 4:3 display
+ * 640 wide. The height is the game's (launcher_preview_size). */
 #define LAUNCHER_PREVIEW_W 640u
-#define LAUNCHER_PREVIEW_H 480u
+/* The rendering form, part of the cache's view key, so a build that draws
+ * the picture differently redraws a cached one: extended LOD at the game's
+ * displayed aspect. */
+#define LAUNCHER_PREVIEW_FORM "extended-lod"
 
 /* The time bound of one preview render, from its start: a render past it is
  * a transient job failure (no failed marker, rerun at the next launch). The
@@ -70,11 +73,22 @@ typedef struct launcher_preview_dome {
  *
  * The harness variable OPENPETE_PREVIEW_VIEW ("<game>=<level>|<pose>",
  * rows separated by ';') replaces a game's row, so a pose is tried without
- * a rebuild; the cache keys the preview on the level and pose, so a changed
+ * a rebuild; the cache keys the preview on the level, the pose, the size and the form, so a changed
  * row redraws it.
  * @param game The game id.
  * @return The row of the one per-game table, or the variable's row. */
 const launcher_preview_spec* launcher_preview_spec_of(const char* game);
+
+/** @brief Returns a game's box picture size: LAUNCHER_PREVIEW_W wide and two lines per displayed row high, the game's displayed frame at its own aspect.
+ *
+ * A 4:3 display shows the game's 240-row frame as 480 lines, two per row;
+ * the game displays fewer rows (224 on Spyro 1, 216 on Spyro 2 and 3),
+ * which a display shows at 448 and 432 lines inside its 480.
+ * @param game The game id.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return 0, or -1 for a game without a box picture. */
+int launcher_preview_size(const char* game, uint32_t* w, uint32_t* h);
 
 /** @brief Reads a level's terrain bytes, sector table, texture tables and VRAM image from a disc into host buffers.
  *
@@ -113,7 +127,7 @@ void launcher_preview_level_free(launcher_preview_level* L);
  * @param b The installed game's build record.
  * @param disc_path The disc.
  * @param dome The level's sky dome, drawn behind the terrain; its clear colour fills the rest.
- * @param rgba Receives LAUNCHER_PREVIEW_W * LAUNCHER_PREVIEW_H * 4 bytes, which the caller frees.
+ * @param rgba Receives the launcher_preview_size image, 4 bytes a pixel, which the caller frees.
  * @param ms Receives the render's milliseconds.
  * @param why Receives the failure's reason.
  * @param cap Its capacity.

@@ -94,6 +94,14 @@ static const launcher_preview_env* lp_env_of(const char* game) {
     return NULL;
 }
 
+int launcher_preview_size(const char* game, uint32_t* w, uint32_t* h) {
+    const launcher_preview_env* E = lp_env_of(game);
+    if (!E) return -1;
+    *w = LAUNCHER_PREVIEW_W;
+    *h = (uint32_t)lroundf(2.0f * E->clip_h);
+    return 0;
+}
+
 /** @brief Writes a formatted failure reason.
  * @param why The buffer.
  * @param cap Its capacity.
@@ -302,13 +310,13 @@ static int lp_build(const openpete_game_build_t* b, launcher_preview_level* L, c
                (unsigned long long)st.verts[3], (unsigned long long)st.verts[4], (unsigned long long)st.dropped,
                (unsigned long long)st.exe_reads, (unsigned long long)st.guest_reads, (unsigned long long)st.guest_writes);
     if (st.baked == 0) return lp_fail(why, cap, "no sector draws from the pose");
-    P->w = LAUNCHER_PREVIEW_W;
-    P->h = LAUNCHER_PREVIEW_H;
+    (void)launcher_preview_size(b->id, &P->w, &P->h);
     for (int c = 0; c < 3; c++) P->bg[c] = (float)bg[c] / 255.0f;
     P->vram = L->vram;
     L->vram = NULL;
     /* The displayed PSX screen, 512 wide and the game's displayed rows
-     * (its clip mapping at 4:3), over the whole target. */
+     * (its clip mapping at 4:3), over the whole target, which has the
+     * displayed frame's aspect: the picture is not stretched. */
     memset(&P->clip, 0, sizeof P->clip);
     P->clip.disp_w = 512.0f;
     P->clip.clip_h = E->clip_h;

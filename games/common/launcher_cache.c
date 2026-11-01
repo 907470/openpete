@@ -398,7 +398,7 @@ static void lc_dome_free(lc_dome* D) {
  * @param dir The game's cache directory.
  * @param m The manifest as read.
  * @param disc The library disc's content hash.
- * @param view The spec's "level|pose".
+ * @param view The view key, "level|pose|WxH form" (lc_preview_update).
  * @param build This build's id.
  * @param trigger Receives the reason a rerun is due.
  * @param cap Its capacity.
@@ -417,7 +417,7 @@ static int lc_preview_check(const char* dir, const lc_manifest* m, const char* d
         return LC_RERUN;
     }
     if (strcmp(m->pv_disc, disc)) { snprintf(trigger, cap, "the library disc's hash changed"); return LC_RERUN; }
-    if (strcmp(m->pv_view, view)) { snprintf(trigger, cap, "the box picture's level or pose changed"); return LC_RERUN; }
+    if (strcmp(m->pv_view, view)) { snprintf(trigger, cap, "the box picture's level, pose or form changed"); return LC_RERUN; }
     return LAUNCHER_CACHE_READY;
 }
 
@@ -438,25 +438,29 @@ static int lc_preview_write(const char* path, const uint8_t* rgba, uint32_t w, u
 }
 
 /** @brief Records a preview's outcome in the manifest: the file and its keys on success, the failed marker on a deterministic failure.
+ * @param game The game id (launcher_preview_size).
  * @param dir The game's cache directory.
  * @param path The manifest's path.
  * @param m The manifest.
  * @param disc The disc's content hash.
- * @param view The spec's "level|pose".
+ * @param view The view key, "level|pose|WxH form" (lc_preview_update).
  * @param rgba The image, or NULL after a failure.
  * @param why The failure's reason.
  * @return 0, or -1 when a write failed. */
-static int lc_preview_record(const char* dir, const char* path, lc_manifest* m, const char* disc, const char* view,
-                             const uint8_t* rgba, const char* why) {
+static int lc_preview_record(const char* game, const char* dir, const char* path, lc_manifest* m, const char* disc,
+                             const char* view, const uint8_t* rgba, const char* why) {
     if (!rgba) {
         snprintf(m->pv_failed_build, sizeof m->pv_failed_build, "%s", openpete_launcher_build_id());
         snprintf(m->pv_failed_disc, sizeof m->pv_failed_disc, "%s", disc);
-        snprintf(m->pv_failed_why, sizeof m->pv_failed_why, "%.*s", (int)sizeof m->pv_failed_why - 1, why);
+        const size_t n = strnlen(why, sizeof m->pv_failed_why - 1);   /* the reason, cut to the field */
+        memcpy(m->pv_failed_why, why, n);
+        m->pv_failed_why[n] = 0;
         return lc_write_manifest(path, m);
     }
     char p[4096];
     openpete_paths_join(p, sizeof p, dir, LC_PREVIEW);
-    if (lc_preview_write(p, rgba, LAUNCHER_PREVIEW_W, LAUNCHER_PREVIEW_H) != 0) return -1;
+    uint32_t w = 0, h = 0;
+    if (launcher_preview_size(game, &w, &h) != 0 || lc_preview_write(p, rgba, w, h) != 0) return -1;
     m->pv_size = lc_size(p);
     snprintf(m->pv_disc, sizeof m->pv_disc, "%s", disc);
     snprintf(m->pv_view, sizeof m->pv_view, "%s", view);
@@ -489,7 +493,9 @@ static void lc_preview_update(const openpete_game_build_t* b, const char* dir, c
     lc_manifest m;
     if (lc_read(path, &m) != 0 || m.format != LAUNCHER_CACHE_FORMAT) return;
     char view[256], trigger[256], why[512];
-    snprintf(view, sizeof view, "%s|%s", S->level, S->pose);
+    uint32_t w = 0, h = 0;
+    (void)launcher_preview_size(b->id, &w, &h);
+    snprintf(view, sizeof view, "%s|%s|%ux%u %s", S->level, S->pose, w, h, LAUNCHER_PREVIEW_FORM);
     const char* build = openpete_launcher_build_id();
     const int st = lc_preview_check(dir, &m, disc, view, build, trigger, sizeof trigger);
     if (st == LAUNCHER_CACHE_READY) { OPL_INFO_F("launcher", "preview of %s is current", b->id); return; }
@@ -510,13 +516,13 @@ static void lc_preview_update(const openpete_game_build_t* b, const char* dir, c
     lc_dome_free(&dome);
     openpete_launcher_preview_progress(0, 0);
     if (rc == OPENPETE_PREVIEW_OK) {
-        if (lc_preview_record(dir, path, &m, disc, view, rgba, NULL) == 0)
-            OPL_INFO_F("launcher", "preview of %s written: %ux%u, %s at %s, %.1f ms", b->id, LAUNCHER_PREVIEW_W,
-                       LAUNCHER_PREVIEW_H, S->level, S->pose, ms);
+        if (lc_preview_record(b->id, dir, path, &m, disc, view, rgba, NULL) == 0)
+            OPL_INFO_F("launcher", "preview of %s written: %ux%u, %s at %s, %.1f ms", b->id, w, h, S->level, S->pose,
+                       ms);
         else
             OPL_WARN_F("launcher", "preview of %s: the file or the manifest could not be written", b->id);
     } else if (rc == OPENPETE_PREVIEW_FAILED) {
-        (void)lc_preview_record(dir, path, &m, disc, view, NULL, why);
+        (void)lc_preview_record(b->id, dir, path, &m, disc, view, NULL, why);
         OPL_ERROR_F("launcher", "preview of %s failed: %s; failed marker written to %s (build %s)", b->id, why,
                     path, build);
     } else if (rc == OPENPETE_PREVIEW_STOPPED) {

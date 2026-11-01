@@ -1675,6 +1675,10 @@ def preview_step(a, d, tag, bad, env=None, binary=None):
     return log, w, r
 
 
+# A box picture's size: 640 wide, two lines per row the game displays (224 rows on Spyro 1, 216 on 2 and 3).
+PREVIEW_SIZE = {"spyro-1": (640, 448), "spyro-2": (640, 432), "spyro-3": (640, 432)}
+
+
 def case_preview(a):
     """The box picture over a three-game library, windowed: cold, warm, a deleted file, another build id, a forced failure, a render past its bound, and a headless launch that neither checks nor logs it."""
     d = cl.case_dir(a.out, "preview")
@@ -1688,7 +1692,7 @@ def case_preview(a):
         m = manifest(d, g)
         keys, files = m if m else ({}, {})
         print(f"[launcher-flow] preview {g}: {pw}x{ph}, {colours} sampled colours, view {keys.get('preview_view')}")
-        if (pw, ph) != (640, 480) or colours < 16:
+        if (pw, ph) != PREVIEW_SIZE[g] or colours < 16:
             bad.append(f"cold: {g}: preview {pw}x{ph} with {colours} sampled colours")
         if files.get("preview.rgba") != (16 + pw * ph * 4 if pw else -1) or not keys.get("preview_disc"):
             bad.append(f"cold: {g}: manifest preview record {keys.get('preview_disc')} {files.get('preview.rgba')}")
@@ -1745,7 +1749,7 @@ def case_preview_hold(a):
     if rc != 0:
         bad.append(f"exit {rc}")
     pw, ph, _ = preview_info(d, "spyro-1")
-    if (pw, ph) != (640, 480):
+    if (pw, ph) != PREVIEW_SIZE["spyro-1"]:
         bad.append(f"preview {pw}x{ph}")
     return verdict("preview-hold", bad)
 

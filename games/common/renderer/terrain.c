@@ -2063,6 +2063,20 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
     if (mn < (double)game_layout.terrain.near_corner) return 1;   /* a corner below the tier-4 bound */
     return !tface_near_tier2(word3);                   /* else tier 2 unless the flag refuses it */
 }
+/* A preview bake's receiver (terrain_preview_build): set on the preview's
+ * thread only, so every other bake uploads to the cache as before. */
+typedef struct tpv_sink tpv_sink;
+static _Thread_local tpv_sink* s_tpv_sink;
+
+/** @brief Reports whether this thread's terrain verdicts and bakes take extended LOD: always in a preview build (s_tpv_sink), else under openpete_no_lod.
+ *
+ * A launcher box picture draws every level as extended LOD draws it,
+ * whatever the session's --lod, and never writes the process-wide global.
+ * @return 1 under extended LOD, else 0. */
+static int tn_no_lod(void) {
+    return s_tpv_sink != NULL || openpete_no_lod != 0;
+}
+
 /** @brief Reports whether the always-HQ pin is in force: exactly under --lod extended, on every game.
  *
  * The extended mode's contract is the highest terrain tier at
@@ -2079,7 +2093,7 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
  * by the live LOD toggle.
  * @return 1 when the pin is in force, else 0. */
 static int hq_pin_active(void) {
-    return openpete_no_lod != 0;
+    return tn_no_lod();
 }
 /** @brief Tests whether a face takes the near/HQ subdivide, honouring the always-HQ pin.
  *
@@ -10983,10 +10997,6 @@ static void tgpu_facedump_sector(int slot, int sec, const tscache_t* SC) {
     tgpu_facedump(slot, sec, 0, 1, SC->imp->V, SC->imp->nV, SC->imp->F, SC->imp->nF);
 }
 
-/* A preview bake's receiver (terrain_preview_build): set on the preview's
- * thread only, so every other bake uploads to the cache as before. */
-typedef struct tpv_sink tpv_sink;
-static _Thread_local tpv_sink* s_tpv_sink;
 static int tpv_take(tpv_sink* K, const tgpu_buf* buf);
 
 /** @brief Returns whether a bake folds faces onto HD replacements: never into a preview, else when the fold is on.
@@ -11699,7 +11709,7 @@ enum { TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY };
  * @return One of TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY. */
 static int sector_lp_ride(const tscache_t* SC, const tn_wcfg* G, int drawHP, int binLP) {
     if (game_layout.terrain.hp_far)
-        return (openpete_no_lod && drawHP && (binLP || SC->nHpF == 0) && SC->nRide > 0)
+        return (tn_no_lod() && drawHP && (binLP || SC->nHpF == 0) && SC->nRide > 0)
                ? TN_RIDE_UNCOVONLY : TN_RIDE_NONE;
     if (G->lod_handoff && !G->tier_faithful && drawHP) return TN_RIDE_FARONLY;
     if (s_gapfill_en && SC->nGapfill > 0) return TN_RIDE_GAPONLY;
@@ -11763,7 +11773,7 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     }
     int binHP = 0, binLP = 0;
     if (game_layout.terrain.hp_far) sector_bin_lists(&H, cbin, &binHP, &binLP);
-    if (game_layout.terrain.hp_far && !openpete_no_lod) {
+    if (game_layout.terrain.hp_far && !tn_no_lod()) {
         drawHP = binHP; drawLP = binLP;
     } else {
         /* A sector's borrowed HP faces count as its HP; the no-HP flag that
@@ -11784,7 +11794,7 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     drawLP = drawLP || ride != TN_RIDE_NONE;
     int fillLP = G->holefill && !culled && !(flags & noLP) && nLpF > 0
                  && ((double)lodThr < cbin + H.r + 0x100)
-                 && !(openpete_no_lod && drawHP);
+                 && !(tn_no_lod() && drawHP);
     V->cbin = cbin;
     V->drawHP = (uint8_t)drawHP; V->drawLP = (uint8_t)drawLP;
     V->lpFarOnly = (uint8_t)(ride == TN_RIDE_FARONLY);
@@ -17868,7 +17878,7 @@ static int tpv_append(void** arr, int have, const void* src, int n, size_t size)
     return 0;
 }
 
-/** @brief Appends a sector's baked plain and near-variant arenas to the preview batch; the anim and cell arenas are counted as dropped.
+/** @brief Appends a sector's baked plain, near-variant and cell-record arenas to the preview batch; the anim arenas are counted as dropped.
  * @param K The receiver.
  * @param buf The sector's bake buffers, indexed by arena.
  * @return 0, or -1 when an allocation failed. */
@@ -17885,6 +17895,14 @@ static int tpv_take(tpv_sink* K, const tgpu_buf* buf) {
                 tpv_append((void**)&B->cx[k], B->nn[k], buf[a].cx, buf[a].n, sizeof(rhi_terrain_nearctx)) != 0)
                 return -1;
             B->nn[k] += buf[a].n;
+        } else if (OPTC_ARENA_IS_CELL(a) && buf[a].rec) {
+            /* CA records (the pin's cells, plain chunk set) take family 0,
+             * CN records (a near-variant sector's cells) family 1. */
+            const int fam = OPTC_ARENA_IS_CELL_ANIM(a) ? 0 : 1;
+            const int c = a - (fam ? OPTC_ARENA_CELL_NEAR_BASE : OPTC_ARENA_CELL_ANIM_BASE);
+            if (tpv_append((void**)&B->crec[fam][c], B->nc[fam][c], buf[a].rec, buf[a].n, buf[a].rsz) != 0)
+                return -1;
+            B->nc[fam][c] += buf[a].n;
         } else {
             K->dropped += (uint64_t)buf[a].n;
         }
@@ -18002,12 +18020,19 @@ static void tpv_globals(const terrain_preview_view* V, const int M[3][3], openpe
     g->hp_drop_sum_far = game_layout.terrain.hp_drop_sum_far;
     g->hp_drop_corner_min = game_layout.terrain.hp_drop_corner_min;
     g->ot_terms = tc_ot_terms();
-    /* The walk's shipped defaults: CLUT fog, both NCLIP culls, the LOD
-     * handoff and gap fill, the layout's rules; no near/HQ subdivide, whose
-     * near-variant and cell chunks the preview does not draw. */
-    g->gflags = OPTC_GF_CLUTFOG | OPTC_GF_CULLHP | OPTC_GF_CULLLP | OPTC_GF_HANDOFF | OPTC_GF_GAPFILL
+    /* The walk's shipped defaults under extended LOD (tc_global_flags with
+     * openpete_no_lod set): CLUT fog, both NCLIP culls, gap fill, the near/HQ
+     * subdivide with the always-HQ pin, the HP faces' near colours at every
+     * distance, no LOD handoff, and the layout's rules. The heavy-fog fade
+     * (OPTC_GF_HPFOG) reads the level's fog class from guest RAM, which a
+     * preview has not got; it stays off. */
+    g->gflags = OPTC_GF_CLUTFOG | OPTC_GF_CULLHP | OPTC_GF_CULLLP | OPTC_GF_GAPFILL
+              | OPTC_GF_NEARHQ | OPTC_GF_NOLOD | OPTC_GF_HQPIN | OPTC_GF_HPRAW
               | (game_layout.terrain.ladder_nearest_corner ? OPTC_GF_LADNEAR : 0u)
               | (game_layout.terrain.nearband_ot_keys      ? OPTC_GF_NBKEYS  : 0u)
+              | (game_layout.terrain.hq_cells4             ? OPTC_GF_CELLS4  : 0u)
+              | (game_layout.terrain.hq_tri4_cells         ? OPTC_GF_TRI4    : 0u)
+              | (game_layout.terrain.hq_tri2_tiles         ? OPTC_GF_TRI2    : 0u)
               | (game_layout.terrain.lp_near_sz            ? OPTC_GF_LPNEAROUT : 0u)
               | (openpete_fog_mode() == OPENPETE_FOG_OFF       ? OPTC_GF_FOGOFF : 0u)
               | (openpete_fog_mode() == OPENPETE_FOG_PER_PIXEL ? OPTC_GF_FOGPP  : 0u);
@@ -18149,7 +18174,10 @@ int terrain_preview_build(const terrain_host_level* L, const terrain_preview_vie
     G.fogRefBase = (int)(V->lod_dist >> 2);
     G.cullRefS2 = (int)(V->cull_dist >> 7);
     G.cull_wx = 1.0; G.cull_wy = 1.0;
-    G.tier_faithful = 1; G.lod_handoff = 1;
+    /* Extended LOD, as the walk sets it under openpete_no_lod: no
+     * tier-faithful distance tests, no LOD handoff (tn_no_lod covers the
+     * verdicts and the bake's HQ pin). */
+    G.tier_faithful = 0; G.lod_handoff = 0;
     G.hqTable = TSRC_TERR_BASE + L->hq_off;
     tpv_globals(V, G.M, &out->g);
     const int rc = tpv_bake_all(&cpu, L, &G, out, &st);

@@ -1230,8 +1230,12 @@ void openpete_tercache_print_exit_row(void);
 #define OPTC_PREVIEW_ARENAS 5
 /* The pipelines a preview draws with, in openpete_tercache_preview_jobs order:
  * opaque, then the alpha, additive and subtractive blend classes, for the
- * plain stage and then the near-variant stage. */
-#define OPTC_PREVIEW_PIPES 8
+ * plain stage, the near-variant stage, the anim-layout cell stage (the HQ
+ * pin's 4x4 cells of a plain sector) and the near cell stage (the cells of a
+ * near-variant sector). */
+#define OPTC_PREVIEW_PIPES 16
+/* The cell-record draw classes: opaque, alpha, additive, subtractive. */
+#define OPTC_PREVIEW_CELL_CLASSES 4
 
 /* Up to OPTC_PREVIEW_SLOTS sectors with their baked chunks: the sectors'
  * origins and flags fill the sector block, the chunks name their sector by
@@ -1247,6 +1251,11 @@ typedef struct {
     struct rhi_terrain_vertex *nv[OPTC_PREVIEW_ARENAS];
     struct rhi_terrain_nearctx *cx[OPTC_PREVIEW_ARENAS];
     int nn[OPTC_PREVIEW_ARENAS];
+    /* 4x4 cell records per draw class: family 0 the OPTC_ARENA_CA_* records
+     * (rhi_terrain_cell_anim), family 1 the OPTC_ARENA_CN_* records
+     * (rhi_terrain_cell). */
+    uint8_t *crec[2][OPTC_PREVIEW_CELL_CLASSES];
+    int nc[2][OPTC_PREVIEW_CELL_CLASSES];
 } openpete_tercache_preview_batch;
 
 /* One preview image: the walk's globals for the pose, the screen mapping,
@@ -1266,10 +1275,10 @@ typedef struct openpete_tercache_preview {
  * @param p The preview, zeroed after. */
 void openpete_tercache_preview_free(openpete_tercache_preview *p);
 
-/** @brief Make the compile jobs of the preview's pipelines: the world pipeline and its three blend classes, plain and near-variant, at a given SLOT_CONTEST value.
+/** @brief Make the compile jobs of the preview's pipelines: the world pipeline and its three blend classes for the plain, near-variant and two cell-record stages, at a given SLOT_CONTEST value.
  *
- * Display owner only (rhi_compile_job_new). The description is the cache's
- * own world description at the device's precision row, so a pipeline the
+ * Display owner only (rhi_compile_job_new). Each description is the cache's
+ * own (the world and cell-record sets) at the device's precision row, so a pipeline the
  * ahead walk compiled is a pipeline-cache hit; the SLOT_CONTEST value is
  * the job's own and the process-wide setting is left as it is. The jobs run
  * on any thread (rhi_compile_job_run).
@@ -1296,8 +1305,9 @@ openpete_tercache_preview_gpu *openpete_tercache_preview_prepare(struct rhi_devi
 
 /** @brief Record the preview into the current frame: one render pass into its target, the opaque chunks, then the blend classes.
  *
- * The plain and near-variant opaque chunks of every batch draw first, then
- * each blend class. Display owner only, inside a frame and outside the
+ * The plain and near-variant opaque chunks and the opaque cell records of
+ * every batch draw first, then each blend class in the same order. Display
+ * owner only, inside a frame and outside the
  * offscreen pass.
  * @param g The prepared objects.
  * @return The vertices drawn. */
