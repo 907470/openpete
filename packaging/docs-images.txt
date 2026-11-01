@@ -1,0 +1,14 @@
+# The image files a package's docs/ may hold, one path per line relative to
+# docs/ (the docs target's site). scripts/fences/docs_image_allowlist.py,
+# run by scripts/package-dist.sh, refuses any other image file and any line
+# here the site lacks. Nothing derived from a game ships: a User docs
+# screenshot shows the launcher before any disc is added, with no box
+# picture, title logo, 3D title or sky.
+
+# The site theme's favicon (mkdocs-material).
+assets/images/favicon.png
+
+# The launcher before any disc is added, captured with OPENPETE_LAUNCHER_SHOT
+# on an empty library.
+user/getting-started/images/launcher-game-page.png
+user/getting-started/images/launcher-picker.png

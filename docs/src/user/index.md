@@ -24,10 +24,10 @@ mods change the picture, not the game.
    pair.
 2. [Install](getting-started/install.md) the package for your platform and
    start it.
-3. Drag the `.bin` or `.cue` onto the window. The
-   [first run](getting-started/first-run.md) copies the image into the
-   library and compiles the game once; later runs list the library's games
-   to choose from, and another game's disc dragged onto that list is added.
+3. Drag the `.bin` or `.cue` onto the window, or choose the game's box and
+   pick the image. The [first run](getting-started/first-run.md) copies the
+   image into the library and compiles the game once; the game page then
+   shows a box per game, and choosing a box with a disc starts its game.
 
 OpenPete is not affiliated with Sony, Insomniac Games, or Activision. Spyro
 the Dragon is a trademark of its respective owners.

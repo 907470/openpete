@@ -58,8 +58,8 @@ tar.xz is an extracted folder that can run portable; see
     Without a bundled compiler the first run needs a system `cc`; see
     [Requirements](requirements.md#a-c-compiler-on-first-run-only).
 
-The first start shows a window asking for the disc image. Continue with
-[First run](first-run.md).
+The first start opens the [game page](../help/glossary.md#game-page), with an
+empty box per game. Continue with [First run](first-run.md).
 
 ## Opening a disc image directly
 
@@ -88,15 +88,14 @@ The flag spelling is `--ingest PATH` <!-- id: flag:--ingest -->.
 
 `--disc PATH` <!-- id: flag:--disc --> boots the image at PATH where it is,
 without copying it into the [library](../help/glossary.md#library). Without
-it, the program lists the library on the **CHOOSE A GAME** screen; see
-[First run](first-run.md#the-one-time-compile).
+it, the program shows the library's games on the game page; see
+[First run](first-run.md#the-game-page).
 
 `--game ID` <!-- id: flag:--game --> names the game to run: `spyro-1`,
 `spyro-2` or `spyro-3`. Without `--disc`, it starts that game's most
-recently played disc in the library without the **CHOOSE A GAME** screen,
-or asks for that game's disc image
-([First run](first-run.md#giving-openpete-the-disc)) when the library holds
-none. Without `--game` the game is read from the disc. A disc of
+recently played disc in the library without the game page, or opens the
+game page with that game's box focused
+([First run](first-run.md#adding-a-disc)) when the library holds none. Without `--game` the game is read from the disc. A disc of
 another game, or a game this program does not run, stops the launch with a
 message.
 

@@ -141,6 +141,12 @@ one entry per VBL, that replays the same game.
 Codebase term: disc library. Where OpenPete keeps its copy of your disc
 image and the game code compiled from it.
 
+### Game page
+
+Codebase term: the launcher's game page. The screen OpenPete opens when
+started without naming a disc: one box per game, from which a game is
+started or its disc added ([First run](../getting-started/first-run.md#the-game-page)).
+
 ### First-run compile
 
 Codebase terms: ingest and the first-boot module build. Copying your disc

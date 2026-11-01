@@ -286,6 +286,12 @@ sys.exit(0 if any(g in games for g in sys.argv[2:]) else 3)
     # sitemap. openpete.com serves them from the build directory's copy.
     rm -f "${STAGE:?}/docs/404.html" "${STAGE:?}/docs/sitemap.xml" \
           "${STAGE:?}/docs/sitemap.xml.gz"
+    # The docs ship only the images packaging/docs-images.txt lists: User
+    # docs screenshots show the launcher before a disc is added, and no
+    # picture derived from a game ships.
+    python3 scripts/fences/docs_image_allowlist.py check "$STAGE/docs" \
+        || { echo "[package-dist] the docs hold an image not on" \
+                  "packaging/docs-images.txt (or a listed one is missing)" >&2; exit 1; }
     cp gamecontrollerdb.txt "$STAGE/" 2>/dev/null || true
     cp LICENSE NOTICE.md "$STAGE/"
     local scopes=(--scope all)

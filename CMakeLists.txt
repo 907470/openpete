@@ -790,6 +790,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME docs_shot_pairs_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_docs_shot_pairs.py)
     set_tests_properties(docs_shot_pairs_selftest PROPERTIES LABELS "fence")
+    # The package docs image fence (scripts/fences/docs_image_allowlist.py,
+    # run by scripts/package-dist.sh on every package's docs/): an image not
+    # on packaging/docs-images.txt, by extension or by signature, and a
+    # listed image absent both refuse. The second test runs the check on the
+    # docs target's site; exit 64 when the site was not built.
+    add_test(NAME docs_image_allowlist_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_docs_image_allowlist.py)
+    set_tests_properties(docs_image_allowlist_selftest PROPERTIES LABELS "fence")
+    add_test(NAME docs_image_allowlist
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/docs_image_allowlist.py
+                     check ${CMAKE_BINARY_DIR}/games/spyro-1/docs-site)
+    set_tests_properties(docs_image_allowlist PROPERTIES
+        LABELS "fence"
+        SKIP_RETURN_CODE 64)
 
     # The image-side gates below (native_visual_regression, the presentation
     # golden rows and the dragon tier) are defined over the pinned capture
