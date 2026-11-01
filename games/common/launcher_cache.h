@@ -11,7 +11,8 @@
  *                   vertices (9 bytes each, game_asset_dome_t) and the
  *                   triangles (three u16 each); little-endian
  *   glyphs.txt      the glyph models (text_glyph_set_write)
- *   logo.rgba       "OPLOGO01", u32 width, u32 height, width * height RGBA
+ *   logo.rgba       "OPLOGO01", u32 width, u32 height, width * height RGBA:
+ *                   the title logo cropped to its opaque texels
  *   preview.rgba    "OPPREV01", u32 width, u32 height, width * height RGBA:
  *                   the box picture (launcher_preview.h)
  *   manifest.toml   the format version, the content hash of the library
@@ -40,7 +41,7 @@ struct openpete_game_build;
 
 /* The manifest's format version this build writes. A manifest of an older
  * version reruns the job; one of a newer version is treated as missing. */
-#define LAUNCHER_CACHE_FORMAT 1
+#define LAUNCHER_CACHE_FORMAT 2
 
 /* launcher_cache_update results. */
 enum {

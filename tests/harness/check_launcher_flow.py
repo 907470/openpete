@@ -936,8 +936,8 @@ def cache_rewrites(a, d, entries, bad):
         rewrite(p, lambda t: re.sub(r"^format = \d+", "format = " + fmt, t, flags=re.M))
         _, w, r = run_step(a, d, "format-" + fmt, bad)
         expect_reruns(bad, "format-" + fmt, r, {g: why})
-        if manifest(d, g)[0].get("format") != "1":
-            bad.append(f"format-{fmt}: {g}'s manifest not rewritten in format 1")
+        if manifest(d, g)[0].get("format") != "2":
+            bad.append(f"format-{fmt}: {g}'s manifest not rewritten in format 2")
     meta = os.path.join(entries["spyro-1"], "meta.toml")
     rewrite(meta, lambda t: t.replace('sha256 = "' + "0" * 64, 'sha256 = "' + "1" * 64))
     _, w, r = run_step(a, d, "hash", bad)

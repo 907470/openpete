@@ -95,7 +95,7 @@ typedef struct game_assets {
     game_asset_dome_t*     domes;
     int                    dome_count;
     struct text_glyph_set* glyphs;
-    uint8_t*               logo_rgba;   /* w * h * 4 bytes, index 0 and colour 0 transparent */
+    uint8_t*               logo_rgba;   /* w * h * 4 bytes, index 0 and colour 0 transparent; cropped to the opaque texels */
     uint32_t               logo_w, logo_h;
 } game_assets_t;
 

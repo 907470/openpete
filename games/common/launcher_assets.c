@@ -324,10 +324,37 @@ static int la_dome(cyclorama_sector_buf* D, const uint8_t* P, uint32_t len, game
 
 /* ---- the title logo ---------------------------------------------------- */
 
-/** @brief Decodes the title logo's drawn region to RGBA and hashes its texel rows and palette.
+/** @brief Crops a decoded logo to the bounding box of its opaque texels, in place.
+ *
+ * The descriptor's region can carry transparent rows and columns around the
+ * drawn logo; the page sizes and places the logo by its image, so the image
+ * keeps only the visible texels, at their own aspect. A logo with no opaque
+ * texel is left whole.
+ * @param a The result holding the logo; its logo_rgba, logo_w and logo_h are rewritten. */
+static void la_logo_crop(game_assets_t* a) {
+    const uint32_t w = a->logo_w, h = a->logo_h;
+    uint32_t x0 = w, y0 = h, x1 = 0, y1 = 0;
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++)
+            if (a->logo_rgba[4u * (y * w + x) + 3u]) {
+                if (x < x0) x0 = x;
+                if (x >= x1) x1 = x + 1u;
+                if (y < y0) y0 = y;
+                y1 = y + 1u;
+            }
+    if (x0 >= x1 || (x0 == 0 && y0 == 0 && x1 == w && y1 == h)) return;
+    const uint32_t cw = x1 - x0, ch = y1 - y0;
+    for (uint32_t y = 0; y < ch; y++)   /* each row moves toward the start: its source is never overwritten first */
+        memmove(a->logo_rgba + 4u * (y * cw), a->logo_rgba + 4u * ((y0 + y) * w + x0), 4u * (size_t)cw);
+    a->logo_w = cw;
+    a->logo_h = ch;
+}
+
+/** @brief Decodes the title logo's drawn region to RGBA, cropped to its opaque texels, and hashes its texel rows and palette.
  *
  * Each 15-bit palette colour expands to 8 bits per channel by a left shift
- * of 3; index 0 and colour 0 are transparent.
+ * of 3; index 0 and colour 0 are transparent. The hash covers the whole
+ * region, before the crop (la_logo_crop).
  * @param img The disc.
  * @param A The game's asset descriptor.
  * @param out Receives the logo.
@@ -366,6 +393,7 @@ static int la_logo(disc_image_t* img, const game_assets_desc_t* A, game_assets_t
     }
     *hash = openpete_fnv1a64_update(hs, pal, 512u);
     out->logo_w = w; out->logo_h = h;
+    la_logo_crop(out);
     free(b);
     return 0;
 }
