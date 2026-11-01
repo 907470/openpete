@@ -138,6 +138,8 @@ bool launcher_title_prepare(float win_w, float win_h, float x0, float cy, float 
     return true;
 }
 
+bool launcher_title_chosen(void) { return t.shown != nullptr; }
+
 bool launcher_title_drawn(float rect[4]) {
     if (t.drawn && rect) memcpy(rect, t.rect, sizeof t.rect);
     return t.drawn;

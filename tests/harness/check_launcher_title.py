@@ -8,8 +8,10 @@ Cases:
             A Spyro 1 entry's cache is written by a headless launch; then, at each reference
             window preset, a windowed launch over that library, with the title's tick pinned
             (OPENPETE_LAUNCHER_TITLE_TICK=TICK), reads the glyph models from the cache's
-            glyphs.txt, draws the 3D title on the selector's first present and writes its dump
-            (OPENPETE_LAUNCHER_TITLE_DUMP) and the selector's manifest. The entry holds no module
+            glyphs.txt, draws the 3D title from the launcher's second present (the first holds it
+            back and draws no title) and writes its dump (OPENPETE_LAUNCHER_TITLE_DUMP) and the
+            manifest and shot of the first frame drawing it (the tag "title3d"); the selector's
+            first-frame manifest holds neither title. The entry holds no module
             (a build without the first-boot pipeline links the game; on a *-launcher build the
             module is removed before the run), so the title is drawn from the cache alone.
             Per preset: the manifest's title.moby rect against the reference layout's within
@@ -184,7 +186,7 @@ def title_run(a, d, tag, preset, extra=None):
     """One windowed launch over the case's library at a preset with the title's tick pinned; returns (rc, log, manifest, dump, shot)."""
     base = os.path.join(d, tag)
     dump = base + ".title.json"
-    for p in (dump, base + ".selector.json", base + ".selector.png"):
+    for p in (dump, base + ".selector.json", base + ".title3d.json", base + ".title3d.png"):
         if os.path.exists(p):
             os.remove(p)
     env = {"OPENPETE_LAUNCHER_MANIFEST": base, "OPENPETE_LAUNCHER_SHOT": base,
@@ -192,7 +194,7 @@ def title_run(a, d, tag, preset, extra=None):
            "OPENPETE_LAUNCHER_INPUT": "2500:quit"}
     env.update(extra or {})
     rc, log = cl.launch(a.binary, d, tag, ["--launcher-window", preset], env, timeout=300)
-    return rc, log, cl.read_json(base + ".selector.json"), cl.read_json(dump), base + ".selector.png"
+    return rc, log, cl.read_json(base + ".title3d.json"), cl.read_json(dump), base + ".title3d.png"
 
 
 def case_title_cache(a):
@@ -218,11 +220,15 @@ def case_title_cache(a):
         ref = reference_title(preset)
         moby, pixel = (man and [it for it in man.get("items", []) if it["id"] == "title.moby"]), \
             (man and [it for it in man.get("items", []) if it["id"] == "title"])
+        first = cl.read_json(os.path.join(d, "p-" + preset) + ".selector.json")
+        held = first and [it for it in first.get("items", []) if it["id"] in ("title", "title.moby")]
+        if not first or held:
+            bad.append(f"{tag}: the selector's first frame {'holds a title' if first else 'has no manifest'}")
         if not man or not moby:
-            bad.append(f"{tag}: the selector's manifest holds no title.moby")
+            bad.append(f"{tag}: the title frame's manifest holds no title.moby")
             continue
         if pixel:
-            bad.append(f"{tag}: the selector's manifest holds the pixel title too")
+            bad.append(f"{tag}: the title frame's manifest holds the pixel title too")
         r = moby[0]["rect"]
         dev = max(abs(r[k] - ref[k]) for k in range(4)) if ref else None
         if ref is None or dev > 1.0:

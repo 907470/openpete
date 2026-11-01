@@ -123,6 +123,8 @@ struct State {
     bool fs_touched = false;
     bool fs_pending = false;     /* a toggle's enter or leave event is due */
     bool item_hovered = false;   /* the last frame's mouse was over a button or entry */
+    bool presented = false;      /* a launcher present on the launcher's device was drawn */
+    bool title_held = false;     /* this present holds the cached 3D title back (prepare_title) */
     bool pointer_moved = false;  /* a pointer motion arrived since the selector last looked */
     SDL_ThreadID ui_tid = 0;
     char stage[128] = {};
@@ -450,8 +452,10 @@ float fb_origin_step(float density) {
  * its origin truncated to the fb_origin_step grid so it starts on a
  * framebuffer pixel edge. While the present draws the 3D title
  * (launcher_title_drawn) the pixel title is not drawn and the 3D title's
- * rect is recorded as title.moby instead. The drawn title's centre is the
- * sky reveal's centre (launcher_sky_title_at).
+ * rect is recorded as title.moby instead. While the present holds the 3D
+ * title back (the launcher's first present, prepare_title) no title is
+ * drawn. The drawn title's centre is the sky reveal's centre
+ * (launcher_sky_title_at).
  * @param f The frame mapping. */
 void draw_title(const Frame& f) {
     static const char kTitle[] = "OPENPETE";
@@ -463,6 +467,7 @@ void draw_title(const Frame& f) {
             launcher_sky_title_at(0.5f * (r[0] + r[2]) / disp.x, 0.5f * (r[1] + r[3]) / disp.y);
         return;
     }
+    if (s.title_held) return;
     const float d = std::max(1.0f, ImGui::GetIO().DisplayFramebufferScale.x);
     const float q = fb_origin_step(d);
     const float p = 28.0f * kTitleScale * f.scale * d;
@@ -485,10 +490,19 @@ void draw_title(const Frame& f) {
  * glyph but the last, and is centred on the ink of the pixel title's
  * capitals: ProggyClean's baseline at trunc(top) + ceil(9.5 c) + c and its
  * capitals 8 cells tall, c the cell. On another device (the adopted one
- * after the hand-off) the 3D title does not draw.
+ * after the hand-off) the 3D title does not draw. The launcher's first
+ * present holds the 3D title back and draws no title in its place when a
+ * game's 3D title is chosen (launcher_title_chosen), so the title pass's
+ * pipelines and target are created on a later present and the first
+ * present shows no pixel title the next one would replace.
  * @param dev The presenting device; NULL for the launcher's. */
 void prepare_title(struct rhi_device* dev) {
     int w = 0, h = 0;
+    s.title_held = !dev && !s.presented && launcher_title_chosen();
+    if (!dev && !s.presented) {
+        (void)launcher_title_prepare(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
     SDL_Window* win = openpete_native_launcher_window();
     if (dev || !win || !SDL_GetWindowSize(win, &w, &h) || w <= 0 || h <= 0) {
         (void)launcher_title_prepare(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -530,10 +544,12 @@ void draw_view(void* ud) {
     ImGui::End();
 }
 
-/* Shot tags, indexed by Screen, then the precompile's progress screen. */
-constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile", "sky"};
+/* Shot tags, indexed by Screen, then the precompile's progress screen, then
+ * the first frames showing the sky's opaque dome and the 3D title. */
+constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile", "sky", "title3d"};
 constexpr int kShotPrecompile = 4;
 constexpr int kShotSky = 5;   /* the first frame whose sky is one opaque dome */
+constexpr int kShotTitle = 6;   /* the first frame drawing the 3D title */
 
 /** @brief Return the clear colour of every launcher present: kBg, or the harness variable OPENPETE_LAUNCHER_CLEAR=r,g,b read once.
  *
@@ -595,12 +611,16 @@ void scripted_input_poll();
  *
  * @param v The view. */
 void present(View& v) {
-    static bool drawn_once = false;   /* a launcher present was drawn */
     v.name = game_name();
-    launcher_sky_present(op_now(), drawn_once);   /* the present's instant: the sky's motion follows it */
+    launcher_sky_present(op_now(), s.presented);   /* the present's instant: the sky's motion follows it */
     if (!present_on(nullptr, v, (int)v.screen)) return;
-    drawn_once = true;
+    s.presented = true;
     if (launcher_sky_opaque()) maybe_shot(nullptr, kShotSky);
+    if (launcher_title_drawn(nullptr)) {
+        maybe_shot(nullptr, kShotTitle);
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        launcher_manifest_write((unsigned)kShotTitle, kShotTag[kShotTitle], d.x, d.y);
+    }
     launcher_stamp(LAUNCHER_EV_FIRST_PRESENT);
     scripted_input_poll();
     if (v.screen == Screen::Select && v.count > 0) launcher_stamp(LAUNCHER_EV_LIST_SHOWN);

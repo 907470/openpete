@@ -332,6 +332,11 @@ void launcher_title_offer(const openpete_launcher_game* g, bool prefer, const ch
  *         not drawn). */
 bool launcher_title_prepare(float win_w, float win_h, float x0, float cy, float width, float gap);
 
+/** @brief Report whether a game's 3D title is chosen: a game's glyph models were read for it (launcher_title_offer).
+ *
+ * @return true when one is chosen. */
+bool launcher_title_chosen(void);
+
 /** @brief Report whether the present being drawn draws the 3D title, and its rect.
  *
  * @param rect Receives x0, y0, x1, y1 in window pixels (the width fitted
