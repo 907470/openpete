@@ -7113,6 +7113,16 @@ int openpete_native_launcher_precompile_progress(unsigned *groups)
 
 uint32_t openpete_native_launcher_precompile_event(void) { return s_ahead.event; }
 
+int openpete_native_launcher_precompile_counts(unsigned *done, unsigned *total)
+{
+    unsigned d = 0, t = 0;
+    const int on = s_ahead.on && s_launch.dev &&
+                   rhi_precompile_walk_get(s_launch.dev, &d, &t, NULL) == RHI_WALK_RUNNING;
+    if (done) *done = on ? d : 0u;
+    if (total) *total = on ? t : 0u;
+    return on;
+}
+
 void openpete_native_launcher_compile_pause(int on)
 {
     if (s_ahead.paused == (on != 0)) return;

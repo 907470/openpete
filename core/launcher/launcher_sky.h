@@ -63,4 +63,18 @@ bool launcher_sky_shown(const char** game, const char** level);
  * @return The fraction, 0..1. */
 float launcher_sky_cover(void);
 
+/** @brief Start the crossfade to the next dome of the rotation now, as a hold's end would, and restart the rotation: the full hold runs after this crossfade.
+ *
+ * A crossfade already running ends at once (its dome becomes the current
+ * one) and the new one starts from it. Does nothing while no dome shows,
+ * during the first disc's reveal, or when the pool holds no other dome.
+ * Logs one line naming the incoming dome and the sky clock.
+ * @return true when a crossfade started. */
+bool launcher_sky_next(void);
+
+/** @brief Return the sky clock: the present-clock time the rotation has advanced through (launcher_sky_present), each step between two presents at most 0.25 s.
+ *
+ * @return Seconds; 0 before the first present. */
+double launcher_sky_clock(void);
+
 #endif /* OPENPETE_LAUNCHER_SKY_STATE_H */

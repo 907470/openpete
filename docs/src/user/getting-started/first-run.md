@@ -26,6 +26,13 @@ from your disc once it is in the [library](../help/glossary.md#library):
 - the background shows the skies of the library's games' levels, one after
   another, each fading into the next.
 
+While a level's sky shows, its name is in the bottom-right corner. Clicking
+the name fades to the next level's sky; the next one after that follows 8
+seconds after the fade ends. While the shader compile runs (see
+[Shaders compile on start](#shaders-compile-on-start)), the bottom-left
+corner shows its progress, **Compiling shaders 42%**, beside a turning
+circle.
+
 | Action | Keyboard | Gamepad | Mouse |
 | --- | --- | --- | --- |
 | Move the focus one box | ++left++ ++right++ | D-pad, left stick | point at a box |
@@ -94,18 +101,19 @@ A chosen image is added as a dropped one is.
 
 ## Preparing a game
 
-Adding a disc runs these steps behind a progress screen with a bar, under
-the heading **FIRST-TIME SETUP** and the line **YOUR DISC IS REBUILT FOR THIS
-PC. THIS HAPPENS ONCE.**:
+Adding a disc runs these steps behind a progress screen: the step's name
+above a bar. The first five steps share one bar, each step taking the part of
+it that matches its usual share of the time, so the bar moves at an even
+pace:
 
-| Step | What it does |
-| --- | --- |
-| **COPYING DISC TO YOUR LIBRARY** | copies the image into the library, named by its SHA-256 |
-| **READING GAME CODE FROM YOUR DISC** | reads the game's program and its level code from the copy |
-| **TRANSLATING GAME CODE** | turns the PlayStation code into C, one part at a time |
-| **BUILDING FOR YOUR PC** | compiles that C for your computer |
-| **LINKING** | joins the compiled parts into the game |
-| **RENDERING PREVIEW** | draws the box's level picture, shown only when it is still drawing after the build |
+| Step | What it does | Share of the bar |
+| --- | --- | --- |
+| **Copying disc to your library** | copies the image into the library, named by its SHA-256 | 14.5% |
+| **Reading game code from your disc** | reads the game's program and its level code from the copy | 2.1% |
+| **Translating game code** | turns the PlayStation code into C, one part at a time | 15.6% |
+| **Building for your PC** | compiles that C for your computer | 67.8%, with the next step |
+| **Linking** | joins the compiled parts into the game | |
+| **Rendering preview** | draws the box's level picture, shown only when it is still drawing after the build | a bar of its own |
 
 Together these are the [first-run compile](../help/glossary.md#first-run-compile).
 Measured times: about 26 seconds on a 16-thread desktop, 45 to 90 seconds
@@ -161,9 +169,9 @@ and quits on the next key or button.
 ## Mods compile on start
 
 Choosing a game whose mods hold source code not compiled yet, or source that
-changed since the last compile, shows **PREPARING MODS** with a
-**COMPILING MODS** step counting the mods and **CHANGED MOD SOURCES ARE
-COMPILED FOR THIS PC.** before the game starts. Mods made only of assets do
+changed since the last compile, shows the step **Compiling mods (1/2)**,
+counting the mods compiled and the mods to compile, before the game
+starts. Mods made only of assets do
 not compile. A mod that fails to compile is left out and the game starts;
 the log names it. See [Mods](../customizing/mods.md).
 
@@ -173,10 +181,10 @@ The game's graphics pipelines are compiled for the graphics card and driver
 and kept in a cache. The compile starts when the launcher's window opens and
 runs while the game page shows. If it has not finished when a game is
 chosen and takes longer than 0.4 seconds more (the first start after a new
-graphics driver or a new release), **PREPARING GRAPHICS** shows with a
-**COMPILING SHADERS** step and **SHADERS ARE COMPILED FOR THIS PC'S GRAPHICS
-DRIVER.** until it finishes. Other starts finish the compile without showing
-it.
+graphics driver or a new release), the step **Compiling shaders (120/412)**
+shows, counting the pipelines compiled, until it finishes. Other starts
+finish the compile without showing it. While the compile runs, its
+progress shows in the bottom-left corner of every other launcher screen.
 
 ## Later starts
 
@@ -191,8 +199,8 @@ closes OpenPete; the launcher does not come back.
 Install a new release over the old one, or beside it (see
 [Installing](install.md)). The first start of a new release recompiles each
 game once more from the library's own copy of the disc: 12 to 50 seconds,
-under the same **FIRST-TIME SETUP** screen, or in the background while the
-game page shows. The original disc image is not needed.
+behind the same progress screen, starting at **Reading game code from your
+disc**, or in the background while the game page shows. The original disc image is not needed.
 
 What carries over:
 

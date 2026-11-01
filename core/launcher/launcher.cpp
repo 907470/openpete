@@ -26,7 +26,7 @@
 // fullscreen and window settings at the hand-off (carry_window_state). The
 // harness variable OPENPETE_LAUNCHER_INPUT=<ms>:<action>[,...] performs each
 // action that long after the first launcher frame: altenter, browse (Space),
-// dblclick and quit post the input events, maximize, restore and resize=WxH call the
+// click=<x>/<y>, dblclick and quit post the input events, maximize, restore and resize=WxH call the
 // window operations a window manager answers, and key=, pad=, stick= and
 // mouse= post key, gamepad and pointer events (scripted_event). OPENPETE_LAUNCHER_MANIFEST=<base>
 // writes each screen's first frame's elements, by the reference layout's ids, to
@@ -38,6 +38,8 @@
 #include "launcher_pace.h"
 #include "launcher_picker.h"
 #include "launcher_shapes.h"
+#include "launcher_chips.h"
+#include "launcher_progress.h"
 #include "launcher_sky.h"
 #include "launcher_quit.h"
 
@@ -272,32 +274,6 @@ void text_centred(const Frame& f, const char* id, float y, float size, ImU32 col
     ImGui::PopFont();
 }
 
-/* The banner and footer of a progress stage, chosen by the stage text's
- * prefix; counted stages show their counts after the stage. The last row's
- * empty prefix matches every other stage. */
-struct StageLook {
-    const char* prefix;
-    const char* banner;
-    const char* footer;
-    bool counted;
-};
-constexpr StageLook kStageLooks[] = {
-    {"COMPILING MODS", "PREPARING MODS", "CHANGED MOD SOURCES ARE COMPILED FOR THIS PC.", true},
-    {"COMPILING SHADERS", "PREPARING GRAPHICS",
-     "SHADERS ARE COMPILED FOR THIS PC'S GRAPHICS DRIVER.", true},
-    {"", "FIRST-TIME SETUP", "YOUR DISC IS REBUILT FOR THIS PC. THIS HAPPENS ONCE.", false},
-};
-
-/** @brief Return the look of a progress stage: the first row of kStageLooks whose prefix starts the stage text.
- *
- * @param stage The stage text.
- * @return The row; the last row when no other matches. */
-const StageLook& stage_look(const char* stage) {
-    for (const StageLook& l : kStageLooks)
-        if (strncmp(stage, l.prefix, strlen(l.prefix)) == 0) return l;
-    return kStageLooks[sizeof kStageLooks / sizeof kStageLooks[0] - 1];
-}
-
 /* The progress view's step line top, in layout px: the place the step chip
  * and the game page's quit chip draw at. */
 constexpr float kStepChipY = 196 + kBandY;
@@ -318,9 +294,10 @@ constexpr float kChipPadX = 12.0f, kChipPadY = 7.0f;
  * @param text The text. */
 void chip_centred(const Frame& f, const char* id, float y, float size, ImU32 col, const char* text) {
     push_body_font(size * f.scale);
-    const ImVec2 sz = ImGui::CalcTextSize(text);
+    const std::string t = launcher_chip_case(text);
+    const ImVec2 sz = ImGui::CalcTextSize(t.c_str());
     const ImVec2 at(f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, f.oy + y * f.scale);
-    launcher_chip_text(id, at, ImVec2(kChipPadX, kChipPadY), f.scale, col, text);
+    launcher_chip_text(id, at, ImVec2(kChipPadX, kChipPadY), f.scale, col, t.c_str());
     ImGui::PopFont();
 }
 
@@ -335,21 +312,18 @@ void draw_quit_ask(const Frame& f) {
     chip_centred(f, "quit.ask", kStepChipY, 14, IM_COL32_WHITE, "Press again to quit");
 }
 
-/** @brief Draw the progress screen: banner, step chip, bar and footer.
+/** @brief Draw the progress screen: the step chip and the bar below it, with no banner, footer or panel.
  *
- * The stage's row of kStageLooks gives the banner and footer. A counted
- * stage shows done/total after the stage text, or done alone while total
- * is 0 and done is not. The bar (launcher_shape_bar) fills done/total,
- * clamped to 1, and is empty when total is 0.
+ * The step chip reads the stage's step line (launcher_progress_line: its
+ * step name in sentence case, a counted step's counts in parentheses). The
+ * bar (launcher_shape_bar) fills to launcher_progress_bar's fraction: the
+ * first boot's stages as one bar weighted by their measured time, any
+ * other stage by its own count; light track, dark border, orange fill.
  * @param f The frame mapping.
  * @param v The view. */
 void draw_progress(const Frame& f, const View& v) {
-    const StageLook& look = stage_look(v.stage);
-    text_centred(f, "banner", 160 + kBandY, 14, IM_COL32(220, 210, 240, 255), look.banner);
     char line[160];
-    if (look.counted && v.total > 0) snprintf(line, sizeof line, "%s %d/%d", v.stage, v.done, v.total);
-    else if (look.counted && v.done > 0) snprintf(line, sizeof line, "%s %d", v.stage, v.done);
-    else snprintf(line, sizeof line, "%s", v.stage);
+    launcher_progress_line(v.stage, v.done, v.total, line, sizeof line);
     /* While East's quit ask shows (launcher_quit_gesture) the quit chip
      * takes the step chip's place. */
     static bool armed_logged = false;
@@ -358,12 +332,11 @@ void draw_progress(const Frame& f, const View& v) {
     armed_logged = armed;
     if (armed) draw_quit_ask(f);
     else chip_centred(f, "step", kStepChipY, 14, IM_COL32_WHITE, line);
-    const float frac = v.total > 0 ? (float)v.done / (float)v.total : 0.0f;
+    const float frac = launcher_progress_bar(v.stage, v.done, v.total);
     const ImVec2 a(f.ox + kBarX * f.scale, f.oy + (kBarY + kBandY) * f.scale);
     const ImVec2 b(f.ox + (kLayoutW - kBarX) * f.scale, a.y + kBarH * f.scale);
     launcher_shape_bar("bar", a, b, f.scale, frac, IM_COL32(150, 130, 190, 255), IM_COL32(240, 138, 30, 255),
                        IM_COL32(50, 38, 80, 255), kBarBorder);
-    text_centred(f, "footer", 292 + kBandY, 8, IM_COL32(150, 130, 190, 255), look.footer);
 }
 
 /** @brief Draw the pending screen's line where the selector's first entry goes.
@@ -477,7 +450,9 @@ void prepare_title(struct rhi_device* dev) {
 /** @brief Draw one frame of a screen: the pixel title, then the screen's content, in one borderless window over the whole display.
  *
  * The per-present callback openpete_native_launcher_present runs between
- * imgui's NewFrame and Render.
+ * imgui's NewFrame and Render. Before the hand-off and outside the drawn
+ * picker, the corner chips (launcher_corner_chips_draw) draw before the
+ * content, the shader chip left out on the shader step.
  * @param ud The View. */
 void draw_view(void* ud) {
     View& v = *static_cast<View*>(ud);
@@ -493,6 +468,9 @@ void draw_view(void* ud) {
     const Frame f = frame_map();
     launcher_manifest_begin();
     draw_title(f);
+    if (!s.handed_off && !launcher_picker_shown())
+        launcher_corner_chips_draw(f.scale, v.screen == Screen::Progress && v.stage &&
+                                                strncmp(v.stage, "COMPILING SHADERS", 17) == 0);
     if (v.screen == Screen::Progress) draw_progress(f, v);
     else if (v.screen == Screen::Pending) draw_pending(f);
     else if (launcher_picker_shown()) {
@@ -1081,13 +1059,46 @@ bool scripted_button_event(const std::string& a, SDL_WindowID id, SDL_Event& e) 
     return false;
 }
 
-/** @brief Harness: build the event of an input action: a key or pad button (scripted_button_event), stick=<x|y>:<value>, mouse=<x>/<y>, dblclick or quit.
+/** @brief Harness: click the left button at a window point: post the pointer's motion there and the press, and build the release.
+ *
+ * A negative coordinate counts from the window's right or bottom edge.
+ * @param win The launcher's window.
+ * @param x The point's x, window coordinates.
+ * @param y Its y.
+ * @param e Receives the release. */
+void scripted_click(SDL_Window* win, float x, float y, SDL_Event& e) {
+    int w = 0, h = 0;
+    SDL_GetWindowSize(win, &w, &h);
+    if (x < 0) x += (float)w;
+    if (y < 0) y += (float)h;
+    SDL_WarpMouseInWindow(win, x, y);
+    SDL_Event m = {};
+    m.type = SDL_EVENT_MOUSE_MOTION;
+    m.motion.windowID = SDL_GetWindowID(win);
+    m.motion.x = x;
+    m.motion.y = y;
+    (void)SDL_PushEvent(&m);
+    SDL_Event d = {};
+    d.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    d.button.windowID = m.motion.windowID;
+    d.button.button = SDL_BUTTON_LEFT;
+    d.button.down = true;
+    d.button.clicks = 1;
+    d.button.x = x;
+    d.button.y = y;
+    (void)SDL_PushEvent(&d);
+    e = d;
+    e.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    e.button.down = false;
+}
+
+/** @brief Harness: build the event of an input action: a key or pad button (scripted_button_event), stick=<x|y>:<value>, mouse=<x>/<y>, click=<x>/<y>, dblclick or quit.
  *
  * stick sets the left stick's axis to the value (-32768 to 32767). mouse
  * warps the pointer to a point in the 640x448 layout space of the frame
  * last drawn and builds no event (e.type stays 0): the platform then
  * reports the motion and the pointer's window, which imgui's backend reads
- * each frame. dblclick is a left double-click at the bottom centre of the
+ * each frame. click is a left click at a window point (scripted_click). dblclick is a left double-click at the bottom centre of the
  * window, below the screens' buttons and entries; quit is the event closing
  * the window posts.
  * @param a The action.
@@ -1107,6 +1118,8 @@ bool scripted_event(const std::string& a, SDL_Window* win, SDL_Event& e) {
     } else if (sscanf(a.c_str(), "mouse=%f/%f", &x, &y) == 2) {
         const Frame f = frame_map();
         SDL_WarpMouseInWindow(win, f.ox + x * f.scale, f.oy + y * f.scale);
+    } else if (sscanf(a.c_str(), "click=%f/%f", &x, &y) == 2) {
+        scripted_click(win, x, y, e);
     } else if (a == "dblclick") {
         SDL_GetWindowSize(win, &w, &h);
         e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;

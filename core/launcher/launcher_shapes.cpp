@@ -41,6 +41,21 @@ void rgba(ImU32 c, float out[4]) {
     out[0] = v.x; out[1] = v.y; out[2] = v.z; out[3] = v.w;
 }
 
+/** @brief Report whether shapes draw their drop shadow: false when the harness variable OPENPETE_LAUNCHER_SHADOW is 0 (the corner profile check reads the edge ramp alone), read once.
+ *
+ * @return true unless the shadow is turned off. */
+bool shadow_on() {
+    static const bool on = [] {
+        const char* e = getenv("OPENPETE_LAUNCHER_SHADOW");
+        return !(e && !strcmp(e, "0"));
+    }();
+    return on;
+}
+
+/* The chips' letter case: false draws each chip's text as written (step
+ * names in sentence case, level names as titled), true in upper case. */
+constexpr bool kChipUpperCase = false;
+
 /** @brief Start a shape over a window-coordinate rect: its rect in framebuffer pixels, its radii scaled to fit, the coverage ramp, and the drop shadow at an alpha.
  *
  * @param s Receives the shape, zeroed first.
@@ -62,7 +77,7 @@ void shape_init(openpete_launcher_shape* s, openpete_launcher_shape_kind kind, I
     s->rx = std::max(0.0f, rx * k * fb.x);
     s->ry = std::max(0.0f, ry * k * fb.y);
     s->aa = kEdgeAA;
-    s->shadow_a = shadow;
+    s->shadow_a = shadow_on() ? shadow : 0.0f;
     s->shadow_dy = kShadowDy * scale * fb.y;
     s->shadow_blur = kShadowBlur * scale * fb.y;
 }
@@ -161,4 +176,12 @@ void launcher_chip_text(const char* id, ImVec2 pos, ImVec2 pad, float scale, ImU
     /* GetColorU32 applies the style's alpha, which the text-hiding harness
      * variable sets to 0. */
     ImGui::GetWindowDrawList()->AddText(pos, ImGui::GetColorU32(col), text);
+}
+
+std::string launcher_chip_case(const char* text) {
+    std::string t = text ? text : "";
+    if (kChipUpperCase)
+        for (char& c : t)
+            if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    return t;
 }

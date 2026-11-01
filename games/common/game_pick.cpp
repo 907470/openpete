@@ -11,6 +11,8 @@
 #include "openpete_config.h"
 #include "recomp_attach.h"
 #include "launcher_cache.h"
+#include "launcher_assets.h"
+#include "game_host_desc.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -125,6 +127,20 @@ unsigned char* entry_picture(const openpete_launcher_game* g, int* w, int* h) {
     return launcher_cache_read_preview(g->game_id, w, h);
 }
 
+/** @brief Return the display name of a level of a per-game entry's game: the row of its launcher assets' level table whose name is the id.
+ *
+ * @param g The per-game entry.
+ * @param level The level id, as the domes file records it.
+ * @return The display name, or NULL when the table holds no such row. */
+const char* entry_level_name(const openpete_launcher_game* g, const char* level) {
+    const openpete_game_build_t* b = build_of(g);
+    const game_assets_desc_t* A = b && b->runtime && b->runtime->host ? b->runtime->host->assets : nullptr;
+    const game_level_table_t* T = A ? A->levels : nullptr;
+    for (size_t i = 0; T && level && i < T->count; i++)
+        if (T->levels[i].name && !strcmp(T->levels[i].name, level)) return T->levels[i].display;
+    return nullptr;
+}
+
 /** @brief Report whether the executable can get a module for a game: it needs no first-boot build, or the build's inputs (recomp/manifest/<id>/manifest.toml) are staged beside the executable.
  *
  * A game without a box is logged once, with the path looked for.
@@ -169,6 +185,7 @@ std::vector<openpete_launcher_game>& game_entries() {
             g.title_emit = entry_title_emit;
             g.load_logo = entry_logo;
             g.load_picture = entry_picture;
+            g.level_name = entry_level_name;
         }
         g.on_page = entry_on_page(b);
     }

@@ -9,6 +9,8 @@
 
 #include "imgui.h"
 
+#include <string>
+
 /* Spyro 3's dialogue box: fill (8,8,8), elliptical corners of these radii
  * in layout px (the quarter ellipse fitted to its corner sprite on the 4:3
  * screen), drawn at half opacity as the game's blend mode 0 does. */
@@ -78,5 +80,13 @@ void launcher_shape_scrim(const char* id, ImFont* font, float size, ImVec2 pos, 
  * @param col The text colour.
  * @param text The text. */
 void launcher_chip_text(const char* id, ImVec2 pos, ImVec2 pad, float scale, ImU32 col, const char* text);
+
+/** @brief Return a chip's text in the chips' letter case: as written, or upper case when the launcher draws its chips in upper case.
+ *
+ * Every chip's text (the step chip, the quit chip, the corner chips) passes
+ * through it before it is measured and drawn.
+ * @param text The text, UTF-8; NULL reads as empty.
+ * @return The text to draw. */
+std::string launcher_chip_case(const char* text);
 
 #endif /* OPENPETE_LAUNCHER_SHAPES_H */

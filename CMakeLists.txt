@@ -1753,6 +1753,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                 SKIP_RETURN_CODE 64
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         endforeach()
+        # The launcher's corner chips, the progress view's weighted bar and the
+        # shapes' corner profile (tests/harness/check_launcher_chips.py): T4 on
+        # a flat clear, T6 over a first boot (a *-launcher build; SKIP
+        # otherwise), and the chips' places, texts and the level chip's click.
+        foreach(_launcher_case corner progress chips)
+            add_test(NAME launcher_chips_${_launcher_case}
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_chips.py
+                             ${_launcher_case} --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(launcher_chips_${_launcher_case} PROPERTIES
+                LABELS "launcher"
+                TIMEOUT 1800
+                SKIP_RETURN_CODE 64
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        endforeach()
+        # Timed against the sky clock and elapsed time: run alone under ctest -j.
+        set_tests_properties(launcher_chips_progress launcher_chips_chips PROPERTIES RUN_SERIAL TRUE)
     endif()
 
     # No PSX RAM dump in the tree (scripts/fences/no-ram-dump.py). The

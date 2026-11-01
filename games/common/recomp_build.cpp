@@ -500,6 +500,35 @@ std::string compute_codegen_stamp(const fs::path& base, const openpete_game_buil
     return stamp;
 }
 
+/* The compile step's schedule: the translation units in the order the
+ * workers take them, largest source first, and each unit's size in KiB
+ * (at least 1), the unit the progress report counts in. */
+struct CompileOrder {
+    std::vector<size_t> order;
+    std::vector<int> kib;
+    int total_kib = 0;
+};
+
+/** @brief Order the translation units largest source first and size each in KiB, so the longest compiles start first and the progress report advances by source size.
+ *
+ * A unit whose size cannot be read counts 1 KiB and keeps its place among
+ * the smallest.
+ * @param tus The translation units, in link order (unchanged).
+ * @return The schedule. */
+CompileOrder compile_order(const std::vector<fs::path>& tus) {
+    CompileOrder o;
+    o.kib.resize(tus.size());
+    for (size_t i = 0; i < tus.size(); i++) {
+        std::error_code ec;
+        const auto b = fs::file_size(tus[i], ec);
+        o.kib[i] = ec ? 1 : (int)std::max<std::uintmax_t>(1, b / 1024);
+        o.total_kib += o.kib[i];
+        o.order.push_back(i);
+    }
+    std::stable_sort(o.order.begin(), o.order.end(), [&](size_t a, size_t b) { return o.kib[a] > o.kib[b]; });
+    return o;
+}
+
 }  // namespace
 
 extern "C" int openpete_recomp_first_boot_module_path(const openpete_game_build_t* b,
@@ -747,16 +776,19 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     std::fprintf(stderr, "[first-boot] compiling %zu C files (-j%u)...\n",
                  tus.size(), jobs);
 
+    const CompileOrder sched = compile_order(tus);
     std::atomic<size_t> next{0};
     std::atomic<int> failed{0};
     std::atomic<size_t> done{0};
+    std::atomic<int> done_kib{0};
     /* The workers read the stop of the job running the build. */
     void* const stop = openpete_launcher_job_stop_handle();
     auto worker = [&]() {
         openpete_launcher_job_stop_adopt(stop);
         for (;;) {
-            size_t i = next.fetch_add(1);
-            if (i >= tus.size() || failed.load()) break;
+            const size_t n = next.fetch_add(1);
+            if (n >= tus.size() || failed.load()) break;
+            const size_t i = sched.order[n];
             const fs::path& tu = tus[i];
             std::vector<std::string> cmd = {cc};
             cmd.insert(cmd.end(), common.begin(), common.end());
@@ -765,6 +797,7 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
             cmd.push_back((obj / (tu.filename().string() + ".o")).string());
             cmd.push_back(tu.string());
             if (!run(cmd)) { failed.store(1); break; }
+            done_kib.fetch_add(sched.kib[i]);
             size_t d = done.fetch_add(1) + 1;
             if (d % 20 == 0 || d == tus.size())
                 std::fprintf(stderr, "[first-boot]   %zu/%zu\n", d, tus.size());
@@ -775,12 +808,13 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
         std::vector<std::thread> pool;
         for (unsigned t = 0; t < jobs; t++) pool.emplace_back(worker);
         /* Progress from THIS thread (SDL rendering is not thread-safe);
-         * workers only bump the counter. */
-        size_t last = (size_t)-1;
+         * workers only bump the counters. The report counts KiB of source
+         * compiled, so a large unit advances the bar by its size. */
+        int last = -1;
         while (done.load() < tus.size() && !failed.load()) {
-            size_t d = done.load();
+            const int d = done_kib.load();
             if (d != last) {
-                progress("BUILDING FOR YOUR PC", (int)d, (int)tus.size());
+                progress("BUILDING FOR YOUR PC", d, sched.total_kib);
                 last = d;
             }
 #ifdef _WIN32
@@ -790,7 +824,7 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
 #endif
         }
         for (auto& t : pool) t.join();
-        progress("BUILDING FOR YOUR PC", (int)tus.size(), (int)tus.size());
+        progress("BUILDING FOR YOUR PC", sched.total_kib, sched.total_kib);
     }
     if (failed.load()) return -1;
 

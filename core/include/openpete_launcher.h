@@ -134,6 +134,11 @@ struct openpete_launcher_game {
      * once, then again after each openpete_launcher_picture_changed. NULL
      * for a game without launcher assets. */
     unsigned char* (*load_picture)(const openpete_launcher_game* g, int* w, int* h);
+    /* Return the display name of one of this game's levels, by the level id
+     * its launcher cache's domes are recorded under (the game's level table:
+     * "stone_hill" -> "Stone Hill"); NULL for an id the table does not hold.
+     * NULL for a game without launcher assets. */
+    const char* (*level_name)(const openpete_launcher_game* g, const char* level);
 };
 
 struct rhi_device;
@@ -333,15 +338,16 @@ int  openpete_launcher_run_task_exclusive(openpete_launcher_task_fn fn, void* us
  * @return OPENPETE_EXIT_OK. */
 int  openpete_launcher_handoff(openpete_options_t* opts);
 
-/** @brief Present one frame of the launcher's progress screen on a device: the title, the game's subtitle, the stage's banner, the stage line, the bar and the footer.
+/** @brief Present one frame of the launcher's progress screen on a device: the title, the step chip and the bar.
  *
  * The launcher's own waits and the renderer's pipeline precompile (after
  * the hand-off, on the device it adopted) draw through this one screen. It
  * reads no launcher state besides the OPENPETE_LAUNCHER_SHOT readback
  * marks, so it draws on a start that never showed a launcher screen. The
- * stage's banner and footer follow its text ("COMPILING MODS",
- * "COMPILING SHADERS", any other stage the first-time setup); a counted
- * stage shows done/total, or done alone while total is 0. The first frame
+ * step chip names the stage's step in sentence case ("COMPILING SHADERS"
+ * reads "Compiling shaders"); a counted stage ("COMPILING MODS",
+ * "COMPILING SHADERS") appends (done/total), or (done) while total is 0;
+ * the bar fills by done/total. The first frame
  * drawn this way is read back as the screen "precompile" when
  * OPENPETE_LAUNCHER_SHOT is set. Display owner only.
  * @param dev The device presented on; NULL for the launcher's own.

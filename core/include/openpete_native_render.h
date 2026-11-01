@@ -297,6 +297,14 @@ int openpete_native_launcher_precompile_progress(unsigned *groups);
  * @return The type, or 0 before the precompile started or when no type could be registered. */
 uint32_t openpete_native_launcher_precompile_event(void);
 
+/** @brief Read the launcher's precompile counts: the create infos returned or skipped and the create infos queued.
+ *
+ * Display owner only (the launcher's thread).
+ * @param done Receives the create infos returned or skipped, or NULL.
+ * @param total Receives the create infos queued, or NULL.
+ * @return 1 while the walk runs, 0 when it ended or never started (both counts then 0). */
+int openpete_native_launcher_precompile_counts(unsigned *done, unsigned *total);
+
 /** @brief Pause or resume the launcher's pipeline compile pool around work that uses every core (the first-boot module build).
  *
  * Paused, each worker finishes the pipeline it holds and starts no other;

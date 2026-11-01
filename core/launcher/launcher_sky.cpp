@@ -362,3 +362,15 @@ bool launcher_sky_shown(const char** game, const char** level) {
     if (level) *level = d ? d->level.c_str() : nullptr;
     return d != nullptr;
 }
+
+bool launcher_sky_next(void) {
+    if (!launcher_screens() || !sk.cur || sk.reveal) return false;
+    DomeP d = pick_next();
+    if (!d || d == sk.cur) return false;
+    start_fade(d, false);
+    OPL_INFO_F("launcher", "sky: next dome on request: %s/%s at %.3f s; its hold starts after the crossfade",
+               d->game.c_str(), d->level.c_str(), sk.clock);
+    return true;
+}
+
+double launcher_sky_clock(void) { return sk.clock; }
