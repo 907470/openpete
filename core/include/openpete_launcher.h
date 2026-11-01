@@ -160,8 +160,8 @@ int  openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
  * LockFileEx on Windows), held from the pick until the hand-off or
  * openpete_launcher_close. The library scan, every ingest and every module
  * build of the launcher run under it.
- * @return 0 when taken (or already held), -1 when another process holds it
- *         or the file cannot be opened. */
+ * @return 0 when taken (or already held), -1 when another process holds it,
+ *         -2 when the lock file cannot be opened or locked. */
 int  openpete_launcher_lock(void);
 
 /** @brief Report whether the launcher job running on the calling thread was asked to stop.

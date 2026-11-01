@@ -815,7 +815,7 @@ int openpete_launcher_lock(void) {
     std::error_code ec;
     fs::create_directories(root, ec);
     const fs::path lock = root / ".lock";
-    if (openpete_paths_lock(lock.string().c_str(), &s_lock_handle) != 0) return -1;
+    if (const int rc = openpete_paths_lock(lock.string().c_str(), &s_lock_handle); rc != 0) return rc;
     s_lock_held = true;
     OPL_INFO_F("library", "library lock taken: %s", lock.string().c_str());
     return 0;

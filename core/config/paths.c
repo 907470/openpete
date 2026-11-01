@@ -3,6 +3,7 @@
 #include "openpete_paths.h"
 #include "openpete_log.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,23 +79,38 @@ int openpete_exe_dir(char* out, size_t cap) {
 int openpete_paths_lock(const char* path, intptr_t* handle) {
 #ifdef _WIN32
     wchar_t w[OPP_PATH_MAX];
-    if (!MultiByteToWideChar(CP_ACP, 0, path, -1, w, (int)(sizeof w / sizeof w[0]))) return -1;
+    if (!MultiByteToWideChar(CP_ACP, 0, path, -1, w, (int)(sizeof w / sizeof w[0]))) {
+        OPL_ERROR_F("paths", "lock %s: path does not convert", path);
+        return -2;
+    }
     HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return -1;
+    if (h == INVALID_HANDLE_VALUE) {
+        OPL_ERROR_F("paths", "lock %s: cannot open (Windows error %lu)", path, (unsigned long)GetLastError());
+        return -2;
+    }
     OVERLAPPED ov;
     memset(&ov, 0, sizeof ov);
     if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) {
+        const DWORD err = GetLastError();
         CloseHandle(h);
-        return -1;
+        if (err == ERROR_LOCK_VIOLATION) return -1;
+        OPL_ERROR_F("paths", "lock %s: cannot lock (Windows error %lu)", path, (unsigned long)err);
+        return -2;
     }
     *handle = (intptr_t)h;
 #else
     const int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        OPL_ERROR_F("paths", "lock %s: cannot open (%s)", path, strerror(errno));
+        return -2;
+    }
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        const int err = errno;
         close(fd);
-        return -1;
+        if (err == EWOULDBLOCK) return -1;
+        OPL_ERROR_F("paths", "lock %s: cannot lock (%s)", path, strerror(err));
+        return -2;
     }
     *handle = (intptr_t)fd;
 #endif

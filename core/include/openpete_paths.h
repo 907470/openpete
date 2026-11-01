@@ -55,7 +55,8 @@ int openpete_exe_path(char* out, size_t cap);
  * The lock lasts until openpete_paths_unlock or the process ends.
  * @param path The file.
  * @param handle Receives the lock's handle.
- * @return 0 when taken, -1 when another process holds it or the file cannot be opened. */
+ * The reason for a -2 is logged.
+ * @return 0 when taken, -1 when another process holds it, -2 when the file cannot be opened or locked. */
 int openpete_paths_lock(const char* path, intptr_t* handle);
 
 /** @brief Release a lock openpete_paths_lock took.

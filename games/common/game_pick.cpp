@@ -201,11 +201,17 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
                                                   : openpete_config_env("OPENPETE_LOG_FILE"));
 
     openpete_launcher_begin(neutral_desc(), &neutral, !neutral.headless);
-    if (openpete_launcher_lock() != 0) {
-        OPL_ERROR_F("launcher", "%s", "another OpenPete is preparing a game: the library is "
-                    "locked by another process; nothing was done");
-        std::fprintf(stderr, "openpete: another OpenPete is preparing a game; try again "
-                             "when it has started\n");
+    if (const int lock = openpete_launcher_lock(); lock != 0) {
+        if (lock == -1) {
+            OPL_ERROR_F("launcher", "%s", "another OpenPete is preparing a game: the library is "
+                        "locked by another process; nothing was done");
+            std::fprintf(stderr, "openpete: another OpenPete is preparing a game; try again "
+                                 "when it has started\n");
+        } else {
+            OPL_ERROR_F("launcher", "%s", "the library lock file cannot be taken (the reason is logged "
+                        "above); nothing was done");
+            std::fprintf(stderr, "openpete: the library folder cannot be locked; see the log\n");
+        }
         *exit_code = OPENPETE_EXIT_SETUP_ERROR;
         return nullptr;
     }
