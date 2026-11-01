@@ -2268,7 +2268,7 @@ static const knob_desc_t g_builtin_debug[] = {
         "1 = every live moby of the level updates every tick at any distance "
         "(Spyro 2 and 3): the moby update-list builder is replaced by a "
         "build without its distance test, and an undrawn gem spins at any "
-        "range. Changes gameplay state; for the credits fly-through video."),
+        "range. For the credits fly-through video."),
     ENVROW_LATCHED("VIDEO_NOSPARX", "Debug", "0",
         "1 = with OPENPETE_D1, the companion's class stays off the moby "
         "update list, so Sparx and his sparkles and glow are absent. Without "
@@ -2277,17 +2277,16 @@ static const knob_desc_t g_builtin_debug[] = {
         "Comma list of keyframe animation ids (Spyro 2 and 3): each "
         "animated sector (door) with that id that rests at keyframe 0 is "
         "started once, as the level opens it, and rests at its next stop. "
-        "Changes gameplay state; for the credits fly-through video."),
+        "For the credits fly-through video."),
     ENVROW_LATCHED("VIDEO_HOME_PANIM", "Debug", "",
         "Comma list of keyframe animation ids (Spyro 2 and 3): each "
         "animated sector with that id is sent back to keyframe 0 and held "
-        "there when the level restarts it. Changes gameplay state; for the "
-        "credits fly-through video."),
+        "there when the level restarts it. For the credits fly-through "
+        "video."),
     ENVROW_LATCHED("VIDEO_ZOE_NEAR", "Debug", "0",
         "1 = the checkpoint fairy reads her distance to the player as near "
         "at any range (Spyro 3), so she is shown idle everywhere and never "
-        "triggers the checkpoint. Changes gameplay state; for the credits "
-        "fly-through video."),
+        "triggers the checkpoint. For the credits fly-through video."),
     ENVROW_LATCHED("CRASH_TEST", "Debug", "",
         "Fault injection for the crash handler: segv (a null store) or "
         "overflow (unbounded recursion) on the game fiber before the game's "
@@ -2489,7 +2488,7 @@ static const knob_desc_t g_builtin_debug[] = {
         "Per-portal opening correction \"id:dh,dv[,sh[,sv]];...\" in world units."),
     ENVROW_DEVICE("TERRAIN_FP32", "Debug", "0",
         "Terrain-cache vertex stages: 1 = the fp32 build (runs without shaderFloat64), "
-        "0 = the fp64 build. Read once at device open."),
+        "0 = the fp64 build."),
     ENVROW_LIVE("TERRAIN_CULL", "Debug", "3",
         "bit0 HP NCLIP cull, bit1 LP cull (default 3 = both; each mirrors its walk's exact rule)."),
     ENVROW_LIVE("TERRAIN_FLAT", "Debug", "0",
