@@ -3,24 +3,33 @@
 bar), read from the binary's own readback: one case per ctest test of the label `launcher`.
 
 Every run is check_launcher.py's windowed launch (its virtual display, window manager and scratch
-data root) over a library seeded with one Spyro 1 entry, picked at once (OPENPETE_LAUNCHER_SELECT=0)
-with the shader compile forced (OPENPETE_PRECOMPILE_FORCE=1, OPENPETE_PRECOMPILE_PANEL_MS=0). Two
-progress screens draw the step chip and the bar: the pick's wait for the entry's launch-time asset
-job, at the launcher window's size (shot tag progress), and the shader compile's after the
-hand-off, at the game's window size, 640x448 (tag precompile). Each screen's first frame is read
-back (OPENPETE_LAUNCHER_SHOT) with its element manifest (OPENPETE_LAUNCHER_MANIFEST).
-The contrast and fill cases run with OPENPETE_LAUNCHER_TEXT_HIDE=1 (imgui's output at alpha 0, so
-the shot holds the background and the shape pass alone) over a fixed background set, each a flat
-clear colour (OPENPETE_LAUNCHER_CLEAR): the launcher draws no dome yet, and over a flat background
-the 95th-percentile luminance under a text item is the composite of the shapes over that colour.
+data root). The fill and layout cases run over a library seeded with one Spyro 1 entry, picked at
+once (OPENPETE_LAUNCHER_SELECT=0) with the shader compile forced (OPENPETE_PRECOMPILE_FORCE=1,
+OPENPETE_PRECOMPILE_PANEL_MS=0). Two progress screens draw the step chip and the bar: the pick's
+wait for the entry's launch-time asset job, at the launcher window's size (shot tag progress), and
+the shader compile's after the hand-off, at the game's window size, 640x448 (tag precompile). Each
+screen's first frame is read back (OPENPETE_LAUNCHER_SHOT) with its element manifest
+(OPENPETE_LAUNCHER_MANIFEST). The contrast and fill cases run with OPENPETE_LAUNCHER_TEXT_HIDE=1
+(imgui's output at alpha 0, so the shot holds the background and the shape pass alone); fill over
+a fixed background set, each a flat clear colour (OPENPETE_LAUNCHER_CLEAR), contrast over the
+level domes the launcher draws.
 
 Cases:
-  contrast  T3's method on the chip text: for every text item drawn on a chip (an id with an
-            <id>.panel element), the WCAG ratio of its colour (white) over the 95th-percentile
-            relative luminance of the readback under its rect (every second pixel per axis, as
-            sweep_contrast.py's measureContrast samples). PASS when every item over every
-            background is at 4.5:1 or more; the figures with 3:1 for a large item (px >= 24) are
-            printed beside it.
+  contrast  T3's method on the chip text over the launcher's own level domes: for every text item
+            drawn on a chip (an id with an <id>.panel element), the WCAG ratio of its colour
+            (white) over the 95th-percentile relative luminance of the readback under its rect
+            (every second pixel per axis, as sweep_contrast.py's measureContrast samples). Each
+            game whose disc image is present gets a library entry and its launcher asset cache
+            (one headless run); per sampled level (--levels per game, evenly spaced over the
+            cache's domes; default 6) the cache's domes.bin is rewritten to that level's dome
+            alone, which also makes the cache stale, so the pick's launch-time asset job runs,
+            held by OPENPETE_ASSET_JOB_DELAY_MS; the progress screen stays up over that dome
+            and the first frame showing it opaque is read back with imgui's output hidden (shot
+            and manifest tag sky). The same run with OPENPETE_LAUNCHER_SCRIM=0 (no text scrim)
+            is the control. PASS when every item over every sampled dome is at 4.5:1 or more;
+            the figures with 3:1 for a large item (px >= 24) are printed beside it. With --domes
+            DIR the bench's rendered dome set (index.json) is the background instead, composed
+            with the binary's shape layer as an affine map read from flat clears.
   fill      The chip's 50% fill against Spyro 3's dialogue-box blend: inside <id>.panel, away
             from its edge ramp, its corners, its drop shadow and the scrim, every pixel within 1
             of (background + (8,8,8)) / 2 per channel; inside <id>.scrim, away from its edge,
@@ -33,12 +42,13 @@ Cases:
             step text differs from the reference's until the step names are in sentence case);
             the scrim's rect inside the chip.
 
-Usage: tests/harness/check_launcher_shapes.py CASE [--build-dir DIR] [--out DIR]
+Usage: tests/harness/check_launcher_shapes.py CASE [--build-dir DIR] [--out DIR] [--levels N] [--domes DIR]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or the disc image missing).
 """
 import argparse
 import math
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -59,6 +69,7 @@ CHIP_PAD_X = 12.0           # the centred chip's padding, layout px
 TEXT_COL = (255, 255, 255)  # chip text
 CHECK_BG = (128, 64, 200)   # the third flat colour the shape layer's affine map is checked on
 LINEAR_BOUND = 2.0          # levels: one rounding per blend stage (fill, scrim; shadow)
+DOME_QUIT_MS = 7000         # the live-dome run's quit: past the first dome's 2.5 s fade-in
 
 
 def rel_lum(r, g, b):
@@ -154,13 +165,152 @@ def shape_layer(a, d):
     return m, keep, c, err
 
 
+def dome_records(b):
+    """The domes.bin records as [(level, bytes of the record)], or None when the file is malformed."""
+    if b[:8] != b"OPDOMES1":
+        return None
+    n, at, out = int.from_bytes(b[8:12], "little"), 12, []
+    for _ in range(n):
+        start, ln = at, b[at]
+        level = b[at + 1:at + 1 + ln].decode()
+        at += 1 + ln
+        nv, nt = int.from_bytes(b[at:at + 4], "little"), int.from_bytes(b[at + 4:at + 8], "little")
+        at += 12 + 3 + nv * 9 + nt * 6
+        out.append((level, b[start:at]))
+    return out if at == len(b) else None
+
+
+def sample(n, k):
+    """k indices spread evenly over range(n), first and last included; all of them when k >= n."""
+    if k >= n or k <= 0:
+        return list(range(n))
+    if k == 1:
+        return [0]
+    return sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+
+
+def dome_shot(a, root, tag, scrim):
+    """One run over the cache's single dome: (manifest, RGB image) of the sky tag, or (None, reason)."""
+    from PIL import Image
+    base = os.path.join(root, tag)
+    for ext in (".sky.png", ".sky.json"):
+        if os.path.exists(base + ext):
+            os.remove(base + ext)
+    e = {"OPENPETE_LAUNCHER_SELECT": "0", "OPENPETE_ASSET_JOB_DELAY_MS": "60000",
+         "OPENPETE_LAUNCHER_INPUT": "%d:quit" % DOME_QUIT_MS, "OPENPETE_LAUNCHER_TEXT_HIDE": "1",
+         "OPENPETE_LAUNCHER_SHOT": base, "OPENPETE_LAUNCHER_MANIFEST": base}
+    if not scrim:
+        e["OPENPETE_LAUNCHER_SCRIM"] = "0"
+    rc, log = cl.launch(a.binary, root, tag, ["--launcher-window", "1280x800"], e, timeout=300)
+    m = cl.read_json(base + ".sky.json")
+    if m is None or not os.path.isfile(base + ".sky.png"):
+        return None, f"no sky shot (rc {rc}; {os.path.join(root, tag + '.log')})"
+    if m.get("screen") != "sky" or "step" not in chip_texts(m):
+        return None, f"the sky shot is not of the progress screen (texts {chip_texts(m)})"
+    return (m, Image.open(base + ".sky.png").convert("RGB")), None
+
+
+def item_ratios(m, im):
+    """Per chip text item of a shot: (id, ratio of white over the p95 luminance under its rect, large)."""
+    tl, out = rel_lum(*TEXT_COL), []
+    by = items(m)
+    for i in chip_texts(m):
+        x0, y0, x1, y1 = by[i]["rect"]
+        lum, n = p95_lum(im, by[i]["rect"])
+        if n:
+            out.append((i, ratio(tl, lum), (y1 - y0) >= 24))
+    return out
+
+
+def live_roots(a, d):
+    """Per game with a disc image: (game, {scrim: data root}, its domes.bin records).
+
+    Each root holds one library entry of the game and the cache a headless run wrote; the control's
+    (scrim False) is a copy of it."""
+    import subprocess
+    roots = []
+    for g in cl.GAMES:
+        if not os.path.isfile(os.path.join(cl.ROOT, "games", g, g, "build", cl.DISCS[g] + ".bin")):
+            continue
+        r = os.path.join(d, g)
+        os.makedirs(r)
+        cl.seed_library(r, (g,))
+        e = {k: v for k, v in os.environ.items() if not k.startswith("OPENPETE_")}
+        e.update({"XDG_DATA_HOME": os.path.join(r, "data"), "XDG_STATE_HOME": os.path.join(r, "state"),
+                  "XDG_CONFIG_HOME": os.path.join(r, "config"), "OPENPETE_MSGBOX_SKIP": "1"})
+        with open(os.path.join(r, "cache.log"), "w") as f:
+            subprocess.run([a.binary, "--no-config", "--no-card", "--vibration", "0", "--mute", "1", "--headless",
+                            "--game", g, "--frame-limit", "1"], env=e, stdout=f, stderr=subprocess.STDOUT,
+                           timeout=600)
+        p = os.path.join(r, "state", "openpete", "cache", g, "domes.bin")
+        recs = dome_records(open(p, "rb").read()) if os.path.isfile(p) else None
+        if not recs:
+            raise RuntimeError(f"{g}: the headless run wrote no domes ({os.path.join(r, 'cache.log')})")
+        # The control's run gets its own copy of the root: two launches never share a data root.
+        c = os.path.join(d, g + "-noscrim")
+        shutil.copytree(r, c, symlinks=True)
+        roots.append((g, {True: r, False: c}, recs))
+    if not roots:
+        raise cl.Skip("no disc image of any game")
+    return roots
+
+
 def case_contrast(a):
+    """T3 on the chip text over the launcher's own level domes, with the no-scrim control.
+
+    With --domes, the bench's dome set instead (contrast_bench)."""
+    if a.domes:
+        return contrast_bench(a)
+    from concurrent.futures import ThreadPoolExecutor
+    d = cl.case_dir(a.out, "contrast")
+    try:
+        roots = live_roots(a, d)
+    except RuntimeError as e:
+        print(f"[launcher] contrast: FAIL {e}")
+        return 1
+    res = {True: [], False: []}   # scrim: [(game, level, item, ratio, large)]
+    for g, rs, recs in roots:
+        for k in sample(len(recs), a.levels):
+            level, rec = recs[k]
+            for r in rs.values():
+                with open(os.path.join(r, "state", "openpete", "cache", g, "domes.bin"), "wb") as f:
+                    f.write(b"OPDOMES1" + (1).to_bytes(4, "little") + rec)
+            tags = {True: f"{level}-scrim", False: f"{level}-noscrim"}
+            with ThreadPoolExecutor(2) as ex:   # at most two game processes
+                runs = {sc: ex.submit(dome_shot, a, rs[sc], tags[sc], sc) for sc in (True, False)}
+            for sc, fut in runs.items():
+                shot, why = fut.result()
+                if shot is None:
+                    print(f"[launcher] contrast: FAIL {g} {level} {tags[sc]}: {why}")
+                    return 1
+                res[sc] += [(g, level, i, q, lg) for i, q, lg in item_ratios(*shot)]
+    if not res[True]:
+        print("[launcher] contrast: VACUOUS (no chip text measured)")
+        return 3
+    for sc in (True, False):
+        rows = res[sc]
+        levels = {(g, lv) for g, lv, *_ in rows}
+        bad = {(g, lv) for g, lv, _, q, _ in rows if q < 4.5}
+        fails = sum(q < 4.5 for *_, q, _ in rows)
+        fails_large = sum(q < (3.0 if lg else 4.5) for *_, q, lg in rows)
+        w = min(rows, key=lambda t: t[3])
+        print(f"[launcher] contrast {'scrim' if sc else 'no-scrim control'}: "
+              f"{len(levels) - len(bad)} of {len(levels)} levels at 4.5:1, {len(rows) - fails} of {len(rows)} "
+              f"item draws, {len(rows) - fails_large} with 3:1 for large; worst {w[3]:.2f}:1, {w[2]} on {w[0]} {w[1]}"
+              + (f"; under 4.5:1: {', '.join(f'{g} {lv}' for g, lv in sorted(bad))}" if bad else ""))
+    fails = sum(q < 4.5 for *_, q, _ in res[True])
+    print(f"[launcher] contrast: {'FAIL' if fails else 'PASS'} (live domes of {', '.join(g for g, _, _ in roots)}; "
+          f"chip text {', '.join(sorted({i for _, _, i, _, _ in res[True]}))})")
+    return 1 if fails else 0
+
+
+def contrast_bench(a):
     """T3 on the chip text over the level domes the bench renders (--domes), through the binary's shape layer."""
     import numpy as np
-    if not a.domes or not os.path.isfile(os.path.join(a.domes, "index.json")):
-        print("[launcher] SKIP: no dome set (--domes DIR with index.json); the launcher draws no dome yet")
+    if not os.path.isfile(os.path.join(a.domes, "index.json")):
+        print(f"[launcher] SKIP: {a.domes} holds no index.json")
         return 64
-    d = cl.case_dir(a.out, "contrast")
+    d = cl.case_dir(a.out, "contrast-bench")
     try:
         m, keep, c, err = shape_layer(a, d)
     except RuntimeError as e:
@@ -340,6 +490,7 @@ def main():
     ap.add_argument("--build-dir", default=os.path.join(cl.ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--domes", default=None)
+    ap.add_argument("--levels", type=int, default=6, help="levels sampled per game by contrast; 0 for all")
     a = ap.parse_args()
     a.binary = os.path.join(a.build_dir, "openpete")
     a.out = a.out or os.path.join(a.build_dir, "launcher-tests")

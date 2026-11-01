@@ -578,7 +578,11 @@ void present(View& v) {
     launcher_sky_present(op_now(), s.presented);   /* the present's instant: the sky's motion follows it */
     if (!present_on(nullptr, v, (int)v.screen)) return;
     s.presented = true;
-    if (launcher_sky_opaque()) maybe_shot(nullptr, kShotSky);
+    if (launcher_sky_opaque()) {
+        maybe_shot(nullptr, kShotSky);
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        launcher_manifest_write((unsigned)kShotSky, kShotTag[kShotSky], d.x, d.y);
+    }
     if (launcher_panel_full()) {
         maybe_shot(nullptr, kShotPanel);
         const ImVec2 d = ImGui::GetIO().DisplaySize;

@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -63,6 +65,17 @@ void shape_init(openpete_launcher_shape* s, openpete_launcher_shape_kind kind, I
     s->shadow_a = shadow;
     s->shadow_dy = kShadowDy * scale * fb.y;
     s->shadow_blur = kShadowBlur * scale * fb.y;
+}
+
+/** @brief Report whether chip lines draw their text scrim: false when the harness variable OPENPETE_LAUNCHER_SCRIM is 0 (the contrast check's no-scrim control), read once.
+ *
+ * @return true unless the scrim is turned off. */
+bool scrim_on() {
+    static const bool on = [] {
+        const char* e = getenv("OPENPETE_LAUNCHER_SCRIM");
+        return !(e && !strcmp(e, "0"));
+    }();
+    return on;
 }
 
 }  // namespace
@@ -133,7 +146,7 @@ void launcher_shape_scrim(const char* id, ImFont* font, float size, ImVec2 pos, 
     shape_init(&s, OPENPETE_LAUNCHER_SHAPE_FILL, a, b, kScrimRadius * scale, kScrimRadius * scale, scale, 0.0f);
     s.col[0] = s.col[1] = s.col[2] = kBox;
     s.col[3] = kScrimAlpha;
-    (void)openpete_native_launcher_shape_add(&s);
+    if (scrim_on()) (void)openpete_native_launcher_shape_add(&s);
     launcher_manifest_item((std::string(id) + ".scrim").c_str(), "scrim", a.x, a.y, b.x, b.y);
 }
 
