@@ -1489,6 +1489,36 @@ def case_preview_hold(a):
     return verdict("preview-hold", bad)
 
 
+def case_preview_stop(a):
+    """A pick of B while A's launch-time preview is prepared and not yet drawn stops A's job within its bound: the stop waits on no present."""
+    d = cl.case_dir(a.out, "preview-stop")
+    seed_entry(d, "spyro-1", 1)
+    seed_entry(d, "spyro-2", 2)
+    # The first render parks between its preparation and its draw for 60 s; the pick lands inside the park.
+    env = dict(FLOW_ENV, OPENPETE_PREVIEW_PARK_MS="60000", OPENPETE_PREVIEW_BOUND_MS="90000",
+               OPENPETE_LAUNCHER_PICK_DELAY_MS="8000", OPENPETE_LAUNCHER_SELECT_GAME="spyro-2")
+    t0 = time.monotonic()
+    rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env,
+                        timeout=150)
+    took = time.monotonic() - t0
+    bad = common_flow(log) + ordered(
+        log, r"launch-time rerun: preview render of spyro-1", r"preview render parked for",
+        r"scripted pick: entry \d+ \(spyro-2\)", r"stopping the launch-time job of spyro-1",
+        r"preview of spyro-1 stopped; the cache is unchanged", r"game picked: spyro-2")
+    if rc == -9:
+        bad.append("timed out at 150 s: the stop waited on the parked render")
+    elif rc != 0:
+        bad.append(f"exit {rc}")
+    if took > 60:
+        bad.append(f"the run took {took:.0f} s, past the 60 s park: the stop waited for the draw")
+    if preview_info(d, "spyro-1") != (0, 0, 0):
+        bad.append("spyro-1 holds a preview from the stopped render")
+    m = re.search(r"preview of spyro-1 failed", log)
+    if m:
+        bad.append("the stopped render wrote a failed marker")
+    return verdict("preview-stop", bad, f"{took:.1f} s")
+
+
 def case_picker(a):
     """D39: the drawn picker under gamescope and after a failed dialog; the picked disc's game decides its box."""
     bad, counts = [], {}
@@ -1584,7 +1614,8 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "shader-step-during": case_shader_step_during, "shader-step-after": case_shader_step_after,
          "shader-step-order": case_shader_step_order, "input": case_input, "picker": case_picker,
          "sky-cache": case_sky_cache, "sky-reveal": case_sky_reveal,
-         "preview": case_preview, "preview-hold": case_preview_hold}
+         "preview": case_preview, "preview-hold": case_preview_hold,
+         "preview-stop": case_preview_stop}
 
 
 def main():

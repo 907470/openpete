@@ -181,8 +181,10 @@ struct openpete_tercache_preview;
  * Any thread but the display owner, which must keep presenting
  * (openpete_native_launcher_present takes the requests; a wake event ends
  * its wait for input). Without the launcher's device (a headless run) it
- * returns at once. A request the display owner has not taken is withdrawn
- * at a stop or the deadline.
+ * returns at once. At a stop or the deadline the call returns without
+ * waiting for a present: a request not yet taken, or a render prepared and
+ * not yet drawn, is withdrawn; only a request the display owner is working
+ * on inside its current call is waited for.
  * @param p The preview; read until the call returns.
  * @param slot_contest The game's terrain.slot_ot_contest, compiled into the jobs.
  * @param rgba Receives p->w * p->h * 4 bytes.
@@ -202,18 +204,23 @@ int openpete_native_launcher_preview_render(struct openpete_tercache_preview *p,
  * @param dev The launcher's device. */
 void openpete_native_launcher_preview_before_frame(struct rhi_device *dev);
 
-/** @brief Record a taken preview render into the present's frame, before the offscreen pass.
+/** @brief Record a prepared preview render into the present's frame, before the offscreen pass.
  *
  * A render prepared at this present records at the next one, so its
  * preparation and its draw with the readback stall two presents, not one.
  * Display owner only (openpete_native_launcher_present). */
 void openpete_native_launcher_preview_in_frame(void);
 
-/** @brief Read a taken preview render back after the present's frame and finish its request.
+/** @brief Read a recorded preview render back after the present's frame and finish its request.
  *
  * Display owner only (openpete_native_launcher_present).
  * @param frame_ran 1 when the frame began and was submitted; 0 keeps the request for the next present. */
 void openpete_native_launcher_preview_after_frame(int frame_ran);
+
+/** @brief Destroy any preview render's device objects before the launcher's device is closed or handed off: a withdrawn one, or a parked one, whose request then ends transient.
+ *
+ * Display owner only, outside a frame. */
+void openpete_native_launcher_preview_release(void);
 
 /** @brief Read back the last launcher frame, count the pixels that differ from the clear colour, and write it as a PNG.
  *

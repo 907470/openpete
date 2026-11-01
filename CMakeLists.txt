@@ -1678,7 +1678,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                                 job-ingest-stop-assets job-pick-other-assets
                                 shader-step-during shader-step-after shader-step-order input picker
                                 sky-cache sky-reveal
-                                preview preview-hold)
+                                preview preview-hold preview-stop)
             add_test(NAME launcher_flow_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_flow.py

@@ -7159,6 +7159,7 @@ int openpete_native_launcher_set_title(const openpete_hud_vert *v, int n, int wi
 void openpete_native_launcher_close(void)
 {
     if (!s_launch.dev) return;
+    openpete_native_launcher_preview_release();
     launcher_sky_release(s_launch.dev);
     nr_launcher_shapes_release(s_launch.dev);
     nr_launcher_title_release(s_launch.dev);
@@ -7423,6 +7424,7 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     SDL_Window *win = s_launch.win;
     rhi_device *dev = s_launch.dev;
     const int created_vsync = s_launch.created_vsync;
+    openpete_native_launcher_preview_release();
     launcher_sky_release(dev);
     nr_launcher_title_release(dev);
     memset(&s_launch, 0, sizeof s_launch);   /* the renderer owns them from here */
