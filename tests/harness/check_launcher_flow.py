@@ -1906,7 +1906,11 @@ def case_preview_stop(a):
                         timeout=900)
     took = time.monotonic() - t0
     stop0 = log_time(log, r"launcher: stopping the launch-time job of spyro-1")
-    stop1 = log_time(log, r"launcher: module rebuild of spyro-1 stopped")
+    # The job's stop ends with its last part: the preview's stop, and on a first-boot build the
+    # module rebuild's, which a build without the first-boot compile never starts.
+    ends = [t for t in (log_time(log, r"launcher: module rebuild of spyro-1 stopped"),
+                        log_time(log, r"launcher: preview of spyro-1 stopped; the cache is unchanged")) if t is not None]
+    stop1 = max(ends) if ends else None
     park = log_time(log, r"launcher: preview render parked for")
     bad = common_flow(log) + ordered(
         log, r"launch-time rerun: preview render of spyro-1", r"preview render parked for",
