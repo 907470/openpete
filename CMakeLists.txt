@@ -1661,7 +1661,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # case: each runs the binary windowed under its own xvfb-run display, with
     # the minimal window manager below and a scratch data root of its own, so
     # the cases run in parallel; exits 64 without xvfb-run, the binary or the
-    # window manager.
+    # window manager. Every run of the four launcher harnesses starts in a
+    # session of its own, ended whole when the run returns or times out (the
+    # reap case proves it on a run that hangs on purpose).
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         find_package(X11 QUIET)
         if(X11_FOUND)
@@ -1670,7 +1672,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         endif()
     endif()
     if(Python3_Interpreter_FOUND)
-        foreach(_launcher_case manifest layout page handoff window-fit window-default font density)
+        foreach(_launcher_case manifest layout page handoff window-fit window-default font density reap)
             add_test(NAME launcher_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher.py
@@ -1705,6 +1707,12 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                 SKIP_RETURN_CODE 64
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         endforeach()
+        # Timed against a bound set on an idle host (the start-up median, the
+        # ahead walk's end or its first groups before a 5 s or 8 s pick): run
+        # alone under ctest -j.
+        set_tests_properties(launcher_flow_startup launcher_flow_shader-step-after
+                             launcher_flow_shader-step-order PROPERTIES
+            RUN_SERIAL TRUE)
         # The launcher's 3D title (tests/harness/check_launcher_title.py): drawn
         # from the asset cache against the reference layout and a model of the
         # emitter, and switched in on the assets-ready reap.

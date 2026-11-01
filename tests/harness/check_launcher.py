@@ -121,6 +121,16 @@ Cases:
             framebuffer pixels (s the layout scale); a --disc launch of
             Spyro 1 with --window 640x448 brings the game's window up at
             640x448 window coordinates and 1280x896 pixels.
+  reap      A run that outlives its timeout leaves no process behind: the binary idling on the
+            empty library's drop screen (no scripted quit) under a 15 s timeout, and a stand-in
+            binary that ignores SIGTERM (the SIGKILL path), each through launch(); and a harness
+            process SIGKILLed (as a ctest timeout does) while its run of the stand-in is in
+            flight, whose guardian must end the run within 15 s. Every process
+            whose environment names the run's data root is recorded while it runs (engagement:
+            the binary and the window manager at least) and none may be alive after launch()
+            returns. The control kills only the xvfb-run wrapper on its timeout, as a plain
+            subprocess timeout does, and must find the binary still running (the instrument sees
+            a leak); the control's session is then ended.
   calibrate Not a ctest case: compares the drop screen with a reference
             manifest of the same screen (--calibration PATH: per preset, a
             "drop" list of id/kind/rect items), printing each element's rect
@@ -135,6 +145,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -167,6 +178,9 @@ LOGO_DROP = 0.25
 TEXT_WIDTH_BOUND = 1.0
 GAMES = ("spyro-1", "spyro-2", "spyro-3")
 DISCS = {"spyro-1": "SCUS-94228", "spyro-2": "SCUS-94425", "spyro-3": "SCUS-94467"}
+# The window manager every windowed run starts on its display; main sets it from --build-dir, and None
+# looks beside the binary (a binary outside the build directory then needs its own copy).
+WM = None
 DROP_IDS = {"title"} | {f"box.{g}.{p}" for g in GAMES for p in ("fill", "disc", "name.0", "frame")}
 
 
@@ -183,6 +197,144 @@ def case_dir(out, name):
     return d
 
 
+# The sessions of the runs in flight, by session id: the reaper ends each one's processes when the
+# harness is signalled (ctest's timeout sends SIGTERM).
+_SESSIONS = set()
+# Seconds a session's processes get between SIGTERM and SIGKILL.
+REAP_GRACE_S = 3.0
+
+
+def session_members(sid):
+    """The pids of the live (non-zombie) processes in a session."""
+    out = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        # After the command name: state, ppid, pgrp, session.
+        if len(fields) > 3 and fields[0] != "Z" and int(fields[3]) == sid:
+            out.append(int(pid))
+    return out
+
+
+def reap_session(sid, grace=REAP_GRACE_S):
+    """End every process of a session: SIGTERM, then SIGKILL to what remains after `grace` seconds.
+
+    The session, not the process group: the launcher starts each compiler driver in a group of its own,
+    and those groups stay in the session. Returns the number of processes that were still running."""
+    found = session_members(sid)
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
+        live = session_members(sid)
+        for pid in live:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + wait
+        while live and time.monotonic() < deadline:
+            time.sleep(0.05)
+            live = session_members(sid)
+        if not live:
+            break
+    return len(found)
+
+
+# The write end of the guardian's pipe, once install_reaper has started it.
+_GUARD = None
+
+
+def track_session(sid):
+    """Record a run's session as in flight, here and with the guardian."""
+    _SESSIONS.add(sid)
+    if _GUARD is not None:
+        os.write(_GUARD, b"+%d\n" % sid)
+
+
+def untrack_session(sid):
+    """Record a run's session as ended."""
+    _SESSIONS.discard(sid)
+    if _GUARD is not None:
+        os.write(_GUARD, b"-%d\n" % sid)
+
+
+def _reap_all(signum, _frame):
+    """Signal handler: end every run's session, then exit with the shell's code for the signal."""
+    for sid in list(_SESSIONS):
+        reap_session(sid, grace=1.0)
+    os._exit(128 + signum)
+
+
+def _guardian(r):
+    """The guardian's body: follow the sessions the harness reports on the pipe and, once the pipe
+    closes (the harness exited, however it died), end every session still recorded."""
+    live, buf = set(), b""
+    while True:
+        chunk = os.read(r, 4096)
+        if not chunk:
+            break
+        buf += chunk
+        *lines, buf = buf.split(b"\n")
+        for ln in lines:
+            if ln[:1] == b"+":
+                live.add(int(ln[1:]))
+            elif ln[:1] == b"-":
+                live.discard(int(ln[1:]))
+    for sid in live:
+        reap_session(sid, grace=1.0)
+
+
+def install_reaper():
+    """End every run in flight when the harness ends without ending its runs.
+
+    A signal the harness can catch (SIGTERM, SIGINT, SIGHUP) ends the runs from its handler. A SIGKILL
+    (a ctest timeout) cannot be caught, so a guardian process, forked in a session of its own before
+    any thread starts, holds the read end of a pipe the harness reports each run's session on; when
+    the harness dies the pipe closes and the guardian ends the sessions still in flight."""
+    global _GUARD
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(s, _reap_all)
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(w)
+        os.setsid()
+        for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(s, signal.SIG_IGN)
+        try:
+            _guardian(r)
+        finally:
+            os._exit(0)
+    os.close(r)
+    _GUARD = w
+
+
+def run_session(cmd, env, out, timeout, stdout=None):
+    """Run a command in a session of its own and wait for it; returns its exit code, -9 on timeout.
+
+    Its stderr goes to `out`, and its stdout too unless `stdout` names another destination.
+
+    On return every process left in the session (a hung binary under an xvfb-run that was killed, the
+    window manager, a compiler driver) is ended, so no run outlives its case."""
+    p = subprocess.Popen(cmd, env=env, stdout=out if stdout is None else stdout,
+                         stderr=subprocess.STDOUT if stdout is None else out, start_new_session=True)
+    track_session(p.pid)
+    try:
+        rc = p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        rc = -9
+    finally:
+        left = reap_session(p.pid)
+        p.wait()
+        untrack_session(p.pid)
+    if rc == -9:
+        print(f"[launcher] timeout after {timeout} s: {cmd[0]} and {left} process(es) of its session ended")
+    return rc
+
+
 def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN, panel=0):
     """One windowed run under a fresh virtual display and the window manager; returns (rc, log text).
 
@@ -190,7 +342,7 @@ def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN, panel=0):
     the manager has advertised itself (its ready file), so the window maps under it."""
     if not shutil.which("xvfb-run"):
         raise Skip("xvfb-run not found")
-    wm = os.path.join(os.path.dirname(binary), "openpete_xvfb_wm")
+    wm = WM or os.path.join(os.path.dirname(binary), "openpete_xvfb_wm")
     if not os.access(wm, os.X_OK):
         raise Skip(f"{wm} missing")
     # The caller's OPENPETE_* knobs (OPENPETE_BACKGROUND, for one) would change the paths under test.
@@ -207,10 +359,7 @@ def launch(binary, d, tag, args, env=None, timeout=120, screen=SCREEN, panel=0):
                                                        "--mute", "1"] + args
     log = os.path.join(d, tag + ".log")
     with open(log, "w") as f:
-        try:
-            rc = subprocess.run(cmd, env=e, stdout=f, stderr=subprocess.STDOUT, timeout=timeout).returncode
-        except subprocess.TimeoutExpired:
-            rc = -9
+        rc = run_session(cmd, e, f, timeout)
     with open(log, errors="replace") as f:
         return rc, f.read()
 
@@ -447,7 +596,8 @@ def launch_scaled(binary, d, tag, args, env=None, timeout=180):
     comp = subprocess.Popen([weston, "--backend=headless-backend.so", f"--width={SCALED_OUTPUT[0]}",
                              f"--height={SCALED_OUTPUT[1]}", f"--scale={SCALED_SCALE}",
                              f"--socket={sock}", "--idle-time=0"],
-                            env=e, stdout=wlog, stderr=subprocess.STDOUT)
+                            env=e, stdout=wlog, stderr=subprocess.STDOUT, start_new_session=True)
+    track_session(comp.pid)
     try:
         deadline = time.monotonic() + 15
         while not os.path.exists(os.path.join(rt, sock)):
@@ -461,18 +611,13 @@ def launch_scaled(binary, d, tag, args, env=None, timeout=180):
         cmd = [binary, "--no-config", "--no-card", "--vibration", "0", "--input-lock", "--mute", "1"] + args
         log = os.path.join(d, tag + ".log")
         with open(log, "w") as f:
-            try:
-                rc = subprocess.run(cmd, env=e, stdout=f, stderr=subprocess.STDOUT, timeout=timeout).returncode
-            except subprocess.TimeoutExpired:
-                rc = -9
+            rc = run_session(cmd, e, f, timeout)
         with open(log, errors="replace") as f:
             return rc, f.read()
     finally:
-        comp.terminate()
-        try:
-            comp.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            comp.kill()
+        reap_session(comp.pid)
+        comp.wait()
+        untrack_session(comp.pid)
         wlog.close()
         shutil.rmtree(rt, ignore_errors=True)
 
@@ -942,6 +1087,150 @@ def case_manifest(a):
     return 1 if bad else 0
 
 
+def env_members(root):
+    """The pids of live processes whose environment holds XDG_DATA_HOME=root."""
+    want = ("XDG_DATA_HOME=" + root).encode()
+    out = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                env = f.read().split(b"\0")
+            with open(f"/proc/{pid}/stat") as f:
+                state = f.read().rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            continue
+        if want in env and state != "Z":
+            out.append(int(pid))
+    return out
+
+
+def comm(pid):
+    """A process's command name, or '?' once it is gone."""
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip()
+    except OSError:
+        return "?"
+
+
+def watch_run(root, run):
+    """Call run() while recording every process whose environment names the data root; returns
+    (run's result, {pid: command name} seen while it ran)."""
+    import threading
+    seen, done = {}, threading.Event()
+
+    def poll():
+        while not done.is_set():
+            for pid in env_members(root):
+                # The latest name: the wrapper shell execs the binary under the same pid.
+                name = comm(pid)
+                if name != "?":
+                    seen[pid] = name
+            time.sleep(0.2)
+    t = threading.Thread(target=poll, daemon=True)
+    t.start()
+    try:
+        return run(), seen
+    finally:
+        done.set()
+        t.join()
+
+
+def case_reap(a):
+    """A timed-out run's processes end with it, the SIGKILL path included; the control sees the leak."""
+    d = case_dir(a.out, "reap")
+    bad = []
+    stub = os.path.join(d, "hang-stub")
+    with open(stub, "w") as f:
+        f.write("#!/bin/sh\ntrap '' TERM\nsleep 600\n")
+    os.chmod(stub, 0o755)
+    for tag, binary, timeout in (("idle", a.binary, 15), ("ignore-term", stub, 5)):
+        run = os.path.join(d, tag)
+        os.makedirs(run)
+        root = os.path.join(run, "data")
+        t0 = time.monotonic()
+        (rc, log), seen = watch_run(root, lambda: launch(binary, run, "run", ["--launcher-window", "1280x800"],
+                                                         timeout=timeout))
+        took = time.monotonic() - t0
+        left = env_members(root)
+        names = sorted(set(seen.values()))
+        print(f"[launcher] reap {tag}: exit {rc} after {took:.1f} s, seen {len(seen)} {names}, alive after {len(left)}")
+        if rc != -9:
+            bad.append(f"{tag}: exit {rc}, not the timeout")
+        want = "openpete" if binary == a.binary else "sleep"
+        if want not in names or "openpete_xvfb_w" not in names:
+            bad.append(f"{tag}: VACUOUS: {want} and the window manager not both seen ({names})")
+        if tag == "idle" and "stamp first_present" not in log:
+            bad.append("idle: the launcher never presented (log run.log)")
+        if left:
+            bad.append(f"{tag}: {len(left)} process(es) outlived the run: {[(p, comm(p)) for p in left]}")
+    # A harness killed outright (SIGKILL, as a ctest timeout does) mid-run: its guardian ends the run.
+    run = os.path.join(d, "harness-killed")
+    os.makedirs(run)
+    root = os.path.join(run, "data")
+    child = ("import os, subprocess, sys\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import check_launcher as cl\n"
+             "cl.install_reaper()\n"
+             "e = dict(os.environ, XDG_DATA_HOME=sys.argv[3])\n"
+             "cl.run_session([sys.argv[2]], e, subprocess.DEVNULL, 600)\n")
+    h = subprocess.Popen([sys.executable, "-c", child, os.path.dirname(os.path.abspath(__file__)), stub, root])
+    deadline, seen = time.monotonic() + 20, []
+    while time.monotonic() < deadline and "sleep" not in seen:
+        seen = [comm(q) for q in env_members(root)]
+        time.sleep(0.1)
+    h.kill()
+    h.wait()
+    deadline, left = time.monotonic() + 15, env_members(root)
+    while left and time.monotonic() < deadline:
+        time.sleep(0.1)
+        left = env_members(root)
+    print(f"[launcher] reap harness-killed: run seen {sorted(set(seen))}, harness SIGKILLed, "
+          f"alive after {len(left)}")
+    if "sleep" not in seen:
+        bad.append(f"harness-killed: VACUOUS: the stand-in never ran ({seen})")
+    if left:
+        bad.append(f"harness-killed: {len(left)} process(es) outlived the killed harness: "
+                   f"{[(q, comm(q)) for q in left]}")
+        for q in left:
+            os.kill(q, signal.SIGKILL)
+    # The control: the wrapper alone killed on the timeout leaves the binary running.
+    run = os.path.join(d, "control")
+    os.makedirs(run)
+    root = os.path.join(run, "data")
+    e = {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY" and not k.startswith("OPENPETE_")}
+    e.update({"SDL_VIDEODRIVER": "x11", "OPENPETE_MSGBOX_SKIP": "1", "XDG_DATA_HOME": root,
+              "XDG_STATE_HOME": os.path.join(run, "state"), "XDG_CONFIG_HOME": os.path.join(run, "config")})
+    with open(os.path.join(run, "run.log"), "w") as f:
+        p = subprocess.Popen(["xvfb-run", "-a", "-s", f"-screen 0 {SCREEN}x24", a.binary, "--no-config",
+                              "--no-card", "--vibration", "0", "--input-lock", "--mute", "1",
+                              "--launcher-window", "1280x800"],
+                             env=e, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+        track_session(p.pid)
+        try:
+            p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+        time.sleep(1.0)
+        leaked = [comm(q) for q in env_members(root)]
+        reap_session(p.pid)
+        untrack_session(p.pid)
+    after = env_members(root)
+    print(f"[launcher] reap control: wrapper killed, {len(leaked)} left running {sorted(leaked)}; "
+          f"{len(after)} after the session's end")
+    if "openpete" not in leaked:
+        bad.append(f"control: the binary did not outlive its killed wrapper ({leaked}): the instrument sees no leak")
+    if after:
+        bad.append(f"control: {len(after)} process(es) survived the session's end")
+    for b in bad:
+        print("[launcher] FAIL", b)
+    print(f"[launcher] reap: {'FAIL' if bad else 'PASS'}")
+    return 1 if bad else 0
+
+
 def case_calibrate(a):
     """The drop screen against a reference manifest of it: per id, the rect deltas."""
     cal = read_json(a.calibration) if a.calibration else None
@@ -972,13 +1261,16 @@ def case_calibrate(a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("case", choices=["manifest", "layout", "page", "handoff", "window-fit", "window-default",
-                                     "font", "density", "calibrate"])
+                                     "font", "density", "reap", "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--calibration", default=None)
     a = ap.parse_args()
     a.binary = os.path.join(a.build_dir, "openpete")
     a.out = a.out or os.path.join(a.build_dir, "launcher-tests")
+    global WM
+    WM = os.path.join(a.build_dir, "openpete_xvfb_wm")
+    install_reaper()
     if not os.access(a.binary, os.X_OK):
         print(f"[launcher] SKIP: {a.binary} missing")
         return 64
@@ -986,7 +1278,7 @@ def main():
         return {"manifest": case_manifest, "layout": case_layout, "page": case_page, "handoff": case_handoff,
                 "window-fit": case_window_fit,
                 "window-default": case_window_default, "font": case_font, "density": case_density,
-                "calibrate": case_calibrate}[a.case](a)
+                "reap": case_reap, "calibrate": case_calibrate}[a.case](a)
     except Skip as e:
         print(f"[launcher] SKIP: {e}")
         return 64

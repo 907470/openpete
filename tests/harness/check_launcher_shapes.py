@@ -227,7 +227,6 @@ def live_roots(a, d):
 
     Each root holds one library entry of the game and the cache a headless run wrote; the control's
     (scrim False) is a copy of it."""
-    import subprocess
     roots = []
     for g in cl.GAMES:
         if not os.path.isfile(os.path.join(cl.ROOT, "games", g, g, "build", cl.DISCS[g] + ".bin")):
@@ -239,9 +238,8 @@ def live_roots(a, d):
         e.update({"XDG_DATA_HOME": os.path.join(r, "data"), "XDG_STATE_HOME": os.path.join(r, "state"),
                   "XDG_CONFIG_HOME": os.path.join(r, "config"), "OPENPETE_MSGBOX_SKIP": "1"})
         with open(os.path.join(r, "cache.log"), "w") as f:
-            subprocess.run([a.binary, "--no-config", "--no-card", "--vibration", "0", "--mute", "1", "--headless",
-                            "--game", g, "--frame-limit", "1"], env=e, stdout=f, stderr=subprocess.STDOUT,
-                           timeout=600)
+            cl.run_session([a.binary, "--no-config", "--no-card", "--vibration", "0", "--mute", "1", "--headless",
+                            "--game", g, "--frame-limit", "1"], e, f, 600)
         p = os.path.join(r, "state", "openpete", "cache", g, "domes.bin")
         recs = dome_records(open(p, "rb").read()) if os.path.isfile(p) else None
         if not recs:
@@ -448,7 +446,7 @@ def reference_progress(preset):
 
 
 def case_layout(a):
-    d = cl.case_dir(a.out, "layout")
+    d = cl.case_dir(a.out, "shapes-layout")
     bad, compared = [], 0
     for preset in cl.PRESETS:
         shots, rc = run(a, d, preset, preset, {})
@@ -494,6 +492,8 @@ def main():
     a = ap.parse_args()
     a.binary = os.path.join(a.build_dir, "openpete")
     a.out = a.out or os.path.join(a.build_dir, "launcher-tests")
+    cl.WM = os.path.join(a.build_dir, "openpete_xvfb_wm")
+    cl.install_reaper()
     if not os.access(a.binary, os.X_OK):
         print(f"[launcher] SKIP: {a.binary} missing")
         return 64

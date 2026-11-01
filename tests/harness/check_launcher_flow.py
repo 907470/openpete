@@ -125,10 +125,10 @@ Cases:
   sky-cache  T7's sky (windowed): over a library of Spyro 1 and Spyro 2 whose caches a headless
             launch wrote, the selector draws the domes the cache holds with no game picked: each
             game's dome count loaded equals domes.bin's, the sky pass drew layers, the selector's
-            first frame is the flat clear (at most SKY_FLAT_MAX differs: the sky is deferred past
-            the first present), and the first frame showing one opaque dome (the shot "sky")
+            first frame differs from the flat clear on no more of its pixels than the control's
+            first frame (SKY_FIRST_TOL: the sky is deferred past the first present), and the first frame showing one opaque dome (the shot "sky")
             differs from the flat clear on at least SKY_COVER of its pixels; the control run with the cache removed and its re-extraction forced to fail
-            (OPENPETE_ASSET_FAIL) loads no dome, draws no layer and stays under SKY_FLAT_MAX.
+            (OPENPETE_ASSET_FAIL) loads no dome, draws no layer and writes no sky shot.
   sky-reveal  T8's dome join and first reveal (windowed): a drop of Spyro 1's disc on the empty
             library's drop screen joins its domes to the rotation and starts the reveal in the
             same step that reaps its assets (the sky line directly after the assets-ready line,
@@ -626,8 +626,8 @@ def install_dump(a, d, tag, game, others, extra=None):
         env["OPENPETE_INSTALL_OTHERS_FIRST"] = "1"
     env.update(extra or {})
     with open(log, "w") as f:
-        subprocess.run(["setarch", os.uname().machine, "-R", a.binary, "--no-config", "--config-report",
-                        "--game", game], env=env, stdout=subprocess.DEVNULL, stderr=f, timeout=300)
+        cl.run_session(["setarch", os.uname().machine, "-R", a.binary, "--no-config", "--config-report",
+                        "--game", game], env, f, 300, stdout=subprocess.DEVNULL)
     if extra is None:
         return report_lines(out)
     with open(log, errors="replace") as f:
@@ -784,10 +784,7 @@ def nox(a, d, tag, args, env=None, timeout=600, binary=None):
         os.remove(log)
     cmd = [binary or a.binary, "--no-config", "--no-card", "--vibration", "0", "--mute", "1", "--headless"] + args
     with open(log, "w") as f:
-        try:
-            rc = subprocess.run(cmd, env=e, stdout=f, stderr=subprocess.STDOUT, timeout=timeout).returncode
-        except subprocess.TimeoutExpired:
-            rc = -9
+        rc = cl.run_session(cmd, e, f, timeout)
     with open(log, errors="replace") as f:
         return rc, f.read()
 
@@ -1029,9 +1026,9 @@ def case_multi_install_launch(a):
                     "XDG_STATE_HOME": os.path.join(d, "state"), "XDG_CONFIG_HOME": os.path.join(d, "config")})
         logp = os.path.join(d, g + ".launch.log")
         with open(logp, "w") as f:
-            subprocess.run(["setarch", os.uname().machine, "-R", a.binary, "--no-config", "--no-card", "--mute", "1",
+            cl.run_session(["setarch", os.uname().machine, "-R", a.binary, "--no-config", "--no-card", "--mute", "1",
                             "--vibration", "0", "--headless", "--game", g, "--frame-limit", "1"],
-                           env=env, stdout=subprocess.DEVNULL, stderr=f, timeout=600)
+                           env, f, 600, stdout=subprocess.DEVNULL)
         log = open(logp, errors="replace").read()
         many = report_lines(out)
         r = dict(reruns(log))
@@ -1064,10 +1061,12 @@ def case_multi_install_launch(a):
 # ---- the sky (sky-*) ----
 
 # The share of the selector's first frame that differs from the flat clear: with a dome behind it
-# every pixel but the vignette's darkest differs; over the flat clear only the screen's text and
-# entries do (the control run measures it).
+# every pixel but the vignette's darkest differs; over the flat clear only the page's title, boxes
+# and pictures do, which the control run (no dome) measures: 0.253 at 1280x800 over a library of
+# Spyro 1 and Spyro 2. The first frame, drawn before the sky, may exceed the control's by at most
+# SKY_FIRST_TOL.
 SKY_COVER = 0.9
-SKY_FLAT_MAX = 0.2
+SKY_FIRST_TOL = 0.01
 SKY_DRAWS = re.compile(r"sky: (\d+) of (\d+) presents handed a view drew the sky: (\d+) layers \((\d+) revealed, "
                        r"(\d+) crossfaded\), (\d+) triangles, (\d+) meshes uploaded")
 SHOT = re.compile(r"screen selector: (\d+) of (\d+) pixels drawn over the clear")
@@ -1106,15 +1105,16 @@ def case_sky_cache(a):
             bad.append(f"{g}: {got.group(1) if got else 'no'} domes loaded, domes.bin holds {n}")
     if layers == 0:
         bad.append("the sky pass drew no layer")
-    if frac < 0 or frac > SKY_FLAT_MAX:
-        bad.append(f"the selector's first frame differs from the clear on {frac:.3f} of its pixels")
     if sfrac < SKY_COVER:
         bad.append(f"the opaque-dome shot differs from the clear on {sfrac:.3f} of its pixels")
     shutil.rmtree(os.path.join(d, "state", "openpete", "cache"))
     # The launch-time jobs would extract the removed cache again; the forced failure keeps it empty.
     log0, layers0, frac0, sfrac0 = sky_selector(a, d, "control", {"OPENPETE_ASSET_FAIL": "1"})
+    if frac < 0 or frac0 < 0 or frac > frac0 + SKY_FIRST_TOL:
+        bad.append(f"the selector's first frame differs from the clear on {frac:.3f} of its pixels, the "
+                   f"control's (no dome) on {frac0:.3f}: the sky drew on the first present")
     joined = re.search(r"sky: \d+ domes of \S+ (loaded from the cache|joined the rotation)", log0)
-    if joined or layers0 or frac0 < 0 or frac0 > SKY_FLAT_MAX or sfrac0 >= 0:
+    if joined or layers0 or sfrac0 >= 0:
         bad.append(f"control: domes {'loaded' if joined else 'none'}, {layers0} layers, {frac0:.3f} drawn")
     return verdict("sky-cache", bad, f"domes {want}; {layers} layers; first frame {frac:.3f}, sky shot {sfrac:.3f}, "
                                      f"control {frac0:.3f}")
@@ -2129,6 +2129,8 @@ def main():
     a = ap.parse_args()
     a.binary = os.path.join(a.build_dir, "openpete")
     a.out = a.out or os.path.join(a.build_dir, "launcher-tests")
+    cl.WM = os.path.join(a.build_dir, "openpete_xvfb_wm")
+    cl.install_reaper()
     if not os.access(a.binary, os.X_OK):
         print(f"[launcher-flow] SKIP: {a.binary} missing")
         return 64

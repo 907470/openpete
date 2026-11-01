@@ -215,7 +215,9 @@ def case_title_cache(a):
             bad.append(f"{tag}: the glyph models were not read from the cache")
         if "3D title of spyro-1 drawn" not in log or "launcher title pass: first composite" not in log:
             bad.append(f"{tag}: the 3D title was not drawn")
-        if os.path.isdir(os.path.join(e, "modules")):
+        # A first-boot build starts the entry's launch-time module rebuild and stops it at the quit,
+        # which may leave the stamp directory; the module file is what the title must not need.
+        if fl.stamped(d, "spyro-1"):
             bad.append(f"{tag}: the entry holds a module")
         ref = reference_title(preset)
         moby, pixel = (man and [it for it in man.get("items", []) if it["id"] == "title.moby"]), \
@@ -299,6 +301,8 @@ def main():
     a = ap.parse_args()
     a.binary = os.path.join(a.build_dir, "openpete")
     a.out = a.out or os.path.join(a.build_dir, "launcher-tests")
+    cl.WM = os.path.join(a.build_dir, "openpete_xvfb_wm")
+    cl.install_reaper()
     if not os.access(a.binary, os.X_OK):
         print(f"[launcher-title] SKIP: {a.binary} missing")
         return 64
