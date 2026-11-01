@@ -1410,9 +1410,12 @@ def case_quit_page_sigterm(a):
                                                                {}, timeout=120)))
     t.start()
     log = os.path.join(d, "run.log")
-    deadline, idle = time.time() + 60, False
+    # Idle is the page after its launch-time job: the entry's box picture renders first, and a terrain pipeline
+    # creation in flight is not interruptible, so a SIGTERM during it measures the compile, not the page.
+    deadline, idle = time.time() + 120, False
     while time.time() < deadline and t.is_alive():
-        if os.path.isfile(log) and "stamp list_shown" in open(log, errors="replace").read():
+        text = open(log, errors="replace").read() if os.path.isfile(log) else ""
+        if "stamp list_shown" in text and "launcher assets of spyro-1 ready (launch-time)" in text:
             idle = True
             break
         time.sleep(0.05)
@@ -1681,7 +1684,10 @@ def preview_reruns(log):
 
 def preview_step(a, d, tag, bad, env=None, binary=None):
     """One windowed launch over the case's library that waits for the launch-time jobs, then picks Spyro 1."""
-    e = dict(FLOW_ENV, OPENPETE_LAUNCHER_SELECT_GAME="spyro-1", OPENPETE_LAUNCHER_SELECT_IDLE="1")
+    # A step other than "bound" lifts the render's time bound past the launch's, so a loaded machine does not
+    # turn its render into the transient that reruns at the next step.
+    e = dict(FLOW_ENV, OPENPETE_LAUNCHER_SELECT_GAME="spyro-1", OPENPETE_LAUNCHER_SELECT_IDLE="1",
+             OPENPETE_PREVIEW_BOUND_MS="600000")
     e.update(env or {})
     before = cache_snapshot(d)
     rc, log = cl.launch(binary or a.binary, d, tag, ["--launcher-window", "1280x800", "--frame-limit", "5"], e,
@@ -1994,8 +2000,13 @@ def case_error_refuse(a):
            "OPENPETE_RECOMP_BUILD_FAIL": "1"}
     rc, log = cl.launch(a.binary, d, "dome", ["--launcher-window", "1280x800"], env, timeout=600)
     shot = re.search(r"screen panel: (\d+) of (\d+) pixels drawn over the clear \(shot (\S+),", log)
+    # The first fill's opacity is half the dome cover at that frame: the drop can land inside the sky's reveal,
+    # whose start waits for the box picture's render. The panel shot is taken only at full cover.
     bad += [f"dome: {x}" for x in ordered(log, r"sky: \d+ domes of spyro-1", r"scripted drop",
-                                           r"error panel raised: zero\.cue", r"error panel fill drawn at 0\.50")]
+                                           r"error panel raised: zero\.cue", r"error panel fill drawn at")]
+    fill = re.search(r"error panel fill drawn at ([\d.]+) opacity \(dome cover ([\d.]+)\)", log)
+    if fill and abs(float(fill.group(1)) - 0.5 * float(fill.group(2))) > 0.006:
+        bad.append(f"dome: fill {fill.group(1)} is not half the dome cover {fill.group(2)}")
     if not shot or int(shot.group(1)) == 0:
         bad.append(f"dome: no panel shot ({shot.group(0) if shot else 'no screen panel line'})")
     counts["dome"] = f"shot {shot.group(3) if shot else 'none'}"
