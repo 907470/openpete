@@ -107,6 +107,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 # A scratch per-user layout. Everything the artifact writes lands here, so
 # the gate can inspect it and the developer's own library is untouched.
+# The packaging step's Python keeps the developer's user site (tomli on a
+# Python without tomllib); only the artifact sees the scratch home.
+PYTHONUSERBASE="$(python3 -m site --user-base)"
+export PYTHONUSERBASE
 export HOME="$WORK/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_STATE_HOME="$HOME/.local/state"
@@ -123,8 +127,13 @@ if [[ -n "$ARTIFACT" ]]; then
     cp "$ARTIFACT" "$WORK/dist/"
 else
     echo "[dist-gate] packaging..."
-    # Releases ship the mod SDK; the gate packages the same way.
-    pkg_args=(linux --with-mod-sdk --out "$WORK/dist")
+    # Releases ship the mod SDK and the fetched clang with its mod sysroot
+    # (release-container.sh); the gate packages the same way.
+    source scripts/lib/tools_dir.sh
+    tc_src="$(openpete_tools_dir .)/clang"
+    [[ -x "$tc_src/bin/clang" && -f "$tc_src/sysroot/include/stdio.h" ]] \
+        || { echo "[dist-gate] no bundled toolchain at $tc_src (scripts/setup_linux_clang.sh)" >&2; exit 64; }
+    pkg_args=(linux --with-mod-sdk --toolchain "$tc_src" --out "$WORK/dist")
     [[ $APPIMAGE -eq 1 ]] && pkg_args+=(--appimage)
     scripts/package-dist.sh "${pkg_args[@]}" >/dev/null
 fi
@@ -227,10 +236,6 @@ if [[ $APPIMAGE -eq 1 ]]; then
         || { echo "[dist-gate] FAIL: first boot did not complete with an" \
                   "empty PATH - the image is not self-contained" >&2;
              tail -20 "$WORK/first-boot.log" >&2; exit 2; }
-    grep -q "cc=.*recomp/tools/clang/bin/clang" "$WORK/first-boot.log" \
-        || { echo "[dist-gate] FAIL: first boot did not use the bundled" \
-                  "compiler:" "$(grep -o 'cc=[^ ]*' "$WORK/first-boot.log" | head -1)" >&2;
-             exit 2; }
 else
     "${APP[@]}" --headless --frame-limit 300 \
           --ingest "$DISC_ABS" --max-runtime-seconds 900 \
@@ -238,6 +243,12 @@ else
         || { echo "[dist-gate] FAIL: first boot did not complete" >&2;
              tail -20 "$WORK/first-boot.log" >&2; exit 2; }
 fi
+# Every shipped artifact bundles the compiler; a mod built by the host cc
+# links the host's libc and would pass here while a player's host has none.
+grep -q "cc=.*recomp/tools/clang/bin/clang" "$WORK/first-boot.log" \
+    || { echo "[dist-gate] FAIL: first boot did not use the bundled" \
+              "compiler:" "$(grep -o 'cc=[^ ]*' "$WORK/first-boot.log" | head -1)" >&2;
+         exit 2; }
 
 # A GUI launch has no terminal, so the log file is the only thing a user
 # can attach to a report. Assert the first boot - the run most likely to
