@@ -183,6 +183,43 @@ class AnalyseTest(unittest.TestCase):
         rc, _ = tr.report(self.tmp, tables, {}, [r], 0.0, set(), "test")
         self.assertEqual(rc, 1)
 
+    def analyse_cxx(self, body):
+        """A C++ TU that includes an annotated header inside `extern "C" {`
+        and names a slot, so the walk runs over it."""
+        with open(os.path.join(self.tmp, "core", "include", "fixture_api.h"), "w") as fh:
+            fh.write('#include "openpete_thread_roles.h"\n'
+                     "void api_fn(void) OP_REQUIRES(sim);\n"
+                     "static inline void api_inline(void) { void (*p)(void) = api_fn; (void)p; }\n")
+        rel = "core/fixture.cpp"
+        with open(os.path.join(self.tmp, rel), "w") as fh:
+            fh.write('#include "openpete_thread_roles.h"\n'
+                     'extern "C" {\n#include "fixture_api.h"\n}\n'
+                     "static void (*s_cb)(void) OP_SLOT(sim);\n" + body + "\n")
+        files = [tr.ROLES_H, "core/include/fixture_api.h", rel]
+        ctx = tr.build_ctx(self.tmp, tr.Tables(self.tmp, files), self.tmp)
+        tr.compile_patterns(ctx)
+        flags = ["-I" + os.path.join(self.tmp, "core", "include"), "-std=gnu++17"]
+        return tr.analyse((ctx, rel, "linux", self.tmp, flags))
+
+    def test_included_declarations_are_not_local(self):
+        # The header's prototype and inline body arrive through the
+        # #include inside extern "C"; they are the header's, not this TU's.
+        r = self.analyse_cxx("")
+        self.assertEqual(r["parse"], [])
+        self.assertTrue(r["walked"])
+        self.assertEqual(r["refusals"], [])
+
+    def test_local_prototype_in_cxx_is_refused(self):
+        for name, body in (("extern_c_block", 'extern "C" { void api_fn(void) OP_REQUIRES(sim); }'),
+                           ("block_scope", 'extern "C" void bad(void) '
+                                           "{ void api_fn(void) OP_REQUIRES(sim); }")):
+            with self.subTest(control=name):
+                r = self.analyse_cxx(body)
+                self.assertEqual(r["parse"], [], name)
+                hits = [x for x in r["refusals"] if "local prototype" in x]
+                self.assertEqual(len(hits), 1, "%s: %s" % (name, r["refusals"]))
+                self.assertIn("core/fixture.cpp:", hits[0])
+
     def test_slot_store_recorded(self):
         r = self.analyse("")
         self.assertIn(("c:fixture.c@F@need", "need", "sim"), r["slot_stores"])

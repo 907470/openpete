@@ -510,6 +510,14 @@ class Walk:
         chain = []
         while todo:
             c, depth = todo.pop()
+            # The walk covers the main file's own text. A declaration an
+            # #include brings in inside a main-file block (`extern "C" {
+            # #include ... }`, a namespace) is pruned as one included at file
+            # scope is never visited: its prototypes are not local and its
+            # inline bodies are not this TU's references.
+            f = c.location.file
+            if depth > 0 and f is not None and f.name != self.main:
+                continue
             del chain[depth:]
             chain.append(c)
             kind = c.kind
