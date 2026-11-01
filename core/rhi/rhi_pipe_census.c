@@ -355,6 +355,16 @@ void rhi_pc_tally_get(rhi_pc_phase phase, unsigned *hit, unsigned *miss, unsigne
     pc_unlock();
 }
 
+void rhi_pc_counts(rhi_pc_phase phase, unsigned *creates, unsigned *known)
+{
+    *creates = *known = 0;
+    if ((unsigned)phase >= RHI_PC_PHASES) return;
+    pc_lock();
+    *creates = s_tally[phase].creates;
+    *known = s_known[phase];
+    pc_unlock();
+}
+
 /** @brief Print one tally line per phase.
  *
  * Caller holds the mutex. */

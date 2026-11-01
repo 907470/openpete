@@ -116,9 +116,7 @@ struct SDL_Window *openpete_native_launcher_window(void);
  * The begin waits for the frame slot (blocking present); a refused begin (a
  * pending swapchain rebuild, a minimized window) draws nothing. The frame
  * is a launcher frame for the boot facts (rhi_boot_launcher_frames), so it
- * neither sets the first-frame fact nor ends the bring-up create phase. On
- * the launcher's own device it first steps the launcher's precompile
- * (openpete_native_launcher_precompile_start).
+ * neither sets the first-frame fact nor ends the bring-up create phase.
  * @param dev The device; NULL for the launcher's own.
  * @param r Clear red, 0..1.
  * @param g Clear green, 0..1.
@@ -150,9 +148,13 @@ int openpete_native_launcher_shot(struct rhi_device *dev, const char *path, cons
  * description mode (rhi_pipeline_describe_begin) and the descriptions start
  * the ahead walk (rhi_precompile_ahead_start): both SLOT_CONTEST values,
  * the texture mapping @p opts resolves (flag, global scope, [saved]) before
- * the other, on the compile pool, stepped by each launcher present
- * (openpete_native_launcher_present). Mod pipelines are not known
- * before the pick and are left to bring-up. Bring-up stops the walk before
+ * the other, and at each mapping the terrain cache's pipelines before the
+ * eager ones, on the compile pool. Each walk job's return pushes the wake
+ * event (openpete_native_launcher_precompile_event), and the launcher's
+ * thread steps the walk (openpete_native_launcher_precompile_step) when it
+ * takes its events, so the walk advances whether or not the launcher
+ * presents. Mod pipelines are not known before the pick and are left to
+ * bring-up. Bring-up stops the walk before
  * its first create; the keys it did not reach compile at bring-up or in the
  * game's background walk. Skipped where bring-up skips its precompile (a
  * synchronous run, a software device) unless OPENPETE_PRECOMPILE_AHEAD or
@@ -160,6 +162,19 @@ int openpete_native_launcher_shot(struct rhi_device *dev, const char *path, cons
  * @param opts The game-neutral options.
  * @return The create infos queued; 0 when skipped or already started. */
 int openpete_native_launcher_precompile_start(const openpete_options_t *opts);
+
+/** @brief Step the launcher's precompile: submit walk jobs in place of those that returned, and end the walk once every job has returned.
+ *
+ * Display owner only (the launcher's thread). Clears the pending wake, so
+ * the next return pushes a new wake event.
+ * @return 1 while the walk runs, 0 when it ended or never started. */
+int openpete_native_launcher_precompile_step(void);
+
+/** @brief Return the SDL event type a returning walk job pushes to wake the launcher's thread.
+ *
+ * At most one is queued between steps. The event carries nothing.
+ * @return The type, or 0 before the precompile started or when no type could be registered. */
+uint32_t openpete_native_launcher_precompile_event(void);
 
 /** @brief Pause or resume the launcher's pipeline compile pool around work that uses every core (the first-boot module build).
  *

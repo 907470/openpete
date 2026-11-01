@@ -222,4 +222,11 @@ unsigned rhi_pc_bringup(uint64_t *out_ns);
  * @param unknown Receives its creates with no valid feedback. */
 void rhi_pc_tally_get(rhi_pc_phase phase, unsigned *hit, unsigned *miss, unsigned *unknown);
 
+/** @brief Read one phase's create count and how many of its creates the cache already held (rhi_pc_known_add).
+ *
+ * @param phase The phase.
+ * @param creates Receives its creates.
+ * @param known Receives its creates of a create info the cache held. */
+void rhi_pc_counts(rhi_pc_phase phase, unsigned *creates, unsigned *known);
+
 #endif /* RHI_PIPE_CENSUS_H */

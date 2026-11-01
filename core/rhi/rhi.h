@@ -1461,6 +1461,9 @@ typedef struct {
     int      cache_cold;         /* the file was removed at open (OPENPETE_PIPELINE_CACHE_COLD) */
     unsigned bringup_creates;    /* pipeline creates before the first frame     */
     uint64_t bringup_ns;         /* their summed wall time                      */
+    unsigned bringup_known;      /* of them, creates of a create info the cache held */
+    unsigned precompile_creates; /* pipeline creates in the precompile phase    */
+    unsigned precompile_known;   /* of them, creates of a create info the cache held */
     unsigned devices_created;    /* devices rhi_create and rhi_create_headless returned */
 } rhi_boot_stats;
 
@@ -1623,7 +1626,8 @@ int            rhi_precompile_walk_start(rhi_device *dev);
  * covered (rhi_rebuild_request) is skipped. When the last job returns the
  * walk logs one line, "background walk: keys K, created C, probe hits H,
  * duplicates D, M ms", and arms the debounced off-thread cache save. Call
- * once per present on the display owner; a no-op unless a walk is running.
+ * on the display owner once per present, or for the ahead walk after its
+ * wake (rhi_precompile_ahead_start); a no-op unless a walk is running.
  * @param dev Device, or NULL.
  * @return The walk's state after the step. */
 rhi_walk_state rhi_precompile_walk_step(rhi_device *dev);
@@ -1657,24 +1661,41 @@ void           rhi_pipeline_describe_begin(rhi_device *dev);
  * @return The descriptions recorded on the device so far. */
 unsigned       rhi_pipeline_describe_end(rhi_device *dev);
 
+/* Groups of the ahead walk's descriptions (rhi_pipeline_describe_group). */
+#define RHI_AHEAD_GROUPS 4u
+
+/** @brief Set the ahead-walk group of the descriptions recorded from now on, the order in which rhi_precompile_ahead_start queues them.
+ *
+ * rhi_pipeline_describe_begin resets the group to 0. A group at or past
+ * RHI_AHEAD_GROUPS reads as the last. Display owner only.
+ * @param dev Device.
+ * @param group The group, 0 queued first. */
+void           rhi_pipeline_describe_group(rhi_device *dev, unsigned group);
+
 /** @brief Start the ahead walk: compile every recorded description into the pipeline cache on the compile pool, before any pipeline of the game exists.
  *
  * The walk is the background variant walk's state machine
  * (rhi_precompile_walk_step advances it, rhi_precompile_walk_get reads it)
  * over the descriptions rhi_pipeline_describe_begin recorded instead of the
- * registry: each description at both SLOT_CONTEST values, every create
- * info of the texture mapping the game will draw first before any of the
- * other, at the textured view and the current MOBY_TRUESCOPE, each key once.
- * A key is skipped as the variant walk skips one (probe hit, manifest), and
- * its creates count in the launcher create phase. Up to two jobs per worker
- * are out at a time, so a step per present keeps the workers fed. Display
- * owner only.
+ * registry: each description at both SLOT_CONTEST values, at the textured
+ * view and the current MOBY_TRUESCOPE, each key once, queued by texture
+ * mapping (the one the game will draw first before the other), then by
+ * group (rhi_pipeline_describe_group), then in the order recorded. A key is
+ * skipped as the variant walk skips one (probe hit, manifest), and its
+ * creates count in the launcher create phase. Up to two jobs per worker are
+ * out at a time. Each return of a walk job calls @p wake on the compile
+ * worker that ran it, so the display owner steps the walk
+ * (rhi_precompile_walk_step) when a job returns rather than on a present;
+ * the step after the last return of a group's first texture mapping logs
+ * "launcher walk: <mapping> group G returned". Display owner only.
  * @param dev Device.
  * @param affine_first true to queue the affine create infos before the
  *        perspective ones: the effective texture mapping is affine.
+ * @param wake Called on a compile worker, with no pool lock held, after
+ *        each walk job returns; NULL for none.
  * @return The create infos queued, or -1 for a NULL device, a walk already
  *         running or no recorded description. */
-int            rhi_precompile_ahead_start(rhi_device *dev, bool affine_first);
+int            rhi_precompile_ahead_start(rhi_device *dev, bool affine_first, void (*wake)(void));
 
 /** @brief Stop the ahead walk: submit nothing more, drop its jobs still queued on the pool, and log what it did.
  *

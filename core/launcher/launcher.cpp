@@ -853,19 +853,36 @@ Ask ask_of(const SDL_Event& e) {
     }
 }
 
-/** @brief Wait up to 100 ms for input, then hand every pending event to imgui and return the first command among them.
+/** @brief Wait up to 100 ms for input, stepping the launcher's precompile at each wake, then hand every pending event to imgui and return the first command among them.
  *
+ * A returning compile job pushes a wake event
+ * (openpete_native_launcher_precompile_event); a batch of only wake events
+ * steps the precompile and keeps waiting for the rest of the 100 ms, so the
+ * caller presents at the cadence of its input, not of the compiles. The
+ * precompile is also stepped when the wait ends.
  * @return The first command the events carry, or Ask::None. */
 Ask wait_input() {
-    SDL_Event e;
-    Ask first = Ask::None;
-    if (!SDL_WaitEventTimeout(&e, 100)) return first;
-    do {
-        openpete_devui_process_event(&e);
-        const Ask a = ask_of(e);
-        if (first == Ask::None) first = a;
-    } while (SDL_PollEvent(&e));
-    return first;
+    const Uint32 wake = openpete_native_launcher_precompile_event();
+    const Uint64 end = SDL_GetTicks() + 100;
+    for (;;) {
+        const Uint64 now = SDL_GetTicks();
+        SDL_Event e;
+        if (now >= end || !SDL_WaitEventTimeout(&e, (Sint32)(end - now))) {
+            (void)openpete_native_launcher_precompile_step();
+            return Ask::None;
+        }
+        Ask first = Ask::None;
+        bool input = false;
+        do {
+            if (wake && e.type == wake) continue;
+            input = true;
+            openpete_devui_process_event(&e);
+            const Ask a = ask_of(e);
+            if (first == Ask::None) first = a;
+        } while (SDL_PollEvent(&e));
+        (void)openpete_native_launcher_precompile_step();
+        if (input) return first;
+    }
 }
 
 /** @brief Harness: whether the scripted pick or drop may act yet.
@@ -939,10 +956,14 @@ const char* wait_for_disc() {
  * A wait (the ingest copy, the module build, the mod compile) cannot be
  * cancelled, so a quit (the window closed, or SIGTERM, which SDL turns into
  * a quit event) is held and re-posted at the hand-off, where the game's
- * loop ends the run, instead of being consumed here. */
+ * loop ends the run, instead of being consumed here. The launcher's
+ * precompile is stepped after the events, and its wake events
+ * (openpete_native_launcher_precompile_event) are consumed. */
 void drain_events() {
+    const Uint32 wake = openpete_native_launcher_precompile_event();
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+        if (wake && e.type == wake) continue;
         if (e.type == SDL_EVENT_QUIT) {
             s.quit_pending = true;
             continue;
@@ -950,6 +971,7 @@ void drain_events() {
         openpete_devui_process_event(&e);
         (void)window_gesture(e);
     }
+    (void)openpete_native_launcher_precompile_step();
 }
 
 /** @brief Draw the progress screen with the mailbox's stage when the worker has reported one.
@@ -1046,8 +1068,9 @@ int SDLCALL scan_main(void* p) {
 
 /** @brief Present the pending screen until the scan worker flags completion, keeping the first quit or drop among the events.
  *
- * Each present steps the launcher's precompile; the wait between presents
- * ends at the first event, the worker's wake event included.
+ * The wait between presents (wait_input) steps the launcher's precompile
+ * and ends at the first event other than a compile wake, the worker's wake
+ * event included.
  * @return 0, LAUNCHER_SEL_QUIT or LAUNCHER_SEL_DROPPED. */
 int pending_loop() {
     View v;

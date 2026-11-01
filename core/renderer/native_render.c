@@ -5954,6 +5954,8 @@ static struct {
     Uint64      t0_ns, last_ns;
     Uint64      panel_ns;      /* wait before the first draw                   */
     unsigned    draws;         /* progress screens presented                   */
+    unsigned    first_done;    /* the first screen's finished count            */
+    unsigned    first_total;   /* the first screen's bar total (0: empty bar)  */
     unsigned    base_done;     /* creates finished by the closed batches       */
     unsigned    base_queued;   /* creates queued by the closed batches         */
     unsigned    held_total;    /* the bar's total once final; 0 before         */
@@ -5965,9 +5967,14 @@ static struct {
  * @param done Compiles finished.
  * @param total The bar's total; 0 for an empty bar with the finished count. */
 static void nr_precompile_panel(unsigned done, unsigned total) {
-    if (openpete_launcher_draw_progress(s_pre.dev, s_pre.name, "COMPILING SHADERS",
-                                        (int)done, (int)total))
-        s_pre.draws++;
+    if (!openpete_launcher_draw_progress(s_pre.dev, s_pre.name, "COMPILING SHADERS",
+                                         (int)done, (int)total))
+        return;
+    if (!s_pre.draws) {
+        s_pre.first_done = done;
+        s_pre.first_total = total;
+    }
+    s_pre.draws++;
 }
 
 /** @brief Pump the window's events between compiles, and draw the compile stage once it has run past its panel wait.
@@ -6827,13 +6834,20 @@ static int nr_tercache_describe_wanted(const rhi_device *dev, const openpete_opt
         && nr_tercache_device_ok(dev);
 }
 
+/* The ahead walk's groups (rhi_pipeline_describe_group), queued in this
+ * order at each texture mapping: the pipelines the launcher's own screens
+ * draw (none is described here), the terrain cache's, then every other
+ * built-in pipeline. */
+enum { NR_AHEAD_LAUNCHER = 0, NR_AHEAD_TERRAIN = 1, NR_AHEAD_REST = 2 };
+
 /** @brief Describe every pipeline bring-up creates before the mods' slots: the eager pipelines with their twins and, when every game could use it, the terrain cache's, through their own builders in describe mode.
  *
  * The front shell is described whatever OPENPETE_MOBY_SHELL holds; a
  * description that never compiles costs a compile and draws nothing. The
  * terrain cache is described only when nr_tercache_describe_wanted holds,
  * since --terrain-cache 0 must keep its pipelines from being created at all.
- * Display owner only.
+ * The terrain cache's descriptions take the group NR_AHEAD_TERRAIN, the
+ * eager ones NR_AHEAD_REST. Display owner only.
  * @param dev Device.
  * @param opts The game-neutral options.
  * @return The descriptions recorded. */
@@ -6848,9 +6862,11 @@ static unsigned nr_describe_pipelines(rhi_device *dev, const openpete_options_t 
     rhi_pipeline *shell_pipe = NULL, *intr_pipe = NULL;
     const nr_twin_out o = { cover, &cover_n, shell, &shell_n, &shell_pipe, &intr_pipe };
     rhi_pipeline_describe_begin(dev);
+    rhi_pipeline_describe_group(dev, NR_AHEAD_REST);
     nr_eager_core(dev, &d, &p, 1);
     (void)nr_eager_twins(dev, &d, &p, 1, &o);
     const int tercache = nr_tercache_describe_wanted(dev, opts);
+    rhi_pipeline_describe_group(dev, NR_AHEAD_TERRAIN);
     if (tercache) openpete_tercache_describe(dev);
     OPL_INFO_F("native", "launcher precompile: terrain cache %s", tercache ? "described" : "not described");
     return rhi_pipeline_describe_end(dev);
@@ -6927,10 +6943,24 @@ const char *openpete_native_launcher_error(void) { return s_launch_error; }
  * ahead walk on the launcher's device until bring-up stops it. */
 static struct {
     int started;   /* the start ran (once per run)                         */
-    int on;        /* the ahead walk runs: each launcher present steps it   */
+    int on;        /* the ahead walk runs: openpete_native_launcher_precompile_step steps it */
     int paused;    /* the pool is paused (openpete_native_launcher_compile_pause) */
     Uint64 pause_ns;
+    Uint32 event;  /* the wake event's type (SDL_RegisterEvents); 0 for none */
+    SDL_AtomicInt wake_pending;  /* a wake event is queued and no step has run since */
 } s_ahead;
+
+/** @brief Wake the launcher's thread after a walk job returned: push one wake event unless one is queued and not yet followed by a step.
+ *
+ * Runs on a compile worker; SDL_PushEvent is safe on any thread. */
+static void nr_ahead_wake(void)
+{
+    if (!s_ahead.event || !SDL_CompareAndSwapAtomicInt(&s_ahead.wake_pending, 0, 1)) return;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = s_ahead.event;
+    if (!SDL_PushEvent(&e)) SDL_SetAtomicInt(&s_ahead.wake_pending, 0);
+}
 
 /** @brief Return whether the launcher precompiles before the pick.
  *
@@ -6965,7 +6995,8 @@ int openpete_native_launcher_precompile_start(const openpete_options_t *opts)
     /* The game-neutral options carry the flag, the global scopes and [saved];
      * a [game.*] or [disc.*] scope is not known before the pick. */
     const bool affine = opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE;
-    const int keys = rhi_precompile_ahead_start(dev, affine);
+    s_ahead.event = SDL_RegisterEvents(1);
+    const int keys = rhi_precompile_ahead_start(dev, affine, nr_ahead_wake);
     s_ahead.on = keys >= 0;
     OPL_INFO_F("native", "launcher precompile: %u pipeline descriptions, %d create infos queued "
                "(both SLOT_CONTEST values; %s)%s", described, keys,
@@ -6973,6 +7004,16 @@ int openpete_native_launcher_precompile_start(const openpete_options_t *opts)
                s_ahead.paused ? "; the compile pool is paused" : "");
     return keys > 0 ? keys : 0;
 }
+
+int openpete_native_launcher_precompile_step(void)
+{
+    if (!s_ahead.on || !s_launch.dev) return 0;
+    SDL_SetAtomicInt(&s_ahead.wake_pending, 0);
+    s_ahead.on = rhi_precompile_walk_step(s_launch.dev) == RHI_WALK_RUNNING;
+    return s_ahead.on;
+}
+
+uint32_t openpete_native_launcher_precompile_event(void) { return s_ahead.event; }
 
 void openpete_native_launcher_compile_pause(int on)
 {
@@ -6988,6 +7029,8 @@ void openpete_native_launcher_compile_pause(int on)
 
 /** @brief End the launcher's precompile when bring-up starts on its device: stop the ahead walk (its running jobs finish into the cache) and resume a paused pool, whose waits bring-up's batches run.
  *
+ * The wake events still queued are removed, so the game's event loop does
+ * not receive them.
  * @param dev The renderer's device. */
 static void nr_ahead_end(rhi_device *dev)
 {
@@ -6995,6 +7038,7 @@ static void nr_ahead_end(rhi_device *dev)
     rhi_compile_pool_pause(dev, false);
     rhi_precompile_ahead_stop(dev);
     s_ahead.on = 0;
+    if (s_ahead.event) SDL_FlushEvent(s_ahead.event);
 }
 
 int openpete_native_launcher_active(void) { return s_launch.dev != NULL; }
@@ -7024,7 +7068,6 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
 {
     rhi_device *dev = on ? on : s_launch.dev;
     if (!dev) return 0;
-    if (!on && s_ahead.on) (void)rhi_precompile_walk_step(dev);
     int drawn = 0;
     rhi_boot_launcher_frames(true);
     rhi_set_present_blocking(dev, true);
@@ -20551,6 +20594,17 @@ static void nr_precompile(void) {
                walk, ps.workers,
                (double)(SDL_GetTicksNS() - t0) / 1e6,  /* clock-guard: wall: precompile duration for the log */
                s_pre.draws, s_pre.held_total, s_pre.base_queued - bs.queued);
+    rhi_boot_stats rb;
+    rhi_boot_stats_get(&rb);
+    OPL_INFO_F("native", "compile stage: %.1f ms from its open, %u creates queued, %u done; "
+               "pipelines compiled %u (bring-up %u of %u creates, precompile %u of %u; the "
+               "rest were held by the cache); progress screen %u present(s), the first at %u of %u",
+               (double)(SDL_GetTicksNS() - s_pre.t0_ns) / 1e6,  /* clock-guard: wall: compile stage duration for the log */
+               s_pre.base_queued, s_pre.base_done,
+               (rb.bringup_creates - rb.bringup_known) + (rb.precompile_creates - rb.precompile_known),
+               rb.bringup_creates - rb.bringup_known, rb.bringup_creates,
+               rb.precompile_creates - rb.precompile_known, rb.precompile_creates,
+               s_pre.draws, s_pre.first_done, s_pre.first_total);
     s_pre.dev = NULL;
 }
 

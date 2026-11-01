@@ -1043,7 +1043,13 @@ static unsigned pool_ran_since(const rhi_compile_pool_stats *p0, unsigned n)
     return p.run - p0->run;
 }
 
-/** @brief The launcher's precompile on the pool: description mode records without creating, a paused pool runs nothing until resumed, the ahead walk compiles every recorded key, and copies of one create info submitted at once wait for each other.
+/* Wake calls of the ahead walk (ahead_wake). */
+static atomic_uint s_ahead_wakes;
+
+/** @brief Count one wake call of the ahead walk: a walk job returned on a compile worker. */
+static void ahead_wake(void) { atomic_fetch_add(&s_ahead_wakes, 1u); }
+
+/** @brief The launcher's precompile on the pool: description mode records without creating, a paused pool runs nothing until resumed, the ahead walk compiles every recorded key with one wake call per returned job, and copies of one create info submitted at once wait for each other.
  *
  * @return 1 when a step misbehaves or is not engaged, else 0. */
 static int ahead_control(void)
@@ -1058,7 +1064,8 @@ static int ahead_control(void)
     rhi_compile_pool_stats p0;
     rhi_compile_pool_stats_get(s_dev, &p0);
     rhi_compile_pool_pause(s_dev, true);
-    const int keys = rhi_precompile_ahead_start(s_dev, false);
+    atomic_store(&s_ahead_wakes, 0u);
+    const int keys = rhi_precompile_ahead_start(s_dev, false, ahead_wake);
     (void)rhi_precompile_walk_step(s_dev);
     const unsigned paused_ran = pool_ran_since(&p0, 1);
     rhi_compile_pool_pause(s_dev, false);
@@ -1066,6 +1073,10 @@ static int ahead_control(void)
     unsigned done = 0, total = 0;
     rhi_precompile_stats st;
     const rhi_walk_state ws = rhi_precompile_walk_get(s_dev, &done, &total, &st);
+    /* A worker calls the wake after it releases the pool lock, so the last
+     * call may follow the step that saw its job return. */
+    for (int i = 0; i < 100 && keys > 0 && atomic_load(&s_ahead_wakes) < (unsigned)keys; i++) SDL_Delay(10);
+    const unsigned wakes = atomic_load(&s_ahead_wakes);
 
     /* Copies of one create info submitted together: the workers that take a
      * copy while another runs it wait. */
@@ -1085,11 +1096,11 @@ static int ahead_control(void)
 
     const bool ok = described == 1 && marked && keys > 0 && paused_ran == 0 &&
                     ws == RHI_WALK_DONE && st.created + st.probe_hits == (unsigned)keys &&
-                    waits >= 1 && q1.variant_failed == q0.variant_failed;
+                    wakes == (unsigned)keys && waits >= 1 && q1.variant_failed == q0.variant_failed;
     printf("ahead_control: described %u (marked %d), keys %d, run while paused %u, walk %s "
-           "created %u probe hits %u of %u, same-key waits %u of %u copies: %s\n", described,
+           "created %u probe hits %u of %u, wakes %u, same-key waits %u of %u copies: %s\n", described,
            marked, keys, paused_ran, ws == RHI_WALK_DONE ? "done" : "NOT DONE", st.created,
-           st.probe_hits, total, waits, copies, ok ? "engaged" : "NOT ENGAGED");
+           st.probe_hits, total, wakes, waits, copies, ok ? "engaged" : "NOT ENGAGED");
     return ok ? 0 : 1;
 }
 

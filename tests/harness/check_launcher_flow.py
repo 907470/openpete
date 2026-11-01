@@ -80,6 +80,17 @@ Cases:
   job-pick-other-assets  T8 (c) on the asset extraction (windowed): a pick of B during A's held
             launch-time asset job stops A, which leaves no cache file, and B's cache is written
             at the pick.
+  shader-step-*  T8's shader step on the launcher's ahead compile (windowed, a cold pipeline
+            cache, OPENPETE_PRECOMPILE_FORCE=1 so bring-up's compile stage runs on lavapipe):
+            shader-step-during: a pick at the selector's first frame stops the ahead walk with
+            create infos not returned, and the compile stage compiles pipelines and draws its
+            progress screen (OPENPETE_PRECOMPILE_PANEL_MS=0).
+            shader-step-after: a pick held until the ahead walk has returned every create info
+            (OPENPETE_LAUNCHER_PICK_DELAY_MS) starts the game with every bring-up create held by
+            the cache (bring-up compiles no pipeline); the progress screens drawn are reported.
+            shader-step-order: with the terrain cache described (OPENPETE_TERRAIN_CACHE_FORCE=1),
+            the walk's terrain group at the first texture mapping returns before the group of
+            the other built-in pipelines.
 
 Usage: tests/harness/check_launcher_flow.py CASE [--build-dir DIR] [--out DIR] [--measure]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or a disc image missing).
@@ -1051,6 +1062,78 @@ def case_job_pick_other_assets(a):
     return verdict("job-pick-other-assets", bad)
 
 
+# ---- the shader step (shader-step-*) ----
+
+SHADER_ENV = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_PRECOMPILE_FORCE": "1", "OPENPETE_LAUNCHER_SELECT": "0"}
+STAGE = re.compile(r"compile stage: ([\d.]+) ms from its open, \d+ creates queued, \d+ done; pipelines compiled "
+                   r"(\d+) \(bring-up (\d+) of (\d+) creates, precompile (\d+) of (\d+);.*?progress screen (\d+) "
+                   r"present\(s\), the first at (\d+) of (\d+)")
+WALK_END = re.compile(r"launcher walk: keys (\d+), created (\d+), probe hits (\d+), .*?([\d.]+) ms \((.*)\)")
+
+
+def shader_run(a, name, env):
+    """One scripted pick of a Spyro 1 entry on a cold cache; returns (rc, log, stage match, walk-end match, problems)."""
+    d = cl.case_dir(a.out, name)
+    seed_entry(d, "spyro-1", 1)
+    rc, log = cl.launch(a.binary, d, "run", ["--frame-limit", "20"], dict(SHADER_ENV, **env), timeout=900)
+    st, wl = STAGE.search(log), WALK_END.search(log)
+    bad = common_flow(log)
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    if not st:
+        bad.append("no compile stage line")
+    if not wl:
+        bad.append("no launcher walk end line")
+    return rc, log, st, wl, bad
+
+
+def case_shader_step_during(a):
+    """A pick during the ahead walk: the walk stops short and the compile stage compiles and draws (windowed)."""
+    rc, log, st, wl, bad = shader_run(a, "shader-step-during", {"OPENPETE_PRECOMPILE_PANEL_MS": "0"})
+    if wl and "stopped at the pick" not in wl.group(5):
+        bad.append("VACUOUS: the ahead walk returned every create info before the pick")
+    if st and int(st.group(3)) == 0:
+        bad.append("bring-up compiled no pipeline: the pick came after the walk's useful part")
+    if st and int(st.group(7)) == 0:
+        bad.append("the compile stage drew no progress screen")
+    detail = (f"walk created {wl.group(2)} of {wl.group(1)}; bring-up compiled {st.group(3)} of {st.group(4)}, "
+              f"stage {st.group(1)} ms, {st.group(7)} screen(s), first at {st.group(8)} of {st.group(9)}") if st and wl else ""
+    return verdict("shader-step-during", bad, detail)
+
+
+def case_shader_step_after(a):
+    """A pick after the ahead walk ends: no bring-up compile, no progress screen (windowed)."""
+    rc, log, st, wl, bad = shader_run(a, "shader-step-after", {"OPENPETE_LAUNCHER_PICK_DELAY_MS": "5000"})
+    if wl and "stopped at the pick" in wl.group(5):
+        bad.append("the ahead walk was still running at the pick (raise the pick delay)")
+    if wl and int(wl.group(2)) + int(wl.group(3)) == 0:
+        bad.append("VACUOUS: the ahead walk created nothing")
+    if st and int(st.group(4)) == 0:
+        bad.append("VACUOUS: bring-up made no create")
+    if st and int(st.group(3)) != 0:
+        bad.append(f"bring-up compiled {st.group(3)} pipelines the walk had compiled")
+    # The progress screen is timed (NR_PRECOMPILE_PANEL_NS): on lavapipe a creation the cache holds
+    # still compiles, so a loaded host can pass the wait with nothing to compile; the count of
+    # pipelines compiled decides, the screens are reported.
+    detail = (f"walk created {wl.group(2)} of {wl.group(1)} in {wl.group(4)} ms; bring-up {st.group(4)} creates, "
+              f"{st.group(3)} compiled, stage {st.group(1)} ms, {st.group(7)} screen(s)") if st and wl else ""
+    return verdict("shader-step-after", bad, detail)
+
+
+def case_shader_step_order(a):
+    """The ahead walk's terrain group returns before the other built-in pipelines at the first texture mapping (windowed)."""
+    rc, log, st, wl, bad = shader_run(a, "shader-step-order", {"OPENPETE_LAUNCHER_PICK_DELAY_MS": "8000",
+                                                                "OPENPETE_TERRAIN_CACHE_FORCE": "1"})
+    groups = re.search(r"per group at the first mapping (\d+) (\d+) (\d+) (\d+)", log)
+    if not groups or int(groups.group(2)) == 0 or int(groups.group(3)) == 0:
+        bad.append("VACUOUS: the walk queued no terrain or no other built-in create info")
+    bad += ordered(log, r"launcher walk: \w+ group 1 returned", r"launcher walk: \w+ group 2 returned")
+    back = {m.group(1): m.group(2) for m in re.finditer(r"launcher walk: \w+ group (\d) returned: \d+ create infos, ([\d.]+) ms", log)}
+    detail = (f"first mapping: terrain {groups.group(2)} at {back.get('1', '-')} ms, other {groups.group(3)} "
+              f"at {back.get('2', '-')} ms") if groups else ""
+    return verdict("shader-step-order", bad, detail)
+
+
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
@@ -1059,7 +1142,9 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "ingest-held": case_ingest_held, "cache": case_cache, "cache-ingest": case_cache_ingest,
          "multi-install-launch": case_multi_install_launch,
          "job-ingest-stop-assets": case_job_ingest_stop_assets,
-         "job-pick-other-assets": case_job_pick_other_assets}
+         "job-pick-other-assets": case_job_pick_other_assets,
+         "shader-step-during": case_shader_step_during, "shader-step-after": case_shader_step_after,
+         "shader-step-order": case_shader_step_order}
 
 
 def main():

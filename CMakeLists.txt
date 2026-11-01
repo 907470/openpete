@@ -1675,7 +1675,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         foreach(_launcher_case startup resolution multi-install multi-install-extract job-ingest-stop job-pick-same
                                 job-pick-other lock failed-marker headless-no-disc bind-repair
                                 ingest-held cache cache-ingest multi-install-launch
-                                job-ingest-stop-assets job-pick-other-assets)
+                                job-ingest-stop-assets job-pick-other-assets
+                                shader-step-during shader-step-after shader-step-order)
             add_test(NAME launcher_flow_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_flow.py
