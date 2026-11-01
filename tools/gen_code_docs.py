@@ -4,7 +4,8 @@
 Writes docs/src/developer/reference/ for the documentation site
 (docs/mkdocs.yml) from the function corpus of the documentation ratchet
 (scripts/fences/doc_ratchet.py): the same libclang parse over the
-linux-release compile database, the same scope (core/ and games/, outside
+compile database of the build that runs it (a launcher preset's database
+adds the first-boot sources, ratchet_lib CONFIG_GATED), the same scope (core/ and games/, outside
 generated/, third_party/, build/ and the nested decomp checkouts), the
 same canonical-site rule for which comment documents a function.
 

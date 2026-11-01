@@ -83,6 +83,10 @@ struct Overlay {
     std::string sha256;      /* of the reference binary (manifest) */
 };
 
+/** @brief Return the directory holding the running executable, with forward slashes.
+ *
+ * Read from GetModuleFileNameA on Windows and /proc/self/exe elsewhere.
+ * @return The directory, or "." when the path cannot be read. */
 std::string exe_dir() {
 #ifdef _WIN32
     char exe[4096];
@@ -137,9 +141,13 @@ bool run(const std::vector<std::string>& args, const char* log_path = nullptr) {
     return rc == 0;
 }
 
-/* FNV-1a 64 over a file - the v1 identity/codegen stamp (labeled as
- * such; D4's release stamps may upgrade the hash, which just changes
- * the stamp string and invalidates caches once). */
+/** @brief Fold a file's bytes into an FNV-1a 64 hash.
+ *
+ * The hash keys the codegen and ROM stamps; the stamp strings name it
+ * (`fnv1a-`, `fnv1a:`), so a change of hash changes every stamp.
+ * @param p The file; an unreadable file folds no bytes.
+ * @param h The running hash (the FNV-1a 64 offset basis for a fresh one).
+ * @return The hash after the file's bytes. */
 uint64_t fnv1a_file(const fs::path& p, uint64_t h = 0xcbf29ce484222325ull) {
     std::ifstream f(p, std::ios::binary);
     char buf[65536];
@@ -153,11 +161,15 @@ uint64_t fnv1a_file(const fs::path& p, uint64_t h = 0xcbf29ce484222325ull) {
     return h;
 }
 
-/* Fold a whole directory tree into `h`. Files are visited in sorted
- * relative-path order, never the filesystem's, so the hash is a property
- * of the content rather than of how the tree happened to be laid out;
- * the relative path is mixed in alongside the bytes, so a rename counts
- * as a change too. */
+/** @brief Fold every regular file under a directory tree into an FNV-1a 64 hash.
+ *
+ * Files are visited in sorted relative-path order, never the filesystem's,
+ * so the hash depends on the content and not on the directory order; each
+ * file's relative path is folded before its bytes, so a rename changes the
+ * hash.
+ * @param root The tree; iteration stops at the first error.
+ * @param h The running hash.
+ * @return The hash after the tree. */
 uint64_t fnv1a_tree(const fs::path& root, uint64_t h) {
     std::error_code ec;
     std::vector<fs::path> files;
@@ -175,15 +187,25 @@ uint64_t fnv1a_tree(const fs::path& root, uint64_t h) {
     return h;
 }
 
+/** @brief Format a 64-bit value as 16 lowercase hex digits.
+ *
+ * @param v The value.
+ * @return The zero-padded digits. */
 std::string hex64(uint64_t v) {
     char b[24];
     std::snprintf(b, sizeof b, "%016llx", (unsigned long long)v);
     return b;
 }
 
-/* Replace every whole-word occurrence of `from` with `to` in file `p`
- * (the dispatch-rename regen does with sed); the rewrite replaces the file
- * atomically (synced), so a failure leaves the previous source whole. */
+/** @brief Replace every whole-word occurrence of a token in a file.
+ *
+ * The same rename the dispatch-rename regen does with sed. A word is a run
+ * of alphanumerics and underscores. The rewrite replaces the file
+ * atomically (synced), so a failure leaves the previous source whole.
+ * @param p The file.
+ * @param from The token to replace.
+ * @param to Its replacement.
+ * @return false when the file cannot be read or written. */
 bool rename_token(const fs::path& p, const std::string& from, const std::string& to) {
     std::ifstream in(p, std::ios::binary);
     if (!in) return false;
@@ -265,6 +287,10 @@ bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out,
     return !out.empty();
 }
 
+/** @brief Return the SHA-256 of a file as 64 lowercase hex digits.
+ *
+ * @param p The file.
+ * @return The digest, or "" when the file cannot be opened. */
 std::string sha256_file_hex(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     if (!f) return "";
@@ -354,9 +380,13 @@ std::string find_psxrecomp(const fs::path& base) {
     return "";
 }
 
-/* The compiler for the module build. Windows: the bundled llvm-mingw
- * next to the exe (no system compiler exists there); POSIX: bundled
- * first, then $OPENPETE_CC, then cc. */
+/** @brief Return the C compiler the module build runs.
+ *
+ * The bundled compiler under base/recomp/tools/ (llvm-mingw on Windows,
+ * clang elsewhere) first, then $OPENPETE_CC; on POSIX the last resort is
+ * `cc`. Windows has no system compiler to fall back on.
+ * @param base The install directory.
+ * @return The compiler path, or "" on Windows when neither names one. */
 std::string find_cc(const fs::path& base) {
 #ifdef _WIN32
     fs::path bundled = base / "recomp" / "tools" / "llvm-mingw" / "bin" /
@@ -387,11 +417,14 @@ std::string run_capture(const std::vector<std::string>& args) {
     return buf.data();
 }
 
-/* First line of `<cc> --version` - the compiler's self-identity, folded
- * into the codegen stamp so swapping the host compiler (or bumping the
- * bundled one) invalidates cached modules instead of silently reusing a
- * dir built by a different optimizer. Empty string if the probe fails
- * (degrades to psxrecomp-only keying, the prior behavior). */
+/** @brief Return the first line of the compiler's `--version` output.
+ *
+ * The line is folded into the codegen stamp, so swapping the host compiler
+ * or updating the bundled one stores modules under a fresh key instead of
+ * reusing a directory another compiler built.
+ * @param cc The compiler path.
+ * @return The line, or "" when cc is empty or the probe fails (the stamp
+ *         is then keyed without the compiler identity). */
 std::string cc_identity(const std::string& cc) {
     if (cc.empty()) return "";
     std::string v = run_capture({cc, "--version"});
@@ -400,22 +433,17 @@ std::string cc_identity(const std::string& cc) {
     return nl == std::string::npos ? v : v.substr(0, nl);
 }
 
-/* Per-machine target-tuning flag for the module compile. Because the
- * module is compiled ON the user's machine, we CAN target their exact
- * CPU - a prebuilt binary can't. Determinism-safe: the recompiled code
- * is pure INTEGER MIPS translation (verified: no float/double), so
- * -march changes instruction selection but not results (full 20k oracle
- * PASS with -march=native), and the fixed-point GTE math lives in the
- * prebuilt runtime, not here.
+/** @brief Return the -march value of the module compile, from $OPENPETE_MODULE_MARCH.
  *
- * DEFAULT OFF, though - measured: `-march=native` gave 0%
- * speedup on the attract-demo workload. The hot code (GTE, renderer,
- * PsyCross) is in the prebuilt runtime we can't tune per-user; the
- * module is branchy integer dispatch that neither vectorizes nor
- * dominates frame time. So the default is the portable baseline (no
- * -march) - CI-identical codegen for every user, no per-CPU cache
- * fragmentation. Opt in with OPENPETE_MODULE_MARCH=native (or a specific
- * value like x86-64-v3) if a heavier workload or CPU shows a benefit. */
+ * The module compiles on the player's machine, so it can target that CPU.
+ * The recompiled code is integer MIPS translation with no float or double
+ * arithmetic, so -march changes instruction selection and not results; the
+ * fixed-point GTE math is in the prebuilt runtime. Unset is the portable
+ * baseline (no -march): the same codegen on every machine and no per-CPU
+ * cache entries. The hot code (GTE, renderer, PsyCross) is in the prebuilt
+ * runtime, and the module is branchy integer dispatch. A value such as
+ * `native` or `x86-64-v3` opts in.
+ * @return The value, or "" when unset, empty, `none` or `off`. */
 std::string module_march() {
     const char* e = openpete_config_env("OPENPETE_MODULE_MARCH");
     std::string m = e ? e : "";
@@ -433,11 +461,14 @@ std::vector<std::string> module_arch_args() {
     return {"-march=" + m, "-mtune=native", "-ffp-contract=off"};
 }
 
-/* Fingerprint the exact target the compiler will emit for module_march():
- * its predefined macros (`__AVX2__`, feature set, target CPU). Folding
- * this into the stamp makes a native-built module dir CPU-specific, so a
- * library copied to a different machine rebuilds instead of executing an
- * illegal instruction. */
+/** @brief Return the compiler's predefined macros under module_march(), the target the module is emitted for.
+ *
+ * The macros (`__AVX2__`, the feature set, the target CPU) are folded into
+ * the codegen stamp, so a module built for one CPU is keyed to it and a
+ * copy on another machine rebuilds instead of executing an illegal
+ * instruction.
+ * @param cc The compiler path.
+ * @return The `-dM -E` output, or "" when cc is empty or no -march is set. */
 std::string cc_target_fingerprint(const std::string& cc) {
     std::string m = module_march();
     if (cc.empty() || m.empty()) return "";

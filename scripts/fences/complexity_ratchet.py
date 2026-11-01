@@ -657,7 +657,7 @@ def mode_hook(root):
     corpus, cbins = score_corpus(tool, root, entries, moved)
 
     for rel in need_entry:
-        if is_header(rel) or rel in UNSCORED:
+        if is_header(rel) or (rel in UNSCORED and rel not in entries):
             continue
         if rel not in entries:
             raise Refusal("%s has no exact compile-database entry (clang-tidy "

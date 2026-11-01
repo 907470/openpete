@@ -53,9 +53,11 @@ SCOPE_EXCLUDE = re.compile(
 SOURCE_EXT = (".c", ".cc", ".cpp", ".cxx")
 HEADER_EXT = (".h", ".hh", ".hpp", ".inc")
 
-# Tracked in-scope sources that no linux-release target compiles. Acted on
-# without refusal, never given rows. Self-checked on every run: each path is
-# tracked and absent from the database, else the list is stale.
+# Tracked in-scope sources that no linux-release target compiles. A path
+# with no entry in the loaded database is acted on without refusal and
+# given no rows. Self-checked on every run: each path is tracked, and a
+# path outside CONFIG_GATED is absent from the database, else the list is
+# stale.
 UNSCORED = (
     "games/common/recomp_build.cpp",            # OPENPETE_RECOMP_FIRST_BOOT=ON
     "games/common/recomp_extract_wad_entry.cpp", # OPENPETE_RECOMP_FIRST_BOOT=ON
@@ -64,6 +66,19 @@ UNSCORED = (
     "tests/unit/sdk_windows_include_test.c",    # cross-compiled by check_sdk_windows_include.sh
     "core/mods/sdk/openpete_mod_abi.c",         # shipped SDK source, built with mods
 )
+
+# The UNSCORED sources a CMake option compiles into another preset's build
+# (the launcher presets set OPENPETE_RECOMP_FIRST_BOOT=ON; a static-linkage
+# configure compiles recomp_attach_static.c). The database decides: under a
+# configuration that compiles one, its entry is present and the source is
+# scored, baselined and documented like any other; with no entry it is
+# UNSCORED. The option is the reason, not a test: a preset can set it as a
+# normal variable, which the CMakeCache.txt does not record.
+CONFIG_GATED = {
+    "games/common/recomp_build.cpp": "OPENPETE_RECOMP_FIRST_BOOT",
+    "games/common/recomp_extract_wad_entry.cpp": "OPENPETE_RECOMP_FIRST_BOOT",
+    "games/common/recomp_attach_static.c": "OPENPETE_RECOMP_LINKAGE",
+}
 
 # Tracked sources outside games/ that a target compiles only when the named
 # game is configured. Under a partial OPENPETE_GAMES without that game they
@@ -556,13 +571,15 @@ def check_unscored(root, entries, fence, complete=False):
             raise Refusal("GAME_GATED list is stale: %s is not tracked. Edit "
                           "GAME_GATED in scripts/fences/ratchet_lib.py." % p)
     for p in unscored:
-        if p not in tracked or p in entries:
+        if p not in tracked or (p in entries and p not in CONFIG_GATED):
             raise Refusal("UNSCORED list is stale: %s is %s. Edit UNSCORED in "
                           "scripts/fences/ratchet_lib.py." % (
                               p, "in the compile database" if p in entries
                               else "not tracked"))
-    say("%s: UNSCORED (no linux-release entry): %d sources"
-        % (fence.name, len(unscored)))
+    gated = sorted(p for p in unscored if p in entries)
+    say("%s: UNSCORED (no entry in this database): %d sources%s"
+        % (fence.name, len(unscored) - len(gated),
+           "; scored here by configuration: " + ", ".join(gated) if gated else ""))
     return unconfigured
 
 

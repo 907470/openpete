@@ -1130,7 +1130,7 @@ def mode_hook(root):
         lib.check_unscored(root, entries, FENCE)
         renames, acted_files, need_entry, moved = lib.acted_on_paths(root, base, scope)
         for rel in need_entry:
-            if is_header(rel) or rel in lib.UNSCORED:
+            if is_header(rel) or (rel in lib.UNSCORED and rel not in entries):
                 continue
             if rel not in entries:
                 raise Refusal("%s has no exact compile-database entry. Run: %s"
