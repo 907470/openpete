@@ -539,6 +539,13 @@ def case_window_fit(a):
         ("small", "1366x768,1366x728", {}, "clamped to 90% of the usable bounds", (1048, 655), False, None),
         ("small-unstubbed", ("1366x768", 40), {}, "clamped to 90% of the usable bounds", (1048, 655), False,
          None),
+        # The outer size decides: the client fits the usable height, the client plus a 38 px title bar
+        # fits only the full height (a 1080p screen at 125% under a taskbar, at 1280x800 scale).
+        ("titlebar-none", "1280x840,1280x810", {}, "as requested", (1280, 800), False, None),
+        ("titlebar", "1280x840,1280x810", {"OPENPETE_LAUNCHER_DECORATION_STUB": "0x38"}, "maximized",
+         (1280, 800), True, None),
+        ("titlebar-small", "1366x768,1366x728", {"OPENPETE_LAUNCHER_DECORATION_STUB": "16x39"},
+         "clamped to 90% of the usable bounds", (986, 616), False, None),
         ("gamescope", "1920x1080,1920x1040", {"GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0"},
          "at the gamescope output size", (1920, 1080), False, None),
     ]
@@ -550,7 +557,7 @@ def case_window_fit(a):
         if isinstance(where, str):
             e["OPENPETE_LAUNCHER_DISPLAY_STUB"] = where
         rc, log = launch(a.binary, d, tag, ["--launcher-window", "1280x800"], e, screen=screen, panel=panel)
-        fit = re.search(r"window fit: request 1280x800, display (\d+x\d+), usable (\d+x\d+): opens (.+) \((\d+)x(\d+)\)", log)
+        fit = re.search(r"window fit: request 1280x800, display (\d+x\d+), usable (\d+x\d+): opens (.+?) \((\d+)x(\d+)\)", log)
         dev = re.search(r"launcher device \S+ created on window \S+ \((\d+)x(\d+)(, maximized)?", log)
         m = read_json(os.path.join(d, "m-" + tag + ".drop.json"))
         got = None

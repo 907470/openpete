@@ -53,6 +53,7 @@
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_time.h"
+#include "openpete_window_restack.h"
 
 #include <algorithm>
 #include <atomic>
@@ -686,6 +687,15 @@ constexpr bool kScaleDesignSize = true;
 constexpr bool kScaleDesignSize = false;
 #endif
 
+/** @brief Read the primary display's content scale, or the harness variable OPENPETE_LAUNCHER_CONTENT_SCALE=<f> when it is set.
+ *
+ * @return The scale; 0 when SDL cannot read it. */
+float launcher_content_scale() {
+    if (const char* e = getenv("OPENPETE_LAUNCHER_CONTENT_SCALE"); e && *e) return strtof(e, nullptr);
+    const SDL_DisplayID d = SDL_GetPrimaryDisplay();
+    return d ? SDL_GetDisplayContentScale(d) : 0.0f;
+}
+
 /** @brief Scale the launcher's design size by the primary display's content scale on Windows, so it opens at the same apparent size at 150% or 200% as at 100%; elsewhere leave it as it is.
  *
  * Only the design size is scaled: a --launcher-window or --window size is
@@ -696,11 +706,7 @@ constexpr bool kScaleDesignSize = false;
  * @param w The design width; receives the requested width.
  * @param h The design height; receives the requested height. */
 void launcher_design_scale(int* w, int* h) {
-    float scale = 0.0f;
-    if (const char* e = getenv("OPENPETE_LAUNCHER_CONTENT_SCALE"); e && *e)
-        scale = strtof(e, nullptr);
-    else if (const SDL_DisplayID d = SDL_GetPrimaryDisplay(); d)
-        scale = SDL_GetDisplayContentScale(d);
+    const float scale = launcher_content_scale();
     const int dw = *w, dh = *h;
     if (kScaleDesignSize) openpete_launcher_scale_size(w, h, scale);
     OPL_INFO_F("launcher", "window scale: content scale %.2f, design size %dx%d: requests %dx%d (%s)",
@@ -729,42 +735,125 @@ bool display_bounds(DisplayBounds* b) {
     return true;
 }
 
-/** @brief Fit the launcher window's requested windowed size to the display: as requested when it fits the usable bounds, maximized when it fits only the full bounds, else clamped to 90% of the usable bounds at the request's aspect; under gamescope the output size.
+/* The fit taken before the window exists, kept for the check against the
+ * decorations the window reports once created (launcher_window_refit). */
+struct WindowFit {
+    bool active = false;  /* a fit decision was taken (not gamescope, not maximized or fullscreen) */
+    int rw = 0, rh = 0;   /* the requested client size */
+    int dw = 0, dh = 0;   /* the decorations the decision counted */
+    DisplayBounds b{};
+    openpete_launcher_fit_how how = OPENPETE_LAUNCHER_FIT_AS_REQUESTED;
+};
+WindowFit s_fit;
+
+/** @brief Name a fit decision for the log.
+ * @param how The decision.
+ * @return Its log text. */
+const char* fit_how_text(openpete_launcher_fit_how how) {
+    switch (how) {
+    case OPENPETE_LAUNCHER_FIT_MAXIMIZED: return "maximized";
+    case OPENPETE_LAUNCHER_FIT_CLAMPED: return "clamped to 90% of the usable bounds";
+    case OPENPETE_LAUNCHER_FIT_AS_REQUESTED: break;
+    }
+    return "as requested";
+}
+
+/** @brief Read the decorations the launcher window will add before it exists: the harness variable OPENPETE_LAUNCHER_DECORATION_STUB=<W>x<H>, else the platform estimate (openpete_window_decoration_estimate; Win32 only, 0 elsewhere).
+ *
+ * @param dw Receives the decorations' total width.
+ * @param dh Receives the decorations' total height.
+ * @return Where the size came from, for the log. */
+const char* decoration_estimate(int* dw, int* dh) {
+    *dw = *dh = 0;
+    if (const char* e = getenv("OPENPETE_LAUNCHER_DECORATION_STUB"); e && *e)
+        return sscanf(e, "%dx%d", dw, dh) == 2 ? "stubbed" : "unreadable stub, none";
+    return openpete_window_decoration_estimate(launcher_content_scale(), dw, dh)
+               ? "estimated from the frame style"
+               : "not known before the window maps";
+}
+
+/** @brief Fit the launcher window's requested client size with its decorations to the display: as requested when the outer size fits the usable bounds, maximized when it fits only the full bounds, else clamped to 90% of the usable bounds at the request's aspect; under gamescope the output size.
  *
  * Sizes are SDL window coordinates: on Wayland and macOS a request opens
  * at the same apparent size on a scaled display as on an unscaled one; on
  * Windows they are pixels, and the design size arrives scaled
- * (launcher_design_scale). The rule is openpete_launcher_fit. A request already
- * maximized or fullscreen, or a display whose bounds cannot be read, is
- * left as it is. Gamescope sets GAMESCOPE_WAYLAND_DISPLAY for every child it
+ * (launcher_design_scale). The decorations are decoration_estimate's: the
+ * frame and title bar on Windows, 0 where the size is not known before the
+ * window maps (X11, Wayland, macOS), where the client size alone is
+ * compared. The rule is openpete_launcher_fit. A request already maximized
+ * or fullscreen, or a display whose bounds cannot be read, is left as it
+ * is. Gamescope sets GAMESCOPE_WAYLAND_DISPLAY for every child it
  * launches; its output is the display's full bounds. The decision is
  * logged.
  * @param w The requested width; receives the width the window opens at.
  * @param h The requested height; receives the height.
  * @param open The OPENPETE_WINDOW_OPEN_* bits; gains MAXIMIZED when the
- *             request fits only the full bounds. */
+ *             outer size fits only the full bounds. */
 void launcher_window_fit(int* w, int* h, int* open) {
     DisplayBounds b;
+    s_fit.active = false;
     if ((*open & (OPENPETE_WINDOW_OPEN_MAXIMIZED | OPENPETE_WINDOW_OPEN_FULLSCREEN)) ||
         !display_bounds(&b) || b.use_w <= 0 || b.use_h <= 0)
         return;
     const int rw = *w, rh = *h;
+    int dw = 0, dh = 0;
+    const char* from = "none under gamescope";
     const char* how = "at the gamescope output size";
     if (const char* gs = getenv("GAMESCOPE_WAYLAND_DISPLAY"); gs && *gs) {
         *w = b.full_w;
         *h = b.full_h;
     } else {
-        switch (openpete_launcher_fit(rw, rh, b.full_w, b.full_h, b.use_w, b.use_h, w, h)) {
-        case OPENPETE_LAUNCHER_FIT_AS_REQUESTED: how = "as requested"; break;
-        case OPENPETE_LAUNCHER_FIT_MAXIMIZED:
-            *open |= OPENPETE_WINDOW_OPEN_MAXIMIZED;
-            how = "maximized";
-            break;
-        case OPENPETE_LAUNCHER_FIT_CLAMPED: how = "clamped to 90% of the usable bounds"; break;
-        }
+        from = decoration_estimate(&dw, &dh);
+        const openpete_launcher_fit_how fit =
+            openpete_launcher_fit(rw, rh, dw, dh, b.full_w, b.full_h, b.use_w, b.use_h, w, h);
+        if (fit == OPENPETE_LAUNCHER_FIT_MAXIMIZED) *open |= OPENPETE_WINDOW_OPEN_MAXIMIZED;
+        how = fit_how_text(fit);
+        s_fit = {true, rw, rh, dw, dh, b, fit};
     }
-    OPL_INFO_F("launcher", "window fit: request %dx%d, display %dx%d, usable %dx%d: opens %s (%dx%d)",
-               rw, rh, b.full_w, b.full_h, b.use_w, b.use_h, how, *w, *h);
+    OPL_INFO_F("launcher", "window fit: request %dx%d, display %dx%d, usable %dx%d: opens %s (%dx%d); "
+               "decorations %dx%d (%s), outer %dx%d",
+               rw, rh, b.full_w, b.full_h, b.use_w, b.use_h, how, *w, *h, dw, dh, from, *w + dw, *h + dh);
+}
+
+/** @brief Check the fit against the decorations the created window reports (SDL_GetWindowBordersSize) and correct the window when they change the decision: maximize it, or resize it to the clamp.
+ *
+ * Runs once, right after the window is created, when launcher_window_fit
+ * took a decision. SDL measures the decorations on Windows and X11; Wayland
+ * and macOS report none, and X11 reports 0 until the window manager's frame
+ * extents arrive, so a measurement of 0 is no measurement and leaves the
+ * window as it is. On Windows the measurement is the frame the estimate
+ * computed, so a correction there means the window opened on a display
+ * whose DPI differs from the primary's. The measurement and any correction
+ * are logged.
+ * @param w The width the window opened at; receives the corrected width.
+ * @param h The height; receives the corrected height.
+ * @param open The OPENPETE_WINDOW_OPEN_* bits; gains MAXIMIZED when the
+ *             correction maximizes. */
+void launcher_window_refit(int* w, int* h, int* open) {
+    if (!s_fit.active || (*open & OPENPETE_WINDOW_OPEN_MAXIMIZED)) return;
+    SDL_Window* win = openpete_native_launcher_window();
+    int top = 0, left = 0, bottom = 0, right = 0;
+    if (!win || !SDL_GetWindowBordersSize(win, &top, &left, &bottom, &right)) return;
+    const int dw = left + right, dh = top + bottom;
+    if (dw == 0 && dh == 0) return;
+    int fw = 0, fh = 0;
+    const openpete_launcher_fit_how fit = openpete_launcher_fit(
+        s_fit.rw, s_fit.rh, dw, dh, s_fit.b.full_w, s_fit.b.full_h, s_fit.b.use_w, s_fit.b.use_h, &fw, &fh);
+    const bool change = fit != s_fit.how || fw != *w || fh != *h;
+    OPL_INFO_F("launcher", "window fit: measured decorations %dx%d (top %d, left %d, bottom %d, right %d), "
+               "estimated %dx%d: %s%s",
+               dw, dh, top, left, bottom, right, s_fit.dw, s_fit.dh, change ? "reopens " : "unchanged, ",
+               fit_how_text(fit));
+    if (!change) return;
+    if (fit == OPENPETE_LAUNCHER_FIT_MAXIMIZED) {
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_MAXIMIZE, 0, 0);
+        *open |= OPENPETE_WINDOW_OPEN_MAXIMIZED;
+    } else {
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESIZE, fw, fh);
+    }
+    *w = fw;
+    *h = fh;
+    s_fit.how = fit;
 }
 
 /** @brief Take the state the launcher window was asked to open in as the untouched state.
@@ -837,6 +926,7 @@ int launcher_open(const openpete_options_t* opts, int continues) {
         open_failed(openpete_native_launcher_error(), continues);
         return -1;
     }
+    if (!s.handed_off) launcher_window_refit(&w, &h, &open);
     window_state_init(opts, w, h, open);
     (void)launcher_body_font();
     launcher_stamp(LAUNCHER_EV_WINDOW);

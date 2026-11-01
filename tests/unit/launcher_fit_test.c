@@ -7,7 +7,12 @@
  * 1.25, 1.5 and 2.0 run against 1920x1080, 2560x1440 and 3840x2160 displays
  * whose usable bounds are 48 px shorter (a taskbar), plus two displays where
  * the scaled size fits only the full bounds, so the maximized arm is reached.
- * Each row's opened size and decision are asserted and printed. */
+ * Rows with no decorations compare the client size alone, as on X11,
+ * Wayland and macOS, where the decorations are not known before the window
+ * maps. Rows with decorations add the Win32 frame of a resizable window at
+ * the row's DPI (AdjustWindowRectExForDpi: 16x39 at 96 DPI, 20x49 at 120,
+ * 24x58 at 144, 32x78 at 192), so the outer size is compared, as on
+ * Windows. Each row's opened size and decision are asserted and printed. */
 
 #include "openpete_launcher_fit.h"
 
@@ -17,6 +22,7 @@
 typedef struct {
     int full_w, full_h; /**< Display bounds. */
     float scale;        /**< Display content scale. */
+    int dw, dh;         /**< Decorations' total width and height (0 where not known before the window maps). */
     int w, h;           /**< Expected opened size. */
     openpete_launcher_fit_how how; /**< Expected decision. */
 } Row;
@@ -27,20 +33,30 @@ int main(void)
 {
     static const char* const kHow[] = {"as requested", "maximized", "clamped"};
     static const Row rows[] = {
-        {1920, 1080, 1.0f, 1280, 800, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {1920, 1080, 1.25f, 1600, 1000, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {1920, 1080, 1.5f, 1486, 929, OPENPETE_LAUNCHER_FIT_CLAMPED},
-        {1920, 1080, 2.0f, 1486, 929, OPENPETE_LAUNCHER_FIT_CLAMPED},
-        {2560, 1440, 1.0f, 1280, 800, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {2560, 1440, 1.25f, 1600, 1000, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {2560, 1440, 1.5f, 1920, 1200, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {2560, 1440, 2.0f, 2004, 1253, OPENPETE_LAUNCHER_FIT_CLAMPED},
-        {3840, 2160, 1.0f, 1280, 800, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {3840, 2160, 1.25f, 1600, 1000, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {3840, 2160, 1.5f, 1920, 1200, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {3840, 2160, 2.0f, 2560, 1600, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
-        {1920, 1200, 1.5f, 1920, 1200, OPENPETE_LAUNCHER_FIT_MAXIMIZED},
-        {2560, 1600, 2.0f, 2560, 1600, OPENPETE_LAUNCHER_FIT_MAXIMIZED},
+        {1920, 1080, 1.0f, 0, 0, 1280, 800, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {1920, 1080, 1.25f, 0, 0, 1600, 1000, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {1920, 1080, 1.5f, 0, 0, 1486, 929, OPENPETE_LAUNCHER_FIT_CLAMPED},
+        {1920, 1080, 2.0f, 0, 0, 1486, 929, OPENPETE_LAUNCHER_FIT_CLAMPED},
+        {2560, 1440, 1.0f, 0, 0, 1280, 800, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {2560, 1440, 1.25f, 0, 0, 1600, 1000, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {2560, 1440, 1.5f, 0, 0, 1920, 1200, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {2560, 1440, 2.0f, 0, 0, 2004, 1253, OPENPETE_LAUNCHER_FIT_CLAMPED},
+        {3840, 2160, 1.0f, 0, 0, 1280, 800, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {3840, 2160, 1.25f, 0, 0, 1600, 1000, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {3840, 2160, 1.5f, 0, 0, 1920, 1200, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {3840, 2160, 2.0f, 0, 0, 2560, 1600, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {1920, 1200, 1.5f, 0, 0, 1920, 1200, OPENPETE_LAUNCHER_FIT_MAXIMIZED},
+        {2560, 1600, 2.0f, 0, 0, 2560, 1600, OPENPETE_LAUNCHER_FIT_MAXIMIZED},
+        {1920, 1080, 1.0f, 16, 39, 1280, 800, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {1920, 1080, 1.25f, 20, 49, 1600, 1000, OPENPETE_LAUNCHER_FIT_MAXIMIZED},
+        {1920, 1080, 1.5f, 24, 58, 1393, 871, OPENPETE_LAUNCHER_FIT_CLAMPED},
+        {1920, 1080, 2.0f, 32, 78, 1361, 851, OPENPETE_LAUNCHER_FIT_CLAMPED},
+        {2560, 1440, 1.25f, 20, 49, 1600, 1000, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {2560, 1440, 1.5f, 24, 58, 1920, 1200, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {2560, 1440, 2.0f, 32, 78, 1880, 1175, OPENPETE_LAUNCHER_FIT_CLAMPED},
+        {3840, 2160, 2.0f, 32, 78, 2560, 1600, OPENPETE_LAUNCHER_FIT_AS_REQUESTED},
+        {1920, 1200, 1.5f, 24, 58, 1566, 979, OPENPETE_LAUNCHER_FIT_CLAMPED},
+        {1680, 1050, 1.25f, 20, 49, 1600, 1000, OPENPETE_LAUNCHER_FIT_MAXIMIZED},
     };
     int bad = 0, seen[3] = {0, 0, 0};
     for (unsigned i = 0; i < sizeof rows / sizeof rows[0]; i++) {
@@ -48,11 +64,13 @@ int main(void)
         int rw = 1280, rh = 800, w = 0, h = 0;
         openpete_launcher_scale_size(&rw, &rh, r->scale);
         const openpete_launcher_fit_how how =
-            openpete_launcher_fit(rw, rh, r->full_w, r->full_h, r->full_w, r->full_h - 48, &w, &h);
+            openpete_launcher_fit(rw, rh, r->dw, r->dh, r->full_w, r->full_h, r->full_w, r->full_h - 48, &w, &h);
         const int ok = how == r->how && w == r->w && h == r->h;
         seen[how]++;
-        printf("%s display %dx%d usable %dx%d scale %.2f: request %dx%d opens %s %dx%d", ok ? "ok  " : "FAIL",
-               r->full_w, r->full_h, r->full_w, r->full_h - 48, (double)r->scale, rw, rh, kHow[how], w, h);
+        printf("%s display %dx%d usable %dx%d scale %.2f decorations %dx%d: request %dx%d (outer %dx%d) opens %s "
+               "%dx%d (outer %dx%d)",
+               ok ? "ok  " : "FAIL", r->full_w, r->full_h, r->full_w, r->full_h - 48, (double)r->scale, r->dw,
+               r->dh, rw, rh, rw + r->dw, rh + r->dh, kHow[how], w, h, w + r->dw, h + r->dh);
         if (!ok) printf(" (expected %s %dx%d)", kHow[r->how], r->w, r->h);
         printf("\n");
         bad += !ok;
