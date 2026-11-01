@@ -1264,8 +1264,17 @@ def mode_hook(root):
     sel = select_all(linux, mingw, None if whole else sources)
     mode = "hook (%s; %s)" % ("whole tree: a staged header" if whole
                               else "%d staged source(s)" % len(sources), inputs)
-    if not any(sel.values()) and sources:
-        raise Refusal("VACUOUS: zero TUs analysed for %d staged source(s)" % len(sources))
+    # A source on the UNSCORED list has no entry in either database by
+    # design (a launcher-preset-only TU): it is not analysable, so a commit
+    # staging only such sources has nothing to analyse rather than a
+    # vacuous analysis.
+    analysable = {f for f in sources if f not in lib.UNSCORED}
+    if not whole and sources and not analysable:
+        say("thread-roles: staged sources are all UNSCORED (no compile-database entry by design): %s"
+            % ", ".join(sorted(sources)))
+        return 0
+    if not any(sel.values()) and analysable:
+        raise Refusal("VACUOUS: zero TUs analysed for %d staged source(s)" % len(analysable))
     tables, ctx, results, wall = run_analysis(root, sel, jobs(), mode)
     rc, _ = report(root, tables, ctx, results, wall, set(scope), mode)
     marks = marker_refusals(root, base, scope)
