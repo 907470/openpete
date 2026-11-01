@@ -5836,13 +5836,23 @@ static void nr_set_create_hooks(void)
     rhi_set_create_hooks(&hooks);
 }
 
+static bool s_pcache_off;   /* openpete_native_launcher_pipeline_cache_off */
+
+void openpete_native_launcher_pipeline_cache_off(void) { s_pcache_off = true; }
+
 /** @brief Point the RHI's pipeline cache at the per-user state "cache" directory, created on demand.
  *
  * Compiled pipelines then persist per GPU, driver and engine build across
- * runs; when the directory cannot be resolved the cache stays in memory. */
+ * runs; when the directory cannot be resolved, or after
+ * openpete_native_launcher_pipeline_cache_off, the cache stays in memory. */
 static void nr_set_pipeline_cache_dir(void)
 {
     char dir[1024];
+    if (s_pcache_off) {
+        rhi_set_pipeline_cache_dir(NULL, openpete_build_version(), NULL);
+        OPL_INFO_F("native", "%s", "pipeline cache: in memory only (openpete_native_launcher_pipeline_cache_off)");
+        return;
+    }
     rhi_set_pipeline_cache_dir(openpete_paths_state_dir("cache", dir, sizeof dir, 1) == 0 ? dir : NULL,
                                openpete_build_version(), op_atomic_write_file);
 }

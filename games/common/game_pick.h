@@ -28,7 +28,8 @@ extern "C" {
  * dumps) takes the game --game names when it is linked, else the first
  * linked game, whose entry runs it. Otherwise the log opens, the library
  * lock is taken (a second launcher process ends here with
- * OPENPETE_EXIT_SETUP_ERROR), and the launcher resolves the disc over every
+ * OPENPETE_EXIT_SETUP_ERROR, windowed after showing the refusal on the game
+ * page until the next command, openpete_launcher_refuse), and the launcher resolves the disc over every
  * game's entries: the launch-time module rebuilds, an --ingest image, the
  * --game entry or the selector's pick, each pick's game installed and its
  * module built in the launcher (openpete_launcher_resolve). The game

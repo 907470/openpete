@@ -8,7 +8,9 @@
 // its game's picture (launcher_page_set_picture) when one is set; else a
 // game with a library disc shows the vertical fill ramp, and a game without
 // one the empty-box drawing (the fill ramp, a disc outline and the game's
-// name in the body font); a game with a library disc adds its title logo,
+// name in the body font), as does a game whose library entry holds a failed
+// module build (launcher_page_set_failed); any other game with a library
+// disc adds its title logo,
 // centred and overlapping the frame's top edge by a quarter of the logo's
 // height. The focused box tints its frame toward its focus palette and grows
 // to 1.08x about its centre, easing with a 40 ms time constant. Every shape
@@ -484,6 +486,7 @@ struct BoxState {
     Image logo, picture;
     op_time_t logo_tried = 0;   /* the last logo read attempt; 0 for none */
     unsigned picture_gen = ~0u; /* launcher_picture_gen at the last picture read; ~0 for none */
+    bool failed = false;        /* the owning entry holds a failed module build (launcher_page_set_failed) */
 };
 
 std::deque<BoxState> s_boxes;    /* by game, in first-seen order; a push keeps references valid */
@@ -814,14 +817,16 @@ int launcher_page_draw(const char* const* entry_games, int count, int focus, int
         const Box& bx = boxes[i];
         const Rect b = scaled(rects[i], bx.st->scale);
         if (box_input(i, b, hovered)) act = activation(bx);
-        if (bx.st->picture.tex) draw_picture(dl, bx, b);
+        const bool failed = bx.entry >= 0 && bx.st->failed;
+        if (failed) draw_empty(dl, bx, b, rects[i]);   /* the failed build: the game's name, no logo */
+        else if (bx.st->picture.tex) draw_picture(dl, bx, b);
         else if (bx.entry >= 0) draw_fill(dl, bx, b);   /* the logo names an ingested game */
         else draw_empty(dl, bx, b, rects[i]);
         const int v0 = dl->VtxBuffer.Size;
         draw_frame(dl, bx, b, std::clamp((bx.st->scale - 1.0f) / (kGrow - 1.0f), 0.0f, 1.0f));
         counts += " " + bx.st->game + " frame " + std::to_string(dl->VtxBuffer.Size - v0) + " vertices" +
-                  (bx.entry >= 0 ? (bx.st->logo.tex ? ", logo" : ", no logo yet") : ", empty");
-        if (bx.entry >= 0 && bx.st->logo.tex) draw_logo(dl, bx, b);
+                  (failed ? ", failed build" : bx.entry >= 0 ? (bx.st->logo.tex ? ", logo" : ", no logo yet") : ", empty");
+        if (!failed && bx.entry >= 0 && bx.st->logo.tex) draw_logo(dl, bx, b);
     }
     if (opening)
         OPL_INFO_F("launcher", "game page: %zu boxes at %.0fx%.0f, box %d focused:%s", boxes.size(), d.x, d.y,
@@ -854,6 +859,31 @@ bool launcher_page_owns_box(const char* const* entry_games, int i) {
     for (const Box& bx : page_boxes(entry_games, i + 1))
         if (bx.entry == i) return true;
     return false;
+}
+
+void launcher_page_set_failed(const char* game, bool failed) {
+    for (BoxState& b : s_boxes) {
+        if (game && b.game != game) continue;
+        if (b.failed != failed)
+            OPL_INFO_F("launcher", "game page: box of %s %s", b.game.c_str(),
+                       failed ? "shows the failed-build drawing" : "no longer shows the failed-build drawing");
+        b.failed = failed;
+    }
+    if (game && failed) {
+        bool known = false;
+        for (const BoxState& b : s_boxes) known = known || b.game == game;
+        if (!known) {
+            box_state(game).failed = true;
+            OPL_INFO_F("launcher", "game page: box of %s shows the failed-build drawing", game);
+        }
+    }
+}
+
+float launcher_page_row_bottom(float w, float h) {
+    const size_t n = page_games().size();
+    if (n == 0) return 0.45f * h;
+    const Rect g = scaled(box_rects(n, w, h)[0], kGrow);
+    return g.y + g.h;
 }
 
 void launcher_page_closed(void) {

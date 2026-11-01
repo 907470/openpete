@@ -258,6 +258,9 @@ int openpete_native_launcher_shot(struct rhi_device *dev, const char *path, cons
  * @return The create infos queued; 0 when skipped or already started. */
 int openpete_native_launcher_precompile_start(const openpete_options_t *opts);
 
+/** @brief Keep the pipeline cache of the next device openpete_native_launcher_open creates in memory only: nothing is read from or written to the state "cache" directory. */
+void openpete_native_launcher_pipeline_cache_off(void);
+
 /** @brief Step the launcher's precompile: submit walk jobs in place of those that returned, and end the walk once every job has returned.
  *
  * Display owner only (the launcher's thread). Clears the pending wake, so

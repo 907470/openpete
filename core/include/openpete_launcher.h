@@ -195,7 +195,9 @@ void openpete_launcher_begin(const openpete_launcher_game* game,
  *         OPENPETE_EXIT_SETUP_ERROR when the drop screen is needed and the
  *         device cannot be created, or, without screens, when the picked
  *         entry's module build failed or its failed-build marker names this
- *         build. */
+ *         build, or the --ingest image was refused before the copy (with
+ *         screens a refusal or a failed build shows the game page with its
+ *         message panel instead). */
 int  openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
                                size_t module_cap, int* exit_now);
 
@@ -208,6 +210,16 @@ int  openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
  * @return 0 when taken (or already held), -1 when another process holds it,
  *         -2 when the lock file cannot be opened or locked. */
 int  openpete_launcher_lock(void);
+
+/** @brief Show a refusal on the launcher's game page and wait for the next command, which quits: the form of a launch that may do nothing (another process holds the library lock).
+ *
+ * Opens the launcher's window without the pipeline precompile and with the
+ * pipeline cache in memory only, so the run writes no pipeline cache; draws
+ * the message panel with no box; any command, a click, a dropped disc or
+ * the window closing quits. Then closes everything it opened.
+ * @param text The message.
+ * @return 0 after the quit, -1 when screens cannot show (headless, or no device). */
+int  openpete_launcher_refuse(const char* text);
 
 /** @brief Report whether the launcher job running on the calling thread was asked to stop, or the player quit during work.
  *

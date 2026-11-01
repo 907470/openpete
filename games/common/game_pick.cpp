@@ -285,6 +285,11 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
                         "above); nothing was done");
             std::fprintf(stderr, "openpete: the library folder cannot be locked; see the log\n");
         }
+        /* Windowed, the refusal shows on the game page until the next command. */
+        (void)openpete_launcher_refuse(lock == -1 ? "Another OpenPete is preparing a game.\nTry again when it has "
+                                                    "started."
+                                                  : "The library folder cannot be locked.\nThe log file names "
+                                                    "the reason.");
         *exit_code = OPENPETE_EXIT_SETUP_ERROR;
         return nullptr;
     }

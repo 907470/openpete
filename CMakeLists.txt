@@ -1680,7 +1680,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                                 sky-cache sky-reveal
                                 preview preview-hold preview-stop
                                 quit-copy quit-translate quit-build quit-assets quit-east-once
-                                quit-east-twice quit-escape quit-close quit-page-sigterm)
+                                quit-east-twice quit-escape quit-close quit-page-sigterm error-refuse error-staged error-build)
             add_test(NAME launcher_flow_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_flow.py

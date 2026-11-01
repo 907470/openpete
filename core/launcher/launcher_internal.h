@@ -11,6 +11,7 @@
 #define LAUNCHER_LIB_FAILED (-1)   /* ingest failure or an unreadable entry */
 #define LAUNCHER_LIB_QUIT   (-2)   /* the player quit the version selector */
 #define LAUNCHER_LIB_BUILD_FAILED (-3)   /* without screens: the picked entry's module build failed */
+#define LAUNCHER_LIB_REFUSED (-4)   /* without screens: the --ingest image was refused before the copy */
 
 /* launcher_select results besides an index. */
 #define LAUNCHER_SEL_QUIT     (-1)  /* the player quit */
@@ -66,7 +67,9 @@ const openpete_launcher_game* launcher_game(void);
  * quit") and a second press within LAUNCHER_QUIT_ASK_MS quits; a file
  * dropped on the window, or chosen in the file dialog Space or the
  * gamepad's west button opens, returns LAUNCHER_SEL_DROPPED with its path in
- * launcher_dropped_path. Entries that own no box are logged. The harness
+ * launcher_dropped_path. While the message panel shows (launcher_panel_raise)
+ * the next command or click only dismisses it; Escape, the window closing
+ * and a drop act after the dismissal. Entries that own no box are logged. The harness
  * variable OPENPETE_LAUNCHER_DROP acts as a drop after the first frame, and
  * without a screen at once (launcher_scripted_drop);
  * OPENPETE_LAUNCHER_SELECT set to an index below @p count picks that entry
@@ -353,7 +356,8 @@ bool launcher_title_drawn(float rect[4]);
  *
  * Boxes are indexed left to right. Each box belongs to the first entry of
  * its game in @p entry_games, the most recently played when the entries come
- * most recent first. The hand cursor shows over a box. The first present
+ * most recent first. A box whose entry holds a failed module build
+ * (launcher_page_set_failed) draws the empty-box drawing and no logo. The hand cursor shows over a box. The first present
  * after launcher_page_closed shows every box at its target size; later
  * presents ease the growth toward it. A box's title logo is read through
  * openpete_launcher_game.load_logo until the cache holds one.
@@ -443,5 +447,68 @@ struct ImFont;
  * @return The font, or NULL without an imgui context or when it could not
  *         be added. */
 ImFont* launcher_body_font(void);
+
+/* ---- the game page's message panel (launcher_panel.cpp) ---- */
+
+/** @brief Show a message on the game page's panel, replacing any shown, and log it.
+ *
+ * Without screens the message is only logged.
+ * @param err The openpete_error_t whose id and URL the panel's last line
+ *        names, or -1 for none.
+ * @param text The message, lines separated by newline characters.
+ * @param quits true when the panel's dismissal quits the launcher. */
+void launcher_panel_raise(int err, const char* text, bool quits);
+
+/** @brief Report whether the panel shows.
+ *
+ * @return true while a message is raised and not dismissed. */
+bool launcher_panel_shown(void);
+
+/** @brief Report whether the shown panel's dismissal quits the launcher.
+ *
+ * @return true for a shown panel raised with quits. */
+bool launcher_panel_quits(void);
+
+/** @brief Report whether the shown panel's last draw had its fill at full opacity: the domes covered the background.
+ *
+ * @return true for a shown panel last drawn at dome cover 1. */
+bool launcher_panel_full(void);
+
+/** @brief Dismiss the shown panel, logging the command that did it.
+ *
+ * @param why The command, for the log. */
+void launcher_panel_dismiss(const char* why);
+
+/** @brief Draw the shown panel into the current imgui window: the message's lines centred (wrapped to the panel's widest, 86% of the window), the error reference below them, inside Spyro 3's dialogue box at half opacity times the sky's dome cover (launcher_sky_cover); recorded in the element manifest.
+ *
+ * The box's top is 14 layout px below @p top, raised to keep a 12 layout px
+ * margin at the window's bottom. The first draw of each message is logged
+ * with its rect and the dome cover, and the first draw of its fill.
+ * @param scale Window pixels per layout pixel.
+ * @param top The bottom of the game page's box row (launcher_page_row_bottom). */
+void launcher_panel_draw(float scale, float top);
+
+/** @brief Raise the panel for a module build that failed and give the game's box its failed-build drawing (launcher_page_set_failed).
+ *
+ * The message names the game, the step and the log file. Without screens
+ * the message is only logged and no box is marked.
+ * @param game The game id.
+ * @param name The game's display name, or NULL for the id.
+ * @param step The failed step's progress text; "" or NULL for the start. */
+void launcher_panel_build_failed(const char* game, const char* name, const char* step);
+
+/** @brief Mark a game's box as holding a failed module build: the box draws the empty-box drawing with the game's name in place of its picture, fill and logo, and still activates its entry.
+ *
+ * A change is logged. A NULL @p game clears every box's mark.
+ * @param game The game id, or NULL for every game.
+ * @param failed true for a failed build. */
+void launcher_page_set_failed(const char* game, bool failed);
+
+/** @brief Return the bottom of the game page's box row with a box grown, in window pixels: where the panel goes.
+ *
+ * @param w The window width.
+ * @param h The window height.
+ * @return The bottom; 45% of @p h when the page draws no box. */
+float launcher_page_row_bottom(float w, float h);
 
 #endif /* OPENPETE_LAUNCHER_INTERNAL_H */

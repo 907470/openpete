@@ -88,6 +88,7 @@ struct View {
     int hovered = -1;                     /* the box under the pointer this frame */
     bool quit_asked = false;              /* the east button's ask shows ("Press again to quit") */
     launcher_picker_result picked = LAUNCHER_PICKER_STAYS;   /* what a click in the drawn picker did */
+    bool clicked = false;                 /* the left mouse button was pressed this frame */
 };
 
 struct State {
@@ -109,6 +110,8 @@ struct State {
     bool task_done = false;
     bool have_progress = false;
     bool fail_deferred = false;  /* the device failed; its message waits for the next open */
+    bool panel_only = false;     /* the page draws the message panel and no box (openpete_launcher_refuse) */
+    bool no_precompile = false;  /* the window opens without the pipeline precompile */
     std::string fail_why;        /* the deferred message's reason */
     Uint32 wake_event = 0;       /* posted by the scan worker when it returns */
     SDL_AtomicInt scan_done = {};
@@ -489,22 +492,26 @@ void draw_view(void* ud) {
     else if (launcher_picker_shown()) {
         v.picked = launcher_picker_draw(f.scale, f.ox, f.oy);
     } else {
-        v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
+        if (!s.panel_only) v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
         if (v.quit_asked) draw_quit_ask(f);
+        launcher_panel_draw(f.scale, s.panel_only ? 0.45f * io.DisplaySize.y
+                                                  : launcher_page_row_bottom(io.DisplaySize.x, io.DisplaySize.y));
+        v.clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     }
     s.item_hovered = ImGui::IsAnyItemHovered();
     ImGui::End();
 }
 
 /* Shot tags, indexed by Screen, then the precompile's progress screen, then
- * the first frames showing the sky's opaque dome, the 3D title and the drawn
- * picker. */
+ * the first frames showing the sky's opaque dome, the 3D title, the drawn
+ * picker and the message panel over a full dome. */
 constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile", "sky", "title3d",
-                                    "picker"};
+                                    "picker", "panel"};
 constexpr int kShotPrecompile = 4;
 constexpr int kShotSky = 5;   /* the first frame whose sky is one opaque dome */
 constexpr int kShotTitle = 6;   /* the first frame drawing the 3D title */
 constexpr int kShotPicker = 7;  /* the first frame drawing the drawn picker */
+constexpr int kShotPanel = 8;   /* the first frame drawing the message panel's fill at full dome cover */
 
 /** @brief Return the clear colour of every launcher present: kBg, or the harness variable OPENPETE_LAUNCHER_CLEAR=r,g,b read once.
  *
@@ -572,6 +579,11 @@ void present(View& v) {
     if (!present_on(nullptr, v, (int)v.screen)) return;
     s.presented = true;
     if (launcher_sky_opaque()) maybe_shot(nullptr, kShotSky);
+    if (launcher_panel_full()) {
+        maybe_shot(nullptr, kShotPanel);
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        launcher_manifest_write((unsigned)kShotPanel, kShotTag[kShotPanel], d.x, d.y);
+    }
     if (launcher_title_drawn(nullptr)) {
         maybe_shot(nullptr, kShotTitle);
         const ImVec2 d = ImGui::GetIO().DisplaySize;
@@ -735,8 +747,9 @@ void open_failed(const std::string& why, int continues) {
  * The window takes launcher_window_request's size; before the hand-off that
  * size is fitted to the display (launcher_window_fit). A device created for a screen, before the
  * hand-off, starts the pipeline precompile on it
- * (openpete_native_launcher_precompile_start); one created at the hand-off
- * leaves the compile to bring-up.
+ * (openpete_native_launcher_precompile_start) unless a refusal opened it
+ * (openpete_launcher_refuse); one created at the hand-off leaves the
+ * compile to bring-up.
  * @param opts The options the window is created from.
  * @param continues Non-zero when the run can continue without the device
  *                  (a disc is or will be named); passed to the message.
@@ -769,7 +782,7 @@ int launcher_open(const openpete_options_t* opts, int continues) {
     (void)launcher_body_font();
     launcher_stamp(LAUNCHER_EV_WINDOW);
     open_first_gamepad();
-    if (!s.handed_off) (void)openpete_native_launcher_precompile_start(opts);
+    if (!s.handed_off && !s.no_precompile) (void)openpete_native_launcher_precompile_start(opts);
     return 0;
 }
 
@@ -1189,6 +1202,23 @@ bool scripted_pick_held() {
 
 /* page_command's result while the page stays up. */
 constexpr int kPageStays = -100;
+/* panel_command's result for a command the panel lets through. */
+constexpr int kPagePass = -101;
+
+/** @brief Take a command while the message panel shows: it dismisses the panel and is consumed, except a quit, Escape and a dropped disc, which act after the dismissal; a panel whose dismissal quits turns every command into a quit.
+ *
+ * @param a The command (Ask::None for a click, with @p clicked).
+ * @param clicked true when the command is a mouse click.
+ * @return kPagePass when no panel shows or the command acts, kPageStays when it was consumed, or LAUNCHER_SEL_QUIT. */
+int panel_command(Ask a, bool clicked) {
+    if (!launcher_panel_shown() || (a == Ask::None && !clicked)) return kPagePass;
+    static const char* const k_name[] = {"none", "quit", "escape", "east", "activate", "browse", "up", "down",
+                                         "left", "right", "a dropped disc"};
+    const bool quits = launcher_panel_quits();
+    launcher_panel_dismiss(clicked ? "a click" : k_name[(int)a]);
+    if (quits) return LAUNCHER_SEL_QUIT;
+    return a == Ask::Quit || a == Ask::Escape || a == Ask::Dropped ? kPagePass : kPageStays;
+}
 
 /** @brief Act on one command on the game page: move the focus, activate or browse for the focused box, quit at once, or ask once before quitting.
  *
@@ -1274,13 +1304,38 @@ bool dialog_poll() {
     return true;
 }
 
+/** @brief Act on what one presented frame of the game page brought: the harness drop, a due scripted pick, a click (which only dismisses a shown panel), an activated box, the drawn picker's choice, a file dialog's choice or failure.
+ *
+ * An activated box without an entry opens the file dialog (dialog_poll opens
+ * the drawn picker on its failure).
+ * @param v The frame's view.
+ * @param scripted The scripted pick's entry index, or -1.
+ * @param games Each library entry's game id.
+ * @return An entry index, LAUNCHER_SEL_QUIT, LAUNCHER_SEL_DROPPED, or kPageStays while the page stays up. */
+int page_frame_result(const View& v, int scripted, const char* const* games) {
+    if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
+    if (scripted >= 0 && scripted_due() && !scripted_pick_held()) {
+        OPL_INFO_F("launcher", "scripted pick: entry %d (%s)", scripted, games[scripted] ? games[scripted] : "");
+        return scripted;
+    }
+    if (const int pc = panel_command(Ask::None, v.clicked || v.activated != LAUNCHER_PAGE_NONE); pc != kPagePass)
+        return pc;   /* the click dismissed the panel */
+    if (v.activated >= 0) return v.activated;
+    if (picker_taken(v.picked) == LAUNCHER_SEL_DROPPED) return LAUNCHER_SEL_DROPPED;
+    if (v.activated == LAUNCHER_PAGE_BROWSE) open_file_dialog();
+    if (dialog_poll()) return LAUNCHER_SEL_DROPPED;
+    return kPageStays;
+}
+
 /** @brief Present the game page until a box with a library entry is activated, a disc is dropped or chosen, or the player quits.
  *
  * An activated box without an entry opens the file dialog (open_file_dialog);
  * a dialog whose callback reports a failure opens the drawn picker, which
  * takes the page's commands while it is open (picker_command). A chosen or
  * dropped image returns whichever box asked for it: the ingest reads its
- * game, and the page next opens on that game's box. The harness drop
+ * game, and the page next opens on that game's box. While the message panel
+ * shows, the next command or click dismisses it and is consumed
+ * (panel_command). The harness drop
  * (launcher_scripted_drop) acts after the first frame; a scripted pick
  * (scripted_pick) returns once due (scripted_due, scripted_pick_held).
  * @param games Each library entry's game id, most recently played first; NULL with @p count 0 for the empty library.
@@ -1313,19 +1368,12 @@ int page_loop(const char* const* games, int count, int scripted) {
         present(v);
         (void)launcher_focus_hover(&focus, v.hovered);
         launcher_jobs_pump();
-        if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
-        if (scripted >= 0 && scripted_due() && !scripted_pick_held()) {
-            OPL_INFO_F("launcher", "scripted pick: entry %d (%s)", scripted, games[scripted] ? games[scripted] : "");
-            return scripted;
-        }
-        if (v.activated >= 0) return v.activated;
-        if (picker_taken(v.picked) == LAUNCHER_SEL_DROPPED) return LAUNCHER_SEL_DROPPED;
-        if (v.activated == LAUNCHER_PAGE_BROWSE) open_file_dialog();
-        if (dialog_poll()) return LAUNCHER_SEL_DROPPED;
+        if (const int r = page_frame_result(v, scripted, games); r != kPageStays) return r;
         const Ask a = wait_input();
         if (s.pointer_moved) launcher_focus_pointer_moved(&focus);
         s.pointer_moved = false;
-        const int r = launcher_picker_shown() ? picker_command(a) : page_command(a, focus, ask, games, count);
+        int r = panel_command(a, false);
+        if (r == kPagePass) r = launcher_picker_shown() ? picker_command(a) : page_command(a, focus, ask, games, count);
         if (r != kPageStays) return r;
     }
 }
@@ -1570,6 +1618,11 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
         *exit_now = 1;
         return OPENPETE_EXIT_OK;
     }
+    if (rc == LAUNCHER_LIB_REFUSED) {
+        openpete_fatal_message(OP_E_INGEST, "OpenPete could not start",
+                               "The disc image was not added to the game library.");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
     if (rc == LAUNCHER_LIB_BUILD_FAILED) {
         openpete_fatal_message(OP_E_MODULE, "OpenPete could not start",
                                "The game code could not be built from the disc.");
@@ -1708,6 +1761,20 @@ int openpete_launcher_draw_progress(struct rhi_device* dev, const char* name,
     return present_on(dev, v, kShotPrecompile) ? 1 : 0;
 }
 
+int openpete_launcher_refuse(const char* text) {
+    if (!s.ui || s.handed_off) return -1;
+    s.no_precompile = true;
+    openpete_native_launcher_pipeline_cache_off();
+    if (launcher_open(s.opts, 0) != 0) return -1;
+    s.panel_only = true;
+    launcher_panel_raise(OP_E_LIBRARY, text, true);
+    (void)page_loop(nullptr, 0, -1);
+    launcher_page_closed();
+    s.panel_only = false;
+    openpete_launcher_close();
+    return 0;
+}
+
 void openpete_launcher_close(void) {
     launcher_jobs_stop_other(nullptr, false);
     s_jobs.queue.clear();
@@ -1785,7 +1852,9 @@ int job_body(Job& job) {
 
 /** @brief Record a finished job's result in its entry: a failed build writes the failed-build marker, a completed build clears one.
  *
- * A stopped job (-2) records nothing.
+ * A failed build also raises the game page's panel and gives the game's box
+ * its failed-build drawing (launcher_panel_build_failed). A stopped job (-2)
+ * records nothing.
  * @param job The finished job. */
 void job_record(const Job& job) {
     if (job.rc == -2) {
@@ -1794,6 +1863,7 @@ void job_record(const Job& job) {
         library_marker_write(job.entry.c_str(), s.last_stage);
         OPL_ERROR_F("launcher", "module rebuild of %s failed at %s; see the log file %s", job.g->game_id,
                     s.last_stage[0] ? s.last_stage : "its start", "openpete.log");
+        launcher_panel_build_failed(job.g->game_id, job.g->display_name, s.last_stage);
     } else if (job.built) {
         library_marker_clear(job.entry.c_str());
         OPL_INFO_F("launcher", "module rebuild of %s done", job.g->game_id);

@@ -443,6 +443,9 @@ def case_lock(a):
         bad.append(f"second process exit {rc2}, not 3")
     if "another OpenPete is preparing a game" not in log2:
         bad.append("second process did not log the lock message")
+    bad += [f"second process: {x}" for x in ordered(
+        log2, r"pipeline cache: in memory only", r"error panel raised \(its dismissal quits\): Another OpenPete",
+        r"error panel drawn", r"scripted input: quit", r"error panel dismissed \(quit\); the launcher quits")]
     if "launcher precompile:" in log2:
         bad.append("second process started the ahead compile")
     if "launch-time job" in log2 or "first-boot module build" in log2:
@@ -1860,6 +1863,237 @@ def case_picker(a):
     return verdict("picker", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 
+# ---- the game page's errors (error-*): the message panel, refusals before the copy, the failed-build box ----
+
+SECTOR = 2352
+TRUNC_SECTORS = 1200   # past SYSTEM.CNF (sector 23) and the boot executable's first sectors on all three discs
+
+
+def write_image(d, name, data):
+    """A disc image under d/images: name.bin holding data and its one-track cue; returns the cue."""
+    img = os.path.join(d, "images")
+    os.makedirs(img, exist_ok=True)
+    with open(os.path.join(img, name + ".bin"), "wb") as f:
+        f.write(data)
+    cue = os.path.join(img, name + ".cue")
+    with open(cue, "w") as f:
+        f.write(f'FILE "{name}.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    return cue
+
+
+def truncated_image(d, name, game, serial_from=None, serial_to=None):
+    """The first TRUNC_SECTORS sectors of a game's disc, its SYSTEM.CNF serial optionally replaced; returns the cue."""
+    b = disc_bin(game)
+    if not os.path.isfile(b):
+        raise cl.Skip(f"{b} missing")
+    with open(b, "rb") as f:
+        data = bytearray(f.read(TRUNC_SECTORS * SECTOR))
+    if serial_from:
+        # Every occurrence: the root directory's record of the boot file and SYSTEM.CNF's BOOT line.
+        if data.find(serial_from) < 0:
+            raise RuntimeError(f"{serial_from!r} not found in {b}")
+        data = bytearray(bytes(data).replace(serial_from, serial_to))
+    return write_image(d, name, bytes(data))
+
+
+def library_bytes(d):
+    """The bytes of every file under the case's library but its lock file, and the ingest-tmp directories present."""
+    lib = os.path.join(d, "data", "openpete", "library")
+    total, tmps = 0, []
+    for root, dirs, files in os.walk(lib):
+        tmps += [x for x in dirs if x.startswith("ingest-tmp-")]
+        total += sum(os.path.getsize(os.path.join(root, f)) for f in files if f != ".lock")
+    return total, tmps
+
+
+def refused_clean(tag, log, d, bad):
+    """Problems with a refusal before the copy: one refusal line, no copy started, nothing in the library."""
+    n = len(re.findall(r"ingest of .* refused before the copy", log))
+    written, tmps = library_bytes(d)
+    if n != 1:
+        bad.append(f"{tag}: {n} refusal lines, want 1")
+    if "copying disc into your library" in log or "COPYING DISC" in log:
+        bad.append(f"{tag}: the copy started")
+    if written or tmps:
+        bad.append(f"{tag}: {written} bytes written to the library, ingest-tmp {tmps}")
+    return n, written
+
+
+def case_error_refuse(a):
+    """T12's refusals before the copy: a non-PSX file, a zero-filled image (the negative control: 0 bytes
+    written), a disc whose serial no game claims, headless (exit 3) and by a drop on the page (the panel, East
+    dismisses it without quitting, the page stays usable); a truncated real disc as the positive control is
+    identified and copied."""
+    d0 = cl.case_dir(a.out, "error-refuse")
+    images = {
+        "zero": (write_image(d0, "zero", bytes(600 * SECTOR)), r"holds no PlayStation SYSTEM\.CNF serial"),
+        "not-a-disc": (write_image(d0, "notadisc", b"this is not a disc image\n" * 40),
+                       r"cannot be read as a raw disc image"),
+        "unclaimed": (truncated_image(d0, "unclaimed", "spyro-1", b"SCUS_942.28", b"SLUS_999.99"),
+                      r"serial SLUS-99999 names no game"),
+    }
+    bad, counts = [], {}
+    for tag, (cue, why) in images.items():
+        d = os.path.join(d0, tag)
+        os.makedirs(d)
+        rc, log = headless(a, d, "ingest", ["--ingest", cue, "--frame-limit", "1"], timeout=300)
+        n, written = refused_clean(tag, log, d, bad)
+        counts[tag] = f"{n} refusal, {written} bytes"
+        if rc != 3 or not re.search(why, log):
+            bad.append(f"{tag}: exit {rc} (want 3), reason {'logged' if re.search(why, log) else 'absent'}")
+    # Windowed: the zero-filled image dropped on the empty page.
+    d = os.path.join(d0, "drop")
+    os.makedirs(d)
+    env = {"OPENPETE_LAUNCHER_DROP": images["zero"][0], "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+           "OPENPETE_LAUNCHER_INPUT": "4000:pad=east,5000:key=right,6500:quit"}
+    rc, log = cl.launch(a.binary, d, "drop", ["--launcher-window", "1280x800"], env, timeout=300)
+    n, written = refused_clean("drop", log, d, bad)
+    bad += [f"drop: {x}" for x in ordered(
+        log, r"scripted drop", r"ingest of .* refused before the copy", r"error panel raised: zero\.cue",
+        r"error panel drawn: \d+ lines", r"scripted input: pad=east", r"error panel dismissed \(east\)",
+        r"scripted input: key=right", r"command: focus right from box 0 to box 1", r"command: quit")]
+    between = log[log.find("error panel dismissed (east)"):log.find("scripted input: key=right")]
+    if "quit asked" in between:
+        bad.append("drop: the dismissing East also asked to quit")
+    if rc != 0:
+        bad.append(f"drop: exit {rc}")
+    counts["drop"] = f"{n} refusal, {written} bytes, panel {'drawn' if 'error panel drawn' in log else 'not drawn'}"
+    # Over a dome: a library entry whose launch-time asset job loads the sky, then the drop; the panel's fill
+    # draws at full opacity and the first such frame is read back (shot tag "panel").
+    d = os.path.join(d0, "dome")
+    os.makedirs(d)
+    seed_entry(d, "spyro-1", 1)
+    env = {"OPENPETE_LAUNCHER_DROP": images["zero"][0], "OPENPETE_LAUNCHER_PICK_DELAY_MS": "9000",
+           "OPENPETE_LAUNCHER_INPUT": "16000:quit", "OPENPETE_LAUNCHER_SHOT": os.path.join(d, "shot"),
+           "OPENPETE_RECOMP_BUILD_FAIL": "1"}
+    rc, log = cl.launch(a.binary, d, "dome", ["--launcher-window", "1280x800"], env, timeout=600)
+    shot = re.search(r"screen panel: (\d+) of (\d+) pixels drawn over the clear \(shot (\S+),", log)
+    bad += [f"dome: {x}" for x in ordered(log, r"sky: \d+ domes of spyro-1", r"scripted drop",
+                                           r"error panel raised: zero\.cue", r"error panel fill drawn at 0\.50")]
+    if not shot or int(shot.group(1)) == 0:
+        bad.append(f"dome: no panel shot ({shot.group(0) if shot else 'no screen panel line'})")
+    counts["dome"] = f"shot {shot.group(3) if shot else 'none'}"
+    # Positive control: a truncated real disc is identified and its copy written.
+    d = os.path.join(d0, "control")
+    os.makedirs(d)
+    cue = truncated_image(d0, "real", "spyro-1")
+    env = {"OPENPETE_LAUNCHER_DROP": cue, "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+           "OPENPETE_LAUNCHER_INPUT": "8000:quit", "OPENPETE_RECOMP_BUILD_FAIL": "1"}
+    rc, log = cl.launch(a.binary, d, "control", ["--launcher-window", "1280x800"], env, timeout=600)
+    written, _ = library_bytes(d)
+    bad += [f"control: {x}" for x in ordered(log, r"scripted drop", r"identified before the copy",
+                                              r"\[library\] added")]
+    if written < TRUNC_SECTORS * SECTOR:
+        bad.append(f"control: {written} bytes in the library, want at least {TRUNC_SECTORS * SECTOR}")
+    counts["control"] = f"{written} bytes"
+    return verdict("error-refuse", bad, "; ".join(f"{k}: {v}" for k, v in counts.items()))
+
+
+def exe_without(a, d, game):
+    """A copy of the binary beside a recomp tree linking the build's but for one game's manifest; returns its path."""
+    x = exe_copy(a, d)
+    rec = os.path.join(os.path.dirname(x), "recomp")
+    os.remove(rec)
+    os.makedirs(os.path.join(rec, "manifest"))
+    src = os.path.join(os.path.abspath(a.build_dir), "recomp")
+    for name in os.listdir(src):
+        if name != "manifest":
+            os.symlink(os.path.join(src, name), os.path.join(rec, name))
+    for g in os.listdir(os.path.join(src, "manifest")):
+        if g != game:
+            os.symlink(os.path.join(src, "manifest", g), os.path.join(rec, "manifest", g))
+    return x
+
+
+def case_error_staged(a):
+    """T12's not-staged refusal: an executable without Spyro 2's first-boot inputs draws no box for it and refuses
+    its disc before the copy, headless (exit 3) and by a drop (the panel names the game)."""
+    need_first_boot(a)
+    d0 = cl.case_dir(a.out, "error-staged")
+    x = exe_without(a, d0, "spyro-2")
+    cue = truncated_image(d0, "s2", "spyro-2")
+    bad, counts = [], {}
+    d = os.path.join(d0, "headless")
+    os.makedirs(d)
+    rc, log = headless(a, d, "ingest", ["--ingest", cue, "--frame-limit", "1"], binary=x, timeout=300)
+    n, written = refused_clean("headless", log, d, bad)
+    if rc != 3 or "spyro-2, whose first-boot inputs this package does not stage" not in log:
+        bad.append(f"headless: exit {rc}, reason {'logged' if 'does not stage' in log else 'absent'}")
+    counts["headless"] = f"{n} refusal, {written} bytes"
+    d = os.path.join(d0, "drop")
+    os.makedirs(d)
+    env = {"OPENPETE_LAUNCHER_DROP": cue, "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+           "OPENPETE_LAUNCHER_INPUT": "4000:quit"}
+    rc, log = cl.launch(x, d, "drop", ["--launcher-window", "1280x800"], env, timeout=300)
+    n, written = refused_clean("drop", log, d, bad)
+    bad += [f"drop: {x_}" for x_ in ordered(log, r"game page: no box for spyro-2", r"game page: 2 boxes",
+                                             r"error panel raised: s2\.cue \(serial SCUS-94425\) is Spyro 2",
+                                             r"error panel drawn")]
+    if rc != 0:
+        bad.append(f"drop: exit {rc}")
+    counts["drop"] = f"{n} refusal, {written} bytes"
+    return verdict("error-staged", bad, "; ".join(f"{k}: {v}" for k, v in counts.items()))
+
+
+def case_error_build(a):
+    """T12's failed builds (windowed): a launch-time rebuild forced to fail with the page up raises the panel and
+    draws the failed-build box; the next launch draws it without a rebuild; a --game launch shows the page with the
+    box focused and the panel (headless: exit 3); activating the box retries from the read step; an ingest whose
+    build is forced to fail keeps the disc copy, writes the marker and returns to the page with the panel."""
+    need_first_boot(a)
+    d = cl.case_dir(a.out, "error-build")
+    e = seed_entry(d, "spyro-1", 1)
+    marker = os.path.join(e, "build-failed.toml")
+    fail = {"OPENPETE_RECOMP_BUILD_FAIL": "1"}
+    bad, counts = [], {}
+    rc, log = input_run(a, d, "launch-time", "20000:quit", fail, timeout=600)
+    bad += [f"launch-time: {x}" for x in ordered(
+        log, r"game page: \d+ boxes", r"launch-time module rebuild of spyro-1", r"module rebuild of spyro-1 failed",
+        r"game page: box of spyro-1 shows the failed-build drawing",
+        r"error panel raised: Spyro the Dragon could not be built from its disc \(step: .*\)\. The log file",
+        r"error panel drawn", r"error panel fill drawn")]
+    if rc != 0 or not os.path.isfile(marker):
+        bad.append(f"launch-time: exit {rc}, marker {'present' if os.path.isfile(marker) else 'absent'}")
+    counts["launch-time panels"] = len(re.findall(r"error panel raised", log))
+    rc, log = input_run(a, d, "next", "3000:quit", timeout=300)
+    if not re.search(r"game page: \d+ boxes .*spyro-1 frame \d+ vertices, failed build", log) or \
+            "launch-time job skipped" not in log or "launch-time module rebuild" in log or rc != 0:
+        bad.append(f"next: exit {rc}, failed box {'drawn' if 'failed build' in log else 'absent'}, rebuild "
+                   f"{'ran' if 'launch-time module rebuild' in log else 'not run'}")
+    rc, log = input_run(a, d, "game", "3000:pad=east,4500:quit", args=["--game", "spyro-1"], timeout=300)
+    bad += [f"--game: {x}" for x in ordered(log, r"holds a failed module build of this build",
+                                             r"error panel raised: Spyro the Dragon could not be built",
+                                             r"command: focus starts on box 0 \(spyro-1", r"error panel drawn",
+                                             r"error panel dismissed \(east\)", r"command: quit")]
+    if rc != 0 or "game picked" in log:
+        bad.append(f"--game: exit {rc}")
+    rc, _ = headless(a, d, "game-headless", ["--game", "spyro-1", "--frame-limit", "1"])
+    if rc != 3:
+        bad.append(f"--game headless: exit {rc}, want 3")
+    rc, log = input_run(a, d, "retry", "3000:key=enter,20000:quit", fail, timeout=600)
+    bad += [f"retry: {x}" for x in ordered(log, r"command: activate box 0 \(spyro-1\)",
+                                            r"failed-build marker removed", r"build failed at the read step",
+                                            r"failed-build marker written", r"error panel raised: Spyro the Dragon")]
+    if not os.path.isfile(marker):
+        bad.append("retry: no marker after the failed retry")
+    # An ingest whose build fails: the copy stays, the marker is written, the page returns with the panel.
+    d2 = os.path.join(d, "ingest")
+    os.makedirs(d2)
+    env = dict(fail, OPENPETE_LAUNCHER_DROP=disc_cue("spyro-2"), OPENPETE_LAUNCHER_PICK_DELAY_MS="500",
+               OPENPETE_LAUNCHER_INPUT="60000:quit")
+    rc, log = cl.launch(a.binary, d2, "ingest", ["--launcher-window", "1280x800"], env, timeout=900)
+    copies = glob.glob(os.path.join(d2, "data", "openpete", "library", "*", "disc.bin"))
+    markers = glob.glob(os.path.join(d2, "data", "openpete", "library", "*", "build-failed.toml"))
+    bad += [f"ingest: {x}" for x in ordered(log, r"\[library\] added", r"build failed at the read step",
+                                             r"error panel raised: Spyro 2: Ripto's Rage! could not be built",
+                                             r"command: focus starts on box 1 \(spyro-2", r"error panel drawn")]
+    if len(copies) != 1 or os.path.getsize(copies[0]) != os.path.getsize(disc_bin("spyro-2")) or len(markers) != 1:
+        bad.append(f"ingest: copies {copies}, markers {markers}")
+    if rc != 0:
+        bad.append(f"ingest: exit {rc}")
+    return verdict("error-build", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
+
+
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
@@ -1877,7 +2111,8 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "quit-copy": case_quit_copy, "quit-translate": case_quit_translate, "quit-build": case_quit_build,
          "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
-         "quit-page-sigterm": case_quit_page_sigterm}
+         "quit-page-sigterm": case_quit_page_sigterm, "error-refuse": case_error_refuse,
+         "error-staged": case_error_staged, "error-build": case_error_build}
 
 
 def main():
