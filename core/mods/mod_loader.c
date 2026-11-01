@@ -4690,7 +4690,11 @@ static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
  * is file-locked and must go stale until the next boot). A failed compile
  * removes the stamp and keeps any existing object; with `stamp` = 1 and a
  * compiler exit status it records the key in the `.fail` stamp
- * (mod_key_failed), which a later success removes.
+ * (mod_key_failed), which a later success removes. The compiler runs
+ * stoppable (openpete_host_spawn_argv_stoppable): a stop (the player quit
+ * the launcher's progress view) kills it, removes the stamp and the object
+ * it was writing, and records no `.fail` stamp, so the next pick compiles
+ * the mod again.
  * @return 0 on success, -1 when there are no sources, no compiler, the
  *         response file cannot be written, or the compile fails. */
 static int mod_compile(const char* mod_dir, const char* id,
@@ -4770,7 +4774,13 @@ static int mod_compile(const char* mod_dir, const char* id,
 
     OPL_INFO_F("mods", "%s [%s]: compiling %d source file%s", id, game,
                n_srcs, n_srcs == 1 ? "" : "s");
-    int rc = openpete_host_spawn_argv(argv, log_path, NULL, 0);
+    int rc = openpete_host_spawn_argv_stoppable(argv, log_path, NULL, 0);
+    if (rc == OPENPETE_HOST_SPAWN_STOPPED) {
+        OPL_INFO_F("mods", "%s [%s]: compile stopped; the mod stays stale", id, game);
+        remove(stamp_path);
+        remove(out_path);
+        return -1;
+    }
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s [%s]: compile failed (see %s/compile.log) "
                     "- disabled", id, game, build_dir);

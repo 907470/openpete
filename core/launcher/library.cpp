@@ -13,6 +13,7 @@
 // own copy.
 #include "launcher_internal.h"
 #include "launcher_sky.h"
+#include "launcher_quit.h"
 
 #include "openpete_atomic_file.h"
 #include "openpete_build_id.h"
@@ -87,15 +88,17 @@ fs::path locate_bin(const fs::path& given) {
  * Reads src through disc_image in direct mode (never the disc cache) in
  * 1 MiB chunks, writing each to dst (created or truncated) and feeding it
  * to the hash. Reports the "COPYING DISC TO YOUR LIBRARY" stage with MiB
- * counts once per 64 MiB copied (openpete_launcher_progress). The hash is
- * finalized after a read failure too, so it covers only the bytes read.
+ * counts once per 64 MiB copied (openpete_launcher_progress). A stop
+ * (openpete_launcher_job_cancelled) is read before each chunk and ends the
+ * copy there. The hash is finalized after a read failure or a stop too, so
+ * it covers only the bytes read.
  * @param src The image to read; disc_image_open refuses one that is not
  *        a whole number of raw 2352-byte sectors.
  * @param dst The file to create or truncate.
  * @param sha_hex Receives 64 hex digits and a NUL; untouched when either file
  *        fails to open.
  * @return true when both files opened, every byte read, and dst's stream
- *         state is good after the last write, else false. */
+ *         state is good after the last write, else false (a stop too). */
 bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]) {
     disc_image_t* in = disc_image_open(src.string().c_str(), DISC_READ_DIRECT,
                                        OPENPETE_DISC_TAG_INGEST);
@@ -110,6 +113,7 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
     openpete_sha256_init(&c);
     std::vector<char> buf(1 << 20);
     while (seen < total_bytes) {
+        if (openpete_launcher_job_cancelled()) { read_ok = false; break; }
         size_t n = total_bytes - seen < buf.size() ? (size_t)(total_bytes - seen) : buf.size();
         int r = disc_image_read_bytes(in, seen, buf.data(), n, OPENPETE_DISC_TAG_INGEST);
         openpete_disc_trace_bytes(OPENPETE_DISC_TAG_INGEST, seen, n,
@@ -340,6 +344,8 @@ fs::path held_entry_of(const char* given, const fs::path& bin) {
  * message naming the library's entry (held_entry_of). An image whose game
  * cannot be read and whose content is already in the library keeps its
  * entry and the copy is removed. A new entry gets disc.cue and meta.toml.
+ * A quit during the copy (launcher_quit_take) stops it and removes the
+ * ingest directory; no entry is installed.
  * @param given The image path from --ingest or a drop.
  * @param entry Receives the entry directory.
  * @return true on success; false after logging the failure. */
@@ -377,6 +383,11 @@ bool ingest(const char* given, fs::path& entry) {
         }
     } ct{&bin, tmp / "disc.bin", sha, false};
     openpete_launcher_run_task(&CopyTask::run, &ct);
+    if (!ct.ok && launcher_quit_taken()) {
+        fs::remove_all(tmp, ec);
+        OPL_INFO_F("library", "ingest copy of %s stopped by the quit; %s removed", given, tmp.string().c_str());
+        return false;
+    }
     if (!ct.ok) {
         std::fprintf(stderr, "openpete: --ingest copy failed\n");
         fs::remove_all(tmp, ec);
@@ -545,6 +556,25 @@ std::string marker_build(const char* entry_dir) {
     return {};
 }
 
+/** @brief Remove every library/ingest-tmp-* directory: a copy a killed process left.
+ *
+ * Runs under the library lock, which every ingest holds, so no live copy
+ * is among them.
+ * @param root The library root. */
+void sweep_ingest_dirs(const fs::path& root) {
+    std::error_code ec;
+    int n = 0;
+    for (auto& e : fs::directory_iterator(root, ec)) {
+        if (e.path().filename().string().rfind("ingest-tmp-", 0) != 0) continue;
+        std::error_code rm;
+        fs::remove_all(e.path(), rm);
+        OPL_INFO_F("library", "stale ingest directory %s %s", e.path().string().c_str(),
+                   rm ? "could not be removed" : "removed");
+        n += rm ? 0 : 1;
+    }
+    if (n) OPL_INFO_F("library", "launch-time sweep: %d stale ingest director%s removed", n, n == 1 ? "y" : "ies");
+}
+
 intptr_t s_lock_handle = 0;
 bool s_lock_held = false;
 /* The launch-time jobs are queued once per process. */
@@ -580,10 +610,11 @@ struct PickBuild {
 /** @brief Build an entry's module when its game's stamped path holds no file: on a launcher task with the pipeline compile paused, its progress drawn while screens show, inline without them.
  *
  * A failed build writes the entry's failed-build marker; a completed one
- * clears it. The game must be installed.
+ * clears it; a stopped one (-2, a quit) writes none, so the next launch
+ * rebuilds it in the background. The game must be installed.
  * @param g The game's per-game entry, with a build pipeline.
  * @param m The entry.
- * @return 0 when the module is there or built, -1 when the build failed. */
+ * @return 0 when the module is there or built, -1 when the build failed or stopped. */
 int build_entry_module(const openpete_launcher_game* g, const Meta& m) {
     char path[4096];
     const std::string entry = m.dir.string();
@@ -598,6 +629,10 @@ int build_entry_module(const openpete_launcher_game* g, const Meta& m) {
     if (rc == 0) {
         library_marker_clear(entry.c_str());
         return 0;
+    }
+    if (rc == -2) {
+        OPL_INFO_F("launcher", "the module build of %s stopped; no failed-build marker written", g->game_id);
+        return -1;
     }
     library_marker_write(entry.c_str(), launcher_last_stage());
     OPL_ERROR_F("launcher", "the module of %s could not be built (step: %s); see the log file",
@@ -619,6 +654,7 @@ int prepare_entry(const Meta& m, const char* context) {
     if (!g) return 0;   /* unidentified or not linked: the entry's identification refuses it */
     launcher_jobs_stop_other(g->game_id, true);
     launcher_jobs_finish_game(g->game_id);
+    if (launcher_quit_taken()) return -1;
     const bool build = g->build_module && g->module_path;
     if (!build && !g->update_assets) return 0;
     g->install(g);
@@ -682,6 +718,7 @@ void ingest_drop(const char* path) {
     fs::path entry;
     Meta m;
     if (!ingest(path, entry) || !read_meta(entry, m)) {
+        if (launcher_quit_taken()) return;
         OPL_ERROR_F("library", "the dropped image %s could not be added to the library", path);
         return;
     }
@@ -716,6 +753,7 @@ int admit_pick(const Meta& m, bool screens, bool& direct) {
         library_marker_clear(dir.c_str());                   /* a pick retries */
     }
     if (prepare_entry(m, "pick") == 0) return kPassBoot;
+    if (launcher_quit_taken()) return LAUNCHER_LIB_QUIT;
     if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
     direct = false;
     return kPassAgain;
@@ -750,7 +788,10 @@ int pick_pass(openpete_options_t* opts, bool screens, bool& direct, Meta& chosen
     queue_launch_jobs(scan.entries);
     if (!screens) launcher_jobs_run_inline();
     if (waited == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
-    if (waited == LAUNCHER_SEL_DROPPED) { ingest_drop(launcher_dropped_path()); return kPassAgain; }
+    if (waited == LAUNCHER_SEL_DROPPED) {
+        ingest_drop(launcher_dropped_path());
+        return launcher_quit_taken() ? LAUNCHER_LIB_QUIT : kPassAgain;
+    }
     if (scan.entries.empty()) return 0;
     note_missing_games(opts);
     Meta* pick = nullptr;
@@ -758,6 +799,7 @@ int pick_pass(openpete_options_t* opts, bool screens, bool& direct, Meta& chosen
     if (rc == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
     if (rc == LAUNCHER_SEL_DROPPED || (!pick && screens)) {
         if (rc == LAUNCHER_SEL_DROPPED) ingest_drop(launcher_dropped_path());
+        if (launcher_quit_taken()) return LAUNCHER_LIB_QUIT;
         direct = false;
         return kPassAgain;
     }
@@ -778,9 +820,11 @@ int resolve_pick(openpete_options_t* opts, char* module_path_out, size_t module_
     if (opts->ingest_path) {
         fs::path entry;
         Meta m;
-        if (!ingest(opts->ingest_path, entry) || !read_meta(entry, m)) return LAUNCHER_LIB_FAILED;
+        if (!ingest(opts->ingest_path, entry) || !read_meta(entry, m))
+            return launcher_quit_taken() ? LAUNCHER_LIB_QUIT : LAUNCHER_LIB_FAILED;
         record_game(m);
         if (prepare_entry(m, "ingest") == 0) return boot_entry(opts, m, module_path_out, module_path_cap);
+        if (launcher_quit_taken()) return LAUNCHER_LIB_QUIT;
         if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
         opts->ingest_path = nullptr;   /* the library, with the entry's failed build */
     }
@@ -829,6 +873,7 @@ int openpete_launcher_lock(void) {
     if (const int rc = openpete_paths_lock(lock.string().c_str(), &s_lock_handle); rc != 0) return rc;
     s_lock_held = true;
     OPL_INFO_F("library", "library lock taken: %s", lock.string().c_str());
+    sweep_ingest_dirs(root);
     return 0;
 }
 
@@ -862,7 +907,8 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
     if (opts->ingest_path) {
         fs::path entry;
         Meta m;
-        if (!ingest(opts->ingest_path, entry) || !read_meta(entry, m)) return LAUNCHER_LIB_FAILED;
+        if (!ingest(opts->ingest_path, entry) || !read_meta(entry, m))
+            return launcher_quit_taken() ? LAUNCHER_LIB_QUIT : LAUNCHER_LIB_FAILED;
         record_game(m);
         return boot_entry(opts, m, module_path_out, module_path_cap);
     }

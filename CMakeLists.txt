@@ -1669,7 +1669,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         endforeach()
         # The launcher's flow checks (tests/harness/check_launcher_flow.py):
         # start-up time, the pick's resolved options, the multi-install dump,
-        # the launcher asset cache and its box picture, and the job runner's module cases, which
+        # the launcher asset cache and its box picture, the quit during work, and the job runner's module cases, which
         # need the first-boot pipeline and exit 64 on a build without it (any
         # but the *-launcher presets).
         foreach(_launcher_case startup resolution multi-install multi-install-extract job-ingest-stop job-pick-same
@@ -1678,7 +1678,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                                 job-ingest-stop-assets job-pick-other-assets
                                 shader-step-during shader-step-after shader-step-order input picker
                                 sky-cache sky-reveal
-                                preview preview-hold preview-stop)
+                                preview preview-hold preview-stop
+                                quit-copy quit-translate quit-build quit-assets quit-east-once
+                                quit-east-twice quit-escape quit-close quit-page-sigterm)
             add_test(NAME launcher_flow_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_flow.py

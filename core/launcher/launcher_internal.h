@@ -183,7 +183,7 @@ void launcher_jobs_pump(void);
 /** @brief Run every queued job on the calling thread, in order, each with its game installed, its asset part inside the `ingest` role before its module part: the form without screens. */
 void launcher_jobs_run_inline(void);
 
-/** @brief Stop the running job unless it is of a game, waiting for its module part to stop between compiler commands and its asset part between levels.
+/** @brief Stop the running job unless it is of a game, waiting for its module part to kill its compiler command and its asset part to stop between levels.
  *
  * @param keep_game The game whose job keeps running, or NULL to stop any.
  * @param requeue Put a job whose module or asset part stopped back at the head of the queue. */

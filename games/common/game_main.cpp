@@ -181,14 +181,24 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
         module_override = library_module_path;
     openpete_boot_mark(OP_BOOT_MODULE_ATTACH_START);
     if (openpete_game_recomp_attach(module_override, opts->disc_path,
-                                    opts->recomp_module_path == NULL) != 0)
+                                    opts->recomp_module_path == NULL) != 0) {
+        /* A quit during the rebuild ends the run in the launcher. */
+        if (openpete_launcher_quit_taken()) {
+            *exit_now = 1;
+            return OPENPETE_EXIT_OK;
+        }
         return fatal_start(1, OP_E_MODULE,
                            "The game code built from the disc could not be loaded or built.");
+    }
     openpete_boot_mark(OP_BOOT_MODULE_ATTACHED);
 
     /* Mod compile-on-boot: every stale enabled source mod compiles on a
      * launcher task, so openpete_mods_init only loads. */
     openpete_mods_prepare(opts, openpete_launcher_progress, openpete_launcher_run_task);
+    if (openpete_launcher_quit_taken()) {   /* a quit during the mod compile */
+        *exit_now = 1;
+        return OPENPETE_EXIT_OK;
+    }
     openpete_boot_mark(OP_BOOT_MODS_COMPILED);
     return openpete_launcher_handoff(opts);
 }

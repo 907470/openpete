@@ -241,7 +241,8 @@ void openpete_recomp_announce_build(const char* why) {
  * @param disc_path The disc.
  * @param why The reason the first bind failed; receives the new reason.
  * A failed rebuild writes the failed-build marker of the library entry the
- * launcher booted (openpete_launcher_mark_build_failed).
+ * launcher booted (openpete_launcher_mark_build_failed); a stopped one (a
+ * quit, -2) writes none.
  * @return The descriptor, or NULL. */
 static const openpete_recomp_module* rebuild_module(const char* path,
                                                     const char* disc_path,
@@ -249,11 +250,12 @@ static const openpete_recomp_module* rebuild_module(const char* path,
     openpete_recomp_announce_build(*why);
     struct build_task bt = { disc_path, path };
     *why = NULL;
-    if (openpete_launcher_run_task_exclusive(build_task_fn, &bt) != 0) {
+    const int rc = openpete_launcher_run_task_exclusive(build_task_fn, &bt);
+    if (rc != 0) {
         /* A library entry's module (the launcher's pick) records the
          * failure, so the next launch shows it instead of rebuilding. */
-        openpete_launcher_mark_build_failed();
-        *why = "could not be rebuilt";
+        if (rc != -2) openpete_launcher_mark_build_failed();
+        *why = rc == -2 ? "was not rebuilt (stopped)" : "could not be rebuilt";
         return NULL;
     }
     return bind_module(path, why);

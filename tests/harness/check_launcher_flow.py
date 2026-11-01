@@ -96,6 +96,21 @@ Cases:
   job-pick-other-assets  T8 (c) on the asset extraction (windowed): a pick of B during A's held
             launch-time asset job stops A, which leaves no cache file, and B's cache is written
             at the pick.
+  quit-*    T13 and T12's quit during work (windowed, OPENPETE_LAUNCHER_QUIT_AT, TMPDIR in the case
+            directory). A stop at each step: quit-copy (a quit event during a dropped disc's copy),
+            quit-translate (SIGTERM during PSXRecomp), quit-build (a quit event while the compiles
+            run; the next launch rebuilds the entry in the background, its inline launch-time job
+            headless, and plays), quit-assets (a quit event while the pick waits for an asset job
+            held by OPENPETE_ASSET_JOB_DELAY_MS). Each reports the quit-to-exit time (the harness's,
+            from the log line to the process's exit, and the launcher's own) against QUIT_BOUND_MS and
+            the leftover counts, each 0: ingest-tmp-* directories, entries, failed-build markers,
+            partial modules, module build directories, *.tmp-* atomic temporaries, the stopped job's
+            cache files, files in TMPDIR, live processes naming the case directory. The progress
+            view's gesture, on the build step: quit-east-once (one East: the quit chip, Press again
+            to quit, takes the step chip's place and goes after 2 s, the build completes and the game plays), quit-east-twice,
+            quit-escape and quit-close (each quits at once, with the step case's checks).
+            quit-page-sigterm: SIGTERM sent from outside to the idle game page ends the process,
+            exit 0, within QUIT_BOUND_MS.
   shader-step-*  T8's shader step on the launcher's ahead compile (windowed, a cold pipeline
             cache, OPENPETE_PRECOMPILE_FORCE=1 so bring-up's compile stage runs on lavapipe):
             shader-step-during: a pick at the selector's first frame stops the ahead walk with
@@ -343,7 +358,7 @@ def case_job_ingest_stop(a):
                         timeout=900)
     bad = common_flow(log) + ordered(
         log, r"launch-time job started: spyro-1", r"scripted drop", r"\[library\] added",
-        r"stopping the launch-time job of spyro-1 \(requeued\)", r"module build stopped between commands",
+        r"stopping the launch-time job of spyro-1 \(requeued\)", r"module build stopped",
         r"launcher-side module build of spyro-2", r"first-boot module build of spyro-2",
         r"launch-time job started: spyro-1", r"module rebuild of spyro-1 done",
         r"scripted pick: entry \d+ \(spyro-2\)", r"game picked: spyro-2")
@@ -387,13 +402,13 @@ def case_job_pick_other(a):
     bad = common_flow(log) + ordered(
         log, r"launch-time job started: spyro-1", r"scripted pick: entry \d+ \(spyro-2\)",
         r"stopping the launch-time job of spyro-1", r"game picked: spyro-2")
-    stopped = "module build stopped between commands" in log
+    stopped = "module build stopped" in log
     partial = os.path.exists(mod) and not whole_module(mod)
     if partial:
         bad.append(f"A's module path holds a partial file {mod}")
     if rc != 0:
         bad.append(f"exit {rc}")
-    return verdict("job-pick-other", bad, f"A {'stopped between commands' if stopped else 'had finished'}; module "
+    return verdict("job-pick-other", bad, f"A {'stopped' if stopped else 'had finished'}; module "
                                f"{'absent' if not os.path.exists(mod) else 'whole'}")
 
 
@@ -1174,6 +1189,249 @@ def case_job_pick_other_assets(a):
     return verdict("job-pick-other-assets", bad)
 
 
+# ---- quit during work (quit-*) ----
+
+# T13's bound on Linux: the larger of 2 s and the longest single pipeline creation; the ahead
+# compile's pipelines on this host create well under 2 s.
+QUIT_BOUND_MS = 2000.0
+QUIT_CLOSED = re.compile(r"quit during work: the work stopped and the launcher closed ([\d.]+) ms after the quit")
+
+
+def quit_launch(a, d, tag, args, env, timeout=900):
+    """A windowed run whose log is followed for the quit line; returns (rc, log, ms from the line to the exit or None)."""
+    res = {}
+    t = threading.Thread(target=lambda: res.update(r=cl.launch(a.binary, d, tag, args, env, timeout=timeout)))
+    t.start()
+    path, off, tail, seen = os.path.join(d, tag + ".log"), 0, b"", None
+    while t.is_alive():
+        if seen is None and os.path.isfile(path):
+            with open(path, "rb") as f:
+                f.seek(off)
+                chunk = f.read()
+            off += len(chunk)
+            if b"quit during work (" in tail + chunk:
+                seen = time.monotonic()
+            tail = (tail + chunk)[-64:]
+        time.sleep(0.005)
+    t.join()
+    end = time.monotonic()
+    rc, log = res["r"]
+    return rc, log, ((end - seen) * 1000.0 if seen else None)
+
+
+def live_processes(d):
+    """Processes other than this one and the run's virtual display whose command line names the case directory.
+
+    xvfb-run keeps its authority file in TMPDIR, so its Xvfb, which it signals as it returns and
+    does not wait for, names the case directory too."""
+    out = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if d in cmd and not cmd.startswith("Xvfb "):
+            out.append(f"{pid}: {cmd[:120]}")
+    return out
+
+
+def leftovers(d, stopped_cache=None):
+    """The files and processes a stopped run must not leave, by kind, with the paths found."""
+    lib = os.path.join(d, "data", "openpete", "library")
+    found = {
+        "ingest-tmp": glob.glob(os.path.join(lib, "ingest-tmp-*")),
+        "failed-markers": glob.glob(os.path.join(lib, "*", "build-failed.toml")),
+        "partial-modules": [m for m in glob.glob(os.path.join(lib, "*", "modules", "*", "*-recomp.so"))
+                            if not whole_module(m)],
+        "build-dirs": glob.glob(os.path.join(lib, "*", "modules", "*", "build")),
+        "atomic-temps": [os.path.join(r, f) for root in ("data", "state") for r, _, fs in os.walk(os.path.join(d, root))
+                         for f in fs if ".tmp-" in f],
+        "tmpdir-files": [os.path.join(r, f) for r, _, fs in os.walk(os.path.join(d, "tmp")) for f in fs],
+        "processes": live_processes(d),
+    }
+    if stopped_cache:
+        c = cache_dir(d, stopped_cache)
+        found["stopped-cache-files"] = [os.path.join(c, f) for f in os.listdir(c)] if os.path.isdir(c) else []
+    return found
+
+
+def quit_case(a, name, setup, quit_at, expect, extra_env=None, next_launch=False):
+    """One quit during work: seed, run windowed with the scripted gesture, then check the stop, its time and its leftovers."""
+    d = cl.case_dir(a.out, name)
+    os.makedirs(os.path.join(d, "tmp"))
+    stopped_cache = setup(d)
+    env = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_LAUNCHER_QUIT_AT": quit_at, "TMPDIR": os.path.join(d, "tmp")}
+    env.update(extra_env or {})
+    rc, log, ms = quit_launch(a, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env)
+    bad = ordered(log, r"scripted quit point reached", r"quit during work \(", expect,
+                  r"quit during work: the work stopped and the launcher closed")
+    m = QUIT_CLOSED.search(log)
+    own = float(m.group(1)) if m else None
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    if "game picked" in log.split("quit during work (", 1)[-1] or "window, device and imgui handed" in log:
+        bad.append("the game started after the quit")
+    if ms is None:
+        bad.append("the quit line was not seen while the process ran")
+    elif ms > QUIT_BOUND_MS:
+        bad.append(f"the process ended {ms:.0f} ms after the quit, over {QUIT_BOUND_MS:.0f} ms")
+    lib = os.path.join(d, "data", "openpete", "library")
+    found = leftovers(d, stopped_cache)
+    for kind, paths in found.items():
+        if paths:
+            bad.append(f"{len(paths)} {kind}: {paths[:3]}")
+    counts = ", ".join(f"{k} {len(v)}" for k, v in found.items())
+    entries = [e for e in glob.glob(os.path.join(lib, "*", "meta.toml"))]
+    detail = (f"exit {ms:.0f} ms after the quit (harness), {own if own is not None else '?'} ms (launcher); "
+              if ms is not None else "") + f"leftovers: {counts}; entries {len(entries)}"
+    if next_launch:
+        rc2, log2 = headless(a, d, "next", ["--game", "spyro-1", "--frame-limit", "1"])
+        mods = stamped(d, "spyro-1")
+        if rc2 != 0 or "launch-time module rebuild of spyro-1" not in log2 or not mods or not whole_module(mods[0]):
+            bad.append(f"next launch: exit {rc2}, rebuild {'ran' if 'launch-time module rebuild' in log2 else 'not run'}, "
+                       f"module {'whole' if mods and whole_module(mods[0]) else 'absent or partial'}")
+        detail += "; next launch rebuilt in the background and played" if not bad else ""
+    return verdict(name, bad, detail)
+
+
+def seed_unbuilt(d):
+    """A Spyro 1 entry with no module: its launch-time job builds, and the pick waits for it."""
+    seed_entry(d, "spyro-1", 1)
+    return None
+
+
+PICK1 = {"OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1"}
+BUILD_EXPECT = r"module build stopped, its compiler commands killed"
+
+
+def case_quit_copy(a):
+    """A quit event during a dropped disc's copy: no entry, no ingest directory."""
+    def setup(d):
+        os.makedirs(os.path.join(d, "data", "openpete", "library"))
+        return None
+    return quit_case(a, "quit-copy", setup, "copy:quit", r"ingest copy of .* stopped by the quit",
+                     {"OPENPETE_LAUNCHER_DROP": disc_cue("spyro-1")})
+
+
+def case_quit_translate(a):
+    """SIGTERM during PSXRecomp kills it; no marker, no build directory."""
+    need_first_boot(a)
+    return quit_case(a, "quit-translate", seed_unbuilt, "translate+300:sigterm", BUILD_EXPECT, PICK1)
+
+
+def case_quit_build(a):
+    """A quit event while the compiles run kills them; the next launch rebuilds in the background."""
+    need_first_boot(a)
+    return quit_case(a, "quit-build", seed_unbuilt, "build+1500:quit", BUILD_EXPECT, PICK1, next_launch=True)
+
+
+def case_quit_assets(a):
+    """A quit event while the pick waits for a held asset job: no cache file."""
+    def setup(d):
+        seed_built(a, d, "spyro-1", 1) if has_first_boot(a) else seed_entry(d, "spyro-1", 1)
+        return "spyro-1"
+    return quit_case(a, "quit-assets", setup, "assets+300:quit",
+                     r"launcher assets of spyro-1 not updated \(stopped\)",
+                     dict(PICK1, OPENPETE_ASSET_JOB_DELAY_MS="60000"))
+
+
+def case_quit_east_twice(a):
+    """East twice within 2 s on the build's progress view quits."""
+    need_first_boot(a)
+    return quit_case(a, "quit-east-twice", seed_unbuilt, "build+1000:east2", BUILD_EXPECT, PICK1)
+
+
+def case_quit_escape(a):
+    """Escape on the build's progress view quits at once."""
+    need_first_boot(a)
+    return quit_case(a, "quit-escape", seed_unbuilt, "build+1000:escape", BUILD_EXPECT, PICK1)
+
+
+def case_quit_close(a):
+    """Closing the window on the build's progress view quits at once."""
+    need_first_boot(a)
+    return quit_case(a, "quit-close", seed_unbuilt, "build+1000:close", BUILD_EXPECT, PICK1)
+
+
+def case_quit_east_once(a):
+    """One East arms the quit (the step chip asks again) and disarms after 2 s; the build completes and the game plays."""
+    need_first_boot(a)
+    d = cl.case_dir(a.out, "quit-east-once")
+    seed_unbuilt(d)
+    env = dict(PICK1, OPENPETE_PRECOMPILE_AHEAD="1", OPENPETE_LAUNCHER_QUIT_AT="build+500:east")
+    rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env, timeout=900)
+    bad = ordered(log, r"scripted quit gesture: east", r"quit armed",
+                  r"progress view: the quit chip reads Press again to quit", r"quit disarmed: no second East within 2000 ms",
+                  r"module rebuild of spyro-1 done", r"game picked: spyro-1")
+    if "quit during work (" in log:
+        bad.append("one East quit")
+    mods = stamped(d, "spyro-1")
+    if rc != 0 or not mods or not whole_module(mods[0]):
+        bad.append(f"exit {rc}, module {'whole' if mods and whole_module(mods[0]) else 'absent or partial'}")
+    return verdict("quit-east-once", bad)
+
+
+def launcher_pid(d, timeout=60.0):
+    """The pid of the openpete process whose XDG_DATA_HOME is the case's data root, or None."""
+    want = ("XDG_DATA_HOME=" + os.path.join(d, "data")).encode()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                if os.path.basename(os.readlink(f"/proc/{pid}/exe")) != "openpete":
+                    continue
+                with open(f"/proc/{pid}/environ", "rb") as f:
+                    if want in f.read().split(b"\0"):
+                        return int(pid)
+            except OSError:
+                continue
+        time.sleep(0.05)
+    return None
+
+
+def case_quit_page_sigterm(a):
+    """SIGTERM sent from outside to an idle game page ends the process (exit 0) within the quit bound."""
+    d = cl.case_dir(a.out, "quit-page-sigterm")
+    if has_first_boot(a):
+        seed_built(a, d, "spyro-1", 1)
+    else:
+        seed_entry(d, "spyro-1", 1)
+    res = {}
+    t = threading.Thread(target=lambda: res.update(r=cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800"],
+                                                               {}, timeout=120)))
+    t.start()
+    log = os.path.join(d, "run.log")
+    deadline, idle = time.time() + 60, False
+    while time.time() < deadline and t.is_alive():
+        if os.path.isfile(log) and "stamp list_shown" in open(log, errors="replace").read():
+            idle = True
+            break
+        time.sleep(0.05)
+    time.sleep(1.0)   # the page idles: no job, no input
+    pid = launcher_pid(d, 5.0) if idle else None
+    sent = time.monotonic()
+    if pid:
+        os.kill(pid, 15)
+    t.join()
+    ms = (time.monotonic() - sent) * 1000.0
+    rc, text = res["r"]
+    bad = []
+    if not idle or not pid:
+        bad.append(f"VACUOUS: page {'shown' if idle else 'not shown'}, pid {pid}")
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    if ms > QUIT_BOUND_MS:
+        bad.append(f"the process ended {ms:.0f} ms after SIGTERM, over {QUIT_BOUND_MS:.0f} ms")
+    if "game picked" in text:
+        bad.append("a game started")
+    return verdict("quit-page-sigterm", bad, f"pid {pid}, exit {ms:.0f} ms after SIGTERM")
+
+
 # ---- the shader step (shader-step-*) ----
 
 SHADER_ENV = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_PRECOMPILE_FORCE": "1", "OPENPETE_LAUNCHER_SELECT": "0"}
@@ -1312,7 +1570,7 @@ def case_input(a):
     counts["keys inert"] = len(re.findall(r"command: (up|down) does nothing", log))
     if counts["keys inert"] != 2:
         bad.append(f"keys: {counts['keys inert']} up/down lines, want 2")
-    if rc != 0 or "command: quit (Escape or the window closed)" not in log or "game picked" in log:
+    if rc != 0 or "command: quit (Escape, the window closed" not in log or "game picked" in log:
         bad.append(f"keys: exit {rc}, Escape quit {'logged' if 'Escape or the window' in log else 'absent'}")
 
     # Pad and stick: the d-pad and the left stick's X move one box per push (the stick re-centres before
@@ -1596,7 +1854,7 @@ def case_picker(a):
     bad += [f"failed: {x}" for x in ordered(
         log, r"command: file picker for box 1 \(spyro-2\)", r"file dialog: failed", r"picker: open",
         r"picker: closed", r"command: file picker for box 1 \(spyro-2\)", r"picker: open", r"picker: closed",
-        r"command: quit \(Escape or the window closed\)")]
+        r"command: quit \(Escape, the window closed")]
     if rc != 0 or "game picked" in log:
         bad.append(f"failed: exit {rc}{', a game was picked' if 'game picked' in log else ''}")
     return verdict("picker", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
@@ -1615,7 +1873,11 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "shader-step-order": case_shader_step_order, "input": case_input, "picker": case_picker,
          "sky-cache": case_sky_cache, "sky-reveal": case_sky_reveal,
          "preview": case_preview, "preview-hold": case_preview_hold,
-         "preview-stop": case_preview_stop}
+         "preview-stop": case_preview_stop,
+         "quit-copy": case_quit_copy, "quit-translate": case_quit_translate, "quit-build": case_quit_build,
+         "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
+         "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
+         "quit-page-sigterm": case_quit_page_sigterm}
 
 
 def main():

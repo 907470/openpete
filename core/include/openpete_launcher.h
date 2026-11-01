@@ -187,8 +187,9 @@ void openpete_launcher_begin(const openpete_launcher_game* game,
  * @param opts The options; receives disc_path, and ingest_path from a drop.
  * @param module_path Receives the booted entry's module path, "" for none.
  * @param module_cap Its capacity.
- * @param exit_now Set to 1 when the player quit the drop screen or the
- *                 version selector.
+ * @param exit_now Set to 1 when the player quit the drop screen, the
+ *                 version selector or a progress view (the copy and build
+ *                 stop first, openpete_launcher_quit_taken).
  * @return OPENPETE_EXIT_OK; 1 after telling the player the library could
  *         not be read or the image could not be added; or
  *         OPENPETE_EXIT_SETUP_ERROR when the drop screen is needed and the
@@ -208,12 +209,15 @@ int  openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
  *         -2 when the lock file cannot be opened or locked. */
 int  openpete_launcher_lock(void);
 
-/** @brief Report whether the launcher job running on the calling thread was asked to stop.
+/** @brief Report whether the launcher job running on the calling thread was asked to stop, or the player quit during work.
  *
- * A launcher job (a module rebuild) is stopped when the player picks another
- * game, ingests a disc or quits; the first-boot build reads this between
- * compiler commands and stops there.
- * @return 1 when the calling thread runs a job asked to stop, else 0. */
+ * A launcher job (a module rebuild, an asset job) is stopped when the player
+ * picks another game or ingests a disc; every job, task and compiler child
+ * stops when the player quits a progress view (openpete_launcher_quit_taken).
+ * The first-boot build's compiler commands and the mod compile poll this
+ * while they run (openpete_host_spawn_argv_stoppable) and are killed on a
+ * stop; the ingest copy reads it per chunk.
+ * @return 1 when the calling thread's work was asked to stop, else 0. */
 int  openpete_launcher_job_cancelled(void);
 
 /** @brief Report the box picture render's progress from its job thread: step @p done of @p total; a total of 0 ends the report.
@@ -227,6 +231,22 @@ void openpete_launcher_preview_progress(int done, int total);
 
 /** @brief Report from any thread that a game's cached box picture was written or marked failed: the game page rereads every box's picture (openpete_launcher_game.load_picture) at its next present. */
 void openpete_launcher_picture_changed(void);
+
+/** @brief Return the stop flag of the job running on the calling thread, for its helper threads to adopt.
+ *
+ * @return The handle, or NULL when the thread runs no job. */
+void* openpete_launcher_job_stop_handle(void);
+
+/** @brief Make the calling thread read a job's stop flag in openpete_launcher_job_cancelled.
+ *
+ * @param handle A handle from openpete_launcher_job_stop_handle, or NULL to
+ *        read none. */
+void openpete_launcher_job_stop_adopt(void* handle);
+
+/** @brief Report whether the player quit a progress view: the work is stopping and the run ends in the launcher.
+ *
+ * @return 1 once the quit is taken, else 0. */
+int  openpete_launcher_quit_taken(void);
 
 /** @brief Return this executable's build id: the configured version joined with the executable's size and modification time.
  *

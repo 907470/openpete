@@ -12,6 +12,11 @@
 // game's build record (game_build.h): the module name, and the overlay
 // window of the game's recomp.conf OVERLAY_RANGE.
 //
+// Every compiler and PSXRecomp command runs from an argument vector, never
+// through a shell (openpete_host_spawn_argv_stoppable): a stop of the
+// launcher job running the build kills the command and every process it
+// started.
+//
 // Inputs staged next to the exe by the shared-linkage build
 // (CMake): recomp/manifest/<game id>/ (converged funcs lists +
 // manifest.toml + psyq.toml + channel_sites.txt; one directory per game,
@@ -26,6 +31,7 @@
 // implib (recomp/tools/libopenpete-exe-exports.a).
 #include "openpete_launcher.h"
 #include "openpete_atomic_file.h"
+#include "host_spawn.h"
 #include "openpete_error_ids.h"
 #include "game_build.h"
 #include "recomp_attach.h"
@@ -67,12 +73,6 @@ static void progress(const char* stage, int done, int total) {
 
 namespace fs = std::filesystem;
 
-#ifdef _WIN32
-#define QUIET_REDIR " > NUL"
-#else
-#define QUIET_REDIR " > /dev/null"
-#endif
-
 namespace {
 
 struct Overlay {
@@ -101,78 +101,36 @@ std::string exe_dir() {
     return ".";
 }
 
-#ifdef _WIN32
-/* Spawn `cmd.exe /C <cmd>` and wait, with NO console window. The shared
- * exe is a GUI-subsystem app (-mwindows) with no console of its own, so a
- * plain std::system()/_popen() child pops its own fresh console window -
- * and first boot spawns hundreds (38× PSXRecomp + ~80 compiler/link
- * invocations), each flashing a window. CREATE_NO_WINDOW allocates the
- * child's console hidden; grandchildren it spawns inherit that hidden
- * console, so the whole build runs silently. When `capture` is non-null,
- * the child's stdout+stderr are collected through a pipe (the _popen
- * replacement). Returns the child exit code, or -1 on spawn failure. */
-int win_run_cmd(const std::string& cmd, std::string* capture) {
-    HANDLE rd = NULL, wr = NULL;
-    if (capture) {
-        SECURITY_ATTRIBUTES sa{};
-        sa.nLength = sizeof sa;
-        sa.bInheritHandle = TRUE;
-        if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
-        /* The read end stays with us - keep it out of the child. */
-        SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-    }
-    /* cmd.exe /C strips the outermost quotes when the command contains
-     * more than one quoted token - the classic system() trap. Wrapping
-     * the whole command in one extra pair of quotes defeats it. */
-    std::string full = "cmd.exe /C \"" + cmd + "\"";
-    std::vector<char> buf(full.begin(), full.end());
-    buf.push_back('\0');
-
-    STARTUPINFOA si{};
-    si.cb = sizeof si;
-    if (capture) {
-        si.dwFlags = STARTF_USESTDHANDLES;
-        si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-        si.hStdOutput = wr;
-        si.hStdError  = wr;
-    }
-    PROCESS_INFORMATION pi{};
-    BOOL ok = CreateProcessA(NULL, buf.data(), NULL, NULL,
-                             capture ? TRUE : FALSE, CREATE_NO_WINDOW,
-                             NULL, NULL, &si, &pi);
-    if (wr) CloseHandle(wr);   /* the child owns the write end now */
-    if (!ok) { if (rd) CloseHandle(rd); return -1; }
-    if (capture) {
-        char b[4096];
-        DWORD n = 0;
-        while (ReadFile(rd, b, sizeof b, &n, NULL) && n > 0)
-            capture->append(b, n);
-        CloseHandle(rd);
-    }
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return (int)code;
-}
-#endif
-
-/** @brief Run one compiler or PSXRecomp command, unless the launcher job running the build was asked to stop.
+/** @brief Join an argument vector with spaces, for a log line.
  *
- * A stop is read here, between commands: a command already running
- * finishes, and none starts after the stop.
- * @param cmd The shell command.
+ * @param args The arguments.
+ * @return The joined text. */
+std::string joined(const std::vector<std::string>& args) {
+    std::string out;
+    for (const std::string& a : args) out += (out.empty() ? "" : " ") + a;
+    return out;
+}
+
+/** @brief Run one compiler or PSXRecomp command from an argument vector, unless the launcher job running the build was asked to stop.
+ *
+ * The command runs stoppable (openpete_host_spawn_argv_stoppable): a stop
+ * read before the start leaves it unstarted, and a stop while it runs kills
+ * it and every process it started.
+ * @param args The program and its arguments.
+ * @param log_path The file its stdout and stderr go to, or NULL to inherit
+ *        the launcher's.
  * @return true when the command ran and exited 0. */
-bool run(const std::string& cmd) {
+bool run(const std::vector<std::string>& args, const char* log_path = nullptr) {
     if (openpete_launcher_job_cancelled()) return false;
-#ifdef _WIN32
-    int rc = win_run_cmd(cmd, NULL);
-#else
-    int rc = std::system(cmd.c_str());
-#endif
-    if (rc != 0) OPL_ERROR_F("recomp-build", "command failed (%d): %s %s", rc, cmd.c_str(),
-                             openpete_error_ref(OP_E_MODULE));
+    std::vector<const char*> argv;
+    for (const std::string& a : args) argv.push_back(a.c_str());
+    argv.push_back(nullptr);
+    const int rc = openpete_host_spawn_argv_stoppable(argv.data(), log_path, nullptr, 0);
+    if (rc == OPENPETE_HOST_SPAWN_STOPPED) return false;
+    if (rc != 0)
+        OPL_ERROR_F("recomp-build", "command failed (%d): %s%s%s %s", rc, joined(args).c_str(),
+                    log_path ? "; its output is in " : "", log_path ? log_path : "",
+                    openpete_error_ref(OP_E_MODULE));
     return rc == 0;
 }
 
@@ -249,7 +207,7 @@ bool rename_token(const fs::path& p, const std::string& from, const std::string&
 struct ManifestHeader {
     std::string main_exe_sha;  /* the main EXE's reference sha256 */
     bool channel_sites = false;  /* the main EXE takes --channel-sites */
-    std::string window_opt;  /* ` --sony-image-window=<lo>:<hi>`, passed to every binary; empty: none */
+    std::string window_opt;  /* `--sony-image-window=<lo>:<hi>`, passed to every binary; empty: none */
 };
 
 /** @brief Record one line of the manifest's header (the lines before its first [[overlay]]).
@@ -262,7 +220,7 @@ void parse_header_line(const std::string& line, ManifestHeader& h) {
     else if (line == "channel_sites = true")
         h.channel_sites = true;
     else if (line.rfind("sony_image_window = \"", 0) == 0)
-        h.window_opt = " --sony-image-window=" + line.substr(21, line.size() - 22);
+        h.window_opt = "--sony-image-window=" + line.substr(21, line.size() - 22);
 }
 
 /** @brief Read a converged manifest.toml: its header facts and its overlays.
@@ -411,33 +369,29 @@ std::string find_cc(const fs::path& base) {
 #endif
 }
 
+/** @brief Run a probe command from an argument vector and return its stdout and stderr.
+ *
+ * The probe is not stoppable: its output keys the codegen stamp, which a
+ * killed probe would change for the rest of the process.
+ * @param args The program and its arguments.
+ * @return The output (at most 1 MiB), or "" when the probe could not run. */
+std::string run_capture(const std::vector<std::string>& args) {
+    std::vector<const char*> argv;
+    for (const std::string& a : args) argv.push_back(a.c_str());
+    argv.push_back(nullptr);
+    std::vector<char> buf(1u << 20);
+    if (openpete_host_spawn_argv(argv.data(), nullptr, buf.data(), buf.size()) < 0) return "";
+    return buf.data();
+}
+
 /* First line of `<cc> --version` - the compiler's self-identity, folded
  * into the codegen stamp so swapping the host compiler (or bumping the
  * bundled one) invalidates cached modules instead of silently reusing a
  * dir built by a different optimizer. Empty string if the probe fails
  * (degrades to psxrecomp-only keying, the prior behavior). */
-std::string run_capture(const std::string& cmd) {
-#ifdef _WIN32
-    /* CreateProcess with CREATE_NO_WINDOW instead of _popen - otherwise
-     * the compiler-identity probe flashes a console window too. */
-    std::string out;
-    win_run_cmd(cmd, &out);
-    return out;
-#else
-    FILE* p = popen(cmd.c_str(), "r");
-    if (!p) return "";
-    std::string out;
-    char buf[4096];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
-    pclose(p);
-    return out;
-#endif
-}
-
 std::string cc_identity(const std::string& cc) {
     if (cc.empty()) return "";
-    std::string v = run_capture("\"" + cc + "\" --version 2>&1");
+    std::string v = run_capture({cc, "--version"});
     /* first line only */
     size_t nl = v.find_first_of("\r\n");
     return nl == std::string::npos ? v : v.substr(0, nl);
@@ -466,10 +420,14 @@ std::string module_march() {
     return m;
 }
 
-std::string module_arch_flags() {
+/** @brief Return the module compile's target-tuning arguments for module_march().
+ *
+ * @return -march, -mtune=native and -ffp-contract=off, or none when no
+ *         tuning is set. */
+std::vector<std::string> module_arch_args() {
     std::string m = module_march();
-    if (m.empty()) return "";
-    return " -march=" + m + " -mtune=native -ffp-contract=off";
+    if (m.empty()) return {};
+    return {"-march=" + m, "-mtune=native", "-ffp-contract=off"};
 }
 
 /* Fingerprint the exact target the compiler will emit for module_march():
@@ -485,8 +443,7 @@ std::string cc_target_fingerprint(const std::string& cc) {
 #else
     const char* nul = "/dev/null";
 #endif
-    return run_capture("\"" + cc + "\" -march=" + m +
-                       " -dM -E -x c \"" + nul + "\" 2>&1");
+    return run_capture({cc, "-march=" + m, "-dM", "-E", "-x", "c", nul});
 }
 
 /** @brief Return the first-boot module's codegen identity, the key its cache entries are stored under.
@@ -581,12 +538,6 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
      * modding framework's link-time override chains re-link from these
      * objects); inputs/gen are scratch. */
     const fs::path work = fs::path(out_module_path).parent_path() / "build";
-    /* Shell quote: cmd.exe double-quotes on Windows, single elsewhere. */
-#ifdef _WIN32
-    const std::string q = "\"";
-#else
-    const std::string q = "'";
-#endif
     const std::string cc = find_cc(base);
     if (cc.empty()) {
         std::fprintf(stderr,
@@ -694,16 +645,18 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
                  ovls.size() + 1);
     progress("TRANSLATING GAME CODE", 0, (int)ovls.size() + 1);
     {
-        std::ostringstream c;
-        c << q << psxrecomp << q << " " << q << (inputs / "PSX.EXE").string() << q
-          << " --output-dir=" << q << gen.string() << q
-          << " --external-symbols=" << q << (man / "psyq.toml").string() << q
-          << " --external-prefix=psyq_"
-          << " --extra-funcs=" << q << (man / "main_exe.funcs.txt").string() << q;
+        std::vector<std::string> c = {
+            psxrecomp, (inputs / "PSX.EXE").string(),
+            "--output-dir=" + gen.string(),
+            "--external-symbols=" + (man / "psyq.toml").string(),
+            "--external-prefix=psyq_",
+            "--extra-funcs=" + (man / "main_exe.funcs.txt").string()};
         if (hdr.channel_sites)
-            c << " --channel-sites=" << q << (man / "channel_sites.txt").string() << q;
-        c << hdr.window_opt << " --defer-foreign-calls --skip-on-error" << QUIET_REDIR;
-        if (!run(c.str())) return -1;
+            c.push_back("--channel-sites=" + (man / "channel_sites.txt").string());
+        if (!hdr.window_opt.empty()) c.push_back(hdr.window_opt);
+        c.push_back("--defer-foreign-calls");
+        c.push_back("--skip-on-error");
+        if (!run(c, (gen / "PSX.EXE.psxrecomp.log").string().c_str())) return -1;
         if (!rename_token(gen / "PSX.EXE_dispatch.c",
                           "psx_dispatch_compiled", "psx_dispatch_main_exe"))
             return -1;
@@ -711,24 +664,25 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     int ovl_done = 1;
     progress("TRANSLATING GAME CODE", ovl_done, (int)ovls.size() + 1);
     for (auto& o : ovls) {
-        std::ostringstream c;
-        c << q << psxrecomp << q << " " << q << (inputs / (o.name + ".ovl")).string() << q
-          << " --raw-bin --load-addr=" << o.load_addr
-          << " --output-stem=" << o.name << ".bin"
-          << " --output-dir=" << q << gen.string() << q
-          << " --external-symbols=" << q << (man / "psyq.toml").string() << q
-          << " --external-prefix=psyq_"
-          << " --func-prefix=func_" << o.name << "_"
-          << " --extra-funcs=" << q << (man / (o.name + ".funcs.txt")).string() << q
-          /* The main EXE's pure leaves, written by its translation above:
-           * an overlay loop polling through one is a delivery site, as in
-           * scripts/regen-recomp.sh. */
-          << " --leaf-summary=" << q << (gen / "PSX.EXE_leaves.tsv").string() << q
-          /* The main EXE's deferred call-carrying spins: the overlay answers
-           * for those whose callee is one of its functions. */
-          << " --quiet-targets=" << q << (gen / "PSX.EXE_loop_sites.tsv").string() << q
-          << hdr.window_opt << " --skip-on-error" << QUIET_REDIR;
-        if (!run(c.str())) return -1;
+        std::vector<std::string> c = {
+            psxrecomp, (inputs / (o.name + ".ovl")).string(),
+            "--raw-bin", "--load-addr=" + o.load_addr,
+            "--output-stem=" + o.name + ".bin",
+            "--output-dir=" + gen.string(),
+            "--external-symbols=" + (man / "psyq.toml").string(),
+            "--external-prefix=psyq_",
+            "--func-prefix=func_" + o.name + "_",
+            "--extra-funcs=" + (man / (o.name + ".funcs.txt")).string(),
+            /* The main EXE's pure leaves, written by its translation above:
+             * an overlay loop polling through one is a delivery site, as in
+             * scripts/regen-recomp.sh. */
+            "--leaf-summary=" + (gen / "PSX.EXE_leaves.tsv").string(),
+            /* The main EXE's deferred call-carrying spins: the overlay
+             * answers for those whose callee is one of its functions. */
+            "--quiet-targets=" + (gen / "PSX.EXE_loop_sites.tsv").string()};
+        if (!hdr.window_opt.empty()) c.push_back(hdr.window_opt);
+        c.push_back("--skip-on-error");
+        if (!run(c, (gen / (o.name + ".psxrecomp.log")).string().c_str())) return -1;
         if (!rename_token(gen / (o.name + ".bin_dispatch.c"),
                           "psx_dispatch_compiled", "psx_dispatch_" + o.name) ||
             !rename_token(gen / (o.name + ".bin_dispatch.c"),
@@ -745,16 +699,19 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     tus.push_back(src / "overlay_dispatch.c");
     tus.push_back(src / "module_main.c");
 
-    const std::string arch = module_arch_flags();  /* -march=native etc. */
+    const std::vector<std::string> arch = module_arch_args();  /* -march=native etc. */
     /* Route exe-exported DATA symbols through the import table on PE
      * (psx_runtime.h) - no fragile pseudo-relocation. */
-    const std::string moddef = " -DOPENPETE_RECOMP_MODULE_BUILD";
+    const std::string moddef = "-DOPENPETE_RECOMP_MODULE_BUILD";
     /* -fno-strict-aliasing: the recompiled C reads guest RAM through wider
      * pointer casts of byte arrays, as the CMake-built module does. */
 #ifdef _WIN32
-    const std::string common =
-        " -c -O2 -fno-strict-aliasing" + arch + moddef + " -w -std=gnu99 -I" + q +
-        src.string() + q;
+    std::vector<std::string> common = {"-c", "-O2", "-fno-strict-aliasing"};
+    common.insert(common.end(), arch.begin(), arch.end());
+    common.push_back(moddef);
+    common.push_back("-w");
+    common.push_back("-std=gnu99");
+    common.push_back("-I" + src.string());
 #else
     /* The bundled clang is the shipped configuration, and the machines it
      * ships to (SteamOS, any host without development packages) have no
@@ -763,23 +720,22 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
      * build here as it would there. */
     const bool bundled_cc =
         cc == (base / "recomp" / "tools" / "clang" / "bin" / "clang").string();
-    const std::string common =
-        " -c -O2 -fPIC -fno-strict-aliasing" + arch + moddef + " -w -std=gnu99" +
-        (bundled_cc ? " -nostdlibinc" : "") + " -I" + q + src.string() + q;
+    std::vector<std::string> common = {"-c", "-O2", "-fPIC", "-fno-strict-aliasing"};
+    common.insert(common.end(), arch.begin(), arch.end());
+    common.push_back(moddef);
+    common.push_back("-w");
+    common.push_back("-std=gnu99");
+    if (bundled_cc) common.push_back("-nostdlibinc");
+    common.push_back("-I" + src.string());
 #endif
     if (!arch.empty())
         std::fprintf(stderr, "[first-boot] tuning for this CPU (%s)\n",
                      module_march().c_str());
-#ifdef _WIN32
-    /* MSVCRT argv parsing unescapes \" - no single-quote idiom on cmd. */
-    const std::string stamps =
-        " -DOPENPETE_CODEGEN_STAMP=\\\"" + codegen_stamp + "\\\""
-        " -DOPENPETE_ROM_SHA256=\\\"" + rom_stamp + "\\\"";
-#else
-    const std::string stamps =
-        " -DOPENPETE_CODEGEN_STAMP='\"" + codegen_stamp + "\"'"
-        " -DOPENPETE_ROM_SHA256='\"" + rom_stamp + "\"'";
-#endif
+    /* String-literal macros: each value carries its double quotes, passed
+     * literally since no shell parses the argument vector. */
+    const std::vector<std::string> stamps = {
+        "-DOPENPETE_CODEGEN_STAMP=\"" + codegen_stamp + "\"",
+        "-DOPENPETE_ROM_SHA256=\"" + rom_stamp + "\""};
 
     unsigned jobs = std::thread::hardware_concurrency();
     if (jobs == 0) jobs = 4;
@@ -792,20 +748,26 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     std::atomic<size_t> next{0};
     std::atomic<int> failed{0};
     std::atomic<size_t> done{0};
+    /* The workers read the stop of the job running the build. */
+    void* const stop = openpete_launcher_job_stop_handle();
     auto worker = [&]() {
+        openpete_launcher_job_stop_adopt(stop);
         for (;;) {
             size_t i = next.fetch_add(1);
-            if (i >= tus.size() || failed.load()) return;
+            if (i >= tus.size() || failed.load()) break;
             const fs::path& tu = tus[i];
-            std::string extra = (tu.filename() == "module_main.c") ? stamps : "";
-            std::string cmd = q + cc + q + common + extra +
-                " -o " + q + (obj / (tu.filename().string() + ".o")).string() +
-                q + " " + q + tu.string() + q;
-            if (!run(cmd)) { failed.store(1); return; }
+            std::vector<std::string> cmd = {cc};
+            cmd.insert(cmd.end(), common.begin(), common.end());
+            if (tu.filename() == "module_main.c") cmd.insert(cmd.end(), stamps.begin(), stamps.end());
+            cmd.push_back("-o");
+            cmd.push_back((obj / (tu.filename().string() + ".o")).string());
+            cmd.push_back(tu.string());
+            if (!run(cmd)) { failed.store(1); break; }
             size_t d = done.fetch_add(1) + 1;
             if (d % 20 == 0 || d == tus.size())
                 std::fprintf(stderr, "[first-boot]   %zu/%zu\n", d, tus.size());
         }
+        openpete_launcher_job_stop_adopt(nullptr);
     };
     {
         std::vector<std::thread> pool;
@@ -854,11 +816,16 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
             rf << '"' << implib << '"' << "\n";
 #endif
         }
-        std::ostringstream c;
-        c << q << cc << q << " -shared -o " << q << out_module_path << q
-          << " @" << q << rsp.string() << q;
+        /* The link writes into the work directory under the module's own
+         * file name (a PE module records that name in its export table)
+         * and the whole file is renamed onto the module path, so a stopped
+         * or failed link leaves no partial module there. */
+        const fs::path linked = work / "link" / fs::path(out_module_path).filename();
+        fs::create_directories(linked.parent_path(), ec);
+        std::vector<std::string> c = {cc, "-shared", "-o", linked.string(), "@" + rsp.string()};
 #ifndef _WIN32
-        c << " -Wl,-Bsymbolic-functions -Wl,--unresolved-symbols=ignore-all";
+        c.push_back("-Wl,-Bsymbolic-functions");
+        c.push_back("-Wl,--unresolved-symbols=ignore-all");
         /* The translated MIPS is pure integer code: it calls nothing from
          * the C library, defines no constructors and needs no crt frames,
          * so the module links with no libc and no DT_NEEDED at all. That
@@ -869,9 +836,18 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
          * memcpy should codegen ever grow one) resolves at dlopen from
          * the process-global scope, which already holds the exe and its
          * libc. */
-        c << " -nostdlib -nostartfiles";
+        c.push_back("-nostdlib");
+        c.push_back("-nostartfiles");
 #endif
-        if (!run(c.str())) return -1;
+        if (!run(c)) return -1;
+        fs::remove(out_module_path, ec);
+        fs::rename(linked, out_module_path, ec);
+        if (ec) {
+            OPL_ERROR_F("recomp-build", "cannot move the linked module onto %s: %s %s", out_module_path,
+                        ec.message().c_str(), openpete_error_ref(OP_E_MODULE));
+            return -1;
+        }
+        fs::remove_all(linked.parent_path(), ec);
     }
 
     /* Drop the scratch now that the link has consumed it. gen/ is ~64 MB
@@ -896,6 +872,11 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
                                                 const char* out_module_path) {
     const int rc = first_boot_build(disc_path, out_module_path);
     if (rc == 0 || !openpete_launcher_job_cancelled()) return rc;
-    OPL_INFO_F("recomp-build", "module build stopped between commands: %s", out_module_path);
+    /* A stopped build leaves nothing behind: its work directory (the
+     * killed commands' partial objects and generated C) is removed, and the
+     * module path never held a partial file (the link's rename). */
+    std::error_code ec;
+    fs::remove_all(fs::path(out_module_path).parent_path() / "build", ec);
+    OPL_INFO_F("recomp-build", "module build stopped, its compiler commands killed: %s", out_module_path);
     return -2;
 }

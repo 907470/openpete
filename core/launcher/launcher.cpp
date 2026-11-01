@@ -38,11 +38,13 @@
 #include "launcher_picker.h"
 #include "launcher_shapes.h"
 #include "launcher_sky.h"
+#include "launcher_quit.h"
 
 #include "imgui.h"
 
 #include <SDL3/SDL.h>
 
+#include "host_spawn.h"
 #include "openpete_devui.h"
 #include "openpete_fatal.h"
 #include "openpete_input_lock.h"
@@ -106,7 +108,6 @@ struct State {
     bool task_active = false;
     bool task_done = false;
     bool have_progress = false;
-    bool quit_pending = false;   /* a quit arrived while a wait was drawn */
     bool fail_deferred = false;  /* the device failed; its message waits for the next open */
     std::string fail_why;        /* the deferred message's reason */
     Uint32 wake_event = 0;       /* posted by the scan worker when it returns */
@@ -318,6 +319,13 @@ void chip_centred(const Frame& f, const char* id, float y, float size, ImU32 col
  * height and border; light track, dark border, orange fill. */
 constexpr float kBarX = 80.0f, kBarY = 240.0f, kBarH = 22.0f, kBarBorder = 2.0f;
 
+/** @brief Draw the quit ask's chip, "Press again to quit", at the step chip's place: white text on the step chip's box (chip_centred).
+ *
+ * @param f The frame mapping. */
+void draw_quit_ask(const Frame& f) {
+    chip_centred(f, "quit.ask", kStepChipY, 14, IM_COL32_WHITE, "Press again to quit");
+}
+
 /** @brief Draw the progress screen: banner, step chip, bar and footer.
  *
  * The stage's row of kStageLooks gives the banner and footer. A counted
@@ -333,20 +341,20 @@ void draw_progress(const Frame& f, const View& v) {
     if (look.counted && v.total > 0) snprintf(line, sizeof line, "%s %d/%d", v.stage, v.done, v.total);
     else if (look.counted && v.done > 0) snprintf(line, sizeof line, "%s %d", v.stage, v.done);
     else snprintf(line, sizeof line, "%s", v.stage);
-    chip_centred(f, "step", kStepChipY, 14, IM_COL32_WHITE, line);
+    /* While East's quit ask shows (launcher_quit_gesture) the quit chip
+     * takes the step chip's place. */
+    static bool armed_logged = false;
+    const bool armed = launcher_quit_armed();
+    if (armed && !armed_logged) OPL_INFO_F("launcher", "%s", "progress view: the quit chip reads Press again to quit");
+    armed_logged = armed;
+    if (armed) draw_quit_ask(f);
+    else chip_centred(f, "step", kStepChipY, 14, IM_COL32_WHITE, line);
     const float frac = v.total > 0 ? (float)v.done / (float)v.total : 0.0f;
     const ImVec2 a(f.ox + kBarX * f.scale, f.oy + (kBarY + kBandY) * f.scale);
     const ImVec2 b(f.ox + (kLayoutW - kBarX) * f.scale, a.y + kBarH * f.scale);
     launcher_shape_bar("bar", a, b, f.scale, frac, IM_COL32(150, 130, 190, 255), IM_COL32(240, 138, 30, 255),
                        IM_COL32(50, 38, 80, 255), kBarBorder);
     text_centred(f, "footer", 292 + kBandY, 8, IM_COL32(150, 130, 190, 255), look.footer);
-}
-
-/** @brief Draw the quit ask's chip, "Press again to quit", at the step chip's place: white text on the step chip's box (chip_centred).
- *
- * @param f The frame mapping. */
-void draw_quit_ask(const Frame& f) {
-    chip_centred(f, "quit.ask", kStepChipY, 14, IM_COL32_WHITE, "Press again to quit");
 }
 
 /** @brief Draw the pending screen's line where the selector's first entry goes.
@@ -558,6 +566,7 @@ void scripted_input_poll();
  *
  * @param v The view. */
 void present(View& v) {
+    if (launcher_quit_taken()) return;   /* the window is hidden while the work stops */
     v.name = game_name();
     launcher_sky_present(op_now(), s.presented);   /* the present's instant: the sky's motion follows it */
     if (!present_on(nullptr, v, (int)v.screen)) return;
@@ -1090,8 +1099,10 @@ Ask ask_of(const SDL_Event& e) {
  * (openpete_native_launcher_precompile_event); a batch of only wake events
  * steps the precompile and keeps waiting for the rest of the 100 ms, so the
  * caller presents at the cadence of its input, not of the compiles. The
- * precompile is also stepped when the wait ends.
- * @return The first command the events carry, or Ask::None. */
+ * precompile is also stepped when the wait ends. A quit (Ask::Quit: a quit
+ * event, SIGTERM, Escape) wins over any other command in the same batch.
+ * @return The first command the events carry, the quit when one is among
+ *         them, or Ask::None. */
 Ask wait_input() {
     const Uint32 wake = openpete_native_launcher_precompile_event();
     const Uint64 end = SDL_GetTicks() + (launcher_page_animating() ? 8 : 100);
@@ -1109,7 +1120,7 @@ Ask wait_input() {
             input = true;
             openpete_devui_process_event(&e);
             const Ask a = ask_of(e);
-            if (first == Ask::None) first = a;
+            if (first == Ask::None || a == Ask::Quit) first = a;
         } while (SDL_PollEvent(&e));
         (void)openpete_native_launcher_precompile_step();
         if (input) return first;
@@ -1179,7 +1190,7 @@ int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const cha
     const char* g = launcher_page_box_game(focus.index);
     switch (a) {
         case Ask::Quit: case Ask::Escape:
-            OPL_INFO_F("launcher", "command: quit (Escape or the window closed)");
+            OPL_INFO_F("launcher", "command: quit (Escape, the window closed or a quit event such as SIGTERM)");
             return LAUNCHER_SEL_QUIT;
         case Ask::Back: return launcher_quit_ask_press(&ask, SDL_GetTicks()) ? LAUNCHER_SEL_QUIT : kPageStays;
         case Ask::Dropped: return LAUNCHER_SEL_DROPPED;
@@ -1330,23 +1341,22 @@ void log_boxless_entries(const char* const* labels, const char* const* games, in
     }
 }
 
-/** @brief Hand pending events to imgui while a wait is drawn, remembering a quit for the hand-off.
+/** @brief Hand pending events to imgui while a wait is drawn, reading each as the progress view's quit gesture first.
  *
- * A wait (the ingest copy, the module build, the mod compile) cannot be
- * cancelled, so a quit (the window closed, or SIGTERM, which SDL turns into
- * a quit event) is held and re-posted at the hand-off, where the game's
- * loop ends the run, instead of being consumed here. The launcher's
- * precompile is stepped after the events, and its wake events
+ * A wait (the ingest copy, a module build, the mod compile, an asset job)
+ * is a progress view: launcher_quit_gesture takes the quit (the window
+ * closed, SIGTERM, which SDL turns into a quit event, Escape, or East twice)
+ * or arms it (one East), and the work stops; the event is consumed. The
+ * harness gesture (launcher_quit_script_poll) is posted first. The
+ * launcher's precompile is stepped after the events, and its wake events
  * (openpete_native_launcher_precompile_event) are consumed. */
 void drain_events() {
     const Uint32 wake = openpete_native_launcher_precompile_event();
+    launcher_quit_script_poll(nullptr);
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (wake && e.type == wake) continue;
-        if (e.type == SDL_EVENT_QUIT) {
-            s.quit_pending = true;
-            continue;
-        }
+        if (launcher_quit_gesture(e) != QuitGesture::None) continue;
         openpete_devui_process_event(&e);
         (void)window_gesture(e);
     }
@@ -1529,6 +1539,7 @@ int launcher_select(const char* const* labels, const char* const* games, int cou
 
 void openpete_launcher_begin(const openpete_launcher_game* game,
                              const openpete_options_t* neutral, int ui) {
+    openpete_host_spawn_set_stop(openpete_launcher_job_cancelled);
     s.game = game;
     s.opts = neutral;
     s.ui = ui != 0;
@@ -1538,7 +1549,7 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
                               size_t module_cap, int* exit_now) {
     *exit_now = 0;
     int rc = library_resolve(opts, module_path, module_cap);
-    if (rc == LAUNCHER_LIB_QUIT) {
+    if (rc == LAUNCHER_LIB_QUIT || launcher_quit_taken()) {
         launcher_jobs_stop_other(nullptr, false);
         *exit_now = 1;
         return OPENPETE_EXIT_OK;
@@ -1573,6 +1584,11 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
             /* The pick: the dropped disc is ingested and built, then the
              * library shows again. */
             library_ingest_drop(dropped);
+            if (launcher_quit_taken()) {
+                launcher_jobs_stop_other(nullptr, false);
+                *exit_now = 1;
+                return OPENPETE_EXIT_OK;
+            }
             return openpete_launcher_resolve(opts, module_path, module_cap, exit_now);
         }
     }
@@ -1657,12 +1673,6 @@ int openpete_launcher_handoff(openpete_options_t* opts) {
     carry_window_state(opts);
     close_gamepad();
     s.handed_off = true;
-    if (s.quit_pending) {
-        SDL_Event q = {};
-        q.type = SDL_EVENT_QUIT;
-        (void)SDL_PushEvent(&q);
-        OPL_INFO_F("launcher", "%s", "a quit arrived during a wait; re-posted for the game");
-    }
     if (opts->headless) return OPENPETE_EXIT_OK;
     if (launcher_open(opts, 1) != 0) {
         opts->native_unavailable = 1;
@@ -1688,6 +1698,7 @@ void openpete_launcher_close(void) {
     library_lock_release();
     close_gamepad();
     openpete_native_launcher_close();
+    launcher_quit_report();
 }
 
 void openpete_launcher_vk_failure(const char* why, int continues) {
@@ -1875,6 +1886,7 @@ bool job_finished();
 void job_wait(bool draw) {
     while (!job_finished()) {
         if (s.ui && openpete_native_launcher_active()) {
+            if (s_ing.busy) launcher_quit_script_poll("assets");
             drain_events();
             if (draw) {
                 char stage[sizeof s_jobs.stage];
@@ -1967,6 +1979,7 @@ void launcher_assets_wait(void) {
         ingest_poll();
         if (!s_ing.busy) break;
         if (s.ui && openpete_native_launcher_active()) {
+            launcher_quit_script_poll("assets");
             drain_events();
             const int total = s_preview_total.load();
             if (total > 0) {
@@ -2059,7 +2072,11 @@ void launcher_jobs_token(int delta) { s_jobs.in_flight += delta; }
 const char* launcher_last_stage(void) { return s.last_stage; }
 
 int openpete_launcher_job_cancelled(void) {
-    return t_cancel && SDL_GetAtomicInt(t_cancel) ? 1 : 0;
+    return (t_cancel && SDL_GetAtomicInt(t_cancel)) || launcher_quit_taken() ? 1 : 0;
 }
+
+void* openpete_launcher_job_stop_handle(void) { return t_cancel; }
+
+void openpete_launcher_job_stop_adopt(void* handle) { t_cancel = static_cast<SDL_AtomicInt*>(handle); }
 
 int openpete_launcher_jobs_in_flight(void) { return s_jobs.in_flight.load(); }

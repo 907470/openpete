@@ -135,6 +135,7 @@ add_library(openpete_core STATIC
     # imgui screens (drop, version selector, progress) it hands the game.
     launcher/library.cpp
     launcher/launcher.cpp
+    launcher/launcher_quit.cpp
     launcher/launcher_manifest.cpp
     launcher/launcher_page.cpp
     launcher/launcher_font.cpp

@@ -71,9 +71,9 @@ void openpete_recomp_announce_build(const char* why);
  * @param disc_path The disc image (a .cue or .bin).
  * @param out_module_path Where the linked module is written.
  * @return 0 on success, -2 when the launcher job running it was asked to
- *         stop (openpete_launcher_job_cancelled; read between compiler
- *         commands, so no partial module is written), -1 on any other
- *         failure (reported on stderr). */
+ *         stop (openpete_launcher_job_cancelled; each compiler command is
+ *         killed on it, the build directory is removed and no partial
+ *         module is written), -1 on any other failure (reported on stderr). */
 int openpete_recomp_first_boot_build(const char* disc_path,
                                      const char* out_module_path);
 
