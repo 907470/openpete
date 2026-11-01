@@ -56,9 +56,13 @@ const openpete_launcher_game* launcher_game(void);
 
 /** @brief Run the version selector over the library's entries.
  *
- * Opens the launcher's window when it is not open. Up and down (keys,
- * d-pad, left stick) move the selection; Enter, the gamepad's south button
- * or a click picks; Escape, the east button or closing the window quits; a
+ * Opens the launcher's window when it is not open. Left and right (keys,
+ * d-pad, left stick) move the focus one entry without wrapping; up and down
+ * do nothing; the pointer takes the focus only after it moves. The focus
+ * starts on the first entry of the game launcher_focus_game names, else
+ * the first. Enter, the gamepad's south button or a click picks; Escape or
+ * closing the window quits at once; the east button asks once ("Press
+ * again to quit") and a second press within LAUNCHER_QUIT_ASK_MS quits; a
  * file dropped on the window, or chosen in the file dialog Space or the
  * gamepad's west button opens, returns LAUNCHER_SEL_DROPPED with its path in
  * launcher_dropped_path. The harness variable OPENPETE_LAUNCHER_DROP acts
@@ -74,6 +78,70 @@ const openpete_launcher_game* launcher_game(void);
  * @param count Their number, at least one; at most six show.
  * @return The picked index, or a LAUNCHER_SEL_* value. */
 int launcher_select(const char* const* labels, const char* const* games, int count);
+
+/* The game page's focus over its boxes. Keys and the pad move it one box
+ * (launcher_focus_move) and hold it there; the box under the pointer takes
+ * it (launcher_focus_hover) only once the pointer has moved since
+ * (launcher_focus_pointer_moved). */
+struct launcher_focus {
+    int index;   /* the focused box */
+    int count;   /* the boxes */
+    bool held;   /* a key or pad placed the focus and the pointer has not moved since */
+};
+
+/** @brief Move the focus one box left or right, without wrapping, and hold it against a still pointer.
+ *
+ * Logs the move, an edge press included.
+ * @param f The focus.
+ * @param dir Negative for left, positive for right.
+ * @return 1 when the focused box changed, else 0. */
+int launcher_focus_move(launcher_focus* f, int dir);
+
+/** @brief Release a held focus: the pointer moved, so the box under it may take the focus.
+ *
+ * @param f The focus. */
+void launcher_focus_pointer_moved(launcher_focus* f);
+
+/** @brief Give the focus to the box under the pointer unless a key or pad holds it.
+ *
+ * @param f The focus.
+ * @param hovered The box under the pointer, or -1 for none.
+ * @return true when the focus moved to @p hovered. */
+bool launcher_focus_hover(launcher_focus* f, int hovered);
+
+/* How long, in ms, a first press of the east button waits for the second
+ * that quits. */
+#define LAUNCHER_QUIT_ASK_MS 2000
+
+/* The east button's ask-once quit: the first press asks, a second within
+ * LAUNCHER_QUIT_ASK_MS quits. Zero-initialised: nothing asked. */
+struct launcher_quit_ask {
+    unsigned long long asked_ms;   /* when the ask was made, 0 for none */
+};
+
+/** @brief Take one press of the east button: the first press asks, a second while the ask shows quits.
+ *
+ * @param q The ask state.
+ * @param now_ms The press's time in ms on a monotonic clock (SDL_GetTicks).
+ * @return true when this press quits. */
+bool launcher_quit_ask_press(launcher_quit_ask* q, unsigned long long now_ms);
+
+/** @brief Report whether the ask shows: a first press was made less than LAUNCHER_QUIT_ASK_MS ago.
+ *
+ * @param q The ask state.
+ * @param now_ms The time in ms on the clock launcher_quit_ask_press was given.
+ * @return true while the "Press again to quit" chip draws. */
+bool launcher_quit_ask_shown(const launcher_quit_ask* q, unsigned long long now_ms);
+
+/** @brief Name the game whose box takes the focus when the game page next shows: the game of a disc just added.
+ *
+ * @param game The game id; NULL or "" for none. */
+void launcher_focus_game_set(const char* game);
+
+/** @brief Return the game launcher_focus_game_set last named.
+ *
+ * @return The game id, "" for none. */
+const char* launcher_focus_game(void);
 
 /** @brief Queue a launch-time job of a game's library entry, run when no other job runs: its module check (and rebuild) and its asset cache check (and extraction).
  *

@@ -1676,7 +1676,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                                 job-pick-other lock failed-marker headless-no-disc bind-repair
                                 ingest-held cache cache-ingest multi-install-launch
                                 job-ingest-stop-assets job-pick-other-assets
-                                shader-step-during shader-step-after shader-step-order)
+                                shader-step-during shader-step-after shader-step-order input)
             add_test(NAME launcher_flow_${_launcher_case}
                      COMMAND ${Python3_EXECUTABLE}
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_flow.py

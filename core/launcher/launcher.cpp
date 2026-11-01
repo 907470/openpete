@@ -26,7 +26,8 @@
 // harness variable OPENPETE_LAUNCHER_INPUT=<ms>:<action>[,...] performs each
 // action that long after the first launcher frame: altenter, browse (Space),
 // dblclick and quit post the input events, maximize, restore and resize=WxH call the
-// window operations a window manager answers. OPENPETE_LAUNCHER_MANIFEST=<base>
+// window operations a window manager answers, and key=, pad=, stick= and
+// mouse= post key, gamepad and pointer events (scripted_event). OPENPETE_LAUNCHER_MANIFEST=<base>
 // writes each screen's first frame's elements, by the reference layout's ids, to
 // <base>.<screen>.json (launcher_manifest.cpp).
 #include "launcher_internal.h"
@@ -37,6 +38,7 @@
 
 #include "openpete_devui.h"
 #include "openpete_fatal.h"
+#include "openpete_input_lock.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_time.h"
@@ -74,6 +76,8 @@ struct View {
     int count = 0;
     int sel = 0;
     int clicked = -1;   /* the label the mouse picked this frame */
+    int hovered = -1;   /* the label under the pointer this frame */
+    bool quit_asked = false;   /* the east button's ask shows ("Press again to quit") */
     bool browse = false;   /* the browse button was pressed this frame */
     bool games = false;    /* the selector lists every game's entries */
     const char* note = nullptr;   /* the selector's note line; NULL or "" for none */
@@ -114,6 +118,7 @@ struct State {
     bool fs_touched = false;
     bool fs_pending = false;     /* a toggle's enter or leave event is due */
     bool item_hovered = false;   /* the last frame's mouse was over a button or entry */
+    bool pointer_moved = false;  /* a pointer motion arrived since the selector last looked */
     SDL_ThreadID ui_tid = 0;
     char stage[128] = {};
     int done = 0, total = 0;
@@ -330,12 +335,33 @@ void draw_drop(const Frame& f, View& v) {
     text_centred(f, "quit.hint", 300 + kBandY, 8, IM_COL32(110, 95, 150, 255), "ESC / (B) TO QUIT");
 }
 
-/** @brief Draw the selector: the heading, up to six entries with the selection marked, the note, the drop and browse hint, and the controls hint.
+/* The progress view's step line top, in layout px: the place the step chip
+ * and the game page's quit chip draw at. */
+constexpr float kStepChipY = 196 + kBandY;
+
+/** @brief Draw the quit ask's chip, "Press again to quit", at the step chip's place: white text on a box of half the background and half (8,8,8).
+ *
+ * @param f The frame mapping. */
+void draw_quit_ask(const Frame& f) {
+    static const char kText[] = "Press again to quit";
+    push_body_font(14 * f.scale);
+    const ImVec2 sz = ImGui::CalcTextSize(kText);
+    ImGui::PopFont();
+    const float pad = 6 * f.scale;
+    const float x = f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, y = f.oy + kStepChipY * f.scale;
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x - pad, y - pad), ImVec2(x + sz.x + pad, y + sz.y + pad),
+                                              IM_COL32(8, 8, 8, 128), pad);
+    launcher_manifest_item("quit.ask.chip", "rect", x - pad, y - pad, x + sz.x + pad, y + sz.y + pad);
+    text_centred(f, "quit.ask", kStepChipY, 14, IM_COL32_WHITE, kText);
+}
+
+/** @brief Draw the selector: the heading, up to six entries with the focused one marked, the note, the drop and browse hint, the controls hint, and the quit ask's chip while it shows.
  *
  * The heading reads CHOOSE A GAME while the selector lists every game's
  * entries, else CHOOSE A VERSION.
  * @param f The frame mapping.
- * @param v The view; clicked is set to the entry the mouse picked. */
+ * @param v The view; clicked is set to the entry the mouse picked, hovered
+ *          to the entry under the pointer. */
 void draw_select(const Frame& f, View& v) {
     text_centred(f, "heading", 136 + kBandY, 14, IM_COL32(220, 210, 240, 255),
                  v.games ? "CHOOSE A GAME" : "CHOOSE A VERSION");
@@ -349,6 +375,7 @@ void draw_select(const Frame& f, View& v) {
         char line[160];
         snprintf(line, sizeof line, "%s %s##%d", on ? ">" : " ", v.labels[i], i);
         if (ImGui::Selectable(line, on, 0, ImVec2(400 * f.scale, 0))) v.clicked = i;
+        if (ImGui::IsItemHovered()) v.hovered = i;
         ImGui::PopStyleColor();
     }
     ImGui::PopFont();
@@ -357,7 +384,8 @@ void draw_select(const Frame& f, View& v) {
     text_centred(f, "drop.hint", 304 + kBandY, 8, IM_COL32(150, 130, 190, 255),
                  "DRAG A DISC IMAGE (.CUE / .BIN) HERE TO ADD IT - SPACE / (X) TO BROWSE");
     text_centred(f, "controls.hint", 320 + kBandY, 8, IM_COL32(110, 95, 150, 255),
-                 "UP/DOWN OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT");
+                 "LEFT/RIGHT OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT");
+    if (v.quit_asked) draw_quit_ask(f);
 }
 
 /** @brief Draw the pending screen's line where the selector's first entry goes.
@@ -797,30 +825,110 @@ bool window_gesture(const SDL_Event& e) {
     return true;
 }
 
-/** @brief Harness: post the key-down event a player's key press produces on the launcher window.
+/** @brief Harness: build the event of a key or pad-button action: altenter, browse, key=<name> or pad=<button>.
  *
- * @param win The launcher window.
- * @param key The keycode.
- * @param scancode The scancode.
- * @param mod The modifier state. */
-void post_key_down(SDL_Window* win, SDL_Keycode key, SDL_Scancode scancode, SDL_Keymod mod) {
-    SDL_Event e = {};
-    e.type = SDL_EVENT_KEY_DOWN;
-    e.key.windowID = SDL_GetWindowID(win);
-    e.key.key = key;
-    e.key.scancode = scancode;
-    e.key.mod = mod;
-    e.key.down = true;
-    (void)SDL_PushEvent(&e);
+ * Keys: left, right, up, down, enter, escape, space; altenter is Return
+ * with the left Alt held, browse is Space. Pad buttons: south, east, west, left, right, up,
+ * down (the d-pad). Key events carry OPENPETE_INJECT_DEVICE_ID.
+ * @param a The action.
+ * @param id The launcher window's id.
+ * @param e Receives the event.
+ * @return true when @p a is one of these actions. */
+bool scripted_button_event(const std::string& a, SDL_WindowID id, SDL_Event& e) {
+    static const struct { const char* n; SDL_Keycode k; SDL_Scancode sc; SDL_Keymod mod; } k_keys[] = {
+        {"altenter", SDLK_RETURN, SDL_SCANCODE_RETURN, SDL_KMOD_LALT},
+        {"browse", SDLK_SPACE, SDL_SCANCODE_SPACE, 0},
+        {"key=left", SDLK_LEFT, SDL_SCANCODE_LEFT, 0}, {"key=right", SDLK_RIGHT, SDL_SCANCODE_RIGHT, 0},
+        {"key=up", SDLK_UP, SDL_SCANCODE_UP, 0}, {"key=down", SDLK_DOWN, SDL_SCANCODE_DOWN, 0},
+        {"key=enter", SDLK_RETURN, SDL_SCANCODE_RETURN, 0},
+        {"key=escape", SDLK_ESCAPE, SDL_SCANCODE_ESCAPE, 0}, {"key=space", SDLK_SPACE, SDL_SCANCODE_SPACE, 0}};
+    static const struct { const char* n; SDL_GamepadButton b; } k_pad[] = {
+        {"pad=south", SDL_GAMEPAD_BUTTON_SOUTH}, {"pad=east", SDL_GAMEPAD_BUTTON_EAST},
+        {"pad=west", SDL_GAMEPAD_BUTTON_WEST}, {"pad=left", SDL_GAMEPAD_BUTTON_DPAD_LEFT},
+        {"pad=right", SDL_GAMEPAD_BUTTON_DPAD_RIGHT}, {"pad=up", SDL_GAMEPAD_BUTTON_DPAD_UP},
+        {"pad=down", SDL_GAMEPAD_BUTTON_DPAD_DOWN}};
+    for (const auto& k : k_keys)
+        if (a == k.n) {
+            e.type = SDL_EVENT_KEY_DOWN;
+            e.key.windowID = id;
+            e.key.key = k.k;
+            e.key.scancode = k.sc;
+            e.key.mod = k.mod;
+            e.key.down = true;
+            e.key.which = OPENPETE_INJECT_DEVICE_ID;
+            return true;
+        }
+    for (const auto& b : k_pad)
+        if (a == b.n) {
+            e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+            e.gbutton.button = (Uint8)b.b;
+            e.gbutton.down = true;
+            return true;
+        }
+    return false;
+}
+
+/** @brief Harness: build the event of an input action: a key or pad button (scripted_button_event), stick=<x|y>:<value>, mouse=<x>/<y>, dblclick or quit.
+ *
+ * stick sets the left stick's axis to the value (-32768 to 32767). mouse
+ * warps the pointer to a point in the 640x448 layout space of the frame
+ * last drawn and builds no event (e.type stays 0): the platform then
+ * reports the motion and the pointer's window, which imgui's backend reads
+ * each frame. dblclick is a left double-click at the bottom centre of the
+ * window, below the screens' buttons and entries; quit is the event closing
+ * the window posts.
+ * @param a The action.
+ * @param win The launcher's window.
+ * @param e Receives the event.
+ * @return true when @p a is one of these actions. */
+bool scripted_event(const std::string& a, SDL_Window* win, SDL_Event& e) {
+    const SDL_WindowID id = SDL_GetWindowID(win);
+    if (scripted_button_event(a, id, e)) return true;
+    char axis = 0;
+    int value = 0, w = 0, h = 0;
+    float x = 0, y = 0;
+    if (sscanf(a.c_str(), "stick=%c:%d", &axis, &value) == 2 && (axis == 'x' || axis == 'y')) {
+        e.type = SDL_EVENT_GAMEPAD_AXIS_MOTION;
+        e.gaxis.axis = (Uint8)(axis == 'x' ? SDL_GAMEPAD_AXIS_LEFTX : SDL_GAMEPAD_AXIS_LEFTY);
+        e.gaxis.value = (Sint16)std::clamp(value, -32768, 32767);
+    } else if (sscanf(a.c_str(), "mouse=%f/%f", &x, &y) == 2) {
+        const Frame f = frame_map();
+        SDL_WarpMouseInWindow(win, f.ox + x * f.scale, f.oy + y * f.scale);
+    } else if (a == "dblclick") {
+        SDL_GetWindowSize(win, &w, &h);
+        e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        e.button.windowID = id;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = true;
+        e.button.clicks = 2;
+        e.button.x = (float)w * 0.5f;
+        e.button.y = (float)h - 4.0f;
+    } else if (a == "quit") {
+        e.type = SDL_EVENT_QUIT;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/** @brief Harness: call the window operation of a window action: maximize, restore or resize=WxH.
+ *
+ * @param a The action; any other is ignored. */
+void scripted_window_op(const std::string& a) {
+    int w = 0, h = 0;
+    if (a == "maximize")
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_MAXIMIZE, 0, 0);
+    else if (a == "restore")
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESTORE, 0, 0);
+    else if (sscanf(a.c_str(), "resize=%dx%d", &w, &h) == 2)
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESIZE, w, h);
 }
 
 /** @brief Harness: run the OPENPETE_LAUNCHER_INPUT actions that are due, timed from the first call (the first launcher frame).
  *
- * altenter, browse (Space, which opens the file dialog) and dblclick post
- * the key and mouse events a player's input produces (the double-click at the bottom centre of the window, below the
- * screens' buttons and entries); quit posts the quit event closing the
- * window does; maximize, restore and resize=WxH call the window
- * operations. Each action runs once. */
+ * An input action (scripted_event) posts its event; a window action
+ * (scripted_window_op) calls the window operation a window manager
+ * answers. Each action runs once. */
 void scripted_input_poll() {
     static Uint64 first_ms = 0;
     static unsigned done = 0;   /* one bit per action, in list order */
@@ -840,31 +948,8 @@ void scripted_input_poll() {
         done |= 1u << idx;
         OPL_INFO_F("launcher", "scripted input: %s", a.c_str());
         SDL_Event e = {};
-        int w = 0, h = 0;
-        if (a == "altenter") {
-            post_key_down(win, SDLK_RETURN, SDL_SCANCODE_RETURN, SDL_KMOD_LALT);
-        } else if (a == "browse") {
-            post_key_down(win, SDLK_SPACE, SDL_SCANCODE_SPACE, SDL_KMOD_NONE);
-        } else if (a == "dblclick") {
-            SDL_GetWindowSize(win, &w, &h);
-            e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
-            e.button.windowID = SDL_GetWindowID(win);
-            e.button.button = SDL_BUTTON_LEFT;
-            e.button.down = true;
-            e.button.clicks = 2;
-            e.button.x = (float)w * 0.5f;
-            e.button.y = (float)h - 4.0f;
-            (void)SDL_PushEvent(&e);
-        } else if (a == "quit") {
-            e.type = SDL_EVENT_QUIT;
-            (void)SDL_PushEvent(&e);
-        } else if (a == "maximize") {
-            (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_MAXIMIZE, 0, 0);
-        } else if (a == "restore") {
-            (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESTORE, 0, 0);
-        } else if (sscanf(a.c_str(), "resize=%dx%d", &w, &h) == 2) {
-            (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESIZE, w, h);
-        }
+        if (!scripted_event(a, win, e)) scripted_window_op(a);
+        else if (e.type) (void)SDL_PushEvent(&e);
     }
 }
 
@@ -890,20 +975,45 @@ void carry_window_state(openpete_options_t* opts) {
 }
 
 /* What one input event asks of a waiting screen. */
-enum class Ask { None, Quit, Pick, Browse, Up, Down, Dropped };
+/* Quit is immediate (Escape, the window closing); Back is the gamepad's east
+ * button, which the game page asks once for and the other screens take as
+ * Quit. */
+enum class Ask { None, Quit, Back, Pick, Browse, Up, Down, Left, Right, Dropped };
 
-/** @brief Read one event as a launcher command: keys, gamepad buttons, the left stick, a dropped file, the window closing.
+/** @brief Read a left-stick axis motion as a move: X as left or right, Y as up or down.
  *
- * A window gesture (window_gesture) is acted on first and is no command:
+ * Each axis moves once per push past a quarter of its range and must
+ * re-centre before it moves again.
+ * @param m The axis motion.
+ * @return The move, or Ask::None. */
+Ask stick_ask(const SDL_GamepadAxisEvent& m) {
+    static bool armed[2] = {true, true};   /* X and Y: re-centred since the last move */
+    const bool x = m.axis == SDL_GAMEPAD_AXIS_LEFTX;
+    if (!x && m.axis != SDL_GAMEPAD_AXIS_LEFTY) return Ask::None;
+    bool& arm = armed[x ? 0 : 1];
+    if (m.value > -8000 && m.value < 8000) {
+        arm = true;
+        return Ask::None;
+    }
+    if (!arm) return Ask::None;
+    arm = false;
+    if (x) return m.value < 0 ? Ask::Left : Ask::Right;
+    return m.value < 0 ? Ask::Up : Ask::Down;
+}
+
+/** @brief Read one event as a launcher command: keys, gamepad buttons, the left stick (stick_ask), a dropped file, the window closing.
+ *
+ * A pointer motion is no command; it is
+ * recorded for the selector's focus (State::pointer_moved). A window gesture (window_gesture) is acted on first and is no command:
  * Alt+Enter toggles fullscreen and does not pick. A dropped file's path is stored for launcher_dropped_path; an added
  * gamepad is opened.
  * @param e The event.
  * @return The command. */
 Ask ask_of(const SDL_Event& e) {
-    static bool armed = true;   /* left-stick debounce: re-centre to move again */
     if (window_gesture(e)) return Ask::None;
     switch (e.type) {
         case SDL_EVENT_QUIT: return Ask::Quit;
+        case SDL_EVENT_MOUSE_MOTION: s.pointer_moved = true; return Ask::None;
         case SDL_EVENT_DROP_FILE:
             snprintf(s.drop_path, sizeof s.drop_path, "%s", e.drop.data);
             return Ask::Dropped;
@@ -911,24 +1021,21 @@ Ask ask_of(const SDL_Event& e) {
         case SDL_EVENT_KEY_DOWN: {
             static const struct { SDL_Keycode k; Ask a; } k_keys[] = {
                 {SDLK_ESCAPE, Ask::Quit}, {SDLK_RETURN, Ask::Pick}, {SDLK_KP_ENTER, Ask::Pick},
-                {SDLK_SPACE, Ask::Browse}, {SDLK_UP, Ask::Up}, {SDLK_DOWN, Ask::Down}};
+                {SDLK_SPACE, Ask::Browse}, {SDLK_UP, Ask::Up}, {SDLK_DOWN, Ask::Down},
+                {SDLK_LEFT, Ask::Left}, {SDLK_RIGHT, Ask::Right}};
             for (const auto& k : k_keys) if (e.key.key == k.k) return k.a;
             return Ask::None;
         }
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
             static const struct { Uint8 b; Ask a; } k_buttons[] = {
-                {SDL_GAMEPAD_BUTTON_SOUTH, Ask::Pick}, {SDL_GAMEPAD_BUTTON_EAST, Ask::Quit},
+                {SDL_GAMEPAD_BUTTON_SOUTH, Ask::Pick}, {SDL_GAMEPAD_BUTTON_EAST, Ask::Back},
                 {SDL_GAMEPAD_BUTTON_WEST, Ask::Browse},
-                {SDL_GAMEPAD_BUTTON_DPAD_UP, Ask::Up}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, Ask::Down}};
+                {SDL_GAMEPAD_BUTTON_DPAD_UP, Ask::Up}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, Ask::Down},
+                {SDL_GAMEPAD_BUTTON_DPAD_LEFT, Ask::Left}, {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, Ask::Right}};
             for (const auto& b : k_buttons) if (e.gbutton.button == b.b) return b.a;
             return Ask::None;
         }
-        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-            if (e.gaxis.axis != SDL_GAMEPAD_AXIS_LEFTY) return Ask::None;
-            if (e.gaxis.value > -8000 && e.gaxis.value < 8000) { armed = true; return Ask::None; }
-            if (!armed) return Ask::None;
-            armed = false;
-            return e.gaxis.value < 0 ? Ask::Up : Ask::Down;
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION: return stick_ask(e.gaxis);
         default: return Ask::None;
     }
 }
@@ -1009,6 +1116,59 @@ bool scripted_pick_held() {
     return e && *e && *e != '0' && !launcher_jobs_idle();
 }
 
+/* page_command's result while the page stays up. */
+constexpr int kPageStays = -100;
+
+/** @brief Act on one command on the game page: move the focus, activate or browse for the focused box, quit at once, or ask once before quitting.
+ *
+ * Escape and the window closing quit at once; the east button asks once
+ * (launcher_quit_ask_press); up and down do nothing.
+ * @param a The command.
+ * @param focus The page's focus.
+ * @param ask The east button's ask state.
+ * @param games Each box's game id.
+ * @return The focused box on activation, LAUNCHER_SEL_QUIT, LAUNCHER_SEL_DROPPED, or kPageStays. */
+int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const char* const* games) {
+    const char* g = games && games[focus.index] ? games[focus.index] : "";
+    switch (a) {
+        case Ask::Quit:
+            OPL_INFO_F("launcher", "command: quit (Escape or the window closed)");
+            return LAUNCHER_SEL_QUIT;
+        case Ask::Back: return launcher_quit_ask_press(&ask, SDL_GetTicks()) ? LAUNCHER_SEL_QUIT : kPageStays;
+        case Ask::Dropped: return LAUNCHER_SEL_DROPPED;
+        case Ask::Browse:
+            OPL_INFO_F("launcher", "command: file picker for box %d (%s)", focus.index, g);
+            open_file_dialog();
+            return kPageStays;
+        case Ask::Pick:
+            OPL_INFO_F("launcher", "command: activate box %d (%s)", focus.index, g);
+            return focus.index;
+        case Ask::Left: case Ask::Right:
+            (void)launcher_focus_move(&focus, a == Ask::Left ? -1 : 1);
+            return kPageStays;
+        case Ask::Up: case Ask::Down:
+            OPL_INFO_F("launcher", "command: %s does nothing on the game page", a == Ask::Up ? "up" : "down");
+            return kPageStays;
+        default: return kPageStays;
+    }
+}
+
+/** @brief Return the box the game page opens focused on: the first of the game launcher_focus_game names, consuming the name, else box 0.
+ *
+ * @param games Each box's game id.
+ * @param count The boxes.
+ * @return The box. */
+int page_first_focus(const char* const* games, int count) {
+    const std::string want = launcher_focus_game();
+    launcher_focus_game_set(nullptr);
+    for (int i = 0; !want.empty() && games && i < count; i++)
+        if (games[i] && want == games[i]) {
+            OPL_INFO_F("launcher", "command: focus starts on box %d (%s, the disc just added)", i, games[i]);
+            return i;
+        }
+    return 0;
+}
+
 /** @brief Run the drop screen until a disc image is dropped or chosen, or the player quits.
  *
  * The harness variable OPENPETE_LAUNCHER_DROP=<path> acts as a drop of that
@@ -1028,7 +1188,7 @@ const char* wait_for_disc() {
             return s.drop_path;
         }
         const Ask a = wait_input();
-        if (a == Ask::Quit) return nullptr;
+        if (a == Ask::Quit || a == Ask::Back) return nullptr;
         if (a == Ask::Dropped) return s.drop_path;
         if (a == Ask::Pick || a == Ask::Browse) open_file_dialog();
     }
@@ -1164,7 +1324,7 @@ int pending_loop() {
         launcher_jobs_pump();
         if (SDL_GetAtomicInt(&s.scan_done)) break;
         const Ask a = wait_input();
-        if (ask == 0 && a == Ask::Quit) ask = LAUNCHER_SEL_QUIT;
+        if (ask == 0 && (a == Ask::Quit || a == Ask::Back)) ask = LAUNCHER_SEL_QUIT;
         else if (ask == 0 && a == Ask::Dropped) ask = LAUNCHER_SEL_DROPPED;
     }
     return ask;
@@ -1231,9 +1391,20 @@ int launcher_select(const char* const* labels, const char* const* games, int cou
     v.games = launcher_neutral();
     v.note = s.note;
     const int scripted = scripted_pick(games, count);
+    /* The focus starts held: the pointer takes it only after it moves. */
+    launcher_focus focus = {page_first_focus(games, count), count, true};
+    launcher_quit_ask ask = {};
+    s.pointer_moved = false;
     for (;;) {
         v.clicked = -1;
+        v.hovered = -1;
+        v.sel = focus.index;
+        const bool asked = launcher_quit_ask_shown(&ask, SDL_GetTicks());
+        if (asked != v.quit_asked)
+            OPL_INFO_F("launcher", "command: quit ask chip %s", asked ? "shown" : "hidden");
+        v.quit_asked = asked;
         present(v);
+        (void)launcher_focus_hover(&focus, v.hovered);
         launcher_jobs_pump();
         if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
         if (scripted >= 0 && scripted_due() && !scripted_pick_held()) {
@@ -1246,15 +1417,11 @@ int launcher_select(const char* const* labels, const char* const* games, int cou
             SDL_SetAtomicInt(&s.dialog_got, 0);
             return LAUNCHER_SEL_DROPPED;
         }
-        switch (wait_input()) {
-            case Ask::Quit: return LAUNCHER_SEL_QUIT;
-            case Ask::Dropped: return LAUNCHER_SEL_DROPPED;
-            case Ask::Browse: open_file_dialog(); break;
-            case Ask::Pick: return v.sel;
-            case Ask::Up: if (v.sel > 0) v.sel--; break;
-            case Ask::Down: if (v.sel < count - 1) v.sel++; break;
-            default: break;
-        }
+        const Ask a = wait_input();
+        if (s.pointer_moved) launcher_focus_pointer_moved(&focus);
+        s.pointer_moved = false;
+        const int r = page_command(a, focus, ask, games);
+        if (r != kPageStays) return r;
     }
 }
 

@@ -683,6 +683,7 @@ void queue_launch_jobs(const std::vector<Meta>& entries) {
 
 /** @brief Ingest a disc dropped on a screen, then build its game's module, and return to the screens.
  *
+ * The game page opens focused on the disc's game (launcher_focus_game_set).
  * A running job of another game is stopped at the copy's end and requeued.
  * @param path The dropped image. */
 void ingest_drop(const char* path) {
@@ -693,6 +694,7 @@ void ingest_drop(const char* path) {
         return;
     }
     record_game(m);
+    launcher_focus_game_set(m.game.c_str());
     launcher_jobs_stop_other(m.game.c_str(), true);
     (void)prepare_entry(m, "ingest");
 }

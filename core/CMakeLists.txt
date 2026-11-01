@@ -138,6 +138,7 @@ add_library(openpete_core STATIC
     launcher/launcher_manifest.cpp
     launcher/launcher_font.cpp
     launcher/launcher_title.cpp
+    launcher/launcher_commands.cpp
 
     # Debug and in-game UI: the O settings menu; the placement ledger for
     # on-screen chrome (six anchors, a usable-x range that dodges the open

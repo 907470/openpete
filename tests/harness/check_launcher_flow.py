@@ -50,6 +50,14 @@ Cases:
             headless-no-disc: headless, a launch naming no disc boots the most recently played entry after the
             inline launch-time check; an empty library, and --game naming a game with no entry,
             exit 3 with the missing-disc diagnostic.
+  input     T11, the game page's commands (windowed, three-game library): arrow keys, the d-pad and
+            the left stick's X move the focus one box without wrap (the stick re-centres between
+            moves); up and down do nothing; Escape quits at once; East asks once ("quit ask chip
+            shown"), the ask lapses after 2 s, and a second East inside 2 s quits; the pointer takes
+            the focus only after it moves, so a key move holds against a still pointer; Space and
+            West open the file picker for the focused box's game; Enter and South start the focused
+            box's game; a disc of another game dropped on the page focuses that game's box when the
+            page returns.
   ingest-held  An image of a game the library already holds is refused before the copy, with a
             message naming the library's entry, and the library is left as it was: by a headless
             --ingest (non-zero exit), and by a drop on the selector (the selector returns and a
@@ -1134,6 +1142,133 @@ def case_shader_step_order(a):
     return verdict("shader-step-order", bad, detail)
 
 
+# ---- the game page's commands (input) ----
+
+# A selector entry's centre in layout px: entry i's line top is 168 + 22 i below the 360 px band,
+# which starts 44 px down the 448 px layout.
+def entry_point(i):
+    """The mouse= action pointing at selector entry i's centre."""
+    return f"mouse=320/{168 + 44 + 22 * i + 8}"
+
+
+def inputs(*acts, start=1500, step=300):
+    """An OPENPETE_LAUNCHER_INPUT value: each action `step` ms after the one before, the first at `start`;
+    an int in the list adds that many ms to the gap before the next action."""
+    out, t = [], start
+    for x in acts:
+        if isinstance(x, int):
+            t += x
+            continue
+        out.append(f"{t}:{x}")
+        t += step
+    return ",".join(out)
+
+
+def focus_moves(log):
+    """The focus moves the log names, in order: (kind, from, to)."""
+    out = []
+    for m in re.finditer(r"command: focus (left|right) from box (\d+) to box (\d+)|"
+                         r"command: focus follows the pointer from box (\d+) to box (\d+)", log):
+        if m.group(1):
+            out.append((m.group(1), int(m.group(2)), int(m.group(3))))
+        else:
+            out.append(("pointer", int(m.group(4)), int(m.group(5))))
+    return out
+
+
+def input_run(a, d, tag, acts, extra=None, args=None, timeout=300):
+    """One windowed launcher run over the case's library with the scripted actions; returns (rc, log)."""
+    env = {"OPENPETE_LAUNCHER_INPUT": acts}
+    env.update(extra or {})
+    return cl.launch(a.binary, d, tag, ["--launcher-window", "1280x800"] + (args or []), env, timeout=timeout)
+
+
+def case_input(a):
+    """T11: keys, pad and pointer drive the game page's focus, activation, file picker and quit."""
+    d = cl.case_dir(a.out, "input")
+    for i, g in enumerate(DISCS):
+        seed_entry(d, g, len(DISCS) - i)
+    bad, counts = [], {}
+
+    def expect_moves(tag, log, want):
+        got = focus_moves(log)
+        counts[tag + " moves"] = len(got)
+        if got != want:
+            bad.append(f"{tag}: focus moves {got}, want {want}")
+
+    # Keys: no wrap at either edge, up/down inert, Escape quits at once.
+    rc, log = input_run(a, d, "keys", inputs("key=left", "key=right", "key=right", "key=right", "key=up",
+                                             "key=down", "key=left", "key=escape"))
+    expect_moves("keys", log, [("left", 0, 0), ("right", 0, 1), ("right", 1, 2), ("right", 2, 2),
+                               ("left", 2, 1)])
+    counts["keys inert"] = len(re.findall(r"command: (up|down) does nothing", log))
+    if counts["keys inert"] != 2:
+        bad.append(f"keys: {counts['keys inert']} up/down lines, want 2")
+    if rc != 0 or "command: quit (Escape or the window closed)" not in log or "game picked" in log:
+        bad.append(f"keys: exit {rc}, Escape quit {'logged' if 'Escape or the window' in log else 'absent'}")
+
+    # Pad and stick: the d-pad and the left stick's X move one box per push (the stick re-centres before
+    # it moves again); East asks once, the ask lapses after 2 s, a second East inside 2 s quits.
+    rc, log = input_run(a, d, "pad", inputs("pad=left", "pad=right", "stick=x:20000", "stick=x:30000",
+                                            "stick=x:0", "stick=x:20000", "stick=x:0", "stick=x:-20000",
+                                            "stick=x:0", "pad=up", "pad=down", "stick=y:-20000",
+                                            "pad=east", 2400, "pad=east", 700, "pad=east"))
+    expect_moves("pad", log, [("left", 0, 0), ("right", 0, 1), ("right", 1, 2), ("right", 2, 2),
+                              ("left", 2, 1)])
+    asks = re.findall(r"command: quit asked", log)
+    chip = re.findall(r"command: quit ask chip (shown|hidden)", log)
+    counts["pad asks"], counts["pad chip"] = len(asks), len(chip)
+    if len(asks) != 2 or chip[:3] != ["shown", "hidden", "shown"]:
+        bad.append(f"pad: {len(asks)} asks (want 2), chip {chip} (want shown, hidden, shown)")
+    if rc != 0 or not re.search(r"command: quit \(east again \d+ ms after the ask\)", log) or "game picked" in log:
+        bad.append(f"pad: exit {rc}, second-East quit {'logged' if 'east again' in log else 'absent'}")
+    if len(re.findall(r"command: (up|down) does nothing", log)) != 3:
+        bad.append("pad: d-pad up/down and stick Y did not each log one inert command")
+
+    # The pointer takes the focus only after it moves: a key move holds against a still pointer.
+    rc, log = input_run(a, d, "pointer", inputs(entry_point(2), "key=left", 900, entry_point(2).replace(
+        "320/", "330/"), "key=escape"))
+    expect_moves("pointer", log, [("pointer", 0, 2), ("left", 2, 1), ("pointer", 1, 2)])
+    if rc != 0:
+        bad.append(f"pointer: exit {rc}")
+
+    # Space and West open the file picker for the focused box's game.
+    rc, log = input_run(a, d, "browse", inputs("key=right", "key=space", 1500, "pad=west", 1500, "key=escape"))
+    pick = re.findall(r"command: file picker for box (\d+) \(([\w-]+)\)", log)
+    counts["browse"] = len(pick)
+    if len(pick) != 2 or any(b != "1" for b, _ in pick) or rc != 0:
+        bad.append(f"browse: exit {rc}, picker lines {pick} (want box 1 twice)")
+
+    # Enter and South activate the focused box: that box's game starts.
+    for tag, acts, box in (("enter", ("key=right", "key=enter"), 1), ("south", ("pad=right", "pad=right", "pad=south"), 2)):
+        rc, log = input_run(a, d, tag, inputs(*acts), args=["--frame-limit", "5"], timeout=600)
+        m = re.search(r"command: activate box (\d+) \(([\w-]+)\)", log)
+        counts[tag] = 1 if m else 0
+        if not m or int(m.group(1)) != box or rc != 0:
+            bad.append(f"{tag}: exit {rc}, activation {m.group(0) if m else 'absent'} (want box {box})")
+        else:
+            bad += [f"{tag}: {x}" for x in ordered(log, re.escape(m.group(0)), r"game picked: " + m.group(2))]
+
+    # A disc of another game added from the page focuses that game's box when the page returns. The
+    # seeded entries' last_played lie past the ingest's time stamp, so the new entry is not the most
+    # recently played (box 0), where the focus would start without the added disc's.
+    d2 = cl.case_dir(a.out, "input-drop")
+    seed_entry(d2, "spyro-1", 4000000001)
+    seed_entry(d2, "spyro-2", 4000000000)
+    rc, log = cl.launch(a.binary, d2, "drop", ["--launcher-window", "1280x800", "--frame-limit", "5"],
+                        {"OPENPETE_LAUNCHER_DROP": disc_cue("spyro-3"), "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+                         "OPENPETE_LAUNCHER_SELECT_GAME": "spyro-3"}, timeout=900)
+    found = re.search(r"command: focus starts on box (\d+) \(spyro-3, the disc just added\)", log)
+    counts["drop focus"] = 1 if found else 0
+    if found and found.group(1) == "0":
+        bad.append("drop: the new entry is box 0, so the focus start does not discriminate")
+    bad += [f"drop: {x}" for x in ordered(log, r"scripted drop", r"command: focus starts on box \d+ \(spyro-3",
+                                          r"game picked: spyro-3")]
+    if rc != 0:
+        bad.append(f"drop: exit {rc}")
+    return verdict("input", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
+
+
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
@@ -1144,7 +1279,7 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "job-ingest-stop-assets": case_job_ingest_stop_assets,
          "job-pick-other-assets": case_job_pick_other_assets,
          "shader-step-during": case_shader_step_during, "shader-step-after": case_shader_step_after,
-         "shader-step-order": case_shader_step_order}
+         "shader-step-order": case_shader_step_order, "input": case_input}
 
 
 def main():
