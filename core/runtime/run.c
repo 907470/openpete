@@ -6960,8 +6960,12 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             s_present_budget_peak -= s_present_budget_peak / 64;
             if (here > s_present_budget_peak) s_present_budget_peak = here;
         }
-        if (native_intermediate && s_present_cost_n >= PACE_COST_WARMUP
-                && !openpete_unlock_fps) {
+        /* Inline strategy only: under eager the present thread owns the
+         * display and eager writes its own shed records, so the predictor
+         * gives no verdict, writes no record, and keeps its shed run and
+         * cost estimate as last learned until inline presents resume. */
+        if (native_intermediate && !s_eager.active
+                && s_present_cost_n >= PACE_COST_WARMUP && !openpete_unlock_fps) {
             /* Cover the tail, not the centre. k=3 takes the miss rate from
              * ~19 % to ~5 % on the recorded cost series; the cost of the wider
              * bound is shedding a little earlier, which is the trade this
