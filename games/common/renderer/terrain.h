@@ -234,7 +234,8 @@ typedef struct terrain_preview_view {
     int32_t  yaw, pitch;      /* stored angle units, as --freecam-pose writes them */
     uint32_t lod_dist;        /* LP/HP LOD distance (m_LodDistance) */
     uint32_t cull_dist;       /* LP far cull distance (m_CullingDistance) */
-    double   H;               /* projection distance */
+    double   H;               /* projection distance: the canonical H times the FOV scale */
+    double   H_canon;         /* the GTE's canonical projection distance */
     double   ofx, ofy;        /* screen offset, pixels */
 } terrain_preview_view;
 

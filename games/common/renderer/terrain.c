@@ -18009,7 +18009,7 @@ static void tpv_globals(const terrain_preview_view* V, const int M[3][3], openpe
     memset(g, 0, sizeof(*g));
     for (int r = 0; r < 3; r++)
         for (int c = 0; c < 3; c++) g->mrow[r][c] = (float)M[r][c];
-    g->ofx = V->ofx; g->ofy = V->ofy; g->H = V->H; g->H_canon = V->H;
+    g->ofx = V->ofx; g->ofy = V->ofy; g->H = V->H; g->H_canon = V->H_canon;
     g->camx = (double)V->pos[0] / 16.0; g->camy = (double)V->pos[1] / 16.0; g->camz = (double)V->pos[2] / 16.0;
     g->fogscale = 4.0 / (double)openpete_fog_scale;
     g->vanim_alpha = 1.0;
@@ -18173,7 +18173,9 @@ int terrain_preview_build(const terrain_host_level* L, const terrain_preview_vie
     G.camx = (double)V->pos[0] / 16.0; G.camy = (double)V->pos[1] / 16.0; G.camz = (double)V->pos[2] / 16.0;
     G.fogRefBase = (int)(V->lod_dist >> 2);
     G.cullRefS2 = (int)(V->cull_dist >> 7);
-    G.cull_wx = 1.0; G.cull_wy = 1.0;
+    /* The sphere cull at the displayed half-widths, as the walk widens it
+     * under --fov (cull_wx = F / s, cull_wy = 1 / s, F = 1 at 4:3). */
+    G.cull_wx = V->H_canon / V->H; G.cull_wy = V->H_canon / V->H;
     /* Extended LOD, as the walk sets it under openpete_no_lod: no
      * tier-faithful distance tests, no LOD handoff (tn_no_lod covers the
      * verdicts and the bake's HQ pin). */

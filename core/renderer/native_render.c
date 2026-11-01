@@ -17460,10 +17460,23 @@ int openpete_native_fov_angles(double* v_deg, double* h_deg) {
     if (h_deg) *h_deg = h;
     return s_fov_lbl_H > 0.0;
 }
+/** @brief Return the factor that takes H_canon to the FOV whose half-angle tangent is @p tan_half over @p rows visible rows.
+ * @param tan_half tan(fov / 2); not positive for the default.
+ * @param rows The visible row count.
+ * @param H_canon The GTE's canonical H.
+ * @param y_row The camera matrix's Y-row scale.
+ * @return The factor; 1 at the default or when an input is not positive. */
+static double fov_h_scale_tan(double tan_half, int rows, double H_canon, double y_row) {
+    if (tan_half <= 0.0 || rows <= 0 || H_canon <= 0.0 || y_row <= 0.0) return 1.0;
+    const double tref = (0.5 * (double)rows) / (y_row * H_canon);
+    return tref / tan_half;
+}
 double openpete_native_fov_h_scale(double H_canon, double y_row) {
-    if (s_fov_tan <= 0.0 || H_canon <= 0.0 || y_row <= 0.0) return 1.0;
-    double tref = (0.5 * (double)openpete_native_visible_rows()) / (y_row * H_canon);
-    return tref / s_fov_tan;
+    return fov_h_scale_tan(s_fov_tan, openpete_native_visible_rows(), H_canon, y_row);
+}
+double openpete_native_fov_h_scale_at(double fov_deg, int rows, double H_canon, double y_row) {
+    const double t = fov_deg > 0.0 ? tan(fov_deg * 0.5 * 3.14159265358979323846 / 180.0) : 0.0;
+    return fov_h_scale_tan(t, rows, H_canon, y_row);
 }
 double openpete_native_fov_horizontal_deg(double H_canon, double y_row) {
     double H_eff = H_canon * openpete_native_fov_h_scale(H_canon, y_row);

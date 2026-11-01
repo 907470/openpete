@@ -2418,6 +2418,17 @@ float  openpete_native_fov_deg(void);
  * @return The factor; 1 at the default FOV or when H_canon or y_row is not
  *         positive. */
 double openpete_native_fov_h_scale(double H_canon, double y_row);
+/** @brief Return the factor that takes the canonical projection H to a vertical FOV over a given number of visible rows.
+ *
+ * The pure form of openpete_native_fov_h_scale: the canonical vertical
+ * half-tangent, (rows / 2) / (y_row * H_canon), divided by tan(fov / 2).
+ * --fov's setter and the launcher's box picture both take it.
+ * @param fov_deg The vertical FOV in degrees; not positive for the default.
+ * @param rows The visible row count.
+ * @param H_canon The GTE's canonical H.
+ * @param y_row The camera matrix's Y-row scale.
+ * @return The factor; 1 at the default FOV or when an input is not positive. */
+double openpete_native_fov_h_scale_at(double fov_deg, int rows, double H_canon, double y_row);
 /** @brief Return the number of rows in the visible band the panel shows.
  *
  * The value is the guest draw-clip height in s_nr (224 on Spyro 1), or 224

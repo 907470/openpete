@@ -29,6 +29,14 @@ struct terrain_host_level;
  * the picture differently redraws a cached one: extended LOD at the game's
  * displayed aspect. */
 #define LAUNCHER_PREVIEW_FORM "extended-lod"
+/* The vertical field of view a box picture is drawn at, as --fov sets it
+ * (openpete_native_fov_h_scale_at over the game's displayed rows): one value
+ * for every game. Part of the cache's view key. */
+#define LAUNCHER_PREVIEW_FOV_DEG 95.0
+/* Supersampling per axis: the picture renders at this multiple of its
+ * stored size and is resolved down by a box filter. Part of the cache's
+ * view key. */
+#define LAUNCHER_PREVIEW_SSAA 2u
 
 /* The time bound of one preview render, from its start: a render past it is
  * a transient job failure (no failed marker, rerun at the next launch). The

@@ -1759,9 +1759,10 @@ def case_preview_stop(a):
     d = cl.case_dir(a.out, "preview-stop")
     seed_entry(d, "spyro-1", 1)
     seed_entry(d, "spyro-2", 2)
-    # The first render parks between its preparation and its draw for 60 s; the pick lands inside the park.
+    # The first render parks between its preparation and its draw for 60 s; the pick lands inside the park,
+    # 20 s in, after a cold first render (sixteen pipeline compiles) on a loaded machine has parked.
     env = dict(FLOW_ENV, OPENPETE_PREVIEW_PARK_MS="60000", OPENPETE_PREVIEW_BOUND_MS="90000",
-               OPENPETE_LAUNCHER_PICK_DELAY_MS="8000", OPENPETE_LAUNCHER_SELECT_GAME="spyro-2")
+               OPENPETE_LAUNCHER_PICK_DELAY_MS="20000", OPENPETE_LAUNCHER_SELECT_GAME="spyro-2")
     t0 = time.monotonic()
     rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env,
                         timeout=150)

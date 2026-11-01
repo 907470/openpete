@@ -10,6 +10,7 @@
 #include "openpete_launcher.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
+#include "renderer/native_gte.h"   /* NGTE_Y_ROW */
 #include "openpete_terrain_cache.h"
 #include "openpete_time.h"
 #include "game_layout.h"
@@ -26,9 +27,9 @@
  * three-box page's picture), at a free-camera pose that frames the hub.
  * The rows are the one place the level and pose are chosen. */
 static const launcher_preview_spec k_preview_specs[] = {
-    {"spyro-1", "artisans",       "pos=(60000, 100000, 26000) yaw=-750 pitch=200"},
-    {"spyro-2", "summer_forest",  "pos=(100000, 20000, 42000) yaw=900 pitch=100"},
-    {"spyro-3", "sunrise_spring", "pos=(28179, 32803, 19766) yaw=0 pitch=160"},
+    {"spyro-1", "artisans",       "pos=(95724, 59413, 11734) yaw=2597 pitch=-32"},
+    {"spyro-2", "summer_forest",  "pos=(104985, 78616, 41379) yaw=1333 pitch=-85"},
+    {"spyro-3", "sunrise_spring", "pos=(40739, 15058, 23398) yaw=933 pitch=-3"},
 };
 
 /* The environment a game runs its levels with, which the disc's level data
@@ -298,7 +299,11 @@ static int lp_build(const openpete_game_build_t* b, launcher_preview_level* L, c
     V.pos[0] = v[0]; V.pos[1] = v[1]; V.pos[2] = v[2];
     V.yaw = v[3]; V.pitch = v[4];
     V.lod_dist = E->lod_dist; V.cull_dist = E->cull_dist;
-    V.H = E->H; V.ofx = E->ofx; V.ofy = E->ofy;
+    /* The projection --fov LAUNCHER_PREVIEW_FOV_DEG gives the game: the
+     * canonical H scaled by the FOV over the game's displayed rows. */
+    V.H_canon = E->H;
+    V.H = E->H * openpete_native_fov_h_scale_at(LAUNCHER_PREVIEW_FOV_DEG, (int)lroundf(E->clip_h), E->H, NGTE_Y_ROW);
+    V.ofx = E->ofx; V.ofy = E->ofy;
     const terrain_host_level H = { L->bytes, L->len, L->sector_off, L->sector_count, L->lq_off, L->hq_off,
                                    L->exe, L->exe_addr, L->exe_len };
     terrain_preview_stats st;
@@ -310,7 +315,11 @@ static int lp_build(const openpete_game_build_t* b, launcher_preview_level* L, c
                (unsigned long long)st.verts[3], (unsigned long long)st.verts[4], (unsigned long long)st.dropped,
                (unsigned long long)st.exe_reads, (unsigned long long)st.guest_reads, (unsigned long long)st.guest_writes);
     if (st.baked == 0) return lp_fail(why, cap, "no sector draws from the pose");
+    /* The target is the stored size times LAUNCHER_PREVIEW_SSAA per axis,
+     * resolved down after the sky is composited (lp_resolve). */
     (void)launcher_preview_size(b->id, &P->w, &P->h);
+    P->w *= LAUNCHER_PREVIEW_SSAA;
+    P->h *= LAUNCHER_PREVIEW_SSAA;
     for (int c = 0; c < 3; c++) P->bg[c] = (float)bg[c] / 255.0f;
     P->vram = L->vram;
     L->vram = NULL;
@@ -459,6 +468,28 @@ static uint32_t lp_dome_draw(const openpete_tercache_preview* P, const launcher_
     return filled;
 }
 
+/** @brief Resolves a supersampled image down in place: each output pixel the mean of its k x k source pixels, alpha opaque.
+ * @param px The image, w * h RGBA; the first (w / k) * (h / k) pixels receive the result.
+ * @param w The source width, a multiple of k.
+ * @param h The source height, a multiple of k.
+ * @param k The factor per axis. */
+static void lp_resolve(uint8_t* px, uint32_t w, uint32_t h, uint32_t k) {
+    if (k <= 1) return;
+    const uint32_t ow = w / k, oh = h / k, n = k * k;
+    for (uint32_t y = 0; y < oh; y++)
+        for (uint32_t x = 0; x < ow; x++) {
+            uint32_t sum[3] = { 0, 0, 0 };
+            for (uint32_t j = 0; j < k; j++)
+                for (uint32_t i = 0; i < k; i++) {
+                    const uint8_t* s = px + ((size_t)(y * k + j) * w + (x * k + i)) * 4u;
+                    sum[0] += s[0]; sum[1] += s[1]; sum[2] += s[2];
+                }
+            uint8_t* d = px + ((size_t)y * ow + x) * 4u;   /* at or before every source pixel still unread */
+            for (int c = 0; c < 3; c++) d[c] = (uint8_t)((sum[c] + n / 2) / n);
+            d[3] = 255;
+        }
+}
+
 /** @brief Puts the dome behind the terrain: every pixel the terrain's draw left at the clear (alpha 0) takes the dome's.
  * @param px The terrain's image, read back with its alpha; made opaque.
  * @param dome The dome's image.
@@ -523,6 +554,7 @@ int launcher_preview_render(const openpete_game_build_t* b, const char* disc_pat
         lp_fail(why, cap, "dome image allocation");
     }
     free(sky);
+    if (rc == OPENPETE_PREVIEW_OK) lp_resolve(px, P.w, P.h, LAUNCHER_PREVIEW_SSAA);
     openpete_tercache_preview_free(&P);
     if (rc != OPENPETE_PREVIEW_OK) { free(px); return rc; }
     *rgba = px;
