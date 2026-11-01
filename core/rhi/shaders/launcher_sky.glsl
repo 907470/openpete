@@ -7,5 +7,5 @@ layout(push_constant) uniform LauncherSky {
     vec4 screen;  /* target width, height in pixels, width / height, the reveal noise's clock in seconds */
     vec4 wipe;    /* reveal centre u, v (0..1, v down), its farthest-corner radius, its soft edge (screen-height units) */
     vec4 layer;   /* reveal progress 0..1, layer opacity, 1 when the reveal mask is the opacity, grain seed */
-    vec4 look;    /* vignette strength, grain amplitude, unused, unused */
+    vec4 look;    /* vignette strength, grain amplitude, target pixels per output pixel per axis, unused */
 } pc;

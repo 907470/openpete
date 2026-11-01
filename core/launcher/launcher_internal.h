@@ -348,6 +348,26 @@ bool launcher_title_chosen(void);
  * @return true when it does. */
 bool launcher_title_drawn(float rect[4]);
 
+/** @brief Resample a straight-alpha RGBA image to at most @p dw x @p dh texels for linear, unmipmapped sampling.
+ *
+ * An area filter per axis over premultiplied colour in linear light: each
+ * output texel is the coverage-weighted mean of the source texels its
+ * footprint overlaps; an axis whose target is at least the source keeps the
+ * source's size. The result has straight alpha, and each zero-alpha texel
+ * within two texels of a nonzero one takes the mean colour of its nonzero
+ * neighbours, so a linear tap across an edge blends no colour from outside
+ * the image. (launcher_image.cpp)
+ * @param src @p sw x @p sh RGBA, straight alpha.
+ * @param sw The source width.
+ * @param sh The source height.
+ * @param dw The target width, clamped to 1..@p sw.
+ * @param dh The target height, clamped to 1..@p sh.
+ * @param out Receives @p *ow x @p *oh RGBA; holds sw x sh x 4 bytes.
+ * @param ow Receives the output width.
+ * @param oh Receives the output height. */
+void launcher_image_fit(const unsigned char* src, int sw, int sh, int dw, int dh, unsigned char* out, int* ow,
+                        int* oh);
+
 /* launcher_page_draw and launcher_page_activate results besides an entry index. */
 #define LAUNCHER_PAGE_NONE   (-1)   /* no box was activated */
 #define LAUNCHER_PAGE_BROWSE (-2)   /* a box without a library disc was activated: choose a disc */

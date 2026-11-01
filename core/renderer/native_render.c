@@ -7112,6 +7112,7 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
     int drawn = 0;
     const int own = dev == s_launch.dev;   /* the launcher's device takes preview requests */
     if (own) openpete_native_launcher_preview_before_frame(dev);
+    if (own) launcher_sky_before_frame(dev);
     rhi_boot_launcher_frames(true);
     rhi_set_present_blocking(dev, true);
     int ran = 0;
@@ -7119,6 +7120,7 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
         ran = 1;
         if (own) openpete_native_launcher_preview_in_frame();
         if (draw) nr_launcher_title_prepass(dev);
+        if (own) launcher_sky_prepass(dev, r, g, b);
         rhi_begin_offscreen(dev, r, g, b, 1.0f);
         drawn = openpete_devui_render_frame_under(dev, draw, ud, nr_launcher_under_ui, dev);
         rhi_end_offscreen(dev);

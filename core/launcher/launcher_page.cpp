@@ -484,6 +484,8 @@ struct BoxState {
     std::string game;
     float scale = 1.0f;
     Image logo, picture;
+    std::vector<unsigned char> logo_src;   /* the logo as the cache holds it, logo_sw x logo_sh RGBA */
+    int logo_sw = 0, logo_sh = 0;
     op_time_t logo_tried = 0;   /* the last logo read attempt; 0 for none */
     unsigned picture_gen = ~0u; /* launcher_picture_gen at the last picture read; ~0 for none */
     bool failed = false;        /* the owning entry holds a failed module build (launcher_page_set_failed) */
@@ -534,6 +536,20 @@ void image_settle(Image& img) {
     if (img.tex && img.tex->Status == ImTextureStatus_OK && img.tex->Pixels) img.tex->DestroyPixels();
 }
 
+/** @brief Set the logo's texture to its source resampled to at most @p w x @p h texels (launcher_image_fit), unless the texture already has the size that gives.
+ *
+ * @param bs The box state holding the source.
+ * @param w The drawn width in pixels, rounded up.
+ * @param h The drawn height in pixels, rounded up. */
+void logo_fit(BoxState& bs, int w, int h) {
+    const int fw = std::clamp(w, 1, bs.logo_sw), fh = std::clamp(h, 1, bs.logo_sh);
+    if (bs.logo.tex && bs.logo.w == fw && bs.logo.h == fh) return;
+    std::vector<unsigned char> px(bs.logo_src.size());
+    int ow = 0, oh = 0;
+    launcher_image_fit(bs.logo_src.data(), bs.logo_sw, bs.logo_sh, fw, fh, px.data(), &ow, &oh);
+    image_set(bs.logo, px.data(), ow, oh);
+}
+
 /** @brief Read a game's title logo from its asset cache unless loaded, at most every 250 ms while the cache holds none.
  *
  * @param g The game.
@@ -547,8 +563,11 @@ void logo_poll(const openpete_launcher_game* g, BoxState& bs, op_time_t now) {
     int w = 0, h = 0;
     unsigned char* rgba = g->load_logo(g, &w, &h);
     if (!rgba) return;
-    image_set(bs.logo, rgba, w, h);
+    bs.logo_src.assign(rgba, rgba + (size_t)w * (size_t)h * 4u);
+    bs.logo_sw = w;
+    bs.logo_sh = h;
     free(rgba);
+    logo_fit(bs, w, h);
     OPL_INFO_F("launcher", "game page: %s title logo %dx%d read from the asset cache", bs.game.c_str(), w, h);
 }
 
@@ -742,17 +761,22 @@ void draw_picture(ImDrawList* dl, const Box& bx, const Rect& b) {
     manifest_box(bx.g->game_id, "picture", "image", r);
 }
 
-/** @brief Draw the box's title logo centred on it, kLogoDrop of its height below the frame's top edge, at kLogoPar texel aspect, linearly filtered.
+/** @brief Draw the box's title logo centred on it, kLogoDrop of its height below the frame's top edge, at kLogoPar texel aspect, linearly filtered from a texture resampled to its size at full focus.
  *
+ * The texture holds the source resampled to the logo's drawn size at the
+ * focused scale (kGrow), so a box at any scale between rest and focus
+ * samples it at 1 to kGrow texels per pixel.
  * @param dl The draw list.
  * @param bx The box.
  * @param b The drawn box. */
 void draw_logo(ImDrawList* dl, const Box& bx, const Rect& b) {
-    const Image& im = bx.st->logo;
-    const float aw = (float)im.w * kLogoPar;
-    const float s = std::min(b.w * kLogoW / aw, b.w * kLogoMaxH / (float)im.h);
-    const float w = aw * s, h = (float)im.h * s, x = b.x + (b.w - w) * 0.5f, y = b.y - h * (1.0f - kLogoDrop);
-    dl->AddImage(im.tex->GetTexRef(), {x, y}, {x + w, y + h});
+    BoxState& st = *bx.st;
+    const float aw = (float)st.logo_sw * kLogoPar;
+    const float s = std::min(b.w * kLogoW / aw, b.w * kLogoMaxH / (float)st.logo_sh);
+    const float w = aw * s, h = (float)st.logo_sh * s, x = b.x + (b.w - w) * 0.5f, y = b.y - h * (1.0f - kLogoDrop);
+    const float grow = kGrow / std::max(st.scale, 1e-3f);
+    logo_fit(st, (int)std::ceil(w * grow), (int)std::ceil(h * grow));
+    dl->AddImage(st.logo.tex->GetTexRef(), {x, y}, {x + w, y + h});
     manifest_box(bx.g->game_id, "logo", "image", {x, y, w, h});
 }
 

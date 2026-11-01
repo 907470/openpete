@@ -85,6 +85,8 @@ void main()
     vec3 rgb = clamp(vCol, 0.0, 1.0);
     vec2 vd = (uv - 0.5) * vec2(aspect, 1.0) / max(aspect, 1.0);
     rgb *= 1.0 - pc.look.x * smoothstep(0.25, 0.85, length(vd) * 1.25);
-    rgb += (hash12(gl_FragCoord.xy + pc.layer.w) - 0.5) * pc.look.y;
+    /* One grain value per output pixel: the supersamples of a pixel share it. */
+    float ss = max(pc.look.z, 1.0);
+    rgb += (hash12(floor(gl_FragCoord.xy / ss) + 0.5 + pc.layer.w) - 0.5) * pc.look.y;
     outColor = vec4(rgb, pc.layer.z > 0.5 ? wipe_mask(uv, pc.screen.w) : pc.layer.y);
 }
