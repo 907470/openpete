@@ -245,6 +245,15 @@ void rhi_set_capture_mode(rhi_device *dev, bool on);
  * @param dev Device, or NULL.
  * @return The rate in Hz; 0 when unknown, headless, or for NULL. */
 float rhi_refresh_hz(const rhi_device *dev);
+/** @brief Harness: answer the device's refresh query with @p hz instead of the display's mode.
+ *
+ * Read at each swapchain (re)creation and when a display change of the
+ * window (SDL_EVENT_WINDOW_DISPLAY_CHANGED) is consumed; a changed answer
+ * then rebuilds the swapchain, so a synthetic display change exercises the
+ * path a move between displays takes.
+ * @param dev Device, or NULL (ignored).
+ * @param hz The stubbed rate in Hz; 0 restores the display's. */
+void rhi_set_refresh_stub(rhi_device *dev, float hz);
 /** @brief Return whether the granted present mode is FIFO or FIFO_RELAXED (vsync).
  *
  * Under those modes the display shows at most one image per refresh, so

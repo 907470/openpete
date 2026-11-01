@@ -7085,9 +7085,25 @@ int openpete_native_launcher_window_op(openpete_launcher_window_op_t op, int w, 
     case OPENPETE_LAUNCHER_WINDOW_MAXIMIZE: SDL_MaximizeWindow(win); break;
     case OPENPETE_LAUNCHER_WINDOW_RESTORE:  SDL_RestoreWindow(win); break;
     case OPENPETE_LAUNCHER_WINDOW_RESIZE:   if (w > 0 && h > 0) SDL_SetWindowSize(win, w, h); break;
+    case OPENPETE_LAUNCHER_WINDOW_MINIMIZE: SDL_MinimizeWindow(win); break;
+    case OPENPETE_LAUNCHER_WINDOW_HIDE:     SDL_HideWindow(win); break;
+    case OPENPETE_LAUNCHER_WINDOW_SHOW:     SDL_ShowWindow(win); break;
+    case OPENPETE_LAUNCHER_WINDOW_DISPLAY_STUB: {
+        rhi_set_refresh_stub(s_launch.dev, (float)w);
+        SDL_Event e = {0};
+        e.type = SDL_EVENT_WINDOW_DISPLAY_CHANGED;
+        e.window.windowID = SDL_GetWindowID(win);
+        e.window.data1 = (Sint32)SDL_GetDisplayForWindow(win);
+        (void)SDL_PushEvent(&e);
+        break;
+    }
     }
     return 0;
 }
+
+float openpete_native_launcher_refresh_hz(void) { return s_launch.dev ? rhi_refresh_hz(s_launch.dev) : 0.0f; }
+
+int openpete_native_launcher_software(void) { return s_launch.dev && rhi_device_is_software(s_launch.dev) ? 1 : 0; }
 
 /** @brief Record the launcher present's passes under imgui's output, once its imgui frame is built: the sky pass, the shape pass, then the 3D title's composite.
  *

@@ -4,6 +4,7 @@
  *
  * It maps every window where the client asks, applies every configure
  * request of a window it holds in the normal state, and answers the
+ * WM_CHANGE_STATE iconify request with _NET_WM_STATE_HIDDEN and an unmap, and the
  * _NET_WM_STATE client message for _NET_WM_STATE_FULLSCREEN (the whole
  * screen) and _NET_WM_STATE_MAXIMIZED_VERT/HORZ (the work area): the
  * window's geometry before the change is kept and restored when the state is
@@ -31,6 +32,7 @@ enum { MAX_CLIENTS = 64 };
 typedef struct {
     Window win;
     int fullscreen, max_v, max_h;
+    int iconic;                 /* unmapped by an iconify request until its next map */
     int saved;                  /* a normal-state geometry is kept */
     int sx, sy, sw, sh;         /* that geometry */
 } client_t;
@@ -39,7 +41,7 @@ static Display *s_dpy;
 static Window s_root;
 static int s_sw, s_sh, s_panel;
 static client_t s_clients[MAX_CLIENTS];
-static Atom a_state, a_full, a_max_v, a_max_h, a_supported, a_check, a_name, a_utf8, a_workarea;
+static Atom a_state, a_full, a_max_v, a_max_h, a_supported, a_check, a_name, a_utf8, a_workarea, a_change_state, a_hidden;
 
 /** @brief Return the client record of a window, creating one when @p add is set.
  *
@@ -62,8 +64,9 @@ static client_t *client_of(Window w, int add)
 /** @brief Write a window's _NET_WM_STATE property from its record. */
 static void write_state(const client_t *c)
 {
-    Atom v[3];
+    Atom v[4];
     int n = 0;
+    if (c->iconic) v[n++] = a_hidden;
     if (c->fullscreen) v[n++] = a_full;
     if (c->max_v) v[n++] = a_max_v;
     if (c->max_h) v[n++] = a_max_h;
@@ -159,14 +162,14 @@ static void advertise(void)
     XChangeProperty(s_dpy, s_root, a_check, XA_WINDOW, 32, PropModeReplace, (unsigned char *)&check, 1);
     XChangeProperty(s_dpy, check, a_check, XA_WINDOW, 32, PropModeReplace, (unsigned char *)&check, 1);
     XChangeProperty(s_dpy, check, a_name, a_utf8, 8, PropModeReplace, (const unsigned char *)"xvfb_wm", 7);
-    Atom sup[] = {a_state, a_full, a_max_v, a_max_h, a_check, a_workarea};
+    Atom sup[] = {a_state, a_full, a_max_v, a_max_h, a_hidden, a_check, a_workarea};
     XChangeProperty(s_dpy, s_root, a_supported, XA_ATOM, 32, PropModeReplace, (unsigned char *)sup,
                     (int)(sizeof sup / sizeof sup[0]));
     long wa[4] = {0, 0, s_sw, s_sh - s_panel};
     XChangeProperty(s_dpy, s_root, a_workarea, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)wa, 4);
 }
 
-/** @brief Act on one event the root's substructure redirect delivers: map, configure, state change, destroy.
+/** @brief Act on one event the root's substructure redirect delivers: map, configure, state change, iconify, destroy.
  *
  * @param e The event. */
 static void handle(XEvent *e)
@@ -175,12 +178,27 @@ static void handle(XEvent *e)
         client_t *c = client_of(e->xmaprequest.window, 1);
         XMapWindow(s_dpy, e->xmaprequest.window);
         if (!c) return;
+        if (c->iconic) {
+            c->iconic = 0;
+            write_state(c);
+        }
         read_initial_state(c);
         if (c->fullscreen || c->max_v || c->max_h) apply_state(c);
     } else if (e->type == ConfigureRequest) {
         on_configure(&e->xconfigurerequest);
     } else if (e->type == ClientMessage && e->xclient.message_type == a_state) {
         on_state_message(&e->xclient);
+    } else if (e->type == ClientMessage && e->xclient.message_type == a_change_state &&
+               e->xclient.data.l[0] == IconicState) {
+        /* An iconify request (XIconifyWindow): _NET_WM_STATE_HIDDEN and unmap; the next MapRequest maps it
+         * again and clears the state. */
+        client_t *c = client_of(e->xclient.window, 1);
+        if (c) {
+            c->iconic = 1;
+            write_state(c);
+        }
+        XUnmapWindow(s_dpy, e->xclient.window);
+        fprintf(stderr, "xvfb_wm: window %lx iconified\n", (unsigned long)e->xclient.window);
     } else if (e->type == DestroyNotify) {
         client_t *c = client_of(e->xdestroywindow.window, 0);
         if (c) c->win = 0;
@@ -199,6 +217,8 @@ static void intern_atoms(void)
     a_name = XInternAtom(s_dpy, "_NET_WM_NAME", False);
     a_utf8 = XInternAtom(s_dpy, "UTF8_STRING", False);
     a_workarea = XInternAtom(s_dpy, "_NET_WORKAREA", False);
+    a_change_state = XInternAtom(s_dpy, "WM_CHANGE_STATE", False);
+    a_hidden = XInternAtom(s_dpy, "_NET_WM_STATE_HIDDEN", False);
 }
 
 /** @brief Run the window manager on $DISPLAY until the server goes away.

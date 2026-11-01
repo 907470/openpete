@@ -1713,6 +1713,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         set_tests_properties(launcher_flow_startup launcher_flow_shader-step-after
                              launcher_flow_shader-step-order PROPERTIES
             RUN_SERIAL TRUE)
+        # The launcher's present rate (tests/harness/check_launcher_present.py):
+        # one present per refresh while shown, none while minimised or hidden,
+        # and a display change that rebuilds the swapchain at its refresh;
+        # timed (presents per second), so it runs alone under ctest -j.
+        add_test(NAME launcher_present
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_present.py
+                         --build-dir ${CMAKE_BINARY_DIR})
+        set_tests_properties(launcher_present PROPERTIES
+            LABELS "launcher"
+            TIMEOUT 300
+            RUN_SERIAL TRUE
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         # The launcher's 3D title (tests/harness/check_launcher_title.py): drawn
         # from the asset cache against the reference layout and a model of the
         # emitter, and switched in on the assets-ready reap.

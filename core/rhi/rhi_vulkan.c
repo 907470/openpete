@@ -666,6 +666,10 @@ struct rhi_device {
      * clear while the thread that runs the sim presents. */
     bool     present_blocking;
     float    refresh_hz;          /* of the display the swapchain was built for (0 = unknown) */
+    /* Set by display_change_watch when the window moves to another display;
+     * consumed by ensure_swapchain on the display owner's thread. */
+    atomic_bool display_changed;
+    float    refresh_stub_hz;     /* harness: the refresh query's answer when above 0 */
     /* While set, presents are skipped without blocking (see the acquire
      * budget above). Cleared once the window passes. */
     Uint64   acquire_backoff_until_ns;
@@ -2122,6 +2126,54 @@ static bool surface_extent(rhi_device *dev, VkSurfaceCapabilitiesKHR *caps, VkEx
     return false;
 }
 
+/** @brief Return the refresh rate of the display that holds the device's window: the harness stub when set, else SDL's current mode of that display.
+ *
+ * @param dev Windowed device.
+ * @return The rate in Hz; 0 when unknown. */
+static float window_refresh_hz(const rhi_device *dev)
+{
+    if (dev->refresh_stub_hz > 0.0f) return dev->refresh_stub_hz;
+    if (!dev->window) return 0.0f;
+    const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(dev->window));
+    return dm ? dm->refresh_rate : 0.0f;
+}
+
+/** @brief SDL event watch that flags a display change of the device's window for the display owner.
+ *
+ * Runs on the thread that raises the event (the event pump), so it only
+ * stores an atomic flag; ensure_swapchain consumes it on the presenting
+ * thread, where the swapchain is rebuilt.
+ * @param ud The rhi_device.
+ * @param ev The event.
+ * @return true, so the event is queued as usual. */
+static bool SDLCALL display_change_watch(void *ud, SDL_Event *ev)
+{
+    rhi_device *dev = ud;
+    if (ev->type == SDL_EVENT_WINDOW_DISPLAY_CHANGED && dev->window &&
+        ev->window.windowID == SDL_GetWindowID(dev->window))
+        atomic_store(&dev->display_changed, true);
+    return true;
+}
+
+/** @brief Consume a flagged display change: when the new display's refresh differs from the swapchain's, flag a discrete rebuild.
+ *
+ * The rebuild re-reads the refresh (window_refresh_hz), so the acquire
+ * budget and the rate rhi_refresh_hz reports follow the window; FIFO's
+ * present rate follows the display by itself.
+ * @param dev Windowed device. */
+static void consume_display_change(rhi_device *dev)
+{
+    if (!atomic_exchange(&dev->display_changed, false)) return;
+    const float hz = window_refresh_hz(dev);
+    RHI_LOG("display change: refresh %.3f -> %.3f Hz%s\n", (double)dev->refresh_hz, (double)hz,
+            hz != dev->refresh_hz ? ", swapchain rebuild" : "");
+    if (hz == dev->refresh_hz) return;
+    dev->needs_recreate = true;
+    dev->resize_discrete = true;
+    dev->recreate_backoff_until_ns = 0;
+    dev->acquire_backoff_until_ns = 0;
+}
+
 /** @brief Create the swapchain for the window's current size, format and present mode.
  *
  * @param dev Windowed device.
@@ -2195,12 +2247,7 @@ static bool create_swapchain(rhi_device *dev)
      * Only load-bearing under FIFO, since a non-blocking mode never waits, but
      * a mode change recreates the swapchain, so this re-runs either way. */
     {
-        float hz = 0.0f;
-        if (dev->window) {
-            const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(
-                SDL_GetDisplayForWindow(dev->window));
-            if (dm) hz = dm->refresh_rate;
-        }
+        const float hz = window_refresh_hz(dev);
         dev->refresh_hz = hz;
         /* One period is what the display owes the present; the half period is
          * jitter margin. Scaling with the refresh rather than flooring at a
@@ -4209,7 +4256,9 @@ rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsyn
                        const char *gpu)
 {
     rhi_display_claim(NULL);   /* boot: the creating thread presents until a handoff */
-    return rhi_create_impl(window, app_name, /*headless=*/false, 0, 0, vsync, gpu);
+    rhi_device *dev = rhi_create_impl(window, app_name, /*headless=*/false, 0, 0, vsync, gpu);
+    if (dev) (void)SDL_AddEventWatch(display_change_watch, dev);
+    return dev;
 }
 
 rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height,
@@ -4327,6 +4376,7 @@ void rhi_destroy(rhi_device *dev)
                 (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
                 (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
     if (!dev) return;
+    if (!dev->headless) SDL_RemoveEventWatch(display_change_watch, dev);
     rhi_compile_pool_stop(dev);   /* no thread may use the cache or the device past here */
     described_free(dev);
     rhi_pc_report();
@@ -4428,6 +4478,11 @@ const char *rhi_present_mode_name(const rhi_device *dev)
 }
 
 float rhi_refresh_hz(const rhi_device *dev) { return dev ? dev->refresh_hz : 0.0f; }
+
+void rhi_set_refresh_stub(rhi_device *dev, float hz)
+{
+    if (dev) dev->refresh_stub_hz = hz;
+}
 bool rhi_present_is_vsync(const rhi_device *dev)
 {
     return dev && !dev->headless && (dev->present_mode_granted == VK_PRESENT_MODE_FIFO_KHR ||
@@ -4564,6 +4619,7 @@ static bool ensure_swapchain(rhi_device *dev)
      * its next present. Not every window system refuses a present of the old
      * extent (OUT_OF_DATE); one that accepts it shows the image at its old
      * size in the corner of the window, or scaled. */
+    if (!dev->headless) consume_display_change(dev);
     if (!dev->needs_recreate && !dev->headless && window_left_swapchain_size(dev))
         dev->needs_recreate = true;
     if (dev->needs_recreate && !dev->headless) {

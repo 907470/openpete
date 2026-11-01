@@ -35,6 +35,7 @@
 // OPENPETE_LAUNCHER_TEXT_HIDE=1 draws imgui's output at alpha 0, so a shot
 // holds the background and the shape pass alone.
 #include "launcher_internal.h"
+#include "launcher_pace.h"
 #include "launcher_picker.h"
 #include "launcher_shapes.h"
 #include "launcher_sky.h"
@@ -569,15 +570,27 @@ bool present_on(struct rhi_device* dev, View& v, int tag) {
 }
 
 void scripted_input_poll();
+void present(View& v, bool may_wait = true);
 
-/** @brief Present one frame of a view on the launcher's device, naming the launcher's game, then run the harness input that is due.
+/** @brief Present one frame of a view on the launcher's device at the present rate, naming the launcher's game, then run the harness input that is due.
  *
- * @param v The view. */
-void present(View& v) {
+ * None runs after a quit was taken (the window is hidden while the work
+ * stops); otherwise launcher_pace_begin decides the present: none while the
+ * window cannot show, else one per refresh period, and the harness input
+ * runs either way.
+ * @param v The view.
+ * @param may_wait true to wait out the refresh period; false skips a
+ *        present that comes before it (a caller doing the work itself). */
+void present(View& v, bool may_wait) {
     if (launcher_quit_taken()) return;   /* the window is hidden while the work stops */
+    if (!launcher_pace_begin(s.presented, may_wait)) {
+        scripted_input_poll();
+        return;
+    }
     v.name = game_name();
     launcher_sky_present(op_now(), s.presented);   /* the present's instant: the sky's motion follows it */
     if (!present_on(nullptr, v, (int)v.screen)) return;
+    launcher_pace_done();
     s.presented = true;
     if (launcher_sky_opaque()) {
         maybe_shot(nullptr, kShotSky);
@@ -1018,8 +1031,10 @@ bool scripted_event(const std::string& a, SDL_Window* win, SDL_Event& e) {
     return true;
 }
 
-/** @brief Harness: call the window operation of a window action: maximize, restore or resize=WxH.
+/** @brief Harness: call the window operation of a window action: maximize, restore, minimize, hide, show, resize=WxH or display=<Hz>.
  *
+ * display=<Hz> stubs the refresh query and posts a display change of the
+ * window, as a move to a display of that refresh does.
  * @param a The action; any other is ignored. */
 void scripted_window_op(const std::string& a) {
     int w = 0, h = 0;
@@ -1029,6 +1044,14 @@ void scripted_window_op(const std::string& a) {
         (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESTORE, 0, 0);
     else if (sscanf(a.c_str(), "resize=%dx%d", &w, &h) == 2)
         (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESIZE, w, h);
+    else if (a == "minimize")
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_MINIMIZE, 0, 0);
+    else if (a == "hide")
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_HIDE, 0, 0);
+    else if (a == "show")
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_SHOW, 0, 0);
+    else if (sscanf(a.c_str(), "display=%d", &w) == 1)
+        (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_DISPLAY_STUB, w, 0);
 }
 
 /** @brief Harness: run the OPENPETE_LAUNCHER_INPUT actions that are due, timed from the first call (the first launcher frame).
@@ -1155,17 +1178,20 @@ Ask ask_of(const SDL_Event& e) {
 /* Commands of an input batch not yet returned by wait_input, oldest first. */
 std::deque<Ask> s_asks;
 
-/** @brief Return the next command of the input batches, waiting up to 100 ms (8 ms while a game page box animates) for a batch when none is queued, and stepping the launcher's precompile at each wake.
+/** @brief Return the next command of the input batches, waiting up to 100 ms for a batch only while the window cannot show, and stepping the launcher's precompile at each wake.
  *
+ * While the window can show, the caller's present paces the loop at the
+ * refresh (launcher_pace_begin) and the events already queued are taken
+ * without a wait. Otherwise no present runs and this waits on events: a
+ * returning compile job pushes a wake event
+ * (openpete_native_launcher_precompile_event), and a batch of only wake
+ * events steps the precompile and keeps waiting for the rest of the 100 ms.
  * Every pending event of a batch goes to imgui, and each command it carries
  * is queued in order; one is returned per call, so the caller presents
  * between commands and no press is lost behind a slow present. A quit
  * (Ask::Quit: a quit event, SIGTERM, the window closed) empties the queue
- * and is returned at once. A returning compile job pushes a wake event
- * (openpete_native_launcher_precompile_event); a batch of only wake events
- * steps the precompile and keeps waiting for the rest of the 100 ms, so the
- * caller presents at the cadence of its input, not of the compiles. The
- * precompile is also stepped when the wait ends.
+ * and is returned at once. The precompile is also stepped when the wait
+ * ends.
  * @return The oldest queued command, the quit when a batch held one, or
  *         Ask::None. */
 Ask wait_input() {
@@ -1176,11 +1202,13 @@ Ask wait_input() {
     };
     if (!s_asks.empty()) return next();
     const Uint32 wake = openpete_native_launcher_precompile_event();
-    const Uint64 end = SDL_GetTicks() + (launcher_page_animating() ? 8 : 100);
+    const bool paced = launcher_pace_visible();
+    const Uint64 end = SDL_GetTicks() + (paced ? 0 : 100);
     for (;;) {
         const Uint64 now = SDL_GetTicks();
         SDL_Event e;
-        if (now >= end || !SDL_WaitEventTimeout(&e, (Sint32)(end - now))) {
+        const bool got = now < end ? SDL_WaitEventTimeout(&e, (Sint32)(end - now)) : SDL_PollEvent(&e);
+        if (!got) {
             (void)openpete_native_launcher_precompile_step();
             return Ask::None;
         }
@@ -1198,7 +1226,7 @@ Ask wait_input() {
             s_asks.clear();
             return Ask::Quit;
         }
-        if (input) return s_asks.empty() ? Ask::None : next();
+        if (input || paced) return s_asks.empty() ? Ask::None : next();
     }
 }
 
@@ -1526,12 +1554,17 @@ int SDLCALL task_main(void* p) {
     return 0;
 }
 
-/** @brief Keep the launcher drawn while a task's worker runs: open the window at its first report, drain events, redraw every 16 ms.
+/** @brief Keep the launcher drawn while a task's worker runs: open the window at its first report, drain events, redraw at the present rate.
  *
- * Returns when the worker flags completion. */
+ * The loop is a build stage (launcher_pace_build_stage). An iteration that
+ * presented was paced by the present (launcher_pace_begin); one that did
+ * not (no report yet, or the window cannot show) sleeps 16 ms. Returns when
+ * the worker flags completion. */
 void task_wait_loop() {
     bool watch = false;
+    launcher_pace_build_stage(true);
     for (;;) {
+        const uint64_t presents = launcher_pace_count();
         SDL_LockMutex(s.lock);
         const bool done = s.task_done, have = s.have_progress;
         SDL_UnlockMutex(s.lock);
@@ -1544,8 +1577,9 @@ void task_wait_loop() {
         }
         ingest_poll();
         if (done) break;
-        SDL_Delay(16);
+        if (launcher_pace_count() == presents) SDL_Delay(16);
     }
+    launcher_pace_build_stage(false);
     if (watch) SDL_RemoveEventWatch(task_event_watch, nullptr);
 }
 
@@ -1750,7 +1784,7 @@ void openpete_launcher_progress(const char* stage, int done, int total) {
     v.done = done;
     v.total = total;
     drain_events();
-    present(v);
+    present(v, false);
 }
 
 int openpete_launcher_run_task(openpete_launcher_task_fn fn, void* userdata) {
@@ -2014,9 +2048,13 @@ bool job_finished();
 
 /** @brief Wait for the running job's two parts to flag done, keeping the window's events drained and, when asked, drawing the job's progress.
  *
- * @param draw true to draw the job's last progress report every 16 ms. */
+ * A drawn wait is a build stage (launcher_pace_build_stage). An iteration
+ * that presented was paced by the present; one that did not sleeps 16 ms.
+ * @param draw true to draw the job's last progress report at the present rate. */
 void job_wait(bool draw) {
+    launcher_pace_build_stage(draw);
     while (!job_finished()) {
+        const uint64_t presents = launcher_pace_count();
         if (s.ui && openpete_native_launcher_active()) {
             if (s_ing.busy) launcher_quit_script_poll("assets");
             drain_events();
@@ -2036,8 +2074,9 @@ void job_wait(bool draw) {
                 present(v);
             }
         }
-        SDL_Delay(16);
+        if (launcher_pace_count() == presents) SDL_Delay(16);
     }
+    launcher_pace_build_stage(false);
 }
 
 /** @brief Report whether the running job's module part and asset part have both ended, reaping a finished asset part.
@@ -2107,7 +2146,9 @@ unsigned launcher_picture_gen(void) { return s_picture_gen.load(); }
 
 void launcher_assets_wait(void) {
     bool held = false;
+    launcher_pace_build_stage(true);
     while (s_ing.busy) {
+        const uint64_t presents = launcher_pace_count();
         ingest_poll();
         if (!s_ing.busy) break;
         if (s.ui && openpete_native_launcher_active()) {
@@ -2127,8 +2168,9 @@ void launcher_assets_wait(void) {
                 present(v);
             }
         }
-        SDL_Delay(5);
+        if (launcher_pace_count() == presents) SDL_Delay(5);
     }
+    launcher_pace_build_stage(false);
     if (held) OPL_INFO_F("launcher", "%s", "the preview hold ends");
 }
 
