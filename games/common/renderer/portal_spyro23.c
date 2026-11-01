@@ -128,6 +128,8 @@ static unsigned p3_dbg_from(void) {
     return v;
 }
 static int s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris;
+static unsigned s_off_feed, s_off_plane;  /* off-screen openings skipped, run totals */
+static unsigned s_off_rows;               /* of the feed's, the ones inside the view but outside the pass's rows */
 
 /** @brief Whether the sub-tick replay lerps previews, off when OPENPETE_PORTAL3_INTERP starts with 0.
  *
@@ -299,7 +301,16 @@ static int p3_clip_edge(const p3_v* in, int n, p3_v* out, float ax, float ay, fl
  * A record the feeder cannot identify, or a pentagon wholly behind SZ 256,
  * falls back to the captured rect and edges: a rect spanning the whole 4:3
  * width with no edge cutting the frame is the camera standing inside the
- * portal, and its X bounds become the visible screen-X range. */
+ * portal, and its X bounds become the visible screen-X range.
+ *
+ * A pentagon that projects but whose bounds miss the view is off-screen and
+ * draws nothing; it never falls back to the capture. The pass's rtps input is
+ * 16-bit (func_8001C040), so a vertex far from the camera at shift 0 wraps and
+ * saturates, and the pass writes a rect where the true pentagon is not, with
+ * no edges to cut it. The view is the visible screen-X range and the visible
+ * rows (openpete_native_visible_y_bounds) moved into the authored space; a
+ * pentagon inside the view but outside the pass's rows is off-screen as well,
+ * since the bounds clamp to those rows and nothing remains to paint. */
 typedef struct { float xmin, xmax, ymin, ymax; int widened; } p3_bounds;
 
 #define P3_FRAME_X0 0      /* the 4:3 framebuffer's screen-X range, the rect's */
@@ -316,6 +327,7 @@ typedef struct { float xmin, xmax, ymin, ymax; int widened; } p3_bounds;
  * presented, in the authored screen space. */
 typedef struct {
     int      ok;                         /* 0: use the captured rect and edges */
+    int      offscreen;                  /* nonzero: draw nothing; 1 outside the view, 2 inside it but outside the pass's rows */
     p3_bounds b;
     int      nedge;
     float    ex[P3_MAX_EDGES][2], ey[P3_MAX_EDGES][2];
@@ -536,7 +548,8 @@ static int p3_dilate_polygon(const double V[][3], int n, double w, double D[][3]
  * @param v The view; supplies the camera, its matrix and H.
  * @param p The preview; its record is used.
  * @param o Receives the opening; ok is 0 when the record is unknown, the
- *        pentagon lies wholly behind SZ 256, or the bounds are empty. */
+ *        pentagon lies wholly behind SZ 256, or the bounds are empty, and
+ *        offscreen is nonzero in the last case. */
 static void p3_native_opening(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_opening* o) {
     memset(o, 0, sizeof *o);
     if (!p->rec) return;
@@ -565,7 +578,14 @@ static void p3_native_opening(CPUState* cpu, const ngte_view* v, const p3_previe
     openpete_native_widescreen_x_bounds(&xlo, &xhi);
     o->b.xmin = fmaxf(x0, xlo); o->b.xmax = fminf(x1, xhi);
     o->b.ymin = fmaxf(y0, (float)P3_FRAME_Y0); o->b.ymax = fminf(y1, (float)P3_FRAME_Y1);
-    if (o->b.xmin >= o->b.xmax || o->b.ymin >= o->b.ymax) return;
+    if (o->b.xmin >= o->b.xmax || o->b.ymin >= o->b.ymax) {
+        float ylo = 0.0f, yhi = 0.0f;
+        openpete_native_visible_y_bounds(&ylo, &yhi);
+        const float sh = (float)(v->ofy - P3_CY);
+        const int in_view = x0 < xhi && x1 > xlo && y0 < yhi - sh && y1 > ylo - sh;
+        o->offscreen = in_view ? 2 : 1;
+        return;
+    }
     o->b.widened = o->b.xmin < (float)P3_FRAME_X0 || o->b.xmax > (float)P3_FRAME_X1;
     o->nedge = n;
     p3_polygon_edges(x, y, n, o->ex, o->ey);
@@ -959,10 +979,14 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
     openpete_native_scene_set_tag(0);
 }
 
-/** @brief Prints the aperture census: a summary line, then one uncapped line per fed preview.
+/** @brief Prints the aperture census: a summary line, the off-screen skip totals, then one uncapped line per fed preview.
  *
- * Each preview line holds the opening polygon in the screen space p3_emit_tri
- * draws into and the per-record channels the replay carries. It is the
+ * The skip line holds the run totals of off-screen openings p3_feed and
+ * portal_s23_sky_planes skipped, and how many of p3_feed's lay inside the view
+ * but outside the pass's rows. Each preview line holds the opening polygon in
+ * the screen space p3_emit_tri draws into and the per-record channels the
+ * replay carries; its native field is 1 on a re-derived opening, 2 on an
+ * off-screen one, else 0. It is the
  * statistic tests/harness/check_feeder_subtick.sh --path portal judges, the
  * aperture being far larger than the compact blob a pixel mask models.
  * @param cpu Reads the portal records.
@@ -972,6 +996,8 @@ static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) {
     const float offx = (float)(vw->ofx - P3_CX), offy = (float)(vw->ofy - P3_CY);
     fprintf(stderr, "[portal3-feed f=%u src=%s a=%.3f portals=%d tris=%d emitted=%d]\n",
             openpete_feed_key_now(), s_feed_src, (double)s_feed_alpha, T->n, s_cen_tris, s_emitted);
+    fprintf(stderr, "[portal3-off f=%u feed=%u plane=%u rows=%u]\n",
+            openpete_feed_key_now(), s_off_feed, s_off_plane, s_off_rows);
     for (int i = 0; i < T->n; i++) {
         p3_preview q; p3_opening op;
         p3_resolve(cpu, vw, &T->p[i], &q, &op);
@@ -980,7 +1006,7 @@ static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) {
         const int pn = p3_opening_poly(p, &op, poly, 32);
         fprintf(stderr, "[portal3-ap f=%u src=%s a=%.3f slot=%d arg=%d n=%d d7=%d dw=%.1f ir0=%d far=%06X rec=%08X native=%d]",
                 openpete_feed_key_now(), s_feed_src, (double)s_feed_alpha, p->slot, p->arg, pn,
-                p->depth7, (double)p->depth_w, p->ir0, p->far_rgb, p->rec, op.ok);
+                p->depth7, (double)p->depth_w, p->ir0, p->far_rgb, p->rec, op.ok ? 1 : op.offscreen ? 2 : 0);
         for (int k = 0; k < pn; k++)
             fprintf(stderr, " (%.2f,%.2f)", (double)(poly[k].x + offx), (double)(poly[k].y + offy));
         fprintf(stderr, "\n");
@@ -1024,8 +1050,9 @@ static void p3_lod_tick(const p3_tick* T, p3_tick* O) {
  * Returns without emitting when the native scene or RP_PORTAL is off, and
  * before opening the frame's scene when the tick holds no preview. Resets the
  * census counters, opens the scene for the current openpete_frame, resolves
- * each preview's opening under the view (p3_resolve) and extracts it, and records the frame in s_sky_fed_frame when any triangle was
- * emitted. Under extended LOD the previews are p3_lod_tick's.
+ * each preview's opening under the view (p3_resolve) and extracts it unless the
+ * opening is off-screen, and records the frame in s_sky_fed_frame when any
+ * triangle was emitted. Under extended LOD the previews are p3_lod_tick's.
  * @param cpu The guest CPU state.
  * @param T The captured (or lerped) previews. */
 static void p3_feed(CPUState* cpu, const p3_tick* T) OP_REQUIRES(sim) {
@@ -1052,6 +1079,7 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) OP_REQUIRES(sim) {
     for (int i = 0; i < T->n; i++) {
         p3_preview q; p3_opening op;
         p3_resolve(cpu, &vw, &T->p[i], &q, &op);
+        if (op.offscreen) { s_off_feed++; s_off_rows += op.offscreen == 2; continue; }
         p3_extract_one(cpu, &q, &op, &vw, sky_ir0, env_far, mask_done);
     }
     if (s_emitted) s_sky_fed_frame = openpete_frame;
@@ -1189,6 +1217,7 @@ int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_sky
         if (s_curr.p[i].arg != 1) continue;   /* one entry per portal, on its base record */
         p3_preview q; p3_opening op;
         p3_resolve(cpu, v, &s_curr.p[i], &q, &op);
+        if (op.offscreen) { s_off_plane++; continue; }
         p3_v poly[16];
         const int pn = q.nedge < 3 ? 0 : p3_opening_poly(&q, &op, poly, 16);
         if (pn < 3) continue;                 /* no bounded opening */

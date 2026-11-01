@@ -122,12 +122,14 @@ int portal_s23_sky_recent(void);
  *
  * The latest capture counts only when it was taken at most three VBLs ago.
  * One entry is written per portal, from its base record (leaf argument 1),
- * and a record without a pentagon of at least three edges is skipped. The
- * opening polygon is the preview's colour bounds clipped by each pentagon
- * edge, shifted by the view's screen offset from (256, 120). The plane is
- * constant-depth (a = b = 0, c = 1 / depth) at the preview's world depth,
- * floored at 1, and carries no view-space outline (vn = 0).
- * @param cpu Unused.
+ * and a record without a pentagon of at least three edges, or whose
+ * re-derived opening is off-screen, is skipped. The opening polygon is the
+ * preview's colour bounds clipped by each pentagon edge, shifted by the
+ * view's screen offset from (256, 120). On a re-derived opening the plane is
+ * the opening plane and carries the pentagon as its view-space outline;
+ * otherwise it is constant-depth (a = b = 0, c = 1 / depth) at the preview's
+ * world depth, floored at 1, with no outline (vn = 0).
+ * @param cpu Reads the portal records.
  * @param v The view whose screen offset places the polygon.
  * @param out Receives the planes.
  * @param max The capacity of `out`.
