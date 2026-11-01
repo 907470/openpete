@@ -9073,8 +9073,9 @@ static bool job_copy_stage(const uint32_t *words, size_t n, const char *name,
 /** @brief Make a job holding copies of a desc and its stage sources, with its stage bytes resolved.
  *
  * Display owner only: stage_bytes reads OPENPETE_SHADER_DIR and its file
- * here, and the census level is latched here, so the job's run reads no
- * environment and no file. A stage given words has its .spv
+ * here, and the census level, the terrain source tint and the key tier
+ * order are latched here, so the job's run reads no environment and no
+ * file. A stage given words has its .spv
  * name cleared from the desc copy.
  * @param desc Pipeline description.
  * @param vert_words Vertex words, or NULL.
@@ -9108,7 +9109,11 @@ static rhi_compile_job *job_make(const rhi_pipeline_desc *desc,
         job_free(job);
         return NULL;
     }
-    (void)rhi_pc_level();   /* latch OPENPETE_PIPE_CENSUS here, never in a run */
+    /* Latch every knob a run reads here, never in a run: the census level,
+     * and the specialization constants stage_spec_fill passes (ids 6, 7). */
+    (void)rhi_pc_level();
+    (void)rhi_terrain_source_tint();
+    (void)key_tier_order();
     job->variant = variant;
     job->slot_contest = s_fs_slot_contest;
     job->generation = generation;
