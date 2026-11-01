@@ -179,3 +179,9 @@ mystic_marsh@fogorig | pos=(81530, 30903, 15232) yaw=-160 pitch=145 | | --fog or
 # Spyro is placed near it, since its update runs only within 16384 units
 # of Spyro.
 glimmer | pos=(70764, 121159, 26861) yaw=-310 pitch=319 | | --player-pose pos=(94565,109322,9300)
+# Reported defect: a portal's cyclorama draws on the right of the screen,
+# outside any portal aperture (seen at --fov 95).
+summer_forest | pos=(80565, 87547, 69619) yaw=607 pitch=278
+# Reported defect: the castle shows doubled spires, low-poly geometry drawn
+# beside the high-poly towers, also under --lod extended (seen at --fov 95).
+summer_forest | pos=(79025, 84035, 72838) yaw=875 pitch=313
