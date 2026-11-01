@@ -49,6 +49,8 @@ typedef struct launcher_preview_spec {
     const char* game;    /* the game id */
     const char* level;   /* the level table's name of the level */
     const char* pose;    /* the --freecam-pose text */
+    int vis_game;        /* 1: the sector set --terrain-visibility game draws (the level's PVS at the
+                          * pose, launcher_preview_pvs); 0: every sector in the frustum */
 } launcher_preview_spec;
 
 /* A host-loaded level: the terrain bytes the walk's decoders read, the
@@ -64,6 +66,12 @@ typedef struct launcher_preview_level {
     uint8_t*  exe;       /* the boot executable's text */
     uint32_t  exe_addr, exe_len;
     int       entry;     /* the WAD entry read */
+    /* The level's PVS octree (Spyro 2/3 sub-file 1, the block after the
+     * environment block): pvs_form 0 when the level form has none the
+     * preview reads, 1 when the block is empty (every sector visible), 2
+     * when pvs_off is the tree's byte offset in bytes. */
+    int       pvs_form;
+    uint32_t  pvs_off;
 } launcher_preview_level;
 
 /* A level's sky dome as the asset extraction stores it (domes.bin,
@@ -76,6 +84,21 @@ typedef struct launcher_preview_dome {
     const uint8_t*  verts;
     const uint16_t* tris;
 } launcher_preview_dome;
+
+/** @brief Computes the sectors the game's PVS lookup marks visible from a camera position: func_80048D18(0) over the level's octree.
+ *
+ * The tree is keyed on the camera position shifted right 11 (the draw-time
+ * copy at the camera block's +0x34). From the root at depth 7 each node
+ * clears its first, strictly increasing run of sector bytes and marks the
+ * rest visible; the descent takes the child octant the position falls in
+ * and ends at depth 0 or at a node without children. A missing child, an
+ * empty block or a tree that opens with -1 makes every sector visible, as
+ * does a read past the bytes.
+ * @param L The level; pvs_form 1 or 2.
+ * @param pos The camera position, world units.
+ * @param vis Receives 256 bytes, 0xFF for a visible sector, 0 for a hidden one.
+ * @return The visible count, or -1 when the level form has no PVS. */
+int launcher_preview_pvs(const launcher_preview_level* L, const int32_t pos[3], uint8_t vis[256]);
 
 /** @brief Returns a game's box picture level and pose, or NULL for a game that has none.
  *

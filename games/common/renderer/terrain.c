@@ -18086,6 +18086,14 @@ static void tpv_free_entry(tscache_t* C) {
     free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
 }
 
+/** @brief Reports whether a sector is in the level's candidate set (terrain_host_level.vis): always without one.
+ * @param L The level.
+ * @param k The sector index.
+ * @return 1 when the sector may draw. */
+static int tpv_in_set(const terrain_host_level* L, int k) {
+    return !L->vis || (k < L->vis_n && L->vis[k] == 0xFF);
+}
+
 /** @brief Decodes, bins and bakes every sector of a host level into the preview's batches.
  * @param cpu The stand-in CPU state.
  * @param L The level.
@@ -18106,6 +18114,7 @@ static int tpv_bake_all(CPUState* cpu, const terrain_host_level* L, const tn_wcf
         tscache_t C;
         if (tpv_decode(cpu, L, k, &C) != 0) continue;
         st->sectors++;
+        if (!tpv_in_set(L, k)) { st->vis_hidden++; tpv_free_entry(&C); continue; }
         tn_secverd V;
         memset(&V, 0, sizeof(V));
         sector_verdicts(&C, G, &V);

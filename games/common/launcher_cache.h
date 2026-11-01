@@ -20,7 +20,7 @@
  *                   wrote them, each output's name and size, and a failed
  *                   marker: the build id and disc hash of a failed run and
  *                   its reason; for the preview, the disc hash and the
- *                   "level|pose|WxH form fovF ssaaN" it was drawn from and its own failed
+ *                   "level|pose|WxH form fovF ssaaN[ vis-game]" it was drawn from and its own failed
  *                   marker
  *
  * Every file is replaced atomically (op_atomic_file), the manifest last,
@@ -68,7 +68,7 @@ enum {
  * stopping early when the job is asked to stop.
  * Then, on the launcher's device only (a headless run neither checks nor
  * logs it), the box picture: current when its file exists at its recorded
- * size and its disc hash and "level|pose|WxH form fovF ssaaN" match; a preview failed marker of
+ * size and its disc hash and "level|pose|WxH form fovF ssaaN[ vis-game]" match; a preview failed marker of
  * this build and disc skips it; otherwise it is rendered
  * (launcher_preview_render) and a rerun logs one line, "launch-time rerun:
  * preview render of <game>" at launch time. A deterministic failure writes

@@ -398,7 +398,7 @@ static void lc_dome_free(lc_dome* D) {
  * @param dir The game's cache directory.
  * @param m The manifest as read.
  * @param disc The library disc's content hash.
- * @param view The view key, "level|pose|WxH form fovF ssaaN" (lc_preview_update).
+ * @param view The view key, "level|pose|WxH form fovF ssaaN[ vis-game]" (lc_preview_update).
  * @param build This build's id.
  * @param trigger Receives the reason a rerun is due.
  * @param cap Its capacity.
@@ -443,7 +443,7 @@ static int lc_preview_write(const char* path, const uint8_t* rgba, uint32_t w, u
  * @param path The manifest's path.
  * @param m The manifest.
  * @param disc The disc's content hash.
- * @param view The view key, "level|pose|WxH form fovF ssaaN" (lc_preview_update).
+ * @param view The view key, "level|pose|WxH form fovF ssaaN[ vis-game]" (lc_preview_update).
  * @param rgba The image, or NULL after a failure.
  * @param why The failure's reason.
  * @return 0, or -1 when a write failed. */
@@ -495,8 +495,8 @@ static void lc_preview_update(const openpete_game_build_t* b, const char* dir, c
     char view[256], trigger[256], why[512];
     uint32_t w = 0, h = 0;
     (void)launcher_preview_size(b->id, &w, &h);
-    snprintf(view, sizeof view, "%s|%s|%ux%u %s fov%g ssaa%u", S->level, S->pose, w, h, LAUNCHER_PREVIEW_FORM,
-             LAUNCHER_PREVIEW_FOV_DEG, LAUNCHER_PREVIEW_SSAA);
+    snprintf(view, sizeof view, "%s|%s|%ux%u %s fov%g ssaa%u%s", S->level, S->pose, w, h, LAUNCHER_PREVIEW_FORM,
+             LAUNCHER_PREVIEW_FOV_DEG, LAUNCHER_PREVIEW_SSAA, S->vis_game ? " vis-game" : "");
     const char* build = openpete_launcher_build_id();
     const int st = lc_preview_check(dir, &m, disc, view, build, trigger, sizeof trigger);
     if (st == LAUNCHER_CACHE_READY) { OPL_INFO_F("launcher", "preview of %s is current", b->id); return; }

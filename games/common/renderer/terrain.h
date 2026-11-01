@@ -225,6 +225,10 @@ typedef struct terrain_host_level {
                                      * reads at guest addresses (the HQ tile UV-orientation
                                      * table), as the game's load leaves them; NULL for none */
     uint32_t        exe_addr, exe_len;
+    const uint8_t*  vis;            /* the candidate set: a sector k draws only when k < vis_n and
+                                     * vis[k] is 0xFF (the game's visibility table form); NULL
+                                     * admits every sector */
+    int             vis_n;
 } terrain_host_level;
 
 /* The view a preview is drawn from: a free-camera pose and the
@@ -242,6 +246,7 @@ typedef struct terrain_preview_view {
 /* What a preview build did, for its log line and its harness. */
 typedef struct terrain_preview_stats {
     int      sectors;          /* records decoded */
+    int      vis_hidden;       /* sectors outside the level's candidate set (terrain_host_level.vis) */
     int      drawn;            /* sectors drawing HP or LP from the view */
     int      baked;            /* sectors baked into the batches */
     int      near;             /* sectors baked with near-variant chunks */
