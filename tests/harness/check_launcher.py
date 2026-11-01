@@ -98,7 +98,8 @@ Cases:
             --window's size (an explicit game window size) without
             --launcher-window, and the same size from the window key of a
             --config file; --window maximized opens it maximized at 1280x800;
-            a window value under [game.spyro-1] does not apply (1280x800). The size and maximized state the
+            a window value under [game.spyro-1] does not apply (1280x800); a stubbed display content scale
+            (OPENPETE_LAUNCHER_CONTENT_SCALE 1.5, 2) logs its scale and leaves 1280x800 off Windows. The size and maximized state the
             launcher device was created at are asserted.
   font      The body font: an empty-library launch logs the body font as
             Fredoka Medium with ProggyClean the default font, and the game
@@ -702,13 +703,26 @@ def case_window_default(a):
         ("config-key", ["--config", keyed], (1600, 900), False),
         ("game-scope", ["--config", scoped], (1280, 800), False),
     ]
+    # A display content scale (stubbed) leaves the design size unscaled off Windows, where window
+    # coordinates carry the scale (Wayland, macOS) or the size stays in pixels (X11).
+    scaled = [("scale-1.5", "1.5"), ("scale-2", "2")]
+    rows += [(tag, [], (1280, 800), False) for tag, _ in scaled]
     bad = []
     for tag, args, size, maxed in rows:
-        rc, log = launch(a.binary, d, tag, args, {"OPENPETE_LAUNCHER_INPUT": "1500:quit"})
+        scale = dict(scaled).get(tag)
+        env = {"OPENPETE_LAUNCHER_INPUT": "1500:quit"}
+        if scale:
+            env["OPENPETE_LAUNCHER_CONTENT_SCALE"] = scale
+        rc, log = launch(a.binary, d, tag, args, env)
         dev = re.search(r"launcher device \S+ created on window \S+ \((\d+)x(\d+)(, maximized)?", log)
         got = ((int(dev.group(1)), int(dev.group(2))), bool(dev.group(3))) if dev else None
         if got != (size, maxed):
             bad.append(f"{tag}: opened {got}, expected {(size, maxed)} (rc {rc}, log {d}/{tag}.log)")
+        if scale:
+            line = re.search(r"window scale: content scale ([\d.]+), design size 1280x800: requests (\d+x\d+) \((.+)\)", log)
+            print(f"[launcher] {tag}: {line and line.group(0)}")
+            if not line or float(line.group(1)) != float(scale) or line.group(2) != "1280x800":
+                bad.append(f"{tag}: scale line {line and line.group(0)}, expected scale {scale} requesting 1280x800")
         print(f"[launcher] {tag}: {' '.join(args) or '(no setting)'}: opened {got}")
     for b in bad:
         print("[launcher] FAIL", b)

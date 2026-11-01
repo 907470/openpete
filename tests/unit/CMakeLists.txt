@@ -881,3 +881,15 @@ add_test(NAME write_census_ranges COMMAND write_census_test ranges
     ${CMAKE_CURRENT_BINARY_DIR}/write_census_ranges.csv)
 add_test(NAME write_census_refuse COMMAND write_census_test refuse
     ${CMAKE_CURRENT_BINARY_DIR}/write_census_refuse.csv)
+
+# launcher_fit_test - header-only. The launcher window's design size scaled
+# by a display content scale and fitted to a display's full and usable
+# bounds, as on Windows, at four scales on three taskbar displays.
+add_executable(launcher_fit_test launcher_fit_test.c)
+target_include_directories(launcher_fit_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+if(NOT WIN32)
+    target_link_libraries(launcher_fit_test PRIVATE m)
+endif()
+set_target_properties(launcher_fit_test PROPERTIES C_STANDARD 99)
+add_test(NAME launcher_fit_test COMMAND launcher_fit_test)

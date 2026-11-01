@@ -48,6 +48,7 @@
 #include "openpete_devui.h"
 #include "openpete_fatal.h"
 #include "openpete_input_lock.h"
+#include "openpete_launcher_fit.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_time.h"
@@ -620,7 +621,9 @@ void close_gamepad() {
 }
 
 /* The launcher window's size when neither --launcher-window nor an explicit
- * game window size is set: the Steam Deck's panel, in window coordinates. */
+ * game window size is set: the Steam Deck's panel, in window coordinates
+ * (scaled by the display's content scale where those are pixels,
+ * launcher_design_scale). */
 constexpr int kLauncherDefaultW = 1280;
 constexpr int kLauncherDefaultH = 800;
 
@@ -635,9 +638,11 @@ constexpr int kLauncherDefaultH = 800;
  * @param opts The options.
  * @param w Receives the width; the size a maximized or fullscreen window returns to.
  * @param h Receives the height.
- * @param open Receives the OPENPETE_WINDOW_OPEN_* bits. */
-void launcher_window_request(const openpete_options_t* opts, int* w, int* h, int* open) {
+ * @param open Receives the OPENPETE_WINDOW_OPEN_* bits.
+ * @return true when the size is the 1280x800 design size (no size is configured), false for a configured or game size. */
+bool launcher_window_request(const openpete_options_t* opts, int* w, int* h, int* open) {
     *open = 0;
+    bool design = false;
     if (opts->launcher_window_maximized == 0) {
         *w = opts->launcher_window_w;
         *h = opts->launcher_window_h;
@@ -650,11 +655,45 @@ void launcher_window_request(const openpete_options_t* opts, int* w, int* h, int
     } else {
         *w = kLauncherDefaultW;
         *h = kLauncherDefaultH;
+        design = true;
     }
     if (opts->launcher_window_maximized > 0 ||
         (opts->launcher_window_maximized < 0 && opts->window_maximized > 0))
         *open |= OPENPETE_WINDOW_OPEN_MAXIMIZED;
     if (opts->launcher_fullscreen > 0) *open |= OPENPETE_WINDOW_OPEN_FULLSCREEN;
+    return design;
+}
+
+/* True where SDL window coordinates are pixels and the display's content
+ * scale is not applied to them: Windows. On Wayland and macOS the window
+ * coordinates already carry the scale; X11 keeps its unscaled size. */
+#ifdef _WIN32
+constexpr bool kScaleDesignSize = true;
+#else
+constexpr bool kScaleDesignSize = false;
+#endif
+
+/** @brief Scale the launcher's design size by the primary display's content scale on Windows, so it opens at the same apparent size at 150% or 200% as at 100%; elsewhere leave it as it is.
+ *
+ * Only the design size is scaled: a --launcher-window or --window size is
+ * taken as given (pixels on Windows). The harness variable
+ * OPENPETE_LAUNCHER_CONTENT_SCALE=<f> gives the scale instead of
+ * SDL_GetDisplayContentScale. The scale and the size requested are logged
+ * on every platform.
+ * @param w The design width; receives the requested width.
+ * @param h The design height; receives the requested height. */
+void launcher_design_scale(int* w, int* h) {
+    float scale = 0.0f;
+    if (const char* e = getenv("OPENPETE_LAUNCHER_CONTENT_SCALE"); e && *e)
+        scale = strtof(e, nullptr);
+    else if (const SDL_DisplayID d = SDL_GetPrimaryDisplay(); d)
+        scale = SDL_GetDisplayContentScale(d);
+    const int dw = *w, dh = *h;
+    if (kScaleDesignSize) openpete_launcher_scale_size(w, h, scale);
+    OPL_INFO_F("launcher", "window scale: content scale %.2f, design size %dx%d: requests %dx%d (%s)",
+               (double)scale, dw, dh, *w, *h,
+               kScaleDesignSize ? "scaled, window coordinates are pixels"
+                                : "unscaled, the window coordinates decide");
 }
 
 /* A display's full and usable bounds, in window coordinates. */
@@ -679,8 +718,10 @@ bool display_bounds(DisplayBounds* b) {
 
 /** @brief Fit the launcher window's requested windowed size to the display: as requested when it fits the usable bounds, maximized when it fits only the full bounds, else clamped to 90% of the usable bounds at the request's aspect; under gamescope the output size.
  *
- * Sizes are window coordinates, so a request opens at the same apparent
- * size on a scaled display as on an unscaled one. A request already
+ * Sizes are SDL window coordinates: on Wayland and macOS a request opens
+ * at the same apparent size on a scaled display as on an unscaled one; on
+ * Windows they are pixels, and the design size arrives scaled
+ * (launcher_design_scale). The rule is openpete_launcher_fit. A request already
  * maximized or fullscreen, or a display whose bounds cannot be read, is
  * left as it is. Gamescope sets GAMESCOPE_WAYLAND_DISPLAY for every child it
  * launches; its output is the display's full bounds. The decision is
@@ -695,21 +736,18 @@ void launcher_window_fit(int* w, int* h, int* open) {
         !display_bounds(&b) || b.use_w <= 0 || b.use_h <= 0)
         return;
     const int rw = *w, rh = *h;
-    const char* how = "as requested";
+    const char* how = "at the gamescope output size";
     if (const char* gs = getenv("GAMESCOPE_WAYLAND_DISPLAY"); gs && *gs) {
         *w = b.full_w;
         *h = b.full_h;
-        how = "at the gamescope output size";
-    } else if (rw > b.use_w || rh > b.use_h) {
-        if (rw <= b.full_w && rh <= b.full_h) {
+    } else {
+        switch (openpete_launcher_fit(rw, rh, b.full_w, b.full_h, b.use_w, b.use_h, w, h)) {
+        case OPENPETE_LAUNCHER_FIT_AS_REQUESTED: how = "as requested"; break;
+        case OPENPETE_LAUNCHER_FIT_MAXIMIZED:
             *open |= OPENPETE_WINDOW_OPEN_MAXIMIZED;
             how = "maximized";
-        } else {
-            const float kw = 0.9f * (float)b.use_w / (float)rw, kh = 0.9f * (float)b.use_h / (float)rh;
-            const float k = kw < kh ? kw : kh;
-            *w = (int)std::lround((float)rw * k);
-            *h = (int)std::lround((float)rh * k);
-            how = "clamped to 90% of the usable bounds";
+            break;
+        case OPENPETE_LAUNCHER_FIT_CLAMPED: how = "clamped to 90% of the usable bounds"; break;
         }
     }
     OPL_INFO_F("launcher", "window fit: request %dx%d, display %dx%d, usable %dx%d: opens %s (%dx%d)",
@@ -748,8 +786,9 @@ void open_failed(const std::string& why, int continues) {
 
 /** @brief Open the launcher's window, device and imgui context unless they exist, telling the player once when the device cannot be created.
  *
- * The window takes launcher_window_request's size; before the hand-off that
- * size is fitted to the display (launcher_window_fit). A device created for a screen, before the
+ * The window takes launcher_window_request's size; before the hand-off the
+ * design size is scaled (launcher_design_scale) and the size is fitted to
+ * the display (launcher_window_fit). A device created for a screen, before the
  * hand-off, starts the pipeline precompile on it
  * (openpete_native_launcher_precompile_start) unless a refusal opened it
  * (openpete_launcher_refuse); one created at the hand-off leaves the
@@ -776,8 +815,11 @@ int launcher_open(const openpete_options_t* opts, int continues) {
         return -1;
     }
     int w, h, open = 0;
-    launcher_window_request(opts, &w, &h, &open);
-    if (!s.handed_off) launcher_window_fit(&w, &h, &open);
+    const bool design = launcher_window_request(opts, &w, &h, &open);
+    if (!s.handed_off) {
+        if (design) launcher_design_scale(&w, &h);
+        launcher_window_fit(&w, &h, &open);
+    }
     if (openpete_native_launcher_open(opts, w, h, open, "OpenPete") != 0) {
         open_failed(openpete_native_launcher_error(), continues);
         return -1;
