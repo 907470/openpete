@@ -9,10 +9,15 @@ Cases:
             repository's image) and a warm pipeline cache: one launch warms the cache, then
             STARTUP_RUNS launches each read both stamps. On a build with the first-boot pipeline
             each entry holds its built module, so the launch-time jobs compute every game's stamp
-            and build nothing. PASS when the median delta is at most
-            STARTUP_BOUND_MS, the bound set from the figure measured on the build before the
-            launch-time stamps moved off the launcher thread. --measure prints the figures and
-            sets no verdict.
+            and build nothing. Each stamp also carries the launcher thread's CPU time and runnable
+            wait (/proc/thread-self/schedstat) and the process's CPU time (getrusage). PASS when the
+            median of the launcher thread's CPU time between the two stamps is at most
+            STARTUP_BOUND_MS and, on an idle host (1-minute load under STARTUP_IDLE_LOAD for every
+            run), the median delta is at most STARTUP_BOUND_MS, the bound set from the figure
+            measured on the build before the launch-time stamps moved off the launcher thread. Under
+            load the delta grows by the time the launcher thread is blocked on lavapipe's rasterizer
+            threads while they wait runnable, which its CPU time excludes. --measure prints the
+            figures and sets no verdict.
   resolution       The resolved options after a scripted launcher pick (OPENPETE_LAUNCHER_SELECT_GAME) of
             a library entry, per game, against a direct --disc launch of the same entry's disc.cue:
             each run writes its resolution (OPENPETE_CONFIG_REPORT_OUT, the --config-report text and
@@ -118,11 +123,12 @@ Cases:
             progress screen (OPENPETE_PRECOMPILE_PANEL_MS=0); every screen's bar has a total
             and its fraction never falls (the "compile stage bar" line).
             shader-step-after: a pick held until the ahead walk has returned every create info
-            (OPENPETE_LAUNCHER_PICK_DELAY_MS) starts the game with every bring-up create held by
-            the cache (bring-up compiles no pipeline); the progress screens drawn are reported.
+            (OPENPETE_LAUNCHER_PICK_AFTER_WALK=end) starts the game with every bring-up create held
+            by the cache (bring-up compiles no pipeline); the progress screens drawn are reported.
             shader-step-order: with the terrain cache described (OPENPETE_TERRAIN_CACHE_FORCE=1),
             the walk's terrain group at the first texture mapping returns before the group of
-            the other built-in pipelines.
+            the other built-in pipelines; the pick is held until the walk logs group 2's return
+            or ends (OPENPETE_LAUNCHER_PICK_AFTER_WALK=2).
   sky-cache  T7's sky (windowed): over a library of Spyro 1 and Spyro 2 whose caches a headless
             launch wrote, the selector draws the domes the cache holds with no game picked: each
             game's dome count loaded equals domes.bin's, the sky pass drew layers, the selector's
@@ -165,6 +171,11 @@ STARTUP_RUNS = 7
 # thread (7 runs on the dev box under Xvfb and lavapipe: median 45.7 ms, min 45.1, max 46.6): the
 # baseline's median plus 10%.
 STARTUP_BOUND_MS = 50.0
+# The 1-minute load average under which the host is idle: the wall-clock delta is bounded only below it.
+# Above it the launcher thread waits blocked on lavapipe's rasterizer threads, which wait runnable, so the
+# delta is the scheduler's; the launcher thread's CPU time between the two stamps, never more than the
+# idle delta, is held to the same bound on every host.
+STARTUP_IDLE_LOAD = 4.0
 
 
 def disc_bin(game):
@@ -201,8 +212,17 @@ def stamps(log):
             for m in re.finditer(r"stamp (\w+) ([\d.]+) ms after process start", log)}
 
 
+def stamp_sched(log):
+    """The scheduler totals each start-up stamp carries, by name: (thread id, ms the thread ran, ms it waited
+    runnable, ms of the process's CPU time)."""
+    return {m.group(1): (m.group(2), float(m.group(3)), float(m.group(4)), float(m.group(5)))
+            for m in re.finditer(r"stamp (\w+) [\d.]+ ms after process start; thread (\d+) ran ([\d.]+) ms, "
+                                 r"waited runnable ([\d.]+) ms; process CPU ([\d.]+) ms", log)}
+
+
 def case_startup(a):
-    """Window-open to first present over a three-game library with a warm pipeline cache."""
+    """Window-open to first present over a three-game library with a warm pipeline cache: the launcher thread's
+    CPU time on every host, the wall-clock delta on an idle one."""
     d = cl.case_dir(a.out, "startup")
     for i, g in enumerate(DISCS):
         # With the first-boot pipeline each entry holds its built module, so the launch-time jobs
@@ -212,28 +232,46 @@ def case_startup(a):
         else:
             seed_entry(d, g, i + 1)
     env = {"OPENPETE_LAUNCHER_INPUT": "2500:quit"}
-    deltas = []
+    walls, rans, cpus, loads = [], [], [], []
     for i in range(STARTUP_RUNS + 1):
+        load = os.getloadavg()[0]
         rc, log = cl.launch(a.binary, d, f"run{i}", ["--launcher-window", "1280x800"], env)
-        s = stamps(log)
+        s, k = stamps(log), stamp_sched(log)
         if rc != 0 or "window_shown" not in s or "first_present" not in s:
             print(f"[launcher-flow] startup run {i}: exit {rc}, stamps {s}: FAIL")
             return 1
+        if "window_shown" not in k or "first_present" not in k or k["window_shown"][0] != k["first_present"][0]:
+            print(f"[launcher-flow] startup run {i}: no scheduler totals on one thread for both stamps ({k}): FAIL")
+            return 1
         if i == 0:
             continue   # warms the pipeline cache
-        deltas.append(s["first_present"] - s["window_shown"])
-        print(f"[launcher-flow] startup run {i}: window_shown {s['window_shown']:.1f} ms, "
-              f"first_present {s['first_present']:.1f} ms, delta {deltas[-1]:.1f} ms")
-    med = statistics.median(deltas)
-    print(f"[launcher-flow] startup: {len(deltas)} runs, delta median {med:.1f} ms, "
-          f"min {min(deltas):.1f}, max {max(deltas):.1f}")
-    if a.measure or STARTUP_BOUND_MS is None:
-        print("[launcher-flow] startup: measured (no bound set)")
-        return 0 if a.measure else 3
-    ok = med <= STARTUP_BOUND_MS
-    print(f"[launcher-flow] startup: median {med:.1f} ms against bound {STARTUP_BOUND_MS} ms: "
-          f"{'PASS' if ok else 'FAIL'}")
-    return 0 if ok else 1
+        w0, w1 = k["window_shown"], k["first_present"]
+        wall, ran, waited, cpu = s["first_present"] - s["window_shown"], w1[1] - w0[1], w1[2] - w0[2], w1[3] - w0[3]
+        walls.append(wall)
+        rans.append(ran)
+        cpus.append(cpu)
+        loads.append(load)
+        print(f"[launcher-flow] startup run {i}: load {load:.1f}, window_shown {s['window_shown']:.1f} ms, "
+              f"first_present {s['first_present']:.1f} ms, delta {wall:.1f} ms; process CPU {cpu:.1f} ms; "
+              f"launcher thread ran {ran:.1f} ms, waited runnable {waited:.1f} ms, blocked {wall - ran - waited:.1f} ms")
+    med, rmed, cmed = statistics.median(walls), statistics.median(rans), statistics.median(cpus)
+    idle = max(loads) < STARTUP_IDLE_LOAD
+    print(f"[launcher-flow] startup: {len(walls)} runs at load {min(loads):.1f}-{max(loads):.1f}; delta median "
+          f"{med:.1f} ms, min {min(walls):.1f}, max {max(walls):.1f}; launcher thread CPU median {rmed:.1f} ms, "
+          f"min {min(rans):.1f}, max {max(rans):.1f}; process CPU median {cmed:.1f} ms")
+    if a.measure:
+        print("[launcher-flow] startup: measured (no verdict)")
+        return 0
+    bad = []
+    if rmed > STARTUP_BOUND_MS:
+        bad.append(f"launcher thread CPU median {rmed:.1f} ms over {STARTUP_BOUND_MS} ms")
+    if idle and med > STARTUP_BOUND_MS:
+        bad.append(f"delta median {med:.1f} ms over {STARTUP_BOUND_MS} ms on an idle host")
+    wall_note = f"delta median against {STARTUP_BOUND_MS} ms" if idle else \
+        f"delta not bounded (load {max(loads):.1f} at or over {STARTUP_IDLE_LOAD})"
+    print(f"[launcher-flow] startup: launcher thread CPU median against {STARTUP_BOUND_MS} ms, {wall_note}: "
+          f"{'FAIL ' + '; '.join(bad) if bad else 'PASS'}")
+    return 1 if bad else 0
 
 
 def module_name(game):
@@ -1500,9 +1538,11 @@ def case_shader_step_during(a):
 
 def case_shader_step_after(a):
     """A pick after the ahead walk ends: no bring-up compile, no progress screen (windowed)."""
-    rc, log, st, wl, bad = shader_run(a, "shader-step-after", {"OPENPETE_LAUNCHER_PICK_DELAY_MS": "5000"})
+    rc, log, st, wl, bad = shader_run(a, "shader-step-after", {"OPENPETE_LAUNCHER_PICK_AFTER_WALK": "end"})
     if wl and "stopped at the pick" in wl.group(5):
-        bad.append("the ahead walk was still running at the pick (raise the pick delay)")
+        bad.append("the ahead walk was still running at the pick")
+    if not re.search(r"scripted pick released: the ahead walk ended", log):
+        bad.append("the pick was not held for the ahead walk's end")
     if wl and int(wl.group(2)) + int(wl.group(3)) == 0:
         bad.append("VACUOUS: the ahead walk created nothing")
     if st and int(st.group(4)) == 0:
@@ -1519,7 +1559,7 @@ def case_shader_step_after(a):
 
 def case_shader_step_order(a):
     """The ahead walk's terrain group returns before the other built-in pipelines at the first texture mapping (windowed)."""
-    rc, log, st, wl, bad = shader_run(a, "shader-step-order", {"OPENPETE_LAUNCHER_PICK_DELAY_MS": "8000",
+    rc, log, st, wl, bad = shader_run(a, "shader-step-order", {"OPENPETE_LAUNCHER_PICK_AFTER_WALK": "2",
                                                                 "OPENPETE_TERRAIN_CACHE_FORCE": "1"})
     groups = re.search(r"per group at the first mapping (\d+) (\d+) (\d+) (\d+)", log)
     if not groups or int(groups.group(2)) == 0 or int(groups.group(3)) == 0:

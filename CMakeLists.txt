@@ -1707,12 +1707,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                 SKIP_RETURN_CODE 64
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         endforeach()
-        # Timed against a bound set on an idle host (the start-up median, the
-        # ahead walk's end or its first groups before a 5 s or 8 s pick): run
-        # alone under ctest -j.
-        set_tests_properties(launcher_flow_startup launcher_flow_shader-step-after
-                             launcher_flow_shader-step-order PROPERTIES
-            RUN_SERIAL TRUE)
+        # The start-up delta is bounded against a figure set on an idle host
+        # (its CPU time on any host): run alone under ctest -j.
+        set_tests_properties(launcher_flow_startup PROPERTIES RUN_SERIAL TRUE)
         # The launcher's present rate (tests/harness/check_launcher_present.py):
         # one present per refresh while shown, none while minimised or hidden,
         # and a display change that rebuilds the swapchain at its refresh;

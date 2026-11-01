@@ -64,6 +64,9 @@
 #include <cstring>
 #include <deque>
 #include <string>
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
 
 namespace {
 
@@ -1356,12 +1359,38 @@ int scripted_pick(const char* const* games, int count) {
     return (pick >= 0 && pick < count) ? pick : -1;
 }
 
-/** @brief Harness: whether the scripted pick waits for idle jobs and they are not idle yet.
+/** @brief Harness: whether the scripted pick waits for the ahead walk and the walk has not reached the event named yet.
  *
- * @return true while OPENPETE_LAUNCHER_SELECT_IDLE is set and a launcher job runs or is queued. */
+ * OPENPETE_LAUNCHER_PICK_AFTER_WALK=end holds the pick while the ahead walk
+ * runs; =<G> holds it while the walk runs and has not logged the return of
+ * its first texture mapping's group G. The release logs "scripted pick
+ * released: the ahead walk ended" or "...: group G returned" once.
+ * @return true while the pick is held. */
+bool scripted_walk_held() {
+    const char* e = getenv("OPENPETE_LAUNCHER_PICK_AFTER_WALK");
+    if (!e || !*e) return false;
+    unsigned groups = 0;
+    const bool runs = openpete_native_launcher_precompile_progress(&groups) != 0;
+    const bool to_end = !strcmp(e, "end");
+    const unsigned g = to_end ? 0u : (unsigned)strtoul(e, nullptr, 10);
+    const bool back = !to_end && g < 32u && ((groups >> g) & 1u);
+    if (runs && !back) return true;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        if (back) OPL_INFO_F("launcher", "scripted pick released: group %u returned", g);
+        else OPL_INFO_F("launcher", "%s", "scripted pick released: the ahead walk ended");
+    }
+    return false;
+}
+
+/** @brief Harness: whether the scripted pick waits for idle jobs or for the ahead walk, and that has not happened yet.
+ *
+ * @return true while OPENPETE_LAUNCHER_SELECT_IDLE is set and a launcher job
+ *         runs or is queued, or while scripted_walk_held holds the pick. */
 bool scripted_pick_held() {
     const char* e = getenv("OPENPETE_LAUNCHER_SELECT_IDLE");
-    return e && *e && *e != '0' && !launcher_jobs_idle();
+    return (e && *e && *e != '0' && !launcher_jobs_idle()) || scripted_walk_held();
 }
 
 /* page_command's result while the page stays up. */
@@ -1734,6 +1763,32 @@ int launcher_await_scan(openpete_launcher_task_fn fn, void* userdata) {
     return ask;
 }
 
+/** @brief Read the calling thread's scheduler totals from /proc/thread-self/schedstat and the process's CPU time from getrusage.
+ *
+ * @param run_ms Receives the thread's CPU time in ms.
+ * @param wait_ms Receives the thread's runnable wait (runnable, not on a CPU) in ms.
+ * @param cpu_ms Receives the CPU time of every thread of the process, exited ones included, in ms.
+ * @return true when both were read (Linux with schedstats), else false and all three 0. */
+static bool stamp_sched(double* run_ms, double* wait_ms, double* cpu_ms) {
+    *run_ms = *wait_ms = *cpu_ms = 0.0;
+#ifdef __linux__
+    FILE* f = fopen("/proc/thread-self/schedstat", "r");
+    if (!f) return false;
+    unsigned long long run = 0, wait = 0;
+    const bool ok = fscanf(f, "%llu %llu", &run, &wait) == 2;
+    fclose(f);
+    struct rusage ru;
+    if (!ok || getrusage(RUSAGE_SELF, &ru) != 0) return false;
+    *run_ms = (double)run / 1e6;
+    *wait_ms = (double)wait / 1e6;
+    *cpu_ms = (double)(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1e3 +
+              (double)(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1e3;
+    return true;
+#else
+    return false;
+#endif
+}
+
 void launcher_stamp(launcher_event ev) {
     static std::atomic<unsigned> logged{0};
     static const char* const k_name[LAUNCHER_EV_COUNT] = {
@@ -1741,8 +1796,15 @@ void launcher_stamp(launcher_event ev) {
     if ((unsigned)ev >= LAUNCHER_EV_COUNT) return;
     const unsigned bit = 1u << (unsigned)ev;
     if (logged.fetch_or(bit) & bit) return;
-    OPL_INFO_F("launcher", "stamp %s %.1f ms after process start", k_name[ev],
-               (double)(op_now() - k_process_start_ns) / 1e6);
+    double run = 0.0, wait = 0.0, cpu = 0.0;
+    const bool sched = stamp_sched(&run, &wait, &cpu);
+    const double at = (double)(op_now() - k_process_start_ns) / 1e6;
+    if (sched)
+        OPL_INFO_F("launcher", "stamp %s %.1f ms after process start; thread %llu ran %.3f ms, waited runnable "
+                   "%.3f ms; process CPU %.3f ms", k_name[ev], at, (unsigned long long)SDL_GetCurrentThreadID(),
+                   run, wait, cpu);
+    else
+        OPL_INFO_F("launcher", "stamp %s %.1f ms after process start", k_name[ev], at);
 }
 
 const openpete_launcher_game* launcher_game(void) { return s.game; }

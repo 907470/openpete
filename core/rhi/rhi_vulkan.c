@@ -3274,19 +3274,27 @@ void rhi_present_trace_arm(rhi_device *dev, const char *why)
 
 /* Launcher hand-off trace (OPENPETE_LAUNCHER_TRACE): every present from the
  * device's first through the game's first, each read back. Presents run on
- * the display owner, one thread at a time. */
-static int s_lxt_on = -1;
-static bool s_lxt_done;        /* the game's first present was logged */
-static unsigned s_lxt_n;       /* presents logged */
+ * the display owner, one thread at a time; the sim thread reads the counts
+ * (rhi_launcher_trace_pending). */
+static atomic_int s_lxt_on = -1;
+static atomic_bool s_lxt_done;   /* the game's first present was logged */
+static atomic_uint s_lxt_n;      /* presents logged */
 
 /** @brief Return whether OPENPETE_LAUNCHER_TRACE is set to a value not starting with 0 (read once). */
 static bool lxt_enabled(void)
 {
-    if (s_lxt_on < 0) {
+    int on = atomic_load(&s_lxt_on);
+    if (on < 0) {
         const char *e = getenv("OPENPETE_LAUNCHER_TRACE");
-        s_lxt_on = (e && *e && *e != '0');
+        on = (e && *e && *e != '0');
+        atomic_store(&s_lxt_on, on);
     }
-    return s_lxt_on > 0;
+    return on > 0;
+}
+
+bool rhi_launcher_trace_pending(void)
+{
+    return lxt_enabled() && atomic_load(&s_lxt_n) > 0 && !atomic_load(&s_lxt_done);
 }
 
 /** @brief Log one present of the launcher hand-off trace with its window and swapchain size and its count of pixels that are not (0,0,0), until the game's first present.
@@ -3300,15 +3308,17 @@ static bool lxt_enabled(void)
  * @param img The image whose content was presented (TRANSFER_SRC), or VK_NULL_HANDLE. */
 static void lxt_present(rhi_device *dev, const char *src, VkImage img)
 {
-    if (s_lxt_done || dev->headless || !lxt_enabled()) return;
+    if (atomic_load(&s_lxt_done) || dev->headless || !lxt_enabled()) return;
     if (!src) src = atomic_load(&s_launcher_frames) ? "launcher" : "game";
     const long nz = img != VK_NULL_HANDLE ? pxt_nonblack(dev, img, 0) : -1;
     int w = 0, h = 0;
     SDL_GetWindowSizeInPixels(dev->window, &w, &h);
     const bool game = !strcmp(src, "game");
-    RHI_LOG("lxt present #%u %s window %dx%d extent %ux%u nonzero %ld%s\n", ++s_lxt_n, src, w, h,
-            dev->sc_extent.width, dev->sc_extent.height, nz, game ? " (the game's first present)" : "");
-    if (game) s_lxt_done = true;
+    RHI_LOG("lxt present #%u %s window %dx%d extent %ux%u nonzero %ld%s\n", atomic_load(&s_lxt_n) + 1u,
+            src, w, h, dev->sc_extent.width, dev->sc_extent.height, nz,
+            game ? " (the game's first present)" : "");
+    if (game) atomic_store(&s_lxt_done, true);
+    atomic_fetch_add(&s_lxt_n, 1u);
 }
 
 /** @brief Log one present against the window's pixel size inside an armed trace window, with its content until the game's first picture.
@@ -11187,6 +11197,11 @@ void rhi_precompile_ahead_stop(rhi_device *dev)
              "%u running", w->n - w->next, w->n, dropped,
              w->submitted > back ? w->submitted - back : 0u);
     walk_end(dev, w, cut);
+}
+
+unsigned rhi_precompile_ahead_returned(const rhi_device *dev)
+{
+    return dev && dev->walk.ahead ? dev->walk.rank_logged : 0u;
 }
 
 rhi_walk_state rhi_precompile_walk_step(rhi_device *dev)

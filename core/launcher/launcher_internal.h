@@ -31,8 +31,10 @@ enum launcher_event {
 /** @brief Log a start-up event once, in ms after process start.
  *
  * Process start is the launcher translation unit's static initialization,
- * before main. A later call for the same event is ignored. Safe on any
- * thread.
+ * before main. Where /proc/thread-self/schedstat reads, the line adds the
+ * calling thread's id, its CPU time and its runnable wait so far, and the
+ * process's CPU time (getrusage), read before the stamp's time. A later
+ * call for the same event is ignored. Safe on any thread.
  * @param ev The event. */
 void launcher_stamp(launcher_event ev);
 

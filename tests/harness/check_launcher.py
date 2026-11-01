@@ -59,6 +59,8 @@ Cases:
             present from the launcher window's first through the game's
             first, each read back and its pixels other than (0,0,0)
             counted). Paths, each one run of Spyro 1 to --frame-limit 30
+            (the trace holds that exit until it logs the game's first
+            present, which the present thread can make after the limit)
             over a library seeded with one entry whose disc.bin links the
             repository's disc image: the selector's pick with the launcher
             window at the game's size and at 1280x800 (a resize at the

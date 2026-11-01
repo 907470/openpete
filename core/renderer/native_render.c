@@ -7105,6 +7105,12 @@ int openpete_native_launcher_precompile_step(void)
     return s_ahead.on;
 }
 
+int openpete_native_launcher_precompile_progress(unsigned *groups)
+{
+    if (groups) *groups = rhi_precompile_ahead_returned(s_launch.dev);
+    return s_ahead.on && s_launch.dev;
+}
+
 uint32_t openpete_native_launcher_precompile_event(void) { return s_ahead.event; }
 
 void openpete_native_launcher_compile_pause(int on)

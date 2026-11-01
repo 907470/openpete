@@ -4879,6 +4879,24 @@ static void host_paused_repaint(const openpete_options_t *opts)
     openpete_native_render_frame((uint64_t)(op_now() / 1000));
 }
 
+/** @brief Return whether the run has reached --frame-limit and may exit there.
+ *
+ * The launcher hand-off trace (rhi_launcher_trace_pending) holds the exit
+ * until it logs the game's first present, which the present thread can make
+ * after the limit; the hold is logged once.
+ * @param opts The parsed options.
+ * @return true when the feed key reached a set limit and no trace holds it. */
+static bool frame_limit_due(const openpete_options_t* opts) OP_REQUIRES(sim) {
+    if (opts->frame_limit <= 0 || (int)openpete_feed_key_now() < opts->frame_limit) return false;
+    if (!rhi_launcher_trace_pending()) return true;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        OPL_INFO_F("exit", "%s", "frame-limit held until the launcher trace logs the game's first present");
+    }
+    return false;
+}
+
 /** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
  *
  * Split from run_host_init because SDL brings its video, gamepad and haptic
@@ -7222,8 +7240,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             quit = 1;
             exit_reason = "game-returned";
         }
-        if (!quit && opts->frame_limit > 0 &&
-            (int)openpete_feed_key_now() >= opts->frame_limit) {
+        if (!quit && frame_limit_due(opts)) {
             quit = 1;
             exit_reason = "frame-limit";
         }

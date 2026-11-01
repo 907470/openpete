@@ -283,6 +283,14 @@ void openpete_native_launcher_pipeline_cache_off(void);
  * @return 1 while the walk runs, 0 when it ended or never started. */
 int openpete_native_launcher_precompile_step(void);
 
+/** @brief Read the launcher's precompile progress: whether the ahead walk runs, and the groups of its first texture mapping that returned.
+ *
+ * Display owner only (the launcher's thread).
+ * @param groups Receives bit G for each group G whose return the walk
+ *        logged (rhi_precompile_ahead_returned), or NULL.
+ * @return 1 while the walk runs, 0 when it ended or never started. */
+int openpete_native_launcher_precompile_progress(unsigned *groups);
+
 /** @brief Return the SDL event type a returning walk job pushes to wake the launcher's thread.
  *
  * At most one is queued between steps. The event carries nothing.

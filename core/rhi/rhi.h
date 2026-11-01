@@ -1503,6 +1503,16 @@ void          rhi_boot_stats_get(rhi_boot_stats *out);
  * @param on true while the launcher draws. */
 void          rhi_boot_launcher_frames(bool on);
 
+/** @brief Return whether the launcher hand-off trace (OPENPETE_LAUNCHER_TRACE) logged a present and has not yet logged the game's first.
+ *
+ * The run loop holds a --frame-limit exit while this holds, so the trace
+ * reaches the game's first present however late the present thread makes
+ * it. Any thread.
+ * @return true while the trace waits for the game's first present; false
+ *         when the trace is off, no windowed device presented or the game's
+ *         first present was logged. */
+bool          rhi_launcher_trace_pending(void);
+
 /** @brief Return the reason the last failed rhi_create or rhi_create_headless gave.
  *
  * A sentence naming the step that failed (no Vulkan loader, the instance,
@@ -1739,6 +1749,14 @@ int            rhi_precompile_ahead_start(rhi_device *dev, bool affine_first, vo
  * only.
  * @param dev Device, or NULL. */
 void           rhi_precompile_ahead_stop(rhi_device *dev);
+
+/** @brief Return the groups of the ahead walk's first texture mapping whose return the walk logged ("launcher walk: <mapping> group G returned"), bit G per group.
+ *
+ * The bits outlive the walk's end and are cleared by the next walk's start.
+ * Display owner only.
+ * @param dev Device, or NULL (0).
+ * @return The bit set. */
+unsigned       rhi_precompile_ahead_returned(const rhi_device *dev);
 
 /* ---- variant-explicit compile jobs ------------------------------------
  * A compile job owns every input of one pipeline compile: a copy of the
