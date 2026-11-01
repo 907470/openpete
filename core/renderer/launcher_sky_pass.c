@@ -211,7 +211,10 @@ static rhi_pipeline *nr_sky_pipe(rhi_device *dev)
     rhi_pipeline_desc d;
     nr_sky_desc(&d);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: creation time for the log */
+    const rhi_pipe_phase ph = rhi_pipe_phase_get();
+    rhi_pipe_phase_set(RHI_PIPE_PHASE_LAUNCHER);   /* the launcher's pipeline, not the game's bring-up */
     (void)rhi_create_pipeline_slot(dev, &d, NULL, 0, NULL, 0, (void **)&s_sky.pipe, NULL);
+    rhi_pipe_phase_set(ph);
     if (s_sky.pipe)
         OPL_INFO_F("launcher", "sky: pipeline created in %.1f ms",
                    (double)(SDL_GetTicksNS() - t0) / 1e6);  /* clock-guard: wall */

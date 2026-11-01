@@ -86,7 +86,10 @@ static int ls_ensure(rhi_device *dev) {
     const op_time_t t0 = op_now();   /* clock-guard: wall: creation time for the log */
     rhi_pipeline_desc d;
     ls_desc(&d);
+    const rhi_pipe_phase ph = rhi_pipe_phase_get();
+    rhi_pipe_phase_set(RHI_PIPE_PHASE_LAUNCHER);   /* the launcher's pipeline, not the game's bring-up */
     if (!s_ls.pipe) s_ls.pipe = rhi_create_pipeline(dev, &d);
+    rhi_pipe_phase_set(ph);
     if (!s_ls.vb) s_ls.vb = rhi_create_vertex_buffer_dynamic(dev, sizeof s_ls.verts);
     if (!s_ls.pipe || !s_ls.vb) {
         OPL_WARN_F("native", "launcher shape pass: %s could not be created; panels, chips and the bar do not draw",

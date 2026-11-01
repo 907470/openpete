@@ -35,7 +35,8 @@ typedef enum {
     RHI_PC_PHASE_REBUILD,       /* a live rebuild (rhi_rebuild_request)      */
     RHI_PC_PHASE_FIRST_USE,     /* after the first frame, outside the above  */
     RHI_PC_PHASE_PROBE,         /* inside rhi_pipe_phase_set(PROBE)           */
-    RHI_PC_PHASE_LAUNCHER,      /* the ahead walk (rhi_precompile_ahead_start) */
+    RHI_PC_PHASE_LAUNCHER,      /* inside rhi_pipe_phase_set(LAUNCHER): the ahead
+                                   walk and the launcher passes' own creates */
     RHI_PC_PHASES
 } rhi_pc_phase;
 

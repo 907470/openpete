@@ -882,6 +882,8 @@ static _Thread_local bool t_in_rebuild;
 void rhi_set_clock(int64_t (*now_ns)(void)) { s_clock = now_ns; }
 void rhi_pipe_phase_set(rhi_pipe_phase phase) { t_pipe_phase = phase; }
 
+rhi_pipe_phase rhi_pipe_phase_get(void) { return t_pipe_phase; }
+
 /** @brief Return the rhi_set_clock time, or 0 without a clock.
  *
  * @return ns on the installed clock. */

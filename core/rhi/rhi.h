@@ -1443,7 +1443,7 @@ typedef enum {
     RHI_PIPE_PHASE_AUTO = 0,   /* bring-up before the first frame, first use after */
     RHI_PIPE_PHASE_PRECOMPILE, /* the precompile                                   */
     RHI_PIPE_PHASE_PROBE,      /* warm-boot probe creates, counted apart           */
-    RHI_PIPE_PHASE_LAUNCHER    /* the ahead walk, before the game is picked        */
+    RHI_PIPE_PHASE_LAUNCHER    /* the launcher: its ahead walk and its passes      */
 } rhi_pipe_phase;
 
 /** @brief Set the phase the calling thread's pipeline creates are counted in until the next call.
@@ -1452,6 +1452,11 @@ typedef enum {
  * every phase but PROBE.
  * @param phase The phase. */
 void          rhi_pipe_phase_set(rhi_pipe_phase phase);
+
+/** @brief Return the phase the calling thread's pipeline creates are counted in (rhi_pipe_phase_set).
+ *
+ * @return The phase. */
+rhi_pipe_phase rhi_pipe_phase_get(void);
 
 /** @brief Install the clock the RHI stamps its boot events with, in ns.
  *

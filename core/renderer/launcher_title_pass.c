@@ -85,10 +85,13 @@ static int lt_ensure_objects(rhi_device *dev) {
     if (s_lt.glyph_pipe && s_lt.resolve_pipe && s_lt.vb && s_lt.quad_vb) return 1;
     const op_time_t t0 = op_now();   /* clock-guard: wall: creation time for the log */
     rhi_pipeline_desc d;
+    const rhi_pipe_phase ph = rhi_pipe_phase_get();
+    rhi_pipe_phase_set(RHI_PIPE_PHASE_LAUNCHER);   /* the launcher's pipelines, not the game's bring-up */
     lt_glyph_desc(&d);
     if (!s_lt.glyph_pipe) s_lt.glyph_pipe = rhi_create_pipeline(dev, &d);
     lt_resolve_desc(&d);
     if (!s_lt.resolve_pipe) s_lt.resolve_pipe = rhi_create_pipeline(dev, &d);
+    rhi_pipe_phase_set(ph);
     if (!s_lt.vb) s_lt.vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * LT_MAX_VERTS);
     if (!s_lt.quad_vb) s_lt.quad_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * 6);
     if (!s_lt.glyph_pipe || !s_lt.resolve_pipe || !s_lt.vb || !s_lt.quad_vb) {
