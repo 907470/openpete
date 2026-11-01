@@ -1093,17 +1093,29 @@ Ask ask_of(const SDL_Event& e) {
     }
 }
 
-/** @brief Wait up to 100 ms for input (8 ms while a game page box animates), stepping the launcher's precompile at each wake, then hand every pending event to imgui and return the first command among them.
+/* Commands of an input batch not yet returned by wait_input, oldest first. */
+std::deque<Ask> s_asks;
+
+/** @brief Return the next command of the input batches, waiting up to 100 ms (8 ms while a game page box animates) for a batch when none is queued, and stepping the launcher's precompile at each wake.
  *
- * A returning compile job pushes a wake event
+ * Every pending event of a batch goes to imgui, and each command it carries
+ * is queued in order; one is returned per call, so the caller presents
+ * between commands and no press is lost behind a slow present. A quit
+ * (Ask::Quit: a quit event, SIGTERM, the window closed) empties the queue
+ * and is returned at once. A returning compile job pushes a wake event
  * (openpete_native_launcher_precompile_event); a batch of only wake events
  * steps the precompile and keeps waiting for the rest of the 100 ms, so the
  * caller presents at the cadence of its input, not of the compiles. The
- * precompile is also stepped when the wait ends. A quit (Ask::Quit: a quit
- * event, SIGTERM, Escape) wins over any other command in the same batch.
- * @return The first command the events carry, the quit when one is among
- *         them, or Ask::None. */
+ * precompile is also stepped when the wait ends.
+ * @return The oldest queued command, the quit when a batch held one, or
+ *         Ask::None. */
 Ask wait_input() {
+    const auto next = []() {
+        const Ask a = s_asks.front();
+        s_asks.pop_front();
+        return a;
+    };
+    if (!s_asks.empty()) return next();
     const Uint32 wake = openpete_native_launcher_precompile_event();
     const Uint64 end = SDL_GetTicks() + (launcher_page_animating() ? 8 : 100);
     for (;;) {
@@ -1113,17 +1125,21 @@ Ask wait_input() {
             (void)openpete_native_launcher_precompile_step();
             return Ask::None;
         }
-        Ask first = Ask::None;
-        bool input = false;
+        bool input = false, quit = false;
         do {
             if (wake && e.type == wake) continue;
             input = true;
             openpete_devui_process_event(&e);
             const Ask a = ask_of(e);
-            if (first == Ask::None || a == Ask::Quit) first = a;
+            quit = quit || a == Ask::Quit;
+            if (a != Ask::None) s_asks.push_back(a);
         } while (SDL_PollEvent(&e));
         (void)openpete_native_launcher_precompile_step();
-        if (input) return first;
+        if (quit) {
+            s_asks.clear();
+            return Ask::Quit;
+        }
+        if (input) return s_asks.empty() ? Ask::None : next();
     }
 }
 
