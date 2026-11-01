@@ -58,6 +58,14 @@ Cases:
             West open the file picker for the focused box's game; Enter and South start the focused
             box's game; a disc of another game dropped on the page focuses that game's box when the
             page returns.
+  picker    T11 and D39's disc choice through the drawn picker (windowed): under gamescope
+            (GAMESCOPE_WAYLAND_DISPLAY set) Space opens the drawn picker and never the file dialog;
+            the pad walks it over a folder the check made (OPENPETE_LAUNCHER_PICKER_ROOTS): South
+            opens a folder, East goes back up, and South on Spyro 2's cue, picked from Spyro 1's box,
+            ingests it as Spyro 2 and the page returns focused on Spyro 2's box, which then plays.
+            Elsewhere a file dialog whose callback reports a failure (OPENPETE_LAUNCHER_DIALOG_FAIL)
+            opens the drawn picker; Escape closes it with the focus unchanged, Space opens it again
+            (no request is refused), and Escape on the page then quits.
   ingest-held  An image of a game the library already holds is refused before the copy, with a
             message naming the library's entry, and the library is left as it was: by a headless
             --ingest (non-zero exit), and by a drop on the selector (the selector returns and a
@@ -1331,8 +1339,11 @@ def case_input(a):
     if rc != 0:
         bad.append(f"pointer: exit {rc}")
 
-    # Space and West open the file picker for the focused box's game.
-    rc, log = input_run(a, d, "browse", inputs("key=right", "key=space", 1500, "pad=west", 1500, "key=escape"))
+    # Space and West open the file picker for the focused box's game. The dialog is made to fail
+    # (OPENPETE_LAUNCHER_DIALOG_FAIL), as it does on a display with neither the portal nor zenity, so each
+    # request opens the drawn picker, which Escape closes; Escape on the page then quits.
+    rc, log = input_run(a, d, "browse", inputs("key=right", "key=space", "key=escape", "pad=west", "key=escape",
+                                               "key=escape"), extra={"OPENPETE_LAUNCHER_DIALOG_FAIL": "1"})
     pick = re.findall(r"command: file picker for box (\d+) \(([\w-]+)\)", log)
     counts["browse"] = len(pick)
     if len(pick) != 2 or any(b != "1" for b, _ in pick) or rc != 0:
@@ -1478,6 +1489,89 @@ def case_preview_hold(a):
     return verdict("preview-hold", bad)
 
 
+def case_picker(a):
+    """D39: the drawn picker under gamescope and after a failed dialog; the picked disc's game decides its box."""
+    bad, counts = [], {}
+    # A folder holding Spyro 2's image: its own cue naming the linked bin beside it.
+    d = cl.case_dir(a.out, "picker")
+    seed_entry(d, "spyro-1", 4000000001)
+    seed_entry(d, "spyro-3", 4000000000)
+    root = os.path.join(d, "pick-root")
+    discs = os.path.join(root, "discs")
+    os.makedirs(discs)
+    os.makedirs(os.path.join(root, ".hidden"))
+    with open(os.path.join(root, "notes.txt"), "w") as f:
+        f.write("not a disc\n")
+    serial = DISCS["spyro-2"][0]
+    os.symlink(disc_bin("spyro-2"), os.path.join(discs, serial + ".bin"))
+    with open(os.path.join(discs, serial + ".cue"), "w") as f:
+        f.write('FILE "%s.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n' % serial)
+    cue = os.path.join(discs, serial + ".cue")
+
+    # Gamescope: the root list (one root), South into it (.., discs/), East back to the root list, South
+    # in again, down to discs/, South (.., the bin, the cue), down twice to the cue, South chooses it.
+    acts = inputs("key=space", "pad=south", "pad=east", "pad=south", "pad=down", "pad=south", "pad=down",
+                  "pad=down", "pad=south")
+    rc, log = cl.launch(a.binary, d, "gamescope", ["--launcher-window", "1280x800", "--frame-limit", "5"],
+                        {"GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0", "OPENPETE_LAUNCHER_PICKER_ROOTS": root,
+                         "OPENPETE_LAUNCHER_INPUT": acts, "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+                         "OPENPETE_LAUNCHER_SELECT_GAME": "spyro-2"}, timeout=900)
+    counts["gamescope dialogs"] = len(re.findall(r"file dialog: requested", log))
+    if counts["gamescope dialogs"]:
+        bad.append(f"gamescope: {counts['gamescope dialogs']} file dialog requests, want 0")
+    listed = re.findall(r"picker: in (.+?): (\d+) folders, (\d+) images", log)
+    counts["gamescope listings"] = len(listed)
+    want = [(root, "1", "0"), (root, "1", "0"), (discs, "0", "2")]
+    if listed != want:
+        bad.append(f"gamescope: listings {listed}, want {want}")
+    bad += [f"gamescope: {x}" for x in ordered(
+        log, r"command: file picker for box 0 \(spyro-1\)", r"picker: open \(gamescope",
+        r"picker: the root list", r"picker: the root list", r"picker: chosen " + re.escape(cue),
+        r"command: focus starts on box 1 \(spyro-2, the disc just added\)", r"game picked: spyro-2")]
+    counts["gamescope chosen"] = len(re.findall(r"picker: chosen ", log))
+    if rc != 0:
+        bad.append(f"gamescope: exit {rc}")
+
+    # A failed dialog: the drawn picker opens; Escape closes it and leaves the focus; a second request
+    # is not refused; Escape on the page quits.
+    d2 = cl.case_dir(a.out, "picker-failed")
+    for i, g in enumerate(DISCS):
+        seed_entry(d2, g, len(DISCS) - i)
+    # The first picker frame's shot and manifest are written before the next action: a wait takes only the
+    # first command of the events it gathers, so actions must not bunch up behind the readback.
+    acts = inputs("key=right", "key=space", 2000, "key=escape", "pad=west", "key=down", "key=escape", "key=escape")
+    rc, log = cl.launch(a.binary, d2, "failed", ["--launcher-window", "1280x800"],
+                        {"OPENPETE_LAUNCHER_DIALOG_FAIL": "1", "OPENPETE_LAUNCHER_PICKER_ROOTS": root,
+                         "OPENPETE_LAUNCHER_INPUT": acts, "OPENPETE_LAUNCHER_SHOT": os.path.join(d2, "shot"),
+                         "OPENPETE_LAUNCHER_MANIFEST": os.path.join(d2, "manifest")}, timeout=300)
+    # The picker's first frame: its folder line and its one root row drawn, with pixels over the clear.
+    man = os.path.join(d2, "manifest.picker.json")
+    ids = [it["id"] for it in cl.read_json(man)["items"]] if os.path.isfile(man) else []
+    counts["picker rows drawn"] = sum(1 for i in ids if re.fullmatch(r"picker\.row\.\d+", i))
+    counts["picker panel"] = ids.count("picker.panel")
+    if "picker.path" not in ids or counts["picker rows drawn"] != 1:
+        bad.append(f"failed: picker manifest {ids} (want picker.path and one row)")
+    m = re.search(r"screen picker: (\d+) of (\d+) pixels drawn", log)
+    counts["picker pixels"] = int(m.group(1)) if m else 0
+    if not counts["picker pixels"]:
+        bad.append("VACUOUS: the picker's first frame drew no pixel over the clear")
+    opened = re.findall(r"picker: open \(the file dialog failed\)", log)
+    closed = re.findall(r"picker: closed$", log, re.M)
+    counts["failed opens"], counts["failed closes"] = len(opened), len(closed)
+    if len(opened) != 2 or len(closed) != 2:
+        bad.append(f"failed: {len(opened)} picker opens, {len(closed)} closes (want 2 and 2)")
+    moves = focus_moves(log)
+    if moves != [("right", 0, 1)]:
+        bad.append(f"failed: focus moves {moves}, want only the first right")
+    bad += [f"failed: {x}" for x in ordered(
+        log, r"command: file picker for box 1 \(spyro-2\)", r"file dialog: failed", r"picker: open",
+        r"picker: closed", r"command: file picker for box 1 \(spyro-2\)", r"picker: open", r"picker: closed",
+        r"command: quit \(Escape or the window closed\)")]
+    if rc != 0 or "game picked" in log:
+        bad.append(f"failed: exit {rc}{', a game was picked' if 'game picked' in log else ''}")
+    return verdict("picker", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
+
+
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
@@ -1488,8 +1582,8 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "job-ingest-stop-assets": case_job_ingest_stop_assets,
          "job-pick-other-assets": case_job_pick_other_assets,
          "shader-step-during": case_shader_step_during, "shader-step-after": case_shader_step_after,
-         "shader-step-order": case_shader_step_order, "input": case_input, "sky-cache": case_sky_cache,
-         "sky-reveal": case_sky_reveal,
+         "shader-step-order": case_shader_step_order, "input": case_input, "picker": case_picker,
+         "sky-cache": case_sky_cache, "sky-reveal": case_sky_reveal,
          "preview": case_preview, "preview-hold": case_preview_hold}
 
 

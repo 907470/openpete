@@ -142,6 +142,7 @@ add_library(openpete_core STATIC
     launcher/launcher_commands.cpp
     launcher/launcher_shapes.cpp
     launcher/launcher_sky.cpp
+    launcher/launcher_picker.cpp
 
     # Debug and in-game UI: the O settings menu; the placement ledger for
     # on-screen chrome (six anchors, a usable-x range that dodges the open

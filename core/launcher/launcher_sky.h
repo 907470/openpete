@@ -56,4 +56,11 @@ bool launcher_sky_opaque(void);
  * @return true when a dome shows, false for the flat background. */
 bool launcher_sky_shown(const char** game, const char** level);
 
+/** @brief Report how much of the background the domes cover: 1 while a dome is on screen, the first dome's fade (or reveal) fraction while it enters over the flat background, 0 for the flat background.
+ *
+ * Content panels draw at this fraction of their opacity, so none draws over
+ * the flat background.
+ * @return The fraction, 0..1. */
+float launcher_sky_cover(void);
+
 #endif /* OPENPETE_LAUNCHER_SKY_STATE_H */

@@ -35,6 +35,7 @@
 // OPENPETE_LAUNCHER_TEXT_HIDE=1 draws imgui's output at alpha 0, so a shot
 // holds the background and the shape pass alone.
 #include "launcher_internal.h"
+#include "launcher_picker.h"
 #include "launcher_shapes.h"
 #include "launcher_sky.h"
 
@@ -84,6 +85,7 @@ struct View {
     int focus = 0;                        /* the game page's focused box */
     int hovered = -1;                     /* the box under the pointer this frame */
     bool quit_asked = false;              /* the east button's ask shows ("Press again to quit") */
+    launcher_picker_result picked = LAUNCHER_PICKER_STAYS;   /* what a click in the drawn picker did */
 };
 
 struct State {
@@ -97,6 +99,7 @@ struct State {
     bool scripted_taken = false;   /* OPENPETE_LAUNCHER_DROP was consumed */
     SDL_AtomicInt dialog_pending = {};
     SDL_AtomicInt dialog_got = {};
+    SDL_AtomicInt dialog_failed = {};   /* the dialog's callback reported a failure: the drawn picker opens */
     unsigned shot_done = 0;    /* one bit per Screen already read back */
     /* Task runner mailbox: the worker writes stage/done/total under lock. */
     SDL_Mutex* lock = nullptr;
@@ -475,7 +478,9 @@ void draw_view(void* ud) {
     draw_title(f);
     if (v.screen == Screen::Progress) draw_progress(f, v);
     else if (v.screen == Screen::Pending) draw_pending(f);
-    else {
+    else if (launcher_picker_shown()) {
+        v.picked = launcher_picker_draw(f.scale, f.ox, f.oy);
+    } else {
         v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
         if (v.quit_asked) draw_quit_ask(f);
     }
@@ -484,11 +489,14 @@ void draw_view(void* ud) {
 }
 
 /* Shot tags, indexed by Screen, then the precompile's progress screen, then
- * the first frames showing the sky's opaque dome and the 3D title. */
-constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile", "sky", "title3d"};
+ * the first frames showing the sky's opaque dome, the 3D title and the drawn
+ * picker. */
+constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile", "sky", "title3d",
+                                    "picker"};
 constexpr int kShotPrecompile = 4;
 constexpr int kShotSky = 5;   /* the first frame whose sky is one opaque dome */
 constexpr int kShotTitle = 6;   /* the first frame drawing the 3D title */
+constexpr int kShotPicker = 7;  /* the first frame drawing the drawn picker */
 
 /** @brief Return the clear colour of every launcher present: kBg, or the harness variable OPENPETE_LAUNCHER_CLEAR=r,g,b read once.
  *
@@ -559,6 +567,11 @@ void present(View& v) {
         maybe_shot(nullptr, kShotTitle);
         const ImVec2 d = ImGui::GetIO().DisplaySize;
         launcher_manifest_write((unsigned)kShotTitle, kShotTag[kShotTitle], d.x, d.y);
+    }
+    if (launcher_picker_shown()) {
+        maybe_shot(nullptr, kShotPicker);
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        launcher_manifest_write((unsigned)kShotPicker, kShotTag[kShotPicker], d.x, d.y);
     }
     launcher_stamp(LAUNCHER_EV_FIRST_PRESENT);
     scripted_input_poll();
@@ -751,7 +764,7 @@ int launcher_open(const openpete_options_t* opts, int continues) {
     return 0;
 }
 
-/** @brief SDL file-dialog callback: store the chosen path and flag it, logging the outcome (chosen, cancelled or failed).
+/** @brief SDL file-dialog callback: store the chosen path and flag it, logging the outcome (chosen, cancelled or failed); a failure flags the drawn picker to open.
  *
  * @param userdata Unused.
  * @param files A NULL-terminated list of chosen paths, empty on a cancel, or NULL on an error.
@@ -766,13 +779,27 @@ void SDLCALL on_file_chosen(void* userdata, const char* const* files, int filter
         OPL_INFO_F("launcher", "file dialog: cancelled");
     } else {
         OPL_WARN_F("launcher", "file dialog: failed: %s", SDL_GetError());
+        SDL_SetAtomicInt(&s.dialog_failed, 1);
     }
     SDL_SetAtomicInt(&s.dialog_pending, 0);
 }
 
-/** @brief Show the native open-file dialog for a .cue or .bin image unless one is open. */
+/** @brief Choose a disc: under gamescope open the drawn picker (launcher_picker_only), else show the native open-file dialog for a .cue or .bin image unless one is open.
+ *
+ * The harness variable OPENPETE_LAUNCHER_DIALOG_FAIL=1 takes the dialog's
+ * failure result without calling SDL, so the drawn picker opens as after a
+ * real failure. */
 void open_file_dialog() {
+    if (launcher_picker_only()) {
+        launcher_picker_open("gamescope: the file dialog is not shown there");
+        return;
+    }
     if (SDL_GetAtomicInt(&s.dialog_pending)) return;
+    if (const char* f = getenv("OPENPETE_LAUNCHER_DIALOG_FAIL"); f && *f && *f != '0') {
+        OPL_WARN_F("launcher", "file dialog: failed: forced (OPENPETE_LAUNCHER_DIALOG_FAIL)");
+        SDL_SetAtomicInt(&s.dialog_failed, 1);
+        return;
+    }
     static const SDL_DialogFileFilter filters[] = {
         {"PSX disc image (.cue, .bin)", "cue;bin"},
         {"All files", "*"},
@@ -987,10 +1014,10 @@ void carry_window_state(openpete_options_t* opts) {
 }
 
 /* What one input event asks of a waiting screen. */
-/* Quit is immediate (Escape, the window closing); Back is the gamepad's east
- * button, which the game page asks once for and the other screens take as
- * Quit. */
-enum class Ask { None, Quit, Back, Pick, Browse, Up, Down, Left, Right, Dropped };
+/* Quit is immediate (the window closing) and so is Escape, except in the
+ * drawn picker, which Escape closes; Back is the gamepad's east button, which
+ * the game page asks once for and the other screens take as Quit. */
+enum class Ask { None, Quit, Escape, Back, Pick, Browse, Up, Down, Left, Right, Dropped };
 
 /** @brief Read a left-stick axis motion as a move: X as left or right, Y as up or down.
  *
@@ -1037,7 +1064,7 @@ Ask ask_of(const SDL_Event& e) {
         case SDL_EVENT_GAMEPAD_ADDED: open_first_gamepad(); return Ask::None;
         case SDL_EVENT_KEY_DOWN: {
             static const struct { SDL_Keycode k; Ask a; } k_keys[] = {
-                {SDLK_ESCAPE, Ask::Quit}, {SDLK_RETURN, Ask::Pick}, {SDLK_KP_ENTER, Ask::Pick},
+                {SDLK_ESCAPE, Ask::Escape}, {SDLK_RETURN, Ask::Pick}, {SDLK_KP_ENTER, Ask::Pick},
                 {SDLK_SPACE, Ask::Browse}, {SDLK_UP, Ask::Up}, {SDLK_DOWN, Ask::Down},
                 {SDLK_LEFT, Ask::Left}, {SDLK_RIGHT, Ask::Right}};
             for (const auto& k : k_keys) if (e.key.key == k.k) return k.a;
@@ -1151,7 +1178,7 @@ int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const cha
     const int act = launcher_page_activation(games, count, focus.index);
     const char* g = launcher_page_box_game(focus.index);
     switch (a) {
-        case Ask::Quit:
+        case Ask::Quit: case Ask::Escape:
             OPL_INFO_F("launcher", "command: quit (Escape or the window closed)");
             return LAUNCHER_SEL_QUIT;
         case Ask::Back: return launcher_quit_ask_press(&ask, SDL_GetTicks()) ? LAUNCHER_SEL_QUIT : kPageStays;
@@ -1175,9 +1202,58 @@ int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const cha
     }
 }
 
+/** @brief Take what the drawn picker did: a chosen image becomes the drop path.
+ *
+ * @param r The picker's result.
+ * @return LAUNCHER_SEL_DROPPED for a chosen image (its path in s.drop_path), else kPageStays. */
+int picker_taken(launcher_picker_result r) {
+    if (r != LAUNCHER_PICKER_CHOSEN) return kPageStays;
+    snprintf(s.drop_path, sizeof s.drop_path, "%s", launcher_picker_chosen());
+    return LAUNCHER_SEL_DROPPED;
+}
+
+/** @brief Act on one command while the drawn picker is open: up and down move its selection, Enter and South open the folder or choose the image, East and left go up (closing from the root list), Escape closes it, a dropped file closes it and is taken, the window closing quits.
+ *
+ * Space and West, and right, do nothing in it.
+ * @param a The command.
+ * @return LAUNCHER_SEL_DROPPED (the path in s.drop_path), LAUNCHER_SEL_QUIT, or kPageStays. */
+int picker_command(Ask a) {
+    switch (a) {
+        case Ask::Quit:
+            OPL_INFO_F("launcher", "command: quit (the window closed)");
+            return LAUNCHER_SEL_QUIT;
+        case Ask::Dropped:
+            (void)launcher_picker_command(LAUNCHER_PICKER_CLOSE);
+            return LAUNCHER_SEL_DROPPED;
+        case Ask::Up: return picker_taken(launcher_picker_command(LAUNCHER_PICKER_UP));
+        case Ask::Down: return picker_taken(launcher_picker_command(LAUNCHER_PICKER_DOWN));
+        case Ask::Pick: return picker_taken(launcher_picker_command(LAUNCHER_PICKER_ACTIVATE));
+        case Ask::Back: case Ask::Left: return picker_taken(launcher_picker_command(LAUNCHER_PICKER_BACK));
+        case Ask::Escape: return picker_taken(launcher_picker_command(LAUNCHER_PICKER_CLOSE));
+        default: return kPageStays;
+    }
+}
+
+/** @brief Take the file dialog's result: a chosen path, or a failure, which opens the drawn picker.
+ *
+ * @return true when the dialog chose a path (in s.drop_path). */
+bool dialog_poll() {
+    if (SDL_GetAtomicInt(&s.dialog_failed)) {
+        SDL_SetAtomicInt(&s.dialog_failed, 0);
+        launcher_picker_open("the file dialog failed");
+    }
+    if (!SDL_GetAtomicInt(&s.dialog_got)) return false;
+    SDL_SetAtomicInt(&s.dialog_got, 0);
+    return true;
+}
+
 /** @brief Present the game page until a box with a library entry is activated, a disc is dropped or chosen, or the player quits.
  *
- * An activated box without an entry opens the file dialog. The harness drop
+ * An activated box without an entry opens the file dialog (open_file_dialog);
+ * a dialog whose callback reports a failure opens the drawn picker, which
+ * takes the page's commands while it is open (picker_command). A chosen or
+ * dropped image returns whichever box asked for it: the ingest reads its
+ * game, and the page next opens on that game's box. The harness drop
  * (launcher_scripted_drop) acts after the first frame; a scripted pick
  * (scripted_pick) returns once due (scripted_due, scripted_pick_held).
  * @param games Each library entry's game id, most recently played first; NULL with @p count 0 for the empty library.
@@ -1200,6 +1276,8 @@ int page_loop(const char* const* games, int count, int scripted) {
     s.pointer_moved = false;
     for (;;) {
         v.activated = LAUNCHER_PAGE_NONE;
+        v.picked = LAUNCHER_PICKER_STAYS;
+        v.hovered = -1;
         v.focus = focus.index;
         const bool asked = launcher_quit_ask_shown(&ask, SDL_GetTicks());
         if (asked != v.quit_asked)
@@ -1214,15 +1292,13 @@ int page_loop(const char* const* games, int count, int scripted) {
             return scripted;
         }
         if (v.activated >= 0) return v.activated;
+        if (picker_taken(v.picked) == LAUNCHER_SEL_DROPPED) return LAUNCHER_SEL_DROPPED;
         if (v.activated == LAUNCHER_PAGE_BROWSE) open_file_dialog();
-        if (SDL_GetAtomicInt(&s.dialog_got)) {
-            SDL_SetAtomicInt(&s.dialog_got, 0);
-            return LAUNCHER_SEL_DROPPED;
-        }
+        if (dialog_poll()) return LAUNCHER_SEL_DROPPED;
         const Ask a = wait_input();
         if (s.pointer_moved) launcher_focus_pointer_moved(&focus);
         s.pointer_moved = false;
-        const int r = page_command(a, focus, ask, games, count);
+        const int r = launcher_picker_shown() ? picker_command(a) : page_command(a, focus, ask, games, count);
         if (r != kPageStays) return r;
     }
 }
@@ -1234,6 +1310,7 @@ int page_loop(const char* const* games, int count, int scripted) {
  * @return The path, owned by the launcher, or NULL on quit. */
 const char* wait_for_disc() {
     const int r = page_loop(nullptr, 0, -1);
+    (void)launcher_picker_command(LAUNCHER_PICKER_CLOSE);
     launcher_page_closed();
     return r == LAUNCHER_SEL_DROPPED ? s.drop_path : nullptr;
 }
@@ -1383,7 +1460,7 @@ int pending_loop() {
         launcher_jobs_pump();
         if (SDL_GetAtomicInt(&s.scan_done)) break;
         const Ask a = wait_input();
-        if (ask == 0 && (a == Ask::Quit || a == Ask::Back)) ask = LAUNCHER_SEL_QUIT;
+        if (ask == 0 && (a == Ask::Quit || a == Ask::Escape || a == Ask::Back)) ask = LAUNCHER_SEL_QUIT;
         else if (ask == 0 && a == Ask::Dropped) ask = LAUNCHER_SEL_DROPPED;
     }
     return ask;
@@ -1445,6 +1522,7 @@ int launcher_select(const char* const* labels, const char* const* games, int cou
     if (!screen) return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : LAUNCHER_SEL_NOSCREEN;
     log_boxless_entries(labels, games, count);
     const int r = page_loop(games, count, scripted_pick(games, count));
+    (void)launcher_picker_command(LAUNCHER_PICKER_CLOSE);
     launcher_page_closed();
     return r;
 }

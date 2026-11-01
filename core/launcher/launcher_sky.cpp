@@ -350,6 +350,11 @@ void launcher_sky_present(op_time_t now, bool after_first) {
 
 bool launcher_sky_opaque(void) { return sk.opaque; }
 
+float launcher_sky_cover(void) {
+    if (sk.cur) return 1.0f;
+    return sk.fading && sk.nxt ? fade_mix() : 0.0f;
+}
+
 bool launcher_sky_shown(const char** game, const char** level) {
     const bool incoming = sk.fading && sk.nxt && (fade_mix() > 0.5f || !sk.cur);
     const DomeP& d = incoming ? sk.nxt : sk.cur;
