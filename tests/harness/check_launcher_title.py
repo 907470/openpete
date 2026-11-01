@@ -17,9 +17,10 @@ Cases:
             Per preset: the manifest's title.moby rect against the reference layout's within
             1 px on every edge, and no pixel title; in the shot, the rect holds drawn pixels and
             no pixel of the pixel title's orange. At 1280x800 the dump is checked against a model
-            of the emitter written here from glyphs.txt and the font's light terms in
-            games/spyro-1/renderer/layout.c (the layout, the wobble yaw, the turning light and
-            the lit colour of each glyph's front face): each glyph's posed rect within
+            of the emitter written here from glyphs.txt, the font's model height in
+            games/spyro-1/renderer/layout.c and the title's light, GAME_FONT_CREDITS_LIGHT in
+            core/include/game_layout.h (the layout, the wobble yaw, the fixed light with unsigned
+            N.L and the lit colour of each glyph's front face): each glyph's posed rect within
             RECT_TOL px and its front face colour within COLOUR_TOL per channel; a second run
             of the same build writes an identical dump (the tolerance's calibration: the
             emitter is deterministic, so the bound covers only the model's double precision
@@ -77,17 +78,22 @@ def reference_title(preset):
 
 
 def font_terms(game):
-    """The font's model height and light terms from a game's layout.c."""
+    """A game font's model height (its layout.c) and the title's light (GAME_FONT_CREDITS_LIGHT in game_layout.h):
+    (model_h, light_add, hi_threshold, hi_gain, fixed_light, base)."""
+    num = r"(-?[\d.]+)f?"
+    vec = r"\{\s*" + num + r",\s*" + num + r",\s*" + num
     with open(os.path.join(ROOT, "games", game, "renderer", "layout.c")) as f:
         src = f.read()
-    blk = src[src.index(".font = {"):]
-    num = r"(-?[\d.]+)f?"
-    model_h = float(re.search(r"\.model_h\s*=\s*" + num, blk).group(1))
-    add = [float(x) for x in re.search(r"\.light_add\s*=\s*\{\s*" + num + r",\s*" + num + r",\s*" + num,
-                                       blk).groups()]
+    model_h = float(re.search(r"\.model_h\s*=\s*" + num, src[src.index(".font = {"):]).group(1))
+    with open(os.path.join(ROOT, "core", "include", "game_layout.h")) as f:
+        src = f.read()
+    blk = src[src.index("#define GAME_FONT_CREDITS_LIGHT"):]
+    add = [float(x) for x in re.search(r"\.light_add\s*=\s*" + vec, blk).groups()]
     hi_t = float(re.search(r"\.hi_threshold\s*=\s*" + num, blk).group(1))
     hi_g = float(re.search(r"\.hi_gain\s*=\s*" + num, blk).group(1))
-    return model_h, add, hi_t, hi_g
+    light = tuple(float(x) for x in re.search(r"\.fixed_light\s*=\s*" + vec, blk).groups())
+    tint = int(re.search(r"\.fixed_tint\s*=\s*0x([0-9A-Fa-f]+)", blk).group(1), 16)
+    return model_h, add, hi_t, hi_g, light, ((tint >> 16) & 0xFF, (tint >> 8) & 0xFF, tint & 0xFF)
 
 
 def read_glyphs(path):
@@ -110,16 +116,11 @@ def read_glyphs(path):
 
 def model_title(glyphs, terms, dump):
     """The emitter's title as modelled here: per glyph (rect, front face, (r, g, b))."""
-    model_h, add, hi_t, hi_g = terms
+    model_h, add, hi_t, hi_g, light, base = terms
     slots = [10 + ord(c) - ord("A") for c in TITLE]
     widths = [max(v[0] for v in glyphs[s][0]) - min(v[0] for v in glyphs[s][0]) for s in slots]
     scale = (dump["width"] - (len(slots) - 1) * dump["gap"]) / sum(widths)
     tick = dump["tick"]
-    a = ((tick * 3) & 0xFF) * (2 * math.pi / 256)
-    lx, ly, lz = math.cos(a) * 0.968, math.sin(a) * 1.549, -0.25
-    ll = math.sqrt(lx * lx + ly * ly + lz * lz)
-    light = (lx / ll, ly / ll, lz / ll)
-    base = (0xB4, 0xB4, 0x3E)
     cursor, out = dump["x0"], []
     for gi, s in enumerate(slots):
         verts, faces = glyphs[s]
@@ -140,7 +141,7 @@ def model_title(glyphs, terms, dump):
         nx0, ny, nz0 = faces[best][1]
         nx, nz = nx0 * cs + nz0 * sn, -nx0 * sn + nz0 * cs
         nl = math.sqrt(nx * nx + ny * ny + nz * nz)
-        t = max(-1.0, min(1.0, (nx * light[0] + ny * light[1] + nz * light[2]) / nl))
+        t = max(0.0, min(1.0, (nx * light[0] + ny * light[1] + nz * light[2]) / nl))
         hi = int((t - hi_t) * hi_g) if t > hi_t else 0
         rgb = tuple(max(0, min(255, base[c] + int(add[c] * t) + hi)) for c in range(3))
         out.append(((min(xs), min(ys), max(xs), max(ys)), best, rgb))

@@ -710,10 +710,7 @@ const game_layout_t spyro3_game_layout = {
         .punct           = { {'!', 36, 0}, {',', 37, 32}, {'.', 38, 36},
                              {'-', 39, 0}, {':', 40, 0} },
         .model_h         = 100.0f,
-        .light_add       = { 92.0f, 92.0f, 0.0f },
-        .hi_threshold    = 0.6256f, .hi_gain = 1176.5f,
-        .fixed_light     = { -0.404f, -0.646f, 0.648f },
-        .fixed_tint      = 0x404000u,
+        GAME_FONT_CREDITS_LIGHT,
     },
     /* The credits letter roll: game state 10 draws through func_8001E374
      * (Draw.s's table jtbl_800102F0), which calls func_credits_80076118.

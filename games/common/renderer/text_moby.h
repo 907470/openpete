@@ -88,8 +88,7 @@ typedef struct {
     float cy;     /* the glyphs' vertical centre */
     float width;  /* the first glyph's left edge to the last glyph's right edge */
     float gap;    /* the space after each glyph but the last */
-    int   tick;   /* wobble and turning-light phase, in game ticks; below 0
-                   * upright under the font's fixed light */
+    int   tick;   /* wobble phase, in game ticks; below 0 upright */
 } text_glyph_fit;
 
 /* One glyph text_glyph_set_emit_title posed: the rect over its posed
@@ -107,13 +106,15 @@ typedef struct {
  * each but the last span fit->width, and each glyph's left edge follows the
  * previous one's by its width and the gap; the cap height is that scale
  * times the font's model_h. Each glyph is posed and lit by the function the
- * producer's emission uses (the per-glyph wobble at fit->tick, the font's
- * light terms under SpecularUpdate's turning light at that tick with signed
- * shading, the menu title's base colour). A character that is no letter or
+ * producer's emission uses: the per-glyph wobble at fit->tick, lit as Spyro
+ * 2's and Spyro 3's performance readout (GAME_FONT_CREDITS_LIGHT: those
+ * fonts' light terms and highlight under their fixed light, unsigned N.L,
+ * their base colour) whichever game's glyphs the set holds, so the wobble
+ * sweeps each glyph's faces through the highlight. A character that is no letter or
  * digit, or whose glyph the set lacks, is skipped without an advance. Reads
  * no global state.
  * @param G The glyph set.
- * @param font The font descriptor whose light terms and model_h apply.
+ * @param font The font descriptor whose model_h applies.
  * @param str The string.
  * @param fit The placement.
  * @param out The vertex buffer: 3 vertices per triangle, x and y in the

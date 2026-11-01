@@ -97,8 +97,9 @@ static float txt_depth_vz(float d)
 #define TXT_WOBBLE_AMP 0.589f
 
 /* Glyph lighting direction is per-emission so the FPS counter keeps its
- * fixed front light while the settings menu, the OSD and the launcher's title
- * use a rotating specular light (the metallic shimmer). glyph_pose dots the
+ * fixed front light while the settings menu and the OSD use a rotating
+ * specular light (the metallic shimmer); the launcher's title keeps the fixed
+ * light of Spyro 2's and Spyro 3's credits font. glyph_pose dots the
  * face normal with this unit vector. text_moby_native_emit installs the fixed
  * model; the menu and OSD builders install the rotating ellipse.
  *
@@ -1666,6 +1667,11 @@ void text_moby_native_osd(CPUState* cpu) {
 
 /* ---- a fitted title from a glyph set read from the launcher cache ------- */
 
+/* The title's light: the credits font's terms of Spyro 2 and Spyro 3 under
+ * their fixed light with unsigned N.L, on their base colour, as the
+ * performance readout draws in those games (text_moby_native_emit). */
+static const struct game_font k_title_light = { GAME_FONT_CREDITS_LIGHT };
+
 /** @brief Maps a letter or digit to its glyph slot, independent of any font's punctuation list.
  *
  * @param c The character.
@@ -1741,8 +1747,7 @@ int text_glyph_set_emit_title(const text_glyph_set* G, const struct game_font* f
     memset(&cx, 0, sizeof cx);
     cx.out = out;
     cx.cap = cap;
-    glyph_light_init(&cx.lt, font);
-    if (fit->tick >= 0) install_specular_light(&cx, (unsigned)fit->tick);
+    glyph_light_init(&cx.lt, &k_title_light);
     float cursor = fit->x0;
     int gi = 0;
     for (const char* c = str; *c; c++) {
@@ -1750,7 +1755,7 @@ int text_glyph_set_emit_title(const text_glyph_set* G, const struct game_font* f
         if (slot < 0) continue;
         const glyph_cache_t* g = &G->glyph[slot];
         const glyph_place_t at = { cursor, fit->cy, scale, 0.0f };
-        const int vcount = glyph_pose(g, &cx.lt, fit->tick, gi, &at, MENU_TITLE_TINT, cx.gx, cx.gy, cx.gz, cx.frgba);
+        const int vcount = glyph_pose(g, &cx.lt, fit->tick, gi, &at, k_title_light.fixed_tint, cx.gx, cx.gy, cx.gz, cx.frgba);
         if (posed && gi < posed_cap) title_posed(&cx, g, vcount, &posed[gi]);
         push_glyph(&cx, g, vcount);
         cursor += (float)(g->vxmax - g->vxmin) * scale + fit->gap;

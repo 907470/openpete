@@ -1387,6 +1387,18 @@ typedef struct game_layout {
 #define GAME_FONT_CLASS_PER_GLYPH 1
 #define GAME_FONT_WAD_MODEL       2
 
+/* The light terms of Spyro 2's and Spyro 3's credits font, as designated
+ * initializers of struct game_font: light_add (92, 92, 0), the highlight
+ * opening at N.L 0.6256 with gain 1176.5, the draw's fixed light and the
+ * base (64, 64, 0). Both layouts initialize their font with it, and the
+ * launcher's title lights every game's glyph models with it
+ * (text_glyph_set_emit_title). */
+#define GAME_FONT_CREDITS_LIGHT                                   \
+    .light_add    = { 92.0f, 92.0f, 0.0f },                       \
+    .hi_threshold = 0.6256f, .hi_gain = 1176.5f,                  \
+    .fixed_light  = { -0.404f, -0.646f, 0.648f },                 \
+    .fixed_tint   = 0x404000u
+
 /* The running game's layout: openpete_game_runtime_register copies the
  * registered descriptor's layout here before any feeder runs, and
  * openpete_run seals it; read-only afterwards. */

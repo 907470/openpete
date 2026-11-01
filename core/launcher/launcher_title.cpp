@@ -7,8 +7,9 @@
 // first whose assets become ready; an ingest or a pick switches to its game
 // when its assets are ready. The glyphs are fitted to the pixel title's width
 // (a gap of 0.004 of the layout height after each but the last) and centred
-// on the ink of its capitals; they wobble and are lit as the settings menu's
-// title, stepping once per game tick on the present clock from the switch.
+// on the ink of its capitals; they wobble as the settings menu's title,
+// stepping once per game tick on the present clock from the switch, and are
+// lit as Spyro 2's and Spyro 3's performance readout (text_glyph_set_emit_title).
 //
 // Harness variables: OPENPETE_LAUNCHER_TITLE_TICK=<n> pins the tick;
 // OPENPETE_LAUNCHER_TITLE_DUMP=<path> writes the first 3D title drawn (its
