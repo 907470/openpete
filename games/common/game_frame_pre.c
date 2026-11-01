@@ -32,5 +32,5 @@ void game_frame_pre_on_tick(struct CPUState* cpu, uint32_t frame_counter) {
      * VSync waits, after the view matrix has been built, so a store seen from
      * here until the next phase entry precedes it for that tick. */
     if (write_census_active()) write_census_set_phase(0);
-    text_moby_native_layers_tick(cpu);
+    text_moby_native_layers_tick();
 }

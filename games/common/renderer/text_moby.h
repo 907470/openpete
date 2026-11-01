@@ -5,14 +5,13 @@
 // end-credits glyphs of Spyro 2 and Spyro 3). game_layout.font says where the
 // models are and how they are packed; see the .c for both formats.
 //
-// The glyph geometry is decoded once into a snapshot (text_moby_native_cache)
-// and every draw works from the snapshot: Spyro 1's from guest RAM the first
-// time its font is resident, Spyro 2's and 3's from the disc image at the
-// first call. Until a snapshot exists, ready() is false and the caller
-// renders nothing.
+// The glyph geometry is decoded once into a snapshot (text_moby_native_cache),
+// read from the disc image at the first call, and every draw works from the
+// snapshot. Until a snapshot exists, ready() is false and the caller renders
+// nothing.
 //
-// Pure presentation - reads glyph-model geometry from RAM or the disc image,
-// writes no gameplay-readable state.
+// Pure presentation - reads glyph-model geometry from the disc image, reads
+// and writes no guest state.
 
 #ifndef OPENPETE_TEXT_MOBY_NATIVE_H
 #define OPENPETE_TEXT_MOBY_NATIVE_H
@@ -22,11 +21,9 @@
 #include "openpete_native_render.h"  /* openpete_hud_vert */
 #include "openpete_disc_image.h"     /* disc_image_t */
 
-struct CPUState;
-
 /* One glyph set: the per-slot glyph geometry, the synthesized hyphen, the
  * punctuation offsets, the tabular digit advance, the source and ready
- * flags, and the WAD model buffer with its attempt latch. The producer
+ * flags, and the disc read's attempt latch. The producer
  * draws from its own set, which text_moby_native_cache fills; an ingest job
  * fills one it allocates and never touches the producer's. */
 typedef struct text_glyph_set text_glyph_set;
@@ -43,12 +40,11 @@ void text_glyph_set_free(text_glyph_set* G);
 
 /** @brief Fills a glyph set from an explicit disc, in the installed game's font form.
  *
- * GAME_FONT_CLASS_PER_GLYPH reads WAD entry game_layout.font.wad_entry
- * whole, the font file the game loads its glyph classes from, and decodes
- * each class through the same decode as the RAM snapshot over that host
- * copy; GAME_FONT_WAD_MODEL reads the model sub-file into the set's model
- * buffer and decodes it as the producer does. One attempt per set. Writes
- * the set only.
+ * Reads and decodes the font as text_moby_native_cache does, through
+ * @p img instead of the booted disc: GAME_FONT_CLASS_PER_GLYPH reads WAD
+ * entry game_layout.font.wad_entry whole, the font file the game loads its
+ * glyph classes from, and GAME_FONT_WAD_MODEL the model sub-file. One
+ * attempt per set. Writes the set only.
  * @param G The set.
  * @param img The disc, opened by the caller on its path.
  * @param hash Receives the FNV-1a 64 of the bytes read (the font file or the
@@ -129,16 +125,14 @@ int text_glyph_set_emit_title(const text_glyph_set* G, const struct game_font* f
                               const text_glyph_fit* fit, openpete_hud_vert* out, int cap, float* cap_h,
                               text_glyph_posed* posed, int posed_cap);
 
-/** @brief Snapshots the glyph-model geometry into the glyph cache the first time it is available.
+/** @brief Reads the glyph-model geometry from the booted disc into the glyph cache at the first call.
  *
- * A GAME_FONT_WAD_MODEL font is read from the disc image at the first call
- * (one attempt per session) and kept only when every digit and letter
- * decodes. A GAME_FONT_CLASS_PER_GLYPH font is decoded from RAM once digit
- * '0' is a loaded simple model. A no-op once the cache is ready; called
- * every tick by the consumers below, and the cache survives the models
- * being unloaded later.
- * @param cpu The guest CPU state. */
-void text_moby_native_cache(struct CPUState* cpu);
+ * One attempt per session, through a disc handle of its own under the font
+ * tag. A GAME_FONT_CLASS_PER_GLYPH font is kept when digit '0' is a simple
+ * model in the font file, a GAME_FONT_WAD_MODEL font when every digit and
+ * letter decodes. Called every tick by the consumers below; a no-op after
+ * the first call. */
+void text_moby_native_cache(void);
 
 /** @brief Reports whether the glyph cache holds a snapshot.
  *
@@ -203,9 +197,8 @@ int text_moby_native_mod_emit(const char* str, float x, float y,
  * digits change; the geometry is rebuilt only when the lines or the anchor
  * change. With the readout off or the cache not ready it publishes nothing.
  * Called from game_on_frame_pre; a no-op unless the native scene is
- * enabled.
- * @param cpu The guest CPU state. */
-void text_moby_native_perf_overlay(struct CPUState* cpu);
+ * enabled. */
+void text_moby_native_perf_overlay(void);
 
 /** @brief Builds the settings menu's title, rows, close glyph and lit frame from the glyph models and publishes them.
  *
@@ -220,9 +213,8 @@ void text_moby_native_perf_overlay(struct CPUState* cpu);
  * under the cursor and the hovered close glyph take the per-glyph yaw
  * wobble. Room for the frame is reserved, so overflowing text loses its
  * own tail. Publishes nothing while the menu is closed; a no-op unless the
- * native scene is enabled.
- * @param cpu The guest CPU state. */
-void text_moby_native_menu(struct CPUState* cpu);
+ * native scene is enabled. */
+void text_moby_native_menu(void);
 
 /** @brief Builds every live OSD toast's text and frame into the renderer's slot grid and publishes it with the slot table.
  *
@@ -232,18 +224,16 @@ void text_moby_native_menu(struct CPUState* cpu);
  * openpete_native_set_osd_glyphs call. Rebuilt on every call while a toast
  * is live, since the shimmer is baked into vertex colours at emit time.
  * Publishes nothing with the OSD off, the ring empty or the cache not
- * ready; a no-op unless the native scene is enabled.
- * @param cpu The guest CPU state. */
-void text_moby_native_osd(struct CPUState* cpu);
+ * ready; a no-op unless the native scene is enabled. */
+void text_moby_native_osd(void);
 
 /** @brief Builds the build-version line (openpete_build_version) and publishes it with its region extent.
  *
  * The string is fixed at configure time, so the geometry is emitted once
  * while the line stays enabled; disabling it clears the renderer's copy
  * and a later enable emits it again. An emission of no vertices is retried
- * on the next call. A no-op unless the native scene is enabled.
- * @param cpu The guest CPU state. */
-void text_moby_native_version(struct CPUState* cpu);
+ * on the next call. A no-op unless the native scene is enabled. */
+void text_moby_native_version(void);
 
 /** @brief Advances the gold shimmer's phase, SpecularUpdate's travelling light reproduced host-side.
  *
@@ -261,9 +251,8 @@ unsigned text_moby_native_shimmer_phase(void);
 /** @brief Runs the host text layers once per pre-tick hook call: the shimmer tick, then the performance readout, the settings menu, the OSD toasts and the version line.
  *
  * The shimmer advances first so every builder after it is lit by the same
- * phase. Each builder reads glyph model geometry from guest RAM and writes
- * renderer state only.
- * @param cpu The guest CPU state. */
-void text_moby_native_layers_tick(struct CPUState* cpu);
+ * phase. Each builder draws from the glyph cache and writes renderer state
+ * only. */
+void text_moby_native_layers_tick(void);
 
 #endif /* OPENPETE_TEXT_MOBY_NATIVE_H */

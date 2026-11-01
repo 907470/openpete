@@ -40,6 +40,17 @@ uint32_t wad_subfile_read(int e, int k, int tag, uint8_t* buf, uint32_t cap, con
  * @return The buffer, which the caller frees, or NULL on failure. */
 uint8_t* wad_subfile_load(int e, int k, int tag, uint32_t* size, const char* who);
 
+/** @brief Reads WAD entry @p e whole from the booted disc into a buffer it allocates.
+ *
+ * The reads go through a handle of their own on the booted disc, traced
+ * under @p tag; the entry is checked as for wad_disc_entry_load.
+ * @param e The WAD entry index.
+ * @param tag The OPENPETE_DISC_TAG_* host path the reads are traced under.
+ * @param size Receives the byte count; 0 on failure.
+ * @param who The log subsystem naming the caller.
+ * @return The buffer, which the caller frees, or NULL with the reason logged. */
+uint8_t* wad_entry_load(int e, int tag, uint32_t* size, const char* who);
+
 /** @brief Reads sub-file @p k of WAD entry @p e from an explicit disc handle into a buffer it allocates.
  *
  * The reads go through @p img, which the caller opened on a disc path of

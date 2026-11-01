@@ -1174,21 +1174,22 @@ typedef struct game_layout {
      * toasts and the performance readout with. `form` 0 means the game has
      * none and the producer publishes no glyphs.
      *
-     * Form GAME_FONT_CLASS_PER_GLYPH: every glyph is its own moby class; the
-     * glyph index is the class, `model_table[index]` points at a model whose
-     * first word is negative, byte 0 the vertex count, byte 1 the face
-     * count, +0x04 a stream of 3-byte packed vertices and +0x0C a stream of
-     * 8-byte faces (four 7-bit vertex indices in word 0 bits 23/16/9/2, the
-     * face normal in word 1's three high bytes as z, x, y). Model +Z faces
-     * the reader. `wad_entry` is the WAD.WAD entry of the font file the
-     * game loads those classes from (a data-size word, then 64 (offset,
+     * Both forms are read from the disc at first use, never from guest
+     * RAM.
+     *
+     * Form GAME_FONT_CLASS_PER_GLYPH: every glyph is its own moby class, the
+     * glyph index is the class. WAD.WAD entry `wad_entry` is the font file
+     * the game loads those classes from: a data-size word, then 64 (offset,
      * class) pairs ended by a zero offset, each offset relative to the
-     * entry, each model pointer relative to its model), which an ingest
-     * job reads instead of guest RAM.
+     * entry. A class's model has a negative first word, byte 0 the vertex
+     * count, byte 1 the face count, +0x04 the offset of a stream of 3-byte
+     * packed vertices and +0x0C that of a stream of 8-byte faces (four
+     * 7-bit vertex indices in word 0 bits 23/16/9/2, the face normal in word
+     * 1's three high bytes as z, x, y), each offset relative to the model.
+     * Model +Z faces the reader.
      *
      * Form GAME_FONT_WAD_MODEL: every glyph is one geometry block of a
-     * model the producer reads from the disc at first use, never from guest
-     * RAM. The model is sub-file `wad_subfile` of entry `wad_entry` of
+     * model. The model is sub-file `wad_subfile` of entry `wad_entry` of
      * WAD.WAD: the WAD's first two sectors hold one (offset, size) word pair
      * per entry, and the entry's first sector one (offset, size) pair per
      * sub-file, offsets relative to the entry. The model's first word is the
@@ -1216,7 +1217,6 @@ typedef struct game_layout {
      * base colour. */
     struct game_font {
         int      form;
-        uint32_t model_table;
         int      wad_entry, wad_subfile;
         int      digit_base;
         int      letter_base;

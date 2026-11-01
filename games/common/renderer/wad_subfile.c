@@ -113,6 +113,17 @@ uint8_t* wad_subfile_load(int e, int k, int tag, uint32_t* size, const char* who
     return buf;
 }
 
+uint8_t* wad_entry_load(int e, int tag, uint32_t* size, const char* who) {
+    *size = 0;
+    disc_image_t* game = disc_image_game();
+    if (!game) { OPL_WARN_F(who, "WAD entry %d not read: no disc open", e); return NULL; }
+    disc_image_t* img = disc_image_open(disc_image_bin_path(game), DISC_READ_CACHED, tag);
+    if (!img) return NULL;
+    uint8_t* buf = wad_disc_entry_load(img, e, 0u, 0u, size, who);
+    disc_image_close(img);
+    return buf;
+}
+
 uint8_t* wad_disc_subfile_load(disc_image_t* img, int e, int k, uint32_t* size, const char* who) {
     *size = 0;
     if (!img || e < 0 || k < 0) return NULL;

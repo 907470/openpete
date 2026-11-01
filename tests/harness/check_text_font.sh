@@ -2,17 +2,18 @@
 # check_text_font.sh - the 3D glyph text gate.
 #
 # The settings menu, the OSD toasts and the performance readout draw with the
-# game's own glyph models (games/common/renderer/text_moby.c): Spyro 1 decodes
-# its HUD font from guest RAM, Spyro 2 and Spyro 3 read their credits font
-# from the disc image at the first draw. This gate runs each row of
+# game's own glyph models (games/common/renderer/text_moby.c), read from the
+# disc image at the first draw: Spyro 1's HUD font, Spyro 2's and Spyro 3's
+# credits font. This gate runs each row of
 # games/<slug>/corpus/text-font-corpus.manifest with the three consumers
 # forced live (OPENPETE_OSD_DEMO, OPENPETE_MENU_DEMO, --perf-stats fps) and
 # reads the glyph vertex counts the producer published
 # (OPENPETE_TEXT_GLYPH_CENSUS).
 #
 # Manifest fields, pipe-separated: name | level | expect
+#   level   the --skip-to-level target, or - for a run from boot that loads
+#           no level (the title and attract loop)
 #   expect  none   every consumer published zero glyph vertices all run
-#           ram    every consumer published glyph vertices, snapshot from RAM
 #           disc   every consumer published glyph vertices, read from the disc
 #
 # The rows run windowed: the producer is inert without the native display (a
@@ -57,10 +58,12 @@ while IFS='|' read -r name level expect; do
     [[ -z "$name" || "$name" == \#* ]] && continue
     rows=$((rows + 1))
     log="$OUT/$name.log"
+    skip=(--skip-to-level "$level")
+    [[ "$level" == - ]] && skip=()
     OPENPETE_OSD_DEMO=3 OPENPETE_MENU_DEMO=1 OPENPETE_TEXT_GLYPH_CENSUS=1 \
         op_own_run timeout -k 10 600 "$PG_BIN" --no-config --vibration 0 --mouse 0 --input-lock --disc "$PG_DISC" \
         --renderer vk --aspect 4:3 --lod original --no-card --mute 1 \
-        --perf-stats fps --skip-to-level "$level" --frame-limit "$FRAMES" \
+        --perf-stats fps "${skip[@]}" --frame-limit "$FRAMES" \
         > "$log" 2>&1
     rc=$?
     [[ -s "$log" ]] || { echo "FAIL $name: no log"; status=1; continue; }

@@ -1,5 +1,6 @@
 # The 3D glyph text gate's rows (tests/harness/check_text_font.sh). The HUD font
-# loads with the title in every session and is decoded from guest RAM.
+# is read from WAD.WAD entry 8 on the disc at the first draw; boot loads no level.
 #
 # name      | level    | expect
-artisans    | artisans | ram
+artisans    | artisans | disc
+boot        | -        | disc

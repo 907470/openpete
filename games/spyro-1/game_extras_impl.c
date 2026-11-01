@@ -428,10 +428,9 @@ static void spyro1_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
 
 
     /* The host text layers (shimmer, performance readout, settings menu, OSD
-     * toasts, version line), built from Spyro's own 3D HUD glyph mobys. Pure
-     * presentation: reads model geometry from RAM, never writes gameplay
-     * state. */
-    text_moby_native_layers_tick(cpu);
+     * toasts, version line), built from Spyro's own 3D HUD glyph models read
+     * from the disc. Pure presentation: reads and writes no guest state. */
+    text_moby_native_layers_tick();
 
     /* --skip-to-level: induce the title's demo-timeout transition toward
      * the target, hold the title off the demo path, and release the present

@@ -431,7 +431,10 @@ const game_layout_t spyro1_game_layout = {
     },
 
     /* The HUD font: one moby class per glyph, digits 260-269, letters
-     * 426-451, punctuation scattered; there is no colon model. Glyphs span
+     * 426-451, punctuation scattered; there is no colon model. Every glyph
+     * class is in WAD.WAD entry 8 (g_WadHeader.m_PETE), the shared-model
+     * file func_8005B7D8 loads at boot and on the title and installs into
+     * g_Models[class]; the producer reads that entry. Glyphs span
      * y -76..76. The game lights them with a dark back-colour plus a white
      * directional term added on top: measured on the Artisans HUD, back
      * colour (96,96,0) on unlit edges up to (214,214,118) at full facing, so
@@ -439,8 +442,7 @@ const game_layout_t spyro1_game_layout = {
      * period model sits at y 24..77, which the colon recentres. */
     .font = {
         .form        = GAME_FONT_CLASS_PER_GLYPH,
-        .model_table = G_MODELS,
-        .wad_entry   = 8,          /* PETE.WAD, loaded by func_8005B7D8 */
+        .wad_entry   = 8,          /* g_WadHeader.m_PETE */
         .digit_base  = 260,
         .letter_base = 426,
         .punct       = { {'%', 272, 0}, {'/', 277, 0}, {'?', 278, 0}, {'+', 317, 0},
