@@ -182,6 +182,11 @@ stage_common() {  # stage_common <exe-dir>
                       "FIRST_BOOT_SOURCES), so the archive could not build its" \
                       "module from the player's disc" >&2; exit 1; }
         cp -a "$B/recomp/manifest/$g" "$STAGE/recomp/manifest/"
+        # The compile cost table weights the first boot's progress bar.
+        if [[ -f "$B/recomp/costs/$g.tsv" ]]; then
+            mkdir -p "$STAGE/recomp/costs"
+            cp -a "$B/recomp/costs/$g.tsv" "$STAGE/recomp/costs/"
+        fi
     done
     cp -a "$B/recomp/src"      "$STAGE/recomp/"
     # The kit is compiled on the user's machine, so it ships as readable

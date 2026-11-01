@@ -7,8 +7,8 @@
  * sentence case, a counted step followed by (done/total). The first boot's
  * stages (copy, read, translate, build, link) share one bar whose segments
  * are weighted by their measured share of the first boot's time, each
- * segment filled by its own count (MiB copied, binaries translated, KiB of
- * source compiled); every other stage fills a bar of its own by its count.
+ * segment filled by its own count (MiB copied, binaries translated, the
+ * compile cost of the units compiled); every other stage fills a bar of its own by its count.
  * Launcher thread only. */
 #ifndef OPENPETE_LAUNCHER_PROGRESS_H
 #define OPENPETE_LAUNCHER_PROGRESS_H

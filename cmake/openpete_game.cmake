@@ -365,6 +365,16 @@ function(_openpete_game_stage_first_boot GAME_ID EXE EXE_DIR GENERATED SERIAL)
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${_manifest} ${_rdir}/manifest/${GAME_ID}
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_manifest_files} ${_rdir}/manifest/${GAME_ID}
         VERBATIM)
+    # The compile cost table (scripts/emit-first-boot-costs.sh) stages apart
+    # from the manifest tree, which the codegen stamp hashes: a re-measured
+    # table changes the progress bar, never the module's identity.
+    set(_costs ${CMAKE_CURRENT_SOURCE_DIR}/manifest/first_boot_costs.tsv)
+    if(EXISTS ${_costs})
+        add_custom_command(TARGET ${EXE} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/costs
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_costs} ${_rdir}/costs/${GAME_ID}.tsv
+            VERBATIM)
+    endif()
     if(OPENPETE_ONE_EXECUTABLE)
         if(NOT TARGET openpete_first_boot_kit)
             add_custom_target(openpete_first_boot_kit ALL)

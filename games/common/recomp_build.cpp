@@ -39,6 +39,7 @@
 #include "openpete_config.h"
 #include "sha256.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -500,33 +501,96 @@ std::string compute_codegen_stamp(const fs::path& base, const openpete_game_buil
     return stamp;
 }
 
+/* The compile step's progress counts in units of this many per build. */
+constexpr int kCostScale = 100000;
+
 /* The compile step's schedule: the translation units in the order the
- * workers take them, largest source first, and each unit's size in KiB
- * (at least 1), the unit the progress report counts in. */
+ * workers take them, largest cost first, and each unit's share of the
+ * step's compile time (summing to 1), the measure the progress report
+ * counts in. */
 struct CompileOrder {
     std::vector<size_t> order;
-    std::vector<int> kib;
-    int total_kib = 0;
+    std::vector<double> cost;
+    int covered = 0;   /* units whose share came from the cost table */
 };
 
-/** @brief Order the translation units largest source first and size each in KiB, so the longest compiles start first and the progress report advances by source size.
+/** @brief Read a compile cost table: one line per translation unit, its file name, a tab and its share of a reference build's compile time; lines opening with # are comments.
  *
- * A unit whose size cannot be read counts 1 KiB and keeps its place among
- * the smallest.
+ * @param path The table.
+ * @return The shares by file name; empty when the file is missing. */
+std::map<std::string, double> read_compile_costs(const fs::path& path) {
+    std::map<std::string, double> t;
+    std::ifstream f(path);
+    std::string line;
+    while (std::getline(f, line)) {
+        const size_t tab = line.find('\t');
+        if (line.empty() || line[0] == '#' || tab == std::string::npos) continue;
+        const double c = std::strtod(line.c_str() + tab + 1, nullptr);
+        if (c > 0.0) t[line.substr(0, tab)] = c;
+    }
+    return t;
+}
+
+/** @brief Weight the translation units by their compile cost and order them largest first, so the longest compiles start first and the progress report advances by compile time.
+ *
+ * A unit the cost table names takes its share from the table; any other
+ * takes its share of the source size (KiB, at least 1) times the share of
+ * the step the table leaves to the units it does not name; the shares
+ * are then normalised to sum to 1.
  * @param tus The translation units, in link order (unchanged).
+ * @param table The cost table (read_compile_costs); may be empty.
  * @return The schedule. */
-CompileOrder compile_order(const std::vector<fs::path>& tus) {
+CompileOrder compile_order(const std::vector<fs::path>& tus, const std::map<std::string, double>& table) {
     CompileOrder o;
-    o.kib.resize(tus.size());
+    o.cost.resize(tus.size());
+    std::vector<double> kib(tus.size());
+    double kib_rest = 0.0, known = 0.0;
     for (size_t i = 0; i < tus.size(); i++) {
         std::error_code ec;
-        const auto b = fs::file_size(tus[i], ec);
-        o.kib[i] = ec ? 1 : (int)std::max<std::uintmax_t>(1, b / 1024);
-        o.total_kib += o.kib[i];
+        const auto bytes = fs::file_size(tus[i], ec);
+        kib[i] = ec ? 1.0 : std::max(1.0, (double)(bytes / 1024));
+        const auto it = table.find(tus[i].filename().string());
+        if (it != table.end()) {
+            o.cost[i] = it->second;
+            known += it->second;
+            o.covered++;
+        } else {
+            kib_rest += kib[i];
+        }
         o.order.push_back(i);
     }
-    std::stable_sort(o.order.begin(), o.order.end(), [&](size_t a, size_t b) { return o.kib[a] > o.kib[b]; });
+    const double rest = o.covered ? std::max(0.0, 1.0 - known) : 1.0;
+    double sum = 0.0;
+    for (size_t i = 0; i < tus.size(); i++) {
+        if (!table.count(tus[i].filename().string())) o.cost[i] = kib_rest > 0.0 ? rest * kib[i] / kib_rest : 0.0;
+        sum += o.cost[i];
+    }
+    for (double& c : o.cost) c = sum > 0.0 ? c / sum : 1.0 / (double)tus.size();
+    std::stable_sort(o.order.begin(), o.order.end(), [&](size_t a, size_t b) { return o.cost[a] > o.cost[b]; });
     return o;
+}
+
+/** @brief Write a compile cost table from the compile seconds of each unit of a build: each unit's seconds over the total.
+ *
+ * @param path The table to write.
+ * @param tus The translation units.
+ * @param secs Each unit's compile seconds.
+ * @param jobs The build's worker count, recorded in the header.
+ * @return true when the file was written. */
+bool write_compile_costs(const fs::path& path, const std::vector<fs::path>& tus, const std::vector<double>& secs,
+                         unsigned jobs) {
+    double total = 0.0;
+    for (double v : secs) total += v;
+    if (total <= 0.0) return false;
+    std::string text = "# First-boot compile cost per translation unit: its compile seconds over the build's\n"
+                       "# total, from a reference build at -j" + std::to_string(jobs) +
+                       " (scripts/emit-first-boot-costs.sh).\n";
+    char row[64];
+    for (size_t i = 0; i < tus.size(); i++) {
+        snprintf(row, sizeof row, "\t%.6f\n", secs[i] / total);
+        text += tus[i].filename().string() + row;
+    }
+    return op_atomic_write_file(path.string().c_str(), text.data(), text.size()) == 0;
 }
 
 }  // namespace
@@ -776,11 +840,15 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     std::fprintf(stderr, "[first-boot] compiling %zu C files (-j%u)...\n",
                  tus.size(), jobs);
 
-    const CompileOrder sched = compile_order(tus);
+    const fs::path cost_path = R / "costs" / (std::string(openpete_game_build()->id) + ".tsv");
+    const CompileOrder sched = compile_order(tus, read_compile_costs(cost_path));
+    OPL_INFO_F("recomp-build", "compile cost table: %d of %zu units (%s)", sched.covered, tus.size(),
+               cost_path.string().c_str());
+    std::vector<double> secs(tus.size(), 0.0);
     std::atomic<size_t> next{0};
     std::atomic<int> failed{0};
     std::atomic<size_t> done{0};
-    std::atomic<int> done_kib{0};
+    std::atomic<int> done_cost{0};
     /* The workers read the stop of the job running the build. */
     void* const stop = openpete_launcher_job_stop_handle();
     auto worker = [&]() {
@@ -796,8 +864,10 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
             cmd.push_back("-o");
             cmd.push_back((obj / (tu.filename().string() + ".o")).string());
             cmd.push_back(tu.string());
+            const auto t0 = std::chrono::steady_clock::now();
             if (!run(cmd)) { failed.store(1); break; }
-            done_kib.fetch_add(sched.kib[i]);
+            secs[i] = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            done_cost.fetch_add((int)std::lround(sched.cost[i] * kCostScale));
             size_t d = done.fetch_add(1) + 1;
             if (d % 20 == 0 || d == tus.size())
                 std::fprintf(stderr, "[first-boot]   %zu/%zu\n", d, tus.size());
@@ -808,13 +878,14 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
         std::vector<std::thread> pool;
         for (unsigned t = 0; t < jobs; t++) pool.emplace_back(worker);
         /* Progress from THIS thread (SDL rendering is not thread-safe);
-         * workers only bump the counters. The report counts KiB of source
-         * compiled, so a large unit advances the bar by its size. */
+         * workers only bump the counters. The report counts the compile
+         * cost of the completed units, so a unit advances the bar by its
+         * share of the step's compile time. */
         int last = -1;
         while (done.load() < tus.size() && !failed.load()) {
-            const int d = done_kib.load();
-            if (d != last) {
-                progress("BUILDING FOR YOUR PC", d, sched.total_kib);
+            const int d = std::min(done_cost.load(), kCostScale);
+            if (d > last) {
+                progress("BUILDING FOR YOUR PC", d, kCostScale);
                 last = d;
             }
 #ifdef _WIN32
@@ -824,7 +895,12 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
 #endif
         }
         for (auto& t : pool) t.join();
-        progress("BUILDING FOR YOUR PC", sched.total_kib, sched.total_kib);
+        progress("BUILDING FOR YOUR PC", kCostScale, kCostScale);
+    }
+    if (!failed.load()) {
+        if (const char* out = getenv("OPENPETE_FIRST_BOOT_COSTS_OUT"); out && *out)
+            OPL_INFO_F("recomp-build", "compile cost table written to %s: %s", out,
+                       write_compile_costs(out, tus, secs, jobs) ? "ok" : "failed");
     }
     if (failed.load()) return -1;
 
