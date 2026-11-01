@@ -506,6 +506,7 @@ struct rhi_device {
     bool                     describing; /* rhi_pipeline_describe_begin .. _end */
     described_desc          *described;  /* the descriptions recorded, owned */
     unsigned                 described_n, described_cap, described_words; /* words: skipped (SPIR-V-word stages) */
+    unsigned                 describe_mark_n, describe_mark_words; /* the counts at the open describe_begin */
     unsigned                 describe_group; /* rhi_pipeline_describe_group */
     bool                     cpool_paused; /* rhi_compile_pool_pause: the pool starts paused */
     uint64_t                 pipe_serial; /* the last registry serial handed out (registry_link) */
@@ -10150,6 +10151,8 @@ void rhi_pipeline_describe_begin(rhi_device *dev)
     seam_check("pipeline_describe_begin");
     dev->describing = true;
     dev->describe_group = 0;
+    dev->describe_mark_n = dev->described_n;
+    dev->describe_mark_words = dev->described_words;
 }
 
 void rhi_pipeline_describe_group(rhi_device *dev, unsigned group)
@@ -10162,6 +10165,21 @@ unsigned rhi_pipeline_describe_end(rhi_device *dev)
     if (!dev) return 0;
     dev->describing = false;
     return dev->described_n;
+}
+
+unsigned rhi_pipeline_describe_discard(rhi_device *dev)
+{
+    if (!dev) return 0;
+    dev->describing = false;
+    const unsigned seen = (dev->described_n - dev->describe_mark_n) +
+                          (dev->described_words - dev->describe_mark_words);
+    for (unsigned i = dev->describe_mark_n; i < dev->described_n; i++) {
+        free(dev->described[i].vert);
+        free(dev->described[i].frag);
+    }
+    dev->described_n = dev->describe_mark_n;
+    dev->described_words = dev->describe_mark_words;
+    return seen;
 }
 
 /** @brief Free the recorded descriptions.

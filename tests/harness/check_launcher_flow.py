@@ -115,7 +115,8 @@ Cases:
             cache, OPENPETE_PRECOMPILE_FORCE=1 so bring-up's compile stage runs on lavapipe):
             shader-step-during: a pick at the selector's first frame stops the ahead walk with
             create infos not returned, and the compile stage compiles pipelines and draws its
-            progress screen (OPENPETE_PRECOMPILE_PANEL_MS=0).
+            progress screen (OPENPETE_PRECOMPILE_PANEL_MS=0); every screen's bar has a total
+            and its fraction never falls (the "compile stage bar" line).
             shader-step-after: a pick held until the ahead walk has returned every create info
             (OPENPETE_LAUNCHER_PICK_DELAY_MS) starts the game with every bring-up create held by
             the cache (bring-up compiles no pipeline); the progress screens drawn are reported.
@@ -1442,6 +1443,23 @@ STAGE = re.compile(r"compile stage: ([\d.]+) ms from its open, \d+ creates queue
                    r"(\d+) \(bring-up (\d+) of (\d+) creates, precompile (\d+) of (\d+);.*?progress screen (\d+) "
                    r"present\(s\), the first at (\d+) of (\d+)")
 WALK_END = re.compile(r"launcher walk: keys (\d+), created (\d+), probe hits (\d+), .*?([\d.]+) ms \((.*)\)")
+BAR = re.compile(r"compile stage bar: predicted (\d+) creates, final total (\d+) \((\d+) queued\); (\d+) screen\(s\)[^:]*: (.*)")
+
+
+def bar_problems(log):
+    """The compile stage's bar: a total on every screen and a fraction that never falls; returns (problems, detail)."""
+    m = BAR.search(log)
+    if not m:
+        return ["no compile stage bar line"], ""
+    vals = [tuple(int(x) for x in v.split("/")) for v in m.group(5).split()] if m.group(5) != "-" else []
+    bad = []
+    if any(t == 0 for _, t in vals):
+        bad.append("a screen drew the bar with no total")
+    fr = [d / t for d, t in vals if t]
+    if any(b < a for a, b in zip(fr, fr[1:])):
+        bad.append("the bar's fraction fell between screens")
+    shown = " ".join(f"{d}/{t}" for d, t in vals[:4]) + (" ... " + " ".join(f"{d}/{t}" for d, t in vals[-2:]) if len(vals) > 4 else "")
+    return bad, f"bar predicted {m.group(1)}, final {m.group(2)} of {m.group(3)} queued, {m.group(4)} screen(s): {shown}"
 
 
 def shader_run(a, name, env):
@@ -1469,8 +1487,11 @@ def case_shader_step_during(a):
         bad.append("bring-up compiled no pipeline: the pick came after the walk's useful part")
     if st and int(st.group(7)) == 0:
         bad.append("the compile stage drew no progress screen")
+    bar_bad, bar_detail = bar_problems(log)
+    bad += bar_bad
     detail = (f"walk created {wl.group(2)} of {wl.group(1)}; bring-up compiled {st.group(3)} of {st.group(4)}, "
-              f"stage {st.group(1)} ms, {st.group(7)} screen(s), first at {st.group(8)} of {st.group(9)}") if st and wl else ""
+              f"stage {st.group(1)} ms, {st.group(7)} screen(s), first at {st.group(8)} of {st.group(9)}; "
+              f"{bar_detail}") if st and wl else ""
     return verdict("shader-step-during", bad, detail)
 
 

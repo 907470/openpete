@@ -1683,6 +1683,17 @@ void           rhi_pipeline_describe_begin(rhi_device *dev);
  * @return The descriptions recorded on the device so far. */
 unsigned       rhi_pipeline_describe_end(rhi_device *dev);
 
+/** @brief Close description mode and drop the descriptions recorded since its rhi_pipeline_describe_begin, returning how many pipeline creates it saw.
+ *
+ * The count is every rhi_create_pipeline_slot call inside the mode: the
+ * descriptions recorded plus the ones given SPIR-V words (counted, never
+ * recorded). Descriptions recorded before that begin stay. A pass that
+ * only counts the creates a builder would make uses it in place of
+ * rhi_pipeline_describe_end. Display owner only.
+ * @param dev Device.
+ * @return The creates seen; 0 for a NULL device. */
+unsigned       rhi_pipeline_describe_discard(rhi_device *dev);
+
 /* Groups of the ahead walk's descriptions (rhi_pipeline_describe_group). */
 #define RHI_AHEAD_GROUPS 4u
 

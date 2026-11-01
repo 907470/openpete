@@ -5964,6 +5964,9 @@ static bool nr_walk_background(void) {
 /* The screen redraws at most this often. */
 #define NR_PRECOMPILE_PANEL_PERIOD_NS (16ll * 1000000ll)
 
+/* Screens of the compile stage whose bar values the stage's log line lists. */
+#define NR_PRECOMPILE_TRACE 96u
+
 /* The compile stage of bring-up: the eager pipeline batches, then the
  * precompile's lazy-slot batch and variant walk, counted as one stage on one
  * progress screen. A run that does not precompile opens no batch and draws
@@ -5980,6 +5983,10 @@ static struct {
     unsigned    base_done;     /* creates finished by the closed batches       */
     unsigned    base_queued;   /* creates queued by the closed batches         */
     unsigned    held_total;    /* the bar's total once final; 0 before         */
+    unsigned    predicted;     /* the creates the stage will queue, counted before its first (nr_compile_stage_predict) */
+    unsigned    shown_done, shown_total;  /* the last screen's values: the bar never moves back from them */
+    unsigned    trace_n;       /* screens recorded in trace (all screens counted in draws) */
+    unsigned    trace[NR_PRECOMPILE_TRACE][2];  /* the first screens' done and total, for the stage's log line */
     bool        walk;          /* the blocking variant walk runs: nothing is queued after it */
 } s_pre;
 
@@ -5995,7 +6002,31 @@ static void nr_precompile_panel(unsigned done, unsigned total) {
         s_pre.first_done = done;
         s_pre.first_total = total;
     }
+    if (s_pre.trace_n < NR_PRECOMPILE_TRACE) {
+        s_pre.trace[s_pre.trace_n][0] = done;
+        s_pre.trace[s_pre.trace_n][1] = total;
+        s_pre.trace_n++;
+    }
+    s_pre.shown_done = done;
+    s_pre.shown_total = total;
     s_pre.draws++;
+}
+
+/** @brief Return the finished count to draw over @p total so the bar's fraction is never below the last screen's.
+ *
+ * The total grows when the stage queues more creates than it predicted;
+ * the fraction then holds at the last screen's until the finished count
+ * catches up.
+ * @param done Compiles finished.
+ * @param total The bar's total, above 0.
+ * @return The count to draw, at most @p total. */
+static unsigned nr_precompile_bar_done(unsigned done, unsigned total) {
+    if (s_pre.shown_total) {
+        const uint64_t floor_num = (uint64_t)s_pre.shown_done * total;
+        if ((uint64_t)done * s_pre.shown_total < floor_num)
+            done = (unsigned)((floor_num + s_pre.shown_total - 1u) / s_pre.shown_total);
+    }
+    return done < total ? done : total;
 }
 
 /** @brief Pump the window's events between compiles, and draw the compile stage once it has run past its panel wait.
@@ -6005,9 +6036,11 @@ static void nr_precompile_panel(unsigned done, unsigned total) {
  * bar's total is the one nr_precompile held once the lazy-slot batch was
  * queued, or, with the blocking walk, the one held at the first draw inside
  * the walk, whose total is known before its first submit and after which
- * nothing is queued; before either the screen shows the finished count over
- * an empty bar, so the bar never moves back. Runs on the display owner
- * (bring-up, before the first tick).
+ * nothing is queued; before either the total is the creates counted before
+ * the stage's first batch (nr_compile_stage_predict), or the queued count
+ * when it is larger, and the finished count drawn keeps the bar's fraction
+ * at or above the last screen's (nr_precompile_bar_done), so the bar never
+ * moves back. Runs on the display owner (bring-up, before the first tick).
  * @param ctx Unused. */
 static void nr_precompile_pump(void* ctx) {
     (void)ctx;
@@ -6022,8 +6055,9 @@ static void nr_precompile_pump(void* ctx) {
     done += s_pre.base_done;
     queued += s_pre.base_queued;
     if (s_pre.walk && !s_pre.held_total) s_pre.held_total = queued;
-    if (s_pre.held_total && done > s_pre.held_total) done = s_pre.held_total;
-    nr_precompile_panel(done, s_pre.held_total);
+    unsigned total = s_pre.held_total;
+    if (!total) total = queued > s_pre.predicted ? queued : s_pre.predicted;
+    nr_precompile_panel(total ? nr_precompile_bar_done(done, total) : done, total);
 }
 
 static void nr_ahead_end(rhi_device *dev);
@@ -6898,6 +6932,38 @@ static unsigned nr_describe_pipelines(rhi_device *dev, const openpete_options_t 
     return rhi_pipeline_describe_end(dev);
 }
 
+/** @brief Count the creates bring-up's eager batches will queue, before the first, so the compile stage's bar has its total from its first screen.
+ *
+ * The eager builders run in describe mode (rhi_pipeline_describe_begin)
+ * with the arguments bring-up passes them: the eager core, its twins with
+ * the front shell when moby_shell_on holds and the rank pass is described,
+ * and the terrain cache's pipelines when bring-up creates them; the count
+ * is every create they make (rhi_pipeline_describe_discard). The lazy-slot
+ * batch adds the raster quantize and dither passes, counted here, and the
+ * mods' slots, which are added when that batch is queued and its total
+ * held (nr_precompile). No-op unless the run precompiles.
+ * @param dev The renderer's device.
+ * @param opts The session options (terrain cache).
+ * @param key_vb_ok Nonzero when the key pass's vertex buffer exists, as nr_eager_core takes it. */
+static void nr_compile_stage_predict(rhi_device *dev, const openpete_options_t *opts, int key_vb_ok) {
+    if (!s_pre.wanted) return;
+    s_pre.wanted = 0;  /* nr_eager_batch_begin opens no batch while describing */
+    nr_eager_descs d;
+    nr_eager_descs_init(&d);
+    nr_eager_set p;
+    nr_cover_twin cover[NR_COVER_TWINS];
+    nr_shell_twin shell[NR_SHELL_TWINS];
+    int cover_n = 0, shell_n = 0;
+    rhi_pipeline *shell_pipe = NULL, *intr_pipe = NULL;
+    const nr_twin_out o = { cover, &cover_n, shell, &shell_n, &shell_pipe, &intr_pipe };
+    rhi_pipeline_describe_begin(dev);
+    nr_eager_core(dev, &d, &p, key_vb_ok);
+    (void)nr_eager_twins(dev, &d, &p, moby_shell_on() && p.moby_rank_pipe != NULL, &o);
+    if (opts->terrain_cache && nr_tercache_device_ok(dev)) openpete_tercache_describe(dev);
+    s_pre.predicted = rhi_pipeline_describe_discard(dev) + 2u;
+    s_pre.wanted = 1;
+}
+
 /** @brief Report whether this run compiles its pipelines synchronously at first draw.
  *
  * A headless run and a run that captures intermediate presents are
@@ -7688,6 +7754,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * depth - the OT_BIAS=0 look). The key IMAGE allocates lazily per target
      * size (ensure_terrain_key_depth). */
     rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
+    nr_compile_stage_predict(dev, opts, terrain_key_vb != NULL);
     nr_eager_set P;
     nr_eager_core(dev, &D, &P, terrain_key_vb != NULL);
     if (!P.terrain_key_pipe && terrain_key_vb) {
@@ -20699,6 +20766,16 @@ static void nr_precompile(void) {
                rb.bringup_creates - rb.bringup_known, rb.bringup_creates,
                rb.precompile_creates - rb.precompile_known, rb.precompile_creates,
                s_pre.draws, s_pre.first_done, s_pre.first_total);
+    char bar[NR_PRECOMPILE_TRACE * 12 + 1];
+    size_t at = 0;
+    bar[0] = 0;
+    for (unsigned i = 0; i < s_pre.trace_n && at < sizeof bar; i++)
+        at += (size_t)snprintf(bar + at, sizeof bar - at, "%s%u/%u", i ? " " : "", s_pre.trace[i][0],
+                               s_pre.trace[i][1]);
+    OPL_INFO_F("native", "compile stage bar: predicted %u creates, final total %u (%u queued); "
+               "%u screen(s)%s: %s",
+               s_pre.predicted, s_pre.held_total, s_pre.base_queued, s_pre.draws,
+               s_pre.draws > s_pre.trace_n ? " (the first listed)" : "", s_pre.draws ? bar : "-");
     s_pre.dev = NULL;
 }
 
