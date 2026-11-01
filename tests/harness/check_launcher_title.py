@@ -263,7 +263,8 @@ def case_title_switch(a):
         log, r"scripted drop", r"\[library\] added", r"launcher assets of spyro-1 ready \(ingest\)",
         r"title glyph models of spyro-1 read from", r"launcher title: the 3D title of spyro-1 \(assets ready\)",
         r"launcher title: 3D title of spyro-1 drawn", r"game picked: spyro-1")
-    lines = [ln for ln in log.splitlines() if "[launcher]" in ln or "launcher" in ln]
+    # The sky's join (check_launcher_flow.py sky-reveal) logs in the same reap; its line is set aside.
+    lines = [ln for ln in log.splitlines() if ("[launcher]" in ln or "launcher" in ln) and " sky: " not in ln]
     idx = next((i for i, ln in enumerate(lines) if re.search(r"launcher assets of spyro-1 ready \(ingest\)", ln)),
                None)
     adj = idx is not None and idx + 2 < len(lines) and "title glyph models of spyro-1 read" in lines[idx + 1] \

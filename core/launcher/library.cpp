@@ -12,6 +12,7 @@
 // never needed again: engine updates rebuild a module from the library's
 // own copy.
 #include "launcher_internal.h"
+#include "launcher_sky.h"
 
 #include "openpete_atomic_file.h"
 #include "openpete_build_id.h"
@@ -754,6 +755,7 @@ int pick_pass(openpete_options_t* opts, bool screens, bool& direct, Meta& chosen
         }
     } scan{library_root(), {}};
     const int waited = launcher_await_scan(&ScanTask::run, &scan);
+    for (const Meta& m : scan.entries) launcher_sky_seed(m.game.c_str());
     queue_launch_jobs(scan.entries);
     if (!screens) launcher_jobs_run_inline();
     if (waited == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;

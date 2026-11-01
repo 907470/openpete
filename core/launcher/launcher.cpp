@@ -35,6 +35,7 @@
 // holds the background and the shape pass alone.
 #include "launcher_internal.h"
 #include "launcher_shapes.h"
+#include "launcher_sky.h"
 
 #include "imgui.h"
 
@@ -449,13 +450,17 @@ float fb_origin_step(float density) {
  * its origin truncated to the fb_origin_step grid so it starts on a
  * framebuffer pixel edge. While the present draws the 3D title
  * (launcher_title_drawn) the pixel title is not drawn and the 3D title's
- * rect is recorded as title.moby instead.
+ * rect is recorded as title.moby instead. The drawn title's centre is the
+ * sky reveal's centre (launcher_sky_title_at).
  * @param f The frame mapping. */
 void draw_title(const Frame& f) {
     static const char kTitle[] = "OPENPETE";
     float r[4];
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
     if (launcher_title_drawn(r)) {
         launcher_manifest_item("title.moby", "mesh3d", r[0], r[1], r[2], r[3]);
+        if (disp.x > 0.0f && disp.y > 0.0f)
+            launcher_sky_title_at(0.5f * (r[0] + r[2]) / disp.x, 0.5f * (r[1] + r[3]) / disp.y);
         return;
     }
     const float d = std::max(1.0f, ImGui::GetIO().DisplayFramebufferScale.x);
@@ -469,6 +474,8 @@ void draw_title(const Frame& f) {
     ImGui::GetWindowDrawList()->AddText(ImVec2(x, y), IM_COL32(240, 138, 30, 255), kTitle);
     ImGui::PopFont();
     launcher_manifest_item("title", "text", x, y, x + w, y + 13.0f * cell);
+    if (disp.x > 0.0f && disp.y > 0.0f)
+        launcher_sky_title_at((x + 0.5f * w) / disp.x, (y + 6.5f * cell) / disp.y);
 }
 
 /** @brief Emit the 3D title for the next present on the launcher's device, fitted to the pixel title's box.
@@ -524,8 +531,9 @@ void draw_view(void* ud) {
 }
 
 /* Shot tags, indexed by Screen, then the precompile's progress screen. */
-constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile"};
+constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile", "sky"};
 constexpr int kShotPrecompile = 4;
+constexpr int kShotSky = 5;   /* the first frame whose sky is one opaque dome */
 
 /** @brief Return the clear colour of every launcher present: kBg, or the harness variable OPENPETE_LAUNCHER_CLEAR=r,g,b read once.
  *
@@ -587,8 +595,12 @@ void scripted_input_poll();
  *
  * @param v The view. */
 void present(View& v) {
+    static bool drawn_once = false;   /* a launcher present was drawn */
     v.name = game_name();
+    launcher_sky_present(op_now(), drawn_once);   /* the present's instant: the sky's motion follows it */
     if (!present_on(nullptr, v, (int)v.screen)) return;
+    drawn_once = true;
+    if (launcher_sky_opaque()) maybe_shot(nullptr, kShotSky);
     launcher_stamp(LAUNCHER_EV_FIRST_PRESENT);
     scripted_input_poll();
     if (v.screen == Screen::Select && v.count > 0) launcher_stamp(LAUNCHER_EV_LIST_SHOWN);
@@ -1805,6 +1817,7 @@ void ingest_poll() {
     const char* what = rc == 0 ? "ready" : rc == 1 ? "kept (a failed marker of this build)"
                      : rc == -2 ? "not updated (stopped)" : "failed";
     OPL_INFO_F("launcher", "launcher assets of %s %s (%s)", s_ing.g->game_id, what, s_ing.context.c_str());
+    if (rc == 0 || rc == 1) launcher_sky_assets_ready(s_ing.g->game_id);
     if (rc == 0 || rc == 1) launcher_title_offer(s_ing.g, s_ing.context != "launch-time", "assets ready");
 }
 

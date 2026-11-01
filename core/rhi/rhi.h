@@ -920,10 +920,15 @@ typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRAC
  *    written. The hole-fill role: geometry that must paint only the
  *    pixels a prior MARK pass did NOT cover (e.g. the terrain LP backing layer
  *    filling LP<->HP T-junction seams without ever poking through the HP).
+ *  - ONCE: draw only where stencil != 1 and write 1 there, so each pixel takes
+ *    one fragment until the next stencil clear: a blended layer whose
+ *    triangles overlap blends each pixel once, and a later ONCE draw fills
+ *    only the pixels the earlier ones left (the launcher sky's dome, then its
+ *    clear-colour fill).
  * Reference is fixed at 1 - per-object isolation is done by rhi_clear_stencil
  * between mask groups, not by reference juggling. */
 typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST,
-               RHI_STENCIL_TEST_ZERO } rhi_stencil_mode;
+               RHI_STENCIL_TEST_ZERO, RHI_STENCIL_ONCE } rhi_stencil_mode;
 
 /* Depth convention of a pipeline or a render target. The compare op, the
  * clear value and the scene stages' depth encoding (vertex and fragment spec
@@ -1136,6 +1141,9 @@ typedef struct rhi_pipeline_desc {
                                  * wireframe view lines it like the
                                  * depth-tested scene pipelines. The 2D
                                  * layers leave it false and stay filled.     */
+    bool           push_vertex; /* the push-constant block is visible to the
+                                 * vertex stage as well as the fragment stage
+                                 * (the terrain pipelines' visibility).       */
 } rhi_pipeline_desc;
 
 /** @brief Create a single-instance host-visible vertex buffer, updated by map and memcpy.

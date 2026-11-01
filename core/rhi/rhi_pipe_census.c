@@ -137,6 +137,7 @@ uint64_t rhi_pc_desc_hash(const rhi_pipeline_desc *d)
      * of every description that leaves them clear is unchanged. */
     if (d->ssbo_set2) h = pc_mix(h, 0x5353424f32ull);   /* "SSBO2" */
     if (d->tex_ssbo_set2) h = pc_mix(h, 0x5458535332ull);   /* "TXSS2" */
+    if (d->push_vertex) h = pc_mix(h, 0x5055534856ull);     /* "PUSHV" */
     return h;
 }
 

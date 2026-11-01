@@ -99,6 +99,17 @@ Cases:
             shader-step-order: with the terrain cache described (OPENPETE_TERRAIN_CACHE_FORCE=1),
             the walk's terrain group at the first texture mapping returns before the group of
             the other built-in pipelines.
+  sky-cache  T7's sky (windowed): over a library of Spyro 1 and Spyro 2 whose caches a headless
+            launch wrote, the selector draws the domes the cache holds with no game picked: each
+            game's dome count loaded equals domes.bin's, the sky pass drew layers, the selector's
+            first frame is the flat clear (at most SKY_FLAT_MAX differs: the sky is deferred past
+            the first present), and the first frame showing one opaque dome (the shot "sky")
+            differs from the flat clear on at least SKY_COVER of its pixels; the control run with the cache removed and its re-extraction forced to fail
+            (OPENPETE_ASSET_FAIL) loads no dome, draws no layer and stays under SKY_FLAT_MAX.
+  sky-reveal  T8's dome join and first reveal (windowed): a drop of Spyro 1's disc on the empty
+            library's drop screen joins its domes to the rotation and starts the reveal in the
+            same step that reaps its assets (the sky line directly after the assets-ready line,
+            no line between them but the title switch's), and the sky pass draws revealed layers.
 
 Usage: tests/harness/check_launcher_flow.py CASE [--build-dir DIR] [--out DIR] [--measure]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or a disc image missing).
@@ -1024,6 +1035,91 @@ def case_multi_install_launch(a):
     return verdict("multi-install-launch", bad, f"{compared} lines compared")
 
 
+# ---- the sky (sky-*) ----
+
+# The share of the selector's first frame that differs from the flat clear: with a dome behind it
+# every pixel but the vignette's darkest differs; over the flat clear only the screen's text and
+# entries do (the control run measures it).
+SKY_COVER = 0.9
+SKY_FLAT_MAX = 0.2
+SKY_DRAWS = re.compile(r"sky: (\d+) of (\d+) presents handed a view drew the sky: (\d+) layers \((\d+) revealed, "
+                       r"(\d+) crossfaded\), (\d+) triangles, (\d+) meshes uploaded")
+SHOT = re.compile(r"screen selector: (\d+) of (\d+) pixels drawn over the clear")
+SKY_SHOT = re.compile(r"screen sky: (\d+) of (\d+) pixels drawn over the clear")
+
+
+def sky_selector(a, d, tag, extra=None):
+    """One windowed run of the selector, quit after 6 s; returns (log, layers drawn, selector and sky shot drawn fractions)."""
+    env = dict({"OPENPETE_LAUNCHER_SHOT": os.path.join(d, tag), "OPENPETE_LAUNCHER_INPUT": "6000:quit"},
+               **(extra or {}))
+    rc, log = cl.launch(a.binary, d, tag, ["--launcher-window", "1280x800"], env, timeout=600)
+    m, shot, sky = SKY_DRAWS.search(log), SHOT.search(log), SKY_SHOT.search(log)
+    frac = int(shot.group(1)) / max(1, int(shot.group(2))) if shot else -1.0
+    sfrac = int(sky.group(1)) / max(1, int(sky.group(2))) if sky else -1.0
+    print(f"[launcher-flow] sky-cache {tag}: exit {rc}, {m.group(0) if m else 'no sky draw line'}, "
+          f"selector {frac:.3f} drawn, sky shot {sfrac:.3f}")
+    return log, int(m.group(3)) if m else 0, frac, sfrac
+
+
+def case_sky_cache(a):
+    """T7's sky: the selector draws the domes the cache holds with no game picked; the control without a cache draws none (windowed)."""
+    d = cl.case_dir(a.out, "sky-cache")
+    seed_entry(d, "spyro-1", 1)
+    seed_entry(d, "spyro-2", 2)
+    bad = []
+    rc, _ = nox(a, d, "cache", ["--game", "spyro-1", "--frame-limit", "1"])
+    if rc != 0:
+        bad.append(f"cache run: exit {rc}")
+    want = {g: domes_count(d, g)[0] for g in ("spyro-1", "spyro-2") if manifest(d, g)}
+    if len(want) != 2 or 0 in want.values():
+        return verdict("sky-cache", bad + [f"VACUOUS: the caches hold domes {want}"])
+    log, layers, frac, sfrac = sky_selector(a, d, "sky")
+    for g, n in want.items():
+        got = re.search(r"sky: (\d+) domes of %s loaded from the cache" % g, log)
+        if not got or int(got.group(1)) != n:
+            bad.append(f"{g}: {got.group(1) if got else 'no'} domes loaded, domes.bin holds {n}")
+    if layers == 0:
+        bad.append("the sky pass drew no layer")
+    if frac < 0 or frac > SKY_FLAT_MAX:
+        bad.append(f"the selector's first frame differs from the clear on {frac:.3f} of its pixels")
+    if sfrac < SKY_COVER:
+        bad.append(f"the opaque-dome shot differs from the clear on {sfrac:.3f} of its pixels")
+    shutil.rmtree(os.path.join(d, "state", "openpete", "cache"))
+    # The launch-time jobs would extract the removed cache again; the forced failure keeps it empty.
+    log0, layers0, frac0, sfrac0 = sky_selector(a, d, "control", {"OPENPETE_ASSET_FAIL": "1"})
+    joined = re.search(r"sky: \d+ domes of \S+ (loaded from the cache|joined the rotation)", log0)
+    if joined or layers0 or frac0 < 0 or frac0 > SKY_FLAT_MAX or sfrac0 >= 0:
+        bad.append(f"control: domes {'loaded' if joined else 'none'}, {layers0} layers, {frac0:.3f} drawn")
+    return verdict("sky-cache", bad, f"domes {want}; {layers} layers; first frame {frac:.3f}, sky shot {sfrac:.3f}, "
+                                     f"control {frac0:.3f}")
+
+
+def case_sky_reveal(a):
+    """T8's dome join and first reveal: both start in the step that reaps the first disc's assets (windowed)."""
+    d = cl.case_dir(a.out, "sky-reveal")
+    env = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_LAUNCHER_DROP": disc_cue("spyro-1"),
+           "OPENPETE_LAUNCHER_INPUT": "30000:quit"}
+    rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800"], env, timeout=900)
+    bad = common_flow(log)
+    # The title switch (check_launcher_title.py title-switch) logs in the same reap; its lines are set aside.
+    lines = [l for l in log.splitlines() if " launcher: " in l and "title glyph models" not in l
+             and "launcher title:" not in l]
+    ready = [i for i, l in enumerate(lines) if "launcher assets of spyro-1 ready (ingest)" in l]
+    if not ready:
+        bad.append("no assets-ready line of the ingest")
+    else:
+        nxt = lines[ready[0] + 1] if ready[0] + 1 < len(lines) else ""
+        m = re.search(r"sky: (\d+) domes of spyro-1 joined the rotation; the reveal starts", nxt)
+        if not m or int(m.group(1)) == 0:
+            bad.append(f"the line after the assets-ready line is {nxt.strip()[-120:]!r}")
+    if "domes of spyro-1 loaded from the cache" in log:
+        bad.append("the empty library seeded domes before the ingest")
+    m = SKY_DRAWS.search(log)
+    if not m or int(m.group(4)) == 0:
+        bad.append(f"no revealed layer drawn ({m.group(0) if m else 'no sky draw line'})")
+    return verdict("sky-reveal", bad, m.group(0) if m else "")
+
+
 SLOW_ASSETS = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_ASSET_JOB_DELAY_MS": "20000"}
 
 
@@ -1279,7 +1375,8 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "job-ingest-stop-assets": case_job_ingest_stop_assets,
          "job-pick-other-assets": case_job_pick_other_assets,
          "shader-step-during": case_shader_step_during, "shader-step-after": case_shader_step_after,
-         "shader-step-order": case_shader_step_order, "input": case_input}
+         "shader-step-order": case_shader_step_order, "input": case_input, "sky-cache": case_sky_cache,
+         "sky-reveal": case_sky_reveal}
 
 
 def main():

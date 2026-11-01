@@ -8136,7 +8136,8 @@ static void pipe_blend_fill(const rhi_pipeline_desc *desc, VkPipelineColorBlendA
  * with the test left enabled, because Vulkan forces depth writes off
  * whenever depthTestEnable is VK_FALSE. Stencil roles: MARK writes 1 where
  * the fragment passes the depth test; TEST draws only where stencil == 1;
- * TEST_ZERO draws where it is not 1 (the hole fill). The reference is a fixed
+ * TEST_ZERO draws where it is not 1 (the hole fill); ONCE draws where it is
+ * not 1 and writes 1 (one fragment per pixel). The reference is a fixed
  * 1; per-object isolation is rhi_clear_stencil between groups.
  * @param dev Device whose depth compare per class is read.
  * @param desc Pipeline description.
@@ -8164,6 +8165,10 @@ static void pipe_depth_stencil_fill(const rhi_device *dev, const rhi_pipeline_de
         sop.compareOp = VK_COMPARE_OP_EQUAL;
     } else if (desc->stencil == RHI_STENCIL_TEST_ZERO) {
         sop.compareOp = VK_COMPARE_OP_NOT_EQUAL;
+    } else if (desc->stencil == RHI_STENCIL_ONCE) {
+        sop.compareOp = VK_COMPARE_OP_NOT_EQUAL;
+        sop.passOp = VK_STENCIL_OP_REPLACE;
+        sop.writeMask = 0xFFu;
     } else {
         return;
     }
@@ -8275,10 +8280,11 @@ static bool pipe_state_fill(const rhi_device *dev, const rhi_pipeline_desc *desc
     };
     /* Optional VRAM sampler set (0) + a push-constant block (the per-draw PSX
      * material: tpage/clut/bpp). Terrain pipelines read the per-draw block
-     * (clip affine + class select) in the VERTEX stage too; everything else
-     * is fragment-only. A pipeline that uses neither keeps an empty layout. */
+     * (clip affine + class select) in the VERTEX stage too, as does a
+     * push_vertex pipeline; everything else is fragment-only. A pipeline
+     * that uses neither keeps an empty layout. */
     st->pcr = (VkPushConstantRange){
-        .stageFlags = desc->terrain_pipeline
+        .stageFlags = (desc->terrain_pipeline || desc->push_vertex)
                           ? (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
                           : VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0, .size = desc->push_const_size,

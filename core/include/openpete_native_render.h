@@ -116,7 +116,10 @@ struct SDL_Window *openpete_native_launcher_window(void);
  * The begin waits for the frame slot (blocking present); a refused begin (a
  * pending swapchain rebuild, a minimized window) draws nothing. The frame
  * is a launcher frame for the boot facts (rhi_boot_launcher_frames), so it
- * neither sets the first-frame fact nor ends the bring-up create phase.
+ * neither sets the first-frame fact nor ends the bring-up create phase. On
+ * the launcher's own device with a callback, the sky view handed by
+ * openpete_native_launcher_sky_next draws between the clear and the imgui
+ * frame; the present consumes the view either way.
  * @param dev The device; NULL for the launcher's own.
  * @param r Clear red, 0..1.
  * @param g Clear green, 0..1.

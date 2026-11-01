@@ -33,6 +33,7 @@
 #include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
 #include "openpete_paths.h"         /* pipeline cache directory */
 #include "openpete_launcher.h"      /* the progress screen the compile stage draws */
+#include "openpete_launcher_sky.h"  /* the launcher's sky pass */
 #include "openpete_save_icon.h"     /* openpete_mark_icon: the window icon before the pick */
 #include "openpete_config.h"        /* device-creation knobs from the game-neutral tiers */
 #include "openpete_error_ids.h"     /* the device-lost line's error id */
@@ -6846,8 +6847,8 @@ static int nr_tercache_describe_wanted(const rhi_device *dev, const openpete_opt
 
 /* The ahead walk's groups (rhi_pipeline_describe_group), queued in this
  * order at each texture mapping: the pipelines the launcher's own screens
- * draw (the shape pass's and the 3D title's), the terrain cache's, then
- * every other built-in pipeline. */
+ * draw (the sky pass's, the shape pass's and the 3D title's), the terrain
+ * cache's, then every other built-in pipeline. */
 enum { NR_AHEAD_LAUNCHER = 0, NR_AHEAD_TERRAIN = 1, NR_AHEAD_REST = 2 };
 
 /** @brief Describe every pipeline bring-up creates before the mods' slots: the eager pipelines with their twins and, when every game could use it, the terrain cache's, through their own builders in describe mode.
@@ -6856,8 +6857,9 @@ enum { NR_AHEAD_LAUNCHER = 0, NR_AHEAD_TERRAIN = 1, NR_AHEAD_REST = 2 };
  * description that never compiles costs a compile and draws nothing. The
  * terrain cache is described only when nr_tercache_describe_wanted holds,
  * since --terrain-cache 0 must keep its pipelines from being created at all.
- * The terrain cache's descriptions take the group NR_AHEAD_TERRAIN, the
- * eager ones NR_AHEAD_REST. Display owner only.
+ * The launcher sky's and 3D title's descriptions take the group
+ * NR_AHEAD_LAUNCHER, the terrain cache's NR_AHEAD_TERRAIN, the eager ones
+ * NR_AHEAD_REST. Display owner only.
  * @param dev Device.
  * @param opts The game-neutral options.
  * @return The descriptions recorded. */
@@ -6873,6 +6875,7 @@ static unsigned nr_describe_pipelines(rhi_device *dev, const openpete_options_t 
     const nr_twin_out o = { cover, &cover_n, shell, &shell_n, &shell_pipe, &intr_pipe };
     rhi_pipeline_describe_begin(dev);
     rhi_pipeline_describe_group(dev, NR_AHEAD_LAUNCHER);
+    launcher_sky_describe(dev);
     nr_launcher_shapes_describe(dev);
     nr_launcher_title_describe(dev);
     rhi_pipeline_describe_group(dev, NR_AHEAD_REST);
@@ -7076,16 +7079,17 @@ int openpete_native_launcher_window_op(openpete_launcher_window_op_t op, int w, 
     return 0;
 }
 
-/** @brief Record the launcher present's passes under imgui's output, once its imgui frame is built: the shape pass, then the 3D title's composite.
+/** @brief Record the launcher present's passes under imgui's output, once its imgui frame is built: the sky pass, the shape pass, then the 3D title's composite.
  *
  * The frame's imgui callback adds the shapes, so the pass records after it
- * and before imgui's draw data (openpete_devui_render_frame_under), over
- * what the present drew before the callback; the title composites over the
- * shapes, and imgui's output over both.
+ * and before imgui's draw data (openpete_devui_render_frame_under). The sky
+ * (on the launcher's own device) draws over the clear, the shapes over the
+ * sky, the title composites over the shapes, and imgui's output over all.
  * @param ud The presenting rhi_device. */
 static void nr_launcher_under_ui(void *ud)
 {
     rhi_device *dev = ud;
+    if (dev == s_launch.dev) (void)launcher_sky_draw(dev);
     nr_launcher_shapes_draw(dev);
     nr_launcher_title_composite(dev);
 }
@@ -7111,6 +7115,7 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
     rhi_set_present_blocking(dev, false);
     rhi_boot_launcher_frames(false);
     nr_launcher_shapes_end();
+    openpete_native_launcher_sky_next(NULL);
     return drawn;
 }
 
@@ -7148,6 +7153,7 @@ int openpete_native_launcher_set_title(const openpete_hud_vert *v, int n, int wi
 void openpete_native_launcher_close(void)
 {
     if (!s_launch.dev) return;
+    launcher_sky_release(s_launch.dev);
     nr_launcher_shapes_release(s_launch.dev);
     nr_launcher_title_release(s_launch.dev);
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
@@ -7411,6 +7417,7 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     SDL_Window *win = s_launch.win;
     rhi_device *dev = s_launch.dev;
     const int created_vsync = s_launch.created_vsync;
+    launcher_sky_release(dev);
     nr_launcher_title_release(dev);
     memset(&s_launch, 0, sizeof s_launch);   /* the renderer owns them from here */
     OPL_INFO_F("native", "renderer device %p is the launcher device (window %p)",
