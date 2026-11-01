@@ -196,14 +196,19 @@ const char* game_name() { return s.game ? s.game->display_name : nullptr; }
 /* The layout-to-window mapping of the frame being drawn. */
 struct Frame { float scale, ox, oy; };
 
-/** @brief Map the 640x448 layout space into the window, letterboxed and centred.
+/** @brief Map the 640x448 layout space into a window of a size, letterboxed and centred.
  *
+ * @param d The window size.
  * @return The scale and the offset of the layout's origin. */
-Frame frame_map() {
-    const ImVec2 d = ImGui::GetIO().DisplaySize;
+Frame frame_map_for(ImVec2 d) {
     const float sc = (d.x / kLayoutW < d.y / kLayoutH) ? d.x / kLayoutW : d.y / kLayoutH;
     return {sc, (d.x - kLayoutW * sc) * 0.5f, (d.y - kLayoutH * sc) * 0.5f};
 }
+
+/** @brief Map the 640x448 layout space into the frame imgui draws, letterboxed and centred.
+ *
+ * @return The scale and the offset of the layout's origin. */
+Frame frame_map() { return frame_map_for(ImGui::GetIO().DisplaySize); }
 
 /* Fredoka's capitals are 700/1210 of its line, ProggyClean's 8/13: the body
  * font is pushed this much larger than a layout size so its capitals stand
@@ -396,10 +401,17 @@ float fb_origin_step(float density) {
  * whole pixel, at least 1, so the cell is c / d window coordinates. The
  * title is 7 c / d wide per glyph and 13 c / d tall, centred horizontally,
  * its origin truncated to the fb_origin_step grid so it starts on a
- * framebuffer pixel edge.
+ * framebuffer pixel edge. While the present draws the 3D title
+ * (launcher_title_drawn) the pixel title is not drawn and the 3D title's
+ * rect is recorded as title.moby instead.
  * @param f The frame mapping. */
 void draw_title(const Frame& f) {
     static const char kTitle[] = "OPENPETE";
+    float r[4];
+    if (launcher_title_drawn(r)) {
+        launcher_manifest_item("title.moby", "mesh3d", r[0], r[1], r[2], r[3]);
+        return;
+    }
     const float d = std::max(1.0f, ImGui::GetIO().DisplayFramebufferScale.x);
     const float q = fb_origin_step(d);
     const float p = 28.0f * kTitleScale * f.scale * d;
@@ -411,6 +423,31 @@ void draw_title(const Frame& f) {
     ImGui::GetWindowDrawList()->AddText(ImVec2(x, y), IM_COL32(240, 138, 30, 255), kTitle);
     ImGui::PopFont();
     launcher_manifest_item("title", "text", x, y, x + w, y + 13.0f * cell);
+}
+
+/** @brief Emit the 3D title for the next present on the launcher's device, fitted to the pixel title's box.
+ *
+ * The title spans the pixel title's width (7 cells per glyph, centred
+ * without truncation), with a gap of 0.004 of the layout height after each
+ * glyph but the last, and is centred on the ink of the pixel title's
+ * capitals: ProggyClean's baseline at trunc(top) + ceil(9.5 c) + c and its
+ * capitals 8 cells tall, c the cell. On another device (the adopted one
+ * after the hand-off) the 3D title does not draw.
+ * @param dev The presenting device; NULL for the launcher's. */
+void prepare_title(struct rhi_device* dev) {
+    int w = 0, h = 0;
+    SDL_Window* win = openpete_native_launcher_window();
+    if (dev || !win || !SDL_GetWindowSize(win, &w, &h) || w <= 0 || h <= 0) {
+        (void)launcher_title_prepare(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+    const Frame f = frame_map_for(ImVec2((float)w, (float)h));
+    const float cell = std::max(1.0f, std::round(28.0f * kTitleScale * f.scale / 13.0f));
+    const float width = 7.0f * cell * 8.0f;
+    const float x0 = f.ox + (kLayoutW * f.scale - width) * 0.5f;
+    const float top = std::trunc(f.oy + (kTitleTop + kBandY) * f.scale);
+    const float cy = top + std::ceil(9.5f * cell) + cell - 4.0f * cell;
+    (void)launcher_title_prepare((float)w, (float)h, x0, cy, width, 0.004f * kLayoutH * f.scale);
 }
 
 /** @brief Draw one frame of a screen: the pixel title, then the screen's content, in one borderless window over the whole display.
@@ -465,6 +502,7 @@ void maybe_shot(struct rhi_device* dev, int tag) {
  * @param tag The kShotTag index of its first-frame readback.
  * @return true when a frame was drawn. */
 bool present_on(struct rhi_device* dev, View& v, int tag) {
+    prepare_title(dev);
     const bool drawn = openpete_native_launcher_present(dev, kBg[0] / 255.0f, kBg[1] / 255.0f,
                                                         kBg[2] / 255.0f, draw_view, &v) != 0;
     if (!drawn) return false;
@@ -1559,6 +1597,7 @@ void ingest_poll() {
     const char* what = rc == 0 ? "ready" : rc == 1 ? "kept (a failed marker of this build)"
                      : rc == -2 ? "not updated (stopped)" : "failed";
     OPL_INFO_F("launcher", "launcher assets of %s %s (%s)", s_ing.g->game_id, what, s_ing.context.c_str());
+    if (rc == 0 || rc == 1) launcher_title_offer(s_ing.g, s_ing.context != "launch-time", "assets ready");
 }
 
 bool job_finished();

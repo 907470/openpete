@@ -45,6 +45,25 @@ typedef struct openpete_launcher_known_disc {
     const char* label;
 } openpete_launcher_known_disc;
 
+/* Where the launcher's 3D title is fitted (openpete_launcher_game.title_emit),
+ * in window pixels. */
+typedef struct openpete_launcher_title {
+    float x0;     /* the first glyph's left edge */
+    float cy;     /* the glyphs' vertical centre */
+    float width;  /* the first glyph's left edge to the last glyph's right edge */
+    float gap;    /* the space after each glyph but the last */
+    int   tick;   /* wobble and turning-light phase, in game ticks */
+} openpete_launcher_title;
+
+/* One glyph of the 3D title as posed: the rect over its vertices in window
+ * pixels and the lit colour (0xAABBGGRR) of its front face, the face whose
+ * unyawed normal points most toward the reader. */
+typedef struct openpete_launcher_title_glyph {
+    float    x0, y0, x1, y1;
+    int      face;
+    unsigned rgba;
+} openpete_launcher_title_glyph;
+
 /* What the launcher needs from a game: one entry per linked game, and one
  * neutral descriptor (no game id) that lists them for the pick made before
  * any game is installed. */
@@ -86,6 +105,17 @@ struct openpete_launcher_game {
      * NULL for a game without launcher assets. */
     int (*update_assets)(const openpete_launcher_game* g, const char* disc_path, const char* disc_sha256,
                   const char* context) OP_SLOT(ingest);
+    /* Read this game's glyph models from its launcher asset cache, replacing
+     * the ones read before; returns 0 when they are ready, -1 when the cache
+     * holds none. Needs no install. NULL for a game without them. */
+    int (*title_load)(const openpete_launcher_game* g);
+    /* Emit a string as this game's 3D title from the glyph models title_load
+     * read: openpete_hud_vert triangles (x, y in window pixels, z a view-Z)
+     * into out (cap vertices), the cap height into cap_h and up to glyph_cap
+     * posed glyphs into glyphs (NULL for none); returns the vertex count, 0
+     * when none are loaded. Needs no install. NULL for a game without them. */
+    int (*title_emit)(const openpete_launcher_game* g, const char* text, const openpete_launcher_title* t,
+                      void* out, int cap, float* cap_h, openpete_launcher_title_glyph* glyphs, int glyph_cap);
     /* The neutral descriptor's per-game entries, one per linked game; NULL
      * and 0 in a per-game entry. */
     const openpete_launcher_game* const* games;

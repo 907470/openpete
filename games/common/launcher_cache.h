@@ -76,6 +76,34 @@ int launcher_cache_update(const struct openpete_game_build* b, const char* disc_
  * @return 1 when it does, else 0. */
 int launcher_cache_game_has_assets(const struct openpete_game_build* b);
 
+/** @brief Reads one game's glyph models from its cache's glyphs.txt for the launcher's title, replacing the ones read before.
+ *
+ * Needs no install: the path names the game by its build record. Logs the
+ * file read and its glyph count, or why nothing was read.
+ * @param b The game's build record.
+ * @return 0 when the models are ready, -1 when the file is missing or does not read. */
+int launcher_cache_title_load(const struct openpete_game_build* b);
+
+struct openpete_launcher_title;
+struct openpete_launcher_title_glyph;
+
+/** @brief Emits a string as one game's 3D title from the glyph models launcher_cache_title_load read (text_glyph_set_emit_title).
+ *
+ * The font's light terms and model height come from the game's own layout,
+ * not the installed game's, so no install is needed.
+ * @param b The game's build record.
+ * @param text The string.
+ * @param t The placement, in window pixels.
+ * @param out The openpete_hud_vert buffer.
+ * @param cap Its capacity, in vertices.
+ * @param cap_h Receives the cap height.
+ * @param glyphs Receives the posed glyphs, or NULL.
+ * @param glyph_cap The records @p glyphs holds.
+ * @return The vertex count, 0 when no models are loaded for the game. */
+int launcher_cache_title_emit(const struct openpete_game_build* b, const char* text,
+                              const struct openpete_launcher_title* t, void* out, int cap, float* cap_h,
+                              struct openpete_launcher_title_glyph* glyphs, int glyph_cap);
+
 #ifdef __cplusplus
 }
 #endif

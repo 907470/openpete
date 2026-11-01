@@ -29,6 +29,31 @@ static int entry_assets(const openpete_launcher_game* g, const char* disc_path, 
                                  context);
 }
 
+/** @brief Read a per-game entry's glyph models from its launcher asset cache (launcher_cache_title_load).
+ *
+ * @param g The per-game entry.
+ * @return 0 when ready, -1 when the cache holds none. */
+static int entry_title_load(const openpete_launcher_game* g) {
+    return launcher_cache_title_load(static_cast<const openpete_game_build_t*>(g->build));
+}
+
+/** @brief Emit a string as a per-game entry's 3D title (launcher_cache_title_emit).
+ *
+ * @param g The per-game entry.
+ * @param text The string.
+ * @param t The placement.
+ * @param out The openpete_hud_vert buffer.
+ * @param cap Its capacity, in vertices.
+ * @param cap_h Receives the cap height.
+ * @param glyphs Receives the posed glyphs, or NULL.
+ * @param glyph_cap The records @p glyphs holds.
+ * @return The vertex count. */
+static int entry_title_emit(const openpete_launcher_game* g, const char* text, const openpete_launcher_title* t,
+                            void* out, int cap, float* cap_h, openpete_launcher_title_glyph* glyphs, int glyph_cap) {
+    return launcher_cache_title_emit(static_cast<const openpete_game_build_t*>(g->build), text, t, out, cap, cap_h,
+                                     glyphs, glyph_cap);
+}
+
 namespace {
 
 /** @brief Return the display name of a linked game, the version selector's prefix of an entry recorded for it.
@@ -97,7 +122,11 @@ std::vector<openpete_launcher_game>& game_entries() {
         g.build = b;
         g.install = entry_install;
         g.build_module = b->build_module ? entry_build : nullptr;
-        if (launcher_cache_game_has_assets(b)) g.update_assets = entry_assets;
+        if (launcher_cache_game_has_assets(b)) {
+            g.update_assets = entry_assets;
+            g.title_load = entry_title_load;
+            g.title_emit = entry_title_emit;
+        }
     }
     return entries;
 }

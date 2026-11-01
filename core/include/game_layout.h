@@ -1214,7 +1214,7 @@ typedef struct game_layout {
      * N.L. `fixed_light` is the unit light of the performance readout (x
      * right, y down, z toward the reader) and `fixed_tint` its 0xRRGGBB
      * base colour. */
-    struct {
+    struct game_font {
         int      form;
         uint32_t model_table;
         int      wad_entry, wad_subfile;

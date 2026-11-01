@@ -638,14 +638,30 @@ int prepare_entry(const Meta& m, const char* context) {
     return rc;
 }
 
+/** @brief Offer the most recently played identified entry's game for the 3D title (launcher_title_offer).
+ *
+ * @param entries The scanned entries.
+ * @param n The neutral descriptor listing the per-game entries. */
+void offer_recent_title(const std::vector<Meta>& entries, const openpete_launcher_game* n) {
+    const Meta* recent = nullptr;
+    for (const auto& m : entries)
+        if (!m.game.empty() && (!recent || m.last_played > recent->last_played)) recent = &m;
+    for (int i = 0; recent && i < n->game_count; i++)
+        if (n->games[i] && n->games[i]->game_id && recent->game == n->games[i]->game_id)
+            launcher_title_offer(n->games[i], true, "the most recently played entry's game");
+}
+
 /** @brief Queue the launch-time job of every library game, once per process: the most recently played entry of each linked game with a first-boot pipeline or launcher assets, its module check skipped when its failed-build marker names this build.
  *
+ * First offers the most recently played identified entry's game for the 3D
+ * title (launcher_title_offer), which shows it from that game's cache.
  * @param entries The scanned entries. */
 void queue_launch_jobs(const std::vector<Meta>& entries) {
     if (s_jobs_queued) return;
     s_jobs_queued = true;
     const openpete_launcher_game* n = launcher_game();
     if (!n || n->game_id) return;
+    offer_recent_title(entries, n);
     for (int i = 0; i < n->game_count; i++) {
         const openpete_launcher_game* g = n->games[i];
         if (!g || (!g->build_module && !g->update_assets)) continue;

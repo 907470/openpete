@@ -137,6 +137,7 @@ add_library(openpete_core STATIC
     launcher/launcher.cpp
     launcher/launcher_manifest.cpp
     launcher/launcher_font.cpp
+    launcher/launcher_title.cpp
 
     # Debug and in-game UI: the O settings menu; the placement ledger for
     # on-screen chrome (six anchors, a usable-x range that dodges the open
@@ -224,6 +225,7 @@ add_library(openpete_core STATIC
     # Native Vulkan renderer. Host-side display consumer built on core/rhi;
     # never writes PSX RAM.
     renderer/native_render.c
+    renderer/launcher_title_pass.c
     renderer/native_vram.c
     renderer/native_fb_snapshot.c
 

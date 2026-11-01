@@ -1687,6 +1687,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                 SKIP_RETURN_CODE 64
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         endforeach()
+        # The launcher's 3D title (tests/harness/check_launcher_title.py): drawn
+        # from the asset cache against the reference layout and a model of the
+        # emitter, and switched in on the assets-ready reap.
+        foreach(_launcher_case title-cache title-switch)
+            add_test(NAME launcher_${_launcher_case}
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_title.py
+                             ${_launcher_case} --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(launcher_${_launcher_case} PROPERTIES
+                LABELS "launcher"
+                TIMEOUT 1800
+                SKIP_RETURN_CODE 64
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        endforeach()
     endif()
 
     # No PSX RAM dump in the tree (scripts/fences/no-ram-dump.py). The

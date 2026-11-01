@@ -97,13 +97,19 @@ static float txt_depth_vz(float d)
 #define TXT_WOBBLE_AMP 0.589f
 
 /* Glyph lighting direction is per-emission so the FPS counter keeps its
- * fixed front light while the settings menu and the OSD use a rotating
- * specular light (the metallic shimmer). emit_glyph dots the face normal with
- * this unit vector. text_moby_native_emit installs the fixed model; the menu
- * and OSD builders install the rotating ellipse.
+ * fixed front light while the settings menu, the OSD and the launcher's title
+ * use a rotating specular light (the metallic shimmer). glyph_pose dots the
+ * face normal with this unit vector. text_moby_native_emit installs the fixed
+ * model; the menu and OSD builders install the rotating ellipse.
  *
- * light_signed: 0 (FPS) = add-only, faces range base..base+add. 1 (menu/OSD) =
+ * signed_nl: 0 (FPS) = add-only, faces range base..base+add. 1 (menu/OSD) =
  * signed - faces turned away darken below base, giving metal contrast. */
+typedef struct {
+    float add[3];               /* the font's light_add                 */
+    float hi_threshold, hi_gain;/* the font's highlight terms           */
+    float dir[3];               /* unit light direction (N.L)           */
+    int   signed_nl;            /* see the note above                   */
+} glyph_light_t;
 
 /* ---- glyph cache (snapshot of the model geometry, immune to later unload) ---
  * One entry per slot; the largest glyph seen is ~62 verts / 67 faces, and a
@@ -629,6 +635,63 @@ void text_glyph_set_write(const text_glyph_set* G, FILE* out) {
     }
 }
 
+/** @brief Parses one "slot" line of a written glyph set into its slot.
+ *
+ * The line is "slot S index I v x,y,z ... f a,b,c,d:nx,ny,nz ...", as
+ * text_glyph_set_write prints it; the index is not read back.
+ * @param G The set.
+ * @param line The line, after "slot ".
+ * @return 0, or -1 when the line is malformed or exceeds a glyph's capacity. */
+static int glyph_set_read_slot(text_glyph_set* G, const char* line) {
+    char* e;
+    const long slot = strtol(line, &e, 10);
+    if (e == line || slot < 0 || slot >= NGLYPH) return -1;
+    glyph_cache_t* g = &G->glyph[slot];
+    const char* v = strstr(e, " v");
+    const char* f = v ? strstr(v, " f") : NULL;
+    if (!v || !f) return -1;
+    int n = 0;
+    for (const char* p = v + 2; p < f && n < TXT_MAX_GLYPH_V; n++) {
+        int x, y, z, used = 0;
+        if (sscanf(p, " %d,%d,%d%n", &x, &y, &z, &used) != 3) break;
+        g->vx[n] = (int16_t)x; g->vy[n] = (int16_t)y; g->vz[n] = (int16_t)z;
+        p += used;
+    }
+    int m = 0;
+    for (const char* p = f + 2; *p && *p != '\n' && m < TXT_MAX_GLYPH_F; m++) {
+        int a, b, c, d, nx, ny, nz, used = 0;
+        if (sscanf(p, " %d,%d,%d,%d:%d,%d,%d%n", &a, &b, &c, &d, &nx, &ny, &nz, &used) != 7) break;
+        if (a < 0 || b < 0 || c < 0 || d < 0 || a >= n || b >= n || c >= n || d >= TXT_MAX_GLYPH_V) return -1;
+        g->fi[m][0] = (uint8_t)a; g->fi[m][1] = (uint8_t)b; g->fi[m][2] = (uint8_t)c; g->fi[m][3] = (uint8_t)d;
+        g->fn[m][0] = (int16_t)nx; g->fn[m][1] = (int16_t)ny; g->fn[m][2] = (int16_t)nz;
+        p += used;
+    }
+    if (n == 0 || m == 0) return -1;
+    g->vcount = n; g->fcount = m;
+    glyph_set_xrange(g);
+    g->valid = 1;
+    return 0;
+}
+
+int text_glyph_set_read(text_glyph_set* G, FILE* in) {
+    memset(G, 0, sizeof *G);
+    G->wad_tried = 1;   /* a set read from a file never reads a disc */
+    char line[16384];
+    int ready = 0, slots = 0;
+    while (fgets(line, sizeof line, in)) {
+        if (!strchr(line, '\n') && !feof(in)) return -1;   /* longer than any line the writer prints */
+        if (!strncmp(line, "ready ", 6)) ready = atoi(line + 6);
+        else if (!strncmp(line, "source ", 7)) G->source = atoi(line + 7);
+        else if (!strncmp(line, "digit_adv ", 10)) G->digit_adv = atoi(line + 10);
+        else if (!strncmp(line, "slot ", 5)) {
+            if (glyph_set_read_slot(G, line + 5) != 0) return -1;
+            slots++;
+        }
+    }
+    G->ready = ready == 1 && slots > 0;
+    return G->ready ? 0 : -1;
+}
+
 int text_moby_native_ready(void) { return s_set.ready; }
 
 void text_moby_native_dump(FILE* out) {
@@ -651,17 +714,31 @@ typedef struct {
     int   n;                   /* verts written so far                 */
     int   glyph_n;             /* of those, glyph faces (the rest is frame) */
     int   dropped;             /* triangles refused for want of capacity */
-    float light[3];            /* unit light direction (N·L)           */
-    int   light_signed;        /* see the note above                   */
-    /* per-glyph vertices in overlay space (filled by emit_glyph). */
+    glyph_light_t lt;          /* the font's light terms and the light   */
+    /* per-glyph vertices in overlay space and face colours (glyph_pose). */
     float gx[TXT_MAX_GLYPH_V], gy[TXT_MAX_GLYPH_V], gz[TXT_MAX_GLYPH_V];
+    uint32_t frgba[TXT_MAX_GLYPH_F];
 } emit_ctx_t;
+
+/** @brief Fills a light from a font's light terms, with the font's fixed front light and unsigned N.L.
+ *
+ * @param lt The light.
+ * @param font The font descriptor. */
+static void glyph_light_init(glyph_light_t* lt, const struct game_font* font) {
+    for (int k = 0; k < 3; k++) {
+        lt->add[k] = font->light_add[k];
+        lt->dir[k] = font->fixed_light[k];
+    }
+    lt->hi_threshold = font->hi_threshold;
+    lt->hi_gain = font->hi_gain;
+    lt->signed_nl = 0;
+}
 
 /** @brief Starts an emission into a vertex buffer, lit by the font's fixed front light.
  *
  * Counters are zeroed and the light is FONT.fixed_light with unsigned N.L
- * shading. Callers wanting the rotating specular overwrite cx->light and
- * cx->light_signed afterwards.
+ * shading. Callers wanting the rotating specular install it afterwards
+ * (install_specular_light).
  * @param cx The emission context.
  * @param out The vertex buffer, or NULL to emit nothing.
  * @param cap The buffer's capacity, in vertices. */
@@ -671,8 +748,7 @@ static void emit_ctx_init(emit_ctx_t* cx, openpete_hud_vert* out, int cap) {
     cx->n   = 0;
     cx->glyph_n = 0;
     cx->dropped = 0;
-    cx->light[0] = FONT.fixed_light[0]; cx->light[1] = FONT.fixed_light[1]; cx->light[2] = FONT.fixed_light[2];
-    cx->light_signed = 0;
+    glyph_light_init(&cx->lt, &FONT);
 }
 
 /** @brief Computes a lit face colour: the base plus the font's light term times N.L, plus the highlight above hi_threshold.
@@ -680,16 +756,18 @@ static void emit_ctx_init(emit_ctx_t* cx, openpete_hud_vert* out, int cap) {
  * Each channel is base + light_add * t + (t - hi_threshold) * hi_gain when
  * t exceeds hi_threshold, clamped to 0..255. A negative t (the signed
  * shading of the menu and the OSD) darkens faces turned away from the light.
+ * Reads only its arguments.
+ * @param lt The light carrying the font's terms.
  * @param baseR The base red, 0..255.
  * @param baseG The base green, 0..255.
  * @param baseB The base blue, 0..255.
  * @param t The N.L term, -1..1.
  * @return The colour as 0xAABBGGRR with alpha 0xFF. */
-static uint32_t lit_colour(int baseR, int baseG, int baseB, float t) {
-    const int hi = (t > FONT.hi_threshold) ? (int)((t - FONT.hi_threshold) * FONT.hi_gain) : 0;
-    int R = baseR + (int)(FONT.light_add[0] * t) + hi; if (R < 0) R = 0; else if (R > 255) R = 255;
-    int G = baseG + (int)(FONT.light_add[1] * t) + hi; if (G < 0) G = 0; else if (G > 255) G = 255;
-    int B = baseB + (int)(FONT.light_add[2] * t) + hi; if (B < 0) B = 0; else if (B > 255) B = 255;
+static uint32_t lit_colour(const glyph_light_t* lt, int baseR, int baseG, int baseB, float t) {
+    const int hi = (t > lt->hi_threshold) ? (int)((t - lt->hi_threshold) * lt->hi_gain) : 0;
+    int R = baseR + (int)(lt->add[0] * t) + hi; if (R < 0) R = 0; else if (R > 255) R = 255;
+    int G = baseG + (int)(lt->add[1] * t) + hi; if (G < 0) G = 0; else if (G > 255) G = 255;
+    int B = baseB + (int)(lt->add[2] * t) + hi; if (B < 0) B = 0; else if (B > 255) B = 255;
     return (uint32_t)R | ((uint32_t)G << 8) | ((uint32_t)B << 16) | 0xFF000000u;
 }
 
@@ -712,31 +790,57 @@ static void push_tri(emit_ctx_t* cx, int a, int b, int c, uint32_t rgba) {
     cx->glyph_n += 3;
 }
 
-/** @brief Emits one cached glyph with its left edge at cursor_x, centred on center_y.
+/** @brief Returns glyph gi's wobble yaw at a wobble tick: cos(((tick * 8 + gi * 12) & 0xFF) * 2pi/256) * TXT_WOBBLE_AMP.
  *
- * The glyph is yawed about its own mid-X, normals included; the advance is
- * the unyawed width. Each face is lit by N.L against the context's light and
- * emitted without a winding cull (a quad as two triangles); the depth test
- * keeps the nearer faces.
- * @param cx The emission context.
- * @param slot The glyph's cache slot.
- * @param cursor_x The left edge, in overlay units.
- * @param center_y The vertical centre, in overlay units.
- * @param scale Overlay units per model unit.
- * @param dy_model A vertical shift in model units (the colon dots).
- * @param yaw The yaw in radians; 0 is front-facing.
- * @param baseR The glyph colour's red, 0..255.
- * @param baseG The glyph colour's green, 0..255.
- * @param baseB The glyph colour's blue, 0..255.
- * @return The glyph width in overlay units, or -1 when the slot is not
- *         cached. */
-static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y,
-                        float scale, float dy_model, float yaw,
-                        int baseR, int baseG, int baseB) {
-    if (slot < 0 || slot >= NGLYPH || !s_set.glyph[slot].valid) return -1.0f;
-    const glyph_cache_t* g = &s_set.glyph[slot];
-    int vcount = g->vcount, fcount = g->fcount, vxmin = g->vxmin, vxmax = g->vxmax;
+ * The PSX pause menu's selected-row ripple: the phase advances 8 per tick
+ * and 12 per glyph. Reads only its arguments.
+ * @param wob_tick The wobble tick, or below 0 for an upright glyph.
+ * @param gi The glyph's index in its string (spaces not counted).
+ * @return The yaw in radians; 0 when wob_tick is below 0. */
+static float glyph_wobble_yaw(int wob_tick, int gi) {
+    if (wob_tick < 0) return 0.0f;
+    const unsigned au = ((unsigned)wob_tick * 8u + (unsigned)gi * 12u) & 0xFFu;
+    return cosf((float)au * (6.2831853f / 256.0f)) * TXT_WOBBLE_AMP;
+}
+
+/* Where one glyph is placed: its left edge, its vertical centre and the
+ * scale, in the caller's units (overlay units or window pixels), and a
+ * vertical shift in model units (the colon dots). */
+typedef struct {
+    float cursor_x, center_y, scale, dy_model;
+} glyph_place_t;
+
+/** @brief Poses one glyph at a wobble tick and lights its faces, writing its vertices and face colours.
+ *
+ * The glyph is yawed by glyph_wobble_yaw(wob_tick, gi) about its own
+ * vertical mid-line (the middle of its X extent), normals included, so it
+ * turns left and right in place; yaw 0 leaves it front-facing. Vertex i
+ * lands at (cursor_x + (x - xmin) * scale, center_y + y * scale) with its
+ * view-Z on the depth band (front nearer). Face f's colour is lit_colour of
+ * the base against N.L, the yawed normal dotted with the light, clamped to
+ * -1..1 for signed shading and 0..1 otherwise. Reads only its arguments, so
+ * the settings menu, the OSD, the readout and the launcher's title share it.
+ * @param g The glyph's geometry.
+ * @param lt The font's light terms and the light.
+ * @param wob_tick The wobble tick, or below 0 for an upright glyph.
+ * @param gi The glyph's index in its string.
+ * @param at Its placement.
+ * @param base The base colour, 0xRRGGBB.
+ * @param gx Receives each vertex's x, TXT_MAX_GLYPH_V entries.
+ * @param gy Receives each vertex's y.
+ * @param gz Receives each vertex's view-Z.
+ * @param frgba Receives each face's colour, TXT_MAX_GLYPH_F entries.
+ * @return The vertex count posed (vcount, at most TXT_MAX_GLYPH_V). */
+static int glyph_pose(const glyph_cache_t* g, const glyph_light_t* lt, int wob_tick, int gi,
+                      const glyph_place_t* at, unsigned base,
+                      float* gx, float* gy, float* gz, uint32_t* frgba) {
+    const int baseR = (int)((base >> 16) & 0xFFu);
+    const int baseG = (int)((base >>  8) & 0xFFu);
+    const int baseB = (int)( base        & 0xFFu);
+    int vcount = g->vcount;
+    const int vxmin = g->vxmin, vxmax = g->vxmax;
     if (vcount > TXT_MAX_GLYPH_V) vcount = TXT_MAX_GLYPH_V;
+    const float yaw = glyph_wobble_yaw(wob_tick, gi);
     /* Selected-row wobble: yaw about the glyph's own vertical axis (its mid-X), so
      * it turns left<->right revealing the extrusion; the normals rotate too (below)
      * so the directional highlight sweeps. yaw==0 -> the original front-facing glyph
@@ -745,31 +849,44 @@ static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y
     const float cs = cosf(yaw), sn = sinf(yaw);
     const float midx = 0.5f * (float)(vxmin + vxmax);
     for (int i = 0; i < vcount; i++) {
-        float my = (float)g->vy[i] + dy_model;
+        float my = (float)g->vy[i] + at->dy_model;
         float dx = (float)g->vx[i] - midx;      /* centre X before rotating */
         float dz = (float)g->vz[i];
         float vx_r = midx + dx * cs + dz * sn;  /* yawed X */
         float mz   =       -dx * sn + dz * cs;  /* yawed Z (depth) */
         float gx_local = (TXT_XSIGN < 0.0f) ? (vxmax - vx_r) : (vx_r - vxmin);
-        cx->gx[i] = cursor_x + gx_local * scale;
-        cx->gy[i] = center_y + TXT_YSIGN * my * scale;
-        cx->gz[i] = txt_depth_vz(TXT_DEPTH_MID - mz * TXT_DEPTH_K);   /* front nearer */
+        gx[i] = at->cursor_x + gx_local * at->scale;
+        gy[i] = at->center_y + TXT_YSIGN * my * at->scale;
+        gz[i] = txt_depth_vz(TXT_DEPTH_MID - mz * TXT_DEPTH_K);   /* front nearer */
     }
-    for (int f = 0; f < fcount; f++) {
-        int i0 = g->fi[f][0], i1 = g->fi[f][1], i2 = g->fi[f][2], i3 = g->fi[f][3];
-        if (i0 >= vcount || i1 >= vcount || i2 >= vcount) continue;
+    for (int f = 0; f < g->fcount && f < TXT_MAX_GLYPH_F; f++) {
         float nz0 = (float)g->fn[f][2];
         float nx0 = TXT_XSIGN * (float)g->fn[f][0]; /* match mirrored geometry */
         float ny  = (float)g->fn[f][1];
         float nx = nx0 * cs + nz0 * sn;                    /* yaw the normal with the glyph */
         float nz = -nx0 * sn + nz0 * cs;
         float nl = sqrtf(nx * nx + ny * ny + nz * nz); if (nl < 1e-3f) nl = 1.0f;
-        float t = (nx * cx->light[0] + ny * cx->light[1] + nz * cx->light[2]) / nl; /* N·L (unit L) */
-        if (cx->light_signed) { if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f; }
-        else                { if (t <  0.0f) t =  0.0f; else if (t >  1.0f) t =  1.0f; }
-        uint32_t rgba = lit_colour(baseR, baseG, baseB, t);
-        /* Draw front AND back faces; the depth test keeps the (nearer) front and
-         * the edge-on side walls have ~zero area - so no winding cull is needed. */
+        float t = (nx * lt->dir[0] + ny * lt->dir[1] + nz * lt->dir[2]) / nl; /* N·L (unit L) */
+        if (lt->signed_nl) { if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f; }
+        else               { if (t <  0.0f) t =  0.0f; else if (t >  1.0f) t =  1.0f; }
+        frgba[f] = lit_colour(lt, baseR, baseG, baseB, t);
+    }
+    return vcount;
+}
+
+/** @brief Appends a posed glyph's faces to the emission buffer as triangles.
+ *
+ * Each face is emitted without a winding cull (a quad as two triangles);
+ * the depth test keeps the nearer faces and the edge-on side walls have
+ * near-zero area. A face naming a vertex past vcount is skipped.
+ * @param cx The emission context; gx, gy, gz and frgba hold the posed glyph.
+ * @param g The glyph's geometry.
+ * @param vcount The vertex count glyph_pose posed. */
+static void push_glyph(emit_ctx_t* cx, const glyph_cache_t* g, int vcount) {
+    for (int f = 0; f < g->fcount; f++) {
+        int i0 = g->fi[f][0], i1 = g->fi[f][1], i2 = g->fi[f][2], i3 = g->fi[f][3];
+        if (i0 >= vcount || i1 >= vcount || i2 >= vcount) continue;
+        const uint32_t rgba = cx->frgba[f];
         if (i2 == i3) {
             push_tri(cx, i0, i1, i2, rgba);                   /* tri */
         } else if (i3 < vcount) {
@@ -777,7 +894,31 @@ static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y
             push_tri(cx, i1, i3, i2, rgba);
         }
     }
-    return (float)(vxmax - vxmin) * scale;
+}
+
+/** @brief Emits one glyph of the producer's glyph set with its left edge at cursor_x, centred on center_y.
+ *
+ * Poses and lights it through glyph_pose with the context's light; the
+ * advance is the unyawed width.
+ * @param cx The emission context.
+ * @param slot The glyph's cache slot.
+ * @param cursor_x The left edge, in overlay units.
+ * @param center_y The vertical centre, in overlay units.
+ * @param scale Overlay units per model unit.
+ * @param dy_model A vertical shift in model units (the colon dots).
+ * @param wob_tick The wobble tick, or below 0 for an upright glyph.
+ * @param gi The glyph's index in its string.
+ * @param base The glyph colour, 0xRRGGBB.
+ * @return The glyph width in overlay units, or -1 when the slot is not
+ *         cached. */
+static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y,
+                        float scale, float dy_model, int wob_tick, int gi, unsigned base) {
+    if (slot < 0 || slot >= NGLYPH || !s_set.glyph[slot].valid) return -1.0f;
+    const glyph_cache_t* g = &s_set.glyph[slot];
+    const glyph_place_t at = { cursor_x, center_y, scale, dy_model };
+    const int vcount = glyph_pose(g, &cx->lt, wob_tick, gi, &at, base, cx->gx, cx->gy, cx->gz, cx->frgba);
+    push_glyph(cx, g, vcount);
+    return (float)(g->vxmax - g->vxmin) * scale;
 }
 
 /** @brief Emits one string's glyphs into the context's buffer.
@@ -800,9 +941,6 @@ static int emit_string(emit_ctx_t* cx, const char* str,
                        unsigned base_rgb, int wob_phase) {
     if (!s_set.ready || !cx->out || cx->cap <= 0 || !str) return 0;
     const int n_before = cx->n;
-    const int baseR = (int)((base_rgb >> 16) & 0xFFu);
-    const int baseG = (int)((base_rgb >>  8) & 0xFFu);
-    const int baseB = (int)( base_rgb        & 0xFFu);
     const float scale    = cap_h / FONT.model_h;
     const float center_y = origin_y + cap_h * 0.5f;
     const int   period   = glyph_slot('.');
@@ -812,17 +950,12 @@ static int emit_string(emit_ctx_t* cx, const char* str,
     for (int i = 0; str[i]; i++) {
         char c = str[i];
         if (c == ' ') { cursor += TXT_SPACE; continue; }
-        float yaw = 0.0f;
-        if (wob_phase >= 0) {
-            unsigned au = ((unsigned)wob_phase * 8u + (unsigned)gi * 12u) & 0xFFu;
-            yaw = cosf((float)au * (6.2831853f / 256.0f)) * TXT_WOBBLE_AMP;
-        }
         if (c == ':' && glyph_slot(':') < 0) {           /* faked colon: two dots */
             float w = emit_glyph(cx, period, cursor, center_y, scale * FONT.colon_scale,
-                                 FONT.colon_recenter + FONT.colon_spread, yaw, baseR, baseG, baseB);
+                                 FONT.colon_recenter + FONT.colon_spread, wob_phase, gi, base_rgb);
             if (w < 0.0f) { cursor += TXT_SPACE; continue; }
             emit_glyph(cx, period, cursor, center_y, scale * FONT.colon_scale,
-                       FONT.colon_recenter - FONT.colon_spread, yaw, baseR, baseG, baseB);
+                       FONT.colon_recenter - FONT.colon_spread, wob_phase, gi, base_rgb);
             cursor += w + TXT_GAP; gi++;
             continue;
         }
@@ -831,8 +964,8 @@ static int emit_string(emit_ctx_t* cx, const char* str,
         float adv, inset;
         glyph_metrics(slot, scale, &adv, &inset);
         if (adv < 0.0f) { cursor += TXT_SPACE; continue; }  /* not cached -> skip */
-        if (emit_glyph(cx, slot, cursor + inset, center_y, scale, 0.0f, yaw,
-                       baseR, baseG, baseB) < 0.0f) {
+        if (emit_glyph(cx, slot, cursor + inset, center_y, scale, 0.0f, wob_phase, gi,
+                       base_rgb) < 0.0f) {
             cursor += TXT_SPACE; continue;
         }
         cursor += adv + TXT_GAP; gi++;
@@ -1066,6 +1199,21 @@ void text_moby_native_layers_tick(CPUState* cpu) {
     text_moby_native_version(cpu);
 }
 
+/** @brief Writes SpecularUpdate's rotating light direction at a phase: (cos a * 0.968, sin a * 1.549, -0.25) normalized, a = 3 * phase / 256 turn.
+ *
+ * Reads only its arguments.
+ * @param phase The phase, in game ticks.
+ * @param dir Receives the unit direction. */
+static void glyph_specular_dir(unsigned phase, float dir[3]) {
+    const unsigned sp = (phase * 3u) & 0xFFu;
+    const float sth = (float)sp * (6.2831853f / 256.0f);
+    float Lx = cosf(sth) * 0.968f;   /* COSINE_8 * 1983 >> 11 */
+    float Ly = sinf(sth) * 1.549f;   /* SINE_8   * 6345 >> 12 */
+    float Lz = -0.25f;               /* -1024 / 4096 (small fixed into-screen) */
+    float Ll = sqrtf(Lx*Lx + Ly*Ly + Lz*Lz); if (Ll < 1e-3f) Ll = 1.0f;
+    dir[0] = Lx/Ll; dir[1] = Ly/Ll; dir[2] = Lz/Ll;
+}
+
 /** @brief Installs SpecularUpdate's rotating light as the emission's light, with signed shading.
  *
  * The light direction is (cos a * 0.968, sin a * 1.549, -0.25) normalized,
@@ -1075,14 +1223,8 @@ void text_moby_native_layers_tick(CPUState* cpu) {
  * @param cx The emission context.
  * @param phase The shimmer phase (text_moby_native_shimmer_phase). */
 static void install_specular_light(emit_ctx_t* cx, unsigned phase) {
-    const unsigned sp = (phase * 3u) & 0xFFu;
-    const float sth = (float)sp * (6.2831853f / 256.0f);
-    float Lx = cosf(sth) * 0.968f;   /* COSINE_8 * 1983 >> 11 */
-    float Ly = sinf(sth) * 1.549f;   /* SINE_8   * 6345 >> 12 */
-    float Lz = -0.25f;               /* -1024 / 4096 (small fixed into-screen) */
-    float Ll = sqrtf(Lx*Lx + Ly*Ly + Lz*Lz); if (Ll < 1e-3f) Ll = 1.0f;
-    cx->light[0] = Lx/Ll; cx->light[1] = Ly/Ll; cx->light[2] = Lz/Ll;
-    cx->light_signed = 1;   /* metal contrast: shadowed faces darken below base */
+    glyph_specular_dir(phase, cx->lt.dir);
+    cx->lt.signed_nl = 1;   /* metal contrast: shadowed faces darken below base */
 }
 
 /** @brief Prints the FNV-1a hash of a published vertex buffer to stderr, under OPENPETE_TEXT_GLYPH_CENSUS=2 or above.
@@ -1161,9 +1303,9 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
  * @param ny The normal's Y component.
  * @return The colour as 0xAABBGGRR. */
 static uint32_t border_lit(const emit_ctx_t* cx, float nx, float ny) {
-    float t = nx * cx->light[0] + ny * cx->light[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
+    float t = nx * cx->lt.dir[0] + ny * cx->lt.dir[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
     if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f;
-    return (lit_colour(MENU_BORDER_R, MENU_BORDER_G, MENU_BORDER_B, t) & 0x00FFFFFFu) |
+    return (lit_colour(&cx->lt, MENU_BORDER_R, MENU_BORDER_G, MENU_BORDER_B, t) & 0x00FFFFFFu) |
            (OPENPETE_HUD_ALPHA_NO_OUTLINE << 24);
 }
 
@@ -1520,4 +1662,99 @@ void text_moby_native_osd(CPUState* cpu) {
     openpete_native_set_osd_glyphs(s_osd_buf, cx.n, slots, ns);
     if ((text_moby_native_shimmer_phase() & 63u) == 0u) glyph_hash_census("osd", s_osd_buf, cx.n);
     glyph_census(2, cx.n, cx.glyph_n);
+}
+
+/* ---- a fitted title from a glyph set read from the launcher cache ------- */
+
+/** @brief Maps a letter or digit to its glyph slot, independent of any font's punctuation list.
+ *
+ * @param c The character.
+ * @return The slot, or -1 for any other character. */
+static int title_slot(char c) {
+    if (c >= '0' && c <= '9') return SLOT_DIGIT + (c - '0');
+    if (c >= 'A' && c <= 'Z') return SLOT_LETTER + (c - 'A');
+    if (c >= 'a' && c <= 'z') return SLOT_LETTER + (c - 'a');
+    return -1;
+}
+
+/** @brief Returns the slot of a title character that the set holds, or -1.
+ *
+ * @param G The glyph set.
+ * @param c The character.
+ * @return The slot, or -1 when the character is no letter or digit or the set lacks its glyph. */
+static int title_glyph(const text_glyph_set* G, char c) {
+    const int slot = title_slot(c);
+    return slot >= 0 && G->glyph[slot].valid ? slot : -1;
+}
+
+/** @brief Returns the index of a glyph's front face: the face whose unyawed normal points most toward the reader (+Z).
+ *
+ * @param g The glyph.
+ * @return The face index, 0 for a glyph without faces. */
+static int glyph_front_face(const glyph_cache_t* g) {
+    int best = 0;
+    float best_z = -2.0f;
+    for (int f = 0; f < g->fcount; f++) {
+        const float x = g->fn[f][0], y = g->fn[f][1], z = g->fn[f][2];
+        const float l = sqrtf(x * x + y * y + z * z);
+        if (l > 0.0f && z / l > best_z) { best_z = z / l; best = f; }
+    }
+    return best;
+}
+
+/** @brief Records a posed glyph's rect over its vertices and its front face's colour.
+ *
+ * @param cx The emission context holding the posed glyph.
+ * @param g The glyph.
+ * @param vcount The vertex count posed.
+ * @param out Receives the record. */
+static void title_posed(const emit_ctx_t* cx, const glyph_cache_t* g, int vcount, text_glyph_posed* out) {
+    out->x0 = out->x1 = cx->gx[0];
+    out->y0 = out->y1 = cx->gy[0];
+    for (int i = 1; i < vcount; i++) {
+        if (cx->gx[i] < out->x0) out->x0 = cx->gx[i];
+        if (cx->gx[i] > out->x1) out->x1 = cx->gx[i];
+        if (cx->gy[i] < out->y0) out->y0 = cx->gy[i];
+        if (cx->gy[i] > out->y1) out->y1 = cx->gy[i];
+    }
+    out->face = glyph_front_face(g);
+    out->rgba = cx->frgba[out->face];
+}
+
+int text_glyph_set_emit_title(const text_glyph_set* G, const struct game_font* font, const char* str,
+                              const text_glyph_fit* fit, openpete_hud_vert* out, int cap, float* cap_h,
+                              text_glyph_posed* posed, int posed_cap) {
+    *cap_h = 0.0f;
+    if (!G || !G->ready || !font || font->model_h <= 0.0f || !str || !out || cap <= 0) return 0;
+    float model_w = 0.0f;
+    int n = 0;
+    for (const char* c = str; *c; c++) {
+        const int slot = title_glyph(G, *c);
+        if (slot < 0) continue;
+        model_w += (float)(G->glyph[slot].vxmax - G->glyph[slot].vxmin);
+        n++;
+    }
+    if (n == 0 || model_w <= 0.0f) return 0;
+    const float scale = (fit->width - (float)(n - 1) * fit->gap) / model_w;
+    *cap_h = scale * font->model_h;
+    emit_ctx_t cx;
+    memset(&cx, 0, sizeof cx);
+    cx.out = out;
+    cx.cap = cap;
+    glyph_light_init(&cx.lt, font);
+    if (fit->tick >= 0) install_specular_light(&cx, (unsigned)fit->tick);
+    float cursor = fit->x0;
+    int gi = 0;
+    for (const char* c = str; *c; c++) {
+        const int slot = title_glyph(G, *c);
+        if (slot < 0) continue;
+        const glyph_cache_t* g = &G->glyph[slot];
+        const glyph_place_t at = { cursor, fit->cy, scale, 0.0f };
+        const int vcount = glyph_pose(g, &cx.lt, fit->tick, gi, &at, MENU_TITLE_TINT, cx.gx, cx.gy, cx.gz, cx.frgba);
+        if (posed && gi < posed_cap) title_posed(&cx, g, vcount, &posed[gi]);
+        push_glyph(&cx, g, vcount);
+        cursor += (float)(g->vxmax - g->vxmin) * scale + fit->gap;
+        gi++;
+    }
+    return cx.n;
 }

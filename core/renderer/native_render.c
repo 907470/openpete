@@ -48,6 +48,7 @@
 #include "openpete_record.h" /* native --record capture seam */
 #include "openpete_view_rect.h" /* the view layout and its pixel rect */
 #include "rhi.h"
+#include "launcher_title_pass.h" /* the launcher's 3D title */
 #include "mod_vec.h"      /* the scene triangle store and compose scratch runs */
 #include "game_layout.h"  /* game_layout.terrain: the per-game ordering-table key policy */
 #include "screenshot.h"  /* openpete_write_png_rgba */
@@ -6844,8 +6845,8 @@ static int nr_tercache_describe_wanted(const rhi_device *dev, const openpete_opt
 
 /* The ahead walk's groups (rhi_pipeline_describe_group), queued in this
  * order at each texture mapping: the pipelines the launcher's own screens
- * draw (none is described here), the terrain cache's, then every other
- * built-in pipeline. */
+ * draw (the 3D title's), the terrain cache's, then every other built-in
+ * pipeline. */
 enum { NR_AHEAD_LAUNCHER = 0, NR_AHEAD_TERRAIN = 1, NR_AHEAD_REST = 2 };
 
 /** @brief Describe every pipeline bring-up creates before the mods' slots: the eager pipelines with their twins and, when every game could use it, the terrain cache's, through their own builders in describe mode.
@@ -6870,6 +6871,8 @@ static unsigned nr_describe_pipelines(rhi_device *dev, const openpete_options_t 
     rhi_pipeline *shell_pipe = NULL, *intr_pipe = NULL;
     const nr_twin_out o = { cover, &cover_n, shell, &shell_n, &shell_pipe, &intr_pipe };
     rhi_pipeline_describe_begin(dev);
+    rhi_pipeline_describe_group(dev, NR_AHEAD_LAUNCHER);
+    nr_launcher_title_describe(dev);
     rhi_pipeline_describe_group(dev, NR_AHEAD_REST);
     nr_eager_core(dev, &d, &p, 1);
     (void)nr_eager_twins(dev, &d, &p, 1, &o);
@@ -7080,7 +7083,9 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
     rhi_boot_launcher_frames(true);
     rhi_set_present_blocking(dev, true);
     if (rhi_begin_frame(dev)) {
+        if (draw) nr_launcher_title_prepass(dev);
         rhi_begin_offscreen(dev, r, g, b, 1.0f);
+        if (draw) nr_launcher_title_composite(dev);
         drawn = openpete_devui_render_frame(dev, draw, ud);
         rhi_end_offscreen(dev);
         rhi_blit_to_swapchain(dev);
@@ -7119,9 +7124,15 @@ int openpete_native_launcher_shot(struct rhi_device *on, const char *path, const
     return rc;
 }
 
+int openpete_native_launcher_set_title(const openpete_hud_vert *v, int n, int win_w, int win_h)
+{
+    return nr_launcher_title_set(s_launch.dev, v, n, win_w, win_h);
+}
+
 void openpete_native_launcher_close(void)
 {
     if (!s_launch.dev) return;
+    nr_launcher_title_release(s_launch.dev);
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
     rhi_destroy(s_launch.dev);
     SDL_DestroyWindow(s_launch.win);
@@ -7383,6 +7394,7 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     SDL_Window *win = s_launch.win;
     rhi_device *dev = s_launch.dev;
     const int created_vsync = s_launch.created_vsync;
+    nr_launcher_title_release(dev);
     memset(&s_launch, 0, sizeof s_launch);   /* the renderer owns them from here */
     OPL_INFO_F("native", "renderer device %p is the launcher device (window %p)",
                (void *)dev, (void *)win);

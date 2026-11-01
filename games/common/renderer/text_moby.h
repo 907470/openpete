@@ -68,6 +68,66 @@ int text_glyph_set_ready(const text_glyph_set* G);
  * @param out The stream. */
 void text_glyph_set_write(const text_glyph_set* G, FILE* out);
 
+/** @brief Reads a glyph set written by text_glyph_set_write into an empty set.
+ *
+ * Every field is replaced: the flags, then each "slot" line's vertices and
+ * faces (the glyph's X extent recomputed). The set never reads a disc
+ * afterwards. A line longer than the writer prints, a malformed slot line
+ * or a face naming a vertex the slot lacks fails the read.
+ * @param G The set.
+ * @param in The stream.
+ * @return 0 when the set read is ready with at least one glyph, else -1. */
+int text_glyph_set_read(text_glyph_set* G, FILE* in);
+
+struct game_font;
+
+/* Where text_glyph_set_emit_title fits a string, in the caller's units
+ * (window pixels for the launcher). */
+typedef struct {
+    float x0;     /* the first glyph's left edge */
+    float cy;     /* the glyphs' vertical centre */
+    float width;  /* the first glyph's left edge to the last glyph's right edge */
+    float gap;    /* the space after each glyph but the last */
+    int   tick;   /* wobble and turning-light phase, in game ticks; below 0
+                   * upright under the font's fixed light */
+} text_glyph_fit;
+
+/* One glyph text_glyph_set_emit_title posed: the rect over its posed
+ * vertices and the lit colour of its front face (the face whose unyawed
+ * normal points most toward the reader). */
+typedef struct {
+    float    x0, y0, x1, y1;
+    int      face;
+    uint32_t rgba;   /* 0xAABBGGRR */
+} text_glyph_posed;
+
+/** @brief Emits a string's letters and digits from a glyph set as the settings menu's title, fitted to a width.
+ *
+ * The scale is the one at which the glyphs' unyawed widths plus a gap after
+ * each but the last span fit->width, and each glyph's left edge follows the
+ * previous one's by its width and the gap; the cap height is that scale
+ * times the font's model_h. Each glyph is posed and lit by the function the
+ * producer's emission uses (the per-glyph wobble at fit->tick, the font's
+ * light terms under SpecularUpdate's turning light at that tick with signed
+ * shading, the menu title's base colour). A character that is no letter or
+ * digit, or whose glyph the set lacks, is skipped without an advance. Reads
+ * no global state.
+ * @param G The glyph set.
+ * @param font The font descriptor whose light terms and model_h apply.
+ * @param str The string.
+ * @param fit The placement.
+ * @param out The vertex buffer: 3 vertices per triangle, x and y in the
+ *        caller's units, z the view-Z of the overlay depth band.
+ * @param cap Its capacity, in vertices; a triangle that does not fit is dropped.
+ * @param cap_h Receives the cap height, 0 when nothing is emitted.
+ * @param posed Receives one record per glyph emitted, or NULL.
+ * @param posed_cap The records @p posed holds.
+ * @return The vertices written; 0 when the set is not ready or holds none
+ *         of the string's glyphs. */
+int text_glyph_set_emit_title(const text_glyph_set* G, const struct game_font* font, const char* str,
+                              const text_glyph_fit* fit, openpete_hud_vert* out, int cap, float* cap_h,
+                              text_glyph_posed* posed, int posed_cap);
+
 /** @brief Snapshots the glyph-model geometry into the glyph cache the first time it is available.
  *
  * A GAME_FONT_WAD_MODEL font is read from the disc image at the first call

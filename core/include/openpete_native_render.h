@@ -673,6 +673,21 @@ typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
  * takes this alpha and stays unringed. */
 #define OPENPETE_HUD_ALPHA_NO_OUTLINE 0xFEu
 
+/** @brief Hand the launcher's next presents its 3D title: glyph triangles drawn depth-tested at twice the window's size per axis and box-filtered over the launcher's image, under the screens' imgui draw.
+ *
+ * Set before each launcher present that draws it; a call with no triangles
+ * clears it. Creates the title pass's pipelines on the launcher's device at
+ * the first call that draws (from the pipeline cache when the launcher's
+ * ahead compile reached them). Launcher thread only.
+ * @param v The triangles, 3 vertices each: x and y in window pixels, z a
+ *        view-Z of the overlay depth band (smaller nearer).
+ * @param n The vertex count; below 3 clears the title.
+ * @param win_w The window width in pixels the triangles are laid out in.
+ * @param win_h The window height in pixels.
+ * @return 1 when the next launcher present draws the title, else 0 (no
+ *         launcher device, no triangles, or the pass could not start). */
+int openpete_native_launcher_set_title(const openpete_hud_vert *v, int n, int win_w, int win_h);
+
 /** @brief Hand the renderer the performance readout's glyph triangles.
  *
  * The glyphs are built each tick by the game-side emitter (text_moby_native)

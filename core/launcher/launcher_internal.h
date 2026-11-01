@@ -241,6 +241,36 @@ void launcher_manifest_item(const char* id, const char* kind, float x0, float y0
  * @param h The window height. */
 void launcher_manifest_write(unsigned tag, const char* screen, float w, float h);
 
+/** @brief Offer a game's glyph models for the 3D title: read them from the game's launcher asset cache and switch the title to them.
+ *
+ * The title belongs to the game last offered with @p prefer; another game's
+ * offer switches only while no 3D title shows. A game whose cache holds no
+ * glyph models leaves the title as it is. Launcher thread only.
+ * @param g The game's launcher entry (per-game or the launcher's own).
+ * @param prefer Make the title this game's: the most recently played entry
+ *        at launch, an ingest's or a pick's game.
+ * @param why The reason, for the log line. */
+void launcher_title_offer(const openpete_launcher_game* g, bool prefer, const char* why);
+
+/** @brief Emit the 3D title for the present about to be drawn on the launcher's device and hand it to the title pass.
+ *
+ * @param win_w The window width the screens lay out in.
+ * @param win_h The window height.
+ * @param x0 The title's left edge, window pixels.
+ * @param cy Its vertical centre.
+ * @param width Its width.
+ * @param gap The gap after each glyph but the last.
+ * @return true when the present draws the 3D title (the pixel title is then
+ *         not drawn). */
+bool launcher_title_prepare(float win_w, float win_h, float x0, float cy, float width, float gap);
+
+/** @brief Report whether the present being drawn draws the 3D title, and its rect.
+ *
+ * @param rect Receives x0, y0, x1, y1 in window pixels (the width fitted
+ *        and the cap height about the centre) when it does; may be NULL.
+ * @return true when it does. */
+bool launcher_title_drawn(float rect[4]);
+
 struct ImFont;
 
 /** @brief Return the launcher's body font, Fredoka Medium, adding it to the current imgui context on the first call.

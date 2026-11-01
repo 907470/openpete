@@ -9,6 +9,7 @@
 #include "openpete_log.h"
 #include "openpete_paths.h"
 #include "openpete_time.h"
+#include "openpete_game_runtime.h"
 #include "renderer/text_moby.h"
 
 #include <stdint.h>
@@ -339,4 +340,72 @@ int launcher_cache_update(const openpete_game_build_t* b, const char* disc_path,
 
 int launcher_cache_game_has_assets(const openpete_game_build_t* b) {
     return b && b->runtime && b->runtime->host && b->runtime->host->assets ? 1 : 0;
+}
+
+/* The glyph models the launcher's title draws, one set per linked game,
+ * keyed by build record; read and drawn on the launcher's thread. */
+#define LC_TITLE_GAMES 8
+static struct {
+    const openpete_game_build_t* b;
+    text_glyph_set*              set;
+} s_title[LC_TITLE_GAMES];
+
+/** @brief Returns the title glyph-set slot of a game, claiming a free one on its first use.
+ *
+ * @param b The game's build record.
+ * @return The slot index, or -1 when every slot holds another game. */
+static int lc_title_slot(const openpete_game_build_t* b) {
+    for (int i = 0; i < LC_TITLE_GAMES; i++)
+        if (s_title[i].b == b) return i;
+    for (int i = 0; i < LC_TITLE_GAMES; i++)
+        if (!s_title[i].b) { s_title[i].b = b; return i; }
+    return -1;
+}
+
+int launcher_cache_title_load(const openpete_game_build_t* b) {
+    char dir[4096], path[4096];
+    const int k = lc_title_slot(b);
+    if (k < 0 || openpete_paths_game_state_dir("cache", b->id, dir, sizeof dir, 0) != 0) return -1;
+    openpete_paths_join(path, sizeof path, dir, k_lc_files[1]);
+    if (!s_title[k].set) s_title[k].set = text_glyph_set_new();
+    text_glyph_set* G = s_title[k].set;
+    FILE* f = G ? fopen(path, "r") : NULL;
+    if (!f) {
+        text_glyph_set_free(G);   /* NULL-safe: the set read before goes with its file */
+        s_title[k].set = NULL;
+        OPL_INFO_F("launcher", "title glyph models of %s: %s does not open", b->id, path);
+        return -1;
+    }
+    const int rc = text_glyph_set_read(G, f);
+    fclose(f);
+    if (rc != 0) {
+        text_glyph_set_free(G);
+        s_title[k].set = NULL;
+        OPL_WARN_F("launcher", "title glyph models of %s: %s does not read", b->id, path);
+        return -1;
+    }
+    OPL_INFO_F("launcher", "title glyph models of %s read from %s", b->id, path);
+    return 0;
+}
+
+int launcher_cache_title_emit(const openpete_game_build_t* b, const char* text, const openpete_launcher_title* t,
+                              void* out, int cap, float* cap_h, openpete_launcher_title_glyph* glyphs,
+                              int glyph_cap) {
+    *cap_h = 0.0f;
+    const int k = lc_title_slot(b);
+    const game_layout_t* layout = b->runtime ? b->runtime->layout : NULL;
+    if (k < 0 || !s_title[k].set || !layout) return 0;
+    text_glyph_posed posed[16];
+    memset(posed, 0, sizeof posed);
+    const text_glyph_fit fit = { t->x0, t->cy, t->width, t->gap, t->tick };
+    const int pcap = glyph_cap < 16 ? glyph_cap : 16;
+    const int n = text_glyph_set_emit_title(s_title[k].set, &layout->font, text, &fit, (openpete_hud_vert*)out, cap,
+                                            cap_h, glyphs ? posed : NULL, pcap);
+    for (int i = 0; glyphs && i < pcap; i++) {
+        glyphs[i].x0 = posed[i].x0; glyphs[i].y0 = posed[i].y0;
+        glyphs[i].x1 = posed[i].x1; glyphs[i].y1 = posed[i].y1;
+        glyphs[i].face = posed[i].face;
+        glyphs[i].rgba = posed[i].rgba;
+    }
+    return n;
 }
