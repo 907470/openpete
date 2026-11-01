@@ -127,6 +127,42 @@ struct SDL_Window *openpete_native_launcher_window(void);
 int openpete_native_launcher_present(struct rhi_device *dev, float r, float g, float b,
                                      void (*draw)(void *ud), void *ud);
 
+/* The kinds of a launcher shape (openpete_launcher_shape). */
+typedef enum {
+    OPENPETE_LAUNCHER_SHAPE_FILL = 0,   /* a panel, chip or text scrim: one colour */
+    OPENPETE_LAUNCHER_SHAPE_BAR = 1     /* a progress bar: track, fill and border */
+} openpete_launcher_shape_kind;
+
+/* One shape of the launcher's shape pass: a rounded rectangle with
+ * elliptical corners, every length in framebuffer pixels, colours straight
+ * (not premultiplied) RGBA in 0..1. */
+typedef struct openpete_launcher_shape {
+    openpete_launcher_shape_kind kind;
+    float rect[4];        /* x0, y0, x1, y1, y down */
+    float rx, ry;         /* corner radii; each at most half the matching side */
+    float col[4];         /* FILL: the colour */
+    float track[4];       /* BAR: the track */
+    float fill[4];        /* BAR: the fill, drawn from x0 to fill_x */
+    float border[4];      /* BAR: the border ring */
+    float fill_x;         /* BAR: the fill's right edge */
+    float border_w;       /* BAR: the ring's width inside the edge */
+    float aa;             /* the edge's coverage ramp width */
+    float shadow_a;       /* the drop shadow's black alpha; 0 casts none */
+    float shadow_dy;      /* the shadow's downward offset */
+    float shadow_blur;    /* the shadow's blur width */
+} openpete_launcher_shape;
+
+/** @brief Add a shape to the shape pass of the launcher present being drawn.
+ *
+ * Called from the present's imgui callback (openpete_native_launcher_present).
+ * The pass draws the frame's shapes in the order added, every shadow first,
+ * after the sky and before the 3D title and imgui's draw data, so imgui text
+ * lands over them; the present drops the list when it ends. Shapes past the
+ * pass's capacity are counted and not drawn.
+ * @param s The shape; copied.
+ * @return 1 when it was added, else 0. */
+int openpete_native_launcher_shape_add(const openpete_launcher_shape *s);
+
 /** @brief Read back the last launcher frame, count the pixels that differ from the clear colour, and write it as a PNG.
  *
  * A pixel differs when a channel is more than 8 levels from @p bg. Waits

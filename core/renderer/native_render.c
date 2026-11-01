@@ -49,6 +49,7 @@
 #include "openpete_view_rect.h" /* the view layout and its pixel rect */
 #include "rhi.h"
 #include "launcher_title_pass.h" /* the launcher's 3D title */
+#include "launcher_shape_pass.h" /* the launcher's panels, chips and bar */
 #include "mod_vec.h"      /* the scene triangle store and compose scratch runs */
 #include "game_layout.h"  /* game_layout.terrain: the per-game ordering-table key policy */
 #include "screenshot.h"  /* openpete_write_png_rgba */
@@ -6845,8 +6846,8 @@ static int nr_tercache_describe_wanted(const rhi_device *dev, const openpete_opt
 
 /* The ahead walk's groups (rhi_pipeline_describe_group), queued in this
  * order at each texture mapping: the pipelines the launcher's own screens
- * draw (the 3D title's), the terrain cache's, then every other built-in
- * pipeline. */
+ * draw (the shape pass's and the 3D title's), the terrain cache's, then
+ * every other built-in pipeline. */
 enum { NR_AHEAD_LAUNCHER = 0, NR_AHEAD_TERRAIN = 1, NR_AHEAD_REST = 2 };
 
 /** @brief Describe every pipeline bring-up creates before the mods' slots: the eager pipelines with their twins and, when every game could use it, the terrain cache's, through their own builders in describe mode.
@@ -6872,6 +6873,7 @@ static unsigned nr_describe_pipelines(rhi_device *dev, const openpete_options_t 
     const nr_twin_out o = { cover, &cover_n, shell, &shell_n, &shell_pipe, &intr_pipe };
     rhi_pipeline_describe_begin(dev);
     rhi_pipeline_describe_group(dev, NR_AHEAD_LAUNCHER);
+    nr_launcher_shapes_describe(dev);
     nr_launcher_title_describe(dev);
     rhi_pipeline_describe_group(dev, NR_AHEAD_REST);
     nr_eager_core(dev, &d, &p, 1);
@@ -7074,6 +7076,20 @@ int openpete_native_launcher_window_op(openpete_launcher_window_op_t op, int w, 
     return 0;
 }
 
+/** @brief Record the launcher present's passes under imgui's output, once its imgui frame is built: the shape pass, then the 3D title's composite.
+ *
+ * The frame's imgui callback adds the shapes, so the pass records after it
+ * and before imgui's draw data (openpete_devui_render_frame_under), over
+ * what the present drew before the callback; the title composites over the
+ * shapes, and imgui's output over both.
+ * @param ud The presenting rhi_device. */
+static void nr_launcher_under_ui(void *ud)
+{
+    rhi_device *dev = ud;
+    nr_launcher_shapes_draw(dev);
+    nr_launcher_title_composite(dev);
+}
+
 int openpete_native_launcher_present(struct rhi_device *on, float r, float g, float b,
                                      void (*draw)(void *ud), void *ud)
 {
@@ -7085,8 +7101,7 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
     if (rhi_begin_frame(dev)) {
         if (draw) nr_launcher_title_prepass(dev);
         rhi_begin_offscreen(dev, r, g, b, 1.0f);
-        if (draw) nr_launcher_title_composite(dev);
-        drawn = openpete_devui_render_frame(dev, draw, ud);
+        drawn = openpete_devui_render_frame_under(dev, draw, ud, nr_launcher_under_ui, dev);
         rhi_end_offscreen(dev);
         rhi_blit_to_swapchain(dev);
         rhi_end_frame(dev);
@@ -7095,6 +7110,7 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
     }
     rhi_set_present_blocking(dev, false);
     rhi_boot_launcher_frames(false);
+    nr_launcher_shapes_end();
     return drawn;
 }
 
@@ -7132,6 +7148,7 @@ int openpete_native_launcher_set_title(const openpete_hud_vert *v, int n, int wi
 void openpete_native_launcher_close(void)
 {
     if (!s_launch.dev) return;
+    nr_launcher_shapes_release(s_launch.dev);
     nr_launcher_title_release(s_launch.dev);
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
     rhi_destroy(s_launch.dev);
@@ -7653,6 +7670,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
         nr_eager_set_destroy(dev, &P);
+        nr_launcher_shapes_release(dev);
         rhi_destroy(dev);
         SDL_DestroyWindow(win);
         return 1;
@@ -23495,6 +23513,7 @@ void openpete_native_render_shutdown(void)
      * owns the display for the teardown's pipeline unlinks. */
     rhi_display_claim(s_nr.dev);
     rhi_wait_idle(s_nr.dev);
+    nr_launcher_shapes_release(s_nr.dev);   /* the adopted launcher device's shape pass */
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
     openpete_tercache_shutdown(s_nr.dev);
     /* The growth census row, printed whether or not the cache came up: a

@@ -29,8 +29,12 @@
 // window operations a window manager answers, and key=, pad=, stick= and
 // mouse= post key, gamepad and pointer events (scripted_event). OPENPETE_LAUNCHER_MANIFEST=<base>
 // writes each screen's first frame's elements, by the reference layout's ids, to
-// <base>.<screen>.json (launcher_manifest.cpp).
+// <base>.<screen>.json (launcher_manifest.cpp). The contrast check's harness
+// variables: OPENPETE_LAUNCHER_CLEAR=r,g,b replaces the clear colour, and
+// OPENPETE_LAUNCHER_TEXT_HIDE=1 draws imgui's output at alpha 0, so a shot
+// holds the background and the shape pass alone.
 #include "launcher_internal.h"
+#include "launcher_shapes.h"
 
 #include "imgui.h"
 
@@ -287,12 +291,42 @@ const StageLook& stage_look(const char* stage) {
     return kStageLooks[sizeof kStageLooks / sizeof kStageLooks[0] - 1];
 }
 
-/** @brief Draw the progress screen: banner, stage line, bar and footer.
+/* The progress view's step line top, in layout px: the place the step chip
+ * and the game page's quit chip draw at. */
+constexpr float kStepChipY = 196 + kBandY;
+/* A centred chip's padding around its line's box, layout px. */
+constexpr float kChipPadX = 12.0f, kChipPadY = 7.0f;
+
+/** @brief Draw one line of text horizontally centred in the layout on a chip (launcher_chip_text): the box, the text scrim, the text.
+ *
+ * The line's origin is its centred position unrounded (imgui truncates it
+ * when it draws); the chip spans the line's box grown by kChipPadX x
+ * kChipPadY layout px, and the text records as @p id, the chip as
+ * <id>.panel and the scrim as <id>.scrim.
+ * @param f The frame mapping.
+ * @param id The text's manifest id.
+ * @param y The line's top in layout pixels.
+ * @param size The text height in layout pixels, as ProggyClean (push_body_font).
+ * @param col The text colour.
+ * @param text The text. */
+void chip_centred(const Frame& f, const char* id, float y, float size, ImU32 col, const char* text) {
+    push_body_font(size * f.scale);
+    const ImVec2 sz = ImGui::CalcTextSize(text);
+    const ImVec2 at(f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, f.oy + y * f.scale);
+    launcher_chip_text(id, at, ImVec2(kChipPadX, kChipPadY), f.scale, col, text);
+    ImGui::PopFont();
+}
+
+/* The progress bar (layout px): its left inset, top below the band's top,
+ * height and border; light track, dark border, orange fill. */
+constexpr float kBarX = 80.0f, kBarY = 240.0f, kBarH = 22.0f, kBarBorder = 2.0f;
+
+/** @brief Draw the progress screen: banner, step chip, bar and footer.
  *
  * The stage's row of kStageLooks gives the banner and footer. A counted
  * stage shows done/total after the stage text, or done alone while total
- * is 0 and done is not. The bar fills done/total, clamped to 1, and is
- * empty when total is 0.
+ * is 0 and done is not. The bar (launcher_shape_bar) fills done/total,
+ * clamped to 1, and is empty when total is 0.
  * @param f The frame mapping.
  * @param v The view. */
 void draw_progress(const Frame& f, const View& v) {
@@ -302,15 +336,12 @@ void draw_progress(const Frame& f, const View& v) {
     if (look.counted && v.total > 0) snprintf(line, sizeof line, "%s %d/%d", v.stage, v.done, v.total);
     else if (look.counted && v.done > 0) snprintf(line, sizeof line, "%s %d", v.stage, v.done);
     else snprintf(line, sizeof line, "%s", v.stage);
-    text_centred(f, "step", 196 + kBandY, 14, IM_COL32_WHITE, line);
-    float frac = v.total > 0 ? (float)v.done / (float)v.total : 0.0f;
-    if (frac > 1.0f) frac = 1.0f;
-    ImGui::SetCursorPos(ImVec2(f.ox + 80 * f.scale, f.oy + (240 + kBandY) * f.scale));
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, IM_COL32(240, 138, 30, 255));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(50, 38, 80, 255));
-    ImGui::ProgressBar(frac, ImVec2((kLayoutW - 160) * f.scale, 22 * f.scale), "");
-    manifest_last_item("bar", "bar");
-    ImGui::PopStyleColor(2);
+    chip_centred(f, "step", kStepChipY, 14, IM_COL32_WHITE, line);
+    const float frac = v.total > 0 ? (float)v.done / (float)v.total : 0.0f;
+    const ImVec2 a(f.ox + kBarX * f.scale, f.oy + (kBarY + kBandY) * f.scale);
+    const ImVec2 b(f.ox + (kLayoutW - kBarX) * f.scale, a.y + kBarH * f.scale);
+    launcher_shape_bar("bar", a, b, f.scale, frac, IM_COL32(150, 130, 190, 255), IM_COL32(240, 138, 30, 255),
+                       IM_COL32(50, 38, 80, 255), kBarBorder);
     text_centred(f, "footer", 292 + kBandY, 8, IM_COL32(150, 130, 190, 255), look.footer);
 }
 
@@ -335,24 +366,11 @@ void draw_drop(const Frame& f, View& v) {
     text_centred(f, "quit.hint", 300 + kBandY, 8, IM_COL32(110, 95, 150, 255), "ESC / (B) TO QUIT");
 }
 
-/* The progress view's step line top, in layout px: the place the step chip
- * and the game page's quit chip draw at. */
-constexpr float kStepChipY = 196 + kBandY;
-
-/** @brief Draw the quit ask's chip, "Press again to quit", at the step chip's place: white text on a box of half the background and half (8,8,8).
+/** @brief Draw the quit ask's chip, "Press again to quit", at the step chip's place: white text on the step chip's box (chip_centred).
  *
  * @param f The frame mapping. */
 void draw_quit_ask(const Frame& f) {
-    static const char kText[] = "Press again to quit";
-    push_body_font(14 * f.scale);
-    const ImVec2 sz = ImGui::CalcTextSize(kText);
-    ImGui::PopFont();
-    const float pad = 6 * f.scale;
-    const float x = f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, y = f.oy + kStepChipY * f.scale;
-    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x - pad, y - pad), ImVec2(x + sz.x + pad, y + sz.y + pad),
-                                              IM_COL32(8, 8, 8, 128), pad);
-    launcher_manifest_item("quit.ask.chip", "rect", x - pad, y - pad, x + sz.x + pad, y + sz.y + pad);
-    text_centred(f, "quit.ask", kStepChipY, 14, IM_COL32_WHITE, kText);
+    chip_centred(f, "quit.ask", kStepChipY, 14, IM_COL32_WHITE, "Press again to quit");
 }
 
 /** @brief Draw the selector: the heading, up to six entries with the focused one marked, the note, the drop and browse hint, the controls hint, and the quit ask's chip while it shows.
@@ -492,6 +510,8 @@ void draw_view(void* ud) {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    static const bool hide = getenv("OPENPETE_LAUNCHER_TEXT_HIDE") != nullptr;
+    if (hide) ImGui::GetStyle().Alpha = 0.0f;
     const Frame f = frame_map();
     launcher_manifest_begin();
     draw_title(f);
@@ -507,6 +527,26 @@ void draw_view(void* ud) {
 constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile"};
 constexpr int kShotPrecompile = 4;
 
+/** @brief Return the clear colour of every launcher present: kBg, or the harness variable OPENPETE_LAUNCHER_CLEAR=r,g,b read once.
+ *
+ * @return R, G, B bytes. */
+const uint8_t* launcher_clear() {
+    static uint8_t c[3] = {kBg[0], kBg[1], kBg[2]};
+    static bool read = false;
+    if (!read) {
+        read = true;
+        const char* e = getenv("OPENPETE_LAUNCHER_CLEAR");
+        int r = 0, g = 0, b = 0;
+        if (e && sscanf(e, "%d,%d,%d", &r, &g, &b) == 3) {
+            c[0] = (uint8_t)std::clamp(r, 0, 255);
+            c[1] = (uint8_t)std::clamp(g, 0, 255);
+            c[2] = (uint8_t)std::clamp(b, 0, 255);
+            OPL_INFO_F("launcher", "clear colour (%d,%d,%d) (OPENPETE_LAUNCHER_CLEAR)", c[0], c[1], c[2]);
+        }
+    }
+    return c;
+}
+
 /** @brief Read back the first frame of a shot tag when OPENPETE_LAUNCHER_SHOT is set, logging how many pixels it drew.
  *
  * @param dev The device the frame was presented on; NULL for the launcher's.
@@ -518,7 +558,7 @@ void maybe_shot(struct rhi_device* dev, int tag) {
     s.shot_done |= bit;
     const std::string path = std::string(base) + "." + kShotTag[tag] + ".png";
     unsigned differ = 0, total = 0;
-    const int rc = openpete_native_launcher_shot(dev, path.c_str(), kBg, &differ, &total);
+    const int rc = openpete_native_launcher_shot(dev, path.c_str(), launcher_clear(), &differ, &total);
     OPL_INFO_F("launcher", "screen %s: %u of %u pixels drawn over the clear (shot %s, rc %d)",
                kShotTag[tag], differ, total, path.c_str(), rc);
 }
@@ -531,8 +571,9 @@ void maybe_shot(struct rhi_device* dev, int tag) {
  * @return true when a frame was drawn. */
 bool present_on(struct rhi_device* dev, View& v, int tag) {
     prepare_title(dev);
-    const bool drawn = openpete_native_launcher_present(dev, kBg[0] / 255.0f, kBg[1] / 255.0f,
-                                                        kBg[2] / 255.0f, draw_view, &v) != 0;
+    const uint8_t* bg = launcher_clear();
+    const bool drawn = openpete_native_launcher_present(dev, bg[0] / 255.0f, bg[1] / 255.0f,
+                                                        bg[2] / 255.0f, draw_view, &v) != 0;
     if (!drawn) return false;
     maybe_shot(dev, tag);
     const ImVec2 d = ImGui::GetIO().DisplaySize;

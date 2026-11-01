@@ -1701,6 +1701,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                 SKIP_RETURN_CODE 64
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         endforeach()
+        # The launcher's shape pass (tests/harness/check_launcher_shapes.py):
+        # the chip text's contrast, the chip fill against Spyro 3's blend and
+        # the shapes' rects against the reference layout, read from the
+        # binary's own readback.
+        foreach(_launcher_case contrast fill layout)
+            add_test(NAME launcher_shapes_${_launcher_case}
+                     COMMAND ${Python3_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_launcher_shapes.py
+                             ${_launcher_case} --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(launcher_shapes_${_launcher_case} PROPERTIES
+                LABELS "launcher"
+                TIMEOUT 1800
+                SKIP_RETURN_CODE 64
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        endforeach()
     endif()
 
     # No PSX RAM dump in the tree (scripts/fences/no-ram-dump.py). The

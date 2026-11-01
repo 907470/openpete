@@ -91,6 +91,21 @@ int  openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
  *         @p draw is NULL or no command buffer is recording. */
 int  openpete_devui_render_frame(struct rhi_device *dev, void (*draw)(void *ud), void *ud);
 
+/** @brief Record one imgui frame as openpete_devui_render_frame does, with passes recorded under imgui's draw data.
+ *
+ * @p under runs after @p draw has built the frame and before the draw data
+ * is recorded, in the same offscreen pass: a pass whose content the frame's
+ * imgui calls decide (the launcher's shapes) draws beneath the frame's
+ * imgui output.
+ * @param dev The device the context was created on.
+ * @param draw Issues the frame's imgui calls.
+ * @param ud Passed to @p draw.
+ * @param under Records the passes under imgui's output; NULL for none.
+ * @param under_ud Passed to @p under.
+ * @return As openpete_devui_render_frame. */
+int  openpete_devui_render_frame_under(struct rhi_device *dev, void (*draw)(void *ud), void *ud,
+                                       void (*under)(void *under_ud), void *under_ud);
+
 /** @brief Destroy the imgui backends and context and return the overlay to its uninitialised state.
  *
  * Clears the open and boot-reveal state and the stored device. No-op before

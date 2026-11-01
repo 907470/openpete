@@ -3335,6 +3335,12 @@ void openpete_devui_render(struct rhi_device *dev)
 
 int openpete_devui_render_frame(struct rhi_device *dev, void (*draw)(void *ud), void *ud)
 {
+    return openpete_devui_render_frame_under(dev, draw, ud, nullptr, nullptr);
+}
+
+int openpete_devui_render_frame_under(struct rhi_device *dev, void (*draw)(void *ud), void *ud,
+                                      void (*under)(void *under_ud), void *under_ud)
+{
     if (!s_ctx || dev != s_dev || !draw) return 0;
     void *cb = rhi_current_command_buffer(dev);
     if (!cb) return 0;
@@ -3346,6 +3352,7 @@ int openpete_devui_render_frame(struct rhi_device *dev, void (*draw)(void *ud), 
     ImGui::NewFrame();
     draw(ud);
     ImGui::Render();
+    if (under) under(under_ud);
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
     return 1;
 }

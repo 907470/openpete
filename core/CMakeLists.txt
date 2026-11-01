@@ -139,6 +139,7 @@ add_library(openpete_core STATIC
     launcher/launcher_font.cpp
     launcher/launcher_title.cpp
     launcher/launcher_commands.cpp
+    launcher/launcher_shapes.cpp
 
     # Debug and in-game UI: the O settings menu; the placement ledger for
     # on-screen chrome (six anchors, a usable-x range that dodges the open
@@ -227,6 +228,7 @@ add_library(openpete_core STATIC
     # never writes PSX RAM.
     renderer/native_render.c
     renderer/launcher_title_pass.c
+    renderer/launcher_shape_pass.c
     renderer/native_vram.c
     renderer/native_fb_snapshot.c
 
