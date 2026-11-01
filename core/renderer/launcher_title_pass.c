@@ -5,12 +5,21 @@
 #include "openpete_time.h"
 #include "rhi.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <string.h>
 
 /* Samples per output pixel along each axis: the target is this many times
- * the window per axis and the composite averages each block. */
+ * the title's rect per axis and the composite averages each block. */
 #define LT_SS 2
+/* The target's largest side in texels; a rect whose LT_SS-times side
+ * exceeds it takes fewer samples per pixel (down to 1). */
+#define LT_MAX_SIDE 4096
+/* Window pixels added around the vertices' bounds on every side. */
+#define LT_PAD 2
+/* The target's extent in window pixels is a multiple of this, so a title
+ * whose bounds move by a few pixels between presents keeps its target. */
+#define LT_ALIGN 64
 /* The largest title the pass takes, in vertices. */
 #define LT_MAX_VERTS 8192
 
@@ -22,7 +31,11 @@ struct lt_state {
     rhi_buffer   *vb;
     rhi_buffer   *quad_vb;
     rhi_texture  *rt;
-    int           rt_w, rt_h;
+    int           rt_w, rt_h;     /* the target in texels: ss times the rect */
+    int           ss;             /* samples per window pixel along each axis */
+    int           rx, ry;         /* the rect's top-left corner, window pixels */
+    int           rw, rh;         /* the rect's extent, window pixels */
+    int           win_w, win_h;   /* the window the rect lies in */
     int           failed;     /* a pipeline, buffer or target could not be created */
     int           n;          /* vertices set for the next present */
     int           armed;      /* the prepass rendered the target this frame */
@@ -90,29 +103,76 @@ static int lt_ensure_objects(rhi_device *dev) {
     return 1;
 }
 
-/** @brief Size the target at LT_SS times a window, recreating it after the device idles on a size change.
+/** @brief Round a window-pixel extent up to a multiple of LT_ALIGN.
  *
+ * @param v The extent.
+ * @return The rounded extent. */
+static int lt_align_up(int v) { return (v + LT_ALIGN - 1) / LT_ALIGN * LT_ALIGN; }
+
+/** @brief Size the target for a rect of at least @p need_w x @p need_h window pixels.
+ *
+ * The target is recreated, after the device idles, when the current one is
+ * too small or over twice the need.
+ * The rect's extent is the need rounded up to LT_ALIGN; the samples per
+ * pixel are LT_SS unless that puts a side past LT_MAX_SIDE or the device's
+ * limit, then the most that fits (at least 1, the extent clamped to fit).
  * @param dev The device.
- * @param w The window width in pixels.
- * @param h The window height in pixels.
- * @return 1 when the target exists at that size, else 0. */
-static int lt_ensure_target(rhi_device *dev, int w, int h) {
-    int want_w = w * LT_SS, want_h = h * LT_SS;
-    const int maxdim = (int)rhi_max_image_dimension(dev);
-    if (want_w > maxdim) want_w = maxdim;
-    if (want_h > maxdim) want_h = maxdim;
-    if (s_lt.rt && s_lt.rt_w == want_w && s_lt.rt_h == want_h) return 1;
+ * @param need_w The width the title's bounds take, window pixels.
+ * @param need_h The height the title's bounds take, window pixels.
+ * @return 1 when the target exists, else 0. */
+static int lt_ensure_target(rhi_device *dev, int need_w, int need_h) {
+    int maxdim = (int)rhi_max_image_dimension(dev);
+    if (maxdim > LT_MAX_SIDE) maxdim = LT_MAX_SIDE;
+    if (need_w > maxdim) need_w = maxdim;
+    if (need_h > maxdim) need_h = maxdim;
+    if (s_lt.rt && need_w <= s_lt.rw && need_h <= s_lt.rh && 2 * need_w >= s_lt.rw - LT_ALIGN &&
+        2 * need_h >= s_lt.rh - LT_ALIGN)
+        return 1;
+    int rw = lt_align_up(need_w), rh = lt_align_up(need_h);
+    if (rw > maxdim) rw = maxdim;
+    if (rh > maxdim) rh = maxdim;
+    int ss = LT_SS;
+    while (ss > 1 && (rw * ss > maxdim || rh * ss > maxdim)) ss--;
     rhi_wait_idle(dev);
     if (s_lt.rt) rhi_destroy_texture(dev, s_lt.rt);
-    s_lt.rt = rhi_create_render_target(dev, (uint32_t)want_w, (uint32_t)want_h);
-    s_lt.rt_w = want_w;
-    s_lt.rt_h = want_h;
+    s_lt.rt = rhi_create_render_target(dev, (uint32_t)(rw * ss), (uint32_t)(rh * ss));
+    s_lt.rw = rw;
+    s_lt.rh = rh;
+    s_lt.ss = ss;
+    s_lt.rt_w = rw * ss;
+    s_lt.rt_h = rh * ss;
     if (!s_lt.rt) {
-        OPL_WARN_F("native", "launcher title pass: the %dx%d target could not be created", want_w, want_h);
+        OPL_WARN_F("native", "launcher title pass: the %dx%d target could not be created", s_lt.rt_w, s_lt.rt_h);
         return 0;
     }
-    OPL_INFO_F("native", "launcher title pass: target %dx%d (%dx per axis)", want_w, want_h, LT_SS);
+    OPL_INFO_F("native", "launcher title pass: target %dx%d (%dx per axis over a %dx%d px rect)", s_lt.rt_w,
+               s_lt.rt_h, ss, rw, rh);
     return 1;
+}
+
+/** @brief Find the window-pixel bounds of the title's vertices, padded by LT_PAD and clamped to the window.
+ *
+ * @param v The vertices.
+ * @param n Their count, at least 1.
+ * @param w The window width in pixels.
+ * @param h The window height in pixels.
+ * @param b Receives x0, y0, x1, y1 (x1 > x0 and y1 > y0 unless the title lies outside the window). */
+static void lt_bounds(const openpete_hud_vert *v, int n, int w, int h, int b[4]) {
+    float x0 = v[0].x, y0 = v[0].y, x1 = v[0].x, y1 = v[0].y;
+    for (int i = 1; i < n; i++) {
+        x0 = v[i].x < x0 ? v[i].x : x0;
+        x1 = v[i].x > x1 ? v[i].x : x1;
+        y0 = v[i].y < y0 ? v[i].y : y0;
+        y1 = v[i].y > y1 ? v[i].y : y1;
+    }
+    const float lo[2] = { x0, y0 }, hi[2] = { x1, y1 }, lim[2] = { (float)w, (float)h };
+    for (int k = 0; k < 2; k++) {
+        float a = floorf(lo[k]) - LT_PAD, z = ceilf(hi[k]) + LT_PAD;
+        a = a < 0.0f ? 0.0f : a > lim[k] ? lim[k] : a;
+        z = z < 0.0f ? 0.0f : z > lim[k] ? lim[k] : z;
+        b[k] = (int)a;
+        b[k + 2] = (int)z;
+    }
 }
 
 int nr_launcher_title_set(rhi_device *dev, const openpete_hud_vert *v, int n, int w, int h) {
@@ -120,13 +180,21 @@ int nr_launcher_title_set(rhi_device *dev, const openpete_hud_vert *v, int n, in
     if (!dev || !v || n < 3 || w <= 0 || h <= 0 || s_lt.failed) return 0;
     if (s_lt.dev && s_lt.dev != dev) return 0;
     s_lt.dev = dev;
-    if (!lt_ensure_objects(dev) || !lt_ensure_target(dev, w, h)) return 0;
     if (n > LT_MAX_VERTS) n = LT_MAX_VERTS;
     n -= n % 3;
-    const float sx = 2.0f / (float)w, sy = 2.0f / (float)h;
+    int b[4];
+    lt_bounds(v, n, w, h, b);
+    if (b[2] <= b[0] || b[3] <= b[1]) return 1;   /* nothing of the title in the window: drawn as nothing */
+    if (!lt_ensure_objects(dev) || !lt_ensure_target(dev, b[2] - b[0], b[3] - b[1])) return 0;
+    s_lt.rx = b[0];
+    s_lt.ry = b[1];
+    s_lt.win_w = w;
+    s_lt.win_h = h;
+    const float sx = 2.0f / (float)s_lt.rw, sy = 2.0f / (float)s_lt.rh;
+    const float ox = (float)s_lt.rx, oy = (float)s_lt.ry;
     for (int i = 0; i < n; i++) {
-        /* Window pixels to clip space, +y up: the target's viewport is Y-flipped. */
-        s_lt.verts[i] = (rhi_vertex){ v[i].x * sx - 1.0f, 1.0f - v[i].y * sy, v[i].z, 0.0f, 0.0f,
+        /* Window pixels to the rect's clip space, +y up: the target's viewport is Y-flipped. */
+        s_lt.verts[i] = (rhi_vertex){ (v[i].x - ox) * sx - 1.0f, 1.0f - (v[i].y - oy) * sy, v[i].z, 0.0f, 0.0f,
                                       v[i].rgba, 0.0f, 0.0f, 0.0f, v[i].z };
     }
     s_lt.n = n;
@@ -148,18 +216,23 @@ void nr_launcher_title_prepass(rhi_device *dev) {
 void nr_launcher_title_composite(rhi_device *dev) {
     if (!s_lt.armed || dev != s_lt.dev) return;
     s_lt.armed = 0;
-    /* The whole window, UV 0..1 over the whole target, v 0 at the top. */
+    /* The rect in the window's clip space, UV 0..1 over the whole target, v 0
+     * at the top; the part past the window's edge is clipped. */
     const uint32_t white = 0xFFFFFFFFu;
-    const rhi_vertex tl = { -1.0f,  1.0f, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex tr = {  1.0f,  1.0f, 0.0f, 1.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex br = {  1.0f, -1.0f, 0.0f, 1.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex bl = { -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
+    const float x0 = 2.0f * (float)s_lt.rx / (float)s_lt.win_w - 1.0f;
+    const float x1 = 2.0f * (float)(s_lt.rx + s_lt.rw) / (float)s_lt.win_w - 1.0f;
+    const float y0 = 1.0f - 2.0f * (float)s_lt.ry / (float)s_lt.win_h;
+    const float y1 = 1.0f - 2.0f * (float)(s_lt.ry + s_lt.rh) / (float)s_lt.win_h;
+    const rhi_vertex tl = { x0, y0, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
+    const rhi_vertex tr = { x1, y0, 0.0f, 1.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
+    const rhi_vertex br = { x1, y1, 0.0f, 1.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
+    const rhi_vertex bl = { x0, y1, 0.0f, 0.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
     const rhi_vertex q[6] = { tl, tr, br, tl, br, bl };
     rhi_update_buffer(s_lt.quad_vb, q, sizeof q);
     rhi_reset_scissor(dev);
     rhi_bind_pipeline(dev, s_lt.resolve_pipe);
     rhi_bind_vram(dev, s_lt.rt);
-    const int pc[2] = { LT_SS, 0 };   /* box over LT_SS x LT_SS, no outline */
+    const int pc[2] = { s_lt.ss, 0 };   /* box over ss x ss, no outline */
     rhi_push_constants(dev, pc, sizeof pc);
     rhi_bind_vertex_buffer(dev, s_lt.quad_vb);
     rhi_draw(dev, 6, 0);
