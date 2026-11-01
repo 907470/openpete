@@ -950,8 +950,10 @@ def case_cache_ingest(a):
         bad.append(f"an ingest logged launch-time reruns {reruns(log)}")
     detail = "no first-boot pipeline: the build-end order is not exercised"
     if "first-boot module build" in log:
-        bad += ordered(log, r"launcher assets of spyro-1 ready \(ingest\)", r"recomp-build: module built: ")
-        detail = "assets ready before the module build's end"
+        # A headless ingest holds the launcher thread on the build, so its reap
+        # (the ready line) follows the build; the cache write must not.
+        bad += ordered(log, r"asset cache of spyro-1 written", r"recomp-build: module built: ")
+        detail = "cache written before the module build's end"
     n, _ = domes_count(d, "spyro-1") if not bad else (0, 0)
     return verdict("cache-ingest", bad, f"{n} domes; {detail}")
 
