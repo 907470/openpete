@@ -178,6 +178,12 @@ struct Ingest {
     int rc = 0;
 };
 Ingest s_ing;
+/* The box picture render's progress (openpete_launcher_preview_progress),
+ * written by the ingest thread; total 0 when no render runs. */
+std::atomic<int> s_preview_done{0}, s_preview_total{0};
+/* Bumped by openpete_launcher_picture_changed; the page rereads its box
+ * pictures when it differs from the value of its last read. */
+std::atomic<unsigned> s_picture_gen{0};
 /* The stop flag openpete_launcher_job_cancelled reads on the calling thread. */
 thread_local SDL_AtomicInt* t_cancel = nullptr;
 
@@ -1868,13 +1874,39 @@ void launcher_assets_start(const openpete_launcher_game* g, const char* disc, co
     ingest_start(g, disc ? disc : "", sha ? sha : "", context, nullptr);
 }
 
+void openpete_launcher_preview_progress(int done, int total) {
+    s_preview_done.store(done);
+    s_preview_total.store(total);
+}
+
+void openpete_launcher_picture_changed(void) { s_picture_gen.fetch_add(1); }
+
+unsigned launcher_picture_gen(void) { return s_picture_gen.load(); }
+
 void launcher_assets_wait(void) {
+    bool held = false;
     while (s_ing.busy) {
         ingest_poll();
         if (!s_ing.busy) break;
-        if (s.ui && openpete_native_launcher_active()) drain_events();
+        if (s.ui && openpete_native_launcher_active()) {
+            drain_events();
+            const int total = s_preview_total.load();
+            if (total > 0) {
+                /* The build ended before the box picture: hold the progress
+                 * screen on the render's step until the job ends (its time
+                 * bound ends it). The presents also carry the render's draw. */
+                if (!held) OPL_INFO_F("launcher", "%s", "the progress screen holds for the preview render");
+                held = true;
+                View v;
+                v.stage = "RENDERING PREVIEW";
+                v.done = s_preview_done.load();
+                v.total = total;
+                present(v);
+            }
+        }
         SDL_Delay(5);
     }
+    if (held) OPL_INFO_F("launcher", "%s", "the preview hold ends");
 }
 
 void launcher_job_add(const openpete_launcher_game* g, const char* entry_dir, const char* disc, const char* sha,

@@ -483,6 +483,7 @@ struct BoxState {
     float scale = 1.0f;
     Image logo, picture;
     op_time_t logo_tried = 0;   /* the last logo read attempt; 0 for none */
+    unsigned picture_gen = ~0u; /* launcher_picture_gen at the last picture read; ~0 for none */
 };
 
 std::deque<BoxState> s_boxes;    /* by game, in first-seen order; a push keeps references valid */
@@ -546,6 +547,23 @@ void logo_poll(const openpete_launcher_game* g, BoxState& bs, op_time_t now) {
     image_set(bs.logo, rgba, w, h);
     free(rgba);
     OPL_INFO_F("launcher", "game page: %s title logo %dx%d read from the asset cache", bs.game.c_str(), w, h);
+}
+
+/** @brief Read a game's box picture from its asset cache into the box (launcher_page_set_picture) at the first present and after each picture change.
+ *
+ * A read that finds no picture keeps the one the box shows.
+ * @param g The game.
+ * @param bs Its box state. */
+void picture_poll(const openpete_launcher_game* g, BoxState& bs) {
+    const unsigned gen = launcher_picture_gen();
+    if (!g->load_picture || bs.picture_gen == gen) return;
+    bs.picture_gen = gen;
+    int w = 0, h = 0;
+    unsigned char* rgba = g->load_picture(g, &w, &h);
+    if (!rgba) return;
+    launcher_page_set_picture(bs.game.c_str(), rgba, w, h);
+    free(rgba);
+    OPL_INFO_F("launcher", "game page: %s box picture %dx%d read from the asset cache", bs.game.c_str(), w, h);
 }
 
 /* One box of the page being drawn. */
@@ -781,7 +799,10 @@ int launcher_page_draw(const char* const* entry_games, int count, int focus, int
     std::vector<Box> boxes = page_boxes(entry_games, count);
     if (boxes.empty()) return LAUNCHER_PAGE_NONE;
     const op_time_t now = op_now();
-    for (const Box& bx : boxes) logo_poll(bx.g, *bx.st, now);
+    for (const Box& bx : boxes) {
+        logo_poll(bx.g, *bx.st, now);
+        picture_poll(bx.g, *bx.st);
+    }
     const bool opening = s_last == 0;
     animate(boxes, (size_t)focus, now);
     const ImVec2 d = ImGui::GetIO().DisplaySize;

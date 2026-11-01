@@ -200,6 +200,7 @@ add_library(openpete_core STATIC
 
     runtime/present_thread.c
     renderer/native_terrain_cache.c
+    renderer/launcher_preview_gpu.c
 
     # Render-side state interpolation snapshot ring (game-agnostic;
     # regions supplied by games/<game>/). Capture-only in v1; lerp +

@@ -4,6 +4,7 @@
  * orchestrator and the debug-camera pose helpers. */
 #ifndef OPENPETE_COMMON_RENDERER_TERRAIN_H
 #define OPENPETE_COMMON_RENDERER_TERRAIN_H
+#include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -210,6 +211,71 @@ int  terrain_snap_camera(double L[3][3], double P[3]);
  * @return The triangle count, or -1 when terrain_snap_ready does not hold. */
 int  terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
                           terrain_snap_census* cen);
+
+/* A level's terrain read from the disc into host bytes, in the record
+ * layout the walk's decoders read: the sector records and the texture
+ * tables at byte offsets into one buffer. */
+typedef struct terrain_host_level {
+    const uint8_t*  bytes;          /* the level's terrain bytes */
+    uint32_t        len;
+    const uint32_t* sector_off;     /* each sector record's byte offset */
+    int             sector_count;
+    uint32_t        lq_off, hq_off; /* the LQ and HQ texture tables' byte offsets */
+    const uint8_t*  exe;            /* the boot executable's text: the static tables the walk
+                                     * reads at guest addresses (the HQ tile UV-orientation
+                                     * table), as the game's load leaves them; NULL for none */
+    uint32_t        exe_addr, exe_len;
+} terrain_host_level;
+
+/* The view a preview is drawn from: a free-camera pose and the
+ * environment distances the game runs the level with. */
+typedef struct terrain_preview_view {
+    int32_t  pos[3];          /* camera position, world units as --freecam-pose writes it (the walk reads world/16) */
+    int32_t  yaw, pitch;      /* stored angle units, as --freecam-pose writes them */
+    uint32_t lod_dist;        /* LP/HP LOD distance (m_LodDistance) */
+    uint32_t cull_dist;       /* LP far cull distance (m_CullingDistance) */
+    double   H;               /* projection distance */
+    double   ofx, ofy;        /* screen offset, pixels */
+} terrain_preview_view;
+
+/* What a preview build did, for its log line and its harness. */
+typedef struct terrain_preview_stats {
+    int      sectors;          /* records decoded */
+    int      drawn;            /* sectors drawing HP or LP from the view */
+    int      baked;            /* sectors baked into the batches */
+    int      near;             /* sectors baked with near-variant chunks */
+    int      bake_fail;        /* sectors whose bake failed */
+    uint64_t verts[5];         /* vertices per baked arena (OPAQUE, ALPHA, ADD, SUB, LP) */
+    uint64_t dropped;          /* vertices of arenas the preview does not draw */
+    uint64_t exe_reads;        /* guest-form reads answered from the boot executable's text */
+    uint64_t guest_reads;      /* other guest-form reads, answered 0 */
+    uint64_t guest_writes;     /* guest stores refused by the stand-in CPU (0 expected) */
+} terrain_preview_stats;
+
+struct openpete_tercache_preview;
+
+/** @brief Builds a one-image preview of a host-loaded level: decodes every sector with the walk's decoders, takes each sector's tier verdicts from the view, bakes the drawn sectors with the cache's chunk packer and fills the globals the terrain pipelines read.
+ *
+ * Reads only the level's bytes and the installed game's layout: the
+ * decoders address the bytes through the host window the HP source level
+ * uses (TSRC_TERR_BASE), and a stand-in CPU state answers a guest-form
+ * read inside the boot executable's text from that text, any other with 0,
+ * and refuses every store, counting each. Every static the
+ * build touches (the host window, the bake's scratch statics and the fog
+ * scale) is saved on entry and restored on return, so a walk after it sees
+ * what it would have seen without it. The game must be installed; no game
+ * may run in the process.
+ * @param L The level.
+ * @param V The view.
+ * @param out Receives the batches and globals; its target size, clear colour
+ *        and VRAM image are the caller's.
+ * @param st Receives the counts, or NULL.
+ * @param why Receives the failure's reason.
+ * @param cap Its capacity.
+ * @return 0, or -1 when the level decodes no sector or an allocation failed. */
+int terrain_preview_build(const terrain_host_level* L, const terrain_preview_view* V,
+                          struct openpete_tercache_preview* out, terrain_preview_stats* st,
+                          char* why, size_t cap);
 
 #ifdef __cplusplus
 }

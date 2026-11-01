@@ -12,11 +12,15 @@
  *                   triangles (three u16 each); little-endian
  *   glyphs.txt      the glyph models (text_glyph_set_write)
  *   logo.rgba       "OPLOGO01", u32 width, u32 height, width * height RGBA
+ *   preview.rgba    "OPPREV01", u32 width, u32 height, width * height RGBA:
+ *                   the box picture (launcher_preview.h)
  *   manifest.toml   the format version, the content hash of the library
  *                   disc the outputs were read from, the build id that
  *                   wrote them, each output's name and size, and a failed
  *                   marker: the build id and disc hash of a failed run and
- *                   its reason
+ *                   its reason; for the preview, the disc hash and the
+ *                   "level|pose" it was drawn from and its own failed
+ *                   marker
  *
  * Every file is replaced atomically (op_atomic_file), the manifest last,
  * so a stopped or killed job leaves the previous outputs whole. The RHI
@@ -61,6 +65,14 @@ enum {
  * previous outputs; a stop writes nothing. The harness variable
  * OPENPETE_ASSET_JOB_DELAY_MS holds the job that long before its writes,
  * stopping early when the job is asked to stop.
+ * Then, on the launcher's device only (a headless run neither checks nor
+ * logs it), the box picture: current when its file exists at its recorded
+ * size and its disc hash and "level|pose" match; a preview failed marker of
+ * this build and disc skips it; otherwise it is rendered
+ * (launcher_preview_render) and a rerun logs one line, "launch-time rerun:
+ * preview render of <game>" at launch time. A deterministic failure writes
+ * the preview's failed marker; a stop, the time bound or a device failure
+ * writes nothing. The extraction outputs' build id does not key the preview.
  * The game must be installed.
  * @param b The installed game's build record.
  * @param disc_path The library entry's disc.
@@ -81,6 +93,18 @@ int launcher_cache_update(const struct openpete_game_build* b, const char* disc_
  * @return width * height RGBA texels, rows top to bottom, allocated with
  *         malloc for the caller to free; NULL when the cache holds none. */
 unsigned char* launcher_cache_read_logo(const char* game, int* w, int* h);
+
+/** @brief Reads a game's box picture from its launcher asset cache (preview.rgba) when the manifest lists it.
+ *
+ * None is read while the manifest holds a preview failed marker or lists a
+ * size the file does not have; the file's magic, width and height (each 1
+ * to 1024) and its size are checked. Reads only, so it runs on any thread.
+ * @param game The game id.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return width * height RGBA texels, rows top to bottom, allocated with
+ *         malloc for the caller to free; NULL when the cache holds none. */
+unsigned char* launcher_cache_read_preview(const char* game, int* w, int* h);
 
 /** @brief Reports whether a game declares launcher assets (an asset descriptor in its host tables).
  *

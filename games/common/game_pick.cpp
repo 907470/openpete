@@ -115,6 +115,16 @@ unsigned char* entry_logo(const openpete_launcher_game* g, int* w, int* h) {
     return launcher_cache_read_logo(g->game_id, w, h);
 }
 
+/** @brief Read a per-game entry's box picture from its launcher asset cache (launcher_cache_read_preview).
+ *
+ * @param g The per-game entry.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return The RGBA texels for the caller to free, or NULL. */
+unsigned char* entry_picture(const openpete_launcher_game* g, int* w, int* h) {
+    return launcher_cache_read_preview(g->game_id, w, h);
+}
+
 /** @brief Report whether the executable can get a module for a game: it needs no first-boot build, or the build's inputs (recomp/manifest/<id>/manifest.toml) are staged beside the executable.
  *
  * A game without a box is logged once, with the path looked for.
@@ -158,6 +168,7 @@ std::vector<openpete_launcher_game>& game_entries() {
             g.title_load = entry_title_load;
             g.title_emit = entry_title_emit;
             g.load_logo = entry_logo;
+            g.load_picture = entry_picture;
         }
         g.on_page = entry_on_page(b);
     }

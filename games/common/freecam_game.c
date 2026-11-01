@@ -836,6 +836,13 @@ int freecam_present_pose(uint32_t prev_tick, const int32_t prev_pos[3],
     return 1;
 }
 
+int freecam_pose_numbers(const char* text, int32_t v[5]) {
+    int32_t roll;
+    char name[FREECAM_NAME_MAX];
+    for (int i = 0; i < 5; i++) v[i] = 0;
+    return text ? freecam_parse_pose_text(text, v, NULL, 5, &roll, name) : 0;
+}
+
 void freecam_view_rotation(double yaw, double pitch, double roll, double R[3][3]) {
     double X[3][3], Y[3][3], Z[3][3], XY[3][3];
     rot_game(0, pitch, X);

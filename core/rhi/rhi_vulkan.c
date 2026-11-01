@@ -9047,6 +9047,11 @@ static rhi_compile_job *job_make(const rhi_pipeline_desc *desc,
     return job;
 }
 
+void rhi_compile_job_set_slot_contest(rhi_compile_job *job, int on)
+{
+    if (job) job->slot_contest = on ? VK_TRUE : VK_FALSE;
+}
+
 rhi_compile_job *rhi_compile_job_new(rhi_device *dev, const rhi_pipeline_desc *desc,
                                      const uint32_t *vert_words, size_t vert_n,
                                      const uint32_t *frag_words, size_t frag_n,

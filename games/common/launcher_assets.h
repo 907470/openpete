@@ -119,6 +119,32 @@ int game_assets_extract(const struct openpete_game_build* b, const char* disc_pa
                         const char* disc_sha256, game_assets_t* out, char* why,
                         size_t why_cap) OP_REQUIRES(ingest);
 
+struct disc_image;
+
+/** @brief Resolves the WAD entry that holds a level: Spyro 1's level entry by level number, Spyro 2/3's through the slot table read from the boot executable.
+ *
+ * The entry is the one the sky payload is read from (GAME_SKY_LEVEL_HEADER,
+ * GAME_SKY_SLOT_CHAIN); the game must be installed.
+ * @param img The disc.
+ * @param A The game's asset descriptor.
+ * @param number The level number.
+ * @param entry Receives the WAD entry index.
+ * @param why Receives the failure's reason.
+ * @param cap Its capacity.
+ * @return 0, or -1. */
+int game_assets_level_entry(struct disc_image* img, const game_assets_desc_t* A, int number, int* entry,
+                            char* why, size_t cap);
+
+/** @brief Reads the boot executable's text (the image its PSX-EXE header loads, static data included) from a disc.
+ *
+ * @param img The disc.
+ * @param addr Receives the load address.
+ * @param len Receives the byte count.
+ * @param why Receives the failure's reason.
+ * @param cap Its capacity.
+ * @return The bytes, which the caller frees, or NULL. */
+uint8_t* game_assets_boot_exe(struct disc_image* img, uint32_t* addr, uint32_t* len, char* why, size_t cap);
+
 /** @brief Releases a result of game_assets_extract; a zeroed result is a no-op.
  *
  * @param a The result, zeroed after. */

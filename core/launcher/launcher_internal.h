@@ -418,6 +418,11 @@ bool launcher_page_animating(void);
  * @param h The height. */
 void launcher_page_set_picture(const char* game, const unsigned char* rgba, int w, int h);
 
+/** @brief Return the box pictures' generation: a count of openpete_launcher_picture_changed calls.
+ *
+ * @return The count. */
+unsigned launcher_picture_gen(void);
+
 /** @brief Hand the page's textures to the renderer backend to destroy at its next render: the hand-off, after which no page shows. */
 void launcher_page_release(void);
 

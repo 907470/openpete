@@ -161,6 +161,43 @@ static uint8_t* la_sky_chain(disc_image_t* img, const la_exe* x, const game_asse
     return sky;
 }
 
+int game_assets_level_entry(disc_image_t* img, const game_assets_desc_t* A, int number, int* entry,
+                            char* why, size_t cap) {
+    if (A->sky_form == GAME_SKY_LEVEL_HEADER) {
+        const int index = (number / 10 - 1) * 6 + number % 10;
+        if (number < 10 || index < 0) return la_fail(why, cap, "level %d: no level number", number);
+        *entry = A->sky_wad_base + 2 * index;
+        return 0;
+    }
+    if (A->sky_form != GAME_SKY_SLOT_CHAIN) return la_fail(why, cap, "the game locates no level on its disc");
+    la_exe x;
+    memset(&x, 0, sizeof x);
+    const char* r = la_exe_open(img, &x);
+    if (r) return la_fail(why, cap, "%s", r);
+    uint8_t slot = 0;
+    if (number < 0 || number > 255 || !portal_game_s23.level_slots ||
+        la_exe_byte(img, &x, portal_game_s23.level_slots + (uint32_t)number, &slot) != 0)
+        return la_fail(why, cap, "level %d: slot table not in the executable", number);
+    *entry = portal_game_s23.level_wad_base + 2 * slot;
+    return 0;
+}
+
+uint8_t* game_assets_boot_exe(disc_image_t* img, uint32_t* addr, uint32_t* len, char* why, size_t cap) {
+    la_exe x;
+    memset(&x, 0, sizeof x);
+    const char* r = la_exe_open(img, &x);
+    if (r) { la_fail(why, cap, "%s", r); return NULL; }
+    uint8_t* b = x.t_size && x.t_size <= 0x200000u ? (uint8_t*)malloc(x.t_size) : NULL;
+    if (!b || disc_image_read_file_range(img, &x.file, 0x800u, b, x.t_size) != x.t_size) {
+        free(b);
+        la_fail(why, cap, "boot executable text unreadable");
+        return NULL;
+    }
+    *addr = x.t_addr;
+    *len = x.t_size;
+    return b;
+}
+
 /* ---- the dome mesh ----------------------------------------------------- */
 
 /* The decode's receiver: vertices deduplicated by (position, colour) in an

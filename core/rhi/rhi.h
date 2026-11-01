@@ -1794,6 +1794,13 @@ rhi_compile_job *rhi_compile_job_of(rhi_device *dev, const rhi_pipeline *pipe,
                                     rhi_pipe_variant variant, uint32_t generation,
                                     uint32_t epoch);
 
+/** @brief Set the SLOT_CONTEST value a job compiles with, in place of the process-wide value it took at its making (rhi_set_slot_contest).
+ *
+ * Call before the job runs; the process-wide value is left as it is.
+ * @param job The job; NULL is ignored.
+ * @param on Nonzero to compare slot indices. */
+void          rhi_compile_job_set_slot_contest(rhi_compile_job *job, int on);
+
 /** @brief Compile a job's pipeline and layout through the device's pipeline cache.
  *
  * Any thread; the device must outlive the call. A job that already holds a

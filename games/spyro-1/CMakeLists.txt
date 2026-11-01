@@ -52,6 +52,7 @@ openpete_add_game(spyro-1
         # The launcher's asset extraction job: domes, glyph models and logo from a disc.
         ${CMAKE_SOURCE_DIR}/games/common/launcher_assets.c
         ${CMAKE_SOURCE_DIR}/games/common/launcher_cache.c
+        ${CMAKE_SOURCE_DIR}/games/common/launcher_preview.c
         renderer/text_moby_id.c
         renderer/transition.c
 

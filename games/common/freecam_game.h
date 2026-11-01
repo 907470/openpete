@@ -154,6 +154,15 @@ int freecam_present_pose(uint32_t prev_tick, const int32_t prev_pos[3],
                          uint32_t curr_tick, const int32_t curr_pos[3],
                          double alpha, double pose[6], int32_t prev_ang[3]);
 
+/** @brief Parse the numbers of --freecam-pose text: x, y, z, then yaw and pitch when present.
+ *
+ * The text reads as --freecam-pose's does ("pos=(x, y, z) yaw=Y pitch=P"
+ * or "x,y,z,yaw,pitch"); a named pose resolves to nothing here.
+ * @param text The pose text, or NULL.
+ * @param v Receives {x, y, z, yaw, pitch}, 0 where absent.
+ * @return The numbers parsed. */
+int freecam_pose_numbers(const char* text, int32_t v[5]);
+
 /** @brief The unit rotation Rz(roll)·Rx(pitch)·Ry(yaw) of a pose, in the game's matrix forms.
  *
  * The view the free camera's stamp composes under every known builder

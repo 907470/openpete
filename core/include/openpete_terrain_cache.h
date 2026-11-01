@@ -1214,4 +1214,102 @@ void openpete_tercache_note_bake(void);
  * arena, ranges_max, nolist, store_bind_refusals and exhaust_warnings. */
 void openpete_tercache_print_exit_row(void);
 
+/* ---- one-image preview: a host-loaded level drawn once ------------------
+ * The launcher's box picture draws a level read from the disc, never from
+ * guest RAM, through the cache's world pipelines on pipelines, buffers,
+ * blocks and a VRAM image of its own: nothing here reads or writes the
+ * cache's arenas, blocks, ring states or statics, so the game's cache starts
+ * as it does without a preview. The game half (terrain.c,
+ * terrain_preview_build) fills an openpete_tercache_preview; the display
+ * owner draws it. */
+
+/* Sector slots one batch holds: every slot but OPTC_SLOT_DEAD. */
+#define OPTC_PREVIEW_SLOTS 511
+/* The arenas a preview bakes per family: OPTC_ARENA_OPAQUE through
+ * OPTC_ARENA_LP, and their near-variant twins from OPTC_ARENA_N_OPAQUE. */
+#define OPTC_PREVIEW_ARENAS 5
+/* The pipelines a preview draws with, in openpete_tercache_preview_jobs order:
+ * opaque, then the alpha, additive and subtractive blend classes, for the
+ * plain stage and then the near-variant stage. */
+#define OPTC_PREVIEW_PIPES 8
+
+/* Up to OPTC_PREVIEW_SLOTS sectors with their baked chunks: the sectors'
+ * origins and flags fill the sector block, the chunks name their sector by
+ * slot (face_flags bits 0-8). */
+typedef struct {
+    int nsec;                                     /* slots used */
+    float o[OPTC_SLOTS][3];                       /* sector origin, world/16 */
+    uint32_t flags[OPTC_SLOTS];                   /* OPTC_SF_* */
+    struct rhi_terrain_vertex *v[OPTC_PREVIEW_ARENAS];  /* malloc'd chunks per arena */
+    int n[OPTC_PREVIEW_ARENAS];                   /* vertices per arena */
+    /* Near-variant chunks (a sector the eye plane can reach, OPTC_SF_NEARVAR):
+     * the vertices and their member contexts, per arena. */
+    struct rhi_terrain_vertex *nv[OPTC_PREVIEW_ARENAS];
+    struct rhi_terrain_nearctx *cx[OPTC_PREVIEW_ARENAS];
+    int nn[OPTC_PREVIEW_ARENAS];
+} openpete_tercache_preview_batch;
+
+/* One preview image: the walk's globals for the pose, the screen mapping,
+ * the target, the clear colour, the level's VRAM image and the batches. */
+typedef struct openpete_tercache_preview {
+    openpete_tercache_globals g;
+    openpete_tercache_clip clip;
+    uint32_t w, h;                 /* target size in pixels */
+    float bg[3];                   /* clear colour, 0..1 */
+    uint16_t *vram;                /* 1024 x 512 PSX pixels, malloc'd */
+    openpete_tercache_preview_batch *batch;   /* malloc'd array */
+    int nbatch;
+} openpete_tercache_preview;
+
+/** @brief Release a preview's batches, chunks and VRAM image; a zeroed preview is a no-op.
+ *
+ * @param p The preview, zeroed after. */
+void openpete_tercache_preview_free(openpete_tercache_preview *p);
+
+/** @brief Make the compile jobs of the preview's pipelines: the world pipeline and its three blend classes, plain and near-variant, at a given SLOT_CONTEST value.
+ *
+ * Display owner only (rhi_compile_job_new). The description is the cache's
+ * own world description at the device's precision row, so a pipeline the
+ * ahead walk compiled is a pipeline-cache hit; the SLOT_CONTEST value is
+ * the job's own and the process-wide setting is left as it is. The jobs run
+ * on any thread (rhi_compile_job_run).
+ * @param dev The device.
+ * @param slot_contest The game's terrain.slot_ot_contest.
+ * @param jobs Receives OPTC_PREVIEW_PIPES jobs; a NULL entry failed.
+ * @return 0, or -1 when a job could not be made (the made ones are discarded). */
+int openpete_tercache_preview_jobs(struct rhi_device *dev, int slot_contest, void *jobs[OPTC_PREVIEW_PIPES]);
+
+/* A preview's device objects between its preparation and its readback. */
+typedef struct openpete_tercache_preview_gpu openpete_tercache_preview_gpu;
+
+/** @brief Prepare a preview's device objects outside a frame: install the compiled jobs, create the target, the VRAM image, the vertex buffers and the blocks, and upload them.
+ *
+ * Display owner only, outside a frame (uploads take the one-shot path).
+ * The jobs are consumed whatever the outcome.
+ * @param dev The device.
+ * @param p The preview.
+ * @param jobs The jobs openpete_tercache_preview_jobs made, run.
+ * @return The objects, or NULL when a pipeline or an object could not be made. */
+openpete_tercache_preview_gpu *openpete_tercache_preview_prepare(struct rhi_device *dev,
+                                                                 const openpete_tercache_preview *p,
+                                                                 void *jobs[OPTC_PREVIEW_PIPES]);
+
+/** @brief Record the preview into the current frame: one render pass into its target, the opaque chunks, then the blend classes.
+ *
+ * The plain and near-variant opaque chunks of every batch draw first, then
+ * each blend class. Display owner only, inside a frame and outside the
+ * offscreen pass.
+ * @param g The prepared objects.
+ * @return The vertices drawn. */
+uint64_t openpete_tercache_preview_record(openpete_tercache_preview_gpu *g);
+
+/** @brief Read the preview's target back as RGBA after its frame was submitted, then destroy its device objects.
+ *
+ * Display owner only, outside a frame; the readback waits for the device.
+ * @param g The prepared objects, consumed.
+ * @param rgba Receives w * h * 4 bytes, or NULL to read nothing.
+ * @param cap Its capacity in bytes.
+ * @return 0, or -1 when the readback failed. */
+int openpete_tercache_preview_finish(openpete_tercache_preview_gpu *g, uint8_t *rgba, size_t cap);
+
 #endif /* OPENPETE_TERRAIN_CACHE_H */

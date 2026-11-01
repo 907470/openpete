@@ -2755,6 +2755,74 @@ static void tc_globals_f32(tc_globals_ubo *gu, const openpete_tercache_globals *
     for (int i = 0; i < 96; i++) tc_f32_copy(gu->frim_pv[i], g->rim_pv[i], 2);
 }
 
+/** @brief Pack published globals into the std140 globals block: the matrix, the fp64 tail, the float fields, fog and flag words, scroll offsets, rim and cover planes, and the HD-fold table when asked.
+ *
+ * @param gu The block; zeroed here.
+ * @param g The published globals.
+ * @param hdfold 1 to snapshot the HD-fold entry table and ramp, 0 to leave them zero (no fold entry). */
+static void tc_globals_pack(tc_globals_ubo *gu, const openpete_tercache_globals *g, int hdfold)
+{
+    memset(gu, 0, sizeof(*gu));
+    for (int k = 0; k < 3; k++) {
+        gu->mrow0[k] = g->mrow[0][k];
+        gu->mrow1[k] = g->mrow[1][k];
+        gu->mrow2[k] = g->mrow[2][k];
+    }
+    gu->dcam_xy[0] = g->camx; gu->dcam_xy[1] = g->camy;
+    gu->dcam_zf[0] = g->camz; gu->dcam_zf[1] = g->fogscale;
+    gu->dof_xy[0]  = g->ofx;  gu->dof_xy[1]  = g->ofy;
+    gu->dH[0]      = g->H;
+    gu->dH[1]      = g->vanim_alpha;   /* poly-anim lerp alpha (anim stage) */
+    gu->dnear[0]   = g->nearz;         /* near-plane clip zc (near stage)   */
+    gu->dspare[0]  = g->H_canon;       /* canonical H (limit-regime mirrors) */
+    gu->dspare[1]  = g->canim_alpha;   /* env-anim colour lerp alpha (anim stage) */
+    tc_globals_f32(gu, g);
+    gu->fog[0] = g->fog_ref_base;
+    gu->fog[1] = (int32_t)g->gflags;
+    gu->fog[2] = g->cull_ref_s2;
+    gu->fog[3] = (int32_t)g->ot_terms;
+    gu->hp_drop[0] = g->hp_drop_sum_far;
+    gu->hp_drop[1] = g->hp_drop_corner_min;
+    memcpy(gu->sdv, g->scroll_dv, sizeof(gu->sdv));
+    memcpy(gu->sdvc, g->scroll_dvc, sizeof(gu->sdvc));
+    gu->rim_cnt[0]  = g->rim_n;
+    gu->rim_oxyH[0] = g->rim_ofx;
+    gu->rim_oxyH[1] = g->rim_ofy;
+    gu->rim_oxyH[2] = g->rim_H;
+    memcpy(gu->rim_knobs, g->rim_knobs, sizeof(gu->rim_knobs));
+    memcpy(gu->rim_abc,   g->rim_abc,   sizeof(gu->rim_abc));
+    memcpy(gu->rim_O,     g->rim_O,     sizeof(gu->rim_O));
+    memcpy(gu->rim_U,     g->rim_U,     sizeof(gu->rim_U));
+    memcpy(gu->rim_W,     g->rim_W,     sizeof(gu->rim_W));
+    memcpy(gu->rim_nrm,   g->rim_nrm,   sizeof(gu->rim_nrm));
+    memcpy(gu->rim_bbox,  g->rim_bbox,  sizeof(gu->rim_bbox));
+    memcpy(gu->rim_pv,    g->rim_pv,    sizeof(gu->rim_pv));
+    if (hdfold) {   /* HD-fold entry table + continuous-fog ramp (level-lifetime state,
+         * snapshotted per build like the rest of the globals). */
+        int n = 0; float lad[2];
+        const void *tab = openpete_native_hdfold_table(&n, lad);
+        gu->hd_lad[0] = lad[0]; gu->hd_lad[1] = lad[1];
+        gu->hd_lad[2] = (float)n;
+        gu->hd_lad[3] = n > 0 ? 1.0f : 0.0f;
+        if (n > 0)
+            memcpy(gu->hd_entry, tab, (size_t)n * sizeof(gu->hd_entry[0]));
+    }
+    gu->cov_cnt[0]   = g->cov_n;
+    gu->cov_cnt[1]   = g->cov_blend;
+    gu->cov_margin[0] = (float)g->cov_margin;
+    for (int pi = 0; pi < 6; pi++) {
+        gu->cov_abc[pi][0] = (float)g->cov_abc[pi][0];
+        gu->cov_abc[pi][1] = (float)g->cov_abc[pi][1];
+        gu->cov_abc[pi][2] = (float)g->cov_abc[pi][2];
+        gu->cov_abc[pi][3] = (float)g->cov_pn[pi];
+        memcpy(gu->cov_bbox[pi], g->cov_bbox[pi], sizeof(gu->cov_bbox[pi]));
+        for (int k = 0; k < 16; k++) {
+            gu->cov_poly[pi * 16 + k][0] = g->cov_pxy[pi][k][0];
+            gu->cov_poly[pi * 16 + k][1] = g->cov_pxy[pi][k][1];
+        }
+    }
+}
+
 void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                    uint32_t stamp, int immediate)
 {
@@ -2807,65 +2875,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
         s_gj.camx += jit; s_gj.camy += jit * 0.75; s_gj.camz += jit * 0.5;
         g = &s_gj;
     }
-    memset(gu, 0, sizeof(*gu));
-    for (int k = 0; k < 3; k++) {
-        gu->mrow0[k] = g->mrow[0][k];
-        gu->mrow1[k] = g->mrow[1][k];
-        gu->mrow2[k] = g->mrow[2][k];
-    }
-    gu->dcam_xy[0] = g->camx; gu->dcam_xy[1] = g->camy;
-    gu->dcam_zf[0] = g->camz; gu->dcam_zf[1] = g->fogscale;
-    gu->dof_xy[0]  = g->ofx;  gu->dof_xy[1]  = g->ofy;
-    gu->dH[0]      = g->H;
-    gu->dH[1]      = g->vanim_alpha;   /* poly-anim lerp alpha (anim stage) */
-    gu->dnear[0]   = g->nearz;         /* near-plane clip zc (near stage)   */
-    gu->dspare[0]  = g->H_canon;       /* canonical H (limit-regime mirrors) */
-    gu->dspare[1]  = g->canim_alpha;   /* env-anim colour lerp alpha (anim stage) */
-    tc_globals_f32(gu, g);
-    gu->fog[0] = g->fog_ref_base;
-    gu->fog[1] = (int32_t)g->gflags;
-    gu->fog[2] = g->cull_ref_s2;
-    gu->fog[3] = (int32_t)g->ot_terms;
-    gu->hp_drop[0] = g->hp_drop_sum_far;
-    gu->hp_drop[1] = g->hp_drop_corner_min;
-    memcpy(gu->sdv, g->scroll_dv, sizeof(gu->sdv));
-    memcpy(gu->sdvc, g->scroll_dvc, sizeof(gu->sdvc));
-    gu->rim_cnt[0]  = g->rim_n;
-    gu->rim_oxyH[0] = g->rim_ofx;
-    gu->rim_oxyH[1] = g->rim_ofy;
-    gu->rim_oxyH[2] = g->rim_H;
-    memcpy(gu->rim_knobs, g->rim_knobs, sizeof(gu->rim_knobs));
-    memcpy(gu->rim_abc,   g->rim_abc,   sizeof(gu->rim_abc));
-    memcpy(gu->rim_O,     g->rim_O,     sizeof(gu->rim_O));
-    memcpy(gu->rim_U,     g->rim_U,     sizeof(gu->rim_U));
-    memcpy(gu->rim_W,     g->rim_W,     sizeof(gu->rim_W));
-    memcpy(gu->rim_nrm,   g->rim_nrm,   sizeof(gu->rim_nrm));
-    memcpy(gu->rim_bbox,  g->rim_bbox,  sizeof(gu->rim_bbox));
-    memcpy(gu->rim_pv,    g->rim_pv,    sizeof(gu->rim_pv));
-    {   /* HD-fold entry table + continuous-fog ramp (level-lifetime state,
-         * snapshotted per build like the rest of the globals). */
-        int n = 0; float lad[2];
-        const void *tab = openpete_native_hdfold_table(&n, lad);
-        gu->hd_lad[0] = lad[0]; gu->hd_lad[1] = lad[1];
-        gu->hd_lad[2] = (float)n;
-        gu->hd_lad[3] = n > 0 ? 1.0f : 0.0f;
-        if (n > 0)
-            memcpy(gu->hd_entry, tab, (size_t)n * sizeof(gu->hd_entry[0]));
-    }
-    gu->cov_cnt[0]   = g->cov_n;
-    gu->cov_cnt[1]   = g->cov_blend;
-    gu->cov_margin[0] = (float)g->cov_margin;
-    for (int pi = 0; pi < 6; pi++) {
-        gu->cov_abc[pi][0] = (float)g->cov_abc[pi][0];
-        gu->cov_abc[pi][1] = (float)g->cov_abc[pi][1];
-        gu->cov_abc[pi][2] = (float)g->cov_abc[pi][2];
-        gu->cov_abc[pi][3] = (float)g->cov_pn[pi];
-        memcpy(gu->cov_bbox[pi], g->cov_bbox[pi], sizeof(gu->cov_bbox[pi]));
-        for (int k = 0; k < 16; k++) {
-            gu->cov_poly[pi * 16 + k][0] = g->cov_pxy[pi][k][0];
-            gu->cov_poly[pi * 16 + k][1] = g->cov_pxy[pi][k][1];
-        }
-    }
+    tc_globals_pack(gu, g, 1);
 
     /* reset sector flags; origins are rewritten by sector_set */
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
@@ -3840,4 +3850,270 @@ void openpete_tercache_print_exit_row(void)
             (unsigned long long)st.pinned_bytes, st.nonlocal_bufs, st.dropped_spans,
             st.migrate_ticks, (unsigned long long)st.stale_bytes, bm, st.ranges_max,
             TC_RANGE_MAX, st.cen_nolist, st.store_bind_refusals, st.exhaust_warnings);
+}
+
+/* ---- one-image preview (openpete_tercache_preview_*) ---------------------- */
+
+/* The preview's device objects: its own pipelines, target, VRAM image, a 1x1
+ * stand-in for the set-2 and set-4 images, a one-record store for set 2,
+ * and per batch a block set and the arenas' vertex buffers. */
+struct openpete_tercache_preview_gpu {
+    rhi_device *dev;
+    rhi_pipeline *pipe[OPTC_PREVIEW_PIPES];
+    rhi_texture *rt, *vram, *dummy;
+    rhi_buffer *store;
+    int nbatch;
+    struct tc_preview_batch_gpu {
+        rhi_ubo *ubo;
+        rhi_buffer *vb[OPTC_PREVIEW_ARENAS];
+        int n[OPTC_PREVIEW_ARENAS];
+        rhi_buffer *nvb[OPTC_PREVIEW_ARENAS], *cxb[OPTC_PREVIEW_ARENAS];
+        int nn[OPTC_PREVIEW_ARENAS];
+    } *b;
+    openpete_tercache_clip clip;
+    uint32_t w, h;
+    float bg[3];
+};
+
+void openpete_tercache_preview_free(openpete_tercache_preview *p)
+{
+    if (!p) return;
+    for (int i = 0; p->batch && i < p->nbatch; i++)
+        for (int a = 0; a < OPTC_PREVIEW_ARENAS; a++) {
+            free(p->batch[i].v[a]);
+            free(p->batch[i].nv[a]);
+            free(p->batch[i].cx[a]);
+        }
+    free(p->batch);
+    free(p->vram);
+    memset(p, 0, sizeof(*p));
+}
+
+int openpete_tercache_preview_jobs(rhi_device *dev, int slot_contest, void *jobs[OPTC_PREVIEW_PIPES])
+{
+    for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) jobs[i] = NULL;
+    if (!dev) return -1;
+    /* The cache's own stage where the device runs it; the fp32 stage on a
+     * device without 64-bit floats, where the cache itself never runs. */
+    const int ok64 = openpete_tercache_device_precision_ok(dev);
+    const char *vert = ok64 ? tc_vert(TC_V_PLAIN) : k_tc_vert[1][TC_V_PLAIN];
+    const char *vnear = ok64 ? tc_vert(TC_V_NEAR) : k_tc_vert[1][TC_V_NEAR];
+    const rhi_pipeline_desc world_desc = {
+        .vert_spv = vert, .frag_spv = "terrain.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .terrain_pipeline = true, .pair_set7 = true, .tex_ssbo_set2 = true,
+        .push_const_size = sizeof(tc_pc),
+    };
+    rhi_pipeline_desc d[OPTC_PREVIEW_PIPES];
+    for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
+        d[i] = world_desc;
+        if (i >= 4) { d[i].vert_spv = vnear; d[i].terrain_near = true; }
+    }
+    for (int i = 0; i < OPTC_PREVIEW_PIPES; i += 4) {
+        d[i + 1].blend = RHI_BLEND_ALPHA;    d[i + 1].depth_write_off = true;
+        d[i + 2].blend = RHI_BLEND_ADD;      d[i + 2].depth_write_off = true;
+        d[i + 3].blend = RHI_BLEND_SUBTRACT; d[i + 3].depth_write_off = true;
+    }
+    const rhi_pipe_variant var = rhi_pipe_variant_current();
+    const uint32_t epoch = rhi_pipe_variant_epoch();
+    for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
+        rhi_compile_job *j = rhi_compile_job_new(dev, &d[i], NULL, 0, NULL, 0, var, 0, epoch);
+        if (!j) {
+            for (int k = 0; k < i; k++) rhi_compile_job_discard(dev, (rhi_compile_job *)jobs[k]);
+            for (int k = 0; k < OPTC_PREVIEW_PIPES; k++) jobs[k] = NULL;
+            return -1;
+        }
+        rhi_compile_job_set_slot_contest(j, slot_contest);
+        jobs[i] = j;
+    }
+    return 0;
+}
+
+/** @brief Destroy a preview's device objects and free the record; NULL is ignored.
+ *
+ * The caller has waited for the device, or nothing was recorded.
+ * @param g The objects. */
+static void tc_preview_gpu_free(openpete_tercache_preview_gpu *g)
+{
+    if (!g) return;
+    rhi_device *dev = g->dev;
+    for (int i = 0; g->b && i < g->nbatch; i++) {
+        if (g->b[i].ubo) rhi_destroy_ubo(dev, g->b[i].ubo);
+        for (int a = 0; a < OPTC_PREVIEW_ARENAS; a++) {
+            if (g->b[i].vb[a]) rhi_destroy_buffer(dev, g->b[i].vb[a]);
+            if (g->b[i].nvb[a]) rhi_destroy_buffer(dev, g->b[i].nvb[a]);
+            if (g->b[i].cxb[a]) rhi_destroy_buffer(dev, g->b[i].cxb[a]);
+        }
+    }
+    free(g->b);
+    for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) rhi_retire_pipeline(dev, g->pipe[i]);
+    if (g->store) rhi_destroy_buffer(dev, g->store);
+    if (g->rt) rhi_destroy_texture(dev, g->rt);
+    if (g->vram) rhi_destroy_texture(dev, g->vram);
+    if (g->dummy) rhi_destroy_texture(dev, g->dummy);
+    free(g);
+}
+
+/** @brief Create one batch's block set and vertex buffers and fill them: the globals block, the sector block with the batch's origins and flags, and each arena's chunks.
+ *
+ * @param dev The device.
+ * @param gu The packed globals block.
+ * @param src The batch.
+ * @param dst Receives the objects.
+ * @return 0, or -1 when an object could not be made. */
+static int tc_preview_batch_make(rhi_device *dev, const tc_globals_ubo *gu,
+                                 const openpete_tercache_preview_batch *src,
+                                 struct tc_preview_batch_gpu *dst)
+{
+    dst->ubo = rhi_create_ubo(dev, (uint32_t)TC_UBO_BLOCK, 2);
+    if (!dst->ubo) return -1;
+    static tc_sector_ubo sec[OPTC_SLOTS];   /* display owner only */
+    memset(sec, 0, sizeof(sec));
+    for (int i = 0; i < src->nsec && i < OPTC_PREVIEW_SLOTS; i++) {
+        union { float f; uint32_t u; } w;
+        w.u = src->flags[i];
+        sec[i].o[0] = src->o[i][0];
+        sec[i].o[1] = src->o[i][1];
+        sec[i].o[2] = src->o[i][2];
+        sec[i].o[3] = w.f;
+        w.u = OPTC_PREV_REC_NONE;   /* no colour table */
+        sec[i].gp[3] = w.f;
+    }
+    rhi_ubo_write(dst->ubo, 0, gu, sizeof(*gu));
+    rhi_ubo_write(dst->ubo, 1, sec, sizeof(sec));
+    for (int a = 0; a < OPTC_PREVIEW_ARENAS; a++) {
+        dst->n[a] = src->n[a];
+        if (src->n[a] <= 0) continue;
+        const size_t bytes = (size_t)src->n[a] * sizeof(rhi_terrain_vertex);
+        dst->vb[a] = rhi_create_vertex_buffer(dev, bytes);
+        if (!dst->vb[a]) return -1;
+        rhi_update_buffer(dst->vb[a], src->v[a], bytes);
+    }
+    for (int a = 0; a < OPTC_PREVIEW_ARENAS; a++) {
+        dst->nn[a] = src->nn[a];
+        if (src->nn[a] <= 0) continue;
+        const size_t vb = (size_t)src->nn[a] * sizeof(rhi_terrain_vertex);
+        const size_t cb = (size_t)src->nn[a] * sizeof(rhi_terrain_nearctx);
+        dst->nvb[a] = rhi_create_vertex_buffer(dev, vb);
+        dst->cxb[a] = rhi_create_vertex_buffer(dev, cb);
+        if (!dst->nvb[a] || !dst->cxb[a]) return -1;
+        rhi_update_buffer(dst->nvb[a], src->nv[a], vb);
+        rhi_update_buffer(dst->cxb[a], src->cx[a], cb);
+    }
+    return 0;
+}
+
+openpete_tercache_preview_gpu *openpete_tercache_preview_prepare(rhi_device *dev,
+                                                                 const openpete_tercache_preview *p,
+                                                                 void *jobs[OPTC_PREVIEW_PIPES])
+{
+    openpete_tercache_preview_gpu *g = (openpete_tercache_preview_gpu *)calloc(1, sizeof(*g));
+    int ok = g != NULL && dev != NULL && p != NULL;
+    for (int i = 0; i < OPTC_PREVIEW_PIPES; i++) {
+        rhi_compile_job *j = (rhi_compile_job *)jobs[i];
+        jobs[i] = NULL;
+        if (!ok || !j) { if (j) rhi_compile_job_discard(dev, j); ok = 0; continue; }
+        g->pipe[i] = rhi_compile_job_install(dev, j);
+        ok &= g->pipe[i] != NULL;
+    }
+    if (!g) return NULL;
+    g->dev = dev;
+    if (!ok) { tc_preview_gpu_free(g); return NULL; }
+    g->clip = p->clip;
+    g->w = p->w; g->h = p->h;
+    memcpy(g->bg, p->bg, sizeof(g->bg));
+    g->rt = rhi_create_render_target(dev, p->w, p->h);
+    g->vram = rhi_create_vram(dev, 1024, 512);
+    g->dummy = rhi_create_rgba8(dev, 1, 1);
+    g->store = rhi_create_storage_buffer_device(dev, OPTC_PREV_REC_WORDS * sizeof(uint32_t));
+    if (!g->rt || !g->vram || !g->dummy || !g->store) { tc_preview_gpu_free(g); return NULL; }
+    rhi_update_vram(dev, g->vram, p->vram);
+    const uint32_t px = 0;
+    rhi_update_rgba8(dev, g->dummy, &px);
+    static tc_globals_ubo gu;   /* display owner only */
+    tc_globals_pack(&gu, &p->g, 0);
+    g->b = (struct tc_preview_batch_gpu *)calloc((size_t)(p->nbatch > 0 ? p->nbatch : 1), sizeof(*g->b));
+    if (!g->b) { tc_preview_gpu_free(g); return NULL; }
+    g->nbatch = p->nbatch;
+    for (int i = 0; i < p->nbatch; i++)
+        if (tc_preview_batch_make(dev, &gu, &p->batch[i], &g->b[i]) != 0) {
+            tc_preview_gpu_free(g);
+            return NULL;
+        }
+    return g;
+}
+
+/** @brief Draw one arena of every batch with one pipeline: the plain chunks, or with @p near the near-variant chunks and their member contexts.
+ *
+ * @param g The objects.
+ * @param pipe The pipeline index.
+ * @param a The arena, OPTC_ARENA_OPAQUE through OPTC_ARENA_LP.
+ * @param near 1 for the near-variant chunks.
+ * @param pc The push constants.
+ * @return The vertices drawn. */
+static uint64_t tc_preview_draw_arenas(openpete_tercache_preview_gpu *g, int pipe, int a, int near,
+                                       const tc_pc *pc)
+{
+    uint64_t n = 0;
+    for (int i = 0; i < g->nbatch; i++) {
+        const int cnt = near ? g->b[i].nn[a] : g->b[i].n[a];
+        if (cnt <= 0) continue;
+        rhi_bind_pipeline(g->dev, g->pipe[pipe]);
+        rhi_bind_vram(g->dev, g->vram);
+        if (rhi_bind_texture_storage(g->dev, g->dummy, g->store,
+                                     (uint32_t)(OPTC_PREV_REC_WORDS * sizeof(uint32_t)), 2, 0) != 0)
+            continue;
+        rhi_bind_texture_set(g->dev, g->dummy, 4);
+        rhi_ubo_bind_at(g->dev, g->b[i].ubo, 5, 0);
+        rhi_ubo_bind_at(g->dev, g->b[i].ubo, 6, 1);
+        rhi_push_constants(g->dev, pc, sizeof(*pc));
+        if (near) rhi_bind_vertex_buffer2(g->dev, g->b[i].nvb[a], g->b[i].cxb[a]);
+        else      rhi_bind_vertex_buffer(g->dev, g->b[i].vb[a]);
+        rhi_draw(g->dev, (uint32_t)cnt, 0);
+        n += (uint64_t)cnt;
+    }
+    return n;
+}
+
+uint64_t openpete_tercache_preview_record(openpete_tercache_preview_gpu *g)
+{
+    if (!g) return 0;
+    tc_pc pc;
+    memset(&pc, 0, sizeof(pc));
+    pc.x_base = g->clip.x_base; pc.x_span = g->clip.x_span;
+    pc.y_base = g->clip.y_base; pc.y_span = g->clip.y_span;
+    pc.disp_w = g->clip.disp_w; pc.clip_h = g->clip.clip_h;
+    pc.band = g->clip.band; pc.freeze_wf = g->clip.freeze_wf;
+    pc.full_extent = g->clip.full_extent;
+    pc.mat_pass = -1;   /* every face: no material pass */
+    rhi_begin_render_target(g->dev, g->rt, g->bg[0], g->bg[1], g->bg[2], 0.0f);
+    /* Opaque and LP first, then each blend class; per pass the plain
+     * stage (pipelines 0-3), then the near-variant stage (4-7). */
+    static const int k_pass[4][2] = { { 0, OPTC_ARENA_OPAQUE }, { 1, OPTC_ARENA_ALPHA },
+                                      { 2, OPTC_ARENA_ADD }, { 3, OPTC_ARENA_SUB } };
+    uint64_t n = 0;
+    for (int near = 0; near < 2; near++) {
+        n += tc_preview_draw_arenas(g, 4 * near, OPTC_ARENA_OPAQUE, near, &pc);
+        n += tc_preview_draw_arenas(g, 4 * near, OPTC_ARENA_LP, near, &pc);
+    }
+    for (int k = 1; k < 4; k++)
+        for (int near = 0; near < 2; near++)
+            n += tc_preview_draw_arenas(g, k_pass[k][0] + 4 * near, k_pass[k][1], near, &pc);
+    rhi_end_render_target(g->dev, g->rt);
+    return n;
+}
+
+int openpete_tercache_preview_finish(openpete_tercache_preview_gpu *g, uint8_t *rgba, size_t cap)
+{
+    if (!g) return -1;
+    int rc = 0;
+    if (rgba) {
+        int w = 0, h = 0;
+        rc = rhi_read_render_target_raw(g->dev, g->rt, rgba, cap, &w, &h) && (uint32_t)w == g->w &&
+                     (uint32_t)h == g->h ? 0 : -1;
+    } else {
+        rhi_wait_idle(g->dev);
+    }
+    tc_preview_gpu_free(g);
+    return rc;
 }

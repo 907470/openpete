@@ -1368,6 +1368,116 @@ def case_input(a):
     return verdict("input", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 
+def preview_info(d, game):
+    """A game's preview.rgba as (width, height, distinct colours), (0, 0, 0) when absent or malformed."""
+    p = os.path.join(cache_dir(d, game), "preview.rgba")
+    if not os.path.isfile(p):
+        return 0, 0, 0
+    b = open(p, "rb").read()
+    w, h = int.from_bytes(b[8:12], "little"), int.from_bytes(b[12:16], "little")
+    if b[:8] != b"OPPREV01" or len(b) != 16 + w * h * 4:
+        return 0, 0, 0
+    px = b[16:]
+    return w, h, len({px[i:i + 3] for i in range(0, len(px), 4 * 97)})
+
+
+def preview_reruns(log):
+    """The launch-time preview rerun lines of a log: (game, trigger)."""
+    return re.findall(r"launch-time rerun: preview render of (\S+) \((.*)\)", log)
+
+
+def preview_step(a, d, tag, bad, env=None, binary=None):
+    """One windowed launch over the case's library that waits for the launch-time jobs, then picks Spyro 1."""
+    e = dict(FLOW_ENV, OPENPETE_LAUNCHER_SELECT_GAME="spyro-1", OPENPETE_LAUNCHER_SELECT_IDLE="1")
+    e.update(env or {})
+    before = cache_snapshot(d)
+    rc, log = cl.launch(binary or a.binary, d, tag, ["--launcher-window", "1280x800", "--frame-limit", "5"], e,
+                        timeout=900)
+    w, r = written(before, cache_snapshot(d)), preview_reruns(log)
+    if rc != 0:
+        bad.append(f"{tag}: exit {rc}")
+    stores = re.findall(r"preview of \S+: .*other guest reads (\d+), guest stores (\d+)", log)
+    if any(x[1] != "0" for x in stores):
+        bad.append(f"{tag}: the preview build stored to guest memory {stores}")
+    print(f"[launcher-flow] preview {tag}: exit {rc}, {len(w)} cache files written, preview reruns {r}")
+    return log, w, r
+
+
+def case_preview(a):
+    """The box picture over a three-game library, windowed: cold, warm, a deleted file, another build id, a forced failure, a render past its bound, and a headless launch that neither checks nor logs it."""
+    d = cl.case_dir(a.out, "preview")
+    seed_library(d)
+    bad = []
+    log, w, r = preview_step(a, d, "cold", bad)
+    expect = {g: "preview.rgba missing" for g in DISCS}
+    expect_reruns(bad, "cold", r, expect)
+    for g in DISCS:
+        pw, ph, colours = preview_info(d, g)
+        m = manifest(d, g)
+        keys, files = m if m else ({}, {})
+        print(f"[launcher-flow] preview {g}: {pw}x{ph}, {colours} sampled colours, view {keys.get('preview_view')}")
+        if (pw, ph) != (640, 480) or colours < 16:
+            bad.append(f"cold: {g}: preview {pw}x{ph} with {colours} sampled colours")
+        if files.get("preview.rgba") != (16 + pw * ph * 4 if pw else -1) or not keys.get("preview_disc"):
+            bad.append(f"cold: {g}: manifest preview record {keys.get('preview_disc')} {files.get('preview.rgba')}")
+        if keys.get("preview_disc") != keys.get("disc_sha256"):
+            bad.append(f"cold: {g}: preview_disc differs from disc_sha256")
+    log, w, r = preview_step(a, d, "warm", bad)
+    current = set(re.findall(r"preview of (\S+) is current", log))
+    if r or any(f.endswith("preview.rgba") for f in w) or current != set(DISCS):
+        bad.append(f"warm: reruns {r}, current {sorted(current)}")
+    os.remove(os.path.join(cache_dir(d, "spyro-2"), "preview.rgba"))
+    _, w, r = preview_step(a, d, "deleted", bad)
+    expect_reruns(bad, "deleted", r, {"spyro-2": "preview.rgba missing"})
+    other = exe_copy(a, d)
+    log, w, r = preview_step(a, d, "other-build", bad, binary=other)
+    if r or len(re.findall(r"launch-time rerun: asset extraction of", log)) != len(DISCS):
+        bad.append(f"other-build: preview reruns {r} (expected none), asset reruns "
+                   f"{len(re.findall(r'launch-time rerun: asset extraction of', log))}")
+    os.remove(os.path.join(cache_dir(d, "spyro-3"), "preview.rgba"))
+    log, w, r = preview_step(a, d, "fail", bad, {"OPENPETE_PREVIEW_FAIL": "spyro-3"}, binary=other)
+    m = manifest(d, "spyro-3")
+    if "preview of spyro-3 failed: forced" not in log or not m or not m[0].get("preview_failed_build"):
+        bad.append("fail: no failure line or no preview failed marker")
+    log, w, r = preview_step(a, d, "fail-same-build", bad, binary=other)
+    if r or "preview of spyro-3 skipped" not in log:
+        bad.append(f"fail-same-build: reruns {r}")
+    log, w, r = preview_step(a, d, "fail-other-build", bad)
+    expect_reruns(bad, "fail-other-build", r, {"spyro-3": "a preview failed marker of build"})
+    os.remove(os.path.join(cache_dir(d, "spyro-1"), "preview.rgba"))
+    log, w, r = preview_step(a, d, "bound", bad, {"OPENPETE_PREVIEW_DELAY_MS": "4000",
+                                                  "OPENPETE_PREVIEW_BOUND_MS": "1000"})
+    m = manifest(d, "spyro-1")
+    if "preview of spyro-1 not drawn: past the time bound" not in log or (m and m[0].get("preview_failed_build")):
+        bad.append("bound: no transient line, or a marker was written")
+    _, w, r = preview_step(a, d, "bound-next", bad)
+    expect_reruns(bad, "bound-next", r, {"spyro-1": "preview.rgba missing"})
+    rc, log = nox(a, d, "headless", ["--game", "spyro-1", "--frame-limit", "1"])
+    lines = re.findall(r".*(?:preview render of|preview of|preview build of).*", log)
+    if rc != 0 or lines or reruns(log) or len(set(re.findall(r"asset cache of (\S+) is current", log))) != len(DISCS):
+        bad.append(f"headless: exit {rc}, preview lines {lines[:3]}, reruns {reruns(log)}")
+    times = [float(x) for x in re.findall(r"preview of \S+ written: .*, ([\d.]+) ms", open(
+        os.path.join(d, "cold.log"), errors="replace").read())]
+    return verdict("preview", bad, f"cold render times {times} ms")
+
+
+def case_preview_hold(a):
+    """An ingest whose preview outlasts the build holds the progress screen on the render's step, then shows the page; the image is written."""
+    d = cl.case_dir(a.out, "preview-hold")
+    env = dict(FLOW_ENV, OPENPETE_LAUNCHER_DROP=disc_cue("spyro-1"), OPENPETE_LAUNCHER_SELECT_GAME="spyro-1",
+               OPENPETE_LAUNCHER_SELECT_IDLE="1", OPENPETE_PREVIEW_DELAY_MS="6000")
+    rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "5"], env, timeout=900)
+    bad = ordered(log, r"\[library\] added", r"preview render of spyro-1 at ingest",
+                  r"the progress screen holds for the preview render", r"preview of spyro-1 written",
+                  r"the preview hold ends", r"game picked: spyro-1")
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    pw, ph, _ = preview_info(d, "spyro-1")
+    if (pw, ph) != (640, 480):
+        bad.append(f"preview {pw}x{ph}")
+    return verdict("preview-hold", bad)
+
+
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
@@ -1379,7 +1489,8 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "job-pick-other-assets": case_job_pick_other_assets,
          "shader-step-during": case_shader_step_during, "shader-step-after": case_shader_step_after,
          "shader-step-order": case_shader_step_order, "input": case_input, "sky-cache": case_sky_cache,
-         "sky-reveal": case_sky_reveal}
+         "sky-reveal": case_sky_reveal,
+         "preview": case_preview, "preview-hold": case_preview_hold}
 
 
 def main():

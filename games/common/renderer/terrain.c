@@ -54,6 +54,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
 #include "renderer/terrain.h"        /* this feeder's exports */
+#include "freecam_game.h"            /* freecam_view_rotation: the preview's view matrix */
 #include "renderer/moby_snap.h"      /* moby_snap_terrain_fed: the sunk-pickup contact */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
 #include "openpete_time.h"           /* op_now: the consolidation migration budget */
@@ -10982,6 +10983,39 @@ static void tgpu_facedump_sector(int slot, int sec, const tscache_t* SC) {
     tgpu_facedump(slot, sec, 0, 1, SC->imp->V, SC->imp->nV, SC->imp->F, SC->imp->nF);
 }
 
+/* A preview bake's receiver (terrain_preview_build): set on the preview's
+ * thread only, so every other bake uploads to the cache as before. */
+typedef struct tpv_sink tpv_sink;
+static _Thread_local tpv_sink* s_tpv_sink;
+static int tpv_take(tpv_sink* K, const tgpu_buf* buf);
+
+/** @brief Returns whether a bake folds faces onto HD replacements: never into a preview, else when the fold is on.
+ * @return 1 to fold. */
+static int tgpu_bake_hdfold(void) { return !s_tpv_sink && openpete_native_hdfold_on(); }
+
+/** @brief Returns the slot generation a bake stamps into its faces: 0 in a preview, else the cache slot's.
+ * @param slot The decode slot.
+ * @return The generation, 0-7. */
+static uint32_t tgpu_bake_gen(int slot) { return s_tpv_sink ? 0u : ((uint32_t)s_tgpu[slot].gen & 7u); }
+
+/** @brief Hands a finished bake to its destination: the preview's sink on its thread, else the cache slot's chunks.
+ * @param slot The decode slot.
+ * @param sec_index The level sector index (the face dump's key).
+ * @param SC The decoded sector.
+ * @param buf The bake buffers, indexed by arena.
+ * @return 1 when the bake landed, else 0. */
+static int tgpu_bake_deliver(int slot, int sec_index, const tscache_t* SC, tgpu_buf* buf) {
+    if (s_tpv_sink) return tpv_take(s_tpv_sink, buf) == 0;
+    tgpu_facedump_sector(slot, sec_index, SC);
+    return tgpu_upload_sector(&s_tgpu[slot], buf);
+}
+
+/** @brief Records a bake's colour-table misses on its cache slot; a preview bake has no slot.
+ * @param slot The decode slot. */
+static void tgpu_bake_note_misses(int slot) {
+    if (!s_tpv_sink) s_tgpu[slot].tabMiss = (uint8_t)s_coltab_miss;
+}
+
 /** @brief Builds and uploads all of one sector's chunks.
  *
  * Bakes the LP tier (the sector's own faces, then its borrowed LP faces)
@@ -11006,9 +11040,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     memset(buf, 0, sizeof(buf));
     int ok = 0;
     int fail = 1;                     /* claim code when !ok (1 = arena-full) */
-    const int hdfold = openpete_native_hdfold_on();
-    uint32_t base_ff = ((uint32_t)slot & 0x1FFu)
-                     | (((uint32_t)s_tgpu[slot].gen & 7u) << 29);
+    const int hdfold = tgpu_bake_hdfold();
+    uint32_t base_ff = ((uint32_t)slot & 0x1FFu) | (tgpu_bake_gen(slot) << 29);
     /* Poly-anim sectors bake into the ANIM twin arenas with a parallel
      * previous-tick record per vertex (the terrain_anim vertex stage lerps
      * prev->cur at the build's alpha). Snap rule mirror: a sector with no
@@ -11091,11 +11124,10 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     }
 
     /* ---- upload ---- */
-    tgpu_facedump_sector(slot, sec_index, SC);
-    ok = tgpu_upload_sector(&s_tgpu[slot], buf);
+    ok = tgpu_bake_deliver(slot, sec_index, SC, buf);
 done:
     /* A face left on baked colours makes the slot re-bake on every roll. */
-    s_tgpu[slot].tabMiss = (uint8_t)s_coltab_miss;
+    tgpu_bake_note_misses(slot);
     s_hq_bank = 0;
     s_prev_bake = 0;
     s_coltab_bake = 0;
@@ -17805,6 +17837,333 @@ void terrain_visibility_capture_arm(void) {
 int terrain_visibility_capture(const uint8_t** out) {
     if (out) *out = s_vis_cap;
     return s_vis_cap_n;
+}
+
+/* ---- one-image preview of a host-loaded level ----------------------------
+ * The launcher's box picture: a level read from the disc into host bytes is
+ * decoded and baked by this walk's own decoders and chunk packer and drawn
+ * once through the terrain cache's pipelines (openpete_tercache_preview_*).
+ * The bytes are addressed through the HP source level's host window, so the
+ * decoders run unchanged; no guest RAM is read or written. */
+
+/* A preview bake's receiver: the batch the sector lands in, its slot, and
+ * the vertices of arenas the preview does not draw. */
+struct tpv_sink {
+    openpete_tercache_preview_batch* B;
+    uint64_t dropped;
+};
+
+/** @brief Appends n elements to a growing array.
+ * @param arr The array, reallocated.
+ * @param have Its element count.
+ * @param src The elements.
+ * @param n Their count.
+ * @param size One element's size.
+ * @return 0, or -1 when the allocation failed. */
+static int tpv_append(void** arr, int have, const void* src, int n, size_t size) {
+    void* na = realloc(*arr, size * (size_t)(have + n));
+    if (!na) return -1;
+    memcpy((uint8_t*)na + size * (size_t)have, src, size * (size_t)n);
+    *arr = na;
+    return 0;
+}
+
+/** @brief Appends a sector's baked plain and near-variant arenas to the preview batch; the anim and cell arenas are counted as dropped.
+ * @param K The receiver.
+ * @param buf The sector's bake buffers, indexed by arena.
+ * @return 0, or -1 when an allocation failed. */
+static int tpv_take(tpv_sink* K, const tgpu_buf* buf) {
+    openpete_tercache_preview_batch* B = K->B;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        if (buf[a].n <= 0) continue;
+        const int k = a - OPTC_ARENA_NEAR_BASE;
+        if (a < OPTC_PREVIEW_ARENAS) {
+            if (tpv_append((void**)&B->v[a], B->n[a], buf[a].v, buf[a].n, sizeof(rhi_terrain_vertex)) != 0) return -1;
+            B->n[a] += buf[a].n;
+        } else if (k >= 0 && k < OPTC_PREVIEW_ARENAS && buf[a].cx) {
+            if (tpv_append((void**)&B->nv[k], B->nn[k], buf[a].v, buf[a].n, sizeof(rhi_terrain_vertex)) != 0 ||
+                tpv_append((void**)&B->cx[k], B->nn[k], buf[a].cx, buf[a].n, sizeof(rhi_terrain_nearctx)) != 0)
+                return -1;
+            B->nn[k] += buf[a].n;
+        } else {
+            K->dropped += (uint64_t)buf[a].n;
+        }
+    }
+    return 0;
+}
+
+/* The stand-in CPU state of a preview build: a guest-form read inside the
+ * boot executable's text answers from that text (the static tables a level
+ * load leaves as the executable holds them), any other read answers 0 and
+ * every store is refused; each is counted. The text is the preview thread's. */
+static _Thread_local const uint8_t* s_tpv_exe;
+static _Thread_local uint32_t s_tpv_exe_addr, s_tpv_exe_len;
+static _Atomic uint64_t s_tpv_exe_reads, s_tpv_reads, s_tpv_writes;
+
+/** @brief Reads n little-endian bytes of the boot executable's text at a guest address, counting the read.
+ * @param a The address.
+ * @param n The byte count, 1, 2 or 4.
+ * @return The value; 0 outside the text. */
+static uint32_t tpv_read(uint32_t a, uint32_t n) {
+    const uint32_t o = a - s_tpv_exe_addr;
+    if (!s_tpv_exe || a < s_tpv_exe_addr || o > s_tpv_exe_len || s_tpv_exe_len - o < n) {
+        s_tpv_reads++;
+        return 0u;
+    }
+    s_tpv_exe_reads++;
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < n; i++) v |= (uint32_t)s_tpv_exe[o + i] << (8 * i);
+    return v;
+}
+/** @brief Answers a guest word read of the preview's stand-in CPU state (tpv_read).
+ * @param a The address.
+ * @return The word. */
+static uint32_t tpv_rw(uint32_t a) { return tpv_read(a, 4); }
+/** @brief Answers a guest halfword read of the preview's stand-in CPU state (tpv_read).
+ * @param a The address.
+ * @return The halfword. */
+static uint16_t tpv_rh(uint32_t a) { return (uint16_t)tpv_read(a, 2); }
+/** @brief Answers a guest byte read of the preview's stand-in CPU state (tpv_read).
+ * @param a The address.
+ * @return The byte. */
+static uint8_t tpv_rb(uint32_t a) { return (uint8_t)tpv_read(a, 1); }
+/** @brief Refuses a guest word store of the preview's stand-in CPU state, counting it.
+ * @param a The address.
+ * @param v The value. */
+static void tpv_ww(uint32_t a, uint32_t v) { (void)a; (void)v; s_tpv_writes++; }
+/** @brief Refuses a guest halfword store of the preview's stand-in CPU state, counting it.
+ * @param a The address.
+ * @param v The value. */
+static void tpv_wh(uint32_t a, uint16_t v) { (void)a; (void)v; s_tpv_writes++; }
+/** @brief Refuses a guest byte store of the preview's stand-in CPU state, counting it.
+ * @param a The address.
+ * @param v The value. */
+static void tpv_wb(uint32_t a, uint8_t v) { (void)a; (void)v; s_tpv_writes++; }
+
+/* The walk statics a preview build sets or the bake scratches, saved on
+ * entry and restored on return. */
+typedef struct {
+    const uint8_t *terr, *tex;
+    uint32_t terr_len, tex_len;
+    double fogscale;
+    int prev_bake, prev_oom, prev_n, coltab_bake, coltab_miss;
+} tpv_saved;
+
+/** @brief Saves the statics a preview build touches.
+ * @param S Receives them. */
+static void tpv_save(tpv_saved* S) {
+    S->terr = s_tsrc_terr; S->terr_len = s_tsrc_terr_len;
+    S->tex = s_tsrc_tex; S->tex_len = s_tsrc_tex_len;
+    S->fogscale = s_fogscale;
+    S->prev_bake = s_prev_bake; S->prev_oom = s_prev_oom; S->prev_n = s_prev_n;
+    S->coltab_bake = s_coltab_bake; S->coltab_miss = s_coltab_miss;
+}
+
+/** @brief Restores the statics tpv_save saved.
+ * @param S The saved values. */
+static void tpv_restore(const tpv_saved* S) {
+    s_tsrc_terr = S->terr; s_tsrc_terr_len = S->terr_len;
+    s_tsrc_tex = S->tex; s_tsrc_tex_len = S->tex_len;
+    s_fogscale = S->fogscale;
+    s_prev_bake = S->prev_bake; s_prev_oom = S->prev_oom; s_prev_n = S->prev_n;
+    s_coltab_bake = S->coltab_bake; s_coltab_miss = S->coltab_miss;
+}
+
+/** @brief Builds a view's binning matrix (the game's view matrix over the GTE vector (camY - Y, camZ - Z, X - camX)) and projection matrix (its screen-Y row scaled by NGTE_Y_ROW), Q12.
+ * @param V The view.
+ * @param Mbin Receives the binning matrix.
+ * @param M Receives the projection matrix. */
+static void tpv_matrices(const terrain_preview_view* V, int Mbin[3][3], int M[3][3]) {
+    double R[3][3];
+    freecam_view_rotation((double)V->yaw, (double)V->pitch, 0.0, R);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            Mbin[i][j] = (int)lround(R[i][j] * 4096.0);
+            M[i][j] = (int)lround(R[i][j] * 4096.0 * (i == 1 ? NGTE_Y_ROW : 1.0));
+        }
+}
+
+/** @brief Fills the preview's globals block from the view: matrix, camera, projection, fog and the walk's default rule flags.
+ * @param V The view.
+ * @param M The projection matrix.
+ * @param g Receives the globals. */
+static void tpv_globals(const terrain_preview_view* V, const int M[3][3], openpete_tercache_globals* g) {
+    memset(g, 0, sizeof(*g));
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) g->mrow[r][c] = (float)M[r][c];
+    g->ofx = V->ofx; g->ofy = V->ofy; g->H = V->H; g->H_canon = V->H;
+    g->camx = (double)V->pos[0] / 16.0; g->camy = (double)V->pos[1] / 16.0; g->camz = (double)V->pos[2] / 16.0;
+    g->fogscale = 4.0 / (double)openpete_fog_scale;
+    g->vanim_alpha = 1.0;
+    g->canim_alpha = 1.0;
+    g->nearz = 1.0;
+    g->fog_ref_base = (int32_t)(V->lod_dist >> 2);
+    g->cull_ref_s2 = (int32_t)(V->cull_dist >> 7);
+    g->hp_drop_sum_far = game_layout.terrain.hp_drop_sum_far;
+    g->hp_drop_corner_min = game_layout.terrain.hp_drop_corner_min;
+    g->ot_terms = tc_ot_terms();
+    /* The walk's shipped defaults: CLUT fog, both NCLIP culls, the LOD
+     * handoff and gap fill, the layout's rules; no near/HQ subdivide, whose
+     * near-variant and cell chunks the preview does not draw. */
+    g->gflags = OPTC_GF_CLUTFOG | OPTC_GF_CULLHP | OPTC_GF_CULLLP | OPTC_GF_HANDOFF | OPTC_GF_GAPFILL
+              | (game_layout.terrain.ladder_nearest_corner ? OPTC_GF_LADNEAR : 0u)
+              | (game_layout.terrain.nearband_ot_keys      ? OPTC_GF_NBKEYS  : 0u)
+              | (game_layout.terrain.lp_near_sz            ? OPTC_GF_LPNEAROUT : 0u)
+              | (openpete_fog_mode() == OPENPETE_FOG_OFF       ? OPTC_GF_FOGOFF : 0u)
+              | (openpete_fog_mode() == OPENPETE_FOG_PER_PIXEL ? OPTC_GF_FOGPP  : 0u);
+}
+
+/** @brief Decodes one sector record of a host level through the host window, as the walk decodes a guest sector.
+ * @param cpu The stand-in CPU state.
+ * @param L The level.
+ * @param k The sector index.
+ * @param C Receives the entry; zeroed here.
+ * @return 0, or -1 when the record lies outside the bytes. */
+static int tpv_decode(CPUState* cpu, const terrain_host_level* L, int k, tscache_t* C) {
+    memset(C, 0, sizeof(*C));
+    const uint32_t off = L->sector_off[k];
+    if (off > L->len || L->len - off < 0x1Cu) return -1;
+    const uint32_t s = TSRC_TERR_BASE + off;
+    const uint32_t g[5] = { rd(cpu, s + 0x04), rd(cpu, s + 0x08), rd(cpu, s + 0x0C),
+                            rd(cpu, s + 0x10), rd(cpu, s + 0x14) };
+    tsc_decode_body(&(twsrc_t){ cpu, NULL, 0u }, s, rd(cpu, s), g, C,
+                    TSRC_TERR_BASE + L->lq_off, TSRC_TERR_BASE + L->hq_off, 0, 0);
+    C->s = s;
+    memcpy(C->sig, g, sizeof(g));
+    tsc_vert_aabb(C);
+    return 0;
+}
+
+/** @brief Publishes one baked sector's origin and flags into its batch slot from its verdicts.
+ * @param B The batch.
+ * @param slot The slot.
+ * @param C The sector.
+ * @param V The verdicts.
+ * @param near 1 when the sector draws its near-variant chunks. */
+static void tpv_publish(openpete_tercache_preview_batch* B, int slot, const tscache_t* C, const tn_secverd* V,
+                        int near) {
+    B->o[slot][0] = (float)C->originX;
+    B->o[slot][1] = (float)C->originY;
+    B->o[slot][2] = (float)C->originZ;
+    B->flags[slot] = OPTC_SF_DRAWN
+        | (V->drawHP ? OPTC_SF_DRAWHP : 0u) | (V->drawLP ? OPTC_SF_DRAWLP : 0u)
+        | (V->lpFarOnly ? OPTC_SF_LPFARONLY : 0u) | (V->lpGapOnly ? OPTC_SF_LPGAPONLY : 0u)
+        | ((uint32_t)V->lpUncovOnly * OPTC_SF_LPUNCOV)
+        | (V->secInLOD ? OPTC_SF_SECINLOD : 0u) | (near ? OPTC_SF_NEARVAR : 0u)
+        | (((uint32_t)V->lpNearThr & OPTC_SF_LPNEAR_MASK) << OPTC_SF_LPNEAR_SHIFT);
+    if (slot + 1 > B->nsec) B->nsec = slot + 1;
+}
+
+/** @brief Frees a decoded entry's arrays.
+ * @param C The entry. */
+static void tpv_free_entry(tscache_t* C) {
+    free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
+    free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
+}
+
+/** @brief Decodes, bins and bakes every sector of a host level into the preview's batches.
+ * @param cpu The stand-in CPU state.
+ * @param L The level.
+ * @param G The latched walk config of the view.
+ * @param out The preview; its batches are appended.
+ * @param st The counts.
+ * @return 0, or -1 when an allocation failed. */
+static int tpv_bake_all(CPUState* cpu, const terrain_host_level* L, const tn_wcfg* G,
+                        openpete_tercache_preview* out, terrain_preview_stats* st) {
+    tpv_sink K;
+    memset(&K, 0, sizeof(K));
+    s_tpv_sink = &K;
+    double l3 = sqrt((double)G->M[2][0] * G->M[2][0] + (double)G->M[2][1] * G->M[2][1] +
+                     (double)G->M[2][2] * G->M[2][2]) / 4096.0;
+    if (l3 < 1e-6) l3 = 1.0;
+    int rc = 0;
+    for (int k = 0; k < L->sector_count && rc == 0; k++) {
+        tscache_t C;
+        if (tpv_decode(cpu, L, k, &C) != 0) continue;
+        st->sectors++;
+        tn_secverd V;
+        memset(&V, 0, sizeof(V));
+        sector_verdicts(&C, G, &V);
+        /* The walk's near rules: a sector wholly behind the near threshold
+         * draws nothing; one the eye plane can reach takes the near-variant
+         * chunks, whose vertex stage clips at the near plane. */
+        double oc1, oc2, oc3;
+        ngte_mac(G->M, G->camy - C.centreY, G->camz - C.centreZ, C.centreX - G->camx, &oc1, &oc2, &oc3);
+        const double nearBound = l3 * ((double)C.radius + 16.0);
+        const int behind = oc3 + nearBound < 16.0;
+        const int near = !behind && oc3 - nearBound < 16.0 &&
+                         !tgpu_near_box_clear(&C, G->M, G->camx, G->camy, G->camz, 16.0);
+        if (!behind && (V.drawHP || V.drawLP)) {
+            st->drawn++;
+            if (!out->nbatch || out->batch[out->nbatch - 1].nsec >= OPTC_PREVIEW_SLOTS) {
+                openpete_tercache_preview_batch* nb = (openpete_tercache_preview_batch*)realloc(
+                    out->batch, sizeof(*nb) * (size_t)(out->nbatch + 1));
+                if (!nb) { rc = -1; tpv_free_entry(&C); break; }
+                out->batch = nb;
+                memset(&out->batch[out->nbatch], 0, sizeof(*nb));
+                out->nbatch++;
+            }
+            openpete_tercache_preview_batch* B = &out->batch[out->nbatch - 1];
+            K.B = B;
+            const int slot = B->nsec;
+            if (tgpu_build_sector(cpu, slot, &C, G->hqTable, -1, near) == 0) {
+                tpv_publish(B, slot, &C, &V, near);
+                st->baked++;
+                st->near += near;
+            } else {
+                st->bake_fail++;
+            }
+        }
+        tpv_free_entry(&C);
+    }
+    s_tpv_sink = NULL;
+    st->dropped = K.dropped;
+    return rc;
+}
+
+int terrain_preview_build(const terrain_host_level* L, const terrain_preview_view* V,
+                          openpete_tercache_preview* out, terrain_preview_stats* st_out,
+                          char* why, size_t cap) {
+    terrain_preview_stats st;
+    memset(&st, 0, sizeof(st));
+    if (!L || !L->bytes || !L->sector_off || L->sector_count <= 0) {
+        snprintf(why, cap, "the level holds no sector");
+        return -1;
+    }
+    tpv_saved saved;
+    tpv_save(&saved);
+    CPUState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.read_word = tpv_rw; cpu.read_half = tpv_rh; cpu.read_byte = tpv_rb;
+    cpu.write_word = tpv_ww; cpu.write_half = tpv_wh; cpu.write_byte = tpv_wb;
+    const uint64_t r0 = s_tpv_reads, w0 = s_tpv_writes, x0 = s_tpv_exe_reads;
+    s_tpv_exe = L->exe; s_tpv_exe_addr = L->exe_addr; s_tpv_exe_len = L->exe ? L->exe_len : 0u;
+    s_tsrc_terr = L->bytes; s_tsrc_terr_len = L->len;
+    s_tsrc_tex = NULL; s_tsrc_tex_len = 0;
+    s_fogscale = 4.0 / (double)openpete_fog_scale;
+    tn_wcfg G;
+    memset(&G, 0, sizeof(G));
+    G.cpu = &cpu;
+    tpv_matrices(V, G.Mbin, G.M);
+    G.camx = (double)V->pos[0] / 16.0; G.camy = (double)V->pos[1] / 16.0; G.camz = (double)V->pos[2] / 16.0;
+    G.fogRefBase = (int)(V->lod_dist >> 2);
+    G.cullRefS2 = (int)(V->cull_dist >> 7);
+    G.cull_wx = 1.0; G.cull_wy = 1.0;
+    G.tier_faithful = 1; G.lod_handoff = 1;
+    G.hqTable = TSRC_TERR_BASE + L->hq_off;
+    tpv_globals(V, G.M, &out->g);
+    const int rc = tpv_bake_all(&cpu, L, &G, out, &st);
+    tpv_restore(&saved);
+    for (int i = 0; i < out->nbatch; i++)
+        for (int a = 0; a < OPTC_PREVIEW_ARENAS; a++) st.verts[a] += (uint64_t)out->batch[i].n[a];
+    st.guest_reads = s_tpv_reads - r0;
+    st.guest_writes = s_tpv_writes - w0;
+    st.exe_reads = s_tpv_exe_reads - x0;
+    s_tpv_exe = NULL;
+    if (st_out) *st_out = st;
+    if (rc != 0) { snprintf(why, cap, "allocation failed"); return -1; }
+    if (st.sectors == 0) { snprintf(why, cap, "no sector record decoded"); return -1; }
+    return 0;
 }
 
 static feature_dispatch_entry_t terrain_dispatch[] = {

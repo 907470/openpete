@@ -166,6 +166,55 @@ typedef struct openpete_launcher_shape {
  * @return 1 when it was added, else 0. */
 int openpete_native_launcher_shape_add(const openpete_launcher_shape *s);
 
+/* openpete_native_launcher_preview_render results. */
+enum {
+    OPENPETE_PREVIEW_OK = 0,
+    OPENPETE_PREVIEW_FAILED = -1,     /* deterministic: a pipeline or object could not be made */
+    OPENPETE_PREVIEW_STOPPED = -2,    /* the job was asked to stop */
+    OPENPETE_PREVIEW_TRANSIENT = -3,  /* no device, the time bound, a readback or frame failure */
+};
+
+struct openpete_tercache_preview;
+
+/** @brief Draw a built preview on the launcher's device and read it back, from a job thread: the display owner makes the pipelines' compile jobs, this thread runs them, and the display owner installs them, records the draw inside its next present and reads the image back.
+ *
+ * Any thread but the display owner, which must keep presenting
+ * (openpete_native_launcher_present takes the requests; a wake event ends
+ * its wait for input). Without the launcher's device (a headless run) it
+ * returns at once. A request the display owner has not taken is withdrawn
+ * at a stop or the deadline.
+ * @param p The preview; read until the call returns.
+ * @param slot_contest The game's terrain.slot_ot_contest, compiled into the jobs.
+ * @param rgba Receives p->w * p->h * 4 bytes.
+ * @param cap Its capacity.
+ * @param stop Polled while waiting; nonzero stops the call. May be NULL.
+ * @param deadline_ns The op_now() time past which the call gives up.
+ * @param why Receives the failure's reason.
+ * @param why_cap Its capacity.
+ * @return An OPENPETE_PREVIEW_* value. */
+int openpete_native_launcher_preview_render(struct openpete_tercache_preview *p, int slot_contest,
+                                            uint8_t *rgba, size_t cap, int (*stop)(void),
+                                            uint64_t deadline_ns, char *why, size_t why_cap);
+
+/** @brief Take a posted preview request at a launcher present, before its frame begins: make the compile jobs, or prepare the render's device objects.
+ *
+ * Display owner only (openpete_native_launcher_present).
+ * @param dev The launcher's device. */
+void openpete_native_launcher_preview_before_frame(struct rhi_device *dev);
+
+/** @brief Record a taken preview render into the present's frame, before the offscreen pass.
+ *
+ * A render prepared at this present records at the next one, so its
+ * preparation and its draw with the readback stall two presents, not one.
+ * Display owner only (openpete_native_launcher_present). */
+void openpete_native_launcher_preview_in_frame(void);
+
+/** @brief Read a taken preview render back after the present's frame and finish its request.
+ *
+ * Display owner only (openpete_native_launcher_present).
+ * @param frame_ran 1 when the frame began and was submitted; 0 keeps the request for the next present. */
+void openpete_native_launcher_preview_after_frame(int frame_ran);
+
 /** @brief Read back the last launcher frame, count the pixels that differ from the clear colour, and write it as a PNG.
  *
  * A pixel differs when a channel is more than 8 levels from @p bg. Waits

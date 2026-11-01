@@ -63,6 +63,7 @@ openpete_add_game(spyro-2
         # The launcher's asset extraction job: domes, glyph models and logo from a disc.
         ${CMAKE_SOURCE_DIR}/games/common/launcher_assets.c
         ${CMAKE_SOURCE_DIR}/games/common/launcher_cache.c
+        ${CMAKE_SOURCE_DIR}/games/common/launcher_preview.c
         renderer/portal_game.c
     FIRST_BOOT_SOURCES
         # The first-boot module build: each overlay carved from the WAD.WAD

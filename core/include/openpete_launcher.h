@@ -129,6 +129,11 @@ struct openpete_launcher_game {
      * caller to free; NULL when the cache holds none. NULL for a game
      * without launcher assets. */
     unsigned char* (*load_logo)(const openpete_launcher_game* g, int* w, int* h);
+    /* Read this game's box picture from its launcher asset cache, in
+     * load_logo's form; NULL when the cache holds none. The page reads it
+     * once, then again after each openpete_launcher_picture_changed. NULL
+     * for a game without launcher assets. */
+    unsigned char* (*load_picture)(const openpete_launcher_game* g, int* w, int* h);
 };
 
 struct rhi_device;
@@ -210,6 +215,18 @@ int  openpete_launcher_lock(void);
  * compiler commands and stops there.
  * @return 1 when the calling thread runs a job asked to stop, else 0. */
 int  openpete_launcher_job_cancelled(void);
+
+/** @brief Report the box picture render's progress from its job thread: step @p done of @p total; a total of 0 ends the report.
+ *
+ * While a report stands, a launcher waiting for its asset job after the
+ * build holds the progress screen on a "RENDERING PREVIEW" step with this
+ * progress as its bar, and presents, which the render's draw needs.
+ * @param done The steps done.
+ * @param total The steps, or 0. */
+void openpete_launcher_preview_progress(int done, int total);
+
+/** @brief Report from any thread that a game's cached box picture was written or marked failed: the game page rereads every box's picture (openpete_launcher_game.load_picture) at its next present. */
+void openpete_launcher_picture_changed(void);
 
 /** @brief Return this executable's build id: the configured version joined with the executable's size and modification time.
  *

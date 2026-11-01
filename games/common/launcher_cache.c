@@ -4,9 +4,11 @@
 #include "game_build.h"
 #include "game_host_desc.h"
 #include "launcher_assets.h"
+#include "launcher_preview.h"
 #include "openpete_atomic_file.h"
 #include "openpete_launcher.h"
 #include "openpete_log.h"
+#include "openpete_native_render.h"
 #include "openpete_paths.h"
 #include "openpete_time.h"
 #include "openpete_game_runtime.h"
@@ -34,7 +36,18 @@ typedef struct {
     char      failed_disc[80];
     char      failed_why[256];
     long long size[LC_FILES];   /* -1 when not listed */
+    /* The preview: the disc hash and view it was drawn from, its size, and
+     * its own failed marker. */
+    char      pv_disc[80];
+    char      pv_view[256];
+    char      pv_failed_build[160];
+    char      pv_failed_disc[80];
+    char      pv_failed_why[256];
+    long long pv_size;          /* -1 when not listed */
 } lc_manifest;
+
+/* The preview's file, beside the extraction outputs. */
+#define LC_PREVIEW "preview.rgba"
 
 /** @brief Copies the quoted value of a `key = "value"` line, or reports that the line is not that key.
  * @param line The line, without its newline.
@@ -56,11 +69,25 @@ static int lc_str(const char* line, const char* key, char* out, size_t cap) {
  * @param line The line.
  * @param m The manifest. */
 static void lc_file_line(const char* line, lc_manifest* m) {
+    const size_t pn = strlen(LC_PREVIEW);
+    if (line[0] == '"' && !strncmp(line + 1, LC_PREVIEW, pn) && !strncmp(line + 1 + pn, "\" = ", 4))
+        m->pv_size = atoll(line + pn + 5);
     for (int i = 0; i < LC_FILES; i++) {
         const size_t n = strlen(k_lc_files[i]);
         if (line[0] == '"' && !strncmp(line + 1, k_lc_files[i], n) && !strncmp(line + 1 + n, "\" = ", 4))
             m->size[i] = atoll(line + n + 5);
     }
+}
+
+/** @brief Reads a `preview_*` key line of the manifest into its preview record.
+ * @param line The line.
+ * @param m The manifest. */
+static void lc_preview_line(const char* line, lc_manifest* m) {
+    if (!lc_str(line, "preview_disc", m->pv_disc, sizeof m->pv_disc) &&
+        !lc_str(line, "preview_view", m->pv_view, sizeof m->pv_view) &&
+        !lc_str(line, "preview_failed_build", m->pv_failed_build, sizeof m->pv_failed_build) &&
+        !lc_str(line, "preview_failed_disc", m->pv_failed_disc, sizeof m->pv_failed_disc))
+        (void)lc_str(line, "preview_failed_why", m->pv_failed_why, sizeof m->pv_failed_why);
 }
 
 /** @brief Reads a game's cache manifest.
@@ -70,6 +97,7 @@ static void lc_file_line(const char* line, lc_manifest* m) {
 static int lc_read(const char* path, lc_manifest* m) {
     memset(m, 0, sizeof *m);
     for (int i = 0; i < LC_FILES; i++) m->size[i] = -1;
+    m->pv_size = -1;
     FILE* f = fopen(path, "r");
     if (!f) return -1;
     char line[512];
@@ -82,8 +110,9 @@ static int lc_read(const char* path, lc_manifest* m) {
         else if (!lc_str(line, "disc_sha256", m->disc, sizeof m->disc) &&
                  !lc_str(line, "build", m->build, sizeof m->build) &&
                  !lc_str(line, "failed_build", m->failed_build, sizeof m->failed_build) &&
-                 !lc_str(line, "failed_disc", m->failed_disc, sizeof m->failed_disc))
-            (void)lc_str(line, "failed_why", m->failed_why, sizeof m->failed_why);
+                 !lc_str(line, "failed_disc", m->failed_disc, sizeof m->failed_disc) &&
+                 !lc_str(line, "failed_why", m->failed_why, sizeof m->failed_why))
+            lc_preview_line(line, m);
     }
     fclose(f);
     return 0;
@@ -96,19 +125,28 @@ static int lc_read(const char* path, lc_manifest* m) {
  * @param m The manifest.
  * @return 0, or -1 when the write failed. */
 static int lc_write_manifest(const char* path, const lc_manifest* m) {
-    char why[sizeof m->failed_why];
+    char why[sizeof m->failed_why], pwhy[sizeof m->pv_failed_why], view[sizeof m->pv_view];
     snprintf(why, sizeof why, "%s", m->failed_why);
-    for (char* c = why; *c; c++)
-        if (*c == '"' || *c == '\\') *c = '\'';
+    snprintf(pwhy, sizeof pwhy, "%s", m->pv_failed_why);
+    snprintf(view, sizeof view, "%s", m->pv_view);
+    char* const vals[3] = {why, pwhy, view};
+    for (int k = 0; k < 3; k++)
+        for (char* c = vals[k]; *c; c++)
+            if (*c == '"' || *c == '\\') *c = '\'';
     op_atomic_file_t af;
     if (op_atomic_file_open(&af, path) != 0) return -1;
     fprintf(af.f, "format = %d\ndisc_sha256 = \"%s\"\nbuild = \"%s\"\n", m->format, m->disc, m->build);
     if (m->failed_build[0])
         fprintf(af.f, "failed_build = \"%s\"\nfailed_disc = \"%s\"\nfailed_why = \"%s\"\n", m->failed_build,
                 m->failed_disc, why);
+    if (m->pv_disc[0]) fprintf(af.f, "preview_disc = \"%s\"\npreview_view = \"%s\"\n", m->pv_disc, view);
+    if (m->pv_failed_build[0])
+        fprintf(af.f, "preview_failed_build = \"%s\"\npreview_failed_disc = \"%s\"\npreview_failed_why = \"%s\"\n",
+                m->pv_failed_build, m->pv_failed_disc, pwhy);
     fprintf(af.f, "[files]\n");
     for (int i = 0; i < LC_FILES; i++)
         if (m->size[i] >= 0) fprintf(af.f, "\"%s\" = %lld\n", k_lc_files[i], m->size[i]);
+    if (m->pv_size >= 0) fprintf(af.f, "\"%s\" = %lld\n", LC_PREVIEW, m->pv_size);
     return op_atomic_file_commit(&af);
 }
 
@@ -285,6 +323,7 @@ static void lc_mark_failed(const char* path, lc_manifest* m, const char* disc, c
     if (m->format != LAUNCHER_CACHE_FORMAT) {   /* another format's record does not carry over */
         memset(m, 0, sizeof *m);
         for (int i = 0; i < LC_FILES; i++) m->size[i] = -1;
+        m->pv_size = -1;
     }
     m->format = LAUNCHER_CACHE_FORMAT;
     snprintf(m->failed_build, sizeof m->failed_build, "%s", openpete_launcher_build_id());
@@ -294,10 +333,215 @@ static void lc_mark_failed(const char* path, lc_manifest* m, const char* disc, c
         OPL_WARN_F("launcher", "asset cache manifest %s: the failed marker could not be written", path);
 }
 
-int launcher_cache_update(const openpete_game_build_t* b, const char* disc_path, const char* disc_sha256,
-                          const char* context) OP_REQUIRES(ingest) {
-    char dir[4096], path[4096], trigger[256], why[512];
-    if (openpete_paths_game_state_dir("cache", b->id, dir, sizeof dir, 1) != 0) {
+/* A level's dome read back from the domes file, its arrays owned. */
+typedef struct {
+    launcher_preview_dome d;
+    uint8_t*  verts;
+    uint16_t* tris;
+} lc_dome;
+
+/** @brief Reads a little-endian u32 of a buffer.
+ * @param p The bytes.
+ * @return The value. */
+static uint32_t lc_rd32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/** @brief Reads a level's dome from the domes file; a missing file or level leaves an empty dome with a black clear.
+ * @param dir The game's cache directory.
+ * @param level The level id.
+ * @param out Receives the dome; release with lc_dome_free. */
+static void lc_dome_read(const char* dir, const char* level, lc_dome* out) {
+    memset(out, 0, sizeof *out);
+    char p[4096];
+    openpete_paths_join(p, sizeof p, dir, k_lc_files[0]);
+    FILE* f = fopen(p, "rb");
+    if (!f) return;
+    uint8_t h[12];
+    uint32_t n = 0;
+    if (fread(h, 1, 12, f) == 12 && memcmp(h, "OPDOMES1", 8) == 0) n = lc_rd32(h + 8);
+    for (uint32_t i = 0; i < n; i++) {
+        const int ln = fgetc(f);
+        char name[256];
+        uint8_t r[15];
+        if (ln < 0 || fread(name, 1, (size_t)ln, f) != (size_t)ln || fread(r, 1, 15, f) != 15) break;
+        name[ln] = 0;
+        const uint32_t nv = lc_rd32(r), nt = lc_rd32(r + 4);
+        if (strcmp(name, level) != 0) {
+            if (fseek(f, (long)nv * 9L + (long)nt * 6L, SEEK_CUR) != 0) break;
+            continue;
+        }
+        memcpy(out->d.bg, r + 12, 3);
+        out->verts = (uint8_t*)malloc((size_t)nv * 9u + 1u);
+        out->tris = (uint16_t*)malloc((size_t)nt * 6u + 2u);
+        uint8_t* tb = (uint8_t*)malloc((size_t)nt * 6u + 1u);
+        if (out->verts && out->tris && tb && fread(out->verts, 9, nv, f) == nv && fread(tb, 6, nt, f) == nt) {
+            for (uint32_t k = 0; k < nt * 3u; k++) out->tris[k] = (uint16_t)(tb[2 * k] | (tb[2 * k + 1] << 8));
+            out->d.nv = nv; out->d.ntri = nt;
+            out->d.verts = out->verts; out->d.tris = out->tris;
+        }
+        free(tb);
+        break;
+    }
+    fclose(f);
+}
+
+/** @brief Releases a dome lc_dome_read filled.
+ * @param D The dome. */
+static void lc_dome_free(lc_dome* D) {
+    free(D->verts);
+    free(D->tris);
+    memset(D, 0, sizeof *D);
+}
+
+/** @brief Decides whether a game's preview is current for a disc and view, writing the rerun trigger when it is not.
+ * @param dir The game's cache directory.
+ * @param m The manifest as read.
+ * @param disc The library disc's content hash.
+ * @param view The spec's "level|pose".
+ * @param build This build's id.
+ * @param trigger Receives the reason a rerun is due.
+ * @param cap Its capacity.
+ * @return LAUNCHER_CACHE_READY, LAUNCHER_CACHE_SKIPPED (a failed marker of
+ *         this build and disc) or LC_RERUN. */
+static int lc_preview_check(const char* dir, const lc_manifest* m, const char* disc, const char* view,
+                            const char* build, char* trigger, size_t cap) {
+    if (m->pv_failed_build[0] && !strcmp(m->pv_failed_build, build) && !strcmp(m->pv_failed_disc, disc))
+        return LAUNCHER_CACHE_SKIPPED;
+    if (m->pv_failed_build[0]) { snprintf(trigger, cap, "a preview failed marker of build %s", m->pv_failed_build); return LC_RERUN; }
+    char p[4096];
+    openpete_paths_join(p, sizeof p, dir, LC_PREVIEW);
+    const long long n = lc_size(p);
+    if (m->pv_size < 0 || n != m->pv_size) {
+        snprintf(trigger, cap, "%s %s", LC_PREVIEW, n < 0 ? "missing" : "differs from the manifest's size");
+        return LC_RERUN;
+    }
+    if (strcmp(m->pv_disc, disc)) { snprintf(trigger, cap, "the library disc's hash changed"); return LC_RERUN; }
+    if (strcmp(m->pv_view, view)) { snprintf(trigger, cap, "the box picture's level or pose changed"); return LC_RERUN; }
+    return LAUNCHER_CACHE_READY;
+}
+
+/** @brief Writes the preview file: "OPPREV01", u32 width, u32 height, then the RGBA rows.
+ * @param path The file.
+ * @param rgba The image.
+ * @param w Its width.
+ * @param h Its height.
+ * @return 0, or -1. */
+static int lc_preview_write(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) {
+    op_atomic_file_t af;
+    if (op_atomic_file_open(&af, path) != 0) return -1;
+    fwrite("OPPREV01", 1, 8, af.f);
+    lc_u32(af.f, w);
+    lc_u32(af.f, h);
+    fwrite(rgba, 1, (size_t)w * h * 4u, af.f);
+    return op_atomic_file_commit(&af);
+}
+
+/** @brief Records a preview's outcome in the manifest: the file and its keys on success, the failed marker on a deterministic failure.
+ * @param dir The game's cache directory.
+ * @param path The manifest's path.
+ * @param m The manifest.
+ * @param disc The disc's content hash.
+ * @param view The spec's "level|pose".
+ * @param rgba The image, or NULL after a failure.
+ * @param why The failure's reason.
+ * @return 0, or -1 when a write failed. */
+static int lc_preview_record(const char* dir, const char* path, lc_manifest* m, const char* disc, const char* view,
+                             const uint8_t* rgba, const char* why) {
+    if (!rgba) {
+        snprintf(m->pv_failed_build, sizeof m->pv_failed_build, "%s", openpete_launcher_build_id());
+        snprintf(m->pv_failed_disc, sizeof m->pv_failed_disc, "%s", disc);
+        snprintf(m->pv_failed_why, sizeof m->pv_failed_why, "%.*s", (int)sizeof m->pv_failed_why - 1, why);
+        return lc_write_manifest(path, m);
+    }
+    char p[4096];
+    openpete_paths_join(p, sizeof p, dir, LC_PREVIEW);
+    if (lc_preview_write(p, rgba, LAUNCHER_PREVIEW_W, LAUNCHER_PREVIEW_H) != 0) return -1;
+    m->pv_size = lc_size(p);
+    snprintf(m->pv_disc, sizeof m->pv_disc, "%s", disc);
+    snprintf(m->pv_view, sizeof m->pv_view, "%s", view);
+    m->pv_failed_build[0] = m->pv_failed_disc[0] = m->pv_failed_why[0] = 0;
+    return lc_write_manifest(path, m);
+}
+
+/** @brief Brings a game's box picture up to date after its extraction: rerenders it when it is not current, on the launcher's device.
+ *
+ * Without the launcher's device (a headless run) nothing is checked or
+ * logged: a preview is never due there. A deterministic failure writes the
+ * preview's failed marker; a stop or a transient failure (the time bound,
+ * the device) writes nothing, so the next launch reruns it.
+ * @param b The installed game's build record.
+ * @param dir The game's cache directory.
+ * @param path The manifest's path.
+ * @param disc_path The disc.
+ * @param disc The disc's content hash.
+ * @param context What started the job. */
+static void lc_preview_update(const openpete_game_build_t* b, const char* dir, const char* path,
+                              const char* disc_path, const char* disc, const char* context) OP_REQUIRES(ingest) {
+    const launcher_preview_spec* S = launcher_preview_spec_of(b->id);
+    if (S && !openpete_native_launcher_active() && getenv("OPENPETE_PREVIEW_BUILD_ONLY")) {
+        char why[512];
+        const int rc = launcher_preview_build_only(b, disc_path, why, sizeof why);
+        OPL_INFO_F("launcher", "preview build of %s without a draw: %s", b->id, rc == 0 ? "done" : why);
+        return;
+    }
+    if (!S || !openpete_native_launcher_active()) return;
+    lc_manifest m;
+    if (lc_read(path, &m) != 0 || m.format != LAUNCHER_CACHE_FORMAT) return;
+    char view[256], trigger[256], why[512];
+    snprintf(view, sizeof view, "%s|%s", S->level, S->pose);
+    const char* build = openpete_launcher_build_id();
+    const int st = lc_preview_check(dir, &m, disc, view, build, trigger, sizeof trigger);
+    if (st == LAUNCHER_CACHE_READY) { OPL_INFO_F("launcher", "preview of %s is current", b->id); return; }
+    if (st == LAUNCHER_CACHE_SKIPPED) {
+        OPL_INFO_F("launcher", "preview of %s skipped: the cache manifest holds a preview failed marker of this "
+                   "build (%s)", b->id, m.pv_failed_why);
+        return;
+    }
+    if (!strcmp(context, "launch-time"))
+        OPL_INFO_F("launcher", "launch-time rerun: preview render of %s (%s)", b->id, trigger);
+    else
+        OPL_INFO_F("launcher", "preview render of %s at %s (%s)", b->id, context, trigger);
+    lc_dome dome;
+    lc_dome_read(dir, S->level, &dome);
+    uint8_t* rgba = NULL;
+    double ms = 0.0;
+    const int rc = launcher_preview_render(b, disc_path, &dome.d, &rgba, &ms, why, sizeof why);
+    lc_dome_free(&dome);
+    openpete_launcher_preview_progress(0, 0);
+    if (rc == OPENPETE_PREVIEW_OK) {
+        if (lc_preview_record(dir, path, &m, disc, view, rgba, NULL) == 0)
+            OPL_INFO_F("launcher", "preview of %s written: %ux%u, %s at %s, %.1f ms", b->id, LAUNCHER_PREVIEW_W,
+                       LAUNCHER_PREVIEW_H, S->level, S->pose, ms);
+        else
+            OPL_WARN_F("launcher", "preview of %s: the file or the manifest could not be written", b->id);
+    } else if (rc == OPENPETE_PREVIEW_FAILED) {
+        (void)lc_preview_record(dir, path, &m, disc, view, NULL, why);
+        OPL_ERROR_F("launcher", "preview of %s failed: %s; failed marker written to %s (build %s)", b->id, why,
+                    path, build);
+    } else if (rc == OPENPETE_PREVIEW_STOPPED) {
+        OPL_INFO_F("launcher", "preview of %s stopped; the cache is unchanged", b->id);
+    } else {
+        OPL_WARN_F("launcher", "preview of %s not drawn: %s; no marker, it reruns at the next launch", b->id, why);
+    }
+    if (rc == OPENPETE_PREVIEW_OK || rc == OPENPETE_PREVIEW_FAILED) openpete_launcher_picture_changed();
+    free(rgba);
+}
+
+/** @brief Brings one game's extraction outputs up to date (the body of launcher_cache_update before its preview).
+ * @param b The installed game's build record.
+ * @param disc_path The disc.
+ * @param disc_sha256 Its content hash.
+ * @param context What started the job.
+ * @param dir Receives the game's cache directory, empty when none resolves.
+ * @param dir_cap Its capacity.
+ * @return A LAUNCHER_CACHE_* value. */
+static int lc_assets_update(const openpete_game_build_t* b, const char* disc_path, const char* disc_sha256,
+                            const char* context, char* dir, size_t dir_cap) OP_REQUIRES(ingest) {
+    char path[4096], trigger[256], why[512];
+    dir[0] = 0;
+    if (openpete_paths_game_state_dir("cache", b->id, dir, dir_cap, 1) != 0) {
+        dir[0] = 0;
         OPL_WARN_F("launcher", "asset cache of %s: no cache directory resolves", b->id);
         return LAUNCHER_CACHE_STOPPED;   /* transient: no marker can be written */
     }
@@ -338,15 +582,18 @@ int launcher_cache_update(const openpete_game_build_t* b, const char* disc_path,
     return LAUNCHER_CACHE_READY;
 }
 
-unsigned char* launcher_cache_read_logo(const char* game, int* w, int* h) {
-    char dir[4096], path[4096];
-    if (!game || openpete_paths_game_state_dir("cache", game, dir, sizeof dir, 0) != 0) return NULL;
-    openpete_paths_join(path, sizeof path, dir, k_lc_files[2]);
+/** @brief Reads an image file of the cache: an 8-byte magic, u32 width and height (each 1 to 1024), then the RGBA rows, and nothing after.
+ * @param path The file.
+ * @param magic Its magic.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return The texels for the caller to free, or NULL when the file is missing or malformed. */
+static unsigned char* lc_read_rgba(const char* path, const char* magic, int* w, int* h) {
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
     uint8_t hd[16];
     unsigned char* px = NULL;
-    if (fread(hd, 1, sizeof hd, f) == sizeof hd && !memcmp(hd, "OPLOGO01", 8)) {
+    if (fread(hd, 1, sizeof hd, f) == sizeof hd && !memcmp(hd, magic, 8)) {
         const uint32_t lw = hd[8] | (uint32_t)hd[9] << 8 | (uint32_t)hd[10] << 16 | (uint32_t)hd[11] << 24;
         const uint32_t lh = hd[12] | (uint32_t)hd[13] << 8 | (uint32_t)hd[14] << 16 | (uint32_t)hd[15] << 24;
         const size_t n = (size_t)lw * lh * 4u;
@@ -359,6 +606,36 @@ unsigned char* launcher_cache_read_logo(const char* game, int* w, int* h) {
     }
     fclose(f);
     return px;
+}
+
+unsigned char* launcher_cache_read_logo(const char* game, int* w, int* h) {
+    char dir[4096], path[4096];
+    if (!game || openpete_paths_game_state_dir("cache", game, dir, sizeof dir, 0) != 0) return NULL;
+    openpete_paths_join(path, sizeof path, dir, k_lc_files[2]);
+    return lc_read_rgba(path, "OPLOGO01", w, h);
+}
+
+unsigned char* launcher_cache_read_preview(const char* game, int* w, int* h) {
+    char dir[4096], path[4096];
+    if (!game || openpete_paths_game_state_dir("cache", game, dir, sizeof dir, 0) != 0) return NULL;
+    openpete_paths_join(path, sizeof path, dir, "manifest.toml");
+    lc_manifest m;
+    if (lc_read(path, &m) != 0 || m.format != LAUNCHER_CACHE_FORMAT || m.pv_failed_build[0]) return NULL;
+    openpete_paths_join(path, sizeof path, dir, LC_PREVIEW);
+    if (m.pv_size < 0 || lc_size(path) != m.pv_size) return NULL;
+    return lc_read_rgba(path, "OPPREV01", w, h);
+}
+
+int launcher_cache_update(const openpete_game_build_t* b, const char* disc_path, const char* disc_sha256,
+                          const char* context) OP_REQUIRES(ingest) {
+    char dir[4096];
+    const int rc = lc_assets_update(b, disc_path, disc_sha256, context, dir, sizeof dir);
+    if (rc != LAUNCHER_CACHE_STOPPED && dir[0] && !openpete_launcher_job_cancelled()) {
+        char path[4096];
+        openpete_paths_join(path, sizeof path, dir, "manifest.toml");
+        lc_preview_update(b, dir, path, disc_path, disc_sha256 ? disc_sha256 : "", context);
+    }
+    return rc;
 }
 
 int launcher_cache_game_has_assets(const openpete_game_build_t* b) {
