@@ -338,6 +338,29 @@ int launcher_cache_update(const openpete_game_build_t* b, const char* disc_path,
     return LAUNCHER_CACHE_READY;
 }
 
+unsigned char* launcher_cache_read_logo(const char* game, int* w, int* h) {
+    char dir[4096], path[4096];
+    if (!game || openpete_paths_game_state_dir("cache", game, dir, sizeof dir, 0) != 0) return NULL;
+    openpete_paths_join(path, sizeof path, dir, k_lc_files[2]);
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    uint8_t hd[16];
+    unsigned char* px = NULL;
+    if (fread(hd, 1, sizeof hd, f) == sizeof hd && !memcmp(hd, "OPLOGO01", 8)) {
+        const uint32_t lw = hd[8] | (uint32_t)hd[9] << 8 | (uint32_t)hd[10] << 16 | (uint32_t)hd[11] << 24;
+        const uint32_t lh = hd[12] | (uint32_t)hd[13] << 8 | (uint32_t)hd[14] << 16 | (uint32_t)hd[15] << 24;
+        const size_t n = (size_t)lw * lh * 4u;
+        if (lw && lh && lw <= 1024u && lh <= 1024u && (px = (unsigned char*)malloc(n)) != NULL &&
+            (fread(px, 1, n, f) != n || fgetc(f) != EOF)) {
+            free(px);
+            px = NULL;
+        }
+        if (px) { *w = (int)lw; *h = (int)lh; }
+    }
+    fclose(f);
+    return px;
+}
+
 int launcher_cache_game_has_assets(const openpete_game_build_t* b) {
     return b && b->runtime && b->runtime->host && b->runtime->host->assets ? 1 : 0;
 }

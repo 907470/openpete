@@ -70,6 +70,18 @@ enum {
 int launcher_cache_update(const struct openpete_game_build* b, const char* disc_path,
                           const char* disc_sha256, const char* context) OP_REQUIRES(ingest);
 
+/** @brief Reads a game's title logo from its launcher asset cache (logo.rgba).
+ *
+ * The file's magic, width and height (each 1 to 1024) and its size are
+ * checked; a missing or malformed file reads as none. Reads only, so it runs
+ * on any thread; the job replaces the file atomically.
+ * @param game The game id.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return width * height RGBA texels, rows top to bottom, allocated with
+ *         malloc for the caller to free; NULL when the cache holds none. */
+unsigned char* launcher_cache_read_logo(const char* game, int* w, int* h);
+
 /** @brief Reports whether a game declares launcher assets (an asset descriptor in its host tables).
  *
  * @param b The game's build record.

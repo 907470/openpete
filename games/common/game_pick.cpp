@@ -7,6 +7,7 @@
 #include "openpete_fatal.h"
 #include "openpete_launcher.h"
 #include "openpete_log.h"
+#include "openpete_paths.h"
 #include "openpete_config.h"
 #include "recomp_attach.h"
 #include "launcher_cache.h"
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 /** @brief Bring a per-game entry's launcher asset cache up to date for a library disc (launcher_cache_update).
@@ -103,6 +105,35 @@ int entry_build(const openpete_launcher_game* g, const char* disc_path, const ch
     return build_of(g)->build_module(disc_path, out_module_path);
 }
 
+/** @brief Read a per-game entry's title logo from its launcher asset cache (launcher_cache_read_logo).
+ *
+ * @param g The per-game entry.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return The RGBA texels for the caller to free, or NULL. */
+unsigned char* entry_logo(const openpete_launcher_game* g, int* w, int* h) {
+    return launcher_cache_read_logo(g->game_id, w, h);
+}
+
+/** @brief Report whether the executable can get a module for a game: it needs no first-boot build, or the build's inputs (recomp/manifest/<id>/manifest.toml) are staged beside the executable.
+ *
+ * A game without a box is logged once, with the path looked for.
+ * @param b The game's build record.
+ * @return 1 when it can, else 0. */
+int entry_on_page(const openpete_game_build_t* b) {
+    if (!b->build_module) return 1;
+    char dir[4096];
+    if (openpete_exe_dir(dir, sizeof dir) != 0) return 0;
+    const std::string manifest = std::string(dir) + "/recomp/manifest/" + b->id + "/manifest.toml";
+    if (FILE* f = std::fopen(manifest.c_str(), "rb")) {
+        std::fclose(f);
+        return 1;
+    }
+    OPL_INFO_F("launcher", "game page: no box for %s: its first-boot inputs are not staged (%s)", b->id,
+               manifest.c_str());
+    return 0;
+}
+
 /** @brief Return the per-game launcher entries, one per linked game, in link order.
  *
  * @return The entries, built on first call. */
@@ -126,7 +157,9 @@ std::vector<openpete_launcher_game>& game_entries() {
             g.update_assets = entry_assets;
             g.title_load = entry_title_load;
             g.title_emit = entry_title_emit;
+            g.load_logo = entry_logo;
         }
+        g.on_page = entry_on_page(b);
     }
     return entries;
 }

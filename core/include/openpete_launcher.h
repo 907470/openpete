@@ -120,6 +120,15 @@ struct openpete_launcher_game {
      * and 0 in a per-game entry. */
     const openpete_launcher_game* const* games;
     int game_count;
+    /* 1 when the executable can get a module for this game (it needs no
+     * first-boot build, or the build's inputs are staged beside it): the
+     * game page draws a box for it. 0 in the neutral descriptor. */
+    int on_page;
+    /* Read this game's title logo from its launcher asset cache: width *
+     * height RGBA texels, rows top to bottom, allocated with malloc for the
+     * caller to free; NULL when the cache holds none. NULL for a game
+     * without launcher assets. */
+    unsigned char* (*load_logo)(const openpete_launcher_game* g, int* w, int* h);
 };
 
 struct rhi_device;
@@ -339,11 +348,6 @@ int  openpete_library_disc_identity(const char* disc_path, char* serial, size_t 
  * @param cue_cap Its capacity.
  * @return 0 when an entry's disc.cue exists, -1 otherwise. */
 int  openpete_library_game_disc(const char* game, char* cue, size_t cue_cap);
-
-/** @brief Set the note the version selector shows under its entries, or clear it.
- *
- * @param note One line, copied; NULL or empty clears it. */
-void openpete_launcher_set_note(const char* note);
 
 #ifdef __cplusplus
 }

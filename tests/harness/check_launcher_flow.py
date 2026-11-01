@@ -1240,11 +1240,15 @@ def case_shader_step_order(a):
 
 # ---- the game page's commands (input) ----
 
-# A selector entry's centre in layout px: entry i's line top is 168 + 22 i below the 360 px band,
-# which starts 44 px down the 448 px layout.
-def entry_point(i):
-    """The mouse= action pointing at selector entry i's centre."""
-    return f"mouse=320/{168 + 44 + 22 * i + 8}"
+# Box i's centre on the game page at 1280x800, in the launcher's 640x448 layout space (mouse= warps
+# there): the three boxes' rects come from the reference layout's empty page.
+def entry_point(i, dx=0.0):
+    """The mouse= action pointing at game page box i's centre (1280x800), dx layout px to the right."""
+    ref = cl.read_json(cl.REFERENCE)["presets"]["1280x800"][0]["items"]
+    r = next(it["rect"] for it in ref if it["id"] == f"box.{cl.GAMES[i]}.frame")
+    sc = min(1280 / 640, 800 / 448)
+    ox, oy = (1280 - 640 * sc) / 2, (800 - 448 * sc) / 2
+    return f"mouse={((r[0] + r[2]) / 2 - ox) / sc + dx:.1f}/{((r[1] + r[3]) / 2 - oy) / sc:.1f}"
 
 
 def inputs(*acts, start=1500, step=300):
@@ -1322,8 +1326,7 @@ def case_input(a):
         bad.append("pad: d-pad up/down and stick Y did not each log one inert command")
 
     # The pointer takes the focus only after it moves: a key move holds against a still pointer.
-    rc, log = input_run(a, d, "pointer", inputs(entry_point(2), "key=left", 900, entry_point(2).replace(
-        "320/", "330/"), "key=escape"))
+    rc, log = input_run(a, d, "pointer", inputs(entry_point(2), "key=left", 900, entry_point(2, 10), "key=escape"))
     expect_moves("pointer", log, [("pointer", 0, 2), ("left", 2, 1), ("pointer", 1, 2)])
     if rc != 0:
         bad.append(f"pointer: exit {rc}")

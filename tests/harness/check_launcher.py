@@ -16,9 +16,10 @@ Cases:
   manifest  The element manifest writer (OPENPETE_LAUNCHER_MANIFEST): at each
             reference window preset (1280x800, 1920x1080, 2560x1080,
             1024x768, 2560x1440, 3840x2160) an empty-library launch draws the drop
-            screen, the writer writes drop.json, and the file names the
-            window size, holds the drop screen's elements, and every rect
-            lies inside the window. The reference layout manifest
+            screen (the game page with every box empty), the writer writes
+            drop.json, and the file names the window size, holds the title
+            and each linked game's empty box (fill, disc, name, frame), and
+            every rect lies inside the window. The reference layout manifest
             (tests/launcher/layout-reference.json) parses, covers the six
             presets, and carries no field outside the id/kind/rect/font/px/
             cell set (no game-derived field).
@@ -28,12 +29,31 @@ Cases:
             first step). A text item's left edge and height match exactly and
             its width within TEXT_WIDTH_BOUND; any other rect within 1 px.
             The ids compared are those the launcher draws as the reference
-            does: the pixel title. The drop screen's shot
+            does: the pixel title and the game page's empty boxes (their
+            fill, disc outline, name lines and frame; compare_page). The
+            drop screen's shot
             (OPENPETE_LAUNCHER_SHOT) is read too: the title's orange ink lies
             inside its rect, no pixel in the rect is a blend of the orange
             and the background, and every horizontal ink run is a multiple
             of the reference's cell (whole-pixel cells). A --game spyro-1
             launch's drop screen draws no subtitle.
+  page      The game page with library discs, at 1280x800 and 1024x768 (a
+            box row narrower than the window, and one the width shrinks):
+            a library of Spyro 1's disc, its asset cache written first by a
+            headless launch, against the reference's page with Spyro 1 in
+            the library (Spyro 2's and 3's empty boxes, every frame, and Spyro
+            1's title logo by its rule: centred on the box, a quarter of its
+            height below the frame's top edge, its rect inside the logo's
+            size caps); a library of all three discs against the page with
+            all three in it (frames and logos). The logo's size is the disc's
+            logo region's, which the reference's stand-in logos do not share,
+            so it is checked by the rule only. A disc dropped on the empty
+            page (Spyro 2's) returns to the page with its box focused: its
+            frame at the reference's focused Spyro 2 rect. An executable
+            whose first-boot inputs are staged for Spyro 1 and Spyro 3 only
+            (a hard link of a -launcher build's binary beside a recomp tree
+            holding those two manifests) draws two boxes, at the reference's
+            two-box page; SKIP for that row without a first-boot build.
   handoff   The last launcher present before the game's first present is
             black on every path into the game (OPENPETE_LAUNCHER_TRACE: every
             present from the launcher window's first through the game's
@@ -81,10 +101,9 @@ Cases:
             a window value under [game.spyro-1] does not apply (1280x800). The size and maximized state the
             launcher device was created at are asserted.
   font      The body font: an empty-library launch logs the body font as
-            Fredoka Medium with ProggyClean the default font, and the drop
-            screen's 14-layout-px lines stand at Fredoka's cap-matched size
-            (round(14 x scale x (8/13)/(700/1210)) px tall) while the title
-            keeps its whole-pixel cells; no font file sits beside the
+            Fredoka Medium with ProggyClean the default font, and the game
+            page's name lines match the reference's Fredoka widths
+            (compare_page) while the title keeps its whole-pixel cells; no font file sits beside the
             executable; after a pick hands the window to the game, the dev
             overlay logs ProggyClean as its font; the licence staging every
             package runs (scripts/dist_compliance.py licences --scope all)
@@ -131,6 +150,14 @@ DISC_BIN = os.path.join(ROOT, "games", "spyro-1", "spyro-1", "build", "SCUS-9422
 DISC_CUE = os.path.join(ROOT, "games", "spyro-1", "spyro-1", "build", "SCUS-94228.cue")
 # The ids the launcher draws as the reference layout does, compared by the layout case.
 LAYOUT_IDS = ["title"]
+# The game page's name lines (Fredoka, laid out by the reference with the browser's measureText and by the
+# launcher with imgui's stb_truetype path) against the reference: the top and height exact, the width
+# within NAME_WIDTH_BOUND px and the left edge (the line is centred) within half of it. Calibrated on the
+# five name lines at the six presets: widths differ by -2.16 to +4.32 px, not monotonic in the size (the
+# browser applies the font's kerning, imgui does not; both round the width up).
+NAME_WIDTH_BOUND = 4.5
+# The logo's share of its height below the frame's top edge.
+LOGO_DROP = 0.25
 # A text item's width against the reference's, in pixels. Calibrated on the drop screen's seven strings
 # (ProggyClean at 8, 14 and 28 layout px) at the six presets, drawn by the launcher and by the reference
 # layout's text model with imgui's whole-pixel font sizes: widths differ by at most 1 px (imgui's
@@ -138,7 +165,9 @@ LAYOUT_IDS = ["title"]
 # times the length), heights not at all; a centred string's left edge moves with that pixel. Text in
 # whole-pixel cells (the pixel title) matches exactly.
 TEXT_WIDTH_BOUND = 1.0
-DROP_IDS = {"title", "drag.1", "drag.2", "browse.hint", "browse.button", "disc.note", "quit.hint"}
+GAMES = ("spyro-1", "spyro-2", "spyro-3")
+DISCS = {"spyro-1": "SCUS-94228", "spyro-2": "SCUS-94425", "spyro-3": "SCUS-94467"}
+DROP_IDS = {"title"} | {f"box.{g}.{p}" for g in GAMES for p in ("fill", "disc", "name.0", "frame")}
 
 
 class Skip(Exception):
@@ -204,18 +233,20 @@ def drop_manifest(binary, d, preset, extra_env=None):
     return read_json(base + ".drop.json"), rc
 
 
-def seed_library(d):
-    """A library holding one Spyro 1 entry whose disc.bin links the repository's image (no copy)."""
-    if not os.path.isfile(DISC_BIN):
-        raise Skip(f"{DISC_BIN} missing")
-    e = os.path.join(d, "data", "openpete", "library", "00000000launcher")
-    os.makedirs(e)
-    os.symlink(DISC_BIN, os.path.join(e, "disc.bin"))
-    with open(os.path.join(e, "disc.cue"), "w") as f:
-        f.write('FILE "disc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
-    with open(os.path.join(e, "meta.toml"), "w") as f:
-        f.write('label = "Spyro the Dragon (launcher test)"\nsource = "SCUS-94228.bin"\n'
-                'sha256 = "%s"\nlast_played = 1\ngame = "spyro-1"\n' % ("0" * 64))
+def seed_library(d, games=("spyro-1",)):
+    """A library holding one entry per game whose disc.bin links the repository's image (no copy)."""
+    for i, g in enumerate(games):
+        b = os.path.join(ROOT, "games", g, g, "build", DISCS[g] + ".bin")
+        if not os.path.isfile(b):
+            raise Skip(f"{b} missing")
+        e = os.path.join(d, "data", "openpete", "library", "00000000launcher" + ("" if g == "spyro-1" else g))
+        os.makedirs(e)
+        os.symlink(b, os.path.join(e, "disc.bin"))
+        with open(os.path.join(e, "disc.cue"), "w") as f:
+            f.write('FILE "disc.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+        with open(os.path.join(e, "meta.toml"), "w") as f:
+            f.write('label = "%s (launcher test)"\nsource = "%s.bin"\n'
+                    'sha256 = "%s"\nlast_played = %d\ngame = "%s"\n' % (g, DISCS[g], "0" * 64, i + 1, g))
 
 
 def trace_presents(log):
@@ -564,6 +595,63 @@ def compare_items(ours, ref, ids):
     return bad
 
 
+def logo_problems(ours, game):
+    """Problems of a box's title logo against its rule: centred on the frame, LOGO_DROP of its height below
+    the frame's top edge, at most 0.92 of the frame's width wide and 0.42 of it tall, one cap met."""
+    mine = {it["id"]: it["rect"] for it in ours}
+    lo, fr = mine.get(f"box.{game}.logo"), mine.get(f"box.{game}.frame")
+    if lo is None or fr is None:
+        return [f"box.{game}.logo: {'no logo' if lo is None else 'no frame'} drawn"]
+    w, h, fw = lo[2] - lo[0], lo[3] - lo[1], fr[2] - fr[0]
+    bad = []
+    if abs((lo[0] + lo[2]) - (fr[0] + fr[2])) / 2 > 0.5:
+        bad.append(f"box.{game}.logo {lo} not centred on the frame {fr}")
+    if abs(lo[1] + (1 - LOGO_DROP) * h - fr[1]) > 0.5:
+        bad.append(f"box.{game}.logo {lo}: {(fr[1] - lo[1]) / h:.3f} of its height above the frame's top, "
+                   f"expected {1 - LOGO_DROP}")
+    if w > 0.92 * fw + 0.5 or h > 0.42 * fw + 0.5 or min(abs(w - 0.92 * fw), abs(h - 0.42 * fw)) > 0.5:
+        bad.append(f"box.{game}.logo {lo}: {w:.2f}x{h:.2f} meets neither cap of a {fw:.2f} wide frame")
+    return bad
+
+
+def compare_page(ours, ref, ingested=(), log=None):
+    """Problems of the launcher's game page against a reference step's, and the count of rects compared.
+
+    Every frame within 1 px; an empty box's fill and disc within 1 px and its name lines' top and height
+    exact, width within NAME_WIDTH_BOUND and left edge within half of it; an
+    ingested box's logo by its rule (logo_problems); the box picture (not drawn yet) is skipped."""
+    mine = {it["id"]: it for it in ours}
+    bad, n = [], 0
+    for it in ref:
+        i = it["id"]
+        if not i.startswith("box."):
+            continue
+        game, part = i.split(".", 2)[1:]
+        if part == "picture":
+            continue
+        if part == "logo":
+            bad += logo_problems(ours, game)
+            n += 1
+            continue
+        a = mine.get(i)
+        if a is None:
+            bad.append(f"{i}: the launcher drew no such element")
+            continue
+        ra, rb = a["rect"], it["rect"]
+        if part.startswith("name."):
+            dw, dx = (ra[2] - ra[0]) - (rb[2] - rb[0]), ra[0] - rb[0]
+            if log is not None:
+                log.append((i, round(dw, 2), round(dx, 2)))
+            ok = (abs(ra[1] - rb[1]) < 0.02 and abs((ra[3] - ra[1]) - (rb[3] - rb[1])) < 0.02 and
+                  abs(dw) <= NAME_WIDTH_BOUND and abs(dx) <= NAME_WIDTH_BOUND / 2 + 0.01)
+        else:
+            ok = all(abs(ra[q] - rb[q]) <= 1.0 for q in range(4))
+        n += 1
+        if not ok:
+            bad.append(f"{i}: launcher {ra} reference {rb}")
+    return bad, n
+
+
 BG = (24, 16, 40)
 TITLE_ORANGE = (240, 138, 30)
 
@@ -607,7 +695,7 @@ def case_layout(a):
     if ref is None:
         print(f"[launcher] FAIL: {REFERENCE} missing")
         return 1
-    bad, compared = [], 0
+    bad, compared, total, deltas = [], 0, 0, []
     for p in PRESETS:
         m, rc = drop_manifest(a.binary, d, p)
         if m is None:
@@ -615,6 +703,14 @@ def case_layout(a):
             continue
         step = ref["presets"][p][0]
         problems = compare_items(m["items"], step["items"], LAYOUT_IDS)
+        compared += len(LAYOUT_IDS) - len(problems)
+        total += len(LAYOUT_IDS)
+        mark = len(deltas)
+        page_bad, n = compare_page(m["items"], step["items"], log=deltas)
+        print(f"[launcher] {p} name lines (id, width delta, left delta): {deltas[mark:]}")
+        problems += page_bad
+        compared += n - len(page_bad)
+        total += n
         title = next((it for it in step["items"] if it["id"] == "title"), None)
         shot = os.path.join(d, "m-" + p + ".drop.png")
         if title and os.path.isfile(shot):
@@ -627,7 +723,6 @@ def case_layout(a):
                                 f"{outside} outside, runs {sorted(runs)}")
         elif title:
             problems.append(f"no shot {shot}")
-        compared += len(LAYOUT_IDS) - len(problems)
         for it in m["items"]:
             if it["id"] in LAYOUT_IDS:
                 print(f"[launcher] {p} {it['id']}: {it['rect']}")
@@ -641,12 +736,14 @@ def case_layout(a):
         bad.append(f"--game spyro-1 drop screen: {'no manifest (rc %d)' % rc if m is None else 'a subtitle is drawn'}")
     for b in bad:
         print("[launcher] FAIL", b)
-    print(f"[launcher] layout: {'FAIL' if bad else 'PASS'} ({compared} of {len(LAYOUT_IDS) * len(PRESETS)} "
-          f"element rects match: {', '.join(LAYOUT_IDS)})")
+    worst = max((max(abs(w), abs(x)) for _, w, x in deltas), default=0)
+    print(f"[launcher] name lines: {len(deltas)} compared, worst width/left delta {worst} px")
+    if total == 0:
+        print("[launcher] layout: VACUOUS (no element compared)")
+        return 3
+    print(f"[launcher] layout: {'FAIL' if bad else 'PASS'} ({compared} of {total} element rects match: "
+          f"{', '.join(LAYOUT_IDS)} and the empty game page)")
     return 1 if bad else 0
-
-
-BODY_SCALE = (8 / 13) / (700 / 1210)   # Fredoka's capitals matched to ProggyClean's
 
 
 def case_font(a):
@@ -658,13 +755,14 @@ def case_font(a):
         log = f.read()
     if not re.search(r"launcher: body font Fredoka Medium \(embedded, \d+ bytes base85\); default font ProggyClean", log):
         bad.append("the launcher logged no Fredoka body font beside the ProggyClean default")
-    sc = min(1280 / 640, 800 / 448)
-    want = round(14 * sc * BODY_SCALE)
-    lines = {it["id"]: it["rect"] for it in (m or {}).get("items", [])}
-    for i in ("drag.1", "drag.2"):
-        r = lines.get(i)
-        if r is None or round(r[3] - r[1]) != want:
-            bad.append(f"{i}: height {r and r[3] - r[1]}, expected {want} (Fredoka at the cap-matched size)")
+    # The game page's name lines are the body font's: their widths match the reference's Fredoka lines
+    # (ProggyClean's fixed advance would differ by tens of pixels).
+    ref = [it for it in read_json(REFERENCE)["presets"]["1280x800"][0]["items"] if ".name." in it["id"]]
+    name_bad, n = compare_page((m or {}).get("items", []), ref)
+    bad += name_bad
+    if n == 0:
+        bad.append("no name line compared")
+    lines = {it["id"]: it["rect"] for it in (m or {}).get("items", []) if ".name." in it["id"]}
     fonts = [n for n in os.listdir(a.build_dir) if n.lower().endswith((".ttf", ".otf", ".ttc", ".woff", ".woff2"))]
     if fonts:
         bad.append(f"font files beside the executable: {fonts}")
@@ -687,11 +785,108 @@ def case_font(a):
     with open(os.path.join(ROOT, "packaging", "README-dist.md.in")) as f:
         if "Fredoka" not in f.read():
             bad.append("packaging/README-dist.md.in does not credit Fredoka")
-    print(f"[launcher] body lines {[(i, lines.get(i)) for i in ('drag.1', 'drag.2')]} expected height {want}; "
+    print(f"[launcher] body lines {sorted(lines.items())}; "
           f"overlay font {ov and ov.group(1)}; licence staged {os.path.isfile(shipped)}")
     for b in bad:
         print("[launcher] FAIL", b)
     print(f"[launcher] font: {'FAIL' if bad else 'PASS'}")
+    return 1 if bad else 0
+
+
+def page_manifest(a, d, tag, preset, screen, env=None, args=(), binary=None, timeout=120):
+    """One windowed launch at a preset writing its manifests under d; returns (the screen's manifest or None, log)."""
+    base = os.path.join(d, f"m-{tag}-{preset}")
+    e = {"OPENPETE_LAUNCHER_MANIFEST": base}
+    e.update(env or {"OPENPETE_LAUNCHER_INPUT": "2000:quit"})
+    _, log = launch(binary or a.binary, d, f"{tag}-{preset}", ["--launcher-window", preset] + list(args), e,
+                    timeout=timeout)
+    return read_json(f"{base}.{screen}.json"), log
+
+
+def page_library(a, d, bad):
+    """The page over a library of Spyro 1's disc and over one of all three, against the reference; the count compared."""
+    ref = read_json(REFERENCE)["presets"]
+    n = 0
+    for lib, step in ((("spyro-1",), 9), (GAMES, 13)):
+        run = os.path.join(d, f"lib-{len(lib)}")
+        os.makedirs(run)
+        seed_library(run, lib)
+        # The asset cache: a headless launch runs each library game's extraction inline before it boots.
+        rc, log = launch(a.binary, run, "prime", ["--headless", "--frame-limit", "1"], timeout=900)
+        missing = [g for g in lib if not re.search(rf"asset cache of {g} (written|is current)", log)]
+        if missing:
+            bad.append(f"library {lib}: no asset cache for {missing} (rc {rc}, log {run}/prime.log)")
+            continue
+        for preset in ("1280x800", "1024x768"):
+            m, _ = page_manifest(a, run, "page", preset, "selector")
+            if m is None:
+                bad.append(f"library {lib} {preset}: no selector.json")
+                continue
+            page_bad, k = compare_page(m["items"], ref[preset][step]["items"])
+            ids = {it["id"] for it in m["items"]}
+            page_bad += [f"box.{g}.logo not drawn" for g in lib if f"box.{g}.logo" not in ids]
+            bad += [f"library {lib} {preset} {x}" for x in page_bad]
+            n += k
+            logos = [(it["id"], it["rect"]) for it in m["items"] if it["id"].endswith(".logo")]
+            print(f"[launcher] page library {list(lib)} {preset}: {k} rects compared, logos {logos}")
+    return n
+
+
+def page_drop_focus(a, d, bad):
+    """A disc dropped on the empty page returns to the page with its game's box focused (grown)."""
+    run = os.path.join(d, "drop")
+    os.makedirs(run)
+    cue = os.path.join(ROOT, "games", "spyro-2", "spyro-2", "build", DISCS["spyro-2"] + ".cue")
+    if not os.path.isfile(cue):
+        raise Skip(f"{cue} missing")
+    env = {"OPENPETE_LAUNCHER_DROP": cue, "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+           "OPENPETE_LAUNCHER_SELECT_GAME": "spyro-2"}
+    m, log = page_manifest(a, run, "drop", "1280x800", "selector", env, ["--frame-limit", "5"], timeout=900)
+    want = next(it["rect"] for it in read_json(REFERENCE)["presets"]["1280x800"][10]["items"]
+                if it["id"] == "box.spyro-2.frame")
+    got = next((it["rect"] for it in (m or {}).get("items", []) if it["id"] == "box.spyro-2.frame"), None)
+    print(f"[launcher] page drop: spyro-2 frame {got}, focused reference {want}")
+    if got is None or any(abs(got[q] - want[q]) > 1.0 for q in range(4)):
+        bad.append(f"after a drop of spyro-2 its frame is {got}, not the focused {want} (log {run}/drop-1280x800.log)")
+    return 1
+
+
+def page_one_box(a, d, bad):
+    """An executable with Spyro 1's first-boot inputs staged and no other game's draws one box, the
+    reference's one-box page; None (a SKIP row) without a first-boot build."""
+    staged = os.path.join(a.build_dir, "recomp", "manifest")
+    if not os.path.isdir(os.path.join(staged, "spyro-1")):
+        print(f"[launcher] page one-box: SKIP (no first-boot inputs staged in {staged})")
+        return None
+    exe = os.path.join(d, "one-box")
+    os.makedirs(os.path.join(exe, "recomp", "manifest"))
+    os.link(a.binary, os.path.join(exe, "openpete"))
+    os.symlink(os.path.join(staged, "spyro-1"), os.path.join(exe, "recomp", "manifest", "spyro-1"))
+    m, log = page_manifest(a, exe, "one-box", "1280x800", "drop", binary=os.path.join(exe, "openpete"))
+    ids = sorted(it["id"] for it in (m or {}).get("items", []) if it["id"].startswith("box."))
+    page_bad, n = compare_page((m or {}).get("items", []), read_json(REFERENCE)["presets"]["1280x800"][14]["items"])
+    if any(g in i for i in ids for g in ("spyro-2", "spyro-3")):
+        page_bad.append(f"boxes of games without staged inputs drawn: {ids}")
+    for g in ("spyro-2", "spyro-3"):
+        if not re.search(rf"game page: no box for {g}: its first-boot inputs are not staged", log):
+            page_bad.append(f"no log line naming {g}'s missing inputs")
+    bad += [f"one-box {x}" for x in page_bad]
+    print(f"[launcher] page one-box: {ids}")
+    return n
+
+
+def case_page(a):
+    """The game page with library discs, the focus after a drop, and the available-games rule."""
+    d = case_dir(a.out, "page")
+    bad = []
+    n = page_library(a, d, bad) + page_drop_focus(a, d, bad)
+    one = page_one_box(a, d, bad)
+    for b in bad:
+        print("[launcher] FAIL", b)
+    print(f"[launcher] page: {'FAIL' if bad else 'PASS'} ({n + (one or 0)} rects compared; one-box row "
+          f"{'run' if one is not None else 'SKIP'})")
+    if n == 0:
+        return 3
     return 1 if bad else 0
 
 
@@ -776,7 +971,7 @@ def case_calibrate(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("case", choices=["manifest", "layout", "handoff", "window-fit", "window-default",
+    ap.add_argument("case", choices=["manifest", "layout", "page", "handoff", "window-fit", "window-default",
                                      "font", "density", "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
@@ -788,7 +983,7 @@ def main():
         print(f"[launcher] SKIP: {a.binary} missing")
         return 64
     try:
-        return {"manifest": case_manifest, "layout": case_layout, "handoff": case_handoff,
+        return {"manifest": case_manifest, "layout": case_layout, "page": case_page, "handoff": case_handoff,
                 "window-fit": case_window_fit,
                 "window-default": case_window_default, "font": case_font, "density": case_density,
                 "calibrate": case_calibrate}[a.case](a)

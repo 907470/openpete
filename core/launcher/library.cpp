@@ -26,6 +26,7 @@
 #include "openpete_psx.h"      /* openpete_psx_read_disc_serial */
 #include "sha256.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -473,10 +474,13 @@ int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*
     for (auto& m : entries)
         if ((!direct || m.game == id) && (!pick || m.last_played > pick->last_played)) pick = &m;
     if (direct) return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : 0;
-    /* Version selector: most recent first, then the rest. */
+    /* The game page's entries, most recently played first: each game's box
+     * goes to its first entry. */
     std::vector<Meta*> order{pick};
     for (auto& m : entries)
         if (&m != pick) order.push_back(&m);
+    std::stable_sort(order.begin() + 1, order.end(),
+                     [](const Meta* a, const Meta* b) { return a->last_played > b->last_played; });
     std::vector<std::string> label_store;
     for (auto* m : order)
         label_store.push_back(entry_label(*m));
@@ -493,30 +497,17 @@ int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*
     return 0;
 }
 
-/** @brief Log each enabled mod's required game that has no disc in the library, and set the selector's note from the first.
+/** @brief Log each enabled mod's required game that has no disc in the library; the game page shows no mod-requirement message.
  *
- * The note reads "MOD <ID> NEEDS <GAME> - ADD ITS DISC", with the count of
- * further pairs when there are more; it is cleared when there are none.
  * @param opts The options naming the mods root and the enabled list. */
 void note_missing_games(const openpete_options_t* opts) {
-    struct Acc { std::string first; int n = 0; } acc;
-    const openpete_launcher_game* lg = launcher_game();
     openpete_mods_missing_games(
-        opts, lg ? lg->game_id : nullptr,
+        opts, launcher_game() ? launcher_game()->game_id : nullptr,
         [](void* ud, const char* mod_id, const char* game) {
-            Acc* a = static_cast<Acc*>(ud);
-            const openpete_launcher_game* g = launcher_game();
-            const char* name = (g && g->game_name) ? g->game_name(game) : nullptr;
-            OPL_WARN_F("library", "mod %s requires %s, which has no disc in the library",
-                       mod_id, game);
-            if (a->n++ == 0)
-                a->first = std::string("MOD ") + mod_id + " NEEDS " +
-                           (name && *name ? name : game) + " - ADD ITS DISC";
+            (void)ud;
+            OPL_WARN_F("library", "mod %s requires %s, which has no disc in the library", mod_id, game);
         },
-        &acc);
-    for (char& c : acc.first) c = (char)std::toupper((unsigned char)c);
-    if (acc.n > 1) acc.first += " (+" + std::to_string(acc.n - 1) + " MORE)";
-    openpete_launcher_set_note(acc.first.c_str());
+        nullptr);
 }
 
 /** @brief Return this executable's build id: the configured version joined with the executable's size and modification time.

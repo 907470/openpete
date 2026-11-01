@@ -136,6 +136,7 @@ add_library(openpete_core STATIC
     launcher/library.cpp
     launcher/launcher.cpp
     launcher/launcher_manifest.cpp
+    launcher/launcher_page.cpp
     launcher/launcher_font.cpp
     launcher/launcher_title.cpp
     launcher/launcher_commands.cpp

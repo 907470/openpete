@@ -3,10 +3,11 @@
 //
 // Three screens, drawn through imgui on the launcher's Vulkan device
 // (openpete_native_launcher_present):
-//   drop      - the library is empty and no disc was named: drag a .cue/.bin
-//               onto the window, or browse for one.
-//   selector  - several library entries, or any while no game is named:
-//               pick one, or drop a disc image to add and boot it.
+//   drop      - the library is empty and no disc was named: the game page
+//               (launcher_page.cpp) with every box empty; a box, or a disc
+//               dragged onto the window, chooses a disc.
+//   selector  - library entries to pick from: the game page; an ingested
+//               box picks its entry, an empty one chooses a disc.
 //   pending   - the library scan runs: the title and a reading line, drawn
 //               from the first frame until the scan returns.
 //   progress  - the ingest copy, the first-boot module build and the mod
@@ -77,15 +78,12 @@ struct View {
     const char* name = nullptr;   /* the game's display name; NULL or "" for none */
     const char* stage = "";
     int done = 0, total = 0;
-    const char* const* labels = nullptr;
+    const char* const* entry_games = nullptr;   /* the game page's library entries' games */
     int count = 0;
-    int sel = 0;
-    int clicked = -1;   /* the label the mouse picked this frame */
-    int hovered = -1;   /* the label under the pointer this frame */
-    bool quit_asked = false;   /* the east button's ask shows ("Press again to quit") */
-    bool browse = false;   /* the browse button was pressed this frame */
-    bool games = false;    /* the selector lists every game's entries */
-    const char* note = nullptr;   /* the selector's note line; NULL or "" for none */
+    int activated = LAUNCHER_PAGE_NONE;   /* the box the mouse activated this frame */
+    int focus = 0;                        /* the game page's focused box */
+    int hovered = -1;                     /* the box under the pointer this frame */
+    bool quit_asked = false;              /* the east button's ask shows ("Press again to quit") */
 };
 
 struct State {
@@ -96,7 +94,6 @@ struct State {
     bool handed_off = false;
     SDL_Gamepad* pad = nullptr;
     char drop_path[4096] = {};
-    char note[160] = {};       /* the selector's note (openpete_launcher_set_note) */
     bool scripted_taken = false;   /* OPENPETE_LAUNCHER_DROP was consumed */
     SDL_AtomicInt dialog_pending = {};
     SDL_AtomicInt dialog_got = {};
@@ -126,6 +123,7 @@ struct State {
     bool presented = false;      /* a launcher present on the launcher's device was drawn */
     bool title_held = false;     /* this present holds the cached 3D title back (prepare_title) */
     bool pointer_moved = false;  /* a pointer motion arrived since the selector last looked */
+    bool pointer_placed = false; /* the window's first pointer motion arrived: it placed the pointer */
     SDL_ThreadID ui_tid = 0;
     char stage[128] = {};
     int done = 0, total = 0;
@@ -189,16 +187,6 @@ void ingest_poll();
  * initialization, which runs before main. */
 const op_time_t k_process_start_ns = op_now();
 
-/** @brief Return the display name a view shows, upper-cased for the screens' headings.
- *
- * @param v The view.
- * @return The view's game name in capitals, or "" when it names none. */
-std::string upper_name(const View& v) {
-    std::string n = v.name ? v.name : "";
-    for (char& c : n) c = (char)toupper((unsigned char)c);
-    return n;
-}
-
 /** @brief Return the display name of the game the launcher was started for.
  *
  * @return The name, or NULL while the launcher names no game (no game is
@@ -235,14 +223,11 @@ void push_body_font(float px) {
     else ImGui::PushFont(nullptr, px);
 }
 
-/** @brief Record the last imgui item's rect in the element manifest.
- *
- * @param id The element's id.
- * @param kind Its kind. */
-void manifest_last_item(const char* id, const char* kind) {
-    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-    launcher_manifest_item(id, kind, a.x, a.y, b.x, b.y);
-}
+}  // namespace
+
+void launcher_push_body_font(float px) { push_body_font(px); }
+
+namespace {
 
 /** @brief Draw one line of text horizontally centred in the layout and record it in the element manifest.
  *
@@ -348,65 +333,11 @@ void draw_progress(const Frame& f, const View& v) {
     text_centred(f, "footer", 292 + kBandY, 8, IM_COL32(150, 130, 190, 255), look.footer);
 }
 
-/** @brief Draw the drop screen: the request for the disc image, the browse button and the quit hint.
- *
- * @param f The frame mapping.
- * @param v The view; browse is set when the button is pressed. */
-void draw_drop(const Frame& f, View& v) {
-    const std::string name = upper_name(v);
-    const std::string drag = name.empty() ? "DRAG YOUR" : "DRAG YOUR " + name;
-    text_centred(f, "drag.1", 160 + kBandY, 14, IM_COL32_WHITE, drag.c_str());
-    text_centred(f, "drag.2", 186 + kBandY, 14, IM_COL32_WHITE, "DISC IMAGE (.CUE / .BIN) HERE");
-    text_centred(f, "browse.hint", 232 + kBandY, 8, IM_COL32(220, 210, 240, 255),
-                 "OR PRESS SPACE / (A) TO BROWSE");
-    push_body_font(8 * f.scale);
-    ImGui::SetCursorPos(ImVec2(f.ox + (kLayoutW * 0.5f - 60) * f.scale, f.oy + (246 + kBandY) * f.scale));
-    if (ImGui::Button("BROWSE...", ImVec2(120 * f.scale, 0))) v.browse = true;
-    manifest_last_item("browse.button", "rect");
-    ImGui::PopFont();
-    text_centred(f, "disc.note", 276 + kBandY, 8, IM_COL32(150, 130, 190, 255),
-                 "YOUR OWN DISC IS REQUIRED. NOTHING IS DOWNLOADED.");
-    text_centred(f, "quit.hint", 300 + kBandY, 8, IM_COL32(110, 95, 150, 255), "ESC / (B) TO QUIT");
-}
-
 /** @brief Draw the quit ask's chip, "Press again to quit", at the step chip's place: white text on the step chip's box (chip_centred).
  *
  * @param f The frame mapping. */
 void draw_quit_ask(const Frame& f) {
     chip_centred(f, "quit.ask", kStepChipY, 14, IM_COL32_WHITE, "Press again to quit");
-}
-
-/** @brief Draw the selector: the heading, up to six entries with the focused one marked, the note, the drop and browse hint, the controls hint, and the quit ask's chip while it shows.
- *
- * The heading reads CHOOSE A GAME while the selector lists every game's
- * entries, else CHOOSE A VERSION.
- * @param f The frame mapping.
- * @param v The view; clicked is set to the entry the mouse picked, hovered
- *          to the entry under the pointer. */
-void draw_select(const Frame& f, View& v) {
-    text_centred(f, "heading", 136 + kBandY, 14, IM_COL32(220, 210, 240, 255),
-                 v.games ? "CHOOSE A GAME" : "CHOOSE A VERSION");
-    push_body_font(14 * f.scale);
-    float y = 168 + kBandY;
-    for (int i = 0; i < v.count && i < 6; i++, y += 22) {
-        ImGui::SetCursorPos(ImVec2(f.ox + 120 * f.scale, f.oy + y * f.scale));
-        const bool on = i == v.sel;
-        ImGui::PushStyleColor(ImGuiCol_Text, on ? IM_COL32(255, 214, 120, 255)
-                                                : IM_COL32(150, 130, 190, 255));
-        char line[160];
-        snprintf(line, sizeof line, "%s %s##%d", on ? ">" : " ", v.labels[i], i);
-        if (ImGui::Selectable(line, on, 0, ImVec2(400 * f.scale, 0))) v.clicked = i;
-        if (ImGui::IsItemHovered()) v.hovered = i;
-        ImGui::PopStyleColor();
-    }
-    ImGui::PopFont();
-    if (v.note && *v.note)
-        text_centred(f, "note", 293 + kBandY, 8, IM_COL32(240, 138, 30, 255), v.note);
-    text_centred(f, "drop.hint", 304 + kBandY, 8, IM_COL32(150, 130, 190, 255),
-                 "DRAG A DISC IMAGE (.CUE / .BIN) HERE TO ADD IT - SPACE / (X) TO BROWSE");
-    text_centred(f, "controls.hint", 320 + kBandY, 8, IM_COL32(110, 95, 150, 255),
-                 "LEFT/RIGHT OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT");
-    if (v.quit_asked) draw_quit_ask(f);
 }
 
 /** @brief Draw the pending screen's line where the selector's first entry goes.
@@ -537,9 +468,11 @@ void draw_view(void* ud) {
     launcher_manifest_begin();
     draw_title(f);
     if (v.screen == Screen::Progress) draw_progress(f, v);
-    else if (v.screen == Screen::Drop) draw_drop(f, v);
     else if (v.screen == Screen::Pending) draw_pending(f);
-    else draw_select(f, v);
+    else {
+        v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
+        if (v.quit_asked) draw_quit_ask(f);
+    }
     s.item_hovered = ImGui::IsAnyItemHovered();
     ImGui::End();
 }
@@ -1076,8 +1009,8 @@ Ask stick_ask(const SDL_GamepadAxisEvent& m) {
 
 /** @brief Read one event as a launcher command: keys, gamepad buttons, the left stick (stick_ask), a dropped file, the window closing.
  *
- * A pointer motion is no command; it is
- * recorded for the selector's focus (State::pointer_moved). A window gesture (window_gesture) is acted on first and is no command:
+ * A pointer motion is no command; every motion after the window's first
+ * is recorded for the game page's focus (State::pointer_moved). A window gesture (window_gesture) is acted on first and is no command:
  * Alt+Enter toggles fullscreen and does not pick. A dropped file's path is stored for launcher_dropped_path; an added
  * gamepad is opened.
  * @param e The event.
@@ -1086,7 +1019,12 @@ Ask ask_of(const SDL_Event& e) {
     if (window_gesture(e)) return Ask::None;
     switch (e.type) {
         case SDL_EVENT_QUIT: return Ask::Quit;
-        case SDL_EVENT_MOUSE_MOTION: s.pointer_moved = true; return Ask::None;
+        case SDL_EVENT_MOUSE_MOTION:
+            /* The window's first motion report places the pointer (a window
+             * opening under a still pointer reports one); later ones move it. */
+            if (s.pointer_placed) s.pointer_moved = true;
+            s.pointer_placed = true;
+            return Ask::None;
         case SDL_EVENT_DROP_FILE:
             snprintf(s.drop_path, sizeof s.drop_path, "%s", e.drop.data);
             return Ask::Dropped;
@@ -1113,7 +1051,7 @@ Ask ask_of(const SDL_Event& e) {
     }
 }
 
-/** @brief Wait up to 100 ms for input, stepping the launcher's precompile at each wake, then hand every pending event to imgui and return the first command among them.
+/** @brief Wait up to 100 ms for input (8 ms while a game page box animates), stepping the launcher's precompile at each wake, then hand every pending event to imgui and return the first command among them.
  *
  * A returning compile job pushes a wake event
  * (openpete_native_launcher_precompile_event); a batch of only wake events
@@ -1123,7 +1061,7 @@ Ask ask_of(const SDL_Event& e) {
  * @return The first command the events carry, or Ask::None. */
 Ask wait_input() {
     const Uint32 wake = openpete_native_launcher_precompile_event();
-    const Uint64 end = SDL_GetTicks() + 100;
+    const Uint64 end = SDL_GetTicks() + (launcher_page_animating() ? 8 : 100);
     for (;;) {
         const Uint64 now = SDL_GetTicks();
         SDL_Event e;
@@ -1199,10 +1137,13 @@ constexpr int kPageStays = -100;
  * @param a The command.
  * @param focus The page's focus.
  * @param ask The east button's ask state.
- * @param games Each box's game id.
- * @return The focused box on activation, LAUNCHER_SEL_QUIT, LAUNCHER_SEL_DROPPED, or kPageStays. */
-int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const char* const* games) {
-    const char* g = games && games[focus.index] ? games[focus.index] : "";
+ * @param games Each library entry's game id (page_loop's).
+ * @param count The entry count.
+ * @return The activated box's entry index, LAUNCHER_SEL_QUIT, LAUNCHER_SEL_DROPPED, or kPageStays; an
+ *         activated box without an entry opens the file dialog. */
+int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const char* const* games, int count) {
+    const int act = launcher_page_activation(games, count, focus.index);
+    const char* g = launcher_page_box_game(focus.index);
     switch (a) {
         case Ask::Quit:
             OPL_INFO_F("launcher", "command: quit (Escape or the window closed)");
@@ -1215,7 +1156,9 @@ int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const cha
             return kPageStays;
         case Ask::Pick:
             OPL_INFO_F("launcher", "command: activate box %d (%s)", focus.index, g);
-            return focus.index;
+            if (act >= 0) return act;
+            open_file_dialog();
+            return kPageStays;
         case Ask::Left: case Ask::Right:
             (void)launcher_focus_move(&focus, a == Ask::Left ? -1 : 1);
             return kPageStays;
@@ -1226,44 +1169,81 @@ int page_command(Ask a, launcher_focus& focus, launcher_quit_ask& ask, const cha
     }
 }
 
-/** @brief Return the box the game page opens focused on: the first of the game launcher_focus_game names, consuming the name, else box 0.
+/** @brief Present the game page until a box with a library entry is activated, a disc is dropped or chosen, or the player quits.
  *
- * @param games Each box's game id.
- * @param count The boxes.
- * @return The box. */
-int page_first_focus(const char* const* games, int count) {
-    const std::string want = launcher_focus_game();
+ * An activated box without an entry opens the file dialog. The harness drop
+ * (launcher_scripted_drop) acts after the first frame; a scripted pick
+ * (scripted_pick) returns once due (scripted_due, scripted_pick_held).
+ * @param games Each library entry's game id, most recently played first; NULL with @p count 0 for the empty library.
+ * @param count The entry count.
+ * @param scripted The scripted pick's entry index, or -1.
+ * @return The activated entry's index, LAUNCHER_SEL_QUIT or LAUNCHER_SEL_DROPPED (its path in s.drop_path). */
+int page_loop(const char* const* games, int count, int scripted) {
+    View v;
+    v.screen = count > 0 ? Screen::Select : Screen::Drop;
+    v.entry_games = games;
+    v.count = count;
+    /* The page opens on the box of the game a disc was just added for, else
+     * the first, held: the pointer takes the focus only after it moves. */
+    const int first = launcher_page_box_of_game(games, count, launcher_focus_game());
+    if (first >= 0) OPL_INFO_F("launcher", "command: focus starts on box %d (%s, the disc just added)", first,
+                               launcher_focus_game());
     launcher_focus_game_set(nullptr);
-    for (int i = 0; !want.empty() && games && i < count; i++)
-        if (games[i] && want == games[i]) {
-            OPL_INFO_F("launcher", "command: focus starts on box %d (%s, the disc just added)", i, games[i]);
-            return i;
+    launcher_focus focus = {std::max(0, first), launcher_page_box_count(games, count), true};
+    launcher_quit_ask ask = {};
+    s.pointer_moved = false;
+    for (;;) {
+        v.activated = LAUNCHER_PAGE_NONE;
+        v.focus = focus.index;
+        const bool asked = launcher_quit_ask_shown(&ask, SDL_GetTicks());
+        if (asked != v.quit_asked)
+            OPL_INFO_F("launcher", "command: quit ask chip %s", asked ? "shown" : "hidden");
+        v.quit_asked = asked;
+        present(v);
+        (void)launcher_focus_hover(&focus, v.hovered);
+        launcher_jobs_pump();
+        if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
+        if (scripted >= 0 && scripted_due() && !scripted_pick_held()) {
+            OPL_INFO_F("launcher", "scripted pick: entry %d (%s)", scripted, games[scripted] ? games[scripted] : "");
+            return scripted;
         }
-    return 0;
+        if (v.activated >= 0) return v.activated;
+        if (v.activated == LAUNCHER_PAGE_BROWSE) open_file_dialog();
+        if (SDL_GetAtomicInt(&s.dialog_got)) {
+            SDL_SetAtomicInt(&s.dialog_got, 0);
+            return LAUNCHER_SEL_DROPPED;
+        }
+        const Ask a = wait_input();
+        if (s.pointer_moved) launcher_focus_pointer_moved(&focus);
+        s.pointer_moved = false;
+        const int r = page_command(a, focus, ask, games, count);
+        if (r != kPageStays) return r;
+    }
 }
 
-/** @brief Run the drop screen until a disc image is dropped or chosen, or the player quits.
+/** @brief Run the game page with every box empty until a disc image is dropped or chosen, or the player quits.
  *
  * The harness variable OPENPETE_LAUNCHER_DROP=<path> acts as a drop of that
  * path after the first frame (launcher_scripted_drop).
  * @return The path, owned by the launcher, or NULL on quit. */
 const char* wait_for_disc() {
-    View v;
-    v.screen = Screen::Drop;
-    for (;;) {
-        v.browse = false;
-        present(v);
-        launcher_jobs_pump();
-        if (const char* scripted = launcher_scripted_drop()) return scripted;
-        if (v.browse) open_file_dialog();
-        if (SDL_GetAtomicInt(&s.dialog_got)) {
-            SDL_SetAtomicInt(&s.dialog_got, 0);
-            return s.drop_path;
-        }
-        const Ask a = wait_input();
-        if (a == Ask::Quit || a == Ask::Back) return nullptr;
-        if (a == Ask::Dropped) return s.drop_path;
-        if (a == Ask::Pick || a == Ask::Browse) open_file_dialog();
+    const int r = page_loop(nullptr, 0, -1);
+    launcher_page_closed();
+    return r == LAUNCHER_SEL_DROPPED ? s.drop_path : nullptr;
+}
+
+/** @brief Log the library entries that own no box on the game page: an entry of a game whose box another (more recent) entry owns, or of no game the page draws.
+ *
+ * @param labels The entry labels.
+ * @param games Each entry's game id.
+ * @param count The entry count. */
+void log_boxless_entries(const char* const* labels, const char* const* games, int count) {
+    for (int i = 0; i < count; i++) {
+        if (launcher_page_owns_box(games, i)) continue;
+        OPL_INFO_F("launcher", "game page: library entry %d (%s, %s) has no box: %s", i, labels[i],
+                   games[i] && *games[i] ? games[i] : "unidentified",
+                   games[i] && *games[i] ? "a more recently played entry of its game owns it"
+                                         : "no game claims it");
     }
 }
 
@@ -1457,49 +1437,10 @@ const char* launcher_scripted_drop(void) {
 int launcher_select(const char* const* labels, const char* const* games, int count) {
     const bool screen = s.ui && !s.handed_off && count > 0 && launcher_open(s.opts, 1) == 0;
     if (!screen) return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : LAUNCHER_SEL_NOSCREEN;
-    View v;
-    v.screen = Screen::Select;
-    v.labels = labels;
-    v.count = count;
-    v.games = launcher_neutral();
-    v.note = s.note;
-    const int scripted = scripted_pick(games, count);
-    /* The focus starts held: the pointer takes it only after it moves. */
-    launcher_focus focus = {page_first_focus(games, count), count, true};
-    launcher_quit_ask ask = {};
-    s.pointer_moved = false;
-    for (;;) {
-        v.clicked = -1;
-        v.hovered = -1;
-        v.sel = focus.index;
-        const bool asked = launcher_quit_ask_shown(&ask, SDL_GetTicks());
-        if (asked != v.quit_asked)
-            OPL_INFO_F("launcher", "command: quit ask chip %s", asked ? "shown" : "hidden");
-        v.quit_asked = asked;
-        present(v);
-        (void)launcher_focus_hover(&focus, v.hovered);
-        launcher_jobs_pump();
-        if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
-        if (scripted >= 0 && scripted_due() && !scripted_pick_held()) {
-            OPL_INFO_F("launcher", "scripted pick: entry %d (%s)", scripted,
-                       games && games[scripted] ? games[scripted] : "");
-            return scripted;
-        }
-        if (v.clicked >= 0) return v.clicked;
-        if (SDL_GetAtomicInt(&s.dialog_got)) {
-            SDL_SetAtomicInt(&s.dialog_got, 0);
-            return LAUNCHER_SEL_DROPPED;
-        }
-        const Ask a = wait_input();
-        if (s.pointer_moved) launcher_focus_pointer_moved(&focus);
-        s.pointer_moved = false;
-        const int r = page_command(a, focus, ask, games);
-        if (r != kPageStays) return r;
-    }
-}
-
-void openpete_launcher_set_note(const char* note) {
-    snprintf(s.note, sizeof s.note, "%s", note ? note : "");
+    log_boxless_entries(labels, games, count);
+    const int r = page_loop(games, count, scripted_pick(games, count));
+    launcher_page_closed();
+    return r;
 }
 
 void openpete_launcher_begin(const openpete_launcher_game* game,
@@ -1628,6 +1569,7 @@ int openpete_launcher_handoff(openpete_options_t* opts) {
     launcher_jobs_stop_other(nullptr, false);
     s_jobs.queue.clear();
     library_lock_release();
+    launcher_page_release();
     carry_window_state(opts);
     close_gamepad();
     s.handed_off = true;

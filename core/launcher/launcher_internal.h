@@ -54,28 +54,29 @@ const char* launcher_scripted_drop(void);
  * @return The game, or NULL before openpete_launcher_begin. */
 const openpete_launcher_game* launcher_game(void);
 
-/** @brief Run the version selector over the library's entries.
+/** @brief Run the game page over the library's entries (launcher_page_draw): each game's box picks its most recently played entry.
  *
  * Opens the launcher's window when it is not open. Left and right (keys,
- * d-pad, left stick) move the focus one entry without wrapping; up and down
+ * d-pad, left stick) move the focus one box without wrapping; up and down
  * do nothing; the pointer takes the focus only after it moves. The focus
- * starts on the first entry of the game launcher_focus_game names, else
- * the first. Enter, the gamepad's south button or a click picks; Escape or
- * closing the window quits at once; the east button asks once ("Press
- * again to quit") and a second press within LAUNCHER_QUIT_ASK_MS quits; a
- * file dropped on the window, or chosen in the file dialog Space or the
+ * starts on the box of the game launcher_focus_game names, else the first.
+ * Enter, the gamepad's south button or a click activates a box: a box with
+ * an entry picks it, an empty box opens the file dialog. Escape or closing
+ * the window quits at once; the east button asks once ("Press again to
+ * quit") and a second press within LAUNCHER_QUIT_ASK_MS quits; a file
+ * dropped on the window, or chosen in the file dialog Space or the
  * gamepad's west button opens, returns LAUNCHER_SEL_DROPPED with its path in
- * launcher_dropped_path. The harness variable OPENPETE_LAUNCHER_DROP acts
- * as a drop after the first frame, and without a screen at once
- * (launcher_scripted_drop); OPENPETE_LAUNCHER_SELECT set to an index below
- * @p count picks that entry after the first frame, and
- * OPENPETE_LAUNCHER_SELECT_GAME set to a game id picks the first entry of
- * that game; with OPENPETE_LAUNCHER_SELECT_IDLE set the scripted pick also
- * waits until no launcher job runs or is queued. Launcher jobs are pumped
- * between frames (launcher_jobs_pump).
- * @param labels The entry labels, most recently played first.
- * @param games Each entry's game id ("" when unidentified).
- * @param count Their number, at least one; at most six show.
+ * launcher_dropped_path. Entries that own no box are logged. The harness
+ * variable OPENPETE_LAUNCHER_DROP acts as a drop after the first frame, and
+ * without a screen at once (launcher_scripted_drop);
+ * OPENPETE_LAUNCHER_SELECT set to an index below @p count picks that entry
+ * after the first frame, and OPENPETE_LAUNCHER_SELECT_GAME set to a game id
+ * picks the first entry of that game; with OPENPETE_LAUNCHER_SELECT_IDLE set
+ * the scripted pick also waits until no launcher job runs or is queued.
+ * Launcher jobs are pumped between frames (launcher_jobs_pump).
+ * @param labels The entry labels, for the log.
+ * @param games Each entry's game id ("" when unidentified), most recently played first.
+ * @param count Their number, at least one.
  * @return The picked index, or a LAUNCHER_SEL_* value. */
 int launcher_select(const char* const* labels, const char* const* games, int count);
 
@@ -343,6 +344,87 @@ bool launcher_title_chosen(void);
  *        and the cap height about the centre) when it does; may be NULL.
  * @return true when it does. */
 bool launcher_title_drawn(float rect[4]);
+
+/* launcher_page_draw and launcher_page_activate results besides an entry index. */
+#define LAUNCHER_PAGE_NONE   (-1)   /* no box was activated */
+#define LAUNCHER_PAGE_BROWSE (-2)   /* a box without a library disc was activated: choose a disc */
+
+/** @brief Draw the game page into the current imgui window: one box per game the launcher's descriptor marks on_page, in its frame, with its picture, else the fill and title logo of a game with a library entry, else the empty-box drawing, the focused box grown; and record its elements in the element manifest.
+ *
+ * Boxes are indexed left to right. Each box belongs to the first entry of
+ * its game in @p entry_games, the most recently played when the entries come
+ * most recent first. The hand cursor shows over a box. The first present
+ * after launcher_page_closed shows every box at its target size; later
+ * presents ease the growth toward it. A box's title logo is read through
+ * openpete_launcher_game.load_logo until the cache holds one.
+ * @param entry_games Each library entry's game id ("" when unidentified); NULL with @p count 0 for none.
+ * @param count The entry count.
+ * @param focus The focused box.
+ * @param hovered Receives the box under the pointer, -1 for none.
+ * @return The clicked box's activation (launcher_page_activation), or LAUNCHER_PAGE_NONE. */
+int launcher_page_draw(const char* const* entry_games, int count, int focus, int* hovered);
+
+/** @brief Count the game page's boxes.
+ *
+ * @param entry_games As launcher_page_draw's.
+ * @param count The entry count.
+ * @return The box count. */
+int launcher_page_box_count(const char* const* entry_games, int count);
+
+/** @brief Return what activating a box does: the index of the library entry owning it, or LAUNCHER_PAGE_BROWSE for a box without one (choose a disc).
+ *
+ * @param entry_games As launcher_page_draw's.
+ * @param count The entry count.
+ * @param box The box.
+ * @return The entry index, or LAUNCHER_PAGE_BROWSE (also for a box out of range). */
+int launcher_page_activation(const char* const* entry_games, int count, int box);
+
+/** @brief Return the game of a box on the game page.
+ *
+ * @param box The box.
+ * @return The game id, "" for a box out of range. */
+const char* launcher_page_box_game(int box);
+
+/** @brief Return the box of a game on the game page.
+ *
+ * @param entry_games As launcher_page_draw's.
+ * @param count The entry count.
+ * @param game The game id.
+ * @return The box, or -1 when the page draws none for it. */
+int launcher_page_box_of_game(const char* const* entry_games, int count, const char* game);
+
+/** @brief Report whether a library entry owns a box on the game page: its game has a box and no entry before it is of that game.
+ *
+ * @param entry_games Each library entry's game id, most recently played first.
+ * @param i The entry's index.
+ * @return true when entry @p i owns its game's box. */
+bool launcher_page_owns_box(const char* const* entry_games, int i);
+
+/** @brief Note that the page stopped showing: its next present snaps every box to its target size. */
+void launcher_page_closed(void);
+
+/** @brief Report whether a box's growth had not settled at the page's last present.
+ *
+ * @return true while a box animates. */
+bool launcher_page_animating(void);
+
+/** @brief Give a game's box its picture, drawn cover-cropped inside the frame in place of its fill.
+ *
+ * Copies the pixels into a texture the page owns, replacing any earlier
+ * picture. Launcher thread, with the launcher's imgui context current.
+ * @param game The game id.
+ * @param rgba width * height * 4 bytes, rows top to bottom.
+ * @param w The width.
+ * @param h The height. */
+void launcher_page_set_picture(const char* game, const unsigned char* rgba, int w, int h);
+
+/** @brief Hand the page's textures to the renderer backend to destroy at its next render: the hand-off, after which no page shows. */
+void launcher_page_release(void);
+
+/** @brief Push the body font at a size whose capitals match ProggyClean's at @p px, or the current font at @p px when the body font is not loaded.
+ *
+ * @param px The text size in window pixels, as ProggyClean would be drawn. */
+void launcher_push_body_font(float px);
 
 struct ImFont;
 
