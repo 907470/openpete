@@ -3,7 +3,9 @@
 #define _GNU_SOURCE   /* pipe2 */
 #endif
 #include "host_spawn.h"
+#include "openpete_log.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +16,25 @@ static int (*s_stop)(void);
 /* The stoppable form's poll period while a child runs, in ms. */
 enum { STOP_POLL_MS = 2 };
 
+/* The mode bits spawn_argv and spawn_line take: poll the stop predicate;
+ * run below normal priority (OPENPETE_HOST_SPAWN_BELOW_NORMAL). */
+enum { SPAWN_STOPPABLE = 1, SPAWN_BELOW_NORMAL = 2 };
+/* The niceness a below-normal child runs at above the caller's (POSIX). */
+enum { BELOW_NORMAL_NICE = 10 };
+
+/* Set by the first below-normal spawn's priority log line. */
+static atomic_flag s_priority_logged = ATOMIC_FLAG_INIT;
+
 void openpete_host_spawn_set_stop(int (*stop)(void)) { s_stop = stop; }
+
+/** @brief Log, once per process, the priority the first below-normal child was read back at.
+ *
+ * @param what The readback's name (Windows priority class, POSIX niceness).
+ * @param value The value read back from the running child. */
+static void log_priority_once(const char* what, long value) {
+    if (atomic_flag_test_and_set(&s_priority_logged)) return;
+    OPL_INFO_F("host-spawn", "below-normal child: %s %#lx (%ld)", what, (unsigned long)value, value);
+}
 
 /** @brief Report whether the registered stop predicate asks the calling thread's spawn to stop.
  *
@@ -89,7 +109,7 @@ static int append_quoted(wchar_t* out, size_t cap, size_t* len, const wchar_t* a
  * @param log_path Log file for stdout and stderr, or NULL.
  * @param capture Capture buffer when log_path is NULL, or NULL.
  * @param cap Size of capture.
- * @param stoppable Non-zero to poll the stop predicate.
+ * @param stoppable SPAWN_* mode bits; non-zero polls the stop predicate.
  * @return The exit code, -1 when the process could not be started, or
  *         OPENPETE_HOST_SPAWN_STOPPED. */
 static int spawn_line(wchar_t* line, const char* log_path, char* capture, size_t cap, int stoppable);
@@ -100,7 +120,7 @@ static int spawn_line(wchar_t* line, const char* log_path, char* capture, size_t
  * @param log_path Log file, or NULL.
  * @param capture Capture buffer, or NULL.
  * @param cap Its size.
- * @param stoppable Non-zero to poll the stop predicate.
+ * @param stoppable SPAWN_* mode bits; non-zero polls the stop predicate.
  * @return As spawn_line, or -1 when the line cannot be built. */
 static int spawn_argv(const char* const* argv, const char* log_path, char* capture, size_t cap,
                       int stoppable) {
@@ -184,7 +204,8 @@ static int spawn_line(wchar_t* line, const char* log_path, char* capture, size_t
     }
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof pi);
-    const DWORD flags = CREATE_NO_WINDOW | (job ? CREATE_SUSPENDED : 0);
+    const DWORD flags = CREATE_NO_WINDOW | (job ? CREATE_SUSPENDED : 0) |
+                        ((stoppable & SPAWN_BELOW_NORMAL) ? BELOW_NORMAL_PRIORITY_CLASS : 0);
     BOOL ok = CreateProcessW(NULL, line, NULL, NULL, wr ? TRUE : FALSE, flags, NULL, NULL, &si, &pi);
     if (wr) CloseHandle(wr);   /* the child owns its copy now */
     if (!ok) {
@@ -192,6 +213,8 @@ static int spawn_line(wchar_t* line, const char* log_path, char* capture, size_t
         if (job) CloseHandle(job);
         return -1;
     }
+    if (stoppable & SPAWN_BELOW_NORMAL)
+        log_priority_once("priority class", (long)GetPriorityClass(pi.hProcess));
     if (job) {
         /* Assigned before it runs, so every process it starts is in the job.
          * Without the job (assignment refused) a stop terminates the child
@@ -246,7 +269,13 @@ int openpete_host_spawn_argv(const char* const* argv, const char* log_path,
 
 int openpete_host_spawn_argv_stoppable(const char* const* argv, const char* log_path,
                                        char* capture, size_t cap) {
-    return spawn_argv(argv, log_path, capture, cap, 1);
+    return spawn_argv(argv, log_path, capture, cap, SPAWN_STOPPABLE);
+}
+
+int openpete_host_spawn_argv_stoppable_flags(const char* const* argv, const char* log_path,
+                                             char* capture, size_t cap, unsigned flags) {
+    return spawn_argv(argv, log_path, capture, cap,
+                      SPAWN_STOPPABLE | ((flags & OPENPETE_HOST_SPAWN_BELOW_NORMAL) ? SPAWN_BELOW_NORMAL : 0));
 }
 
 #else /* !_WIN32 */
@@ -256,6 +285,7 @@ int openpete_host_spawn_argv_stoppable(const char* const* argv, const char* log_
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -343,13 +373,29 @@ static int wait_child(pid_t pid, int stoppable, int stop) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
+/** @brief Lower the process group a stoppable child leads to BELOW_NORMAL_NICE above the caller's niceness, clamped to 19; a refusal leaves it as it is.
+ *
+ * @param pgid The child, leader of its own group. */
+static void lower_group(pid_t pgid) {
+    errno = 0;
+    const int base = getpriority(PRIO_PROCESS, 0);
+    if (errno) return;
+    const int level = base + BELOW_NORMAL_NICE > 19 ? 19 : base + BELOW_NORMAL_NICE;
+    (void)setpriority(PRIO_PGRP, (id_t)pgid, level);
+    errno = 0;
+    const int now = getpriority(PRIO_PGRP, (id_t)pgid);
+    if (!errno) log_priority_once("group niceness", now);
+}
+
 /** @brief Spawn argv with stdout and stderr to the log file or the capture pipe and wait for it; the stoppable form makes the child a process-group leader and kills the group on a stop.
  *
+ * With SPAWN_BELOW_NORMAL the child's group is lowered by BELOW_NORMAL_NICE
+ * right after the spawn (lower_group).
  * @param argv The argument vector.
  * @param log_path Log file, or NULL.
  * @param capture Capture buffer, or NULL.
  * @param cap Its size.
- * @param stoppable Non-zero to poll the stop predicate.
+ * @param stoppable SPAWN_* mode bits; non-zero polls the stop predicate.
  * @return The exit code, -1, or OPENPETE_HOST_SPAWN_STOPPED. */
 static int spawn_argv(const char* const* argv, const char* log_path, char* capture, size_t cap,
                       int stoppable) {
@@ -405,6 +451,7 @@ static int spawn_argv(const char* const* argv, const char* log_path, char* captu
         if (pipefd[0] >= 0) close(pipefd[0]);
         return -1;
     }
+    if (stoppable & SPAWN_BELOW_NORMAL) lower_group(pid);
     int stop = 0;
     if (pipefd[0] >= 0) {
         stop = read_capture(pipefd[0], capture, cap, stoppable);
@@ -420,7 +467,13 @@ int openpete_host_spawn_argv(const char* const* argv, const char* log_path,
 
 int openpete_host_spawn_argv_stoppable(const char* const* argv, const char* log_path,
                                        char* capture, size_t cap) {
-    return spawn_argv(argv, log_path, capture, cap, 1);
+    return spawn_argv(argv, log_path, capture, cap, SPAWN_STOPPABLE);
+}
+
+int openpete_host_spawn_argv_stoppable_flags(const char* const* argv, const char* log_path,
+                                             char* capture, size_t cap, unsigned flags) {
+    return spawn_argv(argv, log_path, capture, cap,
+                      SPAWN_STOPPABLE | ((flags & OPENPETE_HOST_SPAWN_BELOW_NORMAL) ? SPAWN_BELOW_NORMAL : 0));
 }
 
 #endif /* !_WIN32 */

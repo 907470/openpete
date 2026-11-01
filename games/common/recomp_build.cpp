@@ -113,9 +113,10 @@ std::string joined(const std::vector<std::string>& args) {
 
 /** @brief Run one compiler or PSXRecomp command from an argument vector, unless the launcher job running the build was asked to stop.
  *
- * The command runs stoppable (openpete_host_spawn_argv_stoppable): a stop
- * read before the start leaves it unstarted, and a stop while it runs kills
- * it and every process it started.
+ * The command runs stoppable and below normal priority
+ * (openpete_host_spawn_argv_stoppable_flags): a stop read before the start
+ * leaves it unstarted, a stop while it runs kills it and every process it
+ * started, and the launcher and the desktop keep their CPU share.
  * @param args The program and its arguments.
  * @param log_path The file its stdout and stderr go to, or NULL to inherit
  *        the launcher's.
@@ -125,7 +126,8 @@ bool run(const std::vector<std::string>& args, const char* log_path = nullptr) {
     std::vector<const char*> argv;
     for (const std::string& a : args) argv.push_back(a.c_str());
     argv.push_back(nullptr);
-    const int rc = openpete_host_spawn_argv_stoppable(argv.data(), log_path, nullptr, 0);
+    const int rc = openpete_host_spawn_argv_stoppable_flags(argv.data(), log_path, nullptr, 0,
+                                                            OPENPETE_HOST_SPAWN_BELOW_NORMAL);
     if (rc == OPENPETE_HOST_SPAWN_STOPPED) return false;
     if (rc != 0)
         OPL_ERROR_F("recomp-build", "command failed (%d): %s%s%s %s", rc, joined(args).c_str(),

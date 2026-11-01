@@ -12,7 +12,8 @@
 // group on POSIX (POSIX_SPAWN_SETPGROUP) and inside a job object on Windows,
 // polls the registered stop predicate while it waits, and on a stop ends
 // the group (SIGTERM, then SIGKILL after 500 ms) or terminates the job, so
-// the compiler driver's own children (cc1, the linker) end with it.
+// the compiler driver's own children (cc1, the linker) end with it. Its
+// flags form can run the child below normal priority.
 #ifndef OPENPETE_HOST_SPAWN_H
 #define OPENPETE_HOST_SPAWN_H
 
@@ -66,6 +67,27 @@ void openpete_host_spawn_set_stop(int (*stop)(void));
  *         or came before its start. */
 int openpete_host_spawn_argv_stoppable(const char* const* argv, const char* log_path,
                                        char* capture, size_t cap);
+
+/* openpete_host_spawn_argv_stoppable_flags: run the child and the processes
+ * it starts below normal priority (POSIX: nice 10 above the caller's;
+ * Windows: BELOW_NORMAL_PRIORITY_CLASS, which the child's own children
+ * inherit). */
+#define OPENPETE_HOST_SPAWN_BELOW_NORMAL 1u
+
+/** @brief Run a program as openpete_host_spawn_argv_stoppable does, with the OPENPETE_HOST_SPAWN_* flags.
+ *
+ * POSIX applies the priority to the child's process group right after the
+ * spawn (setpriority PRIO_PGRP), so a process the child started before
+ * that call is lowered too and later ones inherit it; a refusal (a caller
+ * already near nice 19) leaves the priority as it is.
+ * @param argv NULL-terminated argument vector; argv[0] is the program.
+ * @param log_path As openpete_host_spawn_argv.
+ * @param capture As openpete_host_spawn_argv.
+ * @param cap As openpete_host_spawn_argv.
+ * @param flags OPENPETE_HOST_SPAWN_BELOW_NORMAL, or 0.
+ * @return As openpete_host_spawn_argv_stoppable. */
+int openpete_host_spawn_argv_stoppable_flags(const char* const* argv, const char* log_path,
+                                             char* capture, size_t cap, unsigned flags);
 
 #ifdef __cplusplus
 }
