@@ -11822,11 +11822,11 @@ static int tn_lp_face_rides(const tn_secverd* SV, const tsface_t* F) {
 /** @brief Applies the draw's near rule for an LP face: the LP near outcode where it applies, else the authored admission.
  *
  * On a game with terrain.lp_near_sz the near outcode replaces the
- * admission for a face on its sector's HP mesh and borrowed HP faces
- * (uncovX clear; uncovX equals uncov without borrowed faces) while the
- * sector's HP draws (a nonzero bound, sector_verdicts): the face drops when
- * every corner's SZ3 is under the bound, so a dropped LP face always has its
- * HP surface drawn in its place. Every other face takes the authored
+ * admission for every LP face of a sector while the sector's HP draws (a
+ * nonzero bound, sector_verdicts): the face drops when every corner's SZ3 is
+ * under the bound, whether or not the HP mesh covers it, as the game's LP
+ * walk tags each vertex and skips a face whose corners are all tagged (Spyro
+ * 2 environment.s 80028BD8-80028E84). Every other face takes the authored
  * admission: with the admission on, slot = (four corner SZ3s summed, a triangle counting its
  * shared corner twice) >> 5 and s3 = (fogRefBase >> 5) - 0x20: the face
  * draws iff slot + 8*admit >= s3; a deficit of -31..-1 falls back to "draw
@@ -11842,7 +11842,7 @@ static const char* tn_lp_face_near_drop(const tn_secverd* SV, const tsface_t* F,
                                         const double cz[4], int quad, int admit,
                                         int fogRefBase) {
     const int nc = quad ? 4 : 3;
-    if (game_layout.terrain.lp_near_sz && SV->lpNearThr && !F->uncovX) {
+    if (game_layout.terrain.lp_near_sz && SV->lpNearThr) {
         const double thr = (double)SV->lpNearThr;
         int under = 0;
         for (int k = 0; k < nc; k++) under += cz[k] < thr;
@@ -13425,11 +13425,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             if (fmDumpOnly) continue;
             /* fardbg verdict trail: every face dropped AFTER its [fardbg-face]
              * row announces itself, so the offline face-set join can subtract
-             * (the dump alone is the pre-verdict universe). r= names the gate. */
+             * (the dump alone is the pre-verdict universe). r= names the gate;
+             * ux= is the face's uncovX tag (LP off its own and borrowed HP). */
             #define FARDBG_DROP(reason) do { \
                 if (s_fardbg_active && !passFill) \
-                    fprintf(stderr, "[fardbg-drop] s=%d p=%d f=%d r=%s\n", \
-                            (int)i, pass, f, (reason)); } while (0)
+                    fprintf(stderr, "[fardbg-drop] s=%d p=%d f=%d r=%s ux=%d\n", \
+                            (int)i, pass, f, (reason), (int)F->uncovX); } while (0)
             if (passLP && !passFill && !tn_lp_face_rides(SV, F)) { FARDBG_DROP("rideonly"); continue; }
             /* Authored per-face LP admission (the .s test, exact): with
              * slot = (four corner SZ3 summed, tris doubling the shared corner)

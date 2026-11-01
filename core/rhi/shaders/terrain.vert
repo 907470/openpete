@@ -1701,10 +1701,6 @@ void main()
         if (lp  && (sf & SF_DRAWLP) == 0u) { kill_vert(); return; }
         if (!lp && (sf & SF_DRAWHP) == 0u) { kill_vert(); return; }
     }
-    /* The LP faces the HP leaves uncovered: the borrowed HP faces count as
-     * cover. */
-    uint ffUncov = FF_LPUNCOVX;
-
     /* ---- face corners -> camera space ---- */
 #ifdef TERRAIN_FP32
     ivec3 cc0 = inC0.xyz;
@@ -1882,12 +1878,11 @@ void main()
             if (fcv >= pfloat(fclim)) { kill_vert(); return; }
         }
         pfloat thr = pfloat((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
-        if (!gapfill_face && (gf & GF_LPNEAROUT) != 0 && thr > 0.0
-            && (ff & ffUncov) == 0u) {
-            /* LP near outcode: a face on its sector's HP mesh, while that HP
-             * draws (nonzero bound), drops when its corners all sit under
-             * the sector's SZ3 bound; every other face takes the authored
-             * admission below. */
+        if (!gapfill_face && (gf & GF_LPNEAROUT) != 0 && thr > 0.0) {
+            /* LP near outcode: every LP face of a sector whose HP draws
+             * (nonzero bound) drops when its corners all sit under the
+             * sector's SZ3 bound, covered by that HP or not; every other
+             * face takes the authored admission below. */
             if (m0.z < thr && m1.z < thr && m2.z < thr &&
                 (!quad || m3c.z < thr)) { kill_vert(); return; }
         } else if (!gapfill_face) {
