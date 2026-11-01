@@ -289,12 +289,16 @@ static rhi_pipeline *nr_sky_resolve_pipe(rhi_device *dev)
 
 /** @brief Return the samples per pixel per axis for a w x h offscreen image: LAUNCHER_SKY_SS, lowered until the target fits the device's image limit and LAUNCHER_SKY_SS_MAX_TEXELS.
  *
+ * A software rasterizer (rhi_device_is_software) draws at 1: there the
+ * supersampled sky costs two to three times a present's time, and the
+ * box-picture renders sharing its cores wait on it.
  * @param dev The device.
  * @param w The offscreen width.
  * @param h The offscreen height.
  * @return The factor, at least 1. */
 static int nr_sky_factor(rhi_device *dev, int w, int h)
 {
+    if (rhi_device_is_software(dev)) return 1;
     const int64_t maxdim = (int64_t)rhi_max_image_dimension(dev);
     int ss = LAUNCHER_SKY_SS;
     while (ss > 1 && ((int64_t)w * ss > maxdim || (int64_t)h * ss > maxdim ||

@@ -16,7 +16,8 @@
  *
  * The layers draw into a target of their own at LAUNCHER_SKY_SS samples per
  * offscreen pixel per axis (fewer when the target would pass the device's
- * image limit or LAUNCHER_SKY_SS_MAX_TEXELS), before the offscreen pass
+ * image limit or LAUNCHER_SKY_SS_MAX_TEXELS, and one on a software
+ * rasterizer), before the offscreen pass
  * opens; inside it one quad writes each offscreen pixel as the mean of its
  * samples in linear light (resolve.frag, the scene SSAA's resolve). At one
  * sample, or for a present whose extent the target does not match, the
