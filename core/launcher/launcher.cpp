@@ -24,8 +24,8 @@
 // resize or maximize the player makes here replaces the booted game's
 // fullscreen and window settings at the hand-off (carry_window_state). The
 // harness variable OPENPETE_LAUNCHER_INPUT=<ms>:<action>[,...] performs each
-// action that long after the first launcher frame: altenter, dblclick and
-// quit post the input events, maximize, restore and resize=WxH call the
+// action that long after the first launcher frame: altenter, browse (Space),
+// dblclick and quit post the input events, maximize, restore and resize=WxH call the
 // window operations a window manager answers. OPENPETE_LAUNCHER_MANIFEST=<base>
 // writes each screen's first frame's elements, by the reference layout's ids, to
 // <base>.<screen>.json (launcher_manifest.cpp).
@@ -673,16 +673,21 @@ int launcher_open(const openpete_options_t* opts, int continues) {
     return 0;
 }
 
-/** @brief SDL file-dialog callback: store the chosen path and flag it.
+/** @brief SDL file-dialog callback: store the chosen path and flag it, logging the outcome (chosen, cancelled or failed).
  *
  * @param userdata Unused.
- * @param files A NULL-terminated list of chosen paths, or NULL on an error.
+ * @param files A NULL-terminated list of chosen paths, empty on a cancel, or NULL on an error.
  * @param filter Unused. */
 void SDLCALL on_file_chosen(void* userdata, const char* const* files, int filter) {
     (void)userdata; (void)filter;
     if (files && files[0]) {
         snprintf(s.drop_path, sizeof s.drop_path, "%s", files[0]);
         SDL_SetAtomicInt(&s.dialog_got, 1);
+        OPL_INFO_F("launcher", "file dialog: chosen %s", files[0]);
+    } else if (files) {
+        OPL_INFO_F("launcher", "file dialog: cancelled");
+    } else {
+        OPL_WARN_F("launcher", "file dialog: failed: %s", SDL_GetError());
     }
     SDL_SetAtomicInt(&s.dialog_pending, 0);
 }
@@ -696,6 +701,7 @@ void open_file_dialog() {
     };
     SDL_SetAtomicInt(&s.dialog_pending, 1);
     SDL_SetAtomicInt(&s.dialog_got, 0);
+    OPL_INFO_F("launcher", "file dialog: requested (video driver %s)", SDL_GetCurrentVideoDriver());
     SDL_ShowOpenFileDialog(on_file_chosen, nullptr, openpete_native_launcher_window(),
                            filters, 2, nullptr, false);
 }
@@ -753,10 +759,27 @@ bool window_gesture(const SDL_Event& e) {
     return true;
 }
 
+/** @brief Harness: post the key-down event a player's key press produces on the launcher window.
+ *
+ * @param win The launcher window.
+ * @param key The keycode.
+ * @param scancode The scancode.
+ * @param mod The modifier state. */
+void post_key_down(SDL_Window* win, SDL_Keycode key, SDL_Scancode scancode, SDL_Keymod mod) {
+    SDL_Event e = {};
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.windowID = SDL_GetWindowID(win);
+    e.key.key = key;
+    e.key.scancode = scancode;
+    e.key.mod = mod;
+    e.key.down = true;
+    (void)SDL_PushEvent(&e);
+}
+
 /** @brief Harness: run the OPENPETE_LAUNCHER_INPUT actions that are due, timed from the first call (the first launcher frame).
  *
- * altenter and dblclick post the key and mouse events a player's input
- * produces (the double-click at the bottom centre of the window, below the
+ * altenter, browse (Space, which opens the file dialog) and dblclick post
+ * the key and mouse events a player's input produces (the double-click at the bottom centre of the window, below the
  * screens' buttons and entries); quit posts the quit event closing the
  * window does; maximize, restore and resize=WxH call the window
  * operations. Each action runs once. */
@@ -781,13 +804,9 @@ void scripted_input_poll() {
         SDL_Event e = {};
         int w = 0, h = 0;
         if (a == "altenter") {
-            e.type = SDL_EVENT_KEY_DOWN;
-            e.key.windowID = SDL_GetWindowID(win);
-            e.key.key = SDLK_RETURN;
-            e.key.scancode = SDL_SCANCODE_RETURN;
-            e.key.mod = SDL_KMOD_LALT;
-            e.key.down = true;
-            (void)SDL_PushEvent(&e);
+            post_key_down(win, SDLK_RETURN, SDL_SCANCODE_RETURN, SDL_KMOD_LALT);
+        } else if (a == "browse") {
+            post_key_down(win, SDLK_SPACE, SDL_SCANCODE_SPACE, SDL_KMOD_NONE);
         } else if (a == "dblclick") {
             SDL_GetWindowSize(win, &w, &h);
             e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
@@ -966,7 +985,10 @@ const char* wait_for_disc() {
         launcher_jobs_pump();
         if (const char* scripted = launcher_scripted_drop()) return scripted;
         if (v.browse) open_file_dialog();
-        if (SDL_GetAtomicInt(&s.dialog_got)) return s.drop_path;
+        if (SDL_GetAtomicInt(&s.dialog_got)) {
+            SDL_SetAtomicInt(&s.dialog_got, 0);
+            return s.drop_path;
+        }
         const Ask a = wait_input();
         if (a == Ask::Quit) return nullptr;
         if (a == Ask::Dropped) return s.drop_path;
