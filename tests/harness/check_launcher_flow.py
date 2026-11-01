@@ -133,10 +133,13 @@ Cases:
   sky-cache  T7's sky (windowed): over a library of Spyro 1 and Spyro 2 whose caches a headless
             launch wrote, the selector draws the domes the cache holds with no game picked: each
             game's dome count loaded equals domes.bin's, the sky pass drew layers, the selector's
-            first frame differs from the flat clear on no more of its pixels than the control's
-            first frame (SKY_FIRST_TOL: the sky is deferred past the first present), and the first frame showing one opaque dome (the shot "sky")
-            differs from the flat clear on at least SKY_COVER of its pixels; the control run with the cache removed and its re-extraction forced to fail
-            (OPENPETE_ASSET_FAIL) loads no dome, draws no layer and writes no sky shot.
+            first frame differs from the flat clear on at most SKY_FIRST_TOL of its pixels outside
+            every element rect of its manifest (the sky is deferred past the first present), and the
+            first frame showing one opaque dome (the shot "sky") differs from the flat clear on at
+            least SKY_COVER of its pixels, overall and outside its elements; the control run with the
+            cache removed and its re-extraction forced to fail (OPENPETE_ASSET_FAIL) loads no dome,
+            draws no layer, writes no sky shot, and its first frame outside the elements is the clear
+            within SKY_FIRST_TOL.
   sky-reveal  T8's dome join and first reveal (windowed): a drop of Spyro 1's disc on the empty
             library's drop screen joins its domes to the rotation and starts the reveal in the
             same step that reaps its assets (the sky line directly after the assets-ready line,
@@ -149,6 +152,7 @@ import argparse
 import fcntl
 import glob
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -1102,28 +1106,71 @@ def case_multi_install_launch(a):
 
 # The share of the selector's first frame that differs from the flat clear: with a dome behind it
 # every pixel but the vignette's darkest differs; over the flat clear only the page's title, boxes
-# and pictures do, which the control run (no dome) measures: 0.253 at 1280x800 over a library of
-# Spyro 1 and Spyro 2. The first frame, drawn before the sky, may exceed the control's by at most
-# SKY_FIRST_TOL.
+# and pictures do. A pixel differs when a channel is more than SKY_LEVELS from the clear, the
+# binary's own criterion (openpete_native_launcher_shot). The first-present check counts only the
+# pixels outside every element rect of the frame's manifest (OPENPETE_LAUNCHER_MANIFEST), each rect
+# grown by SKY_MARGIN window px for the boxes' shadows (they reach 20 px at 1280x800): the elements
+# differ between the dome run and the control, the background outside them does not. That share may
+# be at most SKY_FIRST_TOL; the same count over the first opaque-dome shot must reach SKY_COVER,
+# which proves the masked measure sees a dome.
 SKY_COVER = 0.9
 SKY_FIRST_TOL = 0.01
+SKY_LEVELS = 8
+SKY_MARGIN = 24
 SKY_DRAWS = re.compile(r"sky: (\d+) of (\d+) presents handed a view drew the sky: (\d+) layers \((\d+) revealed, "
                        r"(\d+) crossfaded\), (\d+) triangles, (\d+) meshes uploaded")
 SHOT = re.compile(r"screen selector: (\d+) of (\d+) pixels drawn over the clear")
 SKY_SHOT = re.compile(r"screen sky: (\d+) of (\d+) pixels drawn over the clear")
+LAUNCHER_CLEAR = (24, 16, 40)   # kBg, core/launcher/launcher.cpp
+
+
+def drawn_outside(base, screen):
+    """The share of a shot's pixels outside every element rect of its manifest that differ from the clear.
+
+    Returns (share, pixels counted), or (-1.0, 0) when the shot or its manifest is missing."""
+    from PIL import Image
+    m, png = cl.read_json(base + "." + screen + ".json"), base + "." + screen + ".png"
+    if m is None or not os.path.isfile(png):
+        return -1.0, 0
+    im = Image.open(png).convert("RGB")
+    w, h = im.size
+    sx, sy = w / max(1, m["window"][0]), h / max(1, m["window"][1])
+    inside = bytearray(w * h)
+    for it in m.get("items", []):
+        x0, y0, x1, y1 = it["rect"]
+        c0, c1 = max(0, int((x0 - SKY_MARGIN) * sx)), min(w, int(math.ceil((x1 + SKY_MARGIN) * sx)))
+        for y in range(max(0, int((y0 - SKY_MARGIN) * sy)), min(h, int(math.ceil((y1 + SKY_MARGIN) * sy)))):
+            inside[y * w + c0:y * w + c1] = b"\1" * max(0, c1 - c0)
+    px, n, differ = im.tobytes(), 0, 0
+    for i in range(w * h):
+        if inside[i]:
+            continue
+        n += 1
+        r, g, b = px[3 * i], px[3 * i + 1], px[3 * i + 2]
+        differ += (abs(r - LAUNCHER_CLEAR[0]) > SKY_LEVELS or abs(g - LAUNCHER_CLEAR[1]) > SKY_LEVELS
+                   or abs(b - LAUNCHER_CLEAR[2]) > SKY_LEVELS)
+    return differ / max(1, n), n
 
 
 def sky_selector(a, d, tag, extra=None):
-    """One windowed run of the selector, quit after 6 s; returns (log, layers drawn, selector and sky shot drawn fractions)."""
-    env = dict({"OPENPETE_LAUNCHER_SHOT": os.path.join(d, tag), "OPENPETE_LAUNCHER_INPUT": "6000:quit"},
-               **(extra or {}))
+    """One windowed run of the selector, quit after 6 s.
+
+    Returns (log, layers drawn, selector and sky shot drawn fractions, the same two outside the element rects)."""
+    base = os.path.join(d, tag)
+    env = dict({"OPENPETE_LAUNCHER_SHOT": base, "OPENPETE_LAUNCHER_MANIFEST": base,
+                "OPENPETE_LAUNCHER_INPUT": "6000:quit"}, **(extra or {}))
+    for f in [base + "." + sc + ext for sc in ("selector", "sky") for ext in (".png", ".json")]:
+        if os.path.exists(f):
+            os.remove(f)
     rc, log = cl.launch(a.binary, d, tag, ["--launcher-window", "1280x800"], env, timeout=600)
     m, shot, sky = SKY_DRAWS.search(log), SHOT.search(log), SKY_SHOT.search(log)
     frac = int(shot.group(1)) / max(1, int(shot.group(2))) if shot else -1.0
     sfrac = int(sky.group(1)) / max(1, int(sky.group(2))) if sky else -1.0
+    (out, n), (sout, sn) = drawn_outside(base, "selector"), drawn_outside(base, "sky")
     print(f"[launcher-flow] sky-cache {tag}: exit {rc}, {m.group(0) if m else 'no sky draw line'}, "
-          f"selector {frac:.3f} drawn, sky shot {sfrac:.3f}")
-    return log, int(m.group(3)) if m else 0, frac, sfrac
+          f"selector {frac:.3f} drawn ({out:.4f} of {n} px outside the elements), "
+          f"sky shot {sfrac:.3f} ({sout:.4f} of {sn} px outside)")
+    return log, int(m.group(3)) if m else 0, frac, sfrac, out, sout
 
 
 def case_sky_cache(a):
@@ -1138,7 +1185,7 @@ def case_sky_cache(a):
     want = {g: domes_count(d, g)[0] for g in ("spyro-1", "spyro-2") if manifest(d, g)}
     if len(want) != 2 or 0 in want.values():
         return verdict("sky-cache", bad + [f"VACUOUS: the caches hold domes {want}"])
-    log, layers, frac, sfrac = sky_selector(a, d, "sky")
+    log, layers, frac, sfrac, out, sout = sky_selector(a, d, "sky")
     for g, n in want.items():
         got = re.search(r"sky: (\d+) domes of %s loaded from the cache" % g, log)
         if not got or int(got.group(1)) != n:
@@ -1149,15 +1196,22 @@ def case_sky_cache(a):
         bad.append(f"the opaque-dome shot differs from the clear on {sfrac:.3f} of its pixels")
     shutil.rmtree(os.path.join(d, "state", "openpete", "cache"))
     # The launch-time jobs would extract the removed cache again; the forced failure keeps it empty.
-    log0, layers0, frac0, sfrac0 = sky_selector(a, d, "control", {"OPENPETE_ASSET_FAIL": "1"})
-    if frac < 0 or frac0 < 0 or frac > frac0 + SKY_FIRST_TOL:
-        bad.append(f"the selector's first frame differs from the clear on {frac:.3f} of its pixels, the "
-                   f"control's (no dome) on {frac0:.3f}: the sky drew on the first present")
+    log0, layers0, frac0, sfrac0, out0, _ = sky_selector(a, d, "control", {"OPENPETE_ASSET_FAIL": "1"})
+    if out < 0 or out > SKY_FIRST_TOL:
+        bad.append(f"the selector's first frame differs from the clear on {out:.4f} of its pixels outside the "
+                   f"elements: the sky drew on the first present")
+    if sout < SKY_COVER:
+        bad.append(f"the opaque-dome shot differs from the clear on {sout:.4f} of its pixels outside the "
+                   f"elements: the masked measure does not see a dome")
+    if out0 < 0 or out0 > SKY_FIRST_TOL:
+        bad.append(f"control: the first frame differs from the clear on {out0:.4f} of its pixels outside the "
+                   f"elements: the background is not the clear, or an element is drawn the manifest does not list")
     joined = re.search(r"sky: \d+ domes of \S+ (loaded from the cache|joined the rotation)", log0)
     if joined or layers0 or sfrac0 >= 0:
         bad.append(f"control: domes {'loaded' if joined else 'none'}, {layers0} layers, {frac0:.3f} drawn")
     return verdict("sky-cache", bad, f"domes {want}; {layers} layers; first frame {frac:.3f}, sky shot {sfrac:.3f}, "
-                                     f"control {frac0:.3f}")
+                                     f"control {frac0:.3f}; outside the elements: first frame {out:.4f}, "
+                                     f"sky shot {sout:.4f}, control {out0:.4f}")
 
 
 def case_sky_reveal(a):
