@@ -7037,6 +7037,7 @@ static struct {
     int started;   /* the start ran (once per run)                         */
     int on;        /* the ahead walk runs: openpete_native_launcher_precompile_step steps it */
     int paused;    /* the pool is paused (openpete_native_launcher_compile_pause) */
+    int held;      /* paused for good (openpete_native_launcher_compile_hold): a resume is ignored */
     Uint64 pause_ns;
     Uint32 event;  /* the wake event's type (SDL_RegisterEvents); 0 for none */
     SDL_AtomicInt wake_pending;  /* a wake event is queued and no step has run since */
@@ -7125,7 +7126,7 @@ int openpete_native_launcher_precompile_counts(unsigned *done, unsigned *total)
 
 void openpete_native_launcher_compile_pause(int on)
 {
-    if (s_ahead.paused == (on != 0)) return;
+    if (s_ahead.paused == (on != 0) || (!on && s_ahead.held)) return;
     s_ahead.paused = on != 0;
     const Uint64 now = SDL_GetTicksNS();  /* clock-guard: wall: pause duration for the log */
     if (on) s_ahead.pause_ns = now;
@@ -7133,6 +7134,14 @@ void openpete_native_launcher_compile_pause(int on)
         OPL_INFO_F("native", "launcher precompile: the compile pool resumes after %.1f ms paused",
                    (double)(now - s_ahead.pause_ns) / 1e6);
     if (s_launch.dev) rhi_compile_pool_pause(s_launch.dev, on != 0);
+}
+
+void openpete_native_launcher_compile_hold(void)
+{
+    if (s_ahead.held) return;
+    openpete_native_launcher_compile_pause(1);
+    s_ahead.held = 1;
+    OPL_INFO_F("native", "%s", "launcher precompile: the compile pool takes no other pipeline (held for the quit)");
 }
 
 /** @brief End the launcher's precompile when bring-up starts on its device: stop the ahead walk (its running jobs finish into the cache) and resume a paused pool, whose waits bring-up's batches run.

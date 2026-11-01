@@ -28,8 +28,10 @@ bool launcher_quit_armed(void);
 
 /** @brief Take the quit: hide the launcher's window and stop every launcher job, task and stoppable compiler child.
  *
- * openpete_launcher_job_cancelled reads the quit on every thread once taken.
- * A second call does nothing. Call on the launcher's thread.
+ * openpete_launcher_job_cancelled reads the quit on every thread once taken,
+ * and the launcher's pipeline compile pool takes no other pipeline
+ * (openpete_native_launcher_compile_hold). A second call does nothing. Call
+ * on the launcher's thread.
  * @param how The gesture, for the log. */
 void launcher_quit_take(const char* how);
 

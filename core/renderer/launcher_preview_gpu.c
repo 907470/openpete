@@ -134,14 +134,21 @@ static int lp_compile(int slot_contest, int (*stop)(void), op_time_t deadline, c
     /* The stop is read before each compile: a pipeline creation already
      * running cannot be interrupted, and none starts after the stop. */
     int failed = 0, stopped = 0;
+    double last_ms = 0.0;   /* the last compile's length: a stop seen after it waited at most this long */
     const rhi_pipe_phase ph = rhi_pipe_phase_get();
     rhi_pipe_phase_set(RHI_PIPE_PHASE_LAUNCHER);   /* the launcher's pipelines, not the game's bring-up */
     for (int i = 0; i < OPTC_PREVIEW_PIPES && !stopped; i++) {
         stopped = stop && stop();
-        if (!stopped) failed |= rhi_compile_job_run(s_lp.dev, (rhi_compile_job *)s_lp.jobs[i], 0) != 0;
+        if (stopped) break;
+        const op_time_t t0 = op_now();  /* clock-guard: wall: one compile's length for the stop log */
+        failed |= rhi_compile_job_run(s_lp.dev, (rhi_compile_job *)s_lp.jobs[i], 0) != 0;
+        last_ms = (double)(op_now() - t0) / 1e6;  /* clock-guard: wall: as above */
     }
     rhi_pipe_phase_set(ph);
     stopped = stopped || (stop && stop());
+    if (stopped && last_ms > 0.0)
+        OPL_INFO_F("launcher", "preview compile stopped after the compile in flight (%.1f ms long; a pipeline "
+                   "creation cannot be interrupted)", last_ms);
     if (!failed && !stopped && op_now() <= deadline) return OPENPETE_PREVIEW_OK;
     lp_discard(s_lp.jobs);
     if (failed) { snprintf(why, why_cap, "a terrain pipeline failed to compile"); return OPENPETE_PREVIEW_FAILED; }

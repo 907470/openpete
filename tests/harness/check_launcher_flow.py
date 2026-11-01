@@ -107,7 +107,8 @@ Cases:
             run; the next launch rebuilds the entry in the background, its inline launch-time job
             headless, and plays), quit-assets (a quit event while the pick waits for an asset job
             held by OPENPETE_ASSET_JOB_DELAY_MS). Each reports the quit-to-exit time (the harness's,
-            from the log line to the process's exit, and the launcher's own) against QUIT_BOUND_MS and
+            from the log line to the process's exit, and the launcher's own) against QUIT_BOUND_MS plus
+            the length of the preview compile the stop found in flight (the launcher's log line), and
             the leftover counts, each 0: ingest-tmp-* directories, entries, failed-build markers,
             partial modules, module build directories, *.tmp-* atomic temporaries, the stopped job's
             cache files, files in TMPDIR, live processes naming the case directory. The progress
@@ -1233,10 +1234,20 @@ def case_job_pick_other_assets(a):
 
 # ---- quit during work (quit-*) ----
 
-# T13's bound on Linux: the larger of 2 s and the longest single pipeline creation; the ahead
-# compile's pipelines on this host create well under 2 s.
+# The quit bound on Linux: 2 s for the stop's own work, plus the one pipeline compile the stop may find in
+# flight, which cannot be interrupted (the preview's terrain compile: about 0.5 s at idle on llvmpipe, 1-11 s
+# on a loaded host). The launcher logs that compile's length when the stop finds one; the ahead compile
+# takes no pipeline after the quit and its in-flight launcher pipelines are inside the 2 s.
 QUIT_BOUND_MS = 2000.0
 QUIT_CLOSED = re.compile(r"quit during work: the work stopped and the launcher closed ([\d.]+) ms after the quit")
+QUIT_INFLIGHT = re.compile(r"preview compile stopped after the compile in flight \(([\d.]+) ms long")
+LOG_T = r"^\s*([\d.]+) \[\w+\s*\] "
+
+
+def log_time(log, pattern):
+    """The process-relative time in seconds of the first log line matching `pattern` after its timestamp, or None."""
+    m = re.search(LOG_T + pattern, log, re.M)
+    return float(m.group(1)) if m else None
 
 
 def quit_launch(a, d, tag, args, env, timeout=900):
@@ -1316,10 +1327,13 @@ def quit_case(a, name, setup, quit_at, expect, extra_env=None, next_launch=False
         bad.append(f"exit {rc}")
     if "game picked" in log.split("quit during work (", 1)[-1] or "window, device and imgui handed" in log:
         bad.append("the game started after the quit")
+    after = log.split("quit during work (", 1)[-1]
+    inflight = QUIT_INFLIGHT.search(after)
+    bound = QUIT_BOUND_MS + (float(inflight.group(1)) if inflight else 0.0)
     if ms is None:
         bad.append("the quit line was not seen while the process ran")
-    elif ms > QUIT_BOUND_MS:
-        bad.append(f"the process ended {ms:.0f} ms after the quit, over {QUIT_BOUND_MS:.0f} ms")
+    elif ms > bound:
+        bad.append(f"the process ended {ms:.0f} ms after the quit, over {bound:.0f} ms")
     lib = os.path.join(d, "data", "openpete", "library")
     found = leftovers(d, stopped_cache)
     for kind, paths in found.items():
@@ -1327,7 +1341,8 @@ def quit_case(a, name, setup, quit_at, expect, extra_env=None, next_launch=False
             bad.append(f"{len(paths)} {kind}: {paths[:3]}")
     counts = ", ".join(f"{k} {len(v)}" for k, v in found.items())
     entries = [e for e in glob.glob(os.path.join(lib, "*", "meta.toml"))]
-    detail = (f"exit {ms:.0f} ms after the quit (harness), {own if own is not None else '?'} ms (launcher); "
+    detail = (f"exit {ms:.0f} ms after the quit (harness), {own if own is not None else '?'} ms (launcher), "
+              f"bound {bound:.0f} ms ({inflight.group(1) + ' ms compile in flight' if inflight else 'none in flight'}); "
               if ms is not None else "") + f"leftovers: {counts}; entries {len(entries)}"
     if next_launch:
         rc2, log2 = headless(a, d, "next", ["--game", "spyro-1", "--frame-limit", "1"])
@@ -1827,29 +1842,41 @@ def case_preview_stop(a):
     seed_entry(d, "spyro-1", 1)
     seed_entry(d, "spyro-2", 2)
     # The first render parks between its preparation and its draw for 60 s; the pick lands inside the park,
-    # 20 s in, after a cold first render (sixteen pipeline compiles) on a loaded machine has parked.
+    # 20 s in, after a cold first render (sixteen pipeline compiles) on a loaded machine has parked. The stop
+    # is timed in the log, from its start to the job's end: the run's length also holds spyro-2's cold module
+    # build after the stop, which a loaded host stretches past a minute.
     env = dict(FLOW_ENV, OPENPETE_PREVIEW_PARK_MS="60000", OPENPETE_PREVIEW_BOUND_MS="90000",
                OPENPETE_LAUNCHER_PICK_DELAY_MS="20000", OPENPETE_LAUNCHER_SELECT_GAME="spyro-2")
     t0 = time.monotonic()
     rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env,
-                        timeout=150)
+                        timeout=900)
     took = time.monotonic() - t0
+    stop0 = log_time(log, r"launcher: stopping the launch-time job of spyro-1")
+    stop1 = log_time(log, r"launcher: module rebuild of spyro-1 stopped")
+    park = log_time(log, r"launcher: preview render parked for")
     bad = common_flow(log) + ordered(
         log, r"launch-time rerun: preview render of spyro-1", r"preview render parked for",
         r"scripted pick: entry \d+ \(spyro-2\)", r"stopping the launch-time job of spyro-1",
         r"preview of spyro-1 stopped; the cache is unchanged", r"game picked: spyro-2")
     if rc == -9:
-        bad.append("timed out at 150 s: the stop waited on the parked render")
+        bad.append("timed out at 900 s")
     elif rc != 0:
         bad.append(f"exit {rc}")
-    if took > 60:
-        bad.append(f"the run took {took:.0f} s, past the 60 s park: the stop waited for the draw")
+    stop_ms = (stop1 - stop0) * 1000.0 if stop0 is not None and stop1 is not None else None
+    if stop_ms is None:
+        bad.append("the stop's start or end line is missing")
+    elif stop_ms > QUIT_BOUND_MS:
+        bad.append(f"the stop took {stop_ms:.0f} ms, over {QUIT_BOUND_MS:.0f} ms: it waited on work")
+    if park is not None and stop1 is not None and stop1 >= park + 60.0:
+        bad.append("the stop ended after the park: it waited for the draw")
     if preview_info(d, "spyro-1") != (0, 0, 0):
         bad.append("spyro-1 holds a preview from the stopped render")
     m = re.search(r"preview of spyro-1 failed", log)
     if m:
         bad.append("the stopped render wrote a failed marker")
-    return verdict("preview-stop", bad, f"{took:.1f} s")
+    return verdict("preview-stop", bad, f"stop {stop_ms if stop_ms is not None else float('nan'):.1f} ms, "
+                   f"{(stop0 - park) if stop0 is not None and park is not None else float('nan'):.1f} s into the "
+                   f"park; run {took:.1f} s")
 
 
 def case_picker(a):

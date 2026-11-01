@@ -7,7 +7,9 @@
 // it on every thread, so the copy stops at its next chunk, the module build
 // and the mod compile kill their compiler children
 // (openpete_host_spawn_argv_stoppable), and an asset job stops at its next
-// check; the window hides at once and the process ends once the work stops.
+// check; the background pipeline compile takes no other pipeline (its
+// pool stays paused through the end of a stopped job); the window hides at
+// once and the process ends once the work stops.
 #include "launcher_quit.h"
 #include "launcher_internal.h"
 
@@ -143,6 +145,7 @@ void launcher_quit_take(const char* how) {
     s_taken_ns = op_now();
     s_ask.asked_ms = 0;
     OPL_INFO_F("launcher", "quit during work (%s): the window hides and the work stops", how);
+    openpete_native_launcher_compile_hold();
     if (SDL_Window* win = openpete_native_launcher_window()) SDL_HideWindow(win);
 }
 

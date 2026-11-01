@@ -313,6 +313,15 @@ int openpete_native_launcher_precompile_counts(unsigned *done, unsigned *total);
  * @param on Nonzero to pause, 0 to resume. */
 void openpete_native_launcher_compile_pause(int on);
 
+/** @brief Pause the launcher's pipeline compile pool for the rest of the process: a quit's stop takes no other pipeline.
+ *
+ * Each worker finishes the pipeline it holds, which cannot be interrupted;
+ * every later openpete_native_launcher_compile_pause(0) is ignored, so the
+ * end of a stopped job does not restart the queue, and the pool's stop at
+ * the device's destruction drops it. Display owner only (the launcher's
+ * thread). */
+void openpete_native_launcher_compile_hold(void);
+
 /** @brief Destroy the launcher's imgui context, device and window when the run ends before bring-up adopts them.
  *
  * No-op when the launcher holds no device. */
