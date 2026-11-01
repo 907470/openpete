@@ -1,81 +1,82 @@
 # First-boot compile cost per translation unit: its compile seconds over the build's
-# total, from a reference build at -j16 (scripts/emit-first-boot-costs.sh).
-level_20.bin_full.c	0.025940
-level_33.bin_full.c	0.040160
-level_53.bin_dispatch.c	0.000857
-level_10.bin_full.c	0.021468
-level_15.bin_dispatch.c	0.000121
-level_40.bin_dispatch.c	0.000326
-level_63.bin_full.c	0.007710
-level_13.bin_full.c	0.029681
-level_51.bin_full.c	0.008083
-level_44.bin_full.c	0.029217
-level_52.bin_dispatch.c	0.000524
-level_55.bin_full.c	0.024608
-level_21.bin_dispatch.c	0.004454
-level_30.bin_dispatch.c	0.000748
-level_30.bin_full.c	0.038549
-level_35.bin_full.c	0.024650
-level_45.bin_full.c	0.018143
-titlescreen.bin_full.c	0.001258
-level_43.bin_dispatch.c	0.002027
-credits.bin_full.c	0.004737
-level_43.bin_full.c	0.038490
-level_64.bin_full.c	0.008064
-credits.bin_dispatch.c	0.000112
-level_15.bin_full.c	0.009951
-level_34.bin_dispatch.c	0.000192
-level_10.bin_dispatch.c	0.000141
-level_53.bin_full.c	0.019431
-level_25.bin_dispatch.c	0.000063
-level_50.bin_dispatch.c	0.000847
-level_23.bin_dispatch.c	0.000169
-level_21.bin_full.c	0.037793
-level_54.bin_dispatch.c	0.000106
-level_62.bin_dispatch.c	0.000106
-level_13.bin_dispatch.c	0.000146
-level_52.bin_full.c	0.021027
-level_60.bin_full.c	0.020452
-level_64.bin_dispatch.c	0.000131
-level_33.bin_dispatch.c	0.001587
-level_23.bin_full.c	0.013083
-level_51.bin_dispatch.c	0.000564
-PSX.EXE_full.c	0.089417
-level_25.bin_full.c	0.020953
-level_35.bin_dispatch.c	0.000055
-level_24.bin_full.c	0.014176
-level_31.bin_dispatch.c	0.002170
-level_54.bin_full.c	0.034572
-titlescreen.bin_dispatch.c	0.000074
-level_12.bin_full.c	0.021787
-level_22.bin_dispatch.c	0.000109
-level_32.bin_full.c	0.035267
-level_50.bin_full.c	0.030974
-level_62.bin_full.c	0.026359
-level_60.bin_dispatch.c	0.000115
-level_55.bin_dispatch.c	0.000117
-level_41.bin_dispatch.c	0.001630
-level_31.bin_full.c	0.055099
-level_14.bin_dispatch.c	0.000073
-level_41.bin_full.c	0.014257
-PSX.EXE_dispatch.c	0.009396
-level_14.bin_full.c	0.021711
-level_63.bin_dispatch.c	0.000103
-level_11.bin_dispatch.c	0.000151
-level_20.bin_dispatch.c	0.000582
-level_32.bin_dispatch.c	0.002081
-level_34.bin_full.c	0.030809
-spyro_overlay_table.c	0.000027
-level_40.bin_full.c	0.025695
-level_11.bin_full.c	0.017077
-level_44.bin_dispatch.c	0.002747
-level_12.bin_dispatch.c	0.000084
-level_24.bin_dispatch.c	0.000142
-level_61.bin_dispatch.c	0.000123
-level_42.bin_full.c	0.036280
-level_45.bin_dispatch.c	0.000095
-level_22.bin_full.c	0.039862
-level_42.bin_dispatch.c	0.000123
-level_61.bin_full.c	0.009864
-overlay_dispatch.c	0.000100
-module_main.c	0.000027
+# total, then its completion over the compile step's wall time, from a reference
+# build at -j16 (scripts/emit-first-boot-costs.sh).
+level_20.bin_full.c	0.037232	0.381047
+level_33.bin_full.c	0.036759	0.376107
+level_53.bin_dispatch.c	0.000532	0.548675
+level_10.bin_full.c	0.022508	0.545627
+level_15.bin_dispatch.c	0.000328	0.570621
+level_40.bin_dispatch.c	0.000684	0.557988
+level_63.bin_full.c	0.015133	0.651020
+level_13.bin_full.c	0.030811	0.315338
+level_51.bin_full.c	0.017855	0.659521
+level_44.bin_full.c	0.027078	0.277156
+level_52.bin_dispatch.c	0.000719	0.557823
+level_55.bin_full.c	0.019233	0.419388
+level_21.bin_dispatch.c	0.000807	0.534899
+level_30.bin_dispatch.c	0.000473	0.550463
+level_30.bin_full.c	0.038835	0.397356
+level_35.bin_full.c	0.017213	0.397520
+level_45.bin_full.c	0.017071	0.527407
+titlescreen.bin_full.c	0.005085	0.593930
+level_43.bin_dispatch.c	0.000685	0.541905
+credits.bin_full.c	0.002829	0.526638
+level_43.bin_full.c	0.030888	0.316054
+level_64.bin_full.c	0.016354	0.646150
+credits.bin_dispatch.c	0.000235	0.574443
+level_15.bin_full.c	0.019125	0.593192
+level_34.bin_dispatch.c	0.000523	0.560041
+level_10.bin_dispatch.c	0.000607	0.567262
+level_53.bin_full.c	0.026857	0.623035
+level_25.bin_dispatch.c	0.000514	0.588675
+level_50.bin_dispatch.c	0.000756	0.550990
+level_23.bin_dispatch.c	0.000428	0.561045
+level_21.bin_full.c	0.034035	0.348248
+level_54.bin_dispatch.c	0.000456	0.578920
+level_62.bin_dispatch.c	0.000588	0.580457
+level_13.bin_dispatch.c	0.000687	0.565019
+level_52.bin_full.c	0.021858	0.539689
+level_60.bin_full.c	0.017921	0.527767
+level_64.bin_dispatch.c	0.000607	0.570257
+level_33.bin_dispatch.c	0.000710	0.546953
+level_23.bin_full.c	0.021491	0.617240
+level_51.bin_dispatch.c	0.000781	0.556666
+PSX.EXE_full.c	0.097738	1.000000
+level_25.bin_full.c	0.015852	0.496183
+level_35.bin_dispatch.c	0.000390	0.588896
+level_24.bin_full.c	0.021877	0.614974
+level_31.bin_dispatch.c	0.000812	0.536075
+level_54.bin_full.c	0.021748	0.222604
+titlescreen.bin_dispatch.c	0.000289	0.583413
+level_12.bin_full.c	0.020909	0.463485
+level_22.bin_dispatch.c	0.000782	0.580281
+level_32.bin_full.c	0.032638	0.333991
+level_50.bin_full.c	0.033655	0.344405
+level_62.bin_full.c	0.021114	0.216135
+level_60.bin_dispatch.c	0.000355	0.574258
+level_55.bin_dispatch.c	0.000569	0.576076
+level_41.bin_dispatch.c	0.000700	0.543236
+level_31.bin_full.c	0.038228	0.391139
+level_14.bin_dispatch.c	0.000428	0.587726
+level_41.bin_full.c	0.023293	0.619365
+PSX.EXE_dispatch.c	0.003343	0.497693
+level_14.bin_full.c	0.019517	0.476842
+level_63.bin_dispatch.c	0.000315	0.579300
+level_11.bin_dispatch.c	0.000732	0.565314
+level_20.bin_dispatch.c	0.000756	0.554686
+level_32.bin_dispatch.c	0.001017	0.543258
+level_34.bin_full.c	0.024382	0.249560
+spyro_overlay_table.c	0.000133	0.587214
+level_40.bin_full.c	0.025675	0.478825
+level_11.bin_full.c	0.023724	0.618833
+level_44.bin_dispatch.c	0.000532	0.532849
+level_12.bin_dispatch.c	0.000545	0.585853
+level_24.bin_dispatch.c	0.000391	0.564043
+level_61.bin_dispatch.c	0.000710	0.572283
+level_42.bin_full.c	0.021633	0.221404
+level_45.bin_dispatch.c	0.000547	0.584901
+level_22.bin_full.c	0.034475	0.352748
+level_42.bin_dispatch.c	0.000657	0.572041
+level_61.bin_full.c	0.021672	0.641126
+overlay_dispatch.c	0.000433	0.583349
+module_main.c	0.000146	0.588713

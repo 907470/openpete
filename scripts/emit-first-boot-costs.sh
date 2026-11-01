@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # emit-first-boot-costs.sh - measure a game's first-boot compile cost table:
-# each translation unit's compile seconds over the compile step's total, from
-# one headless first boot of the game's disc by a *-launcher build.
+# per translation unit, its compile seconds over the compile step's summed
+# compile seconds, and its completion over the step's wall time, from one
+# headless first boot of the game's disc by a *-launcher build.
 #
-# The first boot's progress bar fills its build segment by these shares
-# (games/common/recomp_build.cpp, compile_order): a source's compile time
-# grows faster than its size, so a size-weighted bar runs ahead while the
-# largest unit compiles. The table is written to
+# The compile step orders its units by the first column, largest first, and
+# the first boot's progress bar follows the second (games/common/
+# recomp_build.cpp, timeline_position): the completed count's recorded
+# fraction, advanced between completions at this run's pace. A count of
+# units or of source size runs ahead, since a source's compile time grows
+# faster than its size and the step ends with workers idle. The table is
+# written to
 #   games/<game>/manifest/first_boot_costs.tsv
 # and staged by CMake as <exe dir>/recomp/costs/<game>.tsv, outside the
-# manifest tree the codegen stamp hashes. A unit the table does not name
-# (a codegen change since the measurement) falls back to its size share.
+# manifest tree the codegen stamp hashes. When a unit is missing from the
+# table (a codegen change since the measurement) the bar counts compile
+# cost, a missing unit taking its source-size share.
 # Re-run after a codegen change that adds, removes or reshapes units:
 #   GAME=spyro-2 bash scripts/emit-first-boot-costs.sh [build-dir]
-# Measure on an idle host: the shares are relative, but a loaded host
-# stretches the units unevenly.
+# Measure on an idle host: a loaded host stretches the units unevenly.
 set -euo pipefail
 
 GAME=${GAME:-spyro-1}

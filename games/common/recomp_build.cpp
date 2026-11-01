@@ -504,29 +504,44 @@ std::string compute_codegen_stamp(const fs::path& base, const openpete_game_buil
 /* The compile step's progress counts in units of this many per build. */
 constexpr int kCostScale = 100000;
 
+/* One translation unit's row of the compile cost table: its share of a
+ * reference build's summed compile seconds, and the moment it completed as
+ * a fraction of that build's compile step wall time (-1 when the row
+ * holds none). */
+struct UnitCost {
+    double cost = 0.0;
+    double at = -1.0;
+};
+
 /* The compile step's schedule: the translation units in the order the
- * workers take them, largest cost first, and each unit's share of the
- * step's compile time (summing to 1), the measure the progress report
- * counts in. */
+ * workers take them, largest cost first; each unit's cost share (summing
+ * to 1) and recorded completion fraction; and, when the table gives every
+ * unit a completion fraction, the fractions in ascending order, the
+ * reference build's timeline the progress report follows. */
 struct CompileOrder {
     std::vector<size_t> order;
     std::vector<double> cost;
+    std::vector<double> at;
+    std::vector<double> timeline;   /* empty: the report counts cost */
     int covered = 0;   /* units whose share came from the cost table */
 };
 
-/** @brief Read a compile cost table: one line per translation unit, its file name, a tab and its share of a reference build's compile time; lines opening with # are comments.
+/** @brief Read a compile cost table: one line per translation unit, its file name, a tab, its share of a reference build's compile time and, after another tab, its completion as a fraction of that build's compile step wall time; lines opening with # are comments.
  *
  * @param path The table.
- * @return The shares by file name; empty when the file is missing. */
-std::map<std::string, double> read_compile_costs(const fs::path& path) {
-    std::map<std::string, double> t;
+ * @return The rows by file name; empty when the file is missing. */
+std::map<std::string, UnitCost> read_compile_costs(const fs::path& path) {
+    std::map<std::string, UnitCost> t;
     std::ifstream f(path);
     std::string line;
     while (std::getline(f, line)) {
         const size_t tab = line.find('\t');
         if (line.empty() || line[0] == '#' || tab == std::string::npos) continue;
-        const double c = std::strtod(line.c_str() + tab + 1, nullptr);
-        if (c > 0.0) t[line.substr(0, tab)] = c;
+        char* end = nullptr;
+        UnitCost u;
+        u.cost = std::strtod(line.c_str() + tab + 1, &end);
+        if (end && *end == '\t') u.at = std::strtod(end + 1, nullptr);
+        if (u.cost > 0.0) t[line.substr(0, tab)] = u;
     }
     return t;
 }
@@ -536,13 +551,15 @@ std::map<std::string, double> read_compile_costs(const fs::path& path) {
  * A unit the cost table names takes its share from the table; any other
  * takes its share of the source size (KiB, at least 1) times the share of
  * the step the table leaves to the units it does not name; the shares
- * are then normalised to sum to 1.
+ * are then normalised to sum to 1. When the table names every unit with a
+ * completion fraction, the fractions form the timeline.
  * @param tus The translation units, in link order (unchanged).
  * @param table The cost table (read_compile_costs); may be empty.
  * @return The schedule. */
-CompileOrder compile_order(const std::vector<fs::path>& tus, const std::map<std::string, double>& table) {
+CompileOrder compile_order(const std::vector<fs::path>& tus, const std::map<std::string, UnitCost>& table) {
     CompileOrder o;
     o.cost.resize(tus.size());
+    o.at.assign(tus.size(), -1.0);
     std::vector<double> kib(tus.size());
     double kib_rest = 0.0, known = 0.0;
     for (size_t i = 0; i < tus.size(); i++) {
@@ -551,8 +568,9 @@ CompileOrder compile_order(const std::vector<fs::path>& tus, const std::map<std:
         kib[i] = ec ? 1.0 : std::max(1.0, (double)(bytes / 1024));
         const auto it = table.find(tus[i].filename().string());
         if (it != table.end()) {
-            o.cost[i] = it->second;
-            known += it->second;
+            o.cost[i] = it->second.cost;
+            o.at[i] = it->second.at;
+            known += it->second.cost;
             o.covered++;
         } else {
             kib_rest += kib[i];
@@ -567,27 +585,53 @@ CompileOrder compile_order(const std::vector<fs::path>& tus, const std::map<std:
     }
     for (double& c : o.cost) c = sum > 0.0 ? c / sum : 1.0 / (double)tus.size();
     std::stable_sort(o.order.begin(), o.order.end(), [&](size_t a, size_t b) { return o.cost[a] > o.cost[b]; });
+    if (std::all_of(o.at.begin(), o.at.end(), [](double v) { return v > 0.0; })) {
+        o.timeline = o.at;
+        std::sort(o.timeline.begin(), o.timeline.end());
+    }
     return o;
 }
 
-/** @brief Write a compile cost table from the compile seconds of each unit of a build: each unit's seconds over the total.
+/** @brief Place the compile step on the reference build's timeline: the fraction of the step the completed units reach, advanced between completions by this run's elapsed time.
+ *
+ * The completed units reach the recorded fraction of the count-th
+ * completion in recorded order. This run's pace is its elapsed time at its
+ * latest completion over that fraction; between completions the position
+ * is the elapsed time over that pace's whole step, held between the
+ * reached fraction and the next recorded one.
+ * @param timeline The recorded completion fractions, ascending.
+ * @param count The units completed.
+ * @param t The step's elapsed time now, seconds.
+ * @param t_last The step's elapsed time at the latest completion, seconds.
+ * @return The fraction of the step, 0..1. */
+double timeline_position(const std::vector<double>& timeline, size_t count, double t, double t_last) {
+    if (timeline.empty() || count == 0) return 0.0;
+    if (count >= timeline.size()) return 1.0;
+    const double reached = timeline[count - 1], next = timeline[count];
+    if (reached <= 0.0 || t_last <= 0.0) return reached;
+    return std::clamp(t * reached / t_last, reached, next);
+}
+
+/** @brief Write a compile cost table from a build: each unit's compile seconds over the total, and its completion over the step's last.
  *
  * @param path The table to write.
  * @param tus The translation units.
  * @param secs Each unit's compile seconds.
+ * @param done_at Each unit's completion, seconds from the step's start.
  * @param jobs The build's worker count, recorded in the header.
  * @return true when the file was written. */
 bool write_compile_costs(const fs::path& path, const std::vector<fs::path>& tus, const std::vector<double>& secs,
-                         unsigned jobs) {
-    double total = 0.0;
+                         const std::vector<double>& done_at, unsigned jobs) {
+    double total = 0.0, end = 0.0;
     for (double v : secs) total += v;
-    if (total <= 0.0) return false;
+    for (double v : done_at) end = std::max(end, v);
+    if (total <= 0.0 || end <= 0.0) return false;
     std::string text = "# First-boot compile cost per translation unit: its compile seconds over the build's\n"
-                       "# total, from a reference build at -j" + std::to_string(jobs) +
-                       " (scripts/emit-first-boot-costs.sh).\n";
+                       "# total, then its completion over the compile step's wall time, from a reference\n"
+                       "# build at -j" + std::to_string(jobs) + " (scripts/emit-first-boot-costs.sh).\n";
     char row[64];
     for (size_t i = 0; i < tus.size(); i++) {
-        snprintf(row, sizeof row, "\t%.6f\n", secs[i] / total);
+        snprintf(row, sizeof row, "\t%.6f\t%.6f\n", secs[i] / total, done_at[i] / end);
         text += tus[i].filename().string() + row;
     }
     return op_atomic_write_file(path.string().c_str(), text.data(), text.size()) == 0;
@@ -842,13 +886,15 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
 
     const fs::path cost_path = R / "costs" / (std::string(openpete_game_build()->id) + ".tsv");
     const CompileOrder sched = compile_order(tus, read_compile_costs(cost_path));
-    OPL_INFO_F("recomp-build", "compile cost table: %d of %zu units (%s)", sched.covered, tus.size(),
-               cost_path.string().c_str());
-    std::vector<double> secs(tus.size(), 0.0);
+    OPL_INFO_F("recomp-build", "compile cost table: %d of %zu units%s (%s)", sched.covered, tus.size(),
+               sched.timeline.empty() ? "" : ", timeline", cost_path.string().c_str());
+    std::vector<double> secs(tus.size(), 0.0), done_at(tus.size(), 0.0);
+    const auto step_t0 = std::chrono::steady_clock::now();
     std::atomic<size_t> next{0};
     std::atomic<int> failed{0};
     std::atomic<size_t> done{0};
     std::atomic<int> done_cost{0};
+    std::atomic<int64_t> last_ns{0};   /* the latest completion, ns from the step's start */
     /* The workers read the stop of the job running the build. */
     void* const stop = openpete_launcher_job_stop_handle();
     auto worker = [&]() {
@@ -866,8 +912,12 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
             cmd.push_back(tu.string());
             const auto t0 = std::chrono::steady_clock::now();
             if (!run(cmd)) { failed.store(1); break; }
-            secs[i] = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            const auto t1 = std::chrono::steady_clock::now();
+            secs[i] = std::chrono::duration<double>(t1 - t0).count();
+            done_at[i] = std::chrono::duration<double>(t1 - step_t0).count();
             done_cost.fetch_add((int)std::lround(sched.cost[i] * kCostScale));
+            const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - step_t0).count();
+            for (int64_t prev = last_ns.load(); prev < ns && !last_ns.compare_exchange_weak(prev, ns);) {}
             size_t d = done.fetch_add(1) + 1;
             if (d % 20 == 0 || d == tus.size())
                 std::fprintf(stderr, "[first-boot]   %zu/%zu\n", d, tus.size());
@@ -878,12 +928,18 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
         std::vector<std::thread> pool;
         for (unsigned t = 0; t < jobs; t++) pool.emplace_back(worker);
         /* Progress from THIS thread (SDL rendering is not thread-safe);
-         * workers only bump the counters. The report counts the compile
-         * cost of the completed units, so a unit advances the bar by its
-         * share of the step's compile time. */
+         * workers only bump the counters. With the reference build's
+         * timeline the report follows it (timeline_position); without one
+         * it counts the compile cost of the completed units. The report
+         * never moves back. */
         int last = -1;
         while (done.load() < tus.size() && !failed.load()) {
-            const int d = std::min(done_cost.load(), kCostScale);
+            int d = std::min(done_cost.load(), kCostScale);
+            if (!sched.timeline.empty()) {
+                const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - step_t0).count();
+                d = (int)std::lround(kCostScale * timeline_position(sched.timeline, done.load(), t,
+                                                                    (double)last_ns.load() / 1e9));
+            }
             if (d > last) {
                 progress("BUILDING FOR YOUR PC", d, kCostScale);
                 last = d;
@@ -900,7 +956,7 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     if (!failed.load()) {
         if (const char* out = getenv("OPENPETE_FIRST_BOOT_COSTS_OUT"); out && *out)
             OPL_INFO_F("recomp-build", "compile cost table written to %s: %s", out,
-                       write_compile_costs(out, tus, secs, jobs) ? "ok" : "failed");
+                       write_compile_costs(out, tus, secs, done_at, jobs) ? "ok" : "failed");
     }
     if (failed.load()) return -1;
 
