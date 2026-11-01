@@ -112,7 +112,8 @@ static void lp_discard(void *jobs[OPTC_PREVIEW_PIPES])
  * The compiles run off the display owner: a pipeline the ahead walk
  * compiled is a pipeline-cache hit. On success the jobs are left in the
  * mailbox for the render request. The stop poll is read before each
- * compile.
+ * compile. The creates count in the launcher phase (RHI_PIPE_PHASE_LAUNCHER),
+ * so a game's bring-up count holds the game's creates alone.
  * @param slot_contest The SLOT_CONTEST value compiled into the jobs.
  * @param stop The stop poll, or NULL.
  * @param deadline The op_now() time the call gives up at.
@@ -133,10 +134,13 @@ static int lp_compile(int slot_contest, int (*stop)(void), op_time_t deadline, c
     /* The stop is read before each compile: a pipeline creation already
      * running cannot be interrupted, and none starts after the stop. */
     int failed = 0, stopped = 0;
+    const rhi_pipe_phase ph = rhi_pipe_phase_get();
+    rhi_pipe_phase_set(RHI_PIPE_PHASE_LAUNCHER);   /* the launcher's pipelines, not the game's bring-up */
     for (int i = 0; i < OPTC_PREVIEW_PIPES && !stopped; i++) {
         stopped = stop && stop();
         if (!stopped) failed |= rhi_compile_job_run(s_lp.dev, (rhi_compile_job *)s_lp.jobs[i], 0) != 0;
     }
+    rhi_pipe_phase_set(ph);
     stopped = stopped || (stop && stop());
     if (!failed && !stopped && op_now() <= deadline) return OPENPETE_PREVIEW_OK;
     lp_discard(s_lp.jobs);
