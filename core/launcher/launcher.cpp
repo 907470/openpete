@@ -368,22 +368,45 @@ void draw_pending(const Frame& f) {
 constexpr float kTitleScale = 2.4f;
 constexpr float kTitleTop = 8.0f;
 
+/** @brief Return the step, in window coordinates, of a grid whose every line is both a whole window coordinate and a whole framebuffer pixel.
+ *
+ * imgui truncates a text origin to whole window coordinates and the
+ * framebuffer holds @p density pixels per window coordinate, so an origin
+ * on a multiple of the step lands on a framebuffer pixel edge: 1 at
+ * density 1 or 2, 2 at 1.5, 4 at 1.25. A density with no such step up to 8
+ * returns 1.
+ * @param density Framebuffer pixels per window coordinate.
+ * @return The step, 1 to 8. */
+float fb_origin_step(float density) {
+    for (int q = 1; q <= 8; q++) {
+        const float v = density * (float)q;
+        if (std::fabs(v - std::round(v)) < 1e-3f) return (float)q;
+    }
+    return 1.0f;
+}
+
 /** @brief Draw the pixel title OPENPETE centred in the layout band in whole-pixel cells, and record it in the element manifest.
  *
  * ProggyClean's outlines are squares of 128 font units, 13 to its pixel
- * height, so drawn at 13 x c pixels each font pixel covers exactly c x c
- * window pixels and every edge is sharp. c is the title size (28 x
- * kTitleScale layout px) over 13, rounded to a whole pixel, at least 1;
- * the title is 7 c wide per glyph and 13 c tall, centred horizontally, its
- * origin truncated to whole pixels.
+ * height, so rasterized at 13 x c framebuffer pixels each font pixel covers
+ * exactly c x c of them and every edge is sharp. The framebuffer holds d
+ * pixels per window coordinate (imgui's DisplayFramebufferScale, the window's
+ * pixel size over its size, which the font is also rasterized at): c is the
+ * title size (28 x kTitleScale layout px, times d) over 13, rounded to a
+ * whole pixel, at least 1, so the cell is c / d window coordinates. The
+ * title is 7 c / d wide per glyph and 13 c / d tall, centred horizontally,
+ * its origin truncated to the fb_origin_step grid so it starts on a
+ * framebuffer pixel edge.
  * @param f The frame mapping. */
 void draw_title(const Frame& f) {
     static const char kTitle[] = "OPENPETE";
-    const float p = 28.0f * kTitleScale * f.scale;
-    const float cell = std::max(1.0f, std::round(p / 13.0f));
+    const float d = std::max(1.0f, ImGui::GetIO().DisplayFramebufferScale.x);
+    const float q = fb_origin_step(d);
+    const float p = 28.0f * kTitleScale * f.scale * d;
+    const float cell = std::max(1.0f, std::round(p / 13.0f)) / d;
     const float w = 7.0f * cell * (float)(sizeof kTitle - 1);
-    const float x = std::trunc(f.ox + (kLayoutW * f.scale - w) * 0.5f);
-    const float y = std::trunc(f.oy + (kTitleTop + kBandY) * f.scale);
+    const float x = std::trunc((f.ox + (kLayoutW * f.scale - w) * 0.5f) / q) * q;
+    const float y = std::trunc((f.oy + (kTitleTop + kBandY) * f.scale) / q) * q;
     ImGui::PushFont(nullptr, 13.0f * cell);
     ImGui::GetWindowDrawList()->AddText(ImVec2(x, y), IM_COL32(240, 138, 30, 255), kTitle);
     ImGui::PopFont();

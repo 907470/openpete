@@ -1390,16 +1390,20 @@ static const knob_desc_t g_builtin[] = {
           "(the GL reference{default_mark:psycross}). The native window displays either." },
 
     { "window", "Window size", "Display", "--window", NULL,
-      "Launch window size (drag the window to resize live). The default is "
-      "the game's drawn viewport at two window rows per VRAM row.",
+      "Launch window size (drag the window to resize live), in window "
+      "coordinates: the desktop's scaled units on a scaled Wayland or macOS "
+      "display, where the game draws at the full pixel density, else pixels. "
+      "The default is the game's drawn viewport at two window rows per VRAM row.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, window_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "the game's drawn viewport at two window rows per VRAM row, widened to a fixed --aspect",
       .help_arg = "WxH|maximized", .help_order = 60,
       .help_text = "window size, or maximized to open the window maximized (default:\n"
           "the game's drawn viewport at 2x, 640x448 on Spyro 1, 640x432 on\n"
-          "Spyro 2 and 3). A size, maximize or fullscreen set in the launcher\n"
-          "replaces this and --fullscreen for the game it starts" },
+          "Spyro 2 and 3), in window coordinates: scaled units on a scaled\n"
+          "Wayland or macOS display, else pixels. A size, maximize or\n"
+          "fullscreen set in the launcher replaces this and --fullscreen for\n"
+          "the game it starts" },
 
     { "background", "Background window", "Display", "--background", "OPENPETE_BACKGROUND",
       "Open the window visible and at its normal size but unfocused, not "

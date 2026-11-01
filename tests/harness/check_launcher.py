@@ -91,6 +91,17 @@ Cases:
             writes licences/Fredoka-OFL.txt identical to
             packaging/licences/fredoka-ofl.txt; packaging/README-dist.md.in
             credits Fredoka.
+  density   The full-density framebuffer on a scaled display: each run is on
+            a headless Wayland compositor (weston, or the command
+            OPENPETE_TEST_WESTON names, which takes weston's arguments)
+            whose one output is 2560x1600 window coordinates at scale 2. A
+            --launcher-window 1280x800 launch on an empty library opens as
+            requested, presents at 2560x1600 pixels, writes the drop
+            screen's manifest at 1280x800 window coordinates, and draws the
+            pixel title in whole cells of round(28 x 2.4 x s x 2 / 13)
+            framebuffer pixels (s the layout scale); a --disc launch of
+            Spyro 1 with --window 640x448 brings the game's window up at
+            640x448 window coordinates and 1280x896 pixels.
   calibrate Not a ctest case: compares the drop screen with a reference
             manifest of the same screen (--calibration PATH: per preset, a
             "drop" list of id/kind/rect items), printing each element's rect
@@ -107,6 +118,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 REFERENCE = os.path.join(ROOT, "tests", "launcher", "layout-reference.json")
@@ -379,6 +392,123 @@ def case_window_fit(a):
     return 1 if bad else 0
 
 
+# The scaled display of the density case: its output in window coordinates and its scale.
+SCALED_OUTPUT = (2560, 1600)
+SCALED_SCALE = 2
+
+
+def launch_scaled(binary, d, tag, args, env=None, timeout=180):
+    """One windowed run on a fresh headless Wayland compositor whose output is SCALED_OUTPUT window
+    coordinates at SCALED_SCALE; returns (rc, log text).
+
+    The compositor's runtime directory is a short temporary one, since a Wayland socket path is at most
+    107 bytes; the run starts once the socket exists."""
+    weston = os.environ.get("OPENPETE_TEST_WESTON") or shutil.which("weston")
+    if not weston:
+        raise Skip("weston not found (OPENPETE_TEST_WESTON names a substitute)")
+    rt = tempfile.mkdtemp(prefix="opwl-")
+    os.chmod(rt, 0o700)
+    sock = "wl-" + tag
+    e = {k: v for k, v in os.environ.items()
+         if k not in ("WAYLAND_DISPLAY", "DISPLAY") and not k.startswith("OPENPETE_")}
+    e["XDG_RUNTIME_DIR"] = rt
+    wlog = open(os.path.join(d, tag + ".weston.log"), "w")
+    comp = subprocess.Popen([weston, "--backend=headless-backend.so", f"--width={SCALED_OUTPUT[0]}",
+                             f"--height={SCALED_OUTPUT[1]}", f"--scale={SCALED_SCALE}",
+                             f"--socket={sock}", "--idle-time=0"],
+                            env=e, stdout=wlog, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 15
+        while not os.path.exists(os.path.join(rt, sock)):
+            if comp.poll() is not None or time.monotonic() > deadline:
+                raise Skip(f"the compositor did not start (log {d}/{tag}.weston.log)")
+            time.sleep(0.05)
+        e.update({"SDL_VIDEODRIVER": "wayland", "WAYLAND_DISPLAY": sock, "OPENPETE_MSGBOX_SKIP": "1",
+                  "XDG_DATA_HOME": os.path.join(d, "data"), "XDG_STATE_HOME": os.path.join(d, "state"),
+                  "XDG_CONFIG_HOME": os.path.join(d, "config")})
+        e.update(env or {})
+        cmd = [binary, "--no-config", "--no-card", "--vibration", "0", "--input-lock", "--mute", "1"] + args
+        log = os.path.join(d, tag + ".log")
+        with open(log, "w") as f:
+            try:
+                rc = subprocess.run(cmd, env=e, stdout=f, stderr=subprocess.STDOUT, timeout=timeout).returncode
+            except subprocess.TimeoutExpired:
+                rc = -9
+        with open(log, errors="replace") as f:
+            return rc, f.read()
+    finally:
+        comp.terminate()
+        try:
+            comp.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            comp.kill()
+        wlog.close()
+        shutil.rmtree(rt, ignore_errors=True)
+
+
+def case_density(a):
+    """The launcher's and the game's framebuffer at full pixel density on a scaled display."""
+    from PIL import Image
+    d = case_dir(a.out, "density")
+    bad, engaged = [], 0
+    k = SCALED_SCALE
+    # The launcher: window coordinates as requested, pixels at the scale, title cells in framebuffer pixels.
+    base = os.path.join(d, "m-launcher")
+    rc, log = launch_scaled(a.binary, d, "launcher", ["--launcher-window", "1280x800"],
+                            {"OPENPETE_LAUNCHER_INPUT": "1500:quit", "OPENPETE_LAUNCHER_TRACE": "1",
+                             "OPENPETE_LAUNCHER_MANIFEST": base, "OPENPETE_LAUNCHER_SHOT": base})
+    fit = re.search(r"window fit: request 1280x800, display (\d+x\d+), usable \d+x\d+: opens (.+) \((\d+)x(\d+)\)",
+                    log)
+    if not fit or fit.group(2) != "as requested":
+        bad.append(f"launcher: fit {fit and fit.groups()}, expected as requested (rc {rc}, log {d}/launcher.log)")
+    sizes = {p[1] for p in trace_presents(log) if p[0] == "launcher"}
+    if (1280 * k, 800 * k) not in sizes:
+        bad.append(f"launcher: no present at {1280 * k}x{800 * k} pixels (presented at {sizes})")
+    m = read_json(base + ".drop.json")
+    shot = base + ".drop.png"
+    title = m and next((it for it in m["items"] if it["id"] == "title"), None)
+    if m is None or m["window"] != [1280, 800] or title is None or not os.path.isfile(shot):
+        bad.append(f"launcher: drop manifest {m and m['window']} or title or shot missing")
+    else:
+        im_size = Image.open(shot).size
+        sc = min(1280 / 640, 800 / 448)
+        cell = max(1, round(28 * 2.4 * sc * k / 13))
+        rect = [v * k for v in title["rect"]]
+        ink, blend, box, outside, runs = title_ink(shot, rect)
+        engaged += ink
+        h = rect[3] - rect[1]
+        print(f"[launcher] launcher: presents {sorted(sizes)}, shot {im_size}, title rect {title['rect']} "
+              f"window coordinates, ink {ink} px, box {box}, {blend} blended, {outside} outside, "
+              f"runs {sorted(runs)} (cell {cell})")
+        if im_size != (1280 * k, 800 * k):
+            bad.append(f"launcher: shot {im_size}")
+        if abs(h - 13 * cell) > 1e-3:
+            bad.append(f"launcher: title {h} framebuffer pixels tall, expected {13 * cell}")
+        if ink == 0 or blend or outside or any(r % cell for r in runs):
+            bad.append(f"launcher: title ink not in whole cells of {cell}: {ink} px, {blend} blended, "
+                       f"{outside} outside, runs {sorted(runs)}")
+    # The game: --window in window coordinates, the framebuffer at the scale.
+    if not os.path.isfile(DISC_CUE):
+        raise Skip(f"{DISC_CUE} missing")
+    rc, log = launch_scaled(a.binary, d, "game", ["--disc", DISC_CUE, "--window", "640x448",
+                                                  "--frame-limit", "30"], {"OPENPETE_WINDOW_STATE": "1"},
+                            timeout=300)
+    st = re.search(r"window state \(bring-up\):.* pixels=(\d+)x(\d+) window=(\d+)x(\d+)", log)
+    got = st and ((int(st.group(3)), int(st.group(4))), (int(st.group(1)), int(st.group(2))))
+    print(f"[launcher] game: window coordinates, pixels {got} (rc {rc})")
+    if got != ((640, 448), (640 * k, 448 * k)):
+        bad.append(f"game: {got}, expected {((640, 448), (640 * k, 448 * k))} (rc {rc}, log {d}/game.log)")
+    else:
+        engaged += 1
+    for b in bad:
+        print("[launcher] FAIL", b)
+    if not bad and engaged == 0:
+        print("[launcher] density: VACUOUS")
+        return 3
+    print(f"[launcher] density: {'FAIL' if bad else 'PASS'} (scale {k}, {engaged} title ink px + game row)")
+    return 1 if bad else 0
+
+
 def case_window_default(a):
     """The launcher window's default size and its fallback order."""
     d = case_dir(a.out, "window-default")
@@ -647,7 +777,7 @@ def case_calibrate(a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("case", choices=["manifest", "layout", "handoff", "window-fit", "window-default",
-                                     "font", "calibrate"])
+                                     "font", "density", "calibrate"])
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build", "linux-release"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--calibration", default=None)
@@ -660,7 +790,7 @@ def main():
     try:
         return {"manifest": case_manifest, "layout": case_layout, "handoff": case_handoff,
                 "window-fit": case_window_fit,
-                "window-default": case_window_default, "font": case_font,
+                "window-default": case_window_default, "font": case_font, "density": case_density,
                 "calibrate": case_calibrate}[a.case](a)
     except Skip as e:
         print(f"[launcher] SKIP: {e}")

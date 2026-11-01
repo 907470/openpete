@@ -12,6 +12,12 @@ The window opens at the game's drawn picture at twice its size: 640x448
 `--window 1920x1080`, and `--window maximized` opens the window maximized.
 Drag the window's edges to resize it at any time.
 
+On Wayland and macOS, a display with scaling above 100% counts the size in
+the desktop's scaled units, and the game draws at the display's full
+resolution: at 200% scaling `--window 1280x800` opens a window of the same
+apparent size as on an unscaled display, drawn at 2560x1600 pixels. On
+Windows and X11 the size counts pixels.
+
 `--background` <!-- id: flag:--background --> opens the window at its
 normal size without taking focus, behind the other windows where the
 platform allows it; clicking the window or its taskbar button focuses it.
@@ -29,7 +35,7 @@ Fullscreen is borderless, at the desktop's resolution.
 
 ## Launcher window
 
-The launcher opens windowed at 1280x800, or at the size `--window` sets when
+The launcher opens windowed at 1280x800 (in the units `--window` counts), or at the size `--window` sets when
 one is set (maximized when that is maximized); a size set for one game in
 `[game.<id>]` does not apply to it. A size that does not fit the display's
 usable area opens maximized when it fits the whole display, and otherwise

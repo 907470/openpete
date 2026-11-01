@@ -4967,9 +4967,15 @@ static int s_background_requested;
 
 /** @brief Return the creation flags of the game window and set the --background activation hints.
  *
- * The flags are SDL_WINDOW_VULKAN and SDL_WINDOW_RESIZABLE, plus
- * SDL_WINDOW_MAXIMIZED and SDL_WINDOW_FULLSCREEN (borderless desktop, no
- * mode set) as @p open asks; --background drops the fullscreen, which it
+ * The flags are SDL_WINDOW_VULKAN, SDL_WINDOW_RESIZABLE and
+ * SDL_WINDOW_HIGH_PIXEL_DENSITY, plus SDL_WINDOW_MAXIMIZED and
+ * SDL_WINDOW_FULLSCREEN (borderless desktop, no mode set) as @p open asks.
+ * The density flag makes the window's pixel size the display's full
+ * resolution on a scaled Wayland or macOS display, where the size the
+ * window is created and resized at counts window coordinates (2560x1600
+ * pixels for 1280x800 at scale 2); on Windows and X11 the two are equal
+ * with or without it. The swapchain, the game's layout and imgui's
+ * framebuffer scale all read the pixel size (SDL_GetWindowSizeInPixels); --background drops the fullscreen, which it
  * wins over. --background
  * turns off activate-on-show and activate-on-raise, so the window maps at
  * its normal size without taking focus. It stays focusable: a not-focusable
@@ -4982,7 +4988,7 @@ static int s_background_requested;
  * @return The window flags. */
 static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts, int open)
 {
-    SDL_WindowFlags f = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+    SDL_WindowFlags f = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (open & OPENPETE_WINDOW_OPEN_MAXIMIZED) f |= SDL_WINDOW_MAXIMIZED;
     if ((open & OPENPETE_WINDOW_OPEN_FULLSCREEN) && opts->background <= 0) f |= SDL_WINDOW_FULLSCREEN;
     if (opts->background > 0) {
@@ -4998,7 +5004,8 @@ static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts, int open)
  * Called at bring-up and again at exit, since a window manager may focus or
  * restack a window on its own after it maps. The line carries the
  * --background request, input focus, focusability, hidden, minimized,
- * maximized and fullscreen flags, the size in pixels and the video driver. It is printed only for a
+ * maximized and fullscreen flags, the size in pixels, the size in window
+ * coordinates and the video driver. It is printed only for a
  * --background window or when OPENPETE_WINDOW_STATE is set to a value other
  * than 0.
  * @param win Window to report; NULL prints nothing.
@@ -5013,18 +5020,19 @@ static void nr_log_window_state(SDL_Window *win, const char *when)
         if (!v || !*v || *v == '0') return;
     }
     const SDL_WindowFlags f = SDL_GetWindowFlags(win);
-    int pw = 0, ph = 0;
+    int pw = 0, ph = 0, ww = 0, wh = 0;
     SDL_GetWindowSizeInPixels(win, &pw, &ph);
+    SDL_GetWindowSize(win, &ww, &wh);
     OPL_INFO_F("native", "window state (%s): background=%d input_focus=%d "
                "focusable=%d hidden=%d minimized=%d maximized=%d fullscreen=%d "
-               "pixels=%dx%d driver=%s",
+               "pixels=%dx%d window=%dx%d driver=%s",
                when, s_background_requested,
                (f & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0,
                (f & SDL_WINDOW_NOT_FOCUSABLE) ? 0 : 1,
                (f & SDL_WINDOW_HIDDEN) ? 1 : 0,
                (f & SDL_WINDOW_MINIMIZED) ? 1 : 0,
                (f & SDL_WINDOW_MAXIMIZED) ? 1 : 0,
-               (f & SDL_WINDOW_FULLSCREEN) ? 1 : 0, pw, ph,
+               (f & SDL_WINDOW_FULLSCREEN) ? 1 : 0, pw, ph, ww, wh,
                SDL_GetCurrentVideoDriver());
 }
 
