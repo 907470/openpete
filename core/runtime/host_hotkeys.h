@@ -65,7 +65,7 @@ bool step_begin_vbl(bool paused, bool *step_one);
  * @param step_one The host loop's pending-step flag, lowered when the step ends. */
 void step_after_vbl(bool stepping, bool *step_one);
 
-/** @brief Apply the single-action hotkeys: screenshot request, interpolation toggle, LOD toggle, glitch mark request and the fullscreen gestures.
+/** @brief Apply the single-action hotkeys: screenshot request, interpolation toggle, LOD toggle and the fullscreen gestures.
  *
  * Each arm reads its own key edge and writes its own subsystem.
  * @param split Whether the thread split is active: the fullscreen toggle

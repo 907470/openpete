@@ -11,7 +11,6 @@
 
 #include "openpete_fb_snapshot.h"
 #include "openpete_fiber.h"
-#include "openpete_glitch_mark.h"
 #include "openpete_host_mouse.h"
 #include "openpete_host_trace.h"
 #include "openpete_ident_audit.h"
@@ -594,8 +593,7 @@ static void present_player_screenshot(void) OP_REQUIRES(sim)
 /** @brief Run the canonical present's device services and captures, shared by both strategies.
  *
  * The terrain-cache and occlusion services on the headless path (each a
- * no-op with a window), the native target captures, a pending glitch mark,
- * the player screenshot, the every-tick identity audit (between the two
+ * no-op with a window), the native target captures, the player screenshot, the every-tick identity audit (between the two
  * dump blocks, so both see the untouched canonical scene; it restores the
  * scene before returning) and the presentation-golden intermediate leg.
  * @param opts The parsed options.
@@ -607,12 +605,6 @@ static void present_canonical_services(const openpete_options_t* opts, int shot_
     openpete_native_tercache_service_headless();
     openpete_native_occl_service_headless();
     openpete_capture_canon_native(opts, shot_key, capture_canon_present);
-    {   /* A pending glitch mark, from the key or from
-         * OPENPETE_GLITCH_MARK_AT. Reads both rings and writes the
-         * file; no display state is touched. */
-        char gpath[1200];
-        openpete_glitch_mark_service(gpath, sizeof gpath);
-    }
     present_player_screenshot();
     if (openpete_ident_audit_armed()) {
         const int pt_was = openpete_present_thread_borrow();

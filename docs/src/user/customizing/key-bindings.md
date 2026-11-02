@@ -155,7 +155,6 @@ own file to use it.
 | Action | Does |
 | --- | --- |
 | `camlock` (++g++) | lock the displayed view while the game keeps running |
-| `glitch_mark` (++f9++)<!-- id: key:host.glitch_mark --> | write the last presents and terrain walks to a file; bound in a development build only |
 | `fillpick` (++p++), `fillpick_preview` (++h++), `fillpick_fill` (++y++), `fillpick_nofill` (++n++), `fillpick_none` (++b++), `fillpick_undo` (++u++) | the fill-tag inspector, a renderer development tool |
 
 ## Shared keys

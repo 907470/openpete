@@ -15,7 +15,6 @@
  */
 
 #include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
-#include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
 #include "openpete_present_thread.h"
 #include "openpete_pace_log.h"
@@ -708,7 +707,6 @@ typedef struct {
     openpete_occl_camera occl_cam;           /* camera this scene was projected from */
     bw_order_t bw;                           /* blended-world order recorded at publish */
     int       freeze_retained;               /* freeze-backdrop production mode at publish */
-    openpete_glitch_walk_t gwalk;            /* census of the walk that built this scene */
     uint32_t  fam_n[16];                     /* triangles per provenance family at publish
                                               * (OPENPETE_PRESENT_TRACE only) */
     int       tc_built;                      /* drawn retained sectors its terrain build
@@ -19379,9 +19377,8 @@ static void pc_trace_print(int kind, int outcome, int ntri, int tc_drawn)
  * the outcome compose_variant recorded (no compose leaves nothing to tally)
  * and counts it under the scene kind (inline, canonical, intermediate), with
  * the full-extent count, the triangle and retained-terrain ranges, the
- * target extent and the outcome and kind flip counts; it also pushes one
- * record to the glitch-mark ring and, under OPENPETE_PRESENT_TRACE, prints
- * one trace line. A frame rendered into a stage image is
+ * target extent and the outcome and kind flip counts; under
+ * OPENPETE_PRESENT_TRACE it also prints one trace line. A frame rendered into a stage image is
  * counted here, when composed; the swapchain can still decline its later
  * submit, which the present thread's own census counts. */
 static void pc_note(void)
@@ -19413,30 +19410,6 @@ static void pc_note(void)
     if (s_pc.last_outcome >= 0 && s_pc.last_outcome != outcome) s_pc.outcome_flips++;
     if (s_pc.last_kind >= 0 && s_pc.last_kind != kind) s_pc.kind_flips++;
     s_pc.last_outcome = outcome; s_pc.last_kind = kind;
-    {   /* The glitch-mark ring. Every field here is one the census above
-         * already read, so the ring costs one struct store per present. */
-        openpete_glitch_present_t g;
-        memset(&g, 0, sizeof g);
-        g.serial = s_pc.total;
-        g.tick = s_ps_slot ? s_ps_slot->frame : s_scene_frame;
-        g.stamp = scene_present_stamp();
-        g.alpha = (float)(s_ps_slot ? s_ps_slot->alpha : 0.0);
-        g.kind = kind;
-        g.paired = s_ps_slot ? s_ps_slot->paired : 0;
-        g.shows = outcome;
-        g.grid_age = openpete_native_occl_grid_age();
-        g.tris = ntri;
-        g.tercache = tc_drawn;
-        const openpete_occl_camera *gc = s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live;
-        g.cam_valid = gc->valid;
-        if (gc->valid) {
-            memcpy(g.cam_pos, gc->pos, sizeof g.cam_pos);
-            memcpy(g.cam_M, gc->M, sizeof g.cam_M);
-        }
-        if (s_ps_slot) g.walk = s_ps_slot->gwalk;
-        else           openpete_glitch_mark_last_walk(&g.walk);
-        openpete_glitch_mark_note_present(&g);
-    }
     if (pc_trace_on()) pc_trace_print(kind, outcome, ntri, tc_drawn);
 }
 
@@ -21181,7 +21154,6 @@ static void slot_capture_inputs(scene_slot_t *sl) {
     sl->occl_cam = s_occl_cam_live;
     sl->bw = s_bw;
     sl->freeze_retained = s_freeze_retained;
-    openpete_glitch_mark_last_walk(&sl->gwalk);
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
     openpete_mods_material_view_capture(&sl->matview);
     pack_fog_capture(&sl->pack_fog);

@@ -2661,16 +2661,6 @@ static const knob_desc_t g_builtin_debug[] = {
       fillpick_prev_get, fillpick_prev_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .key_action = "fillpick_preview" },
 
-    ENVROW_LATCHED("GLITCH_MARK_N", "Debug", "600",
-        "Depth of the glitch-mark rings, in presents and in terrain walks "
-        "(600 is about 1.25 s of presents at 480 Hz); the rings are "
-        "allocated at launch."),
-    ENVROW_LATCHED("GLITCH_MARK_AT", "Debug", "",
-        "Raise the glitch mark automatically instead of on the glitch_mark "
-        "binding: \"<n>\" or \"p<n>\" at present serial n, \"w<n>\" at "
-        "terrain-walk ordinal n (the only spelling a headless run reaches, "
-        "since headless composes no presents), \"<n>ms\" n milliseconds "
-        "after boot. One shot."),
     ENVROW_LATCHED("ACTOR_OWN_KEY", "Debug", "1",
         "Actor faces contest only other mobys' keys (0 = own keys too)."),
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",

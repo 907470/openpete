@@ -178,7 +178,6 @@ add_library(openpete_core STATIC
     ui/freecam.c
 
     renderer/fillpick.c
-    renderer/glitch_mark.c
     runtime/feature_registry.c
     runtime/game_runtime.c
 

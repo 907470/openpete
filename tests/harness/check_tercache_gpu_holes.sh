@@ -45,10 +45,6 @@
 # actually carries terrain). A row that misses either floor proves nothing
 # about the cache and is reported SKIP-ENGAGEMENT, never PASS.
 #
-# The glitch mark's reader is not an instrument for this class: its swing rule
-# keys on the present record's terrain triangle count, which is zero whenever
-# the retained cache serves every sector of the frame.
-#
 # Usage:
 #   tests/harness/check_tercache_gpu_holes.sh [--game SLUG] [--filter=SUBSTR]
 #                                       [--exe PATH] [--build-dir=DIR]

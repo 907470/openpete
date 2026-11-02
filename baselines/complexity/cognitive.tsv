@@ -46,7 +46,6 @@ core/record/bk2_movie.c	bk2_movie_parse_log	42	0
 core/record/bk2_movie.c	bk2_parse_groups	30	0	
 core/record/record.c	rec_lazy_init	32	0	
 core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0	
-core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	
 core/renderer/native_render.c	compose_variant	45	0	
 core/renderer/native_render.c	draw_native_scene	554	0	
@@ -63,7 +62,6 @@ core/renderer/native_render.c	openpete_native_render_init	47	0
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	43	0	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	83	0	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	46	0	
-core/renderer/native_render.c	pc_note	32	0	
 core/renderer/native_render.c	portal_cover_check	142	0	
 core/renderer/native_render.c	pt_dump_maybe	59	0	
 core/renderer/native_render.c	render_frame_common	44	0	

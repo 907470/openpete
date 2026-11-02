@@ -53,7 +53,6 @@
 #include "openpete_run_capture.h"
 #include "openpete_menu.h"
 #include "openpete_devui.h"
-#include "openpete_glitch_mark.h"
 #include "openpete_freecam.h"
 #include "openpete_keymap.h"  /* [keys] - every host hotkey below */
 #include "openpete_osd.h"     /* toast the changes the player makes */
@@ -2717,9 +2716,6 @@ static int run_on_sim(const openpete_options_t* opts) OP_REQUIRES(sim) {
      * sink first makes it close LAST, so the exit lines still land in it. */
     openpete_log_file_open(opts->log_file);
     atexit(log_frame_on_exit);
-    /* The glitch-mark rings, allocated before any other thread exists so the
-     * two note paths never have to test for initialization. */
-    openpete_glitch_mark_init();
     OPL_INFO_F("boot", "starting %s (frame_limit=%d max_seconds=%d headless=%d)",
                opts->display_name, opts->frame_limit, opts->max_runtime_seconds,
                (int)opts->headless);

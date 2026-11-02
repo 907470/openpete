@@ -45,7 +45,6 @@
 #include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
-#include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
 #include "openpete_portal_cover_slot.h" /* feed plane -> published cover slot */
 #include "openpete_psx.h"
@@ -15394,21 +15393,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_trisplit_matdiff[0], s_trisplit_faces[1], s_trisplit_subs[1],
                     s_trisplit_scull[1], s_trisplit_matdiff[1], s_cells4_faces[0],
                     s_cells4_faces[1]);
-    }
-    {   /* The glitch-mark walk ring: the same counters, kept for the last N
-         * walks so a walk that produced the wrong geometry can be read back
-         * after the fact. s_fardbg_occl0 holds s_tocc_culled as it stood at
-         * this walk's entry, so the difference is this walk's own culls. */
-        openpete_glitch_walk_t gw;
-        gw.ord = 0;
-        gw.tick = openpete_frame;
-        gw.sectors = s_walk_sectors;
-        gw.tris = s_tri_n;
-        gw.near_faces = s_dbg_spike;
-        gw.near_tris = s_dbg_spike_tris;
-        gw.occl_culled = (int32_t)(s_tocc_culled - s_fardbg_occl0);
-        gw.sub = s_vanim_sub;
-        openpete_glitch_mark_note_walk(&gw);
     }
     if (tgpu_on) {
         tgpu_migrate_idle_slots();

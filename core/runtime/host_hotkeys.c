@@ -14,7 +14,6 @@
 #include "openpete_fiber.h"
 #include "openpete_fillpick.h"
 #include "openpete_freecam.h"
-#include "openpete_glitch_mark.h"
 #include "openpete_host_mouse.h"
 #include "openpete_interp.h"
 #include "openpete_keymap.h"
@@ -394,12 +393,6 @@ void host_hotkeys_toggles(bool split)
         openpete_osd_notify("host", "menu.lod", 0, "LOD: %s",
                             openpete_no_lod ? "EXTENDED" : "ORIGINAL");
     }
-
-    /* The glitch mark. The edge only raises a flag; the file is
-     * written later, on this loop, because it blocks on IO and the
-     * ring's other writer is whichever thread owns the display. */
-    if (openpete_key_pressed(OPK_GLITCH_MARK))
-        openpete_glitch_mark_request("key");
 
     /* Alt+Enter (either Alt), the `fullscreen` binding, or a window
      * double-click toggles the native window between windowed and

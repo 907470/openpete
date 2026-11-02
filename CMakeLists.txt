@@ -1308,22 +1308,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Glitch-mark rings. One headless bk2 replay with the mark armed on a walk
-    # ordinal, then tools/glitch_mark_read.py over the dump: no SWING (a walk
-    # whose terrain triangle count left and came back), no STAMP-BACK (a
-    # present composing an older terrain build than its predecessor) and no
-    # GAP. Headless composes no presents, so the present ring is empty and the
-    # walk ring is what the row measures. Engagement: the full 600-row ring,
-    # with nothing lost to recycling. Spyro 1 holds the window measured clean.
-    add_test(NAME glitch_mark_spyro-1
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_glitch_mark.sh
-                     --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
-    set_tests_properties(glitch_mark_spyro-1 PROPERTIES
-        LABELS "presentation;terrain"
-        TIMEOUT 900
-        SKIP_RETURN_CODE 64
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
     # Capture survival under contention. Runs the presentation golden's own
     # legs at CORPUS_JOBS=nproc for three rounds and keeps each round's log.
     # A golden divergence (exit 1) is a rendering verdict and passes here;

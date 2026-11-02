@@ -86,7 +86,6 @@
 "key:host.frame_step" = "playing/practice-tools.md#pause-and-tick-step"
 "key:host.freecam" = "playing/practice-tools.md#free-camera"
 "key:host.fullscreen" = "playing/controls.md#openpete-keys"
-"key:host.glitch_mark" = "customizing/key-bindings.md#development-actions"
 "key:host.interp_toggle" = "graphics/smoothness.md#interpolation"
 "key:host.lod_toggle" = "graphics/quality.md#level-of-detail"
 "key:host.look_axis_x" = "customizing/key-bindings.md#openpete-keys-keyshost"

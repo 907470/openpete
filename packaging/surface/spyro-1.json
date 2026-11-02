@@ -4628,40 +4628,6 @@
    "game": "core"
   },
   {
-   "id": "knob:GLITCH_MARK_N",
-   "flag": null,
-   "env": "OPENPETE_GLITCH_MARK_N",
-   "config_key": null,
-   "schema_type": null,
-   "vocab": [],
-   "aliases": [],
-   "type": "string",
-   "section": "Debug",
-   "block": "debug",
-   "build_cond": null,
-   "cli_only": false,
-   "def": "600",
-   "default_note": null,
-   "game": "core"
-  },
-  {
-   "id": "knob:GLITCH_MARK_AT",
-   "flag": null,
-   "env": "OPENPETE_GLITCH_MARK_AT",
-   "config_key": null,
-   "schema_type": null,
-   "vocab": [],
-   "aliases": [],
-   "type": "string",
-   "section": "Debug",
-   "block": "debug",
-   "build_cond": null,
-   "cli_only": false,
-   "def": null,
-   "default_note": null,
-   "game": "core"
-  },
-  {
    "id": "knob:ACTOR_OWN_KEY",
    "flag": null,
    "env": "OPENPETE_ACTOR_OWN_KEY",
@@ -7184,15 +7150,6 @@
    "devbuild": false,
    "def": "none",
    "suggested": "U"
-  },
-  {
-   "id": "key:host.glitch_mark",
-   "domain": "host",
-   "kind": "digital",
-   "dev": true,
-   "devbuild": true,
-   "def": "none",
-   "suggested": "F9"
   },
   {
    "id": "key:pad.cross",
