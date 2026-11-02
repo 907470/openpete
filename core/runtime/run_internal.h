@@ -170,9 +170,14 @@ void host_eager_start(openpete_frame_time_log_t* ftl, const openpete_options_t* 
 /** @brief Log the eager-production totals and the count of sub-tick re-extracts presented, eager and inline. */
 void host_eager_exit_report(void);
 
-/** @brief Log the pacer's slip totals: deadline periods the sim and render clamps discarded.
- * @return true when a slip occurred and the line was logged. */
-bool host_slip_report(void);
+/** @brief Publish the applied render fps and tick scale, with the applied mute, as the values the live-knob getters report.
+ * @param render_fps The applied --render-fps target.
+ * @param tick_scale The applied --tick-scale. */
+void host_live_knobs_publish(int render_fps, double tick_scale);
+
+/** @brief Seed the live runahead request from --runahead, so the loop's first iteration arms it through the live re-arm path.
+ * @param opts The parsed options. */
+void host_runahead_seed(const openpete_options_t* opts);
 
 /** @brief Log the input-log census: slot-0 staging checks, per-slot presence and independence, the synthetic slots, and the first staging mismatch. */
 void host_input_exit_report(void);
@@ -185,13 +190,14 @@ void host_hotkey_latch_init(void);
 
 /** @brief Build the pace log's environment block from the launch options and the seeded pacer state.
  *
- * Reads the live render-fps target and the runahead request as the pacer
- * step seeded them, the interpolation capture gate, the renderer's
- * device, driver and granted present mode, and the input path.
+ * Reads the runahead request as session open seeded it, the interpolation
+ * capture gate, the renderer's device, driver and granted present mode,
+ * and the input path.
  * @param env Receives the block.
  * @param env_bytes Capacity of @p env.
  * @param opts The parsed options.
  * @param refresh_mhz The display refresh in mHz.
+ * @param render_fps The seeded render-fps target.
  * @param tick_scale The launch --tick-scale. */
 void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t* opts,
-                         int refresh_mhz, double tick_scale);
+                         int refresh_mhz, int render_fps, double tick_scale);

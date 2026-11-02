@@ -79,55 +79,6 @@ static void open_refresh_query(host_session_t* S) OP_REQUIRES(sim)
     }
 }
 
-int host_session_open(host_session_t* S, const openpete_options_t* opts) OP_REQUIRES(sim)
-{
-    memset(S, 0, sizeof(*S));
-    S->opts  = opts;
-    S->split = openpete_split_applies(opts);
-    /* Elapsed time for a fiber failure counts from here; a run that boots
-     * re-stamps it once the fiber exists. */
-    S->start = SDL_GetTicks();
-
-    /* The device was created during init - under the thread split that was
-     * main - but inline presents come from this thread; the display's seam
-     * fence needs the ownership stated, not inferred from who created what.
-     * Eager's engage/disengage re-claims at every later handoff. */
-    openpete_native_display_claim();
-
-    /* Last point at which guest RAM still holds exactly what the EXE loader
-     * and the seed blocks put there: the fiber below is what first executes
-     * guest code, and a --state-load-on-frame restore happens later still,
-     * inside the loop. Mod code that may change guarded guest bytes runs on
-     * this thread from here on: the guest-byte guard brackets it here and
-     * nowhere else. */
-    openpete_mods_guard_claim_thread();
-    game_on_boot(&g_game.cpu);
-
-    if (!run_game_fiber_create()) {
-        OPL_ERROR_F("boot", "game fiber stack allocation failed (out of memory?)");
-        S->exit_reason = "setup-fiber";
-        return OPENPETE_EXIT_PANIC;
-    }
-    OPL_INFO_F("boot", "fibers ready: host=%p game=%p",
-               openpete_host_fiber, openpete_game_fiber);
-
-    if (opts->debug_triangle) {
-        openpete_debug_triangle_init();
-        OPL_INFO_F("boot",
-                   "debug-triangle enabled - emitting hardcoded POLY_F3 each frame");
-    }
-
-    /* No scene is opened here: the game draws every other VBL, so the host
-     * loop yields twice per DrawOTag. The DrawOTag thunk starts the scene on
-     * demand, and only iterations where DrawOTag fired end the scene and
-     * swap; empty iterations leave the previous game frame on screen. */
-
-    S->start = SDL_GetTicks();  /* SDL3: SDL_GetTicks is 64-bit */
-    run_deadline_arm(opts, S->start);
-    open_refresh_query(S);
-    return OPENPETE_EXIT_OK;
-}
-
 /** @brief Open --position-log and write its CSV header.
  *
  * The header is one line so two runs diff directly; the loop flushes after
@@ -228,14 +179,14 @@ static int open_bk2(host_session_t* S) OP_REQUIRES(sim)
  * windowed default of the display refresh), else the tick period; whole
  * ns, since it is a measurement reference and not a deadline the pacer
  * steps.
- * @param S The session; the pacer step has set render_fps and tick_scale.
+ * @param S The session; the pacer holds the launch render rate and tick scale.
  * @return 0, or -1 with S->exit_reason set. */
 static int open_frame_time_log(host_session_t* S) OP_REQUIRES(sim)
 {
     const char* path = S->opts->frame_time_log_path;
     if (!path || !*path) return 0;
-    const int64_t period_ns = (S->render_fps > 0)
-        ? (int64_t)((double)OP_NS_PER_SEC / (double)S->render_fps / S->tick_scale)
+    const int64_t period_ns = (S->pacer.launch_fps > 0)
+        ? (int64_t)((double)OP_NS_PER_SEC / (double)S->pacer.launch_fps / S->pacer.launch_scale)
         : (int64_t)g_openpete_tick_period_ns;
     if (openpete_frame_time_log_open(&S->out.ftl, path, period_ns) != 0) {
         S->exit_reason = "setup-frame-time-log";
@@ -255,7 +206,8 @@ static int open_pace_log(host_session_t* S) OP_REQUIRES(sim)
     const char* path = S->opts->pace_log_path;
     if (!path || !*path) return 0;
     char env[2048];
-    host_pace_env_build(env, sizeof(env), S->opts, S->refresh_mhz, S->tick_scale);
+    host_pace_env_build(env, sizeof(env), S->opts, S->refresh_mhz,
+                        host_pacer_render_fps(&S->pacer), S->pacer.launch_scale);
     if (openpete_pace_log_open(path, env) != 0) {
         S->exit_reason = "setup-pace-log";
         return -1;
@@ -263,7 +215,13 @@ static int open_pace_log(host_session_t* S) OP_REQUIRES(sim)
     return 0;
 }
 
-int host_session_open_outputs(host_session_t* S) OP_REQUIRES(sim)
+/** @brief Open the run's outputs after the pacer: logs, bk2 record and replay, profile, latches, menu and eager production.
+ *
+ * On a failure S->exit_reason names the step and every output opened so
+ * far stays recorded in @p S for host_session_close.
+ * @param S The session; the pacer is initialized.
+ * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR. */
+static int open_outputs(host_session_t* S) OP_REQUIRES(sim)
 {
     const openpete_options_t* opts = S->opts;
     if (open_position_log(S) || open_hash_log(S) || open_bk2(S) ||
@@ -285,6 +243,63 @@ int host_session_open_outputs(host_session_t* S) OP_REQUIRES(sim)
     openpete_menu_init(opts, S->refresh_hz);
     host_eager_start(&S->out.ftl, opts);
     return OPENPETE_EXIT_OK;
+}
+
+int host_session_open(host_session_t* S, const openpete_options_t* opts) OP_REQUIRES(sim)
+{
+    memset(S, 0, sizeof(*S));
+    S->opts  = opts;
+    S->split = openpete_split_applies(opts);
+    /* Elapsed time for a fiber failure counts from here; a run that boots
+     * re-stamps it once the fiber exists. */
+    S->start = SDL_GetTicks();
+
+    /* The device was created during init - under the thread split that was
+     * main - but inline presents come from this thread; the display's seam
+     * fence needs the ownership stated, not inferred from who created what.
+     * Eager's engage/disengage re-claims at every later handoff. */
+    openpete_native_display_claim();
+
+    /* Last point at which guest RAM still holds exactly what the EXE loader
+     * and the seed blocks put there: the fiber below is what first executes
+     * guest code, and a --state-load-on-frame restore happens later still,
+     * inside the loop. Mod code that may change guarded guest bytes runs on
+     * this thread from here on: the guest-byte guard brackets it here and
+     * nowhere else. */
+    openpete_mods_guard_claim_thread();
+    game_on_boot(&g_game.cpu);
+
+    if (!run_game_fiber_create()) {
+        OPL_ERROR_F("boot", "game fiber stack allocation failed (out of memory?)");
+        S->exit_reason = "setup-fiber";
+        return OPENPETE_EXIT_PANIC;
+    }
+    OPL_INFO_F("boot", "fibers ready: host=%p game=%p",
+               openpete_host_fiber, openpete_game_fiber);
+
+    if (opts->debug_triangle) {
+        openpete_debug_triangle_init();
+        OPL_INFO_F("boot",
+                   "debug-triangle enabled - emitting hardcoded POLY_F3 each frame");
+    }
+
+    /* No scene is opened here: the game draws every other VBL, so the host
+     * loop yields twice per DrawOTag. The DrawOTag thunk starts the scene on
+     * demand, and only iterations where DrawOTag fired end the scene and
+     * swap; empty iterations leave the previous game frame on screen. */
+
+    S->start = SDL_GetTicks();  /* SDL3: SDL_GetTicks is 64-bit */
+    run_deadline_arm(opts, S->start);
+    open_refresh_query(S);
+    host_pacer_init(&S->pacer, opts, S->refresh_hz);
+    /* The getters report the seeded pacer state from here on. */
+    host_live_knobs_publish(host_pacer_render_fps(&S->pacer),
+                            host_pacer_tick_scale(&S->pacer));
+    host_pacer_start(&S->pacer, opts);
+    /* --rewind: the keyframe ring; its driver runs at the loop's quiescent point. */
+    openpete_rewind_configure(opts->rewind_window);
+    host_runahead_seed(opts);
+    return open_outputs(S);
 }
 
 /* ---- close -------------------------------------------------------------- */
@@ -461,7 +476,7 @@ static void close_pacing_and_censuses(host_session_t* S) OP_REQUIRES(sim)
     if (S->loop_entered) close_pace_reports();
     openpete_pace_log_close();
     host_trace_close_step(HT_S_PACE_LOG_CLOSE);
-    if (S->loop_entered && host_slip_report())
+    if (S->loop_entered && host_pacer_slip_report(&S->pacer))
         host_trace_close_step(HT_S_SLIP_TOTALS);
     openpete_frame_time_log_close(&S->out.ftl);
     host_trace_close_step(HT_S_FTL_CLOSE);

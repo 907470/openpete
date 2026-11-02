@@ -449,8 +449,8 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     }
 
     /* FPS: exact/nearest in the ladder, seeded from the LIVE pacer target -
-     * run.c resolves the --render-fps default (display refresh when unset,
-     * windowed) into s_render_fps before this init, so opts->render_fps may
+     * the host pacer resolves the --render-fps default (display refresh when
+     * unset, windowed) and publishes it before this init, so opts->render_fps may
      * still hold the -1 sentinel. 0 = legacy match-sim -> the 30 entry. */
     {
         int live_fps = openpete_get_render_fps();

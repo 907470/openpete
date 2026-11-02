@@ -3,6 +3,7 @@
 #pragma once
 
 #include "openpete.h"
+#include "host_pacer.h"
 #include "openpete_frame_time_log.h"
 #include "bk2_movie.h"
 #include "openpete_thread_roles.h"
@@ -38,28 +39,25 @@ typedef struct host_session {
     bool        loop_entered;          /* owner: the loop; close runs its output steps only when set */
     int         refresh_hz;            /* owner: open; display refresh, 60 headless or unknown */
     int         refresh_mhz;           /* owner: open; display refresh in mHz, for the pace log */
-    int         render_fps;            /* owner: the pacer step; the launch --render-fps, resolved */
-    double      tick_scale;            /* owner: the pacer step; --tick-scale, 1 when unset */
+    host_pacer_t   pacer;              /* owner: open (init, start); advanced by the loop tail */
     host_bk2_t     bk2;
     host_outputs_t out;
 } host_session_t;
 
-/** @brief Open the run up to the pacer: display claim, mods guard, game boot hook, game fiber, deadline and refresh query.
+/* One iteration of the host loop. Zeroed at the iteration's start. */
+typedef struct {
+    bool unlock_at_entry;   /* owner: the loop top; the unlock verdict from the previous keymap sample */
+    bool sim_due;           /* owner: the loop top, after the live pacer changes; the sim runs this iteration */
+} host_iter_t;
+
+/** @brief Open the run: display claim, mods guard, game boot hook, game fiber, deadline, refresh query, pacer, rewind ring, runahead request and the outputs.
  *
- * Zeroes @p S first. On a failure S->exit_reason names the step.
+ * Zeroes @p S first. On a failure S->exit_reason names the step and every
+ * resource opened so far stays recorded in @p S for host_session_close.
  * @param S The session.
  * @param opts The parsed options.
- * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_PANIC when the game fiber cannot be allocated. */
+ * @return OPENPETE_EXIT_OK, OPENPETE_EXIT_PANIC when the game fiber cannot be allocated, or OPENPETE_EXIT_SETUP_ERROR when an output cannot be opened. */
 int host_session_open(host_session_t* S, const openpete_options_t* opts) OP_REQUIRES(sim);
-
-/** @brief Open the run's outputs after the pacer: logs, bk2 record and replay, profile, latches, menu and eager production.
- *
- * Runs after the pacer step has set S->render_fps and S->tick_scale. On a
- * failure S->exit_reason names the step and every output opened so far
- * stays recorded in @p S for host_session_close.
- * @param S The session.
- * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR. */
-int host_session_open_outputs(host_session_t* S) OP_REQUIRES(sim);
 
 /** @brief Tear the run down in order and return its exit code.
  *

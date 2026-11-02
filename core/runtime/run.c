@@ -2465,122 +2465,6 @@ bool run_game_fiber_create(void) {
     return openpete_game_fiber != NULL;
 }
 
-/* Live render-fps pacer state (in-game settings menu). openpete_set_render_fps
- * updates s_render_fps and flags a re-anchor; the host loop recomputes the
- * period (it needs the loop's tick_scale) and resets the deadlines to avoid a
- * catch-up burst. Display-only: pacing, never gameplay. Initialised from
- * the RESOLVED launch target just before the loop (an unset --render-fps
- * defaults to the display refresh rate, windowed; 0, headless). */
-static int         s_render_fps       = 0;
-static op_period_t s_render_period    = { 0, 0, 1 };
-static int         s_render_fps_dirty = 0;
-
-/** @brief Return 1 when a headless run paces like a windowed one: OPENPETE_FORCE_PACING is set or the virtual clock is on.
- *
- * A headless run otherwise runs unlocked (fast-forward). The variable is
- * read once and logged; the result is readable before the main loop starts,
- * because the loop seeds its previous-iteration unlock state from it before
- * the first iteration, else the boot VBL would be recorded as paced against
- * a grid nothing slept to. The virtual clock (--record-cfr) advances only
- * inside the pacer's op_sleep_until, which the unlocked branch never calls:
- * unlocked, every capture would carry the same timestamp and one CFR
- * ordinal. Pacing on the virtual clock never blocks, so it costs no speed. */
-static int pace_force_pacing(void)
-{
-    static int s_init = 0, s_on = 0;
-    if (!s_init) {
-        const char* v = getenv("OPENPETE_FORCE_PACING");
-        s_on = (v && *v && *v != '0') ? 1 : 0;
-        s_init = 1;
-        OPL_INFO_F("pacer", "OPENPETE_FORCE_PACING=%d (env=%s)",
-                   s_on, v ? v : "<unset>");
-    }
-    return s_on || op_virtual_clock_active();
-}
-
-/** @brief Return the iteration's unlock verdict, refused while the virtual clock (--record-cfr) is on.
- *
- * The virtual clock advances only inside the pacer's op_sleep_until, which
- * the unlocked branch never calls: an unlocked tick would run with a frozen
- * clock, its capture would repeat the previous tag and the recording would
- * drop it as an ordinal already written. Under the virtual clock the paced
- * branch never blocks, so turbo, --unlock-frames and the skip-to-level
- * fast-forward are already at full host speed; refusing them costs no speed.
- * The first refusal is logged once.
- * @param want The unlock the iteration asks for (turbo, --unlock-frames, skip, headless).
- * @return want, or false when the virtual clock is on. */
-static bool pace_unlock_verdict(bool want)
-{
-    static int s_logged = 0;
-    if (!want || !op_virtual_clock_active()) return want;
-    if (!s_logged) {
-        s_logged = 1;
-        OPL_INFO_F("pacer", "--record-cfr: unlock request (turbo, --unlock-frames or "
-                            "skip-to-level) ignored; every tick advances the capture clock");
-    }
-    return false;
-}
-
-/** @brief Read OPENPETE_PACE_FLIP_LOG once: whether the pacer's idle wait measures the display flip.
- *
- * When on, pace_sleep_until spends the sleep before the next deadline in a
- * bounded vkWaitForPresentKHR on the present just queued, which returns at
- * the flip, a timestamp the engine cannot otherwise observe. The wait runs
- * on the presenting thread only, since the swapchain is externally
- * synchronized. It stays a measurement and off by default: a driver whose
- * wait misbehaves would stall the sim clock.
- * @return 1 when the variable is set to a value not starting with '0'. */
-static int pace_flip_log_on(void)
-{
-    static int on = -1;
-    if (on < 0) {
-        const char *e = getenv("OPENPETE_PACE_FLIP_LOG");
-        on = (e && *e && *e != '0');
-    }
-    return on;
-}
-
-/** @brief Sleep to a deadline and record the requested and actual wake instants.
- *
- * Recording both instants splits a late tick into an OS wake that returned
- * late and work after waking that ran slow. With pace_flip_log_on() and no
- * eager production, the first part of the sleep is a bounded wait for the
- * last queued present's flip (logged through openpete_pace_flip); the wait
- * ends no later than the sim deadline minus the pacer slack, and
- * op_sleep_until then runs the remainder, so the pacing is unchanged.
- * @param deadline_ns The instant to wake at.
- * @param sim_deadline_ns The next sim tick's deadline, or 0 for none; bounds
- *        the flip wait. */
-static void pace_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns)
-{
-    const op_time_t req = op_now();
-    /* Under eager production the presenting thread is the present thread,
-     * which does its own flip logging; a wait from here would race it. */
-    if (pace_flip_log_on() && !s_eager.active) {
-        /* Never wait into the pacer's slack ahead of a SIM deadline. The sleep
-         * is not idle right up to it: op_sleep_until parks until the deadline
-         * minus slack and the loop uses what remains to be ready on time, so
-         * a wait into that window makes ticks late.
-         *
-         * Bounding by the RENDER target instead would disable the wait
-         * wherever the slack exceeds a present slot, which at --render-fps 480
-         * (2.08 ms slots, 2.5 ms slack) is always. Only the tick's own margin
-         * is protected. */
-        const op_time_t guard = sim_deadline_ns
-            ? sim_deadline_ns - op_pacer_slack_ns() : deadline_ns;
-        const op_time_t until = (guard < deadline_ns) ? guard : deadline_ns;
-        const op_time_t budget = until - op_now();
-        if (budget > 0) {
-            uint64_t id = 0, waited = 0;
-            if (openpete_native_render_present_wait((uint64_t)budget, &id,
-                                                    &waited) == 1)
-                openpete_pace_flip(id, (int64_t)op_now(), (int64_t)waited);
-        }
-    }
-    op_sleep_until(deadline_ns);
-    openpete_pace_wake(req, deadline_ns, op_now());
-}
-
 /* One PRESENT record, carrying the block time the present path imposed on
  * this thread since the previous present. Read-and-clear, so each present
  * owns its own waits rather than a running total: under the thread split the
@@ -2667,40 +2551,11 @@ static void pace_record_present(uint8_t kind)
                                  openpete_pace_last_alpha_paired());
 }
 
-/* Slip ledger for the pacer's deadline clamps below. A clamp fires when the
- * loop has fallen more than slip_threshold_ns behind and snaps the deadline
- * forward by whole periods instead of firing catch-up iterations back to
- * back. That is the correct behaviour - a stall must never be repaid as a
- * burst - but it DISCARDS real time, so it must never be silent.
- *
- * The two kinds are not equally serious. A render slip is display-only: a
- * present was late, nothing about the game moved. A SIM slip means wall-clock
- * time passed that the game clock did not account for, so RTA time and tick
- * time have diverged by that much. Sim slips are therefore warned per event;
- * render slips are counted and reported once, because at high --render-fps a
- * struggling host can produce them continuously. */
-static uint64_t s_sim_slip_events    = 0;
-static uint64_t s_sim_slip_periods   = 0;
-static uint64_t s_render_slip_events = 0;
-static uint64_t s_render_slip_periods = 0;
-
-bool host_slip_report(void) {
-    if (!s_sim_slip_events && !s_render_slip_events) return false;
-    OPL_INFO_F("pacer",
-               "slip totals: sim %llu event(s) / %llu period(s) discarded; "
-               "render %llu event(s) / %llu period(s)",
-               (unsigned long long)s_sim_slip_events,
-               (unsigned long long)s_sim_slip_periods,
-               (unsigned long long)s_render_slip_events,
-               (unsigned long long)s_render_slip_periods);
-    return true;
-}
-
 /* Live-knob command queue. The dev overlay and the settings menu set the
  * render fps, tick scale, runahead depth, rewind window and mute from the
- * presenting or pump thread; the values they drive (s_render_fps,
- * s_tick_scale, s_runahead_req, the rewind keyframe ring, s_mute and their
- * dirty flags) belong to the host loop. A setter records its
+ * presenting or pump thread; the values they drive (the pacer's render fps
+ * and tick scale, s_runahead_req, the rewind keyframe ring, s_mute and
+ * their dirty flags) belong to the host loop. A setter records its
  * request in s_knob_cmds under s_knob_mx and raises s_knob_pending; the host
  * loop drains the requests at the top of its iteration (live_knob_drain), its
  * quiescent point, so every write of those values and every mute gain change
@@ -2733,14 +2588,11 @@ void openpete_set_render_fps(int fps) {
     SDL_SetAtomicInt(&s_knob_pending, 1);
 }
 
-/* Live tick-scale (dev overlay). Same dirty-flag shape as render-fps: the
- * host loop re-derives every scaled period (sim, render, tick, slip) at its
+/* Live tick-scale (dev overlay). Queued like render-fps: the host loop's
+ * pacer re-derives every scaled period (sim, render, tick, slip) at its
  * top-of-iteration quiescent point and re-anchors the deadlines. Pacing
  * only - the sim executes identical ticks, just on a stretched wall clock
  * (headless/unlock ignores the deadlines entirely). */
-static double s_tick_scale       = 1.0;
-static int    s_tick_scale_dirty = 0;
-
 void openpete_set_tick_scale(double scale) {
     if (scale < 0.05) scale = 0.05;
     if (scale > 8.0)  scale = 8.0;
@@ -2792,8 +2644,15 @@ static int s_runahead_req   = 0;
 static int s_runahead_dirty = 0;
 static SDL_AtomicInt s_runahead_live;   /* written by the host loop, read anywhere */
 
+void host_runahead_seed(const openpete_options_t* opts)
+{
+    s_runahead_req   = (opts->runahead > 0) ? opts->runahead : 0;
+    SDL_SetAtomicInt(&s_runahead_live, 0);
+    s_runahead_dirty = (s_runahead_req > 0);
+}
+
 void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t* opts,
-                         int refresh_mhz, double tick_scale)
+                         int refresh_mhz, int render_fps, double tick_scale)
 {
     openpete_pace_env_build(env, env_bytes,
                             openpete_native_render_gpu_name(),
@@ -2801,7 +2660,7 @@ void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t
                             refresh_mhz,
                             openpete_native_render_present_mode(),
                             opts->fullscreen ? 1 : 0,
-                            s_render_fps,
+                            render_fps,
                             g_openpete_interp_enabled ? 1 : 0,
                             s_runahead_req,
                             tick_scale,
@@ -2951,24 +2810,24 @@ void openpete_set_mute(int on) {
     SDL_SetAtomicInt(&s_knob_pending, 1);
 }
 
-/** @brief Publish the host loop's applied render fps, tick scale and mute as the values the getters report. */
-static void live_knob_publish_shown(void)
+void host_live_knobs_publish(int render_fps, double tick_scale)
 {
     knob_lock();
-    s_knob_shown.fps = s_render_fps;
-    s_knob_shown.scale = s_tick_scale;
+    s_knob_shown.fps = render_fps;
+    s_knob_shown.scale = tick_scale;
     s_knob_shown.mute = s_mute;
     knob_unlock();
 }
 
 /** @brief Apply the queued live-knob requests on the host loop's thread, at its quiescent point.
  *
- * A changed render fps or tick scale raises the dirty flag the loop's
- * re-derivation reads; a changed runahead depth raises the re-arm flag; a
- * rewind window request resizes the keyframe ring here, off every capture; a
- * mute request sets the baseline and applies the gains here. Requests that
- * match the applied value change nothing. */
-static void live_knob_drain(void)
+ * A render fps or tick scale request goes to the pacer, which applies a
+ * change at host_pacer_apply_live; a changed runahead depth raises the
+ * re-arm flag; a rewind window request resizes the keyframe ring here, off
+ * every capture; a mute request sets the baseline and applies the gains
+ * here. Requests that match the applied value change nothing.
+ * @param P The run's pacer. */
+static void live_knob_drain(host_pacer_t* P)
 {
     if (!SDL_GetAtomicInt(&s_knob_pending)) return;
     knob_lock();
@@ -2976,8 +2835,8 @@ static void live_knob_drain(void)
     memset(&s_knob_cmds, 0, sizeof s_knob_cmds);
     SDL_SetAtomicInt(&s_knob_pending, 0);
     knob_unlock();
-    if (c.fps_set && c.fps != s_render_fps) { s_render_fps = c.fps; s_render_fps_dirty = 1; }
-    if (c.scale_set && c.scale != s_tick_scale) { s_tick_scale = c.scale; s_tick_scale_dirty = 1; }
+    if (c.fps_set) host_pacer_request_fps(P, c.fps);
+    if (c.scale_set) host_pacer_request_scale(P, c.scale);
     if (c.ra_set && c.ra != s_runahead_req) { s_runahead_req = c.ra; s_runahead_dirty = 1; }
     if (c.rw_set) openpete_rewind_configure(c.rw);
     if (c.mute_set) { s_mute = c.mute; apply_mute_gains(); }
@@ -3571,7 +3430,7 @@ static int run_host_init(const openpete_options_t* opts) {
     /* Boot: written before the host loop starts, so no other thread reads it. */
     s_mute = opts->mute;
     apply_mute_gains();
-    live_knob_publish_shown();
+    host_live_knobs_publish(0, 1.0);   /* no pacer yet: the unseeded defaults */
 
     /* Host-backed memory card: apply CLI/env config before the game's
      * MemCardInit thunk fires (during the game's Initialize()). */
@@ -4235,6 +4094,28 @@ static bool frame_limit_due(const openpete_options_t* opts) OP_REQUIRES(sim) {
     return false;
 }
 
+/** @brief Return the iteration's unlock verdict: headless without forced pacing, the skip-to-level fast-forward, turbo held, or a scheduled --unlock-frames range, refused under the virtual clock.
+ *
+ * Called twice per iteration: at the loop top as the peek that gates
+ * sim_due, on the previous keymap sample, and at the tail as the verdict
+ * the pacer and the swap interval follow. Turbo drives the loop's own
+ * pacing and the swap-interval bypass only: the VBL count is yield-driven,
+ * so fast-forward changes wall-clock speed and never game state.
+ * OPENPETE_FORCE_PACING keeps the pacer active under --headless.
+ * @param S The session.
+ * @return true when the iteration runs unpaced. */
+static bool host_unlock_wanted(const host_session_t* S)
+{
+    const openpete_options_t* opts = S->opts;
+    const bool force_pacing = host_pacer_force_pacing();
+    return host_pacer_unlock_verdict(
+        (opts->headless && !force_pacing) ||
+        openpete_skip_present_until_level ||
+        openpete_key_down(OPK_TURBO) ||
+        (opts->unlock_ranges_count > 0 &&
+         unlock_frame_in_ranges(opts, openpete_feed_key_now())));
+}
+
 /** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
  *
  * Split from run_host_init because SDL brings its video, gamepad and haptic
@@ -4258,221 +4139,12 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
-    /* Resolve the launch --render-fps target. -1 = unset: windowed runs
-     * default to the display's refresh rate - the wall-clock dual-pacer + transform-interp
-     * path - while headless keeps the legacy match-sim pacer (0): those runs
-     * are unpaced (unlock) and the oracle/determinism harnesses expect one
-     * present per tick. An explicit --render-fps 0 selects the legacy pacer.
-     * opts stays const; everything below reads the resolved local, and the
-     * live pacer state (s_render_fps) is seeded from it. */
-    const int render_fps = (opts->render_fps >= 0) ? opts->render_fps
-                         : opts->headless          ? 0
-                                                   : S.refresh_hz;
-    if (opts->render_fps < 0 && !opts->headless)
-        OPL_INFO_F("pacer", "--render-fps unset: defaulting to display refresh %d Hz",
-                   render_fps);
-
-    /* Pacer state: a single time source (op_now / op_sleep_until) serves
-     * both the legacy --render-fps=0 path and the --render-fps>0 wall-clock
-     * pacer. Both branches step phase-locked deadlines in integer ns and
-     * slip-clamp identically.
-     *
-     * Period choices:
-     *   sim_period    = the PSX 240p VBL, exactly 37609/2250000 s
-     *                   (59.8261054... Hz - see OP_VBL_* in openpete_time.h)
-     *   render_period = 1/render_fps when --render-fps>0, else
-     *                   sim_period (one present per sim tick).
-     *
-     * Both are op_period_t, so the fractional nanosecond each period carries
-     * (a VBL is 16715111 + 1/9 ns) accrues on the deadline instead of being
-     * truncated away every step. Deadlines land on floor(n * period) for all
-     * n: under a nanosecond off the true grid, and never drifting further.
-     *
-     * Invariant: the inner sim block yields the game fiber at most once
-     * per outer iteration. Multi-vbl catch-up would race-complete the
-     * `pre - post < 2` GPU-pacing loops in draw.c and the 210-vbl Sony /
-     * Universal logo waits in initialization.c. The slip-clamp resets
-     * the deadline forward without firing extra yields. */
-    /* --tick-scale F slows/speeds the WHOLE engine by dividing both the sim and
-     * the render period by F: sim_rate = F*29.913 Hz, present_rate = F*render_fps,
-     * so the count of sub-tick presents PER tick (present_rate/sim_rate) is
-     * invariant - a slow-motion view of the SAME interpolation. Pacing only: the
-     * sim still executes identical ticks (the interp alpha is wall-clock-derived
-     * from the actual tick timestamps, so it auto-stretches), and the deadlines
-     * are reset to now under unlock/headless, so this is inert in the oracle.
-     *
-     * F == 1 keeps the exact rational VBL; any other F is a debug slow-mo that
-     * scales through a double and lands on a whole-ns period, so it leaves the
-     * exact grid by design. */
-    double tick_scale = (opts->tick_scale > 0.0) ? opts->tick_scale : 1.0;
-    op_period_t sim_period = op_scaled_vbl_period(tick_scale);
-    op_time_t   sim_period_ns = op_period_ns(sim_period);
-    const op_period_t render_period = (render_fps > 0)
-        ? op_period_from_ns((op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)render_fps)
-                                        / tick_scale))
-        : sim_period;   /* sim_period is already tick-scaled */
-    /* Seed the live pacer state (openpete_set_render_fps /
-     * openpete_set_tick_scale mutate it; the loop reads s_render_fps /
-     * s_render_period / s_tick_scale instead of the values above). */
-    s_render_fps       = render_fps;
-    s_render_period    = render_period;
-    s_render_fps_dirty = 0;
-    s_tick_scale       = tick_scale;
-    s_tick_scale_dirty = 0;
-    PsyX_SPUFeed_SetNominalRate(tick_scale);
-    /* One WALL-time tick for every sub-tick alpha denominator (ring +
-     * per-object phase lerps). Must stretch with --tick-scale: interp alphas
-     * are wall-clock-derived, so an unscaled (NTSC) cap makes every sweep run
-     * 1/tick_scale× too fast and pin at the clamp for the rest of the tick.
-     * Rounded to whole ns: it is an alpha denominator, not a deadline, so the
-     * carried ninth would be noise below the resolution of any alpha. */
-    op_period_t tick_period = op_period_mul(sim_period, OP_TICK_VBLS);
-    g_openpete_tick_period_ns = op_period_ns(tick_period);
-    op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
-
-    /* --record-cfr: offline capture. `capture_mult` presents are produced per
-     * sim tick, on a clock the pacer advances itself, so the present schedule
-     * is exact no matter how long a frame takes to render - a software
-     * rasterizer and a fast GPU emit the identical frame sequence. That is what
-     * makes two captures at different rates cover the same span of game time.
-     *
-     * The render period is derived from the tick period rather than from an
-     * integer --render-fps: 60 Hz against a 59.826 Hz VBL is a 2.0058 ratio,
-     * which hands some ticks two intermediates and others three. Dividing the
-     * tick period gives exactly `capture_mult` evenly spaced presents per tick.
-     * op_period_div keeps that division exact - a tick split three ways is
-     * 11143407 + 11/27 ns, which no whole-ns period can express - so the
-     * capture grid stays even however long the capture runs.
-     *
-     * A multiplier of 1 wants no sub-tick presents at all, which is precisely
-     * the legacy match-sim pacer (s_render_fps == 0). */
-    const int capture_mult = (opts->record_cfr > 0.0)
-        ? (int)(opts->record_cfr / OP_TICK_HZ + 0.5) : 0;
-    if (capture_mult > 0) {
-        if (capture_mult > 1) {
-            s_render_fps    = (int)(opts->record_cfr + 0.5);  /* nominal, for logs + the "paced" test */
-            s_render_period = op_period_div(tick_period, capture_mult);
-        } else {
-            s_render_fps    = 0;
-            s_render_period = sim_period;
-        }
-        op_virtual_clock_enable(OP_NS_PER_SEC);
-        OPL_INFO_F("pacer",
-                   "--record-cfr %.5f: offline capture clock, %d present(s) per tick "
-                   "(%.4f ms), sim %.4f ms",
-                   opts->record_cfr, capture_mult,
-                   (double)op_period_ns(s_render_period) / 1e6,
-                   (double)sim_period_ns / 1e6);
-    }
-    live_knob_publish_shown();   /* the getters report the seeded pacer state */
-    S.render_fps = render_fps;   /* the frame-time log's target period */
-    S.tick_scale = tick_scale;
-
-    /* Was a deadline in force for the iteration that just ended? The loop's
-     * own unlock verdict is not written until the tail, so iteration 1 has
-     * nothing to read - and an unlocked headless run would record its first
-     * VBL as paced against the pre-boot anchor, printing a paced census for a
-     * run that never paced anything and making the refuse-at-zero guard
-     * unreachable.
-     *
-     * A separate variable rather than seeding `openpete_unlock_fps` itself:
-     * that global gates render paths mid-iteration, and an instrument that
-     * changes iteration 1's rendering to measure iteration 1 is not an
-     * instrument. */
-    int pace_unlock_prev = (opts->headless && !pace_force_pacing()) ? 1 : 0;
-
-    op_time_t     start_ns = op_now();
-    /* Set when a clamp discards wall time at the loop tail; consumed by the
-     * NEXT VBL record, which is the first tick to run against the re-anchored
-     * grid - the slip belongs to the tick that inherited it. */
-    int           pace_slip_pending = 0;
-    /* Set when the deadline chain is deliberately re-anchored (a live
-     * --render-fps / --tick-scale change, an unlock exit). The next VBL's
-     * sleep targeted the OLD grid, so subtracting the NEW anchor would
-     * manufacture a near-zero phase error - flattering, and untrue. That VBL
-     * records no deadline instead. */
-    int           pace_regrid_pending = 0;
-    op_deadline_t next_sim, next_render;
-    op_deadline_anchor(&next_sim, start_ns);
-    op_deadline_anchor(&next_render, start_ns);
-    if (s_render_fps > 0) {
-        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.6f ms (%.6f Hz) render=%.6f ms (render-fps=%d, --tick-scale=%.3f)",
-                   (double)sim_period_ns / 1e6, op_period_hz(sim_period),
-                   (double)op_period_ns(s_render_period) / 1e6,
-                   s_render_fps, tick_scale);
-    } else {
-        OPL_INFO_F("pacer", "legacy pacer: sim=%.6f ms NTSC (%.6f Hz VBL, --render-fps=0, --tick-scale=%.3f)",
-                   (double)sim_period_ns / 1e6, op_period_hz(sim_period), tick_scale);
-    }
-
-    /* Bring up the interpolation snapshot ring. Capture is enabled only
-     * when the render rate exceeds the sim rate: at parity there is nothing
-     * to interpolate between, and the per-tick memcpy is pure overhead.
-     * Safe to run unconditionally: capture is a read-only PSX-RAM copy on
-     * the host fiber while the game fiber is yielded inside VSync(0). */
-    if (openpete_interp_init() == 0) {
-        const op_time_t render_period_ns = op_period_ns(s_render_period);
-        /* The cadence counters judge a display hole against this. */
-        openpete_pace_set_slot_ns((int64_t)render_period_ns);
-        const op_time_t sim_hz_x1000 = (OP_NS_PER_SEC * 1000) / sim_period_ns;
-        const op_time_t render_hz_x1000 = (render_period_ns > 0)
-            ? (OP_NS_PER_SEC * 1000) / render_period_ns
-            : 0;
-        if (s_render_fps > 0 && render_hz_x1000 > sim_hz_x1000) {
-            openpete_interp_set_enabled(1);
-            OPL_INFO_F("interp",
-                       "capture enabled (render-fps=%d > sim ~30 Hz)",
-                       s_render_fps);
-        }
-        /* Offline capture at 2 presents per tick puts the render period exactly
-         * ON the VBL period, which the ">" above reads as parity. It isn't: the
-         * game draws every OTHER VBL, so one of those two presents is a sub-tick
-         * frame and interpolation has real work to do. */
-        if (capture_mult >= 2) {
-            openpete_interp_set_enabled(1);
-            OPL_INFO_F("interp", "capture enabled (offline capture, %d present(s) per tick)",
-                       capture_mult);
-        }
-        /* Presentation-golden intermediate corpus: capture the ring headless so
-         * --screenshot-intermediate-on-frame can re-extract a deterministic
-         * alpha=0.5 sub-tick frame. DETERMINISTIC stamps (fixed grid, one tick
-         * apart) make the forced present target land alpha exactly at 0.5 with no
-         * host-pacing dependency. The live sub-tick present stays headless-blocked
-         * and the canonical lag leg is gated !headless (below), so enabling capture
-         * here does NOT alter the canonical dump - it only feeds the explicit
-         * intermediate capture. */
-        if (opts->screenshot_intermediate_count > 0) {
-            openpete_interp_set_enabled(1);
-            openpete_interp_set_deterministic(1, g_openpete_tick_period_ns);
-            OPL_INFO_F("interp",
-                       "deterministic capture enabled (%d intermediate screenshot target(s), tick=%lld ns)",
-                       opts->screenshot_intermediate_count, (long long)g_openpete_tick_period_ns);
-        }
-    }
-
-    /* --rewind: allocate the keyframe ring. Driver lives
-     * at the quiescent point below (Backspace / --rewind-hold). */
-    openpete_rewind_configure(opts->rewind_window);
-
-    /* --runahead: seeded into the live-depth request; the in-loop apply
-     * block arms it on the first iteration - the identical path a live
+    /* --runahead: session open seeded the live-depth request; the in-loop
+     * apply block arms it on the first iteration - the identical path a live
      * dev-overlay change takes (capability gate + snapshot alloc there). */
     int runahead_n = 0;
     openpete_state_mem_t* ra_snap = NULL;
-    s_runahead_req   = (opts->runahead > 0) ? opts->runahead : 0;
-    SDL_SetAtomicInt(&s_runahead_live, 0);
-    s_runahead_dirty = (s_runahead_req > 0);
-
-    /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
-     * blocks on the ticker's condvar until the atomic vbl counter advances,
-     * naturally pacing the host loop at ~60 Hz. The previous fractional
-     * SDL_Delay accumulator is gone - pacing is implicit in "wait for
-     * tick", which means a single VSync(0) call (loading-screen flyby)
-     * resumes after one tick = 60 fps and a wait-loop body (gameplay)
-     * resumes after two ticks = 30 fps without per-game predicates. */
-
-    rc = host_session_open_outputs(&S);
-    if (rc != OPENPETE_EXIT_OK) return host_session_close(&S, rc);
+    host_pacer_t* const P = &S.pacer;
 
     /* Input pump rate: every host iteration. g_PsyX_Pad_InputOverride is
      * set per host iteration and the input update is what propagates it into
@@ -4510,60 +4182,27 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         SDL_AddAtomicInt(&g_sim_heartbeat, 1);
         host_trace_iter_begin();
         /* Top-of-loop unlock peek used *only* to gate sim_due under
-         * --render-fps>0. The authoritative `unlock_fps` write
+         * --render-fps>0. The authoritative unlock write
          * (openpete_unlock_fps + g_skipSwapInterval) still happens at the
          * bottom of the loop, AFTER PsyX_UpdateInput has refreshed SDL's
          * keyboard cache and AFTER the present has consumed the previous
-         * iter's swap-interval flag - preserving the original semantics
-         * the GL present path was tested under. */
-        /* The same cached gate the bottom of the loop reads, so the
-         * sim-due predicate follows the pacer when measurement mode is on. */
-        bool force_pacing = pace_force_pacing() != 0;
-        /* The turbo read here is the PREVIOUS iteration's keymap sample -
-         * this peek runs before the poll below. That is what a peek is for;
-         * the authoritative unlock write at the bottom of the loop re-reads
-         * after the poll, so a press costs at most one iteration of lag. */
-        bool unlock_now = pace_unlock_verdict(
-                          (opts->headless && !force_pacing) ||
-                          openpete_skip_present_until_level ||
-                          openpete_key_down(OPK_TURBO) ||
-                          (opts->unlock_ranges_count > 0 &&
-                           unlock_frame_in_ranges(opts, openpete_feed_key_now())));
+         * iteration's swap-interval flag. The turbo read here is the
+         * PREVIOUS iteration's keymap sample, since this peek runs before the
+         * poll below; a press costs at most one iteration of lag. */
+        host_iter_t it = {0};
+        it.unlock_at_entry = host_unlock_wanted(&S);
 
         /* sim_due gates the once-per-yield block that does bk2 override
          * stamping, the co_switch into the game fiber, post-yield
          * accounting (position log, bk2 record, present, ram dump, exit
-         * checks). With --render-fps=0 the gate is always true and the loop
-         * reduces to the historical "one yield per outer iter" shape; the
-         * condvar pacer below preserves byte-identical behavior. With
-         * --render-fps>0 the wall-clock pacer drives the outer loop at
-         * render cadence, and sim_due fires when the sim deadline has
-         * elapsed - or unconditionally under unlock_now so fast-forward
-         * actually fast-forwards. */
-        /* Live render-fps change (openpete_set_render_fps, e.g. the in-game
-         * menu): recompute the period with THIS loop's tick_scale and re-anchor
-         * the deadlines to now so a lower->higher switch doesn't fire a burst of
-         * catch-up presents. Also keep interp capture in sync (enabled only when
-         * the render rate exceeds the sim rate), matching the startup gate. */
-        /* Live tick-scale change: re-derive every scaled period, then fall
-         * through the render-fps dirty path below for the render period +
-         * deadline re-anchor + interp-gate re-sync. */
+         * checks). Under the legacy pacer it is always true and the loop
+         * is "one yield per outer iteration"; under the dual pacer the loop
+         * runs at render cadence and sim_due fires when the sim deadline
+         * has elapsed, or unconditionally under unlock so fast-forward
+         * actually fast-forwards. Live tick-scale and render-fps changes
+         * are applied first, below the runahead re-arm. */
         tick_scale_schedule_poll();
-        live_knob_drain();
-        if (s_tick_scale_dirty) {
-            s_tick_scale_dirty = 0;
-            tick_scale = s_tick_scale;
-            sim_period    = op_scaled_vbl_period(tick_scale);
-            sim_period_ns = op_period_ns(sim_period);
-            tick_period   = op_period_mul(sim_period, OP_TICK_VBLS);
-            g_openpete_tick_period_ns = op_period_ns(tick_period);
-            slip_threshold_ns = 4 * sim_period_ns;
-            s_render_fps_dirty = 1;
-            PsyX_SPUFeed_SetNominalRate(tick_scale);
-            OPL_INFO_F("pacer", "tick-scale -> %.3f (sim %.6f ms, %.6f Hz)",
-                       tick_scale, (double)sim_period_ns / 1e6,
-                       op_period_hz(sim_period));
-        }
+        live_knob_drain(P);
         /* A modset toggle changes what the timeline means: rewind history
          * recorded under the old set must not replay into the new one, and
          * a held runahead snapshot may predate a freshly enabled mod that
@@ -4630,30 +4269,13 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             }
             SDL_SetAtomicInt(&s_runahead_live, runahead_n);
         }
-        if (s_render_fps_dirty) {
-            s_render_fps_dirty = 0;
-            s_render_period = (s_render_fps > 0)
-                ? op_period_from_ns((op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)s_render_fps)
-                                                / tick_scale))
-                : sim_period;
-            const op_time_t render_period_ns = op_period_ns(s_render_period);
-            openpete_pace_set_slot_ns((int64_t)render_period_ns);
-            op_time_t anchor = op_now();
-            op_deadline_anchor(&next_sim, anchor);
-            op_deadline_anchor(&next_render, anchor);
-            pace_regrid_pending = 1;
-            const op_time_t sim_hz_x1000  = (OP_NS_PER_SEC * 1000) / sim_period_ns;
-            const op_time_t rend_hz_x1000 = (render_period_ns > 0)
-                ? (OP_NS_PER_SEC * 1000) / render_period_ns : 0;
-            openpete_interp_set_enabled(s_render_fps > 0 && rend_hz_x1000 > sim_hz_x1000 ? 1 : 0);
-            OPL_INFO_F("pacer", "render-fps -> %d (%.4f ms/present)",
-                       s_render_fps, (double)render_period_ns / 1e6);
-        }
-        op_time_t iter_now_ns = op_now();
-        bool   sim_due = (s_render_fps == 0) || unlock_now ||
-                         (iter_now_ns >= next_sim.at);
-        host_trace_bit(HT_F_SIM_DUE, sim_due);
-        host_trace_bit(HT_F_UNLOCK_ENTRY, unlock_now);
+        host_pacer_apply_live(P);
+        it.sim_due = host_pacer_sim_due(P, it.unlock_at_entry);
+        /* The VBL period of this iteration: the world-liveness bound and the
+         * VBL-clock terms read it. */
+        const op_time_t sim_period_ns = host_pacer_sim_period_ns(P);
+        host_trace_bit(HT_F_SIM_DUE, it.sim_due);
+        host_trace_bit(HT_F_UNLOCK_ENTRY, it.unlock_at_entry);
 
         /* Override-channel arbitration for this iteration. The channel has
          * several writers with different priorities; live decode is the
@@ -4667,7 +4289,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * fall back to 0xFFFF - i.e. no override - so live keyboard /
          * gamepad input takes over once the movie ends. */
         unsigned bk2_stamped_frame = openpete_frame;  /* see restamp below */
-        if (sim_due && S.bk2.active) {
+        if (it.sim_due && S.bk2.active) {
             int bk2_frame = bk2_feed_row();
             if (bk2_frame >= S.bk2.movie.frame_count && opts->bk2_stop_on_end) {
                 quit = 1;
@@ -5192,7 +4814,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         unsigned frame_before_yield = openpete_frame;
         { unsigned e_, l_, j_; (void)bk2_feed_iter_take(&e_, &l_, &j_); }   /* writes outside this yield */
         bool ticked_this_iter = false;
-        bool yield_now = sim_due && (!g_paused || g_step_one)
+        bool yield_now = it.sim_due && (!g_paused || g_step_one)
                                  && !rewound_this_iter;
         host_trace_bit(HT_F_OVR_CLAIMED, ovr_claimed);
         host_trace_bit(HT_F_REWOUND, rewound_this_iter);
@@ -5206,12 +4828,10 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * which is the one that governed the sleep this iteration started
          * from: the right question is whether a deadline was in force, not
          * what the next one will be. */
-        const int pace_paced = !pace_unlock_prev;
-        op_time_t pace_deadline_ns = pace_paced ? next_sim.at : 0;
-        if (pace_regrid_pending) { pace_deadline_ns = 0; pace_regrid_pending = 0; }
+        uint8_t   pace_flags = 0;
+        const op_time_t pace_deadline_ns = host_pacer_vbl_deadline(P, &pace_flags);
+        const int pace_paced = !(pace_flags & OP_PACE_F_UNLOCK);
         op_time_t pace_exec_start_ns = 0, pace_exec_end_ns = 0;
-        uint8_t   pace_flags = pace_paced ? 0u : OP_PACE_F_UNLOCK;
-        if (pace_slip_pending) { pace_flags |= OP_PACE_F_SLIPPED; pace_slip_pending = 0; }
         if (yield_now) {
             const bool stepping = step_begin_vbl(g_paused, &g_step_one);
             game_on_frame_pre(&g_game.cpu, openpete_frame);
@@ -5669,7 +5289,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             input_log_commit_yields(ticks, S.bk2.recording, bits);
         }
 
-        if (sim_due && opts->debug_triangle) {
+        if (it.sim_due && opts->debug_triangle) {
             /* Re-issue the static triangle so it's drawn over whatever the
              * game queued - guarantees a non-black on-screen pixel even
              * when the title-screen overlay is a stub. Gated on sim_due so
@@ -5823,10 +5443,10 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                 }
                 if (eager_now) {
                     host_trace_present(HT_P_CANON_EAGER);
-                    const op_time_t period = op_period_ns(s_render_period);
+                    const op_time_t period = host_pacer_render_period_ns(P);
                     const op_time_t curr = openpete_interp_curr_tick_ns();
                     const op_time_t now = op_now();
-                    op_time_t first = next_render.at;
+                    op_time_t first = host_pacer_render_slot(P);
                     while (first < now) first += period;    /* the next slot not yet gone */
                     /* The span is anchored on the newest capture's stamp - unless
                      * that stamp is stale. Captures dedupe when the interpolated
@@ -5840,13 +5460,13 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                     s_eager.anchor_age = now - anchor;
                     const op_time_t span_end = anchor + tp;
                     eager_plan(now, first, period, span_end,
-                               next_sim.at + 2 * sim_period_ns);
+                               host_pacer_sim_deadline(P, 2));
                     /* The canonical scene, then as much of the span as fits
                      * before the update VBL is due - the latter only while
                      * the world is live (the gate below). */
                     s_eager.world_live = s_last_canon_present_ns != 0 &&
                         (now - s_last_canon_present_ns) <= 6 * sim_period_ns;
-                    eager_produce(s_eager.world_live ? next_sim.at + sim_period_ns - 500000
+                    eager_produce(s_eager.world_live ? host_pacer_sim_deadline(P, 1) - 500000
                                                      : now, period);
                     pace_canon_extract_ns = 0;
                 } else
@@ -5985,7 +5605,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          *  - openpete_interp_enabled(): the render rate genuinely exceeds the
          *    sim rate. This is the SAME gate that arms capture (render_hz >
          *    VBL 59.826, kept in sync at startup + on every live render-fps
-         *    change), NOT the weaker s_render_fps > 0. At/below sim parity -
+         *    change), NOT the weaker render_fps > 0. At/below sim parity -
          *    e.g. render-fps 30 vs the ~29.913 Hz sim - sub-tick interpolation
          *    is degenerate: the near-1:1 ratio duplicates/freezes frames
          *    (mobys "stick") while capture is off and the ring is stale. So
@@ -6060,8 +5680,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * After a slip the tail advances by more than one period, so this
          * runs one period optimistic for a single iteration; the next one
          * reads the corrected grid. */
-        const op_time_t pace_sim_deadline =
-            sim_due ? next_sim.at + sim_period_ns : next_sim.at;
+        const op_time_t pace_sim_deadline = host_pacer_present_deadline(P, it.sim_due);
 
         int pace_shed_now = 0;
         if (s_eager.active) {
@@ -6078,7 +5697,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             s_eager.world_live = s_last_canon_present_ns != 0 &&
                 (op_now() - s_last_canon_present_ns) <= 6 * sim_period_ns;
             if (!did_present_this_iter && native_re && s_eager.world_live) {
-                eager_produce(pace_sim_deadline - 500000, op_period_ns(s_render_period));
+                eager_produce(pace_sim_deadline - 500000, host_pacer_render_period_ns(P));
                 host_trace_present(HT_P_EAGER_PRODUCE);
             }
             pace_shed_now = 1;   /* the inline path below stays quiet */
@@ -6406,7 +6025,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * re-log the same frame number. Same gate clears
          * openpete_primitives_drawn after a tick consumed/presented its
          * draws, not on render-only iterations that didn't add any. */
-        if (sim_due) {
+        if (it.sim_due) {
             if ((openpete_frame & 0x3F) == 1u) {
                 OPL_INFO_F("loop",
                            "frame=%u prims_last=%u elapsed_ms=%llu",
@@ -6418,17 +6037,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
 
         /* No PsyX_BeginScene here - DrawOTag starts the scene on demand. */
 
-        /* The turbo binding drives the host loop's own pacing + the GL
-         * swap-interval bypass. vbl is yield-driven so this only affects
-         * wall-clock speed, not game state - fast-forward is invisible to
-         * BK2 replay determinism. Scheduled --unlock-frames windows (test
-         * harness) OR into the same flag. Read from this iteration's
-         * keymap poll, so it is a tick newer than the peek at the top of
-         * the loop; this one is authoritative. */
-        /* OPENPETE_FORCE_PACING=1 (read once, then cached) keeps the
-         * legacy / dual-pacer cadence active even under --headless. Used
-         * by scripts/measure-pacing.py to capture pacing numbers without
-         * needing a real display. */
         /* One VBL record per iteration that ran the game fiber. Iterations
          * that only presented (--render-fps > tick rate) are PRESENT records;
          * conflating the two would make the tick cadence look like the
@@ -6448,17 +6056,11 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             openpete_live_switch_poll(openpete_frame);
         }
 
-        const int s_force_pacing = pace_force_pacing();
-        bool tab_unlock = (opts->headless && !s_force_pacing) ||
-                          openpete_key_down(OPK_TURBO);
-        bool sched_unlock = opts->unlock_ranges_count > 0 &&
-                            unlock_frame_in_ranges(opts, openpete_feed_key_now());
-        bool unlock_fps = pace_unlock_verdict(tab_unlock || sched_unlock ||
-                                              openpete_skip_present_until_level);
+        /* The authoritative unlock verdict, read from this iteration's
+         * keymap poll: one iteration newer than the peek at the loop top. */
+        const bool unlock_fps = host_unlock_wanted(&S);
         skip_mute_sync();
-        if ((unlock_fps ? 1 : 0) != pace_unlock_prev)
-            openpete_pace_window(OP_PACE_W_UNLOCK, unlock_fps ? 1 : 0);
-        pace_unlock_prev = unlock_fps ? 1 : 0;
+        host_pacer_note_unlock(P, unlock_fps);
         openpete_unlock_fps = unlock_fps ? 1 : 0;
         g_skipSwapInterval = unlock_fps ? 1 : 0;
         audio_feed_sync(unlock_fps, opts->headless, g_paused);
@@ -6472,114 +6074,11 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             SDL_Delay(16);
         }
 
-        /* Unified pacer. Both branches step phase-locked integer-ns
-         * deadlines and sleep via op_sleep_until. No condvar drain race, no
-         * SDL_Delay integer-ms rounding.
-         *
-         * Unlock path (Tab / --headless / scheduled fast-forward):
-         * re-anchor both deadlines to now so we don't stall on Tab
-         * release. Mirrors the legacy `next_sim_ms = next_render_ms
-         * = now` reset.
-         *
-         * Skip the sleep entirely once shutdown has been requested
-         * (ESC / window close / SIGINT). The pacer's worst-case wait
-         * is normally one period (~17 ms), but a Win32 waitable timer
-         * that misbehaves could leave us stuck on a multi-second
-         * WaitForSingleObject - the legacy condvar pacer always
-         * checked g_shutdown_requested in its wait loop; mirror that
-         * here so ESC closes the window promptly. */
-        if (unlock_fps || g_shutdown_requested) {
-            op_time_t anchor = op_now();
-            op_deadline_anchor(&next_sim, anchor);
-            op_deadline_anchor(&next_render, anchor);
-            pace_regrid_pending = 1;
-        } else if (s_render_fps == 0) {
-            /* Legacy "match sim cadence" pacer. One present per VBL
-             * cadence, advanced only when the game fiber actually
-             * yielded with a frame bump (ticked_this_iter). dispatch.c
-             * no-tick stub yields skip the pace step so a frame full
-             * of stubs doesn't park us for 16.72 ms per stub. */
-            if (ticked_this_iter) {
-                op_deadline_advance(&next_sim, sim_period, 1);
-                op_time_t now2 = op_now();
-                if (now2 - next_sim.at > slip_threshold_ns) {
-                    op_time_t behind = now2 - next_sim.at;
-                    op_time_t skip = behind / sim_period_ns;
-                    op_deadline_advance(&next_sim, sim_period, skip);
-                    s_sim_slip_events++;
-                    s_sim_slip_periods += (uint64_t)skip;
-                    openpete_pace_slip(OP_PACE_SLIP_SIM, (int64_t)skip, (int64_t)behind);
-                    pace_slip_pending = 1;
-                    OPL_WARN_F("pacer",
-                               "sim slip: host stalled %.1f ms (dropped %lld VBL period(s) "
-                               "of wall time)", (double)behind / 1e6, (long long)skip);
-                }
-                pace_sleep_until(next_sim.at, next_sim.at);
-            }
-        } else {
-            /* Wall-clock dual-pacer. sim deadline advances on sim-due
-             * iters that actually ticked; render deadline advances every
-             * outer iter; we sleep to the sooner of the two so an
-             * under-paced render doesn't starve the sim or vice-versa.
-             *
-             * ticked_this_iter gates the sim step for the same reason the
-             * legacy pacer above gates it: a dispatch.c no-tick stub yield
-             * returns without bumping openpete_frame, and charging it a VBL
-             * period of wall time slows the guest in proportion to how many
-             * such yields a frame takes. A game with one per frame runs at
-             * two thirds speed. */
-            op_time_t now2 = op_now();
-            if (sim_due && ticked_this_iter) {
-                op_deadline_advance(&next_sim, sim_period, 1);
-                if (now2 - next_sim.at > slip_threshold_ns) {
-                    op_time_t behind = now2 - next_sim.at;
-                    op_time_t skip = behind / sim_period_ns;
-                    op_deadline_advance(&next_sim, sim_period, skip);
-                    s_sim_slip_events++;
-                    s_sim_slip_periods += (uint64_t)skip;
-                    openpete_pace_slip(OP_PACE_SLIP_SIM, (int64_t)skip, (int64_t)behind);
-                    pace_slip_pending = 1;
-                    OPL_WARN_F("pacer",
-                               "sim slip: host stalled %.1f ms (dropped %lld VBL period(s) "
-                               "of wall time)", (double)behind / 1e6, (long long)skip);
-                }
-            }
-            if (s_eager.active) {
-                /* Under eager production the render grid is the present
-                 * thread's business: this loop only borrows its PHASE when it
-                 * plans a span. Place it on the grid's first instant after
-                 * now (no slip accounting - nothing was missed) and sleep to
-                 * the sim deadline alone, instead of waking once per slot to
-                 * do nothing, or spinning flat out at an uncapped
-                 * --render-fps. It never steps while already ahead of now, so
-                 * back-to-back catch-up iterations cannot push it more than
-                 * one period past now. */
-                const op_time_t rp = op_period_ns(s_render_period);
-                if (rp > 0 && now2 >= next_render.at)
-                    op_deadline_advance(&next_render, s_render_period,
-                                        (now2 - next_render.at) / rp + 1);
-                pace_sleep_until(next_sim.at, next_sim.at);
-            } else {
-                op_deadline_advance(&next_render, s_render_period, 1);
-            {
-                const op_time_t rp = op_period_ns(s_render_period);
-                if (rp > 0 && now2 - next_render.at > slip_threshold_ns) {
-                    /* Captured before the advance: afterwards next_render.at
-                     * is the NEW grid point and the lateness is gone. */
-                    const op_time_t behind_r = now2 - next_render.at;
-                    op_time_t skip = behind_r / rp;
-                    op_deadline_advance(&next_render, s_render_period, skip);
-                    s_render_slip_events++;
-                    s_render_slip_periods += (uint64_t)skip;
-                    openpete_pace_slip(OP_PACE_SLIP_RENDER, (int64_t)skip,
-                                       (int64_t)behind_r);
-                }
-            }
-            op_time_t next = (next_sim.at < next_render.at)
-                             ? next_sim.at : next_render.at;
-            pace_sleep_until(next, next_sim.at);
-            }
-        }
+        /* The pacer steps its deadlines and sleeps to the next one; unlock
+         * or a requested shutdown (ESC, window close, SIGINT) re-anchors
+         * instead of sleeping, so a misbehaving OS timer cannot hold the quit. */
+        host_pacer_advance(P, unlock_fps, it.sim_due, ticked_this_iter,
+                           s_eager.active, g_shutdown_requested);
         host_trace_bit(HT_F_TICKED, ticked_this_iter);
         host_trace_bit(HT_F_DID_PRESENT, did_present_this_iter);
         host_trace_bit(HT_F_EAGER, s_eager.active);
@@ -6588,7 +6087,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         host_trace_bit(HT_F_STEP_ONE, g_step_one);
         host_trace_bit(HT_F_UNLOCK_TAIL, unlock_fps);
         host_trace_iter_end(quit, exit_reason, pace_flags,
-                            (int64_t)next_sim.at, (int64_t)next_render.at);
+                            (int64_t)host_pacer_sim_deadline(P, 0),
+                            (int64_t)host_pacer_render_slot(P));
 
 #if defined(__EMSCRIPTEN__)
         /* Guarantee one browser event-loop turn per host iteration. The
