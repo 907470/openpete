@@ -2,6 +2,7 @@
 
 #include "openpete_frame_time_log.h"
 #include "openpete_log.h"
+#include "openpete_time.h"
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -63,6 +64,7 @@ int openpete_frame_time_log_open(openpete_frame_time_log_t* log,
     OPL_INFO_F("frame-time-log",
                "writing 32B records (target=%.3f ms) to %s",
                (double)target_period_ns / 1e6, path);
+    log->start_ns = op_now();
     return 0;
 }
 
@@ -82,6 +84,13 @@ void openpete_frame_time_log_record(openpete_frame_time_log_t* log,
     memcpy(buf + 24, &slack_ns,     8);
     fwrite(buf, 1, OFTL_REC_SIZE, log->fp);
     log->records_written++;
+}
+
+void openpete_frame_time_log_present(openpete_frame_time_log_t* log, uint32_t frame) {
+    if (!log || !log->fp) return;
+    const int64_t now_ns      = op_now();
+    const int64_t deadline_ns = log->start_ns + (int64_t)log->records_written * log->target_period_ns;
+    openpete_frame_time_log_record(log, frame, 0u, now_ns, deadline_ns, deadline_ns - now_ns);
 }
 
 void openpete_frame_time_log_close(openpete_frame_time_log_t* log) {

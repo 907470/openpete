@@ -17,6 +17,7 @@
 #include "../rhi/rhi_gpu_audit.h"
 #include "openpete_fnv1a64.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -31,6 +32,17 @@ int ra_pc_on(void) {
 }
 struct ra_pc_slot s_ra_pc[RA_PC_PENDING];
 unsigned s_ra_pc_checked = 0, s_ra_pc_mismatches = 0, s_ra_pc_invalidated = 0;
+
+bool runahead_predict_report(void) {
+    if (!ra_pc_on()) return false;
+    /* stderr, not the log: the roundtrip gate greps this summary. Emitted
+     * whenever the check is armed, counters or not: a window that retired
+     * no prediction then reads as checked=0 instead of an absent line, which
+     * a harness cannot tell from a binary that never armed the check. */
+    fprintf(stderr, "[ra-predict] checked=%u mismatch=%u invalidated=%u\n",
+            s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated);
+    return true;
+}
 /* Wall time of the last runahead snapshot save, added to its restore's for
  * the Mods panel's snapshot cost. */
 static op_time_t s_ra_save_ns = 0;

@@ -4,6 +4,7 @@
 
 #include "host_state_ops.h"
 #include "run_internal.h"
+#include "runahead.h"
 
 #include "openpete.h"
 #include "openpete_fiber.h"
@@ -524,6 +525,24 @@ bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) {
     const bool held = rewind_key_held(opts, live, paused);
     if (!held || !live || paused || !rewind_mods_allow()) return false;
     return rewind_seek_one_tick(bk2_active);
+}
+
+void state_ops_report(void) {
+    OPL_INFO_F("savestate", "deferred to a final yield: %llu snapshot request(s), %llu load request(s); "
+               "periodic state work sat out %llu intermediate yield(s); "
+               "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "
+               "%llu adopted at another park site; "
+               "left gameplay: %llu rolled back, %llu adopted; "
+               "park site: loads=%llu (%llu final yield(s) waited) rewind=%llu stress=%llu "
+               "runahead=%llu refused=%llu stress-abandoned=%llu",
+               s_state_ops_deferred[0], s_state_ops_deferred[1], s_state_yields_skipped,
+               s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted,
+               s_ra_left[0], s_ra_left[1],
+               s_site_deferred[SITE_DEF_LOAD], s_site_wait_yields, s_site_deferred[SITE_DEF_REWIND],
+               s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
+               s_site_refused, s_site_abandoned);
+    OPL_INFO_F("savestate", "deferred at an emitted loop site: %llu request(s); first at loop header "
+               "0x%08X, feed key %u", s_loop_deferred, s_loop_deferred_header, s_loop_deferred_key);
 }
 
 #endif /* OPENPETE_HAS_PSYCROSS */

@@ -37,9 +37,12 @@
 extern "C" {
 #endif
 
+/* One recorder per run: the host loop's inline presents and the present
+ * thread's eager presents append to the same log. */
 typedef struct openpete_frame_time_log {
     FILE*    fp;
     int64_t  target_period_ns;
+    int64_t  start_ns;          /* op_now() at open: the first record's deadline */
     uint64_t records_written;
 } openpete_frame_time_log_t;
 
@@ -47,7 +50,8 @@ typedef struct openpete_frame_time_log {
  *
  * The header carries the magic, version 1, target_period_ns, the creation
  * time in Unix nanoseconds, and the record size 32; its fwrite results are
- * not checked. A failed fopen is logged at error level.
+ * not checked. A failed fopen is logged at error level. On success
+ * start_ns is op_now() after the header is written.
  * @param log Recorder state; zeroed first, so a failed open leaves it closed.
  * @param path Output file path; NULL or empty fails.
  * @param target_period_ns Nominal present period stored in the header.
@@ -75,6 +79,18 @@ void openpete_frame_time_log_record(openpete_frame_time_log_t* log,
                                     int64_t  op_now_ns,
                                     int64_t  deadline_ns,
                                     int64_t  slack_ns);
+
+/** @brief Append one record for a present against the ideal cadence that starts at open.
+ *
+ * The record's deadline is start_ns plus one target period per record
+ * already written, so under --render-fps N the log carries the N Hz present
+ * cadence; its slack is the deadline minus op_now(). No-op when the log is
+ * NULL or not open, without reading the clock.
+ * @param log The recorder.
+ * @param frame openpete_frame, cross-reference only: it repeats across a
+ *        tick's sub-tick presents, and measure-pacing.py keys on the
+ *        timestamps. */
+void openpete_frame_time_log_present(openpete_frame_time_log_t* log, uint32_t frame);
 
 /** @brief Flush and close the file and log the record count and size at info level.
  *

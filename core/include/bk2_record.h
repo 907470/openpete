@@ -73,6 +73,14 @@ void bk2_record_note(uint16_t bits, int log_idx, unsigned writes, unsigned e,
  *         allocation or write failure, with the reason logged. */
 int  bk2_record_finalize(void);
 
+/** @brief End recording without writing anything: the file at the record path and its sidecar are left as they were.
+ *
+ * Frees the copied path, the args sidecar and the row buffer, and clears
+ * the active flag under input_log_lock. The guest discontinuity handler
+ * begin registered stays registered and is inert while recording is not
+ * active. No effect when recording is not active. */
+void bk2_record_discard(void);
+
 /** @brief Format the press/release diff between two PSX pad bitfields as BizHawk button letters.
  *
  * Bitfields use 1 released, 0 pressed. Letters follow the Input Log's

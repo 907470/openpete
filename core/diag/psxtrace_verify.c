@@ -1047,3 +1047,87 @@ void openpete_psxtrace_close(openpete_psxtrace_t* t) {
     free(t->anchor_ticks);
     t->anchor_ticks = NULL;
 }
+
+/** @brief Log the per-region divergence frequency: how many compared records each region diverged on.
+ *
+ * A region that diverges on every record is a persistent state difference;
+ * one that flickers is aliasing or an intermittent leak.
+ * @param t The trace. */
+static void report_region_divergence(const openpete_psxtrace_t* t) {
+    if (t->frames_compared == 0 || t->hashes_diverged == 0) return;
+    for (uint32_t r = 0; r < t->region_count; r++) {
+        const uint64_t n = t->per_region_diverge_count[r];
+        if (n > 0)
+            OPL_INFO_F("psxtrace", "  region[%u] %s: %llu/%llu frames diverged",
+                       r, t->region_names[r], (unsigned long long)n,
+                       (unsigned long long)t->frames_compared);
+    }
+}
+
+/** @brief Log the regions whose reference hash never changed, split by whether the manifest marks them constant_ok.
+ *
+ * Engagement per region: a row whose reference hash never changed across
+ * the run was compared on a constant.
+ * @param t The trace. */
+static void report_zero_change_regions(const openpete_psxtrace_t* t) {
+    if (t->frames_compared <= 1) return;
+    char just[1024], unjust[1024];
+    size_t nj = 0, nu = 0;
+    for (uint32_t r = 0; r < t->region_count; r++) {
+        if (t->per_region_change_count[r] != 0) continue;
+        const int ok = (r < (uint32_t)openpete_state_region_count)
+                     ? openpete_state_regions[r].constant_ok : 0;
+        if (ok) nj += (size_t)snprintf(just + nj, sizeof(just) - nj, " %s", t->region_names[r]);
+        else    nu += (size_t)snprintf(unjust + nu, sizeof(unjust) - nu, " %s", t->region_names[r]);
+    }
+    OPL_INFO_F("psxtrace", "zero-change regions justified (constant_ok):%s", nj ? just : " none");
+    OPL_INFO_F("psxtrace", "zero-change regions unjustified:%s", nu ? unjust : " none");
+}
+
+/** @brief Log the VBL-delta histograms of the reference and of this run, the first mismatch, and the schedule's charges.
+ *
+ * Logs nothing for a trace without VBL stamps.
+ * @param t The trace. */
+static void report_vbl_deltas(const openpete_psxtrace_t* t) {
+    if (!t->has_vbl_stamps) return;
+    char ht[256], ho[256];
+    size_t nt = 0, no = 0;
+    ht[0] = ho[0] = 0;
+    for (int b = 0; b < 17; b++) {
+        if (t->vbl_hist_trace[b])
+            nt += (size_t)snprintf(ht + nt, sizeof(ht) - nt, " %s%d:%llu", b == 16 ? ">=" : "", b,
+                                   (unsigned long long)t->vbl_hist_trace[b]);
+        if (t->vbl_hist_op[b])
+            no += (size_t)snprintf(ho + no, sizeof(ho) - no, " %s%d:%llu", b == 16 ? ">=" : "", b,
+                                   (unsigned long long)t->vbl_hist_op[b]);
+    }
+    OPL_INFO_F("psxtrace", "vbl deltas: policy=%s mismatches=%llu; reference%s; openpete%s",
+               t->vbl_policy_exact ? "exact" : "log",
+               (unsigned long long)t->vbl_delta_mismatches, ht, ho);
+    if (t->vbl_delta_mismatches)
+        OPL_INFO_F("psxtrace", "  first vbl-delta mismatch: record %u reference %d openpete %d",
+                   t->first_vbl_mismatch_frame, t->first_vbl_mismatch_trace,
+                   t->first_vbl_mismatch_op);
+    if (openpete_sched_active())
+        OPL_INFO_F("psxtrace", "  schedule: %u long frames charged at the next wait, final deficit %lld; "
+                   "%u records inside load windows not compared, %u reference records skipped at window ends",
+                   t->vbl_long_frames, (long long)t->vbl_deficit,
+                   t->records_uncompared, t->records_skipped);
+}
+
+void openpete_psxtrace_exit_report(openpete_psxtrace_t* t) {
+    OPL_INFO_F("psxtrace",
+               "summary: records=%u frames_compared=%llu "
+               "hash_mismatches=%llu first_div_frame=%u "
+               "first_non_neutral_div=%s frame=%u",
+               t->records_consumed,
+               (unsigned long long)t->frames_compared,
+               (unsigned long long)t->hashes_diverged,
+               t->diverged ? t->first_divergent_frame : 0u,
+               t->strict_diverged ? t->region_names[t->first_strict_divergent_region] : "none",
+               t->strict_diverged ? t->first_strict_divergent_frame : 0u);
+    report_region_divergence(t);
+    report_zero_change_regions(t);
+    report_vbl_deltas(t);
+    openpete_psxtrace_finalize(t);
+}

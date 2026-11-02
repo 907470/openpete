@@ -2,6 +2,8 @@
 // prediction-check helpers and counters, shared by the host loop (run.c).
 #pragma once
 
+#include <stdbool.h>
+
 #include "openpete_park_site.h"
 #include "openpete_state.h"
 #include "psxrt/psx_runtime.h"
@@ -23,6 +25,10 @@
  * @return 0 off, 1 hash check, 2 hash check plus a full copy of the led RAM
  *         so a mismatch dumps the differing ranges. */
 int ra_pc_on(void);
+
+/** @brief Print the prediction check's totals on stderr when OPENPETE_RA_PREDICT_CHECK armed it.
+ * @return true when the check is armed and the line was printed. */
+bool runahead_predict_report(void);
 
 /** @brief Take runahead's per-tick snapshot, timing the save for the snapshot cost the Mods panel shows.
  *

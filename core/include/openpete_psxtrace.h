@@ -198,6 +198,17 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t);
  * @param t Trace opened by openpete_psxtrace_open(). */
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t);
 
+/** @brief Log the run's comparison summary, then finalize the verdict.
+ *
+ * Logs the summary line (records consumed, records compared, hash
+ * mismatches, the first divergent and first non-neutral divergent record),
+ * the per-region divergence counts, the regions whose reference hash never
+ * changed split by the manifest's constant_ok, and the VBL-delta
+ * histograms with the schedule's charges; then runs
+ * openpete_psxtrace_finalize, which logs the `verdict:` line.
+ * @param t Trace opened by openpete_psxtrace_open(). */
+void openpete_psxtrace_exit_report(openpete_psxtrace_t* t);
+
 /** @brief Close the trace file and free the RAM payload buffer and the VBL stamp array.
  *
  * The pointers are cleared, so a second call is harmless. The schedule

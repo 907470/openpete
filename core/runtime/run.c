@@ -74,6 +74,7 @@
 #include "openpete_handoff.h"
 #include "openpete_thread_roles.h"
 #include "host_state_ops.h"
+#include "host_loop_internal.h"
 #include "run_internal.h"
 #include "runahead.h"
 
@@ -198,6 +199,16 @@ int openpete_psxtrace_skip_current_to(uint32_t rec) {
     return s_psxtrace_active ? openpete_psxtrace_skip_to(s_psxtrace_active, rec) : -1;
 }
 
+openpete_psxtrace_t* run_psxtrace(void) { return psxtrace; }
+
+void run_psxtrace_release(void) {
+    if (!psxtrace) return;
+    openpete_psxtrace_close(psxtrace);
+    psxtrace = NULL;
+    s_psxtrace_active = NULL;
+    openpete_psxtrace_dispatch_hook = NULL;
+}
+
 /** @brief Advance the active psxtrace by one record at a guest anchor and update its terminal status.
  *
  * Installed as openpete_psxtrace_dispatch_hook. Does nothing without an
@@ -264,14 +275,8 @@ void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
  * openpete_shutdown_requested on the sim thread. */
 static atomic_ullong g_run_deadline_ms = 0;
 
-/** @brief Publish the --max-runtime-seconds deadline for openpete_shutdown_requested.
- *
- * Measured from the instant the host loop's own deadline test measures
- * from, so a fast-boot yield taken on the deadline meets a loop that quits
- * on it. No deadline is published when the option is 0.
- * @param opts The parsed options.
- * @param start The host loop's start, in SDL ticks. */
-static void run_deadline_arm(const openpete_options_t* opts, Uint64 start) {
+/* Documented at the declaration in run_internal.h. */
+void run_deadline_arm(const openpete_options_t* opts, Uint64 start) {
     if (opts->max_runtime_seconds <= 0) return;
     atomic_store(&g_run_deadline_ms,
                  (unsigned long long)(start + (Uint64)opts->max_runtime_seconds * 1000));
@@ -402,20 +407,8 @@ static int openpete_thread_split_enabled(void)
     return v;
 }
 
-/** @brief Decide whether the host loop runs on a worker thread while main pumps the window.
- *
- * Every windowed play configuration splits: the vk renderer, and the
- * psycross renderer, where PsyCross rasterizes on the worker through the GL
- * context bring-up created on main (run_split_threaded hands it across).
- * Headless runs, screenshot captures (--screenshot-on-frame,
- * --screenshot-presents-start) and legacy host input stay single-threaded;
- * the gates run in those modes and no modal window loop reaches them.
- * Without the split the sim shares main with the message pump, and a Win32
- * move or size loop parks it for the whole gesture.
- * @param opts The parsed options.
- * @return true when the split is enabled (OPENPETE_THREAD_SPLIT) and the
- *         configuration qualifies. */
-static bool openpete_split_applies(const openpete_options_t* opts)
+/* Documented at the declaration in run_internal.h. */
+bool openpete_split_applies(const openpete_options_t* opts)
 {
     return openpete_thread_split_enabled()
         && !opts->headless
@@ -438,12 +431,17 @@ static SDL_AtomicInt g_sim_heartbeat;
  * longer teardown bound between heartbeats. */
 static SDL_AtomicInt g_sim_teardown;
 
-/** @brief Report teardown progress: one heartbeat for the pump's liveness check, and a re-arm of the quit backstop when a signal armed it. */
-static void sim_teardown_progress(void) {
+/* Documented at the declaration in run_internal.h. */
+void sim_teardown_progress(void) {
     SDL_AddAtomicInt(&g_sim_heartbeat, 1);
 #ifndef _WIN32
     if (atomic_load(&g_quit_backstop_armed)) alarm(QUIT_BACKSTOP_S);
 #endif
+}
+
+void sim_teardown_begin(void) {
+    SDL_SetAtomicInt(&g_sim_teardown, 1);
+    sim_teardown_progress();
 }
 
 /** @brief Take a key event while a binding capture owns the keyboard.
@@ -467,11 +465,8 @@ static bool capture_owns_key_event(const SDL_Event* ev) {
     return true;
 }
 
-/** @brief Stall teardown for OPENPETE_TEARDOWN_STALL_MS milliseconds with no heartbeat.
- *
- * A fault-injection knob for the quit watchdog: it stands in for a
- * recorder flush that takes that long. Unset or 0 does nothing. */
-static void sim_teardown_injected_stall(void)
+/* Documented at the declaration in run_internal.h. */
+void sim_teardown_injected_stall(void)
 {
     const char* e = getenv("OPENPETE_TEARDOWN_STALL_MS");
     const int ms = (e && *e) ? atoi(e) : 0;
@@ -772,28 +767,14 @@ static const char* bk2_row_key_name(bk2_row_key_t key) {
     return key == BK2_ROW_KEY_VBL ? "openpete_vbl" : "openpete_frame";
 }
 
-/** @brief Name the game's feed key, the counter --frame-limit and the one-shot triggers read.
- * @return "vbl" for openpete_vbl, "frame" for openpete_frame. */
-static const char* feed_key_kind_name(void) {
+/* Documented at the declaration in run_internal.h. */
+const char* feed_key_kind_name(void) {
     return openpete_feed_key() == OPENPETE_FEED_KEY_VBL ? "vbl" : "frame";
 }
 
-/** @brief Load the --bk2 movie and check that this run can replay it.
- *
- * Refuses a movie recorded under another load delay, and a consume-keyed
- * movie on a game whose descriptor names no pad-ring consumer. A movie's
- * rows are read at the row position its Header.txt names (bk2_feed_row): a
- * recorded movie at (openpete_consume, openpete_consume_write), a movie with
- * "OpenpeteFeedKey vbl" by openpete_vbl and one without the line by
- * openpete_frame. A movie on an older key is converted on load by replaying
- * it under that key, the rows tools/bk2_rekey.py rewrites to the consume
- * key. The movie is freed on every refusal.
- * @param opts The parsed options; bk2_path names the movie.
- * @param bk2 Receives the movie.
- * @param offset Receives the row counter's value at which row 0 plays.
- * @return 0 when the movie replays; -1 after logging the refusal. */
-static int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
-                           int* offset) {
+/* Documented at the declaration in run_internal.h. */
+int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
+                    int* offset) {
     if (bk2_movie_load(opts->bk2_path, bk2) != 0) {
         return -1;
     }
@@ -862,18 +843,8 @@ static uint16_t pad_p1_readback(unsigned char bk2axes[4]) {
     return PsyX_Pad_GetLastP1Bits();
 }
 
-/** @brief Write the movie being recorded on a fatal exit: commit the yield in flight, then finalize, with input-log appends stopped for good.
- *
- * Registered with openpete_crash_set_exit_flush while --bk2-record records;
- * a hang-watchdog trip runs it on the game fiber, or on the stall monitor
- * thread for the monitor's fallback. Takes input_log_lock and never
- * releases it: a flush on the monitor thread waits out a host-loop commit
- * in flight, and the host loop's next commit blocks until the process
- * ends. The yield the game fiber is inside has taken pad writes no commit
- * has noted; its player 1 readback is appended as one entry carrying them,
- * so the movie ends at the last pad write the guest took. Under a rewind
- * replay the log already holds that entry and none is appended. */
-static void bk2_record_exit_flush(void) {
+/* Documented at the declaration in run_internal.h. */
+void bk2_record_exit_flush(void) {
     input_log_lock();
     if (!openpete_replaying) {
         unsigned char bk2axes[4];
@@ -1073,13 +1044,8 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
 
 #define OPENPETE_HASH_LOG_MAX_REGIONS 128
 
-/** @brief Write the CSV header of the gameplay hash log: frame, vbl, fnv1a64 and one column per region.
- *
- * A region name has commas, CR and LF replaced by '_'. More than
- * OPENPETE_HASH_LOG_MAX_REGIONS regions log an error and truncate the
- * columns to that many.
- * @param fp The log file. */
-static void gameplay_hash_log_emit_header(FILE* fp) {
+/* Documented at the declaration in run_internal.h. */
+void gameplay_hash_log_emit_header(FILE* fp) {
     fputs("frame,vbl,fnv1a64", fp);
     /* One column per registered region, headed by its name. The
      * harness uses these to pinpoint which region first diverged.
@@ -1293,7 +1259,6 @@ static void audio_feed_exit_summary(void) {
 }
 
 /* The --debug-triangle infra-triangle (core/renderer/debug_render.cpp). */
-extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
 
 /* PsyCross internal: set non-zero to bypass SDL_GL_SetSwapInterval at the
@@ -1537,10 +1502,8 @@ static int attach_disc_image(const openpete_options_t* opts) {
     return OPENPETE_EXIT_OK;
 }
 
-/** @brief Log the disc cache's exit census line, with misses per read path, and stop its loader.
- *
- * Logs nothing when the cache was never attached. */
-static void disc_cache_exit_census(void) {
+/* Documented at the declaration in run_internal.h. */
+void disc_cache_exit_census(void) {
     uint64_t m; int64_t w, ln; size_t b;
     openpete_disc_cache_census(&m, &w, &b, &ln);
     if (openpete_disc_cache_active()) {
@@ -2422,17 +2385,14 @@ static void eager_report(void)
  * scenes. Registered with openpete_on_guest_discontinuity. */
 static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.last_target = 0; s_eager.tick_peak = s_eager.tick_ema; }
 
-/* Frame-time-log hook for presents made on the present thread. */
-static struct { openpete_frame_time_log_t *log; int64_t *start_ns, *period_ns; } s_eager_ftl;
-static void ftl_record_present(openpete_frame_time_log_t* log, int64_t start_ns,
-                               int64_t period_ns, uint32_t frame);
+/* The run's frame-time log, for presents made on the present thread; NULL
+ * until eager production starts. */
+static openpete_frame_time_log_t* s_eager_ftl;
 /** @brief Record a present made on the present thread in the profiler trace and the frame-time log.
  *
  * Runs on the present thread after each present that reached the display.
  * The profiler's PRESENT record carries the kind and openpete_canon_tick at
- * the call. The frame-time log is skipped when none was registered; its
- * start and period are read through the pointers registered at startup, and
- * the frame is openpete_frame at the call.
+ * the call. The frame-time log record carries openpete_frame at the call.
  * @param ctx Unused.
  * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT.
  * @param alpha Unused.
@@ -2442,9 +2402,27 @@ static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
     (void)ctx; (void)alpha; (void)paired;
     if (op_prof_on())
         op_prof_present((uint32_t)openpete_canon_tick, kind);
-    if (s_eager_ftl.log)
-        ftl_record_present(s_eager_ftl.log, *s_eager_ftl.start_ns, *s_eager_ftl.period_ns,
-                           openpete_frame);
+    openpete_frame_time_log_present(s_eager_ftl, openpete_frame);
+}
+
+void host_eager_start(openpete_frame_time_log_t* ftl, const openpete_options_t* opts)
+{
+    if (!(openpete_native_scene_enabled() && !opts->headless && openpete_present_thread_start()))
+        return;
+    eager_init();
+    s_eager_ftl = ftl;
+    openpete_present_thread_set_callback(eager_present_cb, NULL);
+    openpete_on_guest_discontinuity(eager_on_discontinuity);
+    openpete_on_guest_discontinuity(openpete_native_scene_ring_flush);
+}
+
+void host_eager_exit_report(void)
+{
+    eager_report();
+    if (s_eager.produced_inter || s_inline_rex)
+        OPL_INFO_F("sub-tick", "%u re-extract(s) presented: %u eager, %u inline",
+                   s_eager.produced_inter + s_inline_rex,
+                   s_eager.produced_inter, s_inline_rex);
 }
 
 /** @brief Body of the game fiber: dispatch the game's entry point and park the fiber for good when it returns.
@@ -2479,27 +2457,12 @@ static void game_fiber_entry(void) {
     while (1) openpete_fiber_switch(openpete_host_fiber);
 }
 
-/** @brief Write one frame-time-log record for a present, canonical or sub-tick.
- *
- * The record's deadline is start_ns plus one period per record already
- * written, so under --render-fps N the log carries the N Hz present
- * cadence; its slack is the deadline minus op_now(). No-op when the log
- * is not open.
- * @param log The frame-time log.
- * @param start_ns Time of the log's first deadline.
- * @param period_ns Target present period in nanoseconds.
- * @param frame openpete_frame, cross-reference only: it repeats across a
- *        tick's sub-tick presents, and measure-pacing.py keys on the
- *        timestamps. */
-static void ftl_record_present(openpete_frame_time_log_t* log,
-                               int64_t start_ns, int64_t period_ns,
-                               uint32_t frame)
-{
-    if (!log->fp) return;
-    int64_t now_ns      = op_now();
-    int64_t deadline_ns = start_ns + (int64_t)log->records_written * period_ns;
-    openpete_frame_time_log_record(log, frame, 0u, now_ns,
-                                   deadline_ns, deadline_ns - now_ns);
+bool run_game_fiber_create(void) {
+    openpete_host_fiber = co_active();
+    /* 8 MB fiber stack - Spyro's deepest reasonable call chain is well under
+     * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
+    openpete_game_fiber = openpete_fiber_create_guarded(8u * 1024u * 1024u, game_fiber_entry);
+    return openpete_game_fiber != NULL;
 }
 
 /* Live render-fps pacer state (in-game settings menu). openpete_set_render_fps
@@ -2698,6 +2661,18 @@ static uint64_t s_sim_slip_periods   = 0;
 static uint64_t s_render_slip_events = 0;
 static uint64_t s_render_slip_periods = 0;
 
+bool host_slip_report(void) {
+    if (!s_sim_slip_events && !s_render_slip_events) return false;
+    OPL_INFO_F("pacer",
+               "slip totals: sim %llu event(s) / %llu period(s) discarded; "
+               "render %llu event(s) / %llu period(s)",
+               (unsigned long long)s_sim_slip_events,
+               (unsigned long long)s_sim_slip_periods,
+               (unsigned long long)s_render_slip_events,
+               (unsigned long long)s_render_slip_periods);
+    return true;
+}
+
 /* Live-knob command queue. The dev overlay and the settings menu set the
  * render fps, tick scale, runahead depth, rewind window and mute from the
  * presenting or pump thread; the values they drive (s_render_fps,
@@ -2793,6 +2768,24 @@ double openpete_get_tick_scale(void) {
 static int s_runahead_req   = 0;
 static int s_runahead_dirty = 0;
 static SDL_AtomicInt s_runahead_live;   /* written by the host loop, read anywhere */
+
+void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t* opts,
+                         int refresh_mhz, double tick_scale)
+{
+    openpete_pace_env_build(env, env_bytes,
+                            openpete_native_render_gpu_name(),
+                            openpete_native_render_driver_version(),
+                            refresh_mhz,
+                            openpete_native_render_present_mode(),
+                            opts->fullscreen ? 1 : 0,
+                            s_render_fps,
+                            g_openpete_interp_enabled ? 1 : 0,
+                            s_runahead_req,
+                            tick_scale,
+                            openpete_split_applies(opts) ? 1 : 0,
+                            openpete_host_input_legacy(),
+                            opts->headless ? 1 : 0);
+}
 
 void openpete_runahead_set(int n) {
     if (n < 0) n = 0;
@@ -3704,6 +3697,42 @@ static uint16_t s_p1_stage_first_read_bits = 0;
 static unsigned char s_p1_stage_first_staged_axes[4] = {0};
 static unsigned char s_p1_stage_first_read_axes[4] = {0};
 
+void host_input_exit_report(void) {
+    /* Staged-vs-readback equality for slot 0. Zero checks means the override
+     * channel was never stamped before a tick (no host-owned input at all),
+     * which makes the mismatch count uninformative rather than clean. */
+    OPL_INFO_F("input-log",
+               "slot-0 staging: %llu check(s), %llu mismatch(es)",
+               s_p1_stage_checks, s_p1_stage_mismatches);
+    OPL_INFO_F("input-log",
+               "pad slots present (VBLs): p1=%llu p2=%llu p3=%llu p4=%llu",
+               s_slot_present_vbls[0], s_slot_present_vbls[1],
+               s_slot_present_vbls[2], s_slot_present_vbls[3]);
+    OPL_INFO_F("input-log",
+               "pad slot independence (VBLs differing): "
+               "p1/p2=%llu p1/p3=%llu p1/p4=%llu p2/p3=%llu p2/p4=%llu p3/p4=%llu",
+               s_slot_differed[0][1], s_slot_differed[0][2], s_slot_differed[0][3],
+               s_slot_differed[1][2], s_slot_differed[1][3], s_slot_differed[2][3]);
+    if (synth_pads_enabled())
+        OPL_INFO_F("input-log",
+                   "synthetic slots 1-3: %llu stage check(s)/%llu mismatch(es), "
+                   "%llu rewind check(s)/%llu mismatch(es)",
+                   s_synth_stage_checks, s_synth_stage_mismatches,
+                   s_synth_rewind_checks, s_synth_rewind_mismatches);
+    if (s_p1_stage_mismatches)
+        OPL_ERROR_F("input-log",
+                    "slot-0 staging first mismatch at frame %u: "
+                    "staged bits=0x%04X axes=%u,%u,%u,%u; "
+                    "readback bits=0x%04X axes=%u,%u,%u,%u",
+                    s_p1_stage_first_frame,
+                    s_p1_stage_first_staged_bits,
+                    s_p1_stage_first_staged_axes[0], s_p1_stage_first_staged_axes[1],
+                    s_p1_stage_first_staged_axes[2], s_p1_stage_first_staged_axes[3],
+                    s_p1_stage_first_read_bits,
+                    s_p1_stage_first_read_axes[0], s_p1_stage_first_read_axes[1],
+                    s_p1_stage_first_read_axes[2], s_p1_stage_first_read_axes[3]);
+}
+
 /** @brief Return the actions that keep reading through the dev overlay's keyboard and pad suspensions.
  *
  * imgui's nav focus covers the whole panel while it is focused, so
@@ -3742,6 +3771,12 @@ static void pad_override_neutral(int active) {
 static bool bk2_frame_in_range(bool active, int row, int count) {
     return active && row >= 0 && row < count;
 }
+
+/* The overlay stamp's latch across iterations: whether an overlay held the
+ * pad neutral on the previous one. Reset per run by host_input_latch_init. */
+static struct { bool prev_overlay_hold; } s_input_latch;
+
+void host_input_latch_init(void) { s_input_latch.prev_overlay_hold = false; }
 
 /** @brief Hold player 1's pad neutral while an overlay owns it, through the override channel.
  *
@@ -3816,12 +3851,8 @@ static void overlay_input_suspend(void) {
     openpete_freecam_set_axes(&ax);
 }
 
-/** @brief Log the vibration census: PadSetAct registrations, motor commands, per-pad recorders, mod slots.
- *
- * Logged unconditionally because the counts are read together. A recorder
- * line appears only for a virtual pad with a callback or a live recorder,
- * and a mod line only for a slot that issued commands. */
-static void rumble_census_report(void) {
+/* Documented at the declaration in run_internal.h. */
+void rumble_census_report(void) {
     /* Vibration census. Emitted unconditionally because the numbers only mean
      * something together, and every one of them is a zero in some legitimate
      * configuration:
@@ -4010,6 +4041,22 @@ static void pause_at_vbl_drive(bool paused, bool step_one)
     }
 }
 
+/* The menu and fullscreen hotkeys' latches across iterations: state the
+ * keymap's press edges do not carry. Reset per run by host_hotkey_latch_init. */
+static struct {
+    bool prev_menu_close;   /* menu_close was down at the previous poll; the menu closes on RELEASE */
+    bool menu_close_stale;  /* menu_close held from before the menu opened */
+    int  prev_mouse_owner;  /* the pointer's owner at the previous poll */
+    bool prev_alt_enter;    /* Alt+Enter was down at the previous poll */
+} s_hotkey_latch;
+
+void host_hotkey_latch_init(void) {
+    s_hotkey_latch.prev_menu_close  = false;
+    s_hotkey_latch.menu_close_stale = false;
+    s_hotkey_latch.prev_mouse_owner = OPENPETE_MOUSE_OWNED_NONE;
+    s_hotkey_latch.prev_alt_enter   = false;
+}
+
 /** @brief Report whether this poll is the menu_close release that closes the open settings menu.
  *
  * The close fires on the release edge of a menu_close source. A source held
@@ -4178,73 +4225,15 @@ static bool frame_limit_due(const openpete_options_t* opts) OP_REQUIRES(sim) {
  * @param opts The parsed options.
  * @return The process exit code. */
 static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
-    /* Which half of the input seam this thread owns (see run_host_init). */
-    const bool split = openpete_split_applies(opts);
     host_trace_open(opts->resume_handoff != NULL, opts->headless);
-
-    /* The device was created during init - under the thread split that was
-     * main - but inline presents come from THIS thread; the display's seam
-     * fence needs the ownership stated, not inferred from who created what.
-     * Eager's engage/disengage re-claims at every later handoff. */
-    openpete_native_display_claim();
-
-    /* Last point at which guest RAM still holds exactly what the EXE
-     * loader and the seed blocks put there: the fiber below is what first
-     * executes guest code, and a --state-load-on-frame restore happens
-     * later still, inside the frame loop. */
-    /* Mod code that may change guarded guest bytes runs on this thread
-     * from here on: the guest-byte guard brackets it here and nowhere else. */
-    openpete_mods_guard_claim_thread();
-    game_on_boot(&g_game.cpu);
-
-    openpete_host_fiber = co_active();
-    /* 8 MB fiber stack - Spyro's deepest reasonable call chain is well under
-     * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
-    openpete_game_fiber = openpete_fiber_create_guarded(8u * 1024u * 1024u, game_fiber_entry);
-    if (!openpete_game_fiber) {
-        OPL_ERROR_F("boot", "game fiber stack allocation failed (out of memory?)");
-        return OPENPETE_EXIT_PANIC;
-    }
-    OPL_INFO_F("boot", "fibers ready: host=%p game=%p",
-               openpete_host_fiber, openpete_game_fiber);
-
-    if (opts->debug_triangle) {
-        openpete_debug_triangle_init();
-        OPL_INFO_F("boot",
-                   "debug-triangle enabled - emitting hardcoded POLY_F3 each frame");
-    }
-
-    /* Don't open a scene here - Spyro is a 30fps game (two PSX vblanks per
-     * logical frame), so the host loop yields twice per DrawOTag. We let the
-     * DrawOTag thunk start the scene on demand via its own PsyX_BeginScene()
-     * call, and only EndScene + SwapWindow on host iterations where DrawOTag
-     * actually fired. Empty iterations leave the front buffer untouched, so
-     * the previous game frame stays visible until the next DrawOTag.
-     *
-     * Net effect: GL output is naturally 30fps and there's no yellow flash
-     * between game frames. */
-
-    Uint64 start = SDL_GetTicks();  /* SDL3: SDL_GetTicks is 64-bit */
-    int    exit_code = OPENPETE_EXIT_OK;
+    host_session_t S;
+    int rc = host_session_open(&S, opts);
+    if (rc != OPENPETE_EXIT_OK) return host_session_close(&S, rc);
+    /* Which half of the input seam this thread owns (see run_host_init). */
+    const bool split = S.split;
+    const Uint64 start = S.start;
     const char* exit_reason = "frame-limit";
     int    quit = 0;
-    run_deadline_arm(opts, start);
-
-    /* Monitor refresh rate (primary display - the window spawns there; 60
-     * when headless / query failure). Feeds the --render-fps default below
-     * and the settings menu's FPS ladder before the loop. */
-    int refresh_hz = 60;
-    /* Exact rate for the pacing log: rounding 59.94 to 60 erases precisely the
-     * distinction a pacing baseline is keyed on. */
-    int refresh_mhz = 60000;
-    if (!opts->headless) {
-        const SDL_DisplayMode* dm =
-            SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-        if (dm && dm->refresh_rate > 0.0f) {
-            refresh_hz  = (int)(dm->refresh_rate + 0.5f);
-            refresh_mhz = (int)(dm->refresh_rate * 1000.0f + 0.5f);
-        }
-    }
 
     /* Resolve the launch --render-fps target. -1 = unset: windowed runs
      * default to the display's refresh rate - the wall-clock dual-pacer + transform-interp
@@ -4255,7 +4244,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
      * live pacer state (s_render_fps) is seeded from it. */
     const int render_fps = (opts->render_fps >= 0) ? opts->render_fps
                          : opts->headless          ? 0
-                                                   : refresh_hz;
+                                                   : S.refresh_hz;
     if (opts->render_fps < 0 && !opts->headless)
         OPL_INFO_F("pacer", "--render-fps unset: defaulting to display refresh %d Hz",
                    render_fps);
@@ -4353,6 +4342,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                    (double)sim_period_ns / 1e6);
     }
     live_knob_publish_shown();   /* the getters report the seeded pacer state */
+    S.render_fps = render_fps;   /* the frame-time log's target period */
+    S.tick_scale = tick_scale;
 
     /* Was a deadline in force for the iteration that just ended? The loop's
      * own unlock verdict is not written until the tail, so iteration 1 has
@@ -4457,146 +4448,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
      * resumes after one tick = 60 fps and a wait-loop body (gameplay)
      * resumes after two ticks = 30 fps without per-game predicates. */
 
-    /* --position-log: open the CSV. Header is one line so multiple runs
-     * can be diff'd without sed magic. fflush after each frame so a
-     * killed run still leaves its progress on disk. */
-    FILE* position_log_fp = NULL;
-    if (opts->position_log_path && *opts->position_log_path) {
-        position_log_fp = fopen(opts->position_log_path, "wb");
-        if (!position_log_fp) {
-            OPL_ERROR_F("position-log", "fopen %s failed: %s",
-                        opts->position_log_path, strerror(errno));
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-        fputs("frame,vbl,x,y,z\n", position_log_fp);
-        OPL_INFO_F("position-log", "writing g_Spyro.m_Position each yield to %s",
-                   opts->position_log_path);
-    }
-
-    /* Primary determinism gate. See gameplay_hash_log_emit. */
-    FILE* gameplay_hash_log_fp = NULL;
-    if (opts->gameplay_hash_log_path && *opts->gameplay_hash_log_path) {
-        /* Zero registered regions hashes nothing: every frame would log the
-         * FNV offset basis and two runs would compare equal on no bytes. */
-        if (openpete_state_region_count == 0) {
-            OPL_ERROR_F("gameplay-hash-log",
-                        "this game registers no gameplay-state regions "
-                        "(no games/<game>/manifest/gameplay_state_regions.toml); "
-                        "a hash over zero regions is vacuous");
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-        gameplay_hash_log_fp = fopen(opts->gameplay_hash_log_path, "wb");
-        if (!gameplay_hash_log_fp) {
-            OPL_ERROR_F("gameplay-hash-log", "fopen %s failed: %s",
-                        opts->gameplay_hash_log_path, strerror(errno));
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-        gameplay_hash_log_emit_header(gameplay_hash_log_fp);
-        OPL_INFO_F("gameplay-hash-log",
-                   "FNV1a-64 over %zu state regions to %s",
-                   openpete_state_region_count,
-                   opts->gameplay_hash_log_path);
-    }
-
-    /* Forward-declare the frame-time-log state - opened below after bk2
-     * setup so its early-returns don't leak the FILE*. */
-    openpete_frame_time_log_t frame_time_log = {0};
-    int64_t frame_time_log_target_period_ns = 0;
-    int64_t frame_time_log_start_ns = 0;
-
-    /* --bk2-record: prepare the in-memory frame buffer. The file isn't
-     * touched until exit, so a SIGTERM/Ctrl-C against the run still
-     * produces a usable movie. */
-    bool bk2_recording = (opts->bk2_record_path && *opts->bk2_record_path);
-    if (bk2_recording) {
-        if (bk2_record_begin(opts->bk2_record_path, opts->bk2_record_args) != 0) {
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-        /* A hang-watchdog exit skips the shutdown below; the flush writes
-         * the movie on that path. */
-        openpete_crash_set_exit_flush(bk2_record_exit_flush);
-    }
-
-    /* Level-load duration, constant for the run: the option, else the game's
-     * own default. Resolved before the movie load so a bk2 recorded under
-     * another value is refused up front. */
-    openpete_cd_load_delay = (opts->load_delay >= 0)
-                               ? opts->load_delay
-                               : (int)game_get_load_delay_default();
-    OPL_INFO_F("cd", "load delay: %d VBL(s) per level load%s",
-               openpete_cd_load_delay,
-               opts->load_delay >= 0 ? " (--load-delay)" : " (game default)");
-
-    /* --bk2: load BizHawk movie once, picked up per-frame in the loop. */
-    bk2_movie_t bk2 = {0};
-    int  bk2_offset = 0;
-    bool bk2_active = (opts->bk2_path && *opts->bk2_path);
-    openpete_bk2_set_active(bk2_active || bk2_recording);
-    if (bk2_active &&
-        bk2_replay_load(opts, &bk2, &bk2_offset) != 0)
-        return OPENPETE_EXIT_SETUP_ERROR;
-    bk2_feed_open(bk2_active ? &bk2 : NULL, bk2_offset);
-
-    /* --frame-time-log: per-present binary recorder for the pacing
-     * harness. The "deadline" we record against is a pure-ideal
-     * cadence:
-     *     deadline = start_op_ns + frame * target_period_ns
-     * This is platform-agnostic and pacer-agnostic - it tells us how
-     * the *actual* present time drifts from a perfectly-paced clock,
-     * regardless of whether the legacy SDL_AddTimer pacer or a future
-     * high-res pacer is driving the loop. The target period is the sim
-     * cadence. */
-    if (opts->frame_time_log_path && *opts->frame_time_log_path) {
-        /* Default target: the PSX tick cadence, one present per tick
-         * (= 1/2 of the 59.8261054 Hz 240p VBL). When the render-fps target
-         * is set (explicit --render-fps N, or the unset windowed default =
-         * display refresh) the dual-pacer drives the loop at N Hz instead,
-         * so use that. Whole ns: the log's ideal-cadence baseline is a
-         * measurement reference, not a deadline the pacer steps. */
-        if (render_fps > 0) {
-            frame_time_log_target_period_ns =
-                (int64_t)((double)OP_NS_PER_SEC / (double)render_fps / tick_scale);
-        } else {
-            frame_time_log_target_period_ns = (int64_t)g_openpete_tick_period_ns;
-        }
-        if (openpete_frame_time_log_open(&frame_time_log,
-                                         opts->frame_time_log_path,
-                                         frame_time_log_target_period_ns) != 0) {
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-        frame_time_log_start_ns = op_now();
-    }
-
-    /* --pace-log: the unified pacing event log. Superset of the recorder
-     * above - every VBL as well as every present, on one timebase, so a late
-     * tick can be attributed to the present that blocked it. Opened here, with
-     * the renderer already up, because the environment block must record the
-     * device and the present mode actually GRANTED. */
-    if (opts->pace_log_path && *opts->pace_log_path) {
-        char env[2048];
-        openpete_pace_env_build(env, sizeof(env),
-                                openpete_native_render_gpu_name(),
-                                openpete_native_render_driver_version(),
-                                refresh_mhz,
-                                openpete_native_render_present_mode(),
-                                opts->fullscreen ? 1 : 0,
-                                s_render_fps,
-                                g_openpete_interp_enabled ? 1 : 0,
-                                s_runahead_req,
-                                tick_scale,
-                                openpete_split_applies(opts) ? 1 : 0,
-                                openpete_host_input_legacy(),
-                                opts->headless ? 1 : 0);
-        if (openpete_pace_log_open(opts->pace_log_path, env) != 0)
-            return OPENPETE_EXIT_SETUP_ERROR;
-    }
-
-    /* Performance trace (--profile-out): streams CPU scope spans + GPU zones +
-     * census, keyed per present / canonical tick. Inert unless the flag is set. */
-    if (opts->profile_out_path && *opts->profile_out_path) {
-        if (op_prof_open(opts->profile_out_path) != 0)
-            return OPENPETE_EXIT_SETUP_ERROR;
-    }
+    rc = host_session_open_outputs(&S);
+    if (rc != OPENPETE_EXIT_OK) return host_session_close(&S, rc);
 
     /* Input pump rate: every host iteration. g_PsyX_Pad_InputOverride is
      * set per host iteration and the input update is what propagates it into
@@ -4628,35 +4481,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
      * writes voices loop their current sample). */
     bool g_paused = false;
     bool g_step_one = false;
-    bool prev_alt_enter = false;
 
-    /* Menu / overlay latches that are NOT key edges: these track the
-     * open/closed state itself so the pad override is cleared exactly
-     * once on the closing transition. */
-    bool prev_menu_close = false;   /* Start/Circle closes on RELEASE */
-    bool menu_close_stale = false;  /* menu_close held from before the open */
-    int  prev_mouse_owner = OPENPETE_MOUSE_OWNED_NONE;
-    bool prev_overlay_hold = false;   /* an overlay held the pad neutral */
-
-    /* Seed the in-game settings menu from the launch flags, and build its FPS
-     * ladder from the monitor refresh queried above (60 if unknown/headless).
-     * Applies nothing - it only makes the menu reflect what the game launched
-     * with (the FPS row reads the live pacer target, which already holds the
-     * resolved render-fps default). */
-    openpete_menu_init(opts, refresh_hz);
-
-    /* Eager production (on unless OPENPETE_EAGER=0): windowed native display
-     * only. */
-    if (openpete_native_scene_enabled() && !opts->headless && openpete_present_thread_start()) {
-        eager_init();
-        s_eager_ftl.log = &frame_time_log;
-        s_eager_ftl.start_ns = &frame_time_log_start_ns;
-        s_eager_ftl.period_ns = &frame_time_log_target_period_ns;
-        openpete_present_thread_set_callback(eager_present_cb, NULL);
-        openpete_on_guest_discontinuity(eager_on_discontinuity);
-        openpete_on_guest_discontinuity(openpete_native_scene_ring_flush);
-    }
-
+    S.loop_entered = true;
     while (!quit) {
         SDL_AddAtomicInt(&g_sim_heartbeat, 1);
         host_trace_iter_begin();
@@ -4817,20 +4643,20 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * fall back to 0xFFFF - i.e. no override - so live keyboard /
          * gamepad input takes over once the movie ends. */
         unsigned bk2_stamped_frame = openpete_frame;  /* see restamp below */
-        if (sim_due && bk2_active) {
+        if (sim_due && S.bk2.active) {
             int bk2_frame = bk2_feed_row();
-            if (bk2_frame >= bk2.frame_count && opts->bk2_stop_on_end) {
+            if (bk2_frame >= S.bk2.movie.frame_count && opts->bk2_stop_on_end) {
                 quit = 1;
                 exit_reason = "bk2-end";
                 break;
             }
-            const int ovr_active = bk2_stamp_row(&bk2, bk2_frame);
+            const int ovr_active = bk2_stamp_row(&S.bk2.movie, bk2_frame);
             const unsigned short bits = (unsigned short)g_PsyX_Pad_InputOverride;
             {
                 /* Mods' read-only bk2 status (api->bk2_status) - also
                  * published pre-offset / past-end (overriding = 0). */
                 openpete_mods_bk2_status_t st = {
-                    1, bk2_frame, (int)bk2.frame_count, ovr_active };
+                    1, bk2_frame, (int)S.bk2.movie.frame_count, ovr_active };
                 openpete_mods_bk2_publish(&st);
             }
             /* Log every input transition so the user can audit the
@@ -4855,10 +4681,10 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * channel; the overlays' neutral stamp yields to it. Evaluated on
          * every iteration, not only sim-due ones, because the overlays stamp
          * on every iteration and the movie restamps only on a tick. */
-        if (overlay_pad_stamp(bk2_active,
-                              bk2_frame_in_range(bk2_active, bk2_feed_row(),
-                                                 bk2.frame_count),
-                              &prev_overlay_hold))
+        if (overlay_pad_stamp(S.bk2.active,
+                              bk2_frame_in_range(S.bk2.active, bk2_feed_row(),
+                                                 S.bk2.movie.frame_count),
+                              &s_input_latch.prev_overlay_hold))
             ovr_claimed = true;
         overlay_input_suspend();
 
@@ -4942,10 +4768,10 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                  * arbitrated view goes neutral; a release edge on a poll
                  * where the owner changed is not a release. */
                 const int mouse_owner = openpete_host_mouse_owned();
-                const bool owner_changed = mouse_owner != prev_mouse_owner;
-                prev_mouse_owner = mouse_owner;
-                if (menu_close_released(close_k, prev_menu_close, owner_changed,
-                                        &menu_close_stale)) {
+                const bool owner_changed = mouse_owner != s_hotkey_latch.prev_mouse_owner;
+                s_hotkey_latch.prev_mouse_owner = mouse_owner;
+                if (menu_close_released(close_k, s_hotkey_latch.prev_menu_close, owner_changed,
+                                        &s_hotkey_latch.menu_close_stale)) {
                     /* Close on the RELEASE edge of Start/Circle. The game pad
                      * is held neutral only while the menu is open, so closing
                      * on the press would let the still-held button bleed into
@@ -4963,7 +4789,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                      * a fixed order. */
                     openpete_menu_mouse_poll();
                 }
-                prev_menu_close = close_k;
+                s_hotkey_latch.prev_menu_close = close_k;
 
                 /* Freecam axes are level-held and consumed every game tick,
                  * but the latch below is skipped while the menu owns the
@@ -4974,8 +4800,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                     openpete_freecam_set_axes(&ax);
                 }
             } else {
-                prev_menu_close = false;
-                menu_close_stale = openpete_key_down(OPK_MENU_CLOSE) != 0;
+                s_hotkey_latch.prev_menu_close = false;
+                s_hotkey_latch.menu_close_stale = openpete_key_down(OPK_MENU_CLOSE) != 0;
             }
         }
         /* The settings writer: menu changes and the dev overlay's Save
@@ -5007,7 +4833,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * (OPENPETE_HANDOFF_AT / openpete_handoff_request). */
             if (state_ops_drain()) {
                 state_stress_step(opts);
-                rewound_this_iter = rewind_step(opts, g_paused, bk2_active);
+                rewound_this_iter = rewind_step(opts, g_paused, S.bk2.active);
                 openpete_mods_arena_page_census_tick();
                 openpete_handoff_poll(&g_game.cpu);
             }
@@ -5019,8 +4845,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * input (measured: rollback+replay self-mismatch on movies
              * with an input edge inside the window). Silent twin of the
              * stamp block above; logging/status stay main-site-only. */
-            if (bk2_active && openpete_frame != bk2_stamped_frame)
-                (void)bk2_stamp_row(&bk2, bk2_feed_row());
+            if (S.bk2.active && openpete_frame != bk2_stamped_frame)
+                (void)bk2_stamp_row(&S.bk2.movie, bk2_feed_row());
 
             host_pause_step(&g_paused, &g_step_one);
 
@@ -5195,7 +5021,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * Alt+Enter is hardcoded rather than a binding because the keymap
              * has no chord vocabulary; `fullscreen` is the rebindable single
              * key for it and ships unbound so nothing changes by default. */
-            prev_alt_enter = fullscreen_poll(split, prev_alt_enter);
+            s_hotkey_latch.prev_alt_enter = fullscreen_poll(split, s_hotkey_latch.prev_alt_enter);
         }
 
         /* Input, as four explicit steps instead of PsyX_UpdateInput's two.
@@ -5303,10 +5129,10 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * claimed the channel. Movie axes are already in the log's bk2
          * order, so they need no reordering. A movie declaring one port
          * leaves the slot absent, which is what it recorded. */
-        if (bk2_active && bk2.players >= 2 && bk2.p2_frames) {
+        if (S.bk2.active && S.bk2.movie.players >= 2 && S.bk2.movie.p2_frames) {
             int bf2 = bk2_feed_row();
-            if (bf2 >= 0 && bf2 < bk2.frame_count) {
-                const bk2_frame_t* f2 = &bk2.p2_frames[bf2];
+            if (bf2 >= 0 && bf2 < S.bk2.movie.frame_count) {
+                const bk2_frame_t* f2 = &S.bk2.movie.p2_frames[bf2];
                 input_log_stage_port(1, f2->buttons, f2->axes);
             }
         }
@@ -5749,13 +5575,13 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * holds garbage before BSS init). Frame counter is openpete_frame,
          * vbl is the synchronous yield-driven counter; both are
          * deterministic across runs by construction. */
-        if (position_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
-            position_log_emit(position_log_fp, openpete_frame,
+        if (S.out.position_log && ticked_this_iter && !openpete_fast_boot_active) {
+            position_log_emit(S.out.position_log, openpete_frame,
                               SDL_GetAtomicInt(&openpete_vbl));
         }
-        if (gameplay_hash_log_fp && ticked_this_iter && !openpete_fast_boot_active) {
+        if (S.out.hash_log && ticked_this_iter && !openpete_fast_boot_active) {
             game_on_hash_emit(openpete_frame);
-            gameplay_hash_log_emit(gameplay_hash_log_fp, openpete_frame,
+            gameplay_hash_log_emit(S.out.hash_log, openpete_frame,
                                    SDL_GetAtomicInt(&openpete_vbl));
         }
 
@@ -5816,7 +5642,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                         s_slot_differed[a][b] += ticks;
                 }
             }
-            input_log_commit_yields(ticks, bk2_recording, bits);
+            input_log_commit_yields(ticks, S.bk2.recording, bits);
         }
 
         if (sim_due && opts->debug_triangle) {
@@ -6112,8 +5938,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * metadata for cross-referencing with position-log /
              * gameplay-hash-log. */
             if (!s_eager.active) {
-            ftl_record_present(&frame_time_log, frame_time_log_start_ns,
-                               frame_time_log_target_period_ns, openpete_frame);
+            openpete_frame_time_log_present(&S.out.ftl, openpete_frame);
             pace_record_present(OP_PACE_CANONICAL);
             openpete_pace_present_span(OP_PACE_CANONICAL, pace_canon_t0,
                                        op_now(), pace_canon_extract_ns);
@@ -6371,8 +6196,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
 
             /* Log this sub-tick present too, so --frame-time-log sees the real
              * present cadence at --render-fps>30 (not just the ~30 Hz canon). */
-            ftl_record_present(&frame_time_log, frame_time_log_start_ns,
-                               frame_time_log_target_period_ns, openpete_frame);
+            openpete_frame_time_log_present(&S.out.ftl, openpete_frame);
             pace_record_present(OP_PACE_INTERMEDIATE);
             {
                 /* Feed the predictor from measured cost, and log the span so
@@ -6753,464 +6577,9 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
 #endif
     }
 
-    /* The present thread is joined before any teardown: it presents through
-     * the device the record flush below drains, writes the frame-time log
-     * and the pace log, and waits on this thread's clock, all of which the
-     * teardown closes. Stopping it hands the display back to this thread. */
     host_trace_loop_end(exit_reason);
-    SDL_SetAtomicInt(&g_sim_teardown, 1);
-    sim_teardown_progress();
-    openpete_present_thread_stop();
-    host_trace_close_step(HT_S_PRESENT_THREAD_STOP);
-    sim_teardown_progress();
-    /* Mods stop their own threads before anything they call is torn down:
-     * the renderer, the texture registry, the mod registries, audio. */
-    openpete_mods_shutdown(sim_teardown_progress);
-    host_trace_close_step(HT_S_MODS_SHUTDOWN);
-    sim_teardown_injected_stall();
-    openpete_settings_save_flush("shutdown");   /* changes still inside the debounce */
-    host_trace_close_step(HT_S_SETTINGS_FLUSH);
-    openpete_rebind_log_summary();
-    host_trace_close_step(HT_S_REBIND_SUMMARY);
-
-    bk2_feed_report();
-    host_trace_close_step(HT_S_BK2_FEED_REPORT);
-    if (bk2_active) {
-        bk2_movie_free(&bk2);
-        host_trace_close_step(HT_S_BK2_FREE);
-        g_PsyX_Pad_InputOverride = 0xFFFF;
-        g_PsyX_Pad_OverrideActive = 0;
-        g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
-        g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
-    }
-    if (bk2_recording) {
-        openpete_crash_set_exit_flush(NULL);
-        bk2_record_finalize();
-        host_trace_close_step(HT_S_BK2_FINALIZE);
-        sim_teardown_progress();
-    }
-    /* --record: drain the native async readback ring's queued tail frames to the
-     * encoder (while the Vulkan device is still alive), THEN flush the encoder +
-     * write the container trailer. Both safe unconditionally (no-op if recording
-     * was never armed / native isn't the display). Reaching here on SIGTERM/Ctrl-C
-     * still produces a playable file. */
-    openpete_native_render_record_flush();
-    host_trace_close_step(HT_S_RECORD_FLUSH);
-    sim_teardown_progress();
-    openpete_record_shutdown();
-    host_trace_close_step(HT_S_RECORD_SHUTDOWN);
-    sim_teardown_progress();
-    /* --screenshot-presents-start/count engagement, reported unconditionally
-     * when the flag was set because that fact is invisible in the images. */
-    openpete_capture_report_presents(opts);
-    host_trace_close_step(HT_S_CAPTURE_REPORT);
-    if (position_log_fp) {
-        fclose(position_log_fp);
-        position_log_fp = NULL;
-        host_trace_close_step(HT_S_POSITION_LOG_CLOSE);
-    }
-    if (gameplay_hash_log_fp) {
-        fclose(gameplay_hash_log_fp);
-        gameplay_hash_log_fp = NULL;
-        host_trace_close_step(HT_S_HASH_LOG_CLOSE);
-    }
-    if (psxtrace) {
-        host_trace_close_step(HT_S_PSXTRACE_SUMMARY);
-        OPL_INFO_F("psxtrace",
-                   "summary: records=%u frames_compared=%llu "
-                   "hash_mismatches=%llu first_div_frame=%u "
-                   "first_non_neutral_div=%s frame=%u",
-                   psxtrace->records_consumed,
-                   (unsigned long long)psxtrace->frames_compared,
-                   (unsigned long long)psxtrace->hashes_diverged,
-                   psxtrace->diverged ? psxtrace->first_divergent_frame : 0u,
-                   psxtrace->strict_diverged
-                       ? psxtrace->region_names[psxtrace->first_strict_divergent_region]
-                       : "none",
-                   psxtrace->strict_diverged ? psxtrace->first_strict_divergent_frame : 0u);
-        /* Per-region divergence frequency: how many of frames_compared
-         * each region diverged on. Stable region == real persistent
-         * state difference; flickering region == aliasing or genuinely
-         * intermittent leak. Logged unconditionally so the gate is
-         * actionable on first read. */
-        if (psxtrace->frames_compared > 0 && psxtrace->hashes_diverged > 0) {
-            for (uint32_t r = 0; r < psxtrace->region_count; r++) {
-                uint64_t n = psxtrace->per_region_diverge_count[r];
-                if (n > 0) {
-                    OPL_INFO_F("psxtrace",
-                               "  region[%u] %s: %llu/%llu frames diverged",
-                               r, psxtrace->region_names[r],
-                               (unsigned long long)n,
-                               (unsigned long long)psxtrace->frames_compared);
-                }
-            }
-        }
-        /* Engagement (per region): a row whose oracle hash never changed
-         * across the run was compared on a constant. */
-        if (psxtrace->frames_compared > 1) {
-            char just[1024], unjust[1024];
-            size_t nj = 0, nu = 0;
-            for (uint32_t r = 0; r < psxtrace->region_count; r++) {
-                if (psxtrace->per_region_change_count[r] != 0) continue;
-                const int ok = (r < (uint32_t)openpete_state_region_count)
-                             ? openpete_state_regions[r].constant_ok : 0;
-                if (ok) nj += (size_t)snprintf(just + nj, sizeof(just) - nj, " %s",
-                                               psxtrace->region_names[r]);
-                else    nu += (size_t)snprintf(unjust + nu, sizeof(unjust) - nu, " %s",
-                                               psxtrace->region_names[r]);
-            }
-            OPL_INFO_F("psxtrace", "zero-change regions justified (constant_ok):%s",
-                       nj ? just : " none");
-            OPL_INFO_F("psxtrace", "zero-change regions unjustified:%s", nu ? unjust : " none");
-        }
-        if (psxtrace->has_vbl_stamps) {
-            char ht[256], ho[256];
-            size_t nt = 0, no = 0;
-            for (int b = 0; b < 17; b++) {
-                if (psxtrace->vbl_hist_trace[b])
-                    nt += (size_t)snprintf(ht + nt, sizeof(ht) - nt, " %s%d:%llu",
-                                           b == 16 ? ">=" : "", b,
-                                           (unsigned long long)psxtrace->vbl_hist_trace[b]);
-                if (psxtrace->vbl_hist_op[b])
-                    no += (size_t)snprintf(ho + no, sizeof(ho) - no, " %s%d:%llu",
-                                           b == 16 ? ">=" : "", b,
-                                           (unsigned long long)psxtrace->vbl_hist_op[b]);
-            }
-            OPL_INFO_F("psxtrace",
-                       "vbl deltas: policy=%s mismatches=%llu; reference%s; openpete%s",
-                       psxtrace->vbl_policy_exact ? "exact" : "log",
-                       (unsigned long long)psxtrace->vbl_delta_mismatches, ht, ho);
-            if (psxtrace->vbl_delta_mismatches)
-                OPL_INFO_F("psxtrace", "  first vbl-delta mismatch: record %u reference %d openpete %d",
-                           psxtrace->first_vbl_mismatch_frame,
-                           psxtrace->first_vbl_mismatch_trace,
-                           psxtrace->first_vbl_mismatch_op);
-            if (openpete_sched_active())
-                OPL_INFO_F("psxtrace", "  schedule: %u long frames charged at the next wait, final deficit %lld; "
-                           "%u records inside load windows not compared, %u reference records skipped at window ends",
-                           psxtrace->vbl_long_frames, (long long)psxtrace->vbl_deficit,
-                           psxtrace->records_uncompared, psxtrace->records_skipped);
-        }
-        /* Promote any EOF-pending CD-load transient to a hard failure and
-         * log the PASS/FAIL verdict + absorbed-transient tally. */
-        openpete_psxtrace_finalize(psxtrace);
-        if (psxtrace->hard_failed && exit_code == OPENPETE_EXIT_OK) {
-            exit_code = OPENPETE_EXIT_DIVERGENCE;
-        }
-        openpete_psxtrace_close(psxtrace);
-        psxtrace = NULL;
-        s_psxtrace_active = NULL;
-        openpete_psxtrace_dispatch_hook = NULL;
-        host_trace_close_step(HT_S_PSXTRACE_CLOSE);
-    }
-
-    Uint64 elapsed = SDL_GetTicks() - start;
-    OPL_INFO_F("exit",
-               "reason=%s frames=%u key=%u key_kind=%s elapsed_ms=%llu dispatch_ok=%d",
-               exit_reason, openpete_frame, openpete_feed_key_now(), feed_key_kind_name(),
-               (unsigned long long)elapsed, g_game.dispatch_ok);
-    host_trace_close_step(HT_S_EXIT_LOG);
-
-    {
-        /* Pacing census: printed on every run, no flag needed, the way the
-         * determinism gates are ambient. A run that was never paced says so
-         * instead of quoting a phase error against a grid it did not follow. */
-        char pace_summary[768];
-        openpete_pace_census_format(pace_summary, sizeof(pace_summary));
-        OPL_INFO_F("pace", "%s", pace_summary);
-        host_trace_close_step(HT_S_PACE_CENSUS);
-    }
-    /* The swapchain's side of the story, which the census cannot see. Printed
-     * unconditionally: a run where the acquire budget expired is a run whose
-     * display rate is not its present count, and that has to be legible
-     * without asking for a log file. */
-    if (openpete_native_render_enabled()) {
-        const uint64_t acq_sheds = openpete_native_render_acquire_sheds();
-        const uint64_t acq_to    = openpete_native_render_acquire_timeouts();
-        OPL_INFO_F("pace",
-                   "swapchain: %u image(s) granted; acquire refused %llu "
-                   "present(s) (%llu budget expiry, the rest suppressed by "
-                   "the back-off it opened); fence refused %llu present(s); "
-                   "%u present(s) never began",
-                   openpete_native_render_swapchain_images(),
-                   (unsigned long long)acq_sheds,
-                   (unsigned long long)acq_to,
-                   (unsigned long long)openpete_native_render_fence_sheds(),
-                   openpete_native_render_begin_refused());
-        host_trace_close_step(HT_S_SWAPCHAIN_REPORT);
-    }
-    openpete_pace_log_close();
-    host_trace_close_step(HT_S_PACE_LOG_CLOSE);
-
-    if (s_sim_slip_events || s_render_slip_events) {
-        OPL_INFO_F("pacer",
-                   "slip totals: sim %llu event(s) / %llu period(s) discarded; "
-                   "render %llu event(s) / %llu period(s)",
-                   (unsigned long long)s_sim_slip_events,
-                   (unsigned long long)s_sim_slip_periods,
-                   (unsigned long long)s_render_slip_events,
-                   (unsigned long long)s_render_slip_periods);
-        host_trace_close_step(HT_S_SLIP_TOTALS);
-    }
-
-    /* The clock is shut down by the caller once every thread that reads it
-     * has stopped (openpete_ticker_stop in run_recomp_fiber and
-     * run_split_threaded): the split's pump keeps calling op_now until the
-     * worker is joined. */
-    openpete_frame_time_log_close(&frame_time_log);
-    host_trace_close_step(HT_S_FTL_CLOSE);
-    op_functrace_dump_aggregate();   /* emit per-function aggregate into the trace */
-    host_trace_close_step(HT_S_FUNCTRACE);
-    if (openpete_interp_enabled()) {
-        host_trace_close_step(HT_S_INTERP_CENSUS);
-        OPL_INFO_F("interp",
-                   "captured=%llu, dedupe-skipped=%llu",
-                   (unsigned long long)openpete_interp_total_captures(),
-                   (unsigned long long)openpete_interp_total_dedupe_skips());
-    }
-    if (ra_pc_on()) {
-        /* stderr, not the log: the roundtrip gate greps this summary.
-         * Emitted whenever the check is armed, counters or not: a window
-         * that retired no prediction then reads as checked=0 instead of
-         * an absent line, which a harness cannot tell from a binary that
-         * never armed the check. */
-        fprintf(stderr, "[ra-predict] checked=%u mismatch=%u invalidated=%u\n",
-                s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated);
-        host_trace_close_step(HT_S_RA_PREDICT_REPORT);
-    }
-    {
-        /* Vertex-stream field census (stderr: harnesses grep it). A
-         * non-zero `unresolved` in a run with no handle-writing mod means
-         * a stock frame word lives below the handle bound. */
-        openpete_vstream_census_t vc;
-        openpete_vstream_census(&vc);
-        host_trace_close_step(HT_S_VSTREAM_CENSUS);
-        if (vc.stock || vc.handle || vc.unresolved)
-            fprintf(stderr, "[vstream] stock=%llu handle=%llu unresolved=%llu"
-                    " first=%#x\n", (unsigned long long)vc.stock,
-                    (unsigned long long)vc.handle,
-                    (unsigned long long)vc.unresolved,
-                    vc.first_unresolved);
-    }
-    {
-        /* sfx pack census (stderr: harnesses grep it). */
-        sfx_pack_census_t sc;
-        sfx_pack_census(&sc);
-        host_trace_close_step(HT_S_SFXPACK_CENSUS);
-        if (sc.keyed || sc.active)
-            fprintf(stderr, "[sfxpack] files=%d keyed=%llu resolved=%llu "
-                    "replaced=%llu rings_out=%llu verify_ok=%llu verify_bad=%llu "
-                    "cb_max_us=%llu cb_p99_us<=%llu sync_decodes=%llu\n",
-                    sc.files, (unsigned long long)sc.keyed,
-                    (unsigned long long)sc.resolved,
-                    (unsigned long long)sc.replaced,
-                    (unsigned long long)sc.rings_out,
-                    (unsigned long long)sc.verify_ok,
-                    (unsigned long long)sc.verify_bad,
-                    (unsigned long long)sc.cb_max_us,
-                    (unsigned long long)sc.cb_p99_us,
-                    (unsigned long long)sc.sync_decodes);
-    }
-    openpete_interp_shutdown();
-    host_trace_close_step(HT_S_INTERP_SHUTDOWN);
-
-    /* Best-effort fiber teardown. Our game fiber is parked in its forever-
-     * yield loop, so co_delete is safe. */
-    if (openpete_game_fiber) {
-        openpete_fiber_delete_guarded(openpete_game_fiber);
-        openpete_game_fiber = NULL;
-        host_trace_close_step(HT_S_FIBER_DELETE);
-    }
-
-    openpete_present_thread_report();
-    host_trace_close_step(HT_S_PRESENT_THREAD_REPORT);
-    /* The present thread was joined after the loop: it raises trace records
-     * while it renders, and closing the stream under a live producer would
-     * flush its chunk while it is still appending to it. */
-    op_prof_close();
-    host_trace_close_step(HT_S_PROF_CLOSE);
-    openpete_native_present_census_report();
-    host_trace_close_step(HT_S_NATIVE_PRESENT_CENSUS);
-    eager_report();
-    host_trace_close_step(HT_S_EAGER_REPORT);
-    if (s_eager.produced_inter || s_inline_rex)
-        OPL_INFO_F("sub-tick", "%u re-extract(s) presented: %u eager, %u inline",
-                   s_eager.produced_inter + s_inline_rex,
-                   s_eager.produced_inter, s_inline_rex);
-    openpete_capture_report_intermediate();
-    host_trace_close_step(HT_S_CAPTURE_INTER_REPORT);
-
-    disc_cache_exit_census();
-    host_trace_close_step(HT_S_DISC_CENSUS);
-    /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
-    openpete_host_input_parity_report();
-    host_trace_close_step(HT_S_INPUT_PARITY);
-
-    /* Staged-vs-readback equality for slot 0. Zero checks means the override
-     * channel was never stamped before a tick (no host-owned input at all),
-     * which makes the mismatch count uninformative rather than clean. */
-    host_trace_close_step(HT_S_INPUT_LOG_REPORT);
-    OPL_INFO_F("input-log",
-               "slot-0 staging: %llu check(s), %llu mismatch(es)",
-               s_p1_stage_checks, s_p1_stage_mismatches);
-    OPL_INFO_F("input-log",
-               "pad slots present (VBLs): p1=%llu p2=%llu p3=%llu p4=%llu",
-               s_slot_present_vbls[0], s_slot_present_vbls[1],
-               s_slot_present_vbls[2], s_slot_present_vbls[3]);
-    OPL_INFO_F("input-log",
-               "pad slot independence (VBLs differing): "
-               "p1/p2=%llu p1/p3=%llu p1/p4=%llu p2/p3=%llu p2/p4=%llu p3/p4=%llu",
-               s_slot_differed[0][1], s_slot_differed[0][2], s_slot_differed[0][3],
-               s_slot_differed[1][2], s_slot_differed[1][3], s_slot_differed[2][3]);
-    if (synth_pads_enabled())
-        OPL_INFO_F("input-log",
-                   "synthetic slots 1-3: %llu stage check(s)/%llu mismatch(es), "
-                   "%llu rewind check(s)/%llu mismatch(es)",
-                   s_synth_stage_checks, s_synth_stage_mismatches,
-                   s_synth_rewind_checks, s_synth_rewind_mismatches);
-    if (s_p1_stage_mismatches)
-        OPL_ERROR_F("input-log",
-                    "slot-0 staging first mismatch at frame %u: "
-                    "staged bits=0x%04X axes=%u,%u,%u,%u; "
-                    "readback bits=0x%04X axes=%u,%u,%u,%u",
-                    s_p1_stage_first_frame,
-                    s_p1_stage_first_staged_bits,
-                    s_p1_stage_first_staged_axes[0], s_p1_stage_first_staged_axes[1],
-                    s_p1_stage_first_staged_axes[2], s_p1_stage_first_staged_axes[3],
-                    s_p1_stage_first_read_bits,
-                    s_p1_stage_first_read_axes[0], s_p1_stage_first_read_axes[1],
-                    s_p1_stage_first_read_axes[2], s_p1_stage_first_read_axes[3]);
-
-    rumble_census_report();
-    host_trace_close_step(HT_S_RUMBLE_REPORT);
-    openpete_rewind_report();
-    host_trace_close_step(HT_S_REWIND_REPORT);
-    host_trace_close_step(HT_S_SAVESTATE_REPORT);
-    OPL_INFO_F("savestate", "deferred to a final yield: %llu snapshot request(s), %llu load request(s); "
-               "periodic state work sat out %llu intermediate yield(s); "
-               "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "
-               "%llu adopted at another park site; "
-               "left gameplay: %llu rolled back, %llu adopted; "
-               "park site: loads=%llu (%llu final yield(s) waited) rewind=%llu stress=%llu "
-               "runahead=%llu refused=%llu stress-abandoned=%llu",
-               s_state_ops_deferred[0], s_state_ops_deferred[1], s_state_yields_skipped,
-               s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted,
-               s_ra_left[0], s_ra_left[1],
-               s_site_deferred[SITE_DEF_LOAD], s_site_wait_yields, s_site_deferred[SITE_DEF_REWIND],
-               s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
-               s_site_refused, s_site_abandoned);
-    OPL_INFO_F("savestate", "deferred at an emitted loop site: %llu request(s); first at loop header "
-               "0x%08X, feed key %u", s_loop_deferred, s_loop_deferred_header, s_loop_deferred_key);
-    {
-        /* The VBL delivery census (games/common/psyq/psyq_thunks.cpp). */
-        if (psyq_vbl_delivery_report) psyq_vbl_delivery_report();
-        host_trace_close_step(HT_S_VBL_DELIVERY);
-    }
-
-    /* OSD engagement. A capture-based gate reading zero here never composited
-     * a toast, whatever its pixels looked like - reported unconditionally so
-     * that cannot pass unnoticed. */
-    if (openpete_osd_enabled()) {
-        OPL_INFO_F("osd", "census: %u toast(s) composited",
-                   openpete_native_osd_composited());
-        host_trace_close_step(HT_S_OSD_CENSUS);
-    }
-    /* Version-line engagement, on the same footing: a capture that never drew
-     * it proves nothing about the line, whatever its pixels looked like. */
-    OPL_INFO_F("version", "census: %s (%s), %u line(s) drawn",
-               openpete_build_version(), openpete_native_version_reason(),
-               openpete_native_version_drawn());
-    host_trace_close_step(HT_S_VERSION_CENSUS);
-
-    {
-        /* Whether the guest's own execution ever reached the Vulkan device. A
-         * present thread can only run concurrently with a tick if this is
-         * zero; any name listed here is a call that would have to be moved,
-         * locked, or deferred first. */
-        host_trace_close_step(HT_S_GPU_AUDIT);
-        unsigned gpu_hits = op_gpu_audit_total();
-        unsigned mw = op_gpu_audit_map_writes();
-        /* Mapped-memory writes are reported even when the call count is zero:
-         * they are host memcpys into device-visible buffers (the terrain
-         * sector arenas, filled from hooks inside the guest's render walk), so
-         * no Vulkan call names them, and a present thread reading those arenas
-         * races them regardless of how clean the call audit looks. */
-        OPL_INFO_F("gpu-audit",
-                   "mapped-buffer writes during guest execution: %u (%llu bytes)",
-                   mw, (unsigned long long)op_gpu_audit_map_bytes());
-        if (gpu_hits == 0) {
-            OPL_INFO_F("gpu-audit", "%s",
-                       "no Vulkan calls during guest execution");
-        } else {
-            const char *names[32];
-            int n = op_gpu_audit_names(names, 32);
-            char buf[1024];
-            int at = 0;
-            for (int i = 0; i < n && at < (int)sizeof(buf) - 1; i++)
-                at += snprintf(buf + at, sizeof(buf) - (size_t)at, "%s%s",
-                               i ? " " : "", names[i]);
-            if (!n) buf[0] = 0;
-            OPL_WARN_F("gpu-audit",
-                       "%u Vulkan calls during guest execution (%d distinct): %s",
-                       gpu_hits, n, buf);
-        }
-    }
-
-    sfx_pack_shutdown();   /* its decode worker's SDL calls must not overlap SDL_Quit */
-    host_trace_close_step(HT_S_SFX_SHUTDOWN);
-    feature_registry_shutdown();   /* the feature modules' workers, likewise */
-    host_trace_close_step(HT_S_FEATURE_SHUTDOWN);
-    /* Renderer + PsyCross teardown destroy the window and call SDL_Quit, which
-     * belong to the thread that created them. Under the split that is main, so
-     * the worker leaves them alone and main runs them after the join -
-     * tearing the window down from here would hang the process on exit. */
-    if (!split) {
-        openpete_stall_monitor_stop();   /* its clock reads must not overlap SDL_Quit */
-        openpete_native_render_shutdown();
-        PsyX_Shutdown();
-        host_trace_close_step(HT_S_RENDER_SHUTDOWN);
-    }
-
-    fprintf(stdout,
-            "openpete-exit: reason=%s frames=%u key=%u key_kind=%s ms=%llu code=%d\n",
-            exit_reason, openpete_frame, openpete_feed_key_now(), feed_key_kind_name(),
-            (unsigned long long)elapsed, exit_code);
-    host_trace_close_step(HT_S_EXIT_STDOUT);
-    /* Host-input end state, printed when the lock or the injection script is
-     * in play: what the lock discarded and what the host-side consumers a
-     * stray key or pointer reaches ended up as. */
-    if (openpete_input_lock_active() || openpete_host_mouse_inject_active()) {
-        fprintf(stdout,
-                "openpete-input: lock=%d dropped=%llu menu_open=%d freecam=%d "
-                "freecam_engages=%u devui_open=%d mouse_motion=(%lld, %lld)\n",
-                openpete_input_lock_active(), openpete_input_lock_dropped(),
-                openpete_menu_is_open() ? 1 : 0,
-                openpete_freecam_active() ? 1 : 0,
-                openpete_freecam_engage_generation(),
-                openpete_devui_is_open() ? 1 : 0,
-                (long long)openpete_host_mouse_motion_total(0),
-                (long long)openpete_host_mouse_motion_total(1));
-        host_trace_close_step(HT_S_INPUT_STDOUT);
-    }
-    /* The player's end state, in --player-pose's own grammar, so the next
-     * run starts where this one stopped: `--skip-to-level <level>
-     * --player-pose "pos=(x, y, z) yaw=N"`. Printed only while the pose is
-     * placeable (a title, demo, load or fly-in exit names the reason). */
-    {
-        int32_t px, py, pz, pyaw, plevel;
-        const int rc = game_get_player_pose(&g_game.cpu, &px, &py, &pz, &pyaw, &plevel);
-        if (rc == 0) {
-            if (pyaw >= 0) fprintf(stdout, "openpete-pose: level=%d pos=(%d, %d, %d) yaw=%d\n",
-                                   plevel, px, py, pz, pyaw);
-            else           fprintf(stdout, "openpete-pose: level=%d pos=(%d, %d, %d) yaw=-\n",
-                                   plevel, px, py, pz);
-        } else {
-            fprintf(stdout, "openpete-pose: none reason=%s\n",
-                    rc == -1 ? "not-live" : "not-placeable");
-        }
-        host_trace_close_step(HT_S_POSE_STDOUT);
-    }
-    return exit_code;
+    S.exit_reason = exit_reason;
+    return host_session_close(&S, OPENPETE_EXIT_OK);
 }
 #endif /* OPENPETE_HAS_PSYCROSS */
 
@@ -7223,8 +6592,8 @@ static void log_frame_on_exit(void) {
  *
  * The path when the thread split does not apply, and the fallback when
  * run_split_threaded cannot create the worker thread. The mod exit pass
- * runs inside the host loop before its teardown; the calls here run it
- * for a host init or host loop that returned before reaching it.
+ * runs inside the host loop's close on every path; the call here runs it
+ * for a host init that failed before the loop.
  * @param opts The parsed options.
  * @return The init error code, or the host loop's exit code. */
 static int run_recomp_fiber(const openpete_options_t* opts) OP_REQUIRES(sim) {
@@ -7235,7 +6604,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) OP_REQUIRES(sim) {
     }
     rc = run_host_loop(opts);
     host_trace_finish();
-    openpete_mods_shutdown(NULL);   /* a no-op unless the loop returned early */
     openpete_ticker_stop();   /* the loop's threads are joined; nothing reads the clock now */
     return rc;
 }
@@ -7257,8 +6625,8 @@ static SDL_Window*   s_psyx_gl_win;
 
 /** @brief Body of the sim thread under the thread split: take the GL context and run the game loop until it exits.
  *
- * Runs the mod exit pass after the loop (a no-op unless the loop returned
- * before reaching it), so it precedes main's teardown after the join. */
+ * The loop's close runs the mod exit pass on every path, so it precedes
+ * main's teardown after the join. */
 static int SDLCALL openpete_sim_thread(void* unused)
 {
     OP_ROLE_BIND(sim);
@@ -7269,7 +6637,6 @@ static int SDLCALL openpete_sim_thread(void* unused)
                     SDL_GetError());
     s_worker_rc = run_host_loop(s_worker_opts);
     host_trace_finish();
-    openpete_mods_shutdown(NULL);
     if (s_psyx_gl_ctx)
         SDL_GL_MakeCurrent(s_psyx_gl_win, NULL);
     SDL_SetAtomicInt(&g_worker_done, 1);

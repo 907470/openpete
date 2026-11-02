@@ -493,6 +493,12 @@ out:
     return rc;
 }
 
+void bk2_record_discard(void) {
+    input_log_lock();
+    if (s_rec.active) rec_reset();
+    input_log_unlock();
+}
+
 int bk2_record_finalize(void) {
     input_log_lock();
     const int rc = rec_write_and_end();

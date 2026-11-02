@@ -40,6 +40,9 @@ void state_stress_step(const openpete_options_t* opts);
  * @return true when the timeline moved (the iteration skips its forward tick). */
 bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active);
 
+/** @brief Log the savestate census: requests deferred to a final yield, runahead deferrals and adoptions, park-site deferrals, and the first emitted-loop-site deferral. */
+void state_ops_report(void);
+
 /* Park-site deferrals by kind: a load whose snapshot was saved at another
  * park site than the current final yield's. */
 enum { SITE_DEF_LOAD, SITE_DEF_REWIND, SITE_DEF_STRESS, SITE_DEF_RUNAHEAD, SITE_DEF_N };
