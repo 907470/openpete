@@ -4,6 +4,7 @@
 
 #include "host_state_ops.h"
 #include "run_internal.h"
+#include "host_input_tick.h"
 #include "runahead.h"
 
 #include "openpete.h"

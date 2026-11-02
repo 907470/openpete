@@ -7,9 +7,11 @@
 #include "openpete_frame_time_log.h"
 #include "bk2_movie.h"
 #include "openpete_thread_roles.h"
+#include "openpete_time.h"
 
 #include <SDL3/SDL.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 
 /* The bk2 movie session: replay (--bk2) and recording (--bk2-record). */
@@ -44,10 +46,23 @@ typedef struct host_session {
     host_outputs_t out;
 } host_session_t;
 
+/* The pace-log record of the VBL an iteration runs: the input sample it
+ * latched. */
+typedef struct {
+    op_time_t latch_ns;    /* owner: host_input_latch; publish instant of the latched sample, 0 on the legacy path */
+    unsigned  latch_seq;   /* owner: host_input_latch; the latched sample's identity, OP_PACE_LATCH_NONE on the legacy path */
+    uint16_t  latch_bits;  /* owner: host_input_latch; pad bits of the latched sample */
+} host_vbl_rec_t;
+
 /* One iteration of the host loop. Zeroed at the iteration's start. */
 typedef struct {
     bool unlock_at_entry;   /* owner: the loop top; the unlock verdict from the previous keymap sample */
     bool sim_due;           /* owner: the loop top, after the live pacer changes; the sim runs this iteration */
+    bool ovr_claimed;       /* owner: host_input_arbitrate; a bk2 row or an overlay claimed the pad override channel */
+    unsigned bk2_stamped_frame; /* owner: host_input_arbitrate; openpete_frame the bk2 stamp was made for */
+    bool p1_staged;         /* owner: host_input_latch; slot 0 of the input record was staged before the yield */
+    unsigned frame_before_yield; /* owner: the tick, before the yield; read by host_input_commit */
+    host_vbl_rec_t vbl;     /* owner: host_input_latch (latch fields) */
 } host_iter_t;
 
 /** @brief Open the run: display claim, mods guard, game boot hook, game fiber, deadline, refresh query, pacer, rewind ring, runahead request and the outputs.

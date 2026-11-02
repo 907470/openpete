@@ -1,5 +1,5 @@
 // core/runtime/run_internal.h - run.c symbols the host-loop modules
-// (host_state_ops.c, host_session.c) call.
+// (host_state_ops.c, host_session.c, host_input_tick.c) call.
 #pragma once
 
 #include "openpete.h"
@@ -13,33 +13,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-
-/** @brief Read OPENPETE_SYNTH_PADS once: the synthetic pad-stream mode for slots 1-3.
- *
- * The synthetic stream lets the N-port input log be exercised without host
- * devices filling slots 1-3. Its bytes are a pure function of the VBL index
- * and the slot (synth_pad_for), so the append path checks that the staged
- * ports survived the tick and the rewind burst checks that the ports it
- * restaged from the log match what that VBL carried. Generate-and-verify
- * stages the stream over the live devices. Verify-only leaves the staged
- * slots as movie replay filled them and only checks them: replaying a
- * recording of the stream with the generator on would overwrite the bytes
- * read back from disk with the bytes they are compared against.
- * @return 0 off (unset, empty or starting with '0'), 2 verify-only (a value
- *         starting with 'v' or 'V'), else 1 generate-and-verify. */
-int synth_pads_enabled(void);
-
-/** @brief Test an input record against the synthetic stream over the slots the current mode fills.
- *
- * Generate-and-verify checks slots 1-3; verify-only checks slot 1 alone,
- * the one player-2 slot a two-player movie replay carries.
- * @param rec The input record.
- * @param frame The VBL index the stream is generated for.
- * @return 1 when every checked slot matches, else 0. */
-int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame);
-
-extern unsigned long long s_synth_rewind_checks;
-extern unsigned long long s_synth_rewind_mismatches;
 
 /* Game fiber state. Static rather than capture so the libco trampoline (which
  * takes no args) can find it. */
@@ -89,34 +62,36 @@ void sim_teardown_injected_stall(void);
  * @return "vbl" for openpete_vbl, "frame" for openpete_frame. */
 const char* feed_key_kind_name(void);
 
-/** @brief Load the --bk2 movie and check that this run can replay it.
+/** @brief Show or hide the OS cursor by who owns the mouse and how long it has been still.
  *
- * Refuses a movie recorded under another load delay, and a consume-keyed
- * movie on a game whose descriptor names no pad-ring consumer. A movie's
- * rows are read at the row position its Header.txt names (bk2_feed_row): a
- * recorded movie at (openpete_consume, openpete_consume_write), a movie with
- * "OpenpeteFeedKey vbl" by openpete_vbl and one without the line by
- * openpete_frame. A movie on an older key is converted on load by replaying
- * it under that key, the rows tools/bk2_rekey.py rewrites to the consume
- * key. The movie is freed on every refusal.
- * @param opts The parsed options; bk2_path names the movie.
- * @param bk2 Receives the movie.
- * @param offset Receives the row counter's value at which row 0 plays.
- * @return 0 when the movie replays; -1 after logging the refusal. */
-int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2, int* offset);
+ * The cursor shows while the dev overlay is open or wants the mouse, while
+ * the settings menu is open, and for CURSOR_IDLE_HIDE_MS after the last
+ * mouse event; otherwise it hides over the game. The first call starts the
+ * idle clock. Edge-triggered: one SDL call per transition. Must run on the
+ * thread that owns the window: SDL's Win32 backend applies visibility with
+ * SetCursor(), which affects only the calling thread's windows, so an
+ * off-thread hide never takes effect until a WM_SETCURSOR, which only mouse
+ * movement sends and which un-hides it again.
+ * @param headless A headless run returns at once. */
+void openpete_cursor_update(bool headless);
 
-/** @brief Write the movie being recorded on a fatal exit: commit the yield in flight, then finalize, with input-log appends stopped for good.
+/** @brief Drain the SDL event queue, forwarding unconsumed events to PsyCross, then apply rumble.
  *
- * Registered with openpete_crash_set_exit_flush while --bk2-record records;
- * a hang-watchdog trip runs it on the game fiber, or on the stall monitor
- * thread for the monitor's fallback. Takes input_log_lock and never
- * releases it: a flush on the monitor thread waits out a host-loop commit
- * in flight, and the host loop's next commit blocks until the process
- * ends. The yield the game fiber is inside has taken pad writes no commit
- * has noted; its player 1 readback is appended as one entry carrying them,
- * so the movie ends at the last pad write the guest took. Under a rewind
- * replay the log already holds that entry and none is appended. */
-void bk2_record_exit_flush(void);
+ * Each event goes through openpete_handle_event, and PsyX_Sys_HandleEvent
+ * when it is not consumed; under OPENPETE_PUMP_PROBE the drain is timed
+ * (openpete_pump_events_probed). The overlay's text-input state and rumble are
+ * applied here because this thread owns the window and the SDL gamepad
+ * handles. */
+void openpete_pump_events(void);
+
+/** @brief Restamp PsyCross's pad maps when a binding edit changed a player-1 pad action since this thread last stamped.
+ *
+ * Runs on the thread about to sample the pad (main's pump loop under the
+ * thread split, the host loop unsplit and on the legacy path), so the
+ * mapping structs have one reader and one writer on one thread. Counts the
+ * restamp per thread for the exit summary.
+ * @param on_main nonzero on main's pump loop. */
+void pad_restamp_if_due(int on_main);
 
 /** @brief Write the CSV header of the gameplay hash log: frame, vbl, fnv1a64 and one column per region.
  *
@@ -178,12 +153,6 @@ void host_live_knobs_publish(int render_fps, double tick_scale);
 /** @brief Seed the live runahead request from --runahead, so the loop's first iteration arms it through the live re-arm path.
  * @param opts The parsed options. */
 void host_runahead_seed(const openpete_options_t* opts);
-
-/** @brief Log the input-log census: slot-0 staging checks, per-slot presence and independence, the synthetic slots, and the first staging mismatch. */
-void host_input_exit_report(void);
-
-/** @brief Reset the overlay pad-stamp latch to its start-of-run state (no overlay held the pad). */
-void host_input_latch_init(void);
 
 /** @brief Reset the menu-close, pointer-owner and Alt+Enter latches to their start-of-run state. */
 void host_hotkey_latch_init(void);

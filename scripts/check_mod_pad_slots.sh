@@ -4,7 +4,7 @@
 # The mods/pad-probe fixture reads slots 0-3 once per tick and recomputes,
 # from each record's own VBL, the bytes the engine's synthetic pad stream
 # defines for that VBL and slot. The formula exists twice - once in
-# core/runtime/run.c, once in the mod, which links no engine symbol - so a
+# core/runtime/host_input_tick.c, once in the mod, which links no engine symbol - so a
 # mismatch means the record a mod reads is not the record the log carries.
 # The expected slot set is the fixture's `expect` config row, written per
 # leg into the leg's own copy of the mod directory.
