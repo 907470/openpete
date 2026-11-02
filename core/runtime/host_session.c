@@ -10,6 +10,7 @@
 #include "run_internal.h"
 #include "host_input_tick.h"
 #include "runahead.h"
+#include "eager.h"
 
 #include "openpete.h"
 #include "openpete_fiber.h"
@@ -561,7 +562,7 @@ static void close_subsystem_reports(void) OP_REQUIRES(sim)
 {
     openpete_native_present_census_report();
     host_trace_close_step(HT_S_NATIVE_PRESENT_CENSUS);
-    host_eager_exit_report();
+    host_present_exit_report();
     host_trace_close_step(HT_S_EAGER_REPORT);
     openpete_capture_report_intermediate();
     host_trace_close_step(HT_S_CAPTURE_INTER_REPORT);

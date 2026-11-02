@@ -281,10 +281,9 @@ static void presents_write(const openpete_options_t *opts, const char *kind)
     } else {
         /* The device is the present thread's while eager is engaged; take it
          * back for the readback and return it. */
-        const int pt_was = openpete_present_thread_active();
-        if (pt_was) openpete_present_thread_set_active(0);
+        const int pt_was = openpete_present_thread_borrow();
         openpete_native_render_screenshot_ext(path, kind, &sw, &sh);
-        if (pt_was) openpete_present_thread_set_active(1);
+        openpete_present_thread_return(pt_was);
     }
     presents_note_shot(path, kind, s_cap.presents_captured,
                        openpete_feed_key_now(), sw, sh);
@@ -337,10 +336,9 @@ static void vk_leg(const openpete_options_t *opts, int shot_key)
                                         0, base, sizeof(base));
         /* The device is the present thread's while eager is engaged: take it
          * back for the dump, then return it. */
-        const int pt_was = openpete_present_thread_active();
-        if (pt_was) openpete_present_thread_set_active(0);
+        const int pt_was = openpete_present_thread_borrow();
         openpete_native_render_screenshot_all(base);
-        if (pt_was) openpete_present_thread_set_active(1);
+        openpete_present_thread_return(pt_was);
     }
 }
 

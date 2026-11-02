@@ -1,6 +1,6 @@
 // core/runtime/run_internal.h - run.c symbols the host-loop modules
 // (host_state_ops.c, host_session.c, host_input_tick.c, host_loop.c,
-// runahead.c) call.
+// host_present.c, eager.c, runahead.c) call.
 #pragma once
 
 #include "openpete.h"
@@ -133,20 +133,6 @@ openpete_psxtrace_t* run_psxtrace(void);
 /** @brief Close the --psxtrace-verify comparison and clear the dispatch hook that advances it; no-op when none is open. */
 void run_psxtrace_release(void);
 
-/** @brief Start eager production and its present thread on a windowed native display, with the run's frame-time log hooked to the present thread's presents.
- *
- * Eager production is on unless OPENPETE_EAGER=0 and needs the native
- * scene path and a window; otherwise, or when the present thread cannot
- * start, nothing starts. Registers eager's and the scene ring's guest
- * discontinuity handlers.
- * @param ftl The run's frame-time log; recorded through for every present
- *        the present thread makes.
- * @param opts The parsed options. */
-void host_eager_start(openpete_frame_time_log_t* ftl, const openpete_options_t* opts);
-
-/** @brief Log the eager-production totals and the count of sub-tick re-extracts presented, eager and inline. */
-void host_eager_exit_report(void);
-
 /** @brief Publish the applied render fps and tick scale, with the applied mute, as the values the live-knob getters report.
  * @param render_fps The applied --render-fps target.
  * @param tick_scale The applied --tick-scale. */
@@ -169,21 +155,20 @@ void host_hotkey_latch_init(void);
 void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t* opts,
                          int refresh_mhz, int render_fps, double tick_scale);
 
-/** @brief Fold one VBL's execution into the update-VBL and tick averages the eager planner reads.
+/** @brief Present the held scene on a paused host iteration that presented nothing else.
  *
- * A VBL that queued no draw is the update VBL, whose mean the plan
- * subtracts from the span budget; one that did is the tick, whose
- * execution sets the lag. An execution of half a tick or more is a load or
- * a stall, not a VBL of either kind, and enters neither mean: it would plan
- * a lag of a hundred targets, or price every later span as if each update
- * VBL were a load. By the same line, a tick that starts half a tick or more
- * past its pacer deadline was delayed by a load or a stall, and its
- * lateness is kept in tick_late (0 for any later start, which is pacer
- * jitter or a production overrun the budget must keep seeing).
- * @param ex The VBL's execution time on this thread.
- * @param start_late Execution start minus the pacer deadline, or 0 when unpaced.
- * @param drawing Nonzero when the VBL queued a draw (a tick). */
-void eager_note_vbl(op_time_t ex, op_time_t start_late, int drawing);
+ * While the sim is paused with no step pending no tick runs, so neither the
+ * canonical nor the sub-tick present fires, and the window would hold its
+ * last image with the dev overlay, the toasts and the cursor frozen inside
+ * it - the overlay could not even be used to resume. This presents the held
+ * scene instead, once per call (the paused loop sleeps 16 ms per iteration),
+ * without a re-extract, since nothing advanced: the hold the intermediate
+ * path applies while the world is not live. Windowed only, never during a
+ * skip fast-forward, and never while eager production holds the display
+ * (it is disengaged while paused). Every call counts one paused idle
+ * iteration for the OPENPETE_PAUSE_AT_VBL schedule, presented or not.
+ * @param opts The parsed options. */
+void host_paused_repaint(const openpete_options_t *opts);
 
 /** @brief Decide whether the VBL about to run belongs to a paused step, clearing the step flag when it does not.
  *

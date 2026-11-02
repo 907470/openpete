@@ -711,6 +711,20 @@ void openpete_present_thread_kick(void)
 
 int openpete_present_thread_active(void) { return s_pt.thr && s_pt.active; }
 
+/* Documented at the declaration in openpete_present_thread.h. */
+int openpete_present_thread_borrow(void)
+{
+    const int was = openpete_present_thread_active();
+    if (was) openpete_present_thread_set_active(0);
+    return was;
+}
+
+/* Documented at the declaration in openpete_present_thread.h. */
+void openpete_present_thread_return(int was)
+{
+    if (was) openpete_present_thread_set_active(1);
+}
+
 void openpete_present_thread_set_active(int on)
 {
     if (!s_pt.thr) return;

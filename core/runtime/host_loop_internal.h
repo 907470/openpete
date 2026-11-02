@@ -43,6 +43,7 @@ typedef struct host_session {
     int         refresh_mhz;           /* owner: open; display refresh in mHz, for the pace log */
     bool        paused;                /* owner: host_pause_step; the sim is paused */
     bool        step_one;              /* owner: host_pause_step (raise); lowered by host_tick when the step ends */
+    op_time_t   last_canon_present_ns; /* owner: host_present (the canonical present); 0 until the first, read by host_world_live */
     host_pacer_t   pacer;              /* owner: open (init, start); advanced by the loop tail */
     host_bk2_t     bk2;
     host_outputs_t out;
@@ -72,6 +73,7 @@ typedef struct {
     unsigned frame_before_yield; /* owner: host_tick, before the yield; read by host_input_commit */
     bool yield_now;         /* owner: host_tick; the game fiber runs this iteration */
     bool ticked;            /* owner: host_tick; the yield advanced openpete_frame */
+    bool did_present;       /* owner: host_present (the canonical present); a drawn tick was presented this iteration */
     host_vbl_rec_t vbl;     /* owner: host_input_latch (latch fields), host_tick (the rest) */
 } host_iter_t;
 
@@ -107,3 +109,40 @@ int host_session_close(host_session_t* S, int rc) OP_REQUIRES(sim);
  *        latch fields; sets frame_before_yield, yield_now, ticked and the
  *        rest of vbl. */
 void host_tick(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
+
+/** @brief Run the present phase: the held-present gate, the canonical present of a drawn tick, then the eager or inline strategy between ticks and the paused repaint.
+ *
+ * The canonical present runs when the game owes one and no skip
+ * fast-forward holds it. Eager production disengages here on any iteration
+ * whose sub-tick presentation is no longer live, so the inline path never
+ * presents while the present thread holds the display.
+ * @param S The session: the options, the pacer, the pause flags, the outputs and the world-liveness stamp.
+ * @param it The iteration: reads sim_due and sim_period_ns; sets did_present. */
+void host_present(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
+
+/** @brief Report whether the world is live: a canonical present was made within six VBLs of now.
+ *
+ * During a CD load or level transition the game fiber stops rendering
+ * while the clock keeps running; a re-extract then would read RAM the
+ * incoming level is overwriting, so sub-tick presents hold the last
+ * composed scene instead. False until the first canonical present.
+ * @param S The session: the world-liveness stamp.
+ * @param it The iteration: the VBL period, scaled by --tick-scale.
+ * @param now The instant judged.
+ * @return true when canonical presents are flowing. */
+bool host_world_live(const host_session_t* S, const host_iter_t* it, op_time_t now);
+
+/** @brief Record a shown present: the profiler's PRESENT record, then the frame-time-log record.
+ *
+ * Called on the sim thread for an inline present and on the present thread
+ * for each present it makes; the profiler record carries
+ * openpete_canon_tick and the frame-time-log record openpete_frame.
+ * @param ftl The run's frame-time log.
+ * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT (equal to the OP_PROF_* kinds). */
+void present_record_shown(openpete_frame_time_log_t* ftl, int kind);
+
+/** @brief Raise the player screenshot request the next canonical present takes. */
+void host_present_request_screenshot(void);
+
+/** @brief Log the eager-production totals and the count of sub-tick re-extracts presented, eager and inline. */
+void host_present_exit_report(void);

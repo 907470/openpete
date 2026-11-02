@@ -6,6 +6,7 @@
 #include "host_pacer.h"
 #include "run_internal.h"
 #include "runahead.h"
+#include "eager.h"
 
 #include "openpete_fiber.h"
 #include "openpete_host_input.h"

@@ -49,6 +49,15 @@ void openpete_present_thread_stop(void);
  * before the thread has started.
  * @param on 1 to hand the display to the thread, 0 to take it back. */
 void openpete_present_thread_set_active(int on);
+/** @brief Take the display back from the present thread for a blocking device read on the calling thread, when the thread holds it.
+ *
+ * Pairs with openpete_present_thread_return; the two calls are the
+ * handoff openpete_present_thread_set_active makes, and nothing else.
+ * @return 1 when the present thread held the display and was drained, else 0. */
+int  openpete_present_thread_borrow(void);
+/** @brief Hand the display back to the present thread after a borrow that took it.
+ * @param was The value openpete_present_thread_borrow returned; 0 does nothing. */
+void openpete_present_thread_return(int was);
 /** @brief Report whether the present thread currently owns the display.
  *
  * Reads the flag without the thread's mutex.
