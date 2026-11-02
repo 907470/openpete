@@ -147,6 +147,7 @@ import argparse
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -189,6 +190,24 @@ DROP_IDS = {"title"} | {f"box.{g}.{p}" for g in GAMES for p in ("fill", "disc", 
 
 class Skip(Exception):
     """A precondition the machine lacks: the case exits 64."""
+
+
+def cpu_sample():
+    """The host's busy and total CPU time from /proc/stat, the waited children's CPU time and the wall
+    clock, all in seconds: other_busy_cores's start point."""
+    with open("/proc/stat") as f:
+        v = [int(x) for x in f.readline().split()[1:]]
+    hz = os.sysconf("SC_CLK_TCK")
+    ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return (sum(v) - v[3] - v[4]) / hz, ru.ru_utime + ru.ru_stime, time.monotonic()
+
+
+def other_busy_cores(start):
+    """The mean count of cores busy since cpu_sample() returned `start` with work other than this process's
+    waited children (the runs the case launched): host busy time less the children's CPU time, over the
+    wall time. A 1-minute load average read at launch counts a preceding run's own load for a minute."""
+    busy, own, wall = (b - a for a, b in zip(start, cpu_sample()))
+    return (busy - own) / wall if wall > 0 else 0.0
 
 
 def case_dir(out, name):

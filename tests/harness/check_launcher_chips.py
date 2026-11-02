@@ -26,7 +26,8 @@ Cases:
             PASS when every deviation is within PROGRESS_BAND, all five stages were drawn, and the
             per-stage count bar the weights replaced (each stage's done/total from 0, read from
             the same lines) exceeds the band (the instrument separates the two). Needs the
-            first-boot pipeline (a *-launcher build; SKIP otherwise).
+            first-boot pipeline (a *-launcher build; SKIP otherwise). SKIP when the run completed and
+            more than PROGRESS_MAX_OTHERS cores were busy with other work over it (other_busy_cores).
   chips     D15, D16 and D28 on the game page (windowed, 1280x800): a library of one Spyro 1 entry
             whose launcher cache a headless run wrote, with the ahead compile on
             (OPENPETE_PRECOMPILE_AHEAD=1). The first frame showing one opaque dome (shot and
@@ -43,7 +44,7 @@ Cases:
 
 Usage: tests/harness/check_launcher_chips.py CASE [--build-dir DIR] [--out DIR]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run, a disc image or the first-boot pipeline
-missing).
+missing; progress also on a loaded host).
 """
 import argparse
 import math
@@ -62,6 +63,10 @@ CORNER_BOUND = 0.15                  # px: the bench measures 0.12 on its own pa
 BOX = 8
 CHIP_ALPHA = 0.5
 PROGRESS_BAND = 0.10                 # the weights' worst deviation over the timing runs is 0.073
+# Other busy cores over the run above which T6 skips: the compile step's 16 workers share the host, so
+# its units stretch unevenly and the deviation grows with the load (0.104-0.111 at 1.4-1.8 other cores,
+# 0.089-0.173 at 2.5-7).
+PROGRESS_MAX_OTHERS = 3.0
 FIRST_BOOT = ("COPYING", "READING", "TRANSLATING", "BUILDING", "LINKING")
 CHIP_PX, CHIP_PAD_X, CHIP_PAD_Y, CHIP_MARGIN, SPIN_GAP = 10.0, 8.0, 6.0, 12.0, 6.0
 CLICK_MS = 6000
@@ -186,8 +191,10 @@ def case_progress(a):
     env = {"OPENPETE_LAUNCHER_DROP": flow.disc_cue("spyro-1"), "OPENPETE_LAUNCHER_PROGRESS_LOG": "1",
            "OPENPETE_LAUNCHER_SELECT_GAME": "spyro-1", "OPENPETE_LAUNCHER_SHOT": os.path.join(d, "shot"),
            "OPENPETE_LAUNCHER_MANIFEST": os.path.join(d, "shot")}
+    start = cl.cpu_sample()
     rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "5"], env,
                         timeout=1500)
+    others = cl.other_busy_cores(start)
     pts, ctl, stages = [], [], set()
     for mm in BAR_LINE.finditer(log):
         f, t, st, dn, tot = float(mm.group(1)), float(mm.group(2)), mm.group(3), int(mm.group(4)), int(mm.group(5))
@@ -219,9 +226,13 @@ def case_progress(a):
         f.write("t\tweighted\tper_stage\n")
         for (t, w_), (_, c) in zip(pts, ctl):
             f.write(f"{t:.3f}\t{w_:.4f}\t{c:.4f}\n")
-    return verdict("progress", bad, f"{len(pts)} points over {t1 - t0:.1f} s, stages {sorted(stages)}: "
-                                    f"max deviation {max(dev):.3f} (band {PROGRESS_BAND}), per-stage control "
-                                    f"{max(dctl):.3f}")
+    detail = (f"{len(pts)} points over {t1 - t0:.1f} s, stages {sorted(stages)}: max deviation {max(dev):.3f} "
+              f"(band {PROGRESS_BAND}), per-stage control {max(dctl):.3f}, {others:.1f} other busy cores")
+    if others > PROGRESS_MAX_OTHERS and rc == 0 and not missing:
+        raise cl.Skip(f"progress: {others:.1f} other busy cores over the run (over {PROGRESS_MAX_OTHERS}): the "
+                      f"compile step's units stretch unevenly under load, so the bar's deviation measures the "
+                      f"host ({detail})")
+    return verdict("progress", bad, detail)
 
 
 CHIP_LABEL = re.compile(r"level chip: (.+) \((\S+)/(\S+)\) at sky clock ([\d.]+) s")

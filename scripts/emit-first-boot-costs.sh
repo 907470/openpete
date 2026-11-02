@@ -7,7 +7,11 @@
 # The compile step orders its units by the first column, largest first, and
 # the first boot's progress bar follows the second (games/common/
 # recomp_build.cpp, timeline_position): the completed count's recorded
-# fraction, advanced between completions at this run's pace. A count of
+# fraction, advanced between completions at this run's pace. The row
+# @first_completion_over_translate holds the build's first completion over
+# its translate step's wall time; before the first completion the bar
+# advances toward the first recorded fraction at that ratio times this
+# run's translate time, both steps running on one core. A count of
 # units or of source size runs ahead, since a source's compile time grows
 # faster than its size and the step ends with workers idle. The table is
 # written to
@@ -45,4 +49,4 @@ env XDG_DATA_HOME="$SCRATCH/data" XDG_STATE_HOME="$SCRATCH/state" XDG_CONFIG_HOM
     > "$SCRATCH/run.log" 2>&1 || { tail -20 "$SCRATCH/run.log" >&2; exit 1; }
 [[ -s "$OUT.new" ]] || { echo "[emit-first-boot-costs] no table written" >&2; tail -20 "$SCRATCH/run.log" >&2; exit 1; }
 mv "$OUT.new" "$OUT"
-echo "[emit-first-boot-costs] $OUT: $(grep -vc '^#' "$OUT") units"
+echo "[emit-first-boot-costs] $OUT: $(grep -vc '^[#@]' "$OUT") units"

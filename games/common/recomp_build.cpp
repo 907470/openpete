@@ -557,22 +557,40 @@ struct CompileOrder {
     int covered = 0;   /* units whose share came from the cost table */
 };
 
+/* A compile cost table: its rows by file name, and the reference build's
+ * time from the compile step's start to its first completion over its
+ * translate step's wall time (-1 when the table records none). */
+struct CostTable {
+    std::map<std::string, UnitCost> units;
+    double first_over_translate = -1.0;
+};
+
+/* The cost table's key of the first completion's pace row. */
+constexpr const char* kFirstOverTranslate = "@first_completion_over_translate";
+
 /** @brief Read a compile cost table: one line per translation unit, its file name, a tab, its share of a reference build's compile time and, after another tab, its completion as a fraction of that build's compile step wall time; lines opening with # are comments.
  *
+ * The line keyed kFirstOverTranslate holds, after a tab, the reference
+ * build's first completion over its translate step's wall time.
  * @param path The table.
- * @return The rows by file name; empty when the file is missing. */
-std::map<std::string, UnitCost> read_compile_costs(const fs::path& path) {
-    std::map<std::string, UnitCost> t;
+ * @return The rows by file name and the pace; empty when the file is missing. */
+CostTable read_compile_costs(const fs::path& path) {
+    CostTable t;
     std::ifstream f(path);
     std::string line;
     while (std::getline(f, line)) {
         const size_t tab = line.find('\t');
         if (line.empty() || line[0] == '#' || tab == std::string::npos) continue;
         char* end = nullptr;
+        if (line.compare(0, tab, kFirstOverTranslate) == 0) {
+            const double v = std::strtod(line.c_str() + tab + 1, nullptr);
+            if (v > 0.0) t.first_over_translate = v;
+            continue;
+        }
         UnitCost u;
         u.cost = std::strtod(line.c_str() + tab + 1, &end);
         if (end && *end == '\t') u.at = std::strtod(end + 1, nullptr);
-        if (u.cost > 0.0) t[line.substr(0, tab)] = u;
+        if (u.cost > 0.0) t.units[line.substr(0, tab)] = u;
     }
     return t;
 }
@@ -629,38 +647,49 @@ CompileOrder compile_order(const std::vector<fs::path>& tus, const std::map<std:
  * completion in recorded order. This run's pace is its elapsed time at its
  * latest completion over that fraction; between completions the position
  * is the elapsed time over that pace's whole step, held between the
- * reached fraction and the next recorded one.
+ * reached fraction and the next recorded one. Before the first completion
+ * the position is the first recorded fraction times the elapsed time over
+ * the expected time to the first completion, held at that fraction; 0
+ * when no expected time is known.
  * @param timeline The recorded completion fractions, ascending.
  * @param count The units completed.
  * @param t The step's elapsed time now, seconds.
  * @param t_last The step's elapsed time at the latest completion, seconds.
+ * @param t_first The expected elapsed time at the first completion, seconds; at most 0 when unknown.
  * @return The fraction of the step, 0..1. */
-double timeline_position(const std::vector<double>& timeline, size_t count, double t, double t_last) {
-    if (timeline.empty() || count == 0) return 0.0;
+double timeline_position(const std::vector<double>& timeline, size_t count, double t, double t_last, double t_first) {
+    if (timeline.empty()) return 0.0;
+    if (count == 0) return t_first > 0.0 ? timeline[0] * std::clamp(t / t_first, 0.0, 1.0) : 0.0;
     if (count >= timeline.size()) return 1.0;
     const double reached = timeline[count - 1], next = timeline[count];
     if (reached <= 0.0 || t_last <= 0.0) return reached;
     return std::clamp(t * reached / t_last, reached, next);
 }
 
-/** @brief Write a compile cost table from a build: each unit's compile seconds over the total, and its completion over the step's last.
+/** @brief Write a compile cost table from a build: each unit's compile seconds over the total, its completion over the step's last, and the first completion over the translate step's wall time.
  *
  * @param path The table to write.
  * @param tus The translation units.
  * @param secs Each unit's compile seconds.
  * @param done_at Each unit's completion, seconds from the step's start.
+ * @param translate_s The translate step's wall time, seconds.
  * @param jobs The build's worker count, recorded in the header.
  * @return true when the file was written. */
 bool write_compile_costs(const fs::path& path, const std::vector<fs::path>& tus, const std::vector<double>& secs,
-                         const std::vector<double>& done_at, unsigned jobs) {
-    double total = 0.0, end = 0.0;
+                         const std::vector<double>& done_at, double translate_s, unsigned jobs) {
+    double total = 0.0, end = 0.0, first = 0.0;
     for (double v : secs) total += v;
     for (double v : done_at) end = std::max(end, v);
-    if (total <= 0.0 || end <= 0.0) return false;
+    if (!done_at.empty()) first = *std::min_element(done_at.begin(), done_at.end());
+    if (total <= 0.0 || end <= 0.0 || first <= 0.0 || translate_s <= 0.0) return false;
     std::string text = "# First-boot compile cost per translation unit: its compile seconds over the build's\n"
                        "# total, then its completion over the compile step's wall time, from a reference\n"
-                       "# build at -j" + std::to_string(jobs) + " (scripts/emit-first-boot-costs.sh).\n";
+                       "# build at -j" + std::to_string(jobs) + " (scripts/emit-first-boot-costs.sh). The @ row is\n"
+                       "# the build's first completion over its translate step's wall time.\n";
     char row[64];
+    snprintf(row, sizeof row, "\t%.6f\n", first / translate_s);
+    text += kFirstOverTranslate;
+    text += row;
     for (size_t i = 0; i < tus.size(); i++) {
         snprintf(row, sizeof row, "\t%.6f\t%.6f\n", secs[i] / total, done_at[i] / end);
         text += tus[i].filename().string() + row;
@@ -814,6 +843,7 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     std::fprintf(stderr, "[first-boot] recompiling MIPS -> C (%zu binaries)...\n",
                  ovls.size() + 1);
     progress("TRANSLATING GAME CODE", 0, (int)ovls.size() + 1);
+    const auto translate_t0 = std::chrono::steady_clock::now();
     {
         std::vector<std::string> c = {
             psxrecomp, (inputs / "PSX.EXE").string(),
@@ -861,6 +891,7 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
         progress("TRANSLATING GAME CODE", ++ovl_done, (int)ovls.size() + 1);
     }
     if (!emit_overlay_table(gen / "spyro_overlay_table.c", gen, ovls)) return -1;
+    const double translate_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - translate_t0).count();
 
     /* 3. compile ---------------------------------------------------------- */
     std::vector<fs::path> tus;
@@ -916,9 +947,14 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
                  tus.size(), jobs);
 
     const fs::path cost_path = R / "costs" / (std::string(openpete_game_build()->id) + ".tsv");
-    const CompileOrder sched = compile_order(tus, read_compile_costs(cost_path));
-    OPL_INFO_F("recomp-build", "compile cost table: %d of %zu units%s (%s)", sched.covered, tus.size(),
-               sched.timeline.empty() ? "" : ", timeline", cost_path.string().c_str());
+    const CostTable costs = read_compile_costs(cost_path);
+    const CompileOrder sched = compile_order(tus, costs.units);
+    /* The translate step and the first compile each run on one core, so
+     * their ratio carries the reference build's hold to this host. */
+    const double t_first = costs.first_over_translate * translate_s;
+    OPL_INFO_F("recomp-build", "compile cost table: %d of %zu units%s, first completion expected at %.2f s (%s)",
+               sched.covered, tus.size(), sched.timeline.empty() ? "" : ", timeline", t_first,
+               cost_path.string().c_str());
     std::vector<double> secs(tus.size(), 0.0), done_at(tus.size(), 0.0);
     const auto step_t0 = std::chrono::steady_clock::now();
     std::atomic<size_t> next{0};
@@ -969,7 +1005,7 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
             if (!sched.timeline.empty()) {
                 const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - step_t0).count();
                 d = (int)std::lround(kCostScale * timeline_position(sched.timeline, done.load(), t,
-                                                                    (double)last_ns.load() / 1e9));
+                                                                    (double)last_ns.load() / 1e9, t_first));
             }
             if (d > last) {
                 progress("BUILDING FOR YOUR PC", d, kCostScale);
@@ -987,7 +1023,7 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     if (!failed.load()) {
         if (const char* out = getenv("OPENPETE_FIRST_BOOT_COSTS_OUT"); out && *out)
             OPL_INFO_F("recomp-build", "compile cost table written to %s: %s", out,
-                       write_compile_costs(out, tus, secs, done_at, jobs) ? "ok" : "failed");
+                       write_compile_costs(out, tus, secs, done_at, translate_s, jobs) ? "ok" : "failed");
     }
     if (failed.load()) return -1;
 
