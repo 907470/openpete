@@ -2498,6 +2498,29 @@ static int pace_force_pacing(void)
     return s_on || op_virtual_clock_active();
 }
 
+/** @brief Return the iteration's unlock verdict, refused while the virtual clock (--record-cfr) is on.
+ *
+ * The virtual clock advances only inside the pacer's op_sleep_until, which
+ * the unlocked branch never calls: an unlocked tick would run with a frozen
+ * clock, its capture would repeat the previous tag and the recording would
+ * drop it as an ordinal already written. Under the virtual clock the paced
+ * branch never blocks, so turbo, --unlock-frames and the skip-to-level
+ * fast-forward are already at full host speed; refusing them costs no speed.
+ * The first refusal is logged once.
+ * @param want The unlock the iteration asks for (turbo, --unlock-frames, skip, headless).
+ * @return want, or false when the virtual clock is on. */
+static bool pace_unlock_verdict(bool want)
+{
+    static int s_logged = 0;
+    if (!want || !op_virtual_clock_active()) return want;
+    if (!s_logged) {
+        s_logged = 1;
+        OPL_INFO_F("pacer", "--record-cfr: unlock request (turbo, --unlock-frames or "
+                            "skip-to-level) ignored; every tick advances the capture clock");
+    }
+    return false;
+}
+
 /** @brief Read OPENPETE_PACE_FLIP_LOG once: whether the pacer's idle wait measures the display flip.
  *
  * When on, pace_sleep_until spends the sleep before the next deadline in a
@@ -4500,11 +4523,12 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * this peek runs before the poll below. That is what a peek is for;
          * the authoritative unlock write at the bottom of the loop re-reads
          * after the poll, so a press costs at most one iteration of lag. */
-        bool unlock_now = (opts->headless && !force_pacing) ||
+        bool unlock_now = pace_unlock_verdict(
+                          (opts->headless && !force_pacing) ||
                           openpete_skip_present_until_level ||
                           openpete_key_down(OPK_TURBO) ||
                           (opts->unlock_ranges_count > 0 &&
-                           unlock_frame_in_ranges(opts, openpete_feed_key_now()));
+                           unlock_frame_in_ranges(opts, openpete_feed_key_now())));
 
         /* sim_due gates the once-per-yield block that does bk2 override
          * stamping, the co_switch into the game fiber, post-yield
@@ -6429,8 +6453,8 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                           openpete_key_down(OPK_TURBO);
         bool sched_unlock = opts->unlock_ranges_count > 0 &&
                             unlock_frame_in_ranges(opts, openpete_feed_key_now());
-        bool unlock_fps = tab_unlock || sched_unlock ||
-                          openpete_skip_present_until_level;
+        bool unlock_fps = pace_unlock_verdict(tab_unlock || sched_unlock ||
+                                              openpete_skip_present_until_level);
         skip_mute_sync();
         if ((unlock_fps ? 1 : 0) != pace_unlock_prev)
             openpete_pace_window(OP_PACE_W_UNLOCK, unlock_fps ? 1 : 0);
