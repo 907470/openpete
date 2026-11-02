@@ -36,13 +36,14 @@ typedef struct host_session {
     const openpete_options_t* opts;    /* owner: open */
     bool        split;                 /* owner: open; the thread split applies */
     Uint64      start;                 /* owner: open; SDL ticks the run's elapsed time counts from */
-    const char* exit_reason;           /* owner: open on a setup error, else the loop */
+    const char* exit_reason;           /* owner: open on a setup error, else host_exit_reason; the loop sets "bk2-end" when host_input_arbitrate ends the movie; NULL while the run continues */
     int         exit_code;             /* owner: close (its argument); raised by the psxtrace verdict */
     bool        loop_entered;          /* owner: the loop; close runs its output steps only when set */
     int         refresh_hz;            /* owner: open; display refresh, 60 headless or unknown */
     int         refresh_mhz;           /* owner: open; display refresh in mHz, for the pace log */
     bool        paused;                /* owner: host_pause_step; the sim is paused */
     bool        step_one;              /* owner: host_pause_step (raise); lowered by host_tick when the step ends */
+    bool        ram_dumped;            /* owner: host_ram_dump_if_due; the --ram-dump-on-frame dump was taken */
     op_time_t   last_canon_present_ns; /* owner: host_present (the canonical present); 0 until the first, read by host_world_live */
     host_pacer_t   pacer;              /* owner: open (init, start); advanced by the loop tail */
     host_bk2_t     bk2;
@@ -109,6 +110,37 @@ int host_session_close(host_session_t* S, int rc) OP_REQUIRES(sim);
  *        latch fields; sets frame_before_yield, yield_now, ticked and the
  *        rest of vbl. */
 void host_tick(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
+
+/** @brief Run the quiescent ops of an iteration while the settings menu is shut: the state half (savestate queue, stress, rewind, handoff), the input restamp, pause and step, then the host hotkeys.
+ *
+ * The game fiber is yielded, so a savestate op can snapshot or restore
+ * without racing the recompiled code, and it runs before the input latch so
+ * a load that overwrites the pad buffer is followed by a fresh write of
+ * current input. While the settings menu is open nothing here runs: the
+ * menu owns input, and the keymap latch keeps advancing underneath, so a
+ * press made under the menu is swallowed rather than replayed.
+ * @param S The session: the options, the pause flags, the bk2 session and the split.
+ * @param it The iteration: sets rewound. */
+void host_quiescent_ops(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
+
+/** @brief Write the --ram-dump-on-frame RAM image, and the CPU register block when --halt-cpu-dump-output is set, once, on the first iteration whose feed key reached the target.
+ * @param S The session: the options and the one-shot flag. */
+void host_ram_dump_if_due(host_session_t* S) OP_REQUIRES(sim);
+
+/** @brief Return the reason the run ends after this iteration, or NULL to continue.
+ *
+ * Precedence: the psxtrace verdict is observed first, so its log line is
+ * emitted; a requested shutdown then overrides every reason ("user-quit");
+ * then the psxtrace reason, the game returning, --frame-limit,
+ * --record-frames and --max-runtime-seconds.
+ * @param S The session: the options and the run start.
+ * @return The exit reason, or NULL. */
+const char* host_exit_reason(const host_session_t* S) OP_REQUIRES(sim);
+
+/** @brief On an iteration the sim was due, log the loop sample every 64th openpete_frame and clear openpete_primitives_drawn.
+ * @param S The session: the run start.
+ * @param it The iteration: reads sim_due. */
+void host_loop_sample(const host_session_t* S, const host_iter_t* it) OP_REQUIRES(sim);
 
 /** @brief Run the present phase: the held-present gate, the canonical present of a drawn tick, then the eager or inline strategy between ticks and the paused repaint.
  *

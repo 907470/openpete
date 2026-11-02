@@ -1,5 +1,5 @@
 // core/runtime/host_state_ops.h - the savestate request queue, the stress
-// harnesses and the rewind driver the host loop (run.c) runs at final yields.
+// harnesses and the rewind driver the host loop runs at final yields.
 #pragma once
 
 #include "openpete.h"
@@ -39,6 +39,19 @@ void state_stress_step(const openpete_options_t* opts);
  * @param bk2_active A movie is loaded for replay.
  * @return true when the timeline moved (the iteration skips its forward tick). */
 bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active);
+
+/** @brief Run the state half of a quiescent iteration: queue this iteration's savestate requests, then at a final yield run the queue, the stress harnesses, the rewind driver, the mod arena page census and the process handoff.
+ *
+ * The game fiber is yielded, so g_game.cpu and g_ram are quiescent and can
+ * be snapshotted or restored without racing the recompiled code. The
+ * handoff resumes on the first pass of a --resume-handoff process and
+ * checkpoints and execs when armed (OPENPETE_HANDOFF_AT,
+ * openpete_handoff_request).
+ * @param opts Run options.
+ * @param paused The host is paused.
+ * @param bk2_active A movie is loaded for replay.
+ * @return true when the rewind driver moved the timeline (the iteration skips its forward tick). */
+bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active);
 
 /** @brief Log the savestate census: requests deferred to a final yield, runahead deferrals and adoptions, park-site deferrals, and the first emitted-loop-site deferral. */
 void state_ops_report(void);

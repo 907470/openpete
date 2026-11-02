@@ -9,6 +9,7 @@
 
 #include "openpete.h"
 #include "openpete_fiber.h"
+#include "openpete_handoff.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
 #include "openpete_mods.h"
@@ -526,6 +527,16 @@ bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) {
     const bool held = rewind_key_held(opts, live, paused);
     if (!held || !live || paused || !rewind_mods_allow()) return false;
     return rewind_seek_one_tick(bk2_active);
+}
+
+bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active) {
+    state_ops_collect(opts);
+    if (!state_ops_drain()) return false;
+    state_stress_step(opts);
+    const bool rewound = rewind_step(opts, paused, bk2_active);
+    openpete_mods_arena_page_census_tick();
+    openpete_handoff_poll(&g_game.cpu);
+    return rewound;
 }
 
 void state_ops_report(void) {

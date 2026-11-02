@@ -1,12 +1,16 @@
-// core/runtime/host_loop.c - the host loop's tick: the VBL an iteration runs
-// in the game fiber, its pace-log bracket, and on a tick the runahead lead
-// around the interp captures, stamped by the interp VBL clock.
+// core/runtime/host_loop.c - the host loop's phases: the tick (the VBL an
+// iteration runs in the game fiber, its pace-log bracket, and on a tick the
+// runahead lead around the interp captures, stamped by the interp VBL
+// clock), the quiescent ops, the RAM dump, the exit test and the sample log.
 
 #include "host_loop_internal.h"
 #include "host_pacer.h"
 #include "run_internal.h"
 #include "runahead.h"
 #include "eager.h"
+#include "host_hotkeys.h"
+#include "host_input_tick.h"
+#include "host_state_ops.h"
 
 #include "openpete_fiber.h"
 #include "openpete_host_input.h"
@@ -14,16 +18,24 @@
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
 #include "openpete_log.h"
+#include "openpete_menu.h"
 #include "openpete_native_render.h"
 #include "openpete_pace_log.h"
 #include "openpete_profile.h"
+#include "openpete_psx.h"
+#include "openpete_psxtrace.h"
+#include "openpete_record.h"
 #include "openpete_rumble.h"
 #include "openpete_time.h"
+#include "rhi.h"
 #include "../rhi/rhi_gpu_audit.h"
 #include "bk2_feed.h"
 #include "game_extras.h"
 
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef OPENPETE_HAS_PSYCROSS
 
@@ -272,6 +284,221 @@ void host_tick(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
     if (!it->yield_now) return;
     tick_run_vbl(S, it);
     if (it->ticked) tick_post(it);
+}
+
+/* Documented at the declaration in host_loop_internal.h. */
+void host_quiescent_ops(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
+{
+    /* Save-state hotkeys (default 1 quick-save, 2 quick-load, 3 cycle
+     * slot). Edge-triggered, one action per press. The game fiber is
+     * yielded right now, so g_game.cpu and g_ram are quiescent - we can
+     * snapshot or restore without racing the recompiled code.
+     *
+     * Run BEFORE PsyX_UpdateInput so a load that overwrites the pad
+     * buffer (which lives in restored g_ram) is immediately followed by
+     * a fresh write of current input - otherwise the game fiber reads
+     * stale buttons from the saved RAM and feels like input has stopped
+     * registering until the next iter.
+     *
+     * Skipped while the settings menu is open - it owns input. The
+     * keymap latch keeps advancing underneath, so a key held across the
+     * close is already latched and cannot misfire on the first iteration
+     * after it, and a press made while the menu was up is swallowed
+     * rather than replayed into the game. */
+    if (openpete_menu_is_open()) return;
+    it->rewound = state_ops_quiescent(S->opts, S->paused, S->bk2.active);
+
+    /* Any op above may have re-anchored openpete_frame. */
+    host_input_restamp_after_ops(S, it);
+
+    host_pause_step(&S->paused, &S->step_one);
+
+    host_hotkeys_toggles(S->split);
+    host_hotkeys_fillpick();
+    host_hotkeys_camera();
+}
+
+/** @brief Write the 528-byte CPU register block beside a RAM dump, in the halt-at-pc dump's format.
+ *
+ * Reads g_game.cpu directly: the game fiber is yielded inside VSync(0) and
+ * the host fiber shares this static struct.
+ * @param path The --halt-cpu-dump-output path. */
+static void ram_dump_cpu(const char* path)
+{
+    FILE* cfp = fopen(path, "wb");
+    if (!cfp) return;
+    const CPUState* c = &g_game.cpu;
+    uint32_t magic = 0x31765343u;
+    fwrite(&magic, 1, 4, cfp);
+    uint32_t gpr[32] = {
+        0u,    c->at, c->v0, c->v1,
+        c->a0, c->a1, c->a2, c->a3,
+        c->t0, c->t1, c->t2, c->t3,
+        c->t4, c->t5, c->t6, c->t7,
+        c->s0, c->s1, c->s2, c->s3,
+        c->s4, c->s5, c->s6, c->s7,
+        c->t8, c->t9, c->k0, c->k1,
+        c->gp, c->sp, c->fp, c->ra,
+    };
+    fwrite(gpr, 4, 32, cfp);
+    /* PC at dump moment is wherever the game fiber
+     * yielded - typically inside VSync's host yield
+     * (PSYQ-side), which means the game's call site of
+     * VSync(). Without a fiber-aware unwinder we can't
+     * know precisely; report 0 so consumers don't
+     * mis-interpret. sp is the load-bearing field for
+     * the masked diff. */
+    uint32_t pc = 0u;
+    fwrite(&pc, 1, 4, cfp);
+    fwrite(&c->hi, 1, 4, cfp);
+    fwrite(&c->lo, 1, 4, cfp);
+    static const uint32_t zero32[32] = {0};
+    fwrite(zero32, 4, 32, cfp);  /* cop0  */
+    fwrite(zero32, 4, 32, cfp);  /* gted  */
+    fwrite(zero32, 4, 32, cfp);  /* gtec  */
+    fclose(cfp);
+    OPL_INFO_F("ram-dump",
+               "cpu wrote 528 bytes to %s (sp=0x%08X gp=0x%08X)",
+               path, c->sp, c->gp);
+}
+
+/* Documented at the declaration in host_loop_internal.h. */
+void host_ram_dump_if_due(host_session_t* S) OP_REQUIRES(sim)
+{
+    const openpete_options_t* opts = S->opts;
+    /* Runs outside the present_pending gate so a request for the very
+     * first rendered frame (ram-dump-on-frame=0) still fires even on
+     * iters where DrawOTag hasn't queued anything yet. Use >= with a
+     * one-shot guard so the trigger is forgiving of skipped frame
+     * numbers. */
+    if (S->ram_dumped || opts->ram_dump_on_frame < 0 ||
+        (int)openpete_feed_key_now() < opts->ram_dump_on_frame)
+        return;
+    S->ram_dumped = true;
+    const char* path = opts->ram_dump_output;
+    FILE* fp = fopen(path, "wb");
+    if (!fp) {
+        OPL_ERROR_F("ram-dump", "fopen %s failed: %s",
+                    path, strerror(errno));
+    } else {
+        const size_t ram_size = 2u * 1024u * 1024u;
+        size_t n = fwrite(openpete_psx_get_ram(), 1, ram_size, fp);
+        fclose(fp);
+        if (n != ram_size) {
+            OPL_ERROR_F("ram-dump",
+                        "short write to %s: %zu of %zu bytes",
+                        path, n, ram_size);
+        } else {
+            OPL_INFO_F("ram-dump",
+                       "wrote %zu bytes to %s on frame %u (target=%d)",
+                       ram_size, path, openpete_frame,
+                       opts->ram_dump_on_frame);
+        }
+    }
+    /* Optional CPU state dump alongside the RAM dump. */
+    if (opts->halt_cpu_dump_output) ram_dump_cpu(opts->halt_cpu_dump_output);
+}
+
+/** @brief Return whether the run has reached --frame-limit and may exit there.
+ *
+ * The launcher hand-off trace (rhi_launcher_trace_pending) holds the exit
+ * until it logs the game's first present, which the present thread can make
+ * after the limit; the hold is logged once.
+ * @param opts The parsed options.
+ * @return true when the feed key reached a set limit and no trace holds it. */
+static bool frame_limit_due(const openpete_options_t* opts) OP_REQUIRES(sim) {
+    if (opts->frame_limit <= 0 || (int)openpete_feed_key_now() < opts->frame_limit) return false;
+    if (!rhi_launcher_trace_pending()) return true;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        OPL_INFO_F("exit", "%s", "frame-limit held until the launcher trace logs the game's first present");
+    }
+    return false;
+}
+
+/** @brief Observe the --psxtrace-verify verdict and return the exit it asks for, logging the eof summary or the divergence.
+ *
+ * The trace advances from the dispatch hook (per game-function entry, not
+ * per host iteration), which sets terminal_status: 0 still running, 1 eof,
+ * 2 divergence, 3 io-error. A divergence under --psxtrace-keep-going asks
+ * for no exit.
+ * @param opts The parsed options.
+ * @return "psxtrace-eof", "psxtrace-divergence", "psxtrace-error", or NULL. */
+static const char* psxtrace_exit_reason(const openpete_options_t* opts) OP_REQUIRES(sim)
+{
+    const openpete_psxtrace_t* psxtrace = run_psxtrace();
+    if (!psxtrace) return NULL;
+    switch (psxtrace->terminal_status) {
+    case 1:
+        OPL_INFO_F("psxtrace",
+                   "trace exhausted (consumed %u records, "
+                   "%llu compared, %llu hash mismatches)",
+                   psxtrace->records_consumed,
+                   (unsigned long long)psxtrace->frames_compared,
+                   (unsigned long long)psxtrace->hashes_diverged);
+        return "psxtrace-eof";
+    case 2: {
+        if (opts->psxtrace_keep_going) return NULL;
+        int32_t r = psxtrace->hard_fail_region;
+        const char* rname = (r >= 0 &&
+            r < (int32_t)psxtrace->region_count)
+            ? psxtrace->region_names[r] : "<total>";
+        OPL_ERROR_F("psxtrace",
+                    "DIVERGED (%s) at frame=%u region=%d (%s) "
+                    "op=0x%016llx oracle=0x%016llx (record %u)",
+                    psxtrace->hard_fail_reason
+                        ? psxtrace->hard_fail_reason : "?",
+                    psxtrace->hard_fail_frame,
+                    (int)r, rname,
+                    (unsigned long long)psxtrace->hard_fail_op,
+                    (unsigned long long)psxtrace->hard_fail_oracle,
+                    psxtrace->records_consumed);
+        return "psxtrace-divergence";
+    }
+    case 3:
+        return "psxtrace-error";
+    default:
+        return NULL;
+    }
+}
+
+/* Documented at the declaration in host_loop_internal.h. */
+const char* host_exit_reason(const host_session_t* S) OP_REQUIRES(sim)
+{
+    const openpete_options_t* opts = S->opts;
+    const char* trace = psxtrace_exit_reason(opts);
+    if (run_shutdown_flagged()) return "user-quit";
+    if (trace) return trace;
+    if (g_game.done) return "game-returned";
+    if (frame_limit_due(opts)) return "frame-limit";
+    /* --record-frames: the capture window has closed. Stop here rather
+     * than at the next frame/tick boundary so the clip ends on exactly the
+     * requested frame count and every rate covers the same game time. */
+    if (openpete_record_finished()) return "record-frames";
+    if (opts->max_runtime_seconds > 0 &&
+        (SDL_GetTicks() - S->start)
+            > (Uint64)opts->max_runtime_seconds * 1000)
+        return "max-runtime-seconds";
+    return NULL;
+}
+
+/* Documented at the declaration in host_loop_internal.h. */
+void host_loop_sample(const host_session_t* S, const host_iter_t* it) OP_REQUIRES(sim)
+{
+    /* Sample log so the user can see the loop is alive. Gated on
+     * sim_due so a render-only iter under --render-fps>0 doesn't
+     * re-log the same frame number. Same gate clears
+     * openpete_primitives_drawn after a tick consumed/presented its
+     * draws, not on render-only iterations that didn't add any. */
+    if (!it->sim_due) return;
+    if ((openpete_frame & 0x3F) == 1u) {
+        OPL_INFO_F("loop",
+                   "frame=%u prims_last=%u elapsed_ms=%llu",
+                   openpete_frame, openpete_primitives_drawn,
+                   (unsigned long long)(SDL_GetTicks() - S->start));
+    }
+    openpete_primitives_drawn = 0u;
 }
 
 #endif /* OPENPETE_HAS_PSYCROSS */

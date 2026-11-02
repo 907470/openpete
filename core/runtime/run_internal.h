@@ -1,6 +1,6 @@
 // core/runtime/run_internal.h - run.c symbols the host-loop modules
 // (host_state_ops.c, host_session.c, host_input_tick.c, host_loop.c,
-// host_present.c, eager.c, runahead.c) call.
+// host_present.c, host_hotkeys.c, eager.c, runahead.c) call.
 #pragma once
 
 #include "openpete.h"
@@ -138,9 +138,6 @@ void run_psxtrace_release(void);
  * @param tick_scale The applied --tick-scale. */
 void host_live_knobs_publish(int render_fps, double tick_scale);
 
-/** @brief Reset the menu-close, pointer-owner and Alt+Enter latches to their start-of-run state. */
-void host_hotkey_latch_init(void);
-
 /** @brief Build the pace log's environment block from the launch options and the seeded pacer state.
  *
  * Reads the runahead request as session open seeded it, the interpolation
@@ -155,33 +152,21 @@ void host_hotkey_latch_init(void);
 void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t* opts,
                          int refresh_mhz, int render_fps, double tick_scale);
 
-/** @brief Present the held scene on a paused host iteration that presented nothing else.
+/** @brief Poll the fullscreen gestures (Alt+Enter edge, the `fullscreen` binding) and route the toggle to the window's owner.
  *
- * While the sim is paused with no step pending no tick runs, so neither the
- * canonical nor the sub-tick present fires, and the window would hold its
- * last image with the dev overlay, the toasts and the cursor frozen inside
- * it - the overlay could not even be used to resume. This presents the held
- * scene instead, once per call (the paused loop sleeps 16 ms per iteration),
- * without a re-extract, since nothing advanced: the hold the intermediate
- * path applies while the world is not live. Windowed only, never during a
- * skip fast-forward, and never while eager production holds the display
- * (it is disengaged while paused). Every call counts one paused idle
- * iteration for the OPENPETE_PAUSE_AT_VBL schedule, presented or not.
- * @param opts The parsed options. */
-void host_paused_repaint(const openpete_options_t *opts);
+ * SDL_SetWindowFullscreen belongs to the thread that owns the window: under
+ * the thread split this loop raises the request on its own edge and main
+ * consumes it; otherwise this loop consumes every raise (its own edge, a
+ * double-click, a request from another thread) and toggles.
+ * @param split Whether the thread split is active.
+ * @param prev_alt_enter Whether Alt+Enter was down at the previous poll.
+ * @return Whether Alt+Enter is down now. */
+bool host_fullscreen_poll(bool split, bool prev_alt_enter);
 
-/** @brief Decide whether the VBL about to run belongs to a paused step, clearing the step flag when it does not.
- *
- * @param paused The host loop's paused flag.
- * @param step_one The host loop's pending-step flag.
- * @return True when the VBL runs for a pending paused step. */
-bool step_begin_vbl(bool paused, bool *step_one);
+/** @brief Return the live mute baseline the pause exit restores: the boot or live --mute, or the skip-to-level transient mute.
+ * @return Nonzero when either mute is set. */
+int run_mute_baseline(void);
 
-/** @brief End a paused step on the VBL the game drew, its tick boundary.
- *
- * A VBL with no draw (the first VBL of a two-VBL tick, or a load) keeps the
- * step pending into the next; after STEP_MAX_VBLS VBLs with no draw the step
- * ends with a warning and the sim stays paused.
- * @param stepping Whether the VBL ran for a paused step (step_begin_vbl); false returns at once.
- * @param step_one The host loop's pending-step flag, lowered when the step ends. */
-void step_after_vbl(bool stepping, bool *step_one);
+/** @brief Return whether a shutdown was requested (the pump's quit, the SIGINT handler, openpete_request_shutdown), without the --max-runtime-seconds deadline openpete_shutdown_requested adds.
+ * @return true once a shutdown was requested. */
+bool run_shutdown_flagged(void);

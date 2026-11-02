@@ -90,6 +90,7 @@ add_library(openpete_core STATIC
     runtime/runahead.c
     runtime/host_loop.c
     runtime/host_present.c
+    runtime/host_hotkeys.c
     runtime/eager.c
     runtime/host_session.c
     runtime/host_pacer.c

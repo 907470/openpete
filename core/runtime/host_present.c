@@ -6,6 +6,7 @@
 #include "host_loop_internal.h"
 #include "eager.h"
 #include "host_pacer.h"
+#include "host_hotkeys.h"
 #include "run_internal.h"
 
 #include "openpete_fb_snapshot.h"
