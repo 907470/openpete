@@ -313,6 +313,17 @@ int openpete_native_launcher_precompile_counts(unsigned *done, unsigned *total);
  * @param on Nonzero to pause, 0 to resume. */
 void openpete_native_launcher_compile_pause(int on);
 
+/** @brief Run the launcher's pipeline compile pool at low priority, or at its own again, around work that runs beside the launcher (a launch-time module rebuild).
+ *
+ * In the low mode the pool's queue runs on low-priority workers
+ * (rhi_compile_pool_low); a pause (openpete_native_launcher_compile_pause,
+ * openpete_native_launcher_compile_hold) still stops every worker. Leaving
+ * the mode logs the pipelines created in it. A mode set before the pool or
+ * the device exists applies when the precompile starts; bring-up leaves it.
+ * Display owner only (the launcher's thread).
+ * @param on Nonzero for low priority, 0 for the pool's own. */
+void openpete_native_launcher_compile_low(int on);
+
 /** @brief Pause the launcher's pipeline compile pool for the rest of the process: a quit's stop takes no other pipeline.
  *
  * Each worker finishes the pipeline it holds, which cannot be interrupted;

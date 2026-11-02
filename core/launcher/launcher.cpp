@@ -2262,18 +2262,39 @@ bool job_finished() {
     return !s_ing.busy && (!s_jobs.th || SDL_GetAtomicInt(&s_jobs.done));
 }
 
-/** @brief Join the finished job's threads, end its in-flight count and its compile pause, and record its result. */
+/** @brief Return whether a launch-time job pauses the pipeline compile pool instead of running it at low priority.
+ *
+ * The harness variable OPENPETE_LAUNCHER_JOB_POOL=pause selects the pause,
+ * the A/B leg of the job's compile timing; any other value or none keeps
+ * the pool running at low priority.
+ * @return true to pause. */
+bool job_pool_pauses() {
+    const char* e = getenv("OPENPETE_LAUNCHER_JOB_POOL");
+    return e && !strcmp(e, "pause");
+}
+
+/** @brief Run the pipeline compile pool beside a launch-time job at low priority, or pause it under OPENPETE_LAUNCHER_JOB_POOL=pause; off restores the pool.
+ *
+ * @param on true when the job starts, false when it is reaped. */
+void job_pool(bool on) {
+    if (job_pool_pauses())
+        openpete_native_launcher_compile_pause(on ? 1 : 0);
+    else
+        openpete_native_launcher_compile_low(on ? 1 : 0);
+}
+
+/** @brief Join the finished job's threads, end its in-flight count and its low-priority compile, and record its result. */
 void job_reap() {
     if (s_jobs.th) SDL_WaitThread(s_jobs.th, nullptr);
     s_jobs.th = nullptr;
     if (s_jobs.cur.assets) s_jobs.cur.arc = s_ing.rc;
-    openpete_native_launcher_compile_pause(0);
+    job_pool(false);
     s_jobs.in_flight--;
     s_jobs.cur.running = false;
     job_record(s_jobs.cur);
 }
 
-/** @brief Start the queued job at the head: install its game, count it in flight, pause the pipeline compile, and start its asset part on the ingest thread and its module part on the job thread. */
+/** @brief Start the queued job at the head: install its game, count it in flight, run the pipeline compile at low priority, and start its asset part on the ingest thread and its module part on the job thread. */
 void job_start() {
     s_jobs.cur = s_jobs.queue.front();
     s_jobs.queue.pop_front();
@@ -2283,7 +2304,7 @@ void job_start() {
     j.running = true;
     j.rc = j.arc = 0;
     j.assets = j.g->update_assets != nullptr;
-    openpete_native_launcher_compile_pause(1);
+    job_pool(true);
     SDL_SetAtomicInt(&s_jobs.done, 0);
     SDL_SetAtomicInt(&s_jobs.cancel, 0);
     SDL_LockMutex(s.lock);

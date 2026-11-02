@@ -2051,6 +2051,17 @@ void          rhi_compile_pool_stop(rhi_device *dev);
  * @param on true to pause, false to resume. */
 void          rhi_compile_pool_pause(rhi_device *dev, bool on);
 
+/** @brief Enter or leave the compile pool's low mode: in it the pool's own workers take no item and a separate set of low-priority workers runs the queue.
+ *
+ * Display owner only. The low workers (half the pool's count, at least 1)
+ * start on the first entry and lower their own priority once; the pool's
+ * workers keep theirs. A pause overrides the mode: paused, no worker of
+ * either set takes an item. A pool not started yet starts in the mode. A
+ * wait for the pool returns in the mode, at the low workers' rate.
+ * @param dev Device, or NULL.
+ * @param on true to enter, false to leave. */
+void          rhi_compile_pool_low(rhi_device *dev, bool on);
+
 /* What one pipeline batch did (rhi_pipeline_batch_end). */
 typedef struct {
     unsigned queued;      /* creates queued on the pool                         */

@@ -7038,7 +7038,11 @@ static struct {
     int on;        /* the ahead walk runs: openpete_native_launcher_precompile_step steps it */
     int paused;    /* the pool is paused (openpete_native_launcher_compile_pause) */
     int held;      /* paused for good (openpete_native_launcher_compile_hold): a resume is ignored */
+    int low;       /* the pool runs on its low-priority workers (openpete_native_launcher_compile_low) */
     Uint64 pause_ns;
+    rhi_compile_pool_stats pause_p0; /* the pool's counts at the pause */
+    Uint64 low_ns;                /* when the low mode began */
+    rhi_compile_pool_stats low_p0; /* the pool's counts then */
     Uint32 event;  /* the wake event's type (SDL_RegisterEvents); 0 for none */
     SDL_AtomicInt wake_pending;  /* a wake event is queued and no step has run since */
 } s_ahead;
@@ -7085,6 +7089,7 @@ int openpete_native_launcher_precompile_start(const openpete_options_t *opts)
     }
     const unsigned described = nr_describe_pipelines(dev, opts);
     rhi_compile_pool_pause(dev, s_ahead.paused != 0);
+    rhi_compile_pool_low(dev, s_ahead.low != 0);
     /* The game-neutral options carry the flag, the global scopes and [saved];
      * a [game.*] or [disc.*] scope is not known before the pick. */
     const bool affine = opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE;
@@ -7094,7 +7099,7 @@ int openpete_native_launcher_precompile_start(const openpete_options_t *opts)
     OPL_INFO_F("native", "launcher precompile: %u pipeline descriptions, %d create infos queued "
                "(both SLOT_CONTEST values; %s)%s", described, keys,
                affine ? "affine, then perspective" : "perspective, then affine",
-               s_ahead.paused ? "; the compile pool is paused" : "");
+               s_ahead.paused ? "; the compile pool is paused" : s_ahead.low ? "; the compile pool runs at low priority" : "");
     return keys > 0 ? keys : 0;
 }
 
@@ -7129,11 +7134,36 @@ void openpete_native_launcher_compile_pause(int on)
     if (s_ahead.paused == (on != 0) || (!on && s_ahead.held)) return;
     s_ahead.paused = on != 0;
     const Uint64 now = SDL_GetTicksNS();  /* clock-guard: wall: pause duration for the log */
-    if (on) s_ahead.pause_ns = now;
-    else
-        OPL_INFO_F("native", "launcher precompile: the compile pool resumes after %.1f ms paused",
-                   (double)(now - s_ahead.pause_ns) / 1e6);
+    rhi_compile_pool_stats p;
+    rhi_compile_pool_stats_get(s_launch.dev, &p);
+    if (on) {
+        s_ahead.pause_ns = now;
+        s_ahead.pause_p0 = p;
+    } else {
+        OPL_INFO_F("native", "launcher precompile: the compile pool resumes after %.1f ms paused; "
+                   "%u pipelines created in it (the items running at the pause)",
+                   (double)(now - s_ahead.pause_ns) / 1e6, p.variant_created - s_ahead.pause_p0.variant_created);
+    }
     if (s_launch.dev) rhi_compile_pool_pause(s_launch.dev, on != 0);
+}
+
+void openpete_native_launcher_compile_low(int on)
+{
+    if (s_ahead.low == (on != 0)) return;
+    s_ahead.low = on != 0;
+    rhi_compile_pool_stats p;
+    rhi_compile_pool_stats_get(s_launch.dev, &p);
+    const Uint64 now = SDL_GetTicksNS();  /* clock-guard: wall: low-mode duration for the log */
+    if (on) {
+        s_ahead.low_ns = now;
+        s_ahead.low_p0 = p;
+    } else {
+        const rhi_compile_pool_stats *p0 = &s_ahead.low_p0;
+        OPL_INFO_F("native", "launcher precompile: %u pipelines created (%u jobs run) at low priority in %.1f ms%s",
+                   p.variant_created - p0->variant_created, p.run - p0->run,
+                   (double)(now - s_ahead.low_ns) / 1e6, s_ahead.held ? " (held for the quit)" : "");
+    }
+    if (s_launch.dev) rhi_compile_pool_low(s_launch.dev, on != 0);
 }
 
 void openpete_native_launcher_compile_hold(void)
@@ -7152,7 +7182,9 @@ void openpete_native_launcher_compile_hold(void)
 static void nr_ahead_end(rhi_device *dev)
 {
     if (s_ahead.paused) openpete_native_launcher_compile_pause(0);
+    if (s_ahead.low) openpete_native_launcher_compile_low(0);
     rhi_compile_pool_pause(dev, false);
+    rhi_compile_pool_low(dev, false);
     rhi_precompile_ahead_stop(dev);
     s_ahead.on = 0;
     if (s_ahead.event) SDL_FlushEvent(s_ahead.event);

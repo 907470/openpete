@@ -46,6 +46,13 @@ Cases:
             job-pick-same: a pick of A during A's rebuild waits for it and starts A.
             job-pick-other: a pick of B during A's rebuild stops A, whose stamped module path then holds no
             file or a whole module; B starts.
+            job-pool-low: a pick of A during A's rebuild on a cold pipeline cache (OPENPETE_PRECOMPILE_FORCE=1,
+            so bring-up's compile stage runs on lavapipe): the compile pool keeps running on its
+            low-priority workers through the rebuild and creates pipelines in it (a non-zero count,
+            the "at low priority" line), and the game starts. Reports the rebuild's wall time, the
+            pipelines bring-up then compiles and its compile stage's length, and the time from the pick
+            and from the rebuild's end to the game's window (the line after the compile stage). --measure also runs the paused pool's leg
+            (OPENPETE_LAUNCHER_JOB_POOL=pause) and prints both legs with the 1-minute load, no verdict.
             lock: a second process started during a headless --ingest of the first logs the lock
             message, queues no ahead compile, writes no pipeline cache and exits 3, and the first
             process's ingest completes with the whole disc copied and its module built.
@@ -119,8 +126,9 @@ Cases:
             exit 0, within QUIT_BOUND_MS.
   shader-step-*  T8's shader step on the launcher's ahead compile (windowed, a cold pipeline
             cache, OPENPETE_PRECOMPILE_FORCE=1 so bring-up's compile stage runs on lavapipe):
-            shader-step-during: a pick at the selector's first frame stops the ahead walk with
-            create infos not returned, and the compile stage compiles pipelines and draws its
+            shader-step-during: a pick at the selector's first frame, over an entry whose launcher
+            asset cache an earlier windowed run wrote (so no launch-time job holds the pick while the ahead
+            walk runs at low priority), stops the ahead walk with create infos not returned, and the compile stage compiles pipelines and draws its
             progress screen (OPENPETE_PRECOMPILE_PANEL_MS=0); every screen's bar has a total
             and its fraction never falls (the "compile stage bar" line).
             shader-step-after: a pick held until the ahead walk has returned every create info
@@ -454,6 +462,76 @@ def case_job_pick_other(a):
         bad.append(f"exit {rc}")
     return verdict("job-pick-other", bad, f"A {'stopped' if stopped else 'had finished'}; module "
                                f"{'absent' if not os.path.exists(mod) else 'whole'}")
+
+
+POOL_LOW = re.compile(r"launcher precompile: (\d+) pipelines created \((\d+) jobs run\) at low priority in ([\d.]+) ms")
+POOL_PAUSED = re.compile(r"the compile pool resumes after ([\d.]+) ms paused; (\d+) pipelines created in it")
+# The game's window is up: bring-up's compile stage has ended and the game's own presents follow.
+GAME_WINDOW_UP = r"native: Vulkan vk window up"
+
+
+def pool_leg(a, name, extra):
+    """One pick of A during A's launch-time rebuild on a cold pipeline cache; returns (rc, log, figures)."""
+    d = cl.case_dir(a.out, name)
+    mod = seed_built(a, d, "spyro-1", 1)
+    os.rename(mod, mod + ".off")
+    env = dict(OPENPETE_PRECOMPILE_AHEAD="1", OPENPETE_PRECOMPILE_FORCE="1",
+               OPENPETE_LAUNCHER_PICK_DELAY_MS="1500", OPENPETE_LAUNCHER_SELECT_GAME="spyro-1", **extra)
+    load = os.getloadavg()[0]
+    rc, log = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env,
+                        timeout=1500)
+    t = {k: log_time(log, p) for k, p in (("start", r"launcher: launch-time module rebuild of spyro-1"),
+                                           ("done", r"launcher: module rebuild of spyro-1 done"),
+                                           ("pick", r"launcher: scripted pick: entry \d+ \(spyro-1\)"),
+                                           ("frame", GAME_WINDOW_UP))}
+    st, low, paused = STAGE.search(log), POOL_LOW.search(log), POOL_PAUSED.search(log)
+    f = {"load": load, "load_end": os.getloadavg()[0], "low": low, "paused": paused, "stage": st, "t": t,
+         "rebuild_s": t["done"] - t["start"] if t["done"] and t["start"] else None,
+         "pick_frame_s": t["frame"] - t["pick"] if t["frame"] and t["pick"] else None,
+         "done_frame_s": t["frame"] - t["done"] if t["frame"] and t["done"] else None,
+         "made": int(low.group(1)) if low else int(paused.group(2)) if paused else None,
+         "bringup": int(st.group(3)) if st else None, "stage_ms": float(st.group(1)) if st else None}
+    return rc, log, f
+
+
+def pool_detail(f):
+    """One leg's figures as text."""
+    def s(v):
+        return "?" if v is None else f"{v:.2f}"
+    return (f"rebuild {s(f['rebuild_s'])} s, {f['made']} pipelines created in it; bring-up compiled "
+            f"{f['bringup']} (compile stage {s(f['stage_ms'])} ms); pick to the game's window {s(f['pick_frame_s'])} s, "
+            f"rebuild end to the game's window {s(f['done_frame_s'])} s; load {f['load']:.1f}-{f['load_end']:.1f}")
+
+
+def case_job_pool_low(a):
+    """A pick of A during A's rebuild: the compile pool runs at low priority through the rebuild and creates pipelines."""
+    need_first_boot(a)
+    rc, log, f = pool_leg(a, "job-pool-low", {})
+    bad = common_flow(log) + ordered(
+        log, r"launch-time job started: spyro-1",
+        r"scripted pick: entry \d+ \(spyro-1\)", r"the pick of spyro-1 waits for its running launch-time job",
+        r"pipelines created \(\d+ jobs run\) at low priority", r"module rebuild of spyro-1 done",
+        r"game picked: spyro-1", r"shared recomp module attached")
+    if "compile pool: low mode" not in log.split("module rebuild of spyro-1 done", 1)[0]:
+        bad.append("the compile pool did not enter its low mode before the rebuild's end")
+    workers = re.search(r"compile pool: (\d+) low-priority worker", log)
+    if not workers or int(workers.group(1)) == 0:
+        bad.append("no low-priority worker started")
+    if not f["low"]:
+        bad.append("no low-priority compile line")
+    elif int(f["low"].group(1)) == 0:
+        bad.append("VACUOUS: the pool created no pipeline during the rebuild")
+    if "compile pool resumes after" in log.split("module rebuild of spyro-1 done", 1)[0]:
+        bad.append("the compile pool was paused during the launch-time rebuild")
+    if rc != 0:
+        bad.append(f"exit {rc}")
+    if not a.measure:
+        return verdict("job-pool-low", bad, pool_detail(f))
+    rc2, log2, f2 = pool_leg(a, "job-pool-paused", {"OPENPETE_LAUNCHER_JOB_POOL": "pause"})
+    print(f"[launcher-flow] job-pool-low: low priority: {pool_detail(f)}")
+    print(f"[launcher-flow] job-pool-low: paused:       {pool_detail(f2)} (exit {rc2})")
+    print("[launcher-flow] job-pool-low: measured (no verdict)" + (f"; low leg problems: {'; '.join(bad)}" if bad else ""))
+    return 0
 
 
 def case_lock(a):
@@ -1572,10 +1650,21 @@ def bar_problems(log):
     return bad, f"bar predicted {m.group(1)}, final {m.group(2)} of {m.group(3)} queued, {m.group(4)} screen(s): {shown}"
 
 
-def shader_run(a, name, env):
-    """One scripted pick of a Spyro 1 entry on a cold cache; returns (rc, log, stage match, walk-end match, problems)."""
+def shader_run(a, name, env, warm_assets=False):
+    """One scripted pick of a Spyro 1 entry on a cold pipeline cache; returns (rc, log, stage match, walk-end match, problems).
+
+    With warm_assets a windowed run without the ahead walk first writes the entry's launcher asset
+    cache (the preview needs the window) and its pipeline cache file is removed, so no launch-time
+    asset job holds the pick while the ahead walk runs on."""
     d = cl.case_dir(a.out, name)
     seed_entry(d, "spyro-1", 1)
+    if warm_assets:
+        rc, _ = cl.launch(a.binary, d, "assets", ["--frame-limit", "1"],
+                          {"OPENPETE_PRECOMPILE_AHEAD": "0", "OPENPETE_LAUNCHER_SELECT": "0"}, timeout=900)
+        if rc != 0 or not os.path.isfile(os.path.join(d, "state", "openpete", "cache", "spyro-1", "preview.rgba")):
+            raise RuntimeError(f"the asset cache run wrote no cache (exit {rc}); see {d}/assets.log")
+        for f in glob.glob(os.path.join(d, "state", "openpete", "cache", "vk-pipelines-*.bin")):
+            os.remove(f)
     rc, log = cl.launch(a.binary, d, "run", ["--frame-limit", "20"], dict(SHADER_ENV, **env), timeout=900)
     st, wl = STAGE.search(log), WALK_END.search(log)
     bad = common_flow(log)
@@ -1590,7 +1679,9 @@ def shader_run(a, name, env):
 
 def case_shader_step_during(a):
     """A pick during the ahead walk: the walk stops short and the compile stage compiles and draws (windowed)."""
-    rc, log, st, wl, bad = shader_run(a, "shader-step-during", {"OPENPETE_PRECOMPILE_PANEL_MS": "0"})
+    rc, log, st, wl, bad = shader_run(a, "shader-step-during", {"OPENPETE_PRECOMPILE_PANEL_MS": "0"}, warm_assets=True)
+    if "launch-time rerun:" in log:
+        bad.append("a launch-time job reran an asset step (the asset cache was not current)")
     if wl and "stopped at the pick" not in wl.group(5):
         bad.append("VACUOUS: the ahead walk returned every create info before the pick")
     if st and int(st.group(3)) == 0:
@@ -2341,6 +2432,7 @@ def case_error_link(a):
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
+         "job-pool-low": case_job_pool_low,
          "job-pick-other": case_job_pick_other, "lock": case_lock, "failed-marker": case_failed_marker,
          "headless-no-disc": case_headless_no_disc, "bind-repair": case_bind_repair,
          "ingest-held": case_ingest_held, "cache": case_cache, "cache-ingest": case_cache_ingest,

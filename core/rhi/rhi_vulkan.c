@@ -509,6 +509,7 @@ struct rhi_device {
     unsigned                 describe_mark_n, describe_mark_words; /* the counts at the open describe_begin */
     unsigned                 describe_group; /* rhi_pipeline_describe_group */
     bool                     cpool_paused; /* rhi_compile_pool_pause: the pool starts paused */
+    bool                     cpool_low;    /* rhi_compile_pool_low: the pool starts on its low workers */
     uint64_t                 pipe_serial; /* the last registry serial handed out (registry_link) */
     VkQueue                  gfx_queue;
     char                     device_name[256];
@@ -9522,10 +9523,13 @@ typedef struct pool_item {
 
 struct compile_pool {
     SDL_Mutex     *mx;
-    SDL_Condition *work;           /* signalled on submit and stop */
+    SDL_Condition *work;           /* the pool's own workers: signalled on submit outside the low mode, and on stop */
+    SDL_Condition *lo_work;        /* the low-priority workers: signalled on submit in the low mode, and on stop */
     SDL_Condition *done;           /* broadcast when a run returns */
     SDL_Thread    *thr[POOL_MAX_WORKERS];
     int            n;              /* worker threads; 0 runs jobs at submit */
+    SDL_Thread    *lo_thr[POOL_MAX_WORKERS]; /* low-priority workers (rhi_compile_pool_low) */
+    int            lo_n;           /* low-priority worker threads started */
     pool_item     *q_head, *q_tail;   /* queued */
     pool_item     *l_head, *l_tail;   /* library parts queued, taken before q_head */
     pool_item     *s_head, *s_tail;   /* staged for the display owner */
@@ -9534,6 +9538,7 @@ struct compile_pool {
     unsigned       lo_queued, lo_running; /* of them, low-queue jobs */
     bool           stop;
     bool           paused;         /* workers take no item (rhi_compile_pool_pause) */
+    bool           low;            /* only the low-priority workers take items (rhi_compile_pool_low) */
     uint64_t       run_keys[POOL_MAX_WORKERS]; /* create-info keys of the jobs running */
     unsigned       run_keys_n;
     rhi_compile_pool_stats st;     /* under mx */
@@ -9765,18 +9770,29 @@ static pool_item *pool_take_locked(struct compile_pool *pl)
     return it;
 }
 
-/** @brief Worker thread: run queued items until the pool stops; while it is paused take none.
+/** @brief Wake a worker of the set that takes items now (the low-priority workers in the low mode, the pool's own otherwise) after a submit.
  *
- * @param arg The device.
- * @return 0. */
-static int SDLCALL pool_worker(void *arg)
+ * Each set waits on its own condition: a signal on a shared one could wake a
+ * worker of the idle set, which sleeps again and consumes the wakeup.
+ * @param pl The pool, locked.
+ * @param all true to wake every worker of the set (a library part, whose link waits on its parts). */
+static void pool_wake_locked(struct compile_pool *pl, bool all)
 {
-    rhi_device *dev = arg;
+    SDL_Condition *c = pl->low ? pl->lo_work : pl->work;
+    if (all) SDL_BroadcastCondition(c); else SDL_SignalCondition(c);
+}
+
+/** @brief Run queued items until the pool stops: while it is paused take none, and take one only while the pool's low flag equals the worker's.
+ *
+ * @param dev The device.
+ * @param low true on a low-priority worker (pool_worker_low). */
+static void pool_worker_loop(rhi_device *dev, bool low)
+{
     struct compile_pool *pl = dev->cpool;
     SDL_LockMutex(pl->mx);
     for (;;) {
-        while ((pl->paused || (!pl->q_head && !pl->l_head && !pl->lo_head)) && !pl->stop)
-            SDL_WaitCondition(pl->work, pl->mx);
+        while ((pl->paused || pl->low != low || (!pl->q_head && !pl->l_head && !pl->lo_head)) && !pl->stop)
+            SDL_WaitCondition(low ? pl->lo_work : pl->work, pl->mx);
         if (pl->stop) break;
         pool_item *it = pool_take_locked(pl);
         pl->running++;
@@ -9797,6 +9813,31 @@ static int SDLCALL pool_worker(void *arg)
         }
     }
     SDL_UnlockMutex(pl->mx);
+}
+
+/** @brief Worker thread at the creator's priority: run queued items while the pool is not in its low mode.
+ *
+ * @param arg The device.
+ * @return 0. */
+static int SDLCALL pool_worker(void *arg)
+{
+    pool_worker_loop(arg, false);
+    return 0;
+}
+
+/** @brief Low-priority worker thread: lower its own scheduling priority once, then run queued items while the pool is in its low mode.
+ *
+ * The priority is set once at the thread's start and never raised: an
+ * unprivileged Linux thread cannot lower its niceness again (RLIMIT_NICE),
+ * so the pool keeps separate threads for each priority instead of moving
+ * one set between them.
+ * @param arg The device.
+ * @return 0. */
+static int SDLCALL pool_worker_low(void *arg)
+{
+    if (!SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW))
+        RHI_LOG("compile pool: a low-priority worker kept its priority (%s)\n", SDL_GetError());
+    pool_worker_loop(arg, true);
     return 0;
 }
 
@@ -9824,8 +9865,41 @@ static void pool_free(struct compile_pool *pl)
 {
     if (pl->mx) SDL_DestroyMutex(pl->mx);
     if (pl->work) SDL_DestroyCondition(pl->work);
+    if (pl->lo_work) SDL_DestroyCondition(pl->lo_work);
     if (pl->done) SDL_DestroyCondition(pl->done);
     free(pl);
+}
+
+/** @brief Enter or leave the pool's low mode, starting its low-priority workers on the first entry.
+ *
+ * Half the pool's worker count (at least 1) run at low priority: where the
+ * OS priority ties with the work that runs beside it (Windows' lowest thread
+ * priority of a normal-class process equals a below-normal-class process's
+ * normal thread), the count bounds the pool's share. A pool with no worker
+ * runs jobs at submit and starts none. A low worker that cannot be started
+ * leaves fewer; with none the mode is not entered, so the queue still runs.
+ * @param dev Device.
+ * @param pl Its pool, unlocked.
+ * @param on true to enter, false to leave. */
+static void pool_low_set(rhi_device *dev, struct compile_pool *pl, bool on)
+{
+    if (on && pl->n > 0 && pl->lo_n == 0) {
+        const int want = pl->n / 2 > 0 ? pl->n / 2 : 1;
+        for (int i = 0; i < want; i++) {
+            pl->lo_thr[pl->lo_n] = SDL_CreateThread(pool_worker_low, "openpete-compile-low", dev);
+            if (!pl->lo_thr[pl->lo_n]) break;
+            pl->lo_n++;
+        }
+        RHI_LOG("compile pool: %d low-priority worker(s)\n", pl->lo_n);
+    }
+    SDL_LockMutex(pl->mx);
+    pl->low = on && pl->lo_n > 0;
+    const unsigned running = pl->running, queued = pl->queued;
+    SDL_BroadcastCondition(pl->work);
+    SDL_BroadcastCondition(pl->lo_work);
+    SDL_UnlockMutex(pl->mx);
+    RHI_LOG("compile pool: %s; %u running, %u queued\n",
+            on ? "low mode (only the low-priority workers take items)" : "normal mode", running, queued);
 }
 
 /** @brief Return the device's compile pool, starting it on first use.
@@ -9841,8 +9915,9 @@ static struct compile_pool *pool_get(rhi_device *dev)
     if (!pl) return NULL;
     pl->mx = SDL_CreateMutex();
     pl->work = SDL_CreateCondition();
+    pl->lo_work = SDL_CreateCondition();
     pl->done = SDL_CreateCondition();
-    if (!pl->mx || !pl->work || !pl->done) { pool_free(pl); return NULL; }
+    if (!pl->mx || !pl->work || !pl->lo_work || !pl->done) { pool_free(pl); return NULL; }
     (void)env_guard_ready();   /* created here, before any worker runs */
     pl->paused = dev->cpool_paused;
     dev->cpool = pl;
@@ -9854,6 +9929,7 @@ static struct compile_pool *pool_get(rhi_device *dev)
     }
     pl->st.workers = (unsigned)pl->n;
     RHI_LOG("compile pool: %d worker(s)%s\n", pl->n, pl->n ? "" : " (jobs run at submit)");
+    if (dev->cpool_low) pool_low_set(dev, pl, true);
     return pl;
 }
 
@@ -9904,7 +9980,7 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
     pl->lo_queued += it->low;
     pl->st.submitted++;
     if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
-    if (libs) SDL_BroadcastCondition(pl->work); else SDL_SignalCondition(pl->work);
+    pool_wake_locked(pl, libs);
     SDL_UnlockMutex(pl->mx);
     return 0;
 }
@@ -9927,7 +10003,7 @@ int rhi_compile_pool_submit_task(rhi_device *dev, rhi_pool_task_fn run, void *ta
     pl->queued++;
     pl->st.tasks_submitted++;
     if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
-    SDL_SignalCondition(pl->work);
+    pool_wake_locked(pl, false);
     SDL_UnlockMutex(pl->mx);
     return 0;
 }
@@ -10024,8 +10100,10 @@ void rhi_compile_pool_stop(rhi_device *dev)
         SDL_LockMutex(pl->mx);
         pl->stop = true;
         SDL_BroadcastCondition(pl->work);
+        SDL_BroadcastCondition(pl->lo_work);
         SDL_UnlockMutex(pl->mx);
         for (int i = 0; i < pl->n; i++) SDL_WaitThread(pl->thr[i], NULL);
+        for (int i = 0; i < pl->lo_n; i++) SDL_WaitThread(pl->lo_thr[i], NULL);
         pl->st.cancelled += pool_cancel_list(dev, pl->q_head);
         pl->st.cancelled += pool_cancel_list(dev, pl->lo_head);
         pl->st.cancelled += pool_cancel_list(dev, pl->s_head);
@@ -10061,10 +10139,21 @@ void rhi_compile_pool_pause(rhi_device *dev, bool on)
     SDL_LockMutex(pl->mx);
     pl->paused = on;
     const unsigned running = pl->running, queued = pl->queued;
-    if (!on) SDL_BroadcastCondition(pl->work);
+    if (!on) {
+        SDL_BroadcastCondition(pl->work);
+        SDL_BroadcastCondition(pl->lo_work);
+    }
     SDL_UnlockMutex(pl->mx);
     RHI_LOG("compile pool: %s; %u running, %u queued\n",
             on ? "paused (the running items finish, no other starts)" : "resumed", running, queued);
+}
+
+void rhi_compile_pool_low(rhi_device *dev, bool on)
+{
+    if (!dev) return;
+    seam_check("compile_pool_low");
+    dev->cpool_low = on;
+    if (dev->cpool) pool_low_set(dev, dev->cpool, on);
 }
 
 /* ---- pipeline batch (rhi.h) ---------------------------------------------- */
