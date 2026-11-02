@@ -617,16 +617,20 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes);
  * @return The µs blocked, 0 when nothing was injected. */
 int64_t openpete_pace_inject(int paced);
 
-/** @brief Busy-wait OPENPETE_PACE_INJECT_PRESENT_US=N µs in every intermediate present.
+/** @brief Spend OPENPETE_PACE_INJECT_PRESENT_US=N[,M[,K]] µs in an intermediate present.
  *
  * Inflating the measured cost of intermediate presents until they no longer
  * fit before the tick deadline makes the shed predicate fire, so the
  * contract that presents are shed while ticks hold phase can be measured.
+ * With M the cost switches between N and M every K calls (K defaults to 1,
+ * alternating per call): alternation gives the cost estimate a non-zero
+ * deviation, and blocks of K calls move it between regimes in which the
+ * predicate admits strictly, admits late, sheds, and probes.
  * The inline intermediate present and the eager producer's intermediate
  * scene each spend it inside the span logged as that present's
- * PRESENT_SPAN cost.
- * The variable is read once and a warning logged when it is positive;
- * inactive under the virtual clock.
+ * PRESENT_SPAN cost. Off the virtual clock the cost is a busy-wait; under
+ * it the virtual clock is advanced by the cost.
+ * The variable is read once and a warning logged when a value is positive.
  * @return The µs spent, 0 when nothing was injected. */
 int64_t openpete_pace_inject_present(void);
 

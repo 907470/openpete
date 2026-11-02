@@ -1089,21 +1089,37 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
 int64_t openpete_pace_inject_present(void)
 {
     static int     s_init;
-    static int64_t s_us;
+    static int64_t s_us[2];
+    static long    s_block = 1;
+    static long    s_calls;
     if (!s_init) {
         s_init = 1;
         const char* e = getenv("OPENPETE_PACE_INJECT_PRESENT_US");
-        s_us = (e && *e) ? strtoll(e, NULL, 10) : 0;
-        if (s_us > 0)
+        char* rest = NULL;
+        s_us[0] = (e && *e) ? strtoll(e, &rest, 10) : 0;
+        s_us[1] = (rest && *rest == ',') ? strtoll(rest + 1, &rest, 10) : s_us[0];
+        if (rest && *rest == ',') s_block = strtol(rest + 1, NULL, 10);
+        if (s_block < 1) s_block = 1;
+        if (s_us[0] > 0 || s_us[1] > 0)
             OPL_WARN_F("pace",
-                       "INJECTING %lld us into every intermediate present - "
-                       "shed-predicate fault injection, never a play path",
-                       (long long)s_us);
+                       "INJECTING %lld,%lld us (switching every %ld present(s)) into "
+                       "intermediate presents%s - shed-predicate fault injection, "
+                       "never a play path",
+                       (long long)s_us[0], (long long)s_us[1], s_block,
+                       op_virtual_clock_active() ? " on the virtual clock" : "");
     }
-    if (s_us <= 0 || op_virtual_clock_active()) return 0;
-    const op_time_t until = op_now() + s_us * OP_NS_PER_US;
+    const int64_t us = s_us[(s_calls++ / s_block) & 1];
+    if (us <= 0) return 0;
+    /* Under the virtual clock op_now advances only through op_sleep_until, so
+     * the stall is that advance: the present's measured span is then exactly
+     * the injected cost. */
+    const op_time_t until = op_now() + us * OP_NS_PER_US;
+    if (op_virtual_clock_active()) {
+        op_sleep_until(until);
+        return us;
+    }
     while (op_now() < until) { }
-    return s_us;
+    return us;
 }
 
 int64_t openpete_pace_inject_canonical(void)
