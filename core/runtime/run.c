@@ -1702,21 +1702,8 @@ static op_time_t eager_tail_cost(void)
  * error; lateness beyond it is lateness the produce guard absorbs. */
 #define EAGER_BUDGET_SAFETY_NS 1000000
 
-/** @brief Fold one VBL's execution into the update-VBL and tick averages the eager planner reads.
- *
- * A VBL that queued no draw is the update VBL, whose mean the plan
- * subtracts from the span budget; one that did is the tick, whose
- * execution sets the lag. An execution of half a tick or more is a load or
- * a stall, not a VBL of either kind, and enters neither mean: it would plan
- * a lag of a hundred targets, or price every later span as if each update
- * VBL were a load. By the same line, a tick that starts half a tick or more
- * past its pacer deadline was delayed by a load or a stall, and its
- * lateness is kept in tick_late (0 for any later start, which is pacer
- * jitter or a production overrun the budget must keep seeing).
- * @param ex The VBL's execution time on this thread.
- * @param start_late Execution start minus the pacer deadline, or 0 when unpaced.
- * @param drawing Nonzero when the VBL queued a draw (a tick). */
-static void eager_note_vbl(op_time_t ex, op_time_t start_late, int drawing)
+/* Documented at the declaration in run_internal.h. */
+void eager_note_vbl(op_time_t ex, op_time_t start_late, int drawing)
 {
     const int stall = ex >= (op_time_t)g_openpete_tick_period_ns / 2;
     if (!drawing) {
@@ -2417,7 +2404,7 @@ static void pace_record_present(uint8_t kind)
 /* Live-knob command queue. The dev overlay and the settings menu set the
  * render fps, tick scale, runahead depth, rewind window and mute from the
  * presenting or pump thread; the values they drive (the pacer's render fps
- * and tick scale, s_runahead_req, the rewind keyframe ring, s_mute and
+ * and tick scale, the runahead request, the rewind keyframe ring, s_mute and
  * their dirty flags) belong to the host loop. A setter records its
  * request in s_knob_cmds under s_knob_mx and raises s_knob_pending; the host
  * loop drains the requests at the top of its iteration (live_knob_drain), its
@@ -2498,22 +2485,6 @@ double openpete_get_tick_scale(void) {
     return v;
 }
 
-/* Live runahead depth (dev overlay). Same dirty-flag shape: the host loop
- * re-arms at its top-of-iteration quiescent point - speculation is fully
- * contained inside one ticked iteration (save -> speculate -> restore), so
- * there is never in-flight state to tear. s_runahead_live is the applied
- * depth after the mod-capability gate (may be forced 0). */
-static int s_runahead_req   = 0;
-static int s_runahead_dirty = 0;
-static SDL_AtomicInt s_runahead_live;   /* written by the host loop, read anywhere */
-
-void host_runahead_seed(const openpete_options_t* opts)
-{
-    s_runahead_req   = (opts->runahead > 0) ? opts->runahead : 0;
-    SDL_SetAtomicInt(&s_runahead_live, 0);
-    s_runahead_dirty = (s_runahead_req > 0);
-}
-
 void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t* opts,
                          int refresh_mhz, int render_fps, double tick_scale)
 {
@@ -2525,7 +2496,7 @@ void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t
                             opts->fullscreen ? 1 : 0,
                             render_fps,
                             g_openpete_interp_enabled ? 1 : 0,
-                            s_runahead_req,
+                            runahead_requested(),
                             tick_scale,
                             openpete_split_applies(opts) ? 1 : 0,
                             openpete_host_input_legacy(),
@@ -2540,8 +2511,6 @@ void openpete_runahead_set(int n) {
     knob_unlock();
     SDL_SetAtomicInt(&s_knob_pending, 1);
 }
-
-int openpete_runahead_get(void) { return SDL_GetAtomicInt(&s_runahead_live); }
 
 /* Pause and step requests from the dev overlay, read by the host loop where it
  * reads the pause and step keys: s_pause_req holds -1 (none), 0 or 1;
@@ -2700,7 +2669,7 @@ static void live_knob_drain(host_pacer_t* P)
     knob_unlock();
     if (c.fps_set) host_pacer_request_fps(P, c.fps);
     if (c.scale_set) host_pacer_request_scale(P, c.scale);
-    if (c.ra_set && c.ra != s_runahead_req) { s_runahead_req = c.ra; s_runahead_dirty = 1; }
+    if (c.ra_set) runahead_request(c.ra);
     if (c.rw_set) openpete_rewind_configure(c.rw);
     if (c.mute_set) { s_mute = c.mute; apply_mute_gains(); }
 }
@@ -3582,26 +3551,16 @@ static bool menu_close_released(bool close_k, bool prev_close,
     return edge;
 }
 
-/** @brief Decide whether the VBL about to run belongs to a paused step, clearing the step flag when it does not.
- *
- * @param paused The host loop's paused flag.
- * @param step_one The host loop's pending-step flag.
- * @return True when the VBL runs for a pending paused step. */
-static bool step_begin_vbl(bool paused, bool *step_one)
+/* Documented at the declaration in run_internal.h. */
+bool step_begin_vbl(bool paused, bool *step_one)
 {
     const bool stepping = paused && *step_one;
     if (!stepping) *step_one = false;
     return stepping;
 }
 
-/** @brief End a paused step on the VBL the game drew, its tick boundary.
- *
- * A VBL with no draw (the first VBL of a two-VBL tick, or a load) keeps the
- * step pending into the next; after STEP_MAX_VBLS VBLs with no draw the step
- * ends with a warning and the sim stays paused.
- * @param stepping Whether the VBL ran for a paused step (step_begin_vbl); false returns at once.
- * @param step_one The host loop's pending-step flag, lowered when the step ends. */
-static void step_after_vbl(bool stepping, bool *step_one)
+/* Documented at the declaration in run_internal.h. */
+void step_after_vbl(bool stepping, bool *step_one)
 {
     if (!stepping) return;
     s_step_vbls++;
@@ -3737,6 +3696,68 @@ static bool host_unlock_wanted(const host_session_t* S)
          unlock_frame_in_ranges(opts, openpete_feed_key_now())));
 }
 
+/* The mod toggle epoch the host loop last applied. */
+static unsigned s_modset_epoch = 0;
+
+/** @brief Clear the rewind history and disarm runahead when the enabled mod set changed since the last iteration.
+ *
+ * A modset toggle changes what the timeline means: rewind history recorded
+ * under the old set must not replay into the new one, and a held runahead
+ * snapshot may predate a freshly enabled mod that declares no runahead
+ * capability. Drop both; runahead_apply_live then re-arms runahead through
+ * its capability gate against the NEW enabled set. */
+static void host_modset_epoch_poll(void)
+{
+    unsigned ep = openpete_mods_toggle_epoch();
+    if (ep == s_modset_epoch) return;
+    s_modset_epoch = ep;
+    if (openpete_rewind_enabled()) {
+        openpete_rewind_clear();
+        OPL_INFO_F("rewind", "modset changed - history cleared");
+    }
+    runahead_disarm();
+}
+
+/** @brief Start an iteration: the heartbeat, the unlock peek, the live tick-scale, render-fps, modset and runahead changes, and sim_due.
+ *
+ * The unlock peek is used *only* to gate sim_due under --render-fps>0. The
+ * authoritative unlock write (openpete_unlock_fps + g_skipSwapInterval)
+ * still happens at the bottom of the loop, AFTER PsyX_UpdateInput has
+ * refreshed SDL's keyboard cache and AFTER the present has consumed the
+ * previous iteration's swap-interval flag. The turbo read here is the
+ * PREVIOUS iteration's keymap sample, since this peek runs before the
+ * keymap poll; a press costs at most one iteration of lag.
+ *
+ * sim_due gates the once-per-yield block that does bk2 override stamping,
+ * the co_switch into the game fiber, post-yield accounting (position log,
+ * bk2 record, present, ram dump, exit checks). Under the legacy pacer it is
+ * always true and the loop is "one yield per outer iteration"; under the
+ * dual pacer the loop runs at render cadence and sim_due fires when the sim
+ * deadline has elapsed, or unconditionally under unlock so fast-forward
+ * actually fast-forwards. Live tick-scale and render-fps changes are
+ * applied first, after the runahead re-arm: a regrid moves the deadline
+ * sim_due reads.
+ * @param S The session: the options and the pacer.
+ * @param it The iteration, zeroed here; sets unlock_at_entry, sim_due and sim_period_ns. */
+static void host_iter_begin(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
+{
+    SDL_AddAtomicInt(&g_sim_heartbeat, 1);
+    host_trace_iter_begin();
+    *it = (host_iter_t){0};
+    it->unlock_at_entry = host_unlock_wanted(S);
+    tick_scale_schedule_poll();
+    live_knob_drain(&S->pacer);
+    host_modset_epoch_poll();
+    runahead_apply_live();
+    host_pacer_apply_live(&S->pacer);
+    it->sim_due = host_pacer_sim_due(&S->pacer, it->unlock_at_entry);
+    /* The VBL period of this iteration: the world-liveness bound and the
+     * VBL-clock terms read it. */
+    it->sim_period_ns = host_pacer_sim_period_ns(&S->pacer);
+    host_trace_bit(HT_F_SIM_DUE, it->sim_due);
+    host_trace_bit(HT_F_UNLOCK_ENTRY, it->unlock_at_entry);
+}
+
 /** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
  *
  * Split from run_host_init because SDL brings its video, gamepad and haptic
@@ -3760,11 +3781,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
-    /* --runahead: session open seeded the live-depth request; the in-loop
-     * apply block arms it on the first iteration - the identical path a live
-     * dev-overlay change takes (capability gate + snapshot alloc there). */
-    int runahead_n = 0;
-    openpete_state_mem_t* ra_snap = NULL;
     host_pacer_t* const P = &S.pacer;
 
     /* Input pump rate: every host iteration. g_PsyX_Pad_InputOverride is
@@ -3787,7 +3803,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
      * save-state regression. The active slot they use is
      * openpete_state_active_slot(), shared with the dev overlay. */
 
-    /* Frame-step state. Pause toggles; frame-step advances exactly one
+    /* Frame-step state (S.paused, S.step_one). Pause toggles; frame-step advances exactly one
      * game tick, running VBLs until the game draws (hold to repeat). While paused the host
      * loop pumps SDL events, sleeps the deadline, and skips the co_switch
      * into the game fiber - so g_ram / CPUState stay frozen and PsyCross
@@ -3795,108 +3811,10 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
      * avoid the held-voice drone (PsyCross's SPU output plays through
      * OpenAL, whose mixer runs on its own thread; without new SPU register
      * writes voices loop their current sample). */
-    bool g_paused = false;
-    bool g_step_one = false;
-
     S.loop_entered = true;
     while (!quit) {
-        SDL_AddAtomicInt(&g_sim_heartbeat, 1);
-        host_trace_iter_begin();
-        /* Top-of-loop unlock peek used *only* to gate sim_due under
-         * --render-fps>0. The authoritative unlock write
-         * (openpete_unlock_fps + g_skipSwapInterval) still happens at the
-         * bottom of the loop, AFTER PsyX_UpdateInput has refreshed SDL's
-         * keyboard cache and AFTER the present has consumed the previous
-         * iteration's swap-interval flag. The turbo read here is the
-         * PREVIOUS iteration's keymap sample, since this peek runs before the
-         * poll below; a press costs at most one iteration of lag. */
-        host_iter_t it = {0};
-        it.unlock_at_entry = host_unlock_wanted(&S);
-
-        /* sim_due gates the once-per-yield block that does bk2 override
-         * stamping, the co_switch into the game fiber, post-yield
-         * accounting (position log, bk2 record, present, ram dump, exit
-         * checks). Under the legacy pacer it is always true and the loop
-         * is "one yield per outer iteration"; under the dual pacer the loop
-         * runs at render cadence and sim_due fires when the sim deadline
-         * has elapsed, or unconditionally under unlock so fast-forward
-         * actually fast-forwards. Live tick-scale and render-fps changes
-         * are applied first, below the runahead re-arm. */
-        tick_scale_schedule_poll();
-        live_knob_drain(P);
-        /* A modset toggle changes what the timeline means: rewind history
-         * recorded under the old set must not replay into the new one, and
-         * a held runahead snapshot may predate a freshly enabled mod that
-         * declares no runahead capability. Drop both; the dirty path below
-         * re-arms runahead through its capability gate against the NEW
-         * enabled set. */
-        {
-            static unsigned s_modset_epoch = 0;
-            unsigned ep = openpete_mods_toggle_epoch();
-            if (ep != s_modset_epoch) {
-                s_modset_epoch = ep;
-                if (openpete_rewind_enabled()) {
-                    openpete_rewind_clear();
-                    OPL_INFO_F("rewind", "modset changed - history cleared");
-                }
-                if (ra_snap) {
-                    openpete_state_mem_free(ra_snap);
-                    ra_snap = NULL;
-                    OPL_INFO_F("runahead",
-                               "modset changed - re-checking capability gate");
-                }
-                s_runahead_dirty = 1;
-            }
-        }
-        /* Live runahead re-arm. Arm only when every enabled mod declares a
-         * runahead posture in its manifest (runahead = pure | host-fx) -
-         * speculative re-execution of tick hooks with undeclared host side
-         * effects would double-fire them. Arms once and holds ra_snap until
-         * the modset epoch above disarms it. */
-        if (s_runahead_dirty) {
-            s_runahead_dirty = 0;
-            int ra_depth = s_runahead_req;
-            if (ra_depth > 0 && !ra_snap) {
-                const char* ra_offender = NULL;
-                if (!openpete_mods_runahead_capable(&ra_offender)) {
-                    OPL_ERROR_F("runahead",
-                                "disabled: mod \"%s\" declares no runahead "
-                                "capability (add runahead = \"pure\" or "
-                                "\"host-fx\" to its mod.toml)",
-                                ra_offender ? ra_offender : "?");
-                    ra_depth = s_runahead_req = 0;
-                } else {
-                    ra_snap = openpete_state_mem_new();
-                    if (!ra_snap) ra_depth = s_runahead_req = 0;
-                    else if (ra_pc_on()) {
-                        (void)openpete_on_guest_discontinuity(ra_pc_invalidate_all);
-                        OPL_INFO_F("runahead",
-                                   "prediction-exactness check armed");
-                    }
-                }
-            }
-            if (ra_depth != runahead_n) {
-                runahead_n = ra_depth;
-                /* The interp ring must never pair a led-timeline state with
-                 * a real-timeline one across the depth switch: reset it so
-                 * the next presents snap instead of lerping backward. */
-                openpete_interp_reset();
-                openpete_interp_objs_reset();
-                if (runahead_n > 0)
-                    OPL_INFO_F("runahead", "armed: leading presentation by "
-                               "%d tick(s)", runahead_n);
-                else
-                    OPL_INFO_F("runahead", "disarmed");
-            }
-            SDL_SetAtomicInt(&s_runahead_live, runahead_n);
-        }
-        host_pacer_apply_live(P);
-        it.sim_due = host_pacer_sim_due(P, it.unlock_at_entry);
-        /* The VBL period of this iteration: the world-liveness bound and the
-         * VBL-clock terms read it. */
-        const op_time_t sim_period_ns = host_pacer_sim_period_ns(P);
-        host_trace_bit(HT_F_SIM_DUE, it.sim_due);
-        host_trace_bit(HT_F_UNLOCK_ENTRY, it.unlock_at_entry);
+        host_iter_t it;
+        host_iter_begin(&S, &it);
 
         /* Override-channel arbitration: the bk2 row, the overlays' neutral
          * stamp and suspension, the cursor. bk2 end leaves before the tick. */
@@ -4018,8 +3936,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * settings reach openpete.toml from this thread only. */
         openpete_settings_save_poll();
 
-        bool rewound_this_iter = false;   /* rewind driver stepped: skip
-                                           * this iteration's forward tick */
         /* Save-state hotkeys (default 1 quick-save, 2 quick-load, 3 cycle
          * slot). Edge-triggered, one action per press. The game fiber is
          * yielded right now, so g_game.cpu and g_ram are quiescent - we can
@@ -4043,7 +3959,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * (OPENPETE_HANDOFF_AT / openpete_handoff_request). */
             if (state_ops_drain()) {
                 state_stress_step(opts);
-                rewound_this_iter = rewind_step(opts, g_paused, S.bk2.active);
+                it.rewound = rewind_step(opts, S.paused, S.bk2.active);
                 openpete_mods_arena_page_census_tick();
                 openpete_handoff_poll(&g_game.cpu);
             }
@@ -4051,7 +3967,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             /* Any op above may have re-anchored openpete_frame. */
             host_input_restamp_after_ops(&S, &it);
 
-            host_pause_step(&g_paused, &g_step_one);
+            host_pause_step(&S.paused, &S.step_one);
 
             /* Player screenshot. The key edge only raises the request: the
              * capture is a blocking readback of the native renderer's
@@ -4229,425 +4145,20 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
 
         host_input_latch(&S, &it);
 
-        /* Hand control to the game until the next VSync(0) yield. Gated so
-         * --render-fps>0 outer iterations that don't have a sim tick due
-         * skip the yield entirely (input is still pumped above; pacer below
-         * sleeps to the next deadline). Frame-step adds a second gate:
-         * while g_paused the yield only fires while g_step_one is raised
-         * (step key or overlay), which stays raised until the game draws. */
-        it.frame_before_yield = openpete_frame;
-        { unsigned e_, l_, j_; (void)bk2_feed_iter_take(&e_, &l_, &j_); }   /* writes outside this yield */
-        bool ticked_this_iter = false;
-        bool yield_now = it.sim_due && (!g_paused || g_step_one)
-                                 && !rewound_this_iter;
-        host_trace_bit(HT_F_OVR_CLAIMED, it.ovr_claimed);
-        host_trace_bit(HT_F_REWOUND, rewound_this_iter);
-        host_trace_bit(HT_F_YIELD, yield_now);
-        /* Pacing log, per VBL. The deadline in force for this iteration is
-         * next_sim.at as it stands BEFORE the tail advances it - the grid
-         * point the pacer slept to at the end of the previous iteration - so
-         * exec_start minus that is the tick's start-phase error.
-         *
-         * `openpete_unlock_fps` carries the previous iteration's verdict,
-         * which is the one that governed the sleep this iteration started
-         * from: the right question is whether a deadline was in force, not
-         * what the next one will be. */
-        uint8_t   pace_flags = 0;
-        const op_time_t pace_deadline_ns = host_pacer_vbl_deadline(P, &pace_flags);
-        const int pace_paced = !(pace_flags & OP_PACE_F_UNLOCK);
-        op_time_t pace_exec_start_ns = 0, pace_exec_end_ns = 0;
-        if (yield_now) {
-            const bool stepping = step_begin_vbl(g_paused, &g_step_one);
-            game_on_frame_pre(&g_game.cpu, openpete_frame);
-            /* Calibration stall (OPENPETE_PACE_INJECT_US), off unless asked
-             * for: a known lateness the log must then report, so the
-             * instrument is checked against truth rather than trusted. */
-            openpete_pace_inject(pace_paced);
-            /* Start-alignment invariant: an iteration that runs the game
-             * fiber must have made its latch decision THIS iteration, before
-             * this point. The input window that external injection measures
-             * - one VBL period, grid-aligned - is a property of that
-             * ordering, so a refactor that moved the latch after the switch,
-             * or skipped it on some path, would silently change the window
-             * while every phase statistic kept reporting normally. Checked
-             * rather than commented; warned rather than fatal, because a
-             * player's game must not die for a diagnostic. */
-            if (!openpete_host_input_legacy() &&
-                it.vbl.latch_seq == OP_PACE_LATCH_NONE) {
-                static int warned;
-                if (!warned++)
-                    OPL_ERROR_F("input",
-                                "ORDERING: VBL %u runs the fiber with no latch "
-                                "decision - input phase is no longer defined "
-                                "by the pump->decode->latch->switch order",
-                                openpete_frame);
-            }
-
-            pace_exec_start_ns = op_now();
-            /* Bracket the VBL BEFORE the switch: the guest's pad read fires
-             * inside it, and a record stamped against the previous VBL's
-             * start would report a phase off by a whole period. */
-            openpete_pace_vbl_begin(openpete_frame, pace_exec_start_ns,
-                                     it.vbl.latch_ns);
-            {
-                uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
-                /* The guest touches neither the device nor device-visible
-                 * memory while it runs (core/rhi/rhi_gpu_audit.h measures
-                 * this); under eager production the present thread keeps
-                 * presenting through this switch. */
-                g_openpete_guest_running = 1;
-                openpete_fiber_switch(openpete_game_fiber);
-                g_openpete_guest_running = 0;
-                if (pt0) openpete_phase_add(OPPT_SIM_TICK, openpete_phase_now_us() - pt0);
-            }
-            pace_exec_end_ns = op_now();
-            ticked_this_iter = (openpete_frame != it.frame_before_yield);
-            /* A VBL on which the screen changes without a DrawOTag (the
-             * display swaps to a buffer holding a scene no present has
-             * shown, or the game draws its fed scene into the buffer on
-             * screen) owes that scene a present. */
-            openpete_present_pending = openpete_native_scene_yield_owes_present(openpete_present_pending);
-            step_after_vbl(stepping, &g_step_one);
-
-            /* Sample the actuator buffer the tick just wrote. Here, rather
-             * than beside the pad latch above, because the guest fills that
-             * buffer inside its own PadVSync: reading before the switch would
-             * ship the previous tick's bytes and put a whole VBL of avoidable
-             * latency on every rumble. Before the runahead speculation below,
-             * so only the committed timeline can reach a motor. */
-            if (ticked_this_iter)
-                openpete_rumble_sample();
-            eager_note_vbl(pace_exec_end_ns - pace_exec_start_ns,
-                           pace_deadline_ns ? pace_exec_start_ns - pace_deadline_ns : 0,
-                           openpete_present_pending);
-
-            bool ra_speculated = false;
-            bool ra_skip_capture = false;
-            if (ticked_this_iter) {
-                game_on_frame(&g_game.cpu, openpete_frame);
-
-                /* Runahead: the tick above is the
-                 * COMMITTED timeline. Save it, speculate 2N more VBLs
-                 * with held input (audible SPU muted; external side
-                 * effects gated by openpete_speculative), let the interp
-                 * captures below snapshot the LED state, then restore
-                 * the real tick after them - everything downstream
-                 * (hash/position logs, input log, recorders, pacer,
-                 * canonical state) sees the real timeline while every
-                 * present interpolates one led by ~N ticks. Measured
-                 * L_submit = 2 ticks; N=2 collapses it.
-                 *
-                 * ONCE PER TICK, on the tick's DRAW VBL only (the real
-                 * yield produced a present): the led state only advances
-                 * once per game tick, so speculating on the update VBL
-                 * too costs a full extra speculation for a capture that
-                 * dedupes away - and that cost lands INSIDE the present-
-                 * critical iteration, dragging the virtual present clock
-                 * behind the capture stamps (measured: alpha drifting to
-                 * -0.27, motion delivered as 30 Hz steps = the "whole
-                 * world jittery" report). Non-speculated ticked
-                 * iterations skip the interp captures entirely - the
-                 * ring must never see a real-timeline (led-minus-N)
-                 * state or it would pair backward. */
-                int ra_want = (runahead_n > 0 && ra_snap &&
-                               game_is_gameplay_live(&g_game.cpu));
-                int ra_left = 0;      /* the speculation left gameplay */
-                int ra_adopted = 0;   /* the snapshot's park site did not recur: no rollback */
-                /* The snapshot is taken at a final yield only: a tick whose
-                 * draw is first seen at an intermediate yield of its wait
-                 * owes its speculation to the wait's final yield. */
-                static int ra_owed = 0;
-                if (!ra_want) openpete_ra_input_edge = 0;
-                const int ra_due = ra_want && (openpete_present_pending || ra_owed);
-                const int ra_now = ra_due && openpete_yield_final;
-                ra_owed = ra_note_owed(ra_due && !ra_now, ra_owed);
-                if (ra_now &&
-                    ra_snapshot_save(ra_snap, &g_game.cpu,
-                                     openpete_frame) == 0) {
-                    /* Input-edge detection: the led branch changes exactly
-                     * when the input we speculate with differs from last
-                     * tick's. Flag the tick so presentation consumers can
-                     * rebase their interp at the last SHOWN state instead
-                     * of snapping to the corrected branch (measured: R2
-                     * release at N=2 showed a -88u/present camera
-                     * reversal; N ticks of mispredicted pan un-shown). */
-                    {
-                        static uint16_t s_ra_pbits;
-                        static unsigned char s_ra_pax[4];
-                        static int s_ra_have = 0;
-                        uint16_t rb = PsyX_Pad_GetLastP1Bits();
-                        unsigned char rax[4];
-                        PsyX_Pad_GetLastP1Analog(rax);
-                        openpete_ra_input_edge =
-                            (s_ra_have && (rb != s_ra_pbits ||
-                             memcmp(rax, s_ra_pax, 4) != 0)) ? 1 : 0;
-                        s_ra_pbits = rb;
-                        memcpy(s_ra_pax, rax, 4);
-                        s_ra_have = 1;
-                    }
-                    /* Prediction-exactness oracle (env-gated, see ra_pc_*
-                     * above): an input edge invalidates every pending
-                     * prediction (the led branch legitimately changed);
-                     * then any prediction targeting THIS committed tick
-                     * must match the committed bytes exactly. RAM here is
-                     * the completed committed tick at its yield - the same
-                     * phase the led hash was taken at. */
-                    if (ra_pc_on()) {
-                        if (openpete_ra_input_edge) ra_pc_invalidate_all();
-                        for (int i = 0; i < RA_PC_PENDING; i++) {
-                            if (!s_ra_pc[i].valid) continue;
-                            if (s_ra_pc[i].target < openpete_frame) {
-                                s_ra_pc[i].valid = 0;   /* missed (mode transition) */
-                                continue;
-                            }
-                            if (s_ra_pc[i].target != openpete_frame) continue;
-                            s_ra_pc[i].valid = 0;
-                            s_ra_pc_checked++;
-                            if (s_ra_pc[i].hash != ra_pc_hash()) {
-                                s_ra_pc_mismatches++;
-                                fprintf(stderr, "[ra-predict] MISMATCH f=%u: led "
-                                        "prediction != committed state (a read of "
-                                        "host state outside the rollback "
-                                        "boundary - neither guest RAM nor the "
-                                        "mod arena - during speculation?)\n",
-                                        openpete_frame);
-                                if (ra_pc_on() >= 2 && s_ra_pc[i].led) {
-                                    /* Dump differing ranges as PSX vaddrs. */
-                                    const uint8_t* a = s_ra_pc[i].led;
-                                    const uint8_t* b = openpete_psx_get_ram();
-                                    unsigned ranges = 0;
-                                    for (uint32_t off = 0; off < OPENPETE_PSX_RAM_SIZE && ranges < 16;) {
-                                        if (a[off] == b[off]) { off++; continue; }
-                                        uint32_t end = off;
-                                        while (end < OPENPETE_PSX_RAM_SIZE && end - off < 4096 &&
-                                               (a[end] != b[end] || (end + 16 < OPENPETE_PSX_RAM_SIZE &&
-                                                memcmp(a + end, b + end, 16) != 0)))
-                                            end++;
-                                        fprintf(stderr, "[ra-predict]   diff 0x%08X..0x%08X "
-                                                "led=%02X%02X%02X%02X comm=%02X%02X%02X%02X\n",
-                                                OPENPETE_PSX_KSEG0_BASE + off,
-                                                OPENPETE_PSX_KSEG0_BASE + end,
-                                                a[off], a[off+1], a[off+2], a[off+3],
-                                                b[off], b[off+1], b[off+2], b[off+3]);
-                                        ranges++;
-                                        off = end + 1;
-                                    }
-                                    const uint8_t* sa = s_ra_pc[i].led + OPENPETE_PSX_RAM_SIZE;
-                                    const uint8_t* sb = openpete_psx_get_scratch();
-                                    if (memcmp(sa, sb, OPENPETE_PSX_SCRATCH_SIZE) != 0)
-                                        fprintf(stderr, "[ra-predict]   diff in SCRATCHPAD\n");
-                                }
-                            }
-                        }
-                    }
-                    /* Host flags the guest's draw thunks mutate are part
-                     * of the rolled-back state: a speculative DrawOTag
-                     * leaking present_pending fired EXTRA canonical
-                     * presents (measured: canon_tick cadence doubled
-                     * under runahead - every tick-keyed instrument
-                     * sampled the wrong sim moments). */
-                    int      ra_pp    = openpete_present_pending;
-                    unsigned ra_prims = openpete_primitives_drawn;
-                    PsyX_SPUAL_Speculate(1, 0);
-                    openpete_speculative = 1;
-                    /* Speculated ticks run inside this VBL's bracket but are
-                     * not this VBL: their pad reads must not be measured
-                     * against its exec_start. */
-                    openpete_pace_vbl_suspend(1);
-                    /* runahead_n game ticks: the loop anchor's entries
-                     * since the snapshot, ending at the next final yield
-                     * (where the rollback below may load). A game without
-                     * an anchor speculates 2N yields. The bound caps a
-                     * speculation that never reaches one. */
-                    const uint32_t ra_t0 = openpete_loop_anchor_ticks();
-                    const int ra_ticks = openpete_game_runtime()->loop_anchor_pc != 0u;
-                    for (int v = 0; v < (ra_ticks ? 8 * runahead_n + 16 : 2 * runahead_n); v++) {
-                        if (ra_ticks && v > 0 && openpete_yield_final &&
-                            openpete_loop_anchor_ticks() - ra_t0 >= (uint32_t)runahead_n)
-                            break;
-                        unsigned bf = openpete_frame;
-                        game_on_frame_pre(&g_game.cpu, openpete_frame);
-                        g_openpete_guest_running = 1;
-                        openpete_fiber_switch(openpete_game_fiber);
-                        g_openpete_guest_running = 0;
-                        if (openpete_frame == bf) break;   /* safety */
-                        /* Speculation left gameplay (a load, a cutscene):
-                         * stop counting ticks. The rollback below still
-                         * loads when the transition waits at the
-                         * snapshot's psyq_VSync site. */
-                        if (!game_is_gameplay_live(&g_game.cpu)) {
-                            ra_left = 1;
-                            break;
-                        }
-                    }
-                    /* The rollback below loads only at a final yield. */
-                    ra_adopted = ra_speculate_to_final(openpete_state_mem_site(ra_snap),
-                                                       8 * runahead_n + 16, &ra_left);
-                    openpete_speculative = 0;
-                    openpete_pace_vbl_suspend(0);
-                    /* An adopted speculation's pad writes and consumer
-                     * entries reach the recorder; a rolled-back one's are
-                     * run again by the committed ticks. */
-                    bk2_feed_speculation_end(ra_adopted);
-                    /* An adopted speculation is the timeline: its frames
-                     * are fed. A rolled-back one is rendered again by the
-                     * committed ticks. */
-                    PsyX_SPUAL_Speculate(0, ra_adopted);
-                    if (!ra_adopted) {
-                        openpete_present_pending  = ra_pp;
-                        openpete_primitives_drawn = ra_prims;
-                    }
-                    /* Record the led prediction while RAM is still the
-                     * speculation head (the rollback happens below, after
-                     * the interp captures); openpete_frame is the led
-                     * frame here. */
-                    if (!ra_left && !ra_adopted) ra_pc_record_led();
-                    ra_speculated = true;
-                    pace_flags |= OP_PACE_F_SPECULATIVE;
-                    host_trace_ra(HT_RA_SPECULATED);
-                }
-                if (ra_left && !ra_adopted) {
-                    /* A speculation that left gameplay leads into a
-                     * transition the committed ticks reach N ticks later:
-                     * roll back now, so the capture below takes the
-                     * committed state as on a tick without speculation. */
-                    unsigned ra_lf = openpete_frame;
-                    const int ra_rc = openpete_state_mem_load(ra_snap, &g_game.cpu, &ra_lf, 1);
-                    if (ra_rc == 0)
-                        openpete_frame = ra_lf;
-                    ra_card_settle(ra_rc);
-                }
-                ra_skip_capture = (ra_want && !ra_speculated && !ra_left) || ra_adopted;
-                if (ra_left || ra_adopted) {
-                    /* An adopted speculation's VBLs are the real timeline;
-                     * a rolled-back one was restored above. Either way the
-                     * rollback below is skipped, predictions pending
-                     * against the led branch die, and the presentation
-                     * drops its pairs and snaps (a fade is starting), so
-                     * no lerp pairs a led state with the committed ticks
-                     * that follow. */
-                    ra_speculated = false;   /* skip the rollback below */
-                    ra_pc_invalidate_all();
-                    openpete_ra_input_edge = 0;
-                    /* Presentation-only reset (NOT the guest-discontinuity
-                     * broadcast - the timeline is continuous forward, and
-                     * the broadcast would finalize an in-progress bk2
-                     * recording). */
-                    openpete_interp_reset();
-                    openpete_interp_objs_reset();
-                    ra_end_log(ra_left, ra_adopted);
-                    host_trace_ra_end(ra_left, ra_adopted);
-                }
-
-                /* Snapshot the transform-bearing regions into the
-                 * interp ring while the game fiber is still yielded
-                 * (consistent RAM). No-op unless --render-fps > sim rate.
-                 *
-                 * Stamp with a PLL-SMOOTHED VBL clock, not raw op_now(): the
-                 * raw completion time of a tick jitters by milliseconds with
-                 * sim/render load, and every snapshot ROLL resets the sub-tick
-                 * alpha mapping against its stamp - jittery stamps make shown
-                 * interp time advance 0.05..1.4 ticks between evenly-generated
-                 * presents (measured on the titlescreen flyby: fast movers
-                 * judder ±half a tick at ANY --render-fps while the slow
-                 * background looks fine). Locking stamps to the ideal VBL grid
-                 * (proportional 1/32 nudge tracks real cadence; full resync on
-                 * a stall/jump, e.g. CD loads) keeps the present-time -> shown-
-                 * time mapping continuous across rolls. */
-                if (!ra_skip_capture) {
-                    host_trace_bit(HT_F_INTERP_CAP, 1);
-                    static op_time_t s_vclk = 0;
-                    static unsigned  s_vclk_f = 0;
-                    /* Ideal VBL step in WALL time - scaled so --tick-scale keeps
-                     * the stamps on the (stretched) grid; an unscaled step makes
-                     * the pred err exceed the resync bound every tick and stamps
-                     * degrade to raw jittery completion times. */
-                    const op_time_t vT = sim_period_ns;
-                    op_time_t raw = op_now();
-                    unsigned df = openpete_frame - s_vclk_f;
-                    s_vclk_f = openpete_frame;
-                    if (s_vclk == 0 || df == 0 || df > 8) s_vclk = raw;
-                    else {
-                        op_time_t pred = s_vclk + (op_time_t)df * vT;
-                        int64_t err = (int64_t)raw - (int64_t)pred;
-                        if (err > (int64_t)vT || err < -(int64_t)vT) s_vclk = raw;  /* stall/jump resync */
-                        else s_vclk = pred + (op_time_t)(err / 32);
-                    }
-                    /* Display-phase bias: the canonical present fires a few ms
-                     * BEFORE this tick's grid stamp (present latency + PLL lock
-                     * to AVERAGE completion), making its alpha slightly NEGATIVE
-                     * - the [0,1] clamp then snaps shown time forward ~0.5 VBL
-                     * at every roll and the following intermediates crawl to
-                     * compensate (measured: ~24% of all motion delivered as
-                     * 30 Hz jumps - the flyby judder). Biasing the stamp back
-                     * by a fixed phase keeps every present's alpha inside
-                     * (0,1): the mapping now−->shown-time stays linear through
-                     * the roll. Costs that many ms of extra display latency.
-                     * OPENPETE_INTERP_PHASE_MS overrides (default 10). */
-                    {
-                        static op_time_t s_phase = -1;
-                        if (s_phase < 0) {
-                            /* Default 0: the presents of one interval span exactly
-                             * one period, so ANY fixed bias clips an end (a +10ms
-                             * bias moved the clamp from alpha<0 at the canonical
-                             * present to alpha>1 on the last ~10ms of dense
-                             * intermediates). The canonical present firing a few
-                             * ms before the grid stamp is instead absorbed by the
-                             * consumers allowing slightly NEGATIVE alpha. */
-                            const char* e = getenv("OPENPETE_INTERP_PHASE_MS");
-                            double ms = e && *e ? atof(e) : 0.0;
-                            if (ms < 0.0) ms = 0.0; else if (ms > 16.0) ms = 16.0;
-                            s_phase = (op_time_t)(ms * 1e6);
-                        }
-                        op_time_t stamp = s_vclk - s_phase;
-                        openpete_interp_capture(openpete_frame, stamp);
-                        /* Under deterministic capture the objs ring takes the VBL clock
-                         * the direct ring stamps its commits with, so per-object sub-tick
-                         * interps (moby positions/rotation, particles, sparkles, HUD
-                         * icons, dragon-stars) pair the pinned present clock against a
-                         * reproducible object timestamp instead of wall time. It advances
-                         * on a VBL the direct ring skips, as the wall-clock stamp does:
-                         * an object that changes there is stamped after the capture that
-                         * last saw its previous state, not equal to it. */
-                        g_openpete_tick_stamp = openpete_interp_deterministic()
-                                              ? openpete_interp_det_vbl_stamp(openpete_frame) : stamp;
-                    }
-                }
-
-                /* Per-object (indirect) snapshot - walks the game's
-                 * object pools (g_LevelMobys) into the keyed prev/curr
-                 * table for sub-tick lerp. Same read-only, same
-                 * --render-fps>sim gate. No-op if no game callback. */
-                if (!ra_skip_capture) openpete_interp_objs_run_capture();
-
-                /* Runahead: captures done at the led head - roll back to
-                 * the committed tick before anything else observes RAM. */
-                if (ra_speculated) {
-                    unsigned ra_lf = openpete_frame;
-                    const int ra_rc = ra_snapshot_rollback(ra_snap, &g_game.cpu, &ra_lf);
-                    ra_card_settle(ra_rc);
-                    if (ra_rc == 0) {
-                        openpete_frame = ra_lf;
-                        /* Committed-timeline regions (g_Camera): replace
-                         * their led bytes in the ring's newest slot with
-                         * the just-restored committed state, so those
-                         * regions pair a branch-free timeline and can
-                         * never show (or snap back from) a misprediction. */
-                        openpete_interp_recapture_committed();
-                    }
-                }
-            }
-        }
+        /* The VBL: the yield decision, the fiber switch inside the pace-log
+         * bracket, and on a tick the runahead lead around the interp
+         * captures. */
+        host_tick(&S, &it);
 
         /* Position log fires after each yield (post-fast-boot - address
          * holds garbage before BSS init). Frame counter is openpete_frame,
          * vbl is the synchronous yield-driven counter; both are
          * deterministic across runs by construction. */
-        if (S.out.position_log && ticked_this_iter && !openpete_fast_boot_active) {
+        if (S.out.position_log && it.ticked && !openpete_fast_boot_active) {
             position_log_emit(S.out.position_log, openpete_frame,
                               SDL_GetAtomicInt(&openpete_vbl));
         }
-        if (S.out.hash_log && ticked_this_iter && !openpete_fast_boot_active) {
+        if (S.out.hash_log && it.ticked && !openpete_fast_boot_active) {
             game_on_hash_emit(openpete_frame);
             gameplay_hash_log_emit(S.out.hash_log, openpete_frame,
                                    SDL_GetAtomicInt(&openpete_vbl));
@@ -4661,7 +4172,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * frame counter didn't advance (gated event pumps, no-tick yields
          * from dispatch stubs), which would otherwise inflate the movie
          * length. */
-        if (ticked_this_iter)
+        if (it.ticked)
             host_input_commit(&S, &it);
 
         if (it.sim_due && opts->debug_triangle) {
@@ -4792,7 +4303,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                 const int spine_on = lag_re && !opts->headless &&
                     openpete_native_scene_enabled() && !openpete_unlock_fps &&
                     g_openpete_interp_enabled && openpete_interp_enabled() &&
-                    !(g_paused && !g_step_one);
+                    !(S.paused && !S.step_one);
                 host_trace_bit(HT_F_SPINE, spine_on);
                 /* Eager production takes the whole present path from here:
                  * the canonical scene is the first of the span's plan, and
@@ -4840,7 +4351,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                      * before the update VBL is due - the latter only while
                      * the world is live (the gate below). */
                     s_eager.world_live = s_last_canon_present_ns != 0 &&
-                        (now - s_last_canon_present_ns) <= 6 * sim_period_ns;
+                        (now - s_last_canon_present_ns) <= 6 * it.sim_period_ns;
                     eager_produce(s_eager.world_live ? host_pacer_sim_deadline(P, 1) - 500000
                                                      : now, period);
                     pace_canon_extract_ns = 0;
@@ -4943,7 +4454,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             openpete_capture_canon_intermediate(opts, &g_game.cpu);
 
             /* Cache rotate moved to "right before next yield's GTE"
-             * (see the yield_now block above) so intermediate renders
+             * (see host_tick) so intermediate renders
              * between sim ticks see the correct cache.s_prev for the
              * saved OT they're re-walking. */
 
@@ -5009,7 +4520,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * the present thread still holds the display. Re-engaging waits for
          * the next canonical tick, which owns the plan. */
         if (s_eager.active && (openpete_unlock_fps || !g_openpete_interp_enabled ||
-                               !openpete_interp_enabled() || (g_paused && !g_step_one))) {
+                               !openpete_interp_enabled() || (S.paused && !S.step_one))) {
             openpete_present_thread_set_active(0);
             s_eager.active = 0;
             OPL_INFO_F("eager", "%s", "disengaged (inline presents)");
@@ -5025,7 +4536,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
             !did_present_this_iter &&
             openpete_native_scene_enabled() &&
             native_re != NULL &&
-            !(g_paused && !g_step_one);
+            !(S.paused && !S.step_one);
         host_trace_bit(HT_F_NATIVE_INTER, native_intermediate);
         /* Predictive shed: an intermediate present is optional, and a tick is
          * not. If this present would not finish before the sim's next
@@ -5070,7 +4581,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * rewriting RAM and a re-extract would read it mid-overwrite.
              * The display holds the last image; no scene is produced. */
             s_eager.world_live = s_last_canon_present_ns != 0 &&
-                (op_now() - s_last_canon_present_ns) <= 6 * sim_period_ns;
+                (op_now() - s_last_canon_present_ns) <= 6 * it.sim_period_ns;
             if (!did_present_this_iter && native_re && s_eager.world_live) {
                 eager_produce(pace_sim_deadline - 500000, host_pacer_render_period_ns(P));
                 host_trace_present(HT_P_EAGER_PRODUCE);
@@ -5188,7 +4699,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * static but world animating" states (idle-homeworld dragons,
              * cutscenes) keep canonical presents flowing every tick, so the
              * per-object animation path is untouched by this gate. */
-            const op_time_t vbl_ns = sim_period_ns;   /* scaled VBL: the gate is
+            const op_time_t vbl_ns = it.sim_period_ns;   /* scaled VBL: the gate is
                                                        * "~3 sim ticks" in WALL
                                                        * time under --tick-scale */
             const bool world_live = s_last_canon_present_ns != 0 &&
@@ -5251,7 +4762,7 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         }
 
         /* Paused repaint: no tick runs, so no other present fires. */
-        if (g_paused && !g_step_one && !did_present_this_iter) {
+        if (S.paused && !S.step_one && !did_present_this_iter) {
             host_paused_repaint(opts);
             host_trace_present(HT_P_PAUSED_REPAINT);
         }
@@ -5416,16 +4927,16 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
          * that only presented (--render-fps > tick rate) are PRESENT records;
          * conflating the two would make the tick cadence look like the
          * present cadence, which is the confusion this log exists to end. */
-        if (yield_now) {
-            if (g_paused)           pace_flags |= OP_PACE_F_PAUSED | OP_PACE_F_STEPPED;
-            if (rewound_this_iter)  pace_flags |= OP_PACE_F_REWIND;
+        if (it.yield_now) {
+            if (S.paused)      it.vbl.flags |= OP_PACE_F_PAUSED | OP_PACE_F_STEPPED;
+            if (it.rewound)    it.vbl.flags |= OP_PACE_F_REWIND;
             if (s_last_canon_present_ns == 0 ||
-                (op_now() - s_last_canon_present_ns) > 6 * sim_period_ns)
-                pace_flags |= OP_PACE_F_NOT_LIVE;
-            openpete_pace_vbl(openpete_frame, pace_flags,
+                (op_now() - s_last_canon_present_ns) > 6 * it.sim_period_ns)
+                it.vbl.flags |= OP_PACE_F_NOT_LIVE;
+            openpete_pace_vbl(openpete_frame, it.vbl.flags,
                               openpete_pace_pad_reads_this_vbl(),
-                              pace_deadline_ns, it.vbl.latch_ns,
-                              pace_exec_start_ns, pace_exec_end_ns,
+                              it.vbl.deadline_ns, it.vbl.latch_ns,
+                              it.vbl.exec_start_ns, it.vbl.exec_end_ns,
                               it.vbl.latch_seq, it.vbl.latch_bits);
             openpete_boot_tick();
             openpete_live_switch_poll(openpete_frame);
@@ -5438,30 +4949,30 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         host_pacer_note_unlock(P, unlock_fps);
         openpete_unlock_fps = unlock_fps ? 1 : 0;
         g_skipSwapInterval = unlock_fps ? 1 : 0;
-        audio_feed_sync(unlock_fps, opts->headless, g_paused);
+        audio_feed_sync(unlock_fps, opts->headless, S.paused);
 
         /* Paused without a step pending: sleep so we don't spin the CPU.
-         * The condvar pacer below only waits when ticked_this_iter, and
+         * The condvar pacer below only waits when the iteration ticked, and
          * the wall-clock pacer's render deadline does sleep but only at
          * its own cadence - explicit sleep here keeps the paused idle
          * cost near-zero regardless of render_fps. */
-        if (g_paused && !ticked_this_iter && !unlock_fps) {
+        if (S.paused && !it.ticked && !unlock_fps) {
             SDL_Delay(16);
         }
 
         /* The pacer steps its deadlines and sleeps to the next one; unlock
          * or a requested shutdown (ESC, window close, SIGINT) re-anchors
          * instead of sleeping, so a misbehaving OS timer cannot hold the quit. */
-        host_pacer_advance(P, unlock_fps, it.sim_due, ticked_this_iter,
+        host_pacer_advance(P, unlock_fps, it.sim_due, it.ticked,
                            s_eager.active, g_shutdown_requested);
-        host_trace_bit(HT_F_TICKED, ticked_this_iter);
+        host_trace_bit(HT_F_TICKED, it.ticked);
         host_trace_bit(HT_F_DID_PRESENT, did_present_this_iter);
         host_trace_bit(HT_F_EAGER, s_eager.active);
         host_trace_bit(HT_F_EAGER_LIVE, s_eager.world_live);
-        host_trace_bit(HT_F_PAUSED, g_paused);
-        host_trace_bit(HT_F_STEP_ONE, g_step_one);
+        host_trace_bit(HT_F_PAUSED, S.paused);
+        host_trace_bit(HT_F_STEP_ONE, S.step_one);
         host_trace_bit(HT_F_UNLOCK_TAIL, unlock_fps);
-        host_trace_iter_end(quit, exit_reason, pace_flags,
+        host_trace_iter_end(quit, exit_reason, it.vbl.flags,
                             (int64_t)host_pacer_sim_deadline(P, 0),
                             (int64_t)host_pacer_render_slot(P));
 

@@ -1,11 +1,13 @@
 // core/runtime/run_internal.h - run.c symbols the host-loop modules
-// (host_state_ops.c, host_session.c, host_input_tick.c) call.
+// (host_state_ops.c, host_session.c, host_input_tick.c, host_loop.c,
+// runahead.c) call.
 #pragma once
 
 #include "openpete.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_input_log.h"
 #include "openpete_psxtrace.h"
+#include "openpete_time.h"
 #include "bk2_movie.h"
 #include "psxrt/psx_runtime.h"
 
@@ -150,10 +152,6 @@ void host_eager_exit_report(void);
  * @param tick_scale The applied --tick-scale. */
 void host_live_knobs_publish(int render_fps, double tick_scale);
 
-/** @brief Seed the live runahead request from --runahead, so the loop's first iteration arms it through the live re-arm path.
- * @param opts The parsed options. */
-void host_runahead_seed(const openpete_options_t* opts);
-
 /** @brief Reset the menu-close, pointer-owner and Alt+Enter latches to their start-of-run state. */
 void host_hotkey_latch_init(void);
 
@@ -170,3 +168,35 @@ void host_hotkey_latch_init(void);
  * @param tick_scale The launch --tick-scale. */
 void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t* opts,
                          int refresh_mhz, int render_fps, double tick_scale);
+
+/** @brief Fold one VBL's execution into the update-VBL and tick averages the eager planner reads.
+ *
+ * A VBL that queued no draw is the update VBL, whose mean the plan
+ * subtracts from the span budget; one that did is the tick, whose
+ * execution sets the lag. An execution of half a tick or more is a load or
+ * a stall, not a VBL of either kind, and enters neither mean: it would plan
+ * a lag of a hundred targets, or price every later span as if each update
+ * VBL were a load. By the same line, a tick that starts half a tick or more
+ * past its pacer deadline was delayed by a load or a stall, and its
+ * lateness is kept in tick_late (0 for any later start, which is pacer
+ * jitter or a production overrun the budget must keep seeing).
+ * @param ex The VBL's execution time on this thread.
+ * @param start_late Execution start minus the pacer deadline, or 0 when unpaced.
+ * @param drawing Nonzero when the VBL queued a draw (a tick). */
+void eager_note_vbl(op_time_t ex, op_time_t start_late, int drawing);
+
+/** @brief Decide whether the VBL about to run belongs to a paused step, clearing the step flag when it does not.
+ *
+ * @param paused The host loop's paused flag.
+ * @param step_one The host loop's pending-step flag.
+ * @return True when the VBL runs for a pending paused step. */
+bool step_begin_vbl(bool paused, bool *step_one);
+
+/** @brief End a paused step on the VBL the game drew, its tick boundary.
+ *
+ * A VBL with no draw (the first VBL of a two-VBL tick, or a load) keeps the
+ * step pending into the next; after STEP_MAX_VBLS VBLs with no draw the step
+ * ends with a warning and the sim stays paused.
+ * @param stepping Whether the VBL ran for a paused step (step_begin_vbl); false returns at once.
+ * @param step_one The host loop's pending-step flag, lowered when the step ends. */
+void step_after_vbl(bool stepping, bool *step_one);

@@ -41,28 +41,38 @@ typedef struct host_session {
     bool        loop_entered;          /* owner: the loop; close runs its output steps only when set */
     int         refresh_hz;            /* owner: open; display refresh, 60 headless or unknown */
     int         refresh_mhz;           /* owner: open; display refresh in mHz, for the pace log */
+    bool        paused;                /* owner: host_pause_step; the sim is paused */
+    bool        step_one;              /* owner: host_pause_step (raise); lowered by host_tick when the step ends */
     host_pacer_t   pacer;              /* owner: open (init, start); advanced by the loop tail */
     host_bk2_t     bk2;
     host_outputs_t out;
 } host_session_t;
 
 /* The pace-log record of the VBL an iteration runs: the input sample it
- * latched. */
+ * latched, the deadline in force, the flags and the execution bracket. */
 typedef struct {
     op_time_t latch_ns;    /* owner: host_input_latch; publish instant of the latched sample, 0 on the legacy path */
     unsigned  latch_seq;   /* owner: host_input_latch; the latched sample's identity, OP_PACE_LATCH_NONE on the legacy path */
     uint16_t  latch_bits;  /* owner: host_input_latch; pad bits of the latched sample */
+    op_time_t deadline_ns; /* owner: host_tick; the pacer deadline in force, 0 when unpaced */
+    uint8_t   flags;       /* owner: host_tick (deadline flags, SPECULATIVE); appended by the loop tail (PAUSED, STEPPED, REWIND, NOT_LIVE) */
+    op_time_t exec_start_ns; /* owner: host_tick; the game fiber switch's start, 0 when the iteration does not yield */
+    op_time_t exec_end_ns;   /* owner: host_tick; the game fiber switch's end, 0 when the iteration does not yield */
 } host_vbl_rec_t;
 
 /* One iteration of the host loop. Zeroed at the iteration's start. */
 typedef struct {
-    bool unlock_at_entry;   /* owner: the loop top; the unlock verdict from the previous keymap sample */
-    bool sim_due;           /* owner: the loop top, after the live pacer changes; the sim runs this iteration */
+    bool unlock_at_entry;   /* owner: host_iter_begin; the unlock verdict from the previous keymap sample */
+    bool sim_due;           /* owner: host_iter_begin, after the live pacer changes; the sim runs this iteration */
+    op_time_t sim_period_ns; /* owner: host_iter_begin; the VBL period the world-liveness bound and the VBL clock read */
     bool ovr_claimed;       /* owner: host_input_arbitrate; a bk2 row or an overlay claimed the pad override channel */
     unsigned bk2_stamped_frame; /* owner: host_input_arbitrate; openpete_frame the bk2 stamp was made for */
     bool p1_staged;         /* owner: host_input_latch; slot 0 of the input record was staged before the yield */
-    unsigned frame_before_yield; /* owner: the tick, before the yield; read by host_input_commit */
-    host_vbl_rec_t vbl;     /* owner: host_input_latch (latch fields) */
+    bool rewound;           /* owner: the quiescent ops (rewind_step); the rewind driver stepped, so no forward tick */
+    unsigned frame_before_yield; /* owner: host_tick, before the yield; read by host_input_commit */
+    bool yield_now;         /* owner: host_tick; the game fiber runs this iteration */
+    bool ticked;            /* owner: host_tick; the yield advanced openpete_frame */
+    host_vbl_rec_t vbl;     /* owner: host_input_latch (latch fields), host_tick (the rest) */
 } host_iter_t;
 
 /** @brief Open the run: display claim, mods guard, game boot hook, game fiber, deadline, refresh query, pacer, rewind ring, runahead request and the outputs.
@@ -85,3 +95,15 @@ int host_session_open(host_session_t* S, const openpete_options_t* opts) OP_REQU
  * @param rc The exit code so far: the loop's, or the failed open step's.
  * @return @p rc, or OPENPETE_EXIT_DIVERGENCE when the psxtrace verdict failed a run that was OK. */
 int host_session_close(host_session_t* S, int rc) OP_REQUIRES(sim);
+
+/** @brief Run the VBL an iteration owes: the yield decision, the game fiber switch inside the pace-log bracket, then on a tick the game hook, the runahead lead, the interp captures and the runahead settle.
+ *
+ * Consumes the pacer's VBL deadline and its flags every iteration, whether
+ * or not it yields. The game fiber runs when the sim is due, not paused
+ * (or a paused step is pending) and the rewind driver did not step. Leaves
+ * RAM at the committed tick.
+ * @param S The session: the pacer, and the pause and step flags.
+ * @param it The iteration: reads sim_due, rewound, sim_period_ns and the
+ *        latch fields; sets frame_before_yield, yield_now, ticked and the
+ *        rest of vbl. */
+void host_tick(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);

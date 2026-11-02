@@ -88,6 +88,7 @@ add_library(openpete_core STATIC
     runtime/run.c
     runtime/host_state_ops.c
     runtime/runahead.c
+    runtime/host_loop.c
     runtime/host_session.c
     runtime/host_pacer.c
     runtime/host_input_tick.c

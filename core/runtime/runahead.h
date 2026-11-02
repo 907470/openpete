@@ -1,8 +1,12 @@
-// core/runtime/runahead.h - runahead's snapshot, rollback and
-// prediction-check helpers and counters, shared by the host loop (run.c).
+// core/runtime/runahead.h - runahead's live arming, per-tick lead and
+// settle, and its snapshot, rollback and prediction-check helpers and
+// counters, shared by the host loop.
 #pragma once
 
 #include <stdbool.h>
+
+#include "openpete.h"
+#include "openpete_thread_roles.h"
 
 #include "openpete_park_site.h"
 #include "openpete_state.h"
@@ -119,3 +123,64 @@ extern unsigned s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated;
 extern unsigned long long s_ra_deferred[2];
 extern unsigned long long s_ra_adopted;
 extern unsigned long long s_ra_left[2];
+
+/* What one tick's runahead lead did. */
+typedef enum {
+    RA_NONE,         /* no speculation ran */
+    RA_SPECULATED,   /* RAM is the led head; runahead_settle rolls it back */
+    RA_ADOPTED,      /* the speculation became the timeline (also when it left gameplay) */
+    RA_LEFT,         /* the speculation left gameplay and was already rolled back */
+} runahead_outcome_t;
+
+/* The lead's verdict for the tick's interp captures and its settle. */
+typedef struct {
+    runahead_outcome_t outcome;
+    bool skip_capture;   /* the interp captures skip this tick */
+} runahead_lead_t;
+
+/** @brief Seed the live runahead request from --runahead, so the loop's first iteration arms it through the live re-arm path.
+ * @param opts The parsed options. */
+void host_runahead_seed(const openpete_options_t* opts);
+
+/** @brief Raise the live runahead depth request; the next runahead_apply_live re-arms when it differs from the current request.
+ * @param n The requested depth, 0 to disarm. */
+void runahead_request(int n);
+
+/** @brief Return the requested runahead depth, before the mod capability gate.
+ * @return The request --runahead or the live setter last made. */
+int runahead_requested(void);
+
+/** @brief Drop the held runahead snapshot and mark the arming dirty, so the next runahead_apply_live re-checks the capability gate against the enabled mod set. */
+void runahead_disarm(void);
+
+/** @brief Apply a changed runahead request at the top of a host iteration: the capability gate, the snapshot allocation and the interp reset across a depth change.
+ *
+ * Publishes the applied depth for openpete_runahead_get. A no-op when no
+ * request or disarm is pending. */
+void runahead_apply_live(void);
+
+/** @brief Check the pending runahead predictions that target the committed tick now in RAM, printing a mismatch on stderr.
+ *
+ * A no-op unless OPENPETE_RA_PREDICT_CHECK armed the check (ra_pc_on). An
+ * input edge first invalidates every pending prediction. */
+void runahead_check_predictions(void);
+
+/** @brief Lead the committed tick just run: snapshot it at a final yield and speculate N ticks with held input, leaving RAM at the led head.
+ *
+ * Once per tick, on the tick's draw VBL (openpete_present_pending) or a
+ * final yield that owes it: the led state advances once per game tick, so
+ * speculating on the update VBL would cost a speculation for a capture that
+ * dedupes away, inside the present-critical iteration. A ticked iteration
+ * with runahead armed that does not speculate skips the interp captures,
+ * since the ring must never see a real-timeline (led-minus-N) state. A
+ * speculation that left gameplay and was not adopted is rolled back here;
+ * one that was adopted stays.
+ * @return The outcome and whether the interp captures skip this tick. */
+runahead_lead_t runahead_lead(void) OP_REQUIRES(sim);
+
+/** @brief Roll an RA_SPECULATED lead back to the committed tick and recapture the committed interp regions from it.
+ *
+ * Runs after the interp captures, before anything else reads RAM. A no-op
+ * for every other outcome.
+ * @param r The lead's verdict. */
+void runahead_settle(runahead_lead_t r);
