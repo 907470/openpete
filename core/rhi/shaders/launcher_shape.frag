@@ -1,6 +1,6 @@
 #version 450
 
-/* The launcher's panels, chips, text scrims and progress bar as
+/* The launcher's panels, chips and progress bar as
  * signed-distance rounded rectangles with elliptical corners
  * (core/renderer/launcher_shape_pass.c). sd is the distance in framebuffer
  * pixels from the pixel centre to the shape's edge, negative inside:

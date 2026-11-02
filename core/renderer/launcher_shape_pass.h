@@ -1,5 +1,5 @@
 /* core/renderer/launcher_shape_pass.h - the launcher's shape pass: the
- * panels, chips, text scrims and progress bar a launcher present's imgui
+ * panels, chips and progress bar a launcher present's imgui
  * callback adds (openpete_native_launcher_shape_add), drawn as signed-distance
  * rounded rectangles with elliptical corners, a coverage ramp at the edge
  * and a drop shadow outside the shape (launcher_shape.vert / .frag).

@@ -9,10 +9,9 @@ Cases:
             bench's check_corner.py method applied to the launcher's PNG. The run is
             check_launcher_shapes.py's seeded pick (one Spyro 1 entry, the shader compile forced),
             whose progress screen (shot tag progress) draws the step chip and the shader compile's
-            corner chip, with imgui's output hidden (OPENPETE_LAUNCHER_TEXT_HIDE), the text scrim
-            (OPENPETE_LAUNCHER_SCRIM=0) and the drop shadow (OPENPETE_LAUNCHER_SHADOW=0) off, so a
-            pixel inside a box's corner square is the clear blended with (8,8,8) at the box's
-            coverage. Per corner row (rows whose centre is past the straight edge's ramp) the
+            corner chip, with imgui's output hidden (OPENPETE_LAUNCHER_TEXT_HIDE) and the drop shadow
+            (OPENPETE_LAUNCHER_SHADOW=0) off, so a pixel inside a box's corner square is the clear
+            blended with (8,8,8) at the box's coverage. Per corner row (rows whose centre is past the straight edge's ramp) the
             measured inset is the box's width at that row minus its integrated coverage, against
             the ellipse of the box's radii (D11's 22.8 x 18.4 layout px, scaled down together to
             fit, as the shape pass does). PASS when every row of every corner is within
@@ -124,7 +123,7 @@ def case_corner(a):
     base = os.path.join(d, "shot")
     bg = 255
     env = dict(SHADER_ENV, OPENPETE_LAUNCHER_SHOT=base, OPENPETE_LAUNCHER_MANIFEST=base,
-               OPENPETE_LAUNCHER_TEXT_HIDE="1", OPENPETE_LAUNCHER_SCRIM="0", OPENPETE_LAUNCHER_SHADOW="0",
+               OPENPETE_LAUNCHER_TEXT_HIDE="1", OPENPETE_LAUNCHER_SHADOW="0",
                OPENPETE_LAUNCHER_CLEAR="%d,%d,%d" % (bg, bg, bg), OPENPETE_PRECOMPILE_AHEAD="1")
     rc, _ = cl.launch(a.binary, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env,
                       timeout=600)

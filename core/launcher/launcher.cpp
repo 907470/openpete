@@ -280,12 +280,12 @@ constexpr float kStepChipY = 196 + kBandY;
 /* A centred chip's padding around its line's box, layout px. */
 constexpr float kChipPadX = 12.0f, kChipPadY = 7.0f;
 
-/** @brief Draw one line of text horizontally centred in the layout on a chip (launcher_chip_text): the box, the text scrim, the text.
+/** @brief Draw one line of text horizontally centred in the layout on a chip (launcher_chip_text): the box, then the text.
  *
  * The line's origin is its centred position unrounded (imgui truncates it
  * when it draws); the chip spans the line's box grown by kChipPadX x
  * kChipPadY layout px, and the text records as @p id, the chip as
- * <id>.panel and the scrim as <id>.scrim.
+ * <id>.panel.
  * @param f The frame mapping.
  * @param id The text's manifest id.
  * @param y The line's top in layout pixels.

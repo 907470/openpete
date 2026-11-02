@@ -58,8 +58,8 @@ const char* launcher_picker_chosen(void);
 
 /** @brief Draw the open picker into the current imgui window: the panel (Spyro 3's dialogue box at the sky's cover, so none over the flat background), the folder's path and its rows, the selected row in orange; a click on a row selects and activates it, the wheel moves the selection.
  *
- * Each line carries the chip line's text scrim and is shortened with "..."
- * to the panel's width: a path keeps its end, a name its start.
+ * Each line is shortened with "..." to the panel's width: a path keeps its
+ * end, a name its start.
  * Elements are recorded in the element manifest as picker.panel,
  * picker.path and picker.row.<n> (n the visible row, from 0).
  * @param scale Window pixels per layout pixel.

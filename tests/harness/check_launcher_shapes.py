@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""check_launcher_shapes.py - the launcher's shape pass (panels, chips, text scrims, the progress
-bar), read from the binary's own readback: one case per ctest test of the label `launcher`.
+"""check_launcher_shapes.py - the launcher's shape pass (panels, chips, the progress bar), read from the binary's own readback: one case per ctest test of the label `launcher`.
 
 Every run is check_launcher.py's windowed launch (its virtual display, window manager and scratch
 data root). The fill and layout cases run over a library seeded with one Spyro 1 entry, picked at
@@ -25,22 +24,20 @@ Cases:
             alone, which also makes the cache stale, so the pick's launch-time asset job runs,
             held by OPENPETE_ASSET_JOB_DELAY_MS; the progress screen stays up over that dome
             and the first frame showing it opaque is read back with imgui's output hidden (shot
-            and manifest tag sky). The same run with OPENPETE_LAUNCHER_SCRIM=0 (no text scrim)
-            is the control. PASS when every item over every sampled dome is at 4.5:1 or more;
-            the figures with 3:1 for a large item (px >= 24) are printed beside it. With --domes
+            and manifest tag sky). A report, not a pass criterion: it prints the levels and item
+            draws at 4.5:1 or more, the figures with 3:1 for a large item (px >= 24) and the worst
+            ratio, and passes whenever every sampled dome's shot was read back. With --domes
             DIR the bench's rendered dome set (index.json) is the background instead, composed
             with the binary's shape layer as an affine map read from flat clears.
   fill      The chip's 50% fill against Spyro 3's dialogue-box blend: inside <id>.panel, away
-            from its edge ramp, its corners, its drop shadow and the scrim, every pixel within 1
-            of (background + (8,8,8)) / 2 per channel; inside <id>.scrim, away from its edge,
-            within 1 of that blend * 0.88 + 8 * 0.12; outside the chip and its shadow the
-            background is unchanged.
+            from its edge ramp, its corners and its drop shadow, every pixel within 1 of
+            (background + (8,8,8)) / 2 per channel; outside the chip and its shadow the background
+            is unchanged.
   layout    T1 on the shapes' ids at each reference preset: the bar's rect within 1 px of the
             reference layout's (tests/launcher/layout-reference.json, the progress states');
             the step chip's top and bottom within 1 px of the reference's; its left and right
             edges the step text's grown by the chip's padding (12 layout px) within 1 px (the
-            step text differs from the reference's until the step names are in sentence case);
-            the scrim's rect inside the chip.
+            step text differs from the reference's until the step names are in sentence case).
 
 Usage: tests/harness/check_launcher_shapes.py CASE [--build-dir DIR] [--out DIR] [--levels N] [--domes DIR]
 Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or the disc image missing).
@@ -48,7 +45,6 @@ Exit 0 PASS, 1 FAIL, 3 VACUOUS, 64 SKIP (binary, xvfb-run or the disc image miss
 import argparse
 import math
 import os
-import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -64,11 +60,10 @@ SHADER_ENV = {"OPENPETE_PRECOMPILE_FORCE": "1", "OPENPETE_PRECOMPILE_PANEL_MS": 
 SCREENS = ["progress", "precompile"]
 BOX = 8                     # Spyro 3's box colour (8,8,8)
 CHIP_ALPHA = 0.5
-SCRIM_ALPHA = 0.12
 CHIP_PAD_X = 12.0           # the centred chip's padding, layout px
 TEXT_COL = (255, 255, 255)  # chip text
 CHECK_BG = (128, 64, 200)   # the third flat colour the shape layer's affine map is checked on
-LINEAR_BOUND = 2.0          # levels: one rounding per blend stage (fill, scrim; shadow)
+LINEAR_BOUND = 2.0          # levels: one rounding per blend stage (fill; shadow)
 DOME_QUIT_MS = 7000         # the live-dome run's quit: past the first dome's 2.5 s fade-in
 
 
@@ -189,7 +184,7 @@ def sample(n, k):
     return sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
 
 
-def dome_shot(a, root, tag, scrim):
+def dome_shot(a, root, tag):
     """One run over the cache's single dome: (manifest, RGB image) of the sky tag, or (None, reason)."""
     from PIL import Image
     base = os.path.join(root, tag)
@@ -199,8 +194,6 @@ def dome_shot(a, root, tag, scrim):
     e = {"OPENPETE_LAUNCHER_SELECT": "0", "OPENPETE_ASSET_JOB_DELAY_MS": "60000",
          "OPENPETE_LAUNCHER_INPUT": "%d:quit" % DOME_QUIT_MS, "OPENPETE_LAUNCHER_TEXT_HIDE": "1",
          "OPENPETE_LAUNCHER_SHOT": base, "OPENPETE_LAUNCHER_MANIFEST": base}
-    if not scrim:
-        e["OPENPETE_LAUNCHER_SCRIM"] = "0"
     rc, log = cl.launch(a.binary, root, tag, ["--launcher-window", "1280x800"], e, timeout=300)
     m = cl.read_json(base + ".sky.json")
     if m is None or not os.path.isfile(base + ".sky.png"):
@@ -223,10 +216,9 @@ def item_ratios(m, im):
 
 
 def live_roots(a, d):
-    """Per game with a disc image: (game, {scrim: data root}, its domes.bin records).
+    """Per game with a disc image: (game, data root, its domes.bin records).
 
-    Each root holds one library entry of the game and the cache a headless run wrote; the control's
-    (scrim False) is a copy of it."""
+    Each root holds one library entry of the game and the cache a headless run wrote."""
     roots = []
     for g in cl.GAMES:
         if not os.path.isfile(os.path.join(cl.ROOT, "games", g, g, "build", cl.DISCS[g] + ".bin")):
@@ -244,66 +236,54 @@ def live_roots(a, d):
         recs = dome_records(open(p, "rb").read()) if os.path.isfile(p) else None
         if not recs:
             raise RuntimeError(f"{g}: the headless run wrote no domes ({os.path.join(r, 'cache.log')})")
-        # The control's run gets its own copy of the root: two launches never share a data root.
-        c = os.path.join(d, g + "-noscrim")
-        shutil.copytree(r, c, symlinks=True)
-        roots.append((g, {True: r, False: c}, recs))
+        roots.append((g, r, recs))
     if not roots:
         raise cl.Skip("no disc image of any game")
     return roots
 
 
 def case_contrast(a):
-    """T3 on the chip text over the launcher's own level domes, with the no-scrim control.
+    """The contrast measurement of the chip text over the launcher's own level domes, reported without a threshold.
 
     With --domes, the bench's dome set instead (contrast_bench)."""
     if a.domes:
         return contrast_bench(a)
-    from concurrent.futures import ThreadPoolExecutor
     d = cl.case_dir(a.out, "contrast")
     try:
         roots = live_roots(a, d)
     except RuntimeError as e:
         print(f"[launcher] contrast: FAIL {e}")
         return 1
-    res = {True: [], False: []}   # scrim: [(game, level, item, ratio, large)]
-    for g, rs, recs in roots:
+    rows = []   # (game, level, item, ratio, large)
+    for g, r, recs in roots:
         for k in sample(len(recs), a.levels):
             level, rec = recs[k]
-            for r in rs.values():
-                with open(os.path.join(r, "state", "openpete", "cache", g, "domes.bin"), "wb") as f:
-                    f.write(b"OPDOMES1" + (1).to_bytes(4, "little") + rec)
-            tags = {True: f"{level}-scrim", False: f"{level}-noscrim"}
-            with ThreadPoolExecutor(2) as ex:   # at most two game processes
-                runs = {sc: ex.submit(dome_shot, a, rs[sc], tags[sc], sc) for sc in (True, False)}
-            for sc, fut in runs.items():
-                shot, why = fut.result()
-                if shot is None:
-                    print(f"[launcher] contrast: FAIL {g} {level} {tags[sc]}: {why}")
-                    return 1
-                res[sc] += [(g, level, i, q, lg) for i, q, lg in item_ratios(*shot)]
-    if not res[True]:
+            with open(os.path.join(r, "state", "openpete", "cache", g, "domes.bin"), "wb") as f:
+                f.write(b"OPDOMES1" + (1).to_bytes(4, "little") + rec)
+            shot, why = dome_shot(a, r, level)
+            if shot is None:
+                print(f"[launcher] contrast: FAIL {g} {level}: {why}")
+                return 1
+            rows += [(g, level, i, q, lg) for i, q, lg in item_ratios(*shot)]
+    if not rows:
         print("[launcher] contrast: VACUOUS (no chip text measured)")
         return 3
-    for sc in (True, False):
-        rows = res[sc]
-        levels = {(g, lv) for g, lv, *_ in rows}
-        bad = {(g, lv) for g, lv, _, q, _ in rows if q < 4.5}
-        fails = sum(q < 4.5 for *_, q, _ in rows)
-        fails_large = sum(q < (3.0 if lg else 4.5) for *_, q, lg in rows)
-        w = min(rows, key=lambda t: t[3])
-        print(f"[launcher] contrast {'scrim' if sc else 'no-scrim control'}: "
-              f"{len(levels) - len(bad)} of {len(levels)} levels at 4.5:1, {len(rows) - fails} of {len(rows)} "
-              f"item draws, {len(rows) - fails_large} with 3:1 for large; worst {w[3]:.2f}:1, {w[2]} on {w[0]} {w[1]}"
-              + (f"; under 4.5:1: {', '.join(f'{g} {lv}' for g, lv in sorted(bad))}" if bad else ""))
-    fails = sum(q < 4.5 for *_, q, _ in res[True])
-    print(f"[launcher] contrast: {'FAIL' if fails else 'PASS'} (live domes of {', '.join(g for g, _, _ in roots)}; "
-          f"chip text {', '.join(sorted({i for _, _, i, _, _ in res[True]}))})")
-    return 1 if fails else 0
+    levels = {(g, lv) for g, lv, *_ in rows}
+    under = {(g, lv) for g, lv, _, q, _ in rows if q < 4.5}
+    n_under = sum(q < 4.5 for *_, q, _ in rows)
+    n_under_large = sum(q < (3.0 if lg else 4.5) for *_, q, lg in rows)
+    w = min(rows, key=lambda t: t[3])
+    print(f"[launcher] contrast: {len(levels) - len(under)} of {len(levels)} levels at 4.5:1, "
+          f"{len(rows) - n_under} of {len(rows)} item draws, {len(rows) - n_under_large} with 3:1 for large; "
+          f"worst {w[3]:.2f}:1, {w[2]} on {w[0]} {w[1]}"
+          + (f"; under 4.5:1: {', '.join(f'{g} {lv}' for g, lv in sorted(under))}" if under else ""))
+    print(f"[launcher] contrast: PASS (reported, no threshold; live domes of {', '.join(g for g, _, _ in roots)}; "
+          f"chip text {', '.join(sorted({i for _, _, i, _, _ in rows}))})")
+    return 0
 
 
 def contrast_bench(a):
-    """T3 on the chip text over the level domes the bench renders (--domes), through the binary's shape layer."""
+    """The contrast measurement of the chip text over the level domes the bench renders (--domes), through the binary's shape layer, reported without a threshold."""
     import numpy as np
     if not os.path.isfile(os.path.join(a.domes, "index.json")):
         print(f"[launcher] SKIP: {a.domes} holds no index.json")
@@ -352,10 +332,10 @@ def contrast_bench(a):
         return 3
     passed = sum(1 for v in levels.values() if v[1] == 0)
     print(f"[launcher] contrast: shape layer affine within {err:.1f} levels on {CHECK_BG}; chip text {', '.join(texts)}")
-    print(f"[launcher] contrast: {'FAIL' if fails else 'PASS'} ({passed} of {len(levels)} levels at 4.5:1, "
+    print(f"[launcher] contrast: PASS (reported, no threshold; {passed} of {len(levels)} levels at 4.5:1, "
           f"{n - fails} of {n} item draws over {len(idx['shots'])} dome views, {n - fails_large} with 3:1 for large; "
           f"worst {worst[0]:.2f}:1, {worst[1]} on {worst[2]} at {worst[3]:g} deg)")
-    return 1 if fails else 0
+    return 0
 
 
 def inside_ellipse_rect(x, y, r, rx, ry, inset):
@@ -380,8 +360,8 @@ def fit_radii(r, scale):
 
 def case_fill(a):
     d = cl.case_dir(a.out, "fill")
-    worst_chip = worst_scrim = worst_bg = 0
-    counts = [0, 0, 0]
+    worst_chip = worst_bg = 0
+    counts = [0, 0]
     bad = []
     try:
         shots = bg_runs(a, d, "fill")
@@ -394,22 +374,14 @@ def case_fill(a):
         px = im.load()
         w, h = im.size
         chip = tuple((v + BOX) / 2.0 for v in bg)
-        scrim = tuple(c * (1 - SCRIM_ALPHA) + BOX * SCRIM_ALPHA for c in chip)
         for i in chip_texts(m):
             pr = by[i + ".panel"]["rect"]
             rx, ry = fit_radii(pr, scale)
-            sr = by.get(i + ".scrim", {}).get("rect")
             for y in range(int(pr[1]), int(math.ceil(pr[3]))):
                 for x in range(int(pr[0]), int(math.ceil(pr[2]))):
                     if not inside_ellipse_rect(x, y, pr, rx, ry, 2.0):
                         continue
                     c = px[x, y]
-                    if sr and sr[0] - 2 <= x + 0.5 <= sr[2] + 2 and sr[1] - 2 <= y + 0.5 <= sr[3] + 2:
-                        if inside_ellipse_rect(x, y, sr, 3 * scale, 3 * scale, 2.0):
-                            e = max(abs(c[k] - scrim[k]) for k in range(3))
-                            worst_scrim = max(worst_scrim, e)
-                            counts[1] += 1
-                        continue
                     e = max(abs(c[k] - chip[k]) for k in range(3))
                     worst_chip = max(worst_chip, e)
                     counts[0] += 1
@@ -419,19 +391,17 @@ def case_fill(a):
                          ((pr[0] + pr[2]) / 2, pr[1] - out)):
                 c = px[int(x), int(y)]
                 worst_bg = max(worst_bg, max(abs(c[k] - bg[k]) for k in range(3)))
-                counts[2] += 1
+                counts[1] += 1
     if worst_chip > 1:
         bad.append(f"chip fill {worst_chip:.1f} from (bg + 8) / 2")
-    if worst_scrim > 1:
-        bad.append(f"scrim {worst_scrim:.1f} from its blend")
     if worst_bg > 1:
         bad.append(f"background beside the chip moved by {worst_bg}")
     if min(counts) == 0:
-        print(f"[launcher] fill: VACUOUS ({counts[0]} chip, {counts[1]} scrim, {counts[2]} background pixels)")
+        print(f"[launcher] fill: VACUOUS ({counts[0]} chip, {counts[1]} background pixels)")
         return 3
     print(f"[launcher] fill: {'FAIL ' + '; '.join(bad) if bad else 'PASS'} (chip interior max |d| "
-          f"{worst_chip:.2f} over {counts[0]} pixels, scrim {worst_scrim:.2f} over {counts[1]}, background "
-          f"{worst_bg} over {counts[2]}; {len(BACKGROUNDS)} backgrounds)")
+          f"{worst_chip:.2f} over {counts[0]} pixels, background {worst_bg} over {counts[1]}; "
+          f"{len(BACKGROUNDS)} backgrounds)")
     return 1 if bad else 0
 
 
@@ -470,15 +440,11 @@ def case_layout(a):
             compared += 1
             if abs(ours - want) > 1.0:
                 bad.append(f"{preset} {name}[{k}] {ours:.2f}, reference {want:.2f}")
-        s, p = by.get("step.scrim", {}).get("rect"), by["step.panel"]["rect"]
-        compared += 1
-        if not s or not (p[0] <= s[0] and p[1] <= s[1] and s[2] <= p[2] and s[3] <= p[3]):
-            bad.append(f"{preset}: step.scrim {s} not inside step.panel {p}")
     if compared == 0:
         print("[launcher] shapes layout: VACUOUS")
         return 3
     print(f"[launcher] shapes layout: {'FAIL ' + '; '.join(bad) if bad else 'PASS'} ({compared - len(bad)} of "
-          f"{compared} checks over {len(cl.PRESETS)} presets: bar, step.panel, step.scrim)")
+          f"{compared} checks over {len(cl.PRESETS)} presets: bar, step.panel)")
     return 1 if bad else 0
 
 

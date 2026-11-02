@@ -147,7 +147,7 @@ int openpete_native_launcher_present(struct rhi_device *dev, float r, float g, f
 
 /* The kinds of a launcher shape (openpete_launcher_shape). */
 typedef enum {
-    OPENPETE_LAUNCHER_SHAPE_FILL = 0,   /* a panel, chip or text scrim: one colour */
+    OPENPETE_LAUNCHER_SHAPE_FILL = 0,   /* a panel or chip: one colour */
     OPENPETE_LAUNCHER_SHAPE_BAR = 1     /* a progress bar: track, fill and border */
 } openpete_launcher_shape_kind;
 

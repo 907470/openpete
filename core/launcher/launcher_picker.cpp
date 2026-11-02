@@ -280,7 +280,6 @@ launcher_picker_result launcher_picker_draw(float scale, float ox, float oy) {
         fit(pk.dir.empty() ? std::string("Choose a disc image (.cue or .bin)") : pk.dir.string(), x_end - x, true);
     const ImVec2 at(x, a.y + kPadY * scale);
     const ImVec2 psz = ImGui::CalcTextSize(where.c_str());
-    launcher_shape_scrim("picker.path", nullptr, ImGui::GetFontSize(), at, where.c_str(), scale);
     dl->AddText(at, ImGui::GetColorU32(IM_COL32(190, 175, 225, 255)), where.c_str());
     launcher_manifest_item("picker.path", "text", at.x, at.y, at.x + psz.x, at.y + psz.y);
     ImGui::PopFont();
@@ -305,7 +304,6 @@ launcher_picker_result launcher_picker_draw(float scale, float ox, float oy) {
         const std::string shown = fit(pk.rows[(size_t)r].label, x_end - x, false);
         const char* label = shown.c_str();
         const std::string rid = "picker.row." + std::to_string(i);
-        launcher_shape_scrim(rid.c_str(), nullptr, ImGui::GetFontSize(), ImVec2(x, ty), label, scale);
         dl->AddText(ImVec2(x, ty), ImGui::GetColorU32(col), label);
         const ImVec2 tsz = ImGui::CalcTextSize(label);
         launcher_manifest_item(rid.c_str(), "text", x, ty, x + tsz.x, ty + tsz.y);

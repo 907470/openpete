@@ -5,7 +5,6 @@
 #include "launcher_internal.h"
 
 #include "imgui.h"
-#include "imgui_internal.h"   /* ImTextCharFromUtf8 */
 
 #include "openpete_native_render.h"
 
@@ -24,11 +23,6 @@ constexpr float kEdgeAA = 1.5f;
 constexpr float kShadowAlpha = 0.35f;
 constexpr float kShadowDy = 2.0f;
 constexpr float kShadowBlur = 6.0f;
-/* A chip line's text scrim: (8,8,8) at this opacity over the line's ink
- * grown by kScrimPad layout px, corners of kScrimRadius layout px. */
-constexpr float kScrimAlpha = 0.12f;
-constexpr float kScrimPad = 3.0f;
-constexpr float kScrimRadius = 3.0f;
 /* Spyro 3's box colour. */
 constexpr float kBox = 8.0f / 255.0f;
 
@@ -82,17 +76,6 @@ void shape_init(openpete_launcher_shape* s, openpete_launcher_shape_kind kind, I
     s->shadow_blur = kShadowBlur * scale * fb.y;
 }
 
-/** @brief Report whether chip lines draw their text scrim: false when the harness variable OPENPETE_LAUNCHER_SCRIM is 0 (the contrast check's no-scrim control), read once.
- *
- * @return true unless the scrim is turned off. */
-bool scrim_on() {
-    static const bool on = [] {
-        const char* e = getenv("OPENPETE_LAUNCHER_SCRIM");
-        return !(e && !strcmp(e, "0"));
-    }();
-    return on;
-}
-
 }  // namespace
 
 void launcher_shape_panel(const char* id, ImVec2 a, ImVec2 b, float scale, float alpha) {
@@ -121,56 +104,11 @@ void launcher_shape_bar(const char* id, ImVec2 a, ImVec2 b, float scale, float f
     launcher_manifest_item(id, "bar", a.x, a.y, b.x, b.y);
 }
 
-bool launcher_text_ink(ImFont* font, float size, ImVec2 pos, const char* text, ImVec2* mn, ImVec2* mx) {
-    if (!font) font = ImGui::GetFont();
-    if (!font || !text) return false;
-    ImFontBaked* baked = font->GetFontBaked(size);
-    if (!baked) return false;
-    /* ImFont::RenderText's placement: the origin truncated, each glyph's
-     * quad at the pen plus its X0..X1, Y0..Y1 scaled to the size. */
-    const float k = size / baked->Size;
-    float x = std::trunc(pos.x);
-    const float y = std::trunc(pos.y);
-    bool any = false;
-    for (const char* s = text; *s;) {
-        unsigned int c = (unsigned char)*s;
-        if (c < 0x80) s++;
-        else s += ImTextCharFromUtf8(&c, s, nullptr);
-        if (c == 0) break;
-        const ImFontGlyph* g = baked->FindGlyph((ImWchar)c);
-        if (!g) continue;
-        if (g->Visible) {
-            const ImVec2 g0(x + g->X0 * k, y + g->Y0 * k), g1(x + g->X1 * k, y + g->Y1 * k);
-            if (!any) { *mn = g0; *mx = g1; any = true; }
-            else {
-                mn->x = std::min(mn->x, g0.x); mn->y = std::min(mn->y, g0.y);
-                mx->x = std::max(mx->x, g1.x); mx->y = std::max(mx->y, g1.y);
-            }
-        }
-        x += g->AdvanceX * k;
-    }
-    return any;
-}
-
-void launcher_shape_scrim(const char* id, ImFont* font, float size, ImVec2 pos, const char* text, float scale) {
-    ImVec2 mn, mx;
-    if (!launcher_text_ink(font, size, pos, text, &mn, &mx)) return;
-    const float pad = kScrimPad * scale;
-    const ImVec2 a(mn.x - pad, mn.y - pad), b(mx.x + pad, mx.y + pad);
-    openpete_launcher_shape s;
-    shape_init(&s, OPENPETE_LAUNCHER_SHAPE_FILL, a, b, kScrimRadius * scale, kScrimRadius * scale, scale, 0.0f);
-    s.col[0] = s.col[1] = s.col[2] = kBox;
-    s.col[3] = kScrimAlpha;
-    if (scrim_on()) (void)openpete_native_launcher_shape_add(&s);
-    launcher_manifest_item((std::string(id) + ".scrim").c_str(), "scrim", a.x, a.y, b.x, b.y);
-}
-
 void launcher_chip_text(const char* id, ImVec2 pos, ImVec2 pad, float scale, ImU32 col, const char* text) {
     const ImVec2 sz = ImGui::CalcTextSize(text);
     const ImVec2 a(pos.x - pad.x * scale, pos.y - pad.y * scale);
     const ImVec2 b(pos.x + sz.x + pad.x * scale, pos.y + sz.y + pad.y * scale);
     launcher_shape_panel((std::string(id) + ".panel").c_str(), a, b, scale, kChipAlpha);
-    launcher_shape_scrim(id, nullptr, ImGui::GetFontSize(), pos, text, scale);
     const float x0 = std::trunc(pos.x), y0 = std::trunc(pos.y);
     launcher_manifest_item(id, "text", x0, y0, x0 + sz.x, y0 + sz.y);
     /* GetColorU32 applies the style's alpha, which the text-hiding harness

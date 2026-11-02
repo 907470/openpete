@@ -9,8 +9,8 @@
 #include <stddef.h>
 #include <string.h>
 
-/* The most shapes one present draws: the game page's chips, scrims, bar
- * and panels with room to spare. */
+/* The most shapes one present draws: the game page's chips, bar and
+ * panels with room to spare. */
 #define LS_MAX 64
 
 /* The fragment stage's push block (launcher_shape.frag Shape), std430. */

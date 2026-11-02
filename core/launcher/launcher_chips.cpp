@@ -53,15 +53,14 @@ Corner place(const char* text, float scale, bool left, float lead) {
     return {ImVec2(x0, y0), ImVec2(x0 + w, y0 + h), ImVec2(x0 + kPadX * scale + lead, y0 + kPadY * scale)};
 }
 
-/** @brief Add a corner chip's box, the text scrim and the text, and record the text in the element manifest.
+/** @brief Add a corner chip's box and the text, and record the text in the element manifest.
  *
- * @param id The text's manifest id; the box records as <id>.panel, the scrim as <id>.scrim.
+ * @param id The text's manifest id; the box records as <id>.panel.
  * @param c The placed chip.
  * @param scale Window pixels per layout pixel.
  * @param text The line. */
 void chip_body(const char* id, const Corner& c, float scale, const char* text) {
     launcher_shape_panel((std::string(id) + ".panel").c_str(), c.a, c.b, scale, kChipAlpha);
-    launcher_shape_scrim(id, nullptr, ImGui::GetFontSize(), c.text, text, scale);
     const ImVec2 ts = ImGui::CalcTextSize(text);
     const float x0 = std::trunc(c.text.x), y0 = std::trunc(c.text.y);
     launcher_manifest_item(id, "text", x0, y0, x0 + ts.x, y0 + ts.y);
