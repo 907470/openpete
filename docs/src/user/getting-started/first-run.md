@@ -142,7 +142,9 @@ A refused disc or a failed step shows a message on the game page, below the
 boxes, ending with the error's id and the address of its row in
 [Troubleshooting](../help/troubleshooting.md#by-error-id). A click on that
 last line opens the row in your web browser and leaves the message shown.
-Any other key, button or click closes the message and does nothing else;
+++enter++ or the pad's south button opens the same row and closes the
+message. Any other key, button or click closes the message and does nothing
+else;
 ++esc++, closing the window and a dropped disc still act as they do on the
 page.
 

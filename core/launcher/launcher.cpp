@@ -1423,6 +1423,8 @@ constexpr int kPagePass = -101;
 
 /** @brief Take a command while the message panel shows: it dismisses the panel and is consumed, except a quit, Escape and a dropped disc, which act after the dismissal; a panel whose dismissal quits turns every command into a quit.
  *
+ * Pick (Enter, South) first opens the error's troubleshooting entry.
+ *
  * @param a The command (Ask::None for a click, with @p clicked).
  * @param clicked true when the command is a mouse click.
  * @return kPagePass when no panel shows or the command acts, kPageStays when it was consumed, or LAUNCHER_SEL_QUIT. */
@@ -1431,6 +1433,7 @@ int panel_command(Ask a, bool clicked) {
     static const char* const k_name[] = {"none", "quit", "escape", "east", "activate", "browse", "up", "down",
                                          "left", "right", "a dropped disc"};
     const bool quits = launcher_panel_quits();
+    if (a == Ask::Pick && !clicked) launcher_panel_open_ref();
     launcher_panel_dismiss(clicked ? "a click" : k_name[(int)a]);
     if (quits) return LAUNCHER_SEL_QUIT;
     return a == Ask::Quit || a == Ask::Escape || a == Ask::Dropped ? kPagePass : kPageStays;

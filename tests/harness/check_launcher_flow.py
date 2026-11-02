@@ -2358,8 +2358,8 @@ def error_anchors():
 
 def case_error_link(a):
     """The panel's reference line is a link: a click on it opens the error's troubleshooting URL (stubbed through
-    OPENPETE_LAUNCHER_OPEN_URL_STUB) and leaves the panel shown; a click on the message line and Enter
-    open nothing and dismiss it. Every error id's anchor is on the troubleshooting page."""
+    OPENPETE_LAUNCHER_OPEN_URL_STUB) and leaves the panel shown; a click on the message line opens nothing and
+    dismisses it; Enter and South open the URL, then dismiss it. Every error id's anchor is on the troubleshooting page."""
     bad, counts = [], {}
     rows, page = error_anchors()
     missing = [i for i, anc in rows if anc not in page]
@@ -2414,18 +2414,24 @@ def case_error_link(a):
     bad += [f"elsewhere: {x}" for x in ordered(log, r"error panel drawn",
                                                 r"scripted input: click=@panel\.error\.line\.0",
                                                 r"error panel dismissed \(a click\)")]
-    d = os.path.join(d0, "keys")
-    os.makedirs(d)
-    rc2, log = cl.launch(a.binary, d, "keys", ["--launcher-window", "1280x800"],
-                         dict(stub, OPENPETE_LAUNCHER_INPUT="4000:key=enter,5500:quit"), timeout=300)
-    n = len(re.findall(r"error panel link: (opened|pressed)", log))
-    counts["enter opens"] = n
-    if n:
-        bad.append(f"keys: {n} link lines after Enter, want 0")
-    bad += [f"keys: {x}" for x in ordered(log, r"error panel drawn", r"scripted input: key=enter",
-                                           r"error panel dismissed \(activate\)")]
-    if rc or rc2:
-        bad.append(f"negative runs: exit {rc}, {rc2}")
+    # Enter and South open the entry, then dismiss the panel.
+    rcs = [rc]
+    for tok, name in (("key=enter", "enter"), ("pad=south", "south")):
+        d = os.path.join(d0, name)
+        os.makedirs(d)
+        rck, log = cl.launch(a.binary, d, name, ["--launcher-window", "1280x800"],
+                             dict(stub, OPENPETE_LAUNCHER_INPUT=f"4000:{tok},5500:quit"), timeout=300)
+        rcs.append(rck)
+        _, kurl = panel_ref(log)
+        kopened = re.findall(opened_re, log)
+        counts[f"{name} opens"] = len(kopened)
+        if not kurl or kopened != [kurl]:
+            bad.append(f"{name}: opened {kopened}, want [{kurl}]")
+        bad += [f"{name}: {x}" for x in ordered(log, r"error panel drawn", rf"scripted input: {re.escape(tok)}",
+                                                 r"error panel link: activated", opened_re,
+                                                 r"error panel dismissed \(activate\)")]
+    if any(rcs):
+        bad.append(f"elsewhere/enter/south runs: exit {rcs}")
     return verdict("error-link", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 

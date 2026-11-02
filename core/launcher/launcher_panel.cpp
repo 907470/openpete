@@ -147,6 +147,14 @@ bool launcher_panel_quits(void) { return s_panel.shown && s_panel.quits; }
 
 bool launcher_panel_full(void) { return s_panel.shown && s_panel.full; }
 
+bool launcher_panel_open_ref(void) {
+    if (!s_panel.shown || s_panel.err < 0) return false;
+    const openpete_error_t e = (openpete_error_t)s_panel.err;
+    OPL_INFO_F("launcher", "error panel link: activated (%s)", openpete_error_id(e));
+    open_url(openpete_error_url(e));
+    return true;
+}
+
 void launcher_panel_dismiss(const char* why) {
     if (!s_panel.shown) return;
     OPL_INFO_F("launcher", "error panel dismissed (%s)%s", why, s_panel.quits ? "; the launcher quits" : "");

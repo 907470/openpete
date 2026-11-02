@@ -510,6 +510,13 @@ bool launcher_panel_full(void);
  * @param why The command, for the log. */
 void launcher_panel_dismiss(const char* why);
 
+/** @brief Open the shown error's troubleshooting URL, as a press on its reference line does.
+ *
+ * Enter and South call it before they dismiss the panel, so a keyboard or
+ * pad reaches the entry the mouse reaches through the link.
+ * @return true when a panel with an error reference shows and its URL was handed to open_url. */
+bool launcher_panel_open_ref(void);
+
 /** @brief Draw the shown panel into the current imgui window: the message's lines centred (wrapped to the panel's widest, 86% of the window), the error reference below them, inside Spyro 3's dialogue box at half opacity times the sky's dome cover (launcher_sky_cover); recorded in the element manifest.
  *
  * The box's top is 14 layout px below @p top, raised to keep a 12 layout px
