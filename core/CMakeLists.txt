@@ -86,6 +86,8 @@ add_library(openpete_core STATIC
     renderer/subtick_view.c
     renderer/screenshot.c
     runtime/run.c
+    runtime/host_state_ops.c
+    runtime/runahead.c
     runtime/host_trace.c
     runtime/run_capture.c
     runtime/skip_common.c

@@ -330,6 +330,10 @@ uint64_t openpete_interp_total_captures(void);
  * @return Skipped-candidate count since start. */
 uint64_t openpete_interp_total_dedupe_skips(void);
 
+/* The interpolation toggle (run.c): 1 runs the native sub-tick
+ * intermediate presents, 0 presents canonical ticks only. */
+extern int g_openpete_interp_enabled;
+
 #ifdef __cplusplus
 }
 #endif

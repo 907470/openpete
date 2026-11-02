@@ -243,6 +243,10 @@ void openpete_interp_objs_stats(int* tracked, int* paired,
  * freezes the other half). */
 extern op_time_t g_openpete_tick_period_ns;
 
+/* The stamp of the newest object capture; run.c sets it beside
+ * openpete_interp_capture, and openpete_interp_tick_stamp returns it. */
+extern op_time_t g_openpete_tick_stamp;
+
 /** @brief Return the stamp of the most recent sim tick.
  *
  * run.c sets it beside openpete_interp_capture: the PLL-smoothed VBL grid

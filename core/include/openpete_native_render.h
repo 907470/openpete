@@ -3207,6 +3207,10 @@ void openpete_native_render_snapshot_fb_window(void);
  * pipeline, the device and the window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);
 
+/* 1 while the canonical present's lagged re-extract runs (run.c), so
+ * feeder-side diagnostics tag the present leg of a sample. */
+extern int g_openpete_canon_lag_leg;
+
 #ifdef __cplusplus
 }
 #endif

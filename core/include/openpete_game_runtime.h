@@ -128,6 +128,11 @@ const openpete_game_runtime_t* openpete_game_runtime(void);
  * @param out The stream. */
 void openpete_game_runtime_dump(FILE* out);
 
+/* The VBL delivery census of the shared PSYQ thunk layer
+ * (games/common/psyq/psyq_thunks.cpp); weak, so a build without that layer
+ * leaves it NULL. */
+extern void psyq_vbl_delivery_report(void) __attribute__((weak));
+
 #ifdef __cplusplus
 }
 #endif

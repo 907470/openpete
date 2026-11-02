@@ -709,6 +709,11 @@ void openpete_gte_hash_op(uint32_t cmd, uint32_t pc,
                           const uint32_t pre_data[32], const uint32_t pre_ctrl[32],
                           const uint32_t post_data[32], const uint32_t post_ctrl[32]);
 
+/* Called with the dispatched address on each hit of
+ * openpete_psxtrace_anchor_pc (core/psx/dispatch.c); NULL when no verifier
+ * is attached. */
+extern void (*openpete_psxtrace_dispatch_hook)(uint32_t addr);
+
 #ifdef __cplusplus
 }
 #endif

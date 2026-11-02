@@ -73,6 +73,9 @@
 #include "openpete_memcard.h"
 #include "openpete_handoff.h"
 #include "openpete_thread_roles.h"
+#include "host_state_ops.h"
+#include "run_internal.h"
+#include "runahead.h"
 
 #include "PsyX/PsyX_public.h"  /* g_PsyX_Pad_InputOverride */
 
@@ -1070,122 +1073,6 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
 
 #define OPENPETE_HASH_LOG_MAX_REGIONS 128
 
-/** @brief Read OPENPETE_RA_PREDICT_CHECK once: the runahead prediction-exactness check level.
- *
- * The check tests that with unchanged input the led state is the future
- * committed state bit for bit. A thunk that reads host state behaving
- * differently under speculation than in the real future (the wall clock, a
- * host static outside the snapshot) breaks that while every
- * state-roundtrip determinism gate stays green. After each speculation the
- * host loop hashes the led guest RAM, scratchpad and mod arena, keyed by
- * the led tick; when the committed timeline reaches that tick the hashes
- * must match. An input edge invalidates the pending predictions (the branch
- * legitimately changed), and so does a guest discontinuity (rewind and
- * state-load replays run under live input, not the predicted branch).
- * @return 0 off, 1 hash check, 2 hash check plus a full copy of the led RAM
- *         so a mismatch dumps the differing ranges. */
-static int ra_pc_on(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char* e = getenv("OPENPETE_RA_PREDICT_CHECK");
-        v = (e && *e && *e != '0') ? atoi(e) : 0;
-        if (v < 0) v = 0;
-    }
-    return v;   /* 1 = hash check; 2 = + full led copy, dump diff ranges */
-}
-#define RA_PC_PENDING 8
-static struct { uint32_t target; uint64_t hash; int valid; uint8_t* led; } s_ra_pc[RA_PC_PENDING];
-static unsigned s_ra_pc_checked = 0, s_ra_pc_mismatches = 0, s_ra_pc_invalidated = 0;
-/* Wall time of the last runahead snapshot save, added to its restore's for
- * the Mods panel's snapshot cost. */
-static op_time_t s_ra_save_ns = 0;
-
-/** @brief Take runahead's per-tick snapshot, timing the save for the snapshot cost the Mods panel shows.
- *
- * @param snap The runahead snapshot.
- * @param cpu The guest register file.
- * @param frame The committed frame the snapshot records.
- * @return openpete_state_mem_save's result, 0 on success. */
-static int ra_snapshot_save(openpete_state_mem_t* snap, const CPUState* cpu,
-                            unsigned frame) {
-    const op_time_t t0 = op_now();
-    const int rc = openpete_state_mem_save(snap, cpu, frame);
-    s_ra_save_ns = op_now() - t0;
-    return rc;
-}
-
-/** @brief Roll back to runahead's snapshot quietly, recording that tick's save plus restore time.
- *
- * @param snap The runahead snapshot.
- * @param cpu The guest register file, restored.
- * @param frame Receives the snapshot's frame.
- * @return openpete_state_mem_load's result, 0 on success. */
-static int ra_snapshot_rollback(const openpete_state_mem_t* snap, CPUState* cpu,
-                                unsigned* frame) {
-    const op_time_t t0 = op_now();
-    const int rc = openpete_state_mem_load(snap, cpu, frame, 1);
-    if (rc == 0)
-        openpete_mods_runahead_snapshot_note(
-            (uint64_t)(s_ra_save_ns + (op_now() - t0)) / 1000u);
-    return rc;
-}
-/** @brief Settle the card writes of a speculation after its rollback attempt.
- *
- * A rollback that restored the state (0), or restored part of it before
- * failing (-2), discards the led ticks' card writes and save records; one
- * refused before restoring anything (-1, or 1 off the park site) leaves the
- * led state in place, so its card writes are adopted.
- * @param rc openpete_state_mem_load's result. */
-static void ra_card_settle(int rc) {
-    if (rc == 0 || rc == -2) openpete_memcard_spec_rollback();
-    else openpete_memcard_spec_adopt();
-}
-
-/** @brief Drop every pending runahead prediction, counting each one dropped. */
-static void ra_pc_invalidate_all(void) {
-    for (int i = 0; i < RA_PC_PENDING; i++)
-        if (s_ra_pc[i].valid) { s_ra_pc[i].valid = 0; s_ra_pc_invalidated++; }
-}
-/** @brief Hash guest RAM, the scratchpad and the mod arena's three used ranges with FNV-1a-64.
- *
- * @return The hash the runahead prediction check compares. */
-static uint64_t ra_pc_hash(void) {
-    uint64_t h = openpete_fnv1a64_init();
-    h = openpete_fnv1a64_update(h, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);
-    h = openpete_fnv1a64_update(h, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
-    /* The mod arena is inside the rollback boundary: a led/committed
-     * split there is the same class of misprediction as one in RAM. */
-    uint32_t used[OPENPETE_ARENA_RANGES];
-    (void)openpete_mods_arena_used(used);
-    for (unsigned r = 0; r < OPENPETE_ARENA_RANGES; r++)
-        if (used[r])
-            h = openpete_fnv1a64_update(h, openpete_mods_arena_range_bytes(r), used[r]);
-    return h;
-}
-
-/** @brief Record the led prediction in a free pending slot while RAM is the speculation head, keyed by the led tick.
- *
- * Nothing when the check is off or every slot is pending. At level 2 the
- * slot also keeps a copy of the led RAM and scratchpad for the mismatch
- * dump. */
-static void ra_pc_record_led(void) {
-    if (!ra_pc_on()) return;
-    for (int i = 0; i < RA_PC_PENDING; i++) {
-        if (s_ra_pc[i].valid) continue;
-        s_ra_pc[i].target = openpete_frame;
-        s_ra_pc[i].hash   = ra_pc_hash();
-        s_ra_pc[i].valid  = 1;
-        if (ra_pc_on() < 2) return;
-        if (!s_ra_pc[i].led)
-            s_ra_pc[i].led = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE + OPENPETE_PSX_SCRATCH_SIZE);
-        if (!s_ra_pc[i].led) return;
-        memcpy(s_ra_pc[i].led, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);
-        memcpy(s_ra_pc[i].led + OPENPETE_PSX_RAM_SIZE, openpete_psx_get_scratch(),
-               OPENPETE_PSX_SCRATCH_SIZE);
-        return;
-    }
-}
-
 /** @brief Write the CSV header of the gameplay hash log: frame, vbl, fnv1a64 and one column per region.
  *
  * A region name has commas, CR and LF replaced by '_'. More than
@@ -1828,15 +1715,7 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
  * function returns (which `main()` shouldn't, but guards against premature
  * returns from any other entry point we point this at). */
 
-/* Game fiber state. Static rather than capture so the libco trampoline (which
- * takes no args) can find it. */
-static struct {
-    CPUState cpu;
-    uint32_t entry;
-    uint32_t gp;
-    int      done;
-    int      dispatch_ok;
-} g_game;
+struct run_game g_game;
 
 /* ---- eager production --------------------------------------------------
  *
@@ -3734,20 +3613,7 @@ static int run_host_init(const openpete_options_t* opts) {
     return 0;
 }
 
-/** @brief Read OPENPETE_SYNTH_PADS once: the synthetic pad-stream mode for slots 1-3.
- *
- * The synthetic stream lets the N-port input log be exercised without host
- * devices filling slots 1-3. Its bytes are a pure function of the VBL index
- * and the slot (synth_pad_for), so the append path checks that the staged
- * ports survived the tick and the rewind burst checks that the ports it
- * restaged from the log match what that VBL carried. Generate-and-verify
- * stages the stream over the live devices. Verify-only leaves the staged
- * slots as movie replay filled them and only checks them: replaying a
- * recording of the stream with the generator on would overwrite the bytes
- * read back from disk with the bytes they are compared against.
- * @return 0 off (unset, empty or starting with '0'), 2 verify-only (a value
- *         starting with 'v' or 'V'), else 1 generate-and-verify. */
-static int synth_pads_enabled(void) {
+int synth_pads_enabled(void) {
     static int s_on = -1;
     if (s_on < 0) {
         const char* v = getenv("OPENPETE_SYNTH_PADS");
@@ -3798,14 +3664,7 @@ static int synth_pads_match_upto(const openpete_input_rec_t* rec, unsigned frame
     return 1;
 }
 
-/** @brief Test an input record against the synthetic stream over the slots the current mode fills.
- *
- * Generate-and-verify checks slots 1-3; verify-only checks slot 1 alone,
- * the one player-2 slot a two-player movie replay carries.
- * @param rec The input record.
- * @param frame The VBL index the stream is generated for.
- * @return 1 when every checked slot matches, else 0. */
-static int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
+int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
     const int last = (synth_pads_enabled() == 2) ? 1 : OPENPETE_PAD_SLOTS - 1;
     return synth_pads_match_upto(rec, frame, last);
 }
@@ -3824,8 +3683,8 @@ static unsigned long long s_slot_differed[OPENPETE_PAD_SLOTS][OPENPETE_PAD_SLOTS
 
 static unsigned long long s_synth_stage_checks = 0;
 static unsigned long long s_synth_stage_mismatches = 0;
-static unsigned long long s_synth_rewind_checks = 0;
-static unsigned long long s_synth_rewind_mismatches = 0;
+unsigned long long s_synth_rewind_checks = 0;
+unsigned long long s_synth_rewind_mismatches = 0;
 
 /* Pre-yield-staging equality instrument. The input record is staged before
  * the tick so an in-tick reader can see it, but the bytes the log stores for
@@ -3952,620 +3811,6 @@ static void overlay_input_suspend(void) {
         return;
     openpete_freecam_axes ax = {0};
     openpete_freecam_set_axes(&ax);
-}
-
-/* Snapshots (savestate, rewind keyframe, runahead) and loads happen only
- * while the game fiber is parked at a psyq_VSync wait's final yield
- * (openpete_yield_final). Below any other yield the fiber's host call stack
- * is mid-delivery (an intermediate VBL of VSync(n > 1), a polling-loop or
- * spin-tick VBL, a schedule charge, a flushed VBLANK, a stub-miss yield);
- * the stack is not snapshotted, so a state taken there or loaded there
- * resumes the wrong continuation.
- *
- * A load also needs the right final yield: each records its park site (the
- * psyq_VSync call's guest ra and sp, openpete_yield_site), every snapshot
- * stores the site it was taken at, and a load applies only while the fiber
- * is parked at a final yield with that site. At another site the loaded
- * registers would run the parked call's continuation (its caller's code
- * with the saved call's s-registers). A load that finds another site waits:
- * a queued file or slot load up to STATE_LOAD_SITE_WAIT final yields and
- * is refused after them; the rewind seek takes the newest keyframe saved
- * at the current site; the stress rollback waits up to its bound and then
- * re-arms; the runahead rollback continues the speculation to the
- * snapshot's site, through a transition when the speculation leaves
- * gameplay, and adopts it at the bound.
- *
- * One-shot requests (the save and load hotkeys, a mod's request, the
- * scheduled --state-save-on-frame / --state-load-on-frame) enter a queue
- * whenever they are raised; state_ops_drain runs the queue in arrival order
- * at a final yield and keeps it otherwise. The periodic state work (the
- * stress harnesses, the rewind keyframe cadence and seek, the process
- * handoff, the runahead snapshot) runs only on an iteration whose drain
- * reported a final yield, and sits out the others. */
-typedef enum {
-    STATE_OP_SAVE_SLOT,   /* openpete_state_save to a slot */
-    STATE_OP_LOAD_SLOT,   /* openpete_state_load from a slot */
-    STATE_OP_SAVE_FILE,   /* openpete_state_save_file to a path */
-    STATE_OP_LOAD_FILE,   /* openpete_state_load_file from a path */
-} state_op_kind;
-
-typedef struct {
-    state_op_kind kind;
-    unsigned slot;        /* the slot of a slot op */
-    const char* path;     /* the path of a file op */
-    int deferred;         /* counted once in s_state_ops_deferred */
-    unsigned site_waits;  /* final yields a load spent at another park site */
-} state_op_t;
-
-/* Final yields a queued load waits for the fiber to park at its site. A
- * game's tick parks at each of its frame-wait sites every tick, so a site
- * absent this long belongs to a mode the run has left (a pause menu, a
- * transition): loading at another site corrupts the timeline, so the load
- * is refused instead. 1800 final yields is at least 30 s of play. */
-#define STATE_LOAD_SITE_WAIT 1800u
-
-/* Park-site deferrals by kind: a load whose snapshot was saved at another
- * park site than the current final yield's. */
-enum { SITE_DEF_LOAD, SITE_DEF_REWIND, SITE_DEF_STRESS, SITE_DEF_RUNAHEAD, SITE_DEF_N };
-static unsigned long long s_site_deferred[SITE_DEF_N];
-static unsigned long long s_site_refused = 0;    /* queued loads refused at STATE_LOAD_SITE_WAIT */
-static unsigned long long s_site_wait_yields = 0; /* final yields queued loads spent at another site */
-static unsigned long long s_site_abandoned = 0;  /* stress rollbacks re-armed at their bound */
-
-#define STATE_OP_QUEUE_LEN 8
-static state_op_t s_state_ops[STATE_OP_QUEUE_LEN];
-static int s_state_op_n = 0;
-static unsigned long long s_state_ops_deferred[2];  /* requests that waited: [0] saves, [1] loads */
-static unsigned long long s_state_yields_skipped = 0;  /* drains at an intermediate yield */
-/* Runahead's share of s_state_ops_deferred: [0] snapshots owed to a later
- * yield (ra_owed), [1] rollbacks whose speculation ended below a non-final
- * yield. */
-static unsigned long long s_ra_deferred[2];
-static unsigned long long s_ra_adopted = 0;  /* speculations adopted: no rollback at the snapshot's park site */
-static unsigned long long s_ra_left[2];  /* speculations that left gameplay: [0] rolled back, [1] adopted */
-
-/* The share of s_state_ops_deferred first deferred at a yield an emitted
- * polling loop's delivery took (openpete_yield_loop_header), and the first
- * such loop's header and feed key. */
-static unsigned long long s_loop_deferred = 0;
-static uint32_t s_loop_deferred_header = 0u;
-static unsigned s_loop_deferred_key = 0u;
-
-/** @brief Attribute one deferred request to the emitted polling loop whose delivery the fiber is yielding under, if any. */
-static void count_loop_deferral(void) {
-    if (!openpete_yield_loop_header) return;
-    if (s_loop_deferred++ == 0u) {
-        s_loop_deferred_header = openpete_yield_loop_header;
-        s_loop_deferred_key = openpete_feed_key_now();
-    }
-}
-
-/** @brief Count one runahead snapshot (kind 0) or rollback (kind 1) deferred to a final yield.
- * @param kind 0 for a snapshot, 1 for a rollback. */
-static void ra_count_deferral(int kind) {
-    s_ra_deferred[kind]++;
-    s_state_ops_deferred[kind]++;
-    count_loop_deferral();
-}
-
-/** @brief Carry a runahead snapshot owed to a later yield, counting the request once when it first waits.
- * @param owe Nonzero when this yield owes the snapshot (due, not at a final yield).
- * @param owed The value carried from the previous yield.
- * @return The value to carry to the next yield. */
-static int ra_note_owed(int owe, int owed) {
-    if (owe && !owed) ra_count_deferral(0);
-    return owe;
-}
-
-/* The active quick-save slot, shared by the slot keys and the dev overlay's
- * Savestate row. A set from another thread raises the announce flag; the host
- * loop announces, since the OSD queue is fed from it. */
-static SDL_AtomicInt s_state_slot;
-static SDL_AtomicInt s_state_slot_announce;
-/* Save/load requests from the dev overlay, bits consumed by state_ops_collect. */
-enum { STATE_REQ_SAVE = 1, STATE_REQ_LOAD = 2 };
-static SDL_AtomicInt s_state_slot_req;
-/* 1 when the active slot's file exists: set on each slot change and after a
- * save to that slot, read by the dev overlay's Load button. */
-static SDL_AtomicInt s_state_slot_full;
-
-unsigned openpete_state_active_slot(void) { return (unsigned)SDL_GetAtomicInt(&s_state_slot); }
-
-int openpete_state_active_slot_full(void) { return SDL_GetAtomicInt(&s_state_slot_full); }
-
-void openpete_state_set_active_slot(unsigned slot) {
-    if (slot >= OPENPETE_STATE_NUM_SLOTS) return;
-    SDL_SetAtomicInt(&s_state_slot, (int)slot);
-    SDL_SetAtomicInt(&s_state_slot_announce, 1);
-}
-
-void openpete_state_request(int load) {
-    const int bit = load ? STATE_REQ_LOAD : STATE_REQ_SAVE;
-    int cur;
-    do cur = SDL_GetAtomicInt(&s_state_slot_req);
-    while (!SDL_CompareAndSwapAtomicInt(&s_state_slot_req, cur, cur | bit));
-}
-
-/** @brief Queue one savestate request for the next final yield.
- * @param kind The operation.
- * @param slot The slot of a slot operation.
- * @param path The path of a file operation. */
-static void state_op_push(state_op_kind kind, unsigned slot, const char* path) {
-    if (s_state_op_n == STATE_OP_QUEUE_LEN) {
-        OPL_WARN_F("savestate", "state-op queue full (%d): request dropped", STATE_OP_QUEUE_LEN);
-        return;
-    }
-    s_state_ops[s_state_op_n++] = (state_op_t){kind, slot, path, 0, 0u};
-}
-
-/* A request's outcome, as state_op_run and state_ops_drain report it: the
- * first three are openpete_state_save / openpete_state_load's return values. */
-enum {
-    STATE_OP_FAILED = -1,   /* save or load failed or refused; running state untouched */
-    STATE_OP_DONE = 0,      /* saved, or loaded */
-    STATE_OP_SITE = 1,      /* a load found another park site than its state's */
-    STATE_OP_SITE_REFUSED = 2, /* that load waited STATE_LOAD_SITE_WAIT final yields */
-};
-
-/** @brief Run one queued savestate request; a load that succeeds re-anchors the host frame counter.
- *
- * The re-anchor makes the one-shot triggers (screenshot-on-frame,
- * ram-dump-on-frame, frame-limit) reason about time from the load as on a
- * fresh run.
- * @param op The request.
- * @return STATE_OP_DONE, STATE_OP_FAILED, or STATE_OP_SITE when a load found
- *         the fiber parked at another site than its state's (nothing
- *         restored). */
-static int state_op_run(const state_op_t* op) {
-    unsigned lf = openpete_frame;
-    int rc = STATE_OP_FAILED;
-    switch (op->kind) {
-    case STATE_OP_SAVE_SLOT:
-        rc = openpete_state_save(op->slot, &g_game.cpu, openpete_frame);
-        if (rc == 0 && op->slot == openpete_state_active_slot())
-            SDL_SetAtomicInt(&s_state_slot_full, 1);
-        return rc;
-    case STATE_OP_SAVE_FILE:
-        return openpete_state_save_file(op->path, &g_game.cpu, openpete_frame);
-    case STATE_OP_LOAD_SLOT:
-        rc = openpete_state_load(op->slot, &g_game.cpu, &lf);
-        break;
-    case STATE_OP_LOAD_FILE:
-        rc = openpete_state_load_file(op->path, &g_game.cpu, &lf);
-        break;
-    }
-    if (rc == STATE_OP_DONE) openpete_frame = lf;
-    return rc;
-}
-
-/** @brief Keep a load that found another park site, or refuse it once it has waited STATE_LOAD_SITE_WAIT final yields.
- * @param op The load request.
- * @return 1 when the request stays queued, 0 when it was refused. */
-static int state_op_site_wait(state_op_t* op) {
-    s_site_wait_yields++;
-    if (op->site_waits++ == 0u) s_site_deferred[SITE_DEF_LOAD]++;
-    if (op->site_waits < STATE_LOAD_SITE_WAIT) return 1;
-    s_site_refused++;
-    OPL_ERROR_F("savestate", "load of %s refused: the fiber did not park at the state's "
-                "site within %u final yields (parked at ra=0x%08X sp=0x%08X); running "
-                "state untouched", op->kind == STATE_OP_LOAD_FILE ? op->path : "the slot",
-                STATE_LOAD_SITE_WAIT, openpete_yield_site.ra, openpete_yield_site.sp);
-    return 0;
-}
-
-/* The OSD coalescing key every slot toast shares: a save, a load and a slot
- * switch in quick succession repaint one toast instead of stacking three. */
-#define STATE_SLOT_OSD_KEY "state.slot"
-
-/** @brief Post the OSD toast for a finished slot save or slot load.
- *
- * File requests (the scheduled --state-save-on-frame / --state-load-on-frame
- * one-shots) post nothing: no player pressed a key for them. A failed slot
- * load whose slot file does not exist is reported as an empty slot; every
- * other failure (a state from another game, build or modset, an unreadable
- * file, a park site that did not recur) as a refused load, whose reason is
- * in the log.
- * @param op The finished request.
- * @param rc STATE_OP_DONE, STATE_OP_FAILED or STATE_OP_SITE_REFUSED. */
-static void state_op_toast(const state_op_t* op, int rc) {
-    const char* fmt = NULL;
-    if (op->kind == STATE_OP_SAVE_SLOT)
-        fmt = rc == STATE_OP_DONE ? "STATE SAVED: SLOT %u" : "SAVE FAILED: SLOT %u";
-    else if (op->kind != STATE_OP_LOAD_SLOT)
-        return;
-    else if (rc == STATE_OP_DONE)
-        fmt = "STATE LOADED: SLOT %u";
-    else
-        fmt = rc == STATE_OP_SITE_REFUSED || openpete_state_slot_present(op->slot)
-                  ? "LOAD REFUSED: SLOT %u" : "LOAD: SLOT %u EMPTY";
-    openpete_osd_notify("host", STATE_SLOT_OSD_KEY, 0, fmt, op->slot);
-}
-
-/** @brief Log and toast the hotkey slot after a slot switch, with whether a state is saved in it.
- * @param slot The new active slot. */
-static void state_slot_announce(unsigned slot) {
-    const int present = openpete_state_slot_present(slot);
-    OPL_INFO_F("savestate", "active slot -> %u%s", slot, present ? " (occupied)" : " (empty)");
-    openpete_osd_notify("host", STATE_SLOT_OSD_KEY, 0, "STATE SLOT: %u %s", slot,
-                        present ? "OCCUPIED" : "EMPTY");
-}
-
-/** @brief Run every queued savestate request at a final yield, or keep the queue and count the wait.
- *
- * Requests run in arrival order. A load whose state was saved at another
- * park site stops the drain there: it and every later request stay queued
- * for the next final yield (state_op_site_wait). A slot request toasts when
- * it finishes or is refused, never while it waits (state_op_toast).
- * @return 1 at a final yield (the queue ran and the periodic state work may run), else 0. */
-static int state_ops_drain(void) {
-    if (!openpete_yield_final) {
-        s_state_yields_skipped++;
-        for (int i = 0; i < s_state_op_n; i++) {
-            state_op_t* op = &s_state_ops[i];
-            if (op->deferred) continue;
-            op->deferred = 1;
-            s_state_ops_deferred[op->kind == STATE_OP_LOAD_SLOT || op->kind == STATE_OP_LOAD_FILE]++;
-            count_loop_deferral();
-        }
-        return 0;
-    }
-    int done = 0;
-    while (done < s_state_op_n) {
-        state_op_t* op = &s_state_ops[done];
-        int rc = state_op_run(op);
-        if (rc == STATE_OP_SITE) {
-            if (state_op_site_wait(op)) break;
-            rc = STATE_OP_SITE_REFUSED;
-        }
-        state_op_toast(op, rc);
-        done++;
-    }
-    memmove(s_state_ops, s_state_ops + done, (size_t)(s_state_op_n - done) * sizeof s_state_ops[0]);
-    s_state_op_n -= done;
-    return 1;
-}
-
-/** @brief Continue a runahead speculation until the game fiber parks at a final yield at the snapshot's park site, so the rollback loads only there.
- *
- * The rollback restores a snapshot taken at a final yield and the fiber then
- * resumes wherever it is parked; below any other yield, or below a final
- * yield of another psyq_VSync call site, its host call stack is not the one
- * the snapshot continues from. The speculation loop ends at a final yield
- * when it breaks on the tick count, but that yield can be another site
- * than the snapshot's (a game with two frame-wait sites), and its yield
- * bound, its no-advance break (the no-tick yield after a stubbed dispatch)
- * and its break on leaving gameplay can leave the fiber at an intermediate
- * yield or at another site. Speculation then continues with the same held
- * input, the rollback counted as deferred (and as a park-site deferral when
- * the fiber was at a final yield), until the site or the bound. A
- * speculation that has left gameplay waits only to its first final yield:
- * a transition that waits at the snapshot's psyq_VSync site rolls back
- * there, and one that waits at another site has moved its frame wait, so
- * the speculation is adopted at once rather than after further held-input
- * VBLs. A site that does not recur within the bound leaves the speculation
- * adopted: no rollback can be applied at another site.
- * @param site The snapshot's park site.
- * @param cap Further yields allowed.
- * @param left In: nonzero when the speculation already left gameplay. Out:
- *        also set when the continuation leaves it.
- * @return 0 when parked at the site (the rollback may load), 1 when the
- *         speculation is adopted. */
-static int ra_speculate_to_final(openpete_park_site_t site, int cap, int* left) {
-    if (openpete_park_site_matches(&site)) return 0;
-    ra_count_deferral(1);
-    if (openpete_yield_final) s_site_deferred[SITE_DEF_RUNAHEAD]++;
-    OPL_DEBUG_F("runahead", "speculation ended at f=%u %s; rollback deferred to the "
-                "snapshot's park site", openpete_frame,
-                openpete_yield_final ? "at another park site" : "below an intermediate yield");
-    for (int v = 0; v < cap && !(*left && openpete_yield_final); v++) {
-        game_on_frame_pre(&g_game.cpu, openpete_frame);
-        g_openpete_guest_running = 1;
-        openpete_fiber_switch(openpete_game_fiber);
-        g_openpete_guest_running = 0;
-        if (!game_is_gameplay_live(&g_game.cpu)) *left = 1;
-        if (openpete_park_site_matches(&site)) return 0;
-    }
-    s_ra_adopted++;
-    return 1;
-}
-
-/** @brief Log the end of a speculation that left gameplay or was adopted, count it, and commit an adopted one's card writes.
- * @param left Nonzero when the speculation left gameplay.
- * @param adopted Nonzero when it became the timeline (its park site did not
- *        recur within the bound): its card writes and save records are
- *        committed; zero when it was rolled back. */
-static void ra_end_log(int left, int adopted) {
-    if (adopted) openpete_memcard_spec_adopt();
-    if (left) s_ra_left[adopted ? 1 : 0]++;
-    if (!adopted)
-        OPL_INFO_F("runahead", "speculation left gameplay; rolled back at the snapshot's "
-                   "park site (led f=%u)", openpete_frame);
-    else if (left)
-        OPL_INFO_F("runahead",
-                   "speculation left gameplay and parked at another site than the "
-                   "snapshot's; adopted the led timeline through f=%u (runahead idle "
-                   "until gameplay resumes)", openpete_frame);
-    else
-        OPL_WARN_F("runahead",
-                   "speculation reached no final yield at the snapshot's park site within "
-                   "its bound; adopted the led timeline through f=%u", openpete_frame);
-}
-
-/** @brief Queue the savestate requests raised this iteration, then apply the slot-cycle key and announce a slot change.
- *
- * Requests are the hotkeys, the dev overlay's Save and Load, and the
- * scheduled one-shots; the slot ones use the active slot as it stood before
- * this iteration's cycle. The scheduled save is queued before the scheduled
- * load, so a save and a load armed for the same tick capture and then
- * restore (a same-tick roundtrip).
- * @param opts Run options (the --state-*-on-frame one-shots). */
-static void state_ops_collect(const openpete_options_t* opts) {
-    static bool sched_saved = false, sched_loaded = false;
-    const unsigned slot = openpete_state_active_slot();
-    const int req = SDL_SetAtomicInt(&s_state_slot_req, 0);
-    if (openpete_key_pressed(OPK_STATE_SAVE) || (req & STATE_REQ_SAVE))
-        state_op_push(STATE_OP_SAVE_SLOT, slot, NULL);
-    if (openpete_key_pressed(OPK_STATE_LOAD) || (req & STATE_REQ_LOAD))
-        state_op_push(STATE_OP_LOAD_SLOT, slot, NULL);
-    const int key = (int)openpete_feed_key_now();
-    if (!sched_saved && opts->state_save_on_frame >= 0 && key >= opts->state_save_on_frame) {
-        sched_saved = true;
-        state_op_push(STATE_OP_SAVE_FILE, 0, opts->state_save_output);
-    }
-    if (!sched_loaded && opts->state_load_on_frame >= 0 && key >= opts->state_load_on_frame) {
-        sched_loaded = true;
-        if (!opts->state_load_input)
-            OPL_ERROR_F("savestate", "--state-load-on-frame armed but no --state-load-input");
-        else
-            state_op_push(STATE_OP_LOAD_FILE, 0, opts->state_load_input);
-    }
-    if (openpete_key_pressed(OPK_STATE_CYCLE))
-        openpete_state_set_active_slot((slot + 1u) % OPENPETE_STATE_NUM_SLOTS);
-    static bool announced_once = false;
-    if (SDL_SetAtomicInt(&s_state_slot_announce, 0)) {
-        state_slot_announce(openpete_state_active_slot());
-    } else if (announced_once) {
-        return;
-    }
-    announced_once = true;
-    SDL_SetAtomicInt(&s_state_slot_full, openpete_state_slot_present(openpete_state_active_slot()));
-}
-
-static unsigned s_stress_it = 0, s_stress_ops = 0;  /* iterations in the current phase; operations done */
-
-/** @brief --state-stress N: every N iterations, an in-memory save and an immediate quiet restore; a stressed run must be hash-identical to a clean one.
- * @param sm The stress snapshot.
- * @param every N. */
-static void state_stress_roundtrip(openpete_state_mem_t* sm, unsigned every) {
-    if (s_stress_it % every != 0) return;
-    if (openpete_state_mem_save(sm, &g_game.cpu, openpete_frame) != 0 ||
-        openpete_state_mem_load(sm, &g_game.cpu, NULL, 1) != 0)
-        return;
-    if ((++s_stress_ops & 0x3FFu) == 1u)
-        OPL_INFO_F("savestate", "stress: %u roundtrips (f=%u)", s_stress_ops, openpete_frame);
-}
-
-/** @brief --state-stress-rewind K: save, run K iterations, restore, replay K (the runahead rollback shape); the replayed window must self-match.
- *
- * Three phases so the timeline still advances: 0 arms (save at F), 1 runs
- * K and rolls back to F, 2 replays K and re-arms at F+K. Armed only in
- * steady-state gameplay: the mem snapshot excludes the boot and load-window
- * sections (VRAM, SPU sample RAM) by contract, so a pending rollback whose
- * window crosses into a transition is abandoned, as runahead is gated off
- * around loads. The rollback applies only at the snapshot's park site: at
- * another site it waits (counted once per rollback), up to 8K + 16
- * iterations past K, the runahead speculation's bound; a site that does not
- * recur by then abandons the rollback and re-arms at the current site.
- * @param sm The stress snapshot.
- * @param k K. */
-static void state_stress_rewind(openpete_state_mem_t* sm, unsigned k) {
-    static int armed = 0;
-    const int live = game_is_gameplay_live(&g_game.cpu);
-    if (armed == 1 && !live) armed = 0;
-    if (armed == 0) {
-        if (live && openpete_state_mem_save(sm, &g_game.cpu, openpete_frame) == 0) armed = 1;
-        s_stress_it = 0;
-        return;
-    }
-    if (s_stress_it < k) return;
-    if (armed == 2) { armed = 0; return; }   /* replay done: re-arm here */
-    unsigned lf = openpete_frame;
-    const int rc = openpete_state_mem_load(sm, &g_game.cpu, &lf, 1);
-    if (rc == 1) {
-        if (s_stress_it == k) s_site_deferred[SITE_DEF_STRESS]++;
-        if (s_stress_it >= 9u * k + 16u) {
-            s_site_abandoned++;
-            armed = 0;
-        }
-        return;
-    }
-    if (rc == 0) {
-        openpete_frame = lf;
-        if ((++s_stress_ops & 0xFFu) == 1u)
-            OPL_INFO_F("savestate", "stress-rewind: %u rollbacks (back to f=%u)", s_stress_ops, lf);
-    }
-    armed = 2;
-    s_stress_it = 0;
-}
-
-/** @brief Step the savestate stress harnesses (restore-at-yield checks) by one quiescent iteration.
- * @param opts Run options (--state-stress, --state-stress-rewind). */
-static void state_stress_step(const openpete_options_t* opts) {
-    static openpete_state_mem_t* sm = NULL;
-    if (opts->state_stress <= 0 && opts->state_stress_rewind <= 0) return;
-    if (!sm) sm = openpete_state_mem_new();
-    if (!sm) return;
-    s_stress_it++;
-    if (opts->state_stress > 0) state_stress_roundtrip(sm, (unsigned)opts->state_stress);
-    if (opts->state_stress_rewind > 0) state_stress_rewind(sm, (unsigned)opts->state_stress_rewind);
-}
-
-/** @brief Stage the input log's record for the tick being re-executed, every slot as recorded, with player 1 as the pad override.
- *
- * A re-executed tick reads every slot exactly as the log recorded it, or
- * the burst replays player 1 faithfully and the other players from stale
- * bytes. Synthetic pads are checked against the log, their only carrier.
- * @param r The record, or NULL when the log has none (nothing staged). */
-static void rewind_stage_logged_input(const openpete_input_rec_t* r) {
-    if (!r) return;
-    input_log_stage_reset(openpete_frame);
-    for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++) {
-        const openpete_input_port_t* pt = &r->port[sl];
-        if (pt->present) input_log_stage_port(sl, pt->bits, pt->axes);
-    }
-    if (synth_pads_enabled()) {
-        s_synth_rewind_checks++;
-        if (!synth_pads_match(input_log_staged(), openpete_frame)) s_synth_rewind_mismatches++;
-    }
-    const openpete_input_port_t* p1 = &r->port[0];
-    g_PsyX_Pad_InputOverride = p1->bits;
-    g_PsyX_Pad_AnalogOverride[0] = p1->axes[2];
-    g_PsyX_Pad_AnalogOverride[1] = p1->axes[3];
-    g_PsyX_Pad_AnalogOverride[2] = p1->axes[0];
-    g_PsyX_Pad_AnalogOverride[3] = p1->axes[1];
-    g_PsyX_Pad_OverrideActive = 1;
-}
-
-/** @brief Step the timeline back one tick: quiet-load the covering keyframe, replay forward to the target with the logged inputs, truncate the future.
- *
- * Interp stores are reset (cheap memsets) so presents snap backward; the
- * full discontinuity broadcast (texture-pack rescan) is not fired per held
- * iteration. Replayed ticks run the main loop's pre-yield hook (per-tick
- * guest mutations are part of the timeline) with presentation
- * announcements and pad-read pacing suspended.
- * The keyframe is the newest at or before the target saved at the park
- * site the fiber is parked at: only that keyframe can be loaded here, and
- * the logged-input replay reaches the target from it whatever its age. With
- * no such keyframe in the window the step is deferred (counted) and the
- * tick runs forward, so a held rewind resumes at the next final yield whose
- * site a keyframe carries.
- * @param bk2_active A movie is loaded for replay (it keeps the pad override).
- * @return true when the timeline moved. */
-static bool rewind_seek_one_tick(bool bk2_active) {
-    const unsigned target = openpete_frame > 2u ? openpete_frame - 2u : 0u;
-    const openpete_rewind_kf_t* kf = openpete_rewind_pick(target, &openpete_yield_site);
-    if (!kf) {
-        if (openpete_rewind_pick(target, NULL)) {
-            s_site_deferred[SITE_DEF_REWIND]++;
-            OPL_DEBUG_F("rewind", "no keyframe at or before f=%u was saved at the park site "
-                        "ra=0x%08X sp=0x%08X; step deferred", target,
-                        openpete_yield_site.ra, openpete_yield_site.sp);
-            return false;
-        }
-        OPL_WARN_F("rewind", "no keyframe covers f=%u (window exhausted or none captured)", target);
-        return false;
-    }
-    unsigned lf = openpete_frame;
-    if (openpete_rewind_restore(kf, &g_game.cpu, &lf) != 0) return false;
-    openpete_frame = lf;
-    openpete_interp_reset();
-    openpete_interp_objs_reset();
-    openpete_replaying = 1;
-    PsyX_SPUAL_Speculate(1, 0);
-    while (openpete_frame < target) {
-        rewind_stage_logged_input(input_log_get(kf->log_idx + (int)(openpete_frame - kf->frame)));
-        const unsigned before = openpete_frame;
-        game_on_frame_pre(&g_game.cpu, openpete_frame);
-        openpete_pace_vbl_suspend(1);
-        g_openpete_guest_running = 1;
-        openpete_fiber_switch(openpete_game_fiber);
-        g_openpete_guest_running = 0;
-        openpete_pace_vbl_suspend(0);
-        if (openpete_frame == before) break;   /* the fiber made no tick */
-    }
-    openpete_replaying = 0;
-    PsyX_SPUAL_Speculate(0, 0);
-    input_log_lock();
-    input_log_truncate(kf->log_idx + (int)(target - kf->frame));
-    input_log_unlock();
-    openpete_rewind_drop_after(openpete_frame);
-    if (!bk2_active) g_PsyX_Pad_OverrideActive = 0;
-    return true;
-}
-
-/** @brief Report whether every enabled code mod declares its host-state posture (mod.toml state=), warning once when one does not.
- *
- * An undeclared mod's host state desyncs silently when the world moves
- * under it, so a timeline jump is refused while one is enabled.
- * @return true when a timeline jump is allowed. */
-static bool rewind_mods_allow(void) {
-    static bool hinted = false;
-    const char* offender = NULL;
-    if (openpete_mods_state_safe(&offender)) return true;
-    if (!hinted) {
-        hinted = true;
-        OPL_WARN_F("rewind", "refused: mod \"%s\" declares no state posture (add state = \"none\" "
-                   "or \"rebuildable\" to its mod.toml)", offender ? offender : "?");
-    }
-    return false;
-}
-
-/** @brief Report whether the rewind key is held this iteration: the key, or the --rewind-hold A:N driver once feed key A is reached.
- *
- * The driver latches at A, or at the first VBL from A on that meets
- * OPENPETE_REWIND_HOLD_PHASE (a held key does not release when the frame
- * drops below the trigger), and holds for N iterations.
- * @param opts Run options (--rewind-hold).
- * @param live The game is in live gameplay.
- * @param paused The host is paused.
- * @return true when held. */
-static bool rewind_key_held(const openpete_options_t* opts, int live, bool paused) {
-    static int held = 0, armed = 0;
-    bool k = openpete_key_down(OPK_REWIND);
-    if (opts->rewind_hold_frame >= 0 && !armed &&
-        (int)openpete_feed_key_now() >= opts->rewind_hold_frame &&
-        openpete_rewind_hold_phase_ready(openpete_frame))
-        armed = 1;
-    if (armed && held < opts->rewind_hold_iters) {
-        k = true;
-        held++;
-        OPL_INFO_F("rewind", "hold %d/%d at f=%u (live=%d paused=%d)",
-                   held, opts->rewind_hold_iters, openpete_frame, live, (int)paused);
-    }
-    return k;
-}
-
-/** @brief Drop every rewind keyframe when a card write reached the card file since the last call.
- *
- * Rewind keyframes carry no card and rewind never writes the card file, so
- * a keyframe taken before a committed write would restore kernel RAM whose
- * directory cache is behind the card. Called before each keyframe capture,
- * so no keyframe older than the latest committed write survives. Logs the
- * first clear of each burst of writes (writes less than 120 frames apart)
- * with the session's clear and committed-write counts. */
-static void rewind_card_commit_clear(void) {
-    static unsigned seen = 0, clears = 0, last_f = 0;
-    const unsigned ep = openpete_memcard_commit_epoch();
-    if (ep == seen) return;
-    seen = ep;
-    openpete_rewind_clear();
-    if (clears++ == 0 || openpete_frame - last_f > 120u)
-        OPL_INFO_F("rewind", "card write committed at f=%u - history cleared (%u clear(s), "
-                   "%u card write(s))", openpete_frame, clears, ep);
-    last_f = openpete_frame;
-}
-
-/** @brief Run one quiescent iteration of rewind: the keyframe cadence, then one tick back while the rewind key is held in live, unpaused gameplay.
- * @param opts Run options.
- * @param paused The host is paused.
- * @param bk2_active A movie is loaded for replay.
- * @return true when the timeline moved (the iteration skips its forward tick). */
-static bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) {
-    if (!openpete_rewind_enabled()) {
-        static bool hinted = false;
-        if (!hinted && openpete_key_down(OPK_REWIND)) {
-            hinted = true;
-            OPL_WARN_F("rewind", "the rewind key was pressed but rewind is disabled - launch with "
-                       "--rewind 30 to enable a 30 s window");
-        }
-        return false;
-    }
-    rewind_card_commit_clear();
-    const int live = game_is_gameplay_live(&g_game.cpu);
-    openpete_rewind_on_iter(&g_game.cpu, openpete_frame, live);
-    const bool held = rewind_key_held(opts, live, paused);
-    if (!held || !live || paused || !rewind_mods_allow()) return false;
-    return rewind_seek_one_tick(bk2_active);
 }
 
 /** @brief Log the vibration census: PadSetAct registrations, motor commands, per-pad recorders, mod slots.
@@ -6459,7 +5704,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                         }
                         op_time_t stamp = s_vclk - s_phase;
                         openpete_interp_capture(openpete_frame, stamp);
-                        extern op_time_t g_openpete_tick_stamp;   /* objs capture shares the stamp */
                         /* Under deterministic capture the objs ring takes the VBL clock
                          * the direct ring stamps its commits with, so per-object sub-tick
                          * interps (moby positions/rotation, particles, sparkles, HUD
@@ -6679,7 +5923,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
              * mutually exclusive with it (that block is gated on
              * !did_present_this_iter, true only on non-draw iters). */
             {
-                extern int g_openpete_interp_enabled;
                 openpete_native_reextract_fn lag_re = openpete_native_get_reextract();
                 /* Commit the per-tick fade/freeze liveness on EVERY canonical present,
                  * renderer-agnostic (outside the spine gate below). commit_fade rolls
@@ -6757,7 +6000,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                 if (spine_on) {
                     host_trace_present(HT_P_CANON_LAG);
                     uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
-                    extern int g_openpete_canon_lag_leg;
                     g_openpete_canon_lag_leg = 1;
                     vp_set_present_target();     /* even display-slot time for this present */
                     const op_time_t rex_t0 = op_now();
@@ -7655,7 +6897,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
         openpete_psxtrace_close(psxtrace);
         psxtrace = NULL;
         s_psxtrace_active = NULL;
-        extern void (*openpete_psxtrace_dispatch_hook)(uint32_t);
         openpete_psxtrace_dispatch_hook = NULL;
         host_trace_close_step(HT_S_PSXTRACE_CLOSE);
     }
@@ -7859,7 +7100,6 @@ static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
                "0x%08X, feed key %u", s_loop_deferred, s_loop_deferred_header, s_loop_deferred_key);
     {
         /* The VBL delivery census (games/common/psyq/psyq_thunks.cpp). */
-        extern void psyq_vbl_delivery_report(void) __attribute__((weak));
         if (psyq_vbl_delivery_report) psyq_vbl_delivery_report();
         host_trace_close_step(HT_S_VBL_DELIVERY);
     }
