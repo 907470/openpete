@@ -51,6 +51,15 @@ void launcher_manifest_item(const char* id, const char* kind, float x0, float y0
     s_items.push_back({id ? id : "", kind ? kind : "", {x0, y0, x1, y1}});
 }
 
+bool launcher_manifest_find(const char* id, float r[4]) {
+    for (const Item& it : s_items)
+        if (id && it.id == id) {
+            for (int i = 0; i < 4; i++) r[i] = it.r[i];
+            return true;
+        }
+    return false;
+}
+
 void launcher_manifest_write(unsigned tag, const char* screen, float w, float h) {
     const char* base = getenv("OPENPETE_LAUNCHER_MANIFEST");
     const unsigned bit = 1u << tag;

@@ -140,9 +140,11 @@ behind its progress screen when that game is chosen first.
 
 A refused disc or a failed step shows a message on the game page, below the
 boxes, ending with the error's id and the address of its row in
-[Troubleshooting](../help/troubleshooting.md#by-error-id). The next key,
-button or click closes the message and does nothing else; ++esc++, closing
-the window and a dropped disc still act as they do on the page.
+[Troubleshooting](../help/troubleshooting.md#by-error-id). A click on that
+last line opens the row in your web browser and leaves the message shown.
+Any other key, button or click closes the message and does nothing else;
+++esc++, closing the window and a dropped disc still act as they do on the
+page.
 
 The message names the disc image's file and, once read, its serial; "..."
 below stands for the file name:

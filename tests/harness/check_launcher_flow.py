@@ -2256,6 +2256,88 @@ def case_error_build(a):
     return verdict("error-build", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 
+def error_anchors():
+    """The (id, anchor) rows of OPENPETE_ERROR_IDS, and the anchors the troubleshooting page holds (<a id=...>)."""
+    with open(os.path.join(ROOT, "core", "include", "openpete_error_ids.h")) as f:
+        rows = re.findall(r'X\(\s*\w+\s*,\s*"(OP-E-[A-Z-]+)"\s*,\s*"([a-z-]+)"\s*\)', f.read())
+    with open(os.path.join(ROOT, "docs", "src", "user", "help", "troubleshooting.md")) as f:
+        page = set(re.findall(r'<a id="([a-z0-9-]+)"></a>', f.read()))
+    return rows, page
+
+
+def case_error_link(a):
+    """The panel's reference line is a link: a click on it opens the error's troubleshooting URL (stubbed through
+    OPENPETE_LAUNCHER_OPEN_URL_STUB) and leaves the panel shown; a click on the message line and Enter
+    open nothing and dismiss it. Every error id's anchor is on the troubleshooting page."""
+    bad, counts = [], {}
+    rows, page = error_anchors()
+    missing = [i for i, anc in rows if anc not in page]
+    counts["ids"], counts["anchors resolved"] = len(rows), len(rows) - len(missing)
+    if not rows or missing:
+        bad.append(f"anchors: {len(rows)} ids, missing on the page {missing}")
+    d0 = cl.case_dir(a.out, "error-link")
+    cue = write_image(d0, "zero", bytes(600 * SECTOR))
+    stub = {"OPENPETE_LAUNCHER_OPEN_URL_STUB": "1", "OPENPETE_LAUNCHER_DROP": cue,
+            "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500"}
+    opened_re = r"error panel link: opened (\S+) \(stubbed"
+
+    def panel_ref(log):
+        m = re.search(r"error panel raised: .*\[(OP-E-[A-Z-]+): (\S+)\]", log)
+        return (m.group(1), m.group(2)) if m else (None, None)
+
+    # Positive: hover and click the reference line, then click the message line, which dismisses.
+    d = os.path.join(d0, "link")
+    os.makedirs(d)
+    rc, log = cl.launch(a.binary, d, "link", ["--launcher-window", "1280x800"],
+                        dict(stub, OPENPETE_LAUNCHER_INPUT="4000:click=@panel.error.ref,"
+                                                           "5500:click=@panel.error.line.0,7000:quit"), timeout=300)
+    eid, url = panel_ref(log)
+    opened = re.findall(opened_re, log)
+    counts["link opens"] = len(opened)
+    if not url or opened != [url]:
+        bad.append(f"link: opened {opened}, want [{url}] (the panel's reference)")
+    if url and not url.startswith("https://openpete.com/docs/user/help/troubleshooting.html#"):
+        bad.append(f"link: {url} is not on the published troubleshooting page")
+    if url and url.split("#", 1)[1] not in page:
+        bad.append(f"link: anchor of {url} is not on the page")
+    bad += [f"link: {x}" for x in ordered(
+        log, r"error panel drawn", r"scripted input: click=@panel\.error\.ref",
+        r"error panel link: hovered, the hand cursor shows", r"error panel link: pressed", opened_re,
+        r"scripted input: click=@panel\.error\.line\.0", r"error panel dismissed \(a click\)", r"command: quit")]
+    between = log[log.find("error panel link: pressed"):log.find("scripted input: click=@panel.error.line.0")]
+    if "error panel dismissed" in between:
+        bad.append("link: the link's click dismissed the panel")
+    if "no such element" in log:
+        bad.append("link: a scripted click found no element")
+    if rc != 0:
+        bad.append(f"link: exit {rc}")
+    counts["id"] = eid
+    # Negative: a click on the message line, and in another run Enter: each dismisses, nothing opens.
+    d = os.path.join(d0, "elsewhere")
+    os.makedirs(d)
+    rc, log = cl.launch(a.binary, d, "elsewhere", ["--launcher-window", "1280x800"],
+                        dict(stub, OPENPETE_LAUNCHER_INPUT="4000:click=@panel.error.line.0,5500:quit"), timeout=300)
+    counts["elsewhere opens"] = len(re.findall(r"error panel link: (opened|pressed)", log))
+    if counts["elsewhere opens"]:
+        bad.append(f"elsewhere: {counts['elsewhere opens']} link lines, want 0")
+    bad += [f"elsewhere: {x}" for x in ordered(log, r"error panel drawn",
+                                                r"scripted input: click=@panel\.error\.line\.0",
+                                                r"error panel dismissed \(a click\)")]
+    d = os.path.join(d0, "keys")
+    os.makedirs(d)
+    rc2, log = cl.launch(a.binary, d, "keys", ["--launcher-window", "1280x800"],
+                         dict(stub, OPENPETE_LAUNCHER_INPUT="4000:key=enter,5500:quit"), timeout=300)
+    n = len(re.findall(r"error panel link: (opened|pressed)", log))
+    counts["enter opens"] = n
+    if n:
+        bad.append(f"keys: {n} link lines after Enter, want 0")
+    bad += [f"keys: {x}" for x in ordered(log, r"error panel drawn", r"scripted input: key=enter",
+                                           r"error panel dismissed \(activate\)")]
+    if rc or rc2:
+        bad.append(f"negative runs: exit {rc}, {rc2}")
+    return verdict("error-link", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
+
+
 CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install": case_multi_install,
          "multi-install-extract": case_multi_install_extract,
          "job-ingest-stop": case_job_ingest_stop, "job-pick-same": case_job_pick_same,
@@ -2274,7 +2356,8 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
          "quit-page-sigterm": case_quit_page_sigterm, "error-refuse": case_error_refuse,
-         "error-staged": case_error_staged, "error-build": case_error_build}
+         "error-staged": case_error_staged, "error-build": case_error_build,
+         "error-link": case_error_link}
 
 
 def main():

@@ -1,7 +1,8 @@
 // core/launcher/launcher_panel.cpp - the game page's message panel: one
 // message at a time, centred below the boxes, in Spyro 3's dialogue box
 // (launcher_shape_panel) and the body font, with the error's id and URL on
-// its last line when it has one (contract in launcher_internal.h).
+// its last line when it has one, a link to the error's troubleshooting entry
+// (contract in launcher_internal.h).
 //
 // The panel's fill follows the sky: it fades in with the first dome and is
 // not drawn over the flat background, where the text draws alone.
@@ -10,11 +11,16 @@
 #include "launcher_sky.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"   /* ImGuiButtonFlags_PressedOnClick */
+
+#include <SDL3/SDL.h>
 
 #include "openpete_error_ids.h"
 #include "openpete_log.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -42,6 +48,7 @@ struct Panel {
     bool drawn = false;        /* the raised message was drawn once */
     bool fill_drawn = false;   /* its fill was drawn once */
     bool full = false;         /* the last draw's dome cover was 1 */
+    bool link_hovered = false; /* the pointer was over the reference line in the last draw */
 };
 Panel s_panel;
 
@@ -75,6 +82,51 @@ void measure(Line& l, float wrap) {
     ImGui::PopFont();
 }
 
+/** @brief Open a URL in the platform's browser, or only log it under the harness variable OPENPETE_LAUNCHER_OPEN_URL_STUB=1.
+ *
+ * SDL_OpenURL hands the URL to ShellExecuteW on Windows, to the desktop
+ * portal's OpenURI over D-Bus or else xdg-open on Linux, and to
+ * NSWorkspace on macOS. A failure is logged.
+ * @param url The URL. */
+void open_url(const char* url) {
+    const char* stub = getenv("OPENPETE_LAUNCHER_OPEN_URL_STUB");
+    if (stub && *stub && *stub != '0') {
+        OPL_INFO_F("launcher", "error panel link: opened %s (stubbed: nothing opened)", url);
+        return;
+    }
+    if (SDL_OpenURL(url)) OPL_INFO_F("launcher", "error panel link: opened %s", url);
+    else OPL_WARN_F("launcher", "error panel link: could not open %s: %s", url, SDL_GetError());
+}
+
+/** @brief Make the reference line a link: an invisible button over its rect, the hand cursor and an underline while hovered, the error's URL opened on a press.
+ *
+ * Logs each start of a hover.
+ * @param l The line as drawn.
+ * @param x Its left edge in window pixels.
+ * @param y Its top edge.
+ * @param scale Window pixels per layout pixel.
+ * @return true when the line was pressed this frame. */
+bool ref_link(const Line& l, float x, float y, float scale) {
+    const openpete_error_t e = (openpete_error_t)s_panel.err;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    const bool pressed = ImGui::InvisibleButton("##panel.error.ref", ImVec2(std::max(1.0f, l.sz.x), std::max(1.0f, l.sz.y)),
+                                                (ImGuiButtonFlags)ImGuiButtonFlags_PressedOnClick);
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        const float u = std::max(1.0f, std::round(0.5f * scale));
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(x, y + l.sz.y), ImVec2(x + l.sz.x, y + l.sz.y), l.col, u);
+    }
+    if (hovered && !s_panel.link_hovered)
+        OPL_INFO_F("launcher", "error panel link: hovered, the hand cursor shows (%s)", openpete_error_id(e));
+    s_panel.link_hovered = hovered;
+    if (pressed) {
+        OPL_INFO_F("launcher", "error panel link: pressed (%s)", openpete_error_id(e));
+        open_url(openpete_error_url(e));
+    }
+    return pressed;
+}
+
 }  // namespace
 
 void launcher_panel_raise(int err, const char* text, bool quits) {
@@ -101,8 +153,8 @@ void launcher_panel_dismiss(const char* why) {
     s_panel.shown = false;
 }
 
-void launcher_panel_draw(float scale, float top) {
-    if (!s_panel.shown) return;
+bool launcher_panel_draw(float scale, float top) {
+    if (!s_panel.shown) return false;
     const ImVec2 d = ImGui::GetIO().DisplaySize;
     const float wrap = d.x * kMaxW - 2.0f * kPadX * scale;
     std::vector<Line> lines;
@@ -127,6 +179,7 @@ void launcher_panel_draw(float scale, float top) {
     if (fill > 0.002f) launcher_shape_panel("panel.error", ImVec2(x0, y0), ImVec2(x0 + bw, y0 + bh), scale, fill);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     float y = y0 + kPadY * scale;
+    bool link_pressed = false;
     for (size_t i = 0; i < lines.size(); i++) {
         const Line& l = lines[i];
         /* A line that fits draws centred; a wrapped one draws as a block at the left padding. */
@@ -134,9 +187,10 @@ void launcher_panel_draw(float scale, float top) {
         launcher_push_body_font(l.px);
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(x, y), l.col, l.text.c_str(), nullptr, wrap);
         ImGui::PopFont();
-        const std::string id = i + 1 == lines.size() && s_panel.err >= 0 ? std::string("panel.error.ref")
-                                                                         : "panel.error.line." + std::to_string(i);
+        const bool ref = i + 1 == lines.size() && s_panel.err >= 0;
+        const std::string id = ref ? std::string("panel.error.ref") : "panel.error.line." + std::to_string(i);
         launcher_manifest_item(id.c_str(), "text", x, y, x + l.sz.x, y + l.sz.y);
+        if (ref) link_pressed = ref_link(l, x, y, scale);
         y += l.sz.y + kLineGap * scale;
     }
     if (!s_panel.drawn) {
@@ -149,6 +203,7 @@ void launcher_panel_draw(float scale, float top) {
         s_panel.fill_drawn = true;
         OPL_INFO_F("launcher", "error panel fill drawn at %.2f opacity (dome cover %.2f)", fill, cover);
     }
+    return link_pressed;
 }
 
 void launcher_panel_build_failed(const char* game, const char* name, const char* step) {

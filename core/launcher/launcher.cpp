@@ -26,7 +26,7 @@
 // fullscreen and window settings at the hand-off (carry_window_state). The
 // harness variable OPENPETE_LAUNCHER_INPUT=<ms>:<action>[,...] performs each
 // action that long after the first launcher frame: altenter, browse (Space),
-// click=<x>/<y>, dblclick and quit post the input events, maximize, restore and resize=WxH call the
+// click=<x>/<y>, click=@<element id>, dblclick and quit post the input events, maximize, restore and resize=WxH call the
 // window operations a window manager answers, and key=, pad=, stick= and
 // mouse= post key, gamepad and pointer events (scripted_event). OPENPETE_LAUNCHER_MANIFEST=<base>
 // writes each screen's first frame's elements, by the reference layout's ids, to
@@ -478,9 +478,10 @@ void draw_view(void* ud) {
     } else {
         if (!s.panel_only) v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
         if (v.quit_asked) draw_quit_ask(f);
-        launcher_panel_draw(f.scale, s.panel_only ? 0.45f * io.DisplaySize.y
-                                                  : launcher_page_row_bottom(io.DisplaySize.x, io.DisplaySize.y));
-        v.clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        const bool link = launcher_panel_draw(
+            f.scale, s.panel_only ? 0.45f * io.DisplaySize.y
+                                  : launcher_page_row_bottom(io.DisplaySize.x, io.DisplaySize.y));
+        v.clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !link;
     }
     s.item_hovered = ImGui::IsAnyItemHovered();
     ImGui::End();
@@ -1092,13 +1093,15 @@ void scripted_click(SDL_Window* win, float x, float y, SDL_Event& e) {
     e.button.down = false;
 }
 
-/** @brief Harness: build the event of an input action: a key or pad button (scripted_button_event), stick=<x|y>:<value>, mouse=<x>/<y>, click=<x>/<y>, dblclick or quit.
+/** @brief Harness: build the event of an input action: a key or pad button (scripted_button_event), stick=<x|y>:<value>, mouse=<x>/<y>, click=<x>/<y>, click=@<id>, dblclick or quit.
  *
  * stick sets the left stick's axis to the value (-32768 to 32767). mouse
  * warps the pointer to a point in the 640x448 layout space of the frame
  * last drawn and builds no event (e.type stays 0): the platform then
  * reports the motion and the pointer's window, which imgui's backend reads
- * each frame. click is a left click at a window point (scripted_click). dblclick is a left double-click at the bottom centre of the
+ * each frame. click is a left click at a window point (scripted_click);
+ * click=@<id> clicks the centre of the element of that id in the last
+ * frame's element manifest (launcher_manifest_find). dblclick is a left double-click at the bottom centre of the
  * window, below the screens' buttons and entries; quit is the event closing
  * the window posts.
  * @param a The action.
@@ -1118,6 +1121,13 @@ bool scripted_event(const std::string& a, SDL_Window* win, SDL_Event& e) {
     } else if (sscanf(a.c_str(), "mouse=%f/%f", &x, &y) == 2) {
         const Frame f = frame_map();
         SDL_WarpMouseInWindow(win, f.ox + x * f.scale, f.oy + y * f.scale);
+    } else if (a.rfind("click=@", 0) == 0) {
+        float r[4];
+        if (!launcher_manifest_find(a.c_str() + 7, r)) {
+            OPL_WARN_F("launcher", "scripted input: %s: the last frame drew no such element", a.c_str());
+            return true;   /* e.type stays 0: no event */
+        }
+        scripted_click(win, 0.5f * (r[0] + r[2]), 0.5f * (r[1] + r[3]), e);
     } else if (sscanf(a.c_str(), "click=%f/%f", &x, &y) == 2) {
         scripted_click(win, x, y, e);
     } else if (a == "dblclick") {

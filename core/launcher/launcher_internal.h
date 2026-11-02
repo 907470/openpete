@@ -315,6 +315,15 @@ void launcher_manifest_item(const char* id, const char* kind, float x0, float y0
  * @param h The window height. */
 void launcher_manifest_write(unsigned tag, const char* screen, float w, float h);
 
+/** @brief Find an element of the last frame drawn by its id and return its rect in window pixels.
+ *
+ * The harness's click=@<id> action reads it to click an element whose place
+ * depends on the frame's layout.
+ * @param id The element's id.
+ * @param r Receives x0, y0, x1, y1.
+ * @return true when the frame recorded an element of that id. */
+bool launcher_manifest_find(const char* id, float r[4]);
+
 /** @brief Offer a game's glyph models for the 3D title: read them from the game's launcher asset cache and switch the title to them.
  *
  * The title belongs to the game last offered with @p prefer; another game's
@@ -505,10 +514,17 @@ void launcher_panel_dismiss(const char* why);
  *
  * The box's top is 14 layout px below @p top, raised to keep a 12 layout px
  * margin at the window's bottom. The first draw of each message is logged
- * with its rect and the dome cover, and the first draw of its fill.
+ * with its rect and the dome cover, and the first draw of its fill. The
+ * reference line is a link: while the pointer is over it the hand cursor
+ * shows and the line is underlined, and a press of the left button opens
+ * the error's troubleshooting URL (openpete_error_url) with SDL_OpenURL and
+ * leaves the panel shown. The harness variable
+ * OPENPETE_LAUNCHER_OPEN_URL_STUB=1 logs the URL and opens nothing.
  * @param scale Window pixels per layout pixel.
- * @param top The bottom of the game page's box row (launcher_page_row_bottom). */
-void launcher_panel_draw(float scale, float top);
+ * @param top The bottom of the game page's box row (launcher_page_row_bottom).
+ * @return true when this frame's press went to the link, so it is not the
+ *         click that dismisses the panel. */
+bool launcher_panel_draw(float scale, float top);
 
 /** @brief Raise the panel for a module build that failed and give the game's box its failed-build drawing (launcher_page_set_failed).
  *
