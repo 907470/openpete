@@ -2512,13 +2512,16 @@ static int         s_render_fps       = 0;
 static op_period_t s_render_period    = { 0, 0, 1 };
 static int         s_render_fps_dirty = 0;
 
-/** @brief Return 1 when OPENPETE_FORCE_PACING makes a headless run pace like a windowed one.
+/** @brief Return 1 when a headless run paces like a windowed one: OPENPETE_FORCE_PACING is set or the virtual clock is on.
  *
  * A headless run otherwise runs unlocked (fast-forward). The variable is
  * read once and logged; the result is readable before the main loop starts,
  * because the loop seeds its previous-iteration unlock state from it before
  * the first iteration, else the boot VBL would be recorded as paced against
- * a grid nothing slept to. */
+ * a grid nothing slept to. The virtual clock (--record-cfr) advances only
+ * inside the pacer's op_sleep_until, which the unlocked branch never calls:
+ * unlocked, every capture would carry the same timestamp and one CFR
+ * ordinal. Pacing on the virtual clock never blocks, so it costs no speed. */
 static int pace_force_pacing(void)
 {
     static int s_init = 0, s_on = 0;
@@ -2529,7 +2532,7 @@ static int pace_force_pacing(void)
         OPL_INFO_F("pacer", "OPENPETE_FORCE_PACING=%d (env=%s)",
                    s_on, v ? v : "<unset>");
     }
-    return s_on;
+    return s_on || op_virtual_clock_active();
 }
 
 /** @brief Read OPENPETE_PACE_FLIP_LOG once: whether the pacer's idle wait measures the display flip.

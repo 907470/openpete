@@ -204,15 +204,21 @@ fi
 OUT3="$OUT_DIR/cfr.mp4"
 LOG3="$OUT_DIR/cfr.log"
 CFR_FRAMES=90
-pg_capture "$LOG3" "$OUT3" -- --mute 1 \
+# The run's only stop is the --record-frames budget; the timeout turns a
+# capture that never fills it into a failure instead of an endless run.
+PG_CAPTURE_TIMEOUT=300 pg_capture "$LOG3" "$OUT3" -- --mute 1 \
        --record-cfr 29.913 --record-frames "$CFR_FRAMES" \
        --record "$OUT3"
+rc3=$?
+(( rc3 == 124 || rc3 == 137 )) &&
+    bad "cfr: run did not exit on the --record-frames budget within 300 s ($(grep -oE '[0-9]+ frame\(s\) captured' "$LOG3" | head -1))"
 
 if [[ -s "$OUT3" ]]; then
     rate="$(probe -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$OUT3")"
     [[ "$rate" == "1125000/37609" ]] || bad "cfr: expected r_frame_rate 1125000/37609, got '$rate'"
 
     dec3="$(probe -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$OUT3")"
+    [[ "$dec3" =~ ^[0-9]+$ ]] || dec3=0   # ffprobe prints N/A for an unfinalized file
     (( ${dec3:-0} == CFR_FRAMES )) || bad "cfr: expected $CFR_FRAMES frames, got ${dec3:-0}"
 
     acodec3="$(probe -select_streams a -show_entries stream=codec_name -of csv=p=0 "$OUT3")"
