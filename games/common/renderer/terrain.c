@@ -4398,14 +4398,19 @@ static void tsc_tag_uncovered(tscache_t* C) {
  * ENV_ANIM_LISTS (Spyro 1): the LP and HP geometry and colour {count,
  * descriptor-pointer array} pairs, each descriptor naming its sector in the
  * u16 at +4.
- * ENV_ANIM_ARENA (Spyro 3): the sub-lists of the block at env+0x1C, each a
- * count word followed by one-word entries whose low byte is the sector index.
+ * ENV_ANIM_ARENA (Spyro 2, Spyro 3): the sub-lists of the block at env+0x1C,
+ * each a count word followed by one-word entries whose low byte is the sector
+ * index, then the LP and HP geometry {count, descriptor-pointer array} pairs,
+ * each keyframe descriptor naming its sector in the byte at +4. Those
+ * keyframe animations rewrite the sector's vertex bank in RAM like the
+ * LISTS form's, and `desc` tells a consumer which kind of entry it holds.
  * An arena entry is live only while bit 0 of the liveness byte for that index
  * is set, which is the same test the game's walkers make before rewriting the
  * sector; skipping a dormant entry keeps the cached decode valid instead of
  * re-decoding unchanged RAM every tick. An iterator with `listed` set skips
  * no entry on liveness: it yields every sector the lists name, the set whose
- * banks animate whether or not the game rewrites them this tick.
+ * banks animate whether or not the game rewrites them this tick. A
+ * descriptor entry is never tested for liveness.
  *
  * The scrolling-texture list stays out: its consumer needs the per-descriptor
  * accumulator record, which exists only in the LISTS form (tsc_scroll_refresh).
@@ -4417,15 +4422,17 @@ typedef struct {
     CPUState* cpu;
     uint32_t  sectorCnt;
     uint32_t  blk;          /* ARENA: the block base, 0 when unresolved */
-    int       list;         /* next list / sub-list to open */
+    int       list;         /* ARENA: next sub-list to open */
+    int       dl;           /* next descriptor list to open: LISTS of the four, ARENA of the two geometry lists */
+    int       desc;         /* the open list holds descriptor pointers (LISTS, or an ARENA geometry list) */
     uint32_t  base;         /* first entry of the open list */
     uint32_t  cnt, k;
     int       kind;         /* ENV_ANIM_KIND_* of the open list */
     int       skip_top;     /* ARENA: this list skips bit-31 entries */
     int       listed;       /* ARENA: yield every list member, skipping no liveness test */
     uint32_t  seen;         /* entries examined, live or not (engagement) */
-    uint32_t  lst;          /* ARENA: the open list's count word */
-    int       model;        /* ARENA: the open list's ENV_ANIM_MODEL_* */
+    uint32_t  lst;          /* ARENA sub-list: the open list's count word */
+    int       model;        /* ARENA sub-list: the open list's ENV_ANIM_MODEL_*; NONE for a descriptor list */
     uint32_t  w;            /* the yielded entry word */
 } env_anim_iter_t;
 
@@ -4446,19 +4453,20 @@ static void env_anim_iter_init(env_anim_iter_t* it, CPUState* cpu, uint32_t sect
         it->blk = rd(cpu, game_layout.env_anim.block_ptr);
 }
 
-/** @brief ENV_ANIM_LISTS: opens the next located, non-empty {count, pointer} pair of the four the game walks.
+/** @brief Opens the next located, non-empty {count, pointer} descriptor pair of the first n the game walks.
  *
  * The four are LP and HP geometry, then LP and HP colour; the first two open
  * as ENV_ANIM_KIND_VERT, the last two as ENV_ANIM_KIND_COLOUR. A pair with
  * no layout offset, a null pointer, a zero count or a count above
- * ENV_ANIM_COUNT_MAX is skipped.
+ * ENV_ANIM_COUNT_MAX is skipped. The opened list carries no walker model.
  * @param it The iterator.
- * @return 1 when a list is open, 0 when all four are spent. */
-static int env_anim_lists_open(env_anim_iter_t* it) {
+ * @param n The pairs to walk: 4 in the LISTS form, 2 (geometry) in the ARENA form.
+ * @return 1 when a list is open, 0 when the n pairs are spent. */
+static int env_anim_lists_open(env_anim_iter_t* it, int n) {
     const uint32_t off[4] = { game_layout.env_anim.lp_poly, game_layout.env_anim.hp_poly,
                               game_layout.env_anim.lp_col,  game_layout.env_anim.hp_col };
-    while (it->list < 4) {
-        int l = it->list++;
+    while (it->dl < n) {
+        int l = it->dl++;
         if (!off[l]) continue;                       /* list not located */
         uint32_t cnt  = rd(it->cpu, off[l]);
         uint32_t base = rd(it->cpu, off[l] + 4);
@@ -4466,6 +4474,9 @@ static int env_anim_lists_open(env_anim_iter_t* it) {
         it->cnt = cnt; it->base = base; it->k = 0;
         it->kind = l < 2 ? ENV_ANIM_KIND_VERT : ENV_ANIM_KIND_COLOUR;
         it->skip_top = 0;
+        it->desc = 1;
+        it->lst = 0;
+        it->model = ENV_ANIM_MODEL_NONE;
         return 1;
     }
     return 0;
@@ -4473,17 +4484,18 @@ static int env_anim_lists_open(env_anim_iter_t* it) {
 
 /** @brief Opens the iterator's next non-empty list in the game's registry form.
  *
- * ENV_ANIM_LISTS delegates to env_anim_lists_open. ENV_ANIM_ARENA opens the
- * next used sub-list row of the block (indirect rows read their list offset
- * from the header word) whose count is 1..ENV_ANIM_COUNT_MAX; an unresolved
- * block (outside KSEG0) opens nothing.
+ * ENV_ANIM_LISTS delegates to env_anim_lists_open over its four pairs.
+ * ENV_ANIM_ARENA opens the next used sub-list row of the block (indirect rows
+ * read their list offset from the header word) whose count is
+ * 1..ENV_ANIM_COUNT_MAX, then the LP and HP geometry descriptor pairs; an
+ * unresolved block (outside KSEG0) opens no sub-list.
  * @param it The iterator.
  * @return 1 when a list is open, 0 when the registry is exhausted. */
 static int env_anim_iter_open(env_anim_iter_t* it) {
     CPUState* cpu = it->cpu;
-    if (game_layout.env_anim.form == ENV_ANIM_LISTS) return env_anim_lists_open(it);
-    if (game_layout.env_anim.form != ENV_ANIM_ARENA || it->blk < 0x80000000u) return 0;
-    while (it->list < ENV_ANIM_SUBLISTS) {
+    if (game_layout.env_anim.form == ENV_ANIM_LISTS) return env_anim_lists_open(it, 4);
+    if (game_layout.env_anim.form != ENV_ANIM_ARENA) return 0;
+    while (it->blk >= 0x80000000u && it->list < ENV_ANIM_SUBLISTS) {
         const env_anim_sublist_t* S = &game_layout.env_anim.sub[it->list];
         it->list++;
         if (!S->entry_off) continue;                 /* unused row */
@@ -4496,45 +4508,59 @@ static int env_anim_iter_open(env_anim_iter_t* it) {
         it->skip_top = S->skip_top;
         it->lst = lst;
         it->model = S->model;
+        it->desc = 0;
         return 1;
     }
-    return 0;
+    return env_anim_lists_open(it, 2);
+}
+
+/** @brief Decodes the sector index one entry of the iterator's open list names.
+ *
+ * A descriptor entry is a pointer, the sector in the u16 at +4 (the byte at
+ * +4 for a geometry descriptor of a poly_sec_u8 game); a null pointer names
+ * nothing. An ENV_ANIM_ARENA sub-list entry carries the sector in the low
+ * byte; a list that skips bit-31 entries names nothing with one, and, unless
+ * `listed` is set, an entry whose liveness byte has bit 0 clear names
+ * nothing.
+ * @param it The iterator, its list open.
+ * @param w The entry word.
+ * @param idx Receives the sector index.
+ * @return 1 when the entry names a sector, 0 when it is skipped. */
+static int env_anim_entry_sector(const env_anim_iter_t* it, uint32_t w, uint32_t* idx) {
+    CPUState* cpu = it->cpu;
+    if (it->desc) {
+        if (!w) return 0;                            /* empty descriptor slot */
+        *idx = (it->kind == ENV_ANIM_KIND_VERT && game_layout.env_anim.poly_sec_u8)
+             ? cpu->read_byte(w + 4) : cpu->read_half(w + 4);
+        return 1;
+    }
+    if (it->skip_top && (int32_t)w < 0) return 0;
+    *idx = w & 0xFFu;
+    return it->listed || !game_layout.env_anim.live_table
+        || (cpu->read_byte(game_layout.env_anim.live_table + *idx) & 1u);   /* animation running */
 }
 
 /** @brief Yields the next animated sector index and what the animation rewrites.
  *
- * ENV_ANIM_LISTS entries are descriptor pointers, the sector in the u16 at
- * +4, and a null pointer is skipped. ENV_ANIM_ARENA entries carry the sector
- * in the low byte; a list that skips bit-31 entries skips them, and, unless
- * `listed` is set, an entry whose liveness byte has bit 0 clear is skipped.
- * An index at or past the sector count is skipped. Every examined entry
- * counts into `seen`; the yielded entry word is left in `w`.
+ * Opens the next list when the open one is spent and skips an entry that
+ * names no sector (env_anim_entry_sector) or an index at or past the sector
+ * count. Every examined entry counts into `seen`; the yielded entry word is
+ * left in `w`.
  * @param it The iterator.
  * @param sector Receives the sector index.
  * @param kind Receives the list's ENV_ANIM_KIND_*.
  * @return 1 when an entry is yielded, 0 when the registry is exhausted. */
 static int env_anim_iter_next(env_anim_iter_t* it, uint32_t* sector, int* kind) {
-    CPUState* cpu = it->cpu;
     for (;;) {
         if (it->k >= it->cnt) {
             if (!env_anim_iter_open(it)) return 0;
             continue;
         }
-        uint32_t w = rd(cpu, it->base + it->k * 4);
+        uint32_t w = rd(it->cpu, it->base + it->k * 4);
         it->k++;
         it->seen++;
         uint32_t idx;
-        if (game_layout.env_anim.form == ENV_ANIM_LISTS) {
-            if (!w) continue;                        /* empty descriptor slot */
-            idx = cpu->read_half(w + 4);
-        } else {
-            if (it->skip_top && (int32_t)w < 0) continue;
-            idx = w & 0xFFu;
-            if (!it->listed && game_layout.env_anim.live_table
-                && !(cpu->read_byte(game_layout.env_anim.live_table + idx) & 1u))
-                continue;                            /* animation not running */
-        }
-        if (idx >= it->sectorCnt) continue;
+        if (!env_anim_entry_sector(it, w, &idx) || idx >= it->sectorCnt) continue;
         it->w = w;
         *sector = idx;
         *kind = it->kind;
@@ -4747,6 +4773,7 @@ static void tsc_envm_refresh(CPUState* cpu, uint32_t sectorCnt) {
         env_anim_iter_init(&it, cpu, sectorCnt);
         it.listed = 1;
         while (env_anim_iter_next(&it, &idx, &kind)) {
+            if (it.desc) continue;                   /* marked by tsc_envm_registry */
             uint32_t n = (rd(cpu, it.base + (it.k - 1u) * 4u) >> 8) & 0xFFu;
             envm_mask_set(kind == ENV_ANIM_KIND_COLOUR ? s_envm_c[idx][1] : s_envm_v[idx][1], 0u, n);
         }
@@ -6865,7 +6892,8 @@ static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
  * (s_vanim_on) fills the float banks lpVf and hpVf with the previous-to-
  * current lerp at s_vanim_alpha, except for a sector where tsc_vanim_jump
  * fires, which stays on the current bank. A failed allocation leaves the
- * bank unfilled. Prints [vanim] lines under OPENPETE_TERRAIN_VANIMDBG.
+ * bank unfilled. Prints [vanim] lines under OPENPETE_TERRAIN_VANIMDBG; the
+ * [vanim-scan] kf= count is the vertex entries that are keyframe descriptors.
  * @param cpu The guest CPU state.
  * @param sectorPtr The sector pointer table's guest address.
  * @param sectorCnt The sector count. */
@@ -6874,7 +6902,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
     envm_tick(cpu, sectorPtr, sectorCnt, s_vanim_sub);
     static int s_vdbg = -1;
     ENV_FLAG_LATCH(s_vdbg, "OPENPETE_TERRAIN_VANIMDBG");
-    int dbg_desc = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
+    int dbg_desc = 0, dbg_kf = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
     uint32_t dbg_seen = 0;
     {
         env_anim_iter_t it;
@@ -6886,6 +6914,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
             uint32_t s = rd(cpu, sectorPtr + idx * 4);
             if (!s) continue;
             dbg_desc++;
+            dbg_kf += it.desc;
             uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
             tscache_t* C = NULL;
             for (uint32_t w = 0; w < TSC_WINDOW; w++) {   /* same probe window as tsc_get */
@@ -6975,8 +7004,9 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
         dbg_seen = it.seen;
     }
     if (s_vdbg && dbg_seen)
-        fprintf(stderr, "[vanim-scan f=%u sub=%d on=%d entries=%u desc=%d cached=%d prev=%d filled=%d]\n",
-                openpete_frame, s_vanim_sub, s_vanim_on, dbg_seen, dbg_desc, dbg_cached, dbg_prev, dbg_filled);
+        fprintf(stderr, "[vanim-scan f=%u sub=%d on=%d entries=%u desc=%d kf=%d cached=%d prev=%d filled=%d]\n",
+                openpete_frame, s_vanim_sub, s_vanim_on, dbg_seen, dbg_desc, dbg_kf, dbg_cached, dbg_prev,
+                dbg_filled);
 }
 
 /* Colour env-anim sub-tick interpolation. The colour sub-lists (Spyro 1
@@ -7300,7 +7330,8 @@ static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sec
 
 /* ---- env-anim motion census (OPENPETE_TERRAIN_ANIMCENSUS=<ticks>) ----------
  * Over each window of <ticks> canonical ticks, one line per sector the
- * animation lists name: the lists (w1, w2, c; v and c on a LISTS game), the
+ * animation lists name: the lists (w1, w2, c and k, a keyframe geometry
+ * descriptor, on an ARENA game; v and c on a LISTS game), the
  * ticks the game animated it (bit 0 of the liveness byte its walkers read,
  * envm_live_ran), the ticks the native pass drew its HP tier (on a game
  * with the walker model, ticks the walkers ran, envm_anchor), the ticks the
@@ -7327,7 +7358,7 @@ static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sec
  * did not; a paused descriptor posts nothing and is never judged. */
 #define ACEN_SECTORS 1024
 typedef struct {
-    uint8_t  lists;                /* 1 wave1 / vertex, 2 wave2, 4 colour */
+    uint8_t  lists;                /* 1 wave1 / vertex, 2 wave2, 4 colour, 8 ARENA keyframe geometry */
     uint8_t  drawnNow;             /* the prepass drew its HP tier since the last tick */
     uint8_t  drawnNowLP;           /* ... its LP tier */
     uint8_t  vhOk, chOk;           /* vh / ch hold a previous tick's hash */
@@ -7402,16 +7433,16 @@ static void acen_model_check(CPUState* cpu, uint32_t idx, uint32_t s, uint32_t s
     A->meq += (uint32_t)eq;
 }
 
-/** @brief Writes a census row's list names (w1, w2, c; v for a vertex list on a LISTS game) joined by '+'.
+/** @brief Writes a census row's list names (w1, w2, c, k; v for a vertex list on a LISTS game) joined by '+'.
  * @param out Receives the names.
  * @param n The size of out.
  * @param lists The row's list bits.
  * @param game_model 1 when the layout carries the walker model. */
 static void acen_lists_name(char* out, size_t n, uint32_t lists, int game_model) {
-    const char* name[3] = { game_model ? "w1" : "v", "w2", "c" };
+    const char* name[4] = { game_model ? "w1" : "v", "w2", "c", "k" };
     size_t o = 0;
     out[0] = 0;
-    for (int b = 0; b < 3 && o < n; b++) {
+    for (int b = 0; b < 4 && o < n; b++) {
         if (!(lists & (1u << b))) continue;
         o += (size_t)snprintf(out + o, n - o, "%s%s", o ? "+" : "", name[b]);
     }
@@ -7517,7 +7548,8 @@ static void acen_flush(int game_model) {
 /** @brief Fills each sector's list bits from every list entry naming it, live or dormant.
  * @param cpu The guest CPU state, read only.
  * @param sectorCnt The sector count.
- * @param lists Receives ACEN_SECTORS list-bit bytes (1 wave1 / vertex, 2 wave2, 4 colour). */
+ * @param lists Receives ACEN_SECTORS list-bit bytes (1 wave1 / vertex, 2 wave2, 4 colour,
+ *        8 keyframe geometry on an ARENA game). */
 static void acen_collect_lists(CPUState* cpu, uint32_t sectorCnt, uint8_t* lists) {
     env_anim_iter_t it;
     uint32_t idx; int kind;
@@ -7526,6 +7558,7 @@ static void acen_collect_lists(CPUState* cpu, uint32_t sectorCnt, uint8_t* lists
     while (env_anim_iter_next(&it, &idx, &kind)) {
         if (idx >= ACEN_SECTORS) continue;
         lists[idx] |= kind == ENV_ANIM_KIND_COLOUR ? 4u
+                    : it.desc && game_layout.env_anim.form == ENV_ANIM_ARENA ? 8u
                     : it.model == ENV_ANIM_MODEL_WAVE2 ? 2u : 1u;
     }
 }
