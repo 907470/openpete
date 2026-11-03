@@ -190,3 +190,9 @@ summer_forest | pos=(79025, 84035, 72838) yaw=875 pitch=313
 # occlusion cull never rejects; the picture is identical at both LODs, so the
 # tile carries the pose and the defect is measured by moby record counts.
 colossus | pos=(47666, 60635, 12089) yaw=78 pitch=41
+# Reported defect: the pool seen from above draws its far water texture at
+# extended LOD, the same picture as original LOD. Its two second-walk
+# sectors (66, 157) have every face past the walk's near split, and that
+# walk's far model keeps the far tile at both LODs where the surrounding
+# terrain takes the near tile. Blessed pre-fix.
+summer_forest | pos=(99823, 31898, 44036) yaw=-707 pitch=992
