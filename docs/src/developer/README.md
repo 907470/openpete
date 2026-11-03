@@ -77,6 +77,9 @@ The level notes are in the Spyro section.
 - [`ram-diff-vs-pcsxr.md`](ram-diff-vs-pcsxr.md) - single-shot 2 MiB RAM and
   CPU diff against pcsx-redux at one PC: byte-level attribution the
   DuckStation oracle cannot give.
+- [`bug-reports.md`](bug-reports.md) - the bug-report zip: its members,
+  `tools/bugreport.py`, `--bug-report-replay` and its exit codes, the
+  replay routes, the release archive, and the harness variables.
 
 ## Porting
 

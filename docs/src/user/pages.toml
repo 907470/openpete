@@ -64,7 +64,7 @@
 "flag:--vertex-precision" = "help/glossary.md#vertex-wobble"
 "flag:--vibration" = "customizing/controllers.md#vibration"
 "flag:--wireframe" = "help/glossary.md#ids-that-contain-frame"
-"key:host.bug_report" = "playing/recording.md#bug-reports"
+"key:host.bug_report" = "help/reporting-a-bug.md#the-bug-report-zip"
 "key:host.camlock" = "playing/dev-overlay.md#sections"
 "key:host.devui" = "playing/dev-overlay.md#the-dev-overlay"
 "key:host.devui_activate" = "playing/dev-overlay.md#controller"

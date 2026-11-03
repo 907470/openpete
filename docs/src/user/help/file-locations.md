@@ -17,7 +17,7 @@ every location below as this install resolves it, then exits.
 | `assets/` | your texture, music and sound packs |
 | `bk2/` | [input recordings](glossary.md#input-recording) |
 | `screenshots/` | PNGs saved with ++f12++ |
-| `bugreports/` | [bug report](../playing/recording.md#bug-reports) zips saved with ++f9++ |
+| `bugreports/` | [bug report](glossary.md#bug-report) zips saved with ++f9++ |
 
 ## Where it goes
 

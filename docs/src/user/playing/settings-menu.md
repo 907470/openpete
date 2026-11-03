@@ -84,7 +84,8 @@ variable. See [The config file](../customizing/config-file.md).
 ## BUG REPORT
 
 Changing **BUG REPORT** <!-- id: menu:menu.bugreport --> closes the menu and
-writes a [bug report](recording.md#bug-reports) zip.
+writes a [bug report](../help/glossary.md#bug-report) zip
+([Reporting a bug](../help/reporting-a-bug.md#the-bug-report-zip)).
 
 ## ADVANCED
 

@@ -153,6 +153,13 @@ Codebase terms: ingest and the first-boot module build. Copying your disc
 into the library and compiling the game's code for your computer, once per
 disc and once per OpenPete release.
 
+### Bug report
+
+Codebase term: the bug-report bundle (the `bug_report` key action, ++f9++).
+One zip holding the last 30 to 60 seconds of play, the inputs that replay
+them, and the facts of the session
+([Reporting a bug](reporting-a-bug.md#the-bug-report-zip)).
+
 ### Code mod
 
 Codebase term: source mod. A mod with a `src/` folder, compiled on your
