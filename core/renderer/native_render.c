@@ -338,8 +338,8 @@ typedef struct {
 #define MENU_OUTLINE_PX 1
 #define OSD_OUTLINE_PX  0
 #define OSD_SLOT_W      0.62f   /* max toast box width,  overlay units */
-#define OSD_SLOT_H      0.075f  /* max toast box height, overlay units */
-#define OSD_GLYPH_MAX   24576   /* 8 toasts of border + wrapped text        */
+#define OSD_GRID_H      OPENPETE_OSD_GRID_H
+#define OSD_GLYPH_MAX   OPENPETE_OSD_GLYPH_MAX
 /* The INTERNAL stored tri: the feeder-facing openpete_scene_tri plus
  * the routing state that travels through the add_tri arguments. Private to
  * this TU - feeders can't write routing fields (no such field exists on their
@@ -5361,7 +5361,7 @@ static struct {
      * resize - one tick of boxes laid out to a width and a height that were
      * never a pair - which is the same class as the perf region rect above,
      * and cheaper to close than to reason about. */
-    uint64_t      osd_slot_px;   /* w | h << 32 */
+    uint64_t      osd_slot_px;   /* grid w | grid h << 32, 1x pixels */
     rhi_buffer   *osd_glyph_vb;       /* toast glyphs + frames (NDC, depth-tested) */
     rhi_buffer   *osd_quad_vb;        /* one composite quad per visible toast */
     rhi_buffer   *osd_panel_vb;       /* the toasts' subtractive panels */
@@ -18096,6 +18096,7 @@ static openpete_hud_vert s_osd_glyph_verts[OSD_GLYPH_MAX];
 static int               s_osd_glyph_n = 0;
 static openpete_osd_slot_t s_osd_slots[OPENPETE_OSD_MAX];
 static int               s_osd_slot_n = 0;
+static unsigned long long s_osd_glyph_clamped;   /* vertices refused at the publish */
 
 /** @brief The OSD publish lock, created on first use without a creation race. */
 static SDL_Mutex *osd_pub_mx(void) {
@@ -18106,7 +18107,12 @@ static SDL_Mutex *osd_pub_mx(void) {
 void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
                                     const openpete_osd_slot_t *slots, int nslots) {
     if (nverts < 0) nverts = 0;
-    if (nverts > OSD_GLYPH_MAX) nverts = OSD_GLYPH_MAX;
+    if (nverts > OSD_GLYPH_MAX) {
+        if (s_osd_glyph_clamped == 0)
+            OPL_WARN_F("native", "OSD glyph publish of %d verts clamped to %d", nverts, OSD_GLYPH_MAX);
+        s_osd_glyph_clamped += (unsigned long long)(nverts - OSD_GLYPH_MAX);
+        nverts = OSD_GLYPH_MAX;
+    }
     if (nslots < 0) nslots = 0;
     if (nslots > OPENPETE_OSD_MAX) nslots = OPENPETE_OSD_MAX;
     SDL_LockMutex(osd_pub_mx());
@@ -18119,27 +18125,29 @@ void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
     SDL_UnlockMutex(osd_pub_mx());
 }
 
-/** @brief Read the OSD slot size in pixels that ensure_osd_ss published.
+/** @brief Read the OSD grid size in 1x pixels that ensure_osd_ss published.
  *
  * Both halves come from one 64-bit read, so a concurrent republish cannot
  * pair a new width with a stale height. Zero in both until the grid has
  * been allocated.
- * @param w Receives the slot width in pixels; may be NULL.
- * @param h Receives the slot height in pixels; may be NULL. */
+ * @param w Receives the grid width in pixels; may be NULL.
+ * @param h Receives the grid height in pixels; may be NULL. */
 static void osd_slot_px(int *w, int *h) {
     const uint64_t v = s_nr.osd_slot_px;   /* one read: both halves from one publish */
     if (w) *w = (int)(uint32_t)v;
     if (h) *h = (int)(uint32_t)(v >> 32);
 }
 
-void openpete_native_osd_slot_extent(float *w, float *h) {
-    /* A slot origin off the OSD_SS_FACTOR grid would make edge blocks
-     * average in the neighbouring slot's texels. */
+void openpete_native_osd_slot_extent(float *w, float *px, int *rows) {
+    /* A row origin off the 1x pixel grid would make edge blocks average in
+     * the neighbouring toast's texels. */
     const float ph = (s_nr.win_h > 0) ? (float)s_nr.win_h : 1.0f;
     int pw, phh;
     osd_slot_px(&pw, &phh);
-    if (w) *w = (pw  > 0) ? (float)pw  / ph : OSD_SLOT_W;
-    if (h) *h = (phh > 0) ? (float)phh / ph : OSD_SLOT_H;
+    if (phh <= 0) phh = (int)(OSD_GRID_H * ph + 0.5f);
+    if (w) *w = (pw > 0) ? (float)pw / ph : OSD_SLOT_W;
+    if (px) *px = 1.0f / ph;
+    if (rows) *rows = phh;
 }
 
 /** @brief Draw a list of 3D text-moby glyph vertices over the current render pass.
@@ -18937,6 +18945,13 @@ static int draw_menu_overlay(void) {
 /* Toasts composited, cumulative; logged at shutdown. */
 static unsigned s_osd_composited = 0;
 unsigned openpete_native_osd_composited(void) { return s_osd_composited; }
+void openpete_native_osd_count_dropped(int verts) {
+    if (verts <= 0) return;
+    if (s_osd_glyph_clamped == 0)
+        OPL_WARN_F("native", "OSD glyph builder refused %d vert(s) for want of budget", verts);
+    s_osd_glyph_clamped += (unsigned long long)verts;
+}
+unsigned long long openpete_native_osd_clamped(void) { return s_osd_glyph_clamped; }
 
 /** @brief Return whether every resource the OSD toast composite needs exists.
  *
@@ -18963,13 +18978,14 @@ static bool osd_should_draw(void) {
 
 /** @brief Create or resize osd_ss, the OSD toast slot grid, on a window resize.
  *
- * The grid holds OPENPETE_OSD_MAX slots stacked vertically, each OSD_SLOT_W
- * by OSD_SLOT_H window-height units at OSD_SS_FACTOR. It is sized from the
- * maximum toast box, never from the live ones: sizing to content would
- * rebuild the target, and wait the device idle, on every arrival, expiry
- * and coalescing repaint, which is once per keypress while a value is held
- * down. Each dimension is clamped to the device's largest image, shrinking
- * the slot. The slot size in pixels is stored in osd_slot_px. The grid is
+ * The grid is OSD_SLOT_W by OSD_GRID_H window-height units at
+ * OSD_SS_FACTOR; the builder packs the toasts into it top to bottom, each
+ * at a whole 1x pixel row. It is sized from the maxima, never from the live
+ * toasts: sizing to content would rebuild the target, and wait the device
+ * idle, on every arrival, expiry and coalescing repaint, which is once per
+ * keypress while a value is held down. Each dimension is clamped to the
+ * device's largest image. The grid size in 1x pixels is stored in
+ * osd_slot_px. The grid is
  * first allocated when a toast is live and is kept afterwards. No-op when
  * the OSD is disabled, the resolve pipe failed at init, or the window size
  * is unknown. Runs outside a frame. */
@@ -18981,18 +18997,14 @@ static void ensure_osd_ss(void) {
     if (!s_nr.osd_ss && !openpete_osd_any_live()) return;
 
     int sw = (int)(OSD_SLOT_W * (float)s_nr.win_h + 0.5f);
-    int sh = (int)(OSD_SLOT_H * (float)s_nr.win_h + 0.5f);
+    int sh = (int)(OSD_GRID_H * (float)s_nr.win_h + 0.5f);
     if (sw < 1) sw = 1;
     if (sh < 1) sh = 1;
     int want_w = sw * OSD_SS_FACTOR;
-    int want_h = sh * OPENPETE_OSD_MAX * OSD_SS_FACTOR;
+    int want_h = sh * OSD_SS_FACTOR;
     uint32_t maxdim = rhi_max_image_dimension(s_nr.dev);
     if ((uint32_t)want_w > maxdim) { want_w = (int)maxdim; sw = want_w / OSD_SS_FACTOR; }
-    if ((uint32_t)want_h > maxdim) {
-        want_h = (int)maxdim;
-        sh = want_h / (OPENPETE_OSD_MAX * OSD_SS_FACTOR);
-        if (sh < 1) sh = 1;
-    }
+    if ((uint32_t)want_h > maxdim) { want_h = (int)maxdim; sh = want_h / OSD_SS_FACTOR; }
     if (s_nr.osd_ss && s_nr.osd_ss_w == want_w && s_nr.osd_ss_h == want_h) return;
     rhi_wait_idle(s_nr.dev);
     if (s_nr.osd_ss) { rhi_destroy_texture(s_nr.dev, s_nr.osd_ss); s_nr.osd_ss = NULL; }
@@ -19000,15 +19012,15 @@ static void ensure_osd_ss(void) {
     s_nr.osd_ss_w = want_w; s_nr.osd_ss_h = want_h;
     s_nr.osd_slot_px = (uint64_t)(uint32_t)sw | ((uint64_t)(uint32_t)sh << 32);
     if (s_nr.osd_ss)
-        OPL_INFO_F("native", "OSD SS grid %dx%d (%d slots of %dx%d px, %d×)",
-                   want_w, want_h, OPENPETE_OSD_MAX, sw, sh, OSD_SS_FACTOR);
+        OPL_INFO_F("native", "OSD SS grid %dx%d (%dx%d px of toast rows, %d×)",
+                   want_w, want_h, sw, sh, OSD_SS_FACTOR);
 }
 
-/** @brief Render every live toast's border and text into the osd_ss slot grid at OSD_SS_FACTOR.
+/** @brief Render every live toast's border and text into the osd_ss grid at OSD_SS_FACTOR.
  *
  * The pass is its own render-target pass, so it runs before the offscreen
- * pass opens. The glyphs arrive in target-local overlay space (slot i at
- * y = i * slot_h), so one linear map covers the whole grid. The published
+ * pass opens. The glyphs arrive in target-local overlay space (a toast at
+ * row r at y = r / window height), so one linear map covers the whole grid. The published
  * glyph list is read under the OSD publish mutex for the whole draw. No-op
  * unless the grid is ready, toasts draw on this present, at least one glyph
  * triangle is published and the slot extent is known. */
@@ -19019,9 +19031,11 @@ static void prepare_osd_ss(void) {
     n = s_osd_glyph_n;
     SDL_UnlockMutex(osd_pub_mx());
     if (n < 3) return;
-    float sw, sh;
-    openpete_native_osd_slot_extent(&sw, &sh);
-    if (sw <= 0.0f || sh <= 0.0f) return;
+    float sw, px;
+    int rows;
+    openpete_native_osd_slot_extent(&sw, &px, &rows);
+    if (sw <= 0.0f || rows <= 0) return;
+    const float sh = px * (float)rows;
     rhi_begin_render_target(s_nr.dev, s_nr.osd_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
     /* The lock spans the draw rather than a copy-out: what it protects is a
      * ~400 KB vertex array, and copying it a second time every present to
@@ -19032,7 +19046,7 @@ static void prepare_osd_ss(void) {
     SDL_LockMutex(osd_pub_mx());
     draw_glyph_list_3d(s_osd_glyph_verts, s_osd_glyph_n,
                        s_nr.osd_glyph_vb, OSD_GLYPH_MAX,
-                       2.0f / sw, 2.0f / (sh * (float)OPENPETE_OSD_MAX), 0.0f, 0.0f,
+                       2.0f / sw, 2.0f / sh, 0.0f, 0.0f,
                        NULL, -1);
     SDL_UnlockMutex(osd_pub_mx());
     rhi_end_render_target(s_nr.dev, s_nr.osd_ss);
@@ -19078,9 +19092,7 @@ static void draw_osd_overlay(void) {
      * suppressed. */
     if (nv <= 0 || !osd_ss_ready() || !osd_should_draw()) return;
 
-    float slot_w, slot_h;
-    openpete_native_osd_slot_extent(&slot_w, &slot_h);
-    int slot_px_w, slot_px_h;
+    int slot_px_w, slot_px_h;   /* the grid, 1x pixels */
     osd_slot_px(&slot_px_w, &slot_px_h);
     if (slot_px_w <= 0 || slot_px_h <= 0) return;
     const int   anchor = openpete_osd_anchor();
@@ -19109,9 +19121,9 @@ static void draw_osd_overlay(void) {
          * glyph edges - the fade carries the easing instead. */
         int bw = (int)(sl->box_w * ph + 0.5f);
         int bh = (int)(sl->box_h * ph + 0.5f);
-        if (bw < 1 || bh < 1) continue;
+        if (bw < 1 || bh < 1 || sl->row_px < 0 || sl->row_px >= slot_px_h) continue;
         if (bw > slot_px_w) bw = slot_px_w;
-        if (bh > slot_px_h) bh = slot_px_h;
+        if (bh > slot_px_h - sl->row_px) bh = slot_px_h - sl->row_px;
         const float w = (float)bw / ph, h = (float)bh / ph;
 
         /* Where it sits. x hugs the anchor's edge; y stacks from whatever the
@@ -19149,8 +19161,8 @@ static void draw_osd_overlay(void) {
 
         /* Composite quad - the slot's used sub-rect, tinted by the fade. */
         const float u1 = (float)bw / (float)slot_px_w;
-        const float v0 = (float)sl->slot / (float)OPENPETE_OSD_MAX;
-        const float v1 = v0 + (float)bh / (float)(slot_px_h * OPENPETE_OSD_MAX);
+        const float v0 = (float)sl->row_px / (float)slot_px_h;
+        const float v1 = (float)(sl->row_px + bh) / (float)slot_px_h;
         const float rw_ndc = w * ax, rh_ndc = h * ay;
         comp[cn].cx = x * ax - 1.0f + rw_ndc * 0.5f;
         comp[cn].cy = 1.0f - y * ay - rh_ndc * 0.5f;

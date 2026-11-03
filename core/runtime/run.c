@@ -1789,6 +1789,45 @@ void openpete_game_window_size(const openpete_options_t* opts, int* out_w, int* 
     *out_h = h;
 }
 
+/** @brief Seed the diagnostic toasts that OPENPETE_OSD_DEMO and OPENPETE_OSD_DEMO_TEXT ask for.
+ *
+ * The OSD is otherwise driven entirely by live user action - a menu row, a
+ * hotkey, a mod - which a headless or scripted capture cannot perform, so a
+ * gate that wants to SEE a toast has no other way to make one exist.
+ * OPENPETE_OSD_DEMO=N posts the first N of eight samples of different
+ * lengths: the box is content-sized, and equal-length samples would never
+ * exercise that. OPENPETE_OSD_DEMO_TEXT posts further toasts with the given
+ * texts, separated by '|', after the samples: the wrap and the ellipsis need
+ * texts longer than any sample. Each toast takes the maximum timeout, so the
+ * stack is still up whenever the capture lands, and its own rate-limit
+ * bucket: the per-source limit exists to stop a runaway producer, and it
+ * would otherwise cap the seed at the burst of 4. Diagnostic only; unset in
+ * normal play. */
+static void osd_demo_seed(void) {
+    static const char *const demo[] = {
+        "VSYNC: ON", "LOD: EXTENDED", "SSAA: 4X",
+        "DISPLAY: FULLSCREEN", "FPS: UNLIMITED", "TEXTURES: AFFINE",
+        "DITHER: 15 BIT", "FREECAM: ON",
+    };
+    const char *e = getenv("OPENPETE_OSD_DEMO");
+    int demo_n = (e && *e) ? atoi(e) : 0;
+    if (demo_n > (int)(sizeof demo / sizeof demo[0]))
+        demo_n = (int)(sizeof demo / sizeof demo[0]);
+    char src[24];
+    for (int i = 0; i < demo_n; i++) {
+        snprintf(src, sizeof src, "demo%d", i);
+        openpete_osd_notify(src, NULL, OPENPETE_OSD_TIMEOUT_MAX_MS, "%s", demo[i]);
+    }
+    const char *t = getenv("OPENPETE_OSD_DEMO_TEXT");
+    for (int i = 0; t && *t; i++) {
+        const char *bar = strchr(t, '|');
+        const int len = bar ? (int)(bar - t) : (int)strlen(t);
+        snprintf(src, sizeof src, "demotext%d", i);
+        openpete_osd_notify(src, NULL, OPENPETE_OSD_TIMEOUT_MAX_MS, "%.*s", len, t);
+        t = bar ? bar + 1 : NULL;
+    }
+}
+
 /** @brief Bring up the host side of a run: guest CPU and PSX runtime, knobs, mods, PsyCross, audio, input, windows and the native renderer.
  *
  * Runs before the host loop, on the thread that will pump SDL events (main
@@ -2081,34 +2120,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_native_set_version_osd(opts->version_osd);   /* build-version line (--version-osd) */
     if (opts->mouse_sensitivity >= 0.0f)
         openpete_freecam_set_mouse_sensitivity(opts->mouse_sensitivity);
-    /* OPENPETE_OSD_DEMO=N seeds N sample toasts at startup. The OSD is
-     * otherwise driven entirely by live user action - a menu row, a hotkey, a
-     * mod - which a headless or scripted capture cannot perform, so a gate
-     * that wants to SEE a toast has no other way to make one exist. The
-     * timeout is the maximum so the stack is still up whenever the capture
-     * frame lands, and the strings are deliberately different lengths: the
-     * box is content-sized inside a fixed slot, and equal-length samples
-     * would never exercise that. Diagnostic only; unset in normal play. */
-    {
-        const char *e = getenv("OPENPETE_OSD_DEMO");
-        int demo_n = (e && *e) ? atoi(e) : 0;
-        static const char *const demo[] = {
-            "VSYNC: ON", "LOD: EXTENDED", "SSAA: 4X",
-            "DISPLAY: FULLSCREEN", "FPS: UNLIMITED", "TEXTURES: AFFINE",
-            "DITHER: 15 BIT", "FREECAM: ON",
-        };
-        if (demo_n > (int)(sizeof demo / sizeof demo[0]))
-            demo_n = (int)(sizeof demo / sizeof demo[0]);
-        for (int i = 0; i < demo_n; i++) {
-            /* One bucket each: the per-source rate limit exists to stop a
-             * runaway producer, and it would otherwise cap this seed at the
-             * burst of 4 - an eight-toast gate that silently captured four. */
-            char src[16];
-            snprintf(src, sizeof src, "demo%d", i);
-            openpete_osd_notify(src, NULL, OPENPETE_OSD_TIMEOUT_MAX_MS,
-                                "%s", demo[i]);
-        }
-    }
+    osd_demo_seed();
     /* OPENPETE_MENU_DEMO=1 opens the settings menu at startup, the menu's
      * counterpart of the toast seed above: an unattended run has no key to
      * open it with. The open menu holds the game pad released, so the run

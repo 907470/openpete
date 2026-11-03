@@ -43,12 +43,14 @@ secret is listed by name, without its value.
 The zip is named `bug-<game>-<date>-<time>.zip`, for example
 `bug-spyro-1-20261103-143000.zip`, and goes in the `bugreports` folder of
 the data folder; with the portable layout that is beside the program
-([File locations](file-locations.md)). When it is written, three
-notifications name the file, list the mods included, and end in
-**NOTHING WAS UPLOADED**. A second press while the first zip is still
-being written shows **BUG REPORT: STILL WRITING THE LAST ONE** and writes
-nothing. **BUG REPORT FAILED - SEE THE LOG** means no zip was written;
-the log says why.
+([File locations](file-locations.md)). After the note, a notification
+reads **BUG REPORT: SAVING...** and stays until the zip is written, then
+changes to **BUG REPORT: SAVED**. The log names the file and the mods it
+includes. A second press while the zip is being written writes nothing;
+before **BUG REPORT: SAVING...** shows, it shows **BUG REPORT: STILL
+WRITING THE LAST ONE**.
+**BUG REPORT FAILED - SEE THE LOG** means no zip was written; the log
+says why.
 
 When the game stops responding ([`OP-E-HANG`](troubleshooting.md#op-e-hang)),
 OpenPete writes a zip itself before it exits, named

@@ -600,7 +600,8 @@ static void close_subsystem_reports(void) OP_REQUIRES(sim)
     if (psyq_vbl_delivery_report) psyq_vbl_delivery_report();
     host_trace_close_step(HT_S_VBL_DELIVERY);
     if (openpete_osd_enabled()) {
-        OPL_INFO_F("osd", "census: %u toast(s) composited", openpete_native_osd_composited());
+        OPL_INFO_F("osd", "census: %u toast(s) composited, %llu glyph vert(s) clamped",
+                   openpete_native_osd_composited(), openpete_native_osd_clamped());
         host_trace_close_step(HT_S_OSD_CENSUS);
     }
     OPL_INFO_F("version", "census: %s (%s), %u line(s) drawn",
@@ -708,7 +709,8 @@ void host_session_press_reports(void) OP_REQUIRES(sim)
     state_ops_report();
     if (psyq_vbl_delivery_report) psyq_vbl_delivery_report();
     if (openpete_osd_enabled())
-        OPL_INFO_F("osd", "census: %u toast(s) composited", openpete_native_osd_composited());
+        OPL_INFO_F("osd", "census: %u toast(s) composited, %llu glyph vert(s) clamped",
+                   openpete_native_osd_composited(), openpete_native_osd_clamped());
     OPL_INFO_F("version", "census: %s (%s), %u line(s) drawn",
                openpete_build_version(), openpete_native_version_reason(),
                openpete_native_version_drawn());

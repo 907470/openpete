@@ -1082,6 +1082,7 @@ void br_job_write(br_job_t* j)
     const int disp = answer_wait(&j->display, t0 + (uint64_t)BR_SHOT_WAIT_MS * 1000000u);
     /* After the screenshot, so the prompt is not in screen.png. */
     if (!j->fatal) note_wait(j);
+    SDL_SetAtomicInt(&j->noted, 1);
     br_redactor_t R;
     br_redactor_init(&R);
     br_members_t m = {0};

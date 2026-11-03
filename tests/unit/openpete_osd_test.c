@@ -16,7 +16,10 @@
  *   4. eviction names a victim in every state, including "every entry is
  *      still rising";
  *   5. the rate limit prices new entries only, never repaints;
- *   6. the stack glides up when a toast above it retires.
+ *   6. the stack glides up when a toast above it retires;
+ *   7. a toast posted with OPENPETE_OSD_TIMEOUT_HOLD outlives every timeout
+ *      until its key is repainted, and then retires on the repaint's;
+ *   8. a text longer than OPENPETE_OSD_TEXT_MAX - 1 bytes ends in "...".
  *
  * SDL's mutex API is faked below so the link line stays SDL-free like every
  * other console test here - the same trick keymap_test uses for its input
@@ -276,6 +279,40 @@ static int test_suppressed(void) {
     return 0;
 }
 
+/* ---- 7: a held toast ends only on a repaint ------------------------------ */
+static int test_hold_until_repaint(void) {
+    openpete_osd_reset();
+    openpete_osd_set_default_timeout_ms(1000);
+    openpete_osd_view_t v[OPENPETE_OSD_MAX];
+    op_time_t t = MS(1000);
+    openpete_osd_notify("host", "job", OPENPETE_OSD_TIMEOUT_HOLD, "SAVING...");
+    if (present_all(t, v, OPENPETE_OSD_MAX) != 1) FAIL("held toast not posted\n");
+    const uint32_t id = v[0].id;
+    if (advance(&t, (int)OPENPETE_OSD_TIMEOUT_MAX_MS + 5000, v, OPENPETE_OSD_MAX) != 1)
+        FAIL("held toast expired on its own\n");
+    openpete_osd_notify("host", "job", 2000, "SAVED");
+    if (advance(&t, 1000, v, OPENPETE_OSD_MAX) != 1 || v[0].id != id)
+        FAIL("the repaint did not keep the held toast's id\n");
+    if (advance(&t, 1000 + FADE_OUT_PAD_MS, v, OPENPETE_OSD_MAX) != 0)
+        FAIL("the repainted toast outlived the repaint's timeout\n");
+    return 0;
+}
+
+/* ---- 8: a cut text shows its cut ------------------------------------------ */
+static int test_cut_text_ends_in_ellipsis(void) {
+    openpete_osd_reset();
+    char big[OPENPETE_OSD_TEXT_MAX + 40];
+    memset(big, 'A', sizeof big - 1);
+    big[sizeof big - 1] = 0;
+    openpete_osd_notify("host", NULL, 0, "%s", big);
+    openpete_osd_item_t items[OPENPETE_OSD_MAX];
+    if (openpete_osd_tick_items(items, OPENPETE_OSD_MAX) != 1) FAIL("long toast not posted\n");
+    const size_t len = strlen(items[0].text);
+    if (len != OPENPETE_OSD_TEXT_MAX - 1 || strcmp(items[0].text + len - 3, "...") != 0)
+        FAIL("cut text is %zu bytes ending \"%s\"\n", len, items[0].text + (len > 3 ? len - 3 : 0));
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
     rc |= test_coalesce();
@@ -285,6 +322,8 @@ int main(void) {
     rc |= test_rate_limit();
     rc |= test_stack_glide();
     rc |= test_suppressed();
+    rc |= test_hold_until_repaint();
+    rc |= test_cut_text_ends_in_ellipsis();
     if (s_lock_depth != 0) { fprintf(stderr, "FAIL: lock left held (%d)\n", s_lock_depth); rc = 1; }
     if (s_lock_max == 0)   { fprintf(stderr, "FAIL: the ring was never locked\n"); rc = 1; }
     printf("openpete_osd_test: %s\n", rc ? "FAILED" : "ok");

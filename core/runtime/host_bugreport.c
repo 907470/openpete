@@ -83,11 +83,27 @@ void openpete_bugreport_init(const openpete_options_t* opts)
 
 void openpete_bugreport_request(void) { SDL_SetAtomicInt(&s_bp.requested, 1); }
 
-/** @brief Join a finished worker, post the bundle's toasts and log its result, then free the job.
+/* The one toast key of a bundle: SAVING holds under it until SAVED or
+ * FAILED repaints it in place. */
+#define BR_OSD_KEY "bugreport.saved"
+
+/** @brief Post the held SAVING toast once the job's note prompt has ended, then join a finished worker, repaint the toast with the result and log it, then free the job.
+ *
+ * The SAVING toast holds with OPENPETE_OSD_TIMEOUT_HOLD and every job ends
+ * here, so the toast is always repainted with SAVED or FAILED and an
+ * ordinary hold. A call without wait inside a speculative or replayed tick
+ * returns at once.
  * @param wait Nonzero to wait for the worker; else return at once while it runs. */
 static void bundle_reap(int wait) OP_REQUIRES(sim)
 {
+    /* openpete_osd_notify drops a post from a speculative or replayed tick;
+     * a dropped SAVED would strand the held SAVING, so the reap waits. */
+    if (!wait && (openpete_speculative || openpete_replaying)) return;
     br_job_t* j = s_bp.job;
+    if (j && !j->saving_shown && SDL_GetAtomicInt(&j->noted)) {
+        j->saving_shown = 1;
+        openpete_osd_notify("host", BR_OSD_KEY, OPENPETE_OSD_TIMEOUT_HOLD, "BUG REPORT: SAVING...");
+    }
     if (!j || (!wait && !SDL_GetAtomicInt(&j->finished))) return;
     SDL_WaitThread(s_bp.thr, NULL);
     s_bp.thr = NULL;
@@ -101,15 +117,11 @@ static void bundle_reap(int wait) OP_REQUIRES(sim)
                    (unsigned long long)j->replacements, j->findings,
                    (unsigned long long)j->press_us, (unsigned long long)j->display_us,
                    (unsigned long long)j->write_ms, j->mods_line[0] ? j->mods_line : "none");
-        openpete_osd_notify("host", "bugreport.saved", 8000, "BUG REPORT SAVED: %s.zip", j->stem);
-        openpete_osd_notify("host", "bugreport.mods", 8000, "MODS INCLUDED: %s",
-                            j->mods_line[0] ? j->mods_line : "NONE");
-        openpete_osd_notify("host", "bugreport.where", 8000, "IN %s - NOTHING WAS UPLOADED",
-                            "BUGREPORTS");
+        openpete_osd_notify("host", BR_OSD_KEY, 8000, "BUG REPORT: SAVED");
     } else {
         s_bp.failed++;
         OPL_ERROR_F("bugreport", "bundle %s not written (see the lines above)", j->zip_path);
-        openpete_osd_notify("host", "bugreport.saved", 8000, "BUG REPORT FAILED - SEE THE LOG");
+        openpete_osd_notify("host", BR_OSD_KEY, 8000, "BUG REPORT FAILED - SEE THE LOG");
     }
     snprintf(s_bp.last_path, sizeof s_bp.last_path, "%s", j->zip_path);
     s_bp.last_members = j->members;
@@ -137,7 +149,11 @@ int openpete_bugreport_due(void) OP_REQUIRES(sim)
     if (s_bp.job) {
         s_bp.refused++;
         OPL_WARN_F("bugreport", "press refused: %s is still being written", s_bp.job->zip_path);
-        openpete_osd_notify("host", "bugreport.saved", 0, "BUG REPORT: STILL WRITING THE LAST ONE");
+        /* Once SAVING shows, it already says so; before (the screenshot
+         * and note prompt), the refusal gets its own word under the key,
+         * which SAVING then repaints. */
+        if (!s_bp.job->saving_shown)
+            openpete_osd_notify("host", BR_OSD_KEY, 0, "BUG REPORT: STILL WRITING THE LAST ONE");
         return 0;
     }
     return 1;
@@ -410,7 +426,7 @@ int openpete_bugreport_press(const CPUState* cpu, const openpete_options_t* opts
     br_job_t* j = (br_job_t*)calloc(1, sizeof *j);
     if (!j || job_paths(j) != 0 || openpete_bugrec_capture(&j->press, cpu) != 0) {
         OPL_ERROR_F("bugreport", "press failed: %s", j ? "no staging directory or state capture" : "out of memory");
-        openpete_osd_notify("host", "bugreport.saved", 0, "BUG REPORT FAILED - SEE THE LOG");
+        openpete_osd_notify("host", BR_OSD_KEY, 8000, "BUG REPORT FAILED - SEE THE LOG");
         if (j) openpete_bugrec_anchor_release(&j->press);
         free(j);
         s_bp.failed++;

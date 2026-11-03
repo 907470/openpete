@@ -1197,6 +1197,8 @@ typedef struct openpete_mod_api {
      *
      * Glyph set: 0-9, A-Z (lowercase folds up), space, and
      * `% / ? + ^ . ' :`. Any other character renders as a space.
+     * A long text wraps at spaces onto at most 10 lines; when text
+     * remains, or the text exceeds 255 bytes, the last line ends in "...".
      *
      * @param key         May be NULL. Coalesces: a live toast with the
      *                    same key is repainted with the new text and a

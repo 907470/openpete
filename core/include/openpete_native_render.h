@@ -26,6 +26,7 @@
 #include "openpete.h" /* openpete_options_t */
 #include "openpete_thread_roles.h" /* OP_SLOT */
 #include "openpete_moby_snap_rule.h" /* openpete_snap_plane */
+#include "openpete_osd.h" /* OPENPETE_OSD_MAX, OPENPETE_OSD_LINES_MAX */
 
 #ifdef __cplusplus
 extern "C" {
@@ -992,25 +993,48 @@ float openpete_native_overlay_px_per_unit(void);
 void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts);
 
 /* ---- OSD toast geometry ------------------------------------------------
- * The OSD renders into a FIXED SLOT GRID: one supersample target holding
- * OPENPETE_OSD_MAX stacked slots of identical extent, reallocated only when
- * the window resizes. Content-sized targets were the obvious design and are
- * wrong - every SS target rebuild waits the device idle, and toast arrivals,
- * expiries and coalescing repaints happen many times a second.
+ * The OSD renders into a FIXED GRID: one supersample target OPENPETE_OSD_GRID_H
+ * window heights tall, reallocated only when the window resizes.
+ * Content-sized targets were the obvious design and are wrong - every SS
+ * target rebuild waits the device idle, and toast arrivals, expiries and
+ * coalescing repaints happen many times a second.
  *
- * The builder emits each toast's border and text into its slot, in
- * TARGET-LOCAL overlay space (slot i's top-left is at y = i * slot height),
- * and reports which toast landed in which slot plus the box it actually
- * filled. The compositor samples that sub-rect and places it by the anchor
- * ledger at the toast's own alpha.
+ * The builder packs each toast's border and text into the grid top to
+ * bottom, oldest first, each starting on a whole 1x pixel row, in
+ * TARGET-LOCAL overlay space (row r's top is at y = r / window height), and
+ * reports which toast landed at which row plus the box it filled. A toast
+ * that does not fit below the ones before it gets no row this tick; it has
+ * no geometry, so its timer does not start, and it takes a row when an
+ * older toast retires. The compositor samples each box and places it by the
+ * anchor ledger at the toast's own alpha.
  *
  * The table is keyed by TOAST ID, never by index: the ring is mutated on
  * other threads between this push and the present that consumes it. Geometry
  * and table are published TOGETHER, under one lock - an id-keyed table is
  * worthless if it can itself be read half-copied. */
+
+/* The grid height in window heights: eight one-line toasts' 0.075 rows. */
+#define OPENPETE_OSD_GRID_H    0.6f
+/* Baseline-to-baseline distance of a wrapped toast's lines, overlay units:
+ * the 0.030 cap height plus 0.010 leading. */
+#define OPENPETE_OSD_LINE_STEP 0.040f
+/* The most lines the grid holds over all toasts: every toast costs its
+ * pad and a frame beyond its line steps, so 0.6 / 0.040 bounds the sum. */
+#define OPENPETE_OSD_GRID_LINES 15
+/* Glyph vertices one line can carry: the densest glyph of the three games'
+ * fonts, Spyro 2's and Spyro 3's comma at 156 vertices per 0.0103 of
+ * advance (15146 per overlay unit), times the 0.58 line width, rounded up. */
+#define OPENPETE_OSD_LINE_VERTS 9000
+/* Each toast's frame (emit_lit_border). */
+#define OPENPETE_OSD_FRAME_VERTS 288
+/* The OSD glyph vertex budget, shared by the builder and the renderer: the
+ * grid's lines at the densest glyph, plus every toast's frame. */
+#define OPENPETE_OSD_GLYPH_MAX (OPENPETE_OSD_GRID_LINES * OPENPETE_OSD_LINE_VERTS + \
+                                OPENPETE_OSD_MAX * OPENPETE_OSD_FRAME_VERTS)
+
 typedef struct {
-    uint32_t id;         /* the toast this slot holds                     */
-    int      slot;       /* its row in the grid                           */
+    uint32_t id;         /* the toast this row holds                      */
+    int      row_px;     /* its top row in the grid, 1x pixels            */
     float    box_w;      /* extent actually filled, overlay units         */
     float    box_h;
 } openpete_osd_slot_t;
@@ -1019,8 +1043,8 @@ typedef struct {
  *
  * Both lists are copied under the OSD publish mutex and the present reads
  * them under the same mutex, so it never pairs one push's vertices with
- * another push's table. nverts is clamped to [0, 24576] (the renderer's
- * glyph capacity) and nslots to [0, OPENPETE_OSD_MAX]; the stored counts
+ * another push's table. nverts is clamped to [0, OPENPETE_OSD_GLYPH_MAX]
+ * (the renderer's glyph capacity; a clamp is counted and logged) and nslots to [0, OPENPETE_OSD_MAX]; the stored counts
  * replace the previous ones, so 0 empties a list. A NULL array with a
  * positive count keeps the previous contents under the new count.
  * @param verts Glyph triangles in target-local overlay space, three
@@ -1032,17 +1056,16 @@ typedef struct {
 void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
                                     const openpete_osd_slot_t *slots, int nslots);
 
-/** @brief Return the extent of one OSD slot in overlay units.
+/** @brief Return the OSD grid's extent for the builder to lay out against.
  *
- * The builder lays out against the same numbers the compositor samples
- * with. The extent is the slot's 1x pixel size, as published with the
- * supersample target, divided by the window height, so slot origins land on
- * the texel blocks the resolve shader averages. Before a target is built
- * the maxima OSD_SLOT_W and OSD_SLOT_H are returned. The grid holds
- * OPENPETE_OSD_MAX slots.
- * @param w Receives the slot width; may be NULL.
- * @param h Receives the slot height; may be NULL. */
-void openpete_native_osd_slot_extent(float *w, float *h);
+ * The numbers are the ones the compositor samples with: the grid's 1x pixel
+ * size, as published with the supersample target, over the window height.
+ * Before a target is built the width is OSD_SLOT_W and the rows
+ * OPENPETE_OSD_GRID_H times the window height.
+ * @param w Receives the grid width, overlay units; may be NULL.
+ * @param px Receives one 1x pixel row's height, overlay units; may be NULL.
+ * @param rows Receives the grid height in 1x pixel rows; may be NULL. */
+void openpete_native_osd_slot_extent(float *w, float *px, int *rows);
 
 /** @brief Return the number of OSD toasts composited so far this run.
  *
@@ -1050,6 +1073,21 @@ void openpete_native_osd_slot_extent(float *w, float *h);
  * toast, whatever its pixels show. Logged at shutdown when the OSD is on.
  * @return The cumulative toast count. */
 unsigned openpete_native_osd_composited(void);
+
+/** @brief Count OSD glyph vertices the builder could not fit in its budget.
+ *
+ * Called by the glyph builder; the count joins the publish clamp in
+ * openpete_native_osd_clamped. Sim thread.
+ * @param verts The vertices refused this tick; 0 or less counts nothing. */
+void openpete_native_osd_count_dropped(int verts);
+
+/** @brief Return the OSD glyph vertices lost so far this run to the budget.
+ *
+ * The sum of the builder's refusals and the publish clamp at
+ * OPENPETE_OSD_GLYPH_MAX. Nonzero means a toast drew without some of its
+ * glyphs. Logged at shutdown with openpete_native_osd_composited.
+ * @return The cumulative vertex count. */
+unsigned long long openpete_native_osd_clamped(void);
 
 /** @brief Turn path-isolation mode (--render-paths) on or off.
  *

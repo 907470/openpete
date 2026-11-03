@@ -161,6 +161,14 @@ static toast_t *evict_victim(void) {
 /* ---- posting ------------------------------------------------------------ */
 void openpete_osd_notify(const char *source, const char *key,
                          uint32_t timeout_ms, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    openpete_osd_vnotify(source, key, timeout_ms, fmt, ap);
+    va_end(ap);
+}
+
+void openpete_osd_vnotify(const char *source, const char *key,
+                          uint32_t timeout_ms, const char *fmt, va_list ap) {
     if (!s_enabled || !fmt) return;
     /* Speculative ticks are rolled back and replayed ticks are re-executed: a
      * notification from either announces something that never committed, or
@@ -169,13 +177,12 @@ void openpete_osd_notify(const char *source, const char *key,
     if (openpete_speculative || openpete_replaying) return;
 
     char text[OPENPETE_OSD_TEXT_MAX];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(text, sizeof text, fmt, ap);
-    va_end(ap);
+    /* A text cut to the buffer ends in "..." so the cut is visible. */
+    if (vsnprintf(text, sizeof text, fmt, ap) >= (int)sizeof text)
+        memcpy(text + sizeof text - 4, "...", 4);
 
     if (timeout_ms == 0) timeout_ms = s_default_ms;
-    else if (timeout_ms > OPENPETE_OSD_TIMEOUT_MAX_MS)
+    else if (timeout_ms != OPENPETE_OSD_TIMEOUT_HOLD && timeout_ms > OPENPETE_OSD_TIMEOUT_MAX_MS)
         timeout_ms = OPENPETE_OSD_TIMEOUT_MAX_MS;
 
     SDL_LockMutex(osd_mx());
@@ -191,8 +198,9 @@ void openpete_osd_notify(const char *source, const char *key,
         memcpy(t->text, text, sizeof text);
         t->ttl_ms  = timeout_ms;
         t->repaint = 1;   /* the present thread rewinds the hold - it owns the clock */
+        const uint32_t id = t->id;
         SDL_UnlockMutex(osd_mx());
-        OPL_DEBUG_F("osd", "repaint key=%s: %s", key, text);
+        OPL_DEBUG_F("osd", "repaint id=%u key=%s: %s", id, key, text);
         return;
     }
 
@@ -214,8 +222,9 @@ void openpete_osd_notify(const char *source, const char *key,
     t->ttl_ms = timeout_ms;
     snprintf(t->key, sizeof t->key, "%s", (key && *key) ? key : "");
     memcpy(t->text, text, sizeof text);
+    const uint32_t id = t->id;
     SDL_UnlockMutex(osd_mx());
-    OPL_DEBUG_F("osd", "post key=%s: %s", (key && *key) ? key : "-", text);
+    OPL_DEBUG_F("osd", "post id=%u key=%s: %s", id, (key && *key) ? key : "-", text);
 }
 
 /* ---- both readers share one order --------------------------------------- */
@@ -282,6 +291,18 @@ static float smoothstep(float x) {
 static float ready_height(const openpete_osd_ready_t *r, int n, uint32_t id) {
     for (int i = 0; i < n; i++) if (r[i].id == id) return r[i].box_h;
     return -1.0f;   /* no geometry published for this toast yet */
+}
+
+/** @brief Report whether a held toast's dwell has run out at an age.
+ *
+ * A toast posted with OPENPETE_OSD_TIMEOUT_HOLD never runs out; it ends
+ * when its key is repainted with another timeout.
+ * @param t The toast.
+ * @param age Time since its birth.
+ * @return 1 when the rise and the hold have both elapsed, else 0. */
+static int hold_over(const toast_t *t, op_time_t age) {
+    if (t->ttl_ms == OPENPETE_OSD_TIMEOUT_HOLD) return 0;
+    return age >= OSD_T_IN_NS + (op_time_t)t->ttl_ms * OP_NS_PER_MS;
 }
 
 int openpete_osd_present_update(op_time_t now,
@@ -363,13 +384,14 @@ int openpete_osd_present_update(op_time_t now,
             if (age >= OSD_T_IN_NS) t->state = ST_HOLD;
             break;
         case ST_HOLD:
-            if (age >= OSD_T_IN_NS + (op_time_t)t->ttl_ms * OP_NS_PER_MS) {
+            if (hold_over(t, age)) {
                 t->state      = ST_FALLING;
                 t->fall_start = now;
             }
             break;
         case ST_FALLING:
             if (now - t->fall_start >= OSD_T_OUT_NS) {
+                OPL_DEBUG_F("osd", "retire id=%u key=%s", t->id, t->key[0] ? t->key : "-");
                 memset(t, 0, sizeof *t);   /* retired */
                 continue;
             }

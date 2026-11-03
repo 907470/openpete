@@ -426,9 +426,11 @@ block of the Mods tab, visible while that overlay shows the tab, repainted
 whenever the mod prints again. `notify` reports an event: a toast in the
 game's gold chrome, shown for a few seconds regardless of any overlay.
 `notify` renders with the game's glyph set (`0-9`, `A-Z`, space, and
-`% / ? + ^ . ' :`; other characters render as a space), coalesces toasts
-that share a key, is rate-limited per mod, and is a no-op on runahead
-and rewind ticks.
+`% / ? + ^ . ' :`; other characters render as a space), wraps a long
+text at spaces onto at most 10 lines and ends the last line in `...` when
+text remains (or when the text exceeds 255 bytes), coalesces toasts that
+share a key, is rate-limited per mod, and is a no-op on runahead and
+rewind ticks.
 
 **Panels.** `openpete_mod_ui.h` mirrors eleven widgets (text, button,
 checkbox, sliders, combo, input text, separator, same-line, tooltip) over

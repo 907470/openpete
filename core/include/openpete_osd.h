@@ -28,6 +28,7 @@
 #ifndef OPENPETE_OSD_H
 #define OPENPETE_OSD_H
 
+#include <stdarg.h>
 #include <stdint.h>
 #include "openpete_time.h"   /* op_time_t */
 
@@ -36,7 +37,10 @@ extern "C" {
 #endif
 
 #define OPENPETE_OSD_MAX        8    /* live toasts; the ring size            */
-#define OPENPETE_OSD_TEXT_MAX  64    /* one toast's text, NUL included        */
+#define OPENPETE_OSD_TEXT_MAX 256    /* one toast's text, NUL included        */
+#define OPENPETE_OSD_LINES_MAX 10    /* wrapped lines per toast, about 230
+                                      * characters; the last line ends in
+                                      * "..." when text remains              */
 #define OPENPETE_OSD_KEY_MAX   40    /* coalescing key (mod id prefix + key)  */
 #define OPENPETE_OSD_SRC_MAX   24    /* rate-limit bucket name ("host", mod)  */
 
@@ -44,6 +48,12 @@ extern "C" {
  * unclamped timeout would let one caller pin slots for the rest of the
  * session. */
 #define OPENPETE_OSD_TIMEOUT_MAX_MS 30000u
+
+/* The timeout that holds a toast until its key is repainted: it never
+ * expires on its own. Only the engine passes it; the mod API clamps it to
+ * OPENPETE_OSD_TIMEOUT_MAX_MS like any other value. The caller owns the
+ * toast's end: it repaints the key with an ordinary timeout. */
+#define OPENPETE_OSD_TIMEOUT_HOLD   0xFFFFFFFFu
 
 /* ---- configuration (CLI / openpete.toml / the M overlay) ---------------- */
 /** @brief Switch notifications on or off.
@@ -100,11 +110,23 @@ uint32_t openpete_osd_default_timeout_ms(void);
  *        a mod; NULL or empty reads as "host".
  * @param key The coalescing key; NULL or empty always stacks a new toast.
  * @param timeout_ms The hold in milliseconds; 0 takes the configured
- *        default, and a value over OPENPETE_OSD_TIMEOUT_MAX_MS is clamped.
- * @param fmt printf format of the text, truncated to
- *        OPENPETE_OSD_TEXT_MAX - 1 bytes. */
+ *        default, OPENPETE_OSD_TIMEOUT_HOLD holds until a repaint, and any
+ *        other value over OPENPETE_OSD_TIMEOUT_MAX_MS is clamped.
+ * @param fmt printf format of the text. A text longer than
+ *        OPENPETE_OSD_TEXT_MAX - 1 bytes is cut to that length with its
+ *        last three bytes replaced by "...", so the cut shows. */
 void openpete_osd_notify(const char *source, const char *key,
                          uint32_t timeout_ms, const char *fmt, ...);
+
+/** @brief Post a toast from a va_list, as openpete_osd_notify does.
+ *
+ * @param source The rate-limit bucket, as for openpete_osd_notify.
+ * @param key The coalescing key, as for openpete_osd_notify.
+ * @param timeout_ms The hold, as for openpete_osd_notify.
+ * @param fmt printf format of the text, as for openpete_osd_notify.
+ * @param ap The format's arguments. */
+void openpete_osd_vnotify(const char *source, const char *key,
+                          uint32_t timeout_ms, const char *fmt, va_list ap);
 
 /* ---- the sim-thread reader: what to build geometry for ------------------ */
 typedef struct {

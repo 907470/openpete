@@ -129,6 +129,8 @@ typedef struct br_job {
     uint64_t shot_t0_ns;        /* when the present services took the screenshot request */
     uint64_t display_us;        /* sim-thread time of the display service, screenshot included */
     /* The worker's results. */
+    SDL_AtomicInt noted;        /* 1 once the note prompt ended and the write began */
+    int      saving_shown;      /* sim thread: the SAVING toast was posted */
     SDL_AtomicInt finished;     /* 1 once the worker returned */
     int      rc;
     size_t   members;

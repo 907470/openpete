@@ -1398,23 +1398,24 @@ static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
  * and the mod id is the openpete_osd_notify source, whose rate-limit bucket
  * is per source, so one mod in a tick loop cannot starve another's
  * notifications or the engine's. A NULL or empty key posts an uncoalesced
- * toast. The text is formatted into OPENPETE_OSD_TEXT_MAX bytes. Refused
- * once the mod's shutdown hook has returned. */
+ * toast. The text is formatted by openpete_osd_vnotify. A timeout over
+ * OPENPETE_OSD_TIMEOUT_MAX_MS, OPENPETE_OSD_TIMEOUT_HOLD included, is
+ * clamped to it, so a mod cannot pin a toast. Refused once the mod's
+ * shutdown hook has returned. */
 static void api_notify(openpete_mod_t* self, const char* key,
                        uint32_t timeout_ms, const char* fmt, ...) {
     if (!self || !fmt || !mod_api_enter(self, "notify")) return;
     struct openpete_mod* m = self;
-    char text[OPENPETE_OSD_TEXT_MAX];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(text, sizeof text, fmt, ap);
-    va_end(ap);
+    if (timeout_ms > OPENPETE_OSD_TIMEOUT_MAX_MS) timeout_ms = OPENPETE_OSD_TIMEOUT_MAX_MS;
     /* A namespaced key that does not fit the OSD's key field posts without
      * coalescing rather than sharing a truncated key with another one. */
     char nskey[OPENPETE_OSD_KEY_MAX];
     const int keyed = key && *key &&
                       snprintf(nskey, sizeof nskey, "%s/%s", m->id, key) < (int)sizeof nskey;
-    openpete_osd_notify(m->id, keyed ? nskey : NULL, timeout_ms, "%s", text);
+    va_list ap;
+    va_start(ap, fmt);
+    openpete_osd_vnotify(m->id, keyed ? nskey : NULL, timeout_ms, fmt, ap);
+    va_end(ap);
     mod_api_leave();
 }
 

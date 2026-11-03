@@ -1364,13 +1364,34 @@ static int emit_lit_border(const emit_ctx_t* ecx,
     return n;
 }
 
+/** @brief Returns one character's advance at a scale, in overlay units, as emit_string advances its cursor.
+ *
+ * glyph_metrics' advance plus TXT_GAP for a glyph; TXT_SPACE for a space or
+ * an uncached character; the scaled period's width plus TXT_GAP for a colon
+ * the font draws as two periods.
+ * @param c The character.
+ * @param scale Overlay units per model unit (cap height / FONT.model_h).
+ * @return The advance. */
+static float glyph_advance(char c, float scale) {
+    if (c == ' ') return TXT_SPACE;
+    if (c == ':' && glyph_slot(':') < 0) {
+        int slot = glyph_slot('.');
+        if (slot < 0 || !s_set.glyph[slot].valid) return TXT_SPACE;
+        return (float)(s_set.glyph[slot].vxmax - s_set.glyph[slot].vxmin)
+               * scale * FONT.colon_scale + TXT_GAP;
+    }
+    float adv, inset;
+    glyph_metrics(glyph_slot(c), scale, &adv, &inset);
+    if (adv < 0.0f) return TXT_SPACE;
+    return adv + TXT_GAP;
+}
+
 /** @brief Returns a string's advance width at a cap height, in overlay units.
  *
- * Mirrors emit_string's cursor accumulation: glyph_metrics' advance plus
- * TXT_GAP per glyph, TXT_SPACE for a space or an uncached character, and
- * the scaled period's width plus TXT_GAP for a colon. The width is linear
- * in cap_h and includes the trailing gap. Used to right-align and centre
- * menu, readout and version text and to size OSD boxes.
+ * The sum of glyph_advance over the string, left to right, so it mirrors
+ * emit_string's cursor accumulation. The width is linear in cap_h and
+ * includes the trailing gap. Used to right-align and centre menu, readout
+ * and version text and to size OSD boxes.
  * @param str The string, or NULL.
  * @param cap_h The cap height, in overlay units.
  * @return The width; 0 when the cache is not ready or str is NULL. */
@@ -1378,21 +1399,7 @@ static float measure_string(const char* str, float cap_h) {
     if (!s_set.ready || !str) return 0.0f;
     const float scale = cap_h / FONT.model_h;
     float cursor = 0.0f;
-    for (int i = 0; str[i]; i++) {
-        char c = str[i];
-        if (c == ' ') { cursor += TXT_SPACE; continue; }
-        if (c == ':' && glyph_slot(':') < 0) {
-            int slot = glyph_slot('.');
-            if (slot < 0 || !s_set.glyph[slot].valid) { cursor += TXT_SPACE; continue; }
-            cursor += (float)(s_set.glyph[slot].vxmax - s_set.glyph[slot].vxmin)
-                      * scale * FONT.colon_scale + TXT_GAP;
-            continue;
-        }
-        float adv, inset;
-        glyph_metrics(glyph_slot(c), scale, &adv, &inset);
-        if (adv < 0.0f) { cursor += TXT_SPACE; continue; }
-        cursor += adv + TXT_GAP;
-    }
+    for (int i = 0; str[i]; i++) cursor += glyph_advance(str[i], scale);
     return cursor;
 }
 
@@ -1572,36 +1579,210 @@ void text_moby_native_menu(void) {
  * geometry built once and reused would show a frozen glint on a live toast.
  * The settings menu already does exactly this while it is open.
  *
- * Geometry is emitted in TARGET-LOCAL overlay space - slot i's box starts at
- * y = i * slot_h - and the slot table tells the compositor which toast landed
- * where and how much of its slot it filled. Text and table are published in
+ * Geometry is emitted in TARGET-LOCAL overlay space, the toasts packed top
+ * to bottom at whole 1x pixel rows, and the slot table tells the compositor
+ * which toast landed at which row and how much of the grid it filled. Text and table are published in
  * one call, so the compositor can never resolve an id through a table that
  * describes different geometry. */
-#define OSD_TXT_MAX     24576   /* must match OSD_GLYPH_MAX (native_render.c) */
 #define OSD_CAP_H       0.030f  /* toast glyph height, overlay units          */
 #define OSD_PAD_X       0.022f
 #define OSD_PAD_Y       0.014f
+#define OSD_LINE_STEP   OPENPETE_OSD_LINE_STEP  /* baseline to baseline        */
 #define OSD_BORDER_BT   0.0035f /* frame thickness - the menu's, so the two read as one set */
 #define OSD_TINT        0x96962Au   /* the menu's mid yellow-gold */
+#define OSD_ELLIPSIS    "..."
+#define OSD_ROW_GAP_PX  2       /* empty 1x rows between packed toasts */
 
-static openpete_hud_vert s_osd_buf[OSD_TXT_MAX];
+_Static_assert(OPENPETE_OSD_FRAME_VERTS == MENU_BORDER_VERTS,
+               "the OSD budget's frame term is emit_lit_border's vertex count");
 
-/** @brief Copies a toast's text and drops trailing characters until it fits a width.
+static openpete_hud_vert s_osd_buf[OPENPETE_OSD_GLYPH_MAX];
+
+/* One toast wrapped into lines: each line is a span of the text, the last
+ * one optionally followed by OSD_ELLIPSIS. */
+typedef struct {
+    int off[OPENPETE_OSD_LINES_MAX];
+    int len[OPENPETE_OSD_LINES_MAX];
+    int n;          /* lines used, at least 1                              */
+    int consumed;   /* bytes of the text laid out, break spaces included    */
+    int cut;        /* 1 when the last line ends in OSD_ELLIPSIS             */
+} osd_wrap_t;
+
+/** @brief Returns the width of a span of a string at a cap height, in overlay units.
  *
- * Truncation keeps a toast inside its slot of the fixed grid; an overrun
- * would put its glyphs into the neighbouring slot's texels, which the
- * compositor samples as part of a different toast.
- * @param src The text, or NULL for an empty string.
+ * Accumulates glyph_advance in the order measure_string does, so a span
+ * covering a whole string measures bit-identically to it.
+ * @param s The string.
+ * @param n The span length in bytes.
+ * @param scale Overlay units per model unit.
+ * @return The width. */
+static float osd_span_w(const char* s, int n, float scale) {
+    float w = 0.0f;
+    for (int i = 0; i < n; i++) w += glyph_advance(s[i], scale);
+    return w;
+}
+
+/** @brief Returns the longest prefix of a span whose width stays within a budget.
+ *
+ * @param s The span.
+ * @param n Its length in bytes.
+ * @param scale Overlay units per model unit.
+ * @param avail The width budget, in overlay units.
+ * @return The prefix length, 0 to @p n. */
+static int osd_fit_prefix(const char* s, int n, float scale, float avail) {
+    float w = 0.0f;
+    for (int i = 0; i < n; i++) {
+        w += glyph_advance(s[i], scale);
+        if (w > avail) return i;
+    }
+    return n;
+}
+
+/** @brief Picks where a line that overflows at fit ends.
+ *
+ * The last space at or before fit wins (the space is consumed by the
+ * break); else the last hyphen, comma or slash before fit, kept on the
+ * line; else fit itself, a mid-word break of at least one byte. A file
+ * name such as bug-spyro-1-20261103-143000.zip therefore moves whole to
+ * the next line when a space precedes it.
+ * @param s The rest of the text, starting at the line.
+ * @param fit The fitting prefix length; the byte at fit does not fit.
+ * @return The line length in bytes, at least 1. */
+static int osd_break_at(const char* s, int fit) {
+    for (int i = fit; i > 0; i--)
+        if (s[i] == ' ') return i;
+    for (int i = fit - 1; i > 0; i--)
+        if (s[i - 1] == '-' || s[i - 1] == ',' || s[i - 1] == '/') return i;
+    return fit > 0 ? fit : 1;
+}
+
+/** @brief Wraps a toast's text into at most OPENPETE_OSD_LINES_MAX lines of a width.
+ *
+ * Greedy: each line takes as much as fits, broken by osd_break_at, and the
+ * spaces at a break are consumed. Text that fits one line is one span of
+ * the whole text, so a one-line toast lays out as it did before wrapping
+ * existed. When text remains after the last line, that line is shortened
+ * until it and OSD_ELLIPSIS fit, trailing spaces dropped, and cut is set.
+ * @param src The text.
  * @param cap_h The cap height, in overlay units.
- * @param avail The width available, in overlay units.
+ * @param avail The line width, in overlay units.
+ * @param out Receives the lines. */
+static void osd_wrap(const char* src, float cap_h, float avail, osd_wrap_t* out) {
+    const float scale = cap_h / FONT.model_h;
+    const int len = (int)strlen(src);
+    int p = 0;
+    out->n = 0;
+    out->cut = 0;
+    while (out->n < OPENPETE_OSD_LINES_MAX) {
+        if (out->n > 0) while (p < len && src[p] == ' ') p++;
+        const int rest = len - p;
+        const int fit = osd_fit_prefix(src + p, rest, scale, avail);
+        int take;
+        if (fit == rest) {
+            take = rest;
+        } else if (out->n == OPENPETE_OSD_LINES_MAX - 1) {
+            const float ell = osd_span_w(OSD_ELLIPSIS, (int)strlen(OSD_ELLIPSIS), scale);
+            take = osd_fit_prefix(src + p, rest, scale, avail - ell);
+            while (take > 0 && src[p + take - 1] == ' ') take--;
+            out->cut = 1;
+        } else {
+            take = osd_break_at(src + p, fit);
+            while (take > 1 && src[p + take - 1] == ' ') take--;
+        }
+        out->off[out->n] = p;
+        out->len[out->n] = take;
+        out->n++;
+        p += take;
+        if (out->cut || p >= len) break;
+        /* The spaces a break consumed count as laid out. */
+        int q = p;
+        while (q < len && src[q] == ' ') q++;
+        if (q >= len) { p = q; break; }
+    }
+    if (out->n == 0) { out->off[0] = 0; out->len[0] = 0; out->n = 1; }
+    out->consumed = p;
+}
+
+/** @brief Prints one stderr line per toast whose layout changed, under OPENPETE_TEXT_GLYPH_CENSUS.
+ *
+ * The line carries the toast id, the text's length, the bytes laid out,
+ * the line count, whether the last line ends in the ellipsis, the box and
+ * the toast's glyph and frame vertices. A check harness reads laid out
+ * equal to length with cut 0 as a toast shown whole. Latched like
+ * glyph_census.
+ * @param id The toast id.
+ * @param len The text's length in bytes.
+ * @param w The layout.
+ * @param box_w The box width, overlay units.
+ * @param box_h The box height, overlay units.
+ * @param verts The toast's vertices, glyphs and frame.
+ * @param glyph_verts Of those, the glyph-face vertices. */
+static void osd_toast_census(uint32_t id, int len, const osd_wrap_t* w, float box_w,
+                             float box_h, int verts, int glyph_verts) {
+    static int s_on = -1;
+    static uint32_t s_last_id[OPENPETE_OSD_MAX];
+    static int s_last_key[OPENPETE_OSD_MAX];
+    if (s_on < 0) { const char* e = getenv("OPENPETE_TEXT_GLYPH_CENSUS"); s_on = (e && *e && *e != '0') ? 1 : 0; }
+    if (!s_on) return;
+    const int key = (len << 16) ^ (w->consumed << 4) ^ (w->n << 1) ^ w->cut;
+    const int k = (int)(id % OPENPETE_OSD_MAX);
+    if (s_last_id[k] == id && s_last_key[k] == key) return;
+    s_last_id[k] = id;
+    s_last_key[k] = key;
+    fprintf(stderr, "[osd-toast vbl=%u] id=%u len=%d laid_out=%d lines=%d cut=%d box=%.4fx%.4f "
+            "verts=%d glyph_verts=%d\n", openpete_feed_key_now(), id, len, w->consumed, w->n,
+            w->cut, (double)box_w, (double)box_h, verts, glyph_verts);
+}
+
+/** @brief Writes line k of a wrapped toast, the ellipsis appended on a cut last line.
+ *
  * @param dst The destination.
- * @param dstcap The destination's size in bytes; a longer text is cut to it
- *        first. */
-static void osd_fit_text(const char* src, float cap_h, float avail,
-                         char* dst, int dstcap) {
-    snprintf(dst, (size_t)dstcap, "%s", src ? src : "");
-    for (int n = (int)strlen(dst); n > 0 && measure_string(dst, cap_h) > avail; n--)
-        dst[n - 1] = 0;
+ * @param cap Its size in bytes.
+ * @param text The toast's text.
+ * @param w The layout.
+ * @param k The line. */
+static void osd_line(char* dst, size_t cap, const char* text, const osd_wrap_t* w, int k) {
+    const int ell = w->cut && k == w->n - 1;
+    snprintf(dst, cap, "%.*s%s", w->len[k], text + w->off[k], ell ? OSD_ELLIPSIS : "");
+}
+
+/** @brief Returns the advance width of a wrapped toast's widest line at OSD_CAP_H.
+ *
+ * @param text The toast's text.
+ * @param w The layout.
+ * @return The width, overlay units. */
+static float osd_text_width(const char* text, const osd_wrap_t* w) {
+    char line[OPENPETE_OSD_TEXT_MAX + sizeof OSD_ELLIPSIS];
+    float text_w = 0.0f;
+    for (int k = 0; k < w->n; k++) {
+        osd_line(line, sizeof line, text, w, k);
+        const float lw = measure_string(line, OSD_CAP_H);
+        if (lw > text_w) text_w = lw;
+    }
+    return text_w;
+}
+
+/** @brief Emits a wrapped toast's lines and its lit frame, the box's top-left at (0, sy).
+ *
+ * @param cx The emission context, its specular light installed.
+ * @param text The toast's text.
+ * @param w The layout.
+ * @param sy The box's top in the grid, overlay units.
+ * @param box_w The box width, overlay units.
+ * @param box_h The box height, overlay units.
+ * @return The frame vertices that did not fit the buffer, 0 when the frame is whole. */
+static int osd_emit_toast(emit_ctx_t* cx, const char* text, const osd_wrap_t* w,
+                          float sy, float box_w, float box_h) {
+    char line[OPENPETE_OSD_TEXT_MAX + sizeof OSD_ELLIPSIS];
+    for (int k = 0; k < w->n; k++) {
+        osd_line(line, sizeof line, text, w, k);
+        emit_string(cx, line, OSD_PAD_X, sy + OSD_PAD_Y + (float)k * OSD_LINE_STEP,
+                    OSD_CAP_H, OSD_TINT, -1);
+    }
+    const int frame = emit_lit_border(cx, 0.0f, sy, box_w, sy + box_h, OSD_BORDER_BT,
+                                      cx->out + cx->n, cx->cap - cx->n);
+    cx->n += frame;
+    return OPENPETE_OSD_FRAME_VERTS - frame;
 }
 
 void text_moby_native_osd(void) {
@@ -1620,43 +1801,52 @@ void text_moby_native_osd(void) {
         return;
     }
 
-    float slot_w, slot_h;
-    openpete_native_osd_slot_extent(&slot_w, &slot_h);
-    if (slot_w <= 0.0f || slot_h <= 0.0f) return;
+    float slot_w, px;
+    int grid_rows;
+    openpete_native_osd_slot_extent(&slot_w, &px, &grid_rows);
+    const float grid_h = px * (float)grid_rows;
     const float text_avail = slot_w - 2.0f * OSD_PAD_X;
-    if (text_avail <= 0.0f) return;
+    if (text_avail <= 0.0f || grid_h <= 0.0f) return;
 
     emit_ctx_t cx;
-    emit_ctx_init(&cx, s_osd_buf, OSD_TXT_MAX);
+    emit_ctx_init(&cx, s_osd_buf, OPENPETE_OSD_GLYPH_MAX);
     install_specular_light(&cx, text_moby_native_shimmer_phase());
 
     openpete_osd_slot_t slots[OPENPETE_OSD_MAX];
     int ns = 0;
+    int frame_short = 0;   /* frame vertices emit_lit_border could not fit */
+    int row = 0;           /* the next free 1x row of the grid */
 
     for (int i = 0; i < n && i < OPENPETE_OSD_MAX; i++) {
-        char line[OPENPETE_OSD_TEXT_MAX];
-        osd_fit_text(items[i].text, OSD_CAP_H, text_avail, line, sizeof line);
+        const char* text = items[i].text;
+        osd_wrap_t w;
+        osd_wrap(text, OSD_CAP_H, text_avail, &w);
 
-        float box_w = 2.0f * OSD_PAD_X + measure_string(line, OSD_CAP_H);
-        float box_h = 2.0f * OSD_PAD_Y + OSD_CAP_H;
-        if (box_w > slot_w) box_w = slot_w;
-        if (box_h > slot_h) box_h = slot_h;
+        const float box_w = fminf(2.0f * OSD_PAD_X + osd_text_width(text, &w), slot_w);
+        const float box_h = fminf(2.0f * OSD_PAD_Y + OSD_CAP_H + (float)(w.n - 1) * OSD_LINE_STEP,
+                                  grid_h);
+        /* The rows the box touches, a partly covered last one included. */
+        const int need = (int)ceilf(box_h / px);
+        if (row + need > grid_rows) break;   /* no room: this toast and the
+                                              * newer ones wait for a row */
 
-        const float sy = (float)i * slot_h;   /* this slot's top in the grid */
-        const int before = cx.n;
-        emit_string(&cx, line, OSD_PAD_X, sy + OSD_PAD_Y, OSD_CAP_H, OSD_TINT, -1);
-        cx.n += emit_lit_border(&cx, 0.0f, sy, box_w, sy + box_h, OSD_BORDER_BT,
-                                s_osd_buf + cx.n, OSD_TXT_MAX - cx.n);
+        const float sy = (float)row * px;   /* this toast's top in the grid */
+        const int before = cx.n, before_glyph = cx.glyph_n;
+        frame_short += osd_emit_toast(&cx, text, &w, sy, box_w, box_h);
+        osd_toast_census(items[i].id, (int)strlen(text), &w, box_w, box_h, cx.n - before,
+                         cx.glyph_n - before_glyph);
         if (cx.n == before) continue;   /* budget exhausted: publish no slot for it,
                                          * and the compositor draws nothing rather
                                          * than an empty frame */
 
-        slots[ns].id    = items[i].id;
-        slots[ns].slot  = i;
+        slots[ns].id     = items[i].id;
+        slots[ns].row_px = row;
         slots[ns].box_w = box_w;
         slots[ns].box_h = box_h;
         ns++;
+        row += need + OSD_ROW_GAP_PX;
     }
+    openpete_native_osd_count_dropped(cx.dropped * 3 + frame_short);
     openpete_native_set_osd_glyphs(s_osd_buf, cx.n, slots, ns);
     if ((text_moby_native_shimmer_phase() & 63u) == 0u) glyph_hash_census("osd", s_osd_buf, cx.n);
     glyph_census(2, cx.n, cx.glyph_n);
