@@ -196,3 +196,8 @@ colossus | pos=(47666, 60635, 12089) yaw=78 pitch=41
 # walk's far model keeps the far tile at both LODs where the surrounding
 # terrain takes the near tile. Blessed pre-fix.
 summer_forest | pos=(99823, 31898, 44036) yaw=-707 pitch=992
+# Reported defect: the Short Idol's shield front (six triangles, flag bit 5,
+# material word 0x90000000, mode 1) draws flat gray where the game draws it
+# textured from the special-material page with generated environment
+# coordinates. Blessed pre-fix.
+idol_springs | pos=(79159, 53926, 16006) yaw=-1450 pitch=36
