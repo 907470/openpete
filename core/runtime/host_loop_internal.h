@@ -69,6 +69,7 @@ typedef struct {
     op_time_t sim_period_ns; /* owner: host_iter_begin; the VBL period the world-liveness bound and the VBL clock read */
     bool ovr_claimed;       /* owner: host_input_arbitrate; a bk2 row or an overlay claimed the pad override channel */
     unsigned bk2_stamped_frame; /* owner: host_input_arbitrate; openpete_frame the bk2 stamp was made for */
+    int      bk2_stamped_row;   /* owner: host_input_arbitrate; the bk2 row it stamped (bk2_feed_row), when sim_due */
     bool p1_staged;         /* owner: host_input_latch; slot 0 of the input record was staged before the yield */
     bool rewound;           /* owner: host_quiescent_ops (rewind_step); the rewind driver stepped, so no forward tick */
     unsigned frame_before_yield; /* owner: host_tick, before the yield; read by host_input_commit */

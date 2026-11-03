@@ -17,11 +17,11 @@
  * nothing and returns true before any other step: the run must not tick a
  * row past the movie.
  * @param S The session.
- * @param it The iteration; reads sim_due, writes ovr_claimed and bk2_stamped_frame.
+ * @param it The iteration; reads sim_due, writes ovr_claimed, bk2_stamped_frame and bk2_stamped_row.
  * @return true when the run ends at the movie's end. */
 bool host_input_arbitrate(const host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
 
-/** @brief Restamp the bk2 row after a quiescent op re-anchored openpete_frame.
+/** @brief Restamp the bk2 row after a quiescent op moved the frame or the row the movie feeds.
  *
  * A savestate load, stress rollback or handoff resume may move
  * openpete_frame; the stamp made by host_input_arbitrate was for the frame
@@ -32,7 +32,7 @@ bool host_input_arbitrate(const host_session_t* S, host_iter_t* it) OP_REQUIRES(
  * to the movie on the iteration the op commits. Silent: the transition
  * log and the mods' bk2 status stay with the arbitration stamp.
  * @param S The session.
- * @param it The iteration; reads bk2_stamped_frame, writes ovr_claimed. */
+ * @param it The iteration; reads bk2_stamped_frame, bk2_stamped_row and sim_due, writes ovr_claimed. */
 void host_input_restamp_after_ops(const host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
 
 /** @brief Pump, sample and latch this iteration's input, then stage the tick's input record.

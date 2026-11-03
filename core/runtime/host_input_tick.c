@@ -454,6 +454,7 @@ bool host_input_arbitrate(const host_session_t* S, host_iter_t* it) OP_REQUIRES(
      * needs the pad to NOT be live input claims it. */
     it->ovr_claimed = false;
     it->bk2_stamped_frame = openpete_frame;  /* see host_input_restamp_after_ops */
+    it->bk2_stamped_row = bk2_feed_row();
     if (it->sim_due && S->bk2.active) {
         const int r = input_bk2_stamp(S);
         if (r < 0) return true;
@@ -484,7 +485,13 @@ bool host_input_arbitrate(const host_session_t* S, host_iter_t* it) OP_REQUIRES(
 /* Documented at the declaration in host_input_tick.h. */
 void host_input_restamp_after_ops(const host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
 {
-    if (!S->bk2.active || openpete_frame == it->bk2_stamped_frame) return;
+    if (!S->bk2.active) return;
+    /* A load that keeps openpete_frame (a fresh process booted to the
+     * anchor's own frame) or the release of a held movie changes the row
+     * without changing the frame, so the row is compared as well. */
+    if (openpete_frame == it->bk2_stamped_frame &&
+        (!it->sim_due || bk2_feed_row() == it->bk2_stamped_row))
+        return;
     /* The arbitration's claim was decided for the row before the jump; it
      * is decided again for the new one, with the same priorities: a movie
      * row in range owns the channel, else an overlay holding the pad keeps
