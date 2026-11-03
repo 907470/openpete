@@ -34,11 +34,11 @@ constexpr Step kSteps[] = {
     {"PREPARING THE GAME", "Preparing the game", LauncherSegment::None, false},
 };
 
-/* The segments' shares of the first boot's time: the mean over the release
- * packages' first boots of the three games on Linux and Windows (copy 9.5 to
- * 18.4%, read 1.8 to 2.5%, translate 9.6 to 26.1%, build and link 60.5 to
- * 74.5% per run). */
-constexpr float kWeights[(int)LauncherSegment::Count] = {0.145f, 0.021f, 0.156f, 0.678f};
+/* The segments' shares of the first boot's time: the mean over twelve
+ * launcher first boots, two per game on Linux and on Windows (copy 10.8 to
+ * 26.8%, read 1.3 to 4.8%, translate 10.3 to 28.0%, build and link 50.3 to
+ * 71.2% per run). */
+constexpr float kWeights[(int)LauncherSegment::Count] = {0.188f, 0.023f, 0.165f, 0.624f};
 
 /* Process start for the bar's log lines: this translation unit's static
  * initialization, which runs before main. */
