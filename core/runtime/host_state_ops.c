@@ -12,6 +12,7 @@
 #include "openpete_handoff.h"
 #include "openpete_bugrec.h"
 #include "openpete_bugreport.h"
+#include "openpete_bugreport_replay.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
 #include "openpete_mods.h"
@@ -551,6 +552,7 @@ bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_a
     const bool rewound = rewind_step(opts, paused, bk2_active);
     openpete_mods_arena_page_census_tick();
     openpete_handoff_poll(&g_game.cpu);
+    openpete_bugreport_replay_step(&g_game.cpu);
     openpete_bugrec_step(&g_game.cpu, rewound);
     return rewound;
 }

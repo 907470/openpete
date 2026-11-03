@@ -101,6 +101,34 @@ int openpete_state_image_card_paths_set(uint8_t* img, size_t len, const char* po
  * @return 0, or -1 when the image is too short or @p cap too small. */
 int openpete_state_image_ident(const uint8_t* img, size_t len, char* out, size_t cap);
 
+/** @brief Compute the identity a state would carry under this build's state ABI and the given codegen and ROM stamps, as lowercase hex.
+ *
+ * The same hash the save header holds, with the stamps supplied instead
+ * of the running module's; NULL reads as "?".
+ * @param cg The codegen stamp, or NULL.
+ * @param rom The ROM stamp, or NULL.
+ * @param out Receives 64 hex digits and a NUL.
+ * @param cap Capacity of @p out, at least 65.
+ * @return 0, or -1 when @p cap is too small. */
+int openpete_state_ident_from_terms(const char* cg, const char* rom, char* out, size_t cap);
+
+/** @brief Admit one identity besides this build's at the load check.
+ *
+ * The caller has verified that identity by recomputing it from another
+ * module's stamps (openpete_state_ident_from_terms); a load of a file
+ * carrying it is logged as admitted. Every other check still applies.
+ * @param hex 64 hex digits, or NULL or "" to admit none.
+ * @return 0, or -1 when @p hex is malformed (none admitted). */
+int openpete_state_admit_ident(const char* hex);
+
+/** @brief Map card names a state's card section carries to the cards the ports hold now.
+ *
+ * A load whose card section names @p port1 (or @p port2) in a held port
+ * checks and rebinds against the card port 1 (port 2) holds instead.
+ * @param port1 The name mapped to port 1's card, or NULL or "" for none.
+ * @param port2 The name mapped to port 2's card, or NULL or "" for none. */
+void openpete_state_card_remap(const char* port1, const char* port2);
+
 /** @brief Write the running state to a file.
  *
  * Writes the header (magic, version, content identity, the running game's

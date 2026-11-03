@@ -496,8 +496,20 @@ build_appimage() {  # build_appimage <stage-dir>
     # build containers routinely have no FUSE.
     ARCH=x86_64 "$TOOL" --appimage-extract-and-run "${rt_arg[@]}" "$APPDIR" "$IMG"
     ( cd "$OUT" && sha256sum "$(basename "$IMG")" > "$(basename "$IMG").sha256" )
+    exe_sidecar "$APPDIR/usr/$EXE" "usr/$EXE" "$IMG"
+    ARTIFACTS+=("$IMG")
     rm -rf "$APPDIR"
     echo "[package] $IMG ready"
+}
+
+# The artifacts this run wrote, for the release archive.
+ARTIFACTS=()
+
+exe_sidecar() {  # exe_sidecar <exe-file> <path-inside> <artifact>
+    # <artifact>.exe.sha256: the SHA-256 of the executable the artifact
+    # carries, as shipped (stripped, signed), with its path inside the
+    # artifact - the hash a bug report records for the binary it ran.
+    echo "$(sha256sum "$1" | cut -d' ' -f1)  $2" > "$3.exe.sha256"
 }
 
 package_linux() {  # package_linux <exe-dir>
@@ -537,6 +549,8 @@ package_linux() {  # package_linux <exe-dir>
     assert_no_copyleft "$STAGE"
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
     ( cd "$OUT" && sha256sum "$NAME.tar.xz" > "$NAME.tar.xz.sha256" )
+    exe_sidecar "$STAGE/$EXE" "$NAME/$EXE" "$OUT/$NAME.tar.xz"
+    ARTIFACTS+=("$OUT/$NAME.tar.xz")
     if [[ $APPIMAGE -eq 1 ]]; then build_appimage "$STAGE"; fi
 }
 
@@ -611,6 +625,8 @@ package_windows() {  # package_windows <exe-dir>
     # zip, and a second level leaves users an install nested one deep.
     ( cd "$STAGE" && python3 -m zipfile -c "../$NAME.zip" . )
     ( cd "$OUT" && sha256sum "$NAME.zip" > "$NAME.zip.sha256" )
+    exe_sidecar "$STAGE/$EXE.exe" "$EXE.exe" "$OUT/$NAME.zip"
+    ARTIFACTS+=("$OUT/$NAME.zip")
 }
 
 EXE=openpete
@@ -636,5 +652,15 @@ if [[ $DRY_RUN -eq 1 ]]; then
 fi
 "package_$PLATFORM" "$B"
 echo "[package] $OUT/$NAME ready"
+# Every package is archived on this machine, tagged or not (playtest builds
+# are untagged), so a bug report's exe SHA-256 finds its artifact. Inside
+# the release container the home directory is not the host's:
+# release-container.sh archives on the host after the container exits.
+if [[ -z "${OPENPETE_IN_RELEASE_CONTAINER:-}" && ! -f /.dockerenv && ! -f /run/.containerenv ]]; then
+    # shellcheck source=scripts/lib/release_archive.sh
+    source scripts/lib/release_archive.sh
+    release_archive_store "$VERSION" "$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit)" \
+        "${ARTIFACTS[@]}"
+fi
 ls -la "$OUT" | grep "$NAME"
 

@@ -380,6 +380,7 @@ static const size_t k_str_fields[] = {
     offsetof(openpete_options_t, card1_path),
     offsetof(openpete_options_t, card2_path),
     offsetof(openpete_options_t, resume_handoff),
+    offsetof(openpete_options_t, bug_report_replay),
     offsetof(openpete_options_t, cheats),
 };
 

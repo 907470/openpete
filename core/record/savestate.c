@@ -394,22 +394,20 @@ static int read_section(FILE* fp, const char* path, const char* what,
     return 0;
 }
 
-/** @brief Fill the 32-byte state identity field from the state ABI, the codegen stamp and the ROM hash.
+/** @brief Fill a 32-byte state identity field from the state ABI and the given codegen and ROM stamps.
  *
  * Hashes the string "stateabi:<ABI>|cg:<codegen_stamp>|rom:<rom_sha256>"
- * with SHA-256, where a missing recomp module or a missing stamp reads as
- * "?". The field holds the first 15 digest bytes as 30 lowercase hex
- * characters, then zero bytes to 32. A source string longer than the
- * 512-byte buffer is hashed as its first 512 bytes, the last being the
- * terminating NUL. Both the save header and the load check use it.
- * @param out Receives OPENPETE_STATE_HASH_LEN bytes. */
-static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
-    const openpete_recomp_module* m = openpete_recomp_module_get();
+ * with SHA-256, where a NULL stamp reads as "?". The field holds the first
+ * 15 digest bytes as 30 lowercase hex characters, then zero bytes to 32. A
+ * source string longer than the 512-byte buffer is hashed as its first 512
+ * bytes, the last being the terminating NUL.
+ * @param out Receives OPENPETE_STATE_HASH_LEN bytes.
+ * @param cg The codegen stamp, or NULL.
+ * @param rom The ROM stamp, or NULL. */
+static void ident_fill_terms(char out[OPENPETE_STATE_HASH_LEN], const char* cg, const char* rom) {
     char src[512];
     int n = snprintf(src, sizeof(src), "stateabi:%u|cg:%s|rom:%s",
-                     OPENPETE_STATE_ABI,
-                     (m && m->codegen_stamp) ? m->codegen_stamp : "?",
-                     (m && m->rom_sha256)    ? m->rom_sha256    : "?");
+                     OPENPETE_STATE_ABI, cg ? cg : "?", rom ? rom : "?");
     if (n < 0) n = 0;
     if ((size_t)n > sizeof(src)) n = (int)sizeof(src);
 
@@ -426,6 +424,81 @@ static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
         out[i * 2 + 1] = hex[digest[i] & 0xF];
     }
     /* 15 bytes of digest as 30 hex chars + NUL padding to 32. */
+}
+
+/** @brief Fill the 32-byte state identity field from the state ABI, the running module's codegen stamp and its ROM hash.
+ *
+ * A missing recomp module or a missing stamp reads as "?". Both the save
+ * header and the load check use it.
+ * @param out Receives OPENPETE_STATE_HASH_LEN bytes. */
+static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
+    const openpete_recomp_module* m = openpete_recomp_module_get();
+    ident_fill_terms(out, m ? m->codegen_stamp : NULL, m ? m->rom_sha256 : NULL);
+}
+
+/** @brief Format a 32-byte identity field as 64 lowercase hex digits.
+ * @param id The field.
+ * @param out Receives 65 bytes. */
+static void ident_hex(const char id[OPENPETE_STATE_HASH_LEN], char out[2 * OPENPETE_STATE_HASH_LEN + 1]) {
+    for (int i = 0; i < OPENPETE_STATE_HASH_LEN; i++)
+        snprintf(out + 2 * i, 3, "%02x", (unsigned char)id[i]);
+}
+
+int openpete_state_ident_from_terms(const char* cg, const char* rom, char* out, size_t cap) {
+    if (cap < 2 * OPENPETE_STATE_HASH_LEN + 1) return -1;
+    char id[OPENPETE_STATE_HASH_LEN];
+    ident_fill_terms(id, cg, rom);
+    ident_hex(id, out);
+    return 0;
+}
+
+/* A foreign identity the load check admits besides this build's: a state
+ * whose identity was recomputed from another module's stamps by the
+ * caller (the bug-report replay). Empty when none. */
+static char s_admit_ident[OPENPETE_STATE_HASH_LEN];
+static int  s_admit_ident_set = 0;
+
+int openpete_state_admit_ident(const char* hex) {
+    s_admit_ident_set = 0;
+    if (!hex || !*hex) return 0;
+    if (strlen(hex) != 2 * OPENPETE_STATE_HASH_LEN) return -1;
+    for (int i = 0; i < OPENPETE_STATE_HASH_LEN; i++) {
+        unsigned v = 0;
+        if (sscanf(hex + 2 * i, "%2x", &v) != 1) return -1;
+        s_admit_ident[i] = (char)v;
+    }
+    s_admit_ident_set = 1;
+    return 0;
+}
+
+/* Card names a load maps to the card a port holds now: a state whose card
+ * section names remap_name[p] is checked against port p's held card. */
+static char s_card_remap[2][STATE_CARD_PATH_LEN];
+
+void openpete_state_card_remap(const char* port1, const char* port2) {
+    snprintf(s_card_remap[0], sizeof s_card_remap[0], "%s", port1 ? port1 : "");
+    snprintf(s_card_remap[1], sizeof s_card_remap[1], "%s", port2 ? port2 : "");
+}
+
+/** @brief Rewrite a card section path that names a remapped card to the path of the card its port holds now.
+ *
+ * A path naming no remapped card, or a port holding no card, is left.
+ * @param c The card section, rewritten in place.
+ * @param log Nonzero to log each rewrite. */
+static void state_card_remap_apply(state_card_t* c, int log) {
+    for (int p = 0; p < 2; p++) {
+        if (!c->held[p]) continue;
+        for (int q = 0; q < 2; q++) {
+            if (!s_card_remap[q][0] || strncmp(c->path[p], s_card_remap[q], STATE_CARD_PATH_LEN) != 0)
+                continue;
+            char have[STATE_CARD_PATH_LEN];
+            if (!openpete_memcard_held_path(q, have, sizeof have)) break;
+            if (log) OPL_INFO_F("savestate", "card %s of slot %d maps to %s", s_card_remap[q], p + 1, have);
+            memset(c->path[p], 0, sizeof c->path[p]);
+            snprintf(c->path[p], sizeof c->path[p], "%s", have);
+            break;
+        }
+    }
 }
 
 /** @brief Fill a header's game field with the running game's id, NUL-padded and truncated to OPENPETE_STATE_GAME_LEN - 1 bytes.
@@ -942,7 +1015,11 @@ static int state_header_check(FILE* fp, const char* path, const openpete_state_h
 
     char want_ident[OPENPETE_STATE_HASH_LEN];
     ident_fill(want_ident);
-    if (memcmp(hdr->ident, want_ident, OPENPETE_STATE_HASH_LEN) != 0) {
+    if (s_admit_ident_set && memcmp(hdr->ident, want_ident, OPENPETE_STATE_HASH_LEN) != 0 &&
+        memcmp(hdr->ident, s_admit_ident, OPENPETE_STATE_HASH_LEN) == 0) {
+        OPL_WARN_F("savestate", "%s: identity of another module admitted (recomputed from its "
+                   "stamps by the caller)", path);
+    } else if (memcmp(hdr->ident, want_ident, OPENPETE_STATE_HASH_LEN) != 0) {
         char hh[OPENPETE_STATE_HASH_LEN + 1];
         char wh[OPENPETE_STATE_HASH_LEN + 1];
         memcpy(hh, hdr->ident,  OPENPETE_STATE_HASH_LEN); hh[OPENPETE_STATE_HASH_LEN] = '\0';
@@ -1051,6 +1128,7 @@ static int state_card_read(FILE* fp, const char* path, long body,
 static int state_card_admit(FILE* fp, const char* path, long body,
                             const openpete_state_header_t* hdr, state_card_t* c) {
     if (state_card_read(fp, path, body, hdr, c) != 0) return -1;
+    state_card_remap_apply(c, 1);
     return state_card_check(path, c);
 }
 
@@ -1183,6 +1261,9 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     for (size_t i = 0; rc == 0 && i < sizeof sections / sizeof sections[0]; i++)
         rc = read_section(fp, path, sections[i].what, sections[i].buf, sections[i].n);
     fclose(fp);
+    /* The section was read again with the rest; the modsave rebind below
+     * reads the remapped paths the admission checked. */
+    if (rc == 0) state_card_remap_apply(&card, 0);
 
     if (rc != 0) {
         free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);

@@ -126,7 +126,7 @@ else
         || { echo "[release] refused: tracked changes in the tree" >&2; exit 1; }
 fi
 env_args=(-e OPENPETE_NO_COMMITS=1 -e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION"
-          -e OPENPETE_TOOLS_DIR=/tools -e OPENPETE_VIBRATION=0
+          -e OPENPETE_TOOLS_DIR=/tools -e OPENPETE_VIBRATION=0 -e OPENPETE_IN_RELEASE_CONTAINER=1
           -e "OPENPETE_RELEASE_TEST=$TEST")
 
 # The release builds from nothing, in directories only the container uses.
@@ -193,3 +193,22 @@ done
     echo "[release] sysroot headers match the image ($n files)"
     scripts/package-dist.sh linux --toolchain /tools/clang '"${pkg_args[*]}"'
 '
+
+# The release archive, on the host: the container's home is not this
+# machine's, so package-dist.sh skips it there (OPENPETE_IN_RELEASE_CONTAINER).
+out=dist
+for ((i = 0; i < ${#pkg_args[@]}; i++)); do
+    [[ "${pkg_args[$i]}" == --out ]] && out="${pkg_args[$((i + 1))]}"
+done
+# shellcheck source=scripts/lib/release_archive.sh
+source scripts/lib/release_archive.sh
+arts=()
+for a in "$out/openpete-${OPENPETE_DIST_VERSION}-linux-x86_64.tar.xz" \
+         "$out/OpenPete-${OPENPETE_DIST_VERSION}-x86_64.AppImage"; do
+    [[ -f "$a" ]] && arts+=("$a")
+done
+if [[ ${#arts[@]} -gt 0 ]]; then
+    release_archive_store "$OPENPETE_DIST_VERSION" "$(git rev-parse --short=9 HEAD)" "${arts[@]}"
+else
+    echo "[release] NOTE: no package under $out to archive" >&2
+fi

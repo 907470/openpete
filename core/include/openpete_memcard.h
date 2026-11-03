@@ -262,6 +262,17 @@ int openpete_memcard_spec_pending(void);
  *         holds no card, has not loaded its image yet, or @p cap is short. */
 int openpete_memcard_image_copy(int slot, uint8_t* dst, size_t cap);
 
+/** @brief Replace a slot's card image, in memory and in its file, with a given one.
+ *
+ * The image the game reads from then on and the persisted one both become
+ * @p src; a slot not yet loaded loads it on first access. A pending
+ * speculative write of the slot is dropped.
+ * @param slot Card slot, 0 or 1.
+ * @param src The image.
+ * @param n Its length; must be 131072.
+ * @return 0, or -1 when the slot holds no writable file-backed card or the write failed. */
+int openpete_memcard_image_restore(int slot, const uint8_t* src, size_t n);
+
 /** @brief Runahead rolled back its led ticks: restore each slot a speculative flush marked from its persisted image and discard the speculative save-record queue. */
 void openpete_memcard_spec_rollback(void);
 

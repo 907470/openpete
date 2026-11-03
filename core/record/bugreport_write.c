@@ -686,9 +686,8 @@ static void redact_all(br_redactor_t* R, br_members_t* m, scan_t* s)
     }
 }
 
-/** @brief Hash a disc image's bytes as the library does (disc_image_read_bytes over the whole image).
- * @return 0, or -1 when the image cannot be read. */
-static int disc_sha(const char* path, char out[65])
+/* Documented at the declaration in bugreport_internal.h. */
+int br_disc_sha(const char* path, char out[65])
 {
     out[0] = '\0';
     if (!path || !*path) return -1;
@@ -735,7 +734,7 @@ static void json_identity(wbuf_t* w, const br_job_t* j, const char* mod_sha)
     char exe[1024], exe_sha[65] = "", ident[80] = "", dsha[65] = "";
     if (openpete_exe_path(exe, sizeof exe) == 0) (void)sha_file(exe, exe_sha, NULL);
     (void)openpete_state_image_ident(j->press.state, j->press.state_len, ident, sizeof ident);
-    (void)disc_sha(j->disc_path, dsha);
+    (void)br_disc_sha(j->disc_path, dsha);
     const openpete_recomp_module* d = openpete_recomp_module_get();
     const char* march = getenv("OPENPETE_MODULE_MARCH");
     wb_printf(w, "{\n  \"schema\": %d,\n  \"build_version\": ", OPENPETE_BUGREPORT_SCHEMA);

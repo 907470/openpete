@@ -61,6 +61,13 @@ void bk2_feed_speculation_end(int adopted);
  *         the movie's row count or more once it has ended. */
 int  bk2_feed_row(void);
 
+/** @brief Hold the movie before its first row, or release it.
+ *
+ * While held bk2_feed_row returns -1, as before the movie's offset, so no
+ * row stamps and the pad is live input (neutral in a headless run).
+ * @param on Nonzero to hold, 0 to release. */
+void bk2_feed_hold(int on);
+
 /** @brief Note the row the host stamped for the next yield, for the map's W lines.
  * @param row The row, as bk2_feed_row returned it. */
 void bk2_feed_stamped(int row);

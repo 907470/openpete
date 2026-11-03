@@ -40,10 +40,16 @@ static unsigned    s_trigger_at = 0;     /* 0 = disarmed */
 static int         s_exec_done = 0;
 static int         s_requested = 0;
 static unsigned    s_resume_waits = 0;   /* polls the resume load found another park site */
+static unsigned    s_resume_cd_waits = 0;  /* polls the resume load found CD reads queued */
+static int         s_resume_result = 0;  /* 0 pending, 1 loaded, -1 failed */
 
 /* Polls a resume load waits for the fresh process to park at the
  * checkpoint's park site before it gives up and continues fresh. */
 #define HANDOFF_RESUME_SITE_WAIT 1800u
+static unsigned    s_site_wait = HANDOFF_RESUME_SITE_WAIT;
+static int         s_need_cd_empty = 0;
+
+extern int PsyX_CD_QueuePending(void);
 
 static int    s_argc = 0;
 static char** s_argv = NULL;
@@ -63,6 +69,17 @@ void openpete_handoff_request(void) {
     s_requested = 1;
 }
 
+void openpete_handoff_resume_policy(unsigned site_wait, int cd_empty) {
+    s_site_wait = site_wait ? site_wait : HANDOFF_RESUME_SITE_WAIT;
+    s_need_cd_empty = cd_empty;
+}
+
+int openpete_handoff_resume_result(unsigned* site_waits, unsigned* cd_waits) {
+    if (site_waits) *site_waits = s_resume_waits;
+    if (cd_waits) *cd_waits = s_resume_cd_waits;
+    return s_resume_result;
+}
+
 #ifndef _WIN32
 /** @brief Format the handoff checkpoint path, "handoff.state" in the states directory.
  *
@@ -78,28 +95,47 @@ static void handoff_path(char* out, size_t cap) {
 }
 #endif
 
+/** @brief Run one poll of the --resume-handoff load: wait for the park site (and, under the empty-queue policy, an empty CD queue), then load and record the outcome.
+ *
+ * Consumes any env trigger too: the schedule fired in the previous image,
+ * and without this the resumed frame counter (>= the trigger) would
+ * re-fire it every quiescent pass, exec-looping forever.
+ * @param cpu Guest CPU state the resume restores. */
+static void handoff_resume_poll(CPUState* cpu) {
+    s_trigger_at = 0;
+    s_exec_done = 1;
+    /* Under the empty-queue policy the load waits, like the park
+     * site, for the fresh process's CD command queue to drain, so the
+     * restored timeline starts with no read in flight as the saved
+     * one did. */
+    if (s_need_cd_empty && PsyX_CD_QueuePending() > 0) {
+        if (++s_resume_cd_waits + s_resume_waits < s_site_wait) return;
+    }
+    unsigned frame = openpete_frame;
+    const int rc = (s_need_cd_empty && PsyX_CD_QueuePending() > 0)
+                       ? -1 : openpete_state_load_file(s_resume_path, cpu, &frame);
+    /* The checkpoint loads only where the fresh process's fiber parks
+     * at the checkpoint's park site. */
+    if (rc == 1 && ++s_resume_waits + s_resume_cd_waits < s_site_wait) return;
+    s_resume_done = 1;
+    if (rc == 0) {
+        openpete_frame = frame;
+        remove(s_resume_path);
+        s_resume_result = 1;
+        OPL_INFO_F("handoff", "session resumed at frame %u after %u park-site and %u CD-queue "
+                   "wait(s)", frame, s_resume_waits, s_resume_cd_waits);
+    } else {
+        s_resume_result = -1;
+        OPL_ERROR_F("handoff", "resume load failed (%s, %u park-site and %u CD-queue wait(s)) "
+                    "- continuing as a fresh session", s_resume_path, s_resume_waits,
+                    s_resume_cd_waits);
+    }
+}
+
 void openpete_handoff_poll(CPUState* cpu) {
-    /* Resume leg: first quiescent point of the fresh process. Consumes
-     * any env trigger too - the schedule fired in the PREVIOUS image;
-     * without this the resumed frame counter (>= the trigger) would
-     * re-fire it every quiescent pass, exec-looping forever. */
+    /* Resume leg: first quiescent point of the fresh process. */
     if (s_resume_path && !s_resume_done) {
-        s_trigger_at = 0;
-        s_exec_done = 1;
-        unsigned frame = openpete_frame;
-        const int rc = openpete_state_load_file(s_resume_path, cpu, &frame);
-        /* The checkpoint loads only where the fresh process's fiber parks
-         * at the checkpoint's park site. */
-        if (rc == 1 && ++s_resume_waits < HANDOFF_RESUME_SITE_WAIT) return;
-        s_resume_done = 1;
-        if (rc == 0) {
-            openpete_frame = frame;
-            remove(s_resume_path);
-            OPL_INFO_F("handoff", "session resumed at frame %u", frame);
-        } else {
-            OPL_ERROR_F("handoff", "resume load failed (%s) - continuing "
-                        "as a fresh session", s_resume_path);
-        }
+        handoff_resume_poll(cpu);
         return;
     }
 

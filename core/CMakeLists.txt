@@ -116,6 +116,7 @@ add_library(openpete_core STATIC
     record/bugrec.c
     record/bugrec_input.c
     record/bugreport_redact.c
+    record/bugreport_replay.c
     record/bugreport_write.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
     record/savestate.c

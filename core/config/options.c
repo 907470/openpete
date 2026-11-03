@@ -508,6 +508,11 @@ static const openpete_help_only_t k_help_only[] = {
     { "--show-fps",                          KNOB_FLAG_ARG_REQUIRED, NULL, "release",  "deprecated spelling of --perf-stats",
       "0|1", 140,
       "deprecated spelling of --perf-stats off|fps (on|off also accepted)" },
+    { "--bug-report-replay",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 25,
+      "replay a bug-report bundle (zip or extracted directory) headless\n"
+      "from its anchor and compare every tick's region hashes and the end\n"
+      "state; exit 0 IDENTICAL, 2 DIVERGED, 64 refused; pass --disc" },
     { "--debug-triangle",                    KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
       NULL, 460,
       "emit a hardcoded POLY_F3 each frame (infra-only validation)" },
@@ -941,6 +946,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->adopt_saves         = 0;     /* modset-mismatch saves warn until adopted */
     opts->save_mismatch_toast = 0;     /* the mismatch log line only */
     opts->resume_handoff      = NULL;  /* process-handoff resume file */
+    opts->bug_report_replay   = NULL;  /* bug-report bundle replayed */
     opts->handoff_argc        = 0;     /* original argv (exec rebuild) */
     opts->handoff_argv        = NULL;
     opts->vertex_precision    = OPENPETE_VERTEX_PRECISION_SUBPIXEL;  /* smooth sub-pixel; --vertex-precision integer for the PSX polygon wobble */
@@ -1746,6 +1752,9 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
     } else if (strcmp(a, "--resume-handoff") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->resume_handoff = v; i++;
+    } else if (strcmp(a, "--bug-report-replay") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->bug_report_replay = v; i++;
     } else if (strcmp(a, "--unlock-frames") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->unlock_frames_spec = v;

@@ -168,9 +168,14 @@ void bk2_feed_speculation_end(int adopted) {
     s_spec.lost = 0ull;
 }
 
+/* Nonzero while the movie is held before its start (bk2_feed_hold). */
+static int s_feed_hold = 0;
+
+void bk2_feed_hold(int on) { s_feed_hold = on; }
+
 int bk2_feed_row(void) {
     const bk2_movie_t* m = s_feed.m;
-    if (!m) return -1;
+    if (!m || s_feed_hold) return -1;
     int row;
     if (m->row_key == BK2_ROW_KEY_CONSUME)
         row = bk2_movie_group_row(m, (int)openpete_consume - s_feed.offset, openpete_consume_write);

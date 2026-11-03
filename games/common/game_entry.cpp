@@ -11,6 +11,7 @@
 #include "game_build.h"
 #include "game_pick.h"
 #include "launcher_assets.h"
+#include "openpete_bugreport_replay.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -140,6 +141,8 @@ static void install_dump() {
 /** @brief Select and install the game this process runs, then run its entry.
  *
  * stdio is reconnected first, before any output and whichever game runs.
+ * A --bug-report-replay command line is first rebuilt from the bundle
+ * (openpete_bugreport_replay_prepare); a refused bundle exits 64.
  * The game is the one --disc names, else the launcher's pick over every
  * linked game's library entries (game_pick.h), which installs each game
  * whose jobs it runs; the final install here makes the picked game the
@@ -153,6 +156,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "openpete: this executable links no game\n");
         return 1;
     }
+    /* A bug-report replay rebuilds the command line from the bundle before
+     * the game is chosen from it. */
+    if (const int rrc = openpete_bugreport_replay_prepare(&argc, &argv)) return rrc;
     const openpete_game_build_t* b = openpete_game_build_named(argc, argv);
     if (!b) {
         int rc = 0;

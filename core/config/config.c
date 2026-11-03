@@ -1592,6 +1592,78 @@ void openpete_config_reset(void) {
     s_materializations = 0;
 }
 
+/* The two file tiers a caller names in place of the exe-dir and per-user
+ * files (openpete_config_tier_files). */
+static char s_tier_files[2][CFG_PATH_MAX];
+static int  s_tier_files_set = 0;
+
+void openpete_config_tier_files(const char *exe_dir_file, const char *user_file) {
+    snprintf(s_tier_files[0], CFG_PATH_MAX, "%s", exe_dir_file ? exe_dir_file : "");
+    snprintf(s_tier_files[1], CFG_PATH_MAX, "%s", user_file ? user_file : "");
+    s_tier_files_set = 1;
+}
+
+/** @brief Name the config files the launch reads: --config's one file, the caller's two tiers, or the exe-dir and per-user openpete.toml.
+ *
+ * Warns about retired sidecar files beside the executable on the default
+ * resolution.
+ * @param explicit_path The --config (or OPENPETE_CONFIG) file, or NULL.
+ * @return 0, or -1 when --config names no file (printed). */
+static int name_config_files(const char *explicit_path) {
+    char exedir[CFG_PATH_MAX] = "";
+    int have_exedir = (openpete_exe_dir(exedir, sizeof exedir) == 0);
+
+    if (explicit_path) {
+        snprintf(s_file_path[0], CFG_PATH_MAX, "%s", explicit_path);
+        s_file_n = 1;
+        s_write_file = 0;
+        if (!file_exists(explicit_path)) {
+            cfg_diag("openpete: --config %s: no such file\n", explicit_path);
+            return -1;
+        }
+    } else if (s_tier_files_set) {
+        /* Both tiers named by the caller: the exe-dir and per-user files of
+         * another session (a bug report's config-files), each read when it
+         * exists, neither created. */
+        for (int f = 0; f < 2; f++)
+            if (s_tier_files[f][0] && file_exists(s_tier_files[f]))
+                memcpy(s_file_path[f], s_tier_files[f], CFG_PATH_MAX);
+        s_file_n = 2;
+    } else {
+        if (have_exedir)
+            openpete_paths_join(s_file_path[0], CFG_PATH_MAX, exedir, "openpete.toml");
+        /* Named, not created: the per-user file is read whether or not
+         * it is the write target, and a portable install must not leave
+         * an empty directory behind in AppData just for having looked. */
+        char userdir[CFG_PATH_MAX];
+        if (openpete_paths_user_config_dir(userdir, sizeof userdir, 0) == 0)
+            openpete_paths_join(s_file_path[1], CFG_PATH_MAX, userdir, "openpete.toml");
+        s_file_n = 2;
+    }
+
+    if (!explicit_path && !s_tier_files_set && have_exedir) warn_retired_sidecars(exedir);
+    return 0;
+}
+
+/** @brief Settle the [saved] write target once the files are parsed: the per-user tier, else the exe-dir file under `portable`; --config pins its own.
+ * @param explicit_path The --config (or OPENPETE_CONFIG) file, or NULL. */
+static void settle_write_target(const char *explicit_path) {
+    /* Both files are now parsed, so the `portable` directive (if any)
+     * has landed and the layout is decided. --config pins its own file
+     * as the target and is not up for a vote. */
+    if (s_tier_files_set) {
+        s_write_file = s_file_path[1][0] ? 1 : 0;
+    } else if (!explicit_path) {
+        s_write_file = openpete_paths_portable() ? 0 : 1;
+        if (s_write_file == 1 && !s_neutral) {
+            /* The write target has to exist before the [saved] flush;
+             * naming it above deliberately did not create it. */
+            char userdir[CFG_PATH_MAX];
+            (void)openpete_paths_user_config_dir(userdir, sizeof userdir, 1);
+        }
+    }
+}
+
 /** @brief Read the launch tiers and both files, and harvest the global scope of each.
  *
  * Scans argv for --no-config, --config-report, --keys-report and --config
@@ -1632,48 +1704,14 @@ static int harvest_launch_and_global(int argc, char **argv, int typed_argc) {
 
     if (s_no_config) return 0;
 
-    char exedir[CFG_PATH_MAX] = "";
-    int have_exedir = (openpete_exe_dir(exedir, sizeof exedir) == 0);
-
-    if (explicit_path) {
-        snprintf(s_file_path[0], CFG_PATH_MAX, "%s", explicit_path);
-        s_file_n = 1;
-        s_write_file = 0;
-        if (!file_exists(explicit_path)) {
-            cfg_diag("openpete: --config %s: no such file\n", explicit_path);
-            return -1;
-        }
-    } else {
-        if (have_exedir)
-            openpete_paths_join(s_file_path[0], CFG_PATH_MAX, exedir, "openpete.toml");
-        /* Named, not created: the per-user file is read whether or not
-         * it is the write target, and a portable install must not leave
-         * an empty directory behind in AppData just for having looked. */
-        char userdir[CFG_PATH_MAX];
-        if (openpete_paths_user_config_dir(userdir, sizeof userdir, 0) == 0)
-            openpete_paths_join(s_file_path[1], CFG_PATH_MAX, userdir, "openpete.toml");
-        s_file_n = 2;
-    }
-
-    if (!explicit_path && have_exedir) warn_retired_sidecars(exedir);
+    if (name_config_files(explicit_path) != 0) return -1;
 
     for (int f = 0; f < s_file_n; f++) {
         if (!s_file_path[f][0]) continue;
         if (load_toml(f) < 0) return -1;
     }
 
-    /* Both files are now parsed, so the `portable` directive (if any)
-     * has landed and the layout is decided. --config pins its own file
-     * as the target and is not up for a vote. */
-    if (!explicit_path) {
-        s_write_file = openpete_paths_portable() ? 0 : 1;
-        if (s_write_file == 1 && !s_neutral) {
-            /* The write target has to exist before the [saved] flush;
-             * naming it above deliberately did not create it. */
-            char userdir[CFG_PATH_MAX];
-            (void)openpete_paths_user_config_dir(userdir, sizeof userdir, 1);
-        }
-    }
+    settle_write_target(explicit_path);
 
     for (int f = 0; f < s_file_n; f++)
         if (s_doc[f] && harvest_global(f) != 0) return -1;

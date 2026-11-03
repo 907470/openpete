@@ -6,6 +6,7 @@
 // which runs only once the loop has entered (a setup error writes no
 // movie, no verdict and no report).
 #include "openpete_bugreport.h"
+#include "openpete_bugreport_replay.h"
 #include "host_loop_internal.h"
 #include "host_state_ops.h"
 #include "host_hotkeys.h"
@@ -730,6 +731,7 @@ int host_session_close(host_session_t* S, int rc) OP_REQUIRES(sim)
     close_threads_and_bk2(S);
     close_record_and_logs(S);
     close_psxtrace(S);
+    S->exit_code = openpete_bugreport_replay_exit(S->exit_code);
 
     const Uint64 elapsed = SDL_GetTicks() - S->start;
     OPL_INFO_F("exit",

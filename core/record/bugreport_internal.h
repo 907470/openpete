@@ -248,6 +248,12 @@ void br_members_free(br_members_t* m);
  * @return The first occurrence, or NULL. */
 const void* br_memmem(const void* hay, size_t n, const void* needle, size_t k);
 
+/** @brief Hash a disc image's bytes as the library does (disc_image_read_bytes over the whole image).
+ * @param path The disc image (a cue or an image file).
+ * @param out Receives 64 hex digits and a NUL, "" on failure.
+ * @return 0, or -1 when the image cannot be read. */
+int br_disc_sha(const char* path, char out[65]);
+
 /** @brief Read a whole file into a heap buffer.
  * @param path The file.
  * @param out Receives the bytes (NUL-terminated); free with free().

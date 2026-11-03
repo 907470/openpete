@@ -5,6 +5,7 @@
 // opens a window that only clears and presents.
 
 #include "openpete_bugreport.h"
+#include "openpete_bugreport_replay.h"
 #include "openpete.h"
 #include "openpete_crash.h"
 #include "openpete_fatal.h"
@@ -2290,6 +2291,7 @@ static int run_host_init(const openpete_options_t* opts) {
     if (openpete_memcard_startup_check() != 0) return OPENPETE_EXIT_SETUP_ERROR;
     openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
                           opts->handoff_argv);
+    if (openpete_bugreport_replay_admit(opts) != 0) return OPENPETE_BUGREPORT_REPLAY_REFUSED;
     /* Savestate slots every game shared are copied into this game's own
      * folder; the newest per-game overlay ini is adopted as the one
      * openpete-devui.ini every game shares. */

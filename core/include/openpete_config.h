@@ -206,6 +206,16 @@ void openpete_config_report(FILE* out);
  * @return The path, or NULL when that layer resolved none. */
 const char* openpete_config_file_path(int i);
 
+/** @brief Name the two config file tiers in place of the exe directory's and the per-user openpete.toml.
+ *
+ * Called before the options parse. Each named file is read when it
+ * exists; a missing one is skipped and nothing is created. The per-user
+ * tier, when present, is the save target. --config and --no-config still
+ * take precedence.
+ * @param exe_dir_file The exe-directory tier's file, or NULL or "" for none.
+ * @param user_file The per-user tier's file, or NULL or "" for none. */
+void openpete_config_tier_files(const char* exe_dir_file, const char* user_file);
+
 /** @brief Return 1 when openpete_config_apply saw --config-report in argv, else 0.
  *
  * No caller reads it; the game mains test openpete_options_t.config_report

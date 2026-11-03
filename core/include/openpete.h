@@ -922,6 +922,7 @@ typedef struct openpete_options {
     int         adopt_saves;   /* --adopt-saves: re-tag each save (card sidecar on games without save records) to the running modset at first card access */
     int         save_mismatch_toast; /* --save-mismatch-toast: OSD toast at a load of a save written under another modset */
     const char* resume_handoff;/* --resume-handoff: process-handoff checkpoint to restore at first quiescence */
+    const char* bug_report_replay; /* --bug-report-replay: the bundle (zip or extracted directory) this session replays */
     int         handoff_argc;  /* original argv snapshot for the handoff exec */
     char**      handoff_argv;
 

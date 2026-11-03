@@ -1080,6 +1080,22 @@ int openpete_memcard_image_copy(int slot, uint8_t* dst, size_t cap)
     return 1;
 }
 
+int openpete_memcard_image_restore(int slot, const uint8_t* src, size_t n)
+{
+    if ((slot != 0 && slot != 1) || !s_present[slot] || !src || n != MC_CARD_SIZE ||
+        s_mem_only[slot] || s_readonly[slot] || mc_resolve_path(slot) != 0)
+        return -1;
+    if (op_atomic_write_file(s_path[slot], src, MC_CARD_SIZE) != 0) return -1;
+    if (s_loaded[slot]) {
+        memcpy(s_card[slot], src, MC_CARD_SIZE);
+        memcpy(s_disk[slot], src, MC_CARD_SIZE);
+        s_spec_dirty[slot] = 0;
+    }
+    OPL_INFO_F("memcard", "card %d: image restored to %s%s", slot, s_path[slot],
+               s_loaded[slot] ? "" : " (loaded on first access)");
+    return 0;
+}
+
 int openpete_memcard_spec_pending(void)
 {
     return s_spec_dirty[0] || s_spec_dirty[1];
