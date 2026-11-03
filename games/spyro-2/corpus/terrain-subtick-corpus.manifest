@@ -1,0 +1,32 @@
+# Sub-tick interpolation of the animated terrain
+# (tests/harness/check_feeder_subtick.sh --game spyro-2 --path terrain).
+#   <source> | <V> | [rect=<x0>,<y0>,<x1>,<y1> ...] [step=<px>] [itol=<px>]
+#
+# This path's knob, OPENPETE_TERRAIN_VANIM, does not suppress the terrain
+# feed: it snaps the vertex channel of the sub-tick present to the newest
+# tick's state. The canonical presents are therefore identical between the two
+# legs and only the intermediate present differs, so the legs are intermediate
+# presents alone and their difference is exactly the pixels the vertex
+# interpolation moved. Both legs select the terrain path, so no other producer
+# can enter it.
+#
+# Read per cell: the differing-pixel count at each alpha. alpha 1 must differ
+# in no pixel (every interpolation term is zero at the tick's own instant),
+# alpha 0 must differ in more than `step` pixels (the channel moved something
+# this cell can see), and alpha 0.5 separates a channel that carries the
+# interval from one that holds its tick state: the latter renders the same
+# present in both legs and the count collapses to zero.
+#
+# The whole frame is the cell where no rect is named: the render-path
+# selection has already isolated the terrain.
+#
+# colossus-moving-terrain: the door Spyro faces at the end of the movie,
+# sector 29, swinging open. Its HP vertex bank changes in RAM on every tick
+# from VBL 2000 to 2118 (58 of its 86 HP vertices move between the ticks at
+# VBL 2060 and 2062; the LP bank does not move and its +0x18 pending byte
+# holds the LP descriptor index); the terrain-only render path draws it. The
+# sector is named by keyframe descriptors in both poly-anim lists of the
+# registry (D_ENV_ANIM_REGISTRY +0x10 LP index 16, +0x20 HP index 18). The
+# two rows sit one third and two thirds into the swing.
+colossus-moving-terrain.bk2 | 2040 |
+colossus-moving-terrain.bk2 | 2080 |
