@@ -185,3 +185,8 @@ summer_forest | pos=(80565, 87547, 69619) yaw=607 pitch=278
 # Reported defect: the castle shows doubled spires, low-poly geometry drawn
 # beside the high-poly towers, also under --lod extended (seen at --fov 95).
 summer_forest | pos=(79025, 84035, 72838) yaw=875 pitch=313
+# Reported defect: low frame rate at extended LOD facing a wall. The extended
+# reveal queues 115 second-kind (simple) mobys behind the wall that the
+# occlusion cull never rejects; the picture is identical at both LODs, so the
+# tile carries the pose and the defect is measured by moby record counts.
+colossus | pos=(47666, 60635, 12089) yaw=78 pitch=41
