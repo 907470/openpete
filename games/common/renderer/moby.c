@@ -3843,6 +3843,9 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
         if (openpete_no_lod) moby_reveal_extended(cpu, m, head, kind, &c);
     }
     if (moby_verify_enabled()) moby_reveal_census_print(&c, kind, wide ? widen : 1.0);
+    moby_kind_census(s_in_reextract ? "sub" : "canon",
+                     kind == MOBY_REVEAL_ANIMATED ? "anim-reveal" : "simple-reveal",
+                     c.added + c.wide_added, c.occl, 0, 0);
     return c.added + c.wide_added;
 }
 
@@ -9853,6 +9856,14 @@ int moby_verify_vbl(void) {
     return s_verify_sparse && openpete_frame > s_verify_hi && openpete_frame % 200u == 0;
 }
 
+void moby_kind_census(const char* leg, const char* kind, long recs, long occl, long verts, long tris) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_KIND_CENSUS"); on = (e && *e && *e != '0'); }
+    if (on)
+        fprintf(stderr, "[moby-kind vbl=%u leg=%s kind=%s] recs=%ld occl=%ld verts=%ld tris=%ld\n",
+                openpete_frame, leg, kind, recs, occl, verts, tris);
+}
+
 /* ---- overlay pass: fed at the canonical present -------------------------
  * The menu screens that draw a one-moby overlay pass (game_layout.moby.
  * overlay_moby) run it at the end of their Draw, after the state draw and its
@@ -13154,6 +13165,28 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     return culled;
 }
 
+/* Explicit bounds of one record at the present's camera, for a kind whose
+ * bounds come from its origin and model radius rather than from the cache. */
+typedef struct { float x0, y0, x1, y1, vz; int valid; } occl_box_t;
+
+/** @brief The occlusion cull verdict for one record from explicit bounds taken at this present's camera.
+ *
+ * A HUD or UI moby and invalid bounds are never occluded. The bounds are
+ * built around the record's current origin and bound every pose, so the
+ * query takes the age-0 inflation of occl_record_decide with no own-motion
+ * allowance: 8 px plus the camera pan, and 600 view-Z units of depth.
+ * @param moby The Moby address.
+ * @param b The bounds.
+ * @return 1 when the record is hidden behind nearer world depth, else 0. */
+static int occl_box_decide(uint32_t moby, const occl_box_t* b) {
+    if (moby_is_hud(moby)) { s_occl_f[0]++; return 0; }
+    if (!b->valid) { s_occl_f[2]++; return 0; }
+    const float inf = 8.0f + s_occl_pan_px * (float)s_view.s;
+    openpete_occl_camera qcam; ngte_occl_camera(&s_view, &qcam);
+    return openpete_native_occl_query(b->x0 - inf, b->y0 - inf, b->x1 + inf, b->y1 + inf,
+                                      b->vz - 600.0f, &qcam);
+}
+
 /* OPENPETE_OCCL_IDENT_CENSUS: every canonical-leg verdict, keyed by the
  * exact moby address (linear probe, no eviction within an epoch), so a later
  * re-extract of the same epoch can be compared verdict for verdict. */
@@ -13231,6 +13264,10 @@ typedef struct {
     uint32_t epoch;
 } occl_hold_t;
 static occl_hold_t s_hold_hook, s_hold_rex;
+/* The second model kind's verdicts: its records are keyed by the same moby
+ * addresses the animated walks test through the cache, so the two kinds hold
+ * their verdicts apart. */
+static occl_hold_t s_hold_hook_simple, s_hold_rex_simple;
 
 /** @brief The live slot of a moby in a hold table, or the empty slot where it would go.
  * @param t The table.
@@ -13261,6 +13298,15 @@ static void occl_hold_put(occl_hold_t* t, uint32_t moby, uint32_t epoch, int cul
     t->e[i].moby = moby; t->e[i].epoch = epoch; t->e[i].culled = (uint8_t)(culled != 0);
 }
 
+/** @brief One record's fresh verdict: from explicit bounds when given, else from the occlusion cache.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param b The bounds, or NULL for the cache.
+ * @return 1 when culled, else 0. */
+static int occl_decide(CPUState* cpu, uint32_t moby, const occl_box_t* b) {
+    return b ? occl_box_decide(moby, b) : occl_record_decide(cpu, moby);
+}
+
 /** @brief The occlusion cull verdict for one record, decided by the canonical scene and held by each re-extract replaying it.
  *
  * The canonical scene decides every verdict: the lag leg's re-extract where
@@ -13277,31 +13323,84 @@ static void occl_hold_put(occl_hold_t* t, uint32_t moby, uint32_t epoch, int cul
  * into the per-leg census.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
+ * @param b The record's bounds at this present's camera (occl_box_decide), or
+ *        NULL to decide from the occlusion cache (occl_record_decide).
+ * @param hook The hold table of the game-hook pass's scene.
+ * @param rex The hold table of the lag leg's re-extract.
  * @return 1 when culled, else 0. */
-static int occl_record_culled(CPUState* cpu, uint32_t moby) {
+static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
+                        occl_hold_t* hook, occl_hold_t* rex) {
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     const int leg = g_openpete_canon_lag_leg ? 1 : 0;
     const int canon = leg || !s_in_reextract;
     int culled, found = 0;
     if (canon) {
-        culled = occl_record_decide(cpu, moby);
-        occl_hold_put(leg ? &s_hold_rex : &s_hold_hook, moby, epoch, culled);
-    } else if (s_hold_rex.epoch == epoch) {
-        const int i = occl_hold_find(&s_hold_rex, moby, &found);
-        culled = found ? (int)s_hold_rex.e[i].culled : occl_record_decide(cpu, moby);
-        if (!found) occl_hold_put(&s_hold_rex, moby, epoch, culled);
-    } else if (spyro_native_canon_epoch_fresh(s_hold_hook.epoch)) {
-        const int i = occl_hold_find(&s_hold_hook, moby, &found);
-        culled = found ? (int)s_hold_hook.e[i].culled : 0;
+        culled = occl_decide(cpu, moby, b);
+        occl_hold_put(leg ? rex : hook, moby, epoch, culled);
+    } else if (rex->epoch == epoch) {
+        const int i = occl_hold_find(rex, moby, &found);
+        culled = found ? (int)rex->e[i].culled : occl_decide(cpu, moby, b);
+        if (!found) occl_hold_put(rex, moby, epoch, culled);
+    } else if (spyro_native_canon_epoch_fresh(hook->epoch)) {
+        const int i = occl_hold_find(hook, moby, &found);
+        culled = found ? (int)hook->e[i].culled : 0;
     } else {
-        culled = occl_record_decide(cpu, moby);
-        occl_hold_put(&s_hold_rex, moby, epoch, culled);
+        culled = occl_decide(cpu, moby, b);
+        occl_hold_put(rex, moby, epoch, culled);
     }
     s_occl_leg_seen[leg]++;
     if (culled) s_occl_leg_culled[leg]++;
     if (oic_on()) oic_note(moby, epoch, canon, culled);
     return culled;
 }
+
+/** @brief The occlusion verdict for one animated-kind record from its cached bounds (occl_verdict).
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @return 1 when culled, else 0. */
+static int occl_record_culled(CPUState* cpu, uint32_t moby) {
+    return occl_verdict(cpu, moby, NULL, &s_hold_hook, &s_hold_rex);
+}
+
+/** @brief Whether the second-kind occlusion test runs: on unless OPENPETE_MOBY_SIMPLE_OCCL is 0, read once.
+ * @return Nonzero when on. */
+static int moby_simple_occl_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_MOBY_SIMPLE_OCCL"); on = !(e && e[0] == '0'); }
+    return on;
+}
+
+/* The bounds the last moby_simple_occluded call built, for the audit. */
+static struct { uint32_t moby; occl_box_t b; int culled; } s_simple_box;
+
+/** @brief The screen rect and nearest view-Z of a sphere at a view-space origin, under the pass view.
+ *
+ * The rect is the bounding box of the eight projected corners of the cube
+ * around the sphere, which holds the projection of the sphere and of every
+ * point inside it while the whole cube lies in front of the camera. The
+ * bounds are invalid when the cube's near face is not past both 64 and half
+ * the canonical H, where the vertices take the GTE's near-plane regime and
+ * the float projection no longer places them.
+ * @param o The origin, view space, full world units.
+ * @param r The radius, full world units.
+ * @param b Receives the bounds. */
+static void occl_sphere_box(const double o[3], double r, occl_box_t* b) {
+    b->valid = 0;
+    const double znear = o[2] - r;
+    if (!(r > 0.0) || znear <= 64.0 || 2.0 * znear <= s_view.H_canon) return;
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    for (int k = 0; k < 8; k++) {
+        double sx, sy; int sat;
+        project(MOBY_IDENT_Q12, NULL, o[0] + ((k & 1) ? r : -r), o[1] + ((k & 2) ? r : -r),
+                o[2] + ((k & 4) ? r : -r), s_view.ofx, s_view.ofy, &s_view, &sx, &sy, &sat);
+        if (k == 0 || sx < x0) x0 = sx;
+        if (k == 0 || sx > x1) x1 = sx;
+        if (k == 0 || sy < y0) y0 = sy;
+        if (k == 0 || sy > y1) y1 = sy;
+    }
+    *b = (occl_box_t){ (float)x0, (float)y0, (float)x1, (float)y1, (float)znear, 1 };
+}
+
 
 /** @brief Print one line per re-extract leg with that leg's occlusion verdict counts since its previous line (OPENPETE_REEXTRACT_FEEDDBG). */
 static void occl_leg_census_report(void) {
@@ -13403,6 +13502,47 @@ static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
             openpete_frame - s_ver_snap.tick,
             x0, y0, x1, y1, vz, s_ver_snap.mot,
             openpete_native_occl_last_scan_max());
+}
+
+static long s_ver_simple_n, s_ver_simple_out;   /* second-kind records audited / not contained */
+
+int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], double radius) {
+    if (!moby_simple_occl_on()) return 0;
+    occl_box_t b;
+    occl_sphere_box(org, radius, &b);
+    const int culled = occl_verdict(cpu, moby, &b, &s_hold_hook_simple, &s_hold_rex_simple);
+    s_simple_box.moby = moby; s_simple_box.b = b; s_simple_box.culled = culled;
+    if (culled && occl_verify_on()) { s_ver_would++; return 0; }   /* audit: decode anyway */
+    return culled;
+}
+
+
+void moby_simple_occl_audit(uint32_t moby, const float (*scr)[2], const double (*vpos)[3], int n) {
+    if (!occl_verify_on() || n <= 0 || s_simple_box.moby != moby || !s_simple_box.b.valid) return;
+    const occl_box_t* b = &s_simple_box.b;
+    float x0 = scr[0][0], x1 = scr[0][0], y0 = scr[0][1], y1 = scr[0][1];
+    double vz = vpos[0][2];
+    for (int j = 1; j < n; j++) {
+        if (scr[j][0] < x0) x0 = scr[j][0];
+        if (scr[j][0] > x1) x1 = scr[j][0];
+        if (scr[j][1] < y0) y0 = scr[j][1];
+        if (scr[j][1] > y1) y1 = scr[j][1];
+        if (vpos[j][2] < vz) vz = vpos[j][2];
+    }
+    s_ver_simple_n++;
+    const int out = x0 < b->x0 || x1 > b->x1 || y0 < b->y0 || y1 > b->y1 || vz < (double)b->vz;
+    if (out) {
+        s_ver_simple_out++;
+        fprintf(stderr, "[occl-VERIFY-simple-UNCONTAINED vbl=%u] moby=%08x box=(%.1f,%.1f)-(%.1f,%.1f) vz=%.1f "
+                        "verts=(%.1f,%.1f)-(%.1f,%.1f) vz=%.1f\n",
+                openpete_frame, moby, b->x0, b->y0, b->x1, b->y1, b->vz, x0, y0, x1, y1, vz);
+    }
+    if (s_simple_box.culled && !occl_query_at(x0, y0, x1, y1, (float)vz, 0.0f, 0.0f)) {
+        const int zeropx = (x1 < s_view.xlo || x0 > s_view.xhi || y1 < 0.0f || y0 > 224.0f);
+        if (!zeropx) s_ver_wrong++;
+        fprintf(stderr, "[occl-VERIFY-simple-%s vbl=%u] moby=%08x fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f\n",
+                zeropx ? "zeropx" : "WRONG", openpete_frame, moby, x0, y0, x1, y1, vz);
+    }
 }
 
 /** @brief The screen rect and nearest view-Z of a record's projected verts, in the units the occlusion query takes.
@@ -14593,7 +14733,8 @@ static void moby_reextract_body(CPUState* cpu) {
     int spec_fresh = s_canon_spec_valid && spyro_native_canon_epoch_fresh(s_canon_spec_epoch);
     int shd_fresh  = spyro_native_canon_shaded_fresh();
 
-    int nm = 0, reg_walk = 0;
+    int nm = 0, reg_walk = 0, reg_verts = 0;
+    const long occl0 = s_occl_culled;
     /* Each pass re-derives from the camera its producer drew under (held
      * verbatim when the tick ended under a different one, else the
      * interpolated bracket). */
@@ -14602,7 +14743,9 @@ static void moby_reextract_body(CPUState* cpu) {
     if (reg_fresh) {
         nm = reextract_record_pass(cpu, "REG");
         reg_walk = s_gout.n;
+        reg_verts = s_proj_n;
     }
+    moby_kind_census("sub", "anim", nm, s_occl_culled - occl0, reg_verts, reg_walk);
     rec_held_queue_census(nm, reg_walk);
     openpete_phase_set_count(OPPC_MOBYS, nm);   /* perf census: records this present */
 
@@ -14686,9 +14829,11 @@ static void moby_reextract_body(CPUState* cpu) {
                         q[0]-pq[0], q[1]-pq[1], q[2]-pq[2], q[3]-pq[3], q[4]-pq[4], q[5]-pq[5],
                         q[6]-pq[6], q[7]-pq[7], q[8]-pq[8]);
                 if (occl_verify_on())
-                    fprintf(stderr, "[moby-occl-verify vbl=%u] would_cull=%ld wrong=%ld (%.3f%%)\n",
+                    fprintf(stderr, "[moby-occl-verify vbl=%u] would_cull=%ld wrong=%ld (%.3f%%) "
+                                    "simple_audited=%ld simple_uncontained=%ld\n",
                             openpete_frame, s_ver_would, s_ver_wrong,
-                            s_ver_would > 0 ? 100.0 * (double)s_ver_wrong / (double)s_ver_would : 0.0);
+                            s_ver_would > 0 ? 100.0 * (double)s_ver_wrong / (double)s_ver_would : 0.0,
+                            s_ver_simple_n, s_ver_simple_out);
                 for (int k = 0; k < OPENPETE_OCCL_Q_COUNT; k++) pq[k] = q[k];
                 for (int k = 0; k < 4; k++) pf[k] = s_occl_f[k];
                 win0 = now; wc = s_occl_culled; ws = s_occl_seen;

@@ -577,6 +577,18 @@ int moby_rec_holds_moby(CPUState* cpu, uint32_t moby);
  * @return 1 inside the window, else 0. */
 int moby_verify_vbl(void);
 
+/** @brief Print one `[moby-kind]` census line for a moby pass when OPENPETE_MOBY_KIND_CENSUS is on, read once.
+ *
+ * Each pass that decodes moby records, and each extended-LOD reveal walk,
+ * calls it once per present.
+ * @param leg `canon` for the canonical pass, `sub` for a sub-tick replay.
+ * @param kind The model kind, or `<kind>-reveal` for a reveal walk.
+ * @param recs The records the pass offered (a reveal walk: appended).
+ * @param occl The records the occlusion test culled.
+ * @param verts The vertices the decode produced.
+ * @param tris The triangles the decode produced. */
+void moby_kind_census(const char* leg, const char* kind, long recs, long occl, long verts, long tris);
+
 #ifdef __cplusplus
 }
 #endif

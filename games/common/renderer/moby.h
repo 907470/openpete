@@ -346,6 +346,36 @@ void moby_simple_screen_origin(double ofx, double ofy);
  * @param sx Receives the screen X.
  * @param sy Receives the screen Y. */
 void moby_simple_project(const double p[3], float* sx, float* sy);
+/** @brief The occlusion verdict for one second-kind record from its view-space origin and bounding radius.
+ *
+ * The record's bounds are the screen rect of the cube around the sphere of
+ * that radius and the sphere's nearest view-Z, under the pass view at this
+ * present's camera; the verdict is the grid query the animated kind's cached
+ * bounds take, decided by the canonical scene and held per epoch for every
+ * replay of it in tables of this kind's own. A HUD or UI moby, a sphere
+ * reaching within 64 view-Z or half the canonical H of the camera, and
+ * OPENPETE_MOBY_SIMPLE_OCCL=0 are never occluded. Under
+ * OPENPETE_MOBY_OCCL_VERIFY a culled record is reported kept, so the decode
+ * runs and moby_simple_occl_audit checks it.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param org The record's origin, view space, full world units.
+ * @param radius A bound on the distance of every vertex of the record from
+ *        the origin, full world units.
+ * @return 1 when the record is hidden behind nearer world depth, else 0. */
+int moby_simple_occluded(struct CPUState* cpu, uint32_t moby, const double org[3], double radius);
+/** @brief Audit the bounds of the last moby_simple_occluded call against the record's decoded vertices (OPENPETE_MOBY_OCCL_VERIFY).
+ *
+ * Counts and prints a vertex outside the bounds' rect or nearer than their
+ * view-Z, and for a record the test culled, re-queries the vertices' own
+ * rect and prints a visible verdict, counted as wrong when the rect lies on
+ * screen. Does nothing with the audit off or when the last call named
+ * another moby or built no bounds.
+ * @param moby The Moby address.
+ * @param scr The vertices' screen positions (moby_simple_project).
+ * @param vpos The vertices, view space, full world units.
+ * @param n Their count. */
+void moby_simple_occl_audit(uint32_t moby, const float (*scr)[2], const double (*vpos)[3], int n);
 /** @brief Project and emit one second-kind triangle given in view space, full world units.
  *
  * Each vertex takes the raw float projection and the GTE near-plane mirror

@@ -1106,6 +1106,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Moby occlusion census. Per row of
+    # games/spyro-2/corpus/moby-occlusion-corpus.manifest, three headless legs at
+    # one freecam pose (extended LOD, extended LOD with the simple-kind
+    # occlusion test off, original LOD) with sub-tick presents, reading the
+    # per-kind decode census: records, culled records, vertices and triangles.
+    # A hidden record decoded on every present costs time and moves no pixel,
+    # which neither the golden nor the oracle sees. Fails when the extended
+    # decode exceeds a row's bound over original LOD, when a row's visible
+    # extension changes, or when an extended screenshot differs from the leg
+    # with the test off; vacuous without bracketed sub-tick presents, census
+    # lines or, where the row asks, a culled record.
+    add_test(NAME moby_occlusion_spyro2
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_occlusion.sh
+                     --game spyro-2 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(moby_occlusion_spyro2 PROPERTIES
+        LABELS "presentation;moby"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Vulkan validation errors on the boot-to-level path. One headless run per
     # game under --renderer vk with VK_LAYER_KHRONOS_validation loaded, from
     # boot through --skip-to-level to a native screenshot, asserting zero

@@ -1018,6 +1018,8 @@ static int s23_simple_mobys(uint32_t* out, int max) {
  * the verify harness prints what this one actually read. */
 static long s_simple_recs, s_simple_verts, s_simple_faces, s_simple_tris;
 static long s_simple_flat, s_simple_screen, s_simple_culled;
+/* Records the occlusion test kept from the decode (a subset of s_simple_culled). */
+static long s_simple_occl;
 /* Screen-space records queued, and the subset of them the placement admitted:
  * the kind's own engagement count, since every other counter mixes the kinds. */
 static long s_simple_screen_drawn;
@@ -1549,6 +1551,131 @@ static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
     return s_held_n;
 }
 
+/* Model radii of second-kind geometry headers, direct mapped. An entry holds
+ * the header address with its first two words and first vertex word, so a
+ * header rewritten in place (a level load) misses instead of reusing a radius. */
+#define S23_RADIUS_N 512
+static struct { uint32_t H, h0, h1, v0; double r; } s_s23_radius[S23_RADIUS_N];
+
+/** @brief The largest distance of a second-kind model's vertex words from its origin, model units.
+ *
+ * Covers the vertex counts of both lists (header word 0 bits 8-15 and 16-23,
+ * the counts the decode reads its vertex words by), so the bound holds at
+ * every tier. Cached per header.
+ * @param cpu The guest CPU state, read only.
+ * @param H The geometry header.
+ * @return The radius, model units. */
+static double s23_simple_model_radius(CPUState* cpu, uint32_t H) {
+    const uint32_t h0 = cpu->read_word(H), h1 = cpu->read_word(H + 4u), v0 = cpu->read_word(H + 0x10u);
+    const unsigned slot = ((H >> 2) * 2654435761u >> 20) & (S23_RADIUS_N - 1);
+    if (s_s23_radius[slot].H == H && s_s23_radius[slot].h0 == h0 &&
+        s_s23_radius[slot].h1 == h1 && s_s23_radius[slot].v0 == v0)
+        return s_s23_radius[slot].r;
+    int n = (int)((h0 >> 8) & 0xFFu), nl = (int)((h0 >> 16) & 0xFFu);
+    if (nl > n) n = nl;
+    if (n > S23_SIMPLE_VERTS) n = S23_SIMPLE_VERTS;
+    double r2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        const uint32_t w = cpu->read_word(H + 0x10u + (uint32_t)i * 4u);
+        const double vx = (double)((int32_t)(w << 10) >> 21);
+        const double vy = (double)((int32_t)(w << 20) >> 20);
+        const double vz = (double)((int32_t)w >> 21);
+        const double d2 = vx * vx + vy * vy + vz * vz;
+        if (d2 > r2) r2 = d2;
+    }
+    s_s23_radius[slot].H = H; s_s23_radius[slot].h0 = h0;
+    s_s23_radius[slot].h1 = h1; s_s23_radius[slot].v0 = v0;
+    s_s23_radius[slot].r = sqrt(r2);
+    return s_s23_radius[slot].r;
+}
+
+/** @brief A bound on how far a Q12 matrix stretches any vector: the square root of the largest absolute row sum of R^T R.
+ *
+ * Every induced norm of R^T R bounds its largest eigenvalue, which is the
+ * square of R's spectral norm, so the result is never below the true
+ * stretch; for the near-orthonormal camera-times-rotation matrices it is
+ * within a fraction of a percent of it.
+ * @param R The matrix, 4096 = 1.0.
+ * @return The bound, 1.0 = no stretch. */
+static double s23_matrix_stretch(const int R[3][3]) {
+    double worst = 0.0;
+    for (int i = 0; i < 3; i++) {
+        double row = 0.0;
+        for (int j = 0; j < 3; j++) {
+            double d = 0.0;
+            for (int k = 0; k < 3; k++) d += (double)R[k][i] * (double)R[k][j];
+            row += fabs(d);
+        }
+        if (row > worst) worst = row;
+    }
+    return sqrt(worst) / 4096.0;
+}
+
+/** @brief Print the submitted screen-space centroid, extent and placement of one second-kind record under OPENPETE_MOBY_POSTRACE_CLS.
+ *
+ * The variable names the class to trace (0xFFFF traces every class), read
+ * the same way as the animated kind's trace in the shared feeder, so one
+ * setting follows a moby across the kind boundary. The centroid alone is
+ * blind to the rotation, so the projected extent and the composed matrix's
+ * first row are printed beside it.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param vscr The record's projected vertices.
+ * @param nv Their count, at least 1.
+ * @param R The record's composed matrix, Q12.
+ * @param rot The moby's rotation word.
+ * @param dmob The moby's own displacement over this present, world units. */
+static void s23_simple_postrace(CPUState* cpu, uint32_t moby, const float (*vscr)[2], int nv,
+                                const int R[3][3], uint32_t rot, const double dmob[3]) {
+    static int s_cls = -2;
+    if (s_cls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_cls = e ? (int)strtol(e, NULL, 0) : -1; }
+    /* The class read stays inside the enable: the decode calls this per
+     * record per present. */
+    if (s_cls < 0) return;
+    const uint16_t s_tcls = (uint16_t)cpu->read_half(moby + game_layout.moby.class_off);
+    if (s_cls != 0xFFFF && s_tcls != (uint16_t)s_cls) return;
+    double cx = 0.0, cy = 0.0;
+    float lo[2] = { vscr[0][0], vscr[0][1] }, hi[2] = { lo[0], lo[1] };
+    for (int i = 0; i < nv; i++) {
+        cx += vscr[i][0]; cy += vscr[i][1];
+        for (int k = 0; k < 2; k++) {
+            if (vscr[i][k] < lo[k]) lo[k] = vscr[i][k];
+            if (vscr[i][k] > hi[k]) hi[k] = vscr[i][k];
+        }
+    }
+    fprintf(stderr, "[simple vbl=%u] m=%08x cls=%03x n=%d c=(%.2f,%.2f) "
+                    "ext=(%.2f,%.2f) r0=(%d,%d,%d) p=(%d,%d,%d) rot=%08x "
+                    "dmob=(%.2f,%.2f,%.2f)\n",
+            openpete_frame, moby, s_tcls, nv, cx / nv, cy / nv,
+            (double)(hi[0] - lo[0]), (double)(hi[1] - lo[1]),
+            R[0][0], R[0][1], R[0][2],
+            (int)cpu->read_word(moby + game_layout.moby.pos_off),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+            (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), rot,
+            dmob[0], dmob[1], dmob[2]);
+}
+
+/** @brief Whether a placed second-kind record is hidden behind nearer world depth, counted into the pass census when it is.
+ *
+ * A world-placed record's vertices sit at (R v + TR) * 2 in full world
+ * units, so the origin is 2 TR and no vertex lies farther from it than twice
+ * the model radius times R's stretch; that sphere takes
+ * moby_simple_occluded. A screen-space record is never hidden.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param pl The record's placement.
+ * @param R The record's composed matrix, Q12.
+ * @return 1 when hidden, else 0. */
+static int s23_simple_hidden(CPUState* cpu, uint32_t moby, const s23_place* pl, const int R[3][3]) {
+    if (pl->screen) return 0;
+    const double org[3] = { pl->TR[0] * 2.0, pl->TR[1] * 2.0, pl->TR[2] * 2.0 };
+    const double rad = 2.0 * s23_simple_model_radius(cpu, pl->header) * s23_matrix_stretch(R) + 1.0;
+    if (!moby_simple_occluded(cpu, moby, org, rad)) return 0;
+    s_simple_occl++;
+    s_simple_culled++;
+    return 1;
+}
+
 /** @brief Decodes the host queue of second-kind records into triangles for the shared walk.
  *
  * Per queued record: places it (s23_simple_place), takes the LOD tier from the
@@ -1559,9 +1686,13 @@ static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
  * moby_simple_tri with the face's paint-key bucket. A sub-tick present, which
  * has a staged tick camera, re-bases each record by the camera change and
  * applies the moby's own displacement and interpolated rotation; a canonical
- * decode takes the cull's values as they stand. Reads guest memory, writes
- * none, and updates the pass counters; it uses static scratch arrays and is not
- * reentrant.
+ * decode takes the cull's values as they stand. A world-placed record takes
+ * the occlusion test (moby_simple_occluded) on its origin and the model radius
+ * stretched by its matrix before any vertex is read, and a hidden one is
+ * neither decoded nor drawn; the canonical pass decides each verdict and its
+ * replays hold it. Reads guest memory, writes none, and updates the pass
+ * counters; it uses static scratch arrays and is not reentrant.
+ * @param cpu The guest CPU state, read only.
  * @return The number of triangles emitted. */
 static int s23_simple_decode(CPUState* cpu) {
     int Rcam[3][3];
@@ -1669,6 +1800,8 @@ static int s23_simple_decode(CPUState* cpu) {
             ngte_euler_sincos(cpu, rot, &esc);
         ngte_compose_euler(pl.R, &esc, R);
 
+        if (s23_simple_hidden(cpu, moby, &pl, R)) continue;
+
         moby_simple_record(cpu, moby);
         if (pl.screen) moby_simple_screen_origin(pl.ofx, pl.ofy);
         /* The translation the draw loads into TRX/TRY/TRZ (mobydraw.s
@@ -1698,44 +1831,9 @@ static int s23_simple_decode(CPUState* cpu) {
             moby_simple_otk_vertex(&ork[0], itr, R, vx, vy, vz, &iv[i]);
         }
         s_simple_verts += nv;
+        moby_simple_occl_audit(moby, (const float (*)[2])vscr, (const double (*)[3])vpos, nv);
 
-        /* OPENPETE_MOBY_POSTRACE_CLS=<class>: the submitted screen-space
-         * centroid of each simple-kind record of that class, the counterpart
-         * of the animated kind's trace in the shared feeder. 0xFFFF traces
-         * every class; the two kinds read the variable the same way, so one
-         * setting follows a moby across the kind boundary. */
-        {
-            static int s_cls = -2;
-            if (s_cls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_cls = e ? (int)strtol(e, NULL, 0) : -1; }
-            /* The class read stays inside the enable: this loop runs per
-             * record per present. */
-            const uint16_t s_tcls = s_cls >= 0
-                ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0u;
-            if (s_cls >= 0 && (s_cls == 0xFFFF || s_tcls == (uint16_t)s_cls)) {
-                double cx = 0.0, cy = 0.0;
-                float lo[2] = { vscr[0][0], vscr[0][1] }, hi[2] = { lo[0], lo[1] };
-                for (int i = 0; i < nv; i++) {
-                    cx += vscr[i][0]; cy += vscr[i][1];
-                    for (int k = 0; k < 2; k++) {
-                        if (vscr[i][k] < lo[k]) lo[k] = vscr[i][k];
-                        if (vscr[i][k] > hi[k]) hi[k] = vscr[i][k];
-                    }
-                }
-                /* The centroid alone is blind to the rotation: a record turning
-                 * about its own centre moves no centroid. The projected extent
-                 * and the composed matrix's first row carry the rotation. */
-                fprintf(stderr, "[simple vbl=%u] m=%08x cls=%03x n=%d c=(%.2f,%.2f) "
-                                "ext=(%.2f,%.2f) r0=(%d,%d,%d) p=(%d,%d,%d) rot=%08x "
-                                "dmob=(%.2f,%.2f,%.2f)\n",
-                        openpete_frame, moby, s_tcls, nv, cx / nv, cy / nv,
-                        (double)(hi[0] - lo[0]), (double)(hi[1] - lo[1]),
-                        R[0][0], R[0][1], R[0][2],
-                        (int)cpu->read_word(moby + game_layout.moby.pos_off),
-                        (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
-                        (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), rot,
-                        dmob[0], dmob[1], dmob[2]);
-            }
-        }
+        s23_simple_postrace(cpu, moby, (const float (*)[2])vscr, nv, R, rot, dmob);
 
         /* The face and colour lists, and the fade the near band applies
          * (mobydraw.s:4285-4346). */
@@ -1890,7 +1988,7 @@ static int s23_simple_decode(CPUState* cpu) {
 static int s23_simple_replay(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
-    s_simple_lp = s_simple_fade = 0;
+    s_simple_lp = s_simple_fade = s_simple_occl = 0;
     /* A held camera cut replaying the previous epoch's animated queue replays
      * this kind's copy of the same epoch: the cull built both against the
      * camera the present shows. */
@@ -1920,6 +2018,7 @@ static int s23_simple_replay(CPUState* cpu) {
                 openpete_frame, s_sq->qn, s_simple_recs, s_simple_culled,
                 s_simple_screen, s_simple_screen_drawn,
                 s_simple_verts, s_simple_faces, n, s_simple_lp, s_simple_fade);
+    moby_kind_census("sub", "simple", s_sq->qn, s_simple_occl, s_simple_verts, n);
     return n;
 }
 
@@ -2415,7 +2514,7 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t ki
 static int s23_simple_pass(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
-    s_simple_lp = s_simple_fade = 0;
+    s_simple_lp = s_simple_fade = s_simple_occl = 0;
     s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = s_flat_front_blended = 0;
     s23_simple_capture(cpu);
     /* Extended LOD: the cull's distance box is what keeps a distant moby out
@@ -2445,6 +2544,7 @@ static int s23_simple_pass(CPUState* cpu) {
                 s_simple_lp, s_simple_fade,
                 s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped,
                 s_flat_front_blended);
+    moby_kind_census("canon", "simple", s_sq->qn, s_simple_occl, s_simple_verts, n);
     return n;
 }
 
