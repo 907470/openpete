@@ -201,3 +201,9 @@ summer_forest | pos=(99823, 31898, 44036) yaw=-707 pitch=992
 # textured from the special-material page with generated environment
 # coordinates. Blessed pre-fix.
 idol_springs | pos=(79159, 53926, 16006) yaw=-1450 pitch=36
+# Reported defect: two Short Idols (class 0x116) beyond the corridor lip are
+# not drawn, natively or on the reference. The camera's 2048-unit cell of the
+# game's precomputed visibility tree lists their sector (77) as hidden, and
+# the moby cull drops every moby whose sector byte is zero; 100 units nearer
+# (the next cell) the sector is listed and both draw. Blessed pre-fix.
+idol_springs | pos=(104793, 86713, 16325) yaw=1961 pitch=246
