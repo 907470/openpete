@@ -624,6 +624,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_disc_boot_order.py)
     set_tests_properties(disc_boot_order_selftest PROPERTIES LABELS "disc")
 
+    # Bug-report bundle reader: info, extract, refusals of malformed
+    # bundles, diff-hashes and the replay route on synthetic bundles.
+    add_test(NAME bugreport_reader_selftest
+             COMMAND python3 -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_bugreport.py)
+
     # Sfx pack census: --dump-sfx-pack over the Spyro 1 disc through the
     # disc reader; the counters, the WAV set's name digest and the trace
     # rows are pinned to the retail disc. Exit 64 = no binary or disc.
