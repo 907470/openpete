@@ -8,9 +8,10 @@
  * and through our own bk2_movie_load. The log is shared with the
  * rewind/runahead drivers.
  *
- * One Input Log line per pad write of a yield, holding the input of the
- * yield the write took, marked with the Header.txt line "OpenpeteFeedKey
- * consume". The rows are grouped by openpete_consume (E, an entry of the
+ * One Input Log line per pad write of a yield, holding player 1's pad as
+ * the host delivered it at that write (bk2_pad_write_t) and the other
+ * ports of the entry the write's yield logged, marked with the Header.txt
+ * line "OpenpeteFeedKey consume". The rows are grouped by openpete_consume (E, an entry of the
  * game's pad-ring consumer); "Input Groups.txt" holds each group's row
  * count, one per line from E 0. A recording that opens inside a group
  * repeats its first row for the group's writes before it.
@@ -21,6 +22,8 @@
  */
 #ifndef OPENPETE_BK2_RECORD_H
 #define OPENPETE_BK2_RECORD_H
+
+#include "bk2_feed.h"   /* bk2_pad_write_t */
 
 #include <stdint.h>
 
@@ -42,23 +45,23 @@ extern "C" {
  *         cannot be copied, with the reason logged. */
 int  bk2_record_begin(const char* path, const char* args_sidecar);
 
-/** @brief Record the pad writes a just-logged entry's yield took and log its pad transitions while recording.
+/** @brief Record the pad writes a just-logged entry's yield took, with player 1's pad at each, and log its pad transitions while recording.
  *
- * The bits already live in the input log. The caller holds input_log_lock
- * across the append and this note. The entry is written @p writes
- * times at finalize: its first write as row @p j of the group of E @p e,
- * the rest as rows of the group of E @p e_rest. A
- * line is logged only when the bits differ from the previous call's. No
- * effect when recording is not active.
- * @param bits Player 1 pad bitfield (1 released, 0 pressed).
+ * The caller holds input_log_lock across the append and this note. The
+ * entry is written @p writes times at finalize, one line per write with
+ * that write's player 1 pad: its first write as row @p j of the group of
+ * E @p e, the rest as rows of the group of E @p e_rest. A line is logged
+ * for each write whose bits differ from the previous write's. No effect
+ * when recording is not active.
  * @param log_idx Input log index input_log_append_staged returned; the line shows
  *        it relative to the movie's first entry.
  * @param writes Yield-path pad writes the entry's yield took; 0 adds no row.
  * @param e openpete_consume at the entry's first write.
  * @param e_rest openpete_consume at its last write.
- * @param j openpete_consume_write at the entry's first write. */
-void bk2_record_note(uint16_t bits, int log_idx, unsigned writes, unsigned e,
-                     unsigned e_rest, unsigned j);
+ * @param j openpete_consume_write at the entry's first write.
+ * @param pads Player 1's pad at each of the @p writes writes, in order. */
+void bk2_record_note(int log_idx, unsigned writes, unsigned e, unsigned e_rest,
+                     unsigned j, const bk2_pad_write_t* pads);
 
 /** @brief Write the recorded window of the input log as a .bk2 zip and end recording.
  *

@@ -275,7 +275,7 @@ void host_tick(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
      * while paused the yield only fires while step_one is raised
      * (step key or overlay), which stays raised until the game draws. */
     it->frame_before_yield = openpete_frame;
-    { unsigned e_, l_, j_; (void)bk2_feed_iter_take(&e_, &l_, &j_); }   /* writes outside this yield */
+    { unsigned e_, l_, j_; (void)bk2_feed_iter_take(&e_, &l_, &j_, NULL); }   /* writes outside this yield */
     it->yield_now = it->sim_due && (!S->paused || S->step_one)
                                 && !it->rewound;
     host_trace_bit(HT_F_OVR_CLAIMED, it->ovr_claimed);

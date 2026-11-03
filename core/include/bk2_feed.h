@@ -11,7 +11,8 @@
  * (openpete_feed_observer_t) to the following ends; the events of a runahead
  * speculation are held and delivered only when the speculation is adopted
  * (bk2_feed_speculation_end):
- *   - collect each iteration's writes for the recorder (bk2_feed_iter_take);
+ *   - collect each iteration's writes for the recorder (bk2_feed_iter_take),
+ *     each with the player 1 pad the host delivered at it (bk2_pad_write_t);
  *   - write the OPENPETE_FEED_MAP log: `W row e j` per write, with the row
  *     the host stamped before it (as bk2_feed_row returned it; -1 with no
  *     movie), and `P frame vbl e j` per canonical
@@ -24,9 +25,19 @@
 
 #include "bk2_movie.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Player 1's pad as the host delivered it at one pad write: the bytes in
+ * the first pad buffer when the write is counted, before the vsync's
+ * takeback can replace them. Axes in the bk2 order LX, LY, RX, RY. */
+typedef struct bk2_pad_write {
+    uint16_t      bits;     /* 1 released, 0 pressed */
+    unsigned char axes[4];
+} bk2_pad_write_t;
 
 /** @brief Install the write and consumer observer, and select the replayed movie.
  *
@@ -59,8 +70,11 @@ void bk2_feed_stamped(int row);
  * @param e Receives openpete_consume at the first of them.
  * @param e_last Receives openpete_consume at the last of them.
  * @param j Receives openpete_consume_write at the first of them.
+ * @param pads Receives the player 1 pad of each write in order, valid until
+ *        the next pad write; NULL when not wanted.
  * @return The number of pad writes of yields since the previous call. */
-unsigned bk2_feed_iter_take(unsigned* e, unsigned* e_last, unsigned* j);
+unsigned bk2_feed_iter_take(unsigned* e, unsigned* e_last, unsigned* j,
+                            const bk2_pad_write_t** pads);
 
 /** @brief Write a `P frame vbl e j` line to the OPENPETE_FEED_MAP log, when it is open. */
 void bk2_feed_map_present(void);

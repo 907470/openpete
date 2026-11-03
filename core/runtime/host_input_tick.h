@@ -26,11 +26,14 @@ bool host_input_arbitrate(const host_session_t* S, host_iter_t* it) OP_REQUIRES(
  * A savestate load, stress rollback or handoff resume may move
  * openpete_frame; the stamp made by host_input_arbitrate was for the frame
  * before the jump, so the row is re-derived for the new one, or the next
- * tick runs with another frame's input. Silent: the transition log and
- * the mods' bk2 status stay with the arbitration stamp.
+ * tick runs with another frame's input. The override claim is decided
+ * again for the new row on the same iteration (a movie row in range, else
+ * an overlay's neutral hold, else live input), so the latch hands the pad
+ * to the movie on the iteration the op commits. Silent: the transition
+ * log and the mods' bk2 status stay with the arbitration stamp.
  * @param S The session.
- * @param it The iteration; reads bk2_stamped_frame. */
-void host_input_restamp_after_ops(const host_session_t* S, const host_iter_t* it) OP_REQUIRES(sim);
+ * @param it The iteration; reads bk2_stamped_frame, writes ovr_claimed. */
+void host_input_restamp_after_ops(const host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
 
 /** @brief Pump, sample and latch this iteration's input, then stage the tick's input record.
  *

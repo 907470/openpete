@@ -81,19 +81,20 @@ int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
 /** @brief Append the staged input record once per yield of the iteration and note each entry's movie rows while recording.
  *
  * A recorded movie carries one row per pad write of a yield, grouped by
- * openpete_consume: the iteration's writes (bk2_feed_iter_take) are noted on
- * its last entry. Holds input_log_lock across the appends and notes, so a
- * finalize on another thread sees each entry with its rows or not at all.
+ * openpete_consume: the iteration's writes (bk2_feed_iter_take), each with
+ * the player 1 pad the host delivered at it, are noted on its last entry.
+ * Holds input_log_lock across the appends and notes, so a finalize on
+ * another thread sees each entry with its rows or not at all.
  * @param ticks Yields the iteration ran (openpete_frame's advance).
- * @param recording True while --bk2-record is recording.
- * @param bits Player 1 pad bits the guest read, for the recorder's log. */
-static void input_log_commit_yields(unsigned ticks, bool recording, uint16_t bits) {
+ * @param recording True while --bk2-record is recording. */
+static void input_log_commit_yields(unsigned ticks, bool recording) {
     input_log_lock();
     unsigned e = 0u, e_last = 0u, j = 0u;
-    const unsigned writes = bk2_feed_iter_take(&e, &e_last, &j);
+    const bk2_pad_write_t* pads = NULL;
+    const unsigned writes = bk2_feed_iter_take(&e, &e_last, &j, &pads);
     for (unsigned t = 0; t < ticks; t++) {
         const int idx = input_log_append_staged();
-        if (recording) bk2_record_note(bits, idx, t + 1 == ticks ? writes : 0u, e, e_last, j);
+        if (recording) bk2_record_note(idx, t + 1 == ticks ? writes : 0u, e, e_last, j, pads);
     }
     input_log_unlock();
 }
@@ -116,7 +117,7 @@ void bk2_record_exit_flush(void) {
         unsigned char bk2axes[4];
         const uint16_t bits = pad_p1_readback(bk2axes);
         input_log_stage_p1_readback(bits, bk2axes);
-        input_log_commit_yields(1u, true, bits);
+        input_log_commit_yields(1u, true);
     }
     (void)bk2_record_finalize();
 }
@@ -474,10 +475,21 @@ bool host_input_arbitrate(const host_session_t* S, host_iter_t* it) OP_REQUIRES(
 }
 
 /* Documented at the declaration in host_input_tick.h. */
-void host_input_restamp_after_ops(const host_session_t* S, const host_iter_t* it) OP_REQUIRES(sim)
+void host_input_restamp_after_ops(const host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
 {
-    if (S->bk2.active && openpete_frame != it->bk2_stamped_frame)
-        (void)bk2_stamp_row(&S->bk2.movie, bk2_feed_row());
+    if (!S->bk2.active || openpete_frame == it->bk2_stamped_frame) return;
+    /* The arbitration's claim was decided for the row before the jump; it
+     * is decided again for the new one, with the same priorities: a movie
+     * row in range owns the channel, else an overlay holding the pad keeps
+     * it neutral, else live input takes it. */
+    if (bk2_stamp_row(&S->bk2.movie, bk2_feed_row())) {
+        it->ovr_claimed = true;
+    } else if (s_input_latch.prev_overlay_hold) {
+        pad_override_neutral(1);
+        it->ovr_claimed = true;
+    } else {
+        it->ovr_claimed = false;
+    }
 }
 
 /** @brief Pump, publish, sample and latch the host's input for this iteration and record which sample the VBL consumes.
@@ -694,7 +706,7 @@ void host_input_commit(const host_session_t* S, const host_iter_t* it) OP_REQUIR
     input_census_staging(it->p1_staged, it->frame_before_yield, bits, bk2axes);
     input_log_stage_p1_readback(bits, bk2axes);
     input_census_slots(ticks);
-    input_log_commit_yields(ticks, S->bk2.recording, bits);
+    input_log_commit_yields(ticks, S->bk2.recording);
 }
 
 #endif /* OPENPETE_HAS_PSYCROSS */
