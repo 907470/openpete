@@ -5,6 +5,7 @@
 #define OPENPETE_BUGREPORT_INTERNAL_H
 
 #include "openpete_bugrec.h"
+#include "openpete_bugthumbs.h"
 
 #include <SDL3/SDL_atomic.h>
 
@@ -81,6 +82,10 @@ typedef struct br_job {
     char     log_path[1024];    /* the current log file, or "" */
     char**   argv;
     int      argc;
+    /* A fatal exit's bundle: the exit's reason ("hang", "cdsync-spin") and
+     * the thread that wrote it ("sim", "other"); NULL for a press. */
+    const char* fatal;
+    const char* exit_thread;
     /* The press, on the sim thread. */
     openpete_bugrec_anchor_t press;   /* the press snapshot and its card images */
     openpete_bugrec_anchor_t anchor;  /* a copy of the recorder's replay anchor */
@@ -97,6 +102,12 @@ typedef struct br_job {
     size_t   input_n;
     uint8_t* hang;              /* the dispatch rings in hang-trace.bin's layout */
     size_t   hang_len;
+    openpete_bugthumb_t* thumbs;  /* the thumbnail ring, oldest first */
+    size_t   thumbs_n;
+    int64_t  press_present_ns;  /* the present clock at the press */
+    int      note_wanted;       /* the press asks the tester for a note */
+    char*    note;              /* the saved note, or NULL */
+    char     note_state[32];    /* saved, skipped, off, no text input, not shown, ... */
     char*    reports;           /* the sim thread's subsystem reports */
     size_t   reports_len;
     char*    summary;
@@ -133,6 +144,9 @@ typedef struct br_job {
  * reports (a present must run, which a canonical tick brings). */
 #define BR_MAIN_WAIT_MS 500u
 #define BR_SHOT_WAIT_MS 2000u
+/* The note prompt: skipped when no frame draws it, or, with no keyboard
+ * attached, no on-screen keyboard shows, within this bound. */
+#define BR_NOTE_SHOW_MS 2000u
 
 /** @brief Withdraw a job's main-thread request when the pump has not claimed it.
  *

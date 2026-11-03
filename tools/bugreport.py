@@ -28,6 +28,10 @@ Subcommands:
       region-hash CSVs (`frame,vbl,fnv1a64,<region>...`). A or B may be a
       bundle, whose hashes.csv is read.
 
+A bundle written at a fatal exit (manifest `trigger` other than `press`: the
+hang watchdog's `hang`, the CdSync spin guard's `cdsync-spin`) holds no
+press.state and no screen.png; its hang/ members are that run's dump.
+
 Exit codes: 0 pass (verified, IDENTICAL), 1 a member fails its manifest
 hash or size, 2 DIVERGED, 3 VACUOUS (no rows compared, no verdict line),
 64 refused (malformed bundle, bad arguments, replay refused).
@@ -46,6 +50,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -294,6 +299,82 @@ def pace_summary(data, window_s=PACE_WINDOW_S):
         out["hitch_ms"] = 2 * p50
         out["hitches"] = sum(1 for x in iv if x > 2 * p50)
     return out
+
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+PNG_PIXELS_MAX = 1 << 26       # a thumbnail's decoded bound (w * h)
+
+
+def png_check(data):
+    """Decode a PNG's structure: chunk CRCs, IHDR, and the IDAT stream inflated to h rows of 1 + w * channels bytes.
+
+    @return (width, height) when it decodes; raises ValueError naming the fault."""
+    if not data.startswith(PNG_SIG):
+        raise ValueError("no PNG signature")
+    pos, ihdr, idat = len(PNG_SIG), None, []
+    while pos + 12 <= len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + n]
+        if len(body) != n or pos + 12 + n > len(data):
+            raise ValueError("truncated chunk")
+        (crc,) = struct.unpack(">I", data[pos + 8 + n:pos + 12 + n])
+        if zlib.crc32(kind + body) & 0xFFFFFFFF != crc:
+            raise ValueError(f"chunk {kind!r} CRC mismatch")
+        if kind == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+        pos += 12 + n
+    if not ihdr:
+        raise ValueError("no IHDR")
+    w, h, depth, ctype = ihdr[0], ihdr[1], ihdr[2], ihdr[3]
+    chans = {0: 1, 2: 3, 4: 2, 6: 4}.get(ctype)
+    if depth != 8 or not chans or not w or not h or w * h > PNG_PIXELS_MAX:
+        raise ValueError(f"unsupported IHDR {w}x{h} depth {depth} type {ctype}")
+    d = zlib.decompressobj()
+    need = h * (1 + w * chans)
+    raw = d.decompress(b"".join(idat), need + 1)
+    if len(raw) != need:
+        raise ValueError(f"IDAT inflates to {len(raw)} B, rows need {need}")
+    if any(raw[r * (1 + w * chans)] > 4 for r in range(h)):
+        raise ValueError("bad row filter byte")
+    return w, h
+
+
+def thumbs_line(b, m):
+    """The thumbnail ring's summary: count, size, span, rate and decode check, from the manifest and the members."""
+    names = sorted(n for n in b.listed if n.startswith("thumbs/") and n.endswith(".png"))
+    th = m.get("thumbs") if isinstance(m.get("thumbs"), dict) else {}
+    if not names:
+        return f"thumbnails: none ({th.get('state') or 'not in this bundle'})"
+    bad, size = 0, None
+    for n in names:
+        try:
+            size = png_check(b.read(n))
+        except (ValueError, BundleError, zlib.error):
+            bad += 1
+    span = th.get("span_ms")
+    line = f"thumbnails: {len(names)}"
+    if size:
+        line += f" ({size[0]}x{size[1]})"
+    if isinstance(span, (int, float)):
+        line += f", span {span / 1000:.2f} s"
+        if len(names) > 1 and span > 0:
+            line += f", {(len(names) - 1) * 1000 / span:.2f} Hz"
+    if isinstance(th.get("newest_age_ms"), (int, float)):
+        line += f", newest {th['newest_age_ms'] / 1000:.2f} s before the press"
+    return line + ("; all decode" if not bad else f"; {bad} do not decode")
+
+
+def note_line(b, m):
+    """The tester's note, or why there is none."""
+    txt = b.text("notes.txt")
+    if txt is not None:
+        return "note: " + txt.strip().replace("\n", " ")[:500]
+    st = (m.get("note") or {}).get("state") if isinstance(m.get("note"), dict) else None
+    return f"note: none ({st or 'not recorded'})"
 
 
 def read_hash_csv(source):
@@ -557,6 +638,11 @@ def cmd_info(args):
     w = o.append
     w(f"bundle {b.path.name}: schema {b.schema}"
       + ("" if b.schema == SCHEMA else f" (this reader knows schema {SCHEMA}; fields may be missing)"))
+    trig = m.get("trigger") or "press"
+    if trig != "press":
+        w(f"trigger {trig}: written at a fatal exit on the {m.get('exit_thread') or '?'} thread; "
+          "no press.state or screen.png; hang/ holds that run's dump")
+    w(note_line(b, m))
     w(f"build {m.get('build_version')} tagged={m.get('build_tagged')} commit {m.get('build_commit')}")
     w(f"exe_sha256 {m.get('exe_sha256')}")
     mod = parse_kv(b.text("module.txt"))
@@ -571,7 +657,7 @@ def cmd_info(args):
                             for x in mods) if mods else "none enabled"))
     argv = m.get("argv") or []
     w("argv: " + " ".join(shlex.quote(str(a)) for a in argv[1:]))
-    pr, an = m.get("press") or {}, m.get("anchor")
+    pr, an = m.get("press"), m.get("anchor")
     w(counter_line("press ", pr))
     w(counter_line("anchor", an))
     if isinstance(an, dict) and isinstance(pr, dict):
@@ -582,6 +668,9 @@ def cmd_info(args):
         # (OPENPETE_BUGREC_CADENCE_VBLS) counts it at the VBL rate.
         w(f"anchor age: frame +{df} ({df / VBL_HZ:.1f} s at the VBL rate), vbl +{dv}, feed_key +{dk}; "
           f"window_ticks {m.get('window_ticks')} segment_rows {m.get('segment_rows')} hash_rows {m.get('hash_rows')}")
+    elif isinstance(an, dict):
+        w(f"anchor age: no press snapshot (fatal exit); segment_rows {m.get('segment_rows')} "
+          f"hash_rows {m.get('hash_rows')} from the anchor to the exit")
     else:
         w("anchor age: no anchor held (no replay window)")
     taint = m.get("taint") or {}
@@ -629,6 +718,7 @@ def cmd_info(args):
             w("  " + " ".join(f"{d}/({c})" for d, c in sorted(dirs.items())))
     for name, st, det in bad:
         w(f"  {st.upper()} {name}: {det}")
+    w(thumbs_line(b, m))
     if b.has("pace.oppl"):
         ps = pace_summary(b.read("pace.oppl"))
         if "error" in ps:

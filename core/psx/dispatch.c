@@ -492,9 +492,10 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
     snprintf(msg, sizeof msg, "The game stopped responding and was closed. "
              "Diagnostic files were written to %s and %s.", path, rampath);
     openpete_fatal_message(OP_E_HANG, "OpenPete stopped responding", msg);
-    /* The registered flush writes what the exit would lose (the movie being
-     * recorded); its log lines precede the sync below. */
-    openpete_crash_run_exit_flush();
+    /* The registered flushes write what the exit would lose (the movie
+     * being recorded, the bug-report bundle); their log lines precede the
+     * sync below. */
+    openpete_crash_run_exit_flush("hang");
     fflush(stdout); fflush(stderr);
     /* stderr is a pipe drained by the log pump thread; exiting first would take the
      * watchdog's own diagnosis down with the process before it is copied. */

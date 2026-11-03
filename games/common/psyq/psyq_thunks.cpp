@@ -4273,7 +4273,7 @@ void psyq_CdSync(CPUState* cpu) {
                         "(rc=%d s0=0x%08X ra=0x%08X) - exiting",
                         cs_calls_this_frame, openpete_frame, rc,
                         cpu->s0, cpu->ra);
-            openpete_crash_run_exit_flush();
+            openpete_crash_run_exit_flush("cdsync-spin");
             std::fflush(stdout); std::fflush(stderr);
             std::_Exit(3);
         }

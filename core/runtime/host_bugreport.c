@@ -8,12 +8,16 @@
 #include "../record/bugreport_internal.h"
 #include "game_extras.h"
 #include "host_loop_internal.h"
+#include "run_internal.h"
 #include "openpete.h"
 #include "openpete_bugrec.h"
 #include "openpete_config.h"
+#include "openpete_crash.h"
+#include "openpete_devui.h"
 #include "openpete_fiber.h"
 #include "openpete_freecam.h"
 #include "openpete_host_trace.h"
+#include "openpete_interp.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
 #include "openpete_mods.h"
@@ -43,9 +47,16 @@ extern char** environ;
 #define BR_ENVIRON environ
 #endif
 
+/* A fatal exit's bound on the in-flight bundle and on its own. */
+#define BR_FATAL_WAIT_MS 30000u
+
 static struct {
     SDL_AtomicInt requested;     /* openpete_bugreport_request */
     long          at_key;        /* OPENPETE_BUGREPORT_AT, or -1 */
+    int           note_env;      /* OPENPETE_BUGREPORT_NOTE: -1 unset, 0 or 1 */
+    int           harness_press; /* the due press came from OPENPETE_BUGREPORT_AT */
+    const openpete_options_t* opts;
+    SDL_ThreadID  sim_tid;       /* the thread openpete_bugreport_init ran on */
     br_job_t*     job;           /* the bundle in flight (sim-owned pointer) */
     SDL_Thread*   thr;
     br_job_t*     shot_job;      /* the bundle whose screenshot the present services owe */
@@ -55,12 +66,19 @@ static struct {
     char          last_path[1400];
     size_t        last_members, last_findings;
     uint64_t      last_bytes, last_replacements, last_press_us, last_display_us, last_write_ms;
-} s_bp = { .at_key = -1 };
+} s_bp = { .at_key = -1, .note_env = -1 };
 
-void openpete_bugreport_init(void)
+static void bundle_exit_flush(void);
+
+void openpete_bugreport_init(const openpete_options_t* opts)
 {
     const char* e = getenv("OPENPETE_BUGREPORT_AT");
     s_bp.at_key = (e && *e) ? strtol(e, NULL, 10) : -1;
+    const char* n = getenv("OPENPETE_BUGREPORT_NOTE");
+    s_bp.note_env = (n && *n) ? (*n != '0') : -1;
+    s_bp.opts = opts;
+    s_bp.sim_tid = SDL_GetCurrentThreadID();
+    openpete_crash_set_exit_flush(OP_EXIT_FLUSH_BUGREPORT, bundle_exit_flush);
 }
 
 void openpete_bugreport_request(void) { SDL_SetAtomicInt(&s_bp.requested, 1); }
@@ -109,8 +127,10 @@ int openpete_bugreport_due(void) OP_REQUIRES(sim)
     bundle_reap(0);
     int due = openpete_key_pressed(OPK_BUG_REPORT) != 0;
     if (SDL_SetAtomicInt(&s_bp.requested, 0)) due = 1;
-    if (s_bp.at_key >= 0 && (long)openpete_feed_key_now() >= s_bp.at_key) {
+    s_bp.harness_press = 0;
+    if (!due && s_bp.at_key >= 0 && (long)openpete_feed_key_now() >= s_bp.at_key) {
         s_bp.at_key = -1;
+        s_bp.harness_press = 1;
         due = 1;
     }
     if (!due) return 0;
@@ -147,8 +167,9 @@ static int job_paths(br_job_t* j)
     if (SDL_GetCurrentTime(&now)) (void)SDL_TimeToDateTime(now, &dt, true);
     const char* game = game_get_id();
     snprintf(j->game, sizeof j->game, "%s", game ? game : "unknown");
-    snprintf(j->stem, sizeof j->stem, "bug-%s-%04d%02d%02d-%02d%02d%02d", j->game, dt.year,
-             dt.month, dt.day, dt.hour, dt.minute, dt.second);
+    snprintf(j->stem, sizeof j->stem, "bug-%s-%04d%02d%02d-%02d%02d%02d%s%s", j->game, dt.year,
+             dt.month, dt.day, dt.hour, dt.minute, dt.second, j->fatal ? "-" : "",
+             j->fatal ? j->fatal : "");
     if (openpete_paths_data_dir("bugreports", j->out_dir, sizeof j->out_dir, 1) != 0) {
         OPL_ERROR_F("bugreport", "no bugreports data directory resolves");
         return -1;
@@ -365,7 +386,10 @@ static void press_rings(br_job_t* j) OP_REQUIRES(sim)
         j->pace_len = j->pace_n = 0;
     }
     j->input_n = openpete_bugrec_input_snapshot(&j->input);
-    j->hang_len = openpete_hang_rings_image(&j->hang);
+    /* At a fatal exit the dump the watchdog just wrote holds these rings. */
+    if (!j->fatal) j->hang_len = openpete_hang_rings_image(&j->hang);
+    if (openpete_bugthumbs_enabled()) j->thumbs_n = openpete_bugthumbs_copy(&j->thumbs);
+    j->press_present_ns = (int64_t)openpete_interp_present_now();
 }
 
 /** @brief Run the worker on its thread.
@@ -393,6 +417,9 @@ int openpete_bugreport_press(const CPUState* cpu, const openpete_options_t* opts
         return -1;
     }
     j->t_press_ns = t0;
+    /* The note is for a person: a harness press asks for it only under
+     * OPENPETE_BUGREPORT_NOTE=1, any other press unless it is 0. */
+    j->note_wanted = s_bp.harness_press ? s_bp.note_env == 1 : s_bp.note_env != 0;
     press_anchor(j);
     press_rings(j);
     openpete_log_capture_begin();
@@ -523,12 +550,15 @@ void openpete_bugreport_shutdown(void) OP_REQUIRES(sim)
         (void)SDL_CompareAndSwapAtomicInt(&j->display, BR_PENDING, BR_ABSENT);
         (void)SDL_CompareAndSwapAtomicInt(&j->shot, BR_PENDING, BR_ABSENT);
     }
+    /* No tester answers a note at exit: the worker finalizes without one. */
+    openpete_devui_note_end();
     OPL_INFO_F("bugreport", "waiting for %s", j->zip_path);
     bundle_reap(1);
 }
 
 void openpete_bugreport_report(void)
 {
+    openpete_bugthumbs_report();
     if (!s_bp.presses && !s_bp.refused) return;
     OPL_INFO_F("bugreport", "census: %llu press(es), %llu written, %llu failed, %llu refused "
                "in flight; last %s: %zu member(s), %llu bytes, %llu redaction(s), %zu finding(s), "
@@ -538,6 +568,119 @@ void openpete_bugreport_report(void)
                (unsigned long long)s_bp.last_bytes, (unsigned long long)s_bp.last_replacements,
                s_bp.last_findings, (unsigned long long)s_bp.last_press_us,
                (unsigned long long)s_bp.last_display_us, (unsigned long long)s_bp.last_write_ms);
+}
+
+/** @brief Copy a fatal exit's sim-side state into its job on the exiting thread: the replay window, the rings, the summary, the mods, the pacing environment and, on the sim's own thread, the subsystem reports.
+ *
+ * Runs on the thread that is exiting, after the movie's flush, which keeps
+ * the input log's lock for good: the lock is recursive, so only the thread
+ * holding it can read the segment. The sim is stopped (this is its thread,
+ * or it is stuck in the loop the stall monitor tripped on), so the state
+ * read is quiescent; off the sim's thread the reports are not run, since
+ * the stuck sim may hold what they read.
+ * @param j The job. */
+static void fatal_collect(br_job_t* j)
+{
+    OP_TSA_SUPPRESS_BEGIN("fatal exit: the sim is stopped while its state is copied")
+    press_anchor(j);
+    press_rings(j);
+    if (!strcmp(j->exit_thread, "sim")) {
+        openpete_log_capture_begin();
+        host_session_press_reports();
+        j->reports = openpete_log_capture_end(&j->reports_len);
+    } else {
+        j->reports = strdup("(not run: the exit was taken off the sim's thread)\n");
+        j->reports_len = j->reports ? strlen(j->reports) : 0;
+    }
+    j->summary = press_summary(&g_game.cpu);
+    press_mods(j);
+    host_session_pace_env(j->pace_env, sizeof j->pace_env);
+    OP_TSA_SUPPRESS_END
+}
+
+/** @brief Collect a fatal exit's collectors and write its bundle: config, keymap, environment variables, argv, then the worker's write.
+ *
+ * Runs on its own thread while the exiting thread waits, so a collector or
+ * a write that blocks cannot keep the process from exiting.
+ * @param p The job.
+ * @return 0. */
+static int fatal_worker(void* p)
+{
+    br_job_t* j = (br_job_t*)p;
+    stage_report(j, "config.txt", openpete_config_report);
+    stage_report(j, "keymap.txt", openpete_keymap_report);
+    j->env = press_env();
+    press_args(j, s_bp.opts);
+    snprintf(j->log_path, sizeof j->log_path, "%s", openpete_log_file_path());
+    j->press_us = (SDL_GetTicksNS() - j->t_press_ns) / 1000u;
+    SDL_SetAtomicPointer(&s_bp.main_job, j);
+    br_job_write(j);
+    SDL_SetAtomicInt(&j->finished, 1);
+    return 0;
+}
+
+/** @brief Wait for a job's worker to set its finished flag, up to a bound.
+ * @param j The job.
+ * @param ms The bound.
+ * @return 1 when it finished. */
+static int fatal_wait(br_job_t* j, unsigned ms)
+{
+    const uint64_t end = SDL_GetTicksNS() + (uint64_t)ms * 1000000u;
+    while (!SDL_GetAtomicInt(&j->finished)) {
+        if (SDL_GetTicksNS() >= end) return 0;
+        SDL_Delay(5);
+    }
+    return 1;
+}
+
+/** @brief The bug-report slot of the fatal exit flush: write a bundle of the run that is exiting.
+ *
+ * Waits for a bundle already in flight first (its answers are bounded),
+ * copies the sim-side state on this thread (fatal_collect), then runs the
+ * collectors and the write on a worker thread, waiting up to
+ * BR_FATAL_WAIT_MS for each, so a collector that blocks cannot keep the
+ * process from exiting. The bundle is left unfreed; the process exits. */
+static void bundle_exit_flush(void)
+{
+    br_job_t* inflight = s_bp.job;
+    if (inflight && !fatal_wait(inflight, BR_FATAL_WAIT_MS))
+        OPL_WARN_F("bugreport", "fatal exit: %s still being written after %u ms", inflight->zip_path,
+                   BR_FATAL_WAIT_MS);
+    br_job_t* j = (br_job_t*)calloc(1, sizeof *j);
+    if (!j) return;
+    const char* why = openpete_crash_exit_reason();
+    j->fatal = why && *why ? why : "fatal";
+    j->exit_thread = SDL_GetCurrentThreadID() == s_bp.sim_tid ? "sim" : "other";
+    j->t_press_ns = SDL_GetTicksNS();
+    snprintf(j->note_state, sizeof j->note_state, "%s", "fatal exit");
+    if (job_paths(j) != 0) return;
+    SDL_SetAtomicInt(&j->shot, BR_ABSENT);
+    SDL_SetAtomicInt(&j->display, BR_ABSENT);
+    fatal_collect(j);
+    OPL_INFO_F("bugreport", "fatal exit (%s) on the %s thread: writing %s; anchor %s, %zu segment "
+               "row(s), %zu hash row(s); %llu us collecting", j->fatal, j->exit_thread, j->zip_path,
+               j->have_anchor ? "held" : "none", j->segment_rows, j->hash_n,
+               (unsigned long long)((SDL_GetTicksNS() - j->t_press_ns) / 1000u));
+    SDL_Thread* t = SDL_CreateThread(fatal_worker, "openpete-bugreport-fatal", j);
+    if (!t) {
+        OPL_ERROR_F("bugreport", "fatal exit: worker thread not created: %s", SDL_GetError());
+        return;
+    }
+    if (!fatal_wait(j, BR_FATAL_WAIT_MS)) {
+        SDL_DetachThread(t);
+        OPL_ERROR_F("bugreport", "fatal exit: %s not finished after %u ms; exiting without it",
+                    j->zip_path, BR_FATAL_WAIT_MS);
+        return;
+    }
+    SDL_WaitThread(t, NULL);
+    if (j->rc == 0)
+        OPL_INFO_F("bugreport", "wrote %s at the fatal exit (%s): %zu member(s), %llu bytes, "
+                   "%llu redaction(s), %zu finding(s), worker %llu ms; nothing was uploaded",
+                   j->zip_path, j->fatal, j->members, (unsigned long long)j->zip_bytes,
+                   (unsigned long long)j->replacements, j->findings,
+                   (unsigned long long)j->write_ms);
+    else
+        OPL_ERROR_F("bugreport", "fatal exit: bundle %s not written (see the lines above)", j->zip_path);
 }
 
 /* Documented at the declaration in bugreport_internal.h. */

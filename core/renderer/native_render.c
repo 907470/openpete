@@ -46,6 +46,7 @@
 #include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
 #include "openpete_interp_objs.h" /* tick stamp + period for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
+#include "openpete_bugthumbs.h" /* bug-report thumbnail ring */
 #include "openpete_view_rect.h" /* the view layout and its pixel rect */
 #include "rhi.h"
 #include "launcher_title_pass.h" /* the launcher's 3D title */
@@ -20979,6 +20980,45 @@ static void record_cycle(uint64_t pts_us)
         openpete_record_submit_frame(buf, w, h, /*top_down=*/1, tag);
 }
 
+/** @brief Cycle the bug-report thumbnail ring on this present: store a completed thumbnail, and queue a downscale when the period elapsed.
+ *
+ * A downscale is queued when the present clock reached the next due
+ * instant, which then advances by OPENPETE_BUGTHUMB_PERIOD_NS (or restarts
+ * from this present after a gap), so the ring samples at a fixed present
+ * clock rate whatever the refresh. Each queued downscale takes the next
+ * entry of an 8-entry stamp ring (present clock, feed key) as its tag; a
+ * retrieval looks its stamp up there. Runs on the display's owner, as
+ * every caller of render_frame_common does; the statics move with the
+ * display, which has one owner at a time. Called between the blit and
+ * end_frame; returns at once while the ring is off
+ * (OPENPETE_BUGREPORT_THUMBS=0). Its GPU work is the "thumb" zone. */
+static void thumb_cycle(void)
+{
+    static uint8_t s_px[(size_t)OPENPETE_BUGTHUMB_W * OPENPETE_BUGTHUMB_H * 4u];
+    static struct { int64_t present_ns; uint32_t feed_key; } s_stamp[8];
+    static uint64_t s_seq;
+    static int64_t s_due;
+    if (!openpete_bugthumbs_enabled()) return;
+    rhi_gpu_zone_begin(s_nr.dev, "thumb");
+    const uint64_t t0 = SDL_GetTicksNS();   /* clock-guard: wall (cost counter) */
+    const int64_t now = (int64_t)openpete_interp_present_now();
+    const int queue = s_seq == 0 || now >= s_due;
+    if (queue) {
+        s_due = (now - s_due < OPENPETE_BUGTHUMB_PERIOD_NS) ? s_due + OPENPETE_BUGTHUMB_PERIOD_NS
+                                                             : now + OPENPETE_BUGTHUMB_PERIOD_NS;
+        s_seq++;
+        s_stamp[s_seq & 7u].present_ns = now;
+        s_stamp[s_seq & 7u].feed_key = openpete_feed_key_now();
+    }
+    int w = 0, h = 0;
+    uint64_t tag = 0;
+    if (rhi_cycle_thumb(s_nr.dev, queue, OPENPETE_BUGTHUMB_W, OPENPETE_BUGTHUMB_H, s_seq,
+                        s_px, sizeof s_px, &w, &h, &tag) && w > 0 && h > 0)
+        openpete_bugthumbs_put(s_px, w, h, s_stamp[tag & 7u].present_ns, s_stamp[tag & 7u].feed_key);
+    openpete_bugthumbs_note_cycle(SDL_GetTicksNS() - t0, queue);   /* clock-guard: wall (cost counter) */
+    rhi_gpu_zone_end(s_nr.dev);
+}
+
 /* ---- eager scene ring: operations (types above, by s_scene) ---- */
 static void render_frame_common(uint64_t record_pts_us, bool have_ref);
 static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze, int kind,
@@ -21775,6 +21815,9 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
         record_cycle(record_pts_us);
         rhi_gpu_zone_end(s_nr.dev);
     }
+
+    /* Bug-report thumbnails: the offscreen as presented, downscaled. */
+    thumb_cycle();
 
     s_late_async = false;
     openpete_mods_hold_owners(NULL, 0);

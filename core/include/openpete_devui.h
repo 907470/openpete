@@ -228,6 +228,41 @@ int  openpete_devui_wants_text_input(void);
  * left uninstalled and the pump thread calls this after each drain. Calls SDL
  * only when the published want differs from the state it last applied. */
 void openpete_devui_pump_text_input(void);
+/* The bug-report note prompt's states (openpete_devui_note_poll). */
+enum {
+    OPENPETE_DEVUI_NOTE_IDLE = 0,
+    OPENPETE_DEVUI_NOTE_REQUESTED = 1,  /* asked for, not drawn yet */
+    OPENPETE_DEVUI_NOTE_SHOWN = 2,      /* on screen, its field focused */
+    OPENPETE_DEVUI_NOTE_SAVED = 3,      /* Enter: the text is final */
+    OPENPETE_DEVUI_NOTE_SKIPPED = 4     /* Escape */
+};
+/* The note's capacity in bytes, terminator included. */
+#define OPENPETE_DEVUI_NOTE_MAX 512
+
+/** @brief Ask for the bug-report note prompt: one text field the next imgui frame draws.
+ *
+ * While the prompt is requested or shown it owns the keyboard as the
+ * overlay does (openpete_devui_wants_keyboard and
+ * openpete_devui_wants_text_input read it), so typed keys reach neither
+ * the game's pad nor a hotkey, and the pump starts SDL text input, which
+ * opens the platform's on-screen keyboard where one exists. Any thread.
+ * @return 1 when requested; 0 when the overlay is not initialised (headless,
+ *         another renderer) or the pump saw neither a keyboard nor
+ *         on-screen keyboard support. */
+int  openpete_devui_note_begin(void);
+/** @brief Read the note prompt's state, and its text once saved; any thread.
+ * @param out Receives the text when the state is OPENPETE_DEVUI_NOTE_SAVED; may be NULL.
+ * @param cap Capacity of @p out.
+ * @param keyboard Receives 1 when the pump saw a keyboard attached; may be NULL.
+ * @param osk_shown Receives 1 while the on-screen keyboard is shown; may be NULL.
+ * @return An OPENPETE_DEVUI_NOTE_* state. */
+int  openpete_devui_note_poll(char *out, size_t cap, int *keyboard, int *osk_shown);
+/** @brief Close the note prompt from any state; any thread. */
+void openpete_devui_note_end(void);
+/** @brief Report whether the note prompt is requested or shown.
+ * @return 1 while it owns the keyboard. */
+int  openpete_devui_note_active(void);
+
 /** @brief Report whether imgui captured the mouse on the last drawn present.
  *
  * Holds with the overlay open, and also with it closed while the fill-tag

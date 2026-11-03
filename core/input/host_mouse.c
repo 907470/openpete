@@ -90,7 +90,7 @@ static SDL_MouseID inj_mouse_id(void)
 typedef enum {
     INJ_MOVE, INJ_DOWN, INJ_UP, INJ_CLICK2, INJ_REL, INJ_WHEEL, INJ_MENU, INJ_CAPTURE,
     INJ_SHOT, INJ_KEYDOWN, INJ_KEYUP, INJ_PAD, INJ_PADAXIS, INJ_REBIND, INJ_UNBIND,
-    INJ_RESTORE
+    INJ_RESTORE, INJ_TEXT
 } inj_verb_t;
 
 typedef struct {
@@ -103,6 +103,7 @@ typedef struct {
                           * the action for REBIND/UNBIND/RESTORE */
     int        slot;     /* REBIND/UNBIND: the source index, -1 to add */
     int        hold;     /* REBIND: a hold: source */
+    char       text[32]; /* TEXT: the characters, `_` read as a space */
 } inj_line_t;
 
 static inj_line_t* s_inj;
@@ -190,6 +191,36 @@ static int inj_parse_rebind(inj_line_t* L, const char* verb, int n, const char* 
     return 1;
 }
 
+/** @brief Parse a `text <characters>` line: one SDL text-input event, `_` read as a space.
+ * @param L the line; its verb and text are written on a match.
+ * @param verb the verb word.
+ * @param n the number of words sscanf read (time and verb included).
+ * @param arg1 the characters.
+ * @return 1 when the line is a text line, else 0. */
+static int inj_parse_text(inj_line_t* L, const char* verb, int n, const char* arg1)
+{
+    if (strcmp(verb, "text") != 0 || n < 3) return 0;
+    L->verb = INJ_TEXT;
+    snprintf(L->text, sizeof L->text, "%s", arg1);
+    for (char* c = L->text; *c; c++)
+        if (*c == '_') *c = ' ';
+    return 1;
+}
+
+/** @brief Parse the verbs with a parser of their own: the binding page's requests (inj_parse_rebind) and text (inj_parse_text).
+ * @param L the line; written on a match.
+ * @param verb the verb word.
+ * @param n the number of words sscanf read (time and verb included).
+ * @param arg1 the first argument word.
+ * @param arg2 the second argument word.
+ * @param arg3 the third argument word.
+ * @return 1 when one of them parsed the line, else 0. */
+static int inj_parse_own_line(inj_line_t* L, const char* verb, int n,
+                              const char* arg1, const char* arg2, const char* arg3)
+{
+    return inj_parse_rebind(L, verb, n, arg1, arg2, arg3) || inj_parse_text(L, verb, n, arg1);
+}
+
 /** @brief Parse a script line's verb and arguments into its injection line.
  *
  * One arm per verb of the OPENPETE_MOUSE_INJECT grammar (see inj_load). A
@@ -205,7 +236,7 @@ static int inj_parse_rebind(inj_line_t* L, const char* verb, int n, const char* 
 static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
                           const char* arg1, const char* arg2, const char* arg3)
 {
-    if (inj_parse_rebind(L, verb, n, arg1, arg2, arg3)) return 1;
+    if (inj_parse_own_line(L, verb, n, arg1, arg2, arg3)) return 1;
     int ok = 1;
     if (!strcmp(verb, "move") && n == 4) {
         L->verb = INJ_MOVE; L->a = strtof(arg1, NULL); L->b = strtof(arg2, NULL);
@@ -247,7 +278,8 @@ static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
  * name and 0|1 or an SDL gamepad axis name and its value (the first
  * OPENPETE_INPUT_VGAMEPAD virtual pad), and the binding page's requests:
  * rebind <domain.action> <slot|add> [hold], unbind <domain.action> <slot>
- * and restore <domain.action>. A line with a bad time, verb, arity
+ * and restore <domain.action>, and text <characters> (one SDL text-input
+ * event, `_` standing for a space). A line with a bad time, verb, arity
  * or button name is logged and skipped. An unreadable file is logged and loads
  * nothing. Growth stops at the first failed allocation, keeping the lines
  * already read. Lines are read into a 256-byte buffer, so a longer line is
@@ -327,6 +359,24 @@ static void inj_push_key(int scancode, int down)
     ev.key.scancode = (SDL_Scancode)scancode;
     ev.key.key = SDL_GetKeyFromScancode((SDL_Scancode)scancode, SDL_KMOD_NONE, false);
     ev.key.down = down ? true : false;
+    SDL_PushEvent(&ev);
+}
+
+/** @brief Push one scripted SDL text-input event, marked as injected unless OPENPETE_MOUSE_INJECT_RAW is set.
+ *
+ * A text event carries no device id, so the mark is its `reserved` field
+ * set to OPENPETE_INJECT_DEVICE_ID, which the input lock reads. The event
+ * points at the script line's own buffer, which lives until exit.
+ * @param text The characters. */
+static void inj_push_text(const char* text)
+{
+    SDL_Event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = SDL_EVENT_TEXT_INPUT;
+    ev.text.timestamp = SDL_GetTicksNS();
+    ev.text.windowID = mouse_window() ? SDL_GetWindowID(mouse_window()) : 0;
+    ev.text.reserved = s_inj_raw ? 0u : OPENPETE_INJECT_DEVICE_ID;
+    ev.text.text = text;
     SDL_PushEvent(&ev);
 }
 
@@ -451,6 +501,7 @@ static void inj_step(unsigned iter)
         case INJ_REBIND: openpete_rebind_request_capture(L->button, L->slot, L->hold); break;
         case INJ_UNBIND: openpete_rebind_request_remove(L->button, L->slot); break;
         case INJ_RESTORE: openpete_rebind_request_restore(L->button); break;
+        case INJ_TEXT:    inj_push_text(L->text); break;
         }
         if (s_probe)
             OPL_INFO_F("mouse", "inject iter=%u ms=%u line=%d verb=%d", iter, ms,

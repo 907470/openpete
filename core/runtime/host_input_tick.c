@@ -334,8 +334,10 @@ void host_input_latch_init(void) {
  * cannot reach the PSX pad through PsyCross's keyboard map) or navigates
  * with the pad (an overlay window holds navigation focus, so the buttons
  * that move through the panel do not also move Spyro; a click outside
- * every overlay window drops the focus and the pad returns to the game).
- * The sim keeps running behind either, so settings preview live. A bk2
+ * every overlay window drops the focus and the pad returns to the game);
+ * the bug-report note prompt from its request to its close.
+ * The sim keeps running behind the menu and the overlay, so settings
+ * preview live. A bk2
  * frame in range outranks both: the movie's input stays the pad's input.
  * On the iteration an overlay lets go the channel is handed back to live
  * decode once, unless a movie is loaded, whose stamp rewrites it.
@@ -346,6 +348,7 @@ void host_input_latch_init(void) {
 static bool overlay_pad_stamp(bool bk2_active, bool bk2_in_range, bool* prev_hold) {
     const bool hold = openpete_menu_is_open() ||
                       openpete_devui_wants_keyboard() ||
+                      openpete_devui_note_active() ||
                       openpete_devui_padnav_engaged() ||
                       openpete_keymap_capture_neutral();
     const bool was = *prev_hold;
@@ -372,15 +375,19 @@ static bool overlay_pad_stamp(bool bk2_active, bool bk2_in_range, bool* prev_hol
  * menu is open every live pad source outside the menu's own actions and
  * the overlay toggles (openpete_keymap_menu_pad_exempt) is suspended the
  * same way, so a hold: pad hotkey sharing a button with menu navigation
- * never fires in the menu. A binding capture zeroes the freecam axes too.
+ * never fires in the menu. The bug-report note prompt suspends both
+ * sources as a focused text field and pad navigation do, from its request,
+ * before its first frame publishes a want. A binding capture zeroes the
+ * freecam axes too.
  * Esc-close works through the event pump. */
 static void overlay_input_suspend(void) {
     int n_exempt = 0;
     const openpete_action_t* exempt = devui_suspend_exempt(&n_exempt);
-    const bool padnav = openpete_devui_padnav_engaged() != 0;
-    const bool text = openpete_devui_wants_text_input() != 0;
+    const bool note = openpete_devui_note_active() != 0;
+    const bool padnav = note || openpete_devui_padnav_engaged() != 0;
+    const bool text = note || openpete_devui_wants_text_input() != 0;
     openpete_keymap_suspend_keyboard(
-        openpete_devui_wants_keyboard() ? 1 : 0, text ? NULL : exempt, n_exempt);
+        (note || openpete_devui_wants_keyboard()) ? 1 : 0, text ? NULL : exempt, n_exempt);
     if (text) openpete_keymap_latch_held_keys();
     if (padnav) {
         openpete_keymap_suspend_pad(1, exempt, n_exempt);

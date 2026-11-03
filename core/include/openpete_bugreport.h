@@ -23,8 +23,11 @@
  * text members and the state files' card paths, scans the members it never
  * rewrites for the home path, user name and host name, hashes every
  * member, writes manifest.json and the zip under
- * openpete_paths_data_dir("bugreports"). The sim thread joins it at its
- * next poll and posts the toast. A press while a bundle is in flight is
+ * openpete_paths_data_dir("bugreports"). Before the zip, a key or menu
+ * press asks the tester for a one-line note (notes.txt) through the dev
+ * overlay's prompt with the sim paused; with no text input the note is
+ * skipped. The sim thread joins the worker at its next poll and posts the
+ * toast. A press while a bundle is in flight is
  * refused with a toast. Nothing stores into PSX RAM.
  */
 #ifndef OPENPETE_BUGREPORT_H
@@ -45,10 +48,18 @@ extern "C" {
 /* manifest.json's schema version. */
 #define OPENPETE_BUGREPORT_SCHEMA 1
 
-/** @brief Read OPENPETE_BUGREPORT_AT=N, a harness press at feed key N.
+/** @brief Read the harness variables and register the fatal-exit bundle.
  *
- * Called once before the host loop. */
-void openpete_bugreport_init(void);
+ * OPENPETE_BUGREPORT_AT=N presses at feed key N. OPENPETE_BUGREPORT_NOTE=0
+ * never asks for the tester's note, =1 asks for it on a harness press too
+ * (by default only a key or menu press asks). Registers the
+ * OP_EXIT_FLUSH_BUGREPORT exit flush, which writes a bundle at a
+ * hang-watchdog trip or a CdSync spin-guard exit: the replay window, the
+ * rings, the reports and collectors, the logs and that exit's hang dump,
+ * with no press.state or screen.png. Called once before the host loop, on
+ * the sim's thread.
+ * @param opts The run options, kept for the fatal bundle's argv and disc. */
+void openpete_bugreport_init(const struct openpete_options* opts);
 
 /** @brief Ask for a bug report at the next final yield; safe from any thread (the settings menu row). */
 void openpete_bugreport_request(void);
@@ -93,7 +104,7 @@ void openpete_bugreport_main_poll(void);
 /** @brief Wait for an in-flight bundle to finish and release it; called at session close. */
 void openpete_bugreport_shutdown(void) OP_REQUIRES(sim);
 
-/** @brief Log the bundle counters: presses, bundles written and failed, the last bundle's members, bytes, replacements, findings and sim-thread press time. */
+/** @brief Log the thumbnail ring's counters, then the bundle counters: presses, bundles written and failed, the last bundle's members, bytes, replacements, findings and sim-thread press time. */
 void openpete_bugreport_report(void);
 
 #ifdef __cplusplus

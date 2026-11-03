@@ -760,6 +760,21 @@ struct rhi_device {
         int         w, h;
     } grid_ring[RHI_FRAMES_IN_FLIGHT];
 
+    /* Thumbnail ring (rhi_cycle_thumb): per frame slot a small image the
+     * offscreen is blitted into and the host staging buffer it is copied to.
+     * The blit and the copy ride cmd[i] under in_flight[i], the discipline
+     * of readback_ring, so retrieving slot i after begin_frame's fence wait
+     * adds no GPU wait. */
+    struct {
+        VkImage         image;
+        VkDeviceMemory  mem;
+        int             iw, ih;    /* the image's extent */
+        rhi_buffer     *staging;
+        bool            pending;
+        int             w, h;      /* extent of the pending copy */
+        uint64_t        tag;
+    } thumb_ring[RHI_FRAMES_IN_FLIGHT];
+
     /* GPU per-pass timestamp zones (OPENPETE_GPU_TIMERS=1): one timestamp
      * query pool per frame in flight, 2 queries per zone. Slot i's results are
      * harvested in rhi_begin_frame right after slot i's fence wait - the same
@@ -4338,6 +4353,7 @@ static void gpl_destroy_all(rhi_device *dev);
 static void lto_destroy_ready(rhi_device *dev);
 
 static void described_free(rhi_device *dev);
+static void thumb_slot_free(rhi_device *dev, int i);
 
 /** @brief Wait the logical device idle, destroy every object created from it, then the device itself.
  *
@@ -4366,6 +4382,7 @@ static void device_objects_destroy(rhi_device *dev)
             rhi_destroy_buffer(dev, dev->grid_ring[i].staging);
             dev->grid_ring[i].staging = NULL;
         }
+        thumb_slot_free(dev, i);
     }
     destroy_swapchain_resources(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
@@ -7018,6 +7035,170 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
             dev->readback_ring[fi].tag = tag;
         }
     }
+    return got;
+}
+
+/** @brief Destroy a thumbnail ring slot's image, its memory and its staging buffer.
+ *
+ * The caller guarantees the slot's last submission completed (its fence
+ * was waited, or the device is idle).
+ * @param dev Device.
+ * @param i The slot. */
+static void thumb_slot_free(rhi_device *dev, int i)
+{
+    if (dev->thumb_ring[i].image) vkDestroyImage(dev->device, dev->thumb_ring[i].image, NULL);
+    if (dev->thumb_ring[i].mem) vkFreeMemory(dev->device, dev->thumb_ring[i].mem, NULL);
+    if (dev->thumb_ring[i].staging) rhi_destroy_buffer(dev, dev->thumb_ring[i].staging);
+    memset(&dev->thumb_ring[i], 0, sizeof dev->thumb_ring[i]);
+}
+
+/** @brief Give a thumbnail ring slot an image and a staging buffer of an extent, recreating them when the extent differs.
+ *
+ * @param dev Device.
+ * @param i The slot, whose last submission completed.
+ * @param w Width.
+ * @param h Height.
+ * @return false when an image, allocation or buffer fails (the slot is left empty). */
+static bool thumb_slot_ensure(rhi_device *dev, int i, int w, int h)
+{
+    if (dev->thumb_ring[i].image && dev->thumb_ring[i].iw == w && dev->thumb_ring[i].ih == h)
+        return true;
+    thumb_slot_free(dev, i);
+    VkImageCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent = { (uint32_t)w, (uint32_t)h, 1 },
+        .mipLevels = 1, .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    if (vkCreateImage(dev->device, &ici, NULL, &dev->thumb_ring[i].image) != VK_SUCCESS) {
+        dev->thumb_ring[i].image = VK_NULL_HANDLE;
+        return false;
+    }
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(dev->device, dev->thumb_ring[i].image, &mr);
+    const uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mr.size, .memoryTypeIndex = mt,
+    };
+    if (mt == UINT32_MAX || vkAllocateMemory(dev->device, &mai, NULL, &dev->thumb_ring[i].mem) != VK_SUCCESS) {
+        dev->thumb_ring[i].mem = VK_NULL_HANDLE;
+        thumb_slot_free(dev, i);
+        return false;
+    }
+    vkBindImageMemory(dev->device, dev->thumb_ring[i].image, dev->thumb_ring[i].mem, 0);
+    dev->thumb_ring[i].staging = create_host_buffer(dev, (size_t)w * (size_t)h * 4u,
+                                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                    /*prefer_cached=*/true);
+    if (!dev->thumb_ring[i].staging) { thumb_slot_free(dev, i); return false; }
+    dev->thumb_ring[i].iw = w;
+    dev->thumb_ring[i].ih = h;
+    return true;
+}
+
+/** @brief Copy a thumbnail ring slot's completed capture out as R,G,B,A with opaque alpha and release the slot.
+ *
+ * The slot's copy completed: rhi_begin_frame waited on its fence. A
+ * capture that does not fit @p out is dropped.
+ * @param dev Device.
+ * @param fi The slot (the current frame).
+ * @param out Destination.
+ * @param out_bytes Its capacity.
+ * @param out_w Receives the width; may be NULL.
+ * @param out_h Receives the height; may be NULL.
+ * @param out_tag Receives the tag; may be NULL.
+ * @return true when a capture was written. */
+static bool thumb_retrieve(rhi_device *dev, uint32_t fi, void *out, size_t out_bytes,
+                           int *out_w, int *out_h, uint64_t *out_tag)
+{
+    if (!dev->thumb_ring[fi].pending) return false;
+    dev->thumb_ring[fi].pending = false;
+    const int pw = dev->thumb_ring[fi].w, ph = dev->thumb_ring[fi].h;
+    const size_t need = (size_t)pw * (size_t)ph * 4u;
+    if (!out || out_bytes < need) return false;
+    uint8_t *dst = (uint8_t *)out;
+    memcpy(dst, dev->thumb_ring[fi].staging->mapped, need);
+    for (size_t p = 3; p < need; p += 4) dst[p] = 0xFF;
+    if (out_w) *out_w = pw;
+    if (out_h) *out_h = ph;
+    if (out_tag) *out_tag = dev->thumb_ring[fi].tag;
+    return true;
+}
+
+/** @brief Fit a source extent inside a box at its aspect, rounding, never upscaling and never below 1 x 1.
+ * @param sw Source width (> 0).
+ * @param sh Source height (> 0).
+ * @param max_w Box width (> 0).
+ * @param max_h Box height (> 0).
+ * @param tw Receives the width.
+ * @param th Receives the height. */
+static void thumb_fit(int sw, int sh, int max_w, int max_h, int *tw, int *th)
+{
+    int w = max_w, h = (int)(((int64_t)sh * max_w + sw / 2) / sw);
+    if (h > max_h) { h = max_h; w = (int)(((int64_t)sw * max_h + sh / 2) / sh); }
+    *tw = w < 1 ? 1 : (w > sw ? sw : w);
+    *th = h < 1 ? 1 : (h > sh ? sh : h);
+}
+
+bool rhi_cycle_thumb(rhi_device *dev, int queue, int max_w, int max_h, uint64_t tag,
+                     void *out, size_t out_bytes, int *out_w, int *out_h, uint64_t *out_tag)
+{
+    if (!dev || !dev->frame_active) return false;
+    const uint32_t fi = dev->frame;
+    /* (1) The copy queued the last time this slot cycled. */
+    const bool got = thumb_retrieve(dev, fi, out, out_bytes, out_w, out_h, out_tag);
+    /* (2) Queue this present's downscale. The offscreen is in TRANSFER_SRC
+     * (its render pass's final layout, already read by the blit). */
+    const int sw = (int)dev->off_extent.width, sh = (int)dev->off_extent.height;
+    if (!queue || sw <= 0 || sh <= 0 || max_w <= 0 || max_h <= 0) return got;
+    int tw = 0, th = 0;
+    thumb_fit(sw, sh, max_w, max_h, &tw, &th);
+    if (!thumb_slot_ensure(dev, (int)fi, tw, th)) return got;
+    VkCommandBuffer cb = dev->cmd[fi];
+    VkImage img = dev->thumb_ring[fi].image;
+    /* The image's previous reader is this slot's last copy, retired by the
+     * fence wait, so its contents are discarded from UNDEFINED. */
+    image_barrier(cb, img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit region = {
+        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .srcOffsets = { {0, 0, 0}, {sw, sh, 1} },
+        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .dstOffsets = { {0, 0, 0}, {tw, th, 1} },
+    };
+    vkCmdBlitImage(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+    image_barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy copy = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .imageExtent = { (uint32_t)tw, (uint32_t)th, 1 },
+    };
+    vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           dev->thumb_ring[fi].staging->buffer, 1, &copy);
+    VkBufferMemoryBarrier to_host = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = dev->thumb_ring[fi].staging->buffer,
+        .offset = 0, .size = VK_WHOLE_SIZE,
+    };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 0, NULL, 1, &to_host, 0, NULL);
+    dev->thumb_ring[fi].pending = true;
+    dev->thumb_ring[fi].w = tw;
+    dev->thumb_ring[fi].h = th;
+    dev->thumb_ring[fi].tag = tag;
     return got;
 }
 

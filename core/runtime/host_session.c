@@ -156,7 +156,7 @@ static int open_bk2(host_session_t* S) OP_REQUIRES(sim)
             return -1;
         }
         S->bk2.recording = true;
-        openpete_crash_set_exit_flush(bk2_record_exit_flush);
+        openpete_crash_set_exit_flush(OP_EXIT_FLUSH_RECORD, bk2_record_exit_flush);
     }
 
     openpete_cd_load_delay = (opts->load_delay >= 0)
@@ -174,7 +174,7 @@ static int open_bk2(host_session_t* S) OP_REQUIRES(sim)
     }
     bk2_feed_open(S->bk2.active ? &S->bk2.movie : NULL, S->bk2.offset);
     openpete_bugrec_init();
-    openpete_bugreport_init();
+    openpete_bugreport_init(opts);
     return 0;
 }
 
@@ -354,7 +354,7 @@ static void close_threads_and_bk2(host_session_t* S) OP_REQUIRES(sim)
         g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
     }
     if (S->bk2.recording) {
-        openpete_crash_set_exit_flush(NULL);
+        openpete_crash_set_exit_flush(OP_EXIT_FLUSH_RECORD, NULL);
         if (S->loop_entered) {
             bk2_record_finalize();
             host_trace_close_step(HT_S_BK2_FINALIZE);

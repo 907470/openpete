@@ -12,7 +12,9 @@
 #include "openpete_atomic_file.h"
 #include "openpete_build_id.h"
 #include "openpete_bugreport.h"
+#include "openpete.h"
 #include "openpete_config.h"
+#include "openpete_devui.h"
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "openpete_host_trace.h"
@@ -247,26 +249,148 @@ static const char* base_name(const char* p)
     return b;
 }
 
-/** @brief Add the logs: the current log's tail (after a barrier, so the press's lines are in it), the previous run's, and the hang files the previous run wrote.
+/** @brief Copy the text after a marker up to the first of the given terminators or the line's end.
+ * @param line The text searched (one line or more).
+ * @param marker The marker.
+ * @param ends Terminators, NULL-ended; the earliest one found ends the value.
+ * @param out Receives the value.
+ * @param cap Capacity of @p out.
+ * @return 1 when the marker was found and the value is not empty. */
+static int value_after(const char* line, const char* marker, const char* const* ends, char* out, size_t cap)
+{
+    const char* v = strstr(line, marker);
+    if (!v) return 0;
+    v += strlen(marker);
+    const char* e = v + strcspn(v, "\r\n");
+    for (int i = 0; ends && ends[i]; i++) {
+        const char* t = br_memmem(v, (size_t)(e - v), ends[i], strlen(ends[i]));
+        if (t && t < e) e = t;
+    }
+    const size_t n = (size_t)(e - v) < cap - 1 ? (size_t)(e - v) : cap - 1;
+    memcpy(out, v, n);
+    out[n] = '\0';
+    return n > 0;
+}
+
+/** @brief Return the start of the last line of a text that holds a needle, or NULL.
+ * @param txt The text, NUL-terminated.
+ * @param needle The bytes sought. */
+static const char* last_line_with(const char* txt, const char* needle)
+{
+    const char* hit = NULL;
+    for (const char* at = txt; (at = strstr(at, needle)) != NULL; at++) hit = at;
+    if (!hit) return NULL;
+    while (hit > txt && hit[-1] != '\n') hit--;
+    return hit;
+}
+
+/** @brief Add the files a fatal exit of the previous run left, named by its log: the hang dump and the Windows minidump.
+ *
+ * The watchdog's line names the paths it wrote ("wrote trace=<path>
+ * ram=<path>"), which OPENPETE_HANG_TRACE / OPENPETE_HANG_RAM may have
+ * moved; the crash report names its minidump ("minidump: <path>"). The
+ * last such line of the previous log decides; a hang line without paths
+ * falls back to the default dump paths.
+ * @param m The members.
+ * @param prev The previous run's log tail. */
+static void add_prev_fatal(br_members_t* m, const char* prev)
+{
+    static const char* const trace_end[] = {" ram=", NULL};
+    static const char* const ram_end[] = {" - exiting", " (ram written", NULL};
+    char path[1100];
+    const char* hang = last_line_with(prev, "hang detected");
+    if (hang) {
+        if (!value_after(hang, "trace=", trace_end, path, sizeof path))
+            openpete_hang_output_path("hang-trace.bin", path, sizeof path);
+        add_file(m, path, "hang/prev-hang-trace.bin", BRM_BINARY);
+        if (!value_after(hang, " ram=", ram_end, path, sizeof path))
+            openpete_hang_output_path("hang-ram.bin", path, sizeof path);
+        add_file(m, path, "hang/prev-hang-ram.bin", BRM_GUEST);
+    }
+    const char* dmp = last_line_with(prev, "minidump: ");
+    if (dmp && value_after(dmp, "minidump: ", NULL, path, sizeof path))
+        add_file(m, path, "crash/prev-openpete-crash.dmp", BRM_BINARY);
+}
+
+/** @brief Add the logs: the current log's tail (after a barrier, so the press's lines are in it), the previous run's with the fatal-exit files it names, and at a fatal exit this run's hang dump.
  * @param m The members.
  * @param j The job. */
 static void add_logs(br_members_t* m, const br_job_t* j)
 {
+    if (j->fatal) {
+        char path[1100];
+        openpete_hang_output_path("hang-trace.bin", path, sizeof path);
+        add_file(m, path, "hang/hang-trace.bin", BRM_BINARY);
+        openpete_hang_output_path("hang-ram.bin", path, sizeof path);
+        add_file(m, path, "hang/hang-ram.bin", BRM_GUEST);
+    }
     if (!j->log_path[0]) return;
     (void)openpete_log_file_barrier(500);
     add_tail(m, j->log_path, BR_LOG_TAIL, "log.txt");
     char prev[1100];
     snprintf(prev, sizeof prev, "%s.1", j->log_path);
     if (!add_tail(m, prev, BR_LOG_PREV_TAIL, "log-prev.txt")) return;
-    /* The previous run tripped the watchdog when its log says so; its
-     * files are the newest ones at the watchdog's paths. */
-    const br_member_t* lp = &m->v[m->n - 1];
-    if (!strstr((const char*)lp->data, "hang detected")) return;
-    char path[1100];
-    openpete_hang_output_path("hang-trace.bin", path, sizeof path);
-    add_file(m, path, "hang/hang-trace.bin", BRM_BINARY);
-    openpete_hang_output_path("hang-ram.bin", path, sizeof path);
-    add_file(m, path, "hang/hang-ram.bin", BRM_GUEST);
+    add_prev_fatal(m, (const char*)m->v[m->n - 1].data);
+}
+
+/** @brief Add the thumbnail ring as thumbs/NNN.png, oldest first, encoded as PNG.
+ * @param m The members.
+ * @param j The job. */
+static void add_thumbs(br_members_t* m, const br_job_t* j)
+{
+    for (size_t i = 0; i < j->thumbs_n; i++) {
+        const openpete_bugthumb_t* t = &j->thumbs[i];
+        size_t len = 0;
+        void* png = tdefl_write_image_to_png_file_in_memory_ex(t->rgba, t->w, t->h, 4, &len,
+                                                              MZ_BEST_SPEED, MZ_FALSE);
+        if (!png) continue;
+        char name[32];
+        snprintf(name, sizeof name, "thumbs/%03zu.png", i);
+        br_members_add_copy(m, name, png, len, BRM_PNG);
+        mz_free(png);
+    }
+}
+
+/** @brief Ask the tester for a note through the overlay's prompt with the sim paused, and wait for the answer.
+ *
+ * Skipped at once when the press did not ask for a note or no text input
+ * exists (no overlay, neither keyboard nor on-screen keyboard); skipped
+ * after BR_NOTE_SHOW_MS when no frame drew the prompt, or when no keyboard
+ * is attached and no on-screen keyboard showed. Otherwise waits without a
+ * bound for Enter or Escape, or for the session close, which ends the
+ * prompt. The sim is paused for the prompt when it was running and resumed
+ * after. Sets note_state and, on Enter, note.
+ * @param j The job. */
+static void note_wait(br_job_t* j)
+{
+#define NOTE_STATE(s) snprintf(j->note_state, sizeof j->note_state, "%s", (s))
+    if (!j->note_wanted) { NOTE_STATE("off"); return; }
+    if (!openpete_devui_note_begin()) { NOTE_STATE("no text input"); return; }
+    const int paused_here = !openpete_sim_paused();
+    if (paused_here) openpete_sim_pause_request(1);
+    const uint64_t t0 = SDL_GetTicksNS();
+    char text[OPENPETE_DEVUI_NOTE_MAX];
+    for (;;) {
+        int kb = 0, osk = 0;
+        const int st = openpete_devui_note_poll(text, sizeof text, &kb, &osk);
+        const int late = SDL_GetTicksNS() - t0 >= (uint64_t)BR_NOTE_SHOW_MS * 1000000u;
+        if (st == OPENPETE_DEVUI_NOTE_SAVED) {
+            NOTE_STATE(text[0] ? "saved" : "empty");
+            if (text[0]) j->note = strdup(text);
+            break;
+        }
+        if (st == OPENPETE_DEVUI_NOTE_SKIPPED) { NOTE_STATE("skipped"); break; }
+        if (st == OPENPETE_DEVUI_NOTE_IDLE) { NOTE_STATE("closed at exit"); break; }
+        if (late && st == OPENPETE_DEVUI_NOTE_REQUESTED) { NOTE_STATE("not shown"); break; }
+        if (late && !kb && !osk) { NOTE_STATE("no on-screen keyboard"); break; }
+        SDL_Delay(5);
+    }
+    openpete_devui_note_end();
+    if (paused_here) openpete_sim_pause_request(0);
+    OPL_INFO_F("bugreport", "note: %s after %llu ms%s", j->note_state,
+               (unsigned long long)((SDL_GetTicksNS() - t0) / 1000000u),
+               paused_here ? " (sim paused for it)" : "");
+#undef NOTE_STATE
 }
 
 /** @brief Build device.txt: the pacing environment block, the display owner's Vulkan report, the main thread's monitors and drivers, and the OS, CPU and memory facts with the allowlisted environment variables. */
@@ -733,11 +857,19 @@ static void json_identity(wbuf_t* w, const br_job_t* j, const char* mod_sha)
 {
     char exe[1024], exe_sha[65] = "", ident[80] = "", dsha[65] = "";
     if (openpete_exe_path(exe, sizeof exe) == 0) (void)sha_file(exe, exe_sha, NULL);
-    (void)openpete_state_image_ident(j->press.state, j->press.state_len, ident, sizeof ident);
+    const openpete_bugrec_anchor_t* id_src = j->press.state ? &j->press : &j->anchor;
+    if (id_src->state)
+        (void)openpete_state_image_ident(id_src->state, id_src->state_len, ident, sizeof ident);
     (void)br_disc_sha(j->disc_path, dsha);
     const openpete_recomp_module* d = openpete_recomp_module_get();
     const char* march = getenv("OPENPETE_MODULE_MARCH");
-    wb_printf(w, "{\n  \"schema\": %d,\n  \"build_version\": ", OPENPETE_BUGREPORT_SCHEMA);
+    wb_printf(w, "{\n  \"schema\": %d,\n  \"trigger\": ", OPENPETE_BUGREPORT_SCHEMA);
+    wb_json_str(w, j->fatal ? j->fatal : "press");
+    if (j->exit_thread) {
+        wb_printf(w, ",\n  \"exit_thread\": ");
+        wb_json_str(w, j->exit_thread);
+    }
+    wb_printf(w, ",\n  \"build_version\": ");
     wb_json_str(w, openpete_build_version());
     wb_printf(w, ",\n  \"build_tagged\": %d,\n  \"build_commit\": ", openpete_build_tagged());
     wb_json_str(w, openpete_build_commit());
@@ -770,6 +902,30 @@ static void json_identity(wbuf_t* w, const br_job_t* j, const char* mod_sha)
     wb_printf(w, "]");
 }
 
+/** @brief Write the manifest's thumbnail fields: state, count, period, span, the newest one's age at the press, and per thumbnail its member, present clock, feed key and size.
+ * @param w The output.
+ * @param j The job. */
+static void json_thumbs(wbuf_t* w, const br_job_t* j)
+{
+    const size_t n = j->thumbs_n;
+    const char* state = !openpete_bugthumbs_enabled() ? "off" : n ? "held" : "none held";
+    wb_printf(w, ",\n  \"thumbs\": {\"state\": \"%s\", \"count\": %zu, \"period_ms\": %lld", state, n,
+              (long long)(OPENPETE_BUGTHUMB_PERIOD_NS / 1000000));
+    if (n) {
+        const openpete_bugthumb_t* a = &j->thumbs[0];
+        const openpete_bugthumb_t* b = &j->thumbs[n - 1];
+        wb_printf(w, ", \"span_ms\": %.1f, \"newest_age_ms\": %.1f",
+                  (double)(b->present_ns - a->present_ns) / 1e6,
+                  (double)(j->press_present_ns - b->present_ns) / 1e6);
+    }
+    wb_printf(w, ", \"list\": [");
+    for (size_t i = 0; i < n; i++)
+        wb_printf(w, "%s\n    {\"name\": \"thumbs/%03zu.png\", \"present_ns\": %lld, \"feed_key\": %u, "
+                  "\"w\": %d, \"h\": %d}", i ? "," : "", i, (long long)j->thumbs[i].present_ns,
+                  j->thumbs[i].feed_key, j->thumbs[i].w, j->thumbs[i].h);
+    wb_printf(w, "]}");
+}
+
 /** @brief Write the manifest's session fields: anchor, press, window, taint, mods, answers and the member list.
  * @param w The output.
  * @param j The job.
@@ -780,9 +936,14 @@ static void json_session(wbuf_t* w, const br_job_t* j, const br_members_t* m, co
     wb_printf(w, ",\n  \"anchor\": ");
     if (j->have_anchor) json_anchor(w, &j->anchor); else wb_printf(w, "null");
     wb_printf(w, ",\n  \"press\": ");
-    json_anchor(w, &j->press);
+    if (j->press.state) json_anchor(w, &j->press); else wb_printf(w, "null");
     wb_printf(w, ",\n  \"window_ticks\": %u,\n  \"segment_rows\": %zu,\n  \"hash_rows\": %zu",
-              j->have_anchor ? j->press.frame - j->anchor.frame : 0u, j->segment_rows, j->hash_n);
+              j->have_anchor && j->press.state ? j->press.frame - j->anchor.frame : 0u,
+              j->segment_rows, j->hash_n);
+    json_thumbs(w, j);
+    wb_printf(w, ",\n  \"note\": {\"state\": ");
+    wb_json_str(w, j->note_state[0] ? j->note_state : "off");
+    wb_printf(w, ", \"chars\": %zu}", j->note ? strlen(j->note) : (size_t)0);
     wb_printf(w, ",\n  \"taint\": {");
     for (int k = 0; k < BUGREC_TAINT_N; k++)
         wb_printf(w, "%s\"%s\": %llu", k ? ", " : "", openpete_bugrec_taint_name((openpete_bugrec_taint_t)k),
@@ -884,6 +1045,12 @@ static void add_press_members(br_members_t* m, br_job_t* j)
         add_stage_file(m, j, "devices.txt", "devices.txt", BRM_TEXT);
     if (SDL_GetAtomicInt(&j->shot) == BR_DONE)
         add_stage_file(m, j, "screen.png", "screen.png", BRM_PNG);
+    add_thumbs(m, j);
+    if (j->note) {
+        wbuf_t nt = {0};
+        wb_printf(&nt, "%s\n", j->note);
+        if (nt.b) br_members_add(m, "notes.txt", (uint8_t*)nt.b, nt.n, BRM_TEXT);
+    }
     char* dev = device_text(j);
     if (dev) br_members_add(m, "device.txt", (uint8_t*)dev, strlen(dev), BRM_TEXT);
 }
@@ -913,6 +1080,8 @@ void br_job_write(br_job_t* j)
     const int main_ok = main_wait(j, t0 + (uint64_t)BR_MAIN_WAIT_MS * 1000000u);
     const int shot = answer_wait(&j->shot, t0 + (uint64_t)BR_SHOT_WAIT_MS * 1000000u);
     const int disp = answer_wait(&j->display, t0 + (uint64_t)BR_SHOT_WAIT_MS * 1000000u);
+    /* After the screenshot, so the prompt is not in screen.png. */
+    if (!j->fatal) note_wait(j);
     br_redactor_t R;
     br_redactor_init(&R);
     br_members_t m = {0};
@@ -964,6 +1133,8 @@ void br_job_free(br_job_t* j)
     free(j->pace);
     free(j->input);
     free(j->hang);
+    openpete_bugthumbs_free(j->thumbs, j->thumbs_n);
+    free(j->note);
     free(j->reports);
     free(j->summary);
     free(j->env);

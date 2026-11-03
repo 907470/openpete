@@ -18,6 +18,12 @@ reads its hashes.csv; CSVs with no tick in common report VACUOUS.
 Pace: present records 16.67 ms apart with one 50 ms gap give p50 16.67 ms
 and one hitch.
 
+Thumbnails and note: 20 thumbnail PNGs with a 4.75 s span report count,
+size, span, rate and "all decode"; a PNG with a broken chunk CRC is counted
+as not decoding; no thumbnail member reports the manifest's state; notes.txt
+is printed; no note reports the manifest's note state; a fatal-exit
+trigger is named.
+
 Replay: the fallback route runs a stub executable (a script printing the
 flag's verdict line, not openpete) and passes its verdict and exit code
 through; an archive directory holding a tarball whose `openpete` member has
@@ -37,6 +43,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -111,6 +118,14 @@ def manifest(mem, **over):
     return m
 
 
+def png(w=32, h=18, shade=0):
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    rows = b"".join(b"\0" + bytes([shade, 0, 0, 255]) * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
 def write_bundle(path, mem=None, man=None, extra=(), tamper=None, skip_manifest=False):
     mem = dict(members() if mem is None else mem)
     man = manifest(mem) if man is None else man
@@ -176,6 +191,53 @@ class InfoExtract(Base):
         rc, out, _ = run("extract", z, self.d / "x")
         self.assertEqual(rc, 1)
         self.assertIn("FAIL summary.txt", out)
+
+
+class ThumbsNote(Base):
+    def bundle(self, n_thumbs=20, note_text=None, broken=None, **over):
+        mem = members()
+        for i in range(n_thumbs):
+            d = png(shade=i)
+            if i == broken:
+                d = d[:40] + bytes([d[40] ^ 1]) + d[41:]
+            mem[f"thumbs/{i:03d}.png"] = d
+        if note_text is not None:
+            mem["notes.txt"] = note_text.encode()
+        return write_bundle(self.d / "t.zip", mem, manifest(mem, **over))
+
+    def test_thumbs_and_note(self):
+        z = self.bundle(note_text="spyro fell through the floor\n",
+                        thumbs={"state": "held", "span_ms": 4750, "newest_age_ms": 120},
+                        note={"state": "saved"})
+        rc, out, err = run("info", z, "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        for s in ["thumbnails: 20 (32x18), span 4.75 s, 4.00 Hz, newest 0.12 s before the press; all decode",
+                  "note: spyro fell through the floor"]:
+            self.assertIn(s, out)
+
+    def test_broken_thumb(self):
+        z = self.bundle(broken=3, thumbs={"state": "held", "span_ms": 4750})
+        rc, out, err = run("info", z, "--archive", self.arch)
+        self.assertIn("1 do not decode", out)
+
+    def test_none(self):
+        z = self.bundle(n_thumbs=0, **{"thumbs": {"state": "off"}, "note": {"state": "skipped"}})
+        rc, out, err = run("info", z, "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("thumbnails: none (off)", out)
+        self.assertIn("note: none (skipped)", out)
+
+    def test_fatal_trigger(self):
+        z = self.bundle(n_thumbs=0, trigger="hang", exit_thread="game fiber", press=None)
+        rc, out, err = run("info", z, "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("trigger hang: written at a fatal exit on the game fiber thread", out)
+        self.assertIn("press : none", out)
+
+    def test_png_check(self):
+        self.assertEqual(br.png_check(png(320, 180)), (320, 180))
+        with self.assertRaises(ValueError):
+            br.png_check(png()[:-20])
 
 
 class Refusals(Base):

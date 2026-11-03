@@ -28,8 +28,10 @@ unsigned long long openpete_input_lock_dropped(void)
  *
  * Keyboard and mouse events are physical unless their `which` is
  * OPENPETE_INJECT_DEVICE_ID; joystick and gamepad input events are physical
- * unless the joystick is an SDL virtual one; text, touch, pen and drop
- * events are always physical. Every other type, including device arrival
+ * unless the joystick is an SDL virtual one; a text-input event is
+ * physical unless its `reserved` field carries OPENPETE_INJECT_DEVICE_ID
+ * (the harness's mark: the event has no device id); text editing, touch,
+ * pen and drop events are always physical. Every other type, including device arrival
  * and removal, is not input, so PsyCross's hotplug bookkeeping stays
  * consistent and a pad opened under the lock is never read.
  * @param ev the event.
@@ -40,8 +42,9 @@ static int from_physical_device(const SDL_Event* ev)
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
         return ev->key.which != OPENPETE_INJECT_DEVICE_ID;
-    case SDL_EVENT_TEXT_EDITING:
     case SDL_EVENT_TEXT_INPUT:
+        return ev->text.reserved != OPENPETE_INJECT_DEVICE_ID;
+    case SDL_EVENT_TEXT_EDITING:
     case SDL_EVENT_TEXT_EDITING_CANDIDATES:
         return 1;
     case SDL_EVENT_MOUSE_MOTION:

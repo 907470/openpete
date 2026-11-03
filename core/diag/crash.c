@@ -569,18 +569,27 @@ void openpete_crash_terminate_now(int code) {
 
 #endif  /* !_WIN32 */
 
-/* The registered exit flush (openpete_crash_set_exit_flush) as an atomic
- * pointer, since the stall monitor thread reads it, and 1 once a fatal exit
- * has claimed the single run. */
-static void* s_exit_flush;
+/* The registered exit flushes (openpete_crash_set_exit_flush) as atomic
+ * pointers, since the stall monitor thread reads them, the reason of the
+ * running fatal exit, and 1 once a fatal exit has claimed the single run. */
+static void* s_exit_flush[OP_EXIT_FLUSH_SLOTS];
+static void* s_exit_reason;
 static SDL_AtomicInt s_exit_flush_ran;
 
-void openpete_crash_set_exit_flush(void (*fn)(void)) {
-    SDL_SetAtomicPointer(&s_exit_flush, (void*)fn);
+void openpete_crash_set_exit_flush(op_exit_flush_slot_t slot, void (*fn)(void)) {
+    if ((unsigned)slot >= OP_EXIT_FLUSH_SLOTS) return;
+    SDL_SetAtomicPointer(&s_exit_flush[slot], (void*)fn);
 }
 
-void openpete_crash_run_exit_flush(void) {
-    void (*fn)(void) = (void (*)(void))SDL_GetAtomicPointer(&s_exit_flush);
-    if (!fn || !SDL_CompareAndSwapAtomicInt(&s_exit_flush_ran, 0, 1)) return;
-    fn();
+void openpete_crash_run_exit_flush(const char* reason) {
+    if (!SDL_CompareAndSwapAtomicInt(&s_exit_flush_ran, 0, 1)) return;
+    SDL_SetAtomicPointer(&s_exit_reason, (void*)reason);
+    for (int i = 0; i < OP_EXIT_FLUSH_SLOTS; i++) {
+        void (*fn)(void) = (void (*)(void))SDL_GetAtomicPointer(&s_exit_flush[i]);
+        if (fn) fn();
+    }
+}
+
+const char* openpete_crash_exit_reason(void) {
+    return (const char*)SDL_GetAtomicPointer(&s_exit_reason);
 }

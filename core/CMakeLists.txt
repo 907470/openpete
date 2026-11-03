@@ -118,6 +118,7 @@ add_library(openpete_core STATIC
     record/bugreport_redact.c
     record/bugreport_replay.c
     record/bugreport_write.c
+    record/bugreport_thumbs.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
     record/savestate.c
     record/rewind.c

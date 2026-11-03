@@ -408,10 +408,109 @@ void openpete_devui_process_event(const union SDL_Event *ev)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* bug-report note prompt                                             */
+/* ------------------------------------------------------------------ */
+
+/* The prompt's lifecycle (OPENPETE_DEVUI_NOTE_*): the requester moves IDLE
+ * to REQUESTED, the frame thread REQUESTED to SHOWN on its first draw and
+ * SHOWN to SAVED or SKIPPED on Enter or Escape; openpete_devui_note_end
+ * returns it to IDLE from any state. s_note_text belongs to the frame
+ * thread until the state reads SAVED, then to the poller. */
+static SDL_AtomicInt s_note_state;
+static char s_note_text[OPENPETE_DEVUI_NOTE_MAX];
+/* The pump thread's latch of the text-input facts SDL reports only there:
+ * a keyboard attached, on-screen keyboard support, and whether the
+ * on-screen keyboard is shown on the overlay's window. */
+static SDL_AtomicInt s_have_kb, s_have_osk, s_osk_shown;
+/* A pad answer to the prompt, published by the host loop on the release
+ * of the overlay's activate (save) or cancel (skip) action: 1 save, 2 skip. */
+static SDL_AtomicInt s_note_pad;
+
+/** @brief Report whether the note prompt is requested or on screen.
+ * @return true while the prompt owns the keyboard. */
+static bool note_active(void)
+{
+    const int st = SDL_GetAtomicInt(&s_note_state);
+    return st == OPENPETE_DEVUI_NOTE_REQUESTED || st == OPENPETE_DEVUI_NOTE_SHOWN;
+}
+
+/** @brief Report whether the overlay or the note prompt owns the keyboard and text input.
+ * @return true while either is up. */
+static bool input_owner(void)
+{
+    return s_open || note_active();
+}
+
+int openpete_devui_note_begin(void)
+{
+    if (!s_inited || !s_win) return 0;
+    if (!SDL_GetAtomicInt(&s_have_kb) && !SDL_GetAtomicInt(&s_have_osk)) return 0;
+    s_note_text[0] = '\0';
+    SDL_SetAtomicInt(&s_note_pad, 0);
+    SDL_SetAtomicInt(&s_note_state, OPENPETE_DEVUI_NOTE_REQUESTED);
+    return 1;
+}
+
+int openpete_devui_note_poll(char *out, size_t cap, int *keyboard, int *osk_shown)
+{
+    const int st = SDL_GetAtomicInt(&s_note_state);
+    if (keyboard) *keyboard = SDL_GetAtomicInt(&s_have_kb);
+    if (osk_shown) *osk_shown = SDL_GetAtomicInt(&s_osk_shown);
+    if (st == OPENPETE_DEVUI_NOTE_SAVED && out && cap) snprintf(out, cap, "%s", s_note_text);
+    return st;
+}
+
+void openpete_devui_note_end(void)
+{
+    SDL_SetAtomicInt(&s_note_state, OPENPETE_DEVUI_NOTE_IDLE);
+}
+
+int openpete_devui_note_active(void)
+{
+    return note_active() ? 1 : 0;
+}
+
+/** @brief Draw the note prompt on the frame thread and move its state on Enter, Escape or a pad answer.
+ *
+ * A centred window with one text field that takes keyboard focus on the
+ * prompt's first frame. Enter saves the field's text, Escape skips; a pad
+ * answer (note_pad_poll) saves or skips. */
+static void draw_note_prompt(void)
+{
+    static bool s_focus = false;
+    if (SDL_CompareAndSwapAtomicInt(&s_note_state, OPENPETE_DEVUI_NOTE_REQUESTED,
+                                    OPENPETE_DEVUI_NOTE_SHOWN))
+        s_focus = true;
+    if (SDL_GetAtomicInt(&s_note_state) != OPENPETE_DEVUI_NOTE_SHOWN) return;
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
+                                   vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x * 0.6f, 0.0f), ImGuiCond_Always);
+    ImGui::Begin("Bug report note", nullptr,
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::TextUnformatted("What went wrong? Enter to save, Esc to skip.");
+    if (s_focus) { ImGui::SetKeyboardFocusHere(); s_focus = false; }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool enter = ImGui::InputText("##note", s_note_text, sizeof s_note_text,
+                                        ImGuiInputTextFlags_EnterReturnsTrue);
+    const int pad = SDL_SetAtomicInt(&s_note_pad, 0);
+    if (enter || pad == 1)
+        SDL_SetAtomicInt(&s_note_state, OPENPETE_DEVUI_NOTE_SAVED);
+    else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || pad == 2)
+        SDL_SetAtomicInt(&s_note_state, OPENPETE_DEVUI_NOTE_SKIPPED);
+    ImGui::End();
+}
+
 void openpete_devui_pump_text_input(void)
 {
     static bool s_text_active = false;
     if (!s_inited || !s_win) return;
+    SDL_SetAtomicInt(&s_have_kb, SDL_HasKeyboard() ? 1 : 0);
+    SDL_SetAtomicInt(&s_have_osk, SDL_HasScreenKeyboardSupport() ? 1 : 0);
+    SDL_SetAtomicInt(&s_osk_shown, SDL_ScreenKeyboardShown(s_win) ? 1 : 0);
     const bool want = openpete_devui_wants_text_input() != 0;
     if (want == s_text_active) return;
     if (want) SDL_StartTextInput(s_win);
@@ -495,12 +594,12 @@ static void devui_publish_io_wants(void)
 {
     const ImGuiIO &io = ImGui::GetIO();
     SDL_SetAtomicInt(&s_wants_kb,
-                     (s_open && (io.WantCaptureKeyboard || io.WantTextInput)) ? 1 : 0);
+                     (input_owner() && (io.WantCaptureKeyboard || io.WantTextInput)) ? 1 : 0);
     /* Text input is published on its own because the two wants call for
      * different gating: a focused field must swallow every key, while bare
      * nav focus -- which keyboard navigation sets for the whole panel -- must
      * still leave the key that closes the panel readable. */
-    SDL_SetAtomicInt(&s_wants_text, (s_open && io.WantTextInput) ? 1 : 0);
+    SDL_SetAtomicInt(&s_wants_text, (input_owner() && io.WantTextInput) ? 1 : 0);
     /* The fill-tag inspector draws its interactive panel with the overlay
      * closed, so its hover counts: a click aimed at its buttons must not
      * also reach the game or the settings menu under it. */
@@ -525,13 +624,13 @@ static void devui_publish_none(void)
 
 int openpete_devui_wants_keyboard(void)
 {
-    if (!s_inited || !s_open) return 0;
+    if (!s_inited || !input_owner()) return 0;
     return SDL_GetAtomicInt(&s_wants_kb);
 }
 
 int openpete_devui_wants_text_input(void)
 {
-    if (!s_inited || !s_open) return 0;
+    if (!s_inited || !input_owner()) return 0;
     return SDL_GetAtomicInt(&s_wants_text);
 }
 
@@ -738,9 +837,27 @@ static unsigned devui_padnav_gate(unsigned levels, bool engaged)
     return levels & ~s_padnav_withheld;
 }
 
+/** @brief Turn the overlay's activate and cancel actions into the note prompt's pad answer, on the host loop.
+ *
+ * A press of either arms it and the armed action's release answers
+ * (activate saves, cancel skips), so the button is up when the prompt lets
+ * the pad go and the sim resumes. The actions stay live while the prompt
+ * suspends the pad (devui_suspend_exempt holds every KM_CTX_DEVUI action). */
+static void note_pad_poll(void)
+{
+    static openpete_action_t s_armed = OPK_ACTION_COUNT;
+    if (!note_active()) { s_armed = OPK_ACTION_COUNT; return; }
+    if (openpete_key_pressed(OPK_DEVUI_ACTIVATE)) s_armed = OPK_DEVUI_ACTIVATE;
+    else if (openpete_key_pressed(OPK_DEVUI_CANCEL)) s_armed = OPK_DEVUI_CANCEL;
+    if (s_armed == OPK_ACTION_COUNT || openpete_key_down(s_armed)) return;
+    SDL_SetAtomicInt(&s_note_pad, s_armed == OPK_DEVUI_ACTIVATE ? 1 : 2);
+    s_armed = OPK_ACTION_COUNT;
+}
+
 void openpete_devui_host_poll(void)
 {
     if (!s_inited) return;
+    note_pad_poll();
     devui_host_toggle();
     devui_toggle_trace();
 
@@ -3250,7 +3367,7 @@ static void draw_always_sections(void)
 int openpete_devui_frame_wanted(void)
 {
     if (!s_inited) return 0;
-    if (s_open) return 1;
+    if (s_open || note_active()) return 1;
     if (openpete_fillpick_active()) return 1;
     return openpete_mods_ui_always_count() > 0 ? 1 : 0;
 }
@@ -3264,9 +3381,18 @@ void openpete_devui_render(struct rhi_device *dev)
 
     bool fillpick = openpete_fillpick_active() != 0;
     const int always_n = openpete_mods_ui_always_count();
-    const bool frame = s_open || fillpick || always_n > 0;
+    const bool note = note_active();
+    const bool frame = s_open || note || fillpick || always_n > 0;
     if (s_open && !s_frame_prev_open) devui_reset_on_open();
     s_frame_prev_open = s_open;
+    /* The prompt's first frame starts from no key held, as the overlay's
+     * open does, so the key that pressed the report types nothing. */
+    static bool s_note_prev = false;
+    if (note && !s_note_prev) {
+        ImGui::GetIO().ClearInputKeys();
+        ImGui::ClearActiveID();
+    }
+    s_note_prev = note;
     /* Drain every present, open or not, so the ring never fills and drops;
      * key events with no frame to consume them are discarded (see
      * devui_drain_events), mouse events keep the pointer current. */
@@ -3327,6 +3453,7 @@ void openpete_devui_render(struct rhi_device *dev)
     else        openpete_keymap_capture_set_rect(0, 0, 0, 0);   /* no prompt drawn */
     if (always_n > 0) draw_always_sections();
     if (fillpick) { draw_fillpick_crosshair(); draw_fillpick_panel(); }
+    if (note) draw_note_prompt();
     ImGui::Render();
     devui_save_ini(false);
     devui_publish_io_wants();

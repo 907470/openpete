@@ -693,6 +693,29 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
  *         fills, outside an active frame, or for NULL @p dev. */
 bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_bytes,
                         int *out_w, int *out_h, uint64_t *out_tag);
+/** @brief Retrieve the thumbnail this frame slot queued the last time it cycled, then optionally queue this frame's.
+ *
+ * A second ring beside rhi_cycle_readback's, for low-resolution images: on
+ * a queueing call the offscreen is downscaled with a linear blit into the
+ * slot's own image, fitted inside max_w x max_h at its aspect, and copied
+ * to the slot's staging buffer, both in the current frame's command
+ * buffer. A slot's capture is retrieved RHI_FRAMES_IN_FLIGHT presents
+ * later, after begin_frame's fence wait, so the GPU is never waited on.
+ * Called between the blit and end_frame on the thread that holds the
+ * display, every present (retrieval runs only when the slot cycles).
+ * @param dev Device whose current frame records the downscale.
+ * @param queue Nonzero to queue this frame's thumbnail.
+ * @param max_w Width bound of a queued thumbnail.
+ * @param max_h Height bound.
+ * @param tag Opaque token stored with a queued thumbnail.
+ * @param out Destination of a retrieved thumbnail, w*h*4 R,G,B,A bytes, alpha opaque.
+ * @param out_bytes Capacity of @p out; a thumbnail that does not fit is dropped.
+ * @param out_w Receives the retrieved width; may be NULL.
+ * @param out_h Receives the retrieved height; may be NULL.
+ * @param out_tag Receives the retrieved tag; may be NULL.
+ * @return true when a thumbnail was written to @p out. */
+bool rhi_cycle_thumb(rhi_device *dev, int queue, int max_w, int max_h, uint64_t tag,
+                     void *out, size_t out_bytes, int *out_w, int *out_h, uint64_t *out_tag);
 /** @brief Wait the device idle and retrieve the pending --record capture with the lowest tag, without recording a new one.
  *
  * Called at shutdown, up to RHI_FRAMES_IN_FLIGHT times, to flush the
