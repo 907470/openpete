@@ -11,13 +11,32 @@
 #
 #   scripts/check_dist_first_boot.sh              # the .tar.xz artifact
 #   scripts/check_dist_first_boot.sh --appimage   # the AppImage artifact
+#   scripts/check_dist_first_boot.sh [--appimage] --game spyro-2
+#   scripts/check_dist_first_boot.sh [--appimage] --all-shipped
+#
+# --game ID (or OPENPETE_E2E_GAME; default spyro-1) names the game the run
+# ingests and replays. games/<game>/oracle.conf supplies the disc (DISC),
+# the golden (GOLDEN) and the flags the golden's capture ran under
+# (RUN_ARGS, e.g. --no-card for a cardless golden), which the replay
+# passes. A missing default golden is captured with
+# scripts/capture_psx_oracle_ds.sh --game <game>. --all-shipped packages
+# once and runs every game of games/shipped.toml against that one
+# artifact, then prints one verdict row per game.
 #
 # OPENPETE_DIST_ARTIFACT=<file> skips the packaging step and gates that
 # already-built .tar.xz or .AppImage instead; with it set, no build tree is
 # needed, so the gate runs on a second machine from a copy of this script,
-# scripts/check_glibc_floor.sh and mods/r10-libc/. OPENPETE_DISC and
-# OPENPETE_TRACE name the disc and the golden; the golden's sidecars
-# (<golden>.vsync, .loads, .srand) must sit beside it.
+# scripts/check_glibc_floor.sh, mods/r10-libc/, games/<game>/oracle.conf
+# and tools/{gen_mod_docs,gen_mod_sdk,psyq_types}.py. OPENPETE_DISC and
+# OPENPETE_TRACE name the disc and the golden (one game; --all-shipped
+# refuses them); the golden's sidecars (<golden>.vsync, .loads, .srand)
+# must sit beside it.
+#
+# Memory cards: every launch runs on a scratch HOME, so the default card
+# directory (the per-user state dir openpete/cards) is scratch, and an
+# inherited OPENPETE_CARD_DIR is unset; the oracle replay adds the
+# recipe's RUN_ARGS. The gate asserts the first boot provisioned its cards
+# inside the scratch layout.
 #
 # OPENPETE_DIST_MASK_HOST_DEV=1 runs every launch of the artifact with
 # empty directories mounted over /usr/include and /usr/lib/gcc (bwrap, or
@@ -77,17 +96,89 @@ fi
 cd "$(dirname "$0")/.."
 
 APPIMAGE=0
-[[ "${1:-}" == "--appimage" ]] && APPIMAGE=1
+GAME="${OPENPETE_E2E_GAME:-spyro-1}"
+ALL_SHIPPED=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --appimage) APPIMAGE=1; shift ;;
+        --game) GAME="${2:?--game needs an id}"; shift 2 ;;
+        --game=*) GAME="${1#--game=}"; shift ;;
+        --all-shipped) ALL_SHIPPED=1; shift ;;
+        *) echo "usage: $0 [--appimage] [--game ID | --all-shipped]" >&2; exit 64 ;;
+    esac
+done
 
 # Debian 11 / bullseye, the release build base (packaging/linux-release.Dockerfile).
 GLIBC_MAX=2.31
 GLIBCXX_MAX=3.4.28
 
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-TRACE="${OPENPETE_TRACE:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
 ARTIFACT="${OPENPETE_DIST_ARTIFACT:-}"
+
+if [[ $ALL_SHIPPED -eq 1 ]]; then
+    [[ -z "${OPENPETE_DISC:-}${OPENPETE_TRACE:-}" ]] \
+        || { echo "[dist-gate] --all-shipped derives each game's disc and golden;" \
+                  "unset OPENPETE_DISC and OPENPETE_TRACE" >&2; exit 64; }
+    mapfile -t games < <(python3 -c '
+import re
+m = re.search(r"^games\s*=\s*\[([^\]]*)\]", open("games/shipped.toml").read(), re.M)
+print("\n".join(re.findall(r"\"([^\"]+)\"", m.group(1)) if m else []))')
+    [[ ${#games[@]} -gt 0 ]] || { echo "[dist-gate] games/shipped.toml lists no game" >&2; exit 64; }
+    ALLWORK=$(mktemp -d "${TMPDIR:-/tmp}/openpete-dist-gate-all.XXXXXX")
+    trap 'rm -rf "${ALLWORK:?}"' EXIT
+    child=("$0")
+    [[ $APPIMAGE -eq 1 ]] && child+=(--appimage)
+    if [[ -z "$ARTIFACT" ]]; then
+        # One package for every game: the children gate the same bytes.
+        [[ -x build/linux-release-launcher/openpete ]] \
+            || { echo "[dist-gate] build linux-release-launcher first" >&2; exit 64; }
+        source scripts/lib/tools_dir.sh
+        tc_src="$(openpete_tools_dir .)/clang"
+        pkg_args=(linux --with-mod-sdk --toolchain "$tc_src" --out "$ALLWORK/dist")
+        [[ $APPIMAGE -eq 1 ]] && pkg_args+=(--appimage)
+        echo "[dist-gate] packaging once for ${games[*]}..."
+        scripts/package-dist.sh "${pkg_args[@]}" >/dev/null
+        ext=tar.xz; [[ $APPIMAGE -eq 1 ]] && ext=AppImage
+        ARTIFACT=$(ls "$ALLWORK"/dist/*."$ext")
+    fi
+    rows=(); worst=0
+    for g in "${games[@]}"; do
+        echo "[dist-gate] ===== $g ====="
+        set +e
+        OPENPETE_DIST_ARTIFACT="$ARTIFACT" "${child[@]}" --game "$g" 2>&1 \
+            | tee "$ALLWORK/$g.log"
+        rc=${PIPESTATUS[0]}
+        set -e
+        verdict=$(grep -m1 -o "psxtrace: verdict.*" "$ALLWORK/$g.log" || echo "no verdict line")
+        rows+=("$(printf '%-8s rc=%-3s %s' "$g" "$rc" "$verdict")")
+        (( rc > worst )) && worst=$rc
+    done
+    echo "[dist-gate] ===== summary: $(basename "$ARTIFACT") ====="
+    printf '[dist-gate]   %s\n' "${rows[@]}"
+    exit "$worst"
+fi
+
+CONF="games/$GAME/oracle.conf"
+[[ -f "$CONF" ]] || { echo "[dist-gate] no oracle recipe for $GAME: $CONF" >&2; exit 64; }
+GOLDEN=""; DISC=""; RUN_ARGS=()
+# shellcheck disable=SC1090
+source "$CONF"
+DISC="${OPENPETE_DISC:-$DISC}"
+TRACE="${OPENPETE_TRACE:-$GOLDEN}"
+# The module's file name: spyro-2 -> spyro2-recomp.so.
+MODULE_SO="${GAME//-/}-recomp.so"
+echo "[dist-gate] game $GAME: disc $DISC, golden $TRACE, replay flags: ${RUN_ARGS[*]:-none}"
 [[ -f "$DISC" ]] || { echo "[dist-gate] disc missing: $DISC" >&2; exit 64; }
-[[ -f "$TRACE" ]] || { echo "[dist-gate] golden missing: $TRACE (tests/harness/check_psx_oracle.sh captures it)" >&2; exit 64; }
+# The golden is generated, not committed: a missing default golden is
+# captured as the oracle gate does; an explicit OPENPETE_TRACE never is.
+if [[ ! -f "$TRACE" && "$TRACE" == "$GOLDEN" && -x scripts/capture_psx_oracle_ds.sh ]]; then
+    [[ -x third_party/duckstation/build-regtest/bin/duckstation-regtest ]] \
+        || { echo "[dist-gate] golden missing: $TRACE and DuckStation is not built" \
+                  "(scripts/setup_duckstation.sh)" >&2; exit 64; }
+    echo "[dist-gate] golden $TRACE missing: capturing it (scripts/capture_psx_oracle_ds.sh --game $GAME)"
+    scripts/capture_psx_oracle_ds.sh --game "$GAME" \
+        || { echo "[dist-gate] golden capture failed" >&2; exit 64; }
+fi
+[[ -f "$TRACE" ]] || { echo "[dist-gate] golden missing: $TRACE (tests/harness/check_psx_oracle.sh --game $GAME captures it)" >&2; exit 64; }
 # The replay runs under the reference's schedule, read from the sidecars
 # beside the golden; every recipe records these three. A golden copied
 # without them replays unscheduled and diverges at the first load.
@@ -115,6 +206,8 @@ export HOME="$WORK/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_STATE_HOME="$HOME/.local/state"
 export XDG_DATA_HOME="$HOME/.local/share"
+# The cards must resolve inside the scratch layout, never a caller's.
+unset OPENPETE_CARD_DIR
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 DATA="$XDG_DATA_HOME/openpete"
 
@@ -223,6 +316,12 @@ if [[ $APPIMAGE -eq 1 ]]; then
         echo "[dist-gate] FAIL: unbundled dependencies:$miss" >&2; exit 2; }
 fi
 
+# The account's own card directory, stamped before the first boot.
+real_card_stamp() {
+    local d; d="$(getent passwd "$(id -un)" | cut -d: -f6)/.local/state/openpete/cards"
+    stat -c '%n %Y %s' "$d"/* 2>/dev/null | sort
+}
+REAL_CARD_STAMP="$(real_card_stamp)"
 echo "[dist-gate] first boot (--ingest)..."
 if [[ $APPIMAGE -eq 1 ]]; then
     # An empty PATH is how the gate proves self-containment: the image
@@ -262,8 +361,23 @@ grep -q "first-boot module build" "$LOGF" \
     || { echo "[dist-gate] FAIL: the log file did not capture the module" \
               "build it was open for" >&2; exit 2; }
 echo "[dist-gate] first boot left a log file ($(wc -c < "$LOGF") bytes)..."
+# The default card directory of the user layout is the per-user state dir,
+# inside the scratch home. A card is created at the game's first card access,
+# which Spyro 1's first boot does not reach and Spyro 2 and 3 do at the title,
+# so the check is where cards went, not whether they exist: any card the first
+# boot made is in the scratch layout, and the account's own card directory is
+# unchanged (REAL_CARD_STAMP, taken before the first boot).
+CARDS="$XDG_STATE_HOME/openpete/cards"
+if [[ -s "$CARDS/card1.mcr" || -s "$CARDS/card2.mcr" ]]; then
+    echo "[dist-gate] first boot provisioned its cards in the scratch layout"
+else
+    echo "[dist-gate] first boot opened no card (none in $CARDS)"
+fi
+[[ "$(real_card_stamp)" == "$REAL_CARD_STAMP" ]] \
+    || { echo "[dist-gate] FAIL: the account's card directory changed during the first boot" >&2;
+         exit 2; }
 
-module=$(ls "$DATA"/library/*/modules/*/spyro1-recomp.so 2>/dev/null | head -1)
+module=$(ls "$DATA"/library/*/modules/*/"$MODULE_SO" 2>/dev/null | head -1)
 [[ -n "$module" ]] || { echo "[dist-gate] FAIL: no module built under $DATA" >&2;
                         tail -20 "$WORK/first-boot.log" >&2; exit 2; }
 grep -q "first-boot module build" "$WORK/first-boot.log" \
@@ -271,7 +385,7 @@ grep -q "first-boot module build" "$WORK/first-boot.log" \
 # The ingest writes the game's launcher asset cache (domes, glyph models,
 # logo and its manifest) beside the build; the warm boot's no-rerun check
 # below is vacuous without it.
-grep -q "asset cache of spyro-1 written" "$WORK/first-boot.log" \
+grep -q "asset cache of $GAME written" "$WORK/first-boot.log" \
     || { echo "[dist-gate] FAIL: first boot wrote no launcher asset cache" >&2; exit 2; }
 # The module must not have acquired a shared-library dependency it cannot
 # resolve: it is linked -nostdlib and binds everything else against the
@@ -282,7 +396,7 @@ needed=$(objdump -p "$module" | awk '/NEEDED/ {print $2}' || true)
 echo "[dist-gate] full 20k oracle on the dist exe + self-built module..."
 "${APP[@]}" --headless \
       --psxtrace-verify "$TRACE_ABS" \
-      --frame-limit 200000 > "$WORK/oracle.log" 2>&1 \
+      --frame-limit 200000 "${RUN_ARGS[@]}" > "$WORK/oracle.log" 2>&1 \
     || { echo "[dist-gate] FAIL: oracle divergence or crash" >&2;
          tail -20 "$WORK/oracle.log" >&2; exit 2; }
 # The verdict line is printed here because $WORK is removed on exit, and a
@@ -310,7 +424,7 @@ if [[ $APPIMAGE -eq 1 ]]; then
     ! grep -q "launch-time rerun" "$WORK/warm-boot.log" \
         || { echo "[dist-gate] FAIL: warm boot reran the asset extraction:" \
                   "$(grep -m1 "launch-time rerun" "$WORK/warm-boot.log")" >&2; exit 2; }
-    grep -q "asset cache of spyro-1 is current" "$WORK/warm-boot.log" \
+    grep -q "asset cache of $GAME is current" "$WORK/warm-boot.log" \
         || { echo "[dist-gate] FAIL: warm boot did not check the asset cache" >&2; exit 2; }
 
     echo "[dist-gate] nothing was written inside the payload..."
@@ -329,15 +443,17 @@ fi
 # version's module, with no crash and nothing that looked stale.
 echo "[dist-gate] an emission-input change re-keys the module cache..."
 before_dir=$(dirname "$module")
-for input in "$appdir"/usr/recomp/manifest/spyro-1/channel_sites.txt \
-             "$appdir"/recomp/manifest/spyro-1/channel_sites.txt; do
-    [[ -f "$input" ]] && { echo "# dist-gate upgrade probe" >> "$input"; break; }
+probed=""
+for input in "$appdir"/usr/recomp/manifest/"$GAME"/manifest.toml \
+             "$appdir"/recomp/manifest/"$GAME"/manifest.toml; do
+    [[ -f "$input" ]] && { echo "# dist-gate upgrade probe" >> "$input"; probed=$input; break; }
 done
+[[ -n "$probed" ]] || { echo "[dist-gate] FAIL: no recomp/manifest/$GAME/manifest.toml in the payload" >&2; exit 2; }
 "${APP[@]}" --headless --frame-limit 60 \
       --max-runtime-seconds 900 > "$WORK/upgrade.log" 2>&1 \
     || { echo "[dist-gate] FAIL: boot after an emission-input change crashed" >&2;
          tail -20 "$WORK/upgrade.log" >&2; exit 2; }
-after=$(ls "$DATA"/library/*/modules/*/spyro1-recomp.so 2>/dev/null | wc -l)
+after=$(ls "$DATA"/library/*/modules/*/"$MODULE_SO" 2>/dev/null | wc -l)
 (( after >= 2 )) \
     || { echo "[dist-gate] FAIL: a manifest change did not re-key the module" \
               "cache - an upgrading user would keep running the previous" \
@@ -363,7 +479,7 @@ grep -q "rebuilding it from your disc" "$WORK/repair.log" \
 
 # The staged example is the drop-in: sdk/examples/ sits next to the
 # binary (AppImage: usr/), as does the documentation site docs/. The
-# compile writes the object for the running game, .build/spyro-1/. The
+# compile writes the object for the running game, .build/<game>/. The
 # example proves the --with-mod-sdk staging, the site's Modding section
 # the docs staging every package carries, and the compile the example.
 sdkdir="$(dirname "$BIN")/sdk"
@@ -376,22 +492,35 @@ docsdir="$(dirname "$BIN")/docs"
     || { echo "[dist-gate] FAIL: $docsdir/modding/index.html not staged (Modding section missing from the package)" >&2; exit 2; }
 # Every staged example and the libc fixture mods/r10-libc (string.h,
 # stdio.h, math.h, stdlib.h, stdatomic.h, an __int128 division) are dropped
-# in together and built by the next boot. Per mod: the object exists (a
-# mod with no src/ is declarative and builds none), its compile.log is
-# empty, the boot logs `loaded <id>`, and the object names no DT_NEEDED
-# (libc binds at dlopen from the process).
+# in together and built by the next boot. A mod whose manifest selects the
+# running game (the loader's rule, tools/gen_mod_docs.py mod_games): the
+# object exists (a mod with no src/ is declarative and builds none), its
+# compile.log is empty, the boot logs `loaded <id>`, and the object names
+# no DT_NEEDED (libc binds at dlopen from the process). A mod for another
+# game: the loader logs it skipped, and it builds and loads nothing.
 fixture=mods/r10-libc
 [[ -f "$fixture/mod.toml" ]] \
     || { echo "[dist-gate] FAIL: $fixture missing beside this script" >&2; exit 2; }
 echo "[dist-gate] drop-in: every sdk example + r10-libc compile + load on boot..."
 mkdir -p "$DATA/mods"
-dropins=()
+dropins=(); others=()
 for d in "$sdkdir"/examples/*/ "$fixture"/; do
     [[ -f "$d/mod.toml" ]] || continue
     id=$(basename "$d")
     cp -r "$d" "$DATA/mods/"
     rm -rf "${DATA:?}/mods/$id/.build"
-    dropins+=("$id")
+    sel=0
+    python3 -c '
+import sys
+sys.path.insert(0, "tools")
+from gen_mod_docs import mod_games
+sys.exit(0 if sys.argv[2] in mod_games(open(sys.argv[1], encoding="utf-8").read()) else 3)
+' "$d/mod.toml" "$GAME" || sel=$?
+    case $sel in
+        0) dropins+=("$id") ;;
+        3) others+=("$id") ;;
+        *) echo "[dist-gate] FAIL: cannot read the games of $d/mod.toml" >&2; exit 2 ;;
+    esac
 done
 "${APP[@]}" --headless --frame-limit 300 \
  --max-runtime-seconds 600 \
@@ -401,8 +530,8 @@ done
 drop_fail=0
 printf '[dist-gate]   %-20s %-4s %-12s %-7s %s\n' mod .so compile.log loaded NEEDED
 for id in "${dropins[@]}"; do
-    so="$DATA/mods/$id/.build/spyro-1/$id.so"
-    clog="$DATA/mods/$id/.build/spyro-1/compile.log"
+    so="$DATA/mods/$id/.build/$GAME/$id.so"
+    clog="$DATA/mods/$id/.build/$GAME/compile.log"
     if [[ -d "$DATA/mods/$id/src" ]]; then
         so_ok=no; [[ -f "$so" ]] && so_ok=yes
         log_ok=empty; [[ -s "$clog" ]] && log_ok="$(wc -c < "$clog")B"
@@ -419,20 +548,32 @@ for id in "${dropins[@]}"; do
     [[ $loaded == yes ]] || drop_fail=1
     printf '[dist-gate]   %-20s %-4s %-12s %-7s %s\n' "$id" "$so_ok" "$log_ok" "$loaded" "${needed:--}"
 done
+for id in "${others[@]}"; do
+    skipped=no
+    grep -q "$id targets .* - skipped (this is $GAME)" "$WORK/mod-boot.log" && skipped=yes
+    built=no; [[ -e "$DATA/mods/$id/.build/$GAME" ]] && built=yes
+    loaded=no; grep -q "loaded $id v" "$WORK/mod-boot.log" && loaded=yes
+    [[ $skipped == yes && $built == no && $loaded == no ]] || drop_fail=1
+    printf '[dist-gate]   %-20s other game: skipped=%s built=%s loaded=%s\n' "$id" "$skipped" "$built" "$loaded"
+done
 if [[ $drop_fail -ne 0 ]]; then
     echo "[dist-gate] FAIL: a drop-in mod did not compile clean, load, or" \
          "link without DT_NEEDED" >&2
     for id in "${dropins[@]}"; do
-        clog="$DATA/mods/$id/.build/spyro-1/compile.log"
+        clog="$DATA/mods/$id/.build/$GAME/compile.log"
         [[ -s "$clog" ]] && { echo "[dist-gate]   $id compile.log:" >&2; head -3 "$clog" >&2; }
     done
     exit 2
 fi
 
-# The packaged SDK carries games/spyro-1/ only: a line with -I sdk alone
-# compiles through the root dispatchers, and a line naming Spyro 2 stops
-# at the dispatcher's #error naming it rather than a missing file.
-echo "[dist-gate] packaged SDK root dispatchers: -I sdk alone compiles, Spyro 2 refused..."
+# The packaged SDK carries sdk/games/<g>/ for every game the package
+# ships (package-dist.sh stages the shipped games' trees, the games whose
+# recomp/manifest/<g>/ it carries) and none other. The root dispatchers
+# select a tree by the OPENPETE_GAME_* defines: per game, a line with
+# -I sdk alone compiles when the tree is packaged (no OPENPETE_GAME_ID
+# selects Spyro 1) and stops at the dispatcher's #error naming the game
+# when it is not.
+echo "[dist-gate] packaged SDK: per-game trees match the shipped games, root dispatchers select each..."
 # A host with no compiler (SteamOS) checks with the artifact's own clang
 # and its sysroot headers instead.
 tc="$(dirname "$BIN")/recomp/tools/clang"
@@ -440,17 +581,32 @@ if command -v cc >/dev/null; then DCC=(cc)
 else DCC=("$tc/bin/clang" -nostdlibinc -isystem "$tc/sysroot/include"); fi
 printf '#include <openpete_mod_api.h>\n#include <openpete_sdk_symbols.h>\n#include <openpete_sdk_wrappers.h>\n#include <openpete_game_structs.h>\n' \
     > "$WORK/dispatch.c"
-"${DCC[@]}" -fsyntax-only -Wall -Wundef -I "$sdkdir" "$WORK/dispatch.c" \
-      > "$WORK/dispatch-s1.log" 2>&1 \
-    || { echo "[dist-gate] FAIL: -I sdk alone did not compile against the packaged SDK" >&2;
-         head -5 "$WORK/dispatch-s1.log" >&2; exit 2; }
-if "${DCC[@]}" -fsyntax-only -Wall -Wundef -DOPENPETE_GAME_ID='"spyro-2"' \
-      -DOPENPETE_GAME_SPYRO1=0 -DOPENPETE_GAME_SPYRO2=1 -DOPENPETE_GAME_SPYRO3=0 \
-      -I "$sdkdir" "$WORK/dispatch.c" > "$WORK/dispatch-s2.log" 2>&1 \
-   || ! grep -qF "has no Spyro 2 headers (sdk/games/spyro-2/ is absent)" "$WORK/dispatch-s2.log"; then
-    echo "[dist-gate] FAIL: a Spyro 2 line against the packaged SDK did not stop at the dispatcher #error" >&2
-    head -5 "$WORK/dispatch-s2.log" >&2; exit 2
-fi
+shipped_games=$(ls "$(dirname "$BIN")/recomp/manifest" | sort | tr '\n' ' ')
+sdk_games=$(ls "$sdkdir/games" | sort | tr '\n' ' ')
+[[ "$sdk_games" == "$shipped_games" ]] \
+    || { echo "[dist-gate] FAIL: sdk/games/ carries [$sdk_games], the package ships [$shipped_games]" >&2; exit 2; }
+[[ " $shipped_games" == *" $GAME "* ]] \
+    || { echo "[dist-gate] FAIL: the package does not ship $GAME (ships $shipped_games)" >&2; exit 2; }
+for n in 1 2 3; do
+    g="spyro-$n"
+    defs=()
+    [[ $n -ne 1 ]] && defs=(-DOPENPETE_GAME_ID="\"$g\"" -DOPENPETE_GAME_SPYRO1=0
+                            -DOPENPETE_GAME_SPYRO2=$((n == 2)) -DOPENPETE_GAME_SPYRO3=$((n == 3)))
+    if "${DCC[@]}" -fsyntax-only -Wall -Wundef "${defs[@]}" -I "$sdkdir" "$WORK/dispatch.c" \
+          > "$WORK/dispatch-$g.log" 2>&1; then
+        got=compiles
+    elif grep -qF "has no Spyro $n headers (sdk/games/$g/ is absent)" "$WORK/dispatch-$g.log"; then
+        got=refused
+    else
+        echo "[dist-gate] FAIL: a $g line against the packaged SDK failed without the dispatcher #error" >&2
+        head -5 "$WORK/dispatch-$g.log" >&2; exit 2
+    fi
+    want=refused; [[ -d "$sdkdir/games/$g" ]] && want=compiles
+    echo "[dist-gate]   $g: $got"
+    [[ $got == "$want" ]] \
+        || { echo "[dist-gate] FAIL: a $g line against the packaged SDK $got; expected $want" >&2;
+             head -5 "$WORK/dispatch-$g.log" >&2; exit 2; }
+done
 
 what=$([[ $APPIMAGE -eq 1 ]] && echo AppImage || echo tarball)
-echo "[dist-gate] PASS - $what: unpack -> ingest -> self-build -> oracle-clean -> mod drop-in (${#dropins[@]} mods)"
+echo "[dist-gate] PASS - $what, $GAME: unpack -> ingest -> self-build -> oracle-clean -> mod drop-in (${#dropins[@]} mods, ${#others[@]} for other games skipped)"
