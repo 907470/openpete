@@ -11,7 +11,13 @@
  *     --gameplay-hash-log row) of every tick since the oldest anchor;
  *   - the bk2 row notes (bk2_record.h) and the host-loop trace records
  *     (openpete_host_trace.h) since the oldest anchor;
- *   - taint counters: the events a replay of the window cannot reproduce.
+ *   - taint counters: the events a replay of the window cannot reproduce;
+ *   - the raw host input ring: every keyboard, mouse, gamepad and joystick
+ *     event the event pump handled, device arrivals and removals and window
+ *     focus changes, with motion and axis events merged per VBL
+ *     (bugrec_input.c); the pacing records of the last 30 s live in the pace
+ *     log's always-on ring (openpete_pace_ring_image), which the dump writes
+ *     beside the rest.
  *
  * An anchor is due every OPENPETE_BUGREC_CADENCE_VBLS VBLs and is admitted
  * at a final yield only when the fiber is parked at a site of the game's
@@ -26,8 +32,9 @@
  * anchor is dropped and retention restarts at the next admitted one.
  *
  * Everything here runs on the sim thread at the host loop's quiescent
- * point, except the taint increments (any thread). Nothing stores into
- * PSX RAM.
+ * point, except the taint increments (any thread) and the input ring,
+ * appended on the thread that pumps SDL events (main) and read on any
+ * thread, both under the ring's own mutex. Nothing stores into PSX RAM.
  */
 #ifndef OPENPETE_BUGREC_H
 #define OPENPETE_BUGREC_H
@@ -35,6 +42,7 @@
 #include "openpete_park_site.h"
 #include "openpete_thread_roles.h"
 typedef struct CPUState CPUState;
+union SDL_Event;
 
 #include <stddef.h>
 #include <stdint.h>
@@ -88,6 +96,75 @@ typedef struct {
     uint64_t  taint_at[BUGREC_TAINT_N];  /* taint totals at the capture */
     uint64_t  capture_us;
 } openpete_bugrec_anchor_t;
+
+/* Entries of the raw host input ring (40 B each). */
+#define OPENPETE_BUGREC_INPUT_EVENTS 8192u
+
+/* Input ring entry flags. */
+enum {
+    BUGREC_IN_LOCKED   = 1u << 0,  /* the input lock dropped the event */
+    BUGREC_IN_INJECTED = 1u << 1,  /* the device id is OPENPETE_INJECT_DEVICE_ID */
+    BUGREC_IN_REPEAT   = 1u << 2   /* a key auto-repeat */
+};
+
+/* One input ring entry: one event, or the motion or axis events of one
+ * device and code within one VBL merged (count > 1; the times are the
+ * first event's). */
+typedef struct {
+    uint64_t t_sdl_ns;  /* the SDL event timestamp (SDL_GetTicksNS clock) */
+    int64_t  t_op_ns;   /* op_now() when the pump handled it */
+    uint32_t vbl;       /* openpete_vbl at the pump */
+    uint32_t which;     /* keyboard, mouse or joystick instance id; window id for focus */
+    uint16_t type;      /* the SDL event type */
+    uint16_t code;      /* scancode, mouse or gamepad button, axis or hat */
+    uint16_t count;     /* events in this entry */
+    uint16_t flags;     /* BUGREC_IN_* */
+    float    a, b;      /* key: down, modifiers; mouse button: down, clicks; motion:
+                           summed xrel, yrel; wheel: x, y; button: down; axis, hat: value */
+} openpete_bugrec_input_t;
+
+typedef struct {
+    uint64_t appended;     /* entries written */
+    uint64_t held;         /* entries the ring holds */
+    uint64_t overwritten;  /* entries replaced by newer ones */
+    uint64_t events;       /* events recorded, merged ones included */
+    uint64_t merged;       /* events merged into an earlier entry */
+    size_t   bytes;        /* the ring's storage */
+} openpete_bugrec_input_counts_t;
+
+/** @brief Record one SDL event in the raw host input ring.
+ *
+ * Called by the event pump for every event before any consumer; types the
+ * ring does not keep (text input, window events other than focus) return
+ * at once. A gamepad's joystick-level events are skipped, its gamepad
+ * events kept. Takes the ring's mutex.
+ * @param ev The event.
+ * @param locked Nonzero when the input lock drops the event. */
+void openpete_bugrec_input_event(const union SDL_Event* ev, int locked);
+
+/** @brief Copy the held input ring entries, oldest first, to the heap.
+ * @param out Receives the entries, or NULL when none; free with free().
+ * @return The entry count. */
+size_t openpete_bugrec_input_snapshot(openpete_bugrec_input_t** out);
+
+/** @brief Write the held input ring entries as CSV with a header line, oldest first.
+ * @param fp The stream.
+ * @return The rows written. */
+size_t openpete_bugrec_input_csv(FILE* fp);
+
+/** @brief Read the input ring's counters.
+ * @param out Receives the counters. */
+void openpete_bugrec_input_counts(openpete_bugrec_input_counts_t* out);
+
+/** @brief Write the connected input devices, one line each.
+ *
+ * Joysticks and gamepads: instance id, the pad slot the device drives
+ * (-1 none), SDL player index, virtual flag, gamepad flag, name, GUID and
+ * the gamepad mapping string. Keyboards and mice (id and name) are listed
+ * only on the main thread, where SDL allows their enumeration.
+ * @param fp The stream.
+ * @return The devices listed. */
+int openpete_bugrec_devices_write(FILE* fp);
 
 /** @brief Register the guest-discontinuity handler and read the harness variables.
  *
@@ -185,7 +262,7 @@ size_t openpete_bugrec_hash_stride(void);
  * @return The rows written. */
 size_t openpete_bugrec_hash_csv(FILE* fp, unsigned from_frame);
 
-/** @brief Write the ring to a directory: each anchor's state, card images, `.modsave` files, metadata and segment bk2, the hash rows, the host-trace records and the counters.
+/** @brief Write the ring to a directory: each anchor's state, card images, `.modsave` files, metadata and segment bk2, the hash rows, the host-trace records, the pace ring's last 30 s, the input ring, the device list and the counters.
  *
  * The test hook OPENPETE_BUGREC_DUMP_AT calls it; files are written on the
  * calling thread.
@@ -193,7 +270,7 @@ size_t openpete_bugrec_hash_csv(FILE* fp, unsigned from_frame);
  * @return 0 when every file was written, -1 otherwise (logged). */
 int openpete_bugrec_dump(const char* dir) OP_REQUIRES(sim);
 
-/** @brief Log the exit report: anchors taken, deferred and dropped by cause, capture time percentiles, bytes held, rows and records held, hashing cost and taint totals. */
+/** @brief Log the exit report: anchors taken, deferred and dropped by cause, capture time percentiles, bytes held, rows and records held, hashing cost, taint totals and the pace and input ring counters. */
 void openpete_bugrec_report(void) OP_REQUIRES(sim);
 
 #ifdef __cplusplus

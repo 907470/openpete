@@ -25,6 +25,7 @@
 #include "openpete_host_trace.h"
 #include "openpete_workpool.h"
 #include "openpete_frame_time_log.h"
+#include "openpete_bugrec.h"
 #include "openpete_pace_log.h"
 #include "openpete_boot_timing.h"
 #include "openpete_disc_trace.h"
@@ -489,7 +490,8 @@ void openpete_pump_events(void) {
 
 /** @brief Handle one event dequeued by the event pump and decide whether PsyCross also sees it.
  *
- * In order: the input lock drops physical-device events; the mouse channel
+ * In order: the bug-report input ring records the event; the input lock
+ * drops physical-device events; the mouse channel
  * and the dev overlay see every remaining event; a joystick arrival is
  * reported against the mapping databases; mouse activity re-arms the
  * cursor idle timer. Quit and window close set the shutdown flag and are
@@ -505,7 +507,9 @@ static bool openpete_handle_event(SDL_Event* ev) {
     /* The input lock discards an event from a physical input device before
      * any consumer below sees it. Quit and window events are not input and
      * fall through, so closing the window still exits. */
-    if (openpete_input_lock_drops_event(ev)) return false;
+    const int locked = openpete_input_lock_drops_event(ev);
+    openpete_bugrec_input_event(ev, locked);
+    if (locked) return false;
     /* The mouse channel derives position, mask and the running totals from
      * the event stream (openpete_host_mouse.h); every consumer reads those. */
     openpete_host_mouse_handle_event(ev);

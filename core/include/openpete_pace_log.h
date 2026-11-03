@@ -68,7 +68,20 @@ enum {
     OP_PACE_PAD_READ    = 10,
     OP_PACE_FLIP        = 11,
     OP_PACE_CD_MISS     = 12,  /* a disc cache miss served from the image file: a = file read ns, b = end offset */
-    OP_PACE_HOST_PUMP   = 13   /* one iteration of the host pump loop (thread split only) */
+    OP_PACE_HOST_PUMP   = 13,  /* one iteration of the host pump loop (thread split only) */
+    /* What a PRESENT showed and where: index = the PRESENT's index, aux = its
+     * kind, flags = OP_PACE_PD_*, a = swapchain image index (-1 none), b, c =
+     * swapchain extent, d = openpete_interp_tick_stamp, e =
+     * openpete_interp_present_now, f = the RHI's swapchain presents so far. */
+    OP_PACE_PRESENT_DETAIL = 14
+};
+
+/* PRESENT_DETAIL flags: the interpolation mode the present ran under. */
+enum {
+    OP_PACE_PD_INTERP        = 1u << 0,  /* sub-tick capture enabled */
+    OP_PACE_PD_EAGER         = 1u << 1,  /* the present thread owned the display */
+    OP_PACE_PD_DETERMINISTIC = 1u << 2,  /* deterministic capture stamps */
+    OP_PACE_PD_PAIRED        = 1u << 3   /* the image had a prev/curr pair */
 };
 
 /* HOST_PUMP flags. */
@@ -180,6 +193,51 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
                              int thread_split, int input_legacy,
                              int headless);
 
+/* ---- ring ---------------------------------------------------------------- */
+
+/* The always-on ring holds the newest OP_PACE_RING_RECORDS records (64 B
+ * each) whatever the file sink does; an image of it is a log file a
+ * scripts/pacing/ reader parses unchanged. */
+#define OP_PACE_RING_RECORDS   131072u
+#define OP_PACE_RING_WINDOW_NS ((int64_t)30 * 1000 * 1000 * 1000)
+
+typedef struct {
+    uint64_t appended;    /* records written to the ring */
+    uint64_t held;        /* records the ring holds */
+    uint64_t overwritten; /* records replaced by newer ones */
+    uint64_t young_lost;  /* of those, replaced while inside OP_PACE_RING_WINDOW_NS */
+    int64_t  span_ns;     /* newest minus oldest held record's t_ns */
+    size_t   bytes;       /* ring and environment block allocation */
+} openpete_pace_ring_counts_t;
+
+/** @brief Allocate the always-on record ring and keep a copy of the environment block for its images.
+ *
+ * From the call on every emitter builds its record and pace_emit stores it
+ * in the ring under the writer lock, beside the file buffer when a log file
+ * is open; the file's record stream is unchanged by the ring. A second call
+ * returns 0. OPENPETE_PACE_RING=0 leaves the ring unarmed.
+ * @param env The environment block from openpete_pace_env_build, or NULL.
+ * @return 0 when the ring is armed, -1 when disabled or allocation fails. */
+int  openpete_pace_ring_arm(const char* env);
+
+/** @brief Build a pace log file image of the ring's records inside a window ending now, on the heap.
+ *
+ * The image is the 64-byte header, the environment block given to
+ * openpete_pace_ring_arm and the held records with t_ns at or after
+ * op_now() - window_ns, in emission order. The records are copied under
+ * the writer lock, which every emitting thread (sim, main, present)
+ * takes per record; the header and environment are written outside it.
+ * @param window_ns The window; 0 or less takes every held record.
+ * @param out Receives the image; free with free().
+ * @param len Receives its length in bytes.
+ * @param records Receives the record count; may be NULL.
+ * @return 0 on success, -1 when the ring is not armed or allocation fails. */
+int  openpete_pace_ring_image(int64_t window_ns, void** out, size_t* len, size_t* records);
+
+/** @brief Read the ring's counters under the writer lock; all zero when the ring is not armed.
+ * @param out Receives the counters. */
+void openpete_pace_ring_counts(openpete_pace_ring_counts_t* out);
+
 /* ---- emit --------------------------------------------------------------- */
 
 /** @brief Classify one VBL into the census, close the pad-read bracket, and write its VBL record.
@@ -193,8 +251,9 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
  * histogram, and when it consumed a host sample (latch_ns nonzero,
  * latched_seq at least 2) the latch-offset bound; latched_seq
  * OP_PACE_LATCH_CLAIMED counts it as claimed instead. The bracket closes
- * before the log-file check so the census classifies pad reads the same
- * with or without a log. With a log open, the record carries deadline,
+ * before the sink check so the census classifies pad reads the same
+ * with or without a sink. With a sink (the ring or an open log), the
+ * record carries deadline,
  * latch, exec start and end, latched_seq and latched_bits, and a
  * CLOCKSAMPLE record follows every 10 s. A zero timestamp means not
  * applicable this iteration; the analyzer treats it as missing.
@@ -277,8 +336,8 @@ void openpete_pace_set_slot_ns(int64_t slot_ns);
  * This is the only timestamp in the log that is not a submit time: every
  * other record says when an image was handed over, and the display decides
  * when to show it. The record keeps the low 32 bits of id as its index and
- * the full id in slot a. Writes no census counter; no-op without an open
- * log.
+ * the full id in slot a. Writes no census counter; no-op without a sink
+ * (the ring or an open log).
  * @param id Swapchain present id waited on.
  * @param t_ns Instant the wait returned, taken as the flip time.
  * @param waited_ns How long the wait blocked; a near-zero wait means the
@@ -369,7 +428,8 @@ void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns);
 /** @brief Record a disc cache miss served from the image file.
  *
  * The disc cache calls it after the reader's file read. Writes a CD_MISS
- * record only; no census counter; no-op without an open log.
+ * record only; no census counter; no-op without a sink (the ring
+ * or an open log).
  * @param waited_ns Time the file read took.
  * @param end_offset End byte offset of the requested range. */
 void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset);
@@ -391,8 +451,8 @@ void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
 /** @brief Write a WINDOW record marking the begin or end of a span during which the pacing grid does not apply.
  *
  * The record carries the id in `aux`, flag 1 on begin, 0 on end, and
- * op_now() as its timestamp. No-op without an open log; the census is not
- * touched.
+ * op_now() as its timestamp. No-op without a sink (the ring or an open
+ * log); the census is not touched.
  * @param id OP_PACE_W_* span kind.
  * @param begin Nonzero at the span's begin, zero at its end. */
 void openpete_pace_window(uint16_t id, int begin);
@@ -420,7 +480,7 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
  * host split that thread owns the sim clock, so this time can make a tick
  * late; the PRESENT_SPAN record attributes it. Emitted by the host loop for
  * canonical and intermediate presents and by eager production for each
- * scene it builds. No-op without an open log.
+ * scene it builds. No-op without a sink (the ring or an open log).
  * @param kind OP_PACE_CANONICAL or OP_PACE_INTERMEDIATE.
  * @param start_ns Start instant.
  * @param end_ns End instant.

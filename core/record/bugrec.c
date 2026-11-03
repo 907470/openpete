@@ -13,6 +13,7 @@
 #include "openpete_log.h"
 #include "openpete_memcard.h"
 #include "openpete_modsave.h"
+#include "openpete_pace_log.h"
 #include "openpete_psx.h"
 #include "openpete_state.h"
 
@@ -520,19 +521,35 @@ int openpete_bugrec_dump(const char* dir) OP_REQUIRES(sim) {
     const uint8_t* trace = NULL;
     const size_t ntrace = host_trace_ring_records(&trace);
     if (ntrace) rc |= dump_file(dir, "hosttrace.bin", trace, ntrace * HT_REC_BYTES);
+    void* pace = NULL;
+    size_t pace_len = 0, npace = 0;
+    if (openpete_pace_ring_image(OP_PACE_RING_WINDOW_NS, &pace, &pace_len, &npace) == 0) {
+        rc |= dump_file(dir, "pace.bin", pace, pace_len);
+        free(pace);
+    }
+    size_t ninput = 0;
+    int ndev = 0;
+    snprintf(path, sizeof path, "%s/input-events.csv", dir);
+    fp = fopen(path, "w");
+    if (fp) { ninput = openpete_bugrec_input_csv(fp); fclose(fp); } else rc = -1;
+    snprintf(path, sizeof path, "%s/devices.txt", dir);
+    fp = fopen(path, "w");
+    if (fp) { ndev = openpete_bugrec_devices_write(fp); fclose(fp); } else rc = -1;
     snprintf(path, sizeof path, "%s/recorder.txt", dir);
     fp = fopen(path, "w");
     if (fp) {
         dump_counters(fp);
-        fprintf(fp, "hash_rows=%zu\ntrace_records=%zu\n", nrows, ntrace);
+        fprintf(fp, "hash_rows=%zu\ntrace_records=%zu\npace_records=%zu\ninput_events=%zu\n"
+                "devices=%d\n", nrows, ntrace, npace, ninput, ndev);
         fclose(fp);
     } else {
         rc = -1;
     }
     OPL_INFO_F("bugrec", "dump: wrote %s at frame %u (feed key %u): %d anchor(s), %zu hash row(s), "
-               "%zu trace record(s)%s", dir, openpete_frame, openpete_feed_key_now(),
+               "%zu trace record(s), %zu pace record(s), %zu input event(s), %d device(s)%s", dir,
+               openpete_frame, openpete_feed_key_now(),
                (openpete_bugrec_anchor(0) != NULL) + (openpete_bugrec_anchor(1) != NULL), nrows,
-               ntrace, rc ? " - a file failed" : "");
+               ntrace, npace, ninput, ndev, rc ? " - a file failed" : "");
     return rc ? -1 : 0;
 }
 
@@ -590,4 +607,16 @@ void openpete_bugrec_report(void) OP_REQUIRES(sim) {
         at += snprintf(line + at, sizeof line - (size_t)at, "%s%s=%llu", k ? " " : "", k_taint_names[k],
                        (unsigned long long)atomic_load_explicit(&s_taint[k], memory_order_relaxed));
     OPL_INFO_F("bugrec", "taint totals: %s", line);
+    openpete_pace_ring_counts_t pc;
+    openpete_pace_ring_counts(&pc);
+    openpete_bugrec_input_counts_t ic;
+    openpete_bugrec_input_counts(&ic);
+    OPL_INFO_F("bugrec", "pace ring: appended %llu held %llu (%.1f s) overwritten %llu "
+               "inside-window %llu, %zu B; input ring: events %llu merged %llu entries %llu "
+               "held %llu overwritten %llu, %zu B",
+               (unsigned long long)pc.appended, (unsigned long long)pc.held, (double)pc.span_ns / 1e9,
+               (unsigned long long)pc.overwritten, (unsigned long long)pc.young_lost, pc.bytes,
+               (unsigned long long)ic.events, (unsigned long long)ic.merged,
+               (unsigned long long)ic.appended, (unsigned long long)ic.held,
+               (unsigned long long)ic.overwritten, ic.bytes);
 }

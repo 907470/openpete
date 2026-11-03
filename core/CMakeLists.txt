@@ -113,6 +113,7 @@ add_library(openpete_core STATIC
     record/bk2_record.c
     record/bk2_feed.c
     record/bugrec.c
+    record/bugrec_input.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
     record/savestate.c
     record/rewind.c

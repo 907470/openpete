@@ -200,19 +200,21 @@ static int open_frame_time_log(host_session_t* S) OP_REQUIRES(sim)
     return 0;
 }
 
-/** @brief Open --pace-log, the unified pacing event log, with its environment block.
+/** @brief Arm the always-on pace ring and open --pace-log, the unified pacing event log, both with one environment block.
  *
- * Opened with the renderer already up, because the environment block
- * records the device and the present mode actually granted.
+ * Done with the renderer already up, because the environment block
+ * records the device and the present mode actually granted. A ring that
+ * cannot be armed is logged and the run continues.
  * @param S The session.
- * @return 0, or -1 with S->exit_reason set. */
+ * @return 0, or -1 with S->exit_reason set when the log file fails. */
 static int open_pace_log(host_session_t* S) OP_REQUIRES(sim)
 {
     const char* path = S->opts->pace_log_path;
-    if (!path || !*path) return 0;
     char env[2048];
     host_pace_env_build(env, sizeof(env), S->opts, S->refresh_mhz,
                         host_pacer_render_fps(&S->pacer), S->pacer.launch_scale);
+    (void)openpete_pace_ring_arm(env);
+    if (!path || !*path) return 0;
     if (openpete_pace_log_open(path, env) != 0) {
         S->exit_reason = "setup-pace-log";
         return -1;

@@ -4464,6 +4464,31 @@ uint32_t rhi_swapchain_image_count(const rhi_device *dev)
     return dev ? dev->sc_count : 0;
 }
 
+/* The last swapchain present's image index and extent, for the pacing log's
+ * PRESENT_DETAIL record. Statics for the reason the block times are: only
+ * the display owner presents and reads them. */
+static uint32_t s_last_present_image = UINT32_MAX;
+static uint32_t s_last_present_w, s_last_present_h;
+static uint64_t s_presents;
+
+/** @brief Note a swapchain present's image index and extent for rhi_last_present.
+ * @param dev The presenting device. */
+static void note_present(const rhi_device *dev)
+{
+    s_last_present_image = dev->image_index;
+    s_last_present_w = dev->sc_extent.width;
+    s_last_present_h = dev->sc_extent.height;
+    s_presents++;
+}
+
+void rhi_last_present(uint32_t *image_index, uint32_t *width, uint32_t *height, uint64_t *presents)
+{
+    *image_index = s_last_present_image;
+    *width = s_last_present_w;
+    *height = s_last_present_h;
+    *presents = s_presents;
+}
+
 void rhi_take_block_times(int64_t *out, int n)
 {
     for (int i = 0; i < n && i < RHI_BLOCK_PHASE_COUNT; i++) {
@@ -5184,6 +5209,7 @@ void rhi_end_frame(rhi_device *dev)
     };
     Uint64 pres_t0 = SDL_GetTicksNS();
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    note_present(dev);
     pxt_present(dev, NULL, pr, dev->off_image);
     if (dev->has_present_timing && pr >= 0) {
         dev->present_id_submitted = this_id;
@@ -5353,6 +5379,7 @@ bool rhi_present_stage_submit(rhi_device *dev, int stage)
     };
     Uint64 pres_t0 = SDL_GetTicksNS();
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    note_present(dev);
     pxt_present(dev, NULL, pr, dev->stage_image[stage]);
     if (dev->has_present_timing && pr >= 0) {
         dev->present_id_submitted = this_id;

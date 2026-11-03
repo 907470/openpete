@@ -9,10 +9,13 @@
 #include "openpete_host_input.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"   /* refusal counters for the present recorder */
+#include "openpete_interp.h"          /* present-detail interpolation mode */
+#include "openpete_interp_objs.h"     /* present-detail tick stamp */
 #include "rhi.h"                      /* block-time phases */
 
 #include <SDL3/SDL.h>
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,7 +75,40 @@ const int64_t openpete_pace_hist_edges_ns[OP_PACE_HIST_BUCKETS] = {
     0           /* unbounded                                              */
 };
 
+/* The always-on ring: the newest PACE_RING_RECORDS records, kept whether or
+ * not a log file is open, so a bug report carries the last 30 s of pacing.
+ * Written by pace_emit under s_lock beside the file buffer; read under
+ * s_lock by openpete_pace_ring_image. */
+static pace_rec_t*  s_ring;
+static uint64_t     s_ring_n;          /* records appended */
+static uint64_t     s_ring_young_lost; /* overwritten while inside the window */
+static _Atomic int  s_ring_on;
+static char*        s_ring_env;
+static unsigned     s_ring_env_bytes;
+static int64_t      s_ring_created_unix_ns;
+static int64_t      s_ring_epoch_ns;
+
 int openpete_pace_log_active(void) { return s_fp != NULL; }
+
+/** @brief Return whether any sink takes records: the log file or the ring. */
+static int pace_sink_on(void)
+{
+    return s_fp != NULL || atomic_load_explicit(&s_ring_on, memory_order_relaxed);
+}
+
+/** @brief Store one record in the ring over its oldest; the caller holds the writer lock.
+ *
+ * An overwritten record younger than OP_PACE_RING_WINDOW_NS against the new
+ * one is counted in s_ring_young_lost: the ring then holds less than the
+ * window. */
+static void ring_put_locked(const pace_rec_t* r)
+{
+    pace_rec_t* slot = &s_ring[s_ring_n % OP_PACE_RING_RECORDS];
+    if (s_ring_n >= OP_PACE_RING_RECORDS && r->t_ns - slot->t_ns < OP_PACE_RING_WINDOW_NS)
+        s_ring_young_lost++;
+    *slot = *r;
+    s_ring_n++;
+}
 
 /** @brief Write the buffered records to the log file and empty the buffer; the caller holds the writer lock.
  *
@@ -114,20 +150,129 @@ static void census_unlock(void)
     SDL_UnlockMutex(openpete_mutex_once(&s_census_lock));
 }
 
-/** @brief Append one record to the write buffer, flushing when it fills.
+/** @brief Append one record to the ring and to the file's write buffer, flushing the buffer when it fills.
  *
- * Does nothing when no log file is open. The check is repeated under the
- * writer lock because a close on another thread can clear the file between
- * the first test and the lock. */
+ * Does nothing when neither the ring is armed nor a log file is open. The
+ * file check is repeated under the writer lock because a close on another
+ * thread can clear the file between the first test and the lock. */
 static void pace_emit(const pace_rec_t* r)
 {
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     SDL_LockMutex(s_lock);
+    if (s_ring) ring_put_locked(r);
     if (s_fp) {                 /* re-check: close() may have won the race */
         s_buf[s_buf_n++] = *r;
         if (s_buf_n == PACE_BUF_RECORDS) pace_flush_locked();
     }
     SDL_UnlockMutex(s_lock);
+}
+
+/** @brief Write the fixed 64-byte file header into hdr.
+ *
+ * @param hdr Receives OP_PACE_HEADER_FIXED bytes.
+ * @param env_bytes Bytes of the environment block that follows.
+ * @param created_unix_ns Wall-clock creation time, ns since the Unix epoch.
+ * @param epoch_ns The op_now() instant the log's timestamps are read against. */
+static void pace_header_fill(uint8_t hdr[OP_PACE_HEADER_FIXED], unsigned env_bytes,
+                             int64_t created_unix_ns, int64_t epoch_ns)
+{
+    memset(hdr, 0, OP_PACE_HEADER_FIXED);
+    uint32_t u32;
+    int64_t  i64;
+    unsigned o = 0;
+#define PUT32(v) do { u32 = (uint32_t)(v); memcpy(hdr + o, &u32, 4); o += 4; } while (0)
+#define PUT64(v) do { i64 = (int64_t)(v);  memcpy(hdr + o, &i64, 8); o += 8; } while (0)
+    PUT32(OP_PACE_MAGIC);
+    PUT32(OP_PACE_VERSION);
+    PUT32(OP_PACE_HEADER_FIXED + env_bytes);
+    PUT32(OP_PACE_RECORD_BYTES);
+    PUT32(env_bytes);
+    PUT32(0);
+    PUT64(created_unix_ns);
+    PUT64(epoch_ns);
+    PUT64(OP_VBL_HZ_NUM);
+    PUT64(OP_VBL_HZ_DEN);
+    PUT64(OP_TICK_VBLS);
+#undef PUT32
+#undef PUT64
+}
+
+int openpete_pace_ring_arm(const char* env)
+{
+    if (atomic_load_explicit(&s_ring_on, memory_order_acquire)) return 0;
+    const char* off = getenv("OPENPETE_PACE_RING");
+    if (off && *off == '0') {
+        OPL_INFO_F("pace", "%s", "OPENPETE_PACE_RING=0: no pace ring");
+        return -1;
+    }
+    if (!s_lock) s_lock = SDL_CreateMutex();
+    pace_rec_t* ring = s_lock ? calloc(OP_PACE_RING_RECORDS, sizeof *ring) : NULL;
+    const size_t env_bytes = env ? strlen(env) : 0u;
+    char* env_copy = ring ? malloc(env_bytes + 1u) : NULL;
+    if (!env_copy) {
+        free(ring);
+        OPL_ERROR_F("pace", "%s", "pace ring allocation failed; no pace ring");
+        return -1;
+    }
+    if (env_bytes) memcpy(env_copy, env, env_bytes);
+    env_copy[env_bytes] = '\0';
+    SDL_Time wall_ns = 0;
+    SDL_GetCurrentTime(&wall_ns);
+    SDL_LockMutex(s_lock);
+    s_ring = ring;
+    s_ring_env = env_copy;
+    s_ring_env_bytes = (unsigned)env_bytes;
+    s_ring_created_unix_ns = (int64_t)wall_ns;
+    s_ring_epoch_ns = op_now();
+    SDL_UnlockMutex(s_lock);
+    if (!s_fp) s_next_clocksample_ns = op_now();
+    atomic_store_explicit(&s_ring_on, 1, memory_order_release);
+    return 0;
+}
+
+int openpete_pace_ring_image(int64_t window_ns, void** out, size_t* len, size_t* records)
+{
+    *out = NULL; *len = 0;
+    if (records) *records = 0;
+    if (!atomic_load_explicit(&s_ring_on, memory_order_acquire)) return -1;
+    const size_t cap = OP_PACE_HEADER_FIXED + (size_t)s_ring_env_bytes +
+                       (size_t)OP_PACE_RING_RECORDS * sizeof(pace_rec_t);
+    uint8_t* img = malloc(cap);
+    if (!img) return -1;
+    pace_header_fill(img, s_ring_env_bytes, s_ring_created_unix_ns, s_ring_epoch_ns);
+    memcpy(img + OP_PACE_HEADER_FIXED, s_ring_env, s_ring_env_bytes);
+    pace_rec_t* dst = (pace_rec_t*)(void*)(img + OP_PACE_HEADER_FIXED + s_ring_env_bytes);
+    size_t n = 0;
+    SDL_LockMutex(s_lock);
+    const uint64_t held = s_ring_n < OP_PACE_RING_RECORDS ? s_ring_n : OP_PACE_RING_RECORDS;
+    const int64_t cutoff = window_ns > 0 ? (int64_t)op_now() - window_ns : INT64_MIN;
+    for (uint64_t k = s_ring_n - held; k < s_ring_n; k++) {
+        const pace_rec_t* r = &s_ring[k % OP_PACE_RING_RECORDS];
+        if (r->t_ns >= cutoff) memcpy(&dst[n++], r, sizeof *r);
+    }
+    SDL_UnlockMutex(s_lock);
+    *out = img;
+    *len = OP_PACE_HEADER_FIXED + (size_t)s_ring_env_bytes + n * sizeof(pace_rec_t);
+    if (records) *records = n;
+    return 0;
+}
+
+void openpete_pace_ring_counts(openpete_pace_ring_counts_t* out)
+{
+    memset(out, 0, sizeof *out);
+    if (!atomic_load_explicit(&s_ring_on, memory_order_acquire)) return;
+    SDL_LockMutex(s_lock);
+    out->appended = s_ring_n;
+    out->held = s_ring_n < OP_PACE_RING_RECORDS ? s_ring_n : OP_PACE_RING_RECORDS;
+    out->overwritten = s_ring_n - out->held;
+    out->young_lost = s_ring_young_lost;
+    if (out->held) {
+        const pace_rec_t* oldest = &s_ring[(s_ring_n - out->held) % OP_PACE_RING_RECORDS];
+        const pace_rec_t* newest = &s_ring[(s_ring_n - 1u) % OP_PACE_RING_RECORDS];
+        out->span_ns = newest->t_ns - oldest->t_ns;
+    }
+    SDL_UnlockMutex(s_lock);
+    out->bytes = (size_t)OP_PACE_RING_RECORDS * sizeof(pace_rec_t) + s_ring_env_bytes;
 }
 
 int openpete_pace_log_open(const char* path, const char* env)
@@ -147,25 +292,7 @@ int openpete_pace_log_open(const char* path, const char* env)
     const int64_t created_unix_ns = (int64_t)wall_ns;
 
     uint8_t hdr[OP_PACE_HEADER_FIXED];
-    memset(hdr, 0, sizeof(hdr));
-    uint32_t u32;
-    int64_t  i64;
-    unsigned o = 0;
-#define PUT32(v) do { u32 = (uint32_t)(v); memcpy(hdr + o, &u32, 4); o += 4; } while (0)
-#define PUT64(v) do { i64 = (int64_t)(v);  memcpy(hdr + o, &i64, 8); o += 8; } while (0)
-    PUT32(OP_PACE_MAGIC);
-    PUT32(OP_PACE_VERSION);
-    PUT32(OP_PACE_HEADER_FIXED + env_bytes);
-    PUT32(OP_PACE_RECORD_BYTES);
-    PUT32(env_bytes);
-    PUT32(0);
-    PUT64(created_unix_ns);
-    PUT64(op_now());
-    PUT64(OP_VBL_HZ_NUM);
-    PUT64(OP_VBL_HZ_DEN);
-    PUT64(OP_TICK_VBLS);
-#undef PUT32
-#undef PUT64
+    pace_header_fill(hdr, env_bytes, created_unix_ns, op_now());
 
     if (fwrite(hdr, 1, sizeof(hdr), fp) != sizeof(hdr) ||
         (env_bytes && fwrite(env, 1, env_bytes, fp) != env_bytes)) {
@@ -370,10 +497,10 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
  * caller_ns only decides whether a sample is due; both clocks are read back
  * to back inside the call, because pairing the caller's older timestamp with
  * a fresh wall read would add a load-dependent offset indistinguishable
- * from the drift the record exists to measure. No-op without an open log. */
+ * from the drift the record exists to measure. No-op without a sink. */
 static void maybe_clocksample(int64_t caller_ns)
 {
-    if (!s_fp || caller_ns < s_next_clocksample_ns) return;
+    if (!pace_sink_on() || caller_ns < s_next_clocksample_ns) return;
     s_next_clocksample_ns = caller_ns + PACE_CLOCKSAMPLE_PERIOD_NS;
 
     /* The pair the analyzer's host-clock check needs: the monotonic source
@@ -454,7 +581,7 @@ void openpete_pace_pad_read(void)
          * result, and measuring its offset would place it in a period it
          * never ran in. Recorded, so it is visible, and excluded. */
         s_census.pad_reads_unattributed++;
-        if (!s_fp) return;
+        if (!pace_sink_on()) return;
         pace_rec_t ur = {0};
         ur.type  = OP_PACE_PAD_READ;
         ur.flags = OP_PACE_PR_UNATTRIBUTED;
@@ -484,7 +611,7 @@ void openpete_pace_pad_read(void)
         }
     }
 
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_PAD_READ;
     r.aux   = (uint16_t)(n > 0xFFFFu ? 0xFFFFu : n);
@@ -559,7 +686,7 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
      * the always-on numbers describe a different rule from the recorded ones. */
     s_vbl_bracket_open = 0;
 
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_VBL;
     r.flags = flags;
@@ -611,51 +738,22 @@ double openpete_pace_last_alpha(void)
 }
 int openpete_pace_last_alpha_paired(void) { return s_next_alpha_paired; }
 
-/* Refusals since the last call become SHED records; see openpete_pace_log.h. */
-void openpete_pace_record_present(uint8_t kind, double alpha, int paired)
-{
-    int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
-    rhi_take_block_times(blk, RHI_BLOCK_PHASE_COUNT);
-    const int64_t now_ns = op_now();
-    /* A present ATTEMPT that the swapchain refused is a shed, not a present.
-     * Three refusal paths exist (fence, acquire budget, acquire back-off);
-     * every one is reported, or the display rate reads as full while the
-     * user watches half of it. */
-    static uint64_t s_prev_fence_sheds, s_prev_acq_sheds;
-    const uint64_t fence_sheds = openpete_native_render_fence_sheds();
-    const uint64_t acq_sheds   = openpete_native_render_acquire_sheds();
-    if (fence_sheds != s_prev_fence_sheds || acq_sheds != s_prev_acq_sheds) {
-        const uint64_t nf = fence_sheds - s_prev_fence_sheds;
-        const uint64_t na = acq_sheds - s_prev_acq_sheds;
-        s_prev_fence_sheds = fence_sheds;
-        s_prev_acq_sheds   = acq_sheds;
-        for (uint64_t i = 0; i < nf; i++)
-            openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY, blk[RHI_BLOCK_FENCE], 0);
-        for (uint64_t i = 0; i < na; i++)
-            openpete_pace_shed(kind, PACE_SHED_NO_IMAGE, blk[RHI_BLOCK_ACQUIRE], 0);
-        return;
-    }
-    openpete_pace_present_alpha(kind, now_ns, blk[RHI_BLOCK_FENCE], blk[RHI_BLOCK_ACQUIRE],
-                                blk[RHI_BLOCK_PRESENT], blk[RHI_BLOCK_RECREATE],
-                                (int64_t)(alpha * 1e6), paired);
-}
-
-void openpete_pace_present(uint8_t kind, int64_t done_ns,
-                           int64_t fence_block_ns, int64_t acquire_block_ns,
-                           int64_t queue_present_block_ns,
-                           int64_t recreate_block_ns)
-{
-    openpete_pace_present_alpha(kind, done_ns, fence_block_ns, acquire_block_ns,
-                                queue_present_block_ns, recreate_block_ns,
-                                s_next_alpha_micro, s_next_alpha_paired);
-}
-
-/* The alpha is an argument so a present on another thread logs its own scene's alpha. */
-void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
-                                 int64_t fence_block_ns, int64_t acquire_block_ns,
-                                 int64_t queue_present_block_ns,
-                                 int64_t recreate_block_ns,
-                                 int64_t alpha_micro, int paired)
+/** @brief Count one present in the census and write its PRESENT record; openpete_pace_present_alpha's body.
+ *
+ * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT.
+ * @param done_ns When the present path returned.
+ * @param fence_block_ns Time blocked on the frame fence.
+ * @param acquire_block_ns Time blocked acquiring a swapchain image.
+ * @param queue_present_block_ns Time blocked in the queue present.
+ * @param recreate_block_ns Time spent rebuilding the swapchain.
+ * @param alpha_micro Alpha the image showed, in 1e-6 of a tick.
+ * @param paired 0 when the image had no prev/curr pair.
+ * @return The present's sequence number, the PRESENT record's index. */
+static uint32_t present_record(uint8_t kind, int64_t done_ns,
+                               int64_t fence_block_ns, int64_t acquire_block_ns,
+                               int64_t queue_present_block_ns,
+                               int64_t recreate_block_ns,
+                               int64_t alpha_micro, int paired)
 {
     census_lock();
     s_census.presents[kind <= OP_PACE_REPEAT ? kind : 0]++;
@@ -681,7 +779,7 @@ void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
     s_prev_present_ns = done_ns;
     const uint32_t seq = s_present_seq++;
     census_unlock();
-    if (!s_fp) return;
+    if (!pace_sink_on()) return seq;
     pace_rec_t r = {0};
     r.type  = OP_PACE_PRESENT;
     r.flags = kind;
@@ -695,13 +793,99 @@ void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
     r.e = alpha_micro;
     r.f = paired;
     pace_emit(&r);
+    return seq;
+}
+
+/** @brief Write the PRESENT_DETAIL record of the present just recorded as seq.
+ *
+ * Read on the thread that presented, right after the present: the RHI's
+ * last-present statics are written only by the display owner. The
+ * interpolation mode is the OP_PACE_PD_* bits; the tick stamp and the
+ * present-clock instant are the interpolation module's.
+ * @param kind The present's kind.
+ * @param done_ns The PRESENT record's t_ns.
+ * @param seq The PRESENT record's index.
+ * @param paired The PRESENT record's paired flag. */
+static void present_detail(uint8_t kind, int64_t done_ns, uint32_t seq, int paired)
+{
+    if (!pace_sink_on()) return;
+    uint32_t image = 0, w = 0, h = 0;
+    uint64_t presents = 0;
+    rhi_last_present(&image, &w, &h, &presents);
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_PRESENT_DETAIL;
+    r.flags = (uint8_t)((openpete_interp_enabled() ? OP_PACE_PD_INTERP : 0u) |
+                        (openpete_present_thread_active() ? OP_PACE_PD_EAGER : 0u) |
+                        (openpete_interp_deterministic() ? OP_PACE_PD_DETERMINISTIC : 0u) |
+                        (paired ? OP_PACE_PD_PAIRED : 0u));
+    r.aux   = kind;
+    r.index = seq;
+    r.t_ns  = done_ns;
+    r.a = image == UINT32_MAX ? -1 : (int64_t)image;
+    r.b = (int64_t)w;
+    r.c = (int64_t)h;
+    r.d = (int64_t)openpete_interp_tick_stamp();
+    r.e = (int64_t)openpete_interp_present_now();
+    r.f = (int64_t)presents;
+    pace_emit(&r);
+}
+
+/* Refusals since the last call become SHED records; see openpete_pace_log.h. */
+void openpete_pace_record_present(uint8_t kind, double alpha, int paired)
+{
+    int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
+    rhi_take_block_times(blk, RHI_BLOCK_PHASE_COUNT);
+    const int64_t now_ns = op_now();
+    /* A present ATTEMPT that the swapchain refused is a shed, not a present.
+     * Three refusal paths exist (fence, acquire budget, acquire back-off);
+     * every one is reported, or the display rate reads as full while the
+     * user watches half of it. */
+    static uint64_t s_prev_fence_sheds, s_prev_acq_sheds;
+    const uint64_t fence_sheds = openpete_native_render_fence_sheds();
+    const uint64_t acq_sheds   = openpete_native_render_acquire_sheds();
+    if (fence_sheds != s_prev_fence_sheds || acq_sheds != s_prev_acq_sheds) {
+        const uint64_t nf = fence_sheds - s_prev_fence_sheds;
+        const uint64_t na = acq_sheds - s_prev_acq_sheds;
+        s_prev_fence_sheds = fence_sheds;
+        s_prev_acq_sheds   = acq_sheds;
+        for (uint64_t i = 0; i < nf; i++)
+            openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY, blk[RHI_BLOCK_FENCE], 0);
+        for (uint64_t i = 0; i < na; i++)
+            openpete_pace_shed(kind, PACE_SHED_NO_IMAGE, blk[RHI_BLOCK_ACQUIRE], 0);
+        return;
+    }
+    const uint32_t seq = present_record(kind, now_ns, blk[RHI_BLOCK_FENCE], blk[RHI_BLOCK_ACQUIRE],
+                                        blk[RHI_BLOCK_PRESENT], blk[RHI_BLOCK_RECREATE],
+                                        (int64_t)(alpha * 1e6), paired);
+    present_detail(kind, now_ns, seq, paired);
+}
+
+void openpete_pace_present(uint8_t kind, int64_t done_ns,
+                           int64_t fence_block_ns, int64_t acquire_block_ns,
+                           int64_t queue_present_block_ns,
+                           int64_t recreate_block_ns)
+{
+    openpete_pace_present_alpha(kind, done_ns, fence_block_ns, acquire_block_ns,
+                                queue_present_block_ns, recreate_block_ns,
+                                s_next_alpha_micro, s_next_alpha_paired);
+}
+
+/* The alpha is an argument so a present on another thread logs its own scene's alpha. */
+void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
+                                 int64_t fence_block_ns, int64_t acquire_block_ns,
+                                 int64_t queue_present_block_ns,
+                                 int64_t recreate_block_ns,
+                                 int64_t alpha_micro, int paired)
+{
+    (void)present_record(kind, done_ns, fence_block_ns, acquire_block_ns,
+                         queue_present_block_ns, recreate_block_ns, alpha_micro, paired);
 }
 
 void openpete_pace_shed(uint8_t kind, uint16_t reason,
                         int64_t predicted_cost_ns, int64_t deadline_margin_ns)
 {
     s_census.sheds++;
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_SHED;
     r.flags = kind;
@@ -713,7 +897,7 @@ void openpete_pace_shed(uint8_t kind, uint16_t reason,
 
 void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset)
 {
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type = OP_PACE_CD_MISS;
     r.t_ns = op_now();
@@ -723,7 +907,7 @@ void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset)
 
 void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns)
 {
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_FLIP;
     r.index = (uint32_t)id;
@@ -741,7 +925,7 @@ void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns)
     const unsigned k = (kind == OP_PACE_SLIP_RENDER) ? 1u : 0u;
     s_census.slip_events[k]++;
     s_census.slip_periods[k] += (uint64_t)(periods > 0 ? periods : 0);
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_SLIP;
     r.flags = kind;
@@ -754,7 +938,7 @@ void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
                               uint16_t bits_delta, int analog_delta)
 {
     s_census.input_edges++;
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_INPUT_EDGE;
     r.flags = analog_delta ? 1u : 0u;
@@ -780,7 +964,7 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns)
     if (behind > s_census.wake_behind_max_ns)
         s_census.wake_behind_max_ns = behind;
     s_census.wakes++;
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_WAKE;
     r.t_ns  = wake_ns;
@@ -793,7 +977,7 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns)
 void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
                                 int64_t end_ns, int64_t extract_ns)
 {
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_PRESENT_SPAN;
     r.flags = kind;
@@ -863,8 +1047,8 @@ void openpete_pace_host_pump(int64_t start_ns, int64_t wait_end_ns,
     if (active > s_win_active_max_ns) s_win_active_max_ns = active;
     if (pump > s_win_pump_max_ns) s_win_pump_max_ns = pump;
 
-    if (!s_fp) {
-        /* No log file: the window accumulators would grow without ever being
+    if (!pace_sink_on()) {
+        /* No sink: the window accumulators would grow without ever being
          * emitted, and their max would then describe the whole run rather than
          * a window. The census above already carries the always-on half. */
         if (end_ns - s_win_start_ns >= PACE_HOST_PUMP_WINDOW_NS) {
@@ -916,7 +1100,7 @@ void openpete_pace_host_pump(int64_t start_ns, int64_t wait_end_ns,
 
 void openpete_pace_window(uint16_t id, int begin)
 {
-    if (!s_fp) return;
+    if (!pace_sink_on()) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_WINDOW;
     r.flags = begin ? 1u : 0u;

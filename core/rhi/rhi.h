@@ -547,6 +547,15 @@ enum { RHI_BLOCK_FENCE = 0, RHI_BLOCK_ACQUIRE, RHI_BLOCK_PRESENT,
  * @param out Receives one value per phase, indexed by the RHI_BLOCK_* enum.
  * @param n Entries of @p out; at most RHI_BLOCK_PHASE_COUNT are filled. */
 void rhi_take_block_times(int64_t *out, int n);
+/** @brief Read the swapchain image index and extent of the last game present and the presents made so far.
+ *
+ * Written at each vkQueuePresentKHR of a frame or a stage (the release of
+ * an unused stage image is not counted). Read on the presenting thread.
+ * @param image_index Receives the image index, UINT32_MAX before the first present.
+ * @param width Receives the swapchain width at that present.
+ * @param height Receives the swapchain height at that present.
+ * @param presents Receives the count of presents. */
+void rhi_last_present(uint32_t *image_index, uint32_t *width, uint32_t *height, uint64_t *presents);
 
 /** @brief Return the number of presents skipped because a fence had not retired.
  *

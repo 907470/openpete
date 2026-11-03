@@ -28,12 +28,16 @@ RECORD_BYTES = 64
 RECORD_LAYOUT = {48: ("<BBHIqqqqq", 1), 64: ("<BBHIqqqqqqq", 2)}
 
 (VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE, WAKE,
- PRESENT_SPAN, PAD_READ, FLIP, CD_MISS, HOST_PUMP) = range(1, 14)
+ PRESENT_SPAN, PAD_READ, FLIP, CD_MISS, HOST_PUMP, PRESENT_DETAIL) = range(1, 15)
 TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               INPUT_EDGE: "INPUT_EDGE", WINDOW: "WINDOW",
               CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE",
               PRESENT_SPAN: "PRESENT_SPAN", PAD_READ: "PAD_READ",
-              FLIP: "FLIP", CD_MISS: "CD_MISS", HOST_PUMP: "HOST_PUMP"}
+              FLIP: "FLIP", CD_MISS: "CD_MISS", HOST_PUMP: "HOST_PUMP",
+              PRESENT_DETAIL: "PRESENT_DETAIL"}
+
+# PRESENT_DETAIL flags: the interpolation mode of the present.
+PD_INTERP, PD_EAGER, PD_DETERMINISTIC, PD_PAIRED = 1, 2, 4, 8
 
 # HOST_PUMP flags. A summary record aggregates one reporting window; the rest
 # are single iterations that crossed the record floor. The two shapes share a
@@ -452,6 +456,13 @@ def fmt_record(r, epoch_ns):
                 f"os {r.b/1e3:+.1f}us behind {r.c/1e3:+.1f}us")
     if r.type == CLOCKSAMPLE:
         return f"{t:10.4f} CLOCK   mono {r.a} wall {r.b}"
+    if r.type == PRESENT_DETAIL:
+        mode = "+".join(n for b, n in ((PD_INTERP, "interp"), (PD_EAGER, "eager"),
+                                       (PD_DETERMINISTIC, "det"), (PD_PAIRED, "paired"))
+                        if r.flags & b) or "none"
+        return (f"{t:10.4f} DETAIL  #{r.index:<7} image {r.a} {r.b}x{r.c} "
+                f"tick {(r.d - epoch_ns)/1e9:.6f}s now {(r.e - epoch_ns)/1e9:.6f}s "
+                f"mode {mode} presents {r.f}")
     if r.type == SHED:
         return (f"{t:10.4f} SHED    kind {r.flags} reason {r.aux} "
                 f"cost {r.a/1e6:.2f} ms margin {r.b/1e6:.2f} ms")
