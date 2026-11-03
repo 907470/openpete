@@ -4,7 +4,7 @@ shape pass's corner profile: one case per ctest test of the label `launcher`, be
 check_launcher.py (whose launch helper, virtual display and scratch data root every case uses).
 
 Cases:
-  corner    T4: the corner profile of every panel and chip in a launcher shot over a flat white
+  corner    the corner profile of every panel and chip in a launcher shot over a flat white
             clear (OPENPETE_LAUNCHER_CLEAR=255,255,255) against the analytic quarter ellipse, by the
             bench's check_corner.py method applied to the launcher's PNG. The run is
             check_launcher_shapes.py's seeded pick (one Spyro 1 entry, the shader compile forced),
@@ -13,11 +13,11 @@ Cases:
             (OPENPETE_LAUNCHER_SHADOW=0) off, so a pixel inside a box's corner square is the clear
             blended with (8,8,8) at the box's coverage. Per corner row (rows whose centre is past the straight edge's ramp) the
             measured inset is the box's width at that row minus its integrated coverage, against
-            the ellipse of the box's radii (D11's 22.8 x 18.4 layout px, scaled down together to
+            the ellipse of the box's radii (22.8 x 18.4 layout px, scaled down together to
             fit, as the shape pass does). PASS when every row of every corner is within
             CORNER_BOUND px and the same rows against a circle of the vertical radius exceed it
             (the instrument resolves the corner's aspect).
-  progress  T6: a first boot's bar position against elapsed time. A windowed drop of Spyro 1's disc
+  progress  a first boot's bar position against elapsed time. A windowed drop of Spyro 1's disc
             on an empty library (OPENPETE_LAUNCHER_DROP) logs each change of the bar's whole percent
             or stage (OPENPETE_LAUNCHER_PROGRESS_LOG: "progress bar: F at T s (STAGE d/t)"); the
             first-boot stages (copy, read, translate, build, link) span t0..t1, the first and last
@@ -57,13 +57,13 @@ import check_launcher as cl  # noqa: E402
 import check_launcher_flow as flow  # noqa: E402
 
 LAYOUT_W, LAYOUT_H = 640.0, 448.0
-PANEL_RX, PANEL_RY = 22.8, 18.4      # D11, layout px
+PANEL_RX, PANEL_RY = 22.8, 18.4      # the panels' corner radii, layout px
 EDGE_AA = 1.5                        # the shape pass's coverage ramp, framebuffer px
 CORNER_BOUND = 0.15                  # px: the bench measures 0.12 on its own panel, this pass 0.107
 BOX = 8
 CHIP_ALPHA = 0.5
 PROGRESS_BAND = 0.10                 # the weights' worst deviation over the timing runs is 0.073
-# Other busy cores over the run above which T6 skips: the compile step's 16 workers share the host, so
+# Other busy cores over the run above which the progress case skips: the compile step's 16 workers share the host, so
 # its units stretch unevenly and the deviation grows with the load (0.104-0.111 at 1.4-1.8 other cores,
 # 0.089-0.173 at 2.5-7).
 PROGRESS_MAX_OTHERS = 3.0
@@ -121,7 +121,7 @@ def corner_rows(px, size, rect, rx, ry, bg, inside, flip_x, flip_y):
 
 
 def case_corner(a):
-    """T4's corner profile of the launcher's boxes over a flat clear."""
+    """Check the corner profile of the launcher's boxes over a flat clear."""
     from PIL import Image
     d = cl.case_dir(a.out, "corner")
     cl.seed_library(d)
@@ -185,7 +185,7 @@ def deviations(pts, t0, t1):
 
 
 def case_progress(a):
-    """T6: a first boot's bar position against elapsed time stays within the band of linear."""
+    """Check that a first boot's bar position against elapsed time stays within the band of linear."""
     flow.need_first_boot(a)
     d = cl.case_dir(a.out, "progress")
     env = {"OPENPETE_LAUNCHER_DROP": flow.disc_cue("spyro-1"), "OPENPETE_LAUNCHER_PROGRESS_LOG": "1",
@@ -250,7 +250,7 @@ def near(v, want, tol=1.0):
 
 
 def chip_rects(m, w, h, bad, shader_detail):
-    """Check the corner chips' rects in a manifest against D15 and D16."""
+    """Check the corner chips' rects in a manifest against their layout places."""
     sc = layout_scale(w, h)
     sky, skyp = item(m, "status.skybox"), item(m, "status.skybox.panel")
     if not sky or not skyp:
@@ -280,7 +280,7 @@ def chip_rects(m, w, h, bad, shader_detail):
 
 
 def case_chips(a):
-    """D15, D16 and D28: the corner chips' places and texts on the game page, and the level chip's click."""
+    """Check the corner chips' places and texts on the game page, and the level chip's click."""
     d = cl.case_dir(a.out, "chips")
     flow.seed_entry(d, "spyro-1", 1)
     rc, _ = flow.nox(a, d, "cache", ["--game", "spyro-1", "--frame-limit", "1"])

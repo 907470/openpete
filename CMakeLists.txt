@@ -1757,8 +1757,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
         endforeach()
         # The launcher's corner chips, the progress view's weighted bar and the
-        # shapes' corner profile (tests/harness/check_launcher_chips.py): T4 on
-        # a flat clear, T6 over a first boot (a *-launcher build; SKIP
+        # shapes' corner profile (tests/harness/check_launcher_chips.py): the
+        # corner profile on a flat clear, the bar over a first boot (a *-launcher build; SKIP
         # otherwise), and the chips' places, texts and the level chip's click.
         foreach(_launcher_case corner progress chips)
             add_test(NAME launcher_chips_${_launcher_case}
