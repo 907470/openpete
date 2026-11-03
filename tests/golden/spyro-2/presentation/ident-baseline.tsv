@@ -6,7 +6,7 @@
 # device: llvmpipe (LLVM 15.0.7, 256 bits)
 # compiler: gcc-11 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
 # preset: linux-release-container
-# image-digest: sha256:a80c943a87baa88c4451509308bc0859fac3696fb2f8d4e58ee0c2f319127ec9
+# image-digest: sha256:6e223a90cf8fe1c1241ff1f962ad780006f7e20762c21a921ced1d05f6b66d13
 # libvulkan: 1.3.204.1-2
 # disc-bin: b3fd9fdb24b115fee4583dbe3c36ab788fd8679fb4592dbec8736392dec64551 games/spyro-2/spyro-2/build/SCUS-94425.bin
 # disc-cue: 51448cef393383b175d88aa11b7173db710a66549bd8276d38a2ac9a5bc197eb games/spyro-2/spyro-2/build/SCUS-94425.cue
@@ -378,6 +378,22 @@ summer-forest-collect-orb__lodext__ident__1455-vk.png	0
 summer-forest-collect-orb__lodext__ident__1457-vk.png	0
 summer-forest-collect-orb__lodext__ident__1459-vk.png	0
 summer-forest-collect-orb__lodext__ident__1467-vk.png	0
+summer-forest-moneybags-fall__ident__1910-vk.png	0
+summer-forest-moneybags-fall__ident__1912-vk.png	0
+summer-forest-moneybags-fall__ident__1914-vk.png	0
+summer-forest-moneybags-fall__ident__1916-vk.png	0
+summer-forest-moneybags-fall__ident__1918-vk.png	0
+summer-forest-moneybags-fall__ident__1920-vk.png	0
+summer-forest-moneybags-fall__ident__1922-vk.png	0
+summer-forest-moneybags-fall__ident__1924-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1910-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1912-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1914-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1916-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1918-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1920-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1922-vk.png	0
+summer-forest-moneybags-fall__lodext__ident__1924-vk.png	0
 summer_forest-123737__ident__2473-vk.png	0
 summer_forest-123737__lodext__ident__2473-vk.png	0
 summer_forest-12609f__ident__2473-vk.png	0
