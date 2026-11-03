@@ -19,8 +19,9 @@ Subcommands:
       Writes every member under DIR and verifies each against the manifest.
   replay BUNDLE [--exe PATH] [--disc CUE] [--archive DIR] [--work DIR]
                 [--timeout S] [--dry-run] [-- EXTRA...]
-      Runs the route `info` names: the archived artifact whose exe SHA-256
-      the manifest names, when the release archive holds it, else
+      Runs the route `info` names: the archived artifact whose inner exe
+      SHA-256 (the archive's EXE-SHA256SUMS) the manifest names, unpacked
+      into the work directory, when the release archive holds it, else
       `--bug-report-replay` on the given or the repository's linux-release
       build. Prints the run's `bug-report-replay:` verdict line.
   diff-hashes A B
@@ -30,7 +31,8 @@ Subcommands:
 
 A bundle written at a fatal exit (manifest `trigger` other than `press`: the
 hang watchdog's `hang`, the CdSync spin guard's `cdsync-spin`) holds no
-press.state and no screen.png; its hang/ members are that run's dump.
+press.state and no screen.png; its hang/ members are that run's dump. Its
+replay compares hash rows only, to the last row of hashes.csv.
 
 Exit codes: 0 pass (verified, IDENTICAL), 1 a member fails its manifest
 hash or size, 2 DIVERGED, 3 VACUOUS (no rows compared, no verdict line),
@@ -44,6 +46,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import struct
 import subprocess
@@ -76,6 +79,9 @@ OPPL_LAYOUT = {48: "<BBHIqqqqq", 64: "<BBHIqqqqqqq"}
 PACE_VBL, PACE_PRESENT, PACE_SHED, PACE_SLIP = 1, 2, 3, 4
 PACE_REPEAT = 2
 PACE_WINDOW_S = 30.0
+
+# The tarfile extraction filter refusing links out of the tree, where the runtime has one.
+TAR_FILTER = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
 
 VERDICT_RE = re.compile(r"bug-report-replay:\s*(IDENTICAL|DIVERGED|REFUSED)\b.*")
 
@@ -468,8 +474,12 @@ def diff_hashes(a, b):
 # replay route
 
 def archive_dir(arg=None):
+    """The release archive root: --archive, else OPENPETE_RELEASE_ARCHIVE_DIR, else the XDG data default."""
     if arg:
         return Path(arg)
+    env = os.environ.get("OPENPETE_RELEASE_ARCHIVE_DIR")
+    if env:
+        return Path(env)
     base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
     return Path(base) / "openpete" / "release-archive"
 
@@ -482,54 +492,56 @@ def file_sha(p):
     return h.hexdigest()
 
 
+def parse_exe_sums(text):
+    """Parse EXE-SHA256SUMS lines, `<hex>  <artifact>:<path inside>`.
+
+    An artifact name holds no `:` or `/` and the inner path is relative
+    with no `..`; a line breaking either, or with a hex field that is not 64
+    hex digits, is skipped.
+    @return a list of (hex, artifact, inner path)."""
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"^([0-9A-Fa-f]{64}) [ *]([^:/\\]+):(.+)$", line.rstrip("\r"))
+        if not m or member_name_ok(m.group(3)):
+            continue
+        out.append((m.group(1).lower(), m.group(2), m.group(3)))
+    return out
+
+
+def artifact_kind(name):
+    if name.endswith(".AppImage"):
+        return "appimage"
+    if re.search(r"\.tar(\.(xz|gz|bz2))?$", name):
+        return "tarball"
+    if name.endswith(".zip"):
+        return "windows-zip"
+    return None
+
+
 def find_archived(man, arch):
     """Find the archived artifact holding the exe the manifest names.
 
-    Looks in <arch>/<build_version>-<build_commit>/ first, then every
-    directory of the archive. An artifact matches when its own SHA-256
-    (SHA256SUMS line or computed) equals the manifest's exe_sha256, or when
-    it is a tarball or zip holding an `openpete` / `openpete.exe` member of
-    that SHA-256.
-    @return (artifact path, member name or None, kind) or None."""
-    want = str(man.get("exe_sha256") or "")
+    The manifest's exe_sha256 is the hash of the running binary, the
+    executable inside the package (inside an AppImage, the inner binary), so
+    the lookup reads each archive directory's EXE-SHA256SUMS, which the
+    archive writes from the packager's sidecar. Looks in
+    <arch>/<build_version>-<build_commit>/ first, then every directory of
+    the archive.
+    @return (artifact path, path inside it, kind) or None."""
+    want = str(man.get("exe_sha256") or "").lower()
     if not want or not arch.is_dir():
         return None
     first = arch / f"{man.get('build_version', '')}-{man.get('build_commit', '')}"
     dirs = [first] if first.is_dir() else []
     dirs += sorted(d for d in arch.iterdir() if d.is_dir() and d != first)
     for d in dirs:
-        sums = {}
-        s = d / "SHA256SUMS"
-        if s.is_file():
-            for line in s.read_text("utf-8", "replace").splitlines():
-                parts = line.split()
-                if len(parts) >= 2:
-                    sums[parts[-1].lstrip("*")] = parts[0].lower()
-        for f in sorted(d.iterdir()):
-            if not f.is_file() or f.name == "SHA256SUMS":
-                continue
-            h = sums.get(f.name) or file_sha(f)
-            if h == want:
-                return f, None, "appimage" if f.name.endswith(".AppImage") else "exe"
-            if re.search(r"\.tar(\.(xz|gz|bz2))?$", f.name):
-                try:
-                    with tarfile.open(f) as t:
-                        for ti in t:
-                            if ti.isfile() and PurePosixPath(ti.name).name == "openpete":
-                                fo = t.extractfile(ti)
-                                if hashlib.sha256(fo.read()).hexdigest() == want:
-                                    return f, ti.name, "tarball"
-                except (tarfile.TarError, OSError):
-                    continue
-            elif f.name.endswith(".zip"):
-                try:
-                    with zipfile.ZipFile(f) as z:
-                        for zi in z.infolist():
-                            if PurePosixPath(zi.filename).name == "openpete.exe":
-                                if hashlib.sha256(z.read(zi)).hexdigest() == want:
-                                    return f, zi.filename, "windows-zip"
-                except (zipfile.BadZipFile, OSError):
-                    continue
+        s = d / "EXE-SHA256SUMS"
+        if not s.is_file():
+            continue
+        for h, art, inner in parse_exe_sums(s.read_text("utf-8", "replace")):
+            kind = artifact_kind(art)
+            if h == want and kind and (d / art).is_file():
+                return d / art, inner, kind
     return None
 
 
@@ -557,18 +569,22 @@ def replay_plan(b, exe=None, disc=None, arch=None, work=None):
     env = {}
     if man.get("module_march"):
         env["OPENPETE_MODULE_MARCH"] = str(man["module_march"])
-    plan = {"env": env, "disc": disc, "work": work, "archive": arch}
+    plan = {"env": env, "disc": disc, "work": work, "archive": arch,
+            "want_sha": str(man.get("exe_sha256") or "").lower()}
     if hit:
         art, member, kind = hit
-        plan.update(route="primary", artifact=art, kind=kind)
+        plan.update(route="primary", artifact=art, member=member, kind=kind)
         if kind == "tarball":
             plan["exe"] = work / "artifact" / member
-        elif kind == "windows-zip":
-            plan["exe"] = None
-            plan["note"] = (f"Windows artifact {art.name} ({member}): run it on the Windows host "
-                            f"with --bug-report-replay (LAW §V: the orchestrator drives it)")
+        elif kind == "appimage":
+            # --appimage-extract writes squashfs-root/ under the working
+            # directory; its AppRun sets the bundled library path and execs
+            # the inner binary, with no FUSE mount.
+            plan["exe"] = work / "artifact" / "squashfs-root" / "AppRun"
         else:
-            plan["exe"] = art
+            plan["exe"] = None
+            plan["note"] = (f"Windows artifact {art.name} ({member}), extracted to {work / 'artifact'}: "
+                            f"run {member} on the Windows host with --bug-report-replay")
     else:
         plan.update(route="fallback", exe=Path(exe).resolve() if exe else default_exe())
         here = None
@@ -745,7 +761,8 @@ def cmd_info(args):
         w("  " + line.strip()[:200])
     plan = replay_plan(b, arch=args.archive)
     if plan["route"] == "primary":
-        w(f"replay route: primary, archived artifact {plan['artifact']} ({plan['kind']})")
+        w(f"replay route: primary, archived artifact {plan['artifact']} ({plan['kind']}), "
+          f"exe {plan['member']} (EXE-SHA256SUMS)")
     else:
         w(f"replay route: fallback (--bug-report-replay on the current build): {plan['note']}")
     if not isinstance(an, dict):
@@ -812,6 +829,50 @@ def cmd_extract(args):
     return EXIT_MISMATCH if fails else EXIT_OK
 
 
+def unpack_artifact(plan):
+    """Unpack the primary route's artifact under <work>/artifact/ and check its exe's SHA-256.
+
+    A tarball is untarred (unsafe names, links and devices skipped), a
+    Windows zip unzipped (unsafe names skipped), an AppImage extracted
+    with its own `--appimage-extract`, which needs no FUSE.
+    @return None, or the reason the artifact cannot be used."""
+    art, kind, member = Path(plan["artifact"]), plan["kind"], plan["member"]
+    dest = Path(plan["work"]) / "artifact"
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    try:
+        if kind == "tarball":
+            with tarfile.open(art) as t:
+                for ti in t:
+                    if member_name_ok(ti.name) or not (ti.isfile() or ti.isdir()):
+                        continue
+                    t.extract(ti, dest, **TAR_FILTER)
+        elif kind == "windows-zip":
+            with zipfile.ZipFile(art) as z:
+                for zi in z.infolist():
+                    if not member_name_ok(zi.filename):
+                        z.extract(zi, dest)
+        elif kind == "appimage":
+            img = dest / art.name
+            shutil.copyfile(art, img)
+            img.chmod(0o755)
+            r = subprocess.run([str(img), "--appimage-extract"], cwd=dest, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, timeout=600)
+            img.unlink()
+            if r.returncode != 0:
+                return f"{art.name} --appimage-extract exit {r.returncode}: {r.stderr[-200:]!r}"
+    except (tarfile.TarError, zipfile.BadZipFile, OSError, subprocess.TimeoutExpired) as e:
+        return f"cannot unpack {art.name}: {e}"
+    exe = dest / ("squashfs-root" if kind == "appimage" else "") / member
+    if not exe.is_file():
+        return f"{art.name} holds no {member}"
+    got = file_sha(exe)
+    if got != str(plan.get("want_sha") or got):
+        return f"{art.name}:{member} SHA-256 {got[:16]} is not the manifest's {str(plan['want_sha'])[:16]}"
+    return None
+
+
 def cmd_replay(args):
     # wslenv-guard: no-launch (runs Linux executables only; a Windows artifact's command is printed, not run)
     b = Bundle(args.bundle)
@@ -826,7 +887,9 @@ def cmd_replay(args):
     plan = replay_plan(b, exe=args.exe, disc=args.disc, arch=args.archive, work=args.work)
     work = Path(plan["work"])
     print(f"route: {plan['route']}" + (f" ({plan['note']})" if plan.get("note") else ""))
-    if not plan.get("cmd"):
+    if plan["route"] == "primary":
+        print(f"artifact: {plan['artifact']} ({plan['kind']}), exe {plan['member']}")
+    if not plan.get("cmd") and not (plan["route"] == "primary" and not args.dry_run):
         print("no command runs on this host")
         return EXIT_REFUSED
     if not args.dry_run:
@@ -839,14 +902,14 @@ def cmd_replay(args):
             if fails:
                 print(f"refused: card member fails its hash: {fails}")
                 return EXIT_REFUSED
-        if plan.get("kind") == "tarball":
-            dest = work / "artifact"
-            dest.mkdir(parents=True, exist_ok=True)
-            with tarfile.open(plan["artifact"]) as t:
-                for ti in t:
-                    if member_name_ok(ti.name) or ti.issym() or ti.islnk() or ti.isdev():
-                        continue
-                    t.extract(ti, dest)
+        if plan["route"] == "primary":
+            why = unpack_artifact(plan)
+            if why:
+                print(f"refused: {why}")
+                return EXIT_REFUSED
+    if not plan.get("cmd"):
+        print("no command runs on this host")
+        return EXIT_REFUSED
     cmd = plan["cmd"] + list(args.extra or [])
     env = dict(os.environ)
     env.update(plan["env"])

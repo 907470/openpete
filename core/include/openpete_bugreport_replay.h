@@ -21,7 +21,11 @@
  * or cross-disc. The anchor loads at its park site on an empty CD queue
  * with the movie held until the load commits; every tick after it compares
  * the region-hash row with hashes.csv; at the press frame the state is
- * captured and compared with press.state section by section, and the
+ * captured and compared with press.state section by section. A bundle
+ * written at a fatal exit (manifest press null: the hang watchdog, the
+ * CdSync spin guard) holds no press.state: it replays to hashes.csv's
+ * last row, compares hash rows only and names the trigger on the verdict
+ * line (`sections=skipped fatal=<trigger>`). The
  * session ends with exit 0 (IDENTICAL), 2 (DIVERGED or VACUOUS) or 64
  * (refused). Nothing here stores into PSX RAM; the anchor load is the
  * savestate loader's.
@@ -65,7 +69,8 @@ int openpete_bugreport_replay_admit(const struct openpete_options* opts);
  * Called at every quiescent final yield after the handoff poll. Releases
  * the movie on the iteration the anchor load commits; at the first final
  * yield at or past the press frame captures the state, compares it with
- * press.state and requests the shutdown.
+ * press.state and requests the shutdown. A fatal bundle's end frame is
+ * its last hash row, where the shutdown is requested with no capture.
  * @param cpu The guest register file. */
 void openpete_bugreport_replay_step(const CPUState* cpu) OP_REQUIRES(sim);
 

@@ -26,8 +26,14 @@ trigger is named.
 
 Replay: the fallback route runs a stub executable (a script printing the
 flag's verdict line, not openpete) and passes its verdict and exit code
-through; an archive directory holding a tarball whose `openpete` member has
-the manifest's exe SHA-256 selects the primary route.
+through. Archive lookup: EXE-SHA256SUMS lines parse into (hash, artifact,
+inner path), malformed lines and unsafe names skipped; a tarball listed
+there with the manifest's exe SHA-256 selects the primary route and replay
+untars and runs its exe; an AppImage listed there (a stub answering
+`--appimage-extract`) is extracted and its AppRun runs; the same artifact
+with no EXE-SHA256SUMS line, or a listed hash its exe does not have, is not
+used; OPENPETE_RELEASE_ARCHIVE_DIR names the archive when --archive is
+absent.
 
 Run: python3 tests/harness/test_bugreport.py (exit 0 = every case passes).
 """
@@ -386,22 +392,113 @@ class Replay(Base):
         self.assertEqual(rc, 64)
         self.assertIn("no anchor", out)
 
+    def archive(self, kind="tarball", sums=True, listed=None):
+        """Write an archive directory as scripts/lib/release_archive.sh lays it out; @return its root."""
+        root = self.d / "archive"
+        d = root / "v0.5.0-test-abcdef123"
+        d.mkdir(parents=True)
+        exe_sha = listed or hashlib.sha256(EXE_BYTES).hexdigest()
+        if kind == "tarball":
+            name, inner = "openpete-v0.5.0-linux-x86_64.tar.xz", "openpete-v0.5.0/openpete"
+            with tarfile.open(d / name, "w:xz") as t:
+                ti = tarfile.TarInfo(inner)
+                ti.size = len(EXE_BYTES)
+                ti.mode = 0o755
+                t.addfile(ti, io.BytesIO(EXE_BYTES))
+        else:
+            # A stand-in AppImage: answers --appimage-extract by writing
+            # squashfs-root/ with the inner exe and an AppRun that execs it.
+            name, inner = "OpenPete-v0.5.0-x86_64.AppImage", "usr/openpete"
+            exe = EXE_BYTES.decode().replace("\n", "\\n")
+            (d / name).write_text(
+                "#!/bin/sh\n"
+                "# Stub AppImage for the reader's unit rows.\n"
+                "[ \"$1\" = --appimage-extract ] || exit 9\n"
+                "mkdir -p squashfs-root/usr\n"
+                f"printf '{exe}' > squashfs-root/usr/openpete\n"
+                "printf '#!/bin/sh\\necho \"apprun: $*\"\\necho \"  bug-report-replay: IDENTICAL rows=7 sections=skipped fatal=hang\"\\n' > squashfs-root/AppRun\n"
+                "chmod 755 squashfs-root/usr/openpete squashfs-root/AppRun\n")
+            (d / name).chmod(0o755)
+        (d / "SHA256SUMS").write_text(f"{file_sha(d / name)}  {name}\n")
+        if sums:
+            (d / "EXE-SHA256SUMS").write_text(f"{exe_sha}  {name}:{inner}\n")
+        return root
+
+    def test_exe_sums_parse(self):
+        good = "ab" * 32
+        text = (f"{good}  a.tar.xz:a/openpete\n"
+                f"{good.upper()}  OpenPete.AppImage:usr/openpete\r\n"
+                f"{good} *w.zip:openpete.exe\n"
+                "not-a-hash  a.tar.xz:a/openpete\n"
+                f"{good}  a.tar.xz\n"
+                f"{good}  a.tar.xz:../openpete\n"
+                f"{good}  a.tar.xz:/abs/openpete\n"
+                f"{good}  dir/a.tar.xz:openpete\n")
+        self.assertEqual(br.parse_exe_sums(text), [
+            (good, "a.tar.xz", "a/openpete"), (good, "OpenPete.AppImage", "usr/openpete"),
+            (good, "w.zip", "openpete.exe")])
+
     def test_primary_route_from_archive(self):
-        arch = self.d / "archive" / "v0.5.0-test-abcdef123"
-        arch.mkdir(parents=True)
-        with tarfile.open(arch / "openpete-v0.5.0-linux-x86_64.tar.xz", "w:xz") as t:
-            ti = tarfile.TarInfo("openpete-v0.5.0/openpete")
-            ti.size = len(EXE_BYTES)
-            ti.mode = 0o755
-            t.addfile(ti, io.BytesIO(EXE_BYTES))
+        arch = self.archive()
         z = write_bundle(self.d / "b.zip")
-        rc, out, err = run("info", z, "--archive", self.d / "archive")
+        rc, out, err = run("info", z, "--archive", arch)
         self.assertEqual(rc, 0, out + err)
         self.assertIn("replay route: primary", out)
-        self.assertIn("(tarball)", out)
-        rc, out, _ = run("replay", z, "--archive", self.d / "archive", "--work", self.d / "w", "--dry-run")
+        self.assertIn("openpete-v0.5.0-linux-x86_64.tar.xz (tarball), exe openpete-v0.5.0/openpete", out)
+        rc, out, _ = run("replay", z, "--archive", arch, "--work", self.d / "w", "--dry-run")
         self.assertEqual(rc, 0)
         self.assertIn(str(self.d / "w" / "artifact" / "openpete-v0.5.0" / "openpete"), out)
+
+    def test_primary_tarball_runs(self):
+        arch = self.archive()
+        z = write_bundle(self.d / "b.zip")
+        disc = self.d / "SCUS-94228.cue"
+        disc.write_text("x")
+        rc, out, err = run("replay", z, "--archive", arch, "--work", self.d / "w", "--disc", disc)
+        # The archived exe prints "archived" and no verdict line: VACUOUS, but it ran.
+        self.assertEqual(rc, 3, out + err)
+        self.assertIn("archived", (self.d / "w" / "replay.log").read_text())
+
+    def test_primary_appimage_extracts(self):
+        arch = self.archive(kind="appimage")
+        z = write_bundle(self.d / "b.zip")
+        rc, out, err = run("info", z, "--archive", arch)
+        self.assertIn("OpenPete-v0.5.0-x86_64.AppImage (appimage), exe usr/openpete", out)
+        disc = self.d / "SCUS-94228.cue"
+        disc.write_text("x")
+        rc, out, err = run("replay", z, "--archive", arch, "--work", self.d / "w", "--disc", disc)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("IDENTICAL rows=7 sections=skipped fatal=hang", out)
+        self.assertIn("apprun: --game spyro-1", (self.d / "w" / "replay.log").read_text())
+
+    def test_unlisted_artifact_not_used(self):
+        arch = self.archive(sums=False)
+        z = write_bundle(self.d / "b.zip")
+        rc, out, _ = run("info", z, "--archive", arch)
+        self.assertIn("replay route: fallback", out)
+
+    def test_listed_hash_mismatch_refused(self):
+        # The listed hash is the manifest's, but the exe inside is not.
+        mem = members()
+        want = "cd" * 32
+        arch = self.archive(listed=want)
+        z = write_bundle(self.d / "b.zip", mem=mem, man=manifest(mem, exe_sha256=want))
+        disc = self.d / "SCUS-94228.cue"
+        disc.write_text("x")
+        rc, out, _ = run("replay", z, "--archive", arch, "--work", self.d / "w", "--disc", disc)
+        self.assertEqual(rc, 64, out)
+        self.assertIn("is not the manifest's", out)
+
+    def test_archive_env(self):
+        arch = self.archive()
+        z = write_bundle(self.d / "b.zip")
+        r = subprocess.run([sys.executable, "-I", str(TOOL), "info", str(z)], capture_output=True, text=True,
+                           timeout=60, env=dict(os.environ, OPENPETE_RELEASE_ARCHIVE_DIR=str(arch)))
+        self.assertIn("replay route: primary", r.stdout)
+
+
+def file_sha(p):
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 
 if __name__ == "__main__":

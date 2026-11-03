@@ -90,14 +90,17 @@ python3 -I tools/bugreport.py diff-hashes A B
 
 **Primary**: the release archive holds the artifact the tester ran. The
 reader looks in `<archive>/<build_version>-<build_commit>/` first, then
-every directory of the archive, for a file whose SHA-256 (its
-`SHA256SUMS` line, else computed) equals the manifest's `exe_sha256`, or a
-tarball or zip holding an `openpete` or `openpete.exe` member of that
-SHA-256. A tarball is extracted to `<work>/artifact/` and its exe runs; a
-Windows zip prints a note and runs nothing (exit 64), since the Windows
-exe is driven on the Windows host. The archive defaults to
-`${XDG_DATA_HOME:-~/.local/share}/openpete/release-archive`; `--archive`
-names another.
+every directory of the archive, for an `EXE-SHA256SUMS` line whose hash
+equals the manifest's `exe_sha256` (the executable inside the artifact,
+which is what the writer hashes); `info` names the artifact, its kind and
+the exe path inside it. `replay` unpacks the artifact into
+`<work>/artifact/` and refuses it (exit 64) when the unpacked exe's
+SHA-256 is not the manifest's: a tarball is untarred and its exe runs; an
+AppImage is extracted with its own `--appimage-extract` (no FUSE) and
+`squashfs-root/AppRun` runs; a Windows zip is unzipped and the command is
+printed, not run (exit 64), since the Windows exe is driven on the Windows
+host. The archive is `--archive`, else `OPENPETE_RELEASE_ARCHIVE_DIR`, else
+`${XDG_DATA_HOME:-~/.local/share}/openpete/release-archive`.
 
 **Fallback**: no archived artifact matches, or `--exe` was given. The
 command runs `--bug-report-replay` on `--exe`, default
@@ -144,13 +147,17 @@ path is not in the bundle.
    held until the load commits and the anchor's card images restored at
    the load. Each tick's region-hash row is compared with `hashes.csv`; at
    the press frame the state is captured and compared with `press.state`
-   section by section.
+   section by section. A fatal-exit bundle (manifest `press` null, trigger
+   `hang` or `cdsync-spin`) holds no `press.state`: it replays to the last
+   row of `hashes.csv`, compares hash rows only, and the verdict line
+   carries `sections=skipped fatal=<trigger>`.
 
 The verdict line on stderr:
 
 ```
 bug-report-replay: IDENTICAL rows=N sections=equal labels=L taint=T [vram-differs=...]
-bug-report-replay: DIVERGED tick=F region=R section=S rows=N labels=L taint=T
+bug-report-replay: IDENTICAL rows=N sections=skipped fatal=hang labels=L taint=T
+bug-report-replay: DIVERGED tick=F region=R section=S rows=N [fatal=...] labels=L taint=T
 bug-report-replay: VACUOUS rows=0 (the run ended at frame F, press frame P) labels=L taint=T
 bug-report-replay: REFUSED <reason> labels=L
 ```
@@ -161,14 +168,13 @@ bug-report-replay: REFUSED <reason> labels=L
 | 2 | DIVERGED or VACUOUS |
 | 64 | refused |
 
-A run that ends before the press frame after comparing rows reports
-DIVERGED in the VACUOUS form. A DIVERGED line is followed by a
+A run that ends before the press frame (for a fatal bundle, `last hash
+row`) after comparing rows reports DIVERGED in the VACUOUS form. A DIVERGED line is followed by a
 `sections differing:` line naming every press-state section that differs. VRAM is not
 gameplay state: a VRAM difference is printed (`vram-differs=` on
 IDENTICAL, a `vram differs (not counted)` line on DIVERGED) and does not
 make the verdict DIVERGED. `taint` counts the events since the anchor that
-a replay cannot reproduce. A bundle whose manifest `press` is null (a fatal-exit
-bundle) is refused.
+a replay cannot reproduce.
 
 ## Release archive
 
@@ -183,13 +189,11 @@ ${XDG_DATA_HOME:-~/.local/share}/openpete/release-archive/<version>-<commit9>/
     EXE-SHA256SUMS    "<hex>  <artifact>:<path inside>": the executable inside it
 ```
 
-`OPENPETE_RELEASE_ARCHIVE_DIR` names another root for the scripts;
-`bugreport.py` does not read it (pass `--archive`). The writer records the
-SHA-256 of the running binary (`/proc/self/exe`), which inside an AppImage
-is the inner binary, so `exe_sha256` is the `EXE-SHA256SUMS` value.
-`bugreport.py` matches an AppImage by the AppImage file's own SHA-256 and
-does not read `EXE-SHA256SUMS`, so a bundle from an AppImage finds its
-artifact only through a tarball holding the same `openpete` binary.
+`OPENPETE_RELEASE_ARCHIVE_DIR` names another root, for the scripts and
+for `bugreport.py`. The writer records the SHA-256 of the running binary
+(`/proc/self/exe`), which inside an AppImage is the inner binary, so
+`exe_sha256` is the `EXE-SHA256SUMS` value and `bugreport.py` matches on
+that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 
 ## Harness variables
 

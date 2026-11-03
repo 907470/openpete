@@ -269,6 +269,10 @@ static struct {
     /* What the manifest names. */
     char     game[32];
     unsigned anchor_frame, anchor_consume, press_frame, press_feed_key;
+    /* A fatal-exit bundle (manifest press null) holds no press.state: its
+     * end frame is hashes.csv's last row and the section compare is skipped. */
+    int      fatal;
+    char     trigger[32];
     char     taint[256];
     char     labels[RP_LABELS];
     /* hashes.csv: the header's region names and one row per frame. */
@@ -812,19 +816,31 @@ static void rp_env_apply(void)
 /* ---- prepare ----------------------------------------------------------- */
 
 /** @brief Read the manifest's anchor and press counters, taint counts and game.
- * @return 0, or -1 (refused) when the bundle holds no anchor. */
+ *
+ * A bundle whose press is null was written at a fatal exit (the hang
+ * watchdog, the CdSync spin guard): it is marked fatal and its end frame
+ * is set from hashes.csv at admission.
+ * @return 0, or -1 (refused) when the bundle holds no anchor or lacks a member the replay reads. */
 static int rp_read_manifest(void)
 {
     const jv_t* an = j_get(&R.man, "anchor");
     const jv_t* pr = j_get(&R.man, "press");
-    if (!an || an->t != J_OBJ || !pr || pr->t != J_OBJ) {
+    if (!an || an->t != J_OBJ) {
         rp_refuse("the bundle holds no anchor (manifest anchor is null): nothing to replay from");
         return -1;
     }
+    snprintf(R.trigger, sizeof R.trigger, "%s", *j_s(&R.man, "trigger") ? j_s(&R.man, "trigger") : "press");
+    if (!pr || pr->t != J_OBJ) {
+        if (!strcmp(R.trigger, "press")) {
+            rp_refuse("the bundle's press is null and its trigger is press: no end frame to replay to");
+            return -1;
+        }
+        R.fatal = 1;
+    }
     R.anchor_frame = j_u(an, "frame");
     R.anchor_consume = j_u(an, "consume");
-    R.press_frame = j_u(pr, "frame");
-    R.press_feed_key = j_u(pr, "feed_key");
+    R.press_frame = R.fatal ? 0u : j_u(pr, "frame");
+    R.press_feed_key = R.fatal ? 0u : j_u(pr, "feed_key");
     snprintf(R.game, sizeof R.game, "%s", j_s(&R.man, "game"));
     const jv_t* t = j_get(&R.man, "taint");
     size_t k = 0;
@@ -834,6 +850,7 @@ static int rp_read_manifest(void)
                               (unsigned)t->kid[i].num);
     static const char* const need[] = {"anchor.state", "press.state", "segment.bk2", "hashes.csv"};
     for (size_t i = 0; i < sizeof need / sizeof need[0]; i++) {
+        if (R.fatal && !strcmp(need[i], "press.state")) continue;
         char p[RP_PATH];
         rp_join(p, sizeof p, R.scratch, need[i]);
         if (!rp_is_file(p)) { rp_refuse("the bundle has no %s", need[i]); return -1; }
@@ -896,8 +913,12 @@ int openpete_bugreport_replay_prepare(int* argc, char*** argv)
     rp_argv_t a = {0};
     if (rp_build_argv(&a, *argc, *argv) != 0) return OPENPETE_BUGREPORT_REPLAY_REFUSED;
     rp_env_apply();
-    fprintf(stderr, "bug-report-replay: %s: %s, anchor frame %u, press frame %u, scratch %s\n",
-            R.bundle, R.game, R.anchor_frame, R.press_frame, R.scratch);
+    if (R.fatal)
+        fprintf(stderr, "bug-report-replay: %s: %s, anchor frame %u, fatal exit (trigger %s): hash rows "
+                "only, to the last row, scratch %s\n", R.bundle, R.game, R.anchor_frame, R.trigger, R.scratch);
+    else
+        fprintf(stderr, "bug-report-replay: %s: %s, anchor frame %u, press frame %u, scratch %s\n",
+                R.bundle, R.game, R.anchor_frame, R.press_frame, R.scratch);
     fprintf(stderr, "bug-report-replay: argv:");
     for (int i = 1; i < a.n; i++) fprintf(stderr, " %s", a.v[i]);
     fprintf(stderr, "\n");
@@ -958,6 +979,8 @@ static int rp_read_hashes(void)
     }
     free(d);
     if (R.nrows == 0) { rp_refuse("hashes.csv holds no row"); return -1; }
+    /* A fatal bundle ends at its last hash row: the last tick the tester's run completed. */
+    if (R.fatal) R.press_frame = (unsigned)R.rows[(R.nrows - 1) * (3u + (size_t)R.ncols)];
     return 0;
 }
 
@@ -1254,34 +1277,53 @@ void openpete_bugreport_replay_step(const CPUState* cpu) OP_REQUIRES(sim)
                    R.load_cd_waits, R.anchor_consume);
     }
     if (openpete_frame < R.press_frame) return;
-    rp_end_compare(cpu);
+    if (R.fatal) {
+        R.done = 1;
+        R.sections_equal = 1;
+        OPL_INFO_F("bugreport", "replay: fatal bundle (trigger %s): the last hash row, frame %u, is reached; "
+                   "the press-section compare is skipped (no press.state)", R.trigger, R.press_frame);
+    } else {
+        rp_end_compare(cpu);
+    }
     openpete_request_shutdown();
+}
+
+/** @brief Name the end-state compare's outcome for the verdict line: skipped for a fatal bundle, else the first differing section, else equal. */
+static const char* rp_sections_term(void)
+{
+    if (R.fatal) return "skipped";
+    return R.section[0] ? R.section : "equal";
 }
 
 int openpete_bugreport_replay_exit(int rc)
 {
     if (!R.on) return rc;
     const char* lab = R.labels[0] ? R.labels : "none";
+    /* A fatal bundle has no press sections: its verdict names the trigger. */
+    char fat[64] = "";
+    if (R.fatal) snprintf(fat, sizeof fat, " fatal=%s", R.trigger);
+    const char* end = R.fatal ? "last hash row" : "press frame";
+    const char* sec = rp_sections_term();
     int out;
     if (R.refused) {
         fprintf(stderr, "bug-report-replay: REFUSED %s labels=%s\n", R.reason, lab);
         out = OPENPETE_BUGREPORT_REPLAY_REFUSED;
     } else if (!R.done || R.rows_compared == 0) {
-        fprintf(stderr, "bug-report-replay: %s rows=%llu (the run ended at frame %u, press frame %u) "
+        fprintf(stderr, "bug-report-replay: %s rows=%llu (the run ended at frame %u, %s %u)%s "
                 "labels=%s taint=%s\n", R.rows_compared ? "DIVERGED" : "VACUOUS",
-                (unsigned long long)R.rows_compared, openpete_frame, R.press_frame, lab, R.taint);
+                (unsigned long long)R.rows_compared, openpete_frame, end, R.press_frame, fat, lab, R.taint);
         out = 2;
     } else if (R.div_frame || !R.sections_equal) {
-        fprintf(stderr, "bug-report-replay: DIVERGED tick=%u region=%s section=%s rows=%llu labels=%s "
+        fprintf(stderr, "bug-report-replay: DIVERGED tick=%u region=%s section=%s rows=%llu%s labels=%s "
                 "taint=%s\n", R.div_frame, R.div_frame ? R.div_regions : "none",
-                R.section[0] ? R.section : "equal", (unsigned long long)R.rows_compared, lab, R.taint);
+                sec, (unsigned long long)R.rows_compared, fat, lab, R.taint);
         if (R.section_all[0]) fprintf(stderr, "bug-report-replay: sections differing: %s\n", R.section_all);
         if (R.vram_note[0]) fprintf(stderr, "bug-report-replay: vram differs (not counted): %s\n", R.vram_note);
         out = 2;
     } else {
-        fprintf(stderr, "bug-report-replay: IDENTICAL rows=%llu sections=equal labels=%s taint=%s%s%s\n",
-                (unsigned long long)R.rows_compared, lab, R.taint, R.vram_note[0] ? " vram-differs=" : "",
-                R.vram_note);
+        fprintf(stderr, "bug-report-replay: IDENTICAL rows=%llu sections=%s%s labels=%s taint=%s%s%s\n",
+                (unsigned long long)R.rows_compared, sec, fat, lab, R.taint,
+                R.vram_note[0] ? " vram-differs=" : "", R.vram_note);
         out = 0;
     }
     return out;
