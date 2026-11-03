@@ -55,6 +55,7 @@
 #include "openpete_fiber.h"      /* openpete_speculative / openpete_replaying */
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h" /* mouse_read / mouse_capture */
+#include "openpete_bugrec.h"
 #include "openpete_rumble.h"   /* pad_rumble: the one byte-to-motor path */
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "game_extras.h"      /* game_get_id: [mod] game targeting */
@@ -2222,6 +2223,7 @@ int openpete_mods_cfg_apply(int mod_index, int n,
     if (openpete_mods_config_write(m->dir, m->log_tag, n, edits) != 0)
         return -1;
     m->cfg_reload_pending = 1;
+    openpete_bugrec_taint(BUGREC_TAINT_MOD_CONFIG);
     return 0;
 }
 
@@ -2678,6 +2680,7 @@ const char* openpete_mods_modset_tag(void) {
  * @return 1 when a source is down, 0 otherwise. */
 static int api_binding_down(openpete_mod_t* self, const char* name) {
     if (!self || !name) return 0;
+    if (!openpete_mods_in_present) openpete_bugrec_taint(BUGREC_TAINT_MOD_INPUT);
 
     /* Every declared [[binding]] is registered with the keymap at load
      * (the mod's own key at rank 0, a [keys.mod.<id>] row above it), so
@@ -2717,6 +2720,7 @@ static int api_mouse_read(openpete_mod_t* self, openpete_mod_mouse_t* out) {
     }
     if (!openpete_host_mouse_initialised()) return -1;
     const int kind = openpete_mods_in_present ? 1 : 0;
+    if (kind == 0) openpete_bugrec_taint(BUGREC_TAINT_MOD_INPUT);
     /* A tick hook under speculation or rewind replay reads the deltas
      * without consuming them: the committed tick that follows sees the
      * whole motion. */

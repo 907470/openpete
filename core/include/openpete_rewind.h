@@ -13,8 +13,9 @@
  * the log per VBL -> co_switch to target -> truncate log + drop_after.
  *
  * Scope: same level only. Keyframes are cleared whenever gameplay
- * liveness drops (level transition/loading - the mem snapshot excludes
- * VRAM/SPU-RAM by contract) and on any real savestate load (via the
+ * liveness drops (level transition/loading - the mem snapshot carries
+ * VRAM but not SPU sample RAM, which a load rewrites) and on any real
+ * savestate load (via the
  * discontinuity broadcast - a loaded state is a different timeline).
  * Memory: ~3 MiB per keyframe (2 MiB RAM, 1 MiB VRAM, scratchpad, SPU
  * voice state, CD queue), one

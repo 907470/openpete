@@ -12,6 +12,9 @@
 #include "openpete_psx.h"
 #include "openpete_park_site.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,14 +46,30 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame);
  *         reason logged. */
 int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame);
 
+/** @brief Capture the running state as the bytes of a state file, into a reusable buffer.
+ *
+ * The bytes are exactly what openpete_state_save_file writes: the header
+ * and every section, the host mirrors (VRAM, SPU, game extra, mod arena)
+ * copied straight into the buffer. Checks the mod arena's immutable rows.
+ * Reads the machine only; writes no guest state.
+ * @param buf The buffer; grown with realloc, NULL to allocate.
+ * @param len Receives the image's length.
+ * @param cap The buffer's capacity, updated when it grows.
+ * @param cpu Guest CPU state whose register prefix is saved.
+ * @param frame openpete_frame value stored in the header.
+ * @return 0 on success; -1 on an allocation or host-mirror snapshot
+ *         failure, with the reason logged. */
+int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
+                                 const CPUState* cpu, unsigned frame);
+
 /** @brief Write the running state to a file.
  *
  * Writes the header (magic, version, content identity, the running game's
  * id, openpete_frame,
  * section sizes, the guest-visible VBL counter, the park site when the
  * fiber is parked at a final yield) and then every section.
- * The host mirrors (VRAM, SPU, game extra, mod arena) are copied to heap
- * buffers before the disk writes. Checks the mod arena's immutable rows
+ * The state is captured whole by openpete_state_image_capture before the
+ * disk write. Checks the mod arena's immutable rows
  * once per save. Used by the slot saves, the mod process handoff, and
  * --state-save-on-frame.
  * @param path Destination file, overwritten.

@@ -1071,6 +1071,15 @@ void openpete_memcard_spec_adopt(void)
     openpete_modsave_spec_commit(ok);
 }
 
+int openpete_memcard_image_copy(int slot, uint8_t* dst, size_t cap)
+{
+    if ((slot != 0 && slot != 1) || !s_present[slot] || !s_loaded[slot] || !dst ||
+        cap < MC_CARD_SIZE)
+        return 0;
+    memcpy(dst, s_card[slot], MC_CARD_SIZE);
+    return 1;
+}
+
 int openpete_memcard_spec_pending(void)
 {
     return s_spec_dirty[0] || s_spec_dirty[1];

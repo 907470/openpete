@@ -248,6 +248,11 @@ static const openpete_launcher_known_disc k_known_discs[] = {
      "Spyro 2: Ripto's Rage! (NTSC-U)"},
 };
 
+/* The bug-report replay site: the main loop's one VSync wait, every state's. */
+static const openpete_park_site_t k_replay_sites[] = {
+    { 0x80015944u, 0x801FFFC8u },
+};
+
 /* Unset: the pad-read site is not localised for this game yet, so the
  * pacing census reports the pad-read phase as unmeasured rather than as
  * zero reads; no load-read classifier, so loads are instant; no WAD disc
@@ -276,6 +281,8 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
     .consume_pc           = 0x8001271Cu,
+    .replay_sites         = k_replay_sites,
+    .replay_site_count    = (int)(sizeof k_replay_sites / sizeof k_replay_sites[0]),
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = game_overlay_resync_on_boot,
     .on_frame_pre         = game_frame_pre_on_tick,

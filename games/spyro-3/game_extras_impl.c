@@ -424,6 +424,11 @@ static const openpete_launcher_known_disc k_known_discs[] = {
      "Spyro: Year of the Dragon (NTSC-U, v1.0)"},
 };
 
+/* The bug-report replay site: the main loop's one VSync wait, every state's. */
+static const openpete_park_site_t k_replay_sites[] = {
+    { 0x8001E8C8u, 0x801FFFB8u },
+};
+
 /* Unset: the pad-read site is not localised for this game yet, so the
  * pacing census reports the pad-read phase as unmeasured rather than as
  * zero reads; no WAD disc layout; no cheats, so --cheats is refused; no
@@ -455,6 +460,8 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
     .consume_pc           = 0x8003A584u,
+    .replay_sites         = k_replay_sites,
+    .replay_site_count    = (int)(sizeof k_replay_sites / sizeof k_replay_sites[0]),
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = spyro3_on_boot,
     .on_frame_pre         = game_frame_pre_on_tick,

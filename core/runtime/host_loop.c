@@ -18,6 +18,7 @@
 #include "openpete_boot_timing.h"
 #include "openpete_host_input.h"
 #include "openpete_host_trace.h"
+#include "openpete_bugrec.h"
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
 #include "openpete_keymap.h"
@@ -560,7 +561,7 @@ static bool host_unlock_wanted(const host_session_t* S)
 /* The mod toggle epoch the host loop last applied. */
 static unsigned s_modset_epoch = 0;
 
-/** @brief Clear the rewind history and disarm runahead when the enabled mod set changed since the last iteration.
+/** @brief Clear the rewind history, disarm runahead and count a bug-report taint when the enabled mod set changed since the last iteration.
  *
  * A modset toggle changes what the timeline means: rewind history recorded
  * under the old set must not replay into the new one, and a held runahead
@@ -572,6 +573,7 @@ static void host_modset_epoch_poll(void)
     unsigned ep = openpete_mods_toggle_epoch();
     if (ep == s_modset_epoch) return;
     s_modset_epoch = ep;
+    openpete_bugrec_taint(BUGREC_TAINT_MOD_TOGGLE);
     if (openpete_rewind_enabled()) {
         openpete_rewind_clear();
         OPL_INFO_F("rewind", "modset changed - history cleared");
@@ -622,7 +624,9 @@ static void host_iter_begin(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
 /** @brief Write the outputs of the committed tick: the position and gameplay hash log rows, the input log commit, and the --debug-triangle re-issue.
  *
  * Runs after the runahead settle, so every row describes the committed
- * timeline. The log rows and the input commit fire only on an iteration
+ * timeline. Every ticked iteration after fast boot hashes the gameplay
+ * state once into the bug-report recorder's ring, and the hash log writes
+ * that row. The log rows and the input commit fire only on an iteration
  * that advanced openpete_frame, and the logs only after fast boot (the
  * player position holds garbage before BSS init); openpete_frame and the
  * yield-driven openpete_vbl are deterministic across runs by construction.
@@ -639,13 +643,16 @@ static void host_tick_outputs(const host_session_t* S, const host_iter_t* it) OP
         position_log_emit(S->out.position_log, openpete_frame,
                           SDL_GetAtomicInt(&openpete_vbl));
     }
-    if (S->out.hash_log && it->ticked && !openpete_fast_boot_active) {
-        game_on_hash_emit(openpete_frame);
-        gameplay_hash_log_emit(S->out.hash_log, openpete_frame,
-                               SDL_GetAtomicInt(&openpete_vbl));
+    if (it->ticked && !openpete_fast_boot_active) {
+        if (S->out.hash_log) game_on_hash_emit(openpete_frame);
+        const int vbl = SDL_GetAtomicInt(&openpete_vbl);
+        const uint64_t* per = NULL;
+        const uint64_t total = openpete_bugrec_hash_tick(openpete_frame, vbl, &per);
+        if (S->out.hash_log)
+            gameplay_hash_log_emit(S->out.hash_log, openpete_frame, vbl, total, per);
     }
     if (it->ticked)
-        host_input_commit(S, it);
+        host_input_commit(it);
     if (it->sim_due && S->opts->debug_triangle)
         openpete_debug_triangle_emit();
 }

@@ -10,6 +10,7 @@
 #include "openpete.h"
 #include "openpete_fiber.h"
 #include "openpete_handoff.h"
+#include "openpete_bugrec.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
 #include "openpete_mods.h"
@@ -395,7 +396,7 @@ static void rewind_stage_logged_input(const openpete_input_rec_t* r) {
     g_PsyX_Pad_OverrideActive = 1;
 }
 
-/** @brief Step the timeline back one tick: quiet-load the covering keyframe, replay forward to the target with the logged inputs, truncate the future.
+/** @brief Step the timeline back one tick: quiet-load the covering keyframe, replay forward to the target with the logged inputs, truncate the future and the bug-report recorder's window past it.
  *
  * Interp stores are reset (cheap memsets) so presents snap backward; the
  * full discontinuity broadcast (texture-pack rescan) is not fired per held
@@ -410,7 +411,7 @@ static void rewind_stage_logged_input(const openpete_input_rec_t* r) {
  * site a keyframe carries.
  * @param bk2_active A movie is loaded for replay (it keeps the pad override).
  * @return true when the timeline moved. */
-static bool rewind_seek_one_tick(bool bk2_active) {
+static bool rewind_seek_one_tick(bool bk2_active) OP_REQUIRES(sim) {
     const unsigned target = openpete_frame > 2u ? openpete_frame - 2u : 0u;
     const openpete_rewind_kf_t* kf = openpete_rewind_pick(target, &openpete_yield_site);
     if (!kf) {
@@ -448,6 +449,7 @@ static bool rewind_seek_one_tick(bool bk2_active) {
     input_log_truncate(kf->log_idx + (int)(target - kf->frame));
     input_log_unlock();
     openpete_rewind_drop_after(openpete_frame);
+    openpete_bugrec_rewound(openpete_frame);
     if (!bk2_active) g_PsyX_Pad_OverrideActive = 0;
     return true;
 }
@@ -514,7 +516,7 @@ static void rewind_card_commit_clear(void) {
     last_f = openpete_frame;
 }
 
-bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) {
+bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim) {
     if (!openpete_rewind_enabled()) {
         static bool hinted = false;
         if (!hinted && openpete_key_down(OPK_REWIND)) {
@@ -532,17 +534,18 @@ bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) {
     return rewind_seek_one_tick(bk2_active);
 }
 
-bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active) {
+bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim) {
     state_ops_collect(opts);
     if (!state_ops_drain()) return false;
     state_stress_step(opts);
     const bool rewound = rewind_step(opts, paused, bk2_active);
     openpete_mods_arena_page_census_tick();
     openpete_handoff_poll(&g_game.cpu);
+    openpete_bugrec_step(&g_game.cpu, rewound);
     return rewound;
 }
 
-void state_ops_report(void) {
+void state_ops_report(void) OP_REQUIRES(sim) {
     OPL_INFO_F("savestate", "deferred to a final yield: %llu snapshot request(s), %llu load request(s); "
                "periodic state work sat out %llu intermediate yield(s); "
                "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "
@@ -556,6 +559,7 @@ void state_ops_report(void) {
                s_site_deferred[SITE_DEF_LOAD], s_site_wait_yields, s_site_deferred[SITE_DEF_REWIND],
                s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
                s_site_refused, s_site_abandoned);
+    openpete_bugrec_report();
     OPL_INFO_F("savestate", "deferred at an emitted loop site: %llu request(s); first at loop header "
                "0x%08X, feed key %u", s_loop_deferred, s_loop_deferred_header, s_loop_deferred_key);
 }

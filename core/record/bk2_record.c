@@ -46,8 +46,8 @@ static const struct { uint16_t mask; char letter; } kButtonChars[16] = {
     { 0x0002, 'L' }, { 0x0004, 'R' },
 };
 
-/* One recorded entry's pad writes: the (E, j) of its first, the E of the
- * rest, and where its writes' player 1 pads start in the pad array. */
+/* One input-log entry's pad writes: the (E, j) of its first, the E of the
+ * rest, and the absolute index of its writes' first player 1 pad. */
 typedef struct {
     unsigned writes;
     unsigned e;
@@ -56,17 +56,37 @@ typedef struct {
     size_t   pad0;
 } bk2_rec_entry_t;
 
+/* The row notes, always on: one entry per input-log index in
+ * [base, base + n), and player 1 at every noted write, pads[k] holding
+ * absolute pad index pad_base + k. Read by the recorder and by the
+ * bug-report segment writer; trimmed from the front by
+ * bk2_notes_retain_from and from the back by bk2_notes_truncate. */
+static struct {
+    bk2_rec_entry_t* rows;
+    int          base, n, cap;
+    bk2_pad_write_t* pads;
+    size_t       pad_base, pads_n, pads_cap;
+} s_notes = {0};
+
 static struct {
     char*        path;
     char*        args;       /* .args sidecar content, or NULL - written at finalize */
     int          start_idx;  /* input_log index of the movie's first frame */
     int          active;
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
-    bk2_rec_entry_t* rows;   /* per entry, indexed from start_idx */
-    int          rows_cap;
-    bk2_pad_write_t* pads;   /* player 1 at every noted write, in note order */
-    size_t       pads_n, pads_cap;
 } s_rec = {0};
+
+/** @brief Return the note of an input-log entry, or NULL when the store does not hold it.
+ * @param idx The entry's input-log index. */
+static const bk2_rec_entry_t* note_at(int idx) {
+    if (idx < s_notes.base || idx >= s_notes.base + s_notes.n) return NULL;
+    return &s_notes.rows[idx - s_notes.base];
+}
+
+/** @brief Return the pad of an absolute pad index. */
+static const bk2_pad_write_t* note_pad(size_t k) {
+    return &s_notes.pads[k - s_notes.pad_base];
+}
 
 /** @brief Finalize the recording when guest state is replaced (a savestate load).
  *
@@ -144,55 +164,96 @@ void bk2_format_button_diff(uint16_t prev, uint16_t cur,
     release_out[rn] = '\0';
 }
 
-/** @brief Grow the recorder's per-entry row array to hold an entry index.
- * @param at The entry's index from the movie's first entry.
+/** @brief Grow the note store to hold an entry index.
+ * @param idx The entry's input-log index, at or past base.
  * @return 0 when it fits, -1 on allocation failure (logged). */
-static int rec_rows_reserve(int at) {
-    if (at < s_rec.rows_cap) return 0;
-    int cap = s_rec.rows_cap ? s_rec.rows_cap : 4096;
+static int notes_reserve(int idx) {
+    const int at = idx - s_notes.base;
+    if (at < s_notes.cap) return 0;
+    int cap = s_notes.cap ? s_notes.cap : 4096;
     while (cap <= at) cap *= 2;
-    bk2_rec_entry_t* grown = (bk2_rec_entry_t*)realloc(s_rec.rows, (size_t)cap * sizeof *grown);
+    bk2_rec_entry_t* grown = (bk2_rec_entry_t*)realloc(s_notes.rows, (size_t)cap * sizeof *grown);
     if (!grown) {
-        OPL_ERROR_F("bk2-record", "out of memory growing the row counts");
+        OPL_ERROR_F("bk2-record", "out of memory growing the row notes");
         return -1;
     }
-    memset(grown + s_rec.rows_cap, 0, (size_t)(cap - s_rec.rows_cap) * sizeof *grown);
-    s_rec.rows = grown;
-    s_rec.rows_cap = cap;
+    s_notes.rows = grown;
+    s_notes.cap = cap;
     return 0;
 }
 
-/** @brief Append pads to the recorder's pad array.
+/** @brief Append pads to the note store's pad array.
  * @param pads The pads.
  * @param n Their count.
  * @return 0 on success, -1 on allocation failure (logged). */
-static int rec_pads_append(const bk2_pad_write_t* pads, unsigned n) {
-    if (s_rec.pads_n + n > s_rec.pads_cap) {
-        size_t cap = s_rec.pads_cap ? s_rec.pads_cap : 4096u;
-        while (cap < s_rec.pads_n + n) cap *= 2u;
-        bk2_pad_write_t* grown = (bk2_pad_write_t*)realloc(s_rec.pads, cap * sizeof *grown);
+static int notes_pads_append(const bk2_pad_write_t* pads, unsigned n) {
+    if (s_notes.pads_n + n > s_notes.pads_cap) {
+        size_t cap = s_notes.pads_cap ? s_notes.pads_cap : 4096u;
+        while (cap < s_notes.pads_n + n) cap *= 2u;
+        bk2_pad_write_t* grown = (bk2_pad_write_t*)realloc(s_notes.pads, cap * sizeof *grown);
         if (!grown) {
             OPL_ERROR_F("bk2-record", "out of memory growing the pad rows");
             return -1;
         }
-        s_rec.pads = grown;
-        s_rec.pads_cap = cap;
+        s_notes.pads = grown;
+        s_notes.pads_cap = cap;
     }
-    memcpy(s_rec.pads + s_rec.pads_n, pads, (size_t)n * sizeof *pads);
-    s_rec.pads_n += n;
+    memcpy(s_notes.pads + s_notes.pads_n, pads, (size_t)n * sizeof *pads);
+    s_notes.pads_n += n;
     return 0;
+}
+
+void bk2_notes_retain_from(int idx) {
+    if (s_rec.active && s_rec.start_idx < idx) idx = s_rec.start_idx;
+    if (idx <= s_notes.base) return;
+    int drop = idx - s_notes.base;
+    if (drop >= s_notes.n) {
+        s_notes.base = idx;
+        s_notes.pad_base += s_notes.pads_n;
+        s_notes.n = 0;
+        s_notes.pads_n = 0;
+        return;
+    }
+    const size_t pad_drop = s_notes.rows[drop].pad0 - s_notes.pad_base;
+    memmove(s_notes.rows, s_notes.rows + drop, (size_t)(s_notes.n - drop) * sizeof *s_notes.rows);
+    memmove(s_notes.pads, s_notes.pads + pad_drop, (s_notes.pads_n - pad_drop) * sizeof *s_notes.pads);
+    s_notes.n -= drop;
+    s_notes.base = idx;
+    s_notes.pads_n -= pad_drop;
+    s_notes.pad_base += pad_drop;
+}
+
+void bk2_notes_truncate(int count) {
+    if (count >= s_notes.base + s_notes.n) return;
+    if (count <= s_notes.base) {
+        s_notes.pads_n = 0;
+        s_notes.n = 0;
+        s_notes.base = count < 0 ? 0 : count;
+        return;
+    }
+    s_notes.n = count - s_notes.base;
+    s_notes.pads_n = s_notes.rows[s_notes.n].pad0 - s_notes.pad_base;
+}
+
+size_t bk2_notes_held(size_t* bytes) {
+    if (bytes) *bytes = (size_t)s_notes.cap * sizeof *s_notes.rows + s_notes.pads_cap * sizeof *s_notes.pads;
+    return (size_t)s_notes.n;
 }
 
 void bk2_record_note(int log_idx, unsigned writes, unsigned e, unsigned e_rest,
                      unsigned j, const bk2_pad_write_t* pads) {
+    if (log_idx < 0) return;
+    if (log_idx < s_notes.base + s_notes.n) bk2_notes_truncate(log_idx);
+    if (s_notes.n == 0) s_notes.base = log_idx;
+    if (notes_reserve(log_idx) != 0) return;
+    const size_t pad0 = s_notes.pad_base + s_notes.pads_n;
+    /* An entry the log took without a note (a gap) holds no write. */
+    while (s_notes.base + s_notes.n < log_idx)
+        s_notes.rows[s_notes.n++] = (bk2_rec_entry_t){0u, 0u, 0u, 0u, pad0};
+    if (writes && notes_pads_append(pads, writes) != 0) return;
+    s_notes.rows[s_notes.n++] = (bk2_rec_entry_t){writes, e, e_rest, j, pad0};
     if (!s_rec.active) return;
     const int at = log_idx - s_rec.start_idx;
-    if (at >= 0) {
-        if (rec_rows_reserve(at) != 0) return;
-        const size_t pad0 = s_rec.pads_n;
-        if (writes && rec_pads_append(pads, writes) != 0) return;
-        s_rec.rows[at] = (bk2_rec_entry_t){writes, e, e_rest, j, pad0};
-    }
     /* Log each write's press/release transitions so a debug-level run
      * shows the same input timeline that lands in the .bk2. */
     for (unsigned k = 0; k < writes; k++) {
@@ -319,48 +380,67 @@ static int build_header(char* out, size_t cap) {
     return n;
 }
 
-/** @brief Return the Input Log lines a recorded entry expands to.
+/* A window of the input log the writer serialises: the entries
+ * [start, start + count), their row groups numbered from group_base. */
+typedef struct {
+    int      start;
+    int      count;
+    unsigned group_base;
+} bk2_window_t;
+
+/** @brief Return the Input Log lines a window's entry expands to.
  *
  * One per pad write of a yield the entry's yield took, as noted by
  * bk2_record_note; the first entry that wrote also repeats for the writes
- * its group took before the recording began (its j).
- * @param i The entry's index from the movie's first entry.
+ * its group took before the window began (its j).
+ * @param w The window.
+ * @param i The entry's index from the window's first entry.
  * @param first The index of the first entry that wrote, or -1.
  * @return The line count. */
-static unsigned entry_rows(int i, int first) {
-    if (!s_rec.rows || i >= s_rec.rows_cap) return 0u;
-    const bk2_rec_entry_t* r = &s_rec.rows[i];
+static unsigned entry_rows(const bk2_window_t* w, int i, int first) {
+    const bk2_rec_entry_t* r = note_at(w->start + i);
+    if (!r) return 0u;
     return r->writes + (i == first ? r->j : 0u);
 }
 
-/** @brief Return the index of the first recorded entry that took a write.
- * @param count Entries in the window.
+/** @brief Return the index of a window's first entry that took a write.
+ * @param w The window.
  * @return The index, or -1 when no entry wrote. */
-static int first_written_entry(int count) {
-    for (int i = 0; i < count && i < s_rec.rows_cap; i++)
-        if (s_rec.rows && s_rec.rows[i].writes) return i;
+static int first_written_entry(const bk2_window_t* w) {
+    for (int i = 0; i < w->count; i++) {
+        const bk2_rec_entry_t* r = note_at(w->start + i);
+        if (r && r->writes) return i;
+    }
     return -1;
 }
 
-/** @brief Serialise the per-E row counts as Input Groups.txt text.
+/** @brief Serialise a window's per-E row counts as Input Groups.txt text.
  *
- * One line per E from 0 to the last written entry's E, holding the rows
- * written for it; an E no recorded write took writes 0, so the movie replays
- * from boot at offset 0.
- * @param count Entries in the window.
+ * One line per E from the window's group base to the last written entry's
+ * E, holding the rows written for it; an E no write took writes 0, so a
+ * window based at E 0 replays from boot at offset 0.
+ * @param w The window.
  * @param out_len Receives the text's length.
- * @return The malloc'd text; NULL when no entry wrote or allocation
- *         fails, with the reason logged. */
-static char* build_groups(int count, size_t* out_len) {
-    const int first = first_written_entry(count);
+ * @return The malloc'd text; NULL when no entry wrote, an entry's E lies
+ *         below the base or allocation fails, with the reason logged. */
+static char* build_groups(const bk2_window_t* w, size_t* out_len) {
+    const int first = first_written_entry(w);
     if (first < 0) {
         OPL_ERROR_F("bk2-record", "no pad write in the recorded window; no rows to write");
         return NULL;
     }
-    unsigned e_last = s_rec.rows[first].e;
-    for (int i = first; i < count && i < s_rec.rows_cap; i++)
-        if (s_rec.rows[i].writes) e_last = s_rec.rows[i].e_rest;
-    const size_t groups = (size_t)e_last + 1u;
+    const bk2_rec_entry_t* f = note_at(w->start + first);
+    if (f->e < w->group_base) {
+        OPL_ERROR_F("bk2-record", "the window's first write is in group %u, below its base %u",
+                    f->e, w->group_base);
+        return NULL;
+    }
+    unsigned e_last = f->e;
+    for (int i = first; i < w->count; i++) {
+        const bk2_rec_entry_t* r = note_at(w->start + i);
+        if (r && r->writes) e_last = r->e_rest;
+    }
+    const size_t groups = (size_t)(e_last - w->group_base) + 1u;
     unsigned* counts = (unsigned*)calloc(groups, sizeof *counts);
     char* text = (char*)malloc(groups * 11u + 1u);
     if (!counts || !text) {
@@ -368,11 +448,11 @@ static char* build_groups(int count, size_t* out_len) {
         OPL_ERROR_F("bk2-record", "out of memory writing %zu groups", groups);
         return NULL;
     }
-    for (int i = first; i < count && i < s_rec.rows_cap; i++) {
-        const bk2_rec_entry_t* r = &s_rec.rows[i];
-        if (!r->writes) continue;
-        counts[r->e] += entry_rows(i, first) - (r->writes - 1u);
-        counts[r->e_rest] += r->writes - 1u;
+    for (int i = first; i < w->count; i++) {
+        const bk2_rec_entry_t* r = note_at(w->start + i);
+        if (!r || !r->writes) continue;
+        counts[r->e - w->group_base] += entry_rows(w, i, first) - (r->writes - 1u);
+        counts[r->e_rest - w->group_base] += r->writes - 1u;
     }
     size_t n = 0;
     for (size_t g = 0; g < groups; g++) n += (size_t)sprintf(text + n, "%u\n", counts[g]);
@@ -381,25 +461,25 @@ static char* build_groups(int count, size_t* out_len) {
     return text;
 }
 
-/** @brief Release the recorder's buffers and clear its state. */
+/** @brief Release the recorder's copies and clear its state. */
 static void rec_reset(void) {
-    free(s_rec.path); free(s_rec.args); free(s_rec.rows); free(s_rec.pads);
+    free(s_rec.path); free(s_rec.args);
     memset(&s_rec, 0, sizeof(s_rec));
 }
 
-/** @brief Serialise the recorded window of the input log as Input Log.txt text.
+/** @brief Serialise a window of the input log as Input Log.txt text.
  *
  * The [Input] header and LogKey for @p players ports, then entry_rows lines
  * per entry, each the entry's record with player 1 replaced by the pad of
  * the write the line is for, then the trailer. Every line has the same
  * width, so one probe line sizes the buffer.
- * @param frame_count Entries in the window [start_idx, start_idx + frame_count).
+ * @param w The window.
  * @param players Ports per line, 1 or 2.
  * @param out_len Receives the text's length, excluding the NUL.
  * @param out_lines Receives the number of movie rows written.
  * @return The malloc'd, NUL-terminated text; NULL when allocation fails,
  *         with the reason logged. */
-static char* build_input_log(int frame_count, int players, size_t* out_len,
+static char* build_input_log(const bk2_window_t* w, int players, size_t* out_len,
                              size_t* out_lines) {
     char key_buf[1024];
     size_t key_len     = (size_t)format_log_key(key_buf, sizeof key_buf, players);
@@ -409,8 +489,8 @@ static char* build_input_log(int frame_count, int players, size_t* out_len,
     for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) input_port_clear(&probe.port[i]);
     int  frame_line_len = format_frame_rec(frame_buf, &probe, players);
     size_t line_count = 0;
-    const int first = first_written_entry(frame_count);
-    for (int i = 0; i < frame_count; i++) line_count += entry_rows(i, first);
+    const int first = first_written_entry(w);
+    for (int i = 0; i < w->count; i++) line_count += entry_rows(w, i, first);
     size_t log_size = key_len + line_count * (size_t)frame_line_len + trailer_len;
     char* log = (char*)malloc(log_size + 1);
     if (!log) {
@@ -419,18 +499,18 @@ static char* build_input_log(int frame_count, int players, size_t* out_len,
     }
     char* p = log;
     memcpy(p, key_buf, key_len); p += key_len;
-    for (int i = 0; i < frame_count; i++) {
-        const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
+    for (int i = 0; i < w->count; i++) {
+        const openpete_input_rec_t* r = input_log_get(w->start + i);
         if (!r) break;   /* defensive; log frozen mid-recording */
-        const unsigned rows = entry_rows(i, first);
+        const unsigned rows = entry_rows(w, i, first);
         if (!rows) continue;
         /* The first written entry's rows for the writes before the
-         * recording began repeat its first write's pad. */
-        const bk2_rec_entry_t* en = &s_rec.rows[i];
+         * window began repeat its first write's pad. */
+        const bk2_rec_entry_t* en = note_at(w->start + i);
         const unsigned pre = rows - en->writes;
         openpete_input_rec_t line = *r;
         for (unsigned k = 0; k < rows; k++) {
-            const bk2_pad_write_t* pad = &s_rec.pads[en->pad0 + (k < pre ? 0u : k - pre)];
+            const bk2_pad_write_t* pad = note_pad(en->pad0 + (k < pre ? 0u : k - pre));
             line.port[0].bits = pad->bits;
             memcpy(line.port[0].axes, pad->axes, sizeof pad->axes);
             p += format_frame_rec(p, &line, players);
@@ -443,55 +523,42 @@ static char* build_input_log(int frame_count, int players, size_t* out_len,
     return log;
 }
 
-/** @brief Write the recorded window of the input log as a .bk2 zip and end recording; the caller holds input_log_lock.
+/** @brief Build a window of the input log as a .bk2 zip on the heap; the caller holds input_log_lock.
  *
- * @return 0 on success or when recording is not active; -1 on an
- *         allocation or write failure, with the reason logged. */
-static int rec_write_and_end(void) {
-    if (!s_rec.active) return 0;
-
-    /* The movie is the input-log window [start_idx, count). */
-    int frame_count = input_log_count() - s_rec.start_idx;
-    if (frame_count < 0) frame_count = 0;   /* defensive (log reset under us) */
-
+ * @param w The window.
+ * @param zbuf Receives the archive, freed with mz_free.
+ * @param zlen Receives its length.
+ * @param lines Receives the movie rows written.
+ * @return 0 on success; -1 when the window holds no write or on an
+ *         allocation or archive failure, with the reason logged. */
+static int window_zip(const bk2_window_t* w, void** zbuf, size_t* zlen, size_t* lines) {
     /* How many ports the movie declares. A slot that was present for any
      * recorded frame is a player for the whole movie: BizHawk fixes the port
      * count in SyncSettings, and no per-frame connect/disconnect column
      * exists to say otherwise, so a slot that comes and goes serialises its
      * absent frames as neutral. */
     int players = 1;
-    for (int i = 0; i < frame_count; i++) {
-        const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
+    for (int i = 0; i < w->count; i++) {
+        const openpete_input_rec_t* r = input_log_get(w->start + i);
         if (r && r->port[1].present) { players = 2; break; }
     }
 
     /* Build Input Log.txt in memory: header + one line per movie row +
      * trailer; and the per-E row counts. */
-    size_t log_len = 0, line_count = 0, groups_len = 0;
-    char* log = build_input_log(frame_count, players, &log_len, &line_count);
-    char* groups = log ? build_groups(frame_count, &groups_len) : NULL;
+    size_t log_len = 0, groups_len = 0;
+    char* log = build_input_log(w, players, &log_len, lines);
+    char* groups = log ? build_groups(w, &groups_len) : NULL;
     if (!groups) {
         free(log);
-        rec_reset();
         return -1;
     }
-
-    /* The launch-args sidecar goes first, so a movie on disk always has the
-     * sidecar it was recorded under (`--bk2 <path>` reads it on replay). */
-    if (s_rec.args)
-        write_args_sidecar(s_rec.path, s_rec.args);
-
-    /* Pack into a .bk2 zip alongside Header.txt, on the heap; the finished
-     * archive replaces the file in one rename, so a failed or interrupted
-     * write leaves the previous movie whole. */
     mz_zip_archive zip;
     memset(&zip, 0, sizeof(zip));
     int rc = -1;
-    void* zbuf = NULL;
-    size_t zlen = 0;
+    *zbuf = NULL;
+    *zlen = 0;
     if (!mz_zip_writer_init_heap(&zip, 0, 0)) {
-        OPL_ERROR_F("bk2-record", "cannot start the archive for %s: %s",
-                    s_rec.path,
+        OPL_ERROR_F("bk2-record", "cannot start the archive: %s",
                     mz_zip_get_error_string(mz_zip_get_last_error(&zip)));
         goto out;
     }
@@ -521,22 +588,71 @@ static int rec_write_and_end(void) {
         OPL_ERROR_F("bk2-record", "SyncSettings.json add failed");
         goto out_close;
     }
-    if (!mz_zip_writer_finalize_heap_archive(&zip, &zbuf, &zlen)) {
+    if (!mz_zip_writer_finalize_heap_archive(&zip, zbuf, zlen)) {
         OPL_ERROR_F("bk2-record", "finalize failed");
         goto out_close;
     }
-    if (op_atomic_write_file(s_rec.path, zbuf, zlen) != 0) {
-        OPL_ERROR_F("bk2-record", "cannot write %s", s_rec.path);
-        goto out_close;
-    }
-    OPL_INFO_F("bk2-record", "wrote %zu frames to %s", line_count, s_rec.path);
     rc = 0;
 out_close:
     mz_zip_writer_end(&zip);
-    mz_free(zbuf);
+    if (rc != 0) { mz_free(*zbuf); *zbuf = NULL; *zlen = 0; }
 out:
     free(log);
     free(groups);
+    return rc;
+}
+
+int bk2_record_window_zip(int start_idx, unsigned group_base, void** zip, size_t* len,
+                          size_t* rows) {
+    const bk2_window_t w = { start_idx, input_log_count() - start_idx, group_base };
+    void* zbuf = NULL;
+    size_t zlen = 0, lines = 0;
+    if (w.count <= 0 || note_at(start_idx) == NULL || window_zip(&w, &zbuf, &zlen, &lines) != 0)
+        return -1;
+    *zip = malloc(zlen);
+    if (!*zip) { mz_free(zbuf); return -1; }
+    memcpy(*zip, zbuf, zlen);
+    mz_free(zbuf);
+    *len = zlen;
+    if (rows) *rows = lines;
+    return 0;
+}
+
+/** @brief Write the recorded window of the input log as a .bk2 zip and end recording; the caller holds input_log_lock.
+ *
+ * @return 0 on success or when recording is not active; -1 on an
+ *         allocation or write failure, with the reason logged. */
+static int rec_write_and_end(void) {
+    if (!s_rec.active) return 0;
+
+    /* The movie is the input-log window [start_idx, count), its groups
+     * numbered from E 0. */
+    int frame_count = input_log_count() - s_rec.start_idx;
+    if (frame_count < 0) frame_count = 0;   /* defensive (log reset under us) */
+    const bk2_window_t w = { s_rec.start_idx, frame_count, 0u };
+    void* zbuf = NULL;
+    size_t zlen = 0, line_count = 0;
+    if (window_zip(&w, &zbuf, &zlen, &line_count) != 0) {
+        OPL_ERROR_F("bk2-record", "%s not written", s_rec.path);
+        rec_reset();
+        return -1;
+    }
+
+    /* The launch-args sidecar goes first, so a movie on disk always has the
+     * sidecar it was recorded under (`--bk2 <path>` reads it on replay). */
+    if (s_rec.args)
+        write_args_sidecar(s_rec.path, s_rec.args);
+
+    /* The finished archive replaces the file in one rename, so a failed or
+     * interrupted write leaves the previous movie whole. */
+    int rc = 0;
+    if (op_atomic_write_file(s_rec.path, zbuf, zlen) != 0) {
+        OPL_ERROR_F("bk2-record", "cannot write %s", s_rec.path);
+        rc = -1;
+    } else {
+        OPL_INFO_F("bk2-record", "wrote %zu frames to %s", line_count, s_rec.path);
+    }
+    mz_free(zbuf);
     rec_reset();
     return rc;
 }

@@ -25,6 +25,7 @@
 
 #include "bk2_feed.h"   /* bk2_pad_write_t */
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -45,14 +46,17 @@ extern "C" {
  *         cannot be copied, with the reason logged. */
 int  bk2_record_begin(const char* path, const char* args_sidecar);
 
-/** @brief Record the pad writes a just-logged entry's yield took, with player 1's pad at each, and log its pad transitions while recording.
+/** @brief Note the pad writes a just-logged entry's yield took, with player 1's pad at each, and log its pad transitions while recording.
  *
+ * Always on: the note store keeps every entry from the floor
+ * bk2_notes_retain_from sets (and from an active recording's first entry).
  * The caller holds input_log_lock across the append and this note. The
- * entry is written @p writes times at finalize, one line per write with
- * that write's player 1 pad: its first write as row @p j of the group of
- * E @p e, the rest as rows of the group of E @p e_rest. A line is logged
- * for each write whose bits differ from the previous write's. No effect
- * when recording is not active.
+ * entry is written @p writes times by a window writer, one line per write
+ * with that write's player 1 pad: its first write as row @p j of the group
+ * of E @p e, the rest as rows of the group of E @p e_rest. A note at or
+ * before the store's last entry first truncates the store to it. While
+ * recording, a line is logged for each write whose bits differ from the
+ * previous write's.
  * @param log_idx Input log index input_log_append_staged returned; the line shows
  *        it relative to the movie's first entry.
  * @param writes Yield-path pad writes the entry's yield took; 0 adds no row.
@@ -62,6 +66,40 @@ int  bk2_record_begin(const char* path, const char* args_sidecar);
  * @param pads Player 1's pad at each of the @p writes writes, in order. */
 void bk2_record_note(int log_idx, unsigned writes, unsigned e, unsigned e_rest,
                      unsigned j, const bk2_pad_write_t* pads);
+
+/** @brief Drop the row notes of the entries before an input-log index.
+ *
+ * An active recording keeps its entries whatever the index. The caller
+ * holds input_log_lock.
+ * @param idx The first entry kept. */
+void bk2_notes_retain_from(int idx);
+
+/** @brief Drop the row notes of the entries at and after an input-log index, after the log was truncated to it.
+ *
+ * The caller holds input_log_lock.
+ * @param count The log's entry count after its truncation. */
+void bk2_notes_truncate(int count);
+
+/** @brief Return the number of entries the note store holds.
+ * @param bytes Receives the store's allocated bytes; may be NULL.
+ * @return The entry count. */
+size_t bk2_notes_held(size_t* bytes);
+
+/** @brief Build the movie of the input-log entries from an index to the log's end as a .bk2 zip on the heap.
+ *
+ * The same writer as the recorder's finalize (Header.txt, Input Log.txt,
+ * Input Groups.txt and, for two players, SyncSettings.json), with the
+ * groups numbered from @p group_base: a replay passes --bk2-frame-offset
+ * @p group_base. The caller holds input_log_lock.
+ * @param start_idx The first entry; the note store must hold it.
+ * @param group_base openpete_consume at the first entry.
+ * @param zip Receives the archive; free with free().
+ * @param len Receives its length.
+ * @param rows Receives the movie rows written; may be NULL.
+ * @return 0 on success; -1 when the store does not hold the entry, the
+ *         window holds no pad write or allocation fails. */
+int bk2_record_window_zip(int start_idx, unsigned group_base, void** zip, size_t* len,
+                          size_t* rows);
 
 /** @brief Write the recorded window of the input log as a .bk2 zip and end recording.
  *
@@ -78,7 +116,7 @@ int  bk2_record_finalize(void);
 
 /** @brief End recording without writing anything: the file at the record path and its sidecar are left as they were.
  *
- * Frees the copied path, the args sidecar and the row buffer, and clears
+ * Frees the copied path, and the args sidecar, and clears
  * the active flag under input_log_lock. The guest discontinuity handler
  * begin registered stays registered and is inert while recording is not
  * active. No effect when recording is not active. */

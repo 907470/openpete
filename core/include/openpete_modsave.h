@@ -204,6 +204,15 @@ uint32_t openpete_modsave_block_load(const void* src, uint32_t size);
 /** @brief A savestate with no game-extra section was loaded: key unknown, held identities empty, generation kept. */
 void openpete_modsave_block_absent(void);
 
+/** @brief Serialise a slot's `.modsave` record set as the bytes the sidecar file holds, without writing it.
+ * @param slot Card slot, 0 or 1.
+ * @param out Receives the malloc'd bytes, or NULL when the slot's card has
+ *        no record set; free with free().
+ * @param len Receives their length, 0 for none.
+ * @return 1 when bytes were produced, 0 when there is no record set, -1
+ *         when allocation failed. */
+int openpete_modsave_sidecar_bytes(int slot, uint8_t** out, size_t* len);
+
 /** @brief After a savestate file load, rebind the key's card slot to the port holding the card the state held at that slot.
  * @param state_paths The state's card section: the image path each port held, "" for none. */
 void openpete_modsave_rebind(const char* const state_paths[2]);

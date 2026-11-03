@@ -4,6 +4,7 @@
 // descriptor (games/<game>/features/freecam.c).
 
 #include "openpete_freecam.h"
+#include "openpete_bugrec.h"
 #include "openpete_log.h"
 
 #include <stdatomic.h>
@@ -43,6 +44,7 @@ bool openpete_freecam_toggle(void) {
         return false;
     }
     s_active = !s_active;
+    if (s_active) openpete_bugrec_taint(BUGREC_TAINT_FREECAM);
     atomic_fetch_add_explicit(&s_engage_gen, 1u, memory_order_relaxed);
     memset(&s_axes, 0, sizeof s_axes);
     /* A request only makes sense against the pose that was on screen when it

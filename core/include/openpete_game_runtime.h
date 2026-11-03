@@ -23,6 +23,7 @@
 #include "game_extras.h"        /* game_disc_layout_t */
 #include "game_layout.h"        /* game_layout_t */
 #include "openpete_mods.h"      /* game_mod_desc_t */
+#include "openpete_park_site.h" /* openpete_park_site_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,6 +70,11 @@ typedef struct openpete_game_runtime {
     uint32_t feed_key;             /* openpete_feed_key_t; 0 = openpete_frame */
     uint32_t loop_anchor_pc;       /* the main loop's first call, entered once per game tick; 0 = none */
     uint32_t consume_pc;           /* the pad-ring consumer, entered once per game tick; keys bk2 rows (openpete_consume); 0 = none */
+    /* The park sites a replay reaches (a cold boot or --skip-to-level): a
+     * bug-report anchor is taken only while the fiber is parked at one.
+     * NULL: every final yield admits. */
+    const openpete_park_site_t* replay_sites;
+    int replay_site_count;
     /* The disc images the launcher's library labels by content hash. */
     const struct openpete_launcher_known_disc* known_discs;   /* NULL: none */
     int known_disc_count;

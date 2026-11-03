@@ -646,12 +646,22 @@ int openpete_state_slot_present(unsigned slot) {
     return (stat(path, &st) == 0 && (st.st_mode & S_IFREG)) ? 1 : 0;
 }
 
-int openpete_state_save_file(const char* path, const CPUState* cpu,
-                             unsigned frame) {
-    op_atomic_file_t af;
-    if (op_atomic_file_open(&af, path) != 0) return -1;
-    FILE* fp = af.f;
+/** @brief Grow an image buffer to hold a byte count.
+ * @param buf The buffer, reallocated.
+ * @param cap Its capacity, updated.
+ * @param need Bytes needed.
+ * @return 0 on success, -1 when allocation failed. */
+static int image_reserve(uint8_t** buf, size_t* cap, size_t need) {
+    if (need <= *cap) return 0;
+    uint8_t* g = (uint8_t*)realloc(*buf, need);
+    if (!g) return -1;
+    *buf = g;
+    *cap = need;
+    return 0;
+}
 
+int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
+                                 const CPUState* cpu, unsigned frame) {
     const char* modset_tag = openpete_mods_modset_tag();
     if (!modset_tag) modset_tag = "";
 
@@ -691,59 +701,68 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     openpete_mods_arena_immutable_check("file save");
     hdr.arena_bytes      = openpete_mods_arena_state_size();
 
-    /* Snapshot the host-side mirrors into heap buffers before writing -
-     * keeps them stable across the (potentially slow) disk I/O even
-     * though the game fiber is yielded right now. */
-    void* vram_snap  = malloc(hdr.vram_bytes);
-    void* spu_snap   = malloc(hdr.spu_state_bytes);
-    void* spumem_snap= malloc(hdr.spu_mem_bytes);
-    void* extra_snap = hdr.game_extra_bytes ? malloc(hdr.game_extra_bytes) : NULL;
-    void* arena_snap = hdr.arena_bytes ? malloc(hdr.arena_bytes) : NULL;
-    if (!vram_snap || !spu_snap || !spumem_snap ||
-        (hdr.game_extra_bytes && !extra_snap) ||
-        (hdr.arena_bytes && !arena_snap) ||
-        PsyX_VRAM_Snapshot(vram_snap, hdr.vram_bytes) != 0 ||
-        PsyX_SPUAL_SnapshotState(spu_snap, hdr.spu_state_bytes) != 0 ||
-        PsyX_SPUAL_SnapshotMem(spumem_snap, hdr.spu_mem_bytes) != 0) {
-        free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
-        free(arena_snap);
-        op_atomic_file_abort(&af);
-        OPL_ERROR_F("savestate", "%s: host-mirror snapshot failed", path);
+    /* The file layout, in order: header, cpu, ram, scratch, vram, spu,
+     * spumem, cd, card, game-extra, arena, modset-tag. */
+    const size_t total = sizeof(hdr) + CPU_REG_BYTES + OPENPETE_PSX_RAM_SIZE +
+                         OPENPETE_PSX_SCRATCH_SIZE + hdr.vram_bytes + hdr.spu_state_bytes +
+                         hdr.spu_mem_bytes + sizeof(state_cd_t) + sizeof(state_card_t) +
+                         hdr.game_extra_bytes + hdr.arena_bytes + hdr.modset_tag_bytes;
+    if (image_reserve(buf, cap, total) != 0) {
+        OPL_ERROR_F("savestate", "out of memory for a %zu-byte state image", total);
         return -1;
     }
-    if (hdr.game_extra_bytes) game_state_extra_save(extra_snap);
-    if (hdr.arena_bytes)      openpete_mods_arena_state_save(arena_snap);
-
+    uint8_t* p = *buf;
+    memcpy(p, &hdr, sizeof hdr);                                  p += sizeof hdr;
+    memcpy(p, cpu, CPU_REG_BYTES);                                p += CPU_REG_BYTES;
+    memcpy(p, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);     p += OPENPETE_PSX_RAM_SIZE;
+    memcpy(p, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE); p += OPENPETE_PSX_SCRATCH_SIZE;
+    if (PsyX_VRAM_Snapshot(p, hdr.vram_bytes) != 0 ||
+        PsyX_SPUAL_SnapshotState(p + hdr.vram_bytes, hdr.spu_state_bytes) != 0 ||
+        PsyX_SPUAL_SnapshotMem(p + hdr.vram_bytes + hdr.spu_state_bytes, hdr.spu_mem_bytes) != 0) {
+        OPL_ERROR_F("savestate", "host-mirror snapshot failed");
+        return -1;
+    }
+    p += hdr.vram_bytes + hdr.spu_state_bytes + hdr.spu_mem_bytes;
     state_cd_t cd;
     state_cd_capture(&cd);
+    memcpy(p, &cd, sizeof cd);                                    p += sizeof cd;
     state_card_t card;
     state_card_capture(&card);
+    memcpy(p, &card, sizeof card);                                p += sizeof card;
+    if (hdr.game_extra_bytes) game_state_extra_save(p);
+    p += hdr.game_extra_bytes;
+    if (hdr.arena_bytes) openpete_mods_arena_state_save(p);
+    p += hdr.arena_bytes;
+    memcpy(p, modset_tag, hdr.modset_tag_bytes);
+    *len = total;
+    return 0;
+}
 
-    /* The file layout, in order; a zero-length section writes nothing. */
-    const struct { const char* what; const void* buf; size_t n; } sections[] = {
-        { "header",     &hdr,                       sizeof(hdr) },
-        { "cpu",        cpu,                        CPU_REG_BYTES },
-        { "ram",        openpete_psx_get_ram(),     OPENPETE_PSX_RAM_SIZE },
-        { "scratch",    openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE },
-        { "vram",       vram_snap,                  hdr.vram_bytes },
-        { "spu",        spu_snap,                   hdr.spu_state_bytes },
-        { "spumem",     spumem_snap,                hdr.spu_mem_bytes },
-        { "cd",         &cd,                        sizeof(cd) },
-        { "card",       &card,                      sizeof(card) },
-        { "game-extra", extra_snap,                 hdr.game_extra_bytes },
-        { "arena",      arena_snap,                 hdr.arena_bytes },
-        { "modset-tag", modset_tag,                 hdr.modset_tag_bytes },
-    };
-    int rc = 0;
-    for (size_t i = 0; rc == 0 && i < sizeof sections / sizeof sections[0]; i++)
-        rc = write_section(fp, path, sections[i].what, sections[i].buf, sections[i].n);
-
-    free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
-    free(arena_snap);
-    if (rc != 0) {
+int openpete_state_save_file(const char* path, const CPUState* cpu,
+                             unsigned frame) {
+    uint8_t* img = NULL;
+    size_t len = 0, cap = 0;
+    if (openpete_state_image_capture(&img, &len, &cap, cpu, frame) != 0) {
+        free(img);
+        OPL_ERROR_F("savestate", "%s: state capture failed", path);
+        return -1;
+    }
+    op_atomic_file_t af;
+    if (op_atomic_file_open(&af, path) != 0) {
+        free(img);
+        return -1;
+    }
+    if (write_section(af.f, path, "state", img, len) != 0) {
+        free(img);
         op_atomic_file_abort(&af);
         return -1;
     }
+    state_card_t card;
+    memcpy(&card, img + len - sizeof(state_card_t) -
+                  ((const openpete_state_header_t*)img)->game_extra_bytes -
+                  ((const openpete_state_header_t*)img)->arena_bytes -
+                  ((const openpete_state_header_t*)img)->modset_tag_bytes, sizeof card);
+    free(img);
     if (op_atomic_file_commit(&af) != 0) return -1;
     OPL_INFO_F("savestate", "saved %s (frame=%u) cards held %u/%u flags 0x%02X/0x%02X",
                path, frame, card.held[0], card.held[1], card.flag[0], card.flag[1]);

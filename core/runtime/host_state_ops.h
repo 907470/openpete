@@ -3,6 +3,7 @@
 #pragma once
 
 #include "openpete.h"
+#include "openpete_thread_roles.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,9 +39,9 @@ void state_stress_step(const openpete_options_t* opts);
  * @param paused The host is paused.
  * @param bk2_active A movie is loaded for replay.
  * @return true when the timeline moved (the iteration skips its forward tick). */
-bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active);
+bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim);
 
-/** @brief Run the state half of a quiescent iteration: queue this iteration's savestate requests, then at a final yield run the queue, the stress harnesses, the rewind driver, the mod arena page census and the process handoff.
+/** @brief Run the state half of a quiescent iteration: queue this iteration's savestate requests, then at a final yield run the queue, the stress harnesses, the rewind driver, the mod arena page census, the process handoff and the bug-report recorder step.
  *
  * The game fiber is yielded, so g_game.cpu and g_ram are quiescent and can
  * be snapshotted or restored without racing the recompiled code. The
@@ -51,10 +52,10 @@ bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active);
  * @param paused The host is paused.
  * @param bk2_active A movie is loaded for replay.
  * @return true when the rewind driver moved the timeline (the iteration skips its forward tick). */
-bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active);
+bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim);
 
-/** @brief Log the savestate census: requests deferred to a final yield, runahead deferrals and adoptions, park-site deferrals, and the first emitted-loop-site deferral. */
-void state_ops_report(void);
+/** @brief Log the savestate census: requests deferred to a final yield, runahead deferrals and adoptions, park-site deferrals, the first emitted-loop-site deferral and the bug-report recorder's report. */
+void state_ops_report(void) OP_REQUIRES(sim);
 
 /* Park-site deferrals by kind: a load whose snapshot was saved at another
  * park site than the current final yield's. */

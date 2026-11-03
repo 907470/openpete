@@ -78,23 +78,23 @@ int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
     return 0;
 }
 
-/** @brief Append the staged input record once per yield of the iteration and note each entry's movie rows while recording.
+/** @brief Append the staged input record once per yield of the iteration and note each entry's movie rows.
  *
- * A recorded movie carries one row per pad write of a yield, grouped by
+ * A movie carries one row per pad write of a yield, grouped by
  * openpete_consume: the iteration's writes (bk2_feed_iter_take), each with
- * the player 1 pad the host delivered at it, are noted on its last entry.
- * Holds input_log_lock across the appends and notes, so a finalize on
- * another thread sees each entry with its rows or not at all.
- * @param ticks Yields the iteration ran (openpete_frame's advance).
- * @param recording True while --bk2-record is recording. */
-static void input_log_commit_yields(unsigned ticks, bool recording) {
+ * the player 1 pad the host delivered at it, are noted on its last entry,
+ * in the always-on note store the recorder and the bug-report segment
+ * read. Holds input_log_lock across the appends and notes, so a finalize
+ * on another thread sees each entry with its rows or not at all.
+ * @param ticks Yields the iteration ran (openpete_frame's advance). */
+static void input_log_commit_yields(unsigned ticks) {
     input_log_lock();
     unsigned e = 0u, e_last = 0u, j = 0u;
     const bk2_pad_write_t* pads = NULL;
     const unsigned writes = bk2_feed_iter_take(&e, &e_last, &j, &pads);
     for (unsigned t = 0; t < ticks; t++) {
         const int idx = input_log_append_staged();
-        if (recording) bk2_record_note(idx, t + 1 == ticks ? writes : 0u, e, e_last, j, pads);
+        bk2_record_note(idx, t + 1 == ticks ? writes : 0u, e, e_last, j, pads);
     }
     input_log_unlock();
 }
@@ -117,7 +117,7 @@ void bk2_record_exit_flush(void) {
         unsigned char bk2axes[4];
         const uint16_t bits = pad_p1_readback(bk2axes);
         input_log_stage_p1_readback(bits, bk2axes);
-        input_log_commit_yields(1u, true);
+        input_log_commit_yields(1u);
     }
     (void)bk2_record_finalize();
 }
@@ -692,7 +692,7 @@ static void input_census_slots(unsigned ticks)
 }
 
 /* Documented at the declaration in host_input_tick.h. */
-void host_input_commit(const host_session_t* S, const host_iter_t* it) OP_REQUIRES(sim)
+void host_input_commit(const host_iter_t* it) OP_REQUIRES(sim)
 {
     /* Per-VBL input log - ALWAYS on: one entry
      * per VBL the fiber consumed this iteration, all carrying the
@@ -706,7 +706,7 @@ void host_input_commit(const host_session_t* S, const host_iter_t* it) OP_REQUIR
     input_census_staging(it->p1_staged, it->frame_before_yield, bits, bk2axes);
     input_log_stage_p1_readback(bits, bk2axes);
     input_census_slots(ticks);
-    input_log_commit_yields(ticks, S->bk2.recording);
+    input_log_commit_yields(ticks);
 }
 
 #endif /* OPENPETE_HAS_PSYCROSS */

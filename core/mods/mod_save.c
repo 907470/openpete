@@ -429,7 +429,34 @@ static void put_snap(ms_buf_t* b, const ms_snap_t* s) {
     }
 }
 
-/** @brief Write the slot's sidecar atomically: magic, version, per index its snapshots, then the SHA-256 of the rest.
+/** @brief Serialise a slot's table as the sidecar's bytes: magic, version, per index its snapshots, then the SHA-256 of the rest.
+ * @param t The slot's table.
+ * @param b Receives the bytes; marked bad when allocation failed. */
+static void sidecar_serialise(const ms_table_t* t, ms_buf_t* b) {
+    buf_put(b, k_file_magic, 8);
+    buf_u32(b, MS_FILE_VER);
+    buf_u32(b, MS_MAX_IDX);
+    for (int i = 0; i < MS_MAX_IDX; i++) {
+        buf_u32(b, t->idx[i].n);
+        for (uint32_t k = 0; k < t->idx[i].n; k++) put_snap(b, t->idx[i].s[k]);
+    }
+    uint8_t h[32];
+    if (!b->bad) { sha(b->p, b->len, h); buf_put(b, h, 32); }
+}
+
+int openpete_modsave_sidecar_bytes(int slot, uint8_t** out, size_t* len) {
+    *out = NULL;
+    *len = 0;
+    if (slot < 0 || slot >= MS_SLOTS || s_sc[slot].state != SC_PRESENT) return 0;
+    ms_buf_t b = { 0 };
+    sidecar_serialise(&s_sc[slot], &b);
+    if (b.bad) { free(b.p); return -1; }
+    *out = b.p;
+    *len = b.len;
+    return 1;
+}
+
+/** @brief Write the slot's sidecar atomically, serialised by sidecar_serialise.
  *
  * A failure is logged and the snapshots stay in memory; every write
  * rewrites the whole file, so the next one retries.
@@ -438,15 +465,7 @@ static void sidecar_write(int slot) {
     ms_table_t* t = &s_sc[slot];
     if (!t->path[0]) return;
     ms_buf_t b = { 0 };
-    buf_put(&b, k_file_magic, 8);
-    buf_u32(&b, MS_FILE_VER);
-    buf_u32(&b, MS_MAX_IDX);
-    for (int i = 0; i < MS_MAX_IDX; i++) {
-        buf_u32(&b, t->idx[i].n);
-        for (uint32_t k = 0; k < t->idx[i].n; k++) put_snap(&b, t->idx[i].s[k]);
-    }
-    uint8_t h[32];
-    if (!b.bad) { sha(b.p, b.len, h); buf_put(&b, h, 32); }
+    sidecar_serialise(t, &b);
     const char* fault = getenv("OPENPETE_MODSAVE_FAULT_WRITE");
     int rc = b.bad ? -1 : (fault && *fault == '1') ? -1 : op_atomic_write_file(t->path, b.p, b.len);
     free(b.p);

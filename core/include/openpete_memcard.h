@@ -254,6 +254,14 @@ int openpete_memcard_file_offset(int slot, const char* name);
  * @return 1 when a slot is marked, else 0. */
 int openpete_memcard_spec_pending(void);
 
+/** @brief Copy a slot's in-memory card image, the bytes the game reads and writes, without touching the card file.
+ * @param slot Card slot, 0 or 1.
+ * @param dst Receives the image.
+ * @param cap Capacity of @p dst; at least 131072 bytes.
+ * @return 1 when the image was copied; 0 when the slot is out of range,
+ *         holds no card, has not loaded its image yet, or @p cap is short. */
+int openpete_memcard_image_copy(int slot, uint8_t* dst, size_t cap);
+
 /** @brief Runahead rolled back its led ticks: restore each slot a speculative flush marked from its persisted image and discard the speculative save-record queue. */
 void openpete_memcard_spec_rollback(void);
 

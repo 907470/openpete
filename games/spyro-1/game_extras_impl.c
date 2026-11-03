@@ -841,6 +841,15 @@ static const openpete_launcher_known_disc k_known_discs[] = {
      "Spyro the Dragon (NTSC-U)"},
 };
 
+/* The bug-report replay sites: the GamestateDraw wait of live gameplay and
+ * the two title-screen waits (GamestateDraw sends each game state to its
+ * own VSync loop; the others are not reached by a cold boot or the skip). */
+static const openpete_park_site_t k_replay_sites[] = {
+    { 0x8001F0E0u, 0x801FFFC0u },
+    { 0x8007DD1Cu, 0x801FFF70u },
+    { 0x8007DD54u, 0x801FFF70u },
+};
+
 /* pad_read_pc: PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68, the game's
  * once-per-VSync consumption of g_PadBuffer: it reads status, size_type,
  * inputs[] and sticks and folds them into g_Pad. Every other reader in the
@@ -876,6 +885,8 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
     .consume_pc           = 0x8003385Cu,
+    .replay_sites         = k_replay_sites,
+    .replay_site_count    = (int)(sizeof k_replay_sites / sizeof k_replay_sites[0]),
     .on_boot              = spyro1_on_boot,
     .on_frame_pre         = spyro1_on_frame_pre,
     .on_state_loaded      = spyro1_on_state_loaded,

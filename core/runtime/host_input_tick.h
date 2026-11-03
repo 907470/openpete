@@ -46,12 +46,11 @@ void host_input_restamp_after_ops(const host_session_t* S, host_iter_t* it) OP_R
  * @param it The iteration; reads ovr_claimed, writes the latch record and p1_staged. */
 void host_input_latch(const host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
 
-/** @brief Commit the input log for the VBLs an iteration ticked: player 1's readback, the staging and slot census, and one log entry per yield, noted by the bk2 recorder while it records.
+/** @brief Commit the input log for the VBLs an iteration ticked: player 1's readback, the staging and slot census, and one log entry per yield with its bk2 row notes.
  *
  * Called only on an iteration that advanced openpete_frame.
- * @param S The session.
  * @param it The iteration; reads p1_staged and frame_before_yield. */
-void host_input_commit(const host_session_t* S, const host_iter_t* it) OP_REQUIRES(sim);
+void host_input_commit(const host_iter_t* it) OP_REQUIRES(sim);
 
 /** @brief Read OPENPETE_SYNTH_PADS once: the synthetic pad-stream mode for slots 1-3.
  *

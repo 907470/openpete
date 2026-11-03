@@ -47,6 +47,7 @@
 #include "feature_registry.h"
 #include "game_extras.h"
 #include "bk2_feed.h"
+#include "openpete_bugrec.h"
 #include "bk2_record.h"
 #include "../host/sfx_pack.h"
 #include "../rhi/rhi_gpu_audit.h"
@@ -170,6 +171,7 @@ static int open_bk2(host_session_t* S) OP_REQUIRES(sim)
         return -1;
     }
     bk2_feed_open(S->bk2.active ? &S->bk2.movie : NULL, S->bk2.offset);
+    openpete_bugrec_init();
     return 0;
 }
 

@@ -815,12 +815,10 @@ void gameplay_hash_log_emit_header(FILE* fp) {
 }
 
 /* Documented at the declaration in run_internal.h. */
-void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl) {
-    uint64_t per_region[OPENPETE_HASH_LOG_MAX_REGIONS];
+void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl, uint64_t total,
+                            const uint64_t* per_region) {
     size_t n = openpete_state_region_count;
     if (n > OPENPETE_HASH_LOG_MAX_REGIONS) n = OPENPETE_HASH_LOG_MAX_REGIONS;
-    /* gameplay_hash_compute_ex always fills the prefix [0..region_count); */
-    uint64_t total = gameplay_hash_compute_ex(per_region);
     fprintf(fp, "%u,%d,%016llx", frame, vbl, (unsigned long long)total);
     for (size_t r = 0; r < n; r++) {
         fprintf(fp, ",%016llx", (unsigned long long)per_region[r]);

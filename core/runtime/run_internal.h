@@ -185,13 +185,16 @@ void position_log_emit(FILE* fp, unsigned frame, int vbl);
 
 /** @brief Append one gameplay hash log row: frame, vbl, the total hash and each region hash in hex.
  *
- * The per-region array holds OPENPETE_HASH_LOG_MAX_REGIONS entries and the
- * row carries at most that many region columns, matching the header, while
- * gameplay_hash_compute_ex writes one entry per registered region.
+ * Formats hashes gameplay_hash_compute_ex already computed (the bug-report
+ * recorder's row for the tick). The row carries at most
+ * OPENPETE_HASH_LOG_MAX_REGIONS region columns, matching the header.
  * @param fp The log file.
  * @param frame The tick counter.
- * @param vbl The VBL counter. */
-void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl);
+ * @param vbl The VBL counter.
+ * @param total The total hash.
+ * @param per_region One hash per registered region. */
+void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl, uint64_t total,
+                            const uint64_t* per_region);
 
 /** @brief Apply the OPENPETE_TICK_SCALE_AT schedule: each `VBL:SCALE` entry calls openpete_set_tick_scale once the device VBL count reaches VBL.
  *

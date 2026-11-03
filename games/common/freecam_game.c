@@ -32,6 +32,7 @@
 #include "game_layout.h"        /* game_layout.cam: the pose bytes */
 #include "game_extras.h"        /* game_is_gameplay_live */
 #include "openpete_freecam.h"
+#include "openpete_bugrec.h"
 #include "openpete_fiber.h"     /* openpete_speculative / openpete_replaying */
 #include "openpete_host_mouse.h" /* probe log */
 #include "openpete_log.h"
@@ -1307,6 +1308,7 @@ int freecam_should_freeze(CPUState* cpu, uint32_t addr) {
          * from the player's new position on this very tick and there's no
          * frame of stale free-camera view before it snaps back. */
         if (openpete_freecam_take_teleport_request()) {
+            openpete_bugrec_taint(BUGREC_TAINT_TELEPORT);
             freecam_teleport_player_to_camera(cpu);
             openpete_freecam_toggle();
             s_pose.seeded = 0;

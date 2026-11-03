@@ -8,8 +8,9 @@
  * steps in the order they ran. Every record is flushed when written, so a
  * killed or exec'd process leaves every completed iteration on disk.
  *
- * Unset, the setters store only into the host-side record below and nothing
- * is written; the trace reads loop state and stores into no PSX RAM.
+ * Unset, nothing is written; every record still enters an always-on ring of
+ * the last records (at most 32768, trimmed to the bug-report recorder's
+ * oldest anchor). The trace reads loop state and stores into no PSX RAM.
  *
  * Record layout (little-endian):
  *   0  u8  type        HT_REC_HEADER, HT_REC_ITER, HT_REC_CLOSE
@@ -35,6 +36,7 @@
 #ifndef OPENPETE_HOST_TRACE_H
 #define OPENPETE_HOST_TRACE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "openpete_thread_roles.h"
@@ -203,7 +205,26 @@ static inline void host_trace_ra_end(int left, int adopted) OP_REQUIRES(sim) {
     if (left || adopted) g_host_trace.ra = (uint8_t)(adopted ? HT_RA_ADOPTED : HT_RA_LEFT);
 }
 
-/** @brief Write the current iteration's record.
+/** @brief Return the index the next iteration record takes.
+ *
+ * @return The iteration records built so far. */
+uint32_t host_trace_iter_index(void) OP_REQUIRES(sim);
+
+/** @brief Drop the ring's records of the iterations before an index.
+ * @param iter The first iteration kept. */
+void host_trace_ring_retain_from(uint32_t iter) OP_REQUIRES(sim);
+
+/** @brief Return the ring's records, oldest first, contiguous.
+ * @param recs Receives the first record; valid until the next iteration's end.
+ * @return The record count (HT_REC_BYTES each). */
+size_t host_trace_ring_records(const uint8_t** recs) OP_REQUIRES(sim);
+
+/** @brief Return the ring's record count.
+ * @param bytes Receives its allocated bytes; may be NULL.
+ * @return The records held. */
+size_t host_trace_ring_held(size_t* bytes) OP_REQUIRES(sim);
+
+/** @brief Build the current iteration's record, keep it in the always-on ring, and write it when the trace is open.
  *
  * @param quit Non-zero when this iteration ended the loop.
  * @param exit_reason The loop's exit reason, recorded only when quit is set.
