@@ -35,8 +35,11 @@
 #                 mod whose WAD is lofty_castle's (level 52) served with
 #                 `replace = true` over the donor toasty (sunny_flight, the
 #                 planned donor, hangs at load), at the freecam topdown pose.
-#                 Reports the row; no verdict (the table still sizes the
-#                 primaries until the estimate lands).
+#                 Reports the row; no verdict (the table sizes the
+#                 primaries, so the donor's row binds).
+#   custom-level-est  the same fixture with OPENPETE_TC_ESTIMATE=1, which
+#                 sizes the arenas from the level's own sector headers:
+#                 claims_sum=0, window_bakes=0, exhaust_warnings=0.
 #
 # --exe PATH drives another binary with the same legs (a build without
 # growth reports claims>0 on the squeeze legs, which is the separation).
@@ -174,24 +177,33 @@ if want refuse-grow; then
     check refuse-grow
 fi
 
-if want custom-level; then
+# The M4 fixture: lofty_castle's WAD (level 52) as a replace-mode custom
+# level over the donor toasty, at the freecam topdown pose.
+custom_level() {  # tag envs... -- checks...
+    local tag="$1"; shift
+    local -a envs=()
+    while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+    [[ "${1:-}" == "--" ]] && shift
     if [[ "$GAME" != spyro-1 ]]; then
-        echo "[tercache-growth] leg=custom-level SKIP (custom levels run on Spyro 1 only)"
-    else
-        ran=1
-        MODS="$OUT/m4mods"
-        rm -rf "${MODS:?}"
-        mkdir -p "$MODS/m4big/assets/levels"
-        python3 tools/extract_wad_entry.py --disc "$PG_DISC" --level 52 \
-            --out "$MODS/m4big/assets/levels/big.wad" > /dev/null ||
-            { echo "[tercache-growth] leg=custom-level FAIL (WAD extraction)"; fail=1; }
-        printf '[mod]\nid      = "m4big"\nname    = "M4 big"\nversion = "1.0.0"\ngame    = "spyro-1"\napi     = 1\n\n[[level]]\nname  = "M4 BIG"\nfiles = "big"\ndonor = "toasty"\nreplace = true\n' \
-            > "$MODS/m4big/mod.toml"
-        run_leg custom-level 2400 -- --mods-dir "$MODS" --skip-to-level toasty \
-            --lod extended --freecam-pose topdown
-        check custom-level
+        echo "[tercache-growth] leg=$tag SKIP (custom levels run on Spyro 1 only)"; return
     fi
-fi
+    ran=1
+    MODS="$OUT/m4mods"
+    rm -rf "${MODS:?}"
+    mkdir -p "$MODS/m4big/assets/levels"
+    python3 tools/extract_wad_entry.py --disc "$PG_DISC" --level 52 \
+        --out "$MODS/m4big/assets/levels/big.wad" > /dev/null ||
+        { echo "[tercache-growth] leg=$tag FAIL (WAD extraction)"; fail=1; }
+    printf '[mod]\nid      = "m4big"\nname    = "M4 big"\nversion = "1.0.0"\ngame    = "spyro-1"\napi     = 1\n\n[[level]]\nname  = "M4 BIG"\nfiles = "big"\ndonor = "toasty"\nreplace = true\n' \
+        > "$MODS/m4big/mod.toml"
+    run_leg "$tag" 2400 "${envs[@]}" -- --mods-dir "$MODS" --skip-to-level toasty \
+        --lod extended --freecam-pose topdown
+    check "$tag" "$@"
+}
+
+want custom-level && custom_level custom-level --
+want custom-level-est && custom_level custom-level-est OPENPETE_TC_ESTIMATE=1 -- \
+    claims_sum=0 window_bakes=0 exhaust_warnings=0
 
 [[ "$ran" == 1 ]] || { echo "tercache-growth: SKIP (no leg ran)"; exit 64; }
 if [[ "$fail" == 0 ]]; then echo "tercache-growth: PASS"; exit 0; fi

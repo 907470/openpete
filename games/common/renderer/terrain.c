@@ -6243,6 +6243,11 @@ static struct {
     uint64_t sig;                /* hash of the scene table's address list; 0 = not built */
     uint32_t nGuest;             /* scene sectors at the head of s_tsv_table */
     uint8_t* hide;               /* per source sector, 512 flags: LP faces 0-255, HP faces 256-511 */
+    /* Per scene sector: the HP and LP face counts of the source sector its
+     * LP faces match (hps_match), the most tsimp_attach can borrow onto it;
+     * bor_n scene sectors are covered, 0 when nothing can be borrowed. */
+    uint16_t borHp[512], borLp[512];
+    uint32_t bor_n;
 } s_tsv;
 
 /** @brief Tests whether a face of a source sector lies on a scene sector's surface.
@@ -6329,7 +6334,10 @@ static int tsv_match_scene(CPUState* cpu, const uint32_t* addr, uint32_t cnt, ts
         nLp += T[q].nLpF > 0;
         const int k = hps_match(&T[q]);
         if (k >= 0) { matched[k] = 1; nMatched++; }
+        s_tsv.borHp[q] = (uint16_t)(k >= 0 ? s_hps.sec[k].nHpF : 0);
+        s_tsv.borLp[q] = (uint16_t)(k >= 0 ? s_hps.sec[k].nLpF : 0);
     }
+    s_tsv.bor_n = cnt;
     return nMatched > 0 && nMatched == nLp;
 }
 
@@ -6371,10 +6379,13 @@ static void tsv_import(int k, const tscache_t* T, uint32_t cnt, uint32_t* n) {
  * @param sectorCnt The scene sector count.
  * @return The extended sector count; sectorCnt when nothing is imported. */
 static uint32_t tsv_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
-    if (!game_layout.terrain.hp_source_wad_entry || sectorCnt == 0u || sectorCnt > 512u) return sectorCnt;
+    if (!game_layout.terrain.hp_source_wad_entry || sectorCnt == 0u || sectorCnt > 512u) {
+        s_tsv.bor_n = 0;
+        return sectorCnt;
+    }
     static int s_off = -1;   /* OPENPETE_TERRAIN_HPIMPORT=0 imports nothing */
     if (s_off < 0) { const char* e = getenv("OPENPETE_TERRAIN_HPIMPORT"); s_off = e && *e == '0'; }
-    if (s_off || !hps_ready(cpu)) return sectorCnt;
+    if (s_off || !hps_ready(cpu)) { s_tsv.bor_n = 0; return sectorCnt; }
     uint32_t addr[512];
     for (uint32_t q = 0; q < sectorCnt; q++) addr[q] = rd(cpu, sectorPtr + q * 4u);
     const uint64_t sig = (openpete_fnv1a64(addr, sizeof(uint32_t) * sectorCnt) ^ sectorPtr) | 1u;
@@ -6387,6 +6398,7 @@ static uint32_t tsv_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCn
     tscache_t* T = (tscache_t*)calloc(sectorCnt, sizeof(tscache_t));
     uint8_t* matched = (uint8_t*)calloc((size_t)s_hps.nSec, 1);
     uint32_t n = sectorCnt;
+    s_tsv.bor_n = 0;
     ENV_FLAG_LATCH(s_imp_census, "OPENPETE_TERRAIN_HPIMPORT_CENSUS");
     if (T && matched && tsv_match_scene(cpu, addr, sectorCnt, T, matched))
         s_tsv.hide = (uint8_t*)calloc((size_t)s_hps.nSec, 512);
@@ -9108,7 +9120,9 @@ static long s_tgpu_keycell_faces;   /* faces baked with FF_KEYCELLS (session) */
  * for fresh buffers instead, which also resets each arena's high-water mark
  * and drops the free-list fragmentation the outgoing level left. The first
  * latch of a session has no outgoing level and init has just made the
- * buffers, so there it clears the slots and sets the level alone. Under
+ * buffers, so there it clears the slots and sets the level alone, except
+ * under OPENPETE_TC_ESTIMATE, where init made only the floor and the first
+ * latch posts the replacement too. Under
  * OPENPETE_TERRAIN_GPU_DBG it prints one [ter-gpu] level-edge line, the
  * level id the arena caps are looked up by, which the arena baseline
  * attributes each census line to.
@@ -9121,8 +9135,175 @@ static void tgpu_level_edge(int prev_level, int level) {
         fprintf(stderr, "[ter-gpu f=%u] level-edge %d -> %d\n",
                 openpete_feed_key_now(), prev_level, level);
     tgpu_free_all_slots();
-    if (prev_level >= 0) openpete_tercache_request_resize(level);
+    if (prev_level >= 0 || openpete_tercache_estimate_on()) openpete_tercache_request_resize(level);
     else openpete_tercache_set_level(level);
+}
+
+/** @brief Adds one animation-list member sector to the anim, near-churn and store figures of a content bound.
+ *
+ * A poly-anim sector (vertex list) bakes the full plain cost, its near twins
+ * re-bake every roll under OPENPETE_TERRAIN_ANIMNEAR, and it takes one
+ * previous-corner record per face. A colour-only sector bakes the flat
+ * variant alone (6 per HP face) unless OPENPETE_TERRAIN_CANIMNEAR=1, under
+ * which it bakes the HQ variants against a colour-table ring of
+ * OPTC_COLTAB_RING entries of 1 + 2 x (LP + 2 x HP colours) words.
+ * @param c The bound being accumulated.
+ * @param m The sector's lists: bit 0 vertex, bit 1 colour; 0 adds nothing.
+ * @param hpf HP faces (own and borrowable).
+ * @param lpf LP faces (own and borrowable).
+ * @param lpc LP colours.
+ * @param hpc HP colours (one of the near and far arrays).
+ * @param cellK Cell records per HP face. */
+static void tgpu_content_anim(openpete_tercache_content* c, uint8_t m, uint64_t hpf, uint64_t lpf,
+                              uint64_t lpc, uint64_t hpc, uint64_t cellK) {
+    if (!m) return;
+    const int coltab = tgpu_canimnear_on();
+    const int hq = (m & 1u) || coltab;
+    c->anim_hp_v += (hq ? 30u : 6u) * hpf;
+    c->anim_lp_v += 6u * lpf;
+    if (hq) c->anim_cell_r += cellK * hpf;
+    if (m & 1u) {
+        c->prev_rec += hpf + lpf;
+        if (tgpu_animnear_on()) { c->animnear_hp_v += 30u * hpf; c->animnear_lp_v += 6u * lpf; }
+    }
+    if ((m & 2u) && coltab)
+        c->coltab_units += OPTC_COLTAB_RING *
+            ((1u + 2u * (lpc + 2u * hpc) + OPTC_PREV_REC_WORDS - 1u) / OPTC_PREV_REC_WORDS);
+}
+
+/** @brief Reads the bake's content bound for a sector table from the sector headers alone.
+ *
+ * One pass over the table (no decode). Per sector, the header words +0x10
+ * and +0x14 give the LP and HP face counts (bits 16-23) and colour counts
+ * (bits 8-15), the counts tsc_decode_body decodes. A scene sector whose LP
+ * faces match an HP source sector (s_tsv.borHp, borLp) adds that source
+ * sector's faces, the most tsimp_attach borrows onto it. The plain bound is
+ * HP faces x 30 (the 6 flat vertices of tgpu_bake_hp_flat plus the HQ 2x2,
+ * 4 sub-quads x 2 triangles, of tgpu_bake_hq2) and LP faces x 6 (two
+ * triangles). The anim figures cover the sectors the animation lists name
+ * (env_anim_iter, listed members, vertex and colour lists); a colour-only
+ * sector without a colour table bakes the flat variant alone
+ * (tgpu_bake_hp_face), 6 per HP face. The poly-anim sectors' plain bound is
+ * also reported for their near twins under OPENPETE_TERRAIN_ANIMNEAR. Cell records
+ * are 8 per HP quad (2 halves x 4 classes) and 12 per HP triangle where the
+ * game locates triangle cells, 0 on a game with no cell table. The store
+ * takes one previous-corner record per face of each poly-anim sector, and
+ * under OPENPETE_TERRAIN_CANIMNEAR=1 one colour-table ring (OPTC_COLTAB_RING
+ * entries of 1 + 2 x (LP + 2 x HP colours) words) per colour-anim sector.
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The walk's sector table (extended).
+ * @param sectorCnt The walk's sector count (extended), at most 1024.
+ * @param guestCnt The scene's own sector count.
+ * @param c Receives the bound. */
+static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, uint32_t guestCnt,
+                         openpete_tercache_content* c) {
+    memset(c, 0, sizeof(*c));
+    static uint8_t member[1024];   /* 1 vertex list, 2 colour list */
+    memset(member, 0, sizeof member);
+    {
+        env_anim_iter_t it;
+        uint32_t idx; int kind;
+        env_anim_iter_init(&it, cpu, guestCnt);
+        it.listed = 1;
+        while (env_anim_iter_next(&it, &idx, &kind))
+            if (idx < guestCnt && idx < 1024u)
+                member[idx] |= (uint8_t)(kind == ENV_ANIM_KIND_VERT ? 1u : 2u);
+    }
+    const uint64_t cellK = (game_layout.terrain.hq_tri4_cells || game_layout.terrain.hq_tri2_tiles)
+                         ? 12u : (game_layout.terrain.hq_cells4 ? 8u : 0u);
+    for (uint32_t q = 0; q < sectorCnt; q++) {
+        const uint32_t s = rd(cpu, sectorPtr + q * 4u);
+        if (!s) continue;
+        const uint32_t w3 = rd(cpu, s + 0x10), w4 = rd(cpu, s + 0x14);
+        uint64_t lpf = (w3 >> 16) & 0xFFu, hpf = (w4 >> 16) & 0xFFu;
+        const uint64_t lpc = (w3 >> 8) & 0xFFu, hpc = (w4 >> 8) & 0xFFu;
+        if (q < s_tsv.bor_n && q < guestCnt) { hpf += s_tsv.borHp[q]; lpf += s_tsv.borLp[q]; }
+        c->hp_v += 30u * hpf;
+        c->lp_v += 6u * lpf;
+        c->cell_r += cellK * hpf;
+        tgpu_content_anim(c, q < 1024u ? member[q] : 0u, hpf, lpf, lpc, hpc, cellK);
+        c->sectors++;
+    }
+}
+
+/** @brief Returns the arena and store bytes a slot's chunks, records and colour-table ring hold.
+ * @param T The slot.
+ * @return Bytes. */
+static uint64_t tgpu_slot_bytes(const tgpu_slot_t* T) {
+    uint64_t b = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        const size_t e = OPTC_ARENA_IS_CELL(a)
+                       ? (OPTC_ARENA_IS_CELL_ANIM(a) ? sizeof(rhi_terrain_cell_anim) : sizeof(rhi_terrain_cell))
+                       : sizeof(rhi_terrain_vertex)
+                         + (OPTC_ARENA_IS_ANIM(a) ? sizeof(rhi_terrain_prev) : 0u)
+                         + (OPTC_ARENA_IS_NEAR(a) ? sizeof(rhi_terrain_nearctx) : 0u);
+        b += (uint64_t)T->count[a] * e;
+    }
+    return b + (uint64_t)(T->prevCount + T->tabUnits) * OPTC_PREV_REC_WORDS * 4u;
+}
+
+/** @brief Compares two sector addresses for qsort and bsearch.
+ * @param a The first address.
+ * @param b The second address.
+ * @return -1, 0 or 1. */
+static int tgpu_addr_cmp(const void* a, const void* b) {
+    const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+/** @brief Posts the level edge's arena request with the table's estimate, and handles a same-id change of the walk's sector table.
+ *
+ * Every walk, after tsv_extend. The table's signature is FNV-1a over the
+ * extended table's sector addresses, xor its address and count. On a level
+ * edge (@p edge) the content bound of the table goes to the cache
+ * (openpete_tercache_set_content) before tgpu_level_edge posts the
+ * replacement, which the cache sizes from it under OPENPETE_TC_ESTIMATE. A
+ * signature change under an unchanged level id (a title return or a scene
+ * swap reuses the id) posts no replacement: under the estimate every slot
+ * whose sector is not in the new table is freed through the deferred
+ * release (otherwise its chunks stay until LRU eviction), the bytes such
+ * slots still hold are counted (`stale_bytes`), and the new table's bound
+ * goes to the cache, which grows an arena whose capacity is below its
+ * estimate.
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The walk's sector table (extended).
+ * @param sectorCnt The walk's sector count (extended).
+ * @param guestCnt The scene's own sector count.
+ * @param lvl The level id this walk read.
+ * @param edge Nonzero when this walk latched a new level id.
+ * @param prev The outgoing level id at an edge, or -1 on the first latch. */
+static void tgpu_table_watch(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
+                             uint32_t guestCnt, int lvl, int edge, int prev) {
+    static uint64_t s_sig;
+    static uint32_t addr[1024];
+    const uint32_t n = sectorCnt <= 1024u ? sectorCnt : 0u;
+    for (uint32_t q = 0; q < n; q++) addr[q] = rd(cpu, sectorPtr + q * 4u);
+    const uint64_t sig = openpete_fnv1a64(addr, sizeof(uint32_t) * n)
+                       ^ ((uint64_t)sectorPtr << 32) ^ n;
+    openpete_tercache_content c;
+    if (edge) {
+        tgpu_content(cpu, sectorPtr, n, guestCnt, &c);
+        openpete_tercache_set_content(lvl, &c);
+        tgpu_level_edge(prev, lvl);
+        s_sig = sig;
+        return;
+    }
+    if (sig == s_sig || n == 0u) return;
+    const int first = s_sig == 0u;
+    s_sig = sig;
+    if (first) return;
+    qsort(addr, n, sizeof(uint32_t), tgpu_addr_cmp);
+    const int fr = openpete_tercache_estimate_on() && !openpete_tercache_bake_held();
+    uint64_t stale = 0;
+    for (int i = 0; i < TSC_SLOTS; i++) {
+        tgpu_slot_t* T = &s_tgpu[i];
+        if (!T->s || bsearch(&T->s, addr, n, sizeof(uint32_t), tgpu_addr_cmp)) continue;
+        if (fr) { tgpu_free_slot(T); tgpu_coltab_free(T); }
+        else stale += tgpu_slot_bytes(T);
+    }
+    openpete_tercache_note_sig_change(stale);
+    tgpu_content(cpu, sectorPtr, n, guestCnt, &c);
+    openpete_tercache_set_content(lvl, &c);
 }
 
 /* Consolidation migration (openpete_tercache_buf_source): a canonical tick
@@ -11352,6 +11533,27 @@ static int tgpu_build_sector_budgeted(CPUState* cpu, int slot, const tscache_t* 
     return r;
 }
 
+/** @brief Bakes a dirty slot's sector, or claims it while a level-edge request awaits adoption.
+ *
+ * Inside that window (openpete_tercache_bake_held) a bake would land in the
+ * outgoing buffers and be freed at the adoption, so the sector takes the
+ * arena-full claim code and re-bakes at the adoption's epoch step.
+ * @param cpu The guest CPU state.
+ * @param slot The decode slot index.
+ * @param SC The decoded sector.
+ * @param hqTable The scene HQ table.
+ * @param sec_index The sector's table index.
+ * @param with_var Nonzero to bake near-variant chunks.
+ * @param mig Nonzero when the bake migrates out of a consolidation source.
+ * @return The claim code: 0 baked, 1 arena-full or held, else the bake's code. */
+static int tgpu_build_or_hold(CPUState* cpu, int slot, const tscache_t* SC, uint32_t hqTable,
+                              int sec_index, int with_var, int mig) {
+    if (!openpete_tercache_bake_held())
+        return tgpu_build_sector_budgeted(cpu, slot, SC, hqTable, sec_index, with_var, mig);
+    openpete_tercache_note_window_skip();
+    return 1;
+}
+
 /** @brief Validates or rebuilds a sector's chunks and decides whether the GPU may draw it this present.
  *
  * A slot without near-variant chunks rebuilds to add them when want_near
@@ -11483,7 +11685,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);
         T->bakePinKey = pinKey;
-        T->unbuildable = tgpu_build_sector_budgeted(cpu, slot, SC, hqTable, sec_index, with_var, mig);
+        T->unbuildable = tgpu_build_or_hold(cpu, slot, SC, hqTable, sec_index, with_var, mig);
         s_tgpu_rebuilds++;
     }
     return tgpu_ensure_finish(T, SC);
@@ -14760,10 +14962,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * sector of the next unmatched, so the accumulator stays empty there and
      * the fold below would pin the old level's mean over its whole LP tier
      * indefinitely. */
-    { int lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
+    int edge = 0, edge_prev = -1;
+    const int walk_lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
+    { int lvl = walk_lvl;
       static int s_lpg_lvl = -1;
       if (lvl != s_lpg_lvl) {
-          tgpu_level_edge(s_lpg_lvl, lvl);
+          edge_prev = s_lpg_lvl;
+          edge = 1;
           s_lpg_lvl = lvl;
           s_lpg_mean_ok = 0;
           s_lpg_acc_n = 0;
@@ -14811,6 +15016,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * scene's own sectors keep their indices and the guest's verdicts. */
     const uint32_t guestCnt = sectorCnt;
     tsv_extend(cpu, &sectorPtr, &sectorCnt);
+    /* The level edge's arena request carries the estimate of the extended
+     * table, so it is posted here rather than at the latch above; nothing
+     * between the two bakes. */
+    tgpu_table_watch(cpu, sectorPtr, sectorCnt, guestCnt, walk_lvl, edge, edge_prev);
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];

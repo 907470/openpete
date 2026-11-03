@@ -975,8 +975,10 @@ void openpete_tercache_prev_free(uint32_t first, int count);
  *
  * Three steps on two threads. This call stores the level and the request.
  * The device-owning thread allocates one fresh {vb, pv} pair per arena,
- * sized for the stored level, and a fresh previous-tick store at the
- * store's current capacity (present_service), since device objects are
+ * sized for the stored level (under OPENPETE_TC_ESTIMATE, the estimate
+ * openpete_tercache_set_content made, raised to the floor), and a fresh
+ * previous-tick store at the store's current capacity, under the estimate
+ * max(store estimate, current capacity) (present_service), since device objects are
  * illegal on the builder's thread. The builder adopts them at its next
  * frame_begin: each arena collapses to one buffer whose bookkeeping resets
  * to high = 0 with an empty free list, the store's allocator resets, and
@@ -1008,7 +1010,7 @@ int  openpete_tercache_resize_ready(void);
  * The stored level sizes every buffer the cache allocates afterwards: the
  * level-edge replacement pairs and the growth buffers. Called directly at
  * the first level latch after boot, where init has just made the buffers
- * and no replacement is owed, and through
+ * and no replacement is owed (without OPENPETE_TC_ESTIMATE), and through
  * openpete_tercache_request_resize() at every later latch.
  * @param level_id Level id of the registered game (game_get_id); the
  *                 capacities are that game's row for the id, or the game's
@@ -1166,6 +1168,10 @@ typedef struct {
      * level in which an arena had neither a growth nor a consolidation
      * buffer coming. */
     uint32_t retire_answers, retire_old_touches, exhaust_warnings;
+    /* Sectors the walk claimed instead of baking while a level-edge
+     * request awaited adoption (OPENPETE_TC_ESTIMATE only), and same-id
+     * sector-table signature changes the builder reported. */
+    uint32_t window_skips, sig_changes;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *
@@ -1209,6 +1215,80 @@ int openpete_tercache_take_bind_refusal(void);
  * and written. Feeds `bakes` and, while a level-edge resize request awaits
  * adoption, `window_bakes` of the stats. */
 void openpete_tercache_note_bake(void);
+
+/* ---- content estimate ----------------------------------------------------
+ * The builder reads the walk's sector table once at every level latch and
+ * at every same-id table signature change, and reports the bake's content
+ * bound from the sector headers alone; the cache turns it into one
+ * capacity per arena. Under OPENPETE_TC_ESTIMATE (outside the knob
+ * registry) those capacities size the arenas (init at the floor, the
+ * level-edge replacement, growth and consolidation steps) in place of the
+ * per-level table; without it they are only reported. */
+typedef struct {
+    /* Vertex bound of the plain bake over every sector of the table: HP
+     * faces x the HP face maximum, LP faces x the LP face maximum. */
+    uint64_t hp_v, lp_v;
+    /* The same over the sectors the animation lists name, which bake into
+     * the anim family and re-bake every roll: a poly-anim sector at the
+     * plain costs, a colour-only sector whose near chunks read no colour
+     * table at the flat costs (its HQ variants go to near chunks alone). */
+    uint64_t anim_hp_v, anim_lp_v;
+    /* The plain bound of the poly-anim sectors, whose near twins also
+     * re-bake every roll (0 under OPENPETE_TERRAIN_ANIMNEAR=0). */
+    uint64_t animnear_hp_v, animnear_lp_v;
+    /* Cell-record bound: HP faces x the records one face can take, over
+     * every sector and over the anim sectors. */
+    uint64_t cell_r, anim_cell_r;
+    /* Previous-tick store units: one previous-corner record per HP and LP
+     * face of each poly-anim sector, and the colour-table rings of the
+     * colour-anim sectors (0 unless their near chunks read a table). */
+    uint64_t prev_rec, coltab_units;
+    uint32_t sectors;                 /* table entries read */
+} openpete_tercache_content;
+/** @brief Store the content bound of the table the walk is about to bake and derive each arena's estimate from it.
+ *
+ * Builder thread, before openpete_tercache_request_resize or
+ * openpete_tercache_set_level at a latch, and at a same-id signature
+ * change. The estimate per arena: the plain family's OPAQUE and LP arenas
+ * take hp_v and lp_v; the anim family's take the anim figures times
+ * (2 + the defer window in builds), since an anim sector re-bakes at every
+ * roll and each replaced chunk stays deferred for the window; the near
+ * family takes twice the plain figure (each face's near twin), the
+ * poly-anim near twins counted once per copy the defer window holds,
+ * times 2 / N for N the buffer cap, so N buffers hold twice that near
+ * content; the near cells cell_r x 2 / N and the anim cells
+ * anim_cell_r x the defer factor; every other arena, and any estimate below
+ * it, the floor (16,384 vertices, 1,024 records on a cell arena). The
+ * store's estimate is prev_rec x the defer factor + coltab_units. Prints
+ * the outgoing figures' `[tc-est]` census line when the level changes.
+ * @param level_id The level the table belongs to.
+ * @param c The content bound. */
+void openpete_tercache_set_content(int level_id, const openpete_tercache_content *c);
+/** @brief Report whether OPENPETE_TC_ESTIMATE selects the estimate sizing.
+ *
+ * Read once; any non-empty value not starting with `0` enables it.
+ * OPENPETE_TC_INITIAL_CAP, when set, still sizes every primary.
+ * @return 1 when the estimate sizes the arenas, else 0. */
+int openpete_tercache_estimate_on(void);
+/** @brief Report whether the walk must claim instead of bake: a level-edge request awaits adoption under OPENPETE_TC_ESTIMATE.
+ *
+ * Builder thread. A sector baked in that window would land in the
+ * outgoing buffers and be freed at the adoption, so the window's sectors
+ * claim with the arena-full code and re-bake at the adoption's epoch step,
+ * and each level edge bakes once.
+ * @return 1 inside the window with the estimate on, else 0. */
+int openpete_tercache_bake_held(void);
+/** @brief Count one sector claimed because openpete_tercache_bake_held() read 1.
+ *
+ * Builder thread. Feeds `window_skips`. */
+void openpete_tercache_note_window_skip(void);
+/** @brief Record one same-id sector-table signature change and the bytes its stale slots still hold after it was handled.
+ *
+ * Builder thread. Feeds `sig_changes` and `stale_bytes` (summed over the
+ * changes). Under OPENPETE_TC_ESTIMATE the builder frees those slots
+ * first, so the bytes read 0; without it they stay until LRU eviction.
+ * @param bytes Arena and store bytes of slots whose sector left the table. */
+void openpete_tercache_note_sig_change(uint64_t bytes);
 /** @brief Print the `tercache:` exit row of the growth census to the log.
  *
  * Reads openpete_tercache_get_stats, so after shutdown it reports the final
