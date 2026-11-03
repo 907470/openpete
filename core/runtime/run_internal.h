@@ -4,6 +4,7 @@
 #pragma once
 
 #include "openpete.h"
+#include "host_pacer.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_input_log.h"
 #include "openpete_psxtrace.h"
@@ -170,3 +171,61 @@ int run_mute_baseline(void);
 /** @brief Return whether a shutdown was requested (the pump's quit, the SIGINT handler, openpete_request_shutdown), without the --max-runtime-seconds deadline openpete_shutdown_requested adds.
  * @return true once a shutdown was requested. */
 bool run_shutdown_flagged(void);
+
+/** @brief Count one host-loop iteration on the sim heartbeat the pump's liveness check reads. */
+void run_sim_heartbeat(void);
+
+/** @brief Append a "frame,vbl,x,y,z" row of the player position to the position log.
+ *
+ * Writes nothing when game_get_player_position reports no position.
+ * @param fp The log file.
+ * @param frame The tick counter.
+ * @param vbl The VBL counter. */
+void position_log_emit(FILE* fp, unsigned frame, int vbl);
+
+/** @brief Append one gameplay hash log row: frame, vbl, the total hash and each region hash in hex.
+ *
+ * The per-region array holds OPENPETE_HASH_LOG_MAX_REGIONS entries and the
+ * row carries at most that many region columns, matching the header, while
+ * gameplay_hash_compute_ex writes one entry per registered region.
+ * @param fp The log file.
+ * @param frame The tick counter.
+ * @param vbl The VBL counter. */
+void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl);
+
+/** @brief Apply the OPENPETE_TICK_SCALE_AT schedule: each `VBL:SCALE` entry calls openpete_set_tick_scale once the device VBL count reaches VBL.
+ *
+ * The harness form of a live tick-scale change (the devui row's setter, at
+ * a reproducible VBL); entries are comma-separated and in VBL order. Read
+ * once; a no-op when the variable is unset. */
+void tick_scale_schedule_poll(void);
+
+/** @brief Apply the queued live-knob requests on the host loop's thread, at its quiescent point.
+ *
+ * A render fps or tick scale request goes to the pacer, which applies a
+ * change at host_pacer_apply_live; a changed runahead depth raises the
+ * re-arm flag; a rewind window request resizes the keyframe ring here, off
+ * every capture; a mute request sets the baseline and applies the gains
+ * here. Requests that match the applied value change nothing.
+ * @param P The run's pacer. */
+void live_knob_drain(host_pacer_t* P);
+
+/** @brief Mute audio while openpete_skip_present_until_level fast-forwards, and restore it after.
+ *
+ * Called wherever the flag can change (boot arming, each host-loop
+ * iteration); applies the mute gains only on a change of the flag. */
+void skip_mute_sync(void);
+
+/** @brief Apply the device feed's run-mode policy for this host-loop iteration, then top the device queue up.
+ *
+ * The feed carries the SPU at the guest's real-time rate. In a window the
+ * feed holds (the SPU still runs) through fast boot, which runs the guest
+ * without host yields until the first scene, through a pause, a
+ * skip-to-level fast-forward and any other unlocked stretch. The phase and
+ * the VBL count tag the feed's per-phase counters and timeline log.
+ * Headless runs unpaced by design: its feed (the synthetic device, when
+ * armed) times itself from the frames pushed.
+ * @param unlock_fps The iteration runs unpaced (fast-forward, skip, headless).
+ * @param headless The run is headless.
+ * @param paused The game is paused. */
+void audio_feed_sync(int unlock_fps, int headless, int paused);

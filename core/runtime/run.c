@@ -91,9 +91,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>  /* _exit */
-#if defined(__EMSCRIPTEN__)
-#include <emscripten.h>  /* emscripten_sleep (Asyncify) */
-#endif
 
 /* The default window comes from the game's own display environment
  * (game_default_window_w/h, game_layout.h): its height is the visible
@@ -327,6 +324,9 @@ static SDL_AtomicInt g_sim_heartbeat;
  * flush, movie finalize, joins) is running; the pump then allows the
  * longer teardown bound between heartbeats. */
 static SDL_AtomicInt g_sim_teardown;
+
+/* Documented at the declaration in run_internal.h. */
+void run_sim_heartbeat(void) { SDL_AddAtomicInt(&g_sim_heartbeat, 1); }
 
 /* Documented at the declaration in run_internal.h. */
 void sim_teardown_progress(void) {
@@ -625,33 +625,13 @@ static void openpete_on_sigint(int sig) {
 #endif
 }
 
-/** @brief Test whether a frame index lies in any of the options' unlock ranges, bounds inclusive.
- *
- * @param opts The parsed options.
- * @param frame The feed key's value (openpete_feed_key_now).
- * @return 1 when inside a range, else 0. */
-static int unlock_frame_in_ranges(const openpete_options_t* opts, unsigned frame) {
-    int f = (int)frame;
-    for (int i = 0; i < opts->unlock_ranges_count; i++) {
-        if (f >= opts->unlock_ranges[i].lo && f <= opts->unlock_ranges[i].hi) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 /* Documented at the declaration in run_internal.h. */
 const char* feed_key_kind_name(void) {
     return openpete_feed_key() == OPENPETE_FEED_KEY_VBL ? "vbl" : "frame";
 }
 
-/** @brief Append a "frame,vbl,x,y,z" row of the player position to the position log.
- *
- * Writes nothing when game_get_player_position reports no position.
- * @param fp The log file.
- * @param frame The tick counter.
- * @param vbl The VBL counter. */
-static void position_log_emit(FILE* fp, unsigned frame, int vbl) {
+/* Documented at the declaration in run_internal.h. */
+void position_log_emit(FILE* fp, unsigned frame, int vbl) {
     int32_t x = 0, y = 0, z = 0;
     if (game_get_player_position(&x, &y, &z) != 0) return;
     fprintf(fp, "%u,%d,%d,%d,%d\n", frame, vbl, x, y, z);
@@ -835,15 +815,8 @@ void gameplay_hash_log_emit_header(FILE* fp) {
     fputc('\n', fp);
 }
 
-/** @brief Append one gameplay hash log row: frame, vbl, the total hash and each region hash in hex.
- *
- * The per-region array holds OPENPETE_HASH_LOG_MAX_REGIONS entries and the
- * row carries at most that many region columns, matching the header, while
- * gameplay_hash_compute_ex writes one entry per registered region.
- * @param fp The log file.
- * @param frame The tick counter.
- * @param vbl The VBL counter. */
-static void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl) {
+/* Documented at the declaration in run_internal.h. */
+void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl) {
     uint64_t per_region[OPENPETE_HASH_LOG_MAX_REGIONS];
     size_t n = openpete_state_region_count;
     if (n > OPENPETE_HASH_LOG_MAX_REGIONS) n = OPENPETE_HASH_LOG_MAX_REGIONS;
@@ -1022,15 +995,6 @@ static void audio_feed_exit_summary(void) {
                    p->underruns, p->primes);
     }
 }
-
-/* The --debug-triangle infra-triangle (core/renderer/debug_render.cpp). */
-extern void openpete_debug_triangle_emit(void);
-
-/* PsyCross internal: set non-zero to bypass SDL_GL_SetSwapInterval at the
- * start of each scene, which uncaps the GL present and lets the host loop
- * actually run as fast as the pipeline allows. Without this Tab still
- * skips our wall-clock pacer, but GL vsync re-locks us to monitor refresh. */
-extern int g_skipSwapInterval;
 
 /* PsyCross's GL window - created by PsyX_Initialise. We need it so --headless
  * can hide the window post-init (we keep a real GL driver for the context;
@@ -1531,12 +1495,8 @@ void openpete_set_tick_scale(double scale) {
     SDL_SetAtomicInt(&s_knob_pending, 1);
 }
 
-/** @brief Apply the OPENPETE_TICK_SCALE_AT schedule: each `VBL:SCALE` entry calls openpete_set_tick_scale once the device VBL count reaches VBL.
- *
- * The harness form of a live tick-scale change (the devui row's setter, at
- * a reproducible VBL); entries are comma-separated and in VBL order. Read
- * once; a no-op when the variable is unset. */
-static void tick_scale_schedule_poll(void) {
+/* Documented at the declaration in run_internal.h. */
+void tick_scale_schedule_poll(void) {
     static const char* s_next = NULL;
     static int s_init = 0;
     if (!s_init) {
@@ -1659,18 +1619,8 @@ static void audio_sinks_setup(const openpete_options_t* opts) {
     atexit(audio_feed_exit_summary);
 }
 
-/** @brief Apply the device feed's run-mode policy for this host-loop iteration, then top the device queue up.
- *
- * The feed carries the SPU at the guest's real-time rate. In a window the
- * feed holds (the SPU still runs) through fast boot, which runs the guest
- * without host yields until the first scene, through a pause, a
- * skip-to-level fast-forward and any other unlocked stretch. The phase and
- * the VBL count tag the feed's per-phase counters and timeline log. Headless runs unpaced by design: its feed (the synthetic device,
- * when armed) times itself from the frames pushed.
- * @param unlock_fps The iteration runs unpaced (fast-forward, skip, headless).
- * @param headless The run is headless.
- * @param paused The game is paused. */
-static void audio_feed_sync(int unlock_fps, int headless, int paused) {
+/* Documented at the declaration in run_internal.h. */
+void audio_feed_sync(int unlock_fps, int headless, int paused) {
     int ph = PH_LIVE;
     if (headless)                                ph = PH_HEADLESS;
     else if (openpete_fast_boot_active)          ph = PH_BOOT;
@@ -1720,15 +1670,8 @@ void host_live_knobs_publish(int render_fps, double tick_scale)
     knob_unlock();
 }
 
-/** @brief Apply the queued live-knob requests on the host loop's thread, at its quiescent point.
- *
- * A render fps or tick scale request goes to the pacer, which applies a
- * change at host_pacer_apply_live; a changed runahead depth raises the
- * re-arm flag; a rewind window request resizes the keyframe ring here, off
- * every capture; a mute request sets the baseline and applies the gains
- * here. Requests that match the applied value change nothing.
- * @param P The run's pacer. */
-static void live_knob_drain(host_pacer_t* P)
+/* Documented at the declaration in run_internal.h. */
+void live_knob_drain(host_pacer_t* P)
 {
     if (!SDL_GetAtomicInt(&s_knob_pending)) return;
     knob_lock();
@@ -1743,11 +1686,8 @@ static void live_knob_drain(host_pacer_t* P)
     if (c.mute_set) { s_mute = c.mute; apply_mute_gains(); }
 }
 
-/** @brief Mute audio while openpete_skip_present_until_level fast-forwards, and restore it after.
- *
- * Called wherever the flag can change (boot arming, each host-loop
- * iteration); applies the mute gains only on a change of the flag. */
-static void skip_mute_sync(void) {
+/* Documented at the declaration in run_internal.h. */
+void skip_mute_sync(void) {
     int want = openpete_skip_present_until_level ? 1 : 0;
     if (want == s_skip_mute) return;
     s_skip_mute = want;
@@ -2462,276 +2402,6 @@ bool host_fullscreen_poll(bool split, bool prev_alt_enter)
     return alt_enter;
 }
 
-/** @brief Return the iteration's unlock verdict: headless without forced pacing, the skip-to-level fast-forward, turbo held, or a scheduled --unlock-frames range, refused under the virtual clock.
- *
- * Called twice per iteration: at the loop top as the peek that gates
- * sim_due, on the previous keymap sample, and at the tail as the verdict
- * the pacer and the swap interval follow. Turbo drives the loop's own
- * pacing and the swap-interval bypass only: the VBL count is yield-driven,
- * so fast-forward changes wall-clock speed and never game state.
- * OPENPETE_FORCE_PACING keeps the pacer active under --headless.
- * @param S The session.
- * @return true when the iteration runs unpaced. */
-static bool host_unlock_wanted(const host_session_t* S)
-{
-    const openpete_options_t* opts = S->opts;
-    const bool force_pacing = host_pacer_force_pacing();
-    return host_pacer_unlock_verdict(
-        (opts->headless && !force_pacing) ||
-        openpete_skip_present_until_level ||
-        openpete_key_down(OPK_TURBO) ||
-        (opts->unlock_ranges_count > 0 &&
-         unlock_frame_in_ranges(opts, openpete_feed_key_now())));
-}
-
-/* The mod toggle epoch the host loop last applied. */
-static unsigned s_modset_epoch = 0;
-
-/** @brief Clear the rewind history and disarm runahead when the enabled mod set changed since the last iteration.
- *
- * A modset toggle changes what the timeline means: rewind history recorded
- * under the old set must not replay into the new one, and a held runahead
- * snapshot may predate a freshly enabled mod that declares no runahead
- * capability. Drop both; runahead_apply_live then re-arms runahead through
- * its capability gate against the NEW enabled set. */
-static void host_modset_epoch_poll(void)
-{
-    unsigned ep = openpete_mods_toggle_epoch();
-    if (ep == s_modset_epoch) return;
-    s_modset_epoch = ep;
-    if (openpete_rewind_enabled()) {
-        openpete_rewind_clear();
-        OPL_INFO_F("rewind", "modset changed - history cleared");
-    }
-    runahead_disarm();
-}
-
-/** @brief Start an iteration: the heartbeat, the unlock peek, the live tick-scale, render-fps, modset and runahead changes, and sim_due.
- *
- * The unlock peek is used *only* to gate sim_due under --render-fps>0. The
- * authoritative unlock write (openpete_unlock_fps + g_skipSwapInterval)
- * still happens at the bottom of the loop, AFTER PsyX_UpdateInput has
- * refreshed SDL's keyboard cache and AFTER the present has consumed the
- * previous iteration's swap-interval flag. The turbo read here is the
- * PREVIOUS iteration's keymap sample, since this peek runs before the
- * keymap poll; a press costs at most one iteration of lag.
- *
- * sim_due gates the once-per-yield block that does bk2 override stamping,
- * the co_switch into the game fiber, post-yield accounting (position log,
- * bk2 record, present, ram dump, exit checks). Under the legacy pacer it is
- * always true and the loop is "one yield per outer iteration"; under the
- * dual pacer the loop runs at render cadence and sim_due fires when the sim
- * deadline has elapsed, or unconditionally under unlock so fast-forward
- * actually fast-forwards. Live tick-scale and render-fps changes are
- * applied first, after the runahead re-arm: a regrid moves the deadline
- * sim_due reads.
- * @param S The session: the options and the pacer.
- * @param it The iteration, zeroed here; sets unlock_at_entry, sim_due and sim_period_ns. */
-static void host_iter_begin(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
-{
-    SDL_AddAtomicInt(&g_sim_heartbeat, 1);
-    host_trace_iter_begin();
-    *it = (host_iter_t){0};
-    it->unlock_at_entry = host_unlock_wanted(S);
-    tick_scale_schedule_poll();
-    live_knob_drain(&S->pacer);
-    host_modset_epoch_poll();
-    runahead_apply_live();
-    host_pacer_apply_live(&S->pacer);
-    it->sim_due = host_pacer_sim_due(&S->pacer, it->unlock_at_entry);
-    /* The VBL period of this iteration: the world-liveness bound and the
-     * VBL-clock terms read it. */
-    it->sim_period_ns = host_pacer_sim_period_ns(&S->pacer);
-    host_trace_bit(HT_F_SIM_DUE, it->sim_due);
-    host_trace_bit(HT_F_UNLOCK_ENTRY, it->unlock_at_entry);
-}
-
-/** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
- *
- * Split from run_host_init because SDL brings its video, gamepad and haptic
- * subsystems up on one thread and pumps them on that thread. With init on
- * the worker, main's pump raced it: a GAMEPAD_ADDED delivered on main
- * reaches PsyX_Pad_Event_ControllerAdded, which re-creates the haptic
- * subsystem while the worker is inside PsyX_Pad_InitSystem. Init on main
- * before main starts pumping serialises the two with no barrier. libco
- * fibers are created and switched here, on the one thread that owns them
- * for their whole life.
- * @param opts The parsed options.
- * @return The process exit code. */
-static int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim) {
-    host_trace_open(opts->resume_handoff != NULL, opts->headless);
-    host_session_t S;
-    int rc = host_session_open(&S, opts);
-    if (rc != OPENPETE_EXIT_OK) return host_session_close(&S, rc);
-    /* Which half of the input seam this thread owns (see run_host_init). */
-
-    host_pacer_t* const P = &S.pacer;
-
-    /* Input pump rate: every host iteration. g_PsyX_Pad_InputOverride is
-     * set per host iteration and the input update is what propagates it into
-     * the pad buffer the game polls, so skipping pumps (for instance while
-     * Tab is held) would leave the game reading a stale override and break
-     * bk2 replay determinism. */
-
-    /* Host hotkeys all come from the keymap (openpete_keymap.h), which
-     * owns the bindings AND the press edges: openpete_keymap_poll() once
-     * per host iteration advances one latch bit per action, so a held key
-     * fires exactly once. That replaces the ~25 prev_*_key bools this
-     * function used to carry, and it is what makes every hotkey below
-     * rebindable from [keys.host] in openpete.toml.
-     *
-     * The savestate keys are number-row 1/2/3 by default rather than the
-     * F2/F4 they started as, because F4 collides with PsyCross's own
-     * debug binding - it cycles g_activeKeyboardControllers, which
-     * silently kicks the keyboard off pad 1 and looks exactly like a
-     * save-state regression. The active slot they use is
-     * openpete_state_active_slot(), shared with the dev overlay. */
-
-    /* Frame-step state (S.paused, S.step_one). Pause toggles; frame-step advances exactly one
-     * game tick, running VBLs until the game draws (hold to repeat). While paused the host
-     * loop pumps SDL events, sleeps the deadline, and skips the co_switch
-     * into the game fiber - so g_ram / CPUState stay frozen and PsyCross
-     * keeps presenting the last completed frame. SPU is muted on enter to
-     * avoid the held-voice drone (PsyCross's SPU output plays through
-     * OpenAL, whose mixer runs on its own thread; without new SPU register
-     * writes voices loop their current sample). */
-    S.loop_entered = true;
-    while (!S.exit_reason) {
-        host_iter_t it;
-        host_iter_begin(&S, &it);
-
-        /* Override-channel arbitration: the bk2 row, the overlays' neutral
-         * stamp and suspension, the cursor. bk2 end leaves before the tick. */
-        if (host_input_arbitrate(&S, &it)) {
-            S.exit_reason = "bk2-end";
-            break;
-        }
-
-        /* The binding sample, the dev overlay and the settings menu. */
-        host_ui_poll();
-
-        /* Save states, rewind, the handoff, pause and step, and the host
-         * hotkeys, while the game fiber is yielded and the menu is shut. */
-        host_quiescent_ops(&S, &it);
-
-        host_input_latch(&S, &it);
-
-        /* The VBL: the yield decision, the fiber switch inside the pace-log
-         * bracket, and on a tick the runahead lead around the interp
-         * captures. */
-        host_tick(&S, &it);
-
-        /* Position log fires after each yield (post-fast-boot - address
-         * holds garbage before BSS init). Frame counter is openpete_frame,
-         * vbl is the synchronous yield-driven counter; both are
-         * deterministic across runs by construction. */
-        if (S.out.position_log && it.ticked && !openpete_fast_boot_active) {
-            position_log_emit(S.out.position_log, openpete_frame,
-                              SDL_GetAtomicInt(&openpete_vbl));
-        }
-        if (S.out.hash_log && it.ticked && !openpete_fast_boot_active) {
-            game_on_hash_emit(openpete_frame);
-            gameplay_hash_log_emit(S.out.hash_log, openpete_frame,
-                                   SDL_GetAtomicInt(&openpete_vbl));
-        }
-
-        /* --bk2-record: one bk2 frame per unit of the feed key so replay
-         * timing matches recording 1:1. Sampled AFTER the yield because PsyX folds
-         * keyboard/gamepad/--bk2 override into pad->buttons inside the
-         * game's PadVSync handler - pre-yield the value would still be
-         * stale from the previous frame. Also skip iterations where the
-         * frame counter didn't advance (gated event pumps, no-tick yields
-         * from dispatch stubs), which would otherwise inflate the movie
-         * length. */
-        if (it.ticked)
-            host_input_commit(&S, &it);
-
-        if (it.sim_due && opts->debug_triangle) {
-            /* Re-issue the static triangle so it's drawn over whatever the
-             * game queued - guarantees a non-black on-screen pixel even
-             * when the title-screen overlay is a stub. Gated on sim_due so
-             * render-only iterations under --render-fps>0 don't pollute the
-             * next tick's OT. */
-            openpete_debug_triangle_emit();
-        }
-
-        /* The canonical present of a drawn tick, then the eager or inline
-         * strategy between ticks and the paused repaint. */
-        host_present(&S, &it);
-
-        host_ram_dump_if_due(&S);
-        S.exit_reason = host_exit_reason(&S);
-
-        host_loop_sample(&S, &it);
-
-        /* No PsyX_BeginScene here - DrawOTag starts the scene on demand. */
-
-        /* One VBL record per iteration that ran the game fiber. Iterations
-         * that only presented (--render-fps > tick rate) are PRESENT records;
-         * conflating the two would make the tick cadence look like the
-         * present cadence, which is the confusion this log exists to end. */
-        if (it.yield_now) {
-            if (S.paused)      it.vbl.flags |= OP_PACE_F_PAUSED | OP_PACE_F_STEPPED;
-            if (it.rewound)    it.vbl.flags |= OP_PACE_F_REWIND;
-            if (!host_world_live(&S, &it, op_now()))
-                it.vbl.flags |= OP_PACE_F_NOT_LIVE;
-            openpete_pace_vbl(openpete_frame, it.vbl.flags,
-                              openpete_pace_pad_reads_this_vbl(),
-                              it.vbl.deadline_ns, it.vbl.latch_ns,
-                              it.vbl.exec_start_ns, it.vbl.exec_end_ns,
-                              it.vbl.latch_seq, it.vbl.latch_bits);
-            openpete_boot_tick();
-            openpete_live_switch_poll(openpete_frame);
-        }
-
-        /* The authoritative unlock verdict, read from this iteration's
-         * keymap poll: one iteration newer than the peek at the loop top. */
-        const bool unlock_fps = host_unlock_wanted(&S);
-        skip_mute_sync();
-        host_pacer_note_unlock(P, unlock_fps);
-        openpete_unlock_fps = unlock_fps ? 1 : 0;
-        g_skipSwapInterval = unlock_fps ? 1 : 0;
-        audio_feed_sync(unlock_fps, opts->headless, S.paused);
-
-        /* Paused without a step pending: sleep so we don't spin the CPU.
-         * The condvar pacer below only waits when the iteration ticked, and
-         * the wall-clock pacer's render deadline does sleep but only at
-         * its own cadence - explicit sleep here keeps the paused idle
-         * cost near-zero regardless of render_fps. */
-        if (S.paused && !it.ticked && !unlock_fps) {
-            SDL_Delay(16);
-        }
-
-        /* The pacer steps its deadlines and sleeps to the next one; unlock
-         * or a requested shutdown (ESC, window close, SIGINT) re-anchors
-         * instead of sleeping, so a misbehaving OS timer cannot hold the quit. */
-        host_pacer_advance(P, unlock_fps, it.sim_due, it.ticked,
-                           eager_active(), g_shutdown_requested);
-        host_trace_bit(HT_F_TICKED, it.ticked);
-        host_trace_bit(HT_F_DID_PRESENT, it.did_present);
-        host_trace_bit(HT_F_EAGER, eager_active());
-        host_trace_bit(HT_F_EAGER_LIVE, eager_world_live());
-        host_trace_bit(HT_F_PAUSED, S.paused);
-        host_trace_bit(HT_F_STEP_ONE, S.step_one);
-        host_trace_bit(HT_F_UNLOCK_TAIL, unlock_fps);
-        host_trace_iter_end(S.exit_reason != NULL, S.exit_reason, it.vbl.flags,
-                            (int64_t)host_pacer_sim_deadline(P, 0),
-                            (int64_t)host_pacer_render_slot(P));
-
-#if defined(__EMSCRIPTEN__)
-        /* Guarantee one browser event-loop turn per host iteration. The
-         * paced pacer branches already yielded inside op_sleep_until's
-         * Asyncify arm, but the unlock / fast-forward branch (and
-         * render-fps=0 no-tick iters) don't call it - without this the tab
-         * would freeze. emscripten_sleep(0) is a single Asyncify
-         * unwind/rewind; harmless after an already-yielded paced iter. */
-        emscripten_sleep(0);
-#endif
-    }
-
-    host_trace_loop_end(S.exit_reason);
-    return host_session_close(&S, OPENPETE_EXIT_OK);
-}
 #endif /* OPENPETE_HAS_PSYCROSS */
 
 /** @brief Log the last openpete_frame value at process exit (atexit handler). */

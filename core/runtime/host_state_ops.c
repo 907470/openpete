@@ -271,6 +271,9 @@ void state_ops_collect(const openpete_options_t* opts) {
     static bool sched_saved = false, sched_loaded = false;
     const unsigned slot = openpete_state_active_slot();
     const int req = SDL_SetAtomicInt(&s_state_slot_req, 0);
+    /* The save and load keys default to the number row: F4 is PsyCross's
+     * debug binding that cycles g_activeKeyboardControllers, which moves the
+     * keyboard off pad 1. The slot is the one the dev overlay shares. */
     if (openpete_key_pressed(OPK_STATE_SAVE) || (req & STATE_REQ_SAVE))
         state_op_push(STATE_OP_SAVE_SLOT, slot, NULL);
     if (openpete_key_pressed(OPK_STATE_LOAD) || (req & STATE_REQ_LOAD))

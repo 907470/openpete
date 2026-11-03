@@ -324,7 +324,8 @@ static void menu_open_input(void)
 void host_ui_poll(void)
 {
     /* Sample every binding once per iteration; openpete_key_pressed()
-     * below reads the edge this computed. Reads SDL's keyboard/gamepad
+     * below reads the edge this computed, one latch bit per action, so a
+     * held key fires once and every hotkey is rebindable from [keys.host]. Reads SDL's keyboard/gamepad
      * state caches, which the previous iteration's pump refreshed - so
      * this must run before the first hotkey test, and the turbo peek at
      * the top of the loop deliberately sees the previous sample.

@@ -42,12 +42,12 @@ typedef struct host_session {
     int         refresh_hz;            /* owner: open; display refresh, 60 headless or unknown */
     int         refresh_mhz;           /* owner: open; display refresh in mHz, for the pace log */
     bool        paused;                /* owner: host_pause_step; the sim is paused */
-    bool        step_one;              /* owner: host_pause_step (raise); lowered by host_tick when the step ends */
+    bool        step_one;              /* owner: host_pause_step (raised while paused, lowered on resume); lowered by host_tick when the step ends */
     bool        ram_dumped;            /* owner: host_ram_dump_if_due; the --ram-dump-on-frame dump was taken */
     op_time_t   last_canon_present_ns; /* owner: host_present (the canonical present); 0 until the first, read by host_world_live */
-    host_pacer_t   pacer;              /* owner: open (init, start); advanced by the loop tail */
-    host_bk2_t     bk2;
-    host_outputs_t out;
+    host_pacer_t   pacer;              /* owner: open (init, start); live changes applied by host_iter_begin, advanced by host_pace_tail */
+    host_bk2_t     bk2;                /* owner: open (bk2 load, record begin) */
+    host_outputs_t out;                /* owner: open; closed by close */
 } host_session_t;
 
 /* The pace-log record of the VBL an iteration runs: the input sample it
@@ -57,12 +57,12 @@ typedef struct {
     unsigned  latch_seq;   /* owner: host_input_latch; the latched sample's identity, OP_PACE_LATCH_NONE on the legacy path */
     uint16_t  latch_bits;  /* owner: host_input_latch; pad bits of the latched sample */
     op_time_t deadline_ns; /* owner: host_tick; the pacer deadline in force, 0 when unpaced */
-    uint8_t   flags;       /* owner: host_tick (deadline flags, SPECULATIVE); appended by the loop tail (PAUSED, STEPPED, REWIND, NOT_LIVE) */
+    uint8_t   flags;       /* owner: host_tick (deadline flags, SPECULATIVE); appended by host_pace_tail (PAUSED, STEPPED, REWIND, NOT_LIVE) */
     op_time_t exec_start_ns; /* owner: host_tick; the game fiber switch's start, 0 when the iteration does not yield */
     op_time_t exec_end_ns;   /* owner: host_tick; the game fiber switch's end, 0 when the iteration does not yield */
 } host_vbl_rec_t;
 
-/* One iteration of the host loop. Zeroed at the iteration's start. */
+/* One iteration of the host loop. Zeroed by host_iter_begin. */
 typedef struct {
     bool unlock_at_entry;   /* owner: host_iter_begin; the unlock verdict from the previous keymap sample */
     bool sim_due;           /* owner: host_iter_begin, after the live pacer changes; the sim runs this iteration */
@@ -70,13 +70,49 @@ typedef struct {
     bool ovr_claimed;       /* owner: host_input_arbitrate; a bk2 row or an overlay claimed the pad override channel */
     unsigned bk2_stamped_frame; /* owner: host_input_arbitrate; openpete_frame the bk2 stamp was made for */
     bool p1_staged;         /* owner: host_input_latch; slot 0 of the input record was staged before the yield */
-    bool rewound;           /* owner: the quiescent ops (rewind_step); the rewind driver stepped, so no forward tick */
+    bool rewound;           /* owner: host_quiescent_ops (rewind_step); the rewind driver stepped, so no forward tick */
     unsigned frame_before_yield; /* owner: host_tick, before the yield; read by host_input_commit */
     bool yield_now;         /* owner: host_tick; the game fiber runs this iteration */
     bool ticked;            /* owner: host_tick; the yield advanced openpete_frame */
     bool did_present;       /* owner: host_present (the canonical present); a drawn tick was presented this iteration */
     host_vbl_rec_t vbl;     /* owner: host_input_latch (latch fields), host_tick (the rest) */
 } host_iter_t;
+
+/** @brief Run the host loop on the sim thread: open the session, run iterations until an exit reason is set, close the session.
+ *
+ * Run apart from run_host_init because SDL brings its video, gamepad and
+ * haptic subsystems up on one thread and pumps them there: init runs on
+ * main before main starts pumping, which serialises the two with no
+ * barrier. The game fiber is created and switched here, on the one thread
+ * that owns it for its whole life.
+ *
+ * The loop body is the phase sequence, one call per phase. The order is
+ * the contract:
+ * - The live pacer changes run before sim_due, since a regrid moves the
+ *   deadline sim_due reads; the unlock peek reads the previous iteration's
+ *   keymap sample.
+ * - The bk2 row is stamped on a sim-due iteration only, the overlays'
+ *   neutral stamp on every iteration; the movie's end leaves before the
+ *   tick of a row past it.
+ * - The keymap poll runs before the first hotkey read.
+ * - The quiescent ops run before the input latch, because a savestate load
+ *   rewrites the pad buffer; the input is pumped and latched on every
+ *   iteration, since the pump propagates the override into the pad buffer
+ *   the game polls, and the input record is staged after every override
+ *   writer.
+ * - The tick runs the game fiber only on a latch decision made this
+ *   iteration; the interp captures are taken at the runahead lead's head,
+ *   and the rollback precedes every other RAM read.
+ * - The tick outputs describe the committed timeline (after the rollback).
+ * - The present never runs inline while the present thread holds the
+ *   display.
+ * - The unlock verdict follows the present, which consumed the previous
+ *   iteration's swap-interval flag; the pacer runs last.
+ *
+ * No scene is begun between iterations: DrawOTag starts the scene on demand.
+ * @param opts The parsed options.
+ * @return The process exit code. */
+int run_host_loop(const openpete_options_t* opts) OP_REQUIRES(sim);
 
 /** @brief Open the run: display claim, mods guard, game boot hook, game fiber, deadline, refresh query, pacer, rewind ring, runahead request and the outputs.
  *

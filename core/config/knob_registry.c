@@ -2345,6 +2345,19 @@ static const knob_desc_t g_builtin_debug[] = {
       "thread-role check site the run reached, with its evaluation and "
       "failure counts. scripts/fences/thread_roles.py join <path> adds "
       "the sites the run did not reach as zero rows."),
+    ENVROW_LATCHED_NOTE("LOOP_TRACE", "Debug", "none: no trace",
+      "Path of the host loop's decision trace: one 64-byte record per loop "
+      "iteration (sim due, unlock, override claim, rewind, yield, tick, the "
+      "present made, the runahead outcome, the exit reason, the VBL pace "
+      "flags and the pacer deadlines), a header per process and the "
+      "teardown steps in the order they ran; layout in "
+      "openpete_host_trace.h. Two builds' traces of one run compare "
+      "decision for decision. Read at the loop's start; a handoff successor "
+      "appends."),
+    ENVROW_LATCHED_NOTE("EAGER_HOLD_S", "Debug", "none: no hold",
+      "Seconds eager production stays off from the first canonical present "
+      "at which every other engage term holds, so inline sub-tick presents "
+      "run and warm the shed predictor first. Read once."),
     ENVROW_LATCHED("GLINT", "Debug", "2",
       "What the gem-glint feeder emits: 0 nothing, 1 the near four-point "
       "stars alone, 2 the near stars and the far crosses. The guest draw "
