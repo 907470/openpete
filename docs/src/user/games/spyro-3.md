@@ -1,8 +1,7 @@
 # Spyro: Year of the Dragon
 
-No OpenPete release package includes Spyro 3 yet. A build from source
-runs it with `openpete` (`openpete.exe` on Windows), the one program that
-runs every game and picks the game from the disc. Its config sections are
+OpenPete runs it with `openpete` (`openpete.exe` on Windows), the one
+program that runs every game and picks the game from the disc. Its config sections are
 `[game.spyro-3]` and `[disc.SCUS-94467]`
 ([Config file](../customizing/config-file.md)).
 
@@ -37,20 +36,6 @@ openpete "Spyro - Year of the Dragon (v1.0).cue"
 
 Spyro 3 creates, saves and loads its save on a memory card as on Spyro 1
 ([Saves](../playing/saves.md#memory-cards)).
-
-!!! warning "New: memory card support"
-    Card support on Spyro 3 is new. Creating, saving and loading are
-    checked against the PlayStation reference; a full run with a card
-    inserted is not checked yet. If the game misbehaves with a card, start it with
-    `--no-card`<!-- id: flag:--no-card -->, or set it once in
-    `openpete.toml`:
-
-    ```toml
-    [game.spyro-3]
-    no_card = true
-    ```
-
-    Without a card the game cannot save.
 
 ## Levels
 

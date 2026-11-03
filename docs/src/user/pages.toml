@@ -220,7 +220,6 @@
 [game.spyro-2]
 "flag:--cheats" = "games/spyro-2.md#cheats"
 "flag:--load-delay" = "games/spyro-2.md#notes"
-"flag:--no-card" = "games/spyro-2.md#memory-cards"
 "flag:--skip-to-area" = "games/spyro-2.md#levels"
 "flag:--skip-to-cutscene" = "games/spyro-2.md#cutscenes"
 "flag:--skip-to-level" = "games/spyro-2.md#levels"
@@ -230,7 +229,6 @@
 [game.spyro-3]
 "flag:--cheats" = "games/spyro-3.md#cheats"
 "flag:--load-delay" = "games/spyro-3.md#notes"
-"flag:--no-card" = "games/spyro-3.md#memory-cards"
 "flag:--skip-to-area" = "games/spyro-3.md#sub-areas"
 "flag:--skip-to-cutscene" = "games/spyro-3.md#cutscenes"
 "flag:--skip-to-level" = "games/spyro-3.md#levels"

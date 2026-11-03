@@ -1,4 +1,4 @@
 # The games the distribution packages ship. The surface dump's audience
 # (which flags, rows, menu rows and keys a player can reach) is computed per
 # game listed here, with that game's scope of packaging/openpete-dist.toml.
-games = ["spyro-1"]
+games = ["spyro-1", "spyro-2", "spyro-3"]

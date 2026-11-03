@@ -1,8 +1,7 @@
 # Spyro 2: Ripto's Rage!
 
-No OpenPete release package includes Spyro 2 yet. A build from source
-runs it with `openpete` (`openpete.exe` on Windows), the one program that
-runs every game and picks the game from the disc. Its config sections are
+OpenPete runs it with `openpete` (`openpete.exe` on Windows), the one
+program that runs every game and picks the game from the disc. Its config sections are
 `[game.spyro-2]` and `[disc.SCUS-94425]`
 ([Config file](../customizing/config-file.md)).
 
@@ -35,20 +34,6 @@ openpete "Spyro 2 - Ripto's Rage.cue"
 
 Spyro 2 creates, saves and loads its save on a memory card as on Spyro 1
 ([Saves](../playing/saves.md#memory-cards)).
-
-!!! warning "New: memory card support"
-    Card support on Spyro 2 is new. Creating, saving and loading are
-    checked against the PlayStation reference; a full run with a card
-    inserted is not checked yet. If the game misbehaves with a card, start it with
-    `--no-card`<!-- id: flag:--no-card -->, or set it once in
-    `openpete.toml`:
-
-    ```toml
-    [game.spyro-2]
-    no_card = true
-    ```
-
-    Without a card the game cannot save.
 
 ## Levels
 
