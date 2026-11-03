@@ -426,6 +426,19 @@ endif()
 if(NOT OPENPETE_GIT_REV)
     set(OPENPETE_GIT_REV "unknown")
 endif()
+# The bare commit an untagged build's version line shows: nine hex
+# characters of HEAD, with no tag distance and no -dirty suffix.
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short=9 HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE OPENPETE_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NOT OPENPETE_GIT_COMMIT)
+    set(OPENPETE_GIT_COMMIT "unknown")
+endif()
 target_compile_definitions(openpete_core
     PRIVATE OPENPETE_BUILD_ID="${OPENPETE_GIT_REV}")
 # The runtime reads and writes guest RAM (uint8_t arrays) through wider
@@ -506,6 +519,7 @@ set(OPENPETE_VERSION_STR "${OPENPETE_BUILD_VERSION}" PARENT_SCOPE)
 message(STATUS "openpete: VERSIONINFO ${OPENPETE_VERSION_NUM} \"${OPENPETE_BUILD_VERSION}\"")
 target_compile_definitions(openpete_core
     PRIVATE OPENPETE_BUILD_VERSION="${OPENPETE_BUILD_VERSION}"
+            OPENPETE_BUILD_COMMIT="${OPENPETE_GIT_COMMIT}"
             OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED}
             OPENPETE_BUILD_DISTRIBUTED=${OPENPETE_BUILD_DISTRIBUTED})
 

@@ -18454,7 +18454,8 @@ static int version_overlay_alpha(void) {
  * the usable x range of the overlay aspect. When the stats overlay draws it
  * claims its anchor with margin 0 and snaps the placement to whole pixels.
  * It then resolves the version line's alpha (s_ver_alpha8) and, when
- * non-zero, claims the bottom-left anchor for it with margin 0 and snaps
+ * non-zero, claims the bottom-left anchor for a tagged build's line or the
+ * bottom-centre anchor for an untagged build's, with margin 0, and snaps
  * that placement, before the toasts stack against what is left. Runs at the
  * top of the per-present resource pass. */
 static void overlay_layout_update(void) {
@@ -18499,7 +18500,11 @@ static void overlay_layout_update(void) {
     if (s_ver_alpha8 > 0) {
         float vw, vh;
         version_region(&vw, &vh);
-        openpete_anchor_place(&s_anchor_ledger, OPENPETE_ANCHOR_BOTTOM_LEFT,
+        /* A release's brief line sits bottom left; an untagged build's
+         * whole-session line sits bottom centre. */
+        const openpete_anchor_t ver_anchor = openpete_build_tagged()
+            ? OPENPETE_ANCHOR_BOTTOM_LEFT : OPENPETE_ANCHOR_BOTTOM_CENTER;
+        openpete_anchor_place(&s_anchor_ledger, ver_anchor,
                               snap_px(vw, ph), snap_px(vh, ph), 0.0f,
                               &s_ver_ox, &s_ver_oy);
         s_ver_ox = snap_px(s_ver_ox, ph);

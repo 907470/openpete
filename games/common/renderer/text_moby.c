@@ -1107,9 +1107,12 @@ void text_moby_native_perf_overlay(void) {
 
 /* ---- the build-version line --------------------------------------------
  * One short line naming the build, region-local like the stats block: the
- * renderer pins the region to the bottom-left anchor and decides how long it
- * stays up. Same cap height and inset as the stats readout, so the two corner
- * blocks read as one set.
+ * renderer pins the region to its anchor and decides how long it stays up.
+ * A tagged release shows its version at the stats readout's cap height and
+ * inset, bottom left, so the two corner blocks read as one set. An untagged
+ * build shows only its commit hash, at VER_CAP_H_UNTAGGED, bottom centre, for
+ * the whole session, so a build handed out for testing is identified by any
+ * screenshot and stays unpleasant to play if it spreads.
  *
  * Built once. The string is fixed at configure time, so re-emitting it every
  * tick would spend the glyph builder's whole cost for identical geometry on
@@ -1118,6 +1121,7 @@ void text_moby_native_perf_overlay(void) {
  * The separators of an untagged describe string ("v0.3.0-12-gabc1234") are
  * drawn with the synthesized hyphen bar when the font has no hyphen model. */
 #define VER_CAP_H     PERF_CAP_H
+#define VER_CAP_H_UNTAGGED 0.050f   /* 2.5x the release line's cap height */
 #define VER_ORIGIN_X  PERF_ORIGIN_X
 #define VER_ORIGIN_Y  PERF_ORIGIN_Y
 /* The extruded glyph models run ~180 verts each, so a describe string of two
@@ -1141,11 +1145,13 @@ void text_moby_native_version(void) {
     }
     if (s_ver_pushed > 0) return;   /* the string never changes */
 
-    const char* text = openpete_build_version();
-    const float region_w = 2.0f * VER_ORIGIN_X + measure_string(text, VER_CAP_H);
-    const float region_h = 2.0f * VER_ORIGIN_Y + VER_CAP_H;
+    const int tagged = openpete_build_tagged();
+    const char* text = tagged ? openpete_build_version() : openpete_build_commit();
+    const float cap = tagged ? VER_CAP_H : VER_CAP_H_UNTAGGED;
+    const float region_w = 2.0f * VER_ORIGIN_X + measure_string(text, cap);
+    const float region_h = 2.0f * VER_ORIGIN_Y + cap;
     const int nv = text_moby_native_emit(text, VER_ORIGIN_X, VER_ORIGIN_Y,
-                                         VER_CAP_H, FONT.fixed_tint,
+                                         cap, FONT.fixed_tint,
                                          s_ver_buf, VER_OVL_MAX);
     if (nv <= 0) return;   /* font cached but this string emitted nothing: retry next tick */
     openpete_native_set_version_glyphs(s_ver_buf, nv, region_w, region_h);

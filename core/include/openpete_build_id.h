@@ -8,8 +8,9 @@
 // "Tagged" means the tree was exactly a release when it was configured: the
 // describe resolved to a tag with no commits and no local modifications on
 // top, or a version was handed in explicitly. An untagged build is a build
-// somebody has to be able to identify from a screenshot, which is why the
-// version line stays on screen for its whole session.
+// somebody has to be able to identify from a screenshot, which is why its
+// version line shows the commit, large, at the bottom centre, for its whole
+// session.
 
 #ifndef OPENPETE_BUILD_ID_H
 #define OPENPETE_BUILD_ID_H
@@ -24,6 +25,13 @@ extern "C" {
  * `git describe` output; "unknown" when the configure step had no git.
  * @return a static string, never NULL */
 const char *openpete_build_version(void);
+
+/** @brief The configure-time commit, nine hex characters of HEAD.
+ *
+ * No tag distance and no -dirty suffix; "unknown" when the configure step
+ * had no git. The untagged build's version line shows this string.
+ * @return a static string, never NULL */
+const char *openpete_build_commit(void);
 
 /** @brief Whether the tree was exactly a release when it was configured.
  *

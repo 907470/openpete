@@ -121,8 +121,8 @@ move aside while the settings menu is open.
 A release build shows its version at the bottom left for two seconds after
 start. `--version-osd off` <!-- id: knob:version_osd --> hides it; default on
 <!-- id: knob:version_osd -->. A distributed build that is not a tagged
-release shows its version for the whole session, and this setting does not
-hide it.
+release, such as a test build, shows its commit hash in large text at the
+bottom centre for the whole session, and this setting does not hide it.
 
 ## Renderer
 
