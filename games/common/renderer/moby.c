@@ -3698,7 +3698,8 @@ static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
  * second sphere failed after the byte was written). It is offered to the
  * game's record builder when moby_game.cull_view_admits, the cull's admission
  * re-evaluated with the lateral and vertical slopes scaled to the view, admits it and the
- * occlusion cull does not reject it. The drawn byte is read, never written.
+ * occlusion cull does not reject it. Under extended LOD the admission skips the
+ * sector-byte test (moby_reveal_sector_only). The drawn byte is read, never written.
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address.
  * @param head The moby array head, for the pre-cull drawn byte.
@@ -3712,7 +3713,8 @@ static int moby_reveal_widened(CPUState* cpu, uint32_t m, uint32_t head, double 
     const unsigned drawn = cpu->read_byte(m + game_layout.moby.drawn_off);
     if (drawn > 1u || (drawn == 1u && moby_rec_holds_moby(cpu, m))) return 0;
     const moby_wide_verdict_t v = moby_game.cull_view_admits(
-        cpu, m, moby_precull_drawn(cpu, m, head), widen, moby_native_view_vwiden());
+        cpu, m, moby_precull_drawn(cpu, m, head), widen, moby_native_view_vwiden(),
+        openpete_no_lod);
     verdicts[v]++;
     const int trace = moby_trace_target() && m == moby_trace_target();
     if (trace)
@@ -3740,8 +3742,49 @@ typedef struct {
     long wide_v[MOBY_WIDE_VERDICTS];
     long requeued;
     long canon_absent, canon_boxed;
-    int  added, wide_added;
+    long sector_seen, sector_occl;
+    int  added, wide_added, sector_added;
 } moby_reveal_census_t;
+
+/** @brief The extended-LOD clause for a moby inside the cull's distance box that the cull dropped on its sector byte alone.
+ *
+ * The game's cull drops a moby whose sector byte at Moby+0x52 names a sector
+ * the precomputed visibility tree marked hidden for the camera's cell. Under
+ * extended LOD the native occlusion test decides such a moby instead: it is
+ * offered to the game's record builder when moby_game.cull_view_admits at 4:3
+ * rejects it on the sector byte and, with that test skipped, passes every
+ * later test of the cull (MOBY_WIDE_CANONICAL for the animated kind; the
+ * second kind's cull has no test after the sector byte, so OTHER_KIND), and
+ * the occlusion cull does not reject it. A moby the cull drops on its box,
+ * range, near, lateral, vertical or second-sphere test stays dropped. The
+ * revealed record takes the walk's own occlusion test as a queued one does.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param drawn The drawn-verdict byte the cull tested.
+ * @param kind The model kind whose queue the record joins.
+ * @param c Tallies the candidate, its occlusion verdict and the record.
+ * @return 1 when a record was appended, else 0. */
+static int moby_reveal_sector_only(CPUState* cpu, uint32_t m, unsigned drawn,
+                                   moby_reveal_kind_t kind, moby_reveal_census_t* c) {
+    if (!moby_game.cull_view_admits) return 0;
+    if (kind == MOBY_REVEAL_ANIMATED && moby_rec_holds_moby(cpu, m)) return 0;
+    if (moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 0) != MOBY_WIDE_SECTOR) return 0;
+    const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 1);
+    if (g != (kind == MOBY_REVEAL_ANIMATED ? MOBY_WIDE_CANONICAL : MOBY_WIDE_OTHER_KIND)) return 0;
+    c->sector_seen++;
+    const int trace = moby_trace_target() && m == moby_trace_target();
+    if (occl_record_culled(cpu, m)) {
+        c->occl++; c->sector_occl++;
+        if (trace) fprintf(stderr, "[moby-trace vbl=%u] %08X SECTOR occluded\n", openpete_frame, m);
+        return 0;
+    }
+    moby_reveal_reason_t why = MOBY_REVEAL_OK;
+    if (!moby_game.reveal_record(cpu, m, kind, &why)) { c->declined[why]++; return 0; }
+    moby_rec_append_note(m);
+    c->sector_added++;
+    if (trace) fprintf(stderr, "[moby-trace vbl=%u] %08X REVEALED sector\n", openpete_frame, m);
+    return 1;
+}
 
 /** @brief The extended-LOD clause of the reveal for one live moby.
  *
@@ -3753,7 +3796,9 @@ typedef struct {
  * skipped. An animated moby inside the box with no record in the queue is
  * tallied in `canon_absent`, and in `canon_boxed` when the game's own
  * admission (moby_game.cull_view_admits at 4:3) rejects it by the box or
- * range test, a moby the box test here wrongly left to the cull.
+ * range test, a moby the box test here wrongly left to the cull. An
+ * in-box moby the cull dropped on its sector byte alone takes
+ * moby_reveal_sector_only.
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address.
  * @param head The moby array head, for the pre-cull drawn byte.
@@ -3776,10 +3821,11 @@ static void moby_reveal_extended(CPUState* cpu, uint32_t m, uint32_t head,
                        d[2] > -t && d[2] < t && v[2] < (int64_t)t);
     if (inbox) {
         c->canon++;
+        if (moby_reveal_sector_only(cpu, m, drawn, kind, c)) return;
         if (kind == MOBY_REVEAL_ANIMATED && !moby_rec_holds_moby(cpu, m)) {
             c->canon_absent++;
             if (moby_game.cull_view_admits) {
-                const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0);
+                const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 0);
                 if (g == MOBY_WIDE_OUTSIDE || g == MOBY_WIDE_RANGE) c->canon_boxed++;
             }
         }
@@ -3806,7 +3852,8 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
                     "declined{nomodel=%ld otherkind=%ld dup=%ld nopose=%ld full=%ld otherform=%ld} "
                     "wide{widen=%.4f added=%d outside=%ld sector=%ld otherkind=%ld range=%ld "
                     "near=%ld lateral=%ld vertical=%ld sphere2=%ld canonical=%ld admit=%ld "
-                    "requeued=%ld} canon_absent=%ld canon_boxed=%ld\n",
+                    "requeued=%ld} canon_absent=%ld canon_boxed=%ld "
+                    "sector{seen=%ld occluded=%ld added=%d}\n",
             openpete_frame, (kind == MOBY_REVEAL_ANIMATED) ? "anim" : "simple",
             c->seen, c->canon, c->occl, c->added,
             c->declined[MOBY_REVEAL_NO_MODEL], c->declined[MOBY_REVEAL_OTHER_KIND],
@@ -3817,7 +3864,8 @@ static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_
             c->wide_v[MOBY_WIDE_RANGE], c->wide_v[MOBY_WIDE_NEAR],
             c->wide_v[MOBY_WIDE_LATERAL], c->wide_v[MOBY_WIDE_VERTICAL],
             c->wide_v[MOBY_WIDE_SPHERE2], c->wide_v[MOBY_WIDE_CANONICAL],
-            c->wide_v[MOBY_WIDE_ADMIT], c->requeued, c->canon_absent, c->canon_boxed);
+            c->wide_v[MOBY_WIDE_ADMIT], c->requeued, c->canon_absent, c->canon_boxed,
+            c->sector_seen, c->sector_occl, c->sector_added);
 }
 
 int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
@@ -3845,8 +3893,8 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
     if (moby_verify_enabled()) moby_reveal_census_print(&c, kind, wide ? widen : 1.0);
     moby_kind_census(s_in_reextract ? "sub" : "canon",
                      kind == MOBY_REVEAL_ANIMATED ? "anim-reveal" : "simple-reveal",
-                     c.added + c.wide_added, c.occl, 0, 0);
-    return c.added + c.wide_added;
+                     c.added + c.wide_added + c.sector_added, c.occl, 0, 0);
+    return c.added + c.wide_added + c.sector_added;
 }
 
 /** @brief Print the occlusion cull counts of the pass that just ran under OPENPETE_OCCL_LEG_CENSUS.
@@ -4003,7 +4051,7 @@ static int trail_cand_has(uint32_t m) {
  * @return 1 when admitted, 0 when rejected, -1 when untested. */
 static int qmiss_admits(CPUState* cpu, uint32_t m, unsigned drawn) {
     if (!moby_game.cull_view_admits) return qmiss_s1_cull_admits(cpu, m, drawn);
-    const moby_wide_verdict_t v = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0);
+    const moby_wide_verdict_t v = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 0);
     if (v == MOBY_WIDE_OTHER_KIND) return -1;
     return v == MOBY_WIDE_CANONICAL;
 }
@@ -4221,7 +4269,7 @@ static int trail_replay_admit(CPUState* cpu, uint32_t* recs, uint32_t* mobys, in
         int dup = 0;
         for (int i = 0; i < nm && !dup; i++) dup = mobys[i] == R.moby;
         if (dup) continue;
-        if (moby_game.cull_view_admits(cpu, R.moby, 1u, 1.0, 1.0) != MOBY_WIDE_CANONICAL) continue;
+        if (moby_game.cull_view_admits(cpu, R.moby, 1u, 1.0, 1.0, 0) != MOBY_WIDE_CANONICAL) continue;
         recs[nm] = rec; mobys[nm] = R.moby; nm++; admit++;
     }
     if (qmiss_census_on())

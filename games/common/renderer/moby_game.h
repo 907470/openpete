@@ -351,11 +351,12 @@ typedef struct moby_game {
      * sector byte, the model kind, then the range, near, lateral and vertical
      * arms and any second sphere the cull tests, the lateral slopes scaled by
      * `widen` and the vertical ones by `vwiden`. ADMIT only when a widened arm
-     * passes where the 4:3 one fails. Reads gamestate only. NULL: the walk
-     * re-admits nothing inside the box. */
+     * passes where the 4:3 one fails. `open_sector` skips the sector-byte
+     * test, so a moby dropped on that byte alone takes the later tests' verdict.
+     * Reads gamestate only. NULL: the walk re-admits nothing inside the box. */
     moby_wide_verdict_t (*cull_view_admits)(CPUState* cpu, uint32_t moby,
                                             unsigned drawn_bits, double widen,
-                                            double vwiden);
+                                            double vwiden, int open_sector);
 
     /* ---- paint order inside one moby ----------------------------------
      * The key arithmetic of each walk is a row of moby_rank.h's table; the

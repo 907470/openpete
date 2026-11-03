@@ -2150,18 +2150,22 @@ static int64_t s23_second_sphere(CPUState* cpu, uint32_t moby, const int cam_m[3
  * first sphere admits takes the same second-sphere test at verdict 1. At
  * `widen` and `vwiden` 1.0 the widened and canonical arms are one test and
  * nothing is admitted.
+ *
+ * With `open_sector` the sector-byte test is skipped, so a moby the cull drops
+ * on that byte alone returns the verdict of the tests after it.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param drawn_bits The drawn-verdict byte the box threshold widens by.
  * @param widen The lateral slope factor, 1.0 at 4:3.
  * @param vwiden The vertical slope factor, 1.0 at the game's FOV.
+ * @param open_sector Nonzero to treat the moby's sector as live.
  * @return The first test that rejects the moby (MOBY_WIDE_SPHERE2 for the
  *         second sphere under the widened view), MOBY_WIDE_CANONICAL when the
  *         game's own arms also admit it, or MOBY_WIDE_ADMIT when only the
  *         widened arms do. */
 static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
                                                 unsigned drawn_bits, double widen,
-                                                double vwiden) {
+                                                double vwiden, int open_sector) {
     const int64_t t = s23_cull_box_threshold(cpu, moby, drawn_bits);
     if (t <= 0) return MOBY_WIDE_OUTSIDE;
     const uint32_t cam = game_layout.cam.base;
@@ -2176,7 +2180,7 @@ static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
     if (dx <= -t || dx >= t || dy <= -t || dy >= t || dz <= -t || dz >= t)
         return MOBY_WIDE_OUTSIDE;
     const uint32_t sector = cpu->read_byte(moby + 0x52u);
-    if (sector < 0xFEu && game_layout.env_anim.live_table &&
+    if (!open_sector && sector < 0xFEu && game_layout.env_anim.live_table &&
         cpu->read_byte(game_layout.env_anim.live_table + sector) == 0u)
         return MOBY_WIDE_SECTOR;
     const uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
