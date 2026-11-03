@@ -916,6 +916,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Host-loop decision trace: every headless row of
+    # games/<slug>/corpus/loop-trace.manifest (the attract-demo boot, the bk2
+    # rows under runahead, state stress, stress rewind and rewind hold, the
+    # handoff exec, the setup-error closes) runs with OPENPETE_LOOP_TRACE and
+    # its trace digest must equal tests/golden/<slug>/loop-trace-baseline.tsv.
+    # A row that misses an engagement term of its manifest row is VACUOUS
+    # (fail). The windowed rows need Xvfb and run by hand (--windowed).
+    foreach(_lt_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME loop_trace_${_lt_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_loop_trace.sh
+                         --game ${_lt_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(loop_trace_${_lt_game} PROPERTIES
+            LABELS "slow;determinism;loop-trace"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Option-parse exit codes: --help exits 0, a typed non-finite --fov exits
     # 3, the same value from openpete.toml warns and keeps the default, and
     # fov = 0 parses as the game's projection. Parse-only legs plus one

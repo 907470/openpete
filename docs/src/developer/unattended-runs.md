@@ -87,6 +87,36 @@ processes; logs land in `<build-dir>/skip-targets/<game>/`. Exit 0 PASS, 1 FAIL,
 `skip_targets_spyro-1`, `skip_targets_spyro-2` and `skip_targets_spyro-3`,
 labels `slow` and `skip-targets` (`ctest -L skip-targets`).
 
+### Loop decision trace
+
+`tests/harness/check_loop_trace.sh [--game SLUG] [--build-dir=DIR] [--row NAME]...
+[--windowed] [--bless] [--ref-bin=PATH]` runs each row of
+`games/<game>/corpus/loop-trace.manifest` with `OPENPETE_LOOP_TRACE` set and
+checks that the host loop made the same decision at every iteration as the
+blessed build. A row is `row | kind | source | launch | covers`: `kind` is
+`boot`, `bk2` (the movie replayed to its end), `setup-ftl` or `setup-pace`
+(a session that fails setup and exits 3), or `windowed`; `covers` lists the
+engagement terms, a count from `tests/harness/looptrace.py counts` that must
+be non-zero (`speculated`, `rollbacks`), equal a value (`headers=2`), or a
+log line (`log:TEXT`, `~` for a space). A row that misses a term is VACUOUS.
+The verdict is the row's line in `tests/golden/<game>/loop-trace-baseline.tsv`:
+exit code, record count and the sha256 of the compared fields of every
+record, equal exactly when `looptrace.py compare` reports two traces
+identical. Off the `--record-cfr` virtual clock the wall-clock fields are
+masked, so headless traces of one build are identical run to run. Traces are
+not committed; on a DIVERGED row, `--ref-bin=PATH` reruns it with a build of
+the baseline's revision and prints the first differing record, and
+`looptrace.py dump` prints the records around it. `--bless` rewrites the
+rows the run made, for an intended change to a loop decision. The
+`windowed` rows (t3: `--record-cfr` at 4 presents per tick, 32-56 min;
+t3b: the same with `OPENPETE_PACE_INJECT_PRESENT_US` and
+`OPENPETE_PACE_LATE_BUDGET_US`, so strict, late, probe and shed admits all
+occur) need `xvfb-run` and run only with `--windowed`. Outputs land in
+`<build-dir>/loop-trace/<game>/<row>/`. Exit 0 PASS, 1 FAIL, 64 SKIP. ctest
+runs the headless rows as `loop_trace_spyro-1`, `loop_trace_spyro-2` and
+`loop_trace_spyro-3`, labels `slow`, `determinism` and `loop-trace`
+(`ctest -L loop-trace`).
+
 ## Exit codes
 
 Defined in `core/include/openpete.h`.

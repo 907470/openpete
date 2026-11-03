@@ -1,0 +1,25 @@
+# Host-loop decision-trace rows (tests/harness/check_loop_trace.sh). Each row is
+# one run with OPENPETE_LOOP_TRACE set; its trace digest, record count and exit
+# code must equal the row of tests/golden/spyro-2/loop-trace-baseline.tsv.
+#
+# Fields: row | kind | source | launch | covers
+#   kind    boot (no movie), bk2 (source replayed with --bk2-stop-on-end to
+#           --frame-limit 6000, unlocked), setup-ftl / setup-pace (a session
+#           that fails its setup on a frame-time log / pace log in a missing
+#           directory; exit 3), windowed (Xvfb, --record-cfr 119.652 virtual
+#           clock; run only under --windowed)
+#   launch  extra arguments; an upper-case KEY=VALUE token is an environment
+#           entry
+#   covers  engagement terms: NAME (count above zero), NAME=N (count equal to
+#           N), log:TEXT (the run log has a line containing TEXT, ~ for a
+#           space). Counts: tests/harness/looptrace.py counts.
+#
+# row        | kind       | source                                         | launch                                   | covers
+t1           | boot       | -                                              | --frame-limit 40000                      | canon-inline close_steps
+t2-ra        | bk2        | shady-oasis-flame.bk2                          | --runahead 2 OPENPETE_RA_PREDICT_CHECK=1 | canon-inline speculated
+t2-stress    | bk2        | shady-oasis-flame.bk2                          | --state-stress 1                         | canon-inline log:savestate:~stress:
+t2-rw        | bk2        | shady-oasis-flame.bk2                          | --state-stress-rewind 25                 | canon-inline rollbacks
+t2-hold      | bk2        | shady-oasis-flame.bk2                          | --rewind 30 --rewind-hold 1500:40        | canon-inline rewound rollbacks
+t2-xl-autumn | bk2        | autumn-plains-skelos-badlands-portal-entry.bk2 | --runahead 2                             | canon-inline speculated left
+t3           | windowed   | -                                              | --frame-limit 8000                       | canon-lag intermediate v-strict
+t3b          | windowed   | -                                              | --frame-limit 8000 OPENPETE_PACE_INJECT_PRESENT_US=8000,20000,32 OPENPETE_PACE_LATE_BUDGET_US=2000 | v-strict late-admit probe shed

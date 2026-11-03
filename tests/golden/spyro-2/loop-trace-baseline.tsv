@@ -1,0 +1,10 @@
+# Host-loop decision-trace baseline (tests/harness/check_loop_trace.sh --bless).
+# row	rc	records	sha256 of the compared fields	engagement (non-zero counts)
+t1	0	39429	2f749a5b5ce17cc1efcefb432844d154c56ac2b4b235f05765268b026070e3b9	none=19460 canon-inline=19967 iterations=39427 headers=1 close_steps=37
+t2-ra	0	1018	11c955cb308ca5aa8342c9e9984815f3a794a79e20f6f5dea3572d607a0a843b	none=492 canon-inline=524 speculated=115 iterations=1016 headers=1 close_steps=39
+t2-stress	0	1018	9c40e8f7981a16aec38822831f1edff9ac860155a31c2d4936007360c42e60d6	none=492 canon-inline=524 iterations=1016 headers=1 close_steps=38
+t2-rw	0	1218	4528edf18f94318f530b945f85ba6620eeda901e5d34c1faccf37428af75fbee	none=596 canon-inline=620 rollbacks=8 iterations=1216 headers=1 close_steps=38
+t2-hold	0	1138	1c6407f733c29c25e14069e51becf039d5d8d9b12aa808d59530630ee70525a3	none=534 canon-inline=602 rewound=40 rollbacks=40 iterations=1136 headers=1 close_steps=38
+t2-xl-autumn	0	1779	07ff965d45063cbf45937c1839e5793db8759810d2f98c0f81884cd780029c8b	none=873 canon-inline=904 speculated=141 left=2 iterations=1777 headers=1 close_steps=38
+t3	0	14855	0f8579daad20743295fac33a1512c96a6d59c7ebbb5b4299eac25b7103b33e84	canon-lag=3760 intermediate=11093 v-strict=11077 iterations=14853 headers=1 close_steps=39
+t3b	0	14855	40b1f15596b96991ec608d9860850dc74ee42fd64a31bd0587bd8ce03a5f0eb2	canon-lag=3760 intermediate=305 late-admit=11 probe=308 shed=10469 v-strict=289 v-late=11 v-probe=308 v-shed=10469 iterations=14853 headers=1 close_steps=39

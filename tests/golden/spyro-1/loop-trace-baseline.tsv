@@ -1,0 +1,14 @@
+# Host-loop decision-trace baseline (tests/harness/check_loop_trace.sh --bless).
+# row	rc	records	sha256 of the compared fields	engagement (non-zero counts)
+t1	0	40002	89dde51baaf70ed650619910066372e2b683e6c9614c9d562a2e69cbbe28b7b1	none=18452 canon-inline=21548 iterations=40000 headers=1 close_steps=37
+t2-ra	0	1831	8b99e3524775e49bb7a307bc3ceeb8945872c74f96d595dacd1cd4c63aefc7cf	none=722 canon-inline=1107 speculated=123 iterations=1829 headers=1 close_steps=39
+t2-stress	0	1831	6005502d221715621f6eae55fa2ed7bbd2f200beebcb3c6c7e2fb7ddd7d6205b	none=722 canon-inline=1107 iterations=1829 headers=1 close_steps=38
+t2-rw	0	2056	ea4be9ab7525ae0e42136a6f45d59e15674cfba8f54dba7f74bb300d1d335ec6	none=839 canon-inline=1215 rollbacks=9 iterations=2054 headers=1 close_steps=38
+t2-hold	0	1951	2edc0e631f111000222bfd558f70f048e06256ef711e9913519a850219002b5d	none=763 canon-inline=1186 rewound=40 rollbacks=40 iterations=1949 headers=1 close_steps=38
+t2-xl-exit	0	2389	47c0a0bb854cba5d89751b4b8c507f246cbb26546e11d5e8b1ab267279d591f4	none=1001 canon-inline=1386 speculated=99 iterations=2387 headers=1 close_steps=38
+t2-xl-town	0	2846	992ef6e02cd818f7273f9967ed75795474fb4a5cff27a76ab1aa660db9e3f6d7	none=1230 canon-inline=1614 speculated=590 adopted=1 iterations=2844 headers=1 close_steps=38
+handoff	0	6005	bf7b5aea0623d545f6e1e8217e8142aaf37cd26e0dfc009bb3519300e3b7f5de	none=2807 canon-inline=3195 rollbacks=1 iterations=6002 headers=2 close_steps=37
+t5a	3	2	e95c3c9665ae9ac6d08716320c0ed2751645d7a29f826a148f80f71bb86e6cf8	headers=1 close_steps=15
+t5b	3	2	c19556757f066ab468b39d170208ede367bd0d1e26b8cc1bc731e27854095fa8	headers=1 close_steps=15
+t3	0	16001	a1f84615cf1193c89985182c34cf7bd6006f2d3c9729f778fd6b56d2458187c6	canon-lag=4386 intermediate=11613 v-strict=11597 iterations=15999 headers=1 close_steps=39
+t3b	0	16001	df8756d29f4bd31c947e4d8667b5d46b22796b1f30df6407ec74ed6ad792cf6b	canon-lag=4386 intermediate=294 late-admit=11 probe=326 shed=10982 v-strict=278 v-late=11 v-probe=326 v-shed=10982 iterations=15999 headers=1 close_steps=39

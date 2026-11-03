@@ -171,7 +171,9 @@ flags, the pacer deadlines) and the teardown steps in the order they ran;
 the layout is in `core/include/openpete_host_trace.h`. Traces of two builds
 on one run compare decision for decision; the wall-clock fields (the
 `NOT_LIVE` and `SLIPPED` pace flags, the deadlines) compare only under the
-`--record-cfr` virtual clock.
+`--record-cfr` virtual clock. `tests/harness/check_loop_trace.sh` runs the
+trace rows against a blessed digest
+([Loop decision trace](unattended-runs.md#loop-decision-trace)).
 
 ## Presentation
 
