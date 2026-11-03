@@ -1908,11 +1908,14 @@ void main()
      * tn_water_drop): a FF_WATER face past the near split (corner-SZ3 sum
      * at 4 * m3 of 0x2000 or more) takes that walk's model, and is dropped
      * at a sum at fogscale of 0x6000 or more. Runs before the LOD handoff
-     * drop, as in the walk. ---- */
+     * drop, as in the walk. Under GF_HQPIN (terrain.c tn_water_hq) such a
+     * face takes the HQ variant with that walk's colours and no facing
+     * test (waterHQ). ---- */
     pfloat wz3 = quad ? m3c.z : m2.z;
     bool waterFar = !lp && !fillPass && (ff & FF_WATER) != 0u
                  && sz3_sum(m0.z, m1.z, m2.z, wz3, 4.0) >= 0x2000;
     if (waterFar && sz3_sum(m0.z, m1.z, m2.z, wz3, fogscale) >= 0x6000) { kill_vert(); return; }
+    bool waterHQ = waterFar && (gf & GF_HQPIN) != 0;
 
     /* ---- the game's HP far model under extended LOD on a heavy-fog level
      * (terrain.c tn_face_blend_far): a textured face of blend 1-3 outside a
@@ -1992,8 +1995,8 @@ void main()
         front3d = ((ff & FF_DSIDE) != 0u) || f1 || f2;
     }
     bool near = false;
-    if (!lp && !fillPass && !waterFar && !blendFar && (gf & GF_NEARHQ) != 0 && quad
-        && (straddle ? front3d : (front || front2)) && (ff & FF_HQELIG) != 0u) {
+    if (!lp && !fillPass && waterFar == waterHQ && !blendFar && (gf & GF_NEARHQ) != 0 && quad
+        && (waterHQ || (straddle ? front3d : (front || front2))) && (ff & FF_HQELIG) != 0u) {
         if ((gf & GF_HQPIN) != 0) {
             /* --no-lod: HQ pinned ON for every eligible face at every
              * distance; only the behind-camera guard and the w3&0x80
@@ -2025,8 +2028,8 @@ void main()
      * to the cells: every triangle not fully behind the camera with
      * w3 & 0x40 clear takes tier 4; the HQ pin sends every other one not
      * fully behind the camera to tier 2. */
-    bool trinear = !quad && !lp && !fillPass && !waterFar && !blendFar && (gf & GF_NEARHQ) != 0
-                && (straddle ? front3d : (front || front2)) && (ff & FF_HQELIG) != 0u;
+    bool trinear = !quad && !lp && !fillPass && waterFar == waterHQ && !blendFar && (gf & GF_NEARHQ) != 0
+                && (waterHQ || (straddle ? front3d : (front || front2))) && (ff & FF_HQELIG) != 0u;
     PREC32 bool trifront = max(m0.z, 0.0) + max(m1.z, 0.0) + 2.0 * max(m2.z, 0.0) > 0.0;
     bool t4tri = trinear && (gf & GF_TRI4) != 0 && (ff & FF_CELLOK) != 0u
               && (pin ? ((ff & FF_W3_40) == 0u && trifront)
@@ -2073,14 +2076,16 @@ void main()
         kill_vert(); return;
     }
     /* nc4_front mirror: a straddling face's cell draws only when one of its
-     * two triples faces. */
-    if (ist && straddle && (ff & FF_DSIDE) == 0u) {
+     * two triples faces; a waterHQ face's cells are not culled (terrain.c
+     * tn_near_face). */
+    bool hqdside = (ff & FF_DSIDE) != 0u || waterHQ;
+    if (ist && straddle && !hqdside) {
         /* nt4_emit's straddler facing: the sub-triangle's own triple. */
         precise pfloat d = det3d(nt4_node(NT_SUB[tsub * 3], m0, m1, m2),
                                  nt4_node(NT_SUB[tsub * 3 + 1], m0, m1, m2),
                                  nt4_node(NT_SUB[tsub * 3 + 2], m0, m1, m2));
         if (flip ? (d > 0.0) : (d < 0.0)) { kill_vert(); return; }
-    } else if (is4 && straddle && (ff & FF_DSIDE) == 0u) {
+    } else if (is4 && straddle && !hqdside) {
         int cr = cell >> 2, cq = cell & 3;
         precise pvec3 ctl = nc4_node(cr, cq, m0, m1, m3c, m2);
         precise pvec3 ctr = nc4_node(cr, cq + 1, m0, m1, m3c, m2);
@@ -2556,7 +2561,7 @@ void main()
         /* A drawn triangle of a face the drain inserts finer keys at the
          * least of its sub-cell keys; the fragment adds its own sub-cell's
          * excess from the table (psx_key_contest.glsl op_drain_delta). */
-        bool kcull = straddle && (ff & FF_DSIDE) == 0u;
+        bool kcull = straddle && !(hqv ? hqdside : (ff & FF_DSIDE) != 0u);
         bool kflip = (ff & FF_FLIP) != 0u;
         if (hqv && !is4 && drain4q)
             ktab = quad_cells_tab(m0, m1, m3c, m2, kcull, kflip);

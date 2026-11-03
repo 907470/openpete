@@ -1187,6 +1187,9 @@ typedef struct {
     /* the face takes the heavy-fog fade (s_hp_fog): clip_push_tri fogs each
      * node at emit_fogref, push_tri stamps emit_hqfog (tn_face_fog_words) */
     uint8_t emit_hqfog_on; int emit_fogref; uint32_t emit_hqfog[2];
+    /* the face takes the second walk's per-corner fade toward black
+     * (tn_water_rgb): clip_push_tri fades each node at its own depth */
+    uint8_t emit_water_on;
     /* OPENPETE_TERRAIN_HQFOG_CENSUS: corners of HQ-pinned far faces found
      * among the emitted vertices, those in the fog band, those whose colour
      * differs from its expected colour, fade faces, no-ladder faces, corners
@@ -1332,15 +1335,23 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
  * wedge's full extent on a WSLg screenshot. */
 #define CLIP_PROJ_LIMIT 2048.0f
 
-/** @brief Fogs a near-path triangle's three nodes toward their far colours when its face takes the heavy fog.
+static uint32_t tn_water_rgb(uint32_t c, double m3);
+
+/** @brief Fades a near-path triangle's three nodes when its face takes the heavy fog or the second walk's fade.
  *
  * Under emit_hqfog_on (s_hp_fog) each node's colour becomes
  * terrain_fog_blend of its near colour (rgb) and its far colour (rgbf, the
- * game's DPCS target) at its own depth and the face's fog reference;
- * otherwise the nodes are left as they are.
+ * game's DPCS target) at its own depth and the face's fog reference; under
+ * emit_water_on each node's near colour is faded toward black at its own
+ * depth (tn_water_rgb), the retained cache's per-node water_col; otherwise
+ * the nodes are left as they are.
  * @param W The walk context.
  * @param v The three nodes, rewritten in place. */
 static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
+    if (W->emit_water_on) {
+        for (int k = 0; k < 3; k++) v[k].rgb = tn_water_rgb(v[k].rgb, v[k].m3);
+        return;
+    }
     if (!W->emit_hqfog_on) return;
     for (int k = 0; k < 3; k++)
         v[k].rgb = terrain_fog_blend(v[k].rgb, v[k].rgbf, v[k].m3, W->emit_fogref);
@@ -10612,6 +10623,35 @@ static int tn_water_drop(const double cz[4], int quad) {
     return tn_sz3_sum(cz, quad, s_fogscale) >= TN_WATER_DROP_SUM;
 }
 
+/** @brief Returns 1 when a second-walk far face takes the near HQ path: exactly under the always-HQ pin.
+ *
+ * The extended mode draws every HQ-eligible face's HQ texture at every
+ * distance; a second-walk face past the near split keeps that walk's fade,
+ * drop and lack of NCLIP on the near path (tn_near_face). The retained
+ * cache mirrors the verdict in terrain.vert (waterFar under GF_HQPIN).
+ * @param waterFar 1 for a second-walk far face (tn_face_water, tn_water_far).
+ * @return 1 when the face takes the near path's HQ texture, else 0. */
+static int tn_water_hq(int waterFar) {
+    return waterFar && hq_pin_active();
+}
+
+/** @brief Returns 1 when a face may take the near HQ path, before its distance verdict.
+ *
+ * An HP face qualifies with the near pass enabled (s_nearhq), an HQ table,
+ * outside the game's HP far model (tn_face_blend_far), and facing; a
+ * second-walk far face qualifies only under the always-HQ pin
+ * (tn_water_hq), facing or not, since that walk runs no NCLIP.
+ * @param hp 1 for an HP face.
+ * @param waterFar 1 for a second-walk far face (tn_face_water, tn_water_far).
+ * @param blendFar 1 for a face on the game's HP far model.
+ * @param nearFront 1 when the face faces (tface_facing's near verdict).
+ * @param hqTable The HQ record table's guest address, 0 when the level has none.
+ * @return 1 when the face may take the near path, else 0. */
+static int tn_near_gate(int hp, int waterFar, int blendFar, int nearFront, uint32_t hqTable) {
+    const int waterHQ = tn_water_hq(waterFar);
+    return hp && waterFar == waterHQ && !blendFar && s_nearhq && hqTable && (nearFront || waterHQ);
+}
+
 /** @brief Returns the second walk's per-vertex depth cue of one corner: IR0 = clamp(2 * (SZ3 - 0x1000), 0, 0xFFF).
  *
  * The game clamps a doubled value with bits 12-13 set to 0xFFF and leaves a
@@ -12533,7 +12573,11 @@ static void tn_lpward_census(tn_wctx* W, const tn_lpward_face* F) {
  * triangle's tier-4 or tier-2 split, in the raw near colours. Under s_hp_fog
  * every node, the corners and the subdivide's interpolated nodes alike, is
  * DPCS-fogged toward the heavy-fog colour at its own depth (clip_push_tri),
- * and its HQ texels carry the heavy-fog words (tn_atmo_words). Corners are in the drain's
+ * and its HQ texels carry the heavy-fog words (tn_atmo_words). A
+ * second-walk face the always-HQ pin routes here past the near split
+ * (water) keeps that walk's model instead: every node faded toward black at
+ * its own depth (tn_water_rgb), no fade words, and no sub-cell facing cull,
+ * as the walk runs no NCLIP. Corners are in the drain's
  * grid order: TL = i0, TR = i1, BL = i3, BR = i2; a triangle's C is i2 = i3
  * with the colour of word 1 byte 0 (c3). Counts near_q_agree or near_c_only
  * by the face's presence in the game's queue, the dbg_spike counters, and
@@ -12551,11 +12595,12 @@ static void tn_lpward_census(tn_wctx* W, const tn_lpward_face* F) {
  * @param fogRef The face's fog reference.
  * @param hqTable The HQ record table's guest address.
  * @param rec The face record's guest address, the key of the game's near queues.
- * @param straddle 1 when a corner is at or behind the eye. */
+ * @param straddle 1 when a corner is at or behind the eye.
+ * @param water 1 for a second-walk far face (tn_face_water, tn_water_far). */
 static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsface_t* F,
                          int host_col, const uint8_t* h_near, uint32_t nearBase,
                          const uint8_t* h_far, uint32_t farBase, int fogRef,
-                         uint32_t hqTable, uint32_t rec, int straddle) {
+                         uint32_t hqTable, uint32_t rec, int straddle, int water) {
     if (is_deferred(rec)) W->near_q_agree++; else W->near_c_only++;
     const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
     uint32_t r[4], rf[4];
@@ -12567,18 +12612,20 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     ngte_cvert TR = { .m1 = sv[F->i1].m1, .m2 = sv[F->i1].m2, .m3 = sv[F->i1].m3, .rgb = r[1], .rgbf = rf[1] };
     ngte_cvert BL = { .m1 = sv[F->i3].m1, .m2 = sv[F->i3].m2, .m3 = sv[F->i3].m3, .rgb = r[3], .rgbf = rf[3] };
     ngte_cvert BR = { .m1 = sv[F->i2].m1, .m2 = sv[F->i2].m2, .m3 = sv[F->i2].m3, .rgb = r[2], .rgbf = rf[2] };
-    W->emit_hqfog_on = (uint8_t)s_hp_fog;
+    const int heavy = s_hp_fog && !water;
+    W->emit_hqfog_on = (uint8_t)heavy;
+    W->emit_water_on = (uint8_t)water;
     W->emit_fogref = fogRef;
     const double cz[4] = { sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, sv[F->i3].m3 };
-    tn_face_fog_words(W, 0, F->fogbias,
-                      s_hp_fog && s_fog_mode == OPENPETE_FOG_ORIGINAL ? tn_ladder_t0k(cz, fogRef) : 0, 0);
-    W->hqfog_cen[3] += s_hp_fog && s_hqfog_census_on;
+    tn_face_fog_words(W, water, F->fogbias,
+                      heavy && s_fog_mode == OPENPETE_FOG_ORIGINAL ? tn_ladder_t0k(cz, fogRef) : 0, 0);
+    W->hqfog_cen[3] += heavy && s_hqfog_census_on;
     int spikeTri0 = W->tri_n;
     const tn_nearface nf = {
         .hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
         .rec = rec, .w3 = F->w3,
         .texid = F->hq_idx, .abe = F->abe, .bank = W->emit_bank,
-        .straddle = straddle, .flip = F->flip, .dside = F->dside,
+        .straddle = straddle, .flip = F->flip, .dside = F->dside || water,
         .rot = F->trirot,
     };
     if (F->quad) terrain_near_emit_face(W, cpu, &nf, TL, TR, BL, BR);
@@ -12586,7 +12633,7 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
                                        !face_tri4_routed(TL.m3, TR.m3, BL.m3, F->w3, rec, F->hq_idx));
     W->dbg_spike_tris += W->tri_n - spikeTri0;
     W->dbg_spike++;   /* near/HQ cells subdivided */
-    W->emit_hqfog_on = 0; W->emit_hqfog[0] = W->emit_hqfog[1] = 0u;
+    W->emit_hqfog_on = 0; W->emit_water_on = 0; W->emit_hqfog[0] = W->emit_hqfog[1] = 0u;
     if (hq_pin_active() && s_hqfog_census_on) {
         /* a triangle's C is BL, coloured from word 1 byte 0 */
         const ngte_cvert V[4] = { TL, TR, F->quad ? BR : BL, BL };
@@ -13454,10 +13501,13 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * kept live by tsc_refresh_anim; a ladder applied to a stale entry
              * lands on the wrong palettes. */
             /* A far face of a second-walk sector draws on that walk's model
-             * (tn_face_water): no ladder, no near path, no NCLIP, its own
-             * drop and colours. */
+             * (tn_face_water): no ladder, no NCLIP, its own drop and
+             * colours. The game draws it with the far tile; the always-HQ
+             * pin (waterHQ) sends it to the near HQ path with that walk's
+             * colours and no facing test. */
             const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
             const int waterFar = pass == 1 && tn_face_water(SC, F) && tn_water_far(cz, quad);
+            const int waterHQ = tn_water_hq(waterFar);
             /* An extended-LOD heavy-fog blended face the game draws far
              * leaves the always-HQ pin for the game's far model
              * (tn_face_blend_far): the flat path and the CLUT ladder; past
@@ -13837,8 +13887,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                                           faceStride == 16, straddle, F->w3, front, front2,
                                           &near_front, &cfront);
             W->dbg_satback += satv & 1; W->dbg_satemit += satv >> 1;
-            int near = (faceStride == 16 && !waterFar && !blendFar && s_nearhq && hqTable && near_front &&
-                        tn_face_near(sv, F, faces + (uint32_t)f * 16u));
+            int near = tn_near_gate(faceStride == 16, waterFar, blendFar, near_front, hqTable)
+                       && tn_face_near(sv, F, faces + (uint32_t)f * 16u);
             {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
                  * (a corner behind the camera) by route - near/HQ vs LQ fall-through. */
                 static int s_ndbg = -1; static long s_nd_near, s_nd_excl, s_nd_lq; static int s_nd_n;
@@ -13860,11 +13910,11 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 }
             }
             if (s_nearq >= 0)   /* debug: use the queue oracle directly (exact 37) */
-                near = (faceStride == 16 && !waterFar && !blendFar && s_nearhq && hqTable
-                        && tn_queue_near(quad, faces + (uint32_t)f*16u));
+                near = tn_near_gate(faceStride == 16, waterFar, blendFar, 1, hqTable)
+                       && tn_queue_near(quad, faces + (uint32_t)f*16u);
             if (near) {
                 tn_near_face(W, cpu, sv, F, host_col, h_near, nearBase, h_far, farBase,
-                             fogRef, hqTable, faces + (uint32_t)f * 16u, straddle);
+                             fogRef, hqTable, faces + (uint32_t)f * 16u, straddle, waterHQ);
                 tn_blend_census(W, blendFar, 1, 0, 0);
                 FARDBG_DROP("nearhq");  /* emitted subdivided - the face-set
                                          * join can't corner-match the parent */
