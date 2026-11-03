@@ -31,6 +31,8 @@ OUT="build/pad-unfocused-win"
 
 # shellcheck source=scripts/lib/wslenv.sh
 . scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/scratch_cards.sh
+. scripts/lib/scratch_cards.sh   # OPENPETE_CARD_DIR: scratch cards, forwarded by wslenv_forward
 mkdir -p "$OUT"
 rm -f build/pad-unfocused-win/on.bk2 build/pad-unfocused-win/on.bk2.args \
       build/pad-unfocused-win/on.log build/pad-unfocused-win/off.bk2 \

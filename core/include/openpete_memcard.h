@@ -65,7 +65,21 @@ void openpete_memcard_set_unformatted(int on);
  * @param on Nonzero enables adoption. */
 void openpete_memcard_set_adopt(int on);
 
-/** @brief Refuse a present slot whose card folder does not exist, then run the modset tag check for each existing image.
+/* Exit status of a launch the card guard refuses. */
+#define OPENPETE_EXIT_CARD_GUARD 64
+
+/** @brief Refuse a launch whose cards the card guard rejects or whose card folder does not exist, then run the modset tag check for each existing image.
+ *
+ * With OPENPETE_CARD_GUARD set and not "0", each present slot's path is
+ * first composed as the first access composes it (--card1/--card2, else
+ * card<N>.mcr in --card-dir, OPENPETE_CARD_DIR or the default card
+ * folder), without creating a directory or opening a file, canonicalized
+ * (links and `..` resolved), and compared against the per-user state
+ * `cards` directory, the `cards` directory beside the executable and,
+ * outside Windows, the per-user state `cards` directory under the
+ * account's passwd home; a match logs one error naming the port and the
+ * path and returns OPENPETE_EXIT_CARD_GUARD before any card folder is
+ * created.
  *
  * Each present slot's image path is resolved (creating the --card-dir,
  * OPENPETE_CARD_DIR or default card folder). A folder that does not exist
@@ -78,7 +92,9 @@ void openpete_memcard_set_adopt(int on);
  * so the later open by the game does not repeat it. A missing image is
  * skipped: it holds no progress, and the first write tags it. Call after
  * mods init and the configuration setters.
- * @return 0, or -1 when a present slot's card folder does not exist. */
+ * @return OPENPETE_EXIT_OK, OPENPETE_EXIT_CARD_GUARD, or
+ *         OPENPETE_EXIT_SETUP_ERROR when a present slot's card folder does
+ *         not exist. */
 int openpete_memcard_startup_check(void);
 
 /* --- libmcrd surface (called by the psyq_MemCard* thunks) ----------------- */

@@ -27,6 +27,7 @@
 
 #include "openpete_atomic_file.h"
 #include "openpete_memcard.h"
+#include "openpete.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -325,10 +326,68 @@ static int case_folder(void) {
     int r_present = openpete_memcard_startup_check();
     printf("folder: missing=%d present=%d\n", r_missing, r_present);
     int rc = 0;
-    if (r_missing != -1) rc |= fail("folder: a card in a missing folder was not refused");
+    if (r_missing != OPENPETE_EXIT_SETUP_ERROR)
+        rc |= fail("folder: a card in a missing folder was not refused");
     if (r_present != 0) rc |= fail("folder: a card in an existing folder was refused");
     struct stat st;
     if (stat(missing, &st) == 0) rc |= fail("folder: the refused card was created");
+    return rc;
+}
+
+/** @brief Run the startup check on one configuration and return its status.
+ * @param guard OPENPETE_CARD_GUARD value, or NULL to unset it.
+ * @param dir --card-dir value, or NULL for none.
+ * @param card1 --card1 path, or NULL for card1.mcr in the card directory.
+ * @param card2 --card2 path, or NULL for card2.mcr in the card directory.
+ * @return The startup check's status. */
+static int guard_leg(const char* guard, const char* dir, const char* card1, const char* card2) {
+    if (guard) setenv("OPENPETE_CARD_GUARD", guard, 1);
+    else unsetenv("OPENPETE_CARD_GUARD");
+    openpete_memcard_set_dir_override(dir);
+    openpete_memcard_set_paths(card1, card2);
+    openpete_memcard_set_presence(0, 1);
+    openpete_memcard_set_presence(1, 1);
+    return openpete_memcard_startup_check();
+}
+
+/** @brief The card guard refuses a slot inside the per-user card directory, through a link or `..`, and admits scratch cards.
+ *
+ * XDG_STATE_HOME points at the case directory, so the per-user card
+ * directory is <case>/state/openpete/cards; OPENPETE_CARD_DIR is unset.
+ * @return 0 when every verdict holds. */
+static int case_guard(void) {
+    char dir[600], state[700], def[760], link[700], up[800], a[700], b[700], c1[800], c2[800];
+    fresh_dir(dir, sizeof dir);
+    snprintf(state, sizeof state, "%s/state", dir);
+    snprintf(def, sizeof def, "%s/openpete/cards", state);
+    snprintf(link, sizeof link, "%s/link", dir);
+    snprintf(up, sizeof up, "%s/scratch/../state/openpete/cards", dir);
+    snprintf(a, sizeof a, "%s/scratch/a.mcr", dir);
+    snprintf(b, sizeof b, "%s/scratch/b.mcr", dir);
+    char cmd[4096];
+    snprintf(cmd, sizeof cmd, "mkdir -p '%s' '%s/scratch' && ln -s '%s' '%s'", def, dir, def, link);
+    if (system(cmd) != 0) { perror("mkdir"); exit(2); }
+    setenv("XDG_STATE_HOME", state, 1);
+    unsetenv("OPENPETE_CARD_DIR");
+    snprintf(c1, sizeof c1, "%s/card1.mcr", link);
+    snprintf(c2, sizeof c2, "%s/card2.mcr", def);
+    const struct { const char* name; const char* guard; const char* dir; const char* c1; const char* c2; int want; } legs[] = {
+        { "no flags",              "1", NULL, NULL, NULL, OPENPETE_EXIT_CARD_GUARD },
+        { "card1 only",            "1", NULL, a,    NULL, OPENPETE_EXIT_CARD_GUARD },
+        { "card-dir default",      "1", def,  NULL, NULL, OPENPETE_EXIT_CARD_GUARD },
+        { "card-dir via ..",       "1", up,   NULL, NULL, OPENPETE_EXIT_CARD_GUARD },
+        { "card1 via link",        "1", NULL, c1,   b,    OPENPETE_EXIT_CARD_GUARD },
+        { "card2 default path",    "1", NULL, a,    c2,   OPENPETE_EXIT_CARD_GUARD },
+        { "both scratch",          "1", NULL, a,    b,    OPENPETE_EXIT_OK },
+        { "guard 0, no flags",     "0", NULL, NULL, NULL, OPENPETE_EXIT_OK },
+        { "guard unset, no flags", NULL, NULL, NULL, NULL, OPENPETE_EXIT_OK },
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof legs / sizeof legs[0]; i++) {
+        const int got = guard_leg(legs[i].guard, legs[i].dir, legs[i].c1, legs[i].c2);
+        printf("guard: %s -> %d\n", legs[i].name, got);
+        if (got != legs[i].want) rc |= fail("guard: a leg returned the wrong status");
+    }
     return rc;
 }
 
@@ -360,6 +419,7 @@ int main(int argc, char** argv) {
     rc |= run_case(bad_dexdrive);
     rc |= run_case(case_frames);
     rc |= run_case(case_folder);
+    rc |= run_case(case_guard);
     printf(rc ? "memcard_test: FAILED\n" : "memcard_test: ok\n");
     return rc;
 }

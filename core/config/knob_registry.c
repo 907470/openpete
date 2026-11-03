@@ -2235,6 +2235,13 @@ static const knob_desc_t g_builtin_debug[] = {
           "whose models and drop shadows are not drawn.\n"
           "Default: env OPENPETE_HIDE_CLASSES, else none. Native renderer only." },
 
+    ENVROW_LATCHED("CARD_GUARD", "Debug", "0",
+        "1 = refuse to start, exit 64 with an error naming the port and "
+        "path, when an inserted card's path (from --card1/--card2, "
+        "--card-dir, OPENPETE_CARD_DIR or the default) resolves inside the "
+        "per-user card directory or the cards directory beside the "
+        "executable. For automated runs, which must not touch a "
+        "player's cards. Read at launch."),
     ENVROW_LATCHED("RUN_RECOMP", "Debug", "",
         "Guest address (hex) the game fiber dispatches instead of the EXE "
         "header's entry point."),

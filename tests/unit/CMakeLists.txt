@@ -291,7 +291,7 @@ add_test(NAME vibration_test COMMAND vibration_test)
 # memcard_test - the host memory card against killed and failed writes and
 # against card files it did not create (atomic replacement, the libmcrd and
 # BIOS error paths, set-aside of unknown files, read-only headered images,
-# in-place frame writes). POSIX only: the cases fork.
+# in-place frame writes, the card guard). POSIX only: the cases fork.
 if(NOT WIN32)
     add_executable(memcard_test
         memcard_test.c

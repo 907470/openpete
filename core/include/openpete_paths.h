@@ -135,6 +135,40 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create);
  * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
 
+/** @brief Name a leaf under the per-user state directory, whatever the layout, creating nothing.
+ *
+ * <leaf> under the openpete directory in the per-user state base
+ * (%LOCALAPPDATA% on Windows, $XDG_STATE_HOME or ~/.local/state
+ * elsewhere), the directory openpete_paths_state_dir returns outside the
+ * portable layout.
+ * @param leaf The leaf ("cards").
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @return 0 on success, -1 when no base resolves or the path does not fit. */
+int openpete_paths_user_state_dir(const char* leaf, char* out, size_t cap);
+
+/** @brief Write the absolute form of path with `.` and `..` applied and, outside Windows, symbolic links resolved.
+ *
+ * POSIX: realpath; a path that does not exist takes its longest existing
+ * prefix's resolved form with the remaining components applied
+ * lexically. Windows: _fullpath with every separator written as a
+ * backslash; links are not resolved.
+ * @param path The path, absolute or relative to the working directory.
+ * @param out Receives the canonical path.
+ * @param cap Capacity of @p out.
+ * @return 0 on success, -1 on an empty path or one that does not fit. */
+int openpete_paths_canonical(const char* path, char* out, size_t cap);
+
+/** @brief Return 1 when path's canonical form equals dir's or lies below it, else 0.
+ *
+ * Both are canonicalized by openpete_paths_canonical; the comparison
+ * stops at a component boundary and ignores case on Windows. A path
+ * either argument cannot canonicalize gives 0.
+ * @param path The path tested.
+ * @param dir The directory.
+ * @return 1 inside, 0 outside. */
+int openpete_paths_within(const char* path, const char* dir);
+
 /** @brief Resolve one game's directory inside a state leaf: <state dir>/<leaf>/<game>.
  *
  * The leaf resolves as openpete_paths_state_dir does; the game's directory

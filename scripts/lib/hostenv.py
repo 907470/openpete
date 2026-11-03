@@ -20,7 +20,8 @@ import tempfile
 
 # Knobs a gate harness exports that cross with every forward, with their
 # WSLENV flags (/p translates a path).
-FORWARDED = {"OPENPETE_THREAD_ROLE_FATAL": "/w", "OPENPETE_THREAD_ROLE_REPORT": "/wp"}
+FORWARDED = {"OPENPETE_THREAD_ROLE_FATAL": "/w", "OPENPETE_THREAD_ROLE_REPORT": "/wp",
+             "OPENPETE_CARD_GUARD": "/w", "OPENPETE_CARD_DIR": "/wp"}
 
 
 def child_env(knobs, base=None):
@@ -48,7 +49,7 @@ def scratch_cards():
     it. An inherited directory under the parent that exists is kept (the
     caller is a harness that already made one). The directory is removed at
     exit; directories whose owning process is gone are removed on each call.
-    A Windows exe launched from WSL does not receive the variable.
+    A Windows exe launched from WSL receives it through child_env.
     Returns the directory.
     """
     parent = os.path.join(os.environ.get("TMPDIR") or "/tmp", "openpete-harness-cards")

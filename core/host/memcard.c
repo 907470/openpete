@@ -18,6 +18,7 @@
  */
 
 #include "openpete_memcard.h"
+#include "openpete.h"
 #include "openpete_atomic_file.h"
 #include "openpete_error_ids.h"
 #include "openpete_log.h"
@@ -42,6 +43,7 @@ extern unsigned openpete_frame;  /* openpete_fiber.h - the VBL frame counter */
   #define OPENPETE_MKDIR(path) _mkdir(path)
   #define MC_SEP '\\'
 #else
+  #include <pwd.h>
   #include <unistd.h>
   #define OPENPETE_MKDIR(path) mkdir((path), 0755)
   #define MC_SEP '/'
@@ -119,26 +121,27 @@ static int     s_mc_status = MC_SYNC_NOTHING;
 
 /* --- directory / image helpers -------------------------------------------- */
 
-/** @brief Write the directory holding the card images into out, creating it as needed.
+/** @brief Write the directory holding the card images into out, creating it when create is nonzero.
  *
  * Precedence: the --card-dir override, then the OPENPETE_CARD_DIR
  * environment variable, then the `cards` leaf of openpete_paths_state_dir,
- * a sibling of the save-states' `states` directory. The directory is made
- * with its creation result ignored for the first two sources. */
-static int mc_resolve_card_dir(char* out, size_t out_size)
+ * a sibling of the save-states' `states` directory. With create the
+ * directory is made, its creation result ignored for the first two
+ * sources. */
+static int mc_resolve_card_dir(char* out, size_t out_size, int create)
 {
     if (s_dir_override[0]) {
-        (void)OPENPETE_MKDIR(s_dir_override);
+        if (create) (void)OPENPETE_MKDIR(s_dir_override);
         snprintf(out, out_size, "%s", s_dir_override);
         return 0;
     }
     const char* env = getenv("OPENPETE_CARD_DIR");
     if (env && *env) {
-        (void)OPENPETE_MKDIR(env);
+        if (create) (void)OPENPETE_MKDIR(env);
         snprintf(out, out_size, "%s", env);
         return 0;
     }
-    return openpete_paths_state_dir("cards", out, out_size, 1);
+    return openpete_paths_state_dir("cards", out, out_size, create);
 }
 
 /** @brief Replace the slot's image path with the file a symbolic link at it names.
@@ -179,7 +182,7 @@ static int mc_resolve_path(int slot)
         return 0;
     }
     char dir[1024];
-    if (mc_resolve_card_dir(dir, sizeof(dir)) != 0) return -1;
+    if (mc_resolve_card_dir(dir, sizeof(dir), 1) != 0) return -1;
     snprintf(s_path[slot], sizeof(s_path[slot]), "%s%ccard%d.mcr",
              dir, MC_SEP, slot + 1);
     mc_follow_link(slot);
@@ -687,6 +690,67 @@ void openpete_memcard_set_adopt(int on)
     s_adopt = on ? 1 : 0;
 }
 
+/** @brief Write the default card directories into dirs: the per-user state `cards`, the portable `cards` beside the exe and, outside Windows, the per-user state `cards` under the account's passwd home.
+ *
+ * The passwd home covers a run whose HOME or XDG_STATE_HOME points
+ * elsewhere while a card path names the account's real directory.
+ * @param dirs Receives up to three paths.
+ * @return The number of paths written. */
+static int mc_guard_default_dirs(char dirs[3][1280])
+{
+    int n = 0;
+    if (openpete_paths_user_state_dir("cards", dirs[n], sizeof dirs[n]) == 0) n++;
+    char exe[1024];
+    if (openpete_exe_dir(exe, sizeof exe) == 0) {
+        openpete_paths_join(dirs[n], sizeof dirs[n], exe, "cards");
+        n++;
+    }
+#ifndef _WIN32
+    const struct passwd* pw = getpwuid(getuid());
+    if (pw && pw->pw_dir && *pw->pw_dir) {
+        snprintf(dirs[n], sizeof dirs[n], "%s/.local/state/openpete/cards", pw->pw_dir);
+        n++;
+    }
+#endif
+    return n;
+}
+
+/** @brief Under OPENPETE_CARD_GUARD set and not "0", log and return OPENPETE_EXIT_CARD_GUARD when a present slot's card path lies in a default card directory, else return 0.
+ *
+ * Each present slot's path is composed as the first access composes it,
+ * without creating a directory or opening a file, and compared after
+ * openpete_paths_canonical (links and `..` resolved) against the
+ * directories mc_guard_default_dirs names. The first match logs one error
+ * naming the port and the path. */
+static int mc_guard_check(void)
+{
+    const char* g = getenv("OPENPETE_CARD_GUARD");
+    if (!g || !*g || strcmp(g, "0") == 0) return 0;
+    char dirs[3][1280];
+    const int nd = mc_guard_default_dirs(dirs);
+    for (int slot = 0; slot < 2; slot++) {
+        if (!s_present[slot]) continue;
+        char path[1280];
+        if (s_path_override[slot][0]) {
+            snprintf(path, sizeof path, "%.*s",
+                     (int)sizeof(s_path_override[slot]) - 1, s_path_override[slot]);
+        } else {
+            char dir[1024];
+            if (mc_resolve_card_dir(dir, sizeof dir, 0) != 0) continue;
+            snprintf(path, sizeof path, "%s%ccard%d.mcr", dir, MC_SEP, slot + 1);
+        }
+        for (int i = 0; i < nd; i++) {
+            if (!openpete_paths_within(path, dirs[i])) continue;
+            OPL_ERROR_F("memcard", "OPENPETE_CARD_GUARD: port %c (card%d) resolves to %s, "
+                        "inside the default card directory %s; refusing to start. Pass "
+                        "--no-card, scratch --card1 and --card2, or OPENPETE_CARD_DIR",
+                        'A' + slot, slot + 1, path, dirs[i]);
+            return OPENPETE_EXIT_CARD_GUARD;
+        }
+    }
+    return 0;
+}
+
 /** @brief Report whether the folder holding the slot's resolved image path exists, naming it in folder.
  *
  * The folder is the path up to its last separator; a path with none lies
@@ -720,7 +784,8 @@ int openpete_memcard_startup_check(void)
      * warning is about the LAUNCH configuration - surface it at startup.
      * Existing images only: a fresh dir has no progress to protect (the
      * game's first real write birth-tags via mc_flush). */
-    int rc = 0;
+    if (mc_guard_check() != 0) return OPENPETE_EXIT_CARD_GUARD;
+    int rc = OPENPETE_EXIT_OK;
     for (int slot = 0; slot < 2; slot++) {
         if (!s_present[slot]) continue;
         if (mc_resolve_path(slot) != 0) continue;
@@ -735,7 +800,7 @@ int openpete_memcard_startup_check(void)
                 OPL_ERROR_F("memcard", "card %d: the card folder %s does not exist and "
                             "could not be created %s", slot, folder,
                             openpete_error_ref(OP_E_CARD_OPEN));
-            rc = -1;
+            rc = OPENPETE_EXIT_SETUP_ERROR;
             continue;
         }
         if (mc_per_save_tags()) continue;

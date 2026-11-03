@@ -50,6 +50,12 @@ else
   LOG_ARG="$LOG"
 fi
 
+# shellcheck source=scripts/lib/wslenv.sh
+. scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/scratch_cards.sh
+. scripts/lib/scratch_cards.sh   # OPENPETE_CARD_DIR: scratch cards, forwarded by wslenv_forward
+wslenv_forward
+
 echo "bench-fps: exe=$EXE  fps=$FPS  frames=$FRAMES  log=$LOG"
 # --vsync 0: present mode immediate so the true achieved rate shows (FIFO would
 # pin the average to the monitor refresh). Pass --vsync 1 after -- to override.
@@ -61,7 +67,7 @@ echo "bench-fps: exe=$EXE  fps=$FPS  frames=$FRAMES  log=$LOG"
 # --input-lock: the bench window ignores the host keyboard, mouse and pads, so
 # host input cannot open a menu or end the run mid-measurement. A flag
 # for the same reason. (scripts/fences/input_lock_guard.py)
-"$EXE" --disc "$DISC_ARG" --renderer vk \
+env "${WSLENV_ARGS[@]}" "$EXE" --disc "$DISC_ARG" --renderer vk \
        --render-fps "$FPS" --frame-limit "$FRAMES" --vsync 0 \
        --max-runtime-seconds 1200 --vibration 0 --input-lock \
        --frame-time-log "$LOG_ARG" "${EXTRA[@]}"

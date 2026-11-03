@@ -12,7 +12,8 @@
 #   env "${WSLENV_ARGS[@]}" ./build/windows-mingw/.../foo.exe ...
 #
 # WSLENV_ARGS holds the assignments plus the WSLENV entry that makes them
-# actually arrive. OPENPETE_THREAD_ROLE_FATAL and OPENPETE_THREAD_ROLE_REPORT,
+# actually arrive. OPENPETE_THREAD_ROLE_FATAL, OPENPETE_THREAD_ROLE_REPORT,
+# OPENPETE_CARD_GUARD and OPENPETE_CARD_DIR (translated to its Windows path),
 # when set in the caller's environment, are forwarded too. Safe on native Linux: WSLENV is simply ignored there.
 
 wslenv_forward() {
@@ -28,6 +29,14 @@ wslenv_forward() {
     names="${names}${names:+:}OPENPETE_THREAD_ROLE_FATAL/w"
   [ -n "${OPENPETE_THREAD_ROLE_REPORT:-}" ] && [[ ":$names:" != *":OPENPETE_THREAD_ROLE_REPORT/"* ]] &&
     names="${names}${names:+:}OPENPETE_THREAD_ROLE_REPORT/wp"
+  # The card guard and the card directory a harness or automation shell exports
+  # cross too, so a Windows exe never falls back to the player's cards: the
+  # guard as is, the directory translated (/p, the wslpath -w spelling, which
+  # leaves the value a Linux child reads unchanged).
+  [ -n "${OPENPETE_CARD_GUARD:-}" ] && [[ ":$names:" != *":OPENPETE_CARD_GUARD/"* ]] &&
+    names="${names}${names:+:}OPENPETE_CARD_GUARD/w"
+  [ -n "${OPENPETE_CARD_DIR:-}" ] && [[ ":$names:" != *":OPENPETE_CARD_DIR/"* ]] &&
+    names="${names}${names:+:}OPENPETE_CARD_DIR/wp"
   [ -n "$names" ] && WSLENV_ARGS+=("WSLENV=${WSLENV:+$WSLENV:}${names}")
 }
 

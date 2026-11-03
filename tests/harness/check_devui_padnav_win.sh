@@ -57,6 +57,8 @@ DISC_ARG="$(wslpath -w "$DISC" 2>/dev/null || echo "$DISC")"
 
 # shellcheck source=scripts/lib/wslenv.sh
 . scripts/lib/wslenv.sh
+# shellcheck source=scripts/lib/scratch_cards.sh
+. scripts/lib/scratch_cards.sh   # OPENPETE_CARD_DIR: scratch cards, forwarded by wslenv_forward
 mkdir -p "$OUT"
 rm -f build/devui-padnav-win/nav.bk2 build/devui-padnav-win/nav.bk2.args \
       build/devui-padnav-win/nav.log build/devui-padnav-win/nav.txt \

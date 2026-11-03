@@ -408,3 +408,113 @@ int openpete_paths_data_dir(const char* leaf, char* out, size_t cap, int create)
     snprintf(out, cap, "%s", dir);
     return 0;
 }
+
+int openpete_paths_user_state_dir(const char* leaf, char* out, size_t cap) {
+    char base[OPP_PATH_MAX];
+    if (user_state_dir(base, sizeof base, 0) != 0) return -1;
+    char dir[OPP_PATH_MAX + 16];
+    openpete_paths_join(dir, sizeof dir, base, leaf);
+    if (strlen(dir) >= cap) return -1;
+    snprintf(out, cap, "%s", dir);
+    return 0;
+}
+
+/** @brief 1 when c separates path components on this platform. */
+static int is_sep(char c) {
+#ifdef _WIN32
+    return c == '/' || c == '\\';
+#else
+    return c == '/';
+#endif
+}
+
+/** @brief Copy s into out, or return -1 when it does not fit in cap. */
+static int copy_fit(char* out, size_t cap, const char* s) {
+    if (strlen(s) >= cap) return -1;
+    snprintf(out, cap, "%s", s);
+    return 0;
+}
+
+#ifndef _WIN32
+/** @brief Split path at its last separator into parent and leaf, trailing separators dropped.
+ *
+ * A path with no separator has the parent "."; one whose only separator
+ * leads it has the parent "/".
+ * @param path The path.
+ * @param parent Receives the parent.
+ * @param pcap Capacity of @p parent.
+ * @param leaf Receives the last component.
+ * @param lcap Capacity of @p leaf.
+ * @return 0, or -1 when the path does not fit. */
+static int split_last(const char* path, char* parent, size_t pcap, char* leaf, size_t lcap) {
+    char buf[OPP_PATH_MAX];
+    if (copy_fit(buf, sizeof buf, path) != 0) return -1;
+    size_t n = strlen(buf);
+    while (n > 1 && buf[n - 1] == '/') buf[--n] = '\0';
+    char* slash = strrchr(buf, '/');
+    if (!slash) {
+        snprintf(parent, pcap, ".");
+        return copy_fit(leaf, lcap, buf);
+    }
+    if (copy_fit(leaf, lcap, slash + 1) != 0) return -1;
+    if (slash == buf) slash++;
+    *slash = '\0';
+    return copy_fit(parent, pcap, buf);
+}
+
+/** @brief Apply one path component to the canonical directory dir lexically: `.` and "" keep it, `..` drops its last component, any other name is joined. */
+static int apply_leaf(const char* dir, const char* leaf, char* out, size_t cap) {
+    char d[OPP_PATH_MAX];
+    if (copy_fit(d, sizeof d, dir) != 0) return -1;
+    if (!*leaf || strcmp(leaf, ".") == 0) return copy_fit(out, cap, d);
+    if (strcmp(leaf, "..") == 0) {
+        char* up = strrchr(d, '/');
+        if (up && up != d) *up = '\0';
+        else snprintf(d, sizeof d, "/");
+        return copy_fit(out, cap, d);
+    }
+    char joined[OPP_PATH_MAX * 2];
+    openpete_paths_join(joined, sizeof joined, d, leaf);
+    return copy_fit(out, cap, joined);
+}
+#endif
+
+int openpete_paths_canonical(const char* path, char* out, size_t cap) {
+    if (!path || !*path || cap == 0) return -1;
+#ifdef _WIN32
+    char full[OPP_PATH_MAX];
+    if (!_fullpath(full, path, sizeof full)) return -1;
+    for (char* p = full; *p; p++) if (*p == '/') *p = '\\';
+    size_t n = strlen(full);
+    while (n > 3 && full[n - 1] == '\\') full[--n] = '\0';
+    return copy_fit(out, cap, full);
+#else
+    char* real = realpath(path, NULL);
+    if (real) {
+        const int rc = copy_fit(out, cap, real);
+        free(real);
+        return rc;
+    }
+    /* The path does not resolve: canonicalize its parent and apply the
+     * last component lexically, so a missing file or directory below an
+     * existing one still compares against the parent's resolved form. */
+    char parent[OPP_PATH_MAX], leaf[OPP_PATH_MAX], cparent[OPP_PATH_MAX];
+    if (split_last(path, parent, sizeof parent, leaf, sizeof leaf) != 0) return -1;
+    if (openpete_paths_canonical(parent, cparent, sizeof cparent) != 0) return -1;
+    return apply_leaf(cparent, leaf, out, cap);
+#endif
+}
+
+int openpete_paths_within(const char* path, const char* dir) {
+    char cp[OPP_PATH_MAX], cd[OPP_PATH_MAX];
+    if (openpete_paths_canonical(path, cp, sizeof cp) != 0) return 0;
+    if (openpete_paths_canonical(dir, cd, sizeof cd) != 0) return 0;
+    size_t n = strlen(cd);
+    while (n > 1 && is_sep(cd[n - 1])) cd[--n] = '\0';
+#ifdef _WIN32
+    if (_strnicmp(cp, cd, n) != 0) return 0;
+#else
+    if (strncmp(cp, cd, n) != 0) return 0;
+#endif
+    return cp[n] == '\0' || is_sep(cp[n]) || (n == 1 && is_sep(cd[0]));
+}

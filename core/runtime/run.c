@@ -2288,7 +2288,8 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_memcard_set_unformatted(opts->card_unformatted);
     openpete_memcard_set_adopt(opts->adopt_saves);
     openpete_memcard_set_mismatch_toast(opts->save_mismatch_toast);
-    if (openpete_memcard_startup_check() != 0) return OPENPETE_EXIT_SETUP_ERROR;
+    const int card_rc = openpete_memcard_startup_check();
+    if (card_rc != OPENPETE_EXIT_OK) return card_rc;
     openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
                           opts->handoff_argv);
     if (openpete_bugreport_replay_admit(opts) != 0) return OPENPETE_BUGREPORT_REPLAY_REFUSED;
