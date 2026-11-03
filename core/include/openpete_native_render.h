@@ -490,6 +490,13 @@ const char* openpete_native_render_driver_version(void);
  * @return A static string such as "immediate" or "fifo"; "none" before the
  *         device exists and in PsyCross-only runs. */
 const char* openpete_native_render_present_mode(void);
+/** @brief Write the Vulkan device report (rhi_device_report) for a bug report's device.txt.
+ *
+ * Called by the display's owner.
+ * @param buf Receives the text.
+ * @param cap Capacity of @p buf.
+ * @return snprintf's count; "vulkan: no device" before the device exists. */
+int openpete_native_render_device_report(char* buf, size_t cap);
 
 /** @brief Toggle the native window between windowed and borderless-desktop fullscreen.
  *

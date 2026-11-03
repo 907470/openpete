@@ -303,5 +303,6 @@ int openpete_game_recomp_attach(const char* module_path_override,
 
     if (openpete_recomp_register(desc) != 0) return -1;
     OPL_INFO_F("recomp", "shared recomp module attached: %s", path);
+    openpete_recomp_module_set_path(path);
     return 0;
 }

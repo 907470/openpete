@@ -161,6 +161,28 @@ int openpete_log_file_crash_fds(int fds[2]);
 void openpete_logf(openpete_log_level_t level, const char* subsystem,
                    const char* fmt, ...);
 
+/** @brief Start capturing the calling thread's log lines into a buffer instead of stderr.
+ *
+ * While the capture is on, every openpete_logf line of level info or above
+ * (whatever the subsystem filter) and every openpete_log_rawf text from this
+ * thread is appended to the buffer in the plain format and not written to
+ * stderr or the log file. Other threads are unaffected. A capture already
+ * on is discarded. */
+void openpete_log_capture_begin(void);
+
+/** @brief Stop the calling thread's capture and return its text.
+ * @param len Receives the text's length; may be NULL.
+ * @return The NUL-terminated text, owned by the caller (free()); NULL when
+ *         allocation failed before the first line. */
+char* openpete_log_capture_end(size_t* len);
+
+/** @brief Write preformatted text to stderr, or to the calling thread's capture while one is on.
+ *
+ * The census lines harnesses grep on stderr in their own format use it, so
+ * a capture also collects them.
+ * @param fmt printf-style format; the text is truncated to 1023 bytes. */
+void openpete_log_rawf(const char* fmt, ...);
+
 /* Convenience macros - subsystem becomes part of the log line. */
 #define OPL_LOG(level, sub, ...) openpete_logf((level), (sub), __VA_ARGS__)
 #define OPL_TRACE_F(sub, ...) OPL_LOG(OPL_TRACE, sub, __VA_ARGS__)

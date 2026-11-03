@@ -594,6 +594,14 @@ uint64_t rhi_acquire_timeouts(const rhi_device *dev);
  * @param dev Device, or NULL.
  * @return The image count; 0 headless or for NULL. */
 uint32_t rhi_swapchain_image_count(const rhi_device *dev);
+/** @brief Write the device report: name, type, vendor and device ids, API and driver versions, the driver id, name and info, the enabled device extensions, the validation layer, present mode, swapchain extent, format, colour space and image count, and the offscreen extent.
+ *
+ * Read by the display's owner.
+ * @param dev Device, or NULL.
+ * @param buf Receives the text, one fact group per line.
+ * @param cap Capacity of @p buf.
+ * @return snprintf's count. */
+int rhi_device_report(const rhi_device *dev, char *buf, size_t cap);
 /** @brief Return whether the picked physical device is a software rasterizer.
  *
  * The test is VK_PHYSICAL_DEVICE_TYPE_CPU, which llvmpipe reports. The

@@ -262,6 +262,55 @@ size_t openpete_bugrec_hash_stride(void);
  * @return The rows written. */
 size_t openpete_bugrec_hash_csv(FILE* fp, unsigned from_frame);
 
+/** @brief Capture a state image with the session's card images and `.modsave` bytes and the replay position into an anchor record, outside the ring.
+ *
+ * The anchor's own buffers are reused; seq stays as it was.
+ * @param a The record to fill.
+ * @param cpu The guest register file.
+ * @return 0, or -1 when the capture failed (the record is left invalid). */
+int openpete_bugrec_capture(openpete_bugrec_anchor_t* a, const CPUState* cpu) OP_REQUIRES(sim);
+
+/** @brief Deep-copy an anchor record: the state image, card images and `.modsave` bytes.
+ * @param dst Receives the copy; release with openpete_bugrec_anchor_release.
+ * @param src The anchor.
+ * @return 0, or -1 when allocation failed (dst holds nothing). */
+int openpete_bugrec_anchor_copy(openpete_bugrec_anchor_t* dst, const openpete_bugrec_anchor_t* src);
+
+/** @brief Free an anchor record's buffers and zero it.
+ * @param a The record. */
+void openpete_bugrec_anchor_release(openpete_bugrec_anchor_t* a);
+
+/** @brief Copy the hash rows held from a frame on to the heap.
+ * @param from_frame The first frame wanted.
+ * @param out Receives the rows (openpete_bugrec_hash_stride() u64 each), or NULL; free with free().
+ * @return The row count. */
+size_t openpete_bugrec_hash_rows_copy(unsigned from_frame, uint64_t** out) OP_REQUIRES(sim);
+
+/** @brief Write hash rows in the --gameplay-hash-log CSV format, header included.
+ * @param fp The stream.
+ * @param rows The rows.
+ * @param n Their count.
+ * @param stride u64 per row.
+ * @return n. */
+size_t openpete_bugrec_hash_csv_rows(FILE* fp, const uint64_t* rows, size_t n, size_t stride);
+
+/** @brief Write input ring entries as CSV with a header line.
+ * @param fp The stream.
+ * @param ev The entries, oldest first.
+ * @param n Their count.
+ * @return n. */
+size_t openpete_bugrec_input_csv_entries(FILE* fp, const openpete_bugrec_input_t* ev, size_t n);
+
+/** @brief Write the connected input devices with each name kept only where the SDL gamepad database names the device's GUID the same.
+ *
+ * As openpete_bugrec_devices_write, with personal device names withheld:
+ * a joystick's name and mapping name are written only when the mapping SDL
+ * holds for its GUID carries the same name; keyboards and mice are listed
+ * by id only.
+ * @param fp The stream.
+ * @return The devices listed. */
+int openpete_bugrec_devices_write_allowlisted(FILE* fp);
+
 /** @brief Write the ring to a directory: each anchor's state, card images, `.modsave` files, metadata and segment bk2, the hash rows, the host-trace records, the pace ring's last 30 s, the input ring, the device list and the counters.
  *
  * The test hook OPENPETE_BUGREC_DUMP_AT calls it; files are written on the

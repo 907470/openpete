@@ -50,6 +50,14 @@ int openpete_recomp_register(const openpete_recomp_module* m);
  * @return The module; never NULL. */
 const openpete_recomp_module* openpete_recomp_module_get(void);
 
+/** @brief Record the file the active module was loaded from (shared linkage).
+ * @param path The module path; NULL clears it. */
+void openpete_recomp_module_set_path(const char* path);
+
+/** @brief Return the file the active module was loaded from.
+ * @return The path, "" for a static build (the module is linked into the executable). */
+const char* openpete_recomp_module_path(void);
+
 #ifdef __cplusplus
 }
 #endif

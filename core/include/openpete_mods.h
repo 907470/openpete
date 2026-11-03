@@ -633,6 +633,14 @@ typedef struct {
  * @return 1 when filled, 0 for an index out of range or a NULL @p out. */
 int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out);
 
+/** @brief Return loaded mod i's directory and the compiled object it was loaded from, for a bug report's copy.
+ *
+ * @param i Index into the loaded mod table.
+ * @param dir Receives the mod's directory; may be NULL.
+ * @param obj Receives the object path, "" when no object was loaded; may be NULL.
+ * @return 1 when filled, 0 for an index out of range. Strings live in the mod table. */
+int openpete_mods_bundle_paths(int i, const char** dir, const char** obj);
+
 /** @brief Return the number of mods refused at load for a game their manifest requires.
  *
  * A refused mod is not in the loaded table; the Mods panel lists these
@@ -691,6 +699,7 @@ typedef struct {
     int64_t     ival;   /* bool/int */
     double      fval;   /* float */
     const char* sval;   /* string */
+    int         secret; /* `secret = true`: a bug report lists the key, never its value */
 } openpete_mods_cfg_row_t;
 
 typedef struct {

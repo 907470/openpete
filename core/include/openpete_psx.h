@@ -456,6 +456,22 @@ void openpete_loop_site_census_log(void);
  * neither. Never call it on the monitor thread. */
 void openpete_stall_monitor_stop(void);
 
+/** @brief Copy the hang watchdog's three dispatch rings in hang-trace.bin's layout to the heap.
+ *
+ * The layout is the 'HNG2' file a trip writes: magic, then each ring's
+ * entry count, head and entries (the interval's first entries, their copy
+ * at the last tick, the most recent). Read on the sim thread at a final
+ * yield, where no dispatch entry is being recorded.
+ * @param out Receives the bytes; free with free().
+ * @return The byte count, 0 when allocation failed. */
+size_t openpete_hang_rings_image(uint8_t** out);
+
+/** @brief Write the path a hang trip writes one of its files to: OPENPETE_HANG_TRACE / OPENPETE_HANG_RAM, else the logs state directory.
+ * @param leaf "hang-trace.bin" or "hang-ram.bin".
+ * @param out Receives the path.
+ * @param cap Capacity of @p out. */
+void openpete_hang_output_path(const char* leaf, char* out, size_t cap);
+
 /** @brief Return the classified-loop instructions counted since the loop anchor's last entry.
  * @return The static body counts summed over every back-edge poll since the anchor. */
 uint64_t openpete_loop_insns_since_anchor(void);

@@ -225,23 +225,13 @@ static int anchor_cards(openpete_bugrec_anchor_t* a) {
     return 0;
 }
 
-/** @brief Capture an anchor into the oldest slot (an empty one first) and rotate the retention.
- * @param cpu The guest register file.
- * @return 0 on success, -1 when the capture failed (the slot is left invalid). */
-static int anchor_take(const CPUState* cpu) OP_REQUIRES(sim) {
-    int s = -1;
-    for (int i = 0; i < OPENPETE_BUGREC_SLOTS && s < 0; i++)
-        if (!s_br.slot[i].valid) s = i;
-    if (s < 0) s = oldest_slot();
-    openpete_bugrec_anchor_t* a = &s_br.slot[s];
+int openpete_bugrec_capture(openpete_bugrec_anchor_t* a, const CPUState* cpu) OP_REQUIRES(sim) {
     a->valid = 0;
     const uint64_t t0 = SDL_GetTicksNS();
     if (openpete_state_image_capture(&a->state, &a->state_len, &a->state_cap,
                                      cpu, openpete_frame) != 0 ||
-        anchor_cards(a) != 0) {
-        s_br.dropped[DROP_ALLOC]++;
+        anchor_cards(a) != 0)
         return -1;
-    }
     a->log_idx = input_log_count();
     a->frame = openpete_frame;
     a->vbl = SDL_GetAtomicInt(&openpete_vbl);
@@ -255,9 +245,25 @@ static int anchor_take(const CPUState* cpu) OP_REQUIRES(sim) {
     a->trace_iter = host_trace_iter_index();
     for (int k = 0; k < BUGREC_TAINT_N; k++)
         a->taint_at[k] = atomic_load_explicit(&s_taint[k], memory_order_relaxed);
-    a->seq = ++s_br.seq;
-    a->valid = 1;
     a->capture_us = (SDL_GetTicksNS() - t0) / 1000u;
+    a->valid = 1;
+    return 0;
+}
+
+/** @brief Capture an anchor into the oldest slot (an empty one first) and rotate the retention.
+ * @param cpu The guest register file.
+ * @return 0 on success, -1 when the capture failed (the slot is left invalid). */
+static int anchor_take(const CPUState* cpu) OP_REQUIRES(sim) {
+    int s = -1;
+    for (int i = 0; i < OPENPETE_BUGREC_SLOTS && s < 0; i++)
+        if (!s_br.slot[i].valid) s = i;
+    if (s < 0) s = oldest_slot();
+    openpete_bugrec_anchor_t* a = &s_br.slot[s];
+    if (openpete_bugrec_capture(a, cpu) != 0) {
+        s_br.dropped[DROP_ALLOC]++;
+        return -1;
+    }
+    a->seq = ++s_br.seq;
     if (s_br.capture_n < CAPTURE_SAMPLES) s_br.capture_us[s_br.capture_n++] = (uint32_t)a->capture_us;
     if (a->capture_us > s_br.capture_max_us) s_br.capture_max_us = a->capture_us;
     s_br.taken++;
@@ -397,12 +403,57 @@ const uint64_t* openpete_bugrec_hash_rows(unsigned from_frame, size_t* count) {
 
 size_t openpete_bugrec_hash_stride(void) { return s_br.stride; }
 
+size_t openpete_bugrec_hash_csv_rows(FILE* fp, const uint64_t* rows, size_t n, size_t stride) {
+    gameplay_hash_log_emit_header(fp);
+    for (size_t i = 0; i < n; i++, rows += stride)
+        gameplay_hash_log_emit(fp, (unsigned)rows[0], (int)(uint32_t)rows[1], rows[3], rows + 4);
+    return n;
+}
+
 size_t openpete_bugrec_hash_csv(FILE* fp, unsigned from_frame) {
     size_t n = 0;
     const uint64_t* r = openpete_bugrec_hash_rows(from_frame, &n);
-    gameplay_hash_log_emit_header(fp);
-    for (size_t i = 0; i < n; i++, r += s_br.stride)
-        gameplay_hash_log_emit(fp, (unsigned)r[0], (int)(uint32_t)r[1], r[3], r + 4);
+    return openpete_bugrec_hash_csv_rows(fp, r, n, s_br.stride);
+}
+
+/** @brief Copy n bytes into a buffer the caller frees, keeping NULL for an empty source.
+ * @return 0, or -1 when allocation failed. */
+static int dup_bytes(uint8_t** dst, const uint8_t* src, size_t n) {
+    *dst = NULL;
+    if (!src || !n) return 0;
+    if (!(*dst = (uint8_t*)malloc(n))) return -1;
+    memcpy(*dst, src, n);
+    return 0;
+}
+
+int openpete_bugrec_anchor_copy(openpete_bugrec_anchor_t* dst, const openpete_bugrec_anchor_t* src) {
+    *dst = *src;
+    dst->state = NULL;
+    dst->state_cap = 0;
+    for (int p = 0; p < 2; p++) dst->card[p] = dst->modsave[p] = NULL;
+    int rc = dup_bytes(&dst->state, src->state, src->state_len);
+    dst->state_cap = dst->state ? src->state_len : 0;
+    for (int p = 0; p < 2; p++) {
+        rc |= dup_bytes(&dst->card[p], src->card_loaded[p] ? src->card[p] : NULL,
+                        OPENPETE_BUGREC_CARD_BYTES);
+        rc |= dup_bytes(&dst->modsave[p], src->modsave[p], src->modsave_len[p]);
+    }
+    if (rc) openpete_bugrec_anchor_release(dst);
+    return rc ? -1 : 0;
+}
+
+void openpete_bugrec_anchor_release(openpete_bugrec_anchor_t* a) {
+    free(a->state);
+    for (int p = 0; p < 2; p++) { free(a->card[p]); free(a->modsave[p]); }
+    memset(a, 0, sizeof *a);
+}
+
+size_t openpete_bugrec_hash_rows_copy(unsigned from_frame, uint64_t** out) OP_REQUIRES(sim) {
+    size_t n = 0;
+    const uint64_t* r = openpete_bugrec_hash_rows(from_frame, &n);
+    *out = NULL;
+    if (!n) return 0;
+    if (dup_bytes((uint8_t**)out, (const uint8_t*)r, n * s_br.stride * sizeof *r) != 0) return 0;
     return n;
 }
 

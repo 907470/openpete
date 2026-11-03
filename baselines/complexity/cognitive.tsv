@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 687e1f5b85eb4e76d572cefc615872871a16b455
+# head: 98bafd2eb430bf50ee183ac3f61ac1fd772a516d
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -35,7 +35,7 @@ core/mods/mod_config.c	cfgw_apply_one	126	0
 core/mods/mod_loader.c	mods_discover	44	0	
 core/mods/mod_loader.c	openpete_mods_init	64	0	
 core/mods/mod_loader.c	openpete_mods_tick_boundary	34	0	
-core/mods/mod_loader.c	parse_config_row	29	0	
+core/mods/mod_loader.c	parse_config_row	27	0	
 core/mods/mod_loader.c	parse_levels	31	0	
 core/mods/mod_loader.c	parse_mod_header	35	0	
 core/mods/mod_registry.c	custom_tick	51	0	

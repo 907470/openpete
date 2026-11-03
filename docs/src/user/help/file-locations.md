@@ -17,6 +17,7 @@ every location below as this install resolves it, then exits.
 | `assets/` | your texture, music and sound packs |
 | `bk2/` | [input recordings](glossary.md#input-recording) |
 | `screenshots/` | PNGs saved with ++f12++ |
+| `bugreports/` | [bug report](../playing/recording.md#bug-reports) zips saved with ++f9++ |
 
 ## Where it goes
 
@@ -32,7 +33,7 @@ program's folder is not writable, per-user is used and the log says so.
 
     ```
     openpete.toml  gamecontrollerdb.txt
-    cards\  states\  logs\  library\  mods\  assets\  bk2\  screenshots\
+    cards\  states\  logs\  library\  mods\  assets\  bk2\  screenshots\  bugreports\
     ```
 
     Two per-user files are also read in this layout, and nothing writes
@@ -45,7 +46,7 @@ program's folder is not writable, per-user is used and the log says so.
     ```
     %APPDATA%\openpete\                     openpete.toml, gamecontrollerdb.txt
     %LOCALAPPDATA%\openpete\cards\  states\  logs\
-    %LOCALAPPDATA%\openpete\library\  mods\  assets\  bk2\  screenshots\
+    %LOCALAPPDATA%\openpete\library\  mods\  assets\  bk2\  screenshots\  bugreports\
     ```
 
 === "Linux AppImage"
@@ -55,7 +56,7 @@ program's folder is not writable, per-user is used and the log says so.
     ```
     ~/.config/openpete/         openpete.toml, gamecontrollerdb.txt
     ~/.local/state/openpete/    cards/  states/  logs/
-    ~/.local/share/openpete/    library/  mods/  assets/  bk2/  screenshots/
+    ~/.local/share/openpete/    library/  mods/  assets/  bk2/  screenshots/  bugreports/
     ```
 
     `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and `$XDG_DATA_HOME` replace the
@@ -64,7 +65,7 @@ program's folder is not writable, per-user is used and the log says so.
 === "Linux tar.xz"
 
     Per-user is the default, with the same folders as the AppImage. A
-    `library/`, `mods/`, `assets/`, `bk2/` or `screenshots/` folder that
+    `library/`, `mods/`, `assets/`, `bk2/`, `screenshots/` or `bugreports/` folder that
     already exists next to the program, and is writable, is used in place
     of the per-user one.
 

@@ -5,6 +5,7 @@
 // step is a release step, which runs on every path, or an output step,
 // which runs only once the loop has entered (a setup error writes no
 // movie, no verdict and no report).
+#include "openpete_bugreport.h"
 #include "host_loop_internal.h"
 #include "host_state_ops.h"
 #include "host_hotkeys.h"
@@ -172,6 +173,7 @@ static int open_bk2(host_session_t* S) OP_REQUIRES(sim)
     }
     bk2_feed_open(S->bk2.active ? &S->bk2.movie : NULL, S->bk2.offset);
     openpete_bugrec_init();
+    openpete_bugreport_init();
     return 0;
 }
 
@@ -252,9 +254,13 @@ static int open_outputs(host_session_t* S) OP_REQUIRES(sim)
     return OPENPETE_EXIT_OK;
 }
 
+/* The open session, for the bug-report press's reports (the pacer). */
+static host_session_t* s_press_session;
+
 int host_session_open(host_session_t* S, const openpete_options_t* opts) OP_REQUIRES(sim)
 {
     memset(S, 0, sizeof(*S));
+    s_press_session = S;
     S->opts  = opts;
     S->split = openpete_split_applies(opts);
     /* Elapsed time for a fiber failure counts from here; a run that boots
@@ -414,6 +420,22 @@ static void close_psxtrace(host_session_t* S) OP_REQUIRES(sim)
     host_trace_close_step(HT_S_PSXTRACE_CLOSE);
 }
 
+/** @brief Log the swapchain's image count and refusals; nothing without the native renderer. */
+static void swapchain_report(void) OP_REQUIRES(sim)
+{
+    if (!openpete_native_render_enabled()) return;
+    OPL_INFO_F("pace",
+               "swapchain: %u image(s) granted; acquire refused %llu "
+               "present(s) (%llu budget expiry, the rest suppressed by "
+               "the back-off it opened); fence refused %llu present(s); "
+               "%u present(s) never began",
+               openpete_native_render_swapchain_images(),
+               (unsigned long long)openpete_native_render_acquire_sheds(),
+               (unsigned long long)openpete_native_render_acquire_timeouts(),
+               (unsigned long long)openpete_native_render_fence_sheds(),
+               openpete_native_render_begin_refused());
+}
+
 /** @brief Log the pacing census and the swapchain's refusals.
  *
  * Both print on every run that looped, with no flag: a run that was never
@@ -426,16 +448,7 @@ static void close_pace_reports(void) OP_REQUIRES(sim)
     OPL_INFO_F("pace", "%s", pace_summary);
     host_trace_close_step(HT_S_PACE_CENSUS);
     if (!openpete_native_render_enabled()) return;
-    OPL_INFO_F("pace",
-               "swapchain: %u image(s) granted; acquire refused %llu "
-               "present(s) (%llu budget expiry, the rest suppressed by "
-               "the back-off it opened); fence refused %llu present(s); "
-               "%u present(s) never began",
-               openpete_native_render_swapchain_images(),
-               (unsigned long long)openpete_native_render_acquire_sheds(),
-               (unsigned long long)openpete_native_render_acquire_timeouts(),
-               (unsigned long long)openpete_native_render_fence_sheds(),
-               openpete_native_render_begin_refused());
+    swapchain_report();
     host_trace_close_step(HT_S_SWAPCHAIN_REPORT);
 }
 
@@ -449,7 +462,7 @@ static void close_stream_censuses(void) OP_REQUIRES(sim)
     openpete_vstream_census(&vc);
     host_trace_close_step(HT_S_VSTREAM_CENSUS);
     if (vc.stock || vc.handle || vc.unresolved)
-        fprintf(stderr, "[vstream] stock=%llu handle=%llu unresolved=%llu"
+        openpete_log_rawf("[vstream] stock=%llu handle=%llu unresolved=%llu"
                 " first=%#x\n", (unsigned long long)vc.stock,
                 (unsigned long long)vc.handle,
                 (unsigned long long)vc.unresolved,
@@ -458,7 +471,7 @@ static void close_stream_censuses(void) OP_REQUIRES(sim)
     sfx_pack_census(&sc);
     host_trace_close_step(HT_S_SFXPACK_CENSUS);
     if (sc.keyed || sc.active)
-        fprintf(stderr, "[sfxpack] files=%d keyed=%llu resolved=%llu "
+        openpete_log_rawf("[sfxpack] files=%d keyed=%llu resolved=%llu "
                 "replaced=%llu rings_out=%llu verify_ok=%llu verify_bad=%llu "
                 "cb_max_us=%llu cb_p99_us<=%llu sync_decodes=%llu\n",
                 sc.files, (unsigned long long)sc.keyed,
@@ -594,6 +607,7 @@ static void close_subsystem_reports(void) OP_REQUIRES(sim)
                openpete_native_version_drawn());
     host_trace_close_step(HT_S_VERSION_CENSUS);
     gpu_audit_report();
+    openpete_bugreport_report();
 }
 
 /** @brief Shut down the sfx pack and feature workers, and the renderer and PsyCross when this thread owns the window.
@@ -654,9 +668,65 @@ static void close_stdout_end_state(void) OP_REQUIRES(sim)
     host_trace_close_step(HT_S_POSE_STDOUT);
 }
 
+/* Documented at the declaration in host_loop_internal.h. */
+void host_session_pace_env(char* env, unsigned env_bytes) OP_REQUIRES(sim)
+{
+    if (!env || !env_bytes) return;
+    env[0] = '\0';
+    host_session_t* S = s_press_session;
+    if (!S || !S->opts) return;
+    host_pace_env_build(env, env_bytes, S->opts, S->refresh_mhz,
+                        host_pacer_render_fps(&S->pacer), S->pacer.launch_scale);
+}
+
+/* Documented at the declaration in host_loop_internal.h. */
+bool host_session_paused(void) OP_REQUIRES(sim)
+{
+    return s_press_session && s_press_session->paused;
+}
+
+/* Documented at the declaration in host_loop_internal.h. */
+void host_session_press_reports(void) OP_REQUIRES(sim)
+{
+    char pace_summary[768];
+    openpete_pace_census_format(pace_summary, sizeof(pace_summary));
+    OPL_INFO_F("pace", "%s", pace_summary);
+    if (s_press_session) (void)host_pacer_slip_report(&s_press_session->pacer);
+    if (openpete_interp_enabled())
+        OPL_INFO_F("interp", "captured=%llu, dedupe-skipped=%llu",
+                   (unsigned long long)openpete_interp_total_captures(),
+                   (unsigned long long)openpete_interp_total_dedupe_skips());
+    (void)runahead_predict_report();
+    close_stream_censuses();
+    openpete_capture_report_intermediate();
+    disc_cache_exit_census();
+    (void)openpete_host_input_parity_report();
+    host_input_exit_report();
+    rumble_census_report();
+    openpete_rewind_report();
+    state_ops_report();
+    if (psyq_vbl_delivery_report) psyq_vbl_delivery_report();
+    if (openpete_osd_enabled())
+        OPL_INFO_F("osd", "census: %u toast(s) composited", openpete_native_osd_composited());
+    OPL_INFO_F("version", "census: %s (%s), %u line(s) drawn",
+               openpete_build_version(), openpete_native_version_reason(),
+               openpete_native_version_drawn());
+    gpu_audit_report();
+}
+
+/* Documented at the declaration in host_loop_internal.h. */
+void host_session_display_reports(void) OP_REQUIRES(sim)
+{
+    swapchain_report();
+    openpete_native_present_census_report();
+    host_present_exit_report();
+    openpete_present_thread_report();
+}
+
 int host_session_close(host_session_t* S, int rc) OP_REQUIRES(sim)
 {
     S->exit_code = rc;
+    openpete_bugreport_shutdown();
     close_threads_and_bk2(S);
     close_record_and_logs(S);
     close_psxtrace(S);

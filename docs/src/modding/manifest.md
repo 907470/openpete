@@ -157,7 +157,17 @@ key     = "render.mode"
 type    = "string"
 default = "fast"
 items   = ["fast", "fancy"]   # string + items renders a combo
+
+[[config]]
+key     = "service.token"
+type    = "string"
+default = ""
+secret  = true            # a bug report names the key and never its value
 ```
+
+A bug report ships each enabled mod's `config.toml` as the declared rows'
+effective values. A row with `secret = true` and every key `config.toml`
+holds that no row declares are listed by key only.
 
 A mod whose UI is settings plus `api->ui_status` lines needs no widget
 code. Custom panels use `openpete_mod_ui.h`, which is versioned

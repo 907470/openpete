@@ -199,6 +199,13 @@ void openpete_config_reset(void);
  * @param out Destination stream; NULL prints to stderr. */
 void openpete_config_report(FILE* out);
 
+/** @brief Return one of the config files the layered config reads: 0 the exe directory's openpete.toml, 1 the user config directory's.
+ *
+ * The path is returned whether or not the file exists.
+ * @param i 0 or 1.
+ * @return The path, or NULL when that layer resolved none. */
+const char* openpete_config_file_path(int i);
+
 /** @brief Return 1 when openpete_config_apply saw --config-report in argv, else 0.
  *
  * No caller reads it; the game mains test openpete_options_t.config_report

@@ -11,6 +11,7 @@
 #include "openpete_fiber.h"
 #include "openpete_handoff.h"
 #include "openpete_bugrec.h"
+#include "openpete_bugreport.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
 #include "openpete_mods.h"
@@ -65,6 +66,7 @@ typedef enum {
     STATE_OP_LOAD_SLOT,   /* openpete_state_load from a slot */
     STATE_OP_SAVE_FILE,   /* openpete_state_save_file to a path */
     STATE_OP_LOAD_FILE,   /* openpete_state_load_file from a path */
+    STATE_OP_BUG_REPORT,  /* openpete_bugreport_press: the bug-report bundle's press */
 } state_op_kind;
 
 typedef struct {
@@ -86,6 +88,9 @@ unsigned long long s_site_deferred[SITE_DEF_N];
 unsigned long long s_site_refused = 0;    /* queued loads refused at STATE_LOAD_SITE_WAIT */
 unsigned long long s_site_wait_yields = 0; /* final yields queued loads spent at another site */
 unsigned long long s_site_abandoned = 0;  /* stress rollbacks re-armed at their bound */
+
+/* The run options the bug-report press records (argv, disc). */
+static const openpete_options_t* s_bug_opts;
 
 #define STATE_OP_QUEUE_LEN 8
 static state_op_t s_state_ops[STATE_OP_QUEUE_LEN];
@@ -166,7 +171,7 @@ enum {
  * @return STATE_OP_DONE, STATE_OP_FAILED, or STATE_OP_SITE when a load found
  *         the fiber parked at another site than its state's (nothing
  *         restored). */
-static int state_op_run(const state_op_t* op) {
+static int state_op_run(const state_op_t* op) OP_REQUIRES(sim) {
     unsigned lf = openpete_frame;
     int rc = STATE_OP_FAILED;
     switch (op->kind) {
@@ -183,6 +188,9 @@ static int state_op_run(const state_op_t* op) {
     case STATE_OP_LOAD_FILE:
         rc = openpete_state_load_file(op->path, &g_game.cpu, &lf);
         break;
+    case STATE_OP_BUG_REPORT:
+        return openpete_bugreport_press(&g_game.cpu, s_bug_opts) == 0 ? STATE_OP_DONE
+                                                                       : STATE_OP_FAILED;
     }
     if (rc == STATE_OP_DONE) openpete_frame = lf;
     return rc;
@@ -240,7 +248,7 @@ static void state_slot_announce(unsigned slot) {
                         present ? "OCCUPIED" : "EMPTY");
 }
 
-int state_ops_drain(void) {
+int state_ops_drain(void) OP_REQUIRES(sim) {
     if (!openpete_yield_final) {
         s_state_yields_skipped++;
         for (int i = 0; i < s_state_op_n; i++) {
@@ -268,8 +276,10 @@ int state_ops_drain(void) {
     return 1;
 }
 
-void state_ops_collect(const openpete_options_t* opts) {
+void state_ops_collect(const openpete_options_t* opts) OP_REQUIRES(sim) {
     static bool sched_saved = false, sched_loaded = false;
+    s_bug_opts = opts;
+    if (openpete_bugreport_due()) state_op_push(STATE_OP_BUG_REPORT, 0, NULL);
     const unsigned slot = openpete_state_active_slot();
     const int req = SDL_SetAtomicInt(&s_state_slot_req, 0);
     /* The save and load keys default to the number row: F4 is PsyCross's

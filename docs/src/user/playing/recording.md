@@ -80,6 +80,21 @@ settings menu, the notifications, the stats readout and the version line.
 `OPENPETE_SCREENSHOT_OVERLAYS=1`) draws them into those captures as the
 window shows them. The default is `0` (off).
 
+## Bug reports
+
+{{ key("key:host.bug_report") }} <!-- id: key:host.bug_report home --> writes one zip,
+`bug-<game>-<date>-<time>.zip`, into the `bugreports` folder
+([File locations](../help/file-locations.md)), and a message names it. The
+**BUG REPORT** row of the [settings menu](settings-menu.md#bug-report) does
+the same from a gamepad. Nothing is uploaded: send the file with the report.
+
+The zip holds what a developer needs to replay the last 30 to 60 seconds:
+two savestates, the inputs between them, a screenshot, the logs, the
+settings and key bindings, the device and driver facts, and every enabled
+mod with its files. Your home folder, user name and computer name are
+replaced in the text it holds; a mod setting marked secret is listed by
+name only.
+
 ## Without the player
 
 `--hide-player 1` <!-- id: knob:hide_player home --> draws the scene

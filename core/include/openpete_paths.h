@@ -162,7 +162,7 @@ int openpete_paths_game_state_dir(const char* leaf, const char* game, char* out,
  * modules and user-authored content, where the state dirs hold
  * machine-local state. With @p create the directory is made; an adopted
  * directory already exists.
- * @param leaf "library", "modules", "mods", "assets", "bk2" or "screenshots".
+ * @param leaf "library", "modules", "mods", "assets", "bk2", "screenshots" or "bugreports".
  * @param out Receives the path.
  * @param cap Capacity of @p out.
  * @param create Non-zero to create the directory.

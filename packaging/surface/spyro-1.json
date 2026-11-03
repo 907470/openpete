@@ -6630,6 +6630,12 @@
    "displayed": true
   },
   {
+   "id": "menu:menu.bugreport",
+   "knob": null,
+   "hint": "SAVE A FILE TO SEND WITH A BUG REPORT",
+   "displayed": true
+  },
+  {
    "id": "menu:menu.docs",
    "knob": null,
    "hint": "OPEN THE DOCUMENTATION IN A BROWSER",
@@ -6826,6 +6832,15 @@
    "devbuild": false,
    "def": "F12",
    "suggested": "F12"
+  },
+  {
+   "id": "key:host.bug_report",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "F9",
+   "suggested": "F9"
   },
   {
    "id": "key:host.savestate_save",

@@ -4,6 +4,7 @@
 // main pumps the window and a worker runs the loop; a build without PsyCross
 // opens a window that only clears and presents.
 
+#include "openpete_bugreport.h"
 #include "openpete.h"
 #include "openpete_crash.h"
 #include "openpete_fatal.h"
@@ -481,6 +482,9 @@ void openpete_pump_events(void) {
     /* SDL text input is a window op of this thread; the overlay decides on
      * the present thread whether a field wants it. */
     openpete_devui_pump_text_input();
+    /* A pending bug report's device and monitor facts: SDL lists keyboards,
+     * mice and displays only on this thread. */
+    openpete_bugreport_main_poll();
     /* Actuators are driven from here because this thread owns the SDL gamepad
      * handles: PsyCross opens and closes them in the controller-added /
      * -removed handlers just above, so applying on any other thread would race

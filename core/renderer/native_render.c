@@ -8055,6 +8055,11 @@ const char* openpete_native_render_driver_version(void)
     return s_nr.dev ? rhi_driver_version(s_nr.dev) : "unknown";
 }
 
+int openpete_native_render_device_report(char* buf, size_t cap)
+{
+    return rhi_device_report(s_nr.dev, buf, cap);
+}
+
 const char* openpete_native_render_present_mode(void)
 {
     return s_nr.dev ? rhi_present_mode_name(s_nr.dev) : "none";

@@ -64,6 +64,15 @@ int openpete_recomp_register(const openpete_recomp_module* m) {
     return 0;
 }
 
+/* The file the shared-linkage attach loaded the module from; "" for a static build. */
+static char s_recomp_module_path[4096];
+
+void openpete_recomp_module_set_path(const char* path) {
+    snprintf(s_recomp_module_path, sizeof s_recomp_module_path, "%s", path ? path : "");
+}
+
+const char* openpete_recomp_module_path(void) { return s_recomp_module_path; }
+
 const openpete_recomp_module* openpete_recomp_module_get(void) {
     return s_recomp_module;
 }
@@ -390,6 +399,38 @@ static void hang_output_path(const char* leaf, char* out, size_t cap) {
         snprintf(out, cap, "%s", leaf);
 }
 
+size_t openpete_hang_rings_image(uint8_t** out) {
+    const uint32_t magic = 0x32474E48u;  /* 'HNG2' */
+    const uint32_t count = HANG_RING, recent = HANG_RECENT;
+    const size_t n = 3u * 4u + sizeof s_hang_ring + 2u * 4u + sizeof s_hang_ring_prev + 2u * 4u +
+                     sizeof s_hang_recent;
+    uint8_t* b = (uint8_t*)malloc(n);
+    *out = b;
+    if (!b) return 0;
+    uint8_t* p = b;
+#define HANG_PUT(src, len) do { memcpy(p, (src), (len)); p += (len); } while (0)
+    HANG_PUT(&magic, 4);
+    HANG_PUT(&count, 4);
+    HANG_PUT(&s_hang_head, 4);
+    HANG_PUT(s_hang_ring, sizeof s_hang_ring);
+    /* Pre-loop snapshot: ring as it stood at the last frame boundary. */
+    HANG_PUT(&count, 4);
+    HANG_PUT(&s_hang_head_prev, 4);
+    HANG_PUT(s_hang_ring_prev, sizeof s_hang_ring_prev);
+    HANG_PUT(&recent, 4);
+    HANG_PUT(&s_hang_recent_head, 4);
+    HANG_PUT(s_hang_recent, sizeof s_hang_recent);
+#undef HANG_PUT
+    return n;
+}
+
+void openpete_hang_output_path(const char* leaf, char* out, size_t cap) {
+    const char* env = strcmp(leaf, "hang-trace.bin") == 0 ? getenv("OPENPETE_HANG_TRACE")
+                      : strcmp(leaf, "hang-ram.bin") == 0 ? getenv("OPENPETE_HANG_RAM") : NULL;
+    if (env && *env) snprintf(out, cap, "%s", env);
+    else hang_output_path(leaf, out, cap);
+}
+
 /** @brief Trip the hang watchdog: write the dispatch rings and guest RAM, tell the player, run the exit flush, and exit with code 2.
  *
  * The caller owns the dump (hang_claim). Called on the game fiber for every
@@ -407,32 +448,18 @@ static void hang_output_path(const char* leaf, char* out, size_t cap) {
  * @param off_thread Nonzero when called on the stall monitor thread. */
 static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
                                         uint32_t stall_ms, int off_thread) {
-    char trace_default[1100], ram_default[1100];
-    hang_output_path("hang-trace.bin", trace_default, sizeof trace_default);
-    hang_output_path("hang-ram.bin", ram_default, sizeof ram_default);
-    const char* path = getenv("OPENPETE_HANG_TRACE");
-    if (!path || !*path) path = trace_default;
+    char path[1100], rampath[1100];
+    openpete_hang_output_path("hang-trace.bin", path, sizeof path);
+    openpete_hang_output_path("hang-ram.bin", rampath, sizeof rampath);
     FILE* fp = fopen(path, "wb");
     if (fp) {
-        uint32_t magic = 0x32474E48u;  /* 'HNG2' */
-        uint32_t count = HANG_RING;
-        uint32_t recent = HANG_RECENT;
-        fwrite(&magic, 4, 1, fp);
-        fwrite(&count, 4, 1, fp);
-        fwrite(&s_hang_head, 4, 1, fp);
-        fwrite(s_hang_ring, sizeof(s_hang_ring[0]), HANG_RING, fp);
-        /* Pre-loop snapshot: ring as it stood at the last frame boundary. */
-        fwrite(&count, 4, 1, fp);
-        fwrite(&s_hang_head_prev, 4, 1, fp);
-        fwrite(s_hang_ring_prev, sizeof(s_hang_ring_prev[0]), HANG_RING, fp);
-        fwrite(&recent, 4, 1, fp);
-        fwrite(&s_hang_recent_head, 4, 1, fp);
-        fwrite(s_hang_recent, sizeof(s_hang_recent[0]), HANG_RECENT, fp);
+        uint8_t* img = NULL;
+        const size_t n = openpete_hang_rings_image(&img);
+        if (n) fwrite(img, 1, n, fp);
+        free(img);
         fclose(fp);
     }
     /* Also dump 2 MB RAM so post-mortem can inspect any address. */
-    const char* rampath = getenv("OPENPETE_HANG_RAM");
-    if (!rampath || !*rampath) rampath = ram_default;
     FILE* rp = fopen(rampath, "wb");
     if (rp) {
         const size_t ram_size = 2u * 1024u * 1024u;

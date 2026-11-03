@@ -18,7 +18,7 @@ void count_loop_deferral(void);
  * for the next final yield (state_op_site_wait). A slot request toasts when
  * it finishes or is refused, never while it waits (state_op_toast).
  * @return 1 at a final yield (the queue ran and the periodic state work may run), else 0. */
-int state_ops_drain(void);
+int state_ops_drain(void) OP_REQUIRES(sim);
 
 /** @brief Queue the savestate requests raised this iteration, then apply the slot-cycle key and announce a slot change.
  *
@@ -28,7 +28,7 @@ int state_ops_drain(void);
  * load, so a save and a load armed for the same tick capture and then
  * restore (a same-tick roundtrip).
  * @param opts Run options (the --state-*-on-frame one-shots). */
-void state_ops_collect(const openpete_options_t* opts);
+void state_ops_collect(const openpete_options_t* opts) OP_REQUIRES(sim);
 
 /** @brief Step the savestate stress harnesses (restore-at-yield checks) by one quiescent iteration.
  * @param opts Run options (--state-stress, --state-stress-rewind). */

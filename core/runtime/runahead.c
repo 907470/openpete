@@ -57,7 +57,7 @@ bool runahead_predict_report(void) {
      * whenever the check is armed, counters or not: a window that retired
      * no prediction then reads as checked=0 instead of an absent line, which
      * a harness cannot tell from a binary that never armed the check. */
-    fprintf(stderr, "[ra-predict] checked=%u mismatch=%u invalidated=%u\n",
+    openpete_log_rawf("[ra-predict] checked=%u mismatch=%u invalidated=%u\n",
             s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated);
     return true;
 }

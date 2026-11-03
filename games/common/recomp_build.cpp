@@ -929,6 +929,18 @@ int first_boot_build(const char* disc_path, const char* out_module_path) {
     if (bundled_cc) common.push_back("-nostdlibinc");
     common.push_back("-I" + src.string());
 #endif
+    /* Path remaps: the working directory reads as `.`, the install
+     * directory as `openpete` and the module's build directory as `module`
+     * in every path the objects carry (__FILE__, DWARF), so a module a bug
+     * report ships names no directory of the machine. GCC and clang apply
+     * the last remap that matches, so the most specific comes last (a
+     * portable install keeps its modules under the exe). The remaps change
+     * no instruction, so the codegen stamp leaves them out. */
+    std::error_code cwd_ec;
+    const fs::path cwd = fs::current_path(cwd_ec);
+    if (!cwd_ec) common.push_back("-ffile-prefix-map=" + cwd.string() + "=.");
+    common.push_back("-ffile-prefix-map=" + base.string() + "=openpete");
+    common.push_back("-ffile-prefix-map=" + work.string() + "=module");
     if (!arch.empty())
         std::fprintf(stderr, "[first-boot] tuning for this CPU (%s)\n",
                      module_march().c_str());

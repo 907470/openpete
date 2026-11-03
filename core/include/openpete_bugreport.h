@@ -1,0 +1,103 @@
+/* core/include/openpete_bugreport.h - the bug-report bundle: one zip a
+ * reader with this repository and no access to the tester's machine debugs
+ * from.
+ *
+ * A press (the `bug_report` key, the settings menu's BUG REPORT row, or
+ * the harness variable OPENPETE_BUGREPORT_AT) queues a state op, so the
+ * press runs at the next final yield on the sim thread
+ * (openpete_bugreport_press). There it copies what moves: the press
+ * snapshot (a state file image with the press-time card images), the
+ * recorder's replay anchor, the segment bk2 from the anchor, the hash rows,
+ * the host-trace, pace and input rings, the hang watchdog's dispatch rings,
+ * the session's subsystem reports (logged into a buffer, not to stderr),
+ * the config and keymap reports and the mods' effective config rows. It
+ * raises the screenshot request with the bundle's staging path; the present
+ * services take the image and, with the present thread's device borrowed,
+ * the display reports (openpete_bugreport_display_service). The device
+ * list and the monitors are collected on the main thread by the event pump
+ * (openpete_bugreport_main_poll).
+ *
+ * A worker thread then waits for those answers (each marked absent after
+ * its bound), reads the files (logs, hang files, config files, the enabled
+ * mods' directories and loaded modules, the recomp module), redacts the
+ * text members and the state files' card paths, scans the members it never
+ * rewrites for the home path, user name and host name, hashes every
+ * member, writes manifest.json and the zip under
+ * openpete_paths_data_dir("bugreports"). The sim thread joins it at its
+ * next poll and posts the toast. A press while a bundle is in flight is
+ * refused with a toast. Nothing stores into PSX RAM.
+ */
+#ifndef OPENPETE_BUGREPORT_H
+#define OPENPETE_BUGREPORT_H
+
+#include "openpete_thread_roles.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct CPUState CPUState;
+struct openpete_options;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* manifest.json's schema version. */
+#define OPENPETE_BUGREPORT_SCHEMA 1
+
+/** @brief Read OPENPETE_BUGREPORT_AT=N, a harness press at feed key N.
+ *
+ * Called once before the host loop. */
+void openpete_bugreport_init(void);
+
+/** @brief Ask for a bug report at the next final yield; safe from any thread (the settings menu row). */
+void openpete_bugreport_request(void);
+
+/** @brief Report whether a press is due this iteration: the key edge, a request or the harness feed key; and post the toast of a finished bundle.
+ *
+ * Called from the state-op collector on the sim thread once per quiescent
+ * iteration. A due press while a bundle is in flight is refused with a
+ * toast and returns 0.
+ * @return 1 when the caller queues the press op. */
+int openpete_bugreport_due(void) OP_REQUIRES(sim);
+
+/** @brief Take the press at a final yield: copy the snapshot, rings and reports, raise the screenshot request and start the worker.
+ *
+ * @param cpu The guest register file.
+ * @param opts The run options (argv, disc, game).
+ * @return 0 when the worker started, -1 when the press failed (logged and toasted). */
+int openpete_bugreport_press(const CPUState* cpu, const struct openpete_options* opts) OP_REQUIRES(sim);
+
+/** @brief Take the pending bundle screenshot request: the staging path of screen.png.
+ *
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @return 1 when a bundle waits for its image, else 0. */
+int openpete_bugreport_take_shot(char* out, size_t cap) OP_REQUIRES(sim);
+
+/** @brief Record the bundle screenshot's outcome and run the display reports while the device is borrowed.
+ *
+ * The display reports are the present-thread report, the native present
+ * and eager censuses, the swapchain line and the Vulkan device report;
+ * they are logged into the bundle's buffer on the calling thread, which
+ * holds the display.
+ * @param shot_ok Nonzero when screen.png was written. */
+void openpete_bugreport_display_service(int shot_ok) OP_REQUIRES(sim);
+
+/** @brief Collect the main-thread facts of a pending bundle: the input devices, monitors, video and audio drivers.
+ *
+ * Called by the event pump on the thread that owns the window; returns at
+ * once when nothing is pending. */
+void openpete_bugreport_main_poll(void);
+
+/** @brief Wait for an in-flight bundle to finish and release it; called at session close. */
+void openpete_bugreport_shutdown(void) OP_REQUIRES(sim);
+
+/** @brief Log the bundle counters: presses, bundles written and failed, the last bundle's members, bytes, replacements, findings and sim-thread press time. */
+void openpete_bugreport_report(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* OPENPETE_BUGREPORT_H */

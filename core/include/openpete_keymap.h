@@ -191,6 +191,8 @@ typedef enum {
   /* --- capture ------------------------------------------------------ */     \
   X(SCREENSHOT,"screenshot",KM_DIGITAL, KM_CTX_ALWAYS,   0,                    \
         "F12",            "save a PNG of the current frame")                   \
+  X(BUG_REPORT,"bug_report",KM_DIGITAL, KM_CTX_ALWAYS,   0,                    \
+        "F9",             "write a bug report zip to send")                    \
   /* --- savestates / rewind / pacing --------------------------------- */     \
   X(STATE_SAVE, "savestate_save",  KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
         "1",              "quick-save to the active slot")                     \

@@ -1188,6 +1188,12 @@ static bool layer_available(const char *name)
     return found;
 }
 
+/* Facts the device report states: the validation layer, the enabled device
+ * extensions and the swapchain's colour space, recorded at creation. */
+static bool s_validation_on;
+static char s_dev_exts[1024];
+static int  s_sc_colorspace = -1;
+
 /** @brief Return whether to enable the Khronos validation layer and its debug-utils messenger.
  *
  * Opt-in: OPENPETE_VK_VALIDATION set to a value not starting with '0'
@@ -1242,6 +1248,7 @@ static bool create_instance(rhi_device *dev, const char *app_name)
     }
 
     bool want_validation = want_validation_layer();
+    s_validation_on = want_validation;
 
     /* Copy SDL's required extensions (none when headless), optionally append
      * debug utils. */
@@ -1937,6 +1944,10 @@ static bool pick_physical_and_device(rhi_device *dev)
     };
     VkResult r = vkCreateDevice(dev->phys, &dci, NULL, &dev->device);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateDevice failed: %d\n", (int)r); return false; }
+    s_dev_exts[0] = '\0';
+    for (uint32_t i = 0, at = 0; i < ext_n && at < sizeof s_dev_exts; i++)
+        at += (uint32_t)snprintf(s_dev_exts + at, sizeof s_dev_exts - at, "%s%s", i ? " " : "",
+                                 dev_ext[i]);
     vkGetDeviceQueue(dev->device, chosen_family, 0, &dev->gfx_queue);
     pipeline_library_locks(dev);
     return true;
@@ -2213,6 +2224,7 @@ static bool create_swapchain(rhi_device *dev)
     if (caps.maxImageCount > 0 && want > caps.maxImageCount) want = caps.maxImageCount;
     if (want > RHI_MAX_SC_IMAGES) want = RHI_MAX_SC_IMAGES;
 
+    s_sc_colorspace = (int)pick.colorSpace;
     VkSwapchainCreateInfoKHR sci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = dev->surface,
@@ -4507,6 +4519,37 @@ void rhi_take_block_times(int64_t *out, int n)
 const char *rhi_driver_version(const rhi_device *dev)
 {
     return (dev && dev->driver_version[0]) ? dev->driver_version : "unknown";
+}
+
+int rhi_device_report(const rhi_device *dev, char *buf, size_t cap)
+{
+    if (!buf || !cap) return 0;
+    buf[0] = '\0';
+    if (!dev || !dev->phys) return snprintf(buf, cap, "vulkan: no device\n");
+    VkPhysicalDeviceDriverProperties drv = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+    VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->phys, &props);
+    const int have_drv = props.apiVersion >= VK_API_VERSION_1_2;
+    if (have_drv) {
+        p2.pNext = &drv;
+        vkGetPhysicalDeviceProperties2(dev->phys, &p2);
+    }
+    return snprintf(buf, cap,
+        "vulkan: device=\"%s\" type=%s vendor=0x%04x device_id=0x%04x api=%u.%u.%u "
+        "driver_version=%s (raw 0x%08x)\n"
+        "vulkan: driver_id=%d driver_name=\"%s\" driver_info=\"%s\"\n"
+        "vulkan: device extensions: %s\n"
+        "vulkan: validation=%s headless=%d present_mode=%s swapchain=%ux%u format=%d "
+        "colorspace=%d images=%u offscreen=%ux%u\n",
+        props.deviceName, device_type_name(props.deviceType), props.vendorID, props.deviceID,
+        VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
+        VK_API_VERSION_PATCH(props.apiVersion), rhi_driver_version(dev), props.driverVersion,
+        have_drv ? (int)drv.driverID : -1, have_drv ? drv.driverName : "",
+        have_drv ? drv.driverInfo : "", s_dev_exts[0] ? s_dev_exts : "(none)",
+        s_validation_on ? "on" : "off", dev->headless ? 1 : 0, rhi_present_mode_name(dev),
+        dev->sc_extent.width, dev->sc_extent.height, (int)dev->sc_format, s_sc_colorspace,
+        dev->sc_count, dev->off_extent.width, dev->off_extent.height);
 }
 
 const char *rhi_present_mode_name(const rhi_device *dev)

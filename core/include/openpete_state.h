@@ -62,6 +62,45 @@ int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame);
 int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
                                  const CPUState* cpu, unsigned frame);
 
+/* One section of a state file image, as openpete_state_image_sections lists it. */
+typedef struct {
+    const char* name;  /* "header", "cpu", "ram", "scratch", "vram", "spu", "spumem", "cd",
+                          "card", "game-extra", "arena", "modset-tag" */
+    size_t      off;   /* byte offset in the image */
+    size_t      len;
+    int         guest; /* the bytes are guest memory or a game's or mod's own data */
+} openpete_state_section_t;
+
+/** @brief List a state file image's sections in file order from its header.
+ *
+ * @param img The image.
+ * @param len Its length.
+ * @param out Receives up to @p max sections.
+ * @param max Capacity of @p out.
+ * @return The section count (12), or -1 when the header's sizes do not add up to @p len. */
+int openpete_state_image_sections(const uint8_t* img, size_t len,
+                                  openpete_state_section_t* out, int max);
+
+/** @brief Rewrite the card paths of a state file image's card section; nothing else changes.
+ *
+ * A port whose path is empty (no card file) stays empty.
+ * @param img The image, changed in place.
+ * @param len Its length.
+ * @param port1 The new path of the card in port 1.
+ * @param port2 The new path of the card in port 2.
+ * @return The paths rewritten, or -1 when the image does not parse. */
+int openpete_state_image_card_paths_set(uint8_t* img, size_t len, const char* port1,
+                                        const char* port2);
+
+/** @brief Write a state file image's content identity as lowercase hex.
+ *
+ * @param img The image.
+ * @param len Its length.
+ * @param out Receives 64 hex digits and a NUL.
+ * @param cap Capacity of @p out, at least 65.
+ * @return 0, or -1 when the image is too short or @p cap too small. */
+int openpete_state_image_ident(const uint8_t* img, size_t len, char* out, size_t cap);
+
 /** @brief Write the running state to a file.
  *
  * Writes the header (magic, version, content identity, the running game's

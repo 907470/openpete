@@ -3,6 +3,7 @@
 // display between ticks, the inline shed predictor, and the world-liveness
 // stamp both strategies gate on.
 
+#include "openpete_bugreport.h"
 #include "host_loop_internal.h"
 #include "eager.h"
 #include "host_pacer.h"
@@ -577,6 +578,16 @@ static void inline_canonical_render(void) OP_REQUIRES(sim)
  * the present thread's while eager is engaged, so the capture borrows it. */
 static void present_player_screenshot(void) OP_REQUIRES(sim)
 {
+    char bug_path[1400];
+    if (openpete_bugreport_take_shot(bug_path, sizeof bug_path)) {
+        /* The bundle's image and the display reports: the device and the
+         * present thread's counters are this thread's while borrowed. */
+        const int pt_was = openpete_present_thread_borrow();
+        const int ok = openpete_native_render_enabled() &&
+                       openpete_native_render_screenshot(bug_path, "bug report") == 0;
+        openpete_bugreport_display_service(ok);
+        openpete_present_thread_return(pt_was);
+    }
     if (!s_screenshot_request && !openpete_host_mouse_take_screenshot_request()) return;
     s_screenshot_request = 0;
     char path[1024];

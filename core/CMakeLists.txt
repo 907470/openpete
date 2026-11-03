@@ -93,6 +93,7 @@ add_library(openpete_core STATIC
     runtime/host_hotkeys.c
     runtime/eager.c
     runtime/host_session.c
+    runtime/host_bugreport.c
     runtime/host_pacer.c
     runtime/host_input_tick.c
     runtime/host_trace.c
@@ -114,6 +115,8 @@ add_library(openpete_core STATIC
     record/bk2_feed.c
     record/bugrec.c
     record/bugrec_input.c
+    record/bugreport_redact.c
+    record/bugreport_write.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
     record/savestate.c
     record/rewind.c
@@ -759,7 +762,7 @@ if(NOT CMAKE_HOST_WIN32)
     add_custom_target(openpete_core_purity_check ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking core/ purity..."
         COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' | grep -vE '^[^:]+:[[:space:]]*#[[:space:]]*define'"
-        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c' --exclude='atomic_file.c' --exclude='disc_image.c' --exclude='mod_arena.c' --exclude='rewind_pages.c'"
+        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c' --exclude='atomic_file.c' --exclude='disc_image.c' --exclude='mod_arena.c' --exclude='rewind_pages.c' --exclude='bugreport_write.c' --exclude='bugreport_redact.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)
 

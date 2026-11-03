@@ -328,10 +328,63 @@ static void emit_json_string(FILE* f, const char* s) {
     fputc('"', f);
 }
 
+/* The calling thread's capture buffer (openpete_log_capture_begin): while
+ * on, every line of level info or above lands here instead of stderr. */
+static _Thread_local struct { char* b; size_t n, cap; int on, oom; } t_cap;
+
+/** @brief Append text to the calling thread's capture buffer, growing it; an allocation failure stops the capture's growth. */
+static void capture_put(const char* s, size_t n) {
+    if (t_cap.oom) return;
+    if (t_cap.n + n + 1 > t_cap.cap) {
+        size_t cap = t_cap.cap ? t_cap.cap * 2 : 16384;
+        while (cap < t_cap.n + n + 1) cap *= 2;
+        char* g = (char*)realloc(t_cap.b, cap);
+        if (!g) { t_cap.oom = 1; return; }
+        t_cap.b = g;
+        t_cap.cap = cap;
+    }
+    memcpy(t_cap.b + t_cap.n, s, n);
+    t_cap.n += n;
+    t_cap.b[t_cap.n] = '\0';
+}
+
+void openpete_log_capture_begin(void) {
+    free(t_cap.b);
+    t_cap.b = NULL;
+    t_cap.n = t_cap.cap = 0;
+    t_cap.oom = 0;
+    t_cap.on = 1;
+    capture_put("", 0);
+}
+
+char* openpete_log_capture_end(size_t* len) {
+    char* b = t_cap.b;
+    if (len) *len = t_cap.n;
+    t_cap.b = NULL;
+    t_cap.n = t_cap.cap = 0;
+    t_cap.on = 0;
+    return b;
+}
+
+void openpete_log_rawf(const char* fmt, ...) {
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    if (t_cap.on) {
+        capture_put(msg, n < 0 ? 0 : ((size_t)n < sizeof msg ? (size_t)n : sizeof msg - 1));
+        return;
+    }
+    fputs(msg, stderr);
+    fflush(stderr);
+}
+
 void openpete_logf(openpete_log_level_t level, const char* subsystem,
                    const char* fmt, ...) {
     const log_snapshot_t* snap = snapshot_load();
-    if (level < lookup_level(snap, subsystem ? subsystem : "")) return;
+    if (t_cap.on ? level < OPL_INFO : level < lookup_level(snap, subsystem ? subsystem : ""))
+        return;
 
     char msg[1024];
     va_list ap;
@@ -340,6 +393,13 @@ void openpete_logf(openpete_log_level_t level, const char* subsystem,
     va_end(ap);
 
     double t = monotonic_seconds() - snap->t0;
+    if (t_cap.on) {
+        char line[1200];
+        const int n = snprintf(line, sizeof line, "%8.4f [%-5s] %s: %s\n", t, level_name(level),
+                               subsystem ? subsystem : "-", msg);
+        capture_put(line, n < 0 ? 0 : ((size_t)n < sizeof line ? (size_t)n : sizeof line - 1));
+        return;
+    }
 
     if (snap->fmt == OPENPETE_LOG_JSON) {
         fprintf(stderr, "{\"t\":%.4f,\"level\":\"%s\",\"subsystem\":",

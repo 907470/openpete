@@ -34,7 +34,7 @@ static dt_row_t s_pend[DT_PENDING];
 
 static const char* const k_tag_names[OPENPETE_DISC_TAG_COUNT] = {
     "none", "libcd", "xa", "exe", "serial", "extract", "woah", "sfx",
-    "wad", "ingest", "cache-load", "iso", "mod", "font", "terrain", "icon",
+    "wad", "ingest", "cache-load", "iso", "mod", "font", "terrain", "icon", "bugreport",
 };
 
 static const char* const k_result_names[] = { "hit", "miss", "direct" };

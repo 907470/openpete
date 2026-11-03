@@ -1884,7 +1884,8 @@ static void report_layout(FILE *out) {
     static const struct { const char *leaf; int per_game; } kState[] = {
         { "cards", 0 }, { "states", 1 }, { "logs", 0 },
     };
-    static const char *const kData[] = { "library", "mods", "assets", "bk2", "screenshots" };
+    static const char *const kData[] = { "library", "mods", "assets", "bk2", "screenshots",
+                                         "bugreports" };
     char dir[CFG_PATH_MAX];
     fprintf(out, "  layout: %s\n",
             openpete_paths_portable() ? "portable (next to the exe)" : "per-user directories");
@@ -1895,6 +1896,10 @@ static void report_layout(FILE *out) {
     for (size_t i = 0; i < sizeof kData / sizeof kData[0]; i++)
         if (openpete_paths_data_dir(kData[i], dir, sizeof dir, 0) == 0)
             fprintf(out, "  %-8s %s\n", kData[i], dir);
+}
+
+const char* openpete_config_file_path(int i) {
+    return (i >= 0 && i < 2 && s_file_path[i][0]) ? s_file_path[i] : NULL;
 }
 
 void openpete_config_report(FILE *out) {

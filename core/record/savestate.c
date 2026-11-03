@@ -738,6 +738,61 @@ int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
     return 0;
 }
 
+int openpete_state_image_sections(const uint8_t* img, size_t len,
+                                  openpete_state_section_t* out, int max) {
+    if (!img || len < sizeof(openpete_state_header_t)) return -1;
+    openpete_state_header_t h;
+    memcpy(&h, img, sizeof h);
+    const struct { const char* name; uint64_t n; int guest; } sec[] = {
+        {"header", sizeof h, 0},          {"cpu", h.cpu_bytes, 0},
+        {"ram", h.ram_bytes, 1},          {"scratch", h.scratch_bytes, 1},
+        {"vram", h.vram_bytes, 1},        {"spu", h.spu_state_bytes, 1},
+        {"spumem", h.spu_mem_bytes, 1},   {"cd", h.cd_state_bytes, 0},
+        {"card", sizeof(state_card_t), 0}, {"game-extra", h.game_extra_bytes, 1},
+        {"arena", h.arena_bytes, 1},      {"modset-tag", h.modset_tag_bytes, 0},
+    };
+    const int nsec = (int)(sizeof sec / sizeof sec[0]);
+    uint64_t off = 0;
+    for (int i = 0; i < nsec; i++) {
+        if (off + sec[i].n > len) return -1;
+        if (i < max) out[i] = (openpete_state_section_t){sec[i].name, (size_t)off, (size_t)sec[i].n,
+                                                         sec[i].guest};
+        off += sec[i].n;
+    }
+    return off == len ? nsec : -1;
+}
+
+int openpete_state_image_card_paths_set(uint8_t* img, size_t len, const char* port1,
+                                        const char* port2) {
+    openpete_state_section_t s[16];
+    const int n = openpete_state_image_sections(img, len, s, 16);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(s[i].name, "card") != 0) continue;
+        state_card_t c;
+        memcpy(&c, img + s[i].off, sizeof c);
+        const char* want[2] = {port1, port2};
+        int changed = 0;
+        for (int p = 0; p < 2; p++) {
+            if (!c.path[p][0]) continue;
+            memset(c.path[p], 0, sizeof c.path[p]);
+            snprintf(c.path[p], sizeof c.path[p], "%s", want[p] ? want[p] : "");
+            changed++;
+        }
+        memcpy(img + s[i].off, &c, sizeof c);
+        return changed;
+    }
+    return -1;
+}
+
+int openpete_state_image_ident(const uint8_t* img, size_t len, char* out, size_t cap) {
+    if (!img || len < sizeof(openpete_state_header_t) || cap < 2 * OPENPETE_STATE_HASH_LEN + 1)
+        return -1;
+    const openpete_state_header_t* h = (const openpete_state_header_t*)img;
+    for (int i = 0; i < OPENPETE_STATE_HASH_LEN; i++)
+        snprintf(out + 2 * i, 3, "%02x", (unsigned char)h->ident[i]);
+    return 0;
+}
+
 int openpete_state_save_file(const char* path, const CPUState* cpu,
                              unsigned frame) {
     uint8_t* img = NULL;

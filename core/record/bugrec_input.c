@@ -242,6 +242,13 @@ size_t openpete_bugrec_input_csv(FILE* fp)
 {
     openpete_bugrec_input_t* ev = NULL;
     const size_t n = openpete_bugrec_input_snapshot(&ev);
+    openpete_bugrec_input_csv_entries(fp, ev, n);
+    free(ev);
+    return n;
+}
+
+size_t openpete_bugrec_input_csv_entries(FILE* fp, const openpete_bugrec_input_t* ev, size_t n)
+{
     fprintf(fp, "t_sdl_ns,t_op_ns,vbl,device,event,code,code_name,a,b,count,locked,injected,repeat\n");
     for (size_t i = 0; i < n; i++) {
         const openpete_bugrec_input_t* e = &ev[i];
@@ -251,7 +258,6 @@ size_t openpete_bugrec_input_csv(FILE* fp)
                 e->count, !!(e->flags & BUGREC_IN_LOCKED), !!(e->flags & BUGREC_IN_INJECTED),
                 !!(e->flags & BUGREC_IN_REPEAT));
     }
-    free(ev);
     return n;
 }
 
@@ -263,25 +269,57 @@ static int input_device_slot(SDL_JoystickID id)
     return -1;
 }
 
-/** @brief Write one joystick's line of the device list: instance id, slot, SDL player index, virtual flag, name, GUID and gamepad mapping. */
-static void input_device_joystick(FILE* fp, SDL_JoystickID id)
+/** @brief Report whether the gamepad mapping SDL holds for a GUID names the device as it reports itself.
+ *
+ * A mapping string is "GUID,name,bindings"; a name the database carries
+ * is the product's, not one its owner gave it.
+ * @param guid The device GUID.
+ * @param name The device's reported name.
+ * @return 1 when the mapping exists and its name field equals @p name. */
+static int input_name_in_db(SDL_GUID guid, const char* name)
+{
+    char* m = SDL_GetGamepadMappingForGUID(guid);
+    int same = 0;
+    const char* c1 = m ? strchr(m, ',') : NULL;
+    const char* c2 = c1 ? strchr(c1 + 1, ',') : NULL;
+    if (c2 && name) same = (size_t)(c2 - c1 - 1) == strlen(name) && !strncmp(c1 + 1, name, strlen(name));
+    SDL_free(m);
+    return same;
+}
+
+/** @brief Write one joystick's line of the device list: instance id, slot, SDL player index, virtual flag, vendor and product ids, name, GUID and gamepad mapping.
+ * @param fp The stream.
+ * @param id The joystick instance.
+ * @param allow Nonzero to write the name and the mapping's name field only when input_name_in_db holds. */
+static void input_device_joystick(FILE* fp, SDL_JoystickID id, int allow)
 {
     char guid[64];
-    SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid, sizeof guid);
+    const SDL_GUID g = SDL_GetJoystickGUIDForID(id);
+    SDL_GUIDToString(g, guid, sizeof guid);
     const char* name = SDL_GetJoystickNameForID(id);
     char* mapping = SDL_IsGamepad(id) ? SDL_GetGamepadMappingForID(id) : NULL;
-    fprintf(fp, "joystick id=%u slot=%d player_index=%d virtual=%d gamepad=%d name=\"%s\" guid=%s "
-            "mapping=\"%s\"\n", (unsigned)id, input_device_slot(id), SDL_GetJoystickPlayerIndexForID(id),
-            SDL_IsJoystickVirtual(id) ? 1 : 0, SDL_IsGamepad(id) ? 1 : 0, name ? name : "", guid,
-            mapping ? mapping : "");
+    const int keep = !allow || input_name_in_db(g, name);
+    const char* tail = mapping ? strchr(mapping, ',') : NULL;
+    tail = tail ? strchr(tail + 1, ',') : NULL;
+    fprintf(fp, "joystick id=%u slot=%d player_index=%d virtual=%d gamepad=%d vendor=0x%04x "
+            "product=0x%04x name=\"%s\" guid=%s mapping=\"", (unsigned)id, input_device_slot(id),
+            SDL_GetJoystickPlayerIndexForID(id), SDL_IsJoystickVirtual(id) ? 1 : 0,
+            SDL_IsGamepad(id) ? 1 : 0, SDL_GetJoystickVendorForID(id),
+            SDL_GetJoystickProductForID(id), keep ? (name ? name : "") : "(withheld)", guid);
+    if (keep || !tail) fprintf(fp, "%s\"\n", mapping ? mapping : "");
+    else fprintf(fp, "%s,(withheld)%s\"\n", guid, tail);
     SDL_free(mapping);
 }
 
-int openpete_bugrec_devices_write(FILE* fp)
+/** @brief Write the device list, with the names allowlisted when asked.
+ * @param fp The stream.
+ * @param allow Nonzero for the allowlisted form.
+ * @return The devices listed. */
+static int input_devices_write(FILE* fp, int allow)
 {
     int count = 0, n = 0;
     SDL_JoystickID* joys = SDL_GetJoysticks(&n);
-    for (int i = 0; joys && i < n; i++, count++) input_device_joystick(fp, joys[i]);
+    for (int i = 0; joys && i < n; i++, count++) input_device_joystick(fp, joys[i], allow);
     SDL_free(joys);
     if (!SDL_IsMainThread()) {
         fprintf(fp, "keyboards and mice: not listed off the main thread\n");
@@ -289,15 +327,19 @@ int openpete_bugrec_devices_write(FILE* fp)
     }
     SDL_KeyboardID* kbs = SDL_GetKeyboards(&n);
     for (int i = 0; kbs && i < n; i++, count++) {
-        const char* name = SDL_GetKeyboardNameForID(kbs[i]);
+        const char* name = allow ? "(withheld)" : SDL_GetKeyboardNameForID(kbs[i]);
         fprintf(fp, "keyboard id=%u name=\"%s\"\n", (unsigned)kbs[i], name ? name : "");
     }
     SDL_free(kbs);
     SDL_MouseID* mice = SDL_GetMice(&n);
     for (int i = 0; mice && i < n; i++, count++) {
-        const char* name = SDL_GetMouseNameForID(mice[i]);
+        const char* name = allow ? "(withheld)" : SDL_GetMouseNameForID(mice[i]);
         fprintf(fp, "mouse id=%u name=\"%s\"\n", (unsigned)mice[i], name ? name : "");
     }
     SDL_free(mice);
     return count;
 }
+
+int openpete_bugrec_devices_write(FILE* fp) { return input_devices_write(fp, 0); }
+
+int openpete_bugrec_devices_write_allowlisted(FILE* fp) { return input_devices_write(fp, 1); }

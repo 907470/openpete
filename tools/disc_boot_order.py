@@ -80,7 +80,8 @@ GAME_TAGS = ("libcd", "xa", "exe", "extract", "wad")   # steer the loader
 SECTOR_TAGS = ("libcd", "xa")                           # PsyCross reads per sector
 STEER_SLOT = {"libcd": 0, "extract": 0, "wad": 0, "xa": 1}   # disc_cache.c steer_slot
 KNOWN_TAGS = ("none", "libcd", "xa", "exe", "serial", "extract", "woah", "sfx",
-              "wad", "ingest", "cache-load", "iso", "mod", "font", "terrain", "icon")
+              "wad", "ingest", "cache-load", "iso", "mod", "font", "terrain", "icon",
+              "bugreport")
 
 class ProfileError(ValueError):
     """A malformed profile."""

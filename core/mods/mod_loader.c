@@ -197,6 +197,7 @@ typedef struct {
     int64_t def_i;     /* default: bool/int */
     double  def_d;     /* default: float */
     char    def_s[64]; /* default: string */
+    int     secret;    /* `secret = true`: the value never leaves the machine in a bug report */
 } mod_cfg_row_t;
 /* One [[material]] row from mod.toml - the zero-C material tier. Holds
  * exactly what `material_register` takes, in manifest spelling, so a mod
@@ -2158,6 +2159,14 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
     return 1;
 }
 
+int openpete_mods_bundle_paths(int i, const char** dir, const char** obj) {
+    if (i < 0 || i >= mod_count()) return 0;
+    const struct openpete_mod* m = mod_at(i);
+    if (dir) *dir = m->dir;
+    if (obj) *obj = m->obj_path;
+    return 1;
+}
+
 /* ── Config-schema accessors (the Mods panel's data source) ────────── */
 
 int openpete_mods_cfg_row_count(int mod_index) {
@@ -2178,6 +2187,7 @@ int openpete_mods_cfg_row(int mod_index, int row,
     out->help    = r->help;
     out->min     = r->min;
     out->max     = r->max;
+    out->secret  = r->secret;
     /* The combo view. A row stores its choices as fixed-width elements,
      * so a pointer into one would move with the row's storage; the
      * pointers are rebuilt here instead, and like `sbuf` below they are
@@ -3684,6 +3694,18 @@ static void parse_config_default(toml_table_t* c, mod_cfg_row_t* r) {
     }
 }
 
+/** @brief Copy an optional string key of a [[config]] table into a fixed buffer, truncating; an absent key leaves the buffer as it was.
+ * @param c The table.
+ * @param key The key.
+ * @param out The buffer.
+ * @param cap Its capacity. */
+static void cfg_string_in(toml_table_t* c, const char* key, char* out, size_t cap) {
+    toml_datum_t d = toml_string_in(c, key);
+    if (!d.ok) return;
+    snprintf(out, cap, "%s", d.u.s);
+    free(d.u.s);
+}
+
 /** @brief Parse one [[config]] table into a schema row.
  *
  * key and type are required; type is bool, int, float or string. label,
@@ -3721,20 +3743,12 @@ static int parse_config_row(toml_table_t* c, mod_cfg_row_t* r,
     free(ck.u.s);
     free(ct.u.s);
     toml_datum_t d;
-    if ((d = toml_string_in(c, "label")).ok) {
-        snprintf(r->label, sizeof r->label, "%s", d.u.s);
-        free(d.u.s);
-    }
-    if ((d = toml_string_in(c, "group")).ok) {
-        snprintf(r->group, sizeof r->group, "%s", d.u.s);
-        free(d.u.s);
-    }
-    if ((d = toml_string_in(c, "help")).ok) {
-        snprintf(r->help, sizeof r->help, "%s", d.u.s);
-        free(d.u.s);
-    }
+    cfg_string_in(c, "label", r->label, sizeof r->label);
+    cfg_string_in(c, "group", r->group, sizeof r->group);
+    cfg_string_in(c, "help", r->help, sizeof r->help);
     if ((d = toml_double_in(c, "min")).ok) r->min = d.u.d;
     if ((d = toml_double_in(c, "max")).ok) r->max = d.u.d;
+    if ((d = toml_bool_in(c, "secret")).ok) r->secret = d.u.b != 0;
     parse_config_default(c, r);
     toml_array_t* it = toml_array_in(c, "items");
     if (it && type == 's') {
@@ -4400,6 +4414,26 @@ static const char* const mod_cc_flags[] = {
 };
 #define MOD_CC_FLAG_COUNT (sizeof mod_cc_flags / sizeof mod_cc_flags[0])
 
+/* The path remaps mod_compile adds after mod_cc_flags, in this order, as
+ * templates: `<cwd>`, `<toolchain>`, `<sdk>` and `<mod>` stand for the
+ * working directory the compiler inherits, the compiler's install tree,
+ * the SDK directory and the mod's directory, and `<id>` for the mod id.
+ * They keep every absolute path of the machine out of the object (DWARF
+ * names and DW_AT_comp_dir, __FILE__), so the module a bug report ships
+ * holds no home path. GCC and clang apply the last remap that matches, so
+ * the most specific directory comes last. The working directory is
+ * remapped rather than named with -fdebug-compilation-dir, which GCC does
+ * not accept. sdk_prefix hashes the templates, not the paths: an object
+ * built under the remaps does not depend on where the directories are (an
+ * AppImage mounts its tree at a new path every launch). */
+static const char* const mod_cc_map_templates[] = {
+    "-ffile-prefix-map=<cwd>=.",
+    "-ffile-prefix-map=<toolchain>=toolchain",
+    "-ffile-prefix-map=<sdk>=sdk",
+    "-ffile-prefix-map=<mod>=mods/<id>",
+};
+#define MOD_CC_MAP_COUNT (sizeof mod_cc_map_templates / sizeof mod_cc_map_templates[0])
+
 static const char* const sdk_inputs[] = {
     "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
     "openpete_sdk_wrappers.h", "psx_runtime.h",
@@ -4467,7 +4501,7 @@ static void sdk_prefix_recheck(const char* sdk_dir) {
 /** @brief Return the SHA-256 state that every mod's build key starts from.
  *
  * Hashes the API version, the compiler identity, the running game's id,
- * the compile line's fixed flags (mod_cc_flags), with a compiler sysroot its flags and the pins in its STAMP, then for each file of sdk_inputs in order the directory it resolves in
+ * the compile line's fixed flags (mod_cc_flags) and path-remap templates (mod_cc_map_templates), with a compiler sysroot its flags and the pins in its STAMP, then for each file of sdk_inputs in order the directory it resolves in
  * (sdk_input_path: per-game or root) and its bytes; an absent file
  * contributes its resolution byte only. The state is cached per (SDK
  * directory, game id) until sdk_prefix_recheck drops it, and callers
@@ -4491,6 +4525,9 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
     for (size_t i = 0; i < MOD_CC_FLAG_COUNT; i++)
         openpete_sha256_update(&hc, mod_cc_flags[i],
                                strlen(mod_cc_flags[i]) + 1);
+    for (size_t i = 0; i < MOD_CC_MAP_COUNT; i++)
+        openpete_sha256_update(&hc, mod_cc_map_templates[i],
+                               strlen(mod_cc_map_templates[i]) + 1);
     {
         /* The sysroot's pins, not its path: an AppImage mounts at a new
          * path every launch, and the key must not change with it. */
@@ -4683,7 +4720,8 @@ static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
  * exported when a source marks one `dllexport`; elsewhere with
  * `-D_GNU_SOURCE`, so glibc's headers declare its extensions
  * (`RTLD_DEFAULT`, `dladdr`) to the mod's sources. The fixed flags come
- * from mod_cc_flags, which the build key hashes. A compiler with a
+ * from mod_cc_flags, which the build key hashes; the path remaps of
+ * mod_cc_map_templates follow them. A compiler with a
  * sysroot beside it (mods_cc_sysroot, the bundled Linux clang) adds
  * mod_cc_sysroot_flags, `-isystem <sysroot>/include` and, after the
  * sources, the builtins archive, so the build reads nothing from the
@@ -4756,11 +4794,35 @@ static int mod_compile(const char* mod_dir, const char* id,
     snprintf(rsp_arg, sizeof rsp_arg, "@%s", rsp_path);
     snprintf(log_path, sizeof log_path, "%s/compile.log", build_dir);
     const mod_cc_sysroot_t* sys = mods_cc_sysroot();
-    const char* argv[MOD_CC_FLAG_COUNT + MOD_CC_SYSROOT_FLAG_COUNT + 11];
+    /* mod_cc_map_templates, filled in. The toolchain tree is the parent
+     * of the compiler's bin/ directory; a compiler named without a
+     * directory has none to map. */
+    char map_mod[2 * MOD_PATH_MAX + 64], map_sdk[MOD_PATH_MAX + 32];
+    char map_tc[MOD_PATH_MAX + 40], tree[MOD_PATH_MAX];
+    char map_cwd[MOD_PATH_MAX + 32], cwd[MOD_PATH_MAX];
+    snprintf(map_mod, sizeof map_mod, "-ffile-prefix-map=%s=mods/%s", mod_dir, id);
+    snprintf(map_sdk, sizeof map_sdk, "-ffile-prefix-map=%s=sdk", sdk_dir);
+    snprintf(tree, sizeof tree, "%s", cc);
+    for (int up = 0; up < 2; up++) {
+        char* sl = strrchr(tree, '/');
+#ifdef _WIN32
+        char* bs = strrchr(tree, '\\');
+        if (bs && (!sl || bs > sl)) sl = bs;
+#endif
+        if (sl) *sl = '\0'; else tree[0] = '\0';
+    }
+    snprintf(map_tc, sizeof map_tc, "-ffile-prefix-map=%s=toolchain", tree);
+    if (!getcwd(cwd, sizeof cwd)) cwd[0] = '\0';
+    snprintf(map_cwd, sizeof map_cwd, "-ffile-prefix-map=%s=.", cwd);
+    const char* argv[MOD_CC_FLAG_COUNT + MOD_CC_MAP_COUNT + MOD_CC_SYSROOT_FLAG_COUNT + 11];
     size_t argc = 0;
     argv[argc++] = cc;
     for (size_t i = 0; i < MOD_CC_FLAG_COUNT; i++)
         argv[argc++] = mod_cc_flags[i];
+    if (cwd[0]) argv[argc++] = map_cwd;
+    if (tree[0]) argv[argc++] = map_tc;
+    argv[argc++] = map_sdk;
+    argv[argc++] = map_mod;
     if (sys->ok) {
         for (size_t i = 0; i < MOD_CC_SYSROOT_FLAG_COUNT; i++)
             argv[argc++] = mod_cc_sysroot_flags[i];

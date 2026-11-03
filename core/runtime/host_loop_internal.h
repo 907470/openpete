@@ -135,6 +135,27 @@ int host_session_open(host_session_t* S, const openpete_options_t* opts) OP_REQU
  * @return @p rc, or OPENPETE_EXIT_DIVERGENCE when the psxtrace verdict failed a run that was OK. */
 int host_session_close(host_session_t* S, int rc) OP_REQUIRES(sim);
 
+/** @brief Build the pacing environment block (host_pace_env_build) of the open session as it stands now.
+ * @param env Receives the block; "" with no session open.
+ * @param env_bytes Capacity of @p env. */
+void host_session_pace_env(char* env, unsigned env_bytes) OP_REQUIRES(sim);
+
+/** @brief Report whether the open session's sim is paused.
+ * @return false with no session open. */
+bool host_session_paused(void) OP_REQUIRES(sim);
+
+/** @brief Log the session's sim-thread subsystem reports without changing their state: the pacing census, slip totals, interpolation, runahead, stream, capture, disc, input, rumble, rewind, savestate, VBL delivery, OSD, version and GPU-audit lines.
+ *
+ * The bug-report press calls it under a log capture, so the lines land in
+ * the bundle; every report here only reads its counters. */
+void host_session_press_reports(void) OP_REQUIRES(sim);
+
+/** @brief Log the display owner's reports without changing their state: the swapchain line, the native present and eager censuses and the present thread's report.
+ *
+ * Called while the present thread's device is borrowed, so its counters
+ * are quiescent. */
+void host_session_display_reports(void) OP_REQUIRES(sim);
+
 /** @brief Run the VBL an iteration owes: the yield decision, the game fiber switch inside the pace-log bracket, then on a tick the game hook, the runahead lead, the interp captures and the runahead settle.
  *
  * Consumes the pacer's VBL deadline and its flags every iteration, whether
