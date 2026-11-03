@@ -3,8 +3,7 @@
 ## The bug report zip
 
 {{ key("key:host.bug_report") }} <!-- id: key:host.bug_report home --> writes one
-[bug report](glossary.md#bug-report) zip. On a controller, open the
-[settings menu](../playing/settings-menu.md) and choose **BUG REPORT**.
+[bug report](glossary.md#bug-report) zip.
 Nothing is uploaded: you send the file, with what happened (the level,
 what you did, what you expected, and what you saw instead).
 
@@ -70,8 +69,7 @@ within 2 seconds.
 ### Steam Deck
 
 In Steam's controller settings for OpenPete, bind a back button to the
-keyboard key ++f9++. Without that binding, hold Start for half a second to
-open the settings menu and choose **BUG REPORT**.
+keyboard key ++f9++.
 
 ## Without the zip
 

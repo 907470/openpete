@@ -1,5 +1,5 @@
 {
- "source_sha": "04df35923208a9a220c747f84ee5467ec41b9c31",
+ "source_sha": "1ad848097a13e4ad21fe9ad089c52eb436b7f522",
  "format": 1,
  "game": "spyro-1",
  "entries": [
@@ -136,6 +136,32 @@
    "build_cond": null,
    "def": null,
    "default_note": "on (FIFO), unless OPENPETE_PRESENT_MODE or the device selects another present mode"
+  },
+  {
+   "id": "knob:gpu",
+   "flag": "--gpu",
+   "env": "OPENPETE_VK_DEVICE",
+   "config_key": "gpu",
+   "schema_type": "string",
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Display",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "unset: chosen automatically, a discrete GPU first, then integrated, virtual, other, then a software rasterizer",
+   "game": "core"
+  },
+  {
+   "id": "flag:--gpu",
+   "flag": "--gpu",
+   "takes_arg": "required",
+   "knob": "gpu",
+   "build_cond": null,
+   "def": null,
+   "default_note": "unset: chosen automatically, a discrete GPU first, then integrated, virtual, other, then a software rasterizer"
   },
   {
    "id": "knob:perf_stats",
@@ -642,20 +668,33 @@
   },
   {
    "id": "knob:fog",
-   "flag": null,
+   "flag": "--fog",
    "env": null,
-   "config_key": null,
-   "schema_type": null,
-   "vocab": [],
+   "config_key": "fog",
+   "schema_type": "enum",
+   "vocab": [
+    "original",
+    "per-pixel",
+    "off"
+   ],
    "aliases": [],
-   "type": "bool",
+   "type": "enum",
    "section": "Display",
    "block": "release",
    "build_cond": null,
    "cli_only": false,
-   "def": "on",
-   "default_note": null,
+   "def": null,
+   "default_note": "follows --lod: original under original, per-pixel under extended",
    "game": "core"
+  },
+  {
+   "id": "flag:--fog",
+   "flag": "--fog",
+   "takes_arg": "required",
+   "knob": "fog",
+   "build_cond": null,
+   "def": null,
+   "default_note": "follows --lod: original under original, per-pixel under extended"
   },
   {
    "id": "knob:fog_scale",
@@ -808,7 +847,7 @@
    "build_cond": null,
    "cli_only": false,
    "def": null,
-   "default_note": "the game window's size and state (--window)",
+   "default_note": "1280x800, or --window's size and state when set",
    "game": "core"
   },
   {
@@ -818,7 +857,7 @@
    "knob": "launcher_window",
    "build_cond": null,
    "def": null,
-   "default_note": "the game window's size and state (--window)"
+   "default_note": "1280x800, or --window's size and state when set"
   },
   {
    "id": "knob:render_paths",
@@ -1928,6 +1967,53 @@
    "game": "core"
   },
   {
+   "id": "knob:state_slot",
+   "flag": null,
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "enum",
+   "section": "Gameplay",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "Slot 0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:state_save",
+   "flag": null,
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "action",
+   "section": "Gameplay",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "game": "core"
+  },
+  {
+   "id": "knob:state_load",
+   "flag": null,
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "action",
+   "section": "Gameplay",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "game": "core"
+  },
+  {
    "id": "knob:freecam_pose",
    "flag": "--freecam-pose",
    "env": "OPENPETE_FREECAM_POSE",
@@ -2507,6 +2593,23 @@
    "default_note": null
   },
   {
+   "id": "knob:CARD_GUARD",
+   "flag": null,
+   "env": "OPENPETE_CARD_GUARD",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:RUN_RECOMP",
    "flag": null,
    "env": "OPENPETE_RUN_RECOMP",
@@ -2808,6 +2911,23 @@
    "game": "core"
   },
   {
+   "id": "knob:BUGREPORT_THUMBS",
+   "flag": null,
+   "env": "OPENPETE_BUGREPORT_THUMBS",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:THREAD_SPLIT",
    "flag": null,
    "env": "OPENPETE_THREAD_SPLIT",
@@ -2856,6 +2976,40 @@
    "cli_only": false,
    "def": null,
    "default_note": "none: no report",
+   "game": "core"
+  },
+  {
+   "id": "knob:LOOP_TRACE",
+   "flag": null,
+   "env": "OPENPETE_LOOP_TRACE",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "none: no trace",
+   "game": "core"
+  },
+  {
+   "id": "knob:EAGER_HOLD_S",
+   "flag": null,
+   "env": "OPENPETE_EAGER_HOLD_S",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "none: no hold",
    "game": "core"
   },
   {
@@ -3845,6 +3999,23 @@
    "game": "core"
   },
   {
+   "id": "knob:TERRAIN_FP32",
+   "flag": null,
+   "env": "OPENPETE_TERRAIN_FP32",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:TERRAIN_CULL",
    "flag": null,
    "env": "OPENPETE_TERRAIN_CULL",
@@ -4317,6 +4488,40 @@
    "build_cond": null,
    "cli_only": false,
    "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:TERRAIN_ANIMNEAR",
+   "flag": null,
+   "env": "OPENPETE_TERRAIN_ANIMNEAR",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:TERRAIN_CANIMNEAR",
+   "flag": null,
+   "env": "OPENPETE_TERRAIN_CANIMNEAR",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
    "default_note": null,
    "game": "core"
   },
@@ -5168,6 +5373,23 @@
    "build_cond": null,
    "cli_only": false,
    "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:PIPE_LOG",
+   "flag": null,
+   "env": "OPENPETE_PIPE_LOG",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug diagnostics",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
    "default_note": null,
    "game": "core"
   },
@@ -6120,6 +6342,15 @@
    "default_note": "deprecated spelling of --perf-stats"
   },
   {
+   "id": "flag:--bug-report-replay",
+   "flag": "--bug-report-replay",
+   "takes_arg": "required",
+   "block": "debug",
+   "build_cond": null,
+   "def": null,
+   "default_note": null
+  },
+  {
    "id": "flag:--debug-triangle",
    "flag": "--debug-triangle",
    "takes_arg": "none",
@@ -6624,21 +6855,15 @@
    "displayed": true
   },
   {
+   "id": "menu:menu.fog",
+   "knob": "fog",
+   "hint": "DISTANCE FOG",
+   "displayed": true
+  },
+  {
    "id": "menu:menu.freecam",
    "knob": "freecam",
    "hint": "FLY THE CAMERA FREELY",
-   "displayed": true
-  },
-  {
-   "id": "menu:menu.bugreport",
-   "knob": null,
-   "hint": "SAVE A FILE TO SEND WITH A BUG REPORT",
-   "displayed": true
-  },
-  {
-   "id": "menu:menu.docs",
-   "knob": null,
-   "hint": "OPEN THE DOCUMENTATION IN A BROWSER",
    "displayed": true
   },
   {
@@ -6663,12 +6888,6 @@
    "id": "menu:menu.moden",
    "knob": null,
    "hint": "TURN THE MOD ON OR OFF",
-   "displayed": false
-  },
-  {
-   "id": "menu:menu.fog",
-   "knob": "fog",
-   "hint": "DISTANCE FOG",
    "displayed": false
   },
   {
@@ -8307,7 +8526,7 @@
  "selfcheck": {
   "flag": {
    "checked": 47,
-   "unchecked": 35,
+   "unchecked": 37,
    "failed": 0
   },
   "switch": {
@@ -8322,7 +8541,7 @@
   },
   "env": {
    "checked": 0,
-   "unchecked": 201,
+   "unchecked": 207,
    "failed": 0
   },
   "failures": []

@@ -22,7 +22,6 @@
 #include "openpete_host_input.h"     /* the published mouse snapshot */
 #include "openpete_host_mouse.h"     /* totals, ownership, probe */
 #include "openpete_devui.h"          /* ADVANCED opens the overlay */
-#include "openpete_bugreport.h"      /* BUG REPORT requests a bundle */
 
 #include <math.h>
 #include <stddef.h>
@@ -32,7 +31,7 @@
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_WOBBLE, ROW_PIXEL, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FOG,
-       ROW_FREECAM, ROW_BUGREPORT, ROW_ADVANCED, ROW_QUIT,
+       ROW_FREECAM, ROW_ADVANCED, ROW_QUIT,
        ROW_COUNT,
        /* MODSEL/MODEN are parked past ROW_COUNT: hidden from display +
         * navigation, but their plumbing stays live and compiled - the case
@@ -43,7 +42,7 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "FOV", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
     "PIXELATION", "TEXTURES", "DITHER", "LOD", "FOG", "FREECAM",
-    "BUG REPORT", "ADVANCED", "EXIT GAME",
+    "ADVANCED", "EXIT GAME",
 };
 
 
@@ -74,7 +73,6 @@ ROW_SURFACE[ROW_MODEN + 1] = {
     [ROW_LOD]     = { "menu.lod",        "lod",              "ORIGINAL OR FULL DETAIL AT ANY DISTANCE", 1 },
     [ROW_FOG]     = { "menu.fog",        "fog",              "DISTANCE FOG",                            1 },
     [ROW_FREECAM] = { "menu.freecam",    "freecam",          "FLY THE CAMERA FREELY",                   0 },
-    [ROW_BUGREPORT] = { "menu.bugreport", NULL,              "SAVE A FILE TO SEND WITH A BUG REPORT",   0 },
     [ROW_ADVANCED] = { "menu.advanced",  NULL,               "MORE SETTINGS AND CONTROLS",              0 },
     [ROW_QUIT]    = { "menu.quit",       NULL,               "QUIT THE GAME",                           0 },
     [ROW_COUNT]   = { NULL,              NULL,               NULL,                                      0 },
@@ -317,7 +315,6 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return s_fog_labels[fog_idx_from_live()];
     case ROW_FREECAM:  return on_off(s_freecam_idx);
-    case ROW_BUGREPORT: return "";  /* centered: the label IS the row */
     case ROW_ADVANCED: return "";   /* centered: the label IS the row */
     case ROW_QUIT:     return "";   /* centered: the label IS the row */
     case ROW_MODSEL: {
@@ -397,12 +394,6 @@ static void apply_row(int row) {
          * clears the latched axes, so no stale intent carries over. */
         if ((s_freecam_idx != 0) != (openpete_freecam_active() ? 1 : 0))
             openpete_freecam_toggle();
-        break;
-    case ROW_BUGREPORT:
-        /* The bundle is written at the next final yield, which the closed
-         * menu lets the host loop reach; its toast names the file. */
-        if (s_open) openpete_menu_toggle();
-        openpete_bugreport_request();
         break;
     case ROW_ADVANCED:
         /* The dev overlay is the full settings UI; this row closes the menu
@@ -538,7 +529,7 @@ static int64_t wheel_notches(int64_t total) {
  * @param row The row index.
  * @return Non-zero for DISPLAY, ADVANCED and EXIT. */
 static int row_action_only(int row) {
-    return row == ROW_DISPLAY || row == ROW_BUGREPORT || row == ROW_ADVANCED || row == ROW_QUIT;
+    return row == ROW_DISPLAY || row == ROW_ADVANCED || row == ROW_QUIT;
 }
 
 /* The close glyph's drawn ink, in overlay units, as the text builder emitted
@@ -722,9 +713,10 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
      * value ("FULLSCREEN") in the value column. It sits below the width the
      * column can take, so the clamp is a safety net for a future wider value
      * rather than what sizes the rows: while it is slack the rows draw at
-     * row_cap exactly. Spacing is a fixed multiple of the cap, so the list
-     * shortens with the glyphs instead of thinning them. */
-    const float spacing   = 0.0412f;   /* row-to-row, 1.39 x row_cap: 16 settings rows and the hint above EXIT */
+     * row_cap exactly. Spacing is the same multiple of the cap the
+     * pause-menu-tuned pitch was, so the list shortens with the glyphs instead
+     * of thinning them. */
+    const float spacing   = 0.0442f;   /* row-to-row, 1.49 x row_cap */
     const float top_pad   = 0.055f;   /* panel top -> title top, panel bottom -> EXIT bottom */
     const float title_gap = 0.070f;   /* title top -> first row (larger header needs more) */
     out->title_cap_h = title_cap;
@@ -780,7 +772,7 @@ const char* openpete_menu_row_hint(int row) {
 }
 
 int openpete_menu_row_centered(int row) {
-    return row == ROW_BUGREPORT || row == ROW_ADVANCED || row == ROW_QUIT;
+    return row == ROW_ADVANCED || row == ROW_QUIT;
 }
 
 const char* openpete_menu_row_value(int row, char* buf, int buflen) {
@@ -852,12 +844,10 @@ void openpete_menu_adjust(int dx) {
         break;
     }
     /* ADVANCED acts on any step and announces nothing: the menu closes
-     * under it and the overlay opens. BUG REPORT likewise: the menu closes
-     * and the bundle's own toast follows. */
-    case ROW_BUGREPORT:
+     * under it and the overlay opens. */
     case ROW_ADVANCED:
         log_state("set");
-        apply_row(s_cursor);
+        apply_row(ROW_ADVANCED);
         return;
     /* Action rows have no value to cycle - left/right are inert on them.
      * openpete_menu_activate() is the only way in, so a stray Right on the

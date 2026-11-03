@@ -2,7 +2,7 @@
  * reader with this repository and no access to the tester's machine debugs
  * from.
  *
- * A press (the `bug_report` key, the settings menu's BUG REPORT row, or
+ * A press (the `bug_report` key or
  * the harness variable OPENPETE_BUGREPORT_AT) queues a state op, so the
  * press runs at the next final yield on the sim thread
  * (openpete_bugreport_press). There it copies what moves: the press

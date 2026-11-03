@@ -81,12 +81,6 @@ an exported environment variable beats them for that launch; a menu change
 to such a setting is still saved and applies on a launch without the flag or
 variable. See [The config file](../customizing/config-file.md).
 
-## BUG REPORT
-
-Changing **BUG REPORT** <!-- id: menu:menu.bugreport --> closes the menu and
-writes a [bug report](../help/glossary.md#bug-report) zip
-([Reporting a bug](../help/reporting-a-bug.md#the-bug-report-zip)).
-
 ## ADVANCED
 
 Changing **ADVANCED** <!-- id: menu:menu.advanced --> closes the menu and

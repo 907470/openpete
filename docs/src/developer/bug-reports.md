@@ -2,7 +2,7 @@
 
 A bug report is one zip a reader with this repository debugs from without
 the tester's machine. The `bug_report` key action (default ++f9++, every
-build), the settings menu's **BUG REPORT** row, or `OPENPETE_BUGREPORT_AT`
+build) or `OPENPETE_BUGREPORT_AT`
 writes it under the data directory's `bugreports/`; a hang-watchdog trip
 or a CdSync spin-guard exit writes one through the exit flush. The User
 side is [Reporting a bug](../user/help/reporting-a-bug.md). This page
@@ -200,7 +200,7 @@ that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 | Variable | Effect |
 | --- | --- |
 | `OPENPETE_BUGREPORT_AT=N` | press at feed key N |
-| `OPENPETE_BUGREPORT_NOTE` | `0`: never ask for the note; `1`: ask on an `OPENPETE_BUGREPORT_AT` press too. Unset: ask on a key or menu press only |
+| `OPENPETE_BUGREPORT_NOTE` | `0`: never ask for the note; `1`: ask on an `OPENPETE_BUGREPORT_AT` press too. Unset: ask on a key press only |
 | `OPENPETE_BUGREC_ANCHOR_AT=K1,K2,...` | take an extra anchor at each feed key, beside the 30 s cadence |
 | `OPENPETE_BUGREC_DUMP_AT=N`, `OPENPETE_BUGREC_DUMP_DIR=D` | at feed key N, write the recorder's contents to D: `anchor-<i>.state`, `.card<N>.mcr`, `.modsave`, `.seg.bk2` and `.txt` per anchor, `hashes.csv`, `hosttrace.bin`, `pace.bin`, `input-events.csv`, `devices.txt`, `recorder.txt`. The first without the second logs an error and dumps nothing |
 | `OPENPETE_BUGREPORT_THUMBS=0` | turn the thumbnail ring off (default `1`): 20 thumbnails in a 320x180 box, one per 250 ms of present clock |

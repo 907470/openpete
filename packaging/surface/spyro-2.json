@@ -1,5 +1,5 @@
 {
- "source_sha": "ee19b9ec2a3901a6109a0532c28c8c85d1d85fd8",
+ "source_sha": "1ad848097a13e4ad21fe9ad089c52eb436b7f522",
  "format": 1,
  "game": "spyro-2",
  "entries": [
@@ -2591,6 +2591,23 @@
    "build_cond": null,
    "def": null,
    "default_note": null
+  },
+  {
+   "id": "knob:CARD_GUARD",
+   "flag": null,
+   "env": "OPENPETE_CARD_GUARD",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
   },
   {
    "id": "knob:RUN_RECOMP",
@@ -6820,12 +6837,6 @@
    "displayed": true
   },
   {
-   "id": "menu:menu.bugreport",
-   "knob": null,
-   "hint": "SAVE A FILE TO SEND WITH A BUG REPORT",
-   "displayed": true
-  },
-  {
    "id": "menu:menu.advanced",
    "knob": null,
    "hint": "MORE SETTINGS AND CONTROLS",
@@ -8680,7 +8691,7 @@
   },
   "env": {
    "checked": 0,
-   "unchecked": 206,
+   "unchecked": 207,
    "failed": 0
   },
   "failures": []
