@@ -403,6 +403,12 @@ typedef struct {
 /* Ranks of the ahead walk: each walked view (PIPE_WALK_VIEWS) by each group. */
 #define AHEAD_RANKS (2u * RHI_AHEAD_GROUPS)
 
+/* The ahead walk's front ranks: the first texture mapping's launcher screens
+ * (group 0) and terrain (group 1). Every front rank returns before the walk
+ * submits an item of a later rank, and each front rank after the first has
+ * its library parts queued once the rank before it returned. */
+#define AHEAD_FRONT_RANKS 2u
+
 /* A description recorded in description mode (rhi_pipeline_describe_begin),
  * its .spv names owned, and its stages' facts once the ahead walk resolved
  * them. */
@@ -436,6 +442,7 @@ struct precompile_walk {
     unsigned               rank_n[AHEAD_RANKS];    /* ahead walk: items per rank */
     unsigned               rank_skip[AHEAD_RANKS]; /* ahead walk: items skipped per rank */
     unsigned               rank_logged;            /* ahead walk: ranks whose return was logged */
+    unsigned               rank_parts;             /* ahead walk: front ranks whose library parts were queued */
     bool                   affine_first;           /* ahead walk: the affine view is walked first */
 };
 
@@ -9960,6 +9967,21 @@ static struct compile_pool *pool_get(rhi_device *dev)
     return pl;
 }
 
+/** @brief Append library part items to the pool's part queue, each counted as queued.
+ *
+ * @param pl The pool, locked.
+ * @param libs Items linked by next (gpl_items_for), or NULL. */
+static void pool_queue_parts_locked(struct compile_pool *pl, pool_item *libs)
+{
+    for (pool_item *l = libs, *next; l; l = next) {
+        next = l->next;
+        l->next = NULL;
+        if (pl->l_tail) pl->l_tail->next = l; else pl->l_head = l;
+        pl->l_tail = l;
+        pl->queued++;
+    }
+}
+
 int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flags,
                             rhi_pool_install_fn fn, void *tag)
 {
@@ -9992,13 +10014,7 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
     }
     pool_item *libs = gpl_items_for(dev, job, it->phase, it->rebuild);
     SDL_LockMutex(pl->mx);
-    for (pool_item *l = libs, *next; l; l = next) {
-        next = l->next;
-        l->next = NULL;
-        if (pl->l_tail) pl->l_tail->next = l; else pl->l_head = l;
-        pl->l_tail = l;
-        pl->queued++;
-    }
+    pool_queue_parts_locked(pl, libs);
     pool_item **head = it->low ? &pl->lo_head : &pl->q_head;
     pool_item **tail = it->low ? &pl->lo_tail : &pl->q_tail;
     if (*tail) (*tail)->next = it; else *head = it;
@@ -10983,16 +10999,30 @@ static rhi_compile_job *walk_ahead_job(rhi_device *dev, const walk_item *it)
     return job;
 }
 
+/** @brief Return whether every front rank of the ahead walk (AHEAD_FRONT_RANKS) holding an item has logged its return.
+ *
+ * @param w The ahead walk.
+ * @return true when no front rank is outstanding. */
+static bool walk_front_back(const struct precompile_walk *w)
+{
+    for (unsigned r = 0; r < AHEAD_FRONT_RANKS; r++)
+        if (w->rank_n[r] && !((w->rank_logged >> r) & 1u)) return false;
+    return true;
+}
+
 /** @brief Submit the walk's next variant that is neither covered by a live rebuild nor of a destroyed pipeline, built from its pipeline (or, on the ahead walk, its recorded description) now.
  *
  * The job carries the precompile create phase, so its creates never count as
- * first use.
+ * first use. The ahead walk submits no item past its front ranks until
+ * walk_front_back holds.
  * @param dev Device.
  * @param w The walk.
- * @return true when a job was submitted, false when the enumeration is spent. */
+ * @return true when a job was submitted, false when the enumeration is spent
+ *         or its next item waits for the front ranks. */
 static bool walk_submit_next(rhi_device *dev, struct precompile_walk *w)
 {
     while (w->next < w->n) {
+        if (w->ahead && w->items[w->next].rank >= AHEAD_FRONT_RANKS && !walk_front_back(w)) return false;
         const walk_item *it = &w->items[w->next++];
         if (rhi_pc_keyset_has(&w->covered, it->key)) {
             w->st.covered++;
@@ -11080,9 +11110,11 @@ static void walk_end(rhi_device *dev, struct precompile_walk *w, const char *cut
  * The line reads "launcher walk: <mapping> group G returned: N create
  * infos, T ms after the start".
  * @param dev Device.
- * @param w The ahead walk. */
-static void walk_log_ranks(rhi_device *dev, struct precompile_walk *w)
+ * @param w The ahead walk.
+ * @return true when the call logged a group. */
+static bool walk_log_ranks(rhi_device *dev, struct precompile_walk *w)
 {
+    bool logged = false;
     unsigned back[AHEAD_RANKS];
     SDL_LockMutex(dev->cpool->mx);
     memcpy(back, dev->cpool->ahead_back, sizeof back);
@@ -11091,10 +11123,74 @@ static void walk_log_ranks(rhi_device *dev, struct precompile_walk *w)
         if ((w->rank_logged >> r) & 1u || !w->rank_n[r] || back[r] + w->rank_skip[r] < w->rank_n[r])
             continue;
         w->rank_logged |= 1u << r;
+        logged = true;
         RHI_LOG("launcher walk: %s group %u returned: %u create infos, %.1f ms after the start\n",
                 w->affine_first ? "affine" : "perspective", r, w->rank_n[r],
                 (double)(SDL_GetTicksNS() - w->t0_ns) / 1e6);  /* clock-guard: wall: walk progress for the log */
     }
+    return logged;
+}
+
+/** @brief Queue the library parts of every ahead walk item of one rank not yet submitted, so the pool's workers build them side by side.
+ *
+ * A part is otherwise claimed only when the first item using it is
+ * submitted (gpl_items_for), and an item waiting on a part holds one of the
+ * walk's slots, so a rank of many items over few parts builds those parts
+ * one after another. A part already claimed or queued is skipped. Display
+ * owner only.
+ * @param dev Device.
+ * @param w The ahead walk.
+ * @param rank The rank.
+ * @return The parts queued. */
+static unsigned walk_queue_rank_parts(rhi_device *dev, struct precompile_walk *w, unsigned rank)
+{
+    struct compile_pool *pl = dev->cpool;
+    if (!pl || pl->n == 0) return 0;
+    pool_item *head = NULL, *tail = NULL;
+    unsigned n = 0;
+    for (unsigned i = w->next; i < w->n; i++) {
+        if (w->items[i].rank != rank) continue;
+        rhi_compile_job *job = walk_ahead_job(dev, &w->items[i]);
+        if (!job) continue;
+        pool_item *libs = gpl_items_for(dev, job, RHI_PIPE_PHASE_LAUNCHER, t_in_rebuild);
+        rhi_compile_job_discard(dev, job);
+        for (pool_item *next; libs; libs = next, n++) {
+            next = libs->next;
+            libs->next = NULL;
+            if (tail) tail->next = libs; else head = libs;
+            tail = libs;
+        }
+    }
+    if (!head) return 0;
+    SDL_LockMutex(pl->mx);
+    pool_queue_parts_locked(pl, head);
+    if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
+    pool_wake_locked(pl, true);
+    SDL_UnlockMutex(pl->mx);
+    return n;
+}
+
+/** @brief Log the ahead walk's returned groups, and queue each front rank's library parts once the rank before it returned (or held no item).
+ *
+ * The queue logs "launcher walk: N library parts of group G queued, T ms
+ * after the start".
+ * @param dev Device.
+ * @param w The ahead walk.
+ * @return true when a group's return was logged, which may release items
+ *         walk_submit_next held. */
+static bool walk_front_step(rhi_device *dev, struct precompile_walk *w)
+{
+    const bool logged = walk_log_ranks(dev, w);
+    for (unsigned r = 1; r < AHEAD_FRONT_RANKS; r++) {
+        const bool prev_back = !w->rank_n[r - 1] || ((w->rank_logged >> (r - 1)) & 1u);
+        if (((w->rank_parts >> r) & 1u) || !prev_back) continue;
+        w->rank_parts |= 1u << r;
+        const unsigned n = walk_queue_rank_parts(dev, w, r);
+        if (n)
+            RHI_LOG("launcher walk: %u library parts of group %u queued, %.1f ms after the start\n", n, r,
+                    (double)(SDL_GetTicksNS() - w->t0_ns) / 1e6);  /* clock-guard: wall: walk progress for the log */
+    }
+    return logged;
 }
 
 /** @brief Submit walk jobs up to the walk's limit (one per call for a background walk), and end the walk once every job has returned.
@@ -11106,10 +11202,11 @@ static rhi_walk_state walk_advance(rhi_device *dev)
     struct precompile_walk *w = &dev->walk;
     if (w->state != RHI_WALK_RUNNING) return w->state;
     if (dev->cpool_stopped || !dev->cpool) { walk_end(dev, w, "abandoned at the pool's stop"); return w->state; }
-    while (w->submitted - walk_returned(dev, &w->p0) < w->limit) {
-        if (!walk_submit_next(dev, w) || (w->background && !w->ahead)) break;
-    }
-    if (w->ahead) walk_log_ranks(dev, w);
+    do {
+        while (w->submitted - walk_returned(dev, &w->p0) < w->limit) {
+            if (!walk_submit_next(dev, w) || (w->background && !w->ahead)) break;
+        }
+    } while (w->ahead && walk_front_step(dev, w));
     if (w->next >= w->n && walk_returned(dev, &w->p0) >= w->submitted) walk_end(dev, w, NULL);
     return w->state;
 }

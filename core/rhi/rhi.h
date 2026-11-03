@@ -1735,7 +1735,9 @@ void           rhi_pipeline_describe_group(rhi_device *dev, unsigned group);
  * group (rhi_pipeline_describe_group), then in the order recorded. A key is
  * skipped as the variant walk skips one (probe hit, manifest), and its
  * creates count in the launcher create phase. Up to two jobs per worker are
- * out at a time. Each return of a walk job calls @p wake on the compile
+ * out at a time. The first texture mapping's groups 0 and 1 return before
+ * any later create info is submitted, and group 1's library parts are
+ * queued on the pool together once group 0 returned. Each return of a walk job calls @p wake on the compile
  * worker that ran it, so the display owner steps the walk
  * (rhi_precompile_walk_step) when a job returns rather than on a present;
  * the step after the last return of a group's first texture mapping logs
