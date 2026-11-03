@@ -208,6 +208,10 @@ export XDG_STATE_HOME="$HOME/.local/state"
 export XDG_DATA_HOME="$HOME/.local/share"
 # The cards must resolve inside the scratch layout, never a caller's.
 unset OPENPETE_CARD_DIR
+# The card guard's declared escape: the scratch HOME above is this run's
+# isolation, and its default card directory is the one the guard refuses.
+# The account's own card directory is checked unchanged after the first boot.
+export OPENPETE_CARD_GUARD=0
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 DATA="$XDG_DATA_HOME/openpete"
 
