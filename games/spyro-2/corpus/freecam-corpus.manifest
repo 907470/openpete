@@ -207,3 +207,11 @@ idol_springs | pos=(79159, 53926, 16006) yaw=-1450 pitch=36
 # the moby cull drops every moby whose sector byte is zero; 100 units nearer
 # (the next cell) the sector is listed and both draw. Blessed pre-fix.
 idol_springs | pos=(104793, 86713, 16325) yaw=1961 pitch=246
+# sunny_beach porthole: the additive glass dome (sector 0, slot term 4) loses
+# its left facets to the frame bevel (sector 43) by OT key, about 2500 px,
+# though true depth puts the glass in front. Blessed pre-fix.
+sunny_beach | pos=(67066, 32020, 29757) yaw=943 pitch=-15
+# hurricos fan: three blade mobys of class 0x046 with colour-word bit 30 set
+# compose 12-bit angles from the colour word; their rotation holds for the
+# whole tick on sub-tick presents. Blessed pre-fix.
+hurricos | pos=(41500, 91104, 30875) yaw=-2027 pitch=992
