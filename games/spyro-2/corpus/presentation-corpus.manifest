@@ -203,3 +203,8 @@ riptos_arena-letterbox|1413|2||1415,1425|--skip-to-level riptos_arena
 # the credits font's glyph models, read from WAD.WAD on the disc
 # (text_moby.c, GAME_FONT_WAD_MODEL).
 settings-menu|2073|100||2073|--skip-to-level summer_forest OPENPETE_MENU_DEMO=1 --screenshot-overlays
+# crushs-dungeon (games/spyro-2/bk2/crushs-dungeon.bk2): the floor's far lip
+# loses the terrain key contest to the lava behind it under --lod extended
+# (per-cell keys on pinned far faces); 1506 is the sub-tick present the
+# reporter saw. Blessed pre-fix.
+crushs-dungeon|1504|2||1504,1506
