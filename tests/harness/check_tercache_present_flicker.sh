@@ -51,8 +51,10 @@
 #          stamp is not the re-extract's build stamp
 # Pass: thin mean <= PATH_THIN_MAX for both kinds, 0 spikes, 0 tc_src=3
 # presents after a re-extract. Engagement: at least PATH_MIN_INTER
-# intermediate presents captured, and the re-extracts fed terrain
-# (sum of the census terrain= counts > 0).
+# intermediate presents captured, and the re-extracts fed terrain: the
+# census terrain= triangles (CPU-walked sectors) plus the secs= of each
+# sub-tick retained-cache build ([tgpu-cen] sub=1,
+# OPENPETE_TERRAIN_GPU_CENSUS) sum to more than 0.
 #
 # Usage: tests/harness/check_tercache_present_flicker.sh [--game SLUG]
 #            [--build-dir=DIR] [--leg=static|path|all]
@@ -257,7 +259,8 @@ fi
 PATH_RC=0
 if [[ "$LEG" != static && -n "$PATH_SPEC" ]]; then
 PLOG="$OUT_ABS/$GAME-path.log"
-wslenv_forward OPENPETE_VIBRATION=0 OPENPETE_FREEZE_DBG=1 OPENPETE_RX_CENSUS=0-1000000
+wslenv_forward OPENPETE_VIBRATION=0 OPENPETE_FREEZE_DBG=1 OPENPETE_RX_CENSUS=0-1000000 \
+    OPENPETE_TERRAIN_GPU_CENSUS=1
 attempt=1
 limit=$((PATH_START + PATH_N + 100))
 while :; do
@@ -270,7 +273,7 @@ while :; do
         --screenshot-presents-count "$PATH_N" \
         --screenshot-output "$OUT_ABS/${GAME}-path__{n}_{p}.png" \
         --frame-limit "$limit" 2>&1 | tr -d '\r' |
-        grep -E --line-buffered '^\[freeze f=|^\[rx-census|screenshot: wrote|exit: reason|panic|assert' \
+        grep -E --line-buffered '^\[freeze f=|^\[rx-census|^\[tgpu-cen|screenshot: wrote|exit: reason|panic|assert' \
             > "$PLOG"
     n=$(ls "$OUT_ABS/$GAME"-path__*.png 2>/dev/null | wc -l)
     [[ "$n" -ge "$PATH_N" ]] && break
@@ -297,7 +300,12 @@ files = sorted((f for f in glob.glob(f"{out}/{game}-path__*.png") if rx.search(f
                key=lambda f: int(rx.search(f).group(2)))
 
 kinds, rx_terrain, rx_n, after_rx, tc3_after, pending = [], 0, 0, 0, 0, False
+sub_secs = 0
 for line in open(log, errors="replace"):
+    if line.startswith("[tgpu-cen"):
+        m = re.search(r" sub=1 secs=(\d+)", line)
+        sub_secs += int(m.group(1)) if m else 0
+        continue
     if line.startswith("[rx-census"):
         m = re.search(r" terrain=(\d+)", line)
         rx_terrain += int(m.group(1)) if m else 0
@@ -340,8 +348,9 @@ if inter < min_inter:
     reasons.append("intermediate=%d<%d" % (inter, min_inter))
 if len(kinds) != len(files):
     reasons.append("log names %d captures, %d files" % (len(kinds), len(files)))
-if rx_terrain <= 0:
-    reasons.append("re-extracts fed no terrain (census terrain sum %d over %d)" % (rx_terrain, rx_n))
+if rx_terrain + sub_secs <= 0:
+    reasons.append("re-extracts fed no terrain (census terrain sum %d over %d, retained sub-tick sectors %d)"
+                   % (rx_terrain, rx_n, sub_secs))
 fails = []
 for k in ("canonical", "intermediate"):
     if mean.get(k, 0.0) > thin_max:
@@ -352,9 +361,9 @@ if tc3_after:
     fails.append("tc_src=3 after re-extract on %d of %d presents" % (tc3_after, after_rx))
 verdict, rc = ("VACUOUS", 1) if reasons else (("FAIL", 1) if fails else ("PASS", 0))
 print("[tercache-flicker] path game=%s presents=%d intermediate=%d thin_mean canon=%.1f inter=%.1f "
-      "spikes=%d tc_src3_after_rx=%d of %d rx=%d rx_terrain=%d verdict=%s%s"
+      "spikes=%d tc_src3_after_rx=%d of %d rx=%d rx_terrain=%d rx_retained_secs=%d verdict=%s%s"
       % (game, len(files), inter, mean.get("canonical", 0.0), mean.get("intermediate", 0.0),
-         len(spikes), tc3_after, after_rx, rx_n, rx_terrain, verdict,
+         len(spikes), tc3_after, after_rx, rx_n, rx_terrain, sub_secs, verdict,
          (" reason=" + "; ".join(reasons + fails)) if (reasons or fails) else ""))
 for p, n, med in spikes[:16]:
     print("[tercache-flicker]   spike at present %d clear=%d median=%d" % (p, n, med))
