@@ -1477,61 +1477,59 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
  * 0x800261F0-0x800261FC, and 0x8002536C-0x800253E0.
  * Only a face in the near band (the canonical classifier, emit_nearband) is
  * drained. A face the always-HQ pin subdivides outside the band is inserted
- * by the game whole, so no node word bounds its terms: its sub-cells sum the
- * unmasked hqscale * m3 of their nodes (`drained` 0).
+ * by the game whole at the face's corner sum, so its sub-cells keep the
+ * parent face key and none of these keys applies to it.
  * The keys are in emit_otkey units, the whole-face key's scale (SZ3 =
  * hqscale * m3). The retained cache's vertex stage mirrors these three
  * functions (terrain.vert drain_sz, drain_key4, drain_key3). */
 static double tface_hqscale(void);
 /** @brief Returns one corner's depth term of a drain key.
  *
- * The term is hqscale * m3. Under drained it is floored, taken as 0 at or
- * below 0, saturated at 65535 as the GTE saturates SZ3, and masked to the
- * 12 bits the node word keeps; otherwise it is returned unrounded and
- * unmasked.
+ * The term is hqscale * m3, floored, taken as 0 at or below 0, saturated at
+ * 65535 as the GTE saturates SZ3, and masked to the 12 bits the node word
+ * keeps.
  * @param m3 The corner's view depth.
- * @param drained Nonzero when the face is in the near band.
  * @return The term. */
-static double tn_drain_sz(double m3, int drained) {
-    if (!drained) return m3 * tface_hqscale();
+static double tn_drain_sz(double m3) {
     double sz = floor(m3 * tface_hqscale());
     if (sz <= 0.0) return 0.0;
     if (sz > 65535.0) sz = 65535.0;
     return (double)((int)sz & 0xFFF);
 }
 /** @brief Returns a quad cell's drain key, the sum of its four corner SZ terms in emit_otkey units.
+ *
+ * Each term is tn_drain_sz's.
  * @param a The first corner.
  * @param b The second corner.
  * @param c The third corner.
  * @param d The fourth corner.
- * @param drained Nonzero when the face is in the near band, so each term is
- *        saturated and masked as the drain does (tn_drain_sz).
  * @return The key. */
 static float tn_drain_key4(const ngte_cvert* a, const ngte_cvert* b,
-                           const ngte_cvert* c, const ngte_cvert* d, int drained) {
-    return (float)(tn_drain_sz(a->m3, drained) + tn_drain_sz(b->m3, drained) +
-                   tn_drain_sz(c->m3, drained) + tn_drain_sz(d->m3, drained));
+                           const ngte_cvert* c, const ngte_cvert* d) {
+    return (float)(tn_drain_sz(a->m3) + tn_drain_sz(b->m3) +
+                   tn_drain_sz(c->m3) + tn_drain_sz(d->m3));
 }
 /** @brief Returns a sub-triangle's drain key SZ A + SZ B + 2 SZ C in emit_otkey units.
+ *
+ * Each term is tn_drain_sz's.
  * @param a The first corner.
  * @param b The second corner.
  * @param c The corner counted twice.
- * @param drained Nonzero when the face is in the near band, so each term is
- *        saturated and masked as the drain does (tn_drain_sz).
  * @return The key. */
-static float tn_drain_key3(const ngte_cvert* a, const ngte_cvert* b, const ngte_cvert* c,
-                           int drained) {
-    return (float)(tn_drain_sz(a->m3, drained) + tn_drain_sz(b->m3, drained) +
-                   2.0 * tn_drain_sz(c->m3, drained));
+static float tn_drain_key3(const ngte_cvert* a, const ngte_cvert* b, const ngte_cvert* c) {
+    return (float)(tn_drain_sz(a->m3) + tn_drain_sz(b->m3) + 2.0 * tn_drain_sz(c->m3));
 }
 
 /** @brief Emits a textured camera-space quad through the near-plane clip.
  *
  * UVs come from a decoded Tiledef in [TL, TR, BL, BR] order; the GPU
  * diagonal is TR-BL, triangulated (TL, TR, BL) + (TR, BL, BR) as in the main
- * loop. The quad is one drain sub-cell and sets emit_otkey to its own key
- * (tn_drain_key4), except under emit_keycells, where the caller has set the
- * face's least sub-cell key and its table.
+ * loop. A quad of a face the game drains (emit_nearband) is one drain
+ * sub-cell and sets emit_otkey to its own key (tn_drain_key4), except under
+ * emit_keycells, where the caller has set the face's least sub-cell key and
+ * its table. A quad of a face the always-HQ pin subdivides outside the near
+ * band keeps the parent face key the walk set, as the game inserts that
+ * face whole.
  * @param W The walk context receiving the triangles.
  * @param tl The top-left corner.
  * @param tr The top-right corner.
@@ -1543,7 +1541,7 @@ static float tn_drain_key3(const ngte_cvert* a, const ngte_cvert* b, const ngte_
 static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
                          const tmat* m, const float u[4], const float v[4]) {
     tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
-    if (!W->emit_keycells) W->emit_otkey = tn_drain_key4(&tl, &tr, &bl, &br, W->emit_nearband);
+    if (!W->emit_keycells && W->emit_nearband) W->emit_otkey = tn_drain_key4(&tl, &tr, &bl, &br);
     clip_push_tri(W, tl, tr, bl, m);
     clip_push_tri(W, tr, bl, br, m);
 }
@@ -2647,8 +2645,8 @@ static int nc4_front(const ngte_cvert* tl, const ngte_cvert* tr,
  * Cell i reads the 16x16 tile at hqBase + hq_cells4 + i*8 with its
  * orientation (tiledef_apply_ori) and, when the record's texture scrolls,
  * its row's V scroll. A straddling single-sided face skips a cell that faces
- * away (nc4_front). Each cell's key is emit_quad_cv's per-quad corner sum,
- * unless emit_keycells holds the face's table.
+ * away (nc4_front). Each cell's key is emit_quad_cv's: the per-quad corner
+ * sum for a drained face, unless emit_keycells holds the face's table.
  * @param W The walk context receiving the triangles.
  * @param cpu The guest CPU state.
  * @param nf The near face.
@@ -2788,7 +2786,7 @@ static void tn_quad_cell_keys(const tn_nearface* nf, ngte_cvert G[5][5], tn_keyc
         const int r = i >> 2, c = i & 3;
         const ngte_cvert *tl = &G[r][c], *tr = &G[r][c + 1];
         const ngte_cvert *bl = &G[r + 1][c], *br = &G[r + 1][c + 1];
-        const float key = tn_drain_key4(tl, tr, bl, br, 1);
+        const float key = tn_drain_key4(tl, tr, bl, br);
         const int front = !(nf->straddle && !nf->dside && !nc4_front(tl, tr, bl, br, nf->flip));
         tn_keycells_add(K, i, front && key > 0.0f, key, i);
     }
@@ -3179,7 +3177,8 @@ static void nt_sub_of(CPUState* cpu, const tn_nearface* nf, int tier2, int i, in
  * its tile's material and the tile's triangle UVs (tiledef_tri_uv), plus the
  * V scroll of its cell row or quadrant pair when the record's texture
  * animation is active. Outside a keyed-cell pass its key is its own
- * tn_drain_key3 (SZ A + SZ B + 2 SZ C) in emit_otkey units. No off-screen
+ * tn_drain_key3 (SZ A + SZ B + 2 SZ C) in emit_otkey units for a face the
+ * game drains (emit_nearband), else the parent face key. No off-screen
  * reject and no size split: the drains' outcode rejects drop only
  * sub-triangles outside the 512x256 GTE screen, which a wider native view
  * shows. Counts culled, material-differing and emitted sub-triangles per
@@ -3210,7 +3209,7 @@ static void nt_emit(tn_wctx* W, CPUState* cpu, const tn_nearface* nf, const ngte
         A.u = u[0]; A.v = v[0] + s.dv;
         B.u = u[1]; B.v = v[1] + s.dv;
         C.u = u[2]; C.v = v[2] + s.dv;
-        if (!W->emit_keycells) W->emit_otkey = tn_drain_key3(&A, &B, &C, W->emit_nearband);
+        if (!W->emit_keycells && W->emit_nearband) W->emit_otkey = tn_drain_key3(&A, &B, &C);
         clip_push_tri(W, A, B, C, &mat);
         W->trisplit_subs[tier2]++;
     }
@@ -3262,7 +3261,7 @@ static void tn_tri_cell_keys(CPUState* cpu, const tn_nearface* nf, const ngte_cv
             double d = cv_det3(&N[a], &N[b], &N[c]);
             front = nf->flip ? d <= 0.0 : d >= 0.0;
         }
-        const float key = tn_drain_key3(&N[a], &N[b], &N[c], 1);
+        const float key = tn_drain_key3(&N[a], &N[b], &N[c]);
         tn_keycells_add(K, i, front && key > 0.0f, key, tn_sub_slot(a, b, c, tier2 ? 2 : 1));
     }
 }

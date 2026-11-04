@@ -707,25 +707,24 @@ vec2 nt4_screen(int n, pvec3 A, pvec3 B, pvec3 C) {
 /* ---- drain sub-cell keys (terrain.c tn_drain_sz, tn_drain_key4 and
  * tn_drain_key3 mirrors) ----------------------------------------------------
  * A drain node's term: its SZ3 (the GTE saturates floor(hqscale * m3) to
- * [0, 0xFFFF]) masked to the 12 bits the node word keeps, for a face in the
- * near band (`drained`); outside it, the unmasked hqscale * m3. A quad cell
- * sums its four nodes, a sub-triangle SZ A + SZ B + 2 SZ C. */
-pfloat drain_sz(pfloat m3, bool drained) {
-    if (!drained) return m3 * 4.0;
+ * [0, 0xFFFF]) masked to the 12 bits the node word keeps. A quad cell sums
+ * its four nodes, a sub-triangle SZ A + SZ B + 2 SZ C. Only a face in the
+ * near band is drained; the rest key whole. */
+pfloat drain_sz(pfloat m3) {
     pfloat sz = floor(m3 * 4.0);
     if (sz <= 0.0) return 0.0;
     sz = dsel(sz > 65535.0, 65535.0, sz);
     return pfloat(int(sz) & 0xFFF);
 }
-float drain_key4(pfloat a, pfloat b, pfloat c, pfloat d, bool drained) {
-    precise pfloat s = drain_sz(a, drained) + drain_sz(b, drained);
-    s = s + drain_sz(c, drained);
-    s = s + drain_sz(d, drained);
+float drain_key4(pfloat a, pfloat b, pfloat c, pfloat d) {
+    precise pfloat s = drain_sz(a) + drain_sz(b);
+    s = s + drain_sz(c);
+    s = s + drain_sz(d);
     return float(s);
 }
-float drain_key3(pfloat a, pfloat b, pfloat c, bool drained) {
-    precise pfloat s = drain_sz(a, drained) + drain_sz(b, drained);
-    s = s + 2.0 * drain_sz(c, drained);
+float drain_key3(pfloat a, pfloat b, pfloat c) {
+    precise pfloat s = drain_sz(a) + drain_sz(b);
+    s = s + 2.0 * drain_sz(c);
     return float(s);
 }
 
@@ -788,7 +787,7 @@ dtab quad_cells_tab(pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR, bool cull, bool flip
         int r = i >> 2, c = i & 3;
         pvec3 tl = G[r * 5 + c], tr = G[r * 5 + c + 1];
         pvec3 bl = G[r * 5 + c + 5], br = G[r * 5 + c + 6];
-        float key = drain_key4(tl.z, tr.z, bl.z, br.z, true);
+        float key = drain_key4(tl.z, tr.z, bl.z, br.z);
         bool f = true;
         if (cull) {
             precise pfloat d1 = det3d(tl, tr, bl);
@@ -828,7 +827,7 @@ dtab tri_cells_tab(pvec3 A, pvec3 B, pvec3 C, bool tier2, bool cull, bool flip)
     for (int i = 0; i < cnt; i++) {
         int t = (base + i) * 3;
         pvec3 a = N[NT_SUB[t]], b = N[NT_SUB[t + 1]], c = N[NT_SUB[t + 2]];
-        float key = drain_key3(a.z, b.z, c.z, true);
+        float key = drain_key3(a.z, b.z, c.z);
         bool f = true;
         if (cull) {
             precise pfloat d = det3d(a, b, c);
@@ -2529,23 +2528,25 @@ void main()
                                        lp ? 0u : (ff & FF_W3_40),
                                        lp ? 0u : (ff & FF_W3_80));
         /* otkey: a whole face's 4-corner view-Z sum x4 (tris sum the shared
-         * i2==i3 corner twice, like the .s); a subdivided face's triangles
-         * carry their own drain sub-cell's key (drain_key4 / drain_key3,
-         * emit_quad_cv and nt_emit). Rounded to float exactly where the
-         * walk rounds. */
+         * i2==i3 corner twice, like the .s); a subdivided face in the near
+         * band (one the game drains) has its triangles carry their own drain
+         * sub-cell's key (drain_key4 / drain_key3, emit_quad_cv and
+         * nt_emit), and one the always-HQ pin subdivides outside the band
+         * keeps the whole-face key, as the game inserts that face whole.
+         * Rounded to float exactly where the walk rounds. */
         PREC32 float ok;
-        if (!hqv) {
+        if (!hqv || !nearband) {
             ok = float((m0.z + m1.z + m2.z + m3c.z) * 4.0);
         } else if (ist) {
             ok = drain_key3(nt4_node(NT_SUB[tsub * 3], m0, m1, m2).z,
                             nt4_node(NT_SUB[tsub * 3 + 1], m0, m1, m2).z,
-                            nt4_node(NT_SUB[tsub * 3 + 2], m0, m1, m2).z, nearband);
+                            nt4_node(NT_SUB[tsub * 3 + 2], m0, m1, m2).z);
         } else if (is4) {
             int cr = cell >> 2, cq = cell & 3;
             ok = drain_key4(nc4_node(cr, cq, m0, m1, m3c, m2).z,
                             nc4_node(cr, cq + 1, m0, m1, m3c, m2).z,
                             nc4_node(cr + 1, cq, m0, m1, m3c, m2).z,
-                            nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2).z, nearband);
+                            nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2).z);
         } else {
             precise pvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
             precise pvec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
@@ -2556,7 +2557,7 @@ void main()
               : subq == 1 ? pvec4(mT.z, TR.z, C.z, mR.z)
               : subq == 2 ? pvec4(mL.z, C.z, BL.z, mB.z)
               :             pvec4(C.z, mR.z, mB.z, BR.z);
-            ok = drain_key4(sq.x, sq.y, sq.z, sq.w, nearband);
+            ok = drain_key4(sq.x, sq.y, sq.z, sq.w);
         }
         /* A drawn triangle of a face the drain inserts finer keys at the
          * least of its sub-cell keys; the fragment adds its own sub-cell's
