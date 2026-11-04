@@ -121,6 +121,23 @@ typedef struct {
 
 enum { TR_SRC_NONE = 0, TR_SRC_RIBBON, TR_SRC_MESH };
 
+/* A clipped quad keeps at most five corners: the plane cuts one corner into
+ * two. */
+#define TR_POLY_MAX 5
+
+/* One item's float build for one view: screen corners with their texture
+ * coordinates and colours. An unclipped build (fan 0) holds the primitive's
+ * corners in its own order and feeds in the GPU's quad split; a polygon the
+ * near plane cut (fan 1) holds n corners in winding order and feeds as a fan
+ * from corner 0; n below 3 feeds nothing. `near` marks a build with a corner
+ * short of TR_NEAR_M3, which takes the near-plane path, and `clipped` one the
+ * plane cut, whichever form it took. */
+typedef struct {
+    int      n, fan, near, clipped;
+    float    x[TR_POLY_MAX], y[TR_POLY_MAX], u[TR_POLY_MAX], v[TR_POLY_MAX];
+    uint32_t rgb[TR_POLY_MAX];
+} tr_poly;
+
 typedef struct {
     ngte_prim p;
     float     depth;
@@ -132,9 +149,9 @@ typedef struct {
     int       wb;              /* ribbon: the record's signed width byte */
     int       count;           /* ribbon: the ring's point count */
     int       shift;           /* mesh: the descriptor's right shift */
-    int       built;           /* bx, by hold the float build */
-    float     bx[4], by[4];    /* the corners built in float under the tick's view */
-    float     px[4], py[4];    /* the corners built for the sub-tick present */
+    int       built;           /* b holds the float build */
+    tr_poly   b;               /* the build under the tick's view */
+    tr_poly   pp;              /* the build for the sub-tick present */
 } tr_item;
 
 static tr_item  s_item[TR_MAX_PRIMS];
@@ -595,33 +612,109 @@ static int tr_feed_enabled(void) {
  * the capture's build verbatim. */
 static int s_reb_active;
 
+/* The near census (OPENPETE_TRACER_NEAR=LO-HI names the VBLs printed): per
+ * producer, the items one present feeds, those with no source (unpaired),
+ * those the float build left to the routine's corners (unbuilt), those with
+ * a corner short of TR_NEAR_M3 (near), those the near plane cut (clipped) and, of those, the ones it removed whole (culled).
+ * Run totals print at exit, split canonical and sub-tick. */
+typedef struct {
+    unsigned long items, unpaired, unbuilt, near, clipped, culled;
+} tr_near_n;
+static tr_near_n     s_near_tot[2][2];   /* [0 canonical, 1 sub-tick][ident] */
+static unsigned long s_near_presents[2];
+
+/** @brief Prints the near census's run totals to stderr, registered with atexit by tr_near_census. */
+static void tr_near_report(void) {
+    static const char* const leg[2] = { "canon", "inter" };
+    static const char* const src[2] = { "ribbon", "mesh" };
+    for (int l = 0; l < 2; l++)
+        for (int k = 0; k < 2; k++) {
+            const tr_near_n* t = &s_near_tot[l][k];
+            fprintf(stderr, "[tracer-near total %s %s] presents=%lu items=%lu unpaired=%lu "
+                    "unbuilt=%lu near=%lu clipped=%lu culled=%lu\n",
+                    leg[l], src[k], s_near_presents[l], t->items, t->unpaired, t->unbuilt,
+                    t->near, t->clipped, t->culled);
+        }
+}
+
+/** @brief Counts one fed set into the near census and prints its line when the VBL is in OPENPETE_TRACER_NEAR's range.
+ *
+ * @param set The items fed.
+ * @param n The item count. */
+static void tr_near_census(const tr_item* set, int n) {
+    static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
+    static int reg;
+    const int print = env_frame_range_active(&s_range, "OPENPETE_TRACER_NEAR", openpete_frame);
+    if (s_range.lo < 0) return;
+    if (!reg) { reg = 1; atexit(tr_near_report); }
+    const int l = s_reb_active ? 1 : 0;
+    tr_near_n c[2];
+    memset(c, 0, sizeof c);
+    for (int i = 0; i < n; i++) {
+        tr_near_n* t = &c[set[i].ident == OPENPETE_TAG_TRACER_MESH ? 1 : 0];
+        t->items++;
+        if (set[i].src == TR_SRC_NONE) { t->unpaired++; continue; }
+        if (!set[i].built) { t->unbuilt++; continue; }
+        const tr_poly* q = l ? &set[i].pp : &set[i].b;
+        if (q->near) t->near++;
+        if (q->clipped) t->clipped++;
+        if (q->n < 3) t->culled++;
+    }
+    s_near_presents[l]++;
+    for (int k = 0; k < 2; k++) {
+        tr_near_n* t = &s_near_tot[l][k];
+        t->items += c[k].items; t->unpaired += c[k].unpaired; t->unbuilt += c[k].unbuilt;
+        t->near += c[k].near; t->clipped += c[k].clipped; t->culled += c[k].culled;
+    }
+    if (print)
+        fprintf(stderr, "[tracer-near f=%u %s] ribbon items=%lu unpaired=%lu unbuilt=%lu "
+                "near=%lu clipped=%lu culled=%lu mesh items=%lu unpaired=%lu unbuilt=%lu "
+                "near=%lu clipped=%lu culled=%lu\n",
+                openpete_frame, l ? "inter" : "canon",
+                c[0].items, c[0].unpaired, c[0].unbuilt, c[0].near, c[0].clipped, c[0].culled,
+                c[1].items, c[1].unpaired, c[1].unbuilt, c[1].near, c[1].clipped, c[1].culled);
+}
+
 /** @brief Feeds one item to the native scene as world triangles.
  *
- * A quad is split into (0,1,2) and (1,3,2); a triangle feeds (0,1,2) alone.
- * Every vertex takes the item's single depth. A built item's corners are its
- * float build, the sub-tick one while the rebase is active and the capture's
- * otherwise; an unbuilt item feeds the routine's corners. Only 3 and 4
- * vertex primitives are fed. Counts the triangles fed.
+ * An unclipped build or an unbuilt item feeds as the primitive does: a quad
+ * split into (0,1,2) and (1,3,2), a triangle (0,1,2) alone. A polygon the
+ * near plane cut feeds as a fan from its corner 0. Every vertex takes the
+ * item's single depth. A built item's corners, texture coordinates and
+ * colours are its float build, the sub-tick one while the rebase is active
+ * and the capture's otherwise; an unbuilt item feeds the routine's corners.
+ * Only 3 and 4 vertex primitives are fed. Counts the triangles fed.
  * @param it The item. */
 static void tr_add_prim(const tr_item* it) {
     const ngte_prim* p = &it->p;
     if (p->nv != 3 && p->nv != 4) return;
     ngte_tpage tp;
     const int blend = ngte_prim_tpage_blend(p, &tp);
-    const int last = p->nv - 1;           /* a triangle fills the unread corner 3 */
-    const int idx[4] = { 0, 1, 2, last };
-    const float* bx = it->built ? (s_reb_active ? it->px : it->bx) : p->x;
-    const float* by = it->built ? (s_reb_active ? it->py : it->by) : p->y;
+    const ngte_tpage* tpp = p->textured ? &tp : NULL;
     float x[4], y[4], u[4], v[4];
     uint32_t rgb[4];
+    const tr_poly* q = it->built ? (s_reb_active ? &it->pp : &it->b) : NULL;
+    if (q && q->fan) {
+        for (int i = 1; i + 1 < q->n; i++) {
+            const int idx[3] = { 0, i, i + 1 };
+            for (int k = 0; k < 3; k++) {
+                const int j = idx[k];
+                x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j];
+            }
+            x[3] = x[2]; y[3] = y[2]; u[3] = u[2]; v[3] = v[2]; rgb[3] = rgb[2];
+            s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, it->depth, tpp, blend, 3);
+        }
+        return;
+    }
+    if (q && q->n < 3) return;
+    const int last = p->nv - 1;           /* a triangle fills the unread corner 3 */
+    const int idx[4] = { 0, 1, 2, last };
     for (int k = 0; k < 4; k++) {
         const int j = idx[k];
-        x[k] = bx[j]; y[k] = by[j];
-        u[k] = (float)p->u[j]; v[k] = (float)p->v[j];
-        rgb[k] = p->rgb[j];
+        if (q) { x[k] = q->x[j]; y[k] = q->y[j]; u[k] = q->u[j]; v[k] = q->v[j]; rgb[k] = q->rgb[j]; }
+        else   { x[k] = p->x[j]; y[k] = p->y[j]; u[k] = (float)p->u[j]; v[k] = (float)p->v[j]; rgb[k] = p->rgb[j]; }
     }
-    s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, it->depth,
-                                                p->textured ? &tp : NULL, blend, p->nv);
+    s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, v, rgb, it->depth, tpp, blend, p->nv);
 }
 
 /** @brief Feeds a set of items to the native scene under the tracer tag.
@@ -634,6 +727,7 @@ static void tr_feed_native(const tr_item* set, int n) {
     if (!tr_feed_enabled()) return;
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
+    tr_near_census(set, n);
     for (int i = 0; i < n; i++) {
         openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(set[i].ident, 0));
         tr_add_prim(&set[i]);
@@ -800,8 +894,11 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
  * tick's head over the interval; a ring that grew this tick holds its new tail
  * on the previous tail. A mesh corner pairs its own vertex by address. A point
  * with no usable previous state holds the tick's world position, and the
- * camera's motion alone moves it. At the end of the tick's interval the replay
- * emits the capture's build verbatim.
+ * camera's motion alone moves it. An item with a corner short of TR_NEAR_M3
+ * is clipped against a near plane in camera space and projected in float,
+ * at capture and at every present alike, so the shown pose decides what
+ * remains of it. At the end of the tick's interval the replay emits the
+ * capture's build verbatim.
  *
  * Out of scope, each its own channel of the same record: the ribbon's DPCS
  * fade by the head's depth and along the ring, and the primitives' depth,
@@ -866,16 +963,17 @@ static int tr_prev_point(int src, const tr_corner* c, int32_t w[3]) {
  * Below alpha 1 the point is the tick's point moved toward its previous point
  * by (1 - alpha); a previous point farther than TR_REUSE_CEILING is not used
  * and the point stays at the tick's. Counts the lerped and held points per
- * producer below alpha 1.
+ * producer below alpha 1. The projection's m1, m2 and m3 are the point in
+ * camera space; its screen position is valid only at m3 >= TR_NEAR_M3, which
+ * the caller tests.
  * @param src The corner's producer.
  * @param c The corner.
  * @param v The view to project under.
  * @param alpha The present's position in the tick interval; 1 or above shows the tick's point.
  * @param o Receives the projection.
- * @return 1 when the corner has a source, its tick point stood in front of
- *         the near floor and the shown point does too. */
+ * @return 1 when the corner has a source, 0 otherwise. */
 static int tr_shown(int src, const tr_corner* c, const ngte_view* v, double alpha, ngte_proj* o) {
-    if (!c->key || !c->ok) return 0;
+    if (!c->key) return 0;
     double p[3] = { (double)c->w[0], (double)c->w[1], (double)c->w[2] };
     if (alpha < 1.0) {
         int32_t pw[3];
@@ -892,7 +990,7 @@ static int tr_shown(int src, const tr_corner* c, const ngte_view* v, double alph
         s_reb_stat[src][lerped ? 0 : 1]++;
     }
     tr_project_world(v, p, o);
-    return o->m3 >= TR_NEAR_M3;
+    return 1;
 }
 
 /** @brief The ribbon's half-width at its head in screen pixels, from the head's view-Z.
@@ -924,56 +1022,273 @@ static double rib_head_width(int wb, double m3, double s) {
  * @param sx The point's screen X.
  * @param sy The point's screen Y.
  * @param a The head's signed half-width (rib_head_width).
- * @param age The point's place counted back from the head.
+ * @param age The point's place counted back from the head; a point the near
+ *        plane cut between two ring points carries the fraction between them.
  * @param count The ring's point count, at least 2.
  * @param k The corner index, 0..3.
  * @param x Receives the corner's screen X.
  * @param y Receives the corner's screen Y. */
-static void rib_corner_xy(double sx, double sy, double a, int age, int count, int k,
+static void rib_corner_xy(double sx, double sy, double a, double age, int count, int k,
                           float* x, float* y) {
-    const double w = a * (1.0 - (double)age / (double)(count - 1));
+    const double w = a * (1.0 - age / (double)(count - 1));
     const double o = (k < 2) ? -w : w;
     *x = (float)(w >= 0.0 ? sx : sx + o);
     *y = (float)(w >= 0.0 ? sy + o : sy);
 }
 
-/** @brief Builds an item's four corners in float under a view at a sub-tick phase.
+/* The plane a cut item is clipped at starts at the terrain's eye plane (16
+ * world units) and doubles while a crossing projects farther than
+ * TR_CLIP_PROJ_LIMIT pixels from the screen centre, at most 16 times: a
+ * crossing at the eye projects tens of thousands of pixels out, and
+ * rasterizers drop the resulting sliver. The band the raised plane removes
+ * lies off screen. */
+#define TR_EYE_M3          16.0
+#define TR_CLIP_PROJ_LIMIT 2048.0
+
+/** @brief Projects a camera-space point to the screen in float, with no GTE divide cap or saturation.
  *
- * A mesh corner is its vertex's projection; a ribbon corner is its point's
- * projection offset by rib_corner_xy at the half-width of the head shown at
- * the same phase (the tick's head view-Z when the shown head stands behind
- * the near floor). A corner whose point has no screen position takes the
- * fallback's corner.
+ * Equal to the GTE-faithful projection wherever that one is uncapped and
+ * unsaturated (m3 above half the GTE's H, |m1| and |m2| inside int16).
+ * @param v The view.
+ * @param m1 Camera-space X.
+ * @param m2 Camera-space Y.
+ * @param m3 Camera-space depth, positive.
+ * @param x Receives the screen X.
+ * @param y Receives the screen Y. */
+static void tr_screen_f(const ngte_view* v, double m1, double m2, double m3, double* x, double* y) {
+    const double q = v->H_eff / m3;
+    *x = v->ofx + m1 * q;
+    *y = v->ofy + m2 * q;
+}
+
+/** @brief Reports whether a crossing at the plane projects farther than TR_CLIP_PROJ_LIMIT from the screen centre.
+ *
+ * @param v The view.
+ * @param c The crossing, at the plane's depth.
+ * @return 1 when it projects past the limit. */
+static int tr_clip_far(const ngte_view* v, const ngte_cvert* c) {
+    double x, y;
+    tr_screen_f(v, c->m1, c->m2, c->m3, &x, &y);
+    return fabs(x - v->ofx) > TR_CLIP_PROJ_LIMIT || fabs(y - v->ofy) > TR_CLIP_PROJ_LIMIT;
+}
+
+/** @brief The camera-space corner a clip interpolates, from a corner's shown point and the primitive's corner attributes.
+ *
+ * @param o The corner's shown projection (m1, m2, m3).
+ * @param p The primitive.
+ * @param k The corner index.
+ * @return The clip corner. */
+static ngte_cvert tr_cvert(const ngte_proj* o, const ngte_prim* p, int k) {
+    ngte_cvert c;
+    memset(&c, 0, sizeof c);
+    c.m1 = o->m1; c.m2 = o->m2; c.m3 = o->m3;
+    c.rgb = p->rgb[k];
+    c.u = (float)p->u[k]; c.v = (float)p->v[k];
+    return c;
+}
+
+/** @brief Clips a mesh polygon in camera space against the near plane and projects what remains in float.
+ *
+ * Sutherland-Hodgman against m3 >= zc, zc raised as TR_EYE_M3 describes.
+ * A polygon no edge crosses keeps the primitive's corner order (the
+ * polygon order is self-inverse for a quad) and the quad split; a cut one
+ * is a fan in winding order.
+ * @param v The view.
+ * @param in The corners in winding order: 0, 1, 3, 2 for a quad.
+ * @param n The corner count, 3 or 4.
+ * @param o Receives the build. */
+static void msh_clip(const ngte_view* v, const ngte_cvert* in, int n, tr_poly* o) {
+    static const int ord4[4] = { 0, 1, 3, 2 };
+    double zc = TR_EYE_M3;
+    for (int round = 0; ; round++) {
+        ngte_cvert out[TR_POLY_MAX];
+        int m = 0, cut = 0, far = 0;
+        for (int i = 0; i < n; i++) {
+            const ngte_cvert cur = in[i], nxt = in[(i + 1) % n];
+            const int ci = cur.m3 >= zc, ni = nxt.m3 >= zc;
+            if (ci) out[m++] = cur;
+            if (ci != ni && m < TR_POLY_MAX) {
+                out[m] = ngte_clip_lerp(cur, nxt, zc);
+                far |= tr_clip_far(v, &out[m]);
+                m++; cut = 1;
+            }
+        }
+        if (far && round < 16) { zc *= 2.0; continue; }
+        o->n = m < 3 ? 0 : m;
+        o->fan = cut;
+        o->near = 1;
+        o->clipped = cut;
+        for (int i = 0; i < o->n; i++) {
+            const int j = (!cut && n == 4) ? ord4[i] : i;
+            double x, y;
+            tr_screen_f(v, out[i].m1, out[i].m2, out[i].m3, &x, &y);
+            o->x[j] = (float)x; o->y[j] = (float)y;
+            o->u[j] = out[i].u; o->v[j] = out[i].v; o->rgb[j] = out[i].rgb;
+        }
+        return;
+    }
+}
+
+/** @brief Fills an unclipped build's texture coordinates and colours from the primitive.
+ *
+ * @param p The primitive.
+ * @param o The build, its n set. */
+static void tr_poly_attrs(const ngte_prim* p, tr_poly* o) {
+    o->fan = 0;
+    o->near = 0;
+    o->clipped = 0;
+    for (int k = 0; k < o->n; k++) {
+        o->u[k] = (float)p->u[k]; o->v[k] = (float)p->v[k]; o->rgb[k] = p->rgb[k];
+    }
+}
+
+/** @brief Projects an item's corners as a present shows them and reports whether all stand in front of the near floor.
+ *
+ * @param it The item.
+ * @param v The view.
+ * @param alpha The present's position in the tick interval.
+ * @param n The corner count.
+ * @param s Receives the n shown projections.
+ * @return -1 when a corner has no source, 1 when every shown corner is at or
+ *         past TR_NEAR_M3, else 0. */
+static int tr_shown_corners(const tr_item* it, const ngte_view* v, double alpha, int n,
+                            ngte_proj s[4]) {
+    int front = 1;
+    for (int k = 0; k < n; k++) {
+        if (!tr_shown(it->src, &it->c[k], v, alpha, &s[k])) return -1;
+        if (s[k].m3 < TR_NEAR_M3) front = 0;
+    }
+    return front;
+}
+
+/** @brief Builds a mesh item: each corner its vertex's projection, the polygon clipped at the near plane when a corner falls short of TR_NEAR_M3.
+ *
+ * @param it The item.
+ * @param v The view.
+ * @param alpha The present's position in the tick interval.
+ * @param o Receives the build.
+ * @return 1 when built, 0 when a corner has no source. */
+static int msh_build(const tr_item* it, const ngte_view* v, double alpha, tr_poly* o) {
+    const ngte_prim* p = &it->p;
+    const int n = p->nv == 3 ? 3 : 4;
+    ngte_proj s[4];
+    const int front = tr_shown_corners(it, v, alpha, n, s);
+    if (front < 0) return 0;
+    if (front) {
+        o->n = n;
+        for (int k = 0; k < n; k++) { o->x[k] = (float)s[k].sx; o->y[k] = (float)s[k].sy; }
+        tr_poly_attrs(p, o);
+        return 1;
+    }
+    static const int ord[2][4] = { { 0, 1, 2, 0 }, { 0, 1, 3, 2 } };
+    ngte_cvert in[4];
+    for (int i = 0; i < n; i++) in[i] = tr_cvert(&s[ord[n == 4][i]], p, ord[n == 4][i]);
+    msh_clip(v, in, n, o);
+    return 1;
+}
+
+/** @brief Moves one end of a ribbon segment the near plane cut onto the plane, toward the other end.
+ *
+ * The end's two corners take the crossing of their edges to the other end's
+ * corners (ngte_clip_lerp: camera-space position, texture coordinates and
+ * colour), and its ring place the same fraction toward the other end's.
+ * @param e The cut end's corners (0 and 2, or 1 and 3), rewritten.
+ * @param f The other end's corners, in the same order.
+ * @param age The cut end's ring place, rewritten.
+ * @param fage The other end's ring place.
+ * @param zc The plane's depth. */
+static void rib_cut_end(ngte_cvert e[2], const ngte_cvert f[2], double* age, double fage, double zc) {
+    const double t = (zc - e[0].m3) / (f[0].m3 - e[0].m3);
+    *age += t * (fage - *age);
+    e[0] = ngte_clip_lerp(e[0], f[0], zc);
+    e[1] = ngte_clip_lerp(e[1], f[1], zc);
+}
+
+/** @brief Clips a ribbon segment against the near plane in camera space and builds its quad.
+ *
+ * End A holds corners 0 and 2, end B corners 1 and 3. A segment whose ends
+ * both stand behind the plane builds nothing; an end behind it moves onto it
+ * (rib_cut_end), with zc raised as TR_EYE_M3 describes. Each corner is then
+ * projected in float and offset by the width law at its end's ring place, and
+ * the build stays a quad in corner order.
+ * @param it The item.
+ * @param v The view.
+ * @param a The head's signed half-width.
+ * @param s The four corners' shown projections.
+ * @param o Receives the build. */
+static void rib_clip(const tr_item* it, const ngte_view* v, double a, const ngte_proj s[4],
+                     tr_poly* o) {
+    const ngte_prim* p = &it->p;
+    const ngte_cvert A0[2] = { tr_cvert(&s[0], p, 0), tr_cvert(&s[2], p, 2) };
+    const ngte_cvert B0[2] = { tr_cvert(&s[1], p, 1), tr_cvert(&s[3], p, 3) };
+    const double ga0 = (double)it->c[0].age, gb0 = (double)it->c[1].age;
+    o->fan = 0;
+    o->near = 1;
+    ngte_cvert A[2], B[2];
+    double ga, gb, zc = TR_EYE_M3;
+    for (int round = 0; ; round++, zc *= 2.0) {
+        memcpy(A, A0, sizeof A); memcpy(B, B0, sizeof B);
+        ga = ga0; gb = gb0;
+        const int ain = A[0].m3 >= zc, bin = B[0].m3 >= zc;
+        o->clipped = !ain || !bin;
+        if (!ain && !bin) { o->n = 0; return; }
+        int far = 0;
+        if (!ain) { rib_cut_end(A, B0, &ga, gb0, zc); far |= tr_clip_far(v, &A[0]); }
+        if (!bin) { rib_cut_end(B, A0, &gb, ga0, zc); far |= tr_clip_far(v, &B[0]); }
+        if (!far || round >= 16) break;
+    }
+    const ngte_cvert* c[4] = { &A[0], &B[0], &A[1], &B[1] };
+    const double g[4] = { ga, gb, ga, gb };
+    o->n = 4;
+    for (int k = 0; k < 4; k++) {
+        double x, y;
+        tr_screen_f(v, c[k]->m1, c[k]->m2, c[k]->m3, &x, &y);
+        rib_corner_xy(x, y, a, g[k], it->count, k, &o->x[k], &o->y[k]);
+        o->u[k] = c[k]->u; o->v[k] = c[k]->v; o->rgb[k] = c[k]->rgb;
+    }
+}
+
+/** @brief Builds a ribbon item: each corner its point's projection offset by the width law, the segment clipped at the near plane when an end falls short of TR_NEAR_M3.
+ *
+ * The half-width is the law's at the head's shown view-Z, which the law
+ * floors at 0x80 halved units (rib_head_width); a head with no source uses
+ * the tick's. A segment reaching in front of TR_NEAR_M3 is built by rib_clip.
+ * @param it The item.
+ * @param v The view.
+ * @param alpha The present's position in the tick interval.
+ * @param o Receives the build.
+ * @return 1 when built, 0 when a corner has no source. */
+static int rib_build(const tr_item* it, const ngte_view* v, double alpha, tr_poly* o) {
+    ngte_proj h;
+    const double hm3 = tr_shown(it->src, &it->head, v, alpha, &h) ? h.m3 : it->head.m3;
+    const double a = rib_head_width(it->wb, hm3, v->s);
+    ngte_proj s[4];
+    const int front = tr_shown_corners(it, v, alpha, 4, s);
+    if (front < 0) return 0;
+    if (!front) { rib_clip(it, v, a, s, o); return 1; }
+    o->n = 4;
+    for (int k = 0; k < 4; k++)
+        rib_corner_xy(s[k].sx, s[k].sy, a, (double)it->c[k].age, it->count, k, &o->x[k], &o->y[k]);
+    tr_poly_attrs(&it->p, o);
+    return 1;
+}
+
+/** @brief Builds an item's corners in float under a view at a sub-tick phase.
+ *
+ * Every corner is placed from its point as the present shows it; an item
+ * reaching in front of the near floor is clipped against the near plane in
+ * camera space (msh_build, rib_build), so no corner takes another build's
+ * position.
  * @param it The item.
  * @param v The view.
  * @param alpha The present's position in the tick interval; 1 builds the tick.
- * @param fbx The fallback corners' X, or NULL to fail instead.
- * @param fby The fallback corners' Y.
- * @param x Receives the corners' screen X.
- * @param y Receives the corners' screen Y.
+ * @param o Receives the build.
  * @return 1 when built, 0 for an item with no source or a corner with no
- *         screen position and no fallback. */
-static int tr_item_build(const tr_item* it, const ngte_view* v, double alpha,
-                         const float* fbx, const float* fby, float x[4], float y[4]) {
-    if (it->src == TR_SRC_NONE) return 0;
-    double a = 0.0;
-    if (it->src == TR_SRC_RIBBON) {
-        ngte_proj h;
-        const double m3 = tr_shown(it->src, &it->head, v, alpha, &h) ? h.m3 : it->head.m3;
-        a = rib_head_width(it->wb, m3, v->s);
-    }
-    for (int k = 0; k < 4; k++) {
-        ngte_proj o;
-        if (!tr_shown(it->src, &it->c[k], v, alpha, &o)) {
-            if (!fbx) return 0;
-            x[k] = fbx[k]; y[k] = fby[k];
-        } else if (it->src == TR_SRC_MESH) {
-            x[k] = (float)o.sx; y[k] = (float)o.sy;
-        } else {
-            rib_corner_xy(o.sx, o.sy, a, it->c[k].age, it->count, k, &x[k], &y[k]);
-        }
-    }
-    return 1;
+ *         source point. */
+static int tr_item_build(const tr_item* it, const ngte_view* v, double alpha, tr_poly* o) {
+    if (it->src == TR_SRC_MESH) return msh_build(it, v, alpha, o);
+    if (it->src == TR_SRC_RIBBON) return rib_build(it, v, alpha, o);
+    return 0;
 }
 
 /* ---- the vertex probe (OPENPETE_TRACER_VTX) ------------------------------
@@ -1209,16 +1524,16 @@ static void tr_vtx_split(const tr_item* it) {
     const float* py = it->p.y;
     if (it->src == TR_SRC_MESH) {
         for (int k = 0; k < 4; k++) {
-            tr_acc_add(&t->mesh[0], (double)px[k] - it->bx[k]);
-            tr_acc_add(&t->mesh[1], (double)py[k] - it->by[k]);
+            tr_acc_add(&t->mesh[0], (double)px[k] - it->b.x[k]);
+            tr_acc_add(&t->mesh[1], (double)py[k] - it->b.y[k]);
         }
         return;
     }
     for (int k = 0; k < 2; k++) {
-        tr_acc_add(&t->centre[0], 0.5 * (((double)px[k] + px[k + 2]) - ((double)it->bx[k] + it->bx[k + 2])));
-        tr_acc_add(&t->centre[1], 0.5 * (((double)py[k] + py[k + 2]) - ((double)it->by[k] + it->by[k + 2])));
+        tr_acc_add(&t->centre[0], 0.5 * (((double)px[k] + px[k + 2]) - ((double)it->b.x[k] + it->b.x[k + 2])));
+        tr_acc_add(&t->centre[1], 0.5 * (((double)py[k] + py[k + 2]) - ((double)it->b.y[k] + it->b.y[k + 2])));
         const double g = ((double)px[k + 2] - px[k]) + ((double)py[k + 2] - py[k]);
-        const double b = ((double)it->bx[k + 2] - it->bx[k]) + ((double)it->by[k + 2] - it->by[k]);
+        const double b = ((double)it->b.x[k + 2] - it->b.x[k]) + ((double)it->b.y[k + 2] - it->b.y[k]);
         tr_acc_add(&t->width, 0.5 * (g - b));
     }
 }
@@ -1239,7 +1554,7 @@ static void tr_vtx_capture(CPUState* cpu, const ngte_view* v, const tr_item* set
     memcpy(t->cam_M, v->cam_M, sizeof t->cam_M);
     for (int i = 0; i < n; i++) {
         const tr_item* it = &set[i];
-        if (!it->built) { t->unbuilt++; continue; }
+        if (!it->built || it->b.near) { t->unbuilt++; continue; }
         t->built++;
         if (it->p.nv == 4) tr_vtx_split(it);
         int ex[4], ey[4];
@@ -1248,14 +1563,14 @@ static void tr_vtx_capture(CPUState* cpu, const ngte_view* v, const tr_item* set
         for (int k = 0; k < it->p.nv && k < 4; k++) {
             t->emu_n++;
             if ((float)ex[k] == it->p.x[k] && (float)ey[k] == it->p.y[k]) t->emu_hit++;
-            const double dx = (double)it->p.x[k] - it->bx[k], dy = (double)it->p.y[k] - it->by[k];
+            const double dx = (double)it->p.x[k] - it->b.x[k], dy = (double)it->p.y[k] - it->b.y[k];
             tr_acc_add(&t->cal[0], dx);
             tr_acc_add(&t->cal[1], dy);
             t->tsum[0] += dx; t->tsum[1] += dy; t->tn++;
             tr_acc_add(&t->place[0], hypot(dx, dy));
             tr_vkey* e = tr_vkey_get(tr_corner_key(it, k));
             e->canon_epoch = s_epoch;
-            e->canon[0] = it->bx[k]; e->canon[1] = it->by[k];
+            e->canon[0] = it->b.x[k]; e->canon[1] = it->b.y[k];
         }
     }
 }
@@ -1272,11 +1587,12 @@ static void tr_vtx_capture(CPUState* cpu, const ngte_view* v, const tr_item* set
  * @param turning Nonzero when the present's camera matrix differs from the tick's. */
 static void tr_vtx_corner(const tr_item* it, int k, const ngte_view* v, double alpha, int turning) {
     tr_vtx_t* t = &s_vtx;
-    const float* fx = s_reb_active ? it->px : it->bx;
-    const float* fy = s_reb_active ? it->py : it->by;
+    const float* fx = s_reb_active ? it->pp.x : it->b.x;
+    const float* fy = s_reb_active ? it->pp.y : it->b.y;
     float f[TV_N][2] = { { fx[k], fy[k] }, { it->p.x[k], it->p.y[k] } };
     ngte_proj o;
-    if (alpha < 1.0 && tr_shown(it->src, &it->c[k], v, alpha, &o)) {
+    if (alpha < 1.0 && it->c[k].ok && tr_shown(it->src, &it->c[k], v, alpha, &o) &&
+        o.m3 >= TR_NEAR_M3) {
         f[TV_OLD][0] += (float)(o.sx - it->c[k].sx);
         f[TV_OLD][1] += (float)(o.sy - it->c[k].sy);
     }
@@ -1302,21 +1618,22 @@ static void tr_vtx_present(const ngte_view* v, double alpha) {
     const int turning = memcmp(t->cam_M, v->cam_M, sizeof t->cam_M) != 0;
     t->turning += (unsigned long)turning;
     for (int i = 0; i < s_tick_n; i++) {
-        if (!s_tick[i].built) continue;
-        for (int k = 0; k < s_tick[i].p.nv && k < 4; k++) tr_vtx_corner(&s_tick[i], k, v, alpha, turning);
+        const tr_item* it = &s_tick[i];
+        if (!it->built || it->b.near || (s_reb_active && it->pp.near)) continue;
+        for (int k = 0; k < it->p.nv && k < 4; k++) tr_vtx_corner(it, k, v, alpha, turning);
     }
 }
 
 /** @brief Builds the call's items in float under the tick's view and calibrates them.
  *
- * An item that does not build (no source, or a point with no screen
- * position) feeds the routine's corners.
+ * An item that does not build (no source, or a corner with no source point)
+ * feeds the routine's corners.
  * @param cpu The guest CPU state.
  * @param v The tick's view. */
 static void tr_build_call(CPUState* cpu, const ngte_view* v) {
     for (int i = 0; i < s_item_n; i++) {
         tr_item* it = &s_item[i];
-        it->built = tr_item_build(it, v, 1.0, NULL, NULL, it->bx, it->by);
+        it->built = tr_item_build(it, v, 1.0, &it->b);
     }
     tr_vtx_capture(cpu, v, s_item, s_item_n);
 }
@@ -1349,8 +1666,7 @@ static void tr_rebase_report(void) {
 /** @brief Builds every held item's corners for the pose this present shows.
  *
  * The staged camera resolves through the sub-tick view, so the view built
- * here is the interpolated transform the rest of the pass draws under. A
- * corner with no screen position at this phase keeps the capture's build. At
+ * here is the interpolated transform the rest of the pass draws under. At
  * alpha 1 or above, with an empty set or with the rebuild disabled, the
  * rebuild stays off and the replay emits the capture's build. The first call
  * past those conditions latches OPENPETE_TRACER_REBASE_DBG and registers
@@ -1368,7 +1684,7 @@ static void tr_rebase_all(const ngte_view* v, double alpha) {
     }
     for (int i = 0; i < s_tick_n; i++) {
         tr_item* it = &s_tick[i];
-        if (it->built) tr_item_build(it, v, alpha, it->bx, it->by, it->px, it->py);
+        if (it->built) (void)tr_item_build(it, v, alpha, &it->pp);
     }
     s_reb_active = 1;
 }

@@ -18,3 +18,14 @@
 # the lerped world vertices is not the screen lerp the cells compare against:
 # its centroid and area cells read PARTIAL (0.40 px, 38.5 px) inside `tol`.
 attract-demo | 14575 | blob=471.9,201.3 blob=344.6,219.3 tol=1.0 step=2
+#
+# Crush's fireball beam in games/spyro-2/bk2/crushs-dungeon.bk2: the indexed
+# mesh, one 27.4-27.5k px component from the left screen edge to Crush. Its
+# near end reaches in front of the near floor (four quads with a corner under
+# view-Z 256 per tick around V). A build that left those quads at the tick's
+# own corners on a sub-tick present doubled the near end into a flap at alpha
+# 0 (centroid 9.67 px off canon(V-2), area 24729 px against 27500). The
+# centroid moves 1.62 px over the interval, so the step floor is 1 and alpha
+# 0 is judged: the flap is an alpha-0 displacement, which the default
+# judged alphas (0.5, 1) do not read.
+crushs-dungeon.bk2 | 3341 | blob=81.9,233.9 tol=1.0 step=1 judge=0,0.5,1

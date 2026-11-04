@@ -1522,7 +1522,7 @@ for name, on, off, vbl in (
         [("inter%s" % a, "%s-i%s-on/%d-vk.png" % (base, a, mid),
           "%s-i%s-off/%d-vk.png" % (base, a, mid), mid) for a in alphas] +
         ([("suppressed", "%s-s-on/%d-vk.png" % (base, mid),
-           "%s-s-off/%d-vk.png" % (base, mid), mid)] if suppress else [])):
+           "%s-s-off/%d-vk.png" % (base, mid), mid)] if suppress and alphas else [])):
     px = mask(on, off)
     if len(px) > mask_cap:
         raise SystemExit("[%s] leg %s masks %d px, above the %d cap: the "
