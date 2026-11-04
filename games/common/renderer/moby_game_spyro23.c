@@ -264,9 +264,12 @@ int s23_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  *     `game_layout.moby.special_tiledef`, biased by the record's CLUT row, into
  *     GTE control 16 (mobydraw.s:2085-2087,2098-2099), and the emit writes that
  *     register's halves over the primitive's texture page and CLUT
- *     (mobydraw.s:2296-2299), keeping the face's own UVs. The substitution is
- *     unconditional, so a zero IR0 leaves a face drawn from the substitute page
- *     with the model's own colours.
+ *     (mobydraw.s:2296-2299). Its command word is POLY_GT3 whatever the face
+ *     record carries (lui 0x3400 at S3 0x800325F0, S2 0x8004596C), and it
+ *     writes per-corner environment coordinates in place of the face's UVs
+ *     (mobydraw.s:2377-2547), so an untextured face record draws textured. The
+ *     substitution is unconditional, so a zero IR0 leaves a face drawn from the
+ *     substitute page with the model's own colours.
  *   mode 2 (mobydraw.s:2551-2564) - the specular sheen. The channels are the
  *     GTE background colour, bits 24-27 doubled is IR0 (mobydraw.s:2024-2045),
  *     and the light matrix is three copies of one constant vector
@@ -274,12 +277,12 @@ int s23_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  *     matrix, scales by IR0 and projects onto that vector on top of the
  *     background colour, giving one colour for the whole face.
  *
- * All three replace the face's vertex colours; mode 1 replaces the texture page
- * and CLUT as well, and none of them touches the face's UVs or its geometry.
- * The special emit's command word starts at
- * the untextured code (mobydraw.s:2562) and the shared emit the three treatments
- * fall into adds the texture bit back from the face record, so a treatment that
- * forced its face untextured would drop the texture the draw keeps.
+ * All three replace the face's vertex colours; mode 1 also replaces the
+ * texture page, CLUT and UVs and draws the face textured. None of them touches
+ * the face's geometry. The mode 0 and mode 2 emits start their command word at
+ * the untextured code (mobydraw.s:2562) and the shared emit they fall into adds
+ * the texture bit back from the face record, so those two keep the face
+ * record's textured flag.
  *
  * CARVE-OUT: flag bit 4 takes a different dispatcher (mobydraw.s:2113) that
  * this decode does not carry; the walk leaves those faces on the ordinary
@@ -596,7 +599,8 @@ static int s23_water_plane(CPUState* cpu, uint32_t mat, uint32_t moby, uint32_t 
  * @param F The face; `hl` must be 1, and n1..n3 are the normal mode 2 reads.
  * @param c The four vertex colours, rewritten in place.
  * @param ev The four corners' model-to-view rotated positions, read by mode 1.
- * @param textured Unused: every treatment keeps the face's textured flag.
+ * @param textured Set to 1 by mode 1 when it applies the substitute page;
+ *        modes 0 and 2 keep the face's own flag.
  * @param tex Receives mode 1's substitute page, CLUT and coordinates; the walk
  *        zeroes it before the call.
  * @return 0 when the face is left alone, else 1 plus the mode applied. */
@@ -605,7 +609,6 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
                            uint32_t c[4], const float ev[4][3], int* textured,
                            moby_face_tex_t* tex) {
     (void)moby;
-    (void)textured;   /* every treatment keeps the face's own textured flag */
     if (F->hl != 1) return 0;                      /* bit 4: the other dispatcher */
     int mode = mat ? (int)((mat >> 28) & 7u) : 0;
     if (mode > 2) return 0;                        /* no face treatment; mode 3 tints the table */
@@ -650,11 +653,10 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
          * GTE control 16 whenever the mode is non-zero (mobydraw.s:2085-2087,
          * 2098-2099), and the per-face emit writes that register's low half
          * over the primitive's texture page and its high half over the CLUT
-         * (mobydraw.s:2296-2299), so the face keeps its own UVs and draws from
-         * the substitute page. The emit builds its command word from the
-         * textured code alone (mobydraw.s:2293-2294): it adds no
-         * semi-transparency bit, whatever the face record's own texture word
-         * carries, so the face draws opaque. */
+         * (mobydraw.s:2296-2299). Its command word is the opaque POLY_GT3
+         * code 0x34 (lui at S3 0x800325F0, S2 0x8004596C) whatever the face
+         * record carries: an untextured face record draws textured from the
+         * substitute page, and no face takes a semi-transparency bit. */
         uint32_t g = game_layout.moby.special_tiledef
                    ? cpu->read_word(game_layout.moby.special_tiledef) : 0u;
         if (g) {
@@ -668,6 +670,7 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
             tex->clx = (int16_t)t.clx;
             tex->cly = (int16_t)t.cly;
             tex->set = 1u;
+            *textured = 1;
         }
         /* The coordinates the emit generates per corner in place of the face's
          * own, from that corner's depth-cued colour before the treatment

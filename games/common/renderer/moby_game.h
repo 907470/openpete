@@ -280,7 +280,7 @@ typedef struct moby_game {
      * A face the stream marks with a special-material flag (moby_wface_t.hl)
      * whose treatment the game selects from the record's material word, not
      * from the face. The hook rewrites the face's four vertex colours in place,
-     * may clear `textured`, and may fill `tex` to draw the face from a
+     * may set or clear `textured`, and may fill `tex` to draw the face from a
      * substitute texture page and CLUT; it returns 0 to leave the face alone,
      * or 1 + the treatment index it applied, which the walk counts. `material`
      * is the record's material word, `M` its model-to-view matrix, `moby` the
