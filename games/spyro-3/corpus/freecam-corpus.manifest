@@ -164,3 +164,7 @@ icy_peak | pos=(86304, 28154, 16229) yaw=-858 pitch=367
 # extended LOD: the flooded tunnel of Dino Mines area 2 draws without the
 # far fog the game fades it to
 dino_mines:2 | pos=(193476, 57000, 11500) yaw=1023 pitch=-1
+# evening_lake whale: class 0x10c with colour-word bit 30 composes 12-bit
+# angles from the colour word; its rotation holds for the whole tick on
+# sub-tick presents. Blessed pre-fix.
+evening_lake | pos=(49300, 52390, 20500) yaw=1100 pitch=108
