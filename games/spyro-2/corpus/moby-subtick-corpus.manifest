@@ -10,3 +10,8 @@
 # base taken at the newest tick's position words reads 41 alpha-0 bases 1 to
 # 3 buckets off the stored one.
 glimmer-pogo-dialogue.bk2 | 1423-1659 | pairs=844 class=30 wbase=90
+# Hurricos: each fan is three blade mobys of class 0x046 whose colour word
+# carries bit 30, so the cull composes 12-bit angles byte<<4 | nibble out of
+# the colour word (mobydraw.s:229-230, 645-649, 710-714, 777-780); the blades spin
+# 128/4096 per tick about one axis.
+pose:hurricos:pos=(41500, 91104, 30875) yaw=-2027 pitch=992 | 2471-2477 | pairs=9 turn=9 | seam 2474 8018d49c class 0x04d leg with no non-class leg in the span, D 0, outside the turn bin | seam 2476 8018d49c class 0x04d leg with no non-class leg in the span, D 0, outside the turn bin | seam 2478 8018d49c class 0x04d leg with no non-class leg in the span, D 0, outside the turn bin

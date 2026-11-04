@@ -11016,19 +11016,36 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     return (double)prev_b + (double)d * t;
 }
 
-int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
-    if (!s_rot_now) return 0;
+/** @brief The snapshot pair and the phase a record's euler sweep takes at this present.
+ *
+ * The conditions are moby_record_euler_at_present's: a sub-tick present, a
+ * pair with a distinct prev, and one class in both states. A jump hold pins
+ * the phase at 0; a facing reversal (moby_mirror_hold) steps instead of
+ * sweeping, holding the previous tick's angles through the interval and
+ * taking this tick's at alpha 1, the schedule the shape channel takes for the
+ * same verdict.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param t_out Receives the phase, 0 at the previous tick and 1 at this one.
+ * @return The pair, or NULL when the caller takes the canonical rotation. */
+static const openpete_interp_obj_t* record_euler_pair(CPUState* cpu, uint32_t moby, double* t_out) {
+    if (!s_rot_now) return NULL;
     const openpete_interp_obj_t* o = moby_interp_find(moby);
-    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
     uint16_t pcls, ccls;
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
     memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
-    if (pcls != ccls) return 0;
+    if (pcls != ccls) return NULL;
     double t = moby_jump_held(moby, o) ? 0.0 : moby_pair_alpha(o);
-    /* A facing reversal steps instead of sweeping: the previous tick's angles
-     * through the whole interval, this tick's at alpha 1, the same schedule
-     * the shape channel takes for the same verdict. */
     if (t < 1.0 && moby_mirror_hold(cpu, moby)) t = moby_hold_expired(o) ? 1.0 : 0.0;
+    *t_out = t;
+    return o;
+}
+
+int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
+    double t;
+    const openpete_interp_obj_t* o = record_euler_pair(cpu, moby, &t);
+    if (!o) return 0;
     const uint32_t ao = game_layout.moby.angle_off;
     double fZ = lerp_byte_angle(o->prev[ao + 0u], o->curr[ao + 0u], t);
     double fX = lerp_byte_angle(o->prev[ao + 1u], o->curr[ao + 1u], t);
@@ -11036,6 +11053,127 @@ int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e)
     ngte_sincos_interp(cpu, fY, &e->sy, &e->cy);
     ngte_sincos_interp(cpu, fX, &e->sx, &e->cx);
     ngte_sincos_interp(cpu, fZ, &e->sz, &e->cz);
+    return 1;
+}
+
+/** @brief Whether a moby snapshot's colour word has bit 30 set, the cull's fine-angle rotation composition.
+ *
+ * The Spyro 2 and Spyro 3 animated-kind cull tests it by shifting the colour
+ * word left one and branching on the sign (Spyro 2 mobydraw.s:229-230, Spyro 3
+ * mobydraw.s:227-228). A layout without a colour word, or a snapshot too short
+ * to hold it, reads 0.
+ * @param s The snapshot's state bytes.
+ * @param len The snapshot's valid byte count.
+ * @return 1 when bit 30 is set, else 0. */
+static int moby_fine_angles(const uint8_t* s, uint16_t len) {
+    const uint32_t off = game_layout.moby.colour_off;
+    if (!off || (uint32_t)len < off + 4u) return 0;
+    uint32_t c;
+    memcpy(&c, s + off, 4);
+    return (c & 0x40000000u) != 0;
+}
+
+/** @brief A moby snapshot's three euler angles in 12-bit units (4096 per turn), as the cull composes them.
+ *
+ * Under bit 30 the cull adds a 4-bit fraction from the colour word below each
+ * angle byte: Y = byte 2 << 4 + colour bits 16-19, X = byte 1 << 4 + bits
+ * 8-11, Z = byte 0 << 4 + bits 0-3 (Spyro 2 mobydraw.s:645-649, 710-714,
+ * 777-780; Spyro 3 mobydraw.s:643-647, 708-712, 775-778). Without it the
+ * angle is byte << 4, the byte form's own angle on the 4096 scale.
+ * @param s The snapshot's state bytes.
+ * @param len The snapshot's valid byte count.
+ * @param a Receives Z, X and Y, in that order (the angle word's byte order). */
+static void moby_angles12(const uint8_t* s, uint16_t len, int a[3]) {
+    const uint32_t ao = game_layout.moby.angle_off;
+    uint32_t c = 0;
+    if (moby_fine_angles(s, len)) memcpy(&c, s + game_layout.moby.colour_off, 4);
+    for (uint32_t k = 0; k < 3u; k++)
+        a[k] = ((int)s[ao + k] << 4) | (int)((c >> (8u * k)) & 0xFu);
+}
+
+/** @brief The sine and cosine the fine-angle composition builds for one integer 12-bit angle.
+ *
+ * The cull indexes the 256-entry sine table at angle >> 4 (the cosine 0x80
+ * bytes on) and, for a nonzero fraction n, adds (n * (next - this)) >> 4
+ * with an arithmetic shift, reading the entry after the indexed one without
+ * wrapping (Spyro 2 mobydraw.s:650-674). An angle of 0 skips the axis, the
+ * identity factor.
+ * @param cpu The guest CPU state, read only.
+ * @param a The angle, 4096 per turn; reduced mod 4096.
+ * @param s Receives the sine, 4096 = 1.0.
+ * @param c Receives the cosine, 4096 = 1.0. */
+static void moby_sincos12(CPUState* cpu, int a, int* s, int* c) {
+    const uint32_t tbl = game_layout.sin_table;
+    a &= 0xFFF;
+    if (!tbl || a == 0) { *s = 0; *c = 4096; return; }
+    const uint32_t p = tbl + ((uint32_t)a >> 4) * 2u;
+    const int n = a & 0xF;
+    int s0 = (int16_t)cpu->read_half(p), c0 = (int16_t)cpu->read_half(p + 0x80u);
+    if (n) {
+        s0 += (n * ((int16_t)cpu->read_half(p + 2u) - s0)) >> 4;
+        c0 += (n * ((int16_t)cpu->read_half(p + 0x82u) - c0)) >> 4;
+    }
+    *s = s0;
+    *c = c0;
+}
+
+/** @brief The fine-angle composition's sine and cosine at a fractional 12-bit angle.
+ *
+ * Linear between the values moby_sincos12 gives the two integer angles
+ * around it, rounded half away from zero, so an integer angle returns the
+ * cull's own value.
+ * @param cpu The guest CPU state, read only.
+ * @param a The angle, 4096 per turn, any range.
+ * @param s Receives the sine.
+ * @param c Receives the cosine. */
+static void moby_sincos12_f(CPUState* cpu, double a, int* s, int* c) {
+    a = fmod(a, 4096.0);
+    if (a < 0.0) a += 4096.0;
+    const int n = (int)a;
+    const double f = a - (double)n;
+    int s0, c0, s1, c1;
+    moby_sincos12(cpu, n, &s0, &c0);
+    if (f == 0.0) { *s = s0; *c = c0; return; }
+    moby_sincos12(cpu, n + 1, &s1, &c1);
+    *s = (int)lround((double)s0 + (double)(s1 - s0) * f);
+    *c = (int)lround((double)c0 + (double)(c1 - c0) * f);
+}
+
+/** @brief The sin/cos pairs of three 12-bit euler angles through the fine-angle composition.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param a Z, X and Y, 4096 per turn.
+ * @param e Receives the pairs. */
+static void moby_euler12(CPUState* cpu, const double a[3], ngte_euler_sc* e) {
+    moby_sincos12_f(cpu, a[2], &e->sy, &e->cy);
+    moby_sincos12_f(cpu, a[1], &e->sx, &e->cx);
+    moby_sincos12_f(cpu, a[0], &e->sz, &e->cz);
+}
+
+/** @brief The euler rotation a fine-angle record displays at this present.
+ *
+ * Each axis takes the shortest arc over 4096 between the previous and the
+ * current snapshot's 12-bit angles (moby_angles12) at the phase
+ * record_euler_pair gives, and moby_euler12 samples it, so at alpha 1 the
+ * result equals E(curr) built the same way.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param e Receives the sin/cos pairs; untouched when 0 is returned.
+ * @return 1, or 0 when record_euler_pair has no pair. */
+static int record_euler12_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
+    double t;
+    const openpete_interp_obj_t* o = record_euler_pair(cpu, moby, &t);
+    if (!o) return 0;
+    int p[3], q[3];
+    moby_angles12(o->prev, o->blob_len, p);
+    moby_angles12(o->curr, o->blob_len, q);
+    double a[3];
+    for (int k = 0; k < 3; k++) {
+        int d = q[k] - p[k];
+        if (d > 2048) d -= 4096; else if (d < -2048) d += 4096;
+        a[k] = (double)p[k] + (double)d * t;
+    }
+    moby_euler12(cpu, a, e);
     return 1;
 }
 
@@ -14006,7 +14144,7 @@ static void euler_mat_d(const ngte_euler_sc* e, int inv, double out[3][3]) {
 }
 
 /* Outcome of record_rotation_to_present, one census bin each. */
-enum { REC_ROT_NOPAIR = 0, REC_ROT_SAME, REC_ROT_SWAPPED, REC_ROT_OTHER_FORM, REC_ROT_N };
+enum { REC_ROT_NOPAIR = 0, REC_ROT_SAME, REC_ROT_SWAPPED, REC_ROT_SWAPPED_FINE, REC_ROT_N };
 
 /** @brief Turn a replayed cull record's rotation from the tick's euler angles to the ones this present displays.
  *
@@ -14020,27 +14158,38 @@ enum { REC_ROT_NOPAIR = 0, REC_ROT_SAME, REC_ROT_SWAPPED, REC_ROT_OTHER_FORM, RE
  * E(present) equals E(curr) (every alpha-1 present, a moby that did not
  * turn), M is kept bit-exact.
  *
- * A moby whose colour word has bit 30 set takes the other composition
- * (Spyro 3 mobydraw.s:227-228 to .L80030DBC): the same axis order from angles
- * carrying a 4-bit fraction out of that word, which the byte-angle pair does
- * not describe, so it keeps the tick's rotation.
+ * A moby whose colour word has bit 30 set takes the fine-angle composition
+ * (Spyro 2 mobydraw.s:229-230 to .L8004419C, Spyro 3 mobydraw.s:227-228 to
+ * .L80030DBC): the same axis order and matrix packing from 12-bit angles
+ * carrying a 4-bit fraction out of that word. When the reference state or
+ * either snapshot has the bit, E(curr) and E(present) both come from the
+ * 12-bit angles (moby_angles12, record_euler12_at_present), a snapshot without
+ * the bit reading its byte angles on the same scale.
  * @param cpu The guest CPU state, read only.
  * @param f The record fields, whose M is rewritten in place.
  * @param moby The Moby address.
  * @return The outcome's census bin (REC_ROT_*). */
 static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t moby) {
-    if (game_layout.moby.colour_off &&
-        (cpu->read_word(moby + game_layout.moby.colour_off) & 0x40000000u))
-        return REC_ROT_OTHER_FORM;
     const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o) return REC_ROT_NOPAIR;
     const uint8_t* ref = rec_ref_state(o);
     if (!ref) return REC_ROT_NOPAIR;
     ngte_euler_sc ep, ec;
-    if (!moby_record_euler_at_present(cpu, moby, &ep)) return REC_ROT_NOPAIR;
-    const uint32_t ao = game_layout.moby.angle_off;
-    ngte_euler_sincos(cpu, (uint32_t)ref[ao] | ((uint32_t)ref[ao + 1u] << 8)
-                           | ((uint32_t)ref[ao + 2u] << 16), &ec);
+    const int fine = moby_fine_angles(ref, o->blob_len)
+                     || (o->have_prev && moby_fine_angles(o->prev, o->blob_len))
+                     || moby_fine_angles(o->curr, o->blob_len);
+    if (fine) {
+        if (!record_euler12_at_present(cpu, moby, &ep)) return REC_ROT_NOPAIR;
+        int r[3];
+        moby_angles12(ref, o->blob_len, r);
+        const double rd[3] = {(double)r[0], (double)r[1], (double)r[2]};
+        moby_euler12(cpu, rd, &ec);
+    } else {
+        if (!moby_record_euler_at_present(cpu, moby, &ep)) return REC_ROT_NOPAIR;
+        const uint32_t ao = game_layout.moby.angle_off;
+        ngte_euler_sincos(cpu, (uint32_t)ref[ao] | ((uint32_t)ref[ao + 1u] << 8)
+                               | ((uint32_t)ref[ao + 2u] << 16), &ec);
+    }
     if (memcmp(&ep, &ec, sizeof ep) == 0) return REC_ROT_SAME;
     double Ei[3][3], Ep[3][3], Q[3][3];
     euler_mat_d(&ec, 1, Ei);
@@ -14054,7 +14203,7 @@ static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t mo
             M[r][c] = (int)lround((double)f->M[r][0] * Q[0][c] + (double)f->M[r][1] * Q[1][c]
                                   + (double)f->M[r][2] * Q[2][c]);
     memcpy(f->M, M, sizeof M);
-    return REC_ROT_SWAPPED;
+    return fine ? REC_ROT_SWAPPED_FINE : REC_ROT_SWAPPED;
 }
 
 /** @brief OPENPETE_MOBY_CENSUS: log one line per record-replay pass that replayed a record, with the bins of record_rotation_to_present.
@@ -14065,10 +14214,10 @@ static void moby_rot_census(const char* pass, const long bins[REC_ROT_N]) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }
     if (!s || bins[REC_ROT_NOPAIR] + bins[REC_ROT_SAME] + bins[REC_ROT_SWAPPED]
-              + bins[REC_ROT_OTHER_FORM] == 0) return;
-    fprintf(stderr, "[moby-rot-census vbl=%u] pass=%s swapped=%ld same=%ld nopair=%ld other_form=%ld\n",
+              + bins[REC_ROT_SWAPPED_FINE] == 0) return;
+    fprintf(stderr, "[moby-rot-census vbl=%u] pass=%s swapped=%ld same=%ld nopair=%ld swapped_fine=%ld\n",
             openpete_frame, pass, bins[REC_ROT_SWAPPED], bins[REC_ROT_SAME],
-            bins[REC_ROT_NOPAIR], bins[REC_ROT_OTHER_FORM]);
+            bins[REC_ROT_NOPAIR], bins[REC_ROT_SWAPPED_FINE]);
 }
 
 /** @brief Overwrite a record's pose fields from a derived pose, keeping w0's other bytes.

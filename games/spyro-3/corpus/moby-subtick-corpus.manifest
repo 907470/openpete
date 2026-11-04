@@ -33,3 +33,8 @@ pose:sunrise_spring:pos=(28471, 32424, 18245) yaw=-1727 pitch=183 | 2473-2533 | 
 # class leg at 5819 (D 0.014 px against the moby's 0.010) is left out of the
 # seam bound, open.
 attract | 5700-5860 | pairs=726 class=43 wbase=209 | seam 5819 8018e328 class leg above the non-class bound, open
+# Evening Lake: the whale, class 0x10c, has bit 30 set in its colour word, so
+# the cull composes 12-bit angles byte<<4 | nibble out of that word
+# (mobydraw.s:227-228, 643-647, 708-712, 775-778); it banks and turns a few
+# 12-bit units per tick along its flight loop.
+pose:evening_lake:pos=(49300, 52390, 20500) yaw=1100 pitch=108 | 1891-1931 | pairs=40 turn=19
