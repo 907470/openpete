@@ -2996,26 +2996,6 @@ static void tc_dead_stamp(const tc_defer *d)
     }
 }
 
-/** @brief Return the camera offset OPENPETE_TERRAIN_CAM_JITTER adds to the cache's camera, in world/16 units, latched.
- *
- * The cache's vertex stages then see a camera with a fractional part on
- * every axis (x + j, y + 0.75 j, z + 0.5 j), so a freecam pose, whose
- * camera is integral, exercises the rounding of the camera-relative
- * operand. The CPU walk keeps the unshifted camera. Diagnostic for the
- * hole census, applied to every precision arm alike; unregistered.
- * @return The offset; 0 when unset. */
-static double tc_cam_jitter(void)
-{
-    static int s_have = 0;
-    static double s_j = 0.0;
-    if (!s_have) {
-        const char *e = getenv("OPENPETE_TERRAIN_CAM_JITTER");
-        s_j = (e && *e) ? atof(e) : 0.0;
-        s_have = 1;
-    }
-    return s_j;
-}
-
 /** @brief Copy n doubles to floats, each rounded to nearest.
  *
  * @param dst Receives the floats.
@@ -3176,13 +3156,6 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
      * draw (inside the frame, current slot only). */
     tc_state *T = tc_begin_state(stamp, immediate);
     tc_globals_ubo *gu = &T->g;
-    static openpete_tercache_globals s_gj;
-    const double jit = tc_cam_jitter();
-    if (jit != 0.0) {
-        s_gj = *g;
-        s_gj.camx += jit; s_gj.camy += jit * 0.75; s_gj.camz += jit * 0.5;
-        g = &s_gj;
-    }
     tc_globals_pack(gu, g, 1);
 
     /* reset sector flags; origins are rewritten by sector_set */

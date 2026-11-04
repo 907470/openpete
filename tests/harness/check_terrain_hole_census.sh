@@ -21,11 +21,12 @@
 # stock image of f64 and f32 and splits their pixel difference into edge and
 # face pixels (terrain_hole_census.py split).
 #
-# --jitter=J sets OPENPETE_TERRAIN_CAM_JITTER=J on every leg: the cache's
-# camera moves by a sub-unit offset on each axis, so the camera-relative
-# operand carries a fraction. A freecam camera is integral, and with an
-# integral camera the fp32 combine and the control's per-sector combine
-# are both exact, so without it the control cannot engage.
+# --jitter=J sets OPENPETE_TERRAIN_CAM_JITTER=J on every leg: the terrain
+# camera (the CPU walk's, its triangle dump's and the cache's alike) moves
+# by a sub-unit offset on each axis, so the camera-relative operand carries
+# a fraction. A freecam camera is integral, and with an integral camera the
+# fp32 combine and the control's per-sector combine are both exact, so
+# without it the control cannot engage.
 #
 # Engagement: a row whose f64 capture shows no face (faces + walked == 0),
 # or whose leg logged no retained sectors (secs > 0 on a [tgpu-cen] line),

@@ -28,10 +28,13 @@ inverse. Classes, first match wins:
   K   covered: P lies inside a walk triangle by more than IN_D from each of
       its edges, so the walk's geometry covers the pixel and the hole is in
       the retained cache's geometry.
-  E   on an exactly shared edge: P within EDGE_D of an edge two triangles
-      share within SAME (a raster tie on a watertight edge).
-  S   an open edge: P within OPEN_D of an edge no other triangle shares, and
-      inside no triangle.
+  E   a raster tie on a watertight edge: P within TIE_D of an edge two
+      triangles share within SAME, the two lying on opposite sides of it,
+      and P's projection strictly inside the edge (0 < t < 1).
+  S   an open edge: P within OPEN_D of an edge with no watertight partner
+      (no other triangle shares it from the opposite side: a boundary, or a
+      fold whose sharing triangle lies on the same side), and inside no
+      triangle.
   U   unattributed.
 
 Prints one line "x y class" per hole to --out (default: none), then the
@@ -46,6 +49,7 @@ EDGE_D = 0.15
 TV_D = 0.08
 CR_D = 0.6
 SAME = 0.03
+TIE_D = 0.002
 IN_D = 0.15
 OPEN_D = 0.75
 CAP_W = 640
@@ -118,12 +122,21 @@ class Geo:
                 out.append(i)
         return out
 
-    def shared(self, nbr, i, a, b):
+    def watertight(self, nbr, i, a, b):
+        """Whether another triangle shares edge (a, b) of triangle i from the opposite side."""
+        c = next(u for u in self.T[i]["p"] if u is not a and u is not b)
+        def side(u):
+            return (b[0] - a[0]) * (u[1] - a[1]) - (b[1] - a[1]) * (u[0] - a[0])
+        si = side(c)
         for j in nbr:
             if j == i:
                 continue
             q = self.T[j]["p"]
-            if any(d2(a, u) < SAME for u in q) and any(d2(b, u) < SAME for u in q):
+            ka = [k for k in range(3) if d2(a, q[k]) < SAME]
+            kb = [k for k in range(3) if d2(b, q[k]) < SAME]
+            if not ka or not kb or ka[0] == kb[0]:
+                continue
+            if si * side(q[3 - ka[0] - kb[0]]) < 0:
                 return True
         return False
 
@@ -188,11 +201,11 @@ class Geo:
         if inside and max(inside) > IN_D:
             return "K"
         for d, i, a, b, tp in sorted(close):
-            if self.shared(nbr, i, a, b):
+            if d < TIE_D and 0.0 < tp < 1.0 and self.watertight(nbr, i, a, b):
                 return "E"
         if not inside:
             for d, i, a, b, tp in sorted(edges):
-                if not self.shared(nbr, i, a, b):
+                if not self.watertight(nbr, i, a, b):
                     return "S"
         return "K" if inside else "U"
 

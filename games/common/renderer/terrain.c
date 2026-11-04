@@ -14797,6 +14797,32 @@ static void tocc_subtick_note(const tocc_probe_t* p, int v)
     }
 }
 
+/** @brief Add the camera offset OPENPETE_TERRAIN_CAM_JITTER names to the terrain camera, in world/16 units.
+ *
+ * terrain_build applies it to the walk's camera (x + j, y + 0.75 j,
+ * z + 0.5 j) before anything reads that camera, so the CPU walk, its
+ * triangle dump and the retained cache's globals see one fractional camera.
+ * A freecam pose, whose camera is integral, then exercises the rounding of
+ * the cache's camera-relative operand, and a walked sector and a retained
+ * neighbour still project their shared vertices from the same camera. The
+ * offset is latched on first use; unset or 0 leaves the camera untouched.
+ * Diagnostic for the hole census, applied to every precision arm alike;
+ * unregistered.
+ * @param camx Camera x, offset in place.
+ * @param camy Camera y, offset in place.
+ * @param camz Camera z, offset in place. */
+static void tn_cam_jitter_apply(double* camx, double* camy, double* camz) {
+    static int s_have = 0;
+    static double s_j = 0.0;
+    if (!s_have) {
+        const char* e = getenv("OPENPETE_TERRAIN_CAM_JITTER");
+        s_j = (e && *e) ? atof(e) : 0.0;
+        s_have = 1;
+    }
+    if (s_j == 0.0) return;
+    *camx += s_j; *camy += s_j * 0.75; *camz += s_j * 0.5;
+}
+
 /** @brief Walks the visible sectors of the current view into the terrain triangle stream and feeds the native scene. */
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_snap_src = 0;                /* until this build latches its walk inputs */
@@ -15022,6 +15048,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * camera-driven - is TRULY continuous, not just stepped at the 1-world-unit
      * lerp32 grid. Falls back to the (floored) RAM at the 30 Hz lockstep. */
     double camx = s_view.cam[0] / 16.0, camy = s_view.cam[1] / 16.0, camz = s_view.cam[2] / 16.0;
+    tn_cam_jitter_apply(&camx, &camy, &camz);
     int fogRefBase = (int32_t)tenv_lod_dist(cpu) >> 2;
     s_fog_ref_last = fogRefBase;
     tn_hpc_flush();
