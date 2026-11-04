@@ -434,6 +434,12 @@ const game_layout_t spyro3_game_layout = {
         .cutpath_count    = 0x8006EDFCu,
         .cutpath_snap     = 0x800u,
         .cutpath_overlays = "cutscene_ title",
+        /* The point buffers by chunk parity (lw D_8006EE08 at 0x80077F8C,
+         * actor list word +0xC at 0x80077F98) and the per-actor frame
+         * lists (D_8006EE2C, lw +0x3C at 0x80077DE0, count lbu at
+         * 0x80077DE8). */
+        .cutpath_points   = 0x8006EE08u,
+        .cutpath_frames   = 0x8006EE2Cu,
         /* No distance bound (jump_bound 0): Sparx (class 0x78) moves up to
          * about 31000 units a tick while other mobys jump as little as about
          * 1000, so a moby the sampler does not drive is held only on a

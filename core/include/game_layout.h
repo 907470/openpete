@@ -755,6 +755,16 @@ typedef struct game_layout {
         uint32_t    cutpath_count;
         uint32_t    cutpath_snap;
         const char* cutpath_overlays;
+        /* The sampler's track tables: cutpath_points is the two-word table of
+         * point buffers, indexed by the chunk's low bit (the record's
+         * animation id); buffer + word [0xC + 4 * actor] is the actor's
+         * point list, one packed word per point (x bits 20-29 << 8, y bits
+         * 10-19 << 8, z bits 0-9 << 8). cutpath_frames is the per-actor
+         * frame-list pointer array; pointer + 0x3C + 4 * chunk points at the
+         * chunk's frame list, whose first byte is the point count. 0 where
+         * the game names none. */
+        uint32_t    cutpath_points;
+        uint32_t    cutpath_frames;
         /* A moby step longer than this many world units in one tick is a
          * jump, for a moby no game marker decides; 0 = no distance bound. */
         uint32_t    jump_bound;

@@ -401,8 +401,9 @@ typedef struct moby_game {
     int  (*cutscene_owns_draw)(CPUState* cpu);
     /* The game's own verdict on one step of a moby its cutscene path
      * sampler drives, from the moby's tick N-1 and tick N records: 1 when the
-     * sampler placed it without interpolating (a jump), 0 when it
-     * interpolated, -1 when the moby is not such an actor or the game has no
+     * sampler moved it to a new place (a teleport), 0 when the step is part of
+     * a continuous track, interpolated by the sampler or placed one segment
+     * at a time, -1 when the moby is not such an actor or the game has no
      * such rule (NULL = -1). */
     int  (*cutpath_jump)(uint32_t moby, const uint8_t* prev_rec, const uint8_t* curr_rec);
     /* A moby the sub-tick view holds at its previous tick on this present:

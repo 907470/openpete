@@ -204,8 +204,8 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos);
 /** @brief Whether one moby's step between two ticks is a jump, by the game's own marker where it has one, and which rule decided.
  *
  * The rules, in order: moby_game.cutpath_jump decides for a moby the game's
- * cutscene path sampler drives (the sampler's own rule for a placement it
- * does not interpolate); a row of the placement table
+ * cutscene path sampler drives (a placement that does not continue a run
+ * of its track); a row of the placement table
  * (game_layout.moby.place) matching the record's class and state transition
  * is a jump; a director row (game_layout.moby.director) whose ring record's
  * state edge or pointer edge names this moby is a jump; a props-word row

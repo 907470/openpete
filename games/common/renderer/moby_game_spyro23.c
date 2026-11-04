@@ -2599,17 +2599,221 @@ static int cutpath_overlay_runs(void) {
     return 0;
 }
 
+/* A placed step continues a run of the track, and is a motion rather than a
+ * teleport, when a neighbouring segment is also placed (cutpath_snap or
+ * more), is within this factor of the step's length and keeps its heading
+ * (the cosine between the two at least CUTPATH_RUN_MIN_COS). A parked actor
+ * toggling between two far points makes equal-length steps that reverse;
+ * a fall, a run or a launch keeps its heading. */
+#define CUTPATH_RUN_LEN_RATIO 1.25
+#define CUTPATH_RUN_MIN_COS   0.25
+
+/** @brief Read one guest word through the host span.
+ *
+ * @param addr The guest address.
+ * @param out Receives the word.
+ * @return 1 when the address maps, else 0. */
+static int cutpath_rd32(uint32_t addr, uint32_t* out) {
+    const void* p = openpete_psx_to_host_span(addr, 4u);
+    if (!p) return 0;
+    memcpy(out, p, 4);
+    return 1;
+}
+
+/** @brief The number of points in one sampler actor's track for one chunk.
+ *
+ * The first byte of the chunk's frame list (frame-list pointer + 0x3C +
+ * 4 * chunk), the count the sampler walks its segments by.
+ * @param actor The actor's index in the moby array.
+ * @param chunk The chunk (the record's animation id byte).
+ * @return The count, or 0 when the actor has no list or a pointer does not map. */
+static int cutpath_track_count(uint32_t actor, uint32_t chunk) {
+    uint32_t fl = 0, list = 0;
+    if (!cutpath_rd32(game_layout.moby.cutpath_frames + actor * 4u, &fl) || fl < 0x80000000u) return 0;
+    if (!cutpath_rd32(fl + 0x3Cu + chunk * 4u, &list) || list < 0x80000000u) return 0;
+    const uint8_t* b = (const uint8_t*)openpete_psx_to_host_span(list, 1u);
+    return b ? *b : 0;
+}
+
+/** @brief One point of a sampler actor's track, decoded as the sampler decodes it.
+ *
+ * The packed word holds three 10-bit fields, each placed at bit 8 of its
+ * coordinate (and 0x3FF00000 sra 12, and 0xFFC00 sra 2, andi 0x3FF sll 8).
+ * @param actor The actor's index in the moby array.
+ * @param chunk The chunk; its low bit picks the point buffer.
+ * @param idx The point index, below the chunk's point count.
+ * @param out Receives the world position.
+ * @return 1 when the index is in the track and every pointer maps, else 0. */
+static int cutpath_track_point(uint32_t actor, uint32_t chunk, int idx, int32_t out[3]) {
+    uint32_t buf = 0, off = 0, w = 0;
+    if (idx < 0 || idx >= cutpath_track_count(actor, chunk)) return 0;
+    if (!cutpath_rd32(game_layout.moby.cutpath_points + (chunk & 1u) * 4u, &buf)) return 0;
+    if (buf < 0x80000000u || !cutpath_rd32(buf + 0xCu + actor * 4u, &off)) return 0;
+    if (!cutpath_rd32(buf + off + (uint32_t)idx * 4u, &w)) return 0;
+    out[0] = (int32_t)((w & 0x3FF00000u) >> 12);
+    out[1] = (int32_t)((w & 0x000FFC00u) >> 2);
+    out[2] = (int32_t)((w & 0x000003FFu) << 8);
+    return 1;
+}
+
+/** @brief The track index, among a record's two sampled frames (+0x3E, +0x3F), whose point is the record's position.
+ *
+ * @param actor The actor's index in the moby array.
+ * @param rec The moby record.
+ * @return The index, or -1 when neither point is the position. */
+static int cutpath_track_index(uint32_t actor, const uint8_t* rec) {
+    const uint32_t chunk = rec[game_layout.moby.anim_state_off];
+    int32_t pos[3], pt[3];
+    memcpy(pos, rec + game_layout.moby.pos_off, 12);
+    for (uint32_t k = 2; k < 4; k++) {
+        const int idx = rec[game_layout.moby.anim_state_off + k];
+        if (cutpath_track_point(actor, chunk, idx, pt) && !memcmp(pt, pos, 12)) return idx;
+    }
+    return -1;
+}
+
+/** @brief The track segment from point a of chunk ka to point b of chunk kb, as a vector.
+ *
+ * @param actor The actor's index in the moby array.
+ * @param ka The first point's chunk.
+ * @param a The first point.
+ * @param kb The second point's chunk.
+ * @param b The second point.
+ * @param out Receives b - a.
+ * @return 1 when both points are in their tracks, else 0. */
+static int cutpath_seg(uint32_t actor, uint32_t ka, int a, uint32_t kb, int b, double out[3]) {
+    int32_t pa[3], pb[3];
+    if (!cutpath_track_point(actor, ka, a, pa) || !cutpath_track_point(actor, kb, b, pb)) return 0;
+    for (int k = 0; k < 3; k++) out[k] = (double)pb[k] - pa[k];
+    return 1;
+}
+
+/** @brief The track segment that ends at point p of chunk k.
+ *
+ * Point p - 1 to p, or, at a chunk's first point, the previous chunk's last
+ * segment when that chunk ends on the same point.
+ * @param actor The actor's index in the moby array.
+ * @param k The chunk.
+ * @param p The point.
+ * @param out Receives the segment.
+ * @return 1 when the segment exists, else 0. */
+static int cutpath_seg_into(uint32_t actor, uint32_t k, int p, double out[3]) {
+    if (p > 0) return cutpath_seg(actor, k, p - 1, k, p, out);
+    if (k == 0) return 0;
+    const int n = cutpath_track_count(actor, k - 1u);
+    double join[3];
+    if (!cutpath_seg(actor, k - 1u, n - 1, k, 0, join) || join[0] || join[1] || join[2]) return 0;
+    return cutpath_seg(actor, k - 1u, n - 2, k - 1u, n - 1, out);
+}
+
+/** @brief The track segment that starts at point c of chunk k.
+ *
+ * Point c to c + 1, or, at a chunk's last point, the next chunk's first
+ * segment when that chunk starts on the same point.
+ * @param actor The actor's index in the moby array.
+ * @param k The chunk.
+ * @param c The point.
+ * @param out Receives the segment.
+ * @return 1 when the segment exists, else 0. */
+static int cutpath_seg_out(uint32_t actor, uint32_t k, int c, double out[3]) {
+    if (c + 1 < cutpath_track_count(actor, k)) return cutpath_seg(actor, k, c, k, c + 1, out);
+    double join[3];
+    if (!cutpath_seg(actor, k, c, k + 1u, 0, join) || join[0] || join[1] || join[2]) return 0;
+    return cutpath_seg(actor, k + 1u, 0, k + 1u, 1, out);
+}
+
+/** @brief Whether a neighbouring segment continues a placed step: placed itself, of comparable length and on the same heading.
+ *
+ * @param step The step, tick N-1 to tick N.
+ * @param len The step's length.
+ * @param seg The neighbouring segment.
+ * @param cos_out Receives the cosine between the two, 0 when seg has no length.
+ * @return 1 when seg is cutpath_snap or more, within CUTPATH_RUN_LEN_RATIO of
+ *         len and at least CUTPATH_RUN_MIN_COS in cosine, else 0. */
+static int cutpath_continues(const double step[3], double len, const double seg[3], double* cos_out) {
+    const double sl = sqrt(seg[0]*seg[0] + seg[1]*seg[1] + seg[2]*seg[2]);
+    *cos_out = sl > 0.0 ? (step[0]*seg[0] + step[1]*seg[1] + step[2]*seg[2]) / (len * sl) : 0.0;
+    if (sl < (double)game_layout.moby.cutpath_snap) return 0;
+    if (sl > CUTPATH_RUN_LEN_RATIO * len || len > CUTPATH_RUN_LEN_RATIO * sl) return 0;
+    return *cos_out >= CUTPATH_RUN_MIN_COS;
+}
+
+/** @brief Print one placed step's census line (OPENPETE_CUTPATH_CENSUS), once per moby and position pair.
+ *
+ * @param moby The moby's guest address.
+ * @param pp Tick N-1's position.
+ * @param cp Tick N's position.
+ * @param located Whether both positions are points of the track.
+ * @param len The step's length.
+ * @param nb The lengths of the segments into and out of the step, -1 where none.
+ * @param cs Their cosines with the step.
+ * @param jump The verdict. */
+static void cutpath_census(uint32_t moby, const int32_t pp[3], const int32_t cp[3], int located,
+                           double len, const double nb[2], const double cs[2], int jump) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_CUTPATH_CENSUS"); s_on = (e && *e && *e != '0'); }
+    if (!s_on) return;
+    /* The verdict is taken at the capture and again on presents. */
+    static uint32_t s_moby[64], s_pos[64];
+    const unsigned slot = (moby / game_layout.moby.array_stride) & 63u;
+    uint32_t h = 2166136261u;
+    for (int k = 0; k < 3; k++) h = ((h ^ (uint32_t)pp[k]) * 16777619u ^ (uint32_t)cp[k]) * 16777619u;
+    if (s_moby[slot] == moby && s_pos[slot] == h) return;
+    s_moby[slot] = moby; s_pos[slot] = h;
+    fprintf(stderr, "[cutpath-census vbl=%u] obj=%08x located=%d len=%.1f into=%.1f cos=%.2f "
+                    "out=%.1f cos=%.2f verdict=%s pp=%d,%d,%d cp=%d,%d,%d\n",
+            openpete_feed_key_now(), moby, located, len, nb[0], cs[0], nb[1], cs[1],
+            jump ? "jump" : "lerp", pp[0], pp[1], pp[2], cp[0], cp[1], cp[2]);
+}
+
+/** @brief Whether a placed step of a sampler actor continues a run of its track, with the neighbours it was judged on.
+ *
+ * prev and curr each sit on one of their record's two sampled frames (the
+ * sampler writes the point itself when it holds or places). The neighbours
+ * are the segment into the previous point, on the previous record's chunk,
+ * and the segment out of the current point, on the current record's chunk.
+ * @param actor The actor's index in the moby array.
+ * @param prev_rec Tick N-1's record.
+ * @param curr_rec Tick N's record.
+ * @param step The step, tick N-1 to tick N.
+ * @param len The step's length.
+ * @param nb Receives the neighbours' lengths, -1 where none.
+ * @param cs Receives their cosines with the step.
+ * @return 1 when it continues a run, 0 when it does not, -1 when either
+ *         position is not a point of the track. */
+static int cutpath_run_step(uint32_t actor, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                            const double step[3], double len, double nb[2], double cs[2]) {
+    const int p = cutpath_track_index(actor, prev_rec);
+    const int c = cutpath_track_index(actor, curr_rec);
+    if (p < 0 || c < 0) return -1;
+    double seg[2][3];
+    const int have[2] = {
+        cutpath_seg_into(actor, prev_rec[game_layout.moby.anim_state_off], p, seg[0]),
+        cutpath_seg_out(actor, curr_rec[game_layout.moby.anim_state_off], c, seg[1]),
+    };
+    int run = 0;
+    for (int k = 0; k < 2; k++) {
+        nb[k] = -1.0; cs[k] = 0.0;
+        if (!have[k]) continue;
+        nb[k] = sqrt(seg[k][0]*seg[k][0] + seg[k][1]*seg[k][1] + seg[k][2]*seg[k][2]);
+        run |= cutpath_continues(step, len, seg[k], &cs[k]);
+    }
+    return run;
+}
+
 /** @brief The cutscene path sampler's verdict on one step of a moby it drives.
  *
  * The sampler runs only in the overlays game_layout.moby.cutpath_overlays
  * names (cutpath_overlay_runs); there it drives the first [cutpath_count]
  * records of the moby array (count taken only in 1..64) and places an actor
- * across any track
- * segment of cutpath_snap world units or more instead of interpolating it,
- * while a shorter segment advances in sixteenths, so one step of
- * cutpath_snap or more is a jump. The game's length (func_8004EDE8) is an
- * integer square root of the same sum (func_8004EDE8 in Spyro 3,
- * func_8001BA20 in Spyro 2); the exact length is used here.
+ * across any track segment of cutpath_snap world units or more instead of
+ * interpolating it, while a shorter segment advances in sixteenths. The
+ * game's length (func_8004EDE8 in Spyro 3, func_8001BA20 in Spyro 2) is an
+ * integer square root of the same sum; the exact length is used here. A step
+ * of cutpath_snap or more is a jump unless it continues a run of the track
+ * (cutpath_run_step): a fast fall or run is placed one segment at a time and
+ * interpolates, a teleport, a replacement in place or a parked actor's
+ * toggle holds. A step whose ends are not points of the track is a jump.
  * @param moby The moby's guest address.
  * @param prev_rec Tick N-1's moby record.
  * @param curr_rec Tick N's moby record.
@@ -2621,20 +2825,22 @@ static int s23_cutpath_jump(uint32_t moby, const uint8_t* prev_rec, const uint8_
     if (!cnt_addr || !game_layout.moby.cutpath_snap) return -1;
     if (!cutpath_overlay_runs()) return -1;
     uint32_t cnt = 0, arr = 0;
-    const void* cp_host = openpete_psx_to_host_span(cnt_addr, 4u);
-    const void* ap_host = openpete_psx_to_host_span(game_layout.moby.array_head, 4u);
-    if (!cp_host || !ap_host) return -1;
-    memcpy(&cnt, cp_host, 4);
-    memcpy(&arr, ap_host, 4);
+    if (!cutpath_rd32(cnt_addr, &cnt) || !cutpath_rd32(game_layout.moby.array_head, &arr)) return -1;
     const uint32_t stride = game_layout.moby.array_stride;
     if (cnt == 0 || cnt > 64u || arr < 0x80000000u || moby < arr || !stride) return -1;
     if ((moby - arr) % stride || (moby - arr) / stride >= cnt) return -1;
     int32_t pp[3], cp[3];
     memcpy(pp, prev_rec + game_layout.moby.pos_off, 12);
     memcpy(cp, curr_rec + game_layout.moby.pos_off, 12);
-    const double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
-    const double snap = (double)game_layout.moby.cutpath_snap;
-    return dx*dx + dy*dy + dz*dz >= snap * snap;
+    const double step[3] = { (double)cp[0] - pp[0], (double)cp[1] - pp[1], (double)cp[2] - pp[2] };
+    const double len = sqrt(step[0]*step[0] + step[1]*step[1] + step[2]*step[2]);
+    if (len < (double)game_layout.moby.cutpath_snap) return 0;
+    double nb[2] = { -1.0, -1.0 }, cs[2] = { 0.0, 0.0 };
+    const int run = game_layout.moby.cutpath_points
+        ? cutpath_run_step((moby - arr) / stride, prev_rec, curr_rec, step, len, nb, cs) : -1;
+    const int jump = run != 1;
+    cutpath_census(moby, pp, cp, run >= 0, len, nb, cs, jump);
+    return jump;
 }
 
 const moby_game_t moby_game_spyro23 = {
