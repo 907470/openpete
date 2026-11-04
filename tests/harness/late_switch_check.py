@@ -15,7 +15,7 @@ from PIL import Image
 
 PART = re.compile(r'\[late-part vbl=(\d+) leg=(canon|inter) a=(-?[\d.]+) ep=(\d+) new=(\d+)\] '
                   r'id=(-?\d+):(\d+) cls=(-?\d+) st=(\S+) c=([0-9a-f]+),([0-9a-f]+) v=(\S*)')
-MOBY = re.compile(r'\[late-moby vbl=(\d+) leg=inter a=(-?[\d.]+) src=(\w+) pass=(\w+)\] m=([0-9a-f]+) '
+MOBY = re.compile(r'\[late-moby vbl=(\d+) leg=inter a=(-?[\d.]+) src=(\w+) pass=(\w+)\] m=([0-9a-f]+)(?::(\d+))? '
                   r'cls=([0-9a-f]+) n=(\d+) c=\(([-\d.]+),([-\d.]+)\) w=\(([-\d.]+),([-\d.]+),([-\d.]+)\)')
 
 
@@ -186,19 +186,23 @@ def check_moby(lines, lo, hi, opts, msgs):
     want = int(opts['cls'], 16) if 'cls' in opts else None
     # A moby is in the row's scope when any traced present draws it at the
     # row's class: a moby whose class changes between two ticks is one moby.
+    # Its identity is the pass, its address and the slot's allocation serial
+    # (0 when the line carries none), so a slot handed to a new record is a
+    # second identity.
     pres, seen, scope = {}, set(), set()
     for m in lines:
         seen.add((int(m[1]), alpha_bin(m[2])))
         if m[4] not in ('REG', 'SIM'):
             continue
-        if want is None or int(m[6], 16) == want:
+        if want is None or int(m[7], 16) == want:
             scope.add(m[5])
     for m in lines:
         if m[4] not in ('REG', 'SIM') or m[5] not in scope:
             continue
-        rec = dict(src=m[3], n=int(m[7]), c=(float(m[8]), float(m[9])),
-                   w=(float(m[10]), float(m[11]), float(m[12])))
-        pres.setdefault((int(m[1]), alpha_bin(m[2])), []).append((m[4] + ':' + m[5], rec))
+        rec = dict(src=m[3], n=int(m[8]), c=(float(m[9]), float(m[10])),
+                   w=(float(m[11]), float(m[12]), float(m[13])))
+        ident = m[4] + ':' + m[5] + ':' + (m[6] or '0')
+        pres.setdefault((int(m[1]), alpha_bin(m[2])), []).append((ident, rec))
     fails = 0
     counts = dict(intervals=0, held=0, deferred=0, reused=0, held_drawn=0, lerped=0)
     dmax_ghost = dmax_pair = 0.0
@@ -210,7 +214,9 @@ def check_moby(lines, lo, hi, opts, msgs):
             continue
         lists = {k: pres.get(k, []) for k in need}
         for k, lst in lists.items():
-            ms = [m for m, _ in lst]
+            # By pass and address: a slot drawn as its old and its new record
+            # in one present is drawn twice.
+            ms = [m.rsplit(':', 1)[0] for m, _ in lst]
             if len(ms) != len(set(ms)):
                 msgs.append(f'  vbl {k[0]} a={k[1]}: a moby drawn twice')
                 fails += 1
@@ -220,6 +226,8 @@ def check_moby(lines, lo, hi, opts, msgs):
         held = set(r0) - set(r1)
         counts['held'] += len(held)
         counts['deferred'] += len(set(r1) - set(r0))
+        addr1 = {k.rsplit(':', 1)[0] for k in r1}
+        counts['reused'] += sum(1 for k in held if k.rsplit(':', 1)[0] in addr1)
         for a in (0.0, 0.5):
             got = dict(lists[(v, a)])
             if set(got) != set(r0):

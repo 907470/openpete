@@ -200,6 +200,7 @@ void openpete_interp_objs_begin_tick(void) {
     for (uint32_t i = 0; i < SLOTS; ++i)
         if (s_tab[i].key) s_tab[i].seen = 0;
     s_stat_spawned = 0;
+    s_ev_n = 0;   /* the evicted set is rebuilt by this tick's captures and end_tick */
 }
 
 static uint32_t s_unshown_replaced;   /* cumulative unshown-spawn replacements */
@@ -220,7 +221,109 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
     (void)openpete_interp_objs_capture_shown(key, data, len, 1);
 }
 
+static void evicted_keep(const openpete_interp_obj_t* e);
+static unsigned long s_reborn;   /* captures that changed a tracked key's serial, since startup */
+
+unsigned long openpete_interp_objs_reborn_count(void) { return s_reborn; }
+
+/* ---- one entry's transitions, applied by a capture ----------------------- */
+
+/** @brief Whether an entry's curr holds exactly the @p len bytes at @p data.
+ *
+ * @param e The entry.
+ * @param data The bytes captured.
+ * @param len Their length.
+ * @return 1 when curr is byte-identical, else 0. */
+static int entry_curr_equals(const openpete_interp_obj_t* e, const void* data, uint32_t len) {
+    return e->blob_len == (uint16_t)len && memcmp(e->curr, data, len) == 0;
+}
+
+/** @brief Whether a tracked entry's key now names another record: its curr holds other bytes at @p serial_off than the capture.
+ *
+ * @param e The tracked entry.
+ * @param data The bytes captured.
+ * @param len Their length.
+ * @param serial_off Offset of the serial word, or 0 for none.
+ * @return 1 when both blobs hold the word and it differs, else 0. */
+static int entry_serial_changed(const openpete_interp_obj_t* e, const void* data, uint32_t len,
+                                uint32_t serial_off) {
+    if (!serial_off || serial_off + 4u > len || e->blob_len < serial_off + 4u) return 0;
+    return memcmp(e->curr + serial_off, (const uint8_t*)data + serial_off, 4u) != 0;
+}
+
+/** @brief Move a tracked entry whose key now names another record to the evicted set at its curr state, counting it.
+ *
+ * The caller then records the capture as a spawn in the same slot.
+ * @param e The tracked entry. */
+static void entry_reborn(const openpete_interp_obj_t* e) {
+    evicted_keep(e);
+    s_reborn++;
+    if (openpete_interp_objs_keylog())
+        fprintf(stderr, "[interp-objs] f=%u reborn key=%08x n=%lu\n", openpete_frame, e->key, s_reborn);
+}
+
+/** @brief Occupy a slot with a new key: no previous state to pair against, curr stamped at this tick.
+ *
+ * Counts the slot when it was empty and counts the spawn; with
+ * OPENPETE_INTERP_OBJS_KEYLOG prints one line per spawn with the key, the
+ * identity instrument for keying tests (a re-keyed object shows as a spawn
+ * every tick it is re-keyed).
+ * @param e The slot.
+ * @param key The object identity. */
+static void entry_spawn(openpete_interp_obj_t* e, uint32_t key) {
+    if (e->key == 0 && s_count < (int)SLOTS) s_count++;
+    e->key          = key;
+    e->have_prev    = 0;
+    e->have_prev2   = 0;
+    e->prev_unshown = 0;
+    e->prev_ns      = 0;
+    e->prev_seen_ns = 0;
+    e->curr_ns      = objs_tick_stamp();
+    s_stat_spawned++;
+    if (openpete_interp_objs_keylog())
+        fprintf(stderr, "[interp-objs] f=%u spawn key=%08x\n", openpete_frame, key);
+}
+
+/** @brief Roll a tracked entry that moved: prev into prev2 (for the pred1 centred tangent), curr into prev, and stamp the roll.
+ *
+ * Consumers then interpolate over this distinct interval, sweeping across
+ * the unchanged ticks in between.
+ * @param e The tracked entry. */
+static void entry_roll(openpete_interp_obj_t* e) {
+    if (e->have_prev) {
+        memcpy(e->prev2, e->prev, e->blob_len);
+        e->have_prev2 = 1;
+        e->prev2_ns   = e->prev_ns;
+    }
+    memcpy(e->prev, e->curr, e->blob_len);
+    e->have_prev    = 1;
+    e->prev_unshown = e->curr_unshown;
+    e->prev_ns      = e->curr_ns;
+    e->prev_seen_ns = e->curr_seen_ns;
+    e->curr_ns      = objs_tick_stamp();
+}
+
+/** @brief Restart a never-rolled entry whose curr was not shown as a fresh spawn at this tick, counting it.
+ *
+ * Applies to a record spawned at a parking pose and changed into a shown
+ * state, so no channel pairs from the unshown pose; a change between two
+ * unshown states rolls instead, so the pair is there when the record is
+ * first shown unchanged.
+ * @param e The tracked entry. */
+static void entry_unshown_replace(openpete_interp_obj_t* e) {
+    e->curr_ns = objs_tick_stamp();
+    s_unshown_replaced++;
+    if (openpete_interp_objs_keylog())
+        fprintf(stderr, "[interp-objs] f=%u unshown-replace key=%08x n=%u\n",
+                openpete_frame, e->key, s_unshown_replaced);
+}
+
 int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t len, int shown) {
+    return openpete_interp_objs_capture_serial(key, data, len, shown, 0u);
+}
+
+int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t len, int shown,
+                                        uint32_t serial_off) {
     if (key == 0 || !data) return 0;
     if (!objs_alloc()) return 0;
     if (len > BLOB) len = BLOB;
@@ -228,74 +331,37 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
     int found;
     uint32_t i = probe(key, &found);
     if (i >= SLOTS) return 0;   /* table full - drop rather than corrupt a colliding slot */
+    openpete_interp_obj_t* e = &s_tab[i];
 
-    int replaced = 0;
-    if (found && shown && !s_tab[i].have_prev && s_tab[i].curr_unshown &&
-        !(s_tab[i].blob_len == (uint16_t)len && memcmp(s_tab[i].curr, data, len) == 0)) {
-        /* Never-rolled entry whose curr was not shown (a record spawned at a
-         * parking pose), changed into a shown state: the new state replaces
-         * curr as a fresh spawn, so no channel pairs from the unshown pose. A
-         * change between two unshown states rolls, so the pair is there when
-         * the record is first shown unchanged. */
-        s_tab[i].curr_ns       = objs_tick_stamp();
-        s_unshown_replaced++;
-        replaced = 1;
-    } else if (found) {
-        /* Dedupe at capture (mirrors openpete_interp_capture): if this object's
-         * blob is byte-identical to last tick's curr, the game logic didn't
-         * advance it (30 Hz logic on a 60 Hz VBL -> every other tick is static),
-         * so DON'T roll - keep prev pinned to the last DISTINCT state. Otherwise
-         * a static VBL rolls curr into prev, losing the real prev, and the
-         * object snaps to curr while the (deduped) camera ring is still
-         * interpolating prev->curr -> the object leads the world (ghosting with
-         * camera movement). Keeping both rings on the same distinct-tick
-         * boundaries makes the shared alpha consistent. */
-        if (s_tab[i].blob_len == (uint16_t)len &&
-            memcmp(s_tab[i].curr, data, len) == 0) {
-            s_tab[i].seen         = 1;
-            s_tab[i].curr_seen_ns = objs_tick_stamp();
-            return 0;                     /* unchanged - keep prev/curr + their roll timestamps */
-        }
-        /* Existing object that moved: roll prev -> prev2 (for the pred1 centered
-         * tangent), then curr -> prev, write curr, and stamp the roll times so
-         * consumers interpolate over this DISTINCT interval (sweeping across the
-         * unchanged ticks in between). */
-        if (s_tab[i].have_prev) {
-            memcpy(s_tab[i].prev2, s_tab[i].prev, s_tab[i].blob_len);
-            s_tab[i].have_prev2 = 1;
-            s_tab[i].prev2_ns   = s_tab[i].prev_ns;
-        }
-        memcpy(s_tab[i].prev, s_tab[i].curr, s_tab[i].blob_len);
-        s_tab[i].have_prev = 1;
-        s_tab[i].prev_unshown = s_tab[i].curr_unshown;
-        s_tab[i].prev_ns   = s_tab[i].curr_ns;
-        s_tab[i].prev_seen_ns = s_tab[i].curr_seen_ns;
-        s_tab[i].curr_ns   = objs_tick_stamp();
-    } else {
-        /* Spawn: occupy the slot, no previous tick to pair against. */
-        if (s_tab[i].key == 0 && s_count < (int)SLOTS) s_count++;
-        s_tab[i].key       = key;
-        s_tab[i].have_prev = 0;
-        s_tab[i].have_prev2 = 0;
-        s_tab[i].prev_unshown = 0;
-        s_tab[i].prev_ns   = 0;
-        s_tab[i].prev_seen_ns = 0;
-        s_tab[i].curr_ns   = objs_tick_stamp();
-        s_stat_spawned++;
-        /* OPENPETE_INTERP_OBJS_KEYLOG: one stderr line per spawn, with the
-         * key - the identity instrument for keying tests (a re-keyed object
-         * shows as a spawn every tick it is re-keyed). */
-        if (openpete_interp_objs_keylog())
-            fprintf(stderr, "[interp-objs] f=%u spawn key=%08x\n", openpete_frame, key);
+    /* The key now names another record: the tracked one despawns at its curr
+     * state (the evicted set) and the new one spawns in its slot. */
+    if (found && entry_serial_changed(e, data, len, serial_off)) {
+        entry_reborn(e);
+        found = 0;
     }
-    if (replaced && openpete_interp_objs_keylog())
-        fprintf(stderr, "[interp-objs] f=%u unshown-replace key=%08x n=%u\n",
-                openpete_frame, key, s_unshown_replaced);
-    memcpy(s_tab[i].curr, data, len);
-    s_tab[i].blob_len     = (uint16_t)len;
-    s_tab[i].curr_unshown = shown ? 0 : 1;
-    s_tab[i].seen         = 1;
-    s_tab[i].curr_seen_ns = s_tab[i].curr_ns;
+    int replaced = 0;
+    if (!found) {
+        entry_spawn(e, key);
+    } else if (entry_curr_equals(e, data, len)) {
+        /* Dedupe at capture (mirrors openpete_interp_capture): a blob
+         * byte-identical to last tick's curr means the game logic did not
+         * advance the object (30 Hz logic on a 60 Hz VBL), so prev stays
+         * pinned to the last distinct state. Rolling here would lose the real
+         * prev and the object would lead the deduped camera ring. */
+        e->seen         = 1;
+        e->curr_seen_ns = objs_tick_stamp();
+        return 0;                     /* unchanged - keep prev/curr + their roll timestamps */
+    } else if (shown && !e->have_prev && e->curr_unshown) {
+        entry_unshown_replace(e);
+        replaced = 1;
+    } else {
+        entry_roll(e);
+    }
+    memcpy(e->curr, data, len);
+    e->blob_len     = (uint16_t)len;
+    e->curr_unshown = shown ? 0 : 1;
+    e->seen         = 1;
+    e->curr_seen_ns = e->curr_ns;
     return replaced;
 }
 
@@ -338,7 +404,6 @@ void openpete_interp_objs_end_tick(void) {
     if (!s_tab) return;
     int nsurv = 0, paired = 0, despawned = 0;
 
-    s_ev_n = 0;
     for (uint32_t i = 0; i < SLOTS; ++i) {
         if (!s_tab[i].key) continue;
         if (s_tab[i].seen) {

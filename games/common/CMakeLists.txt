@@ -56,6 +56,7 @@ set(OPENPETE_GAME_COMMON_SOURCES
     renderer/particles.c
     renderer/player_hide.c
     renderer/moby.c
+    renderer/moby_serial.c
     renderer/moby_rank.c
     renderer/moby_rank_cal.c
     renderer/moby_snap.c

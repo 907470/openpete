@@ -13,6 +13,7 @@
 #include "renderer/credits_key.h"   /* game_credits_track, game_credits_letter_key */
 #include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
 #include "renderer/particles.h"    /* particles_slot_serial */
+#include "renderer/moby_serial.h"  /* moby_slot_serial */
 #include "renderer/orchestrator.h" /* the canonical-render epoch the moby stash carries */
 #include "renderer/moby.h"         /* the native view's drawn sets */
 
@@ -402,14 +403,29 @@ static int view_set_has(uint32_t m) {
     }
 }
 
+/** @brief Whether a changed moby slot serial makes the capture a despawn and a spawn: OPENPETE_MOBY_REUSE_SPAWN, default on, read once.
+ *
+ * Off, the serial is still appended to the blob, and the pair spans the two
+ * records a reused slot held.
+ * @return 1 when on, else 0. */
+static int moby_reuse_spawn_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_MOBY_REUSE_SPAWN"); v = (e && *e) ? (*e != '0') : 1; }
+    return v;
+}
+
 /** @brief Capture one moby record under @p key with whether it was shown on the tick.
  *
  * Shown when the game's cull drew the record (its drawn byte) or the native
  * view drew it (a cull record or a reveal admission of the tick: the widened
  * view and extended LOD draw mobys the 4:3 cull leaves undrawn), so a spawn
  * parked unshown by both and placed into view on a later tick snaps on its
- * first shown tick. With OPENPETE_INTERP_OBJS_KEYLOG a replacement prints the
- * moby, its class and whether the native view drew it.
+ * first shown tick. When the layout names a moby allocator and the store's
+ * blob has room, the slot's allocation serial (moby_slot_serial) follows the
+ * record's bytes, and a serial other than the tracked one's makes the capture
+ * a despawn of the tracked record and a spawn of this one. With
+ * OPENPETE_INTERP_OBJS_KEYLOG a replacement prints the moby, its class and
+ * whether the native view drew it.
  * @param m The moby's PSX address.
  * @param host The live record, for the drawn byte and the class.
  * @param src The record captured (stashed or live).
@@ -420,7 +436,17 @@ static void capture_moby_shown(uint32_t m, const uint8_t* host, const void* src,
                                uint32_t key, int view) {
     const int native = view && view_set_has(m);
     const int shown  = host[game_layout.moby.drawn_off] != 0 || native;
-    if (!openpete_interp_objs_capture_shown(key, src, blob, shown) || !openpete_interp_objs_keylog())
+    uint8_t buf[256];
+    uint32_t len = blob, serial_off = 0u;
+    if (moby_serial_enabled() && blob + 4u <= openpete_interp_objs_blob_bytes() && blob + 4u <= sizeof buf) {
+        const uint32_t serial = moby_slot_serial(m);
+        memcpy(buf, src, blob);
+        memcpy(buf + blob, &serial, 4u);
+        src = buf;
+        len = blob + 4u;
+        serial_off = moby_reuse_spawn_on() ? blob : 0u;
+    }
+    if (!openpete_interp_objs_capture_serial(key, src, len, shown, serial_off) || !openpete_interp_objs_keylog())
         return;
     uint16_t cls;
     memcpy(&cls, host + game_layout.moby.class_off, 2);
@@ -682,11 +708,12 @@ void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
     s_extra_pools = extra_pools;
     /* One whole record per object, so every consumer reads its fields at their
      * natural offsets, and the store's default capacity. The blob is the
-     * longest record a walk captures whole: the Moby, or the tracer ribbon
-     * record, whose point ring runs to its end. The particle record and the
-     * allocation serial appended to it fit under either on every game. */
-    const uint32_t blob = game_layout.tracers.stride > game_layout.moby.array_stride
-                              ? game_layout.tracers.stride : game_layout.moby.array_stride;
+     * longest record a walk captures whole: the Moby with its slot's
+     * allocation serial when the layout names a moby allocator, or the tracer
+     * ribbon record, whose point ring runs to its end. The particle record and
+     * the allocation serial appended to it fit under either on every game. */
+    const uint32_t moby_len = game_layout.moby.array_stride + (moby_serial_enabled() ? 4u : 0u);
+    const uint32_t blob = game_layout.tracers.stride > moby_len ? game_layout.tracers.stride : moby_len;
     game_interp_rows_obj_capture(capture_objs_common, blob, OPENPETE_INTERP_OBJ_SLOTS);
 }
 

@@ -2717,6 +2717,10 @@ static const knob_desc_t g_builtin_debug[] = {
         "Sub-tick presents before alpha 1 draw the previous tick's particle "
         "and moby records, the newest tick's at alpha 1 (Spyro 2/3; 0 draws "
         "the newest tick's at every alpha)."),
+    ENVROW_LATCHED("MOBY_REUSE_SPAWN", "Debug", "1",
+        "A moby slot the allocator hands to a new record is a despawn of the "
+        "old record and a spawn of the new one in the sub-tick pairing "
+        "(Spyro 2/3; 0 pairs the two records)."),
     ENVROW_LATCHED("MOBY_MIRROR_HOLD", "Debug", "64",
         "Sub-tick hold threshold for a moby's one-tick turn, in byte angles "
         "(256 = one turn); 0 interpolates every interval."),

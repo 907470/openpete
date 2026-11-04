@@ -103,8 +103,9 @@ int moby_native_late_spawned(uint32_t moby);
  *
  * The moby's span is staged in the sub-tick view and overwritten with the
  * evicted entry's curr (its state at tick N-1) until moby_native_late_unstage;
- * a moby the table still tracks, one with no evicted entry, or a span the view
- * refuses is not replayed.
+ * a moby the table still tracks (unless its slot took a new record in tick N,
+ * which tick N spawned under the evicted key), one with no evicted entry, or a
+ * span the view refuses is not replayed.
  * @param moby The record's moby.
  * @return 1 when the record replays, else 0. */
 int moby_native_late_ghost_admit(uint32_t moby);
@@ -115,8 +116,9 @@ void moby_native_late_unstage(void);
 /** @brief Print one replayed record's drawn state under OPENPETE_LATE_TRACE=<lo>:<hi> (tests/harness/check_late_switch_subtick.sh).
  *
  * `[late-moby vbl=<v> leg=inter a=<alpha> src=curr|ghost|held pass=<pass>]
- * m=<moby> cls=<class> n=<verts> c=(<x>,<y>) w=(<x>,<y>,<z>)` when the feed
- * key lies in the window: the record's source, its projected vertex count and
+ * m=<moby>:<serial> cls=<class> n=<verts> c=(<x>,<y>) w=(<x>,<y>,<z>)` when the feed
+ * key lies in the window: the record's source, the slot allocation serial of
+ * the state drawn (0 when the blob carries none), its projected vertex count and
  * centroid, and the world position it is drawn at (the position words the view
  * resolves plus the replay's own-motion offset).
  * @param cpu The guest CPU state, read only.

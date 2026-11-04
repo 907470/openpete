@@ -12,3 +12,8 @@ crushs-dungeon.bk2 | 2121-2129 | kind=part held=1 deferred=1 reused=1
 # The same slam's rock mobys (class 0x215), one to four of which despawn per
 # tick.
 crushs-dungeon.bk2 | 2139-2147 | kind=moby cls=0x215 held=1 deferred=0 reused=0
+#
+# The same slam's rocks where the moby allocator hands a slot freed in a tick
+# to a new rock in that tick: the old rock holds its K-1 state and the new one
+# is absent until alpha 1.
+crushs-dungeon.bk2 | 2119-2127 | kind=moby cls=0x215 held=1 deferred=1 reused=1

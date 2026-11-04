@@ -718,7 +718,9 @@ typedef struct game_layout {
      * array itself when the game keeps one at a fixed address (`array_direct`
      * says which). The array ends at the first element whose `state_off` byte
      * equals `state_term`; an element whose state byte has bit 7 set is
-     * dormant. `blend_shift` recovers the keyframe blend weight from the
+     * dormant. `alloc` is the slot allocator every spawn takes its Moby
+     * through, returning the slot in v0 or 0 when the array is full (0 = not
+     * hooked; renderer/moby_serial.h). `blend_shift` recovers the keyframe blend weight from the
      * record's flags word as (w0 >> blend_shift) & blend_mask, with 4096 as
      * 1.0.
      *
@@ -736,6 +738,7 @@ typedef struct game_layout {
         uint32_t array_stride;
         uint32_t state_off;
         uint32_t state_term;
+        uint32_t alloc;
         uint32_t pos_off;
         uint32_t angle_off;
         uint32_t class_off;

@@ -14,10 +14,11 @@
 # record per present whose feed key lies in the window:
 #   [late-part vbl=<v> leg=canon|inter a=<alpha> ep=<set> new=<newest>]
 #       id=<slot>:<serial> cls=<c> st=<x>,<y>,<z>,<size>,<angle> c=<rgb>,<rgb> v=...
-#   [late-moby vbl=<v> leg=inter a=<alpha> src=curr|ghost|held] m=<moby>
+#   [late-moby vbl=<v> leg=inter a=<alpha> src=curr|ghost|held] m=<moby>:<serial>
 #       cls=<class> n=<verts> c=(<x>,<y>) w=(<x>,<y>,<z>)
 # A particle's identity is its pool slot and allocation serial; a moby's is
-# its address. One run per row presents every VBL of the span at alphas 0 and
+# its address and its slot's allocation serial (0 on a game whose layout
+# names no moby allocator). One run per row presents every VBL of the span at alphas 0 and
 # 0.5 (OPENPETE_INTERMEDIATE_PRE_ALPHA) and 1, intermediate captures at
 # lo - 2 .. hi step 2; a second run captures the canonical presents of the
 # same VBLs for the identity leg. The trace VBL of an intermediate capture at
@@ -39,10 +40,10 @@
 #              a state on the segment from its R0 state to its R1 state
 #              (within stol per component, colour within 1 level); a record
 #              R1 does not hold shows its R0 state
-#   every alpha  no particle slot and no moby drawn twice in one present
+#   every alpha  no particle slot and no moby address drawn twice in one present
 # Engagement, summed over the row's intervals: held (identities of R0 absent
 # from R1), deferred (identities of R1 absent from R0) and reused (held
-# particles whose slot R1 holds under another serial). A row whose count is
+# records whose slot or moby address R1 holds under another serial). A row whose count is
 # below its floor is VACUOUS.
 #
 # Input: games/<slug>/corpus/late-switch-subtick-corpus.manifest, rows

@@ -134,7 +134,8 @@ void openpete_interp_objs_run_capture(void);
 
 /** @brief Begin a capture tick by marking every tracked object unseen.
  *
- * Allocates the table on first use. Clears the spawn count; end_tick
+ * Allocates the table on first use. Clears the spawn count and empties the
+ * evicted set, which this tick's reborn captures and end_tick refill; end_tick
  * evicts the objects still unseen. */
 void openpete_interp_objs_begin_tick(void);
 
@@ -169,6 +170,27 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len);
  * @return 1 when the blob replaced an unshown spawn's curr, else 0. */
 int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t len, int shown);
 
+/** @brief Record object @p key's current blob, whose 4 bytes at @p serial_off name the record the key holds.
+ *
+ * openpete_interp_objs_capture_shown, except that a tracked key whose curr
+ * holds other bytes at @p serial_off is a new record under the old key: the
+ * tracked entry moves to the evicted set at its curr state (as an end_tick
+ * eviction does) and the blob is recorded as a spawn. @p serial_off 0, or a
+ * blob too short to hold the 4 bytes, compares nothing.
+ * @param key Object identity; 0 is ignored.
+ * @param data The object's current bytes.
+ * @param len Bytes to record, clamped to the registered blob size.
+ * @param shown Nonzero when the record was shown on this tick.
+ * @param serial_off Offset of the record's serial word in the blob, or 0.
+ * @return 1 when the blob replaced an unshown spawn's curr, else 0. */
+int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t len, int shown,
+                                        uint32_t serial_off);
+
+/** @brief Return the captures since startup that found a tracked key's serial changed (openpete_interp_objs_capture_serial).
+ *
+ * @return The count. */
+unsigned long openpete_interp_objs_reborn_count(void);
+
 /** @brief Return the number of unshown-spawn replacements since startup.
  *
  * @return Count of captures openpete_interp_objs_capture_shown returned 1 for. */
@@ -184,8 +206,8 @@ int openpete_interp_objs_keylog(void);
  *
  * The survivors are rehashed into a cleared table so linear-probe chains
  * stay intact, and a later reuse of an evicted key pairs as a fresh spawn
- * rather than across the gap. The evicted entries replace the previous
- * evicted set (openpete_interp_objs_find_evicted). Finalises the tracked,
+ * rather than across the gap. The evicted entries join the evicted set
+ * begin_tick emptied (openpete_interp_objs_find_evicted). Finalises the tracked,
  * paired and despawned counts. */
 void openpete_interp_objs_end_tick(void);
 
@@ -205,15 +227,15 @@ void openpete_interp_objs_reset(void);
  *         tracked. */
 const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key);
 
-/** @brief Look up an object the last end_tick evicted.
+/** @brief Look up an object the newest capture tick evicted: unseen at its end_tick, or replaced by a new record under its key.
  *
  * The entry holds the object's last captured state as curr (prev and prev2
  * alias it, have_prev 0) and its curr_ns, so a sub-tick present that shows the
  * tick before the newest one can draw an object gone from the newest capture
- * as that tick drew it. Valid until the next end_tick or reset.
+ * as that tick drew it. Valid until the next begin_tick or reset.
  * @param key Object identity; 0 returns NULL.
- * @return The entry, or NULL when the last end_tick evicted no such key (or
- *         dropped it past OPENPETE_INTERP_OBJ_EVICTED). */
+ * @return The entry, or NULL when the newest capture tick evicted no such key
+ *         (or dropped it past OPENPETE_INTERP_OBJ_EVICTED). */
 const openpete_interp_obj_t* openpete_interp_objs_find_evicted(uint32_t key);
 
 /** @brief Return the evicted entries dropped past OPENPETE_INTERP_OBJ_EVICTED since startup.

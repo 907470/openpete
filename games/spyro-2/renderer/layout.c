@@ -446,6 +446,8 @@ const game_layout_t spyro2_game_layout = {
         .array_stride = 0x58u,             /* mobydraw.s:65 addi $ra, $ra, 0x58 */
         .state_off    = 0x48u,             /* mobydraw.s:66 lb; >= 0 processes */
         .state_term   = 0xFFu,             /* mobydraw.s:69-70 state == -1 ends the list */
+        .alloc        = 0x80041290u,       /* asm/updatemobys.s func_80041290: v0 = the free
+                                            * cursor's slot, 0 when full */
         .pos_off      = 0x0Cu,             /* mobydraw.s:81-83 the box cull's three words */
         .angle_off    = 0x44u,             /* mobydraw.s:220 the three byte angles */
         .class_off    = 0x36u,             /* mobydraw.s:111 lhu, model table index */

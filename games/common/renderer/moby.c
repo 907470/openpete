@@ -36,6 +36,7 @@
 #include "renderer/moby.h"          /* this feeder's exported entries */
 #include "renderer/moby_snap.h"     /* the sunk-pickup contact planes */
 #include "renderer/moby_game.h"     /* per-game decoders, classifications and addresses */
+#include "renderer/moby_serial.h"   /* the moby allocator hook */
 #include "renderer/water_plane.h"   /* the water-plane split shared with the player walk */
 #include "renderer/terrain.h"       /* terrain_heavy_fog: the level fog class */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
@@ -2414,11 +2415,17 @@ static uint32_t moby_interp_key(uint32_t moby) {
     return moby_game.interp_key ? moby_game.interp_key(moby) : moby;
 }
 
+static int moby_late_staged(uint32_t moby);
+
 /** @brief The snapshot pair a moby is interpolated with: the interp table's entry under its ring key.
  *
+ * A moby the late switch has staged at its evicted state (moby_late_staged)
+ * has none, as a despawned moby has none: when its slot holds a new record
+ * the table's entry is that record's.
  * @param moby The moby's PSX address.
  * @return The pair, or NULL when the table holds none. */
 static const openpete_interp_obj_t* moby_interp_find(uint32_t moby) {
+    if (moby_late_staged(moby)) return NULL;
     return openpete_interp_objs_find(moby_interp_key(moby));
 }
 
@@ -14577,6 +14584,18 @@ static int s_late_ghost_pass;   /* the regular pass replays the despawned record
 static struct { uint8_t* span; uint32_t len; uint8_t saved[LATE_STAGE_BYTES]; } s_late_stage[LATE_STAGE_MAX];
 static int s_late_stage_n;
 
+/** @brief Whether the present in flight has staged the moby's span at its evicted state (moby_native_late_ghost_admit, until moby_native_late_unstage).
+ *
+ * @param moby The moby's PSX address.
+ * @return 1 when staged, else 0. */
+static int moby_late_staged(uint32_t moby) {
+    if (!s_late_stage_n) return 0;
+    const void* h = openpete_subtick_host_ptr(moby);
+    for (int i = 0; i < s_late_stage_n; i++)
+        if (s_late_stage[i].len && h == s_late_stage[i].span) return 1;
+    return 0;
+}
+
 /* Since startup: late presents, records left out as spawns, despawned records
  * replayed, and despawned records refused (no span could be staged). */
 static unsigned long s_late_presents, s_late_deferred, s_late_ghosts, s_late_refused;
@@ -14587,9 +14606,9 @@ static unsigned long s_late_changed, s_late_mark_d, s_late_mark_g;
 /** @brief Print the late-switch counts at exit under OPENPETE_LATE_CENSUS. */
 static void moby_late_report(void) {
     fprintf(stderr, "[late-switch] kind=moby presents=%lu changed=%lu deferred=%lu held=%lu refused=%lu "
-                    "evdrop=%lu\n",
+                    "evdrop=%lu reborn=%lu\n",
             s_late_presents, s_late_changed, s_late_deferred, s_late_ghosts, s_late_refused,
-            openpete_interp_objs_evicted_dropped());
+            openpete_interp_objs_evicted_dropped(), openpete_interp_objs_reborn_count());
 }
 
 /** @brief Whether OPENPETE_LATE_CENSUS is set to a nonzero value, read once; registers the exit report.
@@ -14626,21 +14645,26 @@ int moby_native_late_spawned(uint32_t moby) {
 }
 
 int moby_native_late_ghost_admit(uint32_t moby) {
-    if (!s_late || moby < 0x80000000u || moby_interp_find(moby)) return 0;
+    if (!s_late || moby < 0x80000000u) return 0;
+    /* A tracked moby is admitted only when it spawned in the newest capture
+     * under a key that capture also evicted: its slot took a new record. */
+    const openpete_interp_obj_t* live = moby_interp_find(moby);
+    if (live && !openpete_interp_objs_spawned_last_tick(live)) return 0;
     const openpete_interp_obj_t* e = openpete_interp_objs_find_evicted(moby_interp_key(moby));
     if (!e || !e->blob_len) return 0;
-    for (int i = 0; i < s_late_stage_n; i++)
-        if (s_late_stage[i].len && openpete_subtick_host_ptr(moby) == s_late_stage[i].span) return 1;
-    uint8_t* span = (uint8_t*)openpete_subtick_view_stage(moby, e->blob_len);
-    if (!span || e->blob_len > LATE_STAGE_BYTES || s_late_stage_n >= LATE_STAGE_MAX) {
+    if (moby_late_staged(moby)) return 1;
+    /* The blob may carry the slot serial after the record: stage the record only. */
+    const uint32_t len = e->blob_len < game_layout.moby.array_stride ? e->blob_len : game_layout.moby.array_stride;
+    uint8_t* span = (uint8_t*)openpete_subtick_view_stage(moby, len);
+    if (!span || len > LATE_STAGE_BYTES || s_late_stage_n >= LATE_STAGE_MAX) {
         s_late_refused++;
         return 0;
     }
-    memcpy(s_late_stage[s_late_stage_n].saved, span, e->blob_len);
+    memcpy(s_late_stage[s_late_stage_n].saved, span, len);
     s_late_stage[s_late_stage_n].span = span;
-    s_late_stage[s_late_stage_n].len = e->blob_len;
+    s_late_stage[s_late_stage_n].len = len;
     s_late_stage_n++;
-    memcpy(span, e->curr, e->blob_len);
+    memcpy(span, e->curr, len);
     s_late_ghosts++;
     return 1;
 }
@@ -14718,9 +14742,17 @@ static void moby_late_trace_line(CPUState* cpu, uint32_t moby, double cx, double
     moby_replay_world_offset(moby, w);
     for (int i = 0; i < 3; i++)
         w[i] += (double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u * (uint32_t)i);
-    fprintf(stderr, "[late-moby vbl=%u leg=inter a=%.4f src=%s pass=%s] m=%08x cls=%03x n=%d "
+    /* The slot serial of the state drawn: the evicted entry's for a replayed
+     * despawn, else the tracked pair's (prev on a held replay). */
+    const openpete_interp_obj_t* o = ghost ? openpete_interp_objs_find_evicted(moby_interp_key(moby))
+                                           : moby_interp_find(moby);
+    const uint32_t so = game_layout.moby.array_stride;
+    uint32_t serial = 0u;
+    if (o && (uint32_t)o->blob_len >= so + 4u)
+        memcpy(&serial, ((s_rec_ref_prev && o->have_prev) ? o->prev : o->curr) + so, 4u);
+    fprintf(stderr, "[late-moby vbl=%u leg=inter a=%.4f src=%s pass=%s] m=%08x:%u cls=%03x n=%d "
                     "c=(%.3f,%.3f) w=(%.3f,%.3f,%.3f)\n",
-            k, s_rc_alpha, ghost ? "ghost" : (s_rec_ref_prev ? "held" : "curr"), pass, moby,
+            k, s_rc_alpha, ghost ? "ghost" : (s_rec_ref_prev ? "held" : "curr"), pass, moby, serial,
             (unsigned)cpu->read_half(moby + game_layout.moby.class_off), n, cx, cy, w[0], w[1], w[2]);
 }
 
@@ -15384,7 +15416,7 @@ static void moby_reextract_body(CPUState* cpu) {
  * pass the layout leaves at 0 contributes no entry instead of truncating the
  * ones after it. A game that names no pass registers nothing and never enters
  * this feeder. */
-static feature_dispatch_entry_t moby_dispatch[7];
+static feature_dispatch_entry_t moby_dispatch[8];
 
 /** @brief The feature module's option hook: fill moby_dispatch with the cull and draw hooks the game layout allows.
  *
@@ -15414,6 +15446,9 @@ static void moby_apply_options(const openpete_options_t* opts) {
         { moby_game.simple_pass ? game_layout.moby.hook_draw_simple : 0u, on_draw_simple },
         { qmiss_census_on() && !game_layout.moby.hook_cull ? game_layout.moby.census_cull : 0u,
           on_cull_census },
+        /* The slot allocator: each allocation's serial, which the object
+         * capture appends to the moby's record. */
+        { game_layout.moby.alloc, moby_serial_on_alloc },
     };
     int n = 0;
     for (size_t i = 0; i < sizeof passes / sizeof passes[0]; i++)
