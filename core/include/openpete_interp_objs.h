@@ -54,6 +54,8 @@ extern "C" {
  * A game that registers no sizes gets these. */
 #define OPENPETE_INTERP_OBJ_SLOTS       4096u
 #define OPENPETE_INTERP_OBJ_BLOB_BYTES  88u
+/* Entries one end_tick keeps of those it evicts (openpete_interp_objs_find_evicted). */
+#define OPENPETE_INTERP_OBJ_EVICTED     1024u
 
 typedef struct {
     uint32_t key;        /* object identity (0 = empty slot) */
@@ -182,8 +184,9 @@ int openpete_interp_objs_keylog(void);
  *
  * The survivors are rehashed into a cleared table so linear-probe chains
  * stay intact, and a later reuse of an evicted key pairs as a fresh spawn
- * rather than across the gap. Finalises the tracked, paired and despawned
- * counts. */
+ * rather than across the gap. The evicted entries replace the previous
+ * evicted set (openpete_interp_objs_find_evicted). Finalises the tracked,
+ * paired and despawned counts. */
 void openpete_interp_objs_end_tick(void);
 
 /** @brief Drop every tracked object and zero the stats.
@@ -192,7 +195,7 @@ void openpete_interp_objs_end_tick(void);
  * registers: savestate load, rewind restore) and by run.c beside
  * openpete_interp_reset. The next capture tick records every object as a
  * spawn (have_prev = 0), so feeders snap instead of lerping across the
- * jump. */
+ * jump. Also empties the evicted set and forgets the capture-tick stamps. */
 void openpete_interp_objs_reset(void);
 
 /** @brief Look up a tracked object by identity.
@@ -201,6 +204,32 @@ void openpete_interp_objs_reset(void);
  * @return The entry, valid until the next end_tick(), or NULL when not
  *         tracked. */
 const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key);
+
+/** @brief Look up an object the last end_tick evicted.
+ *
+ * The entry holds the object's last captured state as curr (prev and prev2
+ * alias it, have_prev 0) and its curr_ns, so a sub-tick present that shows the
+ * tick before the newest one can draw an object gone from the newest capture
+ * as that tick drew it. Valid until the next end_tick or reset.
+ * @param key Object identity; 0 returns NULL.
+ * @return The entry, or NULL when the last end_tick evicted no such key (or
+ *         dropped it past OPENPETE_INTERP_OBJ_EVICTED). */
+const openpete_interp_obj_t* openpete_interp_objs_find_evicted(uint32_t key);
+
+/** @brief Return the evicted entries dropped past OPENPETE_INTERP_OBJ_EVICTED since startup.
+ *
+ * @return The count. */
+unsigned long openpete_interp_objs_evicted_dropped(void);
+
+/** @brief Whether a tracked object first appeared in the newest capture tick.
+ *
+ * True for an entry that has never rolled (have_prev 0) whose curr was stamped
+ * after the capture tick before the newest one: a spawn, or an unshown spawn
+ * whose first shown state replaced curr, in the newest tick. False before two
+ * capture ticks have run since startup or the last reset.
+ * @param o The entry; NULL yields 0.
+ * @return 1 when the object is new in the newest tick, else 0. */
+int openpete_interp_objs_spawned_last_tick(const openpete_interp_obj_t* o);
 
 /** @brief Return the present-clock instant at which every per-object consumer has reached its curr state.
  *

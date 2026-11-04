@@ -28,10 +28,13 @@
  *        rebase projects under it are phased onto the same instant. */
 void particles_reextract(CPUState* cpu, int bracketed, double alpha);
 
-/** @brief Make the particle re-extract show tick N-1's captured set for a held camera cut, or restore the current one.
+/** @brief Make the particle re-extract show tick N-1's captured set, for a held camera cut or a present before alpha 1, or restore the current one.
  *
  * A held cut shows tick N-1's camera, and the primitives the draw emitted that
- * tick are the ones visible under it. The set is chosen by cut_held_set_pick:
+ * tick are the ones visible under it; a present before alpha 1 shows tick
+ * N-1's set (the late switch), each record lerped toward its tick N state,
+ * held at its N-1 state when the slot was freed or reused at tick N, and a
+ * record new at tick N absent. The set is chosen by cut_held_set_pick:
  * the previous set swapped in, the current set when tick N captured nothing,
  * or no set when tick N-1 captured nothing; whether tick N drew the path does
  * not gate the held feed. While on, each record's offsets are measured from

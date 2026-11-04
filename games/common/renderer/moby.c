@@ -3253,7 +3253,8 @@ static int append_revealed_regular(CPUState* cpu) {
  * present the shape lerps from the previous tick's pose
  * (moby_record_prev_pose). The record carries no live record address, takes
  * the specular face treatment when the moby is shiny, and enters the fade
- * snapshot.
+ * snapshot. A late present (moby_native_late_spawned) emits nothing for a
+ * moby new in tick N's capture, whose ZSF4 then reads the near tier 1024.
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address.
  * @param f The moby's record fields under the pass's camera.
@@ -3261,6 +3262,8 @@ static int append_revealed_regular(CPUState* cpu) {
  * @param zsf4_out Receives the record's ZSF4 verdict, also when the decode yields none.
  * @return The projected vertex count appended, 0 when the decode yields none. */
 static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver_check, int* zsf4_out) {
+    *zsf4_out = 1024;
+    if (!ver_check && moby_native_late_spawned(m)) return 0;   /* a late present shows tick N-1's set */
     const int off = s_proj_n;
     /* ZSF4 mirrored from the cull's formula (@8001F404) - there is no live
      * record behind a revealed moby to read the verdict from. Validated by
@@ -14553,6 +14556,194 @@ static void moby_wbase_trace(CPUState* cpu, uint32_t rec, uint32_t moby, int wba
             pb, (w[0] != 0.0 || w[1] != 0.0 || w[2] != 0.0) ? 1 : 0);
 }
 
+/* ---- the late switch -----------------------------------------------------
+ *
+ * A sub-tick present before alpha 1 shows tick N-1's record set: a record
+ * whose moby first appeared in tick N's capture is left out, and a record of
+ * tick N-1's queue whose moby the capture of tick N no longer saw (evicted:
+ * a despawn) is replayed from that queue, its moby's bytes staged at the state
+ * tick N-1 drew (openpete_interp_objs_find_evicted), so every channel of the
+ * replay reads that state and holds it. Alpha 1 shows tick N's set. A moby the
+ * cull merely stopped drawing is a visibility change and stays out of both. */
+static int reextract_record_pass(CPUState* cpu, const char* mat);
+static int s_late;              /* the present in flight shows tick N-1's set */
+static int s_late_ghost_pass;   /* the regular pass replays the despawned records */
+
+/* Staged moby spans of the present's despawned records, restored after their
+ * pass so no later pass of the present reads them. */
+#define LATE_STAGE_MAX 256
+#define LATE_STAGE_BYTES 256u
+static struct { uint8_t* span; uint32_t len; uint8_t saved[LATE_STAGE_BYTES]; } s_late_stage[LATE_STAGE_MAX];
+static int s_late_stage_n;
+
+/* Since startup: late presents, records left out as spawns, despawned records
+ * replayed, and despawned records refused (no span could be staged). */
+static unsigned long s_late_presents, s_late_deferred, s_late_ghosts, s_late_refused;
+/* Late presents whose set differs from tick N's, and the two counts as the
+ * present began, which set_late(0) compares against. */
+static unsigned long s_late_changed, s_late_mark_d, s_late_mark_g;
+
+/** @brief Print the late-switch counts at exit under OPENPETE_LATE_CENSUS. */
+static void moby_late_report(void) {
+    fprintf(stderr, "[late-switch] kind=moby presents=%lu changed=%lu deferred=%lu held=%lu refused=%lu "
+                    "evdrop=%lu\n",
+            s_late_presents, s_late_changed, s_late_deferred, s_late_ghosts, s_late_refused,
+            openpete_interp_objs_evicted_dropped());
+}
+
+/** @brief Whether OPENPETE_LATE_CENSUS is set to a nonzero value, read once; registers the exit report.
+ *
+ * @return 1 when on, else 0. */
+static int moby_late_census_on(void) {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = getenv("OPENPETE_LATE_CENSUS");
+        s = (e && *e && *e != '0');
+        if (s) atexit(moby_late_report);
+    }
+    return s;
+}
+
+void moby_native_set_late(int on) {
+    if (s_late && !on && (s_late_deferred != s_late_mark_d || s_late_ghosts != s_late_mark_g)) s_late_changed++;
+    s_late = on ? 1 : 0;
+    if (s_late) {
+        s_late_presents++;
+        s_late_mark_d = s_late_deferred;
+        s_late_mark_g = s_late_ghosts;
+        (void)moby_late_census_on();
+    }
+}
+
+int moby_native_late_active(void) { return s_late && !s_rec_ref_prev; }
+
+int moby_native_late_spawned(uint32_t moby) {
+    if (!s_late || s_late_ghost_pass || s_rec_ref_prev || moby < 0x80000000u) return 0;
+    if (!openpete_interp_objs_spawned_last_tick(moby_interp_find(moby))) return 0;
+    s_late_deferred++;
+    return 1;
+}
+
+int moby_native_late_ghost_admit(uint32_t moby) {
+    if (!s_late || moby < 0x80000000u || moby_interp_find(moby)) return 0;
+    const openpete_interp_obj_t* e = openpete_interp_objs_find_evicted(moby_interp_key(moby));
+    if (!e || !e->blob_len) return 0;
+    for (int i = 0; i < s_late_stage_n; i++)
+        if (s_late_stage[i].len && openpete_subtick_host_ptr(moby) == s_late_stage[i].span) return 1;
+    uint8_t* span = (uint8_t*)openpete_subtick_view_stage(moby, e->blob_len);
+    if (!span || e->blob_len > LATE_STAGE_BYTES || s_late_stage_n >= LATE_STAGE_MAX) {
+        s_late_refused++;
+        return 0;
+    }
+    memcpy(s_late_stage[s_late_stage_n].saved, span, e->blob_len);
+    s_late_stage[s_late_stage_n].span = span;
+    s_late_stage[s_late_stage_n].len = e->blob_len;
+    s_late_stage_n++;
+    memcpy(span, e->curr, e->blob_len);
+    s_late_ghosts++;
+    return 1;
+}
+
+void moby_native_late_unstage(void) {
+    for (int i = s_late_stage_n - 1; i >= 0; i--)
+        memcpy(s_late_stage[i].span, s_late_stage[i].saved, s_late_stage[i].len);
+    s_late_stage_n = 0;
+}
+
+int moby_native_prev_cull_cam_pos(int32_t out[3]) {
+    if (!rec_prev_usable()) return 0;
+    for (int i = 0; i < 3; i++) out[i] = s_rec_prev.cam_pos[i];
+    return 1;
+}
+
+/** @brief Whether a moby is in the regular pass's handled set (s_reg_moby: its queue and the records it culled).
+ *
+ * @param m The Moby address.
+ * @return 1 when handled, else 0. */
+static int moby_reg_handled(uint32_t m) {
+    for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) return 1;
+    return 0;
+}
+
+/** @brief On a late present, replay the previous queue's records whose moby despawned in the newest tick, as a second regular pass.
+ *
+ * Runs after the regular pass has set s_reg_moby. The previous queue swaps in
+ * as for a held cut (moby_native_replay_prev_queue), reextract_record_list
+ * lists only its despawned records that pass did not handle and stages each
+ * one's moby at its evicted state, and the pass walks and pushes them; the
+ * staged spans are restored and the queue swaps back after.
+ * @param cpu The guest CPU state, read only.
+ * @return The records replayed. */
+static int moby_late_ghost_reextract(CPUState* cpu) {
+    if (!moby_native_late_active() || !rec_prev_usable()) return 0;
+    if (!moby_native_replay_prev_queue(1)) return 0;
+    s_late_ghost_pass = 1;
+    const int n = reextract_record_pass(cpu, "REG");
+    s_late_ghost_pass = 0;
+    moby_native_late_unstage();
+    moby_native_replay_prev_queue(0);
+    return n;
+}
+
+/** @brief Whether the OPENPETE_LATE_TRACE window covers the present in flight; parses the variable on the first call.
+ *
+ * @return 1 when a line prints for this present, else 0. */
+static int moby_late_trace_on(void) {
+    static unsigned lo = 1u, hi = 0u;
+    static int parsed;
+    if (!parsed) {
+        parsed = 1;
+        const char* e = getenv("OPENPETE_LATE_TRACE");
+        unsigned a = 0, b = 0;
+        if (e && sscanf(e, "%u:%u", &a, &b) == 2 && a <= b) { lo = a; hi = b; }
+    }
+    const unsigned k = openpete_feed_key_now();
+    return lo <= hi && k >= lo && k <= hi;
+}
+
+/** @brief Print one `[late-moby]` line (moby_native_late_trace's form).
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param moby The record's moby.
+ * @param cx The centroid X of its projected vertices.
+ * @param cy The centroid Y.
+ * @param n Its projected vertex count.
+ * @param pass The pass's label.
+ * @param ghost Nonzero for a despawned record a late present replays. */
+static void moby_late_trace_line(CPUState* cpu, uint32_t moby, double cx, double cy, int n,
+                                 const char* pass, int ghost) {
+    const unsigned k = openpete_feed_key_now();
+    double w[3];
+    moby_replay_world_offset(moby, w);
+    for (int i = 0; i < 3; i++)
+        w[i] += (double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u * (uint32_t)i);
+    fprintf(stderr, "[late-moby vbl=%u leg=inter a=%.4f src=%s pass=%s] m=%08x cls=%03x n=%d "
+                    "c=(%.3f,%.3f) w=(%.3f,%.3f,%.3f)\n",
+            k, s_rc_alpha, ghost ? "ghost" : (s_rec_ref_prev ? "held" : "curr"), pass, moby,
+            (unsigned)cpu->read_half(moby + game_layout.moby.class_off), n, cx, cy, w[0], w[1], w[2]);
+}
+
+/** @brief Print one replayed record's drawn state under OPENPETE_LATE_TRACE (moby_native_late_trace's line, the pass's material as its label).
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param moby The record's moby.
+ * @param p Its projected vertices.
+ * @param n Their count. */
+static void moby_late_trace(CPUState* cpu, uint32_t moby, const proj_xy* p, int n) {
+    if (!moby_late_trace_on() || n <= 0) return;
+    double cx = 0.0, cy = 0.0;
+    for (int j = 0; j < n; j++) { cx += p[j].sx; cy += p[j].sy; }
+    moby_late_trace_line(cpu, moby, cx / n, cy / n, n, s_cur_mat ? s_cur_mat : "-", s_late_ghost_pass);
+}
+
+void moby_native_late_trace(CPUState* cpu, uint32_t moby, const float (*v)[2], int n,
+                            const char* pass, int ghost) {
+    if (!moby_late_trace_on() || n <= 0) return;
+    double cx = 0.0, cy = 0.0;
+    for (int j = 0; j < n; j++) { cx += v[j][0]; cy += v[j][1]; }
+    moby_late_trace_line(cpu, moby, cx / n, cy / n, n, pass, ghost);
+}
+
 /* Records reextract_record_list dropped on a hold whose previous tick did not show them, since startup. */
 static uint32_t s_hold_unshown_drops;
 
@@ -14591,10 +14782,42 @@ static int reextract_record_list(CPUState* cpu, int is_spec, uint32_t* recs, uin
         moby_record_t R;
         if (!moby_game.read_record(cpu, rec, &R)) break;   /* queue terminator */
         if (R.moby < 0x80000000u || nm >= MAX_RECORDS || rex_hold_unshown_drop(cpu, R.moby)) continue;
+        if (s_late_ghost_pass ? (moby_reg_handled(R.moby) || !moby_native_late_ghost_admit(R.moby))
+                              : moby_native_late_spawned(R.moby)) continue;
         recs[nm] = rec; mobys[nm] = R.moby; nm++;
     }
-    if (!is_spec && !moby_game.host_reveal) nm = trail_replay_admit(cpu, recs, mobys, nm);
+    if (!is_spec && !moby_game.host_reveal && !s_late_ghost_pass) nm = trail_replay_admit(cpu, recs, mobys, nm);
     return nm;
+}
+
+/** @brief The regular sub-tick pass's tail: the handled set the specular pass dedups against, then the widescreen reveal and trailing-edge records.
+ *
+ * The handled set (s_reg_moby) is the records the pass queued plus the mobys
+ * its occlusion test culled: a moby in both queues counts as handled either
+ * way, so the specular pass never draws it a second time. The reveal
+ * re-projects through the interpolated camera the off-4:3 mobys the 4:3 cone
+ * cull skipped, which the canonical feed host-builds
+ * (append_revealed_regular), so they exist on sub-tick presents too; it
+ * dedups against the queued records and is inert at 4:3, where the
+ * trailing-edge records (append_trailing_regular) cover the mobys the newest
+ * tick's cone dropped and the present's camera still sees. The late switch's
+ * despawned-record pass (moby_late_ghost_reextract) runs none of it: its
+ * records join the set already drawn.
+ * @param cpu The guest CPU state, read only.
+ * @param culled The mobys the pass's occlusion test culled.
+ * @param culled_n Their count. */
+static void rex_regular_tail(CPUState* cpu, const uint32_t* culled, int culled_n) {
+    if (s_late_ghost_pass) return;
+    s_reg_moby_n = 0;
+    for (int r = 0; r < s_nrecs && s_reg_moby_n < MAX_RECORDS; r++)
+        s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
+    for (int c = 0; c < culled_n && s_reg_moby_n < MAX_RECORDS; c++)
+        s_reg_moby[s_reg_moby_n++] = culled[c];
+    moby_qmiss_census(cpu, 1);
+    append_revealed_regular(cpu);
+    const uint64_t t_tr = mst_now();
+    append_trailing_regular(cpu);
+    mst_add(MST_TRAIL, t_tr);
 }
 
 /** @brief The centre view Z a sub-tick present's colour fade reads for a moby (fade_snap_present_z's tz_present).
@@ -14793,6 +15016,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         moby_record_size_at(cpu, mobys[i]), ctr[2] * 4.0);
             }
         }
+        moby_late_trace(cpu, mobys[i], s_proj + off, got);
         if (ver_check) occl_verify_end(mobys[i], s_proj + off, got);
         else occl_cache_update(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
@@ -14818,31 +15042,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_proj_n += got; s_nrecs++;
     }
     mst_add(MST_REC, t_rec);
-    if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */
-        s_reg_moby_n = 0;
-        for (int r = 0; r < s_nrecs && s_reg_moby_n < MAX_RECORDS; r++)
-            s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
-        /* Culled REG mobys count as "handled" too - without this, a moby in
-         * BOTH queues would slip past the dedup and draw via SPEC anyway. */
-        for (int c = 0; c < culled_n && s_reg_moby_n < MAX_RECORDS; c++)
-            s_reg_moby[s_reg_moby_n++] = culled_moby[c];
-        moby_qmiss_census(cpu, 1);
-        /* Widescreen reveal on SUB-TICKS too: the render set above is the .s
-         * cull-record queue, which never contains the off-4:3 mobys the 4:3
-         * cone cull skipped - the canonical feed host-builds those via
-         * append_revealed_regular, so without this they existed ONLY on
-         * canonical presents and flickered at high FPS in wide aspects.
-         * Same builder, re-projected through the
-         * interpolated g_Camera; dedups vs s_recs (the queue set - an
-         * occl-culled off-4:3 queue moby may re-enter here, which is merely
-         * redundant draw work, never a wrong pixel). Inert at 4:3, where the
-         * trailing-edge records cover the mobys the newest tick's cone
-         * dropped and the present's camera still sees. */
-        append_revealed_regular(cpu);
-        { const uint64_t t_tr = mst_now();
-          append_trailing_regular(cpu);
-          mst_add(MST_TRAIL, t_tr); }
-    }
+    if (!is_spec) rex_regular_tail(cpu, culled_moby, culled_n);
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
     push_scene_moby(cpu);
     occl_pass_census(mat, 1);
@@ -14941,6 +15141,7 @@ static void moby_reextract_body(CPUState* cpu) {
         nm = reextract_record_pass(cpu, "REG");
         reg_walk = s_gout.n;
         reg_verts = s_proj_n;
+        moby_late_ghost_reextract(cpu);
     }
     moby_kind_census("sub", "anim", nm, s_occl_culled - occl0, reg_verts, reg_walk);
     rec_held_queue_census(nm, reg_walk);

@@ -77,6 +77,63 @@ void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
  * @return 1 while the previous queue is swapped in, else 0. */
 int moby_native_replay_prev_queue(int on);
 
+/** @brief Make the sub-tick replay show tick N-1's record set (the late switch), or tick N's.
+ *
+ * On a present before alpha 1: a record whose moby first appeared in tick N's
+ * object capture is left out (moby_native_late_spawned), and the previous
+ * queue's records whose moby that capture evicted are replayed at the state
+ * tick N-1 drew (moby_native_late_ghost_admit). Set by the orchestrator around
+ * moby_reextract; a held cut's previous-queue replay already shows tick N-1's
+ * set and ignores it.
+ * @param on Nonzero on a present before alpha 1 with the switch enabled. */
+void moby_native_set_late(int on);
+
+/** @brief Whether the present in flight shows tick N-1's record set (moby_native_set_late, outside a held cut).
+ *
+ * @return 1 when active, else 0. */
+int moby_native_late_active(void);
+
+/** @brief Whether a late present leaves a queued record out because its moby first appeared in tick N's capture; counts the deferral.
+ *
+ * @param moby The record's moby.
+ * @return 1 when the record is left out, else 0. */
+int moby_native_late_spawned(uint32_t moby);
+
+/** @brief Whether a late present replays a previous-queue record whose moby tick N's capture evicted, staging the moby's bytes at that state.
+ *
+ * The moby's span is staged in the sub-tick view and overwritten with the
+ * evicted entry's curr (its state at tick N-1) until moby_native_late_unstage;
+ * a moby the table still tracks, one with no evicted entry, or a span the view
+ * refuses is not replayed.
+ * @param moby The record's moby.
+ * @return 1 when the record replays, else 0. */
+int moby_native_late_ghost_admit(uint32_t moby);
+
+/** @brief Restore every moby span moby_native_late_ghost_admit staged to the bytes it held before. */
+void moby_native_late_unstage(void);
+
+/** @brief Print one replayed record's drawn state under OPENPETE_LATE_TRACE=<lo>:<hi> (tests/harness/check_late_switch_subtick.sh).
+ *
+ * `[late-moby vbl=<v> leg=inter a=<alpha> src=curr|ghost|held pass=<pass>]
+ * m=<moby> cls=<class> n=<verts> c=(<x>,<y>) w=(<x>,<y>,<z>)` when the feed
+ * key lies in the window: the record's source, its projected vertex count and
+ * centroid, and the world position it is drawn at (the position words the view
+ * resolves plus the replay's own-motion offset).
+ * @param cpu The guest CPU state, read only.
+ * @param moby The record's moby.
+ * @param v Its projected vertices, screen X and Y.
+ * @param n Their count; 0 prints nothing.
+ * @param pass The pass's label.
+ * @param ghost Nonzero for a despawned record a late present replays. */
+void moby_native_late_trace(CPUState* cpu, uint32_t moby, const float (*v)[2], int n,
+                            const char* pass, int ghost);
+
+/** @brief The camera position the previous canonical epoch's cull composed its records against.
+ *
+ * @param out Receives the position when the previous queue copy is usable.
+ * @return 1 when written, else 0. */
+int moby_native_prev_cull_cam_pos(int32_t out[3]);
+
 /** @brief The object-capture stamp current at the last canonical tick's moby cull, the draw stamp of that tick.
  *
  * An object whose curr is stamped after it rolled after that draw.

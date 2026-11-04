@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 20d815685ad097300cae065c2e494c3b4e1e2843
+# head: d0cb33d80b0e333f46318b9b9ca3abd8b86bfc25
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -109,7 +109,7 @@ games/common/renderer/moby.c	moby_native_pass	49	0
 games/common/renderer/moby.c	moby_reextract_body	49	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_shaded	167	0	
-games/common/renderer/moby.c	reextract_record_pass	106	0	
+games/common/renderer/moby.c	reextract_record_pass	100	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
 games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0	
@@ -120,7 +120,7 @@ games/common/renderer/moby.c	walk_prologue	38	0
 games/common/renderer/moby.c	walk_records	356	0	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0	
 games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0	
-games/common/renderer/moby_game_spyro23.c	s23_simple_decode	99	0	
+games/common/renderer/moby_game_spyro23.c	s23_simple_decode	101	0	
 games/common/renderer/moby_game_spyro23.c	s23_special_face	45	0	
 games/common/renderer/native_gte.c	ngte_walk_prims	48	0	
 games/common/renderer/player.c	pair_lists	27	0	

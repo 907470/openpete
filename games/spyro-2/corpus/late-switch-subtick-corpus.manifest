@@ -1,0 +1,14 @@
+# late-switch-subtick-corpus.manifest - rows of tests/harness/check_late_switch_subtick.sh.
+#   <bk2> | <lo>-<hi> | kind=part|moby [cls=<hex>] [held=<n>] [deferred=<n>] [reused=<n>]
+#                       [vtol=<px>] [ctol=<px>] [stol=<units>]
+#   bk2   a movie under games/spyro-2/bk2
+#   span  intermediate-capture VBLs, two apart; the row also captures lo - 2
+#
+# Crush's Dungeon, the rocks and smoke Crush's slam throws: the particle pool
+# runs near full (232-255 of 256 slots), so records free, respawn and take
+# stolen slots every tick.
+crushs-dungeon.bk2 | 2121-2129 | kind=part held=1 deferred=1 reused=1
+#
+# The same slam's rock mobys (class 0x215), one to four of which despawn per
+# tick.
+crushs-dungeon.bk2 | 2139-2147 | kind=moby cls=0x215 held=1 deferred=0 reused=0

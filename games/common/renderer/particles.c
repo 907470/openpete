@@ -47,6 +47,8 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
+#include "openpete_subtick_view.h"  /* openpete_subtick_view_active: the trace's leg */
+#include "openpete_fiber.h"         /* openpete_feed_key_now: the trace's window */
 #include "renderer/particles.h"
 #include "renderer/orchestrator.h"  /* the canonical-render epoch */
 #include "renderer/cut_guard.h"     /* cut_held_set_pick, cut_census_held_set */
@@ -129,6 +131,7 @@ typedef struct {
     uint32_t  rec;        /* the record that appended it, 0 when unpaired */
     uint32_t  w0, w1, w2; /* the record's position words as the tick read them */
     int       owner;      /* player_hide_particle_owner of the record that appended it */
+    uint32_t  serial;     /* the record's allocation serial at the draw (particles_slot_serial) */
 } part_item;
 
 /* The rebase of one captured primitive onto the sub-tick pose: its vertices
@@ -142,7 +145,11 @@ typedef struct {
     uint8_t active;       /* 1 = draw bx/by (when nb) and take `depth` */
     uint8_t dsz;          /* 1 = the shown size byte differs from the tick's */
     uint8_t nb;           /* how many of bx/by part_build filled at the shown state */
+    uint8_t col_on;       /* 1 = feed col[] in place of the primitive's colour words */
+    uint8_t verdict;      /* part_record_pair's verdict (PART_PAIR_*) */
     float bx[4], by[4];
+    double shown[5];      /* the shown record point (X, Y, Z halfwords), size and angle bytes */
+    uint32_t col[2];      /* the shown colour words, 24-bit, per endpoint (one for a polygon) */
 } part_rebase;
 
 static part_item   s_item_buf[2][PART_MAX_PRIMS];
@@ -161,6 +168,8 @@ static struct { part_item* item; int n; uint32_t epoch; op_time_t ref_ns; } s_it
  * s_item_ref_cut and its curr otherwise. */
 static int       s_item_ref_prev;
 static op_time_t s_item_ref_cut;
+/* The set a held or late present shows (cut_held_set_pick), or -1 outside one. */
+static int s_item_held = -1;
 
 /** @brief Exchange the captured set, its epoch and stamp for the previous epoch's. */
 static void part_item_swap(void) {
@@ -191,6 +200,7 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].rec = 0u;
     s_item[s_item_n].w0 = s_item[s_item_n].w1 = s_item[s_item_n].w2 = 0u;
     s_item[s_item_n].owner = 0;
+    s_item[s_item_n].serial = 0u;
     s_item[s_item_n].nb = 0;
     s_item[s_item_n].verr_n = 0;
     memset(&s_reb[s_item_n], 0, sizeof s_reb[0]);
@@ -384,6 +394,8 @@ typedef struct {
     double size;     /* byte 2 of the second position word */
     double ang;      /* byte 3, lerped along the shortest arc of the 256-step circle */
     double hgt;      /* byte 3, lerped as a magnitude */
+    uint32_t col[2]; /* the shown colour words, 24-bit, per endpoint; valid when col_on */
+    int col_on;      /* 1 when col replaces the primitive's colour words */
 } part_state;
 
 /** @brief The state the captured words hold: no displacement, the tick's own bytes.
@@ -394,6 +406,8 @@ static void part_state_tick(const part_item* it, part_state* st) {
     st->off[0] = st->off[1] = st->off[2] = 0.0;
     st->size = (double)((it->w1 >> 16) & 0xFFu);
     st->ang = st->hgt = (double)((it->w1 >> 24) & 0xFFu);
+    st->col[0] = st->col[1] = 0u;
+    st->col_on = 0;
 }
 
 /** @brief Builds a fixed-layer billboard's four corners in float: the PART_ROT_CLASS offsets about a view-space point the record holds.
@@ -1356,6 +1370,8 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v, int reveal, int 
      * not reach keeps the depth 1.0 (the near guard) that part_prim_sink gave
      * it. */
     s_item_n += s_syn_n;
+    for (int k = 0; k < s_item_n; k++)
+        s_item[k].serial = s_item[k].rec ? particles_slot_serial(s_item[k].rec) : 0u;
 }
 
 /** @brief Whether the native particle feed runs; OPENPETE_PARTICLES starting with '0' suppresses it alone.
@@ -1393,6 +1409,54 @@ static int part_feed_enabled(void) {
 /* A pair spanning more than this is a discontinuity rather than motion. */
 #define PART_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
 
+/* The record offsets of the colour words the routine copies into the
+ * primitive unchanged: every class but PART_TWO_POINT_CLASS stores the word at
+ * +0xC as the primitive's colour word (Spyro 2 partsdraw.s:164,180 for the
+ * fixed layer, :272,291 PART_SPIN_CLASS, :435,452 PART_RECT_CLASS, :579,597
+ * PART_ROT_CLASS, :726-728 PART_DOT_CLASS); the LINE_G2 of
+ * PART_TWO_POINT_CLASS takes its two endpoint colours from +0x10 and +0x14
+ * (:668,676,685-687), +0xC holding that class's second point. */
+#define PART_COL_OFF      0x0Cu
+#define PART_COL2_OFF_A   0x10u
+#define PART_COL2_OFF_B   0x14u
+
+/** @brief The 24-bit colour word a record shows at phase `t` from its previous to its current snapshot, each byte lerped and rounded.
+ *
+ * @param pv The previous snapshot's word.
+ * @param cv The current snapshot's word.
+ * @param t The phase, 0 at the previous state and 1 at the current.
+ * @return The colour word, bits 0-23. */
+static uint32_t part_col_lerp(uint32_t pv, uint32_t cv, double t) {
+    uint32_t out = 0u;
+    for (int k = 0; k < 3; k++) {
+        const double a = (double)((pv >> (8 * k)) & 0xFFu), b = (double)((cv >> (8 * k)) & 0xFFu);
+        int v = (int)floor(a + (b - a) * t + 0.5);
+        v = v < 0 ? 0 : (v > 255 ? 255 : v);
+        out |= (uint32_t)v << (8 * k);
+    }
+    return out;
+}
+
+/** @brief Sets the shown colour words of a record of the previous epoch's set that rolled between that set's draw and the newest capture.
+ *
+ * The set's primitive carries the pair's prev colour words; the present shows
+ * them lerped toward curr's by alpha.
+ * @param o The record's snapshot pair; its blob holds the record from offset 0.
+ * @param cls The record's class.
+ * @param alpha The present's phase.
+ * @param st Receives the colour words and col_on. */
+static void part_state_colour(const openpete_interp_obj_t* o, int cls, double alpha, part_state* st) {
+    const uint32_t oa = cls == PART_TWO_POINT_CLASS ? PART_COL2_OFF_A : PART_COL_OFF;
+    const uint32_t ob = cls == PART_TWO_POINT_CLASS ? PART_COL2_OFF_B : PART_COL_OFF;
+    if ((uint32_t)o->blob_len < ob + 4u) return;
+    uint32_t pa, ca, pb, cb;
+    memcpy(&pa, o->prev + oa, 4); memcpy(&ca, o->curr + oa, 4);
+    memcpy(&pb, o->prev + ob, 4); memcpy(&cb, o->curr + ob, 4);
+    st->col[0] = part_col_lerp(pa, ca, alpha);
+    st->col[1] = part_col_lerp(pb, cb, alpha);
+    st->col_on = 1;
+}
+
 /* The verdict of the pairing: the primitive is lerped only on PART_PAIR_LERP,
  * and holds its current pose otherwise. PART_PAIR_CEIL is a PART_PAIR_REUSE
  * decided by PART_REUSE_CEILING alone, kept apart for the census. */
@@ -1424,6 +1488,13 @@ enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2, PART_PAIR_CE
  * filled). An equal nonzero serial is one allocation, so its record moved
  * however far it moved, and lerps (the Spyro 3 Dino Mines bubbles, type 0x3E,
  * move 0x15E per tick along their path).
+ *
+ * While the previous epoch's set is replayed (s_item_ref_prev), its captured
+ * words are the state that set's draw read: the pair's prev for a slot that
+ * rolled after s_item_ref_cut, which shows prev lerped toward curr by alpha
+ * on every channel, the colour words included (part_state_colour), and the
+ * pair's curr for a slot that did not, which the newest capture also holds and
+ * which therefore shows the captured words at every alpha.
  * @param it The paired captured primitive.
  * @param alpha The present's phase between the two ticks.
  * @param st Receives the state shown; the tick's own unless the verdict is
@@ -1437,6 +1508,10 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns)
         return PART_PAIR_NONE;
     if ((uint32_t)o->blob_len < pos + 12u) return PART_PAIR_NONE;
+    /* A record of the previous epoch's set whose slot did not roll after that
+     * set's draw shows curr, the state the newest capture also holds: it does
+     * not move over the interval. */
+    if (s_item_ref_prev && o->curr_ns <= s_item_ref_cut) return PART_PAIR_LERP;
     if (o->curr_ns - o->prev_ns > PART_PAIR_STALE_NS) return PART_PAIR_NONE;
     uint16_t psel, csel;
     memcpy(&psel, o->prev + game_layout.particles.sel_off, 2);
@@ -1452,10 +1527,10 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     uint16_t ph[3], ch[3];   /* X, Y, Z: the first word's halves, the second's low half */
     memcpy(ph, o->prev + pos, 6);
     memcpy(ch, o->curr + pos, 6);
-    /* A record of the previous epoch's set drew the slot's prev state when the
-     * slot rolled after that draw: the displayed state is the same, and the
-     * offsets are measured from prev, so they gain curr - prev. */
-    const double from_prev = (s_item_ref_prev && o->curr_ns > s_item_ref_cut) ? 1.0 : 0.0;
+    /* A record of the previous epoch's set drew the slot's prev state (the slot
+     * rolled after that draw, tested above): the displayed state is the same,
+     * and the offsets are measured from prev, so they gain curr - prev. */
+    const double from_prev = s_item_ref_prev ? 1.0 : 0.0;
     /* A fixed-layer record's halfwords are signed view coordinates, which
      * cross zero; the difference wraps to the shorter way round. */
     const int fixed = (uint32_t)it->cls >= game_layout.particles.fixed_layer_class;
@@ -1481,6 +1556,7 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
     st->ang = ca + da * rest;
     st->hgt = ca + (pa - ca) * rest;
     st->size = cs + (ps - cs) * rest;
+    if (s_item_ref_prev) part_state_colour(o, it->cls, alpha, st);
     return PART_PAIR_LERP;
 }
 
@@ -1516,6 +1592,7 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
     if (!it->rec) { s_reb_stat[1][it->cls & 0xF]++; return; }   /* held at the tick's pose */
     part_state st;
     const int verdict = part_record_pair(it, alpha, &st);
+    r->verdict = (uint8_t)verdict;
     s_reb_stat[verdict == PART_PAIR_LERP ? 0 : 1][it->cls & 0xF]++;
     if (verdict == PART_PAIR_REUSE || verdict == PART_PAIR_CEIL) s_reb_stat[2][it->cls & 0xF]++;
     if (verdict == PART_PAIR_CEIL) s_reb_stat[3][it->cls & 0xF]++;
@@ -1532,6 +1609,14 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
     }
     r->active = 1;
     r->dsz = (st.size != (double)((it->w1 >> 16) & 0xFFu)) ? 1u : 0u;
+    r->shown[0] = (double)(it->w0 & 0xFFFFu) + st.off[0];
+    r->shown[1] = (double)(it->w0 >> 16) + st.off[1];
+    r->shown[2] = (double)(it->w1 & 0xFFFFu) + st.off[2];
+    r->shown[3] = st.size;
+    r->shown[4] = st.ang;
+    r->col_on = (uint8_t)st.col_on;
+    r->col[0] = st.col[0];
+    r->col[1] = st.col[1];
     r->nb = (uint8_t)part_build(cpu, v, it, &st, r->bx, r->by);
     if (s_reb_dbg >= 2)
         fprintf(stderr, "[part-reb f=%u rec=%08X c=%d v=%d off=(%.2f,%.2f,%.2f) "
@@ -1780,6 +1865,78 @@ static int part_drawn_vertices(const part_item* it, const part_rebase* r, int n,
     return bx != NULL;
 }
 
+/* OPENPETE_LATE_TRACE=<lo>:<hi>: one line per fed primitive on every present
+ * whose feed key lies in [lo, hi] (tests/harness/check_late_switch_subtick.sh).
+ * Read once. */
+static unsigned s_late_lo = 1u, s_late_hi;
+
+/** @brief Whether the OPENPETE_LATE_TRACE window covers the present in flight; parses the variable on the first call.
+ *
+ * @return 1 when a line prints for this present, else 0. */
+static int part_late_trace_on(void) {
+    static int parsed;
+    if (!parsed) {
+        parsed = 1;
+        const char* e = getenv("OPENPETE_LATE_TRACE");
+        unsigned lo = 0, hi = 0;
+        if (e && sscanf(e, "%u:%u", &lo, &hi) == 2 && lo <= hi) { s_late_lo = lo; s_late_hi = hi; }
+    }
+    const unsigned k = openpete_feed_key_now();
+    return s_late_lo <= s_late_hi && k >= s_late_lo && k <= s_late_hi;
+}
+
+/** @brief Prints the state one fed primitive shows, under OPENPETE_LATE_TRACE.
+ *
+ * `[late-part vbl=<v> leg=canon|inter a=<alpha> ep=<set> new=<newest>]
+ * id=<slot>:<serial> cls=<c> st=<x>,<y>,<z>,<size>,<angle> c=<rgb0>,<rgb1>
+ * v=<x>,<y>;...`: the epoch of the set drawn and of the newest captured set,
+ * the record's pool slot and allocation serial (slot -1 for a primitive
+ * paired with no record), the record point's halfwords, size and angle bytes
+ * as shown (the captured words on a canonical feed or an inactive rebase), the
+ * colour words fed and the fed vertices.
+ * @param it The captured primitive.
+ * @param r Its rebase.
+ * @param x The fed vertex X.
+ * @param y The fed vertex Y.
+ * @param n The vertex count.
+ * @param c0 The first fed colour word.
+ * @param c1 The last fed colour word. */
+static void part_late_trace(const part_item* it, const part_rebase* r, const float* x,
+                            const float* y, int n, uint32_t c0, uint32_t c1) {
+    if (!part_late_trace_on()) return;
+    double st[5];
+    if (r->active) memcpy(st, r->shown, sizeof st);
+    else {
+        st[0] = (double)(it->w0 & 0xFFFFu); st[1] = (double)(it->w0 >> 16);
+        st[2] = (double)(it->w1 & 0xFFFFu); st[3] = (double)((it->w1 >> 16) & 0xFFu);
+        st[4] = (double)((it->w1 >> 24) & 0xFFu);
+    }
+    const int inter = openpete_subtick_view_active();
+    const uint32_t newest = (s_item_held == CUT_HELD_PREV) ? s_item_prev.epoch : s_item_epoch;
+    char vb[160];
+    int o = 0;
+    for (int k = 0; k < n && o < (int)sizeof vb - 24; k++)
+        o += snprintf(vb + o, sizeof vb - (size_t)o, "%s%.3f,%.3f", k ? ";" : "", (double)x[k], (double)y[k]);
+    fprintf(stderr, "[late-part vbl=%u leg=%s a=%.4f ep=%u new=%u] id=%d:%u cls=%d "
+                    "st=%.3f,%.3f,%.3f,%.3f,%.3f c=%06x,%06x v=%s\n",
+            openpete_feed_key_now(), inter ? "inter" : "canon", inter ? s_feed_alpha : 1.0,
+            s_item_epoch, newest, it->rec ? particles_slot(it->rec) : -1, it->serial, it->cls,
+            st[0], st[1], st[2], st[3], st[4], c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, vb);
+}
+
+/** @brief The four corner colours a polygon feeds: the primitive's, or the record's shown colour word on every corner when the rebase lerps it.
+ *
+ * A triangle fills the unread corner 3 with its last corner's colour.
+ * @param it The captured primitive.
+ * @param r Its rebase.
+ * @param c Receives the colour words. */
+static void part_quad_colours(const part_item* it, const part_rebase* r, uint32_t c[4]) {
+    const ngte_prim* p = &it->p;
+    if (r->active && r->col_on) { c[0] = c[1] = c[2] = c[3] = r->col[0]; return; }
+    const int last = p->nv - 1;
+    c[0] = p->rgb[0]; c[1] = p->rgb[1]; c[2] = p->rgb[2]; c[3] = p->rgb[last];
+}
+
 /** @brief Feeds a LINE_F2 or LINE_G2 primitive as the quad covering the pixels the GPU draws for it.
  *
  * The endpoints are part_drawn_vertices'; the quad is ngte_line_quad's, with
@@ -1796,11 +1953,13 @@ static void part_feed_line(const part_item* it, const part_rebase* r,
     const ngte_prim* p = &it->p;
     const uint32_t w1 = p->raw[1];
     const int stp = (int)((w1 >> 24) & 0x02u);
-    const uint32_t rgb0 = w1 & 0xFFFFFFu;
-    const uint32_t rgb1 = gouraud ? (p->raw[3] & 0xFFFFFFu) : rgb0;
+    const int col = r->active && r->col_on;
+    const uint32_t rgb0 = col ? r->col[0] : (w1 & 0xFFFFFFu);
+    const uint32_t rgb1 = gouraud ? (col ? r->col[1] : (p->raw[3] & 0xFFFFFFu)) : rgb0;
     float x[4], y[4], qx[4], qy[4];
     const int built = part_drawn_vertices(it, r, 2, x, y);
     part_vertex_place((int)(it - s_item), x, y, 2);
+    part_late_trace(it, r, x, y, 2, rgb0, rgb1);
     ngte_line_quad(x[0], y[0], x[1], y[1], built ? 0.0f : 0.5f, qx, qy);
     static const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     const uint32_t cc[4] = { rgb0, rgb1, rgb0, rgb1 };
@@ -1874,7 +2033,9 @@ static void part_feed_native(void) {
             part_vertex_place(i, x, y, 4);
             const float u[4] = { (float)p->u[0], (float)p->u[1], (float)p->u[2], (float)p->u[last] };
             const float vt[4] = { (float)p->v[0], (float)p->v[1], (float)p->v[2], (float)p->v[last] };
-            const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[last] };
+            uint32_t c[4];
+            part_quad_colours(it, r, c);
+            part_late_trace(it, r, x, y, 4, c[0], c[3]);
             s_fed_tris += (uint32_t)ngte_feed_flat_quad(x, y, u, vt, c, depth,
                                                         p->textured ? &tp : NULL, blend, p->nv);
         } else if ((p->code & 0xF8u) == 0x40u || (p->code & 0xF8u) == 0x50u) {
@@ -2032,8 +2193,6 @@ static void part_extent_census(double alpha) {
             openpete_frame, alpha, s_item_n, buf);
 }
 
-/* The set a held present shows (cut_held_set_pick), or -1 outside a hold. */
-static int s_item_held = -1;
 
 int particles_replay_prev(int on) {
     if (!on) {
@@ -2057,10 +2216,57 @@ int particles_replay_prev(int on) {
     return pick != CUT_HELD_EMPTY;
 }
 
+/* OPENPETE_LATE_CENSUS: over the presents that drew the previous epoch's set
+ * with the newest set captured (a late present or a held cut), the presents
+ * whose set differs from the newest by identity, the records held at their
+ * previous state (slot freed, reused or unpaired at the newest tick), and the
+ * newest set's records the present left out (a slot and serial the previous
+ * set does not hold), of which `reused` took a slot the previous set holds. */
+static unsigned long s_late_presents, s_late_changed, s_late_held, s_late_deferred, s_late_reused;
+
+/** @brief Print the late-switch counts at exit. */
+static void part_late_report(void) {
+    fprintf(stderr, "[late-switch] kind=part presents=%lu changed=%lu held=%lu deferred=%lu reused=%lu\n",
+            s_late_presents, s_late_changed, s_late_held, s_late_deferred, s_late_reused);
+}
+
+/** @brief Adds one present to the OPENPETE_LATE_CENSUS counts when it draws the previous epoch's set; reads the variable once.
+ *
+ * Runs after the rebase, whose verdicts name the held records. */
+static void part_late_census(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char* e = getenv("OPENPETE_LATE_CENSUS");
+        on = (e && *e && *e != '0');
+        if (on) atexit(part_late_report);
+    }
+    if (!on || s_item_held != CUT_HELD_PREV) return;
+    unsigned long held = 0, deferred = 0, reused = 0;
+    for (int i = 0; i < s_item_n; i++)
+        if (s_item[i].rec && s_reb[i].active && s_reb[i].verdict != PART_PAIR_LERP) held++;
+    for (int j = 0; j < s_item_prev.n; j++) {
+        const part_item* nw = &s_item_prev.item[j];
+        if (!nw->rec) continue;
+        int same = 0, slot = 0;
+        for (int i = 0; i < s_item_n && !same; i++) {
+            if (s_item[i].rec != nw->rec) continue;
+            slot = 1;
+            same = s_item[i].serial == nw->serial;
+        }
+        if (!same) { deferred++; reused += (unsigned long)slot; }
+    }
+    s_late_presents++;
+    s_late_changed += (held || deferred) ? 1u : 0u;
+    s_late_held += held;
+    s_late_deferred += deferred;
+    s_late_reused += reused;
+}
+
 /* Sub-tick re-extract of the captured particle set; see particles.h. */
 void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready_held(RP_PARTICLES, s_item_held)) return;
     if (bracketed) part_rebase_all(cpu, alpha);
+    part_late_census();
     s_feed_alpha = bracketed ? alpha : -1.0;
     part_extent_census(alpha);
     render_material_level_push(cpu);

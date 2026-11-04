@@ -2707,6 +2707,10 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LATCHED("MOBY_JUMP_HOLD", "Debug", "1",
         "Hold a replayed moby at its previous tick across a one-tick position "
         "jump (Spyro 2/3; 0 interpolates across it)."),
+    ENVROW_LATCHED("LATE_SWITCH", "Debug", "1",
+        "Sub-tick presents before alpha 1 draw the previous tick's particle "
+        "and moby records, the newest tick's at alpha 1 (Spyro 2/3; 0 draws "
+        "the newest tick's at every alpha)."),
     ENVROW_LATCHED("MOBY_MIRROR_HOLD", "Debug", "64",
         "Sub-tick hold threshold for a moby's one-tick turn, in byte angles "
         "(256 = one turn); 0 interpolates every interval."),

@@ -944,6 +944,9 @@ static s23_simple_queue* s_sq_prev = &s_sq_buf[1];
  * cull composed its deltas against. */
 static int     s_sq_replaying_prev;
 static int32_t s_sq_prev_cam[3];
+/* While a late present replays the previous copy's despawned records alone
+ * (s23_simple_late_ghosts). */
+static int     s_sq_ghost_only;
 
 /** @brief Exchange the current second-kind queue copy for the previous epoch's. */
 static void s23_simple_queue_swap(void) {
@@ -1033,6 +1036,30 @@ static long s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped, s_flat
 extern unsigned openpete_frame;
 
 #define S23_FLAT_SCRATCH 0x1F8003F0u
+
+/** @brief Whether a second-kind queue copy holds a record of moby @p moby.
+ *
+ * @param q The copy.
+ * @param moby The Moby address.
+ * @return 1 when held, else 0. */
+static int s23_simple_queued(const s23_simple_queue* q, uint32_t moby) {
+    for (int i = 0; i < q->qn; i++)
+        if (q->q[i][0] == moby) return 1;
+    return 0;
+}
+
+/** @brief Whether the decode skips a queued record for the late switch.
+ *
+ * A late present shows tick N-1's set: a moby new in tick N's capture is left
+ * out (moby_native_late_spawned), and the decode of the previous copy keeps
+ * only the mobys that capture evicted which the current copy does not hold,
+ * staging each (moby_native_late_ghost_admit).
+ * @param moby The record's moby.
+ * @return 1 when the record is skipped, else 0. */
+static int s23_simple_late_skip(uint32_t moby) {
+    if (!s_sq_ghost_only) return moby_native_late_spawned(moby);
+    return s23_simple_queued(s_sq_prev, moby) || !moby_native_late_ghost_admit(moby);
+}
 
 /** @brief Copies the cull's second-kind queue into the host queue s_sq.
  *
@@ -1740,6 +1767,7 @@ static int s23_simple_decode(CPUState* cpu) {
 
     for (int r = 0; r < s_sq->qn; r++) {
         uint32_t moby = s_sq->q[r][0];
+        if (s23_simple_late_skip(moby)) continue;
         /* The moby's own world displacement over the fraction of the tick this
          * present shows. The cull composed the record at the tick's position,
          * which both kinds encode directly, so without this term the record
@@ -1837,6 +1865,7 @@ static int s23_simple_decode(CPUState* cpu) {
         moby_simple_occl_audit(moby, (const float (*)[2])vscr, (const double (*)[3])vpos, nv);
 
         s23_simple_postrace(cpu, moby, (const float (*)[2])vscr, nv, R, rot, dmob);
+        moby_native_late_trace(cpu, moby, (const float (*)[2])vscr, nv, "SIM", s_sq_ghost_only);
 
         /* The face and colour lists, and the fade the near band applies
          * (mobydraw.s:4285-4346). */
@@ -1976,6 +2005,29 @@ static int s23_simple_decode(CPUState* cpu) {
     return emitted;
 }
 
+/** @brief On a late present, decode the previous copy's records whose moby despawned in the newest tick.
+ *
+ * The previous copy swaps in under its own cull's camera (as for a held cut's
+ * replay) and the decode keeps only the records moby_native_late_ghost_admit
+ * stages; the staged spans are restored and the copies swap back after.
+ * Needs the previous copy to be of the epoch before the current one.
+ * @param cpu The guest CPU state, read only.
+ * @return The number of triangles emitted. */
+static int s23_simple_late_ghosts(CPUState* cpu) {
+    if (!moby_native_late_active() || cut_held_set_pick(s_sq->epoch, s_sq_prev->epoch) != CUT_HELD_PREV ||
+        !moby_native_prev_cull_cam_pos(s_sq_prev_cam))
+        return 0;
+    s23_simple_queue_swap();
+    s_sq_replaying_prev = 1;
+    s_sq_ghost_only = 1;
+    const int n = s23_simple_decode(cpu);
+    s_sq_ghost_only = 0;
+    s_sq_replaying_prev = 0;
+    s23_simple_queue_swap();
+    moby_native_late_unstage();
+    return n;
+}
+
 /** @brief A sub-tick present's replay of the second kind: the captured queue decoded again under the present's camera.
  *
  * Makes no call into the game's draw. During a held cut's previous-queue
@@ -2011,6 +2063,7 @@ static int s23_simple_replay(CPUState* cpu) {
     }
     if (held && pick == CUT_HELD_PREV) s23_simple_queue_swap();
     s_sq_replaying_prev = 0;
+    if (!held) s23_simple_late_ghosts(cpu);
     /* The replay's own census: the queue it read and what that queue decoded
      * to. The pass census covers the canonical tick alone, so without this a
      * replay of a queue no canonical pass built this tick reads as silence. */

@@ -557,6 +557,16 @@ static void cam_dbg_present(const uint8_t* cam, const rx_camera_t* rc, int paire
     cam_dbg_line("RX-curr", curr->data + curr->region_offsets[cdbg_region]);
 }
 
+/** @brief Whether a sub-tick present before alpha 1 shows tick N-1's particle and moby sets: OPENPETE_LATE_SWITCH, default on, read once.
+ *
+ * 0 shows tick N's set at every alpha, for a same-binary A/B.
+ * @return Nonzero when the switch applies. */
+static int late_switch_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_LATE_SWITCH"); v = (e && *e) ? (*e != '0') : 1; }
+    return v;
+}
+
 /** @brief Composes one sub-tick present: brackets the camera between the tick pair, then runs every feeder's re-extract in draw order.
  *
  * @param cpu_v The guest CPUState, as the void pointer game_reextract_view_install's callback takes. */
@@ -583,6 +593,12 @@ static void game_reextract_body(void* cpu_v) {
     const int cam_cut   = rc.br.cut;
     const int hold      = rc.br.hold;
     const double alpha  = rc.br.alpha;
+    /* The late switch: before alpha 1 the present shows tick N-1's set of
+     * particle and moby records (paired records lerp, records gone or reused
+     * at tick N hold their N-1 state, records new at tick N are absent), and
+     * tick N's set at alpha 1, so membership changes where every other channel
+     * reaches tick N. A held cut shows tick N-1's sets already. */
+    const int late = bracketed && alpha < 1.0 && !hold && late_switch_enabled();
     /* The tick side of the bracket, kept for the moby replay: the cull composed
      * every animated record against this camera, so the replay needs it to turn
      * those records onto the interpolated one. */
@@ -625,7 +641,9 @@ static void game_reextract_body(void* cpu_v) {
          * after the pass so the canonical inline render stays byte-exact. */
         moby_native_set_rot_interp(1);
         moby_native_set_verdict_alpha(alpha, bracketed);
+        moby_native_set_late(late);
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
+        moby_native_set_late(0);
         moby_native_set_verdict_alpha(1.0, 1);
         moby_native_set_rot_interp(0);
         moby_native_replay_prev_queue(0);
@@ -644,7 +662,7 @@ static void game_reextract_body(void* cpu_v) {
     shadow_reextract(cpu);          /* drop-shadows under mobys */
     shadow_replay_prev_list(0);
     RX_CENSUS_STEP("shadow");
-    particles_replay_prev(hold);
+    particles_replay_prev(hold || late);
     particles_reextract(cpu, bracketed, alpha);   /* the particle primitives the tick captured */
     particles_replay_prev(0);
     RX_CENSUS_STEP("particles");

@@ -58,6 +58,19 @@ static int                    s_count;   /* live entries currently in the table 
 /* Per-tick stats (finalised in end_tick). */
 static int s_stat_tracked, s_stat_paired, s_stat_spawned, s_stat_despawned;
 
+/* The entries the last end_tick evicted, kept until the next one: an object
+ * gone from the newest capture still has the state the tick before drew, which
+ * a sub-tick present showing that tick's set draws. Each entry owns one blob
+ * (its curr), carved out of s_ev_blob; prev and prev2 alias it and have_prev
+ * is 0, so no consumer pairs across the gap. Past OPENPETE_INTERP_OBJ_EVICTED
+ * the rest are dropped and counted. */
+static openpete_interp_obj_t* s_ev;
+static uint8_t*               s_ev_blob;
+static uint32_t               s_ev_n, s_ev_cap, s_ev_blob_len;
+static unsigned long          s_ev_dropped;
+/* The stamps of the newest capture tick and the one before it (begin_tick). */
+static op_time_t s_tick_ns, s_tick_prev_ns;
+
 static openpete_interp_obj_capture_fn s_capture_cb = NULL;
 
 /** @brief Point each entry's prev, curr and prev2 at its three consecutive blobs.
@@ -182,6 +195,8 @@ static uint32_t probe(uint32_t key, int* found) {
 
 void openpete_interp_objs_begin_tick(void) {
     if (!objs_alloc()) return;
+    s_tick_prev_ns = s_tick_ns;
+    s_tick_ns = objs_tick_stamp();
     for (uint32_t i = 0; i < SLOTS; ++i)
         if (s_tab[i].key) s_tab[i].seen = 0;
     s_stat_spawned = 0;
@@ -284,12 +299,46 @@ int openpete_interp_objs_capture_shown(uint32_t key, const void* data, uint32_t 
     return replaced;
 }
 
+/** @brief Keep an evicted entry's identity and curr state in the evicted set until the next end_tick.
+ *
+ * The set is (re)allocated at OPENPETE_INTERP_OBJ_EVICTED entries of the
+ * registered blob size on first use and after a size change; a full set, or a
+ * failed allocation, drops the entry and counts it.
+ * @param e The entry end_tick is evicting. */
+static void evicted_keep(const openpete_interp_obj_t* e) {
+    if (!s_ev || s_ev_blob_len != BLOB) {
+        free(s_ev); free(s_ev_blob);
+        s_ev_cap = OPENPETE_INTERP_OBJ_EVICTED;
+        s_ev = (openpete_interp_obj_t*)calloc(s_ev_cap, sizeof *s_ev);
+        s_ev_blob = (uint8_t*)calloc((size_t)s_ev_cap, BLOB);
+        s_ev_blob_len = BLOB;
+        s_ev_n = 0;
+        if (!s_ev || !s_ev_blob) {
+            free(s_ev); free(s_ev_blob);
+            s_ev = NULL; s_ev_blob = NULL; s_ev_cap = 0;
+        }
+    }
+    if (s_ev_n >= s_ev_cap) { s_ev_dropped++; return; }
+    openpete_interp_obj_t* d = &s_ev[s_ev_n];
+    uint8_t* b = s_ev_blob + (size_t)s_ev_n * BLOB;
+    memset(d, 0, sizeof *d);
+    d->key = e->key;
+    d->blob_len = e->blob_len;
+    d->curr_unshown = e->curr_unshown;
+    d->curr_ns = e->curr_ns;
+    d->curr_seen_ns = e->curr_seen_ns;
+    memcpy(b, e->curr, e->blob_len);
+    d->prev = d->curr = d->prev2 = b;
+    s_ev_n++;
+}
+
 void openpete_interp_objs_end_tick(void) {
     /* Evict unseen (despawned) entries, then rehash-compact the survivors so
      * linear-probe chains stay intact for next tick's lookups. */
     if (!s_tab) return;
     int nsurv = 0, paired = 0, despawned = 0;
 
+    s_ev_n = 0;
     for (uint32_t i = 0; i < SLOTS; ++i) {
         if (!s_tab[i].key) continue;
         if (s_tab[i].seen) {
@@ -297,6 +346,7 @@ void openpete_interp_objs_end_tick(void) {
             if (s_tab[i].have_prev) paired++;
         } else {
             despawned++;
+            evicted_keep(&s_tab[i]);
         }
     }
 
@@ -317,6 +367,8 @@ void openpete_interp_objs_end_tick(void) {
 
 void openpete_interp_objs_reset(void) {
     if (s_tab) table_clear(s_tab);
+    s_ev_n = 0;
+    s_tick_ns = s_tick_prev_ns = 0;
     s_count = 0;
     s_stat_tracked = s_stat_paired = s_stat_spawned = s_stat_despawned = 0;
 }
@@ -326,6 +378,19 @@ const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key) {
     int found;
     uint32_t i = probe(key, &found);
     return found ? &s_tab[i] : NULL;
+}
+
+const openpete_interp_obj_t* openpete_interp_objs_find_evicted(uint32_t key) {
+    if (key == 0) return NULL;
+    for (uint32_t i = 0; i < s_ev_n; ++i)
+        if (s_ev[i].key == key) return &s_ev[i];
+    return NULL;
+}
+
+unsigned long openpete_interp_objs_evicted_dropped(void) { return s_ev_dropped; }
+
+int openpete_interp_objs_spawned_last_tick(const openpete_interp_obj_t* o) {
+    return o && !o->have_prev && s_tick_prev_ns != 0 && o->curr_ns > s_tick_prev_ns;
 }
 
 op_time_t openpete_interp_identity_present_ns(void) {
