@@ -24,6 +24,13 @@ as not decoding; no thumbnail member reports the manifest's state; notes.txt
 is printed; no note reports the manifest's note state; a fatal-exit
 trigger is named.
 
+Sub-tick ring: a synthetic subtick.bin of three presents reports its
+present and record counts in `info`; `subtick --class` lists the class and
+its record's draws; a record drawn twice at different screen positions in
+one present is flagged MULTI, a paired record drawn off its lerp OFFLERP,
+and a record on its lerp neither; a ring with no flag exits 0, one with a
+flag exits 2; an extracted subtick.bin reads like the bundle.
+
 Replay: the fallback route runs a stub executable (a script printing the
 flag's verdict line, not openpete) and passes its verdict and exit code
 through. Archive lookup: EXE-SHA256SUMS lines parse into (hash, artifact,
@@ -197,6 +204,69 @@ class InfoExtract(Base):
         rc, out, _ = run("extract", z, self.d / "x")
         self.assertEqual(rc, 1)
         self.assertIn("FAIL summary.txt", out)
+
+
+def sub_present(seq, present_ns, kind, alpha, first, n, path=0):
+    return br.SUB_PRESENT.pack(seq, present_ns, present_ns + 1000, present_ns - 40_000_000, present_ns - 6_600_000,
+                               99, 100, 200 + seq, 400 + seq, alpha, kind, 1, path, 0, seq % 4, seq, first, n,
+                               7, 33_430_000)
+
+
+def sub_obj(key, cls, world, sx, sy, prev=(0, 0, 0), curr=(100, 0, 0), verdict=0, prev_dt=-40_000,
+            curr_dt=-6_600):
+    return br.SUB_OBJ.pack(key, key, cls, verdict, br.SUB_F_WORLD | (1 << 6), *prev, *curr, 1, 2, 3, 4, 5, 6,
+                           50, *world, sx, sy, 900.0, prev_dt, curr_dt, 0.5)
+
+
+def subtick_bin(flags=True):
+    """Three presents of a Sparx-class record 0x80010000 and one other record."""
+    # t = 6.6 ms / 33.4 ms (the pair span, under the tick period) = 0.198: on the lerp x = 100 - 100*(1-t) = 19.8.
+    objs = [sub_obj(0x80010000, 0x78, (19.8, 0, 0), 10, 10), sub_obj(0x80020000, 0x10, (100, 0, 0), 50, 50,
+                                                                      prev=(100, 0, 0))]
+    objs += [sub_obj(0x80010000, 0x78, (19.8, 0, 0), 11, 10),
+             sub_obj(0x80010000, 0x78, (19.8, 0, 0), 90 if flags else 11.5, 10)]
+    objs += [sub_obj(0x80010000, 0x78, (60.0 if flags else 19.8, 0, 0), 12, 10)]
+    pres = [sub_present(1, 1_000_000_000, 0, 1.0, 0, 2), sub_present(2, 1_002_083_333, 1, 0.06, 2, 2),
+            sub_present(3, 1_004_166_666, 1, 0.12, 4, 1)]
+    hdr = br.SUB_HEADER.pack(br.SUB_MAGIC, 1, br.SUB_PRESENT.size, br.SUB_OBJ.size, len(pres), len(objs), 0, 0, 0)
+    return hdr + b"".join(pres) + b"".join(objs)
+
+
+class Subtick(Base):
+    def bundle(self, flags=True):
+        mem = members()
+        mem["subtick.bin"] = subtick_bin(flags)
+        return write_bundle(self.d / "s.zip", mem, manifest(mem))
+
+    def test_info_line(self):
+        rc, out, err = run("info", self.bundle(), "--archive", self.arch)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("subtick: 3 presents over 0.00 s (canonical/eager 1, intermediate/eager 2), 5 drawn records; "
+                      "MULTI 1 OFFLERP 1", out)
+
+    def test_flags(self):
+        rc, out, err = run("subtick", self.bundle(), "--class", "0x78")
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("0x078        4     1         3                3", out)
+        self.assertIn("MULTI (one record at more than one screen position within a present, > 2.0 px): 1", out)
+        self.assertIn("seq 2 key 202 a=0.060 rec 80010000 cls 0x078 x2: (11.0,10.0) (90.0,10.0)", out)
+        self.assertIn("OFFLERP (paired record drawn more than 2.0 world units off its lerp and off curr): 1", out)
+        self.assertIn("seq 3 key 203 a=0.120 rec 80010000 cls 0x078 t=0.198 err 40.2", out)
+        self.assertIn("record 80010000 (moby 80010000 cls 0x078), last 4 draws:", out)
+        self.assertNotIn("80020000", out)
+
+    def test_clean(self):
+        rc, out, err = run("subtick", self.bundle(flags=False))
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("MULTI (one record at more than one screen position within a present, > 2.0 px): 0", out)
+        self.assertIn("): 0", out.split("OFFLERP")[1])
+
+    def test_extracted_member(self):
+        f = self.d / "subtick.bin"
+        f.write_bytes(subtick_bin())
+        rc, out, err = run("subtick", f, "--key", "0x80010000")
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("subtick.bin v1: 3 presents over 0.004 s, 5 drawn records", out)
 
 
 class ThumbsNote(Base):

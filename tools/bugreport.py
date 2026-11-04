@@ -24,6 +24,13 @@ Subcommands:
       into the work directory, when the release archive holds it, else
       `--bug-report-replay` on the given or the repository's linux-release
       build. Prints the run's `bug-report-replay:` verdict line.
+  subtick BUNDLE [--class C] [--key K] [--last N] [--tol-px PX] [--tol-world W]
+      The sub-tick present ring (subtick.bin): per object class the records
+      drawn over the held presents, then per record the drawn screen and
+      world positions present by present against the position its snapshot
+      pair lerps to. Flags a record drawn at more than one screen position
+      within one present (MULTI) and a paired record drawn off its lerp
+      (OFFLERP). BUNDLE may also be an extracted subtick.bin.
   diff-hashes A B
       First divergent tick and the regions that differ between two
       region-hash CSVs (`frame,vbl,fnv1a64,<region>...`). A or B may be a
@@ -82,6 +89,16 @@ PACE_WINDOW_S = 30.0
 
 # The tarfile extraction filter refusing links out of the tree, where the runtime has one.
 TAR_FILTER = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+
+# Sub-tick present ring layout (core/include/openpete_bugrec_subtick.h).
+SUB_MAGIC = b"OPSUBTK1"
+SUB_HEADER = struct.Struct("<8sIIIIIIQQ")
+SUB_PRESENT = struct.Struct("<QqqqqIIIIfBBBBiIQIIq")
+SUB_OBJ = struct.Struct("<IIHBB3i3i3B3BH3f3fiif")
+SUB_PATHS = {0: "eager", 1: "inline", 2: "repeat"}
+SUB_VERDICTS = {0: "paired", 1: "newborn", 2: "dying", 3: "held"}
+SUB_F_SPEC, SUB_F_GHOST, SUB_F_REFPREV, SUB_F_NOOBJ, SUB_F_WORLD, SUB_F_UNSHOWN = 1, 2, 4, 8, 16, 32
+SUB_KF = {0: "snap", 1: "lerp", 2: "hold", 3: "?"}
 
 VERDICT_RE = re.compile(r"bug-report-replay:\s*(IDENTICAL|DIVERGED|REFUSED)\b.*")
 
@@ -372,6 +389,118 @@ def thumbs_line(b, m):
     if isinstance(th.get("newest_age_ms"), (int, float)):
         line += f", newest {th['newest_age_ms'] / 1000:.2f} s before the press"
     return line + ("; all decode" if not bad else f"; {bad} do not decode")
+
+
+def subtick_parse(data):
+    """Parse a subtick.bin image into (header dict, presents, entries); each present gains its entry list."""
+    if len(data) < SUB_HEADER.size:
+        raise BundleError("subtick.bin: shorter than its header")
+    magic, ver, psz, osz, npres, nobj, pdrop, base, outside = SUB_HEADER.unpack_from(data, 0)
+    if magic != SUB_MAGIC:
+        raise BundleError("subtick.bin: bad magic")
+    if psz != SUB_PRESENT.size or osz != SUB_OBJ.size:
+        raise BundleError(f"subtick.bin: version {ver} record sizes {psz}/{osz}, this reader knows "
+                          f"{SUB_PRESENT.size}/{SUB_OBJ.size}")
+    if len(data) < SUB_HEADER.size + npres * psz + nobj * osz:
+        raise BundleError("subtick.bin: shorter than its counts")
+    hdr = {"version": ver, "presents": npres, "entries": nobj, "presents_dropped": pdrop,
+           "first_entry": base, "outside": outside}
+    names = ("seq", "present_ns", "target_ns", "tick_prev_ns", "tick_curr_ns", "tick_prev", "tick_curr",
+             "feed_key", "vbl", "alpha", "kind", "paired", "path", "late", "slot", "scene_id",
+             "obj_first", "obj_n", "stamp", "period_ns")
+    off = SUB_HEADER.size
+    pres = []
+    for i in range(npres):
+        pres.append(dict(zip(names, SUB_PRESENT.unpack_from(data, off + i * psz))))
+    off += npres * psz
+    objs = []
+    for i in range(nobj):
+        v = SUB_OBJ.unpack_from(data, off + i * osz)
+        objs.append({"key": v[0], "moby": v[1], "cls": v[2], "verdict": v[3], "flags": v[4],
+                     "prev_pos": v[5:8], "curr_pos": v[8:11], "prev_rot": v[11:14], "curr_rot": v[14:17],
+                     "nverts": v[17], "world": v[18:21], "sx": v[21], "sy": v[22], "vz": v[23],
+                     "prev_dt_us": v[24], "curr_dt_us": v[25], "kf_alpha": v[26]})
+    for p in pres:
+        lo = p["obj_first"] - base
+        p["truncated"] = lo < 0 or lo + p["obj_n"] > nobj
+        p["objs"] = [] if p["truncated"] else objs[lo:lo + p["obj_n"]]
+        for e in p["objs"]:
+            e["present"] = p
+    return hdr, pres, objs
+
+
+def subtick_expected(e, period_ns):
+    """The world position a record's snapshot pair lerps to at its present, and the pair's phase t; (None, None) without a pair."""
+    if not any(e["prev_pos"]) and not any(e["curr_pos"]):
+        return None, None
+    pv, cv = e["prev_pos"], e["curr_pos"]
+    if e["verdict"] == 3:
+        return tuple(float(x) for x in pv), 0.0
+    if e["verdict"] != 0:
+        return tuple(float(x) for x in cv), 1.0
+    span = e["curr_dt_us"] - e["prev_dt_us"]
+    cap = period_ns / 1000.0 if period_ns > 0 else span
+    span = min(span, cap) if span > 0 else 0
+    t = 1.0 if span <= 0 else max(0.0, min(1.0, -e["curr_dt_us"] / span))
+    return tuple(c + (p - c) * (1.0 - t) for p, c in zip(pv, cv)), t
+
+
+def subtick_findings(pres, tol_px, tol_world):
+    """Per present, the keys drawn at more than one screen position (MULTI) and the paired entries drawn off their lerp (OFFLERP).
+
+    @return (multi, offlerp): multi a list of (present, key, entries), offlerp a list of (entry, error, t)."""
+    multi, off = [], []
+    for p in pres:
+        by = {}
+        for e in p["objs"]:
+            by.setdefault(e["key"], []).append(e)
+        for k, es in by.items():
+            if len(es) > 1 and any(abs(a["sx"] - es[0]["sx"]) > tol_px or abs(a["sy"] - es[0]["sy"]) > tol_px
+                                   for a in es[1:]):
+                multi.append((p, k, es))
+        for e in p["objs"]:
+            if not (e["flags"] & SUB_F_WORLD) or e["verdict"] != 0:
+                continue
+            x, t = subtick_expected(e, p["period_ns"])
+            if x is None:
+                continue
+            err = max(abs(a - b) for a, b in zip(e["world"], x))
+            snap = max(abs(a - b) for a, b in zip(e["world"], e["curr_pos"]))
+            if err > tol_world and snap > tol_world:
+                off.append((e, err, t))
+    return multi, off
+
+
+def subtick_load(arg):
+    """The subtick.bin bytes of a bundle or of an extracted member; None when a bundle holds none."""
+    pth = Path(arg)
+    if pth.is_file() and not zipfile.is_zipfile(pth):
+        return pth.read_bytes()
+    b = Bundle(arg)
+    return b.read("subtick.bin") if b.has("subtick.bin") else None
+
+
+def subtick_line(b):
+    """The info line for the sub-tick present ring: presents by kind and path, span, entries, and the finding counts."""
+    if not b.has("subtick.bin"):
+        return "subtick: no subtick.bin"
+    try:
+        hdr, pres, objs = subtick_parse(b.read("subtick.bin"))
+    except BundleError as e:
+        return f"subtick: unreadable ({e})"
+    if not pres:
+        return "subtick: no present held"
+    kinds = {}
+    for p in pres:
+        k = ("canonical" if p["kind"] == 0 else "intermediate") + "/" + SUB_PATHS.get(p["path"], "?")
+        kinds[k] = kinds.get(k, 0) + 1
+    span = (pres[-1]["present_ns"] - pres[0]["present_ns"]) / 1e9
+    multi, off = subtick_findings(pres, 2.0, 2.0)
+    trunc = sum(1 for p in pres if p["truncated"])
+    return (f"subtick: {len(pres)} presents over {span:.2f} s ("
+            + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) + f"), {len(objs)} drawn records"
+            + (f", {trunc} presents truncated" if trunc else "")
+            + f"; MULTI {len(multi)} OFFLERP {len(off)} (python3 -I tools/bugreport.py subtick)")
 
 
 def note_line(b, m):
@@ -735,6 +864,7 @@ def cmd_info(args):
     for name, st, det in bad:
         w(f"  {st.upper()} {name}: {det}")
     w(thumbs_line(b, m))
+    w(subtick_line(b))
     if b.has("pace.oppl"):
         ps = pace_summary(b.read("pace.oppl"))
         if "error" in ps:
@@ -946,6 +1076,70 @@ def cmd_replay(args):
     return rc
 
 
+def cmd_subtick(args):
+    data = subtick_load(args.bundle)
+    if data is None:
+        print("no subtick.bin in this bundle")
+        return EXIT_VACUOUS
+    hdr, pres, objs = subtick_parse(data)
+    o = []
+    w = o.append
+    if not pres:
+        print("subtick.bin holds no present")
+        return EXIT_VACUOUS
+    span = (pres[-1]["present_ns"] - pres[0]["present_ns"]) / 1e9
+    w(f"subtick.bin v{hdr['version']}: {len(pres)} presents over {span:.3f} s, {len(objs)} drawn records; "
+      f"ring dropped {hdr['presents_dropped']} presents and {hdr['first_entry']} records; "
+      f"{hdr['outside']} records offered outside a present")
+    cls_f = int(args.cls, 0) if args.cls else None
+    key_f = int(args.key, 0) if args.key else None
+    sel = [e for e in objs if "present" in e and (cls_f is None or e["cls"] == cls_f)
+           and (key_f is None or e["key"] == key_f)]
+    by_cls = {}
+    for e in sel:
+        c = by_cls.setdefault(e["cls"], {"n": 0, "keys": set(), "pres": set(), "inter": 0})
+        c["n"] += 1
+        c["keys"].add(e["key"])
+        c["pres"].add(e["present"]["seq"])
+        c["inter"] += e["present"]["kind"] != 0
+    w("class  records  keys  presents  on-intermediate")
+    for c, v in sorted(by_cls.items(), key=lambda kv: -kv[1]["n"]):
+        w(f"0x{c:03x} {v['n']:8d} {len(v['keys']):5d} {len(v['pres']):9d} {v['inter']:16d}")
+    multi, off = subtick_findings(pres, args.tol_px, args.tol_world)
+    multi = [x for x in multi if (key_f is None or x[1] == key_f) and (cls_f is None or x[2][0]["cls"] == cls_f)]
+    off = [x for x in off if x[0] in sel] if (cls_f is not None or key_f is not None) else off
+    w(f"MULTI (one record at more than one screen position within a present, > {args.tol_px} px): {len(multi)}")
+    for p, k, es in multi[:args.flag_lines]:
+        w(f"  seq {p['seq']} key {p['feed_key']} a={p['alpha']:.3f} rec {k:08x} cls 0x{es[0]['cls']:03x} x{len(es)}: "
+          + " ".join(f"({e['sx']:.1f},{e['sy']:.1f}){'S' if e['flags'] & SUB_F_SPEC else ''}"
+                     f"{'G' if e['flags'] & SUB_F_GHOST else ''}" for e in es))
+    w(f"OFFLERP (paired record drawn more than {args.tol_world} world units off its lerp and off curr): {len(off)}")
+    for e, err, t in off[:args.flag_lines]:
+        p = e["present"]
+        w(f"  seq {p['seq']} key {p['feed_key']} a={p['alpha']:.3f} rec {e['key']:08x} cls 0x{e['cls']:03x} "
+          f"t={t:.3f} err {err:.1f} drawn ({e['world'][0]:.0f},{e['world'][1]:.0f},{e['world'][2]:.0f}) "
+          f"prev {e['prev_pos']} curr {e['curr_pos']}")
+    keys = sorted({e["key"] for e in sel}) if (cls_f is not None or key_f is not None) else []
+    for k in keys[:args.max_keys]:
+        es = [e for e in sel if e["key"] == k][-args.last:]
+        w(f"record {k:08x} (moby {es[-1]['moby']:08x} cls 0x{es[-1]['cls']:03x}), last {len(es)} draws:")
+        w("     seq  feed  kind path    alpha verdict  kf    t      sx      sy       vz   world x,y,z"
+          "                lerp x,y,z")
+        for e in es:
+            p = e["present"]
+            x, t = subtick_expected(e, p["period_ns"])
+            wx = "(" + ",".join(f"{v:.0f}" for v in e["world"]) + ")" if e["flags"] & SUB_F_WORLD else "-"
+            lx = "(" + ",".join(f"{v:.0f}" for v in x) + ")" if x else "-"
+            tag = ("S" if e["flags"] & SUB_F_SPEC else "") + ("G" if e["flags"] & SUB_F_GHOST else "") + \
+                  ("P" if e["flags"] & SUB_F_REFPREV else "")
+            w(f"  {p['seq']:6d} {p['feed_key']:5d} {'C' if p['kind'] == 0 else 'I'}    {SUB_PATHS.get(p['path'], '?'):6s}"
+              f" {p['alpha']:6.3f} {SUB_VERDICTS.get(e['verdict'], '?'):7s} {SUB_KF[(e['flags'] >> 6) & 3]:4s}"
+              f" {t if t is not None else float('nan'):5.3f} {e['sx']:7.1f} {e['sy']:7.1f} {e['vz']:8.1f}"
+              f"   {wx:24s} {lx} {tag}")
+    print("\n".join(o))
+    return EXIT_DIVERGED if (multi or off) else EXIT_OK
+
+
 def cmd_diff(args):
     a = load_hashes(args.a)
     b = load_hashes(args.b)
@@ -974,11 +1168,21 @@ def main(argv=None):
     p.add_argument("--timeout", type=float, default=1800)
     p.add_argument("--dry-run", action="store_true", help="print the route and command only")
     p.add_argument("extra", nargs="*", help="arguments after -- go to the exe")
+    p = sub.add_parser("subtick", help="per-record sub-tick draws of the last presents, with MULTI and OFFLERP flags")
+    p.add_argument("bundle", help="a bundle, or an extracted subtick.bin")
+    p.add_argument("--class", dest="cls", help="object class to list (0x78 = Spyro 2 Sparx)")
+    p.add_argument("--key", help="pairing key to list")
+    p.add_argument("--last", type=int, default=40, help="draws listed per record (default 40)")
+    p.add_argument("--max-keys", type=int, default=8, help="records listed (default 8)")
+    p.add_argument("--flag-lines", type=int, default=20, help="flag lines listed per kind (default 20)")
+    p.add_argument("--tol-px", type=float, default=2.0, help="MULTI screen tolerance (default 2 px)")
+    p.add_argument("--tol-world", type=float, default=2.0, help="OFFLERP world tolerance (default 2 units)")
     p = sub.add_parser("diff-hashes", help="first divergent tick and region of two hash CSVs")
     p.add_argument("a")
     p.add_argument("b")
     args = ap.parse_args(argv)
-    fn = {"info": cmd_info, "extract": cmd_extract, "replay": cmd_replay, "diff-hashes": cmd_diff}[args.cmd]
+    fn = {"info": cmd_info, "extract": cmd_extract, "replay": cmd_replay, "subtick": cmd_subtick,
+          "diff-hashes": cmd_diff}[args.cmd]
     try:
         return fn(args)
     except BundleError as e:

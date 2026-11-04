@@ -11,6 +11,7 @@
 #include "run_internal.h"
 #include "openpete.h"
 #include "openpete_bugrec.h"
+#include "openpete_bugrec_subtick.h"
 #include "openpete_config.h"
 #include "openpete_crash.h"
 #include "openpete_devui.h"
@@ -387,7 +388,7 @@ static void press_anchor(br_job_t* j) OP_REQUIRES(sim)
     j->hash_n = openpete_bugrec_hash_rows_copy(a ? a->frame : openpete_frame, &j->hash_rows);
 }
 
-/** @brief Copy the host-trace, pace, input and hang rings.
+/** @brief Copy the host-trace, pace, input, hang and sub-tick present rings.
  * @param j The job. */
 static void press_rings(br_job_t* j) OP_REQUIRES(sim)
 {
@@ -405,6 +406,7 @@ static void press_rings(br_job_t* j) OP_REQUIRES(sim)
     /* At a fatal exit the dump the watchdog just wrote holds these rings. */
     if (!j->fatal) j->hang_len = openpete_hang_rings_image(&j->hang);
     if (openpete_bugthumbs_enabled()) j->thumbs_n = openpete_bugthumbs_copy(&j->thumbs);
+    j->subtick_n = openpete_bugrec_subtick_image(&j->subtick, &j->subtick_len);
     j->press_present_ns = (int64_t)openpete_interp_present_now();
 }
 

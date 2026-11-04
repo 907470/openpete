@@ -104,6 +104,8 @@ typedef struct br_job {
     size_t   hang_len;
     openpete_bugthumb_t* thumbs;  /* the thumbnail ring, oldest first */
     size_t   thumbs_n;
+    uint8_t* subtick;           /* the sub-tick present ring's image (subtick.bin) */
+    size_t   subtick_len, subtick_n;
     int64_t  press_present_ns;  /* the present clock at the press */
     int      note_wanted;       /* the press asks the tester for a note */
     char*    note;              /* the saved note, or NULL */

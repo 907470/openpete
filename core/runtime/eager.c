@@ -7,6 +7,7 @@
 #include "host_loop_internal.h"
 #include "run_internal.h"
 
+#include "openpete_bugrec_subtick.h"
 #include "openpete_discontinuity.h"
 #include "openpete_fiber.h"
 #include "openpete_interp.h"
@@ -644,6 +645,7 @@ static void eager_produce_one(op_time_t t, int canonical)
     openpete_interp_set_present_target(t - s_eager.lag);   /* the animation instant this display instant shows */
     if (canonical) g_openpete_canon_lag_leg = 1;
     openpete_native_scene_eager_begin();
+    openpete_bugrec_subtick_begin(canonical ? OP_PACE_CANONICAL : OP_PACE_INTERMEDIATE, BUGREC_SUB_EAGER);
     const op_time_t rex0 = op_now();
     re(&g_game.cpu);
     const op_time_t rex_ns = op_now() - rex0;
@@ -655,6 +657,9 @@ static void eager_produce_one(op_time_t t, int canonical)
     int paired = 0;
     const double alpha = openpete_pace_extract_alpha(&paired);
     const int slot = openpete_native_scene_publish(t, kind, alpha, paired);
+    uint32_t scene_id = 0, stamp = 0;
+    openpete_native_scene_slot_ids(slot, &scene_id, &stamp);
+    openpete_bugrec_subtick_end(alpha, paired, slot, scene_id, stamp, (int64_t)t);
     if (slot >= 0) {
         openpete_present_thread_kick();
         s_eager.produced++;

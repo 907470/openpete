@@ -21353,6 +21353,11 @@ void openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha
     if (paired) *paired = s_ring[slot].paired;
     if (kind) *kind = s_ring[slot].kind;
 }
+void openpete_native_scene_slot_ids(int slot, uint32_t *scene_id, uint32_t *stamp) {
+    if (slot < 0 || slot >= SCENE_RING) return;
+    if (scene_id) *scene_id = s_ring[slot].scene_id;
+    if (stamp) *stamp = s_ring[slot].stamp;
+}
 /* The display's refresh for the current swapchain (0 = unknown). */
 float openpete_native_display_refresh_hz(void) { return s_nr.dev ? rhi_refresh_hz(s_nr.dev) : 0.0f; }
 int   openpete_native_display_vsync(void)      { return s_nr.dev ? rhi_present_is_vsync(s_nr.dev) : 0; }

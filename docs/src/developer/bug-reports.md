@@ -15,8 +15,8 @@ from a harness.
 and the identity fields: build version and commit, exe SHA-256, module
 SHA-256 and march, codegen and ROM stamps, disc name and SHA-256, game,
 argv, the anchor and press records (frame, VBL, feed key, park site), the
-taint counts, the thumbnail list, the note state and the redaction counts
-with their findings.
+taint counts, the thumbnail list, the sub-tick ring's counts, the note
+state and the redaction counts with their findings.
 
 | Member | Content |
 | --- | --- |
@@ -26,6 +26,7 @@ with their findings.
 | `hashes.csv` | one `frame,vbl,fnv1a64,<region>...` row per tick from the anchor, the `--gameplay-hash-log` row |
 | `host-trace.bin`, `pace.oppl`, `input-events.csv`, `hang/rings.bin` | the host-loop trace, the pace ring (last 30 s), the raw host input ring, the hang watchdog's dispatch rings |
 | `screen.png`, `thumbs/NNN.png` | the presented image at the press; the thumbnail ring, oldest first |
+| `subtick.bin` | the sub-tick present ring: the last 1024 re-extracted presents (2.13 s at 480 Hz) with kind, alpha, the tick stamps they lerp between and the scene ring slot, and per drawn object record its pairing key, class, pairing verdict, the snapshot pair's prev and curr positions, angles and roll stamps, and the screen centroid and world position it was drawn at (layout in `core/include/openpete_bugrec_subtick.h`) |
 | `reports.txt`, `pace-census.txt`, `summary.txt` | the subsystem reports at the press and at the screenshot; their pace lines; the state summary |
 | `config.txt`, `keymap.txt`, `config-files/`, `env.txt`, `argv.txt` | `--config-report`, `--keys-report`, the raw config tiers, the `OPENPETE_*` environment, the command line |
 | `device.txt`, `devices.txt` | Vulkan device, displays, system; the input devices |
@@ -54,6 +55,8 @@ python3 -I tools/bugreport.py info BUNDLE [--log-lines N] [--members] [--archive
 python3 -I tools/bugreport.py extract BUNDLE DIR
 python3 -I tools/bugreport.py replay BUNDLE [--exe PATH] [--disc CUE] [--archive DIR]
                                      [--work DIR] [--timeout S] [--dry-run] [-- EXTRA...]
+python3 -I tools/bugreport.py subtick BUNDLE [--class C] [--key K] [--last N] [--max-keys N]
+                                      [--tol-px PX] [--tol-world W]
 python3 -I tools/bugreport.py diff-hashes A B
 ```
 
@@ -72,6 +75,17 @@ python3 -I tools/bugreport.py diff-hashes A B
   `games/<game>/<game>/build/<manifest disc>`. `--timeout` defaults to
   1800 s. `--dry-run` prints the route and the command only. Arguments
   after `--` go to the exe.
+- `subtick` reads `subtick.bin` (BUNDLE may be the extracted member):
+  per object class the records drawn over the held presents and how many
+  were drawn on intermediate presents; with `--class` or `--key`, each
+  selected record's last `--last` draws (present, kind, path, alpha,
+  verdict, keyframe verdict, the pair's phase, screen centroid, drawn
+  world position, the position the pair lerps to). It flags MULTI, a
+  record drawn at screen positions more than `--tol-px` (default 2) apart
+  within one present, and OFFLERP, a paired record drawn more than
+  `--tol-world` (default 2) world units from both its lerp and its curr
+  position; exit 2 when either flag fires. `info` prints the ring's
+  one-line summary.
 - `diff-hashes` names the first divergent tick and the regions that
   differ between two region-hash CSVs; A or B may be a bundle, whose
   `hashes.csv` is read.
@@ -204,6 +218,7 @@ that file alone; an artifact with no `EXE-SHA256SUMS` line is not found.
 | `OPENPETE_BUGREC_ANCHOR_AT=K1,K2,...` | take an extra anchor at each feed key, beside the 30 s cadence |
 | `OPENPETE_BUGREC_DUMP_AT=N`, `OPENPETE_BUGREC_DUMP_DIR=D` | at feed key N, write the recorder's contents to D: `anchor-<i>.state`, `.card<N>.mcr`, `.modsave`, `.seg.bk2` and `.txt` per anchor, `hashes.csv`, `hosttrace.bin`, `pace.bin`, `input-events.csv`, `devices.txt`, `recorder.txt`. The first without the second logs an error and dumps nothing |
 | `OPENPETE_BUGREPORT_THUMBS=0` | turn the thumbnail ring off (default `1`): 20 thumbnails in a 320x180 box, one per 250 ms of present clock |
+| `OPENPETE_BUGREPORT_SUBTICK=0` | turn the sub-tick present ring off (default `1`); the bundle then holds no `subtick.bin` |
 | `OPENPETE_BUGREPORT_REPLAY_DIR`, `OPENPETE_BUGREPORT_REPLAY_SITE_WAIT` | the replay's scratch directory and park-wait cap (above) |
 
 A replay drops `OPENPETE_BUGREPORT_AT`, `OPENPETE_BUGREC_ANCHOR_AT`,

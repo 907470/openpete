@@ -58,6 +58,7 @@
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 #include "openpete_mods.h"     /* per-instance material slot resolve */
 #include "openpete_workpool.h" /* data-parallel face walk (--extract-threads) */
+#include "openpete_bugrec_subtick.h" /* the bug-report sub-tick present ring */
 
 #include <math.h>
 #include <stdint.h>
@@ -14837,6 +14838,107 @@ static double fade_present_tz(CPUState* cpu, uint32_t moby, double trz_frac) {
     return (double)moby_present_drawn_trz(cpu, moby);
 }
 
+/* Per record of the pass loop, indexed like s_recs: the world position the
+ * record was drawn at and its keyframe verdict, for the bug-report sub-tick
+ * ring. Records the pass appends after its loop (reveal, trailing edge)
+ * carry none. */
+static struct { float w[3]; uint8_t kv; } s_bug_rec[MAX_RECORDS];
+
+/** @brief Note one pass-loop record's drawn world position and keyframe verdict for the bug-report sub-tick ring.
+ *
+ * The world position is the moby's position words as this present reads
+ * them, plus, on a game that replays the cull's record (no host reveal),
+ * the own-motion displacement the replay applied (moby_replay_world_offset);
+ * a host-reveal game's view already stages the interpolated position.
+ * Skipped when no present is open.
+ * @param cpu The guest CPU state, read only.
+ * @param r The record's index in s_recs.
+ * @param moby The record's moby.
+ * @param verdict The moby_prev_keyframe verdict. */
+static void rex_bug_note(CPUState* cpu, int r, uint32_t moby, int verdict) {
+    if (!openpete_bugrec_subtick_open() || r < 0 || r >= MAX_RECORDS) return;
+    double w[3] = {0.0, 0.0, 0.0};
+    if (!moby_game.host_reveal) moby_replay_world_offset(moby, w);
+    for (int k = 0; k < 3; k++)
+        s_bug_rec[r].w[k] = (float)(w[k] + (double)(int32_t)cpu->read_word(
+                                    moby + game_layout.moby.pos_off + 4u * (uint32_t)k));
+    s_bug_rec[r].kv = (uint8_t)(verdict & 3);
+}
+
+/** @brief The pairing verdict and flags of one drawn record, from the snapshot pair the interpolation reads.
+ *
+ * @param o The pair: the evicted entry on the despawned-record pass, else
+ *        the tracked one; NULL when the interpolation holds none.
+ * @param moby The record's moby.
+ * @param flags Receives the BUGREC_SUB_F_* bits the verdict sets.
+ * @return BUGREC_SUB_PAIRED, _NEWBORN, _DYING or _HELD. */
+static uint8_t rex_bug_verdict(const openpete_interp_obj_t* o, uint32_t moby, uint8_t* flags) {
+    if (s_late_ghost_pass) { *flags |= BUGREC_SUB_F_GHOST; return BUGREC_SUB_DYING; }
+    if (!o) { *flags |= BUGREC_SUB_F_NOOBJ; return BUGREC_SUB_NEWBORN; }
+    if (o->prev_unshown) *flags |= BUGREC_SUB_F_UNSHOWN;
+    if (!o->have_prev) return BUGREC_SUB_NEWBORN;
+    if (s_rec_ref_prev) { *flags |= BUGREC_SUB_F_REFPREV; return BUGREC_SUB_HELD; }
+    return cut_obj_held(moby) == 1 ? BUGREC_SUB_HELD : BUGREC_SUB_PAIRED;
+}
+
+/** @brief Append every record a sub-tick pass drew to the bug-report sub-tick ring.
+ *
+ * Takes the records the walk draws, with its skips (the specular pass's
+ * dedup against the regular set, a run-once moby, a record with no face
+ * block or no projected vertex), and per record its pairing key, class,
+ * pairing verdict, the pair's prev and curr positions, angle bytes and roll
+ * stamps, the centroid of its projected vertices, its keyframe alpha and,
+ * for a pass-loop record, the world position rex_bug_note kept. Does nothing
+ * when no present is open.
+ * @param cpu The guest CPU state, read only.
+ * @param is_spec Nonzero for the specular pass.
+ * @param n_loop The records the pass loop built; later ones carry no world position. */
+static void rex_bug_record(CPUState* cpu, int is_spec, int n_loop) {
+    if (!openpete_bugrec_subtick_open()) return;
+    openpete_bugrec_subtick_late(s_late);
+    const int64_t pn = openpete_bugrec_subtick_present_ns();
+    const uint32_t po = game_layout.moby.pos_off, ao = game_layout.moby.angle_off;
+    for (int r = 0; r < s_nrecs; r++) {
+        const rec_meta* R = &s_recs[r];
+        const uint32_t mob = R->moby;
+        if (R->faceblock < 0x80000000u || R->proj_n <= 0 || (is_spec && moby_reg_handled(mob))) continue;
+        const uint16_t cls = mob ? (uint16_t)cpu->read_half(mob + game_layout.moby.class_off) : 0;
+        if (mob && moby_run_once_hidden(cpu, mob, cls)) continue;
+        openpete_bugrec_sub_obj_t e;
+        memset(&e, 0, sizeof e);
+        e.key = moby_interp_key(mob);
+        e.moby = mob;
+        e.cls = cls;
+        e.flags = is_spec ? BUGREC_SUB_F_SPEC : 0;
+        const openpete_interp_obj_t* o = s_late_ghost_pass ? openpete_interp_objs_find_evicted(e.key)
+                                                           : moby_interp_find(mob);
+        e.verdict = rex_bug_verdict(o, mob, &e.flags);
+        if (o && (uint32_t)o->blob_len >= po + 12u && (uint32_t)o->blob_len >= ao + 3u) {
+            memcpy(e.prev_pos, o->prev + po, 12);
+            memcpy(e.curr_pos, o->curr + po, 12);
+            memcpy(e.prev_rot, o->prev + ao, 3);
+            memcpy(e.curr_rot, o->curr + ao, 3);
+            e.prev_dt_us = (int32_t)(((int64_t)o->prev_ns - pn) / 1000);
+            e.curr_dt_us = (int32_t)(((int64_t)o->curr_ns - pn) / 1000);
+        }
+        if (r < n_loop) {
+            memcpy(e.world, s_bug_rec[r].w, sizeof e.world);
+            e.flags |= BUGREC_SUB_F_WORLD | (uint8_t)(s_bug_rec[r].kv << BUGREC_SUB_F_KF_SHIFT);
+        }
+        double cx = 0.0, cy = 0.0, cz = 0.0;
+        for (int j = 0; j < R->proj_n; j++) {
+            const proj_xy* v = &s_proj[R->proj_off + j];
+            cx += v->sx; cy += v->sy; cz += v->vz;
+        }
+        e.sx = (float)(cx / R->proj_n);
+        e.sy = (float)(cy / R->proj_n);
+        e.vz = (float)(cz / R->proj_n);
+        e.nverts = (uint16_t)(R->proj_n > 0xFFFF ? 0xFFFF : R->proj_n);
+        e.kf_alpha = R->clr_alpha;
+        openpete_bugrec_subtick_obj(&e);
+    }
+}
+
 /** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
  *
  * The pass rebuilds each record's fields from gamestate under the present's
@@ -15039,11 +15141,14 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(mobys[i], zsf4,
                                                              fade_present_tz(cpu, mobys[i], f.TR_frac[2]),
                                                              s_rc_alpha, &s_recs[s_nrecs].zf);
+        rex_bug_note(cpu, s_nrecs, mobys[i], pd.verdict);
         s_proj_n += got; s_nrecs++;
     }
     mst_add(MST_REC, t_rec);
+    const int n_loop = s_nrecs;
     if (!is_spec) rex_regular_tail(cpu, culled_moby, culled_n);
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
+    rex_bug_record(cpu, is_spec, n_loop);
     push_scene_moby(cpu);
     occl_pass_census(mat, 1);
     moby_rot_census(mat, rot_bins);

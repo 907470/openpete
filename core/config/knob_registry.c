@@ -2342,6 +2342,12 @@ static const knob_desc_t g_builtin_debug[] = {
       "of the presented image per second of present clock, the newest 20 "
       "(5 s) held in memory and written to a bug report as thumbs/. Set 0 "
       "to drop the ring and its per-present downscale."),
+    ENVROW_LATCHED("BUGREPORT_SUBTICK", "Debug", "1",
+      "Keep the bug report's sub-tick present ring: per re-extracted "
+      "present its kind, alpha and tick stamps, and per drawn object record "
+      "its pairing state and drawn position, the newest 1024 presents held "
+      "in memory and written to a bug report as subtick.bin. Set 0 to drop "
+      "the ring."),
     ENVROW_LATCHED("THREAD_SPLIT", "Debug", "1",
       "Run the sim on a worker thread while the main thread owns the window "
       "and the event pump, so dragging or resizing the window cannot stall "

@@ -17,6 +17,8 @@ what you did, what you expected, and what you saw instead).
 - the memory cards as they were at the earlier state
 - a screenshot of the picture at the press, and small screenshots of the 5
   seconds before it
+- where each character and object was drawn in the last 1024 pictures
+  (about 2 seconds at 480 Hz)
 - the end of this run's log and of the previous run's log
 - your settings (the `--config-report` output and your `openpete.toml`
   files) and key bindings (the `--keys-report` output)

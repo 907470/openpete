@@ -2731,6 +2731,14 @@ int      openpete_native_scene_ring_busy(void);
  * @param paired Receives the slot's prev/curr pairing flag; may be NULL.
  * @param kind Receives the slot's OP_PACE_* scene kind; may be NULL. */
 void     openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind);
+/** @brief Read a ring slot's scene id and terrain-cache build stamp.
+ *
+ * Leaves both outputs unchanged when @p slot is out of range. Called by the
+ * publishing thread, which alone writes these fields.
+ * @param slot Ring slot index.
+ * @param scene_id Receives the scene id publish gave the slot; may be NULL.
+ * @param stamp Receives the scene's build stamp; may be NULL. */
+void     openpete_native_scene_slot_ids(int slot, uint32_t *scene_id, uint32_t *stamp);
 /** @brief Log the scene ring's publish census at exit.
  *
  * The line gives the counts published, presented, superseded before

@@ -926,6 +926,24 @@ static void json_thumbs(wbuf_t* w, const br_job_t* j)
     wb_printf(w, "]}");
 }
 
+/** @brief Write the manifest's sub-tick ring fields: presents and entries held, presents and entries the ring dropped, and the entries offered outside a present.
+ * @param w The output.
+ * @param j The job. */
+static void json_subtick(wbuf_t* w, const br_job_t* j)
+{
+    uint32_t hv[7] = {0};
+    uint64_t base = 0, outside = 0;
+    if (j->subtick && j->subtick_len >= 48u) {
+        memcpy(hv, j->subtick + 8, sizeof hv);
+        memcpy(&base, j->subtick + 32, 8);
+        memcpy(&outside, j->subtick + 40, 8);
+    }
+    wb_printf(w, ",\n  \"subtick\": {\"member\": %s, \"version\": %u, \"presents\": %u, \"entries\": %u, "
+              "\"presents_dropped\": %u, \"entries_dropped\": %llu, \"entries_outside\": %llu}",
+              j->subtick ? "\"subtick.bin\"" : "null", hv[0], hv[3], hv[4], hv[5],
+              (unsigned long long)base, (unsigned long long)outside);
+}
+
 /** @brief Write the manifest's session fields: anchor, press, window, taint, mods, answers and the member list.
  * @param w The output.
  * @param j The job.
@@ -941,6 +959,7 @@ static void json_session(wbuf_t* w, const br_job_t* j, const br_members_t* m, co
               j->have_anchor && j->press.state ? j->press.frame - j->anchor.frame : 0u,
               j->segment_rows, j->hash_n);
     json_thumbs(w, j);
+    json_subtick(w, j);
     wb_printf(w, ",\n  \"note\": {\"state\": ");
     wb_json_str(w, j->note_state[0] ? j->note_state : "off");
     wb_printf(w, ", \"chars\": %zu}", j->note ? strlen(j->note) : (size_t)0);
@@ -1026,6 +1045,7 @@ static void add_press_members(br_members_t* m, br_job_t* j)
     if (j->trace) br_members_add_copy(m, "host-trace.bin", j->trace, j->trace_n * HT_REC_BYTES, BRM_BINARY);
     if (j->pace) br_members_add_copy(m, "pace.oppl", j->pace, j->pace_len, BRM_BINARY);
     if (j->hang) br_members_add_copy(m, "hang/rings.bin", j->hang, j->hang_len, BRM_BINARY);
+    if (j->subtick) br_members_add_copy(m, "subtick.bin", j->subtick, j->subtick_len, BRM_BINARY);
     wbuf_t rep = {0};
     wb_puts(&rep, "# sim thread, at the press\n");
     wb_puts(&rep, j->reports);
@@ -1134,6 +1154,7 @@ void br_job_free(br_job_t* j)
     free(j->pace);
     free(j->input);
     free(j->hang);
+    free(j->subtick);
     openpete_bugthumbs_free(j->thumbs, j->thumbs_n);
     free(j->note);
     free(j->reports);

@@ -4,6 +4,7 @@
 // stamp both strategies gate on.
 
 #include "openpete_bugreport.h"
+#include "openpete_bugrec_subtick.h"
 #include "host_loop_internal.h"
 #include "eager.h"
 #include "host_pacer.h"
@@ -502,6 +503,14 @@ static void eager_canonical_present(const host_session_t* S, const host_iter_t* 
                     host_world_live(S, it, now));
 }
 
+/** @brief Close the bug-report recorder's open present for an inline re-extract, with the alpha the re-extract resolved and no ring slot. */
+static void subtick_end_inline(void) OP_REQUIRES(sim)
+{
+    int paired = 0;
+    const double alpha = openpete_pace_extract_alpha(&paired);
+    openpete_bugrec_subtick_end(alpha, paired, -1, 0u, 0u, 0);
+}
+
 /** @brief Re-extract the canonical present at the lagged alpha the intermediates use, on the inline strategy.
  *
  * Sub-tick spine: the game's render just built the scene at the latest pose
@@ -521,7 +530,9 @@ static op_time_t inline_canonical_extract(openpete_native_reextract_fn lag_re) O
     g_openpete_canon_lag_leg = 1;
     vp_set_present_target();     /* even display-slot time for this present */
     const op_time_t rex_t0 = op_now();
+    openpete_bugrec_subtick_begin(OP_PACE_CANONICAL, BUGREC_SUB_INLINE);
     lag_re(&g_game.cpu);
+    subtick_end_inline();
     openpete_native_scene_sig_report(1);
     const op_time_t extract_ns = op_now() - rex_t0;
     g_openpete_canon_lag_leg = 0;
@@ -703,11 +714,16 @@ static void present_inline_intermediate(host_session_t* S, const host_iter_t* it
         uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
         vp_set_present_target();      /* even display-slot time for this present */
         const op_time_t ex0 = op_now();
+        openpete_bugrec_subtick_begin(OP_PACE_INTERMEDIATE, BUGREC_SUB_INLINE);
         native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
+        subtick_end_inline();
         s_inline_rex++;
         openpete_native_scene_sig_report(0);
         pace_extract_ns = op_now() - ex0;
         if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
+    } else {
+        openpete_bugrec_subtick_begin(OP_PACE_INTERMEDIATE, BUGREC_SUB_REPEAT);
+        subtick_end_inline();
     }
     /* Mod draw service: present hooks at sub-tick alpha (no commit). */
     openpete_mods_present_flush(&g_game.cpu, 0);
