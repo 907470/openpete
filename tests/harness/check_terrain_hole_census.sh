@@ -40,10 +40,31 @@
 #   tests/harness/check_terrain_hole_census.sh [--game SLUG] [--filter SUBSTR] [--jitter=J]
 #       [--lods "original extended"] [--lto=on|off|both] [--repeat=N]
 #       [--colour] [--stride=K] [--jobs N] [--out DIR] [--build-dir=DIR]
+#       [--holes [--prec=N] [--classify] [--max-holes=N]] [--resume]
 # --stride=K keeps every K-th selected manifest row (the first, the K+1-th,
 # ...), a sample of the corpus for a run on a slow device.
-# Exit 0 when every engaged row reads pxdiff == 0 for f32, 1 when
-# any does not or the run is VACUOUS, 64 SKIP (no binary, disc or PIL).
+#
+# --holes counts holes instead of comparing arms: one capture per pose and
+# LOD (the fp64 stage, or the precision --prec=N names; LTO; --jitter as
+# given), with --render-paths terrain,portal,transition so no moby, sky,
+# particle or HUD path draws (the terrain feed and the cache's claims are
+# those of a full capture). `terrain_hole_census.py holes` counts the clear
+# pixels enclosed by terrain: pins (1 px) and holes (components up to
+# 16 px). A row whose image holds a pixel that is neither the clear colour
+# nor a face identity (foreign > 0) is IMPURE and fails the run. With
+# --classify, every row with a pin also runs a walk leg on the Linux build
+# (--terrain-cache 0, OPENPETE_TERRAIN_TRIDUMP at the capture key), and
+# tools/terrain_hole_classify.py attributes each pin to a geometric class
+# (T-junction, crack, walk-covered, shared edge, open edge, unattributed).
+# --max-holes=N passes a run with at most N holes (default 0).
+# --resume keeps a leg whose output exists and is newer than the binary
+# (and the walk dump's newer than the build's), so an interrupted run
+# continues where it stopped; without it every leg's outputs are removed
+# before it runs.
+#
+# Exit 0 when every engaged row reads pxdiff == 0 for f32 (--holes: the
+# summed holes are at most --max-holes and no row is IMPURE), 1 when any
+# does not or the run is VACUOUS, 64 SKIP (no binary, disc or PIL).
 set -u
 
 # Unattended launcher: every run this script starts is silenced.
@@ -56,6 +77,7 @@ source scripts/lib/game.sh
 
 BUILD_DIR=build/linux-release
 OUT="" FILTER="" LODS="original extended" LTO=on REPEAT=1 COLOUR=0 JOBS=2 JITTER="" STRIDE=1
+HOLES=0 HPREC=0 CLASSIFY=0 MAXHOLES=0 RESUME=0
 prev=""
 for a in "$@"; do
     case "$a" in
@@ -69,6 +91,11 @@ for a in "$@"; do
         --jitter=*)    JITTER="${a#*=}";;
         --stride=*)    STRIDE="${a#*=}";;
         --colour)      COLOUR=1;;
+        --holes)       HOLES=1;;
+        --prec=*)      HPREC="${a#*=}";;
+        --classify)    CLASSIFY=1;;
+        --max-holes=*) MAXHOLES="${a#*=}";;
+        --resume)      RESUME=1;;
     esac
     case "$prev" in
         --out) OUT="$a";; --filter) FILTER="$a";; --lods) LODS="$a";;
@@ -97,13 +124,26 @@ DISC_ABS="$(cd "$(dirname "$PG_DISC")" && pwd -P)/$(basename "$PG_DISC")"
 source scripts/lib/wslenv.sh
 TOOL=tools/terrain_hole_census.py
 
-leg() {  # tag level pose start lod precision lto faceid
+# The walk's triangle dump is CPU geometry, the same on every device: the
+# walk legs of --classify run the Linux build even when OPENPETE_BIN names a
+# Windows exe.
+LINUX_BIN="$(pg_tree_bin "$BUILD_DIR" "$PG_GAME")"
+
+leg() {  # tag level pose start lod precision lto faceid [kind: holes|walk]
     local tag="$1" level="$2" pose="$3" start="$4" lod="$5" prec="$6" lto="$7" fid="$8"
+    local kind="${9:-}"
     local -a PG_SKIP_ARGS=()
     pg_skip_args "$level"
-    local log="$OUT/$tag.log" shot="$OUT/$tag.png"
-    rm -f "$shot" "$OUT/$tag-vk.png"
-    local -a env=(OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TERRAIN_GPU_CENSUS=1)
+    local log="$OUT/$tag.log" shot="$OUT/$tag.png" out="$OUT/$tag-vk.png" bin="$PG_BIN"
+    [[ "$kind" == walk ]] && out="$OUT/$tag.tri" bin="$LINUX_BIN"
+    [[ $RESUME == 1 && -s "$out" && "$out" -nt "$bin" ]] && return 0
+    rm -f "${OUT:?}/$tag.png" "${OUT:?}/$tag-vk.png" "${OUT:?}/$tag.tri"
+    local -a env=(OPENPETE_TERRAIN_GPU_CENSUS=1)
+    if [[ "$kind" == walk ]]; then
+        env+=("OPENPETE_TERRAIN_TRIDUMP=$start,$out")
+    else
+        env+=(OPENPETE_TERRAIN_CACHE_FORCE=1)
+    fi
     [[ "$prec" != 0 ]] && env+=("OPENPETE_TERRAIN_FP32=$prec")
     [[ "$lto" == fast ]] && env+=(OPENPETE_PIPELINE_LTO=0)
     [[ "$fid" == 1 ]] && env+=(OPENPETE_TERRAIN_FACEID=1)
@@ -114,6 +154,14 @@ leg() {  # tag level pose start lod precision lto faceid
         --screenshot-native-only --screenshot-on-frame "$start"
         --screenshot-output "$shot"
         --frame-limit $((start + 20)) --max-runtime-seconds 840)
+    [[ "$kind" == holes ]] && args+=(--render-paths terrain,portal,transition)
+    [[ "$kind" == walk ]] && args+=(--terrain-cache 0)
+    if [[ "$kind" == walk ]]; then
+        local -a PG_CAPTURE_ENV=("${env[@]}")
+        local PG_CAPTURE_TIMEOUT=900 PG_BIN="$LINUX_BIN"
+        pg_capture "$log" "$out" -- "${args[@]}"
+        return
+    fi
     if [[ "$PG_BIN" == *.exe ]]; then
         # A Windows exe (OPENPETE_BIN): the knobs cross WSL only through
         # WSLENV (scripts/lib/wslenv.sh); the run is headless and takes no
@@ -146,6 +194,100 @@ while IFS='|' read -r name pose start _; do
     STARTS+=("${start:-$PG_FREECAM_START}")
 done < "$MAN"
 
+run_line() {
+    local tag i lod prec lto fid kind
+    IFS='|' read -r tag i lod prec lto fid kind <<<"$1"
+    leg "$tag" "${LEVELS[$i]}" "${POSES[$i]}" "${STARTS[$i]}" "$lod" "$prec" "$lto" "$fid" "$kind" ||
+        echo "[hole-census] leg=$tag NO-CAPTURE"
+}
+run_legs() {  # file of leg lines, run JOBS at a time
+    local -a lines
+    mapfile -t lines < "$1"
+    local k j
+    for ((k = 0; k < ${#lines[@]}; k += JOBS)); do
+        for ((j = k; j < k + JOBS && j < ${#lines[@]}; j++)); do run_line "${lines[$j]}" & done
+        wait
+    done
+}
+secs_of() { grep -o 'secs=[0-9]*' "$1" 2>/dev/null | cut -d= -f2 | sort -n | tail -1; }
+
+if [[ $HOLES == 1 ]]; then
+    LEGS="$OUT/legs-holes.txt"; rm -f "${OUT:?}/legs-holes.txt"
+    for i in "${!SLUGS[@]}"; do
+        for lod in $LODS; do
+            echo "${SLUGS[$i]}__${lod}__p${HPREC}__holes|$i|$lod|$HPREC|lto|1|holes" >> "$LEGS"
+        done
+    done
+    [[ -f "$LEGS" ]] || { echo "[hole-census] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 1; }
+    run_legs "$LEGS"
+    WALKS="$OUT/legs-walk.txt"; rm -f "${OUT:?}/legs-walk.txt"
+    rows=0 vac=0 impure=0 missing=0 t_pins=0 t_holes=0 t_px=0
+    declare -A ROWLINE=()
+    kv() { sed -n "s/.*\b$1=\([0-9]*\).*/\1/p" <<<"$line"; }   # a count of $line
+    for i in "${!SLUGS[@]}"; do
+        for lod in $LODS; do
+            tag="${SLUGS[$i]}__${lod}__p${HPREC}__holes"
+            rows=$((rows + 1))
+            line="$(python3 "$TOOL" holes "$OUT/$tag-vk.png" --list "$OUT/$tag.holes")" || line="MISSING"
+            secs="$(secs_of "$OUT/$tag.log")"
+            if [[ "$line" == MISSING* ]]; then
+                missing=$((missing + 1))
+                echo "[hole-census] row=${SLUGS[$i]} lod=$lod MISSING"
+                continue
+            fi
+            fc=$(( $(kv faces) + $(kv walked) ))
+            note=""
+            if [[ $fc -eq 0 ]]; then
+                vac=$((vac + 1)); note=" VACUOUS"
+            elif [[ $(kv foreign) -ne 0 ]]; then
+                impure=$((impure + 1)); note=" IMPURE"
+            else
+                t_pins=$((t_pins + $(kv pins))); t_holes=$((t_holes + $(kv holes)))
+                t_px=$((t_px + $(kv hole_px)))
+            fi
+            ROWLINE["$tag"]="row=${SLUGS[$i]} lod=$lod secs=${secs:-0} $line$note"
+            [[ $CLASSIFY == 1 && -z "$note" && $(kv pins) -gt 0 ]] &&
+                echo "${SLUGS[$i]}__${lod}__walk|$i|$lod|0|lto|0|walk" >> "$WALKS"
+        done
+    done
+    declare -A CLS=()
+    if [[ $CLASSIFY == 1 && -f "$WALKS" ]]; then
+        if [[ -x "$LINUX_BIN" ]]; then
+            run_legs "$WALKS"
+        else
+            echo "[hole-census] classify: no Linux build at $LINUX_BIN; pins stay unclassified"
+        fi
+    fi
+    for i in "${!SLUGS[@]}"; do
+        for lod in $LODS; do
+            tag="${SLUGS[$i]}__${lod}__p${HPREC}__holes"
+            [[ -n "${ROWLINE[$tag]+set}" ]] || continue
+            cls=""
+            tri="$OUT/${SLUGS[$i]}__${lod}__walk.tri"
+            if [[ $CLASSIFY == 1 && -s "$tri" ]]; then
+                cls="$(python3 tools/terrain_hole_classify.py "$tri" "$OUT/$tag.holes" \
+                       --out "$OUT/$tag.classes" | tail -1)"
+                [[ "$cls" == T=* ]] || cls="UNCLASSIFIED($cls)"
+                [[ "$cls" == T=* ]] && for kvp in $cls; do
+                    CLS["${kvp%%=*}"]=$(( ${CLS["${kvp%%=*}"]:-0} + ${kvp#*=} ))
+                done
+                cls=" classes: $cls"
+            fi
+            echo "[hole-census] ${ROWLINE[$tag]}$cls"
+        done
+    done
+    verdict=PASS
+    [[ $t_holes -gt $MAXHOLES || $impure -ne 0 || $missing -ne 0 ]] && verdict=FAIL
+    [[ $vac -eq $rows ]] && verdict=VACUOUS
+    summary=""
+    for c in $(printf '%s\n' "${!CLS[@]}" | sort); do summary+=" $c=${CLS[$c]}"; done
+    echo "[hole-census] game=$PG_GAME mode=holes prec=$HPREC rows=$rows vacuous=$vac impure=$impure" \
+         "missing=$missing pins=$t_pins holes=$t_holes hole_px=$t_px${summary:+ classes:$summary}" \
+         "verdict=$verdict"
+    [[ $verdict == PASS ]]
+    exit
+fi
+
 # Every leg of the run, one line each, run JOBS at a time.
 LEGS="$OUT/legs.txt"; rm -f "$LEGS"
 for i in "${!SLUGS[@]}"; do
@@ -166,19 +308,7 @@ for i in "${!SLUGS[@]}"; do
 done
 [[ -f "$LEGS" ]] || { echo "[hole-census] game=$PG_GAME rows=0 verdict=VACUOUS"; exit 1; }
 
-run_line() {
-    local tag i lod prec lto fid
-    IFS='|' read -r tag i lod prec lto fid <<<"$1"
-    leg "$tag" "${LEVELS[$i]}" "${POSES[$i]}" "${STARTS[$i]}" "$lod" "$prec" "$lto" "$fid" ||
-        echo "[hole-census] leg=$tag NO-CAPTURE"
-}
-mapfile -t LINES < "$LEGS"
-for ((k = 0; k < ${#LINES[@]}; k += JOBS)); do
-    for ((j = k; j < k + JOBS && j < ${#LINES[@]}; j++)); do run_line "${LINES[$j]}" & done
-    wait
-done
-
-secs_of() { grep -o 'secs=[0-9]*' "$1" 2>/dev/null | cut -d= -f2 | sort -n | tail -1; }
+run_legs "$LEGS"
 
 rows=0 vac=0 bad=0 ctl_px=0 ctl_iso=0 f32_px=0 f32_iso=0 nondet=0
 for i in "${!SLUGS[@]}"; do

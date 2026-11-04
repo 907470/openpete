@@ -1606,8 +1606,13 @@ static void scene_drop_blend_debug(void) {
  * untextured WORLD with all three vertices one colour, the 24-bit identity
  * 0x400000 | an FNV-1a hash of its scene index (22 bits), bit 23 clear, so a
  * walked face reads apart from a retained face (bit 23 set) and from the
- * cleared background. Prints the kept count once per scene. */
-static void scene_faceid_debug(void) {
+ * cleared background. The pass is idempotent (the kept triangles keep their
+ * order, so each keeps its identity), and runs on every scene a present can
+ * compose: the accumulator when it closes, when a present composes it in
+ * place (headless captures and inline presents compose the open scene) and
+ * when it is published into the scene ring.
+ * @param report Nonzero prints the kept count, once per closed scene. */
+static void scene_faceid_debug(int report) {
     if (!openpete_tercache_faceid()) return;
     int w = 0;
     for (int ti = 0; ti < s_scene_n; ti++) {
@@ -1625,7 +1630,7 @@ static void scene_faceid_debug(void) {
         for (int k = 0; k < 3; k++) t.v[k].rgba = rgba;
         s_scene[w++] = t;
     }
-    fprintf(stderr, "[faceid] scene=%u tris=%d walked=%d\n", s_scene_frame, s_scene_n, w);
+    if (report) fprintf(stderr, "[faceid] scene=%u tris=%d walked=%d\n", s_scene_frame, s_scene_n, w);
     s_scene_n = w;
 }
 
@@ -1656,7 +1661,7 @@ static void scene_close_completed(void) {
     }
     s_scene_dropped = 0;
     scene_drop_blend_debug();
-    scene_faceid_debug();
+    scene_faceid_debug(1);
     alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
     scene_hist_push();
 }
@@ -21240,6 +21245,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
      * accumulator takes the slot's former run and holds no scene until the
      * next one begins (every eager re-extract begins its scene). */
     if (!slot_grow(sl, 0)) { scene_keep_refused_stamp(); return -1; }
+    scene_faceid_debug(0);
     scene_run_swap(&sl->tri_v, &s_scene_v);
     sl->tri = (scene_tri_t*)sl->tri_v.data;
     sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;
@@ -21608,6 +21614,7 @@ static void record_extent_pin(void)
 static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
     s_last_frame_presented = 0;
+    scene_faceid_debug(0);   /* an inline present composes the open scene in place */
     ps_apply_geometry();
     glyph_lists_latch();
     record_extent_pin();
@@ -23094,6 +23101,7 @@ int openpete_native_render_screenshot_all(const char *base)
     /* Headless never runs openpete_native_render_frame, so the truescope
      * re-bake must happen here, outside the compose's command recording. */
     truescope_apply_pending();
+    scene_faceid_debug(0);   /* a capture can compose the open scene */
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
     const scene_slot_t *hold_prev;
@@ -23133,6 +23141,7 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
     *out = NULL;
     freeze_src_settle();   /* as in openpete_native_render_screenshot_all */
     truescope_apply_pending();
+    scene_faceid_debug(0);   /* a capture can compose the open scene */
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
     const scene_slot_t *hold_prev;

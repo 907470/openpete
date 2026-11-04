@@ -41,6 +41,26 @@ which identity is drawn, so two arms of one pose compare pixel for pixel.
       colour differs by 8 or more, largest delta first, with how many of
       their pixels are edge pixels.
 
+  holes ID [--list FILE]
+      ID is one face-identity PNG of a capture holding terrain alone
+      (--render-paths terrain,portal,transition: no mobys, sky, particles or
+      HUD). The background is the pixels equal to the clear colour, 0x000000
+      (the face-identity capture clears to black and every terrain draw is
+      recoloured to an identity with bit 22 or bit 23 set, never 0). Prints
+      one line of key=value counts:
+        faces, walked, cov  as for census (cov: pixels not the clear colour)
+        pins       clear pixels whose eight neighbours are all not clear:
+                   1-px holes
+        holes      8-connected clear components of at most 16 pixels that
+                   touch no image edge, every pixel of their 8-neighbour ring
+                   not clear: holes of any size up to 16 px, pins included
+        hole_px    pixels in those components
+        foreign    pixels neither clear nor carrying bit 22 or 23: a draw the
+                   recolour missed (or a path the capture should not hold).
+                   Nonzero makes the capture impure; the caller refuses it.
+      With --list, writes a "# size W H" line, then one line "x y size" per
+      hole pixel (size = its component's pixel count) to FILE.
+
 Engagement: a census line with faces == 0 and walked == 0 compared nothing
 and is marked VACUOUS by the caller.
 """
@@ -183,12 +203,56 @@ def split(argv):
     return 0
 
 
+CLEAR = 0x000000
+HOLE_MAX = 16
+
+
+def holes(argv):
+    out = None
+    if "--list" in argv:
+        k = argv.index("--list")
+        out = argv[k + 1]
+        argv = argv[:k] + argv[k + 2:]
+    ids = load_ids(argv[0])
+    h, w = ids.shape
+    clear = ids == CLEAR
+    terr = is_terrain(ids)
+    foreign = int(np.count_nonzero(~clear & ~terr))
+    p = np.pad(clear, 1, constant_values=True)
+    nclear = sum(p[1 + dy:1 + dy + h, 1 + dx:1 + dx + w].astype(np.int32)
+                 for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx)
+    pins = int(np.count_nonzero(clear & (nclear == 0)))
+    # A clear component of at most HOLE_MAX pixels off the image edge is
+    # enclosed by non-clear pixels: 8-connectivity puts every clear pixel of
+    # its 8-neighbour ring inside the component.
+    found = []
+    for px in components(clear):
+        if len(px) > HOLE_MAX:
+            continue
+        if any(y in (0, h - 1) or x in (0, w - 1) for y, x in px):
+            continue
+        found.append(px)
+    faces = len(np.unique(ids[(ids & RET) != 0]))
+    walked = len(np.unique(ids[((ids & WALK) != 0) & ((ids & RET) == 0)]))
+    print("faces=%d walked=%d cov=%d pins=%d holes=%d hole_px=%d foreign=%d"
+          % (faces, walked, int(np.count_nonzero(~clear)), pins, len(found),
+             sum(len(px) for px in found), foreign))
+    if out is not None:
+        with open(out, "w") as f:
+            f.write("# size %d %d\n" % (w, h))
+            for px in found:
+                for y, x in sorted(px):
+                    f.write("%d %d %d\n" % (x, y, len(px)))
+    return 0
+
+
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("census", "split"):
+    cmds = {"census": census, "split": split, "holes": holes}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__)
         return 64
     try:
-        return census(sys.argv[2:]) if sys.argv[1] == "census" else split(sys.argv[2:])
+        return cmds[sys.argv[1]](sys.argv[2:])
     except FileNotFoundError as e:
         print("terrain_hole_census: missing %s" % e.filename)
         return 1
