@@ -57,7 +57,8 @@
 # Usage: tests/harness/check_tercache_present_flicker.sh [--game SLUG]
 #            [--build-dir=DIR] [--leg=static|path|all]
 #   OPENPETE_TC_FLICKER_EXE   the exe to drive (default: the build's
-#                             windows-mingw exe of the game); a Linux binary
+#                             windows-mingw openpete.exe, one executable for
+#                             every game, run with --game); a Linux binary
 #                             runs windowed on $DISPLAY or $WAYLAND_DISPLAY
 #   OPENPETE_TC_FLICKER_OUT   output directory (default: the build tree)
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (exe, disc, display or python3/PIL
@@ -126,7 +127,7 @@ MIN_PRESENTS=32
 MIN_INTER=8
 MIN_REGION=100
 
-EXE="${OPENPETE_TC_FLICKER_EXE:-$PG_BUILD_DIR/games/$GAME/$(pg_bin_name "$GAME").exe}"
+EXE="${OPENPETE_TC_FLICKER_EXE:-$PG_BUILD_DIR/openpete.exe}"
 DISC_ABS="$(cd "$(dirname "$PG_DISC")" 2>/dev/null && pwd -P)/$(basename "$PG_DISC")"
 [[ -x "$EXE" && -f "$DISC_ABS" ]] ||
     { echo "tercache-flicker: SKIP (exe or disc missing: $EXE)"; exit 64; }
@@ -155,7 +156,7 @@ attempt=1
 limit=$((PRESENTS_START + 100))
 while :; do
     rm -f "$LOG" "$OUT_ABS/$GAME"__*.png
-    env "${WSLENV_ARGS[@]}" "$EXE" \
+    env "${WSLENV_ARGS[@]}" "$EXE" --game "$GAME" \
         --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
         --renderer vk --aspect "$ASPECT" --lod extended --terrain-cache 1 "${PATH_ARGS[@]}" \
         --skip-to-level "$LEVEL" --freecam-pose "$POSE" \
@@ -261,7 +262,7 @@ attempt=1
 limit=$((PATH_START + PATH_N + 100))
 while :; do
     rm -f "$PLOG" "$OUT_ABS/$GAME"-path__*.png
-    env "${WSLENV_ARGS[@]}" "$EXE" \
+    env "${WSLENV_ARGS[@]}" "$EXE" --game "$GAME" \
         --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
         --renderer vk --aspect "$ASPECT" --lod extended --terrain-cache 1 "${PATH_ARGS[@]}" \
         --skip-to-level "$LEVEL" --freecam-path "$PATH_SPEC" \
