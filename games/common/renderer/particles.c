@@ -24,8 +24,9 @@
 // window) and the per-class key test some classes apply after the stamp
 // (game_layout.particles.stamp_skip), which makes the pairing the routine's
 // own invariant rather than a match on geometry. Class `fixed_layer_class` and up link at a fixed front bucket
-// (partsdraw.s:202) and stamp nothing, so those primitives take the near
-// depth that bucket means and are paired by class alone. Line numbers cite the
+// (partsdraw.s:202), stamp nothing and append one primitive per record
+// unconditionally, so they pair with their records by walk order and take the
+// near depth that bucket means. Line numbers cite the
 // Spyro 3 asm/partsdraw.s; the Spyro 2 routine is the same code two lines
 // lower.
 //
@@ -395,13 +396,46 @@ static void part_state_tick(const part_item* it, part_state* st) {
     st->ang = st->hgt = (double)((it->w1 >> 24) & 0xFFu);
 }
 
+/** @brief Builds a fixed-layer billboard's four corners in float: the PART_ROT_CLASS offsets about a view-space point the record holds.
+ *
+ * The routine's fixed-layer path takes no camera term: it loads the GTE
+ * translation straight from the record, TRX = s16(+0x4) << 2, TRY =
+ * word(+0x4) >> 14 arithmetic and TRZ = s16(+0x8) << 2 (partsdraw.s:89,
+ * :111-119), builds the corner offsets from the size byte +0xA and the
+ * sine-table entries at angle byte +0xB plus 32 and plus 96 (:97-110,
+ * :120-123), and projects them under diag(0x1000, 0xA00, 0x1000) (:150-156,
+ * RTPT :159, RTPS :174), the PART_ROT_CLASS corners about that translation.
+ * The halfwords are signed view coordinates; TRY keeps the two bits its shift
+ * takes from the top of +0x4's low half, and the shown displacement `off`,
+ * in halfword units, scales by four as the halfwords do. The projection is the canonical one
+ * (ngte_view_canon): the point is where the game placed the element in its
+ * own view, so --fov does not scale it.
+ * @param cpu Reads the sine table.
+ * @param v The view; supplies the screen offsets and the canonical H.
+ * @param it The paired captured primitive holding the record's words.
+ * @param st The state shown.
+ * @param x Receives the four screen X.
+ * @param y Receives the four screen Y. */
+static void part_fixed_corners(CPUState* cpu, const ngte_view* v, const part_item* it,
+                               const part_state* st, float x[4], float y[4]) {
+    ngte_view c;
+    ngte_view_canon(v, &c);
+    const double t[3] = {
+        4.0 * ((double)(int16_t)(it->w0 & 0xFFFFu) + st->off[0]),
+        (double)((int32_t)it->w0 >> 14) + 4.0 * st->off[1],
+        4.0 * ((double)(int16_t)(it->w1 & 0xFFFFu) + st->off[2]),
+    };
+    part_rot_corners(cpu, &c, t, st->size, st->ang, x, y);
+}
+
 /** @brief Builds a paired primitive's vertices in float from its record's state, as its class's routine builds them.
  *
  * A polygon class yields the four corners in the primitive's vertex order.
  * PART_DOT_CLASS yields the record point and the point one pixel right of it
  * (partsdraw.s:746-748 store SXY and SXY + 1); PART_TWO_POINT_CLASS yields
- * the two record points' projections (:683-684). Nothing is built when the
- * captured primitive's shape is not the one its class appends.
+ * the two record points' projections (:683-684); a class of
+ * fixed_layer_class and up yields part_fixed_corners' four. Nothing is built
+ * when the captured primitive's shape is not the one its class appends.
  * @param cpu Reads the sine table.
  * @param v The view the vertices project under.
  * @param it The paired captured primitive.
@@ -417,6 +451,11 @@ static int part_build(CPUState* cpu, const ngte_view* v, const part_item* it,
     double t[3];
     double p[3];
     ngte_proj o;
+    if ((uint32_t)it->cls >= game_layout.particles.fixed_layer_class) {
+        if (!quad) return 0;
+        part_fixed_corners(cpu, v, it, st, x, y);
+        return 4;
+    }
     part_rec_point(it, 0, st->off, p);
     part_project(v, p, &o);
     switch (it->cls) {
@@ -1170,6 +1209,40 @@ static void part_synth_check(CPUState* cpu, const ngte_view* v, const part_gte* 
             it->p.raw[2], syn.p.raw[3], it->p.raw[3]);
 }
 
+/** @brief Pairs a fixed-layer record with the captured primitive `it`: its position words, class, record, owner, built corners and the fixed front depth.
+ *
+ * The routine appends one primitive for every record of class
+ * fixed_layer_class and up, with no stamp and no window test, so the walk
+ * order alone aligns them. The shown point (psx, psy) is the projection of
+ * the record's view-space translation, and vz its Z.
+ * @param cpu Reads the record and the sine table.
+ * @param v The tick's view.
+ * @param rec The record's guest address.
+ * @param cls The record's class, fixed_layer_class or above.
+ * @param front The scene depth of the fixed front bucket.
+ * @param it The captured item. */
+static void part_pair_fixed(CPUState* cpu, const ngte_view* v, uint32_t rec, int cls,
+                            float front, part_item* it) {
+    it->w0 = cpu->read_word(rec + game_layout.particles.pos_off);
+    it->w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
+    it->w2 = cpu->read_word(rec + game_layout.particles.pos_off + 8u);
+    it->cls = cls;
+    it->rec = rec;
+    it->owner = player_hide_particle_owner(cpu, rec);
+    it->depth = front;
+    part_state st;
+    part_state_tick(it, &st);
+    it->nb = (uint8_t)part_build(cpu, v, it, &st, it->bx, it->by);
+    ngte_view c;
+    ngte_view_canon(v, &c);
+    ngte_proj o;
+    ngte_screen_gte(4.0 * (double)(int16_t)(it->w0 & 0xFFFFu), (double)((int32_t)it->w0 >> 14),
+                    4.0 * (double)(int16_t)(it->w1 & 0xFFFFu), c.ofx, c.ofy, &c, 0, &o);
+    it->psx = o.sx;
+    it->psy = o.sy;
+    it->vz = o.m3;
+}
+
 /** @brief Pairs a stamped record with the captured primitive `it` and advances the modelled GTE state past it.
  *
  * The record emitted a primitive unless it fails its class's test between the
@@ -1239,9 +1312,9 @@ static void part_wide_census_record(CPUState* cpu, const ngte_view* v, const par
  * walking the pool and the captured list together aligns them. A stamped
  * record goes to part_pair_record; a record of class fixed_layer_class and
  * up links at the fixed front bucket, where the routine stamps nothing and
- * always appends, so it takes the front depth and keeps no record, only its
- * owner. Without `reveal` or `census` the walk ends at the last captured
- * primitive, as the pairing needs nothing past it; with either it runs to the
+ * always appends, so it goes to part_pair_fixed. Without `reveal` or
+ * `census` the walk ends at the last captured primitive, as the pairing
+ * needs nothing past it; with either it runs to the
  * pool's end: an unstamped record goes to part_reveal_record under `reveal`,
  * and every record below fixed_layer_class to part_wide_census_record under
  * `census`. Synthetic items are appended past the captured ones and counted
@@ -1267,10 +1340,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v, int reveal, int 
     while ((i < s_item_n || full) && part_walk_next(cpu, &w, &rec, &cls)) {
         if ((uint32_t)cls >= game_layout.particles.fixed_layer_class) {
             part_gte_step(&w.g, cls, 0, NULL);
-            if (i >= s_item_n) continue;
-            s_item[i].cls = cls;
-            s_item[i].owner = player_hide_particle_owner(cpu, rec);
-            s_item[i++].depth = front;
+            if (i < s_item_n) part_pair_fixed(cpu, v, rec, cls, front, &s_item[i++]);
             continue;
         }
         const int stamped = cpu->read_byte(rec + game_layout.particles.drawn_off) != 0;
@@ -1386,8 +1456,12 @@ static int part_record_pair(const part_item* it, double alpha, part_state* st) {
      * slot rolled after that draw: the displayed state is the same, and the
      * offsets are measured from prev, so they gain curr - prev. */
     const double from_prev = (s_item_ref_prev && o->curr_ns > s_item_ref_cut) ? 1.0 : 0.0;
+    /* A fixed-layer record's halfwords are signed view coordinates, which
+     * cross zero; the difference wraps to the shorter way round. */
+    const int fixed = (uint32_t)it->cls >= game_layout.particles.fixed_layer_class;
     double d[3];
-    for (int k = 0; k < 3; k++) d[k] = (double)ph[k] - (double)ch[k];
+    for (int k = 0; k < 3; k++)
+        d[k] = fixed ? (double)(int16_t)(uint16_t)(ph[k] - ch[k]) : (double)ph[k] - (double)ch[k];
     /* An equal nonzero serial on both sides is one allocation: the record
      * continued, however far it moved. */
     if (cser == 0u &&
@@ -1422,13 +1496,14 @@ static int s_reb_dbg;   /* 2 = one line per rebased primitive */
 
 /** @brief Fills s_reb[i] with the rebase of captured primitive i onto the pose this present shows.
  *
- * A primitive with no record (the fixed front bucket, or unpaired) gets an
- * inactive rebase. Otherwise part_record_pair gives the state the record
+ * A primitive with no record gets an inactive rebase, counted snapped when
+ * it has a class. Otherwise part_record_pair gives the state the record
  * shows, part_build rebuilds the vertices at that state under `v`, and the
  * record point's projection there gives the depth (and the displacement the
- * debug lines print). A pair that is not lerped shows the tick's state, so
- * only the camera's motion moves it. Adds to the s_reb_stat verdict counts,
- * and at OPENPETE_PART_REBASE_DBG 2 or more prints one line.
+ * debug lines print); a fixed-layer record keeps the fixed front depth. A
+ * pair that is not lerped shows the tick's state, so only the camera's motion
+ * moves it. Adds to the s_reb_stat verdict counts, and at
+ * OPENPETE_PART_REBASE_DBG 2 or more prints one line.
  * @param cpu Reads the sin/cos table.
  * @param v The view under the staged camera.
  * @param alpha The present's phase between the two ticks.
@@ -1437,19 +1512,24 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
     part_item* it = &s_item[i];
     part_rebase* r = &s_reb[i];
     memset(r, 0, sizeof *r);
-    if (it->cls < 0 || !it->rec) return;         /* the fixed front bucket */
+    if (it->cls < 0) return;                     /* unpaired */
+    if (!it->rec) { s_reb_stat[1][it->cls & 0xF]++; return; }   /* held at the tick's pose */
     part_state st;
     const int verdict = part_record_pair(it, alpha, &st);
     s_reb_stat[verdict == PART_PAIR_LERP ? 0 : 1][it->cls & 0xF]++;
     if (verdict == PART_PAIR_REUSE || verdict == PART_PAIR_CEIL) s_reb_stat[2][it->cls & 0xF]++;
     if (verdict == PART_PAIR_CEIL) s_reb_stat[3][it->cls & 0xF]++;
-    double p[3];
-    ngte_proj o;
-    part_rec_point(it, 0, st.off, p);
-    part_project(v, p, &o);
-    r->dx = (float)(o.sx - it->psx);
-    r->dy = (float)(o.sy - it->psy);
-    r->depth = openpete_native_scene_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
+    if ((uint32_t)it->cls >= game_layout.particles.fixed_layer_class) {
+        r->depth = it->depth;                    /* the fixed front bucket */
+    } else {
+        double p[3];
+        ngte_proj o;
+        part_rec_point(it, 0, st.off, p);
+        part_project(v, p, &o);
+        r->dx = (float)(o.sx - it->psx);
+        r->dy = (float)(o.sy - it->psy);
+        r->depth = openpete_native_scene_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
+    }
     r->active = 1;
     r->dsz = (st.size != (double)((it->w1 >> 16) & 0xFFu)) ? 1u : 0u;
     r->nb = (uint8_t)part_build(cpu, v, it, &st, r->bx, r->by);
@@ -1457,7 +1537,8 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
         fprintf(stderr, "[part-reb f=%u rec=%08X c=%d v=%d off=(%.2f,%.2f,%.2f) "
                         "ps=(%.2f,%.2f) new=(%.2f,%.2f) d=(%.2f,%.2f) nb=%u\n",
                 openpete_frame, it->rec, it->cls, verdict, st.off[0], st.off[1], st.off[2],
-                it->psx, it->psy, o.sx, o.sy, (double)r->dx, (double)r->dy, (unsigned)r->nb);
+                it->psx, it->psy, it->psx + (double)r->dx, it->psy + (double)r->dy,
+                (double)r->dx, (double)r->dy, (unsigned)r->nb);
 }
 
 /** @brief Prints a view's camera, offsets, H, scale and matrix row to stderr.
@@ -1849,8 +1930,9 @@ static void part_item_anchor(const part_item* it, double* ax, double* ay) {
  * feeder emitted from them, and per class the calibration the depth pairing
  * rests on: the mean and worst Manhattan distance between the point each
  * paired record anchors (part_item_anchor) and the centroid of the primitive
- * the pairing gave it, followed by the unpaired count and the stamped records
- * the routine appended nothing for. A correct pairing (and a correct camera
+ * the pairing gave it, followed by the unpaired count, the stamped records
+ * the routine appended nothing for, and the fixed-layer primitives with the
+ * count of them paired to a record. A correct pairing (and a correct camera
  * matrix) keeps the distance small and a wrong one scatters it across the
  * screen. A capture whose fed count is zero measured nothing.
  * @param start Guest address of the polybuf interval's start.
@@ -1879,9 +1961,16 @@ static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
         }
         if (n) fprintf(stderr, " c%d:n=%d mean=%.2f worst=%.1f", cl, n, sum / n, worst);
     }
-    int unpaired = 0;
-    for (int i = 0; i < s_item_n; i++) if (s_item[i].cls < 0) unpaired++;
-    fprintf(stderr, " unpaired=%d stamp_skipped=%d\n", unpaired, s_stamp_skipped);
+    int unpaired = 0, fixed = 0, fixed_rec = 0;
+    for (int i = 0; i < s_item_n; i++) {
+        if (s_item[i].cls < 0) unpaired++;
+        if ((uint32_t)s_item[i].cls >= game_layout.particles.fixed_layer_class && s_item[i].cls >= 0) {
+            fixed++;
+            fixed_rec += s_item[i].rec != 0u;
+        }
+    }
+    fprintf(stderr, " unpaired=%d stamp_skipped=%d fixed=%d fixed_rec=%d\n", unpaired,
+            s_stamp_skipped, fixed, fixed_rec);
 }
 
 /** @brief The distance from the record's own projected point to the primitive's furthest vertex, in pixels.
