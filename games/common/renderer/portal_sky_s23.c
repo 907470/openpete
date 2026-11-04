@@ -24,6 +24,26 @@
 // Horn over every such pair. Faces are tried fewest candidates first, and a
 // rotation that places every picture vertex ends the search.
 //
+// The eye off the centre. Some pictures were baked from an eye away from the
+// sky's centre, with a taller vertical scale (Spyro 2's Dragon Shores, eye
+// about 200 units along -Y, scale about 224; Spyro 3's levels 25 and 50, about
+// 100 and 58 units); no rotation places nine tenths of their vertices. When
+// the rotation search stays under that floor, the camera is refitted as
+// q = R (p - t) with a free vertical scale. The pairs come from colours: a
+// picture face whose ordered colours (or their reverse) match exactly one sky
+// face pairs its corners with that face's, and a vertex takes the sky corner
+// most of its faces name. The face whose rotation brings the most pairs within
+// PSK_EYE_INIT pixels seeds the fit; Levenberg-Marquardt refits the rotation,
+// then the rotation and eye, over the pairs within a shrinking bound; then
+// each picture vertex pairs with its nearest projected sky corner and the
+// rotation, eye and vertical scale are refitted over shrinking bounds. The
+// fit is accepted when nine tenths of the picture vertices that carry a sky
+// colour are placed; a vertex without one (Dragon Shores' sea below the sky's
+// horizon) has no sky corner to land on. The extension then shifts every
+// rotated sky corner by -R t before it is normalised and projects it with the
+// fitted vertical scale. A picture the rotation registers never reaches the
+// refit, and its extension is built with t = 0 and the fixed scale.
+//
 // The search's cost. A picture whose best rotation misses a vertex tries every
 // hypothesis, a few thousand of them. Each is scored from the picture's side:
 // a picture vertex's view ray, rotated back into the world, finds the sky
@@ -87,6 +107,8 @@
 #define PSK_DIR_HASH 16384         /* its bucket count, a power of two */
 #define PSK_MAX_CORNERS (PSK_MAX_SKY_F * 3)
 #define PSK_MAX_SKIES 16           /* the destination plus the record array's other destinations */
+#define PSK_EYE_INIT 6.0           /* pixels: a colour pair this close counts for the seeding rotation */
+#define PSK_EYE_MIN_PAIRS 8        /* the fewest colour pairs the eye refit starts from */
 
 /* ---- the destination sky, per level ------------------------------------- */
 
@@ -459,6 +481,15 @@ static void psk_sort3(const uint32_t in[3], uint32_t out[3]) {
     out[0] = a; out[1] = b; out[2] = c;
 }
 
+/** @brief Orders two colours ascending.
+ * @param a The first.
+ * @param b The second.
+ * @return Negative, zero or positive as qsort expects. */
+static int psk_u32_cmp(const void* a, const void* b) {
+    const uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return x < y ? -1 : x > y;
+}
+
 /** @brief Orders two keyed sky faces by sorted colours, then by index.
  * @param a The first.
  * @param b The second.
@@ -718,6 +749,39 @@ static int psk_try_face(const psk_pic* P, const psk_grid* G, const psk_sky* S, c
     return 0;
 }
 
+/* The eye refit's camera: a world point p maps to q = R (p - t) and projects
+ * to (PSK_CX + PSK_FX q0 / q2, PSK_CY + fy q1 / q2). */
+typedef struct {
+    double R[3][3], t[3], fy;
+} psk_eye_cam;
+
+/* World points paired with picture points, for one fit. */
+typedef struct {
+    int    n;
+    double w[PSK_MAX_PIC_V][3];
+    double x[PSK_MAX_PIC_V], y[PSK_MAX_PIC_V];
+} psk_pairs;
+
+/* The eye refit's scratch: the colour pairs and which of them a stage fits,
+ * the pairs a stage fits, the per-vertex votes, the sky's colours, the
+ * nearest-corner search and the solver's residuals and Jacobian. */
+typedef struct {
+    psk_pairs corr, fit;
+    int       in[PSK_MAX_PIC_V];             /* corr pair inside the stage's bound */
+    int       vote_v[PSK_MAX_PIC_F * 3];     /* a voting face corner's picture vertex */
+    int       vote_c[PSK_MAX_PIC_F * 3];     /* and its sky corner, sky face * 3 + corner */
+    int       vote_next[PSK_MAX_PIC_F * 3];  /* the next vote of the same vertex, -1 ends */
+    int       vote_head[PSK_MAX_PIC_V], vote_tail[PSK_MAX_PIC_V];
+    int       nvote;
+    uint32_t  skyc[PSK_MAX_SKY_F * 3];       /* the sky's colours, sorted, distinct */
+    int       nskyc;
+    uint8_t   sky_coloured[PSK_MAX_PIC_V];
+    double    bd[PSK_MAX_PIC_V];             /* the nearest projected corner's squared distance */
+    int       bc[PSK_MAX_PIC_V];             /* and its index in the search index, -1 for none */
+    double    r[PSK_MAX_PIC_V * 2], r2[PSK_MAX_PIC_V * 2];
+    double    J[PSK_MAX_PIC_V * 2][7];
+} psk_eye;
+
 /* One builder's scratch: the worker thread and the game fiber each own one,
  * so a build on either never shares memory with a build on the other or
  * with the game fiber's sky feed, whose sector decode has its own buffer. */
@@ -728,7 +792,14 @@ typedef struct {
     psk_index X;
     psk_match M;
     psk_rank  rank[PSK_MAX_PIC_F];
+    psk_eye   E;
 } psk_ctx;
+
+/* The camera an extension is built under: the rotation the decode applies,
+ * R t subtracted from each rotated corner, and the vertical scale. */
+typedef struct {
+    double R[3][3], rt[3], fy;
+} psk_cam;
 
 /** @brief Recovers the rotation that projects the sky onto the picture.
  *
@@ -767,6 +838,425 @@ static int psk_register(psk_ctx* C, const psk_pic* P, int prune, double R[3][3],
     }
     psk_horn((const double (*)[3])M->d, (const double (*)[3])M->r, n, R);
     return psk_score(P, G, S, R, M);
+}
+
+/* ---- the eye refit --------------------------------------------------------- */
+
+/** @brief Projects a world point under the eye refit's camera.
+ * @param K The camera.
+ * @param p The world point.
+ * @param x Receives X.
+ * @param y Receives Y.
+ * @return 1 when the point lies inside the PSK_NEAR cone about the eye, else 0. */
+static int psk_eye_project(const psk_eye_cam* K, const double p[3], double* x, double* y) {
+    const double d[3] = { p[0] - K->t[0], p[1] - K->t[1], p[2] - K->t[2] };
+    double c[3];
+    for (int i = 0; i < 3; i++) c[i] = K->R[i][0] * d[0] + K->R[i][1] * d[1] + K->R[i][2] * d[2];
+    const double n = sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+    if (n <= 0.0 || c[2] < PSK_NEAR * n) return 0;
+    *x = PSK_CX + PSK_FX * c[0] / c[2];
+    *y = PSK_CY + K->fy * c[1] / c[2];
+    return 1;
+}
+
+/** @brief The residuals of a pair set under a camera, and their squared sum.
+ *
+ * A point outside the cone takes a residual of 1000 pixels on each axis.
+ * @param K The camera.
+ * @param S The pairs.
+ * @param r Receives 2 * S->n residuals, X then Y per pair.
+ * @return The squared sum. */
+static double psk_eye_resid(const psk_eye_cam* K, const psk_pairs* S, double* r) {
+    double c = 0.0;
+    for (int i = 0; i < S->n; i++) {
+        double x, y;
+        if (!psk_eye_project(K, S->w[i], &x, &y)) { x = S->x[i] + 1e3; y = S->y[i] + 1e3; }
+        r[2 * i] = x - S->x[i];
+        r[2 * i + 1] = y - S->y[i];
+        c += r[2 * i] * r[2 * i] + r[2 * i + 1] * r[2 * i + 1];
+    }
+    return c;
+}
+
+/** @brief Applies a parameter step to a camera: a rotation vector composed before R, an eye offset and a vertical scale offset.
+ * @param K The camera.
+ * @param d The step: rotation vector, eye offset, scale offset.
+ * @param out Receives the stepped camera; not K. */
+static void psk_eye_step(const psk_eye_cam* K, const double d[7], psk_eye_cam* out) {
+    const double th = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    double M[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+    if (th > 0.0) {
+        const double k[3] = { d[0] / th, d[1] / th, d[2] / th }, s = sin(th), c1 = 1.0 - cos(th);
+        const double W[3][3] = { { 0, -k[2], k[1] }, { k[2], 0, -k[0] }, { -k[1], k[0], 0 } };
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+                M[i][j] += s * W[i][j] + c1 * (W[i][0] * W[0][j] + W[i][1] * W[1][j] + W[i][2] * W[2][j]);
+    }
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            out->R[i][j] = M[i][0] * K->R[0][j] + M[i][1] * K->R[1][j] + M[i][2] * K->R[2][j];
+    for (int i = 0; i < 3; i++) out->t[i] = K->t[i] + d[3 + i];
+    out->fy = K->fy + d[6];
+}
+
+/** @brief Solves an n by n linear system by Gaussian elimination with partial pivoting.
+ * @param A The matrix; destroyed.
+ * @param b The right-hand side; destroyed.
+ * @param n The order, at most 7.
+ * @param x Receives the solution.
+ * @return 1 when solved, 0 when a pivot vanishes. */
+static int psk_solve(double A[7][7], double b[7], int n, double x[7]) {
+    for (int c = 0; c < n; c++) {
+        int p = c;
+        for (int r = c + 1; r < n; r++) if (fabs(A[r][c]) > fabs(A[p][c])) p = r;
+        if (fabs(A[p][c]) < 1e-300) return 0;
+        for (int k = 0; k < n; k++) { const double t = A[c][k]; A[c][k] = A[p][k]; A[p][k] = t; }
+        const double tb = b[c]; b[c] = b[p]; b[p] = tb;
+        for (int r = c + 1; r < n; r++) {
+            const double f = A[r][c] / A[c][c];
+            for (int k = c; k < n; k++) A[r][k] -= f * A[c][k];
+            b[r] -= f * b[c];
+        }
+    }
+    for (int c = n - 1; c >= 0; c--) {
+        double s = b[c];
+        for (int k = c + 1; k < n; k++) s -= A[c][k] * x[k];
+        x[c] = s / A[c][c];
+    }
+    return 1;
+}
+
+/** @brief The forward-difference Jacobian of the residuals over the first `nfree` parameters, and its normal equations.
+ * @param E The scratch; its residuals at K are set, its Jacobian is written.
+ * @param K The camera.
+ * @param S The pairs.
+ * @param nfree The parameter count: 3 rotation, 6 with the eye, 7 with the vertical scale.
+ * @param A Receives J^T J.
+ * @param g Receives J^T r. */
+static void psk_eye_normal(psk_eye* E, const psk_eye_cam* K, const psk_pairs* S, int nfree,
+                           double A[7][7], double g[7]) {
+    for (int j = 0; j < nfree; j++) {
+        double d[7] = { 0 };
+        d[j] = j < 3 ? 1e-6 : 1e-4;
+        psk_eye_cam K2;
+        psk_eye_step(K, d, &K2);
+        psk_eye_resid(&K2, S, E->r2);
+        for (int i = 0; i < 2 * S->n; i++) E->J[i][j] = (E->r2[i] - E->r[i]) / d[j];
+    }
+    memset(A, 0, sizeof(double) * 49);
+    memset(g, 0, sizeof(double) * 7);
+    for (int i = 0; i < 2 * S->n; i++)
+        for (int a = 0; a < nfree; a++) {
+            g[a] += E->J[i][a] * E->r[i];
+            for (int b = 0; b < nfree; b++) A[a][b] += E->J[i][a] * E->J[i][b];
+        }
+}
+
+/** @brief Solves one damped step from the normal equations and keeps it when it lowers the squared residual sum.
+ * @param E The scratch; on acceptance its residuals are the stepped camera's.
+ * @param K In/out: the camera.
+ * @param S The pairs.
+ * @param nfree The parameter count.
+ * @param A J^T J.
+ * @param g J^T r.
+ * @param lam The damping.
+ * @param c In/out: the squared residual sum at K.
+ * @return 1 when the step was kept, else 0. */
+static int psk_eye_try_step(psk_eye* E, psk_eye_cam* K, const psk_pairs* S, int nfree, const double A[7][7],
+                            const double g[7], double lam, double* c) {
+    double M[7][7], b[7], dx[7] = { 0 };
+    for (int a = 0; a < nfree; a++) {
+        for (int k = 0; k < nfree; k++) M[a][k] = A[a][k] + (a == k ? lam * A[a][a] : 0.0);
+        b[a] = -g[a];
+    }
+    if (!psk_solve(M, b, nfree, dx)) return 0;
+    psk_eye_cam K2;
+    psk_eye_step(K, dx, &K2);
+    const double c2 = psk_eye_resid(&K2, S, E->r2);
+    if (!(c2 < *c)) return 0;
+    *K = K2;
+    *c = c2;
+    memcpy(E->r, E->r2, sizeof(double) * 2u * (size_t)S->n);
+    return 1;
+}
+
+/** @brief Fits the first `nfree` camera parameters to a pair set by Levenberg-Marquardt.
+ *
+ * At most 30 accepted steps; a step is accepted when it lowers the squared
+ * residual sum, the damping falling tenfold on acceptance and rising tenfold
+ * on rejection, and the fit stops once the damping passes 1e9.
+ * @param E The scratch.
+ * @param K In/out: the camera.
+ * @param S The pairs.
+ * @param nfree The parameter count: 3 rotation, 6 with the eye, 7 with the vertical scale. */
+static void psk_eye_lm(psk_eye* E, psk_eye_cam* K, const psk_pairs* S, int nfree) {
+    if (S->n * 2 < nfree) return;
+    double lam = 1e-3, c = psk_eye_resid(K, S, E->r);
+    for (int it = 0; it < 30; it++) {
+        double A[7][7], g[7];
+        psk_eye_normal(E, K, S, nfree, A, g);
+        while (!psk_eye_try_step(E, K, S, nfree, (const double (*)[7])A, g, lam, &c))
+            if ((lam *= 10.0) > 1e9) return;
+        lam = lam / 10.0 > 1e-9 ? lam / 10.0 : 1e-9;
+    }
+}
+
+/** @brief The one sky face and corner order of a parity class that carries a picture face's colours.
+ * @param P The picture.
+ * @param pf The picture face.
+ * @param S The sky's faces.
+ * @param X The index.
+ * @param o0 The class: 0 for the three rotations, 3 for the three reflections.
+ * @param sf Receives the sky face.
+ * @return The order's index into k_psk_ord, -1 when no or more than one face and order match. */
+static int psk_eye_unique(const psk_pic* P, int pf, const psk_sky* S, const psk_index* X, int o0, int* sf) {
+    int lo, hits = 0, ord = -1;
+    const int n = psk_tri_run(X, P, pf, &lo);
+    for (int t = lo; t < lo + n; t++)
+        for (int o = o0; o < o0 + 3; o++) {
+            const int f = X->tri[t].sf;
+            if (S->c[f][k_psk_ord[o][0]] != P->c[pf][0] || S->c[f][k_psk_ord[o][1]] != P->c[pf][1] ||
+                S->c[f][k_psk_ord[o][2]] != P->c[pf][2]) continue;
+            hits++; ord = o; *sf = f;
+        }
+    return hits == 1 ? ord : -1;
+}
+
+/** @brief Records every picture-corner to sky-corner vote of the faces whose colours one sky face carries.
+ *
+ * A face of one colour votes nothing; a face votes when exactly one sky face
+ * and rotation carry its colours, else when exactly one sky face and
+ * reflection do. Each vertex's votes chain in face order.
+ * @param E The scratch.
+ * @param P The picture.
+ * @param S The sky's faces.
+ * @param X The index. */
+static void psk_eye_votes(psk_eye* E, const psk_pic* P, const psk_sky* S, const psk_index* X) {
+    E->nvote = 0;
+    for (int v = 0; v < P->nv; v++) E->vote_head[v] = E->vote_tail[v] = -1;
+    for (int pf = 0; pf < P->nf; pf++) {
+        if (P->c[pf][0] == P->c[pf][1] && P->c[pf][1] == P->c[pf][2]) continue;
+        int sf = -1, o = psk_eye_unique(P, pf, S, X, 0, &sf);
+        if (o < 0) o = psk_eye_unique(P, pf, S, X, 3, &sf);
+        if (o < 0) continue;
+        for (int i = 0; i < 3; i++) {
+            const int a = E->nvote++, v = P->f[pf][i];
+            E->vote_v[a] = v; E->vote_c[a] = sf * 3 + k_psk_ord[o][i]; E->vote_next[a] = -1;
+            if (E->vote_tail[v] >= 0) E->vote_next[E->vote_tail[v]] = a; else E->vote_head[v] = a;
+            E->vote_tail[v] = a;
+        }
+    }
+}
+
+/** @brief Pairs each voted picture vertex with the sky position most of its votes name, the first named on a tie.
+ * @param E The scratch; its votes are recorded, its colour pairs are written.
+ * @param P The picture.
+ * @param S The sky's faces. */
+static void psk_eye_corr(psk_eye* E, const psk_pic* P, const psk_sky* S) {
+    psk_pairs* Q = &E->corr;
+    Q->n = 0;
+    for (int v = 0; v < P->nv; v++) {
+        int best = -1, bn = 0;
+        for (int a = E->vote_head[v]; a >= 0; a = E->vote_next[a]) {
+            const double* pa = S->p[E->vote_c[a] / 3][E->vote_c[a] % 3];
+            int cnt = 0;
+            for (int b = E->vote_head[v]; b >= 0; b = E->vote_next[b])
+                cnt += !memcmp(pa, S->p[E->vote_c[b] / 3][E->vote_c[b] % 3], sizeof(double) * 3);
+            if (cnt > bn) { bn = cnt; best = a; }
+        }
+        if (best < 0) continue;
+        memcpy(Q->w[Q->n], S->p[E->vote_c[best] / 3][E->vote_c[best] % 3], sizeof Q->w[0]);
+        Q->x[Q->n] = P->x[v]; Q->y[Q->n] = P->y[v];
+        E->bc[v] = Q->n++;
+    }
+}
+
+/** @brief Marks each colour pair the camera projects within `thr` pixels of its picture point.
+ * @param E The scratch.
+ * @param K The camera.
+ * @param thr The bound, exclusive.
+ * @return The count marked. */
+static int psk_eye_select(psk_eye* E, const psk_eye_cam* K, double thr) {
+    int n = 0;
+    for (int i = 0; i < E->corr.n; i++) {
+        double x, y;
+        E->in[i] = psk_eye_project(K, E->corr.w[i], &x, &y) && hypot(x - E->corr.x[i], y - E->corr.y[i]) < thr;
+        n += E->in[i];
+    }
+    return n;
+}
+
+/** @brief The camera of the face rotation that brings the most colour pairs within PSK_EYE_INIT pixels, the eye at the centre.
+ *
+ * Each picture face whose three distinct vertices are paired gives Horn's
+ * rotation of its three pairs; the first best is kept.
+ * @param E The scratch; E->bc maps a paired vertex to its pair.
+ * @param P The picture.
+ * @param K Receives the camera.
+ * @return 1 when a face gave a rotation, else 0. */
+static int psk_eye_seed(psk_eye* E, const psk_pic* P, psk_eye_cam* K) {
+    int best = -1;
+    for (int pf = 0; pf < P->nf; pf++) {
+        const int a = P->f[pf][0], b = P->f[pf][1], c = P->f[pf][2];
+        if (a == b || b == c || a == c || E->bc[a] < 0 || E->bc[b] < 0 || E->bc[c] < 0) continue;
+        double d[3][3], r[3][3];
+        for (int i = 0; i < 3; i++) {
+            const int q = E->bc[P->f[pf][i]];
+            psk_unit(E->corr.w[q], d[i]);
+            psk_ray(E->corr.x[q], E->corr.y[q], r[i]);
+        }
+        psk_eye_cam H = { { { 0 } }, { 0, 0, 0 }, PSK_FY };
+        psk_horn((const double (*)[3])d, (const double (*)[3])r, 3, H.R);
+        const int n = psk_eye_select(E, &H, PSK_EYE_INIT);
+        if (n > best) { best = n; *K = H; }
+    }
+    return best >= 0;
+}
+
+/** @brief Fits the camera over the colour pairs marked by the last selection.
+ * @param E The scratch.
+ * @param K In/out: the camera.
+ * @param nfree The parameter count. */
+static void psk_eye_fit_selected(psk_eye* E, psk_eye_cam* K, int nfree) {
+    psk_pairs* F = &E->fit;
+    F->n = 0;
+    for (int i = 0; i < E->corr.n; i++) {
+        if (!E->in[i]) continue;
+        memcpy(F->w[F->n], E->corr.w[i], sizeof F->w[0]);
+        F->x[F->n] = E->corr.x[i]; F->y[F->n] = E->corr.y[i];
+        F->n++;
+    }
+    psk_eye_lm(E, K, F, nfree);
+}
+
+/** @brief Offers one projected sky corner to every picture vertex within `reach` grid cells, each keeping its nearest.
+ * @param E The scratch: per vertex the nearest squared distance and corner so far.
+ * @param P The picture.
+ * @param G Its grid.
+ * @param x The corner's projected X.
+ * @param y Its projected Y.
+ * @param reach The cells searched on each side.
+ * @param i The corner's index in the search index. */
+static void psk_eye_offer(psk_eye* E, const psk_pic* P, const psk_grid* G, double x, double y, int reach, int i) {
+    for (int dy = -reach; dy <= reach; dy++)
+        for (int dx = -reach; dx <= reach; dx++) {
+            const int c = psk_cell(x + dx * PSK_CELL, y + dy * PSK_CELL);
+            for (int v = c < 0 ? -1 : G->head[c]; v >= 0; v = G->next[v]) {
+                const double ex = P->x[v] - x, ey = P->y[v] - y, d = ex * ex + ey * ey;
+                if (d < E->bd[v]) { E->bd[v] = d; E->bc[v] = i; }
+            }
+        }
+}
+
+/** @brief Pairs each picture vertex with the nearest sky corner the camera projects within `thr` pixels of it.
+ * @param E The scratch; the pairs are written to E->fit.
+ * @param C The builder's scratch: picture grid, sky faces, index.
+ * @param P The picture.
+ * @param K The camera.
+ * @param thr The bound, exclusive. */
+static void psk_eye_nearest(psk_eye* E, const psk_ctx* C, const psk_pic* P, const psk_eye_cam* K, double thr) {
+    const psk_index* X = &C->X;
+    const int reach = (int)ceil(thr / PSK_CELL);
+    for (int v = 0; v < P->nv; v++) { E->bd[v] = thr * thr; E->bc[v] = -1; }
+    for (int i = 0; i < X->n; i++) {
+        double x, y;
+        if (psk_eye_project(K, C->S.p[X->corner[i] / 3][X->corner[i] % 3], &x, &y))
+            psk_eye_offer(E, P, &C->G, x, y, reach, i);
+    }
+    psk_pairs* F = &E->fit;
+    F->n = 0;
+    for (int v = 0; v < P->nv; v++) {
+        if (E->bc[v] < 0) continue;
+        const int k = X->corner[E->bc[v]];
+        memcpy(F->w[F->n], C->S.p[k / 3][k % 3], sizeof F->w[0]);
+        F->x[F->n] = P->x[v]; F->y[F->n] = P->y[v];
+        F->n++;
+    }
+}
+
+/** @brief Marks the picture vertices that carry a colour some sky face carries.
+ * @param E The scratch; receives the sky's colours and the marks.
+ * @param P The picture.
+ * @param S The sky's faces.
+ * @return The count marked. */
+static int psk_eye_sky_coloured(psk_eye* E, const psk_pic* P, const psk_sky* S) {
+    int n = 0;
+    for (int f = 0; f < S->n; f++)
+        for (int k = 0; k < 3; k++) E->skyc[n++] = S->c[f][k];
+    qsort(E->skyc, (size_t)n, sizeof E->skyc[0], psk_u32_cmp);
+    E->nskyc = 0;
+    for (int i = 0; i < n; i++)
+        if (!E->nskyc || E->skyc[E->nskyc - 1] != E->skyc[i]) E->skyc[E->nskyc++] = E->skyc[i];
+    memset(E->sky_coloured, 0, sizeof E->sky_coloured);
+    for (int pf = 0; pf < P->nf; pf++)
+        for (int i = 0; i < 3; i++)
+            if (bsearch(&P->c[pf][i], E->skyc, (size_t)E->nskyc, sizeof E->skyc[0], psk_u32_cmp))
+                E->sky_coloured[P->f[pf][i]] = 1;
+    int m = 0;
+    for (int v = 0; v < P->nv; v++) m += E->sky_coloured[v];
+    return m;
+}
+
+/** @brief Scores the refitted camera as psk_score does: the picture vertices some projected sky corner lands within PSK_SNAP of.
+ * @param C The builder's scratch.
+ * @param P The picture.
+ * @param K The camera.
+ * @param sky_hits Receives the count among the vertices that carry a sky colour.
+ * @return The matched vertex count. */
+static int psk_eye_score(psk_ctx* C, const psk_pic* P, const psk_eye_cam* K, int* sky_hits) {
+    psk_match* M = &C->M;
+    for (int i = 0; i < P->nv; i++) M->hit[i] = -1;
+    int score = 0, sky = 0;
+    for (int f = 0; f < C->S.n; f++)
+        for (int k = 0; k < 3; k++) {
+            double x, y;
+            if (!psk_eye_project(K, C->S.p[f][k], &x, &y)) continue;
+            const int v = psk_near(P, &C->G, x, y);
+            if (v < 0 || M->hit[v] >= 0) continue;
+            M->hit[v] = f * 3 + k;
+            score++;
+            sky += C->E.sky_coloured[v];
+        }
+    *sky_hits = sky;
+    return score;
+}
+
+/** @brief Refits the camera with the eye off the sky's centre and a free vertical scale, for a picture the rotation does not register.
+ *
+ * The search index C->X is the one psk_register built for this sky.
+ * @param C The builder's scratch; its grid, sky faces and index are built.
+ * @param P The picture.
+ * @param K Receives the fitted camera.
+ * @param placed Receives the matched vertex count, accepted or not.
+ * @param sky_placed Receives the matched count among the vertices carrying a sky colour.
+ * @param nsky Receives the count of vertices carrying a sky colour.
+ * @return The matched vertex count when nine tenths of the sky-coloured vertices are matched, else 0. */
+static int psk_register_eye(psk_ctx* C, const psk_pic* P, psk_eye_cam* K, int* placed, int* sky_placed, int* nsky) {
+    static const double k_corr3[] = { 8.0, 3.0, 1.5 }, k_corr6[] = { 20.0, 8.0, 3.0, 1.5, 1.5 };
+    static const double k_near[] = { 6.0, 4.0, 3.0, 2.0, 1.5, 1.5, 1.5 };
+    psk_eye* E = &C->E;
+    *placed = *sky_placed = 0;
+    *nsky = psk_eye_sky_coloured(E, P, &C->S);
+    for (int v = 0; v < P->nv; v++) E->bc[v] = -1;
+    psk_eye_votes(E, P, &C->S, &C->X);
+    psk_eye_corr(E, P, &C->S);
+    if (E->corr.n < PSK_EYE_MIN_PAIRS || !psk_eye_seed(E, P, K)) return 0;
+    psk_eye_select(E, K, PSK_EYE_INIT);
+    for (size_t i = 0; i < sizeof k_corr3 / sizeof k_corr3[0]; i++) {
+        psk_eye_fit_selected(E, K, 3);
+        psk_eye_select(E, K, k_corr3[i]);
+    }
+    for (size_t i = 0; i < sizeof k_corr6 / sizeof k_corr6[0]; i++) {
+        psk_eye_fit_selected(E, K, 6);
+        psk_eye_select(E, K, k_corr6[i]);
+    }
+    for (size_t i = 0; i < sizeof k_near / sizeof k_near[0]; i++) {
+        psk_eye_nearest(E, C, P, K, k_near[i]);
+        psk_eye_lm(E, K, &E->fit, 7);
+    }
+    *placed = psk_eye_score(C, P, K, sky_placed);
+    if (*nsky <= 0 || *sky_placed * 10 < *nsky * 9) return 0;
+    return *placed;
 }
 
 /* ---- the extension -------------------------------------------------------- */
@@ -808,6 +1298,8 @@ typedef struct {
     const psk_pic*  P;
     const psk_grid* G;
     psk_entry*      E;
+    double          rt[3];   /* R t, subtracted from each rotated corner */
+    double          fy;      /* the vertical scale */
 } psk_build;
 
 /** @brief Projects one corner of the extension, taking a picture vertex's position when one lies within PSK_SNAP.
@@ -816,7 +1308,7 @@ typedef struct {
  * @param x Receives X.
  * @param y Receives Y. */
 static void psk_place(const psk_build* B, const ngte_cvert* c, float* x, float* y) {
-    const double px = PSK_CX + PSK_FX * c->m1 / c->m3, py = PSK_CY + PSK_FY * c->m2 / c->m3;
+    const double px = PSK_CX + PSK_FX * c->m1 / c->m3, py = PSK_CY + B->fy * c->m2 / c->m3;
     const int v = psk_near(B->P, B->G, px, py);
     *x = v >= 0 ? B->P->x[v] : (float)px;
     *y = v >= 0 ? B->P->y[v] : (float)py;
@@ -842,7 +1334,8 @@ static void psk_append(const psk_build* B, const ngte_cvert* a, const ngte_cvert
 
 /** @brief Clips one camera-space sky face to the PSK_NEAR cone's plane and appends what remains.
  *
- * The corners are scaled to unit length first, which leaves each projected
+ * Each corner is moved by -R t (zero unless the eye refit registered the
+ * picture) into the picture's eye space. The corners are then scaled to unit length first, which leaves each projected
  * edge on the same screen line, so the plane m3 = PSK_NEAR bounds every
  * corner's screen offset to 1 / PSK_NEAR of the scales.
  * @param a The first corner.
@@ -852,8 +1345,10 @@ static void psk_append(const psk_build* B, const ngte_cvert* a, const ngte_cvert
  * @param ctx The psk_build. */
 static void psk_extend_face(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud, void* ctx) {
     (void)gouraud;
+    const psk_build* B = (const psk_build*)ctx;
     ngte_cvert in[3] = { a, b, c }, out[4];
     for (int i = 0; i < 3; i++) {
+        in[i].m1 -= B->rt[0]; in[i].m2 -= B->rt[1]; in[i].m3 -= B->rt[2];
         const double n = sqrt(in[i].m1 * in[i].m1 + in[i].m2 * in[i].m2 + in[i].m3 * in[i].m3);
         if (n <= 0.0) return;
         in[i].m1 /= n; in[i].m2 /= n; in[i].m3 /= n;
@@ -865,7 +1360,6 @@ static void psk_extend_face(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gourau
         if (ci) out[m++] = cur;
         if (ci != ni && m < 4) out[m++] = ngte_clip_lerp(cur, nxt, PSK_NEAR);
     }
-    const psk_build* B = (const psk_build*)ctx;
     if (m >= 3) psk_append(B, &out[0], &out[1], &out[2]);
     if (m == 4) psk_append(B, &out[0], &out[2], &out[3]);
 }
@@ -886,17 +1380,33 @@ static int psk_census_on(void) {
  * @param P The picture.
  * @param level The picture's destination, for the census line.
  * @param L The candidate sky.
- * @param R Receives the rotation.
+ * @param cam Receives the camera: the rotation with no eye shift and the fixed
+ *        vertical scale, or the eye refit's when only it registers.
  * @return The registered vertex count, 0 when the sky is not accepted. */
-static int psk_try_sky(psk_ctx* C, const psk_pic* P, int level, const psk_level* L, double R[3][3]) {
+static int psk_try_sky(psk_ctx* C, const psk_pic* P, int level, const psk_level* L, psk_cam* cam) {
     static const double I[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
     C->S.n = 0;
     psk_decode_sky(&C->D, L, I, psk_collect, &C->S);
     int best = 0;
-    const int matched = psk_register(C, P, psk_census_on() ? 1 : (P->nv * 9 + 9) / 10, R, &best);
+    int matched = psk_register(C, P, psk_census_on() ? 1 : (P->nv * 9 + 9) / 10, cam->R, &best);
+    cam->rt[0] = cam->rt[1] = cam->rt[2] = 0.0;
+    cam->fy = PSK_FY;
     if (psk_census_on())
         OPL_INFO_F("portal", "sky census: picture of level %d against the sky of level %d: best %d, "
                    "registered %d of %d", level, L->level, best, matched, P->nv);
+    if (matched) return matched;
+    psk_eye_cam K = { { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }, { 0, 0, 0 }, PSK_FY };
+    int placed = 0, sky_placed = 0, nsky = 0;
+    matched = psk_register_eye(C, P, &K, &placed, &sky_placed, &nsky);
+    if (psk_census_on() || matched)
+        OPL_INFO_F("portal", "sky census: picture of level %d against the sky of level %d: eye refit %d of %d "
+                   "(%d of %d sky-coloured), %s; eye (%.1f, %.1f, %.1f), vertical scale %.2f", level, L->level,
+                   placed, P->nv, sky_placed, nsky, matched ? "registered" : "not registered", K.t[0], K.t[1],
+                   K.t[2], K.fy);
+    if (!matched) return 0;
+    memcpy(cam->R, K.R, sizeof K.R);
+    for (int i = 0; i < 3; i++) cam->rt[i] = K.R[i][0] * K.t[0] + K.R[i][1] * K.t[1] + K.R[i][2] * K.t[2];
+    cam->fy = K.fy;
     return matched;
 }
 
@@ -908,20 +1418,20 @@ static int psk_try_sky(psk_ctx* C, const psk_pic* P, int level, const psk_level*
  * candidate is registered and logged, and the choice is the same.
  * @param C The building thread's scratch; its picture grid is built.
  * @param E The entry.
- * @param R Receives the chosen sky's rotation.
+ * @param cam Receives the chosen sky's camera.
  * @param matched Receives the chosen sky's registered count.
  * @return The chosen candidate's index in E->L, -1 when none is taken. */
-static int psk_choose_sky(psk_ctx* C, const psk_entry* E, double R[3][3], int* matched) {
+static int psk_choose_sky(psk_ctx* C, const psk_entry* E, psk_cam* cam, int* matched) {
     const psk_pic* P = &E->pic;
-    double Rk[3][3];
+    psk_cam Ck;
     int pick = -1, hits = 0;
     *matched = 0;
     for (int k = 0; k < E->nl; k++) {
         if (pick == 0 && !psk_census_on()) break;
-        const int m = psk_try_sky(C, P, E->level, E->L[k], Rk);
+        const int m = psk_try_sky(C, P, E->level, E->L[k], &Ck);
         if (!m || pick == 0) continue;
         if (k > 0) hits++;
-        if (pick < 0) { pick = k; *matched = m; memcpy(R, Rk, sizeof Rk); }
+        if (pick < 0) { pick = k; *matched = m; *cam = Ck; }
     }
     if (pick > 0 && hits > 1) {
         OPL_WARN_F("portal", "picture of level %d: %d fallback skies register; ambiguous, no extension",
@@ -941,12 +1451,12 @@ static void psk_build_entry(psk_ctx* C, psk_entry* E, const char* who) {
     const op_time_t t0 = op_now();
     const psk_pic* P = &E->pic;
     psk_grid_build(P, &C->G);
-    double R[3][3];
+    psk_cam cam;
     int matched = 0;
-    const int k = psk_choose_sky(C, E, R, &matched);
+    const int k = psk_choose_sky(C, E, &cam, &matched);
     if (k >= 0) {
-        const psk_build B = { P, &C->G, E };
-        psk_decode_sky(&C->D, E->L[k], R, psk_extend_face, (void*)&B);
+        const psk_build B = { P, &C->G, E, { cam.rt[0], cam.rt[1], cam.rt[2] }, cam.fy };
+        psk_decode_sky(&C->D, E->L[k], cam.R, psk_extend_face, (void*)&B);
     }
     OPL_INFO_F("portal", "picture of level %d: %d of %d vertices registered against the sky of level %d, "
                "%d extension triangles (%.1f ms, %s)", E->level, matched, P->nv,
