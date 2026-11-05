@@ -1546,6 +1546,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Display ownership under eager production: the Spyro 2 attract demo with
+    # OPENPETE_IDENT_AUDIT=300 borrows the display from the present thread
+    # once per canonical present; no device call may come from a thread that
+    # does not own the display (seam 0), over at least 400 drains with eager
+    # engaged. Exit 3 = vacuous (fewer drains, or eager never engaged) and
+    # fails; 64 = SKIP (no display and no xvfb-run, no binary or disc).
+    add_test(NAME display_seam_spyro-2
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_display_seam.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(display_seam_spyro-2 PROPERTIES
+        LABELS "launcher;pacing;windowed"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 720
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Profiler present cadence under eager production, on the Windows exe and
     # the real GPU: --profile-out's present interval p99 (profile-summary.py)
     # within 0.5 ms of the pace log's OP_PACE_PRESENT interval p99, both after

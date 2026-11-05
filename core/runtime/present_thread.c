@@ -61,6 +61,7 @@ static struct {
     SDL_Condition *idle_cv;   /* a compose finished */
 
     int  active;              /* the thread owns the display */
+    unsigned activation;      /* bumped by every set_active 0 -> 1 transition */
     int  busy;                /* a compose is in flight right now */
     int  quit;
 
@@ -480,6 +481,22 @@ static void pt_stall(void)
     if (ns > 0) op_sleep_until(op_now() + ns);
 }
 
+/** @brief Begin serving a new activation: drop the state the previous one left and claim the display; the mutex is held.
+ *
+ * Resets the vblank lattice, the flip wait state and any staged frame, since
+ * another thread may have presented in between, then claims the display
+ * before the thread's next device call. Runs once per activation number,
+ * including for a take-back and handback pair that completed while the
+ * thread waited with the mutex released and so never saw active == 0. */
+static void pt_begin_activation(void)
+{
+    lattice_reset_why("activation", 0);
+    lattice_reset();
+    s_pt.flip_pending = 0; s_pt.flip_holdoff = 0;
+    if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
+    openpete_native_display_claim();
+}
+
 /** @brief Body of the present thread: present scenes from the ring while eager production is active. */
 static int present_thread_main(void *unused)
 {
@@ -488,20 +505,12 @@ static int present_thread_main(void *unused)
     /* Compose-time VRAM reads see the scene's journaled texels, not the
      * model the guest rewrites while this thread draws. */
     openpete_vram_bind_composed();
-    int claimed = 0;   /* this thread has claimed the display for the current activation */
+    unsigned served = 0;   /* the activation this thread last claimed the display for; 0 = none */
     SDL_LockMutex(s_pt.mx);
     for (;;) {
         if (s_pt.quit) break;
-        if (!s_pt.active) {
-            claimed = 0;
-            lattice_reset_why("inactive", 0);
-            lattice_reset();
-            s_pt.flip_pending = 0; s_pt.flip_holdoff = 0;
-            if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
-            SDL_WaitCondition(s_pt.cv, s_pt.mx);
-            continue;
-        }
-        if (!claimed) { openpete_native_display_claim(); claimed = 1; }
+        if (!s_pt.active) { SDL_WaitCondition(s_pt.cv, s_pt.mx); continue; }
+        if (served != s_pt.activation) { served = s_pt.activation; pt_begin_activation(); }
         const double slot = display_slot_ns();
         op_time_t now = op_now();
         const int on_lattice = s_lat.locked && slot > 0.0;
@@ -730,7 +739,12 @@ void openpete_present_thread_set_active(int on)
     if (!s_pt.thr) return;
     SDL_LockMutex(s_pt.mx);
     if (on) {
-        if (!s_pt.active) { s_pt.active = 1; SDL_SignalCondition(s_pt.cv); }
+        if (!s_pt.active) {
+            s_pt.active = 1;
+            /* Never 0, which the thread's served number starts at. */
+            if (++s_pt.activation == 0) s_pt.activation = 1;
+            SDL_SignalCondition(s_pt.cv);
+        }
         SDL_UnlockMutex(s_pt.mx);
         return;
     }

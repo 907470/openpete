@@ -40,8 +40,11 @@ void openpete_present_thread_stop(void);
 
 /** @brief Hand the display to the present thread (1) or take it back (0).
  *
- * Handing over wakes the thread, which claims the display before its first
- * present. Taking it back flushes the scene ring, waits out a compose or
+ * Handing over (a 0 -> 1 transition) starts a new activation and wakes the
+ * thread, which resets its lattice and flip state and claims the display
+ * before its next device call, also when a take-back and handover both
+ * completed while it waited and it never observed the inactive state.
+ * Taking it back flushes the scene ring, waits out a compose or
  * flip wait in flight, discards the staged scene, claims the display for
  * the calling thread, and releases the stage's acquired swapchain image by
  * presenting it once more (openpete_native_present_stage_release); on
