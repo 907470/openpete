@@ -160,6 +160,10 @@ void main()
      * to it. */
     float koff = op_drain_koff(ckoff, vRank.y, uv, u_drain);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
+#if defined(OP_PORTAL_COVER) && !defined(OP_PORTAL_RIM) && !defined(OP_MOBY_SNAP)
+    /* The blended world variant: an unranked non-actor face is terrain. */
+    op_key_blend_frag = !ranked && vRank.x > -0.5;
+#endif
     if (!ranked && abs(koff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead -
          * see psx_key_contest.glsl. */
@@ -168,10 +172,6 @@ void main()
                               koff - 0.5))
                 discard;
         } else {
-#if defined(OP_PORTAL_COVER) && !defined(OP_PORTAL_RIM) && !defined(OP_MOBY_SNAP)
-          /* The blended world variant: an unranked non-actor face is terrain. */
-          op_key_blend_frag = vRank.x > -0.5;
-#endif
           if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
                 texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
@@ -218,5 +218,5 @@ void main()
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vec4(rgb, c.a);
     if (op_key_tier_hit >= 0.0) outColor = op_key_tier_mark(op_key_tier_hit);
     outColor = op_src_tint_scene(outColor, vSrcWalk);
-    if (op_key_blend_hit != 0) outColor = op_key_blend_mark(op_key_blend_hit);
+    outColor = op_key_blend_paint(outColor);
 }

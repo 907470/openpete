@@ -16845,6 +16845,68 @@ static void tn_tridump(void) {
     }
 }
 
+/** @brief Returns a walked triangle's og OT key channel (openpete_scene_tri.koff) under the key resolve, 0 when it neither emits nor contests.
+ *
+ * koff carries the face's ABSOLUTE og
+ * OT key (+0.5 sentinel) - the .s insertion index in world units:
+ * corner-mean view-Z + 128*(authored slot bias). Every opaque
+ * non-fill face both EMITS its flat key into the key image and
+ * CONTESTS it (strict less-by-half-slot, so a face never loses to
+ * its own key and og ties fall through to true depth). One rule
+ * covers the LP<->HP partition, intra-tier authored order, AND the
+ * portal sky contest (the portal sky fans emit bucket+64).
+ *
+ * Near-band faces take one of two shapes, chosen by
+ * game_layout.terrain.nearband_ot_keys - which .s insert reaches
+ * them.
+ *
+ * nearband_ot_keys = 1: the classified faces key through the
+ * ordinary insert like every other face, so each publishes a
+ * positive key on the one shared scale and emits it, which the
+ * terrain-against-terrain slot contest compares by bucket.
+ *
+ * nearband_ot_keys = 0: the faces reach a queue with no OT index,
+ * so they are contest-only (negative koff = |key|, no slot offsets).
+ * The OT dump proves near cells ride the same painter as everything
+ * else (dark_hollow: the beast face at slot 671 of 694 paints over
+ * the wall quads at slots 254-399, and the og framebuffer shows the
+ * beast), so an authored-biased moby key must be able to win near
+ * ground/walls per-pixel (the embedded pedestal-disc rim, and og's
+ * own moby-over-near-wall cases). They never emit: a huge
+ * under-camera face's flat-key raster would discard everything
+ * behind it, and true depth already wins the viewer-side surface's
+ * own pixels. (Adjudication trap: dying mobys death-flash per VBL -
+ * judge these cases on surface identity, never colour.)
+ *
+ * FILL twins stay 0 - stencil-gated to uncovered pixels, they must
+ * never self-discard. Blended terrain stays 0 at every distance:
+ * it neither emits (the key-pass pack drops blend != 0) nor
+ * contests, so true depth decides it against opaque terrain, a
+ * departure from the og painter, which covers a blended face with
+ * any opaque face keyed in a nearer slot whatever its depth; the
+ * near-band negative-koff branch also carries the moby embed rule,
+ * which a veil blending over a moby must not inherit. OT_BIAS=0
+ * zeroes the channel: raw true depth (the A/B leg).
+ *
+ * The branch order is the cache's (terrain.vert): blended, then the
+ * near-band contest-only shape, then the keyed shape.
+ * @param t The triangle.
+ * @param blend Its scene triangle's blend class (openpete_scene_tri.blend).
+ * @return The key + 0.5 (emits and contests), -(corner mean + 0.5)
+ *     (near-band contest-only), or 0. */
+static float tn_tri_koff(const ttri* t, int blend) {
+    static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=0 disables the near-band contest-only keys (A/B) */
+    if (!s_otbias_on || t->fill || !openpete_native_key_resolve_on()) return 0.0f;
+    if (s_nbc < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARBAND_CONTEST");
+        s_nbc = (e && *e) ? (*e != '0') : 1; }
+    if (blend || (t->nearband && !s_nbc)) return 0.0f;
+    const double mean = (t->otkey > 0.0f) ? (double)t->otkey
+                      : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
+    if (t->nearband && !game_layout.terrain.nearband_ot_keys)
+        return (float)-(mean + 0.5);            /* contest-only, never emitted */
+    return (float)(mean + OPENPETE_OT_SLOT_WORLD * (double)t->otslots + 0.5);
+}
+
 /** @brief Feeds this build's terrain triangles to the native scene.
  *
  * Latches the debug toggles, fetches up to 6 portal opening planes for this
@@ -17268,63 +17330,7 @@ static void terrain_feed_native(CPUState* cpu) {
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
-        /* og OT key channel: koff carries the face's ABSOLUTE og
-         * OT key (+0.5 sentinel) - the .s insertion index in world units:
-         * corner-mean view-Z + 128*(authored slot bias). Every opaque
-         * non-fill face both EMITS its flat key into the key image and
-         * CONTESTS it (strict less-by-half-slot, so a face never loses to
-         * its own key and og ties fall through to true depth). One rule
-         * covers the LP<->HP partition, intra-tier authored order, AND the
-         * portal sky contest (the sky fans below emit bucket+64).
-         *
-         * Near-band faces take one of two shapes, chosen by
-         * game_layout.terrain.nearband_ot_keys - which .s insert reaches
-         * them.
-         *
-         * nearband_ot_keys = 1: the classified faces key through the
-         * ordinary insert like every other face, so each publishes a
-         * positive key on the one shared scale and emits it, which the
-         * terrain-against-terrain slot contest compares by bucket.
-         *
-         * nearband_ot_keys = 0: the faces reach a queue with no OT index,
-         * so they are contest-only (negative koff = |key|, no slot offsets).
-         * The OT dump proves near cells ride the same painter as everything
-         * else (dark_hollow: the beast face at slot 671 of 694 paints over
-         * the wall quads at slots 254-399, and the og framebuffer shows the
-         * beast), so an authored-biased moby key must be able to win near
-         * ground/walls per-pixel (the embedded pedestal-disc rim, and og's
-         * own moby-over-near-wall cases). They never emit: a huge
-         * under-camera face's flat-key raster would discard everything
-         * behind it, and true depth already wins the viewer-side surface's
-         * own pixels. (Adjudication trap: dying mobys death-flash per VBL -
-         * judge these cases on surface identity, never colour.)
-         *
-         * FILL twins stay 0 - stencil-gated to uncovered pixels, they must
-         * never self-discard. Transparent terrain CONTESTS but never EMITS
-         * (the key-pass pack drops blend != 0): it doesn't occlude, but the
-         * og painter still covers it - the cyclorama's sky-bucket keys must
-         * beat a beyond-the-sky LP waterfall veil exactly as they beat the
-         * opaque terrain next to it. Blended NEAR-BAND faces stay 0: the
-         * negative-koff branch carries the moby embed rule, which a veil
-         * blending OVER a moby must not inherit. OT_BIAS=0 zeroes the
-         * channel: raw true depth (the A/B leg). */
-        if (s_otbias_on && !t->fill &&
-            openpete_native_key_resolve_on()) {
-            static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=0 disables the near-band contest-only keys (A/B) */
-            if (s_nbc < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARBAND_CONTEST");
-                s_nbc = (e && *e) ? (*e != '0') : 1; }
-            double mean = (t->otkey > 0.0f) ? (double)t->otkey
-                        : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-            double key = mean + OPENPETE_OT_SLOT_WORLD * (double)t->otslots + 0.5;
-            if (!t->nearband)
-                tri.koff = (float)key;
-            else if (!s_nbc || tri.blend)
-                tri.koff = 0.0f;
-            else if (game_layout.terrain.nearband_ot_keys)
-                tri.koff = (float)key;              /* keys through the ordinary insert */
-            else
-                tri.koff = (float)-(mean + 0.5);    /* contest-only, never emitted */
-        }
+        tri.koff = tn_tri_koff(t, tri.blend);   /* og OT key channel */
         tri.kattr = tn_key_attr(t, &tri);
         openpete_native_scene_set_tag(tn_material_tag(cpu, t, tex, tex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);

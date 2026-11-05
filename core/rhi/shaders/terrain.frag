@@ -26,6 +26,6 @@ void main()
     outColor = ko == 2 ? vec4(0.0, 1.0, 1.0, 1.0) : c;
     if (op_key_tier_hit >= 0.0) outColor = op_key_tier_mark(op_key_tier_hit);
     outColor = op_src_tint_cache(outColor);
-    if (op_key_blend_hit != 0) outColor = op_key_blend_mark(op_key_blend_hit);
+    outColor = op_key_blend_paint(outColor);
     if (ter_attr(c)) outColor = c;        /* debug tint mode 7 */
 }

@@ -91,6 +91,10 @@ void main()
         op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;
     /* Ranked faces skip the positive-koff contest - see psx_key_contest.glsl. */
+#if defined(OP_PORTAL_COVER) && !defined(OP_PORTAL_RIM) && !defined(OP_MOBY_SNAP)
+    /* The blended world variant: an unranked non-actor face is terrain. */
+    op_key_blend_frag = !ranked && vRank.x > -0.5;
+#endif
     if (!ranked && abs(ckoff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead: it
          * orders against actor and player keys by ordering-table slot and
@@ -100,10 +104,6 @@ void main()
                               ckoff - 0.5))
                 discard;
         } else {
-#if defined(OP_PORTAL_COVER) && !defined(OP_PORTAL_RIM) && !defined(OP_MOBY_SNAP)
-          /* The blended world variant: an unranked non-actor face is terrain. */
-          op_key_blend_frag = vRank.x > -0.5;
-#endif
           if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
                 texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
@@ -129,5 +129,5 @@ void main()
     if (ko == 1) discard;
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vColor / vQ;
     outColor = op_src_tint_scene(outColor, vSrcWalk);
-    if (op_key_blend_hit != 0) outColor = op_key_blend_mark(op_key_blend_hit);
+    outColor = op_key_blend_paint(outColor);
 }

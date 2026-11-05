@@ -2522,8 +2522,8 @@ void main()
          * set: the game keys them through the ordinary insert with their
          * authored slots, so they take the far faces' key below. Clear: the
          * game's near queue has no OT index, so opaque ones are contest-only
-         * (negative key, no slots). Blended near-band faces stay out either
-         * way (the feed's koff = 0). */
+         * (negative key, no slots). Blended faces stay out at every
+         * distance (the feed's koff = 0). */
         bool nearband = near_canonical(m0.z, m1.z, m2.z, quad ? m3c.z : m2.z,
                                        lp ? 0u : (ff & FF_W3_40),
                                        lp ? 0u : (ff & FF_W3_80));
@@ -2571,7 +2571,10 @@ void main()
         else if (!hqv && flatKeys)
             ktab = tri_cells_tab(m0, m1, m2, !drain4t, kcull, kflip);
         if (ktab.n > 0) ok = ktab.kmin;
-        if (nearband && (((mat0 >> 21) & 3u) != 0u)) {
+        /* Blended terrain never contests (koff 0, as the walk's
+         * terrain.c): it emits no key, and true depth decides it against
+         * opaque terrain at every distance. */
+        if (((mat0 >> 21) & 3u) != 0u) {
             koff = 0.0;
         } else if (nearband && (gf & GF_NBKEYS) == 0) {
             koff = -float(pfloat(ok) + 0.5);
@@ -2581,10 +2584,7 @@ void main()
                               : pfloat(((ff & FF_LPKEY) != 0u ? ot_lp_base() : 0u)
                                        + ot_hp_mul() * ob);
             koff = float(pfloat(ok) + 128.0 * slots + 0.5);
-            /* Opaque faces only, as the walk feeds them (terrain.c
-             * tn_key_attr): a blended face keeps the unbounded override. */
-            if (((mat0 >> 21) & 3u) == 0u)
-                kcls = op_key_class(!lp && (ff & FF_LPKEY) == 0u, float(slots));
+            kcls = op_key_class(!lp && (ff & FF_LPKEY) == 0u, float(slots));
         }
     }
     vKoff = koff;

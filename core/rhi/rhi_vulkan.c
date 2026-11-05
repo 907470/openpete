@@ -8242,20 +8242,23 @@ static int32_t key_tier_order(void)
  * psx_key_contest.glsl OP_KEY_BLEND_CENSUS: 0 off (the default); 1 a blended
  * terrain fragment the terrain-against-terrain key contest would discard is
  * kept and painted by its true-depth verdict against the key owner (red in
- * front, green behind, blue owner unknown). Unset, empty or any other value
- * reads 0. Read once per process, as key_tier_order.
- * @return 0 or 1. */
+ * front, green behind, blue owner unknown); 2 every blended terrain fragment
+ * that survives its contests is painted yellow. Unset, empty or any other
+ * value reads 0. Read once per process, as key_tier_order.
+ * @return 0, 1 or 2. */
 static int32_t key_blend_census(void)
 {
     static _Atomic int32_t s_census = -1;  /* any compile thread reads it */
     int32_t v = s_census;
     if (v < 0) {
         const char *e = getenv("OPENPETE_KEY_BLEND_CENSUS");
-        v = (e && e[0] == '1' && e[1] == '\0') ? 1 : 0;
+        v = (e && (e[0] == '1' || e[0] == '2') && e[1] == '\0') ? e[0] - '0' : 0;
         int32_t unset = -1;
         if (atomic_compare_exchange_strong(&s_census, &unset, v) && v)
-            RHI_LOG("OPENPETE_KEY_BLEND_CENSUS=1: blended terrain key-contest discards "
-                    "painted (red in front, green behind, blue unknown)\n");
+            RHI_LOG("OPENPETE_KEY_BLEND_CENSUS=%d: %s\n", (int)v,
+                    v == 1 ? "blended terrain key-contest discards painted (red in front, "
+                             "green behind, blue unknown)"
+                           : "blended terrain fragments painted yellow");
     }
     return v;
 }

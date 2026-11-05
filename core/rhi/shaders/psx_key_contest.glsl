@@ -777,15 +777,19 @@ float op_key_tier_gap(float tkey, vec4 tattr, float own, float koff, vec2 fattr)
 
 /* ---- blended-terrain contest census ----------------------------------
  *
- * Blended terrain contests opaque terrain keys but emits none (the key-pass
- * pack drops blend != 0), so the terrain-against-terrain arm of op_key_loses
- * is the only rule that removes a blended terrain fragment for a key.
+ * Blended terrain neither emits a key (the key-pass pack drops blend != 0)
+ * nor contests one (its koff is 0, terrain.vert and terrain.c), so the
+ * terrain-against-terrain arm of op_key_loses is the rule that would remove a
+ * blended terrain fragment for a key if it were keyed; a mode-1 mark is a
+ * blended face that still reaches the arm.
  * Specialisation constant 8 (`OP_KEY_BLEND_CENSUS`, OPENPETE_KEY_BLEND_CENSUS
  * for the process): 0 off (the default); 1 a fragment the caller flags as
  * blended terrain (op_key_blend_frag) that the arm would discard is kept,
  * skipping every later arm as a blended face keyed 0 would, and its true-depth
  * verdict against the key owner is recorded in op_key_blend_hit for the
- * caller to paint (op_key_blend_mark). */
+ * caller to paint (op_key_blend_mark); 2 every blended terrain fragment that
+ * survives its contests is painted yellow, the coverage count a mode-1 zero
+ * is read against. */
 layout(constant_id = 8) const int OP_KEY_BLEND_CENSUS = 0;
 
 /* Set by the caller before op_key_loses: the fragment is blended terrain. */
@@ -812,6 +816,16 @@ vec4 op_key_blend_mark(int v)
     return v == 1 ? vec4(1.0, 0.0, 0.0, 1.0)
          : v == 2 ? vec4(0.0, 1.0, 0.0, 1.0)
                   : vec4(0.0, 0.0, 1.0, 1.0);
+}
+
+/* The caller's output colour c under the census: the mode-1 verdict mark of
+ * a kept fragment, yellow for every blended terrain fragment under mode 2,
+ * else c. */
+vec4 op_key_blend_paint(vec4 c)
+{
+    if (op_key_blend_hit != 0) return op_key_blend_mark(op_key_blend_hit);
+    if (OP_KEY_BLEND_CENSUS == 2 && op_key_blend_frag) return vec4(1.0, 1.0, 0.0, 1.0);
+    return c;
 }
 
 /* The census colour of a fragment op_key_tier_hit marks: yellow, blue =
