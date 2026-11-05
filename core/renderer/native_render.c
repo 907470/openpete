@@ -3647,7 +3647,7 @@ void openpete_native_scene_capture_overlay(void) {
     if (!reapplied) letterbox_append(1.0, "canon");
     seq_sort_scene_2d(s_scene, s_scene_n);   /* both paths end in emission order */
     held_capture();
-    hold_retain_canonical();                 /* the area this scene was drawn into holds it */
+    hold_retain_canonical();                 /* the last DRAWENV clip's area holds it */
     { extern int scene_2d_count_fwd(const scene_tri_t* sc, int n);
       static int pz = -1;
       if (pz < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); pz = (e && *e && *e != '0'); }
@@ -5235,6 +5235,17 @@ static void nr_set_window_icon(SDL_Window *win, const unsigned char *rgba, int w
  * normally. */
 #define NR_RESIZE_IMMEDIATE_GRACE_NS (1000ull * 1000ull * 1000ull)
 
+/* A freeze backdrop render target and what it holds. A scene rendered into
+ * it at a widen wf holds its 4:3 picture in the centre 1/wf of the width;
+ * wf 0 marks a snapshot of a present at that present's own aspect, which a
+ * compose samples whole. */
+typedef struct {
+    rhi_texture *tex;
+    int          w, h;    /* extent */
+    bool         valid;   /* holds a captured scene */
+    float        wf;      /* the widen the scene was rendered at, 0 as above */
+} freeze_target_t;
+
 static struct {
     bool          enabled;
     /* Native scene extraction and interpolation are running: the feature
@@ -5383,9 +5394,7 @@ static struct {
      * and the freeze overlay prefers it - so the green desaturated frozen-world
      * effect is captured headless. Holds the most recent world frame; once the
      * freeze bit is set the snapshot stops updating, freezing that frame. */
-    rhi_texture  *shot_frozen;
-    int           shot_frozen_w, shot_frozen_h;
-    bool          shot_frozen_valid;
+    freeze_target_t shot_frozen;
 
     /* SSAA (--ssaa N): the live vk scene renders into a supersampled render
      * target (ss_factor× the window per axis), then a fragment resolve pass
@@ -5405,9 +5414,7 @@ static struct {
      * frozen_tex desaturated + green-tinted (freeze_overlay_pipe) instead of the
      * FT4 that samples PsyCross's VRAM scratch - so the green overlay shows OUR
      * render and survives the end-state where PsyCross's VRAM is gone. */
-    rhi_texture  *frozen_tex;
-    int           frozen_w, frozen_h;
-    bool          frozen_valid;       /* a world frame has been captured */
+    freeze_target_t frozen_tex;       /* .valid once a world frame is captured; .wf 0 */
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
     rhi_pipeline *freeze_plain_pipe;  /* samples frozen_tex unaltered (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
@@ -8732,12 +8739,12 @@ static void ensure_native_rtt(bool want)
     if (s_nr.native_rtt && s_nr.rtt_w == s_nr.ref_w && s_nr.rtt_h == s_nr.ref_h) return;
     rhi_wait_idle(s_nr.dev);
     if (s_nr.native_rtt) { rhi_destroy_texture(s_nr.dev, s_nr.native_rtt); s_nr.native_rtt = NULL; }
-    if (s_nr.frozen_tex) { rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex); s_nr.frozen_tex = NULL; }
-    s_nr.frozen_valid = false;
+    if (s_nr.frozen_tex.tex) { rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex.tex); s_nr.frozen_tex.tex = NULL; }
+    s_nr.frozen_tex.valid = false;
     s_nr.native_rtt = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
-    s_nr.frozen_tex = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
+    s_nr.frozen_tex.tex = rhi_create_render_target(s_nr.dev, (uint32_t)s_nr.ref_w, (uint32_t)s_nr.ref_h);
     s_nr.rtt_w = s_nr.ref_w; s_nr.rtt_h = s_nr.ref_h;
-    s_nr.frozen_w = s_nr.ref_w; s_nr.frozen_h = s_nr.ref_h;
+    s_nr.frozen_tex.w = s_nr.ref_w; s_nr.frozen_tex.h = s_nr.ref_h;
     if (s_nr.native_rtt)
         OPL_INFO_F("native", "native render target %dx%d (+ freeze snapshot)", s_nr.ref_w, s_nr.ref_h);
 }
@@ -14869,23 +14876,41 @@ static void portal_mask_bias(float* c, float* s, float* cl)
  * and its far-sentinel fallback let level mobys reappear once the camera
  * crossed the plane. See the portal draw site in draw_native_scene.) */
 
-/** @brief Return the freeze backdrop texture: the screenshot-time capture when valid, else the live one.
+/** @brief Return the freeze backdrop record: the screenshot-time capture when valid, else the live one.
  *
  * shot_frozen is written by openpete_native_render_snapshot_frozen during a
  * screenshot run and is preferred whenever it exists and is valid; frozen_tex
  * is written by the live present (capture_freeze_from_offscreen), so a
  * headless dump would otherwise have no backdrop.
- * @param out_valid Receives 1 when the returned texture holds a capture;
- *        may be NULL.
- * @return shot_frozen or frozen_tex; frozen_tex may be NULL. */
-static rhi_texture *active_frozen_tex(int *out_valid)
+ * @return shot_frozen or frozen_tex, never NULL; frozen_tex.tex may be NULL. */
+static const freeze_target_t *active_frozen(void)
 {
-    if (s_nr.shot_frozen && s_nr.shot_frozen_valid) {
-        if (out_valid) *out_valid = 1;
-        return s_nr.shot_frozen;
-    }
-    if (out_valid) *out_valid = s_nr.frozen_valid ? 1 : 0;
-    return s_nr.frozen_tex;
+    if (s_nr.shot_frozen.tex && s_nr.shot_frozen.valid) return &s_nr.shot_frozen;
+    return &s_nr.frozen_tex;
+}
+
+/** @brief Give the u range of a freeze backdrop that a compose at the current widen samples.
+ *
+ * A backdrop rendered at widen wf holds its 4:3 picture in the centre 1/wf
+ * of its width. A compose at a smaller widen (s_render_freeze_wf: the
+ * reference-size compose beside a PsyCross reference is 1) covers only the
+ * centre band of it, so u spans 0.5 +- 0.5 x (compose widen / backdrop
+ * widen) and the picture keeps its true width. Equal widens, and a
+ * snapshot at the present's own aspect (wf 0), sample u 0..1. A compose
+ * wider than the backdrop also samples 0..1: shot_frozen is rendered at the
+ * widest widen a capture composes at, so no compose takes that case.
+ * @param t The backdrop the quad samples.
+ * @param u0 Receives the left u.
+ * @param u1 Receives the right u. */
+static void frozen_u_span(const freeze_target_t *t, float *u0, float *u1)
+{
+    *u0 = 0.0f; *u1 = 1.0f;
+    if (t->wf <= 0.0f) return;
+    const float cwf = s_render_freeze_wf > 0.0f ? s_render_freeze_wf : 1.0f;
+    const float k = cwf / t->wf;
+    if (k >= 1.0f - 1e-4f) return;
+    *u0 = 0.5f - 0.5f * k;
+    *u1 = 0.5f + 0.5f * k;
 }
 
 /** @brief Draw the backdrop pair: the far-plane background fill, then the sky dome.
@@ -16261,7 +16286,7 @@ static bool scene_content_test(const scene_tri_t* scene, int n, uint32_t freeze,
     if (scene_has_game_tris(scene, n)) return true;
     if (openpete_tercache_frame_open() && openpete_tercache_frame_content()) return true;
     int retained_ok = 0;
-    if (ps_freeze_retained() && (freeze & (1u << 31))) (void)active_frozen_tex(&retained_ok);
+    if (ps_freeze_retained() && (freeze & (1u << 31))) retained_ok = active_frozen()->valid;
     if (retained_ok) { *retained_only = 1; return true; }
     if (s_hold_clear_bg) return true;   /* the auto-cleared area's fill (hold_redirect_begin) */
     return s_isolation && bg != 0;
@@ -16996,8 +17021,8 @@ static bool draw_native_scene(bool full_extent)
      * Drawn FIRST (the backdrop) so the menu UI composites on top. Only when a
      * world frame has been captured; else fall through (clear/bg shows). */
     int freeze_first = -1;
-    int frozen_ok = 0;
-    (void)active_frozen_tex(&frozen_ok);
+    const freeze_target_t *frozen_src = active_frozen();
+    const int frozen_ok = frozen_src->valid;
     rhi_pipeline *freeze_pipe = ps_freeze_retained() ? s_nr.freeze_plain_pipe
                                                  : s_nr.freeze_overlay_pipe;
     if ((scene_freeze & (1u << 31)) && frozen_ok && freeze_pipe
@@ -17021,10 +17046,14 @@ static bool draw_native_scene(bool full_extent)
          * not stretch); it recomputes each present, tracking live resizes. */
         float l, r, t, b;
         cover_rect(full_extent, &l, &r, &t, &b);
-        const rhi_vertex tl = { l, t, 1.0f, 0.0f, 0.0f, trgba, 0, .w = 0.0f };
-        const rhi_vertex tr = { r, t, 1.0f, 1.0f, 0.0f, trgba, 0, .w = 0.0f };
-        const rhi_vertex br = { r, b, 1.0f, 1.0f, 1.0f, trgba, 0, .w = 0.0f };
-        const rhi_vertex bl = { l, b, 1.0f, 0.0f, 1.0f, trgba, 0, .w = 0.0f };
+        /* A backdrop rendered wider than this compose is cropped to the
+         * compose's band of it (frozen_u_span). */
+        float u0, u1;
+        frozen_u_span(frozen_src, &u0, &u1);
+        const rhi_vertex tl = { l, t, 1.0f, u0, 0.0f, trgba, 0, .w = 0.0f };
+        const rhi_vertex tr = { r, t, 1.0f, u1, 0.0f, trgba, 0, .w = 0.0f };
+        const rhi_vertex br = { r, b, 1.0f, u1, 1.0f, trgba, 0, .w = 0.0f };
+        const rhi_vertex bl = { l, b, 1.0f, u0, 1.0f, trgba, 0, .w = 0.0f };
         freeze_first = n;
         buf[n+0] = tl; buf[n+1] = tr; buf[n+2] = br;
         buf[n+3] = tl; buf[n+4] = br; buf[n+5] = bl;
@@ -17106,7 +17135,7 @@ static bool draw_native_scene(bool full_extent)
      * a freeze frame the world groups are empty (the game stops rendering the
      * world), so this fills the screen and the menu UI composites over it. */
     if (freeze_first >= 0) {
-        rhi_texture *frz = active_frozen_tex(NULL);
+        rhi_texture *frz = active_frozen()->tex;
         if (frz) {
             bind_scene_pipe(freeze_pipe);
             rhi_bind_vram(s_nr.dev, frz);
@@ -19319,16 +19348,16 @@ static void draw_osd_overlay(void) {
  * @param world_frame True when this present composed the world. */
 static void capture_freeze_from_offscreen(bool world_frame)
 {
-    if (!(world_frame && s_nr.frozen_tex && s_nr.win_w > 0 && s_nr.win_h > 0)) return;
+    if (!(world_frame && s_nr.frozen_tex.tex && s_nr.win_w > 0 && s_nr.win_h > 0)) return;
     const openpete_px_rect_t rc = view_px_rect();
     const int sx = rc.x, sy = rc.y, sw = rc.w, sh = rc.h;
     if (sw > 0 && sh > 0) {
         static int s_pt = -1;
         if (s_pt < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_pt = (e && *e && *e != '0'); }
         if (s_pt) { fprintf(stderr, "s"); fflush(stderr); }   /* freeze snapshot enter */
-        rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex, sx, sy, sw, sh);
+        rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex.tex, sx, sy, sw, sh);
         if (s_pt) { fprintf(stderr, "t"); fflush(stderr); }   /* freeze snapshot done */
-        s_nr.frozen_valid = true;
+        s_nr.frozen_tex.valid = true;
     }
 }
 
@@ -19349,7 +19378,7 @@ static void capture_freeze_from_offscreen(bool world_frame)
  *         down. */
 static bool chrome_split_capture(bool world_frame)
 {
-    if (!(world_frame && s_nr.frozen_tex && s_overlay_live)) return false;
+    if (!(world_frame && s_nr.frozen_tex.tex && s_overlay_live)) return false;
     rhi_end_offscreen(s_nr.dev);
     capture_freeze_from_offscreen(true);
     rhi_begin_offscreen_load(s_nr.dev);
@@ -21576,15 +21605,15 @@ static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t
                 openpete_write_png_rgba(path, buf, w, h);
             }
             free(buf);
-            if (s_dump_frozen && s_nr.frozen_tex) {
-                int fw = 0, fh = 0; rhi_texture_extent(s_nr.frozen_tex, &fw, &fh);
+            if (s_dump_frozen && s_nr.frozen_tex.tex) {
+                int fw = 0, fh = 0; rhi_texture_extent(s_nr.frozen_tex.tex, &fw, &fh);
                 size_t fcap = (size_t)fw * (size_t)fh * 4u;
                 unsigned char *fb = fcap ? malloc(fcap) : NULL;
-                if (fb && rhi_read_render_target(s_nr.dev, s_nr.frozen_tex, fb, fcap, &fw, &fh)) {
+                if (fb && rhi_read_render_target(s_nr.dev, s_nr.frozen_tex.tex, fb, fcap, &fw, &fh)) {
                     for (size_t i = 0; i < (size_t)fw * (size_t)fh; i++) fb[i * 4 + 3] = 0xFF;
                     char fpath[1100]; snprintf(fpath, sizeof fpath, "%s.frozen.png", path);
                     openpete_write_png_rgba(fpath, fb, fw, fh);
-                    fprintf(stderr, "[pt-dump] frozen_tex %dx%d valid=%d -> %s\n", fw, fh, (int)s_nr.frozen_valid, fpath);
+                    fprintf(stderr, "[pt-dump] frozen_tex %dx%d valid=%d -> %s\n", fw, fh, (int)s_nr.frozen_tex.valid, fpath);
                 }
                 free(fb);
             }
@@ -22162,8 +22191,7 @@ static struct {
     float        wf;          /* the capture widen at the source present */
     int          pending;     /* sl holds a source present not yet rendered */
     unsigned     retained, settled, superseded, flips;
-    rhi_texture *vtex;        /* OPENPETE_FREEZE_SRC_VERIFY: on-the-spot render */
-    int          vw, vh;
+    freeze_target_t vt;       /* OPENPETE_FREEZE_SRC_VERIFY: on-the-spot render */
     unsigned     vmatch, vdiff;
 } s_frz;
 
@@ -22204,15 +22232,13 @@ static bool freeze_src_verdict(void) {
  * times @p cap_wf by the reference height, the reference shape derived from
  * game state when no reference exists. The scene is the one
  * scene_present_buf returns, so the caller points s_ps_slot at a kept slot
- * to render that slot.
- * @param tex In/out target; replaced when its extent differs.
- * @param tw In/out target width.
- * @param th In/out target height.
- * @param valid Set false when the target is replaced, true once rendered.
+ * to render that slot. The texture is replaced, and the record marked
+ * invalid, when its extent differs; once rendered the record is valid and
+ * holds @p cap_wf as its widen.
+ * @param t The target record.
  * @param cap_wf The capture widen, at least 1.
  * @param sync Nonzero to drain guest VRAM writes into the device texture first. */
-static void freeze_render_into(rhi_texture **tex, int *tw, int *th, bool *valid,
-                               float cap_wf, int sync)
+static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync)
 {
     int scene_n; uint32_t sbg, sfade;
     (void)scene_present_buf(&scene_n, &sbg, &sfade, NULL, NULL, NULL);
@@ -22227,13 +22253,13 @@ static void freeze_render_into(rhi_texture **tex, int *tw, int *th, bool *valid,
     }
     if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
     const int Wc = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
-    if (!(*tex && *tw == Wc && *th == s_nr.ref_h)) {
+    if (!(t->tex && t->w == Wc && t->h == s_nr.ref_h)) {
         rhi_wait_idle(s_nr.dev);
-        if (*tex) rhi_destroy_texture(s_nr.dev, *tex);
-        *tex = rhi_create_render_target(s_nr.dev, (uint32_t)Wc, (uint32_t)s_nr.ref_h);
-        *tw = Wc; *th = s_nr.ref_h; *valid = false;
+        if (t->tex) rhi_destroy_texture(s_nr.dev, t->tex);
+        t->tex = rhi_create_render_target(s_nr.dev, (uint32_t)Wc, (uint32_t)s_nr.ref_h);
+        t->w = Wc; t->h = s_nr.ref_h; t->valid = false;
     }
-    if (!*tex) return;
+    if (!t->tex) return;
 
     if (sync) sync_vram_texture();
     ensure_native_rtt(true);
@@ -22250,16 +22276,17 @@ static void freeze_render_into(rhi_texture **tex, int *tw, int *th, bool *valid,
         hd_flush_pending();
         openpete_native_hdfold_flush();
         native_depth_prepass();
-        { int kw, kh; rhi_texture_extent(*tex, &kw, &kh);
+        { int kw, kh; rhi_texture_extent(t->tex, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
-        rhi_begin_render_target(s_nr.dev, *tex, br, bgc, bb, 1.0f);
+        rhi_begin_render_target(s_nr.dev, t->tex, br, bgc, bb, 1.0f);
         draw_scene_with_matview(true);
-        rhi_end_render_target(s_nr.dev, *tex);
+        rhi_end_render_target(s_nr.dev, t->tex);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);
         rhi_end_frame(s_nr.dev);
-        *valid = true;
+        t->valid = true;
+        t->wf = cap_wf;
         if (freeze_leg_probe())
             fprintf(stderr, "[freezeleg-render f=%u] stamp=%u kept=%d\n",
                     s_scene_frame, scene_present_stamp(), s_ps_slot ? 1 : 0);
@@ -22295,14 +22322,13 @@ static void freeze_src_settle(void) {
     ps_apply_geometry();
     openpete_tercache_frame_select(scene_present_stamp());   /* the kept scene's terrain */
     const int tc_content = openpete_tercache_frame_content();
-    freeze_render_into(&s_nr.shot_frozen, &s_nr.shot_frozen_w, &s_nr.shot_frozen_h,
-                       &s_nr.shot_frozen_valid, s_frz.wf, 0);
+    freeze_render_into(&s_nr.shot_frozen, s_frz.wf, 0);
     openpete_mods_material_view_set(NULL);
     s_ps_slot = NULL;
-    if (freeze_src_verify() && s_frz.vtex && s_nr.shot_frozen) {
+    if (freeze_src_verify() && s_frz.vt.tex && s_nr.shot_frozen.tex) {
         int aw = 0, ah = 0, bw = 0, bh = 0;
-        unsigned char *a = freeze_read_target(s_nr.shot_frozen, &aw, &ah);
-        unsigned char *b = freeze_read_target(s_frz.vtex, &bw, &bh);
+        unsigned char *a = freeze_read_target(s_nr.shot_frozen.tex, &aw, &ah);
+        unsigned char *b = freeze_read_target(s_frz.vt.tex, &bw, &bh);
         const int same = a && b && aw == bw && ah == bh &&
                          memcmp(a, b, (size_t)aw * (size_t)ah * 4u) == 0;
         if (same) s_frz.vmatch++; else s_frz.vdiff++;
@@ -22355,18 +22381,30 @@ static bool freeze_src_retain(float cap_wf) {
  *
  * Each draw area (a DRAWENV clip rect) therefore records its last writer on
  * the guest's timeline. A canonical capture whose scene carries content marks
- * the area it was drawn into SCENE and keeps a copy of that scene, with every
- * compose input (the copy a ring publish makes) and its retained-terrain
- * state; an image op writing into the area marks it VRAM, or, for a copy of
- * one whole area onto another, gives the destination the source's writer and
- * scene. A present that composes nothing of its own shows the VRAM
- * framebuffer when the area its display shows was last written by an image
+ * the clip of the last PutDrawEnv before the capture SCENE and keeps a copy
+ * of that scene, with every compose input (the copy a ring publish makes)
+ * and its retained-terrain state; an image op writing into the area marks it
+ * VRAM, or, for a copy of one whole area onto another, gives the destination
+ * the source's writer and scene. A present that composes nothing of its own
+ * looks up the area inside the last PutDispEnv's rect before its capture:
+ * it shows the VRAM framebuffer when that area was last written by an image
  * op, and otherwise composes that area's kept scene through the ordinary
  * compose, at the present's own window, aspect, widen and postfx, as if it
  * were the present's scene. The verdict is taken when the scene is captured
  * into a ring slot (slot_capture_inputs) or, for a compose of the live scene,
  * at the compose; both read the guest's state as of the scene, so the VRAM
  * journal the compose applies agrees with it.
+ *
+ * A game that puts its envs after the capture (the DRAWENV put before it
+ * belongs to an earlier scene, s_drawenv_put_scene) has both keys name the
+ * buffers of the previous swap: a scene is filed under the area one swap
+ * before the one it was drawn into, and an empty present looks up the area
+ * one swap before the one its display shows. While the buffers alternate every tick
+ * the two offsets are the same swap and cancel: the lookup reaches the
+ * scene drawn into the area the display shows. They differ, and the lookup
+ * reaches the other buffer's scene or mark, when an image op or a put that
+ * does not swap buffers falls between a retain and the empty present it
+ * serves.
  *
  * Under OPENPETE_HOLD=0 (negative control) every empty compose shows the VRAM
  * framebuffer, as before the store existed. OPENPETE_HOLD_CENSUS=1 logs every
@@ -22593,7 +22631,7 @@ static void hold_note_put(void)
     if (isbg) hold_note_clear(s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7], rgb[0], rgb[1], rgb[2]);
 }
 
-/** @brief Keep the game's canonical scene as the content of the draw area it was drawn into.
+/** @brief Keep the game's canonical scene under the clip of the last PutDrawEnv before the capture.
  *
  * Runs at the canonical capture, after the tick's 2D is in. A re-extracted
  * scene keeps nothing; one with neither a game triangle nor retained
@@ -22881,14 +22919,10 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
         return;
     }
     if (s_nr.headless && freeze_src_retain(cap_wf)) {
-        if (freeze_src_verify()) {
-            bool vv = false;
-            freeze_render_into(&s_frz.vtex, &s_frz.vw, &s_frz.vh, &vv, cap_wf, 1);
-        }
+        if (freeze_src_verify()) freeze_render_into(&s_frz.vt, cap_wf, 1);
         return;
     }
-    freeze_render_into(&s_nr.shot_frozen, &s_nr.shot_frozen_w, &s_nr.shot_frozen_h,
-                       &s_nr.shot_frozen_valid, cap_wf, 1);
+    freeze_render_into(&s_nr.shot_frozen, cap_wf, 1);
 }
 
 void openpete_native_occl_service_headless(void)
@@ -23893,9 +23927,9 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_texture(s_nr.dev, s_nr.ref_tex);
     rhi_destroy_texture(s_nr.dev, s_nr.native_rtt);
     rhi_destroy_texture(s_nr.dev, s_nr.shot_rtt);
-    rhi_destroy_texture(s_nr.dev, s_nr.shot_frozen);
-    if (s_frz.vtex) rhi_destroy_texture(s_nr.dev, s_frz.vtex);
-    rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex);
+    rhi_destroy_texture(s_nr.dev, s_nr.shot_frozen.tex);
+    if (s_frz.vt.tex) rhi_destroy_texture(s_nr.dev, s_frz.vt.tex);
+    rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex.tex);
     rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);
     rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth);
     rhi_destroy_texture(s_nr.dev, s_nr.occl_grid);
