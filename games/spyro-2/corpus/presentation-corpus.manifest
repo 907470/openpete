@@ -140,6 +140,10 @@ credits-cheat|2300|200||3678,4572
 # through a near dark shape. Start 1043 (the movie is 1046 VBLs) keeps the grid
 # to two samples.
 start-new-game|1043|10||665
+# start-new-game@fade: the fade from the opening cutscene to the storybook
+# picture. The canonical presents at 984 and 986 are black; the intermediate
+# legs there show the faded cutscene (984) and the storybook (986).
+start-new-game@fade|982|1000||982,984,986,988
 # intro cutscene, VBL 1667: one of the sheep's eyes is covered by its own
 # face geometry (native); the guest draws the eye.
 intro-sheep-eye|1657|10||1667|--skip-to-cutscene intro
