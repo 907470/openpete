@@ -375,6 +375,7 @@ static struct {
                                        * for the set-2 prop key image         */
     _Atomic(tc_store *) prev_live;    /* previous-tick store (set 2, binding 1):
                                        * corner records and colour tables     */
+    uint32_t      shadow_cap;         /* units prev_shadow holds (>= prev_cap) */
     uint32_t     *prev_shadow;        /* CPU copy of the store, prev_cap units:
                                        * the refill source of a replacement  */
     tc_buf        prev_alloc;         /* its allocator (pair unused)          */
@@ -523,6 +524,12 @@ static struct {
      * the peak of each arena's summed high-water mark, and the growth
      * count at the latch. */
     uint32_t         est[OPTC_ARENA_COUNT], rz_est[OPTC_ARENA_COUNT];
+    /* split_q10: per arena, the marked-edge split's vertex growth of the
+     * arena's HP draw class in 1/1024 units (1024 = none), scaling the
+     * measured per-level capacities; rz_q10 its copy for a level-edge
+     * request. split_units: the store units the level's split records take. */
+    uint16_t         split_q10[OPTC_ARENA_COUNT], rz_q10[OPTC_ARENA_COUNT];
+    uint64_t         split_units;
     uint64_t         est_prev;            /* store units */
     int              est_have, est_level;
     uint32_t         lvl_est[OPTC_ARENA_COUNT], lvl_peak[OPTC_ARENA_COUNT];
@@ -621,6 +628,18 @@ static long tc_initial_cap_env(void)
     return ov;
 }
 
+/** @brief Scale a measured capacity by the marked-edge split's vertex growth of the arena's draw class.
+ * @param cap The capacity.
+ * @param arena Arena index; a cell arena is not scaled.
+ * @param q10 Per-arena growth in 1/1024 units, or NULL for none.
+ * @return The scaled capacity, at most 2^31 - 1. */
+static uint32_t tc_split_scale(uint32_t cap, int arena, const uint16_t *q10)
+{
+    if (!q10 || OPTC_ARENA_IS_CELL(arena) || q10[arena] <= 1024u) return cap;
+    const uint64_t v = ((uint64_t)cap * q10[arena] + 1023u) / 1024u;
+    return v > 0x7FFFFFFFu ? 0x7FFFFFFFu : (uint32_t)v;
+}
+
 /** @brief Return the capacity an arena's primary buffer is allocated at.
  *
  * OPENPETE_TC_INITIAL_CAP, read once, wins: one vertex count for every
@@ -631,19 +650,21 @@ static long tc_initial_cap_env(void)
  * squeeze them so the growth path runs; growth steps are sized by it too.
  * Without it, under OPENPETE_TC_ESTIMATE the size is the arena's estimate
  * (@p est) raised to the floor, or the floor when no estimate exists yet;
- * otherwise it is tc_level_cap.
+ * otherwise it is tc_level_cap scaled by the marked-edge split's growth
+ * (tc_split_scale), which the measured capacities do not include.
  * @param level_id Level id, or -1 before any level has loaded.
  * @param arena Arena index.
  * @param est The per-arena estimate, or NULL when none has been made.
+ * @param q10 The per-arena split growth (split_q10 or rz_q10), or NULL.
  * @return Capacity in vertices, or in records on a cell arena. */
-static uint32_t tc_initial_cap(int level_id, int arena, const uint32_t *est)
+static uint32_t tc_initial_cap(int level_id, int arena, const uint32_t *est, const uint16_t *q10)
 {
     const long ov = tc_initial_cap_env();
     if (ov > 0) {
         if (OPTC_ARENA_IS_CELL(arena)) return ov >= 16 ? (uint32_t)(ov / 16) : 1u;
         return (uint32_t)ov;
     }
-    if (!openpete_tercache_estimate_on()) return tc_level_cap(level_id, arena);
+    if (!openpete_tercache_estimate_on()) return tc_split_scale(tc_level_cap(level_id, arena), arena, q10);
     const uint32_t f = tc_floor_cap(arena);
     return (est && est[arena] > f) ? est[arena] : f;
 }
@@ -1256,7 +1277,7 @@ int openpete_tercache_init(rhi_device *dev, void (*batch)(int open))
     /* No level has loaded yet, so every arena starts on the union row, or
      * at the floor under OPENPETE_TC_ESTIMATE. */
     for (int a = 0; ok && a < OPTC_ARENA_COUNT; a++) {
-        tc_pair *pr = tc_pair_make(dev, a, tc_initial_cap(-1, a, NULL));
+        tc_pair *pr = tc_pair_make(dev, a, tc_initial_cap(-1, a, NULL, NULL));
         if (!pr) { ok = 0; break; }
         s_tc.arena[a].buf[0].cap = pr->cap;
         atomic_store_explicit(&s_tc.arena[a].buf[0].pair, pr, memory_order_relaxed);
@@ -1285,6 +1306,7 @@ int openpete_tercache_init(rhi_device *dev, void (*batch)(int open))
     atomic_store_explicit(&s_tc.prev_live, st, memory_order_release);
     s_tc.prev_shadow = (uint32_t *)calloc((size_t)s_tc.prev_cap * OPTC_PREV_REC_WORDS,
                                           sizeof(uint32_t));
+    s_tc.shadow_cap = s_tc.prev_shadow ? s_tc.prev_cap : 0u;
     if (!st || !s_tc.prev_shadow || !s_tc.hd_dummy) {
         fprintf(stderr, "[ter-gpu] init failed (record store or set-2 stand-in) - "
                         "terrain cache disabled, CPU path stays\n");
@@ -1529,7 +1551,7 @@ static int tc_request_consolidation(int arena, uint32_t demand)
     }
     const uint64_t prim = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
                                                               memory_order_relaxed), arena,
-                                         s_tc.est_have ? s_tc.est : NULL);
+                                         s_tc.est_have ? s_tc.est : NULL, s_tc.split_q10);
     uint64_t want = 2u * tc_arena_live(arena);
     if (want < prim) want = prim;
     if (want > prim * (uint64_t)tc_buf_max()) want = prim * (uint64_t)tc_buf_max();
@@ -1644,7 +1666,7 @@ static void tc_request_grow(int arena, uint32_t demand)
     }
     uint32_t want = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
                                                         memory_order_relaxed), arena,
-                                   s_tc.est_have ? s_tc.est : NULL);
+                                   s_tc.est_have ? s_tc.est : NULL, s_tc.split_q10);
     if (demand > want) want = demand;
     const int nb = tc_newest_buf(arena);
     const tc_buf *top = nb >= 0 ? &a->buf[nb] : NULL;
@@ -2046,6 +2068,27 @@ static void tc_retire_queue_drain(uint32_t svc)
     atomic_store_explicit(&s_tc.rq_tail, t, memory_order_release);
 }
 
+/** @brief Size the CPU shadow of the store to a replacement store's capacity, zeroed, and return the units the allocator may hand out.
+ *
+ * Builder thread, at a level-edge adoption: the shadow mirrors every unit
+ * the allocator can name, so it must hold the replacement's capacity
+ * before any record lands in it. A failed reallocation keeps the old
+ * shadow and limits the allocator to its units.
+ * @param cap The replacement store's capacity in units.
+ * @return The allocator's capacity in units. */
+static uint32_t tc_shadow_fit(uint32_t cap)
+{
+    const size_t rb = OPTC_PREV_REC_WORDS * sizeof(uint32_t);
+    if (cap > s_tc.shadow_cap) {
+        uint32_t *sh = (uint32_t *)realloc(s_tc.prev_shadow, (size_t)cap * rb);
+        if (!sh) return s_tc.shadow_cap;
+        s_tc.prev_shadow = sh;
+        s_tc.shadow_cap = cap;
+    }
+    memset(s_tc.prev_shadow, 0, (size_t)cap * rb);
+    return cap;
+}
+
 /** @brief Install an answered previous-tick store replacement, or start the refusal's backoff.
  *
  * Builder thread, from frame_begin and frame_skip, after the last bake into
@@ -2065,7 +2108,7 @@ static void tc_store_adopt(void)
         uint32_t *sh = (uint32_t *)realloc(s_tc.prev_shadow,
                                            (size_t)st->cap * OPTC_PREV_REC_WORDS * sizeof(uint32_t));
         if (!sh) { tc_retire_push(NULL, st); st = NULL; }
-        else s_tc.prev_shadow = sh;
+        else { s_tc.prev_shadow = sh; s_tc.shadow_cap = st->cap; }
     }
     if (!st) {
         s_tc.prev_state = TC_OVF_BACKOFF;
@@ -2164,8 +2207,15 @@ void openpete_tercache_request_resize(int level_id)
     s_tc.rz_window = 1;
     s_tc.rz_store_cap = s_tc.prev_cap;
     memcpy(s_tc.rz_est, s_tc.est, sizeof s_tc.rz_est);
+    memcpy(s_tc.rz_q10, s_tc.split_q10, sizeof s_tc.rz_q10);
     if (openpete_tercache_estimate_on() && s_tc.est_have && s_tc.est_prev > s_tc.rz_store_cap)
         s_tc.rz_store_cap = s_tc.est_prev > UINT32_MAX / 2u ? UINT32_MAX / 2u : (uint32_t)s_tc.est_prev;
+    /* The split records sit beside the store's other runs: the replacement
+     * holds them past the init capacity, so the level does not cross the
+     * growth watermark for them. */
+    const uint64_t split = s_tc.split_units + tc_prev_cap_init();
+    if (!openpete_tercache_estimate_on() && split > s_tc.rz_store_cap)
+        s_tc.rz_store_cap = split > UINT32_MAX / 2u ? UINT32_MAX / 2u : (uint32_t)split;
     atomic_store_explicit(&s_tc.rz_req, 1, memory_order_release);
 }
 
@@ -2517,8 +2567,8 @@ static void tc_adopt_pending(void)
                                                  memory_order_acq_rel);
     s_tc.old_store_serial = s_tc.rz_old_store ? s_tc.rz_old_store->serial : 0u;
     s_tc.rz_store = NULL;
-    s_tc.prev_cap = s_tc.prev_alloc.cap = atomic_load_explicit(&s_tc.prev_live,
-                                                               memory_order_relaxed)->cap;
+    s_tc.prev_cap = s_tc.prev_alloc.cap = tc_shadow_fit(atomic_load_explicit(&s_tc.prev_live,
+                                                                             memory_order_relaxed)->cap);
     s_tc.prev_alloc.high = s_tc.prev_alloc.used = s_tc.prev_alloc.chunks = 0;
     s_tc.prev_alloc.free_n = 0;
     s_tc.prev_defer_n = 0;
@@ -2598,7 +2648,7 @@ static void tc_resize_fulfil(void)
     const int level = atomic_load_explicit(&s_tc.level_id, memory_order_acquire);
     int ok = !tc_refuse(TC_SITE_EDGE);
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
-        made[a] = ok ? tc_pair_make(s_tc.dev, a, tc_initial_cap(level, a, s_tc.rz_est)) : NULL;
+        made[a] = ok ? tc_pair_make(s_tc.dev, a, tc_initial_cap(level, a, s_tc.rz_est, s_tc.rz_q10)) : NULL;
         if (!made[a]) ok = 0;
     }
     tc_store *st = ok ? tc_store_make(s_tc.dev, s_tc.rz_store_cap) : NULL;
@@ -2782,6 +2832,28 @@ static uint32_t tc_est_sat(uint64_t v)
     return v > 0x7FFFFFFFu ? 0x7FFFFFFFu : (uint32_t)v;
 }
 
+/** @brief Derive each arena's split growth from a content bound's per-class figures and keep its store units.
+ *
+ * A class's plain, anim and near arenas take (base + added) / base of that
+ * class in 1/1024 units, rounded up; a class with no base vertices, the LP
+ * and cell arenas take 1024. The store units count an anim sector's
+ * records once per copy the defer window holds.
+ * @param c The content bound.
+ * @param D The defer factor (2 + the defer window in builds). */
+static void tc_split_q10_set(const openpete_tercache_content *c, uint64_t D)
+{
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) s_tc.split_q10[a] = 1024u;
+    for (int k = 0; k < 4; k++) {
+        const uint64_t b = c->split_base_v[k], v = b + c->split_add_v[k];
+        uint64_t q = b ? (1024u * v + b - 1u) / b : 1024u;
+        if (q > 0xFFFFu) q = 0xFFFFu;
+        s_tc.split_q10[OPTC_ARENA_OPAQUE + k] = (uint16_t)q;
+        s_tc.split_q10[OPTC_ARENA_ANIM_BASE + k] = (uint16_t)q;
+        s_tc.split_q10[OPTC_ARENA_NEAR_BASE + k] = (uint16_t)q;
+    }
+    s_tc.split_units = c->split_units + D * c->split_anim_units;
+}
+
 void openpete_tercache_set_content(int level_id, const openpete_tercache_content *c)
 {
     if (!c) return;
@@ -2800,7 +2872,8 @@ void openpete_tercache_set_content(int level_id, const openpete_tercache_content
         const uint32_t f = tc_floor_cap(a), v = tc_est_sat(e[a]);
         s_tc.est[a] = v > f ? v : f;
     }
-    s_tc.est_prev = D * c->prev_rec + c->coltab_units;
+    s_tc.est_prev = D * (c->prev_rec + c->split_anim_units) + c->coltab_units + c->split_units;
+    tc_split_q10_set(c, D);
     if (!s_tc.est_have || level_id != s_tc.est_level) {
         tc_est_census_level();
         s_tc.est_level = level_id;

@@ -1190,6 +1190,13 @@ typedef struct {
     /* the face takes the second walk's per-corner fade toward black
      * (tn_water_rgb): clip_push_tri fades each node at its own depth */
     uint8_t emit_water_on;
+    /* the marked-edge split's node counts of the HP face being walked
+     * (tj_face_edge_n), 0 outside the HP passes */
+    uint8_t tj_face;
+    /* the boundary sides (top, right, bottom, left) of the 2x2 sub-quad
+     * emit_quad_cv is about to draw that lie on a quarter-marked parent
+     * edge, each taking its midpoint */
+    uint8_t tj_sq[4];
     /* OPENPETE_TERRAIN_HQFOG_CENSUS: corners of HQ-pinned far faces found
      * among the emitted vertices, those in the fog band, those whose colour
      * differs from its expected colour, fade faces, no-ladder faces, corners
@@ -1462,6 +1469,184 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
     return r;
 }
 
+/* ---- static marked-edge split: sub-triangle topology ---------------------
+ * An HP face edge that borders an HQ-eligible face carries the nodes the HQ
+ * subdivide puts on it (the midpoint; the quarter points beside a face that
+ * may take the 4x4 cells or the 16-way triangle split), on every face that
+ * draws it whole as well: tj_level_build marks such edges in a level-wide
+ * table, and a flat triangle splits at each node of its marked edges. A
+ * node's position is nc4_pt of the edge's two corners, the operand the
+ * subdivide's own nodes are built from, so both faces draw a vertex at the
+ * identical point and the edge is watertight in every per-present state.
+ * Its colour, UV and face-local coordinate are the split triangle's own
+ * interpolated values there, so the shading does not move.
+ *
+ * A member of a split triangle is a corner of its base triangle (descriptor
+ * 0-2) or the node at quarter k = 1..3 of base edge e, from corner e toward
+ * corner (e + 1) % 3 (descriptor 3 + 3e + k - 1). */
+#define TJ_MAX_TRIS 10
+static uint64_t s_tj_walk_split;   /* base triangles the walk split, all workers (engagement) */
+
+/** @brief Returns the base edge a node descriptor lies on.
+ * @param d A node descriptor, 3..11.
+ * @return The edge, 0..2. */
+static int tj_desc_edge(int d) { return (d - 3) / 3; }
+
+/** @brief Returns the quarter a node descriptor sits at along its edge.
+ * @param d A node descriptor, 3..11.
+ * @return k, 1..3: the node is k/4 of the way from corner e to corner e + 1. */
+static int tj_desc_k(int d) { return (d - 3) % 3 + 1; }
+
+/** @brief Splits the one triangle of a list holding the directed edge p-q at the member mi, keeping the winding.
+ * @param T The triangles as member descriptor triples; receives the new one.
+ * @param nt The triangle count, raised by one when an edge is found.
+ * @param p The edge's first member.
+ * @param q The edge's second member.
+ * @param mi The member inserted on it. */
+static void tj_topo_insert(uint8_t T[TJ_MAX_TRIS][3], int* nt, uint8_t p, uint8_t q, uint8_t mi) {
+    for (int t = 0; t < *nt; t++)
+        for (int s = 0; s < 3; s++) {
+            if (T[t][s] != p || T[t][(s + 1) % 3] != q) continue;
+            uint8_t* N = T[(*nt)++];
+            N[0] = mi; N[1] = q; N[2] = T[t][(s + 2) % 3];
+            T[t][(s + 1) % 3] = mi;
+            return;
+        }
+}
+
+/** @brief Lists the sub-triangles of a base triangle split on its marked edges.
+ *
+ * Edge e (corner e to corner (e + 1) % 3) takes n[e] nodes: 0 none, 1 its
+ * midpoint, 3 the midpoint and then the quarter points, the halving order
+ * nc4_pt builds them in. Each node splits the sub-triangle holding its
+ * edge segment in two. Unsplit, the list is the base triangle itself.
+ * @param n The node count of each base edge: 0, 1 or 3.
+ * @param T Receives the sub-triangles as member descriptor triples.
+ * @return The sub-triangle count, 1..TJ_MAX_TRIS. */
+static int tj_split_topo(const int n[3], uint8_t T[TJ_MAX_TRIS][3]) {
+    int nt = 1;
+    T[0][0] = 0; T[0][1] = 1; T[0][2] = 2;
+    for (int e = 0; e < 3; e++) {
+        if (!n[e]) continue;
+        const uint8_t p = (uint8_t)e, q = (uint8_t)((e + 1) % 3), mid = (uint8_t)(3 + 3 * e + 1);
+        tj_topo_insert(T, &nt, p, q, mid);
+        if (n[e] < 3) continue;
+        tj_topo_insert(T, &nt, p, mid, (uint8_t)(3 + 3 * e));
+        tj_topo_insert(T, &nt, mid, q, (uint8_t)(3 + 3 * e + 2));
+    }
+    return nt;
+}
+
+/** @brief Returns the screen-interpolation parameter of the node at quarter k of an edge.
+ *
+ * The node is the camera-space point k/4 of the way from a to b. Under
+ * perspective-correct interpolation an attribute there is the same k/4 mix
+ * of the corners'; under screen-affine interpolation the mix is the node's
+ * screen parameter, s * zb / ((1 - s) * za + s * zb).
+ * @param k The quarter, 1..3.
+ * @param za The first corner's view-Z (m3).
+ * @param zb The second corner's view-Z.
+ * @return The weight of the second corner. */
+static double tj_lerp_t(int k, double za, double zb) {
+    const double s = 0.25 * k;
+    if (!openpete_native_get_texture_mapping() || za <= 0.0 || zb <= 0.0) return s;
+    return s * zb / ((1.0 - s) * za + s * zb);
+}
+
+/** @brief Mixes two 0x00BBGGRR colours per channel at a weight, rounded to nearest.
+ * @param a The colour at weight 0.
+ * @param b The colour at weight 1.
+ * @param t The weight of b.
+ * @return The mixed colour. */
+static uint32_t tj_rgb_lerp(uint32_t a, uint32_t b, double t) {
+    uint32_t r = 0;
+    for (int s = 0; s < 24; s += 8) {
+        const double ca = (double)((a >> s) & 0xFFu), cb = (double)((b >> s) & 0xFFu);
+        r |= (uint32_t)lround(ca + (cb - ca) * t) << s;
+    }
+    return r;
+}
+
+static ngte_cvert nc4_pt(ngte_cvert a, ngte_cvert b, int k);
+
+/** @brief Places a node on the segment between its edge's two emitted corner points under the integer vertex snap.
+ *
+ * A corner's emitted point is its screen override, else the floor of its
+ * projection; the node takes the point of that segment at the parameter of
+ * its own projection, as nc4_snap_edge places the subdivide's edge nodes. A
+ * corner inside the near plane leaves the node to the per-vertex floor.
+ * @param n The node; receives the screen override.
+ * @param a The edge's first corner.
+ * @param b The edge's second corner. */
+static void tj_snap_node(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert* b) {
+    if (!openpete_native_vertex_snap_active() || a->m3 < s_nearz || b->m3 < s_nearz) return;
+    float ax, ay, bx, by, px, py;
+    proj_screen(a->m1, a->m2, a->m3, &ax, &ay);
+    proj_screen(b->m1, b->m2, b->m3, &bx, &by);
+    proj_screen(n->m1, n->m2, n->m3, &px, &py);
+    if (a->oflag) { ax = a->osx; ay = a->osy; } else { ax = floorf(ax); ay = floorf(ay); }
+    if (b->oflag) { bx = b->osx; by = b->osy; } else { bx = floorf(bx); by = floorf(by); }
+    const float dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+    float tt = L2 > 0.0f ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0.5f;
+    tt = tt < 0.0f ? 0.0f : (tt > 1.0f ? 1.0f : tt);
+    n->osx = ax + tt * dx; n->osy = ay + tt * dy; n->oflag = 1;
+}
+
+/** @brief Builds one member of a split triangle from its base corners.
+ *
+ * A corner member is the corner. A node takes nc4_pt's position (and its
+ * screen override under the snap, tj_snap_node) and the corners' colours,
+ * far colours, UV and face-local coordinate mixed at the node's
+ * interpolation parameter (tj_lerp_t).
+ * @param B The base triangle's corners.
+ * @param d The member descriptor.
+ * @return The member. */
+static ngte_cvert tj_member_cv(const ngte_cvert B[3], int d) {
+    if (d < 3) return B[d];
+    const int e = tj_desc_edge(d), k = tj_desc_k(d);
+    const ngte_cvert* a = &B[e];
+    const ngte_cvert* b = &B[(e + 1) % 3];
+    ngte_cvert r = nc4_pt(*a, *b, k);
+    const double t = tj_lerp_t(k, a->m3, b->m3);
+    r.rgb = tj_rgb_lerp(a->rgb, b->rgb, t);
+    r.rgbf = tj_rgb_lerp(a->rgbf, b->rgbf, t);
+    r.u = (float)(a->u + (b->u - a->u) * t);
+    r.v = (float)(a->v + (b->v - a->v) * t);
+    r.fx = (float)(a->fx + (b->fx - a->fx) * t);
+    r.fy = (float)(a->fy + (b->fy - a->fy) * t);
+    tj_snap_node(&r, a, b);
+    return r;
+}
+
+/** @brief Emits a triangle split at the nodes of its marked edges, each sub-triangle through clip_push_tri.
+ *
+ * With no marked edge the triangle is pushed whole.
+ * @param W The walk context.
+ * @param a The first corner.
+ * @param b The second corner.
+ * @param c The third corner.
+ * @param n The node counts of edges a-b, b-c and c-a: 0, 1 or 3.
+ * @param m The face's material. */
+static void tj_push_split(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c,
+                          const int n[3], const tmat* m) {
+    const ngte_cvert B[3] = { a, b, c };
+    uint8_t T[TJ_MAX_TRIS][3];
+    const int nt = tj_split_topo(n, T);
+    if (nt > 1) __atomic_fetch_add(&s_tj_walk_split, 1u, __ATOMIC_RELAXED);
+    for (int t = 0; t < nt; t++)
+        clip_push_tri(W, tj_member_cv(B, T[t][0]), tj_member_cv(B, T[t][1]), tj_member_cv(B, T[t][2]), m);
+}
+
+/** @brief Returns the node count a face's mark byte gives one of its edges.
+ *
+ * The byte holds 2 bits per edge e, the edge from corner e to corner e + 1
+ * in i0, i1, i2, i3 order (a triangle's third edge runs i2 to i0): 0 none,
+ * 1 the midpoint, 3 the quarter nodes.
+ * @param marks The face's mark byte.
+ * @param e The edge, 0..3.
+ * @return 0, 1 or 3. */
+static int tj_face_edge_n(uint8_t marks, int e) { return (marks >> (2 * e)) & 3; }
+
 /* ---- drain sub-cell keys ------------------------------------------------
  * Every near drain inserts each sub-cell it draws into the ordering table at
  * that sub-cell's own key: the sum of its corner nodes' depth terms >> 7 plus
@@ -1542,8 +1727,9 @@ static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl
                          const tmat* m, const float u[4], const float v[4]) {
     tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
     if (!W->emit_keycells && W->emit_nearband) W->emit_otkey = tn_drain_key4(&tl, &tr, &bl, &br);
-    clip_push_tri(W, tl, tr, bl, m);
-    clip_push_tri(W, tr, bl, br, m);
+    const int n0[3] = { W->tj_sq[0], 0, W->tj_sq[3] }, n1[3] = { 0, W->tj_sq[2], W->tj_sq[1] };
+    tj_push_split(W, tl, tr, bl, n0, m);
+    tj_push_split(W, tr, bl, br, n1, m);
 }
 
 /* Near/HQ subdivide pass - the func_800276A0 simple-emit path (.L80027D7C),
@@ -1800,6 +1986,14 @@ static void tn_quad_sides(ngte_cvert Q[4]) {
     }
 }
 
+/** @brief Sets the sub-quad sides emit_quad_cv splits: each side on a parent edge the face's marks name quarter-marked.
+ * @param W The walk context; receives tj_sq.
+ * @param side The sub-quad's sides (top, right, bottom, left) on the parent's edges of the same name. */
+static void tn_sq_marks(tn_wctx* W, const uint8_t side[4]) {
+    for (int k = 0; k < 4; k++)
+        W->tj_sq[k] = (uint8_t)(side[k] && tj_face_edge_n(W->tj_face, k) == 3);
+}
+
 /** @brief Emits a 2x2 near face as its four quadrant quads.
  *
  * Splits the quad at its edge and centre midpoints (cv_mid). Under the
@@ -1881,12 +2075,20 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
         { mL, C,  BL, mB },                    /* SQ2: bottom-left quadrant-> entry 2 */
         { C,  mR, mB, BR },                    /* SQ3: bottom-right        -> entry 3 */
     };
+    /* Sub-quad i's boundary sides (top, right, bottom, left) on the parent's
+     * edges (top i0-i1, right i1-i2, bottom i2-i3, left i3-i0): SQ0 top and
+     * left, SQ1 top and right, SQ2 bottom and left, SQ3 bottom and right. A
+     * side on a quarter-marked edge takes its midpoint, the parent's quarter
+     * point the 4x4 cells and a flat neighbour draw there. */
+    static const uint8_t k_sq_side[4][4] = { {1,0,0,1}, {1,1,0,0}, {0,0,1,1}, {0,1,1,0} };
     for (int i = 0; i < 4; i++) {
         tmat mat; float u[4], v[4];
         tn_near_quad_tile(cpu, hqBase, texid, abe, i, &mat, u, v);
         tn_quad_sides(q[i]);
         W->emit_kc[0] = (W->emit_kc[0] & 0x3FFFFFFFu) | ((uint32_t)i << 30);
+        tn_sq_marks(W, k_sq_side[i]);
         emit_quad_cv(W, q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
+        memset(W->tj_sq, 0, sizeof W->tj_sq);
     }
 }
 
@@ -8883,6 +9085,7 @@ typedef struct {
                                        * retries when interns or an upload
                                        * drain moved it */
     uint32_t bakeEnvmGen;             /* s_envm_gen at build: the env-anim membership the buckets key on */
+    uint32_t bakeTjGen;               /* the marked-edge table's gen at build: a rebuilt table re-bakes */
     unsigned bakeSelEpoch;            /* material_epoch at build - the baked
                                        * faces carry material BUCKET ids, so a
                                        * selector set that moved makes them
@@ -9182,6 +9385,12 @@ static void tgpu_level_edge(int prev_level, int level) {
     else openpete_tercache_set_level(level);
 }
 
+static void tj_level_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t n, uint32_t lqTable,
+                             uint32_t hqTable, int texTblMode, uint64_t sig);
+static uint32_t tj_sector_addv(uint32_t q);
+static uint32_t tj_sector_recs(uint32_t q);
+static void tj_content_classes(openpete_tercache_content* c);
+
 /** @brief Adds one animation-list member sector to the anim, near-churn and store figures of a content bound.
  *
  * A poly-anim sector (vertex list) bakes the full plain cost, its near twins
@@ -9196,18 +9405,19 @@ static void tgpu_level_edge(int prev_level, int level) {
  * @param lpf LP faces (own and borrowable).
  * @param lpc LP colours.
  * @param hpc HP colours (one of the near and far arrays).
- * @param cellK Cell records per HP face. */
+ * @param cellK Cell records per HP face.
+ * @param addv The plain vertices the marked-edge split adds to the sector. */
 static void tgpu_content_anim(openpete_tercache_content* c, uint8_t m, uint64_t hpf, uint64_t lpf,
-                              uint64_t lpc, uint64_t hpc, uint64_t cellK) {
+                              uint64_t lpc, uint64_t hpc, uint64_t cellK, uint64_t addv) {
     if (!m) return;
     const int coltab = tgpu_canimnear_on();
     const int hq = (m & 1u) || coltab;
-    c->anim_hp_v += (hq ? 30u : 6u) * hpf;
+    c->anim_hp_v += (hq ? 30u : 6u) * hpf + addv;
     c->anim_lp_v += 6u * lpf;
     if (hq) c->anim_cell_r += cellK * hpf;
     if (m & 1u) {
         c->prev_rec += hpf + lpf;
-        if (tgpu_animnear_on()) { c->animnear_hp_v += 30u * hpf; c->animnear_lp_v += 6u * lpf; }
+        if (tgpu_animnear_on()) { c->animnear_hp_v += 30u * hpf + addv; c->animnear_lp_v += 6u * lpf; }
     }
     if ((m & 2u) && coltab)
         c->coltab_units += OPTC_COLTAB_RING *
@@ -9233,6 +9443,9 @@ static void tgpu_content_anim(openpete_tercache_content* c, uint8_t m, uint64_t 
  * takes one previous-corner record per face of each poly-anim sector, and
  * under OPENPETE_TERRAIN_CANIMNEAR=1 one colour-table ring (OPTC_COLTAB_RING
  * entries of 1 + 2 x (LP + 2 x HP colours) words) per colour-anim sector.
+ * The marked-edge split adds its exact per-sector vertices to the plain and
+ * anim bounds, its records' units to the store, and its per-class figures
+ * (tj_content_classes).
  * @param cpu The guest CPU state.
  * @param sectorPtr The walk's sector table (extended).
  * @param sectorCnt The walk's sector count (extended), at most 1024.
@@ -9261,12 +9474,16 @@ static void tgpu_content(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, 
         uint64_t lpf = (w3 >> 16) & 0xFFu, hpf = (w4 >> 16) & 0xFFu;
         const uint64_t lpc = (w3 >> 8) & 0xFFu, hpc = (w4 >> 8) & 0xFFu;
         if (q < s_tsv.bor_n && q < guestCnt) { hpf += s_tsv.borHp[q]; lpf += s_tsv.borLp[q]; }
-        c->hp_v += 30u * hpf;
+        const uint8_t mem = q < 1024u ? member[q] : 0u;
+        c->hp_v += 30u * hpf + tj_sector_addv(q);
         c->lp_v += 6u * lpf;
         c->cell_r += cellK * hpf;
-        tgpu_content_anim(c, q < 1024u ? member[q] : 0u, hpf, lpf, lpc, hpc, cellK);
+        if (mem) c->split_anim_units += 4u * (uint64_t)tj_sector_recs(q);
+        else     c->split_units += 2u * (uint64_t)tj_sector_recs(q);
+        tgpu_content_anim(c, mem, hpf, lpf, lpc, hpc, cellK, tj_sector_addv(q));
         c->sectors++;
     }
+    tj_content_classes(c);
 }
 
 /** @brief Returns the arena and store bytes a slot's chunks, records and colour-table ring hold.
@@ -9294,6 +9511,7 @@ static int tgpu_addr_cmp(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 
+
 /** @brief Posts the level edge's arena request with the table's estimate, and handles a same-id change of the walk's sector table.
  *
  * Every walk, after tsv_extend. The table's signature is FNV-1a over the
@@ -9307,22 +9525,28 @@ static int tgpu_addr_cmp(const void* a, const void* b) {
  * release (otherwise its chunks stay until LRU eviction), the bytes such
  * slots still hold are counted (`stale_bytes`), and the new table's bound
  * goes to the cache, which grows an arena whose capacity is below its
- * estimate.
+ * estimate. The marked-edge table is rebuilt first (tj_level_refresh), so
+ * the bound counts the split's added vertices.
  * @param cpu The guest CPU state.
  * @param sectorPtr The walk's sector table (extended).
  * @param sectorCnt The walk's sector count (extended).
  * @param guestCnt The scene's own sector count.
  * @param lvl The level id this walk read.
  * @param edge Nonzero when this walk latched a new level id.
- * @param prev The outgoing level id at an edge, or -1 on the first latch. */
+ * @param prev The outgoing level id at an edge, or -1 on the first latch.
+ * @param lqTable The LQ Tiledef table.
+ * @param hqTable The HQ record table.
+ * @param texTblMode The texture-table mode the walk decodes with. */
 static void tgpu_table_watch(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
-                             uint32_t guestCnt, int lvl, int edge, int prev) {
+                             uint32_t guestCnt, int lvl, int edge, int prev,
+                             uint32_t lqTable, uint32_t hqTable, int texTblMode) {
     static uint64_t s_sig;
     static uint32_t addr[1024];
     const uint32_t n = sectorCnt <= 1024u ? sectorCnt : 0u;
     for (uint32_t q = 0; q < n; q++) addr[q] = rd(cpu, sectorPtr + q * 4u);
     const uint64_t sig = openpete_fnv1a64(addr, sizeof(uint32_t) * n)
                        ^ ((uint64_t)sectorPtr << 32) ^ n;
+    tj_level_refresh(cpu, sectorPtr, n, lqTable, hqTable, texTblMode, sig);
     openpete_tercache_content c;
     if (edge) {
         tgpu_content(cpu, sectorPtr, n, guestCnt, &c);
@@ -9623,6 +9847,7 @@ typedef struct {
     uint32_t farC[4];     /* HP: raw far colours, i0..i3 (cell records) */
     uint32_t nearC[4];    /* HP: raw near colours, i0..i3 */
     uint32_t pnearC[4], pfarC[4];   /* HP: their previous-tick words (tgpu_prev_cols) */
+    uint8_t  tjm;         /* HP: the face's marked-edge split marks (tj_face_edge_n) */
 } tgpu_face_t;
 typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint32_t prgb_far, prgb_near;   /* anim arenas: previous-tick colours */
@@ -9778,6 +10003,10 @@ static int tgpu_emit_face_tri(tgpu_buf* buf, int arena, int ab, int with_var,
     return 0;
 }
 
+static int tgpu_emit_face_split(tgpu_buf* buf, int arena, int ab, int with_var, const tgpu_face_t* F,
+                                const tgpu_corner_t base[3], int tri2, const int n[3],
+                                const tgpu_corner_t rc[4], uint32_t* rec);
+
 /** @brief Hashes a sector's live colour arrays with FNV-1a, the liveness test for its baked colours.
  *
  * Covers the LP colours and the HP near and far colours, read through
@@ -9854,6 +10083,10 @@ static void tgpu_hq_quadrant(CPUState* cpu, uint32_t hqBase, int abe, int q,
     tiledef_apply_ori(cpu, e, u, v);
 }
 
+/* Sub-quad q's sides (top, right, bottom, left) that lie on the parent's
+ * edges of the same name (terrain_near_emit's k_sq_side). */
+static const uint8_t k_tgpu_sq_side[4][4] = { {1,0,0,1}, {1,1,0,0}, {0,0,1,1}, {0,1,1,0} };
+
 /** @brief Bakes the HQ 2x2 subdivide variant of a near quad, mirroring terrain_near_emit.
  *
  * Corners TL=i0, TR=i1, BL=i3, BR=i2 take the raw near and far colours;
@@ -9863,7 +10096,9 @@ static void tgpu_hq_quadrant(CPUState* cpu, uint32_t hqBase, int abe, int q,
  * read only where the vertex stage fogs a face the HQ pin draws past the
  * game's near band. Sub-quad q uses the HQ tile at hq_sub0 + q*8 with
  * the D_8006D058 UV-orientation adjust (tgpu_hq_quadrant) and is
- * triangulated (TL,TR,BL) + (TR,BL,BR). Camera-space node values are
+ * triangulated (TL,TR,BL) + (TR,BL,BR); a sub-quad side on a parent edge
+ * the face's marks name quarter-marked takes its midpoint, the parent's
+ * quarter point (tgpu_emit_face_split). Camera-space node values are
  * rebuilt in the vertex stage from the parent corners and the role bits.
  * @param cpu The guest CPU state.
  * @param buf The sector's bake buffers, indexed by arena.
@@ -9950,8 +10185,16 @@ static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
             H.matf1 |= (uint32_t)hd << 16;
         }
         int ha = tgpu_arena_of(&m);
-        if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c0, c1, c2, 0) != 0) return -1;
-        if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c1, c2, c3, 1) != 0) return -1;
+        /* Sub-quad sides on a quarter-marked parent edge take their
+         * midpoints (terrain_near_emit's k_sq_side): (TL,TR,BL) holds the
+         * top and left sides, (TR,BL,BR) the bottom and right. */
+        int sd[4];
+        for (int k = 0; k < 4; k++) sd[k] = k_tgpu_sq_side[q][k] && tj_face_edge_n(T->tjm, k) == 3;
+        const tgpu_corner_t rc[4] = { c0, c1, c2, c3 };
+        const int n0[3] = { sd[0], 0, sd[3] }, n1[3] = { 0, sd[2], sd[1] };
+        uint32_t rec = OPTC_PREV_REC_NONE;
+        if (tgpu_emit_face_split(buf, ha, ab, with_var, &H, rc, 0, n0, rc, &rec) != 0) return -1;
+        if (tgpu_emit_face_split(buf, ha, ab, with_var, &H, rc + 1, 1, n1, rc, &rec) != 0) return -1;
     }
     return 0;
 }
@@ -10257,6 +10500,569 @@ static int tgpu_hq_elig(const tsface_t* F, uint32_t hqTable) {
     if (hqTable == 0 || tface_near_excl(F->w3)) return 0;
     return F->quad || game_layout.terrain.hq_tri4_cells != 0
         || game_layout.terrain.hq_tri2_tiles != 0;
+}
+
+/* ---- static marked-edge table ------------------------------------------
+ * Every HP face edge of the level (the own and borrowed HP faces of every
+ * sector of the walk's extended table), keyed by its two endpoints' world
+ * positions (sector origin plus local vertex, unordered). An edge of an
+ * HQ-eligible face (tgpu_hq_elig) is marked 1, its midpoint; an edge of a
+ * face that may take the 4x4 cells or the 16-way triangle split
+ * (tj_face_class) is marked 3, its quarter nodes; an edge of three or more
+ * faces takes the greatest mark of its faces. Keys are exact, so
+ * near-coincident vertices and authored T-junctions match no other edge and
+ * stay unmarked. Each face keeps its edges' marks in one byte
+ * (tj_face_edge_n), stored per sector address; a sector bake and the walk
+ * read the same byte. The table is built at the cache's table watch, from
+ * the sectors the game loaded, so a custom level takes the same rule. */
+#define TJ_SEC_SLOTS 2048u   /* sector mark slots: twice the walk table's 1024 sectors */
+typedef struct { int32_t k[6]; uint8_t used, mark; uint16_t nf; } tj_edge;
+typedef struct { uint32_t s; int nOwn, nAll; uint8_t* m; } tj_sec;
+typedef struct {
+    uint32_t sectors, faces, elig, edges, marked, quarter, open, multi, split_faces;
+    uint64_t add_flat, recs;
+    uint64_t base_v[4], add_v[4];   /* per draw class (tgpu_arena_of): the plain HP bake's
+                                     * vertices without the split, and those it adds */
+} tj_stats;
+static struct {
+    tj_edge* tab;                 /* the level's edges, open addressing; freed after a build */
+    uint32_t cap, used;
+    tj_sec sec[TJ_SEC_SLOTS];     /* face marks by sector address */
+    uint32_t addv[1024];          /* per table index: the plain vertices the split adds */
+    uint32_t recs[1024];          /* per table index: the split records a bake writes */
+    uint64_t key;                 /* the table signature, HQ table and texture mapping built for */
+    uint32_t gen;                 /* bumps at every build; a slot baked at another gen re-bakes */
+    tj_stats st;
+} s_tj;
+static int s_tj_on = -1;
+static uint64_t s_tj_bake_split;   /* split records the bake wrote (engagement) */
+
+/** @brief Returns 1 while the marked-edge split runs: OPENPETE_TERRAIN_TJSPLIT unset or nonzero.
+ * @return 1 or 0. */
+static int tj_on(void) {
+    if (s_tj_on < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_TJSPLIT");
+        s_tj_on = !(e && *e == '0');
+    }
+    return s_tj_on;
+}
+
+/** @brief Writes an edge's key: its two endpoints' world positions, the lesser first.
+ * @param k Receives the six coordinates.
+ * @param SC The sector whose frame the vertices are in.
+ * @param A The first endpoint.
+ * @param B The second endpoint. */
+static void tj_key(int32_t k[6], const tscache_t* SC, const tsvert_t* A, const tsvert_t* B) {
+    const int32_t a[3] = { SC->originX + A->x, SC->originY + A->y, SC->originZ + A->z };
+    const int32_t b[3] = { SC->originX + B->x, SC->originY + B->y, SC->originZ + B->z };
+    const int swap = a[0] != b[0] ? a[0] > b[0] : a[1] != b[1] ? a[1] > b[1] : a[2] > b[2];
+    const int32_t* p = swap ? b : a;
+    const int32_t* q = swap ? a : b;
+    memcpy(k, p, 3 * sizeof(int32_t));
+    memcpy(k + 3, q, 3 * sizeof(int32_t));
+}
+
+/** @brief Returns the slot of an edge key: its entry, or the empty slot it would take.
+ * @param k The key.
+ * @return The slot index; the table must have a free slot. */
+static uint32_t tj_slot(const int32_t k[6]) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 6; i++) h = (h ^ (uint32_t)k[i]) * 16777619u;
+    for (uint32_t j = h & (s_tj.cap - 1);; j = (j + 1) & (s_tj.cap - 1))
+        if (!s_tj.tab[j].used || memcmp(s_tj.tab[j].k, k, sizeof s_tj.tab[j].k) == 0) return j;
+}
+
+/** @brief Doubles the edge table (from 65536 slots), rehashing every entry.
+ * @return 0, or -1 when the allocation fails (the table is unchanged). */
+static int tj_grow(void) {
+    tj_edge* old = s_tj.tab;
+    const uint32_t oc = s_tj.cap;
+    tj_edge* nt = (tj_edge*)calloc(oc ? oc * 2u : 1u << 16, sizeof(tj_edge));
+    if (!nt) return -1;
+    s_tj.tab = nt; s_tj.cap = oc ? oc * 2u : 1u << 16;
+    for (uint32_t i = 0; i < oc; i++)
+        if (old[i].used) s_tj.tab[tj_slot(old[i].k)] = old[i];
+    free(old);
+    return 0;
+}
+
+/** @brief Counts one face on an edge and raises the edge's mark to at least mark, inserting it below half load.
+ * @param k The key.
+ * @param mark 0 (an ineligible face), 1 or 3. */
+static void tj_add(const int32_t k[6], uint8_t mark) {
+    if (2u * (s_tj.used + 1u) > s_tj.cap && tj_grow() != 0) return;
+    tj_edge* e = &s_tj.tab[tj_slot(k)];
+    if (!e->used) { memcpy(e->k, k, sizeof e->k); e->used = 1; s_tj.used++; }
+    if (e->nf < 0xFFFFu) e->nf++;
+    if (mark > e->mark) e->mark = mark;
+}
+
+/** @brief Returns an edge's mark, 0 for an edge the table lacks.
+ * @param k The key.
+ * @return 0, 1 or 3. */
+static int tj_find(const int32_t k[6]) {
+    return s_tj.cap ? s_tj.tab[tj_slot(k)].mark : 0;
+}
+
+/** @brief Returns the mark a face gives its edges: 3 when it may take the 4x4 cells or the 16-way triangle split, 1 when HQ-eligible, else 0.
+ *
+ * The cells verdict (tface_cells_ok) reads the bank s_hq_bank names, which
+ * the caller sets for the face's set as the walk's tn_pass_bank does.
+ * @param F The face.
+ * @param hqTable The HQ table the face's set reads.
+ * @return 0, 1 or 3. */
+static int tj_face_class(const tsface_t* F, uint32_t hqTable) {
+    if (!tgpu_hq_elig(F, hqTable)) return 0;
+    const int q = game_layout.terrain.hq_cells4 && tface_cells_ok(F->hq_idx) && !tface_near_tier2(F->w3)
+               && (F->quad || game_layout.terrain.hq_tri4_cells);
+    return q ? 3 : 1;
+}
+
+/* One HP face set of a sector, as the walk's HP passes read it: the own
+ * faces (pass 1) or the borrowed ones (pass 3). */
+typedef struct { const tsvert_t* V; const tsface_t* F; int nV, nF; uint32_t hq; int bank; } tj_fset;
+
+/** @brief Lists a decoded sector's HP face sets, own then borrowed, with the HQ table and bank each reads (tn_pass_bank).
+ * @param SC The sector.
+ * @param hqTable The scene's HQ table.
+ * @param S Receives up to two sets.
+ * @return The set count. */
+static int tj_face_sets(const tscache_t* SC, uint32_t hqTable, tj_fset S[2]) {
+    int n = 0;
+    if (SC->hpV && SC->hpF)
+        S[n++] = (tj_fset){ SC->hpV, SC->hpF, SC->nHpV, SC->nHpF,
+                            SC->virt ? TSRC_TEX_BASE : hqTable, SC->virt };
+    const tsimp_t* I = SC->imp;
+    if (I && I->V && I->F) S[n++] = (tj_fset){ I->V, I->F, I->nV, I->nF, TSRC_TEX_BASE, 1 };
+    return n;
+}
+
+/** @brief Returns 1 when a face indexes outside its set's vertex bank, the faces the walk skips.
+ * @param S The set.
+ * @param F The face.
+ * @return 1 or 0. */
+static int tj_face_oob(const tj_fset* S, const tsface_t* F) {
+    return F->i0 >= S->nV || F->i1 >= S->nV || F->i2 >= S->nV || F->i3 >= S->nV;
+}
+
+/** @brief Adds every edge of one face set to the table with its faces' marks.
+ * @param SC The sector whose frame the set is in.
+ * @param S The set. */
+static void tj_mark_set(const tscache_t* SC, const tj_fset* S) {
+    s_hq_bank = S->bank;
+    for (int f = 0; f < S->nF; f++) {
+        const tsface_t* F = &S->F[f];
+        if (tj_face_oob(S, F)) continue;
+        const uint8_t mark = (uint8_t)tj_face_class(F, S->hq);
+        const int c[4] = { F->i0, F->i1, F->i2, F->i3 }, n = F->quad ? 4 : 3;
+        for (int e = 0; e < n; e++) {
+            int32_t k[6];
+            tj_key(k, SC, &S->V[c[e]], &S->V[c[(e + 1) % n]]);
+            tj_add(k, mark);
+        }
+        s_tj.st.faces++;
+        s_tj.st.elig += mark != 0;
+    }
+    s_hq_bank = 0;
+}
+
+/** @brief Returns a face's mark byte from the table and counts the triangles, split records and plain vertices the split adds to its bakes.
+ *
+ * The flat variant gains one triangle per edge node; a quad that may draw
+ * the 2x2 subdivide gains two per quarter-marked edge, one in each sub-quad
+ * along it, each such sub-quad writing a split record beside the flat
+ * variant's. The face's draw class (tgpu_arena_of) accumulates its plain
+ * vertices without the split (6 or 3 flat, 24 more for the 2x2) and those
+ * the split adds.
+ * @param SC The sector whose frame the set is in.
+ * @param S The set.
+ * @param F The face.
+ * @param tris Accumulates the added triangles.
+ * @param recs Accumulates the split records.
+ * @return The mark byte. */
+static uint8_t tj_face_marks(const tscache_t* SC, const tj_fset* S, const tsface_t* F,
+                             uint32_t* tris, uint32_t* recs) {
+    const int c[4] = { F->i0, F->i1, F->i2, F->i3 }, n = F->quad ? 4 : 3;
+    const int hq2 = F->quad && tgpu_hq_elig(F, S->hq);
+    uint8_t m = 0;
+    uint32_t add = 0, q4 = 0;
+    for (int e = 0; e < n; e++) {
+        int32_t k[6];
+        tj_key(k, SC, &S->V[c[e]], &S->V[c[(e + 1) % n]]);
+        const int mk = tj_find(k);
+        m |= (uint8_t)(mk << (2 * e));
+        add += (uint32_t)mk;
+        q4 += hq2 && mk == 3;
+    }
+    add += 2u * q4;
+    *tris += add;
+    *recs += (m != 0) + (q4 ? (q4 == 1 ? 2u : 4u) : 0u);
+    const int a = tgpu_arena_of(&F->mat);
+    s_tj.st.base_v[a] += (F->quad ? 6u : 3u) + (hq2 ? 24u : 0u);
+    s_tj.st.add_v[a] += 3u * add;
+    return m;
+}
+
+/** @brief Returns the mark slot of a sector address: its entry, or the empty slot it would take.
+ * @param s The sector's guest address, nonzero.
+ * @return The slot. */
+static tj_sec* tj_sec_slot(uint32_t s) {
+    for (uint32_t j = (s >> 2) * 2654435761u & (TJ_SEC_SLOTS - 1);; j = (j + 1) & (TJ_SEC_SLOTS - 1))
+        if (s_tj.sec[j].s == s || s_tj.sec[j].s == 0) return &s_tj.sec[j];
+}
+
+/** @brief Stores the mark bytes of a sector's faces, own then borrowed, and its share of the split's added vertices and records.
+ * @param SC The sector.
+ * @param hqTable The scene's HQ table.
+ * @param q The sector's index in the walk's table. */
+static void tj_store_sector(const tscache_t* SC, uint32_t hqTable, uint32_t q) {
+    tj_fset S[2];
+    const int ns = tj_face_sets(SC, hqTable, S);
+    const int nAll = (ns > 0 ? S[0].nF : 0) + (ns > 1 ? S[1].nF : 0);
+    tj_sec* E = tj_sec_slot(SC->s);
+    if (E->s || nAll == 0) return;   /* listed twice, or no HP face */
+    uint8_t* m = (uint8_t*)calloc((size_t)nAll, 1);
+    if (!m) return;
+    *E = (tj_sec){ SC->s, (ns > 0 && SC->hpV && SC->hpF) ? S[0].nF : 0, nAll, m };
+    uint32_t tris = 0, recs = 0;
+    int at = 0;
+    for (int i = 0; i < ns; i++) {
+        s_hq_bank = S[i].bank;
+        for (int f = 0; f < S[i].nF; f++, at++) {
+            if (tj_face_oob(&S[i], &S[i].F[f])) continue;
+            m[at] = tj_face_marks(SC, &S[i], &S[i].F[f], &tris, &recs);
+            s_tj.st.split_faces += m[at] != 0;
+        }
+        s_hq_bank = 0;
+    }
+    s_tj.st.add_flat += tris;
+    s_tj.st.recs += recs;
+    if (q < 1024u) { s_tj.addv[q] = 3u * tris; s_tj.recs[q] = recs; }
+    s_tj.st.sectors++;
+}
+
+/** @brief Frees every sector's mark bytes and the edge table, and zeroes the build's figures.
+ */
+static void tj_reset(void) {
+    for (uint32_t j = 0; j < TJ_SEC_SLOTS; j++) free(s_tj.sec[j].m);
+    memset(s_tj.sec, 0, sizeof s_tj.sec);
+    memset(s_tj.addv, 0, sizeof s_tj.addv);
+    memset(s_tj.recs, 0, sizeof s_tj.recs);
+    memset(&s_tj.st, 0, sizeof s_tj.st);
+    free(s_tj.tab);
+    s_tj.tab = NULL; s_tj.cap = s_tj.used = 0;
+}
+
+/** @brief Counts the table's marked, quarter-marked, open (one face) and non-manifold (three or more faces) edges.
+ */
+static void tj_edge_stats(void) {
+    s_tj.st.edges = s_tj.used;
+    for (uint32_t j = 0; j < s_tj.cap; j++) {
+        const tj_edge* e = &s_tj.tab[j];
+        if (!e->used) continue;
+        s_tj.st.marked += e->mark != 0;
+        s_tj.st.quarter += e->mark == 3;
+        s_tj.st.open += e->nf == 1;
+        s_tj.st.multi += e->nf >= 3;
+    }
+}
+
+static void tj_world_census(void);
+
+/* One table build's inputs: the walk's extended sector table and the
+ * decode arguments it reads sectors with. */
+typedef struct {
+    uint32_t sectorPtr, n, lqTable, hqTable;
+    int texTblMode, hidet;
+} tj_lvl;
+
+/** @brief Decodes the sector at one index of the walk's table, as the walk does.
+ * @param cpu The guest CPU state.
+ * @param L The build's inputs.
+ * @param q The index.
+ * @return The sector, or NULL for an empty entry. */
+static const tscache_t* tj_sector(CPUState* cpu, const tj_lvl* L, uint32_t q) {
+    const uint32_t s = rd(cpu, L->sectorPtr + q * 4u);
+    return s ? tsc_get(cpu, s, L->lqTable, L->hqTable, L->texTblMode, L->hidet, L->sectorPtr, L->n) : NULL;
+}
+
+/** @brief Builds the marked-edge table and every sector's face marks for the walk's table.
+ *
+ * Two passes over the table: every face set's edges enter the edge table,
+ * then each face reads its edges' marks back. Logs the level's figures
+ * (`[tjsplit] level`) and, under OPENPETE_TERRAIN_TJSPLIT_CENSUS=1, its
+ * world-space T-junction census; the edge table is then freed.
+ * @param cpu The guest CPU state.
+ * @param L The build's inputs. */
+static void tj_level_build(CPUState* cpu, const tj_lvl* L) {
+    tj_reset();
+    s_tj.gen++;
+    if (!tj_on()) return;
+    for (uint32_t q = 0; q < L->n; q++) {
+        const tscache_t* SC = tj_sector(cpu, L, q);
+        tj_fset S[2];
+        const int ns = SC ? tj_face_sets(SC, L->hqTable, S) : 0;
+        for (int i = 0; i < ns; i++) tj_mark_set(SC, &S[i]);
+    }
+    for (uint32_t q = 0; q < L->n; q++) {
+        const tscache_t* SC = tj_sector(cpu, L, q);
+        if (SC) tj_store_sector(SC, L->hqTable, q);
+    }
+    tj_edge_stats();
+    static int s_census = -1;
+    ENV_FLAG_LATCH(s_census, "OPENPETE_TERRAIN_TJSPLIT_CENSUS");
+    if (s_census) tj_world_census();
+    const tj_stats* T = &s_tj.st;
+    fprintf(stderr, "[tjsplit] level gen=%u sectors=%u faces=%u hq_elig=%u edges=%u marked_edges=%u"
+            " quarter=%u open_edges=%u edges_3plus_faces=%u split_faces=%u add_tris=%llu\n",
+            s_tj.gen, T->sectors, T->faces, T->elig, T->edges, T->marked, T->quarter, T->open,
+            T->multi, T->split_faces, (unsigned long long)T->add_flat);
+    free(s_tj.tab);
+    s_tj.tab = NULL; s_tj.cap = s_tj.used = 0;
+}
+
+/** @brief Prints the walk's split base triangles and the bake's split records at exit, the split's engagement figures.
+ */
+static void tj_use_at_exit(void) {
+    fprintf(stderr, "[tjsplit] use walk_split_tris=%llu bake_split_recs=%llu\n",
+            (unsigned long long)s_tj_walk_split, (unsigned long long)s_tj_bake_split);
+}
+
+/** @brief Rebuilds the marked-edge table when the walk's table, the HQ table or the texture mapping changed since the last build.
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The walk's sector table (extended).
+ * @param n Its sector count.
+ * @param lqTable The LQ Tiledef table.
+ * @param hqTable The HQ record table.
+ * @param texTblMode The texture-table mode the walk decodes with.
+ * @param sig The walk's table signature (tgpu_table_watch). */
+static void tj_level_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t n, uint32_t lqTable,
+                             uint32_t hqTable, int texTblMode, uint64_t sig) {
+    const uint64_t key = sig ^ ((uint64_t)hqTable * 0x9E3779B97F4A7C15ull)
+                       ^ (uint64_t)openpete_native_get_texture_mapping();
+    if (s_tj.gen && key == s_tj.key) return;
+    if (!s_tj.gen) atexit(tj_use_at_exit);
+    s_tj.key = key;
+    const char* e = getenv("OPENPETE_TERRAIN_HIDETAIL");
+    const int hidet = e ? atoi(e) : -1;
+    const tj_lvl L = { sectorPtr, n, lqTable, hqTable, texTblMode, hidet >= 0 ? hidet : 0 };
+    tj_level_build(cpu, &L);
+}
+
+/** @brief Returns a walk pass's face marks for a sector: its own faces on pass 1, its borrowed faces on pass 3.
+ *
+ * NULL on every other pass, with the split off, or for a sector whose face
+ * counts differ from the build's.
+ * @param SC The sector.
+ * @param pass The walk pass.
+ * @param nf The pass's face count.
+ * @return The pass's first face's mark byte, or NULL. */
+static const uint8_t* tj_pass_marks(const tscache_t* SC, int pass, int nf) {
+    if (!tj_on() || (pass != 1 && pass != 3) || !SC->s) return NULL;
+    const tj_sec* E = tj_sec_slot(SC->s);
+    if (E->s != SC->s) return NULL;
+    const int base = pass == 1 ? 0 : E->nOwn;
+    return (pass == 1 ? E->nOwn : E->nAll - E->nOwn) == nf ? E->m + base : NULL;
+}
+
+/** @brief Returns a sector bake's face marks for one of its HP sets (tj_pass_marks), NULL in a preview bake.
+ *
+ * A preview's store holds no split records, so its bakes draw unsplit.
+ * @param SC The sector.
+ * @param pass 1 for the own faces, 3 for the borrowed ones.
+ * @param nf The set's face count.
+ * @return The set's first face's mark byte, or NULL. */
+static const uint8_t* tgpu_tj_marks(const tscache_t* SC, int pass, int nf) {
+    return s_tpv_sink ? NULL : tj_pass_marks(SC, pass, nf);
+}
+
+/** @brief Returns the mark byte of face f of a pass's marks, 0 without marks.
+ * @param m The pass's marks (tj_pass_marks), or NULL.
+ * @param f The face index.
+ * @return The mark byte. */
+static uint8_t tj_marks_at(const uint8_t* m, int f) { return m ? m[f] : 0; }
+
+/** @brief Returns the marked-edge table's build generation.
+ * @return The generation; it changes at every build. */
+static uint32_t tj_gen(void) { return s_tj.gen; }
+
+/** @brief Returns the plain vertices the split adds to the sector at one index of the walk's table.
+ * @param q The index.
+ * @return The vertex count, 0 past the 1024 tracked entries. */
+static uint32_t tj_sector_addv(uint32_t q) { return q < 1024u ? s_tj.addv[q] : 0u; }
+
+/** @brief Returns the split records a bake of the sector at one index of the walk's table writes.
+ * @param q The index.
+ * @return The record count, 0 past the 1024 tracked entries. */
+static uint32_t tj_sector_recs(uint32_t q) { return q < 1024u ? s_tj.recs[q] : 0u; }
+
+/** @brief Copies the level's per-class plain vertex figures of the split into a content bound.
+ * @param c The bound. */
+static void tj_content_classes(openpete_tercache_content* c) {
+    memcpy(c->split_base_v, s_tj.st.base_v, sizeof c->split_base_v);
+    memcpy(c->split_add_v, s_tj.st.add_v, sizeof c->split_add_v);
+}
+
+/* ---- world-space T-junction census (OPENPETE_TERRAIN_TJSPLIT_CENSUS) ----
+ * An instrument over the level's edge table: each distinct edge endpoint
+ * lying strictly inside another edge is a world T-junction, exact
+ * (integer cross product 0) or within 1 world unit of the line; distinct
+ * endpoints at most 2 units apart are near duplicates. Edges are binned by
+ * the 256-unit cells their bounding box spans; an endpoint inside an edge
+ * lies in a cell the edge spans, so testing the endpoint's own cell finds
+ * every edge it can lie inside. */
+#define TJ_CEN_BINS (1u << 16)
+typedef struct {
+    uint32_t* eidx;             /* edge-table slot of each edge */
+    uint32_t ne;
+    int32_t (*vp)[3];           /* distinct endpoints, sorted */
+    uint32_t nv;
+    uint32_t* head;             /* bin -> first link */
+    uint32_t (*lnk)[2];         /* (edge, next link) */
+    uint32_t nl, cap;
+    uint32_t exact, near1, unmarked, dup2;
+} tj_census;
+
+/** @brief Orders two world positions lexicographically for qsort.
+ * @param a The first position.
+ * @param b The second position.
+ * @return Negative, zero or positive. */
+static int tj_cmpv(const void* a, const void* b) {
+    const int32_t* p = (const int32_t*)a;
+    const int32_t* q = (const int32_t*)b;
+    for (int c = 0; c < 3; c++) if (p[c] != q[c]) return p[c] < q[c] ? -1 : 1;
+    return 0;
+}
+
+/** @brief Returns the census bin of a 256-unit cell.
+ * @param x The cell's x.
+ * @param y The cell's y.
+ * @param z The cell's z.
+ * @return The bin. */
+static uint32_t tj_cen_bin(int x, int y, int z) {
+    return (((uint32_t)x * 73856093u) ^ ((uint32_t)y * 19349663u) ^ ((uint32_t)z * 83492791u))
+         & (TJ_CEN_BINS - 1);
+}
+
+/** @brief Lists the table's edges and their distinct endpoints, sorted.
+ * @param C The census; receives eidx, ne, vp and nv.
+ * @return 0, or -1 when an allocation fails. */
+static int tj_cen_points(tj_census* C) {
+    C->eidx = (uint32_t*)malloc((size_t)s_tj.used * sizeof(uint32_t) + 4u);
+    C->vp = (int32_t (*)[3])malloc((size_t)s_tj.used * 2u * sizeof *C->vp + 12u);
+    if (!C->eidx || !C->vp) return -1;
+    for (uint32_t j = 0; j < s_tj.cap; j++) {
+        if (!s_tj.tab[j].used) continue;
+        C->eidx[C->ne++] = j;
+        memcpy(C->vp[C->nv++], s_tj.tab[j].k, 12);
+        memcpy(C->vp[C->nv++], s_tj.tab[j].k + 3, 12);
+    }
+    qsort(C->vp, C->nv, sizeof *C->vp, tj_cmpv);
+    uint32_t u = 0;
+    for (uint32_t i = 0; i < C->nv; i++)
+        if (!u || memcmp(C->vp[i], C->vp[u - 1], 12)) memcpy(C->vp[u++], C->vp[i], 12);
+    C->nv = u;
+    return 0;
+}
+
+/** @brief Appends one (edge, bin) link, doubling the link array when full.
+ * @param C The census.
+ * @param e The edge.
+ * @param h The bin.
+ * @return 0, or -1 when the reallocation fails. */
+static int tj_cen_link(tj_census* C, uint32_t e, uint32_t h) {
+    if (C->nl == C->cap) {
+        const uint32_t nc = C->cap ? C->cap * 2u : 1u << 16;
+        void* t = realloc(C->lnk, (size_t)nc * sizeof *C->lnk);
+        if (!t) return -1;
+        C->lnk = (uint32_t (*)[2])t; C->cap = nc;
+    }
+    C->lnk[C->nl][0] = e; C->lnk[C->nl][1] = C->head[h]; C->head[h] = C->nl++;
+    return 0;
+}
+
+/** @brief Links each edge into the bins of every cell its bounding box, widened by one unit, spans.
+ * @param C The census.
+ * @return 0, or -1 when an allocation fails. */
+static int tj_cen_bin_edges(tj_census* C) {
+    C->head = (uint32_t*)malloc(TJ_CEN_BINS * sizeof(uint32_t));
+    if (!C->head) return -1;
+    memset(C->head, 0xFF, TJ_CEN_BINS * sizeof(uint32_t));
+    for (uint32_t e = 0; e < C->ne; e++) {
+        const int32_t* k = s_tj.tab[C->eidx[e]].k;
+        int lo[3], hi[3];
+        for (int c = 0; c < 3; c++) {
+            lo[c] = ((k[c] < k[3 + c] ? k[c] : k[3 + c]) - 1) >> 8;
+            hi[c] = ((k[c] < k[3 + c] ? k[3 + c] : k[c]) + 1) >> 8;
+        }
+        for (int x = lo[0]; x <= hi[0]; x++)
+            for (int y = lo[1]; y <= hi[1]; y++)
+                for (int z = lo[2]; z <= hi[2]; z++)
+                    if (tj_cen_link(C, e, tj_cen_bin(x, y, z)) != 0) return -1;
+    }
+    return 0;
+}
+
+/** @brief Returns how a point lies on one edge: 2 exactly inside it, 1 within one unit of its line strictly between its ends, else 0.
+ * @param v The point.
+ * @param a The edge's first end.
+ * @param b The edge's second end.
+ * @return 0, 1 or 2. */
+static int tj_cen_on_edge(const int32_t v[3], const int32_t a[3], const int32_t b[3]) {
+    if (!memcmp(v, a, 12) || !memcmp(v, b, 12)) return 0;
+    int64_t d[3], w[3];
+    for (int c = 0; c < 3; c++) { d[c] = (int64_t)b[c] - a[c]; w[c] = (int64_t)v[c] - a[c]; }
+    const int64_t dot = d[0] * w[0] + d[1] * w[1] + d[2] * w[2];
+    const int64_t L2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if (dot <= 0 || dot >= L2) return 0;
+    const double cx = (double)(d[1] * w[2] - d[2] * w[1]), cy = (double)(d[2] * w[0] - d[0] * w[2]),
+                 cz = (double)(d[0] * w[1] - d[1] * w[0]);
+    const double c2 = cx * cx + cy * cy + cz * cz;
+    return c2 == 0.0 ? 2 : (c2 <= (double)L2 ? 1 : 0);
+}
+
+/** @brief Counts one endpoint's T-junctions against the edges binned with its cell.
+ * @param C The census; its exact, near1 and unmarked counts accumulate.
+ * @param v The endpoint. */
+static void tj_cen_point(tj_census* C, const int32_t v[3]) {
+    int hit = 0, hitx = 0, hitu = 0;
+    uint32_t lastE = 0xFFFFFFFFu;
+    for (uint32_t l = C->head[tj_cen_bin(v[0] >> 8, v[1] >> 8, v[2] >> 8)]; l != 0xFFFFFFFFu; l = C->lnk[l][1]) {
+        const uint32_t e = C->lnk[l][0];
+        if (e == lastE) continue;
+        lastE = e;
+        const tj_edge* E = &s_tj.tab[C->eidx[e]];
+        const int on = tj_cen_on_edge(v, E->k, E->k + 3);
+        hitx |= on == 2;
+        hit |= on != 0;
+        hitu |= on != 0 && !E->mark;
+    }
+    C->exact += (uint32_t)hitx; C->near1 += (uint32_t)hit; C->unmarked += (uint32_t)hitu;
+}
+
+/** @brief Counts the distinct endpoint pairs at most 2 units apart, scanning the x-sorted list.
+ * @param C The census; its dup2 count accumulates. */
+static void tj_cen_dups(tj_census* C) {
+    for (uint32_t i = 0; i < C->nv; i++)
+        for (uint32_t j = i + 1; j < C->nv && C->vp[j][0] - C->vp[i][0] <= 2; j++) {
+            const int64_t dx = C->vp[j][0] - C->vp[i][0], dy = C->vp[j][1] - C->vp[i][1],
+                          dz = C->vp[j][2] - C->vp[i][2];
+            C->dup2 += dx * dx + dy * dy + dz * dz <= 4;
+        }
+}
+
+/** @brief Logs the level's world-space T-junction and near-duplicate counts (`[tjsplit] census`).
+ */
+static void tj_world_census(void) {
+    tj_census C;
+    memset(&C, 0, sizeof C);
+    if (tj_cen_points(&C) == 0 && tj_cen_bin_edges(&C) == 0) {
+        for (uint32_t i = 0; i < C.nv; i++) tj_cen_point(&C, C.vp[i]);
+        tj_cen_dups(&C);
+        fprintf(stderr, "[tjsplit] census world_tj_exact=%u world_tj_1unit=%u world_tj_unmarked_edge=%u"
+                " vert_pairs_le2_units=%u\n", C.exact, C.near1, C.unmarked, C.dup2);
+    }
+    free(C.eidx); free(C.vp); free(C.head); free(C.lnk);
 }
 
 /** @brief Bakes a triangle's split variants: tier-4 records where they can draw, tier-2 records where the game has that pass.
@@ -10743,6 +11549,8 @@ typedef struct {
     const canim_t* CA;       /* colour-anim slot, or NULL */
     uint32_t ff;             /* extra face_flags bits */
     const tscache_t* own;    /* the sector whose own HP faces these are (tn_face_water), or NULL */
+    const tsface_t* F0;      /* the set's first face */
+    const uint8_t* tjm;      /* its faces' marked-edge split marks (tj_pass_marks), or NULL */
 } tgpu_hpset;
 
 /** @brief Emits an HP face's flat-variant triangles with their texel UVs and HD-fold entries.
@@ -10750,7 +11558,8 @@ typedef struct {
  * A quad emits (i0, i1, i3) and (i1, i3, i2) with the GT4 UV corners
  * [TL, TR, BL, BR] on i0, i1, i3, i2; a triangle emits its corners with the
  * 2-bit UV orientation (triRot). Under the fold each emitted triangle of
- * both tile halves interns its replacement entry.
+ * both tile halves interns its replacement entry. Each emitted triangle
+ * splits at the nodes of its marked outer edges (tgpu_emit_face_split).
  * @param X The bake context.
  * @param T The face record; the fold entries are written into its material words.
  * @param k The corners in i0..i3 order; the UVs are written here.
@@ -10778,8 +11587,14 @@ static int tgpu_bake_hp_flat(const tgpu_hpctx* X, tgpu_face_t* T, tgpu_corner_t 
             T->matf1 |= (uint32_t)hdF << 16;
             T->matn1 |= (uint32_t)hdN << 16;
         }
-        if (tgpu_emit_face_tri(X->buf, da, X->ab, X->with_var, T, k[0], k[1], k[3], 0) != 0) return -1;
-        return tgpu_emit_face_tri(X->buf, da, X->ab, X->with_var, T, k[1], k[3], k[2], 1) != 0 ? -1 : 0;
+        /* Outer edges i0-i1 and i3-i0, then i3-i2 and i2-i1; the
+         * diagonal i1-i3 carries no node. */
+        const tgpu_corner_t h0[3] = { k[0], k[1], k[3] }, h1[3] = { k[1], k[3], k[2] };
+        const int n0[3] = { tj_face_edge_n(T->tjm, 0), 0, tj_face_edge_n(T->tjm, 3) };
+        const int n1[3] = { 0, tj_face_edge_n(T->tjm, 2), tj_face_edge_n(T->tjm, 1) };
+        uint32_t rec = OPTC_PREV_REC_NONE;
+        if (tgpu_emit_face_split(X->buf, da, X->ab, X->with_var, T, h0, 0, n0, k, &rec) != 0) return -1;
+        return tgpu_emit_face_split(X->buf, da, X->ab, X->with_var, T, h1, 1, n1, k, &rec) != 0 ? -1 : 0;
     }
     /* GT3 with the 2-bit UV orientation (triRot) */
     static const int triRot[4][3] = {{0,1,2},{1,3,0},{3,2,1},{2,0,3}};
@@ -10797,7 +11612,9 @@ static int tgpu_bake_hp_flat(const tgpu_hpctx* X, tgpu_face_t* T, tgpu_corner_t 
         T->matf1 |= (uint32_t)hdF << 16;
         T->matn1 |= (uint32_t)hdN << 16;
     }
-    return tgpu_emit_face_tri(X->buf, da, X->ab, X->with_var, T, k[0], k[1], k[2], 0) != 0 ? -1 : 0;
+    const int n[3] = { tj_face_edge_n(T->tjm, 0), tj_face_edge_n(T->tjm, 1), tj_face_edge_n(T->tjm, 2) };
+    uint32_t rec = OPTC_PREV_REC_NONE;
+    return tgpu_emit_face_split(X->buf, da, X->ab, X->with_var, T, k, 0, n, k, &rec) != 0 ? -1 : 0;
 }
 
 /* Previous-corner records of the sector bake in progress: active for a
@@ -10854,11 +11671,156 @@ static uint32_t tgpu_prev_rec(tgpu_face_t* T) {
     return (uint32_t)s_prev_n++;
 }
 
+/** @brief Appends units to the bake's record list, growing it as needed.
+ *
+ * A list that cannot grow sets s_prev_oom, which fails the bake at
+ * tgpu_prev_upload.
+ * @param w The words, units x OPTC_PREV_REC_WORDS.
+ * @param units The unit count.
+ * @return The first unit's bake-local index, or OPTC_PREV_REC_NONE. */
+static uint32_t tgpu_prev_push(const uint32_t* w, int units) {
+    while (s_prev_n + units > s_prev_cap) {
+        const int nc = s_prev_cap ? s_prev_cap * 2 : 256;
+        uint32_t* nw = (uint32_t*)realloc(s_prev_w, sizeof(*nw) * OPTC_PREV_REC_WORDS * (size_t)nc);
+        if (!nw) { s_prev_oom = 1; return OPTC_PREV_REC_NONE; }
+        s_prev_w = nw; s_prev_cap = nc;
+    }
+    memcpy(s_prev_w + (size_t)s_prev_n * OPTC_PREV_REC_WORDS, w,
+           sizeof(uint32_t) * OPTC_PREV_REC_WORDS * (size_t)units);
+    const uint32_t at = (uint32_t)s_prev_n;
+    s_prev_n += units;
+    return at;
+}
+
+/** @brief Appends a split record: the attributes of a split triangle's four base corners, which its plain and anim vertices read.
+ *
+ * Words 0-3 the corners' far colours, 4-7 their near colours, 8-11 their
+ * UVs (far u, v, near u, v, a byte each). An anim record adds the previous
+ * far (12-15) and near (16-19) colours, the corners' colour-table indices
+ * (20, a byte each) and its flags (21, bit 0: the colours come from the
+ * colour table); 2 units plain, 4 anim.
+ * @param F The face template.
+ * @param c The four base corners: a flat face's i0..i3, a sub-quad's TL, TR, BL, BR.
+ * @param anim 1 for an anim arena's record.
+ * @return The record's bake-local unit index, or OPTC_PREV_REC_NONE. */
+static uint32_t tgpu_split_rec(const tgpu_face_t* F, const tgpu_corner_t c[4], int anim) {
+    uint32_t w[4 * OPTC_PREV_REC_WORDS];
+    memset(w, 0, sizeof w);
+    for (int j = 0; j < 4; j++) {
+        w[j] = c[j].rgb_far & 0xFFFFFFu;
+        w[4 + j] = c[j].rgb_near & 0xFFFFFFu;
+        w[8 + j] = (uint32_t)c[j].uf | (uint32_t)c[j].vf << 8 | (uint32_t)c[j].un << 16 | (uint32_t)c[j].vn << 24;
+        w[12 + j] = c[j].prgb_far & 0xFFFFFFu;
+        w[16 + j] = c[j].prgb_near & 0xFFFFFFu;
+        w[20] |= (uint32_t)c[j].ci << (8 * j);
+    }
+    w[21] = ((F->rf & OPTC_FACE_F_COLTAB) && !(F->flags16 & 1u)) ? 1u : 0u;
+    return tgpu_prev_push(w, anim ? 4 : 2);
+}
+
+/** @brief Marks the last three vertices of a plain or anim buffer as members of one split sub-triangle.
+ *
+ * flags16 bit 14 marks a split vertex; px | py names its record, pz bits
+ * 4-15 the sub-triangle's three member descriptors (4 bits each) and bits
+ * 2-3 the vertex's own member slot.
+ * @param b The buffer.
+ * @param d The sub-triangle's member descriptors.
+ * @param rec The record's bake-local unit index. */
+static void tgpu_split_mark_plain(tgpu_buf* b, const uint8_t d[3], uint32_t rec) {
+    const uint32_t desc = (uint32_t)d[0] | (uint32_t)d[1] << 4 | (uint32_t)d[2] << 8;
+    for (int s = 0; s < 3; s++) {
+        rhi_terrain_vertex* v = &b->v[b->n - 3 + s];
+        v->px = (int16_t)(uint16_t)(rec & 0xFFFFu);
+        v->py = (int16_t)(uint16_t)(rec >> 16);
+        v->pz = (int16_t)(uint16_t)(desc << 4 | (uint32_t)s << 2);
+        v->flags16 |= 0x4000u;
+    }
+}
+
+/** @brief Marks the last six vertices of a near-variant buffer as members of one split sub-triangle.
+ *
+ * The vertices carry the base triangle's corners as their own and context
+ * members, so the near stage resolves the base corners as it resolves an
+ * unsplit triangle's members and then the sub-triangle from them; pz bits
+ * 4-15 take the member descriptors beside the face flags in bits 0-1.
+ * @param b The near-variant buffer.
+ * @param d The sub-triangle's member descriptors. */
+static void tgpu_split_mark_near(tgpu_buf* b, const uint8_t d[3]) {
+    const uint32_t desc = (uint32_t)d[0] | (uint32_t)d[1] << 4 | (uint32_t)d[2] << 8;
+    for (int s = 0; s < 6; s++) {
+        rhi_terrain_vertex* v = &b->v[b->n - 6 + s];
+        v->pz = (int16_t)(uint16_t)(((uint32_t)(uint16_t)v->pz & 0xFu) | desc << 4);
+        v->flags16 |= 0x4000u;
+    }
+}
+
+/** @brief Emits one base triangle split at the nodes of its marked edges into a sector's chunk buffers.
+ *
+ * With no marked edge this is tgpu_emit_face_tri. Otherwise each
+ * sub-triangle (tj_split_topo) bakes as the base triangle's three corners,
+ * marked with the sub-triangle's member descriptors: the vertex stage
+ * builds a node from the transformed corners as the subdivide does and
+ * mixes its attributes from the base corners' (tgpu_split_mark_plain,
+ * tgpu_split_mark_near). The plain vertices read the base corners from a
+ * split record, written on the first split triangle of the record's
+ * corners.
+ * @param buf The sector's bake buffers, indexed by arena.
+ * @param arena The draw-class arena.
+ * @param ab OPTC_ARENA_ANIM_BASE for an anim sector, else 0.
+ * @param with_var 1 when the sector carries near-variant chunks.
+ * @param F The face template.
+ * @param base The base triangle's corners.
+ * @param tri2 1 for a quad's second half or a sub-quad's second triangle.
+ * @param n The node counts of base edges 0-1, 1-2 and 2-0: 0, 1 or 3.
+ * @param rc The record's four base corners.
+ * @param rec The record's index, OPTC_PREV_REC_NONE until written; shared
+ *        by the triangles of one record.
+ * @return 0, or -1 when a push fails. */
+static int tgpu_emit_face_split(tgpu_buf* buf, int arena, int ab, int with_var, const tgpu_face_t* F,
+                                const tgpu_corner_t base[3], int tri2, const int n[3],
+                                const tgpu_corner_t rc[4], uint32_t* rec) {
+    if (!(n[0] | n[1] | n[2]))
+        return tgpu_emit_face_tri(buf, arena, ab, with_var, F, base[0], base[1], base[2], tri2);
+    tgpu_buf* P = &buf[arena + ab];
+    if (!s_tgpu_near_only && *rec == OPTC_PREV_REC_NONE) {
+        *rec = tgpu_split_rec(F, rc, P->anim);
+        s_tj_bake_split++;
+    }
+    uint8_t T[TJ_MAX_TRIS][3];
+    const int nt = tj_split_topo(n, T);
+    for (int t = 0; t < nt; t++) {
+        if (!s_tgpu_near_only) {
+            if (tgpu_emit_tri(P, F, base[0], base[1], base[2], tri2) != 0) return -1;
+            tgpu_split_mark_plain(P, T[t], *rec);
+        }
+        if (!with_var) continue;
+        tgpu_buf* N = &buf[arena + (int)OPTC_ARENA_NEAR_BASE];
+        if (tgpu_emit_tri_near(N, F, base[0], base[1], base[2], tri2) != 0) return -1;
+        tgpu_split_mark_near(N, T[t]);
+    }
+    return 0;
+}
+
+/** @brief Rebases every plain and anim split vertex's record index onto the bake's store allocation.
+ * @param buf The sector's bake buffers, indexed by arena.
+ * @param first The allocation's first unit. */
+static void tgpu_split_rebase(tgpu_buf* buf, uint32_t first) {
+    for (int a = 0; a < OPTC_ARENA_NEAR_BASE; a++)
+        for (int i = 0; i < buf[a].n; i++) {
+            rhi_terrain_vertex* v = &buf[a].v[i];
+            if (!(v->flags16 & 0x4000u)) continue;
+            const uint32_t r = ((uint32_t)(uint16_t)v->px | (uint32_t)(uint16_t)v->py << 16) + first;
+            v->px = (int16_t)(uint16_t)(r & 0xFFFFu);
+            v->py = (int16_t)(uint16_t)(r >> 16);
+        }
+}
+
 /** @brief Allocates and writes the bake's previous-corner records and rebases the near chunks onto them.
  *
  * Every near-variant vertex's px | py and every near cell record's fog_a
- * that names a bake-local record gains the allocation's first index. A
- * bake without records allocates nothing.
+ * that names a bake-local record, and every plain or anim split vertex's
+ * record (tgpu_split_rebase), gains the allocation's first index. A bake
+ * without records allocates nothing.
  * @param T The sector's slot; receives the run (prevFirst, prevCount).
  * @param buf The sector's bake buffers, indexed by arena.
  * @return 0, or -1 when the record store is full or the list failed to
@@ -10882,6 +11844,7 @@ static int tgpu_prev_upload(tgpu_slot_t* T, tgpu_buf* buf) {
             rhi_terrain_cell* c = (rhi_terrain_cell*)(buf[a].rec + buf[a].rsz * (size_t)i);
             if (c->fog_a != OPTC_PREV_REC_NONE) c->fog_a += first;
         }
+    tgpu_split_rebase(buf, first);
     openpete_tercache_prev_write(first, s_prev_w, s_prev_n);
     T->prevFirst = first;
     T->prevCount = s_prev_n;
@@ -11056,6 +12019,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
     if (F->tb != -1)
         T.flags16 = (uint16_t)((((uint32_t)F->tb & 0x7Fu) << 5) | 0x1000u);
     tgpu_hp_face_cols(X->cpu, S, F, &T);
+    T.tjm = tj_marks_at(S->tjm, (int)(F - S->F0));
     tgpu_corner_t k[4];
     memset(k, 0, sizeof(k));
     for (int q = 0; q < 4; q++) {
@@ -11365,14 +12329,16 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
      * level (host colours, no previous-tick state: FF_BORROWED) ---- */
     tgpu_hpctx X = { cpu, buf, ab, with_var, anim && !vsnap, hdfold, canim_only, base_ff, hqTable,
                      (int)own_sec };
-    tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u, SC };
+    tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u, SC,
+                       SC->hpF, tgpu_tj_marks(SC, 1, SC->nHpF) };
     tgpu_own_bank(SC, &X, &own);
     for (int f = 0; SC->hpV && SC->hpF && f < SC->nHpF; f++)
         if (tgpu_bake_hp_face(&X, &own, &SC->hpF[f], &fail) != 0) goto done;
     s_hq_bank = 0;
     if (SC->imp) {
         const tsimp_t* I = SC->imp;
-        const tgpu_hpset bor = { I->V, NULL, I->nV, I->nearCol, I->farCol, 0u, 0u, NULL, 1u << 11, NULL };
+        const tgpu_hpset bor = { I->V, NULL, I->nV, I->nearCol, I->farCol, 0u, 0u, NULL, 1u << 11, NULL,
+                                 I->F, tgpu_tj_marks(SC, 3, I->nF) };
         /* The source table through the host window; no HD fold (pack files
          * name the scene's VRAM, not the auxiliary bank). */
         tgpu_hpctx XB = X;
@@ -11722,6 +12688,8 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
              || (T->bakeSelEpoch != T->selEpoch)
              /* The env-anim membership the buckets key on moved. */
              || (T->bakeEnvmGen != s_envm_gen)
+             /* The marked-edge table was rebuilt: the faces' split marks moved. */
+             || (T->bakeTjGen != tj_gen())
              || tgpu_claim_retry(T);
     /* Migration out of a consolidation source, within the tick's budget. */
     const int mig = tgpu_migrate_due(T, dirty);
@@ -11753,6 +12721,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->bakeAllocEpoch = openpete_tercache_alloc_epoch();
         T->bakeSelEpoch = T->selEpoch;
         T->bakeEnvmGen = s_envm_gen;
+        T->bakeTjGen = tj_gen();
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);
@@ -12182,7 +13151,8 @@ static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
  * (0,0), (4,0) and (0,4). An opaque, unblended near HP triangle the drain
  * inserts as its tier-2 or tier-4 sub-triangles keys each fragment by the
  * sub-triangle containing it (tn_keycells_begin); this applies on a layout
- * with both split node tables.
+ * with both split node tables. The triangle splits at the nodes of its edges
+ * the walk context's face marks name (tj_push_split).
  * @param W The walk context.
  * @param cpu The guest CPU state.
  * @param F The face.
@@ -12207,8 +13177,32 @@ static void tn_flat_tri_emit(tn_wctx* W, CPUState* cpu, const tsface_t* F, int h
         tn_tri_cell_keys(cpu, &nf, N, tier2, &K);
     }
     if (K.n) tn_keycells_begin(W, &K, tier2 ? 4 : 16, tier2 ? 3u : 2u);
-    clip_push_tri(W, A, B, C, m);
+    const int n[3] = { tj_face_edge_n(W->tj_face, 0), tj_face_edge_n(W->tj_face, 1),
+                       tj_face_edge_n(W->tj_face, 2) };
+    tj_push_split(W, A, B, C, n, m);
     W->emit_keycells = 0;
+}
+
+/** @brief Emits an HP quad the port draws flat: (i0, i1, i3) and (i1, i3, i2), each split at the nodes of its marked outer edges.
+ *
+ * The diagonal i1-i3 carries no node; the first triangle's outer edges are
+ * i0-i1 and i3-i0, the second's i3-i2 and i2-i1 (tj_face_edge_n of the walk
+ * context's face marks).
+ * @param W The walk context.
+ * @param sv The sector's projected vertices.
+ * @param F The face.
+ * @param k0 Corner i0's colour and UV.
+ * @param k1 Corner i1's colour and UV.
+ * @param k2 Corner i2's colour and UV.
+ * @param k3 Corner i3's colour and UV.
+ * @param m The face's material. */
+static void tn_flat_quad_emit(tn_wctx* W, const lvert* sv, const tsface_t* F,
+                              lcorner k0, lcorner k1, lcorner k2, lcorner k3, const tmat* m) {
+    const uint8_t mk = W->tj_face;
+    const int n0[3] = { tj_face_edge_n(mk, 0), 0, tj_face_edge_n(mk, 3) };
+    const int n1[3] = { 0, tj_face_edge_n(mk, 2), tj_face_edge_n(mk, 1) };
+    tj_push_split(W, tn_cv(&sv[F->i0], k0), tn_cv(&sv[F->i1], k1), tn_cv(&sv[F->i3], k3), n0, m);
+    tj_push_split(W, tn_cv(&sv[F->i1], k1), tn_cv(&sv[F->i3], k3), tn_cv(&sv[F->i2], k2), n1, m);
 }
 
 /** @brief Returns the walk's near-path verdict for an HP face.
@@ -13358,6 +14352,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         if (!tn_pass_source(SC, pass, CAm, &P)) continue;
         const uint32_t faces = P.faces; const int nv = P.nv, nf = P.nf;
         const tsvert_t* cverts = P.V; const tsface_t* cfaces = P.F;
+        const uint8_t* tjm = tj_pass_marks(SC, pass, nf);   /* marked-edge split, HP passes */
         const float* cvF = P.vF;   /* sub-tick fractional verts (poly-anim sectors only) */
         const uint32_t lpColBase = P.lpCol, nearBase = P.nearB, farBase = P.farB;
         const uint8_t *h_lp = P.h_lp, *h_near = P.h_near, *h_far = P.h_far;
@@ -13401,6 +14396,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * work starts at the projection use. */
             const tsface_t* F = &cfaces[f];
             W->face_F = F; W->face_sv = sv;
+            W->tj_face = tj_marks_at(tjm, f);
             int i0 = F->i0, i1 = F->i1, i2 = F->i2, i3 = F->i3;
             int flip = F->flip;
             int fogRef = fogRefBase + (F->fogbias ? 0x2000 : 0);
@@ -14045,8 +15041,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 emit_tri(W, sv, i0, i1, i2, k0, k1, k2, mat);
                 emit_tri(W, sv, i1, i2, i3, k1, k2, k3, mat);
             } else if (quad) {
-                emit_tri(W, sv, i0, i1, i3, k0, k1, k3, mat);
-                emit_tri(W, sv, i1, i3, i2, k1, k3, k2, mat);
+                tn_flat_quad_emit(W, sv, F, k0, k1, k2, k3, mat);
             } else {
                 /* GT3 UV orientation: corner indices into [TL,TR,BL,BR]=[0,1,2,3]
                  * for slots (i0,i1,i2). rot 0 = {TL,TR,BL} (the .s .L80027588),
@@ -15128,7 +16123,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* The level edge's arena request carries the estimate of the extended
      * table, so it is posted here rather than at the latch above; nothing
      * between the two bakes. */
-    tgpu_table_watch(cpu, sectorPtr, sectorCnt, guestCnt, walk_lvl, edge, edge_prev);
+    tgpu_table_watch(cpu, sectorPtr, sectorCnt, guestCnt, walk_lvl, edge, edge_prev,
+                     lqTable, hqTable, texTblMode);
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];

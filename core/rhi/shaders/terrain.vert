@@ -1351,11 +1351,10 @@ uint cell_rgb_mid(uint a, uint b) {
 }
 #endif
 
-#if defined(TERRAIN_NEAR) || defined(TERRAIN_ANIM)
 /* The previous-tick store (openpete_terrain_cache.h OPTC_PREV_REC_*,
  * OPTC_FACE_F_*), in units of six words: previous-corner records of
- * poly-anim near faces, and per-sector colour tables of env-anim colour
- * sectors. A face's flags ride a near vertex's pz, a cell record's fog_b
+ * poly-anim near faces, per-sector colour tables of env-anim colour
+ * sectors, and the split records of split plain and anim vertices. A face's flags ride a near vertex's pz, a cell record's fog_b
  * and an anim vertex's prev pad. PREV_REC_NONE names no run. */
 #define PREV_REC_NONE  0xFFFFFFFFu
 #define FACE_F_PREV    1u
@@ -1398,6 +1397,145 @@ uint coltab_col(uint slot, int arr, uint idx)
     uint off = arr == 0 ? 0u : (arr == 1 ? nLp : nLp + nHp);
     uint at = b + 1u + off + idx;
     return coltab_lerp(prevRec.w[at + nLp + 2u * nHp], prevRec.w[at]);
+}
+
+/* ---- marked-edge split (terrain.c tj_split_topo, tgpu_emit_face_split) ----
+ * A split vertex (flags16 bit 14) is one member of a sub-triangle of its
+ * base triangle, the emitted triangle its flags name: a flat face's half or
+ * an HQ sub-quad's half. pz bits 4-15 hold the sub-triangle's three member
+ * descriptors, 4 bits each: base corner 0-2, or the node at quarter
+ * k = 1..3 of base edge e, from corner e toward corner (e + 1) % 3
+ * (3 + 3e + k - 1). A node sits at nc4_pt of the edge's transformed
+ * corners, the operand the subdivide builds its own nodes from, so a flat
+ * face and its subdivided neighbour place the shared node identically. Its
+ * attributes mix the base corners' at tj_t. */
+#define TJ_SPLIT 0x4000u
+
+/* Member m's descriptor. */
+int tj_desc(int m) {
+    return (int(uint(inPos.z) & 0xFFFFu) >> (4 + 4 * m)) & 15;
+}
+
+/* The weight of the edge's second corner at quarter k: k / 4 under
+ * perspective-correct interpolation, the node's screen parameter
+ * s * zb / ((1 - s) * za + s * zb) under AFFINE_UV (terrain.c tj_lerp_t). */
+pfloat tj_t(int k, pfloat za, pfloat zb) {
+    pfloat s = pfloat(k) * 0.25;
+    if (!AFFINE_UV || za <= 0.0 || zb <= 0.0) return s;
+    return (s * zb) / ((1.0 - s) * za + s * zb);
+}
+
+/* Member d's two base corners and the second's weight: a corner is its own
+ * pair at weight 0. */
+void tj_ends(int d, pvec3 B[3], out int p, out int q, out pfloat t) {
+    if (d < 3) { p = d; q = d; t = 0.0; return; }
+    int e = (d - 3) / 3, k = (d - 3) % 3 + 1;
+    p = e; q = (e + 1) % 3;
+    t = tj_t(k, B[p].z, B[q].z);
+}
+
+/* Two colours on the 8-bit grid mixed at weight t and rounded half up, the
+ * walk's tj_rgb_lerp. */
+vec3 tj_mix8(vec3 a, vec3 b, float t) {
+    return floor(mix(round(a * 255.0), round(b * 255.0), t) + 0.5) / 255.0;
+}
+
+/* Member d's camera-space position. */
+precise pvec3 tj_pos(int d, pvec3 B[3]) {
+    if (d < 3) return B[d];
+    int e = (d - 3) / 3;
+    return nc4_pt(B[e], B[(e + 1) % 3], (d - 3) % 3 + 1);
+}
+
+/* Member d's emitted screen point: a corner's own; a node's projection,
+ * placed under the integer snap on the segment between its edge's emitted
+ * corner points (terrain.c tj_snap_node), unless an edge corner is inside
+ * the near plane. */
+vec2 tj_scr(int d, pvec3 B[3], vec2 S[3]) {
+    if (d < 3) return S[d];
+    pvec3 m = tj_pos(d, B);
+    if (pc.snap == 0) return proj_of(m);
+    int p = (d - 3) / 3, q = (p + 1) % 3;
+    if (B[p].z < G_NEAR || B[q].z < G_NEAR) return floor(proj_of(m));
+    vec2 A = S[p], C = S[q], mm = proj_of(m);
+    precise float dx = C.x - A.x, dy = C.y - A.y;
+    precise float L2 = dx * dx + dy * dy;
+    precise float num = (mm.x - A.x) * dx + (mm.y - A.y) * dy;
+    float tt = L2 > 0.0 ? num / L2 : 0.5;
+    tt = clamp(tt, 0.0, 1.0);
+    precise float rx = A.x + tt * dx, ry = A.y + tt * dy;
+    return vec2(rx, ry);
+}
+
+/* HQ 2x2 node n (NODEMAP numbering) from the transformed parent corners,
+ * the own-vertex rebuild's expressions. */
+precise pvec3 hq2_node(int n, pvec3 TL, pvec3 TR, pvec3 BL, pvec3 BR) {
+    precise pvec3 mT = (TL + TR) * 0.5, mB = (BL + BR) * 0.5;
+    precise pvec3 mL = (TL + BL) * 0.5, mR = (TR + BR) * 0.5;
+    precise pvec3 C  = (mT + mB) * 0.5;
+    return n == 0 ? TL : n == 1 ? TR : n == 2 ? BR : n == 3 ? BL
+         : n == 4 ? mT : n == 5 ? mB : n == 6 ? mL : n == 7 ? mR : C;
+}
+
+/* A split vertex's base triangle: corner positions B, emitted screen
+ * points S, drain face-local coordinates F (psx_key_contest.glsl) and
+ * split-record corner slots R. A
+ * flat face's halves are (i0, i1, i3) and (i1, i3, i2), a triangle
+ * (i0, i1, i2), at record slots i0..i3; an HQ sub-quad's halves are
+ * (TL, TR, BL) and (TR, BL, BR) of its NODEMAP nodes, at record slots
+ * TL, TR, BL, BR. */
+void tj_base(bool hqv, bool quad, bool tri2, int subq, pvec3 m0, pvec3 m1, pvec3 m2, pvec3 m3c,
+             out pvec3 B[3], out vec2 S[3], out vec2 F[3], out int R[3]) {
+    int o = tri2 ? 1 : 0;
+    for (int j = 0; j < 3; j++) F[j] = vec2(0.0);
+    if (hqv) {
+        pvec3 Q[4];
+        for (int j = 0; j < 4; j++) Q[j] = hq2_node(NODEMAP[subq][j], m0, m1, m3c, m2);
+        for (int j = 0; j < 3; j++) {
+            B[j] = Q[o + j];
+            S[j] = hq_snap_screen(NODEMAP[subq][o + j], m0, m1, m3c, m2, B[j]);
+            F[j] = quad_side_fl(Q[0], Q[1], Q[2], Q[3], B[j]);
+            R[j] = o + j;
+        }
+        return;
+    }
+    if (!quad)     { B[0] = m0; B[1] = m1; B[2] = m2;  R[0] = 0; R[1] = 1; R[2] = 2;
+                     F[1] = vec2(4.0, 0.0); F[2] = vec2(0.0, 4.0); }
+    else if (tri2) { B[0] = m1; B[1] = m3c; B[2] = m2; R[0] = 1; R[1] = 3; R[2] = 2; }
+    else           { B[0] = m0; B[1] = m1; B[2] = m3c; R[0] = 0; R[1] = 1; R[2] = 3; }
+    for (int j = 0; j < 3; j++) S[j] = snap_of(proj_of(B[j]));
+}
+
+#if !defined(TERRAIN_NEAR) && !defined(TERRAIN_CELLS)
+/* This split vertex's record, in words. */
+uint tj_rec() {
+    return ((uint(inPos.x) & 0xFFFFu) | ((uint(inPos.y) & 0xFFFFu) << 16)) * 6u;
+}
+
+/* Record corner c's raw far and near colours: a plain record's words; an
+ * anim record's lerped at the colour alpha (canim_col), or the sector
+ * colour table's (coltab_col) when its flags say so. */
+void tj_rec_col(uint r, int c, bool lp, uint slot, out vec3 cf, out vec3 cn) {
+#ifdef TERRAIN_ANIM
+    if ((prevRec.w[r + 21u] & 1u) != 0u) {
+        uint idx = (prevRec.w[r + 20u] >> uint(8 * c)) & 0xFFu;
+        cf = unrgb(coltab_col(slot, lp ? 0 : 2, idx));
+        cn = unrgb(coltab_col(slot, lp ? 0 : 1, idx));
+        return;
+    }
+    cf = canim_col(prevRec.w[r + 12u + uint(c)], unrgb(prevRec.w[r + uint(c)]));
+    cn = canim_col(prevRec.w[r + 16u + uint(c)], unrgb(prevRec.w[r + 4u + uint(c)]));
+#else
+    cf = unrgb(prevRec.w[r + uint(c)]);
+    cn = unrgb(prevRec.w[r + 4u + uint(c)]);
+#endif
+}
+
+/* Record corner c's UV: the far half's, or the near half's (near). */
+vec2 tj_rec_uv(uint r, int c, bool near) {
+    uint w = prevRec.w[r + 8u + uint(c)];
+    return near ? vec2(float((w >> 16) & 0xFFu), float(w >> 24))
+                : vec2(float(w & 0xFFu), float((w >> 8) & 0xFFu));
 }
 #endif
 
@@ -2074,6 +2212,21 @@ void main()
     if (hqv != (near || t4tri || t2tri) || is4 != (t4 || t4tri || t2tri) || ist2 != t2tri) {
         kill_vert(); return;
     }
+    /* ---- marked-edge split: this vertex's base triangle, and its own
+     * member's base corners and weight (tj_ends) ---- */
+    bool tjs = !is4 && (f16 & TJ_SPLIT) != 0u;
+    pvec3 tjB[3];
+    vec2 tjS[3], tjF[3];
+    int tjR[3];
+    int tjD = 0, tjP = 0, tjQ = 0;
+    pfloat tjT = 0.0;
+    if (tjs) {
+        tj_base(hqv, quad, (f16 & 0x2000u) != 0u, subq, m0, m1, m2, m3c, tjB, tjS, tjF, tjR);
+#ifndef TERRAIN_NEAR
+        tjD = tj_desc(int((uint(inPos.z) >> 2) & 3u));
+        tj_ends(tjD, tjB, tjP, tjQ, tjT);
+#endif
+    }
     /* nc4_front mirror: a straddling face's cell draws only when one of its
      * two triples faces; a waterHQ face's cells are not culled (terrain.c
      * tn_near_face). */
@@ -2129,7 +2282,13 @@ void main()
     if (g.rim_cnt.x > 0) {
         bool tri2 = (f16 & 0x2000u) != 0u;
         int rimv;
-        if (!hqv) {
+        if (tjs) {
+            /* The split sub-triangle's members. */
+            int d0 = tj_desc(0), d1 = tj_desc(1), d2 = tj_desc(2);
+            precise pvec3 ta = tj_pos(d0, tjB), tb = tj_pos(d1, tjB), tc2 = tj_pos(d2, tjB);
+            rimv = rim_classified(tj_scr(d0, tjB, tjS), tj_scr(d1, tjB, tjS), tj_scr(d2, tjB, tjS),
+                                  ta.z, tb.z, tc2.z);
+        } else if (!hqv) {
             precise pvec3 ta, tb, tc2;
             vec2 sa, sb, sc;
             if (!quad)      { ta = m0; tb = m1; tc2 = m2;  sa = p0f; sb = p1f; sc = p2f; }
@@ -2226,6 +2385,15 @@ void main()
             if (delta > 0) clut = (clut + uint(delta << 6)) & 0xFFFFu;
         }
     }
+#if !defined(TERRAIN_NEAR) && !defined(TERRAIN_CELLS)
+    /* A split vertex's UV mixes its base corners' from its record, on the
+     * tile half the face's ladder select drew. */
+    if (tjs) {
+        uint r = tj_rec();
+        bool nh = !hqv && dbg_half == 1u;
+        uv = mix(tj_rec_uv(r, tjR[tjP], nh), tj_rec_uv(r, tjR[tjQ], nh), float(tjT));
+    }
+#endif
     /* HD-fold entry select: the bake stores one entry id per LOD half in
      * the clut words' upper 16 bits (0 = no replacement); the drawn half's
      * id ships to the fragment stage with the CONT-fog flags (ladder faces
@@ -2398,6 +2566,41 @@ void main()
                                    : vec2(inCtxBUV.x, inCtxBUV.y);
         if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
 
+        /* A split vertex's members (tj_desc) over its base triangle, the
+         * members resolved above: under the integer snap every corner takes
+         * its emitted point so a node can sit on its edge's segment. An HQ
+         * split mixes the corners' raw attributes into its members before
+         * they shade at their own depths, as the subdivide's nodes do. */
+        if (tjs && pc.snap != 0 && !tov) {
+            for (int k = 0; k < 3; k++) tos[k] = snap_of(proj_of(tp[k]));
+            tov = true;
+        }
+        int tjd3[3], tjp3[3], tjq3[3];
+        pfloat tjt3[3];
+        for (int k = 0; k < 3 && tjs; k++) {
+            tjd3[k] = tj_desc(k);
+            tj_ends(tjd3[k], tp, tjp3[k], tjq3[k], tjt3[k]);
+        }
+        if (tjs && hqv) {
+            pvec3 p2[3];
+            vec3 f2[3], n2[3];
+            vec2 u2[3], o2[3], l2[3];
+            for (int k = 0; k < 3; k++) {
+                int a = tjp3[k], b = tjq3[k];
+                float t = float(tjt3[k]);
+                p2[k] = tj_pos(tjd3[k], tp);
+                f2[k] = tj_mix8(cf[a], cf[b], t);
+                n2[k] = tj_mix8(cn[a], cn[b], t);
+                u2[k] = mix(uvm[a], uvm[b], t);
+                o2[k] = tj_scr(tjd3[k], tp, tos);
+                l2[k] = mix(tfl[a], tfl[b], t);
+            }
+            for (int k = 0; k < 3; k++) {
+                tp[k] = p2[k]; cf[k] = f2[k]; cn[k] = n2[k];
+                uvm[k] = u2[k]; tos[k] = o2[k]; tfl[k] = l2[k];
+            }
+        }
+
         bool doFog   = hpRaw ? hpFog : (!lp && !hqv && !fogOff);
         bool doGrade = lp && (sf & SF_LPGRADE) != 0u;
         int  dbgmode = (gf >> 26) & 7;
@@ -2415,6 +2618,23 @@ void main()
             cin[k].os = tos[k];
             cin[k].ov = tov;
             cin[k].fl = tfl[k];
+        }
+        /* A flat split mixes its corners' shaded colours into its nodes,
+         * which keeps the flat face's shading. */
+        if (tjs && !hqv) {
+            cvx c2[3];
+            for (int k = 0; k < 3; k++) {
+                int a = tjp3[k], b = tjq3[k];
+                float t = float(tjt3[k]);
+                c2[k] = cin[a];
+                if (tjd3[k] < 3) continue;
+                c2[k].m  = tj_pos(tjd3[k], tp);
+                c2[k].c  = ivec3(floor(mix(vec3(cin[a].c), vec3(cin[b].c), t) + 0.5));
+                c2[k].uv = mix(cin[a].uv, cin[b].uv, t);
+                c2[k].os = tj_scr(tjd3[k], tp, tos);
+                c2[k].fl = mix(cin[a].fl, cin[b].fl, t);
+            }
+            cin = c2;
         }
 
         /* Sutherland-Hodgman against m3 >= zc, with the walk's doubling
@@ -2467,7 +2687,11 @@ void main()
         col = vec4(vec3(V.c) / 255.0, 1.0);
     }
 #else
-    if (!hqv) {
+    if (tjs) {
+        mo = tj_pos(tjD, tjB);
+        sscr = tj_scr(tjD, tjB, tjS);
+        mfl = mix(tjF[tjP], tjF[tjQ], float(tjT));
+    } else if (!hqv) {
 #ifdef TERRAIN_ANIM
         precise pvec3 lown = ANIM_LERP3(inPrevPos.xyz, inPos.xyz);
 #elif defined(TERRAIN_FP32)
@@ -2656,11 +2880,28 @@ void main()
     vec3 cfar8  = op_unorm8(inColFar.rgb);
     vec3 cnear8 = op_unorm8(inColNear.rgb);
 #endif
-    vec4 col = vec4(waterFar ? water_col(cnear8, mo.z, fogscale, fogOff)
-                    : terrain_col(mo.z, hpRaw ? (hpFog ? cfar8 : cnear8) : ((hqv || (fogOff && !lp)) ? cnear8 : cfar8), cnear8,
-                                  hpRaw ? hpFog : (!lp && !hqv && !fogOff), fogRef, fogscale,
-                                  lp && (sf & SF_LPGRADE) != 0u,
-                                  s.sec[slot].gp, s.sec[slot].gq), 1.0);
+    /* One vertex's colour at view-Z Z from its raw far and near colours. */
+#define TJ_SHADE(Z, CF, CN) (waterFar ? water_col(CN, Z, fogscale, fogOff) \
+        : terrain_col(Z, hpRaw ? (hpFog ? CF : CN) : ((hqv || (fogOff && !lp)) ? CN : CF), CN, \
+                      hpRaw ? hpFog : (!lp && !hqv && !fogOff), fogRef, fogscale, \
+                      lp && (sf & SF_LPGRADE) != 0u, s.sec[slot].gp, s.sec[slot].gq))
+    vec4 col = vec4(TJ_SHADE(mo.z, cfar8, cnear8), 1.0);
+#ifndef TERRAIN_CELLS
+    if (tjs) {
+        /* A split vertex mixes its base corners' colours from its record:
+         * an HQ node its raw colours, then shades at its own depth as the
+         * subdivide's nodes do; a flat member the corners' shaded colours,
+         * which keeps the flat face's shading. */
+        uint r = tj_rec();
+        vec3 fp, np, fq, nq;
+        tj_rec_col(r, tjR[tjP], lp, slot, fp, np);
+        tj_rec_col(r, tjR[tjQ], lp, slot, fq, nq);
+        float tt = float(tjT);
+        col.rgb = hqv ? TJ_SHADE(mo.z, tj_mix8(fp, fq, tt), tj_mix8(np, nq, tt))
+                      : tj_mix8(TJ_SHADE(tjB[tjP].z, fp, np), TJ_SHADE(tjB[tjQ].z, fq, nq), tt);
+    }
+#endif
+#undef TJ_SHADE
     {   /* debug tint modes 4/5: show the baked near / far colour raw */
         int dbgmode = (gf >> 26) & 7;
         if ((gf & (1 << 29)) != 0 && dbgmode == 4) col = vec4(op_unorm8(inColNear.rgb), 1.0);

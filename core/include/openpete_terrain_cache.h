@@ -1243,6 +1243,14 @@ typedef struct {
      * face of each poly-anim sector, and the colour-table rings of the
      * colour-anim sectors (0 unless their near chunks read a table). */
     uint64_t prev_rec, coltab_units;
+    /* The marked-edge split: per draw class (OPAQUE, ALPHA, ADD, SUB) the
+     * plain HP vertices of the level's faces without the split and those
+     * the split adds (both exact, from the level's edge table), and the
+     * store units its split records take: split_units 2 per record of a
+     * plain sector, split_anim_units 4 per record of an anim sector, which
+     * re-bakes every roll. hp_v and anim_hp_v already count the added
+     * vertices. */
+    uint64_t split_base_v[4], split_add_v[4], split_units, split_anim_units;
     uint32_t sectors;                 /* table entries read */
 } openpete_tercache_content;
 /** @brief Store the content bound of the table the walk is about to bake and derive each arena's estimate from it.
@@ -1259,7 +1267,12 @@ typedef struct {
  * content; the near cells cell_r x 2 / N and the anim cells
  * anim_cell_r x the defer factor; every other arena, and any estimate below
  * it, the floor (16,384 vertices, 1,024 records on a cell arena). The
- * store's estimate is prev_rec x the defer factor + coltab_units. Prints
+ * store's estimate is (prev_rec + split_anim_units) x the defer factor +
+ * coltab_units + split_units. Without OPENPETE_TC_ESTIMATE the per-level measured
+ * capacities of each HP draw class's plain, anim and near arenas scale by
+ * (split_base_v + split_add_v) / split_base_v of that class, and the
+ * level-edge store holds the split's units (split_units +
+ * split_anim_units x the defer factor) beyond the init capacity. Prints
  * the outgoing figures' `[tc-est]` census line when the level changes.
  * @param level_id The level the table belongs to.
  * @param c The content bound. */
