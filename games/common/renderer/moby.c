@@ -1969,6 +1969,8 @@ static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
 static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t header, double tr[3]);
 static void moby_centre_census(const char* pass);
 static double moby_record_depth_k(CPUState* cpu, uint32_t moby);
+static void moby_sphere_shell_pull(CPUState* cpu, uint32_t moby, uint32_t header,
+                                  double depth_k, proj_xy* out, int n);
 
 /** @brief Project one live cull record, whose fields the game's record reader already extracted.
  *
@@ -2004,10 +2006,13 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, int* zsf4,
     } else if (moby_record_centre_final(cpu, R->moby, R->header, tr)) {
         TR_frac = tr;
     }
-    return moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
-                               NULL, 0.0, -1.0, moby_record_depth_k(cpu, R->moby),
-                               R->TR_raw, TR_frac, R->M,
-                               zsf4, v, out, cap);
+    const double depth_k = moby_record_depth_k(cpu, R->moby);
+    const int n = moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
+                                      NULL, 0.0, -1.0, depth_k,
+                                      R->TR_raw, TR_frac, R->M,
+                                      zsf4, v, out, cap);
+    moby_sphere_shell_pull(cpu, R->moby, R->header, depth_k, out, n);
+    return n;
 }
 
 #define MAX_PROJ 32768
@@ -3292,8 +3297,10 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
     int dzsf4 = rzsf4;   /* the tier drawn (moby_decode_project); the fade snapshot keeps rzsf4 */
     { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
       pose_hold_begin(m, f->header, f->header_b, f->frameA, f->frameB, f->w0);
-      got = moby_decode_project(cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0, pd.dprev, pd.dalpha, -1.0, moby_record_depth_k(cpu, m), f->TR_raw, f->TR_frac, f->M,
+      const double depth_k = moby_record_depth_k(cpu, m);
+      got = moby_decode_project(cpu, f->header, f->header_b, f->frameA, f->frameB, f->w0, pd.dprev, pd.dalpha, -1.0, depth_k, f->TR_raw, f->TR_frac, f->M,
                                 &dzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+      moby_sphere_shell_pull(cpu, m, f->header, depth_k, s_proj + s_proj_n, got);
       pose_hold_end(got);
       if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
     if (got <= 0) return 0;
@@ -13941,6 +13948,122 @@ static double moby_record_depth_k(CPUState* cpu, uint32_t moby) {
     return 32.0 / size;
 }
 
+/** @brief Report whether a moby class is drawn as a camera-facing disc that pictures a sphere.
+ *
+ * The class is named by an entry of game_layout.moby.sphere_shell whose
+ * game.state values hold this walk's state (moby_cls_state_match).
+ * @param cls The moby's m_Class.
+ * @param stbit moby_walk_state_bit for this walk.
+ * @return 1 for a listed class, 0 otherwise. */
+static int moby_class_sphere_shell(uint16_t cls, uint32_t stbit) {
+    for (int k = 0; k < game_layout.moby.sphere_shell_n; k++)
+        if (moby_cls_state_match(&game_layout.moby.sphere_shell[k], cls, stbit)) return 1;
+    return 0;
+}
+
+/** @brief The OPENPETE_SHELL_CENSUS level, read once.
+ *
+ * 0 off; 1 logs each pulled record; 2 also each unlisted record that
+ * depth_k rescales; 3 also each vertex.
+ * @return The level. */
+static int moby_shell_census_level(void) {
+    static int s_cen = -1;
+    if (s_cen < 0) { const char* e = getenv("OPENPETE_SHELL_CENSUS"); s_cen = (e && *e) ? atoi(e) : 0; }
+    return s_cen;
+}
+
+/** @brief The largest absolute model-space vertex coordinate of a decoded record.
+ * @param out The record's projected vertices (proj_xy.mv).
+ * @param n Their count.
+ * @return The coordinate, in model units. */
+static double moby_shell_half_side(const proj_xy* out, int n) {
+    double half = 0.0;
+    for (int i = 0; i < n; i++)
+        for (int c = 0; c < 3; c++)
+            if (fabs(out[i].mv[c]) > half) half = fabs(out[i].mv[c]);
+    return half;
+}
+
+/** @brief Print one record's OPENPETE_SHELL_CENSUS line.
+ *
+ * The line carries the radius from the model and from the view-space X and
+ * Y extents, and the view-Z span. At level 3 each vertex's model and view-space offset follows.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param cls Its m_Class.
+ * @param listed 1 for a sphere-shell class.
+ * @param out The record's projected vertices, before the pull.
+ * @param n Their count.
+ * @param ds The header's scale byte.
+ * @param unit Model unit times depth_k.
+ * @param rho The radius from the model. */
+static void moby_shell_census_line(CPUState* cpu, uint32_t moby, uint16_t cls, int listed,
+                                   const proj_xy* out, int n, int ds, double unit, double rho) {
+    double ex = 0.0, ey = 0.0, ez0 = 1e30, ez1 = -1e30;
+    for (int i = 0; i < n; i++) {
+        ex = fmax(ex, fabs(out[i].ex));
+        ey = fmax(ey, fabs(out[i].ey));
+        ez0 = fmin(ez0, out[i].ez);
+        ez1 = fmax(ez1, out[i].ez);
+    }
+    fprintf(stderr, "[shell-census vbl=%u] moby=%08x cls=%u listed=%d n=%d size=%u ds=%d unit=%.4f rho_model=%.2f "
+            "rho_ex=%.2f rho_ey=%.2f ez_span=%.2f vz0=%.2f\n", openpete_frame, moby, cls, listed, n,
+            cpu->read_byte(moby + game_layout.moby.size_off) & 0xFFu, ds, unit, rho,
+            ex * unit, ey * unit, (ez1 - ez0) * unit, (double)out[0].vz);
+    if (moby_shell_census_level() < 3) return;
+    for (int i = 0; i < n; i++)
+        fprintf(stderr, "[shell-census-v] cls=%u i=%d mv=(%.1f,%.1f,%.1f) e=(%.2f,%.2f,%.2f)\n", cls, i,
+                out[i].mv[0], out[i].mv[1], out[i].mv[2], out[i].ex, out[i].ey, out[i].ez);
+}
+
+/** @brief Move a sphere-shell record's written depth from the sphere's centre to its front surface.
+ *
+ * A listed class (moby_class_sphere_shell) is a flat disc the game turns to
+ * face the camera at the centre of the sphere it pictures; it is drawn after
+ * the mobys inside it, so the ordering table paints it over them. In true
+ * depth the disc at the centre would cut those mobys in half. The disc is a
+ * square about the model origin in one model-space plane, textured with the
+ * circle inscribed in it, so the sphere's radius is the half side: the
+ * largest model-space vertex coordinate (moby_shell_half_side), times the
+ * model unit 2^scale byte (the header's +anim_scale byte, as
+ * moby_decode_project_body shifts the projected view-Z) and depth_k, the
+ * 32 / size factor that draws the sized moby at its true distance. Every
+ * vertex's written and key depth moves nearer by that radius; the
+ * perspective W keeps the drawn projection. A pull that puts the nearest
+ * in-front vertex past the near floor lifts the record uniformly onto it, as
+ * the decode does. OPENPETE_SHELL_CENSUS (moby_shell_census_level) logs
+ * the records it names (moby_shell_census_line).
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param header The record's AnimationHeader.
+ * @param depth_k The factor moby_record_depth_k gave the decode.
+ * @param out The record's projected vertices.
+ * @param n Their count. */
+static void moby_sphere_shell_pull(CPUState* cpu, uint32_t moby, uint32_t header,
+                                  double depth_k, proj_xy* out, int n) {
+    const int cen = moby_shell_census_level();
+    if (game_layout.moby.sphere_shell_n <= 0 && cen < 2) return;
+    if (n <= 0 || moby < 0x80000000u || header < 0x80000000u) return;
+    const uint16_t cls = (uint16_t)cpu->read_half(moby + game_layout.moby.class_off);
+    const int listed = moby_class_sphere_shell(cls, moby_walk_state_bit(cpu));
+    const int census = cen > 0 && (listed || (cen >= 2 && depth_k != 1.0));
+    if (!listed && !census) return;
+    int ds = (int)(cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFFu);
+    if (ds > 8) ds = 8;
+    const double unit = (double)(1 << ds) * depth_k;
+    const double rho = moby_shell_half_side(out, n) * unit;
+    if (census) moby_shell_census_line(cpu, moby, cls, listed, out, n, ds, unit, rho);
+    if (!listed) return;
+    float minvz = 1e30f;
+    for (int i = 0; i < n; i++) {
+        out[i].vz  = (float)(out[i].vz - rho);
+        out[i].kvz = (float)(out[i].kvz - rho);
+        if (out[i].tvz > 0.0f) minvz = fminf(minvz, out[i].vz);
+    }
+    if (minvz < 1.0f)
+        for (int i = 0; i < n; i++) out[i].vz += 1.0f - minvz;
+}
+
 /** @brief The translation a rec_tr_final cull stores, at full precision.
  *
  * The cull takes the centre on the quarter-world grid (build_moby_record_tr's
@@ -15106,10 +15229,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int zsf4 = fade_snap_get(mobys[i], 1024);
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          const double depth_k = moby_record_depth_k(cpu, mobys[i]);
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
-                                    pd.dprev, pd.dalpha, gpf_frac, moby_record_depth_k(cpu, mobys[i]),
+                                    pd.dprev, pd.dalpha, gpf_frac, depth_k,
                                     f.TR_raw, f.TR_frac, f.M, &zsf4, moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+          moby_sphere_shell_pull(cpu, mobys[i], f.header, depth_k, s_proj + s_proj_n, got);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) continue;
         /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid -

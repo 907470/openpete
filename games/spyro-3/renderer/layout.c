@@ -523,6 +523,12 @@ const game_layout_t spyro3_game_layout = {
                         { 0x3u, S3_TITLE_STATES } },
         .true_depth_n   = 3,
 
+        /* Class 170 (0xAA): the air bubble around Sparx under water, a
+         * 9-vertex additive disc the game turns to face the camera and draws
+         * after Sparx (world bucket 11 against his 14-15). */
+        .sphere_shell   = { { 0xAAu, S3_GAME_MODEL_STATES } },
+        .sphere_shell_n = 1,
+
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,
         .hook_draw_specular = 0u,       /* no specular material: the draw issues no

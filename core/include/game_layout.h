@@ -895,6 +895,16 @@ typedef struct game_layout {
         game_moby_cls_state_t true_depth[8];
         int                   true_depth_n;
 
+        /* Sphere-shell classes: the first `sphere_shell_n` entries name
+         * classes, each under its game.state values, drawn as a flat disc
+         * turned to face the camera at the centre of the sphere it pictures,
+         * after the mobys inside it. A listed record's depth is written at
+         * the sphere's front surface, the centre depth less the disc's
+         * radius (moby_sphere_shell_pull in games/common/renderer/moby.c),
+         * so a moby inside the sphere lies behind it. */
+        game_moby_cls_state_t sphere_shell[4];
+        int                   sphere_shell_n;
+
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it
          * names. `draw_simple` is the second model kind's own pass. */

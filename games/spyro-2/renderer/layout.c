@@ -527,6 +527,15 @@ const game_layout_t spyro2_game_layout = {
         .true_depth   = { { 0x0u, 1u << 0 } },
         .true_depth_n = 1,
 
+        /* Class 170 (0xAA): the air bubble around Sparx under water (and the
+         * Aquaria Towers ring bubbles), a 9-vertex additive disc the game
+         * turns to face the camera and draws after Sparx (world bucket 17
+         * against his 20-22). Every state: game.state reads outside the
+         * 0..31 range a state mask names while the attract demo plays a
+         * level. */
+        .sphere_shell   = { { 0xAAu, 0u } },
+        .sphere_shell_n = 1,
+
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,
         .hook_draw_specular = 0u,          /* no specular material: the draw issues no GTE
