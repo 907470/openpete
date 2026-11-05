@@ -838,9 +838,10 @@ static void p3_decode_vertices(CPUState* cpu, uint32_t tab, uint32_t vc, int arg
 /** @brief Whether OPENPETE_PORTAL3_PROBE paints each preview layer one flat sentinel colour.
  *
  * Latched on the first call; set, non-empty and not starting with '0'
- * enables it. Under it the backdrop draws 0xFF00FF, the picture 0x00FF00 and
- * the destination-sky extension 0xFFFF00 (0x00BBGGRR), so a capture counts
- * each layer's pixels inside the aperture.
+ * enables it. Under it the backdrop draws 0xFF00FF, the picture 0x00FF00,
+ * the destination-sky extension 0xFFFF00, its background fill 0x00FFFF and
+ * the strip continuation 0x0080FF (0x00BBGGRR), so a capture counts each
+ * layer's pixels inside the aperture.
  * @return 1 when enabled, else 0. */
 static int p3_probe(void) {
     static int v = -1;
@@ -890,11 +891,18 @@ static int p3_sky_on(void) {
     return v;
 }
 
-/** @brief Emits the destination sky beneath a portal's picture: every triangle portal_sky_s23_extension returns, faded as the picture is.
+/** @brief Emits the destination sky beneath a portal's picture: its background colour over the side bands, then every triangle portal_sky_s23_extension returns, faded as the picture is.
  *
  * Drawn with the picture record, before its faces and after the backdrop's,
  * at the same depth, so the picture keeps every pixel it covers and the sky
- * replaces the backdrop wherever the sky has a face and the picture stops. A triangle whose three
+ * replaces the backdrop wherever the sky has a face and the picture stops.
+ * Beneath the sky, the parts of the bounds left and right of the 4:3 frame
+ * (where p3_decode_vertices stretches the backdrop) are filled with the sky's
+ * background colour, the colour the destination level clears its frame to,
+ * so the band below the sky's horizon shows it instead of the backdrop; the
+ * frame itself keeps the backdrop, which the picture covers. The extension's
+ * leading triangles, the continuation of a strip the picture holds below the
+ * sky, draw over that fill and under the sky. A triangle whose three
  * corners share an outcode bit against the bounds is dropped, as the leaf
  * drops a picture face; the rest are clipped to the outline by p3_emit_split.
  * @param cpu Reads the portal record.
@@ -903,14 +911,26 @@ static int p3_sky_on(void) {
  * @param B The preview's bounds.
  * @param f The preview's fade terms, the probe sentinel for the extension. */
 static void p3_emit_sky(CPUState* cpu, const p3_preview* p, const p3_emit_ctx* E, p3_bounds B, const p3_fade* f) OP_REQUIRES(sim) {
-    const portal_sky_tri* t = NULL;
-    const int n = p->rec ? portal_sky_s23_extension(cpu, p->rec, &t) : 0;
+    portal_sky_ext X = { NULL, 0, 0, 0 };
+    const int n = p->rec ? portal_sky_s23_extension(cpu, p->rec, &X) : 0;
+    const portal_sky_tri* t = X.tri;
+    if (n > 0) {
+        const uint32_t c = f->probe != P3_NO_PROBE ? 0x00FFFFu : p3_fade_colour(X.bg, f);
+        const float side[2][2] = { { B.xmin, fminf(B.xmax, (float)P3_FRAME_X0) },
+                                   { fmaxf(B.xmin, (float)P3_FRAME_X1), B.xmax } };
+        for (int s = 0; s < 2; s++) {
+            if (side[s][1] <= side[s][0] || B.ymax <= B.ymin) continue;
+            const p3_v rect[4] = { { side[s][0], B.ymin, c }, { side[s][1], B.ymin, c },
+                                   { side[s][1], B.ymax, c }, { side[s][0], B.ymax, c } };
+            p3_emit_split(rect, 4, p, E, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0);
+        }
+    }
     for (int i = 0; i < n; i++) {
         p3_v tri[3];
         int all = 0xF;
         for (int k = 0; k < 3; k++) {
             tri[k].x = t[i].x[k]; tri[k].y = t[i].y[k];
-            tri[k].rgb = p3_fade_colour(t[i].rgb[k], f);
+            tri[k].rgb = (i < X.nstrip && f->probe != P3_NO_PROBE) ? 0x0080FFu : p3_fade_colour(t[i].rgb[k], f);
             all &= (tri[k].y <= B.ymin) | ((tri[k].y >= B.ymax) << 1) | ((tri[k].x <= B.xmin) << 2) |
                    ((tri[k].x >= B.xmax) << 3);
         }

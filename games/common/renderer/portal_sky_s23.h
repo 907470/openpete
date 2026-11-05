@@ -25,6 +25,14 @@ typedef struct portal_sky_tri {
     uint32_t rgb[3];
 } portal_sky_tri;
 
+/* One portal's extension: the strip continuation (the first nstrip
+ * triangles) then the destination sky, and the sky's background colour. */
+typedef struct portal_sky_ext {
+    const portal_sky_tri* tri;
+    int                   n, nstrip;
+    uint32_t              bg;   /* 0x00BBGGRR, 0 with no triangles */
+} portal_sky_ext;
+
 /** @brief Finds the sky block's payload in a level's data sub-file by the loader's block walk.
  *
  * Steps over portal_game_s23.level_wad_hops size-prefixed blocks, then over
@@ -52,13 +60,22 @@ uint32_t portal_sky_s23_walk(const uint8_t* b, uint32_t n, uint32_t* len);
  * has not started it, so the list never depends on the thread's progress.
  * Host reads only: no PSX RAM is written and the disc reads go through their
  * own handle.
+ *
+ * Ahead of the sky's triangles the list holds the continuation of the strip
+ * a picture may carry below the sky's lowest ring (faces in colours the sky
+ * does not carry): one quad per picture row and side whose outermost face is
+ * such a face, in the picture's colour there, from far past the frame to the
+ * frame's edge.
  * @param cpu Reads the record and its picture mesh.
  * @param rec The portal record.
- * @param tris Receives the triangles, valid until a later call evicts the
- *        entry (the cache holds 32 portals).
+ * @param out Receives the triangles (valid until a later call evicts the
+ *        entry; the cache holds 32 portals), the strip's count, and the
+ *        registered sky's background colour (0x00BBGGRR), the sky block
+ *        header's three colour bytes, which the sky relocation copies to the
+ *        frame's clear colour.
  * @return The triangle count; 0 when the destination's sky cannot be read
  *         or no camera registers it to the picture. */
-int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri** tris) OP_REQUIRES(sim);
+int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, portal_sky_ext* out) OP_REQUIRES(sim);
 
 /** @brief Queues the extension of one portal record for the background build thread.
  *

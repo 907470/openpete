@@ -8,7 +8,20 @@
 // +0x0C, then the sky block {size, payload} whose payload is the header the
 // sky relocation reads (S2 func_8001C5EC, S3 func_8002B6C8): three colour
 // bytes and a pad, the sector count, and one offset per sector relative to
-// the payload. The portal block follows the sky block.
+// the payload. The portal block follows the sky block. The relocation copies
+// the colour bytes to g_Cyclorama+0x08 (S2 0x800681C0, S3 0x8006E33C), the
+// background colour the frame is cleared to before the sky draws (S2
+// 0x8001D500-0x8001D548 copies the same bytes into both DRAWENVs' r0, g0,
+// b0); the extension returns it so the area the sky has no face over shows
+// it, as the destination level itself does.
+//
+// The strip. A picture may hold faces below the sky's lowest ring in colours
+// the sky does not carry (Spyro 2's Dragon Shores picture: 27 faces down to
+// 250 rows below it), which no sky face continues into the 16:9 bands. Each
+// picture row whose outermost face on a side is such a face is continued
+// outward past the frame in the colour the picture has at that point; these
+// triangles lead the extension's list, so the sky draws over them and the
+// background shows only where a band row borders sky.
 //
 // The camera. The picture's vertices are the sky's vertices projected with
 // the pass's screen centre (256, 120) and the scales 1024/3 across and 640/3
@@ -38,8 +51,9 @@
 // each picture vertex pairs with its nearest projected sky corner and the
 // rotation, eye and vertical scale are refitted over shrinking bounds. The
 // fit is accepted when nine tenths of the picture vertices that carry a sky
-// colour are placed; a vertex without one (Dragon Shores' sea below the sky's
-// horizon) has no sky corner to land on. The extension then shifts every
+// colour are placed; a vertex without one (the strip Spyro 2's Dragon Shores
+// picture holds below the sky's lowest ring, in colours the sky does not
+// carry) has no sky corner to land on. The extension then shifts every
 // rotated sky corner by -R t before it is normalised and projects it with the
 // fitted vertical scale. A picture the rotation registers never reaches the
 // refit, and its extension is built with t = 0 and the fixed scale.
@@ -84,6 +98,7 @@
 #include <SDL3/SDL.h>
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -109,6 +124,13 @@
 #define PSK_MAX_SKIES 16           /* the destination plus the record array's other destinations */
 #define PSK_EYE_INIT 6.0           /* pixels: a colour pair this close counts for the seeding rotation */
 #define PSK_EYE_MIN_PAIRS 8        /* the fewest colour pairs the eye refit starts from */
+#define PSK_BAND_X0 (-86)          /* the census coverage grid over picture space: */
+#define PSK_BAND_W  684            /* x [-86, 598), y [0, 240) */
+#define PSK_BAND_H  240
+#define PSK_FRAME_X0 0             /* the 4:3 frame's picture-space columns */
+#define PSK_FRAME_X1 512
+#define PSK_STRIP_ROWS 240         /* the picture rows the strip continuation covers */
+#define PSK_STRIP_FAR 2048.0       /* how far past the frame a strip row runs; the outline clips it */
 
 /* ---- the destination sky, per level ------------------------------------- */
 
@@ -1279,6 +1301,8 @@ typedef struct {
     psk_pic          pic;
     portal_sky_tri*  tri;
     int              n, cap;
+    int              nstrip;           /* the leading triangles that continue the picture's strip */
+    uint32_t         bg;               /* the registered sky's background colour, 0x00BBGGRR */
 } psk_entry;
 
 /* The entry table's lock as the analysis sees it: psk_lock and psk_unlock
@@ -1442,6 +1466,266 @@ static int psk_choose_sky(psk_ctx* C, const psk_entry* E, psk_cam* cam, int* mat
     return pick;
 }
 
+/* ---- the strip below the sky ----------------------------------------------- */
+
+/** @brief One picture face's Gouraud colour at a point, by barycentric weights.
+ * @param P The picture.
+ * @param f The face.
+ * @param px The point's X.
+ * @param py The point's Y.
+ * @param rgb Receives R, G, B. */
+static void psk_face_rgb(const psk_pic* P, int f, double px, double py, double rgb[3]) {
+    const double ax = P->x[P->f[f][0]], ay = P->y[P->f[f][0]], bx = P->x[P->f[f][1]], by = P->y[P->f[f][1]];
+    const double cx = P->x[P->f[f][2]], cy = P->y[P->f[f][2]];
+    const double den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    double w0 = 1.0 / 3.0, w1 = 1.0 / 3.0;
+    if (fabs(den) > 1e-9) {
+        w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den;
+        w1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den;
+    }
+    const double w[3] = { w0, w1, 1.0 - w0 - w1 };
+    for (int ch = 0; ch < 3; ch++) {
+        rgb[ch] = 0.0;
+        for (int k = 0; k < 3; k++) rgb[ch] += w[k] * (double)((P->c[f][k] >> (8 * ch)) & 0xFFu);
+    }
+}
+
+/** @brief The outermost picture coverage on one side of a picture-space row: the leftmost (side 0) or rightmost (side 1) point where the line crosses a face.
+ * @param P The picture.
+ * @param y The row's Y.
+ * @param side 0 for the left, 1 for the right.
+ * @param x Receives the outermost X.
+ * @return The face holding it, -1 when the line crosses no face. */
+static int psk_row_edge(const psk_pic* P, double y, int side, double* x) {
+    int best = -1;
+    for (int f = 0; f < P->nf; f++)
+        for (int e = 0; e < 3; e++) {
+            const double ax = P->x[P->f[f][e]], ay = P->y[P->f[f][e]];
+            const double bx = P->x[P->f[f][(e + 1) % 3]], by = P->y[P->f[f][(e + 1) % 3]];
+            if ((ay > y) == (by > y)) continue;   /* the edge does not cross the row */
+            const double cx = ax + (bx - ax) * (y - ay) / (by - ay);
+            if (best < 0 || (side ? cx > *x : cx < *x)) { best = f; *x = cx; }
+        }
+    return best;
+}
+
+/** @brief Appends one flat-coloured triangle to the entry.
+ * @param E The entry.
+ * @param x The corners' X.
+ * @param y The corners' Y.
+ * @param rgb The colour, 0x00BBGGRR. */
+static void psk_push_flat(psk_entry* E, const float x[3], const float y[3], uint32_t rgb) {
+    if (E->n == E->cap) {
+        const int cap = E->cap ? E->cap * 2 : 1024;
+        portal_sky_tri* t = (portal_sky_tri*)realloc(E->tri, sizeof(portal_sky_tri) * (size_t)cap);
+        if (!t) return;
+        E->tri = t; E->cap = cap;
+    }
+    portal_sky_tri* T = &E->tri[E->n++];
+    for (int i = 0; i < 3; i++) { T->x[i] = x[i]; T->y[i] = y[i]; T->rgb[i] = rgb; }
+}
+
+/** @brief Whether a picture face carries a colour the sky does not: a face of the strip the picture holds below the sky.
+ * @param X The sky's colours, sorted and distinct (psk_eye_sky_coloured).
+ * @param P The picture.
+ * @param f The face.
+ * @return 1 when one of its colours is not a sky colour. */
+static int psk_strip_face(const psk_eye* X, const psk_pic* P, int f) {
+    for (int k = 0; k < 3; k++)
+        if (!bsearch(&P->c[f][k], X->skyc, (size_t)X->nskyc, sizeof X->skyc[0], psk_u32_cmp)) return 1;
+    return 0;
+}
+
+/** @brief Appends the strip's continuation into one side band for one picture row.
+ *
+ * The row's outermost covered point at its centre names the face and
+ * colour; a face of the sky's colours appends nothing, so that row of the
+ * band keeps the sky and the background beneath it. Otherwise one quad in
+ * that colour runs from PSK_STRIP_FAR beyond the band to the outermost
+ * coverage at the row's top, centre or bottom, whichever lies furthest in
+ * (its overlap with the picture is drawn over by the picture), clamped to
+ * the 4:3 frame's edge so the frame keeps its own pixels.
+ * @param E The entry.
+ * @param X The sky's colours.
+ * @param j The row.
+ * @param side 0 for the left band, 1 for the right. */
+static void psk_strip_row(psk_entry* E, const psk_eye* X, int j, int side) {
+    const psk_pic* P = &E->pic;
+    double xc = 0.0;
+    const int f = psk_row_edge(P, j + 0.5, side, &xc);
+    if (f < 0 || !psk_strip_face(X, P, f)) return;
+    double in = xc;
+    for (int t = 0; t < 2; t++) {
+        double xt = 0.0;
+        if (psk_row_edge(P, (double)(j + t), side, &xt) >= 0) in = side ? fmin(in, xt) : fmax(in, xt);
+    }
+    in = side ? fmax(in, (double)PSK_FRAME_X1) : fmin(in, (double)PSK_FRAME_X0);
+    const double out = side ? PSK_STRIP_FAR : -PSK_STRIP_FAR;
+    if (side ? in >= out : in <= out) return;
+    double rgb[3];
+    psk_face_rgb(P, f, xc, j + 0.5, rgb);
+    uint32_t c = 0;
+    for (int ch = 0; ch < 3; ch++) c |= (uint32_t)lround(fmin(255.0, fmax(0.0, rgb[ch]))) << (8 * ch);
+    const float x0 = (float)out, x1 = (float)in, y0 = (float)j, y1 = (float)(j + 1);
+    const float ax[3] = { x0, x1, x1 }, ay[3] = { y0, y0, y1 }, bx[3] = { x0, x1, x0 }, by[3] = { y0, y1, y1 };
+    psk_push_flat(E, ax, ay, c);
+    psk_push_flat(E, bx, by, c);
+}
+
+/** @brief Builds the strip's continuation into both side bands, ahead of the sky in the entry's triangles.
+ *
+ * A picture whose lowest faces are not sky (a strip below the sky's lowest
+ * ring, in colours the sky does not carry) leaves the band below the sky
+ * with neither sky nor picture; each picture row whose outermost face on a
+ * side is such a face is continued outward in the colour the picture has
+ * there (psk_strip_row). The sky's colours are decoded from the chosen sky
+ * into the scratch first.
+ * @param C The builder's scratch.
+ * @param E The entry; its triangle count is 0.
+ * @param L The sky the picture registered to. */
+static void psk_build_strip(psk_ctx* C, psk_entry* E, const psk_level* L) {
+    static const double I[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+    C->S.n = 0;
+    psk_decode_sky(&C->D, L, I, psk_collect, &C->S);
+    psk_eye_sky_coloured(&C->E, &E->pic, &C->S);
+    for (int j = 0; j < PSK_STRIP_ROWS; j++)
+        for (int side = 0; side < 2; side++) psk_strip_row(E, &C->E, j, side);
+    E->nstrip = E->n;
+}
+
+/* ---- the band census ---------------------------------------------------- */
+
+/** @brief Whether a point lies inside or on a triangle, either winding.
+ * @param x The point's X.
+ * @param y The point's Y.
+ * @param ax The first corner's X.
+ * @param ay The first corner's Y.
+ * @param bx The second corner's X.
+ * @param by The second corner's Y.
+ * @param cx The third corner's X.
+ * @param cy The third corner's Y.
+ * @return 1 when inside, else 0. */
+static int psk_in_tri(double x, double y, double ax, double ay, double bx, double by, double cx, double cy) {
+    const double d0 = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+    const double d1 = (cx - bx) * (y - by) - (cy - by) * (x - bx);
+    const double d2 = (ax - cx) * (y - cy) - (ay - cy) * (x - cx);
+    return (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
+}
+
+/* The census's picture-space canvas over x [PSK_BAND_X0, PSK_BAND_X0 + PSK_BAND_W),
+ * y [0, PSK_BAND_H): the layers covering each cell (PSK_L_*) and the colour of
+ * the last one painted, unfaded. */
+enum { PSK_L_SKY = 1, PSK_L_PIC = 2, PSK_L_STRIP = 4, PSK_L_BG = 8 };
+typedef struct {
+    uint8_t* layer;
+    uint8_t* rgb;
+} psk_canvas;
+
+/** @brief Paints one Gouraud triangle's pixel centres into the canvas.
+ * @param V The canvas.
+ * @param bit The layer bit set.
+ * @param x The corners' X.
+ * @param y The corners' Y.
+ * @param rgb The corners' colours, 0x00BBGGRR. */
+static void psk_paint(psk_canvas* V, uint8_t bit, const float x[3], const float y[3], const uint32_t rgb[3]) {
+    const double x0 = fmin(x[0], fmin(x[1], x[2])), x1 = fmax(x[0], fmax(x[1], x[2]));
+    const double y0 = fmin(y[0], fmin(y[1], y[2])), y1 = fmax(y[0], fmax(y[1], y[2]));
+    const int i0 = (int)fmax(0.0, floor(x0 - PSK_BAND_X0)), i1 = (int)fmin(PSK_BAND_W - 1.0, ceil(x1 - PSK_BAND_X0));
+    const int j0 = (int)fmax(0.0, floor(y0)), j1 = (int)fmin(PSK_BAND_H - 1.0, ceil(y1));
+    const double den = (y[1] - y[2]) * (x[0] - x[2]) + (x[2] - x[1]) * (y[0] - y[2]);
+    for (int j = j0; j <= j1; j++)
+        for (int i = i0; i <= i1; i++) {
+            const double px = PSK_BAND_X0 + i + 0.5, py = j + 0.5;
+            if (!psk_in_tri(px, py, x[0], y[0], x[1], y[1], x[2], y[2])) continue;
+            double w0 = 1.0 / 3.0, w1 = 1.0 / 3.0;
+            if (fabs(den) > 1e-9) {
+                w0 = ((y[1] - y[2]) * (px - x[2]) + (x[2] - x[1]) * (py - y[2])) / den;
+                w1 = ((y[2] - y[0]) * (px - x[2]) + (x[0] - x[2]) * (py - y[2])) / den;
+            }
+            const double w[3] = { w0, w1, 1.0 - w0 - w1 };
+            const size_t c = (size_t)j * PSK_BAND_W + (size_t)i;
+            V->layer[c] |= bit;
+            for (int ch = 0; ch < 3; ch++) {
+                double v = 0.0;
+                for (int k = 0; k < 3; k++) v += w[k] * (double)((rgb[k] >> (8 * ch)) & 0xFFu);
+                V->rgb[c * 3 + (size_t)ch] = (uint8_t)lround(fmin(255.0, fmax(0.0, v)));
+            }
+        }
+}
+
+/** @brief Writes the canvas as <dir>/portal-mask-<level>-<rec>.pgm (16 times the layer bits) and .ppm (the colours) under OPENPETE_PORTAL3_SKY_MASK_DIR.
+ * @param E The entry, for the file names.
+ * @param V The canvas. */
+static void psk_mask_write(const psk_entry* E, const psk_canvas* V) {
+    const char* dir = getenv("OPENPETE_PORTAL3_SKY_MASK_DIR");
+    if (!dir || !*dir) return;
+    const size_t cells = (size_t)PSK_BAND_W * PSK_BAND_H;
+    for (int kind = 0; kind < 2; kind++) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/portal-mask-%d-%08X.%s", dir, E->level, (unsigned)E->rec, kind ? "ppm" : "pgm");
+        FILE* fp = fopen(path, "wb");
+        if (!fp) continue;
+        fprintf(fp, "P%d\n%d %d\n255\n", kind ? 6 : 5, PSK_BAND_W, PSK_BAND_H);
+        if (kind) fwrite(V->rgb, 1, cells * 3, fp);
+        else for (size_t c = 0; c < cells; c++) fputc(16 * V->layer[c], fp);
+        fclose(fp);
+    }
+}
+
+/** @brief Logs the 16:9 side-band pixels of picture space the picture and the sky leave uncovered, and those the strip continuation then covers.
+ *
+ * The band is the picture-space columns a 16:9 view adds beside the 4:3
+ * frame, [-85.33, 0) and [512, 597.33), over the rows the pass clamps to,
+ * [12, 228). The canvas is painted in the pass's order: the background over
+ * the band, the strip continuation, the sky, the picture. A pixel counts as
+ * uncovered when its centre lies in no picture face and no sky triangle (the
+ * backdrop showed there before the fills); of those, the strip continuation
+ * covers some and the background shows on the rest. Logs the chosen
+ * camera's rotation, eye shift and vertical scale beside it, and writes the
+ * canvas (psk_mask_write).
+ * @param E The built entry.
+ * @param cam The camera it was built under. */
+static void psk_band_census(const psk_entry* E, const psk_cam* cam) {
+    const size_t cells = (size_t)PSK_BAND_W * PSK_BAND_H;
+    psk_canvas V = { (uint8_t*)calloc(cells, 1), (uint8_t*)calloc(cells * 3, 1) };
+    if (!V.layer || !V.rgb) { free(V.layer); free(V.rgb); return; }
+    const double half = 256.0 * (16.0 / 9.0) / (4.0 / 3.0);
+    const uint32_t bg3[3] = { E->bg, E->bg, E->bg };
+    const float bx[2][2] = { { (float)(256.0 - half), (float)PSK_FRAME_X0 }, { (float)PSK_FRAME_X1, (float)(256.0 + half) } };
+    for (int s = 0; s < 2; s++) {
+        const float x0[3] = { bx[s][0], bx[s][1], bx[s][1] }, y0[3] = { 0, 0, PSK_BAND_H };
+        const float x1[3] = { bx[s][0], bx[s][1], bx[s][0] }, y1[3] = { 0, PSK_BAND_H, PSK_BAND_H };
+        psk_paint(&V, PSK_L_BG, x0, y0, bg3);
+        psk_paint(&V, PSK_L_BG, x1, y1, bg3);
+    }
+    for (int i = 0; i < E->n; i++)
+        psk_paint(&V, i < E->nstrip ? PSK_L_STRIP : PSK_L_SKY, E->tri[i].x, E->tri[i].y, E->tri[i].rgb);
+    const psk_pic* P = &E->pic;
+    for (int f = 0; f < P->nf; f++) {
+        const float x[3] = { P->x[P->f[f][0]], P->x[P->f[f][1]], P->x[P->f[f][2]] };
+        const float y[3] = { P->y[P->f[f][0]], P->y[P->f[f][1]], P->y[P->f[f][2]] };
+        psk_paint(&V, PSK_L_PIC, x, y, P->c[f]);
+    }
+    int left = 0, right = 0, strip = 0;
+    for (int j = 12; j < 228; j++)
+        for (int i = 0; i < PSK_BAND_W; i++) {
+            const double px = PSK_BAND_X0 + i + 0.5;
+            const int in_l = px < 0.0 && px >= 256.0 - half, in_r = px >= 512.0 && px < 256.0 + half;
+            const uint8_t L = V.layer[(size_t)j * PSK_BAND_W + (size_t)i];
+            if ((L & (PSK_L_SKY | PSK_L_PIC)) || (!in_l && !in_r)) continue;
+            left += in_l; right += in_r; strip += (L & PSK_L_STRIP) != 0;
+        }
+    OPL_INFO_F("portal", "sky census: picture of level %d (record 0x%08X): 16:9 band uncovered %d px (left %d, "
+               "right %d), %d of them strip, the rest background 0x%06X; %d strip triangles; "
+               "R=[%.5f %.5f %.5f|%.5f %.5f %.5f|%.5f %.5f %.5f] Rt=(%.1f, %.1f, %.1f) fy=%.2f", E->level,
+               (unsigned)E->rec, left + right, left, right, strip, (unsigned)E->bg, E->nstrip, cam->R[0][0],
+               cam->R[0][1], cam->R[0][2], cam->R[1][0], cam->R[1][1], cam->R[1][2], cam->R[2][0], cam->R[2][1],
+               cam->R[2][2], cam->rt[0], cam->rt[1], cam->rt[2], cam->fy);
+    psk_mask_write(E, &V);
+    free(V.layer);
+    free(V.rgb);
+}
+
 /** @brief Registers an entry's picture against its sky (psk_choose_sky) and builds the extension into it.
  * @param C The building thread's scratch, or NULL when it could not be allocated (no triangles).
  * @param E The entry; its picture and candidate skies are set, its triangle count is 0.
@@ -1455,12 +1739,16 @@ static void psk_build_entry(psk_ctx* C, psk_entry* E, const char* who) {
     int matched = 0;
     const int k = psk_choose_sky(C, E, &cam, &matched);
     if (k >= 0) {
+        psk_build_strip(C, E, E->L[k]);
         const psk_build B = { P, &C->G, E, { cam.rt[0], cam.rt[1], cam.rt[2] }, cam.fy };
         psk_decode_sky(&C->D, E->L[k], cam.R, psk_extend_face, (void*)&B);
+        const uint8_t* h = E->L[k]->buf;
+        E->bg = (uint32_t)h[0] | ((uint32_t)h[1] << 8) | ((uint32_t)h[2] << 16);
     }
     OPL_INFO_F("portal", "picture of level %d: %d of %d vertices registered against the sky of level %d, "
-               "%d extension triangles (%.1f ms, %s)", E->level, matched, P->nv,
-               k >= 0 ? E->L[k]->level : -1, E->n, (double)(op_now() - t0) / 1e6, who);
+               "%d extension triangles, %d of them the strip (%.1f ms, %s)", E->level, matched, P->nv,
+               k >= 0 ? E->L[k]->level : -1, E->n, E->nstrip, (double)(op_now() - t0) / 1e6, who);
+    if (k >= 0 && psk_census_on()) psk_band_census(E, &cam);
 }
 
 /** @brief Locks the entry table when a lock exists. */
@@ -1591,7 +1879,7 @@ static psk_entry* psk_enqueue(CPUState* cpu, uint32_t rec, uint32_t mesh, int le
         if (c->state == PSK_FREE || c->state == PSK_DONE) { E = c; s_cache_next += (unsigned)k + 1u; }
     }
     if (E) {
-        E->rec = rec; E->mesh = mesh; E->level = level; E->hash = P->hash; E->n = 0;
+        E->rec = rec; E->mesh = mesh; E->level = level; E->hash = P->hash; E->n = 0; E->nstrip = 0; E->bg = 0;
         E->nl = nl;
         memcpy(E->L, L, sizeof(L[0]) * (size_t)nl);
         memcpy(&E->pic, P, sizeof *P);
@@ -1630,9 +1918,9 @@ int portal_sky_s23_prefetch(CPUState* cpu, uint32_t rec) OP_REQUIRES(sim) {
     return psk_enqueue(cpu, rec, mesh, level, &Q) != NULL;
 }
 
-int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri** tris) OP_REQUIRES(sim) {
+int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, portal_sky_ext* out) OP_REQUIRES(sim) {
     static psk_pic P OP_GUARDED_BY(sim);   /* thread-roles: the extension runs on sim */
-    *tris = NULL;
+    memset(out, 0, sizeof *out);
     if (!portal_game_s23.level_slots || !psk_read_picture(cpu, rec, &P)) return 0;
     const int level = (int)cpu->read_byte(rec + 0x42);
     const uint32_t mesh = cpu->read_word(rec + 0x3C);
@@ -1640,6 +1928,9 @@ int portal_sky_s23_extension(CPUState* cpu, uint32_t rec, const portal_sky_tri**
     if (!E) E = psk_enqueue(cpu, rec, mesh, level, &P);
     if (!E) return 0;
     psk_join(E);
-    *tris = E->tri;
+    out->tri = E->tri;
+    out->n = E->n;
+    out->nstrip = E->nstrip;
+    out->bg = E->bg;
     return E->n;
 }
