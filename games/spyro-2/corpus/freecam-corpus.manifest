@@ -215,3 +215,6 @@ sunny_beach | pos=(67066, 32020, 29757) yaw=943 pitch=-15
 # compose 12-bit angles from the colour word; their rotation holds for the
 # whole tick on sub-tick presents. Blessed pre-fix.
 hurricos | pos=(41500, 91104, 30875) yaw=-2027 pitch=992
+# sunny_beach duck: the duck enemy on its inner tube; the duck's body and the
+# tube clip through each other in many places (user report).
+sunny_beach | pos=(23777, 47772, 23999) yaw=-766 pitch=28
