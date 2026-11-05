@@ -45,8 +45,10 @@ In-tree mods: `declarative-example`, `music-swap`,
 `natural-gems`, `hud-stopwatch`, `crt-filter`, `crt-beans`, `scene-sepia`,
 `channel-gallery`, `moby-instance-tint`, `egg-hud-3d`, `teapot-dragons`,
 `crash3-models`, `supercharge-anywhere`, `imgui-panel`, `glyph-v-fix`,
-`game-arms` (one override arm per game), and `pose-report` (one source
-for every game, through the game services) ship code.
+`game-arms` (one override arm per game), `pose-report` (one source
+for every game, through the game services), and `debug-flags` (Mods
+panel buttons that set progress flags a memory card would hold) ship
+code.
 
 CI fixtures, not examples: `arena-canary`, `arena-probe`, `chain-duo-a`,
 `chain-duo-b`, `crash-dummy`, `demo-lib`, `lib-and-client`, `raw-probe`,

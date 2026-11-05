@@ -1,0 +1,42 @@
+# debug-flags - sets progress flags the game otherwise reads from a memory
+# card, from buttons in the Mods panel.
+#
+# The source holds a table of named actions: a guest address, its width,
+# the value to write and the game it belongs to. The mod's section in the
+# Mods panel draws one button per action of the running game, an "Apply
+# all" button, and beside each button the value the address held at the
+# last tick. A press queues the write; the per-tick hook writes it on the
+# next tick, never from the panel.
+#
+# Actions:
+# - Spyro 2, "Ripto defeated (opens the Dragon Shores portal)": the
+#   halfword 0x800646AE = 1, entry 15 of the progress table at 0x80064670,
+#   which Ripto's Arena (level 66) sets when Ripto is beaten. Winter
+#   Tundra's portal-gate object (class 0x16D) tests it every tick and opens
+#   the Dragon Shores portal while it is nonzero, so a press inside Winter
+#   Tundra opens the portal without a reload. The game also reads it in
+#   the pause menu (func_800176A4), the HUD (func_8004F6F4) and code in
+#   every level overlay.
+#
+# The flags are guest RAM and a save written after a press keeps them.
+# Play on scratch cards (--card1/--card2) or --no-card to keep a save
+# unchanged.
+#
+# uses: `openpete_mod_ui.h` - the button panel; a press sets a host bit, never guest RAM
+# uses: `api->override_name` - the Spyro 1 tick hook on GamestateUpdate
+# uses: `api->override_addr` - the Spyro 2 and 3 tick hooks, by address
+# uses: `api->base` - each hook is a pre-hook and runs the game update after the writes
+# uses: `op_read_u16` / `op_write_u16` - reads each flag for the panel and writes queued ones
+# uses: `api->game_id` - selects the running game's rows
+# uses: `api->config_int` - the headless test trigger
+# uses: `api->log` - one line per write
+
+[mod]
+id      = "debug-flags"
+name    = "Debug Flags"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"      # the flags are guest RAM; the queue is host input
+runahead = "host-fx"   # one log line per write
+sim_mutative = true
