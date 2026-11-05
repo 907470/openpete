@@ -3075,6 +3075,21 @@ int openpete_native_scene_canon_repeat(void);
  * openpete_native_scene_canon_repeat reported 1 for this present; the
  * verdict reads 0 afterwards. */
 void openpete_native_scene_open_empty(void);
+/** @brief Report what the draw area a display rect shows holds: content, an empty auto-cleared table, or unknown.
+ *
+ * The area is the first draw clip recorded inside the rect. Its record is
+ * the last write into it: a DrawOTag of a table with content (the fed
+ * scene, or the last capture's scene when the game rendered between it and
+ * the capture before) leaves content; a DrawOTag of an empty table under an
+ * auto-clearing DRAWENV leaves the fill; a VRAM op leaves an image, except
+ * a copy of one whole recorded area onto another, which carries the
+ * source's record. Display state only; reads and writes no PSX RAM.
+ * @param disp_x Display rect left, VRAM texels.
+ * @param disp_y Display rect top.
+ * @param disp_w Display rect width.
+ * @param disp_h Display rect height.
+ * @return 1 content, 0 the fill of an empty table, -1 no recorded area in the rect or an image op wrote it last. */
+int openpete_native_shown_area_content(int disp_x, int disp_y, int disp_w, int disp_h);
 /** @brief Re-apply the overlay carry to the scene, interpolated to the present instant.
  *
  * Call at the end of every re-extract, after the 3D feeders. Each carry

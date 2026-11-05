@@ -174,6 +174,7 @@ const game_layout_t spyro1_game_layout = {
         .base    = G_DB,
         .stride  = (uint32_t)sizeof(DB),
         .drawenv = offsetof(DB, m_DrawEnv),
+        .dispenv = offsetof(DB, m_DispEnv),
         .repeat_site = {
             /* GS_Paused entry: the wait after the world DrawOTag; the pause
              * then StoreImage's the screen and draws nothing before its next

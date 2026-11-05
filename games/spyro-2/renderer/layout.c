@@ -169,6 +169,8 @@ const game_layout_t spyro2_game_layout = {
         .drawenv = 0x00u,                           /* DRAWENV at +0x00; the primitive buffer base the
                                                      * cursor is reset from sits at +0x70
                                                      * (drawutil/func_8004D810.s:57) */
+        .dispenv = 0x5Cu,                           /* the DISPENV PutDispEnv (func_80055CA0) takes
+                                                     * from g_CurDB+0x5C (draw/func_800156FC.s:214-215) */
         .repeat_site = {
             /* func_8004D810 entry: MoveImage of the screen, then isbg zeroed
              * on both buffers (D_80069940, D_800699B4) after the wait

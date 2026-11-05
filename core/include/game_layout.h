@@ -37,7 +37,9 @@ enum { SHADOW_CULL_SPYRO1 = 0, SHADOW_CULL_SPYRO3 = 1 };
 /* What a canonical present with no game render since the last one shows when
  * the game waits at a known VSync (game_layout.db.repeat_site). Without a row
  * the present reads the current buffer's DRAWENV: isbg 1 presents an empty
- * frame cleared to its colour, isbg 0 holds the presented frame.
+ * frame cleared to its colour, unless the draw area the buffer's DISPENV
+ * shows was last drawn with content, which the empty frame keeps uncleared;
+ * isbg 0 holds the presented frame.
  * REPEAT_SITE_HOLD: the screen keeps the presented frame (the game draws
  * nothing between this wait and its next OT, or copies the screen and
  * zeroes isbg on both buffers after the wait).
@@ -331,8 +333,8 @@ typedef struct game_layout {
     } fog;
 
     /* The draw-buffer pair (Spyro 1 `DB`): the pointer to the buffer under
-     * construction, the pair's base and stride, and the DRAWENV offset
-     * inside a buffer. `repeat_site` names the VSync waits whose canonical
+     * construction, the pair's base and stride, and the DRAWENV and DISPENV
+     * offsets inside a buffer. `repeat_site` names the VSync waits whose canonical
      * present (one with no game render since the last) the DRAWENV the
      * present reads does not describe: `yield_ra` is the guest return
      * address of the VSync call the game waits in (openpete_yield_site.ra),
@@ -342,6 +344,7 @@ typedef struct game_layout {
         uint32_t base;
         uint32_t stride;
         uint32_t drawenv;
+        uint32_t dispenv;
         struct { uint32_t yield_ra; int mode; } repeat_site[GAME_REPEAT_SITE_MAX];
     } db;
 

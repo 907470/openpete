@@ -192,6 +192,8 @@ const game_layout_t spyro3_game_layout = {
         .base    = G_DB,
         .stride  = 0x74u,                           /* func_8001E640: the other buffer is +116 */
         .drawenv = 0x00u,                           /* dump: clip rect and clear colour at +0x00..+0x1B */
+        .dispenv = 0x5Cu,                           /* PutDispEnv takes g_CurDB+0x5C
+                                                     * (drawutil/func_80020168.s:78-79) */
         .repeat_site = {
             /* func_80020168 entry: MoveImage of the screen, then isbg zeroed
              * on both buffers (D_8006FC14, D_8006FC88) after the wait

@@ -2342,6 +2342,99 @@ int openpete_native_scene_yield_owes_present(int pending) {
     return pending || swap || front_draw_owed();
 }
 
+/* What each draw area holds as of the last write into it: the table a
+ * DrawOTag drew under the DRAWENV clip, or a VRAM op that overwrote it
+ * (openpete_native_shown_area_content). Keyed by clip rect; written and read
+ * on the thread running the guest. */
+enum { OTAG_AREA_NONE = 0, OTAG_AREA_CONTENT, OTAG_AREA_CLEARED, OTAG_AREA_IMAGE };
+#define OTAG_AREA_MAX 4
+static struct { int x, y, w, h, kind; } s_otag_area[OTAG_AREA_MAX];
+static int s_otag_area_next;
+/* The game rendered nothing between the last canonical capture and the one
+ * before it, so the table it submits next is empty: the capture was a repeat,
+ * held or turned into an empty scene (s_opened_empty marks the open by
+ * openpete_native_scene_open_empty until that capture). */
+static int s_table_empty, s_opened_empty;
+
+/** @brief Note at a canonical capture whether the table the game submits next is empty.
+ *
+ * @param repeat The capture's repeat verdict (openpete_native_scene_canon_repeat). */
+static void otag_table_note_capture(int repeat) {
+    s_table_empty = repeat || s_opened_empty;
+    s_opened_empty = 0;
+}
+
+/** @brief Find the draw-area record with a clip rect, or claim one for it: a free slot, else round-robin.
+ *
+ * @param x Clip left, VRAM texels.
+ * @param y Clip top.
+ * @param w Clip width.
+ * @param h Clip height.
+ * @return The record index. */
+static int otag_area_claim(int x, int y, int w, int h) {
+    for (int i = 0; i < OTAG_AREA_MAX; i++)
+        if (s_otag_area[i].w > 0 && s_otag_area[i].x == x && s_otag_area[i].y == y &&
+            s_otag_area[i].w == w && s_otag_area[i].h == h) return i;
+    for (int i = 0; i < OTAG_AREA_MAX; i++) if (s_otag_area[i].w <= 0) return i;
+    const int k = s_otag_area_next;
+    s_otag_area_next = (s_otag_area_next + 1) % OTAG_AREA_MAX;
+    return k;
+}
+
+/** @brief Record what a DrawOTag leaves in the draw area of the last PutDrawEnv.
+ *
+ * The table holds the fed scene when the game fed one since the last
+ * capture, else the table of the last capture's scene. A table with content
+ * leaves content; an empty one (s_table_empty) leaves the fill under an
+ * auto-clearing DRAWENV, and the area as it was without one.
+ * @param fed Nonzero when the game fed the scene being built since the last capture. */
+static void otag_area_note_draw(int fed) {
+    if (s_geom_in[6] <= 0 || s_geom_in[7] <= 0) return;
+    const int content = fed || !s_table_empty;
+    if (!content && !s_drawenv_put[0]) return;
+    const int k = otag_area_claim(s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7]);
+    s_otag_area[k].x = s_geom_in[4]; s_otag_area[k].y = s_geom_in[5];
+    s_otag_area[k].w = s_geom_in[6]; s_otag_area[k].h = s_geom_in[7];
+    s_otag_area[k].kind = content ? OTAG_AREA_CONTENT : OTAG_AREA_CLEARED;
+}
+
+/** @brief Record a VRAM op over the draw areas: a whole-area copy carries the source area's record, any other write leaves an image.
+ *
+ * @param x Destination left, VRAM texels.
+ * @param y Destination top.
+ * @param w Width.
+ * @param h Height.
+ * @param src_x Copy source left, or -1 for a fill or load.
+ * @param src_y Copy source top; unused for a fill or load. */
+static void otag_area_note_vram(int x, int y, int w, int h, int src_x, int src_y) {
+    if (w <= 0 || h <= 0) return;
+    int from = OTAG_AREA_IMAGE;
+    if (src_x >= 0)
+        for (int i = 0; i < OTAG_AREA_MAX; i++)
+            if (s_otag_area[i].w == w && s_otag_area[i].h == h &&
+                s_otag_area[i].x == src_x && s_otag_area[i].y == src_y) from = s_otag_area[i].kind;
+    for (int i = 0; i < OTAG_AREA_MAX; i++) {
+        const int ax = s_otag_area[i].x, ay = s_otag_area[i].y;
+        const int aw = s_otag_area[i].w, ah = s_otag_area[i].h;
+        if (aw <= 0 || x >= ax + aw || y >= ay + ah || x + w <= ax || y + h <= ay) continue;
+        const int whole = x == ax && y == ay && w == aw && h == ah;
+        s_otag_area[i].kind = whole ? from : OTAG_AREA_IMAGE;
+    }
+}
+
+int openpete_native_shown_area_content(int disp_x, int disp_y, int disp_w, int disp_h) {
+    if (disp_w <= 0 || disp_h <= 0) return -1;
+    for (int i = 0; i < OTAG_AREA_MAX; i++) {
+        const int ax = s_otag_area[i].x, ay = s_otag_area[i].y;
+        const int aw = s_otag_area[i].w, ah = s_otag_area[i].h;
+        if (aw <= 0 || ax < disp_x || ay < disp_y || ax + aw > disp_x + disp_w || ay + ah > disp_y + disp_h)
+            continue;
+        return s_otag_area[i].kind == OTAG_AREA_CONTENT ? 1
+             : s_otag_area[i].kind == OTAG_AREA_CLEARED ? 0 : -1;
+    }
+    return -1;
+}
+
 void openpete_native_note_draw_otag(void) {
     area_fade_fold();
     /* Until the game's first feed since the capture opens a new scene,
@@ -2351,6 +2444,7 @@ void openpete_native_note_draw_otag(void) {
      * DrawOTag draws. */
     const int fed_tris = s_game_fed && scene_has_game_tris(s_scene, s_scene_n);
     const int fed = s_overlay_accum_n > 0 || fed_tris;
+    otag_area_note_draw(fed);
     /* A fed scene is the one the next capture presents; an unfed one means
      * the game submits the OT of the scene the last capture presented. */
     s_otag_scene = s_capture_seq + (unsigned)fed;
@@ -3317,6 +3411,7 @@ void openpete_native_scene_open_empty(void) {
      * scene rather than appending to the presented one. */
     openpete_native_scene_begin_frame(openpete_frame);
     s_canon_repeat = 0;
+    s_opened_empty = 1;
 }
 
 /** @brief Count one canonical capture into the feed census, and the scene the game's render fed since the previous capture when there is one. */
@@ -3433,6 +3528,7 @@ void openpete_native_scene_capture_overlay(void) {
      * prim then) defers that sprite a whole tick and misses this capture. The
      * repeat verdict runs that flush. */
     const int repeat = openpete_native_scene_canon_repeat();
+    otag_table_note_capture(repeat);
     feed_census_note();
     s_capture_seq++;
     s_canon_repeat = -1;
@@ -22561,6 +22657,7 @@ static void hold_retain_canonical(void)
 
 void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y)
 {
+    otag_area_note_vram(x, y, w, h, src_x, src_y);
     if (!hold_on() || w <= 0 || h <= 0) return;
     SDL_LockMutex(hold_mx());
     /* A copy of one whole area onto another whole area moves the image the

@@ -936,6 +936,45 @@ static int cur_db_env(uint8_t env[4]) {
     return 1;
 }
 
+/** @brief Report what the draw area the DISPENV in the buffer g_CurDB points at shows holds, read through the sub-tick view.
+ *
+ * The DISPENV (game_layout.db.dispenv; its display RECT at +0x00) is the
+ * one the game puts with the next table; it names the area the last table
+ * was drawn into (openpete_native_shown_area_content).
+ * @param disp_y Receives the display rect top, or -1 when no buffer is named.
+ * @return 1 content, 0 the fill of an empty table, -1 unknown. */
+static int cur_db_shown_content(int *disp_y) {
+    *disp_y = -1;
+    if (!cur_db_drawenv()) return -1;   /* no valid g_CurDB */
+    const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
+    uint32_t curdb;
+    memcpy(&curdb, curp, 4);
+    const uint8_t* de = (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.dispenv, 8u);
+    if (!de) return -1;
+    int16_t r[4];
+    memcpy(r, de, sizeof r);
+    *disp_y = r[1];
+    return openpete_native_shown_area_content(r[0], r[1], r[2], r[3]);
+}
+
+/** @brief Report whether OPENPETE_REPEAT_CENSUS is set to a value other than one starting with `0`, read once.
+ *
+ * @return 1 when every repeat present logs its site, env and verdict. */
+static int repeat_census_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_REPEAT_CENSUS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/** @brief Report whether a row-less repeat present may hold on the shown area's content; OPENPETE_REPEAT_SHOWN=0 disables it (negative control), read once.
+ *
+ * @return 0 under OPENPETE_REPEAT_SHOWN=0, else 1. */
+static int repeat_shown_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_REPEAT_SHOWN"); on = !(e && *e == '0'); }
+    return on;
+}
+
 /** @brief Return the REPEAT_SITE_* row naming the VSync wait the game is parked in, or REPEAT_SITE_NONE.
  *
  * The wait is the guest return address of the VSync call
@@ -953,6 +992,21 @@ void cyclorama_native_repeat_resolve(void) OP_REQUIRES(sim) {
     uint8_t env[4];
     if (!cur_db_env(env)) return;              /* nothing names the env: hold */
     const int mode = repeat_site_mode();
+    /* The DRAWENV clears the area the next table draws into, which is not
+     * on screen yet: the display shows the area the buffer's DISPENV names,
+     * where the last table was drawn. When that table had content the screen
+     * keeps its image, uncleared: the present is an empty scene under the
+     * env with isbg 0, which shows the retained image of the last rendered
+     * present (ui_freeze_retain_commit) without composing the scene again
+     * over VRAM the game may have reloaded since. */
+    extern unsigned openpete_frame;
+    int disp_y = -1;
+    const int shown = cur_db_shown_content(&disp_y);
+    const int kept = mode == REPEAT_SITE_NONE && env[0] && shown == 1 && repeat_shown_on();
+    if (repeat_census_on())
+        fprintf(stderr, "[repeat] f=%u key=%u ra=%08x mode=%d isbg=%d disp_y=%d shown=%d -> %s\n",
+                openpete_frame, openpete_feed_key_now(), openpete_yield_site.ra, mode, env[0], disp_y, shown,
+                mode != REPEAT_SITE_NONE ? "row" : kept ? "kept" : env[0] ? "open" : "hold");
     if (mode == REPEAT_SITE_HOLD) {
         /* The screen keeps the presented frame, background included: an env
          * the game puts after the wait clears a later table, not this one. */
@@ -960,6 +1014,13 @@ void cyclorama_native_repeat_resolve(void) OP_REQUIRES(sim) {
             memcpy(s_site_env, s_presented_env, sizeof s_site_env);
             s_site_env_valid = 1;
         }
+        return;
+    }
+    if (kept) {
+        env[0] = 0;
+        memcpy(s_site_env, env, sizeof s_site_env);
+        s_site_env_valid = 1;
+        openpete_native_scene_open_empty();
         return;
     }
     if (mode == REPEAT_SITE_CLEAR_BLACK) {

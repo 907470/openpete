@@ -58,7 +58,13 @@ void spyro_native_canon_epoch_supersede(void);
  * game is parked in (openpete_yield_site.ra): REPEAT_SITE_HOLD holds,
  * with the env the last canonical present cleared under, REPEAT_SITE_CLEAR_BLACK takes isbg 1 and black, REPEAT_SITE_CLEAR_DB takes
  * isbg 1 and the buffer's colour; a row's env is what
- * cyclorama_native_present_env reports for this present. With isbg 1 the
+ * cyclorama_native_present_env reports for this present. Without a row,
+ * an env with isbg 1 whose buffer's DISPENV (game_layout.db.dispenv) shows
+ * a draw area last drawn with content (openpete_native_shown_area_content)
+ * becomes that env with isbg 0 and an empty scene: the screen keeps the
+ * displayed image uncleared. OPENPETE_REPEAT_CENSUS=1 logs each repeat
+ * present's site, env, shown area and verdict; OPENPETE_REPEAT_SHOWN=0
+ * disables the shown-area test (negative control). With isbg 1 the
  * present becomes an empty scene (openpete_native_scene_open_empty) cleared
  * to that colour; with isbg 0, without a valid g_CurDB, or on a HOLD row it
  * stays a repeat. Defined by the shared cyclorama feeder for every game. */
