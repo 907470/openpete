@@ -99,7 +99,12 @@ void main()
             if (op_aura_loses(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
                               ckoff - 0.5))
                 discard;
-        } else if (op_key_loses(
+        } else {
+#if defined(OP_PORTAL_COVER) && !defined(OP_PORTAL_RIM) && !defined(OP_MOBY_SNAP)
+          /* The blended world variant: an unranked non-actor face is terrain. */
+          op_key_blend_frag = vRank.x > -0.5;
+#endif
+          if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
                 texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
                 op_akey_contest(op_akey_select(
@@ -112,6 +117,7 @@ void main()
                 op_rank_is_prop(vRank.x),
                 MOBY_TRUESCOPE, SLOT_CONTEST))
             discard;
+        }
     }
     /* A terrain fragment (unranked, not an actor or glow-fan face) keyed
      * behind a key-order moby's key yields to it (op_key_order_yields). */
@@ -123,4 +129,5 @@ void main()
     if (ko == 1) discard;
     outColor = ko == 2 ? vec4(1.0, 0.0, 1.0, 1.0) : vColor / vQ;
     outColor = op_src_tint_scene(outColor, vSrcWalk);
+    if (op_key_blend_hit != 0) outColor = op_key_blend_mark(op_key_blend_hit);
 }

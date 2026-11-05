@@ -17,6 +17,7 @@ void main()
     vec4 c;
     if (ter_debug_shade(c)) { outColor = c; return; }
     if (ter_portal_discards()) discard;   /* portal plane-cover rule */
+    op_key_blend_frag = ((vMat.x >> 21) & 3u) != 0u;   /* blended (census) */
     if (ter_key_loses()) discard;
     int ko = ter_key_order();             /* key-order moby in front by key */
     if (ko == 1) discard;
@@ -25,5 +26,6 @@ void main()
     outColor = ko == 2 ? vec4(0.0, 1.0, 1.0, 1.0) : c;
     if (op_key_tier_hit >= 0.0) outColor = op_key_tier_mark(op_key_tier_hit);
     outColor = op_src_tint_cache(outColor);
+    if (op_key_blend_hit != 0) outColor = op_key_blend_mark(op_key_blend_hit);
     if (ter_attr(c)) outColor = c;        /* debug tint mode 7 */
 }

@@ -775,6 +775,45 @@ float op_key_tier_gap(float tkey, vec4 tattr, float own, float koff, vec2 fattr)
     return gap < OP_KEY_TIER_REACH ? gap : -1.0;
 }
 
+/* ---- blended-terrain contest census ----------------------------------
+ *
+ * Blended terrain contests opaque terrain keys but emits none (the key-pass
+ * pack drops blend != 0), so the terrain-against-terrain arm of op_key_loses
+ * is the only rule that removes a blended terrain fragment for a key.
+ * Specialisation constant 8 (`OP_KEY_BLEND_CENSUS`, OPENPETE_KEY_BLEND_CENSUS
+ * for the process): 0 off (the default); 1 a fragment the caller flags as
+ * blended terrain (op_key_blend_frag) that the arm would discard is kept,
+ * skipping every later arm as a blended face keyed 0 would, and its true-depth
+ * verdict against the key owner is recorded in op_key_blend_hit for the
+ * caller to paint (op_key_blend_mark). */
+layout(constant_id = 8) const int OP_KEY_BLEND_CENSUS = 0;
+
+/* Set by the caller before op_key_loses: the fragment is blended terrain. */
+bool op_key_blend_frag = false;
+
+/* The verdict of the last fragment the census kept: 0 none, 1 in front of
+ * the key owner by true view-Z, 2 at or behind it, 3 the owner carries no
+ * attributes (OP_KEY_CLASS_NONE), so its view-Z is unknown. */
+int op_key_blend_hit = 0;
+
+/* The census verdict of a fragment of view-Z own against the key owner's
+ * attribute texel tattr. */
+int op_key_blend_verdict(vec4 tattr, float own)
+{
+    if (op_key_attr_class(tattr) >= OP_KEY_CLASS_NONE - 0.5) return 3;
+    return own < op_key_attr_z(tattr) ? 1 : 2;
+}
+
+/* The census colour of a verdict: red in front, green behind, blue owner
+ * unknown. Opaque, so an alpha-blended draw stores it exactly; an additive
+ * or subtractive draw moves only the verdict's channel. */
+vec4 op_key_blend_mark(int v)
+{
+    return v == 1 ? vec4(1.0, 0.0, 0.0, 1.0)
+         : v == 2 ? vec4(0.0, 1.0, 0.0, 1.0)
+                  : vec4(0.0, 0.0, 1.0, 1.0);
+}
+
 /* The census colour of a fragment op_key_tier_hit marks: yellow, blue =
  * the gap in 1/32 world. */
 vec4 op_key_tier_mark(float gap)
@@ -842,8 +881,11 @@ bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
         if (!actor && (slot_contest
                 ? op_key_slot_nearer(tkey, floor((koff - 0.5) / OP_KEY_SLOT))
                 : op_key_band_nearer(tkey, band)) &&
-            op_key_override_holds(tattr, own, fattr))
-            return true;
+            op_key_override_holds(tattr, own, fattr)) {
+            if (OP_KEY_BLEND_CENSUS == 0 || !op_key_blend_frag) return true;
+            op_key_blend_hit = op_key_blend_verdict(tattr, own);
+            return false;
+        }
         if ((actor || !truescope) && akey < band &&
             (!truescope || akey < own - 64.0)) return true;
         return truescope && !actor && mkey < own + 1024.0;
