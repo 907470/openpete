@@ -218,3 +218,6 @@ hurricos | pos=(41500, 91104, 30875) yaw=-2027 pitch=992
 # sunny_beach duck: the duck enemy on its inner tube; the duck's body and the
 # tube clip through each other in many places (user report).
 sunny_beach | pos=(23777, 47772, 23999) yaw=-766 pitch=28
+# The same pose at VBL 2433, during the duck's animation: a whole body face
+# covers the tube at this tick (2600-3100 px against the per-pixel crossing).
+sunny_beach@pop | pos=(23777, 47772, 23999) yaw=-766 pitch=28 | 2433
