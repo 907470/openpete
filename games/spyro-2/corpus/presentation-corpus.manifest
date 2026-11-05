@@ -141,9 +141,9 @@ credits-cheat|2300|200||3678,4572
 # to two samples.
 start-new-game|1043|10||665
 # start-new-game@fade: the fade from the opening cutscene to the storybook
-# picture. The canonical presents at 984 and 986 are black; the intermediate
-# legs there show the faded cutscene (984) and the storybook (986).
-start-new-game@fade|982|1000||982,984,986,988
+# picture and its hold. 1013 and 1014 present black inside the hold (255 at
+# 1012, 223 at 1016), on the guest reference as on native.
+start-new-game@fade|982|1000||982,988,1012,1013,1014,1016
 # intro cutscene, VBL 1667: one of the sheep's eyes is covered by its own
 # face geometry (native); the guest draws the eye.
 intro-sheep-eye|1657|10||1667|--skip-to-cutscene intro
