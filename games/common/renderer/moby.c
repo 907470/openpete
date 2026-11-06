@@ -9534,10 +9534,15 @@ static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
  * carries it in skey, which the snap alone reads: it stays out of the key
  * images and the contest, and the snap draws its sunk part in front of the
  * terrain whose key sorts behind it, as it does the opaque faces under it.
+ * An opaque face also carries its moby-against-moby key offset akc, -128 x
+ * m_DepthOffset (0 for a true-depth class): its ordering view-Z at any
+ * pixel plus akc is its key there, so two faces of equal offsets compare
+ * the depths they store, tie pull included; every opaque face but the
+ * key-order class rasters it per pixel (akpx).
  * @param i Walk triangle index.
  * @param cat The face's scene category.
  * @param stbit moby_walk_state_bit, for the class lists.
- * @param t The scene triangle, blend set; its key fields are written. */
+ * @param t The scene triangle, blend and vertices set; its key fields are written. */
 static void moby_face_stamp_key(int i, int cat, uint32_t stbit, openpete_scene_tri* t) {
     if (!moby_face_key_on() || cat != OPENPETE_SCENE_ACTOR || s_wtri_mangle[i] ||
         !s_wtri_moby[i] || !openpete_native_key_resolve_on()) return;
@@ -9549,6 +9554,8 @@ static void moby_face_stamp_key(int i, int cat, uint32_t stbit, openpete_scene_t
     /* Embedded-PROP classes: rendered whole from every angle. */
     t->prop = moby_class_is_prop(s_wtri_cls[i]);
     t->key_order = moby_class_draws_by_key(s_wtri_cls[i], stbit);
+    t->akc = td ? 0.0f : (float)(-OPENPETE_OT_SLOT_WORLD * (double)s_wtri_dofs[i]);
+    t->akpx = !t->key_order;
 }
 
 /* Word b of the heavy-fog texel fade (psx_hq_fog.glsl): bN = 128/256 on every
@@ -9682,15 +9689,17 @@ static void push_scene_moby_tris(CPUState* cpu) {
          * never stored depth. Where the scene sorts by one ordering table
          * (S2/S3) the face's key is the world bucket the draw splices it
          * into (moby_tri_contest_key). The face's ABSOLUTE key rasters into the
-         * actor key image, where the contest scopes a yield among mobys by
-         * the covering face's own TRUE view-Z (MOBY_TRUESCOPE,
-         * psx_scene_key.frag). Terrain does not yield to the key: the part
+         * actor key image for the glow-fan aura contest and the key-order
+         * class's terrain yield; every other keyed opaque face rasters its
+         * per-pixel moby-against-moby key there instead (akc, akpx), which
+         * decides moby against moby (MOBY_TRUESCOPE, psx_key_contest.glsl
+         * op_key_loses). Terrain does not yield to the key: the part
          * of a pulled moby sunk into the terrain it intersects is drawn in
          * front of that terrain by the snap (moby_snap_collect,
          * psx_moby_snap.glsl), while og's pull+push compound - which paints
          * a chest through the wall lip genuinely in front of it - is not
          * mirrored: a wall in front keeps occluding by TRUE depth. The moby
-         * face contests nearer keys except those its own moby owns
+         * face contests nearer actor keys except those its own moby owns
          * (op_akey_select).
          * Blend/FRONT/HUD classes
          * stay unkeyed (a blended ACTOR face carries its key for the snap

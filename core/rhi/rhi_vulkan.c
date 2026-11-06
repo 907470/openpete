@@ -469,7 +469,7 @@ struct lto_state {
  * frame already wrote with the same views. */
 typedef struct {
     VkDescriptorSet *sets;                /* grown by doubling             */
-    VkImageView     (*views)[3];          /* each taken set's views        */
+    VkImageView     (*views)[4];          /* each taken set's views        */
     uint32_t        cap;                  /* entries sets/views hold       */
     uint32_t        alloc;                /* sets allocated                */
     uint32_t        used;                 /* sets taken this frame         */
@@ -820,9 +820,14 @@ struct rhi_device {
      * in the key-resolve and material layouts (key depth, drain records, key
      * owner attributes). Its sets are written per bind like the pair's. */
     VkDescriptorSetLayout trio_set_layout;
-    /* The per-bind set lists of the pair (index 0) and trio (index 1)
-     * layouts, one per frame slot. */
-    rhi_view_sets   vsets[2][RHI_FRAMES_IN_FLIGHT];
+    /* Four-sampler set layout (bindings 0-3): the actor key set of the
+     * key-resolve and material layouts (the flat actor key image's depth and
+     * owner colour, the per-pixel actor key image's depth and owner colour).
+     * Its sets are written per bind like the pair's. */
+    VkDescriptorSetLayout quad_set_layout;
+    /* The per-bind set lists of the pair (index 0), trio (index 1) and quad
+     * (index 2) layouts, one per frame slot. */
+    rhi_view_sets   vsets[3][RHI_FRAMES_IN_FLIGHT];
 
     bool        gpu_timers;                 /* env set AND queue has timestamps */
     float       gpu_ts_period;              /* ns per timestamp tick */
@@ -2942,7 +2947,7 @@ static bool desc_alloc(rhi_device *dev, VkDescriptorSetLayout layout,
  * for high-res replacement art. Layouts: vram_set_layout (one
  * combined-image-sampler at binding 0, shared by every VRAM-sampling
  * pipeline), pair_set_layout (two at bindings 0 and 1), trio_set_layout
- * (three at bindings 0 to 2), ubo_set_layout (two
+ * (three at bindings 0 to 2), quad_set_layout (four at bindings 0 to 3), ubo_set_layout (two
  * dynamic UBOs, vertex and fragment visible, and a fragment-visible storage
  * buffer at binding 2) and ubo1_set_layout (one dynamic UBO). Records ubo_align (minUniformBufferOffsetAlignment, 256 when
  * the device reports 0) and max_desc_sets. The pool holds 4096
@@ -3003,6 +3008,17 @@ static bool create_descriptor_infra(rhi_device *dev)
     };
     if (vkCreateDescriptorSetLayout(dev->device, &tli, NULL, &dev->trio_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (trio) failed\n"); return false;
+    }
+    VkDescriptorSetLayoutBinding qb[4] = { b, b, b, b };
+    qb[1].binding = 1;
+    qb[2].binding = 2;
+    qb[3].binding = 3;
+    VkDescriptorSetLayoutCreateInfo qli = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 4, .pBindings = qb,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &qli, NULL, &dev->quad_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout (quad) failed\n"); return false;
     }
     /* The contract set (set 3): binding 0 = engine block, binding 1 = mod
      * block, both dynamic UBOs visible to vertex and fragment; binding 2 =
@@ -4329,7 +4345,7 @@ static void desc_pools_free(rhi_device *dev)
         vkDestroyDescriptorPool(dev->device, dev->desc_pools[i], NULL);
     dev->desc_pool_n = 0;
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
-        for (int k = 0; k < 2; k++) {
+        for (int k = 0; k < 3; k++) {
             free(dev->vsets[k][i].sets);  dev->vsets[k][i].sets = NULL;
             free(dev->vsets[k][i].views); dev->vsets[k][i].views = NULL;
         }
@@ -4399,6 +4415,7 @@ static void device_objects_destroy(rhi_device *dev)
     vkDestroyDescriptorSetLayout(dev->device, dev->texssbo_set_layout, NULL);
     if (dev->pair_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);
     vkDestroyDescriptorSetLayout(dev->device, dev->trio_set_layout, NULL);   /* VK_NULL_HANDLE is a no-op */
+    vkDestroyDescriptorSetLayout(dev->device, dev->quad_set_layout, NULL);
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 
@@ -4945,6 +4962,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     pcache_autosave(dev);
     dev->vsets[0][dev->frame].used = 0;   /* the slot's pair and trio sets have retired */
     dev->vsets[1][dev->frame].used = 0;
+    dev->vsets[2][dev->frame].used = 0;
     dev->cur_layout = VK_NULL_HANDLE; /* a layout bound last frame may be retired */
     dev->frame_active = true;
     dev->draw_calls = 0;
@@ -7918,9 +7936,10 @@ static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
  * The key-resolve scene layouts (uses_vram3 outside the terrain, postfx and
  * mod kinds) hold the terrain key set at set 2 (trio: key depth, drain
  * records, key owner attributes) and, once uses_vram4 declares the moby key
- * sets, the actor key image's depth with its owner colour at set 1 (pair).
- * A material layout holds the terrain key set at set 2 and the actor key
- * with its owner at set 5. A terrain layout pairs the terrain key depth
+ * sets, the actor key set at set 1 (quad: the flat and the per-pixel actor
+ * key images, each depth with its owner colour). A material layout holds
+ * the terrain key set at set 2 and the actor key set at set 5 (quad). A
+ * terrain layout pairs the terrain key depth
  * with its owner attributes at set 1.
  * @param dev Device holding the set layouts.
  * @param desc Pipeline description.
@@ -7930,7 +7949,7 @@ static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *des
 {
     if (desc->material_pipeline) {
         out[2] = dev->trio_set_layout;
-        out[5] = dev->pair_set_layout;
+        out[5] = dev->quad_set_layout;
         return;
     }
     if (desc->terrain_pipeline) {
@@ -7940,7 +7959,7 @@ static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *des
     if (!desc->uses_vram3 || desc->postfx || desc->mod_pipeline)
         return;
     out[2] = dev->trio_set_layout;
-    if (desc->uses_vram4) out[1] = dev->pair_set_layout;
+    if (desc->uses_vram4) out[1] = dev->quad_set_layout;
 }
 
 /** @brief Return how many descriptor sets, from set 0, a pipeline kind's own layout uses.
@@ -8361,7 +8380,7 @@ typedef struct {
     stage_spec                             vspec, fspec;
     VkPipelineShaderStageCreateInfo        stages[2];
     VkVertexInputBindingDescription        bind;
-    VkVertexInputAttributeDescription      attrs[6];
+    VkVertexInputAttributeDescription      attrs[7];
     VkPipelineVertexInputStateCreateInfo   vi;
     VkPipelineInputAssemblyStateCreateInfo ia;
     VkPipelineViewportStateCreateInfo      vp;
@@ -8576,20 +8595,23 @@ static bool pipe_state_fill(const rhi_device *dev, const rhi_pipeline_desc *desc
      * select; every other shader ignores it. Location 4 is the perspective W (true
      * view-Z), read by the scene vertex stages. Location 5 is the terrain
      * og-key slot offset (rhi_vertex.koff), read by the scene vertex stages
-     * and the terrain key pass. */
-    static const VkVertexInputAttributeDescription k_attrs[6] = {
+     * and the terrain key pass. Location 6 is the moby-against-moby key
+     * offset of an actor face and the colour residual of any other
+     * (rhi_vertex.akc, rgbq), read by the same stages. */
+    static const VkVertexInputAttributeDescription k_attrs[7] = {
         { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(rhi_vertex, x) },
         { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, u) },
         { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,   .offset = offsetof(rhi_vertex, rgba) },
         { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, sx) },
         { .location = 4, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, w) },
         { .location = 5, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, koff) },
+        { .location = 6, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, akc) },
     };
     memcpy(st->attrs, k_attrs, sizeof k_attrs);
     st->vi = (VkPipelineVertexInputStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &st->bind,
-        .vertexAttributeDescriptionCount = 6, .pVertexAttributeDescriptions = st->attrs,
+        .vertexAttributeDescriptionCount = 7, .pVertexAttributeDescriptions = st->attrs,
     };
     if (desc->terrain_pipeline) terrain_vertex_input(desc, &st->vi);
     if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
@@ -12421,10 +12443,10 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex)
                             dev->cur_layout, 1, 1, &tex->set, 0, NULL);
 }
 
-/** @brief Append one allocated set to a frame slot's list of the pair (kind 0) or trio (kind 1) layout, growing the list's arrays by doubling.
+/** @brief Append one allocated set to a frame slot's list of the pair (kind 0), trio (kind 1) or quad (kind 2) layout, growing the list's arrays by doubling.
  *
  * @param dev Device.
- * @param kind 0 for the pair layout, 1 for the trio layout.
+ * @param kind 0 for the pair layout, 1 for the trio layout, 2 for the quad layout.
  * @param f Frame slot.
  * @return false when the arrays cannot grow or the set cannot be allocated. */
 static bool view_sets_grow(rhi_device *dev, int kind, uint32_t f)
@@ -12435,12 +12457,13 @@ static bool view_sets_grow(rhi_device *dev, int kind, uint32_t f)
         VkDescriptorSet *sets = realloc(L->sets, cap * sizeof(*sets));
         if (!sets) return false;
         L->sets = sets;
-        VkImageView (*views)[3] = realloc(L->views, cap * sizeof(*views));
+        VkImageView (*views)[4] = realloc(L->views, cap * sizeof(*views));
         if (!views) return false;
         L->views = views;
         L->cap = cap;
     }
-    if (!desc_alloc(dev, kind ? dev->trio_set_layout : dev->pair_set_layout,
+    if (!desc_alloc(dev, kind == 2 ? dev->quad_set_layout
+                       : kind ? dev->trio_set_layout : dev->pair_set_layout,
                     &L->sets[L->alloc], NULL))
         return false;
     L->alloc++;
@@ -12461,10 +12484,11 @@ static bool view_sets_grow(rhi_device *dev, int kind, uint32_t f)
 static void bind_view_set(rhi_device *dev, const VkImageView *v, uint32_t n, uint32_t set)
 {
     const uint32_t f = dev->frame;
-    const int kind = n == 3 ? 1 : 0;
+    const int kind = n == 4 ? 2 : n == 3 ? 1 : 0;
     rhi_view_sets *L = &dev->vsets[kind][f];
     for (uint32_t i = 0; i < L->used; i++) {
-        if (L->views[i][0] == v[0] && L->views[i][1] == v[1] && (n < 3 || L->views[i][2] == v[2])) {
+        if (L->views[i][0] == v[0] && L->views[i][1] == v[1] && (n < 3 || L->views[i][2] == v[2]) &&
+            (n < 4 || L->views[i][3] == v[3])) {
             vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     dev->cur_layout, set, 1, &L->sets[i], 0, NULL);
             return;
@@ -12476,8 +12500,8 @@ static void bind_view_set(rhi_device *dev, const VkImageView *v, uint32_t n, uin
     }
     const uint32_t slot = L->used++;
     VkDescriptorSet ds = L->sets[slot];
-    VkDescriptorImageInfo ii[3];
-    VkWriteDescriptorSet w[3];
+    VkDescriptorImageInfo ii[4];
+    VkWriteDescriptorSet w[4];
     for (uint32_t k = 0; k < n; k++) {
         L->views[slot][k] = v[k];
         ii[k] = (VkDescriptorImageInfo){ .sampler = dev->vram_sampler, .imageView = v[k],
@@ -12523,6 +12547,14 @@ void rhi_bind_depth_tex_pair(rhi_device *dev, rhi_texture *depth_rt, rhi_texture
 {
     if (!dev->frame_active || !tex || !depth_rt || !depth_rt->rt_depth_sample_view) return;
     bind_view_pair(dev, depth_rt->rt_depth_sample_view, tex->view, set);
+}
+
+void rhi_bind_depth_rt_quad(rhi_device *dev, rhi_texture *a, rhi_texture *b, uint32_t set)
+{
+    if (!dev->frame_active || !a || !b || !a->rt_depth_sample_view || !b->rt_depth_sample_view)
+        return;
+    const VkImageView v[4] = { a->rt_depth_sample_view, a->view, b->rt_depth_sample_view, b->view };
+    bind_view_set(dev, v, 4, set);
 }
 
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size)

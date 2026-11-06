@@ -460,6 +460,7 @@ static int s_walk_sectors;
 /* Built triangles for the scene feed. */
 typedef struct {
     float sx[3], sy[3]; double vz[3]; uint32_t rgb[3];
+    uint32_t rgbq[3];                              /* rgb's residual (ngte_cvert.rgbq) */
     float u[3], v[3];                              /* page-relative texel coords */
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
     int fog_delta;                                 /* CLUT ladder row (see tmat) */
@@ -1292,7 +1293,8 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
              * preserve. Same floor as the renderer's (GTE MAC0>>16). */
             if (fsnap) { t->sx[k] = floorf(t->sx[k]); t->sy[k] = floorf(t->sy[k]); }
         }
-        t->vz[k] = cc[k].m3; t->rgb[k] = cc[k].rgb; t->u[k] = cc[k].u; t->v[k] = cc[k].v;
+        t->vz[k] = cc[k].m3; t->rgb[k] = cc[k].rgb; t->rgbq[k] = cc[k].rgbq;
+        t->u[k] = cc[k].u; t->v[k] = cc[k].v;
         t->fx[k] = cc[k].fx; t->fy[k] = cc[k].fy;
         if (W->serial && s_cv_n < TN_CV_MAX) {       /* colour-A/B verts (verify) */
             s_cvx[s_cv_n]=t->sx[k]; s_cvy[s_cv_n]=t->sy[k]; s_cvz[s_cv_n]=cc[k].m3; s_cvrgb[s_cv_n]=cc[k].rgb; s_cv_n++;
@@ -1351,17 +1353,20 @@ static uint32_t tn_water_rgb(uint32_t c, double m3);
  * game's DPCS target) at its own depth and the face's fog reference; under
  * emit_water_on each node's near colour is faded toward black at its own
  * depth (tn_water_rgb), the retained cache's per-node water_col; otherwise
- * the nodes are left as they are.
+ * the nodes are left as they are. A faded node's colour is the fade's bytes,
+ * so it drops any residual.
  * @param W The walk context.
  * @param v The three nodes, rewritten in place. */
 static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
     if (W->emit_water_on) {
-        for (int k = 0; k < 3; k++) v[k].rgb = tn_water_rgb(v[k].rgb, v[k].m3);
+        for (int k = 0; k < 3; k++) { v[k].rgb = tn_water_rgb(v[k].rgb, v[k].m3); v[k].rgbq = 0; }
         return;
     }
     if (!W->emit_hqfog_on) return;
-    for (int k = 0; k < 3; k++)
+    for (int k = 0; k < 3; k++) {
         v[k].rgb = terrain_fog_blend(v[k].rgb, v[k].rgbf, v[k].m3, W->emit_fogref);
+        v[k].rgbq = 0;
+    }
 }
 
 /** @brief Near-plane clips a camera-space triangle and pushes the result.
@@ -1466,6 +1471,7 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
     r.fx = (a.fx + b.fx) * 0.5f; r.fy = (a.fy + b.fy) * 0.5f;
     r.rgb  = tn_rgb_mid(a.rgb, b.rgb);
     r.rgbf = tn_rgb_mid(a.rgbf, b.rgbf);
+    r.rgbq = 0;
     return r;
 }
 
@@ -1567,6 +1573,27 @@ static uint32_t tj_rgb_lerp(uint32_t a, uint32_t b, double t) {
     return r;
 }
 
+/** @brief Returns the residual of tj_rgb_lerp's rounded bytes from the unrounded mix.
+ *
+ * Each channel is the mix less its rounded byte, in 1/256 of a level, as one
+ * signed byte: bits 0-7 red, 8-15 green, 16-23 blue. terrain.vert tj_rgbq is
+ * the mirror.
+ * @param a The colour at weight 0.
+ * @param b The colour at weight 1.
+ * @param t The weight of b.
+ * @return The packed residual, 0 when every channel mixes onto a byte. */
+static uint32_t tj_rgb_residual(uint32_t a, uint32_t b, double t) {
+    uint32_t r = 0;
+    for (int s = 0; s < 24; s += 8) {
+        const double ca = (double)((a >> s) & 0xFFu), cb = (double)((b >> s) & 0xFFu);
+        const double v = ca + (cb - ca) * t;
+        long q = (long)floor((v - (double)lround(v)) * 256.0 + 0.5);
+        if (q > 127) q = 127;
+        r |= ((uint32_t)q & 0xFFu) << s;
+    }
+    return r;
+}
+
 static ngte_cvert nc4_pt(ngte_cvert a, ngte_cvert b, int k);
 
 /** @brief Places a node on the segment between its edge's two emitted corner points under the integer vertex snap.
@@ -1606,7 +1633,9 @@ static double tj_snap_node(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert*
  * screen override under the snap) and the corners' colours, far colours,
  * UV and face-local coordinate mixed at the weight of that placement
  * (tj_snap_node), which without an override is the node's interpolation
- * parameter (tj_lerp_t).
+ * parameter (tj_lerp_t). The colour keeps its rounding residual (rgbq), so
+ * the split face interpolates as the unsplit face does; the far colour needs
+ * none, since it reaches only the fog, which works on bytes.
  * @param B The base triangle's corners.
  * @param d The member descriptor.
  * @return The member. */
@@ -1618,6 +1647,7 @@ static ngte_cvert tj_member_cv(const ngte_cvert B[3], int d) {
     ngte_cvert r = nc4_pt(*a, *b, k);
     const double t = tj_snap_node(&r, a, b, tj_lerp_t(k, a->m3, b->m3));
     r.rgb = tj_rgb_lerp(a->rgb, b->rgb, t);
+    r.rgbq = tj_rgb_residual(a->rgb, b->rgb, t);
     r.rgbf = tj_rgb_lerp(a->rgbf, b->rgbf, t);
     r.u = (float)(a->u + (b->u - a->u) * t);
     r.v = (float)(a->v + (b->v - a->v) * t);
@@ -18333,6 +18363,7 @@ static void terrain_feed_native(CPUState* cpu) {
                                          : t->tier ? 0xFF0000FFu : 0xFFFF0000u)
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
+            tri.v[k].rgbq = t->rgbq[k];
         }
         tri.koff = tn_tri_koff(t, tri.blend);   /* og OT key channel */
         tri.kattr = tn_key_attr(t, &tri);

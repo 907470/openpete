@@ -460,17 +460,21 @@ vec4 op_key_clip(vec2 cxy, float z, float kv)
 #define OP_KEY_FORM_FLAT 1.0   /* a flat key: op_key_store of the face's key */
 #define OP_KEY_FORM_BAND 0.0   /* the player band: the band value itself */
 #define OP_KEY_FORM_TRUE -1.0  /* the prop class: op_key_store of true view-Z */
+#define OP_KEY_FORM_PIXEL -2.0 /* an actor face: op_key_store of its per-pixel key */
 
 /* The fragment depth a walk key stage writes for form form: a flat key
  * stores op_key_store(kv) (kv the key, a drain sub-cell's or the tier-moved
- * one), the band stores kv (the band value), and the prop class stores
+ * one), the band stores kv (the band value), the prop class stores
  * op_key_store of the fragment's true view-Z, 1/iz with iz the owner's
- * screen-linear true 1/view-Z. */
+ * screen-linear true 1/view-Z, and an actor face's per-pixel form stores
+ * op_key_store(op_actor_key(1/iz, kv)), iz its screen-linear 1/(ordering
+ * view-Z) and kv its key offset (rhi_vertex.akc). */
 float op_key_stored_depth(float form, float kv, float iz)
 {
     if (form > 0.5) return op_key_store(kv);
     if (form > -0.5) return kv;
-    return op_key_store(1.0 / max(iz, 1e-9));
+    if (form > -1.5) return op_key_store(1.0 / max(iz, 1e-9));
+    return op_key_store(max(1.0 / max(iz, 1e-9) + kv, 1.0));
 }
 
 /* The actor key image as every contest but the aura's sees it: a player
@@ -479,6 +483,17 @@ float op_key_stored_depth(float form, float kv, float iz)
 float op_akey_contest(float stored)
 {
     return op_pkey_is(stored) ? OP_KEY_NONE : op_key_from_stored(stored);
+}
+
+/* An actor face's moby-against-moby key at a fragment of ordering view-Z
+ * vz: vz plus the face's key offset akc (rhi_vertex.akc), the written depth
+ * less 128 x m_DepthOffset there, floored at one world unit. The actor key
+ * pass stores it per pixel into the per-pixel actor key image
+ * (OP_KEY_FORM_PIXEL) and an actor fragment contests its own against it
+ * (op_key_loses). */
+float op_actor_key(float vz, float akc)
+{
+    return max(vz + akc, 1.0);
 }
 
 /* ---- the owner of an actor key ------------------------------------------
@@ -842,9 +857,22 @@ vec4 op_key_tier_mark(float gap)
  * prop = an actor face of a curated embedded prop: terrain within the
  * embed bound in front of it yields to it, terrain beyond the bound in
  * front occludes it by true depth, terrain behind it loses by true depth.
- * The verdict reads prop through actor alone. truescope = moby keys yield
- * by the fragment's own true view-Z (the default; false restores the full
- * compound painter among moby keys).
+ * The verdict reads prop through actor alone. truescope = the default
+ * scoping: only an actor fragment contests an actor key, the per-pixel
+ * one (pkey) at its own per-pixel key (akc, below); false restores the full
+ * compound painter among the flat moby keys (akey).
+ *
+ * Moby against moby, under truescope: an actor fragment loses the pixel
+ * when another moby's key in the per-pixel actor key image (pkey, each
+ * opaque actor face rastered at its per-pixel key) is smaller than its own,
+ * both evaluated per pixel (op_actor_key: ordering view-Z plus the face's
+ * offset akc, -128 x m_DepthOffset). akey, the flat actor key image the
+ * glow-fan aura and the key-order class read, is contested only with
+ * truescope false. Two mobys with equal
+ * offsets are ordered by their depth at the pixel; an authored offset pulls
+ * a moby in front of a nearer one by 128 world per unit, as the ordering
+ * table does, but decided per pixel instead of per face. Order within one
+ * moby stays with true depth and the same-moby rank (op_rank_loses).
  *
  * Under truescope, terrain never yields to general moby keys: the authored
  * pulls (-128*dofs) float pickups and decor over whatever the OT sorts them
@@ -866,9 +894,9 @@ vec4 op_key_tier_mark(float gap)
  * caller with neither passes vec4(1.0) or vec2(OP_KEY_CLASS_NONE, 0.0) and
  * the override holds unbounded. On one ordering table an HP fragment also
  * loses to a coplanar LP face of its bucket (op_key_tier_gap). */
-bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
-                  float koff, vec2 fattr, bool actor, bool prop, bool truescope,
-                  bool slot_contest)
+bool op_key_loses(float tkey, vec4 tattr, float akey, float pkey, float mkey, float own,
+                  float koff, float akc, vec2 fattr, bool actor, bool prop,
+                  bool truescope, bool slot_contest)
 {
     if (koff > 0.0) {
         float band = (koff - 0.5) - 64.0;      /* half an OT slot nearer */
@@ -900,8 +928,7 @@ bool op_key_loses(float tkey, vec4 tattr, float akey, float mkey, float own,
             op_key_blend_hit = op_key_blend_verdict(tattr, own);
             return false;
         }
-        if ((actor || !truescope) && akey < band &&
-            (!truescope || akey < own - 64.0)) return true;
+        if (truescope ? actor && pkey < op_actor_key(own, akc) : akey < band) return true;
         return truescope && !actor && mkey < own + 1024.0;
     }
     /* Near band: per-pixel own key, same strict rule, same embed rule. The

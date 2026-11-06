@@ -35,6 +35,9 @@ layout(location = 4) in float inW;    /* TRUE per-vertex view-Z (textured cutout
 layout(location = 5) in float inKoff;
 /* y: the drain record tag (psx_key_contest.glsl op_drain_record). */
 layout(location = 3) in vec2 inRank;
+/* An actor face's moby-against-moby key offset (rhi_vertex.akc), read in the
+ * per-pixel form (inKoff 0.25), whose inPos.z is the vertex's ordering view-Z. */
+layout(location = 6) in float inAkc;
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
@@ -69,6 +72,7 @@ void main()
 {
     float vz = op_scene_vz(inPos.z);
     float kv = vz + max(abs(inKoff) - 0.5, 0.0);   /* og key view-Z */
+    bool pixel = inKoff > 0.0 && inKoff < 0.5;      /* an actor face's per-pixel key */
     gl_Position = op_key_clip(inPos.xy, inPos.z, kv);   /* z_ndc = op_key_store(kv), or the band value */
     float wq = AFFINE_UV ? 1.0 : max(op_src_tint_w(inW), 1.0);
     vColor = inColor;
@@ -77,9 +81,10 @@ void main()
     vQ = 1.0 / wq;
     vDrain = inRank.y;
     bool band = op_pkey_is(inPos.z);
-    vKv = band ? inPos.z : kv;
+    vKv = band ? inPos.z : pixel ? inAkc : kv;
     vIdent = inColor;
-    vIz = 1.0 / max(op_src_tint_w(inW), 1.0);
+    vIz = pixel ? 1.0 / vz : 1.0 / max(op_src_tint_w(inW), 1.0);
     vCls = op_key_class_walk(inRank.x);
-    vKeyForm = band ? OP_KEY_FORM_BAND : inKoff > 0.0 ? OP_KEY_FORM_FLAT : OP_KEY_FORM_TRUE;
+    vKeyForm = band ? OP_KEY_FORM_BAND : pixel ? OP_KEY_FORM_PIXEL
+             : inKoff > 0.0 ? OP_KEY_FORM_FLAT : OP_KEY_FORM_TRUE;
 }

@@ -271,10 +271,10 @@ static rhi_pipeline *nr_sky_resolve_pipe(rhi_device *dev)
         /* The whole target in clip space, UV 0..1 with v 0 at the top, as
          * the offscreen pass's flipped viewport shows it. */
         const uint32_t white = 0xFFFFFFFFu;
-        const rhi_vertex tl = { -1.0f, 1.0f, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-        const rhi_vertex tr = { 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-        const rhi_vertex br = { 1.0f, -1.0f, 0.0f, 1.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-        const rhi_vertex bl = { -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
+        const rhi_vertex tl = { .x = -1.0f, .y = 1.0f, .z = 0.0f, .u = 0.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
+        const rhi_vertex tr = { .x = 1.0f, .y = 1.0f, .z = 0.0f, .u = 1.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
+        const rhi_vertex br = { .x = 1.0f, .y = -1.0f, .z = 0.0f, .u = 1.0f, .v = 1.0f, .rgba = white, .w = 1.0f };
+        const rhi_vertex bl = { .x = -1.0f, .y = -1.0f, .z = 0.0f, .u = 0.0f, .v = 1.0f, .rgba = white, .w = 1.0f };
         const rhi_vertex q[6] = { tl, tr, br, tl, br, bl };
         s_sky.quad = rhi_create_vertex_buffer_device(dev, sizeof q);
         if (s_sky.quad) rhi_update_buffer(s_sky.quad, q, sizeof q);

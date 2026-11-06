@@ -198,6 +198,9 @@ layout(set = 4, binding = 0) uniform sampler2D op_key_moby;
 layout(set = 5, binding = 0) uniform sampler2D op_key_actor;
 /* The moby identity owning each op_key_actor texel (op_akey_id). */
 layout(set = 5, binding = 1) uniform sampler2D op_key_actor_owner;
+/* The per-pixel actor key image (op_actor_key) and its owner colour. */
+layout(set = 5, binding = 2) uniform sampler2D op_key_actor_px;
+layout(set = 5, binding = 3) uniform sampler2D op_key_actor_px_owner;
 layout(set = 6, binding = 0) uniform sampler2D op_moby_rank;
 
 /* Engine-selected depth convention, key scope and per-game contest rule
@@ -246,6 +249,7 @@ layout(location = 1) in vec4  vColor;  /* modulate 0..1  x vQ */
 layout(location = 2) in float vQ;      /* perspective ratio   */
 layout(location = 3) flat in float vKoff;  /* this face's OT key channel     */
 layout(location = 4) flat in vec2  vRank;  /* own walk rank; moby ordinal or identity */
+layout(location = 5) flat in float vAkc;   /* moby-against-moby key offset (op_actor_key) */
 /* 1 on a walked terrain face under the engine's terrain source tint. */
 layout(location = 10) flat in float vSrcWalk;
 
@@ -366,8 +370,12 @@ void main()
                     texelFetch(op_key_actor,       ivec2(gl_FragCoord.xy), 0).r,
                     texelFetch(op_key_actor_owner, ivec2(gl_FragCoord.xy), 0),
                     op_akey_owner(vRank))),
+                op_akey_contest(op_akey_select(
+                    texelFetch(op_key_actor_px,       ivec2(gl_FragCoord.xy), 0).r,
+                    texelFetch(op_key_actor_px_owner, ivec2(gl_FragCoord.xy), 0),
+                    op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
-                own, koff, op_key_fattr_walk(vRank.x),
+                own, koff, vAkc, op_key_fattr_walk(vRank.x),
                 vRank.x < -0.5,     /* unranked moby faces carry rank -1 */
                 op_rank_is_prop(vRank.x),
                 OP_MOBY_TRUESCOPE, OP_SLOT_CONTEST))

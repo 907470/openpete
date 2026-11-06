@@ -692,11 +692,15 @@ int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
  *
  * rgbf: a terrain producer's far (depth-cue target) colour beside the near
  * colour in rgb, for a node it fogs before the cut. A cut does not carry it.
+ *
+ * rgbq: the residual of rgb's three bytes from a node's unrounded colour,
+ * three signed bytes in 1/256 of a level (rhi_vertex.rgbq). Zero on every
+ * other vertex. A cut interpolates the bytes and carries no residual.
  */
 typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
                  float osx, osy; uint8_t oflag;
                  float fx, fy;
-                 uint32_t rgbf; } ngte_cvert;
+                 uint32_t rgbf; uint32_t rgbq; } ngte_cvert;
 
 /** @brief The point where the edge a->b crosses the plane m3 == zc.
  *

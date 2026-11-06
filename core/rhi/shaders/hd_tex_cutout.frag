@@ -20,6 +20,10 @@ layout(set = 0, binding = 0) uniform sampler2D u_hd;
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */
 /* Owner identities of the actor key image; see psx_scene_key.frag. */
 layout(set = 1, binding = 1) uniform sampler2D u_actorown;
+/* The per-pixel actor key image (each opaque actor face at its per-pixel
+ * moby-against-moby key, op_actor_key) and its owner colour (op_akey_id). */
+layout(set = 1, binding = 2) uniform sampler2D u_actorpkey;
+layout(set = 1, binding = 3) uniform sampler2D u_actorpown;
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
 /* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
  * terrain key image's set at binding 1. */
@@ -45,6 +49,7 @@ layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) 
 layout(location = 3) flat in float vKoff; /* terrain og-key offset (see psx_scene_key.frag) */
 layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal */
 
+layout(location = 5) flat in float vAkc; /* moby-against-moby key offset (op_actor_key) */
 layout(location = 0) out vec4 outColor;
 /* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
 layout(location = 10) flat in float vSrcWalk;
@@ -114,8 +119,12 @@ void main()
                 texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
                 texelFetch(u_actorown, ivec2(gl_FragCoord.xy), 0),
                 op_akey_owner(vRank))),
+            op_akey_contest(op_akey_select(
+                texelFetch(u_actorpkey, ivec2(gl_FragCoord.xy), 0).r,
+                texelFetch(u_actorpown, ivec2(gl_FragCoord.xy), 0),
+                op_akey_owner(vRank))),
             op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
-            op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED), koff,
+            op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED), koff, vAkc,
             op_key_fattr_walk(vRank.x),
             vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
             op_rank_is_prop(vRank.x),

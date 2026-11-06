@@ -114,10 +114,10 @@ static void ls_quad(rhi_vertex *v, const float r[4], float m, float w, float h) 
     /* Clip y is up: the offscreen viewport is Y-flipped. */
     const float y0 = 1.0f - (r[1] - m) * 2.0f / h, y1 = 1.0f - (r[3] + m) * 2.0f / h;
     const uint32_t white = 0xFFFFFFFFu;
-    const rhi_vertex tl = { x0, y0, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex tr = { x1, y0, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex br = { x1, y1, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex bl = { x0, y1, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
+    const rhi_vertex tl = { .x = x0, .y = y0, .z = 0.0f, .u = 0.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
+    const rhi_vertex tr = { .x = x1, .y = y0, .z = 0.0f, .u = 0.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
+    const rhi_vertex br = { .x = x1, .y = y1, .z = 0.0f, .u = 0.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
+    const rhi_vertex bl = { .x = x0, .y = y1, .z = 0.0f, .u = 0.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
     v[0] = tl; v[1] = tr; v[2] = br; v[3] = tl; v[4] = br; v[5] = bl;
 }
 

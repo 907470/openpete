@@ -512,6 +512,7 @@ ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc) {
     int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
     int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);
     r.rgb = (uint32_t)rr | ((uint32_t)rg<<8) | ((uint32_t)rb<<16);
+    r.rgbq = 0;
     return r;
 }
 

@@ -1155,7 +1155,12 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
  * screen-space 2D content states 1.0. A vertex that reaches
  * openpete_native_scene_add_tri with pvz <= 0 is counted
  * (openpete_native_scene_pvz_missing) and takes its `z`. */
-typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpete_scene_vert;
+typedef struct {
+    float sx, sy, z; float u, v; uint32_t rgba; float pvz;
+    uint32_t rgbq;   /* the residual of rgba's R, G and B from the unrounded
+                      * colour of a split terrain node (rhi_vertex.rgbq); 0
+                      * on every other vertex. */
+} openpete_scene_vert;
 /* A scene triangle. When `textured` is 0 it is gouraud-shaded from the vertex
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
  * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly
@@ -1421,6 +1426,17 @@ typedef struct {
                   * through the blended snap twin, whose stage reads it in
                   * the snap (psx_moby_snap.glsl) and runs no key contest
                   * with it; koff stays 0, so no key image takes the face. */
+    float akc;   /* an opaque keyed actor face's moby-against-moby key less
+                  * its ordering view-Z: the key at a pixel is the face's
+                  * ordering view-Z there (openpete_scene_vert.z,
+                  * interpolated) plus akc, its written depth less 128 x
+                  * m_DepthOffset. Constant per face (the record's tie pull
+                  * and near-floor lift, and the authored offset), so one
+                  * value serves the face's every pixel. 0 elsewhere.       */
+    int akpx;    /* 1 = the actor key pass rasters the face's per-pixel
+                  * moby-against-moby key (akc) instead of koff: every
+                  * keyed opaque actor face except the key-order class,
+                  * whose key the terrain yield reads (key_order).          */
 } openpete_scene_tri;
 
 /* The rank-channel value of a terrain face's kattr: in [0.25, 0.5), which

@@ -197,8 +197,8 @@ int nr_launcher_title_set(rhi_device *dev, const openpete_hud_vert *v, int n, in
     const float ox = (float)s_lt.rx, oy = (float)s_lt.ry;
     for (int i = 0; i < n; i++) {
         /* Window pixels to the rect's clip space, +y up: the target's viewport is Y-flipped. */
-        s_lt.verts[i] = (rhi_vertex){ (v[i].x - ox) * sx - 1.0f, 1.0f - (v[i].y - oy) * sy, v[i].z, 0.0f, 0.0f,
-                                      v[i].rgba, 0.0f, 0.0f, 0.0f, v[i].z };
+        s_lt.verts[i] = (rhi_vertex){ .x = (v[i].x - ox) * sx - 1.0f, .y = 1.0f - (v[i].y - oy) * sy,
+                                      .z = v[i].z, .rgba = v[i].rgba, .w = v[i].z };
     }
     s_lt.n = n;
     return 1;
@@ -226,10 +226,10 @@ void nr_launcher_title_composite(rhi_device *dev) {
     const float x1 = 2.0f * (float)(s_lt.rx + s_lt.rw) / (float)s_lt.win_w - 1.0f;
     const float y0 = 1.0f - 2.0f * (float)s_lt.ry / (float)s_lt.win_h;
     const float y1 = 1.0f - 2.0f * (float)(s_lt.ry + s_lt.rh) / (float)s_lt.win_h;
-    const rhi_vertex tl = { x0, y0, 0.0f, 0.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex tr = { x1, y0, 0.0f, 1.0f, 0.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex br = { x1, y1, 0.0f, 1.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
-    const rhi_vertex bl = { x0, y1, 0.0f, 0.0f, 1.0f, white, 0.0f, 0.0f, 0.0f, 1.0f };
+    const rhi_vertex tl = { .x = x0, .y = y0, .z = 0.0f, .u = 0.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
+    const rhi_vertex tr = { .x = x1, .y = y0, .z = 0.0f, .u = 1.0f, .v = 0.0f, .rgba = white, .w = 1.0f };
+    const rhi_vertex br = { .x = x1, .y = y1, .z = 0.0f, .u = 1.0f, .v = 1.0f, .rgba = white, .w = 1.0f };
+    const rhi_vertex bl = { .x = x0, .y = y1, .z = 0.0f, .u = 0.0f, .v = 1.0f, .rgba = white, .w = 1.0f };
     const rhi_vertex q[6] = { tl, tr, br, tl, br, bl };
     rhi_update_buffer(s_lt.quad_vb, q, sizeof q);
     rhi_reset_scissor(dev);

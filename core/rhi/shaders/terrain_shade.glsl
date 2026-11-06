@@ -230,10 +230,10 @@ bool ter_key_loses()
     return op_key_loses(
         op_key_from_stored(texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r),
         texelFetch(u_hpattr, ivec2(gl_FragCoord.xy), 0),
-        OP_KEY_NONE,
+        OP_KEY_NONE, OP_KEY_NONE,
         op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
         op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
-        koff, vec2(vKcls, ter_key_plane),
+        koff, 0.0, vec2(vKcls, ter_key_plane),
         false, false, true, SLOT_CONTEST);
 }
 

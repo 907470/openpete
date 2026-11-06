@@ -1299,7 +1299,7 @@ int rim_classified(vec2 s0, vec2 s1, vec2 s2, pfloat z0, pfloat z1, pfloat z2) {
  * subdivide installs on its own nodes under the integer snap. A cut vertex
  * rebuilt by the clip carries none (ngte_clip_lerp zeroes oflag) and falls
  * back to the floor of its own projection, as push_tri does. */
-struct cvx { pvec3 m; ivec3 c; vec2 uv; vec2 os; bool ov; vec2 fl; };
+struct cvx { pvec3 m; ivec3 c; ivec3 q; vec2 uv; vec2 os; bool ov; vec2 fl; };
 
 /* The cut of edge a-b at the plane m3 = zc (cv_lerp mirror). The clip
  * takes a cut only when the endpoints straddle zc, so exactly one is
@@ -1326,6 +1326,7 @@ cvx cv_lerp_n(cvx a, cvx b, pfloat zc) {
     r.m  = pvec3(px, py, zc);
     r.uv = vec2(pu, pv);
     r.c  = ivec3(int(cr), int(cg), int(cb));
+    r.q  = ivec3(0);
     r.os = vec2(0.0); r.ov = false;
     r.fl = vec2(fx, fy);
     return r;
@@ -1429,6 +1430,13 @@ pfloat tj_t(int k, pfloat za, pfloat zb) {
  * walk's tj_rgb_lerp. */
 vec3 tj_mix8(vec3 a, vec3 b, float t) {
     return floor(mix(round(a * 255.0), round(b * 255.0), t) + 0.5) / 255.0;
+}
+
+/* The residual of tj_mix8's byte from the unrounded mix of two colours on the
+ * 8-bit grid, in 1/256 of a level (terrain.c tj_rgb_residual). */
+ivec3 tj_rgbq(vec3 a, vec3 b, float t) {
+    vec3 v = mix(round(a * 255.0), round(b * 255.0), t);
+    return ivec3(min(floor((v - floor(v + 0.5)) * 256.0 + 0.5), vec3(127.0)));
 }
 
 /* Member d's camera-space position. */
@@ -2602,9 +2610,13 @@ void main()
             tjd3[k] = tj_desc(k);
             tj_ends(tjd3[k], tp, tos, tjp3[k], tjq3[k], tjt3[k]);
         }
+        /* A member's colour residual; a re-shaded node's colour is the fog's
+         * bytes, as a corner's is. */
+        ivec3 tq[3] = ivec3[3](ivec3(0), ivec3(0), ivec3(0));
         if (tjs && hqv) {
             pvec3 p2[3];
             vec3 f2[3], n2[3];
+            ivec3 q2[3];
             vec2 u2[3], o2[3], l2[3];
             for (int k = 0; k < 3; k++) {
                 int a = tjp3[k], b = tjq3[k];
@@ -2612,12 +2624,13 @@ void main()
                 p2[k] = tj_pos(tjd3[k], tp);
                 f2[k] = tj_mix8(cf[a], cf[b], t);
                 n2[k] = tj_mix8(cn[a], cn[b], t);
+                q2[k] = (waterFar || hpFog) ? ivec3(0) : tj_rgbq(cn[a], cn[b], t);
                 u2[k] = mix(uvm[a], uvm[b], t);
                 o2[k] = tj_scr(tjd3[k], tp, tos);
                 l2[k] = mix(tfl[a], tfl[b], t);
             }
             for (int k = 0; k < 3; k++) {
-                tp[k] = p2[k]; cf[k] = f2[k]; cn[k] = n2[k];
+                tp[k] = p2[k]; cf[k] = f2[k]; cn[k] = n2[k]; tq[k] = q2[k];
                 uvm[k] = u2[k]; tos[k] = o2[k]; tfl[k] = l2[k];
             }
         }
@@ -2635,6 +2648,7 @@ void main()
             if (dbgraw) c = (dbgmode == 4) ? cn[k] : cf[k];
             cin[k].m  = tp[k];
             cin[k].c  = ivec3(round(c * 255.0));
+            cin[k].q  = tq[k];
             cin[k].uv = uvm[k];
             cin[k].os = tos[k];
             cin[k].ov = tov;
@@ -2651,6 +2665,7 @@ void main()
                 if (tjd3[k] < 3) continue;
                 c2[k].m  = tj_pos(tjd3[k], tp);
                 c2[k].c  = ivec3(floor(mix(vec3(cin[a].c), vec3(cin[b].c), t) + 0.5));
+                c2[k].q  = tj_rgbq(vec3(cin[a].c) / 255.0, vec3(cin[b].c) / 255.0, t);
                 c2[k].uv = mix(cin[a].uv, cin[b].uv, t);
                 c2[k].os = tj_scr(tjd3[k], tp, tos);
                 c2[k].fl = mix(cin[a].fl, cin[b].fl, t);
@@ -2705,7 +2720,7 @@ void main()
         sscr = scr_of(V);
         mfl = V.fl;
         uv  = V.uv;
-        col = vec4(vec3(V.c) / 255.0, 1.0);
+        col = vec4(op_rgb8q(V.c, V.q), 1.0);
     }
 #else
     if (tjs) {
@@ -2912,14 +2927,21 @@ void main()
         /* A split vertex mixes its base corners' colours from its record:
          * an HQ node its raw colours, then shades at its own depth as the
          * subdivide's nodes do; a flat member the corners' shaded colours,
-         * which keeps the flat face's shading. */
+         * which keeps the flat face's shading. A mix keeps its rounding
+         * residual, so the split face interpolates as the unsplit face does;
+         * a fogged or water-faded HQ node's colour is the fade's bytes. */
         uint r = tj_rec();
         vec3 fp, np, fq, nq;
         tj_rec_col(r, tjR[tjP], lp, slot, fp, np);
         tj_rec_col(r, tjR[tjQ], lp, slot, fq, nq);
         float tt = float(tjT);
-        col.rgb = hqv ? TJ_SHADE(mo.z, tj_mix8(fp, fq, tt), tj_mix8(np, nq, tt))
-                      : tj_mix8(TJ_SHADE(tjB[tjP].z, fp, np), TJ_SHADE(tjB[tjQ].z, fq, nq), tt);
+        if (hqv && (waterFar || hpFog)) {
+            col.rgb = TJ_SHADE(mo.z, tj_mix8(fp, fq, tt), tj_mix8(np, nq, tt));
+        } else {
+            vec3 ca = hqv ? np : TJ_SHADE(tjB[tjP].z, fp, np);
+            vec3 cb = hqv ? nq : TJ_SHADE(tjB[tjQ].z, fq, nq);
+            col.rgb = op_rgb8q(ivec3(round(tj_mix8(ca, cb, tt) * 255.0)), tj_rgbq(ca, cb, tt));
+        }
     }
 #endif
 #undef TJ_SHADE

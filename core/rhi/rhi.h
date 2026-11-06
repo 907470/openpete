@@ -771,6 +771,18 @@ typedef struct {
                          * scene stages z is the ORDERING view-Z and may carry
                          * a feeder's OT-slot shift, so deriving W from it
                          * warps UV/colour interpolation. Always stated.        */
+    union {             /* location 6, one float read by the rank channel:     */
+        float akc;      /* rank < -0.5, an actor face: its moby-against-moby
+                         * key offset. On an opaque keyed face the key at a
+                         * fragment is the fragment's ordering view-Z plus akc
+                         * (psx_key_contest.glsl op_key_loses, and the actor
+                         * key pass's per-pixel form, terrain_key.vert).      */
+        float rgbq;     /* any other face: the residual of rgba's R, G and B
+                         * from the vertex's unrounded colour, three signed
+                         * bytes in 1/256 of a level as an integer below 2^24,
+                         * which a float holds exactly (psx_unorm8.glsl
+                         * op_unorm8q). 0 on every vertex but a split node.   */
+    };
 } rhi_vertex;
 
 typedef struct rhi_buffer   rhi_buffer;
@@ -1046,9 +1058,10 @@ typedef struct rhi_pipeline_desc {
     bool           uses_vram4;  /* fourth sampler at set 3 (the MOBY og-key
                                  * image - split from the terrain keys so the
                                  * near-band embed rule applies to moby keys
-                                 * only); also turns set 1 into a pair, the
-                                 * actor key image's depth and its owner
-                                 * colour (rhi_bind_depth_tex_pair). Implies
+                                 * only); also turns set 1 into a quad, the
+                                 * flat and the per-pixel actor key images'
+                                 * depths and owner colours
+                                 * (rhi_bind_depth_rt_quad). Implies
                                  * uses_vram3.                                 */
     bool           uses_vram5;  /* fifth sampler at set 4 (the moby og-RANK
                                  * image: per-pixel winning paint rank +
@@ -2992,6 +3005,18 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
  * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_depth_tex_pair(rhi_device *dev, rhi_texture *depth_rt, rhi_texture *tex,
                              uint32_t set);
+/** @brief Bind a quad set at `set`: the sampled depth and colour of `a` (bindings 0 and 1), then of `b` (bindings 2 and 3).
+ *
+ * The actor key set of the key-resolve and material layouts: the flat actor
+ * key image and the per-pixel one, each with its owner colour. The frame
+ * slot reuses a quad set already written with the same four views, else
+ * writes the next set of the slot's list. Does nothing outside a frame, when
+ * either target is NULL, or when either has no depth sample view.
+ * @param dev Device whose current frame records the bind.
+ * @param a Depth-sampled render target supplying bindings 0 and 1.
+ * @param b Depth-sampled render target supplying bindings 2 and 3.
+ * @param set Descriptor set index in the bound pipeline's layout. */
+void rhi_bind_depth_rt_quad(rhi_device *dev, rhi_texture *a, rhi_texture *b, uint32_t set);
 /** @brief Bind the terrain key set at `set`: the sampled depth of `key_rt` (binding 0), `drain` (binding 1) and `key_rt`'s colour image (binding 2).
  *
  * This is the trio layout of the terrain key image's set in the key-resolve

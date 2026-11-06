@@ -19,6 +19,10 @@
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */
 /* Owner identities of the actor key image; see psx_scene_key.frag. */
 layout(set = 1, binding = 1) uniform sampler2D u_actorown;
+/* The per-pixel actor key image (each opaque actor face at its per-pixel
+ * moby-against-moby key, op_actor_key) and its owner colour (op_akey_id). */
+layout(set = 1, binding = 2) uniform sampler2D u_actorpkey;
+layout(set = 1, binding = 3) uniform sampler2D u_actorpown;
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
 /* The terrain key owner's true view-Z and class (op_key_attr_store), the
  * terrain key image's colour, at the set's binding 2. */
@@ -34,6 +38,7 @@ layout(location = 4) flat in float vKoff;
 layout(location = 5) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal
                                            * (ranked) or moby identity (unranked actor) */
 
+layout(location = 6) flat in float vAkc; /* moby-against-moby key offset (op_actor_key) */
 layout(location = 0) out vec4 outColor;
 /* 1 on a walked terrain face under the source tint (psx_src_tint.glsl). */
 layout(location = 10) flat in float vSrcWalk;
@@ -111,8 +116,12 @@ void main()
                     texelFetch(u_actorkey,  ivec2(gl_FragCoord.xy), 0).r,
                     texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
                     op_akey_owner(vRank))),
+                op_akey_contest(op_akey_select(
+                    texelFetch(u_actorpkey, ivec2(gl_FragCoord.xy), 0).r,
+                    texelFetch(u_actorpown, ivec2(gl_FragCoord.xy), 0),
+                    op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
-                own, ckoff, op_key_fattr_walk(vRank.x),
+                own, ckoff, vAkc, op_key_fattr_walk(vRank.x),
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
                 op_rank_is_prop(vRank.x),
                 MOBY_TRUESCOPE, SLOT_CONTEST))
