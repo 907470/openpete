@@ -2428,8 +2428,9 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LATCHED("TERRAIN_TJSPLIT", "Debug", "1",
         "Marked-edge terrain split: every HP face edge that borders an HQ-eligible "
         "face carries the subdivide's edge nodes on both of its faces, in the CPU "
-        "walk and the retained cache, so the edge has no T-junction pinholes "
-        "(default 1; 0 = faces draw unsplit)."),
+        "walk and the retained cache, so the edge has no T-junction pinholes, and LP "
+        "vertices within one unit of each other draw at one position "
+        "(default 1; 0 = faces draw unsplit and LP vertices as stored)."),
     ENVROW_LATCHED("MOBY_SHADOW_DECAL", "Debug", "1",
         "Depth-aware moby-shadow decal vs legacy subtract pipe (default 1)."),
     ENVROW_LATCHED("SHADOW_PLAYER", "Debug", "1",

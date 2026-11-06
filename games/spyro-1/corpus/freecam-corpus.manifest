@@ -252,7 +252,7 @@ artisans | pos=(85572, 29197, 10208) yaw=2061 pitch=446
 # at 1764 so the intermediate leg lands on VBL 1814, the tick the bull turns 180 degrees
 # by a rotation step and a mirrored keyframe pair at once.
 town_square | pos=(109911, 108961, 10607) yaw=1026 pitch=75 | 1764
-# stone_hill sector 7 faces 0 and 1, picked with the fill-tag inspector;
+# stone_hill sector 7 faces 0, 1 and 2, picked with the fill-tag inspector;
 # blessed pre-fix on the binary before the header regeneration.
 stone_hill | pos=(74035, 203225, 34658) yaw=6884 pitch=311
 # town_square fanning chests: under --lod extended the fans on top of the

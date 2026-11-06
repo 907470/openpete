@@ -10676,12 +10676,20 @@ static int tgpu_hq_elig(const tsface_t* F, uint32_t hqTable) {
  * the sectors the game loaded, so a custom level takes the same rule. */
 #define TJ_SEC_SLOTS 2048u   /* sector mark slots: twice the walk table's 1024 sectors */
 typedef struct { int32_t k[6]; uint8_t used, mark; uint16_t nf; } tj_edge;
-typedef struct { uint32_t s; int nOwn, nAll; uint8_t* m; } tj_sec;
+typedef struct {
+    uint32_t s; int nOwn, nAll; uint8_t* m;
+    tsvert_t* lpW;                /* the sector's LP bank with its welds (tj_weld_sector), or NULL */
+    tsvert_t* borW;               /* the same for the borrowed LP bank, or NULL */
+    int nBorW;                    /* borW's vertex count */
+    uint32_t vhash;               /* tscache_t.vhash the welded banks were copied at */
+} tj_sec;
 typedef struct {
     uint32_t sectors, faces, elig, edges, marked, quarter, open, multi, split_faces;
     uint64_t add_flat, recs;
     uint64_t base_v[4], add_v[4];   /* per draw class (tgpu_arena_of): the plain HP bake's
                                      * vertices without the split, and those it adds */
+    uint32_t weld_lp, weld_pos, weld_verts, weld_secs;   /* LP positions, positions moved, bank
+                                     * vertices moved, sectors holding them */
 } tj_stats;
 static struct {
     tj_edge* tab;                 /* the level's edges, open addressing; freed after a build */
@@ -10695,6 +10703,8 @@ static struct {
 } s_tj;
 static int s_tj_on = -1;
 static uint64_t s_tj_bake_split;   /* split records the bake wrote (engagement) */
+static uint64_t s_tj_walk_weld;    /* walk passes that read a welded LP bank (engagement) */
+static uint64_t s_tj_bake_weld;    /* bake LP sets that read a welded LP bank (engagement) */
 
 /** @brief Returns 1 while the marked-edge split runs: OPENPETE_TERRAIN_TJSPLIT unset or nonzero.
  * @return 1 or 0. */
@@ -10882,7 +10892,7 @@ static void tj_store_sector(const tscache_t* SC, uint32_t hqTable, uint32_t q) {
     if (E->s || nAll == 0) return;   /* listed twice, or no HP face */
     uint8_t* m = (uint8_t*)calloc((size_t)nAll, 1);
     if (!m) return;
-    *E = (tj_sec){ SC->s, (ns > 0 && SC->hpV && SC->hpF) ? S[0].nF : 0, nAll, m };
+    *E = (tj_sec){ .s = SC->s, .nOwn = (ns > 0 && SC->hpV && SC->hpF) ? S[0].nF : 0, .nAll = nAll, .m = m };
     uint32_t tris = 0, recs = 0;
     int at = 0;
     for (int i = 0; i < ns; i++) {
@@ -10903,7 +10913,9 @@ static void tj_store_sector(const tscache_t* SC, uint32_t hqTable, uint32_t q) {
 /** @brief Frees every sector's mark bytes and the edge table, and zeroes the build's figures.
  */
 static void tj_reset(void) {
-    for (uint32_t j = 0; j < TJ_SEC_SLOTS; j++) free(s_tj.sec[j].m);
+    for (uint32_t j = 0; j < TJ_SEC_SLOTS; j++) {
+        free(s_tj.sec[j].m); free(s_tj.sec[j].lpW); free(s_tj.sec[j].borW);
+    }
     memset(s_tj.sec, 0, sizeof s_tj.sec);
     memset(s_tj.addv, 0, sizeof s_tj.addv);
     memset(s_tj.recs, 0, sizeof s_tj.recs);
@@ -10945,6 +10957,237 @@ static const tscache_t* tj_sector(CPUState* cpu, const tj_lvl* L, uint32_t q) {
     return s ? tsc_get(cpu, s, L->lqTable, L->hqTable, L->texTblMode, L->hidet, L->sectorPtr, L->n) : NULL;
 }
 
+/* ---- LP vertex weld ------------------------------------------------------
+ * An LP edge two faces share can reach the level as two edges whose endpoints
+ * sit one unit apart on some axis, in one sector or in two. At sub-pixel
+ * precision the gap shows as background pixels along the edge. Every LP
+ * position within one unit on each axis of another
+ * joins a group, and the group's members draw at its most used position
+ * (corner references over the LP and HP faces of the level, so a position an
+ * HP face holds keeps its bit-exact seam; ties take the lesser position). A
+ * member more than one unit from that position stays where it is, which bounds
+ * every move at one unit per axis on any chain of near vertices.
+ * Sectors keep their decoded banks: coverage, stand-in and face-key tests read
+ * the authored positions. A sector with a moved vertex holds a welded copy of
+ * its LP bank in its tj_sec, which the walk (tn_pass_source) and the bake read
+ * through tj_lp_bank. A poly-anim sector, whose LP bank changes every tick,
+ * takes no part. HP vertices never move. */
+typedef struct { int32_t p[3]; uint32_t uses, root, best, to; uint8_t lp; } tj_wpos;
+typedef struct { tj_wpos* v; uint32_t n, cap; } tj_wlist;
+
+/** @brief Appends one reference of a position to the weld list, doubling the list when full.
+ * @param W The list.
+ * @param SC The sector whose frame the vertex is in.
+ * @param v The vertex.
+ * @param lp 1 for an LP corner, 0 for an HP corner. */
+static void tj_weld_ref(tj_wlist* W, const tscache_t* SC, const tsvert_t* v, int lp) {
+    if (W->n == W->cap) {
+        const uint32_t cap = W->cap ? W->cap * 2u : 1u << 14;
+        tj_wpos* nv = (tj_wpos*)realloc(W->v, cap * sizeof(tj_wpos));
+        if (!nv) return;
+        W->v = nv; W->cap = cap;
+    }
+    W->v[W->n++] = (tj_wpos){ { SC->originX + v->x, SC->originY + v->y, SC->originZ + v->z },
+                              1u, 0u, 0u, 0u, (uint8_t)lp };
+}
+
+/** @brief Appends every corner of one face bank to the weld list, skipping faces that index outside it.
+ * @param W The list.
+ * @param SC The sector whose frame the vertices are in.
+ * @param V The vertex bank.
+ * @param F The faces.
+ * @param nV The bank's vertex count.
+ * @param nF The face count.
+ * @param lp 1 for LP faces, 0 for HP faces. */
+static void tj_weld_refs(tj_wlist* W, const tscache_t* SC, const tsvert_t* V, const tsface_t* F,
+                         int nV, int nF, int lp) {
+    for (int f = 0; V && F && f < nF; f++) {
+        const int c[4] = { F[f].i0, F[f].i1, F[f].i2, F[f].i3 }, n = F[f].quad ? 4 : 3;
+        if (c[0] >= nV || c[1] >= nV || c[2] >= nV || c[3] >= nV) continue;
+        for (int k = 0; k < n; k++) tj_weld_ref(W, SC, &V[c[k]], lp);
+    }
+}
+
+/** @brief Orders two positions by x, then y, then z.
+ * @param a The first tj_wpos.
+ * @param b The second tj_wpos.
+ * @return Negative, 0 or positive. */
+static int tj_wpos_cmp(const void* a, const void* b) {
+    const int32_t* p = ((const tj_wpos*)a)->p;
+    const int32_t* q = ((const tj_wpos*)b)->p;
+    for (int c = 0; c < 3; c++)
+        if (p[c] != q[c]) return p[c] < q[c] ? -1 : 1;
+    return 0;
+}
+
+/** @brief Sorts the weld list and folds equal positions into one entry, summing their references.
+ * @param W The list. */
+static void tj_weld_fold(tj_wlist* W) {
+    if (!W->n) return;
+    qsort(W->v, W->n, sizeof(tj_wpos), tj_wpos_cmp);
+    uint32_t o = 0;
+    for (uint32_t i = 1; i < W->n; i++) {
+        if (tj_wpos_cmp(&W->v[o], &W->v[i]) == 0) {
+            W->v[o].uses += W->v[i].uses;
+            W->v[o].lp |= W->v[i].lp;
+        } else {
+            W->v[++o] = W->v[i];
+        }
+    }
+    W->n = o + 1u;
+    for (uint32_t i = 0; i < W->n; i++) { W->v[i].root = i; s_tj.st.weld_lp += W->v[i].lp; }
+}
+
+/** @brief Returns the root of a position's weld group, halving the path to it.
+ * @param W The list.
+ * @param i The position's index.
+ * @return The root's index. */
+static uint32_t tj_weld_root(tj_wlist* W, uint32_t i) {
+    while (W->v[i].root != i) {
+        W->v[i].root = W->v[W->v[i].root].root;
+        i = W->v[i].root;
+    }
+    return i;
+}
+
+/** @brief Returns 1 when two positions lie within one unit on each axis.
+ * @param a The first position.
+ * @param b The second position.
+ * @return 1 or 0. */
+static int tj_wpos_near(const tj_wpos* a, const tj_wpos* b) {
+    for (int c = 0; c < 3; c++)
+        if (abs(a->p[c] - b->p[c]) > 1) return 0;
+    return 1;
+}
+
+/** @brief Joins every two LP positions within one unit on each axis into one group, scanning the x-sorted list.
+ * @param W The list. */
+static void tj_weld_group(tj_wlist* W) {
+    for (uint32_t i = 0; i < W->n; i++) {
+        if (!W->v[i].lp) continue;
+        for (uint32_t j = i + 1u; j < W->n && W->v[j].p[0] - W->v[i].p[0] <= 1; j++)
+            if (W->v[j].lp && tj_wpos_near(&W->v[i], &W->v[j]))
+                W->v[tj_weld_root(W, j)].root = tj_weld_root(W, i);
+    }
+}
+
+/** @brief Sets each position's weld target: its group's most used position, itself when that lies over a unit away.
+ * @param W The list. */
+static void tj_weld_targets(tj_wlist* W) {
+    for (uint32_t i = 0; i < W->n; i++) W->v[i].best = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < W->n; i++) {
+        tj_wpos* R = &W->v[tj_weld_root(W, i)];
+        if (R->best == 0xFFFFFFFFu || W->v[i].uses > W->v[R->best].uses) R->best = i;
+    }
+    for (uint32_t i = 0; i < W->n; i++) {
+        const uint32_t t = W->v[tj_weld_root(W, i)].best;
+        W->v[i].to = tj_wpos_near(&W->v[i], &W->v[t]) ? t : i;
+        s_tj.st.weld_pos += W->v[i].to != i;
+    }
+}
+
+/** @brief Copies a bank with its moved vertices at their weld targets.
+ * @param W The fold list with its targets set.
+ * @param SC The sector whose frame the bank is in.
+ * @param V The bank.
+ * @param nV Its vertex count.
+ * @return The welded copy, or NULL when no vertex moves. */
+static tsvert_t* tj_weld_bank(const tj_wlist* W, const tscache_t* SC, const tsvert_t* V, int nV) {
+    tsvert_t* out = NULL;
+    for (int k = 0; V && k < nV; k++) {
+        const tj_wpos key = { { SC->originX + V[k].x, SC->originY + V[k].y, SC->originZ + V[k].z },
+                              0u, 0u, 0u, 0u, 0u };
+        const tj_wpos* e = (const tj_wpos*)bsearch(&key, W->v, W->n, sizeof(tj_wpos), tj_wpos_cmp);
+        if (!e || &W->v[e->to] == e) continue;
+        if (!out) {
+            out = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)nV);
+            if (!out) return NULL;
+            memcpy(out, V, sizeof(tsvert_t) * (size_t)nV);
+        }
+        const int32_t* t = W->v[e->to].p;
+        out[k] = (tsvert_t){ (int16_t)(t[0] - SC->originX), (int16_t)(t[1] - SC->originY),
+                             (int16_t)(t[2] - SC->originZ) };
+        s_tj.st.weld_verts++;
+    }
+    return out;
+}
+
+/** @brief Stores a sector's welded LP banks, own and borrowed, in its mark slot.
+ * @param W The fold list with its targets set.
+ * @param SC The sector. */
+static void tj_weld_sector(const tj_wlist* W, const tscache_t* SC) {
+    const tsimp_t* I = SC->imp;
+    tsvert_t* own = tj_weld_bank(W, SC, SC->lpV, SC->nLpV);
+    tsvert_t* bor = I ? tj_weld_bank(W, SC, I->lpV, I->nLpV) : NULL;
+    tj_sec* E = tj_sec_slot(SC->s);
+    if ((!own && !bor) || E->lpW || E->borW) { free(own); free(bor); return; }
+    E->s = SC->s; E->lpW = own; E->borW = bor; E->nBorW = I ? I->nLpV : 0; E->vhash = SC->vhash;
+    s_tj.st.weld_secs++;
+}
+
+/** @brief Welds the level's near-duplicate LP vertices: gathers every static face corner, groups the LP positions, and stores each moved sector's banks.
+ * @param cpu The guest CPU state.
+ * @param L The build's inputs. */
+static void tj_weld_build(CPUState* cpu, const tj_lvl* L) {
+    tj_wlist W = { NULL, 0u, 0u };
+    for (uint32_t q = 0; q < L->n; q++) {
+        const tscache_t* SC = tj_sector(cpu, L, q);
+        if (!SC || SC->polyanim) continue;
+        const tsimp_t* I = SC->imp;
+        tj_weld_refs(&W, SC, SC->lpV, SC->lpF, SC->nLpV, SC->nLpF, 1);
+        tj_weld_refs(&W, SC, SC->hpV, SC->hpF, SC->nHpV, SC->nHpF, 0);
+        if (!I) continue;
+        tj_weld_refs(&W, SC, I->lpV, I->lpF, I->nLpV, I->nLpF, 1);
+        tj_weld_refs(&W, SC, I->V, I->F, I->nV, I->nF, 0);
+    }
+    tj_weld_fold(&W);
+    tj_weld_group(&W);
+    tj_weld_targets(&W);
+    for (uint32_t q = 0; s_tj.st.weld_pos && q < L->n; q++) {
+        const tscache_t* SC = tj_sector(cpu, L, q);
+        if (SC && !SC->polyanim) tj_weld_sector(&W, SC);
+    }
+    free(W.v);
+}
+
+/** @brief Returns the LP bank a sector draws from: its welded copy (tj_weld_sector), else the decoded bank.
+ *
+ * A sector with no copy, a poly-anim sector, and a sector whose vertex words
+ * changed since the copy read the decoded bank.
+ * @param SC The sector.
+ * @param borrowed 1 for the borrowed LP bank, 0 for the own one; SC->imp is set for 1.
+ * @return The bank. */
+static const tsvert_t* tj_lp_bank(const tscache_t* SC, int borrowed) {
+    const tsvert_t* raw = borrowed ? SC->imp->lpV : SC->lpV;
+    if (SC->polyanim || !SC->s) return raw;
+    const tj_sec* E = tj_sec_slot(SC->s);
+    if (E->s != SC->s || E->vhash != SC->vhash) return raw;
+    const tsvert_t* w = borrowed ? (E->nBorW == SC->imp->nLpV ? E->borW : NULL) : E->lpW;
+    return w ? w : raw;
+}
+
+/** @brief Returns the LP bank a sector bake reads (tj_lp_bank), the decoded bank in a preview bake.
+ * @param SC The sector.
+ * @param borrowed 1 for the borrowed LP bank, 0 for the own one.
+ * @return The bank. */
+static const tsvert_t* tgpu_lp_bank(const tscache_t* SC, int borrowed) {
+    const tsvert_t* raw = borrowed ? SC->imp->lpV : SC->lpV;
+    const tsvert_t* v = s_tpv_sink ? raw : tj_lp_bank(SC, borrowed);
+    if (v != raw) __atomic_fetch_add(&s_tj_bake_weld, 1u, __ATOMIC_RELAXED);
+    return v;
+}
+
+/** @brief Returns the LP bank a walk pass reads (tj_lp_bank).
+ * @param SC The sector.
+ * @param borrowed 1 for the borrowed LP bank, 0 for the own one.
+ * @return The bank. */
+static const tsvert_t* tn_lp_bank(const tscache_t* SC, int borrowed) {
+    const tsvert_t* v = tj_lp_bank(SC, borrowed);
+    if (v != (borrowed ? SC->imp->lpV : SC->lpV))
+        __atomic_fetch_add(&s_tj_walk_weld, 1u, __ATOMIC_RELAXED);
+    return v;
+}
+
 /** @brief Builds the marked-edge table and every sector's face marks for the walk's table.
  *
  * Two passes over the table: every face set's edges enter the edge table,
@@ -10967,6 +11210,7 @@ static void tj_level_build(CPUState* cpu, const tj_lvl* L) {
         const tscache_t* SC = tj_sector(cpu, L, q);
         if (SC) tj_store_sector(SC, L->hqTable, q);
     }
+    tj_weld_build(cpu, L);
     tj_edge_stats();
     static int s_census = -1;
     ENV_FLAG_LATCH(s_census, "OPENPETE_TERRAIN_TJSPLIT_CENSUS");
@@ -10976,6 +11220,8 @@ static void tj_level_build(CPUState* cpu, const tj_lvl* L) {
             " quarter=%u open_edges=%u edges_3plus_faces=%u split_faces=%u add_tris=%llu\n",
             s_tj.gen, T->sectors, T->faces, T->elig, T->edges, T->marked, T->quarter, T->open,
             T->multi, T->split_faces, (unsigned long long)T->add_flat);
+    fprintf(stderr, "[tjsplit] weld gen=%u lp_positions=%u moved_positions=%u moved_verts=%u"
+            " sectors=%u\n", s_tj.gen, T->weld_lp, T->weld_pos, T->weld_verts, T->weld_secs);
     free(s_tj.tab);
     s_tj.tab = NULL; s_tj.cap = s_tj.used = 0;
 }
@@ -10985,6 +11231,8 @@ static void tj_level_build(CPUState* cpu, const tj_lvl* L) {
 static void tj_use_at_exit(void) {
     fprintf(stderr, "[tjsplit] use walk_split_tris=%llu bake_split_recs=%llu\n",
             (unsigned long long)s_tj_walk_split, (unsigned long long)s_tj_bake_split);
+    fprintf(stderr, "[tjsplit] weld use walk_passes=%llu bake_sets=%llu\n",
+            (unsigned long long)s_tj_walk_weld, (unsigned long long)s_tj_bake_weld);
 }
 
 /** @brief Rebuilds the marked-edge table when the walk's table, the HQ table or the texture mapping changed since the last build.
@@ -12469,7 +12717,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     const int lp_bucket = openpete_mods_material_terrain_class(-1, 1, 0, 1);
     const int lp_buckets[2] = { lp_bucket, openpete_mods_material_terrain_class(-1, 1, 1, 1) };
     const uint32_t own_sec = tgpu_envm_sec(SC, sec_index);
-    const tgpu_lpset own_lp = { SC->lpV, (anim && !vsnap) ? SC->lpVprev : NULL, SC->nLpV,
+    const tgpu_lpset own_lp = { tgpu_lp_bank(SC, 0), (anim && !vsnap) ? SC->lpVprev : NULL, SC->nLpV,
                                 SC->lpColBase, CA, sec_index };
     for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++)
         if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff,
@@ -12480,7 +12728,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         /* Borrowed LP faces: the source LP colours through the host window,
          * no previous-tick state, no authored correction. */
         const tsimp_t* I = SC->imp;
-        const tgpu_lpset bor_lp = { I->lpV, NULL, I->nLpV, I->lpColBase, NULL, -1 };
+        const tgpu_lpset bor_lp = { tgpu_lp_bank(SC, 1), NULL, I->nLpV, I->lpColBase, NULL, -1 };
         for (int f = 0; f < I->nLpF; f++)
             if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff, lp_bucket, &bor_lp, &I->lpF[f], f) != 0)
                 goto done;
@@ -13931,7 +14179,7 @@ static int tn_pass_source(const tscache_t* SC, int pass, const canim_t* CAm, tn_
             P->V = I->V; P->F = I->F; P->nv = I->nV; P->nf = I->nF;
             P->h_near = I->nearCol; P->h_far = I->farCol;
         } else {
-            P->V = I->lpV; P->F = I->lpF; P->nv = I->nLpV; P->nf = I->nLpF;
+            P->V = tn_lp_bank(SC, 1); P->F = I->lpF; P->nv = I->nLpV; P->nf = I->nLpF;
             P->lpCol = I->lpColBase;
             P->h_lp = (const uint8_t*)tn_host_span(I->lpColBase, I->lpColSpan);
         }
@@ -13939,7 +14187,7 @@ static int tn_pass_source(const tscache_t* SC, int pass, const canim_t* CAm, tn_
     }
     const int lp = (pass != 1);
     if (lp) {
-        P->V = SC->lpV; P->F = SC->lpF; P->nv = SC->nLpV; P->nf = SC->nLpF;
+        P->V = tn_lp_bank(SC, 0); P->F = SC->lpF; P->nv = SC->nLpV; P->nf = SC->nLpF;
         P->faces = SC->lpFaces; P->lpCol = SC->lpColBase;
         if (SC->vfracPres == s_vanim_pres) P->vF = SC->lpVf;
     } else {

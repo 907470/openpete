@@ -22,6 +22,11 @@ inverse. Classes, first match wins:
       (m's face has more triangles than the edge's face, an HQ-subdivided
       face beside a coarser one, same sector), Ts (cross-sector), To (other
       same-sector).
+  O   an opening: two triangle edges flank P within O_R px, on opposite
+      sides of it, and their view depths at the points nearest P differ by
+      at least O_Z units. The surfaces are that far apart along the sight
+      line, so P sees past a silhouette and the background it shows is the
+      correct image, not a crack. The nearest flanking pair decides.
   C   a crack: two edges of different triangles within EDGE_D of P whose
       endpoints pair up within CR_D but not within SAME: a shared edge whose
       vertex positions differ. Co same sector, Cs cross-sector.
@@ -52,8 +57,10 @@ SAME = 0.03
 TIE_D = 0.002
 IN_D = 0.15
 OPEN_D = 0.75
+O_R = 1.5
+O_Z = 24.0
 CAP_W = 640
-CLASSES = ("T", "C", "K", "E", "S", "U")
+CLASSES = ("T", "O", "C", "K", "E", "S", "U")
 
 
 def load_dump(path):
@@ -68,7 +75,8 @@ def load_dump(path):
         f = line.split(",")
         v = ((float(f[7]), float(f[8])), (float(f[10]), float(f[11])),
              (float(f[13]), float(f[14])))
-        tris.append({"sec": int(f[0]), "face": int(f[1]), "v": v})
+        tris.append({"sec": int(f[0]), "face": int(f[1]), "v": v,
+                     "z": (float(f[9]) / 16.0, float(f[12]) / 16.0, float(f[15]) / 16.0)})
     return tris, hdr
 
 
@@ -173,6 +181,29 @@ class Geo:
                         return "Cs" if T[i]["sec"] != T[j]["sec"] else "Co"
         return None
 
+    def depth_gap(self, p, nbr):
+        """The view-depth gap of the nearest pair of triangle edges flanking p, None without a pair."""
+        near = []
+        for i in nbr:
+            q, z = self.T[i]["p"], self.T[i]["z"]
+            for k in range(3):
+                k2 = (k + 1) % 3
+                d, tp = segd(p, q[k], q[k2])
+                if d >= O_R:
+                    continue
+                t = min(1.0, max(0.0, tp))
+                pt = (q[k][0] + t * (q[k2][0] - q[k][0]), q[k][1] + t * (q[k2][1] - q[k][1]))
+                near.append((d, (pt[0] - p[0], pt[1] - p[1]),
+                             1.0 / ((1.0 - t) / z[k] + t / z[k2])))
+        best = None
+        for a, (da, ua, za) in enumerate(near):
+            for db, ub, zb in near[a + 1:]:
+                if ua[0] * ub[0] + ua[1] * ub[1] >= -0.3 * da * db:
+                    continue
+                if best is None or da + db < best[0]:
+                    best = (da + db, abs(za - zb))
+        return None if best is None else best[1]
+
     def classify(self, x, y):
         p = (x + 0.5, y + 0.5)
         nbr = self.near(p)
@@ -195,7 +226,13 @@ class Geo:
                        for k in range(3)):
                     inside.append(min(ds))
         close = [e for e in edges if e[0] < EDGE_D]
-        c = self.tjunction(nbr, close) or self.crack(close)
+        c = self.tjunction(nbr, close)
+        if c:
+            return c
+        gap = None if inside else self.depth_gap(p, nbr)
+        if gap is not None and gap >= O_Z:
+            return "O"
+        c = self.crack(close)
         if c:
             return c
         if inside and max(inside) > IN_D:
