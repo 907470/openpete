@@ -644,7 +644,10 @@ static int rp_card_args(rp_argv_t* a, int port)
 static int rp_replay_args(rp_argv_t* a)
 {
     char p[RP_PATH], src[RP_PATH], num[32];
-    int rc = rp_arg(a, "--headless") | rp_arg(a, "--vibration") | rp_arg(a, "0");
+    /* A windowed replay reaches the live present, which a headless run never
+     * builds: occlusion readback and eager production differ there. */
+    int rc = rp_arg(a, "--vibration") | rp_arg(a, "0");
+    if (!getenv("OPENPETE_BUGREPORT_REPLAY_WINDOWED")) rc |= rp_arg(a, "--headless");
     rc |= rp_card_args(a, 1) | rp_card_args(a, 2);
     rp_join(p, sizeof p, R.scratch, "mods");
     if (rp_mkdirs(p) != 0) rc = -1;
