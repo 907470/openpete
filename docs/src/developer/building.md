@@ -703,9 +703,11 @@ leak scan, signing, and the Windows first-boot e2e with the oracle.
 Extract the archive anywhere and run the exe with no arguments; a bare path
 to a `.cue/.bin/.img/.iso/.chd/.pbp` means `--ingest`, which copies the disc
 into the library, after which the exe recompiles the module and plays.
-`scripts/check_dist_first_boot.sh` checks that whole path end-to-end against
-the 20k hardware oracle, in a scratch `HOME`/XDG so it never touches the
-developer's real directories; `--appimage` gates the AppImage instead, and
+`scripts/check_dist_first_boot.sh --all-shipped` checks that whole path
+end-to-end against the 20k hardware oracle for every game of
+`games/shipped.toml` (`--game ID` for one; a run naming neither is refused),
+in a scratch `HOME`/XDG so it never touches the developer's real directories;
+`--appimage` gates the AppImage instead, and
 `OPENPETE_DIST_ARTIFACT=<file>` gates an already-built artifact with no
 build tree present.
 

@@ -9,19 +9,21 @@
 # This is the closest thing to "a stranger
 # downloaded it and it worked" that CI can check.
 #
-#   scripts/check_dist_first_boot.sh              # the .tar.xz artifact
-#   scripts/check_dist_first_boot.sh --appimage   # the AppImage artifact
+#   scripts/check_dist_first_boot.sh --all-shipped              # the .tar.xz artifact
+#   scripts/check_dist_first_boot.sh --appimage --all-shipped   # the AppImage artifact
 #   scripts/check_dist_first_boot.sh [--appimage] --game spyro-2
-#   scripts/check_dist_first_boot.sh [--appimage] --all-shipped
 #
-# --game ID (or OPENPETE_E2E_GAME; default spyro-1) names the game the run
-# ingests and replays. games/<game>/oracle.conf supplies the disc (DISC),
+# --game ID (or OPENPETE_E2E_GAME) names the game the run ingests and
+# replays; a run that names neither a game nor --all-shipped is refused.
+# games/<game>/oracle.conf supplies the disc (DISC),
 # the golden (GOLDEN) and the flags the golden's capture ran under
 # (RUN_ARGS, e.g. --no-card for a cardless golden), which the replay
 # passes. A missing default golden is captured with
 # scripts/capture_psx_oracle_ds.sh --game <game>. --all-shipped packages
 # once and runs every game of games/shipped.toml against that one
-# artifact, then prints one verdict row per game.
+# artifact, then prints one verdict row per game. --dry-run stops each game
+# after its input checks: it prints the disc, golden and replay flags, refuses
+# a missing one, and neither packages nor captures.
 #
 # OPENPETE_DIST_ARTIFACT=<file> skips the packaging step and gates that
 # already-built .tar.xz or .AppImage instead; with it set, no build tree is
@@ -96,15 +98,17 @@ fi
 cd "$(dirname "$0")/.."
 
 APPIMAGE=0
-GAME="${OPENPETE_E2E_GAME:-spyro-1}"
+GAME="${OPENPETE_E2E_GAME:-}"
 ALL_SHIPPED=0
+DRY_RUN=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --appimage) APPIMAGE=1; shift ;;
         --game) GAME="${2:?--game needs an id}"; shift 2 ;;
         --game=*) GAME="${1#--game=}"; shift ;;
         --all-shipped) ALL_SHIPPED=1; shift ;;
-        *) echo "usage: $0 [--appimage] [--game ID | --all-shipped]" >&2; exit 64 ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        *) echo "usage: $0 [--dry-run] [--appimage] (--game ID | --all-shipped)" >&2; exit 64 ;;
     esac
 done
 
@@ -127,7 +131,8 @@ print("\n".join(re.findall(r"\"([^\"]+)\"", m.group(1)) if m else []))')
     trap 'rm -rf "${ALLWORK:?}"' EXIT
     child=("$0")
     [[ $APPIMAGE -eq 1 ]] && child+=(--appimage)
-    if [[ -z "$ARTIFACT" ]]; then
+    [[ $DRY_RUN -eq 1 ]] && child+=(--dry-run)
+    if [[ -z "$ARTIFACT" && $DRY_RUN -eq 0 ]]; then
         # One package for every game: the children gate the same bytes.
         [[ -x build/linux-release-launcher/openpete ]] \
             || { echo "[dist-gate] build linux-release-launcher first" >&2; exit 64; }
@@ -148,7 +153,7 @@ print("\n".join(re.findall(r"\"([^\"]+)\"", m.group(1)) if m else []))')
             | tee "$ALLWORK/$g.log"
         rc=${PIPESTATUS[0]}
         set -e
-        verdict=$(grep -m1 -o "psxtrace: verdict.*" "$ALLWORK/$g.log" || echo "no verdict line")
+        verdict=$(grep -m1 -oE "psxtrace: verdict.*|dry run: inputs present" "$ALLWORK/$g.log" || echo "no verdict line")
         rows+=("$(printf '%-8s rc=%-3s %s' "$g" "$rc" "$verdict")")
         (( rc > worst )) && worst=$rc
     done
@@ -157,6 +162,7 @@ print("\n".join(re.findall(r"\"([^\"]+)\"", m.group(1)) if m else []))')
     exit "$worst"
 fi
 
+[[ -n "$GAME" ]] || { echo "[dist-gate] name the game: --game ID or --all-shipped" >&2; exit 64; }
 CONF="games/$GAME/oracle.conf"
 [[ -f "$CONF" ]] || { echo "[dist-gate] no oracle recipe for $GAME: $CONF" >&2; exit 64; }
 GOLDEN=""; DISC=""; RUN_ARGS=()
@@ -167,10 +173,10 @@ TRACE="${OPENPETE_TRACE:-$GOLDEN}"
 # The module's file name: spyro-2 -> spyro2-recomp.so.
 MODULE_SO="${GAME//-/}-recomp.so"
 echo "[dist-gate] game $GAME: disc $DISC, golden $TRACE, replay flags: ${RUN_ARGS[*]:-none}"
-[[ -f "$DISC" ]] || { echo "[dist-gate] disc missing: $DISC" >&2; exit 64; }
+[[ -f "$DISC" ]] || { echo "[dist-gate] $GAME: disc missing: $DISC" >&2; exit 64; }
 # The golden is generated, not committed: a missing default golden is
 # captured as the oracle gate does; an explicit OPENPETE_TRACE never is.
-if [[ ! -f "$TRACE" && "$TRACE" == "$GOLDEN" && -x scripts/capture_psx_oracle_ds.sh ]]; then
+if [[ $DRY_RUN -eq 0 && ! -f "$TRACE" && "$TRACE" == "$GOLDEN" && -x scripts/capture_psx_oracle_ds.sh ]]; then
     [[ -x third_party/duckstation/build-regtest/bin/duckstation-regtest ]] \
         || { echo "[dist-gate] golden missing: $TRACE and DuckStation is not built" \
                   "(scripts/setup_duckstation.sh)" >&2; exit 64; }
@@ -178,13 +184,17 @@ if [[ ! -f "$TRACE" && "$TRACE" == "$GOLDEN" && -x scripts/capture_psx_oracle_ds
     scripts/capture_psx_oracle_ds.sh --game "$GAME" \
         || { echo "[dist-gate] golden capture failed" >&2; exit 64; }
 fi
-[[ -f "$TRACE" ]] || { echo "[dist-gate] golden missing: $TRACE (tests/harness/check_psx_oracle.sh --game $GAME captures it)" >&2; exit 64; }
+[[ -f "$TRACE" ]] || { echo "[dist-gate] $GAME: golden missing: $TRACE (tests/harness/check_psx_oracle.sh --game $GAME captures it)" >&2; exit 64; }
 # The replay runs under the reference's schedule, read from the sidecars
 # beside the golden; every recipe records these three. A golden copied
 # without them replays unscheduled and diverges at the first load.
 for _sc in vsync loads srand; do
-    [[ -f "$TRACE.$_sc" ]] || { echo "[dist-gate] golden sidecar missing: $TRACE.$_sc (copy every $TRACE.* file with the golden)" >&2; exit 64; }
+    [[ -f "$TRACE.$_sc" ]] || { echo "[dist-gate] $GAME: golden sidecar missing: $TRACE.$_sc (copy every $TRACE.* file with the golden)" >&2; exit 64; }
 done
+if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[dist-gate] $GAME: dry run: inputs present"
+    exit 0
+fi
 if [[ -n "$ARTIFACT" ]]; then
     [[ -f "$ARTIFACT" ]] || { echo "[dist-gate] artifact missing: $ARTIFACT" >&2; exit 64; }
     case "$ARTIFACT" in *.AppImage) APPIMAGE=1 ;; esac
