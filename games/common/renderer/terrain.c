@@ -1575,11 +1575,16 @@ static ngte_cvert nc4_pt(ngte_cvert a, ngte_cvert b, int k);
  * projection; the node takes the point of that segment at the parameter of
  * its own projection, as nc4_snap_edge places the subdivide's edge nodes. A
  * corner inside the near plane leaves the node to the per-vertex floor.
+ * The returned weight is what the raster gives the unsplit edge at that
+ * screen parameter s: s under screen-affine interpolation, else the
+ * perspective-correct s * za / ((1 - s) * zb + s * za).
  * @param n The node; receives the screen override.
  * @param a The edge's first corner.
- * @param b The edge's second corner. */
-static void tj_snap_node(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert* b) {
-    if (!openpete_native_vertex_snap_active() || a->m3 < s_nearz || b->m3 < s_nearz) return;
+ * @param b The edge's second corner.
+ * @param t The node's weight of b when no override applies.
+ * @return The weight of b for the node's attributes. */
+static double tj_snap_node(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert* b, double t) {
+    if (!openpete_native_vertex_snap_active() || a->m3 < s_nearz || b->m3 < s_nearz) return t;
     float ax, ay, bx, by, px, py;
     proj_screen(a->m1, a->m2, a->m3, &ax, &ay);
     proj_screen(b->m1, b->m2, b->m3, &bx, &by);
@@ -1590,14 +1595,18 @@ static void tj_snap_node(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert* b
     float tt = L2 > 0.0f ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0.5f;
     tt = tt < 0.0f ? 0.0f : (tt > 1.0f ? 1.0f : tt);
     n->osx = ax + tt * dx; n->osy = ay + tt * dy; n->oflag = 1;
+    if (openpete_native_get_texture_mapping()) return tt;
+    const double s = tt, za = a->m3, zb = b->m3;
+    return s * za / ((1.0 - s) * zb + s * za);
 }
 
 /** @brief Builds one member of a split triangle from its base corners.
  *
  * A corner member is the corner. A node takes nc4_pt's position (and its
- * screen override under the snap, tj_snap_node) and the corners' colours,
- * far colours, UV and face-local coordinate mixed at the node's
- * interpolation parameter (tj_lerp_t).
+ * screen override under the snap) and the corners' colours, far colours,
+ * UV and face-local coordinate mixed at the weight of that placement
+ * (tj_snap_node), which without an override is the node's interpolation
+ * parameter (tj_lerp_t).
  * @param B The base triangle's corners.
  * @param d The member descriptor.
  * @return The member. */
@@ -1607,14 +1616,13 @@ static ngte_cvert tj_member_cv(const ngte_cvert B[3], int d) {
     const ngte_cvert* a = &B[e];
     const ngte_cvert* b = &B[(e + 1) % 3];
     ngte_cvert r = nc4_pt(*a, *b, k);
-    const double t = tj_lerp_t(k, a->m3, b->m3);
+    const double t = tj_snap_node(&r, a, b, tj_lerp_t(k, a->m3, b->m3));
     r.rgb = tj_rgb_lerp(a->rgb, b->rgb, t);
     r.rgbf = tj_rgb_lerp(a->rgbf, b->rgbf, t);
     r.u = (float)(a->u + (b->u - a->u) * t);
     r.v = (float)(a->v + (b->v - a->v) * t);
     r.fx = (float)(a->fx + (b->fx - a->fx) * t);
     r.fy = (float)(a->fy + (b->fy - a->fy) * t);
-    tj_snap_node(&r, a, b);
     return r;
 }
 

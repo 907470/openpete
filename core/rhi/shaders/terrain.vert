@@ -1408,7 +1408,7 @@ uint coltab_col(uint slot, int arr, uint idx)
  * (3 + 3e + k - 1). A node sits at nc4_pt of the edge's transformed
  * corners, the operand the subdivide builds its own nodes from, so a flat
  * face and its subdivided neighbour place the shared node identically. Its
- * attributes mix the base corners' at tj_t. */
+ * attributes mix the base corners' at the weight of tj_ends. */
 #define TJ_SPLIT 0x4000u
 
 /* Member m's descriptor. */
@@ -1425,15 +1425,6 @@ pfloat tj_t(int k, pfloat za, pfloat zb) {
     return (s * zb) / ((1.0 - s) * za + s * zb);
 }
 
-/* Member d's two base corners and the second's weight: a corner is its own
- * pair at weight 0. */
-void tj_ends(int d, pvec3 B[3], out int p, out int q, out pfloat t) {
-    if (d < 3) { p = d; q = d; t = 0.0; return; }
-    int e = (d - 3) / 3, k = (d - 3) % 3 + 1;
-    p = e; q = (e + 1) % 3;
-    t = tj_t(k, B[p].z, B[q].z);
-}
-
 /* Two colours on the 8-bit grid mixed at weight t and rounded half up, the
  * walk's tj_rgb_lerp. */
 vec3 tj_mix8(vec3 a, vec3 b, float t) {
@@ -1447,6 +1438,26 @@ precise pvec3 tj_pos(int d, pvec3 B[3]) {
     return nc4_pt(B[e], B[(e + 1) % 3], (d - 3) % 3 + 1);
 }
 
+/* The screen parameter on the segment A-C of the point nearest m, clamped to
+ * [0, 1]; 0.5 on a zero-length segment (terrain.c tj_snap_node). */
+float tj_seg_s(vec2 A, vec2 C, vec2 m) {
+    precise float dx = C.x - A.x, dy = C.y - A.y;
+    precise float L2 = dx * dx + dy * dy;
+    precise float num = (m.x - A.x) * dx + (m.y - A.y) * dy;
+    float tt = L2 > 0.0 ? num / L2 : 0.5;
+    return clamp(tt, 0.0, 1.0);
+}
+
+/* The weight of the edge's second corner at screen parameter s, the value
+ * the raster gives the unsplit edge there: s under AFFINE_UV, the
+ * perspective-correct s * za / ((1 - s) * zb + s * za) otherwise (terrain.c
+ * tj_snap_node). */
+pfloat tj_seg_t(float s, pfloat za, pfloat zb) {
+    if (AFFINE_UV) return pfloat(s);
+    pfloat ps = pfloat(s);
+    return (ps * za) / ((1.0 - ps) * zb + ps * za);
+}
+
 /* Member d's emitted screen point: a corner's own; a node's projection,
  * placed under the integer snap on the segment between its edge's emitted
  * corner points (terrain.c tj_snap_node), unless an edge corner is inside
@@ -1457,14 +1468,24 @@ vec2 tj_scr(int d, pvec3 B[3], vec2 S[3]) {
     if (pc.snap == 0) return proj_of(m);
     int p = (d - 3) / 3, q = (p + 1) % 3;
     if (B[p].z < G_NEAR || B[q].z < G_NEAR) return floor(proj_of(m));
-    vec2 A = S[p], C = S[q], mm = proj_of(m);
+    vec2 A = S[p], C = S[q];
+    float tt = tj_seg_s(A, C, proj_of(m));
     precise float dx = C.x - A.x, dy = C.y - A.y;
-    precise float L2 = dx * dx + dy * dy;
-    precise float num = (mm.x - A.x) * dx + (mm.y - A.y) * dy;
-    float tt = L2 > 0.0 ? num / L2 : 0.5;
-    tt = clamp(tt, 0.0, 1.0);
     precise float rx = A.x + tt * dx, ry = A.y + tt * dy;
     return vec2(rx, ry);
+}
+
+/* Member d's two base corners and the second's weight: a corner is its own
+ * pair at weight 0; a node placed on its edge's snapped segment (tj_scr)
+ * takes the weight of that placement (tj_seg_t), any other node tj_t's. */
+void tj_ends(int d, pvec3 B[3], vec2 S[3], out int p, out int q, out pfloat t) {
+    if (d < 3) { p = d; q = d; t = 0.0; return; }
+    int e = (d - 3) / 3, k = (d - 3) % 3 + 1;
+    p = e; q = (e + 1) % 3;
+    if (pc.snap != 0 && B[p].z >= G_NEAR && B[q].z >= G_NEAR)
+        t = tj_seg_t(tj_seg_s(S[p], S[q], proj_of(tj_pos(d, B))), B[p].z, B[q].z);
+    else
+        t = tj_t(k, B[p].z, B[q].z);
 }
 
 /* HQ 2x2 node n (NODEMAP numbering) from the transformed parent corners,
@@ -2224,7 +2245,7 @@ void main()
         tj_base(hqv, quad, (f16 & 0x2000u) != 0u, subq, m0, m1, m2, m3c, tjB, tjS, tjF, tjR);
 #ifndef TERRAIN_NEAR
         tjD = tj_desc(int((uint(inPos.z) >> 2) & 3u));
-        tj_ends(tjD, tjB, tjP, tjQ, tjT);
+        tj_ends(tjD, tjB, tjS, tjP, tjQ, tjT);
 #endif
     }
     /* nc4_front mirror: a straddling face's cell draws only when one of its
@@ -2579,7 +2600,7 @@ void main()
         pfloat tjt3[3];
         for (int k = 0; k < 3 && tjs; k++) {
             tjd3[k] = tj_desc(k);
-            tj_ends(tjd3[k], tp, tjp3[k], tjq3[k], tjt3[k]);
+            tj_ends(tjd3[k], tp, tos, tjp3[k], tjq3[k], tjt3[k]);
         }
         if (tjs && hqv) {
             pvec3 p2[3];
