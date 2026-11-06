@@ -85,6 +85,10 @@
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 #include "renderer/env_knob.h"
 #include "mod_vec.h"
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 extern void     func_800258F0(CPUState* cpu);  /* the real world renderer */
 extern unsigned openpete_frame;
@@ -7292,7 +7296,8 @@ typedef struct canim {
     uint32_t lpBase, hpBase;      /* LP colour array; HP near array (far follows) */
     uint32_t nLp, nHp;            /* words: nLpC; 2 * nHpC */
     uint32_t* prev; uint32_t* cur;/* nLp + nHp words each */
-    uint32_t* mix;                /* the walk's present colours (alpha < 1) */
+    uint32_t* mix;                /* the walk's present colours (alpha < 1), then nTail words */
+    uint32_t nTail;               /* guest words past the far array in mix (canim_tail_words) */
     uint32_t rollPres;            /* s_vanim_pres of the canonical build that rolled it */
     int havePrev;
     int model;                    /* cur holds words RAM does not: the walker model's HP
@@ -7319,11 +7324,77 @@ static void canim_geom(CPUState* cpu, uint32_t s, canim_t* g) {
     g->hpBase = s + 0x1Cu + ((w4 >> 24) & 0xFFu) * 4u + (w4 & 0xFFu) * 4u;
 }
 
+/** @brief Latches OPENPETE_TERRAIN_CANIM_GUARD, the bounds harness's mode of the `mix` block.
+ *
+ * Set, `mix` ends flush against an inaccessible page (canim_mix_alloc), so a
+ * read past the block faults on every run instead of on the rare heap layout
+ * that leaves the block against an uncommitted page, and the walk counts the
+ * face corners that index past their banks (canim_bounds_census). A value
+ * of 2 is the harness's negative control: no tail, and each counted triangle
+ * reads the far word its c3 names.
+ * @return The variable's value as an integer, 0 when unset. */
+static int canim_guard(void) {
+    static int s_v = -1;
+    if (s_v < 0) { const char* e = getenv("OPENPETE_TERRAIN_CANIM_GUARD"); s_v = (e && *e) ? atoi(e) : 0; }
+    return s_v;
+}
+
+/** @brief Returns the guest words a slot's `mix` block carries past its far array.
+ *
+ * The game reads a face's colour byte offset, at most 0x3FC, with no bound
+ * (r_environment.s 80029834: `andi 0x3FC`, then `lw` off the near array), so
+ * a walk read reaches 0x100 words from the far array's start: past nHpC the
+ * near array runs into the far one as in guest RAM, and past the far array
+ * into these words. The LP array's offsets stay inside the block, whose words
+ * number at least 0x100. OPENPETE_TERRAIN_CANIM_GUARD=2 drops the tail, for
+ * the bounds harness's negative control (canim_bounds_census).
+ * @param nHp The slot's HP words: nHpC, at most 255, for each of the two arrays.
+ * @return The word count. */
+static uint32_t canim_tail_words(uint32_t nHp) {
+    return canim_guard() == 2 ? 0u : 0x100u - nHp / 2u;
+}
+
+/** @brief Allocates a `mix` block, flush against an inaccessible page under the guard.
+ * @param n The block's size in words.
+ * @return The block, or NULL when allocation fails. */
+static uint32_t* canim_mix_alloc(size_t n) {
+    const size_t bytes = sizeof(uint32_t) * (n ? n : 1u);
+#if !defined(_WIN32)
+    if (canim_guard()) {
+        const size_t pg = (size_t)sysconf(_SC_PAGESIZE);
+        const size_t len = ((bytes + pg - 1u) / pg + 1u) * pg;
+        uint8_t* m = (uint8_t*)mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == (uint8_t*)MAP_FAILED) return NULL;
+        if (mprotect(m + len - pg, pg, PROT_NONE) != 0) { munmap(m, len); return NULL; }
+        return (uint32_t*)(void*)(m + len - pg - bytes);
+    }
+#endif
+    return (uint32_t*)malloc(bytes);
+}
+
+/** @brief Releases a block canim_mix_alloc returned.
+ * @param p The block, or NULL.
+ * @param n The block's size in words. */
+static void canim_mix_free(uint32_t* p, size_t n) {
+#if !defined(_WIN32)
+    if (p && canim_guard()) {
+        const size_t pg = (size_t)sysconf(_SC_PAGESIZE);
+        const size_t bytes = sizeof(uint32_t) * (n ? n : 1u);
+        const size_t len = ((bytes + pg - 1u) / pg + 1u) * pg;
+        munmap((uint8_t*)p + bytes + pg - len, len);
+        return;
+    }
+#else
+    (void)n;
+#endif
+    free(p);
+}
+
 /** @brief Releases a colour slot's three word buffers and marks the slot free.
  * @param A The slot; zeroed on return.
  */
 static void canim_free(canim_t* A) {
-    free(A->prev); free(A->cur); free(A->mix);
+    free(A->prev); free(A->cur); canim_mix_free(A->mix, (size_t)A->nLp + A->nHp + A->nTail);
     memset(A, 0, sizeof(*A));
 }
 
@@ -7382,7 +7453,8 @@ static int canim_kf_overlay(CPUState* cpu, canim_t* A) {
 /** @brief Rolls one sector's colour slot on a canonical build: prev takes the last roll's words, cur the words in RAM now.
  *
  * A slot whose header geometry moved (a new level reusing the address) is
- * reallocated and restarts without a previous tick. A full table, a slot
+ * reallocated and restarts without a previous tick. The guest words past
+ * the far array refill `mix`'s tail (canim_tail_words). A full table, a slot
  * already rolled this build, or a failed allocation leaves the sector
  * without a roll. A sector the game's colour walker skips (envm_dormant)
  * takes the walker model's HP words into cur, and a bank with a posted,
@@ -7404,13 +7476,16 @@ static void canim_roll(CPUState* cpu, uint32_t s, uint32_t idx, uint32_t sectorC
         size_t n = (size_t)(A->nLp + A->nHp);
         A->prev = (uint32_t*)malloc(sizeof(uint32_t) * (n ? n : 1u));
         A->cur  = (uint32_t*)malloc(sizeof(uint32_t) * (n ? n : 1u));
-        A->mix  = (uint32_t*)malloc(sizeof(uint32_t) * (n ? n : 1u));
+        A->nTail = canim_tail_words(A->nHp);
+        A->mix  = canim_mix_alloc(n + A->nTail);
         if (!A->prev || !A->cur || !A->mix) { canim_free(A); return; }
     } else {
         uint32_t* t = A->prev; A->prev = A->cur; A->cur = t;
         A->havePrev = 1;
     }
     canim_read(cpu, A, A->cur);
+    for (uint32_t k = 0; k < A->nTail; k++)
+        A->mix[A->nLp + A->nHp + k] = rd(cpu, A->hpBase + (A->nHp + k) * 4u);
     A->model = 0;
     if (A->nHp && envm_dormant(cpu, idx)
         && envm_words(cpu, idx, s, sectorCnt, 1, envm_timer(), A->cur + A->nLp, (int)A->nHp))
@@ -7479,6 +7554,51 @@ static const canim_t* tsc_canim(const tscache_t* SC) {
     if (!A || A->lpBase != SC->lpColBase || A->hpBase != SC->nearBase
         || A->nLp != (uint32_t)SC->nLpC || A->nHp != 2u * (uint32_t)SC->nHpC) return NULL;
     return A;
+}
+
+/* Bounds census under canim_guard: faces of colour-anim passes the walk
+ * read. tri counts triangles; the others count faces indexing past a bank:
+ * lpTri a triangle's c3 past the LP words, flatTri and nearTri a triangle's c3
+ * past the HP far words on the flat and near paths, quad any drawn corner,
+ * tailDiff the triangles whose tail word differs from guest RAM. */
+static long s_cbc_faces, s_cbc_tri, s_cbc_lpTri, s_cbc_flatTri, s_cbc_nearTri, s_cbc_quad, s_cbc_tailDiff;
+static int s_cbc_said;   /* the first past-bank triangle was printed */
+static volatile uint32_t s_cbc_sink;   /* keeps the negative control's read */
+
+/** @brief Counts one face a colour-anim pass reads, ahead of the read.
+ * @param cpu The guest CPU state, read for the tail compare.
+ * @param CA The pass's colour-anim slot, or NULL.
+ * @param passLP 1 for an LP pass.
+ * @param F The face.
+ * @param nearPath 1 for the near path. */
+static inline void canim_bounds_census(CPUState* cpu, const canim_t* CA, int passLP, const tsface_t* F,
+                                       int nearPath) {
+    if (!CA || !canim_guard()) return;
+    const uint32_t n = passLP ? CA->nLp : CA->nHp / 2u;
+    __atomic_add_fetch(&s_cbc_faces, 1, __ATOMIC_RELAXED);
+    if (!F->quad) __atomic_add_fetch(&s_cbc_tri, 1, __ATOMIC_RELAXED);
+    if (!F->quad && F->c3 / 4u >= n) {
+        __atomic_add_fetch(passLP ? &s_cbc_lpTri : nearPath ? &s_cbc_nearTri : &s_cbc_flatTri, 1, __ATOMIC_RELAXED);
+        if (!__atomic_exchange_n(&s_cbc_said, 1, __ATOMIC_RELAXED))
+            fprintf(stderr, "[canim-bounds-first f=%u lp=%d near=%d c3=0x%x n=%u]\n",
+                    openpete_frame, passLP, nearPath, F->c3, n);
+        const uint32_t t = F->c3 / 4u - n;
+        if (!passLP && canim_guard() == 2) s_cbc_sink = CA->mix[CA->nLp + CA->nHp / 2u + F->c3 / 4u];
+        if (!passLP && t < CA->nTail
+            && CA->mix[CA->nLp + CA->nHp + t] != rd(cpu, CA->hpBase + (CA->nHp + t) * 4u))
+            __atomic_add_fetch(&s_cbc_tailDiff, 1, __ATOMIC_RELAXED);
+    }
+    const int past = F->c0 / 4u >= n || F->c1 / 4u >= n || F->c2 / 4u >= n || (F->quad && F->c3 / 4u >= n);
+    if (past) __atomic_add_fetch(&s_cbc_quad, 1, __ATOMIC_RELAXED);
+}
+
+/** @brief Prints the bounds census every 16 builds under the guard. */
+static void canim_bounds_report(void) {
+    static unsigned s_calls;
+    if (!canim_guard() || (s_calls++ & 15u)) return;
+    fprintf(stderr, "[canim-bounds f=%u faces=%ld tri=%ld lpTri=%ld flatTri=%ld nearTri=%ld corner=%ld tailDiff=%ld]\n",
+            openpete_frame, s_cbc_faces, s_cbc_tri, s_cbc_lpTri, s_cbc_flatTri, s_cbc_nearTri, s_cbc_quad,
+            s_cbc_tailDiff);
 }
 
 /** @brief Returns the colour-anim slot whose mix words the walk reads, or NULL to read guest RAM.
@@ -7572,6 +7692,7 @@ static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sec
     }
     s_canim_a = (s_vanim_sub && s_vanim_on) ? (s_canim_en ? s_vanim_alpha : 0.0) : 1.0;
     int stamped = canim_stamp_all(s_canim_a);
+    canim_bounds_report();
     if (s_cdbg)
         fprintf(stderr, "[canim f=%u sub=%d on=%d en=%d a=%.3f named=%d stamped=%d maxd=%d]\n",
                 openpete_frame, s_vanim_sub, s_vanim_on, s_canim_en, s_canim_a, named,
@@ -11527,6 +11648,8 @@ static uint32_t tn_water_rgb(uint32_t c, double m3) {
 }
 
 /** @brief Fills a second-walk far face's corner colours: the sector colour each corner indexes, faded on the per-vertex curve (tn_water_rgb).
+ *
+ * A triangle has three corners; its rc[3] is left unwritten.
  * @param cpu The guest CPU state, read when h_near is NULL.
  * @param h_near The HP near colour bank as a host pointer, or NULL.
  * @param nearBase The HP near colour bank's guest address.
@@ -11537,7 +11660,7 @@ static void tn_water_face_rgb(CPUState* cpu, const uint8_t* h_near, uint32_t nea
                               const lvert* sv, const tsface_t* F, uint32_t rc[4]) {
     const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
     const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
-    for (int q = 0; q < 4; q++) {
+    for (int q = 0; q < (F->quad ? 4 : 3); q++) {
         const uint32_t c = (h_near ? t_le32(h_near + co[q]) : rd(cpu, nearBase + (uint32_t)co[q])) & 0xFFFFFFu;
         rc[q] = tn_water_rgb(c, sv[vi[q]].vz);
     }
@@ -11557,7 +11680,8 @@ typedef struct {
  * Each corner reads its colour word at its face word 1 offset: an LP corner
  * raw, an HP corner through terrain_color_h (host banks) or terrain_color
  * (guest arrays) at the corner's view-Z, a second-walk far face through
- * tn_water_face_rgb. A triangle's fourth colour is 0.
+ * tn_water_face_rgb. A triangle's fourth colour is 0, with no read: its c3
+ * is the near path's corner colour (tn_near_face), unused here.
  * @param S The pass's colour sources.
  * @param sv The sector's projected vertices.
  * @param F The face.
@@ -11569,7 +11693,7 @@ static void tn_flat_face_rgb(const tn_colsrc* S, const lvert* sv, const tsface_t
     if (waterFar) tn_water_face_rgb(S->cpu, S->h_near, S->nearBase, sv, F, rc);
     const int co[4] = { F->c0, F->c1, F->c2, F->c3 };
     const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
-    for (int q = 0; q < 4 && !waterFar; q++)
+    for (int q = 0; q < (F->quad ? 4 : 3) && !waterFar; q++)
         rc[q] = S->h_lp || S->h_near
               ? terrain_color_h(S->passLP, S->h_lp, S->h_near, S->h_far, co[q], sv[vi[q]].vz, fogRef)
               : terrain_color(S->cpu, S->passLP, S->lpColBase, S->nearBase, S->farBase, co[q], sv[vi[q]].vz, fogRef);
@@ -13780,6 +13904,7 @@ typedef struct {
     const float* vF;             /* sub-tick fractional verts, or NULL */
     uint32_t lpCol, nearB, farB; /* colour arrays for the cpu read path */
     const uint8_t *h_lp, *h_near, *h_far;   /* the same as host pointers, or NULL */
+    const canim_t* CA;           /* the colour-anim slot behind them, or NULL */
 } tn_passsrc;
 
 /** @brief Selects the faces one walk pass draws for a sector.
@@ -13824,6 +13949,7 @@ static int tn_pass_source(const tscache_t* SC, int pass, const canim_t* CAm, tn_
     }
     tn_col_ptrs(CAm, lp, P->lpCol, P->nearB, P->farB, SC->lpColSpan, SC->hpColSpan,
                 &P->h_lp, &P->h_near, &P->h_far);
+    P->CA = CAm;
     return P->V && P->F;   /* alloc failure: skip the pass */
 }
 
@@ -14946,6 +15072,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 near = tn_near_gate(faceStride == 16, waterFar, blendFar, 1, hqTable)
                        && tn_queue_near(quad, faces + (uint32_t)f*16u);
             if (near) {
+                canim_bounds_census(cpu, P.CA, passLP, F, 1);
                 tn_near_face(W, cpu, sv, F, host_col, h_near, nearBase, h_far, farBase,
                              fogRef, hqTable, faces + (uint32_t)f * 16u, straddle, waterHQ);
                 tn_blend_census(W, blendFar, 1, 0, 0);
@@ -15008,6 +15135,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * colour index is per face corner (word1); the fog viewZ is the
              * corner's vertex m3. */
             uint32_t rcv[4];
+            canim_bounds_census(cpu, P.CA, passLP, F, 0);
             tn_flat_face_rgb(&CS, sv, F, fogRef, waterFar, rcv);
             uint32_t rc0 = rcv[0], rc1 = rcv[1], rc2 = rcv[2], rc3 = rcv[3];
             {

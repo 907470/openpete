@@ -2259,6 +2259,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Terrain colour-anim `mix` block bounds: one headless row on Spyro 2 and 3 with
+    # the block flush against an inaccessible page and the past-bank face
+    # counter. Exit 2 is VACUOUS (the counter at 0) and fails the test. Skips
+    # (exit 64) without a binary or a disc.
+    add_test(NAME canim_bounds
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_canim_bounds.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(canim_bounds PROPERTIES
+        LABELS "slow;terrain"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 2700
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # CPU terrain walk vs retained terrain cache, per-pose residual against a
     # committed baseline. Per row of games/spyro-1/corpus/walk-cache.manifest, two
     # headless legs at the freecam corpus's canonical VBL (the walk, and the
