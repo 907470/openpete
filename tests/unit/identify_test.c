@@ -1,4 +1,5 @@
-/* tests/unit/identify_test.c - game identification (core/config/identify.c).
+/* tests/unit/identify_test.c - game identification (core/config/identify.c,
+ * core/config/game_registry.c).
  *
  * The serial table against every game's recomp.conf EXE_FILENAME, and the
  * source order and refusals of openpete_identify: a disc beats --game and

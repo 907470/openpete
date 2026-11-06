@@ -4,10 +4,10 @@
 //
 // A box is 3:4 portrait, sized from the window height (42% of it, its row
 // at 40%) and shrunk with the others when the three-box row would pass 92%
-// of the window width; one or two boxes keep the three-box size. A box shows
-// its game's picture (launcher_page_set_picture) when one is set; else a
-// game with a library disc shows the vertical fill ramp, and a game without
-// one the empty-box drawing (the fill ramp, a disc outline and the game's
+// of the window width; one or two boxes keep the three-box size. A box with
+// a library disc shows its game's picture (launcher_page_set_picture) when
+// one is set, else the vertical fill ramp, and a game without one the
+// empty-box drawing (the fill ramp, a disc outline and the game's
 // name in the body font), as does a game whose library entry holds a failed
 // module build (launcher_page_set_failed); any other game with a library
 // disc adds its title logo,
@@ -16,7 +16,17 @@
 // to 1.08x about its centre, easing with a 40 ms time constant. Every shape
 // is an ImDrawList call: convex fills, vertical or horizontal colour ramps,
 // circles, polylines and arcs; the frame units are u = box width / 300.
+//
+// The page's lines (launcher_page_lines_draw): below each box its game's disc
+// serial, and while a game has no disc, the disc hint once, centred on the
+// corner chips' row. A disc goes to the box its serial names whichever box
+// chose it, so the hint belongs to the page and not to a box. Each line sits
+// on a chip that fills with the sky's dome cover (launcher_sky_cover): over the
+// flat background the text draws alone and the lines add no shape to the pass.
 #include "launcher_internal.h"
+#include "launcher_page_layout.h"
+#include "launcher_shapes.h"
+#include "launcher_sky.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"   /* ImGui::RegisterUserTexture */
@@ -35,13 +45,8 @@
 
 namespace {
 
-/* Box geometry, as fractions of the window. */
-constexpr float kBoxTop = 0.40f;     /* the row's band top, of the height */
-constexpr float kBoxH = 0.42f;       /* box height, of the height */
-constexpr float kBoxGap = 0.05f;     /* gap between boxes, of the height */
-constexpr float kBoxMaxRow = 0.92f;  /* the three-box row's widest, of the width */
-constexpr float kBoxAspect = 0.75f;  /* width over height */
-constexpr float kGrow = 1.08f;       /* the focused box's scale */
+using namespace launcher_layout;
+
 constexpr double kGrowTau = 0.040;   /* the grow's time constant, seconds */
 
 /* The title logo: its width at most kLogoW of the box width, its height at
@@ -141,19 +146,6 @@ struct Metal { C4 hi, mid, lo, ink; };
 Metal metal(const Theme& t, float k) {
     return {mix(t.rest[0], t.focus[0], k), mix(t.rest[1], t.focus[1], k), mix(t.rest[2], t.focus[2], k),
             mix(t.rest[3], t.focus[3], k)};
-}
-
-/* A box rect in window pixels. */
-struct Rect { float x, y, w, h; };
-
-/** @brief Return a rect scaled about its centre.
- *
- * @param r The rect.
- * @param s The scale.
- * @return The scaled rect. */
-Rect scaled(const Rect& r, float s) {
-    const float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
-    return {cx - r.w * s * 0.5f, cy - r.h * s * 0.5f, r.w * s, r.h * s};
 }
 
 /* ---- draw-list helpers ---------------------------------------------------- */
@@ -624,22 +616,6 @@ std::vector<Box> page_boxes(const char* const* entry_games, int count) {
     return out;
 }
 
-/** @brief Return the boxes' resting rects: the three-box row's size, the drawn boxes centred as a group.
- *
- * @param n The number of boxes.
- * @param W The window width.
- * @param H The window height.
- * @return The rects, left to right. */
-std::vector<Rect> box_rects(size_t n, float W, float H) {
-    float h = kBoxH * H, w = kBoxAspect * h, gap = kBoxGap * H;
-    const float k = std::min(1.0f, kBoxMaxRow * W / (3.0f * w + 2.0f * gap));
-    h *= k; w *= k; gap *= k;
-    const float x0 = (W - ((float)n * w + (float)(n - 1) * gap)) * 0.5f, y0 = kBoxTop * H + (kBoxH * H - h) * 0.5f;
-    std::vector<Rect> out;
-    for (size_t i = 0; i < n; i++) out.push_back({x0 + (float)i * (w + gap), y0, w, h});
-    return out;
-}
-
 /** @brief Ease each box's scale toward its target (kGrow for the focused box, 1 for the others) by the time since the last page present; the first present of a page snaps them.
  *
  * @param boxes The page's boxes.
@@ -843,7 +819,7 @@ int launcher_page_draw(const char* const* entry_games, int count, int focus, int
         if (box_input(i, b, hovered)) act = activation(bx);
         const bool failed = bx.entry >= 0 && bx.st->failed;
         if (failed) draw_empty(dl, bx, b, rects[i]);   /* the failed build: the game's name, no logo */
-        else if (bx.st->picture.tex) draw_picture(dl, bx, b);
+        else if (bx.entry >= 0 && bx.st->picture.tex) draw_picture(dl, bx, b);
         else if (bx.entry >= 0) draw_fill(dl, bx, b);   /* the logo names an ingested game */
         else draw_empty(dl, bx, b, rects[i]);
         const int v0 = dl->VtxBuffer.Size;
@@ -856,6 +832,34 @@ int launcher_page_draw(const char* const* entry_games, int count, int focus, int
         OPL_INFO_F("launcher", "game page: %zu boxes at %.0fx%.0f, box %d focused:%s", boxes.size(), d.x, d.y,
                    focus, counts.c_str());
     return act;
+}
+
+void launcher_page_lines_draw(const char* const* entry_games, int count, float scale) {
+    const std::vector<const openpete_launcher_game*> games = page_games();
+    if (games.empty()) return;
+    std::vector<const char*> box_games;
+    for (const openpete_launcher_game* g : games) box_games.push_back(g->game_id);
+    const PageLines lines = page_lines(box_games, entry_games, count, launcher_panel_shown());
+    const ImVec2 d = ImGui::GetIO().DisplaySize;
+    const std::vector<Rect> rects = box_rects(games.size(), d.x, d.y);
+    const float fill = kChipAlpha * launcher_sky_cover();
+    launcher_push_body_font(kCornerPx * scale);
+    for (size_t i = 0; i < lines.ids.size(); i++) {
+        if (!lines.ids[i]) continue;
+        const std::string text = launcher_chip_case(lines.ids[i]);
+        const ImVec2 sz = ImGui::CalcTextSize(text.c_str());
+        const Rect t = id_text(rects[i], sz.x, sz.y, scale);
+        const std::string id = std::string("box.") + box_games[i] + ".id";
+        launcher_chip_text(id.c_str(), {t.x, t.y}, {kIdPadX, kIdPadY}, scale, IM_COL32_WHITE, text.c_str(), fill);
+    }
+    if (lines.hint) {
+        const std::string text = launcher_chip_case(lines.hint);
+        const ImVec2 sz = ImGui::CalcTextSize(text.c_str());
+        const Rect t = hint_text(d.x, d.y, sz.x, sz.y, scale);
+        launcher_chip_text("page.hint", {t.x, t.y}, {kCornerPadX, kCornerPadY}, scale, IM_COL32_WHITE, text.c_str(),
+                           fill);
+    }
+    ImGui::PopFont();
 }
 
 int launcher_page_box_count(const char* const* entry_games, int count) {

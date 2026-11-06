@@ -66,6 +66,14 @@ int openpete_game_registered(const char* id);
  * @return The id, or NULL past the last registered game. */
 const char* openpete_game_id_at(int i);
 
+/** @brief The serial of a registered game's disc, the one its SYSTEM.CNF names.
+ *
+ * Each game registers one serial, and an image with another is refused before
+ * its copy, so this is also the serial of any disc the library holds for the game.
+ * @param id A game id; NULL reads as unregistered.
+ * @return The serial ("SCUS-94228"), or NULL for an unregistered id. */
+const char* openpete_serial_of_game(const char* id);
+
 /** @brief The label of an identification source ("disc", "library", "selector", "executable", "none").
  * @param s The source.
  * @return The label, never NULL. */

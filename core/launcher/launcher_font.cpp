@@ -19,6 +19,11 @@ namespace {
 ImFont* s_body = nullptr;
 bool s_tried = false;   /* one attempt per process: a failed add is not retried */
 
+/* Fredoka's capitals are 700/1210 of its line, ProggyClean's 8/13: the body
+ * font is pushed this much larger than a layout size so its capitals stand
+ * as tall as ProggyClean's at that size. */
+constexpr float kBodyScale = (8.0f / 13.0f) / (700.0f / 1210.0f);
+
 }  // namespace
 
 ImFont* launcher_body_font(void) {
@@ -39,4 +44,9 @@ ImFont* launcher_body_font(void) {
                sizeof fredoka_medium_compressed_data_base85 - 1,
                io.FontDefault ? io.FontDefault->GetDebugName() : "(none)");
     return s_body;
+}
+
+void launcher_push_body_font(float px) {
+    if (ImFont* body = launcher_body_font()) ImGui::PushFont(body, px * kBodyScale);
+    else ImGui::PushFont(nullptr, px);
 }

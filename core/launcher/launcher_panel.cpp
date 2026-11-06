@@ -214,12 +214,15 @@ bool launcher_panel_draw(float scale, float top) {
     return link_pressed;
 }
 
-void launcher_panel_build_failed(const char* game, const char* name, const char* step) {
+void launcher_panel_build_failed(const char* game, const char* name, const char* step, bool kept) {
     const char* log = openpete_log_file_path();
-    const std::string text = std::string(name && *name ? name : game) + " could not be built from its disc (step: " +
-                             (step && *step ? step : "start") + ").\nThe log file " +
-                             (log && *log ? log : "openpete.log") +
-                             " names the failure. Choose the box to try again.";
-    if (launcher_screens()) launcher_page_set_failed(game, true);
+    const std::string title = name && *name ? name : game;
+    const std::string where = std::string(" (step: ") + (step && *step ? step : "start") + ").\nThe log file " +
+                              (log && *log ? log : "openpete.log") + " names the failure. ";
+    const std::string text = kept ? title + " could not be built from its disc" + where +
+                                        "Choose the box to try again, or add another copy of the disc."
+                                  : "This copy of " + title + " could not be added" + where +
+                                        "Choose the box to try another copy of the disc.";
+    if (launcher_screens() && kept) launcher_page_set_failed(game, true);
     launcher_panel_raise(OP_E_MODULE, text.c_str(), false);
 }

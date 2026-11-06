@@ -12,6 +12,14 @@
 #ifndef OPENPETE_LAUNCHER_CHIPS_H
 #define OPENPETE_LAUNCHER_CHIPS_H
 
+/* The corner chips' metrics, layout px: the text size (as ProggyClean,
+ * launcher_push_body_font), the padding around the line, the margin to the
+ * window's edges, and the spinner's gap before the text. */
+constexpr float kCornerPx = 10.0f;
+constexpr float kCornerPadX = 8.0f, kCornerPadY = 6.0f;
+constexpr float kCornerMargin = 12.0f;
+constexpr float kSpinGap = 6.0f;
+
 /** @brief Draw the corner chips for one present: the shader compile's chip while the launcher's precompile runs and @p shader_step is false, and the level chip while a dome shows; a click on the level chip starts the crossfade to the next dome.
  *
  * The level chip is a button: the pointer over it is the hand cursor, and

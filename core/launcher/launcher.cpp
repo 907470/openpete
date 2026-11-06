@@ -231,25 +231,6 @@ Frame frame_map_for(ImVec2 d) {
  * @return The scale and the offset of the layout's origin. */
 Frame frame_map() { return frame_map_for(ImGui::GetIO().DisplaySize); }
 
-/* Fredoka's capitals are 700/1210 of its line, ProggyClean's 8/13: the body
- * font is pushed this much larger than a layout size so its capitals stand
- * as tall as ProggyClean's at that size. */
-constexpr float kBodyScale = (8.0f / 13.0f) / (700.0f / 1210.0f);
-
-/** @brief Push the body font (launcher_body_font) at a size whose capitals match ProggyClean's at @p px, or the current font at @p px when the body font is not loaded.
- *
- * @param px The text size in window pixels, as ProggyClean would be drawn. */
-void push_body_font(float px) {
-    if (ImFont* body = launcher_body_font()) ImGui::PushFont(body, px * kBodyScale);
-    else ImGui::PushFont(nullptr, px);
-}
-
-}  // namespace
-
-void launcher_push_body_font(float px) { push_body_font(px); }
-
-namespace {
-
 /** @brief Draw one line of text horizontally centred in the layout and record it in the element manifest.
  *
  * The manifest rect is the text's origin as imgui draws it (truncated to
@@ -258,11 +239,11 @@ namespace {
  * @param id The element's manifest id.
  * @param y The line's top in layout pixels.
  * @param size The text height in layout pixels, as ProggyClean; the body
- *             font draws at the size whose capitals match (push_body_font).
+ *             font draws at the size whose capitals match (launcher_push_body_font).
  * @param col The colour.
  * @param text The text. */
 void text_centred(const Frame& f, const char* id, float y, float size, ImU32 col, const char* text) {
-    push_body_font(size * f.scale);
+    launcher_push_body_font(size * f.scale);
     const ImVec2 sz = ImGui::CalcTextSize(text);
     ImGui::SetCursorPos(ImVec2(f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, f.oy + y * f.scale));
     const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -289,11 +270,11 @@ constexpr float kChipPadX = 12.0f, kChipPadY = 7.0f;
  * @param f The frame mapping.
  * @param id The text's manifest id.
  * @param y The line's top in layout pixels.
- * @param size The text height in layout pixels, as ProggyClean (push_body_font).
+ * @param size The text height in layout pixels, as ProggyClean (launcher_push_body_font).
  * @param col The text colour.
  * @param text The text. */
 void chip_centred(const Frame& f, const char* id, float y, float size, ImU32 col, const char* text) {
-    push_body_font(size * f.scale);
+    launcher_push_body_font(size * f.scale);
     const std::string t = launcher_chip_case(text);
     const ImVec2 sz = ImGui::CalcTextSize(t.c_str());
     const ImVec2 at(f.ox + (kLayoutW * f.scale - sz.x) * 0.5f, f.oy + y * f.scale);
@@ -476,7 +457,10 @@ void draw_view(void* ud) {
     else if (launcher_picker_shown()) {
         v.picked = launcher_picker_draw(f.scale, f.ox, f.oy);
     } else {
-        if (!s.panel_only) v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
+        if (!s.panel_only) {
+            v.activated = launcher_page_draw(v.entry_games, v.count, v.focus, &v.hovered);
+            launcher_page_lines_draw(v.entry_games, v.count, f.scale);
+        }
         if (v.quit_asked) draw_quit_ask(f);
         const bool link = launcher_panel_draw(
             f.scale, s.panel_only ? 0.45f * io.DisplaySize.y
@@ -2121,7 +2105,7 @@ void job_record(const Job& job) {
         library_marker_write(job.entry.c_str(), s.last_stage);
         OPL_ERROR_F("launcher", "module rebuild of %s failed at %s; see the log file %s", job.g->game_id,
                     s.last_stage[0] ? s.last_stage : "its start", "openpete.log");
-        launcher_panel_build_failed(job.g->game_id, job.g->display_name, s.last_stage);
+        launcher_panel_build_failed(job.g->game_id, job.g->display_name, s.last_stage, true);
     } else if (job.built) {
         library_marker_clear(job.entry.c_str());
         OPL_INFO_F("launcher", "module rebuild of %s done", job.g->game_id);

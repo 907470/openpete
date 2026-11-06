@@ -78,6 +78,9 @@ Cases:
             Elsewhere a file dialog whose callback reports a failure (OPENPETE_LAUNCHER_DIALOG_FAIL)
             opens the drawn picker; Escape closes it with the focus unchanged, Space opens it again
             (no request is refused), and Escape on the page then quits.
+  ingest-retry  A byte-altered copy of a disc passes the serial check and fails to build: nothing calls the
+            original redundant, the copy is removed, and the pad adds the good disc from the empty box, which
+            plays; an older failed entry does not refuse the good disc and is removed once it has built.
   ingest-held  An image of a game the library already holds is refused before the copy, with a
             message naming the library's entry, and the library is left as it was: by a headless
             --ingest (non-zero exit), and by a drop on the selector (the selector returns and a
@@ -165,6 +168,7 @@ import os
 import re
 import shutil
 import statistics
+import struct
 import subprocess
 import sys
 import threading
@@ -2236,7 +2240,11 @@ def case_error_refuse(a):
     written, _ = library_bytes(d)
     bad += [f"control: {x}" for x in ordered(log, r"scripted drop", r"identified before the copy",
                                               r"\[library\] added")]
-    if written < TRUNC_SECTORS * SECTOR:
+    if has_first_boot(a):   # the forced build failure removes the copy the ingest made
+        bad += [f"control: {x}" for x in ordered(log, r"\[library\] added", r"removed: the disc added to the library")]
+        if written != 0:
+            bad.append(f"control: {written} bytes left in the library after the failed build")
+    elif written < TRUNC_SECTORS * SECTOR:
         bad.append(f"control: {written} bytes in the library, want at least {TRUNC_SECTORS * SECTOR}")
     counts["control"] = f"{written} bytes"
     return verdict("error-refuse", bad, "; ".join(f"{k}: {v}" for k, v in counts.items()))
@@ -2292,7 +2300,7 @@ def case_error_build(a):
     """T12's failed builds (windowed): a launch-time rebuild forced to fail with the page up raises the panel and
     draws the failed-build box; the next launch draws it without a rebuild; a --game launch shows the page with the
     box focused and the panel (headless: exit 3); activating the box retries from the read step; an ingest whose
-    build is forced to fail keeps the disc copy, writes the marker and returns to the page with the panel."""
+    build is forced to fail removes the disc copy it made and returns to the page with the panel."""
     need_first_boot(a)
     d = cl.case_dir(a.out, "error-build")
     e = seed_entry(d, "spyro-1", 1)
@@ -2329,7 +2337,7 @@ def case_error_build(a):
                                             r"failed-build marker written", r"error panel raised: Spyro the Dragon")]
     if not os.path.isfile(marker):
         bad.append("retry: no marker after the failed retry")
-    # An ingest whose build fails: the copy stays, the marker is written, the page returns with the panel.
+    # An ingest whose build fails: the copy goes, the empty box stays usable, the page returns with the panel.
     d2 = os.path.join(d, "ingest")
     os.makedirs(d2)
     env = dict(fail, OPENPETE_LAUNCHER_DROP=disc_cue("spyro-2"), OPENPETE_LAUNCHER_PICK_DELAY_MS="500",
@@ -2338,10 +2346,11 @@ def case_error_build(a):
     copies = glob.glob(os.path.join(d2, "data", "openpete", "library", "*", "disc.bin"))
     markers = glob.glob(os.path.join(d2, "data", "openpete", "library", "*", "build-failed.toml"))
     bad += [f"ingest: {x}" for x in ordered(log, r"\[library\] added", r"build failed at the read step",
-                                             r"error panel raised: Spyro 2: Ripto's Rage! could not be built",
+                                             r"entry \S+ removed: the disc added to the library did not build",
+                                             r"error panel raised: This copy of Spyro 2: Ripto's Rage! could not be added",
                                              r"command: focus starts on box 1 \(spyro-2", r"error panel drawn")]
-    if len(copies) != 1 or os.path.getsize(copies[0]) != os.path.getsize(disc_bin("spyro-2")) or len(markers) != 1:
-        bad.append(f"ingest: copies {copies}, markers {markers}")
+    if copies or markers or "no longer needed" in log:
+        bad.append(f"ingest: copies {copies}, markers {markers}, redundancy line {'no longer needed' in log}")
     if rc != 0:
         bad.append(f"ingest: exit {rc}")
     return verdict("error-build", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
@@ -2354,6 +2363,105 @@ def error_anchors():
     with open(os.path.join(ROOT, "docs", "src", "user", "help", "troubleshooting.md")) as f:
         page = set(re.findall(r'<a id="([a-z0-9-]+)"></a>', f.read()))
     return rows, page
+
+
+def altered_disc(game, folder):
+    """Write a copy of a game's image into a scratch folder with every sector of WAD.WAD's payload inverted, its
+    table of contents kept: the serial and the file system read as the known disc's, the game's data does not.
+    Returns the cue's path."""
+    with open(disc_bin(game), "rb") as f:
+        raw = bytearray(f.read())
+    def sector(lba):
+        return raw[lba * 2352 + 24: lba * 2352 + 24 + 2048]
+    root = sector(16)[156:190]
+    root_lba, root_size = struct.unpack_from("<I", root, 2)[0], struct.unpack_from("<I", root, 10)[0]
+    wad, wad_size = None, 0
+    for n in range(root_size // 2048):
+        s, at = sector(root_lba + n), 0
+        while at < 2048 and s[at]:
+            name = bytes(s[at + 33: at + 33 + s[at + 32]]).split(b";")[0]
+            if name == b"WAD.WAD":
+                wad, wad_size = struct.unpack_from("<I", s, at + 2)[0], struct.unpack_from("<I", s, at + 10)[0]
+            at += s[at]
+    if wad is None:
+        raise cl.Skip(f"{disc_bin(game)} holds no WAD.WAD")
+    for lba in range(wad + 8, wad + wad_size // 2048):
+        o = lba * 2352 + 24
+        raw[o:o + 2048] = bytes(b ^ 0xFF for b in raw[o:o + 2048])
+    os.makedirs(folder)
+    serial = DISCS[game][0]
+    with open(os.path.join(folder, serial + ".bin"), "wb") as f:
+        f.write(raw)
+    cue = os.path.join(folder, serial + ".cue")
+    with open(cue, "w") as f:
+        f.write('FILE "%s.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n' % serial)
+    return cue
+
+
+def case_ingest_retry(a):
+    """A disc that passes the serial check and cannot build: no redundancy line, the copy removed, the box empty, and
+    another copy added from that box by the pad plays. An older failed entry neither refuses a good disc nor outlives it."""
+    need_first_boot(a)
+    d = cl.case_dir(a.out, "ingest-retry")
+    bad, counts = [], {}
+    fixture = os.path.join(d, "fixture")
+    bad_cue = altered_disc("spyro-3", os.path.join(fixture, "bad"))
+    root = os.path.join(fixture, "root")
+    os.makedirs(root)
+    serial = DISCS["spyro-3"][0]
+    os.symlink(disc_bin("spyro-3"), os.path.join(root, serial + ".bin"))
+    good_cue = os.path.join(root, serial + ".cue")
+    with open(good_cue, "w") as f:
+        f.write('FILE "%s.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n' % serial)
+
+    # The bad disc drops at the first frame. East closes the panel, South on the focused empty box opens the drawn
+    # picker, South enters the root, down twice reaches the cue (.., the bin, the cue), South chooses it.
+    acts = inputs(25000, "pad=east", "pad=south", "pad=south", "pad=down", "pad=down", "pad=south")
+    run = os.path.join(d, "same-session")
+    os.makedirs(run)
+    env = {"OPENPETE_LAUNCHER_DROP": bad_cue, "GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0",
+           "OPENPETE_LAUNCHER_PICKER_ROOTS": root, "OPENPETE_LAUNCHER_INPUT": acts,
+           "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500", "OPENPETE_LAUNCHER_SELECT_GAME": "spyro-3"}
+    rc, log = cl.launch(a.binary, run, "same-session", ["--launcher-window", "1280x800", "--frame-limit", "5"], env,
+                        timeout=900)
+    bad += [f"same session: {x}" for x in ordered(
+        log, r"ingest of .*: serial SCUS-94467, spyro-3; identified before the copy", r"\[library\] added",
+        r"asset extraction of spyro-3 failed", r"entry \S+ removed: the disc added to the library did not build",
+        r"error panel raised: This copy of Spyro: Year of the Dragon could not be added",
+        r"error panel dismissed", r"command: activate box 2 \(spyro-3\)", r"picker: open",
+        r"picker: chosen " + re.escape(good_cue),
+        r"\[library\] added", r"your original .* is no longer needed", r"game picked: spyro-3")]
+    first_panel = log.find("error panel raised")
+    if 0 <= log.find("no longer needed") < first_panel:
+        bad.append("same session: the redundancy line came before the failure")
+    lib = os.path.join(run, "data", "openpete", "library")
+    copies = glob.glob(os.path.join(lib, "*", "disc.bin"))
+    counts["copies left"] = len(copies)
+    if len(copies) != 1 or os.path.getsize(copies[0]) != os.path.getsize(disc_bin("spyro-3")) or \
+            glob.glob(os.path.join(lib, "*", "build-failed.toml")):
+        bad.append(f"same session: copies {copies}")
+    if rc != 0:
+        bad.append(f"same session: exit {rc}")
+
+    # An entry left failed by an earlier release: the good disc is not refused, boots ahead of it and replaces it.
+    run = os.path.join(d, "older-entry")
+    os.makedirs(run)
+    e = seed_entry(run, "spyro-3", 4000000000, tag="00000000failed")
+    os.remove(os.path.join(e, "disc.bin"))
+    os.symlink(os.path.splitext(bad_cue)[0] + ".bin", os.path.join(e, "disc.bin"))
+    with open(os.path.join(e, "build-failed.toml"), "w") as f:
+        f.write('build = "an earlier build"\nstep = "start"\n')
+    env = {"OPENPETE_LAUNCHER_DROP": good_cue, "OPENPETE_LAUNCHER_PICK_DELAY_MS": "500",
+           "OPENPETE_LAUNCHER_SELECT_GAME": "spyro-3"}
+    rc, log = cl.launch(a.binary, run, "older-entry", ["--launcher-window", "1280x800", "--frame-limit", "5"], env,
+                        timeout=900)
+    bad += [f"older entry: {x}" for x in ordered(
+        log, r"identified before the copy", r"entry 00000000failed removed: another disc of its game has built",
+        r"your original .* is no longer needed", r"game picked: spyro-3")]
+    if "already holds a disc" in log or os.path.isdir(e) or rc != 0:
+        bad.append(f"older entry: exit {rc}, entry {'kept' if os.path.isdir(e) else 'gone'}")
+    shutil.rmtree(fixture, ignore_errors=True)
+    return verdict("ingest-retry", bad, ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 
 def case_error_link(a):
@@ -2454,7 +2562,7 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
          "quit-page-sigterm": case_quit_page_sigterm, "error-refuse": case_error_refuse,
-         "error-staged": case_error_staged, "error-build": case_error_build,
+         "error-staged": case_error_staged, "error-build": case_error_build, "ingest-retry": case_ingest_retry,
          "error-link": case_error_link}
 
 

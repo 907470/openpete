@@ -255,7 +255,7 @@ which carries the three games today:
 - `OPENPETE_GAMES` in the top-level `CMakeLists.txt` (or
   `-DOPENPETE_GAMES=` at configure time), and the per-game ctest `foreach`
   lists in the same file.
-- The serial table of `core/config/identify.c`, which identifies the game
+- The serial table of `core/config/game_registry.c`, which identifies the game
   from its disc; `tests/unit/identify_test.c` checks each row against the
   game's `recomp.conf`. The `--game` refusal message in the same file and
   the `--game` help text in `core/config/knob_registry.c` name the games.

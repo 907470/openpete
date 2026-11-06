@@ -16,6 +16,12 @@ sign and the game's name. One box has the focus: its frame turns gold (amber for
 Spyro 3) and the box grows slightly. The page opens with the first box
 focused; after a disc is added, its game's box has the focus.
 
+Below each box is the serial of its game's disc: **SCUS-94228** for Spyro 1,
+**SCUS-94425** for Spyro 2, **SCUS-94467** for Spyro 3. While a game has no
+disc in the library, the bottom of the page reads **Drag and drop or select
+your own copy of the game disc**. A message on the page (see
+[When something fails](#when-something-fails)) hides both until it closes.
+
 Until the first disc is added, the background is plain purple and the title
 is the flat orange **OPENPETE**. Everything else the page draws is read
 from your disc once it is in the [library](../help/glossary.md#library):
@@ -72,7 +78,8 @@ it and refuses, with nothing copied:
   not include ([OP-E-WRONG-DISC](../help/troubleshooting.md#op-e-wrong-disc));
 - a second disc of a game the library already holds, another region or
   revision included; the message names the library's copy, which is left
-  unchanged ([OP-E-INGEST](../help/troubleshooting.md#op-e-ingest)).
+  unchanged ([OP-E-INGEST](../help/troubleshooting.md#op-e-ingest)). A copy
+  whose game could not be built does not count: another disc can replace it.
 
 Adding the same disc image again copies it, finds it already in the library,
 removes the copy and focuses its box.
@@ -117,8 +124,8 @@ pace:
 
 Together these are the [first-run compile](../help/glossary.md#first-run-compile).
 Measured times: about 26 seconds on a 16-thread desktop, 45 to 90 seconds
-on a four-core laptop. After the copy the original image is not needed
-again; the log says so. The library's location is listed under
+on a four-core laptop. Once the game has built, the original image is not
+needed again; the log says so. The library's location is listed under
 [File locations](../help/file-locations.md).
 
 A disc dragged onto the window or chosen in a file dialog returns to the
@@ -157,12 +164,20 @@ below stands for the file name:
 | **... is not a disc of a game OpenPete runs.**, **... which this OpenPete package does not include.** | [OP-E-WRONG-DISC](../help/troubleshooting.md#op-e-wrong-disc) |
 | **... was not added: the library already holds a disc of ...**, **... could not be copied into the library.** | [OP-E-INGEST](../help/troubleshooting.md#op-e-ingest) |
 | **The library folder cannot be written:**, **... could not be added to the library folder.** | [OP-E-LIBRARY](../help/troubleshooting.md#op-e-library) |
-| **... could not be built from its disc (step: ...).**, naming the game | [OP-E-MODULE](../help/troubleshooting.md#op-e-module) |
+| **This copy of ... could not be added (step: ...).**, **... could not be built from its disc (step: ...).**, naming the game | [OP-E-MODULE](../help/troubleshooting.md#op-e-module) |
 
-After a failed step the disc stays in the library and its box shows the
-empty drawing again. The message names the step and the log file. Choosing
-the box retries from the read. Until then, later starts of the same
-OpenPete build do not retry it on their own.
+A disc that passes these checks can still fail to build, as a revision of
+the disc OpenPete does not support does. The message then reads **This copy of
+... could not be added**, names the step and the log file, and the copy is
+removed from the library, so the box is empty again and takes another copy of
+the disc in any of the ways under [Adding a disc](#adding-a-disc). Your
+original image is not changed.
+
+A disc already in the library that later fails to build, after an update,
+stays there and its box shows the empty drawing. The message reads **... could
+not be built from its disc**. Choosing the box retries from the read; until
+then, later starts of the same OpenPete build do not retry it on their own.
+Adding another copy of the disc replaces it once that copy has built.
 
 Only one OpenPete prepares games at a time: a second one started while the
 first shows the launcher draws only the message **Another OpenPete is

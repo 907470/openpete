@@ -44,6 +44,7 @@ add_library(openpete_core STATIC
     config/config.c
     config/config_schema.c
     config/identify.c
+    config/game_registry.c
     config/knob_registry.c
     config/settings_save.c
     config/paths.c

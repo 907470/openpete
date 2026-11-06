@@ -165,7 +165,18 @@ struct Meta {
     std::string sha;
     std::string game;   /* registered game id; "" = unidentified */
     long long last_played = 0;
+    bool failed = false;   /* the entry holds a failed-build marker, of any build */
 };
+
+/** @brief Report whether an entry owns its game's box ahead of another: one that built ahead of a failed one, then the more recently played.
+ *
+ * @param a An entry.
+ * @param b The entry it is compared with.
+ * @return true when @p a ranks first. */
+bool outranks(const Meta& a, const Meta& b) {
+    if (a.failed != b.failed) return b.failed;
+    return a.last_played > b.last_played;
+}
 
 /** @brief The registered game an image's SYSTEM.CNF serial names.
  *
@@ -179,7 +190,13 @@ std::string game_of_image(const fs::path& image) {
     return g ? g : "";
 }
 
-/** @brief Loads a library entry's meta.toml into a Meta.
+/** @brief The failed-build marker's path in an entry, beside its meta.toml.
+ *
+ * @param entry_dir The entry's directory.
+ * @return The path. */
+fs::path marker_path(const char* entry_dir) { return fs::path(entry_dir) / "build-failed.toml"; }
+
+/** @brief Loads a library entry's meta.toml into a Meta, and whether the entry holds a failed-build marker.
  *
  * Recognizes the lines label, source, sha256, game (`key = "value"`, the
  * value taken as the text after the opening quote minus the last character)
@@ -205,6 +222,8 @@ bool read_meta(const fs::path& entry, Meta& m) {
                 m.*k.field = line.substr(n, line.size() - n - 1);
         }
     }
+    std::error_code ec;
+    m.failed = fs::exists(marker_path(entry.string().c_str()), ec);
     return true;
 }
 
@@ -314,15 +333,15 @@ std::string label_for(const char* sha, const fs::path& bin) {
     return bin.filename().string();
 }
 
-/** @brief Return the library entry that holds a disc of a game.
+/** @brief Return the library entry that holds a working disc of a game: an entry with a failed-build marker holds no such disc, so it never blocks another of its game.
  *
  * @param game The game id.
- * @return The entry's directory, or an empty path when the library holds no disc of it. */
+ * @return The entry's directory, or an empty path when the library holds none. */
 fs::path held_entry_of(const std::string& game) {
     std::error_code ec;
     for (auto& e : fs::directory_iterator(library_root(), ec)) {
         Meta m;
-        if (!e.is_directory() || !read_meta(e.path(), m)) continue;
+        if (!e.is_directory() || !read_meta(e.path(), m) || m.failed) continue;
         const std::string g = m.game.empty() ? game_of_image(m.dir / "disc.cue") : m.game;
         if (g == game) return m.dir;
     }
@@ -352,7 +371,7 @@ void refuse(const char* given, int err, bool before_copy, const std::string& why
     OPL_ERROR_F("library", "ingest of %s refused%s: %s", given, before_copy ? " before the copy" : "", why.c_str());
 }
 
-/** @brief Identify an image before any copy: read it, its SYSTEM.CNF serial and the game the serial names, and refuse an unreadable image, a disc no game claims, a game this executable cannot run, and a game the library already holds a disc of.
+/** @brief Identify an image before any copy: read it, its SYSTEM.CNF serial and the game the serial names, and refuse an unreadable image, a disc no game claims, a game this executable cannot run, and a game the library already holds a working disc of.
  *
  * The game must be linked and, while the launcher names no game, have a box
  * on the game page (its first-boot inputs staged); a launcher naming a game
@@ -417,8 +436,10 @@ bool identify(const char* given, const fs::path& bin) {
  * stops it and removes the ingest directory; no entry is installed.
  * @param given The image path from --ingest or a drop.
  * @param entry Receives the entry directory.
+ * @param added Set when this ingest made the entry; false when its content was already in the library.
  * @return true on success; false after logging the failure. */
-bool ingest(const char* given, fs::path& entry) {
+bool ingest(const char* given, fs::path& entry, bool& added) {
+    added = false;
     s_refusal = {};
     fs::path bin = locate_bin(given);
     if (bin.empty()) {
@@ -480,15 +501,23 @@ bool ingest(const char* given, fs::path& entry) {
     write_meta(entry, label, bin.filename().string(), sha,
                (long long)time(nullptr), game_of_image(entry / "disc.cue"));
     std::fprintf(stderr, "[library] added %s (%s)\n", label.c_str(), sha);
-    /* The library owns this copy from here on: the module is rebuilt from
-     * it, never from wherever the image came from. Said once, since the
-     * player otherwise holds two copies of a ~650 MB image with nothing
-     * telling them the first one is now redundant. */
+    added = true;
+    return true;
+}
+
+/** @brief Tell the player a disc image they added is redundant, once its game has built from the library's copy.
+ *
+ * The library owns the copy from then on: the module is rebuilt from it,
+ * never from wherever the image came from. Said once, since the player
+ * otherwise holds two copies of a ~650 MB image with nothing telling them
+ * the first one is now redundant. Until the build succeeds the original is
+ * the only proof the disc is theirs to retry with, so nothing is said.
+ * @param m The entry the ingest added. */
+void note_original_redundant(const Meta& m) {
     std::fprintf(stderr,
         "[library] your original %s is no longer needed - the copy "
         "in your library is what OpenPete uses from now on\n",
-        bin.filename().string().c_str());
-    return true;
+        m.source.c_str());
 }
 
 /** @brief Scan the library for this game's entries and the unidentified ones, recording each entry's game first.
@@ -562,15 +591,14 @@ int pick_entry(const openpete_options_t* opts, std::vector<Meta>& entries, Meta*
                                                               : launcher_game()->game_id;
     pick = nullptr;
     for (auto& m : entries)
-        if ((!direct || m.game == id) && (!pick || m.last_played > pick->last_played)) pick = &m;
+        if ((!direct || m.game == id) && (!pick || outranks(m, *pick))) pick = &m;
     if (direct) return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : 0;
     /* The game page's entries, most recently played first: each game's box
      * goes to its first entry. */
     std::vector<Meta*> order{pick};
     for (auto& m : entries)
         if (&m != pick) order.push_back(&m);
-    std::stable_sort(order.begin() + 1, order.end(),
-                     [](const Meta* a, const Meta* b) { return a->last_played > b->last_played; });
+    std::stable_sort(order.begin() + 1, order.end(), [](const Meta* a, const Meta* b) { return outranks(*a, *b); });
     std::vector<std::string> label_store;
     for (auto* m : order)
         label_store.push_back(entry_label(*m));
@@ -617,12 +645,6 @@ std::string build_id() {
     id = std::string(openpete_build_version()) + "-" + std::to_string(size) + "-" + std::to_string(mtime);
     return id;
 }
-
-/** @brief The failed-build marker's path in an entry, beside its meta.toml.
- *
- * @param entry_dir The entry's directory.
- * @return The path. */
-fs::path marker_path(const char* entry_dir) { return fs::path(entry_dir) / "build-failed.toml"; }
 
 /** @brief Return the build id a failed-build marker names.
  *
@@ -775,7 +797,7 @@ void queue_launch_jobs(const std::vector<Meta>& entries) {
         if (!g || (!g->build_module && !g->update_assets)) continue;
         const Meta* best = nullptr;
         for (const auto& m : entries)
-            if (m.game == g->game_id && (!best || m.last_played > best->last_played)) best = &m;
+            if (m.game == g->game_id && (!best || outranks(m, *best))) best = &m;
         if (!best) continue;
         const std::string dir = best->dir.string();
         bool module = g->build_module != nullptr;
@@ -791,15 +813,78 @@ void queue_launch_jobs(const std::vector<Meta>& entries) {
 
 /** @brief Raise the game page's panel for an entry whose module build failed, naming the step its failed-build marker records, and focus its game's box.
  *
- * @param m The entry. */
-void panel_entry_failed(const Meta& m) {
+ * @param m The entry.
+ * @param kept true while the library keeps the entry, its box retrying it; false for an entry just removed, whose box is empty.
+ * @param step The failed step's text. */
+void panel_entry_failed(const Meta& m, bool kept, const std::string& step) {
     const openpete_launcher_game* g = game_entry_of(m.game);
+    launcher_focus_game_set(m.game.c_str());
+    launcher_panel_build_failed(m.game.c_str(), g ? g->display_name : nullptr, step.c_str(), kept);
+}
+
+/** @brief Return the step an entry's failed-build marker records.
+ *
+ * @param m The entry.
+ * @return The step's text, "" without a marker. */
+std::string marker_step(const Meta& m) {
     std::ifstream f(marker_path(m.dir.string().c_str()));
     std::string line, step;
     while (f && std::getline(f, line))
         if (line.rfind("step = \"", 0) == 0 && line.size() > 9) step = line.substr(8, line.size() - 9);
-    launcher_focus_game_set(m.game.c_str());
-    launcher_panel_build_failed(m.game.c_str(), g ? g->display_name : nullptr, step.c_str());
+    return step;
+}
+
+/** @brief Remove a library entry, its disc copy and its modules with it, and log the outcome.
+ *
+ * @param dir The entry's directory.
+ * @param why The reason, for the log. */
+void remove_entry(const fs::path& dir, const char* why) {
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    OPL_INFO_F("library", "entry %s %s: %s", dir.filename().string().c_str(), ec ? "could not be removed" : "removed",
+               why);
+}
+
+/** @brief Remove every entry of a game holding a failed-build marker, other than one: a disc of the game has built, so a copy that did not has no further use.
+ *
+ * @param game The game id.
+ * @param keep The entry that built. */
+void remove_failed_of(const std::string& game, const fs::path& keep) {
+    std::vector<fs::path> gone;
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(library_root(), ec)) {
+        Meta m;
+        if (e.is_directory() && read_meta(e.path(), m) && m.failed && m.game == game && m.dir != keep)
+            gone.push_back(m.dir);
+    }
+    for (const fs::path& dir : gone) remove_entry(dir, "another disc of its game has built");
+}
+
+/** @brief Conclude an ingested disc's preparation.
+ *
+ * A disc that built replaces any failed entry of its game, and only then is
+ * the player's original called redundant. A disc this ingest added that did
+ * not build is removed: the copy can only fail again, the player still holds
+ * the image they just gave (nothing has called it redundant), and the empty
+ * box takes another disc by click, key, pad or drop. An entry that was already
+ * in the library stays, marked: it may be the only copy left, and its box
+ * retries it. A build stopped by a quit writes no marker and is left for the
+ * next launch.
+ * @param m The entry.
+ * @param added true when this ingest made the entry.
+ * @param rc prepare_entry's status.
+ * @return true when the game can start. */
+bool conclude_ingest(const Meta& m, bool added, int rc) {
+    if (rc == 0) {
+        remove_failed_of(m.game, m.dir);
+        if (added) note_original_redundant(m);
+        return true;
+    }
+    if (launcher_quit_taken()) return false;
+    const std::string step = marker_step(m);
+    if (added) remove_entry(m.dir, "the disc added to the library did not build");
+    panel_entry_failed(m, !added, step);
+    return false;
 }
 
 /** @brief Raise the game page's panel for the last ingest's refusal or failure (refuse). */
@@ -815,7 +900,8 @@ void panel_refusal() {
 void ingest_drop(const char* path) {
     fs::path entry;
     Meta m;
-    if (!ingest(path, entry) || !read_meta(entry, m)) {
+    bool added = false;
+    if (!ingest(path, entry, added) || !read_meta(entry, m)) {
         if (launcher_quit_taken()) return;
         OPL_ERROR_F("library", "the dropped image %s could not be added to the library", path);
         panel_refusal();
@@ -824,7 +910,7 @@ void ingest_drop(const char* path) {
     record_game(m);
     launcher_focus_game_set(m.game.c_str());
     launcher_jobs_stop_other(m.game.c_str(), true);
-    if (prepare_entry(m, "ingest") != 0) panel_entry_failed(m);
+    (void)conclude_ingest(m, added, prepare_entry(m, "ingest"));
 }
 
 /* pick_pass results besides 0 and the LAUNCHER_LIB_* values. */
@@ -850,7 +936,7 @@ int admit_pick(const Meta& m, bool screens, bool& direct) {
         if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
         if (direct) {   /* --game: the library, its box focused, with the panel */
             direct = false;
-            panel_entry_failed(m);
+            panel_entry_failed(m, true, marker_step(m));
             return kPassAgain;
         }
         library_marker_clear(dir.c_str());   /* a pick retries */
@@ -860,7 +946,7 @@ int admit_pick(const Meta& m, bool screens, bool& direct) {
     if (launcher_quit_taken()) return LAUNCHER_LIB_QUIT;
     if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
     direct = false;
-    panel_entry_failed(m);
+    panel_entry_failed(m, true, marker_step(m));
     return kPassAgain;
 }
 
@@ -926,16 +1012,17 @@ int pick_pass(openpete_options_t* opts, bool screens, bool& direct, Meta& chosen
 int resolve_ingest(openpete_options_t* opts, bool screens, char* module_path_out, size_t module_path_cap) {
     fs::path entry;
     Meta m;
-    if (!ingest(opts->ingest_path, entry) || !read_meta(entry, m)) {
+    bool added = false;
+    if (!ingest(opts->ingest_path, entry, added) || !read_meta(entry, m)) {
         if (launcher_quit_taken()) return LAUNCHER_LIB_QUIT;
         if (!screens) return s_refusal.before_copy ? LAUNCHER_LIB_REFUSED : LAUNCHER_LIB_FAILED;
         panel_refusal();
     } else {
         record_game(m);
-        if (prepare_entry(m, "ingest") == 0) return boot_entry(opts, m, module_path_out, module_path_cap);
+        if (conclude_ingest(m, added, prepare_entry(m, "ingest")))
+            return boot_entry(opts, m, module_path_out, module_path_cap);
         if (launcher_quit_taken()) return LAUNCHER_LIB_QUIT;
         if (!screens) return LAUNCHER_LIB_BUILD_FAILED;
-        panel_entry_failed(m);
     }
     opts->ingest_path = nullptr;
     return kPassAgain;
@@ -1033,7 +1120,8 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
     if (opts->ingest_path) {
         fs::path entry;
         Meta m;
-        if (!ingest(opts->ingest_path, entry) || !read_meta(entry, m))
+        bool added = false;
+        if (!ingest(opts->ingest_path, entry, added) || !read_meta(entry, m))
             return launcher_quit_taken() ? LAUNCHER_LIB_QUIT
                  : s_refusal.before_copy ? LAUNCHER_LIB_REFUSED : LAUNCHER_LIB_FAILED;
         record_game(m);
@@ -1092,20 +1180,17 @@ const char* openpete_launcher_selected_game(void) {
 int openpete_library_game_disc(const char* game, char* cue, size_t cue_cap) {
     if (!game || !*game || !cue || !cue_cap) return -1;
     std::error_code ec;
-    fs::path best;
-    long long best_played = -1;
+    Meta best;
     for (auto& e : fs::directory_iterator(library_root(), ec)) {
         Meta m;
         if (!e.is_directory() || !read_meta(e.path(), m)) continue;
         const fs::path c = m.dir / "disc.cue";
         if (!fs::exists(c, ec)) continue;
         const std::string g = m.game.empty() ? game_of_image(c) : m.game;
-        if (g != game || m.last_played <= best_played) continue;
-        best = c;
-        best_played = m.last_played;
+        if (g == game && (best.dir.empty() || outranks(m, best))) best = m;
     }
-    if (best.empty()) return -1;
-    std::snprintf(cue, cue_cap, "%s", best.string().c_str());
+    if (best.dir.empty()) return -1;
+    std::snprintf(cue, cue_cap, "%s", (best.dir / "disc.cue").string().c_str());
     return 0;
 }
 

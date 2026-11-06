@@ -352,6 +352,7 @@ add_test(NAME config_resolve_test COMMAND config_resolve_test)
 add_executable(identify_test
     identify_test.c
     ${CMAKE_SOURCE_DIR}/core/config/identify.c
+    ${CMAKE_SOURCE_DIR}/core/config/game_registry.c
     ${CMAKE_SOURCE_DIR}/core/diag/error_ids.c
     ${CMAKE_SOURCE_DIR}/core/diag/log.c)
 target_include_directories(identify_test PRIVATE
@@ -893,3 +894,21 @@ if(NOT WIN32)
 endif()
 set_target_properties(launcher_fit_test PROPERTIES C_STANDARD 99)
 add_test(NAME launcher_fit_test COMMAND launcher_fit_test)
+
+# launcher_page_lines_test - the game page's lines below its boxes: their text
+# for 0 to 3 games in the library, and their fit at the supported windows,
+# measured with the real body font in an imgui context with no backend.
+if(TARGET openpete_imgui)
+    add_executable(launcher_page_lines_test
+        launcher_page_lines_test.cpp
+        ${CMAKE_SOURCE_DIR}/core/launcher/launcher_font.cpp
+        ${CMAKE_SOURCE_DIR}/core/config/game_registry.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(launcher_page_lines_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/launcher
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+    target_link_libraries(launcher_page_lines_test PRIVATE openpete_imgui)
+    set_target_properties(launcher_page_lines_test PROPERTIES CXX_STANDARD 20 C_STANDARD 11)
+    add_test(NAME launcher_page_lines_test COMMAND launcher_page_lines_test)
+endif()

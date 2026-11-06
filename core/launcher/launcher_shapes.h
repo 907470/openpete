@@ -45,7 +45,7 @@ void launcher_shape_panel(const char* id, ImVec2 a, ImVec2 b, float scale, float
 void launcher_shape_bar(const char* id, ImVec2 a, ImVec2 b, float scale, float frac, ImU32 track, ImU32 fill,
                         ImU32 border, float border_px);
 
-/** @brief Draw one line of text on a chip: the chip box (launcher_shape_panel at kChipAlpha) padded around the line's box, then the text in imgui; each recorded in the element manifest.
+/** @brief Draw one line of text on a chip: the chip box (launcher_shape_panel at @p alpha) padded around the line's box, then the text in imgui; each recorded in the element manifest.
  *
  * The text's box is its origin and CalcTextSize at the current font; the
  * chip spans it grown by @p pad (layout px) and is recorded as <id>.panel,
@@ -55,8 +55,10 @@ void launcher_shape_bar(const char* id, ImVec2 a, ImVec2 b, float scale, float f
  * @param pad The chip's padding around the text box, layout px.
  * @param scale Window pixels per layout pixel.
  * @param col The text colour.
- * @param text The text. */
-void launcher_chip_text(const char* id, ImVec2 pos, ImVec2 pad, float scale, ImU32 col, const char* text);
+ * @param text The text.
+ * @param alpha The box's opacity; at 0 the text draws alone, no shape is added and no <id>.panel recorded. */
+void launcher_chip_text(const char* id, ImVec2 pos, ImVec2 pad, float scale, ImU32 col, const char* text,
+                        float alpha = kChipAlpha);
 
 /** @brief Return a chip's text in the chips' letter case: as written, or upper case when the launcher draws its chips in upper case.
  *

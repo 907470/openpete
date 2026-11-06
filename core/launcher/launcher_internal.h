@@ -399,6 +399,16 @@ void launcher_image_fit(const unsigned char* src, int sw, int sh, int dw, int dh
  * @return The clicked box's activation (launcher_page_activation), or LAUNCHER_PAGE_NONE. */
 int launcher_page_draw(const char* const* entry_games, int count, int focus, int* hovered);
 
+/** @brief Draw the game page's lines into the current imgui window (launcher_layout::page_lines): each box's disc serial below it, and the disc hint on the corner chips' row while a box has no entry; recorded in the element manifest as box.<game>.id and page.hint.
+ *
+ * Each line's chip fills at half opacity times the sky's dome cover, so over
+ * the flat background the text draws alone. The panel covers the serials'
+ * row, so nothing draws while it shows.
+ * @param entry_games As launcher_page_draw's.
+ * @param count The entry count.
+ * @param scale Window pixels per layout pixel. */
+void launcher_page_lines_draw(const char* const* entry_games, int count, float scale);
+
 /** @brief Count the game page's boxes.
  *
  * @param entry_games As launcher_page_draw's.
@@ -533,14 +543,15 @@ bool launcher_panel_open_ref(void);
  *         click that dismisses the panel. */
 bool launcher_panel_draw(float scale, float top);
 
-/** @brief Raise the panel for a module build that failed and give the game's box its failed-build drawing (launcher_page_set_failed).
+/** @brief Raise the panel for a module build that failed and, while the library keeps the entry, give the game's box its failed-build drawing (launcher_page_set_failed).
  *
- * The message names the game, the step and the log file. Without screens
- * the message is only logged and no box is marked.
+ * The message names the game, the step, the log file and what the box does
+ * next. Without screens the message is only logged and no box is marked.
  * @param game The game id.
  * @param name The game's display name, or NULL for the id.
- * @param step The failed step's progress text; "" or NULL for the start. */
-void launcher_panel_build_failed(const char* game, const char* name, const char* step);
+ * @param step The failed step's progress text; "" or NULL for the start.
+ * @param kept true when the entry stays in the library; false when it was removed and the box is empty. */
+void launcher_panel_build_failed(const char* game, const char* name, const char* step, bool kept);
 
 /** @brief Mark a game's box as holding a failed module build: the box draws the empty-box drawing with the game's name in place of its picture, fill and logo, and still activates its entry.
  *

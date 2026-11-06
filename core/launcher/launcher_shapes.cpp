@@ -104,11 +104,12 @@ void launcher_shape_bar(const char* id, ImVec2 a, ImVec2 b, float scale, float f
     launcher_manifest_item(id, "bar", a.x, a.y, b.x, b.y);
 }
 
-void launcher_chip_text(const char* id, ImVec2 pos, ImVec2 pad, float scale, ImU32 col, const char* text) {
+void launcher_chip_text(const char* id, ImVec2 pos, ImVec2 pad, float scale, ImU32 col, const char* text,
+                        float alpha) {
     const ImVec2 sz = ImGui::CalcTextSize(text);
     const ImVec2 a(pos.x - pad.x * scale, pos.y - pad.y * scale);
     const ImVec2 b(pos.x + sz.x + pad.x * scale, pos.y + sz.y + pad.y * scale);
-    launcher_shape_panel((std::string(id) + ".panel").c_str(), a, b, scale, kChipAlpha);
+    launcher_shape_panel((std::string(id) + ".panel").c_str(), a, b, scale, alpha);
     const float x0 = std::trunc(pos.x), y0 = std::trunc(pos.y);
     launcher_manifest_item(id, "text", x0, y0, x0 + sz.x, y0 + sz.y);
     /* GetColorU32 applies the style's alpha, which the text-hiding harness

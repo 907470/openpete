@@ -19,13 +19,7 @@
 
 namespace {
 
-/* The corner chips' metrics, layout px: the text size (as ProggyClean,
- * launcher_push_body_font), the padding around the line, the margin to the
- * window's edges, and the spinner's gap before the text and stroke. */
-constexpr float kChipPx = 10.0f;
-constexpr float kPadX = 8.0f, kPadY = 6.0f;
-constexpr float kMargin = 12.0f;
-constexpr float kSpinGap = 6.0f;
+/* The spinner's stroke, layout px. */
 constexpr float kSpinStroke = 1.5f;
 /* The spinner's arc and its turn: 270 degrees, once per second. */
 constexpr float kSpinSweep = 1.5f * 3.14159265358979f;
@@ -47,10 +41,10 @@ struct Corner {
 Corner place(const char* text, float scale, bool left, float lead) {
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
     const ImVec2 ts = ImGui::CalcTextSize(text);
-    const float w = ts.x + 2.0f * kPadX * scale + lead, h = ts.y + 2.0f * kPadY * scale;
-    const float x0 = left ? kMargin * scale : disp.x - kMargin * scale - w;
-    const float y0 = disp.y - kMargin * scale - h;
-    return {ImVec2(x0, y0), ImVec2(x0 + w, y0 + h), ImVec2(x0 + kPadX * scale + lead, y0 + kPadY * scale)};
+    const float w = ts.x + 2.0f * kCornerPadX * scale + lead, h = ts.y + 2.0f * kCornerPadY * scale;
+    const float x0 = left ? kCornerMargin * scale : disp.x - kCornerMargin * scale - w;
+    const float y0 = disp.y - kCornerMargin * scale - h;
+    return {ImVec2(x0, y0), ImVec2(x0 + w, y0 + h), ImVec2(x0 + kCornerPadX * scale + lead, y0 + kCornerPadY * scale)};
 }
 
 /** @brief Add a corner chip's box and the text, and record the text in the element manifest.
@@ -74,8 +68,8 @@ void chip_body(const char* id, const Corner& c, float scale, const char* text) {
  * @param c The placed chip.
  * @param scale Window pixels per layout pixel. */
 void spinner(const Corner& c, float scale) {
-    const float p = kChipPx * scale, stroke = kSpinStroke * scale;
-    const ImVec2 o(c.a.x + kPadX * scale + 0.5f * p, c.a.y + kPadY * scale + 0.5f * p);
+    const float p = kCornerPx * scale, stroke = kSpinStroke * scale;
+    const ImVec2 o(c.a.x + kCornerPadX * scale + 0.5f * p, c.a.y + kCornerPadY * scale + 0.5f * p);
     const float r = 0.5f * (p - stroke);
     const double turn = std::fmod(launcher_sky_clock() / kSpinPeriodS, 1.0);
     const float a0 = (float)(turn * 2.0 * 3.14159265358979), a1 = a0 + kSpinSweep;
@@ -99,7 +93,7 @@ void shader_chip(float scale) {
     char line[64];
     snprintf(line, sizeof line, "Compiling shaders %u%%", (unsigned)((unsigned long long)done * 100ull / total));
     const std::string text = launcher_chip_case(line);
-    const Corner c = place(text.c_str(), scale, true, (kChipPx + kSpinGap) * scale);
+    const Corner c = place(text.c_str(), scale, true, (kCornerPx + kSpinGap) * scale);
     chip_body("status.shaders", c, scale, text.c_str());
     spinner(c, scale);
 }
@@ -156,7 +150,7 @@ void level_chip(float scale) {
 }  // namespace
 
 void launcher_corner_chips_draw(float scale, bool shader_step) {
-    launcher_push_body_font(kChipPx * scale);
+    launcher_push_body_font(kCornerPx * scale);
     if (!shader_step) shader_chip(scale);
     level_chip(scale);
     ImGui::PopFont();
