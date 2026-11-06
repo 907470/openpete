@@ -221,3 +221,7 @@ sunny_beach | pos=(23777, 47772, 23999) yaw=-766 pitch=28
 # The same pose at VBL 2433, during the duck's animation: a whole body face
 # covers the tube at this tick (2600-3100 px against the per-pixel crossing).
 sunny_beach@pop | pos=(23777, 47772, 23999) yaw=-766 pitch=28 | 2433
+# glimmer@sphere4x3: at 4:3 the sector sphere cull's unfloored double test
+# rejects sector 89 by under one unit where the game's integer test admits it,
+# leaving a hole in the wall at the right edge. Blessed before the fix.
+glimmer@sphere4x3 | pos=(29329, 38785, 9174) yaw=1183 pitch=249 | | --aspect 4:3
