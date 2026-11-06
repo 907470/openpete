@@ -68,10 +68,20 @@ void dragonstar_native_set_rot_interp(const double* ang_zxy);
  * GTE rotation registers are restored. Draws nothing when the native scene is
  * off, nothing was captured, or RP_PORTAL was not drawn on the canonical
  * present (RenderPortals stops during a level load and leaves a stale capture).
+ * On a held camera cut the replay shows tick N-1's capture set and dome matrix
+ * (cut_held_sets_enter), no set when RenderPortals captured none in that
+ * epoch. The set stays selected for the terrain feeder's plane provider until
+ * portal_reextract_leave.
  * @param cpu       guest state, the sub-tick view staged
  * @param alpha     sub-tick fraction between the previous and current tick
- * @param interp_on 1 = camera bracketed, else snap to curr */
-void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
+ * @param interp_on 1 = camera bracketed, else snap to curr
+ * @param hold      nonzero on a held camera cut */
+void portal_reextract(struct CPUState* cpu, double alpha, int interp_on, int hold);
+
+/** @brief Restore the current capture set after a re-extract's terrain feeder has read it.
+ *
+ * Pairs every portal_reextract; canonical renders see no held set. */
+void portal_reextract_leave(void);
 /* terrain_reextract, terrain_native_topdown_pose, terrain_native_sweep_pose:
  * renderer/terrain.h (the shared feeder). */
 void shadow_reextract(struct CPUState* cpu);

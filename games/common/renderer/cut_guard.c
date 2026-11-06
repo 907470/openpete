@@ -737,9 +737,12 @@ static int cut_rec_drawn(const uint8_t* mh) {
 /** @brief Whether one moby record can show tick N-1, for cut_scene_holdable.
  *
  * The record is looked up in the interp table by moby_game.interp_key (the
- * guest address when the game names none). It refuses when it has no entry or
- * no previous state, or when its pair is not one tick (cut_pair_is_tick); a
- * record whose class field differs between prev and curr passes. With the
+ * guest address when the game names none). It refuses when it has no entry,
+ * when the entry is new in tick N (openpete_interp_objs_spawned_last_tick), or
+ * when its pair is not one tick (cut_pair_is_tick); a record whose class field
+ * differs between prev and curr passes. An entry that never rolled and is older
+ * than tick N has held one state since before tick N-1, so its curr is tick
+ * N-1's state and it passes without a pair. With the
  * census armed, every refusal prints the record, and an accepted pair whose
  * roll stamps are more than 1.5 ticks apart prints as a seen pair.
  * @param m Guest address of the record.
@@ -748,7 +751,7 @@ static int cut_rec_drawn(const uint8_t* mh) {
 static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
     const uint32_t key = moby_game.interp_key ? moby_game.interp_key(m) : m;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
-    if (!o || !o->have_prev) {
+    if (!o || openpete_interp_objs_spawned_last_tick(o)) {
         if (cut_census_on()) {
             uint16_t cls = 0;
             if (game_layout.moby.class_off) memcpy(&cls, mh + game_layout.moby.class_off, 2);
@@ -756,6 +759,12 @@ static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
                     openpete_frame, m, key, (unsigned)cls, o != NULL);
         }
         return 0;
+    }
+    if (!o->have_prev) {
+        if (cut_census_on())
+            fprintf(stderr, "[cut-census vbl=%u] scene=unrolled rec=%08x curr_ns=%lld\n",
+                    openpete_frame, m, (long long)o->curr_ns);
+        return 1;
     }
     if (game_layout.moby.class_off) {
         uint16_t pc, cc;
@@ -842,6 +851,8 @@ static int cut_drawn_set_refusals(void) {
     return n;
 }
 
+static int s_prevq_walked;   /* records the last previous-queue walk listed, -1 for no queue */
+
 /** @brief Count the records of the previous epoch's queues, which a held cut replays, that cannot show tick N-1.
  *
  * Dormant records are skipped. A record whose object has not rolled since the
@@ -858,6 +869,7 @@ static int cut_prev_queue_refusals(void) {
     const int all = cut_census_on();
     op_time_t ref_ns = 0;
     const int cnt = moby_native_prev_queue_mobys(mobys, 1024, &ref_ns);
+    s_prevq_walked = cnt;
     int n = 0;
     for (int i = 0; i < cnt && (all || n == 0); i++) {
         const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(mobys[i], rec_bytes);
@@ -875,8 +887,8 @@ int cut_scene_holdable(void) {
         return cut_array_refusals() == 0 && cut_drawn_set_refusals() == 0 &&
                cut_prev_queue_refusals() == 0;
     const int na = cut_array_refusals(), nd = cut_drawn_set_refusals(), np = cut_prev_queue_refusals();
-    fprintf(stderr, "[cut-census vbl=%u] scene refusals array=%d drawn=%d prevq=%d\n",
-            openpete_frame, na, nd, np);
+    fprintf(stderr, "[cut-census vbl=%u] scene refusals array=%d drawn=%d prevq=%d walked=%d\n",
+            openpete_frame, na, nd, np, s_prevq_walked);
     return na == 0 && nd == 0 && np == 0;
 }
 

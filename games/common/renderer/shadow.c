@@ -166,6 +166,9 @@ static void shadow_list_read(CPUState* cpu, uint32_t list_end) {
     }
 }
 
+/* The list a held present walks (cut_held_set_pick), or -1 outside a hold. */
+static int s_list_held = -1;
+
 /** @brief Latches the drawn-moby list base and copies the list records.
  *
  * The base is the GTE data register game_layout.shadow.list_reg plus the list
@@ -1024,7 +1027,7 @@ static void shadow_fan_emit(const shadow_walk* w, const shadow_fan_pts* f) {
  * @param desc The descriptor's address.
  * @param cs Receives the listed count when non-NULL and the list is re-read. */
 static void shadow_list_refresh(CPUState* cpu, uint32_t desc, shadow_wide_census* cs) {
-    if (game_layout.shadow.list_source == SHADOW_LIST_GTE_DATA) return;
+    if (game_layout.shadow.list_source == SHADOW_LIST_GTE_DATA || s_list_held >= 0) return;
     shadow_list_read(cpu, cpu->read_word(desc + 0x08));
     if (cs) cs->listed = s_list_n;
     shadow_list_append_synth();
@@ -1692,9 +1695,6 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_shadow_bracket);
 }
 
-/* The list a held present walks (cut_held_set_pick), or -1 outside a hold. */
-static int s_list_held = -1;
-
 /* Sub-tick moby drop-shadow re-extract; see shadow.h. */
 void shadow_reextract(CPUState* cpu) {
     if (!hook_reextract_ready_held(RP_MOBY_SHADOW, s_list_held)) return;
@@ -1708,8 +1708,6 @@ int shadow_replay_prev_list(int on) {
         return 0;
     }
     if (s_list_held >= 0) return s_list_held != CUT_HELD_EMPTY;
-    /* Only a list in a copy: a fixed-address list is re-read live. */
-    if (game_layout.shadow.list_source != SHADOW_LIST_GTE_DATA) return 0;
     cut_held_pick_t pick = cut_held_set_pick(s_list_epoch, s_list_prev.epoch);
     /* A copy with no base is a list the tick did not build. */
     if ((pick == CUT_HELD_PREV && !s_list_prev.base) || (pick == CUT_HELD_CURR && !s_list_base))

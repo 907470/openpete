@@ -17,6 +17,7 @@
 #include "renderer/render_paths.h"  /* canon-drawn mask (load-window census) */
 #include "interp_regions.h"   /* game_interp_moby_key */
 #include "renderer/cut_guard.h"        /* the shared camera-cut guard and its census */
+#include "renderer/shadow.h"           /* shadow_replay_prev_list */
 #include "renderer/flame.h"          /* the shared fire-breath producer + its bracket */
 
 #include <math.h>
@@ -882,37 +883,44 @@ typedef struct {
     int         open;        /* live[] holds this present's save */
     uint8_t*    stage;       /* view copy for this present, NULL = write guest RAM */
     int         warned;      /* one-shot capture-length-mismatch warning */
+    uint8_t*    prev;        /* the capture canon[] retired, tick N-1's on a held cut */
+    uint32_t    epoch;       /* canonical epoch of canon[] */
+    uint32_t    prev_epoch;  /* canonical epoch of prev[] */
+    op_time_t   prev_ref_ns; /* tick stamp of prev[]'s capture */
+    op_time_t   ref_ns;      /* tick stamp of canon[]'s capture */
 } scratch_region_t;
 
 #define SXY_BASE 0x1F800000u  /* PSX scratchpad (Spyro SXY / NCLIP verdicts) */
 
-static uint8_t s_colour_buf[2][0x500];   /* [0]=canon  [1]=live */
-static uint8_t s_recs_buf[2][0xE00];
-static uint8_t s_shaded_buf[2][0x800];
-static uint8_t s_sxy_buf[2][0x400];
-static uint8_t s_seg_buf[2][0x100];
+static uint8_t s_colour_buf[3][0x500];   /* [0]=canon  [1]=live  [2]=prev */
+static uint8_t s_recs_buf[3][0xE00];
+static uint8_t s_shaded_buf[3][0x800];
+static uint8_t s_sxy_buf[3][0x400];
+static uint8_t s_seg_buf[3][0x100];
 
 static scratch_region_t s_scratch_rows[] = {
     /* per-vertex fog-lit colour scratch [0x1100,0x1600) */
-    { "colour", G_SCRATCH + 0x1100u, 0x500u, SPROD_MOBYREG, SPHASE_ENTER,
-      s_colour_buf[0], s_colour_buf[1], 0, 0, NULL, 0 },
+    { .name = "colour", .psx_base = G_SCRATCH + 0x1100u, .len = 0x500u, .producer = SPROD_MOBYREG,
+      .phase = SPHASE_ENTER, .canon = s_colour_buf[0], .live = s_colour_buf[1], .prev = s_colour_buf[2] },
     /* full REGULAR cull records [0x1600,0x2400) (<=64 @ 0x38) - captured at
      * the MOBY hook while live, BEFORE the Spyro pass reuses 0x1900 */
-    { "recs",   G_SCRATCH + 0x1600u, 0xE00u, SPROD_MOBYREG, SPHASE_ENTER,
-      s_recs_buf[0], s_recs_buf[1], 0, 0, NULL, 0 },
+    { .name = "recs", .psx_base = G_SCRATCH + 0x1600u, .len = 0xE00u, .producer = SPROD_MOBYREG,
+      .phase = SPHASE_ENTER, .canon = s_recs_buf[0], .live = s_recs_buf[1], .prev = s_recs_buf[2] },
     /* shaded Moby* list + lit scratch [0x2400,0x2C00) */
-    { "shaded", G_SCRATCH + 0x2400u, 0x800u, SPROD_SHADED, SPHASE_ENTER,
-      s_shaded_buf[0], s_shaded_buf[1], 0, 0, NULL, 0 },
+    { .name = "shaded", .psx_base = G_SCRATCH + 0x2400u, .len = 0x800u, .producer = SPROD_SHADED,
+      .phase = SPHASE_ENTER, .canon = s_shaded_buf[0], .live = s_shaded_buf[1], .prev = s_shaded_buf[2] },
     /* Spyro's projected int16 SXY (the NCLIP cull verdict) - full 1 KB
      * hardware scratchpad */
-    { "sxy",    SXY_BASE,            0x400u, SPROD_SPYRO,  SPHASE_ENTER,
-      s_sxy_buf[0], s_sxy_buf[1], 0, 0, NULL, 0 },
+    { .name = "sxy", .psx_base = SXY_BASE, .len = 0x400u, .producer = SPROD_SPYRO,
+      .phase = SPHASE_ENTER, .canon = s_sxy_buf[0], .live = s_sxy_buf[1], .prev = s_sxy_buf[2] },
     /* Spyro per-segment scratch [0x1900,0x1A00) - overlaps recs */
-    { "seg",    G_SCRATCH + 0x1900u, 0x100u, SPROD_SPYRO,  SPHASE_SEG_OVERLAY,
-      s_seg_buf[0], s_seg_buf[1], 0, 0, NULL, 0 },
+    { .name = "seg", .psx_base = G_SCRATCH + 0x1900u, .len = 0x100u, .producer = SPROD_SPYRO,
+      .phase = SPHASE_SEG_OVERLAY, .canon = s_seg_buf[0], .live = s_seg_buf[1], .prev = s_seg_buf[2] },
 };
 #define SCRATCH_ROWS ((int)(sizeof s_scratch_rows / sizeof s_scratch_rows[0]))
 static int s_any_captured = 0;
+static int s_bracket_open = 0;   /* enter saved the live scratch this present */
+static int s_bracket_hold = 0;   /* this re-extract is a held camera cut */
 
 /* Canonical-render EPOCH. An openpete_frame stamp ("capture is fresh iff its
  * frame stamp == openpete_frame at re-extract") cannot serve: openpete_frame
@@ -1093,7 +1101,7 @@ static void orch_capture_camera(void* cpu_v, int producer) {
 /** @brief Install a producer's captured camera over the re-extract's camera when the producer drew under another (spyro_native_prod_camera_enter). */
 static int orch_prod_camera_enter(int producer) {
     if (producer < 0 || producer >= SPROD_COUNT) return 0;
-    if (!s_body_cam || s_prod_cam_active) return 0;
+    if (!s_body_cam || s_prod_cam_active || s_bracket_hold) return 0;
     if (s_prod_cam_epoch[producer] != s_canon_epoch_ok || !s_prod_cam_hold[producer]) return 0;
     memcpy(s_prod_cam_saved, s_body_cam, CAM_XFORM_BYTES);
     memcpy(s_body_cam, s_prod_cam[producer], CAM_XFORM_BYTES);
@@ -1125,16 +1133,41 @@ static void orch_epoch_supersede(void) { s_canon_epoch_now++; }
 static uint32_t orch_epoch_stamp(void) { return s_canon_epoch_now; }
 /** @brief Report whether a capture stamp is the last closed epoch (spyro_native_canon_epoch_fresh). */
 static int orch_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }
-/** @brief Report whether the moby-record producer stamped the last closed epoch (spyro_native_canon_mobyreg_fresh). */
-static int orch_mobyreg_fresh(void) { return s_prod_epoch[SPROD_MOBYREG] == s_canon_epoch_ok; }
-/** @brief Report whether the shaded producer stamped the last closed epoch (spyro_native_canon_shaded_fresh). */
-static int orch_shaded_fresh(void)  { return s_prod_epoch[SPROD_SHADED]  == s_canon_epoch_ok; }
 /** @brief Reports whether producer p captured during the last closed canonical render.
  *
  * Compares the producer's last-capture stamp with the last closed epoch,
  * the test orch_mobyreg_fresh and orch_shaded_fresh apply to their own
  * producers. */
 static int scratch_prod_fresh(sprod_t p)   { return s_prod_epoch[p] == s_canon_epoch_ok; }
+
+/** @brief The bytes a re-extract restores for a scratch row, tick N-1's on a held cut.
+ *
+ * Outside a hold, canon[] when the producer ran in the last closed render. On
+ * a hold, the capture cut_held_set_pick names, so a queue tick N-1 drew shows
+ * whatever tick N's cull kept.
+ * @param r The row.
+ * @return The bytes, or NULL when the row shows no capture. */
+static const uint8_t* scratch_row_shown(const scratch_region_t* r) {
+    if (!r->captured) return NULL;
+    if (!s_bracket_hold) return scratch_prod_fresh(r->producer) ? r->canon : NULL;
+    const cut_held_pick_t pick = cut_held_set_pick(r->epoch, r->prev_epoch);
+    return pick == CUT_HELD_PREV ? r->prev : pick == CUT_HELD_CURR ? r->canon : NULL;
+}
+
+/** @brief Whether a producer's rows show a capture on this re-extract.
+ *
+ * @param p The producer.
+ * @return 1 when its first row has bytes to show, else 0. */
+static int scratch_prod_shown(sprod_t p) {
+    for (int i = 0; i < SCRATCH_ROWS; ++i)
+        if (s_scratch_rows[i].producer == p) return scratch_row_shown(&s_scratch_rows[i]) != NULL;
+    return 0;
+}
+
+/** @brief Report whether the moby-record producer has a capture to show (spyro_native_canon_mobyreg_fresh). */
+static int orch_mobyreg_fresh(void) { return scratch_prod_shown(SPROD_MOBYREG); }
+/** @brief Report whether the shaded producer has a capture to show (spyro_native_canon_shaded_fresh). */
+static int orch_shaded_fresh(void)  { return scratch_prod_shown(SPROD_SHADED); }
 
 /* Registry engine: row lookup + capture. Captures fire at the producer hooks
  * (canonical moby/spyro/shaded render hooks, while the scratch is still live)
@@ -1149,10 +1182,20 @@ static scratch_region_t* scratch_row_by_base(uint32_t psx_addr) {
     return NULL;
 }
 
-/** @brief Copies a scratch registry row's live bytes into its canon buffer and stamps the producer epoch. */
+/** @brief Copies a scratch registry row's live bytes into its canon buffer and stamps the producer epoch.
+ *
+ * The epoch's first capture retires canon[] to prev[]; a later capture in the
+ * epoch replaces canon[]. */
 static void scratch_row_capture(scratch_region_t* r) {
     const void* h = openpete_psx_to_host_span(r->psx_base, r->len);
     if (!h) return;
+    if (r->epoch != s_canon_epoch_now) {
+        uint8_t* t = r->prev; r->prev = r->canon; r->canon = t;
+        r->prev_epoch = r->epoch;
+        r->prev_ref_ns = r->ref_ns;
+        r->epoch = s_canon_epoch_now;
+    }
+    r->ref_ns = g_openpete_tick_stamp;
     memcpy(r->canon, h, r->len);
     r->captured = 1;
     s_any_captured = 1;
@@ -1204,11 +1247,21 @@ static void orch_capture_recs(void* cpu_v) {
  * records (records 14+ start at 0x1910) which the .s reuses temporally. We give
  * the moby feeder the FULL records first; scratch_bracket_seg_restore then
  * overlays the seg scratch for the Spyro feeder (called between them). */
-static int s_bracket_open = 0;   /* enter saved the live scratch this present */
+
+/** @brief The retired regular records, the queue a held cut replays (spyro_native_canon_prev_recs). */
+static const uint8_t* orch_prev_recs(uint32_t* len, op_time_t* ref_ns) {
+    const scratch_region_t* r = scratch_row_by_base(G_SCRATCH + 0x1600u);
+    if (!r || !r->captured || cut_held_set_pick(r->epoch, r->prev_epoch) != CUT_HELD_PREV) return NULL;
+    *len = r->len;
+    *ref_ns = r->prev_ref_ns;
+    return r->prev;
+}
 
 /** @brief Saves every scratch row's live bytes, stages each row through the view, and restores fresh producers' canon captures into it. */
-static void scratch_bracket_enter(CPUState* cpu) {
+static void scratch_bracket_enter(CPUState* cpu, int hold) {
     (void)cpu;
+    s_bracket_hold = hold;
+    moby_native_held_scratch(hold);
     {   /* OPENPETE_LOAD_CENSUS: per-producer freshness at re-extract time. */
         static int cen = -1;
         if (cen < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); cen = (e && *e && *e != '0'); }
@@ -1252,11 +1305,12 @@ static void scratch_bracket_enter(CPUState* cpu) {
      * moby + shadow feeders are about to consume). */
     for (int i = 0; i < SCRATCH_ROWS; ++i) {
         scratch_region_t* r = &s_scratch_rows[i];
-        if (r->phase != SPHASE_ENTER || !r->open || !r->captured) continue;
-        if (!scratch_prod_fresh(r->producer)) continue;
-        if (r->stage) { memcpy(r->stage, r->canon, r->len); continue; }
+        if (r->phase != SPHASE_ENTER || !r->open) continue;
+        const uint8_t* src = scratch_row_shown(r);
+        if (!src) continue;
+        if (r->stage) { memcpy(r->stage, src, r->len); continue; }
         void* h = openpete_psx_to_host_span(r->psx_base, r->len);
-        if (h) memcpy(h, r->canon, r->len);
+        if (h) memcpy(h, src, r->len);
     }
 }
 
@@ -1274,11 +1328,12 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
     if (!s_bracket_open) return;
     for (int i = 0; i < SCRATCH_ROWS; ++i) {
         scratch_region_t* r = &s_scratch_rows[i];
-        if (r->phase != SPHASE_SEG_OVERLAY || !r->open || !r->captured) continue;
-        if (!scratch_prod_fresh(r->producer)) continue;
-        if (r->stage) { memcpy(r->stage, r->canon, r->len); continue; }
+        if (r->phase != SPHASE_SEG_OVERLAY || !r->open) continue;
+        const uint8_t* src = scratch_row_shown(r);
+        if (!src) continue;
+        if (r->stage) { memcpy(r->stage, src, r->len); continue; }
         void* h = openpete_psx_to_host_span(r->psx_base, r->len);
-        if (h) memcpy(h, r->canon, r->len);
+        if (h) memcpy(h, src, r->len);
     }
 }
 
@@ -1291,6 +1346,8 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
  * @param cpu Unused. */
 static void scratch_bracket_leave(CPUState* cpu) {
     (void)cpu;
+    s_bracket_hold = 0;
+    moby_native_held_scratch(0);
     if (!s_bracket_open) return;
     s_bracket_open = 0;
     for (int i = 0; i < SCRATCH_ROWS; ++i) {
@@ -2562,7 +2619,7 @@ static void game_reextract_body(void* cpu_v) {
     /* Restore tick-N's transient .s render-pass scratch (cull records, colour,
      * shaded list, Spyro seg + SXY) so the read-only body feeders below find
      * valid inputs - without it they emit nothing and mobys/Spyro flicker. */
-    scratch_bracket_enter(cpu);
+    scratch_bracket_enter(cpu, cam_hold);
 
     /* Sub-tick keyframe-blend for Spyro: pass the alpha + whether interpolation
      * is active (camera bracketed). The feeder builds a blend-interpolated seg
@@ -2601,15 +2658,20 @@ static void game_reextract_body(void* cpu_v) {
     uint64_t pt_t0 = 0, pt_t1;
     transition_reextract(cpu);     /* level-transition / balloonist cross-fade backdrop (backmost) */
     cyclorama_reextract(cpu, alpha, cam_bracketed); /* sky dome + background (transition matrices lerped prev->curr) */
-    portal_reextract(cpu, alpha, cam_bracketed); /* homeworld portal previews (dome matrix lerped prev->curr) */
+    portal_reextract(cpu, alpha, cam_bracketed, cam_hold); /* homeworld portal previews (dome matrix lerped prev->curr) */
     if (pt_on) pt_t0 = openpete_phase_now_us();
     terrain_reextract(cpu, alpha, cam_bracketed); /* interpolated camera + poly-anim vert lerp */
+    portal_reextract_leave();      /* terrain read the held set's opening planes */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_TERRAIN, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     moby_native_set_verdict_alpha(alpha, cam_bracketed);
+    moby_native_replay_prev_queue(cam_hold);   /* a record staged at tick N-1 shows that tick's state */
     moby_reextract(cpu);           /* re-derived: interpolated camera + lerped position */
+    moby_native_replay_prev_queue(0);
     moby_native_set_verdict_alpha(1.0, 1);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_MOBY, pt_t1 - pt_t0); pt_t0 = pt_t1; }
+    shadow_replay_prev_list(cam_hold);
     shadow_reextract(cpu);         /* drop-shadows under mobys (Spyro's: the record loop below) */
+    shadow_replay_prev_list(0);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SHADOW, pt_t1 - pt_t0); }
     /* The moby + shadow feeders have now consumed the FULL regular cull records;
      * overlay the Spyro seg scratch over the (consumed) records 14+ at 0x1900 -
@@ -2617,12 +2679,16 @@ static void game_reextract_body(void* cpu_v) {
      * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
+    player_records_set_hold(cam_hold);   /* a held cut shows tick N-1's records whole */
     player_records_loop(cpu, paired, cam_snap, cam_bracketed, alpha, use_herm,
                        sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION()] : NULL,
                        sh);
+    player_records_set_hold(0);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_reextract(cpu, cam_hold);   /* particles / glows / sparkles (Sparx) */
+    player_records_set_hold(cam_hold);   /* the flame records are the player's */
     flame_records_present(cpu, paired, cam_snap, alpha, fl);   /* fire breath, one ribbon per flame record */
+    player_records_set_hold(0);
     tracer_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
     player_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */
@@ -2738,6 +2804,7 @@ const game_orchestrator_t spyro1_orchestrator = {
     .capture_recs      = orch_capture_recs,
     .capture_sxy       = orch_capture_sxy,
     .capture_camera    = orch_capture_camera,
+    .prev_recs         = orch_prev_recs,
     .prod_camera_enter = orch_prod_camera_enter,
     .prod_camera_leave = orch_prod_camera_leave,
 };

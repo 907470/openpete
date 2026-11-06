@@ -25,6 +25,11 @@ static uint32_t none_epoch_stamp(void) { return 0u; }
 static int none_epoch_fresh(uint32_t stamp) { (void)stamp; return 0; }
 /** @brief Report a producer's capture never fresh. */
 static int none_fresh(void) { return 0; }
+/** @brief Report no retired record capture. */
+static const uint8_t* none_prev_recs(uint32_t* len, op_time_t* ref_ns) {
+    (void)len; (void)ref_ns;
+    return NULL;
+}
 /** @brief Capture nothing. */
 static void none_capture_range(void* cpu, unsigned off, unsigned len) {
     (void)cpu; (void)off; (void)len;
@@ -50,6 +55,7 @@ static int none_prod_camera_enter(int producer) { (void)producer; return 0; }
     .capture_recs      = none_capture, \
     .capture_sxy       = none_capture, \
     .capture_camera    = none_capture_camera, \
+    .prev_recs         = none_prev_recs, \
     .prod_camera_enter = none_prod_camera_enter, \
     .prod_camera_leave = none_void, \
 }
@@ -78,6 +84,7 @@ void game_orchestrator_bind(const game_orchestrator_t* o, void (*interp_register
     BIND(capture_recs);
     BIND(capture_sxy);
     BIND(capture_camera);
+    BIND(prev_recs);
     BIND(prod_camera_enter);
     BIND(prod_camera_leave);
 }
@@ -95,6 +102,9 @@ void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) {
     s_orch.capture_range(cpu, off, len);
 }
 void spyro_native_canon_capture_recs(void* cpu) { s_orch.capture_recs(cpu); }
+const uint8_t* spyro_native_canon_prev_recs(uint32_t* len, op_time_t* ref_ns) {
+    return s_orch.prev_recs(len, ref_ns);
+}
 void spyro_native_canon_capture_sxy(void* cpu) { s_orch.capture_sxy(cpu); }
 void spyro_native_canon_capture_camera(void* cpu, int producer) { s_orch.capture_camera(cpu, producer); }
 int spyro_native_prod_camera_enter(int producer) { return s_orch.prod_camera_enter(producer); }

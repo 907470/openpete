@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: dadf9a420e38a14f442dbd2094fa710d7b763a26
+# head: 969e921cdd6c9dac99094ded5d0295bf174cdfb0
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -106,7 +106,7 @@ games/common/renderer/moby.c	hex_dump	35	0
 games/common/renderer/moby.c	moby_build_validate	51	0	
 games/common/renderer/moby.c	moby_decode_project_body	75	0	
 games/common/renderer/moby.c	moby_native_pass	49	0	
-games/common/renderer/moby.c	moby_reextract_body	49	0	
+games/common/renderer/moby.c	moby_reextract_body	52	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_shaded	167	0	
 games/common/renderer/moby.c	reextract_record_pass	100	0	
@@ -181,8 +181,9 @@ games/spyro-1/renderer/portal.c	feed_portal_dome	122	0
 games/spyro-1/renderer/portal.c	feed_portal_quad	77	0	
 games/spyro-1/renderer/portal.c	feed_revealed_portals	78	0	
 games/spyro-1/renderer/portal.c	leaf_hook	104	0	
-games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	74	0	
-games/spyro-1/renderer/portal.c	portal_reextract	83	0	
+games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	75	0	
+games/spyro-1/renderer/portal.c	portal_reextract	45	0	
+games/spyro-1/renderer/portal.c	portal_replay_dome_matrix	27	0	
 games/spyro-1/renderer/reextract.c	cl_fit_pose	26	0	
 games/spyro-1/renderer/reextract.c	game_reextract_body	338	0	
 games/spyro-1/renderer/reextract.c	particle_pools_bracket	41	0	

@@ -156,6 +156,13 @@ int moby_native_canon_ref_ns(op_time_t* out);
  * @return The count written, or -1 when the previous queue is not usable. */
 int moby_native_prev_queue_mobys(uint32_t* out, int max, op_time_t* ref_ns);
 
+/** @brief Mark a re-extract whose game stages tick N-1's scratch for a held cut.
+ *
+ * The specular queue the sub-tick pass replays then follows the staged scratch
+ * to tick N-1's capture.
+ * @param on Nonzero on a held camera cut. */
+void moby_native_held_scratch(int on);
+
 /** @brief Whether a previous-queue replay (moby_native_replay_prev_queue) is in progress, with the epoch it replays and that cull's camera position.
  *
  * A second queue the same cull wrote (the second model kind's) replays its own

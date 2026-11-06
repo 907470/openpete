@@ -398,7 +398,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
 
 /* Documented at its declaration in reextract.h. */
 void shadow_spyro_reextract(CPUState* cpu, int slot) {
-    if (!hook_reextract_ready(RP_SHADOW)) return;
+    if (!hook_reextract_ready_held(RP_SHADOW, player_records_held_pick())) return;
     shadow_spyro_feed_native(cpu, slot);
 }
 

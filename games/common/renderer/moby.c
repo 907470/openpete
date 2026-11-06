@@ -437,9 +437,13 @@ void moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]) {
 #define SPEC_SCR_LO   (moby_game.spec_window_off)
 #define SPEC_SCR_LEN  (moby_game.spec_window_len)
 #define SPEC_SCR_MAX  0x2000u                  /* storage bound for the snapshot */
-static uint8_t s_canon_spec[SPEC_SCR_MAX];
+static uint8_t  s_canon_spec_buf[2][SPEC_SCR_MAX];
+static uint8_t* s_canon_spec = s_canon_spec_buf[0];
+static uint8_t* s_canon_spec_prev = s_canon_spec_buf[1];  /* the capture a later epoch retired */
 static uint32_t s_canon_spec_epoch = 0;   /* canonical-render epoch at capture (freshness gate) */
+static uint32_t s_canon_spec_prev_epoch = 0;
 static int     s_canon_spec_valid = 0;
+static int     s_held_scratch = 0;        /* the game staged tick N-1's scratch (moby_native_held_scratch) */
 /** @brief Copies the specular scratch window at the canonical moby hook for the sub-tick SPEC bracket. */
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
     /* Runahead: a speculative fire must not stamp or overwrite the canonical
@@ -449,9 +453,28 @@ static void moby_native_capture_spec_scratch(CPUState* cpu) {
     if (!spyro_native_canon_capture_open()) return;
     if (!SPEC_SCR_LEN || SPEC_SCR_LEN > SPEC_SCR_MAX) return;
     const void* h = openpete_subtick_host_span(moby_game.scratch + SPEC_SCR_LO, SPEC_SCR_LEN);
-    if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1;
-             s_canon_spec_epoch = spyro_native_canon_epoch_stamp(); }
+    if (!h) return;
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    if (s_canon_spec_epoch != epoch) {
+        uint8_t* t = s_canon_spec_prev; s_canon_spec_prev = s_canon_spec; s_canon_spec = t;
+        s_canon_spec_prev_epoch = s_canon_spec_epoch;
+    }
+    memcpy(s_canon_spec, h, SPEC_SCR_LEN);
+    s_canon_spec_valid = 1;
+    s_canon_spec_epoch = epoch;
 }
+
+/** @brief The specular scratch a sub-tick pass replays, tick N-1's on a held cut.
+ *
+ * @return The window's bytes, or NULL when no capture is shown. */
+static const uint8_t* moby_spec_shown(void) {
+    if (!s_held_scratch)
+        return s_canon_spec_valid && spyro_native_canon_epoch_fresh(s_canon_spec_epoch) ? s_canon_spec : NULL;
+    const cut_held_pick_t pick = cut_held_set_pick(s_canon_spec_epoch, s_canon_spec_prev_epoch);
+    return pick == CUT_HELD_PREV ? s_canon_spec_prev : pick == CUT_HELD_CURR ? s_canon_spec : NULL;
+}
+
+void moby_native_held_scratch(int on) { s_held_scratch = on; }
 
 /* ---- captured prim (ground truth, decoded from the polybuf) --------- */
 typedef struct {
@@ -10741,10 +10764,18 @@ static int s_hold_asked;
 
 int moby_native_replay_prev_queue(int on) {
     static int      active;
+    static int      in_scratch;   /* the game staged the queue; only the state rule is armed */
     static uint32_t saved_canon;
     s_hold_asked = on ? 1 : 0;
     if (on) {
-        if (active) return 1;
+        if (active || in_scratch) return 1;
+        if (!s_rec_snap_words) {
+            uint32_t len = 0;
+            if (!spyro_native_canon_prev_recs(&len, &s_rec_ref_ns)) return 0;
+            s_rec_ref_prev = 1;
+            in_scratch = 1;
+            return 1;
+        }
         if (!rec_prev_usable()) return 0;
         /* Every object state the previous queue's cull composed is stamped at
          * or before the stamp the current copy took. */
@@ -10758,6 +10789,10 @@ int moby_native_replay_prev_queue(int on) {
         s_rec_ref_prev = 1;
         active = 1;
         return 1;
+    }
+    if (in_scratch) {
+        s_rec_ref_prev = 0;
+        in_scratch = 0;
     }
     if (active) {
         rec_snap_swap();
@@ -10779,7 +10814,46 @@ static void rec_held_queue_census(int recs, int tris) {
             spyro_native_canon_epoch_stamp(), recs, tris);
 }
 
+/** @brief Append the moby of each cull record in a host copy of the queue, up to its terminator.
+ *
+ * @param b The queue's bytes.
+ * @param len Their length.
+ * @param out Receives the mobys.
+ * @param k The entries out already holds.
+ * @param max Capacity of out.
+ * @return The entries out holds. */
+static int rec_bytes_mobys(const uint8_t* b, uint32_t len, uint32_t* out, int k, int max) {
+    const uint32_t stride = game_layout.moby.rec_stride;
+    for (uint32_t o = 0; stride && o + stride <= len && k < max; o += stride) {
+        uint32_t w0, m;
+        memcpy(&w0, b + o, 4);
+        if (!w0) break;
+        memcpy(&m, b + o + game_layout.moby.rec_moby_off, 4);
+        if (m >= 0x80000000u) out[k++] = m;
+    }
+    return k;
+}
+
+/** @brief The mobys of a game's retired scratch capture: tick N-1's regular queue, then its specular one.
+ *
+ * @param out Receives the mobys.
+ * @param max Capacity of out.
+ * @param ref_ns Receives the tick stamp of the regular capture.
+ * @return The entries, or -1 when no retired capture is tick N-1's. */
+static int rec_scratch_prev_mobys(uint32_t* out, int max, op_time_t* ref_ns) {
+    uint32_t len = 0;
+    const uint8_t* recs = spyro_native_canon_prev_recs(&len, ref_ns);
+    if (!recs) return -1;
+    int k = rec_bytes_mobys(recs, len, out, 0, max);
+    const cut_held_pick_t pick = cut_held_set_pick(s_canon_spec_epoch, s_canon_spec_prev_epoch);
+    const uint8_t* spec = pick == CUT_HELD_PREV ? s_canon_spec_prev : pick == CUT_HELD_CURR ? s_canon_spec : NULL;
+    const uint32_t off = game_layout.moby.rec_base - moby_game.scratch - SPEC_SCR_LO;
+    if (spec && off < SPEC_SCR_LEN) k = rec_bytes_mobys(spec + off, SPEC_SCR_LEN - off, out, k, max);
+    return k;
+}
+
 int moby_native_prev_queue_mobys(uint32_t* out, int max, op_time_t* ref_ns) {
+    if (out && max > 0 && !s_rec_snap_words) return rec_scratch_prev_mobys(out, max, ref_ns);
     if (!rec_prev_usable() || !out || max <= 0) return -1;
     if (ref_ns) *ref_ns = s_rec_snap_ref_ns;
     const uint32_t stride = game_layout.moby.rec_stride;
@@ -10939,12 +11013,13 @@ static int moby_hold_expired(const openpete_interp_obj_t* o) {
  * The present clock (s_rot_now) past the current stamp over the pair's
  * distinct interval, clamped to [0, 1]. On a present that holds a camera cut,
  * an object that did not roll at the cut's tick takes 1, its current state
- * being its state at tick N-1 (cut_held_rolled); one that rolled is held by
- * moby_jump_held. The caller has checked curr_ns > prev_ns.
+ * being its state at tick N-1 (cut_held_rolled), and one that rolled takes 0,
+ * its previous state being that state. The caller has checked curr_ns > prev_ns.
  * @param o The interp object.
  * @return The alpha. */
 static double moby_pair_alpha(const openpete_interp_obj_t* o) {
-    if (cut_held_rolled(o) == 0) return 1.0;
+    const int rolled = cut_held_rolled(o);
+    if (rolled >= 0) return rolled ? 0.0 : 1.0;
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
     return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
 }
@@ -15380,7 +15455,11 @@ static void moby_reextract_body(CPUState* cpu) {
      * mobys); gating on the canon-drawn mask reproduces exactly that set instead
      * of replaying the previous level's mobys from stale cull records. The
      * gate also holds the native scene on and the path selected. */
-    if (!hook_reextract_ready(RP_MOBY)) {
+    /* On a held cut whether tick N drew a moby does not decide what tick N-1 drew. */
+    const int held = !s_held_scratch ? -1
+                   : (spyro_native_canon_mobyreg_fresh() || spyro_native_canon_shaded_fresh() || moby_spec_shown())
+                   ? (int)CUT_HELD_PREV : (int)CUT_HELD_EMPTY;
+    if (!hook_reextract_ready_held(RP_MOBY, held)) {
         if (moby_census_on() && openpete_native_scene_enabled())
             fprintf(stderr, "[census vbl=%u MOBY-RE] SKIP (not canon-drawn or "
                             "deselected)\n", openpete_frame);
@@ -15398,7 +15477,7 @@ static void moby_reextract_body(CPUState* cpu) {
      * the last gameplay tick painted the previous level's mobys over the frozen
      * backdrop - the "moby soup" during level transitions (--render-fps only). */
     int reg_fresh  = spyro_native_canon_mobyreg_fresh();
-    int spec_fresh = s_canon_spec_valid && spyro_native_canon_epoch_fresh(s_canon_spec_epoch);
+    const uint8_t* spec_scr = moby_spec_shown();
     int shd_fresh  = spyro_native_canon_shaded_fresh();
 
     int nm = 0, reg_walk = 0, reg_verts = 0;
@@ -15423,7 +15502,7 @@ static void moby_reextract_body(CPUState* cpu) {
      * orchestrator's bracket restored it) for the captured SPEC scratch, run a
      * dedup'd record pass, then restore the REGULAR scratch. */
     int spec_walk = 0;
-    if (spec_fresh) {
+    if (spec_scr) {
         /* The window is wider than any one staged span (it covers both the
          * colour scratch and the cull records), so it is swapped span by span
          * through the view rather than through one host pointer: a memcpy from
@@ -15433,7 +15512,7 @@ static void moby_reextract_body(CPUState* cpu) {
         uint32_t spec_base = moby_game.scratch + SPEC_SCR_LO;
         static uint8_t saved_reg[SPEC_SCR_MAX];
         openpete_subtick_view_peek(spec_base, saved_reg, SPEC_SCR_LEN);  /* REGULAR (from bracket) */
-        openpete_subtick_view_poke(spec_base, s_canon_spec, SPEC_SCR_LEN); /* specular queue + colour */
+        openpete_subtick_view_poke(spec_base, spec_scr, SPEC_SCR_LEN); /* specular queue + colour */
         reextract_record_pass(cpu, "SP");
         spec_walk = s_gout.n;
         openpete_subtick_view_poke(spec_base, saved_reg, SPEC_SCR_LEN);   /* restore REGULAR */
@@ -15517,7 +15596,7 @@ static void moby_reextract_body(CPUState* cpu) {
         static unsigned last = 0xFFFFFFFFu;
         if (openpete_frame != last) { last = openpete_frame;
             fprintf(stderr, "[reextract-moby vbl=%u] fresh reg=%d spec=%d shd=%d | recs_in=%d reg_walk=%d spec_walk=%d sim_walk=%d shd_walk=%d\n",
-                    openpete_frame, reg_fresh, spec_fresh, shd_fresh,
+                    openpete_frame, reg_fresh, (spec_scr != NULL), shd_fresh,
                     nm, reg_walk, spec_walk, sim_walk, shd_fresh ? s_gout.n : 0); }
     }
     occl_leg_census_report();

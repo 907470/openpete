@@ -56,7 +56,8 @@
 #include "openpete_subtick_view.h"
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"
-#include "renderer/hook_bracket.h"   /* hook_reextract_ready */
+#include "renderer/hook_bracket.h"   /* hook_reextract_ready_held */
+#include "renderer/cut_guard.h"      /* cut_held_sets_t: the held cut's tick N-1 set */
 #include "reextract.h"   /* portal_reextract export */
 #include "portal.h"         /* cross-feeder exports (terrain OT-conformance clamp) */
 #include "renderer/portal_plane.h"   /* openpete_portal_plane_margin (shared) */
@@ -554,11 +555,24 @@ typedef struct {
 #define PORTAL_RECT_DOME     2  /* the same bbox, points pushed 2 px outward     */
 #define PORTAL_RECT_OUTLINE  3  /* revealed portal: the float outline bbox       */
 #define PORTAL_CAP_MAX 16
-static portal_cap_t s_pcap[PORTAL_CAP_MAX];
+static portal_cap_t  s_pcap_store[2][PORTAL_CAP_MAX];
+static portal_cap_t* s_pcap = s_pcap_store[0];      /* the last RenderPortals' captures */
+static portal_cap_t* s_pcap_old = s_pcap_store[1];  /* the set that run retired */
 static int          s_pcap_n = 0;     /* entries captured this canonical frame    */
+static int          s_pcap_old_n = 0; /* entries of the retired set               */
 static int          s_pcap_valid = 0; /* a canonical RenderPortals has populated it*/
 static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating RenderPortals */
 static uint32_t     s_pcap_epoch = 0; /* canonical-render epoch of the populating RenderPortals */
+static int          s_pcap_pick = -1; /* the set a held re-extract shows (cut_held_pick_t), -1 outside a hold */
+
+/** @brief Exchange the current capture set with the retired one, with their counts. */
+static void pcap_sets_swap(void) {
+    portal_cap_t* t = s_pcap; s_pcap = s_pcap_old; s_pcap_old = t;
+    const int n = s_pcap_n; s_pcap_n = s_pcap_old_n; s_pcap_old_n = n;
+}
+
+static cut_held_sets_t s_sets = { pcap_sets_swap, &s_pcap_n, "portal", { 0u, 0u }, 0u };
+
 /* Staleness gate: on_80050BE0 calls
  * render_path_mark_drawn(RP_PORTAL) while the canonical frame renders; the
  * shared render_paths commit latches it into the canon-drawn mask once per
@@ -1446,6 +1460,7 @@ static int canon_epoch_recent(uint32_t stamp) {
 }
 
 int openpete_portal_sky_recent(void) {
+    if (s_pcap_pick == CUT_HELD_EMPTY) return 0;
     return s_sky_fed && canon_epoch_recent(s_sky_fed_epoch);
 }
 /* Plane provider for the terrain OT-conformance clamp; documented in portal.h. */
@@ -1458,11 +1473,11 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
     /* No preview paints an opening while the portal path is deselected, so
      * terrain keeps its faces there. */
     const int rp = render_path_enabled(RP_PORTAL);
-    if (!rp || !s_pcap_valid || s_pcap_n == 0) {
+    if (!rp || !s_pcap_valid || s_pcap_n == 0 || s_pcap_pick == CUT_HELD_EMPTY) {
         if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL no-cap rp=%d valid=%d n=%d\n", openpete_frame, rp, s_pcap_valid, s_pcap_n);
         return 0;
     }
-    if (!canon_epoch_recent(s_pcap_epoch)) {
+    if (s_pcap_pick < 0 && !canon_epoch_recent(s_pcap_epoch)) {
         if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL stale capframe=%u\n", openpete_frame, s_pcap_frame);
         return 0;
     }
@@ -3307,6 +3322,7 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     if (s_rp_in) return 0;
     s_rp_in = 1;
     s_fed_n = 0;                              /* reset the per-frame on-4:3 fed-portal dedup set */
+    cut_held_sets_capture(&s_sets);           /* the epoch's first run retires the last set */
     s_pcap_n = 0;                             /* reset the per-frame sub-tick capture set */
     /* Roll the shared dome matrix curr->prev for this canonical tick; the leaves
      * below refill curr. prev is valid iff the previous canonical frame drew a dome
@@ -3435,8 +3451,50 @@ static double portal_cap_fog(CPUState* cpu, const portal_cap_t* c, uint32_t* fog
     return t;
 }
 
+/** @brief The shared dome matrix of a present, from the two ticks' snapshots.
+ *
+ * Outside a hold, lerp(prev, curr, alpha) componentwise, like the spine's
+ * camera matrix: the camera rotation and the portal's spin are baked into both
+ * snapshots, so both interpolate without extrapolation. It snaps to curr when
+ * the camera is not bracketed (paused or loading), the prev snapshot is
+ * missing, or a component moved more than 1200 in the tick, a discontinuity
+ * the spine did not catch (a continuous dome moves a few hundred Q12 units a
+ * tick). On a hold the snapshot of the shown set's RenderPortals run is the
+ * matrix, whatever the cut did to the other one.
+ * @param alpha The sub-tick fraction.
+ * @param interp_on 1 when the camera is bracketed.
+ * @param M Receives the matrix when it is ready.
+ * @return 1 when the snapshot the present reads is valid, else 0. */
+static int portal_replay_dome_matrix(double alpha, int interp_on, int M[3][3]) {
+    const int held_prev = s_pcap_pick == CUT_HELD_PREV;
+    if (held_prev ? !s_dome_prev_valid : !s_dome_curr_valid) return 0;
+    if (held_prev) {
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++) M[i][j] = s_dome_prev[i][j];
+        return 1;
+    }
+    int do_lerp = interp_on && s_dome_prev_valid && s_pcap_pick < 0;
+    for (int i = 0; do_lerp && i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            if (labs((long)s_dome_curr[i][j] - s_dome_prev[i][j]) > 1200) do_lerp = 0;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            if (do_lerp) {
+                double v = (double)s_dome_prev[i][j] +
+                           ((double)s_dome_curr[i][j] - s_dome_prev[i][j]) * alpha;
+                M[i][j] = (int)(v >= 0.0 ? v + 0.5 : v - 0.5);
+            } else {
+                M[i][j] = s_dome_curr[i][j];
+            }
+        }
+    return 1;
+}
+
 /* ---- sub-tick re-extract; documented in reextract.h ---- */
-void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
+void portal_reextract(CPUState* cpu, double alpha, int interp_on, int hold) {
+    s_pcap_pick = cut_held_sets_enter(&s_sets, hold);
+    /* A hold whose set is the current one has no tick before it to lerp from. */
+    if (s_pcap_pick == CUT_HELD_CURR) interp_on = 0;
     if (s_pcap_n == 0) return;
     /* Don't replay a STALE capture. During a level-load transition (e.g. warping
      * THROUGH a portal) the normal draw loop stops, so canonical RenderPortals
@@ -3450,8 +3508,9 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
      * revealed portals with no polybuf emission still count) each canonical present
      * on_80050BE0 runs+feeds, so the bit goes false the moment RenderPortals stops
      * - exactly the staleness signal we need. The gate also holds the native
-     * scene on and the path selected. */
-    if (!hook_reextract_ready(RP_PORTAL)) return;
+     * scene on and the path selected. On a held cut the set's own epoch stands
+     * in for the canon-drawn term. */
+    if (!hook_reextract_ready_held(RP_PORTAL, s_pcap_pick)) return;
     ngte_view_build(cpu, &s_view);
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
         static int cen = -1;
@@ -3464,40 +3523,8 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
     render_material_level_push(cpu);
     openpete_native_scene_begin_frame(openpete_frame);   /* append; cyclorama began it */
 
-    /* Sub-tick dome matrix = lerp(prev, curr, alpha), componentwise (like the
-     * spine's camera lerp_matrix). Both the camera rotation and the portal's spin
-     * are baked into the two snapshots, so both interpolate smoothly - no
-     * extrapolation. Snap to curr when the camera isn't bracketed (paused/loading),
-     * the prev snapshot is missing, or the two tick endpoints diverge implausibly
-     * (a cut the spine didn't catch - keep the lerp from rotating the long way). */
     int dome_M[3][3];
-    int dome_ready = s_dome_curr_valid;
-    if (dome_ready) {
-        int do_lerp = interp_on && s_dome_prev_valid;
-        if (do_lerp) {
-            /* one-tick component delta sanity: a continuous dome (camera + ~0.18°/tick
-             * spin) moves a few hundred Q12 units/tick at most; a far larger jump is a
-             * discontinuity -> snap to curr. */
-            long worst = 0;
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 3; j++) {
-                    long d = (long)s_dome_curr[i][j] - s_dome_prev[i][j];
-                    if (d < 0) d = -d;
-                    if (d > worst) worst = d;
-                }
-            if (worst > 1200) do_lerp = 0;
-        }
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 3; j++) {
-                if (do_lerp) {
-                    double v = (double)s_dome_prev[i][j] +
-                               ((double)s_dome_curr[i][j] - s_dome_prev[i][j]) * alpha;
-                    dome_M[i][j] = (int)(v >= 0.0 ? v + 0.5 : v - 0.5);
-                } else {
-                    dome_M[i][j] = s_dome_curr[i][j];
-                }
-            }
-    }
+    const int dome_ready = portal_replay_dome_matrix(alpha, interp_on, dome_M);
 
     /* Save the transient inputs we overwrite; restore before returning so the
      * game fiber resumes on canonical CPU/RAM state. */
@@ -3593,6 +3620,11 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!clip_st)
         for (int i = 0; i < 4; i++) cpu->write_word(D_CLIPRECT + i * 4, save_clip[i]);
     for (int i = 0; i < 5; i++) cpu->gte_ctrl[i] = save_gte[i];
+}
+
+void portal_reextract_leave(void) {
+    cut_held_sets_leave(&s_sets, s_pcap_pick);
+    s_pcap_pick = -1;
 }
 
 static const feature_dispatch_entry_t portal_dispatch[] = {

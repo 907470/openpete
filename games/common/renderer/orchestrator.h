@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "openpete_thread_roles.h"   /* OP_REQUIRES */
+#include "openpete_time.h"           /* op_time_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -168,6 +169,13 @@ void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len);
  * map for its length captures nothing.
  * @param cpu The guest CPU state. */
 void spyro_native_canon_capture_recs(void* cpu);
+
+/** @brief The regular cull records of tick N-1, for a game that keeps them in its scratch capture.
+ *
+ * @param len Receives the bytes' length.
+ * @param ref_ns Receives the tick stamp of their capture: a state stamped later rolled after they were composed.
+ * @return The bytes, or NULL when no retired capture is tick N-1's. */
+const uint8_t* spyro_native_canon_prev_recs(uint32_t* len, op_time_t* ref_ns);
 /** @brief Captures the block where the player draw left every projected vertex's int16 screen position.
  *
  * The block is also the walk's cull verdict. Called from the canonical
@@ -233,6 +241,7 @@ typedef struct game_orchestrator {
     void     (*capture_recs)(void* cpu);
     void     (*capture_sxy)(void* cpu);
     void     (*capture_camera)(void* cpu, int producer);
+    const uint8_t* (*prev_recs)(uint32_t* len, op_time_t* ref_ns);
     int      (*prod_camera_enter)(int producer);
     void     (*prod_camera_leave)(void);
 } game_orchestrator_t;
