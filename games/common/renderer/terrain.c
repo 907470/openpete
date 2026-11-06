@@ -8498,49 +8498,98 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
  * derived from it share one H. */
 static ngte_view s_view;
 
-/** @brief Tests a sector's bounding sphere for frustum rejection, as environment.s 800224E0-80022548 does.
+/** @brief Computes a sector centre's IR1..IR3 in the draw's integer arithmetic.
+ *
+ * The camera position is floored (the draw shifts it right by 4; a sub-tick
+ * walk's camera is fractional); the centre offsets (camY - cY, camZ - cZ,
+ * cX - camX) are written to IR1..IR3, which keep the low 16 bits
+ * sign-extended; MVMVA with sf=1 and lm=0 rotates them by the view matrix, the
+ * MAC shifted right by 12 and saturated to 16 bits.
+ * @param M The sector-binning matrix, Q12.
+ * @param cam The camera position, X Y Z.
+ * @param c The sphere centre, X Y Z.
+ * @param ir Receives IR1..IR3. */
+static void tsec_game_ir(const int M[3][3], const double cam[3], const int c[3], int32_t ir[3]) {
+    const int32_t cx = (int32_t)floor(cam[0]), cy = (int32_t)floor(cam[1]),
+                  cz = (int32_t)floor(cam[2]);
+    const int64_t v[3] = { (int16_t)(cy - c[1]), (int16_t)(cz - c[2]), (int16_t)(c[0] - cx) };
+    for (int i = 0; i < 3; i++) {
+        int64_t mac = (M[i][0] * v[0] + M[i][1] * v[1] + M[i][2] * v[2]) >> 12;
+        ir[i] = mac < -32768 ? -32768 : (mac > 32767 ? 32767 : (int32_t)mac);
+    }
+}
+
+/** @brief Tests a sphere against the 4:3 side planes in the draw's integer arithmetic.
+ *
+ * Spyro 2 environment.s .L80023D34: rejected when 4(|IR1| - t3) >= 3(IR3 + t4),
+ * the slack terms built by shifts of the radius.
+ * @param x IR1.
+ * @param z IR3.
+ * @param r The sphere radius.
+ * @return Nonzero when the sphere is outside. */
+static int tsec_game_out_x(int32_t x, int32_t z, int32_t r) {
+    const int32_t t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
+    return 4 * (abs(x) - t3) - 3 * (z + t4) >= 0;
+}
+
+/** @brief Tests a sphere against the 4:3 top and bottom planes in the draw's integer arithmetic.
+ *
+ * Spyro 2 environment.s .L80023D70: rejected when 32(|IR2| - t5) >= 17(IR3 + t6).
+ * @param y IR2.
+ * @param z IR3.
+ * @param r The sphere radius.
+ * @return Nonzero when the sphere is outside. */
+static int tsec_game_out_y(int32_t y, int32_t z, int32_t r) {
+    const int32_t t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
+    return 32 * (abs(y) - t5) - 17 * (z + t6) >= 0;
+}
+
+/** @brief Tests a sector's bounding sphere for rejection at the displayed half-widths.
  *
  * The three comparisons are behind the near plane, and outside the
- * horizontal and vertical half-angles, the second and third widened by a
- * radius-proportional slack the draw builds by shifts. The inputs are
- * saturated to 16 bits first, as the GTE saturates IR1..IR3 before the draw
- * reads them back.
+ * horizontal and vertical half-angles. The side tests take the exact plane
+ * distance, 4|vx| - 3·wx·vz >= r·√(16 + 9·wx²) and
+ * 32|vy| - 17·wy·vz >= r·√(1024 + 289·wy²), which admits every sphere the
+ * cone intersects at those half-widths. The operands fit a float's 24-bit
+ * mantissa to under 0.02 units: the centre is saturated to 16 bits, as the GTE
+ * saturates IR1..IR3.
  *
- * The draw's slack is sized for its own 4:3 tangents (4·t3 + 3·t4 ≈ 4.9r
- * against the exact 5r): scaled by a half-width above 1 it falls further
- * short of the sphere's true distance to the side plane (7.87r against
- * 8.94r at wx 2.6667), and rejects spheres that reach into the displayed
- * frame. An axis whose scale is not 1 therefore rejects on the exact plane
- * distance, 4|vx| − 3·wx·vz ≥ r·√(16 + 9·wx²) and
- * 32|vy| − 17·wy·vz ≥ r·√(1024 + 289·wy²), which admits every sphere the
- * displayed frustum intersects; an axis at scale 1 keeps the draw's
- * expression bit-exact, so the 4:3 verdict is the game's.
- * @param c1m The sphere centre's horizontal view coordinate.
- * @param c2m The sphere centre's vertical view coordinate.
- * @param cbin The sphere centre's view depth.
+ * The draw's own slack (environment.s, the sphere test ahead of its sector
+ * lists) falls short of that distance: 4·t3 + 3·t4 ≈ 4.9r against the exact
+ * 5r on the 4:3 side plane, so it rejects spheres reaching into the cone.
+ * Under OPENPETE_TERRAIN_VIS_GAME an axis whose scale is 1 therefore keeps
+ * the draw's integer verdict (tsec_game_ir, tsec_game_out_x, tsec_game_out_y)
+ * and the near test is the draw's; an axis at another scale has no game
+ * verdict and takes the plane distance in both modes.
+ * @param M The sector-binning matrix, Q12.
+ * @param cam The camera position, X Y Z.
+ * @param c The sphere centre, X Y Z.
  * @param r The sphere radius.
  * @param wx The horizontal half-width scale: 1.0 is the 4:3 frame the draw
  *           tests, above 1.0 the displayed frame.
  * @param wy The vertical half-width scale, likewise.
  * @return Nonzero when the sphere is rejected. */
-static int tsec_sphere_cull(double c1m, double c2m, double cbin, int r,
+static int tsec_sphere_cull(const int M[3][3], const double cam[3], const int c[3], int r,
                             double wx, double wy) {
-    double vx = ngte_ir_clamp(c1m), vy = ngte_ir_clamp(c2m), vz = ngte_ir_clamp(cbin);
-    if (vz + r <= 0) return 1;
-    int outX, outY;
-    if (wx == 1.0) {
-        double t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
-        outX = 4.0 * (fabs(vx) - t3) >= 3.0 * wx * (vz + t4);
-    } else {
-        outX = 4.0 * fabs(vx) - 3.0 * wx * vz >= (double)r * sqrt(16.0 + 9.0 * wx * wx);
+    const int game = openpete_native_get_terrain_visibility() != OPENPETE_TERRAIN_VIS_FRUSTUM;
+    int32_t ir[3] = { 0, 0, 0 };
+    if (game) {
+        tsec_game_ir(M, cam, c, ir);
+        if (ir[2] + r <= 0) return 1;
+        if (wx == 1.0 && tsec_game_out_x(ir[0], ir[2], r)) return 1;
+        if (wy == 1.0 && tsec_game_out_y(ir[1], ir[2], r)) return 1;
+        if (wx == 1.0 && wy == 1.0) return 0;
     }
-    if (wy == 1.0) {
-        double t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
-        outY = 32.0 * (fabs(vy) - t5) >= 17.0 * wy * (vz + t6);
-    } else {
-        outY = 32.0 * fabs(vy) - 17.0 * wy * vz >= (double)r * sqrt(1024.0 + 289.0 * wy * wy);
-    }
-    return outX || outY;
+    double c1m, c2m, cbin;
+    ngte_mac(M, cam[1] - c[1], cam[2] - c[2], c[0] - cam[0], &c1m, &c2m, &cbin);
+    const float vx = (float)ngte_ir_clamp(c1m), vy = (float)ngte_ir_clamp(c2m),
+                vz = (float)ngte_ir_clamp(cbin), fr = (float)r,
+                sx = (float)wx, sy = (float)wy;
+    if (!game && vz + fr <= 0.0f) return 1;
+    if (!(game && wx == 1.0)
+        && 4.0f * fabsf(vx) - 3.0f * sx * vz >= fr * sqrtf(16.0f + 9.0f * sx * sx)) return 1;
+    return !(game && wy == 1.0)
+        && 32.0f * fabsf(vy) - 17.0f * sy * vz >= fr * sqrtf(1024.0f + 289.0f * sy * sy);
 }
 
 /* Sector bounding-sphere frustum inputs: the sector table, the draw's
@@ -8568,24 +8617,16 @@ static int tvis_sphere_in(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
     uint32_t sp = rd(cpu, S->sectorPtr + i * 4);
     if (!sp) return 0;
     uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
-    double cx = (double)(int)(w0 >> 16), cy = (double)(int)(w0 & 0xFFFFu),
-           cz = (double)(int)(w1 >> 16);
-    double c1m, c2m, cbin;
-    ngte_mac(S->M, S->camy - cy, S->camz - cz, cx - S->camx, &c1m, &c2m, &cbin);
-    return !tsec_sphere_cull(c1m, c2m, cbin, thdr_radius(w1), S->wx, S->wy);
+    const double cam[3] = { S->camx, S->camy, S->camz };
+    const int c[3] = { (int)(w0 >> 16), (int)(w0 & 0xFFFFu), (int)(w1 >> 16) };
+    return !tsec_sphere_cull(S->M, cam, c, thdr_radius(w1), S->wx, S->wy);
 }
 
 /** @brief Tests a sector's header sphere against the 4:3 cone in func_800258F0's integer arithmetic.
  *
- * r_environment.s 0x80025968-0x80025B50: the camera position is shifted
- * right by 4 (floored, here of the walk's camera, which is fractional on a
- * sub-tick walk); the centre offsets (camY - cY, camZ - cZ, cX - camX) are
- * written to IR1..IR3, which keep the low 16 bits sign-extended; MVMVA with
- * sf=1 and lm=0 rotates them by the camera's view matrix, the MAC shifted
- * right by 12 and saturated to 16 bits. The sector is rejected when
- * IR3 + r <= 0, when 4(|IR1| - t3) >= 3(IR3 + t4), or when
- * 32(|IR2| - t5) >= 17(IR3 + t6), the slack terms built by shifts of the
- * radius r (header word 1 & 0x1FFF) as the draw builds them. On the tick's
+ * r_environment.s 0x80025968-0x80025B50 through tsec_game_ir, the camera here
+ * the walk's. The sector is rejected when IR3 + r <= 0 or by tsec_game_out_x
+ * or tsec_game_out_y, the radius r being header word 1 & 0x1FFF. On the tick's
  * own camera this is the verdict's frustum term bit for bit.
  * @param cpu The guest CPU state.
  * @param S The sphere-test inputs; the half-width scales are not read.
@@ -8596,22 +8637,12 @@ static int tvis_cone_game(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
     uint32_t sp = rd(cpu, S->sectorPtr + i * 4);
     if (!sp) return 0;
     uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
-    const int32_t cx = (int32_t)floor(S->camx), cy = (int32_t)floor(S->camy),
-                  cz = (int32_t)floor(S->camz);
-    const int64_t v[3] = { (int16_t)(cy - (int32_t)(w0 & 0xFFFFu)),
-                           (int16_t)(cz - (int32_t)(w1 >> 16)),
-                           (int16_t)((int32_t)(w0 >> 16) - cx) };
+    const double cam[3] = { S->camx, S->camy, S->camz };
+    const int c[3] = { (int)(w0 >> 16), (int)(w0 & 0xFFFFu), (int)(w1 >> 16) };
     int32_t ir[3];
-    for (int r = 0; r < 3; r++) {
-        int64_t mac = (S->M[r][0] * v[0] + S->M[r][1] * v[1] + S->M[r][2] * v[2]) >> 12;
-        ir[r] = mac < -32768 ? -32768 : (mac > 32767 ? 32767 : (int32_t)mac);
-    }
-    const int32_t r = thdr_radius(w1), z = ir[2];
-    if (z + r <= 0) return 0;
-    const int32_t t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
-    if (4 * (abs(ir[0]) - t3) - 3 * (z + t4) >= 0) return 0;
-    const int32_t t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
-    return 32 * (abs(ir[1]) - t5) - 17 * (z + t6) < 0;
+    tsec_game_ir(S->M, cam, c, ir);
+    const int32_t r = thdr_radius(w1);
+    return ir[2] + r > 0 && !tsec_game_out_x(ir[0], ir[2], r) && !tsec_game_out_y(ir[1], ir[2], r);
 }
 
 /** @brief Appends the imported sectors that pass the frustum sphere test to the walk's visible list.
@@ -13417,11 +13448,13 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     int drawHP, drawLP;
     int culled = 0;
     if (game_layout.terrain.sector_cull == TERRAIN_SECTOR_CULL_SPHERE) {
-        /* The sphere test runs at the displayed half-widths: at the canonical
-         * frame cull_wx/cull_wy are 1.0 and this is the draw's own verdict,
-         * and where the wedge fill is active the side wedges keep the sectors
-         * the 4:3 half-width would reject. */
-        culled = tsec_sphere_cull(c1m, c2m, cbin, H.r, G->cull_wx, G->cull_wy);
+        /* The sphere test runs at the displayed half-widths, so the side
+         * wedges keep the sectors the 4:3 half-width would reject; at the
+         * canonical frame under --terrain-visibility game it is the draw's
+         * own verdict. */
+        const double cam[3] = { G->camx, G->camy, G->camz };
+        const int c[3] = { H.cx, H.cy, H.cz };
+        culled = tsec_sphere_cull(G->Mbin, cam, c, H.r, G->cull_wx, G->cull_wy);
     }
     int binHP = 0, binLP = 0;
     if (game_layout.terrain.hp_far) sector_bin_lists(&H, cbin, &binHP, &binLP);
