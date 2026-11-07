@@ -111,7 +111,7 @@ static int descs_for(int contract, int profile, rhi_pipeline_desc* d) {
     };
     static const rhi_pipeline_desc k_terrain = {
         .vert_spv = "terrain.vert.spv", .blend = RHI_BLEND_NONE, .depth_test = true,
-        .terrain_pipeline = true, .push_const_size = PC_TERRAIN,
+        .terrain_pipeline = true, .tex_ssbo_set2 = true, .push_const_size = PC_TERRAIN,
     };
     static const rhi_pipeline_desc k_decal = {
         .vert_spv = "shadow_decal_tex.vert.spv", .frag_spv = "shadow_decal_tex.frag.spv",
