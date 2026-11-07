@@ -673,7 +673,14 @@ static void eager_produce_one(op_time_t t, int canonical)
     const op_time_t span = op_now() - t0;
     openpete_pace_present_span((uint8_t)kind, t0, t0 + span, rex_ns);
     if (s_eager.cost_n) {
-        const op_time_t d = span > s_eager.cost_ema ? span - s_eager.cost_ema : s_eager.cost_ema - span;
+        op_time_t d = span > s_eager.cost_ema ? span - s_eager.cost_ema : s_eager.cost_ema - span;
+        /* A sample past the bound is one stall, not the width of the cost
+         * distribution. Left whole, 8 * cost_dev outgrows the span's budget and
+         * decimates the rate until the slow window below forgets it, about two
+         * seconds after a single 140 ms scene. The bound moves with the mean, so
+         * a real rise in cost is still learned. */
+        const op_time_t d_cap = s_eager.cost_ema + 4 * s_eager.cost_dev;
+        if (d > d_cap) d = d_cap;
         /* Slower than the mean: the deviation feeds the plan's capacity
          * verdict, and an 8-sample window is half a tick - short enough that a
          * single costly scene moves the level and starts a limit cycle. */
