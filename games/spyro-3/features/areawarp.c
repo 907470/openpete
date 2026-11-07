@@ -20,13 +20,34 @@
 //     0x80053CE8): the area-0 portal with props+52 == the byte 0x8006FBA6,
 //     EnterSubArea(props+52, its pair) (0x80053EA8).
 // No sub-area portal leads to another sub-area, so a warp between two
-// sub-areas goes by way of area 0, as play does.
+// sub-areas goes by way of area 0.
 //
 // The dropdown lists every sub-area of every level in skip_to_area.c's table,
-// "<level name> - Area N". From another level the warp first loads the level
-// in area 0 with the level warp's own request (WarpToLevel, levelwarp.c), and
-// once that level is live enters the area as above. From the title screen it
-// arms --skip-to-area, which does the same at boot.
+// "<level name> - Area N". From area 0 of the target level the warp enters
+// the area as above. From a sub-area or from another level it first loads the
+// target level in area 0 with the level warp's own request (WarpToLevel,
+// levelwarp.c), and once that level is live enters the area. From the title
+// screen it arms --skip-to-area, which does the same at boot.
+//
+// A sub-area is not left through EnterSubArea(0, P). That call returns Spyro
+// to the area-0 pair of the portal, and the sub-level loader (game.state 13,
+// func_80052A84 / func_80053374) updates the mobys at its stage 7
+// (0x8006C514) with the load tick count 0x8006C640 at 0 and the fade
+// 0x8006C598 at 255. A talking moby whose first-approach speech has not run
+// this visit (Crystal Islands' class 540, func_level_41_800806C8 at
+// 0x800822D0: talk flag 0x8006C7B4 bit 0 clear) and that stands within reach
+// of the return point starts its speech there (func_800512E4, game.state 1).
+// The loader then never runs its stages 8 (fade-in) and 9 (game.state 0), so
+// the speech plays under a black screen and gameplay never resumes. In play
+// the player walks past that moby on the way in, which sets the flag; the
+// warp's teleport does not. The level load's own fade-in (func_80053A10)
+// counts 0x8006C640 up before gameplay, so the reload does not reach that
+// path. The reload resets the visit's level state, as entering the level
+// from its homeworld portal does.
+//
+// A leg whose route closes before the drain (a speech that starts on the
+// arrival tick, game.state 1) waits for gameplay to be live again and is
+// queued once more, as --skip-to-area does.
 //
 // The warp makes the portal's call through the transition queue
 // (transition_call.c), at Draw func_8001E638 entry after the tick's whole
@@ -87,16 +108,17 @@ static const knob_desc_t k_area_rows[2] = {
       .default_note = "the sub-area the player is in" },
     { .id = "warp_area_go", .label = "Warp to area", .section = "Gameplay",
       .help = "Enter the selected sub-area the way its portal does, keeping "
-              "progress. From another level the warp loads that level first, "
-              "as the level warp does; from another sub-area of the same "
-              "level it passes through the main area. From the title screen "
+              "progress. From another level, or from a sub-area, the warp "
+              "loads the level first, as the level warp does: the level "
+              "starts over as if entered from its homeworld portal, so "
+              "enemies, talked-to characters and other progress made on this "
+              "visit reset, while gems and eggs stay. From the title screen "
               "it starts a fresh session there, as --skip-to-area does.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Warp" },
 };
 
 static levelwarp_t s_warp;
 static int         s_level = 0;  /* the level the warp ends in */
-static int         s_from  = 0;  /* the area the queued area leg leaves */
 static int         s_final = 0;  /* the area the warp ends in */
 
 /** @brief Fill the dropdown's entries from the sub-area table, one per sub-area.
@@ -145,12 +167,12 @@ static const char* area_refused(CPUState* cpu, int target) {
  *
  * @param cpu The guest CPU state.
  * @return 1 when gameplay is live, isDemoMode is 0, the level is the
- *         request's and the area word is the leg's source, else 0. */
+ *         request's and the area word is 0, else 0. */
 static int leg_route(CPUState* cpu) {
     return spyro3_skip_gameplay_live(cpu) &&
            cpu->read_word(S3_IS_DEMO_MODE) == 0u &&
            cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_level &&
-           cpu->read_word(S3_AREA) == (uint32_t)s_from;
+           cpu->read_word(S3_AREA) == 0u;
 }
 
 /** @brief Move the warp to LEVELWARP_LEAVING after the drain made the EnterSubArea call.
@@ -158,52 +180,55 @@ static int leg_route(CPUState* cpu) {
  * @param cpu Unused. */
 static void leg_called(CPUState* cpu) { (void)cpu; levelwarp_called(&s_warp); }
 
-/** @brief End the warp when the drain dropped the leg.
+/** @brief Wait for the next arrival when the drain dropped the leg.
  *
+ * The warp returns to LEVELWARP_LOADING, so the next tick with gameplay live
+ * runs area_arrival, which queues the leg again while the player is still in
+ * area 0 of the target level and ends the warp otherwise.
  * @param cpu Unused. */
-static void leg_dropped(CPUState* cpu) { (void)cpu; levelwarp_reset(&s_warp); }
+static void leg_dropped(CPUState* cpu) {
+    (void)cpu;
+    s_warp.phase = LEVELWARP_LOADING;
+    s_warp.ticks = 0;
+}
 
-/** @brief Queue EnterSubArea(leg, pair) for one portal crossing from the current area.
+/** @brief Queue EnterSubArea(area, pair) for the area-0 portal crossing into the warp's sub-area.
  *
- * The leg is the target from area 0, else area 0. The pair is the paired
- * moby of the portal standing in the current area and leading to the leg.
- * @param w The warp; its target becomes the leg.
+ * The pair is the paired moby of the area-0 portal leading to the sub-area.
+ * @param w The warp; its target becomes the sub-area's entry number.
  * @param cpu The guest CPU state.
  * @return LEVELWARP_QUEUED, or LEVELWARP_IDLE when the level has no such
  *         portal or a transition is already queued. */
 static int queue_leg(levelwarp_t* w, CPUState* cpu) {
-    const int from = (int)cpu->read_word(S3_AREA);
-    const int leg  = from == 0 ? s_final : 0;
     s3_transition_request_t req = {
         .tag     = "areawarp",
         .entry   = S3_TRANSITION_AT_DRAW,
         .fn      = S3_FN_ENTER_SUB_AREA,
-        .a0      = (uint32_t)leg,
-        .a1      = spyro3_area_portal_pair(cpu, from, leg),
+        .a0      = (uint32_t)s_final,
+        .a1      = spyro3_area_portal_pair(cpu, 0, s_final),
         .route   = leg_route,
         .called  = leg_called,
         .dropped = leg_dropped,
     };
     if (!req.a1) {
-        OPL_WARN_F("areawarp", "level %d has no portal from area %d to area %d",
-                   s_level, from, leg);
+        OPL_WARN_F("areawarp", "level %d has no portal from area 0 to area %d",
+                   s_level, s_final);
         return LEVELWARP_IDLE;
     }
-    s_from = from;
     if (!s3_transition_enqueue(&req)) {
         OPL_INFO_F("areawarp", "%s", "ignored (a transition is already queued)");
         return LEVELWARP_IDLE;
     }
-    w->target = (uint32_t)AREA_KEY(s_level, leg);
-    OPL_INFO_F("areawarp", "queued: level %d area %d -> area %d (warp to area %d)",
-               s_level, from, leg, s_final);
+    w->target = (uint32_t)AREA_KEY(s_level, s_final);
+    OPL_INFO_F("areawarp", "queued: level %d area 0 -> area %d", s_level, s_final);
     return LEVELWARP_QUEUED;
 }
 
 /** @brief Start an area warp: record the level and area, then queue the level leg or the first area leg.
  *
- * In another level the first leg is the level warp's WarpToLevel request to
- * the target level, landing in area 0; in the target level it is queue_leg.
+ * In area 0 of the target level the first leg is queue_leg. Elsewhere (in
+ * another level, or in a sub-area of the target level) it is the level warp's
+ * WarpToLevel request to the target level, landing in area 0.
  * @param w The warp.
  * @param cpu The guest CPU state.
  * @param target The entry number.
@@ -211,7 +236,8 @@ static int queue_leg(levelwarp_t* w, CPUState* cpu) {
 static int area_start(levelwarp_t* w, CPUState* cpu, int target) {
     s_level = KEY_LEVEL(target);
     s_final = KEY_AREA(target);
-    if (cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_level)
+    if (cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_level &&
+        cpu->read_word(S3_AREA) == 0u)
         return queue_leg(w, cpu);
     if (!spyro3_levelwarp_enqueue("areawarp", s_level, leg_called, leg_dropped)) {
         OPL_INFO_F("areawarp", "%s", "ignored (a transition is already queued)");
