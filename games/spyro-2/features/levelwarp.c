@@ -78,7 +78,8 @@
 #include "spyro-2/skip_to_level.h"
 #include "openpete_thread_roles.h"
 
-#define S2_LOADER_STATE     0x80066EECu /* 0 title, 2 loading, -1 level resident */
+#define S2_GAME_STATE       0x800681C8u /* D_800681C8: 0 gameplay, 4 pause menu,
+                                           11 title (func_8001AAA4) */
 #define S2_NEXT_LEVEL_NUM   0x80066F90u /* the level number the loader loads */
 #define S2_DEMO_MODE        0x80067024u /* 1 while an attract demo is running */
 #define S2_DEMO_SPENT       0x80067178u /* set when the recording has run out */
@@ -92,7 +93,8 @@
 #define S2_TITLE_UPDATE     0x80079DF0u /* func_titlescreen_and_loading_80079DF0 */
 #define S2_OVERLAY_TITLE    34u         /* titlescreen_and_loading */
 
-#define S2_LOADER_TITLE     0u
+#define S2_GS_TITLE         11u
+#define S2_GS_PAUSE         4u
 #define S2_SUBSTATE_BACKOUT 4u
 
 
@@ -180,18 +182,27 @@ static int on_title_update(CPUState* cpu, uint32_t addr) {
     return 0;
 }
 
-/* The title route opens on loader state 0; the in-level route while gameplay
- * is live and g_DemoMode is 0, since the attract demo runs a level with the
- * loader resident. The dropdown follows g_NextLevelNum. */
+/* The title route opens on D_800681C8 11, the state func_8001AAA4 enters
+ * at the title; the loader word 0x80066EEC also reads 0 on a level-exit
+ * loading screen (D_800681C8 7) and at a story cutscene's start (5), where
+ * an armed level skip would never meet the title. The in-level route opens
+ * while gameplay is live, D_800681C8 is 0 and g_DemoMode is 0: the
+ * demo-end check func_800159C8 runs only from state 0 of func_8001B140's
+ * dispatch, while func_8001271C copies demo rows into the pad words in
+ * every state, so the route's stores from the pause menu (4) or a level's
+ * fly-in (3) would hold the menu on a dead pad; and the attract demo runs
+ * a level with the loader resident. The dropdown follows g_NextLevelNum. */
 static const levelwarp_game_t k_warp_game = {
     .log_tag        = "levelwarp",
     .rows           = levelwarp_level_rows,
     .test_env       = "OPENPETE_LEVELWARP_TEST",
     .table          = &spyro2_levels,
     .unit           = "level",
-    .title_word     = S2_LOADER_STATE,
-    .title_value    = S2_LOADER_TITLE,
+    .title_word     = S2_GAME_STATE,
+    .title_value    = S2_GS_TITLE,
     .demo_word      = S2_DEMO_MODE,
+    .state_word     = S2_GAME_STATE,
+    .pause_value    = S2_GS_PAUSE,
     .live           = spyro2_skip_gameplay_live,
     .current_word   = S2_NEXT_LEVEL_NUM,
     .title_start    = warp_title_start,

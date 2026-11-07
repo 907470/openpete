@@ -35,6 +35,7 @@
 #include "dispatch_preamble.h"
 #include "openpete_fillpick.h"
 #include "features/levelwarp.h"
+#include "features/state_watch.h"
 #include "psyq/psyq_thunk_state.h"
 
 #include <ctype.h>
@@ -436,6 +437,11 @@ static void spyro1_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * the target, hold the title off the demo path, and release the present
      * fast-forward on the playable edge. Inert without the flag. */
     level_skip_on_tick(&k_level_skip, cpu, frame_counter);
+
+    /* OPENPETE_STATE_WATCH: one stderr line per change of the named guest
+     * words, after the skip and warp hooks as in the shared pre-tick hook.
+     * Reads only; inert without the variable. */
+    state_watch_on_tick(cpu, frame_counter);
 }
 
 /* Each overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON burns LONG(id) at +0x00). */

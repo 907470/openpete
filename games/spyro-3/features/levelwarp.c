@@ -54,6 +54,7 @@
 #define S3_AREA             0x8006C5C8u
 #define S3_IS_DEMO_MODE     0x8006C658u
 #define S3_GS_TITLE         11u
+#define S3_GS_PAUSE         4u
 
 static levelwarp_t s_warp;
 
@@ -123,8 +124,9 @@ static int warp_start(levelwarp_t* w, CPUState* cpu, int target_id) {
 }
 
 /* The title route opens on game.state 11; the in-level route while gameplay
- * is live and isDemoMode is 0, since the attract demo runs the gameplay
- * state with a level resident. The dropdown follows currentLevel. */
+ * is live (game.state 0) and isDemoMode is 0, since the attract demo runs
+ * the gameplay state with a level resident; game.state 4, the pause menu,
+ * reads as the no-route status. The dropdown follows currentLevel. */
 static const levelwarp_game_t k_warp_game = {
     .log_tag          = "levelwarp",
     .rows             = levelwarp_level_rows,
@@ -134,6 +136,8 @@ static const levelwarp_game_t k_warp_game = {
     .title_word       = S3_GAME_STATE,
     .title_value      = S3_GS_TITLE,
     .demo_word        = S3_IS_DEMO_MODE,
+    .state_word       = S3_GAME_STATE,
+    .pause_value      = S3_GS_PAUSE,
     .live             = spyro3_skip_gameplay_live,
     .current_word     = S3_CURRENT_LEVEL,
     .demo_end         = spyro3_skip_end_demo,

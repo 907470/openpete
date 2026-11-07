@@ -99,7 +99,8 @@ static int go_fire(knob_desc_t* k, double v) {
  *
  * Reads queued while a click waits; "loading..." while a warp is in
  * flight; else a note for the title and demo routes, the refusal reason or
- * an empty string for the level route, or the game's no-route text.
+ * an empty string for the level route, or with no route the pause-menu
+ * reason or the game's no-route text.
  * @param k The row.
  * @param buf Receives the text.
  * @param cap Size of @p buf in bytes. */
@@ -112,6 +113,7 @@ static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
     else if (w->route == LEVELWARP_ROUTE_TITLE) s = "from title or menu (resets progress)";
     else if (w->route == LEVELWARP_ROUTE_DEMO)  s = "ends the demo (resets progress)";
     else if (w->route == LEVELWARP_ROUTE_LEVEL) s = w->refused ? w->refused : "";
+    else if (w->refused)                        s = w->refused;
     else s = g->none_status ? g->none_status : "not in a level";
     snprintf(buf, cap, "%s", s);
 }
@@ -247,10 +249,12 @@ static uint32_t current_of(const levelwarp_game_t* g, CPUState* cpu) {
 
 /** @brief Pick the route the live guest state allows.
  *
- * The title route when title_word reads title_value; the in-level route when
- * live() holds and demo_word reads 0; the demo route when live() holds,
- * demo_word reads nonzero and the game supplies demo_end; else none. The free camera does not
- * block the in-level route: drain disengages it before the warp starts.
+ * The title route when title_word reads title_value; else none unless
+ * live() holds and state_word reads 0 (a pause menu or a transition over the
+ * resident level closes both remaining routes); then the in-level route when
+ * demo_word reads 0, the demo route when it reads nonzero and the game
+ * supplies demo_end, else none. The free camera does not block the in-level
+ * route: drain disengages it before the warp starts.
  * @param g The game.
  * @param cpu The guest CPU state.
  * @return A LEVELWARP_ROUTE_* value. */
@@ -258,9 +262,31 @@ static int route_of(const levelwarp_game_t* g, CPUState* cpu) {
     if (g->title_word && cpu->read_word(g->title_word) == g->title_value)
         return LEVELWARP_ROUTE_TITLE;
     if (!g->live(cpu)) return LEVELWARP_ROUTE_NONE;
+    if (g->state_word && cpu->read_word(g->state_word) != 0u)
+        return LEVELWARP_ROUTE_NONE;
     if (!g->demo_word || cpu->read_word(g->demo_word) == 0u)
         return LEVELWARP_ROUTE_LEVEL;
     return g->demo_end ? LEVELWARP_ROUTE_DEMO : LEVELWARP_ROUTE_NONE;
+}
+
+/** @brief Name why the Warp button cannot fire toward a target on the current route.
+ *
+ * On the in-level route, the game's target_refused reason. With no route,
+ * "close the pause menu first" while state_word reads the game's
+ * pause_value and demo_word reads 0. NULL otherwise.
+ * @param w The warp; its route is current.
+ * @param cpu The guest CPU state.
+ * @param target The target number.
+ * @return The reason, or NULL. */
+static const char* refusal_of(const levelwarp_t* w, CPUState* cpu, int target) {
+    const levelwarp_game_t* g = w->game;
+    if (w->route == LEVELWARP_ROUTE_LEVEL)
+        return g->target_refused ? g->target_refused(cpu, target) : NULL;
+    if (w->route != LEVELWARP_ROUTE_NONE || !g->state_word || !g->pause_value)
+        return NULL;
+    if (cpu->read_word(g->state_word) != g->pause_value) return NULL;
+    if (g->demo_word && cpu->read_word(g->demo_word) != 0u) return NULL;
+    return "close the pause menu first";
 }
 
 /** @brief Hand a target to the --skip-to-level machinery, the title and demo routes' common half.
@@ -328,8 +354,7 @@ static int ui_tick(levelwarp_t* w, CPUState* cpu) {
     test_trigger_tick(w);
 
     w->route   = route_of(g, cpu);
-    w->refused = (w->route == LEVELWARP_ROUTE_LEVEL && g->target_refused)
-        ? g->target_refused(cpu, g->table->levels[w->sel].number) : NULL;
+    w->refused = refusal_of(w, cpu, g->table->levels[w->sel].number);
 
     if (!w->sel_touched && w->phase == LEVELWARP_IDLE) {
         int idx = game_level_index(g->table, (int)current_of(g, cpu));
@@ -339,8 +364,7 @@ static int ui_tick(levelwarp_t* w, CPUState* cpu) {
     if (!w->pending) return 0;
     if (w->phase != LEVELWARP_IDLE) return 1;   /* drain when idle */
     w->pending = 0;
-    if (w->route == LEVELWARP_ROUTE_LEVEL && g->target_refused)
-        w->refused = g->target_refused(cpu, w->pending_id);
+    w->refused = refusal_of(w, cpu, w->pending_id);
     drain(w, cpu, w->pending_id);
     return 1;
 }

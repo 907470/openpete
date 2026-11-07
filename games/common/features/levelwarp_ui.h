@@ -52,10 +52,13 @@ typedef struct levelwarp_game {
     const char*               unit;      /* "level" or "area", in log lines */
 
     /* Route. The title route opens while title_word reads title_value
-     * (title_word 0: no title route); the in-level route while live() holds
-     * and demo_word (0: none) reads 0, and never under the free camera. */
+     * (title_word 0: no title route); the in-level route while live() holds,
+     * state_word (0: none) reads 0 and demo_word (0: none) reads 0. With
+     * state_word reading pause_value (0: none) and demo_word 0, the no-route
+     * status asks for the pause menu to be closed; no warp closes it. */
     uint32_t title_word, title_value;
     uint32_t demo_word;
+    uint32_t state_word, pause_value;
     int (*live)(CPUState* cpu);
     /* The target number the player is at, read for the dropdown's
      * auto-follow and on arrival: current() when set, else current_word. */
@@ -103,7 +106,9 @@ struct levelwarp {
     int         sel, sel_touched;
     int         pending, pending_id;
     int         route;
-    const char* refused;
+    const char* refused;   /* why the button cannot fire: the target's
+                            * refusal on the in-level route, the pause
+                            * menu with no route; NULL otherwise */
     int         test_frame, test_id;
 };
 

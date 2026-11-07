@@ -1,0 +1,13 @@
+# The level warp from guest states other than gameplay
+# (tests/harness/check_levelwarp.sh).
+#
+# One row per session. boot: the run's boot arguments. target: the level
+# OPENPETE_LEVELWARP_TEST names. presses: VBLs at which Start is held for 6
+# VBLs ("-": none). trigger: the openpete_frame at which the warp fires.
+# at: the game state the trigger must find (the row is VACUOUS otherwise).
+# limit: --frame-limit (VBLs). expect: refuse (no route; the game returns to
+# gameplay with the demo word 0) or arrive (the warp lands in target).
+#
+# Fields, pipe-separated: name | boot | target | presses | trigger | at | limit | expect
+metropolis_paused | --skip-to-level metropolis | robotica_farms | 3000,3600 | 2600 | 4 | 4000 | refuse
+metropolis_exit_loading | --skip-to-cutscene metropolis_outro | robotica_farms | - | 818 | 7 | 3500 | refuse

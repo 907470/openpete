@@ -556,6 +556,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Level warp from guest states other than gameplay: per row of
+    # games/<game>/corpus/levelwarp.manifest, a headless run that pauses
+    # (or reaches a loading screen), fires OPENPETE_LEVELWARP_TEST there and
+    # unpauses; Spyro 2 and 3 refuse with the demo word 0 and return to
+    # gameplay, Spyro 1 arrives. Fails at zero engaged rows. Exit 64 = no
+    # binary or disc for any game.
+    add_test(NAME levelwarp
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_levelwarp.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(levelwarp PROPERTIES
+        LABELS "slow"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Audio feed across live tick-scale changes: per game, a headless run
     # on the feed's synthetic device under a 0.25-3.0 schedule of
     # openpete_set_tick_scale calls; 0 underruns and 0 overflows, the
