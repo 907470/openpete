@@ -421,20 +421,34 @@ typedef struct game_layout {
         uint32_t hq_cells4;
         /* The same drain's triangle pass. A tier-4 triangle is split into 16
          * sub-triangles over 15 nodes; `hq_tri4_nodes` is its 16-word
-         * sub-triangle table (node ids A, B, C in bytes 3, 2, 1, cell
+         * sub-triangle table (node ids A, B, C in bytes 3, 2, 1, tile
          * selector in bits 2-5, UV orientation in bits 0-1), read for the
          * sub-triangles' ordering keys wherever it is located. The textures
-         * are 0 when the port does not draw the pass: `hq_tri4_cells` the
-         * byte table the selector plus the face's UV rotation indexes (cell *
-         * 8, the rotated 4x4 grid), `hq_tri_uv` the per-orientation UV offset
-         * table (4 blocks of 128 bytes) and `hq_tri_uv_mask` the mask on the
-         * tile's word1 >> 25 index into a block. Spyro 1: D_8006D0F8,
-         * D_8006D388, D_8006D3C8, 0x78 (the near drain's tier-4 triangle
-         * pass). The node tables are the same words in all three games. */
+         * are 0 when the port does not draw the pass. `hq_tri4_cells` is the
+         * byte table the selector plus the face's UV rotation indexes; its
+         * byte b names the tile at `hq_tri4_tile0` + (b & `hq_tri4_tile_mask`)
+         * of the face's HQ record. With `hq_tri4_sub` 0 that tile is the
+         * sub-triangle's 16x16 cell (b & 0x78 = cell * 8). With `hq_tri4_sub`
+         * set the tile is a 32x32 quadrant (b & 0x18) and the word at
+         * `hq_tri4_sub` + (b & 6) * 2 + ((word1 >> 24) & 0x70) is a
+         * 16x16 sub-offset: its low half is added to the tile's word0 and its
+         * signed high half to word1 (the high halves carry the word-1 base
+         * as well). `hq_tri_uv` is the per-orientation UV offset table:
+         * orientation block (rot + o) & 3 starts at block << `hq_tri_uv_shift`
+         * and the entry is (adjusted word1 >> 25) & `hq_tri_uv_mask` inside
+         * it. Spyro 1: D_8006D0F8, D_8006D388, 0x28 / 0x78, no sub-offset,
+         * D_8006D3C8 in 128-byte blocks, mask 0x78. Spyro 2 and 3: tile
+         * 0x10 / 0x18 with the sub-offset table, 64-byte blocks, mask 0x38
+         * (Spyro 2 environment.s .L80028248). The node tables
+         * are the same words in all three games. */
         uint32_t hq_tri4_nodes;
         uint32_t hq_tri4_cells;
+        uint32_t hq_tri4_tile0;
+        uint32_t hq_tri4_tile_mask;
+        uint32_t hq_tri4_sub;
         uint32_t hq_tri_uv;
         uint32_t hq_tri_uv_mask;
+        uint32_t hq_tri_uv_shift;
         /* The +0x2000 queue's triangle pass. A tier-2 triangle is split into
          * 4 sub-triangles over 6 nodes (the corners and the edge midpoints);
          * `hq_tri2_nodes` is its 4-word sub-triangle table (node ids 0-5 in
@@ -442,10 +456,21 @@ typedef struct game_layout {
          * 0-1), read for the keys as `hq_tri4_nodes` is. `hq_tri2_tiles`, 0
          * when the port does not draw the pass, is the byte table the
          * selector plus the face's UV rotation indexes (quadrant tile * 8
-         * from `hq_sub0`). UVs come from `hq_tri_uv` as for tier 4. Spyro 1:
-         * D_8006D0E8, D_8006D378 (the near drain's tier-2 triangle pass). */
+         * from `hq_sub0`). The pass adds `hq_tri2_w1` to the tile's word1
+         * before the UV lookup, which reads `hq_tri2_uv` in the tier-4
+         * pass's block form. Spyro 1: D_8006D0E8, D_8006D378, word1 as is,
+         * the tier-4 UV table. Spyro 2 and 3: word1 - 0x1F00 and a
+         * table of 32x32 spans (Spyro 2 environment.s .L80026AD0). */
         uint32_t hq_tri2_nodes;
         uint32_t hq_tri2_tiles;
+        uint32_t hq_tri2_uv;
+        int32_t  hq_tri2_w1;
+        /* The colour slot (c0..c3: word 1 bytes 3, 2, 1, 0) of a split
+         * triangle's corner C; A and B take slots 0 and 1. Both triangle
+         * drains read word 1 byte 0 on Spyro 1 (r_environment.s .L80029834:
+         * sll 2), byte 1 on Spyro 2 and 3 (environment.s 80026738 and
+         * 80027E24: srl 6). */
+        int      hq_tri_c_col;
         /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of
          * the tile's TPAGE halfword. */
         int      abe_in_tpage;

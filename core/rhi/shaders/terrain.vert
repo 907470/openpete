@@ -1690,9 +1690,9 @@ uint nt4_mid(uint a, uint b, bool drain) {
     return drain ? nt4_rgb_mid(a, b) : cell_rgb_mid(a, b);
 }
 /* Node n's colour of a tier-4 triangle record from corner colours q: A =
- * q.x, B = q.y, C = q.w (word 1 byte 0), nodes in nt4_node's parent order;
- * drain selects the drain's average (near words) over the floor mean (far
- * words). */
+ * q.x, B = q.y, C = q.w (the bake writes the layout's triangle C colour slot
+ * into slot 3), nodes in nt4_node's parent order; drain selects the drain's
+ * average (near words) over the floor mean (far words). */
 uint nt4_node_rgb(int n, uvec4 q, bool drain) {
     uint A = q.x, B = q.y, C = q.w;
     if (n == 0) return A;

@@ -243,9 +243,25 @@ const game_layout_t spyro2_game_layout = {
                                                      * are +0x10, +0x18, +0x20, +0x28; quadrant order
                                                      * TL, TR, BL, BR over the 3x3 subdivide grid */
         .hq_tri4_nodes = 0x800620A0u,               /* the tier-4 triangle pass's sub-triangle table
-                                                     * (environment.s 80028248); the textures are not
-                                                     * located, so the port draws the triangle whole */
+                                                     * (environment.s 80028248) */
+        .hq_tri4_cells = 0x800622A0u,               /* its selector byte table, indexed by
+                                                     * (row & 0x3C) + rot; the byte's bits 3-4 name
+                                                     * the quadrant tile, bits 1-2 its 16x16 quarter */
+        .hq_tri4_tile0 = 0x10u,                     /* the quadrant tiles, as hq_sub0 */
+        .hq_tri4_tile_mask = 0x18u,                 /* `andi 0x18` on the selector byte */
+        .hq_tri4_sub   = 0x800622E0u,               /* the quarter's sub-offset word, at
+                                                     * (b & 6) << 1 plus (word1 >> 24) & 0x70; its
+                                                     * high half folds in word1's -0x1F00 base */
+        .hq_tri_uv     = 0x80062460u,               /* 16x16 spans */
+        .hq_tri_uv_mask = 0x38u,                    /* `srl 25; andi 0x38` */
+        .hq_tri_uv_shift = 6,                       /* ((row + rot) & 3) << 6: 64-byte blocks */
         .hq_tri2_nodes = 0x80062090u,               /* the tier-2 triangle pass's (environment.s 80026AD0) */
+        .hq_tri2_tiles = 0x80062290u,               /* its quadrant byte table, indexed by
+                                                     * (row & 0xC) + rot, a byte offset from +0x10 */
+        .hq_tri2_uv    = 0x80062360u,               /* 32x32 spans, in the tier-4 table's form */
+        .hq_tri2_w1    = -0x1F00,                   /* `addi -0x1F00` on the tile's word1 before
+                                                     * the UV lookup, as the GT4 emit's uv1 */
+        .hq_tri_c_col  = 2,                         /* word 1 byte 1 (environment.s 80026738, 80027E24: srl 6) */
         .abe_in_tpage = 1,
         .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1
                                                      * (environment.s:2680,2669-2671) */

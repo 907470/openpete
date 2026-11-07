@@ -510,6 +510,7 @@ static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this w
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
 static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
+static int s_tri_lq[2];            /* tn_wctx tri_lq sums */
 #define TN_HQFOG_CEN_N 14          /* tn_wctx hqfog_cen fields (tn_hqfog_census_print) */
 static int s_hqfog_cen[TN_HQFOG_CEN_N];   /* tn_wctx hqfog_cen sums */
 /* OPENPETE_TERRAIN_FOGMODE_CENSUS: faces emitted per fog path, summed from
@@ -1223,6 +1224,10 @@ typedef struct {
     /* quads drawn as the 4x4 cells: [0] all, [1] those the drain's distance
      * test alone would draw as the 2x2 (routed by tface_cells_pin) */
     int cells4_faces[2];
+    /* HP triangles the game's near split defers (face_is_near_canonical over
+     * A, B, C, C) that the walk draws whole from their LQ tile: [0] the drain
+     * routes them to tier 4, [1] to tier 2 */
+    int tri_lq[2];
     /* skipped drain-table slots packed this walk: [0] as delta 0 (keyed at
      * the face minimum), [1] as the skip sentinel; [2] folded 2x2 quadrants
      * of keyed quads (tn_quad_folds) */
@@ -2650,6 +2655,20 @@ static int tface_cells_pin(int hq_idx) {
                                                  : (s_hq_bank ? s_hq_hires_src : s_hq_hires)[hq_idx & 0x7F];
 }
 
+/** @brief Tests whether a triangle with HQ record hq_idx may take the tier-4 split.
+ *
+ * With cell tiles of its own (hq_tri4_sub 0) the verdict is tface_cells_ok.
+ * With the sub-offset form each sub-triangle samples a 16x16 quarter of its
+ * quadrant tile, texels the tier-2 split shows, so only affine texturing
+ * takes the tier-4 split; perspective-correct texturing draws the tier-2
+ * split at every near distance, as for a record without 32x32 cells.
+ * @param hq_idx The face's HQ record index; the low 7 bits are used.
+ * @return Nonzero when the triangle may take the tier-4 split. */
+static int tface_tri4_ok(int hq_idx) {
+    if (game_layout.terrain.hq_tri4_sub) return openpete_native_get_texture_mapping();
+    return tface_cells_ok(hq_idx);
+}
+
 static int face_drain_tier4(double z0, double z1, double z2, double z3, uint32_t word3);
 /** @brief Decides whether a near face takes the tier-4 cells (the drain's +0x1E00 route).
  *
@@ -2658,20 +2677,21 @@ static int face_drain_tier4(double z0, double z1, double z2, double z3, uint32_t
  * tface_cells_ok). Under pin (tface_cells_pin) the distance terms drop and
  * the flag term stays: every near face with near_flag_tier2 clear takes the
  * cells (a quad) or the 16 sub-triangles (a triangle, through
- * face_tri4_routed). Without pin the verdict is face_drain_tier4. A game
- * without hq_cells4 or a face with ok clear returns 0.
+ * face_tri4_routed). Without pin the verdict is face_drain_tier4. A face
+ * with ok clear returns 0.
  * @param z0 The first corner's m3.
  * @param z1 The second corner's m3.
  * @param z2 The third corner's m3.
  * @param z3 The fourth corner's m3 (a triangle repeats its third).
  * @param word3 The HP face record's word 3.
- * @param ok 1 when the face may take the cells.
+ * @param ok 1 when the face may take the cells (tface_cells_ok for a quad,
+ *        tface_tri4_ok for a triangle).
  * @param pin 1 when the face is routed to the cells at every distance.
  * @return 1 when the face takes tier 4, else 0.
  */
 static int face_near_tier4(double z0, double z1, double z2, double z3, uint32_t word3,
                            int ok, int pin) {
-    if (!game_layout.terrain.hq_cells4 || !ok) return 0;
+    if (!ok) return 0;
     if (pin)
         return face_is_near(z0, z1, z2, z3, word3) && !tface_near_tier2(word3);
     return face_drain_tier4(z0, z1, z2, z3, word3);
@@ -3269,54 +3289,54 @@ static void nt4_snap(ngte_cvert N[15]) {
     }
 }
 
-/** @brief Returns a tier-4 sub-triangle's cell (0..15), the 4x4 grid rotated by the face's UV rotation (0x80029E44-0x80029E58).
- *
- * The signed byte at hq_tri4_cells + selector + rot is a byte offset in
- * 8-byte tiles; the cell is (offset >> 3) & 15. The selector is the
- * sub-triangle table word's bits 2..5.
+/** @brief Returns the byte at a guest address.
  * @param cpu The guest CPU state.
- * @param row The sub-triangle's table word.
- * @param rot The face's rotation.
- * @return The cell index. */
-static int nt4_cell(CPUState* cpu, uint32_t row, int rot) {
-    uint32_t a = game_layout.terrain.hq_tri4_cells + (row & 0x3Cu) + (uint32_t)rot;
-    int8_t off = (int8_t)(rd(cpu, a & ~3u) >> ((a & 3u) * 8u));
-    return (off >> 3) & 15;
+ * @param a The address.
+ * @return The byte. */
+static uint32_t nt_byte(CPUState* cpu, uint32_t a) {
+    return (rd(cpu, a & ~3u) >> ((a & 3u) * 8u)) & 0xFFu;
 }
 
-/** @brief Computes a sub-triangle's corner UVs from a Tiledef and the triangle UV table.
+/* One sub-triangle of a split triangle face: its nodes in the 15-node
+ * numbering, its tile's UV orientation o, the cell or quadrant it reads
+ * (uv[6] of its cache record, its V scroll row), its Tiledef e, the tile's
+ * words as the pass adjusts them before the UV lookup (w0, w1), the UV table
+ * the pass reads (uvtab) and its V scroll. */
+typedef struct { int a, b, c, o, cell; uint32_t e, w0, w1, uvtab; float dv; } nt_sub;
+
+/** @brief Computes a sub-triangle's corner UVs from its adjusted tile words and its pass's UV table.
  *
- * Mirrors r_environment.s 0x80029E88-0x80029ECC. The table entry is byte
- * offset (word1 >> 25) & hq_tri_uv_mask of orientation block (rot + o) & 3
- * (128 bytes each) of hq_tri_uv. Its deltas are added to the tile words as
- * 32-bit sums, so a u or v byte carries into the next: A = word0 + the
- * entry's low half, B = word1 + its high half (signed), C = word0 + the
- * signed halfword at entry + 4. The prim takes its CLUT from A's word and its
- * TPAGE from B's.
+ * Mirrors r_environment.s 0x80029E88-0x80029ECC (Spyro 2 environment.s
+ * 0x80026B40-0x80026B7C, 0x800282E4-0x80028328). The table entry is byte
+ * offset (w1 >> 25) & hq_tri_uv_mask of orientation block (rot + o) & 3
+ * (1 << hq_tri_uv_shift bytes each) of the sub-triangle's UV table. Its
+ * deltas are added to the adjusted tile words as 32-bit sums, so a u or v
+ * byte carries into the next: A = w0 + the entry's low half, B = w1 + its
+ * high half (signed), C = w0 + the signed halfword at entry + 4. The prim
+ * takes its CLUT from A's word and its TPAGE from B's.
  * @param cpu The guest CPU state.
- * @param e The Tiledef's guest address.
+ * @param s The sub-triangle (nt_sub_of).
  * @param rot The face's rotation.
- * @param o The sub-triangle's orientation offset.
  * @param u Receives the corner U texels, [A, B, C].
  * @param v Receives the corner V texels, [A, B, C].
  * @param matdiff Set to 1 when A's CLUT half or B's TPAGE half differs from
  *                the tile's own, else 0. */
-static void tiledef_tri_uv(CPUState* cpu, uint32_t e, int rot, int o,
+static void tiledef_tri_uv(CPUState* cpu, const nt_sub* s, int rot,
                            float u[3], float v[3], int* matdiff) {
-    uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
-    uint32_t te = game_layout.terrain.hq_tri_uv + ((uint32_t)((rot + o) & 3) << 7)
-                + ((w1 >> 25) & game_layout.terrain.hq_tri_uv_mask);
+    uint32_t te = s->uvtab
+                + ((uint32_t)((rot + s->o) & 3) << game_layout.terrain.hq_tri_uv_shift)
+                + ((s->w1 >> 25) & game_layout.terrain.hq_tri_uv_mask);
     uint32_t d0 = rd(cpu, te), d1 = rd(cpu, te + 4);
     const uint32_t f[3] = {
-        w0 + (d0 & 0xFFFFu),
-        w1 + (uint32_t)((int32_t)d0 >> 16),
-        w0 + (uint32_t)(int32_t)(int16_t)(d1 & 0xFFFFu),
+        s->w0 + (d0 & 0xFFFFu),
+        s->w1 + (uint32_t)((int32_t)d0 >> 16),
+        s->w0 + (uint32_t)(int32_t)(int16_t)(d1 & 0xFFFFu),
     };
     for (int k = 0; k < 3; k++) {
         u[k] = (float)(f[k] & 0xFFu);
         v[k] = (float)((f[k] >> 8) & 0xFFu);
     }
-    *matdiff = ((f[0] ^ w0) >> 16) != 0 || ((f[1] ^ w1) >> 16) != 0;
+    *matdiff = ((f[0] ^ rd(cpu, s->e)) >> 16) != 0 || ((f[1] ^ rd(cpu, s->e + 4)) >> 16) != 0;
 }
 
 /* ---- tier-2 triangles (the +0x2000 queue's triangle pass) -----------------
@@ -3335,26 +3355,6 @@ static void tiledef_tri_uv(CPUState* cpu, uint32_t e, int rot, int o,
  * D_8006D138, one per edge whose neighbour byte & 1, 0x80028240-0x800283D8)
  * are zero-area in camera space and are omitted as the tier-4 pass's are. */
 static const uint8_t k_nt2_node[6] = { 0, 2, 4, 9, 11, 14 };
-
-/* One sub-triangle of a split triangle face: its nodes in the 15-node
- * numbering, its tile, the tile's UV orientation o, the cell or quadrant it
- * reads (uv[6] of its cache record) and its V scroll. */
-typedef struct { int a, b, c, o, cell; uint32_t e; float dv; } nt_sub;
-
-/** @brief A tier-2 sub-triangle's quadrant (0..3) (0x80028408-0x8002843C).
- *
- * The signed byte at hq_tri2_tiles + selector + rot is a byte offset from
- * hq_sub0 in 8-byte tiles; the quadrant is (offset >> 3) & 3. The selector
- * is the sub-triangle table word's bits 2..3.
- * @param cpu The guest CPU state.
- * @param row The sub-triangle's table word.
- * @param rot The face's rotation.
- * @return The quadrant index. */
-static int nt2_tile(CPUState* cpu, uint32_t row, int rot) {
-    uint32_t a = game_layout.terrain.hq_tri2_tiles + (row & 0x0Cu) + (uint32_t)rot;
-    int8_t off = (int8_t)(rd(cpu, a & ~3u) >> ((a & 3u) * 8u));
-    return (off >> 3) & 3;
-}
 
 /** @brief Reads sub-triangle i's table word and its nodes A, B, C in the 15-node numbering.
  *
@@ -3383,15 +3383,47 @@ static uint32_t nt_sub_nodes(CPUState* cpu, int tier2, int i, int* a, int* b, in
     return row;
 }
 
+/** @brief Fills the tier-4 tile, adjusted words and cell of a sub-triangle from its selector byte.
+ *
+ * The tile is hq_tri4_tile0 + (b & hq_tri4_tile_mask) of the face's HQ
+ * record (r_environment.s 0x80029E44-0x80029E58; Spyro 2 environment.s
+ * 0x80028274-0x800282A8). Without hq_tri4_sub it is the cell tile, cell
+ * (b >> 3) & 15, read as is. With hq_tri4_sub it is a 32x32 quadrant tile,
+ * quadrant (b >> 3) & 3, and the sub-offset word at hq_tri4_sub +
+ * (b & 6) * 2 + ((word1 >> 24) & 0x70) moves it to one 16x16 quarter: its
+ * low half is added to word0 and its signed high half to word1
+ * (0x800282B0-0x800282FC). The cell is then that quarter's place in the
+ * record's 4x4 texel grid, read off the low half's u and v steps (0x10 and
+ * 0x1000), so the cache record and the V scroll address the texel row the
+ * quarter samples.
+ * @param cpu The guest CPU state.
+ * @param hqBase The face's HQ record address.
+ * @param b The selector byte.
+ * @param s Receives e, w0, w1 and cell. */
+static void nt4_tile_of(CPUState* cpu, uint32_t hqBase, uint32_t b, nt_sub* s) {
+    s->e = hqBase + game_layout.terrain.hq_tri4_tile0 + (b & game_layout.terrain.hq_tri4_tile_mask);
+    s->w0 = rd(cpu, s->e); s->w1 = rd(cpu, s->e + 4);
+    if (!game_layout.terrain.hq_tri4_sub) { s->cell = (int)((b >> 3) & 15u); return; }
+    const uint32_t d = rd(cpu, game_layout.terrain.hq_tri4_sub + ((b & 6u) << 1)
+                                + ((s->w1 >> 24) & 0x70u));
+    s->w0 += d & 0xFFFFu;
+    s->w1 += (uint32_t)((int32_t)d >> 16);
+    const int q = (int)((b >> 3) & 3u);
+    const int row = (q >> 1) * 2 + (int)((d >> 12) & 1u), col = (q & 1) * 2 + (int)((d >> 4) & 1u);
+    s->cell = row * 4 + col;
+}
+
 /** @brief Fills the descriptor of sub-triangle i of a split face.
  *
- * Reads the nodes and orientation from the sub-triangle table (nt_sub_nodes).
- * Tier 2 takes its quadrant from nt2_tile and its Tiledef entry from
- * hq_sub0 of the face's HQ record; tier 4 takes its cell from nt4_cell and
- * its entry from hq_cells4. With scroll set, dv is the tile row's V scroll
- * for the face's texture id (s_tanim_dvhq per quadrant pair for tier 2,
- * s_tanim_dvcell per cell row for tier 4), else 0. The texid must be in
- * 0..127 when scroll is set.
+ * Reads the nodes and orientation from the sub-triangle table (nt_sub_nodes)
+ * and the selector byte at the pass's byte table + the word's selector bits
+ * + the face's rotation. Tier 2 reads quadrant (b >> 3) & 3 at hq_sub0 of
+ * the face's HQ record (0x80028408-0x8002843C), adds hq_tri2_w1 to its
+ * word1 and looks its UVs up in hq_tri2_uv; tier 4 takes its tile, words
+ * and cell from nt4_tile_of and looks its UVs up in hq_tri_uv. With scroll
+ * set, dv is the tile row's V scroll for the face's texture id
+ * (s_tanim_dvhq per quadrant pair for tier 2, s_tanim_dvcell per cell row
+ * for tier 4), else 0. The texid must be in 0..127 when scroll is set.
  * @param cpu The guest CPU state.
  * @param nf The face.
  * @param tier2 1 for the tier-2 split, 0 for the tier-4 split.
@@ -3404,12 +3436,18 @@ static void nt_sub_of(CPUState* cpu, const tn_nearface* nf, int tier2, int i, in
                       nt_sub* s) {
     uint32_t row = nt_sub_nodes(cpu, tier2, i, &s->a, &s->b, &s->c);
     if (tier2) {
-        s->cell = nt2_tile(cpu, row, nf->rot);
+        const uint32_t b = nt_byte(cpu, game_layout.terrain.hq_tri2_tiles + (row & 0x0Cu)
+                                        + (uint32_t)nf->rot);
+        s->cell = (int)((b >> 3) & 3u);
         s->e = nf->hqBase + game_layout.terrain.hq_sub0 + (uint32_t)s->cell * 8u;
+        s->w0 = rd(cpu, s->e);
+        s->w1 = rd(cpu, s->e + 4) + (uint32_t)game_layout.terrain.hq_tri2_w1;
+        s->uvtab = game_layout.terrain.hq_tri2_uv;
         s->dv = scroll ? s_tanim_dvhq[nf->texid][s->cell >> 1] : 0.0f;
     } else {
-        s->cell = nt4_cell(cpu, row, nf->rot);
-        s->e = nf->hqBase + game_layout.terrain.hq_cells4 + (uint32_t)s->cell * 8u;
+        nt4_tile_of(cpu, nf->hqBase, nt_byte(cpu, game_layout.terrain.hq_tri4_cells
+                                                  + (row & 0x3Cu) + (uint32_t)nf->rot), s);
+        s->uvtab = game_layout.terrain.hq_tri_uv;
         s->dv = scroll ? s_tanim_dvcell[nf->texid][s->cell >> 2] : 0.0f;
     }
     s->o = (int)(row & 3u);
@@ -3450,7 +3488,7 @@ static void nt_emit(tn_wctx* W, CPUState* cpu, const tn_nearface* nf, const ngte
         memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
         decode_tiledef_span(cpu, s.e, nf->abe, &mat, u4, v4, 0x0F);
         mat.texid = nf->texid;
-        tiledef_tri_uv(cpu, s.e, nf->rot, s.o, u, v, &matdiff);
+        tiledef_tri_uv(cpu, &s, nf->rot, u, v, &matdiff);
         W->trisplit_matdiff[tier2] += matdiff;
         A.u = u[0]; A.v = v[0] + s.dv;
         B.u = u[1]; B.v = v[1] + s.dv;
@@ -3514,8 +3552,9 @@ static void tn_tri_cell_keys(CPUState* cpu, const tn_nearface* nf, const ngte_cv
 
 /** @brief Emits a routed triangle face as its tier-4 or tier-2 split.
  *
- * The corners carry the raw near colours of word 1 bytes 3, 2 and 0 (C's
- * from byte 0, 0x80029834 and 0x8002807C; the flat GT3 emit reads byte 1).
+ * The corners carry the raw near colours of word 1 bytes 3 and 2 and, for C,
+ * of slot hq_tri_c_col (byte 0 on Spyro 1, 0x80029834 and 0x8002807C, where
+ * the flat GT3 emit reads byte 1; byte 1 on Spyro 2 and 3).
  * The 15-node grid is built from A, B and C at face-local (0,0), (4,0) and
  * (0,4) and snapped under the integer vertex snap. A tier-4 triangle drawn
  * as the tier-2 split keys each fragment by the drain's tier-4 sub-triangle
@@ -3554,7 +3593,7 @@ static void trisplit_reset(int f[2], int s[2], int c[2], int m[2]) {
     memset(f, 0, 2 * sizeof(int)); memset(s, 0, 2 * sizeof(int));
     memset(c, 0, 2 * sizeof(int)); memset(m, 0, 2 * sizeof(int));
 }
-/** @brief Adds one walk context's split-triangle, tier-4 cell and drain-skip counters into the per-walk sums.
+/** @brief Adds one walk context's split-triangle, whole near triangle, tier-4 cell and drain-skip counters into the per-walk sums.
  * @param W The walk context. */
 static void trisplit_sum(const tn_wctx* W) {
     for (int k = 0; k < 2; k++) {
@@ -3563,6 +3602,7 @@ static void trisplit_sum(const tn_wctx* W) {
         s_trisplit_scull[k] += W->trisplit_scull[k];
         s_trisplit_matdiff[k] += W->trisplit_matdiff[k];
         s_cells4_faces[k] += W->cells4_faces[k];
+        s_tri_lq[k] += W->tri_lq[k];
         s_drain_skip[k] += W->drain_skip[k];
     }
     s_drain_skip[2] += W->drain_skip[2];
@@ -3588,7 +3628,7 @@ static int face_tri4_routed(double zA, double zB, double zC, uint32_t w3, uint32
                             int hq_idx) {
     if (!game_layout.terrain.hq_tri4_cells) return 0;
     if (s_nearq > 0 && s_defer_n > 0) return is_deferred4(rec);
-    return face_near_tier4(zA, zB, zC, zC, w3, tface_cells_ok(hq_idx), tface_cells_pin(hq_idx));
+    return face_near_tier4(zA, zB, zC, zC, w3, tface_tri4_ok(hq_idx), tface_cells_pin(hq_idx));
 }
 
 /* ---- sector decode cache (terrain Tier 1, mirrors the moby faceblock cache) --
@@ -10587,14 +10627,12 @@ static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, 
 
 /** @brief Decodes one split sub-triangle's tile into its record entry, draw class and blend flag.
  *
- * The entry's material is built as in tgpu_cell_tile; uv[0..5] hold the
- * (u, v) of nodes A, B, C from tiledef_tri_uv, and uv[6] the cell or
- * quadrant (its V scroll row is cell >> 2).
+ * The entry's material is built as in tgpu_cell_tile from the sub-triangle's
+ * Tiledef; uv[0..5] hold the (u, v) of nodes A, B, C from tiledef_tri_uv, and
+ * uv[6] the cell or quadrant (its V scroll row is cell >> 2).
  * @param cpu The guest CPU state.
- * @param e The tile's guest address.
+ * @param sub The sub-triangle (nt_sub_of).
  * @param rot The triangle's UV rotation.
- * @param o The sub-triangle's orientation index for tiledef_tri_uv.
- * @param cell The cell or quadrant index.
  * @param abe The face's ABE bit.
  * @param hp_bucket The material bucket written into mat0 from bit 24.
  * @param hdfold 1 to fold the tile onto its HD replacement.
@@ -10602,13 +10640,13 @@ static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, 
  * @param cls Receives the draw-class arena.
  * @param blended Receives 1 when the material is blended.
  * @return 0, or -1 when the HD fold cannot bake the tile. */
-static int tgpu_tri_tile(CPUState* cpu, uint32_t e, int rot, int o, int cell, int abe,
+static int tgpu_tri_tile(CPUState* cpu, const nt_sub* sub, int rot, int abe,
                          int hp_bucket, int hdfold, rhi_terrain_cell_tile* t,
                          uint8_t* cls, uint8_t* blended) {
     tmat m; float u4[4], v4[4], u[3], v[3]; int matdiff;
     memset(&m, 0, sizeof(m)); m.bpp = 16;
-    decode_tiledef_span(cpu, e, abe, &m, u4, v4, 0x0F);
-    tiledef_tri_uv(cpu, e, rot, o, u, v, &matdiff);
+    decode_tiledef_span(cpu, sub->e, abe, &m, u4, v4, 0x0F);
+    tiledef_tri_uv(cpu, sub, rot, u, v, &matdiff);
     memset(t, 0, sizeof(*t));
     t->mat0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
     t->mat1 = (uint32_t)(m.clut_raw & 0xFFFF);
@@ -10616,7 +10654,7 @@ static int tgpu_tri_tile(CPUState* cpu, uint32_t e, int rot, int o, int cell, in
         t->uv[q * 2 + 0] = (uint8_t)u[q];
         t->uv[q * 2 + 1] = (uint8_t)v[q];
     }
-    t->uv[6] = (uint8_t)cell;
+    t->uv[6] = (uint8_t)sub->cell;
     if (hdfold) {
         int hd = tgpu_hdfold_face(&m, u, v, NULL, NULL);
         if (hd < 0) return -1;
@@ -10635,7 +10673,8 @@ static int tgpu_tri_tile(CPUState* cpu, uint32_t e, int rot, int o, int cell, in
  * with its tile and UVs (uv[6] the cell or quadrant, which picks its V
  * scroll); the terrain_cells vertex stage builds the nodes, snap, key and
  * straddler facing from the transformed corners (c3 = c2) and the node
- * colours from near_rgb[0] (A), [1] (B) and [3] (C, word 1 byte 0).
+ * colours from near_rgb[0] (A), [1] (B) and [3] (C, which takes colour slot
+ * hq_tri_c_col).
  * Tier-4 records go where tgpu_bake_cells4 writes its cells: the CN family
  * of a near-variant sector, the CA family of a poly-anim one and, for a face
  * the pin sends to the cells, of every sector's plain chunk set. A tier-2
@@ -10662,6 +10701,12 @@ static int tgpu_bake_tri(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, int
                          int hdfold, int tier2, int* fail) {
     rhi_terrain_cell_anim R;
     tgpu_cell_rec_init(&R, T, nearC);
+    /* Corner C (the record's slot 3) takes the drains' colour slot. */
+    const int cq = game_layout.terrain.hq_tri_c_col;
+    R.cur.near_rgb[3] = nearC[cq] & 0xFFFFFFu;
+    R.cur.far_rgb[3] = T->farC[cq] & 0xFFFFFFu;
+    if (T->rf & OPTC_FACE_F_COLTAB)
+        R.cur.near_rgb[0] = (R.cur.near_rgb[0] & 0x00FFFFFFu) | (uint32_t)T->ci[cq] << 24;
     rhi_terrain_cell_tile tiles[16];
     uint8_t cls[16], blended[16];
     memset(tiles, 0, sizeof tiles); memset(cls, 0xFF, sizeof cls); memset(blended, 0, sizeof blended);
@@ -10670,7 +10715,7 @@ static int tgpu_bake_tri(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, int
     for (int i = 0; i < n; i++) {
         nt_sub sub;
         nt_sub_of(cpu, &nf, tier2, i, 0, &sub);
-        if (tgpu_tri_tile(cpu, sub.e, nf.rot, sub.o, sub.cell, F->abe, hp_bucket, hdfold,
+        if (tgpu_tri_tile(cpu, &sub, nf.rot, F->abe, hp_bucket, hdfold,
                           &tiles[i], &cls[i], &blended[i]) != 0) {
             *fail = 5;
             return -1;
@@ -10678,6 +10723,19 @@ static int tgpu_bake_tri(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, int
     }
     return tgpu_push_cell_families(buf, ab, with_var, pin4 || tier2, &R, tiles, cls, blended,
                                    F->hq_idx, (1u << 24) | ((uint32_t)tier2 << 25));
+}
+
+/** @brief Tests whether a face may take its game's finest near split: a quad the 4x4 cells, a triangle the tier-4 split.
+ *
+ * A quad needs the cell tiles (hq_cells4) and tface_cells_ok; a triangle
+ * needs the tier-4 selector table (hq_tri4_cells) and tface_tri4_ok. The
+ * walk's edge marks, the bake's split records and keyed-cell verdict, and
+ * the cache's per-face FF_CELLOK bit read this one verdict.
+ * @param F The face.
+ * @return Nonzero when the face may take the finest split. */
+static int tface_fine_ok(const tsface_t* F) {
+    if (F->quad) return game_layout.terrain.hq_cells4 && tface_cells_ok(F->hq_idx);
+    return game_layout.terrain.hq_tri4_cells && tface_tri4_ok(F->hq_idx);
 }
 
 /** @brief Tests whether an HP face carries near variants.
@@ -10808,16 +10866,14 @@ static int tj_find(const int32_t k[6]) {
 
 /** @brief Returns the mark a face gives its edges: 3 when it may take the 4x4 cells or the 16-way triangle split, 1 when HQ-eligible, else 0.
  *
- * The cells verdict (tface_cells_ok) reads the bank s_hq_bank names, which
+ * The finest-split verdict (tface_fine_ok) reads the bank s_hq_bank names, which
  * the caller sets for the face's set as the walk's tn_pass_bank does.
  * @param F The face.
  * @param hqTable The HQ table the face's set reads.
  * @return 0, 1 or 3. */
 static int tj_face_class(const tsface_t* F, uint32_t hqTable) {
     if (!tgpu_hq_elig(F, hqTable)) return 0;
-    const int q = game_layout.terrain.hq_cells4 && tface_cells_ok(F->hq_idx) && !tface_near_tier2(F->w3)
-               && (F->quad || game_layout.terrain.hq_tri4_cells);
-    return q ? 3 : 1;
+    return !tface_near_tier2(F->w3) && tface_fine_ok(F) ? 3 : 1;
 }
 
 /* One HP face set of a sector, as the walk's HP passes read it: the own
@@ -11509,7 +11565,7 @@ static void tj_world_census(void) {
 /** @brief Bakes a triangle's split variants: tier-4 records where they can draw, tier-2 records where the game has that pass.
  *
  * Tier-4 records bake on a game with hq_tri4_cells when the classifier can
- * route the face to tier 4 (near_flag_tier2 clear, tface_cells_ok) and a
+ * route the face to tier 4 (near_flag_tier2 clear, tface_fine_ok) and a
  * family draws them (ab, with_var or pin4); tier-2 records bake on a game
  * with hq_tri2_tiles.
  * @param cpu The guest CPU state.
@@ -11529,8 +11585,7 @@ static int tgpu_bake_tris(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, in
                           const tgpu_face_t* T, const uint32_t nearC[4],
                           const tsface_t* F, uint32_t hqBase, int hp_bucket,
                           int hdfold, int* fail) {
-    if (game_layout.terrain.hq_tri4_cells && !tface_near_tier2(F->w3) && (ab || with_var || pin4)
-     && tface_cells_ok(F->hq_idx)
+    if (!tface_near_tier2(F->w3) && (ab || with_var || pin4) && tface_fine_ok(F)
      && tgpu_bake_tri(cpu, buf, ab, with_var, pin4, T, nearC, F, hqBase, hp_bucket, hdfold, 0,
                       fail) != 0)
         return -1;
@@ -11608,7 +11663,7 @@ static int tgpu_key_cells(const tsface_t* F, int hq_elig, int pin4, int canim_on
     if (!hq_elig || (!game_layout.terrain.hq_tri4_cells && !game_layout.terrain.hq_tri2_tiles))
         return 1;
     return game_layout.terrain.hq_tri4_cells && game_layout.terrain.hq_tri2_tiles &&
-           !tface_near_tier2(F->w3) && !tface_cells_ok(F->hq_idx);
+           !tface_near_tier2(F->w3) && !tface_fine_ok(F);
 }
 
 /** @brief Allocates and uploads one built sector's chunks, recording them in its slot.
@@ -12439,7 +12494,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
                  | (tface_near_excl(F->w3)  ? (1u << 16) : 0u)
                  | (hq_elig ? (1u << 17) : 0u)
                  | (pin4    ? (1u << 19) : 0u)      /* routed to the cells */
-                 | ((uint32_t)tface_cells_ok(F->hq_idx) << 20)   /* may take the cells */
+                 | ((uint32_t)tface_fine_ok(F) << 20)   /* may take the finest split */
                  | ((uint32_t)key_cells << 21)   /* keys per drain sub-cell */
                  | ((uint32_t)F->lpkey << 22)    /* keys with the LP base term */
                  | ((uint32_t)tn_face_water(S->own, F) << 23)   /* second-walk face */
@@ -13599,7 +13654,8 @@ static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
  * inserts as its tier-2 or tier-4 sub-triangles keys each fragment by the
  * sub-triangle containing it (tn_keycells_begin); this applies on a layout
  * with both split node tables. The triangle splits at the nodes of its edges
- * the walk context's face marks name (tj_push_split).
+ * the walk context's face marks name (tj_push_split). A high-poly triangle
+ * the game defers counts in tri_lq by its drain tier.
  * @param W The walk context.
  * @param cpu The guest CPU state.
  * @param F The face.
@@ -13614,6 +13670,8 @@ static void tn_flat_tri_emit(tn_wctx* W, CPUState* cpu, const tsface_t* F, int h
     tn_fl(&A, 0.0f, 0.0f); tn_fl(&B, 4.0f, 0.0f); tn_fl(&C, 0.0f, 4.0f);
     tn_keycells K; K.n = 0;
     int tier2 = 0;
+    if (hp && face_is_near_canonical(A.m3, B.m3, C.m3, C.m3, F->w3))
+        W->tri_lq[!face_drain_tier4(A.m3, B.m3, C.m3, C.m3, F->w3)]++;
     if (hp && game_layout.terrain.hq_tri4_nodes && game_layout.terrain.hq_tri2_nodes &&
         !F->abe && !m->blend && face_is_near_canonical(A.m3, B.m3, C.m3, C.m3, F->w3)) {
         const tn_nearface nf = { .w3 = F->w3, .abe = F->abe, .straddle = straddle,
@@ -14019,7 +14077,7 @@ static void tn_lpward_census(tn_wctx* W, const tn_lpward_face* F) {
  * its own depth (tn_water_rgb), no fade words, and no sub-cell facing cull,
  * as the walk runs no NCLIP. Corners are in the drain's
  * grid order: TL = i0, TR = i1, BL = i3, BR = i2; a triangle's C is i2 = i3
- * with the colour of word 1 byte 0 (c3). Counts near_q_agree or near_c_only
+ * with the colour of slot hq_tri_c_col. Counts near_q_agree or near_c_only
  * by the face's presence in the game's queue, the dbg_spike counters, and
  * under OPENPETE_TERRAIN_HQFOG_CENSUS, with extended LOD, the face's corners
  * (tn_hqfog_census).
@@ -14050,7 +14108,8 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     }
     ngte_cvert TL = { .m1 = sv[F->i0].m1, .m2 = sv[F->i0].m2, .m3 = sv[F->i0].m3, .rgb = r[0], .rgbf = rf[0] };
     ngte_cvert TR = { .m1 = sv[F->i1].m1, .m2 = sv[F->i1].m2, .m3 = sv[F->i1].m3, .rgb = r[1], .rgbf = rf[1] };
-    ngte_cvert BL = { .m1 = sv[F->i3].m1, .m2 = sv[F->i3].m2, .m3 = sv[F->i3].m3, .rgb = r[3], .rgbf = rf[3] };
+    const int cq = F->quad ? 3 : game_layout.terrain.hq_tri_c_col;   /* a triangle's C colour slot */
+    ngte_cvert BL = { .m1 = sv[F->i3].m1, .m2 = sv[F->i3].m2, .m3 = sv[F->i3].m3, .rgb = r[cq], .rgbf = rf[cq] };
     ngte_cvert BR = { .m1 = sv[F->i2].m1, .m2 = sv[F->i2].m2, .m3 = sv[F->i2].m3, .rgb = r[2], .rgbf = rf[2] };
     const int heavy = s_hp_fog && !water;
     W->emit_hqfog_on = (uint8_t)heavy;
@@ -14075,7 +14134,7 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     W->dbg_spike++;   /* near/HQ cells subdivided */
     W->emit_hqfog_on = 0; W->emit_water_on = 0; W->emit_hqfog[0] = W->emit_hqfog[1] = 0u;
     if (hq_pin_active() && s_hqfog_census_on) {
-        /* a triangle's C is BL, coloured from word 1 byte 0 */
+        /* a triangle's C is BL, coloured from slot hq_tri_c_col */
         const ngte_cvert V[4] = { TL, TR, F->quad ? BR : BL, BL };
         tn_hqfog_census(W, V, F->quad ? 4 : 3, spikeTri0, fogRef);
     }
@@ -16307,6 +16366,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_dbg_spike_tris = 0;
     trisplit_reset(s_trisplit_faces, s_trisplit_subs, s_trisplit_scull, s_trisplit_matdiff);
     memset(s_cells4_faces, 0, sizeof(s_cells4_faces));
+    memset(s_tri_lq, 0, sizeof(s_tri_lq));
     memset(s_hqfog_cen, 0, sizeof(s_hqfog_cen));
     memset(s_fogcen, 0, sizeof(s_fogcen));
     memset(s_drain_skip, 0, sizeof(s_drain_skip));
@@ -16803,6 +16863,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->dbg_spike_tris = 0;
         trisplit_reset(W->trisplit_faces, W->trisplit_subs, W->trisplit_scull, W->trisplit_matdiff);
         memset(W->cells4_faces, 0, sizeof(W->cells4_faces));
+        memset(W->tri_lq, 0, sizeof(W->tri_lq));
         memset(W->hqfog_cen, 0, sizeof(W->hqfog_cen));
         memset(W->fogcen, 0, sizeof(W->fogcen));
         W->emit_hqfog_on = 0; W->emit_hqfog[0] = W->emit_hqfog[1] = 0u;
@@ -17153,12 +17214,12 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             fprintf(stderr, "[nearcen] frame=%u nearFaces=%d subTris=%d terrainTris=%d sectors=%d "
                     "tri4Faces=%d tri4Subs=%d tri4StraddleCulls=%d tri4MatDiff=%d "
                     "tri2Faces=%d tri2Subs=%d tri2StraddleCulls=%d tri2MatDiff=%d "
-                    "cells4Faces=%d cells4Pinned=%d\n",
+                    "cells4Faces=%d cells4Pinned=%d tri4Lq=%d tri2Lq=%d\n",
                     openpete_feed_key_now(), s_dbg_spike, s_dbg_spike_tris, s_tri_n, s_walk_sectors,
                     s_trisplit_faces[0], s_trisplit_subs[0], s_trisplit_scull[0],
                     s_trisplit_matdiff[0], s_trisplit_faces[1], s_trisplit_subs[1],
                     s_trisplit_scull[1], s_trisplit_matdiff[1], s_cells4_faces[0],
-                    s_cells4_faces[1]);
+                    s_cells4_faces[1], s_tri_lq[0], s_tri_lq[1]);
     }
     if (tgpu_on) {
         tgpu_migrate_idle_slots();

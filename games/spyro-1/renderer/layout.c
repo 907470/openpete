@@ -228,11 +228,21 @@ const game_layout_t spyro1_game_layout = {
                                                      * quadrants before the cell loop */
         .hq_tri4_nodes = D_HQ_TRI4_NODES,
         .hq_tri4_cells = D_HQ_TRI4_CELLS,
+        .hq_tri4_tile0 = 0x28u,                     /* the selector byte is cell * 8 into the
+                                                     * 16 cell tiles (r_environment.s 0x80029E44-0x80029E58) */
+        .hq_tri4_tile_mask = 0x78u,
+        .hq_tri4_sub   = 0u,                        /* no sub-offset: the cell tiles are their own */
         .hq_tri_uv     = D_HQ_TRI_UV,
         .hq_tri_uv_mask = 0x78u,                    /* `srl 25; andi 0x78` at
                                                      * r_environment.s 0x80029E98 */
+        .hq_tri_uv_shift = 7,                       /* 128-byte orientation blocks: the 16-texel
+                                                     * spans at +0, the 32-texel ones at +0x40,
+                                                     * picked by word1 bit 31 through the mask */
         .hq_tri2_nodes = D_HQ_TRI2_NODES,
         .hq_tri2_tiles = D_HQ_TRI2_TILES,
+        .hq_tri2_uv    = D_HQ_TRI_UV,               /* the tier-4 table (r_environment.s 0x80028440-0x80028490) */
+        .hq_tri2_w1    = 0,
+        .hq_tri_c_col  = 3,                         /* word 1 byte 0 (r_environment.s 0x80029834, 0x8002807C) */
         .abe_in_tpage = 0,
         .tile_word1_br = 0,
         .lod_dist_default = 0u,
