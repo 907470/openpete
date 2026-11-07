@@ -42,6 +42,8 @@
 
 #include <stdint.h>
 
+#include "openpete_thread_roles.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -667,15 +669,19 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes);
 
 /** @brief Busy-wait a configured stall before the game fiber runs, to calibrate the phase-error measurement.
  *
- * OPENPETE_PACE_INJECT_US=N[,EVERY] blocks N µs on the first paced VBL and
- * on every EVERY-th paced VBL after it (EVERY defaults to 30). The log must
- * then show a phase error of about N µs on those VBLs and nowhere else: a
- * known input with a known answer. The variable is read once. Inactive on
- * unpaced iterations and under the virtual clock. Call once per iteration,
- * immediately before the yield.
+ * OPENPETE_PACE_INJECT_US=N[,EVERY[,FROM[,COUNT]]] blocks N µs on paced VBL
+ * FROM (counted from 0 over paced VBLs; default 0) and on every EVERY-th
+ * paced VBL after it (EVERY defaults to 30), COUNT times in all (0, the
+ * default: without end). The log must then show a phase error of about N
+ * µs on those VBLs and nowhere else: a known input with a known answer.
+ * Under the virtual clock the stall is an advance of the clock by N µs
+ * (op_sleep_until), so a stall longer than the slip threshold makes the
+ * pacer discard time as a stalled host does. The variable is read once.
+ * Inactive on unpaced iterations. Call once per iteration, immediately
+ * before the yield.
  * @param paced Non-zero when this iteration runs against a live deadline.
  * @return The µs blocked, 0 when nothing was injected. */
-int64_t openpete_pace_inject(int paced);
+int64_t openpete_pace_inject(int paced) OP_REQUIRES(sim);
 
 /** @brief Spend OPENPETE_PACE_INJECT_PRESENT_US=N[,M[,K]] µs in an intermediate present.
  *

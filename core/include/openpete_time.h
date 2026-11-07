@@ -268,9 +268,10 @@ op_time_t op_now(void);
  * returned into the thread's adaptive slack, then spins on
  * op_now() with cpu_relax() until the deadline; POSIX builds call
  * sched_yield() once before the spin. With OPENPETE_PACER_CENSUS=1 each
- * call with time left is counted in the census op_time_shutdown prints. Under the virtual clock it never
- * blocks: it advances the virtual time to the deadline when the deadline
- * is later. Under Emscripten it yields to the browser event loop for the
+ * call with time left is counted in the census op_time_shutdown prints. Under the virtual clock it does not
+ * wait for time: it advances the virtual time to the deadline when the
+ * deadline is later and then runs the step hook
+ * (op_virtual_clock_set_step_hook), which may wait on other work. Under Emscripten it yields to the browser event loop for the
  * remaining whole milliseconds, at least one turn even past the deadline.
  * @param deadline_ns Monotonic deadline in ns. */
 void op_sleep_until(op_time_t deadline_ns);
@@ -301,6 +302,18 @@ op_time_t op_pacer_slack_ns(void);
  * @param start_ns Initial clock value; a value <= 0 is replaced by one
  *        second, since several consumers read a zero timestamp as unset. */
 void op_virtual_clock_enable(op_time_t start_ns);
+
+/** @brief A function op_sleep_until calls after it advances the virtual clock, with the new time. */
+typedef void (*op_clock_step_fn)(op_time_t now_ns);
+
+/** @brief Install the virtual clock's step hook, or remove it with NULL.
+ *
+ * op_sleep_until calls the hook on its own thread after every advance of
+ * the virtual clock, before it returns, so work scheduled on the virtual
+ * timeline (the audio feed's synthetic device and its consumer) runs to
+ * the new instant inside the step. The hook must not call op_sleep_until.
+ * @param fn The hook, or NULL. */
+void op_virtual_clock_set_step_hook(op_clock_step_fn fn);
 
 /** @brief Report whether the virtual clock drives op_now().
  *

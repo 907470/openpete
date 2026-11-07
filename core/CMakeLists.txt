@@ -269,6 +269,7 @@ add_library(openpete_core STATIC
     # of XA music.
     host/host_spawn.c
     host/window_restack.c
+    host/audio_consumer.c
     host/music_override.c
     host/mod_sound.c
     host/sha256.c

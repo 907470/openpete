@@ -5,6 +5,7 @@
 // step is a release step, which runs on every path, or an output step,
 // which runs only once the loop has entered (a setup error writes no
 // movie, no verdict and no report).
+#include "openpete_audio_consumer.h"
 #include "openpete_bugreport.h"
 #include "openpete_bugreport_replay.h"
 #include "host_loop_internal.h"
@@ -306,6 +307,9 @@ int host_session_open(host_session_t* S, const openpete_options_t* opts) OP_REQU
     run_deadline_arm(opts, S->start);
     open_refresh_query(S);
     host_pacer_init(&S->pacer, opts, S->refresh_hz);
+    /* After the pacer's init has requested the launch tick scale, which the
+     * consumer applies at its first wake. */
+    openpete_audio_consumer_start();
     /* The getters report the seeded pacer state from here on. */
     host_live_knobs_publish(host_pacer_render_fps(&S->pacer),
                             host_pacer_tick_scale(&S->pacer));
@@ -622,6 +626,7 @@ static void close_subsystem_reports(void) OP_REQUIRES(sim)
  * @param S The session. */
 static void close_shutdown(const host_session_t* S) OP_REQUIRES(sim)
 {
+    openpete_audio_consumer_stop();   /* before the device it drains closes */
     sfx_pack_shutdown();
     host_trace_close_step(HT_S_SFX_SHUTDOWN);
     feature_registry_shutdown();

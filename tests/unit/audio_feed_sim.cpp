@@ -3,31 +3,36 @@
  * after a stretch in which the producer ran slower than real time.
  *
  * PsyX_SPUFeed.cpp is compiled into this TU so the driver reaches the
- * synthetic producer's clock and the FIFO; its OpenAL calls link but never
- * run (the synthetic device replaces the source).
+ * FIFO; its OpenAL calls link but never run (the synthetic device replaces
+ * the source).
  *
- * Producer: one push per guest VBL (44100 / (2250000/37609) frames, the
- * fraction carried), a stereo sine (L 440 Hz, R 660 Hz, amplitude 12000),
- * each push followed by a pump. The synthetic device's own stalls and
- * jitter apply (PsyX_SPUFeed_Simulate).
+ * Clock: the driver's own scheduled clock in ns, starting at 1 s, playing
+ * the part of the game's virtual clock. Producer: one push per guest VBL
+ * (44100 / (2250000/37609) frames, the fraction carried), a stereo sine
+ * (L 440 Hz, R 660 Hz, amplitude 12000), on a grid of one VBL period. Each
+ * push lands at the later of its grid instant and the previous push, plus
+ * the producer model's delay (PsyX_SPUFeed_SimProducerDelay: 0-1 ms jitter,
+ * a 45 ms stall every 1.5-2.5 s). Before each push the device and the
+ * consumer's wakes run to its instant through PsyX_SPUFeed_SimRunTo, the
+ * call the game's consumer thread makes inside each virtual-clock step.
  *
  * Input: OPENPETE_AUDIO_FEED_SIM=DRIFT[,SEED[,STALL[,SPEED@START+DUR]]].
  * The fourth field is the producer-speed span: from START to START+DUR
- * seconds of producer time the producer pushes SPEED of real time (each
- * push's frames take 1/SPEED of their nominal time on the producer's
- * clock) while its nominal rate stays 1, as when the host's slip clamp
+ * seconds of producer time (VBLs pushed over the VBL rate) the producer
+ * pushes SPEED of real time (each VBL's grid step is 1/SPEED of a VBL
+ * period) while its nominal rate stays 1, as when the host's slip clamp
  * discards wall time the guest could not keep up with.
  *
- * Instrument: the queued latency after every pump, device frames plus the
+ * Instrument: the queued latency after every push, device frames plus the
  * FIFO at the resampling ratio (output frames, reported in ms); its maximum
  * from SETTLE seconds after the span ends to the end of the run; and at
- * every pump whose discard count rose outside a hold, the largest
+ * every device run before a push whose discard count rose, the largest
  * frame-to-frame step of the FIFO sequence the resampler reads across the
  * splice (the frame before the old tail, then the 2048 frames from the new
  * tail), against the sine's own largest step.
  *
  * Pitch (reported, no criterion): the resampling ratio against the
- * nominal rate in cents, 1200 log2(ratio / nominal), at every pump: its
+ * nominal rate in cents, 1200 log2(ratio / nominal), at every push: its
  * extreme inside the span and from SETTLE seconds after it, and the feed's
  * own whole-run pitch statistics.
  *
@@ -164,23 +169,20 @@ void push_vbl(Run* r, int in_span)
 		buf[i * 2 + 1] = (int16_t)lrint(SIM_AMP * sin(w1 * (double)r->frame));
 	}
 	if (in_span)
-	{
-		/* The push's frames take 1/speed of their nominal time. */
-		g_feed.sim_prod_nominal += (double)n / (FEED_RATE * g_feed.nominal) * (1.0 / r->span.speed - 1.0);
 		r->span_vbls++;
-	}
 	PsyX_SPUFeed_Push(buf, n);
 }
 
-/** @brief Pump the feed and measure the splice of any frames it dropped.
+/** @brief Run the device and the consumer to `to_ns` and measure the splice of any frames the consumer dropped.
  * @param r The run.
- * @param t Producer time, s. */
-void pump(Run* r, double t)
+ * @param t Producer time, s.
+ * @param to_ns The clock instant, ns. */
+void run_device(Run* r, double t, long long to_ns)
 {
 	const uint32_t tail0 = g_feed.tail;
 	const uint64_t disc0 = g_feed.discarded;
 	const int16_t prev0[2] = { g_feed.prev[0], g_feed.prev[1] };
-	PsyX_SPUFeed_Pump();
+	PsyX_SPUFeed_SimRunTo(to_ns);
 	if (g_feed.discarded == disc0) return;
 	const uint32_t d = (uint32_t)(g_feed.discarded - disc0);
 	const uint32_t newtail = (tail0 + d) % FEED_FIFO_FRAMES;
@@ -199,7 +201,7 @@ void keep_extreme(double* extreme, double v)
 	if (fabs(v) > fabs(*extreme)) *extreme = v;
 }
 
-/** @brief Sample the queued latency and the pitch deviation after a pump, and write the trace line every 250 ms.
+/** @brief Sample the queued latency and the pitch deviation after a push, and write the trace line every 250 ms.
  * @param r The run.
  * @param t Producer time, s.
  * @param in_span Nonzero inside the producer-speed span. */
@@ -270,15 +272,25 @@ int main(int argc, char** argv)
 	if (r.trace) fputs("t_s latency_ms fifo dev ratio rate\n", r.trace);
 	PsyX_SPUFeed_Simulate(r.drift, r.seed, r.stall);
 	PsyX_SPUFeed_Prepare();
+	long long grid = 1000000000LL, last = grid;   /* clock, ns */
+	PsyX_SPUFeed_SimRunTo(grid);
 	PsyX_SPUFeed_SetHold(0);
+	double grid_frac = 0.0;
 	for (uint64_t vbl = 0;; vbl++)
 	{
 		const double t = vbl / SIM_VBL_HZ;   /* producer time at nominal speed, s */
 		if (t >= r.seconds) break;
 		const int in_span = t >= r.span.start && t < r.span.start + r.span.dur;
+		const long long at = grid > last ? grid : last;
+		const long long push = at + llround(PsyX_SPUFeed_SimProducerDelay(at) * 1e9);
+		run_device(&r, t, push);
 		push_vbl(&r, in_span);
-		pump(&r, t);
 		sample(&r, t, in_span);
+		last = push;
+		grid_frac += 1e9 / SIM_VBL_HZ / (in_span ? r.span.speed : 1.0);
+		const long long step = (long long)grid_frac;
+		grid += step;
+		grid_frac -= (double)step;
 	}
 	if (r.trace) fclose(r.trace);
 	return report(&r);

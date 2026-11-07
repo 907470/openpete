@@ -339,6 +339,11 @@ static void ensure_initialized(void) {
  * reads it. Release store by the writer, acquire load by readers. */
 static atomic_int         s_virtual_on;
 static _Atomic(op_time_t) s_virtual_ns;
+static _Atomic(op_clock_step_fn) s_step_hook;
+
+void op_virtual_clock_set_step_hook(op_clock_step_fn fn) {
+    atomic_store_explicit(&s_step_hook, fn, memory_order_release);
+}
 
 void op_virtual_clock_enable(op_time_t start_ns) {
     atomic_store_explicit(&s_virtual_ns, (start_ns > 0) ? start_ns : OP_NS_PER_SEC,
@@ -474,8 +479,12 @@ void op_sleep_until(op_time_t deadline_ns) {
     /* Virtual clock: the deadline IS the next instant. Never block - the
      * caller's schedule advances, wall time doesn't enter into it. */
     if (atomic_load_explicit(&s_virtual_on, memory_order_acquire)) {
-        if (deadline_ns > atomic_load_explicit(&s_virtual_ns, memory_order_relaxed))
+        if (deadline_ns > atomic_load_explicit(&s_virtual_ns, memory_order_relaxed)) {
             atomic_store_explicit(&s_virtual_ns, deadline_ns, memory_order_release);
+            const op_clock_step_fn hook =
+                atomic_load_explicit(&s_step_hook, memory_order_acquire);
+            if (hook) hook(deadline_ns);
+        }
         return;
     }
     ensure_initialized();

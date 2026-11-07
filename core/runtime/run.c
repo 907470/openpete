@@ -939,7 +939,7 @@ extern int PsyX_SPUAL_SetMute(int on_off);
 extern void PsyX_SPUAL_Speculate(int on, int commit);
 extern void PsyX_SPUAL_SetCapture(int on);
 extern void PsyX_SPUFeed_SetHold(int on);
-extern void PsyX_SPUFeed_Pump(void);
+extern void PsyX_SPUFeed_SetTap(const char* path);
 extern void PsyX_SPUFeed_Simulate(double drift, unsigned int seed, double start_stall);
 extern void PsyX_SPUFeed_SetNominalRate(double rate);
 #define PSYX_SPUFEED_PHASES 8
@@ -956,6 +956,7 @@ typedef struct PsyX_SPUFeed_Stats {
     unsigned long long pitch_n;
     double pitch_med_c, pitch_p99_c, pitch_max_c;
     unsigned long long out_hash;
+    unsigned long long tap_frames;
     PsyX_SPUFeed_PhaseStats phase[PSYX_SPUFEED_PHASES];
     char phase_name[PSYX_SPUFEED_PHASES][16];
 } PsyX_SPUFeed_Stats;
@@ -993,7 +994,8 @@ static void audio_feed_exit_summary(void) {
                st.consumed, st.data_out, st.silence_out);
     OPL_INFO_F("audio", "feed: pitch: pumps=%llu median=%+.2fc p99=%.2fc max=%+.2fc",
                st.pitch_n, st.pitch_med_c, st.pitch_p99_c, st.pitch_max_c);
-    OPL_INFO_F("audio", "feed: out_hash=%016llx data_out=%llu", st.out_hash, st.data_out);
+    OPL_INFO_F("audio", "feed: out_hash=%016llx data_out=%llu tap_frames=%llu", st.out_hash, st.data_out,
+               st.tap_frames);
     for (int i = 0; i < PSYX_SPUFEED_PHASES; i++) {
         const PsyX_SPUFeed_PhaseStats* p = &st.phase[i];
         if (!p->pushed && !p->held) continue;
@@ -1594,9 +1596,16 @@ static const char* const s_feed_phase_names[] = { "boot", "skip", "unlocked", "p
  * with the feed's synthetic device, whose clock runs DRIFT (a fraction,
  * e.g. -0.024) off the producer's and which consumes nothing for STALL
  * seconds after the feed first leaves hold, so a headless run measures the
- * feed's underruns and depth. OPENPETE_AUDIO_FEED_LOG=PATH writes the
- * feed's timeline (holds, primes, underruns, overflows, and its counters
- * every 250 ms of device time).
+ * feed's underruns and depth. The synthetic device runs on the virtual
+ * clock (op_virtual_clock_enable; --record-cfr enables the same clock): the
+ * run is paced in scheduled time, the device and the consumer
+ * thread advance inside each clock step, and the producer model's delays
+ * (seeded by SEED) are clock advances before each VBL, so the counters are
+ * independent of host load and thread timing.
+ * OPENPETE_AUDIO_FEED_LOG=PATH writes the feed's timeline (holds, primes,
+ * underruns, overflows, and its counters every 250 ms of device time).
+ * OPENPETE_AUDIO_FEED_TAP=PATH writes every frame the device plays, raw
+ * s16 stereo 44.1 kHz.
  * @param opts The parsed options. */
 static void audio_sinks_setup(const openpete_options_t* opts) {
     const int record_audio = opts->record_path && !opts->record_no_audio && opts->record_cfr <= 0.0;
@@ -1620,9 +1629,14 @@ static void audio_sinks_setup(const openpete_options_t* opts) {
         const char* comma2 = comma ? strchr(comma + 1, ',') : NULL;
         const double stall = comma2 ? atof(comma2 + 1) : 0.0;
         PsyX_SPUFeed_Simulate(atof(sim), seed, stall);
-        OPL_INFO_F("audio", "feed: synthetic device, drift %+.4f seed %u start stall %.3f s",
+        if (!op_virtual_clock_active())
+            op_virtual_clock_enable(OP_NS_PER_SEC);
+        OPL_INFO_F("audio", "feed: synthetic device on the virtual clock, drift %+.4f seed %u start stall %.3f s",
                    atof(sim), seed, stall);
     }
+    const char* tap = getenv("OPENPETE_AUDIO_FEED_TAP");
+    if (tap && *tap)
+        PsyX_SPUFeed_SetTap(tap);
     atexit(audio_feed_exit_summary);
 }
 
@@ -1636,7 +1650,6 @@ void audio_feed_sync(int unlock_fps, int headless, int paused) {
     else if (unlock_fps)                         ph = PH_UNLOCKED;
     PsyX_SPUFeed_SetPhase(ph, s_feed_phase_names[ph], SDL_GetAtomicInt(&openpete_vbl_device));
     PsyX_SPUFeed_SetHold(ph != PH_LIVE && ph != PH_HEADLESS);
-    PsyX_SPUFeed_Pump();
 }
 
 /* Documented at the declaration in run_internal.h. */

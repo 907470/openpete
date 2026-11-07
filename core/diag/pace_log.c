@@ -1270,33 +1270,39 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
 /* instrument self-verification                                       */
 /* ------------------------------------------------------------------ */
 
-int64_t openpete_pace_inject_present(void)
+/** @brief Parse up to `n` comma-separated integers from environment variable `name` into `v`, leaving the slots it does not reach as they are.
+ * @param name The variable.
+ * @param v The values, holding their defaults on entry.
+ * @param n The slots in `v`.
+ * @return The values parsed, 0 when the variable is unset or empty. */
+static int pace_env_ints(const char* name, int64_t* v, int n)
 {
-    static int     s_init;
-    static int64_t s_us[2];
-    static long    s_block = 1;
-    static long    s_calls;
-    if (!s_init) {
-        s_init = 1;
-        const char* e = getenv("OPENPETE_PACE_INJECT_PRESENT_US");
-        char* rest = NULL;
-        s_us[0] = (e && *e) ? strtoll(e, &rest, 10) : 0;
-        s_us[1] = (rest && *rest == ',') ? strtoll(rest + 1, &rest, 10) : s_us[0];
-        if (rest && *rest == ',') s_block = strtol(rest + 1, NULL, 10);
-        if (s_block < 1) s_block = 1;
-        if (s_us[0] > 0 || s_us[1] > 0)
-            OPL_WARN_F("pace",
-                       "INJECTING %lld,%lld us (switching every %ld present(s)) into "
-                       "intermediate presents%s - shed-predicate fault injection, "
-                       "never a play path",
-                       (long long)s_us[0], (long long)s_us[1], s_block,
-                       op_virtual_clock_active() ? " on the virtual clock" : "");
+    const char* e = getenv(name);
+    if (!e || !*e) return 0;
+    char* end = NULL;
+    int got = 0;
+    const char* at = e;
+    while (got < n) {
+        v[got] = strtoll(at, &end, 10);
+        got++;
+        if (*end != ',') break;
+        at = end + 1;
     }
-    const int64_t us = s_us[(s_calls++ / s_block) & 1];
-    if (us <= 0) return 0;
-    /* Under the virtual clock op_now advances only through op_sleep_until, so
-     * the stall is that advance: the present's measured span is then exactly
-     * the injected cost. */
+    return got;
+}
+
+/** @brief Stall the calling thread for `us` microseconds: a busy-wait on the real clock, an advance of the virtual clock under it.
+ *
+ * Busy-wait, not a sleep: a sleep would be absorbed by the pacer's own
+ * slack accounting on some platforms and measure the sleep primitive
+ * rather than the log's ability to see a late start. The virtual clock
+ * advances only from op_sleep_until, so a spin on op_now there never
+ * terminates: the stall is the clock's advance, and a measured span is
+ * then exactly the injected cost.
+ * @param us The stall, > 0.
+ * @return `us`. */
+static int64_t pace_stall(int64_t us)
+{
     const op_time_t until = op_now() + us * OP_NS_PER_US;
     if (op_virtual_clock_active()) {
         op_sleep_until(until);
@@ -1306,14 +1312,34 @@ int64_t openpete_pace_inject_present(void)
     return us;
 }
 
+int64_t openpete_pace_inject_present(void)
+{
+    static int     s_init;
+    static int64_t s_us[3] = {0, 0, 1};   /* first, second, block */
+    static long    s_calls;
+    if (!s_init) {
+        s_init = 1;
+        if (pace_env_ints("OPENPETE_PACE_INJECT_PRESENT_US", s_us, 3) == 1) s_us[1] = s_us[0];
+        if (s_us[2] < 1) s_us[2] = 1;
+        if (s_us[0] > 0 || s_us[1] > 0)
+            OPL_WARN_F("pace",
+                       "INJECTING %lld,%lld us (switching every %lld present(s)) into "
+                       "intermediate presents%s - shed-predicate fault injection, "
+                       "never a play path",
+                       (long long)s_us[0], (long long)s_us[1], (long long)s_us[2],
+                       op_virtual_clock_active() ? " on the virtual clock" : "");
+    }
+    const int64_t us = s_us[(s_calls++ / s_us[2]) & 1];
+    return us > 0 ? pace_stall(us) : 0;
+}
+
 int64_t openpete_pace_inject_canonical(void)
 {
     static int     s_init;
     static int64_t s_us;
     if (!s_init) {
         s_init = 1;
-        const char* e = getenv("OPENPETE_PACE_INJECT_CANON_US");
-        s_us = (e && *e) ? strtoll(e, NULL, 10) : 0;
+        pace_env_ints("OPENPETE_PACE_INJECT_CANON_US", &s_us, 1);
         if (s_us > 0)
             OPL_WARN_F("pace",
                        "INJECTING %lld us into every CANONICAL present - "
@@ -1322,45 +1348,35 @@ int64_t openpete_pace_inject_canonical(void)
                        (long long)s_us);
     }
     if (s_us <= 0 || op_virtual_clock_active()) return 0;
-    const op_time_t until = op_now() + s_us * OP_NS_PER_US;
-    while (op_now() < until) { }
-    return s_us;
+    return pace_stall(s_us);
 }
 
-int64_t openpete_pace_inject(int paced)
+int64_t openpete_pace_inject(int paced) OP_REQUIRES(sim)
 {
-    static int     s_init;
-    static int64_t s_us;
-    static int64_t s_every = 30;
+    static int      s_init;
+    /* us, every, from, count */
+    static int64_t  s_spec[4] OP_GUARDED_BY(sim) = {0, 30, 0, 0};
     static uint64_t s_seen;
+    static int64_t  s_done OP_GUARDED_BY(sim);
 
     if (!s_init) {
         s_init = 1;
-        const char* e = getenv("OPENPETE_PACE_INJECT_US");
-        if (e && *e) {
-            char* end = NULL;
-            s_us = strtoll(e, &end, 10);
-            if (end && *end == ',') {
-                const int64_t every = strtoll(end + 1, NULL, 10);
-                if (every > 0) s_every = every;
-            }
-            if (s_us > 0)
-                OPL_WARN_F("pace",
-                           "INJECTING a %lld us stall every %lld paced VBL - "
-                           "instrument calibration only, never a play path",
-                           (long long)s_us, (long long)s_every);
-        }
+        pace_env_ints("OPENPETE_PACE_INJECT_US", s_spec, 4);
+        if (s_spec[1] < 1) s_spec[1] = 30;
+        if (s_spec[2] < 0) s_spec[2] = 0;
+        if (s_spec[0] > 0)
+            OPL_WARN_F("pace",
+                       "INJECTING a %lld us stall every %lld paced VBL from paced VBL %lld, "
+                       "%lld time(s) (0: without end)%s - instrument calibration only, "
+                       "never a play path",
+                       (long long)s_spec[0], (long long)s_spec[1], (long long)s_spec[2],
+                       (long long)s_spec[3],
+                       op_virtual_clock_active() ? ", as virtual-clock advances" : "");
     }
-    if (s_us <= 0 || !paced) return 0;
-    /* The spin below waits on op_now, which the virtual clock advances only
-     * from op_sleep_until - so spinning on it there never terminates. */
-    if (op_virtual_clock_active()) return 0;
-    if ((s_seen++ % (uint64_t)s_every) != 0) return 0;
-
-    /* Busy-wait, not a sleep: a sleep would be absorbed by the pacer's own
-     * slack accounting on some platforms and measure the sleep primitive
-     * rather than the log's ability to see a late start. */
-    const op_time_t until = op_now() + s_us * OP_NS_PER_US;
-    while (op_now() < until) { }
-    return s_us;
+    if (s_spec[0] <= 0 || !paced) return 0;
+    const int64_t k = (int64_t)(s_seen++) - s_spec[2];
+    if (k < 0 || k % s_spec[1] != 0) return 0;
+    if (s_spec[3] > 0 && s_done >= s_spec[3]) return 0;
+    s_done++;
+    return pace_stall(s_spec[0]);
 }

@@ -43,10 +43,12 @@
 #
 # Pitch row (spyro-3 credits-pitch): one headless run of
 # games/spyro-3/bk2/credits-cheat.bk2 to VBL 9000 on the device feed's
-# synthetic device at drift 0 (OPENPETE_AUDIO_FEED_SIM=0.0,1), whose clock is
-# the frames pushed, so the row is independent of host load. Instrument: the
-# exit line `audio: feed: pitch:`, the feed's resampling ratio at every pump
-# while data plays from the first data start, in cents from its median.
+# synthetic device at drift 0 (OPENPETE_AUDIO_FEED_SIM=0.0,1), which runs on
+# the virtual clock with the consumer thread advancing inside each clock
+# step, so the row is independent of host load and thread timing.
+# Instrument: the exit line `audio: feed: pitch:`, the feed's resampling
+# ratio at every consumer wake while data plays from the first data start,
+# in cents from its median.
 # Engagement: pumps > 0 and primes >= 1. Pass: p99 <= PITCH_P99_C, |max| <=
 # PITCH_MAX_C, underruns = 0, overflow = 0.
 #

@@ -219,15 +219,16 @@ void live_knob_drain(host_pacer_t* P);
  * iteration); applies the mute gains only on a change of the flag. */
 void skip_mute_sync(void);
 
-/** @brief Apply the device feed's run-mode policy for this host-loop iteration, then top the device queue up.
+/** @brief Apply the device feed's run-mode policy (its phase and hold) for this host-loop iteration.
  *
  * The feed carries the SPU at the guest's real-time rate. In a window the
  * feed holds (the SPU still runs) through fast boot, which runs the guest
  * without host yields until the first scene, through a pause, a
  * skip-to-level fast-forward and any other unlocked stretch. The phase and
  * the VBL count tag the feed's per-phase counters and timeline log.
- * Headless runs unpaced by design: its feed (the synthetic device, when
- * armed) times itself from the frames pushed.
+ * The device queue is the consumer thread's (openpete_audio_consumer_start),
+ * which applies a hold edge at its next wake. Headless runs unpaced, except
+ * on the feed's synthetic device, which runs on the virtual clock.
  * @param unlock_fps The iteration runs unpaced (fast-forward, skip, headless).
  * @param headless The run is headless.
  * @param paused The game is paused. */

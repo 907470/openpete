@@ -572,8 +572,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Audio feed across live tick-scale changes: per game, a headless run
-    # on the feed's synthetic device under a 0.25-3.0 schedule of
+    # Audio feed across live tick-scale changes: per game and producer-model
+    # seed (1-3), a headless run on the feed's synthetic device on the
+    # virtual clock under a 0.25-3.0 schedule of
     # openpete_set_tick_scale calls; 0 underruns and 0 overflows, the
     # queued depth within 45 ms of its target per scale, and back within
     # the band <= 1 s after each change. Exit 64 = no binary or disc.
@@ -583,7 +584,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(audio_tick_scale PROPERTIES
         LABELS "slow;audio"
         RESOURCE_LOCK openpete_game
-        TIMEOUT 900
+        TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -599,6 +600,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(audio_feed_latency PROPERTIES
         LABELS "audio"
         TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Host sim slips reach the audio feed's consumer: a Spyro 1 headless
+    # run on the feed's synthetic device per injected stall (one 500 ms
+    # stall; a 0.8x host for 150 s), virtual-clock advances through
+    # OPENPETE_PACE_INJECT_US; the pacer's sim slip periods are nonzero and
+    # the feed timeline's slips= equals them. Exit 64 = no binary or disc.
+    add_test(NAME audio_feed_slip
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_audio_feed_slip.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(audio_feed_slip PROPERTIES
+        LABELS "slow;audio"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

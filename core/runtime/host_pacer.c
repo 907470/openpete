@@ -38,6 +38,7 @@
 /* Declared in PsyCross's private src/audio/PsyX_SPUFeed.h, which is not on
  * any public include path. */
 extern void PsyX_SPUFeed_SetNominalRate(double rate);
+extern void PsyX_SPUFeed_NoteSimSlips(unsigned long long periods);
 
 /** @brief Return the present period for a render rate at a tick scale: 1/fps scaled, or the sim period at fps 0.
  * @param fps The render rate, 0 for the legacy pacer.
@@ -398,6 +399,7 @@ static void pacer_clamp_slip(host_pacer_t* P, pacer_slip_kind_t kind, op_time_t 
     }
     P->sim_slip_events++;
     P->sim_slip_periods += (uint64_t)skip;
+    PsyX_SPUFeed_NoteSimSlips(P->sim_slip_periods);
     openpete_pace_slip(OP_PACE_SLIP_SIM, (int64_t)skip, (int64_t)behind);
     P->slip_pending = true;
     OPL_WARN_F("pacer",

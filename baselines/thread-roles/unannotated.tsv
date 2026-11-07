@@ -161,13 +161,10 @@ core/diag/pace_log.c	openpete_pace_host_pump	s_win_long	local	-
 core/diag/pace_log.c	openpete_pace_host_pump	s_win_park_ns	local	-	
 core/diag/pace_log.c	openpete_pace_host_pump	s_win_pump_max_ns	local	-	
 core/diag/pace_log.c	openpete_pace_host_pump	s_win_start_ns	local	-	
-core/diag/pace_log.c	openpete_pace_inject	s_every	local	-	
 core/diag/pace_log.c	openpete_pace_inject	s_init	local	-	
 core/diag/pace_log.c	openpete_pace_inject	s_seen	local	-	
-core/diag/pace_log.c	openpete_pace_inject	s_us	local	-	
 core/diag/pace_log.c	openpete_pace_inject_canonical	s_init	local	-	
 core/diag/pace_log.c	openpete_pace_inject_canonical	s_us	local	-	
-core/diag/pace_log.c	openpete_pace_inject_present	s_block	local	-	
 core/diag/pace_log.c	openpete_pace_inject_present	s_calls	local	-	
 core/diag/pace_log.c	openpete_pace_inject_present	s_init	local	-	
 core/diag/pace_log.c	openpete_pace_inject_present	s_us	local	-	
@@ -4743,7 +4740,6 @@ games/spyro-3/features/areawarp.c	-	k_areas	static	-
 games/spyro-3/features/areawarp.c	-	s_area_display	static	-	
 games/spyro-3/features/areawarp.c	-	s_area_slug	static	-	
 games/spyro-3/features/areawarp.c	-	s_final	static	-	
-games/spyro-3/features/areawarp.c	-	s_from	static	atomic	1 storing function(s), none reads it
 games/spyro-3/features/areawarp.c	-	s_level	static	-	
 games/spyro-3/features/areawarp.c	-	s_warp	static	-	
 games/spyro-3/features/bash_demo_egg.c	-	s_egg	static	-	

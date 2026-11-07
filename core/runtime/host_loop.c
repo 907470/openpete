@@ -5,6 +5,7 @@
 // clock), the quiescent ops, the tick outputs, the RAM dump, the exit test,
 // the sample log and the pace tail.
 
+#include "openpete_audio_consumer.h"
 #include "host_loop_internal.h"
 #include "host_pacer.h"
 #include "run_internal.h"
@@ -226,6 +227,9 @@ static void tick_run_vbl(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
      * for: a known lateness the log must then report, so the
      * instrument is checked against truth rather than trusted. */
     openpete_pace_inject(pace_paced);
+    /* The synthetic producer's delay before this VBL's push (a no-op
+     * outside the audio feed's synthetic device). */
+    openpete_audio_consumer_producer_step();
     tick_latch_order_check(it);
 
     it->vbl.exec_start_ns = op_now();

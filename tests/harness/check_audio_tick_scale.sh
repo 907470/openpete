@@ -3,10 +3,13 @@
 # and plays without a gap through live tick-scale changes, and returns to
 # its 1.0 depth after each return to 1.0.
 #
-# Run: one headless attract run per game to --frame-limit 6800 on the
-# feed's synthetic device at drift 0 (OPENPETE_AUDIO_FEED_SIM=0.0,1, whose
-# clock is the frames pushed at the producer's nominal rate, so the row is
-# independent of host load), under OPENPETE_AUDIO_FEED_LOG and the schedule
+# Run: headless attract runs per game to --frame-limit 6800 on the feed's
+# synthetic device at drift 0, one per producer-model seed in SEEDS
+# (OPENPETE_AUDIO_FEED_SIM=0.0,SEED). The synthetic device runs on the
+# virtual clock: the device and the consumer thread advance inside each
+# clock step and the producer model's jitter and stalls are clock advances,
+# so the row is independent of host load and thread timing. Each run is
+# under OPENPETE_AUDIO_FEED_LOG and the schedule
 # OPENPETE_TICK_SCALE_AT (each entry calls openpete_set_tick_scale, the
 # devui row's setter, at its VBL):
 #   1.0 -> 0.5 (VBL 2000) -> 1.0 (2600) -> 1.5 (3200) -> 1.0 (3800)
@@ -19,7 +22,7 @@
 # within the band around the segment's target.
 # Engagement: data plays (a prime) and every segment has timeline lines.
 #
-# Pass, per segment: 0 underruns and 0 overflow events; depth from 1 s after
+# Pass, per run and segment: 0 underruns and 0 overflow events; depth from 1 s after
 # the change within BAND_MS of the target (target 118 ms at scale >= 1;
 # below 1 the target grows by twice and the band by once the excess of
 # one VBL's push, 737/scale - 737 frames); recovery <= RECOVER_MS.
@@ -44,6 +47,7 @@ SCHEDULE="2000:0.5,2600:1.0,3200:1.5,3800:1.0,4400:0.25,5000:1.0,5600:3.0,6200:1
 LIMIT=6800
 BAND_MS=45
 RECOVER_MS=1000
+SEEDS=(1 2 3)
 
 ROOT="${PG_BUILD_DIR:-build/linux-release}/audio-tick-scale"
 ran=0 failed=0 skipped=0
@@ -55,10 +59,11 @@ for game in spyro-1 spyro-2 spyro-3; do
         skipped=$((skipped + 1))
         continue
     fi
-    out="$ROOT/$game"
+    for seed in "${SEEDS[@]}"; do
+    out="$ROOT/$game/seed$seed"
     mkdir -p "$out"
     rm -f "${out:?}/run.log" "${out:?}/feed.log" "${out:?}/check.txt"
-    PG_CAPTURE_ENV=("OPENPETE_AUDIO_FEED_SIM=0.0,1" "OPENPETE_AUDIO_FEED_LOG=$out/feed.log"
+    PG_CAPTURE_ENV=("OPENPETE_AUDIO_FEED_SIM=0.0,$seed" "OPENPETE_AUDIO_FEED_LOG=$out/feed.log"
                     "OPENPETE_TICK_SCALE_AT=$SCHEDULE")
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$out/run.log" "$out/feed.log" -- \
@@ -66,16 +71,17 @@ for game in spyro-1 spyro-2 spyro-3; do
     rc=$?
     ran=$((ran + 1))
     if (( rc )); then
-        echo "[tick-scale-audio] $game verdict=FAIL: run exited $rc (see $out/run.log)"
+        echo "[tick-scale-audio] $game/seed$seed verdict=FAIL: run exited $rc (see $out/run.log)"
         failed=$((failed + 1))
         continue
     fi
     python3 tools/audio_feed_tick_scale.py --log "$out/feed.log" --schedule "$SCHEDULE" \
-        --band-ms "$BAND_MS" --recover-ms "$RECOVER_MS" --tag "$game" >"$out/check.txt" 2>&1
+        --band-ms "$BAND_MS" --recover-ms "$RECOVER_MS" --tag "$game/seed$seed" >"$out/check.txt" 2>&1
     crc=$?
     cat "$out/check.txt"
     grep -q 'verdict=' "$out/check.txt" || crc=2
     (( crc )) && failed=$((failed + 1))
+    done
 done
 
 echo "[tick-scale-audio] rows ran=$ran failed=$failed skipped=$skipped" \

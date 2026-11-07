@@ -11,6 +11,17 @@
 #include <libco.h>
 #include <stddef.h>
 
+#if defined(__has_feature)
+#  if __has_feature(thread_sanitizer) && !defined(__SANITIZE_THREAD__)
+#    define __SANITIZE_THREAD__ 1
+#  endif
+#endif
+#if defined(__SANITIZE_THREAD__)
+#  define OPENPETE_FIBER_TSAN 1
+#  include <SDL3/SDL_mutex.h>
+#  include <sanitizer/tsan_interface.h>
+#endif
+
 #if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #  define OPENPETE_FIBER_GUARD 1
 #  include <sys/mman.h>
@@ -40,6 +51,57 @@ int          openpete_skip_present_until_level = 0;
 int          openpete_skip_ffwd_windowed       = 0;
 /* openpete_no_lod lives in core/renderer/no_lod.c. */
 
+#if defined(OPENPETE_FIBER_TSAN)
+/* ThreadSanitizer keeps one shadow call stack per thread; a libco switch it
+ * is not told about corrupts it. Each libco context is paired with a TSan
+ * fiber: created with the context, or, for a thread's own context, taken
+ * from the thread at its first switch away (tsan_fiber_of). Built only
+ * under -fsanitize=thread. */
+#  define TSAN_FIBERS 16
+static struct { void* co; void* tsan; } s_tsan_fibers[TSAN_FIBERS];
+static SDL_Mutex* s_tsan_mx;
+
+/** @brief Return the TSan fiber paired with libco context `co`, pairing `co` with `own` (when not NULL) if it has none.
+ * @param co The libco context.
+ * @param own The TSan fiber to pair with an unpaired context, or NULL.
+ * @return The paired TSan fiber, or NULL. */
+static void* tsan_fiber_of(void* co, void* own) {
+    if (!s_tsan_mx) s_tsan_mx = SDL_CreateMutex();
+    SDL_LockMutex(s_tsan_mx);
+    void* found = NULL;
+    int free_slot = -1;
+    for (int i = 0; i < TSAN_FIBERS; i++) {
+        if (s_tsan_fibers[i].co == co) { found = s_tsan_fibers[i].tsan; break; }
+        if (!s_tsan_fibers[i].co && free_slot < 0) free_slot = i;
+    }
+    if (!found && own && free_slot >= 0) {
+        s_tsan_fibers[free_slot].co = co;
+        s_tsan_fibers[free_slot].tsan = own;
+        found = own;
+    }
+    SDL_UnlockMutex(s_tsan_mx);
+    return found;
+}
+
+/** @brief Unpair libco context `co` and destroy its TSan fiber.
+ * @param co The libco context. */
+static void tsan_fiber_drop(void* co) {
+    if (!s_tsan_mx) return;
+    SDL_LockMutex(s_tsan_mx);
+    for (int i = 0; i < TSAN_FIBERS; i++)
+        if (s_tsan_fibers[i].co == co) {
+            __tsan_destroy_fiber(s_tsan_fibers[i].tsan);
+            s_tsan_fibers[i].co = s_tsan_fibers[i].tsan = NULL;
+        }
+    SDL_UnlockMutex(s_tsan_mx);
+}
+#  define TSAN_FIBER_CREATED(co) do { if (co) (void)tsan_fiber_of((co), __tsan_create_fiber(0)); } while (0)
+#  define TSAN_FIBER_DELETED(co) tsan_fiber_drop(co)
+#else
+#  define TSAN_FIBER_CREATED(co) ((void)0)
+#  define TSAN_FIBER_DELETED(co) ((void)0)
+#endif
+
 #if defined(OPENPETE_FIBER_GUARD)
 /* The one guarded mapping: the game fiber's stack, guard page first. */
 static void*     s_fiber_map;
@@ -62,11 +124,14 @@ void* openpete_fiber_create_guarded(unsigned size, void (*entry)(void)) {
     /* libco's amd64 co_derive keeps the saved context at the low end of
      * the memory it is given, so the context sits just above the guard and
      * the stack grows down toward both. */
-    return co_derive((char*)map + page, (unsigned)(len - page), entry);
+    cothread_t co = co_derive((char*)map + page, (unsigned)(len - page), entry);
+    TSAN_FIBER_CREATED(co);
+    return co;
 }
 
 void openpete_fiber_delete_guarded(void* fiber) {
     if (!fiber || !s_fiber_map) return;
+    TSAN_FIBER_DELETED(fiber);
     munmap(s_fiber_map, s_fiber_map_len);
     s_fiber_map = NULL;
     s_guard_lo = s_guard_hi = 0;
@@ -77,11 +142,15 @@ int openpete_fiber_guard_contains(uintptr_t addr) {
 }
 #else
 void* openpete_fiber_create_guarded(unsigned size, void (*entry)(void)) {
-    return co_create(size, entry);
+    cothread_t co = co_create(size, entry);
+    TSAN_FIBER_CREATED(co);
+    return co;
 }
 
 void openpete_fiber_delete_guarded(void* fiber) {
-    if (fiber) co_delete((cothread_t)fiber);
+    if (!fiber) return;
+    TSAN_FIBER_DELETED(fiber);
+    co_delete((cothread_t)fiber);
 }
 
 int openpete_fiber_guard_contains(uintptr_t addr) {
@@ -92,6 +161,11 @@ int openpete_fiber_guard_contains(uintptr_t addr) {
 
 void openpete_fiber_switch(void* to) {
     OP_ROLE_CHECK(sim);
+#if defined(OPENPETE_FIBER_TSAN)
+    (void)tsan_fiber_of(co_active(), __tsan_get_current_fiber());
+    void* target = tsan_fiber_of(to, NULL);
+    if (target) __tsan_switch_to_fiber(target, 0);
+#endif
     co_switch((cothread_t)to);
 }
 

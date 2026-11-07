@@ -31,8 +31,6 @@ void PsyX_SPUFeed_Prepare(void) {}
 /** @brief PsyCross stub. */
 void PsyX_SPUFeed_Push(const short* frames, int n) { (void)frames; (void)n; }
 /** @brief PsyCross stub. */
-void PsyX_SPUFeed_Pump(void) {}
-/** @brief PsyCross stub. */
 void PsyX_XA_Init(void) {}
 
 /** @brief psx-spx 4-point gaussian evaluated term by term from kGauss.
