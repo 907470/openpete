@@ -1145,7 +1145,9 @@ typedef struct game_layout {
      * head's camera-relative offset leaves the +/-`box` cube, and the whole
      * record again when its middle point's SZ3 reaches `far_sz`. The routine
      * projects its widened point chain into the scratchpad at `spad`, two
-     * 8-byte entries per chain point. */
+     * 8-byte entries per chain point. `rerand_hold` is the game_state value
+     * under which the routine skips its per-call re-randomize, or -1 on a
+     * routine that re-randomizes unconditionally. */
     struct {
         uint32_t hook;
         uint32_t pool;
@@ -1156,6 +1158,7 @@ typedef struct game_layout {
         int32_t  box;
         int32_t  far_sz;
         uint32_t spad;
+        int32_t  rerand_hold;
     } zap;
 
     /* The two tracer producers: a point-ring ribbon over an array of records

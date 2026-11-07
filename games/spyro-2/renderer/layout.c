@@ -683,6 +683,7 @@ const game_layout_t spyro2_game_layout = {
         .box        = 0x5400,            /* mobyfunc.s:2608-2620 */
         .far_sz     = 0x5000,            /* mobyfunc.s:2819 */
         .spad       = 0x1F800100u,       /* mobyfunc.s:2741 */
+        .rerand_hold = -1,               /* mobyfunc.s:2667-2678: no state test */
     },
     .tracers = {
         .ribbon_hook = F_TRACER_RIBBON,

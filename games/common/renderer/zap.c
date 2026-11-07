@@ -57,17 +57,20 @@
 //
 // The geometry is the guest's own int16 output, read back out of the polybuf,
 // not a second projection. What the primitives do not carry is depth - the PSX
-// orders them by ordering-table bucket - so each segment's view-Z is read back
-// out of the entry table the routine left in the scratchpad and paired to the
-// primitives by replaying the routine's own emit loop over that table: its
-// per-segment outcode AND, its four-corner SZ3 sum and its two coincidence
-// tests, in its own order. Re-deriving the chain instead cannot reach the same
-// verdicts, because each interior point carries a random displacement the
-// routine draws and overwrites inside the call. The routine rewrites the table
-// once per record it projects, so the replay is used only when exactly one
-// record reached that stage and only when its triangle count equals the
-// captured one; otherwise every primitive of the call is left unpaired and the
-// census reports it.
+// orders them by ordering-table bucket - so each segment's view-Z comes from
+// re-running the routine for every live record in slot order: its integer
+// chain, its widening and its RTPS of every entry, into a private entry table,
+// then its emit loop over that table (the per-segment outcode AND, the
+// four-corner SZ3 sum and the two coincidence tests). The scratchpad table
+// holds only the last record the routine projected, so it cannot serve a call
+// with two or more; it calibrates the re-run instead. The interior points'
+// random displacement is reproducible after the call: the old halfword comes
+// from a snapshot of the pool taken before the call, the fresh one is the
+// halfword the routine stored back. The replayed triangles pair to the captured
+// primitives in emit order when the counts agree; otherwise each primitive
+// takes the depth of the replayed triangle whose corners lie nearest its own,
+// or with none replayed the depth of the nearest live record's undisplaced
+// middle chain point, and the census counts it.
 //
 // This is not a second branch of the gem-glint family in glint.c: that pool is
 // 16 records of 0x10 bytes drawn as a screen-facing star of eight POLY_G4 over
@@ -131,9 +134,15 @@ static int      s_item_n;
 static float    s_pred[ZAP_MAX_PRIMS];   /* one depth per predicted triangle */
 static zap_pivot s_pred_pv[ZAP_MAX_PRIMS]; /* its corners' chain points */
 static int      s_pred_n;
+static int16_t  s_pred_xy[ZAP_MAX_PRIMS][3][2] OP_GUARDED_BY(sim); /* its corners as the routine emits them */
 static int      s_live;                 /* records with a non-zero count byte */
 static int      s_accepted;             /* 1 when the replay accounted for the call */
 static int      s_reached;              /* records that reached the projection pass */
+static int      s_paired_recs OP_GUARDED_BY(sim);          /* records whose replayed triangles paired */
+static int      s_fallback OP_GUARDED_BY(sim);             /* primitives paired by nearest triangle or record */
+static int      s_corner_bad OP_GUARDED_BY(sim);           /* paired primitives whose corners differ from the replay */
+static int      s_cal_words OP_GUARDED_BY(sim);            /* scratchpad words compared against the replay */
+static int      s_cal_bad OP_GUARDED_BY(sim);              /* of those, the words that differ */
 static uint32_t s_code_hist[256];
 static uint32_t s_tag_hist[256];
 static uint32_t s_fed_tris;
@@ -176,7 +185,7 @@ static void zap_sets_swap(void) {
 
 static cut_held_sets_t s_sets = { zap_sets_swap, &s_tick_n, "zap", { 0u, 0u }, 0u };
 
-/** @brief Stores one decoded primitive in s_item as an unpaired item at the near-guard depth 1.
+/** @brief Stores one decoded primitive in s_item as an unpaired item at depth 1 until zap_pair_depths places it.
  *
  * @param ctx Unused.
  * @param s The decoded primitive.
@@ -185,7 +194,7 @@ static int zap_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= ZAP_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
-    s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
+    s_item[s_item_n].depth = 1.0f;   /* replaced by zap_pair_depths */
     s_item[s_item_n].paired = 0;
     memset(&s_item[s_item_n].pv, 0, sizeof s_item[0].pv);
     s_item_n++;
@@ -210,43 +219,202 @@ static void zap_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     ngte_walk_prims(cpu, start, end, &pol, zap_prim_sink, NULL);
 }
 
-/** @brief Identifies the record whose projected chain the scratchpad entry table still holds.
+/* The pool as it stood before the call: the routine overwrites each interior
+ * point's random halfword and flips the jitter shift byte, so the re-run reads
+ * the record's own inputs from here and only the fresh halfwords from RAM. */
+#define ZAP_MAX_SLOTS 16
+#define ZAP_PRE_WORDS 256
+static uint32_t s_pre[ZAP_PRE_WORDS] OP_GUARDED_BY(sim);
+static uint32_t s_pre_bytes OP_GUARDED_BY(sim);   /* bytes of the pool the snapshot covers, 0 when none */
+
+/** @brief Copies the pool into s_pre before the routine runs.
  *
- * The routine overwrites the entry table once per record it projects, so the
- * replay is that record's only while exactly one record got that far: the two
- * tests before the projection are the count byte and the head's +/-0x5400
- * box, and both read the record alone. Sets s_live to the records with a
- * non-zero count byte and s_reached to those inside the box. A live record
- * whose count exceeds ZAP_MAX_SEG aborts the search.
- * @param cpu The guest CPU state.
- * @param v The view whose staged camera the box test subtracts.
- * @param out_rec Receives the record's address when exactly one reached the projection.
- * @return That record's segment count, or 0 when none or more than one reached the projection. */
-static int zap_projected_record(CPUState* cpu, const ngte_view* v, uint32_t* out_rec) {
-    int reached = 0, n_reached = 0;
-    uint32_t rec_reached = 0u;
-    s_live = 0;
-    const double box = (double)ZAP.box;
-    for (uint32_t s = 0; s < ZAP.slots; s++) {
-        const uint32_t rec = ZAP.pool + s * ZAP.stride;
-        const int n = (int)(cpu->read_word(rec + ZAP.packed_off) & 0xFFu);
-        if (n == 0) continue;                          /* :2590 free slot */
-        s_live++;
-        if (n < 1 || n > ZAP_MAX_SEG) return 0;
-        /* :2608-2628 the head's camera-relative offset against the box, in the
-         * integer staged camera the routine itself subtracts. */
-        const double hx = (double)(int32_t)cpu->read_word(rec + ZAP.head_off + 0u) - v->cam_ram[0];
-        const double hy = v->cam_ram[1] - (double)(int32_t)cpu->read_word(rec + ZAP.head_off + 4u);
-        const double hz = v->cam_ram[2] - (double)(int32_t)cpu->read_word(rec + ZAP.head_off + 8u);
-        if (fabs(hx) >= box || fabs(hy) >= box || fabs(hz) >= box) continue;
-        reached++;
-        n_reached = n;
-        rec_reached = rec;
+ * Covers ZAP.slots records of ZAP.stride bytes, capped at ZAP_PRE_WORDS words.
+ * @param cpu The guest CPU state, read only. */
+static void zap_snapshot(CPUState* cpu) OP_REQUIRES(sim) {
+    uint32_t bytes = ZAP.slots * ZAP.stride;
+    if (bytes > ZAP_PRE_WORDS * 4u) bytes = ZAP_PRE_WORDS * 4u;
+    for (uint32_t w = 0; w < bytes / 4u; w++) s_pre[w] = cpu->read_word(ZAP.pool + w * 4u);
+    s_pre_bytes = bytes & ~3u;
+}
+
+/** @brief Reports whether the snapshot covers the pool bytes [addr, addr + len).
+ * @param addr The first byte.
+ * @param len The byte count.
+ * @return 1 when covered, else 0. */
+static int zap_pre_covers(uint32_t addr, uint32_t len) OP_REQUIRES_SHARED(sim) {
+    return addr >= ZAP.pool && addr + len <= ZAP.pool + s_pre_bytes;
+}
+
+/** @brief Reads one word of the pool as it stood before the call.
+ * @param addr A word-aligned address the snapshot covers.
+ * @return The word. */
+static uint32_t zap_pre_word(uint32_t addr) OP_REQUIRES_SHARED(sim) {
+    return s_pre[(addr - ZAP.pool) / 4u];
+}
+
+/** @brief Reads one halfword of the pool as it stood before the call, as lhu loads it.
+ * @param addr A halfword-aligned address the snapshot covers.
+ * @return The halfword, zero-extended. */
+static uint32_t zap_pre_half(uint32_t addr) OP_REQUIRES_SHARED(sim) {
+    return (zap_pre_word(addr & ~3u) >> ((addr & 2u) * 8u)) & 0xFFFFu;
+}
+
+/** One call's inputs to the re-run: the GTE state the routine loads and the
+ * staged camera position it subtracts (:2564-2578). */
+typedef struct {
+    int     M[3][3];
+    int32_t cam[3];
+    double  ofx, ofy;
+    int     H;
+    int32_t state;   /* game_state, read when ZAP.rerand_hold >= 0 */
+} zap_emu_ctx;
+
+/** @brief Packs two halfwords into one word, the first in the low half, as two sh store them.
+ * @param lo The low halfword.
+ * @param hi The high halfword.
+ * @return The word. */
+static uint32_t zap_pack(int32_t lo, int32_t hi) {
+    return ((uint32_t)lo & 0xFFFFu) | (((uint32_t)hi & 0xFFFFu) << 16);
+}
+
+/** @brief Projects one entry of the table in place as the routine's RTPS pass does (:2773-2803).
+ *
+ * VXY0 is word 0, VZ0 the low half of word 1; under the zero translation the
+ * result is word 0 = SXY2 and word 1 = SZ3 in the upper half with the four
+ * outcode bits below: 1 for SXY2 at or below 0xD0000 (y <= 13), 2 for SXY2 at
+ * or above 0xE40000 (y >= 228), 4 for x <= 0 and 8 for x >= 512, each a
+ * signed word comparison on the packed value.
+ * @param c The call's GTE state.
+ * @param e The entry, rewritten. */
+static void zap_emu_rtps(const zap_emu_ctx* c, uint32_t e[2]) {
+    static const int k_tr0[3] = { 0, 0, 0 };
+    ngte_rtps_out o;
+    ngte_rtps_int(c->M, k_tr0, (int16_t)(e[0] & 0xFFFFu), (int16_t)(e[0] >> 16),
+                  (int16_t)(e[1] & 0xFFFFu), c->ofx, c->ofy, c->H, &o);
+    const uint32_t at = zap_pack(o.sx, o.sy);
+    uint32_t v0 = (uint32_t)o.sz3 << 16;
+    if (!((int32_t)(at - 0xD0000u) > 0)) v0 += 1u;
+    if (!((int32_t)(at - 0xE40000u) < 0)) v0 += 2u;
+    if (!((int32_t)(at << 16) > 0)) v0 += 4u;
+    if (!((int32_t)((at << 16) - 0x2000000u) < 0)) v0 += 8u;
+    e[0] = at;
+    e[1] = v0;
+}
+
+/** @brief Lays down one record's displaced point chain as the routine does (:2638-2685).
+ *
+ * Point 0 is the head's camera-relative offset and point n the tail's; the
+ * step is the integer quotient of their difference by n, accumulated from the
+ * head. Interior point i adds the three signed 8-bit fields of its old random
+ * halfword (bits 14:7, 9:2 and 4:0 << 3) shifted right by the jitter shift,
+ * and, when the routine re-randomized, the fields of the fresh halfword it
+ * stored, shifted right one more. Spyro 3 skips the re-randomize while
+ * game_state equals ZAP.rerand_hold, and stops it for the rest of the record
+ * once a fresh value equals its own third field (the beq of $v0 against $at,
+ * asm/mobyfunc.s:2671), which only a fresh value of 0 does.
+ * @param cpu The guest CPU state, read for the fresh halfwords.
+ * @param c The call's inputs.
+ * @param rec The record's address.
+ * @param n The segment count.
+ * @param P Receives points 0 to n, camera-relative.
+ * @return 1 when laid down, 0 when the head leaves the +/-ZAP.box cube, -1
+ *         when the record's inputs fall outside the snapshot or Spyro 3's
+ *         compare reads registers a flagless record never loaded. */
+static int zap_emu_chain(CPUState* cpu, const zap_emu_ctx* c, uint32_t rec, int n,
+                         int32_t P[][3]) OP_REQUIRES_SHARED(sim) {
+    const uint32_t halves = rec + ZAP.packed_off + 4u;   /* :2512-2543 the spawner's halfwords */
+    if (!zap_pre_covers(rec + ZAP.head_off, 24u) || !zap_pre_covers(rec + ZAP.packed_off, 4u) ||
+        !zap_pre_covers(halves, 2u * (uint32_t)(n - 1))) return -1;
+    const uint32_t packed = zap_pre_word(rec + ZAP.packed_off);
+    const int sh = (int)((packed >> 8) & 0xFFu) & 31;
+    for (int k = 0; k < 3; k++) {
+        const int32_t h = (int32_t)zap_pre_word(rec + ZAP.head_off + 4u * (uint32_t)k);
+        const int32_t t = (int32_t)zap_pre_word(rec + ZAP.head_off + 12u + 4u * (uint32_t)k);
+        P[0][k] = (k == 0) ? h - c->cam[0] : c->cam[k] - h;
+        P[n][k] = (k == 0) ? t - c->cam[0] : c->cam[k] - t;
+        if (P[0][k] - ZAP.box >= 0 || P[0][k] + ZAP.box <= 0) return 0;   /* :2608-2628 */
     }
-    s_reached = reached;
-    if (reached != 1) return 0;
-    *out_rec = rec_reached;
-    return n_reached;
+    const int s3 = ZAP.rerand_hold >= 0;
+    if (s3 && sh != 0 && (packed >> 16) == 0) return -1;
+    int32_t cv = c->state, ca = ZAP.rerand_hold;
+    int32_t step[3], acc[3];
+    for (int k = 0; k < 3; k++) { step[k] = (P[n][k] - P[0][k]) / n; acc[k] = P[0][k]; }
+    static const int k_sl[3] = { 17, 22, 27 };
+    for (int i = 1; i < n; i++) {
+        const uint32_t ha = halves + 2u * (uint32_t)(i - 1);
+        const uint32_t old = zap_pre_half(ha);
+        for (int k = 0; k < 3; k++) {
+            acc[k] += step[k];
+            P[i][k] = acc[k] + (((int32_t)(old << k_sl[k]) >> 24) >> sh);
+        }
+        if (sh == 0 || (s3 && cv == ca)) continue;
+        const uint32_t r = (uint32_t)cpu->read_half(ha);
+        for (int k = 0; k < 3; k++) P[i][k] += (int32_t)(r << k_sl[k]) >> 25;
+        cv = (int32_t)r;
+        ca = (int32_t)(r << 27) >> 25;
+    }
+    return 1;
+}
+
+/** @brief Re-runs the routine for one record into a private entry table: chain, widening and projection.
+ *
+ * Interior point i is widened (:2693-2745) by d, its neighbours' absolute
+ * difference: w = (max(|dx|, |dy|) + min(|dx|, |dy|) / 2) / 16 on VY, and
+ * |dz| / 16 on VX where |dx| >= |dy|, else on VZ, the two entries taking the
+ * plus and minus sides. An entry is VX = point Y, VY = point Z, VZ = point X,
+ * the halves truncated as sh stores them; the head and the tail are written
+ * as coincident pairs (:2747-2766). Every entry 0 to 2n+1 is then projected.
+ * @param cpu The guest CPU state.
+ * @param c The call's inputs.
+ * @param rec The record's address.
+ * @param n The segment count, 1 to ZAP_MAX_SEG.
+ * @param tab Receives 2n+2 entries of two words.
+ * @return As zap_emu_chain. */
+static int zap_emu_table(CPUState* cpu, const zap_emu_ctx* c, uint32_t rec, int n,
+                         uint32_t tab[][2]) OP_REQUIRES_SHARED(sim) {
+    int32_t P[ZAP_MAX_SEG + 1][3];
+    const int r = zap_emu_chain(cpu, c, rec, n, P);
+    if (r <= 0) return r;
+    for (int i = 0; i <= n; i += n) {
+        tab[2 * i][0] = tab[2 * i + 1][0] = zap_pack(P[i][1], P[i][2]);
+        tab[2 * i][1] = tab[2 * i + 1][1] = (uint32_t)P[i][0];
+    }
+    for (int i = 1; i < n; i++) {
+        int32_t d[3];
+        for (int k = 0; k < 3; k++) {
+            d[k] = P[i + 1][k] - P[i - 1][k];
+            if (d[k] < 0) d[k] = -d[k];
+        }
+        const int xwide = d[0] - d[1] >= 0;
+        const int32_t hi = xwide ? d[0] : d[1], lo = xwide ? d[1] : d[0];
+        const int32_t w = (int32_t)(((uint32_t)hi + ((uint32_t)lo >> 1)) >> 4);
+        const int32_t dz = d[2] >> 4;
+        const int32_t ax = P[i][1] + (xwide ? dz : 0), bx = P[i][1] - (xwide ? dz : 0);
+        const int32_t az = P[i][0] + (xwide ? 0 : dz), bz = P[i][0] - (xwide ? 0 : dz);
+        tab[2 * i][0] = zap_pack(ax, P[i][2] + w);
+        tab[2 * i][1] = (uint32_t)az;
+        tab[2 * i + 1][0] = zap_pack(bx, P[i][2] - w);
+        tab[2 * i + 1][1] = (uint32_t)bz;
+    }
+    for (int e = 0; e <= 2 * n + 1; e++) zap_emu_rtps(c, tab[e]);
+    return 1;
+}
+
+/** @brief Compares a replayed entry table with the one the routine left in the scratchpad.
+ *
+ * The scratchpad holds the last record that passed the box test, so this is
+ * the re-run's calibration: every word must agree. Adds to s_cal_words and
+ * s_cal_bad.
+ * @param cpu The guest CPU state.
+ * @param tab The replayed table.
+ * @param n That record's segment count. */
+static void zap_emu_calibrate(CPUState* cpu, const uint32_t tab[][2], int n) OP_REQUIRES(sim) {
+    for (int e = 0; e <= 2 * n + 1; e++)
+        for (int w = 0; w < 2; w++) {
+            s_cal_words++;
+            if (cpu->read_word(ZAP.spad + (uint32_t)e * 8u + 4u * (uint32_t)w) != tab[e][w]) s_cal_bad++;
+        }
 }
 
 /** @brief Reads a record's head and tail world points.
@@ -377,22 +545,21 @@ static void zap_entry_mid(uint32_t a, uint32_t b, float* x, float* y) {
     *y = ((float)(int16_t)(a >> 16) + (float)(int16_t)(b >> 16)) * 0.5f;
 }
 
-/** @brief Appends one predicted triangle of segment j with its depth and its corners' chain points.
+/** @brief Appends one predicted triangle of segment j with its depth, its corners and their chain points.
  *
  * Segment j joins points j-1 and j of n. Its four entries are point j-1's
  * pair (0, 1) and point j's pair (2, 3); the first triangle's corners are
  * entries 0, 2, 3 and the second's 0, 1, 3 (the stores after :2863 and
  * :2890), so each corner's pivot is the midpoint of its own point's pair.
- * Points 0 and n are the coincident head and tail pairs (:2747-2766); the
- * tail's second entry is also the one the projection pass leaves
- * unprojected, so neither end's corners take a pivot.
+ * Points 0 and n are the coincident head and tail pairs (:2747-2766), so
+ * neither end's corners take a pivot.
  * @param depth The segment's scene depth.
  * @param xy The segment's four packed screen-XY entries.
  * @param second 0 for the first triangle, 1 for the second.
  * @param j The segment index, 1 to n.
  * @param n The record's segment count.
  * @return 1 when appended, 0 when the table is full. */
-static int zap_replay_emit(float depth, const uint32_t xy[4], int second, int j, int n) {
+static int zap_replay_emit(float depth, const uint32_t xy[4], int second, int j, int n) OP_REQUIRES(sim) {
     if (s_pred_n >= ZAP_MAX_PRIMS) return 0;
     static const int ent[2][3] = { {0, 2, 3}, {0, 1, 3} };
     zap_pivot* pv = &s_pred_pv[s_pred_n];
@@ -403,88 +570,191 @@ static int zap_replay_emit(float depth, const uint32_t xy[4], int second, int j,
         pv->pt[k] = (uint8_t)point;
         const int pair = (e < 2) ? 0 : 2;
         zap_entry_mid(xy[pair], xy[pair + 1], &pv->x[k], &pv->y[k]);
+        s_pred_xy[s_pred_n][k][0] = (int16_t)(xy[e] & 0xFFFFu);
+        s_pred_xy[s_pred_n][k][1] = (int16_t)(xy[e] >> 16);
     }
     s_pred[s_pred_n++] = depth;
     return 1;
 }
 
-/** @brief Replays the routine's emit loop out of the entry table it just wrote, appending one depth per emitted triangle in emit order.
+/** @brief Replays the routine's emit loop over one record's entry table, appending one depth per emitted triangle in emit order.
  *
- * The table holds two entries of eight bytes per chain point, {packed screen
- * XY, SZ3 in the upper half and the four-bit outcode in the lower}, and the
- * routine reads four consecutive entries per segment (:2839-2848). Everything
- * the emit loop decides is in those words, so nothing here re-projects: the
- * per-segment outcode AND, the four-corner SZ3 sum the ordering-table bucket is
- * keyed on, and the two coincidence tests that drop one triangle of a segment
- * are the routine's own comparisons on its own words. Its projection pass stops
- * one entry short of the table it filled (:2884-2906 against :2757-2766), so
- * the last segment's fourth corner still carries the pre-projection word; the
- * replay reads it exactly as the routine does rather than substituting a
- * projected value, since the primitive the routine emitted is the one the
- * pairing has to explain.
- * @param cpu The guest CPU state.
+ * The table holds two entries per chain point, {packed screen XY, SZ3 in the
+ * upper half and the four-bit outcode in the lower}, and the routine reads
+ * four consecutive entries per segment (:2839-2848). The record is dropped
+ * whole when every projected entry shares an outcode bit (:2804-2806) or its
+ * middle entry's SZ3 reaches ZAP.far_sz (:2821-2827); a segment is skipped on
+ * its four corners' outcode AND, or when its ordering-table index, the SZ3
+ * sum shifted down nine less two, is negative (:2843-2860), which is what
+ * takes out a segment straddling the camera plane; one triangle of a segment
+ * is skipped when its point's two entries coincide (:2863, :2890).
+ * @param tab The record's projected entry table, 2n+2 entries.
  * @param n The record's segment count.
- * @return The triangle count, or -1 when the record was dropped whole or the
- *         prediction table filled. */
-static int zap_replay(CPUState* cpu, int n) {
-    const uint32_t base = ZAP.spad;          /* :2771 the widened entry table */
-    s_pred_n = 0;
-
-    /* :2804-2806 the record is dropped when every projected entry shares an
-     * outcode bit; the projection pass covers entries 0 to 2n. */
+ * @return The triangles appended, or -1 when the prediction table filled. */
+static int zap_replay(const uint32_t tab[][2], int n) OP_REQUIRES(sim) {
+    const int first = s_pred_n;
     int off = 0xF;
-    for (int e = 0; e <= 2 * n; e++) off &= (int)(cpu->read_word(base + (uint32_t)e * 8u + 4u) & 0xFu);
-    if (off != 0) return -1;
-    /* :2821-2827 and the middle point's signed SZ3 halfword decides the far
-     * reject; the routine addresses it as the halfword at offset 6 of the
-     * table's midpoint. */
-    const int mid_sz = (int)(int16_t)(uint16_t)(cpu->read_word(base + (uint32_t)n * 8u + 4u) >> 16);
-    if (mid_sz - ZAP.far_sz >= 0) return -1;
+    for (int e = 0; e <= 2 * n + 1; e++) off &= (int)(tab[e][1] & 0xFu);
+    if (off != 0) return 0;
+    const int mid_sz = (int)(int16_t)(uint16_t)(tab[n][1] >> 16);
+    if (mid_sz - ZAP.far_sz >= 0) return 0;
 
     for (int j = 1; j <= n; j++) {
         uint32_t xy[4], w1[4];
         for (int k = 0; k < 4; k++) {
-            const uint32_t e = base + (uint32_t)(2 * j - 2 + k) * 8u;
-            xy[k] = cpu->read_word(e);
-            w1[k] = cpu->read_word(e + 4u);
+            xy[k] = tab[2 * j - 2 + k][0];
+            w1[k] = tab[2 * j - 2 + k][1];
         }
         int oc = 0xF;
         for (int k = 0; k < 4; k++) oc &= (int)(w1[k] & 0xFu);
-        if (oc != 0) continue;                         /* :2843-2848 */
-        /* :2849-2860 the ordering-table index is the four corners' SZ3 sum
-         * shifted down by nine and pulled two buckets nearer; a segment whose
-         * index falls below the table's base is dropped, which is what takes
-         * out a segment straddling the camera plane, where the projection
-         * clamped its near corners' SZ3 to zero. */
+        if (oc != 0) continue;
         uint32_t sum = 0;
         for (int k = 0; k < 4; k++) sum += w1[k] >> 16;
         if ((int)(sum >> 9) - 2 < 0) continue;
         const float d = openpete_native_scene_viewz(
             openpete_worldvz_full((float)sum * 0.25f));
-        /* :2863 the first triangle is dropped when this point's two entries
-         * coincide, :2890 the second when the previous point's do. */
         if (xy[2] != xy[3] && !zap_replay_emit(d, xy, 0, j, n)) return -1;
         if (xy[0] != xy[1] && !zap_replay_emit(d, xy, 1, j, n)) return -1;
     }
-    return s_pred_n;
+    return s_pred_n - first;
 }
 
-/** @brief Attaches each captured primitive to the segment that emitted it.
- *
- * The replay walks the routine's own entry table in the order the routine
- * emitted from it, so one cursor serves the call. Before the replay it
- * records the projected record's head and tail, their tick projections and
- * every chain point's tick half-width for the sub-tick rebase. The depths
- * and pivots are taken, and s_accepted set, only when the replay accounts
- * for exactly the primitives the polybuf carries.
+/* One live record of the call: its replayed triangles in s_pred and where its
+ * undisplaced middle chain point projects, the fallback for a primitive no
+ * replayed triangle explains. */
+typedef struct {
+    uint32_t rec;
+    int      n;
+    int      tri0, tri_n;
+    float    mid_depth;
+    float    mx, my;
+} zap_rec_t;
+static zap_rec_t s_recs[ZAP_MAX_SLOTS] OP_GUARDED_BY(sim);
+static int       s_recs_n OP_GUARDED_BY(sim);
+
+/** @brief Projects a record's undisplaced middle chain point: head + (n / 2) * step, the routine's integer step.
+ * @param c The call's inputs.
+ * @param rec The record's address, covered by the snapshot.
+ * @param n The segment count.
+ * @param r Receives mid_depth, mx and my. */
+static void zap_rec_mid(const zap_emu_ctx* c, uint32_t rec, int n, zap_rec_t* r) OP_REQUIRES_SHARED(sim) {
+    int32_t P[3];
+    for (int k = 0; k < 3; k++) {
+        const int32_t h = (int32_t)zap_pre_word(rec + ZAP.head_off + 4u * (uint32_t)k);
+        const int32_t t = (int32_t)zap_pre_word(rec + ZAP.head_off + 12u + 4u * (uint32_t)k);
+        const int32_t ph = (k == 0) ? h - c->cam[0] : c->cam[k] - h;
+        const int32_t pt = (k == 0) ? t - c->cam[0] : c->cam[k] - t;
+        P[k] = ph + ((pt - ph) / n) * (n / 2);
+    }
+    uint32_t e[2] = { zap_pack(P[1], P[2]), (uint32_t)P[0] };
+    zap_emu_rtps(c, e);
+    r->mid_depth = openpete_native_scene_viewz(openpete_worldvz_full((float)(e[1] >> 16)));
+    r->mx = (float)(int16_t)(e[0] & 0xFFFFu);
+    r->my = (float)(int16_t)(e[0] >> 16);
+}
+
+/** @brief Gives an unexplained primitive the depth of the replayed triangle whose corners lie nearest its own, or with none the nearest live record's middle depth.
+ * @param it The primitive, its depth rewritten. */
+static void zap_pair_nearest(zap_item* it) OP_REQUIRES_SHARED(sim) {
+    double best = INFINITY;
+    for (int t = 0; t < s_pred_n; t++) {
+        double d2 = 0.0;
+        for (int k = 0; k < 3; k++) {
+            const double dx = (double)it->p.x[k] - s_pred_xy[t][k][0];
+            const double dy = (double)it->p.y[k] - s_pred_xy[t][k][1];
+            d2 += dx * dx + dy * dy;
+        }
+        if (d2 < best) { best = d2; it->depth = s_pred[t]; }
+    }
+    if (s_pred_n > 0) return;
+    const double cx = ((double)it->p.x[0] + it->p.x[1] + it->p.x[2]) / 3.0;
+    const double cy = ((double)it->p.y[0] + it->p.y[1] + it->p.y[2]) / 3.0;
+    for (int r = 0; r < s_recs_n; r++) {
+        const double dx = cx - s_recs[r].mx, dy = cy - s_recs[r].my;
+        if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; it->depth = s_recs[r].mid_depth; }
+    }
+}
+
+/** @brief Reads the GTE state and the staged camera the routine loads for the call (:2564-2578).
  * @param cpu The guest CPU state.
- * @param v The tick's view. */
-static void zap_pair_depths(CPUState* cpu, const ngte_view* v) {
-    uint32_t rec = 0u;
-    const int n = zap_projected_record(cpu, v, &rec);
-    s_pred_n = 0;
-    s_rec = 0u;
-    if (n <= 0) return;
+ * @param v The tick's view, the matrix and the GTE offsets and H it read.
+ * @param c Receives the inputs. */
+static void zap_emu_ctx_read(CPUState* cpu, const ngte_view* v, zap_emu_ctx* c) {
+    memcpy(c->M, v->cam_M, sizeof c->M);
+    for (int k = 0; k < 3; k++) c->cam[k] = (int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)k);
+    c->ofx = v->ofx; c->ofy = v->ofy; c->H = (int)v->H_canon;
+    c->state = (ZAP.rerand_hold >= 0) ? (int32_t)cpu->read_word(game_layout.game_state) : 0;
+}
+
+/* What the slot-order replay of one call leaves behind: how many live records
+ * it could not replay, the last record that passed the box (the one the
+ * rebase follows when it is the only one) and the last whose table was built
+ * (the one the scratchpad still holds). */
+typedef struct {
+    int      unreplayed;
+    uint32_t last_rec;
+    int      last_n;
+    uint32_t cal_rec;
+    int      cal_n;
+} zap_walk;
+
+/** @brief Replays one live record: its undisplaced middle point, its entry table and its emit loop, appending its triangles to s_pred.
+ *
+ * Adds the record to s_recs and counts it in s_reached when its head passes
+ * the box; a record whose count exceeds ZAP_MAX_SEG, whose inputs fall
+ * outside the snapshot, or whose replay overflows the prediction table counts
+ * as unreplayed.
+ * @param cpu The guest CPU state.
+ * @param c The call's inputs.
+ * @param rec The record's address.
+ * @param n Its segment count, non-zero.
+ * @param w The call's walk, updated. */
+static void zap_replay_record(CPUState* cpu, const zap_emu_ctx* c, uint32_t rec, int n,
+                              zap_walk* w) OP_REQUIRES(sim) {
+    if (n > ZAP_MAX_SEG || !zap_pre_covers(rec + ZAP.head_off, 24u)) { w->unreplayed++; return; }
+    zap_rec_t* r = &s_recs[s_recs_n++];
+    r->rec = rec; r->n = n; r->tri0 = s_pred_n; r->tri_n = 0;
+    zap_rec_mid(c, rec, n, r);
+    uint32_t tab[2 * ZAP_MAX_SEG + 2][2];
+    const int st = zap_emu_table(cpu, c, rec, n, tab);
+    if (st == 0) return;
+    s_reached++;
+    w->last_rec = rec; w->last_n = n;
+    w->cal_rec = (st > 0) ? rec : 0u; w->cal_n = n;
+    const int t = (st > 0) ? zap_replay(tab, n) : -1;
+    if (t < 0) { w->unreplayed++; return; }
+    r->tri_n = t;
+}
+
+/** @brief Replays every live record of the pool in slot order, the routine's own order, then calibrates against the scratchpad.
+ *
+ * Sets s_live and fills s_recs, s_pred and s_reached. The scratchpad holds
+ * the last table the routine built, which is checked word for word against
+ * that record's re-run.
+ * @param cpu The guest CPU state.
+ * @param c The call's inputs.
+ * @param w Receives the walk. */
+static void zap_replay_records(CPUState* cpu, const zap_emu_ctx* c, zap_walk* w) OP_REQUIRES(sim) {
+    memset(w, 0, sizeof *w);
+    for (uint32_t s = 0; s < ZAP.slots && s < ZAP_MAX_SLOTS; s++) {
+        const uint32_t rec = ZAP.pool + s * ZAP.stride;
+        if (!zap_pre_covers(rec + ZAP.packed_off, 4u)) break;
+        const int n = (int)(zap_pre_word(rec + ZAP.packed_off) & 0xFFu);
+        if (n == 0) continue;                          /* :2590 free slot */
+        s_live++;
+        zap_replay_record(cpu, c, rec, n, w);
+    }
+    uint32_t tab[2 * ZAP_MAX_SEG + 2][2];
+    if (w->cal_rec && zap_emu_table(cpu, c, w->cal_rec, w->cal_n, tab) > 0)
+        zap_emu_calibrate(cpu, tab, w->cal_n);
+}
+
+/** @brief Records the one projected record's head and tail, their tick projections and each chain point's tick half-width for the sub-tick rebase.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param rec The record's address.
+ * @param n Its segment count. */
+static void zap_rebase_capture(CPUState* cpu, const ngte_view* v, uint32_t rec, int n) {
     zap_rec_points(cpu, rec, s_head_w, s_tail_w);
     zap_project_point(v, s_head_w, NULL, &s_head_p);
     zap_project_point(v, s_tail_w, NULL, &s_tail_p);
@@ -492,13 +762,44 @@ static void zap_pair_depths(CPUState* cpu, const ngte_view* v) {
     s_seg_n = n;
     static const double k_zero[3] = { 0.0, 0.0, 0.0 };
     for (int i = 0; i <= n; i++) s_hw_tick[i] = zap_half_width(v, k_zero, k_zero, i, n);
-    const int predicted = zap_replay(cpu, n);
-    if (predicted != s_item_n) return;   /* every primitive stays unpaired */
+}
+
+/** @brief Gives the captured primitives the replayed depths and pivots in emit order and sets s_accepted.
+ *
+ * Counts the records that contributed triangles in s_paired_recs and the
+ * primitives whose corners differ from the replayed ones in s_corner_bad. */
+static void zap_pair_emit_order(void) OP_REQUIRES(sim) {
     s_accepted = 1;
+    for (int r = 0; r < s_recs_n; r++) if (s_recs[r].tri_n > 0) s_paired_recs++;
     for (int i = 0; i < s_item_n; i++) {
         s_item[i].depth = s_pred[i];
         s_item[i].paired = 1;
         s_item[i].pv = s_pred_pv[i];
+        for (int k = 0; k < 3; k++)
+            if (s_item[i].p.x[k] != (float)s_pred_xy[i][k][0] ||
+                s_item[i].p.y[k] != (float)s_pred_xy[i][k][1]) { s_corner_bad++; break; }
+    }
+}
+
+/** @brief Re-runs every live record in slot order and attaches each captured primitive to the segment that emitted it.
+ *
+ * When exactly one record reached the projection the sub-tick rebase follows
+ * it. When every live record replayed and the replayed triangle count equals
+ * the captured one the primitives pair in emit order; otherwise each takes
+ * zap_pair_nearest's depth and counts in s_fallback.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view. */
+static void zap_pair_depths(CPUState* cpu, const ngte_view* v) OP_REQUIRES(sim) {
+    s_pred_n = 0; s_rec = 0u; s_recs_n = 0; s_live = 0; s_reached = 0;
+    zap_emu_ctx c;
+    zap_emu_ctx_read(cpu, v, &c);
+    zap_walk w;
+    zap_replay_records(cpu, &c, &w);
+    if (s_reached == 1) zap_rebase_capture(cpu, v, w.last_rec, w.last_n);
+    if (!w.unreplayed && s_pred_n == s_item_n) { zap_pair_emit_order(); return; }
+    for (int i = 0; i < s_item_n; i++) {
+        zap_pair_nearest(&s_item[i]);
+        s_fallback++;
     }
 }
 
@@ -695,31 +996,56 @@ static void zap_hold(void) {
     }
 }
 
+/* The census totals over every call it printed; each call prints the running
+ * totals, so the last line is the run's. */
+static struct {
+    unsigned long calls, multi, live, reached, paired_recs, prims, fallback, depth1,
+                  corner_bad, cal_words, cal_bad;
+} s_ztot OP_GUARDED_BY(sim);   /* thread-roles: census on sim */
+
 /** @brief Prints the per-call zap census for VBLs inside the OPENPETE_ZAP_CENSUS range.
  *
  * OPENPETE_ZAP_CENSUS=LO-HI, or a single VBL. One line per call: the
  * polybuf interval, the primitives captured by GPU code, the live records,
  * the records that reached the projection, whether the replay was accepted,
- * the triangles it predicted, the native triangles fed since fed_before and
- * the primitives left unpaired. Then one line per primitive with its three
- * corners, colour, first UV, page and paired depth. A capture whose fed
- * count is zero measured nothing.
+ * the records it paired, the triangles it predicted, the native triangles
+ * fed since fed_before, the primitives left unpaired, those given a nearest
+ * depth, those still at depth 1, the paired primitives whose corners differ
+ * from the replay, and the scratchpad words compared and differing. Then one
+ * line per primitive with its three corners, colour, first UV, page and
+ * depth, and the running totals. A capture whose fed count is zero
+ * measured nothing.
  * @param start The polybuf cursor before the call.
  * @param end The polybuf cursor after the call.
  * @param fed_before s_fed_tris before the call. */
-static void zap_census(uint32_t start, uint32_t end, uint32_t fed_before) {
+static void zap_census(uint32_t start, uint32_t end, uint32_t fed_before) OP_REQUIRES(sim) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_ZAP_CENSUS", openpete_frame)) return;
-    int unpaired = 0;
-    for (int i = 0; i < s_item_n; i++) if (!s_item[i].paired) unpaired++;
+    int unpaired = 0, depth1 = 0;
+    for (int i = 0; i < s_item_n; i++) {
+        if (!s_item[i].paired) unpaired++;
+        if (s_item[i].depth == 1.0f) depth1++;
+    }
+    s_ztot.calls++; s_ztot.multi += (s_reached > 1); s_ztot.live += (unsigned long)s_live;
+    s_ztot.reached += (unsigned long)s_reached; s_ztot.paired_recs += (unsigned long)s_paired_recs;
+    s_ztot.prims += (unsigned long)s_item_n; s_ztot.fallback += (unsigned long)s_fallback;
+    s_ztot.depth1 += (unsigned long)depth1; s_ztot.corner_bad += (unsigned long)s_corner_bad;
+    s_ztot.cal_words += (unsigned long)s_cal_words; s_ztot.cal_bad += (unsigned long)s_cal_bad;
     fprintf(stderr, "[zap-census f=%u] polybuf [%08X,%08X) %u bytes prims=%d codes:",
             openpete_frame, start, end, end - start, s_item_n);
     uint32_t seen[256];
     memset(seen, 0, sizeof seen);
     for (int i = 0; i < s_item_n; i++) seen[s_item[i].p.code]++;
     for (int c = 0; c < 256; c++) if (seen[c]) fprintf(stderr, " %02X:%u", c, seen[c]);
-    fprintf(stderr, " live=%d reached=%d accepted=%d predicted=%d fed_tris=%u unpaired=%d\n",
-            s_live, s_reached, s_accepted, s_pred_n, s_fed_tris - fed_before, unpaired);
+    fprintf(stderr, " live=%d reached=%d accepted=%d paired_recs=%d predicted=%d fed_tris=%u"
+                    " unpaired=%d fallback=%d depth1=%d corner_bad=%d cal=%d/%d\n",
+            s_live, s_reached, s_accepted, s_paired_recs, s_pred_n, s_fed_tris - fed_before,
+            unpaired, s_fallback, depth1, s_corner_bad, s_cal_bad, s_cal_words);
+    fprintf(stderr, "[zap-census total f=%u] calls=%lu multi=%lu live=%lu reached=%lu paired_recs=%lu "
+                    "prims=%lu fallback=%lu depth1=%lu corner_bad=%lu cal_words=%lu cal_bad=%lu\n",
+            openpete_frame, s_ztot.calls, s_ztot.multi, s_ztot.live, s_ztot.reached,
+            s_ztot.paired_recs, s_ztot.prims, s_ztot.fallback, s_ztot.depth1, s_ztot.corner_bad,
+            s_ztot.cal_words, s_ztot.cal_bad);
     /* Each triangle's first corner and the scene depth the pairing gave it:
      * the two quantities the feed places it by. */
     for (int i = 0; i < s_item_n; i++)
@@ -753,10 +1079,12 @@ static const hook_bracket_desc k_bracket = {
 static int on_zap_draw(CPUState* cpu, uint32_t addr) {
     OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
+    zap_snapshot(cpu);
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
 
     s_item_n = 0; s_pred_n = 0; s_live = 0; s_reached = 0; s_accepted = 0;
+    s_paired_recs = 0; s_fallback = 0; s_corner_bad = 0; s_cal_words = 0; s_cal_bad = 0;
     memset(&s_reb, 0, sizeof s_reb);   /* the canonical feed emits the captured corners */
     const uint32_t fed_before = s_fed_tris;
     /* The epoch's first call retires the previous epoch's set (cut_held_sets_capture). */
