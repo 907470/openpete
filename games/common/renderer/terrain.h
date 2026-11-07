@@ -27,8 +27,16 @@ struct CPUState;
  * @param cpu guest state, the sub-tick camera installed
  * @param alpha sub-tick fraction between the previous and current tick
  * @param interp_on 1 = the camera is bracketed; 0 snaps the vertex animation
- *        to the current tick */
-void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on);
+ *        to the current tick
+ * @param hold nonzero on a held camera cut: a tick N that stopped drawing the
+ *        world still reproduces tick N-1's when terrain_game.world_outlives_draw
+ *        says the world is whole */
+void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on, int hold);
+/** @brief Whether a held camera cut cannot show tick N-1's world: that tick drew it, tick N did not and terrain_game.world_outlives_draw refuses.
+ *
+ * @param cpu guest state
+ * @return 1 when the world is lost to the held present, else 0 */
+int terrain_native_held_world_lost(struct CPUState* cpu);
 
 /** @brief Re-reads the heavy-fog verdict when the loaded level's sector table changes.
  *

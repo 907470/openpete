@@ -1248,6 +1248,16 @@ static void orch_capture_recs(void* cpu_v) {
  * the moby feeder the FULL records first; scratch_bracket_seg_restore then
  * overlays the seg scratch for the Spyro feeder (called between them). */
 
+/** @brief Open a held cut's background bracket: tick N-1's clear, except over a world the load has taken.
+ *
+ * That clear alone is a flat screen tick N-1 never showed, so such a present
+ * keeps tick N's.
+ * @param cpu The guest CPU state.
+ * @param hold Nonzero on a held camera cut. */
+static void held_background_open(CPUState* cpu, int hold) OP_REQUIRES(sim) {
+    cyclorama_native_hold_background(hold && !terrain_native_held_world_lost(cpu));
+}
+
 /** @brief The retired regular records, the queue a held cut replays (spyro_native_canon_prev_recs). */
 static const uint8_t* orch_prev_recs(uint32_t* len, op_time_t* ref_ns) {
     const scratch_region_t* r = scratch_row_by_base(G_SCRATCH + 0x1600u);
@@ -2648,7 +2658,8 @@ static void game_reextract_body(void* cpu_v) {
      * resets s_scene and stamps it with openpete_frame, so the feeders' own
      * begin_frame() calls no-op (no history snapshot / no double-reset). */
     openpete_native_scene_begin();
-    uint32_t bg = cpu->read_word(game_layout.cyc.bg_colour) & 0xFFFFFF;
+    held_background_open(cpu, cam_hold);
+    uint32_t bg = cyclorama_native_bg_word(cpu) & 0xFFFFFF;
     openpete_native_scene_set_bg(bg | 0xFF000000u);   /* fallback bg if cyclorama is off */
 
     /* Re-extract each feeder in canonical scene order. Camera-direct feeders
@@ -2656,11 +2667,11 @@ static void game_reextract_body(void* cpu_v) {
      * reproduces tick-N (far backdrop). Every feeder runs -> nothing vanishes. */
     const int pt_on = openpete_phase_timers_on();   /* per-feeder phase timing */
     uint64_t pt_t0 = 0, pt_t1;
-    transition_reextract(cpu);     /* level-transition / balloonist cross-fade backdrop (backmost) */
+    transition_reextract(cpu, cam_hold);     /* level-transition / balloonist cross-fade backdrop (backmost) */
     cyclorama_reextract(cpu, alpha, cam_bracketed); /* sky dome + background (transition matrices lerped prev->curr) */
     portal_reextract(cpu, alpha, cam_bracketed, cam_hold); /* homeworld portal previews (dome matrix lerped prev->curr) */
     if (pt_on) pt_t0 = openpete_phase_now_us();
-    terrain_reextract(cpu, alpha, cam_bracketed); /* interpolated camera + poly-anim vert lerp */
+    terrain_reextract(cpu, alpha, cam_bracketed, cam_hold); /* interpolated camera + poly-anim vert lerp */
     portal_reextract_leave();      /* terrain read the held set's opening planes */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_TERRAIN, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     moby_native_set_verdict_alpha(alpha, cam_bracketed);
@@ -2685,6 +2696,7 @@ static void game_reextract_body(void* cpu_v) {
                        sh);
     player_records_set_hold(0);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
+    cyclorama_native_hold_background(0);
     particle_reextract(cpu, cam_hold);   /* particles / glows / sparkles (Sparx) */
     player_records_set_hold(cam_hold);   /* the flame records are the player's */
     flame_records_present(cpu, paired, cam_snap, alpha, fl);   /* fire breath, one ribbon per flame record */

@@ -132,9 +132,12 @@ void tracer_reextract(struct CPUState* cpu);
  * and on render_path_canon_drawn(RP_TRANSITION), latched per canonical
  * present from the func_8004F000 hook's recorded polybuf range, so the dome
  * stops once the transition stops emitting. OPENPETE_LOAD_CENSUS logs the
- * replay count every 100 openpete_frame values.
- * @param cpu The guest CPU state with the sub-tick view staged. */
-void transition_reextract(struct CPUState* cpu) OP_REQUIRES(sim);
+ * replay count every 100 openpete_frame values. A held camera cut feeds tick
+ * N-1's dome (cut_held_sets_enter) as that tick extracted it, under the
+ * staged camera of that tick, whatever tick N drew.
+ * @param cpu The guest CPU state with the sub-tick view staged.
+ * @param hold Nonzero on a held camera cut. */
+void transition_reextract(struct CPUState* cpu, int hold) OP_REQUIRES(sim);
 
 #ifdef __cplusplus
 }

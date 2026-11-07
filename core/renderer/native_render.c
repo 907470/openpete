@@ -1028,6 +1028,8 @@ static unsigned           s_scene_hist_frame[SCENE_HIST]; /* completed frame's s
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_clear[SCENE_HIST]; /* draw-environment clear the snapshot was presented under */
 static uint32_t           s_drawenv_clear;               /* defined with the clear-colour setter */
+static uint32_t           scene_clear_word(void);
+static int                s_scene_clear_held;
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
 static int                s_scene_hist_replay[SCENE_HIST]; /* built by a re-extract, per snapshot */
@@ -1407,6 +1409,7 @@ void openpete_native_scene_begin(void) {
      * names its frame. A later re-extract of the same tick must not
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
+    s_scene_clear_held = 0;
     s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
     /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
      * builder tags its build with outside an eager scene
@@ -1568,7 +1571,7 @@ static void scene_hist_push(void) {
     }
     scene_run_swap(&s_scene_hist[slot], &s_scene_v);
     s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
-    s_scene_hist_clear[slot] = s_drawenv_clear;
+    s_scene_hist_clear[slot] = scene_clear_word();
     s_scene_hist_frame[slot] = s_scene_frame;
     s_scene_hist_fade[slot] = s_scene_fade;
     s_scene_hist_freeze[slot] = s_scene_freeze;
@@ -1714,6 +1717,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_cur_seq = 0;
         s_cur_prim = 0;
         s_cur_fb_cell = 0;
+        s_scene_clear_held = 0;
         s_scene_n = 0; memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
         s_scene_fade_prim = 0;
         s_scene_replay = 0;
@@ -2105,6 +2109,16 @@ void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = openpete_tercach
  * auto-clear -> fall back to the scene-fed colour. Persists across sub-tick
  * presents (both producers fire on canonical frames only). */
 static uint32_t s_drawenv_clear = 0;
+/* The clear a held camera cut's scene shows, in place of s_drawenv_clear until
+ * the next scene begins (openpete_native_scene_hold_clear). */
+static int      s_scene_clear_held = 0;
+static uint32_t s_scene_held_clear = 0;
+/** @brief The draw-env clear of the scene being accumulated: the held one on a held camera cut, else the latch.
+ *
+ * @return The clear colour word (0: no auto-clear). */
+static uint32_t scene_clear_word(void) { return s_scene_clear_held ? s_scene_held_clear : s_drawenv_clear; }
+uint32_t openpete_native_clear_color(void) { return s_drawenv_clear; }
+void openpete_native_scene_hold_clear(uint32_t clear) { s_scene_clear_held = 1; s_scene_held_clear = clear; }
 void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
     uint32_t v = isbg
         ? (0xFF000000u | (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8)
@@ -21218,7 +21232,7 @@ static uint32_t ps_drawenv_clear(void) {
         const int slot = scene_hist_slot_at(scene_delay_depth());
         if (slot >= 0) return s_scene_hist_clear[slot];
     }
-    return s_drawenv_clear;
+    return scene_clear_word();
 }
 /** @brief The shadow decal parameters of the composed scene: the slot's snapshot, or the live block inline. */
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
@@ -21357,7 +21371,7 @@ static void slot_note_census(scene_slot_t *sl) {
  * @param sl The slot being filled. */
 static void slot_capture_inputs(scene_slot_t *sl) {
     sl->frame = s_scene_frame;
-    sl->drawenv_clear = s_drawenv_clear;
+    sl->drawenv_clear = scene_clear_word();
     memcpy(sl->geom, s_geom_in, sizeof sl->geom);
     if (sl->ovl_cap < s_mod_overlay_n) {
         int cap = s_mod_overlay_n < 256 ? 256 : s_mod_overlay_n;

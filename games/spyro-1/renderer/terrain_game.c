@@ -3,6 +3,10 @@
  * list, the verdict-file level names and the authored-data art corrections.
  * See renderer/terrain_game.h. */
 #include "renderer/terrain_game.h"
+#include "renderer/cut_guard.h"     /* cut_census_on: the held terrain line */
+#include "game_layout.h"            /* game_state */
+#include "openpete_fiber.h"         /* openpete_frame */
+#include "psx_runtime_internal.h"   /* CPUState, read_word */
 #include "portal.h"        /* the sky-plane provider (OT-conformance clamp) */
 #include "spyro-1/features/levelwarp.h"     /* level id -> verdicts-file spelling */
 #include <stdio.h>
@@ -85,6 +89,30 @@ static int s1_lp_artfix(int level, int sec, int face, uint32_t* rgb) {
     return 0;
 }
 
+#define S1_GS_LEVEL_TRANSITION 1u
+#define S1_G_LOAD_STAGE        0x80075864u   /* g_LoadStage */
+
+/** @brief 1 while GS_LevelTransition has not run LoadLevel's stage 2.
+ *
+ * The transition stops the world draw and calls LoadLevel once per tick
+ * (func_8002DF9C). Stage 0 and 1 write only the cyclorama and sound table
+ * copies below the lower polygon buffer. Stage 2 sets g_LevelId and starts the
+ * overlay read, the first write into the level's memory; the VRAM pages follow
+ * at stage 5. A stage of 2 or less read at the present therefore names the
+ * level being left, with its sectors and textures whole, whatever time the
+ * overlay read takes. Other game states answer 0: GS_TitleScreen's load
+ * replaces the VRAM pages in the tick that stops the draw.
+ * @param cpu The guest CPU state.
+ * @return 1 when the level being left is whole, else 0. */
+static int s1_world_outlives_draw(CPUState* cpu) {
+    const int32_t stage = (int32_t)cpu->read_word(S1_G_LOAD_STAGE);
+    if (cut_census_on())
+        fprintf(stderr, "[cut-census vbl=%u] held-terrain gs=%u stage=%d\n", openpete_frame,
+                cpu->read_word(game_layout.game_state), stage);
+    return cpu->read_word(game_layout.game_state) == S1_GS_LEVEL_TRANSITION &&
+           stage >= 0 && stage <= 2;
+}
+
 const terrain_game_t spyro1_terrain_game = {
     .portal_sky_recent   = openpete_portal_sky_recent,
     .portal_sky_planes   = openpete_portal_sky_planes,
@@ -93,4 +121,5 @@ const terrain_game_t spyro1_terrain_game = {
     .level_name          = s1_level_name,
     .lp_artfix           = s1_lp_artfix,
     .env_feed_waits_for_portals = openpete_portal_capture_follows,
+    .world_outlives_draw = s1_world_outlives_draw,
 };

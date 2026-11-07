@@ -89,6 +89,11 @@ typedef struct terrain_game {
      * wait for terrain_native_flush_deferred, so both read the capture this
      * tick's draw produces. NULL = never. */
     int   (*env_feed_waits_for_portals)(CPUState* cpu);
+
+    /* 1 when the world tick N stopped drawing is still whole in guest RAM and
+     * VRAM, by the game's own load sequence, so a held camera cut may walk it
+     * for tick N-1. NULL: a held cut keeps tick N's drawn verdict. */
+    int   (*world_outlives_draw)(CPUState* cpu);
 } terrain_game_t;
 
 /* The running game's table: game_runtime_install (game_host_desc.h) copies

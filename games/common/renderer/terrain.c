@@ -53,6 +53,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
 #include "renderer/terrain.h"        /* this feeder's exports */
+#include "renderer/cut_guard.h"      /* cut_census_on: the held terrain line */
 #include "freecam_game.h"            /* freecam_view_rotation: the preview's view matrix */
 #include "renderer/moby_snap.h"      /* moby_snap_terrain_fed: the sunk-pickup contact */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
@@ -19380,7 +19381,27 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract; documented at the declaration in terrain.h. */
-void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
+/* Documented at the declaration in terrain.h. */
+int terrain_native_held_world_lost(CPUState* cpu) {
+    if (render_path_canon_drawn(RP_TERRAIN) || !render_path_canon_drawn_prev(RP_TERRAIN)) return 0;
+    const int whole = terrain_game.world_outlives_draw && terrain_game.world_outlives_draw(cpu);
+    if (cut_census_on())
+        fprintf(stderr, "[cut-census vbl=%u] held-terrain tick N-1 drew, tick N did not: %s\n",
+                openpete_frame, whole ? "replay" : "lost");
+    return !whole;
+}
+
+/** @brief Whether a re-extract reproduces terrain: the canonical render drew it, or a held camera cut shows a tick that drew it and the world is whole.
+ *
+ * @param cpu The guest CPU state.
+ * @param hold Nonzero on a held camera cut.
+ * @return 1 when terrain feeds, else 0. */
+static int terrain_reextract_drawn(CPUState* cpu, int hold) {
+    if (render_path_canon_drawn(RP_TERRAIN)) return 1;
+    return hold && render_path_canon_drawn_prev(RP_TERRAIN) && !terrain_native_held_world_lost(cpu);
+}
+
+void terrain_reextract(CPUState* cpu, double alpha, int interp_on, int hold) {
     render_material_level_push(cpu);   /* level keys of this re-extract's bake and resolves */
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_TERRAIN)) return;
@@ -19388,8 +19409,9 @@ void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
      * transition the game stops calling func_800258F0 (no world to render), but
      * s_terrain_saved_occGroup + the level data still in RAM are stale; replaying
      * them paints the old level's geometry over the cyclorama. The canon-drawn
-     * mask is clear for RP_TERRAIN on those frames, so we skip. */
-    if (!render_path_canon_drawn(RP_TERRAIN)) return;
+     * mask is clear for RP_TERRAIN on those frames, so we skip. A held camera
+     * cut shows tick N-1 and asks the game whether that world is still there. */
+    if (!terrain_reextract_drawn(cpu, hold)) return;
     /* OPENPETE_TERRAIN_VANIM=0: snap poly-anim verts to cur (A/B)
      * OPENPETE_TERRAIN_TANIM=0: snap UV-scroll texture anim to cur (A/B)
      * OPENPETE_TERRAIN_CANIM=0: hold env-anim colours at the previous tick (census) */

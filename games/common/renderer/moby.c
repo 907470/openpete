@@ -5273,7 +5273,7 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
         v = v < 0.0 ? 0.0 : (v > 2047.0 ? 2047.0 : v);
         fd->ir0f = 2.0 * v;
         fd->ir0 = (int)fd->ir0f;
-        uint32_t fog = cpu->read_word(game_layout.cyc.bg_colour);
+        uint32_t fog = cyclorama_native_bg_word(cpu);
         fogfc[0] = (int)((fog << 4) & 0xFF0u);   /* 12-bit expand, .s 8001FEF4-FF08 */
         fogfc[1] = (int)((fog >> 4) & 0xFF0u);
         fogfc[2] = (int)((fog >> 12) & 0xFF0u);

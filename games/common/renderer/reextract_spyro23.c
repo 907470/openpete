@@ -615,7 +615,7 @@ static void game_reextract_body(void* cpu_v) {
     RX_CENSUS_BEGIN();
     cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
     RX_CENSUS_STEP("cyclorama");
-    terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
+    terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed, 0);
     RX_CENSUS_STEP("terrain");
     portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
     RX_CENSUS_STEP("portal");

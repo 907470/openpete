@@ -37,6 +37,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/cyclorama.h"  /* this feeder's exports */
+#include "renderer/cut_guard.h"  /* cut_census_on: the held background line */
 #include "renderer/orchestrator.h"  /* cyclorama_native_env_clear_commit */
 #include "openpete_fiber.h"           /* openpete_yield_site: the VSync wait of a repeat present */
 #include "openpete_recomp_module.h"  /* the game's own sky draw, run through the module dispatch */
@@ -49,6 +50,7 @@
 #include <string.h>
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include <stdatomic.h>
 #include "openpete_thread_roles.h"  /* sim: every static below is the sim role's */
 
 extern void     func_8004EBA8(CPUState* cpu);  /* the real dome renderer */
@@ -689,7 +691,7 @@ static void push_scene(CPUState* cpu) OP_REQUIRES(sim) {
      * `--render-paths spyro`) renders over the real scene background, matching
      * PsyCross (which always clears to it via the draw-env). Only the dome
      * TRIANGLES are gated on RP_CYCLORAMA. */
-    uint32_t bg = cpu->read_word(game_layout.cyc.bg_colour) & 0xFFFFFF;
+    uint32_t bg = cyclorama_native_bg_word(cpu) & 0xFFFFFF;
     openpete_native_scene_set_bg(bg | 0xFF000000u);
     if (!render_path_enabled(RP_CYCLORAMA)) return;  /* bg only; dome not selected */
     /* Whole-dome identity: the feeder walks a flat tri list with no
@@ -1042,7 +1044,43 @@ int cyclorama_native_present_env(uint8_t env[4]) OP_REQUIRES_SHARED(sim) {
     return cur_db_env(env);
 }
 
-void cyclorama_native_env_clear_commit(void) OP_REQUIRES(sim) {
+/* The background of the last two canonical renders, [0] tick N and [1] tick
+ * N-1: the clear the composed scene took and g_Cyclorama.m_BackgroundColor.
+ * A repeat present rewrites [0], since it shows the same render. */
+typedef struct { uint32_t clear, bg; } cyc_tick_bg_t;
+static cyc_tick_bg_t s_tick_bg[2] OP_GUARDED_BY(sim);   /* thread-roles: rolled by the commit on sim */
+/* Tick N-1's background word with bit 24 set while a held re-extract runs, else
+ * 0. Atomic: the bracket writes it on sim and a moby walk reads it for its fog. */
+static OP_ROLE_ATOMIC(uint32_t) s_tick_bg_fog;   /* thread-roles: written on sim, read by the moby walk */
+
+/* Documented at the declaration in orchestrator.h. */
+void cyclorama_native_hold_background(int hold) OP_REQUIRES(sim) {
+    atomic_store_explicit(&s_tick_bg_fog, hold ? (s_tick_bg[1].bg & 0xFFFFFFu) | (1u << 24) : 0u,
+                          memory_order_relaxed);
+    if (!hold) return;
+    openpete_native_scene_hold_clear(s_tick_bg[1].clear);
+    if (cut_census_on())
+        fprintf(stderr, "[cut-census vbl=%u] held-background clear=%08x bg=%08x (tick N clear=%08x bg=%08x)\n",
+                openpete_frame, s_tick_bg[1].clear, s_tick_bg[1].bg,
+                s_tick_bg[0].clear, s_tick_bg[0].bg);
+}
+
+/* Documented at the declaration in orchestrator.h. */
+uint32_t cyclorama_native_bg_word(CPUState* cpu) {
+    const uint32_t held = atomic_load_explicit(&s_tick_bg_fog, memory_order_relaxed);
+    return held ? held & 0xFFFFFFu : cpu->read_word(game_layout.cyc.bg_colour);
+}
+
+/** @brief Record the background the commit leaves for this render, rolling the tick pair on a new render. */
+static void cyc_tick_bg_note(void) OP_REQUIRES(sim) {
+    if (!openpete_native_scene_canon_repeat()) s_tick_bg[1] = s_tick_bg[0];
+    s_tick_bg[0].clear = openpete_native_clear_color();
+    const uint8_t* bg = (const uint8_t*)openpete_psx_to_host_span(game_layout.cyc.bg_colour, 4u);
+    if (bg) memcpy(&s_tick_bg[0].bg, bg, 4);
+}
+
+/** @brief Sync the native clear and the present draw area from the DRAWENV the presented scene's OT applies. */
+static void cyc_env_clear_sync(void) OP_REQUIRES(sim) {
     /* The area the presented scene's OT draws into: the held-fade sum the
      * capture presents is that area's, not the PutDrawEnv latch's. */
     const uint8_t* de = cur_db_drawenv();
@@ -1058,6 +1096,11 @@ void cyclorama_native_env_clear_commit(void) OP_REQUIRES(sim) {
     memcpy(s_presented_env, env, sizeof s_presented_env);
     s_presented_env_valid = 1;
     openpete_native_set_clear_color(env[0], env[1], env[2], env[3]);
+}
+
+void cyclorama_native_env_clear_commit(void) OP_REQUIRES(sim) {
+    cyc_env_clear_sync();
+    cyc_tick_bg_note();
 }
 
 /* The hook address is the layout's sky-draw site, bound at boot: a static

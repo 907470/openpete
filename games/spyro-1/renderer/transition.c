@@ -35,6 +35,7 @@
 #include "renderer/render_paths.h"           /* render_paths_active */
 #include "renderer/hook_bracket.h"           /* hook_reextract_ready */
 #include "reextract.h" /* transition_reextract decl */
+#include "renderer/cut_guard.h" /* cut_held_sets_t: the held cut's tick N-1 set */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -67,6 +68,21 @@ extern unsigned openpete_frame;
 #define MAX_DOME_TRI 8192
 static cyclorama_native_tri s_cross[MAX_DOME_TRI];
 static int  s_cross_n;
+
+/* The dome each canonical draw extracted: the set a held camera cut shows. The
+ * re-extract rewrites s_cross on every present. */
+static cyclorama_native_tri  s_tick_buf[2][MAX_DOME_TRI];
+static cyclorama_native_tri* s_tick     = s_tick_buf[0];
+static cyclorama_native_tri* s_tick_old = s_tick_buf[1];
+static int s_tick_n, s_tick_old_n;
+
+/** @brief Exchange the current captured dome with the retired one, with their counts. */
+static void cross_sets_swap(void) {
+    cyclorama_native_tri* t = s_tick; s_tick = s_tick_old; s_tick_old = t;
+    const int n = s_tick_n; s_tick_n = s_tick_old_n; s_tick_old_n = n;
+}
+
+static cut_held_sets_t s_sets = { cross_sets_swap, &s_tick_n, "dome", { 0u, 0u }, 0u };
 /* Below the dome's horizon (and above its cap, when the camera pitches) the
  * PSX shows the draw-env clear: ColorLerp(g_Cyclorama.m_BackgroundColor,
  * 0x401010, D_8007575C) on the balloonist, ColorLerp(m_BackgroundColor, 0,
@@ -98,21 +114,34 @@ static void crossfade_extract(CPUState* cpu) OP_REQUIRES(sim) {
     s_cross_n = cyclorama_native_extract_faded(cpu, s_cross, MAX_DOME_TRI);
 }
 
+/** @brief Keep the dome the canonical draw just extracted for a held camera cut.
+ *
+ * Does nothing on a speculative runahead tick, which extracted nothing. */
+static void crossfade_capture(void) OP_REQUIRES(sim) {
+    extern int openpete_speculative;
+    if (openpete_speculative) return;
+    cut_held_sets_capture(&s_sets);
+    memcpy(s_tick, s_cross, (size_t)s_cross_n * sizeof *s_cross);
+    s_tick_n = s_cross_n;
+}
+
 /** @brief Feeds the extracted cross-fade dome to the native scene as the backmost world layer.
  *
  * The dome sits at view-Z 4096 * 0.999 / 0.001, short of the far clear, so
  * the balloon moby and HUD text draw over it as on the PSX; outside it the
  * draw-env clear shows. The dome's vertex colours carry the DPCS fade func_8004F000
- * applies. */
-static void crossfade_feed_native(void) {
-    if (s_cross_n <= 0) return;
+ * applies.
+ * @param tris The dome's triangles.
+ * @param n Their count. */
+static void crossfade_feed_native(cyclorama_native_tri* tris, int n) {
+    if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
 
     /* Far backdrop, still < 1.0 clear: view-Z 4096 * 0.999 / (1 - 0.999) in
      * float. */
     const float depth = 0x1.f381a6p+21f;
-    for (int i = 0; i < s_cross_n; i++) {
-        cyclorama_native_tri* t = &s_cross[i];
+    for (int i = 0; i < n; i++) {
+        const cyclorama_native_tri* t = &tris[i];
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
@@ -203,8 +232,9 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
 
     if (feed && endp > startp) {
         crossfade_extract(cpu);
+        crossfade_capture();
         render_material_level_push(cpu);
-        crossfade_feed_native();
+        crossfade_feed_native(s_cross, s_cross_n);
         if (dump_on()) {
             static int s_rawdumped = 0;
             if (!s_rawdumped) {
@@ -295,11 +325,16 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract of the cross-fade dome and backdrop; see reextract.h. */
-void transition_reextract(CPUState* cpu) OP_REQUIRES(sim) {
-    if (!hook_reextract_ready(RP_TRANSITION)) return;  /* scene on, selected, canon-drawn */
-    crossfade_extract(cpu);
-    render_material_level_push(cpu);
-    crossfade_feed_native();
+void transition_reextract(CPUState* cpu, int hold) OP_REQUIRES(sim) {
+    const int pick = cut_held_sets_enter(&s_sets, hold);
+    const int ready = hook_reextract_ready_held(RP_TRANSITION, pick);  /* scene on, selected, drawn */
+    if (ready) {
+        if (pick < 0) crossfade_extract(cpu);
+        render_material_level_push(cpu);
+        crossfade_feed_native(pick < 0 ? s_cross : s_tick, pick < 0 ? s_cross_n : s_tick_n);
+    }
+    cut_held_sets_leave(&s_sets, pick);
+    if (!ready) return;
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
         static int cen = -1;
         if (cen < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); cen = (e && *e && *e != '0'); }

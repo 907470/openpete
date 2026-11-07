@@ -173,10 +173,12 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
  * culled / suppressed during a transition) reads as NOT drawn - which is what the
  * spine wants (reproduce only what the canonical frame actually painted). */
 static uint32_t s_canon_mask = 0;
+static uint32_t s_canon_mask_prev = 0;   /* the render before it */
 
 void render_paths_canon_snapshot(void) {
     uint32_t m = s_pending_marks;
     for (int i = 0; i < s_iv_n; i++) m |= (1u << (unsigned)s_iv[i].path);
+    s_canon_mask_prev = s_canon_mask;
     s_canon_mask = m;
 }
 
@@ -206,6 +208,11 @@ static void render_paths_superseded(unsigned frame) {
     for (int p = 0; p < RP_COUNT; p++)
         if (s_mark_vbl[p] < frame) s_pending_marks &= ~(1u << (unsigned)p);
     if (spyro_native_canon_capture_open()) spyro_native_canon_epoch_supersede();
+}
+
+bool render_path_canon_drawn_prev(render_path_t p) {
+    if (p < 0 || p >= RP_COUNT) return false;
+    return (s_canon_mask_prev & (1u << (unsigned)p)) != 0;
 }
 
 bool render_path_canon_drawn(render_path_t p) {

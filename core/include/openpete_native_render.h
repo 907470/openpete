@@ -2298,6 +2298,16 @@ void openpete_native_scene_set_bg(uint32_t rgba);
  * @param g Green, 0..255.
  * @param b Blue, 0..255. */
 void openpete_native_set_clear_color(int isbg, int r, int g, int b);
+/** @brief The draw-env clear latch (openpete_native_set_clear_color).
+ *
+ * @return The clear colour word, byte order R, G, B, A; 0 for no auto-clear. */
+uint32_t openpete_native_clear_color(void);
+/** @brief Make the scene being accumulated show a given draw-env clear instead of the latch, until the next scene begins.
+ *
+ * A held camera cut's scene shows tick N-1 while the latch already holds tick
+ * N's clear. The latch itself is left alone.
+ * @param clear The clear colour word (openpete_native_clear_color). */
+void openpete_native_scene_hold_clear(uint32_t clear);
 /** @brief Record the DRAWENV the game's PutDrawEnv just applied.
  *
  * Called by the PutDrawEnv thunk; openpete_native_note_draw_otag reads it.

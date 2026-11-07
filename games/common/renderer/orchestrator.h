@@ -17,6 +17,8 @@
 #include "openpete_thread_roles.h"   /* OP_REQUIRES */
 #include "openpete_time.h"           /* op_time_t */
 
+struct CPUState;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -102,6 +104,20 @@ int cyclorama_native_present_env(uint8_t env[4]) OP_REQUIRES_SHARED(sim);
  * without a valid g_CurDB). Defined by the shared cyclorama feeder
  * (games/common/renderer/cyclorama.c) for every game. */
 void cyclorama_native_env_clear_commit(void) OP_REQUIRES(sim);
+
+/** @brief Bracket a held camera cut's re-extract: its scene shows tick N-1's draw-env clear and its feeders read tick N-1's m_BackgroundColor.
+ *
+ * Both are the values the commit recorded for tick N-1's render.
+ * @param hold Nonzero to open the bracket, 0 to close it. */
+void cyclorama_native_hold_background(int hold) OP_REQUIRES(sim);
+
+/** @brief g_Cyclorama.m_BackgroundColor as the present being built shows it.
+ *
+ * Tick N-1's value inside a held camera cut's bracket
+ * (cyclorama_native_hold_background), else guest RAM.
+ * @param cpu The guest CPU state.
+ * @return The word, 0x00BBGGRR. */
+uint32_t cyclorama_native_bg_word(struct CPUState* cpu);
 
 /* Canonical-render epoch. A feeder that snapshots transient render-pass
  * scratch stamps the epoch at capture time and replays the capture on the

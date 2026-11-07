@@ -143,6 +143,11 @@ void render_paths_canon_snapshot(void);
  * @param p The path.
  * @return true when the canon-drawn mask holds `p`; false for an out-of-range path. */
 bool render_path_canon_drawn(render_path_t p);
+/** @brief Reports whether path `p` drew on the canonical render before the most recent one.
+ *
+ * @param p The path.
+ * @return true when the previous canon-drawn mask holds `p`; false for an out-of-range path. */
+bool render_path_canon_drawn_prev(render_path_t p);
 
 /** @brief Reports whether the OT walk submits the geometry prim at polybuf address `addr`.
  *
