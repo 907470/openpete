@@ -210,6 +210,12 @@ s2-create-save|1022|82||1022,1104|--card1 {legdir}/card1.mcr --no-card2
 # are sub-tick presents with gems in flight: a spawn or a landing moves every
 # later gem to another slot.
 idol-springs-level-entry|3000|200||3060,3120
+
+# idol-springs-puzzle-1: Idol Springs with two Zoe zap records live and near
+# floor triangles under Spyro (openpete_frame 2000 = VBL 2573; fast boot ends
+# at VBL 573). Pins 2195 and 2800 are further ticks with more than one zap
+# record live.
+idol-springs-puzzle-1|2573|200||2195,2800
 # Cutscene letterbox bars growing 2 PSX rows per tick (VBL 1413-1435): the
 # intermediate leg must show them between the two ticks. Blessed pre-fix.
 riptos_arena-letterbox|1413|2||1415,1425|--skip-to-level riptos_arena
