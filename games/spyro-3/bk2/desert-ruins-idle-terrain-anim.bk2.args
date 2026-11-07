@@ -1,0 +1,5 @@
+# Idle (no input) from the desert_ruins skip, 3000 VBLs (scripts/make_bk2.py
+# --feed-key vbl --frames 3000). The level's poly-animated terrain sectors
+# change their vertex banks every tick; the row measures the per-build
+# terrain cost of that animation (terrain.build p50).
+--skip-to-level desert_ruins
