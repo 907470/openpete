@@ -184,10 +184,10 @@ DISCS = {
     "spyro-3": ("SCUS-94467", "Spyro: Year of the Dragon"),
 }
 STARTUP_RUNS = 7
-# Set from the --measure figure on the build before the launch-time stamps moved off the launcher
-# thread (7 runs on the dev box under Xvfb and lavapipe: median 45.7 ms, min 45.1, max 46.6): the
-# baseline's median plus 10%.
-STARTUP_BOUND_MS = 50.0
+# Set from a page carrying three box pictures, three logos and the shape pass (11 runs on the dev
+# box under Xvfb and lavapipe at load under 0.5: median 54.3 ms, min 52.1, max 55.2): the baseline's
+# median plus 10%. A page with no box pictures read 47 ms.
+STARTUP_BOUND_MS = 60.0
 # The 1-minute load average under which the host is idle: the wall-clock delta is bounded only below it.
 # Above it the launcher thread waits blocked on lavapipe's rasterizer threads, which wait runnable, so the
 # delta is the scheduler's; the launcher thread's CPU time between the two stamps, never more than the
