@@ -347,5 +347,7 @@ set_property(GLOBAL PROPERTY OPENPETE_RHI_SOURCES
 option(OPENPETE_BUILD_RHI_SMOKETEST "Build the RHI smoke test exe" ON)
 if(OPENPETE_BUILD_RHI_SMOKETEST)
     add_executable(rhi_smoketest smoketest.c)
+    target_sources(rhi_smoketest PRIVATE ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
+    target_include_directories(rhi_smoketest PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
     target_link_libraries(rhi_smoketest PRIVATE openpete_rhi SDL3::SDL3-static)
 endif()

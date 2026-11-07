@@ -74,6 +74,7 @@ add_test(NAME view_rect_test COMMAND view_rect_test)
 # negative control. Compiles native_gte.c with link stubs for the renderer
 # entry points it references.
 add_executable(line_quad_test
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c
     line_quad_test.c
     ${CMAKE_SOURCE_DIR}/games/common/renderer/native_gte.c)
 target_include_directories(line_quad_test PRIVATE
@@ -215,6 +216,7 @@ add_test(NAME psx_runtime_layout_test COMMAND psx_runtime_layout_test)
 # registered region. Compiles cpu.c and psx_region.c with local stubs for
 # the CD-ROM register model, the BIOS ROM window and the logger.
 add_executable(psx_span_test
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c
     psx_span_test.c
     ${CMAKE_SOURCE_DIR}/core/psx/cpu.c
     ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
@@ -486,6 +488,7 @@ set_tests_properties(mod_arena_test PROPERTIES LABELS "mods")
 # cleared by a drain with no emit between it (a draw that allocates pool
 # mobys without the text emitters, e.g. the credits roll); the class guard.
 add_executable(text_moby_id_test
+    ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c
     text_moby_id_test.c
     ${CMAKE_SOURCE_DIR}/games/spyro-1/renderer/text_moby_id.c)
 target_include_directories(text_moby_id_test PRIVATE
@@ -912,3 +915,14 @@ if(TARGET openpete_imgui)
     set_target_properties(launcher_page_lines_test PROPERTIES CXX_STANDARD 20 C_STANDARD 11)
     add_test(NAME launcher_page_lines_test COMMAND launcher_page_lines_test)
 endif()
+
+# These compile sources that carry role asserts and binds, whose definitions
+# live in the role runtime.
+foreach(t boot_memfill_test line_quad_test mod_arena_test mod_material_link_test
+          mod_material_resolve_test mod_vec_test psx_span_test rhi_compile_stress
+          rhi_compile_stress_tsan sfx_smpl_walk_test text_moby_id_test
+          write_census_test)
+    if(TARGET ${t})
+        target_sources(${t} PRIVATE ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
+    endif()
+endforeach()
