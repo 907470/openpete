@@ -571,6 +571,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Audio feed latency after a slow producer: audio_feed_sim drives the
+    # feed's synthetic device with no game process through a producer-speed
+    # span (0.8 for 120 s; 0.96 for 60 s), then 1.0; the queued latency
+    # from 2 s after the span stays at or below target + deadband + one
+    # catch-up burst. The driver refuses at zero span VBLs or samples.
+    # Exit 64 = driver not built.
+    add_test(NAME audio_feed_latency
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_audio_feed_latency.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(audio_feed_latency PROPERTIES
+        LABELS "audio"
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # CD drive head: the CdlGetlocP head model replayed against every
     # reference answer of the Spyro 2/3 20k goldens (|diff| <= 2 LBA), and
     # the XA decoder head's rate on a Spyro 2 boot run (37609/15000 LBA per

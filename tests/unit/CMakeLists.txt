@@ -926,3 +926,19 @@ foreach(t boot_memfill_test line_quad_test mod_arena_test mod_material_link_test
         target_sources(${t} PRIVATE ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
     endif()
 endforeach()
+
+# audio_feed_sim - the audio device feed on its synthetic device, driven by
+# a synthetic producer through a producer-speed span (the fourth field of
+# OPENPETE_AUDIO_FEED_SIM); reports the queued latency after the span and
+# the splice step of every drop. The TU includes PsyX_SPUFeed.cpp; the
+# OpenAL calls link but never run. tests/harness/check_audio_feed_latency.sh
+# runs its rows.
+add_executable(audio_feed_sim audio_feed_sim.cpp)
+target_include_directories(audio_feed_sim PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src/audio)
+target_include_directories(audio_feed_sim PRIVATE ${OPENAL_INCLUDE_DIR})
+target_link_libraries(audio_feed_sim PRIVATE SDL3::SDL3-static ${OPENAL_LIBRARY})
+set_target_properties(audio_feed_sim PROPERTIES CXX_STANDARD 20)
