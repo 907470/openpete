@@ -105,6 +105,7 @@ static struct {
     unsigned  spans, produced, skipped_late, cut, refused, level_up, level_down;
     unsigned  produced_inter;         /* of `produced`, the sub-tick re-extracts */
     int       span_cut;               /* this span ended with targets unproduced */
+    unsigned  canon_frame;            /* openpete_frame at the last canonical, 0 after a discontinuity */
 } s_eager = { .level = 1 };
 
 /* Documented at the declaration in eager.h. */
@@ -727,6 +728,19 @@ static int eager_produce(op_time_t deadline, op_time_t period)
     return made;
 }
 
+/** @brief Measure the VBLs since the previous canonical present.
+ *
+ * A guest discontinuity zeroes canon_frame, so the first canonical after one
+ * measures an unknown gap of 0.
+ * @return The gap in VBLs, 0 when unknown. */
+static unsigned eager_canon_gap(void)
+{
+    const unsigned f = (unsigned)openpete_frame;
+    const unsigned gap = s_eager.canon_frame && f > s_eager.canon_frame ? f - s_eager.canon_frame : 0;
+    s_eager.canon_frame = f;
+    return gap;
+}
+
 /* Documented at the declaration in eager.h. */
 void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
                      op_time_t prod_end, op_time_t produce_end, int world_live)
@@ -742,9 +756,27 @@ void eager_canonical(op_time_t now, op_time_t slot, op_time_t period,
      * path keeps presenting the live scene at full rate. Anchor
      * on this tick's landing instead. */
     const op_time_t tp = (op_time_t)g_openpete_tick_period_ns;
-    const op_time_t anchor = (curr && now - curr < 2 * tp) ? curr : now;
+    op_time_t anchor = (curr && now - curr < 2 * tp) ? curr : now;
+    op_time_t span_end = anchor + tp;
+    /* A canonical every VBL (the pause window's grow and shrink): the next
+     * canonical lands one VBL on, not one tick, and the interp ring's stamp
+     * lags it, since the ring commits at most every second VBL on a state the
+     * 2D does not live in. A span of one tick from that stamp alternates a
+     * scene run past the next canonical, drawn from the 2D carry that canonical
+     * replaces, with a span of one slot. The span is this VBL's stamp plus one
+     * VBL, over which the 2D carry's alpha runs 0 to 1. Its budget is one VBL
+     * less the tick's mean cost, since there is no update VBL to produce
+     * through; it is priced from now rather than from the next deadline, so a
+     * tick that started late, which the produce guard absorbs, is not read as
+     * the capacity of every span of the run. */
+    if (eager_canon_gap() == 1) {
+        const op_time_t tick = openpete_interp_tick_stamp();
+        const op_time_t vbl_anchor = (tick && now - tick < tp) ? tick : now;
+        anchor = vbl_anchor;
+        span_end = vbl_anchor + tp / 2;
+        prod_end = now + tp / 2 - s_eager.tick_ema;
+    }
     s_eager.anchor_age = now - anchor;
-    const op_time_t span_end = anchor + tp;
     eager_plan(now, first, period, span_end, prod_end);
     /* The canonical scene, then as much of the span as fits
      * before the update VBL is due - the latter only while
@@ -793,10 +825,10 @@ static void eager_report(void)
 
 /** @brief Drop the eager scene plan on a guest discontinuity (savestate load, rewind, level load).
  *
- * Clears the planned targets and the last target, and resets the decaying
- * tick-time peak to the tick mean. The scene ring flushes its own pending
+ * Clears the planned targets, the last target and the canonical gap's origin,
+ * and resets the decaying tick-time peak to the tick mean. The scene ring flushes its own pending
  * scenes. Registered with openpete_on_guest_discontinuity. */
-static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.last_target = 0; s_eager.tick_peak = s_eager.tick_ema; }
+static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.last_target = 0; s_eager.tick_peak = s_eager.tick_ema; s_eager.canon_frame = 0; }
 
 /* The run's frame-time log, for presents made on the present thread; NULL
  * until eager production starts. */

@@ -41,7 +41,10 @@ int eager_hold_done(void);
  *
  * The span's first display instant is the render-grid slot advanced past
  * now; it is anchored on the newest capture stamp unless that stamp is a
- * tick or more old, when it is anchored on now. The world-liveness verdict
+ * tick or more old, when it is anchored on now. A canonical one VBL after the
+ * previous one predicts another: the span is then anchored on this VBL's stamp,
+ * runs one VBL and is budgeted one VBL less the tick's mean cost.
+ * The world-liveness verdict
  * is recorded after the plan (the plan's shed accounting reads the previous
  * one). Intermediate scenes are produced only while the world is live.
  * @param now The plan instant.
