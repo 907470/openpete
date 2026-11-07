@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 /** @brief Recurse with a 4 KiB frame the compiler cannot elide, until the stack is exhausted.
  *
@@ -470,6 +471,7 @@ typedef struct {
  * @param arg The dump_job_t.
  * @return 0. */
 static DWORD WINAPI dump_thread(LPVOID arg) {
+    OP_ROLE_BIND(crashdump);
     dump_job_t* job = (dump_job_t*)arg;
     HANDLE f = CreateFileW(s_dump_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, NULL);

@@ -45,6 +45,7 @@
 #include <string.h>
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/player_hide.h"
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -811,6 +812,7 @@ static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
  * @return 1 when the dump and the native-versus-captured comparison are
  *         armed, else 0. */
 static int flame_verify_enabled(void) {
+    OP_ROLE_ASSERT(sim);
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_FLAME_VERIFY"); v = (e && *e && *e != '0'); }
     return v;
@@ -848,6 +850,7 @@ static const hook_bracket_desc k_flame_bracket = {
  * @return 0 when the bracket declined to take over, else 1 (the body has
  *         already run). */
 static int on_flame_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_flame_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -961,6 +964,7 @@ static feature_dispatch_entry_t flame_dispatch[] = {
  * A game whose layout locates no emitter leaves the address 0.
  * @param opts Unused. */
 static void flame_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     flame_dispatch[0].addr = game_layout.flame.hook;
 }

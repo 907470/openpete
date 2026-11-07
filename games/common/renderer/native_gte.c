@@ -11,11 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "openpete_thread_roles.h"
 
 ngte_census_t ngte_census;
 int ngte_census_on;
 /** @brief Prints the --fov census counters to stderr; registered to run at exit. */
 static void ngte_census_print(void) {
+    OP_ROLE_ASSERT(sim);
     static const char* site[NGTE_SITE_N] = { "raw_sat", "gte_sat", "part_cap", "moby_near", "terrain_unr" };
     fprintf(stderr, "[fov-census]");
     for (int i = 0; i < NGTE_SITE_N; i++)

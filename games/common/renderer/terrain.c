@@ -43,6 +43,7 @@
 // Gated by OPENPETE_TERRAIN_VERIFY (dump/A/B) or a native renderer mode (feed).
 
 #include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
+#include "openpete_thread_roles.h"
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
 #include "openpete_native_render.h"
@@ -11261,6 +11262,7 @@ static void tj_level_build(CPUState* cpu, const tj_lvl* L) {
 /** @brief Prints the walk's split base triangles and the bake's split records at exit, the split's engagement figures.
  */
 static void tj_use_at_exit(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[tjsplit] use walk_split_tris=%llu bake_split_recs=%llu\n",
             (unsigned long long)s_tj_walk_split, (unsigned long long)s_tj_bake_split);
     fprintf(stderr, "[tjsplit] weld use walk_passes=%llu bake_sets=%llu\n",
@@ -13208,6 +13210,7 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
  * ring entry. A `high` equal to its `cap` with no overflow behind it is a
  * clamp, not a demand figure. */
 static void tgpu_arena_census_line(void) {
+    OP_ROLE_ASSERT(sim);
     openpete_tercache_stats_t st;
     openpete_tercache_get_stats(&st);
     char hwm[768], afail[384], ovf[384];
@@ -15896,6 +15899,7 @@ static unsigned s_occa_from;
 /** @brief Prints the occlusion audit's cumulative totals; registered with atexit. */
 static void tocc_audit_total(void)
 {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[occl-audit-total] walks=%ld walked=%ld frustum=%ld depth=%ld "
             "false_offscreen=%ld\n", s_occa_walks, s_occa_walked, s_occa_frustum,
             s_occa_depth, s_occa_false);
@@ -19219,6 +19223,7 @@ static unsigned s_env_defer_n, s_env_defer_flushed, s_env_defer_late;
 
 /** @brief Print the deferred-feed census at exit. */
 static void terrain_defer_census(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "terrain: deferred env feed: deferred=%u flushed=%u late=%u\n",
             s_env_defer_n, s_env_defer_flushed, s_env_defer_late);
 }
@@ -19292,6 +19297,7 @@ static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) 
  * @param addr the hooked draw's address (unused)
  * @return 1 after running the draw, 0 when the hook is inert or re-entered */
 static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     int verify = terrain_verify_enabled();
     int feed   = openpete_native_scene_enabled();
@@ -19602,6 +19608,7 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
  * @param addr The hooked address.
  * @return 1 when the call was handled here, 0 to fall through. */
 static int on_visibility_terrain(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (!s_vis_arm || cpu->a0 != 0u) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     openpete_recomp_module_get()->dispatch(cpu, addr);
@@ -19993,6 +20000,7 @@ static feature_dispatch_entry_t terrain_dispatch[] = {
  * @param opts Unused.
  */
 static void terrain_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     terrain_dispatch[0].addr = game_layout.hooks.world_draw;
     terrain_dispatch[1].addr = game_layout.hooks.visibility;   /* 0 on a game whose table stays in RAM */

@@ -24,6 +24,7 @@
  */
 
 #include <cstdlib>
+#include "openpete_thread_roles.h"
 
 extern "C" {
 #include "openpete.h"          /* openpete_shutdown_requested */
@@ -425,10 +426,9 @@ extern "C" {
  * @param len The bytes the thunk or PsyCross reads or writes there.
  * @param warned The call site's once-flag.
  * @return The host pointer, or NULL when the span is refused. */
-static void* psyq_span(const char* call, uint32_t addr, uint32_t len, bool* warned) {
+static void* psyq_span(const char* call, uint32_t addr, uint32_t len, std::atomic<bool>* warned) {
     void* p = openpete_psx_to_host_span(addr, len);
-    if (p == nullptr && !*warned) {
-        *warned = true;
+    if (p == nullptr && !warned->exchange(true, std::memory_order_relaxed)) {
         OPL_WARN_F("psyq", "%s: guest span 0x%08X+0x%X refused; access skipped", call, addr, len);
     }
     return p;
@@ -447,10 +447,9 @@ static void* psyq_span(const char* call, uint32_t addr, uint32_t len, bool* warn
  *        @p max; may be NULL.
  * @param warned The call site's once-flag.
  * @return The host pointer, or NULL when the string is refused. */
-static const char* psyq_str(const char* call, uint32_t addr, uint32_t max, uint32_t* len_out, bool* warned) {
+static const char* psyq_str(const char* call, uint32_t addr, uint32_t max, uint32_t* len_out, std::atomic<bool>* warned) {
     const char* p = openpete_psx_to_host_str(addr, max, len_out);
-    if (p == nullptr && !*warned) {
-        *warned = true;
+    if (p == nullptr && !warned->exchange(true, std::memory_order_relaxed)) {
         OPL_WARN_F("psyq", "%s: guest string at 0x%08X runs past its region; access skipped", call, addr);
     }
     return p;
@@ -463,7 +462,7 @@ static inline uint32_t psyq_len(uint64_t n) {
 
 /* Each expansion's lambda is its own type, so its static is a once-flag
  * private to the call site. */
-#define PSYQ_SITE_ONCE() ([]() -> bool* { static bool s_warned; return &s_warned; }())
+#define PSYQ_SITE_ONCE() ([]() -> std::atomic<bool>* { static std::atomic<bool> s_warned; return &s_warned; }())
 /* Guest pointer argument -> host pointer valid for len bytes, or NULL. */
 #define SPAN(addr, len) psyq_span(__func__, (uint32_t)(addr), psyq_len(len), PSYQ_SITE_ONCE())
 /* A guest NULL must stay NULL without a warning: an optional argument of 0
@@ -1653,6 +1652,7 @@ static struct {
 
 /** @brief Print the pad poll census totals. */
 static void pad_poll_census_report(void) {
+    OP_ROLE_ASSERT(sim);
     OPL_INFO_F("pad-poll", "census: vbls=%lu no_command=%lu no_data=%lu lost_writes=%lu "
                "reference_known=%lu card_held_against_reference=%lu",
                s_pp.vbls, s_pp.no_cmd, s_pp.held, s_pp.lost, s_pp.ref_known, s_pp.ref_differ);
@@ -3543,6 +3543,7 @@ static int cd_read_stream(int sector) {
 
 /// @brief Log the music routing and XA delivery counters; registered with atexit by cd_set_mode.
 static void cd_exit_summary(void) {
+    OP_ROLE_ASSERT(sim);
     unsigned long long cd_frames = 0, cd_starved = 0;
     unsigned long long xa_sectors = 0, xa_silence = 0, xa_late = 0, xa_refused = 0, xa_reseeks = 0;
     PsyX_SPUAL_CDInputStats(&cd_frames, &cd_starved);
@@ -4111,6 +4112,7 @@ static uint32_t s_getlocp_ab_n, s_getlocp_ab_over;
 static int s_getlocp_ab_max;
 /// @brief Print the OPENPETE_GETLOCP_AB census line; registered with atexit on the first comparison.
 static void getlocp_ab_summary(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[getlocp-ab] compared=%u over2=%u max_abs_diff=%d verdict=%s\n",
             s_getlocp_ab_n, s_getlocp_ab_over, s_getlocp_ab_max,
             s_getlocp_ab_n == 0 ? "VACUOUS" : (s_getlocp_ab_over ? "FAIL" : "PASS"));

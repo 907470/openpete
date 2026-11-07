@@ -73,6 +73,7 @@
 #include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_thread_roles.h"
 
 extern void     func_8004FEA0(CPUState* cpu);  /* portal sky: close, full colour */
 extern void     func_80050240(CPUState* cpu);  /* portal sky: medium, blended    */
@@ -158,6 +159,7 @@ static int      s_clip_replay;     /* 1 while portal_reextract replays the captu
 
 /** @brief Prints the OPENPETE_PORTAL_CLIP_CENSUS tallies to stderr. */
 static void portal_clip_census_print(void) {
+    OP_ROLE_ASSERT(sim);
     for (int k = 0; k < 2; k++)
         fprintf(stderr, "portal: clip census %s: front=%u near-clipped=%u ext-rect-fallback=%u "
                 "(canonical presents=%u)\n", k ? "replay" : "canonical",
@@ -2879,6 +2881,7 @@ static int s_want_dump_this_frame(void) {
 static unsigned s_rect_match, s_rect_miss;
 /** @brief Print the rect-mirror census at exit. */
 static void portal_rect_census(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "portal: rect mirror: match=%u miss=%u\n", s_rect_match, s_rect_miss);
 }
 
@@ -3107,19 +3110,22 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
  * @param cpu The guest CPU state.
  * @param a The hooked address (unused).
  * @return The leaf_hook verdict. */
-static int on_8004FEA0(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "FEA0(close)",     func_8004FEA0, PORTAL_FLAT);    }
+static int on_8004FEA0(CPUState* cpu, uint32_t a) {
+    OP_ROLE_ASSERT(sim); (void)a; return leaf_hook(cpu, "FEA0(close)",     func_8004FEA0, PORTAL_FLAT);    }
 /** @brief Dispatch hook for func_80050240, the dome leaf fogged toward D_800757D4.
  *
  * @param cpu The guest CPU state.
  * @param a The hooked address (unused).
  * @return The leaf_hook verdict. */
-static int on_80050240(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "50240(blended)",  func_80050240, PORTAL_BLENDED); }
+static int on_80050240(CPUState* cpu, uint32_t a) {
+    OP_ROLE_ASSERT(sim); (void)a; return leaf_hook(cpu, "50240(blended)",  func_80050240, PORTAL_BLENDED); }
 /** @brief Dispatch hook for func_8004F4BC, the unfogged gouraud dome leaf.
  *
  * @param cpu The guest CPU state.
  * @param a The hooked address (unused).
  * @return The leaf_hook verdict. */
-static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "F4BC(secondary)", func_8004F4BC, PORTAL_DOME);    }
+static int on_8004F4BC(CPUState* cpu, uint32_t a) {
+    OP_ROLE_ASSERT(sim); (void)a; return leaf_hook(cpu, "F4BC(secondary)", func_8004F4BC, PORTAL_DOME);    }
 
 /** @brief Draw the destination-sky previews of the portals RenderPortals culled but the view shows.
  *
@@ -3316,6 +3322,7 @@ int openpete_portal_capture_follows(CPUState* cpu) {
  * @param a   the hooked address (unused)
  * @return 1 after running the draw, 0 when inert or re-entered */
 static int on_80050BE0(CPUState* cpu, uint32_t a) {
+    OP_ROLE_ASSERT(sim);
     (void)a;
     int feed = openpete_native_scene_enabled();
     if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0;
@@ -3369,6 +3376,7 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
  *
  * @param opts The parsed options (unused). */
 static void portal_native_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
 }
 

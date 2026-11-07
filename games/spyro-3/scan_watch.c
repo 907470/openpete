@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 /* EXE .text: main_TEXT_START..main_TEXT_END in the decomp's psx.map. */
 #define EXE_LO  0x8001200Cu
@@ -389,6 +390,7 @@ const openpete_mods_guest_guard_t spyro3_scan_guard = { guard_begin, guard_end }
 
 /// @brief Print the verdict counters, the watch counters and the guard counters at exit.
 static void exit_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[s3-scan] checksum verdicts: pass=%u fail=%u%s\n", s_pass, s_fail,
             (s_level_seen && s_pass + s_fail == 0u)
                 ? " VACUOUS: a level loaded and no loading-walk verdict ran" : "");

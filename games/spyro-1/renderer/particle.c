@@ -44,6 +44,7 @@
 #include <string.h>
 #include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_thread_roles.h"
 
 extern void     func_800573C8(CPUState* cpu);  /* RenderParticles  */
 extern void     func_800580F4(CPUState* cpu);  /* RenderGlows      */
@@ -2020,6 +2021,7 @@ static void dragonstar_compare(CPUState* cpu) {
  * cached.
  * @return 1 when the variable is set and not "0", else 0. */
 static int verify_enabled(void) {
+    OP_ROLE_ASSERT(sim);
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PARTICLE_VERIFY"); v = (e && *e && *e != '0'); }
     return v;
@@ -2059,6 +2061,7 @@ static uint32_t s_pcen_sp_ticks, s_pcen_sp_extra_ticks, s_pcen_sp_extra, s_pcen_
  * count, the glow, sparkle and star active, ran, exposed and first-exposed
  * tick counts, and the sparkle-walk extra and missing totals. */
 static void particle_path_census_exit(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "particle path census: ticks=%u glow: active=%u ran=%u exposed=%u first=%u | "
             "sparkle: active=%u ran=%u exposed=%u first=%u | star: active=%u ran=%u exposed=%u first=%u | "
             "sparkle-walk: ticks=%u extra_ticks=%u extra=%u missing_ticks=%u missing=%u extra_first=%u\n",
@@ -2327,7 +2330,8 @@ static void (*s_particle_realfn)(CPUState*);
  *
  * @param cpu The guest CPU state.
  * @param addr The hooked address (unused). */
-static void particle_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; s_particle_realfn(cpu); }
+static void particle_run_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim); (void)addr; s_particle_realfn(cpu); }
 /** @brief Stashes the g_Particles pool pointer before the guest particle renderer runs.
  *
  * g_Particles points at one pool the level loader sets per level and the
@@ -2338,6 +2342,7 @@ static void particle_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; s_part
  * @param feed Unused.
  * @param verify Unused. */
 static void particle_pre(CPUState* cpu, int feed, int verify) {
+    OP_ROLE_ASSERT(sim);
     (void)feed; (void)verify;
     s_part_pool = cpu->read_word(G_PARTICLES);
 }
@@ -2427,6 +2432,7 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
  * (pool_capture).
  * @return The on_particle_renderer verdict. */
 static int on_800573C8_particles(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     const int took = on_particle_renderer(cpu, func_800573C8, "particles", RP_PARTICLES, 1);
     if (took) pool_capture(&s_part_held, &s_part_pc, s_part_pool, PART_POOL_BYTES, 0x20u, part_rec_live);
@@ -2439,6 +2445,7 @@ static int on_800573C8_particles(CPUState* cpu, uint32_t addr) {
  * @param addr The hooked address (unused).
  * @return The on_particle_renderer verdict. */
 static int on_800580F4_glows(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     const int took = on_particle_renderer(cpu, func_800580F4, "glows", RP_GLOW, 0);
     if (took) pool_capture(&s_glow_held, &s_glow_pc, D_GLOWS, GLOW_POOL_BYTES, 0x24u, glow_rec_live);
@@ -2451,6 +2458,7 @@ static int on_800580F4_glows(CPUState* cpu, uint32_t addr) {
  * @param addr The hooked address (unused).
  * @return The on_particle_renderer verdict. */
 static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     const int took = on_particle_renderer(cpu, func_800584C4, "sparkles", RP_SPARKLE, 0);
     if (took) pool_capture(&s_spark_held, &s_spark_pc, G_SPARKLES, SPARK_POOL_BYTES, 0x18u, spark_rec_live);
@@ -2470,7 +2478,8 @@ static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr) {
  * would show on canonical presents and vanish on the intermediates.
  * @param cpu The guest CPU state.
  * @param addr The hooked address (unused). */
-static void dragonstar_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80058864(cpu); }
+static void dragonstar_run_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim); (void)addr; func_80058864(cpu); }
 
 static hook_bracket_state s_dragonstar_hb;
 static const hook_bracket_desc k_dragonstar_bracket = {
@@ -2491,6 +2500,7 @@ static const hook_bracket_desc k_dragonstar_bracket = {
  * @param addr The hooked address.
  * @return 0 when the bracket declines, 1 after the renderer ran here. */
 static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_dragonstar_bracket, &startp, &endp, &feed, &verify))
         return 0;

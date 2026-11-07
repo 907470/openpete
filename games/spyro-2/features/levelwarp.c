@@ -76,6 +76,7 @@
 #include "features/guest_call.h"  /* game_guest_call: a host-initiated guest call */
 #include "psx_runtime_internal.h"   /* CPUState + its read/write callbacks */
 #include "spyro-2/skip_to_level.h"
+#include "openpete_thread_roles.h"
 
 #define S2_LOADER_STATE     0x80066EECu /* 0 title, 2 loading, -1 level resident */
 #define S2_NEXT_LEVEL_NUM   0x80066F90u /* the level number the loader loads */
@@ -161,6 +162,7 @@ static int menu_backs_out(uint32_t mode, uint32_t sub) {
  * @param addr Unused.
  * @return 0, so the update runs. */
 static int on_title_update(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (!s_backout_armed || openpete_speculative) return 0;
     if (spyro2_skip_target() == 0) { s_backout_armed = 0; return 0; }
@@ -203,6 +205,7 @@ static levelwarp_t s_warp = { .game = &k_warp_game };
  *
  * @param opts Unused. */
 static void levelwarp_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     levelwarp_register(&s_warp);
 }

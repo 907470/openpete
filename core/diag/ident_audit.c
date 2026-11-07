@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 /* Per-tick record, kept for the exit summary's percentiles and worst list. */
 typedef struct { unsigned vbl, tick; uint32_t px; int maxch; } audit_row_t;
@@ -156,6 +157,7 @@ static uint32_t pct(const audit_row_t *sorted, size_t n, double p)
  * first). Prints nothing when no tick was recorded. */
 static void audit_report(void)
 {
+    OP_ROLE_ASSERT(sim);
     if (!s_rows_n) return;
     audit_row_t *sorted = malloc(s_rows_n * sizeof(*sorted));
     if (!sorted) return;

@@ -47,6 +47,7 @@
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"         /* cut_held_set_pick, cut_census_held_set */
 #include "renderer/player_hide.h"       /* --hide-player: the companion's shadow */
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -1589,6 +1590,7 @@ static void shadow_moby_compare(CPUState* cpu) {
 
 /* ---- gating --------------------------------------------------------------- */
 int shadow_verify_enabled(void) {
+    OP_ROLE_ASSERT(sim);
     static int v = -1;
     ENV_FLAG_LATCH(v, "OPENPETE_SHADOW_VERIFY");
     return v;
@@ -1606,6 +1608,7 @@ unsigned shadow_verify_frame(void) {
  * @param feed Unused.
  * @param verify Unused. */
 static void shadow_pre(CPUState* cpu, int feed, int verify) {
+    OP_ROLE_ASSERT(sim);
     (void)feed; (void)verify;
     shadow_latch_list_base(cpu);
 }
@@ -1662,6 +1665,7 @@ static const hook_bracket_desc k_shadow_bracket = {
  * @return 1 after running the draw, 0 when the bracket declines and the
  *         ordinary dispatch runs it */
 static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shadow_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -1729,6 +1733,7 @@ static feature_dispatch_entry_t shadow_dispatch[] = {
  *
  * @param opts Unused. */
 static void shadow_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     shadow_dispatch[0].addr = game_layout.shadow.hook;
 }

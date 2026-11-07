@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "openpete_thread_roles.h"
 
 #define DT_SECTOR 2352u
 
@@ -91,6 +92,7 @@ void openpete_disc_trace_flush(void) {
 
 /** @brief Exit handler: write the pending row and close the trace file. */
 static void disc_trace_close(void) {
+    OP_ROLE_ASSERT(sim);
     SDL_LockSpinlock(&s_lock);
     emit_pending();
     if (s_fp) { fclose(s_fp); s_fp = NULL; }

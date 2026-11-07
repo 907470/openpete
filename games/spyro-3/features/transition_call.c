@@ -20,6 +20,7 @@
 #include "openpete_log.h"
 #include "features/guest_call.h"  /* game_guest_call: a host-initiated guest call */
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
+#include "openpete_thread_roles.h"
 
 #define ADDR_DRAW 0x8001E638u
 
@@ -69,6 +70,7 @@ static void store(CPUState* cpu, const s3_transition_store_t* s) {
  * @param addr The hooked address, unused.
  * @return 0 always; the stock Draw body runs after the hook. */
 static int on_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     size_t i;
     s3_transition_request_t r;
     (void)addr;

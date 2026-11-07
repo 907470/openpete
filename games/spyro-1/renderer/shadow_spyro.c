@@ -35,6 +35,7 @@
 #include <string.h>
 #include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_thread_roles.h"
 
 extern void     func_80059A48(CPUState* cpu);  /* the real SPYRO-shadow renderer */
 extern unsigned openpete_frame;
@@ -353,7 +354,8 @@ static void shadow_spyro_compare(CPUState* cpu) {
  *
  * @param cpu The guest CPU state.
  * @param addr Unused. */
-static void shadow_spyro_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80059A48(cpu); }
+static void shadow_spyro_run_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim); (void)addr; func_80059A48(cpu); }
 
 static hook_bracket_state s_shadow_spyro_hb;
 static const hook_bracket_desc k_shadow_spyro_bracket = {
@@ -376,6 +378,7 @@ static const hook_bracket_desc k_shadow_spyro_bracket = {
  * @return 0 when the bracket declined and the ordinary dispatch runs the
  *         draw; 1 when the hook ran it. */
 static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shadow_spyro_bracket, &startp, &endp, &feed, &verify))
         return 0;

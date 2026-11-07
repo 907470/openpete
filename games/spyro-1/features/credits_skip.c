@@ -67,6 +67,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define ADDR_GAMESTATE_UPDATE      0x8003385Cu
 #define ADDR_GAMESTATE_DRAW        0x8001ED5Cu
@@ -254,6 +255,7 @@ static int credits_hook(CPUState* cpu) {
  * @param addr The hooked address (unused).
  * @return 0, so the guest GamestateUpdate always runs. */
 static int on_gamestate_update(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (!(hook_live(SPYRO1_CUTSCENE_CREDITS) ||
           hook_live(SPYRO1_CUTSCENE_CREDITS_FULL)))
@@ -332,6 +334,7 @@ static int ending_hook(CPUState* cpu) {
  * @return The hook's result: 1 skips the guest GamestateDraw (an ending
  *         entry), else 0. */
 static int on_gamestate_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (hook_live(SPYRO1_CUTSCENE_INTRO)) return intro_hook(cpu);
     if (hook_live(SPYRO1_CUTSCENE_ENDING) ||

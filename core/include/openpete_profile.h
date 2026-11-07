@@ -26,6 +26,8 @@
 
 #include <stdint.h>
 
+#include "openpete_thread_roles.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -225,27 +227,30 @@ static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
 #define OP_PROF__CAT2(a, b) a##b
 #define OP_PROF__CAT(a, b)  OP_PROF__CAT2(a, b)
 #define OP_PROF_SCOPE(lit) \
-    static int OP_PROF__CAT(op_prof_id_, __LINE__) = -1; \
+    static OP_ONCE_INT OP_PROF__CAT(op_prof_id_, __LINE__) = -1; \
     int OP_PROF__CAT(op_prof_began_, __LINE__) \
         __attribute__((cleanup(op_prof__scope_cleanup))) = 0; \
     if (op_prof_on()) { \
-        if (OP_PROF__CAT(op_prof_id_, __LINE__) < 0) \
-            OP_PROF__CAT(op_prof_id_, __LINE__) = op_prof_intern(lit); \
-        op_prof_begin(OP_PROF__CAT(op_prof_id_, __LINE__)); \
+        int op_prof_v_ = op_once_int_get(&OP_PROF__CAT(op_prof_id_, __LINE__)); \
+        if (op_prof_v_ < 0) \
+            op_prof_v_ = op_once_int_fill(&OP_PROF__CAT(op_prof_id_, __LINE__), \
+                                          op_prof_intern(lit)); \
+        op_prof_begin(op_prof_v_); \
         OP_PROF__CAT(op_prof_began_, __LINE__) = 1; \
     }
 /* Accumulating variant: same block-scoped usage, but the measured time is
  * summed into a per-name bucket and emitted once per marker (see
  * op_prof_accum). Use for hooks that fire many times per tick. */
 #define OP_PROF_ACCUM_SCOPE(lit) \
-    static int OP_PROF__CAT(op_prof_aid_, __LINE__) = -1; \
+    static OP_ONCE_INT OP_PROF__CAT(op_prof_aid_, __LINE__) = -1; \
     op_prof_accum_guard OP_PROF__CAT(op_prof_ag_, __LINE__) \
         __attribute__((cleanup(op_prof__accum_cleanup))) = { -1, 0 }; \
     if (op_prof_on()) { \
-        if (OP_PROF__CAT(op_prof_aid_, __LINE__) < 0) \
-            OP_PROF__CAT(op_prof_aid_, __LINE__) = op_prof_intern(lit); \
-        OP_PROF__CAT(op_prof_ag_, __LINE__).name_id = \
-            OP_PROF__CAT(op_prof_aid_, __LINE__); \
+        int op_prof_v_ = op_once_int_get(&OP_PROF__CAT(op_prof_aid_, __LINE__)); \
+        if (op_prof_v_ < 0) \
+            op_prof_v_ = op_once_int_fill(&OP_PROF__CAT(op_prof_aid_, __LINE__), \
+                                          op_prof_intern(lit)); \
+        OP_PROF__CAT(op_prof_ag_, __LINE__).name_id = op_prof_v_; \
         OP_PROF__CAT(op_prof_ag_, __LINE__).t0_us = op_prof_now_us(); \
     }
 #else

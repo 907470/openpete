@@ -15,6 +15,7 @@
 #include "openpete_mods.h"
 #include "openpete_paths.h"
 #include "mod_vec.h"
+#include "openpete_thread_roles.h"
 
 /* Sources and entries the tables allocate up front; both grow past it. */
 #define SP_SRC_INIT   17
@@ -320,6 +321,7 @@ static void worker_publish(const char* path, long mtime, long size, int ok, sp_p
  * @return 0. */
 static int SDLCALL sfx_decode_worker(void* ud)
 {
+    OP_ROLE_BIND(sfxdec);
     (void)ud;
     char path[sizeof(((sp_entry*)0)->path)];
     long mtime = 0, size = 0;

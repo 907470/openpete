@@ -38,9 +38,17 @@ cursors and the AST:
     without OP_SEALED;
   - OP_NO_THREAD_SAFETY_ANALYSIS outside OP_TSA_ACCESSOR_TABLE;
     OP_TSA_SUPPRESS_BEGIN without a non-empty string reason;
-  - hook only: an added line that adds or changes a table row or a
-    global's form (OP_GUARDED_BY*, OP_PT_GUARDED_BY*, OP_SEALED) without a
-    `thread-roles: <reason>` marker.
+  - hook only: an added line that adds or changes a table row, or changes
+    a global's form (OP_GUARDED_BY*, OP_PT_GUARDED_BY*, OP_SEALED), without a
+    `thread-roles: <reason>` marker. A global's first form needs none.
+
+Check 2 (population, thread_roles_globals.py). A mutable global declared or
+named in a touched extent without a form is refused, whether or not
+baselines/thread-roles/unannotated.tsv lists it; a row of deferred.tsv
+passes. The refusal names the census's confirmed form or the next step. The
+stateless half (`check`): a form-less global in neither TSV, a row whose
+global has a form, a global in both, and a row added since the merge-base
+with main.
 
 Check 4 (engagement, LAW 8). TUs analysed per database, annotated
 functions and globals, rows, accessors and escapes evaluated and references
@@ -72,6 +80,16 @@ Modes:
                   every TU. --all selects every TU. --ctest: 64 without a
                   database.
   check --armed   exit 1 unless the tracked pre-commit hook calls this fence.
+  range <b>..<h>  check 2's touched-extent half over the cumulative diff, at
+                  h, which must be HEAD with a clean scope (the landing path:
+                  a rebase runs no pre-commit hook), and the TSV compare with b.
+  census          classify the population over both databases, confirm local
+                  forms; --write writes unannotated.tsv, --json <path> the
+                  per-global facts.
+  tighten         drop the unannotated.tsv rows whose global has a form or is
+                  gone, then re-run the annotator over deferred.tsv.
+  replay <sha>    the touched-extent half of one past commit, over that
+                  commit's text in this tree's databases; --json <path>.
   sites           every check site in the tree (kind, file, line).
   join <report>   an OPENPETE_THREAD_ROLE_REPORT file joined to the site
                   list; a site no run reached shows as zero.
@@ -82,6 +100,11 @@ Environment:
                                   windows-mingw preset is configured.
   OPENPETE_THREAD_ROLES_JOBS      parallel TUs (default half the CPUs, at most 16).
   OPENPETE_NO_COMMITS=1           `check --armed` passes unarmed.
+  OPENPETE_THREAD_ROLES_ACCEPT    the reason for a row added to a TSV on this
+                                  commit; it names each added global, or a
+                                  deferred row's chain terminal.
+  OPENPETE_THREAD_ROLES_REFUSED   a path: the hook and range write the refused
+                                  globals there, for the annotator's --batch.
   OPENPETE_THREAD_ROLES_NO_REWRITE=1  calibration control: synchronous
                                   references and slot calls are not
                                   rewritten into helper calls, so check 1
@@ -100,7 +123,10 @@ import time
 
 import ratchet_lib as lib
 from ratchet_lib import Refusal, say, git, is_header, entry_flags
+import thread_roles_globals as pop
 
+# False: check 2 prints what it would refuse and refuses nothing.
+CHECK2_ARMED = False
 SCOPE_ROOTS = ("core/", "games/", "tests/")
 FENCE = lib.Fence("thread-roles", "thread_roles.py", "", SCOPE_ROOTS,
                   "OPENPETE_THREAD_ROLES_DB")
@@ -134,6 +160,17 @@ SWITCH_USR = "c:@F@openpete_fiber_switch"
 MACRO_TARGETS = re.compile(r"^op_role__(bind|assert|assert_shared)_\w+$|"
                            r"^op_role_(bind|enter)_bits$")
 SYNC_CALLEES = ("qsort", "bsearch")
+# Calls that start a thread or a fiber on the function they receive; such an
+# argument needs a row. Compiler-spelled: SDL_CreateThread expands to
+# SDL_CreateThreadRuntime, whose two CRT arguments are not entries.
+CREATION_CALLEES = ("SDL_CreateThreadRuntime", "pthread_create", "_beginthreadex", "CreateThread",
+                    "openpete_fiber_create_guarded")
+CREATION_FORM_ARGS = ("_beginthreadex", "_endthreadex")
+THREAD_PROP = "prop:SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER"
+# The functions that may call exit(): the guest's exit on the game fiber
+# (holding sim) and the two dump modes main runs before openpete_run.
+EXIT_CALLERS = ("psyq_exit", "openpete_surface_dump_run_if_requested",
+                "tooltip_vocab_run_if_requested")
 MARKER = re.compile(r"thread-roles:\s*\S")
 IDENT = re.compile(r"[A-Za-z_]\w*")
 
@@ -247,6 +284,12 @@ def usr_name(usr):
     return usr.rsplit("@", 1)[-1]
 
 
+def row_forms(row):
+    """-> the set of registration forms of a row, joined by `|`. `direct:`
+    declares a row its callers call directly (an inline job body)."""
+    return set(row[0].split("|"))
+
+
 # --------------------------------------------------------------------------
 # Compile databases
 # --------------------------------------------------------------------------
@@ -353,6 +396,9 @@ class Walk:
         self.helper_names = {}    # helper -> original name
         self.annotated = {}       # usr -> attrs tuple
         self.slot_stores = []     # (usr, name, slot roles) of every slot store
+        self.func_refs = []       # survey: every non-call function reference
+        self.row_refs = set()     # rows referenced through a form they declare
+        self.row_macros = set()   # rows whose body holds a role macro
         self.n = 0
         K = ci().CursorKind
         args = list(flags) + ["-Wno-everything"]
@@ -364,7 +410,7 @@ class Walk:
             for d in cxx_includes(MINGW_TARGET in flags):
                 args += ["-isystem", d]
         self.tu = ci().Index.create().parse(
-            self.main, args=args,
+            self.main, args=args, unsaved_files=ctx.get("unsaved"),
             options=ci().TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD)
         # A libclang error leaves holes in the AST the walk reads: VACUOUS.
         self.parse_errors = ["%s (libclang 14)" % d for d in self.tu.diagnostics
@@ -483,6 +529,8 @@ class Walk:
                 continue
             usr = enc[2].get_usr()
             row = self.ctx["rows"].get(usr)
+            if row:
+                self.row_macros.add(usr)
             if not row:
                 self.refusals.append(
                     "%s:%d: %s(%s) in %s, which OP_ROLE_BINDING_TABLE does not list "
@@ -491,6 +539,11 @@ class Walk:
                 self.refusals.append(
                     "%s:%d: %s(%s) in %s, whose row allows %s"
                     % (self.rel, line, name, role, enc[2].spelling, "|".join(sorted(row[1]))))
+        for _, _, c in self.defs:
+            usr = c.get_usr()
+            if usr in self.ctx["rows"] and usr not in self.row_macros:
+                self.refuse(c, "%s has a binding-table row and no role macro in its body"
+                            % c.spelling)
 
     # ---- the body walk --------------------------------------------------
     def walk(self):
@@ -583,6 +636,17 @@ class Walk:
                         "run_split_threaded" % name)
         if name == "co_switch" and enc_usr != SWITCH_USR:
             self.refuse(c, "co_switch outside openpete_fiber_switch")
+        if name == "exit" and not self.rel.startswith("tests/") and (
+                enc is None or enc[2].spelling not in EXIT_CALLERS):
+            self.refuse(c, "exit() outside %s: an atexit handler asserts sim, which holds only "
+                           "for these callers" % ", ".join(EXIT_CALLERS))
+        row = self.ctx["rows"].get(ref.get_usr())
+        if row is not None:
+            if "direct:" in row_forms(row):
+                self.row_refs.add(ref.get_usr())
+            elif not self.rel.startswith("tests/"):
+                self.refuse(c, "direct call of the binding-table entry %s, whose row lists %s; "
+                               "declare `direct:` on the row" % (name, row[0]))
         if MACRO_TARGETS.match(name) and self.rel != RUNTIME_C \
                 and (c.location.line, c.location.column) not in stmt_macro_at:
             self.refuse(c, "direct call of %s; write the OP_ROLE_* macro" % name)
@@ -655,6 +719,11 @@ class Walk:
         internal = name in BOOT_FNS or MACRO_TARGETS.match(name) \
             or name in ("op_role_leave", "op_role_check_at")
         row = self.ctx["rows"].get(usr)
+        self._creation_arg(c, chain, i, use, usr, name, row)
+        if self.ctx.get("collect_refs"):
+            kind, form, slot = self._classify(c, chain, i, use)
+            self.func_refs.append((usr, name, kind, tuple(sorted(form)), slot,
+                                   self.rel, c.location.line))
         if not (attrs or row or internal or name == "co_switch"):
             # A slot store is recorded so the annotator never gives the
             # function a role the slot does not hold.
@@ -673,8 +742,9 @@ class Walk:
             if attrs:
                 self.refuse(c, "%s is a binding-table entry and carries %s; an entry "
                             "asserts or binds its role instead" % (name, ", ".join(attrs)))
-            if row[0] in form:
+            if row_forms(row) & form:
                 self._count("entry")
+                self.row_refs.add(usr)
             else:
                 self.refuse(c, "%s is registered through %s; its row lists %s"
                             % (name, ", ".join(sorted(form)) or "an unlisted form", row[0]))
@@ -695,6 +765,20 @@ class Walk:
         self.refuse(c, "non-call reference to the role-annotated %s (%s) is neither "
                     "synchronous, a slot store, a binding-table form nor a test"
                     % (name, ", ".join(attrs)))
+
+    def _creation_arg(self, c, chain, i, use, usr, name, row):
+        """A function handed to a thread or fiber creation needs a row."""
+        K = ci().CursorKind
+        if row is not None or use is None or use.kind != K.CALL_EXPR \
+                or self.rel.startswith("tests/") or name in CREATION_FORM_ARGS:
+            return
+        callee = use.referenced
+        if callee is None or callee.spelling not in CREATION_CALLEES + ("SDL_SetPointerProperty",):
+            return
+        forms = self._classify(c, chain, i, use)[1]
+        if callee.spelling in CREATION_CALLEES or THREAD_PROP in forms:
+            self.refuse(c, "%s starts a thread or fiber and has no binding-table row"
+                        % name)
 
     def _slot_read(self, c, chain, role):
         """A read of an OP_SLOT slot: a call (rewritten by _slot_call), a
@@ -954,7 +1038,9 @@ def analyse(task):
     tmp = tempfile.mkdtemp(prefix="thread-roles-", dir=ctx["tmp"])
     pairs = []
     rewritten_main = None
-    need_walk = (ctx["walk_re"].search(text) is not None
+    c2 = ctx.get("c2")
+    scan = c2 is not None and rel in c2["tus"]
+    need_walk = (scan or ctx["walk_re"].search(text) is not None
                  or rel in ctx["sealed_files"] or rel in ctx["writer_files"]
                  or (ctx["redecl_re"] is not None and ctx["redecl_re"].search(text)))
     if need_walk:
@@ -970,8 +1056,11 @@ def analyse(task):
         res["refusals"] += w.refusals
         res["decl_attrs"] = w.decl_attrs
         res["rows_defined"] = sorted(w.rows_defined)
+        res["row_refs"] = sorted(w.row_refs)
         res["kinds"] = w.kinds
         res["slot_stores"] = w.slot_stores
+        if scan:
+            res["c2"] = pop.scan_tu(ci(), w.tu, c2, ctx, FENCE, reader(ctx))
         if (w.edits or w.helpers) and not ctx["no_rewrite"]:
             rewritten_main = apply_edits(text, w.edits, w.helpers)
         helper_names = w.helper_names
@@ -1044,6 +1133,62 @@ def analyse(task):
     return res
 
 
+def reader(ctx):
+    """-> rel -> text, the snapshot's text first (a replayed commit), then
+    the working file."""
+    snap = ctx.get("snapshot") or {}
+    root = ctx["root"]
+
+    def read(rel):
+        return snap[rel] if rel in snap else read_text(os.path.join(root, rel))
+    return read
+
+
+_SCAN = None        # (ctx, census or None): inherited by the forked workers
+
+
+def scan_worker(task):
+    """Worker: one (rel, db name, directory, flags) entry, walked only.
+    -> {"rel", "db", "parse", "tu"}."""
+    rel, dbname, directory, flags = task
+    ctx, plan = _SCAN
+    res = {"rel": rel, "db": dbname, "parse": [], "tu": None}
+    try:
+        w = Walk(ctx, rel, directory, flags)
+    except Exception as e:
+        res["parse"].append("%s: libclang parse failed: %s" % (rel, e))
+        return res
+    res["parse"] += w.parse_errors
+    if ctx.get("collect_refs"):
+        w.walk()
+        res["tu"] = w.func_refs
+    elif plan is None:
+        res["tu"] = pop.census_tu(ci(), w.tu, ctx, FENCE, reader(ctx))
+    else:
+        res["tu"] = pop.scan_tu(ci(), w.tu, plan, ctx, FENCE, reader(ctx))
+    return res
+
+
+def run_scan(root, select, plan, snapshot=None, collect_refs=False):
+    """Walk the selected entries without check 1. plan None: the census;
+    collect_refs: the survey of non-call function references.
+    -> (results, wall seconds)."""
+    global _SCAN
+    tables = Tables(root, tracked_scope(root))
+    ctx = build_ctx(root, tables, None)
+    ctx["collect_refs"] = collect_refs
+    ctx["snapshot"] = snapshot or {}
+    ctx["unsaved"] = [(os.path.join(root, r), t) for r, t in ctx["snapshot"].items()] or None
+    _SCAN = (ctx, plan)
+    tasks = [(rel, db, d, f) for db, entries in select.items()
+             for rel, lst in sorted(entries.items()) for d, f in lst]
+    t0 = time.time()
+    with concurrent.futures.ProcessPoolExecutor(max_workers=jobs()) as ex:
+        results = list(ex.map(scan_worker, tasks, chunksize=1))
+    _SCAN = None
+    return results, time.time() - t0
+
+
 # --------------------------------------------------------------------------
 # Selection, the run, the report
 # --------------------------------------------------------------------------
@@ -1054,7 +1199,8 @@ def tracked_scope(root):
 def scope_hashes(root, files):
     out = {}
     for f in files + [ROLES_H, "scripts/fences/thread_roles.py",
-                      "scripts/fences/ratchet_lib.py"]:
+                      "scripts/fences/thread_roles_globals.py",
+                      "scripts/fences/ratchet_lib.py", pop.UNANNOTATED, pop.DEFERRED]:
         try:
             st = os.stat(os.path.join(root, f))
             out[f] = "%d:%d" % (st.st_mtime_ns, st.st_size)
@@ -1064,7 +1210,8 @@ def scope_hashes(root, files):
 
 
 def build_ctx(root, tables, tmp):
-    walk_names = set(tables.candidates) | set(BOOT_FNS) | {"co_switch"} \
+    walk_names = set(tables.candidates) | set(BOOT_FNS) | {"co_switch", "exit"} \
+        | set(CREATION_CALLEES) | {"SDL_CreateThread", "SDL_SetPointerProperty"} \
         | set(tables.slot_walk) | set(STMT_MACROS) | {"OP_TSA_SUPPRESS_BEGIN", NTSA}
     walk_names = {n for n in walk_names if n and n not in ("if", "while", "for", "sizeof",
                                                           "return", "switch")}
@@ -1091,12 +1238,14 @@ def compile_patterns(ctx):
         map(re.escape, ext))) if ext else None)
 
 
-def run_analysis(root, select, jobs, label):
-    """select: {db name: {rel: [(directory, flags)]}} -> results."""
+def run_analysis(root, select, jobs, label, c2=None):
+    """select: {db name: {rel: [(directory, flags)]}} -> results. c2: the
+    check 2 scan plan, with its `tus`."""
     files = tracked_scope(root)
     tables = Tables(root, files)
     tmp = tempfile.mkdtemp(prefix="thread-roles-")
     ctx = build_ctx(root, tables, tmp)
+    ctx["c2"] = c2
     ctx["writer_files"] = {f for f in files
                            if os.path.basename(f) in ctx["writer_files_base"]}
     compile_patterns(ctx)
@@ -1121,6 +1270,7 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
     per_db = {}
     attrs = {}
     rows_defined = set()
+    row_refs = set()
     kinds = {}
     walked = rewritten = tsa = seal = 0
     for r in results:
@@ -1130,6 +1280,7 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
         for usr, lst in r["decl_attrs"].items():
             attrs.setdefault(usr, set()).update((w, a) for w, a in lst)
         rows_defined.update(r["rows_defined"])
+        row_refs.update(r.get("row_refs", ()))
         for k, v in r["kinds"].items():
             kinds[k] = kinds.get(k, 0) + v
         walked += r["walked"]
@@ -1143,6 +1294,10 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
             refusals.append("%s: declarations carry different role attributes: %s"
                             % (usr, "; ".join("%s %s" % (w, " ".join(a) or "(none)")
                                               for w, a in sorted(decls))))
+    if whole_selection(mode):
+        for usr in sorted(set(tables.rows) - row_refs):
+            refusals.append("%s: a binding-table row with no reference of its form %s in the "
+                            "tree" % (usr, tables.rows[usr][0]))
     for rel, line, mac in tables.nested:
         if rel in selected_files:
             refusals.append("%s:%d: %s inside a macro body; role macros are written at "
@@ -1186,6 +1341,12 @@ def report(root, tables, ctx, results, wall, selected_files, mode):
     return 1 if (refusals or parse) else 0, unseen
 
 
+def whole_selection(mode):
+    """True when the run walked every TU, so a reference it did not see does
+    not exist."""
+    return mode.startswith("check --all") or "every TU" in mode or "whole tree" in mode
+
+
 def databases(root, need_mingw=True):
     path = os.environ.get(FENCE.db_env) or os.path.join(root, lib.DB_DEFAULT)
     if not os.path.isfile(path):
@@ -1208,9 +1369,21 @@ def select_all(linux, mingw, files=None):
     return sel
 
 
+def first_form(root, base, path, code):
+    """True when the form macro on the added line is the global's first: the
+    declarator before it carries no form macro in the base text of path."""
+    m = re.search(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*\b(?:%s)\(" % "|".join(FORM_MACROS), code)
+    if not m:
+        return False
+    before = pop.tsv_at(root, base, path) or ""
+    return re.search(r"\b%s\s*(?:\[[^\]]*\]\s*)*\b(?:%s)\("
+                     % (re.escape(m.group(1)), "|".join(FORM_MACROS)),
+                     strip_comments(before)) is None
+
+
 def marker_refusals(root, base, staged):
-    """Hook: added lines that add or change a table row or a global's form
-    need a `thread-roles:` reason on the line."""
+    """Hook: added lines that add or change a table row, or change a global's
+    form, need a `thread-roles:` reason on the line. A first form needs none."""
     out = []
     hunks = lib.diff_hunks(root, base, staged)
     for path, hs in lib.added_ranges(hunks).items():
@@ -1229,10 +1402,104 @@ def marker_refusals(root, base, staged):
                     continue
                 table = path == ROLES_H and re.search(r"\b(ROW|SEAL|ACCESSOR|ESCAPE)\(\"?\w", code)
                 form = path != ROLES_H and re.search(r"\b(%s)\(" % "|".join(FORM_MACROS), code)
+                if form and first_form(root, base, path, code):
+                    continue
                 if (table or form) and not MARKER.search(s):
                     out.append("%s:%d: a row or a global's form changes without a "
                                "`thread-roles: <reason>` marker on the line" % (path, n))
     return out
+
+
+def load_lists(root, rev):
+    """-> (unannotated, deferred) at rev (`:` the index, None the working
+    file). VACUOUS without unannotated.tsv: no census ran."""
+    def text(path):
+        if rev is None:
+            full = os.path.join(root, path)
+            return read_text(full) if os.path.isfile(full) else None
+        return pop.tsv_at(root, rev, path)
+    un = text(pop.UNANNOTATED)
+    if un is None:
+        raise Refusal("VACUOUS: no %s; run `thread_roles.py census --write`" % pop.UNANNOTATED)
+    return pop.Baseline(un), pop.DeferredList(text(pop.DEFERRED))
+
+
+def compare_lists(root, base, un, dfr, renames, accept):
+    """Each TSV against `base`. -> refusals; the reports are printed."""
+    un_text = pop.tsv_at(root, base, pop.UNANNOTATED)
+    if un_text is None:
+        say("  check 2: %s has no %s; nothing to compare" % (base[:9], pop.UNANNOTATED))
+        return []
+    old_un = pop.Baseline(un_text)
+    old_d = pop.Baseline(pop.tsv_at(root, base, pop.DEFERRED) or "")
+    r1, s1 = pop.additions_refused(pop.UNANNOTATED, old_un, un, renames, accept,
+                                   moved_from=old_d)
+    r2, s2 = pop.additions_refused(pop.DEFERRED, old_d, dfr.base, renames, accept,
+                                   confirmed=old_un, need_note=True)
+    for line in s1 + s2:
+        say("  " + line)
+    return r1 + r2
+
+
+def hunks_scope(root, hunks):
+    """-> the in-scope part of a {path: hunks} map."""
+    return {p: h for p, h in hunks.items() if FENCE.in_scope(p)}
+
+
+def c2_plan(root, hunks, entries, read):
+    """-> the check 2 scan plan of a diff: the sources it names and every
+    source reaching a header it names."""
+    files = tracked_scope(root)
+    headers = {p for p in hunks if is_header(p)}
+    tus = {p for p in hunks if not is_header(p) and p in entries}
+    tus |= pop.includers(set(entries), files, read, headers)
+    return {"hunks": hunks, "stateless": True, "stateless_headers": bool(headers),
+            "macros": pop.static_macros(files, read), "tus": tus}
+
+
+def dump_refused(r, path):
+    """Write the refused globals for `thread_roles_annotate.py --batch`."""
+    if path:
+        with open(path, "w") as fh:
+            json.dump(json_ready({"refused": [r["recs"][g] for g in r["refused"]]}), fh)
+
+
+def c2_verdict(root, tus, hunks, un, dfr, read):
+    """Rule on the merged TUs and print the engagement line. -> (exit code,
+    the ruling). Code lines in a file no TU reached are VACUOUS and refuse;
+    no extent touched prints as VACUOUS and rules on nothing."""
+    r = pop.rule(tus, un, dfr)
+    say(pop.engagement_line(r))
+    dump_refused(r, os.environ.get("OPENPETE_THREAD_ROLES_REFUSED"))
+    refusals = r["text"] + pop.stateless(r["recs"], r["declared"], un, dfr)
+    unseen = sorted(p for p, h in hunks.items()
+                    if p not in r["seen"] and p not in lib.UNSCORED
+                    and p not in pop.NO_TU_HEADERS
+                    and os.path.isfile(os.path.join(root, p))
+                    and pop.code_touched(read(p), h, strip_comments))
+    if unseen:
+        say("thread-roles: VACUOUS: check 2 reached no TU for changed code in: %s"
+            % ", ".join(unseen))
+    elif not r["extents"]:
+        say("  check 2: VACUOUS: no extent or declaration touched, nothing ruled on")
+    for line in refusals[:60]:
+        say("    " + line)
+    if len(refusals) > 60:
+        say("    ... %d more" % (len(refusals) - 60))
+    return (1 if refusals or unseen else 0), r
+
+
+def c2_exit(code):
+    """-> check 2's exit status: code when armed, else 0 with a line saying
+    the refusals above were reports."""
+    if code and not CHECK2_ARMED:
+        say("  check 2: REPORT ONLY: the lines above would refuse; CHECK2_ARMED is False")
+        return 0
+    return code
+
+
+def hook_renames(root, changes):
+    return {a: b for s, a, b in changes if s == "R"}
 
 
 def mode_hook(root):
@@ -1241,9 +1508,20 @@ def mode_hook(root):
     staged = [b or a for s, a, b in changes if s != "D"]
     scope = [f for f in staged if FENCE.in_scope(f) or f in (
         "scripts/fences/thread_roles.py", ROLES_H)]
-    if not scope:
+    lists_staged = {pop.UNANNOTATED, pop.DEFERRED} & set(staged)
+    if not scope and not lists_staged:
         say("thread-roles: no staged in-scope path")
         return 0
+    dirty_lists = lists_staged & set(git(root, "diff", "--name-only").stdout.split("\n"))
+    if dirty_lists:
+        raise Refusal("staged with unstaged hunks: %s" % ", ".join(sorted(dirty_lists)))
+    un, dfr = load_lists(root, ":")
+    accept = lib.accept_reason(pop.ACCEPT_ENV) or ""
+    list_refusals = compare_lists(root, base, un, dfr, hook_renames(root, changes), accept)
+    for line in list_refusals:
+        say("    " + line)
+    if not scope:
+        return c2_exit(1 if list_refusals else 0)
     dirty = set(git(root, "diff", "--name-only").stdout.split("\n"))
     unstaged = sorted(f for f in scope if f in dirty)
     if unstaged:
@@ -1275,8 +1553,16 @@ def mode_hook(root):
         return 0
     if not any(sel.values()) and analysable:
         raise Refusal("VACUOUS: zero TUs analysed for %d staged source(s)" % len(analysable))
-    tables, ctx, results, wall = run_analysis(root, sel, jobs(), mode)
+    read = lambda rel: read_text(os.path.join(root, rel))
+    hunks = hunks_scope(root, lib.diff_hunks(root, base, scope))
+    plan = c2_plan(root, hunks, set(linux) | set(mingw), read)
+    tables, ctx, results, wall = run_analysis(root, sel, jobs(), mode, plan)
     rc, _ = report(root, tables, ctx, results, wall, set(scope), mode)
+    t0 = time.time()
+    rc2, _ = c2_verdict(root, [r["c2"] for r in results if r.get("c2")], hunks, un, dfr, read)
+    say("  check 2: ruled in %.2f s over %d TU entries" % (
+        time.time() - t0, sum(1 for r in results if r.get("c2"))))
+    rc = rc or c2_exit(rc2 or (1 if list_refusals else 0))
     marks = marker_refusals(root, base, scope)
     for m in marks:
         say("    " + m)
@@ -1322,16 +1608,39 @@ def mode_check(root, argv):
                     "(%s)" % ", ".join(sorted(changed)[:5]))
     sel = select_all(linux, mingw, sel_files)
     mode = "check --all" if whole else "check: %s" % why
+    un, dfr = load_lists(root, None)
+    list_refusals = merge_base_compare(root, un, dfr)
+    for line in list_refusals:
+        say("    " + line)
     if sel_files is not None and not sel_files:
+        if c2_exit(1 if list_refusals else 0):
+            say("thread-roles: REFUSED")
+            return 1
         say("thread-roles: check: no analysed source changed since the last pass")
         with open(stamp_path, "w") as fh:
             json.dump({"db": db_sig, "files": now}, fh)
         return 0
     if not any(sel.values()):
         raise Refusal("VACUOUS: zero TUs selected (%s)" % why)
-    tables, ctx, results, wall = run_analysis(root, sel, jobs(), mode)
+    plan = {"hunks": {}, "stateless": True, "stateless_headers": sel_files is None,
+            "macros": pop.static_macros(files, lambda r: read_text(os.path.join(root, r))),
+            "tus": set(linux) | set(mingw) if sel_files is None else set(sel_files)}
+    tables, ctx, results, wall = run_analysis(root, sel, jobs(), mode, plan)
     rc, _ = report(root, tables, ctx, results, wall,
                    set(files) if sel_files is None else sel_files, mode)
+    tus = [r["c2"] for r in results if r.get("c2")]
+    extents, recs, seen, declared, defs = pop.merge_tus(tus)
+    state = pop.stateless(recs, declared, un, dfr)
+    if sel_files is None:
+        state += stale_lines(un, recs, seen, declared)
+        state += stale_lines(dfr.base, recs, seen, declared)
+    say("  check 2 (stateless): globals declared %d, rows %d unannotated, %d deferred, "
+        "definitions %d, refused %d" % (len(declared), len(un.rows), len(dfr), defs, len(state)))
+    for line in state[:40]:
+        say("    " + line)
+    if len(state) > 40:
+        say("    ... %d more" % (len(state) - 40))
+    rc = rc or c2_exit(1 if state or list_refusals else 0)
     if rc == 0:
         with open(stamp_path, "w") as fh:
             json.dump({"db": db_sig, "files": now}, fh)
@@ -1339,6 +1648,247 @@ def mode_check(root, argv):
     else:
         say("thread-roles: REFUSED")
     return rc
+
+
+def stale_lines(un, recs, seen, declared):
+    """-> a line per row on a scanned file whose global no TU declared. Only
+    a whole-tree selection decides this."""
+    keys = {(recs[g]["path"], recs[g]["function"], recs[g]["name"]) for g in declared}
+    names = {recs[g]["name"] for g in declared}
+    return ["%s:%s %s has a row and no declaration; delete the row" % k
+            for k, row in sorted(un.rows.items())
+            if k[0] in seen and k not in keys and not (row[3] == "extern" and k[2] in names)]
+
+
+def default_branch_base(root):
+    """-> the merge-base of HEAD and main, or None when the repository has
+    neither."""
+    for ref in ("main", "origin/main"):
+        p = git(root, "merge-base", "HEAD", ref, check=False)
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    return None
+
+
+def merge_base_compare(root, un, dfr):
+    """The stateless half's TSV compare with the merge-base."""
+    base = default_branch_base(root)
+    if base is None:
+        say("  check 2: no main branch; the merge-base compare did not run")
+        return []
+    p = git(root, "diff", "--name-status", "-M", "-l", "100000", "--diff-filter=R", base)
+    renames = {c[1]: c[2] for c in (l.split("\t") for l in p.stdout.splitlines())}
+    return compare_lists(root, base, un, dfr, renames, None)
+
+
+def rev_hunks(root, base, head):
+    """-> {in-scope path: after-side hunks} of base..head."""
+    return hunks_scope(root, lib.diff_hunks(root, base, None, rev=head))
+
+
+def selected(linux, mingw, tus):
+    return {"linux": {r: l for r, l in linux.items() if r in tus},
+            "mingw": {r: l for r, l in mingw.items() if r in tus}}
+
+
+def scan_vacuity(results):
+    """-> the parse failures of a scan; each is VACUOUS."""
+    return [p for r in results for p in r["parse"]]
+
+
+def mode_range(root, argv):
+    """check 2's touched-extent half over base..head at head."""
+    if len(argv) < 2 or ".." not in argv[1]:
+        return None
+    base, head = argv[1].split("..", 1)
+    head_sha = git(root, "rev-parse", head).stdout.strip()
+    if head_sha != lib.head_sha(root):
+        raise Refusal("range reads the tree at %s, and HEAD is %s" % (head, lib.head_sha(root)))
+    dirty = sorted(lib.dirty_paths(root, FENCE))
+    if dirty:
+        raise Refusal("range reads the working tree; tracked or untracked changes in "
+                      "scope: %s" % ", ".join(dirty[:5]))
+    un, dfr = load_lists(root, None)
+    p = git(root, "diff", "--name-status", "-M", "-l", "100000", "--diff-filter=R", base, head)
+    renames = {c[1]: c[2] for c in (l.split("\t") for l in p.stdout.splitlines())}
+    list_refusals = compare_lists(root, base, un, dfr, renames, None)
+    hunks = rev_hunks(root, base, head)
+    read = lambda rel: read_text(os.path.join(root, rel))
+    linux, mingw = databases(root)
+    plan = c2_plan(root, hunks, set(linux) | set(mingw), read)
+    results, wall = run_scan(root, selected(linux, mingw, plan["tus"]), plan)
+    say("thread-roles: range %s..%s: %d files, %d TU entries, %.1f s wall"
+        % (base[:9], head[:9], len(hunks), len(results), wall))
+    parse = scan_vacuity(results)
+    rc, _ = c2_verdict(root, [r["tu"] for r in results if r["tu"]], hunks, un, dfr, read)
+    for line in list_refusals + parse[:20]:
+        say("    " + line)
+    if parse or c2_exit(1 if rc or list_refusals else 0):
+        say("thread-roles: REFUSED")
+        return 1
+    say("thread-roles: PASS")
+    return 0
+
+
+def census_select(linux, mingw):
+    return select_all(linux, mingw)
+
+
+def census_rows(m, confirmed):
+    """-> the unannotated.tsv rows of a merged census: one per form-less
+    member, one per defining path of an extern."""
+    rows = []
+    for g, rec in m["globals"].items():
+        if rec["form"]:
+            continue
+        form, why = confirmed.get(g, ("-", ""))
+        for path in sorted(rec["paths"]) or [rec["path"]]:
+            rows.append([path, rec["function"], rec["name"], rec["kind"], form, why])
+    return rows
+
+
+def summarize(m, confirmed, rows, wall, entries, parse):
+    """Print the census's report."""
+    recs = m["globals"]
+    by_kind, by_form, by_file = {}, {}, {}
+    for r in rows:
+        by_kind[r[3]] = by_kind.get(r[3], 0) + 1
+        by_form[r[4]] = by_form.get(r[4], 0) + 1
+        by_file[r[0]] = by_file.get(r[0], 0) + 1
+    formed = sum(1 for r in recs.values() if r["form"])
+    say("thread-roles census: %d TU entries, %.1f s wall, %d parse failures"
+        % (entries, wall, len(parse)))
+    say("  population %d globals (%d with a form, %d rows form-less)"
+        % (len(recs), formed, len(rows)))
+    say("  rows by kind: %s" % ", ".join("%s %d" % kv for kv in sorted(by_kind.items())))
+    say("  confirmed forms: %s" % ", ".join("%s %d" % kv for kv in sorted(by_form.items())))
+    say("  largest files: %s" % ", ".join("%s %d" % kv for kv in sorted(
+        by_file.items(), key=lambda kv: -kv[1])[:8]))
+
+
+def census_data(root):
+    """-> (merged census, {gid: confirmed form}, rows, wall, entries, parse)."""
+    linux, mingw = databases(root)
+    results, wall = run_scan(root, select_all(linux, mingw), None)
+    parse = scan_vacuity(results)
+    m = pop.merge_census([r["tu"] for r in results if r["tu"]])
+    confirmed = pop.confirm(m)
+    return m, confirmed, census_rows(m, confirmed), wall, len(results), parse
+
+
+def json_ready(obj):
+    """Sets to sorted lists, for json.dump."""
+    if isinstance(obj, dict):
+        return {str(k): json_ready(v) for k, v in obj.items()}
+    if isinstance(obj, (set, frozenset, list, tuple)):
+        items = [json_ready(x) for x in obj]
+        return sorted(items, key=str) if isinstance(obj, (set, frozenset)) else items
+    return obj
+
+
+def option(argv, name):
+    """-> the value after `name` in argv, or None."""
+    return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else None
+
+
+def mode_census(root, argv):
+    m, confirmed, rows, wall, entries, parse = census_data(root)
+    summarize(m, confirmed, rows, wall, entries, parse)
+    for p in parse[:20]:
+        say("    " + p)
+    out = option(argv, "--json")
+    if out:
+        with open(out, "w") as fh:
+            json.dump(json_ready({"globals": m["globals"], "refs": m["refs"],
+                                  "naming": pop.naming_counts(m), "confirmed": confirmed,
+                                  "seen": m["seen"], "calls": m["calls"], "fns": m["fns"],
+                                  "addr_fn": m["addr_fn"]}), fh)
+    if not any(r[4] != "-" for r in rows) or not m["fns"]:
+        raise Refusal("VACUOUS: the census confirmed zero forms")
+    if parse:
+        raise Refusal("VACUOUS: %d entries do not parse under libclang" % len(parse))
+    if "--write" in argv:
+        path = os.path.join(root, pop.UNANNOTATED)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(pop.render_tsv("mutable globals with no form (thread_roles.py census)",
+                                    rows, "census", lib.head_sha(root)))
+        dpath = os.path.join(root, pop.DEFERRED)
+        if not os.path.isfile(dpath):
+            with open(dpath, "w") as fh:
+                fh.write(pop.render_tsv("mutable globals whose demand cascades, each row "
+                                        "with its annotator chain", [], "census",
+                                        lib.head_sha(root)))
+    return 0
+
+
+def mode_tighten(root):
+    """Rows leave unannotated.tsv when the global has a form or is gone;
+    the annotator re-runs over deferred.tsv and moves a row that reaches a
+    fixed point. No row is added here but such a move."""
+    un, dfr = load_lists(root, None)
+    m, confirmed, rows, wall, entries, parse = census_data(root)
+    if parse:
+        raise Refusal("VACUOUS: %d entries do not parse under libclang" % len(parse))
+    live = {tuple(r[:3]): r for r in rows}
+    kept = [live[k] for k in un.rows if k in live]
+    say("thread-roles tighten: unannotated.tsv %d -> %d rows" % (len(un.rows), len(kept)))
+    with open(os.path.join(root, pop.UNANNOTATED), "w") as fh:
+        fh.write(pop.render_tsv("mutable globals with no form (thread_roles.py census)",
+                                kept, "tighten", lib.head_sha(root)))
+    annotator = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                             "thread_roles_annotate.py")
+    return subprocess.run([sys.executable, annotator, "--tighten"], cwd=root).returncode
+
+
+def snapshot_at(root, sha):
+    """-> {rel: text at sha} of every in-scope path that differs from HEAD."""
+    p = git(root, "diff", "--name-only", "--no-renames", sha, "HEAD", "--", *FENCE.root_dirs())
+    snap = {}
+    for rel in p.stdout.split():
+        if not FENCE.in_scope(rel):
+            continue
+        q = subprocess.run(["git", "-C", root, "show", "%s:%s" % (sha, rel)],
+                           capture_output=True)
+        if q.returncode == 0:
+            snap[rel] = q.stdout.decode("utf-8", "replace")
+    return snap
+
+
+def mode_replay(root, argv):
+    """check 2's touched-extent half of one commit, over that commit's text
+    served to libclang in this tree's databases, with the census's facts for
+    the demand. Exit 0; the verdict is the report."""
+    if len(argv) < 2:
+        return None
+    sha = git(root, "rev-parse", argv[1]).stdout.strip()
+    un, dfr = load_lists(root, None)
+    snap = snapshot_at(root, sha)
+    read = lambda rel: snap[rel] if rel in snap else read_text(os.path.join(root, rel))
+    hunks = hunks_scope(root, lib.diff_hunks(root, sha + "^", None, rev=sha))
+    linux, mingw = databases(root)
+    plan = c2_plan(root, hunks, set(linux) | set(mingw), read)
+    plan["stateless"] = False
+    results, wall = run_scan(root, selected(linux, mingw, plan["tus"]), plan, snap)
+    parse = scan_vacuity(results)
+    tus = [r["tu"] for r in results if r["tu"]]
+    r = pop.rule(tus, un, dfr)
+    say("thread-roles: replay %s: %d files, %d TU entries (%d parse failures), %.1f s, "
+        "%d files replaced" % (sha[:9], len(hunks), len(results), len(parse), wall, len(snap)))
+    say(pop.engagement_line(r))
+    if not r["extents"]:
+        say("  VACUOUS: no extent touched")
+    out = option(argv, "--json")
+    if out:
+        with open(out, "w") as fh:
+            json.dump(json_ready({"sha": sha, "extents": r["extents"], "named": r["named"],
+                                  "refused": [dict(r["recs"][g], where=r["by_global"][g])
+                                              for g in r["refused"]],
+                                  "passed_form": r["passed_form"], "parse": parse[:10],
+                                  "files": sorted(hunks)}), fh)
+    for t in r["text"]:
+        say("    " + t[:240])
+    return 0
 
 
 def mode_armed(root):
@@ -1420,6 +1970,14 @@ def dispatch(root, mode, argv):
         return mode_armed(root)
     if mode == "check":
         return mode_check(root, argv)
+    if mode == "range":
+        return mode_range(root, argv)
+    if mode == "census":
+        return mode_census(root, argv)
+    if mode == "tighten":
+        return mode_tighten(root)
+    if mode == "replay":
+        return mode_replay(root, argv)
     if mode == "sites":
         return mode_sites(root)
     if mode == "join":

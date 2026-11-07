@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 static mod_material_t s_mats[MOD_MATERIAL_MAX];
 static int s_mat_count;
@@ -327,6 +328,7 @@ static void census_print_classes(void) {
 }
 
 void mod_mat_census_print(void) {
+    OP_ROLE_ASSERT(sim);
     if (s_census <= 0) return;
     unsigned long long engaged = 0;
     fprintf(stderr, "[material-census] presents=%u materials=%d\n",

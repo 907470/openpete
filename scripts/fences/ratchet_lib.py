@@ -722,16 +722,20 @@ def carry_key(key, renames):
     return key
 
 
-def diff_hunks(root, base, paths, cached=True):
+def diff_hunks(root, base, paths, cached=True, rev=None):
     """-> {path: [(start, count)]}: each hunk's after-side start line and
     added-line count (0 = a pure deletion after line `start`). cached: the
-    index against `base`; else the working tree against the index."""
+    index against `base`; else the working tree against the index. rev: the
+    commit `rev` against `base`, over paths (None: every path)."""
     hunks = {}
-    if not paths:
+    if not paths and rev is None:
         return hunks
     args = ["diff", "-U0", "-M", "-l", "100000"]
-    args += ["--cached", base] if cached else []
-    p = git(root, *(args + ["--"] + list(paths)))
+    if rev is not None:
+        args += [base, rev]
+    else:
+        args += ["--cached", base] if cached else []
+    p = git(root, *(args + ["--"] + list(paths or ())))
     cur = None
     for line in p.stdout.splitlines():
         if line.startswith("+++ "):

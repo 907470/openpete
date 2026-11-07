@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -456,6 +457,7 @@ static struct {
 
 /** @brief Prints the run-wide geometry, walk and matrix verdicts from s_agg to stderr. */
 static void spyro_agg_final(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[spyro-agg FINAL] frames=%ld imperfect=%ld (%.2f%%)  worst=%.1f%% (part %d @f%u)  maxerr=%.1fpx @f%u  => %s\n",
             s_agg.frames, s_agg.bad_frames,
             s_agg.frames ? 100.0 * s_agg.bad_frames / s_agg.frames : 0.0,

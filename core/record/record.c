@@ -29,6 +29,7 @@
 // init warns once if --record was requested). See core/CMakeLists.txt.
 
 #include "openpete_record.h"
+#include "openpete_thread_roles.h"
 #include "openpete_atomic_file.h"
 #include "openpete_crash.h"
 #include "openpete_log.h"
@@ -387,6 +388,7 @@ static void rec_pump_audio(void) {
 
 /** @brief Body of the recording encoder thread: encode queued frames and drain the audio ring until the recording stops. */
 static int rec_thread_main(void* unused) {
+    OP_ROLE_BIND(record);
     (void)unused;
     openpete_crash_thread_attach();
     for (;;) {

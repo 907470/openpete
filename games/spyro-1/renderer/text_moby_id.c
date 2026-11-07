@@ -37,6 +37,7 @@
 #include "psx_runtime_internal.h"
 
 #include "text_moby_id.h"
+#include "openpete_thread_roles.h"
 
 /* g_HudMobys (bump-down pool cursor) and D_800756FC (the pool's base for this
  * tick - the sentinel func_80018880 drains back to). */
@@ -270,6 +271,7 @@ static int text_emit_entry(CPUState* cpu, int spaced) {
  * @param addr Unused.
  * @return 0, so the recompiled emitter runs. */
 static int on_80017FE4_text(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     return text_emit_entry(cpu, 0);
 }
@@ -280,6 +282,7 @@ static int on_80017FE4_text(CPUState* cpu, uint32_t addr) {
  * @param addr Unused.
  * @return 0, so the recompiled emitter runs. */
 static int on_800181AC_text(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     return text_emit_entry(cpu, 1);
 }
@@ -294,6 +297,7 @@ static int on_800181AC_text(CPUState* cpu, uint32_t addr) {
  * @param addr Unused.
  * @return 0, so the recompiled function runs. */
 static int on_80018880_drain(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)cpu; (void)addr;
     if (s_closed) text_id_clear();
     s_closed = 1;

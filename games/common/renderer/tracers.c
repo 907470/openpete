@@ -1,3 +1,4 @@
+#include "openpete_thread_roles.h"
 // games/common/renderer/tracers.c - the tracer ribbon feeders: two handwritten
 // routines that build textured gouraud quad strips and link them into the 3D
 // ordering table themselves, so none of their primitives reaches the 2D
@@ -625,6 +626,7 @@ static unsigned long s_near_presents[2];
 
 /** @brief Prints the near census's run totals to stderr, registered with atexit by tr_near_census. */
 static void tr_near_report(void) {
+    OP_ROLE_ASSERT(sim);
     static const char* const leg[2] = { "canon", "inter" };
     static const char* const src[2] = { "ribbon", "mesh" };
     for (int l = 0; l < 2; l++)
@@ -812,6 +814,7 @@ static uint32_t s_msh_desc;
  * @param feed Unused.
  * @param verify Unused. */
 static void msh_pre(CPUState* cpu, int feed, int verify) {
+    OP_ROLE_ASSERT(sim);
     (void)feed; (void)verify;
     s_msh_desc = cpu->a0;
 }
@@ -830,6 +833,7 @@ static const hook_bracket_desc k_msh = {
  * @return 0 when the bracket declines the call, else the bracket's end
  *         result. */
 static int on_ribbon(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_rib, &startp, &endp, &feed, &verify))
         return 0;
@@ -861,6 +865,7 @@ static int on_ribbon(CPUState* cpu, uint32_t addr) {
  * @return 0 when the bracket declines the call, else the bracket's end
  *         result. */
 static int on_mesh(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_msh, &startp, &endp, &feed, &verify))
         return 0;
@@ -1364,6 +1369,7 @@ static void tr_acc_print(const char* name, const tr_acc* a) {
 
 /** @brief Prints the probe's summary to stderr; registered with atexit. */
 static void tr_vtx_report(void) {
+    OP_ROLE_ASSERT(sim);
     const tr_vtx_t* t = &s_vtx;
     fprintf(stderr, "[tracer-vtx emu] corners=%lu match=%lu built_items=%lu unbuilt_items=%lu\n",
             t->emu_n, t->emu_hit, t->built, t->unbuilt);
@@ -1657,6 +1663,7 @@ static int tr_interp_enabled(void) {
  * largest world step paired. A run whose lerped count is zero rebuilt
  * nothing against a previous point. */
 static void tr_rebase_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[tracer-rebase] ribbon lerped=%lu held=%lu mesh lerped=%lu held=%lu "
             "worldmax=%.3f\n",
             s_reb_stat[TR_SRC_RIBBON][0], s_reb_stat[TR_SRC_RIBBON][1],
@@ -1720,6 +1727,7 @@ static feature_dispatch_entry_t tracers_dispatch[] = {
  *
  * @param opts Unused. */
 static void tracers_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     tracers_dispatch[0].addr = game_layout.tracers.ribbon_hook;
     tracers_dispatch[1].addr = game_layout.tracers.mesh_hook;

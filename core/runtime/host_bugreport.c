@@ -4,6 +4,7 @@
  * facts, and the worker's lifecycle. See openpete_bugreport.h; the worker
  * itself is core/record/bugreport_write.c. */
 #include "openpete_bugreport.h"
+#include "openpete_thread_roles.h"
 
 #include "../record/bugreport_internal.h"
 #include "game_extras.h"
@@ -415,6 +416,7 @@ static void press_rings(br_job_t* j) OP_REQUIRES(sim)
  * @return 0. */
 static int bundle_worker(void* p)
 {
+    OP_ROLE_BIND(bugreport);
     br_job_t* j = (br_job_t*)p;
     br_job_write(j);
     SDL_SetAtomicInt(&j->finished, 1);
@@ -624,6 +626,7 @@ static void fatal_collect(br_job_t* j)
  * @return 0. */
 static int fatal_worker(void* p)
 {
+    OP_ROLE_BIND(bugreport);
     br_job_t* j = (br_job_t*)p;
     stage_report(j, "config.txt", openpete_config_report);
     stage_report(j, "keymap.txt", openpete_keymap_report);

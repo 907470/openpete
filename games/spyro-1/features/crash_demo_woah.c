@@ -69,6 +69,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define ADDR_CRASH_DEMO_LAUNCH 0x8002BAB8u
 #define ADDR_KILL_SOUNDS_MUSIC 0x80056B28u
@@ -176,6 +177,7 @@ static SDL_Thread*   s_loader;
  * @param unused Unused.
  * @return 0. */
 static int SDLCALL woah_load_main(void* unused) {
+    OP_ROLE_BIND(crashdemo);
     (void)unused;
     size_t nsf_len = 0;
     int scope = openpete_disc_trace_scope_begin(OPENPETE_DISC_TAG_WOAH);
@@ -222,6 +224,7 @@ static void woah_load_start(void) {
  * The feature module's shutdown callback, run before SDL_Quit. Waits for a
  * decode still in progress; the decoded PCM stays allocated. */
 static void crash_demo_woah_shutdown(void) {
+    OP_ROLE_ASSERT(sim);
     if (s_loader && s_loader != (SDL_Thread*)-1) SDL_WaitThread(s_loader, NULL);
     s_loader = (SDL_Thread*)-1;  /* joined: never restarted */
 }
@@ -252,6 +255,7 @@ static int in_cheat_branch(CPUState* cpu) {
  * @param addr The hooked address (unused).
  * @return 1 to skip the guest function inside the cheat branch, else 0. */
 static int on_kill_sounds_and_music(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (!in_cheat_branch(cpu)) return 0;
     if (!s_flags_spoofed) {
@@ -271,6 +275,7 @@ static int on_kill_sounds_and_music(CPUState* cpu, uint32_t addr) {
  * @param addr The hooked address (unused).
  * @return 1, always skipping the guest function. */
 static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (s_flags_spoofed) {
         cpu->write_word(ADDR_G_CDMUSIC_FLAGS, s_saved_flags);
@@ -293,6 +298,7 @@ static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
  * @param addr The hooked address (unused).
  * @return 1 to skip the guest call on a repeat tick of the press, else 0. */
 static int on_titlescreen_play_sound(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if ((int)cpu->a0 != TS_SOUND_BACK) return 0;
     if (!in_cheat_branch(cpu)) return 0;
@@ -329,6 +335,7 @@ void spyro1_crash_woah_on_tick(CPUState* cpu) {
  * empty and woah_load_start never starts the loader.
  * @param opts The options, or NULL. */
 static void crash_demo_woah_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     if (opts && opts->disc_path)
         snprintf(s_disc_path, sizeof s_disc_path, "%s", opts->disc_path);
 }

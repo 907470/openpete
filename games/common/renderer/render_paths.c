@@ -19,7 +19,7 @@
 #include "renderer/env_knob.h"
 #include "game_layout.h"             /* level_id: the level push */
 #include "openpete_mods.h"           /* openpete_mods_set_level */
-#include "openpete_thread_roles.h"   /* OP_REQUIRES */
+#include "openpete_thread_roles.h"
 #include "openpete_log.h"            /* table-full warning */
 
 static const char* const k_names[RP_COUNT] = {
@@ -282,6 +282,7 @@ static int      s_feed_audit_registered = 0;
  * and, when nonzero, its unmarked frames and their triangle total.
  * Registered with atexit by the first audited scene. */
 static void render_paths_feed_audit_census(void) {
+    OP_ROLE_ASSERT(sim);
     uint32_t fed = 0, bad = 0;
     for (int p = 0; p < RP_COUNT; p++) { fed += s_feed_audit_fed_frames[p]; bad += s_feed_audit_frames[p]; }
     fprintf(stderr, "render-paths: feed audit: fed_path_frames=%u unmarked_path_frames=%u",
@@ -458,6 +459,7 @@ static int rp_knob_set(knob_desc_t* k, const char* v) {
  * its polybuf interval.
  * @param opts The parsed options; NULL leaves every path rendering. */
 static void render_paths_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     render_paths_init(opts ? opts->render_paths : NULL);
     /* In isolation, an empty native scene must show the background, not the
      * unfiltered PSX VRAM framebuffer (which would show every path). */

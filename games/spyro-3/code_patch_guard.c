@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "openpete_thread_roles.h"
 
 #define MIPS_JR_RA 0x03E00008u
 #define MIPS_NOP   0x00000000u
@@ -35,6 +36,7 @@ static guard_row_t s_rows[] = {
 
 /** @brief Print each guarded function's guard returns and body entries. */
 static void exit_report(void) {
+    OP_ROLE_ASSERT(sim);
     for (size_t i = 0; i < sizeof s_rows / sizeof s_rows[0]; i++) {
         const guard_row_t* r = &s_rows[i];
         fprintf(stderr, "[s3-patch-guard] func_%08X (%s): guard returns=%u (first vbl %d) "

@@ -159,8 +159,10 @@ void op_role_boot_acquire(void) OP_ACQUIRE_CAP(op_role_sim) OP_NO_THREAD_SAFETY_
     t_mask |= OP_ROLE_BIT_sim;
 }
 
+/* Static only: main keeps sim in its mask, since exit() and the return from
+ * main run the atexit handlers on this thread after openpete_run returns,
+ * and each handler asserts sim. */
 void op_role_boot_release(void) OP_RELEASE_CAP(op_role_sim) OP_NO_THREAD_SAFETY_ANALYSIS {
-    t_mask &= ~(unsigned)OP_ROLE_BIT_sim;
 }
 
 void op_role_boot_handoff(void) OP_RELEASE_CAP(op_role_sim) OP_NO_THREAD_SAFETY_ANALYSIS {

@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define PC_PAGE       4096u
 #define CENSUS_WINDOW 30u
@@ -287,6 +288,7 @@ static void pc_panel_check(FILE* f) {
 
 /** @brief Report the census at exit to stderr and, when the variable names a path, to that file. */
 static void pc_report(void) {
+    OP_ROLE_ASSERT(sim);
     pc_emit(stderr);
     pc_panel_check(stderr);
     const char* e = getenv("OPENPETE_ARENA_PAGE_CENSUS");

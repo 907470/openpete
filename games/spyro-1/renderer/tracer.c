@@ -46,6 +46,7 @@
 #include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "tracer_snapshot.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_thread_roles.h"
 
 extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */
 extern unsigned openpete_frame;
@@ -203,13 +204,15 @@ static void tracer_build_and_feed(CPUState* cpu) {
  *
  * @param cpu The guest CPU state.
  * @param addr Unused. */
-static void tracer_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_800189F0(cpu); }
+static void tracer_run_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim); (void)addr; func_800189F0(cpu); }
 /** @brief Bracket pre-step that snapshots the tracer points before the game renderer drains them, when the native feed is on.
  *
  * @param cpu The guest CPU state.
  * @param feed Nonzero when the native feed runs this call.
  * @param verify Unused. */
 static void tracer_pre(CPUState* cpu, int feed, int verify) {
+    OP_ROLE_ASSERT(sim);
     (void)verify;
     if (feed) s_nsets = tracer_snapshot_take(cpu, TRACER_COUNT, TRACER_CNTTAB, TRACER_BASETAB,
                                              s_sets, TRACER_MAX_SETS);
@@ -238,6 +241,7 @@ static const hook_bracket_desc k_tracer_bracket = {
  * @return 0 when the bracket declines and the ordinary dispatch runs the
  *         function; 1 when the bracket ran it. */
 static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t pb0, pb1; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_tracer_bracket, &pb0, &pb1, &feed, &verify))
         return 0;

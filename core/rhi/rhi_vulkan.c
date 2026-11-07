@@ -33,6 +33,7 @@
 #include "rhi_memtype.h"
 #include "rhi_pipe_census.h"
 #include "rhi_pcache_file.h"
+#include "../include/openpete_thread_roles.h"
 
 /* Acquire budget, and the back-off after one expiry.
  *
@@ -4065,6 +4066,7 @@ struct pcache_save_job {
  * @return 0. */
 static int SDLCALL pcache_save_worker(void *arg)
 {
+    OP_ROLE_BIND(pcache);
     struct pcache_save_job *j = arg;
     j->digest = fnv1a64(j->buf + sizeof(struct pcache_envelope), j->n);
     const size_t len = pcache_seal(j->buf, j->n, j->kc, j->driver_version);
@@ -10131,6 +10133,7 @@ static void pool_worker_loop(rhi_device *dev, bool low)
  * @return 0. */
 static int SDLCALL pool_worker(void *arg)
 {
+    OP_ROLE_BIND(compile);
     pool_worker_loop(arg, false);
     return 0;
 }
@@ -10145,6 +10148,7 @@ static int SDLCALL pool_worker(void *arg)
  * @return 0. */
 static int SDLCALL pool_worker_low(void *arg)
 {
+    OP_ROLE_BIND(compile);
     if (!SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW))
         RHI_LOG("compile pool: a low-priority worker kept its priority (%s)\n", SDL_GetError());
     pool_worker_loop(arg, true);

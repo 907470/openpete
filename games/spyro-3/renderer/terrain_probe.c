@@ -1,3 +1,4 @@
+#include "openpete_thread_roles.h"
 // games/spyro-3/renderer/terrain_probe.c - the calibrated terrain probe.
 //
 // Hooks the world draw, runs it once, brackets the primitives it emitted
@@ -335,6 +336,7 @@ static struct {
  * VACUOUS line and stops when no tick, no polygon or no visible sector was
  * seen. on_world_draw registers it with atexit on first use. */
 static void probe_report(void) {
+    OP_ROLE_ASSERT(sim);
     if (S.printed || probe_mode() == 0) return;
     S.printed = 1;
     if (S.ticks == 0 || S.polys == 0 || S.visible_sum == 0) {
@@ -405,6 +407,7 @@ static void probe_report(void) {
  * @param addr The hooked address (unused).
  * @return 1 when the probe ran the draw (the stock body is skipped), else 0. */
 static int on_world_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     int mode = probe_mode();
     if (!mode) return 0;
@@ -566,6 +569,7 @@ static feature_dispatch_entry_t probe_dispatch[] = {
  *
  * @param opts Unused. */
 static void probe_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     probe_dispatch[0].addr = game_layout.hooks.world_draw;
 }

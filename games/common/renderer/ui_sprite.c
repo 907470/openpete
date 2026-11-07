@@ -42,7 +42,7 @@
 #include <math.h>
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
-#include "openpete_thread_roles.h"   /* OP_REQUIRES */
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -2048,6 +2048,7 @@ static void claim_linked(CPUState* cpu, uint32_t prim) {
  * @param addr The hooked entry address.
  * @return 0 when the ordinary dispatch runs the insert, 1 having run it. */
 static int on_ot_insert(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     int feed = openpete_native_scene_enabled();
     if (!feed) {                                /* inert: normal dispatch runs it */
         ui_path_record(cpu, cpu->a0);
@@ -2116,6 +2117,7 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
  * @param addr The hooked entry address; unused.
  * @return 0, so the ordinary dispatch runs the insert. */
 static int on_ot_rank_link(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (!openpete_native_scene_enabled()) return 0;
     ui_sprite_link_note(cpu->a0, (int)cpu->a1);
@@ -2139,6 +2141,7 @@ static int on_ot_rank_link(CPUState* cpu, uint32_t addr) {
  * @param addr The hooked entry address; unused.
  * @return 0, so the ordinary dispatch runs the stitch. */
 static int on_ot_stitch(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)cpu; (void)addr;
     s_link_period++;
     openpete_native_scene_undefer_2d();   /* the held-back table is drawn now */
@@ -2167,6 +2170,7 @@ static int on_ot_stitch(CPUState* cpu, uint32_t addr) {
  * @return 0 when the native scene is off or on re-entry (the ordinary
  *         dispatch runs the emitter), 1 having run it. */
 static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (!openpete_native_scene_enabled()) return 0;   /* inert: normal dispatch runs it */
     if (openpete_frame == s_cap_frame) s_post_fade++;
     s_fade_ran_frame = openpete_frame;   /* this tick's fade is linked before any bars after it */
@@ -2204,6 +2208,7 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
  * @return 0 when the native scene is off or on re-entry (the ordinary
  *         dispatch runs the emitter), 1 having run it. */
 static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (!openpete_native_scene_enabled() || s_in_grid) return 0;
     s_in_grid = 1;
     s_grid_ord = 0;
@@ -2229,6 +2234,7 @@ static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
  * @return 0 when the native scene is off or on re-entry (the ordinary
  *         dispatch runs the emitter), 1 having run it. */
 static int on_letterbox_emitter(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (!openpete_native_scene_enabled() || s_in_letterbox) return 0;
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
     s_in_letterbox = 1;
@@ -2287,6 +2293,7 @@ void ui_freeze_retain_commit(void) OP_REQUIRES_SHARED(sim) {
 
 /// @brief Prints the retained-backdrop present count at exit.
 static void ui_freeze_retain_census(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "ui-freeze: retained-backdrop presents=%u\n", s_freeze_retain_n);
 }
 
@@ -2300,6 +2307,7 @@ static void ui_freeze_retain_census(void) {
  * address ends it.
  * @param opts The options; unused. */
 static void ui_sprite_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     if (ui_game.freeze_retained) {
         openpete_native_scene_set_freeze_retained(1);

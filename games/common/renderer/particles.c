@@ -65,6 +65,7 @@ extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (op
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -1643,6 +1644,7 @@ static void part_view_dbg(const char* tag, const ngte_view* v) {
  *
  * A class with no lerped and no snapped primitive is omitted. */
 static void part_rebase_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[part-rebase] free=%lu", s_free_hits);
     for (int c = 0; c < 16; c++)
         if (s_reb_stat[0][c] || s_reb_stat[1][c])
@@ -1703,6 +1705,7 @@ static int s_vdbg = -1;
 
 /** @brief Prints the OPENPETE_PART_VERTEX_DBG census to stderr, one line per class; registered to run at exit. */
 static void part_vertex_report(void) {
+    OP_ROLE_ASSERT(sim);
     for (int c = 0; c < 16; c++) {
         const part_cal_acc* k = &s_vcal[c];
         if (!k->n && !s_vplc[0][c].n && !s_vplc[1][c].n && !s_vmiss[c]) continue;
@@ -2226,6 +2229,7 @@ static unsigned long s_late_presents, s_late_changed, s_late_held, s_late_deferr
 
 /** @brief Print the late-switch counts at exit. */
 static void part_late_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[late-switch] kind=part presents=%lu changed=%lu held=%lu deferred=%lu reused=%lu\n",
             s_late_presents, s_late_changed, s_late_held, s_late_deferred, s_late_reused);
 }
@@ -2302,6 +2306,7 @@ uint32_t particles_slot_serial(uint32_t rec) {
  * @param addr The allocator's entry address.
  * @return 1 when the allocator ran here, else 0. */
 static int on_part_alloc(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (s_alloc_in) return 0;
     s_alloc_in = 1;
     openpete_recomp_module_get()->dispatch(cpu, addr);
@@ -2333,6 +2338,7 @@ static int on_part_alloc(CPUState* cpu, uint32_t addr) {
  * @param addr The free routine's entry address.
  * @return 0: the guest routine runs. */
 static int on_part_free(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     const int i = particles_slot(cpu->a0);
     if (i >= 0) { s_slot_serial[i] = 0u; s_free_hits++; }
@@ -2348,6 +2354,7 @@ static const hook_bracket_desc k_bracket = {
 
 /** @brief Prints the widened-view census totals to stderr; registered at exit by part_wide_census_on. */
 static void part_wide_total_report(void) {
+    OP_ROLE_ASSERT(sim);
     const part_wide_tally* t = &s_wide_total;
     fprintf(stderr, "[part-wide total] cand=%lu admit=%lu deep=%lu cull=%lu mism=%lu recs=%lu exh=%lu "
                     "syn=%lu syn_bad=%lu syn_c=%lu/%lu/%lu/%lu/%lu\n",
@@ -2453,6 +2460,7 @@ static void part_draw_capture(CPUState* cpu, uint32_t startp, uint32_t endp, int
  * @return 0 when the bracket declines and the ordinary dispatch must run the
  *         draw, else 1: the draw has run. */
 static int on_particles_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -2476,6 +2484,7 @@ static feature_dispatch_entry_t particles_dispatch[] = {
  * names are entered, in order.
  * @param opts Unused. */
 static void particles_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     int n = 0;
     if (game_layout.particles.hook)

@@ -3,3 +3,4 @@
 baselines/complexity/*.tsv merge=ratchet-tsv
 baselines/docs/*.tsv merge=ratchet-tsv
 baselines/warnings/*.tsv merge=ratchet-tsv
+baselines/thread-roles/*.tsv merge=ratchet-tsv

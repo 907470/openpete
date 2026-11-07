@@ -18,6 +18,7 @@
 #include "psx_runtime_internal.h"
 
 #include <stdint.h>
+#include "openpete_thread_roles.h"
 
 #define ZN (game_layout.zoe)
 
@@ -32,6 +33,7 @@ static int s_zoe_near = -1;   /* OPENPETE_VIDEO_ZOE_NEAR, latched at apply-optio
  * @param addr The distance function's entry (unused).
  * @return 1 with v0 set when the caller is her update, else 0. */
 static int zn_on_dist(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     const uint32_t tab = cpu->read_word(game_layout.owner.moby_update);
     if (tab < 0x80000000u || tab >= 0x80200000u) return 0;
@@ -52,6 +54,7 @@ static feature_dispatch_entry_t zn_dispatch[] = {
  * table leaves the hook unbound and warns when the knob is set.
  * @param opts Unused. */
 static void zn_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     ENV_FLAG_LATCH(s_zoe_near, "OPENPETE_VIDEO_ZOE_NEAR");
     if (s_zoe_near > 0 && (ZN.dist_fn == 0u || game_layout.owner.moby_update == 0u)) {

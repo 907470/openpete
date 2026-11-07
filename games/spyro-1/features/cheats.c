@@ -52,6 +52,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define ADDR_G_GAMESTATE      0x800757D8u /* GS_Playing = 0, GS_TitleScreen = 13 */
 #define ADDR_G_LEVELID        0x8007596Cu
@@ -279,6 +280,7 @@ void spyro1_cheats_surface(struct openpete_surface_sink* sink) {
  * stays 0), arms nothing; each armed cheat is logged.
  * @param opts The options, or NULL. */
 static void cheats_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     s_mask    = 0;
     s_armed   = 1;
     s_pending = 0;

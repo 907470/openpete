@@ -292,6 +292,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
  * @param addr Unused.
  * @return 1 when the hook ran the renderer, 0 to let normal dispatch run it. */
 static int on_8001C694(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     int feed = openpete_native_scene_enabled();
     static unsigned last = 0xFFFFFFFFu;
@@ -349,6 +350,7 @@ void transition_reextract(CPUState* cpu, int hold) OP_REQUIRES(sim) {
  *
  * @param opts Unused. */
 static void transition_native_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
 }
 

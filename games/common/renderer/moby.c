@@ -70,6 +70,7 @@
 #include "game_layout.h"          /* game_layout.moby: the engine addresses this walk reads */
 #include "openpete_recomp_module.h"  /* the game's own moby draws, run through the module dispatch */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
+#include "openpete_thread_roles.h"
 
 static int moby_lift_tier(void);
 static void moby_fade_census_skip(void);
@@ -10039,6 +10040,7 @@ static int ovl_ab_on(void) {
 
 /** @brief Print the overlay rebuild A/B totals at exit. */
 static void ovl_ab_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[ovl-ab] total compared=%ld record_equal=%ld verdict_equal=%ld walk_equal=%ld "
                     "worst_xy=%.4f rebuilt=%ld kept=%ld dropped=%ld borrowed=%ld\n",
             s_ovl_ab.cmp, s_ovl_ab.rec_eq, s_ovl_ab.verdict_eq, s_ovl_ab.tri_eq, s_ovl_ab.worst_xy,
@@ -10564,6 +10566,7 @@ static void moby_reveal_dbg(CPUState* cpu) {
  *         (verify, native scene, render paths) or on re-entry, leaving the
  *         fall-through to run it. */
 static int on_cull(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     moby_precull_snapshot(cpu);
@@ -10582,6 +10585,7 @@ static int on_cull(CPUState* cpu, uint32_t addr) {
  * @param addr The cull routine's guest address.
  * @return 1 when the hook ran the cull, 0 on re-entry. */
 static int on_cull_census(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     qmiss_snapshot_candidates(cpu);
     moby_run_draw(cpu, addr);
@@ -10600,6 +10604,7 @@ static int on_cull_census(CPUState* cpu, uint32_t addr) {
  *         (verify, native scene, render paths) or on re-entry, leaving the
  *         ordinary dispatch to run it. */
 static int on_draw_regular(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
@@ -10639,6 +10644,7 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
  *         (verify, native scene, render paths) or on re-entry, leaving the
  *         ordinary dispatch to run it. */
 static int on_draw_specular(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
@@ -12824,6 +12830,7 @@ static void moby_native_set_actor_front(CPUState* cpu) {
  * @param cpu The guest CPU state.
  * @param addr The hooked address, unused. */
 static void moby_run_draw_shaded(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     moby_run_draw(cpu, game_layout.moby.hook_draw_shaded);
 }
@@ -12845,6 +12852,7 @@ static const hook_bracket_desc k_shaded_bracket = {
  * @param addr The hooked address, passed to the bracket.
  * @return 1 when the hook ran the pass; 0 when the bracket declined. */
 static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shaded_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -12923,6 +12931,7 @@ int moby_native_simple_fresh(void) {
  * non-speculative run. The pass's triangle count goes to s_simple_ntri.
  * @param addr The hooked address, unused. */
 static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     s_simple_ntri = moby_game.simple_pass(cpu);
     s_cur_wbk = -1;
@@ -12937,6 +12946,7 @@ static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
  * @param feed Unused.
  * @param verify Unused. */
 static void moby_simple_pre(CPUState* cpu, int feed, int verify) {
+    OP_ROLE_ASSERT(sim);
     (void)feed; (void)verify;
     s_cur_mat = "SIM";
     moby_view_build(cpu);
@@ -12962,6 +12972,7 @@ static const hook_bracket_desc k_simple_bracket = {
  * @return 0 when the game has no second-kind pass or the bracket declines,
  *         leaving the ordinary dispatch to run it; 1 after the pass ran. */
 static int on_draw_simple(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (!moby_game.simple_pass) return 0;
     uint32_t start, end; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_simple_bracket, &start, &end, &feed, &verify))
@@ -14812,6 +14823,7 @@ static unsigned long s_late_changed, s_late_mark_d, s_late_mark_g;
 
 /** @brief Print the late-switch counts at exit under OPENPETE_LATE_CENSUS. */
 static void moby_late_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[late-switch] kind=moby presents=%lu changed=%lu deferred=%lu held=%lu refused=%lu "
                     "evdrop=%lu reborn=%lu\n",
             s_late_presents, s_late_changed, s_late_deferred, s_late_ghosts, s_late_refused,
@@ -15640,6 +15652,7 @@ static feature_dispatch_entry_t moby_dispatch[8];
  * OPENPETE_MOBY_CENSUS is set. The table ends on an address of 0.
  * @param opts Unused. */
 static void moby_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     /* No decoder slots means the geometry would be read with another game's
      * bit layout. Refuse every pass rather than emit wrong triangles, and say
@@ -15648,20 +15661,20 @@ static void moby_apply_options(const openpete_options_t* opts) {
                moby_game.decode_faces && moby_game.read_record;
     if (!have && getenv("OPENPETE_MOBY_CENSUS"))
         fprintf(stderr, "[moby-native] feeder inert: no moby_game decoder slots\n");
-    const struct { uint32_t addr; feature_dispatch_fn fn; } passes[] = {
+    const feature_dispatch_entry_t passes[] = {
         /* The cull runs first and owns the record list every draw pass reads. */
-        { game_layout.moby.hook_cull,          on_cull          },
-        { game_layout.moby.hook_draw_regular,  on_draw_regular  },
-        { game_layout.moby.hook_draw_specular, on_draw_specular },
-        { game_layout.moby.hook_draw_shaded,   on_draw_shaded   },
+        { .addr = game_layout.moby.hook_cull,          .fn = on_cull          },
+        { .addr = game_layout.moby.hook_draw_regular,  .fn = on_draw_regular  },
+        { .addr = game_layout.moby.hook_draw_specular, .fn = on_draw_specular },
+        { .addr = game_layout.moby.hook_draw_shaded,   .fn = on_draw_shaded   },
         /* The second kind reads none of the animated stream decoders, so it
          * registers on its own provider slot. */
-        { moby_game.simple_pass ? game_layout.moby.hook_draw_simple : 0u, on_draw_simple },
-        { qmiss_census_on() && !game_layout.moby.hook_cull ? game_layout.moby.census_cull : 0u,
-          on_cull_census },
+        { .addr = moby_game.simple_pass ? game_layout.moby.hook_draw_simple : 0u, .fn = on_draw_simple },
+        { .addr = qmiss_census_on() && !game_layout.moby.hook_cull ? game_layout.moby.census_cull : 0u,
+          .fn = on_cull_census },
         /* The slot allocator: each allocation's serial, which the object
          * capture appends to the moby's record. */
-        { game_layout.moby.alloc, moby_serial_on_alloc },
+        { .addr = game_layout.moby.alloc, .fn = moby_serial_on_alloc },
     };
     int n = 0;
     for (size_t i = 0; i < sizeof passes / sizeof passes[0]; i++)

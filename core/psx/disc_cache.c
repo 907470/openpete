@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 /* The image is tracked per 2352-byte sector and filled by one loader thread
  * in runs of missing sectors. Run order: the chunk a game read last missed
@@ -193,6 +194,7 @@ static void throttle(size_t bytes) {
  * @param arg Unused.
  * @return 0. */
 static int loader_main(void* arg) {
+    OP_ROLE_BIND(disc);
     (void)arg;
     openpete_crash_thread_attach();
     for (;;) {

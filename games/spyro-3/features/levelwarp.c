@@ -47,6 +47,7 @@
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"   /* CPUState + its read/write callbacks */
 #include "spyro-3/skip_to_level.h"
+#include "openpete_thread_roles.h"
 
 #define S3_GAME_STATE       0x8006E344u /* 0 gameplay, 5 loading image, 11 title */
 #define S3_CURRENT_LEVEL    0x8006C5BCu
@@ -145,6 +146,7 @@ static levelwarp_t s_warp = { .game = &k_warp_game };
  *
  * @param opts Unused. */
 static void levelwarp_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     levelwarp_register(&s_warp);
     spyro3_areawarp_register();

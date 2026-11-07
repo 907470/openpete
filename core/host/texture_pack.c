@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include <SDL3/SDL.h>
+#include "openpete_thread_roles.h"
 
 /* Registry lock. The entry table, the resolve/match/fit caches and the pack
  * table are written by the guest's VRAM ops (on the thread running the
@@ -486,6 +487,7 @@ static void tp_decode_one(int ei) {
 
 /** @brief Body of the texture-pack decode thread: decode queued pack images until shutdown. */
 static int SDLCALL tp_decode_main(void *unused) {
+    OP_ROLE_BIND(texdec);
     (void)unused;
     openpete_crash_thread_attach();
     for (;;) {
@@ -1443,6 +1445,7 @@ static uint64_t tp_box_key(const tp_census_ent *e)
  * never allocated. */
 static void tp_census_report(void)
 {
+    OP_ROLE_ASSERT(sim);
     if (!s_census) return;
     int n = 0, multi_cat = 0, multi_tag = 0;
     for (int i = 0; i < TP_CENSUS_SLOTS; i++) if (s_census[i].key) n++;

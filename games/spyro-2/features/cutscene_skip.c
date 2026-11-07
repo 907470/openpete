@@ -91,6 +91,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include "openpete_thread_roles.h"
 
 #define ADDR_DRAW             0x800156FCu /* func_800156FC, the per-tick draw */
 #define ADDR_CUTSCENE_START   0x80019230u /* func_80019230(k) */
@@ -461,6 +462,7 @@ static void (*const k_hooks[])(CPUState*, const cutscene_t*) = {
  * @param addr Unused.
  * @return 0, so the draw runs. */
 static int on_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     if (!s_row || openpete_speculative) return 0;
     if (!s_induced) {

@@ -21,6 +21,7 @@
 // and the process would exit with the tail of stderr still in the pipe.
 
 #include "openpete_log.h"
+#include "openpete_thread_roles.h"
 #include "openpete_crash.h"
 #include "openpete_paths.h"
 
@@ -236,6 +237,7 @@ static HANDLE s_pump;
 
 /** @brief Body of the log pump thread (Windows): copy the stderr pipe to the real stderr and the log file until EOF. */
 static unsigned __stdcall pump_entry(void* unused) {
+    OP_ROLE_BIND(logpump);
     (void)unused;
     openpete_crash_thread_attach();
     pump_loop();
@@ -263,6 +265,7 @@ static pthread_t s_pump;
 
 /** @brief Body of the log pump thread (POSIX): block asynchronous signals, then copy the stderr pipe to the real stderr and the log file until EOF. */
 static void* pump_entry(void* unused) {
+    OP_ROLE_BIND(logpump);
     (void)unused;
     openpete_crash_thread_attach();
     /* Asynchronous signals go to the game's threads, whose handlers expect

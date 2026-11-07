@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "openpete_thread_roles.h"
 
 /** @brief The smaller of two finite floats, inline (fminf is a library call on this target).
  * @param a First value.
@@ -1295,6 +1296,7 @@ static int mc_vf_begin(void) {
 
 /** @brief Print the verify census, cumulative over the run. */
 static void mc_vf_print(void) {
+    OP_ROLE_ASSERT(sim);
     const mc_vstat* v = &s_vs;
     fprintf(stderr, "[snap-carry-verify] mode=%d carry=%d resolves=%ld presents=%ld presents_anz=%ld mobys=%ld "
                     "planes=%ld mismatch_mobys=%ld mismatch_moved=%ld mismatch_grazing=%ld mismatch_static=%ld carry_only_mobys=%ld fresh_only_mobys=%ld carry_only_planes=%ld "

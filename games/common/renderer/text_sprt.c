@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "openpete_thread_roles.h"
 
 /* Chains walked and glyphs fed since boot: the engagement counters a capture
  * reads to tell "no text drew" from "text drew identically". */
@@ -108,6 +109,7 @@ static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end, int self_lin
  * @param addr The emitter's guest address.
  * @return 1 when the emitter ran here, 0 to leave dispatch to the caller. */
 static int on_text_emitter(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     const int feed = openpete_native_scene_enabled();
     const int rec  = render_paths_active();
     if (!feed && !rec) return 0;                      /* inert: normal dispatch runs it */
@@ -160,6 +162,7 @@ static feature_dispatch_entry_t text_sprt_dispatch[] = {
  * terminated.
  * @param opts Unused. */
 static void text_sprt_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     int n = 0;
     for (int i = 0; i < 3; i++)

@@ -9,6 +9,7 @@
 #include "psx_runtime_internal.h"
 
 #include <stdint.h>
+#include "openpete_thread_roles.h"
 
 #define UL (game_layout.update_list)
 #define MB (game_layout.moby)
@@ -101,6 +102,7 @@ static uint32_t mua_list_pods(CPUState* cpu, uint32_t out) {
  * @param addr The builder's entry (unused).
  * @return 1: the builder's body does not run. */
 static int mua_on_builder(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     for (uint32_t a = 0; a < UL.pod_count; a += 4u) cpu->write_word(UL.pod_flags + a, 0u);
     uint32_t out = mua_list_mobys(cpu, UL.list);
@@ -144,6 +146,7 @@ static feature_dispatch_entry_t mua_dispatch[] = {
  * without a builder, since neither then changes anything.
  * @param opts Unused. */
 static void mua_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     ENV_FLAG_LATCH(s_d1, "OPENPETE_D1");
     ENV_FLAG_LATCH(s_nosparx, "OPENPETE_VIDEO_NOSPARX");

@@ -25,6 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(FENCES))
 sys.path.insert(0, FENCES)
 
 import thread_roles as tr  # noqa: E402
+import thread_roles_globals as pop  # noqa: E402
 
 
 class TextTest(unittest.TestCase):
@@ -99,6 +100,12 @@ CONTROLS = {
     "direct_assert_call": ("void bad(void) { op_role__assert_sim(0); }", "direct call"),
     "reference_before_assert": ("void bad(void) { need(); OP_ROLE_ASSERT(sim); need(); }",
                                 "calling function 'need'"),
+    "exit_outside": ("void exit(int); void bad(void) { exit(1); }", "exit() outside"),
+    "thread_entry_without_row": (
+        "typedef int (*tf)(void*); void* SDL_CreateThreadRuntime(tf, const char*, void*, void*, void*);\n"
+        "static int ent(void* p) { return 0; }\n"
+        "void bad(void) { SDL_CreateThreadRuntime(ent, \"t\", 0, 0, 0); }",
+        "starts a thread or fiber and has no binding-table row"),
     "slot_read_escapes": ("void bad(void) { void (*p)(void) = s_cb; (void)p; }",
                           "read of the OP_SLOT(sim) slot"),
 }
@@ -223,6 +230,354 @@ class AnalyseTest(unittest.TestCase):
     def test_slot_store_recorded(self):
         r = self.analyse("")
         self.assertIn(("c:fixture.c@F@need", "need", "sim"), r["slot_stores"])
+
+
+POPULATION = r'''
+#include "openpete_thread_roles.h"
+#include <stdatomic.h>
+static const int k_c1[3] = {1, 2, 3};
+static const char* const k_c2[] = {"x"};
+static const int k_c3[2][2] = {{1}};
+static const char* s_names[] = {"x"};
+static int s_plain;
+static int s_guarded OP_GUARDED_BY(sim);
+static _Atomic int s_atomic;
+_Thread_local int t_local;
+static op_lock_cap_t s_cap;
+#define PASTE2(a, b) a##b
+#define PASTE(a, b) PASTE2(a, b)
+#define SITE() static int PASTE(site_, __LINE__) = -1; (void)PASTE(site_, __LINE__)
+static int s_init_target;
+static int* s_init_ref = &s_init_target;
+static int s_store_only;
+static int s_pair_a, s_pair_b;
+static int s_rmw;
+static int s_addr;
+void reader(int* out) { *out = s_store_only + s_pair_a + s_pair_b + s_addr; }
+void writer(void) { s_store_only = 1; }
+void pair(void) { s_pair_a = 1; s_pair_b = 2; }
+void rmw(void) { s_rmw += 1; }
+void addr(void) { reader(&s_addr); }
+int once(void) { static int v = -1; if (v < 0) v = 3; return v; }
+void macro_a(void) { SITE(); }
+void macro_b(void) { SITE(); }
+void no_globals(int* p) { *p = 1; }
+void size_only(void) { (void)sizeof(s_plain); }
+void names_plain(void) { s_plain = 1; (void)s_guarded; (void)s_atomic; (void)t_local;
+                         (void)k_c1; (void)s_names; }
+'''
+
+POPULATION_CPP = r'''
+static int s_ctor; static int s_dtor; static int s_tpl; static int s_inline_m;
+struct Obj {
+    Obj() { s_ctor = 1; }
+    ~Obj() { s_dtor = 1; }
+    void m() { s_inline_m = 1; }
+};
+template <typename T> T tpl(T v) { s_tpl = 1; return v; }
+'''
+
+
+@unittest.skipUnless(os.path.isfile(tr.lib.LIBCLANG), "libclang 14 missing")
+class PopulationTest(unittest.TestCase):
+    """Check 2's scan, census and ruling on fixture TUs, line numbers taken
+    from the text, against a scratch tree holding the roles header."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="thread-roles-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        inc = os.path.join(self.tmp, "core", "include")
+        os.makedirs(inc)
+        shutil.copy(os.path.join(ROOT, tr.ROLES_H), inc)
+        self.ctx = {"root": self.tmp, "rows": {}, "escapes": {}, "accessors": {}, "sealed": {},
+                    "slot_names": set()}
+        self.read = lambda r: tr.read_text(os.path.join(self.tmp, r))
+
+    def parse(self, rel, text):
+        path = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(text)
+        flags = ["-Icore/include", "-I" + os.path.join(self.tmp, "core", "include")]
+        if rel.endswith(".cpp"):
+            flags.append("-std=c++17")
+        return tr.Walk(self.ctx, rel, self.tmp, flags)
+
+    def scan(self, rel, text, names):
+        """Scan with the fixture's functions `names` touched."""
+        w = self.parse(rel, text)
+        self.assertEqual(w.parse_errors, [])
+        lines = text.split("\n")
+        hunks = [(i + 1, 1) for i, s in enumerate(lines) if any(n in s for n in names)]
+        plan = {"hunks": {rel: hunks}, "stateless": True, "stateless_headers": True,
+                "macros": set()}
+        return pop.scan_tu(tr.ci(), w.tu, plan, self.ctx, tr.FENCE, self.read)
+
+    def census(self, rel, text):
+        w = self.parse(rel, text)
+        m = pop.merge_census([pop.census_tu(tr.ci(), w.tu, self.ctx, tr.FENCE, self.read)])
+        return m, pop.confirm(m)
+
+    def names(self, m):
+        return {r["name"]: g for g, r in m["globals"].items()}
+
+    def test_const_test_on_known_members(self):
+        m, _ = self.census("core/a.c", POPULATION)
+        n = self.names(m)
+        for out in ("k_c1", "k_c2", "k_c3", "t_local", "s_cap"):
+            self.assertNotIn(out, n)
+        for member in ("s_names", "s_plain", "s_init_ref"):
+            self.assertIn(member, n)
+        self.assertEqual(m["globals"][n["s_guarded"]]["form"], "named")
+        self.assertEqual(m["globals"][n["s_atomic"]]["form"], "atomic")
+
+    def test_macro_static_counts_once_at_the_macro(self):
+        m, _ = self.census("core/a.c", POPULATION)
+        keys = [g for g, r in m["globals"].items() if r["function"].startswith("#define:")]
+        self.assertEqual(keys, ["S|core/a.c|#define:SITE|site"])
+
+    def test_confirmed_forms(self):
+        m, conf = self.census("core/a.c", POPULATION)
+        n = self.names(m)
+        self.assertEqual(conf[n["s_store_only"]][0], "atomic")
+        self.assertEqual(conf[n["v"]][0], "once")
+        for no in ("s_pair_a", "s_pair_b", "s_rmw", "s_addr", "s_names", "s_init_ref"):
+            self.assertNotIn(n[no], conf, no)
+
+    def test_seal_needs_a_boot_only_writer(self):
+        src = ("int openpete_run(void);\nstatic int s_boot; static int s_late;\n"
+               "static void w(void) { s_boot = 1; }\nstatic void l(void) { s_late = 1; }\n"
+               "int main(void) {\n  w();\n  openpete_run();\n  l();\n  return s_boot + s_late;\n}\n")
+        m, conf = self.census("core/a.c", src)
+        n = self.names(m)
+        self.assertEqual(conf[n["s_boot"]][0], "atomic")      # the scalar shape wins
+        d = pop.boot_data(m)
+        self.assertTrue(pop.boot_only(["c:a.c@F@w"], d))
+        self.assertFalse(pop.boot_only(["c:a.c@F@l"], d))
+
+    def rule_of(self, tu, rows=""):
+        head = "file\tfunction\tname\tkind\tform\tnote\n"
+        return pop.rule([tu], pop.Baseline(head + rows), pop.DeferredList(""))
+
+    def test_seeded_global_in_a_touched_function_refuses(self):
+        r = self.rule_of(self.scan("core/a.c", POPULATION, ["names_plain"]))
+        names = {r["recs"][g]["name"] for g in r["refused"]}
+        self.assertEqual(names, {"s_plain", "s_names"})
+        self.assertEqual(r["extents"], 1)
+        self.assertEqual(r["passed_form"], 2)
+        self.assertIn("Choose the owner", r["text"][0])
+
+    def test_listed_global_still_refuses_and_carries_its_form(self):
+        row = "core/a.c\t-\ts_store_only\tstatic\tatomic\t1 storing function(s)\n"
+        r = self.rule_of(self.scan("core/a.c", POPULATION, ["void writer"]), row)
+        self.assertEqual(len(r["refused"]), 1)
+        self.assertIn("confirmed form atomic", r["text"][0])
+        self.assertIn("listed", r["text"][0])
+
+    def test_function_with_no_globals_passes(self):
+        r = self.rule_of(self.scan("core/a.c", POPULATION, ["no_globals"]))
+        self.assertEqual((r["extents"], r["named"], r["refused"]), (1, 0, []))
+
+    def test_sizeof_names_nothing(self):
+        r = self.rule_of(self.scan("core/a.c", POPULATION, ["size_only"]))
+        self.assertEqual((r["extents"], r["named"]), (1, 0))
+
+    def test_file_scope_initializer_touched(self):
+        r = self.rule_of(self.scan("core/a.c", POPULATION, ["int* s_init_ref"]))
+        names = {r["recs"][g]["name"] for g in r["refused"]}
+        self.assertEqual(names, {"s_init_ref", "s_init_target"})
+
+    def test_deferred_row_passes(self):
+        tu = self.scan("core/a.c", POPULATION, ["void writer"])
+        head = "file\tfunction\tname\tkind\tform\tnote\n"
+        d = pop.DeferredList(head + "core/a.c\t-\ts_store_only\tstatic\t-\trole=sim\n")
+        r = pop.rule([tu], pop.Baseline(head), d)
+        self.assertEqual((r["refused"], r["passed_deferred"]), ([], 1))
+
+    def test_cpp_extents(self):
+        for touch, name in (("Obj() {", "s_ctor"), ("~Obj", "s_dtor"), ("T tpl", "s_tpl"),
+                            ("void m()", "s_inline_m")):
+            r = self.rule_of(self.scan("core/b.cpp", POPULATION_CPP, [touch]))
+            got = {r["recs"][g]["name"] for g in r["refused"]}
+            self.assertIn(name, got, touch)
+
+    def test_header_extent_deduplicates_by_usr(self):
+        hdr = "static int s_h;\nstatic inline void hf(void) { s_h = 1; }\n"
+        path = os.path.join(self.tmp, "core", "include", "h.h")
+        with open(path, "w") as fh:
+            fh.write(hdr)
+        plan = {"hunks": {"core/include/h.h": [(2, 1)]}, "stateless": False, "macros": set()}
+        tus = []
+        for rel in ("core/a.c", "core/b.c"):
+            w = self.parse(rel, '#include "h.h"\n')
+            tus.append(pop.scan_tu(tr.ci(), w.tu, plan, self.ctx, tr.FENCE, self.read))
+        r = pop.rule(tus, pop.Baseline(""), pop.DeferredList(""))
+        self.assertEqual((r["extents"], len(r["refused"])), (1, 1))
+
+    def verdict(self, hunks, tus):
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            rc, _ = tr.c2_verdict(self.tmp, tus, hunks, pop.Baseline(""), pop.DeferredList(""),
+                                  self.read)
+        return rc, out.getvalue()
+
+    def test_code_no_tu_reached_is_vacuous_and_refuses(self):
+        with open(os.path.join(self.tmp, "core", "u.h"), "w") as fh:
+            fh.write("int f(void);\n")
+        rc, text = self.verdict({"core/u.h": [(1, 1)]}, [])
+        self.assertEqual(rc, 1)
+        self.assertIn("VACUOUS: check 2 reached no TU", text)
+
+    def test_no_extent_touched_prints_vacuous(self):
+        tu = self.scan("core/a.c", "/* x */\nint f(void) { return 0; }\n", [])
+        rc, text = self.verdict({"core/a.c": [(1, 1)]}, [tu])
+        self.assertEqual(rc, 0)
+        self.assertIn("VACUOUS: no extent or declaration touched", text)
+        self.assertNotIn("PASS", text)
+
+    def test_lock_handles_are_exempt_by_type(self):
+        m, _ = self.census("core/a.c", "typedef struct SDL_Mutex SDL_Mutex;\nstatic SDL_Mutex* s_mx;\n"
+                           "SDL_Mutex* get(void) { return s_mx; }\n")
+        self.assertEqual(self.names(m), {})
+
+    def test_once_is_confirmed_in_cpp(self):
+        m, conf = self.census("core/b.cpp", "int f() { static int v = -1; if (v < 0) v = 3; return v; }\n")
+        self.assertEqual(conf[self.names(m)["v"]][0], "once")
+
+    def test_stateless_half(self):
+        tu = self.scan("core/a.c", '#include "openpete_thread_roles.h"\nstatic int s_x;\n'
+                       'static int s_y OP_GUARDED_BY(sim);\n', [])
+        recs, declared = tu["globals"], tu["declared"]
+        head = "file\tfunction\tname\tkind\tform\tnote\n"
+        none = pop.stateless(recs, declared, pop.Baseline(""), pop.DeferredList(""))
+        self.assertEqual(len(none), 1)
+        self.assertIn("s_x has no form and no row", none[0])
+        both = pop.stateless(recs, declared, pop.Baseline(
+            head + "core/a.c\t-\ts_x\tstatic\t-\t\ncore/a.c\t-\ts_y\tstatic\t-\t\n"),
+            pop.DeferredList(""))
+        self.assertEqual(len(both), 1)
+        self.assertIn("s_y has a form and still has a row", both[0])
+
+
+class ReportModeTest(unittest.TestCase):
+    def test_report_mode_refuses_nothing_and_says_so(self):
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            self.assertEqual(tr.c2_exit(1), 0)
+            self.assertEqual(tr.c2_exit(0), 0)
+        self.assertEqual(out.getvalue().count("REPORT ONLY"), 1)
+
+    def test_armed_refuses(self):
+        saved = tr.CHECK2_ARMED
+        tr.CHECK2_ARMED = True
+        try:
+            self.assertEqual(tr.c2_exit(1), 1)
+        finally:
+            tr.CHECK2_ARMED = saved
+
+
+class RowFormTest(unittest.TestCase):
+    def test_forms_split_and_direct_is_one(self):
+        self.assertEqual(tr.row_forms(("arg:x|direct:", {"sim"})), {"arg:x", "direct:"})
+
+    def test_whole_selection_modes(self):
+        self.assertTrue(tr.whole_selection("check --all"))
+        self.assertTrue(tr.whole_selection("hook (whole tree: a staged header; x)"))
+        self.assertFalse(tr.whole_selection("hook (1 staged source(s); x)"))
+
+
+class ListsTest(unittest.TestCase):
+    HEAD = "file\tfunction\tname\tkind\tform\tnote\n"
+
+    def base(self, *rows):
+        return pop.Baseline(self.HEAD + "".join("\t".join(r) + "\n" for r in rows))
+
+    def test_added_row_needs_the_reason_naming_it(self):
+        before = self.base()
+        after = self.base(("a.c", "-", "s_x", "static", "-", "role=sim; ORPHAN f"))
+        self.assertTrue(pop.additions_refused("t", before, after, {}, "")[0])
+        self.assertTrue(pop.additions_refused("t", before, after, {}, "s_x why",
+                                              need_note=True)[0])
+        self.assertTrue(pop.additions_refused("t", before, after, {}, "other")[0])
+        self.assertEqual(pop.additions_refused("t", before, after, {}, "s_x orphan")[0], [])
+
+    def test_stateless_compare_reports_a_row_with_a_note(self):
+        after = self.base(("a.c", "-", "s_x", "static", "-", "chain"))
+        ref, rep = pop.additions_refused("t", self.base(), after, {}, None)
+        self.assertEqual((ref, len(rep)), ([], 1))
+        bare = self.base(("a.c", "-", "s_x", "static", "-", ""))
+        self.assertEqual(len(pop.additions_refused("t", self.base(), bare, {}, None)[0]), 1)
+
+    def test_rename_carries_a_row(self):
+        before = self.base(("a.c", "-", "s_x", "static", "-", ""))
+        after = self.base(("b.c", "-", "s_x", "static", "-", ""))
+        self.assertEqual(pop.added_rows(before, after, {"a.c": "b.c"}), [])
+        self.assertEqual(pop.added_rows(before, after, {}), [("b.c", "-", "s_x")])
+
+    def test_reason_may_name_the_chain_terminal(self):
+        note = "role=sim; reason=no row at walk_sector_job yet; ORPHAN walk_sector_job (x); chain y"
+        after = self.base(("a.c", "-", "s_x", "static", "-", note))
+        reason = "no row at walk_sector_job yet"
+        self.assertEqual(pop.additions_refused("t", self.base(), after, {}, reason,
+                                               need_note=True)[0], [])
+
+    def test_deferred_row_refused_on_a_confirmed_form_or_no_chain(self):
+        un = self.base(("a.c", "-", "s_x", "static", "atomic", "shape"))
+        d = self.base(("a.c", "-", "s_x", "static", "-", "chain"))
+        ref = pop.additions_refused("t", self.base(), d, {}, "s_x", confirmed=un)[0]
+        self.assertIn("confirms the local form atomic", ref[0])
+        bare = self.base(("b.c", "-", "s_y", "static", "-", ""))
+        ref = pop.additions_refused("t", self.base(), bare, {}, "s_y", need_note=True)[0]
+        self.assertIn("no annotator chain", ref[0])
+
+    def test_tighten_move_is_not_an_addition(self):
+        d = self.base(("a.c", "-", "s_x", "static", "-", "chain"))
+        un = self.base(("a.c", "-", "s_x", "static", "-", ""))
+        self.assertEqual(pop.additions_refused("t", self.base(), un, {}, "", moved_from=d)[0], [])
+
+    def test_includers_follow_headers(self):
+        text = {"a.c": '#include "h1.h"\n', "b.c": "", "h1.h": '#include "dir/h2.h"\n',
+                "dir/h2.h": ""}
+        self.assertEqual(pop.includers({"a.c", "b.c"}, list(text), text.get, {"dir/h2.h"}),
+                         {"a.c"})
+
+    def test_touched_rule(self):
+        self.assertTrue(pop.touched(10, 20, [(20, 1)]))
+        self.assertFalse(pop.touched(10, 20, [(21, 1)]))
+        self.assertTrue(pop.touched(10, 20, [(19, 0)]))
+        self.assertFalse(pop.touched(10, 20, [(20, 0)]))
+
+
+class MarkerTest(unittest.TestCase):
+    """marker_refusals over a scratch repository."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="thread-roles-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        os.makedirs(os.path.join(self.tmp, "core"))
+        self.git("init", "-q")
+        self.git("config", "user.email", "t@t")
+        self.git("config", "user.name", "t")
+
+    def git(self, *a):
+        return tr.git(self.tmp, *a)
+
+    def stage(self, text, msg=None):
+        with open(os.path.join(self.tmp, "core", "a.c"), "w") as fh:
+            fh.write(text)
+        self.git("add", "core/a.c")
+        if msg:
+            self.git("commit", "-qm", msg)
+
+    def test_first_form_needs_no_marker_and_a_change_does(self):
+        self.stage("static int s_x;\n", "base")
+        self.stage("static int s_x OP_GUARDED_BY(sim);\n")
+        self.assertEqual(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"]), [])
+        self.git("commit", "-qm", "form")
+        self.stage("static int s_x OP_GUARDED_BY(main);\n")
+        self.assertEqual(len(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"])), 1)
+        self.stage("static int s_x OP_GUARDED_BY(main); /* thread-roles: moved */\n")
+        self.assertEqual(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"]), [])
 
 
 class AnnotatorTextTest(unittest.TestCase):

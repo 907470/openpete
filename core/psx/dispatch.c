@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 /* --- Recomp-module registry -------------------------------------------
  * Core carries NO link-time reference to the recompiled code; the game
@@ -708,6 +709,7 @@ static void stall_take(uint32_t addr) {
  * @param arg Unused.
  * @return 0 once openpete_stall_monitor_stop raised s_stall_stop. */
 static int SDLCALL stall_monitor_main(void* arg) {
+    OP_ROLE_BIND(stall);
     (void)arg;
     int32_t  last_vbl = SDL_GetAtomicInt(&openpete_vbl);
     uint32_t flat_ms = 0u, request_ms = 0u;

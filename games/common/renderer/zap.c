@@ -1,3 +1,4 @@
+#include "openpete_thread_roles.h"
 // games/common/renderer/zap.c, the feeder for Zoe's zap: a handwritten routine
 // (Spyro 2 func_8004B194 / mobyfunc.s:2548-2905, Spyro 3 func_8002F5B4 /
 // mobyfunc.s:2548-2936) that draws one ragged textured ribbon per live record
@@ -750,6 +751,7 @@ static const hook_bracket_desc k_bracket = {
  * @return 0 when the bracket declines (the ordinary dispatch runs the
  *         routine), else hook_bracket_end's result. */
 static int on_zap_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -916,6 +918,7 @@ static feature_dispatch_entry_t zap_dispatch[] = {
 
 /// @brief Binds the module's dispatch entry to the layout's zap draw address.
 static void zap_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     zap_dispatch[0].addr = game_layout.zap.hook;
 }

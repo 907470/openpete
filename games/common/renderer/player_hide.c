@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -290,6 +291,7 @@ void player_hide_count_data(int cat, int skipped, const void* data, size_t len) 
  *
  * The engagement line prints whenever a face or shadow was dropped. */
 static void player_hide_shutdown(void) {
+    OP_ROLE_ASSERT(sim);
     ph_census_flush();
     ph_type_report();
     if (s_class_faces || s_class_shadow_tris)

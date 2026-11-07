@@ -116,6 +116,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -1200,6 +1201,7 @@ static unsigned long s_reb_stat[3];   /* 0 lerped, 1 snapped, 2 rebuilt */
  * set. Prints how many primitives took a lerped record pair, how many
  * snapped to the tick's pose, and how many had their corners rebuilt. */
 static void glint_rebase_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[glint-rebase] lerped=%lu snapped=%lu rebuilt=%lu\n",
             s_reb_stat[0], s_reb_stat[1], s_reb_stat[2]);
 }
@@ -1628,6 +1630,7 @@ static double        s_own_tot_max;
 
 /** @brief Print the owner census's run totals to stderr; registered with atexit by glint_own_census. */
 static void glint_own_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[glint-own total] owned=%lu pulled=%lu unowned=%lu max_pull=%.1f\n",
             s_own_tot[0], s_own_tot[1], s_own_tot[2], s_own_tot_max);
 }
@@ -1790,6 +1793,7 @@ static int glint_vtx_level(void) {
 
 /** @brief Print the probe's summary to stderr; registered with atexit. */
 static void glint_vtx_report(void) {
+    OP_ROLE_ASSERT(sim);
     static const char* const ax[2] = { "x", "y" };
     for (int k = 0; k < 2; k++) {
         const glint_acc1* a = &s_vtx_cal[k];
@@ -1965,6 +1969,7 @@ static const hook_bracket_desc k_bracket = {
  * @return 0 when the bracket declines and the ordinary dispatch must run the
  *         routine, else 1. */
 static int on_glint_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -2038,6 +2043,7 @@ static feature_dispatch_entry_t glint_dispatch[] = {
  * A game whose layout locates no routine leaves the address 0.
  * @param opts Unused. */
 static void glint_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     glint_dispatch[0].addr = game_layout.glint.hook;
 }

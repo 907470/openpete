@@ -2,6 +2,7 @@
  * generator. See renderer/interp_regions_gen.h. */
 
 #include "renderer/interp_regions_gen.h"
+#include "openpete_thread_roles.h"
 
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
@@ -98,6 +99,7 @@ int game_interp_row_index(const char* name) {
  * not fit is dropped whole with the rows after it, and a closing line names
  * how many rows were printed; the write covers only the bytes formatted. */
 static void census_report(void) {
+    OP_ROLE_ASSERT(sim);
     enum { TAIL = 96 };   /* room kept for the truncation line */
     char buf[128 * OPENPETE_INTERP_MAX_REGIONS + 128];
     size_t n = 0;

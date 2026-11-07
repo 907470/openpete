@@ -1,6 +1,8 @@
 /* games/spyro-1/renderer/reextract.c - Spyro 1's sub-tick re-feed orchestrator.
  * See reextract.h for the contract. */
 
+#include <stdatomic.h>
+
 #include "reextract.h"
 #include "openpete_camlock.h"       /* render camera lock (G) - bracket override */
 #include "openpete_interp.h"
@@ -75,12 +77,15 @@ extern unsigned openpete_frame;
  * @param name The region name, a registered row such as "g_Camera".
  * @param cache The caller's cache; -2 means not yet looked up.
  * @return The row index, -1 when no such region is registered. */
-static int region_of(const char* name, int* cache) {
-    if (*cache == -2) *cache = game_interp_row_index(name);
-    return *cache;
+static int region_of(const char* name, _Atomic int* cache) {
+    int v = atomic_load_explicit(cache, memory_order_acquire);
+    if (v != -2) return v;
+    const int want = game_interp_row_index(name);
+    atomic_compare_exchange_strong(cache, &v, want);
+    return want;
 }
 #define REGION_ACCESSOR(fn, nm) \
-    static int fn(void) { static int c = -2; return region_of(nm, &c); }
+    static int fn(void) { static _Atomic int c = -2; return region_of(nm, &c); }
 REGION_ACCESSOR(CAM_REGION,    "g_Camera")
 REGION_ACCESSOR(SPYRO_REGION,  "g_Spyro")
 REGION_ACCESSOR(FLAME_REGION,  "g_SpyroFlame")

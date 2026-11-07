@@ -17,6 +17,7 @@
 #include "openpete_recomp_module.h"
 
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define MOBY_SLOTS_MAX 4096u
 
@@ -57,6 +58,7 @@ static uint32_t moby_array_base(CPUState* cpu) {
 }
 
 int moby_serial_on_alloc(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (s_alloc_in) return 0;
     s_alloc_in = 1;
     openpete_recomp_module_get()->dispatch(cpu, addr);

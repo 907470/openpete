@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define RAM_SIZE      OPENPETE_PSX_RAM_SIZE
 #define SCRATCH_SIZE  OPENPETE_PSX_SCRATCH_SIZE
@@ -481,6 +482,7 @@ static const char* census_probe(unsigned p, uint64_t delta[CK_KINDS]) {
  * and the general pool. The report goes to stderr and, when
  * OPENPETE_ARENA_CENSUS is a path rather than 1, is appended to that file. */
 static void census_report(void) {
+    OP_ROLE_ASSERT(sim);
     census_counts_t before = s_census;
     uint64_t probe[CP_POOLS][CK_KINDS];
     const char* control[CP_POOLS];

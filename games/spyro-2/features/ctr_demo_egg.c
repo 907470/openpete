@@ -1,3 +1,4 @@
+#include "openpete_thread_roles.h"
 // games/spyro-2/features/ctr_demo_egg.c - the Crash Team Racing demo
 // launcher on Spyro 2's title screen, played as Aku Aku's sound.
 //
@@ -180,6 +181,7 @@ static demo_egg_t s_egg = {
  * @param addr The entered function's vaddr.
  * @return 1 to skip the guest function, else 0. */
 static int on_call(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     return demo_egg_on_call(&s_egg, cpu, addr);
 }
 
@@ -187,6 +189,7 @@ static int on_call(CPUState* cpu, uint32_t addr) {
  *
  * @param opts The options, or NULL. */
 static void ctr_demo_egg_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     if (opts) demo_egg_load(&s_egg, opts->disc_path);
 }
 

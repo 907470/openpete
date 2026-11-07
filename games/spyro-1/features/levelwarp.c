@@ -1,3 +1,4 @@
+#include "openpete_thread_roles.h"
 // games/spyro-1/features/levelwarp.c - jump to any level from the
 // dev overlay (M key), from anywhere.
 //
@@ -310,6 +311,7 @@ static levelwarp_t s_warp = { .game = &k_warp_game };
  *
  * @param opts Unused. */
 static void levelwarp_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     levelwarp_register(&s_warp);
 }

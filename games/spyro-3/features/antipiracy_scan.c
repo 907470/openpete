@@ -49,6 +49,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define S3_EXE_TEXT_START 0x8001200Cu
 #define S3_EXE_TEXT_END   0x80064F9Cu
@@ -226,6 +227,7 @@ static void flush_slots(void) {
 
 /** @brief Log the scans still running when the process exits. */
 static void flush_at_exit(void) {
+    OP_ROLE_ASSERT(sim);
     flush_slots();
 }
 

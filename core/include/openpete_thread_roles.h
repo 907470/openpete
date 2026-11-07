@@ -146,7 +146,8 @@ extern "C" {
     X(launcher,  14)    \
     X(crashdump, 15)    \
     X(crashdemo, 16)    \
-    X(ingest,    17)
+    X(ingest,    17)    \
+    X(bugreport, 18)
 
 typedef struct OP_CAPABILITY_TYPE("role") op_role_cap { char unused; } op_role_cap_t;
 
@@ -184,6 +185,8 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
  *   "field:<type>.<field>" a store to the named struct field
  *   "init:<type>"          an initializer of the named type
  *   "prop:<key>"           SDL_SetPointerProperty(<props>, <key>, fn)
+ *   "direct:"              a direct call: an inline body of a thread's job
+ * Forms join with `|` when a function is reached through more than one.
  * The fence reads this table from the text, one row per line; a change to
  * a row carries a `thread-roles:` reason on its line. */
 #define OP_ROLE_BINDING_TABLE(ROW) \
@@ -199,9 +202,180 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:transition.c@F@on_8004F000_crossfade", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:reextract.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: each game's sub-tick re-extract, run by the host loop */ \
     ROW("c:reextract_spyro23.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: the Spyro 2/3 sub-tick re-extract, run by the host loop */ \
-    ROW("c:@F@game_assets_run_inline", "arg:game_assets_run_inline", "ingest") /* thread-roles: the asset extraction job's headless runner enters ingest for the job's span */ \
-    ROW("c:launcher.cpp@aN@F@ingest_main#*v#", "arg:SDL_CreateThreadRuntime", "ingest") /* thread-roles: the launcher's ingest thread entry binds ingest for the asset job */ \
-    ROW("c:launcher.cpp@aN@F@ingest_run_inline#", "arg:ingest_run_inline", "ingest") /* thread-roles: the launcher's asset job without screens enters ingest for the job's span */
+    ROW("c:@F@game_assets_run_inline", "direct:", "ingest") /* thread-roles: the asset extraction job's headless runner enters ingest for the job's span */ \
+    ROW("c:launcher.cpp@aN@F@ingest_main#*v#", "arg:SDL_CreateThreadRuntime|direct:", "ingest") /* thread-roles: the launcher's ingest thread entry binds ingest for the asset job */ \
+    ROW("c:launcher.cpp@aN@F@ingest_run_inline#", "direct:", "ingest") /* thread-roles: the launcher's asset job without screens enters ingest for the job's span */ \
+    ROW("c:eager.c@F@eager_present_cb", "arg:openpete_present_thread_set_callback", "present") /* thread-roles: run by present_thread_main */ \
+    ROW("c:@F@moby_serial_on_alloc", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:moby.c@F@on_cull", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:moby.c@F@on_cull_census", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:moby.c@F@on_draw_regular", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:moby.c@F@on_draw_shaded", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:moby.c@F@on_draw_simple", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:moby.c@F@on_draw_specular", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:crash.c@F@dump_thread", "arg:CreateThread", "crashdump") /* thread-roles: the dump_thread thread entry binds crashdump */ \
+    ROW("c:crash_demo_woah.c@F@woah_load_main", "arg:SDL_CreateThreadRuntime", "crashdemo") /* thread-roles: the woah_load_main thread entry binds crashdemo */ \
+    ROW("c:disc_cache.c@F@loader_main", "arg:SDL_CreateThreadRuntime|direct:", "disc") /* thread-roles: the loader_main thread entry binds disc */ \
+    ROW("c:dispatch.c@F@stall_monitor_main", "arg:SDL_CreateThreadRuntime", "stall") /* thread-roles: the stall_monitor_main thread entry binds stall */ \
+    ROW("c:host_bugreport.c@F@bundle_worker", "arg:SDL_CreateThreadRuntime|direct:", "bugreport") /* thread-roles: the bundle_worker thread entry binds bugreport */ \
+    ROW("c:host_bugreport.c@F@fatal_worker", "arg:SDL_CreateThreadRuntime", "bugreport") /* thread-roles: the fatal_worker thread entry binds bugreport */ \
+    ROW("c:launcher.cpp@aN@F@job_main#*v#", "arg:SDL_CreateThreadRuntime", "launcher") /* thread-roles: the job_main thread entry binds launcher */ \
+    ROW("c:launcher.cpp@aN@F@scan_main#*v#", "arg:SDL_CreateThreadRuntime", "launcher") /* thread-roles: the scan_main thread entry binds launcher */ \
+    ROW("c:launcher.cpp@aN@F@task_main#*v#", "arg:SDL_CreateThreadRuntime", "launcher") /* thread-roles: the task_main thread entry binds launcher */ \
+    ROW("c:log_file.c@F@pump_entry", "arg:_beginthreadex|arg:pthread_create", "logpump") /* thread-roles: the pump_entry thread entry binds logpump */ \
+    ROW("c:music_override.c@F@mo_worker", "arg:SDL_CreateThreadRuntime", "music") /* thread-roles: the mo_worker thread entry binds music */ \
+    ROW("c:present_thread.c@F@present_thread_main", "arg:SDL_CreateThreadRuntime", "present") /* thread-roles: the present_thread_main thread entry binds present */ \
+    ROW("c:record.c@F@rec_thread_main", "arg:SDL_CreateThreadRuntime", "record") /* thread-roles: the rec_thread_main thread entry binds record */ \
+    ROW("c:rhi_vulkan.c@F@pcache_save_worker", "arg:SDL_CreateThreadRuntime|direct:", "pcache") /* thread-roles: the pcache_save_worker thread entry binds pcache */ \
+    ROW("c:rhi_vulkan.c@F@pool_worker", "arg:SDL_CreateThreadRuntime", "compile") /* thread-roles: the pool_worker thread entry binds compile */ \
+    ROW("c:rhi_vulkan.c@F@pool_worker_low", "arg:SDL_CreateThreadRuntime", "compile") /* thread-roles: the pool_worker_low thread entry binds compile */ \
+    ROW("c:sfx_pack.c@F@sfx_decode_worker", "arg:SDL_CreateThreadRuntime", "sfxdec") /* thread-roles: the sfx_decode_worker thread entry binds sfxdec */ \
+    ROW("c:texture_pack.c@F@tp_decode_main", "arg:SDL_CreateThreadRuntime", "texdec") /* thread-roles: the tp_decode_main thread entry binds texdec */ \
+    ROW("c:work_pool.c@F@wp_thread_main", "arg:SDL_CreateThreadRuntime", "workpool") /* thread-roles: the wp_thread_main thread entry binds workpool */ \
+    ROW("c:eager.c@F@eager_present_cb", "arg:openpete_present_thread_set_callback", "present") /* thread-roles: run by present_thread_main */ \
+    ROW("c:bash_demo_egg.c@F@on_call", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:crash_demo_woah.c@F@on_crash_demo_launch", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:crash_demo_woah.c@F@on_kill_sounds_and_music", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:crash_demo_woah.c@F@on_titlescreen_play_sound", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:credits_skip.c@F@on_gamestate_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:credits_skip.c@F@on_gamestate_update", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:ctr_demo_egg.c@F@on_call", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:cutscene_skip.c@F@on_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:flame.c@F@on_flame_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:glint.c@F@on_glint_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:glow.c@F@on_glow_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:kf_anim_ctl.c@F@kfa_on_walker", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:levelwarp.c@F@on_title_update", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:moby_update_all.c@F@mua_on_builder", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:particle.c@F@on_800573C8_particles", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:particle.c@F@on_800580F4_glows", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:particle.c@F@on_800584C4_sparkles", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:particle.c@F@on_80058864_dragonstar", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:particles.c@F@on_part_alloc", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:particles.c@F@on_part_free", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:particles.c@F@on_particles_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:player.c@F@on_player_draw", "field:feature_dispatch_entry_t.fn", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:polybuf_guard.c@F@on_build_order_table", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:portal.c@F@on_8004F4BC", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:portal.c@F@on_8004FEA0", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:portal.c@F@on_80050240", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:portal.c@F@on_80050BE0", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:shadow.c@F@on_moby_shadows", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:shadow_player.c@F@on_player_shadow", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:shadow_spyro.c@F@on_80059A48_shadow_spyro", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:terrain.c@F@on_visibility_terrain", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:terrain.c@F@on_world_draw_terrain", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:terrain_probe.c@F@on_world_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:text_moby_id.c@F@on_80017FE4_text", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:text_moby_id.c@F@on_800181AC_text", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:text_moby_id.c@F@on_80018880_drain", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:text_sprt.c@F@on_text_emitter", "field:feature_dispatch_entry_t.fn|init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:tracer.c@F@on_800189F0_tracer", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:tracers.c@F@on_mesh", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:tracers.c@F@on_ribbon", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:transition.c@F@on_8001C694", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:transition_call.c@F@on_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:ui_sprite.c@F@on_fade_emitter", "field:feature_dispatch_entry_t.fn|init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:ui_sprite.c@F@on_fb_grid_emitter", "field:feature_dispatch_entry_t.fn|init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:ui_sprite.c@F@on_letterbox_emitter", "field:feature_dispatch_entry_t.fn|init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:ui_sprite.c@F@on_ot_insert", "field:feature_dispatch_entry_t.fn|init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:ui_sprite.c@F@on_ot_rank_link", "field:feature_dispatch_entry_t.fn|init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:ui_sprite.c@F@on_ot_stitch", "field:feature_dispatch_entry_t.fn|init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:zap.c@F@on_zap_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:zoe_near.c@F@zn_on_dist", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:@F@shadow_verify_enabled", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:flame.c@F@flame_verify_enabled", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:moby.c@F@moby_run_draw_shaded", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:moby.c@F@moby_run_draw_simple", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:moby.c@F@moby_simple_pre", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:particle.c@F@dragonstar_run_draw", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:particle.c@F@particle_pre", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:particle.c@F@particle_run_draw", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:particle.c@F@verify_enabled", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:player.c@F@player_run_draw", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:player.c@F@player_verify_enabled", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:shadow.c@F@shadow_pre", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:shadow_spyro.c@F@shadow_spyro_run_draw", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:tracer.c@F@tracer_pre", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:tracer.c@F@tracer_run_draw", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:tracers.c@F@msh_pre", "init:hook_bracket_desc", "sim") /* thread-roles: hook-bracket step, run inside its dispatch hook */ \
+    ROW("c:bash_demo_egg.c@F@bash_demo_egg_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:cheats.c@F@cheats_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:crash_demo_woah.c@F@crash_demo_woah_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:crash_demo_woah.c@F@crash_demo_woah_shutdown", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:ctr_demo_egg.c@F@ctr_demo_egg_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:flame.c@F@flame_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:glint.c@F@glint_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:glow.c@F@glow_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:kf_anim_ctl.c@F@kfa_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:levelwarp.c@F@levelwarp_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:moby.c@F@moby_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:moby_update_all.c@F@mua_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:particles.c@F@particles_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:player.c@F@player_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:player_hide.c@F@player_hide_shutdown", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:portal.c@F@portal_native_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:portal_spyro23.c@F@portal_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:render_paths.c@F@render_paths_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:shadow.c@F@shadow_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:shadow_player.c@F@shadow_player_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:terrain.c@F@terrain_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:terrain_probe.c@F@probe_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:text_sprt.c@F@text_sprt_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:tracers.c@F@tracers_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:transition.c@F@transition_native_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:ui_sprite.c@F@ui_sprite_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:zap.c@F@zap_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:zoe_near.c@F@zn_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:@F@mod_mat_census_print", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:@F@mod_vec_census_report", "arg:atexit|direct:", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:antipiracy_scan.c@F@flush_at_exit", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:arena_page_census.c@F@pc_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:code_patch_guard.c@F@exit_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:cpu.c@F@census_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:disc_trace.c@F@disc_trace_close", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:glint.c@F@glint_own_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:glint.c@F@glint_rebase_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:glint.c@F@glint_vtx_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:glow.c@F@glow_rebase_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:glow.c@F@glow_vtx_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:gte_instruments.cpp@aN@F@census_dump#", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:gte_instruments.cpp@aN@F@ofx_dump#", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:gte_instruments.cpp@aN@F@record_close#", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:ident_audit.c@F@audit_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:interp_regions_gen.c@F@census_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:moby.c@F@moby_late_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:moby.c@F@ovl_ab_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:moby_snap.c@F@mc_vf_print", "arg:atexit|direct:", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:mod_chain.c@F@link_calls_dump", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:native_gte.c@F@ngte_census_print", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:particle.c@F@particle_path_census_exit", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:particles.c@F@part_late_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:particles.c@F@part_rebase_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:particles.c@F@part_vertex_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:particles.c@F@part_wide_total_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:player.c@F@summary", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:portal.c@F@portal_clip_census_print", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:portal.c@F@portal_rect_census", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:psyq_thunks.cpp@F@cd_exit_summary#", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:psyq_thunks.cpp@F@getlocp_ab_summary#", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:psyq_thunks.cpp@F@pad_poll_census_report#", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:render_paths.c@F@render_paths_feed_audit_census", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:run.c@F@audio_feed_exit_summary", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:run.c@F@log_frame_on_exit", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:scan_watch.c@F@exit_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:spyro.c@F@spyro_agg_final", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:terrain.c@F@terrain_defer_census", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:terrain.c@F@tgpu_arena_census_line", "arg:atexit|direct:", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:terrain.c@F@tj_use_at_exit", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:terrain.c@F@tocc_audit_total", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:terrain_probe.c@F@probe_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:texture_pack.c@F@tp_census_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:tracers.c@F@tr_near_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:tracers.c@F@tr_rebase_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:tracers.c@F@tr_vtx_report", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:ui_sprite.c@F@ui_freeze_retain_census", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */ \
+    ROW("c:write_census.c@F@census_close", "arg:atexit", "sim") /* thread-roles: atexit handler, run by exit() or main's return with sim in the mask */
 
 /* SEAL(seal, usr): the function with USR `usr` may write the globals sealed
  * as `seal` (before op_seal), and calls op_seal_check(seal). */
@@ -325,7 +499,7 @@ OP_ROLE_LIST(OP_ROLE_DECLARE_FNS_)
 /** @brief Take `sim` on main at openpete_run's entry, and read the role knobs once. */
 void op_role_boot_acquire(void) OP_ACQUIRE_CAP(op_role_sim);
 
-/** @brief Drop `sim` on main at openpete_run's return. */
+/** @brief Drop `sim` statically at openpete_run's return; the run-time mask keeps it for the atexit handlers. */
 void op_role_boot_release(void) OP_RELEASE_CAP(op_role_sim);
 
 /** @brief Drop `sim` on main just before the sim thread is created, leaving main holding `main`. */
@@ -372,17 +546,21 @@ int op_seal_is_sealed(const op_seal_t* seal);
  * First-use caches                                                    *
  * ------------------------------------------------------------------ */
 
-#ifndef __cplusplus
 /* A first-use cache read by more than one role: `static OP_ONCE_INT s = -1;`
- * then `v = op_once_int_get(&s); if (v < 0) v = op_once_int_fill(&s, x);`. */
-#define OP_ONCE_INT _Atomic int
+ * then `v = op_once_int_get(&s); if (v < 0) v = op_once_int_fill(&s, x);`.
+ * The same spelling in C and C++, so a macro can declare one. */
+#define OP_ONCE_INT OP_ROLE_ATOMIC(int)
 
 /** @brief Read a first-use cache.
  *
  * @param s The cache.
  * @return Its value; -1 before the first fill. */
 static inline int op_once_int_get(OP_ONCE_INT* s) {
+#ifdef __cplusplus
+    return s->load(std::memory_order_acquire);
+#else
     return atomic_load_explicit(s, memory_order_acquire);
+#endif
 }
 
 /** @brief Fill a first-use cache once by compare-and-swap from -1.
@@ -392,12 +570,16 @@ static inline int op_once_int_get(OP_ONCE_INT* s) {
  * @return The value the cache holds: v, or the first filler's. */
 static inline int op_once_int_fill(OP_ONCE_INT* s, int v) {
     int expect = -1;
+#ifdef __cplusplus
+    if (s->compare_exchange_strong(expect, v, std::memory_order_acq_rel, std::memory_order_acquire))
+        return v;
+#else
     if (atomic_compare_exchange_strong_explicit(s, &expect, v, memory_order_acq_rel,
                                                 memory_order_acquire))
         return v;
+#endif
     return expect;
 }
-#endif
 
 #ifdef __cplusplus
 }

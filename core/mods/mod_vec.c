@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "openpete_log.h"
+#include "openpete_thread_roles.h"
 
 /* Census list. Tables init from the mod loader, the simulation thread and
  * the display thread, so link and unlink hold a spin lock; the exit-time
@@ -354,6 +355,7 @@ void mod_fixed_set(mod_fixed* t, size_t count) {
 
 /* Writes the tables= line, then one row per linked table; see the header. */
 void mod_vec_census_report(void) {
+    OP_ROLE_ASSERT(sim);
     const mod_vec_node_t* n;
     size_t tables = 0;
     int needs_close = 0;

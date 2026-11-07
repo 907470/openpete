@@ -38,6 +38,7 @@
 #include <stdio.h>  /* snprintf - owner-state table */
 #include <stdlib.h> /* getenv - timer dump toggle */
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 /* Recompiler runtime: dispatch-by-address (psx_runtime.h). */
 void call_by_address(CPUState* cpu, uint32_t addr);
@@ -329,6 +330,7 @@ static void link_calls_print(void* ctx, const char* owner, uint32_t addr,
 
 /** @brief Print every counter row at process exit (OPENPETE_MOD_LINK_CALLS). */
 static void link_calls_dump(void) {
+    OP_ROLE_ASSERT(sim);
     openpete_mods_link_calls(link_calls_print, NULL);
 }
 

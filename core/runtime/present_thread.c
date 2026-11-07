@@ -53,6 +53,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include "openpete_thread_roles.h"
 
 static struct {
     SDL_Thread    *thr;
@@ -500,6 +501,7 @@ static void pt_begin_activation(void)
 /** @brief Body of the present thread: present scenes from the ring while eager production is active. */
 static int present_thread_main(void *unused)
 {
+    OP_ROLE_BIND(present);
     (void)unused;
     openpete_crash_thread_attach();
     /* Compose-time VRAM reads see the scene's journaled texels, not the

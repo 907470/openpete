@@ -47,6 +47,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define ADDR_BUILD_ORDER_TABLE  0x80016784u
 
@@ -102,6 +103,7 @@ static int guard_mode(void) {
  * @param addr Unused.
  * @return 0. */
 static int on_build_order_table(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     const int mode = guard_mode();
     if (mode == GUARD_OFF) return 0;

@@ -47,6 +47,7 @@
 #include "renderer/cut_guard.h"     /* cut_census_held_set */
 #include "renderer/player_hide.h"
 #include "renderer/water_plane.h"
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 extern op_time_t g_openpete_tick_stamp;      /* per-VBL stamp (PLL) */
@@ -1232,11 +1233,13 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
  *
  * @param cpu Passed to player_game.run_draw.
  * @param addr The hooked address; unused. */
-static void player_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; player_game.run_draw(cpu); }
+static void player_run_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim); (void)addr; player_game.run_draw(cpu); }
 /** @brief Whether the provider's own verify harness wants the hook live.
  *
  * @return The provider's answer, 0 when it has no harness. */
 static int  player_verify_enabled(void) {
+    OP_ROLE_ASSERT(sim);
     return player_game.verify_enabled ? player_game.verify_enabled() : 0;
 }
 
@@ -1262,6 +1265,7 @@ static const hook_bracket_desc k_player_bracket = {
  * @return 0 when the bracket declines (inert or re-entered) so the ordinary
  *         dispatch runs the draw; 1 once the draw has run. */
 static int on_player_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     if (!player_game.run_draw) return 0;
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_player_bracket, &startp, &endp, &feed, &verify))
@@ -1699,6 +1703,7 @@ static void pair_lists(rec_list_t* cur, const rec_list_t* prv) {
  * Registered with atexit by player_records_epoch_commit under
  * OPENPETE_PLAYER_RECDBG; the line starts with [recdbg-summary]. */
 static void summary(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr,
         "[recdbg-summary] epochs=%u no_ring=%u max_calls m=%d s=%d f=%d spec_refused=%u cap_refused=%u "
         "max_epochs_per_vbl=%d roll_ring=%u roll_records=%u roll_both=%u dedupe=%u resets=%u "
@@ -2051,6 +2056,7 @@ static feature_dispatch_entry_t s_dispatch[2];
  * function). Entry 1 is always the empty terminator.
  * @param o Unused. */
 static void player_apply_options(const openpete_options_t* o) {
+    OP_ROLE_ASSERT(sim);
     (void)o;
     s_dispatch[0].addr = 0u; s_dispatch[0].fn = NULL;
     s_dispatch[1].addr = 0u; s_dispatch[1].fn = NULL;

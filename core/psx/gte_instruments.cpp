@@ -37,6 +37,7 @@
 #include "psx_runtime_internal.h"
 
 #include "psx/gtereg.h"
+#include "openpete_thread_roles.h"
 
 extern "C" {
 int openpete_gte_instruments_on = -1;
@@ -312,6 +313,7 @@ void census_unknown(uint32_t cmd) {
 
 /** @brief Print the census to stderr: per function code, undocumented words, stores between commands by kind. */
 void census_dump() {
+    OP_ROLE_ASSERT(sim);
     for (int fn = 0; fn < 64; fn++)
         if (g_census.by_fn[fn])
             std::fprintf(stderr, "[gte-census] fn=%02X n=%llu\n", fn, (unsigned long long)g_census.by_fn[fn]);
@@ -397,6 +399,7 @@ struct OfxCensus { int on = 0; OfxEnt tab[64]; unsigned n = 0; } g_ofx;
 
 /** @brief Print the OFX census table at exit. */
 void ofx_dump() {
+    OP_ROLE_ASSERT(sim);
     for (unsigned k = 0; k < g_ofx.n; k++)
         std::fprintf(stderr, "[ofx-census] pc=%08X ofx=[%d..%d] n=%llu\n", g_ofx.tab[k].pc, (int)(g_ofx.tab[k].lo >> 16),
                      (int)(g_ofx.tab[k].hi >> 16), (unsigned long long)g_ofx.tab[k].n);
@@ -421,6 +424,7 @@ void ofx_op(uint32_t fn, const uint32_t* pre_c) {
 
 /** @brief Close the record file at exit so its last block reaches the disk. */
 void record_close() {
+    OP_ROLE_ASSERT(sim);
     if (g_rec.fp) std::fclose(g_rec.fp);
     g_rec.fp = nullptr;
 }

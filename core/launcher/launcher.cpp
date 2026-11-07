@@ -35,6 +35,7 @@
 // OPENPETE_LAUNCHER_TEXT_HIDE=1 draws imgui's output at alpha 0, so a shot
 // holds the background and the shape pass alone.
 #include "launcher_internal.h"
+#include "openpete_thread_roles.h"
 #include "launcher_pace.h"
 #include "launcher_picker.h"
 #include "launcher_shapes.h"
@@ -1675,6 +1676,7 @@ struct TaskCtx { openpete_launcher_task_fn fn; void* ud; int rc; };
  * @param p The TaskCtx.
  * @return 0. */
 int SDLCALL task_main(void* p) {
+    OP_ROLE_BIND(launcher);
     TaskCtx* t = static_cast<TaskCtx*>(p);
     t->rc = t->fn(t->ud);
     SDL_LockMutex(s.lock);
@@ -1717,6 +1719,7 @@ void task_wait_loop() {
  * @param p The TaskCtx.
  * @return 0. */
 int SDLCALL scan_main(void* p) {
+    OP_ROLE_BIND(launcher);
     TaskCtx* t = static_cast<TaskCtx*>(p);
     t->rc = t->fn(t->ud);
     SDL_SetAtomicInt(&s.scan_done, 1);
@@ -2117,6 +2120,7 @@ void job_record(const Job& job) {
  * @param p Unused.
  * @return 0. */
 int SDLCALL job_main(void* p) {
+    OP_ROLE_BIND(launcher);
     (void)p;
     t_job = true;
     t_cancel = &s_jobs.cancel;

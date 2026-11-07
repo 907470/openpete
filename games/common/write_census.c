@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 typedef struct { uint32_t lo, hi; } census_range_t;
 
@@ -73,6 +74,7 @@ static void wc_swr(uint32_t a, uint32_t v) { row(a & ~3u, 4, v); s_orig_swr(a, v
 
 /// @brief Flushes and closes the census CSV and prints the row and phase-mark counts; exit handler.
 static void census_close(void) {
+    OP_ROLE_ASSERT(sim);
     if (!s_out) return;
     fflush(s_out);
     fclose(s_out);

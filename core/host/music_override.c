@@ -10,6 +10,7 @@
 #include "openpete_mods.h" /* asset-overlay roots */
 #include "openpete_paths.h" /* the writable user assets root */
 #include "wav_loader.h"
+#include "openpete_thread_roles.h"
 
 /* The SPU render's host stream input (PsyCross src/audio/PsyX_SPUAL.h):
  * frames at the WAV's rate, consumed per output sample in guest time and
@@ -337,6 +338,7 @@ static void worker_read_block(FILE* f, uint32_t* left, unsigned gen, int16_t* bu
  * @return 0. */
 static int SDLCALL mo_worker(void* ud)
 {
+    OP_ROLE_BIND(music);
     (void)ud;
     static int16_t buf[MO_CHUNK_FRAMES * 2];
     FILE*    f = NULL;

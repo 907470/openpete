@@ -76,6 +76,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -578,6 +579,7 @@ static glow_vkey s_vkey[GLOW_REC_MAX][GLOW_TRI_N][3];
 
 /** @brief Print the probe's summary to stderr; registered with atexit. */
 static void glow_vtx_report(void) {
+    OP_ROLE_ASSERT(sim);
     static const char* const ax[2] = { "x", "y" };
     for (int k = 0; k < 2; k++)
         fprintf(stderr, "[glow-vtx cal %s] n=%lu mean=%.4f min=%.4f max=%.4f"
@@ -964,6 +966,7 @@ static int glow_shown(const ngte_view* v, const glow_rec* rec, double alpha, con
  * non-empty and not starting with '0'. A run whose lerped count is zero
  * blended nothing toward a previous record and measured nothing. */
 static void glow_rebase_report(void) {
+    OP_ROLE_ASSERT(sim);
     fprintf(stderr, "[glow-rebase] lerped=%lu snapped=%lu worldmax=%.3f\n",
             s_reb_stat[0], s_reb_stat[1], s_reb_worldmax);
 }
@@ -1153,6 +1156,7 @@ static const hook_bracket_desc k_bracket = {
  * @return 0 when the call is refused or the bracket declines, else 1 (the
  *         routine has already run). */
 static int on_glow_draw(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     /* A game whose image holds a second call site over a frozen frame names
      * the world draw's return address; every other caller is refused. */
     if (GW.ra_guard && cpu->ra != GW.ra_guard) return 0;
@@ -1221,6 +1225,7 @@ static feature_dispatch_entry_t glow_dispatch[] = {
  * A game whose layout locates no routine leaves the address 0.
  * @param opts Unused. */
 static void glow_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     glow_dispatch[0].addr = game_layout.glow.hook;
 }

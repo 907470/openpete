@@ -51,6 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "renderer/player_hide.h"
+#include "openpete_thread_roles.h"
 
 extern unsigned openpete_frame;
 
@@ -399,6 +400,7 @@ static const hook_bracket_desc k_bracket = {
  * @param addr The hooked draw's address.
  * @return The bracket's end result after running the draw, else 0. */
 static int on_player_shadow(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -445,6 +447,7 @@ static feature_dispatch_entry_t shadow_player_dispatch[] = {
  *
  * @param opts Unused. */
 static void shadow_player_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     shadow_player_dispatch[0].addr = game_layout.shadow.player.hook;
 }

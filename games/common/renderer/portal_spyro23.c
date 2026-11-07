@@ -2024,6 +2024,7 @@ static feature_dispatch_entry_t portal_dispatch[3];
  * An address of 0 registers nothing; the table ends with a zero entry.
  * @param opts Unused. */
 static void portal_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     const feature_dispatch_entry_t hooks[] = {
         { .addr = portal_game_s23.pass, .fn = on_portal_pass },

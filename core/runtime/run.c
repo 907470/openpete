@@ -970,6 +970,7 @@ extern void PsyX_SPUAL_HostStats(unsigned long long* plays, unsigned long long* 
 
 /** @brief Log the SPU's feature engagement and host-input counters, then the device feed's counters (frames pushed, held and consumed, device periods, underruns, primes, the depth target and percentiles, the rate estimate), its frame accounting, and its per-phase counters, at exit. */
 static void audio_feed_exit_summary(void) {
+    OP_ROLE_ASSERT(sim);
     unsigned long long rc = 0, ri = 0, nz = 0, pm = 0, sw = 0, hp = 0, hf = 0, hs = 0;
     PsyX_SPUAL_FeatureStats(&rc, &ri, &nz, &pm, &sw);
     PsyX_SPUAL_HostStats(&hp, &hf, &hs);
@@ -2426,6 +2427,7 @@ bool host_fullscreen_poll(bool split, bool prev_alt_enter)
 
 /** @brief Log the last openpete_frame value at process exit (atexit handler). */
 static void log_frame_on_exit(void) {
+    OP_ROLE_ASSERT(sim);
     OPL_INFO_F("exit", "last openpete_frame=%u", openpete_frame);
 }
 

@@ -77,7 +77,7 @@ extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
 #include "openpete_native_vram.h"   /* the owned VRAM model + native ops */
 #include "openpete_terrain_cache.h" /* terrain sector-mesh GPU cache (retained terrain) */
 #include "texture_pack.h"           /* texture-replacement registry */
-#include "openpete_thread_roles.h"   /* OP_REQUIRES */
+#include "openpete_thread_roles.h"
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
@@ -15642,9 +15642,10 @@ static void bw_fam_census(const scene_tri_t* sc, int n) {
     bw_fam_census_pass(sc, n, 1, "rank");
 }
 
-#define NR_PROF_BEGIN(lit) do { static int op_id_ = -1; \
-        if (op_prof_on()) { if (op_id_ < 0) op_id_ = op_prof_intern(lit); \
-                            op_prof_begin(op_id_); } } while (0)
+#define NR_PROF_BEGIN(lit) do { static OP_ONCE_INT op_id_ = -1; \
+        if (op_prof_on()) { int op_v_ = op_once_int_get(&op_id_); \
+                            if (op_v_ < 0) op_v_ = op_once_int_fill(&op_id_, op_prof_intern(lit)); \
+                            op_prof_begin(op_v_); } } while (0)
 #define NR_PROF_END() do { if (op_prof_on()) op_prof_end(); } while (0)
 
 /** @brief Print a blended-world block as the ordered pass draws it, on stderr, for OPENPETE_BWDRAWORDER.

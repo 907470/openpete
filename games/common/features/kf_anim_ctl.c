@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"
 
 #define KA (game_layout.kf_anim)
 
@@ -196,6 +197,7 @@ static void kfa_walk_pair(CPUState* cpu, uint32_t pair) {
  * @param addr The walker's entry (unused).
  * @return 0: the walker's body runs. */
 static int kfa_on_walker(CPUState* cpu, uint32_t addr) {
+    OP_ROLE_ASSERT(sim);
     (void)addr;
     for (uint32_t p = 0; p < KA.pairs; p++) kfa_walk_pair(cpu, p);
     if (s_faces_n) kfa_hide_faces(cpu);
@@ -286,6 +288,7 @@ static feature_dispatch_entry_t kfa_dispatch[] = {
  * when any knob is set.
  * @param opts Unused. */
 static void kfa_apply_options(const openpete_options_t* opts) {
+    OP_ROLE_ASSERT(sim);
     (void)opts;
     if (s_latched) return;
     s_latched = 1;
