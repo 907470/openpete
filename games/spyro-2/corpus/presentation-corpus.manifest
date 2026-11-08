@@ -275,3 +275,11 @@ idol-springs-block-glow|1726|2||1726,1728,1730,1732|--skip-to-level idol_springs
 # jaw. The intermediate leg's sub-tick presents 3407, 3411 and 3417 fall
 # inside the covered stretch. Blessed pre-fix.
 idol-springs-fish-swallow|3402|2||3402,3406,3408,3412,3418
+# crushs-dungeon-idle-colour: Crush's Dungeon idle at spawn. The torch-lit
+# wall sectors carry keyframe colour descriptors (registry pairs at +0x18 LP
+# and +0x28 HP) whose blend factor steps every tick; the glow around the
+# torches in the top band changes on every tick. The canonical legs at 3048,
+# 3050 and 3052 show the packed colours; the intermediate legs at 3049 and
+# 3051 show whether the sub-tick present blends the two ticks' colours or
+# holds one tick's. Blessed pre-fix.
+crushs-dungeon-idle-colour|3048|2||3048,3050,3052|--skip-to-level crushs_dungeon
