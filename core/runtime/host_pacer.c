@@ -39,6 +39,7 @@
  * any public include path. */
 extern void PsyX_SPUFeed_SetNominalRate(double rate);
 extern void PsyX_SPUFeed_NoteSimSlips(unsigned long long periods);
+extern void PsyX_SPUFeed_NoteSimLag(double periods);
 
 /** @brief Return the present period for a render rate at a tick scale: 1/fps scaled, or the sim period at fps 0.
  * @param fps The render rate, 0 for the legacy pacer.
@@ -371,6 +372,23 @@ static void pacer_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns,
  * them continuously. */
 typedef enum { PACER_SLIP_SIM, PACER_SLIP_RENDER } pacer_slip_kind_t;
 
+/** @brief Publish to the audio feed the sim periods of real time the producer is behind: the periods slipped so far plus how far @p now is past the deadline of the tick just run (0 when on time).
+ *
+ * The feed's producer time is frames pushed plus these periods, so it
+ * runs continuous with real time between the slip clamp's lumps; one value
+ * carries both, so the feed never reads a slip without the lag it absorbed.
+ * The caller has already advanced the deadline by one period, so the tick
+ * just run was due one period before it.
+ * @param P The pacer.
+ * @param behind_ns now minus the next sim deadline, ns.
+ * @param period_ns The sim period, ns. */
+static void pacer_note_sim_lag(const host_pacer_t* P, op_time_t behind_ns, op_time_t period_ns)
+{
+    const op_time_t late_ns = behind_ns + period_ns;
+    const double lag = late_ns > 0 ? (double)late_ns / (double)period_ns : 0.0;
+    PsyX_SPUFeed_NoteSimLag((double)P->sim_slip_periods + lag);
+}
+
 /** @brief Clamp a deadline that has fallen more than the slip threshold behind @p now forward by whole periods, and account the discarded time.
  *
  * Catching up instead would fire iterations back to back; a stall is never
@@ -385,6 +403,8 @@ static void pacer_clamp_slip(host_pacer_t* P, pacer_slip_kind_t kind, op_time_t 
     op_deadline_t* d = sim ? &P->next_sim : &P->next_render;
     const op_period_t period = sim ? P->sim_period : P->render_period;
     const op_time_t period_ns = op_period_ns(period);
+    if (sim && period_ns > 0)
+        pacer_note_sim_lag(P, now - d->at, period_ns);
     if (period_ns <= 0 || now - d->at <= P->slip_threshold_ns) return;
     /* Captured before the advance: afterwards d->at is the new grid point
      * and the lateness is gone. */
@@ -400,6 +420,7 @@ static void pacer_clamp_slip(host_pacer_t* P, pacer_slip_kind_t kind, op_time_t 
     P->sim_slip_events++;
     P->sim_slip_periods += (uint64_t)skip;
     PsyX_SPUFeed_NoteSimSlips(P->sim_slip_periods);
+    pacer_note_sim_lag(P, now - d->at, period_ns);
     openpete_pace_slip(OP_PACE_SLIP_SIM, (int64_t)skip, (int64_t)behind);
     P->slip_pending = true;
     OPL_WARN_F("pacer",

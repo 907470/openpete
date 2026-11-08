@@ -46,11 +46,13 @@
 # synthetic device at drift 0 (OPENPETE_AUDIO_FEED_SIM=0.0,1), which runs on
 # the virtual clock with the consumer thread advancing inside each clock
 # step, so the row is independent of host load and thread timing.
-# Instrument: the exit line `audio: feed: pitch:`, the feed's resampling
-# ratio at every consumer wake while data plays from the first data start,
-# in cents from its median.
-# Engagement: pumps > 0 and primes >= 1. Pass: p99 <= PITCH_P99_C, |max| <=
-# PITCH_MAX_C, underruns = 0, overflow = 0.
+# Instrument: OPENPETE_AUDIO_FEED_TONE=440 replaces every pushed frame with
+# a 440 Hz sine in producer time and OPENPETE_AUDIO_FEED_TAP writes the
+# device output; tools/audio_tone_pitch.py reads the tone's FFT-peak pitch
+# per 8192-frame window from 3 s, in cents against 440 Hz (calibrated: +1%
+# reads +17.23 c), windows with a gap or a splice skipped.
+# Engagement: windows read > 0 and primes >= 1. Pass: p99 of |cents| <=
+# PITCH_P99_C, |max| <= PITCH_MAX_C, underruns = 0, overflow = 0.
 #
 # Usage: tests/harness/check_cutscene_audio.sh [--build-dir=DIR] [--game=G]
 #            [--row=CUTSCENE] [--ref-dir=DIR (default tests/golden)]
@@ -127,7 +129,8 @@ for row in "${ROWS[@]}"; do
     (( crc )) && failed=$((failed + 1))
 done
 
-# Pitch bound: ratio p99 and max deviation from the median, in cents.
+# Pitch bound: p99 and max of |cents| of the tone read against 440 Hz at
+# the tick scale in force.
 PITCH_P99_C=2
 PITCH_MAX_C=5
 PITCH_ROWS=("spyro-3 credits-pitch credits-cheat 9000 0.0")
@@ -144,8 +147,9 @@ for row in "${PITCH_ROWS[@]}"; do
     fi
     out="$ROOT/$game-$name"
     mkdir -p "$out"
-    rm -f "${out:?}/run.log" "${out:?}/feed.log"
-    PG_CAPTURE_ENV=("OPENPETE_AUDIO_FEED_SIM=$drift,1" "OPENPETE_AUDIO_FEED_LOG=$out/feed.log")
+    rm -f "${out:?}/run.log" "${out:?}/feed.log" "${out:?}/tap.raw" "${out:?}/pitch.txt"
+    PG_CAPTURE_ENV=("OPENPETE_AUDIO_FEED_SIM=$drift,1" "OPENPETE_AUDIO_FEED_LOG=$out/feed.log"
+                    "OPENPETE_AUDIO_FEED_TONE=440" "OPENPETE_AUDIO_FEED_TAP=$out/tap.raw")
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$out/run.log" "$out/feed.log" -- \
         --mute 1 --bk2 "$bk2p" --frame-limit "$limit" </dev/null
@@ -156,27 +160,29 @@ for row in "${PITCH_ROWS[@]}"; do
         failed=$((failed + 1))
         continue
     fi
-    pitch="$(grep -ao 'feed: pitch: .*' "$out/run.log" | tail -n 1)"
     feed="$(grep -ao 'feed: pushed=.*' "$out/run.log" | tail -n 1)"
-    verdict="$(python3 - "$pitch" "$feed" "$PITCH_P99_C" "$PITCH_MAX_C" <<'PY'
+    python3 tools/audio_tone_pitch.py --tap "$out/tap.raw" --tone 440 --drift "$drift" --from-s 3 \
+        --p99 "$PITCH_P99_C" --max "$PITCH_MAX_C" --tag "$game/$name" >"$out/pitch.txt" 2>&1
+    rm -f "${out:?}/tap.raw"
+    verdict="$(python3 - "$out/pitch.txt" "$feed" <<'PY'
 import re, sys
-pitch, feed, p99_bound, max_bound = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
-def num(key, text):
-    m = re.search(r'\b' + key + r'=([-+0-9.]+)', text)
+text, feed = open(sys.argv[1]).read(), sys.argv[2]
+def num(key, t):
+    m = re.search(r'\b' + key + r'=([-+0-9.]+)', t)
     return float(m.group(1)) if m else None
-v = {k: num(k, pitch) for k in ('pumps', 'p99', 'max')}
-v.update({k: num(k, feed) for k in ('underruns', 'overflow', 'primes')})
-if any(x is None for x in v.values()):
-    print('verdict=FAIL: no feed pitch or counter line')
+v = {k: num(k, feed) for k in ('underruns', 'overflow', 'primes')}
+read = re.search(r'steady n=(\d+) median=(\S+) p99=(\S+) max=(\S+)', text)
+tone = re.search(r'verdict=(.*)', text)
+if any(x is None for x in v.values()) or not read or not tone:
+    print('verdict=FAIL: no tone read or feed counter line')
     sys.exit()
 fails = []
-if v['pumps'] <= 0 or v['primes'] < 1: fails.append('VACUOUS (no data played)')
-if v['p99'] > p99_bound: fails.append(f"p99 {v['p99']:.2f}c > {p99_bound:g}c")
-if abs(v['max']) > max_bound: fails.append(f"max {v['max']:+.2f}c > {max_bound:g}c")
+if v['primes'] < 1 or int(read.group(1)) == 0: fails.append('VACUOUS (no data played)')
+if tone.group(1) != 'PASS': fails.append(tone.group(1))
 if v['underruns']: fails.append(f"underruns {v['underruns']:.0f}")
 if v['overflow']: fails.append(f"overflow {v['overflow']:.0f}")
-print(f"pumps={v['pumps']:.0f} p99={v['p99']:.2f}c max={v['max']:+.2f}c underruns={v['underruns']:.0f} "
-      f"overflow={v['overflow']:.0f} bound=p99<={p99_bound:g}c,max<={max_bound:g}c "
+print(f"windows={read.group(1)} median={read.group(2)} p99={read.group(3)} max={read.group(4)} "
+      f"underruns={v['underruns']:.0f} overflow={v['overflow']:.0f} "
       + ('verdict=PASS' if not fails else 'verdict=FAIL: ' + '; '.join(fails)))
 PY
 )"

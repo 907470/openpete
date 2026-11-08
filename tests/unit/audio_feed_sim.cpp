@@ -41,7 +41,13 @@
  * Engagement: VBLs pushed inside the span and latency samples in the
  * measured window; either at zero is a refusal.
  *
- * Usage: audio_feed_sim [--seconds=S] [--settle=S] [--trace=PATH]
+ * OPENPETE_AUDIO_FEED_LOG=PATH writes the feed's timeline.
+ * --tap=PATH writes the device-output tap (raw s16 stereo 44.1 kHz) for
+ * tools/audio_tone_pitch.py; --scale-at=T:S,... steps the tick scale at
+ * producer seconds T.
+ *
+ * Usage: audio_feed_sim [--seconds=S] [--settle=S] [--trace=PATH] [--tap=PATH]
+ *            [--scale-at=T:S,...]
  * Exit 0 PASS, 2 FAIL, 3 refusal (zero engagement), 64 usage. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"     // warning-ratchet: PsyCross source compiled in unchanged
@@ -120,6 +126,8 @@ int splice_step(const int16_t prev[2], uint32_t tail, uint32_t avail)
 struct Run {
 	double seconds = 250.0, settle = 2.0;
 	const char* trace_path = nullptr;
+	const char* tap_path = nullptr;
+	const char* scale_at = nullptr;   /* T:S,... tick-scale steps at producer seconds T */
 	double drift = 0.0, stall = 0.0;
 	unsigned seed = 1u;
 	Span span;
@@ -144,6 +152,8 @@ int parse_run(Run* r, int argc, char** argv)
 		if (!strncmp(a, "--seconds=", 10)) r->seconds = atof(a + 10);
 		else if (!strncmp(a, "--settle=", 9)) r->settle = atof(a + 9);
 		else if (!strncmp(a, "--trace=", 8)) r->trace_path = a + 8;
+		else if (!strncmp(a, "--tap=", 6)) r->tap_path = a + 6;
+		else if (!strncmp(a, "--scale-at=", 11)) r->scale_at = a + 11;
 		else { fprintf(stderr, "audio_feed_sim: unknown argument %s\n", a); return 0; }
 	}
 	const char* spec = getenv("OPENPETE_AUDIO_FEED_SIM");
@@ -207,7 +217,7 @@ void keep_extreme(double* extreme, double v)
  * @param in_span Nonzero inside the producer-speed span. */
 void sample(Run* r, double t, int in_span)
 {
-	const double lat = device_queued() + g_feed.count / g_feed.ratio;
+	const double lat = device_queued() + (g_feed.count + g_feed.st_n) / g_feed.ratio;
 	if (lat > r->peak_any) { r->peak_any = lat; r->peak_any_t = t; }
 	const double cents = 1200.0 * log2(g_feed.ratio / g_feed.nominal);
 	if (g_feed.playing && in_span) keep_extreme(&r->cents_span, cents);
@@ -245,6 +255,11 @@ int report(const Run* r)
 	       (unsigned long long)g_feed.discarded, (unsigned long long)r->splices, r->splice_worst, natural);
 	PsyX_SPUFeed_Stats st;
 	PsyX_SPUFeed_GetStats(&st);
+	printf("drift drift=%.6f expected=%.6f speed=%.4f fits=%llu refits=%llu behind_used=%.1f\n", st.drift,
+	       1.0 / (1.0 + r->drift), st.speed, (unsigned long long)st.drift_fits, (unsigned long long)st.drift_refits,
+	       st.slips_used);
+	printf("stretch hops=%llu engages=%llu on=%d corr_p01=%.2f corr_p50=%.2f\n", (unsigned long long)st.st_hops,
+	       (unsigned long long)st.st_engages, st.st_on, st.st_corr_p01, st.st_corr_p50);
 	printf("pitch span_extreme=%+.1fc after_settle_extreme=%+.1fc run_median=%+.2fc run_p99=%.2fc run_max=%+.2fc\n",
 	       r->cents_span, r->cents_after, st.pitch_med_c, st.pitch_p99_c, st.pitch_max_c);
 	if (!r->span_vbls || !r->samples)
@@ -260,7 +275,32 @@ int report(const Run* r)
 
 } // namespace
 
+/** @brief The tick scale in force at producer time `t` under --scale-at (1 before its first step).
+ * @param r The run.
+ * @param t Producer time, s.
+ * @return The tick scale. */
+double scale_at(const Run* r, double t)
+{
+	double s = 1.0;
+	for (const char* p = r->scale_at; p && *p;)
+	{
+		char* end = nullptr;
+		const double at = strtod(p, &end);
+		if (*end != ':' || at > t) break;
+		s = strtod(end + 1, &end);
+		p = *end == ',' ? end + 1 : end;
+	}
+	return s;
+}
+
 /** @brief Run the synthetic producer and device through the configured span and report the post-span latency, the splices and the verdict.
+ *
+ * Inside the span each VBL takes 1/SPEED of a sim period of the clock, and
+ * the host's slip clamp is modelled: once the producer is more than 4
+ * periods behind its deadline the whole periods behind are discarded and
+ * the running total is handed to PsyX_SPUFeed_NoteSimSlips, and the
+ * periods behind real time (slipped plus the deadline's lag) to
+ * PsyX_SPUFeed_NoteSimLag, as the pacer does. A --scale-at step sets the nominal rate and scales the sim period.
  * @param argc Argument count.
  * @param argv Arguments.
  * @return 0 PASS, 2 FAIL, 3 refusal, 64 usage. */
@@ -272,14 +312,24 @@ int main(int argc, char** argv)
 	if (r.trace) fputs("t_s latency_ms fifo dev ratio rate\n", r.trace);
 	PsyX_SPUFeed_Simulate(r.drift, r.seed, r.stall);
 	PsyX_SPUFeed_Prepare();
+	if (r.tap_path) PsyX_SPUFeed_SetTap(r.tap_path);
+	const char* log = getenv("OPENPETE_AUDIO_FEED_LOG");
+	if (log && *log) PsyX_SPUFeed_SetLog(log);
 	long long grid = 1000000000LL, last = grid;   /* clock, ns */
 	PsyX_SPUFeed_SimRunTo(grid);
 	PsyX_SPUFeed_SetHold(0);
-	double grid_frac = 0.0;
+	double grid_frac = 0.0, late = 0.0, scale = 1.0;
+	unsigned long long slips = 0;
 	for (uint64_t vbl = 0;; vbl++)
 	{
 		const double t = vbl / SIM_VBL_HZ;   /* producer time at nominal speed, s */
 		if (t >= r.seconds) break;
+		const double sc = scale_at(&r, t);
+		if (sc != scale)
+		{
+			scale = sc;
+			PsyX_SPUFeed_SetNominalRate(sc);
+		}
 		const int in_span = t >= r.span.start && t < r.span.start + r.span.dur;
 		const long long at = grid > last ? grid : last;
 		const long long push = at + llround(PsyX_SPUFeed_SimProducerDelay(at) * 1e9);
@@ -287,11 +337,24 @@ int main(int argc, char** argv)
 		push_vbl(&r, in_span);
 		sample(&r, t, in_span);
 		last = push;
-		grid_frac += 1e9 / SIM_VBL_HZ / (in_span ? r.span.speed : 1.0);
+		if (in_span)
+		{
+			late += 1.0 / r.span.speed - 1.0;
+			if (late > 4.0)
+			{
+				const double k = floor(late);
+				late -= k;
+				slips += (unsigned long long)k;
+				PsyX_SPUFeed_NoteSimSlips(slips);
+			}
+			PsyX_SPUFeed_NoteSimLag((double)slips + late);
+		}
+		grid_frac += 1e9 / SIM_VBL_HZ / scale / (in_span ? r.span.speed : 1.0);
 		const long long step = (long long)grid_frac;
 		grid += step;
 		grid_frac -= (double)step;
 	}
 	if (r.trace) fclose(r.trace);
+	PsyX_SPUFeed_SetTap(nullptr);
 	return report(&r);
 }

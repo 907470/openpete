@@ -940,6 +940,7 @@ extern void PsyX_SPUAL_Speculate(int on, int commit);
 extern void PsyX_SPUAL_SetCapture(int on);
 extern void PsyX_SPUFeed_SetHold(int on);
 extern void PsyX_SPUFeed_SetTap(const char* path);
+extern void PsyX_SPUFeed_SetTone(double hz);
 extern void PsyX_SPUFeed_Simulate(double drift, unsigned int seed, double start_stall);
 extern void PsyX_SPUFeed_SetNominalRate(double rate);
 #define PSYX_SPUFEED_PHASES 8
@@ -959,6 +960,12 @@ typedef struct PsyX_SPUFeed_Stats {
     unsigned long long tap_frames;
     PsyX_SPUFeed_PhaseStats phase[PSYX_SPUFEED_PHASES];
     char phase_name[PSYX_SPUFEED_PHASES][16];
+    double drift, speed;
+    unsigned long long drift_fits, drift_refits;
+    double slips_used, slips_dropped;
+    unsigned long long st_hops, st_engages;
+    int st_on;
+    double st_corr_p01, st_corr_p50;
 } PsyX_SPUFeed_Stats;
 extern void PsyX_SPUFeed_SetPhase(int phase, const char* name, int tag);
 extern void PsyX_SPUFeed_SetLog(const char* path);
@@ -969,7 +976,7 @@ extern void PsyX_SPUAL_FeatureStats(unsigned long long* reverb_cycles, unsigned 
 extern void PsyX_SPUAL_HostStats(unsigned long long* plays, unsigned long long* clip_frames,
                                  unsigned long long* stream_frames);
 
-/** @brief Log the SPU's feature engagement and host-input counters, then the device feed's counters (frames pushed, held and consumed, device periods, underruns, primes, the depth target and percentiles, the rate estimate), its frame accounting, and its per-phase counters, at exit. */
+/** @brief Log the SPU's feature engagement and host-input counters, then the device feed's counters (frames pushed, held and consumed, device periods, underruns, primes, the depth target and percentiles, the rate estimate), its frame accounting, its drift and producer speed, its time stretch, and its per-phase counters, at exit. */
 static void audio_feed_exit_summary(void) {
     OP_ROLE_ASSERT(sim);
     unsigned long long rc = 0, ri = 0, nz = 0, pm = 0, sw = 0, hp = 0, hf = 0, hs = 0;
@@ -994,6 +1001,12 @@ static void audio_feed_exit_summary(void) {
                st.consumed, st.data_out, st.silence_out);
     OPL_INFO_F("audio", "feed: pitch: pumps=%llu median=%+.2fc p99=%.2fc max=%+.2fc",
                st.pitch_n, st.pitch_med_c, st.pitch_p99_c, st.pitch_max_c);
+    OPL_INFO_F("audio", "feed: drift: drift=%.6f (%+.1f ppm) speed=%.4f fits=%llu refits=%llu "
+               "behind_used=%.1f behind_dropped=%.1f",
+               st.drift, (1.0 / st.drift - 1.0) * 1e6, st.speed, st.drift_fits, st.drift_refits,
+               st.slips_used, st.slips_dropped);
+    OPL_INFO_F("audio", "feed: stretch: hops=%llu engages=%llu on=%d corr_p01=%.2f corr_p50=%.2f",
+               st.st_hops, st.st_engages, st.st_on, st.st_corr_p01, st.st_corr_p50);
     OPL_INFO_F("audio", "feed: out_hash=%016llx data_out=%llu tap_frames=%llu", st.out_hash, st.data_out,
                st.tap_frames);
     for (int i = 0; i < PSYX_SPUFEED_PHASES; i++) {
@@ -1606,6 +1619,8 @@ static const char* const s_feed_phase_names[] = { "boot", "skip", "unlocked", "p
  * underruns, overflows, and its counters every 250 ms of device time).
  * OPENPETE_AUDIO_FEED_TAP=PATH writes every frame the device plays, raw
  * s16 stereo 44.1 kHz.
+ * OPENPETE_AUDIO_FEED_TONE=HZ replaces every pushed frame with a sine of
+ * HZ in producer time, for the pitch read of tools/audio_tone_pitch.py.
  * @param opts The parsed options. */
 static void audio_sinks_setup(const openpete_options_t* opts) {
     const int record_audio = opts->record_path && !opts->record_no_audio && opts->record_cfr <= 0.0;
@@ -1637,6 +1652,9 @@ static void audio_sinks_setup(const openpete_options_t* opts) {
     const char* tap = getenv("OPENPETE_AUDIO_FEED_TAP");
     if (tap && *tap)
         PsyX_SPUFeed_SetTap(tap);
+    const char* tone = getenv("OPENPETE_AUDIO_FEED_TONE");
+    if (tone && *tone)
+        PsyX_SPUFeed_SetTone(atof(tone));
     atexit(audio_feed_exit_summary);
 }
 
