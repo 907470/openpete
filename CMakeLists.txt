@@ -361,6 +361,27 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # The debug-flags row check alone (check_mods.sh --section debugflags),
+    # one test per game with rows: Spyro 1's table holds none, so
+    # mod_ladder_games cannot reach them. Each run measures 4 s on an idle
+    # machine; TIMEOUT 30 leaves room for the mod compile under load.
+    openpete_game_bin(spyro-2 _spyro2_bin _spyro2_args)
+    foreach(_g_to spyro-2:30 spyro-3:30)
+        string(REPLACE ":" ";" _g_to "${_g_to}")
+        list(GET _g_to 0 _g)
+        list(GET _g_to 1 _to)
+        string(REPLACE "spyro-" "_spyro" _gvar "${_g}")
+        add_test(NAME mod_ladder_debugflags_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mods.sh
+                         --game ${_g} --section debugflags)
+        set_tests_properties(mod_ladder_debugflags_${_g} PROPERTIES
+            LABELS "slow;mods"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT ${_to}
+            ENVIRONMENT "OPENPETE_BIN=${${_gvar}_bin}"
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Per-mod save-record harness (Spyro 1): the save and load recordings
     # under the pad-format fixtures, chained load legs, checksum repair,
     # fixture-driven saves, and the api legs, which report SKIP until the

@@ -29,6 +29,9 @@
 #             scratch library), the declarative materials and the table
 #             census, each with per-game fixture values; and on Spyro 1 the
 #             mod shader rungs.
+#   debugflags  the debug-flags row check of the games section alone
+#             (ctest mod_ladder_debugflags_<game>); a full run reaches it
+#             through games.
 #   matrix    Spyro 1 only: the chain-duo matrix, observer-neutrality, crash
 #             attribution, decomp promotion, prebuilt objects, the asset and
 #             wad overlays, and the [test]-block runner.
@@ -66,8 +69,8 @@ for _a in "$@"; do
     fi
 done
 case "$SECTION" in
-    ""|games|matrix|timeline) ;;
-    *) echo "unknown --section '$SECTION' (expected games, matrix or timeline)" >&2
+    ""|games|debugflags|matrix|timeline) ;;
+    *) echo "unknown --section '$SECTION' (expected games, debugflags, matrix or timeline)" >&2
        exit 64 ;;
 esac
 # section_on <name>: true when the run includes that section.
@@ -151,6 +154,7 @@ source tests/harness/mods_sdk_rungs.sh
 source tests/harness/mods_multigame_rungs.sh
 # shellcheck source=tests/harness/mods_games_rungs.sh
 source tests/harness/mods_games_rungs.sh
+fi
 
 # ── debug-flags: each row of the running game writes once and reads back ──
 # The config.toml key `test.apply_tick` queues every row of the running
@@ -160,6 +164,7 @@ source tests/harness/mods_games_rungs.sh
 # value did not read back. The expected count is the number of rows the
 # source table carries for the game, so a new row enters the rung with no
 # edit here; the mod's own row count at entry must agree with it.
+if section_on games || [ "$SECTION" = debugflags ]; then
 say "debug-flags: each $PG_GAME row writes once and reads back"
 rm -rf "${WORK:?}/dbg"; mkdir -p "$WORK/dbg"
 cp -r "$MODS_SRC/debug-flags" "$WORK/dbg/debug-flags"
