@@ -281,22 +281,19 @@ add_custom_command(
     DEPENDS ${RHI_SHADER_SOURCES} ${RHI_FP64_GUARD}
     COMMENT "shader fp64 fence: no fp64 spelling in the fp32 build's sources"
     VERBATIM)
-# Embed the compiled .spv into the binary: a build-time `cmake -P` step turns
-# the SPIR-V into a generated C source (byte arrays + a name->blob table),
-# which is compiled into the library. The renderer then loads shaders from
-# memory - the binary is self-contained, no loose shaders/ dir ships. Pure
-# CMake (file(READ ... HEX)); see embed_shaders.cmake. (A dev/modding file override via
-# OPENPETE_SHADER_DIR still reads loose .spv from disk - e.g. this build's
-# ${RHI_SHADER_OUT_DIR} - without a relink.)
+# Embed the compiled .spv into the binary: a build-time step
+# (embed_shaders.py) turns the SPIR-V into a generated C source (byte arrays
+# + a name->blob table), which is compiled into the library. The renderer
+# then loads shaders from memory - the binary is self-contained, no loose
+# shaders/ dir ships. (A dev/modding file override via OPENPETE_SHADER_DIR
+# still reads loose .spv from disk - e.g. this build's ${RHI_SHADER_OUT_DIR}
+# - without a relink.)
 set(RHI_EMBED_C ${CMAKE_CURRENT_BINARY_DIR}/rhi_shaders_embedded.c)
-string(REPLACE ";" "|" RHI_SHADER_SPV_ARG "${RHI_SHADER_SPV}")
+set(RHI_EMBED_PY ${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.py)
 add_custom_command(
     OUTPUT ${RHI_EMBED_C}
-    COMMAND ${CMAKE_COMMAND}
-            -DSPV_LIST=${RHI_SHADER_SPV_ARG}
-            -DOUT_C=${RHI_EMBED_C}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.cmake
-    DEPENDS ${RHI_SHADER_SPV} ${CMAKE_CURRENT_SOURCE_DIR}/embed_shaders.cmake
+    COMMAND python3 ${RHI_EMBED_PY} ${RHI_EMBED_C} ${RHI_SHADER_SPV}
+    DEPENDS ${RHI_SHADER_SPV} ${RHI_EMBED_PY}
             ${RHI_SHADER_OUT_DIR}/fp64_capability.stamp ${RHI_SHADER_OUT_DIR}/fp64_source.stamp
     COMMENT "Embedding SPIR-V shaders -> rhi_shaders_embedded.c"
     VERBATIM)

@@ -3,7 +3,7 @@
 
 /* SPIR-V shaders embedded in the binary so the native renderer ships as a
  * self-contained executable (no loose shaders/ dir). The table below is
- * GENERATED at build time by embed_shaders.cmake from the glslangValidator
+ * GENERATED at build time by embed_shaders.py from the glslangValidator
  * .spv outputs; the loader (rhi_vulkan.c:load_shader_module) resolves a blob
  * by its .spv filename - the same string the pipeline descs already use.
  * A dev/modding file override is available via OPENPETE_SHADER_DIR. */

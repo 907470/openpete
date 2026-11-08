@@ -449,8 +449,11 @@ endif()
 if(NOT OPENPETE_GIT_COMMIT)
     set(OPENPETE_GIT_COMMIT "unknown")
 endif()
-target_compile_definitions(openpete_core
-    PRIVATE OPENPETE_BUILD_ID="${OPENPETE_GIT_REV}")
+# The commit-derived defines reach only the sources that read them, so the
+# rest of openpete_core compiles to the same command line at every commit
+# and stays a compiler-cache hit across checkouts.
+set_property(SOURCE diag/pace_log.c APPEND PROPERTY
+    COMPILE_DEFINITIONS OPENPETE_BUILD_ID="${OPENPETE_GIT_REV}")
 # The runtime reads and writes guest RAM (uint8_t arrays) through wider
 # pointer casts; -fno-strict-aliasing keeps the optimizer from reordering or
 # dropping those accesses. The game executables and their recompiled module
@@ -527,11 +530,11 @@ endif()
 set(OPENPETE_VERSION_NUM "${OPENPETE_VERSION_NUM}" PARENT_SCOPE)
 set(OPENPETE_VERSION_STR "${OPENPETE_BUILD_VERSION}" PARENT_SCOPE)
 message(STATUS "openpete: VERSIONINFO ${OPENPETE_VERSION_NUM} \"${OPENPETE_BUILD_VERSION}\"")
-target_compile_definitions(openpete_core
-    PRIVATE OPENPETE_BUILD_VERSION="${OPENPETE_BUILD_VERSION}"
-            OPENPETE_BUILD_COMMIT="${OPENPETE_GIT_COMMIT}"
-            OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED}
-            OPENPETE_BUILD_DISTRIBUTED=${OPENPETE_BUILD_DISTRIBUTED})
+set_property(SOURCE config/build_id.c APPEND PROPERTY
+    COMPILE_DEFINITIONS OPENPETE_BUILD_VERSION="${OPENPETE_BUILD_VERSION}"
+                        OPENPETE_BUILD_COMMIT="${OPENPETE_GIT_COMMIT}"
+                        OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED}
+                        OPENPETE_BUILD_DISTRIBUTED=${OPENPETE_BUILD_DISTRIBUTED})
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);
