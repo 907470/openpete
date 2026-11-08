@@ -8242,10 +8242,261 @@ static void isect_log_moby(uint32_t mob, int i0, const isect_count* c) {
             openpete_frame, s_cur_mat, mob, s_wtri_cls[i0], s_wtri_front[i0], c->faces,
             c->contested, c->pairs, c->coplanar, c->shared, c->stacked);
 }
+/* ---- census and rank reuse -------------------------------------------------
+ * isect_census tests a moby run's eligible faces only against each other, so
+ * a run's contest flags, its eligible faces' decal bases (s_wtri_under) and
+ * its ranks are a function of the run's own walk records (projected sx, sy, vz
+ * and tvz per vertex, ordering-table key, fkey, blend, UI and mangle flags,
+ * moby), the pass view's H_eff and offsets, the tie mode and the stacked-pair
+ * switch. Each canonical feed pass (material tag, overlay or not) stores the
+ * inputs and that verdict of every run with an eligible face; the next feed of
+ * the pass takes a run's stored verdict when the run, identified by its moby
+ * and its occurrence among that moby's runs in the pass, finds its stored
+ * inputs equal byte for byte, and runs the census and rank on it otherwise. A
+ * decal base is stored relative to the run's first walk index and rewritten at
+ * the run's current one. A reused run copies the stored rank whole; no rank is
+ * seeded from a stored order. The reuse is off on the sub-tick re-extract,
+ * while an instrument reads the per-pair records (isect_instrumented), and
+ * under OPENPETE_MOBY_RANK_REUSE=0. OPENPETE_MOBY_RANK_REUSE=count matches
+ * runs without reusing them and prints the matched share of the census time;
+ * OPENPETE_MOBY_RANK_REUSE_VERIFY=1 compares each reusing feed against a full
+ * census and rank (rr_verify); OPENPETE_MOBY_RANK_REUSE_NEGCTL=1 reuses a run
+ * found by identity and face count without comparing its inputs, the
+ * negative control of the verify. */
+#define RR_NONE INT32_MIN   /* a stored decal base: none (s_wtri_under -1) */
+#define RR_SLOTS 10         /* material tags REG, SPEC, SIM, SHD, other; x overlay */
+/* One walk triangle's census and rank inputs; pad is zero, so a byte compare
+ * of two records is a compare of their fields' bits. */
+typedef struct { float v[3][4]; int32_t otk; uint32_t fkey; uint8_t blend, ui, mangle, pad; } rr_face;
+/* One stored run: its moby and occurrence, first walk index, face count and
+ * offset into the store's face arrays; src is the matched run of the previous
+ * store (-1 none), cyc the census nanoseconds the count mode charged it. */
+typedef struct { uint32_t moby; int ord, i0, n, off, src; uint64_t cyc; } rr_run;
+typedef struct {
+    rr_run* run; int nrun, caprun;
+    rr_face* in; uint8_t* cont; int32_t* under; int32_t* rank; int nface, capface;
+    int* ht; int htcap;            /* (moby, ord) -> run index + 1, open addressing */
+    double view[3]; int tie, stacked, valid;
+} rr_store;
+static rr_store s_rr[RR_SLOTS][2];
+static int s_rr_cur[RR_SLOTS];
+static rr_store *s_rr_new, *s_rr_old;   /* the feed's store and its predecessor; NULL off */
+static int s_rr_rank_at;                /* native_rank_build's cursor into s_rr_new->run */
+
+/** @brief The reuse mode from OPENPETE_MOBY_RANK_REUSE, latched on first use.
+ * @return 0 off ("0"), 2 match and count only ("count"), else 1 on. */
+static int rr_mode(void) {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = getenv("OPENPETE_MOBY_RANK_REUSE");
+        s = (e && *e == '0') ? 0 : (e && strcmp(e, "count") == 0) ? 2 : 1;
+    }
+    return s;
+}
+/** @brief Whether OPENPETE_MOBY_RANK_REUSE_VERIFY=1 enables the reuse digest, latched on first use.
+ * @return 1 when on, else 0. */
+static int rr_verify_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_REUSE_VERIFY"); s = e && *e == '1'; }
+    return s;
+}
+/** @brief Whether OPENPETE_MOBY_RANK_REUSE_NEGCTL=1 skips the input compare, latched on first use.
+ * @return 1 when on, else 0. */
+static int rr_negctl_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_REUSE_NEGCTL"); s = e && *e == '1'; }
+    return s;
+}
+/** @brief The monotonic clock in nanoseconds while the count mode is on, else 0.
+ * @return The clock, or 0. */
+static uint64_t rr_clock(void) {
+    if (rr_mode() != 2) return 0;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+/** @brief Grow an array to hold at least need elements, doubling from 256.
+ * @param p The array; replaced on growth.
+ * @param cap Its capacity in elements; updated on growth.
+ * @param need The elements required.
+ * @param sz One element's size.
+ * @return 1 when the array holds need elements, 0 when the allocation failed. */
+static int rr_grow(void** p, int* cap, int need, size_t sz) {
+    if (need <= *cap) return 1;
+    int c = *cap ? *cap : 256;
+    while (c < need) c *= 2;
+    void* q = realloc(*p, (size_t)c * sz);
+    if (!q) return 0;
+    *p = q; *cap = c;
+    return 1;
+}
+/** @brief The store slot of the current feed pass: its material tag and whether it is the overlay pass.
+ * @return The slot, 0 to RR_SLOTS - 1. */
+static int rr_slot(void) {
+    static const char* const tags[] = { "REG", "SPEC", "SIM", "SHD" };
+    int t = 4;
+    for (int k = 0; k < 4; k++)
+        if (strcmp(s_cur_mat, tags[k]) == 0) t = k;
+    return t * 2 + (s_pass_overlay != 0);
+}
+/** @brief The hash-table position of a run identity in a store.
+ * @param s The store; htcap a power of two.
+ * @param moby The run's moby.
+ * @param ord Its occurrence among the moby's runs in the pass.
+ * @return The first probe position. */
+static int rr_hpos(const rr_store* s, uint32_t moby, int ord) {
+    return (int)(((moby * 0x9E3779B1u) ^ ((uint32_t)ord * 0x85EBCA6Bu)) >> 7) & (s->htcap - 1);
+}
+/** @brief The run of a store with a given identity.
+ * @param s The store.
+ * @param moby The run's moby.
+ * @param ord Its occurrence.
+ * @return The run's index, or -1. */
+static int rr_find(const rr_store* s, uint32_t moby, int ord) {
+    if (!s->htcap) return -1;
+    for (int h = rr_hpos(s, moby, ord); s->ht[h]; h = (h + 1) & (s->htcap - 1)) {
+        const rr_run* r = &s->run[s->ht[h] - 1];
+        if (r->moby == moby && r->ord == ord) return s->ht[h] - 1;
+    }
+    return -1;
+}
+/** @brief Start the current feed's store, or leave the reuse off for this feed.
+ *
+ * The reuse runs on a canonical feed with the reuse mode on and no instrument
+ * reading the per-pair records. The feed's
+ * store takes the pass view, the tie mode and the stacked-pair switch; the
+ * previous store of the pass is matched only when all three are equal.
+ * @return 1 when the reuse is on for this feed. */
+static int rr_begin(void) {
+    s_rr_new = s_rr_old = NULL;
+    if (!rr_mode() || s_in_reextract || isect_instrumented()) return 0;
+    const int slot = rr_slot();
+    rr_store *o = &s_rr[slot][s_rr_cur[slot]], *s = &s_rr[slot][s_rr_cur[slot] ^ 1];
+    int cap = 64;
+    while (cap < 2 * s_gout.n) cap *= 2;
+    if (cap > s->htcap) {
+        int* h = realloc(s->ht, (size_t)cap * sizeof *h);
+        if (!h) return 0;
+        s->ht = h; s->htcap = cap;
+    }
+    memset(s->ht, 0, (size_t)s->htcap * sizeof *s->ht);
+    s->nrun = s->nface = 0;
+    s->view[0] = s_view.H_eff; s->view[1] = s_view.ofx; s->view[2] = s_view.ofy;
+    s->tie = moby_rank_tie_mode(); s->stacked = isect_stacked_on(); s->valid = 0;
+    const int same = o->valid && memcmp(o->view, s->view, sizeof s->view) == 0 &&
+                     o->tie == s->tie && o->stacked == s->stacked;
+    s_rr_new = s; s_rr_old = same ? o : NULL; s_rr_rank_at = 0;
+    return 1;
+}
+/** @brief Pack one walk triangle's census and rank inputs.
+ * @param i The walk triangle index.
+ * @param f Receives the record, padding zeroed. */
+static void rr_pack(int i, rr_face* f) {
+    memset(f, 0, sizeof *f);
+    for (int k = 0; k < 3; k++) {
+        const ntri_vert* v = &s_wtri[i].v[k];
+        f->v[k][0] = v->sx; f->v[k][1] = v->sy; f->v[k][2] = v->vz; f->v[k][3] = v->tvz;
+    }
+    f->otk = s_wtri_otk[i]; f->fkey = s_wtri_fkey[i];
+    f->blend = (uint8_t)s_wtri[i].blend; f->ui = s_wtri_ui[i]; f->mangle = s_wtri_mangle[i];
+}
+/** @brief Append a run to the feed's store: its identity, its packed inputs and a hash-table entry.
+ * @param s The store.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param mob The run's moby.
+ * @return The run's index, or -1 when an allocation failed. */
+static int rr_add(rr_store* s, int i0, int i1, uint32_t mob) {
+    const int n = i1 - i0;
+    if (!rr_grow((void**)&s->run, &s->caprun, s->nrun + 1, sizeof *s->run)) return -1;
+    int cap = s->capface;
+    if (!rr_grow((void**)&s->in, &cap, s->nface + n, sizeof *s->in)) return -1;
+    cap = s->capface;
+    if (!rr_grow((void**)&s->cont, &cap, s->nface + n, sizeof *s->cont)) return -1;
+    cap = s->capface;
+    if (!rr_grow((void**)&s->under, &cap, s->nface + n, sizeof *s->under)) return -1;
+    cap = s->capface;
+    if (!rr_grow((void**)&s->rank, &cap, s->nface + n, sizeof *s->rank)) return -1;
+    s->capface = cap;
+    int ord = 0;
+    while (rr_find(s, mob, ord) >= 0) ord++;
+    rr_run* r = &s->run[s->nrun];
+    *r = (rr_run){ mob, ord, i0, n, s->nface, -1, 0 };
+    for (int k = 0; k < n; k++) rr_pack(i0 + k, &s->in[s->nface + k]);
+    int h = rr_hpos(s, mob, ord);
+    while (s->ht[h]) h = (h + 1) & (s->htcap - 1);
+    s->ht[h] = ++s->nrun;
+    s->nface += n;
+    return s->nrun - 1;
+}
+/** @brief Whether a run has an eligible face.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @return 1 when it has one. */
+static int rr_has_eligible(int i0, int i1) {
+    for (int i = i0; i < i1; i++)
+        if (isect_eligible(i)) return 1;
+    return 0;
+}
+/** @brief Store one census run and take its stored verdict when its inputs match the previous store.
+ *
+ * A run with no eligible face has no census and ranks 0 and is not stored.
+ * On a match (inputs equal byte for byte, or identity and face count alone
+ * under the negative control) the run's contest flags and its eligible faces'
+ * decal bases are written from the previous store and the run is marked for
+ * native_rank_build; the count mode marks without writing.
+ * @param i0 The run's first walk triangle.
+ * @param i1 One past its last.
+ * @param mob The run's moby.
+ * @return 1 when the run's census outputs were written, 0 when the census runs. */
+static int rr_census_reused(int i0, int i1, uint32_t mob) {
+    rr_store *s = s_rr_new, *o = s_rr_old;
+    if (!s || !mob || !rr_has_eligible(i0, i1)) return 0;
+    const int r = rr_add(s, i0, i1, mob);
+    if (r < 0) { s_rr_new = s_rr_old = NULL; return 0; }
+    const int j = o ? rr_find(o, mob, s->run[r].ord) : -1;
+    const int n = i1 - i0;
+    if (j < 0 || o->run[j].n != n) return 0;
+    const int oo = o->run[j].off;
+    if (!rr_negctl_on() && memcmp(&o->in[oo], &s->in[s->run[r].off], (size_t)n * sizeof(rr_face)))
+        return 0;
+    s->run[r].src = j;
+    if (rr_mode() != 1) return 0;
+    for (int k = 0; k < n; k++) {
+        const int i = i0 + k, u = o->under[oo + k];
+        s_wtri_contest[i] = o->cont[oo + k];
+        if (isect_eligible(i)) s_wtri_under[i] = u == RR_NONE ? -1 : u + i0;
+    }
+    return 1;
+}
+/** @brief Charge the census nanoseconds since t0 to the store's last run when it starts at i0.
+ * @param t0 The rr_clock value at the run's start; 0 does nothing.
+ * @param i0 The run's first walk triangle. */
+static void rr_charge(uint64_t t0, int i0) {
+    rr_store* s = s_rr_new;
+    if (!t0 || !s || !s->nrun || s->run[s->nrun - 1].i0 != i0) return;
+    s->run[s->nrun - 1].cyc += rr_clock() - t0;
+}
+/** @brief Copy a run's stored ranks when the census took its stored verdict.
+ *
+ * native_rank_build visits the walk's runs in the census order, so the
+ * store's runs are met in order by one cursor.
+ * @param i0 The run's first walk triangle.
+ * @return 1 when the run's ranks were written, 0 when the rank build runs. */
+static int rr_rank_reused(int i0) {
+    rr_store* s = s_rr_new;
+    if (!s || s_rr_rank_at >= s->nrun || s->run[s_rr_rank_at].i0 != i0) return 0;
+    const rr_run* r = &s->run[s_rr_rank_at++];
+    if (r->src < 0 || rr_mode() != 1) return 0;
+    const rr_run* o = &s_rr_old->run[r->src];
+    memcpy(&s_nrank[i0], &s_rr_old->rank[o->off], (size_t)r->n * sizeof s_nrank[0]);
+    return 1;
+}
+
 /** @brief Fill s_wtri_contest[] and the intersecting-pair list for the whole walk.
  *
  * Groups the walk's contiguous triangles by moby and runs isect_moby over each
- * moby's eligible faces. With the intersection log on and the VBL nonzero it
+ * moby's eligible faces, except a run whose stored verdict the reuse takes
+ * (rr_census_reused). With the intersection log on and the VBL nonzero it
  * prints one line per moby with faces and a summary line. */
 static void isect_census(void) {
     static isect_tri T[MAX_NTRI];
@@ -8258,10 +8509,13 @@ static void isect_census(void) {
         uint32_t mob = s_wtri_moby[i0];
         int i1 = i0, n = 0;
         while (i1 < s_gout.n && s_wtri_moby[i1] == mob) i1++;
+        if (rr_census_reused(i0, i1, mob)) { i0 = i1; continue; }
+        const uint64_t t0 = rr_clock();
         for (int i = i0; i < i1; i++)
             if (mob && isect_eligible(i)) { isect_tri_of(i, &T[n]); idx[n++] = i; }
         isect_count c = {0};
         isect_moby(T, idx, n, &c);
+        rr_charge(t0, i0);
         if (logit && n > 0) isect_log_moby(mob, i0, &c);
         tot.faces += c.faces; tot.contested += c.contested; tot.pairs += c.pairs;
         tot.coplanar += c.coplanar; tot.shared += c.shared; tot.stacked += c.stacked;
@@ -8328,10 +8582,72 @@ static void native_rank_build(void) {
     for (int i0 = 0; i0 < s_gout.n; ) {
         int i1 = i0, cont = 0;
         for (; i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]; i1++) cont |= s_wtri_contest[i1];
+        if (rr_rank_reused(i0)) { i0 = i1; continue; }
         if (all || cont) native_rank_moby(i0, i1, native_rank_negctl());
         else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
         i0 = i1;
     }
+}
+
+/** @brief Compare the feed's reused verdict against a full census and rank of the same walk (OPENPETE_MOBY_RANK_REUSE_VERIFY=1).
+ *
+ * An instrument: copies the feed's contest flags, ranks and decal bases
+ * aside, runs isect_census and native_rank_build with no store attached,
+ * counts the faces whose contest flag or rank differs or, on an eligible
+ * face, whose decal base differs, then restores the feed's own values, so the
+ * reused verdict stays the one presented. Prints one [rank-reuse-verify] line.
+ * @param reused The feed's reused runs. */
+static void rr_verify(long reused) {
+    static uint8_t cont[MAX_NTRI];
+    static int rank[MAX_NTRI], under[MAX_NTRI];
+    const int n = s_gout.n;
+    memcpy(cont, s_wtri_contest, (size_t)n);
+    memcpy(rank, s_nrank, (size_t)n * sizeof rank[0]);
+    memcpy(under, s_wtri_under, (size_t)n * sizeof under[0]);
+    isect_census();
+    native_rank_build();
+    long mism = 0;
+    for (int i = 0; i < n; i++)
+        mism += cont[i] != s_wtri_contest[i] || rank[i] != s_nrank[i] ||
+                (isect_eligible(i) && under[i] != s_wtri_under[i]);
+    memcpy(s_wtri_contest, cont, (size_t)n);
+    memcpy(s_nrank, rank, (size_t)n * sizeof rank[0]);
+    memcpy(s_wtri_under, under, (size_t)n * sizeof under[0]);
+    fprintf(stderr, "[rank-reuse-verify] vbl=%u mat=%s ovl=%d tris=%d reused=%ld mism=%ld\n",
+            openpete_frame, s_cur_mat, s_pass_overlay, n, reused, mism);
+}
+/** @brief Write the feed's run verdicts into its store, make it the pass's current store, and print the count line.
+ *
+ * Every stored run keeps its contest flags, its eligible faces' decal bases
+ * relative to its first walk index (RR_NONE for none, and for a face that is
+ * not eligible) and its ranks. The count mode and the verify print one
+ * [rank-reuse] line: stored runs, matched runs, and in the count mode the
+ * census nanoseconds of all stored runs and of the matched ones; the verify
+ * then runs rr_verify. */
+static void rr_end(void) {
+    rr_store* s = s_rr_new;
+    s_rr_new = s_rr_old = NULL;
+    if (!s) return;
+    long hit = 0;
+    uint64_t cyc = 0, cyc_hit = 0;
+    for (int r = 0; r < s->nrun; r++) {
+        const rr_run* x = &s->run[r];
+        for (int k = 0; k < x->n; k++) {
+            const int i = x->i0 + k, u = s_wtri_under[i];
+            s->cont[x->off + k] = s_wtri_contest[i];
+            s->under[x->off + k] = (isect_eligible(i) && u >= 0) ? u - x->i0 : RR_NONE;
+            s->rank[x->off + k] = s_nrank[i];
+        }
+        hit += x->src >= 0; cyc += x->cyc; cyc_hit += x->src >= 0 ? x->cyc : 0;
+    }
+    s->valid = 1;
+    const int slot = rr_slot();
+    s_rr_cur[slot] ^= 1;
+    if (rr_mode() == 2 || rr_verify_on())
+        fprintf(stderr, "[rank-reuse] vbl=%u mat=%s ovl=%d runs=%d same=%ld census_ns=%llu same_ns=%llu\n",
+                openpete_frame, s_cur_mat, s_pass_overlay, s->nrun, hit,
+                (unsigned long long)cyc, (unsigned long long)cyc_hit);
+    if (rr_verify_on() && rr_mode() == 1) rr_verify(hit);
 }
 
 /* ---- sub-tick carry of the paint verdict ------------------------------------
@@ -9101,10 +9417,10 @@ static void moby_rank_prepare(CPUState* cpu) {
     if (!openpete_mobyrank_on() && !isect_log_on()) return;
     int carry = s_in_reextract && rank_carry_on();
     uint64_t t0 = rt_now(), c0 = rt_cpu_ns();
-    if (carry) rank_carry_apply(cpu); else isect_census();
+    if (carry) rank_carry_apply(cpu); else { rr_begin(); isect_census(); }
     rank_stage_time(RT_ISECT, t0, c0);
     t0 = rt_now(); c0 = rt_cpu_ns();
-    if (!carry) native_rank_build();
+    if (!carry) { native_rank_build(); rr_end(); }
     if (!s_in_reextract) rank_carry_store(cpu);
     rank_stage_time(RT_RANK, t0, c0);
     rt_report(s_cur_mat, s_gout.n);
