@@ -191,8 +191,12 @@ const game_layout_t spyro1_game_layout = {
         },
     },
     .polybuf = {
-        .cursor = D_POLYBUF_CURSOR,
-        .end    = D_POLYBUF_END,
+        .cursor    = D_POLYBUF_CURSOR,
+        .end       = D_POLYBUF_END,
+        .sample_fn = 0x80016784u,   /* BuildOrderTable: runs after every renderer has queued */
+        .sample_ra = 0u,
+        .scratch   = 0u,            /* no draw scratch inside the buffer */
+        .ot_ptr    = 0x80075820u,   /* g_WorldOT, allocated directly after the buffer */
     },
     .cam = {
         .base        = G_CAMERA,

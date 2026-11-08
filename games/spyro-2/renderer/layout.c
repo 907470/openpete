@@ -196,8 +196,17 @@ const game_layout_t spyro2_game_layout = {
         },
     },
     .polybuf = {
-        .cursor = D_POLYBUF_CURSOR,
-        .end    = D_POLYBUF_END,
+        .cursor    = D_POLYBUF_CURSOR,
+        .end       = D_POLYBUF_END,
+        .sample_fn = F_UI_OT_STITCH, /* func_8001B2A8, the OT stitch before DrawOTag: every
+                                      * caller (draw/func_800156FC.s:220 per present) runs it
+                                      * after the state's draw has returned */
+        .sample_ra = 0u,
+        .scratch   = 0x3000u,       /* mobydraw.s:28-40, environment.s:1559-1563,
+                                     * spyrodraw.s:28-30 carve at end - 0x3000 */
+        .ot_ptr    = 0x80066FFCu,   /* init/func_80011DD4.s:41-53: the OT sits 8 bytes
+                                     * (the 2D entry) above the second buffer's end */
+        .db_base_off = 0x70u,       /* each draw buffer's primitive base word */
     },
     .cam = {
         .base        = G_CAMERA,

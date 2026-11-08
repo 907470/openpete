@@ -348,10 +348,27 @@ typedef struct game_layout {
         struct { uint32_t yield_ra; int mode; } repeat_site[GAME_REPEAT_SITE_MAX];
     } db;
 
-    /* The per-frame primitive allocator: the cursor word and the end word. */
+    /* The per-frame primitive allocator: the cursor word and the end word.
+     * The overflow guard (games/common/features/polybuf_guard.c) samples the
+     * cursor on entry to `sample_fn`, a call every emitter of the present has
+     * returned before, and a recompiled guest function (a PsyQ thunk never
+     * dispatches); with `sample_ra` nonzero only the call returning to that
+     * guest address counts. `scratch` is the draw scratch the 3D passes
+     * carve below the end every tick (`*end - scratch`), 0 for none; the
+     * cursor crossing it overwrites that scratch. `ot_ptr` is the word that
+     * holds the world ordering table's base, 0 when the game has none.
+     * `db_base_off` is the offset of a buffer's base word inside each `db`
+     * record, 0 when the guard cannot tell the buffers apart; the pair is
+     * laid out back to back at equal size, so a sample whose end word does
+     * not belong to the buffer holding the cursor is a stale pair. */
     struct {
         uint32_t cursor;
         uint32_t end;
+        uint32_t sample_fn;
+        uint32_t sample_ra;
+        uint32_t scratch;
+        uint32_t ot_ptr;
+        uint32_t db_base_off;
     } polybuf;
 
     /* The camera (Spyro 1 `Camera`). `[base, xform_end)` is the draw-time

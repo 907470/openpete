@@ -2883,9 +2883,9 @@ static const knob_desc_t g_builtin_debug[] = {
         "1/20-frame portal replay-state print."),
     ENVROW_LIVE("POLYBUF_GUARD", "Debug diagnostics", "0",
         "polygon-buffer overflow detector: logs when the prim cursor "
-        "(D_800757B0) passes the buffer end (D_800756FC) and starts "
-        "overwriting g_WorldOT. 0=off (default), 1=on, "
-        "verbose=per-frame headroom"),
+        "passes the buffer end (Spyro 1, into g_WorldOT) or the draw-scratch "
+        "carve at end - 0x3000 (Spyro 2, 3), and the closest approach. "
+        "0=off (default), 1=on, verbose=every sample"),
     ENVROW_LATCHED("NOLOD_DOME_DBG", "Debug diagnostics", "0",
         "Per-event forced-dome feed print under extended LOD."),
 };

@@ -257,7 +257,7 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:particles.c@F@on_part_free", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:particles.c@F@on_particles_draw", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:player.c@F@on_player_draw", "field:feature_dispatch_entry_t.fn", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
-    ROW("c:polybuf_guard.c@F@on_build_order_table", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:polybuf_guard.c@F@on_polybuf_sample", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:portal.c@F@on_8004F4BC", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:portal.c@F@on_8004FEA0", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:portal.c@F@on_80050240", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
@@ -318,6 +318,8 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:player_hide.c@F@player_hide_shutdown", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
     ROW("c:portal.c@F@portal_native_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
     ROW("c:portal_spyro23.c@F@portal_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:polybuf_guard.c@F@polybuf_guard_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
+    ROW("c:polybuf_guard.c@F@polybuf_guard_shutdown", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
     ROW("c:render_paths.c@F@render_paths_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
     ROW("c:shadow.c@F@shadow_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \
     ROW("c:shadow_player.c@F@shadow_player_apply_options", "init:feature_module_t", "sim") /* thread-roles: feature module callback, run by the host loop on the thread holding sim */ \

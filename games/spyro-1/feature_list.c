@@ -130,12 +130,12 @@ static const feature_module_t* const k_modules[] = {
     &crash_demo_woah_module,
     /* Read-only detector for the unchecked polygon-buffer overflow: samples
      * the prim cursor (D_800757B0) against the buffer end (D_800756FC) once
-     * per frame at BuildOrderTable, when the cursor is at its frame peak.
+     * per present at BuildOrderTable, when the cursor is at its frame peak.
      * Overrunning the buffer walks primitives into g_WorldOT, which sits
      * immediately after it, and the OT tail-insert then dereferences primitive
      * bytes as a node pointer - arbitrary 3-byte writes. Always falls through;
      * Off by default; OPENPETE_POLYBUF_GUARD=1 enables it, =verbose also logs
-     * per-frame headroom. */
+     * every sample. */
     &polybuf_guard_module,
 };
 

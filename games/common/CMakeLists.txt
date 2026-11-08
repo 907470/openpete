@@ -82,7 +82,10 @@ set(OPENPETE_GAME_COMMON_SOURCES
     features/demo_egg.c
     # OPENPETE_STATE_WATCH: a stderr line per change of named guest words,
     # read by the shared pre-tick hook.
-    features/state_watch.c)
+    features/state_watch.c
+    # OPENPETE_POLYBUF_GUARD: the read-only polygon-buffer overflow detector,
+    # reached only through a game's feature list.
+    features/polybuf_guard.c)
 
 add_library(openpete_game_common OBJECT ${OPENPETE_GAME_COMMON_SOURCES})
 openpete_game_common_settings(openpete_game_common)

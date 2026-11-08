@@ -24,6 +24,7 @@ extern const feature_module_t glint_module;
 extern const feature_module_t zap_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
+extern const feature_module_t polybuf_guard_module;
 
 static const feature_module_t* const k_modules[] = {
     /* The dev-overlay level warp (M): registers its two rows at
@@ -107,7 +108,12 @@ static const feature_module_t* const k_modules[] = {
     &ui_sprite_module,
     /* The SPRT text feeder: hooks the two glyph emitters, which link their own
      * primitive chain and so never reach the chokepoint. */
-    &text_sprt_module,
+    &text_sprt_module,    /* Read-only detector for the unchecked polygon-buffer overflow: samples
+     * the prim cursor at the ordering-table stitch before DrawOTag, against
+     * the draw-scratch carve at end - 0x3000 and the end. Always falls
+     * through; off by default, OPENPETE_POLYBUF_GUARD=1 enables it, =verbose
+     * also logs every sample. */
+    &polybuf_guard_module,
 };
 /* The list spyro2_game_runtime carries (game_extras_impl.c). */
 const openpete_feature_list_t spyro2_feature_list = {

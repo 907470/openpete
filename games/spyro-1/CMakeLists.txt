@@ -57,7 +57,6 @@ openpete_add_game(spyro-1
         renderer/transition.c
 
         # Non-renderer feature modules.
-        features/polybuf_guard.c
         features/freecam.c
         features/audio_volume.c
         features/vibration.c

@@ -24,6 +24,7 @@ extern const feature_module_t player_module;
 extern const feature_module_t flame_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
+extern const feature_module_t polybuf_guard_module;
 extern const feature_module_t terrain_probe_module;
 extern const feature_module_t transition_call_module;
 
@@ -108,7 +109,12 @@ static const feature_module_t* const k_modules[] = {
      * primitive chain and so never reach the chokepoint. */
     &text_sprt_module,
     /* The calibrated terrain probe: inert unless OPENPETE_TERRAIN_PROBE is set. */
-    &terrain_probe_module,
+    &terrain_probe_module,    /* Read-only detector for the unchecked polygon-buffer overflow: samples
+     * the prim cursor at the ordering-table stitch before DrawOTag, against
+     * the draw-scratch carve at end - 0x3000 and the end. Always falls
+     * through; off by default, OPENPETE_POLYBUF_GUARD=1 enables it, =verbose
+     * also logs every sample. */
+    &polybuf_guard_module,
 };
 /* The list spyro3_game_runtime carries (game_extras_impl.c). */
 const openpete_feature_list_t spyro3_feature_list = {
