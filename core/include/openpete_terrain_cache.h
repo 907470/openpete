@@ -1161,6 +1161,17 @@ typedef struct {
      * request awaited adoption, and same-id
      * sector-table signature changes the builder reported. */
     uint32_t window_skips, sig_changes;
+    /* First-touch bake budget: sectors claimed for a walk because the
+     * tick's budget was spent (summed over walks), runs of consecutive
+     * walks that claimed any (closed by a walk that claimed none), the
+     * longest closed run in walks, the walks of a run still open, and the
+     * longest deferral in ticks of a sector that then baked. */
+    uint32_t budget_claims, budget_episodes, budget_walks_max, budget_open, budget_age_max;
+    /* Canonical tick walks that deferred a sector without baking one. The
+     * budget admits the first candidate of every tick, so the invariant is
+     * 0, and a run of deferring walks is then no longer than the candidates
+     * of its first walk plus those arriving during it. */
+    uint32_t budget_starved;
 } openpete_tercache_stats_t;
 /** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
  *
@@ -1268,6 +1279,15 @@ int openpete_tercache_bake_held(void);
  *
  * Builder thread. Feeds `window_skips`. */
 void openpete_tercache_note_window_skip(void);
+/** @brief Record one walk's first-touch budget deferrals.
+ *
+ * Builder thread, once per walk that feeds the cache. Feeds
+ * `budget_claims`, the run counters `budget_episodes`, `budget_walks_max`
+ * and `budget_open`, `budget_age_max` and `budget_starved`.
+ * @param claims Sectors the walk claimed because the tick's bake budget was spent.
+ * @param age_ticks The longest deferral, in ticks, of a sector the walk baked.
+ * @param starved Nonzero for a canonical tick walk that deferred a sector and baked none. */
+void openpete_tercache_note_budget_walk(uint32_t claims, uint32_t age_ticks, int starved);
 /** @brief Record one same-id sector-table signature change and the bytes its stale slots still hold after it was handled.
  *
  * Builder thread. Feeds `sig_changes` and `stale_bytes` (summed over the
@@ -1286,7 +1306,8 @@ void openpete_tercache_note_sig_change(uint64_t bytes);
  * sealed_draws, sealed_allocs, svc_fulfilled, draws_retired, pinned_bytes,
  * nonlocal_bufs, dropped_spans, migrate_ticks, stale_bytes, buffers per
  * arena, ranges_max, nolist, store_bind_refusals, retire_answers,
- * retire_old_touches and exhaust_warnings. */
+ * retire_old_touches, exhaust_warnings, window_skips, sig_changes and the
+ * budget counters. */
 void openpete_tercache_print_exit_row(void);
 
 /* ---- one-image preview: a host-loaded level drawn once ------------------

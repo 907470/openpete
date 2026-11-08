@@ -2593,6 +2593,8 @@ static const knob_desc_t g_builtin_debug[] = {
         "Retain near-plane poly-anim sectors on the GPU clip-fan path (default 1 = GPU, 0 = CPU walk)."),
     ENVROW_LATCHED("TERRAIN_CANIMNEAR", "Debug", "1",
         "Retain near-plane env-anim colour sectors on the GPU clip-fan path (default 1 = GPU, 0 = CPU walk)."),
+    ENVROW_LATCHED("TC_BAKE_BUDGET_US", "Debug", "1000",
+        "Terrain-cache first-touch bake time per tick in us; the rest draw through the CPU walk (0 = one sector per tick, off = no budget)."),
     ENVROW_LIVE("TERRAIN_VANIM", "Debug", "1",
         "Sub-tick lerp of moving-terrain verts (default 1)."),
     ENVROW_LIVE("TERRAIN_TANIM", "Debug", "1",

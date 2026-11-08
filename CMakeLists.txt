@@ -746,7 +746,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # every arena sized from the level's content estimate reads
     # claims_sum=0 with bakes>0, failed_edges=0, and one fulfilled
     # replacement per level latch (the level edges plus the session's
-    # first latch). Exit 64 = no binary or disc.
+    # first latch); the first-touch bake budget defers sectors at the edges
+    # (budget_claims>0), bakes at least one per tick (budget_starved=0) and
+    # closes every deferring run before exit (budget_open=0). Exit 64 = no
+    # binary or disc.
     foreach(_g spyro-1 spyro-2 spyro-3)
         add_test(NAME tercache_level_edges_${_g}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tercache_growth.sh

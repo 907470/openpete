@@ -14,6 +14,19 @@
 #                 failed_edges=0, and svc_fulfilled equal to the level
 #                 latches (`[tc-est] latch` lines: every level edge plus the
 #                 session's first latch, each of which posts a replacement).
+#                 The first-touch bake budget engages at the edges and
+#                 closes: budget_claims>0 (the edge bakes exceed the
+#                 per-tick budget), budget_open=0 (no walk still deferring
+#                 at exit), budget_starved=0 (every tick that deferred a
+#                 sector baked one: the budget admits the first candidate of
+#                 a tick). budget_starved=0 is the bound on a deferring run:
+#                 with at least one bake per walk, a run that opens on C
+#                 candidates and receives A more while it lasts ends within
+#                 C + A walks. No constant bounds the run's walk count
+#                 (budget_walks_max, printed): host load sets the bakes per
+#                 walk and the camera sets A.
+#                 OPENPETE_TC_BAKE_BUDGET_US=off is the separating control
+#                 (budget_claims=0).
 #   squeeze-demo  the attract demo (boot to title, --frame-limit
 #                 DEMO_LIMIT) with OPENPETE_TC_INITIAL_CAP squeezed below the
 #                 levels' demand, so every arena must grow: claims_sum=0,
@@ -151,7 +164,8 @@ if want level-edges; then
     run_leg level-edges "$DEMO_LIMIT" --
     latches="$(grep -c '^\[tc-est\] latch level=' "$OUT/level-edges.log")"
     echo "[tercache-growth] leg=level-edges latches=$latches (level edges + 1)"
-    check level-edges claims_sum=0 failed_edges=0 "svc_fulfilled=$latches"
+    check level-edges claims_sum=0 failed_edges=0 "svc_fulfilled=$latches" \
+        budget_claims\>0 budget_open=0 budget_starved=0
     [[ "$latches" -gt 1 ]] ||
         { echo "[tercache-growth] leg=level-edges VACUOUS (no level edge crossed)"; fail=1; }
 fi

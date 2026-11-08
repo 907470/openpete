@@ -140,13 +140,13 @@ games/common/renderer/terrain.c	fp_hit_tri	31	0
 games/common/renderer/terrain.c	portal_rim_classify	53	0	
 games/common/renderer/terrain.c	td_scan_verts	26	0	
 games/common/renderer/terrain.c	terrain_animdbg	44	0	
-games/common/renderer/terrain.c	terrain_build	535	0	
+games/common/renderer/terrain.c	terrain_build	511	0	
 games/common/renderer/terrain.c	terrain_compare	313	0	
 games/common/renderer/terrain.c	terrain_feed_native	351	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	94	0	
 games/common/renderer/terrain.c	tgpu_build_sector	44	0	
-games/common/renderer/terrain.c	tgpu_ensure	31	0	
+games/common/renderer/terrain.c	tgpu_ensure	30	0	
 games/common/renderer/terrain.c	tgpu_env_block	30	0	
 games/common/renderer/terrain.c	tgpu_pack_scan_faces	40	0	
 games/common/renderer/terrain.c	tn_tridump	29	0	

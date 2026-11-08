@@ -479,6 +479,8 @@ static struct {
     uint32_t         lvl_prev_peak, lvl_grow0, lvl_sigs;
     uint32_t         window_skips, sig_changes;
     uint64_t         stale_bytes;
+    uint32_t         budget_claims, budget_episodes, budget_walks_max, budget_open, budget_age_max;
+    uint32_t         budget_starved;
 } s_tc;
 
 static void tc_est_col(char *out, size_t cap, const uint32_t *v);
@@ -2809,6 +2811,18 @@ int openpete_tercache_bake_held(void)
 
 void openpete_tercache_note_window_skip(void) { s_tc.window_skips++; }
 
+void openpete_tercache_note_budget_walk(uint32_t claims, uint32_t age_ticks, int starved)
+{
+    s_tc.budget_claims += claims;
+    s_tc.budget_starved += starved != 0;
+    if (age_ticks > s_tc.budget_age_max) s_tc.budget_age_max = age_ticks;
+    if (claims) { s_tc.budget_open++; return; }
+    if (!s_tc.budget_open) return;
+    s_tc.budget_episodes++;
+    if (s_tc.budget_open > s_tc.budget_walks_max) s_tc.budget_walks_max = s_tc.budget_open;
+    s_tc.budget_open = 0;
+}
+
 void openpete_tercache_note_sig_change(uint64_t bytes)
 {
     s_tc.sig_changes++;
@@ -4034,6 +4048,12 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->window_skips       = s_tc.window_skips;
     out->sig_changes        = s_tc.sig_changes;
     out->stale_bytes        = s_tc.stale_bytes;
+    out->budget_claims      = s_tc.budget_claims;
+    out->budget_episodes    = s_tc.budget_episodes;
+    out->budget_walks_max   = s_tc.budget_walks_max;
+    out->budget_open        = s_tc.budget_open;
+    out->budget_age_max     = s_tc.budget_age_max;
+    out->budget_starved     = s_tc.budget_starved;
 }
 
 int openpete_tercache_take_bind_refusal(void)
@@ -4105,7 +4125,9 @@ void openpete_tercache_print_exit_row(void)
             "svc_fulfilled=%u draws_retired=%u pinned_bytes=%llu nonlocal_bufs=%u "
             "dropped_spans=%u migrate_ticks=%u stale_bytes=%llu bufs=%s ranges_max=%u/%d "
             "nolist=%u store_bind_refusals=%u retire_answers=%u retire_old_touches=%u "
-            "exhaust_warnings=%u window_skips=%u sig_changes=%u\n",
+            "exhaust_warnings=%u window_skips=%u sig_changes=%u budget_claims=%u "
+            "budget_episodes=%u budget_walks_max=%u budget_open=%u budget_age_max=%u "
+            "budget_starved=%u\n",
             st.bakes, st.grow, st.consolidations, st.failed_edges, st.prev_grow, st.prev_fail,
             (unsigned long long)csum, cl, st.edge_claims, st.grow_claims, st.retire_claims,
             st.prev_grow_claims, st.window_bakes, st.defer_overflow, st.hold_takes,
@@ -4114,7 +4136,9 @@ void openpete_tercache_print_exit_row(void)
             (unsigned long long)st.pinned_bytes, st.nonlocal_bufs, st.dropped_spans,
             st.migrate_ticks, (unsigned long long)st.stale_bytes, bm, st.ranges_max,
             TC_RANGE_MAX, st.cen_nolist, st.store_bind_refusals, st.retire_answers,
-            st.retire_old_touches, st.exhaust_warnings, st.window_skips, st.sig_changes);
+            st.retire_old_touches, st.exhaust_warnings, st.window_skips, st.sig_changes,
+            st.budget_claims, st.budget_episodes, st.budget_walks_max, st.budget_open,
+            st.budget_age_max, st.budget_starved);
 }
 
 /* ---- one-image preview (openpete_tercache_preview_*) ---------------------- */
