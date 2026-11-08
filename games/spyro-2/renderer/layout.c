@@ -104,13 +104,16 @@ const game_layout_t spyro2_game_layout = {
         .poly_sec_u8 = 1,
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = D_ENV_ANIM_LIVE,
-        /* Registry pairs 2 and 4. func_800225F8 advances each descriptor's
-         * keyframe and stamps its list index into sector+0x18 / +0x1A
-         * (environment.s:226, 340); the world draw packs the posted pose
-         * and stores 0xFF there only for a tier it lists
-         * (environment.s:1685-1737 bins the tiers, 1743 LP, 1935 HP). */
+        /* Registry pairs 2 to 5. func_800225F8 advances each descriptor's
+         * keyframe and stamps its list index into sector+0x18 / +0x19 /
+         * +0x1A / +0x1B (environment.s:226, 283, 340, 397); the world draw
+         * packs the posted pose and stores 0xFF there only for a tier it
+         * lists (environment.s:1685-1737 bins the tiers; vertices 1743 LP,
+         * 1935 HP; colours 1849 LP, 2046 HP). */
         .kf_lp_poly = D_ENV_ANIM_REGISTRY + 0x10u,
         .kf_hp_poly = D_ENV_ANIM_REGISTRY + 0x20u,
+        .kf_lp_col  = D_ENV_ANIM_REGISTRY + 0x18u,
+        .kf_hp_col  = D_ENV_ANIM_REGISTRY + 0x28u,
         .kf_hide    = 1,             /* environment.s:1756-1762, 1948-1954 */
         .sub = {
             { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR, ENV_ANIM_MODEL_COLOUR },

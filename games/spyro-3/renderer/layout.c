@@ -139,13 +139,15 @@ const game_layout_t spyro3_game_layout = {
         .poly_sec_u8 = 1,
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = 0x80072330u,    /* D_8006FCF4 + 0x263C */
-        /* Registry pairs 2 and 4. func_80020E74 advances each descriptor's
-         * keyframe and stamps its list index into sector+0x18 / +0x1A
-         * (80021188, 80021328); func_80022378 packs the posted pose and
-         * stores 0xFF there only for a tier it lists (8002265C LP, 80022938
-         * HP). */
+        /* Registry pairs 2 to 5. func_80020E74 advances each descriptor's
+         * keyframe and stamps its list index into sector+0x18 / +0x19 /
+         * +0x1A / +0x1B (80021188, 80021258, 80021328, 800213F8);
+         * func_80022378 packs the posted pose and stores 0xFF there only
+         * for a tier it lists (8002265C LP, 80022938 HP). */
         .kf_lp_poly = 0x8006E350u + 0x10u,
         .kf_hp_poly = 0x8006E350u + 0x20u,
+        .kf_lp_col  = 0x8006E350u + 0x18u,
+        .kf_hp_col  = 0x8006E350u + 0x28u,
         .kf_hide    = 1,             /* 800226A0 (LP, ori 0x2000), 8002297C (HP, ori 0x4000) */
         .sub = {
             { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR, ENV_ANIM_MODEL_COLOUR },

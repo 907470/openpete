@@ -5171,8 +5171,8 @@ typedef struct {
     uint32_t  sectorCnt;
     uint32_t  blk;          /* ARENA: the block base, 0 when unresolved */
     int       list;         /* ARENA: next sub-list to open */
-    int       dl;           /* next descriptor list to open: LISTS of the four, ARENA of the two geometry lists */
-    int       desc;         /* the open list holds descriptor pointers (LISTS, or an ARENA geometry list) */
+    int       dl;           /* next descriptor list to open: of the four, after the ARENA sub-lists */
+    int       desc;         /* the open list holds descriptor pointers (any of the four pairs) */
     uint32_t  base;         /* first entry of the open list */
     uint32_t  cnt, k;
     int       kind;         /* ENV_ANIM_KIND_* of the open list */
@@ -5201,19 +5201,18 @@ static void env_anim_iter_init(env_anim_iter_t* it, CPUState* cpu, uint32_t sect
         it->blk = rd(cpu, game_layout.env_anim.block_ptr);
 }
 
-/** @brief Opens the next located, non-empty {count, pointer} descriptor pair of the first n the game walks.
+/** @brief Opens the next located, non-empty one of the four {count, pointer} descriptor pairs the game walks.
  *
  * The four are LP and HP geometry, then LP and HP colour; the first two open
  * as ENV_ANIM_KIND_VERT, the last two as ENV_ANIM_KIND_COLOUR. A pair with
  * no layout offset, a null pointer, a zero count or a count above
  * ENV_ANIM_COUNT_MAX is skipped. The opened list carries no walker model.
  * @param it The iterator.
- * @param n The pairs to walk: 4 in the LISTS form, 2 (geometry) in the ARENA form.
- * @return 1 when a list is open, 0 when the n pairs are spent. */
-static int env_anim_lists_open(env_anim_iter_t* it, int n) {
+ * @return 1 when a list is open, 0 when the four pairs are spent. */
+static int env_anim_lists_open(env_anim_iter_t* it) {
     const uint32_t off[4] = { game_layout.env_anim.lp_poly, game_layout.env_anim.hp_poly,
                               game_layout.env_anim.lp_col,  game_layout.env_anim.hp_col };
-    while (it->dl < n) {
+    while (it->dl < 4) {
         int l = it->dl++;
         if (!off[l]) continue;                       /* list not located */
         uint32_t cnt  = rd(it->cpu, off[l]);
@@ -5235,13 +5234,13 @@ static int env_anim_lists_open(env_anim_iter_t* it, int n) {
  * ENV_ANIM_LISTS delegates to env_anim_lists_open over its four pairs.
  * ENV_ANIM_ARENA opens the next used sub-list row of the block (indirect rows
  * read their list offset from the header word) whose count is
- * 1..ENV_ANIM_COUNT_MAX, then the LP and HP geometry descriptor pairs; an
+ * 1..ENV_ANIM_COUNT_MAX, then the four keyframe descriptor pairs; an
  * unresolved block (outside KSEG0) opens no sub-list.
  * @param it The iterator.
  * @return 1 when a list is open, 0 when the registry is exhausted. */
 static int env_anim_iter_open(env_anim_iter_t* it) {
     CPUState* cpu = it->cpu;
-    if (game_layout.env_anim.form == ENV_ANIM_LISTS) return env_anim_lists_open(it, 4);
+    if (game_layout.env_anim.form == ENV_ANIM_LISTS) return env_anim_lists_open(it);
     if (game_layout.env_anim.form != ENV_ANIM_ARENA) return 0;
     while (it->blk >= 0x80000000u && it->list < ENV_ANIM_SUBLISTS) {
         const env_anim_sublist_t* S = &game_layout.env_anim.sub[it->list];
@@ -5259,7 +5258,7 @@ static int env_anim_iter_open(env_anim_iter_t* it) {
         it->desc = 0;
         return 1;
     }
-    return env_anim_lists_open(it, 2);
+    return env_anim_lists_open(it);
 }
 
 /** @brief Decodes the sector index one entry of the iterator's open list names.
