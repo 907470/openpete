@@ -1022,6 +1022,23 @@ static void flag_setenv(const char* name, const char* v) {
 #endif
 }
 
+/** @brief Add one --player-pose placement: the first typed one replaces an exported OPENPETE_PLAYER_POSE, each later one is appended after ';'.
+ *
+ * The placements apply in order (games/common/freecam_game.c), each at its
+ * "@N" feed-key value.
+ * @param v The flag's value.
+ * @param notes Records that the flag was typed. */
+static void player_pose_add(const char* v, parse_notes_t* notes) {
+    static char list[2048];
+    if (!notes->player_pose_flag) snprintf(list, sizeof list, "%s", v);
+    else {
+        const size_t used = strlen(list);
+        snprintf(list + used, sizeof list - used, ";%s", v);
+    }
+    flag_setenv("OPENPETE_PLAYER_POSE", list);
+    notes->player_pose_flag = true;
+}
+
 /* parse_one_flag's result for an argument no arm accepts, which no config
  * fallback covers: an unknown flag is a typo to fix, not a value to replace. */
 #define PARSE_UNKNOWN_ARG (-2)
@@ -1537,8 +1554,7 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         i++;
     } else if (strcmp(a, "--player-pose") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-        flag_setenv("OPENPETE_PLAYER_POSE", v);
-        notes->player_pose_flag = true;
+        player_pose_add(v, notes);
         i++;
     } else if (strcmp(a, "--debug-triangle") == 0) {
         opts->debug_triangle = true;

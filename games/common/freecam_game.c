@@ -1146,53 +1146,83 @@ static int player_placeable(CPUState* cpu) {
     return D->player_placeable ? D->player_placeable(cpu) : level_live(cpu);
 }
 
-/* 1 while a scripted placement is still waiting for its tick. The freecam's
- * scripted engage waits on it: the freecam engages at level_live, before the
- * fly-in ends, and freezes the player update and the follow, so a placement
- * gated on the ordinary follow would never fire under it. */
-static int s_player_pose_pending = -1;   /* -1: env not read yet */
-/* The feed-key value an "@N" suffix names, or -1 to place on the first
- * placeable tick. */
-static long s_player_pose_at_key = -1;
+/* The placements OPENPETE_PLAYER_POSE lists, ';' between them, applied in
+ * order: each waits for its "@N" feed-key value (or the first placeable
+ * tick, without one) and for the one before it. s_pose_n is -1 until the
+ * variable is read. The freecam's scripted engage waits until the last has
+ * applied: the freecam engages at level_live, before the fly-in ends, and
+ * freezes the player update and the follow, so a placement gated on the
+ * ordinary follow would never fire under it. */
+#define PLAYER_POSE_MAX 16
+static char s_pose_text[PLAYER_POSE_MAX][128];
+static long s_pose_at_key[PLAYER_POSE_MAX];
+static int  s_pose_n = -1;
+static int  s_pose_next;
 
-/** @brief Report whether OPENPETE_PLAYER_POSE is set and not yet applied.
+/** @brief Read one listed placement into slot k: its text before '@' and its "@N" feed-key value.
  *
- * Reads the variable on the first call, caches the result until
- * freecam_player_pose_maybe_apply clears it, and records the "@N" suffix's
- * N, when one follows the pose, as the feed-key value the placement waits for.
+ * @param e The entry's text, not NUL-terminated.
+ * @param len Its length.
+ * @param k The slot.
+ * @return 0, or -1 when the text after '@' is not a feed-key value or the
+ *         entry does not fit. */
+static int player_pose_read_entry(const char* e, size_t len, int k) {
+    char buf[128];
+    if (len >= sizeof buf) return -1;
+    memcpy(buf, e, len);
+    buf[len] = '\0';
+    s_pose_at_key[k] = -1;
+    char* at = strchr(buf, '@');
+    if (at) {
+        char* end;
+        const long n = strtol(at + 1, &end, 10);
+        while (*end == ' ') end++;
+        if (end == at + 1 || *end || n < 0) {
+            OPL_WARN_F("freecam", "OPENPETE_PLAYER_POSE: \"%s\" after '@' is not a feed-key value; not applied", at + 1);
+            return -1;
+        }
+        s_pose_at_key[k] = n;
+        *at = '\0';
+    }
+    snprintf(s_pose_text[k], sizeof s_pose_text[k], "%s", buf);
+    return 0;
+}
+
+/** @brief Report whether a placement OPENPETE_PLAYER_POSE lists is still to apply.
+ *
+ * Reads the variable on the first call and splits it at ';' into at most
+ * PLAYER_POSE_MAX placements; a malformed entry or one too many applies
+ * none of them.
  * @return 1 while a placement is waiting, else 0. */
 static int player_pose_pending(void) {
-    if (s_player_pose_pending < 0) {
+    if (s_pose_n < 0) {
+        s_pose_n = 0;
         const char* pose = getenv("OPENPETE_PLAYER_POSE");
-        s_player_pose_pending = (pose && *pose) ? 1 : 0;
-        const char* at = s_player_pose_pending ? strchr(pose, '@') : NULL;
-        if (at) {
-            char* end;
-            const long n = strtol(at + 1, &end, 10);
-            while (*end == ' ') end++;
-            if (end == at + 1 || *end || n < 0) {
-                OPL_WARN_F("freecam", "OPENPETE_PLAYER_POSE: \"%s\" after '@' is not a feed-key value; not applied", at + 1);
-                s_player_pose_pending = 0;
-            } else {
-                s_player_pose_at_key = n;
+        for (const char* e = pose; e && *e; ) {
+            const char* semi = strchr(e, ';');
+            const size_t len = semi ? (size_t)(semi - e) : strlen(e);
+            if (s_pose_n == PLAYER_POSE_MAX || player_pose_read_entry(e, len, s_pose_n) != 0) {
+                OPL_WARN_F("freecam", "OPENPETE_PLAYER_POSE: entry %d is malformed or past the %d allowed; "
+                           "no placement applied", s_pose_n + 1, PLAYER_POSE_MAX);
+                s_pose_n = 0;
+                break;
             }
+            s_pose_n++;
+            e = semi ? semi + 1 : e + len;
         }
     }
-    return s_player_pose_pending;
+    return s_pose_next < s_pose_n;
 }
 
 void freecam_player_pose_maybe_apply(CPUState* cpu) {
     if (!player_pose_pending()) return;
-    if (s_player_pose_at_key >= 0 &&
-        openpete_feed_key_now() < (unsigned long)s_player_pose_at_key) return;
+    const int k = s_pose_next;
+    if (s_pose_at_key[k] >= 0 &&
+        openpete_feed_key_now() < (unsigned long)s_pose_at_key[k]) return;
     if (!player_placeable(cpu)) return;
-    s_player_pose_pending = 0;
-    char pose[256];
-    snprintf(pose, sizeof pose, "%s", getenv("OPENPETE_PLAYER_POSE"));
-    char* at = strchr(pose, '@');
-    if (at) *at = '\0';
+    s_pose_next++;
     int32_t v[5] = {0, 0, 0, 0, 0};
-    const int n = freecam_parse_ints(pose, v, 5);
+    const int n = freecam_parse_ints(s_pose_text[k], v, 5);
     if (n < 3 || n > 4) {
         OPL_WARN_F("freecam", "OPENPETE_PLAYER_POSE needs x,y,z or x,y,z,yaw (got %d numbers); not applied", n);
         return;

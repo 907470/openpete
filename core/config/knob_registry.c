@@ -2004,7 +2004,8 @@ static const knob_desc_t g_builtin[] = {
     { "player_pose", "Player pose", "Gameplay", "--player-pose", "OPENPETE_PLAYER_POSE",
       "Place the player at this position and facing once gameplay is live "
       "and under pad control (\"x,y,z[,yaw][@N]\"; @N waits until count N "
-      "of the --frame-limit counter).",
+      "of the --frame-limit counter). Repeat the flag, or separate entries "
+      "with ';', to place the player again at later counts, in order.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, env_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none: the player starts where the game places him",
@@ -2013,7 +2014,9 @@ static const knob_desc_t g_builtin[] = {
           "\"x,y,z[,yaw]\" or the exit pose line (\"pos=(x, y, z) yaw=N\",\n"
           "yaw 4096 per turn); the follow camera is re-seated behind him.\n"
           "A trailing \"@N\" waits for the first such tick at or after count\n"
-          "N of the counter --frame-limit reads.\n"
+          "N of the counter --frame-limit reads. Repeat the flag (or\n"
+          "separate entries with ';') to place him again later: each\n"
+          "entry applies in order, at its own @N.\n"
           "CLI twin of OPENPETE_PLAYER_POSE. Every run prints its end\n"
           "state as openpete-pose: after openpete-exit:." },
 
