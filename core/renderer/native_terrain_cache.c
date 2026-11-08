@@ -1482,16 +1482,35 @@ static int tc_buf_alloc(tc_buf *a, uint32_t n, uint32_t *out_first)
     return 0;
 }
 
-/** @brief Return an arena's live element count over the buffers that take allocations or still hold content, sealed buffers excluded.
+/** @brief Return an arena's occupied element count: live chunks plus released ranges still in the defer window, sealed buffers excluded.
+ *
+ * A released range takes no allocation until its defer window passes, so a
+ * sector that re-bakes every build holds its new chunk and up to
+ * TC_DEFER_PRESENTS builds of its old ones; the live count alone
+ * undercounts such an arena by that churn.
  * @param arena Arena index.
  * @return Elements. */
-static uint64_t tc_arena_live(int arena)
+static uint64_t tc_arena_occupied(int arena)
 {
     const tc_arena *a = &s_tc.arena[arena];
-    uint64_t live = 0;
+    uint64_t occ = 0;
     for (int b = 0; b < TC_BUF_SLOTS; b++)
-        if (!a->buf[b].sealed && tc_live_pair(arena, b)) live += a->buf[b].used;
-    return live;
+        if (!a->buf[b].sealed && tc_live_pair(arena, b)) occ += a->buf[b].used;
+    for (int i = 0; i < s_tc.defer_n; i++) {
+        const tc_defer *d = &s_tc.defer[i];
+        if (d->arena == arena && !a->buf[d->buf].sealed && tc_live_pair(arena, d->buf)) occ += d->count;
+    }
+    return occ;
+}
+
+/** @brief Return the elements a buffer can allocate now: the room above its high-water mark plus its free list.
+ * @param bf Buffer.
+ * @return Elements. */
+static uint64_t tc_buf_room(const tc_buf *bf)
+{
+    uint64_t room = bf->cap - bf->high;
+    for (int i = 0; i < bf->free_n; i++) room += bf->free_list[i].count;
+    return room;
 }
 
 /** @brief Count an arena's occupied buffer slots and find its lowest empty one.
@@ -1530,9 +1549,12 @@ static void tc_post_request(int arena, int kind, uint32_t want)
 
 /** @brief Ask for a consolidation buffer for an arena, making every buffer it holds a source.
  *
- * Builder thread. The buffer holds max(primary size, 2 x live), capped at
- * TC_BUF_MAX (as OPENPETE_TC_BUF_MAX lowers it) x primary size and raised to
- * the refused demand; live excludes sealed buffers. From the request on, no
+ * Builder thread. The buffer holds max(primary size, 2 x occupied, the
+ * refused demand); occupied (tc_arena_occupied) counts live chunks and
+ * deferred ranges and excludes sealed buffers. No cap applies: a buffer
+ * below the occupied count refuses the migration it is made for and the
+ * arena consolidates again; the sources' capacity bounds the occupied
+ * count. From the request on, no
  * source takes an allocation, and each source retires once its chunks have
  * migrated (tc_source_retire). Refused, as by a backoff, when the arena has
  * no empty slot or a previous consolidation's sources still remain; the
@@ -1552,16 +1574,17 @@ static int tc_request_consolidation(int arena, uint32_t demand)
     const uint64_t prim = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
                                                               memory_order_relaxed), arena,
                                          s_tc.est_have ? s_tc.est : NULL, s_tc.split_q10);
-    uint64_t want = 2u * tc_arena_live(arena);
+    const uint64_t occ = tc_arena_occupied(arena);
+    uint64_t want = 2u * occ;
     if (want < prim) want = prim;
-    if (want > prim * (uint64_t)tc_buf_max()) want = prim * (uint64_t)tc_buf_max();
     if (want < demand) want = demand;
+    if (want > 0x7FFFFFFFu) want = 0x7FFFFFFFu;
     for (int b = 0; b < TC_BUF_SLOTS; b++)
         if (tc_live_pair(arena, b)) { a->buf[b].source = 1; a->buf[b].zeroed = 0; }
     a->cons_live = 1;
     a->cons_ticks = 0;
-    fprintf(stderr, "[ter-gpu] arena %d consolidation request: %u elements (live %llu)\n",
-            arena, (uint32_t)want, (unsigned long long)tc_arena_live(arena));
+    fprintf(stderr, "[ter-gpu] arena %d consolidation request: %u elements (occupied %llu)\n",
+            arena, (uint32_t)want, (unsigned long long)occ);
     tc_post_request(arena, TC_REQ_CONS, (uint32_t)want);
     return 1;
 }
@@ -1625,7 +1648,12 @@ static void tc_exhaust_warn(void)
             atomic_load_explicit(&s_tc.level_id, memory_order_relaxed), line);
 }
 
-/** @brief Return the slot of an arena's newest buffer that takes allocations: the highest occupied slot that is not a source.
+/** @brief Return the slot of the last buffer the allocator tries: the highest occupied slot that is not a source.
+ *
+ * chunk_alloc is first fit in slot order, so this buffer takes a chunk
+ * only after every lower slot refused it, and its room is the arena's last
+ * reserve. A slot reused after a source retires sits below it, so the
+ * buffer is not always the most recently installed one.
  * @param arena Arena index.
  * @return The slot, or -1 when no buffer takes allocations. */
 static int tc_newest_buf(int arena)
@@ -1636,17 +1664,33 @@ static int tc_newest_buf(int arena)
     return -1;
 }
 
+/** @brief Return the capacity of an arena's buffers that take allocations: occupied slots that are neither sources nor sealed.
+ * @param arena Arena index.
+ * @return Elements. */
+static uint64_t tc_arena_capacity(int arena)
+{
+    const tc_arena *a = &s_tc.arena[arena];
+    uint64_t cap = 0;
+    for (int b = 0; b < TC_BUF_SLOTS; b++)
+        if (!a->buf[b].source && !a->buf[b].sealed && tc_live_pair(arena, b)) cap += a->buf[b].cap;
+    return cap;
+}
+
 /** @brief Ask for one more buffer for an arena: growth below the buffer cap, consolidation at it.
  *
  * Builder thread, from a chunk every buffer of the arena refused (@p demand
- * > 0) or from an allocation that took the newest buffer past 75% of its
- * capacity (@p demand 0). A growth buffer holds max(demand, primary size),
- * the primary size being tc_initial_cap (the level's row, the arena's
- * estimate, or OPENPETE_TC_INITIAL_CAP); the arena holds at most tc_buf_max() such
- * buffers. At that cap a refusal asks for a consolidation instead; the
+ * > 0) or from an allocation into the last buffer the allocator tries
+ * (tc_newest_buf) that left it under 25% of its capacity allocatable
+ * (tc_buf_room) (@p demand 0). A growth buffer holds max(demand, primary
+ * size, the capacity of the arena's allocating buffers), the primary size
+ * being tc_initial_cap (the level's row, the arena's estimate, or
+ * OPENPETE_TC_INITIAL_CAP): each step doubles the arena, so tc_buf_max()
+ * buffers hold 2^(tc_buf_max() - 1) primary sizes, and a primary size that
+ * undercounts the content by up to that factor grows without a
+ * consolidation. At that cap a refusal asks for a consolidation instead; the
  * watermark asks for nothing. Dropped while a request is outstanding or a
  * refusal's backoff runs. Every request is logged with the newest buffer's
- * high-water mark and live count, the two measures of its fill.
+ * high-water mark, live count and room.
  * @param arena Arena index.
  * @param demand Element count of the refused chunk, or 0 for the watermark. */
 static void tc_request_grow(int arena, uint32_t demand)
@@ -1667,13 +1711,16 @@ static void tc_request_grow(int arena, uint32_t demand)
     uint32_t want = tc_initial_cap(atomic_load_explicit(&s_tc.level_id,
                                                         memory_order_relaxed), arena,
                                    s_tc.est_have ? s_tc.est : NULL, s_tc.split_q10);
+    const uint64_t held = tc_arena_capacity(arena);
+    if (held > want) want = held > 0x7FFFFFFFu ? 0x7FFFFFFFu : (uint32_t)held;
     if (demand > want) want = demand;
     const int nb = tc_newest_buf(arena);
     const tc_buf *top = nb >= 0 ? &a->buf[nb] : NULL;
     fprintf(stderr, "[ter-gpu] arena %d grow request: %s demand=%u want=%u buffers=%d "
-                    "newest high=%u used=%u cap=%u\n",
+                    "newest high=%u used=%u room=%llu cap=%u\n",
             arena, demand ? "refusal" : "watermark", demand, want, k,
-            top ? top->high : 0u, top ? top->used : 0u, top ? top->cap : 0u);
+            top ? top->high : 0u, top ? top->used : 0u,
+            (unsigned long long)(top ? tc_buf_room(top) : 0u), top ? top->cap : 0u);
     tc_post_request(arena, TC_REQ_GROW, want);
 }
 
@@ -1875,6 +1922,7 @@ static void tc_state_mark(tc_state *T)
     }
 }
 
+
 int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first,
                                   int *out_buf)
 {
@@ -1888,10 +1936,14 @@ int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first
         if (tc_buf_alloc(&a->buf[b], (uint32_t)vert_count, out_first) != 0) continue;
         if (a->buf[b].sealed) s_tc.sealed_allocs++;   /* unreachable: sealed is a source */
         *out_buf = b;
-        /* Watermark: the newest buffer past 75% of its capacity asks for
-         * the next buffer before a chunk is refused. */
+        /* Watermark: the last buffer the allocator tries, left with under
+         * 25% of its capacity allocatable (room above the high-water mark
+         * plus its free list), asks for the next buffer before a chunk is
+         * refused. The high-water mark alone is not the fill: one chunk near
+         * the top holds it there while churn cycles through the free list. */
         const tc_buf *nb = &a->buf[newest];
-        if (b == newest && (uint64_t)nb->high * 4u > (uint64_t)nb->cap * 3u)
+        if (b == newest && (uint64_t)nb->high * 4u > (uint64_t)nb->cap * 3u &&
+            tc_buf_room(nb) * 4u < (uint64_t)nb->cap)
             tc_request_grow(arena, 0u);
         return 0;
     }

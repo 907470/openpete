@@ -8,7 +8,7 @@
 # nothing about the cache and is VACUOUS, never PASS.
 #
 # Legs (--leg selects one; the default set is squeeze-bk2, consolidate,
-# store, failed-edge):
+# store, failed-edge, steady-pose):
 #   squeeze-demo  the attract demo (boot to title, --frame-limit
 #                 DEMO_LIMIT) with OPENPETE_TC_INITIAL_CAP squeezed below the
 #                 levels' demand, so every arena must grow: claims_sum=0,
@@ -31,6 +31,16 @@
 #   refuse-grow   OPENPETE_TC_REFUSE=grow:*,cons:* with the squeeze: every
 #                 growth and consolidation refused. Reports the claims the
 #                 refusal policy leaves (the exhaustion case); no verdict.
+#   steady-pose   Spyro 2 skelos_badlands at a freecam pose under
+#                 --texture-mapping affine and --lod extended, where the
+#                 poly-anim cell-record arena (CA_OPAQUE) re-bakes every
+#                 build and outgrows its table row about 25-fold, run
+#                 STEADY_LIMIT VBLs (the level loads near VBL 1290 and
+#                 settles within 300 builds): claims_sum=0,
+#                 consolidations=0, exhaust_warnings=0, and at most
+#                 STEADY_REQ growth requests per arena after the level
+#                 load (7: a growth series that fits the 8 slots; an arena
+#                 that never settles requests without bound).
 #   custom-level  the M4 fixture, built at run time from the disc: a scratch
 #                 mod whose WAD is lofty_castle's (level 52) served with
 #                 `replace = true` over the donor toasty (sunny_flight, the
@@ -56,7 +66,7 @@ source scripts/lib/game.sh
 
 export OPENPETE_VIBRATION=0
 
-LEG=""; EXE=""; OUT=""; SQUEEZE=32768; DEMO_LIMIT=40000
+LEG=""; EXE=""; OUT=""; SQUEEZE=32768; DEMO_LIMIT=40000; STEADY_LIMIT=2400; STEADY_REQ=7
 prev=""
 for a in "$@"; do
     case "$prev" in
@@ -107,7 +117,7 @@ field() {  # tag name
 
 fail=0
 ran=0
-want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " squeeze-bk2 consolidate store failed-edge " == *" $1 "* ) ]]; }
+want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " squeeze-bk2 consolidate store failed-edge steady-pose " == *" $1 "* ) ]]; }
 # check tag expr...: each expr is name<op>value over the row's fields.
 check() {
     local tag="$1"; shift
@@ -169,6 +179,29 @@ if want failed-edge; then
     run_leg failed-edge 1900 OPENPETE_TC_REFUSE='edge:*' -- --skip-to-level "$SPAWN"
     check failed-edge failed_edges\>0 consolidations\>0 hold_takes\>0 sealed_allocs=0 \
         hold_drops=0 claims_sum=0
+fi
+
+if want steady-pose; then
+    if [[ "$GAME" != spyro-2 ]]; then
+        echo "[tercache-growth] leg=steady-pose SKIP (the pose is a Spyro 2 row)"
+    else
+        ran=1
+        run_leg steady-pose "$STEADY_LIMIT" -- --skip-to-level skelos_badlands \
+            --freecam-pose "pos=(116034, 2704, 95746) yaw=1112 pitch=541" \
+            --texture-mapping affine --lod extended
+        check steady-pose claims_sum=0 consolidations=0 exhaust_warnings=0
+        # Growth and consolidation requests per arena after the level load.
+        req="$(sed -n '/loader took level=/,$p' "$OUT/steady-pose.log" |
+            sed -n 's/^\[ter-gpu\] arena \([0-9]*\) \(grow\|consolidation\) request.*/\1/p' |
+            sort | uniq -c | sort -rn | head -1)"
+        read -r n arena <<< "${req:-0 -}"
+        echo "[tercache-growth] leg=steady-pose most requests after the level load: $n (arena $arena)"
+        if ! grep -q 'loader took level=' "$OUT/steady-pose.log"; then
+            echo "[tercache-growth] leg=steady-pose VACUOUS (the level never loaded)"; fail=1
+        elif [[ "$n" -gt "$STEADY_REQ" ]]; then
+            echo "[tercache-growth] leg=steady-pose FAIL (arena $arena: $n requests > $STEADY_REQ)"; fail=1
+        fi
+    fi
 fi
 
 if want refuse-grow; then
