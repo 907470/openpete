@@ -222,6 +222,25 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
 }
 
 static void evicted_keep(const openpete_interp_obj_t* e);
+
+static unsigned long s_collisions;   /* second captures of a key in one tick, since startup */
+
+unsigned long openpete_interp_objs_collisions(void) { return s_collisions; }
+
+/** @brief Count a refused capture of a key another capture already wrote this tick; OPENPETE_INTERP_OBJS_COLLIDE prints it.
+ *
+ * The printed line names the key, the blob length the entry holds (the
+ * first source's) and the length refused, for the first 2000 refusals.
+ * @param e The entry the capture found already seen.
+ * @param len The captured length. */
+static void collision_note(const openpete_interp_obj_t* e, uint32_t len) {
+    static int on = -1;
+    if (on < 0) { const char* v = getenv("OPENPETE_INTERP_OBJS_COLLIDE"); on = (v && *v && *v != '0'); }
+    s_collisions++;
+    if (on && s_collisions <= 2000ul)
+        fprintf(stderr, "[interp-collide] f=%u key=%08x held_len=%u new_len=%u n=%lu\n",
+                openpete_frame, e->key, (unsigned)e->blob_len, (unsigned)len, s_collisions);
+}
 static unsigned long s_reborn;   /* captures that changed a tracked key's serial, since startup */
 
 unsigned long openpete_interp_objs_reborn_count(void) { return s_reborn; }
@@ -332,6 +351,14 @@ int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t
     uint32_t i = probe(key, &found);
     if (i >= SLOTS) return 0;   /* table full - drop rather than corrupt a colliding slot */
     openpete_interp_obj_t* e = &s_tab[i];
+    /* One entry per key per tick: a second capture of a key is another
+     * source keyed on the same address, and rolling it in would leave the
+     * first source's entry holding a foreign blob with prev_ns == curr_ns.
+     * The first capture of the tick keeps the entry. */
+    if (found && e->seen) {
+        collision_note(e, len);
+        return 0;
+    }
 
     /* The key now names another record: the tracked one despawns at its curr
      * state (the evicted set) and the new one spawns in its slot. */

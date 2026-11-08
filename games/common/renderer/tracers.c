@@ -71,6 +71,7 @@
 #include "renderer/hook_bracket.h"
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"     /* cut_held_sets_t: the held cut's tick N-1 set */
+#include "renderer/orchestrator.h"  /* the canonical-render epoch the vertex lists carry */
 #include "renderer/tracers.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
@@ -176,13 +177,15 @@ static void tr_sets_swap(void) {
 
 static cut_held_sets_t s_sets = { tr_sets_swap, &s_tick_n, "tracers", { 0u, 0u }, 0u };
 
-/* The mesh vertex lists the most recent drawing frame read: address and
- * vertex count. The set stands until the next frame that draws a mesh, so
- * every capture between two draws sees it. */
+/* The mesh vertex lists the most recent VBL with a mesh call read: address
+ * and vertex count, and the canonical-render epoch of that render. The set
+ * is reported only while that epoch is the in-flight or the last closed one,
+ * so a render that calls no mesh retires it. */
 static uint32_t s_list_addr[TR_MAX_LISTS];
 static uint32_t s_list_n[TR_MAX_LISTS];
 static int      s_lists;
 static unsigned s_list_frame = 0xFFFFFFFFu;
+static uint32_t s_list_epoch;
 
 static uint32_t s_code_hist[256];
 static uint32_t s_tag_hist[256];
@@ -487,14 +490,17 @@ static void rib_pair_depths(CPUState* cpu, const ngte_view* v) {
  * The list ends at the routine's -1 terminator (:3223-3225), bounded by the
  * scratchpad table's SPAD_MAX_VERTS. The first note on a new VBL empties
  * the set; a repeated address, an address outside KSEG0 RAM and a list past
- * TR_MAX_LISTS are ignored. The capture runs on every VBL and the draw once
- * per tick, so the set is replaced by the next VBL that draws, not consumed
- * by the capture: a vertex missing from one capture is evicted from the
- * store and pairs as a spawn.
+ * TR_MAX_LISTS are ignored. Each note stamps the set with the in-flight
+ * canonical-render epoch. The capture runs on every VBL and the draw once
+ * per tick, so the set is replaced by the next VBL that draws and retired by
+ * a render that calls no mesh (tracers_mesh_lists), not consumed by the
+ * capture: a vertex missing from one capture is evicted from the store and
+ * pairs as a spawn.
  * @param cpu The guest CPU state.
  * @param vlist The vertex list's guest address. */
 static void msh_note_list(CPUState* cpu, uint32_t vlist) {
     if (s_list_frame != openpete_frame) { s_list_frame = openpete_frame; s_lists = 0; }
+    s_list_epoch = spyro_native_canon_epoch_stamp();
     if (vlist < 0x80000000u || vlist >= 0x80800000u) return;
     for (int i = 0; i < s_lists; i++) if (s_list_addr[i] == vlist) return;
     if (s_lists >= TR_MAX_LISTS) return;
@@ -505,7 +511,25 @@ static void msh_note_list(CPUState* cpu, uint32_t vlist) {
     s_lists++;
 }
 
+/** @brief Records the vertex list a mesh descriptor names when it is a KSEG0 RAM address (msh_note_list).
+ *
+ * @param cpu The guest CPU state.
+ * @param desc The mesh descriptor's guest address.
+ * @return 1 when the list was a KSEG0 RAM address, else 0. */
+static int msh_note_desc(CPUState* cpu, uint32_t desc) {
+    const uint32_t vlist = cpu->read_word(desc + MSH_VERTS);
+    if (vlist < 0x80000000u || vlist >= 0x80800000u) return 0;
+    msh_note_list(cpu, vlist);
+    return 1;
+}
+
+uint32_t tracers_mesh_vertex_key(uint32_t va) {
+    return TRACERS_MESH_KEY_TAG | (va & TRACERS_MESH_KEY_MASK);
+}
+
 int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) {
+    if (s_list_epoch != spyro_native_canon_epoch_stamp() &&
+        !spyro_native_canon_epoch_fresh(s_list_epoch)) return 0;
     int n = 0;
     for (int i = 0; i < s_lists && n < max; i++, n++) {
         addr[n] = s_list_addr[i];
@@ -518,7 +542,7 @@ int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) {
  *
  * Corner k is the entry's index byte k (:3358-3378 store them at +0x08,
  * +0x14, +0x20, +0x2C); the vertex is the 12-byte world XYZ triple at that
- * index of the descriptor's vertex list, keyed by its address.
+ * index of the descriptor's vertex list, keyed by tracers_mesh_vertex_key.
  * @param cpu The guest CPU state.
  * @param v The tick's view.
  * @param it The item.
@@ -536,7 +560,7 @@ static void msh_set_corners(CPUState* cpu, const ngte_view* v, tr_item* it,
             (int32_t)cpu->read_word(va + 4u),
             (int32_t)cpu->read_word(va + 8u),
         };
-        tr_corner_set(&it->c[k], v, va, 0, w);
+        tr_corner_set(&it->c[k], v, tracers_mesh_vertex_key(va), 0, w);
     }
 }
 
@@ -558,8 +582,7 @@ static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
     const uint32_t ilist = cpu->read_word(desc + MSH_INDICES);
     if (ilist < 0x80000000u || ilist >= 0x80800000u) return;
     const uint32_t vlist = cpu->read_word(desc + MSH_VERTS);
-    const int have_verts = vlist >= 0x80000000u && vlist < 0x80800000u;
-    if (have_verts) msh_note_list(cpu, vlist);
+    const int have_verts = msh_note_desc(cpu, desc);
     const int shift = (int)cpu->read_word(desc + MSH_SHIFT);
     const float mul = (shift >= 0 && shift < 24) ? (float)(1u << (unsigned)shift) : 1.0f;
 
@@ -859,7 +882,7 @@ static int on_ribbon(CPUState* cpu, uint32_t addr) {
  *
  * As on_ribbon, with the depths and corners paired from the descriptor read
  * before the draw (s_msh_desc); a call that appended no primitives does no
- * capture.
+ * capture and only notes the vertex list the routine projected.
  * @param cpu The guest CPU state.
  * @param addr The routine's guest address.
  * @return 0 when the bracket declines the call, else the bracket's end
@@ -882,6 +905,8 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
         render_material_level_push(cpu);
         if (feed && render_path_enabled(RP_TRACER))
             tr_feed_native(&s_tick[first], s_tick_n - first);
+    } else {
+        (void)msh_note_desc(cpu, s_msh_desc);   /* projected, none emitted: the list stays live */
     }
     tr_census("mesh", startp, endp, fed_before);
     return hook_bracket_end(&k_msh);

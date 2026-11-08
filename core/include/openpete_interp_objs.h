@@ -146,8 +146,9 @@ void openpete_interp_objs_begin_tick(void);
  * last distinct state, the same dedupe the direct ring applies. A changed
  * blob rolls prev into prev2 (when have_prev), curr into prev, and stamps
  * curr_ns with openpete_interp_tick_stamp(). A new key occupies an empty
- * slot with have_prev = 0 (spawn). A full table drops the capture. Marks
- * the object seen.
+ * slot with have_prev = 0 (spawn). A full table drops the capture, and a
+ * key already captured since begin_tick is refused and counted
+ * (openpete_interp_objs_collisions). Marks the object seen.
  * @param key Object identity; 0 is ignored.
  * @param data Blob source; NULL is ignored.
  * @param len Bytes to record, clamped to the registered blob size. */
@@ -190,6 +191,11 @@ int openpete_interp_objs_capture_serial(uint32_t key, const void* data, uint32_t
  *
  * @return The count. */
 unsigned long openpete_interp_objs_reborn_count(void);
+
+/** @brief Return the captures since startup refused because another capture already wrote the key in the same tick.
+ *
+ * @return The count. */
+unsigned long openpete_interp_objs_collisions(void);
 
 /** @brief Return the number of unshown-spawn replacements since startup.
  *

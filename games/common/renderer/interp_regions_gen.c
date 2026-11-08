@@ -619,7 +619,7 @@ void game_interp_capture_tracer_pool(void) {
         for (uint32_t i = 0; i < nv[l]; ++i) {
             const uint32_t va = addr[l] + i * 12u;
             const void* host = openpete_psx_to_host_span(va, 12u);
-            if (host) openpete_interp_objs_capture(va, host, 12u);
+            if (host) openpete_interp_objs_capture(tracers_mesh_vertex_key(va), host, 12u);
         }
     }
 }
